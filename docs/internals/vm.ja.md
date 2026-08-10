@@ -505,3 +505,23 @@ sweepのゼロ埋めresizeが生きたcell slotへの`Release r0`を生んで
 segfaultした。tempは1エントリずつ忘れる形に修正。あわせて
 `return`は、囲む文の飛行中temp（arm横断で保持中のmatch subject等）
 をGC backstopに残さず解放するようになった。
+
+次に`fn name`宣言がarityディスパッチのoverload付きで入った:
+`MultifnReg`が各body chunkのclosureをJITと同じランタイム
+multimethodレジストリ（`multifn_register_and_install`、arityのみ —
+型文字列はnull）へ登録するので、同一スコープのoverloadは1つの
+dispatcherに合流し、ネストスコープの宣言はスコープ毎のレジストリ
+キーでshadowingになり、同一arityの再宣言はテーブルエントリを
+置換し、DispatchErrorのkind/文面/位置は共有dispatcher thunkから
+出る。再帰が動くのは、コンパイラが文リストの`fn name`をスコープ
+入口で事前宣言する（未束縛sentinel入りの所有cell）から — リスト
+前方で作られたclosureも本物のcellをcaptureでき（相互再帰）、宣言
+文が走る前の読み出しはlazy束縛の読み出しガード`UnboundErr`が
+interpと同じNameErrorにする。この機構を移植前にinterp/JITで
+プローブする（deferサイクルの手順）と、今度はJIT側のmaster潜在
+バグが出た: closureのcaptureがlazy前方参照cellを*実体化*し、
+null-pointer読み出しガードの頼る「宣言未実行」信号を消すため、
+宣言前の読み出しでinterpがNameErrorを出すところをJITはnilの
+プレースホルダをユーザーコードに流していた — `fn name`だけでなく
+素の`let`でも。まず`jit.h`側を修正（sentinel+値ガード。VMは今回
+その設計をミラーする）、回帰は`tests/test_forward_ref.cul`。

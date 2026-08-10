@@ -1,0 +1,44 @@
+# dispatcher scoping: a nested-scope `fn name` shadows (its own table), a
+# same-arity re-decl in one scope replaces, the name is an ordinary value,
+# and per-call redeclaration inside a function stays stable.
+fn f(x) {
+  x + 1
+}
+{
+  fn f(x) {
+    x * 10
+  }
+  println(f(3))
+}
+println(f(3))
+
+fn twice(x) {
+  x * 2
+}
+let g = twice
+println(g(21))
+let apply = fn (h, v) { h(v) }
+println(apply(twice, 5))
+
+fn r(x) {
+  x + 1
+}
+fn r(x) {
+  x + 2
+}
+println(r(1))
+
+# a nested closure captures the named fn's dispatcher cell
+let mk = fn () { fn (v) { twice(v) + 1 } }
+let mked = mk()
+println(mked(4))
+
+# fn-local named fn, redeclared per call
+fn outer(n) {
+  fn inner(x) {
+    x + n
+  }
+  inner(1)
+}
+println(outer(10))
+println(outer(20))

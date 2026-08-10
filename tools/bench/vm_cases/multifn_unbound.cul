@@ -1,0 +1,10 @@
+# reading a `fn name` before its decl statement ran is a catchable
+# NameError — through a capture and directly; after the decl it resolves.
+let call_early = fn () { early(1) }
+println(try { call_early() } catch e { e })
+println(try { early(2) } catch e { e })
+fn early(x) {
+  x + 1
+}
+println(call_early())
+println(early(2))

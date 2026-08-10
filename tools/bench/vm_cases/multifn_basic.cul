@@ -1,0 +1,33 @@
+# `fn name` declarations: arity-dispatch overloads, self and mutual
+# recursion through the pre-declared dispatcher cell, zero-arity overload.
+fn add(a, b) {
+  a + b
+}
+fn add(a, b, c) {
+  a + b + c
+}
+println(add(1, 2))
+println(add(1, 2, 3))
+
+fn fact(n) {
+  if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+println(fact(5))
+
+fn is_even(n) {
+  if n == 0 { true } else { is_odd(n - 1) }
+}
+fn is_odd(n) {
+  if n == 0 { false } else { is_even(n - 1) }
+}
+println(is_even(10))
+println(is_odd(7))
+
+fn greet() {
+  "hi"
+}
+fn greet(who) {
+  "hi " + who
+}
+println(greet())
+println(greet("you"))

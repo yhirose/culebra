@@ -1,0 +1,6 @@
+# uncaught call before the decl statement ran: NameError at the reference
+println("before")
+println(early(1))
+fn early(x) {
+  x + 1
+}

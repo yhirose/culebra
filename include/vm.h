@@ -19,7 +19,10 @@
 // fn literals with closures (captured locals promoted to JitCells, the
 // JIT's cell mechanism — forward-reference capture is still rejected);
 // `match` over leaf patterns (literals, `_`, bindings, typed bindings over
-// primitive type names, or-patterns of non-binding leaves) with guards.
+// primitive type names, or-patterns of non-binding leaves) with guards;
+// `fn name` declarations with arity-dispatch overloads through the shared
+// multimethod runtime, incl. self/mutual recursion via pre-declared
+// dispatcher cells (reads before the decl runs raise NameError).
 
 #ifdef CULEBRA_JIT_ENABLED
 
@@ -109,6 +112,15 @@ enum class Op : uint8_t {
   ImmutErr,    // throw ImmutableError for name consts[a] (runtime, after the
                // RHS evaluated — `if false { x = 1 }` stays silent, interp
                // parity); never falls through
+  UnboundErr,  // if regs[a] is the unbound sentinel (TAG_NO_SELF), throw
+               // NameError for name consts[b] — the read guard on a `fn
+               // name` dispatcher cell read before its decl statement ran
+               // (the JIT's emit_unbound_value_guard). Usually falls through.
+  MultifnReg,  // regs[a] = dispatcher (+1) after registering closure regs[b]
+               // as an overload of multimethod key consts[c] (a chunk-owned
+               // string); d = the body's chunk index, whose param_names feed
+               // the registry (types stay null — arity-only dispatch in the
+               // slice). The registry absorbs the body's +1; regs[b] = nil.
   Throw,       // user `throw`: regs[a]'s +1 transfers to the thrown-value
                // carrier (culebra_runtime_throw); regs[a] is nil'd BEFORE the
                // raise so a handler's release ladder cannot double-release
@@ -237,7 +249,9 @@ class Compiler {
     // reads; the returned top-level info carries chunk 0's captured_locals.
     FuncInfo top_info = analysis.analyze_program(ast);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
-    Compiler main(prog, analysis, /*in_function=*/false, &top_info);
+    int multifn_uid = 0;  // program-wide (the JIT's multifn_uid_counter_)
+    Compiler main(prog, analysis, /*in_function=*/false, &top_info,
+                  &multifn_uid);
     // The top-level frame mark (JIT main's fn.mark): first insn, so a
     // throw at any pc finds it populated. The Halt epilogue runs to it —
     // before the top scope's releases, hence the inlined block below.
@@ -245,6 +259,7 @@ class Compiler {
     {
       using namespace peg::udl;
       main.push_scope();
+      main.predeclare_multifns(ast);
       if (ast.tag == "STATEMENTS"_) {
         for (const auto& n : ast.nodes) main.compile_statement(*n);
       } else {
@@ -262,11 +277,12 @@ class Compiler {
 
  private:
   Compiler(VmProgram& prog, FnAnalysis& analysis, bool in_function,
-           const FuncInfo* info)
+           const FuncInfo* info, int* multifn_uid)
       : prog_(prog),
         analysis_(analysis),
         in_function_(in_function),
-        info_(info) {}
+        info_(info),
+        multifn_uid_(multifn_uid) {}
 
   struct Binding {
     std::string name;
@@ -276,10 +292,20 @@ class Compiler {
     // CellGet, writes through CellSet. True for a captured local's owned
     // cell and for a capture bound from the closure (borrowed).
     bool is_cell = false;
+    // Pre-declared `fn name` dispatcher cell (or a capture of one): the
+    // cell holds the unbound sentinel until the decl statement runs, so
+    // reads emit UnboundErr (the JIT's lazy forward-ref read guard).
+    bool lazy = false;
   };
   struct Scope {
     std::vector<Binding> bindings;
     int32_t slot_watermark;  // next_slot_ at scope entry; pop rolls back
+    // Lexical key into the process-global multimethod registry for each
+    // `fn name` declared directly in this scope: same-scope overloads
+    // share one key (one dispatcher + method table), a same-named decl in
+    // a different scope gets a distinct key (the JIT's
+    // Scope::multifn_keys / multifn_scope_key).
+    std::map<std::string, std::string> multifn_keys;
   };
   struct LoopCtx {
     int32_t slot_watermark;  // slots >= this are inner to the loop scope
@@ -299,6 +325,7 @@ class Compiler {
   FnAnalysis& analysis_;
   bool in_function_;
   const FuncInfo* info_;  // this chunk's analysis (captured_locals gate)
+  int* multifn_uid_;      // shared across nested chunk compilers
   Chunk chunk_;
   std::vector<Scope> scopes_;
   std::vector<LoopCtx> loops_;
@@ -542,11 +569,14 @@ class Compiler {
   }
 
   // A read of a cell binding: the value comes out retained, so the result
-  // is an owned temp (JIT load_slot), unlike a plain slot's borrow.
+  // is an owned temp (JIT load_slot), unlike a plain slot's borrow. A lazy
+  // dispatcher cell read before its decl ran guards for the unbound
+  // sentinel (NameError at the reference, interp parity).
   ExprResult read_binding(const peg::Ast& at, const Binding& b) {
     if (!b.is_cell) return {b.slot, false};
     int32_t t = alloc_temp(at);
     emit(Op::CellGet, t, b.slot);
+    if (b.lazy) emit(Op::UnboundErr, t, kconst_str(b.name));
     return {t, true};
   }
 
@@ -585,6 +615,7 @@ class Compiler {
     using namespace peg::udl;
     DeferScope ds(*this, defer_key ? *defer_key : ast);
     push_scope();
+    predeclare_multifns(ast);
     if (ast.tag == "STATEMENTS"_) {
       for (const auto& n : ast.nodes) compile_statement(*n);
     } else {
@@ -603,6 +634,7 @@ class Compiler {
     using namespace peg::udl;
     DeferScope ds(*this, defer_key ? *defer_key : ast);
     push_scope();
+    predeclare_multifns(ast);
     compile_body_into(ast, dst);
     ds.close();
     pop_scope();
@@ -638,6 +670,7 @@ class Compiler {
       case "RETURN"_:
       case "LEXICAL_SCOPE"_:
       case "DEFER"_:
+      case "MULTIFN_DECL"_:  // a decl evaluates to nil (interp parity)
         compile_statement_inner(ast);
         break;
       case "ASSIGNMENT"_:
@@ -686,6 +719,9 @@ class Compiler {
         emit(Op::DeferPush, t);
         break;
       }
+      case "MULTIFN_DECL"_:
+        compile_multifn_decl(ast);
+        break;
       case "BREAK"_:
       case "CONTINUE"_: {
         bool brk = ast.tag == "BREAK"_;
@@ -757,12 +793,99 @@ class Compiler {
     emit(Op::DeferMark, frame_defer_mark_);
   }
 
+  // Scope-entry pre-declaration of `fn name` dispatcher cells (the multifn
+  // slice of the JIT's pre_allocate_forward_refs): every name a
+  // MULTIFN_DECL in this statement list declares gets an owned cell holding
+  // the unbound sentinel before any statement runs, so a closure built
+  // earlier in the list captures a real cell (mutual recursion resolves)
+  // and a read before the decl statement ran raises NameError through the
+  // binding's lazy guard. One reused temp feeds every CellNew, so the only
+  // lasting slots are the pinned cells themselves.
+  void predeclare_multifns(const peg::Ast& ast) {
+    using namespace peg::udl;
+    std::vector<std::pair<const peg::Ast*, std::string>> decls;
+    auto handle = [&](const peg::Ast& node) {
+      if (node.tag != "MULTIFN_DECL"_) return;
+      size_t i = 0;
+      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) i++;
+      auto name = std::string(
+          culebra::parse_generic_head(node.nodes[i]->token).outer);
+      for (const auto& [n_, nm] : decls)
+        if (nm == name) return;  // overloads share the first decl's cell
+      decls.emplace_back(node.nodes[i].get(), std::move(name));
+    };
+    if (ast.tag == "STATEMENTS"_) {
+      // One level of list nesting, like the JIT's pre-pass: a `{ ... }`
+      // block statement carries its list one child down.
+      for (const auto& n : ast.nodes) {
+        if (n->tag == "STATEMENTS"_) {
+          for (const auto& inner : n->nodes) handle(*inner);
+        } else {
+          handle(*n);
+        }
+      }
+    } else {
+      handle(ast);
+    }
+    if (decls.empty()) return;
+    TempScope ts(*this);
+    std::vector<int32_t> cslots;
+    for (const auto& [at, name] : decls) cslots.push_back(alloc_slot(*at, name));
+    int32_t tmp = alloc_temp(ast);
+    for (size_t k = 0; k < decls.size(); ++k) {
+      emit(Op::LoadConst, tmp, kconst({TAG_NO_SELF, 0}));
+      emit(Op::CellNew, cslots[k], tmp);  // nils tmp; reloaded per name
+      mark_cell_slot(cslots[k]);
+      scopes_.back().bindings.push_back({decls[k].second, cslots[k],
+                                         /*is_mut=*/false, /*is_cell=*/true,
+                                         /*lazy=*/true});
+    }
+  }
+
+  // `fn name(params) { body }` — a free named-function declaration. The
+  // slice registers arity-dispatch overloads through the same runtime
+  // multimethod registry the JIT uses (multifn_register_and_install):
+  // same-scope overloads merge into one dispatcher, a nested-scope decl
+  // shadows through its own per-scope registry key, a same-arity re-decl
+  // replaces its table entry, and DispatchError kind/message/position come
+  // from the shared dispatcher thunk. Installing stores the dispatcher
+  // into the cell predeclare_multifns created, flipping it from the
+  // unbound sentinel.
+  void compile_multifn_decl(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes[0]->tag == "DECORATOR"_) reject(ast, "decorator");
+    auto head = culebra::parse_generic_head(ast.nodes[0]->token);
+    if (!head.args.empty())
+      reject(*ast.nodes[0], "generic type parameters");
+    auto name = std::string(head.outer);
+    int32_t idx = compile_fn_chunk(ast, ast.nodes[1].get(),
+                                   ast.nodes.back().get());
+    int32_t cls = alloc_temp(ast);
+    emit(Op::MakeClosure, cls, idx);
+    // Same-scope overloads share one registry key (the binding's scope is
+    // the current one — predeclare ran at its entry).
+    auto& keys = scopes_.back().multifn_keys;
+    auto it = keys.find(name);
+    if (it == keys.end()) {
+      it = keys.emplace(name, name + '\x1f' +
+                                  std::to_string((*multifn_uid_)++)).first;
+    }
+    int32_t t = alloc_temp(ast);
+    emit(Op::MultifnReg, t, cls, kconst_str(it->second), idx);
+    forget_temp(cls);  // the registry absorbed the body's +1 (reg is nil)
+    const Binding* b = lookup(name);
+    if (!b || !b->is_cell)
+      reject(ast, std::format("fn '{}' declared here", name));
+    emit(Op::CellSet, b->slot, owned_src(ast, {t, true}));
+  }
+
   // Resolve a nested chunk's capture list in the creating frame. The mut
   // flag rides along (the JIT's free_var_mut snapshot): a capture of a
   // capture keeps the original binding's flag by construction.
   struct CaptureList {
     std::vector<int32_t> slots;
     std::vector<bool> muts;
+    std::vector<bool> lazys;  // the JIT's free_var_lazy snapshot
   };
   CaptureList resolve_captures(const peg::Ast& ast, const FuncInfo& info) {
     CaptureList caps;
@@ -772,10 +895,13 @@ class Compiler {
         reject(ast, std::format("UFCS candidate capture of '{}'", fv));
       const Binding* b = lookup(fv);
       // The JIT covers this with lazy forward-ref cells
-      // (pre_allocate_forward_refs); outside the slice for now.
+      // (pre_allocate_forward_refs); outside the slice for now — except
+      // `fn name` dispatcher cells, which predeclare_multifns creates at
+      // scope entry, so mutual recursion resolves right here.
       if (!b) reject(ast, std::format("forward-reference capture of '{}'", fv));
       caps.slots.push_back(b->slot);
       caps.muts.push_back(b->is_mut);
+      caps.lazys.push_back(b->lazy);
     }
     return caps;
   }
@@ -785,14 +911,17 @@ class Compiler {
   // resolve against THIS frame's bindings — each must already be a declared
   // cell binding (its own CellNew slot, or a capture passed through) —
   // and become the callee chunk's capture list. uses_fn places the
-  // recursion-handle slot.
-  int32_t compile_fn_chunk(const peg::Ast& ast) {
+  // recursion-handle slot. A MULTIFN_DECL body reuses this whole path with
+  // its own params/body children (its name child shifts them by one).
+  int32_t compile_fn_chunk(const peg::Ast& ast,
+                           const peg::Ast* params_override = nullptr,
+                           const peg::Ast* body_override = nullptr) {
     using namespace peg::udl;
     const FuncInfo& info = analysis_.func_info.at(&ast);
     if (info.uses_args) reject(ast, "__ARGS__");
     for (const auto& n : ast.nodes)
       if (n->tag == "RETURN_TYPE"_) reject(*n, "return type annotation");
-    const auto& params = *ast.nodes[0];
+    const auto& params = params_override ? *params_override : *ast.nodes[0];
     for (const auto& p : params.nodes) {
       if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
         reject(*p, "keyword-only / rest parameter");
@@ -801,12 +930,12 @@ class Compiler {
       for (const auto& pc : p->nodes)
         if (pc->tag == "TYPE_ANNOTATION"_) reject(*p, "typed parameter");
     }
-    const auto& body = *ast.nodes[1];
+    const auto& body = body_override ? *body_override : *ast.nodes[1];
     auto caps = resolve_captures(ast, info);
 
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
-    Compiler fc(prog_, analysis_, /*in_function=*/true, &info);
+    Compiler fc(prog_, analysis_, /*in_function=*/true, &info, multifn_uid_);
     fc.stamp(ast);
     fc.push_scope();  // the frame scope: params + captures + the `fn` handle
     fc.chunk_.arity = static_cast<int32_t>(params.nodes.size());
@@ -846,12 +975,13 @@ class Compiler {
     }
     // Bind the captures: borrowed cell pointers out of the closure. The
     // slots are named-but-not-cell, so frame teardown's Release is a no-op
-    // on them (the closure owns the refs).
+    // on them (the closure owns the refs). The lazy flag rides along so a
+    // captured dispatcher cell read before its decl still NameErrors.
     for (size_t i = 0; i < info.free_vars.size(); ++i) {
       int32_t s = fc.alloc_slot(ast, info.free_vars[i]);
       fc.emit(Op::BindCapture, s, static_cast<int32_t>(i));
       fc.scopes_.back().bindings.push_back(
-          {info.free_vars[i], s, caps.muts[i], true});
+          {info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]});
     }
     int32_t rv = fc.alloc_temp(ast);
     fc.compile_block_into(body, rv);
@@ -881,7 +1011,7 @@ class Compiler {
 
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
-    Compiler fc(prog_, analysis_, /*in_function=*/true, &info);
+    Compiler fc(prog_, analysis_, /*in_function=*/true, &info, multifn_uid_);
     fc.stamp(ast);
     fc.push_scope();
     fc.chunk_.capture_src_slots = std::move(caps.slots);
@@ -890,7 +1020,7 @@ class Compiler {
       int32_t s = fc.alloc_slot(ast, info.free_vars[i]);
       fc.emit(Op::BindCapture, s, static_cast<int32_t>(i));
       fc.scopes_.back().bindings.push_back(
-          {info.free_vars[i], s, caps.muts[i], true});
+          {info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]});
     }
     int32_t rv = fc.alloc_temp(ast);
     fc.compile_block_into(*ast.nodes[0], rv);
@@ -1190,6 +1320,7 @@ class Compiler {
     // caught here, exactly as the interp's nesting has it.
     if (body_scope_defer) defer_scopes_.push_back(rmark);
     push_scope();
+    predeclare_multifns(*ast.nodes[0]);
     compile_body_into(*ast.nodes[0], res);
     auto end = static_cast<uint32_t>(chunk_.code.size());
     if (body_scope_defer) {
@@ -1662,7 +1793,8 @@ inline std::string dump(const Chunk& c) {
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfTag",
       "MakeClosure", "Call",    "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
-      "ImmutErr",  "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
+      "ImmutErr",  "UnboundErr", "MultifnReg",
+      "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
@@ -2169,6 +2301,36 @@ struct Exec {
               reinterpret_cast<const char*>(c.consts[in.a].data), line, col);
           break;  // unreachable — the helper always throws
         }
+        case Op::UnboundErr:
+          if (regs[in.a].tag == TAG_NO_SELF) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
+            culebra_runtime_throw_error(
+                "NameError",
+                std::format("undefined variable '{}'", nm).c_str(),
+                line, col);
+          }
+          ++pc;
+          break;
+        case Op::MultifnReg: {
+          const Chunk& f = p.chunks[in.d];
+          // Arity-only dispatch: null type strings, the chunk's stable
+          // param-name storage for kwarg coverage (unused in the slice).
+          std::vector<const char*> names;
+          std::vector<const char*> types(f.param_names.size(), nullptr);
+          names.reserve(f.param_names.size());
+          for (const auto& n : f.param_names) names.push_back(n.c_str());
+          auto n = static_cast<int64_t>(f.param_names.size());
+          auto* disp = culebra_runtime_multifn_register_and_install(
+              reinterpret_cast<const char*>(c.consts[in.c].data),
+              reinterpret_cast<JitClosure*>(regs[in.b].data),
+              n ? types.data() : nullptr, n, /*variadic=*/0,
+              /*min_arity=*/n, n ? names.data() : nullptr);
+          regs[in.b] = JitValue{TAG_NIL, 0};  // the registry took the +1
+          regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(disp)};
+          ++pc;
+          break;
+        }
         case Op::Throw: {
           JitValue v = regs[in.a];
           regs[in.a] = JitValue{TAG_NIL, 0};  // the +1 rides the carrier now
@@ -2494,6 +2656,7 @@ struct Lowering {
             case TAG_LONG: v = j.make_long(b.getInt64(k.data)); break;
             case TAG_BOOL: v = j.make_bool(b.getInt1(k.data != 0)); break;
             case TAG_NIL: v = j.make_nil(); break;
+            case TAG_NO_SELF: v = j.make_no_self(); break;  // unbound sentinel
             case TAG_FLOAT: {
               double d;
               std::memcpy(&d, &k.data, 8);
@@ -2783,6 +2946,64 @@ struct Lowering {
               reinterpret_cast<const char*>(c.consts[in.a].data),
               static_cast<size_t>(line), static_cast<size_t>(col));
           if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          break;
+        }
+        case Op::UnboundErr: {
+          auto v = load_slot(in.a);
+          auto unbound = b.CreateICmpEQ(j.extract_tag(v),
+                                        b.getInt8(TAG_NO_SELF), "vm.unbound");
+          auto errBB = BasicBlock::Create(j.ctx_, "vm.unbound.err", fn);
+          auto okBB = BasicBlock::Create(j.ctx_, "vm.unbound.ok", fn);
+          b.CreateCondBr(unbound, errBB, okBB);
+          b.SetInsertPoint(errBB);
+          auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
+          j.emit_throw_error("NameError",
+                             std::format("undefined variable '{}'", nm),
+                             j.current_line_, j.current_column_);
+          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          b.SetInsertPoint(okBB);
+          break;
+        }
+        case Op::MultifnReg: {
+          const Chunk& f = p.chunks[in.d];
+          auto* keyBytes = reinterpret_cast<const char*>(c.consts[in.c].data);
+          int64_t keyLen;
+          std::memcpy(&keyLen, keyBytes - 8, 8);
+          auto keyG = j.get_or_create_global_str(
+              std::string(keyBytes, static_cast<size_t>(keyLen)), ".vm.mfkey");
+          // Arity-only dispatch: a null-typed entry per param, the chunk's
+          // param names as .rodata (mirrors emit_multifn_register's arrays).
+          auto nparams = static_cast<int64_t>(f.param_names.size());
+          llvm::Value* namesPtr = llvm::ConstantPointerNull::get(ptrTy);
+          llvm::Value* typesPtr = llvm::ConstantPointerNull::get(ptrTy);
+          if (nparams > 0) {
+            std::vector<llvm::Constant*> nameCs;
+            std::vector<llvm::Constant*> typeCs;
+            for (const auto& nm : f.param_names) {
+              nameCs.push_back(j.get_or_create_global_str(nm, ".vm.mfpn"));
+              typeCs.push_back(llvm::ConstantPointerNull::get(ptrTy));
+            }
+            auto arrTy = llvm::ArrayType::get(ptrTy, nameCs.size());
+            namesPtr = new llvm::GlobalVariable(
+                *j.module_, arrTy, /*isConstant=*/true,
+                llvm::GlobalValue::PrivateLinkage,
+                llvm::ConstantArray::get(arrTy, nameCs), ".vm.mfnames");
+            typesPtr = new llvm::GlobalVariable(
+                *j.module_, arrTy, /*isConstant=*/true,
+                llvm::GlobalValue::PrivateLinkage,
+                llvm::ConstantArray::get(arrTy, typeCs), ".vm.mftypes");
+          }
+          auto bodyPtr =
+              b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
+          auto disp = j.emit_call(
+              j.module_->getOrInsertFunction(
+                  rt::multifn_register_and_install, ptrTy, ptrTy, ptrTy,
+                  ptrTy, i64Ty, i64Ty, i64Ty, ptrTy),
+              {keyG, bodyPtr, typesPtr, b.getInt64(nparams), b.getInt64(0),
+               b.getInt64(nparams), namesPtr},
+              "vm.mf.disp");
+          b.CreateStore(j.make_nil(), slots[in.b]);
+          b.CreateStore(j.make_func(disp), slots[in.a]);
           break;
         }
         case Op::Throw: {

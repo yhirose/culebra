@@ -1,0 +1,6 @@
+# no overload matches the argument count: DispatchError at the call site
+println("before")
+fn only2(a, b) {
+  a + b
+}
+println(only2(1))

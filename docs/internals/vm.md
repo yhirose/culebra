@@ -549,3 +549,26 @@ statement's watermark, and the sweep's zero-filled resize emitted
 forgotten one entry at a time. `return` also learned to release
 in-flight temps of enclosing statements (a match subject held
 across arms) instead of leaving them to the GC backstop.
+
+`fn name` declarations came next, with arity-dispatch overloads:
+`MultifnReg` registers each body chunk's closure into the same
+runtime multimethod registry the JIT uses
+(`multifn_register_and_install`, arity-only — null type strings), so
+same-scope overloads merge into one dispatcher, a nested-scope decl
+shadows through its own per-scope registry key, a same-arity re-decl
+replaces its table entry, and DispatchError kind/message/position
+come from the shared dispatcher thunk. Recursion works because the
+compiler pre-declares every `fn name` of a statement list at scope
+entry — an owned cell holding an unbound sentinel — so a closure
+built earlier in the list captures a real cell (mutual recursion),
+and a read before the decl statement runs raises the interp's
+NameError through `UnboundErr`, the read guard on lazy dispatcher
+bindings. Probing that machinery interp-vs-JIT before porting (the
+defer-cycle procedure) exposed another latent master bug, this time
+in the JIT: a closure capture *materializes* the lazy forward-ref
+cell, erasing the "declaration never ran" signal its null-pointer
+read guard relied on, so a pre-decl read let a nil placeholder flow
+into user code where the interp raises NameError — with a plain
+`let` as much as a `fn name`. Fixed in `jit.h` first (the sentinel +
+value-guard design the VM now mirrors), regression in
+`tests/test_forward_ref.cul`.
