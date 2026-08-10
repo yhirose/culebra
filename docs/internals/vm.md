@@ -452,3 +452,22 @@ Caveats recorded for Phase 1, in fairness to both verdicts:
   side-effect-free); re-verify with effectful endpoints in Phase 1.
 - The spike's scope-stack slot allocator is a placeholder for the
   lifted analysis passes (§3); the Q1 verdict assumes that swap.
+
+Postscript — Phase 1 opened on the same branch, and the spike
+graduated rather than being discarded. The analysis passes moved out
+of `jit.h` into `fn_analysis.h` (the first §7 step; `-O0 --emit-llvm`
+IR is byte-identical across the corpus before and after the lift),
+and `vm_spike.h` grew into `include/vm.h`: namespace `culebra::vm`,
+flags renamed to `--vm` / `--vm-dump` / `--vm-llvm`, rejections now
+`VmError`, the correctness set now `tools/bench/vm_cases/`. The
+slice gained the expression core and basic control flow — Float /
+Bool / nil / String and Array literals (Array makes
+`Retain`/`Release` real, answering the first caveat above),
+arithmetic and comparisons with the JIT's exact dispatch shape (the
+lowering calls the same `emit_arith_step` / `emit_comparison_i1` /
+`value_to_bool` emitters the AST path uses), `&&` / `||` / `??`,
+comparison chains, `if`/ternary as expressions, `while`, and
+`FnAnalysis` as the compiler's front end (the shadow check now runs
+on the VM lane). All three lanes agree on the extended set,
+including error kind/message/position for type mismatches,
+division by zero, and non-Bool conditions.

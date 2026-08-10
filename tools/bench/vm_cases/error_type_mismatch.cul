@@ -1,0 +1,4 @@
+# TypeError from the shared arith helper, position attributed to the
+# additive expression.
+let x = 1
+println(x + 'a')

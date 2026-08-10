@@ -1,0 +1,4 @@
+# Strict Bool truthiness: a non-Bool condition raises TypeError.
+if 'truthy' {
+    println('unreached')
+}

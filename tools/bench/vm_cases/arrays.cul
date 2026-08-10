@@ -1,0 +1,25 @@
+# Array literals — the slice's RC-real type: every Release on one is a live
+# refcount decrement, so this file is what makes the leak lanes meaningful.
+let a = [1, 2, 3]
+println(a)
+println([1, 'x', 2.5, nil, true])
+println([[1, 2], [3]])
+println([])
+println([1, 2] == [1, 2])
+println([1, 2] == [1, 3])
+
+# Rebinding releases the previous array; loop-scoped arrays release every
+# iteration; a conditional arm's array flows out through the result slot.
+let mut cur = [0]
+for i in 1..=100 {
+    cur = [i, i + 1]
+}
+println(cur)
+let mut n = 0
+while n < 50 {
+    let scratch = [n, n, n]
+    n = n + 1
+}
+println(n)
+let picked = if true { [1, 2] } else { [3] }
+println(picked)

@@ -1,0 +1,3 @@
+# Division by zero: same kind, message, and position on every lane.
+let mut d = 0
+println(10 / d)

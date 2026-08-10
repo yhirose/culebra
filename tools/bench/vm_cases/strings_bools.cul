@@ -1,0 +1,34 @@
+# Strings (heap values through the shared runtime helpers) and the
+# short-circuit operators' keep-the-operand semantics.
+let s = 'hello'
+println(s)
+println("double-quoted")
+println('ab' + 'cd')
+let mut m = 'x'
+m = m + 'y'
+m = m + 'z'
+println(m)
+println('abc' == 'abc')
+println('abc' == 'abd')
+println('abc' != 'abd')
+println('abc' < 'abd')
+println('b' > 'a')
+println('a' <= 'a')
+println(1 == 1.0)
+println(1 == '1')
+println(nil == nil)
+
+println(false || true)
+println(true && false)
+println(true && true && false)
+println(nil ?? 3)
+println(nil ?? nil ?? 'fallback')
+println(7 ?? 8)
+
+# Comparison chains: each middle operand evaluates once, short-circuits at
+# the first failing link (Python semantics).
+println(1 < 2)
+let x = 5
+println(1 < x < 10)
+println(1 < x < 4)
+println(10 > x >= 5)

@@ -96,10 +96,11 @@ extern "C" void ___chkstk_ms();
 
 namespace culebra {
 
-// The bytecode-VM spike's LLVM lowering (vm_spike.h) is a JIT friend, like
-// JitExtension below.
-namespace vmspike {
-struct SpikeLowering;
+// The bytecode VM (vm.h): its LLVM lowering is a JIT friend like
+// JitExtension below, and its compiler shares the is_builtin_var predicate.
+namespace vm {
+struct Lowering;
+class Compiler;
 }
 
 // --- JIT compiler implementation ---
@@ -1676,7 +1677,8 @@ struct JIT {
   // stdlib_jit.h) can reach JIT internals (builder_/module_/make_long/
   // extract_tag/...) without those being part of the public surface.
   friend struct JitExtension;
-  friend struct vmspike::SpikeLowering;
+  friend struct vm::Lowering;
+  friend class vm::Compiler;
 
   llvm::LLVMContext& ctx_;
   llvm::Module* module_;

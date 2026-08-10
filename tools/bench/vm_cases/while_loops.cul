@@ -1,0 +1,31 @@
+# while: condition re-evaluated per iteration, break/continue, nesting.
+let mut i = 0
+let mut sum = 0
+while i < 10 {
+    i = i + 1
+    if i % 2 == 0 { continue }
+    if i > 7 { break }
+    sum = sum + i
+}
+println(i)
+println(sum)
+
+let mut outer = 0
+let mut hits = 0
+while outer < 3 {
+    let mut inner = 0
+    while inner < 3 {
+        hits = hits + 1
+        inner = inner + 1
+    }
+    outer = outer + 1
+}
+println(hits)
+
+# A while whose condition owns heap temps: they must release per iteration.
+let mut k = 0
+while [k] == [0] {
+    k = k + 1
+    if k > 3 { break }
+}
+println(k)

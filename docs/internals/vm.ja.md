@@ -422,3 +422,19 @@ interp側のコストベースラインが高すぎるため1.5倍の合格ラ�
   する
 - spikeのscope-stack slot allocatorは持ち上げ予定の解析パス（§3）
   のプレースホルダであり、Q1の判定はその置換を前提とする
+
+追記 — Phase 1は同じbranchで開始し、spikeは破棄ではなく昇格した。
+解析パスは`jit.h`から`fn_analysis.h`へ移動（§7の第一歩。持ち上げ
+前後で全コーパスの`-O0 --emit-llvm` IRがバイト単位で一致）、
+`vm_spike.h`は`include/vm.h`へ成長した: namespaceは`culebra::vm`、
+フラグは`--vm` / `--vm-dump` / `--vm-llvm`に改名、rejectは
+`VmError`、正当性セットは`tools/bench/vm_cases/`。スライスには
+expression coreと基本制御フローが加わった — Float / Bool / nil /
+StringとArrayリテラル（ArrayがRetain/Releaseを実在化させ、上の
+留保の1つ目に答える）、JITと同一のdispatch形状を持つ算術・比較
+（loweringはAST経路と同じ`emit_arith_step` / `emit_comparison_i1` /
+`value_to_bool` emitterを呼ぶ）、`&&` / `||` / `??`、比較チェーン、
+式としての`if`/三項演算子、`while`、そしてコンパイラのfront end
+としての`FnAnalysis`（shadow checkがVMレーンでも走る）。型不一致・
+ゼロ除算・非Bool条件のエラーkind/文面/位置まで含め、拡張後の
+セットでも3レーンは完全一致する。
