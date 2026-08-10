@@ -13,6 +13,7 @@
 
 #include "define_smoke.cc"
 #include "mi_smoke.cc"
+#include "module_scope_smoke.cc"
 #include "mt_smoke.cc"
 #include "signal_smoke.cc"
 #include "single_ast_smoke.cc"
@@ -26,6 +27,8 @@ int main(int argc, char** argv) {
   if (argc == 2) {
     if (std::strcmp(argv[1], "define") == 0) return define_smoke_ns::run();
     if (std::strcmp(argv[1], "mi") == 0) return mi_smoke_ns::run();
+    if (std::strcmp(argv[1], "module_scope") == 0)
+      return module_scope_smoke_ns::run();
     if (std::strcmp(argv[1], "mt") == 0) return mt_smoke_ns::run();
     if (std::strcmp(argv[1], "signal") == 0) return signal_smoke_ns::run();
     if (std::strcmp(argv[1], "single_ast") == 0)
@@ -38,7 +41,7 @@ int main(int argc, char** argv) {
       return utf8_invalid_smoke_ns::run();
   }
   std::fprintf(stderr,
-               "usage: smoke_suite <define|mi|mt|signal|single_ast|"
-               "tensor_device|tensor_device_pin|utf8_invalid>\n");
+               "usage: smoke_suite <define|mi|module_scope|mt|signal|"
+               "single_ast|tensor_device|tensor_device_pin|utf8_invalid>\n");
   return 2;
 }

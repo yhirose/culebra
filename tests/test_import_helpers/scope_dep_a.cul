@@ -1,0 +1,3 @@
+y = "a-local"
+let read_y = fn () { y }
+export {read_y}

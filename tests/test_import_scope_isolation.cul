@@ -1,0 +1,27 @@
+# Conformance: §23 (Modules). Regression cover for a module-scope leak
+# where a dependency module's `mod_env` chained its outer scope to the
+# SAME Environment the entry later writes its own top-level bindings
+# into — so an entry's bare `x = ...` retroactively became visible (and
+# immutable) inside any already-loaded dependency's functions, raising
+# ImmutableError on a same-named, wholly independent local. Fixed by
+# running the entry in its own child scope and flattening it into `env`
+# only after it finishes (interpreter.h's interpret_modules). interp-only
+# fix — the JIT was never exposed (it resets its compile-time scope
+# stack per module/function and never shares a live Environment chain
+# across a module boundary), so this is expected to already pass under
+# both backends.
+
+import dep from './test_import_helpers/scope_dep_bare_x.cul'
+import a from './test_import_helpers/scope_dep_a.cul'
+import b from './test_import_helpers/scope_dep_b.cul'
+
+# --- Original bug: entry's bare top-level `x` vs. the dependency's own
+# bare-assigned function-local `x` must be fully independent. ---
+x = 1
+assert_eq(dep.read_x(), "dep-x")
+assert_eq(x, 1)
+
+# --- Two independent dependencies stay isolated from each other too
+# (already-correct behavior; regression guard). ---
+assert_eq(a.read_y(), "a-local")
+assert_eq(b.read_y(), "b-local")

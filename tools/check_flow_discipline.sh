@@ -57,7 +57,7 @@ ratchet "Break/ContinueSignal references" "$sig" 0 \
 # run_deferred must stay reachable from one guarded place per scope kind. A new
 # bare call usually means a hand-rolled scope that will miss an exit path.
 deferred=$(grep -c "run_deferred(" include/interpreter.h || true)
-ratchet "run_deferred call sites (interpreter.h)" "$deferred" 19 \
+ratchet "run_deferred call sites (interpreter.h)" "$deferred" 21 \
   "Prefer run_loop_body()/existing scope helpers over a new handler block."
 
 if (( fail )); then
@@ -65,4 +65,4 @@ if (( fail )); then
   exit 1
 fi
 echo "flow-discipline OK (conv=$conv/1 ret-throw=$ret_throw/0 ret-catch=$ret_catch/0" \
-     "signals=$sig/0 deferred=$deferred/19)"
+     "signals=$sig/0 deferred=$deferred/21)"

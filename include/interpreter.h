@@ -12292,10 +12292,12 @@ struct ScriptTeardownGuard {
 
 // Drives a multi-module program: evaluates dependencies in
 // topological order into fresh per-module scopes, caches each
-// module's export Object, and finally evaluates the entry module
-// against `env` so its top-level bindings stay visible to the
-// caller. `modules.back()` is the entry. Error handling matches
-// `interpret` for the single-AST path.
+// module's export Object, and finally evaluates the entry module in
+// its own child scope so its top-level bindings can't leak backward
+// into already-evaluated dependencies' functions, then flattens those
+// bindings into `env` so they stay visible to the caller. `modules.
+// back()` is the entry. Error handling matches `interpret` for the
+// single-AST path.
 inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
                               const std::shared_ptr<Environment>& env,
                               Value& val,
@@ -12341,12 +12343,32 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
       interp->module_stack_.pop_back();
     }
 
-    // Entry runs against the caller-supplied env so REPL / embedding
-    // sessions can read its top-level bindings afterwards.
+    // Entry runs in its own child scope, not against `env` directly — a
+    // dependency module's functions already chained `mod_env->outer` to
+    // `env` above, before entry ever runs, so entry's own top-level names
+    // must live somewhere those closures structurally cannot reach.
+    // `entry_env->outer == env` still resolves builtins/lazy stdlib exactly
+    // as before. Once entry finishes, its bindings are moved (not copied —
+    // a copy would leave two independent Symbol slots that could drift
+    // apart on a later mutation) into `env` itself, so REPL / embedding
+    // callers can still read them through the same `env` pointer they
+    // passed in.
     const auto& entry = modules.back();
     interp->module_stack_.push_back(entry.abs_path);
-    // A bare `return` at module top level supplies the program's value.
-    val = deliver_call(interp->eval(*entry.ast, env));
+    auto entry_env = make_scope(env);
+    try {
+      // A bare `return` at module top level supplies the program's value.
+      val = deliver_call(interp->eval(*entry.ast, entry_env));
+      interp->run_deferred(entry_env);
+    } catch (...) {
+      interp->run_deferred(entry_env);
+      interp->module_stack_.pop_back();
+      throw;
+    }
+    for (auto& [name, sym] : entry_env->dictionary) {
+      env->dictionary.insert_or_assign(name, std::move(sym));
+    }
+    entry_env->dictionary.clear();
     interp->module_stack_.pop_back();
     flush_top_defers();
     return true;

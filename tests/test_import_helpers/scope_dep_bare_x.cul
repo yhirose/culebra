@@ -1,0 +1,9 @@
+# A bare-assigned local that shares its name with a top-level bare
+# assignment in an entry that imports this module. The two must be
+# fully independent bindings.
+
+let read_x = fn () {
+  x = "dep-x"
+  x
+}
+export {read_x}

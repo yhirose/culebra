@@ -1,0 +1,2 @@
+let read_shared = fn () { shared }
+export {read_shared}

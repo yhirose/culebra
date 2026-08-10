@@ -1,0 +1,5 @@
+let read_y = fn () {
+  y = "b-local"   # must not collide with dep A's own `y`
+  y
+}
+export {read_y}
