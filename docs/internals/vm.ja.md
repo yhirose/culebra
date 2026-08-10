@@ -553,3 +553,21 @@ spliceしない。作業の中で境界も1つ見えた: `FnAnalysis`のlocals
 builtin名（fnリテラルの後ろにblockスコープの`let to_string`が
 ある等）は、fn側の読み出しが前方参照captureになる — sliceの他の
 前方参照captureと同じくrejectで、JITはこれをuse siteで解決する。
+
+Phase 1の最終項目 — 差分機構にレーンを足す — は、sliceが正直に
+検査できる範囲に合わせて2つに分けて着地した。curated corpus
+（`tools/bench/vm_cases/`: 3レーン照合と、全allocationでcollect
+する同じスイープ）はゲートになった: `just test-dev`・`just test`・
+CIのci-lightシャードが回し、corpusはslice内のプログラムしか
+持たないので、そこでのVmErrorは出力不一致 — sliceの後退は手動
+スクリプト頼みでなくゲートを赤にする。そして
+`misc/run_all_backends.sh` — Windows CIジョブが呼ぶ共有の
+単発スクリプト対称性ヘルパー — には`--vm`/`--vm-llvm`レーンが
+生えた: 出力一致はpass、コンパイル時VmErrorのrejectはSKIPとして
+表示して緑のまま、それ以外は失敗 — sliceが育つにつれテストごとに
+VMレーンが自然に点灯する。生成difftest corpusは当面2レーンの
+まま: チャンク先頭にprobe preambleをテキスト連結する構造で、
+preambleはsliceの遥か外（クラス・メソッド呼び出し）にあるため
+全チャンクがコンパイル時rejectになる。per-caseのskip機構は
+Phase 2のカバレッジがあって初めて意味を持ち、それはPhase 2の
+仕事である。

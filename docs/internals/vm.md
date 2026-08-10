@@ -603,3 +603,22 @@ block-scoped `let to_string` after a fn literal that reads the
 builtin) turns the fn's read into a forward-reference capture —
 rejected, like every other forward-reference capture in the slice,
 where the JIT resolves it at the use site.
+
+Phase 1's last item — the differential machinery gains a lane —
+landed in two pieces, each sized to what the slice can honestly
+check. The curated corpus (`tools/bench/vm_cases/`: the three-lane
+compare plus the same sweep under collect-on-every-allocation) is
+now a gate: `just test-dev`, `just test`, and the ci-light CI shard
+run it, and since the corpus holds only in-slice programs, any
+VmError there is an output mismatch — a slice regression turns the
+gate red instead of relying on a manually run script. And
+`misc/run_all_backends.sh`, the shared single-script symmetry
+helper the Windows CI jobs call, grew `--vm` / `--vm-llvm` lanes: a
+matching output passes, a compile-time VmError reject prints the
+lane as SKIP (visible, still green), and anything else fails — so
+each test's VM lanes light up on their own as the slice grows. The
+generated difftest corpus stays two-lane for now: its chunks are
+textually prepended with the probe preamble, which sits far outside
+the slice (classes, method calls), so every chunk would reject at
+compile time; a per-case skip mechanism only earns its keep with
+Phase 2 coverage, and that is where it belongs.

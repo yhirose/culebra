@@ -658,6 +658,20 @@ _run-tests BACKEND:
         # only a genuine hang trips it.
         ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh "$BIN"
     }
+    # VM three-lane parity (tools/bench/vm_cases): the curated bytecode-VM
+    # corpus, interp vs --vm vs --vm-llvm, then the same sweep with
+    # collect-on-every-allocation. The corpus holds only programs inside the
+    # VM slice, so a VmError here is an output mismatch — a slice regression
+    # fails the gate instead of skipping. Quiet on success (the scripts print
+    # one OK line per case × lane); full output is replayed on failure.
+    run_vm_cases() {
+        local out
+        out="$(${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
+            || { printf '%s\n' "$out"; exit 1; }
+        out="$(${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/gc_stress_check.sh "$BIN" 2>&1)" \
+            || { printf '%s\n' "$out"; exit 1; }
+        echo "vm_cases OK (interp == --vm == --vm-llvm, + GC_STRESS)"
+    }
     # Leak-fuzz: rerun the same corpus under CULEBRA_GC_NEVER and fail on any
     # JIT RC leak not already in tools/difftest/leak_baseline.txt. A regression
     # gate for the ownership work — catches a new carve-out leak the moment a
@@ -815,6 +829,7 @@ _run-tests BACKEND:
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (generated corpus)"; run_difftest; }
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-fuzz (corpus RC-leak regression)"; run_leak_fuzz; }
@@ -841,6 +856,7 @@ _run-tests BACKEND:
         run_source_ratchets
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit)"; run_isolate
         phase "done"; echo "test OK (fast)"
@@ -873,6 +889,7 @@ _run-tests BACKEND:
       ci-light)
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
         phase "culebra-test self"; run_culebra_test_self

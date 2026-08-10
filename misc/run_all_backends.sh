@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Run one .cul file through interp, JIT and AOT, and require the same output
-# from all three.
+# Run one .cul file through interp, JIT, the VM lanes and AOT, and require the
+# same output from every lane that runs it. The VM lanes (--vm, --vm-llvm)
+# reject out-of-slice constructs with a compile-time VmError; that reports the
+# lane as SKIP (visible, still green), so each test's VM lanes light up on
+# their own as the slice grows. Any other VM mismatch fails like the rest.
 #
 # Usage: misc/run_all_backends.sh <culebra exe> <script.cul> <expected> <LABEL>
 #
@@ -16,11 +19,19 @@ expected=${3:?}
 label=${4:?}
 
 fail=0
-for mode in "" "--jit"; do
+for mode in "" "--jit" "--vm" "--vm-llvm"; do
   echo "=== $exe $mode $script ==="
   out=$(timeout 60 "$exe" $mode "$script" 2>&1); rc=$?
   echo "out=[$out] rc=$rc"
-  [ "$out" = "$expected" ] || { echo "${label}_${mode:---interp}_FAIL"; fail=1; }
+  [ "$out" = "$expected" ] && continue
+  case $mode in
+    --vm*)
+      if [ "$rc" -ne 0 ] && [[ "$out" == *VmError* ]]; then
+        echo "${label}_${mode}_SKIP"
+        continue
+      fi ;;
+  esac
+  echo "${label}_${mode:---interp}_FAIL"; fail=1
 done
 
 echo "=== $exe build $script ==="
