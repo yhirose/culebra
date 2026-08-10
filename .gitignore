@@ -65,6 +65,7 @@ examples/webview/visits.db
 !.claude/settings.json
 !.claude/skills/
 !.claude/commands/
+!.claude/rules/
 
 # Local scratch probes (kept out of git)
 tmp/
