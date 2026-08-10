@@ -127,6 +127,24 @@ struct JIT {
     // is the binding's declaration, so it must not be mut-checked against
     // this placeholder — the flag clears when it lands.
     bool awaits_implicit_decl = false;
+    // True for a Stack slot whose first-seen declaration site, in this
+    // scope, is nested inside an if/cond arm (see conditional_depth_):
+    // only one arm ever runs per call, so a sibling arm's own bare
+    // `x = ...` can't be classified declare-vs-reassign at compile time
+    // the way straight-line code can — the interp decides it dynamically
+    // per call via env->has(name). The slot holds a runtime sentinel
+    // (TAG_NO_SELF, the no-receiver precedent) until whichever arm
+    // actually runs replaces it with the real value; mut_alloca tracks
+    // the winning arm's mut-ness the same way, at runtime. Never set for
+    // Cell slots — a captured name's declare/reassign ambiguity across
+    // sibling arms is a separate, not-yet-fixed gap (see
+    // pre_allocate_forward_refs).
+    bool runtime_decl = false;
+    // Runtime mut bit for a runtime_decl slot; null otherwise. A plain
+    // `bool mut` above can't represent "whichever arm ran, declared
+    // mut or not" — only one arm's declare ever executes per call, and
+    // JIT compiles every arm once.
+    llvm::AllocaInst* mut_alloca = nullptr;
   };
 
   // Analysis result for a function (including top-level __culebra_main).
@@ -202,6 +220,18 @@ struct JIT {
     std::map<std::string, std::string> multifn_keys;
   };
 
+  // Marks IR compiled while inside an if/cond arm body (compile_if /
+  // compile_cond): scoped so an early return out of compile() (a throw
+  // from deep inside the arm) still decrements via the destructor. See
+  // conditional_depth_ and VarSlot::runtime_decl.
+  struct ConditionalArmGuard {
+    JIT* jit;
+    explicit ConditionalArmGuard(JIT* j) : jit(j) { ++jit->conditional_depth_; }
+    ~ConditionalArmGuard() { --jit->conditional_depth_; }
+    ConditionalArmGuard(const ConditionalArmGuard&) = delete;
+    ConditionalArmGuard& operator=(const ConditionalArmGuard&) = delete;
+  };
+
   // One rung of a frame's cleanup ladder — its throw-path teardown.
   //
   // A single fn-wide pad would collect every throwing call's unwind edge, and
@@ -271,6 +301,11 @@ struct JIT {
     std::vector<llvm::Value*> unwind_covered;
     bool emitting_unwind_cleanup;
     bool in_receiver_frame;
+    // A nested fn's own if/cond arms start counting from zero — the
+    // enclosing fn's still-open conditional context (if the nested fn
+    // literal is itself declared inside an if arm) says nothing about
+    // scoping inside the nested body.
+    size_t conditional_depth;
 
     explicit CompilerStateSaver(JIT& j)
         : jit(&j),
@@ -295,7 +330,8 @@ struct JIT {
           unwind_covered(std::exchange(j.unwind_covered_, {})),
           emitting_unwind_cleanup(
               std::exchange(j.emitting_unwind_cleanup_, false)),
-          in_receiver_frame(std::exchange(j.in_receiver_frame_, false)) {}
+          in_receiver_frame(std::exchange(j.in_receiver_frame_, false)),
+          conditional_depth(std::exchange(j.conditional_depth_, 0)) {}
 
     void restore() {
       if (!jit) return;
@@ -317,6 +353,7 @@ struct JIT {
       jit->unwind_covered_ = std::move(unwind_covered);
       jit->emitting_unwind_cleanup_ = emitting_unwind_cleanup;
       jit->in_receiver_frame_ = in_receiver_frame;
+      jit->conditional_depth_ = conditional_depth;
       jit->iter_cleanup_stack_ = std::move(iter_cleanup);
       jit->current_owned_hot_ = owned_hot;
       jit->current_fn_defer_mark_ = fn_defer_mark;
@@ -1764,6 +1801,13 @@ struct JIT {
   // TAG_NO_SELF to nil on entry, so `self` reads there skip the guard.
   bool in_receiver_frame_ = false;
 
+  // > 0 while compiling an if/cond arm body (see ConditionalArmGuard):
+  // gates whether a brand-new bare-declared name gets a runtime_decl
+  // slot instead of an ordinary one. A counter, not a bool, so nested
+  // if-in-if composes without an inner if's exit clearing the outer's
+  // still-open conditional context.
+  size_t conditional_depth_ = 0;
+
   // Current AST position for error reporting
   size_t current_line_ = 0;
   size_t current_column_ = 0;
@@ -1947,8 +1991,18 @@ struct JIT {
     if (!slot.owned) return;
     if (slot.kind == VarSlot::Stack) {
       emit_value_release(builder_.CreateLoad(valueType_, slot.alloca));
-      builder_.CreateStore(
-          llvm::ConstantAggregateZero::get(valueType_), slot.alloca);
+      if (slot.runtime_decl) {
+        // Re-arm to the unbound sentinel, not a generic zero/nil: a
+        // runtime_decl slot living in a loop body's per-iteration scope
+        // must look "never declared" again next pass, exactly like the
+        // interp's fresh Environment per call/iteration (see
+        // make_runtime_decl_stack_slot).
+        builder_.CreateStore(make_no_self(), slot.alloca);
+        builder_.CreateStore(builder_.getInt1(false), slot.mut_alloca);
+      } else {
+        builder_.CreateStore(
+            llvm::ConstantAggregateZero::get(valueType_), slot.alloca);
+      }
     } else {
       auto ptrTy = llvm::PointerType::get(ctx_, 0);
       emit_cell_release(builder_.CreateLoad(ptrTy, slot.alloca));
@@ -2326,8 +2380,29 @@ struct JIT {
     emit_lazy_cell_read_guard(slot, name);
     auto val = load_slot_raw(slot, name);
     emit_no_self_read_guard(val, name);
+    emit_runtime_decl_read_guard(slot, val, name);
     emit_value_retain(val);
     return val;
+  }
+
+  // A runtime_decl slot (see VarSlot::runtime_decl) still holding the
+  // unbound sentinel means the if/cond arm that declares this name
+  // didn't run on this call — exactly the interp's NameError for a bare
+  // declare inside a branch that wasn't taken this time.
+  void emit_runtime_decl_read_guard(const VarSlot& slot, llvm::Value* val,
+                                    const std::string& name) {
+    if (!slot.runtime_decl) return;
+    auto absent = builder_.CreateICmpEQ(
+        extract_tag(val), builder_.getInt8(TAG_NO_SELF), "decl.absent");
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto throwBB = llvm::BasicBlock::Create(ctx_, "decl.unbound.read", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "decl.bound.read", fn);
+    builder_.CreateCondBr(absent, throwBB, contBB);
+    builder_.SetInsertPoint(throwBB);
+    emit_throw_error("NameError", std::format("undefined variable '{}'", name),
+                     current_line_, current_column_);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(contBB);
   }
 
   // Store a value into a slot (does NOT retain/release — caller's responsibility).
@@ -5609,6 +5684,85 @@ struct JIT {
     return slot;
   }
 
+  // A conditionally-declared local (see conditional_depth_ /
+  // VarSlot::runtime_decl): the alloca is entry-block-initialized to the
+  // unbound sentinel rather than a real value, since only one of the
+  // if/cond arms that might declare this name ever runs per call. The
+  // bare/let/mut statement reaching this point is the FIRST time the
+  // compiler has seen this name in this scope, so — from ITS OWN
+  // perspective — it is unconditionally this call's real declaration; a
+  // sibling arm compiled later finds this slot already registered and
+  // checks the sentinel at runtime instead (see emit_runtime_decl_assign).
+  VarSlot make_runtime_decl_stack_slot(const std::string& name,
+                                       llvm::Value* initValue, bool is_mut) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto alloca = entryB.CreateAlloca(valueType_, nullptr, name);
+    entryB.CreateStore(make_no_self(), alloca);
+    auto mutAlloca =
+        entryB.CreateAlloca(builder_.getInt1Ty(), nullptr, name + ".decl_mut");
+    entryB.CreateStore(builder_.getInt1(false), mutAlloca);
+    VarSlot slot{VarSlot::Stack, alloca, /*owned=*/true, is_mut};
+    slot.runtime_decl = true;
+    slot.mut_alloca = mutAlloca;
+    store_slot(slot, initValue);
+    builder_.CreateStore(builder_.getInt1(is_mut), mutAlloca);
+    return slot;
+  }
+
+  // Runtime-checked declare-vs-reassign for a name whose slot is
+  // VarSlot::runtime_decl (found already registered in scopes_.back() by
+  // a sibling if/cond arm compiled earlier in program order): only one
+  // arm ever runs per call, so whether this bare `x = ...` is the
+  // binding's first declaration or a reassignment of an already-
+  // materialized sibling arm's binding can only be decided by checking
+  // the value actually stored at runtime — exactly mirroring the
+  // interp's per-call dynamic `env->has(name)`. `declare` (explicit
+  // `let`/`mut`) always takes the declare path unconditionally, matching
+  // interp's assign_name. Returns false always (the compile-time
+  // "declares" bookkeeping compile_assign_var uses for `let f = fn ...`
+  // kwargs resolution is inherently ambiguous here; forget_fn_ast's
+  // runtime-resolution fallback is always correct, just not free).
+  bool emit_runtime_decl_assign(const VarSlot& slot, const std::string& name,
+                                llvm::Value* rval, bool declare, bool mut,
+                                size_t line, size_t column) {
+    if (declare) {
+      store_slot(slot, rval);
+      builder_.CreateStore(builder_.getInt1(mut), slot.mut_alloca);
+      return false;
+    }
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto cur = load_slot_raw(slot, name + ".cur");
+    auto isUnbound = builder_.CreateICmpEQ(
+        extract_tag(cur), builder_.getInt8(TAG_NO_SELF), "decl.unbound");
+    auto declBB = llvm::BasicBlock::Create(ctx_, "decl.new", fn);
+    auto reassignBB = llvm::BasicBlock::Create(ctx_, "decl.reassign", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "decl.cont", fn);
+    builder_.CreateCondBr(isUnbound, declBB, reassignBB);
+
+    builder_.SetInsertPoint(declBB);
+    store_slot(slot, rval);
+    builder_.CreateStore(builder_.getInt1(mut), slot.mut_alloca);
+    builder_.CreateBr(contBB);
+
+    builder_.SetInsertPoint(reassignBB);
+    auto curMut =
+        builder_.CreateLoad(builder_.getInt1Ty(), slot.mut_alloca, "decl.mut");
+    auto throwBB = llvm::BasicBlock::Create(ctx_, "decl.immut", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "decl.ok", fn);
+    builder_.CreateCondBr(curMut, okBB, throwBB);
+    builder_.SetInsertPoint(throwBB);
+    emit_immutable_assign_throw(name, line, column);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(okBB);
+    store_slot(slot, rval);
+    builder_.CreateBr(contBB);
+
+    builder_.SetInsertPoint(contBB);
+    return false;
+  }
+
   // A non-owning stack slot: stores `initValue` as a borrowed alias (no
   // retain, no release of any prior content) and is skipped by scope-exit
   // release (owned=false). Used for a match arm's direct-leaf subject
@@ -5828,6 +5982,10 @@ struct JIT {
       auto& slots = scopes_.back().slots;
       auto it = slots.find(name);
       if (it != slots.end()) {
+        if (it->second.runtime_decl) {
+          return emit_runtime_decl_assign(it->second, name, rval, declare,
+                                          mut, line, column);
+        }
         bool declares = declare || it->second.awaits_implicit_decl;
         it->second.awaits_implicit_decl = false;
         if (declares) {
@@ -5850,6 +6008,20 @@ struct JIT {
         store_slot(*existing, rval);
         return false;
       }
+    }
+
+    // A name never seen before in this scope, first sighted while
+    // compiling inside an if/cond arm: only one arm ever runs per call,
+    // so a sibling arm's own first bare declare of the same name can't
+    // be told apart from a reassignment at compile time (see
+    // VarSlot::runtime_decl). Captured names are excluded — they need
+    // Cell storage for closure capture, not a Stack slot; that
+    // declare/reassign ambiguity across sibling arms remains open (see
+    // pre_allocate_forward_refs).
+    if (conditional_depth_ > 0 &&
+        !(current_info_ && current_info_->captured_locals.contains(name))) {
+      define_var(name, make_runtime_decl_stack_slot(name, rval, mut));
+      return true;
     }
 
     declare_local(name, rval, /*is_mut=*/mut);
@@ -6920,8 +7092,14 @@ struct JIT {
     const auto& nodes = ast.nodes;
     for (auto i = iv.arm_off; i < nodes.size(); i += 2) {
       if (i + 1 == nodes.size()) {
-        // else block
-        auto val = compile(*nodes[i]).consume();
+        // else block. Mutually exclusive with every other arm — only one
+        // ever runs per call, so a bare declare in here needs
+        // conditional_depth_ (see emit_assign_name).
+        llvm::Value* val;
+        {
+          ConditionalArmGuard arm_guard(this);
+          val = compile(*nodes[i]).consume();
+        }
         if (!builder_.GetInsertBlock()->getTerminator()) {
           builder_.CreateStore(val, resultAlloca);
           builder_.CreateBr(mergeBB);
@@ -6935,7 +7113,11 @@ struct JIT {
         builder_.CreateCondBr(b, thenBB, elseBB);
 
         builder_.SetInsertPoint(thenBB);
-        auto thenVal = compile(*nodes[i + 1]).consume();
+        llvm::Value* thenVal;
+        {
+          ConditionalArmGuard arm_guard(this);
+          thenVal = compile(*nodes[i + 1]).consume();
+        }
         if (!builder_.GetInsertBlock()->getTerminator()) {
           builder_.CreateStore(thenVal, resultAlloca);
           builder_.CreateBr(mergeBB);
@@ -6986,7 +7168,11 @@ struct JIT {
       if (builder_.GetInsertBlock()->getTerminator()) break;
       const auto& test = *arm->nodes[0];
       if (test.tag == "WILDCARD"_) {
-        auto val = compile(*arm->nodes[1]).consume();
+        llvm::Value* val;
+        {
+          ConditionalArmGuard arm_guard(this);
+          val = compile(*arm->nodes[1]).consume();
+        }
         if (!builder_.GetInsertBlock()->getTerminator()) {
           builder_.CreateStore(val, resultAlloca);
           builder_.CreateBr(mergeBB);
@@ -6998,7 +7184,11 @@ struct JIT {
         builder_.CreateCondBr(b, thenBB, elseBB);
 
         builder_.SetInsertPoint(thenBB);
-        auto thenVal = compile(*arm->nodes[1]).consume();
+        llvm::Value* thenVal;
+        {
+          ConditionalArmGuard arm_guard(this);
+          thenVal = compile(*arm->nodes[1]).consume();
+        }
         if (!builder_.GetInsertBlock()->getTerminator()) {
           builder_.CreateStore(thenVal, resultAlloca);
           builder_.CreateBr(mergeBB);

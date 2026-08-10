@@ -317,6 +317,24 @@ fn run(which, N) {
     for i in 0..N {
       let _ = mk_decorated(i)
     }
+  } else if which == "conditional_decl" {
+    # A name whose only declaration sites are nested inside if/cond arms
+    # (runtime_decl slot): exercises the sentinel store/release cycle —
+    # declare-path store, reassign-path release-then-store, and the
+    # scope-exit re-arm to the sentinel each loop pass — for both a
+    # never-taken branch (sentinel released as-is) and heap payloads
+    # flowing through the declare/reassign/read guards.
+    for i in 0..N {
+      if i % 3 == 0 {
+        v = V.new(i, [], [])
+      } else if i % 3 == 1 {
+        mut v = V.new(i, [], [])
+        v = V.new(i + 1, [], [])
+      }
+      if i % 3 != 2 {
+        let _ = v.data
+      }
+    }
   } else if which == "ufcs_hook_throw" {
     # ufcs-builtin hook error arms (unknown kwarg / arity / value_to_long
     # type error) must consume the heap receiver / compiled arg +1 before
@@ -521,6 +539,7 @@ if which == "list" {
     "iter_any_driver",
     "array_sized_default",
     "deco_let",
+    "conditional_decl",
     "ufcs_hook_throw",
   ]
   for n in names {

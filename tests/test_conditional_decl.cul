@@ -1,0 +1,135 @@
+// A bare/`let`/`mut` declaration whose only site(s) sit inside an
+// if/cond arm: only one arm ever runs per call, so declare-vs-reassign
+// can't be told apart from a sibling arm's own first declare at compile
+// time — the JIT used to misclassify the second-compiled arm's first
+// touch as a reassignment of the first-compiled arm's (immutable-by-
+// default) binding, raising a false ImmutableError, and a read of a
+// never-taken branch's declaration silently returned nil instead of
+// the interp's NameError. Runs under interp, --jit, and AOT.
+
+// --- Original bug: if/else sibling arms, each their own call. ---
+fn if_else_sibling(a) {
+  if a { x = 1 } else { x = 2 }
+  x
+}
+assert_eq(if_else_sibling(true), 1)
+assert_eq(if_else_sibling(false), 2)
+
+// --- Two independent, sequential if statements in one call: each
+// arm's bare declare must not see the other's as already-declared. ---
+fn sequential_ifs(n) {
+  mut out = []
+  if n == 0 {
+    x = 1
+    out.push(x)
+  }
+  if n == 1 {
+    x = 2
+    out.push(x)
+  }
+  out
+}
+assert_eq(sequential_ifs(0), [1])
+assert_eq(sequential_ifs(1), [2])
+
+// --- Both arms taken across two calls in the SAME call: the second
+// if's bare declare of the same name IS a real reassignment (the first
+// if unconditionally ran first) and must still raise ImmutableError,
+// matching interp. ---
+assert_throws("ImmutableError", fn () {
+  fn both_taken(n) {
+    if n >= 0 { x = 1 }
+    if n >= 1 { x = 2 }
+    x
+  }
+  both_taken(1)
+})
+
+// --- True sequential reassignment (same straight-line block, not
+// sibling branches) still throws — top level and inside a single arm. ---
+assert_throws("ImmutableError", fn () {
+  y = 1
+  y = 2
+})
+assert_throws("ImmutableError", fn () {
+  if true {
+    z = 1
+    z = 2
+  }
+})
+
+// --- Read of a branch that didn't run this call: NameError, not nil
+// (the JIT used to read a stale/zeroed slot as nil here). ---
+assert_throws("NameError", fn () {
+  fn maybe_declared(n) {
+    if n == 1 { w = 5 }
+    w
+  }
+  maybe_declared(0)
+})
+
+// --- 3+ arm if/elif/else and cond: every arm mutually exclusive with
+// every other arm, not just its immediate neighbor. ---
+fn if_elif_chain(a) {
+  if a == 1 { v = 1 } else if a == 2 { v = 2 } else { v = 3 }
+  v
+}
+assert_eq(if_elif_chain(1), 1)
+assert_eq(if_elif_chain(2), 2)
+assert_eq(if_elif_chain(3), 3)
+
+fn cond_arms(a) {
+  cond {
+    a == 1 => { u = 1 },
+    a == 2 => { u = 2 },
+    _ => { u = 3 },
+  }
+  u
+}
+assert_eq(cond_arms(1), 1)
+assert_eq(cond_arms(2), 2)
+assert_eq(cond_arms(3), 3)
+
+// --- Closure capturing a name declared unconditionally before an
+// if/else that also assigns it: unaffected by this fix, regression
+// guard for the ordinary (non-conditional-declare) capture path. ---
+fn closure_over_unconditional(a) {
+  mut n = 0
+  fn bump() {
+    n = n + 1
+  }
+  if a { bump() } else { bump() }
+  n
+}
+assert_eq(closure_over_unconditional(true), 1)
+assert_eq(closure_over_unconditional(false), 1)
+
+// --- Mixed `mut` / bare across sibling arms: JIT tracks mut-ness at
+// runtime (per the arm that actually ran), matching interp exactly —
+// not "whichever arm compiled last wins". ---
+fn mixed_mut(a) {
+  if a { mut m = 1 } else { m = 2 }
+  m = 5
+  m
+}
+assert_eq(mixed_mut(true), 5)
+assert_throws("ImmutableError", fn () {
+  mixed_mut(false)
+})
+
+// --- Loop body: a conditionally-declared name must re-arm to "not yet
+// declared" every pass, not leak the previous iteration's value or its
+// slot's storage across iterations. ---
+assert_throws("NameError", fn () {
+  fn loop_rearm() {
+    for i in range(3) {
+      if i == 0 { p = 100 }
+      if i == 0 {
+        assert_eq(p, 100)
+      } else {
+        p  // never declared this pass — must raise, not read stale 100
+      }
+    }
+  }
+  loop_rearm()
+})
