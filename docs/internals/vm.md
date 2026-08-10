@@ -502,4 +502,24 @@ the lowering maps regions straight onto landingpads — `emit_call`'s
 existing invoke conversion plus the same carrier classification
 (`try_translate`) the JIT's `compile_try` uses, so CulebraErrors
 materialize as the same error objects and foreign exceptions keep
-unwinding. Defer is the remaining EH construct.
+unwinding. `defer` closed out EH: a defer body is a 0-arity chunk
+through the existing `MakeClosure` machinery (captures and all),
+and three ops (`DeferMark` / `DeferPush` / `DeferRunTo`) drive the
+same global LIFO defer stack the JIT uses — frame-level marks
+(`has_any_defer`, the chunk's first insn) that `return`, the Halt
+epilogue, and frame-escaping throws run to, plus per-scope marks
+(`scope_has_defer`) for lexical scopes, loop bodies, and try/catch
+bodies. A try takes a region mark and ends its region before the
+body's fall-through defer run, so a defer throwing at the try
+body's normal exit escapes its own catch, exactly as the interp's
+`run_deferred` placement has it; the handler opens with
+run-defers-then-release-ladder. A throw no region catches runs the
+frame's pending defers on the way out (the executor in `run_frame`'s
+catch-all, the lowering via a frame-level cleanup pad) — the
+observable slice of the JIT's frame cleanup ladder, with slot
+releases still on the GC backstop. Porting defer flushed out two
+JIT bugs that had been breaking interp/JIT agreement all along —
+try/catch-body defers fired at function exit instead of block exit,
+and break/continue skipped defers pending in a nested lexical
+scope — both fixed in `fn_analysis.h`/`jit.h`, so the three-lane
+comparison now covers every defer case.

@@ -464,4 +464,21 @@ executorはdispatch loopをC++ catchで包んでhandlerに再入し、
 loweringはregionをそのままlandingpadへ写像する — `emit_call`の
 既存invoke変換と、JITの`compile_try`と同じcarrier分類
 （`try_translate`）により、CulebraErrorは同じerror objectとして
-実体化し、foreign例外は素通りする。EHで残るのはdeferのみ。
+実体化し、foreign例外は素通りする。`defer`がEHを締めくくった:
+defer本体は既存の`MakeClosure`機構（capture込み）で0-arity chunk
+になり、3つのop（`DeferMark` / `DeferPush` / `DeferRunTo`）がJIT
+と同じグローバルLIFO deferスタックを駆動する — frame単位のmark
+（`has_any_defer`、chunkの先頭命令）へは`return`・Haltエピローグ・
+frameを突き抜けるthrowが走り、scope単位のmark（`scope_has_defer`）
+はlexical scope・loop body・try/catch本体が持つ。tryはregion mark
+を取り、regionを本体fall-throughのdefer実行より前で閉じる — try
+本体の正常出口でthrowするdeferは自分のcatchに捕まらない（interp
+の`run_deferred`配置と同一）。handlerは「defer実行→解放ラダー」で
+開く。どのregionにも捕まらないthrowはframeの残deferを実行してから
+抜ける（executorは`run_frame`のcatch-all、loweringはframe単位の
+cleanup pad） — JITのframe cleanupラダーの可観測な部分集合で、
+slot解放は引き続きGC backstopに落ちる。deferの移植は、interp/JIT
+一致を最初から破っていたJITバグ2件 — try/catch本体のdeferがblock
+出口でなく関数出口で発火・break/continueがネストしたlexical scope
+の残deferを取り逃す — をあぶり出し、`fn_analysis.h`/`jit.h`で修正
+済み。3レーン比較は全deferケースを覆う。
