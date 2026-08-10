@@ -695,6 +695,7 @@ inline constexpr auto num_sub_borrow      = "culebra_runtime_num_sub_borrow";
 inline constexpr auto num_mul_borrow      = "culebra_runtime_num_mul_borrow";
 inline constexpr auto num_div_borrow      = "culebra_runtime_num_div_borrow";
 inline constexpr auto num_mod_borrow      = "culebra_runtime_num_mod_borrow";
+inline constexpr auto num_pow_borrow      = "culebra_runtime_num_pow_borrow";
 inline constexpr auto num_neg_borrow      = "culebra_runtime_num_neg_borrow";
 inline constexpr auto to_bool_borrow      = "culebra_runtime_to_bool_borrow";
 // In-place variants for compound assignment (`t += x`). Tensor lhs

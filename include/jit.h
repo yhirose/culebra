@@ -5523,10 +5523,10 @@ struct JIT {
                                std::string_view op, bool inplace = false) {
     // Callee-cleans (same as emit_binop_dispatch, which covers again for
     // its own callers): matmul/pow below call their helpers directly.
-    // Those two have no `_borrow` twins, so the VM slice must not reach
-    // them — fail loudly instead of silently violating the contract.
-    if (vm_borrow_ops_ && (op == "@" || op == "**"))
-      throw std::runtime_error("vm: pow/matmul lack borrow-contract helpers");
+    // Matmul has no `_borrow` twin, so the VM slice must not reach it —
+    // fail loudly instead of silently violating the contract.
+    if (vm_borrow_ops_ && op == "@")
+      throw std::runtime_error("vm: matmul lacks a borrow-contract helper");
     UnwindCovered cover(this, {lhs, rhs});
     if (op == "@") {
       // No in-place matmul (output shape differs from lhs).
@@ -5541,7 +5541,9 @@ struct JIT {
            current_line_val(), current_column_val()}, "cmp.matmul");
     }
     if (op == "**") {
-      const char* rt_name = inplace ? rt::num_inplace_pow : rt::num_pow;
+      const char* rt_name = vm_borrow_ops_ ? rt::num_pow_borrow
+                            : inplace      ? rt::num_inplace_pow
+                                           : rt::num_pow;
       return emit_value_call(
           module_->getOrInsertFunction(
               rt_name, valueType_,
@@ -5768,13 +5770,11 @@ struct JIT {
     return own(make_bool(notb));
   }
 
-  // `~x` — bitwise complement, Long-only (else TypeError). Mirrors the
-  // interp's eval_unary_bnot.
-  Owned compile_unary_bnot(const peg::Ast& ast) {
-    // Owned like compile_unary_minus's operand: visible to the unwind-temp
-    // window across the TypeError edge, released (a Long no-op) at return.
-    Owned val = compile(*ast.nodes[1]);
-    auto tag = extract_tag(val.borrow());
+  // `~v` — bitwise complement, Long-only (else the typed TypeError). One
+  // definition, two consumers — compile_unary_bnot and the VM lowering's
+  // BitNot (the emit_neg_step precedent).
+  llvm::Value* emit_bnot_step(llvm::Value* v) {
+    auto tag = extract_tag(v);
     auto isLong = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
     auto fn = builder_.GetInsertBlock()->getParent();
     auto intBB = llvm::BasicBlock::Create(ctx_, "bnot.int", fn);
@@ -5785,7 +5785,7 @@ struct JIT {
     OwnedPhi merge(this, "bnot.r");
     builder_.SetInsertPoint(intBB);
     merge.add_incoming(
-        make_long(builder_.CreateNot(extract_data(val.borrow()), "bnot")));
+        make_long(builder_.CreateNot(extract_data(v), "bnot")));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
@@ -5793,7 +5793,64 @@ struct JIT {
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
-    return merge.finish(mergeBB);
+    return merge.finish(mergeBB).consume();
+  }
+
+  // `~x` — bitwise complement, Long-only (else TypeError). Mirrors the
+  // interp's eval_unary_bnot.
+  Owned compile_unary_bnot(const peg::Ast& ast) {
+    // Owned like compile_unary_minus's operand: visible to the unwind-temp
+    // window across the TypeError edge, released (a Long no-op) at return.
+    Owned val = compile(*ast.nodes[1]);
+    return own(emit_bnot_step(val.borrow()));
+  }
+
+  // One bitwise / shift step (`|` `^` `&` `<<` `>>`), Long-only — a non-Long
+  // operand raises the typed TypeError, reporting the lhs first. One
+  // definition, two consumers — compile_bitwise and the VM lowering's Bit*
+  // ops (the emit_arith_step precedent).
+  llvm::Value* emit_bitwise_step(llvm::Value* lhs, llvm::Value* rhs,
+                                 std::string_view op) {
+    auto longTag = builder_.getInt8(TAG_LONG);
+    auto ltag = extract_tag(lhs);
+    auto rtag = extract_tag(rhs);
+    auto bothLong = builder_.CreateAnd(
+        builder_.CreateICmpEQ(ltag, longTag),
+        builder_.CreateICmpEQ(rtag, longTag), "bit.bothlong");
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto intBB = llvm::BasicBlock::Create(ctx_, "bit.int", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "bit.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "bit.merge", fn);
+    builder_.CreateCondBr(bothLong, intBB, errBB);
+
+    builder_.SetInsertPoint(intBB);
+    auto ld = extract_data(lhs);
+    auto rd = extract_data(rhs);
+    llvm::Value* r;
+    if (op == "|") r = builder_.CreateOr(ld, rd, "bor");
+    else if (op == "^") r = builder_.CreateXor(ld, rd, "bxor");
+    else if (op == "&") r = builder_.CreateAnd(ld, rd, "band");
+    else {
+      // Mask the shift count to the low 6 bits (operand width) so a count
+      // >= 64 is well-defined instead of LLVM `poison` — matching interp's
+      // `rhs & 63` (hardware/Java/C# rule). `1 << 64 == 1`.
+      auto sh = builder_.CreateAnd(rd, builder_.getInt64(63), "shcnt");
+      if (op == "<<") r = builder_.CreateShl(ld, sh, "shl");
+      else r = builder_.CreateAShr(ld, sh, "ashr");  // ">>" (signed)
+    }
+    OwnedPhi step(this, "bit.r");
+    step.add_incoming(make_long(r));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    // Report on whichever operand isn't a Long.
+    auto lNotLong = builder_.CreateICmpNE(ltag, longTag);
+    auto badTag = builder_.CreateSelect(lNotLong, ltag, rtag);
+    emit_type_error_typed("Long", badTag);
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(mergeBB);
+    return step.finish(mergeBB).consume();
   }
 
   // Bitwise / shift chains (`^` `&` `<<` `>>`), Long-only. A non-Long
@@ -5804,51 +5861,13 @@ struct JIT {
     // (and across the TypeError edge below), and release them — a no-op for
     // the Long-only happy path — once the step's result is built.
     Owned lhs = compile(*ast.nodes[0]);
-    auto longTag = builder_.getInt8(TAG_LONG);
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
       Owned rhs = compile(*ast.nodes[i + 1]);
-      auto op = ast.nodes[i]->token;
-      auto ltag = extract_tag(lhs.borrow());
-      auto rtag = extract_tag(rhs.borrow());
-      auto bothLong = builder_.CreateAnd(
-          builder_.CreateICmpEQ(ltag, longTag),
-          builder_.CreateICmpEQ(rtag, longTag), "bit.bothlong");
-      auto fn = builder_.GetInsertBlock()->getParent();
-      auto intBB = llvm::BasicBlock::Create(ctx_, "bit.int", fn);
-      auto errBB = llvm::BasicBlock::Create(ctx_, "bit.err", fn);
-      auto mergeBB = llvm::BasicBlock::Create(ctx_, "bit.merge", fn);
-      builder_.CreateCondBr(bothLong, intBB, errBB);
-
-      builder_.SetInsertPoint(intBB);
-      auto ld = extract_data(lhs.borrow());
-      auto rd = extract_data(rhs.borrow());
-      llvm::Value* r;
-      if (op == "|") r = builder_.CreateOr(ld, rd, "bor");
-      else if (op == "^") r = builder_.CreateXor(ld, rd, "bxor");
-      else if (op == "&") r = builder_.CreateAnd(ld, rd, "band");
-      else {
-        // Mask the shift count to the low 6 bits (operand width) so a count
-        // >= 64 is well-defined instead of LLVM `poison` — matching interp's
-        // `rhs & 63` (hardware/Java/C# rule). `1 << 64 == 1`.
-        auto sh = builder_.CreateAnd(rd, builder_.getInt64(63), "shcnt");
-        if (op == "<<") r = builder_.CreateShl(ld, sh, "shl");
-        else r = builder_.CreateAShr(ld, sh, "ashr");  // ">>" (signed)
-      }
-      OwnedPhi step(this, "bit.r");
-      step.add_incoming(make_long(r));
-      builder_.CreateBr(mergeBB);
-
-      builder_.SetInsertPoint(errBB);
-      // Report on whichever operand isn't a Long.
-      auto lNotLong = builder_.CreateICmpNE(ltag, longTag);
-      auto badTag = builder_.CreateSelect(lNotLong, ltag, rtag);
-      emit_type_error_typed("Long", badTag);
-      builder_.CreateUnreachable();
-
-      builder_.SetInsertPoint(mergeBB);
+      auto r = emit_bitwise_step(lhs.borrow(), rhs.borrow(),
+                                 ast.nodes[i]->token);
       // Move-assign releases the previous accumulator (a no-op Long here);
       // `rhs` releases at the end of the iteration.
-      lhs = step.finish(mergeBB);
+      lhs = own(r);
     }
     return lhs;
   }
@@ -5880,31 +5899,79 @@ struct JIT {
     // node entirely when there's no `**`.
     Owned base = compile(*ast.nodes[0]);
 
-    // Peephole specialization for compile-time-constant exponents.
-    // Correctness note: sqrt(x) and std::pow(x, 0.5) agree on NaN
-    // behavior for negative x, so the 0.5 case is safe to inline.
+    // Peephole specialization for compile-time-constant exponents, guarded
+    // on the base being numeric at runtime — a String/Object base falls to
+    // num_pow so the `__pow__` dispatch and the '**' TypeError shape survive
+    // the specialization (the unguarded forms leaked '*' errors and passed
+    // `"a" ** 1` through untouched). Correctness note: sqrt(x) and
+    // std::pow(x, 0.5) agree on NaN behavior for negative x, so the 0.5
+    // case is safe to inline.
     if (auto lit = try_numeric_literal(*ast.nodes[2])) {
-      if (!lit->is_float && lit->l == 2) {
-        auto r = emit_binop_dispatch(
-            base.borrow(), base.borrow(), rt::num_mul,
-            [&](llvm::Value* ld, llvm::Value* rd) {
-              return make_long(builder_.CreateMul(ld, rd, "mul"));
-            },
-            [&](llvm::Value* lD, llvm::Value* rD) {
-              return make_float(builder_.CreateFMul(lD, rD, "fmul"));
-            });
-        return own(r);  // base (used as both operands) released by its handle
-      }
-      if (lit->is_float && lit->d == 0.5) {
-        auto d = coerce_to_double(base.borrow());
-        auto sqrtFn = llvm::Intrinsic::getOrInsertDeclaration(
-            module_, llvm::Intrinsic::sqrt, {builder_.getDoubleTy()});
-        auto result = make_float(builder_.CreateCall(sqrtFn, {d}, "sqrt"));
-        return own(result);  // base released by its handle
-      }
-      if ((!lit->is_float && lit->l == 1) ||
-          (lit->is_float && lit->d == 1.0)) {
-        return base;  // base IS the result — its +1 transfers out
+      bool sq = !lit->is_float && lit->l == 2;
+      bool half = lit->is_float && lit->d == 0.5;
+      bool unit = (!lit->is_float && lit->l == 1) ||
+                  (lit->is_float && lit->d == 1.0);
+      if (sq || half || unit) {
+        auto tag = extract_tag(base.borrow());
+        auto isLong = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
+        auto isFloat = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FLOAT));
+        auto fn = builder_.GetInsertBlock()->getParent();
+        auto numBB = llvm::BasicBlock::Create(ctx_, "pow.num", fn);
+        auto slowBB = llvm::BasicBlock::Create(ctx_, "pow.slow", fn);
+        auto mergeBB = llvm::BasicBlock::Create(ctx_, "pow.merge", fn);
+        builder_.CreateCondBr(builder_.CreateOr(isLong, isFloat, "pow.isnum"),
+                              numBB, slowBB);
+
+        // The fast arms produce Long/Float results (and `unit` passes the
+        // numeric base through), so the phi's +1 and the base handle's
+        // release are both no-ops there; the slow arm's num_pow result is
+        // a real +1 like the generic path below.
+        OwnedPhi merge(this, "pow.r");
+        builder_.SetInsertPoint(numBB);
+        if (sq) {
+          auto intBB = llvm::BasicBlock::Create(ctx_, "pow.sq.int", fn);
+          auto fltBB = llvm::BasicBlock::Create(ctx_, "pow.sq.flt", fn);
+          builder_.CreateCondBr(isLong, intBB, fltBB);
+          builder_.SetInsertPoint(intBB);
+          auto ld = extract_data(base.borrow());
+          merge.add_incoming(make_long(builder_.CreateMul(ld, ld, "mul")));
+          builder_.CreateBr(mergeBB);
+          builder_.SetInsertPoint(fltBB);
+          auto d = coerce_to_double(base.borrow());
+          merge.add_incoming(make_float(builder_.CreateFMul(d, d, "fmul")));
+          builder_.CreateBr(mergeBB);
+        } else if (half) {
+          auto d = coerce_to_double(base.borrow());
+          auto sqrtFn = llvm::Intrinsic::getOrInsertDeclaration(
+              module_, llvm::Intrinsic::sqrt, {builder_.getDoubleTy()});
+          merge.add_incoming(
+              make_float(builder_.CreateCall(sqrtFn, {d}, "sqrt")));
+          builder_.CreateBr(mergeBB);
+        } else {
+          // Rebuild the base value inside the arm block (the rc-pin ratchet
+          // wants phi incomings produced in their own arm; tag/data
+          // re-extraction is free after mem2reg).
+          merge.add_incoming(make_value(extract_tag(base.borrow()),
+                                        extract_data(base.borrow())));
+          builder_.CreateBr(mergeBB);
+        }
+
+        builder_.SetInsertPoint(slowBB);
+        {
+          // Callee-cleans like the generic path; the exponent is an
+          // immediate, so only the base needs the cover.
+          UnwindCovered cover(this, {base.borrow()});
+          merge.add_incoming(emit_num_pow_call(
+              base.borrow(),
+              builder_.getInt8(lit->is_float ? TAG_FLOAT : TAG_LONG),
+              builder_.getInt64(lit->is_float
+                                    ? _culebra_double_to_bits(lit->d)
+                                    : lit->l)));
+        }
+        builder_.CreateBr(mergeBB);
+
+        builder_.SetInsertPoint(mergeBB);
+        return merge.finish(mergeBB);
       }
     }
 
@@ -5912,7 +5979,17 @@ struct JIT {
     // Callee-cleans: num_pow releases both operands on every throw — the
     // `__pow__` dispatch's and _arith_guard_numeric's alike.
     UnwindCovered cover(this, {base.borrow(), exp.borrow()});
-    auto result = emit_value_call(
+    auto result = emit_num_pow_call(base.borrow(), extract_tag(exp.borrow()),
+                                    extract_data(exp.borrow()));
+    return own(result);  // base and exp consumed by `**`, released by their handles
+  }
+
+  // The one num_pow call site shape (tag/data operands + the operator's
+  // position), shared by compile_power's generic tail and its peephole's
+  // non-numeric fallback.
+  llvm::Value* emit_num_pow_call(llvm::Value* baseV, llvm::Value* expTag,
+                                 llvm::Value* expData) {
+    return emit_value_call(
         module_->getOrInsertFunction(rt::num_pow, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
@@ -5920,10 +5997,8 @@ struct JIT {
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
-        {extract_tag(base.borrow()), extract_data(base.borrow()),
-         extract_tag(exp.borrow()), extract_data(exp.borrow()),
+        {extract_tag(baseV), extract_data(baseV), expTag, expData,
          current_line_val(), current_column_val()}, "pow.r");
-    return own(result);  // base and exp consumed by `**`, released by their handles
   }
 
   // --- Comparison ---

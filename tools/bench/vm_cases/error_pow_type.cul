@@ -1,0 +1,3 @@
+# `**` TypeError names both operand types and carries the operator's
+# position (the num_pow line/col regression).
+println(1 ** 'a')

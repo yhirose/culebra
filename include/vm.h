@@ -12,8 +12,9 @@
 //
 // Current slice (the expression core + basic control flow): Long / Float /
 // Bool / nil / String / Array literals; `let` / `let mut` / reassignment of
-// plain identifiers; arithmetic + - * / % and unary - ! + with the JIT's
-// dispatch shape; comparisons (including chains) and `&&` / `||` / `??`;
+// plain identifiers; arithmetic + - * / % ** and unary - ! + ~ with the
+// JIT's dispatch shape; the Long-only bitwise/shift ops & | ^ << >>;
+// comparisons (including chains) and `&&` / `||` / `??`;
 // `if` / `else if` / `else` (as an expression) and the ternary; `while`;
 // counted range `for`; `break` / `continue`; single-argument `println`;
 // fn literals with closures (captured locals promoted to JitCells, the
@@ -73,6 +74,16 @@ enum class Op : uint8_t {
   Mul,         // zero-guarded), both-numeric via double, else the num_*
   Div,         // runtime helper (string concat, __op__ dispatch, TypeError)
   Mod,         // with the instruction's line/col from the position table
+  Pow,         // regs[a] = regs[b] ** regs[c] via num_pow_borrow — no inline
+               // fast path (the AST JIT's generic tail is the same call; its
+               // literal-exponent peepholes are numeric-guarded, so every
+               // input agrees with the helper)
+  BitAnd,      // regs[a] = regs[b] & regs[c]; the five bitwise ops are
+  BitOr,       // Long-only — anything else raises the typed TypeError
+  BitXor,      // ("expected Long, got X", lhs reported first), matching
+  Shl,         // emit_bitwise_step. Shift counts mask to the low 6 bits;
+  Shr,         // `<<` wraps (unsigned shift), `>>` is arithmetic.
+  BitNot,      // regs[a] = ~regs[b], Long-only like the binary five
   Eq,          // regs[a] = Bool(regs[b] == regs[c]): both-Long inline, else
   Ne,          // value_equal; ordering ops below go through
   Lt,          // value_{less,leq,greater,geq} (line/col-carrying, matching
@@ -1690,6 +1701,43 @@ class Compiler {
       }
       case "UNARY_PLUS"_:
         return compile_expr(*ast.nodes[1]);
+      case "UNARY_BNOT"_: {
+        auto r = compile_expr(*ast.nodes[1]);
+        int32_t t = alloc_temp(ast);
+        emit(Op::BitNot, t, r.slot);
+        return {t, true};
+      }
+      case "POWER"_: {
+        // [base, POWER_OPERATOR, exponent]; right-associativity is the
+        // grammar's recursion. Always the Pow op — see its enum note on
+        // why the JIT's literal peepholes need no mirror here.
+        auto base = compile_expr(*ast.nodes[0]);
+        auto exp = compile_expr(*ast.nodes[2]);
+        int32_t t = alloc_temp(ast);
+        emit(Op::Pow, t, base.slot, exp.slot);
+        return {t, true};
+      }
+      case "BIT_OR"_:
+      case "BIT_XOR"_:
+      case "BIT_AND"_:
+      case "SHIFT"_: {
+        auto acc = compile_expr(*ast.nodes[0]);
+        for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
+          auto op_tok = ast.nodes[i]->token;
+          Op op;
+          if (op_tok == "|") op = Op::BitOr;
+          else if (op_tok == "^") op = Op::BitXor;
+          else if (op_tok == "&") op = Op::BitAnd;
+          else if (op_tok == "<<") op = Op::Shl;
+          else if (op_tok == ">>") op = Op::Shr;
+          else reject(*ast.nodes[i], std::format("operator '{}'", op_tok));
+          auto rhs = compile_expr(*ast.nodes[i + 1]);
+          int32_t t = alloc_temp(ast);
+          emit(op, t, acc.slot, rhs.slot);
+          acc = {t, true};
+        }
+        return acc;
+      }
       case "ADDITIVE"_:
       case "MULTIPLICATIVE"_: {
         auto acc = compile_expr(*ast.nodes[0]);
@@ -1771,7 +1819,9 @@ inline std::string dump(const Chunk& c) {
   static constexpr const char* kNames[] = {
       "LoadConst", "Move",      "Take",       "Retain",       "Release",
       "Neg",       "Not",       "Add",        "Sub",          "Mul",
-      "Div",       "Mod",       "Eq",         "Ne",           "Lt",
+      "Div",       "Mod",       "Pow",        "BitAnd",       "BitOr",
+      "BitXor",    "Shl",       "Shr",        "BitNot",
+      "Eq",        "Ne",        "Lt",
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfTag",
       "MakeClosure", "Call",    "Ret",
@@ -2108,6 +2158,57 @@ struct Exec {
             }
           }
           regs[in.a] = out;
+          ++pc;
+          break;
+        }
+        case Op::Pow: {
+          const JitValue& l = regs[in.b];
+          const JitValue& r = regs[in.c];
+          auto [line, col] = chunk_pos_at(c, pc);
+          regs[in.a] = culebra_runtime_num_pow_borrow(
+              static_cast<int8_t>(l.tag), l.data, static_cast<int8_t>(r.tag),
+              r.data, line, col);
+          ++pc;
+          break;
+        }
+        case Op::BitAnd:
+        case Op::BitOr:
+        case Op::BitXor:
+        case Op::Shl:
+        case Op::Shr: {
+          const JitValue& l = regs[in.b];
+          const JitValue& r = regs[in.c];
+          if (l.tag != TAG_LONG || r.tag != TAG_LONG) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            culebra_runtime_type_error_typed(
+                line, col, "Long",
+                static_cast<int8_t>(l.tag != TAG_LONG ? l.tag : r.tag));
+          }
+          int64_t ld = l.data, rd = r.data, out;
+          switch (in.op) {
+            case Op::BitAnd: out = ld & rd; break;
+            case Op::BitOr:  out = ld | rd; break;
+            case Op::BitXor: out = ld ^ rd; break;
+            // Count masked to the low 6 bits (the interp/JIT rule); `<<`
+            // runs unsigned so value overflow wraps instead of being UB.
+            case Op::Shl:
+              out = static_cast<int64_t>(static_cast<uint64_t>(ld)
+                                         << (rd & 63));
+              break;
+            default: out = ld >> (rd & 63); break;  // Shr (arithmetic)
+          }
+          regs[in.a] = JitValue{TAG_LONG, out};
+          ++pc;
+          break;
+        }
+        case Op::BitNot: {
+          const JitValue& v = regs[in.b];
+          if (v.tag != TAG_LONG) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            culebra_runtime_type_error_typed(line, col, "Long",
+                                             static_cast<int8_t>(v.tag));
+          }
+          regs[in.a] = JitValue{TAG_LONG, ~v.data};
           ++pc;
           break;
         }
@@ -2729,6 +2830,30 @@ struct Lowering {
           b.CreateStore(r, slots[in.a]);
           break;
         }
+        case Op::Pow: {
+          // emit_arith_step's "**" arm picks num_pow_borrow under the VM
+          // operand contract (vm_borrow_ops_).
+          auto r = j.emit_arith_step(load_slot(in.b), load_slot(in.c), "**");
+          b.CreateStore(r, slots[in.a]);
+          break;
+        }
+        case Op::BitAnd:
+        case Op::BitOr:
+        case Op::BitXor:
+        case Op::Shl:
+        case Op::Shr: {
+          const char* op = in.op == Op::BitAnd   ? "&"
+                           : in.op == Op::BitOr  ? "|"
+                           : in.op == Op::BitXor ? "^"
+                           : in.op == Op::Shl    ? "<<"
+                                                 : ">>";
+          auto r = j.emit_bitwise_step(load_slot(in.b), load_slot(in.c), op);
+          b.CreateStore(r, slots[in.a]);
+          break;
+        }
+        case Op::BitNot:
+          b.CreateStore(j.emit_bnot_step(load_slot(in.b)), slots[in.a]);
+          break;
         case Op::Eq:
         case Op::Ne:
         case Op::Lt:

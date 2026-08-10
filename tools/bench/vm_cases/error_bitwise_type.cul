@@ -1,0 +1,4 @@
+# Bitwise ops are Long-only: the typed TypeError reports the lhs first,
+# after both operands ran (the traced call's effect prints first).
+fn traced(v) { println("traced") ; v }
+println(1.5 | traced(2))

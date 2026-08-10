@@ -1568,9 +1568,8 @@ CUL_NUM_INPLACE(mul, Op::Mul)
 CUL_NUM_INPLACE(div, Op::Div)
 // Pow expansion is further down — it needs `culebra_runtime_num_pow`.
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__pow__")) return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
@@ -1587,6 +1586,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
   return {TAG_FLOAT, _culebra_double_to_bits(std::pow(a, b))};
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
+  return culebra_runtime_num_pow_borrow(lt, ld, rt, rd, line, col);
 }
 
 CUL_NUM_INPLACE(pow, Op::Pow)

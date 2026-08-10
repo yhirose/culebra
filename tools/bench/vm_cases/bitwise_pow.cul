@@ -1,0 +1,38 @@
+# Bitwise / shift chains, `~`, and `**` — the Phase 2 operator batch.
+println(0b1100 & 0b1010)
+println(12 ^ 10)
+println(5 | 2)
+println(1 | 4 | 16)
+println(1 << 4)
+println(256 >> 2)
+println((0 - 8) >> 1)
+println(1 << 64)
+println(1 << 70)
+println(~0)
+println(~5)
+println(5 & ~1)
+println(1 & 2 == 0)
+println(1 + 1 << 2)
+
+# Power: Long/Long stays Long (negative exponent goes Float), floats
+# promote, big squares wrap like `*`.
+println(2 ** 10)
+println(2 ** -1)
+println(2.0 ** 0.5)
+println(9 ** 0.5)
+println(7 ** 1)
+println(7.5 ** 1)
+println(3037000500 ** 2)
+let e = 2
+println(3037000500 ** e)
+println(2 ** 3 ** 2)
+
+# Operators through variables and expressions on both sides.
+let mut acc = 0
+for i in 1..=8 {
+    acc = acc | (1 << i)
+}
+println(acc)
+let mask = 0xFF
+println(acc & mask)
+println((acc ^ mask) ** 2)
