@@ -12365,10 +12365,12 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
       interp->module_stack_.pop_back();
       throw;
     }
-    for (auto& [name, sym] : entry_env->dictionary) {
-      env->dictionary.insert_or_assign(name, std::move(sym));
+    for (auto it = entry_env->dictionary.begin();
+        it != entry_env->dictionary.end();) {
+      auto node = entry_env->dictionary.extract(it++);
+      env->dictionary.insert_or_assign(std::move(node.key()),
+                                       std::move(node.mapped()));
     }
-    entry_env->dictionary.clear();
     interp->module_stack_.pop_back();
     flush_top_defers();
     return true;
