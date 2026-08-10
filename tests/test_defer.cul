@@ -101,4 +101,107 @@ let r4 = try {
 assert_eq(r4, 'mixed')
 assert_eq(log, 'inner;outer;')
 
+# A try body is its own defer scope: its defers fire when the block
+# closes (before any code after the try), not at function exit. The JIT
+# used to treat them as function-level and ran them at frame exit.
+log = ''
+let f_try_scope = fn () {
+  try {
+    defer {
+      log = "{log}try-defer;"
+    }
+    log = "{log}body;"
+  } catch _ {
+    log = "{log}caught;"
+  }
+  log = "{log}after;"
+  nil
+}
+f_try_scope()
+assert_eq(log, 'body;try-defer;after;')
+
+# Same for the catch body: its defers fire when the handler closes.
+log = ''
+let f_catch_scope = fn () {
+  try {
+    throw 'cx'
+  } catch _ {
+    defer {
+      log = "{log}catch-defer;"
+    }
+    log = "{log}handler;"
+  }
+  log = "{log}after;"
+  nil
+}
+f_catch_scope()
+assert_eq(log, 'handler;catch-defer;after;')
+
+# On a caught throw the try body's defers run before the catch body
+# (interp's run_deferred(tryEnv) fires between the two blocks).
+log = ''
+try {
+  defer {
+    log = "{log}d1;"
+  }
+  {
+    defer {
+      log = "{log}d2;"
+    }
+    throw 'tx'
+  }
+} catch _ {
+  log = "{log}caught;"
+}
+assert_eq(log, 'd2;d1;caught;')
+
+# A defer throwing at the try body's NORMAL exit escapes its own catch
+# (interp runs run_deferred(tryEnv) outside the try/catch pair).
+log = ''
+let r5 = try {
+  try {
+    defer {
+      throw 'dboom'
+    }
+    'ok'
+  } catch _ {
+    log = "{log}inner-caught;"
+    'inner'
+  }
+} catch e {
+  log = "{log}outer-caught;"
+  e
+}
+assert_eq(r5, 'dboom')
+assert_eq(log, 'outer-caught;')
+
+# break / continue run the defers of a nested lexical scope they jump
+# out of, even when the loop body itself declares none. The JIT used to
+# consult only the body's own mark and skipped (leaked) these.
+log = ''
+while true {
+  log = "{log}iter;"
+  {
+    defer {
+      log = "{log}scope-d;"
+    }
+    break
+  }
+}
+assert_eq(log, 'iter;scope-d;')
+
+log = ''
+for i in 0..3 {
+  {
+    defer {
+      log = "{log}d{i};"
+    }
+    if i == 1 {
+      continue
+    }
+    log = "{log}b{i};"
+  }
+}
+assert_eq(log, 'b0;d0;d1;b2;d2;')
+
 IO.inspect('test_defer OK')

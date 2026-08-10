@@ -166,6 +166,12 @@ struct JIT {
     // every in-scope exit, so no alloca is needed). Consumed by the
     // inline empty-region check at scope exit. See push_scope.
     llvm::Value* owned_mark = nullptr;
+    // Defer-stack mark for a scope that contains its own defers (null
+    // otherwise). break/continue scan the open scopes above the loop body
+    // for the outermost non-null mark, so defers pending in a nested
+    // lexical scope run on the way out (interp unwinds scope by scope;
+    // the loop body's own mark alone would skip them).
+    llvm::Value* defer_mark = nullptr;
     // `let f = fn (...) {...}` records the FUNCTION AST here so a
     // later `f(x, y: 2)` can resolve kwargs against `f`'s parameter
     // list at compile time. Only same-scope direct bindings populate
@@ -6944,6 +6950,7 @@ struct JIT {
         arm_mark = builder_.CreateCall(
             module_->getFunction(rt::defer_mark), {}, "arm.mark");
       }
+      scopes_.back().defer_mark = arm_mark;
       current_lpad_ = arm_cleanupBB;
       // The arm value stays in its Owned across the defer-run below (an
       // invoke — a throwing defer would strand a bare +1): the window
@@ -7069,6 +7076,7 @@ struct JIT {
       mark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
                                  "while.body.mark");
     }
+    scopes_.back().defer_mark = mark;
     current_lpad_ = cleanupBB;
 
     loop_stack_.push_back({condBB, afterBB, mark, scopes_.size() - 1});
@@ -7136,6 +7144,7 @@ struct JIT {
     }
     current_lpad_ = cleanupBB;
     push_scope();
+    scopes_.back().defer_mark = mark;
     pre_allocate_forward_refs(block);
     // Drop the block's result on the normal path; on a terminated path (the
     // block ended in a `return` / `throw`, e.g. the search idiom's `nobreak {
@@ -7172,15 +7181,25 @@ struct JIT {
     enter_dead_block(dead_name);
   }
 
+  // The outermost still-open defer scope at or above `base_scope_index` (a
+  // loop body). Its mark bounds every defer pushed since that scope opened —
+  // including those of nested lexical scopes a break/continue jumps out of,
+  // which the body's own mark misses when the body itself declares no defer
+  // (interp unwinds scope by scope, running each run_deferred on the way).
+  llvm::Value* pending_defer_mark(size_t base_scope_index) {
+    for (size_t i = base_scope_index; i < scopes_.size(); ++i)
+      if (scopes_[i].defer_mark) return scopes_[i].defer_mark;
+    return nullptr;
+  }
+
   Owned compile_break(const peg::Ast& ast) {
     if (loop_stack_.empty()) {
       throw culebra::CulebraError("SyntaxError", "break outside loop",
                                   ast.line, ast.column);
     }
-    // Run the current iteration's defers before leaving the loop (interp's
-    // eval_for runs_deferred in its BreakSignal handler). null when the body
-    // has no defer / for `while`.
-    if (auto* m = loop_stack_.back().defer_mark) {
+    // Run the abandoned iteration's pending defers before leaving the loop
+    // (interp's eval_for runs_deferred in its BreakSignal handler).
+    if (auto* m = pending_defer_mark(loop_stack_.back().body_scope_index)) {
       emit_call(module_->getFunction(rt::defer_run_to), {m});
     }
     // Release the abandoned iteration's owned slots + resolve its owned region
@@ -7197,9 +7216,9 @@ struct JIT {
       throw culebra::CulebraError("SyntaxError", "continue outside loop",
                                   ast.line, ast.column);
     }
-    // Run this iteration's defers before continuing (interp runs_deferred in
-    // its ContinueSignal handler).
-    if (auto* m = loop_stack_.back().defer_mark) {
+    // Run this iteration's pending defers before continuing (interp
+    // runs_deferred in its ContinueSignal handler).
+    if (auto* m = pending_defer_mark(loop_stack_.back().body_scope_index)) {
       emit_call(module_->getFunction(rt::defer_run_to), {m});
     }
     // Release the iteration's owned slots + resolve its owned region before
@@ -7626,6 +7645,7 @@ struct JIT {
       iter_cleanup_stack_.back().body_defer_mark = mark;
       iter_cleanup_stack_.back().fill_pending = false;
     }
+    scopes_.back().defer_mark = mark;
     current_lpad_ = cleanupBB;
 
     loop_stack_.push_back({continue_bb, break_bb, mark, scopes_.size() - 1});
@@ -8099,6 +8119,7 @@ struct JIT {
     current_lpad_ = cleanupBB;
 
     push_scope();
+    scopes_.back().defer_mark = mark;
     // Forward-ref / self-recursion support inside the block: captured
     // names declared by this block's own statements need their cell
     // before any closure that captures them is built (the function-body
@@ -12787,8 +12808,20 @@ struct JIT {
     builder_.SetInsertPoint(tryBB);
     auto savedLpad = current_lpad_;
     auto tryCleanupBB = llvm::BasicBlock::Create(ctx_, "try.body.cleanup", fn);
+    // The try body is its own defer scope (interp's tryEnv runs run_deferred
+    // on every exit): mark on entry, run on the normal path below and on the
+    // throw edge via the cleanup pad — so body defers fire before the catch
+    // handler, not at function exit. Mirrors the match-arm discipline.
+    bool body_has_defer =
+        analysis_.scope_has_defer.contains(ast.nodes[0].get());
+    llvm::Value* bodyMark = nullptr;
+    if (body_has_defer) {
+      bodyMark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
+                                     "try.body.mark");
+    }
     current_lpad_ = tryCleanupBB;
     push_scope();
+    scopes_.back().defer_mark = bodyMark;
     // Land a body/catch result in resultSlot and branch to the shared end
     // block; in a terminated block the value is dead residue — discard it
     // without emitting a release past the terminator.
@@ -12805,9 +12838,19 @@ struct JIT {
     // the window releases it on that edge, and it is consumed
     // directly into the result store.
     Owned tryOwned = compile(*ast.nodes[0]);
+    // Normal-path defer run, before the scope's slots release (interp's
+    // run_deferred order) and under the OUTER lpad: interp runs
+    // run_deferred(tryEnv) outside its own try/catch, so a defer throwing at
+    // normal exit propagates past this catch — it must not unwind into
+    // tryCleanupBB (whose re-raise lands at this try's own handler). The
+    // body value stays in its Owned across the run (the window spills it).
+    if (body_has_defer && !builder_.GetInsertBlock()->getTerminator()) {
+      current_lpad_ = savedLpad;
+      emit_call(module_->getFunction(rt::defer_run_to), {bodyMark});
+    }
     // Fill/erase the body cleanup while the scope is live; it re-raises to the
     // catch pad (lpadBB), but the code after the try restores the outer lpad.
-    finish_and_pop_scope(tryCleanupBB, /*defer_mark=*/nullptr, lpadBB,
+    finish_and_pop_scope(tryCleanupBB, bodyMark, lpadBB,
                          "try.body.exc", savedLpad);
     finalize(std::move(tryOwned));
 
@@ -12886,8 +12929,19 @@ struct JIT {
     builder_.SetInsertPoint(catchBB);
     auto catchCleanupBB =
         llvm::BasicBlock::Create(ctx_, "try.catch.cleanup", fn);
+    // The catch body is its own defer scope too (interp's catchEnv): same
+    // mark/run discipline as the try body; both exits re-raise to the outer
+    // lpad, so a throwing catch defer never re-enters this try.
+    bool catch_has_defer =
+        analysis_.scope_has_defer.contains(ast.nodes[2].get());
+    llvm::Value* catchMark = nullptr;
+    if (catch_has_defer) {
+      catchMark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
+                                      "try.catch.mark");
+    }
     current_lpad_ = catchCleanupBB;
     push_scope();
+    scopes_.back().defer_mark = catchMark;
     auto caughtName = std::string(ast.nodes[1]->token);
     // Match interp's bind_pattern_name (interpreter.h:5264 → mut=true
     // default): the `catch e { ... }` binding is mutable so handlers
@@ -12896,7 +12950,11 @@ struct JIT {
     declare_local(caughtName, caughtValue, /*is_mut=*/true);
     // Same Owned-across-teardown discipline as the try body above.
     Owned catchOwned = compile(*ast.nodes[2]);
-    finish_and_pop_scope(catchCleanupBB, /*defer_mark=*/nullptr, savedLpad,
+    if (catch_has_defer && !builder_.GetInsertBlock()->getTerminator()) {
+      current_lpad_ = savedLpad;
+      emit_call(module_->getFunction(rt::defer_run_to), {catchMark});
+    }
+    finish_and_pop_scope(catchCleanupBB, catchMark, savedLpad,
                          "try.catch.exc", savedLpad);
     finalize(std::move(catchOwned));
 

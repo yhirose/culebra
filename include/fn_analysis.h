@@ -751,9 +751,17 @@ struct FnAnalysis {
     }
     if (node.tag == "TRY"_) {
       info.has_eh = true;
-      bool any = false;
-      for (auto& c : node.nodes) any |= scan_eh_defer(*c, at_fn_top, info);
-      return any;
+      // TRY = [body, catch_ident, catch_body]. Both blocks are their own
+      // scopes (interp's tryEnv / catchEnv each run_deferred at exit):
+      // absorb their defers so they fire when the block closes, not at
+      // function exit.
+      if (scan_eh_defer(*node.nodes[0], /*at_fn_top=*/false, info)) {
+        scope_has_defer.insert(node.nodes[0].get());
+      }
+      if (scan_eh_defer(*node.nodes[2], /*at_fn_top=*/false, info)) {
+        scope_has_defer.insert(node.nodes[2].get());
+      }
+      return false;  // the try/catch blocks absorb their own defers
     }
     if (node.tag == "WHILE"_) {
       // The loop safepoint (emit_safepoint) can throw Interrupted on Ctrl+C, so
