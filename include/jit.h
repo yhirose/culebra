@@ -346,6 +346,13 @@ struct JIT {
   // to — resolve_lpad turns it into the frame ladder's current rung.
   llvm::BasicBlock* current_lpad_ = nullptr;
 
+  // Operand-ownership contract for the dispatch emitters. The AST path hands
+  // +1 operand temps and relies on the helpers' callee-cleans-on-throw; the
+  // bytecode VM's lowering (vm::Lowering) hands borrowed register loads and
+  // sets this so the emitters pick the `_borrow` helper twins — a try
+  // handler's release ladder is then the one releaser on the throw path.
+  bool vm_borrow_ops_ = false;
+
   // The frame's throw-path teardown (see FrameCleanupRung), innermost last.
   std::vector<FrameCleanupRung> frame_ladder_;
   // scopes_.size() while the frame scope is the innermost one, so define_var
@@ -3386,8 +3393,9 @@ struct JIT {
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
     auto slowVal = emit_call(
-        module_->getOrInsertFunction(rt::to_bool, builder_.getInt1Ty(), i8Ty,
-                                     i64Ty, i64Ty, i64Ty),
+        module_->getOrInsertFunction(
+            vm_borrow_ops_ ? rt::to_bool_borrow : rt::to_bool,
+            builder_.getInt1Ty(), i8Ty, i64Ty, i64Ty, i64Ty),
         {tag, data, current_line_val(), current_column_val()});
     // emit_call may have split the block (invoke continuation); the phi's
     // incoming edge is whatever block now holds the branch.
@@ -5450,6 +5458,15 @@ struct JIT {
       default:
         throw std::runtime_error("invalid compound assignment operator");
     }
+    if (vm_borrow_ops_) {
+      switch (ope) {  // inplace never combines with the VM contract
+        case '+': rt_name = rt::num_add_borrow; break;
+        case '-': rt_name = rt::num_sub_borrow; break;
+        case '*': rt_name = rt::num_mul_borrow; break;
+        case '/': rt_name = rt::num_div_borrow; break;
+        case '%': rt_name = rt::num_mod_borrow; break;
+      }
+    }
     return emit_binop_dispatch(
         lhs, rhs, rt_name,
         [&](llvm::Value* ld, llvm::Value* rd) -> llvm::Value* {
@@ -5845,12 +5862,13 @@ struct JIT {
       // the operand temps on every throw of its own. See the callee-cleans
       // note in emit_binop_dispatch.
       auto slowEq = emit_call(
-          module_->getOrInsertFunction(rt::value_equal,
-                                       builder_.getInt1Ty(),
-                                       builder_.getInt8Ty(),
-                                       builder_.getInt64Ty(),
-                                       builder_.getInt8Ty(),
-                                       builder_.getInt64Ty()),
+          module_->getOrInsertFunction(
+              vm_borrow_ops_ ? rt::value_equal_borrow : rt::value_equal,
+              builder_.getInt1Ty(),
+              builder_.getInt8Ty(),
+              builder_.getInt64Ty(),
+              builder_.getInt8Ty(),
+              builder_.getInt64Ty()),
           {ltag, ldata, rtag, rdata}, "val.eq");
       auto slowEndBB = builder_.GetInsertBlock();
       builder_.CreateBr(mergeBB);
@@ -5900,10 +5918,14 @@ struct JIT {
     // relationship.
     builder_.SetInsertPoint(slowBB);
     const char* ord_rt = nullptr;
-    if (ope_str == "<") ord_rt = rt::value_less;
-    else if (ope_str == "<=") ord_rt = rt::value_leq;
-    else if (ope_str == ">") ord_rt = rt::value_greater;
-    else if (ope_str == ">=") ord_rt = rt::value_geq;
+    if (ope_str == "<")
+      ord_rt = vm_borrow_ops_ ? rt::value_less_borrow : rt::value_less;
+    else if (ope_str == "<=")
+      ord_rt = vm_borrow_ops_ ? rt::value_leq_borrow : rt::value_leq;
+    else if (ope_str == ">")
+      ord_rt = vm_borrow_ops_ ? rt::value_greater_borrow : rt::value_greater;
+    else if (ope_str == ">=")
+      ord_rt = vm_borrow_ops_ ? rt::value_geq_borrow : rt::value_geq;
     else throw std::runtime_error("invalid comparison operator");
 
     // Not guarded on the unwind edge (same reason as the eq slow path and

@@ -1,0 +1,34 @@
+# try/catch as an expression: body value, thrown value, runtime errors as
+# structured objects, rethrow, nesting, and the mutable catch binding.
+let a = try { 1 + 2 } catch e { -1 }
+println(a)
+println(try { throw 42 } catch e { e })
+println(try { throw "boom" } catch e { e })
+
+# A runtime CulebraError materializes as an error object; printing it shows
+# kind/message/position identically on every lane.
+let mut zero = 0
+println(try { 10 / zero } catch e { e })
+println(try { !nil } catch e { e })
+
+# The catch binding is mutable (interp's bind_pattern_name default).
+let m = try { throw 5 } catch e { e = e * 2; e + 1 }
+println(m)
+
+# Rethrow from a handler reaches the outer try; each hop adds context.
+println(try { try { throw 1 } catch e { throw e + 1 } } catch e { e + 10 })
+
+# Throws unwind through callee frames into the caller's region.
+let f = fn (n) { if n > 2 { throw n * 100 } else { n } }
+println(try { f(1) + f(5) } catch e { e })
+
+# try in a loop: the result/caught slots reset every iteration.
+let mut acc = 0
+for i in 0..6 {
+    acc = acc + try { if i % 2 == 1 { throw i * 10 } else { i } } catch e { e }
+}
+println(acc)
+
+# A caught error can feed ordinary control flow afterwards.
+let verdict = try { throw 7 } catch e { if e > 5 { "big" } else { "small" } }
+println(verdict)

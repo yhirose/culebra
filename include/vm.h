@@ -104,6 +104,10 @@ enum class Op : uint8_t {
   ImmutErr,    // throw ImmutableError for name consts[a] (runtime, after the
                // RHS evaluated — `if false { x = 1 }` stays silent, interp
                // parity); never falls through
+  Throw,       // user `throw`: regs[a]'s +1 transfers to the thrown-value
+               // carrier (culebra_runtime_throw); regs[a] is nil'd BEFORE the
+               // raise so a handler's release ladder cannot double-release
+               // the payload. Never falls through.
   ForPrep,     // control quad at base=a: {cur, end, step, flags}. Rejects a
                // zero step (ValueError at the range expression's position,
                // like rt::range_step_check), stores inclusive (c) into the
@@ -153,6 +157,19 @@ struct Chunk {
   // creation site — its MakeClosure — so the list lives with the callee
   // chunk instead of being encoded into the instruction.
   std::vector<int32_t> capture_src_slots;
+  // try/catch region: a throw at pc in [start, end) lands at `handler` with
+  // the caught value in `caught_slot` (written by the dispatcher / the
+  // lowered landingpad prelude before the jump). The handler opens with a
+  // bytecode release ladder for every slot the region allocated — sound
+  // because Release/CellRelease are destructive and nil-safe, and under the
+  // borrow operand contract a throw leaves every register frame-owned.
+  // Entries are pushed innermost-first (a nested try compiles before its
+  // encloser finishes), so the first entry containing pc is the target.
+  struct EhRegion {
+    uint32_t start, end, handler;
+    int32_t caught_slot;
+  };
+  std::vector<EhRegion> eh;
 };
 
 struct VmProgram;
@@ -262,6 +279,18 @@ class Compiler {
   // scope exit emits CellRelease instead of Release. Borrowed capture slots
   // stay false — the closure owns their cell ref.
   std::vector<bool> slot_cell_;
+  // Owned cell slots are PINNED: never returned to the allocator, so a slot
+  // is cell-or-plain for the chunk's whole lifetime. A try handler's release
+  // ladder chooses Release vs CellRelease statically per slot — a slot that
+  // hosted a cell in one generation and a plain heap value in another would
+  // make that choice wrong at runtime. The wasted indices are bounded by the
+  // number of captured bindings (kMaxSlots rejects overflow).
+  int32_t pin_floor_ = 0;
+
+  void mark_cell_slot(int32_t s) {
+    slot_cell_[s] = true;
+    pin_floor_ = std::max(pin_floor_, s + 1);
+  }
   uint32_t pend_line_ = 0, pend_col_ = 0;
 
   [[noreturn]] static void reject(const peg::Ast& ast, const std::string& what) {
@@ -366,11 +395,13 @@ class Compiler {
         emit(slot_cell_[s] ? Op::CellRelease : Op::Release, s);
   }
 
-  // Emits the scope's Releases and returns its slots to the allocator.
+  // Emits the scope's Releases and returns its slots to the allocator
+  // (pinned cell slots stay allocated; their stale named/cell flags only
+  // cost an outer ladder a redundant nil-safe CellRelease).
   void pop_scope() {
     const auto& sc = scopes_.back();
     release_down_to(sc.slot_watermark);
-    next_slot_ = sc.slot_watermark;
+    next_slot_ = std::max(sc.slot_watermark, pin_floor_);
     named_top_ = std::min(named_top_, next_slot_);
     scopes_.pop_back();
   }
@@ -390,7 +421,7 @@ class Compiler {
     for (size_t i = stmt_temps_.size(); i > base; --i)
       emit(Op::Release, stmt_temps_[i - 1]);
     stmt_temps_.resize(base);
-    next_slot_ = std::max(slot_base, named_top_);
+    next_slot_ = std::max({slot_base, named_top_, pin_floor_});
   }
 
   // Statement temps live until the end of the statement that made them.
@@ -643,7 +674,7 @@ class Compiler {
     for (const auto& pr : promos) {
       int32_t cslot = fc.alloc_slot(*pr.at, pr.name);
       fc.emit(Op::CellNew, cslot, pr.abi_slot);
-      fc.slot_cell_[cslot] = true;
+      fc.mark_cell_slot(cslot);
       fc.scopes_.back().bindings.push_back({pr.name, cslot, pr.is_mut, true});
     }
     // Bind the captures: borrowed cell pointers out of the closure. The
@@ -681,7 +712,7 @@ class Compiler {
       int32_t slot = alloc_slot(*tgt, name);
       if (cell) {
         store_new_cell(*tgt, slot, compile_expr(*av.rhs));
-        slot_cell_[slot] = true;
+        mark_cell_slot(slot);
       } else {
         store_into(slot, compile_expr(*av.rhs), /*dst_is_fresh=*/true);
       }
@@ -731,7 +762,7 @@ class Compiler {
     int32_t bind = var;
     if (cell) {
       bind = alloc_slot(id, std::string(id.token));
-      slot_cell_[bind] = true;
+      mark_cell_slot(bind);
     }
 
     // Endpoints evaluate before the binding exists, in source order, with
@@ -913,6 +944,49 @@ class Compiler {
     return {res, true};
   }
 
+  // `try BODY catch name HANDLER` as an expression. The body's instructions
+  // form an EhRegion; the handler opens with the region's release ladder —
+  // every slot the body allocated, the Release/CellRelease choice static per
+  // slot thanks to cell-slot pinning — then binds the caught value (mutable,
+  // the interp's catch-binding default) and runs into the same result slot.
+  // Normal-path exits (fall-through, break/continue/return crossing the
+  // region) release through the regular scope machinery; the ladder only
+  // runs on the exception path, where every emit is nil-safe.
+  ExprResult compile_try(const peg::Ast& ast) {
+    using namespace peg::udl;
+    const auto& id = *ast.nodes[1];
+    int32_t res = alloc_temp(ast);
+    int32_t caught = alloc_temp(ast);
+    int32_t wm = next_slot_;
+    auto start = static_cast<uint32_t>(chunk_.code.size());
+    compile_block_into(*ast.nodes[0], res);
+    size_t end_jump = emit(Op::Jump);
+    auto handler = static_cast<uint32_t>(chunk_.code.size());
+    for (int32_t s = high_water_ - 1; s >= wm; --s)
+      emit(slot_cell_[s] ? Op::CellRelease : Op::Release, s);
+    push_scope();
+    auto name = std::string(id.token);
+    if (is_sink_name(name)) {
+      emit(Op::Release, caught);  // `catch _`: drop the payload's +1
+    } else {
+      bool cell = info_->captured_locals.contains(name);
+      int32_t e = alloc_slot(id, name);
+      if (cell) {
+        emit(Op::CellNew, e, caught);
+        mark_cell_slot(e);
+      } else {
+        emit(Op::Take, e, caught);
+      }
+      scopes_.back().bindings.push_back({name, e, /*is_mut=*/true, cell});
+    }
+    compile_block_into(*ast.nodes[2], res);
+    pop_scope();
+    chunk_.code[end_jump].a = static_cast<int32_t>(chunk_.code.size());
+    chunk_.eh.push_back(
+        {start, static_cast<uint32_t>(end_jump), handler, caught});
+    return {res, true};
+  }
+
   ExprResult compile_expr(const peg::Ast& ast) {
     using namespace peg::udl;
     StampGuard pos(*this, ast);
@@ -1031,6 +1105,17 @@ class Compiler {
       case "IF"_:
       case "CONDITIONAL"_:
         return compile_if(ast);
+      case "TRY"_:
+        return compile_try(ast);
+      case "THROW"_: {
+        int32_t src = owned_src(ast, compile_expr(*ast.nodes[0]));
+        emit(Op::Throw, src);
+        // Dummy nil for the (unreachable) expression value, keeping the
+        // stream well-formed — the compile_throw pattern.
+        int32_t t = alloc_temp(ast);
+        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+        return {t, true};
+      }
       case "FUNCTION"_:
       case "LAMBDA"_: {
         int32_t idx = compile_fn_chunk(ast);
@@ -1076,7 +1161,7 @@ inline std::string dump(const Chunk& c) {
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil",
       "MakeClosure", "Call",    "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
-      "ImmutErr",
+      "ImmutErr",  "Throw",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
@@ -1125,7 +1210,16 @@ struct Exec {
     p.descs.resize(p.chunks.size());
     for (size_t i = 0; i < p.chunks.size(); ++i)
       p.descs[i] = {&p, static_cast<int32_t>(i)};
-    run_frame(p, 0, nullptr, 0, nullptr);
+    try {
+      run_frame(p, 0, nullptr, 0, nullptr);
+    } catch (const CulebraException& e) {
+      // Uncaught user throw: format first, then consume the carrier's
+      // reference — JIT::exec's boundary, so main.cc prints the same
+      // "uncaught: ..." on every lane.
+      auto s = _culebra_uncaught_display(e.tag, e.data);
+      _culebra_value_release_impl(e.tag, e.data);
+      throw std::runtime_error(std::format("uncaught: {}", s));
+    }
   }
 
   // JitFn-ABI entry: native code (and the executor's own Call op) reaches a
@@ -1169,11 +1263,48 @@ struct Exec {
             JitValue{TAG_FUNC, reinterpret_cast<int64_t>(cls)};
         culebra_runtime_value_retain(TAG_FUNC, regs[c.fn_slot].data);
       }
-      culebra_runtime_recursion_enter();
     }
+    // A try handler restores the recursion count to this frame's own level
+    // (frames unwound between the throw and the handler never ran their
+    // `leave`) — the JIT's try.rec snapshot, hoisted to the prologue since
+    // the depth is constant within a frame.
+    int64_t frame_depth = chunk_idx != 0
+                              ? culebra_runtime_recursion_enter()
+                              : culebra_runtime_recursion_depth();
     const Insn* code = c.code.data();
     size_t pc = 0;
+    // Dispatch, re-entering at a region's handler when a throw lands inside
+    // one. Classification shares the JIT landingpad's carrier machinery:
+    // try_translate materializes a CulebraError as an error Object, a user
+    // throw already carries a value, and a foreign exception leaves
+    // is_throw=0 and keeps unwinding (as does any throw outside a region).
+    for (;;) {
+      try {
+        return dispatch(p, c, code, regs, pc, chunk_idx, cls);
+      } catch (...) {
+        const Chunk::EhRegion* r = nullptr;
+        for (const auto& e : c.eh)
+          if (e.start <= pc && pc < e.end) {
+            r = &e;  // innermost-first table order: first hit wins
+            break;
+          }
+        if (!r) throw;
+        culebra_runtime_try_translate();
+        if (!culebra_runtime_get_is_throw()) throw;
+        culebra_runtime_clear_is_throw();
+        culebra_runtime_recursion_restore(frame_depth);
+        regs[r->caught_slot] = JitValue{culebra_runtime_get_thrown_tag(),
+                                        culebra_runtime_get_thrown_data()};
+        pc = static_cast<size_t>(r->handler);
+      }
+    }
+  }
 
+  // The dispatch loop proper: runs until Ret/Halt, or unwinds with `pc`
+  // still at the faulting instruction (run_frame's catch consults it).
+  static JitValue dispatch(const VmProgram& p, const Chunk& c,
+                           const Insn* code, JitValue* regs, size_t& pc,
+                           int32_t chunk_idx, JitClosure* cls) {
     auto as_double = [](const JitValue& v) {
       if (v.tag == TAG_LONG) return static_cast<double>(v.data);
       double d;
@@ -1192,11 +1323,14 @@ struct Exec {
       return (l.tag == TAG_LONG || l.tag == TAG_FLOAT) &&
              (r.tag == TAG_LONG || r.tag == TAG_FLOAT);
     };
+    // Borrow-contract helpers throughout the dispatch (the `_borrow` twins):
+    // operands stay owned by the frame's registers on every path, so a try
+    // handler's release ladder is the one releaser after a throw.
     auto to_bool = [&](const JitValue& v, size_t at) {
       if (v.tag == TAG_BOOL) return v.data != 0;
       auto [line, col] = chunk_pos_at(c, at);
-      return culebra_runtime_to_bool(static_cast<int8_t>(v.tag), v.data,
-                                     line, col);
+      return culebra_runtime_to_bool_borrow(static_cast<int8_t>(v.tag),
+                                            v.data, line, col);
     };
 
     for (;;) {
@@ -1234,8 +1368,8 @@ struct Exec {
                               0 - static_cast<uint64_t>(v.data))};
           } else {
             auto [line, col] = chunk_pos_at(c, pc);
-            regs[in.a] = culebra_runtime_num_neg(static_cast<int8_t>(v.tag),
-                                                 v.data, line, col);
+            regs[in.a] = culebra_runtime_num_neg_borrow(
+                static_cast<int8_t>(v.tag), v.data, line, col);
           }
           ++pc;
           break;
@@ -1295,19 +1429,24 @@ struct Exec {
             auto rt = static_cast<int8_t>(r.tag);
             switch (in.op) {
               case Op::Add:
-                out = culebra_runtime_num_add(lt, l.data, rt, r.data, line, col);
+                out = culebra_runtime_num_add_borrow(lt, l.data, rt, r.data,
+                                                     line, col);
                 break;
               case Op::Sub:
-                out = culebra_runtime_num_sub(lt, l.data, rt, r.data, line, col);
+                out = culebra_runtime_num_sub_borrow(lt, l.data, rt, r.data,
+                                                     line, col);
                 break;
               case Op::Mul:
-                out = culebra_runtime_num_mul(lt, l.data, rt, r.data, line, col);
+                out = culebra_runtime_num_mul_borrow(lt, l.data, rt, r.data,
+                                                     line, col);
                 break;
               case Op::Div:
-                out = culebra_runtime_num_div(lt, l.data, rt, r.data, line, col);
+                out = culebra_runtime_num_div_borrow(lt, l.data, rt, r.data,
+                                                     line, col);
                 break;
               case Op::Mod:
-                out = culebra_runtime_num_mod(lt, l.data, rt, r.data, line, col);
+                out = culebra_runtime_num_mod_borrow(lt, l.data, rt, r.data,
+                                                     line, col);
                 break;
               default: __builtin_unreachable();
             }
@@ -1329,10 +1468,9 @@ struct Exec {
             // gets backfilled); the VM does the same through the same hook.
             auto [line, col] = chunk_pos_at(c, pc);
             culebra_runtime_set_op_pos(line, col);
-            eq = culebra_runtime_value_equal(static_cast<int8_t>(l.tag),
-                                             l.data,
-                                             static_cast<int8_t>(r.tag),
-                                             r.data);
+            eq = culebra_runtime_value_equal_borrow(
+                static_cast<int8_t>(l.tag), l.data,
+                static_cast<int8_t>(r.tag), r.data);
           }
           regs[in.a] = JitValue{TAG_BOOL, in.op == Op::Eq ? eq : !eq};
           ++pc;
@@ -1358,20 +1496,20 @@ struct Exec {
             auto rt = static_cast<int8_t>(r.tag);
             switch (in.op) {
               case Op::Lt:
-                res = culebra_runtime_value_less(lt, l.data, rt, r.data,
-                                                 line, col);
+                res = culebra_runtime_value_less_borrow(lt, l.data, rt,
+                                                        r.data, line, col);
                 break;
               case Op::Le:
-                res = culebra_runtime_value_leq(lt, l.data, rt, r.data,
-                                                line, col);
+                res = culebra_runtime_value_leq_borrow(lt, l.data, rt, r.data,
+                                                       line, col);
                 break;
               case Op::Gt:
-                res = culebra_runtime_value_greater(lt, l.data, rt, r.data,
-                                                    line, col);
+                res = culebra_runtime_value_greater_borrow(lt, l.data, rt,
+                                                           r.data, line, col);
                 break;
               default:
-                res = culebra_runtime_value_geq(lt, l.data, rt, r.data,
-                                                line, col);
+                res = culebra_runtime_value_geq_borrow(lt, l.data, rt, r.data,
+                                                       line, col);
                 break;
             }
           }
@@ -1438,9 +1576,19 @@ struct Exec {
             culebra_runtime_type_error_typed(
                 line, col, "Function", static_cast<int8_t>(callee.tag));
           }
-          JitValue r = _jit_invoke(reinterpret_cast<JitClosure*>(callee.data),
-                                   JitValue{TAG_NO_SELF, 0}, in.d,
-                                   in.d ? &regs[in.c] : nullptr);
+          JitValue r;
+          try {
+            r = _jit_invoke(reinterpret_cast<JitClosure*>(callee.data),
+                            JitValue{TAG_NO_SELF, 0}, in.d,
+                            in.d ? &regs[in.c] : nullptr);
+          } catch (...) {
+            // The callee consumed each arg's +1 on its own unwind path too
+            // (the JitFn ABI); nil the slab slots so an enclosing region's
+            // release ladder cannot double-release them.
+            for (int32_t i = 0; i < in.d; ++i)
+              regs[in.c + i] = JitValue{TAG_NIL, 0};
+            throw;
+          }
           for (int32_t i = 0; i < in.d; ++i)
             regs[in.c + i] = JitValue{TAG_NIL, 0};  // callee took ownership
           regs[in.a] = r;
@@ -1498,6 +1646,12 @@ struct Exec {
           culebra_runtime_immutable_assign(
               reinterpret_cast<const char*>(c.consts[in.a].data), line, col);
           break;  // unreachable — the helper always throws
+        }
+        case Op::Throw: {
+          JitValue v = regs[in.a];
+          regs[in.a] = JitValue{TAG_NIL, 0};  // the +1 rides the carrier now
+          culebra_runtime_throw(static_cast<int8_t>(v.tag), v.data);
+          break;  // unreachable — throw never returns
         }
         case Op::ForPrep: {
           int64_t step = regs[in.a + 2].data;
@@ -1564,6 +1718,9 @@ struct Lowering {
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
     jit.declare_runtime_functions();
+    // Registers are borrowed by the dispatch helpers; a region's release
+    // ladder owns the throw path (see the Op enum's contract notes).
+    jit.vm_borrow_ops_ = true;
 
     // One LLVM function per chunk: the top level keeps the __culebra_main
     // entry shape; function chunks get the JitFn ABI, so MakeClosure hands
@@ -1602,6 +1759,7 @@ struct Lowering {
     auto& b = j.builder_;
     auto i64Ty = b.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(j.ctx_, 0);
+    if (!c.eh.empty()) fn->setPersonalityFn(j.get_personality_fn());
     b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fn));
 
     // Frame-ABI arguments (function chunks only; see JitFn in jit_value.h).
@@ -1686,7 +1844,27 @@ struct Lowering {
         b.CreateStore(fnVal, slots[c.fn_slot]);
         j.emit_value_retain(fnVal);
       }
-      b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_enter, i64Ty));
+    }
+    // Region handlers restore the recursion count to the frame's own level
+    // (Exec::run_frame's frame_depth, the JIT's try.rec snapshot hoisted to
+    // the prologue — the depth is constant within a frame).
+    llvm::Value* depthSlot = nullptr;
+    {
+      llvm::Value* depth =
+          chunk_idx != 0
+              ? b.CreateCall(j.module_->getOrInsertFunction(
+                                 rt::recursion_enter, i64Ty),
+                             {}, "rec.depth")
+              : (c.eh.empty()
+                     ? nullptr
+                     : b.CreateCall(j.module_->getOrInsertFunction(
+                                        rt::recursion_depth, i64Ty),
+                                    {}, "rec.depth"));
+      if (!c.eh.empty()) {
+        IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        depthSlot = eb.CreateAlloca(i64Ty, nullptr, "eh.depth");
+        b.CreateStore(depth, depthSlot);
+      }
     }
 
     // Pass 1: every jump target opens a basic block. A conditional jump's
@@ -1707,6 +1885,7 @@ struct Lowering {
           break;
         case Op::Ret:
         case Op::ImmutErr:  // lowers to a noreturn call + unreachable
+        case Op::Throw:
           mark(static_cast<int32_t>(i) + 1);
           break;
         case Op::JumpIfFalse:
@@ -1727,6 +1906,21 @@ struct Lowering {
       }
     }
 
+    // Each region opens a handler block at its handler pc (the bytecode
+    // release ladder lives there) and gets a landingpad prelude block,
+    // filled after the main walk. Setting current_lpad_ per instruction
+    // turns every may-throw helper call inside a region into an invoke —
+    // emit_call's standard behavior, no lowering-specific plumbing.
+    for (const auto& r : c.eh) mark(static_cast<int32_t>(r.handler));
+    std::vector<BasicBlock*> lpads(c.eh.size());
+    for (size_t k = 0; k < c.eh.size(); ++k)
+      lpads[k] = BasicBlock::Create(j.ctx_, std::format("eh.lpad.{}", k), fn);
+    auto lpad_for = [&](size_t pc) -> BasicBlock* {
+      for (size_t k = 0; k < c.eh.size(); ++k)
+        if (c.eh[k].start <= pc && pc < c.eh[k].end) return lpads[k];
+      return nullptr;  // innermost-first table order: first hit wins
+    };
+
     // Pass 2: linear walk over the instructions. The chunk's position table
     // feeds the JIT's position state, so every emitter that bakes line/col
     // into calls (arith, comparisons, to_bool) attributes exactly as the
@@ -1741,6 +1935,7 @@ struct Lowering {
         j.current_line_ = static_cast<size_t>(line);
         j.current_column_ = static_cast<size_t>(col);
       }
+      j.current_lpad_ = lpad_for(i);
       const auto& in = c.code[i];
       switch (in.op) {
         case Op::LoadConst: {
@@ -1802,8 +1997,8 @@ struct Lowering {
           b.SetInsertPoint(slowBB);
           auto r = j.emit_value_call(
               j.module_->getOrInsertFunction(
-                  rt::num_neg, j.valueType_, b.getInt8Ty(), i64Ty, i64Ty,
-                  i64Ty),
+                  rt::num_neg_borrow, j.valueType_, b.getInt8Ty(), i64Ty,
+                  i64Ty, i64Ty),
               {j.extract_tag(v), j.extract_data(v), j.current_line_val(),
                j.current_column_val()}, "neg.num");
           b.CreateStore(r, slots[in.a]);
@@ -1924,13 +2119,13 @@ struct Lowering {
           b.SetInsertPoint(errBB);
           // Same shape as the executor's cold path: no Object values exist
           // in the slice, so the JIT's __call__/ctor probes cannot hit.
-          b.CreateCall(
+          j.emit_call(
               j.module_->getOrInsertFunction(rt::type_error_typed,
                                              b.getVoidTy(), i64Ty, i64Ty,
                                              ptrTy, b.getInt8Ty()),
               {b.getInt64(line), b.getInt64(col),
                b.CreateGlobalString("Function"), tag});
-          b.CreateUnreachable();
+          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
           b.SetInsertPoint(okBB);
           auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
           auto fnFieldPtr =
@@ -1954,11 +2149,15 @@ struct Lowering {
           auto jitFnTy = FunctionType::get(
               b.getVoidTy(),
               {ptrTy, ptrTy, b.getInt8Ty(), i64Ty, i64Ty, ptrTy}, false);
-          b.CreateCall(jitFnTy, fnPtr,
-                       {retTmp, clsPtr, b.getInt8(TAG_NO_SELF),
-                        b.getInt64(0), b.getInt64(in.d), slab});
+          // The callee consumes each arg's +1 on every exit (the JitFn ABI),
+          // so the arg slots go nil BEFORE the call — the slab alloca keeps
+          // the values alive for the callee, and a region's release ladder
+          // cannot double-release them on the unwind edge.
           for (int32_t k = 0; k < in.d; ++k)
             b.CreateStore(j.make_nil(), slots[in.c + k]);
+          j.emit_call(jitFnTy, fnPtr,
+                      {retTmp, clsPtr, b.getInt8(TAG_NO_SELF),
+                       b.getInt64(0), b.getInt64(in.d), slab});
           b.CreateStore(b.CreateLoad(j.valueType_, retTmp), slots[in.a]);
           break;
         }
@@ -2026,7 +2225,16 @@ struct Lowering {
           j.emit_immutable_assign_throw(
               reinterpret_cast<const char*>(c.consts[in.a].data),
               static_cast<size_t>(line), static_cast<size_t>(col));
-          b.CreateUnreachable();
+          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          break;
+        }
+        case Op::Throw: {
+          auto v = load_slot(in.a);
+          b.CreateStore(j.make_nil(), slots[in.a]);
+          j.emit_call(j.module_->getOrInsertFunction(
+                          rt::throw_, b.getVoidTy(), b.getInt8Ty(), i64Ty),
+                      {j.extract_tag(v), j.extract_data(v)});
+          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
           break;
         }
         case Op::ForPrep: {
@@ -2086,6 +2294,67 @@ struct Lowering {
           b.CreateRetVoid();
           break;
       }
+    }
+    j.current_lpad_ = nullptr;
+
+    // Fill the landingpad preludes (compile_try's pad, minus the AST path's
+    // scope state): classify via the carriers, rethrow a foreign exception
+    // toward the enclosing region's pad (or out of the function), and on
+    // the handled path restore the recursion depth, bind the caught value,
+    // and jump to the bytecode handler — whose release ladder then runs as
+    // ordinary instructions.
+    for (size_t k = 0; k < c.eh.size(); ++k) {
+      const auto& r = c.eh[k];
+      b.SetInsertPoint(lpads[k]);
+      auto lpadTy = StructType::get(ptrTy, b.getInt32Ty());
+      auto lp = b.CreateLandingPad(lpadTy, 1, "exc");
+      lp->addClause(ConstantPointerNull::get(cast<PointerType>(ptrTy)));
+      auto excPtr = b.CreateExtractValue(lp, {0}, "exc.ptr");
+      b.CreateCall(
+          j.module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
+          {excPtr});
+      b.CreateCall(j.module_->getOrInsertFunction(
+          "culebra_runtime_try_translate", b.getVoidTy()));
+      auto flag = b.CreateCall(
+          j.module_->getOrInsertFunction("culebra_runtime_get_is_throw",
+                                         b.getInt8Ty()),
+          {}, "is_throw");
+      auto ours = b.CreateICmpNE(flag, b.getInt8(0));
+      auto handleBB =
+          BasicBlock::Create(j.ctx_, std::format("eh.handle.{}", k), fn);
+      auto foreignBB =
+          BasicBlock::Create(j.ctx_, std::format("eh.foreign.{}", k), fn);
+      b.CreateCondBr(ours, handleBB, foreignBB);
+
+      b.SetInsertPoint(foreignBB);
+      {
+        BasicBlock* outer = nullptr;
+        for (size_t m = k + 1; m < c.eh.size(); ++m)
+          if (c.eh[m].start <= r.start && r.end <= c.eh[m].end) {
+            outer = lpads[m];
+            break;
+          }
+        j.emit_rethrow(outer);
+      }
+
+      b.SetInsertPoint(handleBB);
+      b.CreateCall(j.module_->getOrInsertFunction(
+          "culebra_runtime_clear_is_throw", b.getVoidTy()));
+      b.CreateCall(
+          j.module_->getOrInsertFunction("__cxa_end_catch", b.getVoidTy()));
+      b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_restore,
+                                                  b.getVoidTy(), i64Ty),
+                   {b.CreateLoad(i64Ty, depthSlot, "rec.d")});
+      auto tagV = b.CreateCall(
+          j.module_->getOrInsertFunction("culebra_runtime_get_thrown_tag",
+                                         b.getInt8Ty()),
+          {}, "exc.tag");
+      auto dataV = b.CreateCall(
+          j.module_->getOrInsertFunction("culebra_runtime_get_thrown_data",
+                                         i64Ty),
+          {}, "exc.data");
+      b.CreateStore(j.make_value(tagV, dataV), slots[r.caught_slot]);
+      b.CreateBr(blocks.at(static_cast<int32_t>(r.handler)));
     }
   }
 };

@@ -688,6 +688,15 @@ inline constexpr auto num_div             = "culebra_runtime_num_div";
 inline constexpr auto num_mod             = "culebra_runtime_num_mod";
 inline constexpr auto num_pow             = "culebra_runtime_num_pow";
 inline constexpr auto num_neg             = "culebra_runtime_num_neg";
+// Borrow-contract twins (the bytecode VM's lanes): full semantics, no
+// operand release on throw — the frame's registers stay the owners.
+inline constexpr auto num_add_borrow      = "culebra_runtime_num_add_borrow";
+inline constexpr auto num_sub_borrow      = "culebra_runtime_num_sub_borrow";
+inline constexpr auto num_mul_borrow      = "culebra_runtime_num_mul_borrow";
+inline constexpr auto num_div_borrow      = "culebra_runtime_num_div_borrow";
+inline constexpr auto num_mod_borrow      = "culebra_runtime_num_mod_borrow";
+inline constexpr auto num_neg_borrow      = "culebra_runtime_num_neg_borrow";
+inline constexpr auto to_bool_borrow      = "culebra_runtime_to_bool_borrow";
 // In-place variants for compound assignment (`t += x`). Tensor lhs
 // mutates in place and returns the same Tensor; non-Tensor lhs is
 // equivalent to the plain num_OP helper.
@@ -1024,6 +1033,13 @@ inline constexpr auto value_less          = "culebra_runtime_value_less";
 inline constexpr auto value_leq           = "culebra_runtime_value_leq";
 inline constexpr auto value_greater       = "culebra_runtime_value_greater";
 inline constexpr auto value_geq           = "culebra_runtime_value_geq";
+// Borrow-contract twins (see num_*_borrow above).
+inline constexpr auto value_equal_borrow  = "culebra_runtime_value_equal_borrow";
+inline constexpr auto value_less_borrow   = "culebra_runtime_value_less_borrow";
+inline constexpr auto value_leq_borrow    = "culebra_runtime_value_leq_borrow";
+inline constexpr auto value_greater_borrow =
+    "culebra_runtime_value_greater_borrow";
+inline constexpr auto value_geq_borrow    = "culebra_runtime_value_geq_borrow";
 inline constexpr auto value_release       = "culebra_runtime_value_release";
 inline constexpr auto value_retain        = "culebra_runtime_value_retain";
 inline constexpr auto value_swap_owned    = "culebra_runtime_value_swap_owned";

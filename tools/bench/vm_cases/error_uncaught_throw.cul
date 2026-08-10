@@ -1,0 +1,4 @@
+# An uncaught user throw exits with the same message and status everywhere.
+let mut steps = 0
+steps = steps + 1
+throw "unhandled"

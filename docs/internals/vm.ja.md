@@ -453,4 +453,15 @@ list（関数リテラルの生成サイトは常に1つ）からcapturesを充�
 キャプチャされるループ変数はiterationごとに新しいcellを得る。
 非`mut`束縛への代入は全レーンでinterpと同じ実行時ImmutableError
 になり（実行されない代入は沈黙のまま）、前方参照キャプチャだけが
-未対応のrejectとして残る。
+未対応のrejectとして残る。`throw`と`try`/`catch`がspikeのEH形式
+留保に答えた: 形式は静的なtry region（`EhRegion`: pc範囲・handler
+pc・caught slot）を持ち、オペランド契約はborrow双子helper
+（`num_*_borrow`等 — dispatch本体は同一、throw時にオペランドを
+releaseしない）へ切替わった。これでthrow後も全レジスタはframe
+所有のままで、handler先頭のbytecode解放ラダーが唯一のreleaserに
+なる（cell slotはpinされ、ラダーのRelease/CellRelease選択は静的）。
+executorはdispatch loopをC++ catchで包んでhandlerに再入し、
+loweringはregionをそのままlandingpadへ写像する — `emit_call`の
+既存invoke変換と、JITの`compile_try`と同じcarrier分類
+（`try_translate`）により、CulebraErrorは同じerror objectとして
+実体化し、foreign例外は素通りする。EHで残るのはdeferのみ。

@@ -489,4 +489,17 @@ of shared mutable state stays explicit in the instruction stream;
 variables get a fresh cell per iteration, assignment to a non-`mut`
 binding is now the interp's runtime ImmutableError on every lane
 (a never-executed assignment stays silent), and forward-reference
-capture is the one shape still rejected.
+capture is the one shape still rejected. `throw` and `try`/`catch`
+answered the spike's EH-format caveat: the format carries static
+try regions (`EhRegion`: pc range, handler pc, caught slot), the
+operand contract switched to borrow-twin helpers (`num_*_borrow`
+etc. — same dispatch bodies, no operand release on throw) so a
+throw leaves every register frame-owned and the handler's bytecode
+release ladder is the one releaser (cell slots are pinned so the
+ladder's Release-vs-CellRelease choice is static), the executor
+catches around its dispatch loop and re-enters at the handler, and
+the lowering maps regions straight onto landingpads — `emit_call`'s
+existing invoke conversion plus the same carrier classification
+(`try_translate`) the JIT's `compile_try` uses, so CulebraErrors
+materialize as the same error objects and foreign exceptions keep
+unwinding. Defer is the remaining EH construct.

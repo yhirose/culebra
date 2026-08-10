@@ -1463,7 +1463,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_get(
 // semantics live in one place instead of a 5-block switch at every condition
 // site. Nil and other tags raise (mirrors interpreter.h to_bool); NaN is
 // truthy (d != 0.0 is true for NaN, matching Python's bool(float('nan'))).
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool_borrow(
     int8_t tag, int64_t data, int64_t line, int64_t col) {
   switch (tag) {
     case TAG_LONG:
@@ -1473,16 +1473,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool(
       std::memcpy(&d, &data, sizeof(d));
       return d != 0.0;
     }
-    default: {
-      // Direct type error (a non-numeric condition/operand, e.g. `if [1]` or
-      // `![1]`). The codegen hands a `+1`-owned temp and does not release it
-      // on this unwind edge, so the guard does — callee-cleans-on-throw,
-      // matching the arithmetic and comparison operator entries.
-      JitUnwindRelease g{JitValue{tag, data}};
+    default:
       culebra_runtime_type_error_typed(line, col, "Bool, Long, or Float", tag);
-    }
   }
   return false;  // unreachable: type_error_typed throws
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool(
+    int8_t tag, int64_t data, int64_t line, int64_t col) {
+  // Direct type error path (a non-numeric condition/operand, e.g. `if [1]` or
+  // `![1]`): the codegen hands a `+1`-owned temp and does not release it
+  // on this unwind edge, so the guard does — callee-cleans-on-throw,
+  // matching the arithmetic and comparison operator entries. The `_borrow`
+  // twin (the bytecode VM's contract) leaves the operand alone.
+  JitUnwindRelease g{JitValue{tag, data}};
+  return culebra_runtime_to_bool_borrow(tag, data, line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj,

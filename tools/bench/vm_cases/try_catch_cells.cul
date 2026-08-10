@@ -1,0 +1,39 @@
+# EH crossing the cell machinery: throws release try-scoped bindings
+# (including owned cells) via the region ladder, captured state stays
+# consistent, and a caught value can itself be captured.
+let mut log = 0
+let note = fn (v) { log = log * 100 + v }
+
+# A closure made inside a try body survives the throw only if it escaped
+# first; the region ladder releases the body's own bindings.
+let mut kept = fn () { -1 }
+let r = try {
+    let xs = [1, 2, 3]
+    let mut n = 5
+    kept = fn () { n }
+    n = 6
+    throw 99
+} catch e {
+    note(e)
+    e
+}
+println(r)
+println(kept())
+
+# The catch binding captured by a closure (a cell-bound catch name).
+let mut replay = fn () { -1 }
+let s = try { throw 41 } catch e {
+    replay = fn () { e + 1 }
+    e
+}
+println(s)
+println(replay())
+
+# Arity and recursion errors from VM closures are catchable like any other,
+# and the handler restores the recursion depth to its own frame's level.
+let two = fn (a, b) { a + b }
+println(try { two(1) } catch e { e })
+let deep = fn (n) { fn(n + 1) }
+println(try { deep(0) } catch e { e })
+println(try { deep(0) } catch e { "again" })
+println(log)
