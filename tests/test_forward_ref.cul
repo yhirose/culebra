@@ -95,6 +95,29 @@ h = 2
 
 assert_eq(reads_h(), 2)
 
+# --- (7b) Reading a forward ref before its declaration runs ---
+# The pre-allocated cell exists as soon as a closure captures it, but the
+# name stays unbound until the declaring statement executes: a read —
+# direct or through the capture — is a runtime NameError on every
+# backend, never a nil placeholder flowing into user code.
+let cap_u = fn () {
+  unbound_u + 1
+}
+assert_throws('NameError', cap_u)
+assert_eq(try { unbound_u + 1 } catch e { e.kind }, 'NameError')
+let unbound_u = 41
+assert_eq(cap_u(), 42)
+
+# Same through a forward multifn: capture, then call before the decl.
+let call_mf = fn () {
+  mf_u(1)
+}
+assert_throws('NameError', call_mf)
+fn mf_u(x) {
+  x + 1
+}
+assert_eq(call_mf(), 2)
+
 # --- (7) Reassignment drops the recorded FUNCTION AST ---
 # kwargs resolve against the binding's current value, not the literal the
 # name was first declared with.

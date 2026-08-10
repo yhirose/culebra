@@ -146,6 +146,13 @@ struct JIT {
     // static `mut` above can't say "whichever arm ran, declared mut or
     // not" when JIT compiles every arm once but only one ever executes.
     llvm::AllocaInst* mut_alloca = nullptr;
+    // True for a callee-side capture of a lazy forward-ref cell (see
+    // FuncInfo::free_var_lazy): reads check the cell's value for the
+    // unbound sentinel and raise NameError, since the capture itself
+    // materialized the cell and the null-pointer read guard can no
+    // longer tell "declaration never ran". Never set on hot ordinary
+    // captures, so they pay nothing.
+    bool unbound_guard = false;
   };
 
   // The front-end analysis (FuncInfo, the locals/free-var/EH-defer passes)
@@ -2346,6 +2353,7 @@ struct JIT {
   llvm::Value* load_slot(const VarSlot& slot, const std::string& name) {
     emit_lazy_cell_read_guard(slot, name);
     auto val = load_slot_raw(slot, name);
+    emit_unbound_value_guard(slot, val, name);
     emit_no_self_read_guard(val, name);
     emit_runtime_decl_read_guard(slot, val, name);
     emit_value_retain(val);
@@ -3161,8 +3169,13 @@ struct JIT {
   }
 
   // Materialize a lazy forward-ref cell if its statement list hasn't
-  // run yet (cell pointer still null): allocate a nil-valued cell so a
-  // writer / closure capture has a real cell to land in. Idempotent.
+  // run yet (cell pointer still null): allocate a cell so a writer /
+  // closure capture has a real cell to land in. The placeholder value is
+  // the unbound sentinel (TAG_NO_SELF, the no-receiver precedent), NOT
+  // nil — a capture materializes the cell before the declaration runs,
+  // and a read through that capture must still be the interp's NameError
+  // (see emit_unbound_value_guard), not a nil flowing into user code.
+  // The declaring statement's store replaces the sentinel. Idempotent.
   void emit_lazy_cell_materialize(const VarSlot& slot) {
     if (slot.kind != VarSlot::Cell || !slot.lazy) return;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -3178,7 +3191,7 @@ struct JIT {
         module_->getOrInsertFunction(rt::cell_new, ptrTy,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty()),
-        {builder_.getInt8(TAG_NIL), builder_.getInt64(0)}, "lazy.cell");
+        {builder_.getInt8(TAG_NO_SELF), builder_.getInt64(0)}, "lazy.cell");
     builder_.CreateStore(cellPtr, slot.alloca);
     builder_.CreateBr(contBB);
     builder_.SetInsertPoint(contBB);
@@ -3214,6 +3227,30 @@ struct JIT {
     auto isNull = builder_.CreateICmpEQ(
         cur, llvm::ConstantPointerNull::get(ptrTy), "lazy.isnull");
     emit_unbound_name_guard(isNull, name, "lazy");
+  }
+
+  // Companion value guard for the materialized case: the cell exists (a
+  // capture or a sibling branch materialized it) but still holds the
+  // unbound sentinel — the declaration has not run. Emitted only for
+  // lazy creator-side slots and for captures flagged unbound_guard, so
+  // ordinary reads pay nothing. `self` never takes this path (it is not
+  // a forward-ref pre-declaration); its NO_SELF handling stays in
+  // emit_no_self_read_guard.
+  void emit_unbound_value_guard(const VarSlot& slot, llvm::Value* val,
+                                const std::string& name) {
+    if (!slot.lazy && !slot.unbound_guard) return;
+    auto unbound = builder_.CreateICmpEQ(
+        extract_tag(val), builder_.getInt8(TAG_NO_SELF), "lazy.tag.unbound");
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto throwBB = llvm::BasicBlock::Create(ctx_, "lazy.val.unbound", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "lazy.val.bound", fn);
+    builder_.CreateCondBr(unbound, throwBB, contBB);
+    builder_.SetInsertPoint(throwBB);
+    emit_throw_error("NameError",
+                     std::format("undefined variable '{}'", name),
+                     current_line_, current_column_);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(contBB);
   }
 
   // A `self` read outside a receiver frame: TAG_NO_SELF means the call
@@ -9200,6 +9237,7 @@ struct JIT {
           {fn, paramMeta});
     }
     info.free_var_mut.assign(n, false);
+    info.free_var_lazy.assign(n, false);
     if (n > 0) {
       auto capturesFieldPtr =
           builder_.CreateStructGEP(closureType_, closurePtr, 3);
@@ -9249,8 +9287,9 @@ struct JIT {
               std::format("free var '{}' is not a cell", fv));
         }
         info.free_var_mut[i] = slot->mut;
-        // A capture of a lazy forward-ref cell materializes it (nil
-        // value) so the closure holds a real cell, never null.
+        info.free_var_lazy[i] = slot->lazy || slot->unbound_guard;
+        // A capture of a lazy forward-ref cell materializes it (unbound
+        // sentinel inside) so the closure holds a real cell, never null.
         emit_lazy_cell_materialize(*slot);
         auto cellPtr = cell_ptr_of(*slot);
         auto dstSlot = builder_.CreateInBoundsGEP(
@@ -12688,9 +12727,13 @@ struct JIT {
     // Snapshot outer mut flags before compiling the defer body — the
     // body's free-var bindings read this. Mirrors compile_fn_common.
     info.free_var_mut.assign(info.free_vars.size(), false);
+    info.free_var_lazy.assign(info.free_vars.size(), false);
     for (size_t i = 0; i < info.free_vars.size(); i++) {
       auto outer_slot = lookup_var(info.free_vars[i]);
-      if (outer_slot) info.free_var_mut[i] = outer_slot->mut;
+      if (outer_slot) {
+        info.free_var_mut[i] = outer_slot->mut;
+        info.free_var_lazy[i] = outer_slot->lazy || outer_slot->unbound_guard;
+      }
     }
 
     // Defer thunks ignore n_args/args (callers always pass 0/null).
@@ -12723,7 +12766,14 @@ struct JIT {
       builder_.CreateStore(cellPtr, holder);
       // Borrowed: the defer closure object owns the cell ref.
       bool fv_mut = i < info.free_var_mut.size() ? info.free_var_mut[i] : false;
-      define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false, fv_mut});
+      VarSlot cap{VarSlot::Cell, holder, /*owned=*/false, fv_mut};
+      // A capture of a lazy forward-ref cell guards reads for the unbound
+      // sentinel (UFCS candidates excepted — their sentinel declines the
+      // call gate like the nil an unreachable candidate binds).
+      cap.unbound_guard = i < info.free_var_lazy.size() &&
+                          info.free_var_lazy[i] &&
+                          !info.optional_free_vars.contains(fv);
+      define_var(fv, cap);
     }
 
     // A defer thunk's value is discarded (the runtime ignores its return),

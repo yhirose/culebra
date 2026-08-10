@@ -30,6 +30,12 @@ struct FuncInfo {
   // by the inner function's free-var binding so ImmutableError fires on
   // writes to captured non-mut bindings.
   std::vector<bool> free_var_mut;
+  // Parallel to free_vars: the outer slot was a lazy forward-ref cell (or
+  // itself a guarded capture of one) when the closure was instantiated.
+  // The inner binding then guards reads for the unbound sentinel — a call
+  // before the declaring statement ran raises the interp's NameError
+  // instead of letting the materialized cell's placeholder flow as nil.
+  std::vector<bool> free_var_lazy;
   // Free vars noted only as UFCS method-name candidates, never read as a
   // variable. The enclosing locals set is flat per function, so a name
   // declared in a block that has already closed still lands here — for a

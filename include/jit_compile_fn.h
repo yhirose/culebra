@@ -43,15 +43,19 @@ inline JIT::Owned JIT::compile_fn_common(
   }
   FuncInfo& info = infoIt->second;
 
-  // Snapshot outer mut flags for each captured free var *before* we
-  // descend into the body. emit_closure_build later re-populates this
-  // (also from the outer scope), but the inner body's free-var
-  // bindings consume it during their own compilation, which happens
+  // Snapshot outer mut / lazy flags for each captured free var *before*
+  // we descend into the body. emit_closure_build later re-populates
+  // these (also from the outer scope), but the inner body's free-var
+  // bindings consume them during their own compilation, which happens
   // first — so the snapshot must be taken here.
   info.free_var_mut.assign(info.free_vars.size(), false);
+  info.free_var_lazy.assign(info.free_vars.size(), false);
   for (size_t i = 0; i < info.free_vars.size(); i++) {
     auto outer_slot = lookup_var(info.free_vars[i]);
-    if (outer_slot) info.free_var_mut[i] = outer_slot->mut;
+    if (outer_slot) {
+      info.free_var_mut[i] = outer_slot->mut;
+      info.free_var_lazy[i] = outer_slot->lazy || outer_slot->unbound_guard;
+    }
   }
 
   std::vector<std::string> paramNames;
@@ -330,7 +334,16 @@ inline JIT::Owned JIT::compile_fn_common(
     auto holder = entryB.CreateAlloca(ptrTy, nullptr, fv);
     builder_.CreateStore(cellPtr, holder);
     bool fv_mut = i < info.free_var_mut.size() ? info.free_var_mut[i] : false;
-    define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false, fv_mut});
+    VarSlot cap{VarSlot::Cell, holder, /*owned=*/false, fv_mut};
+    // A capture of a lazy forward-ref cell guards reads for the unbound
+    // sentinel — a call before the declaring statement ran is the
+    // interp's NameError, not a nil placeholder flowing into the body.
+    // UFCS candidates are excepted: their sentinel must decline the call
+    // gate exactly like the nil an unreachable candidate binds.
+    cap.unbound_guard = i < info.free_var_lazy.size() &&
+                        info.free_var_lazy[i] &&
+                        !info.optional_free_vars.contains(fv);
+    define_var(fv, cap);
   }
 
   // Typed-param error positions resolve per call at runtime (interp
