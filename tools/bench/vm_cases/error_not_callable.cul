@@ -1,0 +1,3 @@
+# Calling a non-function: TypeError at the call site.
+let notfn = 5
+println(notfn(1))

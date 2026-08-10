@@ -468,6 +468,15 @@ lowering calls the same `emit_arith_step` / `emit_comparison_i1` /
 `value_to_bool` emitters the AST path uses), `&&` / `||` / `??`,
 comparison chains, `if`/ternary as expressions, `while`, and
 `FnAnalysis` as the compiler's front end (the shadow check now runs
-on the VM lane). All three lanes agree on the extended set,
-including error kind/message/position for type mismatches,
-division by zero, and non-Bool conditions.
+on the VM lane; free_vars gates the non-capturing slice). Functions
+followed: non-capturing function literals compile to chunks of
+their own, calls go through the JitFn ABI — a function value is a
+real `JitClosure` (the executor's carry a trampoline + descriptor
+cell, the lowered module's are native functions), so the ArityError
+/ "expected Function" / RecursionError semantics, positions
+included, come from the same runtime machinery the JIT uses —
+with `return`, the `fn` recursion handle, and dropped extra args.
+All three lanes agree on the extended set, including error
+kind/message/position for type mismatches, division by zero,
+non-Bool conditions, missing arguments, non-callable callees, and
+the recursion limit.

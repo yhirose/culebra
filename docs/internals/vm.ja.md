@@ -435,6 +435,13 @@ StringとArrayリテラル（ArrayがRetain/Releaseを実在化させ、上の
 （loweringはAST経路と同じ`emit_arith_step` / `emit_comparison_i1` /
 `value_to_bool` emitterを呼ぶ）、`&&` / `||` / `??`、比較チェーン、
 式としての`if`/三項演算子、`while`、そしてコンパイラのfront end
-としての`FnAnalysis`（shadow checkがVMレーンでも走る）。型不一致・
-ゼロ除算・非Bool条件のエラーkind/文面/位置まで含め、拡張後の
-セットでも3レーンは完全一致する。
+としての`FnAnalysis`（shadow checkがVMレーンでも走る。free_varsが
+非キャプチャsliceのゲート）。続けて関数が入った: 非キャプチャの
+関数リテラルは各自のchunkにコンパイルされ、呼び出しはJitFn ABIを
+通る — 関数値は本物の`JitClosure`（executor側はトランポリン+
+descriptor cell、lowered module側はネイティブ関数）なので、
+ArityError／"expected Function"／RecursionErrorの意味論は位置まで
+含めてJITと同じランタイム機構から出る — `return`・`fn`再帰
+ハンドル・余剰引数のdropつき。型不一致・ゼロ除算・非Bool条件・
+引数不足・非callable・再帰上限のエラーkind/文面/位置まで含め、
+拡張後のセットでも3レーンは完全一致する。

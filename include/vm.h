@@ -73,6 +73,18 @@ enum class Op : uint8_t {
   JumpIfFalse, // if !to_bool(regs[a]) pc = b (strict Bool truthiness)
   JumpIfTrue,  // if to_bool(regs[a]) pc = b
   JumpIfNotNil,// if regs[a].tag != TAG_NIL pc = b (`??` short-circuit)
+  MakeClosure, // regs[a] = new closure (+1) over function chunk b. In the
+               // executor its fn_ptr is Exec::trampoline and captures[0]
+               // holds the chunk's descriptor (a Long-valued cell, so its
+               // release is a no-op — the bound-method thunk precedent); in
+               // the lowered module it is the chunk's native function with
+               // no captures.
+  Call,        // regs[a] = call regs[b] with args regs[c..c+d). Publishes
+               // the call site (set_call_site), checks TAG_FUNC (else the
+               // interp's "expected Function" TypeError), and goes through
+               // the JitFn ABI — the callee takes ownership of each arg, so
+               // the arg slots are nil'd after the call.
+  Ret,         // return regs[a] from the frame (+1 transfers to the caller)
   ForPrep,     // control quad at base=a: {cur, end, step, flags}. Rejects a
                // zero step (ValueError at the range expression's position,
                // like rt::range_step_check), stores inclusive (c) into the
@@ -88,7 +100,7 @@ enum class Op : uint8_t {
 
 struct Insn {
   Op op;
-  int32_t a = 0, b = 0, c = 0;
+  int32_t a = 0, b = 0, c = 0, d = 0;
 };
 
 // Run-length position side table: entry covers [first_insn, next.first_insn).
@@ -111,6 +123,30 @@ struct Chunk {
   int32_t num_slots = 0;
   std::vector<PosEntry> positions;
   std::vector<std::string> slot_names;  // debug table, always emitted
+  // Function-chunk metadata (chunk 0 — the module top level — has none).
+  // Params occupy slots [0, arity); `fn_slot` binds the `fn` recursion
+  // handle when the body reads it (FuncInfo::uses_fn), -1 otherwise.
+  int32_t arity = 0;
+  std::vector<std::string> param_names;  // for the ArityError message
+  int32_t fn_slot = -1;
+};
+
+struct VmProgram;
+
+// What the executor's closures point at: the trampoline recovers the chunk
+// to interpret from one of these (stashed as a Long in the closure's capture
+// cell). Exec::run fills `descs` — compile_module returns the program by
+// value, so its final address exists only at run time.
+struct VmFnDesc {
+  const VmProgram* prog;
+  int32_t chunk;
+};
+
+// A compiled module: chunk 0 is the top level; every function literal adds
+// one (reserved in creation order, so nested literals interleave freely).
+struct VmProgram {
+  std::vector<Chunk> chunks;
+  std::vector<VmFnDesc> descs;  // filled by Exec::run, one per chunk
 };
 
 inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
@@ -123,26 +159,33 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
   return {line, col};
 }
 
-// AST -> Chunk. The front end is the shared FnAnalysis — the same passes the
-// JIT runs — so the shadow check and (once functions land) the capture/EH
-// analysis are backend-symmetric by construction. Slot assignment itself is
-// the scope stack below, mirroring the JIT's Scope/VarSlot walk; FuncInfo's
-// captured_locals/EH flags gain consumers when closures and try arrive.
+// AST -> VmProgram. The front end is the shared FnAnalysis — the same passes
+// the JIT runs — so the shadow check and the per-function capture/flag
+// analysis are backend-symmetric by construction (free_vars gates the
+// non-capturing slice; uses_fn places the recursion handle). Slot assignment
+// itself is the scope stack below, mirroring the JIT's Scope/VarSlot walk.
+// One Compiler instance per chunk; the program and the analysis are shared.
 // Everything outside the slice throws VmError at compile time.
 class Compiler {
  public:
-  Chunk compile_module(const peg::Ast& ast) {
+  static VmProgram compile_module(const peg::Ast& ast) {
+    VmProgram prog;
     FnAnalysis analysis(&JIT::is_builtin_var);
-    analysis.analyze_program(ast);  // runs lint::check_shadow (parity) and
-                                    // will feed slot/capture layout as the
-                                    // slice grows past plain locals
-    compile_block(ast);
-    emit(Op::Halt);
-    chunk_.num_slots = high_water_;
-    return std::move(chunk_);
+    analysis.analyze_program(ast);  // lint::check_shadow (parity) + the
+                                    // per-fn FuncInfo compile_fn_chunk reads
+    prog.chunks.emplace_back();  // reserve index 0 for the top level
+    Compiler main(prog, analysis, /*in_function=*/false);
+    main.compile_block(ast);
+    main.emit(Op::Halt);
+    main.chunk_.num_slots = main.high_water_;
+    prog.chunks[0] = std::move(main.chunk_);
+    return prog;
   }
 
  private:
+  Compiler(VmProgram& prog, FnAnalysis& analysis, bool in_function)
+      : prog_(prog), analysis_(analysis), in_function_(in_function) {}
+
   struct Binding {
     std::string name;
     int32_t slot;
@@ -162,6 +205,9 @@ class Compiler {
     bool owned;  // true: statement temp holding a +1; false: named slot
   };
 
+  VmProgram& prog_;
+  FnAnalysis& analysis_;
+  bool in_function_;
   Chunk chunk_;
   std::vector<Scope> scopes_;
   std::vector<LoopCtx> loops_;
@@ -171,6 +217,12 @@ class Compiler {
                            // a let declared mid-statement keeps its slot
   int32_t high_water_ = 0;
   std::vector<int32_t> stmt_temps_;
+  // Per-slot named flag for the CURRENT generation of each slot (alloc_raw
+  // rewrites it on reuse). Scope-exit releases consult this instead of a
+  // "named slots sit below all temps" watermark — a frame's return-value
+  // temp is allocated before the body's named slots, so that ordering
+  // assumption does not hold once functions exist.
+  std::vector<bool> slot_named_;
   uint32_t pend_line_ = 0, pend_col_ = 0;
 
   [[noreturn]] static void reject(const peg::Ast& ast, const std::string& what) {
@@ -203,35 +255,39 @@ class Compiler {
     }
   };
 
-  size_t emit(Op op, int32_t a = 0, int32_t b = 0, int32_t c = 0) {
+  size_t emit(Op op, int32_t a = 0, int32_t b = 0, int32_t c = 0,
+              int32_t d = 0) {
     if (chunk_.positions.empty() ||
         chunk_.positions.back().line != pend_line_ ||
         chunk_.positions.back().col != pend_col_) {
       chunk_.positions.push_back(
           {static_cast<uint32_t>(chunk_.code.size()), pend_line_, pend_col_});
     }
-    chunk_.code.push_back({op, a, b, c});
+    chunk_.code.push_back({op, a, b, c, d});
     return chunk_.code.size() - 1;
   }
 
-  int32_t alloc_raw(const peg::Ast& at, std::string name) {
+  int32_t alloc_raw(const peg::Ast& at, std::string name, bool named) {
     if (next_slot_ >= kMaxSlots) reject(at, "frame larger than 256 slots");
     int32_t s = next_slot_++;
     if (s >= static_cast<int32_t>(chunk_.slot_names.size()))
       chunk_.slot_names.resize(s + 1);
     chunk_.slot_names[s] = std::move(name);
+    if (s >= static_cast<int32_t>(slot_named_.size()))
+      slot_named_.resize(s + 1);
+    slot_named_[s] = named;
     high_water_ = std::max(high_water_, next_slot_);
     return s;
   }
 
   int32_t alloc_slot(const peg::Ast& at, std::string name) {
-    int32_t s = alloc_raw(at, std::move(name));
+    int32_t s = alloc_raw(at, std::move(name), /*named=*/true);
     named_top_ = next_slot_;
     return s;
   }
 
   int32_t alloc_temp(const peg::Ast& at) {
-    int32_t s = alloc_raw(at, "(tmp)");
+    int32_t s = alloc_raw(at, "(tmp)", /*named=*/false);
     stmt_temps_.push_back(s);
     return s;
   }
@@ -259,11 +315,12 @@ class Compiler {
   void push_scope() { scopes_.push_back({{}, next_slot_}); }
 
   // The release ladder every scope exit uses (reverse order, mirroring the
-  // JIT's frame ladder). Capped at named_top_: slots above it are statement
-  // temps owned by a live TempScope, which releases them itself.
+  // JIT's frame ladder). Releases only the named slots: statement temps in
+  // the range are owned by a live TempScope (or are a frame's return-value
+  // slot), which release on their own paths.
   void release_down_to(int32_t watermark) {
-    for (int32_t s = std::min(next_slot_, named_top_) - 1; s >= watermark; --s)
-      emit(Op::Release, s);
+    for (int32_t s = next_slot_ - 1; s >= watermark; --s)
+      if (slot_named_[s]) emit(Op::Release, s);
   }
 
   // Emits the scope's Releases and returns its slots to the allocator.
@@ -365,13 +422,11 @@ class Compiler {
       case "WHILE"_:
       case "BREAK"_:
       case "CONTINUE"_:
+      case "RETURN"_:
         compile_statement_inner(ast);
         break;
       case "ASSIGNMENT"_:
         store_into(dst, compile_assignment(ast), /*dst_is_fresh=*/true);
-        break;
-      case "CALL"_:
-        compile_println(ast);
         break;
       default:
         store_into(dst, compile_expr(ast), /*dst_is_fresh=*/true);
@@ -400,9 +455,6 @@ class Compiler {
       case "WHILE"_:
         compile_while(ast);
         break;
-      case "CALL"_:
-        compile_println(ast);
-        break;
       case "BREAK"_:
       case "CONTINUE"_: {
         bool brk = ast.tag == "BREAK"_;
@@ -413,10 +465,80 @@ class Compiler {
         (brk ? lc.break_jumps : lc.continue_jumps).push_back(emit(Op::Jump));
         break;
       }
+      case "RETURN"_: {
+        if (!in_function_) reject(ast, "return outside a function");
+        // The return value survives its statement's temp sweep in a
+        // dedicated slot (the while-condition pattern), then every named
+        // slot of the frame releases before the value leaves — a return
+        // from any depth tears the whole frame scope stack down.
+        int32_t rv = alloc_temp(ast);
+        {
+          size_t base = stmt_temps_.size();
+          int32_t slot_base = next_slot_;
+          if (!ast.nodes.empty())
+            store_into(rv, compile_expr(*ast.nodes[0]), /*dst_is_fresh=*/true);
+          else
+            emit(Op::LoadConst, rv, kconst({TAG_NIL, 0}));
+          sweep_temps(base, slot_base);
+        }
+        release_down_to(0);
+        emit(Op::Ret, rv);
+        break;
+      }
       default:
         compile_expr(ast);  // expression statement; temps swept by the caller
         break;
     }
+  }
+
+  // One function literal -> one chunk, compiled by a fresh Compiler (frame
+  // state is per chunk; the program and analysis are shared). The slice is
+  // non-capturing plain-parameter functions — FnAnalysis's free_vars is the
+  // gate, and uses_fn places the recursion-handle slot.
+  int32_t compile_fn_chunk(const peg::Ast& ast) {
+    using namespace peg::udl;
+    const FuncInfo& info = analysis_.func_info.at(&ast);
+    if (!info.free_vars.empty())
+      reject(ast, std::format("closure capture of '{}'", info.free_vars[0]));
+    if (info.uses_args) reject(ast, "__ARGS__");
+    for (const auto& n : ast.nodes)
+      if (n->tag == "RETURN_TYPE"_) reject(*n, "return type annotation");
+    const auto& params = *ast.nodes[0];
+    for (const auto& p : params.nodes) {
+      if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
+        reject(*p, "keyword-only / rest parameter");
+      if (culebra::is_pattern_param(*p)) reject(*p, "pattern parameter");
+      if (culebra::extract_default_expr(*p)) reject(*p, "default argument");
+      for (const auto& pc : p->nodes)
+        if (pc->tag == "TYPE_ANNOTATION"_) reject(*p, "typed parameter");
+    }
+    const auto& body = *ast.nodes[1];
+
+    int32_t idx = static_cast<int32_t>(prog_.chunks.size());
+    prog_.chunks.emplace_back();  // reserve the index; nested fns append
+    Compiler fc(prog_, analysis_, /*in_function=*/true);
+    fc.stamp(ast);
+    fc.push_scope();  // the frame scope: params + the `fn` handle
+    fc.chunk_.arity = static_cast<int32_t>(params.nodes.size());
+    for (const auto& p : params.nodes) {
+      auto [name_sv, pl, pc_] = culebra::extract_param_name_loc(*p);
+      auto name = std::string(name_sv);
+      int32_t slot = fc.alloc_slot(*p, name);
+      fc.chunk_.param_names.push_back(name);
+      if (!is_sink_name(name))
+        fc.scopes_.back().bindings.push_back({name, slot, false});
+    }
+    if (info.uses_fn) {
+      fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
+      fc.scopes_.back().bindings.push_back({"fn", fc.chunk_.fn_slot, false});
+    }
+    int32_t rv = fc.alloc_temp(ast);
+    fc.compile_block_into(body, rv);
+    fc.pop_scope();
+    fc.emit(Op::Ret, rv);
+    fc.chunk_.num_slots = fc.high_water_;
+    prog_.chunks[idx] = std::move(fc.chunk_);
+    return idx;
   }
 
   // Evaluates to the assigned value (interp parity: `let c = if true
@@ -528,15 +650,38 @@ class Compiler {
     loops_.pop_back();
   }
 
+  // Direct `println(<expr>)` — the slice's I/O primitive, one dedicated op.
+  // The caller (compile_expr's CALL case) has already matched the shape.
   void compile_println(const peg::Ast& ast) {
-    using namespace peg::udl;
-    if (ast.nodes.size() != 2 || ast.nodes[0]->tag != "IDENTIFIER"_ ||
-        ast.nodes[0]->token != "println" || lookup("println") ||
-        ast.nodes[1]->original_tag != "ARGUMENTS"_)
-      reject(ast, "call (only a direct println(<expr>) is in the slice)");
     const auto& args = *ast.nodes[1];
     if (args.nodes.size() != 1) reject(args, "println takes one argument here");
     emit(Op::Println, compile_expr(*args.nodes[0]).slot);
+  }
+
+  // General call: callee expression, positional args in a contiguous run of
+  // owned temps (the JitFn ABI's arg slab), one Call op. Evaluation order is
+  // callee first, then args left to right — both backends' order.
+  ExprResult compile_call(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.size() != 2 || ast.nodes[1]->original_tag != "ARGUMENTS"_)
+      reject(ast, "call chain / method call");
+    auto callee = compile_expr(*ast.nodes[0]);
+    const auto& args = *ast.nodes[1];
+    for (const auto& a : args.nodes) {
+      if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_)
+        reject(*a, "keyword argument");
+      if (a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_)
+        reject(*a, "kwargs splat");
+    }
+    int32_t argc = static_cast<int32_t>(args.nodes.size());
+    int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
+    for (int32_t i = 0; i < argc; i++) alloc_temp(*args.nodes[i]);
+    for (int32_t i = 0; i < argc; i++)
+      store_into(base + i, compile_expr(*args.nodes[i]),
+                 /*dst_is_fresh=*/true);
+    int32_t t = alloc_temp(ast);
+    emit(Op::Call, t, callee.slot, base, argc);
+    return {t, true};
   }
 
   // `if` / ternary in any position: a result temp starts nil, the taken
@@ -736,6 +881,24 @@ class Compiler {
       case "IF"_:
       case "CONDITIONAL"_:
         return compile_if(ast);
+      case "FUNCTION"_:
+      case "LAMBDA"_: {
+        int32_t idx = compile_fn_chunk(ast);
+        int32_t t = alloc_temp(ast);
+        emit(Op::MakeClosure, t, idx);
+        return {t, true};
+      }
+      case "CALL"_: {
+        if (ast.nodes.size() == 2 && ast.nodes[0]->tag == "IDENTIFIER"_ &&
+            ast.nodes[0]->token == "println" && !lookup("println") &&
+            ast.nodes[1]->original_tag == "ARGUMENTS"_) {
+          compile_println(ast);
+          int32_t t = alloc_temp(ast);
+          emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+          return {t, true};
+        }
+        return compile_call(ast);
+      }
       case "WHILE"_:
       case "FOR"_: {
         // Loops in value position evaluate to nil (interp parity:
@@ -761,6 +924,7 @@ inline std::string dump(const Chunk& c) {
       "Div",       "Mod",       "Eq",         "Ne",           "Lt",
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil",
+      "MakeClosure", "Call",    "Ret",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
@@ -770,9 +934,23 @@ inline std::string dump(const Chunk& c) {
   for (size_t i = 0; i < c.code.size(); ++i) {
     const auto& in = c.code[i];
     auto [line, col] = chunk_pos_at(c, i);
-    out += std::format("{:4}: {:<12} {:4} {:4} {:4}   ; {}:{}\n", i,
+    out += std::format("{:4}: {:<12} {:4} {:4} {:4} {:4}   ; {}:{}\n", i,
                        kNames[static_cast<size_t>(in.op)], in.a, in.b, in.c,
-                       line, col);
+                       in.d, line, col);
+  }
+  return out;
+}
+
+inline std::string dump(const VmProgram& p) {
+  std::string out;
+  for (size_t i = 0; i < p.chunks.size(); ++i) {
+    const auto& c = p.chunks[i];
+    if (i == 0) {
+      out += "; == main ==\n";
+    } else {
+      out += std::format("; == fn {} (arity {}) ==\n", i, c.arity);
+    }
+    out += dump(c);
   }
   return out;
 }
@@ -786,10 +964,56 @@ inline std::string dump(const Chunk& c) {
 // yet); the abandoned frame's registers are reclaimed by the conservative
 // backstop, mirroring the JIT's uncaught-error path.
 struct Exec {
-  static void run(const Chunk& c) {
+  static void run(VmProgram& p) {
+    p.descs.resize(p.chunks.size());
+    for (size_t i = 0; i < p.chunks.size(); ++i)
+      p.descs[i] = {&p, static_cast<int32_t>(i)};
+    run_frame(p, 0, nullptr, 0, nullptr);
+  }
+
+  // JitFn-ABI entry: native code (and the executor's own Call op) reaches a
+  // VM function through the closure's fn_ptr like any other closure; the
+  // descriptor in captures[0] says which chunk to interpret. The receiver
+  // scalars are unused until methods enter the slice.
+  static void trampoline(JitValue* ret, JitClosure* cls, int8_t /*self_tag*/,
+                         int64_t /*self_data*/, int64_t n_args,
+                         JitValue* args) {
+    auto* d = reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
+    *ret = run_frame(*d->prog, d->chunk, cls, n_args, args);
+  }
+
+  static JitValue run_frame(const VmProgram& p, int32_t chunk_idx,
+                            JitClosure* cls, int64_t n_args, JitValue* args) {
+    const Chunk& c = p.chunks[chunk_idx];
     if (c.num_slots > kMaxSlots)
       throw CulebraError("VmError", "--vm: frame too large");
     JitValue regs[kMaxSlots] = {};  // zero-init == {TAG_NIL, 0}
+    if (chunk_idx != 0) {
+      // Param binding, mirroring the JIT prologue: too few args raises the
+      // interp's ArityError at the published call site; extras drop (their
+      // +1 released) since __ARGS__ is outside the slice. The recursion
+      // guard runs after binding (TypeError-before-RecursionError order),
+      // and `leave` only on the normal return — unwinding skips it, like
+      // the JIT's frames.
+      if (n_args < c.arity) {
+        for (int64_t i = 0; i < n_args; ++i)
+          culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
+                                        args[i].data);
+        culebra::throw_missing_required_arg_at(
+            c.param_names[static_cast<size_t>(n_args)], _jit_call_site_line,
+            _jit_call_site_col);
+      }
+      for (int32_t i = 0; i < c.arity; ++i) regs[i] = args[i];
+      for (int64_t i = c.arity; i < n_args; ++i)
+        culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
+                                      args[i].data);
+      if (c.fn_slot >= 0) {
+        regs[c.fn_slot] =
+            JitValue{TAG_FUNC, reinterpret_cast<int64_t>(cls)};
+        culebra_runtime_value_retain(TAG_FUNC, regs[c.fn_slot].data);
+      }
+      culebra_runtime_recursion_enter();
+    }
     const Insn* code = c.code.data();
     size_t pc = 0;
 
@@ -1026,6 +1250,42 @@ struct Exec {
           if (regs[in.a].tag != TAG_NIL) pc = static_cast<size_t>(in.b);
           else ++pc;
           break;
+        case Op::MakeClosure: {
+          const Chunk& f = p.chunks[in.b];
+          auto* mc = culebra_runtime_closure_new(
+              reinterpret_cast<void*>(&trampoline), 1,
+              static_cast<size_t>(f.arity));
+          mc->captures[0] = culebra_runtime_cell_new(
+              TAG_LONG, reinterpret_cast<int64_t>(&p.descs[in.b]));
+          regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(mc)};
+          ++pc;
+          break;
+        }
+        case Op::Call: {
+          const JitValue& callee = regs[in.b];
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_set_call_site(line, col);
+          if (callee.tag != TAG_FUNC) {
+            // No Object/class values exist in the slice yet, so the JIT's
+            // __call__/ctor probes cannot hit — the plain TypeError is the
+            // whole cold path for now.
+            culebra_runtime_type_error_typed(
+                line, col, "Function", static_cast<int8_t>(callee.tag));
+          }
+          JitValue r = _jit_invoke(reinterpret_cast<JitClosure*>(callee.data),
+                                   JitValue{TAG_NO_SELF, 0}, in.d,
+                                   in.d ? &regs[in.c] : nullptr);
+          for (int32_t i = 0; i < in.d; ++i)
+            regs[in.c + i] = JitValue{TAG_NIL, 0};  // callee took ownership
+          regs[in.a] = r;
+          ++pc;
+          break;
+        }
+        case Op::Ret: {
+          JitValue rv = regs[in.a];
+          if (chunk_idx != 0) culebra_runtime_recursion_leave();
+          return rv;
+        }
         case Op::ForPrep: {
           int64_t step = regs[in.a + 2].data;
           if (step == 0) {
@@ -1068,7 +1328,7 @@ struct Exec {
           ++pc;
           break;
         case Op::Halt:
-          return;
+          return JitValue{TAG_NIL, 0};
       }
     }
   }
@@ -1082,7 +1342,7 @@ struct Exec {
 // (emit_arith_step, emit_comparison_i1, value_to_bool) — one dispatch
 // definition, two consumers.
 struct Lowering {
-  static void run_chunk(const Chunk& c, bool emit_llvm, int opt_level) {
+  static void run_program(const VmProgram& p, bool emit_llvm, int opt_level) {
     using namespace llvm;
     JIT::ensure_native_target_init();
     auto ctx = std::make_unique<LLVMContext>();
@@ -1092,12 +1352,27 @@ struct Lowering {
     JIT jit(ctx.get(), mod.get(), builder);
     jit.declare_runtime_functions();
 
-    auto fn = Function::Create(FunctionType::get(builder.getVoidTy(), false),
-                               Function::ExternalLinkage, "__culebra_main",
-                               mod.get());
-    builder.SetInsertPoint(BasicBlock::Create(*ctx, "entry", fn));
-    lower_chunk(jit, c, fn);
-    verifyFunction(*fn);
+    // One LLVM function per chunk: the top level keeps the __culebra_main
+    // entry shape; function chunks get the JitFn ABI, so MakeClosure hands
+    // their address to closure_new exactly like a JIT-compiled function.
+    auto ptrTy = PointerType::get(*ctx, 0);
+    auto jitFnTy = FunctionType::get(
+        builder.getVoidTy(),
+        {ptrTy, ptrTy, builder.getInt8Ty(), builder.getInt64Ty(),
+         builder.getInt64Ty(), ptrTy},
+        false);
+    std::vector<Function*> fns(p.chunks.size());
+    fns[0] = Function::Create(FunctionType::get(builder.getVoidTy(), false),
+                              Function::ExternalLinkage, "__culebra_main",
+                              mod.get());
+    for (size_t i = 1; i < p.chunks.size(); ++i) {
+      fns[i] = Function::Create(jitFnTy, Function::InternalLinkage,
+                                std::format("__vm_fn_{}", i), mod.get());
+    }
+    for (size_t i = 0; i < p.chunks.size(); ++i) {
+      lower_chunk(jit, p, i, fns);
+      verifyFunction(*fns[i]);
+    }
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
     if (emit_llvm) {
       mod->print(outs(), nullptr);
@@ -1106,11 +1381,27 @@ struct Lowering {
     }
   }
 
-  static void lower_chunk(JIT& j, const Chunk& c, llvm::Function* fn) {
+  static void lower_chunk(JIT& j, const VmProgram& p, size_t chunk_idx,
+                          const std::vector<llvm::Function*>& fns) {
     using namespace llvm;
+    const Chunk& c = p.chunks[chunk_idx];
+    auto* fn = fns[chunk_idx];
     auto& b = j.builder_;
     auto i64Ty = b.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(j.ctx_, 0);
+    b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fn));
+
+    // Frame-ABI arguments (function chunks only; see JitFn in jit_value.h).
+    llvm::Value* retPtr = nullptr;
+    llvm::Value* clsArg = nullptr;
+    llvm::Value* nArgs = nullptr;
+    llvm::Value* argsPtr = nullptr;
+    if (chunk_idx != 0) {
+      retPtr = fn->getArg(0);
+      clsArg = fn->getArg(1);
+      nArgs = fn->getArg(4);
+      argsPtr = fn->getArg(5);
+    }
 
     // One Value alloca per slot, nil-initialized — mem2reg turns these into
     // SSA; this is what replaces the AST path's Scope/VarSlot machinery.
@@ -1125,10 +1416,70 @@ struct Lowering {
       return b.CreateLoad(j.valueType_, slots[s]);
     };
 
+    // Function-chunk prologue, mirroring both the JIT prologue and
+    // Exec::run_frame: arity guard (ArityError at the published call site),
+    // param binding, overflow-arg release, the `fn` handle, and the
+    // recursion guard after binding.
+    if (chunk_idx != 0) {
+      if (c.arity > 0) {
+        auto tooFew = b.CreateICmpSLT(nArgs, b.getInt64(c.arity), "too.few");
+        auto errBB = BasicBlock::Create(j.ctx_, "arity.err", fn);
+        auto okBB = BasicBlock::Create(j.ctx_, "arity.ok", fn);
+        b.CreateCondBr(tooFew, errBB, okBB);
+        b.SetInsertPoint(errBB);
+        std::vector<Constant*> nameptrs;
+        for (const auto& n : c.param_names)
+          nameptrs.push_back(b.CreateGlobalString(n));
+        auto arrTy = ArrayType::get(ptrTy, nameptrs.size());
+        auto* namesG = new GlobalVariable(
+            *j.module_, arrTy, /*isConstant=*/true,
+            GlobalValue::PrivateLinkage, ConstantArray::get(arrTy, nameptrs),
+            ".paramnames");
+        // The prologue's own fallback position is unused: set_call_site
+        // always ran on the caller side, and arity_missing prefers it.
+        b.CreateCall(j.module_->getOrInsertFunction(
+                         rt::arity_missing, b.getVoidTy(), ptrTy, i64Ty,
+                         i64Ty, i64Ty),
+                     {namesG, nArgs, b.getInt64(0), b.getInt64(0)});
+        b.CreateUnreachable();
+        b.SetInsertPoint(okBB);
+        for (int32_t i = 0; i < c.arity; ++i) {
+          auto* src = b.CreateConstGEP1_64(j.valueType_, argsPtr,
+                                           static_cast<uint64_t>(i));
+          b.CreateStore(b.CreateLoad(j.valueType_, src), slots[i]);
+        }
+      }
+      // Release overflow args: for (iv = arity; iv < nArgs; iv++).
+      {
+        auto* fromBB = b.GetInsertBlock();
+        auto hdrBB = BasicBlock::Create(j.ctx_, "extras.hdr", fn);
+        auto bodyBB = BasicBlock::Create(j.ctx_, "extras.body", fn);
+        auto doneBB = BasicBlock::Create(j.ctx_, "extras.done", fn);
+        b.CreateBr(hdrBB);
+        b.SetInsertPoint(hdrBB);
+        auto* iv = b.CreatePHI(i64Ty, 2, "iv");
+        iv->addIncoming(b.getInt64(c.arity), fromBB);
+        b.CreateCondBr(b.CreateICmpSLT(iv, nArgs), bodyBB, doneBB);
+        b.SetInsertPoint(bodyBB);
+        auto* src = b.CreateGEP(j.valueType_, argsPtr, iv);
+        j.emit_value_release(b.CreateLoad(j.valueType_, src));
+        auto* next = b.CreateAdd(iv, b.getInt64(1));
+        iv->addIncoming(next, b.GetInsertBlock());
+        b.CreateBr(hdrBB);
+        b.SetInsertPoint(doneBB);
+      }
+      if (c.fn_slot >= 0) {
+        auto fnVal = j.make_func(clsArg);
+        b.CreateStore(fnVal, slots[c.fn_slot]);
+        j.emit_value_retain(fnVal);
+      }
+      b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_enter, i64Ty));
+    }
+
     // Pass 1: every jump target opens a basic block. A conditional jump's
-    // fall-through (and the insn after an unconditional Jump — dead code a
-    // break/continue can leave) opens one too, so pass 2 never emits into a
-    // terminated block.
+    // fall-through (and the insn after a terminator — dead code a
+    // break/continue/return can leave) opens one too, so pass 2 never emits
+    // into a terminated block.
     std::map<int32_t, BasicBlock*> blocks;
     auto mark = [&](int32_t t) {
       if (t < static_cast<int32_t>(c.code.size()) && !blocks.count(t))
@@ -1139,6 +1490,9 @@ struct Lowering {
       switch (in.op) {
         case Op::Jump:
           mark(in.a);
+          mark(static_cast<int32_t>(i) + 1);
+          break;
+        case Op::Ret:
           mark(static_cast<int32_t>(i) + 1);
           break;
         case Op::JumpIfFalse:
@@ -1317,6 +1671,75 @@ struct Lowering {
                          blocks.at(static_cast<int32_t>(i) + 1));
           break;
         }
+        case Op::MakeClosure: {
+          auto cls = j.emit_call(
+              j.module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
+                                             i64Ty, i64Ty),
+              {fns[in.b], b.getInt64(0),
+               b.getInt64(p.chunks[in.b].arity)},
+              "cls");
+          b.CreateStore(j.make_func(cls), slots[in.a]);
+          break;
+        }
+        case Op::Call: {
+          auto [line, col] = chunk_pos_at(c, i);
+          b.CreateCall(j.module_->getOrInsertFunction(
+                           rt::set_call_site, b.getVoidTy(), i64Ty, i64Ty),
+                       {b.getInt64(line), b.getInt64(col)});
+          auto calleeV = load_slot(in.b);
+          auto tag = j.extract_tag(calleeV);
+          auto isFunc = b.CreateICmpEQ(tag, b.getInt8(TAG_FUNC));
+          auto errBB = BasicBlock::Create(j.ctx_, "call.err", fn);
+          auto okBB = BasicBlock::Create(j.ctx_, "call.ok", fn);
+          b.CreateCondBr(isFunc, okBB, errBB);
+          b.SetInsertPoint(errBB);
+          // Same shape as the executor's cold path: no Object values exist
+          // in the slice, so the JIT's __call__/ctor probes cannot hit.
+          b.CreateCall(
+              j.module_->getOrInsertFunction(rt::type_error_typed,
+                                             b.getVoidTy(), i64Ty, i64Ty,
+                                             ptrTy, b.getInt8Ty()),
+              {b.getInt64(line), b.getInt64(col),
+               b.CreateGlobalString("Function"), tag});
+          b.CreateUnreachable();
+          b.SetInsertPoint(okBB);
+          auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
+          auto fnFieldPtr =
+              b.CreateStructGEP(j.closureType_, clsPtr, 1, "fn.ptr");
+          auto fnPtr = b.CreateLoad(ptrTy, fnFieldPtr, "fn");
+          IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+          llvm::Value* slab;
+          if (in.d > 0) {
+            slab = eb.CreateAlloca(ArrayType::get(j.valueType_, in.d),
+                                   nullptr, "call.args");
+            for (int32_t k = 0; k < in.d; ++k) {
+              auto* dstp = b.CreateConstGEP2_64(
+                  ArrayType::get(j.valueType_, in.d), slab, 0,
+                  static_cast<uint64_t>(k));
+              b.CreateStore(load_slot(in.c + k), dstp);
+            }
+          } else {
+            slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
+          }
+          auto* retTmp = eb.CreateAlloca(j.valueType_, nullptr, "call.ret");
+          auto jitFnTy = FunctionType::get(
+              b.getVoidTy(),
+              {ptrTy, ptrTy, b.getInt8Ty(), i64Ty, i64Ty, ptrTy}, false);
+          b.CreateCall(jitFnTy, fnPtr,
+                       {retTmp, clsPtr, b.getInt8(TAG_NO_SELF),
+                        b.getInt64(0), b.getInt64(in.d), slab});
+          for (int32_t k = 0; k < in.d; ++k)
+            b.CreateStore(j.make_nil(), slots[in.c + k]);
+          b.CreateStore(b.CreateLoad(j.valueType_, retTmp), slots[in.a]);
+          break;
+        }
+        case Op::Ret: {
+          b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_leave,
+                                                      b.getVoidTy()));
+          b.CreateStore(load_slot(in.a), retPtr);
+          b.CreateRetVoid();
+          break;
+        }
         case Op::ForPrep: {
           auto [line, col] = chunk_pos_at(c, i);
           j.emit_range_step_check(j.extract_data(load_slot(in.a + 2)), line,
@@ -1378,9 +1801,9 @@ struct Lowering {
   }
 };
 
-inline void run_chunk_via_llvm(const Chunk& chunk, bool emit_llvm,
-                               int opt_level) {
-  Lowering::run_chunk(chunk, emit_llvm, opt_level);
+inline void run_program_via_llvm(const VmProgram& prog, bool emit_llvm,
+                                 int opt_level) {
+  Lowering::run_program(prog, emit_llvm, opt_level);
 }
 
 }  // namespace culebra::vm

@@ -1,0 +1,7 @@
+# The `fn` handle: recursion without captures, on every lane.
+let fact = fn (n) { if n <= 1 { 1 } else { n * fn(n - 1) } }
+println(fact(20))
+let fib = fn (n) { if n < 2 { n } else { fn(n - 1) + fn(n - 2) } }
+println(fib(20))
+let sum = fn (n, acc) { if n == 0 { acc } else { fn(n - 1, acc + n) } }
+println(sum(500, 0))

@@ -1364,18 +1364,17 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
       throw culebra::CulebraError(
           "VmError", "--vm: single-module scripts only");
     }
-    auto chunk = culebra::vm::Compiler().compile_module(
-        *modules.front().ast);
+    auto prog = culebra::vm::Compiler::compile_module(*modules.front().ast);
     switch (options.vm) {
       case Options::Vm::Dump:
-        cout << culebra::vm::dump(chunk);
+        cout << culebra::vm::dump(prog);
         break;
       case Options::Vm::Llvm:
-        culebra::vm::run_chunk_via_llvm(chunk, options.emit_llvm,
-                                        options.opt_level);
+        culebra::vm::run_program_via_llvm(prog, options.emit_llvm,
+                                          options.opt_level);
         break;
       default:
-        culebra::vm::Exec::run(chunk);
+        culebra::vm::Exec::run(prog);
         break;
     }
     return true;

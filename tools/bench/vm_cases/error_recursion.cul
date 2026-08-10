@@ -1,0 +1,3 @@
+# The shared recursion guard: same limit, message, and position everywhere.
+let f = fn (n) { fn(n + 1) }
+println(f(0))

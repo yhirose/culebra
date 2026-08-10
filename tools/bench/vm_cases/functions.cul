@@ -1,0 +1,43 @@
+# Non-capturing function literals through the JitFn ABI: definition, calls,
+# return (valued / bare / implicit tail), the `fn` recursion handle, extra
+# args dropping, and functions as first-class values.
+let add = fn (a, b) { a + b }
+println(add(2, 3))
+println(add)
+println(add == add)
+let add2 = fn (a, b) { a + b }
+println(add == add2)
+
+let doubled = fn (x) { return x * 2; 999 }
+println(doubled(21))
+let bare = fn () { return }
+println(bare())
+let tail = fn () { 7 }
+println(tail())
+println((fn (x) { x + 1 })(41))
+
+# Extra args drop; declared params bind positionally.
+let one = fn (a) { a }
+println(one(1, 2, 3))
+
+# The frame releases its scope on every exit; heap params flow through.
+let pick = fn (xs, flag) { if flag { xs } else { [0] } }
+println(pick([1, 2], true))
+println(pick([1, 2], false))
+let mk = fn (n) { [n, n * 2] }
+let mut acc = 0
+for i in 1..=50 {
+    let pair = mk(i)
+    acc = acc + i
+}
+println(acc)
+
+# Early return from inside a loop tears the frame down.
+let firstover = fn (limit) {
+    for i in 0..100 {
+        if i * i > limit { return i }
+    }
+    -1
+}
+println(firstover(50))
+println(firstover(1000000))
