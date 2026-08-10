@@ -1,0 +1,3 @@
+# A runtime error inside the taken arm keeps its own position across lanes.
+println("before")
+println(match 2 { 2 => 1 / 0, _ => "no" })

@@ -523,3 +523,29 @@ try/catch-body defers fired at function exit instead of block exit,
 and break/continue skipped defers pending in a nested lexical
 scope — both fixed in `fn_analysis.h`/`jit.h`, so the three-lane
 comparison now covers every defer case.
+
+`match` followed, over the leaf-pattern slice: literals (with the
+tag checked before the value, so no numeric coercion — `1` never
+matches `1.0`), `_`, bindings, typed bindings over the primitive
+type names (unions included, generic args stripped), or-patterns of
+non-binding alternatives, and guards. One new op sufficed:
+`JumpIfTag`, the pattern's tag gate; the value check reuses `Eq`
+behind the gate, and the guard reuses `JumpIfFalse` — whose
+`to_bool` coercion (Bool as-is, Long/Float numeric, anything else a
+TypeError attributed to the match node) turned out to be exactly
+the guard's semantics in both existing lanes. Compilation orders
+each arm test → bind → guard → body, so a failed test jumps to the
+next arm with nothing live and only a guard failure has a binding
+to release; arm bodies are their own defer scopes (the
+`scan_eh_defer` MATCH case), the subject lives in one
+statement-owned temp across the arms, and a binding alternative
+inside an or-pattern is the one rejected shape (it would bind on
+some paths only). Porting match surfaced a latent compiler bug:
+consuming a temp erased *every* sweep-list entry with that slot
+index, and arm-scope rollback is the first construct that makes two
+list entries share an index — the list shrank below an inner
+statement's watermark, and the sweep's zero-filled resize emitted
+`Release r0` onto a live cell slot (a segfault). Temps are now
+forgotten one entry at a time. `return` also learned to release
+in-flight temps of enclosing statements (a match subject held
+across arms) instead of leaving them to the GC backstop.

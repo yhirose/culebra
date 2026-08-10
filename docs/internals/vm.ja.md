@@ -482,3 +482,26 @@ slot解放は引き続きGC backstopに落ちる。deferの移植は、interp/JI
 出口でなく関数出口で発火・break/continueがネストしたlexical scope
 の残deferを取り逃す — をあぶり出し、`fn_analysis.h`/`jit.h`で修正
 済み。3レーン比較は全deferケースを覆う。
+
+続いて`match`がリーフパターンsliceの範囲で入った: リテラル
+（値より先にtagを検査するので数値の暗黙変換はない — `1`は`1.0`に
+マッチしない）・`_`・束縛・プリミティブ型名上の型付き束縛
+（union対応、generic引数は剥がす）・非束縛限定のorパターン・
+guard。新opは`JumpIfTag`（パターンのtagゲート）1つで足りた:
+ゲート通過後の値検査は既存の`Eq`を、guardは既存の`JumpIfFalse`を
+再利用する — その`to_bool`変換（Boolはそのまま、Long/Floatは
+数値的、それ以外はmatchノードの位置を持つTypeError）が既存2レーン
+のguard意味論と正確に一致していた。コンパイルは各armを「テスト→
+束縛→guard→本体」の順に並べる。テスト失敗のジャンプ先には生きた
+束縛がなく、束縛の解放が要るのはguard失敗経路だけになる。arm本体
+は自分のdefer scope（`scan_eh_defer`のMATCHケース）で、subjectは
+文所有のtemp 1つがarm横断で保持する。orパターン内の束縛だけが
+reject（マッチした選択肢によって束縛されたりされなかったりする
+ため）。matchの移植はコンパイラの潜在バグを1件あぶり出した:
+tempの消費がsweepリストから同じslot番号のエントリを*全部*消して
+いて、armスコープのslot巻き戻しが「同じ番号を持つエントリが2つ
+並ぶ」最初の構文だった — リストが内側の文のwatermarkより短くなり、
+sweepのゼロ埋めresizeが生きたcell slotへの`Release r0`を生んで
+segfaultした。tempは1エントリずつ忘れる形に修正。あわせて
+`return`は、囲む文の飛行中temp（arm横断で保持中のmatch subject等）
+をGC backstopに残さず解放するようになった。

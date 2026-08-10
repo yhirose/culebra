@@ -17,7 +17,9 @@
 // `if` / `else if` / `else` (as an expression) and the ternary; `while`;
 // counted range `for`; `break` / `continue`; single-argument `println`;
 // fn literals with closures (captured locals promoted to JitCells, the
-// JIT's cell mechanism — forward-reference capture is still rejected).
+// JIT's cell mechanism — forward-reference capture is still rejected);
+// `match` over leaf patterns (literals, `_`, bindings, typed bindings over
+// primitive type names, or-patterns of non-binding leaves) with guards.
 
 #ifdef CULEBRA_JIT_ENABLED
 
@@ -75,6 +77,9 @@ enum class Op : uint8_t {
   JumpIfFalse, // if !to_bool(regs[a]) pc = b (strict Bool truthiness)
   JumpIfTrue,  // if to_bool(regs[a]) pc = b
   JumpIfNotNil,// if regs[a].tag != TAG_NIL pc = b (`??` short-circuit)
+  JumpIfTag,   // if regs[a].tag == c pc = b — a pattern's tag gate; a
+               // match test never throws, so it carries no position
+
   MakeClosure, // regs[a] = new closure (+1) over function chunk b. In the
                // executor its fn_ptr is Exec::trampoline and captures[0]
                // holds the chunk's descriptor (a Long-valued cell, so its
@@ -476,6 +481,22 @@ class Compiler {
     ~TempScope() { c.sweep_temps(base, slot_base); }
   };
 
+  // Forget the consumed temp's most recent sweep-list entry — and only
+  // that one. Scope rollback lets a later match arm reuse an earlier arm's
+  // temp slot INDEX while the earlier arm's entry is still in the list, so
+  // an erase-by-value would take the outer entry with it, shrink the list
+  // below an inner TempScope's base, and the dtor's resize would then
+  // zero-fill — emitting Releases of slot 0 (a live cell slot; segfaulted).
+  // The most recent equal entry is always the one being consumed.
+  void forget_temp(int32_t slot) {
+    for (auto it = stmt_temps_.rbegin(); it != stmt_temps_.rend(); ++it) {
+      if (*it == slot) {
+        stmt_temps_.erase(std::next(it).base());
+        return;
+      }
+    }
+  }
+
   // Release dst's previous value, then either transfer the temp's +1 or
   // copy-and-retain the borrowed slot. The one store rule every write uses.
   // `dst_is_fresh` skips the Release for a slot known to hold nil (a
@@ -489,7 +510,7 @@ class Compiler {
     if (!dst_is_fresh) emit(Op::Release, dst);
     if (r.owned) {
       emit(Op::Take, dst, r.slot);
-      std::erase(stmt_temps_, r.slot);
+      forget_temp(r.slot);
     } else {
       emit(Op::Move, dst, r.slot);
       emit(Op::Retain, dst);
@@ -506,7 +527,7 @@ class Compiler {
       emit(Op::Retain, src);
       return src;
     }
-    std::erase(stmt_temps_, r.slot);
+    forget_temp(r.slot);
     return r.slot;
   }
 
@@ -706,6 +727,12 @@ class Compiler {
             emit(Op::LoadConst, rv, kconst({TAG_NIL, 0}));
           sweep_temps(base, slot_base);
         }
+        // In-flight temps of enclosing statements (a match subject held
+        // across arms, a half-built array) still hold their +1s; the frame
+        // is exiting, so release them here like break/continue do instead
+        // of leaving them to the GC backstop. `rv` rides past.
+        for (int32_t t : stmt_temps_)
+          if (t != rv) emit(Op::Release, t);
         // Run every still-pending defer of the frame before its slots
         // release (the fn.mark bounds them all — nested scope marks sit
         // above it, so one run covers a return from any depth).
@@ -1204,6 +1231,250 @@ class Compiler {
     return {res, true};
   }
 
+  // `match` as an expression, over the leaf-pattern slice. The subject is
+  // owned by a statement temp across the arms (the JIT holds it in a
+  // dedicated subject scope; here the statement sweep / the break-return
+  // temp releases are the single releaser). Every arm runs test → bind →
+  // guard → body: a leaf pattern cannot bind before its tests pass, so a
+  // failed test jumps to the next arm with nothing live, and only a guard
+  // failure has a binding to release. The body block writes the shared
+  // result slot exactly once (compile_if's shape); no arm matched → nil.
+  ExprResult compile_match(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto mv = culebra::view_match(ast);
+    if (mv.init) reject(*mv.init, "match init clause");
+    int32_t res = alloc_temp(ast);
+    int32_t subj = alloc_temp(ast);
+    store_into(subj, compile_expr(*mv.subject), /*dst_is_fresh=*/true);
+    auto patch_to_here = [&](size_t ix) {
+      auto& insn = chunk_.code[ix];
+      auto here = static_cast<int32_t>(chunk_.code.size());
+      (insn.op == Op::Jump ? insn.a : insn.b) = here;
+    };
+    std::vector<size_t> end_jumps;
+    for (const auto& arm : mv.arms->nodes) {
+      // arm->nodes: PATTERN (GUARD)? body
+      const auto& pat = *arm->nodes[0];
+      push_scope();
+      std::vector<size_t> fail_jumps;  // patched to the next arm's start
+      compile_pattern_test(pat, subj, fail_jumps);
+      // Bind once every test passed. Arm bindings are mutable (interp's
+      // try_pattern default), and a captured one lives in a cell like any
+      // local (the compile_try catch-binding shape).
+      int32_t bound = -1;
+      bool bound_cell = false;
+      if (const peg::Ast* nn = pattern_binding_node(pat)) {
+        auto name = std::string(nn->token);
+        bound_cell = info_->captured_locals.contains(name);
+        bound = alloc_slot(*nn, name);
+        if (bound_cell) {
+          store_new_cell(*nn, bound, {subj, false});
+          mark_cell_slot(bound);
+        } else {
+          store_into(bound, {subj, false}, /*dst_is_fresh=*/true);
+        }
+        scopes_.back().bindings.push_back({name, bound, /*is_mut=*/true,
+                                           bound_cell});
+      }
+      size_t body_idx = 1;
+      size_t guard_fail = SIZE_MAX;
+      if (arm->nodes[body_idx]->tag == "GUARD"_) {
+        auto g = compile_expr(*arm->nodes[body_idx]->nodes[0]);
+        // The test reads the pending MATCH position: a non-Bool guard's
+        // TypeError reports the match node in both existing lanes.
+        guard_fail = emit(Op::JumpIfFalse, g.slot);
+        body_idx++;
+      }
+      // The arm body is its own defer scope (scan_eh_defer's MATCH case
+      // keys the body node): defers fire when the arm's braces close, the
+      // arm value already owned in `res`.
+      compile_block_into(*arm->nodes[body_idx], res,
+                         /*defer_key=*/arm->nodes[body_idx].get());
+      pop_scope();  // the taken path's binding release
+      end_jumps.push_back(emit(Op::Jump));
+      if (guard_fail != SIZE_MAX) {
+        // Guard-fail: the binding is live on this path; release it, then
+        // fall through into the next arm's tests.
+        patch_to_here(guard_fail);
+        if (bound >= 0)
+          emit(bound_cell ? Op::CellRelease : Op::Release, bound);
+      }
+      for (size_t ix : fail_jumps) patch_to_here(ix);
+    }
+    for (size_t ix : end_jumps) patch_to_here(ix);
+    return {res, true};
+  }
+
+  // Emits the tests for one leaf pattern: fall through on match, jump (via
+  // `fail`) on mismatch. Bindings are NOT emitted here — the caller binds
+  // after the whole pattern passed, which is what makes the fail edges
+  // release-free.
+  void compile_pattern_test(const peg::Ast& pat, int32_t subj,
+                            std::vector<size_t>& fail) {
+    using namespace peg::udl;
+    // A PATTERN node with children is an or-pattern: alternatives tried in
+    // order, first match wins. A binding alternative would bind on some
+    // paths only — the JIT/interp allow it (the bind simply happens on the
+    // alternative that matched), but the two-phase test/bind split here
+    // cannot express it, so it stays outside the slice.
+    if (pat.tag == "PATTERN"_ && !pat.nodes.empty()) {
+      if (pattern_binding_node(pat))
+        reject(pat, "binding in an or-pattern");
+      std::vector<size_t> ok_jumps;
+      for (size_t i = 0; i < pat.nodes.size(); i++) {
+        std::vector<size_t> alt_fail;
+        compile_pattern_test(*pat.nodes[i], subj, alt_fail);
+        if (i + 1 < pat.nodes.size()) {
+          ok_jumps.push_back(emit(Op::Jump));
+          for (size_t ix : alt_fail) {
+            auto& insn = chunk_.code[ix];
+            (insn.op == Op::Jump ? insn.a : insn.b) =
+                static_cast<int32_t>(chunk_.code.size());
+          }
+        } else {
+          fail.insert(fail.end(), alt_fail.begin(), alt_fail.end());
+        }
+      }
+      for (size_t ix : ok_jumps)
+        chunk_.code[ix].a = static_cast<int32_t>(chunk_.code.size());
+      return;
+    }
+    // Tag gate: fall through when the subject's tag is in `tags`.
+    auto tag_gate = [&](const std::vector<int8_t>& tags) {
+      std::vector<size_t> ok;
+      for (int8_t t : tags)
+        ok.push_back(emit(Op::JumpIfTag, subj, 0, t));
+      fail.push_back(emit(Op::Jump));
+      for (size_t ix : ok)
+        chunk_.code[ix].b = static_cast<int32_t>(chunk_.code.size());
+    };
+    // Value check after the gate: Eq against the literal constant. The
+    // gate makes Eq's dispatch exact (a Float subject never numerically
+    // equals a Long pattern — interp's try_pattern checks type first).
+    auto lit_eq = [&](int32_t kidx) {
+      int32_t k = alloc_temp(pat);
+      emit(Op::LoadConst, k, kidx);
+      int32_t t = alloc_temp(pat);
+      emit(Op::Eq, t, subj, k);
+      fail.push_back(emit(Op::JumpIfFalse, t));
+    };
+    switch (pat.tag) {
+      case "WILDCARD"_:
+      case "IDENTIFIER"_:
+        return;  // always matches; IDENTIFIER binds in the caller
+      case "TYPED_IDENT"_: {
+        auto tags = type_name_tags(*pat.nodes[1]);
+        if (!tags.empty()) tag_gate(tags);
+        return;
+      }
+      case "NIL"_:
+        tag_gate({TAG_NIL});
+        return;
+      case "BOOLEAN"_:
+        tag_gate({TAG_BOOL});
+        lit_eq(kconst({TAG_BOOL, pat.token == "true"}));
+        return;
+      case "NUMBER"_:
+        tag_gate({TAG_LONG});
+        lit_eq(kconst_long(culebra::parse_integer_literal(pat.token)));
+        return;
+      case "FLOAT"_: {
+        tag_gate({TAG_FLOAT});
+        double d = pat.token_to_number<double>();
+        int64_t bits;
+        std::memcpy(&bits, &d, 8);
+        lit_eq(kconst({TAG_FLOAT, bits}));
+        return;
+      }
+      case "STRING"_:
+      case "INTERPOLATED_CONTENT"_:
+      case "INTERPOLATED_STRING"_: {
+        // A string literal pattern matches String and StringView subjects
+        // by content (try_pattern's to_string_view comparison; Eq on two
+        // strlikes is that comparison). Only constant interpolated forms
+        // are valid — an embedded expression makes the pattern a
+        // never-match, mirroring interp/JIT's pre-execution-lint defense.
+        std::string s;
+        if (pat.tag == "STRING"_) {
+          s = std::string(pat.token);
+        } else if (pat.tag == "INTERPOLATED_CONTENT"_) {
+          s = culebra::decode_interpolated_content(pat.token);
+        } else {
+          for (const auto& child : pat.nodes) {
+            if (child->tag != "INTERPOLATED_CONTENT"_) {
+              fail.push_back(emit(Op::Jump));
+              return;
+            }
+            s += culebra::decode_interpolated_content(child->token);
+          }
+        }
+        tag_gate({TAG_STRING, TAG_STRINGVIEW});
+        lit_eq(kconst_str(s));
+        return;
+      }
+      default:
+        reject(pat, std::format("pattern '{}'", pat.name));
+    }
+  }
+
+  // The single name a leaf pattern binds (nullptr when none): the
+  // IDENTIFIER itself, or a TYPED_IDENT's name child. `_` sinks bind
+  // nothing. For an or-PATTERN, any binding alternative — used both to
+  // reject or-bindings and to find the arm's binding.
+  const peg::Ast* pattern_binding_node(const peg::Ast& pat) const {
+    using namespace peg::udl;
+    if (pat.tag == "PATTERN"_) {
+      for (const auto& sub : pat.nodes)
+        if (auto* n = pattern_binding_node(*sub)) return n;
+      return nullptr;
+    }
+    const peg::Ast* nn = nullptr;
+    if (pat.tag == "IDENTIFIER"_) nn = &pat;
+    else if (pat.tag == "TYPED_IDENT"_) nn = pat.nodes[0].get();
+    if (nn && !is_sink_name(std::string(nn->token))) return nn;
+    return nullptr;
+  }
+
+  // Type-annotation name(s) → accepted tag set, mirroring the JIT's
+  // TYPED_IDENT emitter: generic args stripped (`Array<Long>` gates on
+  // Array), unions OR their alternatives, `Any` gates nothing (empty
+  // result). Trait / user-class names need the runtime's type system —
+  // outside the slice.
+  std::vector<int8_t> type_name_tags(const peg::Ast& type_node) {
+    auto full = type_node.token;
+    std::vector<int8_t> tags;
+    auto add_single = [&](std::string_view tn) -> bool {  // false: Any
+      if (tn.find('<') != std::string_view::npos)
+        tn = culebra::parse_generic_head(tn).outer;
+      if (tn == "Any") return false;
+      int8_t t;
+      if (tn == "Nil") t = TAG_NIL;
+      else if (tn == "Bool") t = TAG_BOOL;
+      else if (tn == "Long") t = TAG_LONG;
+      else if (tn == "Float") t = TAG_FLOAT;
+      else if (tn == "String") t = TAG_STRING;
+      else if (tn == "StringView") t = TAG_STRINGVIEW;
+      else if (tn == "Array") t = TAG_ARRAY;
+      else if (tn == "Object") t = TAG_OBJECT;
+      else if (tn == "Function") t = TAG_FUNC;
+      else if (tn == "Tuple") t = TAG_TUPLE;
+      else if (tn == "Set") t = TAG_SET;
+      else if (tn == "Tensor") t = TAG_TENSOR;
+      else reject(type_node, std::format("type name '{}' in pattern", tn));
+      bool dup = false;
+      for (int8_t e : tags) dup |= (e == t);
+      if (!dup) tags.push_back(t);
+      return true;
+    };
+    if (full.find('|') != std::string_view::npos) {
+      for (auto cand : culebra::split_union_types(full))
+        if (!add_single(cand)) return {};  // Any alternative: no gate
+    } else if (!add_single(full)) {
+      return {};
+    }
+    return tags;
+  }
+
   // Any DEFER in the subtree that would register on this frame's stack —
   // stops at fn/defer boundaries (their bodies push at their own run time).
   static bool subtree_has_defer(const peg::Ast& n) {
@@ -1335,6 +1606,8 @@ class Compiler {
         return compile_if(ast);
       case "TRY"_:
         return compile_try(ast);
+      case "MATCH"_:
+        return compile_match(ast);
       case "THROW"_: {
         int32_t src = owned_src(ast, compile_expr(*ast.nodes[0]));
         emit(Op::Throw, src);
@@ -1386,7 +1659,7 @@ inline std::string dump(const Chunk& c) {
       "Neg",       "Not",       "Add",        "Sub",          "Mul",
       "Div",       "Mod",       "Eq",         "Ne",           "Lt",
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
-      "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil",
+      "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfTag",
       "MakeClosure", "Call",    "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
@@ -1789,6 +2062,11 @@ struct Exec {
           if (regs[in.a].tag != TAG_NIL) pc = static_cast<size_t>(in.b);
           else ++pc;
           break;
+        case Op::JumpIfTag:
+          if (regs[in.a].tag == static_cast<int64_t>(in.c))
+            pc = static_cast<size_t>(in.b);
+          else ++pc;
+          break;
         case Op::MakeClosure: {
           const Chunk& f = p.chunks[in.b];
           auto n = f.capture_src_slots.size();
@@ -2154,6 +2432,7 @@ struct Lowering {
         case Op::JumpIfFalse:
         case Op::JumpIfTrue:
         case Op::JumpIfNotNil:
+        case Op::JumpIfTag:
           mark(in.b);
           mark(static_cast<int32_t>(i) + 1);
           break;
@@ -2347,6 +2626,14 @@ struct Lowering {
           auto notNil = b.CreateICmpNE(j.extract_tag(load_slot(in.a)),
                                        b.getInt8(TAG_NIL), "notnil");
           b.CreateCondBr(notNil, blocks.at(in.b),
+                         blocks.at(static_cast<int32_t>(i) + 1));
+          break;
+        }
+        case Op::JumpIfTag: {
+          auto tagIs = b.CreateICmpEQ(
+              j.extract_tag(load_slot(in.a)),
+              b.getInt8(static_cast<uint8_t>(in.c)), "tag.is");
+          b.CreateCondBr(tagIs, blocks.at(in.b),
                          blocks.at(static_cast<int32_t>(i) + 1));
           break;
         }

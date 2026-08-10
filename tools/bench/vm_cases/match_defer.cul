@@ -1,0 +1,67 @@
+# A block arm is its own defer scope: defers fire when the arm's braces
+# close (LIFO), on the fall-through, break, return, and throw paths alike,
+# while the arm value survives them.
+let r = match 1 {
+  1 => {
+    defer { println("arm defer") }
+    println("arm body")
+    "value"
+  },
+  _ => "no",
+}
+println(r)
+
+match 2 {
+  2 => {
+    defer { println("d1") }
+    defer { println("d2") }
+    println("body2")
+    0
+  },
+  _ => 0,
+}
+println("after2")
+
+# break out of an arm body: the arm's defer fires before the loop exits
+mut i = 0
+while i < 3 {
+  i = i + 1
+  match i {
+    2 => {
+      defer { println("defer at break") }
+      println("break arm")
+      break
+    },
+    n => println(n),
+  }
+}
+println("after loop")
+println(i)
+
+# return crossing an arm with a pending defer
+let f = fn (v) {
+  match v {
+    1 => {
+      defer { println("defer at return") }
+      return "early"
+    },
+    _ => "late",
+  }
+}
+println(f(1))
+println(f(9))
+
+# a throw from the arm body fires the arm defer, then the outer catch
+let c = try {
+    match 5 {
+      5 => {
+        defer { println("defer at throw") }
+        throw "boom"
+      },
+      _ => 0,
+    }
+  } catch e {
+    "caught " + e
+  }
+println(c)
+println("done")

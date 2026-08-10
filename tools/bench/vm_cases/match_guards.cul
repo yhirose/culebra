@@ -1,0 +1,32 @@
+# match guards: run after the pattern binds, see the binding, and follow
+# the runtime's to_bool coercion (Bool as-is, Long/Float numeric, anything
+# else TypeError) — looser than the strict-Bool `if` condition.
+println(match 7 { n if n > 5 => "big", n => "small" })
+println(match 3 { n if n > 5 => "big", n => "small" })
+println(match 10 { n:Long if n % 2 == 0 => "even-long", _ => "no" })
+println(match 7 { 7 if false => "guarded-out", 7 => "plain", _ => "no" })
+println(match 1 { _ if 2 > 1 => "wild-guard", _ => "no" })
+
+# a guard runs only when its own pattern matched
+mut log = 0
+let bump = fn () {
+  log = log + 1
+  true
+}
+println(match 2 { 1 if bump() => "a", 2 if bump() => "b", _ => "c" })
+println(log)
+
+# to_bool coercion per value class
+let probe = fn (label, thunk) {
+  let r = try { thunk() } catch _ { "ERR" }
+  println(label + ": " + r)
+}
+probe("long0", fn () { match 1 { n if 0 => "T", _ => "F" } })
+probe("long2", fn () { match 1 { n if 2 => "T", _ => "F" } })
+probe("neg", fn () { match 1 { n if -1 => "T", _ => "F" } })
+probe("f0", fn () { match 1 { n if 0.0 => "T", _ => "F" } })
+probe("f25", fn () { match 1 { n if 2.5 => "T", _ => "F" } })
+probe("str", fn () { match 1 { n if "x" => "T", _ => "F" } })
+probe("nil", fn () { match 1 { n if nil => "T", _ => "F" } })
+probe("arr", fn () { match 1 { n if [1] => "T", _ => "F" } })
+probe("bool", fn () { match 1 { n if true => "T", _ => "F" } })

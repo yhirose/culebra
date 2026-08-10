@@ -1,0 +1,41 @@
+# match over literal patterns: first match wins, no arm -> nil, cross-type
+# literals never match, or-patterns, nesting, subject evaluated once.
+println(match 2 { 1 => "one", 2 => "two", _ => "other" })
+println(match 9 { 1 => "one", 2 => "two", _ => "other" })
+println(match 9 { 1 => "one", 2 => "two" })            # no arm -> nil
+println(match 1.5 { 1.5 => "float", _ => "other" })
+println(match true { false => "f", true => "t" })
+println(match nil { nil => "nil-arm", _ => "other" })
+println(match "hi" { "ho" => 1, "hi" => 2, _ => 3 })
+println(match "" { "" => "empty", _ => "other" })
+
+# A literal pattern checks the tag before the value: no numeric coercion.
+println(match 1.0 { 1 => "long-pat", _ => "no" })
+println(match 1 { 1.0 => "float-pat", _ => "no" })
+println(match true { 1 => "one", _ => "no" })
+println(match "1" { 1 => "one", _ => "no" })
+
+# Arms are tried top to bottom.
+println(match 5 { _ => "first", 5 => "second" })
+
+# The subject expression runs exactly once.
+mut calls = 0
+let next = fn () {
+  calls = calls + 1
+  calls
+}
+println(match next() { 1 => "one", 2 => "two", _ => "other" })
+println(calls)
+
+# match is an expression; arms can nest another match.
+let r = match 3 { 3 => 30, _ => 0 }
+println(r + 1)
+println(match 1 { 1 => match 2 { 2 => "inner", _ => "x" }, _ => "y" })
+
+# or-patterns: alternatives tried in order, first hit wins.
+println(match 2 { 1 | 2 | 3 => "small", _ => "big" })
+println(match 4 { 1 | 2 | 3 => "small", _ => "big" })
+println(match "b" { "a" | "b" => "ab", _ => "other" })
+println(match nil { 1 | nil => "one-or-nil", _ => "other" })
+println(match 2.5 { 1 | 2.5 => "mixed", _ => "other" })
+println(match 9 { 1 | _ => "one-or-any" })

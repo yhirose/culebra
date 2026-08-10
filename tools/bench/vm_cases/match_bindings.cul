@@ -1,0 +1,38 @@
+# match bindings: a bare identifier always matches and binds the subject;
+# typed bindings gate on the type tag first; bindings are mutable, scoped
+# to the arm, and capturable by closures.
+println(match 41 { x => x + 1 })
+println(match "s" { x => x })
+let m = match 10 { x => {
+    x = x * 2
+    x + 1
+  } }
+println(m)
+
+# typed bindings over the primitive type names
+println(match 7 { n:Long => n * 2, _ => "no" })
+println(match 7.5 { n:Long => "long", f:Float => f, _ => "no" })
+println(match "abc" { s:String => s, _ => "no" })
+println(match [1, 2] { a:Array => "arr", _ => "no" })
+println(match nil { v:Nil => "nil-typed", _ => "no" })
+println(match true { b:Bool => b, _ => "no" })
+let f = fn (x) { x }
+println(match f { g:Function => "func", _ => "no" })
+println(match 3 { v:Any => v, _ => "no" })
+
+# union types gate on any alternative's tag
+println(match 3 { v:Long|Float => "num", _ => "no" })
+println(match 3.5 { v:Long|Float => "num", _ => "no" })
+println(match "s" { v:Long|Float => "num", _ => "no" })
+
+# generic args are stripped before matching
+println(match [1] { a:Array<Long> => "arrgen", _ => "no" })
+
+# the binding shadows and does not leak past the arm
+let x = 100
+println(match 1 { x => x + 1 })
+println(x)
+
+# an arm binding captured by a closure lives past the match
+let g = match 5 { v => fn () { v * 3 } }
+println(g())
