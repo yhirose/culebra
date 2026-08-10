@@ -127,23 +127,16 @@ struct JIT {
     // is the binding's declaration, so it must not be mut-checked against
     // this placeholder — the flag clears when it lands.
     bool awaits_implicit_decl = false;
-    // True for a Stack slot whose first-seen declaration site, in this
-    // scope, is nested inside an if/cond arm (see conditional_depth_):
-    // only one arm ever runs per call, so a sibling arm's own bare
-    // `x = ...` can't be classified declare-vs-reassign at compile time
-    // the way straight-line code can — the interp decides it dynamically
-    // per call via env->has(name). The slot holds a runtime sentinel
-    // (TAG_NO_SELF, the no-receiver precedent) until whichever arm
-    // actually runs replaces it with the real value; mut_alloca tracks
-    // the winning arm's mut-ness the same way, at runtime. Never set for
-    // Cell slots — a captured name's declare/reassign ambiguity across
-    // sibling arms is a separate, not-yet-fixed gap (see
-    // pre_allocate_forward_refs).
+    // True for a Stack slot first declared inside an if/cond arm (see
+    // conditional_depth_): only one arm runs per call, so declare-vs-
+    // reassign can't be told apart from a sibling arm's own first touch
+    // at compile time. Holds a runtime sentinel (TAG_NO_SELF) until
+    // whichever arm actually runs replaces it. Never set for Cell slots
+    // (see pre_allocate_forward_refs).
     bool runtime_decl = false;
-    // Runtime mut bit for a runtime_decl slot; null otherwise. A plain
-    // `bool mut` above can't represent "whichever arm ran, declared
-    // mut or not" — only one arm's declare ever executes per call, and
-    // JIT compiles every arm once.
+    // Runtime mut bit for a runtime_decl slot, null otherwise — a
+    // static `mut` above can't say "whichever arm ran, declared mut or
+    // not" when JIT compiles every arm once but only one ever executes.
     llvm::AllocaInst* mut_alloca = nullptr;
   };
 
@@ -2394,15 +2387,7 @@ struct JIT {
     if (!slot.runtime_decl) return;
     auto absent = builder_.CreateICmpEQ(
         extract_tag(val), builder_.getInt8(TAG_NO_SELF), "decl.absent");
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto throwBB = llvm::BasicBlock::Create(ctx_, "decl.unbound.read", fn);
-    auto contBB = llvm::BasicBlock::Create(ctx_, "decl.bound.read", fn);
-    builder_.CreateCondBr(absent, throwBB, contBB);
-    builder_.SetInsertPoint(throwBB);
-    emit_throw_error("NameError", std::format("undefined variable '{}'", name),
-                     current_line_, current_column_);
-    builder_.CreateUnreachable();
-    builder_.SetInsertPoint(contBB);
+    emit_unbound_name_guard(absent, name, "decl");
   }
 
   // Store a value into a slot (does NOT retain/release — caller's responsibility).
@@ -3225,6 +3210,25 @@ struct JIT {
     builder_.SetInsertPoint(contBB);
   }
 
+  // Shared skeleton for every "this name isn't bound yet" read guard:
+  // if `unbound` (i1), raise the interp's NameError; otherwise continue.
+  // Callers differ only in how they compute `unbound` (a null cell
+  // pointer, a sentinel tag, ...); `label` keeps each caller's blocks
+  // distinguishable in --emit-llvm output.
+  void emit_unbound_name_guard(llvm::Value* unbound, const std::string& name,
+                               const char* label) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto throwBB = llvm::BasicBlock::Create(ctx_, std::string(label) + ".unbound", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, std::string(label) + ".bound", fn);
+    builder_.CreateCondBr(unbound, throwBB, contBB);
+    builder_.SetInsertPoint(throwBB);
+    emit_throw_error("NameError",
+                     std::format("undefined variable '{}'", name),
+                     current_line_, current_column_);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(contBB);
+  }
+
   // Read guard for a lazy cell: a still-null cell means the declaring
   // statement list never executed — the name is unbound, exactly the
   // interp's runtime NameError (catchable), not a null deref.
@@ -3235,16 +3239,7 @@ struct JIT {
     auto cur = builder_.CreateLoad(ptrTy, slot.alloca, "lazy.cellp");
     auto isNull = builder_.CreateICmpEQ(
         cur, llvm::ConstantPointerNull::get(ptrTy), "lazy.isnull");
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto throwBB = llvm::BasicBlock::Create(ctx_, "lazy.unbound", fn);
-    auto contBB = llvm::BasicBlock::Create(ctx_, "lazy.bound", fn);
-    builder_.CreateCondBr(isNull, throwBB, contBB);
-    builder_.SetInsertPoint(throwBB);
-    emit_throw_error("NameError",
-                     std::format("undefined variable '{}'", name),
-                     current_line_, current_column_);
-    builder_.CreateUnreachable();
-    builder_.SetInsertPoint(contBB);
+    emit_unbound_name_guard(isNull, name, "lazy");
   }
 
   // A `self` read outside a receiver frame: TAG_NO_SELF means the call
@@ -3256,15 +3251,7 @@ struct JIT {
     if (name != "self" || in_receiver_frame_) return;
     auto absent = builder_.CreateICmpEQ(
         extract_tag(val), builder_.getInt8(TAG_NO_SELF), "self.absent");
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto throwBB = llvm::BasicBlock::Create(ctx_, "self.unbound", fn);
-    auto contBB = llvm::BasicBlock::Create(ctx_, "self.bound", fn);
-    builder_.CreateCondBr(absent, throwBB, contBB);
-    builder_.SetInsertPoint(throwBB);
-    emit_throw_error("NameError", "undefined variable 'self'",
-                     current_line_, current_column_);
-    builder_.CreateUnreachable();
-    builder_.SetInsertPoint(contBB);
+    emit_unbound_name_guard(absent, name, "self");
   }
 
   // --- Value helpers ---
@@ -5720,17 +5707,17 @@ struct JIT {
   // the value actually stored at runtime — exactly mirroring the
   // interp's per-call dynamic `env->has(name)`. `declare` (explicit
   // `let`/`mut`) always takes the declare path unconditionally, matching
-  // interp's assign_name. Returns false always (the compile-time
-  // "declares" bookkeeping compile_assign_var uses for `let f = fn ...`
-  // kwargs resolution is inherently ambiguous here; forget_fn_ast's
-  // runtime-resolution fallback is always correct, just not free).
-  bool emit_runtime_decl_assign(const VarSlot& slot, const std::string& name,
+  // interp's assign_name. Always a reassignment from compile_assign_var's
+  // point of view: the compile-time "declares" bookkeeping it uses for
+  // `let f = fn ...` kwargs resolution is inherently ambiguous here, so
+  // callers fall back to forget_fn_ast's runtime resolution.
+  void emit_runtime_decl_assign(const VarSlot& slot, const std::string& name,
                                 llvm::Value* rval, bool declare, bool mut,
                                 size_t line, size_t column) {
     if (declare) {
       store_slot(slot, rval);
       builder_.CreateStore(builder_.getInt1(mut), slot.mut_alloca);
-      return false;
+      return;
     }
     auto fn = builder_.GetInsertBlock()->getParent();
     auto cur = load_slot_raw(slot, name + ".cur");
@@ -5741,8 +5728,13 @@ struct JIT {
     auto contBB = llvm::BasicBlock::Create(ctx_, "decl.cont", fn);
     builder_.CreateCondBr(isUnbound, declBB, reassignBB);
 
+    // `cur` is provably the slot's current content on both successor
+    // paths below (no store in between) — release it directly instead
+    // of routing through store_slot, which would reload the same "old"
+    // value right back out of the alloca it was just read from.
     builder_.SetInsertPoint(declBB);
-    store_slot(slot, rval);
+    store_slot_raw(slot, rval);
+    emit_value_release(cur);
     builder_.CreateStore(builder_.getInt1(mut), slot.mut_alloca);
     builder_.CreateBr(contBB);
 
@@ -5756,11 +5748,11 @@ struct JIT {
     emit_immutable_assign_throw(name, line, column);
     builder_.CreateUnreachable();
     builder_.SetInsertPoint(okBB);
-    store_slot(slot, rval);
+    store_slot_raw(slot, rval);
+    emit_value_release(cur);
     builder_.CreateBr(contBB);
 
     builder_.SetInsertPoint(contBB);
-    return false;
   }
 
   // A non-owning stack slot: stores `initValue` as a borrowed alias (no
@@ -5983,8 +5975,9 @@ struct JIT {
       auto it = slots.find(name);
       if (it != slots.end()) {
         if (it->second.runtime_decl) {
-          return emit_runtime_decl_assign(it->second, name, rval, declare,
-                                          mut, line, column);
+          emit_runtime_decl_assign(it->second, name, rval, declare, mut,
+                                   line, column);
+          return false;
         }
         bool declares = declare || it->second.awaits_implicit_decl;
         it->second.awaits_implicit_decl = false;
