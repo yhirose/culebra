@@ -1,0 +1,32 @@
+# The bare stdlib globals (kBuiltinFns' native functions) reached through
+# NsGet + the generic Call op: conversions, type_of, hash, the I/O trio,
+# and the sequence factories as values.
+println(to_string(42))
+println(to_string(1.5))
+println(to_string(true))
+println(to_string(nil))
+println(to_string('already'))
+println(to_string([1, [2, 3], 'x']))
+println(to_long('7') + 1)
+println(to_long(3.9))
+println(to_long(true))
+println(to_float('2.5'))
+println(to_float(3))
+println(type_of(1))
+println(type_of(1.0))
+println(type_of('s'))
+println(type_of([1, 2]))
+println(type_of(nil))
+println(type_of(to_string))
+# hash values are per-process — assert properties, not the numbers.
+println(hash('abc') == hash('abc'))
+println(type_of(hash('abc')))
+print('a')
+print('b\n')
+inspect([1, nil, 's'])
+inspect('plain')
+# Bare println() takes the generic route and the binder's '' default.
+println()
+println(to_string(range(3)))
+println(to_string(iota(3)))
+println(to_string(iota(2, 5)))

@@ -22,7 +22,12 @@
 // primitive type names, or-patterns of non-binding leaves) with guards;
 // `fn name` declarations with arity-dispatch overloads through the shared
 // multimethod runtime, incl. self/mutual recursion via pre-declared
-// dispatcher cells (reads before the decl runs raise NameError).
+// dispatcher cells (reads before the decl runs raise NameError);
+// the bare stdlib globals (to_string, type_of, range, ... — kBuiltinFns'
+// native functions), resolved per-Runtime through the JIT's namespace_get
+// slow path and called like any closure. Lazy source modules (Time,
+// assert_*, ...) need the preamble splice, which the VM lane skips, so
+// those names stay rejected.
 
 #ifdef CULEBRA_JIT_ENABLED
 
@@ -121,6 +126,11 @@ enum class Op : uint8_t {
                // string); d = the body's chunk index, whose param_names feed
                // the registry (types stay null — arity-only dispatch in the
                // slice). The registry absorbs the body's +1; regs[b] = nil.
+  NsGet,       // regs[a] = stdlib global consts[b] (+1), resolved through
+               // culebra_runtime_namespace_get — the per-Runtime cached
+               // closure the JIT's emit_builtin_var_get slow path returns,
+               // so `f == to_string` holds across reads. Compile-time
+               // allowlisted; the resolver's NameError path is unreachable.
   Throw,       // user `throw`: regs[a]'s +1 transfers to the thrown-value
                // carrier (culebra_runtime_throw); regs[a] is nil'd BEFORE the
                // raise so a handler's release ladder cannot double-release
@@ -1171,12 +1181,32 @@ class Compiler {
     loops_.pop_back();
   }
 
-  // Direct `println(<expr>)` — the slice's I/O primitive, one dedicated op.
-  // The caller (compile_expr's CALL case) has already matched the shape.
-  void compile_println(const peg::Ast& ast) {
-    const auto& args = *ast.nodes[1];
-    if (args.nodes.size() != 1) reject(args, "println takes one argument here");
-    emit(Op::Println, compile_expr(*args.nodes[0]).slot);
+  // The stdlib names the slice reaches: kBuiltinFns' bare native globals,
+  // resolvable through culebra_runtime_namespace_get with no preamble
+  // splice. The effects primitives are excluded (their emitting transforms
+  // are rejected); lazy source modules (Time, assert_*, ...) need the
+  // preamble, so they fall through to the unresolved-identifier reject.
+  static bool is_stdlib_global(std::string_view name) {
+    if (name.starts_with("__eff_")) return false;
+    for (const auto& m : kBuiltinFns)
+      if (name == m.name) return true;
+    return false;
+  }
+
+  // Direct 1-positional-arg `println(<expr>)` — the dedicated-op peephole.
+  // Every other shape (bare `println()`, wrong arity, kwargs, println as a
+  // value) takes the generic NsGet + Call route and the runtime's own
+  // diagnostics.
+  bool is_direct_println(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.size() != 2 || ast.nodes[0]->tag != "IDENTIFIER"_ ||
+        ast.nodes[0]->token != "println" || lookup("println") ||
+        ast.nodes[1]->original_tag != "ARGUMENTS"_ ||
+        ast.nodes[1]->nodes.size() != 1)
+      return false;
+    const auto& a0 = *ast.nodes[1]->nodes[0];
+    return a0.tag != "KWARG"_ && a0.original_tag != "KWARG"_ &&
+           a0.tag != "KWARG_SPLAT"_ && a0.original_tag != "KWARG_SPLAT"_;
   }
 
   // General call: callee expression, positional args in a contiguous run of
@@ -1687,9 +1717,13 @@ class Compiler {
       }
       case "IDENTIFIER"_: {
         const Binding* b = lookup(ast.token);
-        if (!b)
-          reject(ast, std::format("unresolved identifier '{}'", ast.token));
-        return read_binding(ast, *b);
+        if (b) return read_binding(ast, *b);
+        if (is_stdlib_global(ast.token)) {
+          int32_t t = alloc_temp(ast);
+          emit(Op::NsGet, t, kconst_str(ast.token));
+          return {t, true};
+        }
+        reject(ast, std::format("unresolved identifier '{}'", ast.token));
       }
       case "UNARY_MINUS"_: {
         auto r = compile_expr(*ast.nodes[1]);  // nodes[0] is the operator
@@ -1756,10 +1790,8 @@ class Compiler {
         return {t, true};
       }
       case "CALL"_: {
-        if (ast.nodes.size() == 2 && ast.nodes[0]->tag == "IDENTIFIER"_ &&
-            ast.nodes[0]->token == "println" && !lookup("println") &&
-            ast.nodes[1]->original_tag == "ARGUMENTS"_) {
-          compile_println(ast);
+        if (is_direct_println(ast)) {
+          emit(Op::Println, compile_expr(*ast.nodes[1]->nodes[0]).slot);
           int32_t t = alloc_temp(ast);
           emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
           return {t, true};
@@ -1793,7 +1825,7 @@ inline std::string dump(const Chunk& c) {
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfTag",
       "MakeClosure", "Call",    "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
-      "ImmutErr",  "UnboundErr", "MultifnReg",
+      "ImmutErr",  "UnboundErr", "MultifnReg", "NsGet",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
@@ -2328,6 +2360,15 @@ struct Exec {
               /*min_arity=*/n, n ? names.data() : nullptr);
           regs[in.b] = JitValue{TAG_NIL, 0};  // the registry took the +1
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(disp)};
+          ++pc;
+          break;
+        }
+        case Op::NsGet: {
+          int8_t tag;
+          int64_t data;
+          culebra_runtime_namespace_get(
+              reinterpret_cast<const char*>(c.consts[in.b].data), &tag, &data);
+          regs[in.a] = JitValue{tag, data};  // the resolver's +1
           ++pc;
           break;
         }
@@ -3004,6 +3045,13 @@ struct Lowering {
               "vm.mf.disp");
           b.CreateStore(j.make_nil(), slots[in.b]);
           b.CreateStore(j.make_func(disp), slots[in.a]);
+          break;
+        }
+        case Op::NsGet: {
+          // The JIT's own bare-builtin slow path; nothrow for allowlisted
+          // names, so a plain call even inside a region.
+          auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
+          b.CreateStore(j.emit_builtin_var_get(nm), slots[in.a]);
           break;
         }
         case Op::Throw: {

@@ -1,0 +1,30 @@
+# Stdlib globals as first-class values: NsGet hands back the per-Runtime
+# cached closure, so reads compare equal, capture like any binding, and a
+# lexical shadow wins over the builtin (the interp's scope order).
+let f = to_string
+println(f(42))
+println(f == to_string)
+println(type_of(f))
+
+let apply = fn (g, x) { g(x) }
+println(apply(to_string, 7))
+println(apply(to_long, '9'))
+println(apply(type_of, []))
+
+# Resolved inside a nested frame: the builtin needs no capture. (`to_long`,
+# not `to_string` — the block shadow below makes `to_string` a local of this
+# function, and FnAnalysis' locals set is function-granular, so a fn body
+# reading it would be a forward-reference capture: rejected in the slice.)
+let show = fn (x) { to_long(x) + 1 }
+println(show('3'))
+
+let p = println
+p('via value')
+p()
+
+# A lexical shadow wins; the builtin is back once the scope closes.
+{
+  let to_string = fn (x) { 'shadowed' }
+  println(to_string(1))
+}
+println(to_string(1))

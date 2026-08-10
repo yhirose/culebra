@@ -1,0 +1,11 @@
+# Stdlib type/value errors: the adapters' own diagnostics at the call site,
+# including a typed-parameter check (grid). The last one is uncaught.
+try { to_long('abc') } catch e { inspect(e) }
+try { to_long(nil) } catch e { inspect(e) }
+try { to_float('xyz') } catch e { inspect(e) }
+try { hash([1, 2]) } catch e { inspect(e) }
+try { grid(1, 2) } catch e { inspect(e) }
+try { range('x') } catch e { inspect(e) }
+let g = to_float
+try { g([1]) } catch e { inspect(e) }
+to_long('nope')

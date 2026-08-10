@@ -525,3 +525,31 @@ null-pointer読み出しガードの頼る「宣言未実行」信号を消す�
 プレースホルダをユーザーコードに流していた — `fn name`だけでなく
 素の`let`でも。まず`jit.h`側を修正（sentinel+値ガード。VMは今回
 その設計をミラーする）、回帰は`tests/test_forward_ref.cul`。
+
+続いてstdlibがruntime層経由で届いた — Phase 1の見取り図の
+「stdlibの大部分はruntime束縛経由で届く（3つ目のstdlib移植は
+しない）」そのままに。新opは`NsGet`の1つだけ:
+`culebra_runtime_namespace_get`で裸のbuiltinグローバルを名前
+解決する — JIT自身のslow path（`emit_builtin_var_get`）が返す
+Runtime毎キャッシュ済みclosureで、loweringはそのemitterをそのまま
+呼ぶ — 結果は普通の関数値なので、呼び出しは既存の汎用`Call` opが
+そのまま受ける。これでnativeな`kBuiltinFns`グローバル全部
+（`to_string` / `to_long` / `to_float` / `type_of` / `hash` /
+`inspect` / `print` / `println` / `range` / `iota` / `grid`）に
+名前毎のコードなしで到達する。プローブで、builtinの直呼びと
+値経由の呼び出し（`let f = to_string; f()`）が結果もエラーも —
+kind・文面・call site位置、型付きパラメータ検査まで — interpと
+JITで既に完全一致することを確認済みだったから: binderの
+trampolineは全部を`set_call_site`に帰着させ、それはVMの`Call` opが
+既に発行している。同名の読み出しは等値（`f == to_string` —
+Runtime毎に1つのキャッシュ済みclosure）、lexicalな束縛は今まで
+どおりbuiltinをshadowし、`println(<1引数>)`は専用opのpeepholeを
+保ちつつ、それ以外の形 — 裸の`println()`・arity違い・値としての
+println — は汎用経路とruntime自身の診断に乗る。lazy source
+モジュール（`Time`・`Regex`・`assert_*`族など）はreject継続:
+これらはpreamble spliceが組み立てるもので、VMレーンは意図的に
+spliceしない。作業の中で境界も1つ見えた: `FnAnalysis`のlocals
+集合は関数粒度なので、同じ関数内のどこかで宣言もされている
+builtin名（fnリテラルの後ろにblockスコープの`let to_string`が
+ある等）は、fn側の読み出しが前方参照captureになる — sliceの他の
+前方参照captureと同じくrejectで、JITはこれをuse siteで解決する。

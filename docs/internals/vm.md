@@ -572,3 +572,34 @@ into user code where the interp raises NameError — with a plain
 `let` as much as a `fn name`. Fixed in `jit.h` first (the sentinel +
 value-guard design the VM now mirrors), regression in
 `tests/test_forward_ref.cul`.
+
+The stdlib then arrived through the runtime layer, exactly as the
+Phase 1 sketch has it ("most of the stdlib arrives through the
+runtime binding — no third stdlib port"): one new op, `NsGet`,
+resolves a bare builtin global by name through
+`culebra_runtime_namespace_get` — the per-Runtime cached closure the
+JIT's own slow path (`emit_builtin_var_get`) returns; the lowering
+just calls that emitter — and the result is an ordinary function
+value for the existing generic `Call` op. That reaches every native
+`kBuiltinFns` global (`to_string` / `to_long` / `to_float` /
+`type_of` / `hash` / `inspect` / `print` / `println` / `range` /
+`iota` / `grid`) with no per-name code, because probing showed the
+interp and the JIT already agree that a direct builtin call and a
+through-value call (`let f = to_string; f()`) produce identical
+results and errors — kind, message, and call-site position, typed
+parameter checks included: the binder trampoline attributes
+everything to `set_call_site`, which the VM's `Call` op already
+publishes. Reads of the same name compare equal (`f == to_string` —
+one cached closure per Runtime), a lexical binding still shadows the
+builtin, and `println(<one arg>)` keeps its dedicated-op peephole
+while every other shape — bare `println()`, wrong arity, println as
+a value — takes the generic route and the runtime's own diagnostics.
+The lazy source modules (`Time`, `Regex`, the `assert_*` family, ...)
+stay rejected: they are built by the preamble splice, which the VM
+lane deliberately skips. One boundary became visible in the process:
+`FnAnalysis`' locals set is function-granular, so a builtin name
+that is *also* declared somewhere in the same function (say a
+block-scoped `let to_string` after a fn literal that reads the
+builtin) turns the fn's read into a forward-reference capture —
+rejected, like every other forward-reference capture in the slice,
+where the JIT resolves it at the use site.

@@ -1,0 +1,11 @@
+# Stdlib arity errors land at the call site with the binder's own message,
+# direct or through a value. The last one is uncaught (nonzero exit).
+try { to_string() } catch e { inspect(e) }
+try { to_string(1, 2) } catch e { inspect(e) }
+try { println(1, 2) } catch e { inspect(e) }
+let f = to_long
+try { f() } catch e { inspect(e) }
+try { range() } catch e { inspect(e) }
+try { range(1, 2, 3) } catch e { inspect(e) }
+try { iota() } catch e { inspect(e) }
+type_of()
