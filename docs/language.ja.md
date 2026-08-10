@@ -2456,10 +2456,10 @@ fn find(xs, target) {
 ```culebra
 # doctest: skip
 let width = "v" + match n {
-    # nが4のとき`+`は完了しない
-    4 => break,
-    _ => "x",
-  }
+  # nが4のとき`+`は完了しない
+  4 => break,
+  _ => "x",
+}
 ```
 
 知っておくべき帰結:

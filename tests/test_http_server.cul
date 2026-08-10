@@ -487,15 +487,15 @@ fn error_kind(f) {
 }
 esrv = Http.server()
 inspect("bind-missing -> " + error_kind(fn () {
-    esrv.bind()
-  }))
+  esrv.bind()
+}))
 inspect("bind-type -> " + error_kind(fn () {
-    esrv.bind("80")
-  }))
+  esrv.bind("80")
+}))
 inspect("listen-missing -> " + error_kind(fn () {
-    esrv.listen()
-  }))
+  esrv.listen()
+}))
 inspect("workers-type -> " + error_kind(fn () {
-    esrv.serve_async(workers: "4")
-  }))
+  esrv.serve_async(workers: "4")
+}))
 esrv.close()

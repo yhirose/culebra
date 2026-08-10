@@ -86,16 +86,16 @@ fn dump() {
     while x < _Canvas.width() {
       let p = _Canvas.get_pixel(x, y)
       s = s + if p == RED {
-          "."
-        } else if p == BLUE {
-          "#"
-        } else if p == GREEN {
-          "o"
-        } else if p == WHITE {
-          "w"
-        } else {
-          " "
-        }
+        "."
+      } else if p == BLUE {
+        "#"
+      } else if p == GREEN {
+        "o"
+      } else if p == WHITE {
+        "w"
+      } else {
+        " "
+      }
       x = x + 1
     }
     rows.push(s)

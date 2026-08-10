@@ -11,10 +11,10 @@
 
 fn in_binop(c) {
   y = 5 + if c {
-      return 1
-    } else {
-      2
-    }
+    return 1
+  } else {
+    2
+  }
   y
 }
 assert_eq(in_binop(true), 1)

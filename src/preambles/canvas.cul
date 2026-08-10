@@ -73,10 +73,10 @@ let _canvas_module = fn () {
     } else {
       0
     } + if flip_y {
-        2
-      } else {
-        0
-      }
+      2
+    } else {
+      0
+    }
   }
 
   # Pack the blit transform flags. transpose swaps the X and Y axes — a
@@ -84,20 +84,20 @@ let _canvas_module = fn () {
   # rotation).
   let _blit_flags = fn (flip_x, flip_y, transpose) {
     _flip_bits(flip_x, flip_y) + if transpose {
-        4
-      } else {
-        0
-      }
+      4
+    } else {
+      0
+    }
   }
 
   # Flags for the scaling blit. There is no transpose, and bit 3 asks for box
   # averaging when the sprite shrinks (ignored when it doesn't).
   let _scale_flags = fn (flip_x, flip_y, smooth) {
     _flip_bits(flip_x, flip_y) + if smooth {
-        8
-      } else {
-        0
-      }
+      8
+    } else {
+      0
+    }
   }
 
   # A registered sprite. `pixels` is a flat row-major array; if `palette` is

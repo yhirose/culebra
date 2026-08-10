@@ -184,18 +184,18 @@ let _term_module = fn () {
       0
     }
     bright + if r > 110 {
-        1
-      } else {
-        0
-      } + if g > 110 {
-        2
-      } else {
-        0
-      } + if b > 110 {
-        4
-      } else {
-        0
-      }
+      1
+    } else {
+      0
+    } + if g > 110 {
+      2
+    } else {
+      0
+    } + if b > 110 {
+      4
+    } else {
+      0
+    }
   }
   let _idx_rgb = fn (n) {
     if n < 232 {
@@ -406,10 +406,10 @@ let _term_module = fn () {
         # to blank the continuation cell. Reading that cell back instead misses
         # the row offset and breaks whenever the draw was clipped.
         cx = cx + if _Term.width(gs) == 2 {
-            2
-          } else {
-            1
-          }
+          2
+        } else {
+          1
+        }
       }
       self
     }
@@ -598,10 +598,10 @@ let _term_module = fn () {
     app: fn (body, mouse = false) {
       _Term.raw_on()
       IO.print("\x1b[?1049h\x1b[?25l\x1b[0m" + if mouse {
-          "\x1b[?1002h\x1b[?1006h"
-        } else {
-          ""
-        })
+        "\x1b[?1002h\x1b[?1006h"
+      } else {
+        ""
+      })
       _Term.flush()
       defer {
         IO.print(if mouse {

@@ -2595,10 +2595,10 @@ be ill-typed:
 ```culebra
 # doctest: skip
 let width = "v" + match n {
-    # the `+` never completes when n is 4
-    4 => break,
-    _ => "x",
-  }
+  # the `+` never completes when n is 4
+  4 => break,
+  _ => "x",
+}
 ```
 
 Consequences worth knowing:

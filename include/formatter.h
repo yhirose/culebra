@@ -57,6 +57,7 @@ struct Doc {
   std::vector<DocP> children;  // Concat, Group (size 1), Indent (size 1)
   int indent = 0;              // Indent
   bool weightless = false;     // Text that the fit check ignores
+  bool has_hardline = false;   // this doc or anything under it breaks
 };
 
 inline DocP doc_text(std::string s) {
@@ -84,14 +85,29 @@ inline DocP doc_if_break(std::string s) {
 }
 inline DocP doc_line() { auto d = std::make_shared<Doc>(); d->kind = DocKind::Line; return d; }
 inline DocP doc_softline() { auto d = std::make_shared<Doc>(); d->kind = DocKind::SoftLine; return d; }
-inline DocP doc_hardline() { auto d = std::make_shared<Doc>(); d->kind = DocKind::HardLine; return d; }
+inline DocP doc_hardline() {
+  auto d = std::make_shared<Doc>();
+  d->kind = DocKind::HardLine;
+  d->has_hardline = true;
+  return d;
+}
 inline DocP doc_concat(std::vector<DocP> xs) {
   auto d = std::make_shared<Doc>();
   d->kind = DocKind::Concat;
   d->children = std::move(xs);
+  for (const auto& c : d->children) d->has_hardline |= c && c->has_hardline;
   return d;
 }
+// A Group may only wrap docs that can lay out flat, so one holding a HardLine
+// is no Group at all: doc_fits stops measuring at the first hardline and
+// reports "fits", which would render everything past it as if flat. Degrading
+// to the child is what break mode already renders — with no Group left on the
+// path, the separators below lay out broken. Callers that want a specific
+// shape for such a doc (print_delimited's hug, print_call's flat chain) test
+// for the break themselves and never get here; this keeps the invariant true
+// for the ones that don't.
 inline DocP doc_group(DocP x) {
+  if (x && x->has_hardline) return x;
   auto d = std::make_shared<Doc>();
   d->kind = DocKind::Group;
   d->children = {std::move(x)};
@@ -101,6 +117,7 @@ inline DocP doc_indent(int n, DocP x) {
   auto d = std::make_shared<Doc>();
   d->kind = DocKind::Indent;
   d->indent = n;
+  d->has_hardline = x && x->has_hardline;
   d->children = {std::move(x)};
   return d;
 }
@@ -120,15 +137,9 @@ inline DocP doc_flatten(const DocP& d) {
   return c;
 }
 
-// A Group may only wrap docs that can lay out flat, so anything holding a
-// HardLine has to stay ungrouped (the invariant the layout relies on).
-inline bool doc_has_hardline(const DocP& d) {
-  if (!d) return false;
-  if (d->kind == DocKind::HardLine) return true;
-  for (const auto& c : d->children)
-    if (doc_has_hardline(c)) return true;
-  return false;
-}
+// Whether a doc breaks a line no matter how much room it is given. Folded in
+// at construction, so asking is O(1) however deeply the doc is nested.
+inline bool doc_has_hardline(const DocP& d) { return d && d->has_hardline; }
 
 struct LayoutCmd {
   int indent;
@@ -890,6 +901,26 @@ class Printer {
     }
 
     size_t m = operands.size();
+    std::vector<DocP> ods{
+        print_operand(*operands[0], P, /*assoc_safe=*/!right_assoc, node.name)};
+    for (size_t k = 1; k < m; k++)
+      ods.push_back(print_operand(*operands[k], P,
+                                  right_assoc ? (k == m - 1) : false, node.name));
+
+    // An operand that breaks on its own — a call carrying a block argument —
+    // leaves the chain nothing worth wrapping: the width is already spent, and
+    // breaking after an operator would only push that operand's own lines a
+    // level deeper. Keep the chain on one line and let the operand break
+    // inside itself.
+    if (std::any_of(ods.begin(), ods.end(), doc_has_hardline)) {
+      std::vector<DocP> flat{ods[0]};
+      for (size_t k = 1; k < m; k++) {
+        flat.push_back(doc_text(" " + ops[k - 1] + " "));
+        flat.push_back(std::move(ods[k]));
+      }
+      return doc_concat(std::move(flat));
+    }
+
     // Flat: `a op b op c`. When too wide, break AFTER each operator so it ends
     // the line and the continuation is indented:
     //   a op
@@ -901,13 +932,12 @@ class Printer {
     // so trailing the operator is safe for every binary operator.
     std::vector<DocP> cont;
     for (size_t k = 1; k < m; k++) {
-      bool assoc_safe = right_assoc ? (k == m - 1) : false;
       cont.push_back(doc_text(" " + ops[k - 1]));
       cont.push_back(doc_line());
-      cont.push_back(print_operand(*operands[k], P, assoc_safe, node.name));
+      cont.push_back(std::move(ods[k]));
     }
     return doc_group(doc_concat({
-        print_operand(*operands[0], P, /*assoc_safe=*/!right_assoc, node.name),
+        std::move(ods[0]),
         doc_indent(kIndent, doc_concat(std::move(cont))),
     }));
   }
@@ -949,6 +979,11 @@ class Printer {
     DocP cond = print_operand(*node.nodes[0], prec("CONDITIONAL"), /*assoc_safe=*/true);
     DocP then = print(*node.nodes[1]);
     DocP els = print_operand(*node.nodes[2], prec("CONDITIONAL"), /*assoc_safe=*/true);
+    // A branch that breaks on its own wraps nothing useful, exactly as in a
+    // binary chain: stay on one line and let the branch break inside itself.
+    if (doc_has_hardline(cond) || doc_has_hardline(then) || doc_has_hardline(els))
+      return doc_concat({cond, doc_text(" ? "), std::move(then), doc_text(" : "),
+                         std::move(els)});
     // Wrap like a binary chain when it overflows: `?` and `:` lead the
     // continuation lines, which parses because both are infix rungs that admit
     // a newline before them (unlike `+`, where breaking early ends the term).
@@ -1082,26 +1117,20 @@ class Printer {
       if (is_dot(*node.nodes[i]) && node.nodes[i + 1]->original_name == "ARGUMENTS")
         calls++;
 
-    std::vector<DocP> segs;
+    std::vector<DocP> segs{receiver};
     for (size_t i = 1; i < node.nodes.size(); i++)
       segs.push_back(print_postfix(*node.nodes[i]));
 
-    // A chain carrying a block argument already breaks, and a Group may not
-    // wrap a hardline: doc_fits would call it flat, leaving the `.` softlines
-    // unbroken while the indent below still applied to the breaks inside —
-    // pushing that argument list a level too deep. Such a chain stays flat.
-    bool breaks = doc_has_hardline(receiver);
-    for (const auto& s : segs) breaks = breaks || doc_has_hardline(s);
+    // A chain carrying a block argument has nothing worth wrapping either: the
+    // indent below would push that argument list a level deeper than the same
+    // call written without the chain. Such a chain stays flat.
+    if (calls < 2 || std::any_of(segs.begin(), segs.end(), doc_has_hardline))
+      return doc_concat(std::move(segs));
 
-    if (calls < 2 || breaks) {
-      std::vector<DocP> parts{receiver};
-      for (auto& s : segs) parts.push_back(std::move(s));
-      return doc_concat(std::move(parts));
-    }
     std::vector<DocP> cont;
     for (size_t i = 1; i < node.nodes.size(); i++) {
       if (is_dot(*node.nodes[i])) cont.push_back(doc_softline());  // break before `.`
-      cont.push_back(std::move(segs[i - 1]));
+      cont.push_back(std::move(segs[i]));
     }
     return doc_group(doc_concat({receiver, doc_indent(kIndent, doc_concat(std::move(cont)))}));
   }

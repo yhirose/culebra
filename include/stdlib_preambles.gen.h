@@ -398,18 +398,18 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
       0
     }
     bright + if r > 110 {
-        1
-      } else {
-        0
-      } + if g > 110 {
-        2
-      } else {
-        0
-      } + if b > 110 {
-        4
-      } else {
-        0
-      }
+      1
+    } else {
+      0
+    } + if g > 110 {
+      2
+    } else {
+      0
+    } + if b > 110 {
+      4
+    } else {
+      0
+    }
   }
   let _idx_rgb = fn (n) {
     if n < 232 {
@@ -620,10 +620,10 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
         # to blank the continuation cell. Reading that cell back instead misses
         # the row offset and breaks whenever the draw was clipped.
         cx = cx + if _Term.width(gs) == 2 {
-            2
-          } else {
-            1
-          }
+          2
+        } else {
+          1
+        }
       }
       self
     }
@@ -812,10 +812,10 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
     app: fn (body, mouse = false) {
       _Term.raw_on()
       IO.print("\x1b[?1049h\x1b[?25l\x1b[0m" + if mouse {
-          "\x1b[?1002h\x1b[?1006h"
-        } else {
-          ""
-        })
+        "\x1b[?1002h\x1b[?1006h"
+      } else {
+        ""
+      })
       _Term.flush()
       defer {
         IO.print(if mouse {
@@ -909,10 +909,10 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     } else {
       0
     } + if flip_y {
-        2
-      } else {
-        0
-      }
+      2
+    } else {
+      0
+    }
   }
 
   # Pack the blit transform flags. transpose swaps the X and Y axes — a
@@ -920,20 +920,20 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   # rotation).
   let _blit_flags = fn (flip_x, flip_y, transpose) {
     _flip_bits(flip_x, flip_y) + if transpose {
-        4
-      } else {
-        0
-      }
+      4
+    } else {
+      0
+    }
   }
 
   # Flags for the scaling blit. There is no transpose, and bit 3 asks for box
   # averaging when the sprite shrinks (ignored when it doesn't).
   let _scale_flags = fn (flip_x, flip_y, smooth) {
     _flip_bits(flip_x, flip_y) + if smooth {
-        8
-      } else {
-        0
-      }
+      8
+    } else {
+      0
+    }
   }
 
   # A registered sprite. `pixels` is a flat row-major array; if `palette` is

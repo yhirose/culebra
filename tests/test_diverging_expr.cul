@@ -152,9 +152,9 @@ mut widths = []
 while true {
   n = n + 1
   let s = "v" + match n {
-      4 => break,
-      _ => "x",
-    }
+    4 => break,
+    _ => "x",
+  }
   widths.push(s.size())
 }
 assert_eq(widths, [2, 2, 2])
@@ -197,9 +197,9 @@ fn defer_return(x) {
     log2.push("fn-d")
   }
   let s = "r" + match x {
-      7 => return "early",
-      _ => "late",
-    }
+    7 => return "early",
+    _ => "late",
+  }
   s
 }
 assert_eq(defer_return(7), "early")
