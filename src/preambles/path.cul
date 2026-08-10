@@ -127,18 +127,18 @@ let _path_module = fn () {
     # --- directory listing / globbing (return Path, so chains stay Path) ---
     list() {
       FS.list_dir(self._path).map(fn (e) {
-          Path.new(FS.join(self._path, e))
-        })
+        Path.new(FS.join(self._path, e))
+      })
     }
     glob(pattern) {
       FS.glob(FS.join(self._path, pattern)).map(fn (p) {
-          Path.new(p)
-        })
+        Path.new(p)
+      })
     }
     walk() {
       FS.walk(self._path).map(fn (p) {
-          Path.new(p)
-        })
+        Path.new(p)
+      })
     }
   }
   Path

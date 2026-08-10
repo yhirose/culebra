@@ -17,8 +17,8 @@ assert_eq("John 3".replace(re'(?<w>\w+) (?<n>\d+)', "$<n>:$<w>"), "3:John")
 
 # Regex with a callback repl.
 assert_eq("x12y3".replace(re'\d+', fn (m) {
-    "[{m.value}]"
-  }), "x[12]y[3]")
+  "[{m.value}]"
+}), "x[12]y[3]")
 
 # A pre-compiled named Regex works too.
 let R = Regex.compile("(?<a>\d+)-(?<b>\d+)")

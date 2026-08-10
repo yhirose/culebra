@@ -52,11 +52,11 @@ assert_throws("ArityError", || {a: 1}.get_or_put("z", fn (*, k) {
 }))
 // ...but a thunk whose parameters all have somewhere to come from runs.
 assert_eq({a: 1}.get_or_put("z", fn (q = 5) {
-    q
-  }), 5)
+  q
+}), 5)
 assert_eq({a: 1}.get_or_put("y", fn (*rest) {
-    rest.size()
-  }), 0)
+  rest.size()
+}), 0)
 
 // A key and a value that never reach the slot (the thunk raised, or the key
 // is unhashable) must not strand — the RC-leak net for these lives in the

@@ -101,9 +101,9 @@ test_nested_inlined_callbacks = fn () {
 # The lazy-iterator side fuses through the same emitters.
 test_iterator_chain_capture = fn () {
   let r = range(3).map(fn (i) {
-      let k = i * 2
-      [1].map(|_| k)[0]
-    }).collect()
+    let k = i * 2
+    [1].map(|_| k)[0]
+  }).collect()
   assert_eq(r, [0, 2, 4])
 }
 

@@ -4217,8 +4217,8 @@ inspect('👨‍👩‍👧'.graphemes().count())    # => 1
 
 # Numeric ops via code_points
 upper = 'Hello World'.code_points().filter(fn (cp) {
-    cp >= 65 && cp <= 90
-  }).count()  # 2 ('H', 'W')
+  cp >= 65 && cp <= 90
+}).count()  # 2 ('H', 'W')
 ```
 
 All three iterators **decode the source string on demand**: each

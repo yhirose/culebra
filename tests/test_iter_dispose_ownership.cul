@@ -8,20 +8,30 @@
 # Distinct iterator: the iterator's drop fires at loop exit (after dispose),
 # the iterable's drop at its scope exit.
 fn mk_distinct() {
-  {v: 1, iter: fn () {
-      {mut i: 0, has_next: fn () {
+  {
+    v: 1,
+    iter: fn () {
+      {
+        mut i: 0,
+        has_next: fn () {
           self.i < 3
-        }, next: fn () {
+        },
+        next: fn () {
           self.i = self.i + 1
           self.i
-        }, dispose: fn () {
+        },
+        dispose: fn () {
           inspect("distinct: disposed")
-        }, drop: fn () {
+        },
+        drop: fn () {
           inspect("distinct: iter dropped")
-        }}
-    }, drop: fn () {
+        },
+      }
+    },
+    drop: fn () {
       inspect("distinct: iterable dropped")
-    }}
+    },
+  }
 }
 
 fn run_distinct() {
@@ -46,18 +56,25 @@ inspect("fresh: after run")
 
 # Self-returning iterator: still usable after the loop, drop at scope exit.
 fn mk_self() {
-  {mut i: 0, iter: fn () {
+  {
+    mut i: 0,
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       self.i < 3
-    }, next: fn () {
+    },
+    next: fn () {
       self.i = self.i + 1
       self.i
-    }, dispose: fn () {
+    },
+    dispose: fn () {
       inspect("self: disposed")
-    }, drop: fn () {
+    },
+    drop: fn () {
       inspect("self: dropped")
-    }}
+    },
+  }
 }
 
 fn run_self() {

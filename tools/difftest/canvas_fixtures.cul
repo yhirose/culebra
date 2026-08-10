@@ -13,11 +13,11 @@ let _CA = 255 * 16777216
 # one record.
 fn _cdump() {
   range(_Canvas.height()).map(fn (y) {
-      range(_Canvas.width()).map(fn (x) {
-          let p = _Canvas.get_pixel(x, y)
-          p == 0 ? "." : to_string(p % 10)
-        }).join("")
-    }).join("/")
+    range(_Canvas.width()).map(fn (x) {
+      let p = _Canvas.get_pixel(x, y)
+      p == 0 ? "." : to_string(p % 10)
+    }).join("")
+  }).join("/")
 }
 
 # Two-glyph 8x8 font for the glyph cases: index 0 is a solid block, index 1 a

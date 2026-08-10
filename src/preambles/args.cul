@@ -311,9 +311,11 @@ let _args_module = fn () {
     }
     _parse_impl_flat(argv, spec)
   }
-  {try_parse: fn (argv, spec) {
+  {
+    try_parse: fn (argv, spec) {
       _parse_impl(argv, spec)
-    }, parse: fn (argv, spec) {
+    },
+    parse: fn (argv, spec) {
       try {
         _parse_impl(argv, spec)
       } catch e {
@@ -329,8 +331,10 @@ let _args_module = fn () {
         IO.eprintln("error: {msg}")
         Sys.exit(2)
       }
-    }, help: fn (spec) {
+    },
+    help: fn (spec) {
       _format_help(spec)
-    }}
+    },
+  }
 }
 let Args = _args_module()

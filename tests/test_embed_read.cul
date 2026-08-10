@@ -43,8 +43,12 @@ try {
 
 # The handle is Sendable: an isolate rebuilds it over the same directory.
 (tx, rx) = Channel.new()
-h = Isolate.spawn(fn (tx, art) {
+h = Isolate.spawn(
+  fn (tx, art) {
     tx.send(art.read("app.js").trim())
-  }, tx, d)
+  },
+  tx,
+  d,
+)
 inspect("from isolate: " + rx.recv())
 h.join()

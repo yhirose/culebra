@@ -45,8 +45,8 @@ fn closed_msg(thunk) {
   let c = b.inner()
   b.drop()
   assert_eq(closed_msg(fn () {
-      c.value()
-    }), 'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+    c.value()
+  }), 'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
 }
 
 # --- An escaped borrow keeps its owner alive (escape-based ownership):
@@ -71,8 +71,8 @@ fn closed_msg(thunk) {
   assert_eq(c.value(), 3)
   b.reset(9)  # non-const: gen++
   assert_eq(closed_msg(fn () {
-      c.value()
-    }), 'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+    c.value()
+  }), 'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
   assert_eq(b.inner().value(), 9)  # a fresh borrow sees the new state
 }
 
@@ -92,8 +92,8 @@ fn closed_msg(thunk) {
   assert_eq(r.value(), 6)
   b.reset(1)
   assert_eq(closed_msg(fn () {
-      r.value()
-    }), 'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+    r.value()
+  }), 'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
 }
 
 # --- Mutating THROUGH a borrow does not invalidate its siblings. -------------
@@ -128,8 +128,8 @@ fn closed_msg(thunk) {
   let c = b.inner()
   let r = try {
     Isolate.spawn(fn () {
-        c.value()
-      }).join()
+      c.value()
+    }).join()
   } catch e {
     e.kind
   }

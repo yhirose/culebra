@@ -1344,10 +1344,10 @@ let render = fn () {
       # it, so the car's own projection is the constant H — v4 interpolates its
       # camera-space height to arrive at the same number.
       draw_player(speed / MAX_SPEED, H * 1.0, cond {
-          key_left => -1.0,
-          key_right => 1.0,
-          _ => 0.0,
-        }, player_segment.p2_wy - player_segment.p1_wy)
+        key_left => -1.0,
+        key_right => 1.0,
+        _ => 0.0,
+      }, player_segment.p2_wy - player_segment.p1_wy)
     }
     mi -= 1
     mi = n_segments - 1 if mi < 0

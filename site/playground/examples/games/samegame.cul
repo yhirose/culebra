@@ -285,108 +285,108 @@ fn try_remove(b, r, c) {
 }
 
 Term.app(fn (s) {
-    mut board = new_board()
-    mut score = 0
-    mut cur_r = 0
-    mut cur_c = 0
-    mut moves = 0
-    mut msg = ""
+  mut board = new_board()
+  mut score = 0
+  mut cur_r = 0
+  mut cur_c = 0
+  mut moves = 0
+  mut msg = ""
 
-    fn new_round() {
-      board = new_board()
-      score = 0
-      cur_r = 0
-      cur_c = 0
-      moves = 0
-      msg = ""
-    }
+  fn new_round() {
+    board = new_board()
+    score = 0
+    cur_r = 0
+    cur_c = 0
+    moves = 0
+    msg = ""
+  }
 
-    draw(s, board, cur_r, cur_c, score, msg)
+  draw(s, board, cur_r, cur_c, score, msg)
 
-    while true {
-      if !has_moves(board) {
-        let left = count_tiles(board)
-        if left == 0 {
-          score += 1000
-          msg = "CLEARED!  bonus +1000"
-        } else {
-          msg = "no moves — game over ({left} left)"
-        }
-        msg += "  —  q: quit, other key: new game"
-        draw(s, board, cur_r, cur_c, score, msg)
-        return if !INTERACTIVE
-        let (best, entry) = record_score(score)
-        if entry != nil {
-          draw_score_box(s, best, entry, "q: quit   other key: new game")
-          return if wait_any_key(s) == "q"
-          new_round()
-          draw(s, board, cur_r, cur_c, score, msg)
-          continue
-        }
+  while true {
+    if !has_moves(board) {
+      let left = count_tiles(board)
+      if left == 0 {
+        score += 1000
+        msg = "CLEARED!  bonus +1000"
+      } else {
+        msg = "no moves — game over ({left} left)"
+      }
+      msg += "  —  q: quit, other key: new game"
+      draw(s, board, cur_r, cur_c, score, msg)
+      return if !INTERACTIVE
+      let (best, entry) = record_score(score)
+      if entry != nil {
+        draw_score_box(s, best, entry, "q: quit   other key: new game")
         return if wait_any_key(s) == "q"
         new_round()
         draw(s, board, cur_r, cur_c, score, msg)
+        continue
       }
-      return if MAX_MOVES >= 0 && moves >= MAX_MOVES
+      return if wait_any_key(s) == "q"
+      new_round()
+      draw(s, board, cur_r, cur_c, score, msg)
+    }
+    return if MAX_MOVES >= 0 && moves >= MAX_MOVES
 
-      mut sr = -1
-      mut sc = -1
-      if INTERACTIVE {
-        let ev = s.poll(0.1)
-        if ev != nil {
-          if ev.kind == "key" {
-            return if ev.key == "q"
-            match ev.key {
-              "n" => {
-                new_round()
-              },
-              "s" => {
-                show_scores(s, board, cur_r, cur_c, score, msg)
-              },
-              "h" => {
-                show_help(s, board, cur_r, cur_c, score, msg)
-              },
-              "left" => {
-                cur_c = Math.clamp(cur_c - 1, 0, COLS - 1)
-              },
-              "right" => {
-                cur_c = Math.clamp(cur_c + 1, 0, COLS - 1)
-              },
-              "up" => {
-                cur_r = Math.clamp(cur_r - 1, 0, ROWS - 1)
-              },
-              "down" => {
-                cur_r = Math.clamp(cur_r + 1, 0, ROWS - 1)
-              },
-              " " | "enter" => {
-                sr = cur_r
-                sc = cur_c
-              },
-            }
-            draw(s, board, cur_r, cur_c, score, msg)
-          } else if ev.kind == "mouse" && ev.event == "press" && ev.button == "left" {
-            let (ox, oy) = offsets(s)
-            let gc = (ev.x - ox) / 2
-            let gr = ev.y - oy
-            if gr >= 0 && gr < ROWS && gc >= 0 && gc < COLS {
-              sr = gr
-              sc = gc
-            }
+    mut sr = -1
+    mut sc = -1
+    if INTERACTIVE {
+      let ev = s.poll(0.1)
+      if ev != nil {
+        if ev.kind == "key" {
+          return if ev.key == "q"
+          match ev.key {
+            "n" => {
+              new_round()
+            },
+            "s" => {
+              show_scores(s, board, cur_r, cur_c, score, msg)
+            },
+            "h" => {
+              show_help(s, board, cur_r, cur_c, score, msg)
+            },
+            "left" => {
+              cur_c = Math.clamp(cur_c - 1, 0, COLS - 1)
+            },
+            "right" => {
+              cur_c = Math.clamp(cur_c + 1, 0, COLS - 1)
+            },
+            "up" => {
+              cur_r = Math.clamp(cur_r - 1, 0, ROWS - 1)
+            },
+            "down" => {
+              cur_r = Math.clamp(cur_r + 1, 0, ROWS - 1)
+            },
+            " " | "enter" => {
+              sr = cur_r
+              sc = cur_c
+            },
+          }
+          draw(s, board, cur_r, cur_c, score, msg)
+        } else if ev.kind == "mouse" && ev.event == "press" && ev.button == "left" {
+          let (ox, oy) = offsets(s)
+          let gc = (ev.x - ox) / 2
+          let gr = ev.y - oy
+          if gr >= 0 && gr < ROWS && gc >= 0 && gc < COLS {
+            sr = gr
+            sc = gc
           }
         }
-      } else {
-        (sr, sc) = find_move(board)
-        Time.sleep(0.04)
       }
+    } else {
+      (sr, sc) = find_move(board)
+      Time.sleep(0.04)
+    }
 
-      if sr >= 0 {
-        let n = try_remove(board, sr, sc)
-        if n >= 2 {
-          score += (n - 2) * (n - 2)
-          moves += 1
-          msg = "cleared {n}"
-          draw(s, board, cur_r, cur_c, score, msg)
-        }
+    if sr >= 0 {
+      let n = try_remove(board, sr, sc)
+      if n >= 2 {
+        score += (n - 2) * (n - 2)
+        moves += 1
+        msg = "cleared {n}"
+        draw(s, board, cur_r, cur_c, score, msg)
       }
     }
-  }, mouse: INTERACTIVE)  # enable mouse reporting (interactive only) so clicks reach s.poll()
+  }
+}, mouse: INTERACTIVE)  # enable mouse reporting (interactive only) so clicks reach s.poll()

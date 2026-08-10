@@ -645,15 +645,19 @@ guarantee for lazy chains: [language.md §18.5](language.md).
 ```culebra
 countdown = fn (start) {
   mut i = start
-  {iter: fn () {
+  {
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       i > 0
-    }, next: fn () {
+    },
+    next: fn () {
       v = i
       i -= 1
       v
-    }}
+    },
+  }
 }
 
 for v in countdown(3) {
@@ -1107,11 +1111,14 @@ private). Both styles are first-class.
 ```culebra
 Car2 = {new: fn (mpr) {
   mut miles = 0
-  {run: fn (n) {
+  {
+    run: fn (n) {
       miles += mpr * n
-    }, total: fn () {
+    },
+    total: fn () {
       "total: {miles} miles"
-    }}
+    },
+  }
 }}
 
 car = Car2.new(5)

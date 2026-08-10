@@ -43,12 +43,12 @@ assert_eq(b.sigmoid(), "box-sigmoid")
 
 // builtins still apply on Array / String receivers
 assert_eq([3, 1, 2].find(fn (x) {
-    x == 2
-  }), 2)
+  x == 2
+}), 2)
 assert_eq("a,b,c".split(",").size(), 3)
 assert_eq([1, 2, 3].map(fn (x) {
-    x * 2
-  })[2], 6)
+  x * 2
+})[2], 6)
 
 // a builtin the user class does not define still reaches the builtin
 let xs = [5, 1, 9]

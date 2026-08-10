@@ -164,30 +164,45 @@ let _time_module = fn () {
       n != nil && self._nanos == n
     }
   }
-  {now: fn () {
+  {
+    now: fn () {
       Instant.new(_Time.now_nanos())
-    }, monotonic: fn () {
+    },
+    monotonic: fn () {
       _Time.monotonic()
-    }, sleep: fn (secs) {
+    },
+    sleep: fn (secs) {
       _Time.sleep(secs)
-    }, from_iso: fn (s) {
+    },
+    from_iso: fn (s) {
       Instant.new(_Time.from_iso_nanos(s))
-    }, from_unix: fn (secs) {
+    },
+    from_unix: fn (secs) {
       Instant.new(to_long(to_float(secs) * 1000000000.0))
-    }, from_parts: fn (p, utc = false) {
+    },
+    from_parts: fn (p, utc = false) {
       Instant.new(_Time.from_parts_nanos(p, utc))
-    }, parse: fn (s, fmt) {
+    },
+    parse: fn (s, fmt) {
       Instant.new(_Time.parse_nanos(s, fmt))
-    }, seconds: fn (n) {
+    },
+    seconds: fn (n) {
       Duration.new(to_long(to_float(n) * 1000000000.0))
-    }, milliseconds: fn (n) {
+    },
+    milliseconds: fn (n) {
       Duration.new(to_long(to_float(n) * 1000000.0))
-    }, minutes: fn (n) {
+    },
+    minutes: fn (n) {
       Duration.new(to_long(to_float(n) * 60000000000.0))
-    }, hours: fn (n) {
+    },
+    hours: fn (n) {
       Duration.new(to_long(to_float(n) * 3600000000000.0))
-    }, days: fn (n) {
+    },
+    days: fn (n) {
       Duration.new(to_long(to_float(n) * 86400000000000.0))
-    }, Instant: Instant, Duration: Duration}
+    },
+    Instant: Instant,
+    Duration: Duration,
+  }
 }
 let Time = _time_module()

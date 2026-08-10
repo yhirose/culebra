@@ -54,11 +54,11 @@ assert_eq(e2, "TypeError")
 
 // Real builtin methods still work positionally (regression guard).
 assert_eq([1, 2, 3].all(fn (x) {
-    x > 0
-  }), true)
+  x > 0
+}), true)
 assert_eq([1, 2, 3].map(fn (x) {
-    x * 2
-  }), [2, 4, 6])
+  x * 2
+}), [2, 4, 6])
 assert_eq("hi".upper(), "HI")
 
 // --- ns-method arity / splat check ORDER matches interp -------------------
@@ -160,8 +160,8 @@ let bs = nm_err(fn () {
 assert_true(bs.message.contains("'upper' cannot be used as a value"))
 // Immediate method calls still work.
 assert_eq([1, 2].map(fn (x) {
-    x * 2
-  }), [2, 4])
+  x * 2
+}), [2, 4])
 assert_eq("hi".upper(), "HI")
 // A user-defined method IS a first-class value (stays callable through a var).
 class Doubler {

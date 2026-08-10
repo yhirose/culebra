@@ -38,13 +38,13 @@ fn make_a_class() {
   Local.new(1)
 }
 assert_lt(measure(fn () {
-    mut j = 0
-    while j < 100 {
-      make_a_class().b()
-      j = j + 1
-    }
-    j
-  }), 1000)
+  mut j = 0
+  while j < 100 {
+    make_a_class().b()
+    j = j + 1
+  }
+  j
+}), 1000)
 inspect("gc leak [class-in-fn]: no leak")
 
 // Variant — binding the constructor (or any method) to a name goes through
@@ -64,11 +64,11 @@ fn make_and_bind() {
   mk(1).m()
 }
 assert_lt(measure(fn () {
-    mut j = 0
-    while j < 100 {
-      make_and_bind()
-      j = j + 1
-    }
-    j
-  }), 1000)
+  mut j = 0
+  while j < 100 {
+    make_and_bind()
+    j = j + 1
+  }
+  j
+}), 1000)
 inspect("gc leak [wrapped-ctor bound to name]: no leak")

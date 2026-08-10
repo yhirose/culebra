@@ -12,25 +12,25 @@
 # --- Variadic callbacks are accepted and bind *args correctly ---------------
 # A `*args` callback collects the per-element args into an Array.
 assert_eq([10, 20].map(fn (*xs) {
-    xs.size()
-  }), [1, 1])  # map → 1 arg
+  xs.size()
+}), [1, 1])  # map → 1 arg
 assert_eq([1, 2, 3].reduce(0, fn (*xs) {
-    xs.size()
-  }), 2)  # reduce → 2 args
+  xs.size()
+}), 2)  # reduce → 2 args
 assert_eq([1, 2, 3].reduce(0, fn (a, *xs) {
-    a + xs.size()
-  }), 3)  # acc + 1 each
+  a + xs.size()
+}), 3)  # acc + 1 each
 assert_eq([1, 2, 3].map(fn (a, *xs) {
-    a
-  }), [1, 2, 3])  # rest empty
+  a
+}), [1, 2, 3])  # rest empty
 
 # Same through iterators (terminal HOFs) and as a lazy stage's terminal.
 assert_eq(range(1, 4).find(fn (*xs) {
-    xs[0] == 2
-  }), 2)
+  xs[0] == 2
+}), 2)
 assert_eq(range(1, 4).reduce(0, fn (a, b) {
-    a + b
-  }), 6)
+  a + b
+}), 6)
 
 # range / iota stay usable as higher-order callbacks (variadic builtins).
 assert_eq([2, 4].map(iota), [[0, 1], [0, 1, 2, 3]])
@@ -95,8 +95,8 @@ assert_eq(rd.kind, 'TypeError')
 
 # The same fixed-arity function IS accepted where the count matches.
 assert_eq([1, 2, 3].reduce(0, fn (a, b = 9) {
-    a + b
-  }), 6)
+  a + b
+}), 6)
 
 # --- The check fires before iterating, so an empty receiver still errors ----
 let re = try {
@@ -146,8 +146,8 @@ assert_eq(rc.message, 'type error: map expects a 1-parameter function')
 # inconsistently.
 let lm = try {
   range(1, 4).map(fn (a, b) {
-      a
-    }).collect()
+    a
+  }).collect()
   nil
 } catch e {
   e
@@ -156,8 +156,8 @@ assert_eq(lm.kind, 'TypeError')
 assert_eq(lm.message, 'type error: map expects a 1-parameter function')
 let lf = try {
   range(1, 4).filter(fn (a, b) {
-      a
-    }).collect()
+    a
+  }).collect()
   nil
 } catch e {
   e
@@ -166,8 +166,8 @@ assert_eq(lf.kind, 'TypeError')
 assert_eq(lf.message, 'type error: filter expects a 1-parameter function')
 let ltw = try {
   range(1, 9).take_while(fn (a, b) {
-      a
-    }).collect()
+    a
+  }).collect()
   nil
 } catch e {
   e
@@ -175,8 +175,8 @@ let ltw = try {
 assert_eq(ltw.message, 'type error: take_while expects a 1-parameter function')
 let lfm = try {
   range(1, 4).flat_map(fn (a, b) {
-      [a]
-    }).collect()
+    [a]
+  }).collect()
   nil
 } catch e {
   e
@@ -185,11 +185,11 @@ assert_eq(lfm.message, 'type error: flat_map expects a 1-parameter function')
 
 # A `*args` callback still works through every lazy stage.
 assert_eq(range(1, 4).map(fn (*xs) {
-      xs.size()
-    }).collect(), [1, 1, 1])
+  xs.size()
+}).collect(), [1, 1, 1])
 assert_eq(range(1, 9).take_while(fn (*xs) {
-      xs[0] < 3
-    }).collect(), [1, 2])
+  xs[0] < 3
+}).collect(), [1, 2])
 
 # A non-Function callback is rejected eagerly (it used to crash the JIT lazy
 # wrapper, which invoked it as a function pointer).
@@ -209,22 +209,22 @@ assert_eq(lnf.message, "type error: parameter 'f' expects Function")
 # call) applied it. Both backends now evaluate `default_expr` in the callback
 # path, matching `f(x)`.
 assert_eq([1, 2, 3].map(fn (a, b = 9, *xs) {
-    b
-  }), [9, 9, 9])  # literal default
+  b
+}), [9, 9, 9])  # literal default
 assert_eq([1, 2, 3].map(fn (a, b = 9, *xs) {
-    xs
-  }), [[], [], []])  # rest still empty
+  xs
+}), [[], [], []])  # rest still empty
 assert_eq([1, 2, 3].map(fn (a, b = a * 10, *xs) {
-    b
-  }), [10, 20, 30])  # default sees earlier param
+  b
+}), [10, 20, 30])  # default sees earlier param
 let cap = 100
 assert_eq([1, 2, 3].map(fn (a, b = cap, *xs) {
-    b
-  }), [100, 100, 100])  # default sees closure var
+  b
+}), [100, 100, 100])  # default sees closure var
 # Same through a 2-arg reducer.
 assert_eq([1, 2].reduce(0, fn (acc, x, c = 5, *xs) {
-    acc + x + c
-  }), 13)
+  acc + x + c
+}), 13)
 # A direct call is the reference semantics the callback path now matches.
 let g = fn (a, b = 9, *xs) {
   b
@@ -293,11 +293,11 @@ let pf = fn ((a, b)) {
 }
 assert_eq([(1, 2)].map(pf), [3])
 assert_eq([(1, 2)].map(fn ((a, b)) {
-    a + b
-  }), [3])
+  a + b
+}), [3])
 assert_eq([(1, 2)].reduce(0, fn (acc, (a, b)) {
-    acc + a + b
-  }), 3)
+  acc + a + b
+}), 3)
 assert_eq([(1, 2)].iter().map(fn ((a, b)) {
-      a + b
-    }).collect(), [3])
+  a + b
+}).collect(), [3])

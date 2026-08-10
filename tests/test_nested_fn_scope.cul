@@ -171,10 +171,10 @@ fn untaken() {
   h(2)
 }
 assert_eq(try {
-    untaken()
-  } catch e {
-    e.kind
-  }, 'NameError')
+  untaken()
+} catch e {
+  e.kind
+}, 'NameError')
 
 # an inner `fn` shadows an outer same-named one; the outer survives
 fn sh_outer() {

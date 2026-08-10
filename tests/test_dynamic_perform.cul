@@ -227,10 +227,10 @@ let sh4 = try {
 assert_eq(sh4, "caught")
 assert_eq(handle { sh_direct() } with sh_ask(r) { r("after") }, "after")
 assert_eq(try {
-    sh_direct()
-  } catch e {
-    e.kind
-  }, "EffectError")
+  sh_direct()
+} catch e {
+  e.kind
+}, "EffectError")
 
 // --- (17) an op named like a dict method (get/has/…) dispatches correctly:
 // the handler index keys must not let such a name shadow the methods the

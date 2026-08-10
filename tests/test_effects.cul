@@ -289,17 +289,17 @@ effect fn th_body() {
   throw "boom"
 }
 assert_eq(try {
-    handle { th_body() } with th_ask(resume) { resume(1) }
-  } catch e {
-    "caught:" + e
-  }, "caught:boom")
+  handle { th_body() } with th_ask(resume) { resume(1) }
+} catch e {
+  "caught:" + e
+}, "caught:boom")
 
 // throw directly in a handle body (lexical position)
 assert_eq(try {
-    handle { let x = perform th_ask(); throw "hb" } with th_ask(resume) { resume(7) }
-  } catch e {
-    "caught:" + e
-  }, "caught:hb")
+  handle { let x = perform th_ask(); throw "hb" } with th_ask(resume) { resume(7) }
+} catch e {
+  "caught:" + e
+}, "caught:hb")
 
 // interior throw skips the (unreachable) tail expression
 effect fn th_interior() {
@@ -308,10 +308,10 @@ effect fn th_interior() {
   x + 1
 }
 assert_eq(try {
-    handle { th_interior() } with th_ask(resume) { resume(1) }
-  } catch e {
-    e
-  }, "mid")
+  handle { th_interior() } with th_ask(resume) { resume(1) }
+} catch e {
+  e
+}, "mid")
 
 // throw guarded by an if arm; the other arm returns normally
 effect fn th_guard(flag) {
@@ -320,10 +320,10 @@ effect fn th_guard(flag) {
 }
 assert_eq(handle { th_guard(false) } with th_ask(resume) { resume(9) }, 9)
 assert_eq(try {
-    handle { th_guard(true) } with th_ask(resume) { resume(9) }
-  } catch e {
-    e
-  }, "hit")
+  handle { th_guard(true) } with th_ask(resume) { resume(9) }
+} catch e {
+  e
+}, "hit")
 
 // a thrown effect body escapes an enclosing generator's iteration too
 fn th_gen() {

@@ -173,8 +173,8 @@ let keeper = {drop: fn () {
 fn run_cyc() {
   {
     let cyc = {drop: fn () {
-        ev6.push('dead')
-      }, keep: keeper}
+      ev6.push('dead')
+    }, keep: keeper}
     cyc.me = cyc
   }
   nil

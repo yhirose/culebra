@@ -183,7 +183,7 @@ assert_eq(Plain.new().hail(sep: "!"), "trait-hail!")  // same gate, kwargs arm
 // A plain dict inherits nothing, so the free function keeps the name.
 assert_eq({}.greet(), "free-function")
 assert_eq({greet: fn () {
-    "dict-slot"
-  }}.greet(), "dict-slot")
+  "dict-slot"
+}}.greet(), "dict-slot")
 
 IO.inspect("test_traits OK")

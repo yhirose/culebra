@@ -65,15 +65,15 @@ _Canvas.set_pixel(Math.nan, 0, BLUE)  // NaN -> 0
 assert_eq(_Canvas.get_pixel(0, 0), BLUE)
 // Colours, flags and handles are still Long-only.
 assert_eq(try {
-    _Canvas.rect(0, 0, 1, 1, 1.5, 1)
-  } catch e {
-    e.message
-  }, "type error: parameter 'rgba' expects Long")
+  _Canvas.rect(0, 0, 1, 1, 1.5, 1)
+} catch e {
+  e.message
+}, "type error: parameter 'rgba' expects Long")
 assert_eq(try {
-    _Canvas.rect("x", 0, 1, 1, 1, 1)
-  } catch e {
-    e.message
-  }, "type error: parameter 'x' expects Long|Float")
+  _Canvas.rect("x", 0, 1, 1, 1, 1)
+} catch e {
+  e.message
+}, "type error: parameter 'x' expects Long|Float")
 
 // --- triangle / polygon: even-odd scanline fill ---
 // Renders the framebuffer as one string per row so a whole shape asserts at once.
@@ -158,25 +158,25 @@ _Canvas.polygon([1, 1, 5, 1, 5], BLUE, 1)  // 2 vertices + a stray x
 assert_eq(dump(), "......../......../......../......../......../........")
 // Vertices carry the same Long|Float contract the scalar arguments do.
 assert_eq(try {
-    _Canvas.polygon([1, 1, "x", 1, 5, 5], BLUE, 1)
-  } catch e {
-    e.message
-  }, "type error: parameter 'points' expects an Array of Long|Float")
+  _Canvas.polygon([1, 1, "x", 1, 5, 5], BLUE, 1)
+} catch e {
+  e.message
+}, "type error: parameter 'points' expects an Array of Long|Float")
 assert_eq(try {
-    _Canvas.polygon(5, BLUE, 1)
-  } catch e {
-    e.message
-  }, "type error: parameter 'points' expects Array")
+  _Canvas.polygon(5, BLUE, 1)
+} catch e {
+  e.message
+}, "type error: parameter 'points' expects Array")
 assert_eq(try {
-    _Canvas.polygon([1, 1, 5, 1, 5, 5], 1.5, 1)
-  } catch e {
-    e.message
-  }, "type error: parameter 'rgba' expects Long")
+  _Canvas.polygon([1, 1, 5, 1, 5, 5], 1.5, 1)
+} catch e {
+  e.message
+}, "type error: parameter 'rgba' expects Long")
 assert_eq(try {
-    _Canvas.triangle(0, 0, 1, 1, 2, 2, 1.5, 1)
-  } catch e {
-    e.message
-  }, "type error: parameter 'rgba' expects Long")
+  _Canvas.triangle(0, 0, 1, 1, 2, 2, 1.5, 1)
+} catch e {
+  e.message
+}, "type error: parameter 'rgba' expects Long")
 
 // --- line / ellipse primitives ---
 // line carries the same Long|Float coordinate contract; both endpoints are
@@ -199,15 +199,15 @@ _Canvas.clear(0)
 _Canvas.line(0.9, 2.1, 4.2, 2.8, BLUE)  // Floats floor like other coords
 assert_eq(_Canvas.get_pixel(0, 2), BLUE)
 assert_eq(try {
-    _Canvas.line(0, 0, "x", 1, 1)
-  } catch e {
-    e.message
-  }, "type error: parameter 'x2' expects Long|Float")
+  _Canvas.line(0, 0, "x", 1, 1)
+} catch e {
+  e.message
+}, "type error: parameter 'x2' expects Long|Float")
 assert_eq(try {
-    _Canvas.line(0, 0, 1, 1, 1.5)
-  } catch e {
-    e.message
-  }, "type error: parameter 'rgba' expects Long")
+  _Canvas.line(0, 0, 1, 1, 1.5)
+} catch e {
+  e.message
+}, "type error: parameter 'rgba' expects Long")
 
 // ellipse: centre-and-radii, fill and outline; negative radius draws nothing.
 _Canvas.init(7, 7)
@@ -223,15 +223,15 @@ assert_eq(_Canvas.get_pixel(3, 3), 0)  // interior untouched
 _Canvas.ellipse(3, 3, -1, 2, RED, 1)
 assert_eq(_Canvas.get_pixel(3, 3), 0)  // negative radius: nothing
 assert_eq(try {
-    _Canvas.ellipse(0, 0, "r", 1, 1, 1)
-  } catch e {
-    e.message
-  }, "type error: parameter 'rx' expects Long|Float")
+  _Canvas.ellipse(0, 0, "r", 1, 1, 1)
+} catch e {
+  e.message
+}, "type error: parameter 'rx' expects Long|Float")
 assert_eq(try {
-    _Canvas.ellipse(0, 0, 1, 1, 1.5, 1)
-  } catch e {
-    e.message
-  }, "type error: parameter 'rgba' expects Long")
+  _Canvas.ellipse(0, 0, 1, 1, 1.5, 1)
+} catch e {
+  e.message
+}, "type error: parameter 'rgba' expects Long")
 
 _Canvas.init(4, 4)
 
@@ -406,10 +406,10 @@ _Canvas.blit_scaled(hole, 0, 0, 1, 1, 0, 0, 4, 1, 8, 255)
 assert_eq(_Canvas.get_pixel(0, 0), RED)
 
 assert_eq(try {
-    _Canvas.blit_scaled(chk, 0, 0, 1, 1, 0, 0, 1, 1, 0, "x")
-  } catch e {
-    e.message
-  }, "type error: parameter 'alpha' expects Long")
+  _Canvas.blit_scaled(chk, 0, 0, 1, 1, 0, 0, 1, 1, 0, "x")
+} catch e {
+  e.message
+}, "type error: parameter 'alpha' expects Long")
 
 // --- font_load / glyph: an 8x8 bitmap cell, one call per character ---
 // Two glyphs: index 0 is a solid block, index 1 a single top-left pixel.
@@ -505,20 +505,20 @@ assert_eq(png_pixels(PNG_I16), [RED, GREEN])               // 16 bpc, narrowed
 // Anything that isn't a decodable PNG raises the one shared ValueError.
 let truncated = "89504e470d0a1a0a0000000d4948445200000002"
 assert_eq(try {
-    _Canvas.sprite_from_png(Encoding.hex.decode(truncated))
-  } catch e {
-    e.kind + "|" + e.message
-  }, "ValueError|not a valid PNG image")
+  _Canvas.sprite_from_png(Encoding.hex.decode(truncated))
+} catch e {
+  e.kind + "|" + e.message
+}, "ValueError|not a valid PNG image")
 assert_eq(try {
-    _Canvas.sprite_from_png("")
-  } catch e {
-    e.message
-  }, "not a valid PNG image")
+  _Canvas.sprite_from_png("")
+} catch e {
+  e.message
+}, "not a valid PNG image")
 assert_eq(try {
-    _Canvas.sprite_from_png(5)
-  } catch e {
-    e.message
-  }, "type error: parameter 'data' expects String")
+  _Canvas.sprite_from_png(5)
+} catch e {
+  e.message
+}, "type error: parameter 'data' expects String")
 // An unknown handle has no dimensions (rather than reading out of bounds).
 assert_eq(_Canvas.sprite_width(-1), 0)
 assert_eq(_Canvas.sprite_height(9999), 0)
@@ -558,16 +558,16 @@ assert_eq(
 // A stale handle raises rather than reading freed pixels; an empty target has
 // nothing to encode.
 assert_eq(try {
-    _Canvas.sprite_to_png(9999)
-  } catch e {
-    e.kind + "|" + e.message
-  }, "ValueError|not a live sprite handle")
+  _Canvas.sprite_to_png(9999)
+} catch e {
+  e.kind + "|" + e.message
+}, "ValueError|not a live sprite handle")
 _Canvas.init(0, 0)
 assert_eq(try {
-    _Canvas.sprite_to_png(0)
-  } catch e {
-    e.message
-  }, "image has no pixels")
+  _Canvas.sprite_to_png(0)
+} catch e {
+  e.message
+}, "image has no pixels")
 _Canvas.init(4, 4)
 
 // --- sprite_free: a retired handle stays dead when its slot is reused ---
@@ -601,10 +601,10 @@ _Canvas.sprite_free(123456789)
 // dangling.
 assert_eq(_Canvas.target(heir) >= 0, true)
 assert_eq(try {
-    _Canvas.sprite_free(heir)
-  } catch e {
-    e.kind + "|" + e.message
-  }, "ValueError|cannot free the sprite currently drawn to")
+  _Canvas.sprite_free(heir)
+} catch e {
+  e.kind + "|" + e.message
+}, "ValueError|cannot free the sprite currently drawn to")
 _Canvas.target(0)
 
 // Churn create/free: slots are recycled, but no two handles collide and every

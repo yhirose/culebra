@@ -59,12 +59,15 @@ assert_eq([].iter().position(|v| true), nil)
 # --- laziness: none of these may drain an unbounded source -----------------
 fn naturals() {
   mut n = 0
-  {has_next: fn () {
+  {
+    has_next: fn () {
       true
-    }, next: fn () {
+    },
+    next: fn () {
       n = n + 1
       n - 1
-    }}
+    },
+  }
 }
 assert_eq(naturals().skip_while(|x| x < 3).first(), 3)
 assert_eq(naturals().position(|x| x == 4), 4)
@@ -73,9 +76,9 @@ assert_eq(naturals().nth(6), 6)
 # only as many pulls as the answer needs
 mut pulls = 0
 assert_eq(range(1000000).map(fn (x) {
-      pulls = pulls + 1
-      x
-    }).nth(3), 3)
+  pulls = pulls + 1
+  x
+}).nth(3), 3)
 assert_eq(pulls, 4)
 
 # --- numeric aggregates accept Float -------------------------------------
@@ -140,9 +143,9 @@ assert_eq([{k: 1, t: 'first'}, {k: 1, t: 'second'}].max_by(|o| o.k).t, 'first')
 # The key is computed exactly once per element.
 mut keycalls = 0
 assert_eq([5, 3, 9, 1].min_by(fn (x) {
-    keycalls = keycalls + 1
-    x
-  }), 1)
+  keycalls = keycalls + 1
+  x
+}), 1)
 assert_eq(keycalls, 4)
 # Empty throws, like min/max.
 try {
@@ -354,14 +357,14 @@ try {
 # --- tap: side effect, element passes through unchanged ---------------------
 mut tapped = []
 assert_eq([1, 2, 3].iter().tap(fn (x) {
-      tapped.push(x)
-    }).map(|x| x * 10).collect(), [10, 20, 30])
+  tapped.push(x)
+}).map(|x| x * 10).collect(), [10, 20, 30])
 assert_eq(tapped, [1, 2, 3])
 # Lazy: only the pulled elements run the callback.
 mut probed = []
 assert_eq(range(100).tap(fn (x) {
-      probed.push(x)
-    }).take(3).collect(), [0, 1, 2])
+  probed.push(x)
+}).take(3).collect(), [0, 1, 2])
 assert_eq(probed, [0, 1, 2])
 
 # --- step_by: first element, then every n-th --------------------------------
@@ -396,12 +399,15 @@ assert_eq(
 # --- all six stream an unbounded source ------------------------------------
 fn naturals2() {
   mut n = 0
-  {has_next: fn () {
+  {
+    has_next: fn () {
       true
-    }, next: fn () {
+    },
+    next: fn () {
       n = n + 1
       n - 1
-    }}
+    },
+  }
 }
 assert_eq(naturals2().scan(0, |a, x| a + x).take(5).collect(), [0, 1, 3, 6, 10])
 assert_eq(naturals2().step_by(4).take(3).collect(), [0, 4, 8])

@@ -22,9 +22,9 @@ assert_eq(fe_array(), 2)
 fn fe_iter() {
   mut n = 0
   [1, 2, 3].iter().for_each(fn (x) {
-      return nil if x == 2
-      n = n + 1
-    })
+    return nil if x == 2
+    n = n + 1
+  })
   n
 }
 assert_eq(fe_iter(), 2)
@@ -50,17 +50,17 @@ assert_eq(m_array(), [10, 99, 30])
 
 fn m_iter() {
   [1, 2, 3].iter().map(fn (x) {
-      return 99 if x == 2
-      x
-    }).collect()
+    return 99 if x == 2
+    x
+  }).collect()
 }
 assert_eq(m_iter(), [1, 99, 3])
 
 fn m_range() {
   range(3).map(fn (x) {
-      return 99 if x == 1
-      x
-    }).collect()
+    return 99 if x == 1
+    x
+  }).collect()
 }
 assert_eq(m_range(), [0, 99, 2])
 

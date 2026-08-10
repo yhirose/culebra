@@ -17,10 +17,10 @@ class Box {
   }
 }
 assert_lt(measure(fn () {
-    mut acc = []
-    for k in 0..200 {
-      acc.push(Box.new(k))
-    }
-    acc.size()
-  }), 200)
+  mut acc = []
+  for k in 0..200 {
+    acc.push(Box.new(k))
+  }
+  acc.size()
+}), 200)
 inspect("gc leak [for-range]: no leak")

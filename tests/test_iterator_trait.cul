@@ -92,21 +92,21 @@ assert_eq(it.has_next(), false)
 
 // --- Iterator pipeline methods compose under the new protocol ---
 let doubled = [1, 2, 3].iter().map(fn (x) {
-    x * 2
-  }).collect()
+  x * 2
+}).collect()
 assert_eq(doubled.size(), 3)
 assert_true(doubled[0] == 2 && doubled[1] == 4 && doubled[2] == 6)
 
 let evens = range(10).filter(fn (x) {
-    x % 2 == 0
-  }).collect()
+  x % 2 == 0
+}).collect()
 assert_eq(evens.size(), 5)
 assert_true(evens[0] == 0 && evens[4] == 8)
 
 // --- User class works in the pipeline too ---
 let cs = Counter.new(0, 5).map(fn (x) {
-    x * x
-  }).collect()
+  x * x
+}).collect()
 assert_eq(cs.size(), 5)
 assert_true(cs[0] == 0 && cs[4] == 16)
 

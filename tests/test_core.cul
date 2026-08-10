@@ -7,8 +7,8 @@
 test_call = fn () {
   ret = fn () {
     [1, fn () {
-        [4, 5, 6]
-      }, 3]
+      [4, 5, 6]
+    }, 3]
   }()[1]()[1]
   assert_eq(ret, 5)
 }
@@ -211,11 +211,16 @@ test_default_params = fn () {
 
 test_object = fn () {
   n = 1
-  o = {n: 123, s: 'str', f1: fn (x) {
+  o = {
+    n: 123,
+    s: 'str',
+    f1: fn (x) {
       x + self.n
-    }, f2: fn (x) {
+    },
+    f2: fn (x) {
       x + n
-    }}
+    },
+  }
   assert_eq(o.size(), 4)
   assert_eq(o.f1(10), 133)
   assert_eq(o.f2(10), 11)
@@ -307,13 +312,17 @@ test_object_factory = fn () {
   ctor = fn (init) {
     mut n = init
 
-    {add: fn (x) {
+    {
+      add: fn (x) {
         n = n + x
-      }, sub: fn (x) {
+      },
+      sub: fn (x) {
         n = n - x
-      }, val: fn () {
+      },
+      val: fn () {
         n
-      }}
+      },
+    }
   }
 
   calc = ctor(10)
@@ -328,11 +337,14 @@ test_class = fn () {
   Car = {new: fn (miles_per_run) {
     mut total_miles = 0
 
-    {run: fn (times) {
+    {
+      run: fn (times) {
         total_miles = total_miles + miles_per_run * times
-      }, total: fn () {
+      },
+      total: fn () {
         total_miles
-      }}
+      },
+    }
   }}
 
   car = Car.new(5)
@@ -798,8 +810,8 @@ test_builtin_methods = fn () {
   assert_eq(sum, 10)
 
   assert_eq([1, 2, 3].reduce(1, fn (acc, x) {
-      acc * x
-    }), 6)
+    acc * x
+  }), 6)
 
   mut total = 0
   [10, 20, 30].for_each(fn (x) {
@@ -808,11 +820,11 @@ test_builtin_methods = fn () {
   assert_eq(total, 60)
 
   assert_eq([3, 1, 4, 1, 5].find(fn (x) {
-      x > 3
-    }), 4)
+    x > 3
+  }), 4)
   assert_eq([3, 1, 4].find(fn (x) {
-      x > 100
-    }), nil)
+    x > 100
+  }), nil)
 
   assert_true([1, 2, 3].any(fn (x) {
     x > 2
@@ -821,8 +833,8 @@ test_builtin_methods = fn () {
     x > 100
   }))
   assert_eq([].any(fn (x) {
-      x > 0
-    }), false)
+    x > 0
+  }), false)
 
   assert_true([1, 2, 3].all(fn (x) {
     x > 0
@@ -902,11 +914,14 @@ test_shadow_rules = fn () {
   // (D) Closure-as-object: bare reassignment reaches captured outer.
   make_counter = fn () {
     mut n = 0
-    {incr: fn () {
+    {
+      incr: fn () {
         n = n + 1
-      }, get: fn () {
+      },
+      get: fn () {
         n
-      }}
+      },
+    }
   }
   c = make_counter()
   c.incr()
@@ -1080,8 +1095,8 @@ test_ufcs = fn () {
     x + 1
   }
   result = [1, 2, 3].map(fn (x) {
-      x * 10
-    }).sum().incr()
+    x * 10
+  }).sum().incr()
   assert_eq(result, 61)
 
   // Variadic __ARGS__: overflow goes to __ARGS__, and __ARGS__ is
@@ -1352,29 +1367,39 @@ test_object_factory()
 
 test_special_method_ops = fn () {
   make_box = fn (v) {
-    {v: v, __add__: fn (r) {
+    {
+      v: v,
+      __add__: fn (r) {
         match r {
           n: Long => self.v + n,
           _ => self.v + r.v,
         }
-      }, __mul__: fn (r) {
+      },
+      __mul__: fn (r) {
         match r {
           n: Long => self.v * n,
           _ => self.v * r.v,
         }
-      }, __sub__: fn (r) {
+      },
+      __sub__: fn (r) {
         self.v - r.v
-      }, __neg__: fn () {
+      },
+      __neg__: fn () {
         -self.v
-      }, __pow__: fn (e) {
+      },
+      __pow__: fn (e) {
         self.v ** e.v
-      }, __matmul__: fn (r) {
+      },
+      __matmul__: fn (r) {
         self.v * r.v + 1
-      }, __eq__: fn (r) {
+      },
+      __eq__: fn (r) {
         self.v == r.v
-      }, __lt__: fn (r) {
+      },
+      __lt__: fn (r) {
         self.v < r.v
-      }}
+      },
+    }
   }
   a = make_box(3)
   b = make_box(4)

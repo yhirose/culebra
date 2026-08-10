@@ -461,11 +461,14 @@ assert_eq(r_cb3.message, "type error: parameter 'f' expects Function")
 # but their arity errors still match interp. Iterator too-many used to be
 # silently dropped on interp and "expected Function, got Nil" on the JIT.
 let r_im = try {
-  [1, 2].iter().map(fn (x) {
-        x
-      }, fn (y) {
-        y
-      })
+  [1, 2].iter().map(
+    fn (x) {
+      x
+    },
+    fn (y) {
+      y
+    },
+  )
   nil
 } catch e {
   e
@@ -589,8 +592,8 @@ assert_eq(
 # (eager) then collect (method-miss), matching interp.
 let r_mc = try {
   [1, 2, 3].map(fn (x) {
-      x * 2
-    }).collect()
+    x * 2
+  }).collect()
   nil
 } catch e {
   e
@@ -599,8 +602,8 @@ assert_eq(r_mc.kind, 'TypeError')
 assert_eq(r_mc.message, "type error: expected Function, got Nil")
 # The valid fused path still produces the collected array.
 assert_eq([1, 2, 3].iter().map(fn (x) {
-      x * 2
-    }).collect(), [2, 4, 6])
+  x * 2
+}).collect(), [2, 4, 6])
 
 # A type-specific builtin method on the WRONG receiver resolves like
 # interp, not via the codegen's "expected <SpecificType>". A scalar can't
@@ -742,7 +745,7 @@ let r_nsv = try {
   e
 }
 assert_eq(r_nsv.kind, 'TypeError')
-assert_eq(r_nsv.line, 740)
+assert_eq(r_nsv.line, 743)
 # Through a higher-order call, the error is attributed to the HOF call site.
 let r_nshof = try {
   ["x", "y"].map(Math.abs)
@@ -750,7 +753,7 @@ let r_nshof = try {
   e
 }
 assert_eq(r_nshof.kind, 'TypeError')
-assert_eq(r_nshof.line, 748)
+assert_eq(r_nshof.line, 751)
 
 # A built-in method on a receiver whose type doesn't support it reports the
 # same receiver-resolution failure on both backends. The JIT's polymorphic

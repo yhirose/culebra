@@ -182,11 +182,11 @@ Canvas.run(8, 8, fn () {
   // (not a DispatchError) — the scalar arm's own type check, not multidispatch
   // "no matching overload" (docs/language.md).
   assert_eq(try {
-      Canvas.set_pixel("x", 1, RED)
-      ""
-    } catch e {
-      e.kind
-    }, "TypeError")
+    Canvas.set_pixel("x", 1, RED)
+    ""
+  } catch e {
+    e.kind
+  }, "TypeError")
 
   // fill: false on rect / triangle / polygon leaves the interior untouched.
   Canvas.clear(GREEN)
@@ -309,8 +309,8 @@ Canvas.init(4, 4)
 Canvas.clear(RED)
 let busy = try {
   Isolate.spawn(fn () {
-      Canvas.init(2, 2)
-    }).join()
+    Canvas.init(2, 2)
+  }).join()
   nil
 } catch e {
   e
@@ -320,12 +320,12 @@ assert_eq(
   'RuntimeError: another isolate is already drawing to the canvas',
 )
 assert_eq(Isolate.spawn(fn () {
-      Canvas.clear(GREEN)  // clipped away: a 0x0 target
-      Canvas.get_pixel(0, 0)
-    }).join(), 0)
+  Canvas.clear(GREEN)  // clipped away: a 0x0 target
+  Canvas.get_pixel(0, 0)
+}).join(), 0)
 assert_eq(Isolate.spawn(fn () {
-      Canvas.Sprite.new([GREEN], 1, 1).width()  // 0: no handle was registered
-    }).join(), 0)
+  Canvas.Sprite.new([GREEN], 1, 1).width()  // 0: no handle was registered
+}).join(), 0)
 assert_eq(Canvas.get_pixel(0, 0), RED)  // this isolate's canvas is intact
 
 // Canvas.init sizes the framebuffer without going through run — for a program

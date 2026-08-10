@@ -49,14 +49,18 @@ assert_eq(evens, 3)
 # User-defined iterator (new Iterator/Iterable protocol)
 once = fn (v) {
   mut emitted = false
-  {iter: fn () {
+  {
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       !emitted
-    }, next: fn () {
+    },
+    next: fn () {
       emitted = true
       v
-    }}
+    },
+  }
 }
 mut seen = []
 for x in once(42) {
@@ -107,8 +111,8 @@ assert_true(cps[0] == 99 && cps[1] == 97 && cps[2] == 102 && cps[3] == 233)
 
 # Numeric ops are natural on code points (range / classification)
 upper = 'Hello World'.code_points().filter(fn (cp) {
-    cp >= 65 && cp <= 90
-  }).count()
+  cp >= 65 && cp <= 90
+}).count()
 assert_eq(upper, 2)
 
 # Empty and ASCII-only
@@ -308,15 +312,15 @@ assert_throws("ValueError", fn () {
 
 # map
 r1 = [1, 2, 3].iter().map(fn (x) {
-    x * 10
-  }).collect()
+  x * 10
+}).collect()
 assert_eq(r1.size(), 3)
 assert_true(r1[0] == 10 && r1[2] == 30)
 
 # filter
 r2 = range(10).filter(fn (x) {
-    x % 3 == 0
-  }).collect()
+  x % 3 == 0
+}).collect()
 assert_eq(r2.size(), 4)
 assert_true(r2[0] == 0 && r2[3] == 9)
 
@@ -332,8 +336,8 @@ assert_true(r4[0] == 7 && r4[2] == 9)
 
 # take_while
 r5 = range(20).take_while(fn (x) {
-    x < 5
-  }).collect()
+  x < 5
+}).collect()
 assert_eq(r5.size(), 5)
 assert_true(r5[0] == 0 && r5[4] == 4)
 
@@ -378,7 +382,7 @@ assert_eq(r8, [(0, 'a'), (1, 'b')])
 
 # flat_map
 r9 = [[1, 2], [], [3]].iter().flat_map(fn (xs) {
-    xs
-  }).collect()
+  xs
+}).collect()
 assert_eq(r9.size(), 3)
 assert_true(r9[0] == 1 && r9[1] == 2 && r9[2] == 3)

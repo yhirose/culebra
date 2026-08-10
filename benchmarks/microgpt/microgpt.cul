@@ -209,19 +209,19 @@ gpt = fn (token_id, pos_id, keys, values) {
     values[li].push(v)
 
     let x_attn = range(n_head).flat_map(fn (h) {
-        let hs = h * head_dim
-        let q_h = q.slice(hs, hs + head_dim)
-        let k_h = keys[li].map(|ki| ki.slice(hs, hs + head_dim))
-        let v_h = values[li].map(|vi| vi.slice(hs, hs + head_dim))
-        let attn_logits = k_h.map(|kt| dot(kt, q_h) * attn_scale)
-        let attn_weights = softmax(attn_logits)
-        range(head_dim)
-          .map(|j| range(v_h.size()).reduce(
-            Value.new(0.0),
-            |acc, t| acc + attn_weights[t] * v_h[t][j],
-          ))
-          .collect()
-      }).collect()
+      let hs = h * head_dim
+      let q_h = q.slice(hs, hs + head_dim)
+      let k_h = keys[li].map(|ki| ki.slice(hs, hs + head_dim))
+      let v_h = values[li].map(|vi| vi.slice(hs, hs + head_dim))
+      let attn_logits = k_h.map(|kt| dot(kt, q_h) * attn_scale)
+      let attn_weights = softmax(attn_logits)
+      range(head_dim)
+        .map(|j| range(v_h.size()).reduce(
+          Value.new(0.0),
+          |acc, t| acc + attn_weights[t] * v_h[t][j],
+        ))
+        .collect()
+    }).collect()
 
     x = add_v(linear(x_attn, layer.attn_wo), x_residual1)
 

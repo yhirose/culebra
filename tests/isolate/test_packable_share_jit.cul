@@ -18,17 +18,17 @@ class Vec2 {
 let buf = SharedBuffer.new(2, Vec2)
 buf[0].x = 1.0
 Isolate.spawn(fn (b) {
-      b[0].x = 99.0
-      b[1].y = 7.0
-    }, buf).join()
+  b[0].x = 99.0
+  b[1].y = 7.0
+}, buf).join()
 assert_eq(buf[0].x, 99.0)
 assert_eq(buf[1].y, 7.0)
 
 # --- Captured by the closure: same sharing -----------------------------------
 let buf2 = SharedBuffer.new(1, Vec2)
 Isolate.spawn(fn () {
-    buf2[0].x = 3.5
-  }).join()
+  buf2[0].x = 3.5
+}).join()
 assert_eq(buf2[0].x, 3.5)
 
 # --- Parallel workers writing disjoint elements (no overlap → no race) -------
@@ -50,9 +50,9 @@ assert_eq(total, 140)  # 0+1+4+9+16+25+36+49
 let cbuf = SharedBuffer.new(1, Cell)
 let (tx, rx) = Channel.new(1)
 Isolate.spawn(fn (t) {
-      cbuf[0].v = 42
-      t.send(1)
-    }, tx).join()
+  cbuf[0].v = 42
+  t.send(1)
+}, tx).join()
 rx.recv()
 assert_eq(cbuf[0].v, 42)
 

@@ -44,8 +44,8 @@ assert_eq(g2.next(), 42)
 
 // --- pipeline composition (Phase 2 Iterator methods) ---
 let mapped = echo(10).map(fn (x) {
-    x * 3
-  }).collect()
+  x * 3
+}).collect()
 assert_eq(mapped.size(), 1)
 assert_eq(mapped[0], 30)
 

@@ -151,17 +151,17 @@ FS.chmod(cf, 0o755)
 assert_eq(FS.stat(cf).mode, 0o755)
 // chmod on a missing path throws IOError; a non-Long mode is a TypeError.
 assert_eq(try {
-    FS.chmod(bogus, 0o644)
-    "ok"
-  } catch e {
-    e.kind
-  }, "IOError")
+  FS.chmod(bogus, 0o644)
+  "ok"
+} catch e {
+  e.kind
+}, "IOError")
 assert_eq(try {
-    FS.chmod(cf, "644")
-    "ok"
-  } catch e {
-    e.kind
-  }, "TypeError")
+  FS.chmod(cf, "644")
+  "ok"
+} catch e {
+  e.kind
+}, "TypeError")
 
 // stat exposes uid/gid; chown to the file's own owner/group is allowed for a
 // non-root process (so this is root-independent) and leaves them unchanged.
@@ -175,31 +175,31 @@ assert_eq(FS.stat(cf).uid, own.uid)
 // chown errors: missing path -> IOError; unknown name -> IOError; a non
 // String/Long/Nil owner -> TypeError. (All identical across backends.)
 assert_eq(try {
-    FS.chown(bogus, 0)
-    "ok"
-  } catch e {
-    e.kind
-  }, "IOError")
+  FS.chown(bogus, 0)
+  "ok"
+} catch e {
+  e.kind
+}, "IOError")
 assert_eq(try {
-    FS.chown(cf, owner: "no_such_user_zzz")
-    "ok"
-  } catch e {
-    e.kind
-  }, "IOError")
+  FS.chown(cf, owner: "no_such_user_zzz")
+  "ok"
+} catch e {
+  e.kind
+}, "IOError")
 assert_eq(try {
-    FS.chown(cf, owner: true)
-    "ok"
-  } catch e {
-    e.kind
-  }, "TypeError")
+  FS.chown(cf, owner: true)
+  "ok"
+} catch e {
+  e.kind
+}, "TypeError")
 // A StringView (e.g. a slice) is a name, not a type error: it reaches name
 // resolution -> unknown-user IOError, identically on both backends.
 assert_eq(try {
-    FS.chown(cf, owner: "no_such_user_zzz"[0..5])
-    "ok"
-  } catch e {
-    e.kind
-  }, "IOError")
+  FS.chown(cf, owner: "no_such_user_zzz"[0..5])
+  "ok"
+} catch e {
+  e.kind
+}, "IOError")
 
 // walk: every path under xdir (sub/, f.txt, sub/g.txt) = 3 entries.
 assert_eq(FS.walk(xdir).size(), 3)

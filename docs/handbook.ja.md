@@ -630,15 +630,19 @@ inspect([1, 2, 3, 4].iter().windows(2).collect())
 ```culebra
 countdown = fn (start) {
   mut i = start
-  {iter: fn () {
+  {
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       i > 0
-    }, next: fn () {
+    },
+    next: fn () {
       v = i
       i -= 1
       v
-    }}
+    },
+  }
 }
 
 for v in countdown(3) {
@@ -1088,11 +1092,14 @@ inspect(t.scale)       # => 'C'
 ```culebra
 Car2 = {new: fn (mpr) {
   mut miles = 0
-  {run: fn (n) {
+  {
+    run: fn (n) {
       miles += mpr * n
-    }, total: fn () {
+    },
+    total: fn () {
       "走行距離: {miles} miles"
-    }}
+    },
+  }
 }}
 
 car = Car2.new(5)

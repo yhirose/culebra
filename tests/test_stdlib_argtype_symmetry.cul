@@ -75,12 +75,12 @@ assert_eq(e10.message, "type error: parameter 'lo' expects Long")
 # every positional, not just arg0 (the JIT used to skip the check entirely).
 let r = FS.rename
 assert_eq(err(fn () {
-    r("a", 5)
-  }).message, "type error: parameter 'dst' expects String|Path")
+  r("a", 5)
+}).message, "type error: parameter 'dst' expects String|Path")
 let p = Math.pow
 assert_eq(err(fn () {
-    p(2, "x")
-  }).message, "type error: parameter 'exp' expects Long")
+  p(2, "x")
+}).message, "type error: parameter 'exp' expects Long")
 
 # --- And through a higher-order callback.
 let e11 = err(fn () {
@@ -97,22 +97,22 @@ assert_eq(e11.message, "type error: parameter 'exp' expects Long")
 # now positioned on both backends. The interp==JIT harness already enforces the
 # byte match; these assertions pin the kind so the path stays exercised.
 assert_eq(err(fn () {
-    Random.uniform(0.0, "x")
-  }).kind, 'TypeError')
+  Random.uniform(0.0, "x")
+}).kind, 'TypeError')
 assert_eq(err(fn () {
-    Random.gauss("x", 1.0)
-  }).kind, 'TypeError')
+  Random.gauss("x", 1.0)
+}).kind, 'TypeError')
 # Both Long and Float operands are accepted (no over-strict Float rejection).
 assert_eq(type_of(Random.uniform(0, 1)), 'Float')
 assert_eq(type_of(Random.gauss(0.0, 1.0)), 'Float')
 
 # Math.clamp(x, lo, hi) is Long|Float, same untyped-numeric convention.
 assert_eq(err(fn () {
-    Math.clamp(1, "x", 5)
-  }).kind, 'TypeError')
+  Math.clamp(1, "x", 5)
+}).kind, 'TypeError')
 assert_eq(err(fn () {
-    Math.clamp(1, 0, "x")
-  }).kind, 'TypeError')
+  Math.clamp(1, 0, "x")
+}).kind, 'TypeError')
 assert_eq(type_of(Math.clamp(5, 0.0, 10)), 'Float')
 assert_eq(type_of(Math.clamp(5, 0, 10)), 'Long')
 
@@ -120,11 +120,11 @@ assert_eq(type_of(Math.clamp(5, 0, 10)), 'Long')
 # `count must be an integer`; it now matches interp's canonical
 # `expected Long, got <T>` (both reject Float too — strict Long).
 assert_eq(err(fn () {
-    SharedBuffer.new("x", 1)
-  }).message, 'type error: expected Long, got String')
+  SharedBuffer.new("x", 1)
+}).message, 'type error: expected Long, got String')
 assert_eq(err(fn () {
-    SharedBuffer.new(2.0, 1)
-  }).message, 'type error: expected Long, got Float')
+  SharedBuffer.new(2.0, 1)
+}).message, 'type error: expected Long, got Float')
 
 # --- Valid calls are unaffected.
 assert_eq(Math.pow(2, 10), 1024)

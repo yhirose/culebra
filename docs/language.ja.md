@@ -3989,8 +3989,8 @@ inspect('👨‍👩‍👧'.graphemes().count())    # => 1
 
 # code_points なら数値演算が自然
 upper = 'Hello World'.code_points().filter(fn (cp) {
-    cp >= 65 && cp <= 90
-  }).count()  # 2 ('H', 'W')
+  cp >= 65 && cp <= 90
+}).count()  # 2 ('H', 'W')
 ```
 
 3種のイテレータはすべて **UTF-8を逐次decode** します。各

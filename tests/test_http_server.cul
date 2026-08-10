@@ -212,10 +212,10 @@ bad.close()
 # idempotent. These never bind a socket.
 srv2 = Http.server()
 chained = srv2.get("/a", fn (req) {
-    "a"
-  }).post("/b", fn (req) {
-    "b"
-  })
+  "a"
+}).post("/b", fn (req) {
+  "b"
+})
 inspect("chaining returns handle -> " + (chained == srv2).to_string())
 srv2.close()
 srv2.close()

@@ -33,17 +33,23 @@ let _log_module = fn () {
     }
   }
   let _methods = fn (bound) {
-    {debug: fn (msg, fields = {}) {
+    {
+      debug: fn (msg, fields = {}) {
         _emit("debug", 0, msg, bound, fields)
-      }, info: fn (msg, fields = {}) {
+      },
+      info: fn (msg, fields = {}) {
         _emit("info", 1, msg, bound, fields)
-      }, warn: fn (msg, fields = {}) {
+      },
+      warn: fn (msg, fields = {}) {
         _emit("warn", 2, msg, bound, fields)
-      }, error: fn (msg, fields = {}) {
+      },
+      error: fn (msg, fields = {}) {
         _emit("error", 3, msg, bound, fields)
-      }, with: fn (more) {
+      },
+      with: fn (more) {
         _methods({...bound, ...more})
-      }}
+      },
+    }
   }
   let _set_level = fn (l) {
     let n = _levels.get(l, -1)

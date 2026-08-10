@@ -39,8 +39,8 @@ for _round in 0..4 {
   })
   assert_eq(outs.size(), 24)
   assert_eq(outs.sum(), inputs.map(fn (i) {
-      3 + i % 3
-    }).sum())
+    3 + i % 3
+  }).sum())
 }
 
 # The same race reached the other way: sequential spawns that each resolve a

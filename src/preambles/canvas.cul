@@ -451,11 +451,16 @@ let _canvas_module = fn () {
   # stream is fed from present(), so it only advances while frames are shown.
   # Raises ValueError when the bytes are neither MP3 nor Ogg.
   let music = fn (data, loop = true, vol = 100, start = 0.0) {
-    _Canvas.music_play(data, if loop {
+    _Canvas.music_play(
+      data,
+      if loop {
         1
       } else {
         0
-      }, vol, start)
+      },
+      vol,
+      start,
+    )
   }
 
   # --- offscreen drawing --------------------------------------------------

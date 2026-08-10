@@ -28,14 +28,14 @@ class Box {
   }
 }
 assert_lt(measure(fn () {
-    mut topo = []
-    build = |n| if n > 0 {
-      topo.push(Box.new(n))
-      fn(n - 1)
-    } else {
-      0
-    }
-    build(200)
-    topo.size()
-  }), 1000)
+  mut topo = []
+  build = |n| if n > 0 {
+    topo.push(Box.new(n))
+    fn(n - 1)
+  } else {
+    0
+  }
+  build(200)
+  topo.size()
+}), 1000)
 inspect("gc leak [self-closure]: no leak")

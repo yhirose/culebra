@@ -82,38 +82,38 @@ let run = fn (f) {
 
 // unary binds tighter than `*`, `/`, `%`: negate first, then combine
 assert_eq(run(fn () {
-    -N(2) * N(3)
-  }), ['neg', 'mul'])
+  -N(2) * N(3)
+}), ['neg', 'mul'])
 assert_eq(run(fn () {
-    -N(2) / N(3)
-  }), ['neg', 'div'])
+  -N(2) / N(3)
+}), ['neg', 'div'])
 assert_eq(run(fn () {
-    -N(2) % N(3)
-  }), ['neg', 'mod'])
+  -N(2) % N(3)
+}), ['neg', 'mod'])
 assert_eq(run(fn () {
-    N(2) * -N(3)
-  }), ['neg', 'mul'])
+  N(2) * -N(3)
+}), ['neg', 'mul'])
 
 // ... and tighter than `+` / `-` too
 assert_eq(run(fn () {
-    -N(2) + N(3)
-  }), ['neg', 'add'])
+  -N(2) + N(3)
+}), ['neg', 'add'])
 assert_eq(run(fn () {
-    -N(2) - N(3)
-  }), ['neg', 'sub'])
+  -N(2) - N(3)
+}), ['neg', 'sub'])
 
 // ... but looser than `**`: the power runs first and its result is negated
 assert_eq(run(fn () {
-    -N(2) ** N(3)
-  }), ['pow', 'neg'])
+  -N(2) ** N(3)
+}), ['pow', 'neg'])
 
 // parentheses still override, in both directions
 assert_eq(run(fn () {
-    -(N(2) * N(3))
-  }), ['mul', 'neg'])
+  -(N(2) * N(3))
+}), ['mul', 'neg'])
 assert_eq(run(fn () {
-    (-N(2)) ** N(3)
-  }), ['neg', 'pow'])
+  (-N(2)) ** N(3)
+}), ['neg', 'pow'])
 
 // `!` and `~` sit on the same rungs. They take no dunder (`!` is Bool-only,
 // `~` Long-only), so the operand order shows through the value instead.
@@ -123,10 +123,10 @@ assert_eq(~1 * 2, -4)           // (~1) * 2 == -2 * 2
 
 // stacked unaries apply innermost-first
 assert_eq(run(fn () {
-    -(-N(2))
-  }), ['neg', 'neg'])
+  -(-N(2))
+}), ['neg', 'neg'])
 
 // a longer chain: each operand negates before it is combined
 assert_eq(run(fn () {
-    -N(2) * N(3) + -N(4)
-  }), ['neg', 'mul', 'neg', 'add'])
+  -N(2) * N(3) + -N(4)
+}), ['neg', 'mul', 'neg', 'add'])

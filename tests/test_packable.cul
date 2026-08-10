@@ -154,13 +154,13 @@ class Counter {
 # Runs the callback holding the lock and returns its value; mutations stick.
 let lb = SharedBuffer.new(1, Counter)
 assert_eq(lb.with_lock(fn () {
-    lb[0].n = lb[0].n + 41
-    99
-  }), 99)
+  lb[0].n = lb[0].n + 41
+  99
+}), 99)
 assert_eq(lb[0].n, 41)
 assert_eq(lb.with_lock(fn () {
-    "released"
-  }), "released")  # lock freed each call
+  "released"
+}), "released")  # lock freed each call
 # Contended read-modify-write across isolates: the lock makes it exact (a
 # lost-update race would undercount 8 * 1000).
 let shared_counter = SharedBuffer.new(1, Counter)

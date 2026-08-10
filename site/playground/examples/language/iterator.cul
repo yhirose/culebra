@@ -13,15 +13,19 @@ println("first_four multiples of 7 = {first_four}")
 
 fn countdown(start) {
   mut i = start
-  {iter: fn () {
+  {
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       i > 0
-    }, next: fn () {
+    },
+    next: fn () {
       let v = i
       i -= 1
       v
-    }}
+    },
+  }
 }
 
 println("countdown = {countdown(3).collect()}")

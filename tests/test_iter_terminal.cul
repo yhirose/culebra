@@ -13,8 +13,8 @@
 # for_each
 mut acc = 0
 [1, 2, 3].iter().for_each(fn (x) {
-    acc = acc + x
-  })
+  acc = acc + x
+})
 assert_eq(acc, 6)
 
 # reduce
@@ -24,8 +24,8 @@ s = range(1, 6).reduce(0, fn (a, x) {
 assert_eq(s, 15)
 
 s2 = [].iter().reduce(42, fn (a, x) {
-    a + x
-  })
+  a + x
+})
 assert_eq(s2, 42)  # empty → init
 
 # find
@@ -35,31 +35,31 @@ f = range(100).find(fn (x) {
 assert_eq(f, 12)
 
 f2 = [1, 2, 3].iter().find(fn (x) {
-    x > 99
-  })
+  x > 99
+})
 assert_eq(f2, nil)
 
 # any / all
 assert_eq([1, 2, 3].iter().any(fn (x) {
-      x > 2
-    }), true)
+  x > 2
+}), true)
 assert_eq([1, 2, 3].iter().any(fn (x) {
-      x > 99
-    }), false)
+  x > 99
+}), false)
 assert_eq([1, 2, 3].iter().all(fn (x) {
-      x > 0
-    }), true)
+  x > 0
+}), true)
 assert_eq([1, 2, 3].iter().all(fn (x) {
-      x > 1
-    }), false)
+  x > 1
+}), false)
 assert_eq([].iter().all(fn (x) {
-      x > 0
-    }), true)  # vacuous truth
+  x > 0
+}), true)  # vacuous truth
 
 # count
 assert_eq(range(100).filter(fn (x) {
-      x % 7 == 0
-    }).count(), 15)
+  x % 7 == 0
+}).count(), 15)
 assert_eq([].iter().count(), 0)
 
 # sum / product — identity on empty (0 / 1), same shape as math folds
@@ -68,8 +68,8 @@ assert_eq([].iter().sum(), 0)
 assert_eq(range(1, 6).product(), 120)
 assert_eq([].iter().product(), 1)
 assert_eq(range(100).filter(fn (x) {
-      x % 3 == 0
-    }).sum(), 1683)
+  x % 3 == 0
+}).sum(), 1683)
 
 # min / max — empty input throws (tested via type_of check on a helper
 # that would only produce a value on success)
@@ -80,10 +80,10 @@ assert_eq(range(-5, 5).max(), 4)
 
 # Chain of chains: lazy + terminal
 head = range(1000000).filter(fn (x) {
-    x % 2 == 0
-  }).map(fn (x) {
-    x * x
-  }).take(4).collect()
+  x % 2 == 0
+}).map(fn (x) {
+  x * x
+}).take(4).collect()
 assert_eq(head.size(), 4)
 assert_true(head[0] == 0 && head[1] == 4 && head[2] == 16 && head[3] == 36)
 
@@ -99,19 +99,23 @@ assert_true(m[0] == 2 && m[2] == 4)
 
 # collect() on a user-defined iterator that yields zero values
 empty_iter = fn () {
-  {iter: fn () {
+  {
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       false
-    }, next: fn () {
+    },
+    next: fn () {
       nil
-    }}
+    },
+  }
 }
 assert_eq(empty_iter().collect().size(), 0)
 assert_eq(empty_iter().count(), 0)
 assert_eq(empty_iter().map(fn (x) {
-      x
-    }).collect().size(), 0)
+  x
+}).collect().size(), 0)
 
 # chain with mismatched / empty sides
 c1 = [1, 2].iter().chain([]).collect()
@@ -143,8 +147,8 @@ assert_eq(visited, 3)
 # take_while stays stopped after the first rejection — a subsequent
 # element that matches the predicate must NOT be emitted.
 tw = [1, 2, 3, 0, 4, 5].iter().take_while(fn (x) {
-    x > 0
-  }).collect()
+  x > 0
+}).collect()
 assert_eq(tw.size(), 3)
 assert_true(tw[0] == 1 && tw[1] == 2 && tw[2] == 3)
 
@@ -153,20 +157,20 @@ assert_eq([].iter().enumerate().collect().size(), 0)
 
 # flat_map with empty outer
 assert_eq([].iter().flat_map(fn (x) {
-      [x]
-    }).collect().size(), 0)
+  [x]
+}).collect().size(), 0)
 
 # flat_map where some inner iterables are empty
 fm = [[], [1], [], [2, 3], []].iter().flat_map(fn (xs) {
-    xs
-  }).collect()
+  xs
+}).collect()
 assert_eq(fm.size(), 3)
 assert_true(fm[0] == 1 && fm[1] == 2 && fm[2] == 3)
 
 # flat_map with range callbacks (non-Array iterable)
 fm2 = [1, 2, 3].iter().flat_map(fn (n) {
-    range(n)
-  }).collect()
+  range(n)
+}).collect()
 assert_eq(fm2.size(), 6)
 # range(1) + range(2) + range(3) = [0] + [0,1] + [0,1,2]
 assert_true(fm2[0] == 0 &&
@@ -181,14 +185,18 @@ assert_true(fm2[0] == 0 &&
 # undefined (user-defined behavior) so we only assert the protocol.
 drained = fn () {
   mut emitted = false
-  {iter: fn () {
+  {
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       !emitted
-    }, next: fn () {
+    },
+    next: fn () {
       emitted = true
       7
-    }}
+    },
+  }
 }
 it = drained()
 assert_eq(it.has_next(), true)
@@ -228,12 +236,15 @@ class Countdown {
   }
   iter() {
     let mut i = self.n
-    {has_next: fn () {
+    {
+      has_next: fn () {
         i > 0
-      }, next: fn () {
+      },
+      next: fn () {
         i = i - 1
         i + 1
-      }}
+      },
+    }
   }
 }
 assert_eq(Countdown.new(5).iter().filter(|x| x % 2 == 0).collect(), [4, 2])
@@ -263,12 +274,15 @@ mut calls = 0
 class Naturals {
   new() {}
   iter() {
-    {has_next: fn () {
+    {
+      has_next: fn () {
         true
-      }, next: fn () {
+      },
+      next: fn () {
         calls = calls + 1
         calls
-      }}
+      },
+    }
   }
 }
 assert_eq(Naturals.new().iter().map(|x| x * 2).take(2).collect(), [2, 4])
@@ -343,11 +357,14 @@ assert_eq(perr.message, "type error: iterator missing has_next()/next()")
 # The same error surfaces from a lazy chain — at the terminal that drives it,
 # since building the chain pulls nothing.
 perr = nil
-let half = {next: fn () {
+let half = {
+  next: fn () {
     1
-  }, iter: fn () {
+  },
+  iter: fn () {
     self
-  }}
+  },
+}
 let half_chain = half.map(|x| x)
 try {
   half_chain.take(2).collect()

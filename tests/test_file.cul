@@ -241,37 +241,37 @@ let kind_of = fn (body) {
 }
 File.with(vf, "r", fn (f) {
   assert_eq(kind_of(fn () {
-      f.read("x")
-    }), "TypeError")
+    f.read("x")
+  }), "TypeError")
   assert_eq(kind_of(fn () {
-      f.read(n: "x")
-    }), "TypeError")
+    f.read(n: "x")
+  }), "TypeError")
   assert_eq(kind_of(fn () {
-      f.seek()
-    }), "ArityError")
+    f.seek()
+  }), "ArityError")
   assert_eq(kind_of(fn () {
-      f.seek("x")
-    }), "TypeError")
+    f.seek("x")
+  }), "TypeError")
   assert_eq(kind_of(fn () {
-      f.seek(0, 5)
-    }), "TypeError")
+    f.seek(0, 5)
+  }), "TypeError")
   assert_eq(kind_of(fn () {
-      f.chunks()
-    }), "ArityError")
+    f.chunks()
+  }), "ArityError")
   assert_eq(kind_of(fn () {
-      f.chunks("x")
-    }), "TypeError")
+    f.chunks("x")
+  }), "TypeError")
   // the handle survives a failed check and still works
   f.seek(offset: 3)
   assert_eq(f.read(n: 2), "34")
 })
 File.with(vf, "w", fn (f) {
   assert_eq(kind_of(fn () {
-      f.write()
-    }), "ArityError")
+    f.write()
+  }), "ArityError")
   assert_eq(kind_of(fn () {
-      f.write(123)
-    }), "TypeError")
+    f.write(123)
+  }), "TypeError")
 })
 FS.remove(vf)
 

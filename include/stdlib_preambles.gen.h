@@ -168,31 +168,46 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
       n != nil && self._nanos == n
     }
   }
-  {now: fn () {
+  {
+    now: fn () {
       Instant.new(_Time.now_nanos())
-    }, monotonic: fn () {
+    },
+    monotonic: fn () {
       _Time.monotonic()
-    }, sleep: fn (secs) {
+    },
+    sleep: fn (secs) {
       _Time.sleep(secs)
-    }, from_iso: fn (s) {
+    },
+    from_iso: fn (s) {
       Instant.new(_Time.from_iso_nanos(s))
-    }, from_unix: fn (secs) {
+    },
+    from_unix: fn (secs) {
       Instant.new(to_long(to_float(secs) * 1000000000.0))
-    }, from_parts: fn (p, utc = false) {
+    },
+    from_parts: fn (p, utc = false) {
       Instant.new(_Time.from_parts_nanos(p, utc))
-    }, parse: fn (s, fmt) {
+    },
+    parse: fn (s, fmt) {
       Instant.new(_Time.parse_nanos(s, fmt))
-    }, seconds: fn (n) {
+    },
+    seconds: fn (n) {
       Duration.new(to_long(to_float(n) * 1000000000.0))
-    }, milliseconds: fn (n) {
+    },
+    milliseconds: fn (n) {
       Duration.new(to_long(to_float(n) * 1000000.0))
-    }, minutes: fn (n) {
+    },
+    minutes: fn (n) {
       Duration.new(to_long(to_float(n) * 60000000000.0))
-    }, hours: fn (n) {
+    },
+    hours: fn (n) {
       Duration.new(to_long(to_float(n) * 3600000000000.0))
-    }, days: fn (n) {
+    },
+    days: fn (n) {
       Duration.new(to_long(to_float(n) * 86400000000000.0))
-    }, Instant: Instant, Duration: Duration}
+    },
+    Instant: Instant,
+    Duration: Duration,
+  }
 }
 let Time = _time_module()
 )=culpre=";
@@ -1272,11 +1287,16 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   # stream is fed from present(), so it only advances while frames are shown.
   # Raises ValueError when the bytes are neither MP3 nor Ogg.
   let music = fn (data, loop = true, vol = 100, start = 0.0) {
-    _Canvas.music_play(data, if loop {
+    _Canvas.music_play(
+      data,
+      if loop {
         1
       } else {
         0
-      }, vol, start)
+      },
+      vol,
+      start,
+    )
   }
 
   # --- offscreen drawing --------------------------------------------------
@@ -1822,9 +1842,11 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     }
     _parse_impl_flat(argv, spec)
   }
-  {try_parse: fn (argv, spec) {
+  {
+    try_parse: fn (argv, spec) {
       _parse_impl(argv, spec)
-    }, parse: fn (argv, spec) {
+    },
+    parse: fn (argv, spec) {
       try {
         _parse_impl(argv, spec)
       } catch e {
@@ -1840,9 +1862,11 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
         IO.eprintln("error: {msg}")
         Sys.exit(2)
       }
-    }, help: fn (spec) {
+    },
+    help: fn (spec) {
       _format_help(spec)
-    }}
+    },
+  }
 }
 let Args = _args_module()
 )=culpre=";
@@ -2023,27 +2047,39 @@ let _regex_module = fn () {
       _Regex.split(self._pat, s)
     }
   }
-  {compile: fn (pattern, flags = "") {
+  {
+    compile: fn (pattern, flags = "") {
       Regex.new(if flags == "" {
         pattern
       } else {
         "(?" + flags + ")" + pattern
       })
-    }, escape: _regex_escape, interp: _regex_interp, find: fn (pattern, s) {
+    },
+    escape: _regex_escape,
+    interp: _regex_interp,
+    find: fn (pattern, s) {
       _Regex.find(pattern, s)
-    }, match: fn (pattern, s) {
+    },
+    match: fn (pattern, s) {
       _Regex.match(pattern, s)
-    }, find_all: fn (pattern, s) {
+    },
+    find_all: fn (pattern, s) {
       _Regex.find_all(pattern, s)
-    }, test: fn (pattern, s) {
+    },
+    test: fn (pattern, s) {
       _Regex.test(pattern, s)
-    }, split: fn (pattern, s) {
+    },
+    split: fn (pattern, s) {
       _Regex.split(pattern, s)
-    }, replace_all: fn (pattern, s, repl) {
+    },
+    replace_all: fn (pattern, s, repl) {
       Regex.new(pattern).replace_all(s, repl)
-    }, replace_first: fn (pattern, s, repl) {
+    },
+    replace_first: fn (pattern, s, repl) {
       Regex.new(pattern).replace_first(s, repl)
-    }, Regex: Regex}
+    },
+    Regex: Regex,
+  }
 }
 let Regex = _regex_module()
 )=culpre=";
@@ -2092,17 +2128,23 @@ inline constexpr const char* LOG_MODULE_SOURCE = R"=culpre=(let _log_module = fn
     }
   }
   let _methods = fn (bound) {
-    {debug: fn (msg, fields = {}) {
+    {
+      debug: fn (msg, fields = {}) {
         _emit("debug", 0, msg, bound, fields)
-      }, info: fn (msg, fields = {}) {
+      },
+      info: fn (msg, fields = {}) {
         _emit("info", 1, msg, bound, fields)
-      }, warn: fn (msg, fields = {}) {
+      },
+      warn: fn (msg, fields = {}) {
         _emit("warn", 2, msg, bound, fields)
-      }, error: fn (msg, fields = {}) {
+      },
+      error: fn (msg, fields = {}) {
         _emit("error", 3, msg, bound, fields)
-      }, with: fn (more) {
+      },
+      with: fn (more) {
         _methods({...bound, ...more})
-      }}
+      },
+    }
   }
   let _set_level = fn (l) {
     let n = _levels.get(l, -1)
@@ -2303,18 +2345,18 @@ let _path_module = fn () {
     # --- directory listing / globbing (return Path, so chains stay Path) ---
     list() {
       FS.list_dir(self._path).map(fn (e) {
-          Path.new(FS.join(self._path, e))
-        })
+        Path.new(FS.join(self._path, e))
+      })
     }
     glob(pattern) {
       FS.glob(FS.join(self._path, pattern)).map(fn (p) {
-          Path.new(p)
-        })
+        Path.new(p)
+      })
     }
     walk() {
       FS.walk(self._path).map(fn (p) {
-          Path.new(p)
-        })
+        Path.new(p)
+      })
     }
   }
   Path

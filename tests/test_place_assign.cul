@@ -36,11 +36,11 @@ mut s = [1, 2]
 (s[0], _) = (5, 99)
 assert_eq(s, [5, 2])
 assert_eq(try {
-    _
-    "read"
-  } catch e {
-    e.kind
-  }, "NameError")
+  _
+  "read"
+} catch e {
+  e.kind
+}, "NameError")
 
 // --- the RHS may be any indexed sequence, Array or Tuple
 mut r = [0, 0]
@@ -64,18 +64,18 @@ assert_eq(sp, [2, 1])
 // --- arity / type mismatch is a ValueError that writes NOTHING
 mut u = [1, 2]
 assert_eq(try {
-    (u[0], u[1]) = (1, 2, 3)
-    "no error"
-  } catch e {
-    e.kind
-  }, "ValueError")
+  (u[0], u[1]) = (1, 2, 3)
+  "no error"
+} catch e {
+  e.kind
+}, "ValueError")
 assert_eq(u, [1, 2])
 assert_eq(try {
-    (u[0], u[1]) = 5
-    "no error"
-  } catch e {
-    e.kind
-  }, "ValueError")
+  (u[0], u[1]) = 5
+  "no error"
+} catch e {
+  e.kind
+}, "ValueError")
 assert_eq(u, [1, 2])
 
 // --- immutability follows the single-target rules exactly: an immutable
@@ -84,11 +84,11 @@ assert_eq(u, [1, 2])
 let imm = {a: 1}
 mut ok = 0
 assert_eq(try {
-    (imm.a, ok) = (9, 9)
-    "no error"
-  } catch e {
-    e.kind
-  }, "ImmutableError")
+  (imm.a, ok) = (9, 9)
+  "no error"
+} catch e {
+  e.kind
+}, "ImmutableError")
 let fixed = [1, 2]
 (fixed[0], ok) = (42, 1)
 assert_eq(fixed, [42, 2])
@@ -111,11 +111,11 @@ let boom = fn () {
   throw "boom"
 }
 assert_eq(try {
-    (a2[0], a2[boom()]) = ([7], [8])
-    "no error"
-  } catch e {
-    e.to_string()
-  }, "boom")
+  (a2[0], a2[boom()]) = ([7], [8])
+  "no error"
+} catch e {
+  e.to_string()
+}, "boom")
 assert_eq(a2[0], [7])
 assert_eq(a2[1], 0)
 

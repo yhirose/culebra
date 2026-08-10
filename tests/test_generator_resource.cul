@@ -184,18 +184,23 @@ assert_eq(log_g, '1;closed;caught:from-generator;')
 mut log_h = ''
 fn iter_h(thrower) {
   mut i = 0
-  {iter: fn () {
+  {
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       throw 'hn' if thrower == 'has_next' && i == 1
       true
-    }, next: fn () {
+    },
+    next: fn () {
       i = i + 1
       throw 'nx' if thrower == 'next' && i == 2
       i
-    }, dispose: fn () {
+    },
+    dispose: fn () {
       log_h = "{log_h}disposed;"
-    }}
+    },
+  }
 }
 try {
   for v in iter_h('next') {
@@ -214,15 +219,20 @@ try {
 assert_eq(log_h, 'disposed;c:hn;')
 
 // A dispose that throws on this path must not replace the in-flight error.
-let iter_i = {iter: fn () {
+let iter_i = {
+  iter: fn () {
     self
-  }, has_next: fn () {
+  },
+  has_next: fn () {
     true
-  }, next: fn () {
+  },
+  next: fn () {
     throw 'original'
-  }, dispose: fn () {
+  },
+  dispose: fn () {
     throw 'from-dispose'
-  }}
+  },
+}
 mut log_i = ''
 try {
   for v in iter_i {
@@ -237,17 +247,22 @@ assert_eq(log_i, 'original;')
 mut log_j = ''
 fn iter_j(tag, bad) {
   mut i = 0
-  {iter: fn () {
+  {
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       i < 4
-    }, next: fn () {
+    },
+    next: fn () {
       i = i + 1
       throw 'inner' if bad && i == 2
       i
-    }, dispose: fn () {
+    },
+    dispose: fn () {
       log_j = "{log_j}{tag};"
-    }}
+    },
+  }
 }
 try {
   for a in iter_j('out', false) {
@@ -523,17 +538,22 @@ assert_eq(log_t, 'closed;')
 // keeps the original error (same lines for-in draws).
 fn make_bad_dispose(thrower) {
   mut i = 0
-  {iter: fn () {
+  {
+    iter: fn () {
       self
-    }, has_next: fn () {
+    },
+    has_next: fn () {
       i < 2
-    }, next: fn () {
+    },
+    next: fn () {
       i = i + 1
       throw 'original' if thrower && i == 2
       i
-    }, dispose: fn () {
+    },
+    dispose: fn () {
       throw 'from-dispose'
-    }}
+    },
+  }
 }
 mut caught_t = ''
 try {

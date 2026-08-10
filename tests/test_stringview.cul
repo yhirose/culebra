@@ -48,8 +48,8 @@ assert_eq(three[0], 'a')
 assert_eq(three[2], 'c')
 
 let upper = 'a,b,c'.split_iter(',').map(fn (s) {
-    s.upper()
-  }).collect()
+  s.upper()
+}).collect()
 assert_eq(upper[0], 'A')
 assert_eq(upper[2], 'C')
 

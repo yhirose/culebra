@@ -27,11 +27,14 @@ assert_throws("TypeError", fn () {
 })  // ns + dict builtin
 // user object satisfying the iterator protocol gains the lazy method set
 assert_throws("TypeError", fn () {
-  let o = {has_next: fn () {
+  let o = {
+    has_next: fn () {
       false
-    }, next: fn () {
+    },
+    next: fn () {
       nil
-    }}
+    },
+  }
   o.collect
 })
 

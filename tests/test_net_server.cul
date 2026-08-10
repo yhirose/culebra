@@ -22,10 +22,10 @@ iso = Isolate.spawn(fn () {
   // Each connection: read one line, echo it back uppercased. "boom" raises, to
   // prove one failing handler doesn't take the server (or its worker) down.
   l.serve(fn (conn) {
-      let line = conn.read_line()
-      throw "handler exploded" if line == "boom"
-      conn.write(line.upper() + "\n") if line != nil
-    }, workers: 4)
+    let line = conn.read_line()
+    throw "handler exploded" if line == "boom"
+    conn.write(line.upper() + "\n") if line != nil
+  }, workers: 4)
 })
 tx.drop()  // the parent's own sender copy
 PORT = rx.recv()

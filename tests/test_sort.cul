@@ -23,8 +23,8 @@ assert_eq([2.5, 1.5, 3.0].sorted(), [1.5, 2.5, 3.0])
 
 // --- stable (equal elements keep input order) ---
 assert_eq([[1, "a"], [1, "b"]].sorted_by(fn (p) {
-    p[0]
-  }), [[1, "a"], [1, "b"]])
+  p[0]
+}), [[1, "a"], [1, "b"]])
 
 // --- edge cases ---
 assert_eq([].sorted(), [])
@@ -44,8 +44,8 @@ class Money {
   }
 }
 assert_eq([Money.new(3), Money.new(1), Money.new(2)].sorted().map(fn (m) {
-      m.c
-    }), [1, 2, 3])
+  m.c
+}), [1, 2, 3])
 class Rank {
   new(n) {
     self.n = n
@@ -55,8 +55,8 @@ class Rank {
   }
 }
 assert_eq([Rank.new(2), Rank.new(1)].sorted().map(fn (r) {
-      r.n
-    }), [1, 2])
+  r.n
+}), [1, 2])
 
 // --- incomparable elements throw, like `a < b` ---
 let e = try {
@@ -121,8 +121,8 @@ assert_eq(e4, "type error: cannot compare String and Long")
 let ks = [3, "a", 1]
 let e5 = try {
   ks.sort_by(fn (x) {
-      x
-    }, reverse: true)
+    x
+  }, reverse: true)
   nil
 } catch e {
   e.message
@@ -135,8 +135,8 @@ assert_eq(ks, [3, "a", 1])
 assert_eq([3, 1.5, 2, 1, 2.0].sorted(), [1, 1.5, 2, 2.0, 3])
 assert_eq([3, 1.5, 2, 1, 2.0].sorted(reverse: true), [3, 2, 2.0, 1.5, 1])
 assert_eq([3, 1.5, 2].sorted_by(fn (x) {
-    x
-  }), [1.5, 2, 3])
+  x
+}), [1.5, 2, 3])
 
 // Shuffled runs of user objects go through that same path; exercise multi-
 // element cycles at several sizes, both directions, mutating and not.
@@ -154,21 +154,21 @@ for n in [1, 2, 3, 5, 17, 64, 200] {
     Money.new(v)
   })
   assert_eq(objs.sorted().map(fn (m) {
-        m.c
-      }), raw.sorted())
+    m.c
+  }), raw.sorted())
   assert_eq(objs.sorted(reverse: true).map(fn (m) {
-        m.c
-      }), raw.sorted(reverse: true))
+    m.c
+  }), raw.sorted(reverse: true))
   assert_eq(objs.map(fn (m) {
-      m.c
-    }), raw)  // non-mutating form leaves it be
+    m.c
+  }), raw)  // non-mutating form leaves it be
   let mutable = raw.map(fn (v) {
     Money.new(v)
   })
   mutable.sort()
   assert_eq(mutable.map(fn (m) {
-      m.c
-    }), raw.sorted())
+    m.c
+  }), raw.sorted())
 }
 
 // --- a user cmp / __lt__ that throws leaves the array whole -----------------
@@ -197,8 +197,8 @@ let eb = try {
 }
 assert_eq(eb, "E")
 assert_eq(bs.map(fn (b) {
-    b.v
-  }), [3, 9, 1])  // untouched, nothing freed
+  b.v
+}), [3, 9, 1])  // untouched, nothing freed
 let eb2 = try {
   bs.sorted()
   nil
@@ -207,8 +207,8 @@ let eb2 = try {
 }
 assert_eq(eb2, "E")
 assert_eq(bs.map(fn (b) {
-    b.v
-  }), [3, 9, 1])
+  b.v
+}), [3, 9, 1])
 // `reverse:` swaps which side is the receiver, so throw on either operand to
 // reach the same borrow window from the flipped direction.
 class Boom2 {
@@ -233,8 +233,8 @@ let eb3 = try {
 }
 assert_eq(eb3, "E")
 assert_eq(rs.map(fn (b) {
-    b.v
-  }), [3, 9, 1])
+  b.v
+}), [3, 9, 1])
 
 class Blt {
   new(v) {
@@ -258,8 +258,8 @@ let el = try {
 }
 assert_eq(el, "E")
 assert_eq(ls.map(fn (b) {
-    b.v
-  }), [3, 9, 1])
+  b.v
+}), [3, 9, 1])
 
 // --- extra positional arg is rejected (0 positional params) ---
 let e2 = try {

@@ -15,52 +15,52 @@ assert_eq(sign(0), "zero")
 // First true wins regardless of later arms.
 x = 10
 assert_eq(cond {
-    x > 100 => "huge",
-    x > 5 => "big",
-    _ => "small",
-  }, "big")
+  x > 100 => "huge",
+  x > 5 => "big",
+  _ => "small",
+}, "big")
 
 // No arm matches → nil (like match).
 assert_eq(cond {
-    false => 1,
-    false => 2,
-  }, nil)
+  false => 1,
+  false => 2,
+}, nil)
 
 // `_` short-circuits: later arms after it never run.
 assert_eq(cond {
-    _ => "first",
-    true => "never",
-  }, "first")
+  _ => "first",
+  true => "never",
+}, "first")
 
 // Block body yields its last value; binds in its own scope.
 y = 3
 assert_eq(cond {
-    y > 0 => {
-      a = y * 2
-      a + 1
-    },
-    _ => 0,
-  }, 7)
+  y > 0 => {
+    a = y * 2
+    a + 1
+  },
+  _ => 0,
+}, 7)
 
 // Tests are arbitrary expressions (calls, &&, ||, comparisons).
 fn even(n) {
   n % 2 == 0
 }
 assert_eq(cond {
-    even(3) => "e",
-    even(4) && y > 0 => "ok",
-    _ => "no",
-  }, "ok")
+  even(3) => "e",
+  even(4) && y > 0 => "ok",
+  _ => "no",
+}, "ok")
 
 // Truthiness mirrors `if`: zero is falsy, nonzero truthy.
 assert_eq(cond {
-    0 => "t",
-    _ => "f",
-  }, "f")
+  0 => "t",
+  _ => "f",
+}, "f")
 assert_eq(cond {
-    5 => "t",
-    _ => "f",
-  }, "t")
+  5 => "t",
+  _ => "f",
+}, "t")
 
 // Usable inline (interpolation, assignment, arguments).
 assert_eq("s={cond { y > 0 => 1, _ => 0 }}", "s=1")

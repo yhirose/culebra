@@ -30,8 +30,8 @@ assert_eq(['1', '2', '3'].map(to_long), [1, 2, 3])
 # filter with a builtin predicate-shaped value (to_bool not a builtin; use
 # a chain through map instead — type_of as the discriminator).
 assert_eq([1, 2.0, 3].map(type_of).filter(fn (s) {
-      s == 'Long'
-    }).size(), 2)
+  s == 'Long'
+}).size(), 2)
 
 # Side-effecting builtin (inspect) as a for_each callback — newline per element.
 [7, 8].for_each(inspect)
@@ -47,8 +47,8 @@ assert_eq(it(2, 6), [2, 3, 4, 5])
 # range / iota handed to a HOF — the variadic builtin runs per element with
 # its `step` default and __ARGS__ supplied, exactly like a direct call.
 assert_eq([1, 2, 3].map(range).map(fn (g) {
-      g.collect()
-    }), [[0], [0, 1], [0, 1, 2]])
+  g.collect()
+}), [[0], [0, 1], [0, 1, 2]])
 assert_eq([3, 5].map(iota), [[0, 1, 2], [0, 1, 2, 3, 4]])
 
 # Another variadic builtin (Math.min) bound and called directly.

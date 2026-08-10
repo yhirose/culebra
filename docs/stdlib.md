@@ -5022,10 +5022,10 @@ slow connection can't stall the accept loop:
 # doctest: skip
 let server = Net.listen(7000)
 server.serve(fn (conn) {
-    for line in conn.lines() {
-      conn.write(line.upper() + "\n")
-    }
-  }, workers: 8)  # blocks until Ctrl+C
+  for line in conn.lines() {
+    conn.write(line.upper() + "\n")
+  }
+}, workers: 8)  # blocks until Ctrl+C
 ```
 
 - `workers: 0` (the default) picks a CPU-scaled pool (at least 4, at most 8);

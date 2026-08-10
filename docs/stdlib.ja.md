@@ -4874,10 +4874,10 @@ for conn in server {
 # doctest: skip
 let server = Net.listen(7000)
 server.serve(fn (conn) {
-    for line in conn.lines() {
-      conn.write(line.upper() + "\n")
-    }
-  }, workers: 8)  # Ctrl+C までブロック
+  for line in conn.lines() {
+    conn.write(line.upper() + "\n")
+  }
+}, workers: 8)  # Ctrl+C までブロック
 ```
 
 - `workers: 0`（既定）はCPU数に応じたプール（最小4、最大8）。正の数を渡せば

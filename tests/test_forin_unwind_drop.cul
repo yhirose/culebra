@@ -21,20 +21,30 @@ try {
 # Protocol branch, distinct iterator: body throws; the iterator is disposed
 # and dropped by the protocol cleanup, then the iterable by the for scope.
 fn mk_proto() {
-  {v: 1, iter: fn () {
-      {mut i: 0, has_next: fn () {
+  {
+    v: 1,
+    iter: fn () {
+      {
+        mut i: 0,
+        has_next: fn () {
           self.i < 3
-        }, next: fn () {
+        },
+        next: fn () {
           self.i = self.i + 1
           self.i
-        }, dispose: fn () {
+        },
+        dispose: fn () {
           inspect("proto: disposed")
-        }, drop: fn () {
+        },
+        drop: fn () {
           inspect("proto: iter dropped")
-        }}
-    }, drop: fn () {
+        },
+      }
+    },
+    drop: fn () {
       inspect("proto: iterable dropped")
-    }}
+    },
+  }
 }
 fn run_proto() {
   for x in mk_proto() {
@@ -50,20 +60,30 @@ try {
 # Protocol branch, throwing dispose on break: the dispose's own throw
 # propagates, and both the iterator and the iterable still drop.
 fn mk_throwing() {
-  {v: 1, iter: fn () {
-      {mut i: 0, has_next: fn () {
+  {
+    v: 1,
+    iter: fn () {
+      {
+        mut i: 0,
+        has_next: fn () {
           self.i < 3
-        }, next: fn () {
+        },
+        next: fn () {
           self.i = self.i + 1
           self.i
-        }, dispose: fn () {
+        },
+        dispose: fn () {
           throw "dboom"
-        }, drop: fn () {
+        },
+        drop: fn () {
           inspect("dthrow: iter dropped")
-        }}
-    }, drop: fn () {
+        },
+      }
+    },
+    drop: fn () {
       inspect("dthrow: iterable dropped")
-    }}
+    },
+  }
 }
 fn run_dthrow() {
   for x in mk_throwing() {
@@ -114,12 +134,16 @@ try {
 # Same window on the protocol cursor, where the element comes from next().
 fn mk_elem_gen() {
   {iter: fn () {
-    {mut done: false, has_next: fn () {
+    {
+      mut done: false,
+      has_next: fn () {
         !self.done
-      }, next: fn () {
+      },
+      next: fn () {
         self.done = true
         mk_elem(2)
-      }}
+      },
+    }
   }}
 }
 fn run_elem_proto() {

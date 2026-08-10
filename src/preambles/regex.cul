@@ -80,26 +80,38 @@ let _regex_module = fn () {
       _Regex.split(self._pat, s)
     }
   }
-  {compile: fn (pattern, flags = "") {
+  {
+    compile: fn (pattern, flags = "") {
       Regex.new(if flags == "" {
         pattern
       } else {
         "(?" + flags + ")" + pattern
       })
-    }, escape: _regex_escape, interp: _regex_interp, find: fn (pattern, s) {
+    },
+    escape: _regex_escape,
+    interp: _regex_interp,
+    find: fn (pattern, s) {
       _Regex.find(pattern, s)
-    }, match: fn (pattern, s) {
+    },
+    match: fn (pattern, s) {
       _Regex.match(pattern, s)
-    }, find_all: fn (pattern, s) {
+    },
+    find_all: fn (pattern, s) {
       _Regex.find_all(pattern, s)
-    }, test: fn (pattern, s) {
+    },
+    test: fn (pattern, s) {
       _Regex.test(pattern, s)
-    }, split: fn (pattern, s) {
+    },
+    split: fn (pattern, s) {
       _Regex.split(pattern, s)
-    }, replace_all: fn (pattern, s, repl) {
+    },
+    replace_all: fn (pattern, s, repl) {
       Regex.new(pattern).replace_all(s, repl)
-    }, replace_first: fn (pattern, s, repl) {
+    },
+    replace_first: fn (pattern, s, repl) {
       Regex.new(pattern).replace_first(s, repl)
-    }, Regex: Regex}
+    },
+    Regex: Regex,
+  }
 }
 let Regex = _regex_module()

@@ -379,14 +379,19 @@ fn boom() {
 # A user-`iter` iterable whose iterator is a distinct object with a dispose.
 fn mk_proto(v) {
   {v: v, iter: fn () {
-    {mut i: 0, has_next: fn () {
+    {
+      mut i: 0,
+      has_next: fn () {
         self.i < 2
-      }, next: fn () {
+      },
+      next: fn () {
         self.i = self.i + 1
         self.i
-      }, dispose: fn () {
+      },
+      dispose: fn () {
         0
-      }}
+      },
+    }
   }}
 }
 
@@ -414,14 +419,19 @@ fn forin_set_thrower(v) {
 # Like mk_proto, but the iterator's dispose throws.
 fn mk_proto_throwing(v) {
   {v: v, iter: fn () {
-    {mut i: 0, has_next: fn () {
+    {
+      mut i: 0,
+      has_next: fn () {
         self.i < 2
-      }, next: fn () {
+      },
+      next: fn () {
         self.i = self.i + 1
         self.i
-      }, dispose: fn () {
+      },
+      dispose: fn () {
         throw "boom"
-      }}
+      },
+    }
   }}
 }
 

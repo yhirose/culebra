@@ -6,9 +6,9 @@ fn group_digits(s) {
   let chars = s.graphemes().collect()
   chars.reverse()
   let groups = chars.iter().chunks(3).map(fn (c) {
-      c.reverse()
-      c.join('')
-    }).collect()
+    c.reverse()
+    c.join('')
+  }).collect()
   groups.reverse()
   groups.join(',')
 }

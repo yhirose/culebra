@@ -76,11 +76,11 @@ try {
 shared = SharedBuffer.new(1, Obj)
 shared[0].shape = Shape.Rect(7.0, 8.0)
 total = Isolate.spawn(fn () {
-    match shared[0].shape {
-      Rect(a, b) => a + b,
-      _ => -1.0,
-    }
-  }).join()
+  match shared[0].shape {
+    Rect(a, b) => a + b,
+    _ => -1.0,
+  }
+}).join()
 assert_eq(total, 15.0)
 
 IO.inspect("test_packable_enum OK")

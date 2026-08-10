@@ -14,12 +14,12 @@ assert_true(Regex.compile(`\b` + Regex.escape(word)).test("use C++ here"))
 // --- replace_all with a function argument ---
 let d = Regex.compile('\d+')
 assert_eq(d.replace_all("a1 b22 c333", fn (m) {
-    "<{m.value}>"
-  }), "a<1> b<22> c<333>")
+  "<{m.value}>"
+}), "a<1> b<22> c<333>")
 // the callback sees the whole Match (groups, offsets)
 assert_eq(Regex.compile('(\w)(\w)').replace_all("ab cd", fn (m) {
-      m.groups[2].value + m.groups[1].value
-    }), "ba dc")
+  m.groups[2].value + m.groups[1].value
+}), "ba dc")
 // String repl still uses the $-template fast path
 assert_eq(d.replace_all("x9y", "#"), "x#y")
 
@@ -60,13 +60,13 @@ assert_eq(anchored[0].value, "xx")
 // empty matches advance one grapheme (e\u0301 = 3-byte cluster), never mid-cluster
 let ee = Regex.compile('a*').find_iter("e\u0301b").collect()
 assert_eq(ee.map(fn (m) {
-    m.start
-  }), [0, 3, 4])
+  m.start
+}), [0, 3, 4])
 // ...and never land between CR and LF (fused cluster)
 let crlf = Regex.compile('q*').find_iter("a\r\nb").collect()
 assert_eq(crlf.map(fn (m) {
-    m.start
-  }), [0, 1, 3, 4])
+  m.start
+}), [0, 1, 3, 4])
 
 // --- find_all_str / count: lean bulk APIs (no Match objects) ---
 let w = Regex.compile('\w+')

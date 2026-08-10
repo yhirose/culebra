@@ -58,9 +58,9 @@ assert_eq(o.with + o.from, 3)
 
 // The keyword meanings are unaffected by any of the above.
 assert_eq(cond {
-    total > 5 => "big",
-    _ => "small",
-  }, "big")
+  total > 5 => "big",
+  _ => "small",
+}, "big")
 for i in [1, 2] {
   total = total + i
 } nobreak {
