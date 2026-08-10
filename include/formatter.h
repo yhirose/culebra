@@ -971,24 +971,50 @@ class Printer {
     // against the bracket (prettier's "hug") so `f({...})` reads as one call.
     if (items.size() == 1)
       return doc_concat({doc_text(open), std::move(items[0]), doc_text(close)});
-    // Last-argument hugging: when the final element already brings its own line
-    // breaks — a function body, a nested block — the list is multi-line no
-    // matter what, so splitting it only buys a level of indentation. Keep the
-    // callback attached, the way `srv.get("/path", fn (req) { ... })` is written.
-    if (doc_has_hardline(items.back())) {
-      bool rest_flat = true;
-      for (size_t i = 0; i + 1 < items.size(); i++)
-        if (doc_has_hardline(items[i])) { rest_flat = false; break; }
-      if (rest_flat) {
-        std::vector<DocP> hug{doc_text(open)};
-        for (size_t i = 0; i < items.size(); i++) {
-          if (i) hug.push_back(doc_text(", "));
-          hug.push_back(std::move(items[i]));
-        }
-        hug.push_back(doc_text(close));
-        return doc_concat(std::move(hug));
+    // Elements that bring their own line breaks: a function body, a block
+    // expression, a literal holding a comment.
+    int blocks = 0;
+    size_t block = 0;
+    for (size_t i = 0; i < items.size(); i++)
+      if (doc_has_hardline(items[i])) { blocks++; block = i; }
+
+    // One element breaks and at most one follows it: the list is multi-line no
+    // matter what, so splitting it only buys a level of indentation. Keep it
+    // hugged, the way `srv.get("/path", fn (req) { ... })` and
+    // `assert_throws(fn () { ... }, "TypeError")` are written. Allowing one
+    // element after the block is what keeps a trailing option (`workers: 4`,
+    // `frames: 36000`) from costing the whole list its shape — dart's formatter
+    // draws the line in the same place, for the same reason.
+    if (blocks == 1 && block + 2 >= items.size()) {
+      std::vector<DocP> hug{doc_text(open)};
+      for (size_t i = 0; i < items.size(); i++) {
+        if (i) hug.push_back(doc_text(", "));
+        hug.push_back(std::move(items[i]));
       }
+      hug.push_back(doc_text(close));
+      return doc_concat(std::move(hug));
     }
+
+    // Any other list with a break inside it goes one element per line. It can
+    // never lay out flat, so it is built from hardlines rather than wrapped in
+    // a Group: doc_fits reports "fits" the moment it reaches a hardline, and
+    // everything past that point would then render as if flat. Always broken,
+    // so the trailing comma is unconditional.
+    if (blocks > 0) {
+      std::vector<DocP> broken;
+      for (auto& item : items) {
+        broken.push_back(doc_hardline());
+        broken.push_back(std::move(item));
+        broken.push_back(doc_text(","));
+      }
+      return doc_concat({
+          doc_text(open),
+          doc_indent(kIndent, doc_concat(std::move(broken))),
+          doc_hardline(),
+          doc_text(close),
+      });
+    }
+
     std::vector<DocP> inner;
     inner.push_back(doc_softline());
     for (size_t i = 0; i < items.size(); i++) {
@@ -1056,17 +1082,26 @@ class Printer {
       if (is_dot(*node.nodes[i]) && node.nodes[i + 1]->original_name == "ARGUMENTS")
         calls++;
 
-    std::vector<DocP> parts;
-    if (calls < 2) {
-      parts.push_back(receiver);
-      for (size_t i = 1; i < node.nodes.size(); i++)
-        parts.push_back(print_postfix(*node.nodes[i]));
+    std::vector<DocP> segs;
+    for (size_t i = 1; i < node.nodes.size(); i++)
+      segs.push_back(print_postfix(*node.nodes[i]));
+
+    // A chain carrying a block argument already breaks, and a Group may not
+    // wrap a hardline: doc_fits would call it flat, leaving the `.` softlines
+    // unbroken while the indent below still applied to the breaks inside —
+    // pushing that argument list a level too deep. Such a chain stays flat.
+    bool breaks = doc_has_hardline(receiver);
+    for (const auto& s : segs) breaks = breaks || doc_has_hardline(s);
+
+    if (calls < 2 || breaks) {
+      std::vector<DocP> parts{receiver};
+      for (auto& s : segs) parts.push_back(std::move(s));
       return doc_concat(std::move(parts));
     }
     std::vector<DocP> cont;
     for (size_t i = 1; i < node.nodes.size(); i++) {
       if (is_dot(*node.nodes[i])) cont.push_back(doc_softline());  // break before `.`
-      cont.push_back(print_postfix(*node.nodes[i]));
+      cont.push_back(std::move(segs[i - 1]));
     }
     return doc_group(doc_concat({receiver, doc_indent(kIndent, doc_concat(std::move(cont)))}));
   }

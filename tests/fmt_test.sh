@@ -391,6 +391,112 @@ if ! diff -u "$TMP/brk_want.cul" "$TMP/brk_got.cul" > "$TMP/brk_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1j. Golden fixture: a list whose block isn't the last element ---------
+# A `fn` body (or any block expression) hard-breaks, and a Group may not wrap a
+# hardline: doc_fits reports "fits" the moment it reaches one, so everything
+# after it renders as if flat and lands glued to the block's closing brace, one
+# indent level too deep. A list keeps the block hugged only while at most one
+# element follows it; anything else lays out one element per line.
+# See include/formatter.h print_delimited.
+cat > "$TMP/blk2_in.cul" <<'EOF'
+fn run(w, h, tick, frames = 1) { tick() }
+fn spawn(body, a, b) { body() }
+run(1, 2, fn () {
+  inspect("tick")
+  true
+}, frames: 3)
+spawn(fn () {
+  inspect("body")
+}, 1, 2)
+let m = {a: fn () {
+  1
+}, b: fn () {
+  2
+}, c: 3}
+inspect(m.a())
+EOF
+cat > "$TMP/blk2_want.cul" <<'EOF'
+fn run(w, h, tick, frames = 1) {
+  tick()
+}
+fn spawn(body, a, b) {
+  body()
+}
+run(1, 2, fn () {
+  inspect("tick")
+  true
+}, frames: 3)
+spawn(
+  fn () {
+    inspect("body")
+  },
+  1,
+  2,
+)
+let m = {
+  a: fn () {
+    1
+  },
+  b: fn () {
+    2
+  },
+  c: 3,
+}
+inspect(m.a())
+EOF
+"$CULEBRA" fmt "$TMP/blk2_in.cul" > "$TMP/blk2_got.cul" 2>"$TMP/blk2_err"
+if ! diff -u "$TMP/blk2_want.cul" "$TMP/blk2_got.cul" > "$TMP/blk2_diff" 2>&1; then
+  echo "FAIL golden (non-final block element): formatted output differs"
+  cat "$TMP/blk2_diff"
+  fail=1
+fi
+
+# --- 1k. Golden fixture: a method chain carrying a block argument ----------
+# A chain of two or more calls is grouped so it can break before each `.`, but
+# that Group may not wrap a hardline either: a block argument left the `.`
+# softlines unbroken while the chain's indent still applied to the breaks
+# inside it, so the block landed one level deeper than the same call written
+# without the chain. See include/formatter.h print_call.
+cat > "$TMP/chn_in.cul" <<'EOF'
+xs = [1, 2]
+a = xs.map(fn (x) {
+  x
+})
+b = xs.iter().map(fn (x) {
+  x
+})
+c = xs.iter().map(fn (x) {
+  x
+}, fn (y) {
+  y
+})
+inspect(a)
+EOF
+cat > "$TMP/chn_want.cul" <<'EOF'
+xs = [1, 2]
+a = xs.map(fn (x) {
+  x
+})
+b = xs.iter().map(fn (x) {
+  x
+})
+c = xs.iter().map(
+  fn (x) {
+    x
+  },
+  fn (y) {
+    y
+  },
+)
+inspect(a)
+EOF
+"$CULEBRA" fmt "$TMP/chn_in.cul" > "$TMP/chn_got.cul" 2>"$TMP/chn_err"
+if ! diff -u "$TMP/chn_want.cul" "$TMP/chn_got.cul" > "$TMP/chn_diff" 2>&1; then
+  echo "FAIL golden (block argument in a method chain): output differs"
+  cat "$TMP/chn_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are
