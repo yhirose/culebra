@@ -1781,10 +1781,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_make_range(
     int8_t has_start, int64_t start, int8_t has_end, int64_t end,
     int8_t inclusive, int64_t step) {
-  static const char kRange[] = "Range";
+  // Header-backed: every TAG_STRING must carry the length at data[-8]
+  // (_str_len); a bare char array segfaults the structural `==` walk.
+  static const struct { JitStrHeader h; char bytes[6]; } kRange = {{5},
+                                                                   "Range"};
   auto* o = culebra_runtime_object_new();
   culebra_runtime_object_set(o, "class", false, TAG_STRING,
-                             reinterpret_cast<int64_t>(kRange), 0, 0);
+                             reinterpret_cast<int64_t>(kRange.bytes), 0, 0);
   culebra_runtime_object_set(o, "start", false,
                              has_start ? TAG_LONG : TAG_NIL,
                              has_start ? start : 0, 0, 0);
