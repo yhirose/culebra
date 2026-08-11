@@ -1,0 +1,3 @@
+# An uncaught non-Long sized-array count: TypeError at the array literal,
+# all lanes.
+let x = [0]('x')

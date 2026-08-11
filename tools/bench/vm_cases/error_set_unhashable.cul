@@ -1,0 +1,3 @@
+# An uncaught unhashable set element: TypeError at the set literal, all
+# lanes.
+let x = {[1], 2}

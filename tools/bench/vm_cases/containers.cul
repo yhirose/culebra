@@ -1,0 +1,70 @@
+# Container literals: sized arrays, spread elements, tuples, sets.
+# Tuple/Set join Array as in-slice RC-real constructors here, so the leak
+# lanes see their Release traffic too.
+
+# Sized array: resize-then-overwrite order, nil and explicit defaults.
+println([0](3))
+println([1, 2](5, 9))
+println([1, 2, 3](2))
+println([](0))
+let n = 4
+println([0](n, n * 2))
+
+# A heap default aliases one object across the filled slots (per-slot
+# retain — the churn below is what catches an over-release).
+mut i = 0
+while i < 200 {
+    let t = [](3, [i])
+    i = i + 1
+}
+println(i)
+
+# Spread: array/tuple/set sources, literal and stored, mixed with plain
+# elements, and the same source spliced twice.
+println([...[1, 2], 3])
+println([0, ...[1, 2], ...[3]])
+println([...(1, 2)])
+println([...{9, 9, 8}])
+let src = [5, 6]
+println([...src, ...src])
+println(src)
+
+# Tuples: construction, nesting, equality, point reads.
+let t = (1, 'two', 3.0)
+println(t)
+println(t[1])
+println(t[-1])
+println((1, 2) == (1, 2))
+println((1, 2) == (1, 3))
+println(([1, ...[2]], (3, 4)))
+
+# Sets: dedupe at construction, equality, spread back out.
+let s = {2, 1, 2}
+println(s)
+println({1, 2} == {2, 1})
+println({1, 2} == {1, 3})
+println([...s])
+
+# Rebinding and loop-scoped containers release every pass.
+mut cur = (0, 0)
+mut ss = {0, 1}
+i = 0
+while i < 100 {
+    cur = (i, [i])
+    ss = {i, i + 1, i}
+    i = i + 1
+}
+println(cur)
+println(ss)
+
+# Caught error edges: the partial container and the pending element are
+# released on the unwind, all lanes.
+mut r = nil
+r = try { let q = [...nil]; nil } catch e { 'caught-spread' }
+println(r)
+r = try { let q = {2, [3]}; nil } catch e { 'caught-unhashable' }
+println(r)
+r = try { let q = [7](0 - 3); nil } catch e { 'caught-negative' }
+println(r)
+r = try { let q = [7]('x', 9); nil } catch e { 'caught-count-type' }
+println(r)

@@ -4257,9 +4257,8 @@ struct JIT {
               builder_.getInt64Ty(), builder_.getInt8Ty(),
               builder_.getInt64Ty(), builder_.getInt64Ty(),
               builder_.getInt64Ty()),
-          {arrPtr, count, defTag, defData,
-           builder_.getInt64(ast.nodes[1]->line),
-           builder_.getInt64(ast.nodes[1]->column)});
+          {arrPtr, count, defTag, defData, current_line_val(),
+           current_column_val()});
     }
 
     // Overwrite or push literal values (matches interpreter:

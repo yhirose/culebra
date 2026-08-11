@@ -1,0 +1,3 @@
+# An uncaught spread of a non-iterable: the typed TypeError at the spread
+# element, all lanes.
+let x = [1, ...5]

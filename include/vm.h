@@ -11,7 +11,8 @@
 // contract only.
 //
 // Current slice (the expression core + basic control flow): Long / Float /
-// Bool / nil / String / Array literals; interpolated and triple strings
+// Bool / nil / String literals; Array (incl. sized `[v](n, d)` and `...`
+// spread elements), Tuple, and Set literals; interpolated and triple strings
 // (embedded expressions, format specs, the shared block dedent);
 // `let` / `let mut` / reassignment /
 // compound assignment (op= and ??=) of plain identifiers; arithmetic
@@ -96,6 +97,29 @@ enum class Op : uint8_t {
   ArrayNew,    // regs[a] = fresh empty Array (+1)
   ArrayAppend, // append regs[c] into array regs[a] at index b; regs[c] = nil
                // (the array absorbs the +1, mirroring compile_array)
+  ArrayPush,   // append regs[b] to array regs[a] — a spread-mode literal's
+               // non-spread element, where the running index no longer
+               // aligns (compile_array's has_spread switch); the array
+               // absorbs the +1, regs[b] = nil
+  ArrayExtend, // splice regs[b]'s elements into array regs[a] (`...x`).
+               // array_extend borrows the source (retaining each copied
+               // element) — the register keeps its +1; a non-Array/Tuple/Set
+               // source raises the typed TypeError with this instruction's
+               // line/col (the spread element's position)
+  ArrayResize, // sized-literal prefill: resize array regs[a] to regs[b]
+               // (strict Long, else "expected Long"; a negative count is
+               // ValueError) filling with regs[c], or nil when c == -1.
+               // The default is borrowed — each filled slot retains its own
+               // alias ref. Positioned at the count expression's node.
+  TupleNew,    // regs[a] = fresh empty Tuple (+1)
+  TuplePush,   // append regs[b] into tuple regs[a]; regs[b] = nil (absorbed)
+  SetNew,      // regs[a] = fresh empty Set (+1)
+  SetAdd,      // add regs[b] into set regs[a]; regs[b] = nil — set_add
+               // absorbs the +1 (releases it on a duplicate). Hashing an
+               // unhashable element throws positionless before the absorb:
+               // the register still owns the value (the handler ladder
+               // frees it) and the SetOpPos published just before (the
+               // literal's position, compile_set's emit order) anchors it.
   Index,       // regs[a] = regs[b][regs[c]] (+1) — the plain point read,
                // emit_point_index's dispatch: Array/Tuple by Long key (a
                // negative index counts from the end), Object by value key
@@ -1956,18 +1980,65 @@ class Compiler {
         // here, like the JIT).
         return compile_interp_pieces(ast, culebra::normalize_triple_pieces(ast));
       case "ARRAY"_: {
-        if (ast.nodes.size() > 1) reject(ast, "sized array literal");
         int32_t t = alloc_temp(ast);
         emit(Op::ArrayNew, t);
+        if (ast.nodes.size() > 1) {  // sized: [v](n) / [v](n, d)
+          auto count = compile_expr(*ast.nodes[1]);
+          ExprResult def{-1, false};
+          if (ast.nodes.size() > 2) def = compile_expr(*ast.nodes[2]);
+          // Count and default stay register-owned (array_resize borrows
+          // both); every count error anchors at the array literal, the
+          // interp's eval boundary / the JIT's PosGuard position.
+          StampGuard pos(*this, ast);
+          emit(Op::ArrayResize, t, count.slot, def.slot);
+        }
         const auto& seq = *ast.nodes[0];
+        bool has_spread = false;
+        for (const auto& e : seq.nodes)
+          if (e->tag == "SPREAD_ELEM"_) has_spread = true;
         for (size_t i = 0; i < seq.nodes.size(); i++) {
-          if (seq.nodes[i]->tag == "SPREAD_ELEM"_)
-            reject(*seq.nodes[i], "array spread");
-          // ArrayAppend absorbs a +1: owned_src retains a borrowed slot
-          // into a temp and drops a consumed temp from the sweep list.
-          auto v = compile_expr(*seq.nodes[i]);
-          emit(Op::ArrayAppend, t, static_cast<int32_t>(i),
-               owned_src(*seq.nodes[i], v));
+          const auto& e = *seq.nodes[i];
+          if (e.tag == "SPREAD_ELEM"_) {
+            // array_extend borrows the source — no owned_src: a temp's +1
+            // falls to the statement sweep, a binding stays untouched.
+            auto v = compile_expr(*e.nodes[0]);
+            StampGuard pos(*this, e);
+            emit(Op::ArrayExtend, t, v.slot);
+          } else if (has_spread) {
+            // A spread broke the index alignment: pure append, the JIT's
+            // has_spread switch. (A sized literal cannot reach here — the
+            // sized+spread mix is a parse-time SyntaxError.)
+            auto v = compile_expr(e);
+            emit(Op::ArrayPush, t, owned_src(e, v));
+          } else {
+            // ArrayAppend absorbs a +1: owned_src retains a borrowed slot
+            // into a temp and drops a consumed temp from the sweep list.
+            auto v = compile_expr(e);
+            emit(Op::ArrayAppend, t, static_cast<int32_t>(i),
+                 owned_src(e, v));
+          }
+        }
+        return {t, true};
+      }
+      case "TUPLE"_: {
+        int32_t t = alloc_temp(ast);
+        emit(Op::TupleNew, t);
+        for (const auto& n : ast.nodes) {
+          auto v = compile_expr(*n);
+          emit(Op::TuplePush, t, owned_src(*n, v));
+        }
+        return {t, true};
+      }
+      case "SET"_: {
+        int32_t t = alloc_temp(ast);
+        emit(Op::SetNew, t);
+        for (const auto& n : ast.nodes) {
+          auto v = compile_expr(*n);
+          // set_add's unhashable throw is positionless — publish the
+          // literal's position first, compile_set's emit order.
+          StampGuard pos(*this, ast);
+          emit(Op::SetOpPos);
+          emit(Op::SetAdd, t, owned_src(*n, v));
         }
         return {t, true};
       }
@@ -2119,6 +2190,8 @@ inline std::string dump(const Chunk& c) {
       "BitXor",    "Shl",       "Shr",        "BitNot",
       "Eq",        "Ne",        "Lt",
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
+      "ArrayPush", "ArrayExtend", "ArrayResize",
+      "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfTag",
       "MakeClosure", "Call",    "Ret",
@@ -2589,6 +2662,68 @@ struct Exec {
               reinterpret_cast<JitArray*>(regs[in.a].data), in.b,
               static_cast<int8_t>(regs[in.c].tag), regs[in.c].data);
           regs[in.c] = JitValue{TAG_NIL, 0};
+          ++pc;
+          break;
+        case Op::ArrayPush:
+          culebra_runtime_array_push(
+              reinterpret_cast<JitArray*>(regs[in.a].data),
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
+          regs[in.b] = JitValue{TAG_NIL, 0};
+          ++pc;
+          break;
+        case Op::ArrayExtend: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_array_extend(
+              reinterpret_cast<JitArray*>(regs[in.a].data),
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data, line,
+              col);
+          ++pc;
+          break;
+        }
+        case Op::ArrayResize: {
+          const JitValue& cnt = regs[in.b];
+          auto [line, col] = chunk_pos_at(c, pc);
+          if (cnt.tag != TAG_LONG)  // value_to_long's strict gate
+            culebra_runtime_type_error_typed(line, col, "Long",
+                                             static_cast<int8_t>(cnt.tag));
+          int8_t dt = TAG_NIL;
+          int64_t dd = 0;
+          if (in.c >= 0) {
+            dt = static_cast<int8_t>(regs[in.c].tag);
+            dd = regs[in.c].data;
+          }
+          culebra_runtime_array_resize(
+              reinterpret_cast<JitArray*>(regs[in.a].data), cnt.data, dt, dd,
+              line, col);
+          ++pc;
+          break;
+        }
+        case Op::TupleNew:
+          regs[in.a] = JitValue{
+              TAG_TUPLE,
+              reinterpret_cast<int64_t>(culebra_runtime_tuple_new())};
+          ++pc;
+          break;
+        case Op::TuplePush:
+          culebra_runtime_tuple_push(
+              reinterpret_cast<JitArray*>(regs[in.a].data),
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
+          regs[in.b] = JitValue{TAG_NIL, 0};
+          ++pc;
+          break;
+        case Op::SetNew:
+          regs[in.a] = JitValue{
+              TAG_SET, reinterpret_cast<int64_t>(culebra_runtime_set_new())};
+          ++pc;
+          break;
+        case Op::SetAdd:
+          // On the unhashable throw the register still owns the +1 (the
+          // handler ladder frees it); the SetOpPos published just before
+          // anchors the positionless error at the literal.
+          culebra_runtime_set_add(reinterpret_cast<JitSet*>(regs[in.a].data),
+                                  static_cast<int8_t>(regs[in.b].tag),
+                                  regs[in.b].data);
+          regs[in.b] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
         case Op::Index:
@@ -3357,6 +3492,83 @@ struct Lowering {
                   b.getInt8Ty(), i64Ty),
               {arr, b.getInt64(in.b), j.extract_tag(v), j.extract_data(v)});
           b.CreateStore(j.make_nil(), slots[in.c]);
+          break;
+        }
+        case Op::ArrayPush: {
+          auto arr = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto v = load_slot(in.b);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::array_push, b.getVoidTy(),
+                                             ptrTy, b.getInt8Ty(), i64Ty),
+              {arr, j.extract_tag(v), j.extract_data(v)});
+          b.CreateStore(j.make_nil(), slots[in.b]);
+          break;
+        }
+        case Op::ArrayExtend: {
+          // Borrows the source register (compile_array's spread arm); the
+          // non-iterable throw unwinds through the region pad with every
+          // slot still frame-owned.
+          auto arr = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto v = load_slot(in.b);
+          j.emit_call(
+              j.module_->getOrInsertFunction(
+                  rt::array_extend, b.getVoidTy(), ptrTy, b.getInt8Ty(),
+                  i64Ty, i64Ty, i64Ty),
+              {arr, j.extract_tag(v), j.extract_data(v),
+               j.current_line_val(), j.current_column_val()});
+          break;
+        }
+        case Op::ArrayResize: {
+          auto arr = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto count = j.value_to_long(load_slot(in.b));
+          llvm::Value* defTag = b.getInt8(TAG_NIL);
+          llvm::Value* defData = b.getInt64(0);
+          if (in.c >= 0) {
+            auto d = load_slot(in.c);
+            defTag = j.extract_tag(d);
+            defData = j.extract_data(d);
+          }
+          j.emit_call(
+              j.module_->getOrInsertFunction(
+                  rt::array_resize, b.getVoidTy(), ptrTy, i64Ty,
+                  b.getInt8Ty(), i64Ty, i64Ty, i64Ty),
+              {arr, count, defTag, defData, j.current_line_val(),
+               j.current_column_val()});
+          break;
+        }
+        case Op::TupleNew: {
+          auto tup = j.emit_call(
+              j.module_->getOrInsertFunction(rt::tuple_new, ptrTy), {},
+              "tup");
+          b.CreateStore(j.make_tuple(tup), slots[in.a]);
+          break;
+        }
+        case Op::TuplePush: {
+          auto tup = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto v = load_slot(in.b);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::tuple_push, b.getVoidTy(),
+                                             ptrTy, b.getInt8Ty(), i64Ty),
+              {tup, j.extract_tag(v), j.extract_data(v)});
+          b.CreateStore(j.make_nil(), slots[in.b]);
+          break;
+        }
+        case Op::SetNew: {
+          auto s = j.emit_call(
+              j.module_->getOrInsertFunction(rt::set_new, ptrTy), {}, "set");
+          b.CreateStore(j.make_set(s), slots[in.a]);
+          break;
+        }
+        case Op::SetAdd: {
+          // The SetOpPos lowered just before published the literal's
+          // position for the positionless unhashable throw.
+          auto s = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto v = load_slot(in.b);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::set_add, b.getVoidTy(),
+                                             ptrTy, b.getInt8Ty(), i64Ty),
+              {s, j.extract_tag(v), j.extract_data(v)});
+          b.CreateStore(j.make_nil(), slots[in.b]);
           break;
         }
         case Op::Index: {

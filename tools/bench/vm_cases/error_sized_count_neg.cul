@@ -1,0 +1,3 @@
+# An uncaught negative sized-array count: ValueError at the array literal,
+# all lanes.
+let x = [0](-1)
