@@ -1,0 +1,13 @@
+# A throw out of an arm that bound a whole structural pattern: the arm's
+# bindings and the pattern's element temps unwind with the frame, and the
+# error keeps its own position on every lane.
+println("before")
+let f = fn (v) {
+    match v {
+        [a, [b, c]] if a > 100 => "guarded out",
+        [a, [b, c]] => b / c,
+        _ => "no",
+    }
+}
+println(f([1, [2, 1]]))
+println(f([1, [2, 0]]))

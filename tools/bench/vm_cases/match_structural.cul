@@ -1,0 +1,183 @@
+# Structural patterns in match arms: the same array / tuple / object engine
+# the destructuring statements use, wired to the arms. Every test runs before
+# any binding, so a failed arm leaves nothing bound and the next arm rebinds
+# the same names from scratch.
+let cls = fn (v) {
+    match v {
+        [a, b] => "arr2 {a} {b}",
+        [a] => "arr1 {a}",
+        [] => "arr0",
+        _ => "other",
+    }
+}
+println(cls([1, 2]))
+println(cls([9]))
+println(cls([]))
+println(cls("ab"))
+println(cls(3))
+println(cls([1, 2, 3]))
+
+# One pattern form matches either indexed sequence, in both directions.
+println(match (7, 8) { [a, b] => "arr-pat {a}{b}", _ => "no" })
+println(match [7, 8] { (a, b) => "tup-pat {a}{b}", _ => "no" })
+println(match (1, 2, 3) { (a, b, c) => "tup3 {a}{b}{c}", _ => "no" })
+
+# Nesting and `...rest` at any position; a rest over a Tuple yields an Array.
+let nest = fn (v) {
+    match v {
+        [[a, b], ...t] => "nest {a}{b} rest={t}",
+        [h, ...t, z] => "mid {h}{t}{z}",
+        [...t] => "all {t}",
+        _ => "no",
+    }
+}
+println(nest([[1, 2], 3, 4]))
+println(nest([1, 2, 3, 4]))
+println(nest([5]))
+println(nest([]))
+println(nest(9))
+println(match (1, 2, 3) { [h, ...t] => "tuprest {h} {t}", _ => "no" })
+
+# Literals, typed elements and `_` sinks inside a container.
+let lit = fn (v) {
+    match v {
+        [a, 5] => "five {a}",
+        [x:Long, y:String] => "ls {x}{y}",
+        [_, _] => "two",
+        _ => "no",
+    }
+}
+println(lit([1, 5]))
+println(lit([1, "z"]))
+println(lit(["q", "z"]))
+println(lit([1, 2]))
+println(lit([1]))
+println(match [1, 2, 3] { [_, b, _] => "sink {b}", _ => "no" })
+
+# At most one `...rest`: a second makes the pattern a never-match.
+println(match [1, 2, 3] { [a, ...t, ...u] => "rr", _ => "no" })
+
+# Object patterns: shorthand binds the key's own name, `key: pattern` renames
+# or nests, a missing key falls to the next arm, `{}` accepts any Object.
+let obj = range(0, 3)
+println(match obj { {nope: x} => "nope", {iter: i} => "iter {type_of(i)}", _ => "no" })
+println(match obj { {iter, next} => "two {type_of(iter)}{type_of(next)}", _ => "no" })
+println(match obj { {} => "any object", _ => "no" })
+println(match [1, 2] { {} => "any object", _ => "no" })
+println(match 5 { {} => "any object", _ => "no" })
+
+# An or-pattern of containers (no alternative may bind — parse rejects that).
+println(match [3] { [1, 2] | [3] => "orc", _ => "no" })
+println(match [1, 9] { [1 | 2, b] => "alt {b}", _ => "no" })
+println(match [3, 9] { [1 | 2, b] => "alt", _ => "no" })
+
+# A guard sees the whole pattern's bindings; a failing guard releases them all
+# and the next arm binds the same names again.
+let g = fn (v) {
+    match v {
+        [a, [b, c]] if a > 100 => "big",
+        [a, [b, c]] if b > c => "desc",
+        [a, [b, c]] => "asc {a}{b}{c}",
+        [a, b] => "two {a}{b}",
+        _ => "no",
+    }
+}
+println(g([1, [3, 2]]))
+println(g([1, [2, 3]]))
+println(g([200, [1, 2]]))
+println(g([4, 5]))
+println(g(0))
+
+# Bindings from any depth are ordinary locals: mutable, shadowing, capturable.
+println(match [1, 2] { [x, y] => { x = x + 10; "{x}{y}" }, _ => "no" })
+let outer = "kept"
+println(match [1, 2] { [outer, y] => "{outer}{y}", _ => "no" })
+println(outer)
+let cap = match [7, [8, 9]] { [x, [y, ...t]] => fn () { "{x}{y}{t}" }, _ => nil }
+println(cap())
+# a capture on the arm that the guard rejects, then again on the one it takes
+let pick = fn (v) {
+    match v {
+        [x, y] if y > 100 => fn () { x + y },
+        [x, y] => fn () { x * y },
+        _ => fn () { 0 },
+    }
+}
+println(pick([3, 4])())
+println(pick([3, 400])())
+println(pick(1)())
+
+# A later element repeating a name: the last write wins, as in the other lanes.
+println(match [1, 2] { [a, a] => "dup {a}", _ => "no" })
+
+# The arm value may be a binding — it outlives the arm scope.
+let tail = fn (v) { match v { [h, ...t] => t, _ => nil } }
+println(to_string(tail([1, 2, 3])))
+let inner = fn (v) { match v { [h, b] => b, _ => nil } }
+println(to_string(inner([1, [2, 3]])))
+
+# In a loop: arm temps and per-iteration bindings both reset, and a closure
+# made in an arm keeps that iteration's values.
+let mut total = 0
+let mut last = nil
+for i in 0..4 {
+    match [i, [i * 2, i * 3]] {
+        [a, [b, c]] if a == 2 => { total = total + 100 },
+        [a, [b, c]] => { total = total + a + b + c; last = [c] },
+        _ => nil,
+    }
+}
+println("{total} {last}")
+
+# Nesting the constructs: an inner match over an outer binding, a pattern
+# under an object key, and a guard that declares on an arm that is rejected.
+let nestm = fn (v) {
+    match v {
+        [a, b] => match b { [c, d] => "in {a}{c}{d}", _ => "out {a}" },
+        _ => "no",
+    }
+}
+println(nestm([1, [2, 3]]))
+println(nestm([1, 2]))
+println(match [1, [2, 3, 4], (5, 6)] {
+    [a, [b, ...t], (c, d)] => "deep {a}{b}{t}{c}{d}",
+    _ => "no",
+})
+println(match [range(0, 2), 5] { [{iter: i}, n] => "oi {type_of(i)} {n}", _ => "no" })
+println(match [1, 2] {
+    [x, y] if (let q = x + y) > 100 => "big {q}",
+    [x, y] => "small {x}{y}",
+    _ => "no",
+})
+
+# The subject may be a captured cell the closure already reassigned.
+let subjcell = fn () {
+    let mut v = [1, [2]]
+    let g = fn () { v = [3, [4]] }
+    g()
+    match v { [a, [b]] => a + b, _ => -1 }
+}
+println(subjcell())
+
+# Early exits out of an arm holding bindings.
+let ret = fn (v) { match v { [x, [y, z]] => { return x + y + z }, _ => -1 } }
+println(ret([4, [5, 6]]))
+println(ret(0))
+let thr = fn (v) {
+    try {
+        match v { [x, [y, z]] => throw "boom {x}{y}{z}", _ => "no" }
+    } catch e {
+        "caught {e}"
+    }
+}
+println(thr([1, [2, 3]]))
+let mut acc = ""
+for i in 0..5 {
+    match [i, [i]] {
+        [x, [y]] if x == 3 => { acc = acc + "B"; break },
+        [x, [y]] if x == 1 => { acc = acc + "C"; continue },
+        [x, [y]] => { acc = acc + to_string(y) },
+        _ => nil,
+    }
+}
+println(acc)

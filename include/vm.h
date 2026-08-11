@@ -27,8 +27,10 @@
 // error like both backends);
 // fn literals with closures (captured locals promoted to JitCells, the
 // JIT's cell mechanism — forward-reference capture is still rejected);
-// `match` over leaf patterns (literals, `_`, bindings, typed bindings over
-// primitive type names, or-patterns of non-binding leaves) with guards;
+// patterns — literals, `_`, bindings, typed bindings over primitive type
+// names, or-patterns of non-binding alternatives, and array / tuple / object
+// patterns with nesting, `...rest` and sinks — driving both `match` arms
+// (with guards) and destructuring declarations / parallel assignment;
 // `fn name` declarations with arity-dispatch overloads through the shared
 // multimethod runtime, incl. self/mutual recursion via pre-declared
 // dispatcher cells (reads before the decl runs raise NameError);
@@ -1745,14 +1747,14 @@ class Compiler {
     return {res, true};
   }
 
-  // `match` as an expression, over the leaf-pattern slice. The subject is
-  // owned by a statement temp across the arms (the JIT holds it in a
-  // dedicated subject scope; here the statement sweep / the break-return
-  // temp releases are the single releaser). Every arm runs test → bind →
-  // guard → body: a leaf pattern cannot bind before its tests pass, so a
-  // failed test jumps to the next arm with nothing live, and only a guard
-  // failure has a binding to release. The body block writes the shared
-  // result slot exactly once (compile_if's shape); no arm matched → nil.
+  // `match` as an expression. The subject is owned by a statement temp across
+  // the arms (the JIT holds it in a dedicated subject scope; here the
+  // statement sweep / the break-return temp releases are the single
+  // releaser). Every arm runs test → bind → guard → body, the two-phase walk
+  // compile_destructure_assign shares: no pattern binds before all of its
+  // tests pass, so a failed test jumps to the next arm with nothing live, and
+  // only a guard failure has bindings to release. The body block writes the
+  // shared result slot exactly once (compile_if's shape); no arm matched → nil.
   ExprResult compile_match(const peg::Ast& ast) {
     using namespace peg::udl;
     auto mv = culebra::view_match(ast);
@@ -1768,30 +1770,26 @@ class Compiler {
       std::vector<size_t> fail_jumps;  // patched to the next arm's start
       compile_pattern_test(pat, subj, fail_jumps);
       // Bind once every test passed. Arm bindings are mutable (interp's
-      // try_pattern default), and a captured one lives in a cell like any
-      // local (the compile_try catch-binding shape).
-      int32_t bound = -1;
-      bool bound_cell = false;
-      if (const peg::Ast* nn = culebra::find_pattern_binding(pat)) {
-        auto name = std::string(nn->token);
-        bound_cell = info_->captured_locals.contains(name);
-        bound = alloc_slot(*nn, name);
-        if (bound_cell) {
-          store_new_cell(*nn, bound, {subj, false});
-          mark_cell_slot(bound);
-        } else {
-          store_into(bound, {subj, false}, /*dst_is_fresh=*/true);
-        }
-        scopes_.back().bindings.push_back({name, bound, /*is_mut=*/true,
-                                           bound_cell});
-      }
+      // try_pattern default) and declare like a `let`, so a captured one
+      // lives in a cell (the compile_try catch-binding shape). The subject is
+      // borrowed — it belongs to the statement temp, and a leaf retains its
+      // own reference. An ObjGet in this walk cannot miss (the tests proved
+      // every key present), so its edge joins the mismatch edge unused.
+      compile_pattern_bind(pat, subj, /*subj_owned=*/false, fail_jumps,
+                           /*is_mut=*/true, /*declares=*/true);
       size_t body_idx = 1;
-      size_t guard_fail = SIZE_MAX;
       if (arm->nodes[body_idx]->tag == "GUARD"_) {
         auto g = compile_expr(*arm->nodes[body_idx]->nodes[0]);
-        // The test reads the pending MATCH position: a non-Bool guard's
-        // TypeError reports the match node in both existing lanes.
-        guard_fail = emit(Op::JumpIfFalse, g.slot);
+        // Branch on the guard being TAKEN, so the failing path is the fall
+        // through and its release ladder is emitted here — with the arm's
+        // scope still open, which is what lets the whole pattern's bindings
+        // (not just one) be released by the ordinary scope ladder. The test
+        // reads the pending MATCH position: a non-Bool guard's TypeError
+        // reports the match node in both existing lanes.
+        size_t take = emit(Op::JumpIfTrue, g.slot);
+        release_down_to(scopes_.back().slot_watermark);
+        fail_jumps.push_back(emit(Op::Jump));
+        patch_to_here(take);
         body_idx++;
       }
       // The arm body is its own defer scope (scan_eh_defer's MATCH case
@@ -1799,15 +1797,17 @@ class Compiler {
       // arm value already owned in `res`.
       compile_block_into(*arm->nodes[body_idx], res,
                          /*defer_key=*/arm->nodes[body_idx].get());
+      int32_t arm_top = next_slot_;
       pop_scope();  // the taken path's binding release
+      // Arms are alternative paths but ONE statement, so they must not share
+      // slot indices: the scope rollback would hand the next arm a slot this
+      // arm still has a temp entry for (its `+1` dropped by the second write,
+      // and the statement sweep releasing it twice), and could re-declare a
+      // plain slot as a captured binding's cell — the kind a release ladder
+      // picks statically per slot. Keeping the water mark costs slots in
+      // proportion to the whole match, which kMaxSlots bounds.
+      next_slot_ = arm_top;
       end_jumps.push_back(emit(Op::Jump));
-      if (guard_fail != SIZE_MAX) {
-        // Guard-fail: the binding is live on this path; release it, then
-        // fall through into the next arm's tests.
-        patch_to_here(guard_fail);
-        if (bound >= 0)
-          emit(bound_cell ? Op::CellRelease : Op::Release, bound);
-      }
       for (size_t ix : fail_jumps) patch_to_here(ix);
     }
     for (size_t ix : end_jumps) patch_to_here(ix);
