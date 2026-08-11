@@ -30,6 +30,24 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
   // (object_set_any / _jit_overwrite_slot ignore this parameter unless
   // is_init, which this call site never sets).
   bool mut = true;
+  // A write-context read of an Array element (`a[i] += v`, `a[i] ??= v`)
+  // uses array_set's bounds rule — a negative index is IndexError, never
+  // the plain read's from-the-end normalization. Without this guard
+  // array_get would read `a[-1]` as the last element and the compound
+  // step (or the `??=` keep test) would run on it: interp says IndexError,
+  // the JIT used to say the step's TypeError — or nothing at all.
+  auto guard_write_index = [&](llvm::Value* idx) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto negBB = llvm::BasicBlock::Create(ctx_, "widx.neg", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "widx.ok", fn);
+    builder_.CreateCondBr(
+        builder_.CreateICmpSLT(idx, builder_.getInt64(0)), negBB, okBB);
+    builder_.SetInsertPoint(negBB);
+    emit_throw_error("IndexError", "index out of range",
+                     ast.nodes[lvaloff]->line, ast.nodes[lvaloff]->column);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(okBB);
+  };
   // Complex lvalue (obj.prop, arr[idx]). The receiver rolls through one
   // Owned handle (the compile_call idiom): each step borrows the current
   // +1 and move-assigning the step's fresh +1 releases the previous link
@@ -172,6 +190,7 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
           auto arrPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
           auto idxVal = compile(finalPostfix).consume();
           auto idx = value_to_long(idxVal);
+          guard_write_index(idx);
           auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(), nullptr,
                                               "ncidx.out.tag");
           auto outData = builder_.CreateAlloca(builder_.getInt64Ty(), nullptr,
@@ -316,6 +335,7 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
       auto idx = value_to_long(idxVal);
       llvm::Value* to_store_arr = rval;
       if (compound) {
+        guard_write_index(idx);
         auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(),
                                             nullptr, "cidx.out.tag");
         auto outData = builder_.CreateAlloca(builder_.getInt64Ty(),

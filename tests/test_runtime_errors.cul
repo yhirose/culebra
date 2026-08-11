@@ -810,3 +810,23 @@ assert_eq(
   r_ri.message,
   'type error: expected Object, Array, or Tensor, got Bool',
 )
+
+# A negative index never writes: `a[-1] = v` is rejected by the store, and
+# the write-context *reads* of `a[i] += v` / `a[i] ??= v` reject it the same
+# way. The JIT used to normalize that read like a plain `a[-1]` — `??=` on a
+# non-nil last element silently kept it, and a compound step surfaced the
+# step's error (TypeError below) instead of IndexError.
+let r_negc = try {
+  let a = [1, 'x']
+  a[-1] += 1
+} catch e {
+  e
+}
+assert_eq(r_negc.kind, 'IndexError')
+let r_negnc = try {
+  let a = [nil, 1]
+  a[-1] ??= 5
+} catch e {
+  e
+}
+assert_eq(r_negnc.kind, 'IndexError')
