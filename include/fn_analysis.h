@@ -135,6 +135,16 @@ struct FnAnalysis {
   // Collect names introduced by `let x = ...` or by bare `x = ...` where x is
   // not in any outer scope (auto-local). Does not descend into nested
   // functions.
+  // Does an enclosing function already hold this name? A bare (`let`-less)
+  // write to such a name reassigns it rather than declaring a local.
+  static bool visible_in_outer(
+      std::string_view name,
+      const std::vector<const std::set<std::string>*>& outer) {
+    for (auto* s : outer)
+      if (s->contains(std::string(name))) return true;
+    return false;
+  }
+
   void collect_fn_locals(
       const peg::Ast& node, std::set<std::string>& locals,
       const std::vector<const std::set<std::string>*>& outer) const {
@@ -164,12 +174,17 @@ struct FnAnalysis {
       // locals of the enclosing function (like a plain `let`), so nested
       // closures can capture them and the bindings get promoted to cells.
       // Same mechanism as MATCH above; without this they look like globals and
-      // a capturing closure raises NameError.
+      // a capturing closure raises NameError. A `let`-less destructure
+      // reassigns whatever is visible, exactly as bare `x = v` does, so a name
+      // an enclosing scope already holds is a free variable, not a local.
       if (node.nodes.size() >= 3) {
+        bool is_declare = node.nodes[0]->token == "let" ||
+                          node.nodes[1]->token == "mut";
         for_each_pattern_binding(
             *node.nodes[2],
             [&](std::string_view name, size_t, size_t) {
-              locals.insert(std::string(name));
+              if (is_declare || !visible_in_outer(name, outer))
+                locals.insert(std::string(name));
             });
       }
       // fall through to walk the RHS
@@ -178,12 +193,14 @@ struct FnAnalysis {
     if (node.tag == "PLACE_ASSIGN"_) {
       // A plain-name target declares when nothing visible holds the name, so
       // it is a local of the enclosing function for the same reason as the
-      // destructure patterns above. Chain targets bind nothing and are walked
-      // as ordinary expressions below.
+      // destructure patterns above — and a free variable when an enclosing
+      // scope does hold it. Chain targets bind nothing and are walked as
+      // ordinary expressions below.
       culebra::for_each_place_target(
           node, [](const peg::Ast&) {},
           [&](const peg::Ast& name) {
-            locals.insert(std::string(name.token));
+            if (!visible_in_outer(name.token, outer))
+              locals.insert(std::string(name.token));
           });
       // fall through to walk the targets' subexpressions and the RHS
     }
@@ -225,18 +242,8 @@ struct FnAnalysis {
 
           if (is_declare) {
             if (!is_sink_name(name)) locals.insert(name);
-          } else {
-            // Bare assignment: local only if not in outer
-            bool in_outer = false;
-            for (auto* s : outer) {
-              if (s->contains(name)) {
-                in_outer = true;
-                break;
-              }
-            }
-            if (!in_outer && !is_sink_name(name)) {
-              locals.insert(name);
-            }
+          } else if (!visible_in_outer(name, outer) && !is_sink_name(name)) {
+            locals.insert(name);  // bare assignment: local only if not in outer
           }
         }
       }

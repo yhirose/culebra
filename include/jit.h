@@ -5289,6 +5289,14 @@ struct JIT {
   // compile_destructure_assign; defaults to declare for match arms.
   bool pattern_declare_ = true;
 
+  // False while emit_pattern walks a tree for its answer only: the tests are
+  // emitted, the bindings (and the retains that feed them) are not.
+  // compile_destructure_assign emits both walks so a mismatch writes nothing
+  // — see the interp's pattern_bind_ for the rule. Match arms, for-in
+  // bindings and destructuring parameters bind into a scope that dies with a
+  // failed match, so they emit the binding walk alone.
+  bool pattern_bind_ = true;
+
   // A match arm whose top-level pattern binds the subject directly
   // (`x => …` / `x:Object => …`) borrows it rather than taking its +1:
   // the subject's single owning reference lives in compile_match's scope
@@ -5298,8 +5306,10 @@ struct JIT {
 
   // DESTRUCTURE_ASSIGN children: [LET, MUTABLE, PATTERN, EXPRESSION].
   // `let`/`let mut` declares; a bare `(a, b) = …` reassigns existing
-  // variables. Reuses the match-pattern emitter. On runtime mismatch,
-  // throws via the same channel as other "shape mismatch" cases.
+  // variables. Reuses the match-pattern emitter twice — a testing walk
+  // decides, a binding walk writes — so a mismatch leaves the targets
+  // untouched (see pattern_bind_). On runtime mismatch, throws via the same
+  // channel as other "shape mismatch" cases.
   Owned compile_destructure_assign(const peg::Ast& ast) {
     bool declares = ast.nodes[0]->token == "let" || ast.nodes[1]->token == "mut";
     bool is_mut = ast.nodes[1]->token == "mut";
@@ -5318,13 +5328,23 @@ struct JIT {
 
     auto saved_declare = pattern_declare_;
     pattern_declare_ = declares;
+    pattern_bind_ = false;
     auto matched = emit_pattern(pattern, rvalO.borrow(), is_mut);
-    pattern_declare_ = saved_declare;
+    pattern_bind_ = true;
 
     auto fn = builder_.GetInsertBlock()->getParent();
     auto failBB = llvm::BasicBlock::Create(ctx_, "destr.fail", fn);
+    auto bindBB = llvm::BasicBlock::Create(ctx_, "destr.bind", fn);
     auto okBB = llvm::BasicBlock::Create(ctx_, "destr.ok", fn);
-    builder_.CreateCondBr(matched, okBB, failBB);
+    builder_.CreateCondBr(matched, bindBB, failBB);
+
+    // The binding walk re-runs the tests it already passed; nothing between
+    // the two walks can change the subject, so its answer is a constant true
+    // the optimizer folds away, and its fail edge is dead.
+    builder_.SetInsertPoint(bindBB);
+    auto bound = emit_pattern(pattern, rvalO.borrow(), is_mut);
+    pattern_declare_ = saved_declare;
+    builder_.CreateCondBr(bound, okBB, failBB);
 
     builder_.SetInsertPoint(failBB);
     emit_call(
@@ -6619,18 +6639,17 @@ struct JIT {
         // matches but introduces no binding (subject is borrowed here,
         // so there's nothing to release on this path).
         auto name = std::string(pattern.token);
-        if (!is_sink_name(name)) {
-          // `let`-less destructure (pattern_declare_ == false): assign to
-          // an existing slot (mut-checked); otherwise declare a binding.
-          const VarSlot* slot = nullptr;
-          if (!pattern_declare_) slot = lookup_var(name);
-          if (slot) {
-            if (!slot->mut) emit_immutable_assign_throw(name, pattern.line,
-                                                        pattern.column);
-            store_slot(*slot, subject);
-          } else {
+        if (!is_sink_name(name) && pattern_bind_) {
+          // A `let`-less destructure leaf writes exactly as bare `x = v`
+          // does — an existing binding anywhere in the chain (a capture cell
+          // included) is reassigned and mut-checked, an unseen name is
+          // declared — so it goes through that emitter rather than a local
+          // lookup, which saw no capture and silently declared a shadow.
+          if (pattern_declare_)
             declare_local(name, subject, is_mut, match_bind_borrow_);
-          }
+          else
+            emit_assign_name(name, subject, /*declare=*/false, is_mut,
+                             pattern.line, pattern.column);
         }
         return builder_.getTrue();
       }
@@ -6682,7 +6701,7 @@ struct JIT {
         // the sink — the type tag still gates the match, but no slot
         // is allocated.
         auto name = std::string(pattern.nodes[0]->token);
-        if (!is_sink_name(name))
+        if (!is_sink_name(name) && pattern_bind_)
           declare_local(name, subject, is_mut, match_bind_borrow_);
         return tag_match;
       }
@@ -6706,6 +6725,7 @@ struct JIT {
   // value and retain their own leaves. Mirrors emit_object_pattern's split.
   bool pattern_takes_ownership(const peg::Ast& pat) {
     using namespace peg::udl;
+    if (!pattern_bind_) return false;  // a testing walk binds nothing
     if (pat.tag == "IDENTIFIER"_)
       return !is_sink_name(std::string(pat.token));
     if (pat.tag == "TYPED_IDENT"_)
@@ -6807,22 +6827,20 @@ struct JIT {
     }
 
     if (rest_idx >= 0) {
-      auto rest_start = builder_.getInt64(rest_idx);
-      auto rest_len =
-          builder_.CreateSub(size, builder_.getInt64(fixed), "rest.len");
-      auto rest_arr_ptr = emit_call(
-          module_->getOrInsertFunction(rt::array_slice, ptrTy,
-                                       ptrTy, builder_.getInt64Ty(),
-                                       builder_.getInt64Ty()),
-          {arrPtr, rest_start, rest_len}, "rest.arr");
-      auto rest_val = own(make_array(rest_arr_ptr));
       auto rest_name = std::string(elems[rest_idx]->nodes[0]->token);
-      if (is_sink_name(rest_name)) {
-        // `[a, ...] = arr` / `[a, ..._, b] = arr`: still slice the
-        // tail (so post-rest elements get the right indices), but
-        // drop the resulting Array's +1 instead of holding it.
-        rest_val.drop();
-      } else {
+      // The tail slice exists only to be bound — the size check above is all
+      // a testing walk needs, and the post-rest indices below come from
+      // `size`, not from the slice. `[a, ...] = arr` / `[a, ..._, b] = arr`
+      // name no rest, so the Array's +1 is dropped instead of held.
+      if (pattern_bind_ && !is_sink_name(rest_name)) {
+        auto rest_len =
+            builder_.CreateSub(size, builder_.getInt64(fixed), "rest.len");
+        auto rest_arr_ptr = emit_call(
+            module_->getOrInsertFunction(rt::array_slice, ptrTy,
+                                         ptrTy, builder_.getInt64Ty(),
+                                         builder_.getInt64Ty()),
+            {arrPtr, builder_.getInt64(rest_idx), rest_len}, "rest.arr");
+        auto rest_val = own(make_array(rest_arr_ptr));
         declare_local(rest_name, rest_val.consume(), is_mut);
       }
       for (size_t i = rest_idx + 1; i < elems.size(); i++) {

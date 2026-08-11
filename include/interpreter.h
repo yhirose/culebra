@@ -7842,6 +7842,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // eval_destructure_assign; defaults to declare for every other caller.
   bool pattern_declare_ = true;
 
+  // False while a pattern is being walked for its answer only: every test
+  // runs, no name is bound. `eval_destructure_assign` walks twice — once to
+  // decide, once to bind — so a shape mismatch leaves no partial writes
+  // behind (the rule `eval_place_assign` already followed). Every other
+  // caller matches into a scope it discards on failure, so one binding walk
+  // is enough there.
+  bool pattern_bind_ = true;
+
   // Array and Tuple share one `shared_ptr<vector<Value>>` storage, so every
   // form that destructures an indexed sequence accepts either: `[a, b]` works
   // on a tuple just as `(a, b)` works on a list. Returns nullptr for any other
@@ -7855,6 +7863,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   void bind_pattern_name(const std::shared_ptr<Environment>& env,
                          const peg::Ast& ident_node, Value val,
                          bool mut = true) {
+    if (!pattern_bind_) return;
     auto name = ident_node.token;
     if (!pattern_declare_ && env->has(name)) {
       env->assign(name, std::move(val));
@@ -7974,15 +7983,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         for (int i = 0; i < rest_idx; i++) {
           if (!try_pattern(*elems[i], items[i], env, mut)) return false;
         }
-        // Collect rest into new Array
-        auto rest_len = items.size() - fixed;
-        ArrayValue rest;
-        rest.values->reserve(rest_len);
-        for (size_t j = 0; j < rest_len; j++) {
-          rest.values->push_back(items[rest_idx + j]);
+        // Collect rest into a new Array (only the binding walk needs it —
+        // the tail's length is already covered by the size check above).
+        if (pattern_bind_) {
+          auto rest_len = items.size() - fixed;
+          ArrayValue rest;
+          rest.values->reserve(rest_len);
+          for (size_t j = 0; j < rest_len; j++) {
+            rest.values->push_back(items[rest_idx + j]);
+          }
+          bind_pattern_name(env, *elems[rest_idx]->nodes[0],
+                            Value(std::move(rest)), mut);
         }
-        bind_pattern_name(env, *elems[rest_idx]->nodes[0],
-                          Value(std::move(rest)), mut);
         // Match post-rest fixed elements
         for (size_t i = rest_idx + 1; i < elems.size(); i++) {
           auto src_idx = items.size() - (elems.size() - i);
@@ -11518,7 +11530,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // DESTRUCTURE_ASSIGN children: [LET, MUTABLE, PATTERN, EXPRESSION].
   // `let`/`let mut` declares; a bare `(a, b) = …` (LET empty) reassigns
   // existing variables (parallel / swap assignment). Evaluates RHS once,
-  // then reuses `try_pattern`. Mismatch is a runtime error (unlike match).
+  // then reuses `try_pattern` — first to decide, then to bind, so a mismatch
+  // writes nothing (`(a, b) = …` can target variables that outlive the
+  // statement; eval_place_assign checks its arity up front for the same
+  // reason). Mismatch is a runtime error (unlike match).
   Value eval_destructure_assign(const peg::Ast& ast,
                                 const std::shared_ptr<Environment>& env) {
     bool declares = ast.nodes[0]->token == "let" || ast.nodes[1]->token == "mut";
@@ -11529,9 +11544,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     pattern_declare_ = declares;
     bool ok;
     try {
+      pattern_bind_ = false;
       ok = try_pattern(pattern, rval, env, mut);
+      pattern_bind_ = true;
+      if (ok) try_pattern(pattern, rval, env, mut);
     } catch (...) {
       pattern_declare_ = saved;
+      pattern_bind_ = true;
       throw;
     }
     pattern_declare_ = saved;

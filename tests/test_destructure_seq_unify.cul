@@ -30,3 +30,37 @@ assert_eq(t, [2, 3, 4])
 [p, q] = [7, 8]
 assert_eq(p, 7)
 assert_eq(q, 8)
+
+// --- A mismatch writes nothing ---
+// The pattern is matched before any target is written, so a target to the
+// left of the failure keeps its old value (the rule PLACE_ASSIGN follows).
+mut m1 = 0
+mut m2 = 0
+assert_throws("ValueError", fn () { [m1, 5] = [9, 6] })   // literal element
+assert_eq(m1, 0)
+assert_throws("ValueError", fn () { [m1, m2] = [1] })     // arity
+assert_eq(m1, 0)
+assert_throws("ValueError", fn () { [m1, [m2, 9]] = [1, [2, 3]] })  // nested
+assert_eq(m1, 0)
+assert_throws("ValueError", fn () { [m1, {k: m2}] = [1, {"j": 2}] })  // key
+assert_eq(m1, 0)
+assert_throws("ValueError", fn () { [m1, m2: Long] = [1, "s"] })  // typed
+assert_eq(m1, 0)
+assert_throws("ValueError", fn () { [m1, m2, ...r] = [1] })  // rest minimum
+assert_eq(m1, 0)
+
+// A captured target is written through its cell, and left alone on the
+// same mismatch.
+mut cap = 0
+let read_cap = fn () { cap }
+assert_throws("ValueError", fn () { [cap, 5] = [9, 6] })
+assert_eq(read_cap(), 0)
+[cap, 6] = [9, 6]
+assert_eq(read_cap(), 9)
+
+// An ImmutableError is not a mismatch: it fires as that target is written,
+// so the targets before it already hold their new values.
+mut ok1 = 0
+let frozen = 1
+assert_throws("ImmutableError", fn () { [ok1, frozen] = [5, 6] })
+assert_eq(ok1, 5)

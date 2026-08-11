@@ -1854,6 +1854,12 @@ is reassigned (an immutable one raises `ImmutableError`), and a name
 that is not visible is declared, just as bare `x = v` does. Array and
 object patterns work too: `[p, q, _] = xs`, `{g, h} = rec`.
 
+The pattern is matched against the value before any target is written,
+so a shape mismatch (`ValueError`) writes nothing — `[a, 5] = [9, 6]`
+leaves `a` alone rather than assigning `9` and then failing on the `5`.
+An `ImmutableError` is a different failure: it is raised as that target
+is written, so targets to its left already hold their new values.
+
 **Index and property targets.** A target may also be an index or
 property chain, so swapping elements needs no temporary either:
 
