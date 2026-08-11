@@ -7384,8 +7384,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // where the debugger's per-statement hook fires. Normally reached only from
   // _eval_dispatch for STATEMENT-tagged nodes; the loop / if evaluators also
   // call it for a single-statement block body, whose lone STATEMENT wrapper the
-  // AstOptimizer collapses away (so a breakpoint there would otherwise never
-  // fire). See eval_for / eval_while / eval_if.
+  // AstOptimizer collapses away (so neither the collect nor a breakpoint there
+  // would otherwise ever fire). See eval_for / eval_while / eval_if.
   void statement_boundary(const peg::Ast& ast,
                           const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
@@ -7615,8 +7615,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                          Prologue&& prologue, OnUnwind&& on_unwind) {
     try {
       prologue();
-      if (debugger_ && is_collapsed_single_statement(body))
-        statement_boundary(body, scopeEnv);  // breakpoint on a 1-stmt body
+      // The only statement boundary a collapsed single-statement body reaches,
+      // so it cannot be gated on debugger_: a boundary is also where a pending
+      // collect runs, and without one `for i in … { let a = [i] }` never polls
+      // the GC — the tracked set then grows for the whole loop. A
+      // multi-statement body already collects here, one boundary per statement.
+      if (is_collapsed_single_statement(body))
+        statement_boundary(body, scopeEnv);
       eval(body, scopeEnv);
       run_deferred(scopeEnv);
       // The loop consumes break/continue here; a `return` also ends the loop
