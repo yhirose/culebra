@@ -6648,8 +6648,12 @@ struct JIT {
           if (pattern_declare_)
             declare_local(name, subject, is_mut, match_bind_borrow_);
           else
+            // Only a destructure reaches the reassigning form, and its
+            // ImmutableError reports the statement (the position compile()
+            // still holds here, and the one the mismatch ValueError uses),
+            // not the leaf inside the pattern.
             emit_assign_name(name, subject, /*declare=*/false, is_mut,
-                             pattern.line, pattern.column);
+                             current_line_, current_column_);
         }
         return builder_.getTrue();
       }

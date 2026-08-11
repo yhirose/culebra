@@ -1,0 +1,5 @@
+# A `let`-less leaf writing an immutable binding: ImmutableError at that
+# target, after the targets before it already took their new values.
+let mut first = 0
+let frozen = 1
+[first, frozen] = [2, 3]

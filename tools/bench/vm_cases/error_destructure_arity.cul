@@ -1,0 +1,4 @@
+# An uncaught shape mismatch: ValueError anchored at the destructure
+# statement, not at the element that failed.
+let xs = [1]
+let [a, b] = xs

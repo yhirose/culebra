@@ -1,0 +1,3 @@
+# A nested element decides the mismatch; the position is still the statement,
+# and the earlier leaf never binds.
+let [a, [b, c]] = [1, [2]]

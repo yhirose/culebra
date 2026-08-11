@@ -338,5 +338,11 @@ check_same "or-bind param"      'fn f([a | _]) { a }'
 # `((n: Long | Float) | 42)` — an or-pattern binding, not a wider Union.
 check_same "or-bind type-then-literal" "match 1 { n: Long | Float | 42 => n, _ => 0 }"
 
+# A destructure's two throws both report the statement, not the leaf that
+# failed: the shape mismatch and a `let`-less leaf's ImmutableError.
+check_same "destructure mismatch"  'let [a, b] = [1]'
+check_same "destructure immutable" 'let c = 0
+[c] = [5]'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

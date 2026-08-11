@@ -162,6 +162,26 @@ enum class Op : uint8_t {
                // mutable, is_init=false), else "expected Array". The value
                // stays register-owned (a retain feeds the consuming store),
                // so the assignment expression still reads it afterwards.
+  SeqChk,      // destructuring gate: unless regs[a] is an Array or Tuple of
+               // exactly c elements (d=0) — at least c, when the pattern has
+               // a `...rest` (d=1) — pc = b. One JitArray backs both tags, so
+               // either pattern form matches either value, the unification
+               // interp's indexed_sequence applies. Never throws.
+  SeqGet,      // regs[a] = element c of the sequence regs[b], retained (+1);
+               // a negative c counts back from the end, which is where a
+               // post-rest element sits. Not the language's `a[i]`: a SeqChk
+               // has already fixed the shape and the length, so this reads a
+               // slot that exists and raises nothing.
+  SeqRest,     // regs[a] = a fresh Array (+1) holding regs[b]'s elements from
+               // c up to size - d — a `...rest` tail, bounded by the same
+               // SeqChk minimum.
+  ObjGet,      // unless regs[c] is an Object holding key consts[d], pc = b;
+               // otherwise regs[a] = that property (+1). One op for an object
+               // pattern entry's presence test and its read.
+  DestrErr,    // throw the destructure mismatch ValueError at this
+               // instruction's position — stamped at the DESTRUCTURE_ASSIGN
+               // node, where the other backends anchor it. Never falls
+               // through.
   Jump,        // pc = a
   JumpIfFalse, // if !to_bool(regs[a]) pc = b (strict Bool truthiness)
   JumpIfTrue,  // if to_bool(regs[a]) pc = b
@@ -1794,6 +1814,142 @@ class Compiler {
     return {res, true};
   }
 
+  // `let [a, b] = e` / `let {x} = e` / `[a, b] = e`. The pattern is matched
+  // before a single target is written — the two-phase walk the interp and
+  // the JIT share, which is what makes a mismatch leave the targets alone
+  // and every fail edge release-free (nothing but statement temps is live).
+  // Evaluates to the right-hand value, like the other assignment forms.
+  ExprResult compile_destructure_assign(const peg::Ast& ast) {
+    bool declares =
+        ast.nodes[0]->token == "let" || ast.nodes[1]->token == "mut";
+    bool is_mut = ast.nodes[1]->token == "mut";
+    const auto& pat = *ast.nodes[2];
+    // Both of this statement's throws — the mismatch and a leaf's
+    // ImmutableError — report the destructure node, so the walks run under
+    // its stamp (the RHS's own guards restore it).
+    StampGuard pos(*this, ast);
+    // The value lands in a temp before the pattern names exist, so
+    // `let [x] = x` reads the outer `x` (compile_assignment's rule).
+    int32_t rv = alloc_temp(ast);
+    store_into(rv, compile_expr(*ast.nodes[3]), /*dst_is_fresh=*/true);
+    std::vector<size_t> fail;
+    compile_pattern_test(pat, rv, fail);
+    // The subject is the statement's value too, so the walk borrows it; the
+    // element temps it reads are handed over instead.
+    compile_pattern_bind(pat, rv, /*subj_owned=*/false, fail, is_mut, declares);
+    size_t done = emit(Op::Jump);
+    for (size_t ix : fail) patch_to_here(ix);
+    emit(Op::DestrErr);
+    patch_to_here(done);
+    return {rv, false};
+  }
+
+  // Writes the pattern's bindings, the tests already passed. Element reads
+  // repeat (an Array read is pure, and nothing between the walks can change
+  // the subject); the `fail` edges an ObjGet needs are the mismatch's, dead
+  // on this walk. A leaf consumes its subject register's `+1` when the
+  // caller offers it (`subj_owned`, true for the element temps read here);
+  // a container ignores the offer, since its children read the temp more
+  // than once and the statement sweep is the single releaser.
+  void compile_pattern_bind(const peg::Ast& pat, int32_t subj, bool subj_owned,
+                            std::vector<size_t>& fail, bool is_mut,
+                            bool declares) {
+    using namespace peg::udl;
+    switch (pat.tag) {
+      case "IDENTIFIER"_:
+        bind_pattern_name(pat, pat, subj, subj_owned, is_mut, declares);
+        return;
+      case "TYPED_IDENT"_:
+        bind_pattern_name(pat, *pat.nodes[0], subj, subj_owned, is_mut,
+                          declares);
+        return;
+      case "ARRAY_PATTERN"_:
+      case "FOR_BINDING"_:
+      case "TUPLE_PATTERN"_: {
+        bool too_many = false;
+        int rest = rest_index(pat, pat.tag == "ARRAY_PATTERN"_, too_many);
+        const auto& elems = pat.nodes;
+        for (size_t i = 0; i < elems.size(); i++) {
+          if (!culebra::find_pattern_binding(*elems[i])) continue;
+          int32_t t = alloc_temp(pat);
+          if (static_cast<int>(i) == rest) {
+            emit(Op::SeqRest, t, subj, static_cast<int32_t>(i),
+                 static_cast<int32_t>(elems.size() - 1));
+            bind_pattern_name(*elems[i], *elems[i]->nodes[0], t,
+                              /*src_owned=*/true, is_mut, declares);
+            continue;
+          }
+          int32_t at = rest >= 0 && static_cast<int>(i) > rest
+                           ? static_cast<int32_t>(i) -
+                                 static_cast<int32_t>(elems.size())
+                           : static_cast<int32_t>(i);
+          emit(Op::SeqGet, t, subj, at);
+          compile_pattern_bind(*elems[i], t, /*subj_owned=*/true, fail, is_mut,
+                               declares);
+        }
+        return;
+      }
+      case "OBJECT_PATTERN"_: {
+        for (const auto& entry : pat.nodes) {
+          bool full = entry->tag == "OBJECT_PAT_ENTRY"_;
+          const peg::Ast* sub = full ? entry->nodes[1].get() : nullptr;
+          if (sub ? !culebra::find_pattern_binding(*sub)
+                  : culebra::is_sink_name(entry->token))
+            continue;
+          auto key = full ? entry->nodes[0]->token : entry->token;
+          int32_t t = alloc_temp(*entry);
+          fail.push_back(emit(Op::ObjGet, t, 0, subj, kconst_str(key)));
+          if (sub)
+            compile_pattern_bind(*sub, t, /*subj_owned=*/true, fail, is_mut,
+                                 declares);
+          else
+            bind_pattern_name(*entry, *entry, t, /*src_owned=*/true, is_mut,
+                              declares);
+        }
+        return;
+      }
+      default:
+        return;  // literals and `_` bind nothing
+    }
+  }
+
+  // One pattern leaf's write. A declaring form (`let` / `mut`) binds a new
+  // name exactly as `let x = v` does, cell included when the name is
+  // captured; a `let`-less one reassigns the visible binding with `x = v`'s
+  // rules, mutability check and all. An owned `src` hands its `+1` to the
+  // store (`_` drops it back to the sweep, as does the unreachable code
+  // after an ImmutErr).
+  void bind_pattern_name(const peg::Ast& at, const peg::Ast& ident,
+                         int32_t src, bool src_owned, bool is_mut,
+                         bool declares) {
+    auto name = std::string(ident.token);
+    if (culebra::is_sink_name(name)) return;
+    ExprResult v{src, src_owned};
+    if (declares) {
+      bool cell = info_->captured_locals.contains(name);
+      int32_t slot = alloc_slot(ident, name);
+      if (cell) {
+        store_new_cell(at, slot, v);
+        mark_cell_slot(slot);
+      } else {
+        store_into(slot, v, /*dst_is_fresh=*/true);
+      }
+      scopes_.back().bindings.push_back({name, slot, is_mut, cell});
+      return;
+    }
+    const Binding* b = lookup(name);
+    // A name nothing visible holds would be declared by the interp; the VM
+    // rejects that for bare `x = v` too (compile_assignment), so the two
+    // assignment forms stay on the same slice boundary.
+    if (!b) reject(ident, "assignment to an undeclared name");
+    if (!b->is_mut) {
+      emit(Op::ImmutErr, kconst_str(name));  // at the statement's stamp
+      return;  // never falls through
+    }
+    if (b->is_cell) store_cell(at, b->slot, v);
+    else store_into(b->slot, v);
+  }
+
   // Emits the tests for one leaf pattern: fall through on match, jump (via
   // `fail`) on mismatch. Bindings are NOT emitted here — the caller binds
   // after the whole pattern passed, which is what makes the fail edges
@@ -1890,8 +2046,93 @@ class Compiler {
         lit_eq(kconst_str(s));
         return;
       }
+      case "ARRAY_PATTERN"_:
+        compile_seq_pattern_test(pat, subj, fail, /*allow_rest=*/true);
+        return;
+      case "FOR_BINDING"_:  // multi-target `for k, v in …`: a tuple's shape
+      case "TUPLE_PATTERN"_:
+        compile_seq_pattern_test(pat, subj, fail, /*allow_rest=*/false);
+        return;
+      case "OBJECT_PATTERN"_:
+        compile_obj_pattern_test(pat, subj, fail);
+        return;
       default:
         reject(pat, std::format("pattern '{}'", pat.name));
+    }
+  }
+
+  // Does matching this pattern test anything, or does it accept every value?
+  // A pattern that only binds needs no element read in the testing walk.
+  static bool pattern_has_test(const peg::Ast& pat) {
+    using namespace peg::udl;
+    return !(pat.tag == "WILDCARD"_ || pat.tag == "IDENTIFIER"_ ||
+             pat.tag == "REST_PATTERN"_);
+  }
+
+  // The `...rest` element's position in an array pattern, or -1. A second
+  // rest makes the pattern a never-match in the other backends (interp bails
+  // out of ARRAY_PATTERN, the JIT leaves the extra REST_PATTERN to its
+  // default-false arm), which `too_many` reports back.
+  static int rest_index(const peg::Ast& pat, bool allow_rest,
+                        bool& too_many) {
+    using namespace peg::udl;
+    int found = -1;
+    too_many = false;
+    if (!allow_rest) return -1;  // a tuple pattern's grammar has no rest
+    for (size_t i = 0; i < pat.nodes.size(); i++) {
+      if (pat.nodes[i]->tag != "REST_PATTERN"_) continue;
+      if (found >= 0) {
+        too_many = true;
+        return found;
+      }
+      found = static_cast<int>(i);
+    }
+    return found;
+  }
+
+  // `[p, q]` / `(p, q)` / `[h, ...t, z]`: shape and length, then the element
+  // sub-patterns that test something. Post-rest elements index from the end,
+  // so the tail's length never has to reach a register.
+  void compile_seq_pattern_test(const peg::Ast& pat, int32_t subj,
+                                std::vector<size_t>& fail, bool allow_rest) {
+    bool too_many = false;
+    int rest = rest_index(pat, allow_rest, too_many);
+    if (too_many) {
+      fail.push_back(emit(Op::Jump));  // at most one rest: never matches
+      return;
+    }
+    const auto& elems = pat.nodes;
+    auto fixed = static_cast<int32_t>(elems.size() - (rest >= 0 ? 1 : 0));
+    fail.push_back(emit(Op::SeqChk, subj, 0, fixed, rest >= 0 ? 1 : 0));
+    for (size_t i = 0; i < elems.size(); i++) {
+      if (static_cast<int>(i) == rest || !pattern_has_test(*elems[i])) continue;
+      int32_t at = rest >= 0 && static_cast<int>(i) > rest
+                       ? static_cast<int32_t>(i) - static_cast<int32_t>(
+                                                       elems.size())
+                       : static_cast<int32_t>(i);
+      int32_t t = alloc_temp(pat);
+      emit(Op::SeqGet, t, subj, at);
+      compile_pattern_test(*elems[i], t, fail);
+    }
+  }
+
+  // `{k}` / `{k: p}`: an Object, then every named key present (extra keys are
+  // ignored). The tag gate stands on its own so `{}` still rejects a
+  // non-Object, which no entry would be left to catch.
+  void compile_obj_pattern_test(const peg::Ast& pat, int32_t subj,
+                                std::vector<size_t>& fail) {
+    using namespace peg::udl;
+    std::vector<size_t> ok;
+    ok.push_back(emit(Op::JumpIfTag, subj, 0, TAG_OBJECT));
+    fail.push_back(emit(Op::Jump));
+    for (size_t ix : ok) patch_to_here(ix);
+    for (const auto& entry : pat.nodes) {
+      bool full = entry->tag == "OBJECT_PAT_ENTRY"_;
+      const peg::Ast* sub = full ? entry->nodes[1].get() : nullptr;
+      auto key = full ? entry->nodes[0]->token : entry->token;
+      int32_t t = alloc_temp(*entry);
+      fail.push_back(emit(Op::ObjGet, t, 0, subj, kconst_str(key)));
+      if (sub && pattern_has_test(*sub)) compile_pattern_test(*sub, t, fail);
     }
   }
 
@@ -2192,6 +2433,8 @@ class Compiler {
         return compile_if(ast);
       case "ASSIGNMENT"_:  // expression position: `let r = (w += 2)`
         return compile_assignment(ast);
+      case "DESTRUCTURE_ASSIGN"_:
+        return compile_destructure_assign(ast);
       case "TRY"_:
         return compile_try(ast);
       case "MATCH"_:
@@ -2251,6 +2494,7 @@ inline std::string dump(const Chunk& c) {
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
+      "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
       "JumpIfTag",
       "MakeClosure", "Call",    "Ret",
@@ -2962,6 +3206,61 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::SeqChk: {
+          const JitValue& v = regs[in.a];
+          bool ok = v.tag == TAG_ARRAY || v.tag == TAG_TUPLE;
+          if (ok) {
+            int64_t n = culebra_runtime_array_size(
+                reinterpret_cast<JitArray*>(v.data));
+            ok = in.d ? n >= in.c : n == in.c;
+          }
+          if (ok) ++pc;
+          else pc = static_cast<size_t>(in.b);
+          break;
+        }
+        case Op::SeqGet: {
+          auto* arr = reinterpret_cast<JitArray*>(regs[in.b].data);
+          int64_t at = in.c >= 0 ? in.c : culebra_runtime_array_size(arr) + in.c;
+          auto [line, col] = chunk_pos_at(c, pc);
+          int8_t t;
+          int64_t d;
+          culebra_runtime_array_get(arr, at, &t, &d, line, col);
+          culebra_runtime_value_retain(t, d);  // array_get borrows the slot
+          regs[in.a] = JitValue{t, d};
+          ++pc;
+          break;
+        }
+        case Op::SeqRest: {
+          auto* arr = reinterpret_cast<JitArray*>(regs[in.b].data);
+          auto* out = culebra_runtime_array_slice(
+              arr, in.c, culebra_runtime_array_size(arr) - in.d);
+          regs[in.a] = JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)};
+          ++pc;
+          break;
+        }
+        case Op::ObjGet: {
+          const JitValue& recv = regs[in.c];
+          const auto* key = reinterpret_cast<const char*>(c.consts[in.d].data);
+          if (recv.tag != TAG_OBJECT ||
+              !culebra_runtime_object_has(
+                  reinterpret_cast<JitObject*>(recv.data), key)) {
+            pc = static_cast<size_t>(in.b);
+            break;
+          }
+          int8_t t;
+          int64_t d;
+          culebra_runtime_object_get(reinterpret_cast<JitObject*>(recv.data),
+                                     key, &t, &d);
+          culebra_runtime_value_retain(t, d);  // object_get borrows the slot
+          regs[in.a] = JitValue{t, d};
+          ++pc;
+          break;
+        }
+        case Op::DestrErr: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra::throw_destructure_mismatch_at(line, col);
+          break;
+        }
         case Op::Jump:
           pc = static_cast<size_t>(in.a);
           break;
@@ -3416,6 +3715,7 @@ struct Lowering {
           break;
         case Op::Ret:
         case Op::ImmutErr:  // lowers to a noreturn call + unreachable
+        case Op::DestrErr:
         case Op::Throw:
           mark(static_cast<int32_t>(i) + 1);
           break;
@@ -3424,6 +3724,8 @@ struct Lowering {
         case Op::JumpIfNotNil:
         case Op::JumpIfNil:
         case Op::JumpIfTag:
+        case Op::SeqChk:   // pattern mismatch edges, same encoding
+        case Op::ObjGet:
           mark(in.b);
           mark(static_cast<int32_t>(i) + 1);
           break;
@@ -3704,6 +4006,105 @@ struct Lowering {
                              j.current_line_, j.current_column_);
           if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
           b.SetInsertPoint(okBB);
+          break;
+        }
+        case Op::SeqChk: {
+          // Array-or-Tuple tag, then the size the pattern asked for. Both
+          // arms are pure loads, so this is a plain CondBr — no cleanup, no
+          // position: a pattern test cannot throw.
+          auto v = load_slot(in.a);
+          auto tag = j.extract_tag(v);
+          auto isSeq = b.CreateOr(
+              b.CreateICmpEQ(tag, b.getInt8(TAG_ARRAY)),
+              b.CreateICmpEQ(tag, b.getInt8(TAG_TUPLE)), "vseq.is_seq");
+          auto sizeBB = BasicBlock::Create(j.ctx_, "vseq.size", fn);
+          auto* fall = blocks.at(static_cast<int32_t>(i) + 1);
+          b.CreateCondBr(isSeq, sizeBB, blocks.at(in.b));
+          b.SetInsertPoint(sizeBB);
+          auto n = j.emit_call(
+              j.module_->getOrInsertFunction(rt::array_size, i64Ty, ptrTy),
+              {b.CreateIntToPtr(j.extract_data(v), ptrTy)}, "vseq.n");
+          auto want = b.getInt64(in.c);
+          b.CreateCondBr(in.d ? b.CreateICmpSGE(n, want)
+                              : b.CreateICmpEQ(n, want),
+                         fall, blocks.at(in.b));
+          break;
+        }
+        case Op::SeqGet: {
+          // array_get hands back a borrowed element; the register owns what
+          // it holds, so mint the slot's own reference.
+          auto arr = b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
+          llvm::Value* at = b.getInt64(in.c);
+          if (in.c < 0) {
+            auto n = j.emit_call(
+                j.module_->getOrInsertFunction(rt::array_size, i64Ty, ptrTy),
+                {arr}, "vseq.n");
+            at = b.CreateAdd(n, at, "vseq.from_end");
+          }
+          auto outTag = b.CreateAlloca(b.getInt8Ty(), nullptr, "vseq.tag");
+          auto outData = b.CreateAlloca(i64Ty, nullptr, "vseq.data");
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::array_get, b.getVoidTy(),
+                                             ptrTy, i64Ty, ptrTy, ptrTy, i64Ty,
+                                             i64Ty),
+              {arr, at, outTag, outData, j.current_line_val(),
+               j.current_column_val()});
+          auto v = j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
+                                b.CreateLoad(i64Ty, outData));
+          j.emit_value_retain(v);
+          b.CreateStore(v, slots[in.a]);
+          break;
+        }
+        case Op::SeqRest: {
+          auto arr = b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
+          auto n = j.emit_call(
+              j.module_->getOrInsertFunction(rt::array_size, i64Ty, ptrTy),
+              {arr}, "vrest.n");
+          auto out = j.emit_call(
+              j.module_->getOrInsertFunction(rt::array_slice, ptrTy, ptrTy,
+                                             i64Ty, i64Ty),
+              {arr, b.getInt64(in.c), b.CreateSub(n, b.getInt64(in.d))},
+              "vrest.arr");
+          b.CreateStore(j.make_array(out), slots[in.a]);
+          break;
+        }
+        case Op::ObjGet: {
+          auto v = load_slot(in.c);
+          auto key = j.emit_str_literal(
+              _str_sv(reinterpret_cast<const char*>(c.consts[in.d].data)));
+          auto isObj = b.CreateICmpEQ(j.extract_tag(v),
+                                      b.getInt8(TAG_OBJECT), "vobj.is_obj");
+          auto hasBB = BasicBlock::Create(j.ctx_, "vobj.has", fn);
+          auto getBB = BasicBlock::Create(j.ctx_, "vobj.get", fn);
+          b.CreateCondBr(isObj, hasBB, blocks.at(in.b));
+          b.SetInsertPoint(hasBB);
+          auto obj = b.CreateIntToPtr(j.extract_data(v), ptrTy);
+          auto has = j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_has, b.getInt1Ty(),
+                                             ptrTy, ptrTy),
+              {obj, key}, "vobj.hit");
+          b.CreateCondBr(has, getBB, blocks.at(in.b));
+          b.SetInsertPoint(getBB);
+          auto outTag = b.CreateAlloca(b.getInt8Ty(), nullptr, "vobj.tag");
+          auto outData = b.CreateAlloca(i64Ty, nullptr, "vobj.data");
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_get, b.getVoidTy(),
+                                             ptrTy, ptrTy, ptrTy, ptrTy),
+              {obj, key, outTag, outData});
+          auto got = j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
+                                  b.CreateLoad(i64Ty, outData));
+          j.emit_value_retain(got);  // object_get borrows the slot
+          b.CreateStore(got, slots[in.a]);
+          b.CreateBr(blocks.at(static_cast<int32_t>(i) + 1));
+          break;
+        }
+        case Op::DestrErr: {
+          auto [line, col] = chunk_pos_at(c, i);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::destructure_mismatch,
+                                             b.getVoidTy(), i64Ty, i64Ty),
+              {b.getInt64(line), b.getInt64(col)});
+          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
           break;
         }
         case Op::Index: {

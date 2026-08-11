@@ -1,0 +1,113 @@
+# Destructuring declarations and parallel assignment: array / tuple / object
+# patterns, nesting, `...rest`, `_` sinks, and the `let`-less form that writes
+# existing bindings. One pattern form matches either indexed sequence.
+let [a, b] = [1, "x"]
+println("{a} {b}")
+let (c, d) = (2, 3)
+println("{c} {d}")
+let [e, f] = (4, 5)
+println("{e} {f}")
+let (g, h) = [6, 7]
+println("{g} {h}")
+
+# Nesting mixes the forms at any depth.
+let [i, [j, (k, l)]] = [8, [9, (10, 11)]]
+println("{i} {j} {k} {l}")
+
+# `_` matches without binding; the element is still required to exist.
+let [_, m] = [12, 13]
+println(m)
+let [] = []
+println("empty ok")
+
+# `let mut` marks every leaf mutable; a plain `let` leaf is immutable.
+let mut [n, o] = [14, 15]
+n = n + o
+println(n)
+
+# A destructure evaluates to its right-hand value.
+let r = (let [p] = [16])
+println("{r} {p}")
+
+# `...rest` collects a fresh Array; it may sit anywhere in the pattern, and
+# `..._` drops the tail while still placing the elements after it.
+let [q, ...rest] = [17, 18, 19]
+println("{q} {rest}")
+let [...all] = [20, 21]
+println(all)
+let [s, ..._, t] = [22, 23, 24, 25]
+println("{s} {t}")
+let [u, ...mid, v] = [26, 27, 28, 29]
+println("{u} {mid} {v}")
+let [w, ...none] = [30]
+println("{w} {none}")
+
+# Literal and typed elements test without binding.
+let [1, x1] = [1, 31]
+println(x1)
+let [nil, x2] = [nil, 32]
+println(x2)
+let ["k", x3] = ["k", 33]
+println(x3)
+let [x4:Long, x5:String] = [34, "s"]
+println("{x4} {x5}")
+
+# `let`-less: existing bindings are written, including through a cell.
+let mut y1 = 0
+let mut y2 = 0
+[y1, y2] = [35, 36]
+println("{y1} {y2}")
+let mut cap = 0
+let read_cap = fn () { cap }
+[cap] = [37]
+println(read_cap())
+
+# Swap and rotate need no temporary — the right-hand side is one value.
+let mut z1 = 1
+let mut z2 = 2
+[z1, z2] = [z2, z1]
+println("{z1} {z2}")
+
+# Object patterns: shorthand binds the key's own name, `key: pattern` renames
+# or nests, extra keys are ignored, and `{}` accepts any Object.
+let obj = range(0, 3)
+let {iter, next} = obj
+println("{type_of(iter)} {type_of(next)}")
+let {has_next: hn} = obj
+println(type_of(hn))
+let {} = obj
+println("any object ok")
+
+# Declared names are ordinary locals: capturable, and shadowable by a later
+# declaration in the same scope.
+let [c1, c2] = [38, 39]
+let sum = fn () { c1 + c2 }
+println(sum())
+let [c1] = [40]
+println(c1)
+
+# In a loop the element temps and the per-iteration bindings both reset.
+let mut total = 0
+for i in 0..4 {
+    let [d1, [d2, d3]] = [i, [i * 2, i * 3]]
+    total = total + d1 + d2 + d3
+}
+println(total)
+
+# Inside a function, with a mismatch crossing the frame into the caller's
+# handler — the pattern's temps unwind with the rest of the frame.
+let take = fn (v) { let [h, [t]] = v; h + t }
+println(try { take([1, [2]]) } catch e { "no" })
+println(try { take([1, 2]) } catch e { "mismatch" })
+println(try { take([1, [2], 3]) } catch e { "mismatch" })
+
+# A mismatch writes nothing: the pattern is matched before any target.
+let mut keep = 41
+let caught = try { [keep, 99] = [42, 43] } catch e { "mismatch" }
+println("{caught} {keep}")
+
+# An ImmutableError is not a mismatch — it fires as that target is written.
+let mut first = 0
+let frozen = 44
+let imm = try { [first, frozen] = [45, 46] } catch e { "immutable" }
+println("{imm} {first}")

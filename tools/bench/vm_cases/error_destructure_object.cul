@@ -1,0 +1,2 @@
+# A missing key is the same mismatch as a wrong length.
+let {iter, missing} = range(0, 2)
