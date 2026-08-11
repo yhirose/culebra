@@ -107,6 +107,26 @@ let r7 = try {
 }
 assert_eq(r7.kind, 'IndexError')
 
+# An index write to a non-indexable receiver reports the same generic
+# "expected Array" as the read path on both backends — the JIT used to say
+# "expected Array or Object" on its plain-set and `??=` dispatches.
+let r_iw = try {
+  let t = (1, 2)
+  t[0] = 9
+} catch e {
+  e
+}
+assert_eq(r_iw.kind, 'TypeError')
+assert_eq(r_iw.message, 'type error: expected Array, got Tuple')
+let r_iwnc = try {
+  let x = 1
+  x[0] ??= 1
+} catch e {
+  e
+}
+assert_eq(r_iwnc.kind, 'TypeError')
+assert_eq(r_iwnc.message, 'type error: expected Array, got Long')
+
 # --- DropContractError ---
 let r9 = try {
   let _ = {drop: 42}
@@ -271,7 +291,7 @@ assert_eq(r_lvcall.kind, 'DispatchError')
 # Line and column both match across backends: the JIT no longer shifts
 # error lines by the stdlib preamble height (the preamble is now spliced
 # into the AST after parse, so user nodes keep their natural positions).
-assert_eq(r_lvcall.line, 264)
+assert_eq(r_lvcall.line, 284)
 assert_eq(r_lvcall.col, 3)
 
 # --- Runtime helpers (throwing stdlib functions) ---
@@ -359,7 +379,7 @@ let r_attr = try {
   e
 }
 assert_eq(r_attr.kind, 'AttributeError')
-assert_eq(r_attr.line, 356)
+assert_eq(r_attr.line, 376)
 assert_eq(r_attr.col, 5)
 
 let r_type = try {
@@ -369,7 +389,7 @@ let r_type = try {
   e
 }
 assert_eq(r_type.kind, 'TypeError')
-assert_eq(r_type.line, 366)
+assert_eq(r_type.line, 386)
 assert_eq(r_type.col, 11)
 
 # --- built-in method arity: symmetric count-based ArityError ---
@@ -745,7 +765,7 @@ let r_nsv = try {
   e
 }
 assert_eq(r_nsv.kind, 'TypeError')
-assert_eq(r_nsv.line, 743)
+assert_eq(r_nsv.line, 763)
 # Through a higher-order call, the error is attributed to the HOF call site.
 let r_nshof = try {
   ["x", "y"].map(Math.abs)
@@ -753,7 +773,7 @@ let r_nshof = try {
   e
 }
 assert_eq(r_nshof.kind, 'TypeError')
-assert_eq(r_nshof.line, 751)
+assert_eq(r_nshof.line, 771)
 
 # A built-in method on a receiver whose type doesn't support it reports the
 # same receiver-resolution failure on both backends. The JIT's polymorphic

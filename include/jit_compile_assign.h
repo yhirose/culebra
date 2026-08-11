@@ -114,7 +114,9 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
         builder_.CreateCondBr(ncIsObj, ncObjKindBB, ncErrBB);
 
         builder_.SetInsertPoint(ncErrBB);
-        emit_type_error_typed("Array or Object", tag);
+        // Interp reports every non-indexable assignment target as "expected
+        // Array" (the read path's wording), even though Object works too.
+        emit_type_error_typed("Array", tag);
         builder_.CreateUnreachable();
 
         // FixedArray view / SharedBuffer / Shared.new receivers are all
@@ -303,7 +305,8 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
       builder_.CreateCondBr(isObj, objBB, errBB);
 
       builder_.SetInsertPoint(errBB);
-      emit_type_error_typed("Array or Object", tag);
+      // Same wording as the read path and interp: "expected Array".
+      emit_type_error_typed("Array", tag);
       builder_.CreateUnreachable();
 
       // Array path
