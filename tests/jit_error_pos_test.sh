@@ -316,5 +316,12 @@ let it = f.chunks(2)
 f.close()
 for c in it { c }"
 
+# A spread inside a sized array literal is a parse-time SyntaxError anchored
+# at the spread element on both backends.
+check_same "sized array spread" 'let a = [9, ...[8]](3)'
+# The set literal's unhashable throw is positionless in the runtime; the JIT
+# must publish the literal's position (the interp's eval boundary anchor).
+check_same "set literal unhashable" 'let s = {[1], 2}'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

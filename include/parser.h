@@ -864,6 +864,36 @@ inline void require_getter_no_params(const MethodView& mv,
       static_cast<long>(mv.name_col));
 }
 
+// First `...` spread element directly inside a sized array literal
+// (`[v, ...x](n)`), or nullptr. Only the sized array's own element list
+// counts — a spread inside a nested plain literal is fine.
+inline const peg::Ast* find_sized_spread_mix(const peg::Ast& ast) {
+  using namespace peg::udl;
+  if (ast.tag == "ARRAY"_ && ast.nodes.size() > 1) {
+    for (const auto& e : ast.nodes[0]->nodes) {
+      if (e->tag == "SPREAD_ELEM"_) return e.get();
+    }
+  }
+  for (const auto& n : ast.nodes) {
+    if (auto* hit = find_sized_spread_mix(*n)) return hit;
+  }
+  return nullptr;
+}
+
+// A sized array literal cannot contain a spread: the size prefill (resize,
+// then literals overwrite positions 0..) and a spread's append compose into
+// a shape whose size no longer matches the count, so the mix is rejected at
+// parse time on every backend.
+inline void reject_sized_spread_mix(const peg::Ast& ast) {
+  if (auto* s = find_sized_spread_mix(ast)) {
+    throw CulebraError(
+        "SyntaxError",
+        "a sized array literal (`[v](n)`) cannot contain a `...` spread "
+        "element — spread into a plain `[...]` literal instead",
+        static_cast<long>(s->line), static_cast<long>(s->column));
+  }
+}
+
 // View of a `@derive(...)` decorator. The grammar is
 //   DECORATOR <- '@' _ CALL
 // and `@derive(Eq, Hash, Show, Comparable)` parses (post-AstOptimizer,

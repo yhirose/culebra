@@ -4356,6 +4356,11 @@ struct JIT {
     current_lpad_ = cleanupBB;
     for (const auto& node : ast.nodes) {
       Owned val = compile(*node);
+      // set_add hashes on insert and an unhashable element raises
+      // positionless; publish the literal's position (restored by
+      // PosGuard after each element) so the backfill lands where the
+      // interp's eval boundary anchors it.
+      emit_set_op_pos();
       emit_call(
           module_->getOrInsertFunction(
               rt::set_add, builder_.getVoidTy(), ptrTy,
