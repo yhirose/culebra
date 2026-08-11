@@ -1,0 +1,4 @@
+# A range key in write context: the write ops stay point-only, so the
+# Long-key check reports the Object key at the assignment node.
+mut a = [1, 2, 3]
+a[1..2] = 9

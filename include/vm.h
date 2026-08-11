@@ -21,6 +21,10 @@
 // comparisons (including chains) and `&&` / `||` / `??`;
 // `if` / `else if` / `else` (as an expression) and the ternary; `while`;
 // counted range `for`; `break` / `continue`; single-argument `println`;
+// range values (`a..b`, `a..=b`, `by step`, open ends, the bare `..`) and
+// slicing (`xs[1..3]` and stored-range keys — Array copy / String view /
+// Tuple new tuple; write-context range keys fall to the runtime Long-key
+// error like both backends);
 // fn literals with closures (captured locals promoted to JitCells, the
 // JIT's cell mechanism — forward-reference capture is still rejected);
 // `match` over leaf patterns (literals, `_`, bindings, typed bindings over
@@ -120,12 +124,27 @@ enum class Op : uint8_t {
                // the register still owns the value (the handler ladder
                // frees it) and the SetOpPos published just before (the
                // literal's position, compile_set's emit order) anchors it.
-  Index,       // regs[a] = regs[b][regs[c]] (+1) — the plain point read,
-               // emit_point_index's dispatch: Array/Tuple by Long key (a
-               // negative index counts from the end), Object by value key
-               // (object_get_any — KeyError on a plain-dict miss), else
-               // "expected Array". The key stays register-owned (a retain
-               // feeds the consuming Object helper).
+  RangeNew,    // regs[a] = fresh Range object (+1) from the contiguous run
+               // regs[b..b+2] = start, end, step (each Long — ChkLong ran
+               // right after its endpoint compiled; step defaults via a
+               // LoadConst 1). c packs has_start | has_end<<1 | inclusive<<2
+               // (an absent endpoint's slot is unread). make_range only
+               // allocates — never throws.
+  ChkLong,     // if regs[a].tag != Long, throw the typed TypeError
+               // ("expected Long, got X") at this instruction's position —
+               // a range endpoint's strictness check, emitted between
+               // endpoint compiles so `0.5..t()` throws before t() runs
+               // (the JIT's value_to_long-after-each-compile order).
+  Index,       // regs[a] = regs[b][regs[c]] (+1). A range-valued key
+               // (is_range — the full-shape gate) slices the receiver via
+               // culebra_runtime_slice (Array copy / String view / Tuple
+               // new tuple, else "expected Array"), checked before the
+               // receiver dispatch like emit_index_step. Otherwise the
+               // plain point read, emit_point_index's dispatch: Array/Tuple
+               // by Long key (a negative index counts from the end), Object
+               // by value key (object_get_any — KeyError on a plain-dict
+               // miss), else "expected Array". The key stays register-owned
+               // (a retain feeds the consuming Object helper).
   IndexWr,     // like Index, but the write-context read of `a[i] op= v`:
                // the JIT's compound set dispatch — Array-only (a Tuple is
                // not writable) with array_set's bounds rule (a negative
@@ -1240,7 +1259,9 @@ class Compiler {
 
   // Complex index lvalue: `a[i] = v`, `a[i] op= v`, `a[i] ??= v`, and
   // chains (`n[i][j] = v` — intermediate INDEX / ARGUMENTS postfixes ride
-  // the rvalue fold). The final postfix must be a point `[k]`. Evaluation
+  // the rvalue fold). A range key compiles like any other and falls into
+  // the write ops' Long-key check ("expected Long, got Object") — the
+  // probed both-backend behavior for `a[1..2] = v`. Evaluation
   // order is the probed both-backend one: RHS first (plain/compound), then
   // the receiver chain, then the key; `??=` evaluates receiver and key,
   // and the RHS only when the current value is nil. Every op is stamped at
@@ -1263,8 +1284,6 @@ class Compiler {
                          static_cast<int64_t>(ast.column));
     }
     if (fin.original_tag != "INDEX"_) reject(fin, "property assignment");
-    if (fin.tag == "RANGE"_ || fin.tag == "RANGE_OPERATOR"_)
-      reject(fin, "slice index");
 
     auto chain_prefix = [&] {
       auto recv = compile_expr(*ast.nodes[av.lvaloff]);
@@ -1479,20 +1498,51 @@ class Compiler {
 
   // One `[k]` postfix applied to `recv`. `op` picks the read flavor: Index
   // for an rvalue read, IndexWr/IndexCo for compile_assign_index's
-  // write-context reads. A literal range subscript is a slice — out of
-  // slice (and a stored Range value cannot exist in-slice, so the runtime
-  // is-range dispatch has nothing to hit; `range(0, n)` is a plain Object,
-  // not a Range, on every backend). The op is stamped at the enclosing
-  // node `at`, where both backends anchor every index error.
+  // write-context reads. A range key — literal (`xs[1..3]`) or stored —
+  // rides the same Index op: its runtime is-range dispatch slices before
+  // the receiver arms (emit_index_step's order). The write-context reads
+  // stay point-only like the JIT's compound dispatch: a range key falls
+  // into their Long-key check ("expected Long, got Object"). The op is
+  // stamped at the enclosing node `at`, where both backends anchor every
+  // index error.
   ExprResult compile_index_read(const peg::Ast& at, const peg::Ast& post,
                                 ExprResult recv, Op op) {
-    using namespace peg::udl;
-    if (post.tag == "RANGE"_ || post.tag == "RANGE_OPERATOR"_)
-      reject(post, "slice index");
     auto key = compile_expr(post);
     StampGuard pos(*this, at);
     int32_t t = alloc_temp(at);
     emit(op, t, recv.slot, key.slot);
+    return {t, true};
+  }
+
+  // `a..b` / `a..=b` (optionally `by step`) and the bare `..`: a Range
+  // object over a contiguous start/end/step slot run. Each present
+  // endpoint is ChkLong'd right after it compiles — `0.5..t()` throws
+  // before t() runs, the JIT's value_to_long-after-each-compile order —
+  // with every check and the RangeNew stamped at the range node, both
+  // backends' anchor for endpoint type errors.
+  ExprResult compile_range(const peg::Ast& ast) {
+    using namespace peg::udl;
+    culebra::RangeLayout lay{};
+    if (ast.tag != "RANGE_OPERATOR"_) lay = culebra::decode_range_layout(ast);
+    int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
+    for (int i = 0; i < 3; i++) alloc_temp(ast);
+    if (lay.start) {
+      store_into(base + 0, compile_expr(*lay.start), /*dst_is_fresh=*/true);
+      emit(Op::ChkLong, base + 0);
+    }
+    if (lay.end) {
+      store_into(base + 1, compile_expr(*lay.end), /*dst_is_fresh=*/true);
+      emit(Op::ChkLong, base + 1);
+    }
+    if (lay.step) {
+      store_into(base + 2, compile_expr(*lay.step), /*dst_is_fresh=*/true);
+      emit(Op::ChkLong, base + 2);
+    } else {
+      emit(Op::LoadConst, base + 2, kconst_long(1));
+    }
+    int32_t t = alloc_temp(ast);
+    emit(Op::RangeNew, t, base,
+         (lay.start ? 1 : 0) | (lay.end ? 2 : 0) | (lay.inclusive ? 4 : 0));
     return {t, true};
   }
 
@@ -2020,6 +2070,9 @@ class Compiler {
         }
         return {t, true};
       }
+      case "RANGE"_:
+      case "RANGE_OPERATOR"_:  // bare `..`: open both ends
+        return compile_range(ast);
       case "TUPLE"_: {
         int32_t t = alloc_temp(ast);
         emit(Op::TupleNew, t);
@@ -2192,6 +2245,7 @@ inline std::string dump(const Chunk& c) {
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "ArrayPush", "ArrayExtend", "ArrayResize",
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
+      "RangeNew",  "ChkLong",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfTag",
       "MakeClosure", "Call",    "Ret",
@@ -2726,12 +2780,45 @@ struct Exec {
           regs[in.b] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
+        case Op::RangeNew: {
+          bool hs = in.c & 1, he = in.c & 2;
+          auto* o = culebra_runtime_make_range(
+              hs ? 1 : 0, hs ? regs[in.b].data : 0, he ? 1 : 0,
+              he ? regs[in.b + 1].data : 0, (in.c & 4) ? 1 : 0,
+              regs[in.b + 2].data);
+          regs[in.a] = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+          ++pc;
+          break;
+        }
+        case Op::ChkLong: {
+          if (regs[in.a].tag != TAG_LONG) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            culebra_runtime_type_error_typed(
+                line, col, "Long", static_cast<int8_t>(regs[in.a].tag));
+          }
+          ++pc;
+          break;
+        }
         case Op::Index:
         case Op::IndexWr: {
           const JitValue& recv = regs[in.b];
           const JitValue& key = regs[in.c];
           auto [line, col] = chunk_pos_at(c, pc);
           bool wr = in.op == Op::IndexWr;
+          // Range-valued key: slice, dispatched ahead of the receiver arms
+          // (emit_index_step's order — an Object receiver slices too, into
+          // culebra_runtime_slice's "expected Array"). Read-only on both
+          // operands; the result is fresh +1.
+          if (!wr && culebra_runtime_is_range(static_cast<int8_t>(key.tag),
+                                              key.data)) {
+            int8_t t;
+            int64_t d;
+            culebra_runtime_slice(static_cast<int8_t>(recv.tag), recv.data,
+                                  key.data, &t, &d, line, col);
+            regs[in.a] = JitValue{t, d};
+            ++pc;
+            break;
+          }
           if (recv.tag == TAG_ARRAY || (!wr && recv.tag == TAG_TUPLE)) {
             if (key.tag != TAG_LONG)
               culebra_runtime_type_error_typed(
@@ -3571,20 +3658,54 @@ struct Lowering {
           b.CreateStore(j.make_nil(), slots[in.b]);
           break;
         }
+        case Op::RangeNew: {
+          bool hs = in.c & 1, he = in.c & 2;
+          auto res = j.emit_make_range(
+              hs ? j.extract_data(load_slot(in.b)) : nullptr,
+              he ? j.extract_data(load_slot(in.b + 1)) : nullptr, in.c & 4,
+              j.extract_data(load_slot(in.b + 2)));
+          b.CreateStore(res, slots[in.a]);
+          break;
+        }
+        case Op::ChkLong:
+          // value_to_long's error branch is the whole point; the Long
+          // payload is discarded.
+          j.value_to_long(load_slot(in.a));
+          break;
         case Op::Index: {
           // emit_point_index consumes the key on its returning paths and
-          // releases both operands on its throw edges; the registers must
-          // stay slot-owned (the handler ladder is the sole slot releaser),
-          // so retain both up front — the emitter's releases cancel the
-          // retains, and the receiver's surviving +1 is dropped on the
-          // normal path. The result is +1.
+          // releases both operands on its throw edges — and the slice arm's
+          // emit_slice_value releases both on its throw edge; the registers
+          // must stay slot-owned (the handler ladder is the sole slot
+          // releaser), so retain both up front — the emitters' releases
+          // cancel the retains, and the surviving +1s are dropped on the
+          // normal paths. The result is +1 on both arms.
           auto recv = load_slot(in.b);
           auto key = load_slot(in.c);
           j.emit_value_retain(recv);
           j.emit_value_retain(key);
-          auto res = j.emit_point_index(recv, key);
-          j.emit_value_release(recv);
-          b.CreateStore(res, slots[in.a]);
+          auto cond = j.emit_is_range(key);
+          auto sliceBB = BasicBlock::Create(j.ctx_, "vidx.slice", fn);
+          auto pointBB = BasicBlock::Create(j.ctx_, "vidx.point", fn);
+          auto mergeBB = BasicBlock::Create(j.ctx_, "vidx.merge", fn);
+          b.CreateCondBr(cond, sliceBB, pointBB);
+          b.SetInsertPoint(sliceBB);
+          {
+            // Slice reads both operands; drop both minted +1s here.
+            auto res = j.emit_slice_value(recv, key);
+            j.emit_value_release(recv);
+            j.emit_value_release(key);
+            b.CreateStore(res, slots[in.a]);
+            b.CreateBr(mergeBB);
+          }
+          b.SetInsertPoint(pointBB);
+          {
+            auto res = j.emit_point_index(recv, key);
+            j.emit_value_release(recv);
+            b.CreateStore(res, slots[in.a]);
+            b.CreateBr(mergeBB);
+          }
+          b.SetInsertPoint(mergeBB);
           break;
         }
         case Op::IndexWr:

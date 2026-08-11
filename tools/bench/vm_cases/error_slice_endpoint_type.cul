@@ -1,0 +1,3 @@
+# A non-Long range endpoint: typed TypeError anchored at the range node,
+# thrown before the later endpoints evaluate.
+let r = 1.5..3

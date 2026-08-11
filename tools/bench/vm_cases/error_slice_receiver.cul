@@ -1,0 +1,3 @@
+# A range key on a non-sliceable receiver: culebra_runtime_slice's
+# "expected Array" at the chain head.
+5[0..1]
