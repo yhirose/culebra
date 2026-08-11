@@ -11,5 +11,15 @@ runs:
     - name: Install just
       shell: bash
       run: |
-        curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-          | sudo bash -s -- --to /usr/local/bin
+        # just.systems intermittently 403s CI's shared runner IPs; retry
+        # before failing the job outright.
+        for attempt in 1 2 3; do
+          if curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+            | sudo bash -s -- --to /usr/local/bin; then
+            exit 0
+          fi
+          echo "install-just: attempt ${attempt} failed, retrying in 10s" >&2
+          sleep 10
+        done
+        echo "install-just: all attempts failed" >&2
+        exit 1
