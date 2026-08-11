@@ -1,0 +1,2 @@
+# An invalid format spec reports ValueError at the piece's position.
+let s = "abc {1:zz} def"

@@ -1,0 +1,40 @@
+# String interpolation: bare pieces, format specs, and triple strings.
+let v = 42
+let f = 3.14159
+println("v={v} f={f}")
+println("pi={f:.2f} hex={255:x} oct={8:o} bin={5:b} pad={7:04d}")
+println("sci={12345.678:.3e} pct={0.755:.1%}")
+println("left=[{1:<6}] right=[{2:>6}] mid=[{3:^6}]")
+println("float as int={2.9:d} long as float={3:.1f}")
+
+# Pieces evaluate left-to-right; expressions nest freely.
+mut n = 0
+let bump = fn () { n += 1; n }
+println("a={bump()} b={bump()} c={bump()}")
+println("sum={1 + 2 * 3} cmp={1 < 2} arr={[1, 2, 3]}")
+println("nil={nil} bool={true} str={'x'}")
+
+# Escapes decode once, at compile time.
+println("tab=\tnl=\\n brace=\{v}")
+
+# Empty and literal-only strings stay single constants.
+println("")
+println("just text")
+
+# Triple strings: block dedent, embedded expressions, blank lines.
+let t = """
+  head {v}
+  mid
+
+  tail {1 + 1}
+  """
+println(t)
+let one = """single {v} line"""
+println(one)
+
+# Concat through += builds on the same heap-string runtime.
+mut s = ""
+for i in 1..=3 {
+    s += "{i},"
+}
+println(s)

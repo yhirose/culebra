@@ -11,7 +11,9 @@
 // contract only.
 //
 // Current slice (the expression core + basic control flow): Long / Float /
-// Bool / nil / String / Array literals; `let` / `let mut` / reassignment /
+// Bool / nil / String / Array literals; interpolated and triple strings
+// (embedded expressions, format specs, the shared block dedent);
+// `let` / `let mut` / reassignment /
 // compound assignment (op= and ??=) of plain identifiers; arithmetic
 // + - * / % ** and unary - ! + ~ with the JIT's dispatch shape; the
 // Long-only bitwise/shift ops & | ^ << >>;
@@ -145,6 +147,19 @@ enum class Op : uint8_t {
                // closure the JIT's emit_builtin_var_get slow path returns,
                // so `f == to_string` holds across reads. Compile-time
                // allowlisted; the resolver's NameError path is unreachable.
+  SetOpPos,    // publish this instruction's line/col as the pending op
+               // position (culebra_runtime_set_op_pos). Emitted before an
+               // interpolation piece renders — stamped at the string
+               // literal, so a positionless throw in the display walk
+               // (nesting too deep) backfills there, the JIT's emit order.
+  Disp,        // regs[a] = display string of regs[b] (value_to_display,
+               // borrow) — a bare `{expr}` piece. The result is a fresh
+               // heap string: TAG_STRING, so outside RC entirely.
+  Fmt,         // regs[a] = format_value(regs[b], spec consts[c]) with this
+               // instruction's line/col (the piece node's position — spec
+               // errors report there) — a `{expr:spec}` piece
+  StrCat,      // regs[a] = str_concat(regs[b], regs[c]); both operands are
+               // Strings by construction (interpolation pieces)
   Throw,       // user `throw`: regs[a]'s +1 transfers to the thrown-value
                // carrier (culebra_runtime_throw); regs[a] is nil'd BEFORE the
                // raise so a handler's release ladder cannot double-release
@@ -1693,6 +1708,68 @@ class Compiler {
     return tags;
   }
 
+  // Interpolated / triple strings over a normalized piece list: literal
+  // chunks fold at compile time (consecutive ones into one constant, so a
+  // pure-literal string is a single LoadConst with no concat chain — the
+  // compile_triple_string fold); each `{expr}` piece renders through Disp,
+  // or Fmt with its spec, and StrCat chains the accumulator left-to-right
+  // (compile_interpolated_string's order). Strings aren't RC'd, so the
+  // temps carry no release pressure.
+  ExprResult compile_interp_pieces(
+      const peg::Ast& ast, const std::vector<culebra::InterpPiece>& pieces) {
+    using namespace peg::udl;
+    std::string pending;
+    int32_t acc = -1;
+    auto cat = [&](int32_t piece) {
+      if (acc < 0) {
+        acc = piece;
+        return;
+      }
+      int32_t t = alloc_temp(ast);
+      emit(Op::StrCat, t, acc, piece);
+      acc = t;
+    };
+    auto flush = [&] {
+      if (pending.empty()) return;
+      int32_t t = alloc_temp(ast);
+      emit(Op::LoadConst, t, kconst_str(pending));
+      pending.clear();
+      cat(t);
+    };
+    for (const auto& p : pieces) {
+      if (!p.expr) {
+        pending += culebra::decode_interpolated_content(p.text);
+        continue;
+      }
+      flush();
+      const peg::Ast& node = *p.expr;
+      const peg::Ast* expr_node = &node;
+      const peg::Ast* spec = nullptr;
+      if (node.tag == "INTERP_EXPR"_) {
+        expr_node = node.nodes[0].get();
+        if (node.nodes.size() > 1) spec = node.nodes[1].get();
+      }
+      auto v = compile_expr(*expr_node);
+      // SetOpPos rides the enclosing string literal's stamp (the pending
+      // position here); the render op itself is stamped at the piece so
+      // Fmt's spec errors report the `{expr:spec}` node.
+      emit(Op::SetOpPos);
+      int32_t t = alloc_temp(ast);
+      StampGuard pos(*this, node);
+      if (spec)
+        emit(Op::Fmt, t, v.slot, kconst_str(spec->token));
+      else
+        emit(Op::Disp, t, v.slot);
+      cat(t);
+    }
+    flush();
+    if (acc < 0) {  // no pieces at all: the empty string
+      acc = alloc_temp(ast);
+      emit(Op::LoadConst, acc, kconst_str(""));
+    }
+    return {acc, true};
+  }
+
   ExprResult compile_expr(const peg::Ast& ast) {
     using namespace peg::udl;
     StampGuard pos(*this, ast);
@@ -1726,18 +1803,21 @@ class Compiler {
         return {t, true};
       }
       case "INTERPOLATED_STRING"_: {
-        // All-literal pieces fold to one constant at compile time; pieces
-        // with embedded expressions need calls, outside the slice.
-        std::string folded;
+        std::vector<culebra::InterpPiece> pieces;
+        pieces.reserve(ast.nodes.size());
         for (const auto& piece : ast.nodes) {
-          if (piece->tag != "INTERPOLATED_CONTENT"_)
-            reject(*piece, "string interpolation");
-          folded += culebra::decode_interpolated_content(piece->token);
+          if (piece->tag == "INTERPOLATED_CONTENT"_)
+            pieces.push_back({std::string(piece->token), nullptr});
+          else
+            pieces.push_back({{}, piece.get()});
         }
-        int32_t t = alloc_temp(ast);
-        emit(Op::LoadConst, t, kconst_str(folded));
-        return {t, true};
+        return compile_interp_pieces(ast, pieces);
       }
+      case "TRIPLE_STRING"_:
+        // normalize_triple_pieces is the shared dedent authority (its
+        // SyntaxError for a mis-indented close surfaces at compile time
+        // here, like the JIT).
+        return compile_interp_pieces(ast, culebra::normalize_triple_pieces(ast));
       case "ARRAY"_: {
         if (ast.nodes.size() > 1) reject(ast, "sized array literal");
         int32_t t = alloc_temp(ast);
@@ -1906,6 +1986,7 @@ inline std::string dump(const Chunk& c) {
       "MakeClosure", "Call",    "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "UnboundErr", "MultifnReg", "NsGet",
+      "SetOpPos",  "Disp",      "Fmt",        "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
@@ -1984,6 +2065,12 @@ struct Exec {
       auto s = _culebra_uncaught_display(e.tag, e.data);
       _culebra_value_release_impl(e.tag, e.data);
       throw std::runtime_error(std::format("uncaught: {}", s));
+    } catch (CulebraError& e) {
+      // Backfill a positionless error from the published op position at
+      // the engine boundary — JIT::exec's rule (the interp stamps at its
+      // eval() boundary; an Interrupted stays 0:0 on every lane).
+      if (e.kind != "Interrupted") _jit_backfill_op_pos(e);
+      throw;
     }
   }
 
@@ -2527,6 +2614,38 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::SetOpPos: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_set_op_pos(line, col);
+          ++pc;
+          break;
+        }
+        case Op::Disp:
+          regs[in.a] = JitValue{
+              TAG_STRING,
+              reinterpret_cast<int64_t>(culebra_runtime_value_to_display(
+                  static_cast<int8_t>(regs[in.b].tag), regs[in.b].data))};
+          ++pc;
+          break;
+        case Op::Fmt: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          regs[in.a] = JitValue{
+              TAG_STRING,
+              reinterpret_cast<int64_t>(culebra_runtime_format_value(
+                  static_cast<int8_t>(regs[in.b].tag), regs[in.b].data,
+                  reinterpret_cast<const char*>(c.consts[in.c].data), line,
+                  col))};
+          ++pc;
+          break;
+        }
+        case Op::StrCat:
+          regs[in.a] = JitValue{
+              TAG_STRING,
+              reinterpret_cast<int64_t>(culebra_runtime_str_concat(
+                  reinterpret_cast<const char*>(regs[in.b].data),
+                  reinterpret_cast<const char*>(regs[in.c].data)))};
+          ++pc;
+          break;
         case Op::Throw: {
           JitValue v = regs[in.a];
           regs[in.a] = JitValue{TAG_NIL, 0};  // the +1 rides the carrier now
@@ -3193,6 +3312,47 @@ struct Lowering {
           // names, so a plain call even inside a region.
           auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
           b.CreateStore(j.emit_builtin_var_get(nm), slots[in.a]);
+          break;
+        }
+        case Op::SetOpPos:
+          // Uses the JIT's own emitter (rt::set_op_pos over the current
+          // position state, already fed from this instruction's table row).
+          j.emit_set_op_pos();
+          break;
+        case Op::Disp: {
+          auto v = load_slot(in.b);
+          auto s = j.emit_call(
+              j.module_->getOrInsertFunction(rt::value_to_display, ptrTy,
+                                             b.getInt8Ty(), i64Ty),
+              {j.extract_tag(v), j.extract_data(v)}, "disp");
+          b.CreateStore(j.make_string(s), slots[in.a]);
+          break;
+        }
+        case Op::Fmt: {
+          auto v = load_slot(in.b);
+          auto specPtr = j.get_or_create_global_str(
+              std::string(
+                  _str_sv(reinterpret_cast<const char*>(c.consts[in.c].data))),
+              ".fmtspec");
+          auto [line, col] = chunk_pos_at(c, i);
+          auto s = j.emit_call(
+              j.module_->getOrInsertFunction(rt::format_value, ptrTy,
+                                             b.getInt8Ty(), i64Ty, ptrTy,
+                                             i64Ty, i64Ty),
+              {j.extract_tag(v), j.extract_data(v), specPtr, b.getInt64(line),
+               b.getInt64(col)},
+              "fmt");
+          b.CreateStore(j.make_string(s), slots[in.a]);
+          break;
+        }
+        case Op::StrCat: {
+          auto l = b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
+          auto r = b.CreateIntToPtr(j.extract_data(load_slot(in.c)), ptrTy);
+          auto s = j.emit_call(
+              j.module_->getOrInsertFunction(rt::str_concat, ptrTy, ptrTy,
+                                             ptrTy),
+              {l, r}, "concat");
+          b.CreateStore(j.make_string(s), slots[in.a]);
           break;
         }
         case Op::Throw: {
