@@ -38,4 +38,52 @@ try {
 }
 assert_eq(k2, "TypeError")
 
+# `reverse:` is type-checked like any declared parameter.
+mut e_rev = nil
+try {
+  [3, 1].sorted(reverse: 5)
+} catch e {
+  e_rev = e
+}
+assert_eq(e_rev.kind, "TypeError")
+assert_true(e_rev.message.contains("parameter 'reverse' expects Bool"))
+
+# Built-ins bind positionally: a keyword-only parameter is the ONLY name a
+# keyword may carry, so naming an ordinary parameter is the keyword error even
+# when the method declares that parameter (`truncate(max:)`, `sorted_by(f:)`).
+fn kw_error(f: Function) -> String {
+  try {
+    f()
+    return "no throw"
+  } catch e {
+    return e.kind + ': ' + e.message
+  }
+}
+
+let kw_msg = "does not accept keyword arguments"
+assert_true(kw_error(fn () { "hello world".truncate(max: 8) }).contains(kw_msg))
+assert_true(kw_error(fn () { "xa".trim_start(chars: "x") }).contains(kw_msg))
+assert_true(kw_error(fn () { [3, 1].sorted_by(f: |x| x) }).contains(kw_msg))
+
+# ...and `**` splat names nothing statically, so no built-in takes one.
+let opts = {"reverse": true}
+assert_true(kw_error(fn () { [3, 1].sorted(**opts) }).contains(kw_msg))
+
+# The keyword error belongs to a receiver that RESOLVES the name. One that
+# doesn't gets its ordinary miss (the property is read before any binding):
+# `take` is an iterator method, not an Array one.
+assert_true(kw_error(fn () { [1, 2, 3].take(n: 2) }).contains("expected Function"))
+assert_true(
+  kw_error(fn () { (5).truncate(max: 8) }).contains("expected Object, Array"))
+
+# A user-defined method of the same name binds its keywords normally.
+class Doc {
+  new() {}
+  truncate(max, ellipsis: String = "~") {
+    "user " + to_string(max) + ellipsis
+  }
+}
+assert_eq(Doc().truncate(max: 3), "user 3~")
+assert_eq(Doc().truncate(3, ellipsis: "!"), "user 3!")
+
 IO.inspect("test_sorted_by_reverse OK")

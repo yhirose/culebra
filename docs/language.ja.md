@@ -1252,6 +1252,31 @@ step 1のプロパティなので、グローバルな`parameters`が横取り�
 ハンドル、あるいは候補がそもそも無い場合）だけがat-most-once
 ガードに届きます。
 
+#### 組み込みメソッドは位置引数でバインドする
+
+組み込みメソッド（`Array` / `String` / `Set` / `Tuple` / dict /
+iterator / `Tensor`）は引数を**位置で**バインドします。キーワード
+引数として書ける名前は*キーワード専用*パラメータ —— `sorted`の
+`reverse:`のように、そもそも位置スロットを持たないもの —— だけ
+です。通常のパラメータ名をキーワードで指定するのは、そのパラメータ
+が実在しても`TypeError`であり、`**` splatは一切受け付けません:
+
+```culebra
+# doctest: skip
+[3, 1, 2].sorted(reverse: true)     # → [3, 2, 1]  (キーワード専用)
+'hello world'.truncate(8)           # → 'hello...'
+'hello world'.truncate(max: 8)      # TypeError: built-in method 'truncate'
+                                    # does not accept keyword arguments
+[3, 1].sorted(**{'reverse': true})  # 同じ TypeError
+```
+
+この規則は名前ではなく*呼ばれる実体*についてのものです。同名の
+ユーザ定義メソッドはただの関数なので、`doc.truncate(max: 8)`は
+普通にキーワードをバインドします。また名前を**解決するレシーバ**
+についての話でもあります —— プロパティは引数がバインドされる前に
+読まれるので、`[1, 2].take(n: 1)`（`Array`に`take`は無い）は
+キーワードのエラーではなく通常のメソッド解決失敗になります。
+
 #### namespaceは閉じている
 
 組み込みnamespaceのメンバー集合は固定なので、知らないメンバーは

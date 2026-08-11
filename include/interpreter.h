@@ -10283,11 +10283,30 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // the unconsumed kwargs surface as an opaque ArityError. Matches JIT.
     if (val.type == Value::Function) {
       const auto& fn = val.get<FunctionValue>();
-      // A builtin method that declares a keyword-only / defaulted / **rest
-      // parameter (e.g. `sort_by(f, reverse: true)`) is kwarg-capable: defer
-      // to the general binder below, which handles keywords + arity exactly
-      // like the namespace methods (Http.get, ...). Only the pure positional
-      // builtins keep the fast early gate.
+      // A builtin method binds positionally; the only keyword it takes is one
+      // naming a keyword-only parameter (`sort_by(f, reverse: true)`), which
+      // has no positional slot at all. Anything else — a keyword naming an
+      // ordinary parameter, a `**` splat — is a TypeError, so the accepted
+      // shapes stay the ones the JIT's per-method codegen can bind (the
+      // backends' single rule: builtin_method_accepts_keyword).
+      if (fn.is_builtin_method) {
+        for (const auto& child : ast.nodes) {
+          if (child->tag == "KWARG_SPLAT"_ ||
+              (child->tag == "KWARG"_ &&
+               !builtin_method_accepts_keyword(*fn.params,
+                                               child->nodes[0]->token))) {
+            throw CulebraError("TypeError",
+                builtin_method_kwargs_error_message(
+                    fn.name.empty() ? "<builtin>" : fn.name),
+                ast.line, ast.column);
+          }
+        }
+      }
+      // A builtin that declares a keyword-only / defaulted / **rest parameter
+      // (e.g. `sort_by(f, reverse: true)`) defers its arity to the general
+      // binder below, which reports the same rich errors as the namespace
+      // methods (Http.get, ...). Only the pure positional builtins keep the
+      // fast count-based gate.
       bool kw_capable = false;
       if (fn.is_builtin_method) {
         auto bb = builtin_arity_bounds(*fn.params);
@@ -10296,14 +10315,6 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           if (p.kw_only || p.kwargs_rest) kw_capable = true;
       }
       if (fn.is_builtin_method && !kw_capable) {
-        for (const auto& child : ast.nodes) {
-          if (child->tag == "KWARG"_ || child->tag == "KWARG_SPLAT"_) {
-            throw CulebraError("TypeError",
-                builtin_method_kwargs_error_message(
-                    fn.name.empty() ? "<builtin>" : fn.name),
-                ast.line, ast.column);
-          }
-        }
         // Positional arity: a fixed-shape built-in on a value-typed
         // receiver rejects too few / too many args with a count-based
         // ArityError (the JIT raises the same — see jit.h). No kwargs

@@ -1343,6 +1343,31 @@ no `drop` of its own hands the call to a free `drop` in scope, and only
 a receiver that resolves the name — a handle with its own `drop`, or no
 candidate in scope at all — reaches the at-most-once guard.
 
+#### Built-in methods bind positionally
+
+A built-in method (`Array` / `String` / `Set` / `Tuple` / dict /
+iterator / `Tensor`) binds its arguments **by position**. The one name a
+keyword argument may carry is a *keyword-only* parameter — one with no
+positional slot at all, like `sorted`'s `reverse:`. A keyword naming an
+ordinary parameter is a `TypeError`, even where that parameter exists,
+and a `**` splat is never accepted:
+
+```culebra
+# doctest: skip
+[3, 1, 2].sorted(reverse: true)     # → [3, 2, 1]  (keyword-only)
+'hello world'.truncate(8)           # → 'hello...'
+'hello world'.truncate(max: 8)      # TypeError: built-in method 'truncate'
+                                    # does not accept keyword arguments
+[3, 1].sorted(**{'reverse': true})  # the same TypeError
+```
+
+The rule is about the *callee*, not the name: a user-defined method of
+the same name is an ordinary function, so `doc.truncate(max: 8)` binds
+its keyword normally. It is also about a receiver that **resolves** the
+name — the property is read before any argument binds, so
+`[1, 2].take(n: 1)` (no `take` on `Array`) is the ordinary method miss
+rather than the keyword error.
+
 #### Namespaces are closed
 
 A built-in namespace exposes a fixed member set, so an unknown member is

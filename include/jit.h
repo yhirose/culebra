@@ -11073,24 +11073,49 @@ struct JIT {
     return table;
   }
 
-  // Whether some builtin value-type method named `method` declares a
-  // keyword-only / defaulted / **rest parameter — i.e. it can take keyword
-  // args (e.g. `sort_by(f, reverse: true)`). Consulted by the builtin
-  // kwarg gate so such a call isn't rejected before compile_builtin_method
-  // gets to bind the keyword. Over-approximates across receiver types (the
-  // actual per-(method,argc) dispatch still happens in the builtin codegen).
-  static bool builtin_method_is_kwarg_capable(const std::string& method) {
-    for (auto& [tag, table] : builtin_value_tables()) {
-      auto it = table->find(method);
-      if (it == table->end() || it->second.type != Value::Function) continue;
-      const auto& params = *it->second.get<FunctionValue>().params;
-      if (culebra::builtin_arity_bounds(params).min !=
-          culebra::builtin_arity_bounds(params).max)
-        return true;
-      for (const auto& p : params)
-        if (p.kw_only || p.kwargs_rest) return true;
+  // The declared parameters of `method` in one builtin table, or null when
+  // that table has no Function-valued entry of the name. Generic over the
+  // mapped type: the value tables map to Value, iterator_builtins() to
+  // IterBuiltin{fn, kind}.
+  template <class Table>
+  static const std::vector<FunctionValue::Parameter>* builtin_method_params(
+      const Table& tbl, const std::string& method) {
+    auto it = tbl.find(method);
+    if (it == tbl.end()) return nullptr;
+    const Value& fnv = [&]() -> const Value& {
+      if constexpr (std::is_same_v<std::decay_t<decltype(it->second)>,
+                                   culebra::IterBuiltin>) {
+        return it->second.fn;
+      } else {
+        return it->second;
+      }
+    }();
+    if (fnv.type != Value::Function) return nullptr;
+    return fnv.get<FunctionValue>().params.get();
+  }
+
+  // Whether every keyword this call supplies is one a builtin `method` can
+  // take — i.e. names a keyword-only parameter (`sort_by(f, reverse: true)`),
+  // the sole keyword shape built-ins accept (builtin_method_accepts_keyword).
+  // A `**` splat names nothing statically, so it never qualifies. The
+  // receiver's type is a run-time fact, so this over-approximates across the
+  // tables, exactly like emit_builtin_arity_check's own lookup; a receiver
+  // that turns out not to resolve the name took the UFCS arm before this.
+  bool builtin_method_keywords_bindable(const std::string& method,
+                                        const peg::Ast& argsAst) {
+    auto scan = scan_arg_list(argsAst);
+    if (!scan.splats.empty()) return false;
+    for (const auto& [kw, _val] : scan.explicit_kwargs) {
+      auto accepts = [&](const std::vector<FunctionValue::Parameter>* params) {
+        return params && culebra::builtin_method_accepts_keyword(*params, kw);
+      };
+      bool ok = accepts(builtin_method_params(*dict_builtin_table(), method)) ||
+                accepts(builtin_method_params(iterator_builtins(), method));
+      for (auto& [tag, table] : builtin_value_tables())
+        ok = ok || accepts(builtin_method_params(*table, method));
+      if (!ok) return false;
     }
-    return false;
+    return true;
   }
 
   // Whether `method` names two callees at once, so only the receiver's tag
@@ -11567,7 +11592,8 @@ struct JIT {
     // Only emit the runtime test when a candidate is visible at compile time —
     // without one the miss arm would just re-emit the builtin path's own
     // fallback, so every ordinary `arr.push(x)` site stays as it was.
-    if (auto load_free_fn = ufcs_free_fn_loader(method)) {
+    auto load_free_fn = ufcs_free_fn_loader(method);
+    if (load_free_fn) {
       auto resolves = emit_receiver_has_property(method, receiver);
       auto hitBB = llvm::BasicBlock::Create(ctx_, "umb.resolved", fn);
       auto missBB = llvm::BasicBlock::Create(ctx_, "umb.unresolved", fn);
@@ -11581,13 +11607,29 @@ struct JIT {
       builder_.SetInsertPoint(hitBB);
     }
     // A kwargs call on a receiver that DOES resolve the name targets a true
-    // builtin, which never accepts keywords — raise the same TypeError the
-    // interp does. (A receiver that doesn't took the UFCS arm above, where the
-    // free function binds its keywords normally.)
+    // builtin, which binds positionally — every keyword but a keyword-only
+    // parameter's raises the same TypeError the interp does.
     Owned builtinRes;
     if (!arg_list_is_positional_only(argsAst) &&
-        !builtin_method_is_kwarg_capable(method) &&
+        !builtin_method_keywords_bindable(method, argsAst) &&
         !builtin_method_errors_by_receiver(method)) {
+      // "Resolves the name" is the condition, not "is not an Object": the
+      // interp reads the property before it binds a single argument, so
+      // `[1, 2].take(n: 1)` — a name Array does not carry — is the method
+      // miss, never the keyword error. With a UFCS candidate in scope the
+      // arm above already proved it resolves; without one, test here and
+      // send the miss to the shared unresolved path.
+      if (!load_free_fn) {
+        auto kwBB = llvm::BasicBlock::Create(ctx_, "umb.kw.builtin", fn);
+        auto missBB = llvm::BasicBlock::Create(ctx_, "umb.kw.miss", fn);
+        builder_.CreateCondBr(emit_receiver_has_property(method, receiver),
+                              kwBB, missBB);
+        builder_.SetInsertPoint(missBB);
+        umbMerge.add_incoming(emit_unresolved_builtin_method(
+            method, argsAst, receiver, /*guard_arity_receiver=*/true));
+        builder_.CreateBr(mergeBB);
+        builder_.SetInsertPoint(kwBB);
+      }
       // The receiver is owned here (+1) and this arm never hands it to a
       // callee frame, so release it before the throw or it strands (the Set
       // in `{1, 2}.add(x: 3)`). emit_throw_error only reads the message, not
@@ -16011,6 +16053,25 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return iterMerge.finish(mergeBB);
   }
 
+  // The sort family's `reverse:` keyword, as the interp binder sees it: the
+  // declared parameter is `Bool`, checked before the sorter runs and reported
+  // at the call root (where every rich binder error of a builtin points).
+  auto compile_sort_reverse = [&](const peg::Ast* rev_expr) -> llvm::Value* {
+    if (!rev_expr) return builder_.getInt1(false);
+    auto rev = compile(*rev_expr);
+    {
+      // A failing check skips this value's straight-line release below, so
+      // guard the `+1` on the unwind edge (`sorted(reverse: [1])`).
+      ThrowGuard rev_guard(this, {rev.borrow()});
+      emit_type_check_at(
+          rev.borrow(), "Bool", "parameter 'reverse'",
+          builder_.getInt64(call_root_line_ ? call_root_line_ : current_line_),
+          builder_.getInt64(call_root_line_ ? call_root_col_
+                                            : current_column_));
+    }
+    return value_to_bool(rev.consume());
+  };
+
   // sort_by / sorted_by accept one positional callback plus an optional
   // keyword-only `reverse:` (sort descending, stable). Handle only the valid
   // shape here (one positional, no unknown keyword); any malformed call
@@ -16037,8 +16098,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         // window; the guard closes before the call, keeping the two
         // releasers mutually exclusive.
         ThrowGuard rev_guard(this, {f.borrow()});
-        rev = rev_expr ? value_to_bool(compile(*rev_expr).consume())
-                       : builder_.getInt1(false);
+        rev = compile_sort_reverse(rev_expr);
       }
       auto fv = f.consume();  // callee-consumes from here
       if (method == "sort_by") {
@@ -16068,8 +16128,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     if (scan.positional.empty() && kw_ok) {
       const peg::Ast* rev_expr = scan.kwarg("reverse");
       auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
-      llvm::Value* rev = rev_expr ? value_to_bool(compile(*rev_expr).consume())
-                                  : builder_.getInt1(false);
+      llvm::Value* rev = compile_sort_reverse(rev_expr);
       if (method == "sort") {
         emit_call(module_->getFunction(rt::array_sort),
                   {arrPtr, rev, ho_line, ho_col});

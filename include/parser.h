@@ -1194,6 +1194,21 @@ inline ArityBounds builtin_arity_bounds(const std::vector<P>& params) {
           has_args_rest(params)};
 }
 
+// Built-in methods bind their arguments positionally — `'ab'.repeat(2)`, never
+// `'ab'.repeat(n: 2)`. The one name a keyword argument may carry is a
+// KEYWORD-ONLY parameter, which has no positional slot to bind through
+// (`[3, 1].sorted(reverse: true)`). A `**` splat names nothing until run time,
+// so a built-in never accepts one. Both backends gate on this, which is what
+// keeps a built-in's keyword surface inside what the JIT's per-method codegen
+// can bind statically.
+template <class P>
+inline bool builtin_method_accepts_keyword(const std::vector<P>& params,
+                                           std::string_view name) {
+  for (const auto& p : params)
+    if (p.kw_only && p.name == name) return true;
+  return false;
+}
+
 // Whether a callback declaring `cb_min` required and `cb_max` total regular
 // positional params (cb_max < 0 means a `*args` catch-all removed the upper
 // bound) can stand in for a higher-order callback invoked with exactly
