@@ -11,9 +11,10 @@
 // contract only.
 //
 // Current slice (the expression core + basic control flow): Long / Float /
-// Bool / nil / String / Array literals; `let` / `let mut` / reassignment of
-// plain identifiers; arithmetic + - * / % ** and unary - ! + ~ with the
-// JIT's dispatch shape; the Long-only bitwise/shift ops & | ^ << >>;
+// Bool / nil / String / Array literals; `let` / `let mut` / reassignment /
+// compound assignment (op= and ??=) of plain identifiers; arithmetic
+// + - * / % ** and unary - ! + ~ with the JIT's dispatch shape; the
+// Long-only bitwise/shift ops & | ^ << >>;
 // comparisons (including chains) and `&&` / `||` / `??`;
 // `if` / `else if` / `else` (as an expression) and the ternary; `while`;
 // counted range `for`; `break` / `continue`; single-argument `println`;
@@ -1059,11 +1060,11 @@ class Compiler {
   // { let x = 5 }` reads 5) — returned as a borrow of the target slot.
   ExprResult compile_assignment(const peg::Ast& ast) {
     auto av = culebra::view_assignment(ast);
-    if (av.compound) reject(ast, "compound assignment");
     if (!av.type_annotation.empty()) reject(ast, "type annotation");
     auto* tgt = culebra::assign_name_target(ast, av);
     if (!tgt) reject(ast, "non-identifier assignment target");
     if (tgt->token == "_") reject(*tgt, "sink binding");
+    if (av.compound) return compile_compound_assign(ast, av, *tgt);
     if (av.is_let || av.is_mut) {  // interp's assign_name: let||mut declares
       // Slot reserved before the RHS so temps stack above it; the name only
       // becomes visible after the RHS (let x = x reads the outer x).
@@ -1093,6 +1094,82 @@ class Compiler {
     if (b->is_cell) store_cell(*tgt, b->slot, r);
     else store_into(b->slot, r);
     return read_binding(*tgt, *b);
+  }
+
+  // `x op= e` / `x ??= e` on a plain identifier, the compile_assign_var
+  // order: the RHS evaluates first, then the current value loads, the step
+  // runs, and only the rebind checks mutability — a step TypeError beats
+  // the ImmutableError. `??=` reverses the front half: the current value's
+  // nil test gates whether the RHS (and every later check) runs at all.
+  ExprResult compile_compound_assign(const peg::Ast& ast,
+                                     const culebra::AssignmentView& av,
+                                     const peg::Ast& tgt) {
+    StampGuard pos(*this, ast);
+    if (av.is_let || av.is_mut) {
+      // Compile-time like the JIT (the interp raises the same SyntaxError
+      // when the statement runs).
+      throw CulebraError("SyntaxError",
+                         "compound assignment cannot declare a new variable.",
+                         static_cast<int>(ast.line),
+                         static_cast<int>(ast.column));
+    }
+    auto base = av.op_base;
+    const Binding* b = lookup(tgt.token);
+    if (!b && !is_stdlib_global(tgt.token))
+      reject(tgt, "compound assignment to an undeclared name");
+
+    if (base == "??") {
+      if (!b) {
+        // A builtin global never reads nil, so `??=` keeps it and the RHS
+        // never runs (the JIT's builtin-compound arm).
+        int32_t t = alloc_temp(tgt);
+        emit(Op::NsGet, t, kconst_str(tgt.token));
+        return {t, true};
+      }
+      auto cur = read_binding(tgt, *b);
+      size_t skip = emit(Op::JumpIfNotNil, cur.slot);
+      auto rhs = compile_expr(*av.rhs);
+      if (!b->is_mut) {
+        emit(Op::ImmutErr, kconst_str(tgt.token));
+      } else if (b->is_cell) {
+        store_cell(tgt, b->slot, rhs);
+      } else {
+        store_into(b->slot, rhs);
+      }
+      patch_to_here(skip);
+      return read_binding(tgt, *b);
+    }
+
+    Op op;
+    if (base == "+") op = Op::Add;
+    else if (base == "-") op = Op::Sub;
+    else if (base == "*") op = Op::Mul;
+    else if (base == "/") op = Op::Div;
+    else if (base == "%") op = Op::Mod;
+    else if (base == "**") op = Op::Pow;
+    else reject(ast, std::format("operator '{}='", base));  // `@=`
+
+    auto rhs = compile_expr(*av.rhs);
+    ExprResult cur;
+    if (b) {
+      cur = read_binding(tgt, *b);
+    } else {
+      int32_t t = alloc_temp(tgt);
+      emit(Op::NsGet, t, kconst_str(tgt.token));
+      cur = {t, true};
+    }
+    int32_t t = alloc_temp(ast);
+    emit(op, t, cur.slot, rhs.slot);
+    if (!b || !b->is_mut) {
+      // Runtime ImmutableError after the step ran (builtins are immutable
+      // root bindings); the step result strands like any throw-abandoned
+      // temp (conservative backstop).
+      emit(Op::ImmutErr, kconst_str(tgt.token));
+      return {t, false};  // unreachable
+    }
+    if (b->is_cell) store_cell(tgt, b->slot, {t, true});
+    else store_into(b->slot, {t, true});
+    return read_binding(tgt, *b);
   }
 
   void compile_for(const peg::Ast& ast) {
@@ -1768,6 +1845,8 @@ class Compiler {
       case "IF"_:
       case "CONDITIONAL"_:
         return compile_if(ast);
+      case "ASSIGNMENT"_:  // expression position: `let r = (w += 2)`
+        return compile_assignment(ast);
       case "TRY"_:
         return compile_try(ast);
       case "MATCH"_:

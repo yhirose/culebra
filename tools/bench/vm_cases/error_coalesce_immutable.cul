@@ -1,0 +1,5 @@
+# `??=` through a nil immutable: the RHS runs (its print lands), then the
+# rebind raises ImmutableError.
+let z = nil
+fn loud() { println("rhs ran") ; 5 }
+z ??= loud()

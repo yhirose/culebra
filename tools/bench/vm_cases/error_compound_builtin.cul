@@ -1,0 +1,4 @@
+# Compound assignment on a builtin global reads it like the interp's
+# root-env binding: the '+' step's TypeError is the exit (the JIT once
+# raised NameError here).
+to_string += 1

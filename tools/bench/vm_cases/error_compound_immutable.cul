@@ -1,0 +1,4 @@
+# Rebinding an immutable name through `+=` — the step runs first, so the
+# error is the rebind's ImmutableError, at the assignment's position.
+let x = 1
+x += 1

@@ -1,0 +1,4 @@
+# A compound step's TypeError beats the immutable-rebind check: the lhs
+# is `let`-bound, but the '+' failure surfaces, not ImmutableError.
+let x = 1
+x += 'a'

@@ -5049,6 +5049,23 @@ struct JIT {
     if (compound) {
       auto slot = lookup_var(name);
       if (!slot) {
+        if (is_builtin_var(name)) {
+          // A builtin global is an ordinary (immutable) root-env binding to
+          // the interp, so compound assignment reads it and runs the step:
+          // the step's TypeError is the common exit, a step that does
+          // produce a value (a reflected `__op__`) dies at the rebind's
+          // ImmutableError, and `??=` keeps the never-nil builtin without
+          // evaluating the RHS. The JIT used to raise NameError here.
+          auto cur = emit_builtin_var_get(name);
+          if (nil_coalesce) return own(cur);
+          auto new_val =
+              emit_arith_step(cur, rval, base_op, /*inplace=*/true);
+          (void)new_val;  // stranded at the throw, like rebindBB's
+          emit_value_release(rval);
+          emit_value_release(cur);
+          emit_immutable_assign_throw(name, ast.line, ast.column);
+          return own(make_nil());
+        }
         // Match interp's eval-time NameError (interpreter.h:5000)
         // so `try { x += 1 } catch e { e.kind }` is symmetric.
         emit_throw_error("NameError",

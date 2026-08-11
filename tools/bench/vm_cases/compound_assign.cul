@@ -1,0 +1,56 @@
+# Compound assignment: += -= *= /= %= **= and ??=.
+mut a = 10
+a += 5
+a -= 3
+a *= 4
+a /= 2
+a %= 7
+println(a)
+mut p = 2
+p **= 5
+println(p)
+mut f = 10.0
+f /= 4
+println(f)
+
+# The assignment expression's value is the stored result.
+mut w = 3
+let r = (w += 2)
+println(r)
+
+# RHS evaluates before the current value loads: f's write through the
+# cell is visible to the read.
+mut x = 10
+let bump = fn () { x = 100; 5 }
+x += bump()
+println(x)
+
+# ??= keeps a non-nil current value without running the RHS, assigns
+# through a nil one.
+mut y = 1
+let g = fn () { println("g ran"); 9 }
+y ??= g()
+println(y)
+mut z = nil
+z ??= g()
+println(z)
+let kept = (z ??= 777)
+println(kept)
+
+# Compound through a captured cell variable.
+mut n = 0
+let inc = fn () { n += 3 }
+inc()
+inc()
+println(n)
+
+# ??= on a builtin global keeps the builtin; the kept value still calls.
+let pr = (println ??= 1)
+pr("kept builtin")
+
+# String append via +=.
+mut s = 'a'
+for i in 1..3 {
+    s += 'b'
+}
+println(s)

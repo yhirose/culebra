@@ -128,6 +128,12 @@ check_same "to_long bad string"       '"abc".to_long()'
 check_same "pow type error"           'let x = 1 ** "a"'
 check_same "pow zero neg exponent"    'let x = 0 ** -1'
 
+# Compound assignment on a builtin global reads the (immutable) root-env
+# binding: the step's TypeError surfaces (the JIT once said NameError),
+# and `??=` keeps the never-nil builtin without error.
+check_same "compound on builtin"      'to_string += 1'
+check_eq   "coalesce on builtin"      '(println ??= 1)("kept")'
+
 # An uncaught top-level `throw` prints `uncaught: <value>`. A thrown string
 # prints raw (it's the message), matching the interp's str_display — the JIT
 # once quoted it (`uncaught: 'boom'`). Non-strings already agreed.
