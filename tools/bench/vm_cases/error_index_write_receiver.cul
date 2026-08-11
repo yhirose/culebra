@@ -1,0 +1,4 @@
+# An index write to a non-indexable receiver: the aligned "expected
+# Array" wording (the JIT used to say "Array or Object" here).
+let s = 'ab'
+s[0] = 1

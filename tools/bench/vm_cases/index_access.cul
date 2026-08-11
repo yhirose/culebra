@@ -1,0 +1,102 @@
+# Point index access — reads (negative wraps, Tuple-free slice shapes),
+# writes (plain / compound / `??=`), chains, and the Object arm reached
+# through `range()` (a plain-dict Object on every backend).
+let a = [10, 20, 30]
+println(a[0])
+println(a[2])
+println(a[-1])
+println(a[-3])
+let i = 1
+println(a[i])
+println(a[i + 1])
+
+# Nested chains read and write through intermediate Index steps.
+let n = [[1, 2], [3, 4]]
+println(n[1][0])
+println(n[0][1] + n[1][1])
+n[1][0] = 9
+n[0][1] += 10
+println(n)
+
+# Plain writes: element mutation is not a rebind (`let` is enough), and
+# the assignment expression reads the stored value.
+let b = [1, 2, 3]
+b[0] = 9
+b[-1 + 3 - 1] = 7
+println(b)
+println((b[0] = 42))
+println((b[1] += 1))
+
+# Compound forms over the existing step ops.
+b[0] -= 2
+b[1] *= 3
+b[2] %= 4
+println(b)
+let f = [2.0]
+f[0] /= 8
+println(f)
+let p = [2]
+p[0] **= 5
+println(p)
+
+# `??=`: nil element takes the RHS, non-nil keeps (RHS never runs).
+mut ran = 0
+fn rhs() { ran += 1; 5 }
+let c = [nil, 1]
+c[0] ??= rhs()
+c[1] ??= rhs()
+println(c)
+println(ran)
+println((c[1] ??= 9))
+
+# Evaluation order: RHS -> receiver -> key (plain and compound); `??=`
+# evaluates receiver and key, then the RHS only on nil.
+mut ord = [0, 0]
+fn recv() { println('recv'); ord }
+fn key() { println('key'); 0 }
+fn val() { println('val'); 3 }
+recv()[key()] = val()
+recv()[key()] += val()
+println(ord)
+
+# The Object arm: `range()` returns a plain-dict Object — subscript
+# reads, writes, compound, and `??=` all flow through it.
+let o = range(0, 2)
+o['k'] = 5
+println(o['k'])
+o['k'] += 2
+println(o['k'])
+o['m'] ??= 9
+println(o['m'])
+o['m'] ??= 100
+println(o['m'])
+
+# Errors are catchable at the region boundary; the write-context reads
+# reject a negative index (array_set's bounds rule, all backends).
+let g = [1, 2, 3]
+println(try { g[9] } catch e { 'oob' })
+println(try { g['x'] } catch e { 'key_type' })
+println(try { g[-1] += 1 } catch e { 'neg_compound' })
+println(try { g[-1] ??= 1 } catch e { 'neg_coalesce' })
+println(try { g[-4] } catch e { 'neg_oob' })
+println(try { 1[0] } catch e { 'not_indexable' })
+println(try { 1[0] = 1 } catch e { 'not_writable' })
+fn get(xs, j) { xs[j] }
+println(try { get(g, 42) } catch e { 'deep_oob' })
+mut hits = 0
+fn boom() { hits += 1; throw 'from_key' }
+println(try { g[boom()] } catch e { e })
+println(hits)
+
+# Heap values through element slots under the RC discipline: overwrite
+# releases the old element, loops churn fresh arrays per iteration.
+mut store = [[0], [0], [0]]
+mut acc = 0
+for k in 0..3 {
+  acc += k + 1
+  store[k] = [acc]
+}
+println(store)
+let deep = [[['x']]]
+deep[0][0][0] = 'y'
+println(deep[0][0][0])

@@ -1,0 +1,3 @@
+# An uncaught out-of-range read: IndexError at the receiver, all lanes.
+let a = [1, 2, 3]
+a[5]

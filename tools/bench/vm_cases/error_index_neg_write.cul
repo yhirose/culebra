@@ -1,0 +1,5 @@
+# The write-context read of a compound index assignment rejects a
+# negative index (array_set's bounds rule) — IndexError, never the
+# step's TypeError on the from-the-end element.
+let a = [1, 'x']
+a[-1] += 1

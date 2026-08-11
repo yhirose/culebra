@@ -96,6 +96,25 @@ enum class Op : uint8_t {
   ArrayNew,    // regs[a] = fresh empty Array (+1)
   ArrayAppend, // append regs[c] into array regs[a] at index b; regs[c] = nil
                // (the array absorbs the +1, mirroring compile_array)
+  Index,       // regs[a] = regs[b][regs[c]] (+1) — the plain point read,
+               // emit_point_index's dispatch: Array/Tuple by Long key (a
+               // negative index counts from the end), Object by value key
+               // (object_get_any — KeyError on a plain-dict miss), else
+               // "expected Array". The key stays register-owned (a retain
+               // feeds the consuming Object helper).
+  IndexWr,     // like Index, but the write-context read of `a[i] op= v`:
+               // the JIT's compound set dispatch — Array-only (a Tuple is
+               // not writable) with array_set's bounds rule (a negative
+               // index is IndexError, never normalized), Object unchanged.
+  IndexCo,     // regs[a] = current value for `a[i] ??= v`: the Array arm
+               // reads like IndexWr; the Object arm passes the nc
+               // receiver-kind rejects, then object_get_for_coalesce —
+               // a plain-dict miss is nil (the write test), not KeyError.
+  IndexSet,    // regs[a][regs[b]] = regs[c]: Array by Long via array_set,
+               // Object via object_set_any (runtime-inserted slots default
+               // mutable, is_init=false), else "expected Array". The value
+               // stays register-owned (a retain feeds the consuming store),
+               // so the assignment expression still reads it afterwards.
   Jump,        // pc = a
   JumpIfFalse, // if !to_bool(regs[a]) pc = b (strict Bool truthiness)
   JumpIfTrue,  // if to_bool(regs[a]) pc = b
@@ -1077,7 +1096,10 @@ class Compiler {
     auto av = culebra::view_assignment(ast);
     if (!av.type_annotation.empty()) reject(ast, "type annotation");
     auto* tgt = culebra::assign_name_target(ast, av);
-    if (!tgt) reject(ast, "non-identifier assignment target");
+    if (!tgt) {
+      if (av.lvalcnt > 1) return compile_assign_index(ast, av);
+      reject(ast, "non-identifier assignment target");
+    }
     if (tgt->token == "_") reject(*tgt, "sink binding");
     if (av.compound) return compile_compound_assign(ast, av, *tgt);
     if (av.is_let || av.is_mut) {  // interp's assign_name: let||mut declares
@@ -1155,14 +1177,7 @@ class Compiler {
       return read_binding(tgt, *b);
     }
 
-    Op op;
-    if (base == "+") op = Op::Add;
-    else if (base == "-") op = Op::Sub;
-    else if (base == "*") op = Op::Mul;
-    else if (base == "/") op = Op::Div;
-    else if (base == "%") op = Op::Mod;
-    else if (base == "**") op = Op::Pow;
-    else reject(ast, std::format("operator '{}='", base));  // `@=`
+    Op op = compound_op(ast, base);
 
     auto rhs = compile_expr(*av.rhs);
     ExprResult cur;
@@ -1185,6 +1200,91 @@ class Compiler {
     if (b->is_cell) store_cell(tgt, b->slot, {t, true});
     else store_into(b->slot, {t, true});
     return read_binding(tgt, *b);
+  }
+
+  // The compound-step op table, shared by the scalar and index forms;
+  // anything else (`@=`) is out of slice.
+  Op compound_op(const peg::Ast& ast, std::string_view base) {
+    if (base == "+") return Op::Add;
+    if (base == "-") return Op::Sub;
+    if (base == "*") return Op::Mul;
+    if (base == "/") return Op::Div;
+    if (base == "%") return Op::Mod;
+    if (base == "**") return Op::Pow;
+    reject(ast, std::format("operator '{}='", base));
+  }
+
+  // Complex index lvalue: `a[i] = v`, `a[i] op= v`, `a[i] ??= v`, and
+  // chains (`n[i][j] = v` — intermediate INDEX / ARGUMENTS postfixes ride
+  // the rvalue fold). The final postfix must be a point `[k]`. Evaluation
+  // order is the probed both-backend one: RHS first (plain/compound), then
+  // the receiver chain, then the key; `??=` evaluates receiver and key,
+  // and the RHS only when the current value is nil. Every op is stamped at
+  // the assignment node — the receiver head, where both backends anchor
+  // every index error (array_set / object_set_any positions included).
+  ExprResult compile_assign_index(const peg::Ast& ast,
+                                  const culebra::AssignmentView& av) {
+    using namespace peg::udl;
+    if (av.is_let || av.is_mut) reject(ast, "declaring a complex target");
+    StampGuard pos(*this, ast);
+    size_t end = av.lvaloff + static_cast<size_t>(av.lvalcnt) - 1;
+    const auto& fin = *ast.nodes[end];
+    if (fin.original_tag == "ARGUMENTS"_) {
+      // Lint rejects `f() = v` pre-eval on every backend; mirror the
+      // JIT's defensive throw (position backfilled by the wrapper there,
+      // explicit here).
+      throw CulebraError("SyntaxError",
+                         "cannot assign to a function call result.",
+                         static_cast<int64_t>(ast.line),
+                         static_cast<int64_t>(ast.column));
+    }
+    if (fin.original_tag != "INDEX"_) reject(fin, "property assignment");
+    if (fin.tag == "RANGE"_ || fin.tag == "RANGE_OPERATOR"_)
+      reject(fin, "slice index");
+
+    auto chain_prefix = [&] {
+      auto recv = compile_expr(*ast.nodes[av.lvaloff]);
+      for (size_t i = av.lvaloff + 1; i < end; ++i) {
+        const auto& post = *ast.nodes[i];
+        if (post.original_tag == "ARGUMENTS"_)
+          recv = compile_call_step(ast, post, recv);
+        else if (post.original_tag == "INDEX"_)
+          recv = compile_index_read(ast, post, recv, Op::Index);
+        else
+          reject(post, "call chain / method call");
+      }
+      return recv;
+    };
+
+    if (av.compound && av.op_base == "??") {
+      auto recv = chain_prefix();
+      auto key = compile_expr(fin);
+      int32_t cur = alloc_temp(ast);
+      emit(Op::IndexCo, cur, recv.slot, key.slot);
+      size_t skip = emit(Op::JumpIfNotNil, cur);
+      auto rhs = compile_expr(*av.rhs);
+      emit(Op::IndexSet, recv.slot, key.slot, rhs.slot);
+      store_into(cur, rhs);
+      patch_to_here(skip);
+      return {cur, true};
+    }
+    if (av.compound) {
+      Op op = compound_op(ast, av.op_base);
+      auto rhs = compile_expr(*av.rhs);
+      auto recv = chain_prefix();
+      auto key = compile_expr(fin);
+      int32_t cur = alloc_temp(ast);
+      emit(Op::IndexWr, cur, recv.slot, key.slot);
+      int32_t t = alloc_temp(ast);
+      emit(op, t, cur, rhs.slot);
+      emit(Op::IndexSet, recv.slot, key.slot, t);
+      return {t, true};
+    }
+    auto rhs = compile_expr(*av.rhs);
+    auto recv = chain_prefix();
+    auto key = compile_expr(fin);
+    emit(Op::IndexSet, recv.slot, key.slot, rhs.slot);
+    return rhs;
   }
 
   void compile_for(const peg::Ast& ast) {
@@ -1309,15 +1409,33 @@ class Compiler {
            a0.tag != "KWARG_SPLAT"_ && a0.original_tag != "KWARG_SPLAT"_;
   }
 
-  // General call: callee expression, positional args in a contiguous run of
-  // owned temps (the JitFn ABI's arg slab), one Call op. Evaluation order is
-  // callee first, then args left to right — both backends' order.
+  // Postfix chain: `f(x)`, `a[i]`, and their compositions (`n[i][j]`,
+  // `f()[k]`, `a[i](x)`), folded left to right over one rolling result —
+  // the compile_assign_complex receiver walk, minus the DOT forms (method
+  // calls and property access stay out of slice).
   ExprResult compile_call(const peg::Ast& ast) {
     using namespace peg::udl;
-    if (ast.nodes.size() != 2 || ast.nodes[1]->original_tag != "ARGUMENTS"_)
-      reject(ast, "call chain / method call");
-    auto callee = compile_expr(*ast.nodes[0]);
-    const auto& args = *ast.nodes[1];
+    auto res = compile_expr(*ast.nodes[0]);
+    for (size_t i = 1; i < ast.nodes.size(); ++i) {
+      const auto& post = *ast.nodes[i];
+      if (post.original_tag == "ARGUMENTS"_)
+        res = compile_call_step(ast, post, res);
+      else if (post.original_tag == "INDEX"_)
+        res = compile_index_read(ast, post, res, Op::Index);
+      else if (post.original_tag == "SAFE_INDEX"_)
+        reject(post, "safe index");
+      else
+        reject(post, "call chain / method call");
+    }
+    return res;
+  }
+
+  // One argument-list postfix: positional args in a contiguous run of
+  // owned temps (the JitFn ABI's arg slab), one Call op. Evaluation order
+  // is callee first, then args left to right — both backends' order.
+  ExprResult compile_call_step(const peg::Ast& ast, const peg::Ast& args,
+                               ExprResult callee) {
+    using namespace peg::udl;
     for (const auto& a : args.nodes) {
       if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_)
         reject(*a, "keyword argument");
@@ -1332,6 +1450,25 @@ class Compiler {
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(ast);
     emit(Op::Call, t, callee.slot, base, argc);
+    return {t, true};
+  }
+
+  // One `[k]` postfix applied to `recv`. `op` picks the read flavor: Index
+  // for an rvalue read, IndexWr/IndexCo for compile_assign_index's
+  // write-context reads. A literal range subscript is a slice — out of
+  // slice (and a stored Range value cannot exist in-slice, so the runtime
+  // is-range dispatch has nothing to hit; `range(0, n)` is a plain Object,
+  // not a Range, on every backend). The op is stamped at the enclosing
+  // node `at`, where both backends anchor every index error.
+  ExprResult compile_index_read(const peg::Ast& at, const peg::Ast& post,
+                                ExprResult recv, Op op) {
+    using namespace peg::udl;
+    if (post.tag == "RANGE"_ || post.tag == "RANGE_OPERATOR"_)
+      reject(post, "slice index");
+    auto key = compile_expr(post);
+    StampGuard pos(*this, at);
+    int32_t t = alloc_temp(at);
+    emit(op, t, recv.slot, key.slot);
     return {t, true};
   }
 
@@ -1982,6 +2119,7 @@ inline std::string dump(const Chunk& c) {
       "BitXor",    "Shl",       "Shr",        "BitNot",
       "Eq",        "Ne",        "Lt",
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
+      "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfTag",
       "MakeClosure", "Call",    "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
@@ -2453,6 +2591,141 @@ struct Exec {
           regs[in.c] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
+        case Op::Index:
+        case Op::IndexWr: {
+          const JitValue& recv = regs[in.b];
+          const JitValue& key = regs[in.c];
+          auto [line, col] = chunk_pos_at(c, pc);
+          bool wr = in.op == Op::IndexWr;
+          if (recv.tag == TAG_ARRAY || (!wr && recv.tag == TAG_TUPLE)) {
+            if (key.tag != TAG_LONG)
+              culebra_runtime_type_error_typed(
+                  line, col, "Long", static_cast<int8_t>(key.tag));
+            // Write-context read: array_set's bounds rule (guard_write_index).
+            if (wr && key.data < 0)
+              culebra_runtime_throw_error("IndexError", "index out of range",
+                                          line, col);
+            int8_t t;
+            int64_t d;
+            culebra_runtime_array_get(reinterpret_cast<JitArray*>(recv.data),
+                                      key.data, &t, &d, line, col);
+            culebra_runtime_value_retain(t, d);  // array_get borrows the slot
+            regs[in.a] = JitValue{t, d};
+          } else if (recv.tag == TAG_OBJECT) {
+            // object_get_any consumes a non-String key on every path;
+            // retain so the register keeps its owner +1. The result is +1.
+            culebra_runtime_value_retain(static_cast<int8_t>(key.tag),
+                                         key.data);
+            int8_t t;
+            int64_t d;
+            culebra_runtime_object_get_any(
+                reinterpret_cast<JitObject*>(recv.data),
+                static_cast<int8_t>(key.tag), key.data, &t, &d, line, col,
+                /*own_receiver=*/false);
+            regs[in.a] = JitValue{t, d};
+          } else {
+            culebra_runtime_type_error_typed(
+                line, col, "Array", static_cast<int8_t>(recv.tag));
+          }
+          ++pc;
+          break;
+        }
+        case Op::IndexCo: {
+          const JitValue& recv = regs[in.b];
+          const JitValue& key = regs[in.c];
+          auto [line, col] = chunk_pos_at(c, pc);
+          if (recv.tag == TAG_ARRAY) {
+            if (key.tag != TAG_LONG)
+              culebra_runtime_type_error_typed(
+                  line, col, "Long", static_cast<int8_t>(key.tag));
+            if (key.data < 0)
+              culebra_runtime_throw_error("IndexError", "index out of range",
+                                          line, col);
+            int8_t t;
+            int64_t d;
+            culebra_runtime_array_get(reinterpret_cast<JitArray*>(recv.data),
+                                      key.data, &t, &d, line, col);
+            culebra_runtime_value_retain(t, d);
+            regs[in.a] = JitValue{t, d};
+          } else if (recv.tag == TAG_OBJECT) {
+            // The nc receiver-kind rejects fire ahead of the read, the
+            // JIT's nc dispatch — none of the three kinds is constructible
+            // in the slice, but the mirror keeps the arm 1:1.
+            switch (culebra_runtime_nc_receiver_kind(recv.data)) {
+              case 1:
+                culebra_runtime_throw_error(
+                    "TypeError",
+                    "`?" "?=` is not supported on a FixedArray element",
+                    line, col);
+                break;
+              case 2:
+                culebra_runtime_throw_error(
+                    "ImmutableError", "Shared values are immutable", line,
+                    col);
+                break;
+              case 3:
+                culebra_runtime_throw_error(
+                    "TypeError",
+                    "cannot assign to a SharedBuffer element directly; "
+                    "set fields via buf[i].field = value",
+                    line, col);
+                break;
+              default:
+                break;
+            }
+            culebra_runtime_value_retain(static_cast<int8_t>(key.tag),
+                                         key.data);
+            int8_t t;
+            int64_t d;
+            // A plain-dict miss leaves nil (found=false) — exactly the
+            // write test the JumpIfNotNil that follows performs.
+            culebra_runtime_object_get_for_coalesce(
+                reinterpret_cast<JitObject*>(recv.data),
+                static_cast<int8_t>(key.tag), key.data, &t, &d, line, col);
+            regs[in.a] = JitValue{t, d};
+          } else {
+            culebra_runtime_type_error_typed(
+                line, col, "Array", static_cast<int8_t>(recv.tag));
+          }
+          ++pc;
+          break;
+        }
+        case Op::IndexSet: {
+          const JitValue& recv = regs[in.a];
+          const JitValue& key = regs[in.b];
+          const JitValue& val = regs[in.c];
+          auto [line, col] = chunk_pos_at(c, pc);
+          if (recv.tag == TAG_ARRAY) {
+            if (key.tag != TAG_LONG)
+              culebra_runtime_type_error_typed(
+                  line, col, "Long", static_cast<int8_t>(key.tag));
+            // The store consumes a +1; the value register keeps its own
+            // (the assignment expression reads it afterwards). On the OOB
+            // throw the minted +1 strands to the GC backstop, like the
+            // JIT's rval.
+            culebra_runtime_value_retain(static_cast<int8_t>(val.tag),
+                                         val.data);
+            culebra_runtime_array_set(reinterpret_cast<JitArray*>(recv.data),
+                                      key.data, static_cast<int8_t>(val.tag),
+                                      val.data, line, col);
+          } else if (recv.tag == TAG_OBJECT) {
+            // object_set_any consumes the key and the value on every path.
+            culebra_runtime_value_retain(static_cast<int8_t>(key.tag),
+                                         key.data);
+            culebra_runtime_value_retain(static_cast<int8_t>(val.tag),
+                                         val.data);
+            culebra_runtime_object_set_any(
+                reinterpret_cast<JitObject*>(recv.data),
+                static_cast<int8_t>(key.tag), key.data, /*mut=*/true,
+                static_cast<int8_t>(val.tag), val.data, line, col,
+                /*is_init=*/false);
+          } else {
+            culebra_runtime_type_error_typed(
+                line, col, "Array", static_cast<int8_t>(recv.tag));
+          }
+          ++pc;
+          break;
+        }
         case Op::Jump:
           pc = static_cast<size_t>(in.a);
           break;
@@ -3084,6 +3357,198 @@ struct Lowering {
                   b.getInt8Ty(), i64Ty),
               {arr, b.getInt64(in.b), j.extract_tag(v), j.extract_data(v)});
           b.CreateStore(j.make_nil(), slots[in.c]);
+          break;
+        }
+        case Op::Index: {
+          // emit_point_index consumes the key on its returning paths and
+          // releases both operands on its throw edges; the registers must
+          // stay slot-owned (the handler ladder is the sole slot releaser),
+          // so retain both up front — the emitter's releases cancel the
+          // retains, and the receiver's surviving +1 is dropped on the
+          // normal path. The result is +1.
+          auto recv = load_slot(in.b);
+          auto key = load_slot(in.c);
+          j.emit_value_retain(recv);
+          j.emit_value_retain(key);
+          auto res = j.emit_point_index(recv, key);
+          j.emit_value_release(recv);
+          b.CreateStore(res, slots[in.a]);
+          break;
+        }
+        case Op::IndexWr:
+        case Op::IndexCo: {
+          // The write-context reads — the read halves of the JIT's
+          // compound (IndexWr) and `??=` (IndexCo) index dispatches, with
+          // the register-borrow contract: nothing is consumed from a slot,
+          // the helpers' consuming key contract is fed by a retain, and
+          // the +1 result lands in the destination slot.
+          auto recv = load_slot(in.b);
+          auto key = load_slot(in.c);
+          auto tag = j.extract_tag(recv);
+          auto arrBB = BasicBlock::Create(j.ctx_, "iwr.arr", fn);
+          auto chkObjBB = BasicBlock::Create(j.ctx_, "iwr.chk_obj", fn);
+          auto objBB = BasicBlock::Create(j.ctx_, "iwr.obj", fn);
+          auto errBB = BasicBlock::Create(j.ctx_, "iwr.err", fn);
+          auto mergeBB = BasicBlock::Create(j.ctx_, "iwr.merge", fn);
+          IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+          auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "iwr.tag");
+          auto outData = eb.CreateAlloca(i64Ty, nullptr, "iwr.data");
+          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_ARRAY)), arrBB,
+                         chkObjBB);
+          b.SetInsertPoint(chkObjBB);
+          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), objBB,
+                         errBB);
+          b.SetInsertPoint(errBB);
+          j.emit_type_error_typed("Array", tag);
+          b.CreateUnreachable();
+
+          // Array arm: array_set's bounds rule (a negative index is
+          // IndexError — guard_write_index), then array_get; the borrowed
+          // element is retained for the register.
+          b.SetInsertPoint(arrBB);
+          {
+            auto idx = j.value_to_long(key);
+            auto negBB = BasicBlock::Create(j.ctx_, "iwr.neg", fn);
+            auto okBB = BasicBlock::Create(j.ctx_, "iwr.ok", fn);
+            b.CreateCondBr(b.CreateICmpSLT(idx, b.getInt64(0)), negBB, okBB);
+            b.SetInsertPoint(negBB);
+            j.emit_throw_error("IndexError", "index out of range",
+                               j.current_line_, j.current_column_);
+            b.CreateUnreachable();
+            b.SetInsertPoint(okBB);
+            auto arrPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+            j.emit_call(
+                j.module_->getOrInsertFunction(rt::array_get, b.getVoidTy(),
+                                               ptrTy, i64Ty, ptrTy, ptrTy,
+                                               i64Ty, i64Ty),
+                {arrPtr, idx, outTag, outData, j.current_line_val(),
+                 j.current_column_val()});
+            j.emit_value_retain(
+                j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
+                             b.CreateLoad(i64Ty, outData)));
+            b.CreateBr(mergeBB);
+          }
+
+          // Object arm: IndexCo passes the nc receiver-kind rejects (none
+          // constructible in the slice; mirrored 1:1) and reads through
+          // object_get_for_coalesce (a plain-dict miss is nil); IndexWr
+          // reads through object_get_any (KeyError on a miss). Both
+          // consume the key — the retain keeps the register the owner.
+          b.SetInsertPoint(objBB);
+          {
+            auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+            if (in.op == Op::IndexCo) {
+              auto kind = j.emit_call(
+                  j.module_->getOrInsertFunction(rt::nc_receiver_kind,
+                                                 b.getInt8Ty(), i64Ty),
+                  {j.extract_data(recv)}, "iwr.kind");
+              auto favBB = BasicBlock::Create(j.ctx_, "iwr.faverr", fn);
+              auto svBB = BasicBlock::Create(j.ctx_, "iwr.sverr", fn);
+              auto sbBB = BasicBlock::Create(j.ctx_, "iwr.sberr", fn);
+              auto plainBB = BasicBlock::Create(j.ctx_, "iwr.plain", fn);
+              auto sw = b.CreateSwitch(kind, plainBB, 3);
+              sw->addCase(b.getInt8(1), favBB);
+              sw->addCase(b.getInt8(2), svBB);
+              sw->addCase(b.getInt8(3), sbBB);
+              b.SetInsertPoint(favBB);
+              j.emit_throw_error(
+                  "TypeError", "`?" "?=` is not supported on a FixedArray element",
+                  j.current_line_, j.current_column_);
+              b.CreateUnreachable();
+              b.SetInsertPoint(svBB);
+              j.emit_throw_error("ImmutableError",
+                                 "Shared values are immutable",
+                                 j.current_line_, j.current_column_);
+              b.CreateUnreachable();
+              b.SetInsertPoint(sbBB);
+              j.emit_throw_error(
+                  "TypeError",
+                  "cannot assign to a SharedBuffer element directly; "
+                  "set fields via buf[i].field = value",
+                  j.current_line_, j.current_column_);
+              b.CreateUnreachable();
+              b.SetInsertPoint(plainBB);
+              j.emit_value_retain(key);
+              j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      rt::object_get_for_coalesce, b.getInt1Ty(), ptrTy,
+                      b.getInt8Ty(), i64Ty, ptrTy, ptrTy, i64Ty, i64Ty),
+                  {objPtr, j.extract_tag(key), j.extract_data(key), outTag,
+                   outData, j.current_line_val(), j.current_column_val()});
+            } else {
+              j.emit_value_retain(key);
+              j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      rt::object_get_any, b.getVoidTy(), ptrTy,
+                      b.getInt8Ty(), i64Ty, ptrTy, ptrTy, i64Ty, i64Ty,
+                      b.getInt1Ty()),
+                  {objPtr, j.extract_tag(key), j.extract_data(key), outTag,
+                   outData, j.current_line_val(), j.current_column_val(),
+                   b.getInt1(false)});
+            }
+            b.CreateBr(mergeBB);
+          }
+
+          b.SetInsertPoint(mergeBB);
+          b.CreateStore(j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
+                                     b.CreateLoad(i64Ty, outData)),
+                        slots[in.a]);
+          break;
+        }
+        case Op::IndexSet: {
+          auto recv = load_slot(in.a);
+          auto key = load_slot(in.b);
+          auto val = load_slot(in.c);
+          auto tag = j.extract_tag(recv);
+          auto arrBB = BasicBlock::Create(j.ctx_, "iset.arr", fn);
+          auto chkObjBB = BasicBlock::Create(j.ctx_, "iset.chk_obj", fn);
+          auto objBB = BasicBlock::Create(j.ctx_, "iset.obj", fn);
+          auto errBB = BasicBlock::Create(j.ctx_, "iset.err", fn);
+          auto mergeBB = BasicBlock::Create(j.ctx_, "iset.merge", fn);
+          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_ARRAY)), arrBB,
+                         chkObjBB);
+          b.SetInsertPoint(chkObjBB);
+          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), objBB,
+                         errBB);
+          b.SetInsertPoint(errBB);
+          j.emit_type_error_typed("Array", tag);
+          b.CreateUnreachable();
+
+          // The stores consume a +1 of the value (and, for the Object arm,
+          // of the key); the registers keep their own — the assignment
+          // expression still reads the value slot afterwards. On array_set's
+          // OOB throw the minted +1 strands to the GC backstop, like the
+          // JIT's rval.
+          b.SetInsertPoint(arrBB);
+          {
+            auto idx = j.value_to_long(key);
+            auto arrPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+            j.emit_value_retain(val);
+            j.emit_call(
+                j.module_->getOrInsertFunction(rt::array_set, b.getVoidTy(),
+                                               ptrTy, i64Ty, b.getInt8Ty(),
+                                               i64Ty, i64Ty, i64Ty),
+                {arrPtr, idx, j.extract_tag(val), j.extract_data(val),
+                 j.current_line_val(), j.current_column_val()});
+            b.CreateBr(mergeBB);
+          }
+          b.SetInsertPoint(objBB);
+          {
+            auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+            j.emit_value_retain(key);
+            j.emit_value_retain(val);
+            j.emit_call(
+                j.module_->getOrInsertFunction(
+                    rt::object_set_any, b.getVoidTy(), ptrTy,
+                    b.getInt8Ty(), i64Ty, b.getInt1Ty(), b.getInt8Ty(),
+                    i64Ty, i64Ty, i64Ty, b.getInt1Ty()),
+                {objPtr, j.extract_tag(key), j.extract_data(key),
+                 b.getInt1(true), j.extract_tag(val), j.extract_data(val),
+                 j.current_line_val(), j.current_column_val(),
+                 b.getInt1(false)});
+            b.CreateBr(mergeBB);
+          }
+          b.SetInsertPoint(mergeBB);
           break;
         }
         case Op::Jump:

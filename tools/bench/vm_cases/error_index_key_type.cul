@@ -1,0 +1,3 @@
+# A non-Long key on an Array receiver: typed TypeError at the receiver.
+let a = [1, 2, 3]
+a[1.5]
