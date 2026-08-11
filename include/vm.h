@@ -1752,7 +1752,7 @@ class Compiler {
       // local (the compile_try catch-binding shape).
       int32_t bound = -1;
       bool bound_cell = false;
-      if (const peg::Ast* nn = pattern_binding_node(pat)) {
+      if (const peg::Ast* nn = culebra::find_pattern_binding(pat)) {
         auto name = std::string(nn->token);
         bound_cell = info_->captured_locals.contains(name);
         bound = alloc_slot(*nn, name);
@@ -1802,13 +1802,10 @@ class Compiler {
                             std::vector<size_t>& fail) {
     using namespace peg::udl;
     // A PATTERN node with children is an or-pattern: alternatives tried in
-    // order, first match wins. A binding alternative would bind on some
-    // paths only — the JIT/interp allow it (the bind simply happens on the
-    // alternative that matched), but the two-phase test/bind split here
-    // cannot express it, so it stays outside the slice.
+    // order, first match wins. An alternative never binds — parse rejects
+    // that shape (`reject_or_pattern_binding`), which is what lets the tests
+    // below stand alone from the binding pass.
     if (pat.tag == "PATTERN"_ && !pat.nodes.empty()) {
-      if (pattern_binding_node(pat))
-        reject(pat, "binding in an or-pattern");
       std::vector<size_t> ok_jumps;
       for (size_t i = 0; i < pat.nodes.size(); i++) {
         std::vector<size_t> alt_fail;
@@ -1896,24 +1893,6 @@ class Compiler {
       default:
         reject(pat, std::format("pattern '{}'", pat.name));
     }
-  }
-
-  // The single name a leaf pattern binds (nullptr when none): the
-  // IDENTIFIER itself, or a TYPED_IDENT's name child. `_` sinks bind
-  // nothing. For an or-PATTERN, any binding alternative — used both to
-  // reject or-bindings and to find the arm's binding.
-  const peg::Ast* pattern_binding_node(const peg::Ast& pat) const {
-    using namespace peg::udl;
-    if (pat.tag == "PATTERN"_) {
-      for (const auto& sub : pat.nodes)
-        if (auto* n = pattern_binding_node(*sub)) return n;
-      return nullptr;
-    }
-    const peg::Ast* nn = nullptr;
-    if (pat.tag == "IDENTIFIER"_) nn = &pat;
-    else if (pat.tag == "TYPED_IDENT"_) nn = pat.nodes[0].get();
-    if (nn && !is_sink_name(std::string(nn->token))) return nn;
-    return nullptr;
   }
 
   // Type-annotation name(s) → accepted tag set over the shared

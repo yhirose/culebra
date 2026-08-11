@@ -1027,6 +1027,57 @@ inline std::optional<ArgListError> check_arg_list(const peg::Ast& args_ast) {
 // `_` is the non-binding sink in patterns and parameters.
 inline bool is_sink_name(std::string_view s) { return s == "_"; }
 
+// The first name a pattern subtree binds, or nullptr. Bindings are non-sink
+// IDENTIFIER / TYPED_IDENT / `...rest` leaves, wherever they sit; an object
+// pattern's key names a field rather than a binding, so only its value
+// sub-pattern is walked.
+inline const peg::Ast* find_pattern_binding(const peg::Ast& pat) {
+  using namespace peg::udl;
+  switch (pat.tag) {
+    case "IDENTIFIER"_:
+      return is_sink_name(pat.token) ? nullptr : &pat;
+    case "TYPED_IDENT"_:
+    case "REST_PATTERN"_:
+      return is_sink_name(pat.nodes[0]->token) ? nullptr : pat.nodes[0].get();
+    case "OBJECT_PAT_ENTRY"_:  // `key: PATTERN` — the key is not a binding
+      return find_pattern_binding(*pat.nodes[1]);
+    default:
+      break;
+  }
+  for (const auto& n : pat.nodes) {
+    if (auto* hit = find_pattern_binding(*n)) return hit;
+  }
+  return nullptr;
+}
+
+// First binding inside an or-pattern (a PATTERN node keeps its children only
+// when it has two or more alternatives), or nullptr.
+inline const peg::Ast* find_or_pattern_binding(const peg::Ast& ast) {
+  using namespace peg::udl;
+  if (ast.tag == "PATTERN"_ && !ast.nodes.empty()) {
+    if (auto* b = find_pattern_binding(ast)) return b;
+  }
+  for (const auto& n : ast.nodes) {
+    if (auto* hit = find_or_pattern_binding(*n)) return hit;
+  }
+  return nullptr;
+}
+
+// An or-pattern alternative cannot bind: the name would exist only on the
+// paths whose alternative matched, so every consumer has to invent a rule for
+// the others (the interp leaves it undeclared, a two-phase test/bind split
+// cannot express it at all). Rejected at parse time on every backend.
+inline void reject_or_pattern_binding(const peg::Ast& ast) {
+  if (auto* b = find_or_pattern_binding(ast)) {
+    throw CulebraError(
+        "SyntaxError",
+        std::format("or-pattern alternatives cannot bind a name ('{}') — "
+                    "write one pattern (or `match` arm) per alternative",
+                    b->token),
+        static_cast<long>(b->line), static_cast<long>(b->column));
+  }
+}
+
 inline bool is_kw_only_sep(const peg::Ast& node) {
   using namespace peg::udl;
   return node.tag == "KW_ONLY_SEP"_;

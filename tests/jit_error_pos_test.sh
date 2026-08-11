@@ -323,5 +323,20 @@ check_same "sized array spread" 'let a = [9, ...[8]](3)'
 # must publish the literal's position (the interp's eval boundary anchor).
 check_same "set literal unhashable" 'let s = {[1], 2}'
 
+# A binding inside an or-pattern is a parse-time SyntaxError anchored at the
+# binding name, in every pattern position (match arm, destructure, for
+# binding, parameter) and at any nesting depth.
+check_same "or-bind match arm"  'match 1 { a | _ => a, _ => 0 }'
+check_same "or-bind ctor arm"   'enum R { Ok(T), Err(E) }
+match R.Ok(1) { Ok(x) | Err(x) => x, _ => 0 }'
+check_same "or-bind destructure" 'let [5 | a] = [7]'
+check_same "or-bind nested"     'let {k: [_, b | 2]} = {k: [1, 2]}'
+check_same "or-bind typed"      'match 1 { x: Long | _ => 0, _ => 1 }'
+check_same "or-bind for"        'for [a | _] in [[1]] { a }'
+check_same "or-bind param"      'fn f([a | _]) { a }'
+# TYPE_ANNOTATION closes at the first non-Type alternative, so this parses as
+# `((n: Long | Float) | 42)` — an or-pattern binding, not a wider Union.
+check_same "or-bind type-then-literal" "match 1 { n: Long | Float | 42 => n, _ => 0 }"
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

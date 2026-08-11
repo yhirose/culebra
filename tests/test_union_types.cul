@@ -81,18 +81,21 @@ assert_eq(classify("hi"), "string")
 assert_eq(classify(nil), "other")
 
 // --- PATTERN outer `|` vs TYPE_ANNOTATION inner `|` ---
-// TYPE_ANNOTATION closes at the first non-Type alt; lowercase
-// identifiers and literals fall back to PATTERN outer alternation.
+// TYPE_ANNOTATION closes at the first non-Type alt, so `n: Long | Float | 42`
+// parses as `((n: Long | Float) | 42)` — an or-pattern whose first
+// alternative binds, which is a parse-time SyntaxError (a name bound on one
+// alternative only). tests/jit_error_pos_test.sh covers that diagnostic; a
+// Union type pattern with no outer alternation is the form that runs.
 fn boundary(v) {
   match v {
-    // Parses as ((n: Long | Float) | 42 | 'zero').
-    n: Long | Float | 42 | 'zero' => "matched",
+    n: Long | Float => "matched ({n})",
+    42 | 'zero' => "matched",
     _ => "other",
   }
 }
-assert_eq(boundary(1), "matched")
-assert_eq(boundary(1.5), "matched")
-assert_eq(boundary(42), "matched")
+assert_eq(boundary(1), "matched (1)")
+assert_eq(boundary(1.5), "matched (1.5)")
+assert_eq(boundary(42), "matched (42)")
 assert_eq(boundary('zero'), "matched")
 assert_eq(boundary('other'), "other")
 assert_eq(boundary(nil), "other")

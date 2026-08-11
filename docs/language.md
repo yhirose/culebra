@@ -2686,7 +2686,7 @@ fall-through, or an exception).
 | `name`            | Any value, binds it to `name`            |
 | `_`               | Any value, no binding                    |
 | `name: Type`      | Value whose type is `Type`; binds        |
-| `p1 \| p2 \| p3`  | Any of the sub-patterns matches          |
+| `p1 \| p2 \| p3`  | Any of the sub-patterns matches; alternatives cannot bind |
 | `[p1, p2, ...]`   | `Array` of exactly the same length       |
 | `[p1, ...rest]`   | `Array` of ≥ `n−1` elements; `rest` is a fresh `Array` of the remainder |
 | `[a, ...m, z]`    | Rest can be in the middle; pre/post positions match fixed elements |
@@ -2705,9 +2705,10 @@ fall-through, or an exception).
   depth-first.
 * A binding `name` introduced by the pattern is visible in the guard
   and the body.
-* `|` (or) sub-patterns with inconsistent bindings have undefined
-  bindings in the non-matching branches; put only literals (or
-  identical binding structures) inside `|` for predictable behavior.
+* `|` (or) sub-patterns cannot bind: a name inside an alternative would
+  exist only on the paths that took it, so any binding there is a
+  `SyntaxError` (`a | _`, `5 | a`, `Ok(x) | Err(x)`). Write literals and
+  `_` inside `|`, and one arm (or one pattern) per binding shape.
 * `Array` patterns require an exact length unless a `...rest` element
   is present; objects do not require exact key sets — extra keys are
   ignored.
