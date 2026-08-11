@@ -2171,6 +2171,8 @@ prod.join()
 | `tx.drop()` / `rx.drop()` | both | release this endpoint |
 | `rx.recv()` | rx | block for one value; returns `nil` once the channel is closed and drained |
 | `for v in rx { ... }` | rx | drain until closed (the clean end-of-stream form) |
+| `rx.try_recv()` | rx | take one value without blocking; answers `Value(v)`, `Empty`, or `Closed` |
+| `rx.drain(max = nil)` | rx | take what is queued right now, at most `max` of it, without blocking (an Array, possibly empty) |
 
 **Auto-close is the deadlock-safety net.** The active senders are counted;
 when the **last `tx` is dropped** (a producer isolate finishing, normally or by
@@ -2180,11 +2182,87 @@ producer. Note the multi-producer trap: every `tx` (including the parent's
 original) must be dropped for the channel to close — drop the ones you don't
 keep.
 
+**Cloned endpoints compete; they don't mirror.** Each value goes to exactly
+one endpoint — whichever `recv` reaches it first — so cloning `rx` spreads a
+stream across consumers rather than copying it to each. Clone `rx` when one
+consumer can't keep up: several long-running consumers on a shared queue keep
+a producer from stalling on a full buffer, and absorb bursts that a single
+consumer would serialize. For a copy per consumer, send to a channel per
+consumer instead.
+
 **`Channel.new(0)` is a rendezvous channel** (capacity 0): `send` does not return
 until a receiver takes the value — a synchronous hand-off with no buffering.
 Useful for backpressure (a producer can't run ahead of its consumer). Within a
 single isolate it deadlocks (the send has no one to hand to), so use it across
 isolates. Capacity must be `>= 0`.
+
+#### Receiving without blocking — `rx.try_recv` and `rx.drain`
+
+`recv()` and `for v in rx` block, which is right for a consumer whose only job
+is the channel. A caller that must keep making progress on its own schedule —
+a `Canvas.run` frame callback, a TUI key loop, any timed loop — cannot afford
+to stop there: a blocked frame is a dropped frame. `try_recv()` always returns
+immediately.
+
+It answers with one of three variants, the shape of an `enum`:
+
+```culebra
+# doctest: skip
+enum ChannelResult { Value(Any), Empty, Closed }
+```
+
+`Value(v)` carries a value that was queued, `Empty` means nothing is queued
+*right now* (the channel is still open, so ask again later), and `Closed` means
+nothing will ever arrive again (every `tx` is gone and the queue is drained).
+
+```culebra
+# doctest: skip
+match rx.try_recv() {
+  Value(ev) => world.apply(ev),
+  Empty()   => nil,        # nothing this frame — carry on
+  Closed()  => running = false,
+}
+```
+
+Note the `()` on `Empty()` and `Closed()`. A bare `Empty` in a match arm is an
+identifier pattern, which matches *anything* and binds it — the arms below it
+would never run. `x: Empty` works too, if you prefer to name what you matched.
+
+Three variants rather than a `nil` return, because `nil` would have to mean
+three things at once here: `recv()` already returns `nil` both for a genuine
+`nil` payload and for end-of-stream, and a non-blocking read adds "nothing yet"
+on top. A loop written `while (v = rx.try_recv()) != nil` would then stop early
+the first time a real `nil` came through. The variant makes each case
+answerable.
+
+`drain()` takes the whole queue at once, which is usually what a frame wants:
+
+```culebra
+# doctest: skip
+for ev in rx.drain() { world.apply(ev) }
+```
+
+It returns an Array — empty when nothing is queued, and empty on a closed
+channel too, so pair it with `try_recv()` when you need to notice the close.
+What it hands back is what the queue held at the instant it was called, taken
+in one step. That matters more than it sounds: popping one value at a time
+frees a slot, which wakes a blocked sender, which refills before the next pop
+looks — so a `try_recv()` loop over a capacity-4 channel with a busy producer
+has been measured handing back several hundred values. `drain()` cannot run
+away like that, and a `try_recv()` loop you write yourself can.
+
+Pass `max` to bound the batch further, when the queue itself may be long:
+
+```culebra
+# doctest: skip
+for ev in rx.drain(16) { world.apply(ev) }   # at most 16 this frame
+```
+
+The rest stays queued for the next call. `max` must be a `Long` (a count) or
+`nil` for no limit; a negative value raises `ValueError`.
+
+Neither method is available on a `Channel.fan_in` receiver yet; both are only
+on a plain `rx`.
 
 #### `Channel.fan_in(sources: [rx]) -> rx`
 

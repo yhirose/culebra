@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <deque>
 #include <exception>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -696,6 +697,132 @@ inline Value channel_recv(int64_t id) {
   return node ? chan_take(*node) : Value();
 }
 
+// The three outcomes of a non-blocking pop. Blocking recv collapses the last
+// two into nullopt (it only cares "a value, or never one"); a caller that
+// can't block must tell "nothing yet" from "nothing ever" apart.
+enum class ChanTryPopStatus { Value, Empty, Closed };
+struct ChanTryPopResult {
+  ChanTryPopStatus status;
+  std::optional<sendable::SendNode> node;  // set iff status == Value
+};
+
+// The variant name each outcome answers with — one table, so the backends
+// can't drift on the spelling.
+inline std::string_view chan_status_variant(ChanTryPopStatus s) {
+  switch (s) {
+    case ChanTryPopStatus::Value: return "Value";
+    case ChanTryPopStatus::Empty: return "Empty";
+    case ChanTryPopStatus::Closed: return "Closed";
+  }
+  return "Closed";
+}
+
+// chan_pop_blocking's non-blocking twin: same lock / pop / notify, no wait.
+// Both backends call this one function, so neither can observe a different
+// queue-vs-close race than the other.
+inline ChanTryPopResult chan_pop_nonblocking(int64_t id) {
+  auto core = chan_lookup(id);
+  if (!core) return {ChanTryPopStatus::Closed, std::nullopt};
+  std::unique_lock<std::mutex> lk(core->m);
+  if (!core->q.empty()) {
+    sendable::SendNode node = std::move(core->q.front());
+    core->q.pop_front();
+    lk.unlock();
+    core->cv.notify_all();  // a sender waiting for room (bounded / rendezvous)
+    return {ChanTryPopStatus::Value, std::move(node)};
+  }
+  return {core->closed ? ChanTryPopStatus::Closed : ChanTryPopStatus::Empty,
+          std::nullopt};
+}
+
+// Take up to `max` of what is queued at this instant, in one lock. Popping
+// one at a time races the producer instead: each pop wakes a blocked sender,
+// which refills before the loop re-checks, so a cap-4 channel can hand back
+// hundreds of values.
+inline std::deque<sendable::SendNode> chan_take_queued(ChannelCore& core,
+                                                      size_t max) {
+  std::deque<sendable::SendNode> taken;
+  {
+    std::lock_guard<std::mutex> lk(core.m);
+    if (max >= core.q.size()) {
+      taken.swap(core.q);
+    } else {
+      auto end = core.q.begin() + static_cast<std::ptrdiff_t>(max);
+      taken.assign(std::make_move_iterator(core.q.begin()),
+                   std::make_move_iterator(end));
+      core.q.erase(core.q.begin(), end);
+    }
+  }
+  if (!taken.empty()) core.cv.notify_all();  // room for every waiting sender
+  return taken;
+}
+
+// `try_recv` answers with a ChannelResult variant: `Value(v)`, `Empty`, or
+// `Closed`. The instance is hand-tagged with the same `class` / `__enum`
+// pair eval_enum_decl writes, so `match` / `inspect` treat it exactly like a
+// declared enum's variant — no binding for the name exists (nor is one
+// needed: a pattern compares the tag, never resolving the name).
+//
+// Built fresh per call: a cached singleton would be unreachable from any
+// environment root, so a collection could clear it out from under a later
+// caller. The allocation is noise next to the mutex already taken above.
+inline ObjectValue _make_channel_result(ChanTryPopStatus status) {
+  ObjectValue inst;
+  inst.properties->emplace(
+      "class", Symbol{Value(std::string(chan_status_variant(status))), true});
+  inst.properties->emplace("__enum",
+                           Symbol{Value(std::string("ChannelResult")), true});
+  return inst;
+}
+
+inline Value channel_try_recv(int64_t id) {
+  auto r = chan_pop_nonblocking(id);
+  ObjectValue inst = _make_channel_result(r.status);
+  if (r.status == ChanTryPopStatus::Value) {
+    inst.properties->emplace(std::string(positional_field_name(0)),
+                             Symbol{chan_take(*r.node), true});
+  }
+  return Value(std::move(inst));
+}
+
+// How `rx.drain(max = nil)`'s argument arrived. Each backend classifies its
+// own value representation, then shares the checks below, so a bad `max`
+// fails identically in both.
+enum class DrainMaxKind { Nil, Count, Other };
+
+inline size_t chan_drain_max(DrainMaxKind kind, int64_t n, int64_t line,
+                             int64_t col) {
+  if (kind == DrainMaxKind::Nil) return std::numeric_limits<size_t>::max();
+  if (kind != DrainMaxKind::Count) {
+    throw culebra::CulebraError("TypeError",
+        "rx.drain: max must be a Long or nil", line, col);
+  }
+  if (n < 0) {
+    throw culebra::CulebraError("ValueError", "rx.drain: max must be >= 0",
+                                line, col);
+  }
+  return static_cast<size_t>(n);
+}
+
+inline size_t chan_drain_max(const Value& v, int64_t line, int64_t col) {
+  bool is_count = v.type == Value::Long;
+  return chan_drain_max(v.type == Value::Nil ? DrainMaxKind::Nil
+                        : is_count           ? DrainMaxKind::Count
+                                             : DrainMaxKind::Other,
+                        is_count ? v.to_long() : 0, line, col);
+}
+
+// Take what is queued right now, without blocking — at most `max` of it.
+inline Value channel_drain(int64_t id, size_t max) {
+  ArrayValue out;
+  if (auto core = chan_lookup(id)) {
+    auto taken = chan_take_queued(*core, max);
+    out.values->reserve(taken.size());
+    for (const auto& node : taken) out.values->push_back(chan_take(node));
+  }
+  return Value(std::move(out));
+}
+
 inline bool _isolate_finished(IsolateCore& c);  // fwd (defined after IsolateCore)
 
 // Wait until one of a merge's sources has a value and pop it; return nullopt
@@ -832,6 +959,17 @@ inline Value make_channel_endpoint(int64_t id, int role) {
         Value(FunctionValue({}, [id](std::shared_ptr<Environment>) -> Value {
           return channel_iter(id);
         }, ""sv)), false);
+    h.initialize("try_recv",
+        Value(FunctionValue({}, [id](std::shared_ptr<Environment>) -> Value {
+          return channel_try_recv(id);
+        }, ""sv)), false);
+    h.initialize("drain",
+        Value(FunctionValue({{"max", false, ""sv, nullptr, kw_default_nil()}},
+            [id](std::shared_ptr<Environment> env) -> Value {
+              int64_t line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
+              int64_t col = env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
+              return channel_drain(id, chan_drain_max(env->get("max"), line, col));
+            }, "Array"sv)), false);
   }
   return Value(std::move(h));
 }

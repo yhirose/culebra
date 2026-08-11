@@ -1,0 +1,144 @@
+# Channel try_recv() / drain(): non-blocking receive. Runs under BOTH interp
+# and --jit. `try_recv` answers with a ChannelResult variant, so a caller that
+# cannot block (a frame callback, any timed loop) tells "nothing yet" from
+# "nothing ever" apart without a nil sentinel.
+#
+# Nullary variants are matched as `Empty()` / `Closed()` — a bare `Empty` in a
+# match arm is an identifier binding, i.e. a catch-all, not a variant pattern.
+
+fn describe(r) {
+  return match r {
+    Value(v) => "Value({v})",
+    Empty() => "Empty",
+    Closed() => "Closed",
+    _ => "UNMATCHED",
+  }
+}
+
+# When a value is on its way, only its arrival time is unknown — spin until
+# it lands rather than sleeping for a guessed interval.
+fn poll_until_value(rx) {
+  mut r = rx.try_recv()
+  while describe(r) == "Empty" {
+    r = rx.try_recv()
+  }
+  return r
+}
+
+# --- open + empty is Empty; a queued value is Value(v) ---
+let (tx, rx) = Channel.new(8)
+assert_eq(describe(rx.try_recv()), "Empty")
+tx.send(1)
+assert_eq(describe(rx.try_recv()), "Value(1)")
+assert_eq(describe(rx.try_recv()), "Empty")  # drained again
+
+# --- drain takes everything queued, in send order ---
+tx.send(10)
+tx.send(20)
+tx.send(30)
+assert_eq(rx.drain(), [10, 20, 30])
+assert_eq(rx.drain(), [])  # empty + open
+
+# --- drain(max) takes at most max, oldest first; the rest stays queued ---
+tx.send(1)
+tx.send(2)
+tx.send(3)
+assert_eq(rx.drain(2), [1, 2])
+assert_eq(rx.drain(0), [])     # a zero budget takes nothing
+assert_eq(rx.drain(100), [3])  # a max above the queue is not an error
+assert_eq(rx.drain(1), [])     # nothing left
+
+# --- drain's max is a Long or nil; both backends reject the rest alike ---
+fn drain_err(rx, max) {
+  try {
+    rx.drain(max)
+    return "no throw"
+  } catch e {
+    return "{e.kind}: {e.message}"
+  }
+}
+assert_eq(drain_err(rx, -1), "ValueError: rx.drain: max must be >= 0")
+assert_eq(drain_err(rx, "x"), "TypeError: rx.drain: max must be a Long or nil")
+assert_eq(drain_err(rx, 1.5), "TypeError: rx.drain: max must be a Long or nil")
+
+# --- closed + drained is Closed, and drain stays empty ---
+tx.drop()
+assert_eq(describe(rx.try_recv()), "Closed")
+assert_eq(describe(rx.try_recv()), "Closed")  # idempotent
+assert_eq(rx.drain(), [])
+
+# --- a channel closed with values still queued drains them, THEN closes ---
+let (tx2, rx2) = Channel.new(4)
+tx2.send("a")
+tx2.send("b")
+tx2.drop()  # closed, but two values are still in flight
+assert_eq(describe(rx2.try_recv()), "Value(a)")
+assert_eq(rx2.drain(), ["b"])
+assert_eq(describe(rx2.try_recv()), "Closed")
+
+# --- a genuine nil payload is Value(nil), never confused with Empty/Closed ---
+let (tx3, rx3) = Channel.new(2)
+tx3.send(nil)
+assert_eq(describe(rx3.try_recv()), "Value(nil)")
+assert_eq(describe(rx3.try_recv()), "Empty")
+tx3.drop()
+assert_eq(describe(rx3.try_recv()), "Closed")
+
+# --- never-sent-on channel: dropping the only tx closes it outright ---
+let (tx4, rx4) = Channel.new(1)
+tx4.drop()
+assert_eq(describe(rx4.try_recv()), "Closed")
+assert_eq(rx4.drain(), [])
+
+# --- the variant carries the enum tag, so a type pattern matches it ---
+let (tx5, rx5) = Channel.new(1)
+tx5.drop()
+assert_eq(match rx5.try_recv() {
+  x: ChannelResult => true,
+  _ => false,
+}, true)
+
+# --- a live worker: Empty before the request, Value after (no timing race —
+# the worker cannot answer until it is asked) ---
+let (req_tx, req_rx) = Channel.new(1)
+let (rep_tx, rep_rx) = Channel.new(1)
+let worker = Isolate.spawn(fn () {
+  for _ in req_rx {
+    rep_tx.send("pong")
+  }
+  rep_tx.drop()
+})
+req_rx.drop()
+rep_tx.drop()
+
+assert_eq(describe(rep_rx.try_recv()), "Empty")  # not asked yet
+req_tx.send("ping")
+assert_eq(describe(poll_until_value(rep_rx)), "Value(pong)")
+req_tx.drop()
+worker.join()
+
+# --- rendezvous (cap 0): try_recv takes the value and unblocks the sender ---
+let (tx6, rx6) = Channel.new(0)
+let sender = Isolate.spawn(fn () {
+  tx6.send(42)  # blocks until a receiver takes it
+  tx6.drop()
+})
+tx6.drop()
+assert_eq(describe(poll_until_value(rx6)), "Value(42)")
+sender.join()
+
+# --- drain over a rendezvous channel hands the sender its release too ---
+let (tx7, rx7) = Channel.new(0)
+let sender7 = Isolate.spawn(fn () {
+  tx7.send("solo")
+  tx7.drop()
+})
+tx7.drop()
+mut batch = rx7.drain()
+while batch.empty() {
+  batch = rx7.drain()
+}
+assert_eq(batch, ["solo"])
+sender7.join()
+
+inspect("test_try_recv: all assertions passed")

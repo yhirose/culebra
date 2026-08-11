@@ -2108,6 +2108,8 @@ prod.join()
 | `tx.drop()` / `rx.drop()` | 両方 | このendpointを解放 |
 | `rx.recv()` | rx | 1値をブロッキング取得。closedかつ空なら`nil` |
 | `for v in rx { ... }` | rx | closedまでdrain（綺麗なend-of-streamの形） |
+| `rx.try_recv()` | rx | ブロックせず1値取得。`Value(v)` / `Empty` / `Closed`を返す |
+| `rx.drain(max = nil)` | rx | 今キューにある分を最大`max`件までブロックせず取得（Array、空もあり） |
 
 **auto-closeがデッドロック安全網です。** アクティブな送信端を数え、**最後の`tx`
 がdropされた**時（producer isolateが正常／例外終了）にchannelがcloseし、
@@ -2116,10 +2118,85 @@ prod.join()
 channelが閉じるには全ての`tx`（親の元のtx含む）がdropされる必要があります —
 保持しないtxはdropしてください。
 
+**cloneしたendpointは競合し、複製はしません。** 各値はちょうど1つのendpoint
+（最初に`recv`が届いたもの）に渡るので、`rx`のcloneはストリームをconsumerに
+分散させるのであって、各consumerにコピーを配るのではありません。1つの
+consumerでは捌ききれない時に`rx`をcloneします: 共有キューに長時間実行の
+consumerを複数並べれば、producerがバッファ満杯で止まらずに済み、単一
+consumerなら直列化されるバーストも吸収できます。consumerごとにコピーが
+欲しい場合は、consumerごとのchannelへ送ってください。
+
 **`Channel.new(0)`はrendezvous channel**（容量0）: `send`は受信者が値を
 受け取るまで返りません — バッファ無しの同期ハンドオフ。backpressure
 （producerがconsumerを追い越せない）に有用。単一isolate内ではdeadlock
 （渡す相手がいない）のでisolate間で使います。容量は`0以上`。
+
+#### ブロックしない受信 — `rx.try_recv`と`rx.drain`
+
+`recv()`と`for v in rx`はブロックします。channelだけが仕事のconsumerには
+それが正解ですが、自分のスケジュールで進み続けなければならない呼び出し側 —
+`Canvas.run`のフレームコールバック、TUIのキーループ、その他あらゆる時間駆動の
+ループ — はそこで止まれません。ブロックしたフレームは落ちたフレームです。
+`try_recv()`は常に即座に返ります。
+
+戻り値は`enum`の形をした3つのvariantのいずれかです:
+
+```culebra
+# doctest: skip
+enum ChannelResult { Value(Any), Empty, Closed }
+```
+
+`Value(v)`はキューにあった値を運び、`Empty`は**今は**何もない（channelは
+openのままなので後でまた聞く）、`Closed`はもう二度と何も来ない（全`tx`が
+無くなりキューも空）ことを意味します。
+
+```culebra
+# doctest: skip
+match rx.try_recv() {
+  Value(ev) => world.apply(ev),
+  Empty()   => nil,        # このフレームは何もなし — 続行
+  Closed()  => running = false,
+}
+```
+
+`Empty()`と`Closed()`の`()`に注意してください。matchのアームでの裸の`Empty`は
+識別子パターンで、**何にでも**マッチして束縛するため、それ以降のアームは
+決して実行されません。マッチしたものに名前を付けたければ`x: Empty`も使えます。
+
+`nil`を返さず3つのvariantにしたのは、ここでは`nil`が3つの意味を同時に
+持たざるを得ないからです: `recv()`は既に本物の`nil`ペイロードとend-of-stream
+の両方で`nil`を返しており、ノンブロッキング読み出しではそこに「まだ何もない」
+が加わります。`while (v = rx.try_recv()) != nil`と書いたループは、本物の`nil`
+が流れてきた最初の瞬間に早期終了してしまいます。variantなら各ケースに
+答えられます。
+
+`drain()`はキュー全体を一度に取ります。フレームが欲しいのは通常こちらです:
+
+```culebra
+# doctest: skip
+for ev in rx.drain() { world.apply(ev) }
+```
+
+返るのはArrayで、何もなければ空、closedなchannelでも空なので、closeを
+検知する必要があれば`try_recv()`と併用してください。返るのは**呼んだ瞬間に
+キューにあった分**で、1ステップで取り出されます。これは見た目以上に重要です:
+1件ずつpopするとスロットが空き、ブロック中のsenderが起きて、次のpopが見る前に
+補充するため、容量4のchannelに対する`try_recv()`ループが数百件を返す例が
+実測されています。`drain()`はこの暴走をしませんが、自分で書いた`try_recv()`
+ループはします。
+
+キュー自体が長くなりうる場合は、`max`でバッチをさらに縛れます:
+
+```culebra
+# doctest: skip
+for ev in rx.drain(16) { world.apply(ev) }   # このフレームは最大16件
+```
+
+残りはキューに留まり次回に回ります。`max`は`Long`（件数）か制限なしの`nil`
+で、負値は`ValueError`になります。
+
+どちらのメソッドも`Channel.fan_in`のreceiverではまだ使えません。プレーンな
+`rx`専用です。
 
 #### `Channel.fan_in(sources: [rx]) -> rx`
 

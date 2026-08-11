@@ -734,6 +734,73 @@ inline void _jit_chan_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   { *__ret = ret; return; }
 }
 
+// The ChannelResult variant names, interned once: `Empty` is the common
+// answer in a polling loop, so don't retake _intern_str's global lock per
+// call. build_variant is the same entry point compiled `Enum.Variant(...)`
+// calls use, so the instance is indistinguishable from a declared one.
+inline JitValue _jit_channel_result(ChanTryPopStatus status, JitValue* payload) {
+  static const char* kEnum = _intern_str("ChannelResult");
+  static const char* kValue =
+      _intern_str(chan_status_variant(ChanTryPopStatus::Value));
+  static const char* kEmpty =
+      _intern_str(chan_status_variant(ChanTryPopStatus::Empty));
+  static const char* kClosed =
+      _intern_str(chan_status_variant(ChanTryPopStatus::Closed));
+  const char* name = kClosed;
+  switch (status) {
+    case ChanTryPopStatus::Value: name = kValue; break;
+    case ChanTryPopStatus::Empty: name = kEmpty; break;
+    case ChanTryPopStatus::Closed: break;
+  }
+  int64_t arity = payload ? 1 : 0;
+  return culebra_runtime_build_variant(name, kEnum, arity, payload, arity, 0, 0);
+}
+
+inline void _jit_chan_try_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+                                   JitValue*) {
+  JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
+  int64_t id = _jit_self_long(self, "__channel_id__");
+  auto r = chan_pop_nonblocking(id);
+  JitValue ret;
+  if (r.status == ChanTryPopStatus::Value) {
+    JitDeCtx dc;
+    JitValue v = jit_deserialize(*r.node, dc);  // build_variant takes the +1
+    release_inflight_channels(*r.node);
+    ret = _jit_channel_result(r.status, &v);
+  } else {
+    ret = _jit_channel_result(r.status, nullptr);
+  }
+  { *__ret = ret; return; }
+}
+
+inline void _jit_chan_drain(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
+                                JitValue* args) {
+  JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
+  JitMethodArgs _a{n, args};
+  int64_t id = _jit_self_long(self, "__channel_id__");
+  JitValue m = n >= 1 ? args[0] : JitValue{TAG_NIL, 0};
+  size_t max = _jit_at_call_site([&] {  // the thunk ABI carries no line/col
+    return chan_drain_max(m.tag == TAG_NIL    ? DrainMaxKind::Nil
+                          : m.tag == TAG_LONG ? DrainMaxKind::Count
+                                              : DrainMaxKind::Other,
+                          m.data, 0, 0);
+  });
+  auto core = chan_lookup(id);
+  auto taken = core ? chan_take_queued(*core, max)
+                    : std::deque<sendable::SendNode>{};
+  auto* out =
+      culebra_runtime_array_new_reserved(static_cast<int64_t>(taken.size()));
+  for (const auto& node : taken) {
+    JitDeCtx dc;
+    JitValue v = jit_deserialize(node, dc);  // the array takes the +1
+    release_inflight_channels(node);
+    culebra_runtime_array_push(out, v.tag, v.data);
+  }
+  { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(out)}; return; }
+}
+
 // True if the handle was already dropped; otherwise marks it dropped. Shared
 // by the channel and SharedBuffer drop handlers so their refcount moves once
 // across explicit `drop()` + GC teardown.
@@ -851,6 +918,8 @@ inline JitValue _jit_make_channel_endpoint(int64_t id, int role) {
   } else {
     meth("recv", _jit_chan_recv);
     meth("iter", _jit_chan_iter);
+    meth("try_recv", _jit_chan_try_recv);
+    meth("drain", _jit_chan_drain);
   }
   h->has_drop = true;
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
