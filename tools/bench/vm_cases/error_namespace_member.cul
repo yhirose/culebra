@@ -1,0 +1,26 @@
+# A namespace has a closed member set, so an unknown member is an
+# AttributeError at the read — direct or through a value alike. The read
+# happens BEFORE the arguments compile, so a member miss on a namespace never
+# evaluates them (contrast error_method_not_function.cul, where the miss
+# reads as nil and the call is what fails).
+try { Math.nope } catch e { inspect(e) }
+let m = Math
+try { m.nope } catch e { inspect(e) }
+fn side() {
+  println('side')
+  1
+}
+try { Math.nope(side()) } catch e { inspect(e) }
+try { m.nope(side()) } catch e { inspect(e) }
+try { Encoding.hex.nope() } catch e { inspect(e) }
+
+# Argument and receiver errors from a real namespace method.
+try { Math.abs() } catch e { inspect(e) }
+try { Math.abs(1, 2) } catch e { inspect(e) }
+try { Math.abs('x') } catch e { inspect(e) }
+let f = Math.abs
+try { f('x') } catch e { inspect(e) }
+
+# A member that is not a function.
+try { Math.pi(1) } catch e { inspect(e) }
+Math.nope

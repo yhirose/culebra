@@ -100,6 +100,7 @@ namespace culebra {
 // JitExtension below, and its compiler shares the is_builtin_var predicate.
 namespace vm {
 struct Lowering;
+struct Exec;
 class Compiler;
 }
 
@@ -1741,6 +1742,7 @@ struct JIT {
   // extract_tag/...) without those being part of the public surface.
   friend struct JitExtension;
   friend struct vm::Lowering;
+  friend struct vm::Exec;
   friend class vm::Compiler;
 
   llvm::LLVMContext& ctx_;
@@ -3016,7 +3018,7 @@ struct JIT {
                                        llvm::Value* hasOwnField,
                                        llvm::Value* receiver,
                                        const std::string& name,
-                                       const peg::Ast& postfix) {
+                                       int64_t line, int64_t col) {
     if (!culebra::is_builtin_method_name(name)) return;
     auto fn = builder_.GetInsertBlock()->getParent();
     auto isNil = builder_.CreateICmpEQ(extract_tag(propResult),
@@ -3039,8 +3041,7 @@ struct JIT {
             builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy,
             builder_.getInt64Ty(), builder_.getInt64Ty()),
         {extract_tag(receiver), extract_data(receiver), keyPtr,
-         builder_.getInt64(static_cast<int64_t>(postfix.line)),
-         builder_.getInt64(static_cast<int64_t>(postfix.column))});
+         builder_.getInt64(line), builder_.getInt64(col)});
     builder_.CreateBr(contBB);
     builder_.SetInsertPoint(contBB);
   }
@@ -9777,8 +9778,10 @@ struct JIT {
                                              /*own_receiver=*/true);
             auto hasOwn = emit_has_own_field(receiver, name);
             callee = own(emit_property_value_read(receiver, view, name));
-            emit_reject_bare_builtin_method(callee.borrow(), hasOwn, receiver,
-                                            name, postfix);
+            emit_reject_bare_builtin_method(
+                callee.borrow(), hasOwn, receiver, name,
+                static_cast<int64_t>(postfix.line),
+                static_cast<int64_t>(postfix.column));
             recv.drop();
           }
           break;

@@ -1,0 +1,33 @@
+# Bare `x.name` reads. A Range value and the iterator object `range()` builds
+# are the objects the slice can make; a container that simply lacks the member
+# reads as nil, which is the language's permissive member rule.
+let r = 0..3
+println(r.start)
+println(r.end)
+println(r.inclusive)
+println(r.class)
+println(r.nope)
+
+let ri = 0..=3
+println(ri.inclusive)
+
+let d = range(0, 2)
+println(type_of(d.next))
+println(d.nope)
+
+# Non-object containers answer a miss with nil too.
+println([1, 2].nope)
+println('ab'.nope)
+println((1, 2).nope)
+
+# `?.` on nil collapses the whole rest of the chain, so the read never runs.
+let z = nil
+println(z?.start)
+println(z?.start.end)
+println(r?.start)
+
+# A property read is an ordinary expression: it chains and nests.
+println((0..5).end)
+println([0..7][0].end)
+let pick = fn (x) { x.start }
+println(pick(2..9))

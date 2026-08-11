@@ -1,0 +1,36 @@
+# A builtin namespace is an ordinary value: NsGet hands back the per-Runtime
+# cached object, so reads compare equal, it travels through bindings, args and
+# containers, and a lexical shadow wins over it.
+let m = Math
+println(m == Math)
+println(type_of(m))
+println(m.pi)
+println(Math.pi)
+println(m.inf)
+
+let take = fn (o) { o.abs(-7) }
+println(take(Math))
+println(take(m))
+
+let xs = [Math, Math]
+println(xs[0].abs(-8))
+
+let held = fn () { Math }
+println(held().abs(-9))
+
+# A sub-namespace is just a property whose value is another namespace object.
+let hex = Encoding.hex
+println(hex.encode('a'))
+println(Encoding.hex.encode('a'))
+
+# A lexical shadow wins over the namespace, and it is back once the scope
+# closes. (`JSON`, not `Math`: FnAnalysis' locals set is function-granular, so
+# shadowing a name anywhere in this frame would turn the `held` closure's read
+# of it into a forward-reference capture — rejected in the slice, same reason
+# stdlib_values.cul splits its names.)
+{
+  let JSON = 5
+  println(JSON)
+}
+println(JSON.stringify([1]))
+println(Math.abs(-1))

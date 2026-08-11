@@ -1,0 +1,21 @@
+# A plain object reads a missing member as nil, so `d.nope()` fails at the
+# CALL, not at the read: the arguments have already run by then, and the
+# diagnostic is the ordinary "expected Function" one at the head of the chain.
+fn side(n) {
+  println('side')
+  n
+}
+let d = range(0, 3)
+try { d.nope() } catch e { inspect(e) }
+try { d.nope(side(1)) } catch e { inspect(e) }
+try { (0..3).nope() } catch e { inspect(e) }
+try { [1, 2].nope() } catch e { inspect(e) }
+try { 'ab'.nope() } catch e { inspect(e) }
+
+# A member that holds a non-function value.
+try { (0..3).start() } catch e { inspect(e) }
+
+# A throwing method body propagates as itself.
+let it = range(0, 1)
+println(it.next())
+d.nope()

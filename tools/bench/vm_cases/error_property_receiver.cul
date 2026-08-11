@@ -1,0 +1,15 @@
+# A scalar receiver has no member space at all: reading one is a TypeError,
+# anchored at the head of the chain (not at the member name). Calling one
+# fails at the same read, before the arguments run.
+let n = 5
+try { n.foo } catch e { inspect(e) }
+try { n.foo() } catch e { inspect(e) }
+try { true.foo } catch e { inspect(e) }
+try { nil.foo } catch e { inspect(e) }
+try { (1.5).foo } catch e { inspect(e) }
+fn side() {
+  println('side')
+  1
+}
+try { n.foo(side()) } catch e { inspect(e) }
+n.foo

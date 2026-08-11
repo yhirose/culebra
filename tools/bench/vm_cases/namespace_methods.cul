@@ -1,0 +1,38 @@
+# `Ns.method(args)` and the same call through a namespace value are one path
+# here — the property read plus a receiver call. The AST backends reach the
+# first spelling through a compile-time peephole and the second through the
+# generic dispatch; every pair below agrees, which is what makes one path
+# enough.
+let M = Math
+let J = JSON
+let H = Hash
+
+println(Math.sqrt(9.0))
+println(M.sqrt(9.0))
+println(Math.floor(2.7))
+println(M.floor(2.7))
+println(Math.clamp(9, 0, 3))
+println(M.clamp(9, 0, 3))
+println(JSON.stringify([1, 2]))
+println(J.stringify([1, 2]))
+println(JSON.parse('[1, 2]'))
+println(J.parse('[1, 2]'))
+println(Hash.sha256('a'))
+println(H.sha256('a'))
+
+# A namespace method pulled out as a value binds its receiver, so calling it
+# later is the same call.
+let f = Math.abs
+println(f(-3))
+println(Math.abs(-3))
+println(type_of(f))
+
+# Nested inside a closure and a loop: the namespace resolves per read, no
+# capture involved.
+let g = fn (n) { Math.abs(n) + M.sign(n) }
+println(g(-4))
+mut acc = 0
+for i in 1..4 {
+  acc = acc + Math.abs(0 - i)
+}
+println(acc)

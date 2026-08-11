@@ -1,0 +1,17 @@
+# A value-type built-in method is dispatched inline and has no closure to
+# hand back, so naming one without calling it is a TypeError on every
+# backend — decided per receiver against the interp's own builtin tables, so
+# a receiver that would NOT have dispatched it reads as an ordinary nil miss.
+# The error is anchored at the method name, not at the head of the chain.
+let s = 'ab'
+try { s.size } catch e { inspect(e) }
+try { [1, 2].size } catch e { inspect(e) }
+try { (1, 2).size } catch e { inspect(e) }
+try { Math.has } catch e { inspect(e) }
+try { range(0, 2).has } catch e { inspect(e) }
+
+# Not a builtin-method name on that receiver: plain nil.
+println([1, 2].code_points)
+println('ab'.union)
+println((0..3).size)
+s.map

@@ -164,6 +164,29 @@ enum class Op : uint8_t {
                // mutable, is_init=false), else "expected Array". The value
                // stays register-owned (a retain feeds the consuming store),
                // so the assignment expression still reads it afterwards.
+  PropVal,     // regs[a] = property consts[c] of regs[b], read AS A VALUE
+               // (+1) — a bare `x.name`, the JIT's non-call DOT arm. The
+               // resolve is emit_property_get's (function introspection on a
+               // Function receiver, own slot then proto on an Object, a
+               // container's miss as nil, a scalar's TypeError), then
+               // bind_method_value / getter_or_value: a function-valued
+               // property comes back bound to its receiver, a getter fires.
+               // Stamped at the chain head, both backends' anchor for the
+               // read's errors.
+  BareMethChk, // the bare built-in method reject: when regs[a] is nil and
+               // regs[b] has no own field consts[c], let
+               // culebra_runtime_bare_builtin_reject decide from the interp's
+               // own tables whether that receiver would have dispatched
+               // consts[c] as a built-in method — `let m = 'ab'.size` is a
+               // TypeError on every backend, any other miss stays nil.
+               // Emitted only for a built-in method name (the JIT's
+               // compile-time filter) and stamped at the DOT node: the
+               // method name's own position, NOT the chain head.
+  PropRaw,     // regs[a] = the raw property view of consts[c] on regs[b],
+               // retained (+1) — the callee half of `x.m(...)`. Unlike
+               // PropVal it neither binds `self` into a wrapper nor runs the
+               // bare-method reject: CallM passes the receiver as `self`
+               // itself, compile_method_call's property tail.
   SeqChk,      // destructuring gate: unless regs[a] is an Array or Tuple of
                // exactly c elements (d=0) — at least c, when the pattern has
                // a `...rest` (d=1) — pc = b. One JitArray backs both tags, so
@@ -208,6 +231,12 @@ enum class Op : uint8_t {
                // interp's "expected Function" TypeError), and goes through
                // the JitFn ABI — the callee takes ownership of each arg, so
                // the arg slots are nil'd after the call.
+  CallM,       // regs[a] = call regs[b] with self = regs[c] and args
+               // regs[c+1..c+1+d) — one contiguous run whose head is the
+               // receiver. Same JitFn ABI as Call (the callee consumes the
+               // receiver and every arg, so the whole run is nil'd after),
+               // and the same TAG_FUNC check — which is where a missing
+               // method surfaces, as "expected Function, got Nil".
   Ret,         // return regs[a] from the frame (+1 transfers to the caller)
   CellNew,     // regs[a] = new JitCell absorbing regs[b]'s +1; regs[b] = nil.
                // Releases the cell previously in regs[a] (null on first run —
@@ -1323,8 +1352,19 @@ class Compiler {
           recv = compile_call_step(ast, post, recv);
         else if (post.original_tag == "INDEX"_)
           recv = compile_index_read(ast, post, recv, Op::Index);
-        else
-          reject(post, "call chain / method call");
+        else if (post.original_tag == "DOT"_) {
+          // Intermediate `.p` / `.m(...)` in a receiver prefix
+          // (`d.next.field[0] = v`) — plain rvalue reads, the same steps the
+          // chain fold uses. `?.` cannot appear here: the grammar has no
+          // safe-navigating lvalue.
+          if (i + 1 < end && ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
+            recv = compile_method_call(ast, post, *ast.nodes[i + 1], recv);
+            ++i;
+          } else {
+            recv = compile_property_read(ast, post, recv);
+          }
+        } else
+          reject(post, "call chain");
       }
       return recv;
     };
@@ -1464,6 +1504,16 @@ class Compiler {
     return false;
   }
 
+  // The namespace VALUES the slice reaches: the natively built ones, taken
+  // straight from the resolver's own predicate (kNsMethods / wrap.h classes /
+  // constant groups) so the two cannot drift. The lazy source modules (Time,
+  // Regex, Term, ...) are deliberately absent — their objects are produced by
+  // preamble builder closures the VM lane never splices, so they stay on the
+  // unresolved-identifier reject, same as their bare functions.
+  static bool is_stdlib_namespace(std::string_view name) {
+    return _is_known_ns(name);
+  }
+
   // Direct 1-positional-arg `println(<expr>)` — the dedicated-op peephole,
   // mirroring the JIT's own direct-println emit (stdlib_jit.h), so both
   // compiled lanes skip the resolver + closure invoke for the common shape.
@@ -1482,20 +1532,22 @@ class Compiler {
            a0.tag != "KWARG_SPLAT"_ && a0.original_tag != "KWARG_SPLAT"_;
   }
 
-  // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x!!`, and their compositions
-  // (`n[i][j]`, `f()[k]`, `a[i](x)`), folded left to right over one rolling
-  // result — the compile_assign_complex receiver walk, minus the DOT forms
-  // (method calls and property access stay out of slice). A `?[` chain
+  // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
+  // `x!!`, and their compositions (`n[i][j]`, `f()[k]`, `Math.abs(-3).nope`),
+  // folded left to right over one rolling result — the same walk
+  // compile_assign_index runs over a receiver prefix. A `?[` / `?.` chain
   // routes every exit through one merge temp (begin_safe_nav's diamond,
   // compile_if's nil-fresh result discipline): each guard's JumpIfNil
   // targets the merge point past the store, so a nil receiver skips the
-  // rest of the chain — key expressions and `!!` checks included — and
-  // leaves the merge temp nil.
+  // rest of the chain — key expressions, arguments and `!!` checks
+  // included — and leaves the merge temp nil.
   ExprResult compile_call(const peg::Ast& ast) {
     using namespace peg::udl;
     bool has_safe = false;
-    for (size_t i = 1; i < ast.nodes.size(); ++i)
-      if (ast.nodes[i]->original_tag == "SAFE_INDEX"_) has_safe = true;
+    for (size_t i = 1; i < ast.nodes.size(); ++i) {
+      auto t = ast.nodes[i]->original_tag;
+      if (t == "SAFE_INDEX"_ || t == "SAFE_DOT"_) has_safe = true;
+    }
     int32_t out = has_safe ? alloc_temp(ast) : -1;
     std::vector<size_t> nil_jumps;
     auto res = compile_expr(*ast.nodes[0]);
@@ -1508,11 +1560,22 @@ class Compiler {
       else if (post.original_tag == "SAFE_INDEX"_) {
         nil_jumps.push_back(emit(Op::JumpIfNil, res.slot));
         res = compile_index_read(ast, post, res, Op::Index);
+      } else if (post.original_tag == "DOT"_ ||
+                 post.original_tag == "SAFE_DOT"_) {
+        if (post.original_tag == "SAFE_DOT"_)
+          nil_jumps.push_back(emit(Op::JumpIfNil, res.slot));
+        if (i + 1 < ast.nodes.size() &&
+            ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
+          res = compile_method_call(ast, post, *ast.nodes[i + 1], res);
+          ++i;  // consume ARGUMENTS
+        } else {
+          res = compile_property_read(ast, post, res);
+        }
       } else if (post.original_tag == "NONNULL"_) {
         StampGuard pos(*this, post);
         emit(Op::NilChk, res.slot);
       } else
-        reject(post, "call chain / method call");
+        reject(post, "call chain");
     }
     if (!has_safe) return res;
     store_into(out, res, /*dst_is_fresh=*/true);
@@ -1520,11 +1583,96 @@ class Compiler {
     return {out, true};
   }
 
-  // One argument-list postfix: positional args in a contiguous run of
-  // owned temps (the JitFn ABI's arg slab), one Call op. Evaluation order
-  // is callee first, then args left to right — both backends' order.
-  ExprResult compile_call_step(const peg::Ast& ast, const peg::Ast& args,
-                               ExprResult callee) {
+  // One `.name` postfix with no call after it: the property value read,
+  // followed by the bare built-in method reject when the name could be one
+  // (the JIT emits that cold check under the same compile-time filter).
+  ExprResult compile_property_read(const peg::Ast& at, const peg::Ast& post,
+                                   ExprResult recv) {
+    reject_fn_introspection(post);
+    int32_t t;
+    {
+      StampGuard pos(*this, at);
+      t = alloc_temp(at);
+      emit(Op::PropVal, t, recv.slot, kconst_str(post.token));
+    }
+    if (culebra::is_builtin_method_name(post.token)) {
+      StampGuard pos(*this, post);  // the method name's own position
+      emit(Op::BareMethChk, t, recv.slot, kconst_str(post.token));
+    }
+    return {t, true};
+  }
+
+  // The method names the slice cannot answer through the generic property
+  // path. Each is decided by NAME at compile time — the receiver's type is
+  // only known at run time, and for all three the JIT resolves against
+  // machinery with no runtime counterpart the executor could call:
+  //   - a built-in method name is inline tag dispatch (compile_builtin_method);
+  //     `Math.keys()` is the dict builtin on a namespace object, not the
+  //     closed-member read the property path would do
+  //   - `drop` / `parameters` have their own dispatches (explicit_drop, the
+  //     synthesized class walker)
+  //   - a name that resolves as a free function is a UFCS candidate:
+  //     `3.dbl()` is `dbl(3)`, decided by a runtime has-property gate
+  // The sets come from shared tables (builtin_method_names, kBuiltinFns), so
+  // the boundary cannot drift from the backends'.
+  //
+  // The UFCS test only consults THIS chunk's scopes, and that is the whole
+  // test: FnAnalysis already counts a candidate living in an enclosing frame
+  // as a free variable of the reading function, so resolve_captures rejects it
+  // at the fn literal ("UFCS candidate capture of ..."), and a candidate that
+  // is a builtin never enters scopes_ at all — is_stdlib_global catches those.
+  // `.name` / `.params` / `.return_type` resolve a Function receiver's
+  // signature out of the JitParamMeta side table, which is keyed by fn_ptr —
+  // and the executor's closures all share one fn_ptr (Exec::trampoline), so
+  // there is nothing per-function to key on. Rejected by name on every
+  // receiver rather than answered wrong on a Function one; no object the
+  // slice can build carries a field of these names anyway.
+  void reject_fn_introspection(const peg::Ast& post) {
+    if (JIT::fn_introspection_name(post.token))
+      reject(post, std::format("function introspection '{}'", post.token));
+  }
+
+  void reject_out_of_slice_method(const peg::Ast& post) {
+    reject_fn_introspection(post);
+    std::string_view name = post.token;
+    if (culebra::is_builtin_method_name(name))
+      reject(post, std::format("built-in method '{}'", name));
+    if (name == "drop" || name == "parameters")
+      reject(post, std::format("'{}' dispatch", name));
+    if (lookup(name) || is_stdlib_global(name))
+      reject(post, std::format("UFCS candidate '{}'", name));
+  }
+
+  // `x.m(args)` — compile_method_call's property tail. The property resolves
+  // FIRST, before any argument compiles: that is the probed order on both
+  // backends (a namespace's AttributeError fires without evaluating the
+  // arguments; a plain dict's miss evaluates them and then fails the
+  // TAG_FUNC check). Receiver and arguments then share one contiguous run
+  // with the receiver at its head — CallM hands that head over as `self`,
+  // the JitFn ABI's receiver, instead of minting a bound-method wrapper.
+  ExprResult compile_method_call(const peg::Ast& at, const peg::Ast& post,
+                                 const peg::Ast& args, ExprResult recv) {
+    reject_out_of_slice_method(post);
+    reject_kwargs(args);
+    StampGuard pos(*this, at);
+    int32_t callee = alloc_temp(at);
+    emit(Op::PropRaw, callee, recv.slot, kconst_str(post.token));
+    int32_t argc = static_cast<int32_t>(args.nodes.size());
+    int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
+    alloc_temp(at);             // [0] = the receiver
+    for (int32_t i = 0; i < argc; i++) alloc_temp(*args.nodes[i]);
+    store_into(base, recv, /*dst_is_fresh=*/true);
+    for (int32_t i = 0; i < argc; i++)
+      store_into(base + 1 + i, compile_expr(*args.nodes[i]),
+                 /*dst_is_fresh=*/true);
+    int32_t t = alloc_temp(at);
+    emit(Op::CallM, t, callee, base, argc);
+    return {t, true};
+  }
+
+  // Positional-only argument lists: the runtime kwarg resolver is out of
+  // slice, so both call forms turn a keyword away at compile time.
+  void reject_kwargs(const peg::Ast& args) {
     using namespace peg::udl;
     for (const auto& a : args.nodes) {
       if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_)
@@ -1532,6 +1680,14 @@ class Compiler {
       if (a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_)
         reject(*a, "kwargs splat");
     }
+  }
+
+  // One argument-list postfix: positional args in a contiguous run of
+  // owned temps (the JitFn ABI's arg slab), one Call op. Evaluation order
+  // is callee first, then args left to right — both backends' order.
+  ExprResult compile_call_step(const peg::Ast& ast, const peg::Ast& args,
+                               ExprResult callee) {
+    reject_kwargs(args);
     int32_t argc = static_cast<int32_t>(args.nodes.size());
     int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
     for (int32_t i = 0; i < argc; i++) alloc_temp(*args.nodes[i]);
@@ -2343,7 +2499,7 @@ class Compiler {
       case "IDENTIFIER"_: {
         const Binding* b = lookup(ast.token);
         if (b) return read_binding(ast, *b);
-        if (is_stdlib_global(ast.token)) {
+        if (is_stdlib_global(ast.token) || is_stdlib_namespace(ast.token)) {
           int32_t t = alloc_temp(ast);
           emit(Op::NsGet, t, kconst_str(ast.token));
           return {t, true};
@@ -2494,10 +2650,11 @@ inline std::string dump(const Chunk& c) {
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
+      "PropVal",   "BareMethChk", "PropRaw",
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
       "JumpIfTag",
-      "MakeClosure", "Call",    "Ret",
+      "MakeClosure", "Call",    "CallM",      "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "UnboundErr", "MultifnReg", "NsGet",
       "SetOpPos",  "Disp",      "Fmt",        "StrCat",
@@ -3110,6 +3267,49 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::PropVal:
+        case Op::PropRaw: {
+          const JitValue& recv = regs[in.b];
+          const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto [line, col] = chunk_pos_at(c, pc);
+          // emit_property_get without its per-site inline cache: the executor
+          // always takes the cold funnel, and object_get_ic only WRITES the
+          // cache (the fast path that reads it lives in emitted code), so one
+          // scratch entry per execution is all it needs. emit_property_get's
+          // fn_mode branch has no mirror here — the three introspection names
+          // are a compile-time reject, so `view` is always the borrowed
+          // object-slot form.
+          JitPropIC ic{};
+          JitValue view = culebra_runtime_prop_get(
+              static_cast<int8_t>(recv.tag), recv.data, key, &ic, line, col,
+              /*own_receiver=*/false);
+          if (in.op == Op::PropRaw) {
+            // The register owns what it holds, so the borrowed view becomes a
+            // +1 here; the statement sweep is its releaser.
+            culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
+                                         view.data);
+            regs[in.a] = view;
+          } else {
+            regs[in.a] = culebra_runtime_bind_method_value(
+                static_cast<int8_t>(recv.tag), recv.data,
+                static_cast<int8_t>(view.tag), view.data, key);
+          }
+          ++pc;
+          break;
+        }
+        case Op::BareMethChk: {
+          const JitValue& recv = regs[in.b];
+          const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
+          if (regs[in.a].tag == TAG_NIL &&
+              !culebra_runtime_object_has_own_field(
+                  static_cast<int8_t>(recv.tag), recv.data, key)) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            culebra_runtime_bare_builtin_reject(static_cast<int8_t>(recv.tag),
+                                                recv.data, key, line, col);
+          }
+          ++pc;
+          break;
+        }
         case Op::IndexCo: {
           const JitValue& recv = regs[in.b];
           const JitValue& key = regs[in.c];
@@ -3331,6 +3531,39 @@ struct Exec {
           }
           for (int32_t i = 0; i < in.d; ++i)
             regs[in.c + i] = JitValue{TAG_NIL, 0};  // callee took ownership
+          regs[in.a] = r;
+          ++pc;
+          break;
+        }
+        case Op::CallM: {
+          const JitValue& callee = regs[in.b];
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_set_call_site(line, col);
+          if (callee.tag != TAG_FUNC) {
+            // Where a missing method lands: the property read gave nil, so
+            // this is the interp's "expected Function, got Nil". The receiver
+            // and args stay register-owned — nothing has been handed over
+            // yet, so the enclosing ladder is still their releaser.
+            culebra_runtime_type_error_typed(
+                line, col, "Function", static_cast<int8_t>(callee.tag));
+          }
+          // The run is receiver-then-args; the callee consumes all of it.
+          // culebra_runtime_call_receiver is not mirrored: it only rewrites a
+          // lowered state object's promoted body local into "no receiver",
+          // and those protos come from the generator / effects transforms the
+          // slice rejects outright.
+          JitValue r;
+          try {
+            r = _jit_invoke(reinterpret_cast<JitClosure*>(callee.data),
+                            regs[in.c], in.d,
+                            in.d ? &regs[in.c + 1] : nullptr);
+          } catch (...) {
+            for (int32_t i = 0; i <= in.d; ++i)
+              regs[in.c + i] = JitValue{TAG_NIL, 0};
+            throw;
+          }
+          for (int32_t i = 0; i <= in.d; ++i)
+            regs[in.c + i] = JitValue{TAG_NIL, 0};
           regs[in.a] = r;
           ++pc;
           break;
@@ -4143,6 +4376,41 @@ struct Lowering {
           b.SetInsertPoint(mergeBB);
           break;
         }
+        case Op::PropVal:
+        case Op::PropRaw: {
+          // The AST path's own emitters, so the resolve, the inline cache and
+          // the `self` binding are the same IR a `x.name` read compiles to.
+          std::string key(_str_sv(
+              reinterpret_cast<const char*>(c.consts[in.c].data)));
+          auto recv = load_slot(in.b);
+          // own_receiver=false: the register keeps its +1 across the read,
+          // and the handler ladder is its sole releaser on a throw edge.
+          auto view = j.emit_property_get(recv, key);
+          if (in.op == Op::PropRaw) {
+            // Always the borrowed object-slot form: the three introspection
+            // names, whose fn_mode view arrives +1, are a compile-time reject.
+            j.emit_value_retain(view);
+            b.CreateStore(view, slots[in.a]);
+          } else {
+            b.CreateStore(j.emit_property_value_read(recv, view, key),
+                          slots[in.a]);
+          }
+          break;
+        }
+        case Op::BareMethChk: {
+          std::string key(_str_sv(
+              reinterpret_cast<const char*>(c.consts[in.c].data)));
+          auto [line, col] = chunk_pos_at(c, i);
+          auto recv = load_slot(in.b);
+          // has-own is computed here rather than carried from PropVal: the
+          // receiver's register is live until the statement sweep, so there
+          // is no window the AST path's "while the receiver is still live"
+          // ordering protects against.
+          j.emit_reject_bare_builtin_method(load_slot(in.a),
+                                            j.emit_has_own_field(recv, key),
+                                            recv, key, line, col);
+          break;
+        }
         case Op::IndexWr:
         case Op::IndexCo: {
           // The write-context reads — the read halves of the JIT's
@@ -4380,11 +4648,19 @@ struct Lowering {
           b.CreateStore(j.make_func(cls), slots[in.a]);
           break;
         }
-        case Op::Call: {
+        case Op::Call:
+        case Op::CallM: {
+          // One arm for both: a method call differs only in where the arg run
+          // starts (its head slot is the receiver) and in what rides the ABI's
+          // receiver pair. culebra_runtime_call_receiver is not mirrored — see
+          // the executor's CallM.
+          bool meth = in.op == Op::CallM;
+          int32_t argBase = in.c + (meth ? 1 : 0);
           auto [line, col] = chunk_pos_at(c, i);
           b.CreateCall(j.module_->getOrInsertFunction(
                            rt::set_call_site, b.getVoidTy(), i64Ty, i64Ty),
                        {b.getInt64(line), b.getInt64(col)});
+          auto selfV = meth ? load_slot(in.c) : nullptr;
           auto calleeV = load_slot(in.b);
           auto tag = j.extract_tag(calleeV);
           auto isFunc = b.CreateICmpEQ(tag, b.getInt8(TAG_FUNC));
@@ -4415,22 +4691,26 @@ struct Lowering {
               auto* dstp = b.CreateConstGEP2_64(
                   ArrayType::get(j.valueType_, in.d), slab, 0,
                   static_cast<uint64_t>(k));
-              b.CreateStore(load_slot(in.c + k), dstp);
+              b.CreateStore(load_slot(argBase + k), dstp);
             }
           } else {
             slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
           }
           auto* retTmp = eb.CreateAlloca(j.valueType_, nullptr, "call.ret");
           auto jitFnTy = jit_fn_type(b, ptrTy);
-          // The callee consumes each arg's +1 on every exit (the JitFn ABI),
-          // so the arg slots go nil BEFORE the call — the slab alloca keeps
-          // the values alive for the callee, and a region's release ladder
-          // cannot double-release them on the unwind edge.
+          // The callee consumes each arg's +1 — and a method call's receiver
+          // too — on every exit (the JitFn ABI), so those slots go nil BEFORE
+          // the call: the slab alloca keeps the values alive for the callee,
+          // and a region's release ladder cannot double-release them on the
+          // unwind edge.
           for (int32_t k = 0; k < in.d; ++k)
-            b.CreateStore(j.make_nil(), slots[in.c + k]);
+            b.CreateStore(j.make_nil(), slots[argBase + k]);
+          if (meth) b.CreateStore(j.make_nil(), slots[in.c]);
           j.emit_call(jitFnTy, fnPtr,
-                      {retTmp, clsPtr, b.getInt8(TAG_NO_SELF),
-                       b.getInt64(0), b.getInt64(in.d), slab});
+                      {retTmp, clsPtr,
+                       meth ? j.extract_tag(selfV) : b.getInt8(TAG_NO_SELF),
+                       meth ? j.extract_data(selfV) : b.getInt64(0),
+                       b.getInt64(in.d), slab});
           b.CreateStore(b.CreateLoad(j.valueType_, retTmp), slots[in.a]);
           break;
         }

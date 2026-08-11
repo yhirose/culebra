@@ -1,0 +1,54 @@
+# `x.m(args)` on an object receiver: the property resolves, then the call runs
+# with the receiver as `self`. `range()` returns an iterator object whose
+# `next` / `has_next` are ordinary closure members.
+let d = range(0, 3)
+println(d.has_next())
+println(d.next())
+println(d.next())
+println(d.next())
+println(d.has_next())
+
+# Pulled out as a value it stays bound to the same iterator.
+let e = range(0, 2)
+let step = e.next
+println(step())
+println(e.next())
+
+# Receiver first, then the arguments, left to right.
+fn recv() {
+  println('recv')
+  range(0, 3)
+}
+fn arg(n) {
+  println('arg')
+  n
+}
+let sink = fn (x) { x }
+println(sink(recv().next()))
+println(arg(1) + arg(2))
+
+# Chains: the call's result is the next link's receiver.
+println(Math.abs(0 - Math.abs(-4)))
+println((0..3).start + range(0, 9).next())
+
+# `?.` short-circuits the arguments too — `boom` never runs.
+fn boom() { throw 'no' }
+let z = nil
+println(z?.next())
+println(z?.next(boom()))
+println(z?.next().start)
+
+# A method call inside try/catch and inside a function frame.
+let f = fn () {
+  let it = range(5, 9)
+  it.next()
+}
+println(f())
+try {
+  let it = range(0, 1)
+  println(it.next())
+  println(it.has_next())
+  throw 'stop'
+} catch err {
+  println('caught')
+}
