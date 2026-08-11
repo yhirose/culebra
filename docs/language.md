@@ -4502,6 +4502,10 @@ of each `next`:
 | `has_next` | `fn () -> Bool` | an **Iterator** | whether another element is available |
 | `next` | `fn () -> Any` | an **Iterator** | the next element (called only when `has_next()` was truthy) |
 
+A built-in iterator called past its end yields `nil` rather than
+raising, the same as a drained generator. Since `nil` is also a
+perfectly good element, gate on `has_next()` to tell the two apart.
+
 **Contract, enforced at property assignment**: binding `iter`,
 `has_next` or `next` to a non-`Function` value, or to a function with
 non-zero arity, raises `DropContractError: type error: '<name>' must be

@@ -4271,6 +4271,10 @@ inspect(prices.iter().map(|(k, v)| (v, k)).to_object())
 | `has_next` | `fn () -> Bool` | **Iterator** | 次の要素があるか |
 | `next` | `fn () -> Any` | **Iterator** | 次の要素（`has_next()`が真だったときだけ呼ばれる） |
 
+組み込みイテレータを終端より先で呼ぶと、例外ではなく`nil`が返ります
+（汲み尽くしたgeneratorと同じ）。`nil`自体も要素になりうるので、
+両者を区別したいときは`has_next()`でゲートしてください。
+
 **契約（プロパティ代入時に検査）**: `iter` / `has_next` / `next`を
 非`Function`値、または引数ありのFunctionに束縛すると、代入時点で
 `DropContractError: type error: '<name>' must be a Function taking no

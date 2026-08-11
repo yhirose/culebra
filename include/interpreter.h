@@ -3414,10 +3414,11 @@ inline Value _make_iterator(AdvanceFn&& advance,
       Value(FunctionValue({}, [state, ensure](
                                   std::shared_ptr<Environment> callEnv) {
         ensure(callEnv);
-        if (state->done) {
-          throw CulebraError("StopIteration",
-                             "next() called on a drained iterator");
-        }
+        // Past the end yields nil, the JIT trampoline's contract
+        // (_iter_trampoline_next_fn) and the one a generator's lowered
+        // `next` already had on both backends. §18.5 only ever promises
+        // `next` behind a truthy `has_next`, so nothing rests on this.
+        if (state->done) return Value();
         auto v = std::move(*state->cached);
         state->cached.reset();
         state->ready = false;

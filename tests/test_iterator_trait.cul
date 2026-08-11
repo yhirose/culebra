@@ -90,6 +90,20 @@ assert_eq(it.next(), 1)
 assert_eq(it.next(), 2)
 assert_eq(it.has_next(), false)
 
+// --- next() past the end yields nil, on every source and every backend ---
+// §18.5 only promises `next` behind a truthy `has_next`; a drained built-in
+// wrapper used to throw on the interpreter alone.
+assert_eq(it.next(), nil)
+assert_eq(it.next(), nil)
+let drained = [1].iter()
+drained.next()
+assert_eq(drained.next(), nil)
+let chained = [1].iter().map(fn (x) {
+  x
+})
+chained.next()
+assert_eq(chained.next(), nil)
+
 // --- Iterator pipeline methods compose under the new protocol ---
 let doubled = [1, 2, 3].iter().map(fn (x) {
   x * 2
