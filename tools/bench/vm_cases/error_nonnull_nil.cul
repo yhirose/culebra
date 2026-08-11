@@ -1,0 +1,4 @@
+# `!!` on nil: NilError anchored at the `!!` token itself (not the
+# chain head).
+let a = [1, nil]
+println(a[1]!!)

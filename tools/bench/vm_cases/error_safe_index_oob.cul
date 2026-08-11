@@ -1,0 +1,3 @@
+# A non-nil receiver flows through the plain index errors: uncaught
+# IndexError, anchored at the chain head.
+println([1]?[5])

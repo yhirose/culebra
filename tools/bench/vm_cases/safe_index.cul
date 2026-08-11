@@ -1,0 +1,90 @@
+# Safe index `a?[k]` and non-null assert `x!!` — a nil receiver at any
+# `?[` collapses the whole remaining postfix chain to nil (key
+# expressions and later steps stay unevaluated); a non-nil receiver
+# flows through the plain Index dispatch unchanged.
+let a = [10, 20, 30]
+println(a?[0])
+println(a?[-1])
+let tp = (1, 2)
+println(tp?[1])
+let n = nil
+println(n?[0])
+println(n?[0] ?? 7)
+
+# Whole-chain collapse: later indexes, calls, and `!!` are all skipped.
+println(n?[0][5])
+println(n?[0](99))
+println(n?[0]!!)
+let hole = [nil]
+println(hole?[0]?[3])
+println(hole[0]?[3])
+let m = [[1, 2]]
+println(m?[0]?[1])
+println(m?[0][1])
+
+# The key expression must not run when the receiver is nil.
+fn t(x, v) {
+  println(x)
+  v
+}
+println(n?[t("key", 0)])
+println(n?[t("s", 0)..t("e", 2)])
+println(a?[t("live", 1)])
+
+# Range keys ride the same dispatch: literal, stored, string view.
+println(a?[1..3])
+println(a?[1..])
+let r = 0..=1
+println(a?[r])
+println(n?[r])
+let s = "abcd"
+println(s?[1..3])
+
+# A call result chains into `?[`, and a safe-indexed closure calls on.
+fn f() {
+  [10, 20, 30]
+}
+println(f()?[1])
+let fs = [fn (x) { x + 1 }]
+println(fs?[0](2))
+
+# Object receiver (a plain `range()` object): present key reads, missing
+# key is a catchable KeyError — the plain Index arms, unchanged.
+let ro = range(0, 3)
+println(ro?["start"])
+mut marker = ""
+try {
+  ro?["zzz"]
+} catch e {
+  marker = "keyerror"
+}
+println(marker)
+
+# Parens break the chain: the collapse must not leak past them.
+try {
+  (n?[0])[5]
+} catch e {
+  marker = "paren"
+}
+println(marker)
+
+# The merge temp is re-fresh each iteration: both diamond paths in a loop.
+mut k = 0
+mut acc = 0
+while k < 4 {
+  let recv = if k % 2 == 0 { nil } else { a }
+  acc += recv?[0] ?? 50
+  k += 1
+}
+println(acc)
+
+# `!!` on a non-nil value passes it through unchanged.
+println(a?[0]!!)
+println(a[0]!!)
+let maybe = [1, nil]
+try {
+  maybe[1]!!
+} catch e {
+  marker = "nonnull"
+}
+println(marker)

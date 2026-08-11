@@ -135,6 +135,10 @@ enum class Op : uint8_t {
                // a range endpoint's strictness check, emitted between
                // endpoint compiles so `0.5..t()` throws before t() runs
                // (the JIT's value_to_long-after-each-compile order).
+  NilChk,      // `expr!!`: if regs[a] is nil, throw NilError at this
+               // instruction's position (the `!!` token — both backends'
+               // anchor, unlike the index errors' chain-head). Usually
+               // falls through; the value passes unchanged.
   Index,       // regs[a] = regs[b][regs[c]] (+1). A range-valued key
                // (is_range — the full-shape gate) slices the receiver via
                // culebra_runtime_slice (Array copy / String view / Tuple
@@ -162,6 +166,10 @@ enum class Op : uint8_t {
   JumpIfFalse, // if !to_bool(regs[a]) pc = b (strict Bool truthiness)
   JumpIfTrue,  // if to_bool(regs[a]) pc = b
   JumpIfNotNil,// if regs[a].tag != TAG_NIL pc = b (`??` short-circuit)
+  JumpIfNil,   // if regs[a].tag == TAG_NIL pc = b — a `?[` receiver guard:
+               // the target is the chain's merge point, so a nil receiver
+               // collapses the whole remaining postfix chain (key
+               // expressions included) to nil, both backends' safe-nav
   JumpIfTag,   // if regs[a].tag == c pc = b — a pattern's tag gate; a
                // match test never throws, so it carries no position
 
@@ -1452,12 +1460,22 @@ class Compiler {
            a0.tag != "KWARG_SPLAT"_ && a0.original_tag != "KWARG_SPLAT"_;
   }
 
-  // Postfix chain: `f(x)`, `a[i]`, and their compositions (`n[i][j]`,
-  // `f()[k]`, `a[i](x)`), folded left to right over one rolling result —
-  // the compile_assign_complex receiver walk, minus the DOT forms (method
-  // calls and property access stay out of slice).
+  // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x!!`, and their compositions
+  // (`n[i][j]`, `f()[k]`, `a[i](x)`), folded left to right over one rolling
+  // result — the compile_assign_complex receiver walk, minus the DOT forms
+  // (method calls and property access stay out of slice). A `?[` chain
+  // routes every exit through one merge temp (begin_safe_nav's diamond,
+  // compile_if's nil-fresh result discipline): each guard's JumpIfNil
+  // targets the merge point past the store, so a nil receiver skips the
+  // rest of the chain — key expressions and `!!` checks included — and
+  // leaves the merge temp nil.
   ExprResult compile_call(const peg::Ast& ast) {
     using namespace peg::udl;
+    bool has_safe = false;
+    for (size_t i = 1; i < ast.nodes.size(); ++i)
+      if (ast.nodes[i]->original_tag == "SAFE_INDEX"_) has_safe = true;
+    int32_t out = has_safe ? alloc_temp(ast) : -1;
+    std::vector<size_t> nil_jumps;
     auto res = compile_expr(*ast.nodes[0]);
     for (size_t i = 1; i < ast.nodes.size(); ++i) {
       const auto& post = *ast.nodes[i];
@@ -1465,12 +1483,19 @@ class Compiler {
         res = compile_call_step(ast, post, res);
       else if (post.original_tag == "INDEX"_)
         res = compile_index_read(ast, post, res, Op::Index);
-      else if (post.original_tag == "SAFE_INDEX"_)
-        reject(post, "safe index");
-      else
+      else if (post.original_tag == "SAFE_INDEX"_) {
+        nil_jumps.push_back(emit(Op::JumpIfNil, res.slot));
+        res = compile_index_read(ast, post, res, Op::Index);
+      } else if (post.original_tag == "NONNULL"_) {
+        StampGuard pos(*this, post);
+        emit(Op::NilChk, res.slot);
+      } else
         reject(post, "call chain / method call");
     }
-    return res;
+    if (!has_safe) return res;
+    store_into(out, res, /*dst_is_fresh=*/true);
+    for (size_t j : nil_jumps) patch_to_here(j);
+    return {out, true};
   }
 
   // One argument-list postfix: positional args in a contiguous run of
@@ -2245,9 +2270,10 @@ inline std::string dump(const Chunk& c) {
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "ArrayPush", "ArrayExtend", "ArrayResize",
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
-      "RangeNew",  "ChkLong",
+      "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
-      "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfTag",
+      "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
+      "JumpIfTag",
       "MakeClosure", "Call",    "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "UnboundErr", "MultifnReg", "NsGet",
@@ -2799,6 +2825,15 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::NilChk: {
+          if (regs[in.a].tag == TAG_NIL) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            culebra_runtime_throw_error("NilError", "`!!` applied to nil",
+                                        line, col);
+          }
+          ++pc;
+          break;
+        }
         case Op::Index:
         case Op::IndexWr: {
           const JitValue& recv = regs[in.b];
@@ -2961,6 +2996,10 @@ struct Exec {
           break;
         case Op::JumpIfNotNil:
           if (regs[in.a].tag != TAG_NIL) pc = static_cast<size_t>(in.b);
+          else ++pc;
+          break;
+        case Op::JumpIfNil:
+          if (regs[in.a].tag == TAG_NIL) pc = static_cast<size_t>(in.b);
           else ++pc;
           break;
         case Op::JumpIfTag:
@@ -3404,6 +3443,7 @@ struct Lowering {
         case Op::JumpIfFalse:
         case Op::JumpIfTrue:
         case Op::JumpIfNotNil:
+        case Op::JumpIfNil:
         case Op::JumpIfTag:
           mark(in.b);
           mark(static_cast<int32_t>(i) + 1);
@@ -3672,6 +3712,21 @@ struct Lowering {
           // payload is discarded.
           j.value_to_long(load_slot(in.a));
           break;
+        case Op::NilChk: {
+          // emit_nonnull_assert's shape, with the position from the chunk
+          // table (the `!!` token's stamp).
+          auto isNil = b.CreateICmpEQ(j.extract_tag(load_slot(in.a)),
+                                      b.getInt8(TAG_NIL), "vm.nonnull.isnil");
+          auto errBB = BasicBlock::Create(j.ctx_, "vm.nonnull.nil", fn);
+          auto okBB = BasicBlock::Create(j.ctx_, "vm.nonnull.ok", fn);
+          b.CreateCondBr(isNil, errBB, okBB);
+          b.SetInsertPoint(errBB);
+          j.emit_throw_error("NilError", "`!!` applied to nil",
+                             j.current_line_, j.current_column_);
+          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          b.SetInsertPoint(okBB);
+          break;
+        }
         case Op::Index: {
           // emit_point_index consumes the key on its returning paths and
           // releases both operands on its throw edges — and the slice arm's
@@ -3902,6 +3957,13 @@ struct Lowering {
           auto notNil = b.CreateICmpNE(j.extract_tag(load_slot(in.a)),
                                        b.getInt8(TAG_NIL), "notnil");
           b.CreateCondBr(notNil, blocks.at(in.b),
+                         blocks.at(static_cast<int32_t>(i) + 1));
+          break;
+        }
+        case Op::JumpIfNil: {
+          auto isNil = b.CreateICmpEQ(j.extract_tag(load_slot(in.a)),
+                                      b.getInt8(TAG_NIL), "isnil");
+          b.CreateCondBr(isNil, blocks.at(in.b),
                          blocks.at(static_cast<int32_t>(i) + 1));
           break;
         }
