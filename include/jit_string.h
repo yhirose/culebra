@@ -49,6 +49,36 @@ inline JitValue _jit_slot_or_nil(const JitObject* obj, std::string_view k) {
                                       : obj->slots[i].value;
 }
 
+// A value is a Range only when it carries the full shape `a..b` builds:
+// class:"Range", start/end Long or Nil, inclusive Bool, step Long (or
+// absent). A hand-built partial `{class:"Range"}` dict stays an ordinary
+// Object — point-key lookup, generic display, method iteration — instead
+// of slicing with unchecked slot reads. Shared by every class=="Range"
+// gate (slice dispatch, display, for-in coercion) so the shape rule
+// cannot drift; the interpreter's is_range_value is the mirror.
+inline bool _jit_is_range_shaped(const JitObject* obj) {
+  auto cls = _jit_slot_or_nil(obj, "class");
+  if (cls.tag != TAG_STRING ||
+      std::string_view(reinterpret_cast<const char*>(cls.data)) != "Range") {
+    return false;
+  }
+  auto long_or_nil = [&](std::string_view k) {
+    auto i = obj->find_slot(k);
+    if (i == static_cast<size_t>(-1)) return false;
+    auto t = obj->slots[i].value.tag;
+    return t == TAG_LONG || t == TAG_NIL;
+  };
+  if (!long_or_nil("start") || !long_or_nil("end")) return false;
+  auto inc = obj->find_slot("inclusive");
+  if (inc == static_cast<size_t>(-1) ||
+      obj->slots[inc].value.tag != TAG_BOOL) {
+    return false;
+  }
+  auto step = obj->find_slot("step");
+  return step == static_cast<size_t>(-1) ||
+         obj->slots[step].value.tag == TAG_LONG;
+}
+
 // Internal helper (C++ - not extern C, but inline to satisfy ODR)
 inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
   switch (type) {
@@ -136,11 +166,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       // Range value: print in source form (`1..3`, `2..`, `..3`, `..`,
       // `1..=3`) rather than as a raw object (matches the interpreter).
       {
-        auto cidx = obj->find_slot("class");
-        if (cidx != static_cast<size_t>(-1) &&
-            obj->slots[cidx].value.tag == TAG_STRING &&
-            std::string_view(reinterpret_cast<const char*>(
-                obj->slots[cidx].value.data)) == "Range") {
+        if (_jit_is_range_shaped(obj)) {
           auto sv = _jit_slot_or_nil(obj, "start");
           auto ev = _jit_slot_or_nil(obj, "end");
           auto iv = _jit_slot_or_nil(obj, "inclusive");

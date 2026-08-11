@@ -1804,22 +1804,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_make_range(
   return o;
 }
 
-// True iff `tag:data` is a range value (an Object carrying class:"Range").
+// True iff `tag:data` is a range value — an Object carrying the full
+// Range shape (_jit_is_range_shaped), not just a class:"Range" tag.
 // Cheap: a non-Object short-circuits on the tag before any slot scan.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_range(
     int8_t tag, int64_t data) {
   if (tag != TAG_OBJECT) return 0;
-  auto* o = reinterpret_cast<JitObject*>(data);
-  auto idx = o->find_slot("class");
-  if (idx == static_cast<size_t>(-1) ||
-      o->slots[idx].value.tag != TAG_STRING) {
-    return 0;
-  }
-  return std::string_view(
-             reinterpret_cast<const char*>(o->slots[idx].value.data)) ==
-                 "Range"
-             ? 1
-             : 0;
+  return _jit_is_range_shaped(reinterpret_cast<JitObject*>(data)) ? 1 : 0;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(

@@ -2477,7 +2477,14 @@ inline culebra::RangeBounds _grid_bounds_from_range(int8_t t, int64_t d,
                                                      const char* ctx,
                                                      int64_t line,
                                                      int64_t col) {
-  culebra_runtime_type_check(t, d, "Range", ctx, line, col);
+  // Shape-gated (not just the class tag) so a hand-built partial Range
+  // dict fails here instead of reading garbage bounds below.
+  if (t != TAG_OBJECT ||
+      !_jit_is_range_shaped(reinterpret_cast<JitObject*>(d))) {
+    throw culebra::CulebraError(
+        "TypeError", std::format("type error: {} expects Range", ctx), line,
+        col);
+  }
   auto b = _range_bounds_from_object(reinterpret_cast<JitObject*>(d),
                                      line, col);
   culebra_runtime_range_step_check(b.step, line, col);

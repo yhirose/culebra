@@ -3044,6 +3044,29 @@ inline std::optional<std::string_view> class_tag(const Value& val) {
   return std::string_view(cn.template get<std::string>());
 }
 
+// A value is a Range only when it carries the full shape `a..b` builds:
+// class:"Range", start/end Long or Nil, inclusive Bool, step Long (or
+// absent). A hand-built partial `{class:"Range"}` dict stays an ordinary
+// Object — point-key lookup, generic display, method iteration — instead
+// of crashing the unchecked slot reads. Every class=="Range" gate (slice
+// dispatch, display, for-in, grid) goes through here so the shape rule
+// cannot drift; the JIT runtime's _jit_is_range_shaped is the mirror.
+inline bool is_range_value(const Value& val) {
+  auto ct = class_tag(val);
+  if (!ct || *ct != "Range") return false;
+  const auto& obj = val.to_object();
+  auto long_or_nil = [&](std::string_view k) {
+    if (!obj.has(k)) return false;
+    auto t = obj.get(k).type;
+    return t == Value::Long || t == Value::Nil;
+  };
+  if (!long_or_nil("start") || !long_or_nil("end")) return false;
+  if (!obj.has("inclusive") || obj.get("inclusive").type != Value::Bool) {
+    return false;
+  }
+  return !obj.has("step") || obj.get("step").type == Value::Long;
+}
+
 inline bool type_matches(const Value& val, std::string_view name) {
   if (name == "Any") return true;
   // Union types (e.g. `Long | Float`) — any-of match. Recursively
@@ -3229,16 +3252,16 @@ inline std::string Value::str_object() const {
   const auto& properties = *obj.properties;
   // Range value: print in source form (`1..3`, `2..`, `..3`, `..`,
   // `1..=3`) rather than as a raw object.
-  if (auto rt = class_tag(*this); rt && *rt == "Range") {
+  if (is_range_value(*this)) {
     const auto& s_v = obj.get("start");
     const auto& e_v = obj.get("end");
     std::string out;
     if (s_v.type != Value::Nil) out += s_v.str();
     out += obj.get("inclusive").to_bool() ? "..=" : "..";
     if (e_v.type != Value::Nil) out += e_v.str();
-    const auto& step_v = obj.get("step");
-    if (step_v.type != Value::Nil && step_v.to_long() != 1) {
-      out += " by " + std::to_string(step_v.to_long());
+    // `step` is Long when present (the shape gate); absent reads as 1.
+    if (obj.has("step") && obj.get("step").to_long() != 1) {
+      out += " by " + std::to_string(obj.get("step").to_long());
     }
     return out;
   }
@@ -4135,8 +4158,9 @@ inline RangeBounds range_bounds(const ObjectValue& obj, size_t line,
     throw CulebraError("TypeError", "cannot iterate an unbounded range",
         static_cast<long>(line), static_cast<long>(col));
   }
-  const auto& step_v = obj.get("step");
-  int64_t step = step_v.type == Value::Nil ? 1 : step_v.to_long();
+  // `step` is Long when present (the is_range_value gate); absent reads
+  // as 1 (older/manually-built range objects).
+  int64_t step = obj.has("step") ? obj.get("step").to_long() : 1;
   if (step == 0) {
     throw CulebraError("ValueError", "range() step must not be zero",
         static_cast<long>(line), static_cast<long>(col));
@@ -4150,7 +4174,7 @@ inline RangeBounds range_bounds(const ObjectValue& obj, size_t line,
 // the given source location if the value is not iterable.
 inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
   Value iter_fn;
-  if (auto ct = class_tag(iterable); ct && *ct == "Range") {
+  if (is_range_value(iterable)) {
     return _iter_over_range(range_bounds(iterable.to_object(), line, col));
   }
   if (iterable.type == Value::String ||
@@ -4376,7 +4400,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
          // for-in path (_get_iterator). Without this, `(0..n).iter()` (which
          // the generator for-in desugar emits) walked the Range object's
          // fields instead of its elements.
-         if (auto ct = class_tag(self); ct && *ct == "Range") {
+         if (is_range_value(self)) {
            return _get_iterator(self, 0, 0);
          }
          return _object_iterator(self.to_object(), ObjectIterMode::Pairs);
@@ -7164,8 +7188,16 @@ inline void setup_core_globals(Environment& env) {
             }
             auto expect_range = [&](const Value& v,
                                     const char* pname) -> RangeBounds {
-              check_type(v, "Range", std::format("parameter '{}'", pname),
-                        static_cast<size_t>(line), static_cast<size_t>(col));
+              // Shape-gated (not just the class tag) so a hand-built
+              // partial Range dict fails here instead of crashing the
+              // slot reads in range_bounds.
+              if (!is_range_value(v)) {
+                throw CulebraError(
+                    "TypeError",
+                    std::format("type error: parameter '{}' expects Range",
+                                pname),
+                    line, col);
+              }
               return range_bounds(v.to_object(), static_cast<size_t>(line),
                                   static_cast<size_t>(col));
             };
@@ -7719,7 +7751,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     const peg::Ast* nb = fv.nobreak;
     bool completed;
 
-    if (auto ct = class_tag(iterable); ct && *ct == "Range") {
+    if (is_range_value(iterable)) {
       // A bounded range walks a plain counter: the generic path below
       // would allocate an iterator Object per loop entry and route every
       // step through has_next()/next() method calls, which dominates a
@@ -10346,7 +10378,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // `seq[r]` where r is a range value slices instead of a point lookup:
     // Array -> shallow copy, String/StringView -> byte-unit zero-copy view,
     // Tuple -> new tuple. Works for literal (`xs[1..3]`) and stored ranges.
-    if (auto ct = class_tag(key); ct && *ct == "Range") {
+    if (is_range_value(key)) {
       return eval_slice(val, key);
     }
     // FixedArray view `arr[i]`: read element i from the inline bytes.

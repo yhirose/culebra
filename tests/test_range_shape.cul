@@ -1,0 +1,55 @@
+# Range values are recognized structurally, not by the class tag alone:
+# class:"Range", start/end Long or Nil, inclusive Bool, step Long (or
+# absent). A hand-built partial `{class:"Range"}` dict is an ordinary
+# Object on every backend — the slice/iteration/display gates used to
+# split (interp crashed the unchecked slot reads with a raw C++ error,
+# the JIT sliced with unchecked bounds).
+
+let a = [1, 2, 3]
+
+# A complete hand-built shape is indistinguishable from `a..b` and slices.
+let complete = {"class": "Range", "start": 1, "end": 3, "inclusive": false}
+assert_eq(a[complete], [2, 3])
+let stepped = {"class": "Range", "start": 1, "end": 3, "inclusive": false, "step": 1}
+assert_eq(a[stepped], [2, 3])
+
+# Partial or mistyped shapes are plain Objects: a point-key lookup on an
+# Array rejects the Object key.
+let partial = {"class": "Range"}
+mut caught = ""
+try {
+  a[partial]
+} catch e {
+  caught = "point-key"
+}
+assert_eq(caught, "point-key")
+
+let mistyped = {"class": "Range", "start": "x", "end": 3, "inclusive": false, "step": 1}
+caught = ""
+try {
+  a[mistyped]
+} catch e {
+  caught = "point-key"
+}
+assert_eq(caught, "point-key")
+
+# Display: a real range prints in source form, a partial fake generically.
+let r13 = 1..3
+assert_eq("{r13}", "1..3")
+assert_eq("{partial}", 'Range {}')
+
+# Iteration: a partial fake walks its (key, value) pairs like any Object.
+mut pairs = []
+for kv in partial {
+  pairs.push(kv)
+}
+assert_eq(pairs, [("class", "Range")])
+
+# grid() rejects a partial fake with the parameter type error.
+caught = ""
+try {
+  grid(partial, partial)
+} catch e {
+  caught = e.message
+}
+assert_eq(caught, "type error: parameter 'x_range' expects Range")
