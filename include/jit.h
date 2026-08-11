@@ -68,6 +68,7 @@
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"  // JIT memory manager
 #include "llvm/Support/Memory.h"  // sys::Memory / MemoryBlock (near-image mapper)
 #include <cxxabi.h>  // __cxa_begin_catch / __cxa_end_catch / __cxa_rethrow
+#include <unwind.h>  // _Unwind_Resume_or_Rethrow (the rethrow relay's exit)
 // The mingw SEH personality has no public header; declare it to take its address
 // for the JIT's absolute-symbol map (see JIT::define_windows_eh_symbols).
 extern "C" int __gxx_personality_seh0(...);
@@ -275,6 +276,8 @@ struct JIT {
     std::vector<llvm::Value*> unwind_temp_slots;
     std::vector<llvm::Value*> unwind_covered;
     bool emitting_unwind_cleanup;
+    // The nested body's cleanup pads need a slot in *their* entry block.
+    llvm::Value* exc_slot;
     bool in_receiver_frame;
     // A nested fn's own if/cond arms start counting from zero — the
     // enclosing fn's still-open conditional context (if the nested fn
@@ -305,6 +308,7 @@ struct JIT {
           unwind_covered(std::exchange(j.unwind_covered_, {})),
           emitting_unwind_cleanup(
               std::exchange(j.emitting_unwind_cleanup_, false)),
+          exc_slot(std::exchange(j.exc_slot_, nullptr)),
           in_receiver_frame(std::exchange(j.in_receiver_frame_, false)),
           conditional_depth(std::exchange(j.conditional_depth_, 0)) {}
 
@@ -327,6 +331,7 @@ struct JIT {
       jit->unwind_temp_slots_ = std::move(unwind_temp_slots);
       jit->unwind_covered_ = std::move(unwind_covered);
       jit->emitting_unwind_cleanup_ = emitting_unwind_cleanup;
+      jit->exc_slot_ = exc_slot;
       jit->in_receiver_frame_ = in_receiver_frame;
       jit->conditional_depth_ = conditional_depth;
       jit->iter_cleanup_stack_ = std::move(iter_cleanup);
@@ -538,28 +543,60 @@ struct JIT {
     return emit_call(llvm::FunctionCallee(fty, fnPtr), args, name);
   }
 
-  // Re-raise the currently-handled exception (inside a catch-all
-  // cleanup landingpad). If `outerLpad` is non-null, invoke
-  // `__cxa_rethrow` with it as the unwind target so the exception
-  // reaches that outer lpad within the same LLVM function; otherwise
-  // a plain call lets the exception propagate out to the caller.
-  // `drained` says this pad has already emptied the unwind-temp pool, so the
-  // edge carries none of it onward; the default assumes the worst, which costs
-  // an outer rung a wider drain but can never leave a temporary behind.
-  void emit_rethrow(llvm::BasicBlock* outerLpad, bool drained = false) {
+  // Re-raise from a pad that *handled* the exception — it called
+  // `__cxa_begin_catch`, so the ABI's handler count is open and has to be
+  // closed again before the exception travels on. The only such re-raise is
+  // emit_lpad_classify's foreign arm; a cleanup pad never opens the exception
+  // at all (see CleanupPad) and continues the unwind directly.
+  //
+  // If `outerLpad` is non-null the exception reaches that pad within the same
+  // LLVM function; otherwise it propagates out to the caller.
+  void emit_handler_rethrow(llvm::BasicBlock* outerLpad,
+                            bool drained = false) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto rethrowFn = module_->getOrInsertFunction(
         "__cxa_rethrow", builder_.getVoidTy());
     auto fn = builder_.GetInsertBlock()->getParent();
     outerLpad = resolve_lpad(outerLpad, drained ? 0 : SIZE_MAX);
+
+    // `__cxa_rethrow` negates the exception's handler count and restarts the
+    // unwind; the ABI closes the rethrowing handler on the rethrow's own
+    // unwind edge, which is where this pad's `__cxa_begin_catch`
+    // (emit_handler_prologue) is paired off. Same shape GCC emits for
+    // `catch (...) { throw; }`. Without the pairing the count never returns to
+    // zero, so libsupc++ never runs `_Unwind_DeleteException` and the
+    // exception object is stranded. The `end_catch` belongs on this edge and
+    // not at the receiving pad's head: that pad also collects ordinary invoke
+    // edges, where ending a catch would discard a live exception.
+    auto relayBB = llvm::BasicBlock::Create(ctx_, "rethrow.relay", fn);
+    auto deadBB = llvm::BasicBlock::Create(ctx_, "rethrow.dead", fn);
+    builder_.CreateInvoke(rethrowFn, deadBB, relayBB, {});
+    builder_.SetInsertPoint(deadBB);
+    builder_.CreateUnreachable();
+
+    emit_landingpad(relayBB, "rethrow.exc", /*open=*/false);
+    builder_.CreateCall(
+        module_->getOrInsertFunction("__cxa_end_catch", builder_.getVoidTy()));
+    auto excPtr = builder_.CreateLoad(ptrTy, exception_slot(), "exc");
+    // The exception is closed but still alive (a rethrown handler's end_catch
+    // pops it without deleting): carry it on to the enclosing pad in this
+    // frame, or out of the function when there is none.
+    auto resumeFn = module_->getOrInsertFunction(rt_unwind_resume,
+                                                 builder_.getInt32Ty(), ptrTy);
     if (outerLpad) {
-      auto deadBB = llvm::BasicBlock::Create(ctx_, "rethrow.dead", fn);
-      builder_.CreateInvoke(rethrowFn, deadBB, outerLpad, {});
-      builder_.SetInsertPoint(deadBB);
+      auto goneBB = llvm::BasicBlock::Create(ctx_, "rethrow.gone", fn);
+      builder_.CreateInvoke(resumeFn, goneBB, outerLpad, {excPtr});
+      builder_.SetInsertPoint(goneBB);
     } else {
-      builder_.CreateCall(rethrowFn, {});
+      builder_.CreateCall(resumeFn, {excPtr});
     }
     builder_.CreateUnreachable();
   }
+
+  // Itanium-ABI unwinder entry the rethrow relay continues on (libgcc; the
+  // same call `__cxa_rethrow` makes internally). Named once so the Windows
+  // absolute-symbol table below and the emitter cannot drift apart.
+  static constexpr const char* rt_unwind_resume = "_Unwind_Resume_or_Rethrow";
 
   // Exception-safe incremental construction of a heap value (a container
   // literal appends elements; each element expression can throw). Returns an
@@ -604,21 +641,39 @@ struct JIT {
     clear_pending_guard(guard);
   }
 
-  // Catch-all cleanup-landingpad prologue at `cleanupBB`: landingpad + null
-  // clause + `__cxa_begin_catch`, leaving the insertion point in `cleanupBB`.
-  // Shared by every hand-rolled cleanup landingpad.
-  llvm::LandingPadInst* emit_catch_all_prologue(llvm::BasicBlock* cleanupBB,
-                                                const char* name) {
+  // Catch-all landingpad at `padBB`, leaving the insertion point there.
+  // `open` says whether this pad takes the exception over: a pad that *ends*
+  // the throw (emit_lpad_classify's handled arm, the iterator dispose
+  // swallow) opens it with `__cxa_begin_catch` and owes exactly one
+  // `__cxa_end_catch`; a pad that only cleans up and hands the throw on does
+  // not (CleanupPad), so the ABI's handler count reaches the real handler
+  // untouched and the exception object is freed exactly once.
+  llvm::LandingPadInst* emit_landingpad(llvm::BasicBlock* padBB,
+                                        const char* name, bool open) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    builder_.SetInsertPoint(cleanupBB);
+    builder_.SetInsertPoint(padBB);
     auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
     auto lpad = builder_.CreateLandingPad(lpadTy, 1, name);
+    // Catch-all rather than `cleanup`: phase 1 stops at the innermost pad, so
+    // `defer` and `drop` run even for a throw nothing catches — the guarantee
+    // docs/language.md makes — instead of depending on a handler further out.
     lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));
     auto excPtr = builder_.CreateExtractValue(lpad, {0});
-    builder_.CreateCall(
-        module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
-        {excPtr});
+    if (open) {
+      builder_.CreateCall(
+          module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
+          {excPtr});
+    } else {
+      builder_.CreateStore(excPtr, exception_slot());
+    }
     return lpad;
+  }
+
+  // A pad that handles the exception: opens it, and owes an `__cxa_end_catch`
+  // on every path out (emit_handler_rethrow provides it for the re-raising one).
+  llvm::LandingPadInst* emit_handler_prologue(llvm::BasicBlock* padBB,
+                                              const char* name) {
+    return emit_landingpad(padBB, name, /*open=*/true);
   }
 
   // Catch-all landingpad + carrier classification, shared by compile_try
@@ -633,7 +688,7 @@ struct JIT {
                           llvm::Value* depthSlot, llvm::Value* caughtSlot,
                           llvm::BasicBlock* handlerBB) {
     auto fn = lpadBB->getParent();
-    emit_catch_all_prologue(lpadBB, "exc");
+    emit_handler_prologue(lpadBB, "exc");
     builder_.CreateCall(module_->getOrInsertFunction(
         "culebra_runtime_try_translate", builder_.getVoidTy()));
     auto flagVal = builder_.CreateCall(
@@ -646,7 +701,7 @@ struct JIT {
     builder_.CreateCondBr(isOurs, handleBB, foreignBB);
 
     builder_.SetInsertPoint(foreignBB);
-    emit_rethrow(foreignTarget);
+    emit_handler_rethrow(foreignTarget);
 
     builder_.SetInsertPoint(handleBB);
     builder_.CreateCall(module_->getOrInsertFunction(
@@ -679,21 +734,12 @@ struct JIT {
   void finish_construction_cleanup(llvm::BasicBlock* cleanupBB,
                                    llvm::ArrayRef<llvm::Value*> guards,
                                    llvm::BasicBlock* outerLpad) {
-    if (llvm::pred_empty(cleanupBB)) {
-      cleanupBB->eraseFromParent();
-      return;
-    }
-    auto savedInsert = builder_.GetInsertBlock();
-    // A landingpad requires the function to carry a personality; a function
-    // with no try/catch otherwise has none. Idempotent.
-    auto fn = cleanupBB->getParent();
-    if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
-    UnwindCleanupEmission cleanup_scope(this);
-    emit_catch_all_prologue(cleanupBB, "build.lpad");
+    CleanupPad pad(*this, outerLpad, /*drained=*/true);
+    if (!pad.open(cleanupBB, "build.lpad")) return;
     // In-flight expression temporaries die first, then the partial
     // container — the same order as finish_scope_cleanup / the frame ladder.
     // Draining here and not only at the frame's ladder keeps the guarantee
-    // local: this pad re-raises to `outerLpad`, which is null for a
+    // local: this pad hands the throw to `outerLpad`, which is null for a
     // construction that is not nested inside one, so nothing downstream would
     // drain the pool. The nil-clear makes any outer pad on the same unwind
     // chain a no-op, so draining at every link never double-frees.
@@ -701,8 +747,6 @@ struct JIT {
     for (auto* guard : guards)
       emit_value_release(
           builder_.CreateLoad(valueType_, guard, "build.partial"));
-    emit_rethrow(outerLpad, /*drained=*/true);
-    builder_.SetInsertPoint(savedInsert);
   }
 
   // Throw-path cleanup for one lexical region. On the exception edge it runs the
@@ -725,17 +769,8 @@ struct JIT {
   void finish_scope_cleanup(llvm::BasicBlock* cleanupBB, const Scope& scope,
                             llvm::Value* defer_mark,
                             llvm::BasicBlock* outerLpad, const char* excName) {
-    if (llvm::pred_empty(cleanupBB)) {
-      cleanupBB->eraseFromParent();
-      return;
-    }
-    auto savedInsert = builder_.GetInsertBlock();
-    // A landingpad requires the function to carry a personality; a function
-    // with no try/defer otherwise has none. Idempotent.
-    auto fn = cleanupBB->getParent();
-    if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
-    UnwindCleanupEmission cleanup_scope(this);
-    emit_catch_all_prologue(cleanupBB, excName);
+    CleanupPad pad(*this, outerLpad, /*drained=*/true);
+    if (!pad.open(cleanupBB, excName)) return;
     // The throwing expression's in-flight temporaries die first —
     // in the interpreter they are freed as its eval frames unwind, before
     // any enclosing block's defers run.
@@ -752,8 +787,6 @@ struct JIT {
     if (defer_mark)
       builder_.CreateCall(module_->getFunction(rt::defer_run_to), {defer_mark});
     release_scope_slots(scope);
-    emit_rethrow(outerLpad, /*drained=*/true);
-    builder_.SetInsertPoint(savedInsert);
   }
 
   // Close a scope that both fills a throw-path cleanup and releases on the
@@ -1099,6 +1132,9 @@ struct JIT {
     add("__cxa_begin_catch", reinterpret_cast<void*>(&__cxa_begin_catch));
     add("__cxa_end_catch", reinterpret_cast<void*>(&__cxa_end_catch));
     add("__cxa_rethrow", reinterpret_cast<void*>(&__cxa_rethrow));
+    // Where a pad continues the unwind (CleanupPad, emit_handler_rethrow):
+    // libgcc is static here too, so the PE export table cannot supply it.
+    add(rt_unwind_resume, reinterpret_cast<void*>(&_Unwind_Resume_or_Rethrow));
     // Stack-probe helper for large-frame prologues (see the extern declaration
     // above). Missing it makes any JIT'd function with a >4 KB frame — e.g. a
     // user class method — call an unresolved address and jump into garbage.
@@ -2113,11 +2149,9 @@ struct JIT {
     }
 
     if (live > 0) {
-      // A landingpad needs the function to carry a personality; a throw-capable
-      // body with no try/defer had none set at creation (has_eh gates that).
-      // Idempotent.
-      if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
-      UnwindCleanupEmission cleanup_scope(this);
+      // The frame's rungs are entries of one cleanup region: they converge on
+      // the descent chain, whose base carries the throw out of the function.
+      CleanupPad pad(*this, /*outerLpad=*/nullptr);
       auto i64Ty = builder_.getInt64Ty();
       auto recFn = module_->getOrInsertFunction(
           rt::recursion_restore, builder_.getVoidTy(), i64Ty);
@@ -2150,15 +2184,10 @@ struct JIT {
         builder_.CreateCall(
             recFn, {builder_.CreateSub(recD, builder_.getInt64(1), "rec.d1")});
       }
-      emit_rethrow(/*outerLpad=*/nullptr);
+      auto baseBB = builder_.GetInsertBlock();
 
       for (size_t k = 0; k < live; k++) {
-        auto pad = frame_ladder_[k].pad;
-        if (llvm::pred_empty(pad)) {
-          pad->eraseFromParent();
-          continue;
-        }
-        emit_catch_all_prologue(pad, "fn.exc");
+        if (!pad.open(frame_ladder_[k].pad, "fn.exc")) continue;
         // Restore the depth this frame entered with before its defers run:
         // the frames unwound below us never ran their leaves, while interp's
         // RAII has already decremented them by the time run_deferred fires.
@@ -2177,6 +2206,8 @@ struct JIT {
         if (suppress_drop) emit_set_drop_suppressed(1);
         builder_.CreateBr(chain[k]);
       }
+      // The region's single exit sits at the end of the chain's base.
+      builder_.SetInsertPoint(baseBB);
     }
 
     frame_ladder_.clear();
@@ -2681,6 +2712,24 @@ struct JIT {
   // about to release.
   bool emitting_unwind_cleanup_ = false;
 
+  // Entry-block slot holding the exception a cleanup region is carrying, from
+  // the landingpad that receives it to the edge that hands it on. One per
+  // LLVM function: a frame unwinds one exception at a time, and between those
+  // two points a pad calls runtime helpers only — a user `drop` or `defer`
+  // body is its own function with its own slot.
+  llvm::Value* exc_slot_ = nullptr;
+
+  llvm::Value* exception_slot() {
+    if (!exc_slot_) {
+      auto fn = builder_.GetInsertBlock()->getParent();
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      exc_slot_ = entryB.CreateAlloca(llvm::PointerType::get(ctx_, 0), nullptr,
+                                      "exc.slot");
+    }
+    return exc_slot_;
+  }
+
   void cover_on_unwind(const std::vector<llvm::Value*>& vals) {
     unwind_covered_.insert(unwind_covered_.end(), vals.begin(), vals.end());
   }
@@ -2762,6 +2811,87 @@ struct JIT {
     ~UnwindCleanupEmission() { jit_->emitting_unwind_cleanup_ = prev_; }
     UnwindCleanupEmission(const UnwindCleanupEmission&) = delete;
     UnwindCleanupEmission& operator=(const UnwindCleanupEmission&) = delete;
+  };
+
+  // One lexical cleanup region's throw path: its landingpad entries, the
+  // releases they run, and the single edge that carries the throw onward.
+  //
+  // A cleanup pad does not handle the exception — it runs what the region
+  // owes (in-flight temporaries, defers, scope slots, an iterator's dispose)
+  // and hands the still-in-flight throw to the enclosing pad, or out of the
+  // function. So it never opens the exception: the ABI's handler count stays
+  // untouched until the pad that does handle it opens and closes it once,
+  // which is what lets libsupc++ free the exception object. Clang emits a
+  // cleanup the same way; culebra differs only in the catch-all clause
+  // (see emit_landingpad) and in continuing the unwind explicitly, since the
+  // enclosing region's pad is a separate block a `resume` would step over.
+  //
+  // Entries, releases and exit are one object so a region cannot be opened
+  // without being continued: the destructor emits the exit, at the current
+  // insertion point — `open` leaves the builder in the entry block, which is
+  // where a single-entry region's releases go; a multi-entry region (the
+  // frame's ladder) points the builder at the end of its shared descent
+  // chain before this object dies.
+  class CleanupPad {
+   public:
+    CleanupPad(JIT& jit, llvm::BasicBlock* outerLpad, bool drained = false)
+        : jit_(jit),
+          outer_(outerLpad),
+          drained_(drained),
+          saved_insert_(jit.builder_.GetInsertBlock()),
+          cleanup_scope_(&jit) {}
+
+    // Make `padBB` an entry of this region — unless nothing unwinds to it, in
+    // which case it is erased and this returns false. That is the can-throw
+    // gate every pad has: a region whose body cannot throw costs nothing.
+    bool open(llvm::BasicBlock* padBB, const char* name) {
+      if (llvm::pred_empty(padBB)) {
+        padBB->eraseFromParent();
+        return false;
+      }
+      // A landingpad needs the function to carry a personality; a body with no
+      // try/defer of its own never set one. Idempotent.
+      auto fn = padBB->getParent();
+      if (!fn->hasPersonalityFn())
+        fn->setPersonalityFn(jit_.get_personality_fn());
+      jit_.emit_landingpad(padBB, name, /*open=*/false);
+      opened_ = true;
+      return true;
+    }
+
+    ~CleanupPad() {
+      auto& b = jit_.builder_;
+      if (opened_ && !b.GetInsertBlock()->getTerminator()) {
+        auto ptrTy = llvm::PointerType::get(jit_.ctx_, 0);
+        auto fn = b.GetInsertBlock()->getParent();
+        auto exc = b.CreateLoad(ptrTy, jit_.exception_slot(), "exc");
+        auto resumeFn = jit_.module_->getOrInsertFunction(
+            rt_unwind_resume, b.getInt32Ty(), ptrTy);
+        // Resolved here, not at construction: the ladder's stand-in becomes
+        // whichever rung is current when the edge is actually emitted.
+        auto outer = jit_.resolve_lpad(outer_, drained_ ? 0 : SIZE_MAX);
+        if (outer) {
+          auto goneBB = llvm::BasicBlock::Create(jit_.ctx_, "unwind.gone", fn);
+          b.CreateInvoke(resumeFn, goneBB, outer, {exc});
+          b.SetInsertPoint(goneBB);
+        } else {
+          b.CreateCall(resumeFn, {exc});
+        }
+        b.CreateUnreachable();
+      }
+      b.SetInsertPoint(saved_insert_);
+    }
+
+    CleanupPad(const CleanupPad&) = delete;
+    CleanupPad& operator=(const CleanupPad&) = delete;
+
+   private:
+    JIT& jit_;
+    llvm::BasicBlock* outer_;
+    bool drained_;
+    llvm::BasicBlock* saved_insert_;
+    UnwindCleanupEmission cleanup_scope_;
+    bool opened_ = false;
   };
 
   // Wrap a freshly produced `+1`-owned Value in an ownership handle.
@@ -7754,21 +7884,19 @@ struct JIT {
     builder_.CreateBr(endBB);
 
     // Exception path: the same dispose (swallowing a throwing dispose so the
-    // in-flight exception survives, as the interpreter does), then rethrow so
-    // the original keeps unwinding — into forCleanupBB, which releases the
-    // scope. Gated on can-throw via pred_empty, as everywhere.
-    if (llvm::pred_empty(excBB)) {
-      excBB->eraseFromParent();
-    } else {
-      emit_catch_all_prologue(excBB, "for.lpad");
-      // This iteration's element dies first, ahead of the iterator's dispose
-      // — the interp order, where the element's temporary goes as the body
-      // frame unwinds and dispose runs on the way out of the loop. Nil unless
-      // the throw landed inside the advance-to-binding window.
-      release_pending_guard(cursor.elem);
-      emit_iter_dispose_if_active(cursor.iter, "for.exc",
-                                  /*swallow_dispose=*/true);
-      emit_rethrow(bodyOuterLpad);
+    // in-flight exception survives, as the interpreter does), then on into
+    // forCleanupBB, which releases the scope.
+    {
+      CleanupPad pad(*this, bodyOuterLpad);
+      if (pad.open(excBB, "for.lpad")) {
+        // This iteration's element dies first, ahead of the iterator's dispose
+        // — the interp order, where the element's temporary goes as the body
+        // frame unwinds and dispose runs on the way out of the loop. Nil unless
+        // the throw landed inside the advance-to-binding window.
+        release_pending_guard(cursor.elem);
+        emit_iter_dispose_if_active(cursor.iter, "for.exc",
+                                    /*swallow_dispose=*/true);
+      }
     }
 
     builder_.SetInsertPoint(endBB);
@@ -8181,7 +8309,7 @@ struct JIT {
       compile_function_call_raw(dispose_fn_val, iterFinal, {});
       current_lpad_ = savedLpad;
       builder_.CreateBr(restoreBB);
-      emit_catch_all_prologue(swallowBB, name(".dispose.lpad").c_str());
+      emit_handler_prologue(swallowBB, name(".dispose.lpad").c_str());
       builder_.CreateCall(
           module_->getOrInsertFunction("__cxa_end_catch", builder_.getVoidTy()),
           {});
@@ -13615,14 +13743,13 @@ inline void JIT::emit_iter_unary_inline_loop(
   current_lpad_ = outerLpad;
 
   // Exception edge: dispose quietly (the in-flight error must survive a
-  // throwing dispose), then rethrow into the caller's pad.
-  if (llvm::pred_empty(excBB)) {
-    excBB->eraseFromParent();
-  } else {
-    emit_catch_all_prologue(excBB, "ihofi.lpad");
-    emit_iter_dispose_if_active(iterAlloca, "ihofi.exc",
-                                /*swallow_dispose=*/true);
-    emit_rethrow(outerLpad);
+  // throwing dispose), then on into the caller's pad.
+  {
+    CleanupPad pad(*this, outerLpad);
+    if (pad.open(excBB, "ihofi.lpad")) {
+      emit_iter_dispose_if_active(iterAlloca, "ihofi.exc",
+                                  /*swallow_dispose=*/true);
+    }
   }
 
   // Natural drain: dispose after the loop, before the caller materializes
@@ -13971,13 +14098,12 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   }
   current_lpad_ = cleanupBB;
 
-  if (llvm::pred_empty(excBB)) {
-    excBB->eraseFromParent();
-  } else {
-    emit_catch_all_prologue(excBB, "iri.lpad");
-    emit_iter_dispose_if_active(iterAlloca, "iri.exc",
-                                /*swallow_dispose=*/true);
-    emit_rethrow(cleanupBB);
+  {
+    CleanupPad pad(*this, cleanupBB);
+    if (pad.open(excBB, "iri.lpad")) {
+      emit_iter_dispose_if_active(iterAlloca, "iri.exc",
+                                  /*swallow_dispose=*/true);
+    }
   }
 
   // Natural drain: dispose before the acc handoff — a throwing dispose lands

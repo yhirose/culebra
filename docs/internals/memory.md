@@ -250,6 +250,27 @@ is the same reverse-declaration order the normal exit uses. The top
 level is an ordinary frame here — a program's own bindings are
 released when an uncaught error leaves it, just like a function's.
 
+**The exception object is a resource too, and only the pad that ends
+the throw holds it.** A landing pad that *handles* an exception opens it
+through the C++ ABI and closes it again — that pairing is what frees the
+exception object, since the ABI reclaims it when the handler count
+returns to zero. A pad that only runs a region's releases and passes the
+throw on never opens it: the count travels untouched from the throw to
+the pad that ends it, so a cleanup pad has nothing to balance and no way
+to strand anything. That is also how Clang emits a cleanup, and it keeps
+the cost of a throw proportional to the frames it crosses rather than to
+the pads on the way.
+
+The two kinds are built by one emitter, which is where the choice is
+made, and a cleanup region — its landing pads, its releases, and the
+single edge that carries the throw onward — is one object whose
+destructor emits that edge, so a region cannot be opened without being
+continued. A missing pairing would be invisible to every value-level
+leak check, because what is stranded is the C++ exception object rather
+than a culebra value, so a codegen gate reads the emitted IR instead:
+only a handler prologue may open an exception, and a handler that
+re-raises closes it on the re-raise's own unwind edge.
+
 **Borrowed values expose no release operation.** A borrowed value's
 handle offers only the read operation; there is no API that both
 borrows and releases the same value. "A borrowed operand was

@@ -794,6 +794,13 @@ _run-tests BACKEND:
     # as every JIT test crashing at once.
     run_jit_host_symbols() { bash tools/check_jit_host_symbols.sh "$BIN"; }
 
+    # EH balance: every cleanup landingpad's __cxa_begin_catch is closed by an
+    # __cxa_end_catch — the re-raising ones on the rethrow's own unwind edge.
+    # An unclosed handler strands the exception object (~184 B per caught
+    # throw), which no value-level leak gate can see. Reads emitted IR, so it
+    # runs off the binary alone (tools/check_eh_balance.sh).
+    run_eh_balance() { bash tools/check_eh_balance.sh "$BIN"; }
+
     # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
     # creation, so neither the driver nor an AOT binary may carry it in
     # DT_NEEDED or export the forwarders (tools/check_webview_dynload.sh).
@@ -826,6 +833,7 @@ _run-tests BACKEND:
       all)
         run_source_ratchets
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
+        phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
@@ -855,6 +863,7 @@ _run-tests BACKEND:
       fast)
         run_source_ratchets
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
+        phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "culebra-test self"; run_culebra_test_self
@@ -888,6 +897,7 @@ _run-tests BACKEND:
       # stays under the wrap lane's wall-clock.
       ci-light)
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
+        phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends

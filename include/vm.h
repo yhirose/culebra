@@ -4984,10 +4984,8 @@ struct Lowering {
     // propagates out, as the executor's catch does), uncount the frame,
     // and re-raise out of the function.
     if (framePad) {
-      if (pred_empty(framePad)) {
-        framePad->eraseFromParent();
-      } else {
-        j.emit_catch_all_prologue(framePad, "vm.frame.exc");
+      JIT::CleanupPad pad(j, /*outerLpad=*/nullptr);
+      if (pad.open(framePad, "vm.frame.exc")) {
         auto restoreFn = j.module_->getOrInsertFunction(
             rt::recursion_restore, b.getVoidTy(), i64Ty);
         auto d = b.CreateLoad(i64Ty, depthSlot, "rec.d");
@@ -4999,7 +4997,6 @@ struct Lowering {
           b.CreateCall(restoreFn,
                        {b.CreateSub(d, b.getInt64(1), "rec.d1")});
         }
-        j.emit_rethrow(nullptr);
       }
     }
   }
