@@ -804,8 +804,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_extend(
       culebra_runtime_array_push(arr, m.tag, m.data);
     }
   } else {
-    throw culebra::CulebraError("TypeError",
-        "cannot spread non-iterable into an array (Array/Tuple/Set only)",
+    throw culebra::CulebraError(
+        "TypeError",
+        std::format("cannot spread {} into an array (Array/Tuple/Set only)",
+                    _culebra_tag_name(tag)),
         line, col);
   }
 }
@@ -817,8 +819,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_extend(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
     JitObject* dst, int8_t tag, int64_t data, int64_t line, int64_t col) {
   if (tag != TAG_OBJECT) {
-    throw culebra::CulebraError("TypeError",
-        "cannot spread non-object into an object (Object only)", line, col);
+    throw culebra::CulebraError(
+        "TypeError",
+        std::format("cannot spread {} into an object (Object only)",
+                    _culebra_tag_name(tag)),
+        line, col);
   }
   auto* src = reinterpret_cast<JitObject*>(data);
   src->for_each([&](std::string_view name, const JitObjectEntry& e) {

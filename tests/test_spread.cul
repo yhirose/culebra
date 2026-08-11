@@ -54,4 +54,12 @@ let e2 = try {
 }
 assert_eq(e2, "TypeError")
 
+// Error messages name the spread value's actual type on both backends.
+let m1 = try { let _ = [...'ab']; nil } catch er { er.message }
+assert_eq(m1, "cannot spread String into an array (Array/Tuple/Set only)")
+let m2 = try { let _ = [...(1..3)]; nil } catch er { er.message }
+assert_eq(m2, "cannot spread Object into an array (Array/Tuple/Set only)")
+let m3 = try { let _ = {...[1]}; nil } catch er { er.message }
+assert_eq(m3, "cannot spread Array into an object (Object only)")
+
 IO.inspect("test_spread OK")
