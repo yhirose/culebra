@@ -18,4 +18,11 @@ while i < 1000 {
   assert_eq(t.size(), 3)
   i = i + 1
 }
+// A negative count is a catchable ValueError (it used to leak a raw C++
+// exception on both backends).
+let neg = try { let _ = [0](-1); nil } catch er { "{er.kind}: {er.message}" }
+assert_eq(neg, "ValueError: array size must not be negative")
+let negDef = try { let _ = [](0 - 5, 9); nil } catch er { er.kind }
+assert_eq(negDef, "ValueError")
+
 inspect("array sized default: ok")

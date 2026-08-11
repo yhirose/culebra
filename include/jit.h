@@ -3657,7 +3657,8 @@ struct JIT {
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(
         rt::array_resize, builder_.getVoidTy(), ptrTy,
-        builder_.getInt64Ty(), builder_.getInt8Ty(), builder_.getInt64Ty());
+        builder_.getInt64Ty(), builder_.getInt8Ty(), builder_.getInt64Ty(),
+        builder_.getInt64Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::array_get,
                                  builder_.getVoidTy(), ptrTy,
                                  builder_.getInt64Ty(), ptrTy, ptrTy,
@@ -4254,8 +4255,11 @@ struct JIT {
           module_->getOrInsertFunction(
               rt::array_resize, builder_.getVoidTy(), ptrTy,
               builder_.getInt64Ty(), builder_.getInt8Ty(),
+              builder_.getInt64Ty(), builder_.getInt64Ty(),
               builder_.getInt64Ty()),
-          {arrPtr, count, defTag, defData});
+          {arrPtr, count, defTag, defData,
+           builder_.getInt64(ast.nodes[1]->line),
+           builder_.getInt64(ast.nodes[1]->column)});
     }
 
     // Overwrite or push literal values (matches interpreter:

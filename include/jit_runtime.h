@@ -1896,7 +1896,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_resize(
-    JitArray* arr, int64_t count, int8_t def_tag, int64_t def_data) {
+    JitArray* arr, int64_t count, int8_t def_tag, int64_t def_data,
+    int64_t line, int64_t col) {
+  // A negative count would wrap through the size_t casts below into an
+  // endless fill loop (the interp guards the same way).
+  if (count < 0) {
+    throw culebra::CulebraError("ValueError", "array size must not be negative",
+                                line, col);
+  }
   // The default is BORROWED: every filled slot aliases it (interp shares the
   // same object too) and must own its own ref — array free releases each
   // slot, so an unretained alias over-releases (SIGSEGV with a heap default).

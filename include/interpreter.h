@@ -12024,6 +12024,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       Value countv;
       if (!eval_operand(*ast.nodes[1], env, countv)) return Value();
       auto count = countv.to_long();
+      if (count < 0) {
+        throw CulebraError("ValueError", "array size must not be negative",
+                           static_cast<long>(ast.nodes[1]->line),
+                           static_cast<long>(ast.nodes[1]->column));
+      }
       if (ast.nodes.size() == 3) {
         auto val = eval(*ast.nodes[2], env);
         arr.values->resize(count, std::move(val));
