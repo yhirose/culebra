@@ -363,6 +363,9 @@ enum class BMeth : uint8_t {
   Repeat, Truncate, TrimStart, TrimEnd, Tr, Split, StartsWith, EndsWith,
   Push, Pop, Insert, RemoveAt, Extend, Reverse, IndexOf,  // Array
   Slice, Contains, ToString,                    // polymorphic, eager
+  Join, Sum, Product, Min, Max, ToSet,  // Array(+Tensor)+iterator, eager
+  Sorted,                                // Array only, eager
+  Distinct, Flatten,                    // iterator-shaped Object only
 };
 
 // The receivers a built-in resolves on, one bit per value tag. A gate's set
@@ -391,14 +394,32 @@ inline constexpr BRecvMask kRecvContains =
     bmeth_tag_bit(TAG_OBJECT) | bmeth_tag_bit(TAG_SET);
 inline constexpr BRecvMask kRecvSliceable =
     kRecvStrLike | kRecvArray | bmeth_tag_bit(TAG_TENSOR);
+// The Array(+Tensor)-or-iterator-shaped-Object receiver gate join/sum/
+// product/min/max/to_set/distinct/flatten all share: an Array (plus Tensor
+// for sum/max) resolves the name from its own value table, and an
+// iterator-shaped Object resolves it by running the iterator_builtins()
+// version on it (a Terminal drains, a Lazy one — distinct/flatten — hands
+// back a new iterator instead) — two arms sharing one gate, split by
+// obj_iter_shaped the same way `contains` splits its five.
+inline constexpr BRecvMask kRecvArrayIter =
+    kRecvArray | bmeth_tag_bit(TAG_OBJECT);
+inline constexpr BRecvMask kRecvArrayTensorIter =
+    kRecvArray | bmeth_tag_bit(TAG_TENSOR) | bmeth_tag_bit(TAG_OBJECT);
+// distinct/flatten have no eager Array arm at all (no such spelling exists in
+// any value table) — only an iterator-shaped Object resolves them, so an
+// Array receiver takes the ordinary method-miss path, same as any name it
+// doesn't have.
+inline constexpr BRecvMask kRecvIterOnly = bmeth_tag_bit(TAG_OBJECT);
 // No gate at all: `to_string` is the display conversion every value has, so
 // no receiver can fail to resolve it.
 inline constexpr BRecvMask kRecvAny = 0xFFFF;
 
 // A parameter's declared type, checked with the interp binder's wording at the
 // argument's own position. `Any` is an undeclared parameter — no check at all,
-// so the compiler emits no ChkParam for it.
-enum class BParam : uint8_t { Any, Long, StrLike, Array };
+// so the compiler emits no ChkParam for it. `String` is strict (unlike
+// StrLike, a StringView fails it) — `join`'s `sep` is declared plain "String"
+// in the interp table, not the StringLike trait.
+enum class BParam : uint8_t { Any, Long, StrLike, Array, String };
 
 struct BMethSpec {
   std::string_view name;
@@ -476,6 +497,33 @@ inline std::span<const BMethSpec> bmeth_specs() {
        {kRecvStrLike}, /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
       {"to_string", 0, ToString, kRecvAny, 0, nullptr, {}, {}, {},
        /*subsumes_global=*/true},
+      // join/sum/product/min/max/to_set: Array's own value table plus an
+      // iterator-shaped Object (each is Terminal — it drains), Tensor
+      // joining only where a reduction method exists for it (sum/max, not
+      // product/min — no such spelling in TensorValue::builtins()). `sep`
+      // is checked on every receiver alike (param_when 0), since it is not
+      // itself polymorphic.
+      {"join", 1, Join, kRecvArrayIter, 1, nullptr, {String}, {"sep"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"sum", 0, Sum, kRecvArrayTensorIter, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"product", 0, Product, kRecvArrayIter, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"min", 0, Min, kRecvArrayIter, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"max", 0, Max, kRecvArrayTensorIter, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"to_set", 0, ToSet, kRecvArrayIter, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      // sorted: Array only — no iterator arm, no Tensor (both probed misses).
+      // `reverse:` is kw-only in the interp/JIT signature; the VM's call
+      // compiler rejects every keyword argument at compile time already
+      // (reject_kwargs), so this arm is reachable only without it.
+      {"sorted", 0, Sorted, kRecvArray, 0, nullptr, {}, {}},
+      {"distinct", 0, Distinct, kRecvIterOnly, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"flatten", 0, Flatten, kRecvIterOnly, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
   };
   return kSpecs;
 }
@@ -504,6 +552,7 @@ inline const char* bmeth_param_type(BParam p) {
   switch (p) {
     case BParam::Long: return "Long";
     case BParam::Array: return "Array";
+    case BParam::String: return "String";
     default: return "StringLike";
   }
 }
@@ -525,6 +574,7 @@ inline bool bmeth_param_ok(BParam p, int8_t tag) {
     case BParam::Array: return tag == TAG_ARRAY;
     case BParam::StrLike:
       return tag == TAG_STRING || tag == TAG_STRINGVIEW;
+    case BParam::String: return tag == TAG_STRING;
   }
   return false;
 }
@@ -750,6 +800,70 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       culebra_runtime_set_op_pos(line, col);
       return str(culebra_runtime_value_to_display(
           static_cast<int8_t>(recv.tag), recv.data));
+    // join/sum/product/min/max/to_set/sorted/distinct/flatten: the gate
+    // already let through only Array/Tensor/an iterator-shaped Object, so
+    // each arm is a straight dispatch on the tag the gate proved.
+    case BMeth::Join:
+      // A non-String element's display can raise the too-deep ValueError,
+      // positionless like ToString's.
+      culebra_runtime_set_op_pos(line, col);
+      if (recv.tag == TAG_ARRAY)
+        return str(culebra_runtime_array_join(arr(recv), cstr(args[0])));
+      return str(culebra_runtime_iter_join(static_cast<int8_t>(recv.tag),
+                                           recv.data, cstr(args[0])));
+    case BMeth::Sum:
+      if (recv.tag == TAG_ARRAY)
+        return culebra_runtime_array_sum(arr(recv), line, col);
+      if (recv.tag == TAG_TENSOR)
+        return culebra_runtime_tensor_reduce_all(
+            reinterpret_cast<JitTensor*>(recv.data),
+            static_cast<int64_t>(culebra::Op::Sum));
+      return culebra_runtime_iter_sum(static_cast<int8_t>(recv.tag), recv.data,
+                                      line, col);
+    case BMeth::Product:
+      if (recv.tag == TAG_ARRAY) return culebra_runtime_array_product(arr(recv), line, col);
+      return culebra_runtime_iter_product(static_cast<int8_t>(recv.tag),
+                                          recv.data, line, col);
+    case BMeth::Min:
+      if (recv.tag == TAG_ARRAY) return culebra_runtime_array_min(arr(recv), line, col);
+      return culebra_runtime_iter_min(static_cast<int8_t>(recv.tag), recv.data,
+                                      line, col);
+    case BMeth::Max:
+      if (recv.tag == TAG_ARRAY)
+        return culebra_runtime_array_max(arr(recv), line, col);
+      if (recv.tag == TAG_TENSOR)
+        return culebra_runtime_tensor_reduce_all(
+            reinterpret_cast<JitTensor*>(recv.data),
+            static_cast<int64_t>(culebra::Op::Max));
+      return culebra_runtime_iter_max(static_cast<int8_t>(recv.tag), recv.data,
+                                      line, col);
+    case BMeth::ToSet:
+      if (recv.tag == TAG_ARRAY)
+        return JitValue{TAG_SET, reinterpret_cast<int64_t>(
+                                     culebra_runtime_array_to_set(
+                                         arr(recv), line, col))};
+      return JitValue{
+          TAG_SET,
+          reinterpret_cast<int64_t>(culebra_runtime_iter_to_set(
+              static_cast<int8_t>(recv.tag), recv.data, line, col))};
+    case BMeth::Sorted:
+      // `reverse:` is kw-only and the VM rejects every keyword argument at
+      // compile time, so this arm is reachable only without it.
+      return JitValue{TAG_ARRAY,
+                      reinterpret_cast<int64_t>(culebra_runtime_array_sorted(
+                          arr(recv), /*reverse=*/false, line, col))};
+    case BMeth::Distinct:
+      // The gate proved TAG_OBJECT (iterator-shaped) — no other tag reaches
+      // here.
+      return JitValue{
+          TAG_OBJECT,
+          reinterpret_cast<int64_t>(culebra_runtime_iter_distinct(
+              static_cast<int8_t>(recv.tag), recv.data, line, col))};
+    case BMeth::Flatten:
+      return JitValue{
+          TAG_OBJECT,
+          reinterpret_cast<int64_t>(culebra_runtime_iter_flatten(
+              static_cast<int8_t>(recv.tag), recv.data, line, col))};
   }
   return JitValue{TAG_NIL, 0};  // unreachable: every id has an arm
 }
@@ -5195,6 +5309,9 @@ struct Lowering {
             case BParam::Array:
               ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_ARRAY));
               break;
+            case BParam::String:
+              ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_STRING));
+              break;
             default:  // StrLike; Any emits no check at all
               ok = b.CreateOr(
                   b.CreateICmpEQ(argTag, b.getInt8(TAG_STRING)),
@@ -5263,6 +5380,14 @@ struct Lowering {
                             llvm::ArrayRef<llvm::Value*> a) {
             return j.make_string(
                 j.emit_call(j.module_->getFunction(rt_name), a, "vbm.r"));
+          };
+          // sum/product/min/max/tensor_reduce_all return %Value by the
+          // struct-return convention emit_value_call matches (see its own
+          // comment) — a bare emit_call would read the wrong registers.
+          auto val_fn = [&](const char* rt_name,
+                            llvm::ArrayRef<llvm::Value*> a) {
+            return j.emit_value_call(j.module_->getFunction(rt_name), a,
+                                     "vbm.r");
           };
           llvm::Value* res = nullptr;
           switch (static_cast<BMeth>(in.c)) {
@@ -5518,6 +5643,156 @@ struct Lowering {
               res = j.make_string(j.emit_call(
                   j.module_->getFunction(rt::value_to_display),
                   {j.extract_tag(recv), j.extract_data(recv)}, "vbm.ts"));
+              break;
+            // iterator_builtins()'s eager trio: the gate already let through
+            // only Array/Tensor/an iterator-shaped Object, so each arm is a
+            // straight dispatch on the tag the gate proved — one block per
+            // arm, merged through an entry-block alloca like Slice/Contains.
+            case BMeth::Join: {
+              // A non-String element's display can raise the too-deep
+              // ValueError, positionless like ToString's.
+              j.emit_set_op_pos();
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.jn");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.jn.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.jn.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.jn.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  str_fn(rt::array_join, {arr(), cstr(arg(0))}), out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              b.CreateStore(
+                  str_fn(rt::iter_join,
+                        {tagv, j.extract_data(recv), cstr(arg(0))}),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::Sum:
+            case BMeth::Max: {
+              bool is_sum = static_cast<BMeth>(in.c) == BMeth::Sum;
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.sx");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.sx.arr", fn);
+              auto tenBB = BasicBlock::Create(j.ctx_, "vbm.sx.ten", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.sx.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.sx.join", fn);
+              auto sw = b.CreateSwitch(tagv, iterBB, 2);
+              sw->addCase(b.getInt8(TAG_ARRAY), arrBB);
+              sw->addCase(b.getInt8(TAG_TENSOR), tenBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  val_fn(is_sum ? rt::array_sum : rt::array_max,
+                        {arr(), b.getInt64(line), b.getInt64(col)}),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(tenBB);
+              b.CreateStore(
+                  val_fn(rt::tensor_reduce_all,
+                        {arr(), b.getInt64(static_cast<int64_t>(
+                                    is_sum ? culebra::Op::Sum
+                                           : culebra::Op::Max))}),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              b.CreateStore(
+                  val_fn(is_sum ? rt::iter_sum : rt::iter_max,
+                        {tagv, j.extract_data(recv), b.getInt64(line),
+                         b.getInt64(col)}),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::Product:
+            case BMeth::Min: {
+              bool is_product = static_cast<BMeth>(in.c) == BMeth::Product;
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.pn");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.pn.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.pn.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.pn.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  val_fn(is_product ? rt::array_product : rt::array_min,
+                        {arr(), b.getInt64(line), b.getInt64(col)}),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              b.CreateStore(
+                  val_fn(is_product ? rt::iter_product : rt::iter_min,
+                        {tagv, j.extract_data(recv), b.getInt64(line),
+                         b.getInt64(col)}),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::ToSet: {
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.ts2");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.ts2.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.ts2.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.ts2.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  j.make_set(j.emit_call(
+                      j.module_->getFunction(rt::array_to_set),
+                      {arr(), b.getInt64(line), b.getInt64(col)}, "vbm.ts2a")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              b.CreateStore(
+                  j.make_set(j.emit_call(
+                      j.module_->getFunction(rt::iter_to_set),
+                      {tagv, j.extract_data(recv), b.getInt64(line),
+                       b.getInt64(col)},
+                      "vbm.ts2i")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::Sorted:
+              // `reverse:` is kw-only and the VM rejects every keyword
+              // argument at compile time, so this arm is reachable only
+              // without it — the gate already proved Array.
+              res = j.make_array(j.emit_call(
+                  j.module_->getFunction(rt::array_sorted),
+                  {arr(), b.getInt1(false), b.getInt64(line), b.getInt64(col)},
+                  "vbm.srt"));
+              break;
+            case BMeth::Distinct:
+              // The gate proved TAG_OBJECT (iterator-shaped) — no other tag
+              // reaches here, so this is a straight call, no branch.
+              res = j.make_object(
+                  j.emit_call(j.module_->getFunction(rt::iter_distinct),
+                             {j.extract_tag(recv), j.extract_data(recv),
+                              b.getInt64(line), b.getInt64(col)},
+                             "vbm.dis"));
+              break;
+            case BMeth::Flatten:
+              res = j.make_object(
+                  j.emit_call(j.module_->getFunction(rt::iter_flatten),
+                             {j.extract_tag(recv), j.extract_data(recv),
+                              b.getInt64(line), b.getInt64(col)},
+                             "vbm.fl"));
               break;
             case BMeth::Pop:
             case BMeth::RemoveAt: {

@@ -1,7 +1,10 @@
 # The polymorphic eager built-ins: one name over several receivers, so the
 # gate is a tag set rather than a single type — `slice` on Array/String/
 # StringView/Tensor, `contains` on those plus Set/Tuple and an iterator-shaped
-# Object, `to_string` on every value there is, and `index_of` on Array alone.
+# Object, `to_string` on every value there is, `index_of` on Array alone, and
+# join/sum/product/min/max/to_set/sorted/distinct/flatten below (mostly
+# iterator_builtins() Terminal methods that drain; distinct/flatten are Lazy
+# and hand back a new iterator instead).
 
 # slice: each receiver keeps its own result type, and none of them mutates.
 let a = [1, 2, 3, 4]
@@ -142,3 +145,94 @@ try {
 } catch err {
     println("{err.kind}: {err.message}")
 }
+
+# join/sum/product/min/max/to_set/sorted/distinct/flatten: an Array's own
+# value table plus an iterator-shaped Object (a Terminal drains it; distinct/
+# flatten are Lazy and hand back a new iterator instead), and — for sum/max
+# only — a Tensor reduction. product/min/join/to_set have no Tensor form;
+# sorted has no iterator arm at all; distinct/flatten have no Array arm at
+# all.
+let nums = [3, 1, 2, 1]
+inspect(nums.sum())
+inspect(nums.product())
+inspect(nums.min())
+inspect(nums.max())
+inspect(nums.join('-'))
+inspect(nums.to_set())
+inspect(nums.sorted())
+inspect(nums)  # none of these mutate the receiver
+
+let ten = Tensor.from([3.0, 1.0, 2.0])
+inspect(ten.sum())
+inspect(ten.max())
+
+let it = range(0, 5)
+inspect(it.sum())
+inspect(range(1, 5).product())
+inspect(range(0, 5).min())
+inspect(range(0, 5).max())
+inspect(range(0, 4).join('-'))
+inspect(range(0, 4).to_set())
+inspect(range(0, 4).distinct())
+inspect(grid(0..2, 0..2).flatten())
+
+# The Object arm is the iterator protocol itself, so it CONSUMES like
+# contains's Object arm: the second question is asked of what is left.
+let drained = range(0, 3)
+inspect(drained.sum())
+inspect(drained.sum())
+
+# Empty-Array edge cases: sum/product have an identity, min/max do not.
+inspect([].sum())
+inspect([].product())
+inspect([].sorted())
+inspect([].to_set())
+
+# Errors: a scalar receiver cannot carry members at all (before the
+# arguments run); an Array lacking the name (distinct/flatten) or a Tensor
+# lacking it (product/min/join/to_set) merely lacks the method, reported
+# once the arguments have run; join's `sep` is declared plain String, so a
+# StringView fails it where `contains`'s StringLike needle would not.
+try {
+    (5).sum()
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    [].min()
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    Tensor.from([1.0]).product()
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    nums.distinct()
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    nums.join(seen(5))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    nums.join('-'.view())
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# Churn: every round allocates through the Array and iterator arms, so
+# GC_STRESS gets to look at the refcounts of results that outlive their
+# receivers.
+mut j = 0
+mut kept = 0
+while j < 300 {
+    let src = [j, j + 1, j + 2, j]
+    kept = kept + src.sum() + src.to_set().size() + range(0, j % 5).sum()
+    j = j + 1
+}
+println(j)
+println(kept)
