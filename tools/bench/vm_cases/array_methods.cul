@@ -1,0 +1,142 @@
+# The Array mutators and index_of. These are the first built-ins that move
+# a reference across the call — `push`/`insert` take the argument's `+1` off
+# the register, `pop`/`remove_at` hand one back — so the churn loops below
+# are where an over- or under-release shows up.
+
+mut a = [1, 2]
+inspect(a.push(3))
+inspect(a)
+inspect(a.pop())
+inspect(a)
+inspect(a.insert(1, 'x'))
+inspect(a)
+inspect(a.remove_at(0))
+inspect(a)
+inspect(a.extend([7, 8]))
+inspect(a)
+inspect(a.reverse())
+inspect(a)
+inspect(a.index_of('x'))
+inspect(a.index_of(2))
+inspect(a.index_of(99))
+
+# Empty receivers: pop is nil, reverse and extend are no-ops.
+mut e = []
+inspect(e.pop())
+e.reverse()
+e.extend([])
+inspect(e)
+inspect(e.index_of(1))
+
+# Heap elements, so every step moves a real refcount.
+mut h = []
+h.push([1, 2])
+h.push('s')
+h.push({3, 4})
+h.insert(0, (5, 6))
+inspect(h)
+inspect(h.pop())
+inspect(h.remove_at(0))
+inspect(h)
+
+# Aliasing: the array is one object seen through two names.
+mut al = [1]
+let same = al
+al.push(2)
+al.reverse()
+inspect(same)
+al.extend(al)
+inspect(same)
+
+# Negative and end positions.
+mut n = [1, 2, 3]
+n.insert(-1, 'a')
+n.insert(3, 'b')
+inspect(n)
+inspect(n.remove_at(-1))
+inspect(n)
+
+# index_of compares by value, and a nested array counts.
+inspect([[1], [2]].index_of([2]))
+inspect(['a', 'b'].index_of('b'))
+
+# Churn: build and drain repeatedly, with a fresh heap value each round.
+mut i = 0
+while i < 300 {
+    mut t = []
+    t.push([i])
+    t.insert(0, [i, i])
+    t.extend([[i]])
+    let x = t.pop()
+    let y = t.remove_at(0)
+    t.reverse()
+    i = i + 1
+}
+println(i)
+
+# The errors: the receiver gate, the parameter checks and the runtime's own
+# index resolution, each at its own anchor.
+mut g = [1, 2]
+try {
+    g.insert(9, 'x')
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    g.remove_at(-9)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    g.insert('bad', 'x')
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    g.remove_at(1.5)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    g.extend((1, 2))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+inspect(g)
+
+# A receiver that resolves no such method: a scalar fails at the property
+# read, anything else only after the arguments have run.
+fn seen(x) {
+    println("ran {x}")
+    x
+}
+try {
+    (5).push(seen(1))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    'ab'.push(seen(2))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+let tup = (1, 2)
+try {
+    tup.reverse()
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    range(0, 2).pop()
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# An argument that throws leaves the receiver untouched.
+mut k = [1]
+try {
+    k.push(seen(3) / 0)
+} catch err {
+    println(err.kind)
+}
+inspect(k)

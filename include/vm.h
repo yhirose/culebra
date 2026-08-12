@@ -356,6 +356,7 @@ enum class BMeth : uint8_t {
   Size, Empty, Presence,                        // any sized receiver
   Upper, Lower, Capitalize, Trim, Lines, View,  // String/StringView, no args
   Repeat, Truncate, TrimStart, TrimEnd, Tr, Split, StartsWith, EndsWith,
+  Push, Pop, Insert, RemoveAt, Extend, Reverse, IndexOf,  // Array
 };
 
 // The receivers a built-in resolves on. A gate's set must be exactly the set
@@ -367,11 +368,13 @@ enum class BMeth : uint8_t {
 enum class BRecv : uint8_t {
   Sized,    // Array/Tuple/Object/String/StringView/Set — emit_size_probe's set
   StrLike,  // String/StringView
+  Array,    // Array only — the mutators and index_of
 };
 
 // A parameter's declared type, checked with the interp binder's wording at the
-// argument's own position.
-enum class BParam : uint8_t { Long, StrLike };
+// argument's own position. `Any` is an undeclared parameter — no check at all,
+// so the compiler emits no ChkParam for it.
+enum class BParam : uint8_t { Any, Long, StrLike, Array };
 
 struct BMethSpec {
   std::string_view name;
@@ -418,6 +421,16 @@ inline std::span<const BMethSpec> bmeth_specs() {
        {StrLike}, {"prefix"}},
       {"ends_with", 1, EndsWith, BRecv::StrLike, 1, nullptr,
        {StrLike}, {"suffix"}},
+      // Array. `push`/`insert` take the value's +1 off the register, so the
+      // compiler nils the run before the call (see bmeth_consumes_args);
+      // `pop`/`remove_at` hand one back the other way.
+      {"push", 1, Push, BRecv::Array, 1, nullptr, {Any}, {"arg"}},
+      {"pop", 0, Pop, BRecv::Array, 0, nullptr, {}, {}},
+      {"insert", 2, Insert, BRecv::Array, 2, nullptr, {Long, Any}, {"i", "x"}},
+      {"remove_at", 1, RemoveAt, BRecv::Array, 1, nullptr, {Long}, {"i"}},
+      {"extend", 1, Extend, BRecv::Array, 1, nullptr, {Array}, {"other"}},
+      {"reverse", 0, Reverse, BRecv::Array, 0, nullptr, {}, {}},
+      {"index_of", 1, IndexOf, BRecv::Array, 1, nullptr, {Any}, {"v"}},
   };
   return kSpecs;
 }
@@ -430,15 +443,30 @@ inline const BMethSpec* bmeth_lookup(std::string_view name, size_t argc) {
 
 // Whether `tag` is a receiver the gate lets through.
 inline bool bmeth_receiver_ok(BRecv recv, int8_t tag) {
-  if (tag == TAG_STRING || tag == TAG_STRINGVIEW) return true;
-  if (recv == BRecv::StrLike) return false;
-  return tag == TAG_ARRAY || tag == TAG_TUPLE || tag == TAG_OBJECT ||
-         tag == TAG_SET;
+  switch (recv) {
+    case BRecv::Array:
+      return tag == TAG_ARRAY;
+    case BRecv::StrLike:
+      return tag == TAG_STRING || tag == TAG_STRINGVIEW;
+    case BRecv::Sized:
+      return tag == TAG_STRING || tag == TAG_STRINGVIEW || tag == TAG_ARRAY ||
+             tag == TAG_TUPLE || tag == TAG_OBJECT || tag == TAG_SET;
+  }
+  return false;
 }
 
 // The name a parameter's declared type carries into the error message.
 inline const char* bmeth_param_type(BParam p) {
-  return p == BParam::Long ? "Long" : "StringLike";
+  switch (p) {
+    case BParam::Long: return "Long";
+    case BParam::Array: return "Array";
+    default: return "StringLike";
+  }
+}
+
+// Whether the built-in takes its arguments' `+1` off the registers.
+inline bool bmeth_consumes_args(BMeth id) {
+  return id == BMeth::Push || id == BMeth::Insert;
 }
 
 // The accepted tags, tested inline like the JIT arms' own gates
@@ -447,8 +475,14 @@ inline const char* bmeth_param_type(BParam p) {
 // registry entry comes from the preamble the VM lanes do not splice, so the
 // runtime check would reject a perfectly good String there.
 inline bool bmeth_param_ok(BParam p, int8_t tag) {
-  if (p == BParam::Long) return tag == TAG_LONG;
-  return tag == TAG_STRING || tag == TAG_STRINGVIEW;
+  switch (p) {
+    case BParam::Any: return true;
+    case BParam::Long: return tag == TAG_LONG;
+    case BParam::Array: return tag == TAG_ARRAY;
+    case BParam::StrLike:
+      return tag == TAG_STRING || tag == TAG_STRINGVIEW;
+  }
+  return false;
 }
 
 // The rejected argument's error, in the interp binder's wording — reached
@@ -526,6 +560,9 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
   auto str = [](const char* s) {
     return JitValue{TAG_STRING, reinterpret_cast<int64_t>(s)};
   };
+  auto arr = [](const JitValue& v) {
+    return reinterpret_cast<JitArray*>(v.data);
+  };
   switch (id) {
     case BMeth::Size:
       return JitValue{TAG_LONG, bmeth_size(recv)};
@@ -574,6 +611,41 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
     case BMeth::EndsWith:
       return JitValue{TAG_BOOL, culebra_runtime_str_ends_with(
                                     cstr(recv), cstr(args[0])) ? 1 : 0};
+    case BMeth::Push:
+      culebra_runtime_array_push(arr(recv), static_cast<int8_t>(args[0].tag),
+                                 args[0].data);
+      return JitValue{TAG_NIL, 0};
+    case BMeth::Pop:
+    case BMeth::RemoveAt: {
+      // The removed element's +1 moves out through the out-params; an empty
+      // array pops nil, and a bad index throws from inside remove_at.
+      int8_t tag = TAG_NIL;
+      int64_t data = 0;
+      if (id == BMeth::Pop)
+        culebra_runtime_array_pop(arr(recv), &tag, &data);
+      else
+        culebra_runtime_array_remove_at(arr(recv), args[0].data, &tag, &data,
+                                        line, col);
+      return JitValue{tag, data};
+    }
+    case BMeth::Insert:
+      culebra_runtime_array_insert(arr(recv), args[0].data,
+                                   static_cast<int8_t>(args[1].tag),
+                                   args[1].data, line, col);
+      return JitValue{TAG_NIL, 0};
+    case BMeth::Extend:
+      culebra_runtime_array_extend(arr(recv), static_cast<int8_t>(args[0].tag),
+                                   args[0].data, line, col);
+      return JitValue{TAG_NIL, 0};
+    case BMeth::Reverse:
+      culebra_runtime_array_reverse(arr(recv));
+      return JitValue{TAG_NIL, 0};
+    case BMeth::IndexOf:
+      // A too-deep element raises a positionless ValueError from the compare.
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{TAG_LONG, culebra_runtime_array_index_of(
+                                    arr(recv), static_cast<int8_t>(args[0].tag),
+                                    args[0].data)};
   }
   return JitValue{TAG_NIL, 0};  // unreachable: every id has an arm
 }
@@ -1969,6 +2041,7 @@ class Compiler {
     // so the checks come as one run after the whole list, each still stamped
     // at its own argument.
     for (int32_t i = 0; i < argc; i++) {
+      if (spec.params[i] == BParam::Any) continue;  // undeclared: no check
       StampGuard arg_pos(*this, *args.nodes[i]);
       emit(Op::ChkParam, base + 2 + i, base,
            static_cast<int32_t>(spec.params[i]),
@@ -3694,9 +3767,20 @@ struct Exec {
           }
           // The built-in borrows the receiver and the arguments — every one of
           // them stays register-owned, so the statement sweep is their sole
-          // releaser and a throwing helper strands nothing.
-          regs[in.a] = bmeth_apply(static_cast<BMeth>(in.c), regs[in.b + 1],
-                                   &regs[in.b + 2], line, col);
+          // releaser and a throwing helper strands nothing. The two that take
+          // the arguments' `+1` are the exception: hand the values over and
+          // nil the run first, so the helper is their only owner from the
+          // call on (`array_insert` releases on its own throw edge).
+          auto id = static_cast<BMeth>(in.c);
+          bool consumes = bmeth_consumes_args(id);
+          JitValue argv[2] = {JitValue{TAG_NIL, 0}, JitValue{TAG_NIL, 0}};
+          for (int32_t k = 0; consumes && k < in.d; ++k) {
+            argv[k] = regs[in.b + 2 + k];
+            regs[in.b + 2 + k] = JitValue{TAG_NIL, 0};
+          }
+          regs[in.a] = bmeth_apply(id, regs[in.b + 1],
+                                   consumes ? argv : &regs[in.b + 2], line,
+                                   col);
           ++pc;
           break;
         }
@@ -4910,13 +4994,22 @@ struct Lowering {
           b.SetInsertPoint(gateBB);
           auto badBB = BasicBlock::Create(j.ctx_, "vbm.rcverr", fn);
           auto sw = b.CreateSwitch(tag, badBB, 6);
-          sw->addCase(b.getInt8(TAG_STRING), contBB);
-          sw->addCase(b.getInt8(TAG_STRINGVIEW), contBB);
-          if (bmeth_recv_of(id) == BRecv::Sized) {
-            sw->addCase(b.getInt8(TAG_ARRAY), contBB);
-            sw->addCase(b.getInt8(TAG_TUPLE), contBB);
-            sw->addCase(b.getInt8(TAG_OBJECT), contBB);
-            sw->addCase(b.getInt8(TAG_SET), contBB);
+          switch (bmeth_recv_of(id)) {
+            case BRecv::Array:
+              sw->addCase(b.getInt8(TAG_ARRAY), contBB);
+              break;
+            case BRecv::StrLike:
+              sw->addCase(b.getInt8(TAG_STRING), contBB);
+              sw->addCase(b.getInt8(TAG_STRINGVIEW), contBB);
+              break;
+            case BRecv::Sized:
+              sw->addCase(b.getInt8(TAG_STRING), contBB);
+              sw->addCase(b.getInt8(TAG_STRINGVIEW), contBB);
+              sw->addCase(b.getInt8(TAG_ARRAY), contBB);
+              sw->addCase(b.getInt8(TAG_TUPLE), contBB);
+              sw->addCase(b.getInt8(TAG_OBJECT), contBB);
+              sw->addCase(b.getInt8(TAG_SET), contBB);
+              break;
           }
           // A scalar receiver fails here and now; anything else only lacks
           // the method, which BMeth reports once the arguments have run.
@@ -4954,12 +5047,20 @@ struct Lowering {
           // The accepted tags inline, like the JIT arms' own gates — see
           // bmeth_param_ok for why the runtime check can't stand alone.
           auto argTag = j.extract_tag(load_slot(in.a));
-          auto ok =
-              kind == BParam::Long
-                  ? b.CreateICmpEQ(argTag, b.getInt8(TAG_LONG))
-                  : b.CreateOr(
-                        b.CreateICmpEQ(argTag, b.getInt8(TAG_STRING)),
-                        b.CreateICmpEQ(argTag, b.getInt8(TAG_STRINGVIEW)));
+          llvm::Value* ok = nullptr;
+          switch (kind) {
+            case BParam::Long:
+              ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_LONG));
+              break;
+            case BParam::Array:
+              ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_ARRAY));
+              break;
+            default:  // StrLike; Any emits no check at all
+              ok = b.CreateOr(
+                  b.CreateICmpEQ(argTag, b.getInt8(TAG_STRING)),
+                  b.CreateICmpEQ(argTag, b.getInt8(TAG_STRINGVIEW)));
+              break;
+          }
           b.CreateCondBr(ok, contBB, errBB);
           b.SetInsertPoint(errBB);
           auto [line, col] = chunk_pos_at(c, i);
@@ -5007,7 +5108,18 @@ struct Lowering {
           // so nothing here consumes a slot and the ladder keeps releasing
           // them; the result is a fresh +1.
           auto recv = load_slot(in.b + 1);
-          auto arg = [&](int32_t k) { return load_slot(in.b + 2 + k); };
+          llvm::SmallVector<llvm::Value*, 2> argv;
+          for (int32_t k = 0; k < in.d; ++k)
+            argv.push_back(load_slot(in.b + 2 + k));
+          auto arg = [&](int32_t k) { return argv[k]; };
+          auto arr = [&] {
+            return b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+          };
+          // The consuming built-ins take the arguments off the registers
+          // before the call, so the helper is their only owner from there on.
+          if (bmeth_consumes_args(static_cast<BMeth>(in.c)))
+            for (int32_t k = 0; k < in.d; ++k)
+              b.CreateStore(j.make_nil(), slots[in.b + 2 + k]);
           auto cstr = [&](llvm::Value* v) {
             return j.emit_call(j.module_->getFunction(rt::strlike_to_cstr),
                                {j.extract_tag(v), j.extract_data(v)}, "vbm.s");
@@ -5104,6 +5216,70 @@ struct Lowering {
                           : rt::str_ends_with),
                   {cstr(recv), cstr(arg(0))}, "vbm.p"));
               break;
+            case BMeth::Push:
+              j.emit_call(
+                  j.module_->getOrInsertFunction(rt::array_push, b.getVoidTy(),
+                                                 ptrTy, b.getInt8Ty(), i64Ty),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0))});
+              res = j.make_nil();
+              break;
+            case BMeth::Insert:
+              j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      rt::array_insert, b.getVoidTy(), ptrTy, i64Ty,
+                      b.getInt8Ty(), i64Ty, i64Ty, i64Ty),
+                  {arr(), j.extract_data(arg(0)), j.extract_tag(arg(1)),
+                   j.extract_data(arg(1)), b.getInt64(line),
+                   b.getInt64(col)});
+              res = j.make_nil();
+              break;
+            case BMeth::Extend:
+              j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      rt::array_extend, b.getVoidTy(), ptrTy, b.getInt8Ty(),
+                      i64Ty, i64Ty, i64Ty),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   b.getInt64(line), b.getInt64(col)});
+              res = j.make_nil();
+              break;
+            case BMeth::Reverse:
+              j.emit_call(j.module_->getOrInsertFunction(
+                              rt::array_reverse, b.getVoidTy(), ptrTy),
+                          {arr()});
+              res = j.make_nil();
+              break;
+            case BMeth::IndexOf:
+              j.emit_set_op_pos();  // positionless ValueError on a deep element
+              res = j.make_long(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::array_index_of, i64Ty,
+                                                 ptrTy, b.getInt8Ty(), i64Ty),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0))},
+                  "vbm.iof"));
+              break;
+            case BMeth::Pop:
+            case BMeth::RemoveAt: {
+              // The element's +1 arrives through out-params. Entry-block
+              // allocas: this arm can sit inside a loop body.
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "vbm.rt");
+              auto outData = eb.CreateAlloca(i64Ty, nullptr, "vbm.rd");
+              if (static_cast<BMeth>(in.c) == BMeth::Pop) {
+                j.emit_call(
+                    j.module_->getOrInsertFunction(rt::array_pop, b.getVoidTy(),
+                                                   ptrTy, ptrTy, ptrTy),
+                    {arr(), outTag, outData});
+              } else {
+                j.emit_call(
+                    j.module_->getOrInsertFunction(
+                        rt::array_remove_at, b.getVoidTy(), ptrTy, i64Ty, ptrTy,
+                        ptrTy, i64Ty, i64Ty),
+                    {arr(), j.extract_data(arg(0)), outTag, outData,
+                     b.getInt64(line), b.getInt64(col)});
+              }
+              res = j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
+                                 b.CreateLoad(i64Ty, outData));
+              break;
+            }
           }
           b.CreateStore(res, slots[in.a]);
           b.CreateBr(mergeBB);
