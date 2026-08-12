@@ -10,7 +10,7 @@ For an introductory tour and usage idioms see
 [`handbook.md` §14](handbook.md#14-standard-library).
 
 Language-level built-ins — `to_long`, `to_float`, `to_string`,
-`type_of`, `range`, `iota` — are specified in
+`type_of`, `range`, `iota`, `repeat` — are specified in
 [§19 of the language spec](language.md). The matcher family
 (`assert_true` / `assert_eq` / `assert_throws` / etc.) is documented
 in [§13 below](#13-matchers). Methods on built-in types (`String`,
@@ -117,6 +117,7 @@ Conventions used below:
 | 2D/3D vector math (dot, length, normalize, distance) | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
+| Fill an `Array` with `n` copies of a value | [language spec §19](language.md) — `repeat(n, value)` |
 | Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §19](language.md) |
 
 ---

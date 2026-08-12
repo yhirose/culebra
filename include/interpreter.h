@@ -6942,6 +6942,8 @@ inline std::pair<int64_t, int64_t> _parse_range_args(
 // are first-class iterator/array factories — Python/Rust/Kotlin etc.
 // expose them as builtins, not under a Math namespace.
 inline void setup_core_globals(Environment& env) {
+  using namespace std::literals;
+
   // iota(n) / iota(start, end): materialize a new Array of consecutive
   // integers. Eager; for lazy iteration use range.
   env.initialize(
@@ -6962,6 +6964,30 @@ inline void setup_core_globals(Environment& env) {
             }
             return Value(std::move(out));
           })),
+      false);
+
+  // repeat(n, value): materialize a new Array of `n` copies of `value`.
+  // Eager, like iota. `n < 0` is a ValueError rather than a silent empty
+  // Array, matching String's `s.repeat(n)` (shared.h's str_repeat).
+  env.initialize(
+      "repeat",
+      Value(FunctionValue({{"n", false, "Long"sv}, {"value", false, ""sv}},
+                          [](std::shared_ptr<Environment> callEnv) {
+                            auto n = callEnv->get("n").to_long();
+                            if (n < 0) {
+                              auto line = callEnv->get("__LINE__").to_long();
+                              auto col = callEnv->get("__COLUMN__").to_long();
+                              throw CulebraError("ValueError",
+                                  "repeat() n must not be negative", line, col);
+                            }
+                            auto value = callEnv->get("value");
+                            ArrayValue out;
+                            out.values->reserve(static_cast<size_t>(n));
+                            for (int64_t i = 0; i < n; i++)
+                              out.values->push_back(value);
+                            return Value(std::move(out));
+                          },
+                          "Array"sv)),
       false);
 
   // range(n) / range(start, end) / range(..., step: N): lazy integer

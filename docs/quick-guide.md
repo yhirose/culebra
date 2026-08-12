@@ -627,6 +627,7 @@ single most common transfer mistake.
 | `"a\n" + "b\n"` | a `"""` block |
 | `.map(fn (x) { expr })` | `.map(\|x\| expr)` |
 | `range(0, n)` | `range(n)` |
+| `iota(n).map(\|_\| v)` | `repeat(n, v)` |
 | `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
 | `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
 | `{k1: v1, k2: obj.k2, k3: obj.k3}` (copy every field to change one) | `{...obj, k1: v1}` |
@@ -657,7 +658,7 @@ entry with no receiver at all (`contains(x)` under **Set methods**,
 
 **Iterator methods** — it.map(f); it.filter(p); it.take(n); it.skip(n); it.take_while(p); it.skip_while(p); it.step_by(n); it.distinct(); it.tap(f); it.scan(init, f); it.flatten(); it.chunk_by(f); it.chunks(n); it.windows(n); it.flat_map(f); it.chain(other); it.zip(other); it.enumerate(); it.collect(); it.join(sep); it.for_each(f); it.reduce(init, f); it.find(p); it.any(p); it.all(p); it.count(); it.first(); it.last(); it.nth(n); it.position(p); it.contains(v); it.sum(); it.product(); it.min(); it.max(); it.min_by(f); it.max_by(f); it.to_set(); it.to_object(); it.group_by(f); it.partition(p); it.unzip()
 
-**Core built-ins** — to_long(v: Any) -> Long; to_float(v: Any) -> Float; to_string(v: Any) -> String; type_of(v: Any) -> String; range(n: Long, *, step: Long = 1) -> Iterator; range(start: Long, end: Long, *, step: Long = 1) -> Iterator; iota(n: Long) -> Array; iota(start: Long, end: Long) -> Array; grid(x_range: Range, y_range: Range) -> Iterator
+**Core built-ins** — to_long(v: Any) -> Long; to_float(v: Any) -> Float; to_string(v: Any) -> String; type_of(v: Any) -> String; range(n: Long, *, step: Long = 1) -> Iterator; range(start: Long, end: Long, *, step: Long = 1) -> Iterator; iota(n: Long) -> Array; iota(start: Long, end: Long) -> Array; repeat(n: Long, value: Any) -> Array; grid(x_range: Range, y_range: Range) -> Iterator
 
 **Math** — Math.pi; Math.e; Math.inf; Math.nan; Math.abs(x: Long|Float) -> Long|Float; Math.min(a, b, ...) -> Long|Float; Math.max(a, b, ...) -> Long|Float; Math.log(x: Long|Float) -> Float; Math.exp(x: Long|Float) -> Float; Math.sqrt(x: Long|Float) -> Float; Math.sin(x) -> Float; Math.cos(x) -> Float; Math.tan(x) -> Float; Math.asin(x) -> Float; Math.acos(x) -> Float; Math.atan(x) -> Float; Math.atan2(y, x) -> Float; Math.floor(x: Long|Float) -> Long; Math.ceil(x: Long|Float) -> Long; Math.round(x: Long|Float) -> Long; Math.pow(base: Long, exp: Long) -> Long; Math.sign(x: Long) -> Long; Math.clamp(x: Long|Float, lo: Long|Float, hi: Long|Float) -> Long|Float; Math.wrap(x: Long, n: Long) -> Long
 

@@ -11697,6 +11697,13 @@ struct JIT {
       return [this, slot, method] { return load_slot(*slot, method); };
     if (!culebra::lazy_fn_group_of(method).empty())
       return [this, method] { return emit_builtin_var_get(method); };
+    // `repeat` is a bare C++-intrinsic global like `to_long`/`range`, but
+    // (unlike those) has no bespoke fast path worth hand-coding in
+    // compile_ufcs_builtin — reuse this already-generic loader instead of
+    // adding a third-rung arm that would just re-derive the arity/kwarg
+    // checking this path gets for free from compile_function_call_raw.
+    if (method == "repeat")
+      return [this, method] { return emit_builtin_var_get(method); };
     return {};
   }
 

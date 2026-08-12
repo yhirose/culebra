@@ -4724,7 +4724,9 @@ type introspection, and the display convention. The second group
 (`range`, `iota`, `grid`) provides the canonical integer-sequence
 factories; both backends recognise `range`/`iota` for fusion /
 specialisation, and they are the standard form used in `for`-in
-loops throughout the language. The matcher family (`assert_true` /
+loops throughout the language. `repeat` is a related but separate
+eager `Array` constructor — `n` copies of one value rather than an
+integer sequence. The matcher family (`assert_true` /
 `assert_eq` / `assert_throws` / `assert_close` / etc.) is a third
 group of globals — see
 [`docs/stdlib.md`](stdlib.md) for the full reference. The broader
@@ -4875,6 +4877,24 @@ expects an `Array`).
 inspect(iota(3))     # => [0, 1, 2]
 inspect(iota(2, 5))  # => [2, 3, 4]
 inspect(iota(5, 2))  # => []
+```
+
+### `repeat(n: Long, value: Any) -> Array`
+
+Materialise an `Array` of `n` copies of `value`. `n < 0` raises
+`ValueError`; `n == 0` returns `[]`. Every copy is the same
+`value` — if it's a mutable reference (`Array`/`Object`), all `n`
+slots alias one instance, the same sharing `[value] * n` gives in
+Python or `Array(n).fill(value)` in JavaScript.
+
+```culebra
+inspect(repeat(3, 0))    # => [0, 0, 0]
+inspect(repeat(0, "x"))  # => []
+
+let shared = repeat(2, [])
+shared[0].push(1)
+# Both slots are the same Array
+inspect(shared)  # => [[1], [1]]
 ```
 
 ### `grid(x_range: Range, y_range: Range) -> Iterator`

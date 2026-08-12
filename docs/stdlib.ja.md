@@ -9,7 +9,7 @@
 を参照してください。
 
 言語レベルの組み込み関数（`to_long`, `to_float`, `to_string`,
-`type_of`, `range`, `iota`）は [言語仕様 §19](language.ja.md)
+`type_of`, `range`, `iota`, `repeat`）は [言語仕様 §19](language.ja.md)
 を参照してください。matcher一族 (`assert_true` / `assert_eq` /
 `assert_throws`等) は [§13 Matchers](#13-matchers) で扱います。
 組み込み型（`String`, `Array`, `Object`）のメソッドは
@@ -115,6 +115,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §19](language.ja.md) |
+| `n`個の値で`Array`を埋める | [言語仕様 §19](language.ja.md) — `repeat(n, value)` |
 | 変換（`to_long`、`to_float`、`to_string`、`type_of`） | [言語仕様 §19](language.ja.md) |
 
 ---

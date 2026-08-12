@@ -218,7 +218,7 @@ class Cells {
   new(w, h) {
     self.w = w
     self.h = h
-    self.k = iota(w * h).map(|_| 0)
+    self.k = repeat(w * h, 0)
   }
 
   get(x, y) {
@@ -311,7 +311,7 @@ class KeyImage {
   new(w, h) {
     self.w = w
     self.h = h
-    self.k = iota(w * h).map(|_| 0)
+    self.k = repeat(w * h, 0)
   }
 
   # Expand `cells` by `scale` and drop it at (x, y), cropped to w x h.

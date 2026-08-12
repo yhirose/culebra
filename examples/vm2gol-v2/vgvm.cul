@@ -33,10 +33,6 @@ fn bp_minus_offset(s) {
   }
 }
 
-fn zeros(n) {
-  iota(n).map(|_| 0)
-}
-
 fn pad2(n) {
   s = to_string(n)
   s.size() < 2 ? "0{s}" : s
@@ -45,8 +41,8 @@ fn pad2(n) {
 class Memory {
   new(stack_size) {
     self.main = []
-    self.stack = zeros(stack_size)
-    self.vram = zeros(50)
+    self.stack = repeat(stack_size, 0)
+    self.vram = repeat(50, 0)
   }
 
   dump_main(pc) {

@@ -105,7 +105,14 @@ count_bare() { # file
 # through here: this is a CULEBRA_RT_INLINE extern-C runtime helper, not
 # codegen, so the retain has to be bare — one more instance of an already-
 # justified pattern, not a new debt shape.
-ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 99
+# 99 -> 100 (2026-08-11, reviewed): new _ns_global_repeat (bare global
+# `repeat(n, value)`) retains its borrowed `value` once per copy before
+# pushing it into the freshly-built Array — the args a raw NsMethod adapter
+# receives are borrowed (the generic ns-call dispatch drops every arg slot
+# after the call returns), so each of the n copies needs its own retain
+# before array_push absorbs it. Same "no Owned/JitOwnedVal layer reachable
+# from a raw runtime adapter" shape as random_choice/weighted_choice above.
+ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 100
 # 17 -> 12 (2026-08-01): the isolate/parallel child entries hold the rebuilt
 # closure, its args and the call result in JitOwnedVal, so their tail releases
 # are gone — and with them the hang a throwing child caused by never dropping a

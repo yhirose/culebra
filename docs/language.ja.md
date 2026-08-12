@@ -4489,7 +4489,9 @@ iterator chainで不可避）。eagerに実体化して最大スループット�
 紐付くエラー、型の内省、表示規則）に結びついています。第2グループ
 （`range`、`iota`、`grid`）は標準的な整数列ファクトリで、`range`
 / `iota`は両バックエンドがfusion / specialisationの対象として認識し、
-言語全体の`for`-inループで使われる正規形です。第3グループはmatcher
+言語全体の`for`-inループで使われる正規形です。`repeat`は関連するが
+別物の、eagerな`Array`コンストラクタです — 整数列ではなく、1つの値
+を`n`個複製します。第3グループはmatcher
 一族 (`assert_true` / `assert_eq` / `assert_throws` / `assert_close`等)
 — 全referenceは
 [`docs/stdlib.ja.md`](stdlib.ja.md) を参照。`Math` / `IO` / `Sys`
@@ -4633,6 +4635,24 @@ C++ `std::iota` / Scheme SRFI-1から命名。`for`-inループには`range`を
 inspect(iota(3))     # => [0, 1, 2]
 inspect(iota(2, 5))  # => [2, 3, 4]
 inspect(iota(5, 2))  # => []
+```
+
+### `repeat(n: Long, value: Any) -> Array`
+
+`value`を`n`個複製した`Array`を作ります。`n < 0`は`ValueError`、
+`n == 0`は`[]`。全スロットは同じ`value`です — `Array`/`Object`の
+ような可変参照の場合、`n`個のスロットは同一インスタンスを共有します
+（Pythonの`[value] * n`やJavaScriptの`Array(n).fill(value)`と同じ
+挙動）。
+
+```culebra
+inspect(repeat(3, 0))    # => [0, 0, 0]
+inspect(repeat(0, "x"))  # => []
+
+let shared = repeat(2, [])
+shared[0].push(1)
+# 両スロットとも同じArray
+inspect(shared)  # => [[1], [1]]
 ```
 
 ### `grid(x_range: Range, y_range: Range) -> Iterator`

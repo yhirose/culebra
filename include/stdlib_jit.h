@@ -3864,6 +3864,25 @@ inline JitValue _ns_global_iota(JitValue* a, int64_t) {
   _range_bounds(a[0], "iota", start, end);
   return _ns_adapt::v_array(culebra_runtime_iota(start, end));
 }
+// repeat(n, value): materialize a new Array of `n` copies of `value`. Fixed
+// arity 2 (unlike iota's variadic collect), so a[0]/a[1] are the raw args —
+// but still just BORROWED (the generic ns-call slab drops every arg slot
+// after the call returns, see compile_ns_call's emit_value_slab_call), so
+// every copy needs its own retain; array_push absorbs the +1 it's given.
+inline JitValue _ns_global_repeat(JitValue* a, int64_t) {
+  int64_t n = _ns_adapt::take_long(a[0]);
+  if (n < 0) {
+    throw culebra::CulebraError("ValueError",
+        "repeat() n must not be negative", 0, 0);
+  }
+  JitValue value = a[1];
+  auto* r = culebra_runtime_array_new_reserved(n);
+  for (int64_t i = 0; i < n; i++) {
+    culebra_runtime_value_retain(value.tag, value.data);
+    culebra_runtime_array_push(r, value.tag, value.data);
+  }
+  return _ns_adapt::v_array(r);
+}
 // grid as a first-class value: the collected positional Array must hold
 // exactly 2 (Range) args — culebra_runtime_grid_new does the Range/bounds
 // validation, same as the direct-call fast path. Line/col fall back to
@@ -7034,8 +7053,12 @@ inline JitValue _jit_ns_dispatch_owned_slab(const NsMethod* m,
 inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
                                         JitValue* args, int64_t line,
                                         int64_t col, int64_t arg0_line,
-                                        int64_t arg0_col) {
-  const NsParamMeta* pm = _ns_meta(m);
+                                        int64_t arg0_col,
+                                        const NsParamMeta* pm_hint = nullptr) {
+  // The trampoline (the only caller with `pm` already in hand, needed for its
+  // own arity gate) passes it through to skip a second _ns_meta lookup keyed
+  // on the same `m`; the other callers leave this null and get it here.
+  const NsParamMeta* pm = pm_hint ? pm_hint : _ns_meta(m);
   try {
     // Args-rest method (range/iota): build the same canonical
     // [rest-Array, kw-only...] slab the kwarg resolver produces, so a single
@@ -7113,7 +7136,18 @@ inline void _jit_ns_method_trampoline(
   // so this is skipped and the dispatch's body-coercion arg0 check runs below
   // (matching the interp's callback wording). Args-rest methods (range/iota)
   // bind positionals into the rest Array, so they keep the dispatch path.
-  if (_jit_argpos_n > 0) {
+  //
+  // Gate on arity first: interp's binder always checks the positional/keyword
+  // count against the declared params before binding (type-checking) any of
+  // them, so a wrong-arity call reports ArityError even when the first arg's
+  // type would also fail (`{a:1}.repeat()` → ArityError, not "parameter 'n'
+  // expects Long"). Without this gate the loop below type-checks whatever
+  // positions exist regardless of count, letting a bad-typed arg0 preempt a
+  // dispatch-side ArityError this same call would otherwise raise.
+  const NsParamMeta* pm = _ns_meta(m);
+  bool arity_ok = pm ? (n_args >= pm->min_arity && n_args <= pm->max_arity)
+                     : (m->arity < 0 || n_args == m->arity);
+  if (arity_ok && _jit_argpos_n > 0) {
     // `_ns_type_meta` carries every method's per-positional type (derived from
     // the canonical params), so all positionals — not just arg0 — are checked
     // here, matching the interp binder. Args-rest methods (range/iota) bind
@@ -7146,7 +7180,7 @@ inline void _jit_ns_method_trampoline(
   // arg0's position for the (callback) body-coercion arg0 type check.
   { *__ret = _jit_ns_method_dispatch(m, n_args, args, _jit_call_site_line,
                                  _jit_call_site_col, _jit_call_arg0_line,
-                                 _jit_call_arg0_col); return; }
+                                 _jit_call_arg0_col, pm); return; }
 }
 
 inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
@@ -7527,6 +7561,7 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "__eff_catch_abort", 1, &_ns_global_eff_catch_abort},
   {"", "range",    -1, &_ns_global_range},
   {"", "iota",     -1, &_ns_global_iota},
+  {"", "repeat",    2, &_ns_global_repeat},
   {"", "grid",     -1, &_ns_global_grid},
 };
 
@@ -10036,7 +10071,7 @@ inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
 
 inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
-      "inspect", "print",   "println",
+      "inspect", "print",   "println",   "repeat",
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
       "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
