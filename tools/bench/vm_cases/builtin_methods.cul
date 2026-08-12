@@ -1,0 +1,135 @@
+# Value-type built-in methods: the size family over every sized receiver,
+# and the String surface the slice implements. The gate, the parameter
+# checks and the operation are three separate ops, so each lane's answer is
+# assembled the same way the AST backends assemble theirs.
+
+# --- size / empty / presence: one probe, six receivers -------------------
+println([1, 2, 3].size())
+println((1, 2).size())
+println({1, 2, 3}.size())
+println('abc'.size())
+println('café'.size())
+println('abc'.view().size())
+println(range(0, 3).size())
+println(Math.size() > 0)
+
+println([].empty())
+println([1].empty())
+println(''.empty())
+println('a'.empty())
+println({1,}.empty())
+println((1,).empty())
+
+inspect([1].presence())
+inspect([].presence())
+inspect('a'.presence())
+inspect(''.presence())
+inspect({1,}.presence())
+inspect((1,).presence())
+
+# The receiver comes back retained, so a churn loop over a fresh one is
+# where an over- or under-release shows up.
+mut i = 0
+while i < 200 {
+    let p = [i].presence()
+    i = i + 1
+}
+println(i)
+
+# --- String, no arguments ------------------------------------------------
+println('aBc'.upper())
+println('aBc'.lower())
+println('hELLO world'.capitalize())
+println(''.upper())
+println('café'.upper())
+println('[' + '  a b  '.trim() + ']')
+println('[' + '\n\ta\t\n'.trim() + ']')
+inspect('a\nb\n'.lines())
+inspect(''.lines())
+println(type_of('abc'.view()))
+
+# --- String, Long argument ----------------------------------------------
+println('ab'.repeat(3))
+println('[' + 'ab'.repeat(0) + ']')
+println('hello world'.truncate(8))
+println('hello'.truncate(8))
+println('hello world'.truncate(6, '..'))
+println('hello world'.truncate(3, ''))
+
+# --- String, StringLike arguments ---------------------------------------
+println('[' + 'xxaxx'.trim_start('x') + ']')
+println('[' + 'xxaxx'.trim_end('x') + ']')
+println('[' + '  a  '.trim_start() + ']')
+println('[' + '  a  '.trim_end() + ']')
+println('abc'.tr('ab', 'xy'))
+println('abc'.tr('abc', 'x'))
+println('[' + 'abc'.tr('abc', '') + ']')
+inspect('a,b,c'.split(','))
+inspect('abc'.split(''))
+inspect('a,,b'.split(','))
+println('abc'.starts_with('ab'))
+println('abc'.starts_with(''))
+println('abc'.ends_with('bc'))
+println('abc'.ends_with('z'))
+
+# --- A StringView receiver reaches every String method -------------------
+let v = 'a,b'.view()
+println(v.size())
+println(v.upper())
+inspect(v.split(','))
+println(v.trim())
+println(v.repeat(2))
+inspect(v.presence())
+
+# --- Chains, side effects, evaluation order ------------------------------
+println('a'.upper().repeat(3).lower())
+println('a,b,c'.split(',').size())
+println('a b'.split(' ').presence().size())
+
+fn side(x) {
+    println('arg ' + x)
+    x
+}
+println('ab'.tr(side('a'), side('x')))
+
+# The arguments evaluate left to right, after the receiver is gated.
+mut n = 0
+fn bump() {
+    n = n + 1
+    to_string(n)
+}
+println('abc'.tr(bump(), bump()))
+println(n)
+
+# --- A throwing call leaves nothing behind -------------------------------
+# The receiver and the arguments are heap values the gate/check throws past,
+# so the handler ladder is the only thing that can free them.
+mut caught = 0
+while caught < 200 {
+    try {
+        [caught].upper()
+    } catch e {
+        caught = caught + 1
+    }
+}
+println(caught)
+
+mut bad = 0
+while bad < 200 {
+    try {
+        ('x' + to_string(bad)).repeat([bad])
+    } catch e {
+        bad = bad + 1
+    }
+}
+println(bad)
+
+# --- Heap receivers and results under churn ------------------------------
+mut k = 0
+mut total = 0
+while k < 300 {
+    let parts = ('a,b,c,' + to_string(k)).split(',')
+    total = total + parts.size()
+    k = k + 1
+}
+println(total)

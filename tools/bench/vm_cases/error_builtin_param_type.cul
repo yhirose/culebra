@@ -1,0 +1,5 @@
+# A parameter's declared type, reported with the interp binder's wording at
+# the argument's own position (not the chain head).
+println(
+  'ab'.repeat(
+    'x'))

@@ -182,6 +182,36 @@ enum class Op : uint8_t {
                // Emitted only for a built-in method name (the JIT's
                // compile-time filter) and stamped at the DOT node: the
                // method name's own position, NOT the chain head.
+  MethGate,    // the gate a built-in method call passes before any argument
+               // evaluates: regs[a] = the user-defined method shadowing the
+               // built-in, or the TAG_NO_SELF sentinel when the built-in
+               // itself answers. An Object receiver is asked first — the read
+               // is emit_property_get's, so a namespace's unknown member
+               // raises its AttributeError right here, and the shadow test is
+               // compile_user_method_over_builtin's checkBB (a Function-valued
+               // read, an own/proto slot of the name, or a Shared view of a
+               // dict-builtin name). Every other receiver takes the built-in,
+               // whose receiver gate (built-in d's BRecv, else the
+               // resolution error) runs here too — ahead of the arguments,
+               // both backends' order: `(5).repeat(boom())` never evaluates
+               // boom(). consts[c] names the method; positioned at the chain
+               // head, where both backends anchor a receiver's failure.
+  ChkParam,    // a built-in parameter's declared-type check: unless regs[b]
+               // (MethGate's gate slot) still holds the sentinel — a user
+               // method binds by its own signature, not the built-in's —
+               // check regs[a] against type c and raise the interp binder's
+               // wording, context consts[d] ("parameter 'sep'"), at this
+               // instruction's position: the argument's own node.
+  BMeth,       // regs[a] = built-in method c over the run at b: regs[b] is
+               // MethGate's gate slot, regs[b+1] the receiver, and
+               // regs[b+2..b+2+d) the arguments — defaults already
+               // materialized, so d is the built-in's own arity. A gate slot
+               // holding anything but the sentinel is the shadowing user
+               // method, called through the JitFn ABI exactly as CallM does
+               // (consuming receiver and args; a non-Function there is the
+               // interp's "expected Function, got Long"). The built-in arm
+               // BORROWS the receiver and the arguments — the statement sweep
+               // stays their sole releaser — and yields a fresh +1.
   PropRaw,     // regs[a] = the raw property view of consts[c] on regs[b],
                // retained (+1) — the callee half of `x.m(...)`. Unlike
                // PropVal it neither binds `self` into a wrapper nor runs the
@@ -311,6 +341,224 @@ struct Insn {
   Op op;
   int32_t a = 0, b = 0, c = 0, d = 0;
 };
+
+// --- Value-type built-in methods -------------------------------------------
+//
+// The slice answers a named set of built-in methods, keyed by (name, argc) —
+// compile_builtin_method's own dispatch granularity. A shape outside the table
+// (`'ab'.repeat()`, the 0-arg `it.count()`) is a compile-time reject rather
+// than a half-answer, because which receiver resolves a name at which arity is
+// what decides between an ArityError and a method miss, and only the tables
+// know. One table drives all three lanes: the compiler reads the receiver gate
+// and the parameter checks out of it, the executor and the lowering switch on
+// the id.
+enum class BMeth : uint8_t {
+  Size, Empty, Presence,                        // any sized receiver
+  Upper, Lower, Capitalize, Trim, Lines, View,  // String/StringView, no args
+  Repeat, Truncate, TrimStart, TrimEnd, Tr, Split, StartsWith, EndsWith,
+};
+
+// The receivers a built-in resolves on. Anything else never reaches it: it
+// takes emit_receiver_resolution_error's two-way answer — a scalar cannot hold
+// members at all ("expected Object, Array, or Tensor"), anything else simply
+// lacks the method ("expected Function, got Nil").
+enum class BRecv : uint8_t {
+  Sized,    // Array/Tuple/Object/String/StringView/Set — emit_size_probe's set
+  StrLike,  // String/StringView
+};
+
+// A parameter's declared type, checked with the interp binder's wording at the
+// argument's own position.
+enum class BParam : uint8_t { Long, StrLike };
+
+struct BMethSpec {
+  std::string_view name;
+  int8_t argc;           // positional arguments written at the call site
+  BMeth id;
+  BRecv recv;
+  int8_t nargs;          // arguments the op reads: argc, or argc + 1 with `def`
+  const char* def;       // the trailing optional parameter's default literal
+  BParam params[2];
+  const char* pnames[2];  // the interp's parameter names, for the type error
+};
+
+inline std::span<const BMethSpec> bmeth_specs() {
+  using enum BMeth;
+  using enum BParam;
+  static constexpr BMethSpec kSpecs[] = {
+      {"size", 0, Size, BRecv::Sized, 0, nullptr, {}, {}},
+      {"empty", 0, Empty, BRecv::Sized, 0, nullptr, {}, {}},
+      {"presence", 0, Presence, BRecv::Sized, 0, nullptr, {}, {}},
+      {"upper", 0, Upper, BRecv::StrLike, 0, nullptr, {}, {}},
+      {"lower", 0, Lower, BRecv::StrLike, 0, nullptr, {}, {}},
+      {"capitalize", 0, Capitalize, BRecv::StrLike, 0, nullptr, {}, {}},
+      {"trim", 0, Trim, BRecv::StrLike, 0, nullptr, {}, {}},
+      {"lines", 0, Lines, BRecv::StrLike, 0, nullptr, {}, {}},
+      {"view", 0, View, BRecv::StrLike, 0, nullptr, {}, {}},
+      {"repeat", 1, Repeat, BRecv::StrLike, 1, nullptr, {Long}, {"n"}},
+      // The optional tail is filled by the compiler with the interp's own
+      // default, so the op sees one fixed arity per id.
+      {"truncate", 1, Truncate, BRecv::StrLike, 2, "...",
+       {Long, StrLike}, {"max", "ellipsis"}},
+      {"truncate", 2, Truncate, BRecv::StrLike, 2, nullptr,
+       {Long, StrLike}, {"max", "ellipsis"}},
+      {"trim_start", 0, TrimStart, BRecv::StrLike, 1, "",
+       {StrLike}, {"chars"}},
+      {"trim_start", 1, TrimStart, BRecv::StrLike, 1, nullptr,
+       {StrLike}, {"chars"}},
+      {"trim_end", 0, TrimEnd, BRecv::StrLike, 1, "", {StrLike}, {"chars"}},
+      {"trim_end", 1, TrimEnd, BRecv::StrLike, 1, nullptr,
+       {StrLike}, {"chars"}},
+      {"tr", 2, Tr, BRecv::StrLike, 2, nullptr,
+       {StrLike, StrLike}, {"from", "to"}},
+      {"split", 1, Split, BRecv::StrLike, 1, nullptr, {StrLike}, {"sep"}},
+      {"starts_with", 1, StartsWith, BRecv::StrLike, 1, nullptr,
+       {StrLike}, {"prefix"}},
+      {"ends_with", 1, EndsWith, BRecv::StrLike, 1, nullptr,
+       {StrLike}, {"suffix"}},
+  };
+  return kSpecs;
+}
+
+inline const BMethSpec* bmeth_lookup(std::string_view name, size_t argc) {
+  for (const auto& s : bmeth_specs())
+    if (s.name == name && s.argc == static_cast<int8_t>(argc)) return &s;
+  return nullptr;
+}
+
+// Whether `tag` is a receiver the gate lets through.
+inline bool bmeth_receiver_ok(BRecv recv, int8_t tag) {
+  if (tag == TAG_STRING || tag == TAG_STRINGVIEW) return true;
+  if (recv == BRecv::StrLike) return false;
+  return tag == TAG_ARRAY || tag == TAG_TUPLE || tag == TAG_OBJECT ||
+         tag == TAG_SET;
+}
+
+// The name a parameter's declared type carries into the error message.
+inline const char* bmeth_param_type(BParam p) {
+  return p == BParam::Long ? "Long" : "StringLike";
+}
+
+// The accepted tags, tested inline like the JIT arms' own gates
+// (coerce_strlike_cstr, emit_builtin_long_arg). The test cannot be left to
+// culebra_runtime_type_check alone: `StringLike` is a built-in TRAIT, and its
+// registry entry comes from the preamble the VM lanes do not splice, so the
+// runtime check would reject a perfectly good String there.
+inline bool bmeth_param_ok(BParam p, int8_t tag) {
+  if (p == BParam::Long) return tag == TAG_LONG;
+  return tag == TAG_STRING || tag == TAG_STRINGVIEW;
+}
+
+// The rejected argument's error, in the interp binder's wording — reached
+// only from the failing side of bmeth_param_ok, so it always throws.
+inline void bmeth_param_error(BParam p, const char* context, int64_t line,
+                              int64_t col) {
+  culebra_runtime_throw_error(
+      "TypeError",
+      std::format("type error: {} expects {}", context, bmeth_param_type(p))
+          .c_str(),
+      line, col);
+}
+
+inline BRecv bmeth_recv_of(BMeth id) {
+  for (const auto& s : bmeth_specs())
+    if (s.id == id) return s.recv;
+  return BRecv::StrLike;  // unreachable: every id has a spec
+}
+
+// emit_receiver_resolution_error's answer, executor-side: a scalar cannot
+// carry members at all, anything else simply lacks the method.
+inline void bmeth_receiver_error(int8_t tag, int64_t line, int64_t col) {
+  bool scalar = tag == TAG_NIL || tag == TAG_BOOL || tag == TAG_LONG ||
+                tag == TAG_FLOAT;
+  culebra_runtime_type_error_typed(
+      line, col, scalar ? "Object, Array, or Tensor" : "Function",
+      scalar ? tag : static_cast<int8_t>(TAG_NIL));
+}
+
+// emit_size_probe's arms, executor-side. The receiver gate ran first, so
+// every tag reaching here has a length.
+inline int64_t bmeth_size(const JitValue& v) {
+  switch (v.tag) {
+    case TAG_ARRAY:
+    case TAG_TUPLE:
+      return culebra_runtime_array_size(
+          reinterpret_cast<JitArray*>(v.data));
+    case TAG_OBJECT:
+      return culebra_runtime_object_size(
+          reinterpret_cast<JitObject*>(v.data));
+    case TAG_STRING:
+      return culebra_runtime_str_size(reinterpret_cast<const char*>(v.data));
+    case TAG_STRINGVIEW:
+      return static_cast<int64_t>(
+          reinterpret_cast<JitStringView*>(v.data)->len);
+    default:
+      return culebra_runtime_set_size(reinterpret_cast<JitSet*>(v.data));
+  }
+}
+
+// The built-in itself: receiver and arguments are already gated and
+// type-checked, so each arm is the runtime call the JIT's own arm makes.
+// Both operands stay borrowed; the result is a fresh +1.
+inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
+                            const JitValue* args, int64_t line, int64_t col) {
+  auto cstr = [](const JitValue& v) {
+    return culebra_runtime_strlike_to_cstr(static_cast<int8_t>(v.tag), v.data);
+  };
+  auto str = [](const char* s) {
+    return JitValue{TAG_STRING, reinterpret_cast<int64_t>(s)};
+  };
+  switch (id) {
+    case BMeth::Size:
+      return JitValue{TAG_LONG, bmeth_size(recv)};
+    case BMeth::Empty:
+      return JitValue{TAG_BOOL, bmeth_size(recv) == 0 ? 1 : 0};
+    case BMeth::Presence:
+      // The receiver itself when non-empty — a second owner hands it out.
+      if (bmeth_size(recv) == 0) return JitValue{TAG_NIL, 0};
+      culebra_runtime_value_retain(static_cast<int8_t>(recv.tag), recv.data);
+      return recv;
+    case BMeth::Upper:
+      return str(culebra_runtime_str_upper(cstr(recv)));
+    case BMeth::Lower:
+      return str(culebra_runtime_str_lower(cstr(recv)));
+    case BMeth::Capitalize:
+      return str(culebra_runtime_str_capitalize(cstr(recv)));
+    case BMeth::Trim:
+      return str(culebra_runtime_str_trim(cstr(recv)));
+    case BMeth::Lines:
+      return JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(
+                                     culebra_runtime_str_lines(cstr(recv)))};
+    case BMeth::View:
+      return JitValue{TAG_STRINGVIEW,
+                      reinterpret_cast<int64_t>(culebra_runtime_strlike_view(
+                          static_cast<int8_t>(recv.tag), recv.data))};
+    case BMeth::Repeat:
+      return str(culebra_runtime_str_repeat(cstr(recv), args[0].data, line,
+                                            col));
+    case BMeth::Truncate:
+      return str(culebra_runtime_str_truncate(cstr(recv), args[0].data,
+                                              cstr(args[1]), line, col));
+    case BMeth::TrimStart:
+      return str(culebra_runtime_str_trim_start(cstr(recv), cstr(args[0])));
+    case BMeth::TrimEnd:
+      return str(culebra_runtime_str_trim_end(cstr(recv), cstr(args[0])));
+    case BMeth::Tr:
+      return str(culebra_runtime_str_tr(cstr(recv), cstr(args[0]),
+                                        cstr(args[1])));
+    case BMeth::Split:
+      return JitValue{TAG_ARRAY,
+                      reinterpret_cast<int64_t>(culebra_runtime_str_split(
+                          cstr(recv), cstr(args[0])))};
+    case BMeth::StartsWith:
+      return JitValue{TAG_BOOL, culebra_runtime_str_starts_with(
+                                    cstr(recv), cstr(args[0])) ? 1 : 0};
+    case BMeth::EndsWith:
+      return JitValue{TAG_BOOL, culebra_runtime_str_ends_with(
+                                    cstr(recv), cstr(args[0])) ? 1 : 0};
+  }
+  return JitValue{TAG_NIL, 0};  // unreachable: every id has an arm
+}
 
 // Run-length position side table: entry covers [first_insn, next.first_insn).
 // This is what makes error positions structural instead of hand-threaded.
@@ -1602,17 +1850,20 @@ class Compiler {
     return {t, true};
   }
 
-  // The method names the slice cannot answer through the generic property
-  // path. Each is decided by NAME at compile time — the receiver's type is
-  // only known at run time, and for all three the JIT resolves against
+  // The method names the slice cannot answer. Each is decided by NAME (and,
+  // for a built-in, by argument count) at compile time — the receiver's type
+  // is only known at run time, and for these the JIT resolves against
   // machinery with no runtime counterpart the executor could call:
-  //   - a built-in method name is inline tag dispatch (compile_builtin_method);
-  //     `Math.keys()` is the dict builtin on a namespace object, not the
-  //     closed-member read the property path would do
+  //   - a built-in method the table above does not carry at this arity is
+  //     inline tag dispatch (compile_builtin_method); `Math.keys()` is the
+  //     dict builtin on a namespace object, not the closed-member read the
+  //     property path would do
   //   - `drop` / `parameters` have their own dispatches (explicit_drop, the
   //     synthesized class walker)
   //   - a name that resolves as a free function is a UFCS candidate:
-  //     `3.dbl()` is `dbl(3)`, decided by a runtime has-property gate
+  //     `3.dbl()` is `dbl(3)`, decided by a runtime has-property gate — so it
+  //     is rejected even when the table implements the built-in, whose own
+  //     gate has no UFCS arm
   // The sets come from shared tables (builtin_method_names, kBuiltinFns), so
   // the boundary cannot drift from the backends'.
   //
@@ -1632,15 +1883,16 @@ class Compiler {
       reject(post, std::format("function introspection '{}'", post.token));
   }
 
-  void reject_out_of_slice_method(const peg::Ast& post) {
+  void reject_out_of_slice_method(const peg::Ast& post, bool have_builtin) {
     reject_fn_introspection(post);
     std::string_view name = post.token;
+    if (lookup(name) || is_stdlib_global(name))
+      reject(post, std::format("UFCS candidate '{}'", name));
+    if (have_builtin) return;
     if (culebra::is_builtin_method_name(name))
       reject(post, std::format("built-in method '{}'", name));
     if (name == "drop" || name == "parameters")
       reject(post, std::format("'{}' dispatch", name));
-    if (lookup(name) || is_stdlib_global(name))
-      reject(post, std::format("UFCS candidate '{}'", name));
   }
 
   // `x.m(args)` — compile_method_call's property tail. The property resolves
@@ -1652,8 +1904,10 @@ class Compiler {
   // the JitFn ABI's receiver, instead of minting a bound-method wrapper.
   ExprResult compile_method_call(const peg::Ast& at, const peg::Ast& post,
                                  const peg::Ast& args, ExprResult recv) {
-    reject_out_of_slice_method(post);
+    const BMethSpec* spec = bmeth_lookup(post.token, args.nodes.size());
+    reject_out_of_slice_method(post, spec != nullptr);
     reject_kwargs(args);
+    if (spec) return compile_builtin_method(at, post, args, recv, *spec);
     StampGuard pos(*this, at);
     int32_t callee = alloc_temp(at);
     emit(Op::PropRaw, callee, recv.slot, kconst_str(post.token));
@@ -1667,6 +1921,43 @@ class Compiler {
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(at);
     emit(Op::CallM, t, callee, base, argc);
+    return {t, true};
+  }
+
+  // `x.m(args)` where `m` is a built-in the table implements at this arity.
+  // The run is one slot wider than a plain method call's: its head is
+  // MethGate's gate slot, which decides between the built-in and a
+  // user-defined method of the same name and reaches BMeth as the choice.
+  // The emission order IS the evaluation order both backends show: resolve
+  // the property and gate the receiver, then the arguments left to right,
+  // each type-checked at its own position the moment it lands.
+  ExprResult compile_builtin_method(const peg::Ast& at, const peg::Ast& post,
+                                    const peg::Ast& args, ExprResult recv,
+                                    const BMethSpec& spec) {
+    StampGuard pos(*this, at);  // the chain head: the gate's and BMeth's anchor
+    int32_t argc = static_cast<int32_t>(args.nodes.size());
+    int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
+    alloc_temp(at);             // [0] = the gate (user method or sentinel)
+    alloc_temp(at);             // [1] = the receiver
+    for (int32_t i = 0; i < spec.nargs; i++)
+      alloc_temp(i < argc ? *args.nodes[i] : at);
+    emit(Op::MethGate, base, recv.slot, kconst_str(post.token),
+         static_cast<int32_t>(spec.id));
+    store_into(base + 1, recv, /*dst_is_fresh=*/true);
+    for (int32_t i = 0; i < argc; i++) {
+      store_into(base + 2 + i, compile_expr(*args.nodes[i]),
+                 /*dst_is_fresh=*/true);
+      StampGuard arg_pos(*this, *args.nodes[i]);
+      emit(Op::ChkParam, base + 2 + i, base,
+           static_cast<int32_t>(spec.params[i]),
+           kconst_str(std::format("parameter '{}'", spec.pnames[i])));
+    }
+    // The omitted optional argument: the interp's declared default, so the
+    // op's arity is fixed per built-in and needs no absent-argument arm.
+    if (spec.nargs > argc)
+      emit(Op::LoadConst, base + 2 + argc, kconst_str(spec.def));
+    int32_t t = alloc_temp(at);
+    emit(Op::BMeth, t, base, static_cast<int32_t>(spec.id), spec.nargs);
     return {t, true};
   }
 
@@ -2650,7 +2941,7 @@ inline std::string dump(const Chunk& c) {
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
-      "PropVal",   "BareMethChk", "PropRaw",
+      "PropVal",   "BareMethChk", "MethGate", "ChkParam", "BMeth", "PropRaw",
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
       "JumpIfTag",
@@ -3294,6 +3585,88 @@ struct Exec {
                 static_cast<int8_t>(recv.tag), recv.data,
                 static_cast<int8_t>(view.tag), view.data, key);
           }
+          ++pc;
+          break;
+        }
+        case Op::MethGate: {
+          const JitValue& recv = regs[in.b];
+          const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto [line, col] = chunk_pos_at(c, pc);
+          regs[in.a] = JitValue{TAG_NO_SELF, 0};  // the built-in answers
+          if (recv.tag == TAG_OBJECT) {
+            // checkBB: the object's own read decides. A namespace raises its
+            // AttributeError from inside this read (a dict-builtin name is
+            // exempt there, which is why `Math.size()` reaches the built-in).
+            JitPropIC ic{};
+            JitValue view = culebra_runtime_prop_get(
+                TAG_OBJECT, recv.data, key, &ic, line, col,
+                /*own_receiver=*/false);
+            // An own slot wins even holding a non-Function: `{size: 5}.size()`
+            // is "expected Function, got Long", not the dict builtin. A Shared
+            // view carries no dict builtins at all — every name it lacks is a
+            // frozen-tree read, so it takes the user arm too.
+            if (view.tag == TAG_FUNC ||
+                culebra_runtime_object_has_own_field(TAG_OBJECT, recv.data,
+                                                     key) ||
+                (culebra::is_object_builtin_method_name(key) &&
+                 culebra_runtime_is_shared_val(recv.data))) {
+              // The register owns what it holds; the sweep is its releaser.
+              culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
+                                           view.data);
+              regs[in.a] = view;
+              ++pc;
+              break;
+            }
+          }
+          if (!bmeth_receiver_ok(bmeth_recv_of(static_cast<BMeth>(in.d)),
+                                 static_cast<int8_t>(recv.tag)))
+            bmeth_receiver_error(static_cast<int8_t>(recv.tag), line, col);
+          ++pc;
+          break;
+        }
+        case Op::ChkParam: {
+          // A user method shadowing the built-in binds by its own signature.
+          if (regs[in.b].tag == TAG_NO_SELF &&
+              !bmeth_param_ok(static_cast<BParam>(in.c),
+                              static_cast<int8_t>(regs[in.a].tag))) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            bmeth_param_error(
+                static_cast<BParam>(in.c),
+                reinterpret_cast<const char*>(c.consts[in.d].data), line, col);
+          }
+          ++pc;
+          break;
+        }
+        case Op::BMeth: {
+          const JitValue& gate = regs[in.b];
+          auto [line, col] = chunk_pos_at(c, pc);
+          if (gate.tag != TAG_NO_SELF) {
+            // The shadowing user method: CallM's hand-off, one slot over.
+            culebra_runtime_set_call_site(line, col);
+            if (gate.tag != TAG_FUNC)
+              culebra_runtime_type_error_typed(
+                  line, col, "Function", static_cast<int8_t>(gate.tag));
+            JitValue r;
+            try {
+              r = _jit_invoke(reinterpret_cast<JitClosure*>(gate.data),
+                              regs[in.b + 1], in.d,
+                              in.d ? &regs[in.b + 2] : nullptr);
+            } catch (...) {
+              for (int32_t i = 1; i <= in.d + 1; ++i)
+                regs[in.b + i] = JitValue{TAG_NIL, 0};
+              throw;
+            }
+            for (int32_t i = 1; i <= in.d + 1; ++i)
+              regs[in.b + i] = JitValue{TAG_NIL, 0};
+            regs[in.a] = r;
+            ++pc;
+            break;
+          }
+          // The built-in borrows the receiver and the arguments — every one of
+          // them stays register-owned, so the statement sweep is their sole
+          // releaser and a throwing helper strands nothing.
+          regs[in.a] = bmeth_apply(static_cast<BMeth>(in.c), regs[in.b + 1],
+                                   &regs[in.b + 2], line, col);
           ++pc;
           break;
         }
@@ -3990,6 +4363,62 @@ struct Lowering {
     BasicBlock* framePad =
         frame_defers ? BasicBlock::Create(j.ctx_, "vm.frame.pad", fn)
                      : nullptr;
+    // The JitFn hand-off, shared by Call / CallM and BMeth's user-method arm:
+    // the TAG_FUNC gate, the arg slab, and the ABI call. `selfSlot < 0` is a
+    // plain call (TAG_NO_SELF rides the receiver pair). The callee consumes
+    // the receiver and every argument on every exit, so those slots go nil
+    // BEFORE the call — the slab alloca keeps the values alive for the callee
+    // and a region's release ladder cannot double-release them on the unwind
+    // edge. Returns the call's result value.
+    auto emit_invoke = [&](llvm::Value* calleeV, int32_t selfSlot,
+                           int32_t argBase, int32_t argc, int64_t line,
+                           int64_t col) -> llvm::Value* {
+      b.CreateCall(j.module_->getOrInsertFunction(rt::set_call_site,
+                                                  b.getVoidTy(), i64Ty, i64Ty),
+                   {b.getInt64(line), b.getInt64(col)});
+      auto tag = j.extract_tag(calleeV);
+      auto errBB = BasicBlock::Create(j.ctx_, "call.err", fn);
+      auto okBB = BasicBlock::Create(j.ctx_, "call.ok", fn);
+      b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_FUNC)), okBB, errBB);
+      b.SetInsertPoint(errBB);
+      // Same shape as the executor's cold path: no class values exist in the
+      // slice, so the JIT's __call__/ctor probes cannot hit.
+      j.emit_call(j.module_->getOrInsertFunction(rt::type_error_typed,
+                                                 b.getVoidTy(), i64Ty, i64Ty,
+                                                 ptrTy, b.getInt8Ty()),
+                  {b.getInt64(line), b.getInt64(col),
+                   b.CreateGlobalString("Function"), tag});
+      if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+      b.SetInsertPoint(okBB);
+      auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
+      auto fnFieldPtr = b.CreateStructGEP(j.closureType_, clsPtr, 1, "fn.ptr");
+      auto fnPtr = b.CreateLoad(ptrTy, fnFieldPtr, "fn");
+      IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+      llvm::Value* slab;
+      if (argc > 0) {
+        slab = eb.CreateAlloca(ArrayType::get(j.valueType_, argc), nullptr,
+                               "call.args");
+        for (int32_t k = 0; k < argc; ++k) {
+          auto* dstp = b.CreateConstGEP2_64(ArrayType::get(j.valueType_, argc),
+                                            slab, 0, static_cast<uint64_t>(k));
+          b.CreateStore(load_slot(argBase + k), dstp);
+        }
+      } else {
+        slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
+      }
+      auto* retTmp = eb.CreateAlloca(j.valueType_, nullptr, "call.ret");
+      auto selfV = selfSlot >= 0 ? load_slot(selfSlot) : nullptr;
+      for (int32_t k = 0; k < argc; ++k)
+        b.CreateStore(j.make_nil(), slots[argBase + k]);
+      if (selfSlot >= 0) b.CreateStore(j.make_nil(), slots[selfSlot]);
+      j.emit_call(jit_fn_type(b, ptrTy), fnPtr,
+                  {retTmp, clsPtr,
+                   selfV ? j.extract_tag(selfV) : b.getInt8(TAG_NO_SELF),
+                   selfV ? j.extract_data(selfV) : b.getInt64(0),
+                   b.getInt64(argc), slab});
+      return b.CreateLoad(j.valueType_, retTmp);
+    };
+
     auto lpad_for = [&](size_t pc) -> BasicBlock* {
       for (size_t k = 0; k < c.eh.size(); ++k)
         if (c.eh[k].start <= pc && pc < c.eh[k].end) return lpads[k];
@@ -4397,6 +4826,220 @@ struct Lowering {
           }
           break;
         }
+        case Op::MethGate: {
+          // checkBB then the receiver gate, in compile_user_method_over_
+          // builtin's order, with the AST path's own property emitter.
+          std::string key(_str_sv(
+              reinterpret_cast<const char*>(c.consts[in.c].data)));
+          auto id = static_cast<BMeth>(in.d);
+          auto recv = load_slot(in.b);
+          auto tag = j.extract_tag(recv);
+          b.CreateStore(j.make_no_self(), slots[in.a]);
+          auto objBB = BasicBlock::Create(j.ctx_, "vbm.obj", fn);
+          auto gateBB = BasicBlock::Create(j.ctx_, "vbm.gate", fn);
+          auto userBB = BasicBlock::Create(j.ctx_, "vbm.user", fn);
+          auto contBB = BasicBlock::Create(j.ctx_, "vbm.cont", fn);
+          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), objBB,
+                         gateBB);
+
+          b.SetInsertPoint(objBB);
+          // own_receiver=false: the register keeps its +1 across the read.
+          auto view = j.emit_property_get(recv, key);
+          auto toUser = b.CreateOr(
+              b.CreateICmpEQ(j.extract_tag(view), b.getInt8(TAG_FUNC)),
+              j.emit_has_own_field(recv, key));
+          if (culebra::is_object_builtin_method_name(key)) {
+            // A Shared view carries no dict builtins: every name it lacks is
+            // a frozen-tree read, not the dict table's.
+            toUser = b.CreateOr(
+                toUser,
+                b.CreateICmpNE(
+                    j.emit_call(j.module_->getFunction(rt::is_shared_val),
+                                {j.extract_data(recv)}, "vbm.isview"),
+                    b.getInt8(0)));
+          }
+          b.CreateCondBr(toUser, userBB, gateBB);
+
+          b.SetInsertPoint(userBB);
+          j.emit_value_retain(view);  // the slot owns what it holds
+          b.CreateStore(view, slots[in.a]);
+          b.CreateBr(contBB);
+
+          b.SetInsertPoint(gateBB);
+          auto badBB = BasicBlock::Create(j.ctx_, "vbm.rcverr", fn);
+          auto sw = b.CreateSwitch(tag, badBB, 6);
+          sw->addCase(b.getInt8(TAG_STRING), contBB);
+          sw->addCase(b.getInt8(TAG_STRINGVIEW), contBB);
+          if (bmeth_recv_of(id) == BRecv::Sized) {
+            sw->addCase(b.getInt8(TAG_ARRAY), contBB);
+            sw->addCase(b.getInt8(TAG_TUPLE), contBB);
+            sw->addCase(b.getInt8(TAG_OBJECT), contBB);
+            sw->addCase(b.getInt8(TAG_SET), contBB);
+          }
+          b.SetInsertPoint(badBB);
+          j.emit_receiver_resolution_error(tag, "vbm");
+
+          b.SetInsertPoint(contBB);
+          break;
+        }
+        case Op::ChkParam: {
+          auto kind = static_cast<BParam>(in.c);
+          auto gate = load_slot(in.b);
+          auto chkBB = BasicBlock::Create(j.ctx_, "vbm.chk", fn);
+          auto errBB = BasicBlock::Create(j.ctx_, "vbm.chk.err", fn);
+          auto contBB = BasicBlock::Create(j.ctx_, "vbm.chk.cont", fn);
+          // A user method shadowing the built-in binds by its own signature.
+          b.CreateCondBr(
+              b.CreateICmpEQ(j.extract_tag(gate), b.getInt8(TAG_NO_SELF)),
+              chkBB, contBB);
+          b.SetInsertPoint(chkBB);
+          // The accepted tags inline, like the JIT arms' own gates — see
+          // bmeth_param_ok for why the runtime check can't stand alone.
+          auto argTag = j.extract_tag(load_slot(in.a));
+          auto ok =
+              kind == BParam::Long
+                  ? b.CreateICmpEQ(argTag, b.getInt8(TAG_LONG))
+                  : b.CreateOr(
+                        b.CreateICmpEQ(argTag, b.getInt8(TAG_STRING)),
+                        b.CreateICmpEQ(argTag, b.getInt8(TAG_STRINGVIEW)));
+          b.CreateCondBr(ok, contBB, errBB);
+          b.SetInsertPoint(errBB);
+          auto [line, col] = chunk_pos_at(c, i);
+          j.emit_throw_error(
+              "TypeError",
+              std::format("type error: {} expects {}",
+                          _str_sv(reinterpret_cast<const char*>(
+                              c.consts[in.d].data)),
+                          bmeth_param_type(kind)),
+              line, col);
+          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          b.SetInsertPoint(contBB);
+          break;
+        }
+        case Op::BMeth: {
+          auto [line, col] = chunk_pos_at(c, i);
+          auto gate = load_slot(in.b);
+          auto userBB = BasicBlock::Create(j.ctx_, "vbm.call", fn);
+          auto biBB = BasicBlock::Create(j.ctx_, "vbm.builtin", fn);
+          auto mergeBB = BasicBlock::Create(j.ctx_, "vbm.merge", fn);
+          b.CreateCondBr(
+              b.CreateICmpEQ(j.extract_tag(gate), b.getInt8(TAG_NO_SELF)),
+              biBB, userBB);
+
+          b.SetInsertPoint(userBB);
+          // The shadowing user method: CallM's hand-off, one slot over.
+          b.CreateStore(emit_invoke(gate, in.b + 1, in.b + 2, in.d, line, col),
+                        slots[in.a]);
+          b.CreateBr(mergeBB);
+
+          b.SetInsertPoint(biBB);
+          // Receiver and arguments stay slot-owned (borrowed by the built-in),
+          // so nothing here consumes a slot and the ladder keeps releasing
+          // them; the result is a fresh +1.
+          auto recv = load_slot(in.b + 1);
+          auto arg = [&](int32_t k) { return load_slot(in.b + 2 + k); };
+          auto cstr = [&](llvm::Value* v) {
+            return j.emit_call(j.module_->getFunction(rt::strlike_to_cstr),
+                               {j.extract_tag(v), j.extract_data(v)}, "vbm.s");
+          };
+          auto str_fn = [&](const char* rt_name,
+                            llvm::ArrayRef<llvm::Value*> a) {
+            return j.make_string(
+                j.emit_call(j.module_->getFunction(rt_name), a, "vbm.r"));
+          };
+          llvm::Value* res = nullptr;
+          switch (static_cast<BMeth>(in.c)) {
+            case BMeth::Size:
+              res = j.make_long(j.emit_size_probe(recv, j.extract_tag(recv),
+                                                  "vbm.size"));
+              break;
+            case BMeth::Empty:
+              res = j.make_bool(b.CreateICmpEQ(
+                  j.emit_size_probe(recv, j.extract_tag(recv), "vbm.empty"),
+                  b.getInt64(0)));
+              break;
+            case BMeth::Presence: {
+              // Non-empty yields the receiver retained — a second owner is
+              // handing it out; empty yields nil.
+              auto size =
+                  j.emit_size_probe(recv, j.extract_tag(recv), "vbm.presence");
+              auto emptyBB = BasicBlock::Create(j.ctx_, "vbm.pres.e", fn);
+              auto fullBB = BasicBlock::Create(j.ctx_, "vbm.pres.f", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.pres.j", fn);
+              // Entry-block alloca: this arm can sit inside a loop body.
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.pres");
+              b.CreateCondBr(b.CreateICmpEQ(size, b.getInt64(0)), emptyBB,
+                             fullBB);
+              b.SetInsertPoint(emptyBB);
+              b.CreateStore(j.make_nil(), out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(fullBB);
+              auto kept = load_slot(in.b + 1);
+              j.emit_value_retain(kept);
+              b.CreateStore(kept, out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::Upper: res = str_fn(rt::str_upper, {cstr(recv)}); break;
+            case BMeth::Lower: res = str_fn(rt::str_lower, {cstr(recv)}); break;
+            case BMeth::Capitalize:
+              res = str_fn(rt::str_capitalize, {cstr(recv)});
+              break;
+            case BMeth::Trim: res = str_fn(rt::str_trim, {cstr(recv)}); break;
+            case BMeth::Lines:
+              res = j.make_array(j.emit_call(
+                  j.module_->getFunction(rt::str_lines), {cstr(recv)}, "vbm.l"));
+              break;
+            case BMeth::View:
+              res = j.make_stringview(j.emit_call(
+                  j.module_->getFunction(rt::strlike_view),
+                  {j.extract_tag(recv), j.extract_data(recv)}, "vbm.v"));
+              break;
+            case BMeth::Repeat:
+              res = str_fn(rt::str_repeat,
+                           {cstr(recv), j.extract_data(arg(0)),
+                            b.getInt64(line), b.getInt64(col)});
+              break;
+            case BMeth::Truncate:
+              res = str_fn(rt::str_truncate,
+                           {cstr(recv), j.extract_data(arg(0)), cstr(arg(1)),
+                            b.getInt64(line), b.getInt64(col)});
+              break;
+            case BMeth::TrimStart:
+              res = str_fn(rt::str_trim_start, {cstr(recv), cstr(arg(0))});
+              break;
+            case BMeth::TrimEnd:
+              res = str_fn(rt::str_trim_end, {cstr(recv), cstr(arg(0))});
+              break;
+            case BMeth::Tr:
+              res = str_fn(rt::str_tr,
+                           {cstr(recv), cstr(arg(0)), cstr(arg(1))});
+              break;
+            case BMeth::Split:
+              res = j.make_array(j.emit_call(
+                  j.module_->getFunction(rt::str_split),
+                  {cstr(recv), cstr(arg(0))}, "vbm.sp"));
+              break;
+            case BMeth::StartsWith:
+            case BMeth::EndsWith:
+              // The predicates are declared i1-returning, so the result
+              // rides straight into the Bool (the AST arms' own shape).
+              res = j.make_bool(j.emit_call(
+                  j.module_->getFunction(
+                      static_cast<BMeth>(in.c) == BMeth::StartsWith
+                          ? rt::str_starts_with
+                          : rt::str_ends_with),
+                  {cstr(recv), cstr(arg(0))}, "vbm.p"));
+              break;
+          }
+          b.CreateStore(res, slots[in.a]);
+          b.CreateBr(mergeBB);
+          b.SetInsertPoint(mergeBB);
+          break;
+        }
         case Op::BareMethChk: {
           std::string key(_str_sv(
               reinterpret_cast<const char*>(c.consts[in.c].data)));
@@ -4655,63 +5298,10 @@ struct Lowering {
           // receiver pair. culebra_runtime_call_receiver is not mirrored — see
           // the executor's CallM.
           bool meth = in.op == Op::CallM;
-          int32_t argBase = in.c + (meth ? 1 : 0);
           auto [line, col] = chunk_pos_at(c, i);
-          b.CreateCall(j.module_->getOrInsertFunction(
-                           rt::set_call_site, b.getVoidTy(), i64Ty, i64Ty),
-                       {b.getInt64(line), b.getInt64(col)});
-          auto selfV = meth ? load_slot(in.c) : nullptr;
-          auto calleeV = load_slot(in.b);
-          auto tag = j.extract_tag(calleeV);
-          auto isFunc = b.CreateICmpEQ(tag, b.getInt8(TAG_FUNC));
-          auto errBB = BasicBlock::Create(j.ctx_, "call.err", fn);
-          auto okBB = BasicBlock::Create(j.ctx_, "call.ok", fn);
-          b.CreateCondBr(isFunc, okBB, errBB);
-          b.SetInsertPoint(errBB);
-          // Same shape as the executor's cold path: no Object values exist
-          // in the slice, so the JIT's __call__/ctor probes cannot hit.
-          j.emit_call(
-              j.module_->getOrInsertFunction(rt::type_error_typed,
-                                             b.getVoidTy(), i64Ty, i64Ty,
-                                             ptrTy, b.getInt8Ty()),
-              {b.getInt64(line), b.getInt64(col),
-               b.CreateGlobalString("Function"), tag});
-          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
-          b.SetInsertPoint(okBB);
-          auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
-          auto fnFieldPtr =
-              b.CreateStructGEP(j.closureType_, clsPtr, 1, "fn.ptr");
-          auto fnPtr = b.CreateLoad(ptrTy, fnFieldPtr, "fn");
-          IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-          llvm::Value* slab;
-          if (in.d > 0) {
-            slab = eb.CreateAlloca(ArrayType::get(j.valueType_, in.d),
-                                   nullptr, "call.args");
-            for (int32_t k = 0; k < in.d; ++k) {
-              auto* dstp = b.CreateConstGEP2_64(
-                  ArrayType::get(j.valueType_, in.d), slab, 0,
-                  static_cast<uint64_t>(k));
-              b.CreateStore(load_slot(argBase + k), dstp);
-            }
-          } else {
-            slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
-          }
-          auto* retTmp = eb.CreateAlloca(j.valueType_, nullptr, "call.ret");
-          auto jitFnTy = jit_fn_type(b, ptrTy);
-          // The callee consumes each arg's +1 — and a method call's receiver
-          // too — on every exit (the JitFn ABI), so those slots go nil BEFORE
-          // the call: the slab alloca keeps the values alive for the callee,
-          // and a region's release ladder cannot double-release them on the
-          // unwind edge.
-          for (int32_t k = 0; k < in.d; ++k)
-            b.CreateStore(j.make_nil(), slots[argBase + k]);
-          if (meth) b.CreateStore(j.make_nil(), slots[in.c]);
-          j.emit_call(jitFnTy, fnPtr,
-                      {retTmp, clsPtr,
-                       meth ? j.extract_tag(selfV) : b.getInt8(TAG_NO_SELF),
-                       meth ? j.extract_data(selfV) : b.getInt64(0),
-                       b.getInt64(in.d), slab});
-          b.CreateStore(b.CreateLoad(j.valueType_, retTmp), slots[in.a]);
+          b.CreateStore(emit_invoke(load_slot(in.b), meth ? in.c : -1,
+                                    in.c + (meth ? 1 : 0), in.d, line, col),
+                        slots[in.a]);
           break;
         }
         case Op::Ret: {

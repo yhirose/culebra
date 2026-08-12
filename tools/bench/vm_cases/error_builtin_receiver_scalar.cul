@@ -1,0 +1,4 @@
+# A scalar receiver cannot carry members at all — the member-access error,
+# anchored at the chain head like every other receiver failure.
+let n = 5
+println(n.upper())

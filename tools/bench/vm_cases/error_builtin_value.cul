@@ -1,0 +1,2 @@
+# The runtime's own ValueError (negative count), anchored at the chain head.
+println('ab'.repeat(-1))

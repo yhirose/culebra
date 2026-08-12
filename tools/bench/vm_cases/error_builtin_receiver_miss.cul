@@ -1,0 +1,3 @@
+# A receiver that simply lacks the method: the property read gave nil, so
+# both backends report the method miss.
+println([1, 2].trim())
