@@ -4177,7 +4177,14 @@ struct Lowering {
     }
     for (size_t i = 0; i < p.chunks.size(); ++i) {
       lower_chunk(jit, p, i, fns);
-      verifyFunction(*fns[i]);
+      // Report and stop: verifyFunction's one-argument form returns the
+      // verdict and prints nothing, so ignoring it let malformed IR (an
+      // i1 result compared against an i8 zero, from a runtime helper whose
+      // declared return type the arm mis-read) reach the optimizer and run.
+      std::string err;
+      raw_string_ostream os(err);
+      if (verifyFunction(*fns[i], &os))
+        throw std::runtime_error("vm: lowered IR failed verification: " + err);
     }
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
     if (emit_llvm) {
@@ -4199,6 +4206,11 @@ struct Lowering {
     if (!c.eh.empty() || frame_defers)
       fn->setPersonalityFn(j.get_personality_fn());
     b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fn));
+    // Per-LLVM-function JIT state, which the AST path resets through
+    // CompilerStateSaver at each nested fn literal: one chunk is one
+    // function, and a cleanup pad's exception slot must be an alloca in
+    // THIS function's entry block.
+    j.exc_slot_ = nullptr;
 
     // Frame-ABI arguments (function chunks only; see JitFn in jit_value.h).
     llvm::Value* retPtr = nullptr;
