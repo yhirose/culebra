@@ -366,6 +366,16 @@ enum class BMeth : uint8_t {
   Join, Sum, Product, Min, Max, ToSet,  // Array(+Tensor)+iterator, eager
   Sorted,                                // Array only, eager
   Distinct, Flatten,                    // iterator-shaped Object only
+  // Array(+iterator)-dual, callback-taking: the eager arm drains an Array in
+  // place, the lazy arm (Map/Filter/FlatMap) hands back a new iterator
+  // instead of draining. The callback's own type/arity check lives inside
+  // the runtime helper (JitHofCallback / _culebra_capture_callback), so no
+  // param is declared here — see the BMethSpec rows below.
+  // `AnyOf` (not `Any`): BMethSpec rows below bring both this enum and
+  // BParam into scope with `using enum`, and BParam::Any would collide.
+  Map, Filter, ForEach, AnyOf, All, Find, FlatMap, MinBy, MaxBy, Reduce,
+  GroupBy, Partition,
+  SortBy, SortedBy,                     // Array only, mutates / eager
 };
 
 // The receivers a built-in resolves on, one bit per value tag. A gate's set
@@ -524,6 +534,39 @@ inline std::span<const BMethSpec> bmeth_specs() {
        /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
       {"flatten", 0, Flatten, kRecvIterOnly, 0, nullptr, {}, {}, {},
        /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      // Higher-order: Array(+iterator)-dual, one callback. `Any` param here
+      // means no ChkParam — the callback's own type/arity error comes from
+      // inside the runtime helper (JitHofCallback), already worded and
+      // positioned identically to a hand-written check would be.
+      {"map", 1, Map, kRecvArrayIter, 1, nullptr, {Any}, {"f"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"filter", 1, Filter, kRecvArrayIter, 1, nullptr, {Any}, {"p"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"for_each", 1, ForEach, kRecvArrayIter, 1, nullptr, {Any}, {"f"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"any", 1, AnyOf, kRecvArrayIter, 1, nullptr, {Any}, {"p"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"all", 1, All, kRecvArrayIter, 1, nullptr, {Any}, {"p"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"find", 1, Find, kRecvArrayIter, 1, nullptr, {Any}, {"f"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"flat_map", 1, FlatMap, kRecvArrayIter, 1, nullptr, {Any}, {"f"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"min_by", 1, MinBy, kRecvArrayIter, 1, nullptr, {Any}, {"f"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"max_by", 1, MaxBy, kRecvArrayIter, 1, nullptr, {Any}, {"f"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"reduce", 2, Reduce, kRecvArrayIter, 2, nullptr, {Any, Any},
+       {"init", "f"}, {}, /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"group_by", 1, GroupBy, kRecvArrayIter, 1, nullptr, {Any}, {"f"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"partition", 1, Partition, kRecvArrayIter, 1, nullptr, {Any}, {"p"},
+       {}, /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      // sort_by/sorted_by: Array only (no iterator arm exists). `reverse:`
+      // is kw-only in the interp/JIT signature; the VM's reject_kwargs makes
+      // this arm reachable only without it, so the call is always `(f)`.
+      {"sort_by", 1, SortBy, kRecvArray, 1, nullptr, {Any}, {"f"}, {}},
+      {"sorted_by", 1, SortedBy, kRecvArray, 1, nullptr, {Any}, {"f"}, {}},
   };
   return kSpecs;
 }
@@ -559,7 +602,16 @@ inline const char* bmeth_param_type(BParam p) {
 
 // Whether the built-in takes its arguments' `+1` off the registers.
 inline bool bmeth_consumes_args(BMeth id) {
-  return id == BMeth::Push || id == BMeth::Insert;
+  return id == BMeth::Push || id == BMeth::Insert ||
+         // The higher-order group: the runtime helper owns the callback (and
+         // reduce's seed) from entry on every exit, like a JIT AST callsite's
+         // hof_owned list.
+         id == BMeth::Map || id == BMeth::Filter || id == BMeth::ForEach ||
+         id == BMeth::AnyOf || id == BMeth::All || id == BMeth::Find ||
+         id == BMeth::FlatMap || id == BMeth::MinBy || id == BMeth::MaxBy ||
+         id == BMeth::Reduce || id == BMeth::GroupBy ||
+         id == BMeth::Partition || id == BMeth::SortBy ||
+         id == BMeth::SortedBy;
 }
 
 // The accepted tags, tested inline like the JIT arms' own gates
@@ -864,6 +916,164 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
           TAG_OBJECT,
           reinterpret_cast<int64_t>(culebra_runtime_iter_flatten(
               static_cast<int8_t>(recv.tag), recv.data, line, col))};
+    // Higher-order group: the gate already let through only Array or an
+    // iterator-shaped Object, so each arm dispatches on the tag the gate
+    // proved — the callback itself stays borrowed to the runtime helper,
+    // which is its sole owner from the call on (bmeth_consumes_args nils
+    // the slot before this runs).
+    case BMeth::Map:
+      if (recv.tag == TAG_ARRAY)
+        return JitValue{TAG_ARRAY,
+                        reinterpret_cast<int64_t>(culebra_runtime_array_map(
+                            arr(recv), static_cast<int8_t>(args[0].tag),
+                            args[0].data, line, col))};
+      return JitValue{TAG_OBJECT,
+                      reinterpret_cast<int64_t>(culebra_runtime_iter_map(
+                          static_cast<int8_t>(recv.tag), recv.data,
+                          static_cast<int8_t>(args[0].tag), args[0].data,
+                          line, col))};
+    case BMeth::Filter:
+      if (recv.tag == TAG_ARRAY)
+        return JitValue{TAG_ARRAY,
+                        reinterpret_cast<int64_t>(culebra_runtime_array_filter(
+                            arr(recv), static_cast<int8_t>(args[0].tag),
+                            args[0].data, line, col))};
+      return JitValue{TAG_OBJECT,
+                      reinterpret_cast<int64_t>(culebra_runtime_iter_filter(
+                          static_cast<int8_t>(recv.tag), recv.data,
+                          static_cast<int8_t>(args[0].tag), args[0].data,
+                          line, col))};
+    case BMeth::ForEach:
+      if (recv.tag == TAG_ARRAY)
+        culebra_runtime_array_for_each(arr(recv),
+                                       static_cast<int8_t>(args[0].tag),
+                                       args[0].data, line, col);
+      else
+        culebra_runtime_iter_for_each(static_cast<int8_t>(recv.tag),
+                                      recv.data,
+                                      static_cast<int8_t>(args[0].tag),
+                                      args[0].data, line, col);
+      return JitValue{TAG_NIL, 0};
+    case BMeth::AnyOf:
+    case BMeth::All: {
+      bool is_any = id == BMeth::AnyOf;
+      int64_t r;
+      if (recv.tag == TAG_ARRAY)
+        r = is_any ? culebra_runtime_array_any(arr(recv),
+                                               static_cast<int8_t>(args[0].tag),
+                                               args[0].data, line, col)
+                  : culebra_runtime_array_all(
+                        arr(recv), static_cast<int8_t>(args[0].tag),
+                        args[0].data, line, col);
+      else
+        r = is_any
+                ? culebra_runtime_iter_any(
+                      static_cast<int8_t>(recv.tag), recv.data,
+                      static_cast<int8_t>(args[0].tag), args[0].data, line,
+                      col)
+                : culebra_runtime_iter_all(
+                      static_cast<int8_t>(recv.tag), recv.data,
+                      static_cast<int8_t>(args[0].tag), args[0].data, line,
+                      col);
+      return JitValue{TAG_BOOL, r != 0 ? 1 : 0};
+    }
+    case BMeth::Find: {
+      // The winning element's +1 arrives through out-params; nothing found
+      // answers nil.
+      int8_t tag = TAG_NIL;
+      int64_t data = 0;
+      if (recv.tag == TAG_ARRAY)
+        culebra_runtime_array_find(arr(recv), static_cast<int8_t>(args[0].tag),
+                                   args[0].data, line, col, &tag, &data);
+      else
+        culebra_runtime_iter_find(static_cast<int8_t>(recv.tag), recv.data,
+                                  static_cast<int8_t>(args[0].tag),
+                                  args[0].data, line, col, &tag, &data);
+      return JitValue{tag, data};
+    }
+    case BMeth::FlatMap:
+      if (recv.tag == TAG_ARRAY)
+        return JitValue{
+            TAG_ARRAY,
+            reinterpret_cast<int64_t>(culebra_runtime_array_flat_map(
+                arr(recv), static_cast<int8_t>(args[0].tag), args[0].data,
+                line, col))};
+      return JitValue{TAG_OBJECT,
+                      reinterpret_cast<int64_t>(culebra_runtime_iter_flat_map(
+                          static_cast<int8_t>(recv.tag), recv.data,
+                          static_cast<int8_t>(args[0].tag), args[0].data,
+                          line, col))};
+    case BMeth::MinBy:
+      if (recv.tag == TAG_ARRAY)
+        return culebra_runtime_array_min_by(
+            arr(recv), static_cast<int8_t>(args[0].tag), args[0].data, line,
+            col);
+      return culebra_runtime_iter_min_by(
+          static_cast<int8_t>(recv.tag), recv.data,
+          static_cast<int8_t>(args[0].tag), args[0].data, line, col);
+    case BMeth::MaxBy:
+      if (recv.tag == TAG_ARRAY)
+        return culebra_runtime_array_max_by(
+            arr(recv), static_cast<int8_t>(args[0].tag), args[0].data, line,
+            col);
+      return culebra_runtime_iter_max_by(
+          static_cast<int8_t>(recv.tag), recv.data,
+          static_cast<int8_t>(args[0].tag), args[0].data, line, col);
+    case BMeth::Reduce: {
+      int8_t tag = TAG_NIL;
+      int64_t data = 0;
+      if (recv.tag == TAG_ARRAY)
+        culebra_runtime_array_reduce(
+            arr(recv), static_cast<int8_t>(args[0].tag), args[0].data,
+            static_cast<int8_t>(args[1].tag), args[1].data, line, col, &tag,
+            &data);
+      else
+        culebra_runtime_iter_reduce(
+            static_cast<int8_t>(recv.tag), recv.data,
+            static_cast<int8_t>(args[0].tag), args[0].data,
+            static_cast<int8_t>(args[1].tag), args[1].data, line, col, &tag,
+            &data);
+      return JitValue{tag, data};
+    }
+    case BMeth::GroupBy:
+      if (recv.tag == TAG_ARRAY)
+        return JitValue{
+            TAG_OBJECT,
+            reinterpret_cast<int64_t>(culebra_runtime_array_group_by(
+                arr(recv), static_cast<int8_t>(args[0].tag), args[0].data,
+                line, col))};
+      return JitValue{TAG_OBJECT,
+                      reinterpret_cast<int64_t>(culebra_runtime_iter_group_by(
+                          static_cast<int8_t>(recv.tag), recv.data,
+                          static_cast<int8_t>(args[0].tag), args[0].data,
+                          line, col))};
+    case BMeth::Partition:
+      // A Tuple is a JitArray under a different tag (make_tuple's own
+      // reading) — the runtime helper already returns the pair that way.
+      if (recv.tag == TAG_ARRAY)
+        return JitValue{
+            TAG_TUPLE,
+            reinterpret_cast<int64_t>(culebra_runtime_array_partition(
+                arr(recv), static_cast<int8_t>(args[0].tag), args[0].data,
+                line, col))};
+      return JitValue{TAG_TUPLE,
+                      reinterpret_cast<int64_t>(culebra_runtime_iter_partition(
+                          static_cast<int8_t>(recv.tag), recv.data,
+                          static_cast<int8_t>(args[0].tag), args[0].data,
+                          line, col))};
+    case BMeth::SortBy:
+      // `reverse:` is kw-only and the VM rejects every keyword argument at
+      // compile time, so this arm is reachable only without it.
+      culebra_runtime_array_sort_by(arr(recv), static_cast<int8_t>(args[0].tag),
+                                    args[0].data, /*reverse=*/false, line,
+                                    col);
+      return JitValue{TAG_NIL, 0};
+    case BMeth::SortedBy:
+      return JitValue{
+          TAG_ARRAY,
+          reinterpret_cast<int64_t>(culebra_runtime_array_sorted_by(
+              arr(recv), static_cast<int8_t>(args[0].tag), args[0].data,
+              /*reverse=*/false, line, col))};
   }
   return JitValue{TAG_NIL, 0};  // unreachable: every id has an arm
 }
@@ -5793,6 +6003,264 @@ struct Lowering {
                              {j.extract_tag(recv), j.extract_data(recv),
                               b.getInt64(line), b.getInt64(col)},
                              "vbm.fl"));
+              break;
+            // Higher-order group: one block per receiver arm, merged through
+            // an entry-block alloca like Sum/Max/ToSet above — the gate
+            // already proved Array or an iterator-shaped Object. The
+            // callback (and reduce's seed) already left the register run
+            // nil'd above (bmeth_consumes_args), so `arg(k)` here is the
+            // helper's sole owner from the call on.
+            case BMeth::Map:
+            case BMeth::Filter:
+            case BMeth::FlatMap: {
+              auto id = static_cast<BMeth>(in.c);
+              const char* arrSym = id == BMeth::Map      ? rt::array_map
+                                   : id == BMeth::Filter  ? rt::array_filter
+                                                          : rt::array_flat_map;
+              const char* iterSym = id == BMeth::Map      ? rt::iter_map
+                                    : id == BMeth::Filter  ? rt::iter_filter
+                                                           : rt::iter_flat_map;
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.hof");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.hof.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.hof.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.hof.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  j.make_array(j.emit_call(
+                      j.module_->getFunction(arrSym),
+                      {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                       b.getInt64(line), b.getInt64(col)},
+                      "vbm.hof.a")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              b.CreateStore(
+                  j.make_object(j.emit_call(
+                      j.module_->getFunction(iterSym),
+                      {tagv, j.extract_data(recv), j.extract_tag(arg(0)),
+                       j.extract_data(arg(0)), b.getInt64(line),
+                       b.getInt64(col)},
+                      "vbm.hof.i")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::ForEach: {
+              auto tagv = j.extract_tag(recv);
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.fe.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.fe.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.fe.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              j.emit_call(j.module_->getFunction(rt::array_for_each),
+                         {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                          b.getInt64(line), b.getInt64(col)});
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              j.emit_call(j.module_->getFunction(rt::iter_for_each),
+                         {tagv, j.extract_data(recv), j.extract_tag(arg(0)),
+                          j.extract_data(arg(0)), b.getInt64(line),
+                          b.getInt64(col)});
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = j.make_nil();
+              break;
+            }
+            case BMeth::AnyOf:
+            case BMeth::All: {
+              bool is_any = static_cast<BMeth>(in.c) == BMeth::AnyOf;
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.aa");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.aa.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.aa.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.aa.join", fn);
+              auto asBool = [&](llvm::Value* v) {
+                return j.make_bool(b.CreateICmpNE(
+                    v, llvm::ConstantInt::get(v->getType(), 0)));
+              };
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  asBool(j.emit_call(
+                      j.module_->getFunction(is_any ? rt::array_any
+                                                    : rt::array_all),
+                      {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                       b.getInt64(line), b.getInt64(col)},
+                      "vbm.aa.a")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              b.CreateStore(
+                  asBool(j.emit_call(
+                      j.module_->getFunction(is_any ? rt::iter_any
+                                                    : rt::iter_all),
+                      {tagv, j.extract_data(recv), j.extract_tag(arg(0)),
+                       j.extract_data(arg(0)), b.getInt64(line),
+                       b.getInt64(col)},
+                      "vbm.aa.i")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::Find: {
+              // The winning element's +1 arrives through out-params, like
+              // Pop/RemoveAt below.
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "vbm.fd.t");
+              auto outData = eb.CreateAlloca(i64Ty, nullptr, "vbm.fd.d");
+              auto tagv = j.extract_tag(recv);
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.fd.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.fd.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.fd.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              j.emit_call(j.module_->getFunction(rt::array_find),
+                         {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                          b.getInt64(line), b.getInt64(col), outTag, outData});
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              j.emit_call(j.module_->getFunction(rt::iter_find),
+                         {tagv, j.extract_data(recv), j.extract_tag(arg(0)),
+                          j.extract_data(arg(0)), b.getInt64(line),
+                          b.getInt64(col), outTag, outData});
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
+                                 b.CreateLoad(i64Ty, outData));
+              break;
+            }
+            case BMeth::MinBy:
+            case BMeth::MaxBy: {
+              bool is_min = static_cast<BMeth>(in.c) == BMeth::MinBy;
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.mb");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.mb.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.mb.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.mb.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  val_fn(is_min ? rt::array_min_by : rt::array_max_by,
+                        {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                         b.getInt64(line), b.getInt64(col)}),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              b.CreateStore(
+                  val_fn(is_min ? rt::iter_min_by : rt::iter_max_by,
+                        {tagv, j.extract_data(recv), j.extract_tag(arg(0)),
+                         j.extract_data(arg(0)), b.getInt64(line),
+                         b.getInt64(col)}),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::Reduce: {
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "vbm.rd.t");
+              auto outData = eb.CreateAlloca(i64Ty, nullptr, "vbm.rd.d");
+              auto tagv = j.extract_tag(recv);
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.rd.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.rd.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.rd.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              j.emit_call(
+                  j.module_->getFunction(rt::array_reduce),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   j.extract_tag(arg(1)), j.extract_data(arg(1)),
+                   b.getInt64(line), b.getInt64(col), outTag, outData});
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              j.emit_call(
+                  j.module_->getFunction(rt::iter_reduce),
+                  {tagv, j.extract_data(recv), j.extract_tag(arg(0)),
+                   j.extract_data(arg(0)), j.extract_tag(arg(1)),
+                   j.extract_data(arg(1)), b.getInt64(line), b.getInt64(col),
+                   outTag, outData});
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
+                                 b.CreateLoad(i64Ty, outData));
+              break;
+            }
+            case BMeth::GroupBy:
+            case BMeth::Partition: {
+              bool is_group_by = static_cast<BMeth>(in.c) == BMeth::GroupBy;
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.gp");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.gp.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.gp.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.gp.join", fn);
+              // A Tuple is a JitArray under a different tag (make_tuple's
+              // own reading) — partition's runtime helper already returns
+              // the pair that way.
+              auto wrap = [&](llvm::Value* ptr) {
+                return is_group_by ? j.make_object(ptr) : j.make_tuple(ptr);
+              };
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  wrap(j.emit_call(
+                      j.module_->getFunction(is_group_by
+                                                  ? rt::array_group_by
+                                                  : rt::array_partition),
+                      {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                       b.getInt64(line), b.getInt64(col)},
+                      "vbm.gp.a")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              b.CreateStore(
+                  wrap(j.emit_call(
+                      j.module_->getFunction(is_group_by
+                                                  ? rt::iter_group_by
+                                                  : rt::iter_partition),
+                      {tagv, j.extract_data(recv), j.extract_tag(arg(0)),
+                       j.extract_data(arg(0)), b.getInt64(line),
+                       b.getInt64(col)},
+                      "vbm.gp.i")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::SortBy:
+              // `reverse:` is kw-only and the VM rejects every keyword
+              // argument at compile time, so this arm is reachable only
+              // without it — the gate already proved Array.
+              j.emit_call(
+                  j.module_->getFunction(rt::array_sort_by),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   b.getInt1(false), b.getInt64(line), b.getInt64(col)});
+              res = j.make_nil();
+              break;
+            case BMeth::SortedBy:
+              res = j.make_array(j.emit_call(
+                  j.module_->getFunction(rt::array_sorted_by),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   b.getInt1(false), b.getInt64(line), b.getInt64(col)},
+                  "vbm.sb"));
               break;
             case BMeth::Pop:
             case BMeth::RemoveAt: {

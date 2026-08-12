@@ -1,0 +1,161 @@
+# Higher-order/iterator methods: one callback (reduce also takes a seed),
+# resolved on an Array or an iterator-shaped Object. map/filter/flat_map are
+# Lazy on the Object arm (a new iterator, undrained); for_each/any/all/find/
+# min_by/max_by/reduce/group_by/partition are Terminal on both arms.
+# sort_by/sorted_by are Array only — no such spelling exists in
+# iterator_builtins(). The callback's own type/arity error comes from inside
+# the runtime helper (JitHofCallback / _culebra_capture_callback), not a
+# hand-written VM check.
+
+let a = [3, 1, 4, 1, 5]
+
+inspect(a.map(fn (x) { x * 2 }))
+inspect(a.filter(fn (x) { x > 2 }))
+mut seen = []
+a.for_each(fn (x) { seen.push(x) })
+inspect(seen)
+inspect(a.any(fn (x) { x > 4 }))
+inspect(a.all(fn (x) { x > 0 }))
+inspect(a.find(fn (x) { x > 3 }))
+inspect(a.find(fn (x) { x > 100 }))
+inspect([[1, 2], [3], []].flat_map(fn (x) { x }))
+inspect(a.min_by(fn (x) { -x }))
+inspect(a.max_by(fn (x) { -x }))
+inspect(a.reduce(0, fn (acc, x) { acc + x }))
+inspect(a.reduce('', fn (acc, x) { acc + to_string(x) }))
+inspect(a.group_by(fn (x) { x % 2 }))
+inspect(a.partition(fn (x) { x % 2 == 0 }))
+inspect(a)  # none of the above mutate the receiver
+
+mut b = [3, 1, 4, 1, 5]
+b.sort_by(fn (x) { -x })
+inspect(b)
+inspect([3, 1, 4, 1, 5].sorted_by(fn (x) { -x }))
+
+# --- Captures and mutation across a callback -----------------------------
+mut total = 0
+a.for_each(fn (x) { total = total + x })
+inspect(total)
+
+fn make_adder(step) {
+    fn (x) { x + step }
+}
+inspect(a.map(make_adder(10)))
+
+# --- A throw inside the callback propagates out, unwound ---------------
+try {
+    a.map(fn (x) { if x == 4 { throw 'boom' }; x })
+    println('unreachable')
+} catch e {
+    inspect(e)
+}
+
+# --- The iterator (Object) arm: Lazy vs Terminal --------------------------
+let r = range(0, 5)
+inspect(r.map(fn (x) { x * 2 }))          # a new iterator, not drained
+mut order = []
+let m = range(0, 5).map(fn (x) { order.push(x); x })
+inspect(order)                            # nothing ran yet
+inspect(m.next())
+inspect(order)                            # one pull ran the callback once
+
+inspect(range(0, 5).filter(fn (x) { x % 2 == 0 }))
+mut acc2 = []
+range(0, 5).for_each(fn (x) { acc2.push(x) })
+inspect(acc2)
+inspect(range(0, 5).any(fn (x) { x > 3 }))
+inspect(range(0, 5).all(fn (x) { x >= 0 }))
+inspect(range(0, 5).find(fn (x) { x > 3 }))
+inspect(range(0, 5).flat_map(fn (x) { [x, x] }))
+inspect(range(0, 5).min_by(fn (x) { -x }))
+inspect(range(0, 5).max_by(fn (x) { -x }))
+inspect(range(0, 5).reduce(0, fn (acc, x) { acc + x }))
+inspect(range(0, 5).group_by(fn (x) { x % 2 }))
+inspect(range(0, 5).partition(fn (x) { x % 2 == 0 }))
+
+# The Object arm is the iterator protocol itself, so a Terminal CONSUMES:
+# the second question is asked of what is left (same rule as
+# polymorphic_methods.cul's sum/contains).
+let drained = range(0, 4)
+inspect(drained.any(fn (x) { x > 100 }))
+inspect(drained.any(fn (x) { x > 100 }))
+
+# --- Empty receivers --------------------------------------------------
+inspect([].map(fn (x) { x }))
+inspect([].any(fn (x) { true }))
+inspect([].all(fn (x) { true }))
+inspect([].find(fn (x) { true }))
+inspect([].reduce(0, fn (acc, x) { acc + x }))
+inspect(range(0, 0).find(fn (x) { true }))
+
+# --- The errors ------------------------------------------------------
+# A scalar receiver cannot carry members at all — nothing runs.
+fn seen_arg(x) {
+    println("ran {x}")
+    x
+}
+try {
+    (5).map(seen_arg(1))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+# Everything else merely lacks the method, and only once the argument runs.
+try {
+    'ab'.map(seen_arg(2))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    (1, 2).reduce(seen_arg(3), seen_arg(4))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+# A non-Function argument: the runtime helper's own bind-time check.
+try {
+    a.map(5)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    range(0, 4).for_each('x')
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+# A callback with the wrong arity: same check, in-body this time.
+try {
+    a.map(fn (x, y) { x + y })
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+# min_by/max_by of an empty Array: no such element exists.
+try {
+    [].min_by(fn (x) { x })
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+# flat_map's callback must answer an Array.
+try {
+    a.flat_map(fn (x) { x })
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# --- Chains -------------------------------------------------------------
+inspect(a.filter(fn (x) { x > 1 }).map(fn (x) { x * 10 }))
+inspect(range(0, 6).filter(fn (x) { x % 2 == 0 }).map(fn (x) { x + 1 }).next())
+
+# --- Churn: every round allocates a fresh closure and a fresh result, so
+# GC_STRESS gets to look at the refcounts of results that outlive both the
+# receiver and the callback.
+mut i = 0
+mut kept = 0
+while i < 300 {
+    let src = [i, i + 1, i + 2]
+    let step = i % 5
+    kept = kept + src.map(fn (x) { x + step }).sum() +
+           src.reduce(0, fn (acc, x) { acc + x }) +
+           range(0, i % 4).filter(fn (x) { x % 2 == 0 }).to_set().size()
+    i = i + 1
+}
+println(i)
+println(kept)
