@@ -4713,17 +4713,28 @@ struct JIT {
         // literal's position so the backfill lands where the interp's eval
         // boundary anchors it.
         emit_set_op_pos();
-        emit_call(
-            module_->getOrInsertFunction(
-                rt::object_set_any, builder_.getVoidTy(), ptrTy,
-                builder_.getInt8Ty(), builder_.getInt64Ty(),
-                builder_.getInt1Ty(), builder_.getInt8Ty(),
-                builder_.getInt64Ty(), builder_.getInt64Ty(),
-                builder_.getInt64Ty(), builder_.getInt1Ty()),
-            {objPtr, extract_tag(key.borrow()), extract_data(key.borrow()),
-             builder_.getInt1(pv.is_mut), extract_tag(val.borrow()),
-             extract_data(val.borrow()), current_line_val(),
-             current_column_val(), builder_.getInt1(true)});
+        {
+          // object_set_any's own JitUnwindRelease guard releases key and
+          // value on EVERY exit, including the positionless unhashable
+          // throw — exclude them from the automatic unwind-temp window
+          // (emit_object_set's well-known-check precedent), or the throw
+          // releases each once inside the call and once more when the
+          // window drains, an over-release (ASan-confirmed: a hash-throw
+          // from `{(boom_array_key): v}` inside a loop corrupts the slab
+          // allocator a few iterations later).
+          UnwindCovered cover(this, {key.borrow(), val.borrow()});
+          emit_call(
+              module_->getOrInsertFunction(
+                  rt::object_set_any, builder_.getVoidTy(), ptrTy,
+                  builder_.getInt8Ty(), builder_.getInt64Ty(),
+                  builder_.getInt1Ty(), builder_.getInt8Ty(),
+                  builder_.getInt64Ty(), builder_.getInt64Ty(),
+                  builder_.getInt64Ty(), builder_.getInt1Ty()),
+              {objPtr, extract_tag(key.borrow()), extract_data(key.borrow()),
+               builder_.getInt1(pv.is_mut), extract_tag(val.borrow()),
+               extract_data(val.borrow()), current_line_val(),
+               current_column_val(), builder_.getInt1(true)});
+        }
         key.consume();  // object_set_any absorbed the key's +1
         val.consume();  // ... and the value's
         continue;

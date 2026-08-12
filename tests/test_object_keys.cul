@@ -191,4 +191,23 @@ while i < 20 {
 }
 assert_eq(bag3.size(), 0)
 
+// Regression: an unhashable non-IDENTIFIER key (a Tuple containing an
+// unhashable Array) repeatedly thrown in a loop used to corrupt the JIT's
+// heap a few hundred iterations later — object_set_any's own unwind-time
+// release of the key/value raced the JIT's automatic unwind-temp window,
+// which released the same pair again on the same throw (a double release;
+// the interp has no such window so it never showed the bug). Enough
+// iterations to reliably reproduce the pre-fix corruption.
+mut j = 0
+while j < 2000 {
+  let ok = try {
+    let bad = {([j], 1): "x"}
+    false
+  } catch er {
+    er.kind == "TypeError"
+  }
+  assert_true(ok)
+  j = j + 1
+}
+
 IO.inspect("test_object_keys OK")
