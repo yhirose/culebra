@@ -829,7 +829,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
   src->for_each([&](std::string_view name, const JitObjectEntry& e) {
     culebra_runtime_value_retain(e.value.tag, e.value.data);
     culebra_runtime_object_set(dst, std::string(name).c_str(), /*mut=*/true,
-                               e.value.tag, e.value.data, line, col);
+                               e.value.tag, e.value.data, line, col,
+                               /*is_init=*/true);
   });
 }
 

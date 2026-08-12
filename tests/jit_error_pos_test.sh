@@ -322,6 +322,10 @@ check_same "sized array spread" 'let a = [9, ...[8]](3)'
 # The set literal's unhashable throw is positionless in the runtime; the JIT
 # must publish the literal's position (the interp's eval boundary anchor).
 check_same "set literal unhashable" 'let s = {[1], 2}'
+# Same gap on the non-IDENTIFIER-key path of an object literal: the sidecar
+# hash on insert throws positionless, and the JIT must publish the object
+# literal's position to match.
+check_same "object literal unhashable key" 'let o = {([1], 2): "x"}'
 
 # A binding inside an or-pattern is a parse-time SyntaxError anchored at the
 # binding name, in every pattern position (match arm, destructure, for

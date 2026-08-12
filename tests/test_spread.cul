@@ -45,6 +45,15 @@ let cfg = {...defaults, ...user}
 assert_eq(cfg.host, "localhost")
 assert_eq(cfg.port, 8080)
 
+// A later spread overwrites an earlier immutable key (last-wins, same as a
+// duplicate `key: value` pair — a literal isn't a sequence of immutable
+// `o[k] = v` assignments, see test_object_keys.cul).
+let base = {a: 1, b: 2}
+let overridden = {b: 99, ...base}
+assert_eq(overridden.b, 2)
+overridden.b = 7  // the spread-merged slot is mutable
+assert_eq(overridden.b, 7)
+
 // Non-object spread into object errors.
 let e2 = try {
   let _ = {...5}

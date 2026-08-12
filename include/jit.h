@@ -4708,6 +4708,11 @@ struct JIT {
         // value expression can't orphan a heap key (`{(1,2): boom()}`).
         Owned key = compile(*pv.key);
         Owned val = compile(*pv.value);
+        // object_set_any hashes the key into the sidecar map on insert; an
+        // unhashable key raises positionless (see compile_set). Publish the
+        // literal's position so the backfill lands where the interp's eval
+        // boundary anchors it.
+        emit_set_op_pos();
         emit_call(
             module_->getOrInsertFunction(
                 rt::object_set_any, builder_.getVoidTy(), ptrTy,
