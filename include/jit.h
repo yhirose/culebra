@@ -4108,6 +4108,11 @@ struct JIT {
     if (ast.line) current_line_ = ast.line;
     if (ast.column) current_column_ = ast.column;
 
+    // A builtin arm's context (see emit_receiver_resolution_error) describes
+    // the code the arm emits itself, never a subexpression's: a nested call
+    // reached from an argument must not report through the outer arm.
+    BuiltinArmScope arm_scope(this, nullptr);
+
     Owned compiled;
     try {
     compiled = [&]() -> Owned {
@@ -10355,30 +10360,72 @@ struct JIT {
                                    llvm::PointerType::get(ctx_, 0));
   }
 
-  // Emit interp's eval_property resolution-failure error for a builtin
-  // method whose receiver is the wrong type: a scalar (Nil/Bool/Long/
-  // Float — interp's to_object rejects it) → the member-access error
-  // "expected Object, Array, or Tensor, got <T>"; any object-ish value
-  // simply lacks the method → "expected Function, got Nil". Assumes the
-  // builder is at the failure block and terminates it (unreachable).
-  void emit_receiver_resolution_error(llvm::Value* tag,
-                                      const std::string& prefix) {
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto isScalar = builder_.CreateOr(
+  // The builtin arm being emitted. A receiver that fails an arm's own gate
+  // but could still carry members is not a resolved call at all, and the
+  // shared unresolved path needs the whole call to reproduce interp's order.
+  struct BuiltinArm {
+    const std::string* method;
+    const peg::Ast* args;
+    llvm::Value* receiver;
+  };
+  const BuiltinArm* builtin_arm_ = nullptr;
+
+  struct BuiltinArmScope {
+    JIT* jit_;
+    const BuiltinArm* saved_;
+    BuiltinArmScope(JIT* jit, const BuiltinArm* arm)
+        : jit_(jit), saved_(jit->builtin_arm_) {
+      jit_->builtin_arm_ = arm;
+    }
+    ~BuiltinArmScope() { jit_->builtin_arm_ = saved_; }
+    BuiltinArmScope(const BuiltinArmScope&) = delete;
+    BuiltinArmScope& operator=(const BuiltinArmScope&) = delete;
+  };
+
+  // Whether `tag` names a value interp's to_object rejects outright, so a
+  // member access on it fails at the property read — before any argument of
+  // the call is evaluated.
+  llvm::Value* emit_is_scalar_tag(llvm::Value* tag) {
+    return builder_.CreateOr(
         builder_.CreateOr(
             builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_NIL)),
             builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_BOOL))),
         builder_.CreateOr(
             builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG)),
             builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FLOAT))));
+  }
+
+  // Emit interp's eval_property resolution-failure error for a builtin
+  // method whose receiver is the wrong type: a scalar (Nil/Bool/Long/
+  // Float — interp's to_object rejects it) → the member-access error
+  // "expected Object, Array, or Tensor, got <T>"; any object-ish value
+  // simply lacks the method → "expected Function, got Nil". Assumes the
+  // builder is at the failure block and terminates it (unreachable).
+  //
+  // The object-ish miss is only KNOWN once the arguments have run: interp
+  // reads the property (nil), evaluates the arguments, and fails on the
+  // call. Inside a builtin arm (builtin_arm_ set) hand that half to the
+  // shared unresolved path, which reproduces exactly that order.
+  void emit_receiver_resolution_error(llvm::Value* tag,
+                                      const std::string& prefix) {
+    auto fn = builder_.GetInsertBlock()->getParent();
     auto scalarBB = llvm::BasicBlock::Create(ctx_, prefix + ".scalar", fn);
     auto objishBB = llvm::BasicBlock::Create(ctx_, prefix + ".objish", fn);
-    builder_.CreateCondBr(isScalar, scalarBB, objishBB);
+    builder_.CreateCondBr(emit_is_scalar_tag(tag), scalarBB, objishBB);
     builder_.SetInsertPoint(scalarBB);
     emit_type_error_typed("Object, Array, or Tensor", tag);
     builder_.CreateUnreachable();
     builder_.SetInsertPoint(objishBB);
-    emit_type_error_typed("Function", builder_.getInt8(TAG_NIL));
+    // An argument-less call has nothing to evaluate first, so the direct
+    // throw is already the same observation — and keeps the cold block from
+    // carrying a second copy of the whole call.
+    if (builtin_arm_ && !builtin_arm_->args->nodes.empty()) {
+      emit_unresolved_builtin_method(*builtin_arm_->method,
+                                     *builtin_arm_->args,
+                                     builtin_arm_->receiver);  // always throws
+    } else {
+      emit_type_error_typed("Function", builder_.getInt8(TAG_NIL));
+    }
     builder_.CreateUnreachable();
   }
 
@@ -10905,6 +10952,21 @@ struct JIT {
                                        llvm::Value* receiver) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
+    // A scalar receiver carries no members at all, and interp says so at the
+    // property read — before the argument runs. The rest of the dispatch is
+    // the other half of emit_receiver_resolution_error and stays below, past
+    // the argument, where a miss really is only known once it has run.
+    {
+      auto rtag = extract_tag(receiver);
+      auto badBB = llvm::BasicBlock::Create(ctx_, "ma.scalar", fn);
+      auto okBB = llvm::BasicBlock::Create(ctx_, "ma.member", fn);
+      builder_.CreateCondBr(emit_is_scalar_tag(rtag), badBB, okBB);
+      builder_.SetInsertPoint(badBB);
+      emit_value_release(receiver);  // no arm past here frees this frame's +1
+      emit_type_error_typed("Object, Array, or Tensor", rtag);
+      builder_.CreateUnreachable();
+      builder_.SetInsertPoint(okBB);
+    }
     // The argument expression can throw (`s.add(f())`), and the arms that
     // release the receiver all sit past that edge — hold its +1 as Owned so
     // the unwind-temp window covers it while the argument compiles.
@@ -14322,6 +14384,11 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // setup. Keeps user-defined method calls free of builtin-method overhead.
   if (!known_builtin_methods().contains(method)) return {};
 
+  // Every receiver gate below reports a still-plausible receiver through the
+  // shared unresolved path; see emit_receiver_resolution_error.
+  BuiltinArm arm{&method, &argsAst, receiver};
+  BuiltinArmScope arm_scope(this, &arm);
+
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto tag = extract_tag(receiver);
   auto fn = builder_.GetInsertBlock()->getParent();
@@ -15176,17 +15243,26 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   if (method == "truncate" && argsAst.nodes.size() >= 1 &&
       argsAst.nodes.size() <= 2) {
     auto strPtr = coerce_strlike_cstr(receiver, "trunc", true);
-    auto max = emit_builtin_long_arg(*argsAst.nodes[0], "max");
+    // Every argument runs before any is bound — the interp binder's order,
+    // which `'ab'.truncate(bad, f())` makes observable.
+    Owned maxO = compile(*argsAst.nodes[0]);
     Owned ellipsis;
     llvm::Value* ellipsisPtr;
     if (argsAst.nodes.size() < 2) {
+      emit_type_check(maxO.borrow(), "Long", "parameter 'max'",
+                      argsAst.nodes[0].get());
       ellipsisPtr = emit_str_literal("...");
     } else {
+      // Both stay Owned across both checks, so the automatic unwind-temp
+      // window releases whichever is in flight when one throws.
       ellipsis = compile(*argsAst.nodes[1]);
+      emit_type_check(maxO.borrow(), "Long", "parameter 'max'",
+                      argsAst.nodes[0].get());
       ellipsisPtr = coerce_strlike_cstr(ellipsis.borrow(), "trunc.ellipsis",
                                         false, "ellipsis",
                                         argsAst.nodes[1].get());
     }
+    auto max = value_to_long(maxO.consume());
     auto s = emit_call(
         module_->getFunction(rt::str_truncate),
         {strPtr, max, ellipsisPtr, current_line_val(), current_column_val()});
@@ -15203,12 +15279,13 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
 
   if (method == "tr" && argsAst.nodes.size() == 2) {
     auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
+    // Both arguments run before either is bound (see `truncate`).
     auto from = compile(*argsAst.nodes[0]);
-    auto fromPtr = coerce_strlike_cstr(from.borrow(), "tr.from", false, "from",
-                                        argsAst.nodes[0].get());
     auto to = compile(*argsAst.nodes[1]);
+    auto fromPtr = coerce_strlike_cstr(from.borrow(), "tr.from", false, "from",
+                                       argsAst.nodes[0].get());
     auto toPtr = coerce_strlike_cstr(to.borrow(), "tr.to", false, "to",
-                                      argsAst.nodes[1].get());
+                                     argsAst.nodes[1].get());
     auto s = emit_call(
         module_->getFunction(rt::str_tr), {strPtr, fromPtr, toPtr});
     from.drop();
@@ -15460,10 +15537,12 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     OwnedPhi getMerge(this, "get");
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    // The fallback runs before the index is bound (see `truncate`); both stay
+    // Owned across the check, which is what covers its throw edge.
     Owned idxO = compile(*argsAst.nodes[0]);
+    Owned fbAO = compile(*argsAst.nodes[1]);
     emit_type_check(idxO.borrow(), "Long", "parameter 'i'",
                     argsAst.nodes[0].get());
-    Owned fbAO = compile(*argsAst.nodes[1]);
     auto idx = extract_data(idxO.consume());
     auto fbA = fbAO.consume();
     auto arrResult = emit_value_call(

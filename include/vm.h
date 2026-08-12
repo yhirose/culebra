@@ -358,10 +358,12 @@ enum class BMeth : uint8_t {
   Repeat, Truncate, TrimStart, TrimEnd, Tr, Split, StartsWith, EndsWith,
 };
 
-// The receivers a built-in resolves on. Anything else never reaches it: it
-// takes emit_receiver_resolution_error's two-way answer — a scalar cannot hold
-// members at all ("expected Object, Array, or Tensor"), anything else simply
-// lacks the method ("expected Function, got Nil").
+// The receivers a built-in resolves on. A gate's set must be exactly the set
+// of receivers whose built-in table holds the name at this arity, because
+// everything else takes emit_receiver_resolution_error's two-way answer
+// outright — a scalar cannot hold members at all ("expected Object, Array, or
+// Tensor"), anything else simply lacks the method ("expected Function, got
+// Nil") — instead of asking the tables again.
 enum class BRecv : uint8_t {
   Sized,    // Array/Tuple/Object/String/StringView/Set — emit_size_probe's set
   StrLike,  // String/StringView
@@ -466,15 +468,31 @@ inline BRecv bmeth_recv_of(BMeth id) {
   return BRecv::StrLike;  // unreachable: every id has a spec
 }
 
-// emit_receiver_resolution_error's answer, executor-side: a scalar cannot
-// carry members at all, anything else simply lacks the method.
-inline void bmeth_receiver_error(int8_t tag, int64_t line, int64_t col) {
-  bool scalar = tag == TAG_NIL || tag == TAG_BOOL || tag == TAG_LONG ||
-                tag == TAG_FLOAT;
-  culebra_runtime_type_error_typed(
-      line, col, scalar ? "Object, Array, or Tensor" : "Function",
-      scalar ? tag : static_cast<int8_t>(TAG_NIL));
+// emit_receiver_resolution_error's two halves, executor-side. A scalar
+// cannot carry members at all and interp says so at the property read —
+// before the arguments run, so MethGate raises it on the spot. Anything else
+// merely lacks the method, which is only known once the arguments have run:
+// MethGate marks the gate slot and BMeth raises it at the far end.
+inline bool bmeth_scalar_tag(int8_t tag) {
+  return tag == TAG_NIL || tag == TAG_BOOL || tag == TAG_LONG ||
+         tag == TAG_FLOAT;
 }
+
+inline void bmeth_scalar_receiver_error(int8_t tag, int64_t line,
+                                        int64_t col) {
+  culebra_runtime_type_error_typed(line, col, "Object, Array, or Tensor", tag);
+}
+
+inline void bmeth_miss_error(int64_t line, int64_t col) {
+  culebra_runtime_type_error_typed(line, col, "Function",
+                                   static_cast<int8_t>(TAG_NIL));
+}
+
+// The gate slot's two sentinels: `{TAG_NO_SELF, 0}` is "the built-in
+// answers" (make_no_self), `{TAG_NO_SELF, 1}` is "no receiver resolves this
+// name". Anything else is the shadowing user method itself.
+inline constexpr int64_t kBMethGateBuiltin = 0;
+inline constexpr int64_t kBMethGateMiss = 1;
 
 // emit_size_probe's arms, executor-side. The receiver gate ran first, so
 // every tag reaching here has a length.
@@ -1944,9 +1962,13 @@ class Compiler {
     emit(Op::MethGate, base, recv.slot, kconst_str(post.token),
          static_cast<int32_t>(spec.id));
     store_into(base + 1, recv, /*dst_is_fresh=*/true);
-    for (int32_t i = 0; i < argc; i++) {
+    for (int32_t i = 0; i < argc; i++)
       store_into(base + 2 + i, compile_expr(*args.nodes[i]),
                  /*dst_is_fresh=*/true);
+    // Every argument runs before any is bound — the interp binder's order,
+    // so the checks come as one run after the whole list, each still stamped
+    // at its own argument.
+    for (int32_t i = 0; i < argc; i++) {
       StampGuard arg_pos(*this, *args.nodes[i]);
       emit(Op::ChkParam, base + 2 + i, base,
            static_cast<int32_t>(spec.params[i]),
@@ -3592,7 +3614,7 @@ struct Exec {
           const JitValue& recv = regs[in.b];
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
           auto [line, col] = chunk_pos_at(c, pc);
-          regs[in.a] = JitValue{TAG_NO_SELF, 0};  // the built-in answers
+          regs[in.a] = JitValue{TAG_NO_SELF, kBMethGateBuiltin};
           if (recv.tag == TAG_OBJECT) {
             // checkBB: the object's own read decides. A namespace raises its
             // AttributeError from inside this read (a dict-builtin name is
@@ -3619,14 +3641,20 @@ struct Exec {
             }
           }
           if (!bmeth_receiver_ok(bmeth_recv_of(static_cast<BMeth>(in.d)),
-                                 static_cast<int8_t>(recv.tag)))
-            bmeth_receiver_error(static_cast<int8_t>(recv.tag), line, col);
+                                 static_cast<int8_t>(recv.tag))) {
+            if (bmeth_scalar_tag(static_cast<int8_t>(recv.tag)))
+              bmeth_scalar_receiver_error(static_cast<int8_t>(recv.tag), line,
+                                          col);
+            regs[in.a] = JitValue{TAG_NO_SELF, kBMethGateMiss};
+          }
           ++pc;
           break;
         }
         case Op::ChkParam: {
-          // A user method shadowing the built-in binds by its own signature.
+          // A user method shadowing the built-in binds by its own signature,
+          // and a miss binds nothing at all.
           if (regs[in.b].tag == TAG_NO_SELF &&
+              regs[in.b].data == kBMethGateBuiltin &&
               !bmeth_param_ok(static_cast<BParam>(in.c),
                               static_cast<int8_t>(regs[in.a].tag))) {
             auto [line, col] = chunk_pos_at(c, pc);
@@ -3640,6 +3668,8 @@ struct Exec {
         case Op::BMeth: {
           const JitValue& gate = regs[in.b];
           auto [line, col] = chunk_pos_at(c, pc);
+          if (gate.tag == TAG_NO_SELF && gate.data == kBMethGateMiss)
+            bmeth_miss_error(line, col);  // the arguments have run by now
           if (gate.tag != TAG_NO_SELF) {
             // The shadowing user method: CallM's hand-off, one slot over.
             culebra_runtime_set_call_site(line, col);
@@ -4888,8 +4918,20 @@ struct Lowering {
             sw->addCase(b.getInt8(TAG_OBJECT), contBB);
             sw->addCase(b.getInt8(TAG_SET), contBB);
           }
+          // A scalar receiver fails here and now; anything else only lacks
+          // the method, which BMeth reports once the arguments have run.
           b.SetInsertPoint(badBB);
-          j.emit_receiver_resolution_error(tag, "vbm");
+          auto scalarBB = BasicBlock::Create(j.ctx_, "vbm.scalar", fn);
+          auto missBB = BasicBlock::Create(j.ctx_, "vbm.miss", fn);
+          b.CreateCondBr(j.emit_is_scalar_tag(tag), scalarBB, missBB);
+          b.SetInsertPoint(scalarBB);
+          j.emit_type_error_typed("Object, Array, or Tensor", tag);
+          b.CreateUnreachable();
+          b.SetInsertPoint(missBB);
+          b.CreateStore(j.make_value(b.getInt8(TAG_NO_SELF),
+                                     b.getInt64(kBMethGateMiss)),
+                        slots[in.a]);
+          b.CreateBr(contBB);
 
           b.SetInsertPoint(contBB);
           break;
@@ -4900,9 +4942,13 @@ struct Lowering {
           auto chkBB = BasicBlock::Create(j.ctx_, "vbm.chk", fn);
           auto errBB = BasicBlock::Create(j.ctx_, "vbm.chk.err", fn);
           auto contBB = BasicBlock::Create(j.ctx_, "vbm.chk.cont", fn);
-          // A user method shadowing the built-in binds by its own signature.
+          // A user method shadowing the built-in binds by its own signature,
+          // and a miss binds nothing at all.
           b.CreateCondBr(
-              b.CreateICmpEQ(j.extract_tag(gate), b.getInt8(TAG_NO_SELF)),
+              b.CreateAnd(
+                  b.CreateICmpEQ(j.extract_tag(gate), b.getInt8(TAG_NO_SELF)),
+                  b.CreateICmpEQ(j.extract_data(gate),
+                                 b.getInt64(kBMethGateBuiltin))),
               chkBB, contBB);
           b.SetInsertPoint(chkBB);
           // The accepted tags inline, like the JIT arms' own gates — see
@@ -4933,10 +4979,22 @@ struct Lowering {
           auto gate = load_slot(in.b);
           auto userBB = BasicBlock::Create(j.ctx_, "vbm.call", fn);
           auto biBB = BasicBlock::Create(j.ctx_, "vbm.builtin", fn);
+          auto sentBB = BasicBlock::Create(j.ctx_, "vbm.sentinel", fn);
+          auto missBB = BasicBlock::Create(j.ctx_, "vbm.missfail", fn);
           auto mergeBB = BasicBlock::Create(j.ctx_, "vbm.merge", fn);
           b.CreateCondBr(
               b.CreateICmpEQ(j.extract_tag(gate), b.getInt8(TAG_NO_SELF)),
-              biBB, userBB);
+              sentBB, userBB);
+
+          // The receiver resolved no method at all: MethGate deferred that to
+          // here so the arguments run first, as the interp's order has them.
+          b.SetInsertPoint(sentBB);
+          b.CreateCondBr(b.CreateICmpEQ(j.extract_data(gate),
+                                        b.getInt64(kBMethGateMiss)),
+                         missBB, biBB);
+          b.SetInsertPoint(missBB);
+          j.emit_type_error_typed("Function", b.getInt8(TAG_NIL));
+          b.CreateUnreachable();
 
           b.SetInsertPoint(userBB);
           // The shadowing user method: CallM's hand-off, one slot over.

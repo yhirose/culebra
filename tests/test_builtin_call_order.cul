@@ -1,0 +1,85 @@
+# A built-in method call runs in one order on every backend: a scalar
+# receiver fails at the property read, before any argument; everything else
+# evaluates the whole argument list and only then binds it — so a method the
+# receiver lacks, and a wrongly typed argument, are both reported after the
+# list has run.
+
+mut seen = []
+
+fn t(x) {
+  seen.push(x)
+  x
+}
+
+fn ran(body) {
+  seen = []
+  try {
+    body()
+  } catch e {
+    return seen
+  }
+  seen
+}
+
+# A scalar carries no members at all: nothing runs.
+assert_eq(ran(fn () { (5).repeat(t('a')) }), [])
+assert_eq(ran(fn () { nil.push(t('a')) }), [])
+
+# Object-ish receivers that simply lack the method: the arguments run first.
+assert_eq(ran(fn () { 'ab'.push(t('a')) }), ['a'])
+let tup = (1, 2)
+assert_eq(ran(fn () { tup.trim_start(t('a')) }), ['a'])
+assert_eq(ran(fn () { [1].get_or_put(t('a'), t('b')) }), ['a', 'b'])
+assert_eq(ran(fn () { [1].union(t('a')) }), ['a'])
+
+# ...and the error is the resolution failure, not the argument's type.
+try {
+  'ab'.push(1)
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, 'TypeError')
+  assert_true(e.message.contains('expected Function'))
+}
+
+# The whole argument list runs before the first one is bound.
+assert_eq(ran(fn () { 'abcdef'.truncate(t('bad'), t('.')) }), ['bad', '.'])
+assert_eq(ran(fn () { 'abc'.tr(t(1), t('x')) }), [1, 'x'])
+assert_eq(ran(fn () { [1, 2].get(t('bad'), t('d')) }), ['bad', 'd'])
+assert_eq(ran(fn () { [1, 2].slice(t('bad'), t(1)) }), ['bad', 1])
+assert_eq(ran(fn () { [1].insert(t('bad'), t(9)) }), ['bad', 9])
+
+# A call nested in an argument reports as itself, not through the outer
+# method: the inner receiver decides both the order and the position.
+assert_eq(ran(fn () { [1].push((5).add(t('a'))) }), [])
+assert_eq(ran(fn () { [1].push([9].add(t('a'))) }), ['a'])
+assert_eq(ran(fn () { [1].push('ab'.push(t('a'))) }), ['a'])
+
+# A later argument that throws wins over an earlier one's type error.
+fn boom() {
+  throw 'boom'
+}
+try {
+  'abcdef'.truncate('bad', boom())
+  assert_true(false)
+} catch e {
+  assert_eq(e, 'boom')
+}
+
+# The checks themselves still fire, at the offending argument.
+try {
+  'abcdef'.truncate('bad', '.')
+  assert_true(false)
+} catch e {
+  assert_true(e.message.contains("parameter 'max'"))
+}
+try {
+  'abc'.tr('a', 2)
+  assert_true(false)
+} catch e {
+  assert_true(e.message.contains("parameter 'to'"))
+}
+
+# The valid calls are untouched.
+assert_eq('abcdef'.truncate(4, '~'), 'abc~')
+assert_eq('abc'.tr('ab', 'zy'), 'zyc')
+assert_eq([1, 2].get(5, 'd'), 'd')

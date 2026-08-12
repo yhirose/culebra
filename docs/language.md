@@ -1368,6 +1368,23 @@ name — the property is read before any argument binds, so
 `[1, 2].take(n: 1)` (no `take` on `Array`) is the ordinary method miss
 rather than the keyword error.
 
+#### The argument list runs before anything binds
+
+`x.m(a, b)` reads the property, evaluates **every** argument left to
+right, and only then binds them. So a wrongly typed argument and a
+method the receiver does not have are both reported *after* the whole
+list has run:
+
+```culebra
+# doctest: skip
+'abc'.truncate(bad(), loud())   # both run, then the `max` type error
+'ab'.push(loud())               # loud() runs, then "expected Function, got Nil"
+```
+
+The one thing that fails earlier is a scalar receiver: `nil`, `Bool`,
+`Long` and `Float` carry no members at all, so `(5).push(loud())` fails
+at the property read and `loud()` never runs.
+
 #### Namespaces are closed
 
 A built-in namespace exposes a fixed member set, so an unknown member is
