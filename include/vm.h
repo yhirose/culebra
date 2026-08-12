@@ -127,6 +127,32 @@ enum class Op : uint8_t {
                // the register still owns the value (the handler ladder
                // frees it) and the SetOpPos published just before (the
                // literal's position, compile_set's emit order) anchors it.
+  ObjectNew,   // regs[a] = fresh empty Object (+1)
+  ObjectSet,   // an IDENTIFIER/shorthand property: regs[a].consts[c] =
+               // regs[b] (absorbed), consts[c] mutable iff d — object_set
+               // with is_init=true, so a duplicate key (or a later spread)
+               // overwrites last-wins like the interp's initialize, rather
+               // than tripping the immutable-entry guard meant for `o.x = v`.
+               // A well-known name (next/has_next/iter/drop) validates the
+               // contract and throws positionless; compile_object emits
+               // SetOpPos with the literal's own position right before,
+               // only for those four names (emit_object_set's condition).
+  ObjectSetAny,// a non-IDENTIFIER literal key (String/Float/Number/Nil/Bool/
+               // Tuple): regs[a][regs[b]] = regs[c] (both absorbed), mutable
+               // iff d — object_set_any with is_init=true. Hashing an
+               // unhashable key throws positionless; compile_object always
+               // publishes SetOpPos with the literal's own position right
+               // before (also covers a well-known String-literal key, e.g.
+               // `{"next": 5}`, which routes through the same contract
+               // check as the IDENTIFIER path).
+  ObjectMerge, // `{...obj}`: merge regs[b]'s entries into regs[a] (later
+               // keys win); object_merge borrows the source (retaining each
+               // copied entry, is_init=true so it can override an already-
+               // immutable key) — the register keeps its +1. A non-Object
+               // source raises the typed TypeError at this instruction's
+               // position, which compile_object stamps at the SPREAD_ELEM
+               // node (compile_array's ArrayExtend precedent), not the
+               // literal's own position.
   RangeNew,    // regs[a] = fresh Range object (+1) from the contiguous run
                // regs[b..b+2] = start, end, step (each Long — ChkLong ran
                // right after its endpoint compiled; step defaults via a
@@ -3399,6 +3425,55 @@ class Compiler {
         }
         return {t, true};
       }
+      case "OBJECT"_: {
+        int32_t t = alloc_temp(ast);
+        emit(Op::ObjectNew, t);
+        for (const auto& prop : ast.nodes) {
+          if (prop->tag == "SPREAD_ELEM"_) {
+            // object_merge borrows the source; no owned_src — a temp's +1
+            // falls to the statement sweep, a binding stays untouched.
+            auto v = compile_expr(*prop->nodes[0]);
+            // The non-Object-source TypeError carries this instruction's own
+            // position — anchor it at the spread element, compile_array's
+            // ArrayExtend precedent (distinct entries can each misreport).
+            StampGuard pos(*this, *prop);
+            emit(Op::ObjectMerge, t, v.slot);
+            continue;
+          }
+          auto pv = culebra::view_object_property(*prop);
+          if (pv.key->tag != "IDENTIFIER"_) {
+            // Non-IDENTIFIER literal key (String/Float/Number/Nil/Bool/
+            // Tuple) — object_set_any. Both key and value are absorbed.
+            auto key = compile_expr(*pv.key);
+            auto val = compile_expr(*pv.value);
+            // Hashing an unhashable key throws positionless, and a String
+            // key can also hit the well-known-name contract check (both
+            // positionless) — publish the literal's own position first,
+            // compile_set's / emit_object_set's emit order.
+            StampGuard pos(*this, ast);
+            emit(Op::SetOpPos);
+            emit(Op::ObjectSetAny, t, owned_src(*pv.key, key),
+                 owned_src(*pv.value, val), pv.is_mut ? 1 : 0);
+            continue;
+          }
+          // IDENTIFIER key: shorthand `{x}` reads the variable through the
+          // ordinary identifier path (lookup / stdlib global / the same
+          // compile-time "unresolved identifier" reject as a bare read —
+          // interp's shorthand is a plain scope read too, so an undefined
+          // name never reaches a runtime NameError in this slice).
+          auto val = compile_expr(*pv.value);
+          if (culebra::is_well_known_prop(pv.key->token)) {
+            // The contract error is positionless; publish this literal's
+            // position first (emit_object_set's condition — confined to the
+            // four protocol names, a plain property pays nothing).
+            StampGuard pos(*this, ast);
+            emit(Op::SetOpPos);
+          }
+          emit(Op::ObjectSet, t, owned_src(*pv.value, val),
+               kconst_str(pv.key->token), pv.is_mut ? 1 : 0);
+        }
+        return {t, true};
+      }
       case "IDENTIFIER"_: {
         const Binding* b = lookup(ast.token);
         if (b) return read_binding(ast, *b);
@@ -3551,6 +3626,7 @@ inline std::string dump(const Chunk& c) {
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "ArrayPush", "ArrayExtend", "ArrayResize",
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
+      "ObjectNew", "ObjectSet", "ObjectSetAny", "ObjectMerge",
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "PropVal",   "BareMethChk", "MethGate", "ChkParam", "BMeth", "PropRaw",
@@ -4089,6 +4165,55 @@ struct Exec {
           regs[in.b] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
+        case Op::ObjectNew:
+          regs[in.a] = JitValue{
+              TAG_OBJECT,
+              reinterpret_cast<int64_t>(culebra_runtime_object_new())};
+          ++pc;
+          break;
+        case Op::ObjectSet: {
+          // Unlike set_add, object_set consumes the value on EVERY exit,
+          // including the positionless well-known-contract throw — nil the
+          // register first so the handler ladder never double-releases.
+          int8_t vt = static_cast<int8_t>(regs[in.b].tag);
+          int64_t vd = regs[in.b].data;
+          regs[in.b] = JitValue{TAG_NIL, 0};
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_object_set(
+              reinterpret_cast<JitObject*>(regs[in.a].data),
+              reinterpret_cast<const char*>(c.consts[in.c].data), in.d != 0,
+              vt, vd, line, col, /*is_init=*/true);
+          ++pc;
+          break;
+        }
+        case Op::ObjectSetAny: {
+          // object_set_any consumes both the key and the value on every
+          // exit (including the positionless unhashable/well-known throw,
+          // unlike set_add) — nil both registers first.
+          int8_t kt = static_cast<int8_t>(regs[in.b].tag);
+          int64_t kd = regs[in.b].data;
+          int8_t vt = static_cast<int8_t>(regs[in.c].tag);
+          int64_t vd = regs[in.c].data;
+          regs[in.b] = JitValue{TAG_NIL, 0};
+          regs[in.c] = JitValue{TAG_NIL, 0};
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_object_set_any(
+              reinterpret_cast<JitObject*>(regs[in.a].data), kt, kd,
+              in.d != 0, vt, vd, line, col, /*is_init=*/true);
+          ++pc;
+          break;
+        }
+        case Op::ObjectMerge: {
+          // object_merge borrows the source (retains each copied entry) —
+          // the register keeps its +1, freed later by the statement sweep.
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_object_merge(
+              reinterpret_cast<JitObject*>(regs[in.a].data),
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data, line,
+              col);
+          ++pc;
+          break;
+        }
         case Op::RangeNew: {
           bool hs = in.c & 1, he = in.c & 2;
           auto* o = culebra_runtime_make_range(
@@ -5292,6 +5417,71 @@ struct Lowering {
                                              ptrTy, b.getInt8Ty(), i64Ty),
               {s, j.extract_tag(v), j.extract_data(v)});
           b.CreateStore(j.make_nil(), slots[in.b]);
+          break;
+        }
+        case Op::ObjectNew: {
+          auto obj = j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_new, ptrTy), {},
+              "vm.obj");
+          b.CreateStore(j.make_object(obj), slots[in.a]);
+          break;
+        }
+        case Op::ObjectSet: {
+          // Unlike set_add, object_set consumes the value on EVERY exit
+          // (including the positionless well-known-contract throw) — pull
+          // tag/data into locals and nil the slot BEFORE the call, so a
+          // throw into the landing pad never finds a stale value to
+          // double-release.
+          auto obj = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto v = load_slot(in.b);
+          auto vt = j.extract_tag(v);
+          auto vd = j.extract_data(v);
+          b.CreateStore(j.make_nil(), slots[in.b]);
+          auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto keyPtr = j.get_or_create_global_str(nm, ".vm.objkey");
+          j.emit_call(
+              j.module_->getOrInsertFunction(
+                  rt::object_set, b.getVoidTy(), ptrTy, ptrTy, b.getInt1Ty(),
+                  b.getInt8Ty(), i64Ty, i64Ty, i64Ty, b.getInt1Ty()),
+              {obj, keyPtr, b.getInt1(in.d != 0), vt, vd,
+               j.current_line_val(), j.current_column_val(),
+               b.getInt1(true)});
+          break;
+        }
+        case Op::ObjectSetAny: {
+          // object_set_any consumes both the key and the value on every
+          // exit (including the positionless unhashable/well-known throw)
+          // — same pre-nil-before-call reasoning as ObjectSet.
+          auto obj = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto k = load_slot(in.b);
+          auto kt = j.extract_tag(k);
+          auto kd = j.extract_data(k);
+          auto v = load_slot(in.c);
+          auto vt = j.extract_tag(v);
+          auto vd = j.extract_data(v);
+          b.CreateStore(j.make_nil(), slots[in.b]);
+          b.CreateStore(j.make_nil(), slots[in.c]);
+          j.emit_call(
+              j.module_->getOrInsertFunction(
+                  rt::object_set_any, b.getVoidTy(), ptrTy, b.getInt8Ty(),
+                  i64Ty, b.getInt1Ty(), b.getInt8Ty(), i64Ty, i64Ty, i64Ty,
+                  b.getInt1Ty()),
+              {obj, kt, kd, b.getInt1(in.d != 0), vt, vd,
+               j.current_line_val(), j.current_column_val(),
+               b.getInt1(true)});
+          break;
+        }
+        case Op::ObjectMerge: {
+          // object_merge borrows the source (retains each copied entry) —
+          // the slot keeps its +1, freed later by the statement sweep.
+          auto obj = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto v = load_slot(in.b);
+          j.emit_call(
+              j.module_->getOrInsertFunction(
+                  rt::object_merge, b.getVoidTy(), ptrTy, b.getInt8Ty(),
+                  i64Ty, i64Ty, i64Ty),
+              {obj, j.extract_tag(v), j.extract_data(v),
+               j.current_line_val(), j.current_column_val()});
           break;
         }
         case Op::RangeNew: {

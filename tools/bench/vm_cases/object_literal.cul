@@ -1,0 +1,105 @@
+# OBJECT literal construction: `{k: v}` / shorthand `{x}` / `{...obj}`
+# spread / non-IDENTIFIER literal keys (String/Float/Number/Nil/Bool/Tuple).
+# Property *writes* (`obj.k = v`, PLACE_ASSIGN, compound assignment) stay
+# out of the VM's slice — this file only builds and reads.
+
+let x = 10
+inspect({a: 1, x, b: 2})
+
+# Duplicate keys overwrite last-wins during construction — never trips the
+# immutable-entry guard (a literal isn't a sequence of `o[k] = v` writes).
+inspect({a: 1, a: 2, a: 3})
+
+# Non-IDENTIFIER literal keys: String/Float/Number/Nil/Bool/Tuple.
+inspect({"s": 1, 2: "two", 3.5: "float", nil: "n", true: "t", (1, 2): "tup"})
+inspect({2: "a", 2: "b"})
+
+# Spread merge: later keys win, and a later spread overwrites an
+# already-set immutable key (same last-wins rule as a duplicate key).
+let base = {a: 1, b: 2}
+inspect({...base, b: 3, c: 4})
+inspect({b: 99, ...base})
+let base1 = {a: 1}
+let base2 = {a: 2}
+inspect({...base1, ...base2})
+
+# Self-referential-ish: spreading a binding into a literal that also reads
+# it by shorthand.
+let self_src = {p: 1, q: 2}
+inspect({p: self_src.p, ...self_src})
+
+# Aliasing: two names see the same freshly-built Object.
+let al = {v: 1}
+let same = al
+inspect(same.v == al.v)
+
+# Nested literals (a value that is itself an object/array/tuple literal).
+inspect({outer: {inner: [1, 2], t: (3, 4)}})
+
+# Churn: build (success and each error shape) repeatedly.
+mut i = 0
+while i < 300 {
+    let o = {x: (i, i), ...base, "s": i, 9: i, nil: i}
+    let ok = try {
+        let bad = {next: 5}
+        false
+    } catch er {
+        er.kind == "DropContractError"
+    }
+    let ok2 = try {
+        let bad2 = {([i], 1): "x"}
+        false
+    } catch er {
+        er.kind == "TypeError"
+    }
+    let ok3 = try {
+        let bad3 = {...[1, 2]}
+        false
+    } catch er {
+        er.kind == "TypeError"
+    }
+    if !ok || !ok2 || !ok3 { throw "regression at churn" }
+    i = i + 1
+}
+println(i)
+
+# The errors: the well-known-property contract, an unhashable key (both
+# positionless in the runtime, backfilled to the literal), and a non-Object
+# spread source.
+try {
+    {next: 5}
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    {has_next: 1}
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    {([1, 2], 3): "x"}
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    {...[1, 2, 3]}
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    {...5}
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# A value expression that throws leaves the partially-built object to be
+# released, not surfaced — only the throw is observable.
+fn seen(x) {
+    println("ran {x}")
+    x
+}
+try {
+    {a: 1, b: seen(1) / 0}
+} catch err {
+    println(err.kind)
+}
