@@ -1,0 +1,123 @@
+# Set-only methods: union/intersect/diff/sym_diff/subset/superset (both
+# operands Set, borrowed — the runtime helper retains fresh copies or just
+# compares), add/remove (mutating: add absorbs the argument's `+1`, remove
+# only hashes it for lookup), and to_array (shared with Tuple and Tensor —
+# three unrelated value tables bind this one name, so the gate lets all
+# three through and dispatches on the receiver tag).
+
+let a = {1, 2, 3}
+let b = {2, 3, 4}
+inspect(a.union(b).to_array())
+inspect(a.intersect(b).to_array())
+inspect(a.diff(b).to_array())
+inspect(a.sym_diff(b).to_array())
+inspect(a.subset(b))
+inspect(a.subset({1, 2, 3, 4}))
+inspect(a.superset(b))
+inspect({1, 2}.superset({1,}))
+inspect(a.to_array())
+
+mut s = {1, 2}
+inspect(s.add(3))
+inspect(s.add(1))
+inspect(s.to_array())
+inspect(s.remove(1))
+inspect(s.remove(99))
+inspect(s.to_array())
+
+# Self-referential: union/intersect/subset/superset with the receiver itself.
+mut self_s = {1, 2}
+inspect(self_s.union(self_s).to_array())
+inspect(self_s.intersect(self_s).to_array())
+inspect(self_s.subset(self_s))
+inspect(self_s.superset(self_s))
+
+# Aliasing: the set is one object seen through two names.
+mut al = {1,}
+let same = al
+al.add(2)
+inspect(same.to_array())
+
+# Heap elements: a Tuple is hashable (element-wise) and RC-real, unlike an
+# Array or Object, so it is the one heap value a Set can actually hold —
+# every insert/remove below moves a real refcount.
+mut h = {(1, 2),}
+h.add('s')
+h.add((3, 4))
+inspect(h.to_array())
+inspect(h.remove((1, 2)))
+inspect(h.to_array())
+
+# Empty-set operations.
+inspect({1,}.diff({1,}).to_array())
+inspect({1,}.diff({1,}).empty())
+
+# Churn: build and drain repeatedly, with a fresh heap value each round.
+# `(i,)` (not `{i,}`) — a bare identifier in a one-element `{...}` parses as
+# the Object shorthand property `{i: i}`, not a Set (grammar tries OBJECT
+# before SET; see language.md's Set-literal note), so the element is wrapped
+# in a Tuple to stay unambiguously a Set literal.
+mut i = 0
+while i < 300 {
+    mut t = {(i,),}
+    t.add((i, i))
+    let u = t.union({(i,),})
+    let d = t.diff({(i,),})
+    t.remove((i,))
+    i = i + 1
+}
+println(i)
+
+# The errors: the receiver gate, the parameter checks and the runtime's own
+# unhashable-element rejection, each at its own anchor.
+try {
+    {1, 2}.union(5)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    {1, 2}.subset('x')
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    {1, 2}.add([1, 2])
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    {1, 2}.union({[1, 2],})
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# A receiver that resolves no such method: a scalar fails at the property
+# read, anything else only after the arguments have run.
+fn seen(x) {
+    println("ran {x}")
+    x
+}
+try {
+    (5).union(seen(1))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    [1, 2].add(seen(2))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    'ab'.remove(seen(3))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# An argument that throws leaves the receiver untouched.
+mut k = {1,}
+try {
+    k.add(seen(4) / 0)
+} catch err {
+    println(err.kind)
+}
+inspect(k.to_array())

@@ -376,6 +376,8 @@ enum class BMeth : uint8_t {
   Map, Filter, ForEach, AnyOf, All, Find, FlatMap, MinBy, MaxBy, Reduce,
   GroupBy, Partition,
   SortBy, SortedBy,                     // Array only, mutates / eager
+  Union, Intersect, Diff, SymDiff, Subset, Superset, Add, Remove,
+  ToArray,                              // Set only
 };
 
 // The receivers a built-in resolves on, one bit per value tag. A gate's set
@@ -393,6 +395,17 @@ inline constexpr BRecvMask bmeth_tag_bit(int8_t tag) {
 inline constexpr BRecvMask kRecvStrLike =
     bmeth_tag_bit(TAG_STRING) | bmeth_tag_bit(TAG_STRINGVIEW);
 inline constexpr BRecvMask kRecvArray = bmeth_tag_bit(TAG_ARRAY);
+// union/intersect/diff/sym_diff/subset/superset/add/remove: Set is the only
+// receiver a value table binds these names on at this arity (an Object's own
+// `remove` — dict key deletion, a different signature entirely — resolves
+// through MethGate's object arm, which reads the object's own property
+// before this gate is ever tested, so the two never collide).
+inline constexpr BRecvMask kRecvSet = bmeth_tag_bit(TAG_SET);
+// to_array: three unrelated value tables bind it — Set, Tuple, and Tensor
+// (`grep '"to_array"sv'` across interpreter.h's builtins tables), each with
+// its own conversion. No Array arm exists (an Array already is one).
+inline constexpr BRecvMask kRecvToArray =
+    kRecvSet | bmeth_tag_bit(TAG_TUPLE) | bmeth_tag_bit(TAG_TENSOR);
 // emit_size_probe's set. `contains` resolves on the same six tags today, but
 // the two are spelled out separately so that changing one cannot move the
 // other: they are equal by coincidence, not by construction.
@@ -429,7 +442,7 @@ inline constexpr BRecvMask kRecvAny = 0xFFFF;
 // so the compiler emits no ChkParam for it. `String` is strict (unlike
 // StrLike, a StringView fails it) — `join`'s `sep` is declared plain "String"
 // in the interp table, not the StringLike trait.
-enum class BParam : uint8_t { Any, Long, StrLike, Array, String };
+enum class BParam : uint8_t { Any, Long, StrLike, Array, String, Set };
 
 struct BMethSpec {
   std::string_view name;
@@ -567,6 +580,20 @@ inline std::span<const BMethSpec> bmeth_specs() {
       // this arm reachable only without it, so the call is always `(f)`.
       {"sort_by", 1, SortBy, kRecvArray, 1, nullptr, {Any}, {"f"}, {}},
       {"sorted_by", 1, SortedBy, kRecvArray, 1, nullptr, {Any}, {"f"}, {}},
+      // Set: no polymorphism, so no param_when narrowing — `other` is
+      // declared plain "Set" in the interp table, checked on the one
+      // receiver that ever reaches here. `add`/`remove`'s element is `Any`
+      // (undeclared in the interp table); an unhashable element's error
+      // comes from inside the runtime helper's insert/erase, not ChkParam.
+      {"union", 1, Union, kRecvSet, 1, nullptr, {Set}, {"other"}},
+      {"intersect", 1, Intersect, kRecvSet, 1, nullptr, {Set}, {"other"}},
+      {"diff", 1, Diff, kRecvSet, 1, nullptr, {Set}, {"other"}},
+      {"sym_diff", 1, SymDiff, kRecvSet, 1, nullptr, {Set}, {"other"}},
+      {"subset", 1, Subset, kRecvSet, 1, nullptr, {Set}, {"other"}},
+      {"superset", 1, Superset, kRecvSet, 1, nullptr, {Set}, {"other"}},
+      {"add", 1, Add, kRecvSet, 1, nullptr, {Any}, {"x"}},
+      {"remove", 1, Remove, kRecvSet, 1, nullptr, {Any}, {"x"}},
+      {"to_array", 0, ToArray, kRecvToArray, 0, nullptr, {}, {}},
   };
   return kSpecs;
 }
@@ -596,13 +623,14 @@ inline const char* bmeth_param_type(BParam p) {
     case BParam::Long: return "Long";
     case BParam::Array: return "Array";
     case BParam::String: return "String";
+    case BParam::Set: return "Set";
     default: return "StringLike";
   }
 }
 
 // Whether the built-in takes its arguments' `+1` off the registers.
 inline bool bmeth_consumes_args(BMeth id) {
-  return id == BMeth::Push || id == BMeth::Insert ||
+  return id == BMeth::Push || id == BMeth::Insert || id == BMeth::Add ||
          // The higher-order group: the runtime helper owns the callback (and
          // reduce's seed) from entry on every exit, like a JIT AST callsite's
          // hof_owned list.
@@ -627,6 +655,7 @@ inline bool bmeth_param_ok(BParam p, int8_t tag) {
     case BParam::StrLike:
       return tag == TAG_STRING || tag == TAG_STRINGVIEW;
     case BParam::String: return tag == TAG_STRING;
+    case BParam::Set: return tag == TAG_SET;
   }
   return false;
 }
@@ -713,6 +742,7 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
   auto arr = [](const JitValue& v) {
     return reinterpret_cast<JitArray*>(v.data);
   };
+  auto st = [](const JitValue& v) { return reinterpret_cast<JitSet*>(v.data); };
   switch (id) {
     case BMeth::Size:
       return JitValue{TAG_LONG, bmeth_size(recv)};
@@ -1074,6 +1104,58 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
           reinterpret_cast<int64_t>(culebra_runtime_array_sorted_by(
               arr(recv), static_cast<int8_t>(args[0].tag), args[0].data,
               /*reverse=*/false, line, col))};
+    // Set-only: union/intersect/diff/sym_diff/subset/superset borrow both
+    // operands (the runtime helper retains fresh copies into a new Set, or
+    // just compares), so `args[0]` stays register-owned like Contains'.
+    case BMeth::Union:
+      return JitValue{TAG_SET, reinterpret_cast<int64_t>(
+                                   culebra_runtime_set_union(st(recv),
+                                                             st(args[0])))};
+    case BMeth::Intersect:
+      return JitValue{
+          TAG_SET, reinterpret_cast<int64_t>(culebra_runtime_set_intersect(
+                       st(recv), st(args[0])))};
+    case BMeth::Diff:
+      return JitValue{TAG_SET, reinterpret_cast<int64_t>(
+                                   culebra_runtime_set_diff(st(recv),
+                                                            st(args[0])))};
+    case BMeth::SymDiff:
+      return JitValue{
+          TAG_SET, reinterpret_cast<int64_t>(culebra_runtime_set_sym_diff(
+                       st(recv), st(args[0])))};
+    case BMeth::Subset:
+      return JitValue{TAG_BOOL,
+                      culebra_runtime_set_subset(st(recv), st(args[0]))};
+    case BMeth::Superset:
+      return JitValue{TAG_BOOL,
+                      culebra_runtime_set_superset(st(recv), st(args[0]))};
+    // `add` absorbs the argument's `+1` (bmeth_consumes_args); `remove` only
+    // hashes it for lookup, same as Contains.
+    case BMeth::Add:
+      return JitValue{TAG_BOOL, culebra_runtime_set_add_method(
+                                    st(recv), static_cast<int8_t>(args[0].tag),
+                                    args[0].data, line, col)};
+    case BMeth::Remove:
+      return JitValue{TAG_BOOL, culebra_runtime_set_remove(
+                                    st(recv), static_cast<int8_t>(args[0].tag),
+                                    args[0].data, line, col)};
+    // Three unrelated value tables bind this name — Set, Tuple, Tensor.
+    case BMeth::ToArray:
+      switch (recv.tag) {
+        case TAG_TUPLE:
+          return JitValue{TAG_ARRAY,
+                          reinterpret_cast<int64_t>(
+                              culebra_runtime_tuple_to_array(arr(recv)))};
+        case TAG_TENSOR:
+          return JitValue{
+              TAG_ARRAY,
+              reinterpret_cast<int64_t>(culebra_runtime_tensor_to_array(
+                  reinterpret_cast<JitTensor*>(recv.data)))};
+        default:  // TAG_SET, the gate's remaining case
+          return JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(
+                                         culebra_runtime_set_to_array(
+                                             st(recv)))};
+      }
   }
   return JitValue{TAG_NIL, 0};  // unreachable: every id has an arm
 }
@@ -5522,6 +5604,9 @@ struct Lowering {
             case BParam::String:
               ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_STRING));
               break;
+            case BParam::Set:
+              ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_SET));
+              break;
             default:  // StrLike; Any emits no check at all
               ok = b.CreateOr(
                   b.CreateICmpEQ(argTag, b.getInt8(TAG_STRING)),
@@ -6284,6 +6369,95 @@ struct Lowering {
               }
               res = j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
                                  b.CreateLoad(i64Ty, outData));
+              break;
+            }
+            // Set-only: both operands stay slot-owned (borrowed by the
+            // runtime helper), like Contains'.
+            case BMeth::Union:
+            case BMeth::Intersect:
+            case BMeth::Diff:
+            case BMeth::SymDiff: {
+              auto id = static_cast<BMeth>(in.c);
+              const char* rt_name = id == BMeth::Union       ? rt::set_union
+                                    : id == BMeth::Intersect ? rt::set_intersect
+                                    : id == BMeth::Diff      ? rt::set_diff
+                                                              : rt::set_sym_diff;
+              res = j.make_set(j.emit_call(
+                  j.module_->getOrInsertFunction(rt_name, ptrTy, ptrTy, ptrTy),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.set"));
+              break;
+            }
+            case BMeth::Subset:
+            case BMeth::Superset: {
+              const char* rt_name = static_cast<BMeth>(in.c) == BMeth::Subset
+                                        ? rt::set_subset
+                                        : rt::set_superset;
+              auto r = j.emit_call(
+                  j.module_->getOrInsertFunction(rt_name, b.getInt8Ty(), ptrTy,
+                                                 ptrTy),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.setp");
+              res = j.make_bool(b.CreateICmpNE(r, b.getInt8(0)));
+              break;
+            }
+            // `add` absorbed the argument's `+1` already (bmeth_consumes_args
+            // nils the slot above); `remove` only hashes it for lookup.
+            case BMeth::Add:
+            case BMeth::Remove: {
+              const char* rt_name = static_cast<BMeth>(in.c) == BMeth::Add
+                                        ? rt::set_add_method
+                                        : rt::set_remove;
+              auto r = j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      rt_name, b.getInt8Ty(), ptrTy, b.getInt8Ty(), i64Ty,
+                      i64Ty, i64Ty),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   b.getInt64(line), b.getInt64(col)},
+                  "vbm.setm");
+              res = j.make_bool(b.CreateICmpNE(r, b.getInt8(0)));
+              break;
+            }
+            // Three unrelated value tables bind this name — Set, Tuple,
+            // Tensor. One block per receiver, merged like Slice/Contains
+            // (the gate already proved the tag is one of the three).
+            case BMeth::ToArray: {
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.ta");
+              auto tupBB = BasicBlock::Create(j.ctx_, "vbm.ta.tup", fn);
+              auto tenBB = BasicBlock::Create(j.ctx_, "vbm.ta.ten", fn);
+              auto setBB = BasicBlock::Create(j.ctx_, "vbm.ta.set", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.ta.join", fn);
+              auto sw = b.CreateSwitch(tagv, setBB, 2);
+              sw->addCase(b.getInt8(TAG_TUPLE), tupBB);
+              sw->addCase(b.getInt8(TAG_TENSOR), tenBB);
+              b.SetInsertPoint(tupBB);
+              b.CreateStore(
+                  j.make_array(j.emit_call(
+                      j.module_->getOrInsertFunction(rt::tuple_to_array,
+                                                     ptrTy, ptrTy),
+                      {arr()}, "vbm.ta.t")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(tenBB);
+              b.CreateStore(
+                  j.make_array(j.emit_call(
+                      j.module_->getFunction(rt::tensor_to_array),
+                      {b.CreateIntToPtr(j.extract_data(recv), ptrTy)},
+                      "vbm.ta.n")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(setBB);
+              b.CreateStore(
+                  j.make_array(j.emit_call(
+                      j.module_->getOrInsertFunction(rt::set_to_array, ptrTy,
+                                                     ptrTy),
+                      {arr()}, "vbm.ta.s")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
               break;
             }
           }
