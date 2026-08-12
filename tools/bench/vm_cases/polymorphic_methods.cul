@@ -1,0 +1,144 @@
+# The polymorphic eager built-ins: one name over several receivers, so the
+# gate is a tag set rather than a single type — `slice` on Array/String/
+# StringView/Tensor, `contains` on those plus Set/Tuple and an iterator-shaped
+# Object, `to_string` on every value there is, and `index_of` on Array alone.
+
+# slice: each receiver keeps its own result type, and none of them mutates.
+let a = [1, 2, 3, 4]
+inspect(a.slice(1, 3))
+inspect(a.slice(-2, 99))
+inspect(a.slice(3, 1))
+inspect(a.slice(0, 0))
+inspect(a)
+let s = 'hello world'
+inspect(s.slice(0, 5))
+inspect(type_of(s.slice(0, 5)))
+inspect(s.slice(-5, 99))
+inspect(s.view().slice(1, 3))
+inspect(''.slice(0, 3))
+let t = Tensor.from([1.0, 2.0, 3.0, 4.0])
+inspect(t.slice(1, 3))
+inspect(type_of(t.slice(1, 3)))
+
+# contains: five arms, one needle. Value equality on the container arms
+# (a Long is not the String that spells it, a nested array compares
+# element-wise), substring search on the String one.
+inspect(a.contains(3))
+inspect(a.contains('3'))
+inspect(a.contains(nil))
+inspect([[1], [2]].contains([2]))
+inspect([(1, 2)].contains((1, 2)))
+inspect(a.contains(fn (x) { x }))
+inspect(s.contains('lo w'))
+inspect(s.contains(''))
+inspect(s.view().contains('zz'))
+inspect(s.contains('world'.view()))
+inspect({1, 2, 3}.contains(2))
+inspect({1, 2, 3}.contains(9))
+inspect((7, 8).contains(8))
+inspect((7, 8).contains([8]))
+
+# The Object arm is the iterator protocol itself, so it CONSUMES: the second
+# question is asked of what is left.
+let r = range(0, 4)
+inspect(r.contains(2))
+inspect(r.contains(2))
+inspect(grid(0..2, 0..2).contains((1, 1)))
+
+# index_of resolves on Array alone.
+inspect(a.index_of(3))
+inspect(a.index_of(99))
+inspect([[1], [2]].index_of([2]))
+
+# to_string has no receiver gate at all: it is the display conversion the
+# same-named global performs, reached through the value instead of past it.
+inspect((5).to_string())
+inspect(nil.to_string())
+inspect(true.to_string())
+inspect((1.5).to_string())
+inspect(a.to_string())
+inspect((7, 8).to_string())
+inspect({1, 2}.to_string())
+inspect([[1, 'a'], nil].to_string())
+inspect(s.view().to_string())
+inspect(type_of(s.view().to_string()))
+inspect(t.to_string())
+inspect(to_string(a) == a.to_string())
+inspect((5).to_string().upper())
+
+# Chains: a slice's result answers the next question.
+inspect(a.slice(1, 3).contains(3))
+inspect(a.slice(0, 2).index_of(2))
+inspect(s.slice(0, 5).to_string().upper())
+inspect(s.view().slice(1, 3).to_string())
+
+# Churn: every round allocates through all three, so GC_STRESS gets to look
+# at the refcounts of results that outlive their receivers.
+mut i = 0
+mut keep = []
+while i < 300 {
+    let src = [i, i + 1, i + 2]
+    let cut = src.slice(1, 3)
+    let txt = cut.to_string()
+    if cut.contains(i + 1) {
+        keep = [txt]
+    }
+    i = i + 1
+}
+println(i)
+inspect(keep)
+
+# The errors. A scalar receiver cannot carry members at all; anything else
+# merely lacks the method — and only after the arguments have run.
+fn seen(x) {
+    println("ran {x}")
+    x
+}
+try {
+    (5).slice(0, seen(1))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    {1, 2}.slice(0, seen(2))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    (7, 8).index_of(seen(3))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    range(0, 2).slice(seen(4), 1)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# The parameter checks: `slice` declares both bounds on every arm, `contains`
+# declares its needle on the String arm only.
+try {
+    [1, 2].slice('x', 1)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    'ab'.slice(0, 1.5)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    'ab'.contains(5)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    {1, 2}.contains([1])
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    Tensor.from([1.0, 2.0]).slice(0, 9)
+} catch err {
+    println("{err.kind}: {err.message}")
+}

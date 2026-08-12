@@ -1,0 +1,8 @@
+# `contains` is an iterator-protocol method as well as a container one, so an
+# Object resolves it only when it carries the protocol. A plain dict does not,
+# and — like every other method miss — says so once the argument has run.
+fn seen(x) {
+    println("ran {x}")
+    x
+}
+println(JSON.parse('{"a": 1}').contains(seen(1)))

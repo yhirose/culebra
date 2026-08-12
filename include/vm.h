@@ -50,6 +50,7 @@
 #include <stdlib_jit.h>  // culebra_runtime_println + the rt::println decl hook
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -191,7 +192,7 @@ enum class Op : uint8_t {
                // compile_user_method_over_builtin's checkBB (a Function-valued
                // read, an own/proto slot of the name, or a Shared view of a
                // dict-builtin name). Every other receiver takes the built-in,
-               // whose receiver gate (built-in d's BRecv, else the
+               // whose receiver gate (built-in d's tag mask, else the
                // resolution error) runs here too — ahead of the arguments,
                // both backends' order: `(5).repeat(boom())` never evaluates
                // boom(). consts[c] names the method; positioned at the chain
@@ -199,9 +200,13 @@ enum class Op : uint8_t {
   ChkParam,    // a built-in parameter's declared-type check: unless regs[b]
                // (MethGate's gate slot) still holds the sentinel — a user
                // method binds by its own signature, not the built-in's —
-               // check regs[a] against type c and raise the interp binder's
-               // wording, context consts[d] ("parameter 'sep'"), at this
-               // instruction's position: the argument's own node.
+               // check regs[a] against parameter d of spec c and raise the
+               // interp binder's wording at this instruction's position: the
+               // argument's own node. A polymorphic built-in declares the
+               // parameter per receiver arm, so the spec's own mask decides
+               // whether the check covers regs[b+1] (the receiver) at all:
+               // `'ab'.contains(x)` wants StringLike, `[1].contains(x)` takes
+               // anything.
   BMeth,       // regs[a] = built-in method c over the run at b: regs[b] is
                // MethGate's gate slot, regs[b+1] the receiver, and
                // regs[b+2..b+2+d) the arguments — defaults already
@@ -357,19 +362,38 @@ enum class BMeth : uint8_t {
   Upper, Lower, Capitalize, Trim, Lines, View,  // String/StringView, no args
   Repeat, Truncate, TrimStart, TrimEnd, Tr, Split, StartsWith, EndsWith,
   Push, Pop, Insert, RemoveAt, Extend, Reverse, IndexOf,  // Array
+  Slice, Contains, ToString,                    // polymorphic, eager
 };
 
-// The receivers a built-in resolves on. A gate's set must be exactly the set
-// of receivers whose built-in table holds the name at this arity, because
-// everything else takes emit_receiver_resolution_error's two-way answer
-// outright — a scalar cannot hold members at all ("expected Object, Array, or
-// Tensor"), anything else simply lacks the method ("expected Function, got
-// Nil") — instead of asking the tables again.
-enum class BRecv : uint8_t {
-  Sized,    // Array/Tuple/Object/String/StringView/Set — emit_size_probe's set
-  StrLike,  // String/StringView
-  Array,    // Array only — the mutators and index_of
-};
+// The receivers a built-in resolves on, one bit per value tag. A gate's set
+// must be exactly the set of receivers whose built-in table holds the name at
+// this arity, because everything else takes emit_receiver_resolution_error's
+// two-way answer outright — a scalar cannot hold members at all ("expected
+// Object, Array, or Tensor"), anything else simply lacks the method ("expected
+// Function, got Nil") — instead of asking the tables again.
+using BRecvMask = uint16_t;
+
+inline constexpr BRecvMask bmeth_tag_bit(int8_t tag) {
+  return static_cast<BRecvMask>(1u << tag);
+}
+
+inline constexpr BRecvMask kRecvStrLike =
+    bmeth_tag_bit(TAG_STRING) | bmeth_tag_bit(TAG_STRINGVIEW);
+inline constexpr BRecvMask kRecvArray = bmeth_tag_bit(TAG_ARRAY);
+// emit_size_probe's set. `contains` resolves on the same six tags today, but
+// the two are spelled out separately so that changing one cannot move the
+// other: they are equal by coincidence, not by construction.
+inline constexpr BRecvMask kRecvSized =
+    kRecvStrLike | kRecvArray | bmeth_tag_bit(TAG_TUPLE) |
+    bmeth_tag_bit(TAG_OBJECT) | bmeth_tag_bit(TAG_SET);
+inline constexpr BRecvMask kRecvContains =
+    kRecvStrLike | kRecvArray | bmeth_tag_bit(TAG_TUPLE) |
+    bmeth_tag_bit(TAG_OBJECT) | bmeth_tag_bit(TAG_SET);
+inline constexpr BRecvMask kRecvSliceable =
+    kRecvStrLike | kRecvArray | bmeth_tag_bit(TAG_TENSOR);
+// No gate at all: `to_string` is the display conversion every value has, so
+// no receiver can fail to resolve it.
+inline constexpr BRecvMask kRecvAny = 0xFFFF;
 
 // A parameter's declared type, checked with the interp binder's wording at the
 // argument's own position. `Any` is an undeclared parameter — no check at all,
@@ -380,57 +404,78 @@ struct BMethSpec {
   std::string_view name;
   int8_t argc;           // positional arguments written at the call site
   BMeth id;
-  BRecv recv;
+  BRecvMask recv;
   int8_t nargs;          // arguments the op reads: argc, or argc + 1 with `def`
   const char* def;       // the trailing optional parameter's default literal
   BParam params[2];
   const char* pnames[2];  // the interp's parameter names, for the type error
+  // The receivers each check applies to: a polymorphic built-in declares its
+  // parameter per arm (`'ab'.contains(x)` wants StringLike; the Array/Set/
+  // Tuple/iterator arms take anything). 0 is "every receiver".
+  BRecvMask param_when[2];
+  // Whether the same-named stdlib global computes the same thing, so the call
+  // needs no UFCS fallback to reach it (`to_string` alone).
+  bool subsumes_global;
+  // Whether an Object receiver must be iterator-shaped to resolve the name at
+  // all. `contains` is an iterator-protocol method as well as a container one,
+  // so a plain dict simply lacks it (interp's is_iterator_shaped, the JIT's
+  // iterator receiver gate — both reduce to an own/proto `next`, since `iter`
+  // is a dict builtin every Object "has").
+  bool obj_iter_shaped;
 };
 
 inline std::span<const BMethSpec> bmeth_specs() {
   using enum BMeth;
   using enum BParam;
   static constexpr BMethSpec kSpecs[] = {
-      {"size", 0, Size, BRecv::Sized, 0, nullptr, {}, {}},
-      {"empty", 0, Empty, BRecv::Sized, 0, nullptr, {}, {}},
-      {"presence", 0, Presence, BRecv::Sized, 0, nullptr, {}, {}},
-      {"upper", 0, Upper, BRecv::StrLike, 0, nullptr, {}, {}},
-      {"lower", 0, Lower, BRecv::StrLike, 0, nullptr, {}, {}},
-      {"capitalize", 0, Capitalize, BRecv::StrLike, 0, nullptr, {}, {}},
-      {"trim", 0, Trim, BRecv::StrLike, 0, nullptr, {}, {}},
-      {"lines", 0, Lines, BRecv::StrLike, 0, nullptr, {}, {}},
-      {"view", 0, View, BRecv::StrLike, 0, nullptr, {}, {}},
-      {"repeat", 1, Repeat, BRecv::StrLike, 1, nullptr, {Long}, {"n"}},
+      {"size", 0, Size, kRecvSized, 0, nullptr, {}, {}},
+      {"empty", 0, Empty, kRecvSized, 0, nullptr, {}, {}},
+      {"presence", 0, Presence, kRecvSized, 0, nullptr, {}, {}},
+      {"upper", 0, Upper, kRecvStrLike, 0, nullptr, {}, {}},
+      {"lower", 0, Lower, kRecvStrLike, 0, nullptr, {}, {}},
+      {"capitalize", 0, Capitalize, kRecvStrLike, 0, nullptr, {}, {}},
+      {"trim", 0, Trim, kRecvStrLike, 0, nullptr, {}, {}},
+      {"lines", 0, Lines, kRecvStrLike, 0, nullptr, {}, {}},
+      {"view", 0, View, kRecvStrLike, 0, nullptr, {}, {}},
+      {"repeat", 1, Repeat, kRecvStrLike, 1, nullptr, {Long}, {"n"}},
       // The optional tail is filled by the compiler with the interp's own
       // default, so the op sees one fixed arity per id.
-      {"truncate", 1, Truncate, BRecv::StrLike, 2, "...",
+      {"truncate", 1, Truncate, kRecvStrLike, 2, "...",
        {Long, StrLike}, {"max", "ellipsis"}},
-      {"truncate", 2, Truncate, BRecv::StrLike, 2, nullptr,
+      {"truncate", 2, Truncate, kRecvStrLike, 2, nullptr,
        {Long, StrLike}, {"max", "ellipsis"}},
-      {"trim_start", 0, TrimStart, BRecv::StrLike, 1, "",
+      {"trim_start", 0, TrimStart, kRecvStrLike, 1, "",
        {StrLike}, {"chars"}},
-      {"trim_start", 1, TrimStart, BRecv::StrLike, 1, nullptr,
+      {"trim_start", 1, TrimStart, kRecvStrLike, 1, nullptr,
        {StrLike}, {"chars"}},
-      {"trim_end", 0, TrimEnd, BRecv::StrLike, 1, "", {StrLike}, {"chars"}},
-      {"trim_end", 1, TrimEnd, BRecv::StrLike, 1, nullptr,
+      {"trim_end", 0, TrimEnd, kRecvStrLike, 1, "", {StrLike}, {"chars"}},
+      {"trim_end", 1, TrimEnd, kRecvStrLike, 1, nullptr,
        {StrLike}, {"chars"}},
-      {"tr", 2, Tr, BRecv::StrLike, 2, nullptr,
+      {"tr", 2, Tr, kRecvStrLike, 2, nullptr,
        {StrLike, StrLike}, {"from", "to"}},
-      {"split", 1, Split, BRecv::StrLike, 1, nullptr, {StrLike}, {"sep"}},
-      {"starts_with", 1, StartsWith, BRecv::StrLike, 1, nullptr,
+      {"split", 1, Split, kRecvStrLike, 1, nullptr, {StrLike}, {"sep"}},
+      {"starts_with", 1, StartsWith, kRecvStrLike, 1, nullptr,
        {StrLike}, {"prefix"}},
-      {"ends_with", 1, EndsWith, BRecv::StrLike, 1, nullptr,
+      {"ends_with", 1, EndsWith, kRecvStrLike, 1, nullptr,
        {StrLike}, {"suffix"}},
       // Array. `push`/`insert` take the value's +1 off the register, so the
       // compiler nils the run before the call (see bmeth_consumes_args);
       // `pop`/`remove_at` hand one back the other way.
-      {"push", 1, Push, BRecv::Array, 1, nullptr, {Any}, {"arg"}},
-      {"pop", 0, Pop, BRecv::Array, 0, nullptr, {}, {}},
-      {"insert", 2, Insert, BRecv::Array, 2, nullptr, {Long, Any}, {"i", "x"}},
-      {"remove_at", 1, RemoveAt, BRecv::Array, 1, nullptr, {Long}, {"i"}},
-      {"extend", 1, Extend, BRecv::Array, 1, nullptr, {Array}, {"other"}},
-      {"reverse", 0, Reverse, BRecv::Array, 0, nullptr, {}, {}},
-      {"index_of", 1, IndexOf, BRecv::Array, 1, nullptr, {Any}, {"v"}},
+      {"push", 1, Push, kRecvArray, 1, nullptr, {Any}, {"arg"}},
+      {"pop", 0, Pop, kRecvArray, 0, nullptr, {}, {}},
+      {"insert", 2, Insert, kRecvArray, 2, nullptr, {Long, Any}, {"i", "x"}},
+      {"remove_at", 1, RemoveAt, kRecvArray, 1, nullptr, {Long}, {"i"}},
+      {"extend", 1, Extend, kRecvArray, 1, nullptr, {Array}, {"other"}},
+      {"reverse", 0, Reverse, kRecvArray, 0, nullptr, {}, {}},
+      {"index_of", 1, IndexOf, kRecvArray, 1, nullptr, {Any}, {"v"}},
+      // Polymorphic: one name, several receivers, and — for `contains` — a
+      // declared parameter on the String arm alone.
+      {"slice", 2, Slice, kRecvSliceable, 2, nullptr, {Long, Long},
+       {"start", "end"}},
+      {"contains", 1, Contains, kRecvContains, 1, nullptr, {StrLike}, {"sub"},
+       {kRecvStrLike}, /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"to_string", 0, ToString, kRecvAny, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/true},
   };
   return kSpecs;
 }
@@ -441,18 +486,17 @@ inline const BMethSpec* bmeth_lookup(std::string_view name, size_t argc) {
   return nullptr;
 }
 
+// The spec's own position, the name ChkParam carries: the check's type, its
+// parameter name and the receivers it applies to all come back out of the
+// table, so the instruction holds no copy of any of them.
+inline int32_t bmeth_spec_index(const BMethSpec& s) {
+  return static_cast<int32_t>(&s - bmeth_specs().data());
+}
+
 // Whether `tag` is a receiver the gate lets through.
-inline bool bmeth_receiver_ok(BRecv recv, int8_t tag) {
-  switch (recv) {
-    case BRecv::Array:
-      return tag == TAG_ARRAY;
-    case BRecv::StrLike:
-      return tag == TAG_STRING || tag == TAG_STRINGVIEW;
-    case BRecv::Sized:
-      return tag == TAG_STRING || tag == TAG_STRINGVIEW || tag == TAG_ARRAY ||
-             tag == TAG_TUPLE || tag == TAG_OBJECT || tag == TAG_SET;
-  }
-  return false;
+inline bool bmeth_receiver_ok(BRecvMask recv, int8_t tag) {
+  if (recv == kRecvAny) return true;  // no gate: every receiver resolves it
+  return tag >= 0 && tag < 16 && (recv & bmeth_tag_bit(tag)) != 0;
 }
 
 // The name a parameter's declared type carries into the error message.
@@ -485,21 +529,25 @@ inline bool bmeth_param_ok(BParam p, int8_t tag) {
   return false;
 }
 
-// The rejected argument's error, in the interp binder's wording — reached
-// only from the failing side of bmeth_param_ok, so it always throws.
-inline void bmeth_param_error(BParam p, const char* context, int64_t line,
-                              int64_t col) {
-  culebra_runtime_throw_error(
-      "TypeError",
-      std::format("type error: {} expects {}", context, bmeth_param_type(p))
-          .c_str(),
-      line, col);
+// Whether a parameter's check covers this receiver. A polymorphic built-in
+// declares its parameter per arm, so the same argument is checked on the
+// String receiver and waved through on the Array one.
+inline bool bmeth_param_applies(const BMethSpec& s, int32_t i, int8_t tag) {
+  return s.param_when[i] == 0 || bmeth_receiver_ok(s.param_when[i], tag);
 }
 
-inline BRecv bmeth_recv_of(BMeth id) {
+// The message a rejected argument carries, in the interp binder's wording.
+inline std::string bmeth_param_message(const BMethSpec& s, int32_t i) {
+  return std::format("type error: parameter '{}' expects {}", s.pnames[i],
+                     bmeth_param_type(s.params[i]));
+}
+
+// The gate fields (receiver mask, iterator shape) are the same across an id's
+// arities, so the first row answers for all of them.
+inline const BMethSpec& bmeth_gate_spec(BMeth id) {
   for (const auto& s : bmeth_specs())
-    if (s.id == id) return s.recv;
-  return BRecv::StrLike;  // unreachable: every id has a spec
+    if (s.id == id) return s;
+  return bmeth_specs()[0];  // unreachable: every id has a spec
 }
 
 // emit_receiver_resolution_error's two halves, executor-side. A scalar
@@ -646,6 +694,62 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       return JitValue{TAG_LONG, culebra_runtime_array_index_of(
                                     arr(recv), static_cast<int8_t>(args[0].tag),
                                     args[0].data)};
+    // The polymorphic arms dispatch on the receiver the gate let through.
+    // String/StringView is the default arm here and in the lowering's switch,
+    // so the two lanes read the same way.
+    case BMeth::Slice:
+      if (recv.tag == TAG_ARRAY)
+        return JitValue{TAG_ARRAY,
+                        reinterpret_cast<int64_t>(culebra_runtime_array_slice2(
+                            arr(recv), args[0].data, args[1].data))};
+      if (recv.tag == TAG_TENSOR) {
+        // The engine's out-of-bounds IndexError arrives positionless.
+        culebra_runtime_set_op_pos(line, col);
+        return JitValue{TAG_TENSOR,
+                        reinterpret_cast<int64_t>(culebra_runtime_tensor_slice(
+                            reinterpret_cast<JitTensor*>(recv.data),
+                            args[0].data, args[1].data))};
+      }
+      return JitValue{
+          TAG_STRINGVIEW,
+          reinterpret_cast<int64_t>(culebra_runtime_strlike_slice_view(
+              static_cast<int8_t>(recv.tag), recv.data, args[0].data,
+              args[1].data))};
+    case BMeth::Contains: {
+      auto found = [&]() -> bool {
+        switch (recv.tag) {
+          case TAG_ARRAY:
+            // A too-deep element raises a positionless ValueError.
+            culebra_runtime_set_op_pos(line, col);
+            return culebra_runtime_array_contains(
+                arr(recv), static_cast<int8_t>(args[0].tag), args[0].data);
+          case TAG_SET:
+            return culebra_runtime_set_contains(
+                reinterpret_cast<JitSet*>(recv.data),
+                static_cast<int8_t>(args[0].tag), args[0].data, line, col);
+          case TAG_TUPLE:
+            culebra_runtime_set_op_pos(line, col);
+            return culebra_runtime_tuple_contains(
+                       arr(recv), static_cast<int8_t>(args[0].tag),
+                       args[0].data) != 0;
+          case TAG_OBJECT:
+            // The iterator protocol itself: an object that does not carry it
+            // fails inside the drive, the same error interp reports.
+            culebra_runtime_set_op_pos(line, col);
+            return culebra_runtime_iter_contains(
+                       static_cast<int8_t>(recv.tag), recv.data,
+                       static_cast<int8_t>(args[0].tag), args[0].data) != 0;
+          default:
+            return culebra_runtime_str_contains(cstr(recv), cstr(args[0]));
+        }
+      }();
+      return JitValue{TAG_BOOL, found ? 1 : 0};
+    }
+    case BMeth::ToString:
+      // The display form of any value — a too-deep one raises positionless.
+      culebra_runtime_set_op_pos(line, col);
+      return str(culebra_runtime_value_to_display(
+          static_cast<int8_t>(recv.tag), recv.data));
   }
   return JitValue{TAG_NIL, 0};  // unreachable: every id has an arm
 }
@@ -1973,12 +2077,19 @@ class Compiler {
       reject(post, std::format("function introspection '{}'", post.token));
   }
 
-  void reject_out_of_slice_method(const peg::Ast& post, bool have_builtin) {
+  void reject_out_of_slice_method(const peg::Ast& post,
+                                  const BMethSpec* spec) {
     reject_fn_introspection(post);
     std::string_view name = post.token;
-    if (lookup(name) || is_stdlib_global(name))
+    // A built-in that subsumes its global (`to_string`) needs no UFCS arm:
+    // the built-in performs the same conversion on every receiver the global
+    // would have taken. Only the stdlib half of the test is exempt — a name
+    // the user declared shadows the built-in on both backends, and that stays
+    // out of slice.
+    bool subsumes = spec && spec->subsumes_global;
+    if (lookup(name) || (is_stdlib_global(name) && !subsumes))
       reject(post, std::format("UFCS candidate '{}'", name));
-    if (have_builtin) return;
+    if (spec) return;
     if (culebra::is_builtin_method_name(name))
       reject(post, std::format("built-in method '{}'", name));
     if (name == "drop" || name == "parameters")
@@ -1995,7 +2106,7 @@ class Compiler {
   ExprResult compile_method_call(const peg::Ast& at, const peg::Ast& post,
                                  const peg::Ast& args, ExprResult recv) {
     const BMethSpec* spec = bmeth_lookup(post.token, args.nodes.size());
-    reject_out_of_slice_method(post, spec != nullptr);
+    reject_out_of_slice_method(post, spec);
     reject_kwargs(args);
     if (spec) return compile_builtin_method(at, post, args, recv, *spec);
     StampGuard pos(*this, at);
@@ -2043,9 +2154,9 @@ class Compiler {
     for (int32_t i = 0; i < argc; i++) {
       if (spec.params[i] == BParam::Any) continue;  // undeclared: no check
       StampGuard arg_pos(*this, *args.nodes[i]);
-      emit(Op::ChkParam, base + 2 + i, base,
-           static_cast<int32_t>(spec.params[i]),
-           kconst_str(std::format("parameter '{}'", spec.pnames[i])));
+      // The spec's own index is the whole operand: type, parameter name and
+      // the receivers the check covers all come back out of the table.
+      emit(Op::ChkParam, base + 2 + i, base, bmeth_spec_index(spec), i);
     }
     // The omitted optional argument: the interp's declared default, so the
     // op's arity is fixed per built-in and needs no absent-argument arm.
@@ -3713,8 +3824,14 @@ struct Exec {
               break;
             }
           }
-          if (!bmeth_receiver_ok(bmeth_recv_of(static_cast<BMeth>(in.d)),
-                                 static_cast<int8_t>(recv.tag))) {
+          const BMethSpec& gate = bmeth_gate_spec(static_cast<BMeth>(in.d));
+          bool ok = bmeth_receiver_ok(gate.recv, static_cast<int8_t>(recv.tag));
+          // An iterator-protocol name resolves on an Object only when the
+          // object carries the protocol; a plain dict merely lacks it.
+          if (ok && gate.obj_iter_shaped && recv.tag == TAG_OBJECT)
+            ok = culebra_runtime_object_has(
+                reinterpret_cast<JitObject*>(recv.data), "next");
+          if (!ok) {
             if (bmeth_scalar_tag(static_cast<int8_t>(recv.tag)))
               bmeth_scalar_receiver_error(static_cast<int8_t>(recv.tag), line,
                                           col);
@@ -3725,15 +3842,19 @@ struct Exec {
         }
         case Op::ChkParam: {
           // A user method shadowing the built-in binds by its own signature,
-          // and a miss binds nothing at all.
+          // and a miss binds nothing at all. regs[b+1] is the receiver, which
+          // decides whether a per-arm check applies here (BMeth's own layout).
+          const BMethSpec& spec = bmeth_specs()[in.c];
           if (regs[in.b].tag == TAG_NO_SELF &&
               regs[in.b].data == kBMethGateBuiltin &&
-              !bmeth_param_ok(static_cast<BParam>(in.c),
+              bmeth_param_applies(spec, in.d,
+                                  static_cast<int8_t>(regs[in.b + 1].tag)) &&
+              !bmeth_param_ok(spec.params[in.d],
                               static_cast<int8_t>(regs[in.a].tag))) {
             auto [line, col] = chunk_pos_at(c, pc);
-            bmeth_param_error(
-                static_cast<BParam>(in.c),
-                reinterpret_cast<const char*>(c.consts[in.d].data), line, col);
+            culebra_runtime_throw_error(
+                "TypeError", bmeth_param_message(spec, in.d).c_str(), line,
+                col);
           }
           ++pc;
           break;
@@ -4992,46 +5113,53 @@ struct Lowering {
           b.CreateBr(contBB);
 
           b.SetInsertPoint(gateBB);
-          auto badBB = BasicBlock::Create(j.ctx_, "vbm.rcverr", fn);
-          auto sw = b.CreateSwitch(tag, badBB, 6);
-          switch (bmeth_recv_of(id)) {
-            case BRecv::Array:
-              sw->addCase(b.getInt8(TAG_ARRAY), contBB);
-              break;
-            case BRecv::StrLike:
-              sw->addCase(b.getInt8(TAG_STRING), contBB);
-              sw->addCase(b.getInt8(TAG_STRINGVIEW), contBB);
-              break;
-            case BRecv::Sized:
-              sw->addCase(b.getInt8(TAG_STRING), contBB);
-              sw->addCase(b.getInt8(TAG_STRINGVIEW), contBB);
-              sw->addCase(b.getInt8(TAG_ARRAY), contBB);
-              sw->addCase(b.getInt8(TAG_TUPLE), contBB);
-              sw->addCase(b.getInt8(TAG_OBJECT), contBB);
-              sw->addCase(b.getInt8(TAG_SET), contBB);
-              break;
+          const BMethSpec& gate = bmeth_gate_spec(id);
+          auto mask = gate.recv;
+          if (mask == kRecvAny) {
+            b.CreateBr(contBB);  // no gate: every receiver resolves the name
+          } else {
+            auto badBB = BasicBlock::Create(j.ctx_, "vbm.rcverr", fn);
+            // An iterator-protocol name resolves on an Object only when the
+            // object carries the protocol; a plain dict merely lacks it.
+            llvm::BasicBlock* shapeBB = contBB;
+            if (gate.obj_iter_shaped && bmeth_receiver_ok(mask, TAG_OBJECT))
+              shapeBB = BasicBlock::Create(j.ctx_, "vbm.itershape", fn);
+            auto sw = b.CreateSwitch(tag, badBB, std::popcount(mask));
+            for (int8_t t = 0; t < 16; ++t)
+              if (bmeth_receiver_ok(mask, t))
+                sw->addCase(b.getInt8(t), t == TAG_OBJECT ? shapeBB : contBB);
+            if (shapeBB != contBB) {
+              b.SetInsertPoint(shapeBB);
+              b.CreateCondBr(
+                  j.emit_object_has(
+                      b.CreateIntToPtr(j.extract_data(recv), ptrTy),
+                      j.get_or_create_global_str("next", ".it.next")),
+                  contBB, badBB);
+            }
+            // A scalar receiver fails here and now; anything else only lacks
+            // the method, which BMeth reports once the arguments have run.
+            b.SetInsertPoint(badBB);
+            auto scalarBB = BasicBlock::Create(j.ctx_, "vbm.scalar", fn);
+            auto missBB = BasicBlock::Create(j.ctx_, "vbm.miss", fn);
+            b.CreateCondBr(j.emit_is_scalar_tag(tag), scalarBB, missBB);
+            b.SetInsertPoint(scalarBB);
+            j.emit_type_error_typed("Object, Array, or Tensor", tag);
+            b.CreateUnreachable();
+            b.SetInsertPoint(missBB);
+            b.CreateStore(j.make_value(b.getInt8(TAG_NO_SELF),
+                                       b.getInt64(kBMethGateMiss)),
+                          slots[in.a]);
+            b.CreateBr(contBB);
           }
-          // A scalar receiver fails here and now; anything else only lacks
-          // the method, which BMeth reports once the arguments have run.
-          b.SetInsertPoint(badBB);
-          auto scalarBB = BasicBlock::Create(j.ctx_, "vbm.scalar", fn);
-          auto missBB = BasicBlock::Create(j.ctx_, "vbm.miss", fn);
-          b.CreateCondBr(j.emit_is_scalar_tag(tag), scalarBB, missBB);
-          b.SetInsertPoint(scalarBB);
-          j.emit_type_error_typed("Object, Array, or Tensor", tag);
-          b.CreateUnreachable();
-          b.SetInsertPoint(missBB);
-          b.CreateStore(j.make_value(b.getInt8(TAG_NO_SELF),
-                                     b.getInt64(kBMethGateMiss)),
-                        slots[in.a]);
-          b.CreateBr(contBB);
 
           b.SetInsertPoint(contBB);
           break;
         }
         case Op::ChkParam: {
-          auto kind = static_cast<BParam>(in.c);
+          const BMethSpec& spec = bmeth_specs()[in.c];
+          auto kind = spec.params[in.d];
           auto gate = load_slot(in.b);
+          auto gateOkBB = BasicBlock::Create(j.ctx_, "vbm.chk.gate", fn);
           auto chkBB = BasicBlock::Create(j.ctx_, "vbm.chk", fn);
           auto errBB = BasicBlock::Create(j.ctx_, "vbm.chk.err", fn);
           auto contBB = BasicBlock::Create(j.ctx_, "vbm.chk.cont", fn);
@@ -5042,7 +5170,19 @@ struct Lowering {
                   b.CreateICmpEQ(j.extract_tag(gate), b.getInt8(TAG_NO_SELF)),
                   b.CreateICmpEQ(j.extract_data(gate),
                                  b.getInt64(kBMethGateBuiltin))),
-              chkBB, contBB);
+              gateOkBB, contBB);
+          b.SetInsertPoint(gateOkBB);
+          // A per-arm parameter is only declared on some receivers; regs[b+1]
+          // is the receiver (BMeth's own layout), so the arm decides here.
+          if (spec.param_when[in.d] == 0) {
+            b.CreateBr(chkBB);
+          } else {
+            auto mask = spec.param_when[in.d];
+            auto sw = b.CreateSwitch(j.extract_tag(load_slot(in.b + 1)), contBB,
+                                     std::popcount(mask));
+            for (int8_t t = 0; t < 16; ++t)
+              if (bmeth_receiver_ok(mask, t)) sw->addCase(b.getInt8(t), chkBB);
+          }
           b.SetInsertPoint(chkBB);
           // The accepted tags inline, like the JIT arms' own gates — see
           // bmeth_param_ok for why the runtime check can't stand alone.
@@ -5064,13 +5204,8 @@ struct Lowering {
           b.CreateCondBr(ok, contBB, errBB);
           b.SetInsertPoint(errBB);
           auto [line, col] = chunk_pos_at(c, i);
-          j.emit_throw_error(
-              "TypeError",
-              std::format("type error: {} expects {}",
-                          _str_sv(reinterpret_cast<const char*>(
-                              c.consts[in.d].data)),
-                          bmeth_param_type(kind)),
-              line, col);
+          j.emit_throw_error("TypeError", bmeth_param_message(spec, in.d), line,
+                             col);
           if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
           b.SetInsertPoint(contBB);
           break;
@@ -5255,6 +5390,134 @@ struct Lowering {
                                                  ptrTy, b.getInt8Ty(), i64Ty),
                   {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0))},
                   "vbm.iof"));
+              break;
+            case BMeth::Slice:
+            case BMeth::Contains: {
+              // The polymorphic arms: one block per receiver, merged through
+              // an entry-block alloca (this arm can sit inside a loop body).
+              // String/StringView is the switch's default, the executor's own
+              // reading. The gate proved the tag is one of the cases.
+              bool is_slice = static_cast<BMeth>(in.c) == BMeth::Slice;
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.poly");
+              auto strBB = BasicBlock::Create(j.ctx_, "vbm.p.str", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.p.join", fn);
+              auto arm = [&](const char* name) {
+                return BasicBlock::Create(j.ctx_, name, fn);
+              };
+              auto boolv = [&](llvm::Value* v) {
+                return j.make_bool(
+                    v->getType()->isIntegerTy(1)
+                        ? v
+                        : b.CreateICmpNE(
+                              v, llvm::ConstantInt::get(v->getType(), 0)));
+              };
+              if (is_slice) {
+                auto arrBB = arm("vbm.sl.arr");
+                auto tenBB = arm("vbm.sl.ten");
+                auto sw = b.CreateSwitch(tagv, strBB, 3);
+                sw->addCase(b.getInt8(TAG_ARRAY), arrBB);
+                sw->addCase(b.getInt8(TAG_TENSOR), tenBB);
+                b.SetInsertPoint(arrBB);
+                b.CreateStore(
+                    j.make_array(j.emit_call(
+                        j.module_->getFunction(rt::array_slice2),
+                        {arr(), j.extract_data(arg(0)), j.extract_data(arg(1))},
+                        "vbm.sl")),
+                    out);
+                b.CreateBr(joinBB);
+                b.SetInsertPoint(tenBB);
+                // The engine's out-of-bounds IndexError arrives positionless.
+                j.emit_set_op_pos();
+                b.CreateStore(
+                    j.make_tensor(j.emit_call(
+                        j.module_->getFunction(rt::tensor_slice),
+                        {b.CreateIntToPtr(j.extract_data(recv), ptrTy),
+                         j.extract_data(arg(0)), j.extract_data(arg(1))},
+                        "vbm.slt")),
+                    out);
+                b.CreateBr(joinBB);
+                b.SetInsertPoint(strBB);
+                b.CreateStore(
+                    j.make_stringview(j.emit_call(
+                        j.module_->getFunction(rt::strlike_slice_view),
+                        {tagv, j.extract_data(recv), j.extract_data(arg(0)),
+                         j.extract_data(arg(1))},
+                        "vbm.sls")),
+                    out);
+                b.CreateBr(joinBB);
+              } else {
+                auto arrBB = arm("vbm.ct.arr");
+                auto setBB = arm("vbm.ct.set");
+                auto tupBB = arm("vbm.ct.tup");
+                auto iterBB = arm("vbm.ct.iter");
+                // The needle rides into four arms, so it is taken apart here,
+                // ahead of the switch: this block ends at that terminator.
+                auto nTag = j.extract_tag(arg(0));
+                auto nData = j.extract_data(arg(0));
+                auto sw = b.CreateSwitch(tagv, strBB, 5);
+                sw->addCase(b.getInt8(TAG_ARRAY), arrBB);
+                sw->addCase(b.getInt8(TAG_SET), setBB);
+                sw->addCase(b.getInt8(TAG_TUPLE), tupBB);
+                sw->addCase(b.getInt8(TAG_OBJECT), iterBB);
+                b.SetInsertPoint(arrBB);
+                // A too-deep element raises a positionless ValueError.
+                j.emit_set_op_pos();
+                b.CreateStore(
+                    boolv(j.emit_call(j.module_->getFunction(rt::array_contains),
+                                      {arr(), nTag, nData}, "vbm.ct")),
+                    out);
+                b.CreateBr(joinBB);
+                b.SetInsertPoint(setBB);
+                b.CreateStore(
+                    boolv(j.emit_call(
+                        j.module_->getOrInsertFunction(
+                            rt::set_contains, b.getInt1Ty(), ptrTy,
+                            b.getInt8Ty(), i64Ty, i64Ty, i64Ty),
+                        {b.CreateIntToPtr(j.extract_data(recv), ptrTy),
+                         nTag, nData, b.getInt64(line), b.getInt64(col)},
+                        "vbm.cts")),
+                    out);
+                b.CreateBr(joinBB);
+                b.SetInsertPoint(tupBB);
+                j.emit_set_op_pos();
+                b.CreateStore(
+                    boolv(j.emit_call(
+                        j.module_->getOrInsertFunction(rt::tuple_contains,
+                                                       b.getInt8Ty(), ptrTy,
+                                                       b.getInt8Ty(), i64Ty),
+                        {arr(), nTag, nData}, "vbm.ctt")),
+                    out);
+                b.CreateBr(joinBB);
+                b.SetInsertPoint(iterBB);
+                // The iterator protocol itself: an object that does not carry
+                // it fails inside the drive, the same error interp reports.
+                j.emit_set_op_pos();
+                b.CreateStore(
+                    boolv(j.emit_call(j.module_->getFunction(rt::iter_contains),
+                                      {tagv, j.extract_data(recv), nTag, nData},
+                                      "vbm.cti")),
+                    out);
+                b.CreateBr(joinBB);
+                b.SetInsertPoint(strBB);
+                b.CreateStore(
+                    boolv(j.emit_call(j.module_->getFunction(rt::str_contains),
+                                      {cstr(recv), cstr(arg(0))}, "vbm.ctstr")),
+                    out);
+                b.CreateBr(joinBB);
+              }
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::ToString:
+              // The display form of any value — a too-deep one raises
+              // positionless.
+              j.emit_set_op_pos();
+              res = j.make_string(j.emit_call(
+                  j.module_->getFunction(rt::value_to_display),
+                  {j.extract_tag(recv), j.extract_data(recv)}, "vbm.ts"));
               break;
             case BMeth::Pop:
             case BMeth::RemoveAt: {
