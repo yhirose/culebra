@@ -142,6 +142,15 @@ check_eq "uncaught throw int"         'throw 42'
 check_eq "uncaught throw object"      'throw {code: 1, msg: "x"}'
 check_eq "uncaught throw array"       'throw [1, "a"]'
 
+# get_or_put's unhashable-key TypeError is raised from inside the runtime
+# store, positionless — the JIT once left it at whatever an unrelated call
+# (a lazy `init` thunk's own body) last published, or at 0:0 with no thunk
+# at all. Both forms (eager and lazy init) must anchor at the receiver.
+check_same "get_or_put unhashable (eager init)" 'mut d = {}
+d.get_or_put([1, 2], 42)'
+check_same "get_or_put unhashable (lazy init)"  'mut d = {}
+d.get_or_put([1, 2], fn () { 99 })'
+
 # A non-Function passed to an iterator/array higher-order method reports
 # "parameter '<name>' expects Function" at the ARGUMENT's position, with the
 # method's actual param name (map/for_each/... → 'f', filter/find/any/all/

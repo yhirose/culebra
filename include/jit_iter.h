@@ -3670,6 +3670,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
   JitOwnedVal ret_guard(v);
   culebra_runtime_value_retain(v.tag, v.data);
   key_guard.consume();
+  // The store's non-String-key path hashes through the map's Hasher, which
+  // raises "unhashable type" positionless (no line/col of its own) — same
+  // class as SetAdd / ObjectSetAny. A lazy `init` thunk invoked just above can
+  // itself publish (and so clobber) the op position, so re-publish this call's
+  // own (already-correct) position right before the one call that can raise
+  // it, rather than relying on whatever the JIT caller stamped earlier.
+  culebra_runtime_set_op_pos(line, col);
   culebra_runtime_object_set_any(obj, kt, kd, /*mut*/ true, v.tag, v.data,
                                  line, col, /*is_init*/ false);
   return ret_guard.consume();
