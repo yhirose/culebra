@@ -1,0 +1,8 @@
+# `self` is immutable inside a method — the reassignment site reports.
+class S {
+  new() { self.x = 1 }
+  bad() {
+    self = 5
+  }
+}
+S.new().bad()

@@ -1,0 +1,8 @@
+# A well-known protocol name declared with parameters breaks its contract
+# when the declaration runs — a positionless runtime throw the declaration
+# node anchors.
+class Bad {
+  new() { }
+  next(a) { a }
+}
+println('unreached')

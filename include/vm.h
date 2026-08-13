@@ -368,6 +368,36 @@ enum class Op : uint8_t {
                // string); d = the body's chunk index, whose param_names feed
                // the registry (types stay null — arity-only dispatch in the
                // slice). The registry absorbs the body's +1; regs[b] = nil.
+  ClassMeta,   // regs[a] = the shared class meta Object (+1) built from the
+               // method closures in the run regs[b .. b+c), named by the
+               // chunk's name table d (build_class_meta). object_set
+               // consumes every closure's +1 — including on the
+               // well-known-contract throw, which is positionless, so a
+               // SetOpPos stamped at the CLASS_DECL precedes it — so the
+               // whole run is nil'd.
+  ClassObj,    // regs[a] = fresh Object (+1) marked `is_class`, so `C(args)`
+               // finds its `new` (object_new + mark_class)
+  BindStatic,  // bind regs[c] into class object regs[a] under name consts[b]
+               // (object_bind_static — the raw emplace the class namespace
+               // uses, so a member named `drop` stays an ordinary function
+               // and the well-known contract does not apply). The slot
+               // absorbs the +1; regs[c] = nil.
+  MakeInst,    // regs[a] = a fresh instance (+1) of class consts[c]:
+               // build_class_instance over the borrowed {meta, field-init,
+               // new-body} triple at regs[b .. b+3) and the argument run
+               // regs[0 .. d). The helper consumes every argument's +1 on
+               // every exit (the body absorbs them, a default ctor releases
+               // them), so the argument run is nil'd. Emitted as the whole
+               // body of a synthetic constructor chunk.
+  FieldInit,   // run the field-init closure regs[a] on receiver regs[b]
+               // (run_field_init; both borrowed). Emitted at the top of a
+               // `new` body, after parameter binding — interp's timing, so
+               // an arity error fires with no field side effects.
+  SelfMerge,   // regs[a] = the frame's `self`: the ABI receiver when the
+               // call supplied one, else the value in the captured cell
+               // regs[b] (rt::self_merge, +1 either way). Only a frame that
+               // captured an enclosing `self` emits it — a method's own
+               // receiver arrives through the chunk's self_slot.
   NsGet,       // regs[a] = stdlib global consts[b] (+1), resolved through
                // culebra_runtime_namespace_get — the per-Runtime cached
                // closure the JIT's emit_builtin_var_get slow path returns,
@@ -1324,6 +1354,18 @@ struct Chunk {
   int32_t arity = 0;
   std::vector<std::string> param_names;  // for the ArityError message
   int32_t fn_slot = -1;
+  // Receiver frames (a class method, a `new` body, the synthetic field-init
+  // thunk) bind the JitFn ABI's receiver here; -1 means the frame takes no
+  // receiver, and the incoming +1 is released on entry (the JIT's ctor thunk
+  // does the same with the class object it is called on). A frame that
+  // captured an enclosing `self` also takes the slot, but raw: SelfMerge
+  // needs to see the NO_SELF sentinel to know a plain call from a receiver
+  // call, so the prologue skips the nil rewrite there.
+  int32_t self_slot = -1;
+  bool self_raw = false;
+  // Method-name tables for ClassMeta, indexed by its `d` operand. Stable
+  // storage: the executor hands build_class_meta an array of these c_str()s.
+  std::vector<std::vector<std::string>> name_tables;
   // Capture list: for each free var, the slot (in the CREATING frame's
   // numbering) holding its cell pointer. A fn literal has exactly one
   // creation site — its MakeClosure — so the list lives with the callee
@@ -1390,6 +1432,17 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
 // which bindings live in cells; free_vars becomes each chunk's capture
 // list; uses_fn places the recursion handle). Slot assignment itself is
 // the scope stack below, mirroring the JIT's Scope/VarSlot walk.
+// A class member's body: what compile_fn_chunk has to add on top of a plain
+// function frame. `receiver` binds the ABI's `self`; `fields` replaces the
+// AST body with the declared-field stores of the synthetic field-init thunk;
+// `field_init_owner` makes a `new` body run that thunk (reached through the
+// hidden capture fn_analysis gave it) right after parameter binding.
+struct MemberOpts {
+  bool receiver = false;
+  const std::vector<const peg::Ast*>* fields = nullptr;
+  const peg::Ast* field_init_owner = nullptr;
+};
+
 // One Compiler instance per chunk; the program and the analysis are shared.
 // Everything outside the slice throws VmError at compile time.
 class Compiler {
@@ -1722,6 +1775,24 @@ class Compiler {
     return r.slot;
   }
 
+  // A typed field with no initializer takes its type's zero (the JIT's
+  // emit_zero_value over the shared zero_kind_for_type table).
+  int32_t emit_zero_value(const peg::Ast& at, std::string_view type) {
+    int32_t t = alloc_temp(at);
+    int32_t k = 0;
+    switch (culebra::zero_kind_for_type(type)) {
+      case culebra::ZeroKind::Float:
+        k = kconst({TAG_FLOAT, _culebra_double_to_bits(0.0)});
+        break;
+      case culebra::ZeroKind::Bool: k = kconst({TAG_BOOL, 0}); break;
+      case culebra::ZeroKind::String: k = kconst_str(""); break;
+      case culebra::ZeroKind::Long: k = kconst_long(0); break;
+      case culebra::ZeroKind::Nil: k = kconst({TAG_NIL, 0}); break;
+    }
+    emit(Op::LoadConst, t, k);
+    return t;
+  }
+
   // Declaration point of a captured local: a fresh cell absorbs the value.
   void store_new_cell(const peg::Ast& at, int32_t dst, ExprResult r) {
     emit(Op::CellNew, dst, owned_src(at, r));
@@ -1840,6 +1911,7 @@ class Compiler {
       case "LEXICAL_SCOPE"_:
       case "DEFER"_:
       case "MULTIFN_DECL"_:  // a decl evaluates to nil (interp parity)
+      case "CLASS_DECL"_:
         compile_statement_inner(ast);
         break;
       case "ASSIGNMENT"_:
@@ -1890,6 +1962,9 @@ class Compiler {
       }
       case "MULTIFN_DECL"_:
         compile_multifn_decl(ast);
+        break;
+      case "CLASS_DECL"_:
+        compile_class_decl(ast);
         break;
       case "BREAK"_:
       case "CONTINUE"_: {
@@ -2048,6 +2123,217 @@ class Compiler {
     emit(Op::CellSet, b->slot, owned_src(ast, {t, true}));
   }
 
+  // `class Name { new(...) {...}  m(...) {...}  x = e  y: T = e }`.
+  // The runtime shape is the JIT's: one shared meta Object holding the
+  // method closures, instances delegating to it through `proto`, and a
+  // class namespace Object carrying `new` and marked so `C(args)` reaches
+  // it. Field initializers become a synthetic thunk the `new` body runs
+  // after its parameters bound. Statics, getters and overloads are out of
+  // this slice.
+  void compile_class_decl(const peg::Ast& ast) {
+    using namespace peg::udl;
+    size_t dec_end = 0;
+    while (dec_end < ast.nodes.size() &&
+           ast.nodes[dec_end]->tag == "DECORATOR"_)
+      dec_end++;
+    if (dec_end > 0) reject(*ast.nodes[0], "class decorator");
+    // Generic params are documentation the runtime never sees (the JIT
+    // strips them the same way); typed params, which is what they would
+    // rewrite, are rejected inside every body anyway.
+    auto class_name =
+        std::string(culebra::parse_generic_head(ast.nodes[dec_end]->token).outer);
+
+    const peg::Ast* new_ast = nullptr;
+    std::vector<std::string> method_names;
+    std::vector<const peg::Ast*> method_asts;
+    std::vector<const peg::Ast*> fields;
+    for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
+      const auto& m = *ast.nodes[i];
+      auto mv = culebra::view_method(m);
+      if (mv.is_static) reject(m, "static class member");
+      if (mv.is_getter) reject(m, std::format("getter '{}'", mv.name));
+      if (mv.is_typed_field || mv.is_field) {
+        fields.push_back(&m);
+        continue;
+      }
+      if (mv.name == "new") {
+        if (new_ast) reject(m, "constructor overload");
+        new_ast = &m;
+        continue;
+      }
+      auto name = std::string(mv.name);
+      if (std::find(method_names.begin(), method_names.end(), name) !=
+          method_names.end())
+        reject(m, std::format("method overload '{}'", name));
+      method_names.push_back(name);
+      method_asts.push_back(&m);
+    }
+
+    // The class name binds before any body compiles: a method that says
+    // `Name.new(...)` captures this cell, which the finished class value
+    // lands in below (the JIT's pre-allocated class slot). A read before
+    // the declaration ran stays the usual unresolved-identifier reject.
+    int32_t class_slot = alloc_slot(ast, class_name);
+    {
+      TempScope ts(*this);
+      int32_t t = alloc_temp(ast);
+      emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+      emit(Op::CellNew, class_slot, t);
+    }
+    mark_cell_slot(class_slot);
+    scopes_.back().bindings.push_back(
+        {class_name, class_slot, /*is_mut=*/false, /*is_cell=*/true});
+
+    TempScope ts(*this);
+    std::vector<int32_t> method_chunks;
+    for (auto* m : method_asts) {
+      auto mv = culebra::view_method(*m);
+      method_chunks.push_back(
+          compile_fn_chunk(*m, mv.params, **mv.body, {.receiver = true}));
+    }
+    // The field-init thunk is compiled — and bound under its hidden name —
+    // before the `new` body, whose capture list fn_analysis already points
+    // at it.
+    int32_t finit_slot = -1;
+    if (!fields.empty()) {
+      int32_t idx = compile_fn_chunk(ast, /*params=*/nullptr, ast,
+                                     {.receiver = true, .fields = &fields});
+      int32_t t = alloc_temp(ast);
+      emit(Op::MakeClosure, t, idx);
+      finit_slot = alloc_slot(ast, "(field.init)");
+      emit(Op::CellNew, finit_slot, owned_src(ast, {t, true}));
+      mark_cell_slot(finit_slot);
+      if (new_ast) {
+        scopes_.back().bindings.push_back(
+            {culebra::field_init_slot_name(ast), finit_slot,
+             /*is_mut=*/false, /*is_cell=*/true});
+      }
+    }
+    int32_t body_chunk = -1;
+    if (new_ast) {
+      auto mv = culebra::view_method(*new_ast);
+      body_chunk = compile_fn_chunk(
+          *new_ast, mv.params, **mv.body,
+          {.receiver = true,
+           .field_init_owner = fields.empty() ? nullptr : &ast});
+    }
+
+    // The shared meta: the method closures in one contiguous run.
+    int32_t meta = alloc_temp(ast);
+    {
+      int32_t run = next_slot_;
+      for (size_t i = 0; i < method_chunks.size(); i++) {
+        int32_t t = alloc_temp(*method_asts[i]);
+        emit(Op::MakeClosure, t, method_chunks[i]);
+        (void)t;
+      }
+      auto table = static_cast<int32_t>(chunk_.name_tables.size());
+      chunk_.name_tables.push_back(method_names);
+      // The well-known contract throw inside build_class_meta is
+      // positionless and the interp stamps it at the declaration.
+      emit(Op::SetOpPos);
+      emit(Op::ClassMeta, meta, run,
+           static_cast<int32_t>(method_chunks.size()), table);
+      for (size_t i = 0; i < method_chunks.size(); i++)
+        forget_temp(run + static_cast<int32_t>(i));  // the meta took each +1
+    }
+
+    // The constructor closure captures {meta, field-init, `new` body}; each
+    // capture is a cell in this frame, like every other closure's.
+    int32_t meta_cell = alloc_slot(ast, "(class.meta)");
+    emit(Op::CellNew, meta_cell, owned_src(ast, {meta, true}));
+    mark_cell_slot(meta_cell);
+    int32_t nil_cell = -1;
+    auto cell_or_nil = [&](int32_t cell) {
+      if (cell >= 0) return cell;
+      if (nil_cell < 0) {
+        TempScope nts(*this);
+        int32_t t = alloc_temp(ast);
+        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+        nil_cell = alloc_slot(ast, "(class.absent)");
+        emit(Op::CellNew, nil_cell, t);
+        mark_cell_slot(nil_cell);
+      }
+      return nil_cell;
+    };
+    // A `new` body reaches the field-init through its own hidden capture,
+    // so the constructor passes one or the other, never both — the split
+    // build_class_instance expects.
+    int32_t body_cell = -1;
+    if (new_ast) {
+      int32_t t = alloc_temp(ast);
+      emit(Op::MakeClosure, t, body_chunk);
+      body_cell = alloc_slot(ast, "(class.new)");
+      emit(Op::CellNew, body_cell, owned_src(ast, {t, true}));
+      mark_cell_slot(body_cell);
+    }
+    std::vector<int32_t> ctor_caps{
+        meta_cell, new_ast ? cell_or_nil(-1) : cell_or_nil(finit_slot),
+        new_ast ? body_cell : cell_or_nil(-1)};
+    int32_t ctor_chunk = compile_ctor_chunk(
+        ast, class_name, new_ast ? culebra::view_method(*new_ast).params
+                                 : nullptr,
+        ctor_caps);
+
+    int32_t ctor = alloc_temp(ast);
+    emit(Op::MakeClosure, ctor, ctor_chunk);
+    int32_t cls = alloc_temp(ast);
+    emit(Op::ClassObj, cls);
+    emit(Op::BindStatic, cls, kconst_str("new"), owned_src(ast, {ctor, true}));
+    emit(Op::CellSet, class_slot, owned_src(ast, {cls, true}));
+  }
+
+  // The synthetic constructor: `build_class_instance` over the captured
+  // {meta, field-init, body} triple and the frame's own arguments. It is
+  // the JIT's emit_constructor_fn thunk as a chunk — the arity check and
+  // its ArityError message come from the frame prologue, so they read the
+  // `new` body's parameter names and fire before any field initializer.
+  int32_t compile_ctor_chunk(const peg::Ast& ast, const std::string& class_name,
+                             const peg::Ast* params,
+                             const std::vector<int32_t>& caps) {
+    int32_t idx = static_cast<int32_t>(prog_.chunks.size());
+    prog_.chunks.emplace_back();
+    Compiler fc(prog_, analysis_, /*in_function=*/true, info_, multifn_uid_);
+    fc.stamp(ast);
+    fc.push_scope();
+    fc.chunk_.capture_src_slots = caps;
+    fc.chunk_.arity = params ? static_cast<int32_t>(params->nodes.size()) : 0;
+    if (params) {
+      for (const auto& p : params->nodes) {
+        auto pv = culebra::view_parameter(*p);
+        auto name = pv.pattern
+                        ? std::string(culebra::destructure_param_name(
+                              fc.chunk_.param_names.size()))
+                        : std::string(pv.name);
+        fc.alloc_slot(*p, name);
+        fc.chunk_.param_names.push_back(name);
+      }
+    }
+    int32_t cap0 = -1;
+    for (size_t i = 0; i < caps.size(); i++) {
+      int32_t s = fc.alloc_slot(ast, "(class.capture)");
+      if (i == 0) cap0 = s;
+      fc.emit(Op::BindCapture, s, static_cast<int32_t>(i));
+    }
+    // The instance rides a temp: the scope ladder below releases named
+    // slots, and the frame's result must outlive it.
+    int32_t rv = fc.alloc_temp(ast);
+    {
+      TempScope ts(fc);
+      int32_t run = fc.next_slot_;
+      for (size_t i = 0; i < caps.size(); i++)
+        fc.emit(Op::CellGet, fc.alloc_temp(ast),
+                cap0 + static_cast<int32_t>(i));
+      fc.emit(Op::MakeInst, rv, run, fc.kconst_str(class_name),
+              fc.chunk_.arity);
+    }  // the sweep drops the three borrowed reads
+    fc.pop_scope();
+    fc.emit(Op::Ret, rv);
+    fc.chunk_.num_slots = fc.high_water_;
+    prog_.chunks[idx] = std::move(fc.chunk_);
+    return idx;
+  }
+
   // Resolve a nested chunk's capture list in the creating frame. The mut
   // flag rides along (the JIT's free_var_mut snapshot): a capture of a
   // capture keeps the original binding's flag by construction.
@@ -2059,7 +2345,6 @@ class Compiler {
   CaptureList resolve_captures(const peg::Ast& ast, const FuncInfo& info) {
     CaptureList caps;
     for (const auto& fv : info.free_vars) {
-      if (fv == "self") reject(ast, "closure capture of 'self'");
       if (info.optional_free_vars.contains(fv))
         reject(ast, std::format("UFCS candidate capture of '{}'", fv));
       const Binding* b = lookup(fv);
@@ -2085,7 +2370,7 @@ class Compiler {
   // `defer` body reuses it with `params` null — a 0-arity thunk over the
   // same closure machinery and frame epilogue.
   int32_t compile_fn_chunk(const peg::Ast& ast, const peg::Ast* params,
-                           const peg::Ast& body) {
+                           const peg::Ast& body, MemberOpts mo = MemberOpts()) {
     using namespace peg::udl;
     const FuncInfo& info = analysis_.func_info.at(&ast);
     if (info.uses_args) reject(ast, "__ARGS__");
@@ -2151,6 +2436,25 @@ class Compiler {
         }
       }
     }
+    // The ABI receiver. A receiver frame owns it in a slot of its own —
+    // immutable, so `self = v` raises the interp's ImmutableError — and the
+    // frame teardown releases it; every other frame releases it on entry.
+    bool captures_self =
+        !mo.receiver && std::find(info.free_vars.begin(), info.free_vars.end(),
+                                  "self") != info.free_vars.end();
+    if (mo.receiver || captures_self) {
+      fc.chunk_.self_slot = fc.alloc_slot(ast, captures_self ? "(self.arg)"
+                                                             : "self");
+      fc.chunk_.self_raw = captures_self;
+    }
+    if (mo.receiver) {
+      if (info.captured_locals.contains("self")) {
+        promos.push_back({"self", fc.chunk_.self_slot, false, &ast});
+      } else {
+        fc.scopes_.back().bindings.push_back(
+            {"self", fc.chunk_.self_slot, false});
+      }
+    }
     if (info.uses_fn) {
       fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
       fc.scopes_.back().bindings.push_back({"fn", fc.chunk_.fn_slot, false});
@@ -2166,11 +2470,30 @@ class Compiler {
     // slots are named-but-not-cell, so frame teardown's Release is a no-op
     // on them (the closure owns the refs). The lazy flag rides along so a
     // captured dispatcher cell read before its decl still NameErrors.
+    int32_t self_cap = -1;
     for (size_t i = 0; i < info.free_vars.size(); ++i) {
       int32_t s = fc.alloc_slot(ast, info.free_vars[i]);
       fc.emit(Op::BindCapture, s, static_cast<int32_t>(i));
+      // A captured enclosing `self` feeds the merge below instead of
+      // binding directly: a call that supplies a receiver still wins.
+      if (info.free_vars[i] == "self") {
+        self_cap = s;
+        continue;
+      }
       fc.scopes_.back().bindings.push_back(
           {info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]});
+    }
+    if (self_cap >= 0) {
+      int32_t s = fc.alloc_slot(ast, "self");
+      fc.emit(Op::SelfMerge, s, fc.chunk_.self_slot, self_cap);
+      if (info.captured_locals.contains("self")) {
+        int32_t cslot = fc.alloc_slot(ast, "self");
+        fc.emit(Op::CellNew, cslot, s);
+        fc.mark_cell_slot(cslot);
+        fc.scopes_.back().bindings.push_back({"self", cslot, false, true});
+      } else {
+        fc.scopes_.back().bindings.push_back({"self", s, false});
+      }
     }
     // Unpack destructuring params, left to right: the test-then-bind walks
     // of compile_destructure_assign against the synthetic slot (borrowed —
@@ -2189,8 +2512,36 @@ class Compiler {
       fc.emit(Op::DestrErr);
       fc.patch_to_here(done);
     }
+    // A `new` body runs the class's field initializers here — after the
+    // parameters bound, before the first body statement (interp's
+    // init_instance_fields timing: an arity error leaves no field behind).
+    if (mo.field_init_owner) {
+      TempScope fts(fc);
+      const Binding* fb =
+          fc.lookup(culebra::field_init_slot_name(*mo.field_init_owner));
+      int32_t t = fc.alloc_temp(ast);
+      fc.emit(Op::CellGet, t, fb->slot);
+      fc.emit(Op::FieldInit, t, fc.chunk_.self_slot);
+    }
     int32_t rv = fc.alloc_temp(ast);
-    fc.compile_block_into(body, rv);
+    if (mo.fields) {
+      // The synthetic field-init thunk: one `self.name = value` per
+      // declared field, declaration order, is_init like the JIT's
+      // emit_object_set — an initializer that reached the property
+      // through a method call is overwritten regardless of its mut flag.
+      for (const auto* f : *mo.fields) {
+        TempScope fts(fc);
+        auto mv = culebra::view_method(*f);
+        ExprResult v =
+            mv.value ? fc.compile_expr(*mv.value)
+                     : ExprResult{fc.emit_zero_value(*f, mv.type_annotation),
+                                  true};
+        fc.emit(Op::ObjectSet, fc.chunk_.self_slot, fc.owned_src(*f, v),
+                fc.kconst_str(std::string(mv.name)), /*mut=*/1);
+      }
+    } else {
+      fc.compile_block_into(body, rv);
+    }
     // Frame defers run before the frame scope's releases (interp's
     // run_deferred(callEnv) order); `return` emits its own copy.
     if (fc.frame_defer_mark_ >= 0)
@@ -4022,7 +4373,10 @@ inline std::string dump(const Chunk& c) {
       "JumpIfTag",
       "MakeClosure", "Call",    "CallM",      "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
-      "ImmutErr",  "UnboundErr", "MultifnReg", "NsGet",
+      "ImmutErr",  "UnboundErr", "MultifnReg",
+      "ClassMeta", "ClassObj",  "BindStatic", "MakeInst",     "FieldInit",
+      "SelfMerge",
+      "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
@@ -4115,15 +4469,17 @@ struct Exec {
   // VM function through the closure's fn_ptr like any other closure; the
   // descriptor in captures[0] says which chunk to interpret. The receiver
   // scalars are unused until methods enter the slice.
-  static void trampoline(JitValue* ret, JitClosure* cls, int8_t /*self_tag*/,
-                         int64_t /*self_data*/, int64_t n_args,
-                         JitValue* args) {
+  static void trampoline(JitValue* ret, JitClosure* cls, int8_t self_tag,
+                         int64_t self_data, int64_t n_args, JitValue* args) {
     auto* d = reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
-    *ret = run_frame(*d->prog, d->chunk, cls, n_args, args);
+    *ret = run_frame(*d->prog, d->chunk, cls, n_args, args, self_tag,
+                     self_data);
   }
 
   static JitValue run_frame(const VmProgram& p, int32_t chunk_idx,
-                            JitClosure* cls, int64_t n_args, JitValue* args) {
+                            JitClosure* cls, int64_t n_args, JitValue* args,
+                            int8_t self_tag = TAG_NO_SELF,
+                            int64_t self_data = 0) {
     const Chunk& c = p.chunks[chunk_idx];
     if (c.num_slots > kMaxSlots)
       throw CulebraError("VmError", "--vm: frame too large");
@@ -4143,6 +4499,10 @@ struct Exec {
         for (int64_t i = 0; i < n_args; ++i)
           culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
                                         args[i].data);
+        // The receiver's +1 would strand here too — the JIT's arity error
+        // releases it in the same prologue, before the frame's cleanup
+        // ladder covers anything.
+        culebra_runtime_value_release(self_tag, self_data);
         // The runtime helper owns the diagnostic (message + prefer-the-
         // published-call-site policy) for every lane; cold path.
         std::vector<const char*> names;
@@ -4154,6 +4514,18 @@ struct Exec {
       for (int64_t i = c.arity; i < n_args; ++i)
         culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
                                       args[i].data);
+      // The receiver: a receiver frame's slot takes the +1 (and the frame
+      // teardown releases it); every other frame drops it, like the JIT's
+      // constructor thunk does with the class object it was called on. An
+      // absent receiver (TAG_NO_SELF) reads as nil, the interp's plain-call
+      // fallthrough.
+      if (c.self_slot >= 0) {
+        regs[c.self_slot] = (self_tag == TAG_NO_SELF && !c.self_raw)
+                                ? JitValue{TAG_NIL, 0}
+                                : JitValue{self_tag, self_data};
+      } else {
+        culebra_runtime_value_release(self_tag, self_data);
+      }
       if (c.fn_slot >= 0) {
         regs[c.fn_slot] =
             JitValue{TAG_FUNC, reinterpret_cast<int64_t>(cls)};
@@ -5166,16 +5538,23 @@ struct Exec {
           const JitValue& callee = regs[in.b];
           auto [line, col] = chunk_pos_at(c, pc);
           culebra_runtime_set_call_site(line, col);
-          if (callee.tag != TAG_FUNC) {
-            // No Object/class values exist in the slice yet, so the JIT's
-            // __call__/ctor probes cannot hit — the plain TypeError is the
-            // whole cold path for now.
+          JitValue target = callee;
+          if (target.tag != TAG_FUNC) {
+            // `C(args)` builds an instance: the class object's `new`,
+            // borrowed (the register keeps the class's own +1). The
+            // is_class gate keeps a plain dict holding a "new" key inert,
+            // so its TypeError is unchanged. The `call` overload — the
+            // JIT's other cold-path probe — is out of the slice.
+            target = culebra_runtime_class_new_method(
+                static_cast<int8_t>(callee.tag), callee.data);
+          }
+          if (target.tag != TAG_FUNC) {
             culebra_runtime_type_error_typed(
                 line, col, "Function", static_cast<int8_t>(callee.tag));
           }
           JitValue r;
           try {
-            r = _jit_invoke(reinterpret_cast<JitClosure*>(callee.data),
+            r = _jit_invoke(reinterpret_cast<JitClosure*>(target.data),
                             JitValue{TAG_NO_SELF, 0}, in.d,
                             in.d ? &regs[in.c] : nullptr);
           } catch (...) {
@@ -5304,6 +5683,92 @@ struct Exec {
               /*min_arity=*/n, n ? names.data() : nullptr);
           regs[in.b] = JitValue{TAG_NIL, 0};  // the registry took the +1
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(disp)};
+          ++pc;
+          break;
+        }
+        case Op::ClassMeta: {
+          // Cold path (once per declaration): the names table lives in the
+          // chunk, so the array of c_str()s is built here.
+          const auto& tbl = c.name_tables[in.d];
+          std::vector<const char*> names;
+          names.reserve(tbl.size());
+          for (const auto& n : tbl) names.push_back(n.c_str());
+          auto n_methods = static_cast<int64_t>(in.c);
+          // The run is handed over in place: a copy into a heap vector
+          // would be invisible to the conservative stack scan, and the
+          // first allocation inside build_class_meta would collect every
+          // method closure out from under it. object_set consumes each +1
+          // — on the contract throw too, where the helper releases the
+          // not-yet-bound tail itself — so the registers are emptied only
+          // once the call is past, on both edges.
+          JitObject* meta;
+          try {
+            meta = culebra_runtime_build_class_meta(
+                names.data(), &regs[in.b], n_methods, /*lowered_state=*/0);
+          } catch (...) {
+            for (int32_t i = 0; i < in.c; ++i)
+              regs[in.b + i] = JitValue{TAG_NIL, 0};
+            throw;
+          }
+          for (int32_t i = 0; i < in.c; ++i)
+            regs[in.b + i] = JitValue{TAG_NIL, 0};
+          regs[in.a] = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(meta)};
+          ++pc;
+          break;
+        }
+        case Op::ClassObj: {
+          auto* o = culebra_runtime_object_new();
+          culebra_runtime_mark_class(o);
+          regs[in.a] = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+          ++pc;
+          break;
+        }
+        case Op::BindStatic: {
+          culebra_runtime_object_bind_static(
+              reinterpret_cast<JitObject*>(regs[in.a].data),
+              reinterpret_cast<const char*>(c.consts[in.b].data),
+              static_cast<int8_t>(regs[in.c].tag), regs[in.c].data);
+          regs[in.c] = JitValue{TAG_NIL, 0};  // the slot absorbed the +1
+          ++pc;
+          break;
+        }
+        case Op::MakeInst: {
+          const JitValue& meta = regs[in.b];
+          const JitValue& finit = regs[in.b + 1];
+          const JitValue& body = regs[in.b + 2];
+          JitValue r;
+          try {
+            r = culebra_runtime_build_class_instance(
+                reinterpret_cast<const char*>(c.consts[in.c].data),
+                reinterpret_cast<JitObject*>(meta.data),
+                static_cast<int8_t>(finit.tag), finit.data,
+                static_cast<int8_t>(body.tag), body.data, in.d,
+                in.d ? &regs[0] : nullptr);
+          } catch (...) {
+            // The helper consumed each argument's +1 on its unwind path
+            // too (the `new` body's own ABI, or its field-init guard).
+            for (int32_t i = 0; i < in.d; ++i) regs[i] = JitValue{TAG_NIL, 0};
+            throw;
+          }
+          for (int32_t i = 0; i < in.d; ++i) regs[i] = JitValue{TAG_NIL, 0};
+          regs[in.a] = r;
+          ++pc;
+          break;
+        }
+        case Op::FieldInit:
+          culebra_runtime_run_field_init(
+              reinterpret_cast<JitClosure*>(regs[in.a].data),
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
+          ++pc;
+          break;
+        case Op::SelfMerge: {
+          // A receiver's +1 transfers straight through, so the raw slot is
+          // emptied rather than released; with none it holds the sentinel.
+          JitValue abi = regs[in.b];
+          regs[in.b] = JitValue{TAG_NIL, 0};
+          regs[in.a] = culebra_runtime_self_merge(
+              static_cast<int8_t>(abi.tag), abi.data,
+              reinterpret_cast<JitCell*>(regs[in.c].data));
           ++pc;
           break;
         }
@@ -5511,11 +5976,15 @@ struct Lowering {
     // Frame-ABI arguments (function chunks only; see JitFn in jit_value.h).
     llvm::Value* retPtr = nullptr;
     llvm::Value* clsArg = nullptr;
+    llvm::Value* selfTag = nullptr;
+    llvm::Value* selfData = nullptr;
     llvm::Value* nArgs = nullptr;
     llvm::Value* argsPtr = nullptr;
     if (chunk_idx != 0) {
       retPtr = fn->getArg(0);
       clsArg = fn->getArg(1);
+      selfTag = fn->getArg(2);
+      selfData = fn->getArg(3);
       nArgs = fn->getArg(4);
       argsPtr = fn->getArg(5);
     }
@@ -5548,6 +6017,9 @@ struct Lowering {
         for (const auto& n : c.param_names)
           nameptrs.push_back(j.get_or_create_global_str(n, ".paramname"));
         auto* namesG = j.build_str_ptr_array(nameptrs, ".paramnames");
+        // The receiver's +1 would strand on this edge (the frame's ladder
+        // covers nothing yet) — the JIT's arity error releases it here too.
+        j.emit_value_release(j.make_value(selfTag, selfData));
         // The prologue's own fallback position is unused: set_call_site
         // always ran on the caller side, and arity_missing prefers it.
         b.CreateCall(j.module_->getOrInsertFunction(
@@ -5580,6 +6052,22 @@ struct Lowering {
         iv->addIncoming(next, b.GetInsertBlock());
         b.CreateBr(hdrBB);
         b.SetInsertPoint(doneBB);
+      }
+      // The receiver, mirroring Exec::run_frame: a receiver frame's slot
+      // takes the +1 (its teardown releases it), a SelfMerge frame keeps the
+      // raw pair so the sentinel stays visible, and every other frame drops
+      // it — the JIT ctor thunk's release of the class object it was called
+      // on.
+      if (c.self_slot >= 0) {
+        auto selfVal = j.make_value(selfTag, selfData);
+        if (!c.self_raw) {
+          auto absent = b.CreateICmpEQ(selfTag, b.getInt8(TAG_NO_SELF),
+                                       "self.absent");
+          selfVal = b.CreateSelect(absent, j.make_nil(), selfVal, "self");
+        }
+        b.CreateStore(selfVal, slots[c.self_slot]);
+      } else {
+        j.emit_value_release(j.make_value(selfTag, selfData));
       }
       if (c.fn_slot >= 0) {
         auto fnVal = j.make_func(clsArg);
@@ -5685,12 +6173,25 @@ struct Lowering {
                                                   b.getVoidTy(), i64Ty, i64Ty),
                    {b.getInt64(line), b.getInt64(col)});
       auto tag = j.extract_tag(calleeV);
+      auto* fromBB = b.GetInsertBlock();
+      auto probeBB = BasicBlock::Create(j.ctx_, "call.probe", fn);
       auto errBB = BasicBlock::Create(j.ctx_, "call.err", fn);
       auto okBB = BasicBlock::Create(j.ctx_, "call.ok", fn);
-      b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_FUNC)), okBB, errBB);
+      b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_FUNC)), okBB, probeBB);
+      // `C(args)` builds an instance through the class object's borrowed
+      // `new`; the is_class gate keeps a plain dict with a "new" key inert,
+      // so its TypeError is unchanged. The JIT's other cold-path probe, the
+      // `call` overload, is out of the slice.
+      b.SetInsertPoint(probeBB);
+      auto ctorV = j.emit_value_call(
+          j.module_->getOrInsertFunction(rt::class_new_method, j.valueType_,
+                                         b.getInt8Ty(), i64Ty),
+          {tag, j.extract_data(calleeV)}, "ctor.method");
+      auto* probeEndBB = b.GetInsertBlock();
+      b.CreateCondBr(
+          b.CreateICmpEQ(j.extract_tag(ctorV), b.getInt8(TAG_FUNC)), okBB,
+          errBB);
       b.SetInsertPoint(errBB);
-      // Same shape as the executor's cold path: no class values exist in the
-      // slice, so the JIT's __call__/ctor probes cannot hit.
       j.emit_call(j.module_->getOrInsertFunction(rt::type_error_typed,
                                                  b.getVoidTy(), i64Ty, i64Ty,
                                                  ptrTy, b.getInt8Ty()),
@@ -5698,6 +6199,10 @@ struct Lowering {
                    b.CreateGlobalString("Function"), tag});
       if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
       b.SetInsertPoint(okBB);
+      auto* calleePhi = b.CreatePHI(j.valueType_, 2, "call.callee");
+      calleePhi->addIncoming(calleeV, fromBB);
+      calleePhi->addIncoming(ctorV, probeEndBB);
+      calleeV = calleePhi;
       auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
       auto fnFieldPtr = b.CreateStructGEP(j.closureType_, clsPtr, 1, "fn.ptr");
       auto fnPtr = b.CreateLoad(ptrTy, fnFieldPtr, "fn");
@@ -7809,6 +8314,116 @@ struct Lowering {
               "vm.mf.disp");
           b.CreateStore(j.make_nil(), slots[in.b]);
           b.CreateStore(j.make_func(disp), slots[in.a]);
+          break;
+        }
+        case Op::ClassMeta: {
+          // The method run is spilled into one entry-block slab — the
+          // JIT's meta.methods alloca — and the names ride as .rodata.
+          std::vector<llvm::Constant*> nameCs;
+          for (const auto& nm : c.name_tables[in.d])
+            nameCs.push_back(j.get_or_create_global_str(nm, ".vm.mname"));
+          auto namesPtr = in.c ? j.build_str_ptr_array(nameCs, ".vm.mnames")
+                               : llvm::ConstantPointerNull::get(ptrTy);
+          llvm::Value* slab = llvm::ConstantPointerNull::get(ptrTy);
+          if (in.c) {
+            IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+            slab = eb.CreateAlloca(j.valueType_, b.getInt64(in.c),
+                                   "vm.meta.methods");
+            for (int32_t i = 0; i < in.c; ++i) {
+              b.CreateStore(load_slot(in.b + i),
+                            b.CreateInBoundsGEP(j.valueType_, slab,
+                                                {b.getInt64(i)}));
+              b.CreateStore(j.make_nil(), slots[in.b + i]);  // +1 handed over
+            }
+          }
+          auto meta = j.emit_call(
+              j.module_->getOrInsertFunction(rt::build_class_meta, ptrTy,
+                                             ptrTy, ptrTy, i64Ty, i64Ty),
+              {namesPtr, slab, b.getInt64(in.c), b.getInt64(0)},
+              "vm.class.meta");
+          b.CreateStore(j.make_object(meta), slots[in.a]);
+          break;
+        }
+        case Op::ClassObj: {
+          auto o = j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_new, ptrTy), {},
+              "vm.class.ns");
+          j.emit_call(j.module_->getOrInsertFunction(rt::mark_class,
+                                                     b.getVoidTy(), ptrTy),
+                      {o});
+          b.CreateStore(j.make_object(o), slots[in.a]);
+          break;
+        }
+        case Op::BindStatic: {
+          auto v = load_slot(in.c);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_bind_static,
+                                             b.getVoidTy(), ptrTy, ptrTy,
+                                             b.getInt8Ty(), i64Ty),
+              {b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy),
+               j.get_or_create_global_str(
+                   std::string(_str_sv(reinterpret_cast<const char*>(
+                       c.consts[in.b].data))),
+                   ".vm.key"),
+               j.extract_tag(v), j.extract_data(v)});
+          b.CreateStore(j.make_nil(), slots[in.c]);  // the slot took the +1
+          break;
+        }
+        case Op::MakeInst: {
+          // The argument run is the frame's own parameter slots, which the
+          // helper consumes on every exit — spill them into one entry-block
+          // slab and empty the slots, the Call op's arg-slab discipline.
+          llvm::Value* argSlab = llvm::ConstantPointerNull::get(ptrTy);
+          if (in.d) {
+            IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+            argSlab = eb.CreateAlloca(j.valueType_, b.getInt64(in.d),
+                                      "vm.ctor.args");
+            for (int32_t i = 0; i < in.d; ++i) {
+              b.CreateStore(load_slot(i),
+                            b.CreateInBoundsGEP(j.valueType_, argSlab,
+                                                {b.getInt64(i)}));
+              b.CreateStore(j.make_nil(), slots[i]);
+            }
+          }
+          auto meta = load_slot(in.b);
+          auto finit = load_slot(in.b + 1);
+          auto body = load_slot(in.b + 2);
+          auto inst = j.emit_value_call(
+              j.module_->getOrInsertFunction(
+                  rt::build_class_instance, j.valueType_, ptrTy, ptrTy,
+                  b.getInt8Ty(), i64Ty, b.getInt8Ty(), i64Ty, i64Ty, ptrTy),
+              {// The instance stores this as its `class` TAG_STRING, so it
+               // must be header-backed (the length sits at data[-8]) — a
+               // bare C global would make every later read walk garbage.
+               j.emit_str_literal(_str_sv(reinterpret_cast<const char*>(
+                   c.consts[in.c].data))),
+               b.CreateIntToPtr(j.extract_data(meta), ptrTy),
+               j.extract_tag(finit), j.extract_data(finit),
+               j.extract_tag(body), j.extract_data(body), b.getInt64(in.d),
+               argSlab},
+              "vm.instance");
+          b.CreateStore(inst, slots[in.a]);
+          break;
+        }
+        case Op::FieldInit: {
+          auto self = load_slot(in.b);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::run_field_init, b.getVoidTy(),
+                                             ptrTy, b.getInt8Ty(), i64Ty),
+              {b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy),
+               j.extract_tag(self), j.extract_data(self)});
+          break;
+        }
+        case Op::SelfMerge: {
+          auto abi = load_slot(in.b);
+          b.CreateStore(j.make_nil(), slots[in.b]);  // the +1 transfers
+          auto merged = j.emit_value_call(
+              j.module_->getOrInsertFunction(rt::self_merge, j.valueType_,
+                                             b.getInt8Ty(), i64Ty, ptrTy),
+              {j.extract_tag(abi), j.extract_data(abi),
+               b.CreateIntToPtr(j.extract_data(load_slot(in.c)), ptrTy)},
+              "vm.self");
+          b.CreateStore(merged, slots[in.a]);
           break;
         }
         case Op::NsGet: {

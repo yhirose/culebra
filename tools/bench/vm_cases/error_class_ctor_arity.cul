@@ -1,0 +1,10 @@
+# A missing constructor argument: the ArityError names the `new` body's
+# parameter, and no field initializer has run yet.
+class P {
+  n = (fn () {
+    println('field-init')
+    1
+  })()
+  new(a, b) { self.n = a + b }
+}
+P.new(1)

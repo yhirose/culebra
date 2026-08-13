@@ -1,0 +1,219 @@
+# Plain classes: instance methods, one `new`, declared fields, `self`.
+# The runtime shape is the JIT's — one shared meta object holding the
+# methods, instances delegating to it through `proto` — so `keys()` reports
+# only `class` and the fields. Statics, getters and overloads are out of the
+# slice (they reject; see the reject cases beside this file).
+
+class Car {
+  new(mpr) {
+    self.miles = 0
+    self.mpr = mpr
+  }
+  run(n) { self.miles = self.miles + self.mpr * n }
+  total() { self.miles }
+}
+let c = Car.new(5)
+c.run(3)
+println(c.total())
+println(c.class)
+inspect(c.keys())
+inspect(c)
+
+# `C(args)` reaches the same constructor as `C.new(args)`.
+let c2 = Car(2)
+c2.run(4)
+println(c2.total())
+
+# --- No constructor, and declared fields ---------------------------------
+class Empty {
+  hi() { 'hi' }
+}
+println(Empty.new().hi())
+inspect(Empty.new().keys())
+
+# Fields with no `new`: the constructor runs the field-init closure itself,
+# and a typed field with no initializer takes its type's zero.
+class NoCtor {
+  a = 1
+  b: Long = 2
+  c: String
+  sum() { self.a + self.b }
+}
+println(NoCtor.new().sum())
+inspect(NoCtor.new())
+inspect(NoCtor().keys())
+
+class Box {
+  n: Long = 1
+  tag = 'plain'
+  items = []
+  bare: Long
+  new(extra) {
+    println("ctor sees n={self.n}")
+    self.extra = extra
+  }
+  show() { "{self.n}/{self.tag}/{self.items}/{self.extra}/{self.bare}" }
+}
+let b1 = Box.new(7)
+println(b1.show())
+# Each instance gets its own initializer run — the arrays are not shared.
+let b2 = Box.new(8)
+b2.items.push(9)
+inspect(b1.items)
+inspect(b2.items)
+inspect(b1.keys())
+
+# A field initializer reads earlier fields through `self`; the ctor body
+# runs after all of them.
+class Chain {
+  a = 1
+  b = 2
+  new() { self.c = self.a + self.b }
+  sum() { self.a + self.b + self.c }
+}
+println(Chain.new().sum())
+
+# --- `self`: immutable, and the ctor always returns its instance ---------
+class R {
+  new() {
+    self.x = 1
+    return 42
+  }
+  bad() { self = 5 }
+}
+inspect(R.new())
+println(try { R.new().bad() } catch e { e.kind })
+
+# Fields reached through `self` are mutable, from inside and out.
+class M {
+  new() { self.a = 1 }
+  bump() {
+    self.a = self.a + 1
+    self
+  }
+}
+let m = M.new()
+println(m.bump().bump().a)
+m.a = 10
+println(m.a)
+
+# --- Captured `self` ------------------------------------------------------
+class Basket {
+  new(s) { self.scale = s }
+  scaled(xs) { xs.map(fn (x) { self.scale * x }) }
+  scaled_lambda(xs) { xs.map(|x| self.scale * x) }
+  total(xs) {
+    mut sum = 0
+    xs.for_each(fn (x) { sum = sum + x * self.scale })
+    sum
+  }
+  detached() { fn () { self.scale } }
+}
+let bk = Basket.new(3)
+inspect(bk.scaled([1, 2]))
+inspect(bk.scaled_lambda([1, 2]))
+println(bk.total([1, 2]))
+# The closure outlives the call that made it.
+println(Basket.new(9).detached()())
+# A receiver supplied at the call still beats the captured one.
+let host = {scale: 100, f: Basket.new(4).detached()}
+println(host.f())
+
+# --- Methods, values, and the class object -------------------------------
+class T {
+  new(v) { self.v = v }
+  m() { self.v }
+  twin() { T.new(self.v) }
+  down(n) { if n <= 0 { 0 } else { 1 + self.down(n - 1) } }
+}
+let t = T.new(3)
+println(t.m())
+println(t.twin().v)
+println(t.down(50))
+println(type_of(T))
+inspect(T.keys())
+inspect(t.nope)
+println(try { t.nope() } catch e { e.kind })
+# A method read as a value stays bound to its receiver.
+let bound = t.m
+println(bound())
+println(type_of(t.m))
+
+# A class declared inside a function, and the class captured by its methods.
+fn make(v) {
+  class Local {
+    new(x) { self.x = x }
+    doubled() { self.x * 2 }
+  }
+  Local.new(v)
+}
+println(make(21).doubled())
+
+# --- Errors, defer, and unwinding ----------------------------------------
+class E {
+  new(x) {
+    self.a = x
+    throw 'ctor'
+  }
+}
+println(try { E.new(1) } catch e { e })
+
+class Fi {
+  n = (fn () {
+    throw 'field'
+  })()
+  new() { println('never') }
+}
+println(try { Fi.new() } catch e { e })
+
+class D {
+  new() { self.log = [] }
+  work() {
+    defer { self.log.push('defer') }
+    self.log.push('body')
+    'ok'
+  }
+  thrower() {
+    defer { self.log.push('unwound') }
+    throw 'x'
+  }
+}
+let d = D.new()
+println(d.work())
+println(try { d.thrower() } catch e { 'caught' })
+inspect(d.log)
+
+# Instances in containers, and one instance holding another.
+class P {
+  new(x) { self.x = x }
+  get_() { self.x }
+}
+let p = P.new(1)
+inspect([p, P.new(2)])
+let dict = {'k': p}
+println(dict['k'].get_())
+class Wrap {
+  new(inner) { self.inner = inner }
+  deep() { self.inner.get_() }
+}
+println(Wrap.new(p).deep())
+inspect(Wrap.new(p))
+
+# --- Churn: instances, captured selves and a failing ctor ----------------
+mut i = 0
+mut total = 0
+while i < 300 {
+    let inst = Box.new(i)
+    total = total + inst.n + inst.items.size()
+    let cap = Basket.new(i)
+    total = total + cap.detached()()
+    let ok = try {
+        E.new(i)
+        false
+    } catch er {
+        er == 'ctor'
+    }
+    if !ok { throw "regression at churn" }
+    i = i + 1
+}
+println(total)

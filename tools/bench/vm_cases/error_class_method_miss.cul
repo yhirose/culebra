@@ -1,0 +1,6 @@
+# A property no method table resolves is nil, so calling it is the plain
+# not-a-function TypeError at the chain head.
+class T {
+  new() { self.x = 1 }
+}
+T.new().nope()
