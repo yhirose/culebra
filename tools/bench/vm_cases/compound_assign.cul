@@ -54,3 +54,18 @@ for i in 1..3 {
     s += 'b'
 }
 println(s)
+
+# A compound step with a Tensor lhs mutates in place (the interp's
+# try_tensor_inplace): the original binding sees the update through the
+# alias, on every op that has an in-place form.
+let t0 = Tensor.from([1.0, 2.0])
+mut tv = t0
+tv += Tensor.from([10.0, 10.0])
+println(t0.to_array())
+tv *= Tensor.from([2.0, 2.0])
+println(t0.to_array())
+tv **= Tensor.from([1.0, 2.0])
+println(t0.to_array())
+let ta = [Tensor.from([5.0])]
+ta[0] -= Tensor.from([1.0])
+println(ta[0].to_array())

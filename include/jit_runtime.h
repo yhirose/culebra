@@ -1551,7 +1551,22 @@ inline JitValue _try_tensor_inplace(int8_t lt, int64_t ld,
   return {TAG_NIL, 0};  // sentinel: in-place did not run
 }
 
+// Two entries per operator, like CUL_NUM_BINOP: the `_borrow` twin keeps
+// the VM's register-ownership contract (the Tensor still mutates in
+// place — _try_tensor_inplace only mints the +1 result ref), and the
+// plain name falls back to the callee-cleans-on-throw helper.
 #define CUL_NUM_INPLACE(name, op_enum)                                  \
+  CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue                                 \
+  culebra_runtime_num_inplace_##name##_borrow(                          \
+      int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \
+      int64_t line, int64_t col) {                                      \
+    if (lt == TAG_TENSOR) {                                             \
+      auto r = _try_tensor_inplace(lt, ld, rt, rd, culebra::op_enum);   \
+      if (r.tag != TAG_NIL) return r;                                   \
+    }                                                                   \
+    return culebra_runtime_num_##name##_borrow(lt, ld, rt, rd, line,    \
+                                               col);                    \
+  }                                                                     \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue                                 \
   culebra_runtime_num_inplace_##name(                                   \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \

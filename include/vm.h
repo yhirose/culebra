@@ -84,7 +84,11 @@ enum class Op : uint8_t {
   Sub,         // emit_binop_dispatch: both-Long inline (wrapping; Div/Mod
   Mul,         // zero-guarded), both-numeric via double, else the num_*
   Div,         // runtime helper (string concat, __op__ dispatch, TypeError)
-  Mod,         // with the instruction's line/col from the position table
+  Mod,         // with the instruction's line/col from the position table.
+               // d=1 marks a compound-assignment step: a Tensor lhs mutates
+               // in place through the num_inplace_*_borrow twin (interp's
+               // try_tensor_inplace / the JIT's emit_arith_step(inplace)),
+               // observable through aliases. Mod has no in-place form.
   Pow,         // regs[a] = regs[b] ** regs[c] via num_pow_borrow — no inline
                // fast path (the AST JIT's generic tail is the same call; its
                // literal-exponent peepholes are numeric-guarded, so every
@@ -2226,7 +2230,7 @@ class Compiler {
       cur = {t, true};
     }
     int32_t t = alloc_temp(ast);
-    emit(op, t, cur.slot, rhs.slot);
+    emit(op, t, cur.slot, rhs.slot, /*inplace=*/1);
     if (!b || !b->is_mut) {
       // Runtime ImmutableError after the step ran (builtins are immutable
       // root bindings); the step result strands like any throw-abandoned
@@ -2324,7 +2328,7 @@ class Compiler {
       int32_t cur = alloc_temp(ast);
       emit(Op::IndexWr, cur, recv.slot, key.slot);
       int32_t t = alloc_temp(ast);
-      emit(op, t, cur, rhs.slot);
+      emit(op, t, cur, rhs.slot, /*inplace=*/1);
       emit(Op::IndexSet, recv.slot, key.slot, t);
       return {t, true};
     }
@@ -4007,25 +4011,36 @@ struct Exec {
               default: __builtin_unreachable();
             }
           } else {
+            // d=1 (a compound step) picks the in-place twin: a Tensor lhs
+            // mutates its buffer and returns itself (+1), the interp's
+            // try_tensor_inplace. Mod has no in-place form.
             auto [line, col] = chunk_pos_at(c, pc);
             auto lt = static_cast<int8_t>(l.tag);
             auto rt = static_cast<int8_t>(r.tag);
             switch (in.op) {
               case Op::Add:
-                out = culebra_runtime_num_add_borrow(lt, l.data, rt, r.data,
-                                                     line, col);
+                out = in.d ? culebra_runtime_num_inplace_add_borrow(
+                                 lt, l.data, rt, r.data, line, col)
+                           : culebra_runtime_num_add_borrow(lt, l.data, rt,
+                                                            r.data, line, col);
                 break;
               case Op::Sub:
-                out = culebra_runtime_num_sub_borrow(lt, l.data, rt, r.data,
-                                                     line, col);
+                out = in.d ? culebra_runtime_num_inplace_sub_borrow(
+                                 lt, l.data, rt, r.data, line, col)
+                           : culebra_runtime_num_sub_borrow(lt, l.data, rt,
+                                                            r.data, line, col);
                 break;
               case Op::Mul:
-                out = culebra_runtime_num_mul_borrow(lt, l.data, rt, r.data,
-                                                     line, col);
+                out = in.d ? culebra_runtime_num_inplace_mul_borrow(
+                                 lt, l.data, rt, r.data, line, col)
+                           : culebra_runtime_num_mul_borrow(lt, l.data, rt,
+                                                            r.data, line, col);
                 break;
               case Op::Div:
-                out = culebra_runtime_num_div_borrow(lt, l.data, rt, r.data,
-                                                     line, col);
+                out = in.d ? culebra_runtime_num_inplace_div_borrow(
+                                 lt, l.data, rt, r.data, line, col)
+                           : culebra_runtime_num_div_borrow(lt, l.data, rt,
+                                                            r.data, line, col);
                 break;
               case Op::Mod:
                 out = culebra_runtime_num_mod_borrow(lt, l.data, rt, r.data,
@@ -4042,9 +4057,13 @@ struct Exec {
           const JitValue& l = regs[in.b];
           const JitValue& r = regs[in.c];
           auto [line, col] = chunk_pos_at(c, pc);
-          regs[in.a] = culebra_runtime_num_pow_borrow(
-              static_cast<int8_t>(l.tag), l.data, static_cast<int8_t>(r.tag),
-              r.data, line, col);
+          auto lt = static_cast<int8_t>(l.tag);
+          auto rt = static_cast<int8_t>(r.tag);
+          regs[in.a] =
+              in.d ? culebra_runtime_num_inplace_pow_borrow(lt, l.data, rt,
+                                                            r.data, line, col)
+                   : culebra_runtime_num_pow_borrow(lt, l.data, rt, r.data,
+                                                    line, col);
           ++pc;
           break;
         }
@@ -5341,14 +5360,18 @@ struct Lowering {
                            : in.op == Op::Mul ? "*"
                            : in.op == Op::Div ? "/"
                                               : "%";
-          auto r = j.emit_arith_step(load_slot(in.b), load_slot(in.c), op);
+          // d=1 (a compound step) picks the in-place `_borrow` twin — the
+          // executor's dispatch above and emit_arith_step share the choice.
+          auto r = j.emit_arith_step(load_slot(in.b), load_slot(in.c), op,
+                                     /*inplace=*/in.d != 0);
           b.CreateStore(r, slots[in.a]);
           break;
         }
         case Op::Pow: {
-          // emit_arith_step's "**" arm picks num_pow_borrow under the VM
-          // operand contract (vm_borrow_ops_).
-          auto r = j.emit_arith_step(load_slot(in.b), load_slot(in.c), "**");
+          // emit_arith_step's "**" arm picks the `_borrow` twin under the
+          // VM operand contract (vm_borrow_ops_), in-place when d=1.
+          auto r = j.emit_arith_step(load_slot(in.b), load_slot(in.c), "**",
+                                     /*inplace=*/in.d != 0);
           b.CreateStore(r, slots[in.a]);
           break;
         }

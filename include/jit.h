@@ -5738,9 +5738,11 @@ struct JIT {
            current_line_val(), current_column_val()}, "cmp.matmul");
     }
     if (op == "**") {
-      const char* rt_name = vm_borrow_ops_ ? rt::num_pow_borrow
-                            : inplace      ? rt::num_inplace_pow
-                                           : rt::num_pow;
+      const char* rt_name = vm_borrow_ops_
+                                ? (inplace ? rt::num_inplace_pow_borrow
+                                           : rt::num_pow_borrow)
+                            : inplace ? rt::num_inplace_pow
+                                      : rt::num_pow;
       return emit_value_call(
           module_->getOrInsertFunction(
               rt_name, valueType_,
@@ -5753,22 +5755,30 @@ struct JIT {
     }
     // One selection point for the (op, ownership-contract) → helper-name
     // mapping: callee-cleans by default, the Tensor-aware in-place variant,
-    // or the VM lowering's `_borrow` twin (inplace never combines with it).
+    // and each with a `_borrow` twin for the VM lowering's contract.
     char ope = op[0];
     const char* rt_name = nullptr;
     switch (ope) {
-      case '+': rt_name = vm_borrow_ops_ ? rt::num_add_borrow
-                          : inplace      ? rt::num_inplace_add
-                                         : rt::num_add; break;
-      case '-': rt_name = vm_borrow_ops_ ? rt::num_sub_borrow
-                          : inplace      ? rt::num_inplace_sub
-                                         : rt::num_sub; break;
-      case '*': rt_name = vm_borrow_ops_ ? rt::num_mul_borrow
-                          : inplace      ? rt::num_inplace_mul
-                                         : rt::num_mul; break;
-      case '/': rt_name = vm_borrow_ops_ ? rt::num_div_borrow
-                          : inplace      ? rt::num_inplace_div
-                                         : rt::num_div; break;
+      case '+': rt_name = vm_borrow_ops_
+                              ? (inplace ? rt::num_inplace_add_borrow
+                                         : rt::num_add_borrow)
+                          : inplace ? rt::num_inplace_add
+                                    : rt::num_add; break;
+      case '-': rt_name = vm_borrow_ops_
+                              ? (inplace ? rt::num_inplace_sub_borrow
+                                         : rt::num_sub_borrow)
+                          : inplace ? rt::num_inplace_sub
+                                    : rt::num_sub; break;
+      case '*': rt_name = vm_borrow_ops_
+                              ? (inplace ? rt::num_inplace_mul_borrow
+                                         : rt::num_mul_borrow)
+                          : inplace ? rt::num_inplace_mul
+                                    : rt::num_mul; break;
+      case '/': rt_name = vm_borrow_ops_
+                              ? (inplace ? rt::num_inplace_div_borrow
+                                         : rt::num_div_borrow)
+                          : inplace ? rt::num_inplace_div
+                                    : rt::num_div; break;
       case '%':  // mod has no Tensor in-place
         rt_name = vm_borrow_ops_ ? rt::num_mod_borrow : rt::num_mod;
         break;

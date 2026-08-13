@@ -706,6 +706,13 @@ inline constexpr auto num_inplace_sub     = "culebra_runtime_num_inplace_sub";
 inline constexpr auto num_inplace_mul     = "culebra_runtime_num_inplace_mul";
 inline constexpr auto num_inplace_div     = "culebra_runtime_num_inplace_div";
 inline constexpr auto num_inplace_pow     = "culebra_runtime_num_inplace_pow";
+// Borrow-contract in-place twins: the VM's compound step, where the
+// Tensor mutation must still happen but the operands stay register-owned.
+inline constexpr auto num_inplace_add_borrow = "culebra_runtime_num_inplace_add_borrow";
+inline constexpr auto num_inplace_sub_borrow = "culebra_runtime_num_inplace_sub_borrow";
+inline constexpr auto num_inplace_mul_borrow = "culebra_runtime_num_inplace_mul_borrow";
+inline constexpr auto num_inplace_div_borrow = "culebra_runtime_num_inplace_div_borrow";
+inline constexpr auto num_inplace_pow_borrow = "culebra_runtime_num_inplace_pow_borrow";
 inline constexpr auto sys_argv            = "culebra_runtime_sys_argv";
 inline constexpr auto sys_env             = "culebra_runtime_sys_env";
 inline constexpr auto sys_exit            = "culebra_runtime_sys_exit";
