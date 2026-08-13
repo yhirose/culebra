@@ -1180,6 +1180,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
     int64_t line, int64_t col) {
   _jit_call_site_line = line;
   _jit_call_site_col = col;
+  // The boundary position defaults to the call site (they coincide for
+  // every non-UFCS call shape); a pending override published just before
+  // this call (set_call_boundary — the UFCS chain head) wins and is
+  // consumed, so it can never leak into a later call.
+  if (_jit_pending_boundary_line || _jit_pending_boundary_col) {
+    _jit_call_boundary_line = _jit_pending_boundary_line;
+    _jit_call_boundary_col = _jit_pending_boundary_col;
+    _jit_pending_boundary_line = 0;
+    _jit_pending_boundary_col = 0;
+  } else {
+    _jit_call_boundary_line = line;
+    _jit_call_boundary_col = col;
+  }
   // Default the arg0 position to the call site: it is read only on the
   // (callback) body-coercion arg0 type-error path, where the call site is the
   // right position. The as-value path instead threads per-arg positions below.
@@ -1190,6 +1203,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
   // its per-element call with the count still 0, marking it as the callback
   // path so the dispatch uses body-coercion wording.
   _jit_argpos_n = 0;
+}
+
+// Publish the boundary position of the NEXT call (see _jit_call_boundary_*):
+// a UFCS site's chain head, emitted after the arguments and immediately
+// before the call, so the set_call_site inside the call consumes it before
+// any other call can.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_boundary(
+    int64_t line, int64_t col) {
+  _jit_pending_boundary_line = line;
+  _jit_pending_boundary_col = col;
 }
 
 // Record the position of the indirect call's i-th argument (see _jit_argpos_*),

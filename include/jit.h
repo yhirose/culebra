@@ -1498,6 +1498,23 @@ struct JIT {
                builder_.getInt64(static_cast<int64_t>(current_column_))});
   }
 
+  // Publish the current node (the postfix chain, per PosGuard) as the NEXT
+  // call's boundary — where the interp's eval() boundary stamps a
+  // positionless error escaping that call. Emitted at a positional UFCS
+  // site after the arguments and immediately before the call, whose
+  // set_call_site consumes it; every other call shape (and the kwargs UFCS
+  // arms, whose ARG_LIST compiles inside the callee where a nested call
+  // would consume the pending pair early) leaves the boundary defaulting
+  // to its call site.
+  void emit_set_call_boundary() {
+    emit_call(module_->getOrInsertFunction(rt::set_call_boundary,
+                                           builder_.getVoidTy(),
+                                           builder_.getInt64Ty(),
+                                           builder_.getInt64Ty()),
+              {builder_.getInt64(static_cast<int64_t>(current_line_)),
+               builder_.getInt64(static_cast<int64_t>(current_column_))});
+  }
+
   // Higher-order-function inlining: when a HOF (map/filter/reduce/...)
   // is called with a literal lambda or fn expression as the callback,
   // emit the body inline into the iteration loop instead of going
@@ -11588,6 +11605,7 @@ struct JIT {
       recvHold.consume();  // handed to the raw call below
       auto [ufcsArgs, ufcsArgAsts] = ufcs_call_args(
           receiver, dot_ast, consume_all(std::move(ownedArgs)), argAsts);
+      emit_set_call_boundary();  // the chain node, before CallSiteAt repins
       CallSiteAt at(*this, argsAst);
       res = compile_function_call_raw(freeFn, nullptr, ufcsArgs, ufcsArgAsts);
     }
@@ -12012,6 +12030,7 @@ struct JIT {
                        consume_all(std::move(ufcsOwnedArgs)), ufcsArgAstList);
     Owned ufcsRes;
     {
+      emit_set_call_boundary();  // the chain node, before CallSiteAt repins
       CallSiteAt at(*this, argsAst);
       ufcsRes =
           compile_function_call_raw(freeFn, nullptr, ufcsArgs, ufcsArgAsts);

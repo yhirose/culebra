@@ -619,6 +619,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
 inline thread_local int64_t _jit_call_site_line = 0;
 inline thread_local int64_t _jit_call_site_col = 0;
 
+// The call's BOUNDARY position — where the interp's eval() would stamp a
+// positionless error escaping this call: the call's own chain node. For a
+// direct or through-value call that IS the call site, so set_call_site
+// defaults it there; a UFCS site publishes the chain head as a pending
+// override first (set_call_boundary), which the next set_call_site
+// consumes. The ns dispatch's final positionless backfill reads this pair
+// instead of the call site — its explicit errors (arity, param types) keep
+// reporting at the call site, interp's two-channel split.
+inline thread_local int64_t _jit_call_boundary_line = 0;
+inline thread_local int64_t _jit_call_boundary_col = 0;
+inline thread_local int64_t _jit_pending_boundary_line = 0;
+inline thread_local int64_t _jit_pending_boundary_col = 0;
+
 // Run `op`, backfilling a positionless error from the published call site.
 // The entry-catch idiom for native thunks, whose ABI carries no line/col
 // (handle methods, derived-method thunks, ns adapters). A template needs

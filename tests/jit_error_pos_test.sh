@@ -390,5 +390,26 @@ buf[0].x ??= 2.0'
 # write form, `??=` included (its plain read reports the chain head).
 check_same "??= ns unknown member"     'Math.zzz ??= 1'
 
+# A positionless error escaping a UFCS call backfills at the postfix
+# chain's head (interp's eval() boundary), NOT the call site — the
+# boundary channel set_call_boundary publishes. Explicit errors (arity,
+# to_long's conversion read of the call-site channel) stay at the
+# argument list.
+check_same "ufcs native boundary"      'let h = hash
+[1].h()'
+check_same "ufcs stdlib boundary"      '[1].hash()'
+check_same "ufcs stdlib arity"         '(3).println(4)'
+check_same "ufcs to_long call site"    "'ab'.to_long()"
+# The display walker's too-deep ValueError is positionless; both the
+# direct println and its UFCS spelling publish the chain position.
+check_same "println too-deep direct"   'mut v = [0]
+mut i = 0
+while i < 6000 { v = [v]; i += 1 }
+println(v)'
+check_same "println too-deep ufcs"     'mut v = [0]
+mut i = 0
+while i < 6000 { v = [v]; i += 1 }
+v.println()'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

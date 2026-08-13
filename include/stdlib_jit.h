@@ -3930,11 +3930,17 @@ inline JitValue _ns_global_type_of(JitValue* a, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_type_of(a[0].tag));
 }
 inline JitValue _ns_global_to_long(JitValue* a, int64_t n) {
-  return culebra_runtime_to_long_any(a[0].tag, a[0].data, 0, 0,
+  // interp's builtin reads __LINE__/__COLUMN__ (its call-site channel) and
+  // throws the bad-conversion error WITH that position — not positionless,
+  // so the dispatch's boundary backfill must not claim it. Mirror the read.
+  return culebra_runtime_to_long_any(a[0].tag, a[0].data,
+                                     _jit_call_site_line, _jit_call_site_col,
                                      n > 1 ? a[1].data : 10);
 }
 inline JitValue _ns_global_to_float(JitValue* a, int64_t) {
-  return culebra_runtime_to_float_any(a[0].tag, a[0].data, 0, 0);
+  return culebra_runtime_to_float_any(a[0].tag, a[0].data,
+                                      _jit_call_site_line,
+                                      _jit_call_site_col);
 }
 inline JitValue _ns_global_to_string(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
@@ -7205,10 +7211,17 @@ inline JitValue _jit_ns_dispatch_owned_slab(const NsMethod* m,
 // from the thread-local) and the `NsMethod*`-driven entry used by
 // compile_ns_call for Http / the nested Encoding codecs (which pass the
 // argument/call position explicitly).
+// `bline/bcol` is the call's boundary position (_jit_call_boundary_*,
+// snapshotted by the trampoline at entry so a nested call inside the body
+// can't clobber it): where the interp's eval() would stamp a positionless
+// error escaping this call. It equals the call site everywhere except a
+// UFCS site, whose explicit errors (arity, param types) report at the
+// argument list while its boundary is the postfix chain's head.
 inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
                                         JitValue* args, int64_t line,
                                         int64_t col, int64_t arg0_line,
-                                        int64_t arg0_col,
+                                        int64_t arg0_col, int64_t bline,
+                                        int64_t bcol,
                                         const NsParamMeta* pm_hint = nullptr) {
   // The trampoline (the only caller with `pm` already in hand, needed for its
   // own arity gate) passes it through to skip a second _ns_meta lookup keyed
@@ -7273,7 +7286,7 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
       throw;
     }
   } catch (culebra::CulebraError& e) {
-    _jit_backfill_error_pos(e, line, col);
+    _jit_backfill_error_pos(e, bline, bcol);
     throw;
   }
 }
@@ -7335,7 +7348,8 @@ inline void _jit_ns_method_trampoline(
   // arg0's position for the (callback) body-coercion arg0 type check.
   { *__ret = _jit_ns_method_dispatch(m, n_args, args, _jit_call_site_line,
                                  _jit_call_site_col, _jit_call_arg0_line,
-                                 _jit_call_arg0_col, pm); return; }
+                                 _jit_call_arg0_col, _jit_call_boundary_line,
+                                 _jit_call_boundary_col, pm); return; }
 }
 
 inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
@@ -7544,10 +7558,11 @@ inline bool _jit_ns_kwarg_resolve_core(
   // canonical by construction and its positional arity was checked up front,
   // so re-entering _jit_ns_method_dispatch would only re-run that gate — and
   // wrongly, since a keyword-only param occupies a slab slot the positional
-  // cap (max_arity) deliberately excludes. `_jit_at_pos` supplies the same
-  // call-site backfill for a positionless adapter error (`Http.get(params: 5)`)
-  // that the dispatch would have.
-  *out = _jit_at_pos(line, col,
+  // cap (max_arity) deliberately excludes. `_jit_at_pos` supplies the backfill
+  // for a positionless adapter error (`Http.get(params: 5)`) that the dispatch
+  // would have — at the boundary, which is the call site everywhere except a
+  // UFCS chain, whose errors anchor at the chain's head.
+  *out = _jit_at_pos(_jit_call_boundary_line, _jit_call_boundary_col,
                      [&] { return _jit_ns_dispatch_owned_slab(m, slab); });
   return true;
 }
@@ -8153,8 +8168,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_ns_method_call_kw(
   // bailed without consuming. The caller passes no kwargs/splats for these, so
   // dispatch the positionals directly (dispatch consumes them). The typed arg0
   // was already checked inline at its position by the caller, so the dispatch's
-  // arg0 check is inert here; pass the call site for it.
-  return _jit_ns_method_dispatch(m, n_pos, positional, line, col, line, col);
+  // arg0 check is inert here; pass the call site for it. This entry is a
+  // direct-call peephole (never a UFCS site), so the boundary is the call
+  // site too.
+  return _jit_ns_method_dispatch(m, n_pos, positional, line, col, line, col,
+                                 line, col);
 }
 }  // extern "C"
 
@@ -10523,6 +10541,10 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
     auto rt_name = method == "inspect" ? rt::inspect
                   : method == "println" ? rt::println
                                          : rt::print;
+    // The str walker inside raises a positionless ValueError on a too-deep
+    // value; publish the chain position so the boundary backfill lands
+    // there (emit_output_call does the same for the direct form).
+    jit.emit_set_op_pos();
     emit_call(module_->getFunction(rt_name),
                         {extract_tag(recv.borrow()), extract_data(recv.borrow())});
     recv.drop();
