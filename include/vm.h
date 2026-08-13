@@ -404,6 +404,8 @@ enum class BMeth : uint8_t {
   SortBy, SortedBy,                     // Array only, mutates / eager
   Union, Intersect, Diff, SymDiff, Subset, Superset, Add, Remove,
   ToArray,                              // Set only
+  Keys, Has, GetOrPut,                   // Object (dict) only
+  Get,                                    // Array or Object (dual, eager)
 };
 
 // The receivers a built-in resolves on, one bit per value tag. A gate's set
@@ -459,6 +461,13 @@ inline constexpr BRecvMask kRecvArrayTensorIter =
 // Array receiver takes the ordinary method-miss path, same as any name it
 // doesn't have.
 inline constexpr BRecvMask kRecvIterOnly = bmeth_tag_bit(TAG_OBJECT);
+// keys/has/get_or_put: any plain dict, not just an iterator-shaped one —
+// unlike kRecvIterOnly's distinct/flatten, ObjectValue::builtins() answers
+// for every Object regardless of an own/proto `next`.
+inline constexpr BRecvMask kRecvObject = bmeth_tag_bit(TAG_OBJECT);
+// get: Array indexes by Long, Object looks up by key — both read-only,
+// neither requiring the iterator shape.
+inline constexpr BRecvMask kRecvArrayOrObject = kRecvArray | kRecvObject;
 // No gate at all: `to_string` is the display conversion every value has, so
 // no receiver can fail to resolve it.
 inline constexpr BRecvMask kRecvAny = 0xFFFF;
@@ -620,6 +629,24 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"add", 1, Add, kRecvSet, 1, nullptr, {Any}, {"x"}},
       {"remove", 1, Remove, kRecvSet, 1, nullptr, {Any}, {"x"}},
       {"to_array", 0, ToArray, kRecvToArray, 0, nullptr, {}, {}},
+      // Object (dict): keys/has/get_or_put resolve on any plain Object, not
+      // just an iterator-shaped one — MethGate's Object arm already reads the
+      // receiver's own property first, so an own `get_or_put` field (or a
+      // Shared.new view, which the interp routes to the same "not a Function"
+      // miss) shadows the builtin before this gate is ever tested, same as
+      // Set's `add`/`remove`. `has`/`get_or_put`'s key and `get_or_put`'s
+      // init are undeclared in the interp table (`Any`) — an unhashable key's
+      // error comes from inside the runtime store, not ChkParam.
+      {"keys", 0, Keys, kRecvObject, 0, nullptr, {}, {}},
+      {"has", 1, Has, kRecvObject, 1, nullptr, {Any}, {"key"}},
+      {"get_or_put", 2, GetOrPut, kRecvObject, 2, nullptr, {Any, Any},
+       {"key", "init"}},
+      // get: Array indexes by Long (interp's own param name is "i" there,
+      // not "key" — the two receivers use unrelated interp tables), Object
+      // looks up by any key. The index check applies to the Array arm only;
+      // Object's key is never type-checked (an unhashable one just misses).
+      {"get", 2, Get, kRecvArrayOrObject, 2, nullptr, {Long, Any},
+       {"i", "fallback"}, {kRecvArray}},
   };
   return kSpecs;
 }
@@ -665,7 +692,14 @@ inline bool bmeth_consumes_args(BMeth id) {
          id == BMeth::FlatMap || id == BMeth::MinBy || id == BMeth::MaxBy ||
          id == BMeth::Reduce || id == BMeth::GroupBy ||
          id == BMeth::Partition || id == BMeth::SortBy ||
-         id == BMeth::SortedBy;
+         id == BMeth::SortedBy ||
+         // has/get/get_or_put: the runtime store takes the key's (and, on a
+         // hit or a String key aside, the fallback/init's) `+1` off the
+         // registers, mirroring the JIT AST arms' own Owned-consuming
+         // discipline (object_has_value / array_get_default /
+         // object_get_default / object_get_or_put all consume what they are
+         // handed).
+         id == BMeth::Has || id == BMeth::Get || id == BMeth::GetOrPut;
 }
 
 // The accepted tags, tested inline like the JIT arms' own gates
@@ -1182,6 +1216,33 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
                                          culebra_runtime_set_to_array(
                                              st(recv)))};
       }
+    case BMeth::Keys:
+      return JitValue{
+          TAG_ARRAY,
+          reinterpret_cast<int64_t>(culebra_runtime_object_keys(
+              reinterpret_cast<JitObject*>(recv.data)))};
+    case BMeth::Has:
+      return JitValue{
+          TAG_BOOL,
+          culebra_runtime_object_has_value(
+              reinterpret_cast<JitObject*>(recv.data),
+              static_cast<int8_t>(args[0].tag), args[0].data) ? 1 : 0};
+    // Array indexes by Long, Object looks up by key — the gate proved the
+    // tag is one of the two.
+    case BMeth::Get:
+      if (recv.tag == TAG_ARRAY)
+        return culebra_runtime_array_get_default(
+            arr(recv), args[0].data, static_cast<int8_t>(args[1].tag),
+            args[1].data);
+      return culebra_runtime_object_get_default(
+          reinterpret_cast<JitObject*>(recv.data),
+          static_cast<int8_t>(args[0].tag), args[0].data,
+          static_cast<int8_t>(args[1].tag), args[1].data, line, col);
+    case BMeth::GetOrPut:
+      return culebra_runtime_object_get_or_put(
+          reinterpret_cast<JitObject*>(recv.data),
+          static_cast<int8_t>(args[0].tag), args[0].data,
+          static_cast<int8_t>(args[1].tag), args[1].data, line, col);
   }
   return JitValue{TAG_NIL, 0};  // unreachable: every id has an arm
 }
@@ -6650,6 +6711,70 @@ struct Lowering {
               res = b.CreateLoad(j.valueType_, out);
               break;
             }
+            case BMeth::Keys:
+              res = j.make_array(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::object_keys, ptrTy,
+                                                 ptrTy),
+                  {arr()}, "vbm.keys"));
+              break;
+            case BMeth::Has:
+              res = j.make_bool(j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      rt::object_has_value, b.getInt1Ty(), ptrTy,
+                      b.getInt8Ty(), i64Ty),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0))},
+                  "vbm.has"));
+              break;
+            // Array indexes by Long, Object looks up by key — the gate
+            // proved the tag is one of the two.
+            case BMeth::Get: {
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.get");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.get.arr", fn);
+              auto objBB = BasicBlock::Create(j.ctx_, "vbm.get.obj", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.get.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             objBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  j.emit_value_call(
+                      j.module_->getOrInsertFunction(
+                          rt::array_get_default, j.valueType_, ptrTy, i64Ty,
+                          b.getInt8Ty(), i64Ty),
+                      {arr(), j.extract_data(arg(0)), j.extract_tag(arg(1)),
+                       j.extract_data(arg(1))},
+                      "vbm.get.a"),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(objBB);
+              b.CreateStore(
+                  j.emit_value_call(
+                      j.module_->getOrInsertFunction(
+                          rt::object_get_default, j.valueType_, ptrTy,
+                          b.getInt8Ty(), i64Ty, b.getInt8Ty(), i64Ty, i64Ty,
+                          i64Ty),
+                      {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                       j.extract_tag(arg(1)), j.extract_data(arg(1)),
+                       b.getInt64(line), b.getInt64(col)},
+                      "vbm.get.o"),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::GetOrPut:
+              res = j.emit_value_call(
+                  j.module_->getOrInsertFunction(
+                      rt::object_get_or_put, j.valueType_, ptrTy,
+                      b.getInt8Ty(), i64Ty, b.getInt8Ty(), i64Ty, i64Ty,
+                      i64Ty),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   j.extract_tag(arg(1)), j.extract_data(arg(1)),
+                   b.getInt64(line), b.getInt64(col)},
+                  "vbm.gop");
+              break;
           }
           b.CreateStore(res, slots[in.a]);
           b.CreateBr(mergeBB);

@@ -1,0 +1,126 @@
+# The dict group: keys/has/get_or_put (Object-only) and get (Array-or-Object,
+# the two receivers reading unrelated interp tables — Array indexes by Long
+# with a typed `i`, Object looks up by any key with no check at all). All four
+# ride MethGate/ChkParam/BMeth; the runtime helpers consume the key's (and on
+# a hit the fallback/init's) `+1`, so the compiler nils the argument run.
+
+let d = {a: 1, b: 2}
+inspect(d.keys())
+inspect(({}).keys())
+inspect(d.has('a'))
+inspect(d.has('z'))
+inspect(d.has([1, 2]))
+
+# Non-string keys land in the sidecar; keys() interleaves them with the
+# string slots in insertion order.
+mut nk = {a: 1}
+nk[(7, 8)] = 'tup'
+nk[2] = 'two'
+inspect(nk.keys())
+inspect(nk.has(2))
+inspect(nk.has((7, 8)))
+inspect(nk.has((7, 9)))
+
+# get: Array by Long (negative wraps, out of range falls back — both ends),
+# Object by key (miss falls back, never inserts).
+let xs = [10, 20, 30]
+inspect(xs.get(0, -1))
+inspect(xs.get(-1, -1))
+inspect(xs.get(5, -1))
+inspect(xs.get(-5, -1))
+inspect(d.get('a', -1))
+inspect(d.get('z', -1))
+inspect(nk.get((7, 8), 'fb'))
+inspect(d.has('z'))
+
+# get_or_put: a hit keeps the stored value, a miss inserts (a mutable slot)
+# and returns the same reference — the accumulator idiom grows in place.
+mut acc = {a: 1}
+inspect(acc.get_or_put('a', 99))
+inspect(acc.get_or_put('z', 99))
+inspect(acc)
+mut groups = {}
+groups.get_or_put('k', || []).push(1)
+groups.get_or_put('k', || []).push(2)
+inspect(groups)
+
+# The lazy init: a function value runs only on a miss, once.
+mut calls = 0
+fn mk() {
+    calls = calls + 1
+    42
+}
+mut lz = {}
+inspect(lz.get_or_put('k', mk))
+inspect(lz.get_or_put('k', mk))
+println(calls)
+
+# A thunk with a required parameter cannot be a 0-argument init; a native
+# builtin as the init takes its own trampoline's count-based rejection.
+try {
+    ({}).get_or_put('z', |a| a)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    ({}).get_or_put('z', to_string)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# The errors: Array `get`'s typed index, the unhashable non-String key (the
+# throw comes from inside the runtime store, anchored at the chain head),
+# and the scalar receiver, which fails before any argument runs.
+try {
+    xs.get('x', -1)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    ({}).get_or_put([1, 2], 1)
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    ({1: 'x'}).has([1, 2])
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+fn seen(x) {
+    println("ran {x}")
+    x
+}
+try {
+    (5).get(seen(1), seen(2))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+try {
+    'ab'.get_or_put(seen(3), seen(4))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# A user field shadows the builtin: a Function wins, a non-Function is the
+# method-miss error after the arguments have run.
+let own_keys = {keys: fn () { 'mine' }}
+inspect(own_keys.keys())
+try {
+    ({get: 42}).get(seen(5), seen(6))
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+
+# Churn: fresh heap keys and values every round, hits and misses alternating.
+mut i = 0
+mut ch = {}
+while i < 300 {
+    let k = (i % 7, i % 3)
+    ch.get_or_put(k, || []).push(i)
+    if ch.has(k) && ch.get(k, []).size() > 5 {
+        ch = {}
+    }
+    i = i + 1
+}
+inspect(ch.keys().size())
+println(i)
