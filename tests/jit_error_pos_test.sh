@@ -370,5 +370,25 @@ check_same "prop ??= array recv"      'let a = [1]
 a.k ??= 7'
 check_same "prop write scalar recv"   '(5).a = 1'
 
+# A Shared.new view rejects every write form as ImmutableError anchored at
+# the statement (interp throws positionless); the compound pre-check must
+# not shadow it with "missing property", and the `??=` receiver-kind
+# rejects must not anchor at the property/subscript token.
+check_same "compound shared view prop" 'let s = Shared.new({a: 1})
+s.a += 1'
+check_same "??= shared view prop"      'let s = Shared.new({a: 1})
+s.a ??= 2'
+check_same "??= shared view index"     "let s = Shared.new({a: 1})
+s['a'] ??= 2"
+check_same "??= packed field"          '@packable
+class P {
+  x: Float32 = 0.0
+}
+let buf = SharedBuffer.new(1, P)
+buf[0].x ??= 2.0'
+# The interp rejects a namespace unknown member at the DOT node in every
+# write form, `??=` included (its plain read reports the chain head).
+check_same "??= ns unknown member"     'Math.zzz ??= 1'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

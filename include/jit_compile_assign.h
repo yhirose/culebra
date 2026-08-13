@@ -160,15 +160,18 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
         ncKindSw->addCase(builder_.getInt8(2), svErrBB);
         ncKindSw->addCase(builder_.getInt8(3), sbErrBB);
 
+        // The FixedArray and Shared-view rejects are positionless in the
+        // interp (statement backfill); only the SharedBuffer wording below
+        // carries the subscript's own position there.
         builder_.SetInsertPoint(favErrBB);
         emit_throw_error("TypeError",
             "`?" "?=` is not supported on a FixedArray element",
-            finalPostfix.line, finalPostfix.column);
+            ast.line, ast.column);
         builder_.CreateUnreachable();
 
         builder_.SetInsertPoint(svErrBB);
         emit_throw_error("ImmutableError", "Shared values are immutable",
-                         finalPostfix.line, finalPostfix.column);
+                         ast.line, ast.column);
         builder_.CreateUnreachable();
 
         builder_.SetInsertPoint(sbErrBB);
@@ -497,19 +500,32 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
         ncDotKindSw->addCase(builder_.getInt8(2), svDotErrBB);
         ncDotKindSw->addCase(builder_.getInt8(4), packedErrBB);
 
+        // Both rejects are positionless in the interp (the eval wrapper
+        // backfills the statement), so anchor at the statement, not the
+        // property token.
         builder_.SetInsertPoint(svDotErrBB);
         emit_throw_error("ImmutableError", "Shared values are immutable",
-                         finalPostfix.line, finalPostfix.column);
+                         ast.line, ast.column);
         builder_.CreateUnreachable();
 
         builder_.SetInsertPoint(packedErrBB);
         emit_throw_error("TypeError",
             "`?" "?=` is not supported on a packed field",
-            finalPostfix.line, finalPostfix.column);
+            ast.line, ast.column);
         builder_.CreateUnreachable();
 
         builder_.SetInsertPoint(ncDotPlainBB);
+        // The interp's `??=` rejects a namespace's unknown member at the
+        // DOT node (reject_namespace_write, the write-context anchor),
+        // not the chain head a plain read reports; pin the read there.
+        auto sav_l = current_line_, sav_c = current_column_;
+        if (finalPostfix.line) {
+          current_line_ = finalPostfix.line;
+          current_column_ = finalPostfix.column;
+        }
         auto cur = emit_property_get(lval, name);  // +0 borrowed
+        current_line_ = sav_l;
+        current_column_ = sav_c;
         auto isNil =
             builder_.CreateICmpEQ(extract_tag(cur), builder_.getInt8(TAG_NIL));
         auto ncAssignBB = llvm::BasicBlock::Create(ctx_, "ncprop.assign", fn);
@@ -540,6 +556,28 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
       // For compound (`o.x += rhs`), read current → apply op → write back.
       llvm::Value* to_store = rval;
       if (compound) {
+        // A Shared.new view is immutable on every write surface, and the
+        // interp checks that ahead of its find_prop — so the missing-
+        // property pre-check below must not turn the reject into
+        // "missing property". Positionless in the interp: anchor at the
+        // statement. (A @packable packed view stays on the pre-check
+        // path — its fields resolve through object_has like a plain
+        // property, matching the interp's packed_view_get/set arm.)
+        auto cKind = emit_call(
+            module_->getOrInsertFunction(rt::nc_receiver_kind,
+                                         builder_.getInt8Ty(),
+                                         builder_.getInt64Ty()),
+            {extract_data(lval)}, "cprop.kind");
+        auto csvErrBB = llvm::BasicBlock::Create(ctx_, "cprop.sverr", fn);
+        auto cchkBB = llvm::BasicBlock::Create(ctx_, "cprop.chk", fn);
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(cKind, builder_.getInt8(2)), csvErrBB,
+            cchkBB);
+        builder_.SetInsertPoint(csvErrBB);
+        emit_throw_error("ImmutableError", "Shared values are immutable",
+                         ast.line, ast.column);
+        builder_.CreateUnreachable();
+        builder_.SetInsertPoint(cchkBB);
         // Pre-check that the property exists. Without this the
         // JIT would read a missing slot as nil and then `emit_arith_step`
         // would throw TypeError ("nil + N"), whereas the interp throws
