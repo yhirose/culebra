@@ -1750,6 +1750,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
 
   const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
   if (!meta) {
+    // No parameter metadata means the closure's parameters live behind its
+    // own prologue or trampoline (a VM function, a native builtin wrapper) —
+    // the side table only describes AST-compiled functions. With keyword
+    // content present that is a real error: nothing here can bind a name.
+    // Without any (a 0-kwarg call routed through this entry, e.g.
+    // get_or_put's lazy-init thunk), there is no binder work at all — hand
+    // the positional slab straight to the closure like an ordinary call
+    // site, publishing the call site first so the callee's own arity and
+    // recursion guards report there (where the interp anchors these too).
+    // The hand-off contract is the same as the meta path's tail below.
+    if (n_kw == 0 && n_splat == 0) {
+      culebra_runtime_set_call_site(line, col);
+      return _jit_invoke(cls, self_val, n_pos, positional);
+    }
     release_owned();
     throw culebra::CulebraError("TypeError",
         "function does not accept keyword arguments", line, col);

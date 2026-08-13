@@ -4098,7 +4098,16 @@ inline Value _invoke_callback(const Value& fn_val) {
   // frame that the body only trips over if it reads the name. The JIT runs
   // these thunks through its ordinary call path and says exactly this.
   // A kw-only parameter counts too: nothing supplies keywords here either.
-  if (!fn.multimethod_accepts_arity) {
+  // A strict-arity native (`d.get_or_put(k, to_string)`) takes the same
+  // count-based rejection its ordinary call path gives (`let f = to_string;
+  // f()`), not the user-fn missing-required wording — on the JIT side these
+  // thunks run through the native's own trampoline, which says exactly that.
+  if (fn.strict_arity) {
+    auto b = builtin_arity_bounds(*fn.params);
+    if (!b.variadic && b.min > 0) {
+      throw CulebraError("ArityError", ns_fn_arity_error_message(b.min, 0));
+    }
+  } else if (!fn.multimethod_accepts_arity) {
     for (const auto& p : *fn.params) {
       if (p.kwargs_rest || p.args_rest) continue;
       if (p.default_expr == nullptr && p.default_value == nullptr) {

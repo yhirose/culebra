@@ -63,3 +63,18 @@ assert_eq({a: 1}.get_or_put("y", fn (*rest) {
 // difftest leak corpus; these pin the observable behaviour.
 assert_throws("TypeError", || {a: 1}.get_or_put([1, 2], || [3, 4]))
 assert_eq({a: 1}.get_or_put((1, "k"), || "made"), "made")
+
+// A native builtin as `init` runs through its own trampoline on a miss, so
+// the rejection is the count-based ArityError its ordinary call gives
+// (`let f = to_string; f()`) — not the user-fn missing-required wording.
+// The JIT used to answer "function does not accept keyword arguments" here:
+// its thunk invoke goes through the shared kwargs dispatch, which has no
+// parameter metadata for a native and, with no keyword content in the call,
+// now hands it the plain positional path instead of rejecting.
+mut native_init_msg = ""
+try {
+  let _ = {a: 1}.get_or_put("z", to_string)
+} catch e {
+  native_init_msg = "{e.kind}: {e.message}"
+}
+assert_eq(native_init_msg, "ArityError: expected 1 positional argument, got 0")
