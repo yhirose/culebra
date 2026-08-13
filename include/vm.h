@@ -5630,8 +5630,11 @@ struct Lowering {
                 {arr}, "vseq.n");
             at = b.CreateAdd(n, at, "vseq.from_end");
           }
-          auto outTag = b.CreateAlloca(b.getInt8Ty(), nullptr, "vseq.tag");
-          auto outData = b.CreateAlloca(i64Ty, nullptr, "vseq.data");
+          // Entry-block allocas: this arm can sit inside a loop body, and a
+          // current-block alloca would grow the stack every iteration.
+          IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+          auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "vseq.tag");
+          auto outData = eb.CreateAlloca(i64Ty, nullptr, "vseq.data");
           j.emit_call(
               j.module_->getOrInsertFunction(rt::array_get, b.getVoidTy(),
                                              ptrTy, i64Ty, ptrTy, ptrTy, i64Ty,
@@ -5674,8 +5677,10 @@ struct Lowering {
               {obj, key}, "vobj.hit");
           b.CreateCondBr(has, getBB, blocks.at(in.b));
           b.SetInsertPoint(getBB);
-          auto outTag = b.CreateAlloca(b.getInt8Ty(), nullptr, "vobj.tag");
-          auto outData = b.CreateAlloca(i64Ty, nullptr, "vobj.data");
+          // Entry-block allocas — same loop-body stack-growth trap as SeqGet.
+          IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+          auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "vobj.tag");
+          auto outData = eb.CreateAlloca(i64Ty, nullptr, "vobj.data");
           j.emit_call(
               j.module_->getOrInsertFunction(rt::object_get, b.getVoidTy(),
                                              ptrTy, ptrTy, ptrTy, ptrTy),
