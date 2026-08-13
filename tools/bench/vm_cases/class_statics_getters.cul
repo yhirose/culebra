@@ -1,0 +1,149 @@
+# Statics and getters. Statics live on the class namespace object (bound
+# raw, so a static named `drop` stays an ordinary function); getters live on
+# the meta beside the methods, registered so a bare `obj.name` read invokes
+# them. A static body is a receiver frame whose `self` is the class object.
+
+class Shape {
+  static UNIT = 1
+  new() { self.kind = 'unknown' }
+  area() { 0 }
+  get named() { 'shape:' + self.kind }
+  static circle(r) {
+    let s = Shape.new()
+    s.kind = 'circle'
+    s.radius = r
+    s
+  }
+  static square(side) {
+    let s = Shape.new()
+    s.kind = 'square'
+    s
+  }
+  static both() { Shape.circle(1).kind + '/' + Shape.square(2).kind }
+  static unit() { Shape.UNIT }
+}
+println(Shape.circle(3).kind)
+println(Shape.circle(3).radius)
+println(Shape.both())
+println(Shape.unit())
+println(Shape.UNIT)
+println(Shape.circle(2).named)
+inspect(Shape.keys())
+println(type_of(Shape.circle))
+# A static field is immutable on the class object.
+println(try { Shape.UNIT = 8 } catch e { e.kind })
+
+# `self` inside a static body is the class object, and stays bound when the
+# static is taken as a value.
+class S {
+  new() { self.x = 1 }
+  static kind_of_self() { type_of(self) }
+}
+println(S.kind_of_self())
+let detached = S.kind_of_self
+println(detached())
+
+# Statics and instance methods do not leak into each other's namespace.
+class Split {
+  new() { self.x = 1 }
+  static st() { 'static' }
+  inst() { 'instance' }
+}
+let sp = Split.new()
+println(sp.inst())
+inspect(sp.st)
+println(try { sp.st() } catch e { e.kind })
+inspect(Split.inst)
+println(try { Split.inst() } catch e { e.kind })
+
+# --- Static fields: declaration-time, declaration order ------------------
+let outer = 40
+fn trace(s, v) {
+  println(s)
+  v
+}
+println('--- decl')
+class K {
+  static A = trace('static-A', 1)
+  static FROM_OUTER = outer + 2
+  new() { self.x = 1 }
+  static B = trace('static-B', 2)
+  static SIZED: Long
+}
+println('--- done')
+println(K.A + K.B)
+println(K.FROM_OUTER)
+inspect(K.SIZED)
+inspect(K.keys())
+
+# --- Getters --------------------------------------------------------------
+class C {
+  new(v) { self.v = v }
+  get doubled() { self.v * 2 }
+  get label() { "v={self.v}" }
+  get boxed() { fn () { self.v } }
+  get size() { 99 }
+  plain() { self.v }
+}
+let c = C.new(21)
+println(c.doubled)
+println(c.label)
+println(c.plain())
+println(type_of(c.doubled))
+# A getter returning a function hands back the function; calling the read
+# calls that function.
+println(type_of(c.boxed))
+println(c.boxed())
+# A getter shadowing a dict-builtin name wins for the bare read.
+println(c.size)
+# Getters are not own properties: they live on the meta, like methods.
+inspect(c.keys())
+inspect(c)
+
+# A getter that throws, and one whose body captures `self` into a closure.
+class G {
+  new() { self.n = 1 }
+  get boom() { throw 'getter' }
+  get held() { fn () { self.n + 1 } }
+}
+println(try { G.new().boom } catch e { e })
+println(G.new().held()())
+
+# Getters through higher-order code, and nested instances.
+class H {
+  new(v) { self.v = v }
+  get doubled() { self.v * 2 }
+}
+inspect([H.new(1), H.new(2)].map(fn (h) { h.doubled }))
+class W {
+  new(inner) { self.inner = inner }
+  get deep() { self.inner.doubled }
+}
+println(W.new(H.new(4)).deep)
+
+# A ctor-assigned property and a getter of the same name: the own property
+# wins, the getter stays unreachable.
+class A {
+  v = 1
+  new() { self.set_by_ctor = 5 }
+  get v2() { self.v }
+  get set_by_ctor() { 'getter' }
+}
+let a = A.new()
+println(a.v2)
+println(a.set_by_ctor)
+inspect(a.keys())
+
+# --- Churn: statics, getters and instances -------------------------------
+mut i = 0
+mut total = 0
+while i < 300 {
+    let inst = C.new(i)
+    total = total + inst.doubled + inst.size
+    total = total + Shape.circle(i).radius
+    total = total + H.new(i).doubled
+    let g = G.new()
+    total = total + g.held()()
+    i = i + 1
+}
+println(total)

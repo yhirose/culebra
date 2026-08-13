@@ -393,6 +393,10 @@ enum class Op : uint8_t {
                // (run_field_init; both borrowed). Emitted at the top of a
                // `new` body, after parameter binding — interp's timing, so
                // an arity error fires with no field side effects.
+  RegGetter,   // register closure regs[a] as a getter, so a bare `obj.name`
+               // read invokes it (culebra_runtime_register_getter, keyed by
+               // the closure's fn_ptr). Emitted once per getter method, at
+               // its declaration — the JIT's register_getter call.
   SelfMerge,   // regs[a] = the frame's `self`: the ABI receiver when the
                // call supplied one, else the value in the captured cell
                // regs[b] (rt::self_merge, +1 either way). Only a frame that
@@ -1363,6 +1367,12 @@ struct Chunk {
   // call, so the prologue skips the nil rewrite there.
   int32_t self_slot = -1;
   bool self_raw = false;
+  // A getter body (`get x() { … }`). The runtime's getter registry is keyed
+  // by a closure's fn_ptr, and every executor closure shares one interpreter
+  // entry point — so a getter chunk's closures get their own (see
+  // Exec::getter_trampoline), which is what makes the key mean "this code is
+  // a getter" in that lane too.
+  bool is_getter = false;
   // Method-name tables for ClassMeta, indexed by its `d` operand. Stable
   // storage: the executor hands build_class_meta an array of these c_str()s.
   std::vector<std::vector<std::string>> name_tables;
@@ -2123,13 +2133,14 @@ class Compiler {
     emit(Op::CellSet, b->slot, owned_src(ast, {t, true}));
   }
 
-  // `class Name { new(...) {...}  m(...) {...}  x = e  y: T = e }`.
+  // `class Name { new(...) {...}  m(...) {...}  get g() {...}
+  //               static f(...) {...}  static K = e  x = e  y: T = e }`.
   // The runtime shape is the JIT's: one shared meta Object holding the
-  // method closures, instances delegating to it through `proto`, and a
-  // class namespace Object carrying `new` and marked so `C(args)` reaches
-  // it. Field initializers become a synthetic thunk the `new` body runs
-  // after its parameters bound. Statics, getters and overloads are out of
-  // this slice.
+  // instance methods (getters among them, registered so a bare read invokes
+  // them), instances delegating to it through `proto`, and a class namespace
+  // Object carrying `new` plus the statics, marked so `C(args)` reaches the
+  // constructor. Field initializers become a synthetic thunk the `new` body
+  // runs after its parameters bound. Overloads are out of this slice.
   void compile_class_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     size_t dec_end = 0;
@@ -2146,14 +2157,40 @@ class Compiler {
     const peg::Ast* new_ast = nullptr;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
+    std::vector<std::string> static_names;
+    std::vector<const peg::Ast*> static_asts;
+    std::vector<const peg::Ast*> static_fields;
     std::vector<const peg::Ast*> fields;
+    auto claim = [&](std::vector<std::string>& names, const peg::Ast& m,
+                     std::string_view what) {
+      auto n = std::string(culebra::view_method(m).name);
+      if (std::find(names.begin(), names.end(), n) != names.end())
+        reject(m, std::format("{} overload '{}'", what, n));
+      names.push_back(std::move(n));
+    };
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
-      if (mv.is_static) reject(m, "static class member");
-      if (mv.is_getter) reject(m, std::format("getter '{}'", mv.name));
-      if (mv.is_typed_field || mv.is_field) {
+      // The shared member checks both other backends run while collecting:
+      // a getter takes no parameters (and is a method, not a field form).
+      if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
+      // Member classification, mirroring collect_class_members on both
+      // backends — including its wart: a *typed* field is an instance field
+      // even when written `static`, so `static T: Long = 5` lands on every
+      // instance and the class object never carries it (probed, and the two
+      // agree, so the slice inherits it rather than inventing a third
+      // reading).
+      if (mv.is_typed_field) {
         fields.push_back(&m);
+        continue;
+      }
+      if (mv.is_field) {
+        (mv.is_static ? static_fields : fields).push_back(&m);
+        continue;
+      }
+      if (mv.is_static) {
+        claim(static_names, m, "static");
+        static_asts.push_back(&m);
         continue;
       }
       if (mv.name == "new") {
@@ -2161,11 +2198,7 @@ class Compiler {
         new_ast = &m;
         continue;
       }
-      auto name = std::string(mv.name);
-      if (std::find(method_names.begin(), method_names.end(), name) !=
-          method_names.end())
-        reject(m, std::format("method overload '{}'", name));
-      method_names.push_back(name);
+      claim(method_names, m, "method");
       method_asts.push_back(&m);
     }
 
@@ -2185,10 +2218,33 @@ class Compiler {
         {class_name, class_slot, /*is_mut=*/false, /*is_cell=*/true});
 
     TempScope ts(*this);
+    // Static field values evaluate here, at the declaration, in the
+    // enclosing scope (the JIT's static_field_vals) — the only user code a
+    // class declaration runs, so it stays ahead of the closure building,
+    // which keeps the method run below contiguous.
+    std::vector<int32_t> static_field_vals;
+    for (auto* m : static_fields) {
+      auto mv = culebra::view_method(*m);
+      static_field_vals.push_back(
+          owned_src(*m, mv.value ? compile_expr(*mv.value)
+                                 : ExprResult{emit_zero_value(
+                                                  *m, mv.type_annotation),
+                                              true}));
+    }
     std::vector<int32_t> method_chunks;
     for (auto* m : method_asts) {
       auto mv = culebra::view_method(*m);
       method_chunks.push_back(
+          compile_fn_chunk(*m, mv.params, **mv.body, {.receiver = true}));
+      if (mv.is_getter) prog_.chunks[method_chunks.back()].is_getter = true;
+    }
+    std::vector<int32_t> static_chunks;
+    for (auto* m : static_asts) {
+      auto mv = culebra::view_method(*m);
+      // A static body is a receiver frame too: `S.f()` binds the class
+      // object as its `self`, which is what the interp's namespace call
+      // does (probed — a detached `let f = S.f` keeps that receiver).
+      static_chunks.push_back(
           compile_fn_chunk(*m, mv.params, **mv.body, {.receiver = true}));
     }
     // The field-init thunk is compiled — and bound under its hidden name —
@@ -2225,7 +2281,10 @@ class Compiler {
       for (size_t i = 0; i < method_chunks.size(); i++) {
         int32_t t = alloc_temp(*method_asts[i]);
         emit(Op::MakeClosure, t, method_chunks[i]);
-        (void)t;
+        // A getter registers where it maps 1:1 to its source method, before
+        // the meta absorbs it (the JIT's register_getter site).
+        if (culebra::view_method(*method_asts[i]).is_getter)
+          emit(Op::RegGetter, t);
       }
       auto table = static_cast<int32_t>(chunk_.name_tables.size());
       chunk_.name_tables.push_back(method_names);
@@ -2279,7 +2338,23 @@ class Compiler {
     emit(Op::MakeClosure, ctor, ctor_chunk);
     int32_t cls = alloc_temp(ast);
     emit(Op::ClassObj, cls);
+    // The class namespace: `new`, then the statics and their fields. The raw
+    // bind is deliberate — a static named `drop` is an ordinary function
+    // here, so neither the well-known contract nor the drop registration
+    // applies (the JIT's emit_bind_static).
     emit(Op::BindStatic, cls, kconst_str("new"), owned_src(ast, {ctor, true}));
+    for (size_t i = 0; i < static_chunks.size(); i++) {
+      int32_t t = alloc_temp(*static_asts[i]);
+      emit(Op::MakeClosure, t, static_chunks[i]);
+      emit(Op::BindStatic, cls, kconst_str(static_names[i]),
+           owned_src(*static_asts[i], {t, true}));
+    }
+    for (size_t i = 0; i < static_fields.size(); i++) {
+      emit(Op::BindStatic, cls,
+           kconst_str(std::string(culebra::view_method(*static_fields[i]).name)),
+           static_field_vals[i]);
+      forget_temp(static_field_vals[i]);  // the slot absorbed the +1
+    }
     emit(Op::CellSet, class_slot, owned_src(ast, {cls, true}));
   }
 
@@ -4375,7 +4450,7 @@ inline std::string dump(const Chunk& c) {
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "UnboundErr", "MultifnReg",
       "ClassMeta", "ClassObj",  "BindStatic", "MakeInst",     "FieldInit",
-      "SelfMerge",
+      "RegGetter", "SelfMerge",
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
@@ -4474,6 +4549,18 @@ struct Exec {
     auto* d = reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
     *ret = run_frame(*d->prog, d->chunk, cls, n_args, args, self_tag,
                      self_data);
+  }
+
+  // The same entry point, for getter bodies only. The runtime decides
+  // whether a bare `obj.name` read invokes the method by looking its
+  // fn_ptr up in the getter registry — a key that identifies the code
+  // behind a closure. In the lowering each chunk is its own function, so
+  // that key already distinguishes getters; here one interpreter runs
+  // every chunk, so getters need a second door to keep the key honest.
+  static void getter_trampoline(JitValue* ret, JitClosure* cls,
+                                int8_t self_tag, int64_t self_data,
+                                int64_t n_args, JitValue* args) {
+    trampoline(ret, cls, self_tag, self_data, n_args, args);
   }
 
   static JitValue run_frame(const VmProgram& p, int32_t chunk_idx,
@@ -5518,8 +5605,9 @@ struct Exec {
           const Chunk& f = p.chunks[in.b];
           auto n = f.capture_src_slots.size();
           auto* mc = culebra_runtime_closure_new(
-              reinterpret_cast<void*>(&trampoline), 1 + n,
-              static_cast<size_t>(f.arity));
+              f.is_getter ? reinterpret_cast<void*>(&getter_trampoline)
+                          : reinterpret_cast<void*>(&trampoline),
+              1 + n, static_cast<size_t>(f.arity));
           culebra_runtime_cell_retain(p.desc_cells[in.b]);
           mc->captures[0] = p.desc_cells[in.b];
           // Fill the captures from the creating frame's cell slots, each
@@ -5759,6 +5847,14 @@ struct Exec {
           culebra_runtime_run_field_init(
               reinterpret_cast<JitClosure*>(regs[in.a].data),
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
+          ++pc;
+          break;
+        case Op::RegGetter:
+          // Registers this lane's getter entry point, which every getter
+          // closure here shares — an idempotent insert, unlike the lowering
+          // where each getter chunk registers its own function.
+          culebra_runtime_register_getter(
+              reinterpret_cast<JitClosure*>(regs[in.a].data));
           ++pc;
           break;
         case Op::SelfMerge: {
@@ -8414,6 +8510,12 @@ struct Lowering {
                j.extract_tag(self), j.extract_data(self)});
           break;
         }
+        case Op::RegGetter:
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::register_getter,
+                                             b.getVoidTy(), ptrTy),
+              {b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy)});
+          break;
         case Op::SelfMerge: {
           auto abi = load_slot(in.b);
           b.CreateStore(j.make_nil(), slots[in.b]);  // the +1 transfers

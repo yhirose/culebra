@@ -1,0 +1,7 @@
+# A getter takes no parameters — the shared member check every backend runs
+# while collecting the class's members.
+class E {
+  new() { self.x = 1 }
+  get bad(a) { a }
+}
+println('unreached')
