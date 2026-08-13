@@ -30,7 +30,8 @@
             "examples/tensor/mnist/weights/w2.csv",
             "examples/tensor/mnist/weights/b2.csv",
             "examples/tensor/mnist/weights/w3.csv",
-            "examples/tensor/mnist/weights/b3.csv"
+            "examples/tensor/mnist/weights/b3.csv",
+            "examples/tensor/mnist/assets/Inter-SemiBold-subset.ttf"
           ]
         }
       ]
