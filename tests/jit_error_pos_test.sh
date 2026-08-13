@@ -357,5 +357,18 @@ check_same "destructure mismatch"  'let [a, b] = [1]'
 check_same "destructure immutable" 'let c = 0
 [c] = [5]'
 
+# A property write's receiver is Object only: Array/Tensor share to_object's
+# wider read gate, but their inherited property sidecar is not a write
+# surface. Every DOT write form rejects with the read path's wording.
+check_same "prop write array recv"    'let a = [1, 2]
+a.k = 9'
+check_same "prop write tensor recv"   'let t = Tensor.from([1.0])
+t.k = 5'
+check_same "prop compound array recv" 'let a = [1]
+a.k += 1'
+check_same "prop ??= array recv"      'let a = [1]
+a.k ??= 7'
+check_same "prop write scalar recv"   '(5).a = 1'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

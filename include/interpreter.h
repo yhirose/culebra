@@ -11946,6 +11946,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           packed_view_set(lval, name, rval, postfix.line, postfix.column);
           return rval;
         }
+        // A property write's receiver is Object only. Array/Tensor inherit
+        // to_object's wider gate for reads, but their property sidecar is
+        // not a write surface (the JIT has no such storage); the wording
+        // stays the read path's.
+        if (lval.type != Value::Object) {
+          lval._throw_type_error("Object, Array, or Tensor");
+        }
         auto& obj = lval.to_object();
         auto name = postfix.token;
         // A closed namespace has a fixed member set (see eval_property);

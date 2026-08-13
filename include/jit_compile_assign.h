@@ -458,7 +458,9 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
       builder_.CreateCondBr(isObj, okBB, errBB);
 
       builder_.SetInsertPoint(errBB);
-      emit_type_error_typed("Object", tag);
+      // The read path's wording (interp's to_object), even though only
+      // Object is writable — matches the interp's write reject.
+      emit_type_error_typed("Object, Array, or Tensor", tag);
       builder_.CreateUnreachable();
 
       builder_.SetInsertPoint(okBB);
