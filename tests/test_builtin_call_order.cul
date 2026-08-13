@@ -83,3 +83,19 @@ try {
 assert_eq('abcdef'.truncate(4, '~'), 'abc~')
 assert_eq('abc'.tr('ab', 'zy'), 'zyc')
 assert_eq([1, 2].get(5, 'd'), 'd')
+
+# A visible UFCS candidate does not change the order: resolution still
+# precedes the arguments. A receiver whose property read throws (a scalar
+# with a non-Function binding of the name, a namespace member miss) reports
+# before any argument runs; a receiver that reads the miss as nil (String /
+# plain dict) still runs the list first.
+let nonfn = 5
+fn free_fn(x, y) { [x, y] }
+assert_eq(ran(fn () { (5).nonfn(t('a')) }), [])
+assert_eq(ran(fn () { Math.free_fn(t('a')) }), [])
+assert_eq(ran(fn () { Math.nonfn(t('a')) }), [])
+assert_eq(ran(fn () { 'ab'.nonfn(t('a')) }), ['a'])
+assert_eq(ran(fn () { {'k': 1}.nonfn(t('a')) }), ['a'])
+
+# The UFCS call itself evaluates its arguments (and only then the body).
+assert_eq((5).free_fn(t('b')), [5, 'b'])

@@ -11891,19 +11891,12 @@ struct JIT {
       return kwMerge.finish(mergeBB);
     }
 
-    std::vector<const peg::Ast*> argAsts;
-    // The argument expressions can throw (`x.f(g())`), and every arm that
-    // releases the receiver sits past that edge — hold its +1 as Owned so the
-    // unwind-temp window covers it while they compile. (The kwargs path above
-    // needs no counterpart: its callee owns the receiver from entry.)
-    Owned recvHold = own(receiver);
-    auto ownedArgs = compile_positional_args(argsAst, argAsts);
-    recvHold.consume();  // handed to the arms below
-    // The method / UFCS branches below are mutually exclusive at runtime;
-    // both reference the same raws, so this single consume still hands each
-    // +1 to exactly one runtime consumer.
-    auto userArgs = consume_all(std::move(ownedArgs));
-
+    // Arguments compile INSIDE whichever arm runs, after that arm's method
+    // resolution — interp's order: a resolution that throws (a namespace's
+    // AttributeError, the scalar member error on a non-Function binding)
+    // fires before any argument runs. The arms are mutually exclusive at
+    // runtime, so per-arm compiles never double a side effect (the
+    // compile_ufcs_or_miss shape).
     auto tag = extract_tag(receiver);
     auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
 
@@ -11929,21 +11922,32 @@ struct JIT {
     builder_.CreateCondBr(hasProp, methodBB, ufcsBB);
 
     builder_.SetInsertPoint(methodBB);
-    auto methodVal = emit_property_get(receiver, method);
+    // The read precedes the arguments (interp: a namespace member miss
+    // raises before any argument runs); own_receiver makes it the sole
+    // releaser of the receiver's +1 on that edge.
+    auto methodVal = emit_property_get(receiver, method, /*own_receiver=*/true);
     OwnedPhi ufcsMerge(this, "ufcs.res");
     // A non-Function property (`{f: 5}.f()`, an introspection view) lowers
     // to a non-function call; nothing else releases the consumed receiver +
     // args on that raise, so opt into both (fires only on that arm — a real
     // method's callee frame cleans its own self/params).
     // fn_mode hands back a +1-OWNED view (not the usual borrowed slot value)
-    // and the call only borrows its callee. Hold it across the call so the
-    // unwind-temp window releases it when the call raises on a non-callable
-    // view (`g.params()`), and drop it on the normal path.
+    // and the call only borrows its callee. Hold it across the argument
+    // compiles and the call so the unwind-temp window releases it when
+    // either raises (`g.params()` on a non-callable view), and drop it on
+    // the normal path.
     Owned introView;
     if (fn_introspection_name(method)) introView = own(methodVal);
+    std::vector<const peg::Ast*> methodArgAsts;
+    // The argument expressions can throw (`x.f(g())`), and the releases of
+    // the receiver sit past that edge — hold its +1 as Owned so the
+    // unwind-temp window covers it while they compile.
+    Owned methodRecvHold = own(receiver);
+    auto methodOwnedArgs = compile_positional_args(argsAst, methodArgAsts);
+    methodRecvHold.consume();  // handed to the call below
     auto methodRes = compile_function_call_raw(
-        methodVal, receiver, userArgs,
-        /*check_kw_only=*/false, /*allow_call_overload=*/true, argAsts,
+        methodVal, receiver, consume_all(std::move(methodOwnedArgs)),
+        /*check_kw_only=*/false, /*allow_call_overload=*/true, methodArgAsts,
         /*own_self_on_error=*/true, /*own_args_on_error=*/true);
     introView.drop();
     ufcsMerge.add_incoming(std::move(methodRes));
@@ -11964,49 +11968,55 @@ struct JIT {
     builder_.SetInsertPoint(missBB);
     // The non-Function binding is not a callee — drop the load's +1.
     own(freeFn).drop();
-    llvm::Value* missProp;
-    {
-      // Re-own the compiled args across the may-throw property read so the
-      // unwind-temp window releases them on that edge; the receiver rides
-      // the helper's own_receiver contract. Each +1 is handed back to the
-      // call below (same block).
-      std::vector<Owned> argWindow;
-      argWindow.reserve(userArgs.size());
-      for (auto* a : userArgs) argWindow.push_back(own(a));
-      missProp = emit_property_get(receiver, method, /*own_receiver=*/true);
-      for (auto& h : argWindow) h.consume();
-    }
+    // The read precedes the arguments, like the method arm's: the scalar
+    // member error on a Long/Float/Bool receiver fires before any argument
+    // runs (interp falls through to eval_property right here). The receiver
+    // rides the helper's own_receiver contract on that edge.
+    auto missProp = emit_property_get(receiver, method, /*own_receiver=*/true);
     // Same shape as compile_method_call's no-candidate tail: a method miss
     // lowers to `call nil`, whose error path releases the consumed receiver
     // + args. The three function-introspection names return a +1-owned
-    // view — drop it after the call (see that tail).
-    bool ownedMissView = fn_introspection_name(method);
+    // view — hold it across the argument compiles and the call (the
+    // unwind-temp window), drop it on the normal path.
+    Owned missView;
+    if (fn_introspection_name(method)) missView = own(missProp);
+    std::vector<const peg::Ast*> missArgAsts;
+    Owned missRecvHold = own(receiver);
+    auto missOwnedArgs = compile_positional_args(argsAst, missArgAsts);
+    missRecvHold.consume();  // handed to the call below
     auto missRes = compile_function_call_raw(
-        missProp, receiver, userArgs,
-        /*check_kw_only=*/false, /*allow_call_overload=*/true, argAsts,
+        missProp, receiver, consume_all(std::move(missOwnedArgs)),
+        /*check_kw_only=*/false, /*allow_call_overload=*/true, missArgAsts,
         /*own_self_on_error=*/true, /*own_args_on_error=*/true);
-    if (ownedMissView) own(missProp).drop();
+    missView.drop();
     ufcsMerge.add_incoming(std::move(missRes));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(callBB);
+    // This branch owns the slot load's +1, dropped on the normal path below.
+    // Holding it as Owned keeps it visible to the unwind-temp window while
+    // the argument expressions compile and across the call, so a throw on
+    // either edge releases it instead of stranding it (the
+    // compile_ufcs_or_miss shape). It is a distinct SSA from the callee
+    // frame's this/params, so this never collides with the callee's own
+    // cleanup.
+    Owned freeHold = own(freeFn);
+    std::vector<const peg::Ast*> ufcsArgAstList;
+    // The receiver rides as positional[0]; hold it as Owned so the
+    // unwind-temp window covers it while the argument expressions compile.
+    Owned ufcsRecvHold = own(receiver);
+    auto ufcsOwnedArgs = compile_positional_args(argsAst, ufcsArgAstList);
+    ufcsRecvHold.consume();  // handed to the raw call below
     auto [ufcsArgs, ufcsArgAsts] =
-        ufcs_call_args(receiver, dot_ast, userArgs, argAsts);
-    // This branch owns the slot load's +1, released on the normal path below.
-    // A positional typed-param binding throw (`"x".f(1)` where `f`'s first
-    // param is Long) would strand it — guard the borrowed callee value on the
-    // unwind edge, mirroring the kwarg UFCS branch above. The closure is a
-    // distinct SSA from the callee frame's this/params (which the callee frame
-    // cleans on throw), so it does not double-free the callee's own cleanup.
+        ufcs_call_args(receiver, dot_ast,
+                       consume_all(std::move(ufcsOwnedArgs)), ufcsArgAstList);
     Owned ufcsRes;
     {
       CallSiteAt at(*this, argsAst);
-      ThrowGuard callee_guard(this, {freeFn});
       ufcsRes =
           compile_function_call_raw(freeFn, nullptr, ufcsArgs, ufcsArgAsts);
     }
-    // Borrowed-callee dispatch; release the slot load's +1 (see above).
-    emit_value_release(freeFn);
+    freeHold.drop();  // borrowed-callee dispatch
     ufcsMerge.add_incoming(std::move(ufcsRes));
     builder_.CreateBr(mergeBB);
 
