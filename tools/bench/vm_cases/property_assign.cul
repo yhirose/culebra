@@ -1,0 +1,161 @@
+# Property assignment (`o.k = v` / `o.k op= v` / `o.k ??= v`) and
+# PLACE_ASSIGN (`(a, p[0], o.k) = e`): correctness, aliasing, evaluation
+# order, churn. Error kinds ride the uncaught error_prop_* / error_place_*
+# cases; the caught shapes here pin the kinds only.
+
+# Plain writes: insert (mutable by default), overwrite a `mut` literal key,
+# a builtin-method-named key shadows nothing on insert.
+let o1 = {}
+o1.k = 5
+o1.k = 6
+inspect(o1.k)
+let o2 = {mut a: 1}
+o2.a = 2
+inspect(o2.a)
+let o3 = {}
+o3.size = 41
+inspect(o3.size)
+
+# The assignment expression reads the assigned value.
+let x1 = (o1.k = 7)
+inspect(x1)
+
+# Evaluation order: RHS before the receiver chain.
+mut order = []
+fn r() { order.push('recv'); {mut a: 1} }
+fn v() { order.push('rhs'); 9 }
+r().a = v()
+inspect(order)
+
+# Chains: DOT-final behind DOT and INDEX prefixes, INDEX-final behind DOT.
+let c1 = {mut b: {mut c: 1}}
+c1.b.c = 9
+inspect(c1.b.c)
+let c2 = [{mut k: 1}]
+c2[0].k = 8
+inspect(c2[0].k)
+let c3 = {mut d: [1, 2]}
+c3.d[0] = 7
+inspect(c3.d)
+
+# Compound: arith, string append, pow, over an inserted key, chains.
+let m1 = {mut n: 1}
+m1.n += 2
+inspect(m1.n)
+m1.n **= 3
+inspect(m1.n)
+let m2 = {mut s: 'ab'}
+m2.s += 'cd'
+inspect(m2.s)
+let m3 = {}
+m3.k = 1
+m3.k += 1
+inspect(m3.k)
+let x2 = (m1.n -= 7)
+inspect(x2)
+
+# A compound step's Tensor value mutates in place — the original binding
+# sees the update through the alias.
+let t0 = Tensor.from([1.0, 2.0])
+let mt = {mut t: t0}
+mt.t += Tensor.from([10.0, 10.0])
+inspect(t0.to_array())
+
+# ??=: assign through nil, keep non-nil without running the RHS (and
+# without tripping the immutable key), insert a missing key.
+let z1 = {mut a: nil, b: 3}
+z1.a ??= 5
+inspect(z1.a)
+mut boomed = false
+fn boom() { boomed = true; 9 }
+let z2 = {c: 1}
+z2.c ??= boom()
+inspect(z2.c)
+inspect(boomed)
+let z3 = {}
+z3.k ??= 7
+inspect(z3.k)
+let x3 = (z1.a ??= 99)
+inspect(x3)
+
+# PLACE_ASSIGN: names and chain targets, snapshot before any write,
+# left-to-right writes, tuple RHS, sink, expression value, captured cell.
+mut pa = 0
+let pp = [0, 0]
+(pa, pp[0]) = [1, 2]
+inspect(pa)
+inspect(pp)
+let q = [1, 2]
+(q[1], q[0]) = q
+inspect(q)
+mut pz = 0
+let po = {mut a: 0}
+(po.a, pz) = [5, 6]
+inspect(po.a)
+inspect(pz)
+mut ta = 0
+mut tb = 0
+(ta, tb) = (1, 2)
+inspect((ta, tb))
+mut sy = 0
+(_, sy) = [1, 2]
+inspect(sy)
+mut d1 = 0
+(d1, d1) = [1, 2]
+inspect(d1)
+mut va = 0
+mut vb = 0
+let pv = ((va, vb) = [3, 4])
+inspect(pv)
+mut cap = 0
+let bump = fn () { (cap, _) = [99, 0] }
+bump()
+inspect(cap)
+
+# A PLACE mismatch throws before anything writes; an immutable target
+# throws after the earlier targets already wrote.
+mut w1 = 0
+let ok1 = try {
+    (w1, _) = [1]
+    false
+} catch er {
+    er.kind == "ValueError" && w1 == 0
+}
+inspect(ok1)
+mut w2 = 0
+let imm = 1
+let ok2 = try {
+    (w2, imm) = [2, 3]
+    false
+} catch er {
+    er.kind == "ImmutableError" && w2 == 2
+}
+inspect(ok2)
+
+# Churn: writes (all three forms) and place-assigns, plus each caught
+# error shape, repeatedly — RC balance under pressure.
+mut i = 0
+mut acc = {mut n: 0}
+while i < 300 {
+    acc.n += 1
+    acc.k = (i, i)
+    acc.k ??= (0, 0)
+    (acc.n, _) = [acc.n, i]
+    let ok = try {
+        let frozen = {f: 1}
+        frozen.f = 2
+        false
+    } catch er {
+        er.kind == "ImmutableError"
+    }
+    let okm = try {
+        acc.zzz += 1
+        false
+    } catch er {
+        er.kind == "AttributeError"
+    }
+    if !ok || !okm { throw "regression at churn" }
+    i = i + 1
+}
+inspect(acc.n)
+inspect(i)

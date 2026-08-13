@@ -1,0 +1,4 @@
+# A property write's receiver is Object only; the reject keeps the read
+# path's wording and the statement anchor on every backend.
+let a = [1, 2]
+a.k = 9

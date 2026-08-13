@@ -1,0 +1,5 @@
+# Compound assignment on a missing property: AttributeError anchored at
+# the DOT node, after the RHS evaluated.
+fn v() { println('rhs'); 1 }
+let o = {}
+o.a += v()

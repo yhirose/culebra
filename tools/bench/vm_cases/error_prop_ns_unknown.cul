@@ -1,0 +1,4 @@
+# A closed namespace's unknown member: AttributeError at the DOT node,
+# after the RHS ran (both backends' order).
+fn v() { println('rhs'); 1 }
+Math.zzz = v()

@@ -1,0 +1,6 @@
+# PLACE_ASSIGN arity mismatch: the destructure ValueError at the
+# statement, after the RHS evaluated, before any target writes.
+fn v() { println('rhs'); [1] }
+mut a = 0
+mut b = 0
+(a, b) = v()

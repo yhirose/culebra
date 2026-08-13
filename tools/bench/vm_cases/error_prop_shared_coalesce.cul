@@ -1,0 +1,5 @@
+# A Shared.new view rejects `??=` before reading, ImmutableError at the
+# statement — the receiver-kind gate ahead of the property read.
+fn v() { println('rhs'); 2 }
+let s = Shared.new({a: 1})
+s.a ??= v()

@@ -195,6 +195,37 @@ enum class Op : uint8_t {
                // mutable, is_init=false), else "expected Array". The value
                // stays register-owned (a retain feeds the consuming store),
                // so the assignment expression still reads it afterwards.
+  PropSet,     // regs[a].consts[c] = regs[b]: object_set with is_init=false
+               // (an existing slot's mut flag decides; a fresh slot defaults
+               // mutable). A non-Object receiver is the write reject's typed
+               // TypeError ("expected Object, Array, or Tensor" — the read
+               // wording, both backends'). The value stays register-owned
+               // (IndexSet's retain-feeds-the-store rule). All throws carry
+               // this instruction's position (the assignment statement)
+               // except the well-known contract on insert, which is
+               // positionless — compile emits SetOpPos right before, for
+               // those four names only (the ObjectSet literal's condition).
+  PropWr,      // regs[a] = property consts[c] of regs[b], the write-context
+               // read of `o.k op= v`: receiver gate as PropSet, then the
+               // Shared-view ImmutableError (ahead of the existence check,
+               // the interp's order), then the missing-property
+               // AttributeError — anchored at the DOT node, whose packed
+               // line<<32|col rides consts[d] (every other throw here uses
+               // the statement, this instruction's own stamp). The hit is a
+               // raw retained view (+1), never bound.
+  PropCo,      // regs[a] = current value for `o.k ??= v`: receiver gate,
+               // then the nc receiver-kind rejects (Shared view / packed
+               // field, at the statement), then a plain property read — a
+               // miss is nil (the JumpIfNotNil write test), and a closed
+               // namespace's unknown member raises its AttributeError at
+               // the DOT node (consts[d], the interp's
+               // reject_namespace_write anchor) before the RHS ever runs.
+  NsWrChk,     // the plain `o.k = v` namespace-typo check: when regs[a] is
+               // an Object, culebra_runtime_check_namespace_write raises
+               // AttributeError at this instruction's position (the DOT
+               // node) for a closed namespace's unknown member. A
+               // non-Object receiver falls through silently — PropSet's
+               // receiver gate reports it, same observable order.
   PropVal,     // regs[a] = property consts[c] of regs[b], read AS A VALUE
                // (+1) — a bare `x.name`, the JIT's non-call DOT arm. The
                // resolve is emit_property_get's (function introspection on a
@@ -2281,32 +2312,50 @@ class Compiler {
                          static_cast<int64_t>(ast.line),
                          static_cast<int64_t>(ast.column));
     }
-    if (fin.original_tag != "INDEX"_) reject(fin, "property assignment");
-
     auto chain_prefix = [&] {
-      auto recv = compile_expr(*ast.nodes[av.lvaloff]);
-      for (size_t i = av.lvaloff + 1; i < end; ++i) {
-        const auto& post = *ast.nodes[i];
-        if (post.original_tag == "ARGUMENTS"_)
-          recv = compile_call_step(ast, post, recv);
-        else if (post.original_tag == "INDEX"_)
-          recv = compile_index_read(ast, post, recv, Op::Index);
-        else if (post.original_tag == "DOT"_) {
-          // Intermediate `.p` / `.m(...)` in a receiver prefix
-          // (`d.next.field[0] = v`) — plain rvalue reads, the same steps the
-          // chain fold uses. `?.` cannot appear here: the grammar has no
-          // safe-navigating lvalue.
-          if (i + 1 < end && ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
-            recv = compile_method_call(ast, post, *ast.nodes[i + 1], recv);
-            ++i;
-          } else {
-            recv = compile_property_read(ast, post, recv);
-          }
-        } else
-          reject(post, "call chain");
-      }
-      return recv;
+      return compile_lvalue_prefix(ast, av.lvaloff, end);
     };
+
+    if (fin.original_tag == "DOT"_) {
+      // `o.k = v` / `o.k op= v` / `o.k ??= v`. The receiver gate and every
+      // object_set throw anchor at the assignment statement; the DOT node
+      // is the anchor for the two write-context property errors (the
+      // namespace typo and the compound miss), packed into a Long const
+      // for the ops that need both positions.
+      int32_t name = kconst_str(fin.token);
+      int32_t dotpos = kconst_long((static_cast<int64_t>(fin.line) << 32) |
+                                   static_cast<int64_t>(fin.column));
+      if (av.compound && av.op_base == "??") {
+        auto recv = chain_prefix();
+        int32_t cur = alloc_temp(ast);
+        emit(Op::PropCo, cur, recv.slot, name, dotpos);
+        size_t skip = emit(Op::JumpIfNotNil, cur);
+        auto rhs = compile_expr(*av.rhs);
+        emit_prop_set(fin, recv.slot, rhs.slot, /*ns_check=*/false);
+        store_into(cur, rhs);
+        patch_to_here(skip);
+        return {cur, true};
+      }
+      if (av.compound) {
+        Op op = compound_op(ast, av.op_base);
+        auto rhs = compile_expr(*av.rhs);
+        auto recv = chain_prefix();
+        int32_t cur = alloc_temp(ast);
+        emit(Op::PropWr, cur, recv.slot, name, dotpos);
+        int32_t t = alloc_temp(ast);
+        emit(op, t, cur, rhs.slot, /*inplace=*/1);
+        // No namespace check on the write-back: a namespace's unknown
+        // member already fell out of PropWr, and a known one overwrites
+        // into its own (immutable) slot — the interp's order.
+        emit_prop_set(fin, recv.slot, t, /*ns_check=*/false);
+        return {t, true};
+      }
+      auto rhs = compile_expr(*av.rhs);
+      auto recv = chain_prefix();
+      emit_prop_set(fin, recv.slot, rhs.slot, /*ns_check=*/true);
+      return rhs;
+    }
+    if (fin.original_tag != "INDEX"_) reject(fin, "property assignment");
 
     if (av.compound && av.op_base == "??") {
       auto recv = chain_prefix();
@@ -2337,6 +2386,128 @@ class Compiler {
     auto key = compile_expr(fin);
     emit(Op::IndexSet, recv.slot, key.slot, rhs.slot);
     return rhs;
+  }
+
+  // The receiver-prefix fold shared by every complex lvalue (`a.b[i].c`'s
+  // steps before the final set): each intermediate postfix is a plain
+  // rvalue read. `?.` cannot appear — the grammar has no safe-navigating
+  // lvalue.
+  ExprResult compile_lvalue_prefix(const peg::Ast& at, size_t lvaloff,
+                                   size_t end) {
+    using namespace peg::udl;
+    auto recv = compile_expr(*at.nodes[lvaloff]);
+    for (size_t i = lvaloff + 1; i < end; ++i) {
+      const auto& post = *at.nodes[i];
+      if (post.original_tag == "ARGUMENTS"_)
+        recv = compile_call_step(at, post, recv);
+      else if (post.original_tag == "INDEX"_)
+        recv = compile_index_read(at, post, recv, Op::Index);
+      else if (post.original_tag == "DOT"_) {
+        if (i + 1 < end && at.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
+          recv = compile_method_call(at, post, *at.nodes[i + 1], recv);
+          ++i;
+        } else {
+          recv = compile_property_read(at, post, recv);
+        }
+      } else
+        reject(post, "call chain");
+    }
+    return recv;
+  }
+
+  // The final `.name = value` store, shared by the three DOT assignment
+  // forms and a PLACE target: the namespace-typo check at the DOT node
+  // (plain writes only — a compound/coalesce write-back's member already
+  // resolved), the well-known contract's position publish, then PropSet.
+  // The value slot keeps its +1, so callers read it as the expression's
+  // value; the statement sweep is its releaser.
+  void emit_prop_set(const peg::Ast& dot, int32_t recv, int32_t val,
+                     bool ns_check) {
+    int32_t name = kconst_str(dot.token);
+    if (ns_check) {
+      StampGuard dp(*this, dot);
+      emit(Op::NsWrChk, recv, 0, name);
+    }
+    // The insert path's well-known contract throw is positionless; publish
+    // the statement position for those four names (compile_object's rule).
+    if (culebra::is_well_known_prop(dot.token)) emit(Op::SetOpPos);
+    emit(Op::PropSet, recv, val, name);
+  }
+
+  // `(a, p[0], o.k) = e` — parallel assignment. The RHS evaluates once and
+  // its elements snapshot into temps (SeqGet) before any target writes, so
+  // a target aliasing the RHS still reads the pre-write values; the writes
+  // then run left-to-right, and a mid-list throw leaves earlier targets
+  // written (both backends' probed order — unlike DESTRUCTURE_ASSIGN's
+  // two-phase all-or-nothing). Shape mismatch is the destructure
+  // ValueError at the statement, checked before anything writes. A
+  // plain-name target must already be visible: the form's implicit
+  // declare stays out of the slice, the bare `x = v` boundary.
+  ExprResult compile_place_assign(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto pv = culebra::view_place_assign(ast);
+    StampGuard pos(*this, ast);
+    int32_t rv = alloc_temp(ast);
+    store_into(rv, compile_expr(*pv.rhs), /*dst_is_fresh=*/true);
+    std::vector<size_t> fail;
+    fail.push_back(
+        emit(Op::SeqChk, rv, 0, static_cast<int32_t>(pv.count), 0));
+    std::vector<int32_t> elems(pv.count, -1);
+    for (size_t i = 0; i < pv.count; ++i) {
+      const auto& t = *ast.nodes[i];
+      if (t.tag != "PLACE"_ && t.token == "_") continue;  // sink: no read
+      elems[i] = alloc_temp(t);
+      emit(Op::SeqGet, elems[i], rv, static_cast<int32_t>(i));
+    }
+    for (size_t i = 0; i < pv.count; ++i) {
+      const auto& t = *ast.nodes[i];
+      if (elems[i] < 0) continue;
+      if (t.tag == "PLACE"_) {
+        compile_place_target(t, elems[i]);
+        continue;
+      }
+      // Bare name: `x = v` semantics minus the declare. The element temp's
+      // +1 moves into the binding; an immutable name throws here, after
+      // the earlier targets already wrote (left-to-right).
+      const Binding* b = lookup(t.token);
+      if (!b) reject(t, "assignment to an undeclared name");
+      if (!b->is_mut) {
+        emit(Op::ImmutErr, kconst_str(t.token));
+      } else if (b->is_cell) {
+        store_cell(t, b->slot, {elems[i], true});
+      } else {
+        store_into(b->slot, {elems[i], true});
+      }
+    }
+    size_t done = emit(Op::Jump);
+    for (size_t ix : fail) patch_to_here(ix);
+    emit(Op::DestrErr);
+    patch_to_here(done);
+    return {rv, false};
+  }
+
+  // One PLACE target's write with an element temp as the value — the
+  // plain (non-compound) final-set arms of compile_assign_index. The
+  // element keeps its +1 through the store (IndexSet/PropSet both
+  // retain-feed); the statement sweep frees it.
+  void compile_place_target(const peg::Ast& place, int32_t val) {
+    using namespace peg::udl;
+    size_t end = place.nodes.size() - 1;
+    const auto& fin = *place.nodes[end];
+    if (fin.original_tag == "ARGUMENTS"_) {
+      throw CulebraError("SyntaxError",
+                         "cannot assign to a function call result.",
+                         static_cast<int64_t>(place.line),
+                         static_cast<int64_t>(place.column));
+    }
+    auto recv = compile_lvalue_prefix(place, 0, end);
+    if (fin.original_tag == "DOT"_) {
+      emit_prop_set(fin, recv.slot, val, /*ns_check=*/true);
+      return;
+    }
+    if (fin.original_tag != "INDEX"_) reject(fin, "property assignment");
+    auto key = compile_expr(fin);
+    emit(Op::IndexSet, recv.slot, key.slot, val);
   }
 
   void compile_for(const peg::Ast& ast) {
@@ -3634,6 +3805,8 @@ class Compiler {
         return compile_assignment(ast);
       case "DESTRUCTURE_ASSIGN"_:
         return compile_destructure_assign(ast);
+      case "PLACE_ASSIGN"_:
+        return compile_place_assign(ast);
       case "TRY"_:
         return compile_try(ast);
       case "MATCH"_:
@@ -3694,6 +3867,7 @@ inline std::string dump(const Chunk& c) {
       "ObjectNew", "ObjectSet", "ObjectSetAny", "ObjectMerge",
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
+      "PropSet",   "PropWr",    "PropCo",     "NsWrChk",
       "PropVal",   "BareMethChk", "MethGate", "ChkParam", "BMeth", "PropRaw",
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
@@ -4622,6 +4796,107 @@ struct Exec {
             culebra_runtime_type_error_typed(
                 line, col, "Array", static_cast<int8_t>(recv.tag));
           }
+          ++pc;
+          break;
+        }
+        case Op::NsWrChk: {
+          const JitValue& recv = regs[in.a];
+          if (recv.tag == TAG_OBJECT) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            culebra_runtime_check_namespace_write(
+                reinterpret_cast<JitObject*>(recv.data),
+                reinterpret_cast<const char*>(c.consts[in.c].data), line,
+                col);
+          }
+          ++pc;
+          break;
+        }
+        case Op::PropSet: {
+          const JitValue& recv = regs[in.a];
+          const JitValue& val = regs[in.b];
+          auto [line, col] = chunk_pos_at(c, pc);
+          if (recv.tag != TAG_OBJECT)
+            culebra_runtime_type_error_typed(
+                line, col, "Object, Array, or Tensor",
+                static_cast<int8_t>(recv.tag));
+          // The retain feeds object_set's consuming store; the register
+          // keeps its +1 so the assignment expression reads it afterwards.
+          culebra_runtime_value_retain(static_cast<int8_t>(val.tag), val.data);
+          culebra_runtime_object_set(
+              reinterpret_cast<JitObject*>(recv.data),
+              reinterpret_cast<const char*>(c.consts[in.c].data),
+              /*mut=*/true, static_cast<int8_t>(val.tag), val.data, line, col,
+              /*is_init=*/false);
+          ++pc;
+          break;
+        }
+        case Op::PropWr: {
+          const JitValue& recv = regs[in.b];
+          const auto* key = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto [line, col] = chunk_pos_at(c, pc);
+          if (recv.tag != TAG_OBJECT)
+            culebra_runtime_type_error_typed(
+                line, col, "Object, Array, or Tensor",
+                static_cast<int8_t>(recv.tag));
+          // The Shared-view reject runs ahead of the existence check (the
+          // interp's is_shared_val_view-before-find_prop order), at the
+          // statement; the miss anchors at the DOT node from consts[d].
+          if (culebra_runtime_nc_receiver_kind(recv.data) == 2)
+            culebra_runtime_throw_error("ImmutableError",
+                                        "Shared values are immutable", line,
+                                        col);
+          auto* obj = reinterpret_cast<JitObject*>(recv.data);
+          if (!culebra_runtime_object_has(obj, key)) {
+            int64_t pk = c.consts[in.d].data;
+            culebra_runtime_compound_missing_property(pk >> 32,
+                                                      pk & 0xffffffff);
+          }
+          JitPropIC ic{};
+          JitValue view = culebra_runtime_prop_get(TAG_OBJECT, recv.data, key,
+                                                   &ic, line, col,
+                                                   /*own_receiver=*/false);
+          culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
+                                       view.data);
+          regs[in.a] = view;
+          ++pc;
+          break;
+        }
+        case Op::PropCo: {
+          const JitValue& recv = regs[in.b];
+          const auto* key = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto [line, col] = chunk_pos_at(c, pc);
+          if (recv.tag != TAG_OBJECT)
+            culebra_runtime_type_error_typed(
+                line, col, "Object, Array, or Tensor",
+                static_cast<int8_t>(recv.tag));
+          // The nc receiver-kind rejects fire ahead of the read (the JIT's
+          // nc DOT dispatch — only the Shared-view kind is constructible in
+          // the slice, but the mirror keeps the arm 1:1).
+          switch (culebra_runtime_nc_receiver_kind(recv.data)) {
+            case 2:
+              culebra_runtime_throw_error("ImmutableError",
+                                          "Shared values are immutable", line,
+                                          col);
+              break;
+            case 4:
+              culebra_runtime_throw_error(
+                  "TypeError", "`?" "?=` is not supported on a packed field",
+                  line, col);
+              break;
+            default:
+              break;
+          }
+          // A plain read: a dict miss is nil (the JumpIfNotNil write test);
+          // a namespace's unknown member raises AttributeError at the DOT
+          // node (consts[d]) — before the RHS ever runs.
+          int64_t pk = c.consts[in.d].data;
+          JitPropIC ic{};
+          JitValue view = culebra_runtime_prop_get(
+              TAG_OBJECT, recv.data, key, &ic, pk >> 32, pk & 0xffffffff,
+              /*own_receiver=*/false);
+          culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
+                                       view.data);
+          regs[in.a] = view;
           ++pc;
           break;
         }
@@ -6997,6 +7272,157 @@ struct Lowering {
             b.CreateBr(mergeBB);
           }
           b.SetInsertPoint(mergeBB);
+          break;
+        }
+        case Op::NsWrChk: {
+          auto recv = load_slot(in.a);
+          auto isObj = b.CreateICmpEQ(j.extract_tag(recv),
+                                      b.getInt8(TAG_OBJECT), "nswr.is_obj");
+          auto chkBB = BasicBlock::Create(j.ctx_, "vm.nswr.chk", fn);
+          auto okBB = BasicBlock::Create(j.ctx_, "vm.nswr.ok", fn);
+          b.CreateCondBr(isObj, chkBB, okBB);
+          b.SetInsertPoint(chkBB);
+          auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::check_namespace_write,
+                                             b.getVoidTy(), ptrTy, ptrTy,
+                                             i64Ty, i64Ty),
+              {b.CreateIntToPtr(j.extract_data(recv), ptrTy),
+               j.get_or_create_global_str(nm, ".vm.propname"),
+               j.current_line_val(), j.current_column_val()});
+          b.CreateBr(okBB);
+          b.SetInsertPoint(okBB);
+          break;
+        }
+        case Op::PropSet: {
+          auto recv = load_slot(in.a);
+          auto val = load_slot(in.b);
+          auto tag = j.extract_tag(recv);
+          auto okBB = BasicBlock::Create(j.ctx_, "pset.ok", fn);
+          auto errBB = BasicBlock::Create(j.ctx_, "pset.err", fn);
+          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), okBB,
+                         errBB);
+          b.SetInsertPoint(errBB);
+          j.emit_type_error_typed("Object, Array, or Tensor", tag);
+          b.CreateUnreachable();
+          b.SetInsertPoint(okBB);
+          // The retain feeds object_set's consuming store; the slot keeps
+          // its +1 (IndexSet's rule) so the expression still reads it.
+          j.emit_value_retain(val);
+          auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+          j.emit_call(
+              j.module_->getOrInsertFunction(
+                  rt::object_set, b.getVoidTy(), ptrTy, ptrTy, b.getInt1Ty(),
+                  b.getInt8Ty(), i64Ty, i64Ty, i64Ty, b.getInt1Ty()),
+              {b.CreateIntToPtr(j.extract_data(recv), ptrTy),
+               j.get_or_create_global_str(nm, ".vm.propname"),
+               b.getInt1(true), j.extract_tag(val), j.extract_data(val),
+               j.current_line_val(), j.current_column_val(),
+               b.getInt1(false)});
+          break;
+        }
+        case Op::PropWr: {
+          auto recv = load_slot(in.b);
+          auto tag = j.extract_tag(recv);
+          auto okBB = BasicBlock::Create(j.ctx_, "pwr.ok", fn);
+          auto errBB = BasicBlock::Create(j.ctx_, "pwr.err", fn);
+          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), okBB,
+                         errBB);
+          b.SetInsertPoint(errBB);
+          j.emit_type_error_typed("Object, Array, or Tensor", tag);
+          b.CreateUnreachable();
+          b.SetInsertPoint(okBB);
+          auto objData = j.extract_data(recv);
+          auto objPtr = b.CreateIntToPtr(objData, ptrTy);
+          // Shared-view reject ahead of the existence check (the interp's
+          // order), at the statement.
+          auto kind = j.emit_call(
+              j.module_->getOrInsertFunction(rt::nc_receiver_kind,
+                                             b.getInt8Ty(), i64Ty),
+              {objData}, "pwr.kind");
+          auto svBB = BasicBlock::Create(j.ctx_, "pwr.sverr", fn);
+          auto hasBB = BasicBlock::Create(j.ctx_, "pwr.has", fn);
+          b.CreateCondBr(b.CreateICmpEQ(kind, b.getInt8(2)), svBB, hasBB);
+          b.SetInsertPoint(svBB);
+          j.emit_throw_error("ImmutableError", "Shared values are immutable",
+                             j.current_line_, j.current_column_);
+          b.CreateUnreachable();
+          b.SetInsertPoint(hasBB);
+          auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto keyPtr = j.get_or_create_global_str(nm, ".vm.propname");
+          auto has = j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_has, b.getInt1Ty(),
+                                             ptrTy, ptrTy),
+              {objPtr, keyPtr}, "pwr.has");
+          auto readBB = BasicBlock::Create(j.ctx_, "pwr.read", fn);
+          auto missBB = BasicBlock::Create(j.ctx_, "pwr.miss", fn);
+          b.CreateCondBr(has, readBB, missBB);
+          b.SetInsertPoint(missBB);
+          {
+            // The miss anchors at the DOT node, packed into consts[d].
+            int64_t pk = c.consts[in.d].data;
+            j.emit_call(
+                j.module_->getOrInsertFunction(rt::compound_missing_property,
+                                               b.getVoidTy(), i64Ty, i64Ty),
+                {b.getInt64(pk >> 32), b.getInt64(pk & 0xffffffff)});
+            b.CreateUnreachable();
+          }
+          b.SetInsertPoint(readBB);
+          auto view = j.emit_property_get(recv, nm);
+          j.emit_value_retain(view);
+          b.CreateStore(view, slots[in.a]);
+          break;
+        }
+        case Op::PropCo: {
+          auto recv = load_slot(in.b);
+          auto tag = j.extract_tag(recv);
+          auto okBB = BasicBlock::Create(j.ctx_, "pco.ok", fn);
+          auto errBB = BasicBlock::Create(j.ctx_, "pco.err", fn);
+          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), okBB,
+                         errBB);
+          b.SetInsertPoint(errBB);
+          j.emit_type_error_typed("Object, Array, or Tensor", tag);
+          b.CreateUnreachable();
+          b.SetInsertPoint(okBB);
+          auto objData = j.extract_data(recv);
+          // The nc receiver-kind rejects ahead of the read (the JIT's nc
+          // DOT dispatch: Shared view / packed field), at the statement.
+          auto kind = j.emit_call(
+              j.module_->getOrInsertFunction(rt::nc_receiver_kind,
+                                             b.getInt8Ty(), i64Ty),
+              {objData}, "pco.kind");
+          auto svBB = BasicBlock::Create(j.ctx_, "pco.sverr", fn);
+          auto pkBB = BasicBlock::Create(j.ctx_, "pco.packederr", fn);
+          auto readBB = BasicBlock::Create(j.ctx_, "pco.read", fn);
+          auto sw = b.CreateSwitch(kind, readBB, 2);
+          sw->addCase(b.getInt8(2), svBB);
+          sw->addCase(b.getInt8(4), pkBB);
+          b.SetInsertPoint(svBB);
+          j.emit_throw_error("ImmutableError", "Shared values are immutable",
+                             j.current_line_, j.current_column_);
+          b.CreateUnreachable();
+          b.SetInsertPoint(pkBB);
+          j.emit_throw_error("TypeError",
+                             "`?" "?=` is not supported on a packed field",
+                             j.current_line_, j.current_column_);
+          b.CreateUnreachable();
+          b.SetInsertPoint(readBB);
+          {
+            // Pin the read at the DOT node (consts[d]): a namespace's
+            // unknown member raises its AttributeError there, the interp's
+            // reject_namespace_write anchor. A dict miss stays nil.
+            auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+            int64_t pk = c.consts[in.d].data;
+            auto sl = j.current_line_;
+            auto sc = j.current_column_;
+            j.current_line_ = static_cast<size_t>(pk >> 32);
+            j.current_column_ = static_cast<size_t>(pk & 0xffffffff);
+            auto view = j.emit_property_get(recv, nm);
+            j.current_line_ = sl;
+            j.current_column_ = sc;
+            j.emit_value_retain(view);
+            b.CreateStore(view, slots[in.a]);
+          }
           break;
         }
         case Op::Jump:
