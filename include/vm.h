@@ -2095,7 +2095,6 @@ class Compiler {
       for (const auto& p : params->nodes) {
         if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
           reject(*p, "keyword-only / rest parameter");
-        if (culebra::is_pattern_param(*p)) reject(*p, "pattern parameter");
         if (culebra::extract_default_expr(*p)) reject(*p, "default argument");
         for (const auto& pc : p->nodes)
           if (pc->tag == "TYPE_ANNOTATION"_) reject(*p, "typed parameter");
@@ -2121,9 +2120,26 @@ class Compiler {
       const peg::Ast* at;
     };
     std::vector<CellPromo> promos;
+    // A destructuring param (`fn ([a, b])`) is one positional ABI slot under
+    // the JIT's synthetic name (which also feeds the ArityError message);
+    // the prologue below unpacks it. No binding: the synthetic name is not
+    // referencable (interp/JIT NameError; here the usual unresolved reject).
+    struct PatParam {
+      const peg::Ast* pat;
+      int32_t slot;
+    };
+    std::vector<PatParam> pat_params;
     if (params) {
       for (const auto& p : params->nodes) {
         auto pv = culebra::view_parameter(*p);
+        if (pv.pattern) {
+          auto synth = std::string(
+              culebra::destructure_param_name(fc.chunk_.param_names.size()));
+          int32_t slot = fc.alloc_slot(*p, synth);
+          fc.chunk_.param_names.push_back(synth);
+          pat_params.push_back({pv.pattern, slot});
+          continue;
+        }
         auto name = std::string(pv.name);
         int32_t slot = fc.alloc_slot(*p, name);
         fc.chunk_.param_names.push_back(name);
@@ -2155,6 +2171,23 @@ class Compiler {
       fc.emit(Op::BindCapture, s, static_cast<int32_t>(i));
       fc.scopes_.back().bindings.push_back(
           {info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]});
+    }
+    // Unpack destructuring params, left to right: the test-then-bind walks
+    // of compile_destructure_assign against the synthetic slot (borrowed —
+    // it stays behind as an anonymous drained slot). Every throw anchors at
+    // the pattern node (interp/JIT's destructure_mismatch anchor), and the
+    // leaves declare immutable frame bindings, cells included.
+    for (const auto& pp : pat_params) {
+      StampGuard pos(fc, *pp.pat);
+      TempScope ts(fc);
+      std::vector<size_t> fail;
+      fc.compile_pattern_test(*pp.pat, pp.slot, fail);
+      fc.compile_pattern_bind(*pp.pat, pp.slot, /*subj_owned=*/false, fail,
+                              /*is_mut=*/false, /*declares=*/true);
+      size_t done = fc.emit(Op::Jump);
+      for (size_t ix : fail) fc.patch_to_here(ix);
+      fc.emit(Op::DestrErr);
+      fc.patch_to_here(done);
     }
     int32_t rv = fc.alloc_temp(ast);
     fc.compile_block_into(body, rv);

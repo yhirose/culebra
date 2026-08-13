@@ -1,0 +1,7 @@
+# Pattern leaves are immutable, like plain params: the reassignment site
+# reports, not the pattern.
+let f = fn ([a]) {
+  a = 5
+  a
+}
+f([1])

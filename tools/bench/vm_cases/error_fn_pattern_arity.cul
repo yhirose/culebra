@@ -1,0 +1,4 @@
+# A missing pattern argument reports the synthetic slot name — the same
+# leak interp and the JIT show.
+let f = fn ([a, b]) { a }
+f()

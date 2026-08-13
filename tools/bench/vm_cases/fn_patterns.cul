@@ -1,0 +1,109 @@
+# Destructuring params on every fn form: one synthetic positional slot,
+# unpacked by the prologue's test-then-bind walks. A mismatch is the
+# destructure ValueError anchored at the pattern node; the leaves are
+# immutable frame bindings, cell-promoted when captured.
+
+# --- Every fn form, happy path -------------------------------------------
+let f1 = fn ([a, b]) { a + b }
+println(f1([1, 2]))
+
+fn f2([a, b]) { a * b }
+println(f2([3, 4]))
+
+let f3 = |[a, b]| a - b
+println(f3([10, 3]))
+
+let f4 = fn ({x, y}) { x + y }
+println(f4({x: 5, y: 6}))
+
+let f5 = |{k}| k
+println(f5({k: 42}))
+
+let f6 = fn ((a, b)) { a + b }
+println(f6((7, 8)))
+
+# A seq pattern takes Tuple and Array alike (match parity).
+println(f6([1, 1]))
+println(f1((2, 2)))
+
+# Mixed plain and pattern params, and two patterns side by side.
+let f7 = fn (p, [a, b], q) { p + a + b + q }
+println(f7(1, [2, 3], 4))
+let f8 = fn ([a], [b]) { a * 10 + b }
+println(f8([9], [5]))
+
+# --- Nested, rest, sink, literal and typed leaves ------------------------
+let n1 = fn ([[a, b], {k}]) { a + b + k }
+println(n1([[1, 2], {k: 3}]))
+
+let r1 = fn ([h, ...t]) { "{h}|{t}" }
+println(r1([1, 2, 3]))
+println(r1([1]))
+let r2 = fn ([a, ...m, z]) { "{a}|{m}|{z}" }
+println(r2([1, 2, 3, 4, 5]))
+
+let s1 = fn ([_, b]) { b }
+println(s1([1, 2]))
+let s2 = fn ({x: _, y}) { y }
+println(s2({x: 1, y: 9}))
+
+let l1 = fn ([1, a]) { a }
+println(l1([1, 7]))
+println(try { l1([2, 7]) } catch e { e.kind })
+
+let t1 = fn ([a: Long, b]) { a + b }
+println(t1([1, 2]))
+println(try { t1(['x', 2]) } catch e { e.kind })
+
+# Duplicate leaves: last one wins (lookup walks newest-first).
+let d1 = fn ([a, a]) { a }
+println(d1([1, 2]))
+
+# Object pattern: a present-but-nil key matches; a missing key mismatches.
+let o1 = fn ({x}) { inspect(x) }
+o1({x: nil})
+println(try { o1({y: 1}) } catch e { "miss" })
+
+# --- Captured leaves (cell promotion) ------------------------------------
+let mk = fn ([a, b]) { fn () { a + b } }
+println(mk([20, 22])())
+let mk2 = fn ({x}) { || x * 2 }
+println(mk2({x: 21})())
+
+# The recursion handle sees the frame's pattern leaves fresh per call.
+let fact = fn ([n, acc]) {
+  if n == 0 { acc } else { fn([n - 1, acc * n]) }
+}
+println(fact([5, 1]))
+
+# --- multifn: pattern arm is one positional slot for arity dispatch ------
+fn h([a, b]) { 'pattern' }
+fn h(x, y, z) { 'three' }
+println(h([1, 2]))
+println(h(1, 2, 3))
+println(try { h([1]) } catch e { e.kind })  # arm won, then mismatched
+
+# --- A mismatch crossing the frame into the caller's handler -------------
+let take = fn ([h, [t]]) { h + t }
+println(try { take([1, [2]]) } catch e { "no" })
+println(try { take([1, 2]) } catch e { "mismatch" })
+println(try { take(5) } catch e { "mismatch" })
+
+# --- Churn: unpack (success and mismatch) repeatedly ---------------------
+mut i = 0
+mut total = 0
+while i < 300 {
+    let g = fn ([u, {v}, ...rest]) { u + v + rest.size() }
+    total = total + g([i, {v: 1}, 7, 8])
+    let ok = try {
+        g([i])
+        false
+    } catch er {
+        er.kind == "ValueError"
+    }
+    let cap = fn ([c]) { || c }
+    total = total + cap([2])()
+    if !ok { throw "regression at churn" }
+    i = i + 1
+}
+println(total)

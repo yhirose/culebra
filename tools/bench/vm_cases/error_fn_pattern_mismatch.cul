@@ -1,0 +1,4 @@
+# An uncaught param-pattern mismatch: ValueError anchored at the pattern
+# node, not the call site or the failing element.
+let f = fn (p, [a, b]) { a }
+f(1, [2])
