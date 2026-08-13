@@ -1,0 +1,92 @@
+# UFCS: `x.f(args)` where the receiver has no property `f` and a free
+# function of that name is visible — batch 18's HasProp gate + Call arms.
+
+# Basic: user free fns over every receiver kind the slice can build.
+fn dbl(x) { x * 2 }
+fn addn(x, n) { x + n }
+println((3).dbl())
+println((3).dbl().dbl())
+println((3).addn(4))
+println(3.5.dbl())
+fn head2(xs) { xs[0] }
+println([7, 8].head2())
+fn wrap(v) { [v] }
+println('ab'.wrap())
+println(nil.wrap())
+fn pair(t) { t }
+println((1, 2).pair())
+
+# The gate: an own property wins over the candidate; a namespace resolves
+# every name itself; a plain dict miss takes UFCS with the dict as arg 0.
+let o1 = {'dbl': fn () { 'own' }}
+println(o1.dbl())
+fn keys_of(d) { d.keys() }
+println({'a': 1}.keys_of())
+fn tag_it(r) { 'iter-ufcs' }
+println(range(0, 3).tag_it())
+try { Math.dbl() } catch e { println("{e.kind}: {e.message}") }
+
+# A non-Function candidate declines the gate: ordinary dispatch, whose
+# scalar member error fires before the arguments run.
+let nonfn = 5
+fn boom() { throw 'B' }
+try { (3).nonfn(boom()) } catch e { println("{e.kind}: {e.message}") }
+try { {'a': 1}.nonfn(boom()) } catch e { println('caught: ' + e) }
+
+# let-bound and mut-rebound candidates; a multifn dispatches by arity.
+let dblL = |x| x * 2
+println((5).dblL())
+mut swp = |x| 'one'
+println((1).swp())
+swp = |x| 'two'
+println((1).swp())
+fn f(x) { 1 }
+fn f(x, y) { 2 }
+println((3).f())
+println((3).f(4))
+
+# A mutating callee sees the same array; safe-nav short-circuits the chain.
+fn app(xs) { xs.push(9) }
+let a = [1]
+a.app()
+println(a)
+mut mv = nil
+println(mv?.dbl())
+mv = 6
+println(mv?.dbl())
+
+# stdlib global candidates through the same gate.
+println((3).inspect())
+println((3).type_of())
+println('42'.to_long())
+println((3).to_float())
+println((2).iota())
+let r = (3).range()
+println([r.start, r.end, r.inclusive])
+println((3).hash() == (3).hash())
+(4).println()
+fn inspect(x) { 'mine' }
+println((3).inspect())
+
+# Error kinds through the UFCS call itself.
+fn two(x, y) { x + y }
+try { (3).two() } catch e { println("{e.kind}: {e.message}") }
+try { (3).println(4) } catch e { println("{e.kind}: {e.message}") }
+try { [1].hash() } catch e { println("{e.kind}: {e.message}") }
+try { 'zz'.to_long() } catch e { println("{e.kind}: {e.message}") }
+try { (3.5).range() } catch e { println("{e.kind}: {e.message}") }
+
+# Churn: the gate + both arms in a loop, heap receivers and results.
+fn tail2(xs) { xs[xs.size() - 1] }
+mut i = 0
+mut keep = []
+while i < 300 {
+    let row = [i, i * 2]
+    keep.push(row.tail2())
+    if keep.size() > 6 { keep = keep.wrap().head2() ; keep = [] }
+    i += 1
+}
+println(i)
+# uncaught, last: the boundary position of a positionless native error
+let h = hash
+[1].h()

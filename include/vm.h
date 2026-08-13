@@ -283,6 +283,15 @@ enum class Op : uint8_t {
                // PropVal it neither binds `self` into a wrapper nor runs the
                // bare-method reject: CallM passes the receiver as `self`
                // itself, compile_method_call's property tail.
+  HasProp,     // regs[a] = Bool: does regs[b] resolve consts[c] as a property
+               // of its own? The UFCS gate (interp's receiver_has_property /
+               // the JIT's method-or-UFCS branch). Only names outside every
+               // builtin method table reach a UFCS site (the builtin-name
+               // collision stays a compile-time reject), so the value-table
+               // and iterator arms of the full gate are statically false and
+               // the question collapses to its Object arm: an own/proto slot,
+               // a conforming instance's trait default, or a closed namespace
+               // (which answers every name itself). Nothrow.
   SeqChk,      // destructuring gate: unless regs[a] is an Array or Tuple of
                // exactly c elements (d=0) — at least c, when the pattern has
                // a `...rest` (d=1) — pc = b. One JitArray backs both tags, so
@@ -369,6 +378,13 @@ enum class Op : uint8_t {
                // interpolation piece renders — stamped at the string
                // literal, so a positionless throw in the display walk
                // (nesting too deep) backfills there, the JIT's emit order.
+  BoundPos,    // publish this instruction's line/col as the NEXT call's
+               // boundary (culebra_runtime_set_call_boundary) — where a
+               // positionless error escaping that call lands, the interp's
+               // eval() boundary. Emitted at a UFCS site, stamped at the
+               // postfix chain node, right before the Call (whose
+               // set_call_site consumes the pending pair); every other call
+               // shape leaves the boundary at its call site.
   Disp,        // regs[a] = display string of regs[b] (value_to_display,
                // borrow) — a bare `{expr}` piece. The result is a fresh
                // heap string: TAG_STRING, so outside RC entirely.
@@ -1720,11 +1736,16 @@ class Compiler {
   // is an owned temp (JIT load_slot), unlike a plain slot's borrow. A lazy
   // dispatcher cell read before its decl ran guards for the unbound
   // sentinel (NameError at the reference, interp parity).
-  ExprResult read_binding(const peg::Ast& at, const Binding& b) {
+  // `unbound_guard=false` is the UFCS candidate load: a lazy dispatcher
+  // cell still holding its sentinel must decline the gate like any other
+  // non-Function (interp's env->has is false before the decl ran), not
+  // raise the read's NameError — the JIT's optional-candidate rule.
+  ExprResult read_binding(const peg::Ast& at, const Binding& b,
+                          bool unbound_guard = true) {
     if (!b.is_cell) return {b.slot, false};
     int32_t t = alloc_temp(at);
     emit(Op::CellGet, t, b.slot);
-    if (b.lazy) emit(Op::UnboundErr, t, kconst_str(b.name));
+    if (b.lazy && unbound_guard) emit(Op::UnboundErr, t, kconst_str(b.name));
     return {t, true};
   }
 
@@ -2745,17 +2766,34 @@ class Compiler {
       reject(post, std::format("function introspection '{}'", post.token));
   }
 
+  // The compile-time UFCS candidate for `name` at this site, if any — the
+  // JIT's ufcs_free_fn_loader: a scope binding first (Function-ness is a
+  // runtime fact; a non-Function declines the gate there), then a bare
+  // stdlib global the resolver owns. A built-in that subsumes its global
+  // (`to_string`) needs no UFCS arm: the built-in performs the same
+  // conversion on every receiver the global would have taken. Only the
+  // stdlib half of the test is exempt — a name the user declared shadows
+  // the built-in on both backends, and that stays out of slice.
+  enum class UfcsCand { None, Binding, Global };
+  UfcsCand ufcs_candidate(std::string_view name, const BMethSpec* spec) {
+    if (lookup(name)) return UfcsCand::Binding;
+    bool subsumes = spec && spec->subsumes_global;
+    if (is_stdlib_global(name) && !subsumes) return UfcsCand::Global;
+    return UfcsCand::None;
+  }
+
   void reject_out_of_slice_method(const peg::Ast& post,
                                   const BMethSpec* spec) {
     reject_fn_introspection(post);
     std::string_view name = post.token;
-    // A built-in that subsumes its global (`to_string`) needs no UFCS arm:
-    // the built-in performs the same conversion on every receiver the global
-    // would have taken. Only the stdlib half of the test is exempt — a name
-    // the user declared shadows the built-in on both backends, and that stays
-    // out of slice.
-    bool subsumes = spec && spec->subsumes_global;
-    if (lookup(name) || (is_stdlib_global(name) && !subsumes))
+    // A candidate on a BUILT-IN method name stays rejected: its hit arm is
+    // the inline tag dispatch (or the specs' MethGate, whose gate has no
+    // UFCS arm) — `(5).map(f)` with a free `map` needs a gate ahead of
+    // machinery the slice compiles differently. A candidate on any other
+    // name compiles the runtime gate (compile_method_call's UFCS arms).
+    if (ufcs_candidate(name, spec) != UfcsCand::None &&
+        (spec || culebra::is_builtin_method_name(name) || name == "drop" ||
+         name == "parameters"))
       reject(post, std::format("UFCS candidate '{}'", name));
     if (spec) return;
     if (culebra::is_builtin_method_name(name))
@@ -2777,6 +2815,82 @@ class Compiler {
     reject_out_of_slice_method(post, spec);
     reject_kwargs(args);
     if (spec) return compile_builtin_method(at, post, args, recv, *spec);
+    UfcsCand cand = ufcs_candidate(post.token, spec);
+    if (cand == UfcsCand::None)
+      return compile_property_call(at, post, args, recv);
+    // A visible candidate: the runtime gate decides, interp's eval_call
+    // order — resolution first, arguments inside whichever arm runs. Every
+    // arm writes the merge temp once per disjoint path (compile_if's
+    // discipline), and each consumes the receiver exactly once at runtime
+    // (a Take fires only on the arm that executes).
+    StampGuard pos(*this, at);
+    int32_t out = alloc_temp(at);
+    int32_t gate = alloc_temp(at);
+    emit(Op::HasProp, gate, recv.slot, kconst_str(post.token));
+    size_t to_ufcs = emit(Op::JumpIfFalse, gate);
+    // hit arm: the receiver resolves the name itself.
+    store_into(out, compile_property_call(at, post, args, recv),
+               /*dst_is_fresh=*/true);
+    size_t done_hit = emit(Op::Jump);
+    patch_to_here(to_ufcs);
+    // The candidate load. A lazy dispatcher cell's sentinel declines the
+    // Function test below like interp's pre-decl env miss (no UnboundErr);
+    // NsGet is the resolver's cached closure, always a Function.
+    const Binding* cb =
+        cand == UfcsCand::Binding ? lookup(post.token) : nullptr;
+    ExprResult candv = cb ? read_binding(post, *cb, /*unbound_guard=*/false)
+                          : [&] {
+                              int32_t t = alloc_temp(post);
+                              emit(Op::NsGet, t, kconst_str(post.token));
+                              return ExprResult{t, true};
+                            }();
+    if (cb && cb->lazy && is_stdlib_global(post.token)) {
+      // A predeclared `fn` shadowing a stdlib global: until its decl
+      // statement runs, interp's env walk still resolves the GLOBAL, so a
+      // sentinel substitutes the resolver's closure instead of declining.
+      // The sentinel is not RC'd, so NsGet's +1 overwrites it in place.
+      size_t subst = emit(Op::JumpIfTag, candv.slot, 0, TAG_NO_SELF);
+      size_t over = emit(Op::Jump);
+      patch_to_here(subst);
+      emit(Op::NsGet, candv.slot, kconst_str(post.token));
+      patch_to_here(over);
+    }
+    size_t to_call = emit(Op::JumpIfTag, candv.slot, 0, TAG_FUNC);
+    // non-Function candidate: ordinary dispatch, the property read's own
+    // errors included (scalar member TypeError before the arguments run).
+    store_into(out, compile_property_call(at, post, args, recv),
+               /*dst_is_fresh=*/true);
+    size_t done_miss = emit(Op::Jump);
+    patch_to_here(to_call);
+    // UFCS: `name(receiver, args...)`. The receiver rides as positional[0];
+    // the call site is the ARGUMENTS node (interp's eval_ufcs_call, the
+    // JIT's CallSiteAt(argsAst)).
+    {
+      int32_t argc = static_cast<int32_t>(args.nodes.size());
+      int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
+      alloc_temp(at);             // [0] = the receiver
+      for (int32_t i = 0; i < argc; i++) alloc_temp(*args.nodes[i]);
+      store_into(base, recv, /*dst_is_fresh=*/true);
+      for (int32_t i = 0; i < argc; i++)
+        store_into(base + 1 + i, compile_expr(*args.nodes[i]),
+                   /*dst_is_fresh=*/true);
+      int32_t t = alloc_temp(at);
+      emit(Op::BoundPos);  // ambient stamp = the chain node `at`
+      {
+        StampGuard call_pos(*this, args);
+        emit(Op::Call, t, candv.slot, base, argc + 1);
+      }
+      store_into(out, {t, true}, /*dst_is_fresh=*/true);
+    }
+    patch_to_here(done_hit);
+    patch_to_here(done_miss);
+    return {out, true};
+  }
+
+  // The no-candidate tail (and both non-UFCS arms of the gated form):
+  // resolve the property, then the arguments, then the JitFn call.
+  ExprResult compile_property_call(const peg::Ast& at, const peg::Ast& post,
+                                   const peg::Ast& args, ExprResult recv) {
     StampGuard pos(*this, at);
     int32_t callee = alloc_temp(at);
     emit(Op::PropRaw, callee, recv.slot, kconst_str(post.token));
@@ -3869,13 +3983,14 @@ inline std::string dump(const Chunk& c) {
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "PropSet",   "PropWr",    "PropCo",     "NsWrChk",
       "PropVal",   "BareMethChk", "MethGate", "ChkParam", "BMeth", "PropRaw",
+      "HasProp",
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
       "JumpIfTag",
       "MakeClosure", "Call",    "CallM",      "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "UnboundErr", "MultifnReg", "NsGet",
-      "SetOpPos",  "Disp",      "Fmt",        "StrCat",
+      "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
@@ -4579,6 +4694,21 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::HasProp: {
+          const JitValue& recv = regs[in.b];
+          const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
+          // The Object arm of the UFCS gate; every other tag is a static
+          // miss here (the compiler only emits HasProp for names outside
+          // the builtin method tables — see the op's comment).
+          bool has =
+              recv.tag == TAG_OBJECT &&
+              (culebra_runtime_object_has_or_trait_default(
+                   reinterpret_cast<JitObject*>(recv.data), key) ||
+               culebra_runtime_is_namespace(recv.data));
+          regs[in.a] = JitValue{TAG_BOOL, has ? 1 : 0};
+          ++pc;
+          break;
+        }
         case Op::MethGate: {
           const JitValue& recv = regs[in.b];
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
@@ -5159,6 +5289,12 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::BoundPos: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_set_call_boundary(line, col);
+          ++pc;
+          break;
+        }
         case Op::Disp:
           regs[in.a] = JitValue{
               TAG_STRING,
@@ -5235,11 +5371,17 @@ struct Exec {
           pc = static_cast<size_t>(in.b);
           break;
         }
-        case Op::Println:
+        case Op::Println: {
+          // The str walker inside raises a positionless ValueError on a
+          // too-deep value; publish this row's position so the boundary
+          // backfill lands there (the JIT's emit_output_call order).
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_set_op_pos(line, col);
           culebra_runtime_println(static_cast<int8_t>(regs[in.a].tag),
                                   regs[in.a].data);
           ++pc;
           break;
+        }
         case Op::Safepoint:
           if (culebra_g_wake.load(std::memory_order_relaxed))
             culebra::throw_if_interrupted();
@@ -6031,6 +6173,30 @@ struct Lowering {
             b.CreateStore(j.emit_property_value_read(recv, view, key),
                           slots[in.a]);
           }
+          break;
+        }
+        case Op::HasProp: {
+          // The Object arm of the UFCS gate — compile_method_or_ufcs's test
+          // (emit_receiver_resolves_method) behind the same tag check; every
+          // other tag is a static miss for the names that reach a UFCS site.
+          std::string key(_str_sv(
+              reinterpret_cast<const char*>(c.consts[in.c].data)));
+          auto recv = load_slot(in.b);
+          auto entryBB = b.GetInsertBlock();
+          auto objBB = BasicBlock::Create(j.ctx_, "vhp.obj", fn);
+          auto contBB = BasicBlock::Create(j.ctx_, "vhp.cont", fn);
+          b.CreateCondBr(
+              b.CreateICmpEQ(j.extract_tag(recv), b.getInt8(TAG_OBJECT)),
+              objBB, contBB);
+          b.SetInsertPoint(objBB);
+          auto objHit = j.emit_receiver_resolves_method(recv, key);
+          auto objEnd = b.GetInsertBlock();
+          b.CreateBr(contBB);
+          b.SetInsertPoint(contBB);
+          auto hit = b.CreatePHI(b.getInt1Ty(), 2, "vhp.hit");
+          hit->addIncoming(b.getFalse(), entryBB);
+          hit->addIncoming(objHit, objEnd);
+          b.CreateStore(j.make_bool(hit), slots[in.a]);
           break;
         }
         case Op::MethGate: {
@@ -7624,6 +7790,10 @@ struct Lowering {
           // position state, already fed from this instruction's table row).
           j.emit_set_op_pos();
           break;
+        case Op::BoundPos:
+          // Same shape: the UFCS boundary publish over this row's position.
+          j.emit_set_call_boundary();
+          break;
         case Op::Disp: {
           auto v = load_slot(in.b);
           auto s = j.emit_call(
@@ -7729,6 +7899,7 @@ struct Lowering {
         }
         case Op::Println: {
           auto v = load_slot(in.a);
+          j.emit_set_op_pos();  // the too-deep walk's backfill anchor
           j.emit_call(j.module_->getFunction(rt::println),
                       {j.extract_tag(v), j.extract_data(v)});
           break;
