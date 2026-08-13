@@ -20,6 +20,7 @@
 #include <net.h>
 #include <proc.h>
 #include <canvas.h>
+#include <font_ttf.h>
 #include <image.h>
 #include <term.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -820,6 +821,32 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sprite_free(
   if (!culebra::_canvas_detail::sprite_free(id))
     throw culebra::CulebraError(
         "ValueError", culebra::_canvas_detail::kFreeTargetError, line, col);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_ttf_load(
+    uint8_t tag, int64_t data, int64_t line, int64_t col) {
+  auto r = culebra::_canvas_detail::ttf_load(_culebra_str_view(tag, data));
+  if (!r.error.empty())
+    throw culebra::CulebraError("ValueError", r.error, line, col);
+  return r.id;
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_ttf_free(
+    int64_t id) {
+  culebra::_canvas_detail::ttf_free(id);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_ttf_glyph(
+    int64_t font, int64_t codepoint, int64_t x, int64_t y, int64_t rgba,
+    int64_t size) {
+  return culebra::_canvas_detail::ttf_glyph(
+      font, codepoint, static_cast<int>(x), static_cast<int>(y),
+      static_cast<uint32_t>(rgba), size);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_ttf_advance(
+    int64_t font, int64_t codepoint, int64_t size) {
+  return culebra::_canvas_detail::ttf_advance(font, codepoint, size);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_ttf_ascent(
+    int64_t font, int64_t size) {
+  return culebra::_canvas_detail::ttf_ascent(font, size);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_target(
     int64_t id, int64_t line, int64_t col) {
@@ -8218,6 +8245,13 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_sprite_height, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_blank, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_sprite_free, vt, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_ttf_load, i64,
+                                   jit.builder_.getInt8Ty(), i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_ttf_free, vt, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_ttf_glyph, i64, i64, i64, i64,
+                                   i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_ttf_advance, i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_ttf_ascent, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_target, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_blit, vt, i64, i64, i64, i64, i64,
                                    i64, i64, i64, i64, i64);
@@ -9427,6 +9461,30 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
         v->push_back(col);
         return call_void(rt::canvas_sprite_free, *v);
       }
+    if (method == "ttf_load" && a.size() == 1) {
+      auto data = jit.compile(*a[0]);
+      emit_type_check(data.borrow(), "String", "parameter 'data'", a[0].get());
+      auto id = emit_call(module_->getFunction(rt::canvas_ttf_load),
+                          {extract_tag(data.borrow()),
+                           extract_data(data.borrow()), line, col});
+      data.drop();
+      return jit.own(make_long(id));
+    }
+    if (method == "ttf_free")
+      if (auto v = args({{"id"}})) return call_void(rt::canvas_ttf_free, *v);
+    if (method == "ttf_glyph")
+      if (auto v = args({{"font"}, {"codepoint"}, {"x", Coord}, {"y", Coord},
+                         {"rgba"}, {"size"}}))
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_ttf_glyph), *v)));
+    if (method == "ttf_advance")
+      if (auto v = args({{"font"}, {"codepoint"}, {"size"}}))
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_ttf_advance), *v)));
+    if (method == "ttf_ascent")
+      if (auto v = args({{"font"}, {"size"}}))
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_ttf_ascent), *v)));
     if (method == "target")
       if (auto v = args({{"id"}})) {
         v->push_back(line);

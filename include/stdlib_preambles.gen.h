@@ -1090,6 +1090,56 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     }
   }
 
+  # A parsed TTF/OTF font (its bytes as a String, e.g. from `FS.read` or
+  # `Embed.dir(...).read(...)` -- the latter bakes the font into an AOT
+  # binary the same way it already does for Sprite.from_png assets). Unlike
+  # Sprite this has no fixed size: size is given per draw call, so one Font
+  # serves every size a program uses, and the native side caches rasterized
+  # glyphs per (font, codepoint, size). stb_truetype does no bounds-checking
+  # against malformed input (unlike the PNG decoder behind Sprite.from_png)
+  # -- only load fonts from trusted sources.
+  class Font {
+    new(data: String) {
+      self._id = _Canvas.ttf_load(data)
+    }
+    # A font's native memory frees when the last reference drops, mirroring
+    # Sprite. A constructor that threw (bad font bytes) drops before _id was
+    # ever set.
+    drop() {
+      _Canvas.ttf_free(self._id) if self._id != nil
+    }
+    # Pixel ascent at `size`: how far the tallest glyph reaches above the
+    # baseline. draw()/text_width() use this so (x, y) reads as visual
+    # top-left, matching Canvas.text's convention even though the native
+    # primitive places glyphs by baseline.
+    ascent(size) {
+      _Canvas.ttf_ascent(self._id, size)
+    }
+    advance(codepoint, size) {
+      _Canvas.ttf_advance(self._id, codepoint, size)
+    }
+    # Draw `s` at (x, y) -- visual top-left -- in `color` at `size` px. Every
+    # Unicode scalar value in `s` is drawn (full Unicode, unlike the built-in
+    # ASCII-only bitmap font): an unmapped codepoint draws stb_truetype's
+    # .notdef glyph rather than being skipped. No kerning (v1): advance is
+    # the sum of each glyph's own width.
+    draw(s, x, y, color, size) {
+      let baseline = y + self.ascent(size)
+      mut cx = x
+      for cp in s.code_points() {
+        cx += _Canvas.ttf_glyph(self._id, cp, cx, baseline, color, size)
+      }
+    }
+    # Pixel width `s` will occupy at `size` -- for right-aligning / centring.
+    text_width(s, size) {
+      mut w = 0
+      for cp in s.code_points() {
+        w += self.advance(cp, size)
+      }
+      w
+    }
+  }
+
   # --- built-in 8x8 bitmap font -------------------------------------------
   # The WASM-4 runtime font (ISC-licensed, aduros/wasm4), covering printable
   # ASCII 32..126. Each glyph is 8 rows of 8 pixels, one byte per row, MSB the
@@ -1481,6 +1531,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     draw_to: draw_to,
     text: text,
     text_width: text_width,
+    Font: Font,
     buttons: buttons,
     mouse: mouse,
     key: key,

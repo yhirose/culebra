@@ -4700,6 +4700,47 @@ character — `scale: 2` is the title-screen size. A non-positive scale draws
 nothing. `Canvas.text_width(s, scale = 1) -> Long` gives the pixel width, for
 centring or right-aligning.
 
+### TTF fonts
+
+`Canvas.Font(data)` parses TTF/OTF bytes — `FS.read` of a font file, or
+`Embed.dir(...).read(...)` to bake it into an AOT binary the same way
+`Sprite.from_png` assets already do — and returns a handle. Unlike `Sprite`,
+a `Font` has no fixed size: size is a parameter of each draw call, so one
+`Font` serves every size a program uses, and rasterized glyphs are cached
+internally per (font, codepoint, size). Anything stb_truetype can't parse
+raises `ValueError: not a valid TTF/OTF font`. **Only load fonts from
+trusted sources** — like most TTF/OTF parsers, stb_truetype does not
+range-check a malformed file's internal offsets.
+
+| Method | Effect |
+| --- | --- |
+| `font.draw(s, x, y, color, size)` | draw `s` at `(x, y)` (visual top-left) in `color` at `size` px |
+| `font.text_width(s, size) -> Long` | pixel width `s` will occupy at `size` — for right-aligning / centring |
+| `font.ascent(size) -> Long` | pixel ascent above the baseline at `size` |
+| `font.advance(codepoint, size) -> Long` | pixel advance of one codepoint at `size` |
+
+`draw` walks every Unicode scalar value in `s` (full Unicode, unlike the
+built-in bitmap font's ASCII-only `text`), rendering each with
+antialiasing — a glyph's edge composites through the same alpha-blend every
+other draw call uses, so a partially-covered pixel blends toward `color`
+rather than snapping fully on or off. A codepoint outside the font falls back
+to the font's own `.notdef` glyph rather than being skipped. There is no
+kerning: advance is the sum of each glyph's own width.
+There is no hinting either — a deliberate choice, not a gap: hinting would
+make glyph shapes depend on the hinting engine's own rounding, and
+`Canvas.Font` targets the same pixel-for-pixel result across native, the
+browser and headless that every other Canvas primitive does.
+
+```culebra
+# doctest: skip
+let font = Canvas.Font(FS.read("assets/roboto.ttf"))
+Canvas.run(320, 240, fn () {
+  Canvas.clear(Canvas.rgba(20, 20, 24))
+  font.draw("Score: 42", 8, 8, Canvas.rgba(255, 255, 255), 16)
+  true
+})
+```
+
 ### Input
 
 Input is polled each frame (it reflects the current state, not an event queue).

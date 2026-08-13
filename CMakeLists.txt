@@ -90,7 +90,10 @@ include_directories(./vendor/cpp-regexlib)
 include_directories(./vendor/cpp-httplib)
 # stb_image (vendor/stb/stb_image.h, public domain) — the PNG decoder behind
 # Canvas.Sprite.from_png. Header-only with its own inflate, so it adds no link
-# dependency; see include/image.h for how it is compiled in.
+# dependency; see include/image.h for how it is compiled in. stb_truetype
+# (vendor/stb/stb_truetype.h, same licence) is the TTF/OTF rasterizer behind
+# Canvas.Font, same shape — header-only, no link dependency; see
+# include/font_ttf.h.
 include_directories(./vendor/stb)
 # Builtin SQLite namespace. OFF drops the amalgamation entirely (no sqlite3
 # object, no link, no `SQLite` name in either backend) — the WASM playground

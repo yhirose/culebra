@@ -4558,6 +4558,45 @@ FS.write("tile.png", tile.to_png())
 `Canvas.text_width(s, scale = 1) -> Long`はピクセル幅を返す（中央寄せ /
 右寄せ用）。
 
+### TTFフォント
+
+`Canvas.Font(data)`はTTF/OTFのバイト列をパースし — フォントファイルの`FS.read`や、
+`Embed.dir(...).read(...)`でAOTバイナリへ焼き込める（`Sprite.from_png`のアセットと
+同じ要領） — ハンドルを返す。`Sprite`と違い`Font`はサイズを固定しない — サイズは
+描画のたびに引数で渡すので、1つの`Font`がプログラム内で使う全サイズを兼ねる。
+ラスタライズ済みグリフは内部で(font, codepoint, size)ごとにキャッシュされる。
+stb_truetypeがパースできないものは`ValueError: not a valid TTF/OTF font`を送出
+する。**信頼できるソースのフォントのみ読み込むこと** — 大半のTTF/OTFパーサ同様、
+stb_truetypeは壊れたファイル内部のオフセットを範囲チェックしない。
+
+| メソッド | 効果 |
+| --- | --- |
+| `font.draw(s, x, y, color, size)` | `s`を`(x, y)`（視覚上の左上）起点に`color`・`size` pxで描く |
+| `font.text_width(s, size) -> Long` | `size`で`s`が占めるピクセル幅(中央寄せ/右寄せ用) |
+| `font.ascent(size) -> Long` | `size`でのベースラインからの上端ピクセル数 |
+| `font.advance(codepoint, size) -> Long` | `size`での1コードポイント分の送り幅 |
+
+`draw`は`s`中の全Unicodeスカラー値を歩く(内蔵ビットマップフォントの`text`はASCII
+限定の`.bytes()`ベースだが、こちらはフルUnicode)。各グリフはアンチエイリアス付き
+で描かれ — 他の描画呼び出しと同じアルファブレンドを通るので、部分的にしか覆われて
+いないピクセルは完全なon/offでなく`color`へ向かってブレンドする。フォントに無い
+コードポイントはスキップされずフォント自身の`.notdef`グリフへフォールバックする。
+kerningはない: 送り幅は各グリフ自身の幅の和。
+hintingもない — これは欠落でなく意図的な選択で、hintingを入れるとグリフ形状が
+hintingエンジン自体の丸め処理に依存してしまい、`Canvas.Font`はnative・ブラウザ・
+headlessの全backendで同じ結果を目指す他の全Canvas primitiveと同じ立場を取って
+いる。
+
+```culebra
+# doctest: skip
+let font = Canvas.Font(FS.read("assets/roboto.ttf"))
+Canvas.run(320, 240, fn () {
+  Canvas.clear(Canvas.rgba(20, 20, 24))
+  font.draw("Score: 42", 8, 8, Canvas.rgba(255, 255, 255), 16)
+  true
+})
+```
+
 ### 入力
 
 入力は毎フレームのポーリング（イベントキューでなく現在の状態を反映する）。

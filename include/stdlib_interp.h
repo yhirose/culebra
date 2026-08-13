@@ -35,6 +35,7 @@
 #include <http.h>
 #endif
 #include <canvas.h>
+#include <font_ttf.h>
 #include <regexlib.h>
 #include <stdlib_math.h>
 #include <term.h>
@@ -2051,6 +2052,78 @@ inline Value make_canvas_primitives_namespace() {
                                  env->get("__COLUMN__").to_long());
             return Value();
           })),
+      false);
+
+  // _Canvas.ttf_load(data: String) -> Long (handle). Raises ValueError on
+  // anything stb_truetype won't parse.
+  ns.initialize("ttf_load",
+      Value(FunctionValue({{"data", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
+            auto r = _canvas_detail::ttf_load(
+                env->get("data").to_string_view());
+            if (!r.error.empty())
+              throw CulebraError("ValueError", r.error, line, col);
+            return Value(static_cast<int64_t>(r.id));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.ttf_free(id) -> Nil. An unknown/already-freed handle is a no-op.
+  ns.initialize("ttf_free",
+      Value(FunctionValue({{"id", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            _canvas_detail::ttf_free(env->get("id").to_long());
+            return Value();
+          })),
+      false);
+
+  // _Canvas.ttf_glyph(font, codepoint, x, y, rgba, size) -> Long (the
+  // glyph's own pixel advance, 0 if nothing was rasterized). (x, y) is the
+  // baseline pen position (stb_truetype's convention), not top-left.
+  ns.initialize("ttf_glyph",
+      Value(FunctionValue({{"font", false, "Long"sv},
+                           {"codepoint", false, "Long"sv},
+                           {"x", false, "Long|Float"sv},
+                           {"y", false, "Long|Float"sv},
+                           {"rgba", false, "Long"sv},
+                           {"size", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<int64_t>(_canvas_detail::ttf_glyph(
+                env->get("font").to_long(), env->get("codepoint").to_long(),
+                static_cast<int>(canvas_coord_arg(env, "x")),
+                static_cast<int>(canvas_coord_arg(env, "y")),
+                static_cast<uint32_t>(env->get("rgba").to_long()),
+                env->get("size").to_long())));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.ttf_advance(font, codepoint, size) -> Long (pixel advance width;
+  // 0 for an unknown handle or a non-positive size).
+  ns.initialize("ttf_advance",
+      Value(FunctionValue({{"font", false, "Long"sv},
+                           {"codepoint", false, "Long"sv},
+                           {"size", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<int64_t>(_canvas_detail::ttf_advance(
+                env->get("font").to_long(), env->get("codepoint").to_long(),
+                env->get("size").to_long())));
+          },
+          "Long"sv)),
+      false);
+
+  // _Canvas.ttf_ascent(font, size) -> Long (pixel ascent above the baseline).
+  // Lets the preamble convert a visual top-left y into a baseline y.
+  ns.initialize("ttf_ascent",
+      Value(FunctionValue({{"font", false, "Long"sv},
+                           {"size", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<int64_t>(_canvas_detail::ttf_ascent(
+                env->get("font").to_long(), env->get("size").to_long())));
+          },
+          "Long"sv)),
       false);
 
   // _Canvas.target(id) -> Long (the previous target). 0 = the framebuffer;

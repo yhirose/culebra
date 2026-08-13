@@ -466,6 +466,112 @@ assert_eq(_Canvas.get_pixel(0, 0), RED)
 
 _Canvas.init(4, 4)
 
+// --- ttf_load / ttf_glyph / ttf_advance / ttf_ascent: outline rasterization ---
+// A wholly original, minimal TTF (project-authored, public domain -- no
+// licensing question the way a real-world font would raise): 1000 units/em,
+// ascent 800 / descent -200, four mapped codepoints -- 'A' a solid square
+// filling 0..700 (no antialiasing, for an exact coverage-count check), 'B' a
+// right triangle 0..700 (a genuine antialiased diagonal edge, for the
+// coverage/alpha composite check), space with advance-only metrics, and
+// U+3042 (multi-byte in UTF-8) mapped to a small diamond, exercised by the
+// preamble's Font tests in test_canvas_module.cul.
+let TTF_TEST_FONT = "00010000000a0080000300204f532f32450074b00000012800000060636d6170005930cb0000019c00000044676c7966fb76064b000001ec0000006a686561642fde0f02000000ac000000366868656106420326000000e400000024686d74780e10000000000188000000146c6f6361003e0067000001e00000000c6d6178700007000600000108000000206e616d658e5d242a00000258000001e3706f73747501d8ec0000043c000000340001000000010000945121465f0f3cf5000103e800000000e6a2e5b300000000e6a2e5b300000000038402bc000000030002000000000000000100000320ff38000003e80000000003200001000000000000000000000000000000050001000000050004000100000000000200000000000000000000000000000000000302d00190000500040000000000000000000000000000000000000000000000000000000000000000000000010002000000000000000000003f3f3f3f0000002030420320ff380000032000c800000000000000000000000000000020000003e800000320000003200000019000000258000000000002000000030000001400030001000000140004003000000008000800020000002000423042ffff0000002000413042ffffffe3ffc0cfc2000100000000000000000000000d0019002500250035000100640000038402bc0003000033211121640320fce002bc0000010000000002bc02bc000300003121112102bcfd4402bc00010000000002bc02bc0002000031210102bcfd4402bc000001000000000258025800030000210902012c012cfed4fed4012c012cfed40000000000000c00960001000000000001000c000000010000000000020007000c0001000000000003002a001300010000000000040014003d0001000000000005000b005100010000000000060013005c00030001040900010018006f0003000104090002000e00870003000104090003005400950003000104090004002800e900030001040900050016011100030001040900060026012743756c656272612054657374526567756c617243756c65627261205465737420526567756c61723b2063756c656272612074657374206669787475726543756c65627261205465737420526567756c617256657273696f6e20312e3043756c65627261546573742d526567756c617200430075006c0065006200720061002000540065007300740052006500670075006c0061007200430075006c00650062007200610020005400650073007400200052006500670075006c00610072003b002000630075006c0065006200720061002000740065007300740020006600690078007400750072006500430075006c00650062007200610020005400650073007400200052006500670075006c0061007200560065007200730069006f006e00200031002e003000430075006c00650062007200610054006500730074002d0052006500670075006c00610072000002000000000000000000000000000000000000000000000000000000000000000500000024002500030102076469616d6f6e64"
+
+let font = _Canvas.ttf_load(Encoding.hex.decode(TTF_TEST_FONT))
+
+// Metrics: 1000 units/em, ascent 800, 'A'/'B' advance 800, space advance 400
+// -- at size 10 that's scale 0.01, so whole-pixel results with no rounding
+// ambiguity.
+assert_eq(_Canvas.ttf_ascent(font, 10), 8)
+assert_eq(_Canvas.ttf_advance(font, 65, 10), 8)  // 'A'
+assert_eq(_Canvas.ttf_advance(font, 32, 10), 4)  // space
+
+// 'A' is a solid square with no antialiased edge at this scale: coverage is
+// either full or absent, never partial.
+_Canvas.init(20, 20)
+_Canvas.clear(CLEAR)
+_Canvas.ttf_glyph(font, 65, 2, 10, WHITE, 10)  // (x, y) is the baseline
+mut opaque = 0
+mut any = 0
+for y in 0..20 {
+  for x in 0..20 {
+    let a = (_Canvas.get_pixel(x, y) >> 24) & 0xff
+    if a > 0 {
+      any = any + 1
+    }
+    if a == 255 {
+      opaque = opaque + 1
+    }
+  }
+}
+assert_eq(any, 49)     // a clean 7x7 block
+assert_eq(opaque, 49)  // -- fully opaque throughout, no partial-coverage rim
+
+// 'B' is a right triangle: its hypotenuse gives a genuine antialiased edge.
+// The exact composited values are hand-verified against blend_over's rule
+// ((cov*a+127)/255): drawing rgba(10, 20, 30, 200) over transparent puts
+// (0, 1) at coverage-scaled alpha 100 -- (10*100+127)/255 = 4,
+// (20*100+127)/255 = 8, (30*100+127)/255 = 12 -- and (0, 2) sits fully
+// inside the triangle at the base colour's own alpha, 200.
+_Canvas.init(10, 10)
+_Canvas.clear(CLEAR)
+_Canvas.ttf_glyph(font, 66, 0, 8, rgba(10, 20, 30, 200), 10)  // 'B', baseline y=8
+assert_eq(_Canvas.get_pixel(0, 1), rgba(4, 8, 12, 100))
+assert_eq(_Canvas.get_pixel(0, 2), rgba(8, 16, 24, 200))
+// Drawing the same edge over an opaque background composites through
+// blend_over's Porter-Duff alpha rule (a + da*(1-a)/255) rather than eroding
+// it: the result stays fully opaque.
+_Canvas.clear(RED)
+_Canvas.ttf_glyph(font, 66, 0, 8, rgba(10, 20, 30, 200), 10)
+assert_eq(_Canvas.get_pixel(0, 1), rgba(159, 8, 12, 255))
+
+// --- ttf_*: unknown handle, freed handle, non-positive size, alpha 0, an
+// unmapped codepoint -- every one a no-op / 0, never a crash or a read past
+// what the font actually has.
+_Canvas.init(4, 4)
+_Canvas.clear(CLEAR)
+_Canvas.ttf_glyph(999, 65, 0, 0, WHITE, 10)  // unknown handle
+assert_eq(_Canvas.get_pixel(0, 0), 0)
+assert_eq(_Canvas.ttf_advance(999, 65, 10), 0)
+assert_eq(_Canvas.ttf_ascent(999, 10), 0)
+assert_eq(_Canvas.ttf_advance(font, 65, 0), 0)   // size 0
+assert_eq(_Canvas.ttf_advance(font, 65, -5), 0)  // negative size
+assert_eq(_Canvas.ttf_ascent(font, 0), 0)
+_Canvas.ttf_glyph(font, 65, 0, 0, WHITE, 0)  // non-positive size draws nothing
+assert_eq(_Canvas.get_pixel(0, 0), 0)
+_Canvas.ttf_glyph(font, 65, 0, 0, rgba(255, 255, 255, 0), 10)  // alpha 0
+assert_eq(_Canvas.get_pixel(0, 0), 0)
+// A codepoint outside the font's cmap falls back to stb_truetype's own
+// .notdef glyph rather than being skipped (no crash either way) -- this
+// fixture's .notdef happens to carry no outline, so nothing is drawn here; a
+// real font with a visible .notdef "tofu box" would draw that box instead.
+_Canvas.ttf_glyph(font, 128512, 0, 0, WHITE, 10)  // U+1F600, unmapped
+assert_eq(_Canvas.get_pixel(0, 0), 0)
+
+// A huge size clamps rather than rasterizing (and allocating) unboundedly.
+assert_eq(_Canvas.ttf_advance(font, 65, 999999999), 1638)  // 800 * (2048/1000)
+
+_Canvas.ttf_free(font)
+assert_eq(_Canvas.ttf_advance(font, 65, 10), 0)  // a freed handle is unknown
+_Canvas.ttf_free(font)                           // a second free is a no-op
+
+// Anything stb_truetype can't parse raises the one shared ValueError.
+assert_eq(try {
+  _Canvas.ttf_load("not a font")
+} catch e {
+  e.kind + "|" + e.message
+}, "ValueError|not a valid TTF/OTF font")
+assert_eq(try {
+  _Canvas.ttf_load("")
+} catch e {
+  e.message
+}, "not a valid TTF/OTF font")
+assert_eq(try {
+  _Canvas.ttf_load(5)
+} catch e {
+  e.message
+}, "type error: parameter 'data' expects String")
+
 // --- sprite_from_png: decode, and read the size back from the decode ---
 // Hand-built fixtures (see the PNG spec's colour types), hex so the bytes
 // survive as source. Every one is 2 pixels wide: red, green / blue, transparent
