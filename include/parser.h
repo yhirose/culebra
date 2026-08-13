@@ -1078,6 +1078,28 @@ inline void reject_or_pattern_binding(const peg::Ast& ast) {
   }
 }
 
+// `static new(...)` is a contradiction: `new` names the constructor, which
+// builds an instance and binds `self` to it, and a static member has neither.
+// Both existing backends sorted it into the statics and then disagreed about
+// which binding of the class object's `new` property survived (the interp
+// kept the synthesized constructor, the JIT let the static overwrite it), so
+// the form has never meant one thing. Rejected at parse time on every
+// backend rather than picking a winner for code nobody can have relied on.
+inline void reject_static_new(const peg::Ast& ast) {
+  using namespace peg::udl;
+  if (ast.tag == "METHOD"_ && ast.nodes[0]->token == "static" &&
+      ast.nodes[1]->token == "new" && ast.nodes.size() > 2 &&
+      ast.nodes[2]->tag == "PARAMETERS"_) {
+    const auto& id = *ast.nodes[1];
+    throw CulebraError(
+        "SyntaxError",
+        "`new` cannot be static — the constructor always builds an instance; "
+        "give the factory another name",
+        static_cast<long>(id.line), static_cast<long>(id.column));
+  }
+  for (const auto& n : ast.nodes) reject_static_new(*n);
+}
+
 inline bool is_kw_only_sep(const peg::Ast& node) {
   using namespace peg::udl;
   return node.tag == "KW_ONLY_SEP"_;

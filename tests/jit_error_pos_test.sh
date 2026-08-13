@@ -351,6 +351,17 @@ check_same "or-bind param"      'fn f([a | _]) { a }'
 # `((n: Long | Float) | 42)` — an or-pattern binding, not a wider Union.
 check_same "or-bind type-then-literal" "match 1 { n: Long | Float | 42 => n, _ => 0 }"
 
+# `static new` is a parse-time SyntaxError anchored at the name: the two
+# backends used to sort it into the statics and then disagree about which
+# binding of the class object's `new` survived.
+check_same "static new" 'class Z {
+  static new() { 1 }
+}'
+check_same "static new with ctor" 'class Z {
+  new() { self.a = 1 }
+  static new(x) { x }
+}'
+
 # A destructure's two throws both report the statement, not the leaf that
 # failed: the shape mismatch and a `let`-less leaf's ImmutableError.
 check_same "destructure mismatch"  'let [a, b] = [1]'
