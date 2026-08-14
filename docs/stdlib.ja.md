@@ -85,6 +85,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 | ファイルをストリーム（行 / チャンク / seek） | [§4 File](#4-file) — `File.open` / `File.with` |
 | パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs)；流暢な`Path`ラッパ: [§3 `Path`](#path--流暢なラッパ) |
 | stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
+| ディレクトリの変更監視 | [§3 FS](#3-fs) — `FS.watch` |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
 | `Instant` / `Duration`クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 負になりうるインデックスを`0..n`に巻き戻す | [§1 Math](#1-math) — `Math.wrap(i, n)`（`%`は切り捨てなので負のまま） |
@@ -637,6 +638,57 @@ glob `pattern`にマッチするパス（ソート済み）。セグメント単
 # doctest: skip
 let sources = FS.glob('src/**/*.cul')
 ```
+
+### 変更の監視
+
+#### `FS.watch(path: String, recursive: Bool = true, match: Array? = nil) -> WatchHandle`
+
+ディレクトリの変更を監視します。ハンドルの反復は次の変更までブロック
+し、`{path, kind}`を返します。`path`は絶対・正規化済み（シンボリック
+リンク解決済みなので、macOSでは`/tmp`配下が`/private/tmp`配下として
+報告される）、`kind`は`'created'` / `'modified'` / `'deleted'`。
+`match`は指定拡張子で終わるパスだけを通します（先頭ドットは有無どちら
+でも可 — `'cul'`と`'.cul'`は同じフィルタ）。判定はイベントをキューに積む
+前に行うので、弾かれた変更はキューに入りません。
+ディレクトリでなければ`IOError`、`match`が文字列配列でなければ
+`TypeError`。
+
+バックエンドはmacOSがFSEvents、Linuxがinotify。**Windowsは未対応**で
+`IOError`を投げます。
+
+```culebra
+# doctest: skip
+for e in FS.watch('src', match: ['.cul']) {
+  println("{e.kind} {e.path}")
+}
+```
+
+イベントは監視を開いた時点から積まれるので、最初の取り出しより前に起き
+た変更も届きます。ハンドルはそのまま反復でき、`break`しても使えるまま
+です。名前付きハンドルは再度反復できます:
+
+```culebra
+# doctest: skip
+let w = FS.watch('src')
+for e in w { break }        # ハンドルは開いたまま
+for e in w { break }        # 前のループの続きから
+w.close()
+```
+
+`close()`で監視を止めます。スコープを抜けたハンドルは自分で閉じるので、
+匿名の`for e in FS.watch(p)`はループ終了時に停止します。監視は開いた
+スレッドに属し、isolateへ送ることはできません。
+
+意図的に約束していないことが3点あります。**kindはOSの粒度でのbest
+effort**です。FSEventsは短い窓の中で同一パスへの複数の変更を1イベント
+に畳み、inotifyは個別に報告するため、同じ編集が片方では1イベント、もう
+片方では2イベントになりえます。**renameはペアになりません** — 旧パスの
+`deleted`と新パスの`created`として別々に届きます。**重複排除も
+debounceもせず**、キューは無制限です。木の変化より遅い消費者はイベント
+を落とすのではなくメモリを消費します。
+
+待機中の反復を終わらせられるのは`break`・Ctrl+C・実行中のisolateの
+キャンセルだけです。タイムアウトやノンブロッキング取得はありません。
 
 ### パス解決
 
@@ -5340,9 +5392,9 @@ run_with(IO, "via parameter")
 
 ### OS 拡張
 
-ファイル監視はありません。生ソケットのTLSもありません（`Net`は平文で、
-TLSは [§15 Http](#15-http) が自前で持ちます）。必要なら
-[§11 Proc](#11-proc) でサブプロセスに委譲してください。
+Windowsのファイル監視はありません（`FS.watch`はmacOSとLinuxのみ）。生ソケット
+のTLSもありません（`Net`は平文で、TLSは [§15 Http](#15-http) が自前で持ちます）。
+必要なら [§11 Proc](#11-proc) でサブプロセスに委譲してください。
 
 ---
 

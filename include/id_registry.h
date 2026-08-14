@@ -20,6 +20,12 @@ struct IdRegistry {
   std::vector<T*> slots;
   std::vector<uint32_t> gen;
   std::vector<uint32_t> free;
+  // The one place the (gen, slot) packing lives, so a caller walking `slots`
+  // to retire what it finds there names an id the same way add() minted it.
+  int64_t id_at(uint32_t s) const {
+    return static_cast<int64_t>((static_cast<uint64_t>(gen[s]) << 32) |
+                                static_cast<uint64_t>(s));
+  }
   int64_t add(T* p) {
     uint32_t s;
     if (!free.empty()) {
@@ -31,8 +37,7 @@ struct IdRegistry {
       slots.push_back(p);
       gen.push_back(0);
     }
-    return static_cast<int64_t>((static_cast<uint64_t>(gen[s]) << 32) |
-                                static_cast<uint64_t>(s));
+    return id_at(s);
   }
   T* get(int64_t id) {
     uint32_t s = static_cast<uint32_t>(id & 0xFFFFFFFF);

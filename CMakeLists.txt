@@ -1236,6 +1236,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Threads REQUIRED)
   target_link_libraries(culebra Threads::Threads ${CMAKE_DL_LIBS})
 endif()
+# FS.watch's macOS backend is FSEvents, which lives in CoreServices. FS is a
+# core namespace (fswatcher.h reaches every build through stdlib_interp.h), so
+# this is unconditional rather than a kFeatureAxes row — every target that
+# links the interpreter stack needs it, and `culebra build` appends the same
+# framework to every Mach-O link (src/main.cc, core_frameworks).
+if(APPLE)
+  set(_core_frameworks "-framework CoreServices")
+else()
+  set(_core_frameworks "")
+endif()
+target_link_libraries(culebra ${_core_frameworks})
 if(CULEBRA_ENABLE_SQLITE)
   target_link_libraries(culebra culebra_sqlite3)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -1482,6 +1493,8 @@ endif()
 # The embedding TUs include stdlib_interp.h -> compress.h inline, which calls
 # zlib directly, so the suite needs libz.
 target_link_libraries(smoke_suite ZLIB::ZLIB)
+# ... and stdlib_interp.h -> fswatcher.h calls FSEvents on macOS.
+target_link_libraries(smoke_suite ${_core_frameworks})
 # stdlib_interp.h -> sqlite.h inline wrappers call sqlite3_* directly.
 if(CULEBRA_ENABLE_SQLITE)
   target_link_libraries(smoke_suite culebra_sqlite3)
@@ -1542,6 +1555,19 @@ if(WIN32)
   target_link_libraries(net_test ws2_32)
 endif()
 add_test(NAME net_test COMMAND net_test)
+
+# fswatcher.h core test: drives create/modify/delete inside a temp directory and
+# pulls them back through fs_watch_next. Offline, no interpreter/JIT linkage.
+# Skipped where there is no backend (Windows), which the test itself asserts.
+add_executable(fswatcher_test test/fswatcher_test.cc)
+target_compile_features(fswatcher_test PRIVATE cxx_std_23)
+target_include_directories(fswatcher_test PRIVATE include
+  "${CMAKE_CURRENT_SOURCE_DIR}/vendor/cpp-unicodelib")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(fswatcher_test Threads::Threads)
+endif()
+target_link_libraries(fswatcher_test ${_core_frameworks})
+add_test(NAME fswatcher_test COMMAND fswatcher_test)
 
 # GC unit tests — the standalone collector (include/jit_gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no

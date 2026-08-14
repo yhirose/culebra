@@ -20,6 +20,7 @@
 #include <env.h>
 #include <foreign.h>
 #include <foreign_binding.h>
+#include <fswatcher.h>
 #include <hash.h>
 #include <json.h>
 #if defined(CULEBRA_SQLITE_ENABLED)
@@ -603,6 +604,64 @@ inline void _fs_do_chown(const std::filesystem::path&, int64_t, int64_t,
 
 #endif  // !_WIN32
 
+// --- FS.watch handle -------------------------------------------------------
+
+// The handle FS.watch returns: iterable (the events), plus close/drop. It
+// carries only the id — the Watcher itself lives in the fswatcher table, so a
+// captured or stale handle degrades to "closed" rather than a dangling read.
+inline Value make_watch_handle(int64_t id) {
+  ObjectValue h;
+  h.initialize("_id", Value(static_cast<int64_t>(id)), false);
+  // The watch is owned by one thread's table (like a File fd), so it must not
+  // cross an isolate boundary.
+  h.initialize("__nonsendable__", Value(true), false);
+
+  auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("self").to_object().get("_id").to_long();
+  };
+
+  // Iterating the handle directly (`for e in w`) is what makes the handle the
+  // iterable, so for-in keeps it alive for the loop. Deliberately no dispose:
+  // closing on loop exit would break `break` + re-loop on a named handle, and
+  // an anonymous `for e in FS.watch(p)` is stopped by the temporary's drop.
+  h.initialize(
+      "iter",
+      Value(FunctionValue({}, [hid](std::shared_ptr<Environment> env) -> Value {
+        int64_t id = hid(env);
+        return _make_iterator(
+            [id](std::shared_ptr<Environment>) -> std::optional<Value> {
+              fswatch::FsEvent ev;
+              if (fswatch::fs_watch_next(id, ev) != fswatch::Next::Event)
+                return _iter_step_done();
+              ObjectValue o;
+              o.initialize("path", Value(std::move(ev.path)), false);
+              o.initialize("kind", Value(std::string(fswatch::kind_name(ev.kind))),
+                           false);
+              return _iter_step_value(Value(std::move(o)));
+            });
+      })),
+      false);
+
+  h.initialize(
+      "close",
+      Value(FunctionValue({}, [hid](std::shared_ptr<Environment> env) {
+        fswatch::fs_watch_close(hid(env));
+        return Value();
+      })),
+      false);
+
+  // GC backstop: stop a watch that was never explicitly closed.
+  h.initialize(
+      "drop",
+      Value(FunctionValue({}, [hid](std::shared_ptr<Environment> env) {
+        fswatch::fs_watch_close(hid(env));
+        return Value();
+      })),
+      false);
+
+  return Value(std::move(h));
+}
+
 inline Value make_fs_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -1041,6 +1100,40 @@ inline Value make_fs_namespace() {
             return Value(std::move(av));
           },
           "Array"sv)),
+      false);
+
+  // `FS.watch(path, recursive: true, match: nil)` -> a handle whose iteration
+  // blocks for the next change under `path`, as `{path, kind}`. The kinds are
+  // the OS's granularity, not ours (see fswatcher.h); `match` keeps only the
+  // paths ending in one of the given extensions, filtered before an event is
+  // ever queued.
+  ns.initialize(
+      "watch",
+      Value(FunctionValue(
+          {{"path", false, "String|Path"sv},
+           {"recursive", false, ""sv, nullptr, kw_default_true()},
+           {"match", false, ""sv, nullptr, kw_default_nil()}},
+          [throw_io](std::shared_ptr<Environment> env) -> Value {
+            int64_t line = env->get("__LINE__").to_long();
+            int64_t col = env->get("__COLUMN__").to_long();
+            const auto& p = _fspath(env->get("path"));
+            bool recursive = env->get("recursive").to_bool();
+            std::vector<std::string> exts;
+            const auto& m = env->get("match");
+            if (m.type != Value::Nil) {
+              if (m.type != Value::Array) throw_type_error_at(line, col);
+              for (const auto& v : *m.to_array().values) {
+                if (v.type != Value::String && v.type != Value::StringView)
+                  throw_type_error_at(line, col);
+                exts.push_back(fswatch::normalize_ext(v.to_string_view()));
+              }
+            }
+            std::string err;
+            int64_t id = fswatch::fs_watch_open(p, recursive, exts, err);
+            if (id < 0) throw_io(err, line, col);
+            return make_watch_handle(id);
+          },
+          "Object"sv)),
       false);
 
   // `FS.glob(pattern)` -> Array<String> of matching paths. Supports `*`,

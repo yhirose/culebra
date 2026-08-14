@@ -97,13 +97,17 @@ PYEOF
 }
 
 # interp: leaf sources (range/string/File/Net/stdin/isolate/...) = 21.
+# 21 -> 22 (2026-08-13, reviewed): FS.watch's handle iterates OS change events,
+# a source with no upstream culebra iterator — same leaf shape as the Net/File
+# handles beside it.
 mi=$(count_no_upstream '_make_iterator\s*\(')
-ratchet "no-upstream _make_iterator calls (interp leaves)" "$mi" 21
+ratchet "no-upstream _make_iterator calls (interp leaves)" "$mi" 22
 
 # JIT: leaf sources = 15 (9 jit_iter.h + 6 stdlib_jit.h) — grid_new joined
 # math_range/iota et al. as a new source factory (no upstream iterator).
+# 15 -> 16 (2026-08-13, reviewed): the JIT twin of the FS.watch leaf above.
 wf=$(count_no_upstream '_iter_wrap_fast<[^>]*>\s*\(')
-ratchet "no-upstream _iter_wrap_fast calls (JIT leaves)" "$wf" 15
+ratchet "no-upstream _iter_wrap_fast calls (JIT leaves)" "$wf" 16
 
 if (( fail )); then exit 1; fi
 echo "iter-wiring OK (pull=$pull/0 advance_raw=$adv/25 has_next_closure=$hnc/4" \

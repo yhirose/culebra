@@ -2602,6 +2602,75 @@ CULEBRA_RT_INLINE JitValue _culebra_file_build_handle(int64_t id) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
+// --- FS.watch handle: iterable (the events) + close/drop. Mirrors interp
+// make_watch_handle; both pull through the same fswatch core. --------------
+
+// for-in pull: block for the next change. A close (or a stale id) ends the
+// iteration; an interrupt propagates out as the cooperative Interrupted.
+inline void _watch_events_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                  int8_t* out_tag, int64_t* out_data) {
+  int64_t id = cls->captures[0]->value.data;
+  culebra::fswatch::FsEvent ev;
+  if (culebra::fswatch::fs_watch_next(id, ev) !=
+      culebra::fswatch::Next::Event) {
+    *done = true;
+    return;
+  }
+  auto* o = culebra_runtime_object_new();
+  o->set_or_append("path",
+                   JitValue{TAG_STRING,
+                            reinterpret_cast<int64_t>(_culebra_heap_str(ev.path))},
+                   false);
+  o->set_or_append(
+      "kind",
+      JitValue{TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(
+                               culebra::fswatch::kind_name(ev.kind)))},
+      false);
+  *done = false;
+  *out_tag = TAG_OBJECT;
+  *out_data = reinterpret_cast<int64_t>(o);
+}
+
+CULEBRA_RT_INLINE void _jit_watch_iter(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                           int64_t self_data, int64_t, JitValue*) {
+  // self arrives +1-owned (callee-consumes); the guard releases it on every
+  // path, including the throw out of a failed iterator build.
+  JitOwnedVal self(JitValue{self_tag, self_data});
+  int64_t id =
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.borrow().data), "_id");
+  auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
+  // No dispose: the handle owns the close, so `break` leaves a named handle
+  // usable and an anonymous one is stopped by its own drop (interp twin).
+  auto* it = _iter_wrap_fast<&_watch_events_fast_fn>({id_cell});
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
+}
+CULEBRA_RT_INLINE void _jit_watch_close(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                            int64_t self_data, int64_t, JitValue*) {
+  JitOwnedVal self(JitValue{self_tag, self_data});
+  culebra::fswatch::fs_watch_close(
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.borrow().data), "_id"));
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+CULEBRA_RT_INLINE void _jit_watch_drop(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                           int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  // drop runs from the destructor's drop protocol — must NOT release self.
+  culebra::fswatch::fs_watch_close(
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_watch_build_handle(int64_t id) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  _jit_handle_bind_method(h, "iter", _jit_watch_iter, 0);
+  _jit_handle_bind_method(h, "close", _jit_watch_close, 0);
+  _jit_handle_bind_method(h, "drop", _jit_watch_drop, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
 // --- IO.stdin() handle: a read-only reader over standard input, sharing the
 // File reader shape (.lines() / .read(n=nil)). No fd/close — stdin isn't
 // seekable or closeable, so it carries no resource and needs no drop. ------
@@ -4152,6 +4221,30 @@ inline JitValue _ns_fs_chown(JitValue* a, int64_t n) {
   culebra::_fs_do_chown(_ns_adapt::take_path(a[0]), uid, gid, 0, 0);
   return _ns_adapt::v_nil();
 }
+// watch(path, recursive=true, match=nil): slab full-arity via NsParamMeta.
+inline JitValue _ns_fs_watch(JitValue* a, int64_t n) {
+  JitValue rec = n > 1 ? a[1] : JitValue{TAG_BOOL, 1};
+  JitValue match = n > 2 ? a[2] : JitValue{TAG_NIL, 0};
+  std::vector<std::string> exts;
+  if (match.tag != TAG_NIL) {
+    ::JitArray* arr = _ns_adapt::take_array(match);
+    if (!arr) throw_type_error_at(0, 0);
+    for (size_t i = 0; i < arr->size; i++) {
+      if (arr->items[i].tag != ::TAG_STRING &&
+          arr->items[i].tag != ::TAG_STRINGVIEW)
+        throw_type_error_at(0, 0);
+      exts.push_back(culebra::fswatch::normalize_ext(
+          _culebra_str_view(arr->items[i].tag, arr->items[i].data)));
+    }
+  }
+  std::string err;
+  int64_t id = culebra::fswatch::fs_watch_open(
+      _ns_adapt::take_path(a[0]),
+      !(rec.tag == TAG_BOOL && rec.data == 0), exts, err);
+  if (id < 0) culebra::_io_throw(err, 0, 0);
+  return _culebra_watch_build_handle(id);
+}
+
 // copy(src, dst, recursive=false): slab full-arity via NsParamMeta.
 inline JitValue _ns_fs_copy(JitValue* a, int64_t n) {
   JitValue rec = n > 2 ? a[2] : JitValue{TAG_BOOL, 0};
@@ -6664,7 +6757,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Proc")     return nm == "run" || nm == "all" || nm == "spawn" ||
                                 nm == "race";
   if (ns == "FS")       return nm == "remove" || nm == "copy" ||
-                               nm == "chown";
+                               nm == "chown" || nm == "watch";
   if (ns == "File")     return nm == "open" || nm == "with";
   if (ns == "Parallel") return nm == "map" || nm == "each" ||
                                 nm == "map_settled" || nm == "race";
@@ -6840,6 +6933,7 @@ inline const NsMethod kNsMethods[] = {
   {"FS",     "readlink",  1, &_ns_fs_readlink},
   {"FS",     "walk",      1, &_ns_fs_walk},
   {"FS",     "glob",      1, &_ns_fs_glob},
+  {"FS",     "watch",     1, &_ns_fs_watch},
 
   {"File",   "open",      1, &_ns_file_open},
   {"File",   "with",      2, &_ns_file_with},

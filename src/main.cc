@@ -1034,6 +1034,12 @@ int run_build(const BuildOptions& opts) {
   if (feature_failed) return 1;
 
   std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
+  // FS.watch's macOS backend is FSEvents (CoreServices). Unlike a feature
+  // axis, FS is core: the runtime archive carries fswatcher.h's bodies for
+  // every program, so a Mach-O link needs the framework whether or not the
+  // program watches anything. The driver links it for the same reason
+  // (CMakeLists, the APPLE block beside the Linux Threads one).
+  const char* core_frameworks = target_is_macho ? "-framework CoreServices" : "";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
   // PIE executable unconditionally, which then refuses the non-PIC
@@ -1084,6 +1090,7 @@ int run_build(const BuildOptions& opts) {
   parts.push_back(no_pie);
   parts.push_back(win_static);
   parts.push_back(libcxx);
+  parts.push_back(core_frameworks);
   parts.insert(parts.end(), feature_links.begin(), feature_links.end());
   parts.push_back("-o");
   parts.push_back(shq(opts.output));

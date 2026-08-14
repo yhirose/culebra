@@ -316,13 +316,13 @@ inline TestRunSummary run_doctests(
         ok = interpret(ast, env, val, emsgs);
         captured = cap.take();
       }
-      // Reap any isolate this block left outstanding (e.g. a doc example
-      // that throws past an unreached join()) — JoinIsolatesGuard
+      // Reap whatever this block left outstanding (e.g. a doc example that
+      // throws past an unreached join()) — ScriptTeardownGuard
       // (interpreter.h), scoped to the rest of this loop iteration, so it
       // fires once per doc block instead of once per script run
       // (interpret_modules) or once per REPL session (repl.h): each doc
       // block is its own fresh env / run.
-      JoinIsolatesGuard join_isolates_guard;
+      ScriptTeardownGuard script_teardown_guard;
       // interpret() converts uncaught throws into emsgs and returns false.
       std::string err = emsgs.empty() ? "" : emsgs.front();
 

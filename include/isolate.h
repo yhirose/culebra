@@ -439,7 +439,7 @@ inline void cancel_and_join_isolates(
 // everything has already been joined (h.join()/h.drop() ran, or the handle's
 // own scope exit reaped it), which is the common case. Installed into
 // interp_isolate_teardown_join_hook (shared.h) below; interpreter.h calls the
-// hook once a top-level script run ends, mirroring jit.h's JoinIsolatesGuard
+// hook once a top-level script run ends, mirroring jit.h's teardown guard
 // around JIT::exec.
 inline void _interp_isolate_teardown_join_all() {
   std::vector<std::shared_ptr<IsolateCore>> live;

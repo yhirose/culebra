@@ -39,6 +39,15 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
   culebra::install_console_utf8();
   culebra::install_sigint_handler();
 
+  // Close any watch the program left open, on every exit path — the AOT twin
+  // of the ScriptTeardownGuard around `interpret_modules` and `JIT::exec`. A
+  // top-level `let w = FS.watch(...)` never runs its drop (docs/language.md),
+  // so without this its OS notification thread would live into process
+  // teardown, and the three backends would differ in when the watch stops.
+  struct ScriptTeardownGuard {
+    ~ScriptTeardownGuard() { culebra::fswatch::fs_watch_close_all(); }
+  } script_teardown_guard;
+
   try {
     main_fn();
   } catch (const CulebraException& e) {

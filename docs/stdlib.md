@@ -87,6 +87,7 @@ Conventions used below:
 | Stream a file (lines / chunks / seek) | [§4 File](#4-file) — `File.open` / `File.with` |
 | Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs); fluent `Path` wrapper: [§3 `Path`](#path--the-fluent-wrapper) |
 | Stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
+| Watch a directory for changes | [§3 FS](#3-fs) — `FS.watch` |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Wrap an index that can go negative into `0..n` | [§1 Math](#1-math) — `Math.wrap(i, n)` (`%` truncates, so it stays negative) |
@@ -649,6 +650,61 @@ distinct from `Regex`.
 # doctest: skip
 let sources = FS.glob('src/**/*.cul')
 ```
+
+### Watching for changes
+
+#### `FS.watch(path: String, recursive: Bool = true, match: Array? = nil) -> WatchHandle`
+
+Watch a directory for changes. Iterating the handle blocks until the
+next change and yields `{path, kind}`, where `path` is absolute and
+canonical (symlinks resolved, so a `/tmp` root reports under
+`/private/tmp` on macOS) and `kind` is `'created'`, `'modified'` or
+`'deleted'`. `match` keeps only the paths ending in one of the given
+extensions, with or without the leading dot (`'cul'` and `'.cul'` are
+the same filter); the check happens before an event is queued, so a
+rejected change never reaches the queue. Throws `IOError` if `path`
+isn't a directory, `TypeError` if `match` isn't an array of strings.
+
+Backed by FSEvents on macOS and inotify on Linux; **not yet supported
+on Windows**, where it throws `IOError`.
+
+```culebra
+# doctest: skip
+for e in FS.watch('src', match: ['.cul']) {
+  println("{e.kind} {e.path}")
+}
+```
+
+Events queue from the moment the watch opens, so a change made before
+the first pull is still delivered. The handle is iterable directly, and
+`break` leaves it usable — a named handle can be iterated again:
+
+```culebra
+# doctest: skip
+let w = FS.watch('src')
+for e in w { break }        # handle stays open
+for e in w { break }        # picks up where the first loop left off
+w.close()
+```
+
+`close()` stops the watch; a handle that goes out of scope closes
+itself. An anonymous `for e in FS.watch(p)` is therefore stopped when
+the loop ends. A watch belongs to the thread that opened it and cannot
+be sent to an isolate.
+
+Three things are deliberately not promised. **Kinds are best effort at
+the OS's granularity**: FSEvents coalesces several changes to one path
+inside a short window into a single event, while inotify reports each
+separately, so the same edit can surface as one event on one platform
+and two on another. **A rename is not paired** — it arrives as a
+`deleted` on the old path and a `created` on the new one. **Nothing is
+deduplicated or debounced**, and the queue is unbounded: a consumer
+that pulls slower than the tree changes grows memory rather than
+dropping events.
+
+An iteration that is simply waiting can only be ended by `break`, by
+Ctrl+C, or by cancelling the isolate it runs in — there is no timeout
+or non-blocking pull.
 
 ### Path resolution
 
@@ -5491,9 +5547,10 @@ language built-ins (see [`docs/language.md`](language.md)); reach for
 
 ### OS extras
 
-No file watcher, and no TLS on a raw socket (`Net` is plaintext;
-[§15 Http](#15-http) carries its own TLS). Shell out through
-[§11 Proc](#11-proc) when you need them.
+No file watcher on Windows (`FS.watch` covers macOS and Linux), and no
+TLS on a raw socket (`Net` is plaintext; [§15 Http](#15-http) carries
+its own TLS). Shell out through [§11 Proc](#11-proc) when you need
+them.
 
 ---
 

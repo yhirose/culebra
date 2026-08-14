@@ -1,0 +1,164 @@
+// Conformance: FS.watch (filesystem change events). See docs/stdlib.md §FS.
+// Runs on interp / JIT / AOT via `just test`; identical stdout across all three.
+//
+// The OS decides how many events one change produces, so nothing here asserts
+// an event count or the order of two paths — only that a path shows up and
+// what kind it carried. Events queue from the moment the watch opens, so a
+// write before the first pull still lands: no concurrency is needed here.
+
+let tmpdir_env = Sys.env("TMPDIR")
+let tmp_root = tmpdir_env != "" ? tmpdir_env : "/tmp"
+// FSEvents reports realpath'd paths (a /tmp root comes back as /private/tmp on
+// macOS), and FS.watch canonicalizes its root to match, so expectations have
+// to be built from the canonical form too.
+let root = FS.join(FS.realpath(tmp_root), "culebra_fs_watch_test")
+FS.remove(root, recursive: true) if FS.exists(root)
+FS.mkdir(root)
+
+// Pull events until `name` shows up directly under `dir`, and report its kind.
+// A closed watch ends the loop, which turns a missing event into a failed
+// assertion instead of a hang.
+let await_kind = fn (w, dir, name) {
+  let want = FS.join(dir, name)
+  let mut kind = "none"
+  for e in w {
+    if e.path == want {
+      kind = e.kind
+      break
+    }
+  }
+  kind
+}
+
+// --- created / modified / deleted ---------------------------------------
+
+let w = FS.watch(root)
+
+FS.write(FS.join(root, "a.txt"), "one")
+// A create followed by a write inside one FSEvents window arrives as a single
+// "created"; inotify splits it into two events. Both are a correct report that
+// the path came into existence, so accept either rather than pin the platform.
+let k_created = await_kind(w, root, "a.txt")
+assert_true(k_created == "created" || k_created == "modified")
+
+FS.write(FS.join(root, "a.txt"), "one two")
+assert_true(await_kind(w, root, "a.txt") != "none")
+
+FS.remove(FS.join(root, "a.txt"))
+assert_eq(await_kind(w, root, "a.txt"), "deleted")
+
+// A named handle survives `break`: the iterator does not close it, so the loop
+// above can be re-entered on the same watch.
+FS.write(FS.join(root, "again.txt"), "x")
+assert_true(await_kind(w, root, "again.txt") != "none")
+w.close()
+
+// --- recursive --------------------------------------------------------------
+
+let nested = FS.join(root, "sub")
+FS.mkdir(nested)
+let wr = FS.watch(root, recursive: true)
+FS.write(FS.join(nested, "deep.txt"), "d")
+assert_true(await_kind(wr, nested, "deep.txt") != "none")
+wr.close()
+
+// A directory created after the watch opens is watched too — including files
+// that appear in it before its own watch is in place.
+let wn = FS.watch(root, recursive: true)
+let late = FS.join(root, "late")
+FS.mkdir(late)
+FS.write(FS.join(late, "inside.txt"), "i")
+assert_true(await_kind(wn, late, "inside.txt") != "none")
+wn.close()
+
+// --- match: extension filter ------------------------------------------------
+
+// "cul" and ".cul" name the same filter.
+let wm = FS.watch(root, match: ["cul", ".toml"])
+FS.write(FS.join(root, "ignored.txt"), "x")
+FS.write(FS.join(root, "kept.cul"), "x")
+assert_true(await_kind(wm, root, "kept.cul") != "none")
+FS.write(FS.join(root, "kept.toml"), "x")
+assert_true(await_kind(wm, root, "kept.toml") != "none")
+// Everything up to kept.toml has been pulled, so the filtered .txt could only
+// appear later. Closing here and draining what remains proves it never queued.
+wm.close()
+let mut leaked = false
+for e in wm {
+  leaked = true if e.path.ends_with(".txt")
+}
+assert_true(!leaked)
+
+// --- non-recursive ----------------------------------------------------------
+
+let wf = FS.watch(root, recursive: false)
+FS.write(FS.join(nested, "hidden.txt"), "h")
+FS.write(FS.join(root, "top.txt"), "t")
+// Drained rather than awaited: await_kind discards what it isn't looking for,
+// so it could not tell a filtered nested write from a delivered one.
+let mut saw_nested = false
+for e in wf {
+  saw_nested = true if e.path.starts_with(nested)
+  break if e.path == FS.join(root, "top.txt")
+}
+assert_true(!saw_nested)
+wf.close()
+
+// --- errors -----------------------------------------------------------------
+
+assert_throws("IOError", fn () {
+  FS.watch(FS.join(root, "nope"))
+})
+assert_throws("TypeError", fn () {
+  FS.watch(root, match: [1])
+})
+assert_throws("TypeError", fn () {
+  FS.watch(root, match: 1)
+})
+assert_throws("TypeError", fn () {
+  FS.watch(42)
+})
+
+// Asserted on the message, not just the kind: "not a directory" is the one
+// wording both backends have to produce from the same place.
+let e_not_dir = try {
+  FS.watch(FS.join(root, "top.txt"))
+  "no-err"
+} catch e {
+  e.message
+}
+assert_true(e_not_dir.ends_with("not a directory"))
+
+// --- handle lifetime --------------------------------------------------------
+
+// close is idempotent, and a closed watch iterates as empty rather than
+// blocking or reaching into a freed watcher.
+let wc = FS.watch(root)
+wc.close()
+wc.close()
+let mut after_close = 0
+for e in wc {
+  after_close += 1
+}
+assert_eq(after_close, 0)
+
+// Watches are released as they go out of scope, in both the forms a program
+// writes: anonymous, and named inside a block. Were they leaked, this would
+// exhaust Linux's per-user inotify instance limit (128 by default) first.
+// No event is pulled here — this thread cannot write once the loop has
+// blocked on the first pull, so delivery is asserted above instead.
+for _ in 0..200 {
+  FS.watch(root).close()
+  let scoped = FS.watch(root)
+}
+
+// A watch is tied to one thread's table, so it must not cross an isolate.
+assert_throws("SendError", fn () {
+  let ws = FS.watch(root)
+  Isolate.spawn(fn () {
+    ws
+  }).join()
+})
+
+FS.remove(root, recursive: true)
+println("fs_watch ok")

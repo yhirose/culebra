@@ -14,6 +14,7 @@ Value shared_val_get_prop(const Value& view, std::string_view name);
 Value shared_val_get_index(const Value& view, const Value& key);
 Value shared_val_make_iter(const Value& view);
 }  // namespace culebra
+#include <fswatcher.h>
 #include <parser.h>
 #include <range_bounds.h>
 #include <shared.h>
@@ -12122,19 +12123,24 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Debugger debugger_;
 };
 
-// Reaps any isolate still outstanding via the interp teardown hook (see
-// interp_isolate_teardown_join_hook, shared.h) when it goes out of scope,
-// before whatever runs next assumes no isolate is still touching shared
-// state (e.g. main() tearing down process-wide statics after a script
-// run) — RAII so this fires on every exit path (normal return, uncaught
-// throw, Interrupted rethrow), without each caller re-deriving that
-// discipline. Mirrors jit.h's JoinIsolatesGuard around JIT::exec. Shared
-// by interpret_modules (below, function-scoped: once per script run),
-// repl.h (session-scoped: once per REPL session, not per line), and
-// doctest_runner.h (statement-scoped: once per doc block).
-struct JoinIsolatesGuard {
-  ~JoinIsolatesGuard() {
+// Reaps whatever the script left running when it goes out of scope, before
+// whatever runs next assumes nothing is still touching shared state (e.g.
+// main() tearing down process-wide statics after a script run) — RAII so this
+// fires on every exit path (normal return, uncaught throw, Interrupted
+// rethrow), without each caller re-deriving that discipline. Mirrors jit.h's
+// guard around JIT::exec. Shared by interpret_modules (below, function-scoped:
+// once per script run), repl.h (session-scoped: once per REPL session, not per
+// line), and doctest_runner.h (statement-scoped: once per doc block).
+//
+// Two things qualify. Isolates go through the teardown hook (see
+// interp_isolate_teardown_join_hook, shared.h). Watches are closed directly:
+// a top-level `let w = FS.watch(...)` never runs its drop (docs/language.md —
+// top-level bindings stay alive at exit on every backend), which for a watch
+// would leave an OS notification thread running into process teardown.
+struct ScriptTeardownGuard {
+  ~ScriptTeardownGuard() {
     if (auto& fn = interp_isolate_teardown_join_hook()) fn();
+    fswatch::fs_watch_close_all();
   }
 };
 
@@ -12167,7 +12173,7 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
       try { fn(); } catch (...) {}
     }
   };
-  JoinIsolatesGuard join_isolates_guard;
+  ScriptTeardownGuard script_teardown_guard;
   try {
     for (const auto& m : modules) lint::check_shadow(*m.ast);
 
