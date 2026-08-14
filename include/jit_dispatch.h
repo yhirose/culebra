@@ -193,34 +193,19 @@ inline std::string_view _jit_derived_class_tag(JitObject* obj) {
   return _culebra_str_view(v.tag, v.data);
 }
 
-// Three-way compare for `cmp`: numeric (Long/Float/Bool collapse) and
-// string ordering, falling back to data identity. Mirrors the
-// interpreter's `Value::operator<` reach for the field types @derive
-// supports in the MVP.
+// Three-way compare for `cmp`, mirroring the interp's derived body: `==`
+// decides sameness, and anything else is ordered by `<`. Both operands here
+// are the twins of what the interp reaches — `_culebra_value_equal` for
+// `Value::operator==`, `_culebra_value_ord` for `Value::ord_compare` — so a
+// field pair the language refuses to order (Array, Object, mixed types)
+// raises the same TypeError, rather than an order invented from the raw
+// payloads. Positionless: every caller runs under _jit_at_call_site.
 inline int _jit_derived_cmp3(const JitValue& a, const JitValue& b) {
-  if (JitValueEq{}(a, b)) return 0;
-  auto as_double = [](const JitValue& v, bool& ok) -> double {
-    ok = true;
-    if (v.tag == TAG_LONG) return static_cast<double>(v.data);
-    if (v.tag == TAG_BOOL) return v.data ? 1.0 : 0.0;
-    if (v.tag == TAG_FLOAT) {
-      double d;
-      std::memcpy(&d, &v.data, sizeof d);
-      return d;
-    }
-    ok = false;
-    return 0;
-  };
-  bool oa, ob;
-  double da = as_double(a, oa), db = as_double(b, ob);
-  if (oa && ob) return da < db ? -1 : 1;
-  if ((a.tag == TAG_STRING || a.tag == TAG_STRINGVIEW) &&
-      (b.tag == TAG_STRING || b.tag == TAG_STRINGVIEW)) {
-    return _culebra_str_view(a.tag, a.data) < _culebra_str_view(b.tag, b.data)
-               ? -1
-               : 1;
-  }
-  return a.data < b.data ? -1 : 1;
+  if (_culebra_value_equal(a.tag, a.data, b.tag, b.data)) return 0;
+  return _culebra_value_ord(a.tag, a.data, b.tag, b.data,
+                            [](double x, double y) { return x < y; }, 0, 0)
+             ? -1
+             : 1;
 }
 
 // eq(other): same class tag + every data field equal (JitValueEq, so
@@ -308,15 +293,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_cmp(
 // nested user `eq`/`cmp` throwing out of a derived body would strand them
 // otherwise, and without the release at all every derived
 // `==`/`!=`/`cmp`/`hash`/`show` leaks its operand(s).
+// `eq(other)` / `cmp(other)` declare a required parameter on the interp side
+// (a native FunctionValue with one param), so calling either with no argument
+// is the ordinary missing-required ArityError — raised before the body, as any
+// binder would. Shared by the two 1-parameter thunks below; `hash()` / `to_s()`
+// take none and so have nothing to check.
+inline void _jit_derived_require_other(int64_t n) {
+  if (n >= 1) return;
+  static const char* const kNames[] = {"other", nullptr};
+  culebra_runtime_arity_missing(kNames, 0, 0, 0);
+}
+
 inline void _jit_derived_eq_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                        JitValue* args) {
   JitValue self{self_tag, self_data};
   JitMethodArgs _a{n, args};
   JitMethodSelf _s{self};
+  _jit_derived_require_other(n);
   JitValue r{TAG_BOOL, 0};
   // The thunk ABI carries no line/col; backfill the walker's positionless
   // nesting ValueError from the published call site (all four thunks).
-  if (self.tag == TAG_OBJECT && n >= 1)
+  if (self.tag == TAG_OBJECT)
     r = _jit_at_call_site([&] {
       return culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
                                         args[0]);
@@ -354,8 +351,9 @@ inline void _jit_derived_cmp_thunk(JitValue* __ret, JitClosure*, int8_t self_tag
   JitValue self{self_tag, self_data};
   JitMethodArgs _a{n, args};
   JitMethodSelf _s{self};
+  _jit_derived_require_other(n);
   JitValue r{TAG_LONG, 0};
-  if (self.tag == TAG_OBJECT && n >= 1)
+  if (self.tag == TAG_OBJECT)
     r = {TAG_LONG, _jit_at_call_site([&] {
            return culebra_runtime_derived_cmp(
                reinterpret_cast<JitObject*>(self.data), args[0]);

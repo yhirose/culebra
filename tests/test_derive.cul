@@ -90,4 +90,60 @@ let probe = try {
 }
 assert_eq(probe, "absent")
 
+// --- eq / cmp declare a required parameter ---
+// The generated pair takes `other`, so calling either with nothing is the
+// ordinary missing-required ArityError, not a default-shaped answer.
+@derive(Eq, Hash, Show, Comparable)
+class Bare {
+  new(v) {
+    self.v = v
+  }
+}
+let bare = Bare.new(1)
+let eq_arity = try {
+  bare.eq()
+  "no-error"
+} catch e {
+  e.kind
+}
+assert_eq(eq_arity, "ArityError")
+let cmp_arity = try {
+  bare.cmp()
+  "no-error"
+} catch e {
+  e.kind
+}
+assert_eq(cmp_arity, "ArityError")
+// hash() / to_s() take none, so they stay callable.
+assert_eq(bare.to_s(), "Bare(1)")
+
+// --- cmp orders the field types `<` orders, and refuses the rest ---
+// Derived cmp reaches the same ordering the `<` operator does, so a field
+// the language will not order is a TypeError instead of an invented answer.
+@derive(Comparable)
+class Holder {
+  new(v) {
+    self.v = v
+  }
+}
+assert_eq(Holder.new(1).cmp(Holder.new(2)), -1)
+assert_eq(Holder.new("b").cmp(Holder.new("a")), 1)
+assert_eq(Holder.new(1.5).cmp(Holder.new(1.5)), 0)
+let cmp_array = try {
+  Holder.new([1]).cmp(Holder.new([2]))
+  "no-error"
+} catch e {
+  e.kind + ": " + e.message
+}
+assert_eq(cmp_array, "TypeError: type error: cannot compare Array and Array")
+let cmp_mixed = try {
+  Holder.new(1).cmp(Holder.new("a"))
+  "no-error"
+} catch e {
+  e.kind + ": " + e.message
+}
+assert_eq(cmp_mixed, "TypeError: type error: cannot compare Long and String")
+// Equal fields never reach the ordering, so a same-valued Array pair is fine.
+assert_eq(Holder.new([1]).cmp(Holder.new([1])), 0)
+
 IO.inspect("test_derive OK")
