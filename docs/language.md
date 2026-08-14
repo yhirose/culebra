@@ -4151,16 +4151,24 @@ receiver is never mutated.
 | `s.size() -> Long`                              | Byte length.                         |
 | `s.empty() -> Bool`                              | Whether `size() == 0`.               |
 | `s.presence() -> String \| StringView \| Nil`   | `s` unchanged if non-empty, else `nil` — pairs with `??`/`?.` for "use it if there's anything there" (`x.presence() ?? default`). |
-| `s.upper() -> String`                           | ASCII uppercase.                     |
-| `s.lower() -> String`                           | ASCII lowercase.                     |
-| `s.capitalize() -> String`                      | First ASCII letter uppercase, the rest lowercase. ASCII-only like `upper`/`lower`, so a leading non-ASCII scalar passes through. |
+| `s.upper() -> String`                           | Uppercase, full Unicode case mapping (UAX #21). A mapping may change the length: `'ß'.upper()` is `'SS'`. |
+| `s.lower() -> String`                           | Lowercase, same mapping rules.       |
+| `s.capitalize() -> String`                      | First letter titlecase, the rest lowercase (Python/Ruby `capitalize`). |
+| `s.title() -> String`                           | Every word's first letter titlecase, the rest lowercase. Word boundaries are UAX #29, so `"o'neil".title()` is `"O'neil"` — the apostrophe does not start a word. |
+| `s.normalize(form: StringLike = "NFC") -> String` | Unicode normalization: `"NFC"`, `"NFD"`, `"NFKC"`, or `"NFKD"`. Composed and decomposed spellings of the same text compare equal after `normalize()`; equality itself is by bytes (§8), so it does not normalize for you. Any other `form` is a `ValueError`. |
+| `s.eq_ignore_case(other: StringLike) -> Bool`   | Default caseless matching (full case folding), so `'Straße'.eq_ignore_case('STRASSE')` is `true`. Canonical equivalence is deliberately not folded in — `normalize()` both sides for that. |
+| `s.reverse() -> String`                         | Reversed by Extended Grapheme Cluster (UAX #29), so an emoji ZWJ sequence or a base+combining pair survives intact. A new String — unlike `Array.reverse()`, which mutates in place and returns `nil`. |
 | `s.repeat(n: Long) -> String`                   | `n` copies concatenated. `n == 0` → `""`; a negative `n` is a `ValueError`, as is a result too large to allocate. |
 | `s.truncate(max: Long, ellipsis: StringLike = "...") -> String` | `s` unchanged if it already fits in `max` bytes; otherwise cut so the result (content + `ellipsis`) is exactly `max` bytes. Byte-based like `slice`, so a multi-byte scalar can split at the cut point. `max < 0`, or too small to fit `ellipsis`, is a `ValueError`. |
-| `s.trim() -> String`                            | Remove leading/trailing whitespace (` `, `\t`, `\n`, `\r`). |
+| `s.trim() -> String`                            | Remove leading/trailing Unicode whitespace (the `White_Space` property, so NBSP and U+3000 count, not just ` `/`\t`/`\n`/`\r`). |
 | `s.trim_start(chars: StringLike = "") -> String` | Trim from the start. No arg → whitespace; `chars` → leading scalars in that set (no ranges). |
 | `s.trim_end(chars: StringLike = "") -> String`  | Trim from the end. e.g. `s.trim_end("\n")`. |
 | `s.tr(from: StringLike, to: StringLike) -> String` | Per-scalar translation, character-list form — no `a-z` ranges or `^`. Each scalar of `s` found in `from` becomes the scalar at the same position in `to`; a shorter `to` repeats its last scalar, an empty `to` deletes. `s.tr("０１２３４５６７８９", "0123456789")`. |
-| `s.split(sep: StringLike) -> Array<StringView>` | Split on every occurrence of `sep`. Empty `sep` → `[s]`. Elements share a single source. |
+| `s.split(sep: StringLike, limit: Long = 0) -> Array<StringView>` | Split on every occurrence of `sep`. Empty `sep` → `[s]`. Elements share a single source. `limit` caps how many pieces come back, the last one holding the remainder (`'a.b.c'.split('.', 2)` → `['a', 'b.c']`); `0` is uncapped and a negative one is a `ValueError`. |
+| `s.rsplit(sep: StringLike, limit: Long = 0) -> Array<StringView>` | The same pieces, but `limit` is filled from the right: `'a.b.c'.rsplit('.', 2)` → `['a.b', 'c']`. The result stays in left-to-right order, and without a `limit` the two agree. |
+| `s.split_whitespace() -> Array<StringView>`     | Split on runs of Unicode whitespace, with no empty piece at either end: `'  a  b '.split_whitespace()` is `['a', 'b']`, where `split(' ')` keeps the empties. |
+| `s.split_once(sep: StringLike) -> Tuple \| Nil` | The two halves around the *first* `sep`, or `nil` when it does not occur — the shape a `key=value` parse wants, where `split` would break on a value containing `sep`. An empty `sep` never splits, so `nil`. |
+| `s.rsplit_once(sep: StringLike) -> Tuple \| Nil` | The halves around the *last* `sep`, or `nil`. |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | Lazy variant of `split`. Short-circuits with `.take(n)` over huge inputs. |
 | `s.lines() -> Array<StringView>`                | Split on `\n`, `\r\n`, or `\r`. The terminator is dropped and a trailing one yields no final empty element, so `"a\nb\n".lines()` is `["a", "b"]` — the same line boundaries as `File.lines()`. Eager like `split`. |
 | `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | Replace **every** occurrence; chains. `pat` a `String` → literal; `pat` a `Regex` (incl. `re'…'`) → regex, so `repl` may be a `$1` / `$<name>` template or a `fn (Match) -> String`. A stdlib helper reached by UFCS — `s.replace(p, r)` is `replace(s, p, r)`. |
@@ -4168,6 +4176,16 @@ receiver is never mutated.
 | `s.count(sub: StringLike) -> Long`              | Non-overlapping occurrences of `sub`, so `"aaaa".count("aa")` is `2`. Empty `sub` → `0`, matching `split("")` yielding the receiver whole. Literal only — a compiled `Regex` counts its own matches. |
 | `s.starts_with(prefix: StringLike) -> Bool`     | Whether `s` begins with `prefix`.    |
 | `s.ends_with(suffix: StringLike) -> Bool`       | Whether `s` ends with `suffix`.      |
+| `s.index_of(sub: StringLike, start: Long = 0) -> Long` | Byte offset of the first `sub` at or after `start`, or `-1` — the same "-1 means absent" convention `Array.index_of` uses. A negative `start` counts from the end, like `slice`'s indices. |
+| `s.last_index_of(sub: StringLike) -> Long`      | Byte offset of the last `sub`, or `-1`. |
+| `s.strip_prefix(prefix: StringLike) -> String`  | `s` without that exact prefix, or `s` unchanged when it is not there. Unlike `trim_start(chars)`, which trims a *set* of scalars, this matches the whole affix once. |
+| `s.strip_suffix(suffix: StringLike) -> String`  | `s` without that exact suffix, or `s` unchanged. |
+| `s.replace_first(pat: String \| Regex, repl: String \| Function) -> String` | Like `replace`, but only the first occurrence. Same `pat`/`repl` rules. |
+| `s.is_digit() -> Bool`                          | Whether `s` is non-empty AND every scalar is a decimal digit (General_Category `Nd`, so fullwidth `'１２３'` counts). |
+| `s.is_alpha() -> Bool`                          | Non-empty and every scalar is `Alphabetic`. |
+| `s.is_alnum() -> Bool`                          | Non-empty and every scalar is `Alphabetic` or a number. |
+| `s.is_space() -> Bool`                          | Non-empty and every scalar is `White_Space`. |
+| `s.is_ascii() -> Bool`                          | Non-empty and every byte is below `0x80`. Empty is `false` here too — one rule for the whole `is_*` family rather than a per-method exception. |
 | `s.slice(start: Long, end: Long) -> StringView` | Substring `[start, end)` borrowing from the receiver's bytes. Negative indices count from end; `start` clamped to `[0, size()]`, `end` to `[start, size()]`. |
 | `s.view() -> StringView`                        | A view aliasing the receiver's bytes (no copy). |
 | `s.to_string() -> String`                       | Materialize an owning `String` (no-op for `String`; copies for `StringView`). |
@@ -4772,24 +4790,33 @@ when the name appears in value position. `range` / `iota` accept their
 closure too (`range(0, 10, **{step: 2})` works), with the same
 `ArityError` / unknown-keyword diagnostics as the direct call.
 
-### `to_long(v: Any) -> Long`
+### `to_long(v: Any, *, base: Long = 10) -> Long`
 
 Convert `v` to `Long`:
 
 * `Long` → itself.
 * `Float` → truncated toward zero.
   `to_long(3.7) == 3`, `to_long(-3.7) == -3`.
-* `String` → parsed as a base-10 signed integer; leading/trailing
+* `String` → parsed as a signed integer in `base`; leading/trailing
   whitespace is allowed, anything else fails.
 * Other types raise `type error`.
 
-**Throws**: `type error at L:C.` on an unparseable string or a
-non-numeric / non-string argument.
+`base` is keyword-only and ranges over 2–36. For base 16 / 8 / 2 the
+matching `0x` / `0o` / `0b` prefix is accepted, so a literal copied out
+of source parses as itself. Naming a `base` for a non-String `v` is an
+error rather than a silently ignored argument — keyword-only also keeps
+`to_long` a one-parameter function, so `map(to_long)` still binds.
+
+**Throws**: `type error at L:C.` on an unparseable string, a
+non-numeric / non-string argument, or a `base` given for one;
+`ValueError` for a `base` outside 2–36.
 
 ```culebra
-inspect(to_long('42'))  # => 42
-inspect(to_long('-7'))  # => -7
-inspect(to_long(3.9))   # => 3
+inspect(to_long('42'))             # => 42
+inspect(to_long('-7'))             # => -7
+inspect(to_long(3.9))              # => 3
+inspect(to_long('ff', base: 16))   # => 255
+inspect(to_long('0b1010', base: 2))  # => 10
 ```
 
 ### `to_float(v: Any) -> Float`

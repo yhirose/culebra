@@ -960,6 +960,19 @@ inline constexpr auto str_repeat          = "culebra_runtime_str_repeat";
 inline constexpr auto str_truncate        = "culebra_runtime_str_truncate";
 inline constexpr auto str_lines           = "culebra_runtime_str_lines";
 inline constexpr auto str_count           = "culebra_runtime_str_count";
+inline constexpr auto str_title           = "culebra_runtime_str_title";
+inline constexpr auto str_normalize       = "culebra_runtime_str_normalize";
+inline constexpr auto str_reverse         = "culebra_runtime_str_reverse";
+inline constexpr auto str_eq_ignore_case
+    = "culebra_runtime_str_eq_ignore_case";
+inline constexpr auto str_index_of        = "culebra_runtime_str_index_of";
+inline constexpr auto str_last_index_of
+    = "culebra_runtime_str_last_index_of";
+inline constexpr auto str_strip_prefix    = "culebra_runtime_str_strip_prefix";
+inline constexpr auto str_strip_suffix    = "culebra_runtime_str_strip_suffix";
+inline constexpr auto str_split_whitespace
+    = "culebra_runtime_str_split_whitespace";
+inline constexpr auto str_is_class        = "culebra_runtime_str_is_class";
 inline constexpr auto safepoint           = "culebra_runtime_safepoint";
 inline constexpr auto throw_              = "culebra_runtime_throw";
 inline constexpr auto to_long             = "culebra_runtime_to_long";

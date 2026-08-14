@@ -12,6 +12,7 @@
 #include <runtime/rt_macros.h>
 #include <shared.h>
 #include <tensor.h>
+#include <unicode_str.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 
@@ -4461,8 +4462,26 @@ struct JIT {
     module_->getOrInsertFunction(rt::str_tr, ptrTy, ptrTy, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_trim_start, ptrTy, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_trim_end, ptrTy, ptrTy, ptrTy);
-    module_->getOrInsertFunction(rt::str_split, ptrTy, ptrTy,
-                                 ptrTy);
+    module_->getOrInsertFunction(rt::str_split, ptrTy, ptrTy, ptrTy,
+                                 builder_.getInt64Ty(), builder_.getInt1Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::str_split_whitespace, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_title, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_normalize, ptrTy, ptrTy, ptrTy,
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::str_reverse, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_eq_ignore_case, builder_.getInt1Ty(),
+                                 ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_index_of, builder_.getInt64Ty(), ptrTy,
+                                 ptrTy, builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::str_last_index_of, builder_.getInt64Ty(),
+                                 ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_strip_prefix, ptrTy, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_strip_suffix, ptrTy, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_is_class, builder_.getInt1Ty(), ptrTy,
+                                 builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::str_slice, ptrTy, ptrTy,
                                  builder_.getInt64Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::strlike_view, ptrTy,
@@ -15089,11 +15108,37 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(result);
   }
 
+  // reverse reverses an Array in place (and answers nil), but a String is
+  // immutable so its arm answers a new String — reversed by grapheme cluster.
   if (method == "reverse" && argsAst.nodes.size() == 0) {
-    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "rev");
-    emit_call(module_->getFunction(rt::array_reverse),
-                        {arrPtr});
-    return own(make_nil());
+    auto arrBB = llvm::BasicBlock::Create(ctx_, "rev.arr", fn);
+    auto strBB = llvm::BasicBlock::Create(ctx_, "rev.str", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "rev.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "rev.merge", fn);
+    auto sw = builder_.CreateSwitch(tag, errBB, 3);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), strBB);
+
+    OwnedPhi revMerge(this, "rev");
+    builder_.SetInsertPoint(arrBB);
+    auto revArrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    emit_call(module_->getFunction(rt::array_reverse), {revArrPtr});
+    revMerge.add_incoming(make_nil());
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(strBB);
+    auto revStrPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
+                               {tag, extract_data(receiver)});
+    auto rev = emit_call(module_->getFunction(rt::str_reverse), {revStrPtr});
+    revMerge.add_incoming(make_string(rev));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_receiver_resolution_error(tag, "reverse");
+
+    builder_.SetInsertPoint(mergeBB);
+    return revMerge.finish(mergeBB);
   }
 
   // slice works on Array, String, StringView, and Tensor.
@@ -15182,14 +15227,71 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return slMerge.finish(mergeBB);
   }
 
-  if (method == "index_of" && argsAst.nodes.size() == 1) {
-    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "iof");
+  // index_of works on an Array (by value) and on a String/StringView (by
+  // substring, with an optional start offset). The two tables disagree on
+  // arity, so the shared check runs first: `[1,2].index_of(1, 0)` is interp's
+  // ArityError, not a receiver-type error.
+  if (method == "index_of" && argsAst.nodes.size() >= 1 &&
+      argsAst.nodes.size() <= 2) {
+    emit_builtin_arity_check(method, argsAst, receiver);
+    auto arrBB = llvm::BasicBlock::Create(ctx_, "iof.arr", fn);
+    auto strBB = llvm::BasicBlock::Create(ctx_, "iof.str", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "iof.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "iof.merge", fn);
+    auto sw = builder_.CreateSwitch(tag, errBB, 3);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), strBB);
+
+    OwnedPhi iofMerge(this, "iof");
+    builder_.SetInsertPoint(arrBB);
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto v = compile(*argsAst.nodes[0]);
-    emit_set_op_pos();  // positionless ValueError on a too-deep element
-    auto idx = emit_call(
-        module_->getFunction(rt::array_index_of),
-        {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow())});
+    llvm::Value* arrIdx;
+    {
+      // array_index_of compares (and may hash) the value; guard the borrowed
+      // `+1` so it isn't stranded on that throw edge, as contains does.
+      ThrowGuard v_guard(this, {v.borrow()});
+      emit_set_op_pos();  // positionless ValueError on a too-deep element
+      arrIdx = emit_call(
+          module_->getFunction(rt::array_index_of),
+          {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow())});
+    }
     v.drop();
+    iofMerge.add_incoming(make_long(arrIdx));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(strBB);
+    auto iofStrPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
+                               {tag, extract_data(receiver)});
+    auto sub = compile(*argsAst.nodes[0]);
+    auto subPtr = coerce_strlike_cstr(sub.borrow(), "iof.sub", false, "sub",
+                                      argsAst.nodes[0].get());
+    llvm::Value* start =
+        argsAst.nodes.size() == 2
+            ? emit_builtin_long_arg(*argsAst.nodes[1], "start")
+            : builder_.getInt64(0);
+    auto strIdx = emit_call(module_->getFunction(rt::str_index_of),
+                            {iofStrPtr, subPtr, start});
+    sub.drop();
+    iofMerge.add_incoming(make_long(strIdx));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_receiver_resolution_error(tag, "index_of");
+
+    builder_.SetInsertPoint(mergeBB);
+    return iofMerge.finish(mergeBB);
+  }
+
+  if (method == "last_index_of" && argsAst.nodes.size() == 1) {
+    auto strPtr = coerce_strlike_cstr(receiver, "liof", true);
+    auto sub = compile(*argsAst.nodes[0]);
+    auto subPtr = coerce_strlike_cstr(sub.borrow(), "liof.sub", false, "sub",
+                                      argsAst.nodes[0].get());
+    auto idx = emit_call(module_->getFunction(rt::str_last_index_of),
+                         {strPtr, subPtr});
+    sub.drop();
     return own(make_long(idx));
   }
 
@@ -15471,14 +15573,31 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     return own(make_string(s));
   }
 
-  if (method == "split" && argsAst.nodes.size() == 1) {
-    auto strPtr = coerce_strlike_cstr(receiver, "sp", true);
+  // split / rsplit differ only in which end fills the `limit`, so they share
+  // one arm (and one runtime entry point) here as they do in the interp.
+  if ((method == "split" || method == "rsplit") && argsAst.nodes.size() >= 1 &&
+      argsAst.nodes.size() <= 2) {
+    bool from_right = method == "rsplit";
+    auto strPtr = coerce_strlike_cstr(receiver, from_right ? "rsp" : "sp",
+                                      true);
     auto sep = compile(*argsAst.nodes[0]);
     auto sepPtr = coerce_strlike_cstr(sep.borrow(), "sp.sep", false, "sep",
                                     argsAst.nodes[0].get());
-    auto arr = emit_call(
-        module_->getFunction(rt::str_split), {strPtr, sepPtr});
+    llvm::Value* limit =
+        argsAst.nodes.size() == 2
+            ? emit_builtin_long_arg(*argsAst.nodes[1], "limit")
+            : builder_.getInt64(0);
+    auto arr = emit_call(module_->getFunction(rt::str_split),
+                         {strPtr, sepPtr, limit, builder_.getInt1(from_right),
+                          current_line_val(), current_column_val()});
     sep.drop();
+    return own(make_array(arr));
+  }
+
+  if (method == "split_whitespace" && argsAst.nodes.size() == 0) {
+    auto strPtr = coerce_strlike_cstr(receiver, "spw", true);
+    auto arr =
+        emit_call(module_->getFunction(rt::str_split_whitespace), {strPtr});
     return own(make_array(arr));
   }
 
@@ -15525,7 +15644,9 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     auto sepPtr = coerce_strlike_cstr(sep.borrow(), "spli.sep", false, "sep",
                                     argsAst.nodes[0].get());
     auto arr = emit_call(
-        module_->getFunction(rt::str_split), {strPtr, sepPtr});
+        module_->getFunction(rt::str_split),
+        {strPtr, sepPtr, builder_.getInt64(0), builder_.getInt1(false),
+         current_line_val(), current_column_val()});
     sep.drop();
     auto iter = emit_call(module_->getFunction(rt::array_iter), {arr});
     // array_iter takes its own +1 on the Array, so str_split's fresh one dies
@@ -15557,6 +15678,73 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         {strPtr, pPtr});
     p.drop();
     return own(make_bool(r));
+  }
+
+  // strip_prefix / strip_suffix differ only in which end they match, so one
+  // arm serves both.
+  if ((method == "strip_prefix" || method == "strip_suffix") &&
+      argsAst.nodes.size() == 1) {
+    bool is_prefix = method == "strip_prefix";
+    auto strPtr = coerce_strlike_cstr(receiver, is_prefix ? "spfx" : "ssfx",
+                                      true);
+    auto p = compile(*argsAst.nodes[0]);
+    auto pPtr = coerce_strlike_cstr(p.borrow(), "sfx.arg", false,
+                                    is_prefix ? "prefix" : "suffix",
+                                    argsAst.nodes[0].get());
+    auto s = emit_call(module_->getFunction(is_prefix ? rt::str_strip_prefix
+                                                      : rt::str_strip_suffix),
+                       {strPtr, pPtr});
+    p.drop();
+    return own(make_string(s));
+  }
+
+  if (method == "title" && argsAst.nodes.size() == 0) {
+    auto strPtr = coerce_strlike_cstr(receiver, "ttl", true);
+    auto s = emit_call(module_->getFunction(rt::str_title), {strPtr});
+    return own(make_string(s));
+  }
+
+  if (method == "normalize" && argsAst.nodes.size() <= 1) {
+    auto strPtr = coerce_strlike_cstr(receiver, "nrm", true);
+    Owned form;
+    llvm::Value* formPtr;
+    if (argsAst.nodes.empty()) {
+      formPtr = emit_str_literal("NFC");
+    } else {
+      form = compile(*argsAst.nodes[0]);
+      formPtr = coerce_strlike_cstr(form.borrow(), "nrm.form", false, "form",
+                                    argsAst.nodes[0].get());
+    }
+    auto s = emit_call(
+        module_->getFunction(rt::str_normalize),
+        {strPtr, formPtr, current_line_val(), current_column_val()});
+    form.drop();  // no-op when empty; releases the compiled arg otherwise
+    return own(make_string(s));
+  }
+
+  if (method == "eq_ignore_case" && argsAst.nodes.size() == 1) {
+    auto strPtr = coerce_strlike_cstr(receiver, "eqic", true);
+    auto other = compile(*argsAst.nodes[0]);
+    auto otherPtr = coerce_strlike_cstr(other.borrow(), "eqic.other", false,
+                                        "other", argsAst.nodes[0].get());
+    auto r = emit_call(module_->getFunction(rt::str_eq_ignore_case),
+                       {strPtr, otherPtr});
+    other.drop();
+    return own(make_bool(r));
+  }
+
+  // The is_* family: same shape, one selector apart, so a table beats five
+  // near-identical arms. The order matches culebra_runtime_str_is_class.
+  {
+    static constexpr std::string_view kClasses[] = {
+        "is_digit", "is_alpha", "is_alnum", "is_space", "is_ascii"};
+    for (size_t i = 0; i < std::size(kClasses); i++) {
+      if (method != kClasses[i] || !argsAst.nodes.empty()) continue;
+      auto strPtr = coerce_strlike_cstr(receiver, "isc", true);
+      auto r = emit_call(module_->getFunction(rt::str_is_class),
+                         {strPtr, builder_.getInt64(static_cast<int64_t>(i))});
+      return own(make_bool(r));
+    }
   }
 
   // --- Object methods ---

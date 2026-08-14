@@ -82,7 +82,10 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "add",
       "union",      "intersect",   "diff",       "sym_diff",   "subset",
       "superset",   "requires_grad","grad",      "backward",   "zero_grad",
-      "detach",     "item"};
+      "detach",     "item",
+      "last_index_of", "strip_prefix", "strip_suffix", "rsplit",
+      "split_whitespace", "normalize", "title", "eq_ignore_case",
+      "is_digit",   "is_alpha",    "is_alnum",   "is_space",   "is_ascii"};
   return kNames;
 }
 inline bool is_builtin_method_name(std::string_view name) {
@@ -121,8 +124,8 @@ inline const char* lazy_namespace_static_name(std::string_view name) {
 }
 
 // The culebra-source stdlib modules that bind bare *functions* instead of a
-// namespace object: the matcher family (matchers.cul) and `replace`
-// (string_replace.cul). Both backends must hand out one instance of each per
+// namespace object: the matcher family (matchers.cul) and the String helpers
+// (string_fns.cul). Both backends must hand out one instance of each per
 // Runtime, so a function reached from two modules compares equal on either.
 // The interp binds a group's names once in the global environment
 // (initialize_lazy_group); the JIT/AOT wrap the same source in a builder that
@@ -140,9 +143,11 @@ inline std::span<const LazyFnGroup> lazy_fn_groups() {
       "assert_true", "assert_false", "assert_eq",     "assert_ne",
       "assert_lt",   "assert_le",    "assert_gt",     "assert_ge",
       "assert_throws", "assert_close"};
-  static constexpr std::string_view kReplace[] = {"replace"};
+  static constexpr std::string_view kStringFns[] = {"replace", "replace_first",
+                                                    "split_once",
+                                                    "rsplit_once"};
   static constexpr LazyFnGroup kGroups[] = {{"__Matchers", kMatchers},
-                                            {"__Replace", kReplace}};
+                                            {"__StringFns", kStringFns}};
   return kGroups;
 }
 
@@ -1395,6 +1400,83 @@ inline int64_t str_count(std::string_view s, std::string_view sub) {
   return n;
 }
 
+// `s.index_of(sub, start)` — the byte offset of the first match at or after
+// `start`, or -1 (Array.index_of's convention). A negative `start` counts
+// from the end, like slice's indices.
+inline int64_t str_index_of(std::string_view s, std::string_view sub,
+                            int64_t start) {
+  auto n = static_cast<int64_t>(s.size());
+  if (start < 0) start += n;
+  if (start < 0) start = 0;
+  if (start > n) return -1;
+  auto p = s.find(sub, static_cast<size_t>(start));
+  return p == std::string_view::npos ? -1 : static_cast<int64_t>(p);
+}
+
+// `s.last_index_of(sub)` — the byte offset of the last match, or -1.
+inline int64_t str_last_index_of(std::string_view s, std::string_view sub) {
+  auto p = s.rfind(sub);
+  return p == std::string_view::npos ? -1 : static_cast<int64_t>(p);
+}
+
+// `s.strip_prefix(p)` / `s.strip_suffix(p)` — `s` without that exact
+// affix, or `s` unchanged when it is not there. Unlike `trim_start(chars)`,
+// which trims a *set* of scalars, these match the whole string once.
+inline std::string_view str_strip_prefix(std::string_view s,
+                                         std::string_view p) {
+  return s.size() >= p.size() && s.compare(0, p.size(), p) == 0
+             ? s.substr(p.size())
+             : s;
+}
+
+inline std::string_view str_strip_suffix(std::string_view s,
+                                         std::string_view p) {
+  return s.size() >= p.size() &&
+                 s.compare(s.size() - p.size(), p.size(), p) == 0
+             ? s.substr(0, s.size() - p.size())
+             : s;
+}
+
+// `s.split(sep, limit)` / `s.rsplit(sep, limit)` — the pieces, as views into
+// `s`. An empty `sep` never splits. `limit` caps how many pieces come back
+// (0 = uncapped); `rsplit` fills that cap from the right but still returns
+// the pieces left to right, so `'a.b.c'.rsplit('.', 2)` is `['a.b', 'c']`.
+// Single source for both backends and for both directions.
+inline std::vector<std::string_view> str_split_pieces(std::string_view s,
+                                                      std::string_view sep,
+                                                      int64_t limit,
+                                                      bool from_right) {
+  std::vector<std::string_view> out;
+  if (sep.empty() || limit == 1) {
+    out.push_back(s);
+    return out;
+  }
+  auto capped = [&] {
+    return limit > 0 && static_cast<int64_t>(out.size()) + 1 == limit;
+  };
+  if (!from_right) {
+    size_t pos = 0;
+    while (!capped()) {
+      auto p = s.find(sep, pos);
+      if (p == std::string_view::npos) break;
+      out.push_back(s.substr(pos, p - pos));
+      pos = p + sep.size();
+    }
+    out.push_back(s.substr(pos));
+    return out;
+  }
+  size_t end = s.size();
+  while (!capped() && end >= sep.size()) {
+    auto p = s.rfind(sep, end - sep.size());
+    if (p == std::string_view::npos) break;
+    out.push_back(s.substr(p + sep.size(), end - p - sep.size()));
+    end = p;
+  }
+  out.push_back(s.substr(0, end));
+  std::reverse(out.begin(), out.end());
+  return out;
+}
+
 // Advance the bracket-nesting `depth` for one character. `<...>` Generic
 // args and `(...)` function-type params both nest, so a separator (`|`,
 // `+`, `,`) is only top-level when depth is 0 — that's how `fn(A | B) -> C`
@@ -1819,16 +1901,33 @@ inline std::string canonicalize_type_annotation(std::string_view name) {
   return out;
 }
 
-// Parse a full string as a base-10 signed long; whitespace-trim allowed,
-// any other trailing content or invalid form throws `type error at L:C`.
-inline int64_t parse_long_strict(std::string_view s, int64_t line,
-                                 int64_t col) {
+// Parse a full string as a signed long in `base` (2-36); whitespace-trim
+// allowed, any other trailing content or invalid form throws `type error at
+// L:C`. A base outside the range is a ValueError.
+inline int64_t parse_long_strict(std::string_view s, int64_t line, int64_t col,
+                                 int64_t base = 10) {
+  if (base < 2 || base > 36) {
+    throw CulebraError(
+        "ValueError",
+        std::format("to_long() base must be between 2 and 36, got {}", base),
+        line, col);
+  }
   auto t = trim_ascii(s);
   if (t.empty()) throw_type_error_at(line, col);
   try {
     size_t used = 0;
     std::string owned(t);
-    int64_t v = std::stoll(owned, &used, 10);
+    // Accept the radix prefix that matches the base, so a literal copied out
+    // of source (`0xff`, `0b1010`) parses as itself. Dropping just the letter
+    // leaves its `0` as a leading digit, which every base accepts.
+    size_t at = (owned[0] == '+' || owned[0] == '-') ? 1 : 0;
+    std::string_view marks =
+        base == 16 ? "xX" : base == 8 ? "oO" : base == 2 ? "bB" : "";
+    if (!marks.empty() && owned.size() > at + 2 && owned[at] == '0' &&
+        marks.find(owned[at + 1]) != std::string_view::npos) {
+      owned.erase(at + 1, 1);
+    }
+    int64_t v = std::stoll(owned, &used, static_cast<int>(base));
     if (used != owned.size()) throw std::invalid_argument("");
     return v;
   } catch (const std::runtime_error&) {

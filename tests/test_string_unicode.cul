@@ -1,0 +1,114 @@
+// Unicode-aware String operations: upper / lower / capitalize / title /
+// normalize / eq_ignore_case / reverse / the is_* family / whitespace trim.
+
+// --- case mapping (UAX #21, not ASCII-only) ---------------------------
+assert_eq("ä".upper(), "Ä")
+assert_eq("Ä".lower(), "ä")
+assert_eq("ǅ".lower(), "ǆ")
+// a mapping may change the length: ß uppercases to two scalars
+assert_eq("ß".upper(), "SS")
+assert_eq("straße".upper(), "STRASSE")
+// ASCII keeps behaving as before
+assert_eq("HeLLo".lower(), "hello")
+assert_eq("HeLLo".upper(), "HELLO")
+assert_eq("".upper(), "")
+
+// --- capitalize / title ----------------------------------------------
+// capitalize: first letter up, everything after it down
+assert_eq("éCOLE".capitalize(), "École")
+assert_eq("rEaD mE".capitalize(), "Read me")
+// title: every word's first letter
+assert_eq("read me".title(), "Read Me")
+// word boundaries are UAX #29, so an apostrophe does not start a new word
+assert_eq("o'neil de la cruz".title(), "O'neil De La Cruz")
+assert_eq("".title(), "")
+// titlecase is not uppercase for the digraph letters
+assert_eq("ǆungla".capitalize(), "ǅungla")
+assert_eq("ǆungla".upper(), "ǄUNGLA")
+
+// --- normalize --------------------------------------------------------
+// composed vs decomposed é: equal after NFC, different bytes before
+let composed = "é"
+let decomposed = "é"
+assert_ne(composed, decomposed)
+assert_eq(composed.normalize("NFC"), decomposed.normalize("NFC"))
+assert_eq(composed.size(), 2)
+assert_eq(composed.normalize("NFD").size(), 3)
+// NFC is the default form
+assert_eq(decomposed.normalize(), composed)
+// the compatibility forms fold presentation differences away
+assert_eq("ﬁ".normalize("NFKC"), "fi")
+assert_eq("①".normalize("NFKD"), "1")
+assert_throws("ValueError", || "abc".normalize("NFX"))
+
+// --- eq_ignore_case ---------------------------------------------------
+assert_true("Hello".eq_ignore_case("HELLO"))
+assert_true("ÄÖÜ".eq_ignore_case("äöü"))
+// full case folding, so ß matches ss
+assert_true("Straße".eq_ignore_case("STRASSE"))
+assert_false("abc".eq_ignore_case("abd"))
+assert_true("".eq_ignore_case(""))
+// canonical equivalence is NOT folded in — normalize() is the way to ask
+assert_false(composed.eq_ignore_case(decomposed))
+
+// --- reverse ----------------------------------------------------------
+// String reverse answers a new String (Array.reverse mutates and answers nil)
+assert_eq("abc".reverse(), "cba")
+assert_eq("".reverse(), "")
+// by grapheme cluster: a ZWJ emoji sequence stays one unit
+assert_eq("👨‍👩‍👧ab".reverse(), "ba👨‍👩‍👧")
+// a base + combining mark stays attached to its base
+assert_eq(("x" + decomposed).reverse(), decomposed + "x")
+mut arr = [1, 2, 3]
+assert_eq(arr.reverse(), nil)
+assert_eq(arr, [3, 2, 1])
+
+// --- the is_* family --------------------------------------------------
+// every scalar has the property, and an empty receiver is false throughout
+assert_true("123".is_digit())
+assert_true("１２３".is_digit())  // fullwidth digits are Nd too
+assert_false("12a".is_digit())
+assert_false("".is_digit())
+assert_true("abc".is_alpha())
+assert_true("日本語".is_alpha())
+assert_false("ab1".is_alpha())
+assert_true("ab1".is_alnum())
+assert_false("ab-1".is_alnum())
+assert_true(" \t\n".is_space())
+assert_true("　".is_space())  // U+3000 IDEOGRAPHIC SPACE
+assert_false(" a ".is_space())
+assert_true("abc".is_ascii())
+assert_false("abé".is_ascii())
+assert_false("".is_ascii())
+
+// --- trim over Unicode whitespace -------------------------------------
+assert_eq("　 héllo 　".trim(), "héllo")
+assert_eq(" abc".trim_start(), "abc")  // NBSP is White_Space
+assert_eq("abc　".trim_end(), "abc")
+// an explicit `chars` set still trims exactly those scalars
+assert_eq("xxabcxx".trim_start("x"), "abcxx")
+assert_eq(" abc ".trim_start("x"), " abc ")
+
+// --- to_long(base:) ---------------------------------------------------
+assert_eq(to_long("ff", base: 16), 255)
+assert_eq(to_long("-1f", base: 16), -31)
+assert_eq(to_long("1010", base: 2), 10)
+assert_eq(to_long("777", base: 8), 511)
+assert_eq(to_long("z", base: 36), 35)
+// the matching radix prefix is accepted, so a source literal parses as itself
+assert_eq(to_long("0xff", base: 16), 255)
+assert_eq(to_long("0b1010", base: 2), 10)
+assert_eq(to_long("0o777", base: 8), 511)
+assert_eq(to_long("-0x1f", base: 16), -31)
+// UFCS spelling
+assert_eq("ff".to_long(base: 16), 255)
+// base 10 stays the default, and to_long keeps its 1-argument callback shape
+assert_eq(to_long("42"), 42)
+assert_eq(["1", "2"].map(to_long), [1, 2])
+// a digit outside the base, an out-of-range base, a non-String receiver
+assert_throws("TypeError", || to_long("zz", base: 16))
+assert_throws("ValueError", || to_long("10", base: 99))
+assert_throws("ValueError", || to_long("10", base: 1))
+assert_throws("TypeError", || to_long(3.7, base: 16))
+
+IO.inspect("test_string_unicode OK")

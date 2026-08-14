@@ -3923,16 +3923,24 @@ matcher一族`assert_true` / `assert_eq`等）は
 | `s.size() -> Long`                              | バイト長                              |
 | `s.empty() -> Bool`                              | `size() == 0`か                     |
 | `s.presence() -> String \| StringView \| Nil`   | 非空なら`s`をそのまま、空なら`nil` — `??`/`?.`と組み合わせて「あれば使う」慣用句に（`x.presence() ?? default`） |
-| `s.upper() -> String`                           | ASCIIの大文字化                      |
-| `s.lower() -> String`                           | ASCIIの小文字化                      |
-| `s.capitalize() -> String`                      | 先頭のASCII文字を大文字に、残りを小文字に。`upper`/`lower`と同じくASCIIのみなので、先頭が非ASCII scalarならそのまま |
+| `s.upper() -> String`                           | 大文字化。Unicode全体のcase mapping（UAX #21）なので長さが変わりうる: `'ß'.upper()`は`'SS'` |
+| `s.lower() -> String`                           | 小文字化。mappingの規則は同じ         |
+| `s.capitalize() -> String`                      | 先頭の文字をtitlecaseに、残りを小文字に（Python/Rubyの`capitalize`） |
+| `s.title() -> String`                           | 各単語の先頭文字をtitlecaseに、残りを小文字に。単語境界はUAX #29なので`"o'neil".title()`は`"O'neil"`（アポストロフィは単語を区切らない） |
+| `s.normalize(form: StringLike = "NFC") -> String` | Unicode正規化: `"NFC"` / `"NFD"` / `"NFKC"` / `"NFKD"`。合成済みと分解済みの同一テキストは`normalize()`後に等しくなる。等価判定自体はバイト単位（§8）なので自動では正規化しない。他の`form`は`ValueError` |
+| `s.eq_ignore_case(other: StringLike) -> Bool`   | 大文字小文字を無視した一致（full case folding）。`'Straße'.eq_ignore_case('STRASSE')`は`true`。正準等価は意図的に含めない — それが要るなら両辺を`normalize()`する |
+| `s.reverse() -> String`                         | 書記素クラスタ（UAX #29）単位で反転するので、絵文字のZWJ列や基底+結合文字の組は壊れない。新しいStringを返す — in-placeで変更して`nil`を返す`Array.reverse()`とは異なる |
 | `s.repeat(n: Long) -> String`                   | `n`個連結。`n == 0`は`""`、負の`n`は`ValueError`。確保できない大きさの結果も`ValueError` |
 | `s.truncate(max: Long, ellipsis: StringLike = "...") -> String` | `s`が`max`バイト以内ならそのまま。超えるなら結果（本文+`ellipsis`）がちょうど`max`バイトになるよう切る。`slice`と同じくバイト単位なので、切断点でマルチバイトscalarが分断されうる。`max < 0`、または`ellipsis`が収まらない小ささは`ValueError` |
-| `s.trim() -> String`                            | 前後の空白（` `, `\t`, `\n`, `\r`）を除去 |
+| `s.trim() -> String`                            | 前後のUnicode空白（`White_Space`プロパティ。` `/`\t`/`\n`/`\r`だけでなくNBSPやU+3000も含む）を除去 |
 | `s.trim_start(chars: StringLike = "") -> String` | 先頭側を除去。引数なし → 空白、`chars` → その集合の先頭scalar（範囲非対応） |
 | `s.trim_end(chars: StringLike = "") -> String`  | 末尾側を除去。例`s.trim_end("\n")` |
 | `s.tr(from: StringLike, to: StringLike) -> String` | scalar単位の変換（文字リスト形式 — `a-z`範囲や`^`は非対応）。`s`の各scalarが`from`にあれば`to`の同位置scalarに置換。`to`が短ければ末尾scalarを繰り返し、空`to`は削除。`s.tr("０１２３４５６７８９", "0123456789")` |
-| `s.split(sep: StringLike) -> Array<StringView>` | `sep`の出現ごとに分割。`sep`が空なら`[s]`。要素は1個のsourceを共有 |
+| `s.split(sep: StringLike, limit: Long = 0) -> Array<StringView>` | `sep`の出現ごとに分割。`sep`が空なら`[s]`。要素は1個のsourceを共有。`limit`は返す要素数の上限で、最後の要素が残り全部を持つ（`'a.b.c'.split('.', 2)`→`['a', 'b.c']`）。`0`は無制限、負値は`ValueError` |
+| `s.rsplit(sep: StringLike, limit: Long = 0) -> Array<StringView>` | 分割結果は同じだが`limit`を右から埋める: `'a.b.c'.rsplit('.', 2)`は`['a.b', 'c']`。返る配列は左から右の順のままで、`limit`なしなら`split`と一致 |
+| `s.split_whitespace() -> Array<StringView>`     | Unicode空白の連なりで分割し、両端に空要素を作らない: `'  a  b '.split_whitespace()`は`['a', 'b']`（`split(' ')`は空要素を残す） |
+| `s.split_once(sep: StringLike) -> Tuple \| Nil` | **最初**の`sep`の前後2つに分割。`sep`がなければ`nil`。`key=value`のパースが欲しい形で、値に`sep`が含まれても壊れない（`split`は壊れる）。空の`sep`は分割しないので`nil` |
+| `s.rsplit_once(sep: StringLike) -> Tuple \| Nil` | **最後**の`sep`の前後2つに分割。なければ`nil` |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | `split`の遅延版。巨大入力で`.take(n)`する場合の早期終了に |
 | `s.lines() -> Array<StringView>`                | `\n` / `\r\n` / `\r`で分割。終端記号は落とし、末尾の終端は空要素を生まないので`"a\nb\n".lines()`は`["a", "b"]` — `File.lines()`と同じ行境界。`split`と同じくeager |
 | `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | **全**出現を置換。連鎖可。`pat`が`String` → リテラル置換、`Regex`（`re'…'`含む）→ 正規表現置換で`repl`は`$1` / `$<name>`テンプレートか`fn (Match) -> String`。UFCSで呼ぶstdlibヘルパ — `s.replace(p, r)`は`replace(s, p, r)`。 |
@@ -3940,6 +3948,16 @@ matcher一族`assert_true` / `assert_eq`等）は
 | `s.count(sub: StringLike) -> Long`              | `sub`の重ならない出現数。`"aaaa".count("aa")`は`2`。空の`sub`は`0`（`split("")`がレシーバ全体を返すのに合わせた）。リテラルのみ — パターンはコンパイル済み`Regex`側が数える |
 | `s.starts_with(prefix: StringLike) -> Bool`     | `prefix`で始まるか                   |
 | `s.ends_with(suffix: StringLike) -> Bool`       | `suffix`で終わるか                   |
+| `s.index_of(sub: StringLike, start: Long = 0) -> Long` | `start`以降で最初に現れる`sub`のバイトオフセット。なければ`-1`（`Array.index_of`と同じ「-1 = 見つからない」規約）。負の`start`は`slice`の添字と同じく末尾から数える |
+| `s.last_index_of(sub: StringLike) -> Long`      | 最後に現れる`sub`のバイトオフセット。なければ`-1` |
+| `s.strip_prefix(prefix: StringLike) -> String`  | その接頭辞ちょうどを取り除く。なければ`s`のまま。scalarの**集合**を削る`trim_start(chars)`と違い、接頭辞全体に1回だけマッチする |
+| `s.strip_suffix(suffix: StringLike) -> String`  | その接尾辞ちょうどを取り除く。なければ`s`のまま |
+| `s.replace_first(pat: String \| Regex, repl: String \| Function) -> String` | `replace`と同じだが最初の1個だけ置換。`pat`/`repl`の規則も同じ |
+| `s.is_digit() -> Bool`                          | `s`が非空で、かつ全scalarが10進数字（General_Category `Nd`。全角の`'１２３'`も該当）か |
+| `s.is_alpha() -> Bool`                          | 非空で、かつ全scalarが`Alphabetic`か   |
+| `s.is_alnum() -> Bool`                          | 非空で、かつ全scalarが`Alphabetic`または数字か |
+| `s.is_space() -> Bool`                          | 非空で、かつ全scalarが`White_Space`か  |
+| `s.is_ascii() -> Bool`                          | 非空で、かつ全バイトが`0x80`未満か。空はここでも`false` — `is_*`系は例外を作らず全部同じ規則にしてある |
 | `s.slice(start: Long, end: Long) -> StringView` | `[start, end)`の部分ビュー (レシーバのバイトを借用)。負の値は末尾から、`start`は`[0, size()]`、`end`は`[start, size()]`にクランプ |
 | `s.view() -> StringView`                        | レシーバのバイトをaliasするview (コピーなし) |
 | `s.to_string() -> String`                       | 所有権付き`String`にmaterialize (String受信はno-op、StringView受信はコピー) |
@@ -4536,24 +4554,32 @@ inspect(f(0, 10, step: 2).collect())  # => [0, 2, 4, 6, 8]
 (`range(0, 10, **{step: 2})`も動作)。診断 (`ArityError` / 未知キーワード)
 は直接呼び出しと同一です。
 
-### `to_long(v: Any) -> Long`
+### `to_long(v: Any, *, base: Long = 10) -> Long`
 
 `v`を`Long`に変換します:
 
 * `Long` → そのまま。
 * `Float` → 0方向への切り捨て。
   `to_long(3.7) == 3`、`to_long(-3.7) == -3`。
-* `String` → 10進の符号付き整数としてパース。前後の空白は許容、
+* `String` → `base`の符号付き整数としてパース。前後の空白は許容、
   それ以外は失敗。
 * 上記以外の型は`type error`。
 
-**例外**: パースできない文字列や、非数値・非文字列を渡すと
-`type error at L:C.`。
+`base`はキーワード専用で2〜36。base 16 / 8 / 2では対応する
+`0x` / `0o` / `0b`接頭辞も受け付けるので、ソースからコピーした
+リテラルがそのままパースできます。非Stringの`v`に`base`を渡すのは
+黙って無視せずエラーにします。キーワード専用にしているのは、
+`to_long`を1引数関数のまま保って`map(to_long)`が通るようにするためです。
+
+**例外**: パースできない文字列、非数値・非文字列、それらに`base`を
+渡した場合は`type error at L:C.`。`base`が2〜36の外なら`ValueError`。
 
 ```culebra
-inspect(to_long('42'))  # => 42
-inspect(to_long('-7'))  # => -7
-inspect(to_long(3.9))   # => 3
+inspect(to_long('42'))               # => 42
+inspect(to_long('-7'))               # => -7
+inspect(to_long(3.9))                # => 3
+inspect(to_long('ff', base: 16))     # => 255
+inspect(to_long('0b1010', base: 2))  # => 10
 ```
 
 ### `to_float(v: Any) -> Float`

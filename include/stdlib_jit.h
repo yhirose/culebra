@@ -59,15 +59,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_to_long(
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_to_long_any(
-    int8_t tag, int64_t data, int64_t line, int64_t col) {
+    int8_t tag, int64_t data, int64_t line, int64_t col, int64_t base) {
+  bool str = tag == TAG_STRING || tag == TAG_STRINGVIEW;
+  // A base only means something for a string to parse (see the interp's
+  // to_long); naming one for a number is a mistake, not an ignored arg.
+  if (!str && base != 10) {
+    throw culebra::CulebraError("TypeError",
+                                "to_long() base is only valid for a String",
+                                line, col);
+  }
   if (tag == TAG_LONG) return {TAG_LONG, data};
   if (tag == TAG_FLOAT) {
     return {TAG_LONG, static_cast<int64_t>(_culebra_float_to_double(data))};
   }
-  if (tag == TAG_STRING || tag == TAG_STRINGVIEW) {
+  if (str) {
     auto sv = _culebra_str_view(tag, data);
     return {TAG_LONG,
-            parse_long_strict(std::string(sv).c_str(), line, col)};
+            parse_long_strict(std::string(sv).c_str(), line, col, base)};
   }
   throw_type_error_at(line, col);
 }
@@ -3921,8 +3929,9 @@ inline JitValue _ns_io_stderr_is_terminal(JitValue*, int64_t) {
 inline JitValue _ns_global_type_of(JitValue* a, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_type_of(a[0].tag));
 }
-inline JitValue _ns_global_to_long(JitValue* a, int64_t) {
-  return culebra_runtime_to_long_any(a[0].tag, a[0].data, 0, 0);
+inline JitValue _ns_global_to_long(JitValue* a, int64_t n) {
+  return culebra_runtime_to_long_any(a[0].tag, a[0].data, 0, 0,
+                                     n > 1 ? a[1].data : 10);
 }
 inline JitValue _ns_global_to_float(JitValue* a, int64_t) {
   return culebra_runtime_to_float_any(a[0].tag, a[0].data, 0, 0);
@@ -6795,7 +6804,8 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Compress") return nm == "deflate";  // level default
   if (ns == "IO")       return nm == "println";  // arg defaults to ""
   if (ns.empty())       return nm == "range" || nm == "iota" ||
-                               nm == "grid" || nm == "println";  // bare globals
+                               nm == "grid" || nm == "println" ||
+                               nm == "to_long";  // bare globals
   return false;
 }
 
@@ -7530,14 +7540,15 @@ inline bool _jit_ns_kwarg_resolve_core(
         culebra::unknown_kwarg_message(bad), line, col);
   }
 
-  // Dispatch the full-arity slab (it releases the slab values, and backfills a
-  // positionless adapter error from the passed call site — matching interp's
-  // call-site position for adapter-internal type errors like
-  // `Http.get(params: 5)`; the typed-positional checks already fired earlier at
-  // the argument position).
-  // pm is non-null here, so the dispatch's arg0 type check is inert; pass the
-  // call site for arg0 (the typed positionals were already checked inline).
-  *out = _jit_ns_method_dispatch(m, n, slab.data(), line, col, line, col);
+  // Dispatch the full-arity slab, as the args-rest path above does: it is
+  // canonical by construction and its positional arity was checked up front,
+  // so re-entering _jit_ns_method_dispatch would only re-run that gate — and
+  // wrongly, since a keyword-only param occupies a slab slot the positional
+  // cap (max_arity) deliberately excludes. `_jit_at_pos` supplies the same
+  // call-site backfill for a positionless adapter error (`Http.get(params: 5)`)
+  // that the dispatch would have.
+  *out = _jit_at_pos(line, col,
+                     [&] { return _jit_ns_dispatch_owned_slab(m, slab); });
   return true;
 }
 
@@ -7669,7 +7680,7 @@ struct _JitNamespaceTable {
   // be released before the GC heap substate (a lower slot) is destroyed.
   std::unordered_map<std::string, JitClosure*> builtin_fns;
   // Memo for the bare function globals written in culebra (the matcher
-  // family, `replace`). Each is a member slot of its group Object in
+  // family, the String helpers). Each is a member slot of its group Object in
   // `entries`, which holds the reference and is pinned for the Runtime's
   // lifetime — so this map borrows and needs no teardown of its own.
   std::unordered_map<std::string, JitClosure*> lazy_fns;
@@ -7697,7 +7708,7 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "print",     1, &_ns_io_print},
   {"", "println",   1, &_ns_io_println},
   {"", "type_of",   1, &_ns_global_type_of},
-  {"", "to_long",   1, &_ns_global_to_long},
+  {"", "to_long",   2, &_ns_global_to_long},
   {"", "to_float",  1, &_ns_global_to_float},
   {"", "to_string", 1, &_ns_global_to_string},
   {"", "hash",      1, &_ns_global_hash},
@@ -7929,7 +7940,7 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
   return obj;
 }
 
-// Resolve a bare stdlib function global (matcher family, `replace`) to the one
+// Resolve a bare stdlib function global (matcher family, String helpers) to the one
 // closure its group module built on this Runtime, or null if `name` is not
 // one. The group Object is built + pinned by _jit_namespace_get_or_build, so
 // reading the member out of its slot — rather than through property access,
@@ -7998,7 +8009,7 @@ culebra_runtime_namespace_get(const char* name,
   std::string nm(name ? name : "");
   // Bare builtin function used as a value (`let f = inspect`, `map(type_of)`,
   // `assert_eq`). Checked before the namespace lookup since these names are
-  // not namespaces; the culebra-source ones (matcher family, `replace`)
+  // not namespaces; the culebra-source ones (matcher family, String helpers)
   // resolve the same way, through their group module.
   auto& table = culebra::runtime_substate<_JitNamespaceTable>(
       culebra::kSlotJitNamespaceTable);
@@ -8159,7 +8170,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::to_long_any, jit.valueType_,
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
-                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
   // `hash(v)` builtin: (tag, data, line, col) -> int64. The Object
   // path inside the runtime invokes a user `hash()` method; primitives
   // share JitValueHash with the AnyKeyMap.
@@ -8597,12 +8609,13 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
   // downstream call dispatch can take over.
   if (!JIT::arg_list_is_positional_only(argsAst)) {
     if (jit.lookup_fn_ast(name) != nullptr) return {};
-    // range/iota accept a `step` kwarg / `**` splat — fall through to nullptr
-    // so the general path resolves them as their args-rest closure and routes
-    // through call_with_kwargs (the resolver handles step + unknown-kwarg).
-    // The genuinely positional-only globals keep their clean SyntaxError.
+    // range/iota (`step`) and to_long (`base`) accept a kwarg / `**` splat —
+    // fall through to nullptr so the general path resolves them as a closure
+    // and routes through call_with_kwargs (the resolver handles the keyword
+    // plus the unknown-kwarg error). The genuinely positional-only globals
+    // keep their clean SyntaxError.
     static const std::set<std::string_view> kwarg_rejecting_globals = {
-        "inspect", "print", "println", "to_long", "to_float", "to_string",
+        "inspect", "print", "println", "to_float", "to_string",
         "type_of", "hash",
     };
     if (kwarg_rejecting_globals.contains(name)) {
@@ -8628,15 +8641,18 @@ inline JIT::Owned JitExtension::compile_global(JIT& jit,
   if (name == "println" && argsAst.nodes.size() <= 1)
     return jit.own(emit_output_call(jit, rt::println, argsAst));
 
-  if (name == "to_long" && argsAst.nodes.size() == 1) {
+  // Plain `to_long(x)`. The keyword form (`base: 16`) declines to the kwarg
+  // slab path, which binds it through the canonical interp params.
+  if (name == "to_long" && argsAst.nodes.size() == 1 &&
+      JIT::scan_arg_list(argsAst).positional.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
     // Polymorphic: Long/Float/String. The runtime helper dispatches
-    // on tag (Long identity, Float truncate, String parse) and
+    // on tag (Long identity, Float truncate, String parse in `base`) and
     // raises `type error` for anything else.
     auto result = jit.emit_value_call(
         jit.module_->getFunction(rt::to_long_any),
         {jit.extract_tag(arg.borrow()), jit.extract_data(arg.borrow()),
-         line, col});
+         line, col, jit.builder_.getInt64(10)});
     arg.drop();
     return jit.own(result);
   }
@@ -10411,6 +10427,54 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
     }
   }
 
+  // `x.to_long()` / `s.to_long(base: 16)`. UFCS feeds the receiver in as `v`,
+  // so the only argument this form can carry is the keyword-only `base` —
+  // handled here (like range's `step:` above) rather than by the blanket
+  // kwarg rejection below, which is for the globals that name no parameter.
+  if (method == "to_long") {
+    auto scan = JIT::scan_arg_list(argsAst);
+    if (scan.splats.empty()) {
+      const peg::Ast* base_ast = nullptr;
+      for (const auto& [kw, val] : scan.explicit_kwargs) {
+        if (kw == "base" && !base_ast) {
+          base_ast = val;
+          continue;
+        }
+        // Any other keyword (or a repeat of `base`) is interp's runtime
+        // TypeError, reported at the keyword's own position.
+        jit.emit_value_release(receiver);  // consumed before the throw
+        jit.emit_throw_error("TypeError",
+                             culebra::unknown_kwarg_message(std::string(kw)),
+                             argsAst.line, argsAst.column);
+        return jit.own(jit.make_nil());  // unreachable after the throw
+      }
+      // The receiver is `v`, so any positional here is one too many.
+      if (!scan.positional.empty()) {
+        jit.emit_value_release(receiver);
+        jit.emit_throw_error(
+            "ArityError",
+            culebra::ns_fn_arity_error_message(
+                1, 1 + static_cast<long>(scan.positional.size())),
+            argsAst.line, argsAst.column);
+        return jit.own(jit.make_nil());  // unreachable after the throw
+      }
+      auto recv = jit.own(receiver);
+      // Polymorphic Long/Float/String, mirroring compile_global's bare
+      // `to_long(x)` — interp's `(123).to_long()` accepts a Long, so the
+      // String-only `rt::to_long` would wrongly reject it.
+      llvm::Value* base = base_ast
+                              ? jit.emit_builtin_long_arg(*base_ast, "base")
+                              : builder_.getInt64(10);
+      auto r = jit.emit_value_call(
+          module_->getFunction(rt::to_long_any),
+          {extract_tag(recv.borrow()), extract_data(recv.borrow()),
+           builder_.getInt64(argsAst.line), builder_.getInt64(argsAst.column),
+           base});
+      recv.drop();
+      return jit.own(r);
+    }
+  }
+
   // Arity-1 global builtins reachable via UFCS (`x.f()` == `f(x)`). interp
   // resolves these against the global env, so they all work as methods and an
   // extra positional arg is an ArityError on the arity-1 global — not the
@@ -10420,8 +10484,8 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
   // variadic *bare* call but bind arity-1 in the global env, so their UFCS form
   // belongs here too; only the 0-arg spelling reaches their branches below.
   static const std::set<std::string_view> arity1_globals = {
-      "to_long", "to_float", "type_of", "hash",
-      "inspect", "print",    "println"};
+      "to_float", "type_of", "hash",
+      "inspect",  "print",   "println"};
   // None of them declares a parameter name, so a keyword is interp's plain
   // "function does not accept keyword arguments" — decided before the count
   // below, which would otherwise read the keyword as a positional. (`range` /
@@ -10471,17 +10535,6 @@ inline JIT::Owned JitExtension::compile_ufcs_builtin(
   // node here.
   auto argLine = builder_.getInt64(argsAst.line);
   auto argCol = builder_.getInt64(argsAst.column);
-  if (method == "to_long") {
-    // Polymorphic Long/Float/String, mirroring compile_global's bare
-    // `to_long(x)` — interp's `(123).to_long()` accepts a Long, so the
-    // String-only `rt::to_long` here used to wrongly reject it.
-    auto r = jit.emit_value_call(
-        module_->getFunction(rt::to_long_any),
-        {extract_tag(recv.borrow()), extract_data(recv.borrow()), argLine,
-         argCol});
-    recv.drop();
-    return jit.own(r);
-  }
   if (method == "to_float") {
     // Polymorphic Long/Float/String, mirroring compile_global's bare
     // `to_float(x)`. Returns a full Value (the runtime picks the tag).

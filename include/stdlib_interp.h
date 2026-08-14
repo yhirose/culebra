@@ -7364,21 +7364,37 @@ inline void setup_built_in_functions(Environment& env) {
 
   env.initialize(
       "to_long",
-      Value(FunctionValue({{"v", false}},
+      // `base` is keyword-only: a second *positional* param would make
+      // `to_long` a 2-parameter function, which the exact-arity callback rule
+      // (callback_arity_accepts) then rejects from `map(to_long)`.
+      Value(FunctionValue({{"v", false},
+                           {"base", false, "Long"sv, nullptr,
+                            std::make_shared<Value>(Value((int64_t)10)), true}},
                           [](std::shared_ptr<Environment> env) {
                             const auto& v = env->get("v");
                             auto line = env->get("__LINE__").to_long();
                             auto col = env->get("__COLUMN__").to_long();
+                            auto base = env->get("base").to_long();
+                            bool str = v.type == Value::String ||
+                                       v.type == Value::StringView;
+                            // A base only means something for a string to
+                            // parse; naming one for a number is a mistake
+                            // worth reporting, not a silently ignored arg.
+                            if (!str && base != 10) {
+                              throw CulebraError(
+                                  "TypeError",
+                                  "to_long() base is only valid for a String",
+                                  line, col);
+                            }
                             if (v.type == Value::Long) return v;
                             if (v.type == Value::Float) {
                               // Truncate toward zero (matches Python's int()).
                               return Value(static_cast<int64_t>(v.get<double>()));
                             }
-                            if (v.type != Value::String &&
-                                v.type != Value::StringView)
-                              throw_type_error_at(line, col);
+                            if (!str) throw_type_error_at(line, col);
                             return Value(parse_long_strict(
-                                std::string(v.to_string_view()), line, col));
+                                std::string(v.to_string_view()), line, col,
+                                base));
                           },
                           "Long"sv)),
       false);
@@ -7726,7 +7742,7 @@ inline std::span<const LazyNsModule> lazy_ns_modules() {
 // The source backing a bare-function group (see LazyFnGroup in shared.h).
 inline std::string_view lazy_fn_group_source(std::string_view group) {
   if (group == "__Matchers") return MATCHERS_MODULE_SOURCE;
-  if (group == "__Replace") return STRING_REPLACE_MODULE_SOURCE;
+  if (group == "__StringFns") return STRING_FNS_MODULE_SOURCE;
   return {};
 }
 
@@ -7839,8 +7855,8 @@ inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
 // cost.
 inline void register_stdlib_lazy_modules(Environment& env) {
   for (const auto& m : lazy_ns_modules()) env.initialize_lazy(m.name, m.source);
-  // Bare-function modules (the 10 matchers, `replace`): every name in a group
-  // shares one source via initialize_lazy_group. First `get` of any member
+  // Bare-function modules (the 10 matchers, the String helpers): every name in
+  // a group shares one source via initialize_lazy_group. First `get` of any member
   // parses + evals the source once, binding the whole group in this env; the
   // others are picked up by the non-Nil guard in resolve_from_lazy. One
   // binding per env is what makes `assert_eq` read from two modules the same

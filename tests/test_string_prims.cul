@@ -42,9 +42,11 @@ assert_eq("read".capitalize(), "Read")
 assert_eq("READ".capitalize(), "Read")
 assert_eq("rEaD mE".capitalize(), "Read me")
 assert_eq("".capitalize(), "")
-// leading non-letter, and non-ASCII passthrough (ASCII-only, like upper)
+// leading non-letter stays put; a non-ASCII letter titlecases (full Unicode
+// case mapping, like upper)
 assert_eq("1st".capitalize(), "1st")
-assert_eq("éa".capitalize(), "éa")
+assert_eq("éa".capitalize(), "Éa")
+assert_eq("ǆungla".capitalize(), "ǅungla")  // titlecase != uppercase
 
 // --- lines ----------------------------------------------------------
 assert_eq("a\nb\nc".lines(), ["a", "b", "c"])

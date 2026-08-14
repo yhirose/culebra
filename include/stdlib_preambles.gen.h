@@ -2154,12 +2154,30 @@ let _regex_module = fn () {
 let Regex = _regex_module()
 )=culpre=";
 
-inline constexpr const char* STRING_REPLACE_MODULE_SOURCE = R"=culpre=(let replace = fn (s, pat, repl) {
-  if type_of(pat) == "String" {
+inline constexpr const char* STRING_FNS_MODULE_SOURCE = R"=culpre=(let replace = fn (s, pat, repl) {
+  if type_of(pat) == "String" || type_of(pat) == "StringView" {
     s.split(pat).join(repl)
   } else {
     pat.replace_all(s, repl)
   }
+}
+
+let replace_first = fn (s, pat, repl) {
+  if type_of(pat) == "String" || type_of(pat) == "StringView" {
+    s.split(pat, 2).join(repl)
+  } else {
+    pat.replace_first(s, repl)
+  }
+}
+
+let split_once = fn (s, sep) {
+  let i = sep.empty() ? -1 : s.index_of(sep)
+  i < 0 ? nil : (s.slice(0, i), s.slice(i + sep.size(), s.size()))
+}
+
+let rsplit_once = fn (s, sep) {
+  let i = sep.empty() ? -1 : s.last_index_of(sep)
+  i < 0 ? nil : (s.slice(0, i), s.slice(i + sep.size(), s.size()))
 }
 )=culpre=";
 

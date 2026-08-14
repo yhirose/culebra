@@ -3152,17 +3152,77 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_str_size(const char* s
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_upper(
     const char* s) {
-  return _culebra_heap_str(culebra::ascii_upper(std::string(_str_sv(s))));
+  return _culebra_heap_str(culebra::str_upper(_str_sv(s)));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_lower(
     const char* s) {
-  return _culebra_heap_str(culebra::ascii_lower(std::string(_str_sv(s))));
+  return _culebra_heap_str(culebra::str_lower(_str_sv(s)));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_capitalize(
     const char* s) {
-  return _culebra_heap_str(culebra::ascii_capitalize(std::string(_str_sv(s))));
+  return _culebra_heap_str(culebra::str_capitalize(_str_sv(s)));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_title(
+    const char* s) {
+  return _culebra_heap_str(culebra::str_title(_str_sv(s)));
+}
+
+// `s.normalize(form)` — shares culebra::str_normalize with the interp,
+// including its unknown-form ValueError (positioned at the call site).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_normalize(
+    const char* s, const char* form, int64_t line, int64_t col) {
+  return _culebra_heap_str(culebra::str_normalize(
+      _str_sv(s), _str_sv(form), static_cast<long>(line),
+      static_cast<long>(col)));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_reverse(
+    const char* s) {
+  return _culebra_heap_str(culebra::str_reverse(_str_sv(s)));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_eq_ignore_case(
+    const char* s, const char* other) {
+  return culebra::str_eq_ignore_case(_str_sv(s), _str_sv(other));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_str_index_of(
+    const char* s, const char* sub, int64_t start) {
+  return culebra::str_index_of(_str_sv(s), _str_sv(sub), start);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_str_last_index_of(
+    const char* s, const char* sub) {
+  return culebra::str_last_index_of(_str_sv(s), _str_sv(sub));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_strip_prefix(
+    const char* s, const char* prefix) {
+  return _culebra_heap_str(
+      std::string(culebra::str_strip_prefix(_str_sv(s), _str_sv(prefix))));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_strip_suffix(
+    const char* s, const char* suffix) {
+  return _culebra_heap_str(
+      std::string(culebra::str_strip_suffix(_str_sv(s), _str_sv(suffix))));
+}
+
+// The `is_*` family — one entry point with a selector, so the five share a
+// declaration and a lowering arm instead of five near-identical ones.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_is_class(
+    const char* s, int64_t which) {
+  auto sv = _str_sv(s);
+  switch (which) {
+    case 0: return culebra::str_is_digit(sv);
+    case 1: return culebra::str_is_alpha(sv);
+    case 2: return culebra::str_is_alnum(sv);
+    case 3: return culebra::str_is_space(sv);
+    default: return culebra::str_is_ascii(sv);
+  }
 }
 
 // `s.repeat(n)` — shares culebra::str_repeat with the interp, including its
@@ -3191,8 +3251,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_str_count(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim(
     const char* s) {
-  auto trimmed = culebra::trim_ascii(_str_sv(s));
-  return _culebra_heap_str(trimmed);
+  return _culebra_heap_str(culebra::str_trim(_str_sv(s), "", true, true));
 }
 
 // `s.tr(from, to)` — per-scalar translation; shares culebra::str_tr with
@@ -3203,42 +3262,48 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_tr(
       culebra::str_tr(_str_sv(s), _str_sv(from), _str_sv(to)));
 }
 
-// `s.trim_start(chars)` / `s.trim_end(chars)` — empty `chars` trims ASCII
-// whitespace. Shares culebra::trim_chars with the interp.
+// `s.trim_start(chars)` / `s.trim_end(chars)` — empty `chars` trims Unicode
+// whitespace. Shares culebra::str_trim with the interp.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim_start(
     const char* s, const char* chars) {
   return _culebra_heap_str(
-      culebra::trim_chars(_str_sv(s), _str_sv(chars), true, false));
+      culebra::str_trim(_str_sv(s), _str_sv(chars), true, false));
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim_end(
     const char* s, const char* chars) {
   return _culebra_heap_str(
-      culebra::trim_chars(_str_sv(s), _str_sv(chars), false, true));
+      culebra::str_trim(_str_sv(s), _str_sv(chars), false, true));
 }
 
+// `s.split(sep, limit)` / `s.rsplit(sep, limit)` — `limit` 0 is uncapped
+// (the default) and a negative one is a ValueError. Shares
+// culebra::str_split_pieces with the interp so the pieces, and the order
+// `rsplit` fills them in, agree.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
-    const char* s, const char* sep) {
-  auto* r = culebra_runtime_array_new();
-  std::string_view sv = _str_sv(s);
-  std::string_view sp = _str_sv(sep);
-  auto push_view = [&](std::string_view piece) {
-    auto* v = _culebra_heap_view(piece.data(), piece.size(), s);
-    culebra_runtime_array_push(r, TAG_STRINGVIEW,
-                               reinterpret_cast<int64_t>(v));
-  };
-  if (sp.empty()) {
-    push_view(sv);
-    return r;
+    const char* s, const char* sep, int64_t limit, bool from_right,
+    int64_t line, int64_t col) {
+  if (limit < 0) {
+    throw culebra::CulebraError("ValueError",
+                                "split() limit must not be negative",
+                                static_cast<long>(line),
+                                static_cast<long>(col));
   }
-  size_t pos = 0;
-  while (true) {
-    auto p = sv.find(sp, pos);
-    if (p == std::string_view::npos) {
-      push_view(sv.substr(pos));
-      break;
-    }
-    push_view(sv.substr(pos, p - pos));
-    pos = p + sp.size();
+  auto* r = culebra_runtime_array_new();
+  for (auto piece :
+       culebra::str_split_pieces(_str_sv(s), _str_sv(sep), limit, from_right)) {
+    auto* v = _culebra_heap_view(piece.data(), piece.size(), s);
+    culebra_runtime_array_push(r, TAG_STRINGVIEW, reinterpret_cast<int64_t>(v));
+  }
+  return r;
+}
+
+// `s.split_whitespace()` — runs of Unicode whitespace, no empty pieces.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
+culebra_runtime_str_split_whitespace(const char* s) {
+  auto* r = culebra_runtime_array_new();
+  for (auto piece : culebra::str_split_whitespace(_str_sv(s))) {
+    auto* v = _culebra_heap_view(piece.data(), piece.size(), s);
+    culebra_runtime_array_push(r, TAG_STRINGVIEW, reinterpret_cast<int64_t>(v));
   }
   return r;
 }

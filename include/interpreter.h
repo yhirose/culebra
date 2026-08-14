@@ -19,6 +19,7 @@ Value shared_val_make_iter(const Value& view);
 #include <range_bounds.h>
 #include <shared.h>
 #include <tensor.h>
+#include <unicode_str.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 
@@ -5730,6 +5731,23 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
   return props_;
 }
 
+// `split` / `rsplit` — one body for both directions, so the two never drift.
+// The pieces are views into the receiver's bytes, like `slice`.
+inline Value _str_split_value(const std::shared_ptr<Environment>& callEnv,
+                              bool from_right) {
+  auto [src, base] = callEnv->get("self").share_source_and_view();
+  auto sep = callEnv->get("sep").to_string_view();
+  int64_t limit = callEnv->get("limit").to_long();
+  if (limit < 0) {
+    throw CulebraError("ValueError", "split() limit must not be negative");
+  }
+  ArrayValue out;
+  for (auto piece : culebra::str_split_pieces(base, sep, limit, from_right)) {
+    out.values->push_back(Value(src, piece));
+  }
+  return Value(std::move(out));
+}
+
 // Method lookup table for primitive String values. Not part of any Object.
 inline std::unordered_map<std::string_view, Value>& string_builtins() {
   using namespace std::literals;
@@ -5753,22 +5771,30 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return Value(std::string(callEnv->get("self").to_string_view()));
        }))},
+      // Full Unicode case mapping (UAX #21), so a mapping may change the
+      // string's length: `'ß'.upper()` is `'SS'`.
       {"upper"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         return Value(culebra::ascii_upper(
-             callEnv->get("self").to_string()));
+         return Value(culebra::str_upper(
+             callEnv->get("self").to_string_view()));
        }))},
       {"lower"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         return Value(culebra::ascii_lower(
-             callEnv->get("self").to_string()));
+         return Value(culebra::str_lower(
+             callEnv->get("self").to_string_view()));
        }))},
-      // First ASCII letter up, the rest down (Python/Ruby `capitalize`).
-      // ASCII-only, like upper/lower.
+      // First letter up, the rest down (Python/Ruby `capitalize`).
       {"capitalize"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         return Value(culebra::ascii_capitalize(
-             callEnv->get("self").to_string()));
+         return Value(culebra::str_capitalize(
+             callEnv->get("self").to_string_view()));
+       }))},
+      // Every word's first letter up, the rest down. Word boundaries are
+      // UAX #29, so `"o'neil"` titlecases as one word.
+      {"title"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(culebra::str_title(
+             callEnv->get("self").to_string_view()));
        }))},
       // `n` copies concatenated. Negative `n` is a ValueError; 0 is empty.
       {"repeat"sv,
@@ -5795,16 +5821,16 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
            }))},
       {"trim"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& s = callEnv->get("self").to_string();
-         return Value(std::string(trim_ascii(s)));
+         return Value(std::string(culebra::str_trim(
+             callEnv->get("self").to_string_view(), "", true, true)));
        }))},
-      // Directional trim. No arg → ASCII whitespace; `chars` → trim leading
-      // (trim_start) / trailing (trim_end) scalars in that set. See trim_chars.
+      // Directional trim. No arg → Unicode whitespace; `chars` → trim leading
+      // (trim_start) / trailing (trim_end) scalars in that set. See str_trim.
       {"trim_start"sv,
        Value(FunctionValue(
            {{"chars", false, "StringLike"sv, nullptr, kw_default_empty_str()}},
            [](std::shared_ptr<Environment> callEnv) {
-             return Value(std::string(culebra::trim_chars(
+             return Value(std::string(culebra::str_trim(
                  callEnv->get("self").to_string_view(),
                  callEnv->get("chars").to_string_view(), true, false)));
            }))},
@@ -5812,7 +5838,7 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
        Value(FunctionValue(
            {{"chars", false, "StringLike"sv, nullptr, kw_default_empty_str()}},
            [](std::shared_ptr<Environment> callEnv) {
-             return Value(std::string(culebra::trim_chars(
+             return Value(std::string(culebra::str_trim(
                  callEnv->get("self").to_string_view(),
                  callEnv->get("chars").to_string_view(), false, true)));
            }))},
@@ -5832,28 +5858,33 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
       // Python/JS/Swift/Ruby/Go; for early exit use `split_iter`.
       {"split"sv,
        Value(FunctionValue(
-           {{"sep", false, "StringLike"sv}},
+           {{"sep", false, "StringLike"sv},
+            {"limit", false, "Long"sv, nullptr, kw_default_zero()}},
            [](std::shared_ptr<Environment> callEnv) {
-             auto [src, base] = callEnv->get("self").share_source_and_view();
-             auto sep = std::string(callEnv->get("sep").to_string_view());
-             ArrayValue out;
-             if (sep.empty()) {
-               out.values->push_back(Value(src, base));
-             } else {
-               size_t pos = 0;
-               while (true) {
-                 auto p = base.find(sep, pos);
-                 if (p == std::string_view::npos) {
-                   out.values->push_back(Value(src, base.substr(pos)));
-                   break;
-                 }
-                 out.values->push_back(
-                     Value(src, base.substr(pos, p - pos)));
-                 pos = p + sep.size();
-               }
-             }
-             return Value(std::move(out));
+             return _str_split_value(callEnv, false);
            }))},
+      // Same pieces as `split`, but the `limit` is filled from the right:
+      // `'a.b.c'.rsplit('.', 2)` is `['a.b', 'c']`. Without a limit the two
+      // agree.
+      {"rsplit"sv,
+       Value(FunctionValue(
+           {{"sep", false, "StringLike"sv},
+            {"limit", false, "Long"sv, nullptr, kw_default_zero()}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return _str_split_value(callEnv, true);
+           }))},
+      // Split on runs of Unicode whitespace, with no empty piece at either
+      // end — `'  a  b '.split_whitespace()` is `['a', 'b']`, where
+      // `split(' ')` would keep the empties.
+      {"split_whitespace"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto [src, base] = callEnv->get("self").share_source_and_view();
+         ArrayValue out;
+         for (auto piece : culebra::str_split_whitespace(base)) {
+           out.values->push_back(Value(src, piece));
+         }
+         return Value(std::move(out));
+       }))},
       // Lazy variant of split. `.take(n).collect()` short-circuits.
       {"split_iter"sv,
        Value(FunctionValue(
@@ -5932,6 +5963,99 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
                           s.compare(s.size() - suf.size(), suf.size(), suf) ==
                               0);
            }))},
+      // Byte offset of a match, or -1 — Array.index_of's convention. A
+      // negative `start` counts from the end, like slice's indices.
+      {"index_of"sv,
+       Value(FunctionValue(
+           {{"sub", false, "StringLike"sv},
+            {"start", false, "Long"sv, nullptr, kw_default_zero()}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(culebra::str_index_of(
+                 callEnv->get("self").to_string_view(),
+                 callEnv->get("sub").to_string_view(),
+                 callEnv->get("start").to_long()));
+           }))},
+      {"last_index_of"sv,
+       Value(FunctionValue(
+           {{"sub", false, "StringLike"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(culebra::str_last_index_of(
+                 callEnv->get("self").to_string_view(),
+                 callEnv->get("sub").to_string_view()));
+           }))},
+      // The receiver without that exact affix, or unchanged when it is not
+      // there. `trim_start(chars)` trims a *set* of scalars; these match the
+      // whole affix once.
+      {"strip_prefix"sv,
+       Value(FunctionValue(
+           {{"prefix", false, "StringLike"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(std::string(culebra::str_strip_prefix(
+                 callEnv->get("self").to_string_view(),
+                 callEnv->get("prefix").to_string_view())));
+           }))},
+      {"strip_suffix"sv,
+       Value(FunctionValue(
+           {{"suffix", false, "StringLike"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(std::string(culebra::str_strip_suffix(
+                 callEnv->get("self").to_string_view(),
+                 callEnv->get("suffix").to_string_view())));
+           }))},
+      // Reversed by grapheme cluster, so an emoji ZWJ sequence or a
+      // base+combining pair survives the flip intact.
+      {"reverse"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(
+             culebra::str_reverse(callEnv->get("self").to_string_view()));
+       }))},
+      // Unicode normalization. An unknown form is a ValueError.
+      {"normalize"sv,
+       Value(FunctionValue(
+           {{"form", false, "StringLike"sv, nullptr,
+             std::make_shared<Value>(Value(std::string("NFC")))}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(culebra::str_normalize(
+                 callEnv->get("self").to_string_view(),
+                 callEnv->get("form").to_string_view()));
+           }))},
+      // Default caseless matching (full case folding), so `'ß'` and `'SS'`
+      // match. Canonical equivalence is not folded in — `normalize()` is the
+      // explicit way to ask for that.
+      {"eq_ignore_case"sv,
+       Value(FunctionValue(
+           {{"other", false, "StringLike"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(culebra::str_eq_ignore_case(
+                 callEnv->get("self").to_string_view(),
+                 callEnv->get("other").to_string_view()));
+           }))},
+      // The `is_*` family: non-empty AND every scalar has the property.
+      {"is_digit"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(
+             culebra::str_is_digit(callEnv->get("self").to_string_view()));
+       }))},
+      {"is_alpha"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(
+             culebra::str_is_alpha(callEnv->get("self").to_string_view()));
+       }))},
+      {"is_alnum"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(
+             culebra::str_is_alnum(callEnv->get("self").to_string_view()));
+       }))},
+      {"is_space"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(
+             culebra::str_is_space(callEnv->get("self").to_string_view()));
+       }))},
+      {"is_ascii"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(
+             culebra::str_is_ascii(callEnv->get("self").to_string_view()));
+       }))},
       // Sub-view sharing the receiver's bytes. One source-copy alloc
       // for a String receiver; chained slices reuse the source.
       {"slice"sv,
