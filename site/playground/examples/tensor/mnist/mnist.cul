@@ -216,18 +216,18 @@ let tick = fn () {
 
   # --- render ---
   Canvas.clear(BG)
-  FONT.draw('DRAW A DIGIT', PAD_X, HEADER_Y, BRAND, TITLE_SIZE)
+  FONT.draw_screen('DRAW A DIGIT', PAD_X, HEADER_Y, BRAND, TITLE_SIZE)
   pad.draw(PAD_X, PAD_Y)
   Canvas.rect(PAD_X - 1, PAD_Y - 1, PAD_W + 2, PAD_W + 2, BORDER, false)
 
   if has_ink {
     Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BRAND_SOFT)
     Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BRAND, false)
-    FONT.draw('CLEAR', CLEAR_X, CLEAR_Y, BRAND_STRONG, BODY_SIZE)
+    FONT.draw_screen('CLEAR', CLEAR_X, CLEAR_Y, BRAND_STRONG, BODY_SIZE)
   } else {
     Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, SURFACE2)
     Canvas.rect(BTN_X, BTN_Y, BTN_W, BTN_H, BORDER, false)
-    FONT.draw('CLEAR', CLEAR_X, CLEAR_Y, MUTED, BODY_SIZE)
+    FONT.draw_screen('CLEAR', CLEAR_X, CLEAR_Y, MUTED, BODY_SIZE)
   }
 
   mut best = -1
@@ -240,17 +240,17 @@ let tick = fn () {
       }
     }
   }
-  FONT.draw('PREDICTION:', LABEL_X, HEADER_Y, ACCENT, TITLE_SIZE)
+  FONT.draw_screen('PREDICTION:', LABEL_X, HEADER_Y, ACCENT, TITLE_SIZE)
   if best >= 0 {
-    FONT.draw(to_string(best), PREDICTION_DIGIT_X, HEADER_Y, TEXT, TITLE_SIZE)
+    FONT.draw_screen(to_string(best), PREDICTION_DIGIT_X, HEADER_Y, TEXT, TITLE_SIZE)
   } else {
-    FONT.draw('-', PREDICTION_DIGIT_X, HEADER_Y, MUTED, TITLE_SIZE)
+    FONT.draw_screen('-', PREDICTION_DIGIT_X, HEADER_Y, MUTED, TITLE_SIZE)
   }
 
   for i in 0..10 {
     let y = ROW_Y0 + i * ROW_H
     let digit_color = i == best ? TEXT : MUTED
-    FONT.draw(to_string(i), LABEL_X, y + 6, digit_color, TITLE_SIZE)
+    FONT.draw_screen(to_string(i), LABEL_X, y + 6, digit_color, TITLE_SIZE)
     Canvas.rect(BAR_X, y + 6, BAR_W, BAR_H, SURFACE2)
     if probs != nil {
       let p = probs[i]
@@ -262,7 +262,7 @@ let tick = fn () {
           BRAND
         })
       }
-      FONT.draw("{Math.round(p * 100.0)}%", PCT_X, y + 10, MUTED, BODY_SIZE)
+      FONT.draw_screen("{Math.round(p * 100.0)}%", PCT_X, y + 10, MUTED, BODY_SIZE)
     }
   }
 

@@ -229,6 +229,14 @@ onmessage = async (e) => {
     if (self.__soundsPlaying) self.__soundsPlaying[e.data.id] = e.data.playing;
     return;
   }
+  if (type === "canvasScreenScale") {
+    // Read synchronously by _wasm_canvas_screen_scale (canvas.h) to size the
+    // screen layer. Unlike termSize, which is settled before the program runs,
+    // this changes mid-run: the pane is resized, or the Canvas tab is shown
+    // for the first time and finally has a width to measure.
+    self.__canvasScreenScale = e.data.scale;
+    return;
+  }
   if (type === "termSize") {
     // Read synchronously by _wasm_term_cols/rows (term.h) — a Worker has its
     // own global scope, so app.js can't set these directly and sends them

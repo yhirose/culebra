@@ -58,6 +58,34 @@ addEventListener("resize", fitTerm);
 const gameCanvas = $("game");
 const gctx = gameCanvas.getContext("2d");
 const canvasPane = $("canvas-pane");
+// The screen layer over the framebuffer: Font.draw_screen's text, rasterized
+// wasm-side at this pane's CSS size rather than the framebuffer's, so its
+// antialiased edges survive the pixelated upscale. (CSS pixels, not device
+// ones — devicePixelRatio would multiply the per-frame postMessage copy by
+// four, which the native backend gets for free but this does not.)
+const canvasStack = $("canvas-stack");
+const textCanvas = $("game-text");
+const tctx = textCanvas.getContext("2d");
+let overlayPainted = false;  // something is on the overlay, so it needs clearing
+
+// Tell the wasm side how far the page is stretching the framebuffer, so it can
+// rasterize screen-layer text at that size. Sent on every change rather than
+// polled: the wasm side reads it synchronously (self.__canvasScreenScale) at
+// whatever moment a draw_screen call happens. A hidden or unsized pane
+// measures 0 — leave the last good value in place instead of collapsing the
+// layer to nothing.
+function sendScreenScale() {
+  if (!worker || !gameCanvas.width) return;
+  const shown = gameCanvas.getBoundingClientRect().width;
+  if (shown <= 0) return;
+  worker.postMessage({ type: "canvasScreenScale", scale: shown / gameCanvas.width });
+}
+// Follows the pane through window resizes, the responsive breakpoint, and the
+// editor/pane split — all of which change the displayed width without a resize
+// event of their own.
+if (typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(sendScreenScale).observe(gameCanvas);
+}
 
 // --- tabs --------------------------------------------------------------
 
@@ -80,7 +108,9 @@ function switchTab(name) {
   // A hidden pane has no width to measure against, so the terminal is sized
   // the moment it becomes visible rather than only on load and on resize.
   if (name === "tui") { fitTerm(); term.focus(); }
-  if (name === "canvas") canvasPane.focus();
+  // Same reason for the canvas: the screen layer's scale comes from the
+  // displayed width, which is 0 while the pane is hidden.
+  if (name === "canvas") { sendScreenScale(); canvasPane.focus(); }
 }
 tabButtons.output.addEventListener("click", () => switchTab("output"));
 tabButtons.tui.addEventListener("click", () => switchTab("tui"));
@@ -434,8 +464,29 @@ function drawFrame(msg) {
   if (gameCanvas.width !== msg.w || gameCanvas.height !== msg.h) {
     gameCanvas.width = msg.w;
     gameCanvas.height = msg.h;
+    // The stack carries the framebuffer's ratio for both layers (styles.css).
+    canvasStack.style.aspectRatio = msg.w + " / " + msg.h;
+    sendScreenScale();  // a new framebuffer size is a new scale
   }
   gctx.putImageData(new ImageData(new Uint8ClampedArray(msg.buf), msg.w, msg.h), 0, 0);
+  // The screen layer, sized by what the wasm side actually rasterized rather
+  // than by measuring here — the two must agree or putImageData would throw.
+  // screenBuf is null on frames that drew no screen text, which is most frames
+  // of most programs: clear the overlay the once, then leave it alone, the way
+  // the native backend's g_screen_tex_dirty does.
+  if (textCanvas.width !== msg.screenW || textCanvas.height !== msg.screenH) {
+    textCanvas.width = msg.screenW;  // resizing a canvas also clears it
+    textCanvas.height = msg.screenH;
+    overlayPainted = false;
+  } else if (!msg.screenBuf && overlayPainted) {
+    tctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+    overlayPainted = false;
+  }
+  if (msg.screenBuf && msg.screenW > 0 && msg.screenH > 0) {
+    tctx.putImageData(
+      new ImageData(new Uint8ClampedArray(msg.screenBuf), msg.screenW, msg.screenH), 0, 0);
+    overlayPainted = true;
+  }
   if (!inCanvas) {
     inCanvas = true;
     switchTab("canvas");
