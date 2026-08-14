@@ -217,4 +217,87 @@ assert_eq([first.new().m(1), first.new().m(1, 2)], ['A-one', 'A-two'])
 assert_eq([first.s(1), first.s(1, 2)], ['A-s1', 'A-s2'])
 assert_eq([second.new().m(1), second.s(1, 2)], ['B-one', 'B-s2'])
 
+# --- the runtime's own method calls reach an overload set too ---
+# `==` / `!=` route through `eq(other)`, ordering through `cmp(other)`, and
+# hash-keyed containers through `hash()` + `eq(other)`. Each of those is a
+# hand-built frame inside the runtime, not a source-level call, so it has to
+# hand the argument to the dispatcher the same way an ordinary `a.eq(b)`
+# does — otherwise the overloaded name dies on the dispatcher's internals.
+class Approx {
+  new(x) {
+    self.x = x
+  }
+  hash() {
+    self.x
+  }
+  hash(seed) {
+    seed
+  }
+  eq(o) {
+    self.x == o.x
+  }
+  eq(o, tol) {
+    true
+  }
+  cmp(o) {
+    if self.x < o.x { -1 } else { if self.x == o.x { 0 } else { 1 } }
+  }
+  cmp(o, key) {
+    0
+  }
+}
+assert_eq(Approx.new(1) == Approx.new(1), true)
+assert_eq(Approx.new(1) != Approx.new(2), true)
+assert_eq(Approx.new(1) < Approx.new(2), true)
+assert_eq([Approx.new(2), Approx.new(1)].sorted().map(|a| a.x), [1, 2])
+assert_eq({Approx.new(1), Approx.new(1), Approx.new(2)}.size(), 2)
+mut seen = {}
+seen[Approx.new(1)] = 'a'
+seen[Approx.new(1)] = 'b'
+assert_eq([seen.keys().size(), seen[Approx.new(1)]], [1, 'b'])
+# An overload set with no arm the runtime can call reports its own
+# DispatchError, not a leak of the dispatcher's internal argument name.
+class OnlyTwo {
+  new() {}
+  eq() {
+    true
+  }
+  eq(a, b) {
+    true
+  }
+}
+let dispatch_err = try {
+  OnlyTwo.new() == OnlyTwo.new()
+  'no-error'
+} catch e {
+  e.kind
+}
+assert_eq(dispatch_err, 'DispatchError')
+
+# --- a single (non-overloaded) method binds through the same path ---
+# Defaults land, and a required parameter the runtime can't fill is the
+# ordinary ArityError rather than a hole the body trips over later.
+class Defaulted {
+  new(x) {
+    self.x = x
+  }
+  eq(o, tol = 0) {
+    self.x - o.x <= tol
+  }
+}
+assert_eq(Defaulted.new(1) == Defaulted.new(1), true)
+class NeedsTwo {
+  new() {}
+  hash(seed) {
+    seed
+  }
+}
+let arity_err = try {
+  hash(NeedsTwo.new())
+  'no-error'
+} catch e {
+  e.kind
+}
+assert_eq(arity_err, 'ArityError')
+
 inspect("method multidispatch OK")

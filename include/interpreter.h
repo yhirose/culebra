@@ -3686,14 +3686,59 @@ inline std::shared_ptr<Environment> _make_method_call_env(
   return env;
 }
 
+// Reject a hand-built invocation (the `==` / ordering method calls below,
+// and `_invoke_callback`'s zero-arg thunk form) that would leave a required
+// parameter unfilled, using the wording the ordinary call binder gives. No
+// higher-order entry pre-validated these, so the hole has to raise here
+// rather than surface as a NameError when the body reads the name. A
+// strict-arity native takes the count-based rejection its own call path
+// gives (`let f = to_string; f()`); a multimethod dispatcher reports its own
+// DispatchError once it sees the arguments. The JIT runs all of these
+// through its ordinary call path and says exactly this.
+inline void check_direct_call_arity(const FunctionValue& fn, size_t n_args) {
+  if (fn.multimethod_accepts_arity) return;
+  if (fn.strict_arity) {
+    auto b = builtin_arity_bounds(*fn.params);
+    if (!b.variadic && b.min > static_cast<int64_t>(n_args)) {
+      throw CulebraError(
+          "ArityError",
+          ns_fn_arity_error_message(b.min, static_cast<int64_t>(n_args)));
+    }
+    return;
+  }
+  size_t pos = 0;
+  for (const auto& p : *fn.params) {
+    if (p.kwargs_rest || p.args_rest) continue;
+    // Nothing supplies keywords here, so a kw-only param is never filled.
+    if (!p.kw_only && pos < n_args) {
+      pos++;
+      continue;
+    }
+    if (p.default_expr == nullptr && p.default_value == nullptr) {
+      throw CulebraError("ArityError", missing_required_arg_message(p.name));
+    }
+  }
+}
+
+// Bind positional args into a hand-built method frame (defined below, after
+// bind_overflow_args). Forward-declared so the protocol / `==` / ordering
+// invokers here share the one binder — it is what routes an overload set's
+// arguments into the `__ARGS__` its dispatcher body reads, and what applies
+// defaults and typed-param checks exactly as an ordinary call would.
+inline void bind_callback_params(Environment& frame, const FunctionValue& f,
+                                 std::initializer_list<Value> args);
+
 // Call an already-resolved 0-parameter method with `receiver` as its
 // `self`. Method bodies use `return X` (generator-synthesized next()
 // does, and any user iterator with an early return). `FunctionValue::eval`
 // raises ReturnValue rather than returning the value, so catch it here —
 // without this, the surrounding for-in would unwind silently.
 inline Value _invoke_fn_no_args(const Value& fn, const Value& receiver) {
-  return deliver_call(
-      fn.to_function().eval(_make_method_call_env(receiver, 0, 0)));
+  const auto& f = fn.to_function();
+  check_direct_call_arity(f, 0);
+  auto env = _make_method_call_env(receiver, 0, 0);
+  bind_callback_params(*env, f, {});
+  return deliver_call(f.eval(env));
 }
 
 // Invoke a 0-parameter method stored on an iterator-shaped Object
@@ -3708,10 +3753,9 @@ inline Value _invoke_method_no_args(const Value& receiver,
 // Caller guarantees both sides are Object with an `eq` property.
 inline bool _invoke_user_eq(const Value& a, const Value& b) {
   const auto& fn = a.to_object().get("eq").to_function();
+  check_direct_call_arity(fn, 1);
   auto env = _make_method_call_env(a, 0, 0);
-  if (!fn.params->empty()) {
-    env->initialize((*fn.params)[0].name, b, false);
-  }
+  bind_callback_params(*env, fn, {b});
   return deliver_call(fn.eval(env)).to_bool();
 }
 
@@ -3725,8 +3769,9 @@ inline Value _invoke_binary_method(const Value& receiver,
                                    std::string_view method_name,
                                    const Value& arg) {
   const auto& fn = receiver.to_object().get(method_name).to_function();
+  check_direct_call_arity(fn, 1);
   auto env = _make_method_call_env(receiver, 0, 0);
-  if (!fn.params->empty()) env->initialize((*fn.params)[0].name, arg, false);
+  bind_callback_params(*env, fn, {arg});
   // A method body may `return` (raises ReturnValue) rather than fall off its
   // last expression — catch it like _invoke_method_no_args.
   return deliver_call(fn.eval(env));
@@ -4078,12 +4123,6 @@ inline Value _iter_numeric_extreme(Value upstream, bool want_max,
   return best;
 }
 
-// Bind positional callback args into a function frame (defined below, after
-// bind_overflow_args). Forward-declared so the iterator callback invokers can
-// share the one binder that handles *args / defaults / __ARGS__ builtins.
-inline void bind_callback_params(Environment& frame, const FunctionValue& f,
-                                 std::initializer_list<Value> args);
-
 // Invoke a user-supplied callable (mapper/predicate/reducer callback)
 // on the given argument. Used by Iterator methods where the callback
 // body runs repeatedly per step. No `self` is bound — callbacks are
@@ -4093,40 +4132,12 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
 inline Value _invoke_callback(const Value& fn_val) {
   const auto& fn = fn_val.to_function();
   // The zero-argument form is a thunk call, not a per-element callback: no
-  // HOF entry pre-validated the arity, so an unfilled required parameter has
-  // to raise here (`d.get_or_put(k, |a| a)`) rather than leave a hole in the
-  // frame that the body only trips over if it reads the name. The JIT runs
-  // these thunks through its ordinary call path and says exactly this.
-  // A kw-only parameter counts too: nothing supplies keywords here either.
-  // A strict-arity native (`d.get_or_put(k, to_string)`) takes the same
-  // count-based rejection its ordinary call path gives (`let f = to_string;
-  // f()`), not the user-fn missing-required wording — on the JIT side these
-  // thunks run through the native's own trampoline, which says exactly that.
-  if (fn.strict_arity) {
-    auto b = builtin_arity_bounds(*fn.params);
-    if (!b.variadic && b.min > 0) {
-      throw CulebraError("ArityError", ns_fn_arity_error_message(b.min, 0));
-    }
-  } else if (!fn.multimethod_accepts_arity) {
-    for (const auto& p : *fn.params) {
-      if (p.kwargs_rest || p.args_rest) continue;
-      if (p.default_expr == nullptr && p.default_value == nullptr) {
-        throw CulebraError("ArityError", missing_required_arg_message(p.name));
-      }
-    }
-  }
+  // HOF entry pre-validated the arity (`d.get_or_put(k, |a| a)`).
+  check_direct_call_arity(fn, 0);
   auto env = std::make_shared<Environment>();
   env->is_function_frame = true;
   env->initialize("fn", fn_val, false);
   bind_callback_params(*env, fn, {});
-  // A multimethod dispatcher declares only `**__KWARGS__`, so the binder's
-  // overflow guard skips `__ARGS__` — yet the dispatcher body reads it
-  // unconditionally to pick an overload. Give it the empty list the ordinary
-  // call path would have bound, so a zero-argument thunk reports the
-  // DispatchError the JIT reports instead of a NameError for the internal name.
-  if (fn.multimethod_accepts_arity) {
-    env->initialize("__ARGS__", Value(ArrayValue{}), false);
-  }
   env->initialize("__LINE__", Value(int64_t{0}), false);
   env->initialize("__COLUMN__", Value(int64_t{0}), false);
   return deliver_call(fn.eval(env));
@@ -4533,6 +4544,14 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
       extras.values->push_back(args.begin()[i]);
     }
     bind_overflow_args(params, frame, Value(std::move(extras)));
+  } else if (f.multimethod_accepts_arity) {
+    // A multimethod dispatcher declares only `**__KWARGS__`, so a call that
+    // fits inside `regulars` leaves the guard above untaken — yet the
+    // dispatcher body reads `__ARGS__` unconditionally to pick an overload.
+    // Give it the empty list the ordinary call path would have bound, so a
+    // zero-argument invocation reports the DispatchError the JIT reports
+    // instead of a NameError for the internal name.
+    frame.initialize("__ARGS__", Value(ArrayValue{}), false);
   }
 }
 
