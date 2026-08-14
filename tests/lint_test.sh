@@ -179,6 +179,11 @@ expect_param_reject() {
   fi
 }
 expect_param_reject "non-default after default" "non-default parameter 'b' follows a default parameter" 'fn f(a = 1, b) { b }'
+# A destructuring parameter takes no default, so it is a required one: after
+# a defaulted parameter no arity can fill it (the interp raised a runtime
+# ArityError naming the synthetic slot; the JIT read the unfilled slab entry
+# and crashed).
+expect_param_reject "pattern after default" "non-default parameter '__destructure_1' follows a default parameter" 'let f = fn (a = 1, [b, c]) { b }'
 expect_param_reject "args not last"     "'*args' must be the last parameter"        'fn f(*args, b) { b }'
 expect_param_reject "args after sep"    "'*args' cannot follow a '*' separator"     'fn f(a, *, *args) { a }'
 expect_param_reject "kwargs not last"   "'**' catch-all must be the last parameter" 'fn f(**kw, b) { b }'

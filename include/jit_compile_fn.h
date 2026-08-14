@@ -216,6 +216,11 @@ inline JIT::Owned JIT::compile_fn_common(
   // default (leading portion, since defaults must be trailing).
   size_t declaredArity = paramNames.size();
   size_t requiredArity = firstDefaulted.value_or(declaredArity);
+  // A destructuring parameter takes no default, so it is required wherever
+  // it sits. lint rejects one after a defaulted parameter; this keeps the
+  // prologue from reading an unfilled slab entry if that check is bypassed.
+  for (size_t i = requiredArity; i < paramPatterns.size(); i++)
+    if (paramPatterns[i]) requiredArity = i + 1;
   {
     auto need = builder_.getInt64(static_cast<int64_t>(requiredArity));
     auto tooFew = builder_.CreateICmpULT(nArgsArg, need);

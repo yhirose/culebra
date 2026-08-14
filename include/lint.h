@@ -232,6 +232,7 @@ class ScopeWalker {
     bool seen_default = false, kw_only = false, seen_sep = false;
     bool seen_kwargs_rest = false, seen_args_rest = false;
     size_t kw_only_count = 0;
+    size_t positional = 0;  // declared slot index (the synthetic name's)
     auto err = [&](std::string msg, size_t line, size_t col) {
       diags_.push_back(Diagnostic{"SyntaxError", std::move(msg),
                                   static_cast<long>(line),
@@ -269,15 +270,25 @@ class ScopeWalker {
         seen_kwargs_rest = true;
         continue;
       }
-      if (pv.pattern) continue;
+      // A destructuring parameter cannot carry a default, so it is a
+      // required one and falls under the same ordering rule — the binders
+      // count required slots by position, and a required slot after a
+      // defaulted one has no arity that can fill it.
       if (pv.default_value) {
         seen_default = true;
       } else if (seen_default && !kw_only) {
         return err(
             std::format("non-default parameter '{}' follows a default parameter",
-                        pv.name),
-            pv.name_line, pv.name_col);
+                        pv.pattern ? culebra::destructure_param_name(positional)
+                                   : pv.name),
+            pv.name_line ? pv.name_line : node->line,
+            pv.name_line ? pv.name_col : node->column);
       }
+      if (pv.pattern) {
+        positional++;
+        continue;
+      }
+      positional++;
       if (kw_only) kw_only_count++;
     }
     if (seen_sep && kw_only_count == 0 && !seen_kwargs_rest) {
