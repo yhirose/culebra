@@ -3125,7 +3125,12 @@ class Compiler {
                 fc.kconst_str(std::string(mv.name)), /*mut=*/1);
       }
     } else {
-      fc.compile_block_into(body, rv);
+      // The body compiles INTO the frame scope rather than a nested one (the
+      // JIT's "the body BLOCK is this frame's scope"): its locals belong to
+      // the frame, so they are released after the frame's defers run, not
+      // before — and the unwind ladder covers them.
+      fc.predeclare_multifns(body);
+      fc.compile_body_into(body, rv);
     }
     fc.emit_return_type_check(rv);
     // Frame defers run before the frame scope's releases (interp's
