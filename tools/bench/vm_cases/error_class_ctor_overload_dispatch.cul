@@ -1,0 +1,13 @@
+# The `new` arm is picked before anything is allocated, so an unmatched call
+# raises without building an instance or running a field initializer.
+fn trace(n) {
+  println('field init ran')
+  n
+}
+class Point {
+  x = trace(1)
+  new(a) { self.tag = 'one' }
+  new(a, b) { self.tag = 'two' }
+}
+println('before')
+println(Point(1, 2, 3).tag)

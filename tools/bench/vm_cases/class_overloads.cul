@@ -1,0 +1,169 @@
+# Class member overloads: same-named methods, statics and `new` bodies with
+# distinct signatures merge into one dispatcher per name, through the same
+# runtime multimethod registry a free `fn name` overload set uses. Typed
+# parameters are out of the slice, so every arm here differs in arity.
+
+class Calc {
+  base = 10
+  plus(a) { self.base + a }
+  plus(a, b) { self.base + a + b }
+  plus(a, b, cc) { self.base + a + b + cc }
+  once() { 'no dispatcher' }
+  both() { "{self.plus(1)}/{self.plus(1, 2)}" }
+}
+let c = Calc.new()
+println(c.plus(1))
+println(c.plus(1, 2))
+println(c.plus(1, 2, 3))
+println(c.once())
+println(c.both())
+println(type_of(c.plus))
+inspect(c.keys())
+
+# A detached overloaded method keeps its receiver, and dispatches on arity.
+let f = c.plus
+println(f(5))
+println(f(5, 6))
+
+# --- statics ---------------------------------------------------------------
+# Static and instance overload sets are independent namespaces: the class
+# object carries the statics, the shared meta the instance methods.
+class Vec {
+  static make(x) { "one:{x}" }
+  static make(x, y) { "two:{x},{y}" }
+  static plain() { 'plain' }
+  make(x) { "inst:{x}" }
+  make(x, y) { "inst2:{x},{y}" }
+}
+println(Vec.make(1))
+println(Vec.make(1, 2))
+println(Vec.plain())
+println(Vec.new().make(1))
+println(Vec.new().make(1, 2))
+inspect(Vec.keys())
+println(Vec.new().make)
+
+# A static body is still a receiver frame — `self` is the class object.
+class Ref {
+  static tell(a) { type_of(self) }
+  static tell(a, b) { self.helper(a) }
+  static helper(a) { "helper:{a}" }
+}
+println(Ref.tell(1))
+println(Ref.tell(1, 2))
+
+# --- constructors ----------------------------------------------------------
+# The arm is picked before any instance exists, so the field initializers of
+# the picked `new` run once, in declaration order, after its params bound.
+class Point {
+  tag = 'unset'
+  seen = 0
+  new() { self.tag = 'empty' }
+  new(a) { self.tag = "one:{a}" }
+  new(a, b) { self.tag = "two:{a},{b}" }
+}
+println(Point().tag)
+println(Point(1).tag)
+println(Point(1, 2).tag)
+println(Point.new(9).tag)
+println(Point(1).seen)
+inspect(Point.keys())
+
+# Constructor overloads with no declared fields, reached through a detached
+# `C.new` value as well as `C(args)`.
+class Pair {
+  new(a) { self.v = "one:{a}" }
+  new(a, b) { self.v = "two" }
+}
+let ctor = Pair.new
+println(ctor(1).v)
+println(ctor(1, 2).v)
+println(Pair(3).v)
+
+# --- getters vs an overload set --------------------------------------------
+# A getter and a same-named method have distinct signatures, so they merge
+# too — and the dispatcher that replaces them is not a getter, so the bare
+# read stops auto-invoking and yields the dispatcher itself.
+class Mixed {
+  x = 4
+  get v() { "getter:{self.x}" }
+  v(a) { "method:{a}" }
+  get plainv() { "plain:{self.x}" }
+}
+println(type_of(Mixed.new().v))
+println(Mixed.new().v(1))
+println(Mixed.new().plainv)
+
+# --- per-declaration tables ------------------------------------------------
+# Every execution of a class declaration builds its own dispatchers, so an
+# instance keeps the bodies (and captures) of the activation that made it.
+fn spawn(tag) {
+  class Tagged {
+    m(a) { "{tag}-one" }
+    m(a, b) { "{tag}-two" }
+    static s(a) { "{tag}-s1" }
+    static s(a, b) { "{tag}-s2" }
+    new(a) { self.v = "{tag}-c1" }
+    new(a, b) { self.v = "{tag}-c2" }
+  }
+  Tagged
+}
+let first = spawn('A')
+let second = spawn('B')
+println(first.new(1).m(1))
+println(first.new(1).m(1, 2))
+println(first.s(1))
+println(first.s(1, 2))
+println(first(1).v)
+println(first(1, 2).v)
+println(second.new(1).m(1))
+println(second.s(1, 2))
+println(second(1).v)
+
+# The same rule for a declaration re-run in a loop.
+mut round = 0
+while round < 3 {
+  class R {
+    k(x) { "{round}:{x}" }
+    k(x, y) { "{round}:{x},{y}" }
+  }
+  println(R.new().k(7))
+  println(R.new().k(7, 8))
+  round += 1
+}
+
+# --- caught dispatch failures ----------------------------------------------
+try {
+  c.plus()
+} catch e {
+  println('method: ' + e.message)
+}
+try {
+  Vec.make(1, 2, 3)
+} catch e {
+  println('static: ' + e.message)
+}
+try {
+  Point(1, 2, 3)
+} catch e {
+  println('ctor: ' + e.message)
+}
+
+# --- churn -----------------------------------------------------------------
+# Overloaded construction and dispatch in a hot loop: nothing accumulates.
+class Box {
+  items = []
+  new(a) { self.items = [a] }
+  new(a, b) { self.items = [a, b] }
+  total(x) { self.items.size() + x }
+  total(x, y) { self.items.size() + x + y }
+}
+mut acc = 0
+mut i = 0
+while i < 3000 {
+  let one = Box(i)
+  let two = Box(i, i)
+  acc += one.total(1) + two.total(1, 2)
+  i += 1
+}
+println(acc)

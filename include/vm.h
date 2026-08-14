@@ -377,7 +377,10 @@ enum class Op : uint8_t {
                // sentinel if it outlived it (culebra_runtime_multifn_self).
                // Prologue-only; the binding it feeds is lazy, so reads guard
                // the sentinel with the usual NameError.
+  WkErr,       // throw the well-known-property contract error for name
                // consts[a] — a well-known name that carries an overload set,
+               // whose dispatcher build_class_meta would never get to reject.
+               // Positionless, so a SetOpPos at the CLASS_DECL precedes it.
                // Never falls through.
   ClassMeta,   // regs[a] = the shared class meta Object (+1) built from the
                // method closures in the run regs[b .. b+c), named by the
@@ -2146,6 +2149,67 @@ class Compiler {
     emit(Op::CellSet, b->slot, owned_src(ast, {t, true}));
   }
 
+  // Group same-named class members, in first-appearance order: each entry
+  // lists the positions that share one name. A name declared once keeps its
+  // bare closure (no dispatcher, no overhead), the rest merge.
+  static std::vector<std::vector<size_t>> group_overloads(
+      const std::vector<std::string>& names) {
+    std::vector<std::vector<size_t>> groups;
+    std::vector<std::string> seen;
+    for (size_t i = 0; i < names.size(); i++) {
+      auto it = std::find(seen.begin(), seen.end(), names[i]);
+      if (it == seen.end()) {
+        seen.push_back(names[i]);
+        groups.push_back({i});
+      } else {
+        groups[static_cast<size_t>(it - seen.begin())].push_back(i);
+      }
+    }
+    return groups;
+  }
+
+  static std::vector<std::string> grouped_names(
+      const std::vector<std::vector<size_t>>& groups,
+      const std::vector<std::string>& names) {
+    std::vector<std::string> out;
+    out.reserve(groups.size());
+    for (const auto& g : groups) out.push_back(names[g.front()]);
+    return out;
+  }
+
+  // Materialize one member name into `dst`: a lone closure, or — for an
+  // overload set — the dispatcher its arms register into. Each arm's body
+  // rides a scratch temp the registry empties, and every append after the
+  // first hands back a duplicate +1 to the same dispatcher, so that one
+  // rides a temp too; `dst` is the single reference that outlives the
+  // statement.
+  void emit_member_closure(int32_t dst, const std::vector<size_t>& arms,
+                           const std::vector<const peg::Ast*>& asts,
+                           const std::vector<int32_t>& chunks) {
+    auto make_arm = [&](size_t i, int32_t slot) {
+      emit(Op::MakeClosure, slot, chunks[i]);
+      // A getter registers where it maps 1:1 to its source method, before
+      // the meta absorbs it (the JIT's register_getter site). An overloaded
+      // one still registers, and still loses the bare-read invoke: the
+      // dispatcher that replaces it is not a getter.
+      if (culebra::view_method(*asts[i]).is_getter) emit(Op::RegGetter, slot);
+    };
+    if (arms.size() == 1) {
+      make_arm(arms.front(), dst);
+      return;
+    }
+    int32_t into = -1;
+    for (size_t k = 0; k < arms.size(); k++) {
+      TempScope ats(*this);
+      int32_t body = alloc_temp(*asts[arms[k]]);
+      make_arm(arms[k], body);
+      int32_t out = k == 0 ? dst : alloc_temp(*asts[arms[k]]);
+      emit(Op::MultifnReg, out, body, into, chunks[arms[k]]);
+      forget_temp(body);  // the registry absorbed the body's +1 (reg is nil)
+      into = dst;
+    }
+  }
+
   // `class Name { new(...) {...}  m(...) {...}  get g() {...}
   //               static f(...) {...}  static K = e  x = e  y: T = e }`.
   // The runtime shape is the JIT's: one shared meta Object holding the
@@ -2153,7 +2217,9 @@ class Compiler {
   // them), instances delegating to it through `proto`, and a class namespace
   // Object carrying `new` plus the statics, marked so `C(args)` reaches the
   // constructor. Field initializers become a synthetic thunk the `new` body
-  // runs after its parameters bound. Overloads are out of this slice.
+  // runs after its parameters bound. Same-named members with distinct
+  // signatures merge into one dispatcher through the runtime multimethod
+  // registry, exactly as a free `fn name` overload set does.
   void compile_class_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     size_t dec_end = 0;
@@ -2167,20 +2233,17 @@ class Compiler {
     auto class_name =
         std::string(culebra::parse_generic_head(ast.nodes[dec_end]->token).outer);
 
-    const peg::Ast* new_ast = nullptr;
+    // Names may repeat: same-named members with distinct signatures are an
+    // overload set (lint has already rejected two identical signatures, so
+    // within the slice — where a typed parameter is itself rejected — the
+    // arms always differ in arity).
+    std::vector<const peg::Ast*> new_asts;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
     std::vector<std::string> static_names;
     std::vector<const peg::Ast*> static_asts;
     std::vector<const peg::Ast*> static_fields;
     std::vector<const peg::Ast*> fields;
-    auto claim = [&](std::vector<std::string>& names, const peg::Ast& m,
-                     std::string_view what) {
-      auto n = std::string(culebra::view_method(m).name);
-      if (std::find(names.begin(), names.end(), n) != names.end())
-        reject(m, std::format("{} overload '{}'", what, n));
-      names.push_back(std::move(n));
-    };
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
@@ -2202,17 +2265,30 @@ class Compiler {
         continue;
       }
       if (mv.is_static) {
-        claim(static_names, m, "static");
+        static_names.emplace_back(mv.name);
         static_asts.push_back(&m);
         continue;
       }
       if (mv.name == "new") {
-        if (new_ast) reject(m, "constructor overload");
-        new_ast = &m;
+        new_asts.push_back(&m);
         continue;
       }
-      claim(method_names, m, "method");
+      method_names.emplace_back(mv.name);
       method_asts.push_back(&m);
+    }
+    const peg::Ast* new_ast = new_asts.empty() ? nullptr : new_asts.front();
+    // A well-known name with an overload set can't satisfy the 0-arg
+    // contract: the grouped dispatcher replaces the arms, so
+    // build_class_meta never sees one to reject. Collected here, thrown
+    // where build_class_meta would have thrown (the JIT's
+    // emit_wk_overload_errors).
+    std::vector<std::string> wk_overloaded;
+    {
+      std::set<std::string> seen, taken;
+      for (const auto& n : method_names)
+        if (!seen.insert(n).second && culebra::is_well_known_prop(n) &&
+            taken.insert(n).second)
+          wk_overloaded.push_back(n);
     }
 
     // The class name binds before any body compiles: a method that says
@@ -2249,7 +2325,9 @@ class Compiler {
       auto mv = culebra::view_method(*m);
       method_chunks.push_back(
           compile_fn_chunk(*m, mv.params, **mv.body, {.receiver = true}));
-      if (mv.is_getter) prog_.chunks[method_chunks.back()].is_getter = true;
+      auto& ch = prog_.chunks[method_chunks.back()];
+      ch.multifn_name = std::string(mv.name);
+      if (mv.is_getter) ch.is_getter = true;
     }
     std::vector<int32_t> static_chunks;
     for (auto* m : static_asts) {
@@ -2259,6 +2337,7 @@ class Compiler {
       // does (probed — a detached `let f = S.f` keeps that receiver).
       static_chunks.push_back(
           compile_fn_chunk(*m, mv.params, **mv.body, {.receiver = true}));
+      prog_.chunks[static_chunks.back()].multifn_name = std::string(mv.name);
     }
     // The field-init thunk is compiled — and bound under its hidden name —
     // before the `new` body, whose capture list fn_analysis already points
@@ -2278,36 +2357,35 @@ class Compiler {
              /*is_mut=*/false, /*is_cell=*/true});
       }
     }
-    int32_t body_chunk = -1;
-    if (new_ast) {
-      auto mv = culebra::view_method(*new_ast);
-      body_chunk = compile_fn_chunk(
-          *new_ast, mv.params, **mv.body,
+    std::vector<int32_t> body_chunks;
+    for (auto* m : new_asts) {
+      auto mv = culebra::view_method(*m);
+      body_chunks.push_back(compile_fn_chunk(
+          *m, mv.params, **mv.body,
           {.receiver = true,
-           .field_init_owner = fields.empty() ? nullptr : &ast});
+           .field_init_owner = fields.empty() ? nullptr : &ast}));
     }
 
-    // The shared meta: the method closures in one contiguous run.
+    // The shared meta: one closure per member name in a contiguous run —
+    // an overloaded name contributing its dispatcher instead.
+    auto groups = group_overloads(method_names);
     int32_t meta = alloc_temp(ast);
     {
       int32_t run = next_slot_;
-      for (size_t i = 0; i < method_chunks.size(); i++) {
-        int32_t t = alloc_temp(*method_asts[i]);
-        emit(Op::MakeClosure, t, method_chunks[i]);
-        // A getter registers where it maps 1:1 to its source method, before
-        // the meta absorbs it (the JIT's register_getter site).
-        if (culebra::view_method(*method_asts[i]).is_getter)
-          emit(Op::RegGetter, t);
-      }
+      for (size_t g = 0; g < groups.size(); g++) alloc_temp(ast);
+      for (size_t g = 0; g < groups.size(); g++)
+        emit_member_closure(run + static_cast<int32_t>(g), groups[g],
+                            method_asts, method_chunks);
       auto table = static_cast<int32_t>(chunk_.name_tables.size());
-      chunk_.name_tables.push_back(method_names);
-      // The well-known contract throw inside build_class_meta is
-      // positionless and the interp stamps it at the declaration.
+      chunk_.name_tables.push_back(grouped_names(groups, method_names));
+      // Both contract throws below are positionless and the interp stamps
+      // them at the declaration.
       emit(Op::SetOpPos);
-      emit(Op::ClassMeta, meta, run,
-           static_cast<int32_t>(method_chunks.size()), table);
-      for (size_t i = 0; i < method_chunks.size(); i++)
-        forget_temp(run + static_cast<int32_t>(i));  // the meta took each +1
+      for (const auto& n : wk_overloaded) emit(Op::WkErr, kconst_str(n));
+      emit(Op::ClassMeta, meta, run, static_cast<int32_t>(groups.size()),
+           table);
+      for (size_t g = 0; g < groups.size(); g++)
+        forget_temp(run + static_cast<int32_t>(g));  // the meta took each +1
     }
 
     // The constructor closure captures {meta, field-init, `new` body}; each
@@ -2330,25 +2408,43 @@ class Compiler {
     };
     // A `new` body reaches the field-init through its own hidden capture,
     // so the constructor passes one or the other, never both — the split
-    // build_class_instance expects.
-    int32_t body_cell = -1;
-    if (new_ast) {
-      int32_t t = alloc_temp(ast);
-      emit(Op::MakeClosure, t, body_chunk);
-      body_cell = alloc_slot(ast, "(class.new)");
-      emit(Op::CellNew, body_cell, owned_src(ast, {t, true}));
-      mark_cell_slot(body_cell);
-    }
-    std::vector<int32_t> ctor_caps{
-        meta_cell, new_ast ? cell_or_nil(-1) : cell_or_nil(finit_slot),
-        new_ast ? body_cell : cell_or_nil(-1)};
-    int32_t ctor_chunk = compile_ctor_chunk(
-        ast, class_name, new_ast ? culebra::view_method(*new_ast).params
-                                 : nullptr,
-        ctor_caps);
-
+    // build_class_instance expects. One constructor closure per `new`: an
+    // overload set registers them all under a shared dispatcher, so the arm
+    // is picked before any instance is allocated. They share one meta cell
+    // (the JIT gives each closure its own cell and so has to hand out one
+    // meta reference apiece).
     int32_t ctor = alloc_temp(ast);
-    emit(Op::MakeClosure, ctor, ctor_chunk);
+    int32_t into = -1;
+    for (size_t k = 0; k < std::max<size_t>(new_asts.size(), 1); k++) {
+      const peg::Ast* na = new_asts.empty() ? nullptr : new_asts[k];
+      int32_t body_cell = -1;
+      if (na) {
+        TempScope bts(*this);
+        int32_t t = alloc_temp(*na);
+        emit(Op::MakeClosure, t, body_chunks[k]);
+        body_cell = alloc_slot(*na, "(class.new)");
+        emit(Op::CellNew, body_cell, owned_src(*na, {t, true}));
+        mark_cell_slot(body_cell);
+      }
+      std::vector<int32_t> ctor_caps{
+          meta_cell, na ? cell_or_nil(-1) : cell_or_nil(finit_slot),
+          na ? body_cell : cell_or_nil(-1)};
+      int32_t ctor_chunk = compile_ctor_chunk(
+          ast, class_name, na ? culebra::view_method(*na).params : nullptr,
+          ctor_caps);
+      if (new_asts.size() < 2) {
+        emit(Op::MakeClosure, ctor, ctor_chunk);
+        break;
+      }
+      prog_.chunks[ctor_chunk].multifn_name = "new";
+      TempScope cts(*this);
+      int32_t c = alloc_temp(*na);
+      emit(Op::MakeClosure, c, ctor_chunk);
+      int32_t out = k == 0 ? ctor : alloc_temp(*na);
+      emit(Op::MultifnReg, out, c, into, ctor_chunk);
+      forget_temp(c);  // the registry absorbed the constructor's +1
+      into = ctor;
+    }
     int32_t cls = alloc_temp(ast);
     emit(Op::ClassObj, cls);
     // The class namespace: `new`, then the statics and their fields. The raw
@@ -2356,11 +2452,13 @@ class Compiler {
     // here, so neither the well-known contract nor the drop registration
     // applies (the JIT's emit_bind_static).
     emit(Op::BindStatic, cls, kconst_str("new"), owned_src(ast, {ctor, true}));
-    for (size_t i = 0; i < static_chunks.size(); i++) {
-      int32_t t = alloc_temp(*static_asts[i]);
-      emit(Op::MakeClosure, t, static_chunks[i]);
-      emit(Op::BindStatic, cls, kconst_str(static_names[i]),
-           owned_src(*static_asts[i], {t, true}));
+    // Statics overload the same way, on their own dispatcher — the class
+    // object and the instance meta are separate namespaces.
+    for (const auto& arms : group_overloads(static_names)) {
+      int32_t t = alloc_temp(*static_asts[arms.front()]);
+      emit_member_closure(t, arms, static_asts, static_chunks);
+      emit(Op::BindStatic, cls, kconst_str(static_names[arms.front()]),
+           owned_src(*static_asts[arms.front()], {t, true}));
     }
     for (size_t i = 0; i < static_fields.size(); i++) {
       emit(Op::BindStatic, cls,
@@ -4480,7 +4578,7 @@ inline std::string dump(const Chunk& c) {
       "JumpIfTag",
       "MakeClosure", "Call",    "CallM",      "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
-      "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",
+      "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "WkErr",
       "ClassMeta", "ClassObj",  "BindStatic", "MakeInst",     "FieldInit",
       "RegGetter", "SelfMerge",
       "NsGet",
@@ -5812,7 +5910,10 @@ struct Exec {
           regs[in.a] = culebra_runtime_multifn_self(cls);
           ++pc;
           break;
+        case Op::WkErr:
+          culebra_runtime_wk_contract_error(
               reinterpret_cast<const char*>(c.consts[in.a].data));
+          break;  // unreachable — the helper always throws
         case Op::ClassMeta: {
           // Cold path (once per declaration): the names table lives in the
           // chunk, so the array of c_str()s is built here.
@@ -6252,6 +6353,7 @@ struct Lowering {
           break;
         case Op::Ret:
         case Op::ImmutErr:  // lowers to a noreturn call + unreachable
+        case Op::WkErr:
         case Op::DestrErr:
         case Op::Throw:
           mark(static_cast<int32_t>(i) + 1);
@@ -8461,10 +8563,14 @@ struct Lowering {
           b.CreateStore(v, slots[in.a]);
           break;
         }
+        case Op::WkErr: {
           j.emit_call(
+              j.module_->getOrInsertFunction(rt::wk_contract_error,
                                              b.getVoidTy(), ptrTy),
               {j.get_or_create_global_str(
                   _str_sv(reinterpret_cast<const char*>(c.consts[in.a].data)),
+                  ".vm.wkname")});
+          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
           break;
         }
         case Op::ClassMeta: {

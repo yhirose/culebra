@@ -1,0 +1,7 @@
+# No overload matches the call: a DispatchError naming the bare member,
+# anchored at the head of the call chain.
+class Calc {
+  plus(a) { a }
+  plus(a, b) { a + b }
+}
+println(Calc.new().plus(1, 2, 3))

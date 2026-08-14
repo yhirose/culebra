@@ -1,0 +1,15 @@
+# A well-known protocol name carrying an overload set can never satisfy the
+# 0-argument contract: the dispatcher replaces the arms, so the declaration
+# raises where it would have rejected a single parameterized method — after
+# the static field initializers ran.
+fn trace(n) {
+  println('static field ran')
+  n
+}
+println('before')
+class Bad {
+  static K = trace(1)
+  next() { 1 }
+  next(a) { a }
+}
+println('unreached')
