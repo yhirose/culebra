@@ -2049,9 +2049,12 @@ an expression).
 * Optional type annotations are enforced on entry (§14).
 * A parameter may have a default value via `name = expr`. When the
   caller omits the argument, the default is evaluated on each call in
-  the function's definition environment, extended with any earlier
-  parameter bindings — so `fn (a, b = a + 1)` works. Default
-  parameters must follow all required parameters.
+  the function's definition environment, extended with the bindings the
+  frame makes before its parameters — the receiver `self`, the recursion
+  handle `fn`, and any earlier parameter — so both `fn (a, b = a + 1)`
+  and `m(k = self.n)` work. In a constructor the instance already exists
+  but its field initializers have not run yet, so `self`'s fields read
+  `nil` there. Default parameters must follow all required parameters.
 * A parameter may be a **destructuring pattern** — `fn ({x, y})`,
   `fn ([a, b])`, `fn ((k, v))`, and the lambda form `|{a, b}|`. The
   argument is matched against the pattern at entry and its names are
@@ -4063,6 +4066,14 @@ single parent's properties is **not specified** (currently follows
 
 **Exceptions**: an exception thrown from `drop` is logged to stderr
 and swallowed so that the rest of the cleanup cascade proceeds.
+
+**Failed construction**: a class instance exists from the moment
+`C.new(...)` is entered — before its arguments bind and before its
+field initializers run — so a constructor call that throws anywhere
+(a missing or wrong-typed argument, a throwing default, a field
+initializer, the body) still drops the half-built instance. A
+dispatch miss on an overloaded `new` throws before any instance is
+built, so nothing is dropped there.
 
 **Reentrant drop bodies**: a `drop` body may mutate the object's own
 fields, including releasing a reference that is itself part of a

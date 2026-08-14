@@ -654,6 +654,62 @@ fn test_member_default_sees_defining_scope() {
 }
 test_member_default_sees_defining_scope()
 
+fn test_member_default_sees_receiver() {
+  # A default also sees the frame bindings that precede the parameters: the
+  # receiver `self` and the recursion handle `fn`, which is the order the
+  # compiled prologue binds them in. The interp used to evaluate defaults in
+  # the definition environment alone, so `self` there was a NameError.
+  class R {
+    n = 5
+    m(k = self.n) {
+      k * 2
+    }
+    static s(k = self) {
+      type_of(k)
+    }
+    countdown(i, acc = fn) {
+      type_of(acc)
+    }
+  }
+  let r = R.new()
+  assert_eq(r.m(), 10)
+  assert_eq(r.m(1), 2)
+  assert_eq(R.s(), 'Object')
+  assert_eq(r.countdown(1), 'Function')
+  # In a `new` default the instance exists but its fields have not been
+  # initialized yet (they run once the parameters bind).
+  class N {
+    v = 3
+    new(a = self.v) {
+      self.seen = a
+    }
+  }
+  assert_eq(N.new().seen, nil)
+  assert_eq(N.new(8).seen, 8)
+}
+test_member_default_sees_receiver()
+
+fn test_ctor_binding_error_drops_instance() {
+  # The instance is allocated before its arguments bind, so a call that never
+  # reaches the body still leaves a half-built instance behind — its `drop`
+  # runs, like the one for a body or field-initializer throw.
+  mut dropped = 0
+  class D {
+    x = 1
+    new(a: Long) {
+      self.x = a
+    }
+    drop() {
+      dropped = dropped + 1
+    }
+  }
+  assert_eq(try { D.new() } catch e { e.kind }, 'ArityError')
+  assert_eq(dropped, 1)
+  assert_eq(try { D.new('x') } catch e { e.kind }, 'TypeError')
+  assert_eq(dropped, 2)
+}
+test_ctor_binding_error_drops_instance()
+
 fn test_field_init_after_arg_binding() {
   # Initializers run only once the ctor args bound successfully: an arity
   # error fires first, with no field side effects (interp/JIT symmetric).

@@ -696,6 +696,15 @@ struct FunctionValue {
   // value (`obj.name`, no call parens) invokes it 0-arg instead of yielding a
   // bound method. Set at class-decl time; plain methods leave it false.
   bool is_getter = false;
+  // The receiver this call binds as `self`, materialized BEFORE the
+  // parameters — the JIT's compiled prologue binds the receiver, the captures
+  // and `fn` ahead of the defaults, so a default expression sees them. A
+  // bound-method wrapper hands back its receiver; a constructor allocates the
+  // instance its body then populates, which is also why a binding error
+  // there drops a half-built instance (build_class_instance allocates first
+  // on the compiled side too). Empty for a plain function: `self` in its
+  // default is the undeclared name it is in its body.
+  std::function<Value()> materialize_self;
   // Multifn dispatcher view-of-source: when set, `fn.params` and
   // `fn.return_type` look through to this snapshot of the first
   // registered method body. The dispatcher itself keeps a synthetic
@@ -4448,12 +4457,14 @@ inline void bind_overflow_args(
 
 // Resolve parameter `p`'s default the way the full call binder does, so the
 // two binders share one implementation and cannot drift. A user `default_expr`
-// (AST) is evaluated against the function's `def_env` plus the earlier params
-// already bound in `earlier`; a C++ `default_value` is used directly. Returns
-// nullopt when the param has no default (a missing required argument — the
-// caller decides whether that is an error). `eval_fn` is the AST evaluator:
-// the interpreter's `eval` member at a normal call site, or `f.eval_default_expr`
-// (which closes over the interpreter) from the free-function callback binder.
+// (AST) is evaluated against the function's `def_env` plus the frame bindings
+// that exist before the parameters — the receiver `self`, the recursion handle
+// `fn`, and the earlier params already bound in `earlier`; a C++
+// `default_value` is used directly. Returns nullopt when the param has no
+// default (a missing required argument — the caller decides whether that is an
+// error). `eval_fn` is the AST evaluator: the interpreter's `eval` member at a
+// normal call site, or `f.eval_default_expr` (which closes over the
+// interpreter) from the free-function callback binder.
 // Invariant: any param with a `default_expr` was built by make_function_value,
 // which sets `eval_default_expr`, so `eval_fn` is non-null whenever it is used.
 template <class EvalFn>
@@ -4467,6 +4478,12 @@ inline std::optional<Value> resolve_param_default(const FunctionValue& f,
   if (param.default_expr) {
     auto defEnv = std::make_shared<Environment>(f.def_env);
     defEnv->outer = f.def_env;
+    // `self` / `fn` are the callee frame's own bindings, so has_own: a plain
+    // function called FROM a method must not pick the caller's receiver up
+    // (the JIT frame's self is the no-receiver sentinel there).
+    for (auto nm : {std::string_view("self"), std::string_view("fn")})
+      if (earlier.has_own(nm))
+        defEnv->initialize(nm, earlier.get(nm), false);
     for (size_t j = 0; j < p; j++) {
       const auto& pj = (*f.params)[j];
       if (earlier.has(pj.name))
@@ -9737,8 +9754,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
               // silently swapping the returned instance, and the
               // constructor's return value is always the originally
               // allocated object (so `self.x = ...` is the supported way
-              // to populate fields).
-              auto inst = Value(build_instance());
+              // to populate fields). The binder normally allocated it
+              // already (materialize_self, so a default expression can read
+              // `self`); a hand-built frame that skipped the binder — a
+              // constructor handed to a higher-order builtin — allocates
+              // here instead.
+              auto inst = callEnv->has_own("self") ? callEnv->get("self")
+                                                   : Value(build_instance());
               // Declared-field initializers run first — against the class's
               // defining scope, not callEnv, so `new` params stay invisible.
               self->init_instance_fields(*shared_fields, env, inst);
@@ -9765,6 +9787,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // default constructor below now also captures `env` (for the field
         // initializers), so both paths sit at multiplicity 2.
         ctor.get<FunctionValue>().eval_captures_def_env = true;
+        // The instance is the constructor's receiver: allocated before the
+        // arguments bind, so a default expression reads `self` (field-less
+        // at that point — the initializers run below) and a binding error
+        // abandons it, dropping it. Mirrors build_class_instance, which
+        // allocates before the compiled `new` body's prologue runs.
+        ctor.get<FunctionValue>().materialize_self =
+            [build_instance] { return Value(build_instance()); };
         // The ctor is built directly (not via make_function_value), so wire
         // the default-expression evaluator bridge here too — the callback
         // binder (`arr.map(C.new)`) resolves ctor param defaults through it.
@@ -10219,6 +10248,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto callEnv = std::make_shared<Environment>(env);
     callEnv->is_function_frame = true;
     callEnv->initialize("fn", fn_val, false);
+    // The receiver goes in before the parameters, the order the compiled
+    // prologue binds them in: a default expression sees `self` (and `fn`),
+    // and a constructor's instance exists before its arguments bind — so a
+    // binding error there abandons a half-built instance and runs its `drop`,
+    // like the JIT's build_class_instance. The body reuses this binding.
+    if (f.materialize_self)
+      callEnv->initialize("self", f.materialize_self(), false);
     dap_frame.set_callee(callEnv.get());  // debugger: this call's function frame
 
     // C. Walk formal params in declaration order; consume positional
@@ -10603,7 +10639,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     Value wrapped = dispose_receiver
         ? Value(FunctionValue(*pf.params, [receiver, underlying](
                                               std::shared_ptr<Environment> callEnv) {
-            callEnv->initialize("self", *receiver, false);
+            // Already there when the binder materialized it (and for a
+            // constructor it is the instance, not this receiver) — see
+            // materialize_self below.
+            if (!callEnv->has_own("self"))
+              callEnv->initialize("self", *receiver, false);
             Value result;
             try {
               result = underlying->get<FunctionValue>().eval(callEnv);
@@ -10616,7 +10656,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           }))
         : Value(
         FunctionValue(*pf.params, [receiver, underlying](std::shared_ptr<Environment> callEnv) {
-          callEnv->initialize("self", *receiver, false);
+          if (!callEnv->has_own("self"))
+            callEnv->initialize("self", *receiver, false);
           // get<>() returns a reference (prop is already a validated Function);
           // to_function() would copy the FunctionValue on every call.
           return underlying->get<FunctionValue>().eval(callEnv);
@@ -10644,6 +10685,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // eval closure does not capture it, so multiplicity stays 1).
     wf.def_env = pf.def_env;
     wf.eval_default_expr = pf.eval_default_expr;
+    // ...and the receiver goes in ahead of them, so a default expression
+    // reads `self` where the compiled prologue does (the same shared copy
+    // the eval closure and the collector hook below use). A constructor
+    // reached through this wrapper (`C.new`) keeps its own: the frame's
+    // `self` is the instance it allocates, not the class object the
+    // property was read from.
+    wf.materialize_self = pf.materialize_self
+                              ? pf.materialize_self
+                              : std::function<Value()>(
+                                    [receiver] { return *receiver; });
     // Arity-check genuine builtin-table methods only. The table dispatch
     // sites pass `method_name` (for the error message); trait-default and
     // other non-table wrappers don't, so they stay unchecked — keeping
