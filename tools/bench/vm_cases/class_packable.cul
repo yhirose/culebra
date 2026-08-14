@@ -1,0 +1,148 @@
+# `@packable` — a compiler-recognized class directive that fixes the byte
+# layout of the declared fields. The layout registers when the declaration
+# runs (AOT compiles and runs in separate processes, so a compile-time
+# registration would be invisible), and a marker property lets
+# `SharedBuffer.new(n, Cls)` recover the class name from the class object.
+
+@packable
+class FP {
+  x: Float32 = 0.0
+  y: Float32 = 0.0
+}
+let buf = SharedBuffer.new(3, FP)
+println(buf.size)
+buf[0].x = 1.5
+let v = buf[0]
+v.y = 2.5
+inspect([buf[0].x, buf[0].y])
+println(buf[2].x)
+inspect(FP.keys())
+println(FP.__packable__)
+# Negative indices count from the end.
+buf[-1].x = 9.0
+println(buf[2].x)
+
+# A @packable class is still an ordinary class: instances, methods, statics.
+@packable
+class P {
+  a: Long = 7
+  b: Bool = true
+  m() {
+    self.a * 2
+  }
+  static mk() {
+    P.new()
+  }
+}
+let p = P.mk()
+println(p.a)
+println(p.b)
+inspect(p.keys())
+println(p.class)
+println(type_of(p))
+println(p.m())
+p.a = 9
+println(p.a)
+# The marker is on the class object, not the instances.
+println(P.__packable__)
+inspect(p.__packable__)
+
+# --- Field types ----------------------------------------------------------
+@packable
+class Wide {
+  i8: Int8 = -1
+  i16: Int16 = 2
+  i32: Int32 = 3
+  i64: Int64 = 4
+  by: Byte = 5
+  f32: Float32 = 0.5
+  f64: Float64 = 1.5
+  bo: Bool = false
+}
+let wb = SharedBuffer.new(2, Wide)
+wb[0].i8 = -8
+wb[0].i16 = 300
+wb[0].i32 = 70000
+wb[0].i64 = 5000000000
+wb[0].by = 255
+wb[0].f32 = 0.25
+wb[0].f64 = 2.25
+wb[0].bo = true
+inspect([wb[0].i8, wb[0].i16, wb[0].i32, wb[0].i64, wb[0].by])
+inspect([wb[0].f32, wb[0].f64, wb[0].bo])
+inspect([wb[1].i8, wb[1].i64, wb[1].bo])
+# A zero-initialized record ignores the declared defaults.
+println(Wide.new().i8)
+
+# --- Fixed-capacity inline fields ----------------------------------------
+@packable
+class Body {
+  label: FixedString<8> = ''
+  xs: FixedArray<Int32, 3> = []
+}
+let bb = SharedBuffer.new(2, Body)
+bb[0].label = 'hi'
+println(bb[0].label)
+bb[0].xs.push(4)
+bb[0].xs.push(5)
+println(bb[0].xs.size())
+println(bb[0].xs[0])
+println(try { bb[1].label = 'way-too-long-name' } catch e { e.kind })
+println(try { bb[1].xs.push(1); bb[1].xs.push(2); bb[1].xs.push(3); bb[1].xs.push(4) } catch e { e.kind })
+
+# --- @packable with @derive ----------------------------------------------
+@packable
+@derive(Eq, Hash, Show, Comparable)
+class Both {
+  a: Long = 1
+  b: Bool = false
+}
+let bo = Both.new()
+println(bo.to_s())
+println(bo.eq(Both.new()))
+println(bo.hash() == Both.new().hash())
+println(bo.cmp(Both.new()))
+let both_buf = SharedBuffer.new(1, Both)
+println(both_buf[0].a)
+
+# --- Errors ---------------------------------------------------------------
+println(try { buf[5].x } catch e { e.kind })
+println(try { buf[0].zz } catch e { e.kind })
+println(try { buf[0] = 1 } catch e { e.kind })
+println(try { SharedBuffer.new(2, 5) } catch e { e.kind })
+class Plain {
+  new() {}
+}
+println(try { SharedBuffer.new(2, Plain) } catch e { e.kind })
+
+# --- Per-activation: each declaration registers its own layout ------------
+fn mk() {
+  @packable
+  class R {
+    a: Long = 1
+  }
+  SharedBuffer.new(1, R)
+}
+let b1 = mk()
+let b2 = mk()
+println(b1.size)
+b1[0].a = 5
+println(b1[0].a)
+println(b2[0].a)
+
+# --- Churn: records written and read back --------------------------------
+let cb = SharedBuffer.new(4, P)
+mut i = 0
+mut total = 0
+while i < 300 {
+  let slot = i % 4
+  cb[slot].a = i
+  cb[slot].b = i % 2 == 0
+  total = total + cb[slot].a
+  if cb[slot].b {
+    total = total + 1
+  }
+  total = total + P.new().m()
+  i = i + 1
+}
+println(total)

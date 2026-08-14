@@ -883,6 +883,8 @@ inline constexpr auto object_bind_static  = "culebra_runtime_object_bind_static"
 inline constexpr auto wk_contract_error   = "culebra_runtime_wk_contract_error";
 inline constexpr auto object_set_fast     = "culebra_runtime_object_set_fast";
 inline constexpr auto object_set_ic       = "culebra_runtime_object_set_ic";
+inline constexpr auto object_set_uncached =
+    "culebra_runtime_object_set_uncached";
 inline constexpr auto object_set_any      = "culebra_runtime_object_set_any";
 inline constexpr auto object_get_any      = "culebra_runtime_object_get_any";
 inline constexpr auto object_get_for_coalesce

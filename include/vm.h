@@ -389,6 +389,16 @@ enum class Op : uint8_t {
                // well-known-contract throw, which is positionless, so a
                // SetOpPos stamped at the CLASS_DECL precedes it — so the
                // whole run is nil'd.
+  DeriveFn,    // regs[a] = a captureless closure (+1) over the shared runtime
+               // thunk for @derive kind b (0=eq/1=hash/2=to_s/3=cmp —
+               // culebra_runtime_make_derived_method). Emitted into the class
+               // meta's method run alongside the user methods, so dispatch
+               // and Set/Object key lookup find it the same way. nothrow.
+  RegPack,     // register the @packable byte layout of class consts[a] from
+               // the "name:Type;…" spec consts[b] (culebra_runtime_register_
+               // packable), at the declaration — the layout must land in the
+               // running process, which under AOT is not the compiling one.
+               // The field types are lint-validated, so nothrow.
   ClassObj,    // regs[a] = fresh Object (+1) marked `is_class`, so `C(args)`
                // finds its `new` (object_new + mark_class)
   BindStatic,  // bind regs[c] into class object regs[a] under name consts[b]
@@ -2226,7 +2236,18 @@ class Compiler {
     while (dec_end < ast.nodes.size() &&
            ast.nodes[dec_end]->tag == "DECORATOR"_)
       dec_end++;
-    if (dec_end > 0) reject(*ast.nodes[0], "class decorator");
+    // `@derive(...)` and `@packable` are compiler-recognized directives, not
+    // callable decorators — neither is applied to the finished class value, so
+    // neither needs the decorator-application machinery the rest would.
+    bool is_packable = false;
+    for (size_t i = 0; i < dec_end; i++) {
+      if (culebra::is_packable_decorator(*ast.nodes[i])) {
+        is_packable = true;
+        continue;
+      }
+      if (!culebra::view_derive(*ast.nodes[i]).empty()) continue;
+      reject(*ast.nodes[i], "class decorator");
+    }
     // Generic params are documentation the runtime never sees (the JIT
     // strips them the same way); typed params, which is what they would
     // rewrite, are rejected inside every body anyway.
@@ -2244,12 +2265,20 @@ class Compiler {
     std::vector<const peg::Ast*> static_asts;
     std::vector<const peg::Ast*> static_fields;
     std::vector<const peg::Ast*> fields;
+    // Declared (name, type) pairs in field order — the @packable layout spec.
+    std::vector<std::pair<std::string, std::string>> packable_fields;
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
       // The shared member checks both other backends run while collecting:
-      // a getter takes no parameters (and is a method, not a field form).
+      // a getter takes no parameters (and is a method, not a field form), and
+      // a @packable field carries the type its bytes are laid out from (lint
+      // reports both first; these are the same safety net the others keep).
       if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
+      if (is_packable && mv.is_field && !mv.is_static)
+        culebra::require_typed_packable_field(mv, class_name);
+      if (is_packable && mv.is_typed_field)
+        packable_fields.emplace_back(mv.name, mv.type_annotation);
       // Member classification, mirroring collect_class_members on both
       // backends — including its wart: a *typed* field is an instance field
       // even when written `static`, so `static T: Long = 5` lands on every
@@ -2277,6 +2306,21 @@ class Compiler {
       method_asts.push_back(&m);
     }
     const peg::Ast* new_ast = new_asts.empty() ? nullptr : new_asts.front();
+    // Resolve `@derive(...)` into the (method name, runtime kind) pairs to
+    // append to the meta, after the members so a name the class declares
+    // itself wins (collect_class_members' user_defined rule). An unknown
+    // trait name is lint's, reported before anything runs; the throw here is
+    // the same safety net the other backends keep.
+    std::vector<std::pair<std::string, int>> derive_methods;
+    for (size_t i = 0; i < dec_end; i++) {
+      for (auto trait : culebra::view_derive(*ast.nodes[i])) {
+        auto dm = culebra::derive_method_for(trait);
+        std::string mname(dm.name);
+        if (std::find(method_names.begin(), method_names.end(), mname) ==
+            method_names.end())
+          derive_methods.emplace_back(std::move(mname), dm.kind);
+      }
+    }
     // A well-known name with an overload set can't satisfy the 0-arg
     // contract: the grouped dispatcher replaces the arms, so
     // build_class_meta never sees one to reject. Collected here, thrown
@@ -2367,25 +2411,34 @@ class Compiler {
     }
 
     // The shared meta: one closure per member name in a contiguous run —
-    // an overloaded name contributing its dispatcher instead.
+    // an overloaded name contributing its dispatcher instead, and each
+    // @derive method its captureless thunk closure, appended after the user
+    // methods as the JIT appends them.
     auto groups = group_overloads(method_names);
     int32_t meta = alloc_temp(ast);
     {
+      auto n_run = static_cast<int32_t>(groups.size() + derive_methods.size());
       int32_t run = next_slot_;
-      for (size_t g = 0; g < groups.size(); g++) alloc_temp(ast);
+      for (int32_t k = 0; k < n_run; k++) alloc_temp(ast);
       for (size_t g = 0; g < groups.size(); g++)
         emit_member_closure(run + static_cast<int32_t>(g), groups[g],
                             method_asts, method_chunks);
+      auto names = grouped_names(groups, method_names);
+      for (size_t d = 0; d < derive_methods.size(); d++) {
+        emit(Op::DeriveFn,
+             run + static_cast<int32_t>(groups.size() + d),
+             derive_methods[d].second);
+        names.push_back(derive_methods[d].first);
+      }
       auto table = static_cast<int32_t>(chunk_.name_tables.size());
-      chunk_.name_tables.push_back(grouped_names(groups, method_names));
+      chunk_.name_tables.push_back(std::move(names));
       // Both contract throws below are positionless and the interp stamps
       // them at the declaration.
       emit(Op::SetOpPos);
       for (const auto& n : wk_overloaded) emit(Op::WkErr, kconst_str(n));
-      emit(Op::ClassMeta, meta, run, static_cast<int32_t>(groups.size()),
-           table);
-      for (size_t g = 0; g < groups.size(); g++)
-        forget_temp(run + static_cast<int32_t>(g));  // the meta took each +1
+      emit(Op::ClassMeta, meta, run, n_run, table);
+      for (int32_t k = 0; k < n_run; k++)
+        forget_temp(run + k);  // the meta took each +1
     }
 
     // The constructor closure captures {meta, field-init, `new` body}; each
@@ -2465,6 +2518,24 @@ class Compiler {
            kconst_str(std::string(culebra::view_method(*static_fields[i]).name)),
            static_field_vals[i]);
       forget_temp(static_field_vals[i]);  // the slot absorbed the +1
+    }
+    // @packable: register the byte layout and mark the class object so
+    // `SharedBuffer.new(n, Cls)` can recover the class name from it. The
+    // marker is a plain String, which is not refcounted, so the bind's
+    // absorbed +1 costs nothing.
+    if (is_packable) {
+      std::string spec;
+      for (const auto& [fname, ftype] : packable_fields) {
+        if (!spec.empty()) spec += ';';
+        spec += fname;
+        spec += ':';
+        spec += ftype;
+      }
+      emit(Op::RegPack, kconst_str(class_name), kconst_str(spec));
+      int32_t marker = alloc_temp(ast);
+      emit(Op::LoadConst, marker, kconst_str(class_name));
+      emit(Op::BindStatic, cls, kconst_str("__packable__"), marker);
+      forget_temp(marker);  // the slot absorbed the +1
     }
     emit(Op::CellSet, class_slot, owned_src(ast, {cls, true}));
   }
@@ -4579,8 +4650,8 @@ inline std::string dump(const Chunk& c) {
       "MakeClosure", "Call",    "CallM",      "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "WkErr",
-      "ClassMeta", "ClassObj",  "BindStatic", "MakeInst",     "FieldInit",
-      "RegGetter", "SelfMerge",
+      "ClassMeta", "DeriveFn",  "RegPack",    "ClassObj",     "BindStatic",
+      "MakeInst",  "FieldInit", "RegGetter",  "SelfMerge",
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
@@ -5574,7 +5645,7 @@ struct Exec {
           // The retain feeds object_set's consuming store; the register
           // keeps its +1 so the assignment expression reads it afterwards.
           culebra_runtime_value_retain(static_cast<int8_t>(val.tag), val.data);
-          culebra_runtime_object_set(
+          culebra_runtime_object_set_uncached(
               reinterpret_cast<JitObject*>(recv.data),
               reinterpret_cast<const char*>(c.consts[in.c].data),
               /*mut=*/true, static_cast<int8_t>(val.tag), val.data, line, col,
@@ -5944,6 +6015,18 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::DeriveFn: {
+          auto* cl = culebra_runtime_make_derived_method(in.b);
+          regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(cl)};
+          ++pc;
+          break;
+        }
+        case Op::RegPack:
+          culebra_runtime_register_packable(
+              reinterpret_cast<const char*>(c.consts[in.a].data),
+              reinterpret_cast<const char*>(c.consts[in.b].data));
+          ++pc;
+          break;
         case Op::ClassObj: {
           auto* o = culebra_runtime_object_new();
           culebra_runtime_mark_class(o);
@@ -8253,8 +8336,9 @@ struct Lowering {
           auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
           j.emit_call(
               j.module_->getOrInsertFunction(
-                  rt::object_set, b.getVoidTy(), ptrTy, ptrTy, b.getInt1Ty(),
-                  b.getInt8Ty(), i64Ty, i64Ty, i64Ty, b.getInt1Ty()),
+                  rt::object_set_uncached, b.getVoidTy(), ptrTy, ptrTy,
+                  b.getInt1Ty(), b.getInt8Ty(), i64Ty, i64Ty, i64Ty,
+                  b.getInt1Ty()),
               {b.CreateIntToPtr(j.extract_data(recv), ptrTy),
                j.get_or_create_global_str(nm, ".vm.propname"),
                b.getInt1(true), j.extract_tag(val), j.extract_data(val),
@@ -8599,6 +8683,27 @@ struct Lowering {
               {namesPtr, slab, b.getInt64(in.c), b.getInt64(0)},
               "vm.class.meta");
           b.CreateStore(j.make_object(meta), slots[in.a]);
+          break;
+        }
+        case Op::DeriveFn: {
+          auto cl = j.emit_call(
+              j.module_->getOrInsertFunction(rt::make_derived_method, ptrTy,
+                                             i64Ty),
+              {b.getInt64(in.b)}, "vm.derive.closure");
+          b.CreateStore(j.make_func(cl), slots[in.a]);
+          break;
+        }
+        case Op::RegPack: {
+          auto arg = [&](int32_t k, const char* nm) {
+            return j.get_or_create_global_str(
+                std::string(_str_sv(
+                    reinterpret_cast<const char*>(c.consts[k].data))),
+                nm);
+          };
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::register_packable,
+                                             b.getVoidTy(), ptrTy, ptrTy),
+              {arg(in.a, ".vm.pkg.name"), arg(in.b, ".vm.pkg.spec")});
           break;
         }
         case Op::ClassObj: {

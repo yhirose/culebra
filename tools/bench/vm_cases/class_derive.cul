@@ -1,0 +1,215 @@
+# `@derive(Eq, Hash, Show, Comparable)` — a compiler-recognized class
+# directive, not a callable decorator. Each requested trait puts one more
+# closure on the class meta beside the user methods, so dispatch and the
+# hash-keyed containers find them the same way.
+
+@derive(Eq, Hash, Show, Comparable)
+class Point {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
+let a = Point.new(1, 2)
+let b = Point.new(1, 2)
+let c = Point.new(1, 3)
+println(a.eq(b))
+println(a.eq(c))
+println(a.hash() == b.hash())
+println(a.hash() == c.hash())
+println(a.to_s())
+println(a.cmp(c))
+println(c.cmp(a))
+println(a.cmp(b))
+
+# The operators route through the derived methods.
+println(a == b)
+println(a == c)
+println(a != c)
+println(a < c)
+println(a <= b)
+println(a > c)
+println(a >= b)
+
+# Derived methods live on the meta, so they are not own properties.
+inspect(a.keys())
+println(a.class)
+println(type_of(a))
+# A derived method taken as a value keeps its receiver.
+let f = a.eq
+println(f(b))
+let g = a.to_s
+println(g())
+
+# --- Nominal: same fields, different class, never equal -------------------
+@derive(Eq, Hash, Show, Comparable)
+class Other {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
+let o = Other.new(1, 2)
+println(a.eq(o))
+println(a == o)
+println(a.hash() == o.hash())
+println(a.to_s())
+println(o.to_s())
+# A non-Object other is simply unequal, and orders as 0.
+println(a.eq(5))
+println(a.eq(nil))
+println(a.cmp(5))
+
+# --- User definitions win -------------------------------------------------
+@derive(Eq, Hash, Show, Comparable)
+class Custom {
+  new(v) {
+    self.v = v
+  }
+  to_s() {
+    'custom-' + to_string(self.v)
+  }
+  eq(o) {
+    true
+  }
+}
+let cu = Custom.new(1)
+println(cu.to_s())
+println(cu.eq(Custom.new(9)))
+println(cu == Custom.new(9))
+println(cu.cmp(Custom.new(9)))
+
+# --- @derive alongside an overload set ------------------------------------
+# Batch 22's grouping runs before the derive append, so an overloaded name
+# and a derived one sit side by side on the same meta.
+@derive(Eq, Show)
+class Over {
+  new(v) {
+    self.v = v
+  }
+  m() {
+    'm0'
+  }
+  m(k) {
+    'm1-' + to_string(k)
+  }
+}
+let ov = Over.new(1)
+println(ov.m())
+println(ov.m(7))
+println(ov.to_s())
+println(ov.eq(Over.new(1)))
+# A user overload set on a derived name wins outright — the derive is
+# skipped, so `==` reaches the dispatcher and reports its own DispatchError.
+@derive(Eq, Show)
+class OverEq {
+  new(v) {
+    self.v = v
+  }
+  eq() {
+    'eq0'
+  }
+  eq(p, q) {
+    'eq2'
+  }
+}
+let oe = OverEq.new(1)
+println(oe.eq())
+println(oe.eq(1, 2))
+println(oe.to_s())
+println(try { oe == OverEq.new(1) } catch e { e.kind })
+
+# --- Fields: declaration order, methods skipped ---------------------------
+@derive(Eq, Hash, Show, Comparable)
+class Fielded {
+  a: Long = 1
+  b = 'z'
+  new() {
+    self.c = 3.5
+  }
+  m() {
+    9
+  }
+}
+let fi = Fielded.new()
+println(fi.to_s())
+inspect(fi.keys())
+println(fi.hash() == Fielded.new().hash())
+println(fi.eq(Fielded.new()))
+println(fi.cmp(Fielded.new()))
+
+# --- Hash + Eq make a class usable as a key -------------------------------
+@derive(Eq, Hash)
+class Key {
+  new(x) {
+    self.x = x
+  }
+}
+let s = {Key.new(1), Key.new(2), Key.new(1)}
+println(s.size())
+println(s.contains(Key.new(2)))
+println(s.contains(Key.new(7)))
+mut d = {}
+d[Key.new(3)] = 'three'
+d[Key.new(3)] = 'again'
+println(d[Key.new(3)])
+println(d.keys().size())
+
+# --- Errors ---------------------------------------------------------------
+# eq / cmp declare `other`; hash / to_s take none.
+println(try { a.eq() } catch e { e.kind })
+println(try { a.cmp() } catch e { e.kind })
+println(a.hash(9) == a.hash(9))
+println(a.to_s(1))
+# cmp orders what `<` orders and refuses the rest.
+@derive(Comparable)
+class Holder {
+  new(v) {
+    self.v = v
+  }
+}
+println(Holder.new(1).cmp(Holder.new(2)))
+println(Holder.new('b').cmp(Holder.new('a')))
+println(Holder.new(1.5).cmp(Holder.new(1.5)))
+println(try { Holder.new([1]).cmp(Holder.new([2])) } catch e { e.kind })
+println(try { Holder.new(1).cmp(Holder.new('a')) } catch e { e.kind })
+# Equal fields never reach the ordering.
+println(Holder.new([1]).cmp(Holder.new([1])))
+
+# --- Per-activation: a class declared in a loop derives afresh ------------
+mut n = 0
+for i in 0..3 {
+  @derive(Eq, Show)
+  class Loop {
+    new(x) {
+      self.x = x
+    }
+  }
+  let p = Loop.new(i)
+  println(p.to_s())
+  if p.eq(Loop.new(i)) {
+    n = n + 1
+  }
+}
+println(n)
+
+# --- Churn: derived methods over many instances --------------------------
+mut i = 0
+mut total = 0
+while i < 300 {
+  let p = Point.new(i, i + 1)
+  let q = Point.new(i, i + 1)
+  if p.eq(q) {
+    total = total + 1
+  }
+  if p == q {
+    total = total + 1
+  }
+  total = total + p.to_s().size()
+  if p.hash() == q.hash() {
+    total = total + 1
+  }
+  total = total + p.cmp(Point.new(i, i + 2))
+  i = i + 1
+}
+println(total)

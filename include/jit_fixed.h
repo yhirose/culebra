@@ -1235,6 +1235,37 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
   }
 }
 
+// The two receivers a property write never stores a slot on. `view.field = v`
+// on a @packable packed view writes straight into the shared backing bytes
+// (zero copy); a Shared.new view is immutable on every write surface. Neither
+// name ever becomes an own slot, so the write always reaches an uncached path
+// — the IC below stays cold for both, and the bytecode VM, which keeps no
+// per-site cache at all, comes through the entry after it. Returns true when
+// the write was handled here. Matches the interp's packed_view_set arm.
+inline bool _jit_prop_write_intercepted(JitObject* obj, const char* key,
+                                        int8_t tag, int64_t data,
+                                        int64_t line, int64_t col) {
+  if (_jit_is_packed_view(obj)) {
+    _jit_packed_view_set(obj, key, tag, data, line, col);
+    return true;
+  }
+  if (obj->is_shared_val) {
+    _culebra_value_release_impl(tag, data);
+    throw culebra::CulebraError("ImmutableError",
+                                "Shared values are immutable", line, col);
+  }
+  return false;
+}
+
+// Property write with no per-site inline cache — the bytecode VM's `o.k = v`.
+// Same interceptions the IC slow path performs, then the plain store.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_uncached(
+    JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
+    int64_t line, int64_t col, bool is_init) {
+  if (_jit_prop_write_intercepted(obj, key, tag, data, line, col)) return;
+  culebra_runtime_object_set(obj, key, mut, tag, data, line, col, is_init);
+}
+
 // Slow path for the property-write IC. Performs the full lookup
 // (mirrors `culebra_runtime_object_set`), then refreshes the IC so
 // subsequent writes at this site with the same starting shape hit
@@ -1245,21 +1276,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     JitObject* obj, const char* key, JitPropSetIC* ic, bool mut,
     int8_t tag, int64_t data, int64_t line, int64_t col, bool is_init) {
-  // `view.field = v`: write straight into the shared backing bytes (zero
-  // copy). Never populates the IC (the field is not an own slot), so every
-  // write reaches this slow path and is intercepted. Matches the interp.
-  if (_jit_is_packed_view(obj)) {
-    _jit_packed_view_set(obj, key, tag, data, line, col);
-    return;
-  }
-  // Shared.new views are immutable — every write surface throws. A
-  // data-field name never becomes an own slot, so writes always reach
-  // this slow path (the IC stays cold, like the packed view above).
-  if (obj->is_shared_val) {
-    _culebra_value_release_impl(tag, data);
-    throw culebra::CulebraError("ImmutableError",
-                                "Shared values are immutable", line, col);
-  }
+  if (_jit_prop_write_intercepted(obj, key, tag, data, line, col)) return;
   auto* before = obj->shape;
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
