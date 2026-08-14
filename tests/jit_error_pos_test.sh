@@ -478,6 +478,26 @@ fn mk() {
   P
 }
 println("declared")'
+# A getter with parameters is the same shape: the static pass reports it, so
+# an unreached declaration fails too.
+check_same "getter with params"        'println("before")
+class C {
+  new() { }
+  get g(a) {
+    a
+  }
+}'
+check_same "getter with params in fn"  'println("before")
+fn mk() {
+  class C {
+    new() { }
+    get g(a) {
+      a
+    }
+  }
+  C
+}
+println("declared")'
 
 # A declared return type is checked against the value the call produced, so
 # the violation reports at the CALL, not at the declaration — including the

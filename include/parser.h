@@ -849,19 +849,30 @@ inline void require_typed_packable_field(const MethodView& mv,
 }
 
 // A getter (`get name() { ... }`) takes no parameters — it is read as a
-// property, so there is no call site to pass arguments. Throws one canonical
-// SyntaxError shared by interp and JIT. Only call for method-form members
-// (mv.params non-null); getter fields are rejected earlier by the grammar's
-// `&IdentInitChar` lookahead never firing on `get x = ...` / `get x: T`.
+// property, so there is no call site to pass arguments. Getter fields are
+// rejected earlier by the grammar's `&IdentInitChar` lookahead never firing
+// on `get x = ...` / `get x: T`, which is why a null `params` counts as a
+// violation here.
+inline bool getter_takes_params(const MethodView& mv) {
+  return !(mv.params && mv.params->nodes.empty());
+}
+
+// The message is shared with the lint pass (which reports it pre-eval as a
+// Diagnostic rather than a throw) so the two can't drift.
+inline std::string getter_params_message(std::string_view name,
+                                         std::string_view class_name) {
+  return std::format("getter `{}` in class `{}` must take no parameters",
+                     name, class_name);
+}
+
+// Evaluator-side safety net: throws the same canonical SyntaxError.
 inline void require_getter_no_params(const MethodView& mv,
                                      std::string_view class_name) {
-  if (mv.params && mv.params->nodes.empty()) return;
-  throw CulebraError(
-      "SyntaxError",
-      std::format("getter `{}` in class `{}` must take no parameters",
-                  mv.name, class_name),
-      static_cast<long>(mv.name_line),
-      static_cast<long>(mv.name_col));
+  if (!getter_takes_params(mv)) return;
+  throw CulebraError("SyntaxError",
+                     getter_params_message(mv.name, class_name),
+                     static_cast<long>(mv.name_line),
+                     static_cast<long>(mv.name_col));
 }
 
 // First `...` spread element directly inside a sized array literal

@@ -532,6 +532,16 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
         bool is_field_member = mv.is_field || mv.is_typed_field;
+        // A getter is read as a property, so it has no call site to take
+        // arguments at — shared message with the evaluator-side safety net
+        // (require_getter_no_params).
+        if (mv.is_getter && culebra::getter_takes_params(mv)) {
+          diags_.push_back(Diagnostic{
+              "SyntaxError",
+              culebra::getter_params_message(mv.name, class_name),
+              static_cast<long>(mv.name_line),
+              static_cast<long>(mv.name_col), Severity::Error});
+        }
         // Static members live on the class object, instance members on
         // instances — each name space is checked independently. Constructors
         // (`new`) overload like methods — distinct signatures merge, an

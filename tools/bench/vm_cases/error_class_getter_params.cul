@@ -1,5 +1,5 @@
-# A getter takes no parameters — the shared member check every backend runs
-# while collecting the class's members.
+# A getter takes no parameters — reported by the static pass, so it fires
+# before anything runs on every backend.
 class E {
   new() { self.x = 1 }
   get bad(a) { a }
