@@ -10816,6 +10816,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // Proc.run) accept kwargs and stay first-class; only builtins()-table
     // methods — `[1,2].map` — are rejected as bare values.
     const Symbol* carried = obj.find_prop(name);
+    // A trait default is a method the conforming class inherits, so it ranks
+    // with the class's own methods: ahead of the dict builtins (`size`,
+    // `keys`, ...), the synthesized `parameters()`, and the duck-typed
+    // iterator set below. Only an own/class definition of the name outranks
+    // it. The JIT says the same through _jit_find_trait_default.
+    if (!carried) {
+      if (const Value* def = _find_trait_default(val, name)) {
+        return _wrap_method_with_this(*def, val, /*is_builtin=*/false);
+      }
+    }
     if (const Value* found = carried ? &carried->val
                                      : obj.find_builtin(name)) {
       const Value& prop = *found;
@@ -10862,19 +10872,6 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       int64_t col =
           recv && recv->column ? static_cast<long>(recv->column) : ast.column;
       throw_namespace_missing_member_at(obj.ns_name, name, line, col);
-    }
-
-    // Trait default-method fallback: if this instance's class doesn't
-    // define `name`, look for a registered trait that (a) has a default
-    // for `name` and (b) the instance structurally conforms to.
-    if (class_tag(val)) {
-      for (const auto& [trait_name, default_methods] : trait_default_impls_) {
-        auto it = default_methods.find(std::string(name));
-        if (it == default_methods.end()) continue;
-        if (type_matches(val, trait_name)) {
-          return _wrap_method_with_this(it->second, val, /*is_builtin=*/false);
-        }
-      }
     }
 
     // Auto-synthesized `parameters()` on class instances: walks the
@@ -10945,13 +10942,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // Trait default-method visibility: if a registered trait owns a
       // default named `name` and this instance conforms, the property
       // exists — block UFCS from hijacking via a same-named global fn.
-      if (class_tag(val)) {
-        for (const auto& [trait_name, default_methods] : trait_default_impls_) {
-          if (default_methods.find(std::string(name)) ==
-              default_methods.end()) continue;
-          if (type_matches(val, trait_name)) return true;
-        }
-      }
+      if (_find_trait_default(val, name)) return true;
     }
     return false;
   }
@@ -11298,6 +11289,21 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return _make_range(start, end, lay.inclusive, step);
   }
 
+  // The default body named `name` owned by a registered trait this value
+  // conforms to, or null. Gated on class_tag: a plain dict is not a
+  // conforming instance, it just happens to hold the right keys. One source
+  // for the three askers — the property read, the UFCS gate, and
+  // resolve_class_method — mirroring the JIT's _jit_find_trait_default.
+  const Value* _find_trait_default(const Value& val, std::string_view name) {
+    if (!class_tag(val)) return nullptr;
+    for (const auto& [trait_name, default_methods] : trait_default_impls_) {
+      auto it = default_methods.find(std::string(name));
+      if (it == default_methods.end()) continue;
+      if (type_matches(val, trait_name)) return &it->second;
+    }
+    return nullptr;
+  }
+
   // Resolve a method by name on a class instance, honoring both the
   // instance's own Function properties and inherited trait defaults
   // (mirrors eval_property's method lookup, which is where `__call__`
@@ -11313,12 +11319,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         sym && sym->val.type == Value::Function) {
       return _wrap_method_with_this(sym->val, val, /*is_builtin=*/false);
     }
-    for (const auto& [trait_name, default_methods] : trait_default_impls_) {
-      auto dit = default_methods.find(std::string(name));
-      if (dit == default_methods.end()) continue;
-      if (type_matches(val, trait_name)) {
-        return _wrap_method_with_this(dit->second, val, /*is_builtin=*/false);
-      }
+    if (const Value* def = _find_trait_default(val, name)) {
+      return _wrap_method_with_this(*def, val, /*is_builtin=*/false);
     }
     return std::nullopt;
   }

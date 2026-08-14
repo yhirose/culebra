@@ -10870,7 +10870,12 @@ struct JIT {
     auto classKey = get_or_create_global_str("class", ".params.ck");
     auto paramsKey = get_or_create_global_str("parameters", ".params.pk");
     auto hasClass = emit_object_has(objPtr, classKey, "params.has.class");
-    auto hasUser = emit_object_has(objPtr, paramsKey, "params.has.user");
+    // A trait default named `parameters` is an inherited method, so it wins
+    // over the synthesized walker exactly like a class's own method does.
+    auto hasUser = emit_call(
+        module_->getOrInsertFunction(rt::object_has_or_trait_default,
+                                     builder_.getInt1Ty(), ptrTy, ptrTy),
+        {objPtr, paramsKey}, "params.has.user");
     auto useAuto = builder_.CreateAnd(
         hasClass, builder_.CreateNot(hasUser), "params.use.auto");
     if (!load_free_fn) {
