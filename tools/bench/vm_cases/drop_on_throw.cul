@@ -1,0 +1,141 @@
+# A throw that escapes a frame releases the frame's slots on the way out, so
+# a value with a `drop` dies deterministically there — the frame cleanup
+# ladder, whose normal-path twin is the scope ladders the compiler emits.
+# Order: the frame's pending defers first, then its slots in reverse.
+
+class R {
+  n = 0
+  new(k) { self.n = k }
+  drop() { println('drop ' + to_string(self.n)) }
+}
+
+# --- Plain locals, innermost frame first ---------------------------------
+fn inner() {
+  let a = R.new(1)
+  let b = R.new(2)
+  throw 'x'
+}
+fn outer() {
+  let c = R.new(3)
+  inner()
+}
+println(try { outer() } catch e { 'caught' })
+
+# --- Defers run before the releases --------------------------------------
+println('--- defers')
+fn withdefer() {
+  let a = R.new(4)
+  defer { println('defer 1') }
+  let b = R.new(5)
+  defer { println('defer 2') }
+  throw 'x'
+}
+println(try { withdefer() } catch e { 'caught' })
+
+# The same order on the normal path: the body's locals are the frame's, so
+# they release after the frame's defers.
+println('--- normal path')
+fn normal() {
+  let a = R.new(6)
+  defer { println('defer normal') }
+  0
+}
+println(normal())
+
+# --- A parent's cascade, and an Array of them ----------------------------
+println('--- cascade')
+class Holder {
+  a = nil
+  b = nil
+  new(x, y) { self.a = x ; self.b = y }
+  drop() { println('drop holder') }
+}
+fn cascade() {
+  let h = Holder.new(R.new(7), R.new(8))
+  throw 'x'
+}
+println(try { cascade() } catch e { 'caught' })
+fn arr() {
+  let xs = [R.new(9), R.new(10)]
+  throw 'x'
+}
+println(try { arr() } catch e { 'caught' })
+
+# --- Nested blocks and loop bodies ---------------------------------------
+println('--- scopes')
+fn blocks() {
+  let o = R.new(11)
+  {
+    let i = R.new(12)
+    throw 'x'
+  }
+}
+println(try { blocks() } catch e { 'caught' })
+fn loops() {
+  for i in 0..3 {
+    let a = R.new(20 + i)
+    if i == 1 { throw 'x' }
+  }
+}
+println(try { loops() } catch e { 'caught' })
+
+# --- A handler that re-throws: its ladder, then the frame's --------------
+println('--- rethrow')
+fn rethrow() {
+  let o = R.new(30)
+  try {
+    let i = R.new(31)
+    throw 'x'
+  } catch e {
+    println('caught inside')
+    throw 'again'
+  }
+}
+println(try { rethrow() } catch e { 'caught outside' })
+
+# --- A method frame: the receiver is a slot like any other ---------------
+println('--- receiver')
+class M {
+  r = nil
+  new() { self.r = R.new(40) }
+  boom() {
+    let local = R.new(41)
+    throw 'x'
+  }
+  drop() { println('drop instance') }
+}
+fn usemethod() {
+  M.new().boom()
+}
+println(try { usemethod() } catch e { 'caught' })
+
+# --- A constructor that fails after allocating --------------------------
+println('--- ctor')
+class D {
+  x = 1
+  new(a: Long) { self.x = a }
+  drop() { println('drop D') }
+}
+println(try { D.new() } catch e { e.kind })
+println(try { D.new('x') } catch e { e.kind })
+
+# --- Churn: the ladder runs on every one of these ------------------------
+# A counting drop rather than a printing one — the interest is that the
+# releases happen every time, not the transcript.
+mut dropped = 0
+class Q {
+  n = 0
+  new(k) { self.n = k }
+  drop() { dropped = dropped + 1 }
+}
+fn churn() {
+  let a = Q.new(1)
+  let b = [Q.new(2), Q.new(3)]
+  throw 'x'
+}
+mut caught = 0
+for i in 0..2000 {
+  caught += try { churn() ; 0 } catch e { 1 }
+}
+println([caught, dropped])
+println('drop_on_throw OK')

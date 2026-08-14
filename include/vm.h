@@ -1421,6 +1421,11 @@ struct Chunk {
   // chunk, like the JIT module's globals.
   std::vector<std::unique_ptr<char[]>> str_arena;
   int32_t num_slots = 0;
+  // Per-slot: does this slot own a cell (CellRelease) rather than a plain
+  // value (Release)? The frame's unwind ladder reads it, the way a region
+  // handler's compiled ladder chooses statically — sound because owned cell
+  // slots are pinned for the chunk's lifetime.
+  std::vector<uint8_t> slot_is_cell;
   std::vector<PosEntry> positions;
   std::vector<std::string> slot_names;  // debug table, always emitted
   // Function-chunk metadata (chunk 0 — the module top level — has none).
@@ -1609,7 +1614,7 @@ class Compiler {
       main.pop_scope();
     }
     main.emit(Op::Halt);
-    main.chunk_.num_slots = main.high_water_;
+    main.finalize_chunk();
     prog.chunks[0] = std::move(main.chunk_);
     return prog;
   }
@@ -1835,6 +1840,18 @@ class Compiler {
     chunk_.str_arena.push_back(std::move(buf));
     it->second = kconst({TAG_STRING, reinterpret_cast<int64_t>(data)});
     return it->second;
+  }
+
+  // Freeze the frame layout the runtime needs: the slot count, and the
+  // per-slot cell flag the unwind ladder picks its release op from. The
+  // choice is static because owned cell slots are pinned (see pin_floor_),
+  // exactly as a region handler's ladder relies on.
+  void finalize_chunk() {
+    chunk_.num_slots = high_water_;
+    chunk_.slot_is_cell.assign(static_cast<size_t>(high_water_), 0);
+    for (int32_t s = 0; s < high_water_ &&
+                        s < static_cast<int32_t>(slot_cell_.size()); ++s)
+      chunk_.slot_is_cell[s] = slot_cell_[s] ? 1 : 0;
   }
 
   void push_scope() { scopes_.push_back({{}, next_slot_}); }
@@ -2784,7 +2801,7 @@ class Compiler {
     }  // the sweep drops the three borrowed reads
     fc.pop_scope();
     fc.emit(Op::Ret, rv);
-    fc.chunk_.num_slots = fc.high_water_;
+    fc.finalize_chunk();
     prog_.chunks[idx] = std::move(fc.chunk_);
     return idx;
   }
@@ -3139,7 +3156,7 @@ class Compiler {
       fc.emit(Op::DeferRunTo, fc.frame_defer_mark_);
     fc.pop_scope();
     fc.emit(Op::Ret, rv);
-    fc.chunk_.num_slots = fc.high_water_;
+    fc.finalize_chunk();
     prog_.chunks[idx] = std::move(fc.chunk_);
     return idx;
   }
@@ -5194,19 +5211,21 @@ struct Exec {
             break;
           }
         if (!r) {
-          // No region: run the frame's pending defers before unwinding out
-          // (the observable slice of the JIT's frame cleanup ladder; slot
-          // releases stay on the GC backstop). Ladder order around the run:
-          // restore this frame's depth first — the unwound callees never ran
-          // their `leave`, and a defer body's own calls must count from
-          // here — then uncount the frame. The tag check is belt-and-
-          // braces: DeferMark is the chunk's first instruction.
+          // No region: the JIT's frame cleanup ladder, in its order. Restore
+          // this frame's depth first — the unwound callees never ran their
+          // `leave`, and the defers (and any `drop` the releases fire) must
+          // count from here — then the pending defers, then the frame's own
+          // slots in reverse order, and finally uncount the frame on the way
+          // out. Every restore ignores the "never entered" sentinel, and the
+          // tag check is belt-and-braces: DeferMark is the chunk's first
+          // instruction.
+          culebra_runtime_recursion_restore(frame_depth);
           if (c.defer_mark_slot >= 0 &&
-              regs[c.defer_mark_slot].tag == TAG_LONG) {
-            culebra_runtime_recursion_restore(frame_depth);
+              regs[c.defer_mark_slot].tag == TAG_LONG)
             culebra_runtime_defer_run_to(regs[c.defer_mark_slot].data);
-            if (chunk_idx != 0)
-              culebra_runtime_recursion_restore(frame_depth - 1);
+          if (chunk_idx != 0) {
+            release_frame_slots(c, regs);
+            culebra_runtime_recursion_restore(frame_depth - 1);
           }
           throw;
         }
@@ -5218,6 +5237,25 @@ struct Exec {
                                         culebra_runtime_get_thrown_data()};
         pc = static_cast<size_t>(r->handler);
       }
+    }
+  }
+
+  // The frame's release ladder for a throw that no region caught: every
+  // slot in reverse order, the op chosen per slot the way a region
+  // handler's compiled ladder chooses it. Releasing the whole frame is
+  // sound for the same reason the region ladder releases its whole range —
+  // under the borrow operand contract a throw leaves every register
+  // frame-owned — and Release is destructive and nil-safe, so a slot an
+  // inner handler already emptied costs one no-op.
+  static void release_frame_slots(const Chunk& c, JitValue* regs) {
+    for (int32_t s = c.num_slots - 1; s >= 0; --s) {
+      if (s < static_cast<int32_t>(c.slot_is_cell.size()) && c.slot_is_cell[s])
+        culebra_runtime_cell_release(
+            reinterpret_cast<JitCell*>(regs[s].data));
+      else
+        culebra_runtime_value_release(static_cast<int8_t>(regs[s].tag),
+                                      regs[s].data);
+      regs[s] = JitValue{TAG_NIL, 0};
     }
   }
 
@@ -6737,7 +6775,10 @@ struct Lowering {
     auto i64Ty = b.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(j.ctx_, 0);
     bool frame_defers = c.defer_mark_slot >= 0;
-    if (!c.eh.empty() || frame_defers)
+    // A function chunk always carries a frame cleanup pad now (it releases
+    // the frame's slots on the way out), so it always needs a personality.
+    bool frame_pad_wanted = chunk_idx != 0;
+    if (!c.eh.empty() || frame_defers || frame_pad_wanted)
       fn->setPersonalityFn(j.get_personality_fn());
     b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fn));
     // Per-LLVM-function JIT state, which the AST path resets through
@@ -6885,7 +6926,7 @@ struct Lowering {
     // "never entered" sentinel keeps every restore a no-op until then, so a
     // throw out of a default expression leaves the count alone.
     llvm::Value* depthSlot = nullptr;
-    if (!c.eh.empty() || frame_defers) {
+    if (!c.eh.empty() || frame_defers || frame_pad_wanted) {
       IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
       depthSlot = eb.CreateAlloca(i64Ty, nullptr, "eh.depth");
       llvm::Value* depth0 = b.getInt64(-1);
@@ -6951,13 +6992,13 @@ struct Lowering {
     std::vector<BasicBlock*> lpads(c.eh.size());
     for (size_t k = 0; k < c.eh.size(); ++k)
       lpads[k] = BasicBlock::Create(j.ctx_, std::format("eh.lpad.{}", k), fn);
-    // Frame-level cleanup pad (chunks with defers only): a throw outside
-    // every region runs the frame's pending defers before unwinding out —
-    // the observable slice of the JIT's frame cleanup ladder; slot releases
-    // stay on the GC backstop, like the executor's catch-all.
+    // Frame-level cleanup pad: a throw outside every region runs the frame's
+    // pending defers and then releases the frame's own slots before
+    // unwinding out — the JIT's frame cleanup ladder, and the twin of
+    // Exec::run_frame's catch-all.
     BasicBlock* framePad =
-        frame_defers ? BasicBlock::Create(j.ctx_, "vm.frame.pad", fn)
-                     : nullptr;
+        frame_pad_wanted ? BasicBlock::Create(j.ctx_, "vm.frame.pad", fn)
+                         : nullptr;
     // The JitFn hand-off, shared by Call / CallM and BMeth's user-method arm:
     // the TAG_FUNC gate, the arg slab, and the ABI call. `selfSlot < 0` is a
     // plain call (TAG_NO_SELF rides the receiver pair). The callee consumes
@@ -9578,13 +9619,25 @@ struct Lowering {
             rt::recursion_restore, b.getVoidTy(), i64Ty);
         auto d = b.CreateLoad(i64Ty, depthSlot, "rec.d");
         b.CreateCall(restoreFn, {d});
-        auto markV = b.CreateLoad(j.valueType_, slots[c.defer_mark_slot]);
-        b.CreateCall(j.module_->getFunction(rt::defer_run_to),
-                     {j.extract_data(markV)});
-        if (chunk_idx != 0) {
-          b.CreateCall(restoreFn,
-                       {b.CreateSub(d, b.getInt64(1), "rec.d1")});
+        if (frame_defers) {
+          auto markV = b.CreateLoad(j.valueType_, slots[c.defer_mark_slot]);
+          b.CreateCall(j.module_->getFunction(rt::defer_run_to),
+                       {j.extract_data(markV)});
         }
+        // The frame's own slots, reverse order — Exec::release_frame_slots,
+        // and the descent chain of the JIT's ladder. A `drop` it fires runs
+        // at this frame's restored depth, before the frame is uncounted.
+        for (int32_t s = c.num_slots - 1; s >= 0; --s) {
+          if (s < static_cast<int32_t>(c.slot_is_cell.size()) &&
+              c.slot_is_cell[s])
+            j.emit_cell_release(
+                b.CreateIntToPtr(j.extract_data(load_slot(s)), ptrTy));
+          else
+            j.emit_value_release(load_slot(s));
+          b.CreateStore(j.make_nil(), slots[s]);
+        }
+        b.CreateCall(restoreFn,
+                     {b.CreateSub(d, b.getInt64(1), "rec.d1")});
       }
     }
   }
