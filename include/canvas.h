@@ -952,10 +952,11 @@ EM_JS(int, _wasm_canvas_buttons, (), { return self.__canvasButtons || 0; });
 EM_JS(int, _wasm_canvas_mouse_x, (), { return self.__canvasMouseX || 0; });
 EM_JS(int, _wasm_canvas_mouse_y, (), { return self.__canvasMouseY || 0; });
 EM_JS(int, _wasm_canvas_mouse_buttons, (), { return self.__canvasMouseButtons || 0; });
-// How far the page is stretching the framebuffer, kept current by app.js's
-// ResizeObserver on the canvas pane. Missing until the page has measured
-// itself (and in a hidden tab, which has no box to measure), so it defaults to
-// 1.0 — the screen layer then matches the framebuffer instead of vanishing.
+// How far the page is stretching the framebuffer, in device pixels rather than
+// CSS ones, kept current by app.js's ResizeObserver on the canvas pane. Missing
+// until the page has measured itself (and in a hidden tab, which has no box to
+// measure), so it defaults to 1.0 — the screen layer then matches the
+// framebuffer instead of vanishing.
 EM_JS(double, _wasm_canvas_screen_scale, (), {
   return self.__canvasScreenScale || 1.0;
 });

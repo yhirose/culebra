@@ -59,10 +59,10 @@ const gameCanvas = $("game");
 const gctx = gameCanvas.getContext("2d");
 const canvasPane = $("canvas-pane");
 // The screen layer over the framebuffer: Font.draw_screen's text, rasterized
-// wasm-side at this pane's CSS size rather than the framebuffer's, so its
-// antialiased edges survive the pixelated upscale. (CSS pixels, not device
-// ones — devicePixelRatio would multiply the per-frame postMessage copy by
-// four, which the native backend gets for free but this does not.)
+// wasm-side at the size this pane is actually presented at rather than the
+// framebuffer's, so its antialiased edges survive the pixelated upscale.
+// Device pixels, not CSS ones: on a 2x display a CSS-sized layer is itself
+// upscaled by the compositor, which is the same blur one step further down.
 const canvasStack = $("canvas-stack");
 const textCanvas = $("game-text");
 const tctx = textCanvas.getContext("2d");
@@ -76,7 +76,7 @@ let overlayPainted = false;  // something is on the overlay, so it needs clearin
 // layer to nothing.
 function sendScreenScale() {
   if (!worker || !gameCanvas.width) return;
-  const shown = gameCanvas.getBoundingClientRect().width;
+  const shown = gameCanvas.getBoundingClientRect().width * (devicePixelRatio || 1);
   if (shown <= 0) return;
   worker.postMessage({ type: "canvasScreenScale", scale: shown / gameCanvas.width });
 }
@@ -86,6 +86,17 @@ function sendScreenScale() {
 if (typeof ResizeObserver !== "undefined") {
   new ResizeObserver(sendScreenScale).observe(gameCanvas);
 }
+// ...and through a change of devicePixelRatio, which the observer above cannot
+// see: dragging the window to a display of another density leaves every CSS box
+// exactly as it was. The query names the current ratio, so it fires once when
+// that stops being true and is re-armed against the new one.
+function watchPixelRatio() {
+  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener("change", () => {
+    sendScreenScale();
+    watchPixelRatio();
+  }, { once: true });
+}
+watchPixelRatio();
 
 // --- tabs --------------------------------------------------------------
 

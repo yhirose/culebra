@@ -4823,11 +4823,11 @@ Two things follow from the screen layer being separate from the framebuffer:
 
 A native window rasterizes at the display's real pixel density, not the
 window's nominal size: on a 2x (Retina/HiDPI) screen a 640x380 window is
-1280x760 actual pixels, and that is what the text is drawn at. In the
-Playground it follows the pane's CSS size, so text is drawn at whatever width
-the canvas is displayed at rather than at the device's pixel density. Where
-there is no display to scale into — headless, or a window that could not open
-— the scale is 1 and `draw_screen` lands exactly where `draw` would.
+1280x760 actual pixels, and that is what the text is drawn at. The Playground
+does the same, from the width the pane is displayed at times the browser's
+device pixel ratio. Where there is no display to scale into — headless, or a
+window that could not open — the scale is 1 and `draw_screen` lands exactly
+where `draw` would.
 
 ### Input
 
