@@ -1244,9 +1244,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
 // the write was handled here. Matches the interp's packed_view_set arm.
 inline bool _jit_prop_write_intercepted(JitObject* obj, const char* key,
                                         int8_t tag, int64_t data,
-                                        int64_t line, int64_t col) {
+                                        int64_t line, int64_t col,
+                                        int64_t mem_line, int64_t mem_col) {
   if (_jit_is_packed_view(obj)) {
-    _jit_packed_view_set(obj, key, tag, data, line, col);
+    // A packed field's own errors report at the member (the interp's
+    // packed_view_set takes the DOT node's position); everything else on a
+    // property write reports at the statement.
+    _jit_packed_view_set(obj, key, tag, data, mem_line ? mem_line : line,
+                         mem_line ? mem_col : col);
     return true;
   }
   if (obj->is_shared_val) {
@@ -1261,8 +1266,11 @@ inline bool _jit_prop_write_intercepted(JitObject* obj, const char* key,
 // Same interceptions the IC slow path performs, then the plain store.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_uncached(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
-    int64_t line, int64_t col, bool is_init) {
-  if (_jit_prop_write_intercepted(obj, key, tag, data, line, col)) return;
+    int64_t line, int64_t col, bool is_init, int64_t mem_line,
+    int64_t mem_col) {
+  if (_jit_prop_write_intercepted(obj, key, tag, data, line, col, mem_line,
+                                  mem_col))
+    return;
   culebra_runtime_object_set(obj, key, mut, tag, data, line, col, is_init);
 }
 
@@ -1275,8 +1283,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_uncached(
 // permanent miss for objects that always start out with no shape.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     JitObject* obj, const char* key, JitPropSetIC* ic, bool mut,
-    int8_t tag, int64_t data, int64_t line, int64_t col, bool is_init) {
-  if (_jit_prop_write_intercepted(obj, key, tag, data, line, col)) return;
+    int8_t tag, int64_t data, int64_t line, int64_t col, bool is_init,
+    int64_t mem_line, int64_t mem_col) {
+  if (_jit_prop_write_intercepted(obj, key, tag, data, line, col, mem_line,
+                                  mem_col))
+    return;
   auto* before = obj->shape;
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {

@@ -643,7 +643,8 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
       // expression result.
       emit_value_retain(to_store);
       emit_object_set(objPtr, name, mut, extract_tag(to_store),
-                      extract_data(to_store));
+                      extract_data(to_store), /*is_init=*/false,
+                      &finalPostfix);
       emit_value_release(lval);  // release the lvalue's ref
       return own(to_store);
     }

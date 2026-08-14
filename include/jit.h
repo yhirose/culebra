@@ -4542,9 +4542,14 @@ struct JIT {
   // scan, no `transition_add` lookup). Miss → slow helper that does
   // the full work and refills the IC. See `JitPropSetIC` and
   // `culebra_runtime_object_set_fast` / `_set_ic`.
+  // `member_at`, when non-null, is the member token of a user-written
+  // `recv.k = v`: a packed field's own error reports there (the interp's
+  // packed_view_set anchor), while every other error on the write keeps the
+  // statement position.
   void emit_object_set(llvm::Value* objPtr, const std::string& name,
                        bool mut, llvm::Value* tag, llvm::Value* data,
-                       bool is_init = false) {
+                       bool is_init = false,
+                       const peg::Ast* member_at = nullptr) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
@@ -4616,10 +4621,12 @@ struct JIT {
         module_->getOrInsertFunction(
             rt::object_set_ic, builder_.getVoidTy(), ptrTy, ptrTy, ptrTy,
             builder_.getInt1Ty(), i8Ty, i64Ty, i64Ty, i64Ty,
-            builder_.getInt1Ty()),
+            builder_.getInt1Ty(), i64Ty, i64Ty),
         {objPtr, keyPtr, icGlobal, builder_.getInt1(mut), tag, data,
          current_line_val(), current_column_val(),
-         builder_.getInt1(is_init)});
+         builder_.getInt1(is_init),
+         builder_.getInt64(member_at ? member_at->line : 0),
+         builder_.getInt64(member_at ? member_at->column : 0)});
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);

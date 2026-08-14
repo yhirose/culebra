@@ -204,7 +204,9 @@ enum class Op : uint8_t {
                // this instruction's position (the assignment statement)
                // except the well-known contract on insert, which is
                // positionless — compile emits SetOpPos right before, for
-               // those four names only (the ObjectSet literal's condition).
+               // those four names only (the ObjectSet literal's condition) —
+               // and a packed field's own error, which anchors at the DOT
+               // node (packed line<<32|col in consts[d], as PropWr's miss).
   PropWr,      // regs[a] = property consts[c] of regs[b], the write-context
                // read of `o.k op= v`: receiver gate as PropSet, then the
                // Shared-view ImmutableError (ahead of the existence check,
@@ -3105,6 +3107,8 @@ class Compiler {
   void emit_prop_set(const peg::Ast& dot, int32_t recv, int32_t val,
                      bool ns_check) {
     int32_t name = kconst_str(dot.token);
+    int32_t dotpos = kconst_long((static_cast<int64_t>(dot.line) << 32) |
+                                 static_cast<int64_t>(dot.column));
     if (ns_check) {
       StampGuard dp(*this, dot);
       emit(Op::NsWrChk, recv, 0, name);
@@ -3112,7 +3116,7 @@ class Compiler {
     // The insert path's well-known contract throw is positionless; publish
     // the statement position for those four names (compile_object's rule).
     if (culebra::is_well_known_prop(dot.token)) emit(Op::SetOpPos);
-    emit(Op::PropSet, recv, val, name);
+    emit(Op::PropSet, recv, val, name, dotpos);
   }
 
   // `(a, p[0], o.k) = e` — parallel assignment. The RHS evaluates once and
@@ -5645,11 +5649,12 @@ struct Exec {
           // The retain feeds object_set's consuming store; the register
           // keeps its +1 so the assignment expression reads it afterwards.
           culebra_runtime_value_retain(static_cast<int8_t>(val.tag), val.data);
+          int64_t dotpk = c.consts[in.d].data;
           culebra_runtime_object_set_uncached(
               reinterpret_cast<JitObject*>(recv.data),
               reinterpret_cast<const char*>(c.consts[in.c].data),
               /*mut=*/true, static_cast<int8_t>(val.tag), val.data, line, col,
-              /*is_init=*/false);
+              /*is_init=*/false, dotpk >> 32, dotpk & 0xffffffff);
           ++pc;
           break;
         }
@@ -8338,12 +8343,13 @@ struct Lowering {
               j.module_->getOrInsertFunction(
                   rt::object_set_uncached, b.getVoidTy(), ptrTy, ptrTy,
                   b.getInt1Ty(), b.getInt8Ty(), i64Ty, i64Ty, i64Ty,
-                  b.getInt1Ty()),
+                  b.getInt1Ty(), i64Ty, i64Ty),
               {b.CreateIntToPtr(j.extract_data(recv), ptrTy),
                j.get_or_create_global_str(nm, ".vm.propname"),
                b.getInt1(true), j.extract_tag(val), j.extract_data(val),
                j.current_line_val(), j.current_column_val(),
-               b.getInt1(false)});
+               b.getInt1(false), b.getInt64(c.consts[in.d].data >> 32),
+               b.getInt64(c.consts[in.d].data & 0xffffffff)});
           break;
         }
         case Op::PropWr: {
