@@ -181,7 +181,13 @@ inline JIT::Owned JIT::compile_class_decl(const peg::Ast& ast) {
     llvm::Value* nameArrayPtr;
     size_t n_methods = method_vals.size();
     if (n_methods > 0) {
-      methodSlab = builder_.CreateAlloca(
+      // Entry block, not here: a `class` declared inside a loop runs this
+      // alloca on every iteration, and a stack that only unwinds at frame
+      // exit overflows (~500k rounds on an 8 MB stack).
+      auto fn = builder_.GetInsertBlock()->getParent();
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      methodSlab = entryB.CreateAlloca(
           valueType_, builder_.getInt64(static_cast<int64_t>(n_methods)),
           "meta.methods");
       for (size_t i = 0; i < n_methods; i++) {

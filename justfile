@@ -801,6 +801,15 @@ _run-tests BACKEND:
     # runs off the binary alone (tools/check_eh_balance.sh).
     run_eh_balance() { bash tools/check_eh_balance.sh "$BIN"; }
 
+    # Entry-block alloca discipline: a scratch slot emitted into an ordinary
+    # block is a dynamic stack bump the frame never gives back, so a loop
+    # containing it eventually overflows the stack (two shipped crashes came
+    # from exactly that — tools/check_alloca_discipline.sh). Reads emitted IR
+    # for both lanes, so it runs off the binary alone.
+    run_alloca_discipline() {
+        bash tools/check_alloca_discipline.sh "$BIN"
+    }
+
     # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
     # creation, so neither the driver nor an AOT binary may carry it in
     # DT_NEEDED or export the forwarders (tools/check_webview_dynload.sh).
@@ -834,6 +843,7 @@ _run-tests BACKEND:
         run_source_ratchets
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
+        phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
@@ -864,6 +874,7 @@ _run-tests BACKEND:
         run_source_ratchets
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
+        phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "culebra-test self"; run_culebra_test_self
@@ -898,6 +909,7 @@ _run-tests BACKEND:
       ci-light)
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
+        phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends

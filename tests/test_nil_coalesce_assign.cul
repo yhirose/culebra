@@ -30,4 +30,34 @@ mut s = nil
 s ??= "hi"
 assert_eq(s, "hi")
 
+// Compound and `??=` index assignment inside a loop must not grow the frame
+// per iteration: the read-back out-params belong in the function's entry
+// block. Twenty-four sites × 25k rounds is ~5 MB of stack if any one of them
+// leaks a frame slot per pass — the JIT used to segfault on this shape.
+fn hot_index_writes() {
+  mut a = [0, nil]
+  mut i = 0
+  while i < 25000 {
+    a[0] += 1
+    a[0] += 1
+    a[0] += 1
+    a[0] += 1
+    a[0] += 1
+    a[0] += 1
+    a[0] += 1
+    a[0] += 1
+    a[1] ??= 5
+    a[1] = nil
+    a[1] ??= 5
+    a[1] = nil
+    a[1] ??= 5
+    a[1] = nil
+    a[1] ??= 5
+    a[1] = nil
+    i = i + 1
+  }
+  a[0]
+}
+assert_eq(hot_index_writes(), 200000)
+
 IO.inspect("test_nil_coalesce_assign OK")

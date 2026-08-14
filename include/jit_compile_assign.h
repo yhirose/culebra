@@ -114,6 +114,12 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
       auto ptrTy = llvm::PointerType::get(ctx_, 0);
       auto tag = extract_tag(lval);
       auto fn = builder_.GetInsertBlock()->getParent();
+      // The out-param slots for every read-back below live in the entry
+      // block: a compound or `??=` index assignment is ordinary loop-body
+      // code, and an alloca left in place would grow the frame once per
+      // iteration until the stack runs out (~2M rounds on 8 MB).
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
       if (nil_coalesce) {
         // `lval[k] ??= v`: own dispatch (Array element / Object key) —
         // `rval` is null here (the RHS is compiled lazily below, only on
@@ -194,10 +200,10 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
           auto idxVal = compile(finalPostfix).consume();
           auto idx = value_to_long(idxVal);
           guard_write_index(idx);
-          auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(), nullptr,
-                                              "ncidx.out.tag");
-          auto outData = builder_.CreateAlloca(builder_.getInt64Ty(), nullptr,
-                                               "ncidx.out.data");
+          auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr,
+                                            "ncidx.out.tag");
+          auto outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                             "ncidx.out.data");
           emit_call(
               module_->getOrInsertFunction(
                   rt::array_get, builder_.getVoidTy(), ptrTy,
@@ -247,10 +253,10 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
           auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
           Owned keyO = compile(finalPostfix);
           emit_value_retain(keyO.borrow());
-          auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(), nullptr,
-                                              "ncobj.out.tag");
-          auto outData = builder_.CreateAlloca(builder_.getInt64Ty(), nullptr,
-                                               "ncobj.out.data");
+          auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr,
+                                            "ncobj.out.tag");
+          auto outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                             "ncobj.out.data");
           auto found = emit_call(
               module_->getOrInsertFunction(
                   rt::object_get_for_coalesce, builder_.getInt1Ty(), ptrTy,
@@ -339,10 +345,10 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
       llvm::Value* to_store_arr = rval;
       if (compound) {
         guard_write_index(idx);
-        auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(),
-                                            nullptr, "cidx.out.tag");
-        auto outData = builder_.CreateAlloca(builder_.getInt64Ty(),
-                                             nullptr, "cidx.out.data");
+        auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(),
+                                          nullptr, "cidx.out.tag");
+        auto outData = entryB.CreateAlloca(builder_.getInt64Ty(),
+                                           nullptr, "cidx.out.data");
         emit_call(
             module_->getOrInsertFunction(
                 rt::array_get, builder_.getVoidTy(), ptrTy,
@@ -398,10 +404,10 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
         // separate +1 (the minted ref feeds object_get_any; keyO keeps
         // the object_set_any ref).
         emit_value_retain(keyO.borrow());
-        auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(),
-                                            nullptr, "cobj.out.tag");
-        auto outData = builder_.CreateAlloca(builder_.getInt64Ty(),
-                                             nullptr, "cobj.out.data");
+        auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(),
+                                          nullptr, "cobj.out.tag");
+        auto outData = entryB.CreateAlloca(builder_.getInt64Ty(),
+                                           nullptr, "cobj.out.data");
         emit_call(
             module_->getOrInsertFunction(
                 rt::object_get_any, builder_.getVoidTy(), ptrTy,
