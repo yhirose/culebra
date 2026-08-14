@@ -191,4 +191,30 @@ let bumped = Parallel.map([Counter.new(100), Counter.new(200)], |c| c.bump(5))
 assert_eq(bumped[0], 105)
 assert_eq(bumped[1], 205)
 
+# --- each execution of a class declaration owns its overload tables ---
+# Two activations of the same `class` build separate dispatchers, so an
+# instance from the first keeps the bodies (and captures) it was built with.
+fn spawn(tag) {
+  class Tagged {
+    m(a) {
+      "{tag}-one"
+    }
+    m(a, b) {
+      "{tag}-two"
+    }
+    static s(a) {
+      "{tag}-s1"
+    }
+    static s(a, b) {
+      "{tag}-s2"
+    }
+  }
+  Tagged
+}
+let first = spawn("A")
+let second = spawn("B")
+assert_eq([first.new().m(1), first.new().m(1, 2)], ['A-one', 'A-two'])
+assert_eq([first.s(1), first.s(1, 2)], ['A-s1', 'A-s2'])
+assert_eq([second.new().m(1), second.s(1, 2)], ['B-one', 'B-s2'])
+
 inspect("method multidispatch OK")

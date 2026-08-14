@@ -1030,6 +1030,7 @@ inline constexpr auto class_parameters_walk =
     "culebra_runtime_class_parameters_walk";
 inline constexpr auto multifn_register_and_install =
     "culebra_runtime_multifn_register_and_install";
+inline constexpr auto multifn_self        = "culebra_runtime_multifn_self";
 inline constexpr auto arity_error         = "culebra_runtime_arity_error";
 inline constexpr auto arity_missing       = "culebra_runtime_arity_missing";
 inline constexpr auto args_slice_to_array =

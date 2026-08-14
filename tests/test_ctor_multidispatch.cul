@@ -208,4 +208,22 @@ class Cell<T> {
 assert_eq(Cell(7).kind, "one")
 assert_eq(Cell(1, 2).kind, "two")
 
+# A re-run class declaration gets its own `new` dispatcher, so the ctor
+# bodies keep the activation's captures rather than the latest run's.
+fn spawn_point(tag) {
+  class Tagged {
+    new(a) {
+      self.v = "{tag}-one"
+    }
+    new(a, b) {
+      self.v = "{tag}-two"
+    }
+  }
+  Tagged
+}
+let early = spawn_point("A")
+let late = spawn_point("B")
+assert_eq([early(1).v, early(1, 2).v], ['A-one', 'A-two'])
+assert_eq([late(1).v, late(1, 2).v], ['B-one', 'B-two'])
+
 inspect("ctor multidispatch OK")

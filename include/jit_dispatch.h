@@ -590,8 +590,9 @@ _jit_multimethods() {
 }
 
 // Recover the user-facing name from a multimethod registry key. Keys are
-// lexically scoped as `name\x1f<uid>` (see JIT::multifn_scope_key); the
-// suffix is internal, so diagnostics strip it back to the source name.
+// `name\x1f<uid>`, one per dispatcher (see
+// culebra_runtime_multifn_register_and_install); the suffix is internal, so
+// diagnostics strip it back to the source name.
 inline std::string_view _jit_multifn_display(std::string_view key) {
   auto sep = key.find('\x1f');
   return sep == std::string_view::npos ? key : key.substr(0, sep);
@@ -724,6 +725,31 @@ inline std::map<JitClosure*, std::string>&
 _jit_multifn_dispatcher_names() {
   return culebra::runtime_substate<std::map<JitClosure*, std::string>>(
       culebra::kSlotJitMultifnNames);
+}
+
+// Non-owning body→dispatcher uplinks: the multifn self-recursion handle.
+// A body's only +1 lives in its dispatcher's table entry, so the body can
+// never outlive its dispatcher — the classic parent pointer. Entries are
+// maintained wherever the table's are: registration inserts (and drops a
+// displaced body's), _jit_multifn_forget clears the dead dispatcher's.
+inline std::map<JitClosure*, JitClosure*>& _jit_multifn_body_uplinks() {
+  return culebra::runtime_substate<std::map<JitClosure*, JitClosure*>>(
+      culebra::kSlotJitMultifnUplinks);
+}
+
+// The self-handle read a multifn body's prologue emits: the dispatcher
+// this body was registered into, +1 for the frame (alive for the whole
+// call — the caller invoked us through it). A miss — a body handle that
+// escaped via `fn` and outlived its dispatcher — returns the unbound
+// sentinel, which the binding's read guard turns into the NameError an
+// undeclared name gets.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
+culebra_runtime_multifn_self(JitClosure* body) {
+  auto& uplinks = _jit_multifn_body_uplinks();
+  auto it = uplinks.find(body);
+  if (it == uplinks.end()) return JitValue{TAG_NO_SELF, 0};
+  it->second->refcount++;
+  return JitValue{TAG_FUNC, reinterpret_cast<int64_t>(it->second)};
 }
 
 // Function-value introspection. `cls` is a JitClosure*; `prop` is
@@ -893,6 +919,11 @@ inline void _jit_multifn_forget(JitClosure* c, bool release_bodies) {
   // backstop's finalize pass.)
   std::vector<JitMultiMethodEntry> doomed;
   if (auto mit = tbl.find(nit->second); mit != tbl.end()) {
+    // The bodies' self-recursion uplinks die with the table entry on both
+    // paths — the sweep reclaims the bodies through their own entries, and
+    // a stale uplink would dangle at the raw-pointer layer.
+    for (auto& e : mit->second)
+      if (e.body) _jit_multifn_body_uplinks().erase(e.body);
     if (release_bodies) doomed = std::move(mit->second);
     tbl.erase(mit);
   }
@@ -1300,20 +1331,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_callback_arg_site(
   _jit_callback_arg_col = col;
 }
 
-// Append a method to the named multimethod table (replacing an entry
-// with an identical param-type sequence — re-declaration semantics).
-// Returns the dispatcher closure for `name`, creating it on first
-// call and caching it across re-decls. Caller takes a +1 reference
-// (the env binding) and is responsible for the matching release.
+// Append a method to a multimethod table (replacing an entry with an
+// identical param-type sequence — same-declaration overload semantics).
+// `into` is the dispatcher this declaration already installed earlier in
+// the SAME activation (a preceding same-scope overload, or the previous
+// arm of one class member's overload set); passing null mints a fresh
+// dispatcher over a fresh table. That is the interp's rule (has_own on
+// the declaring env frame): a decl re-run in a new activation — a `fn`
+// inside a loop or a re-entered function, a class declaration executed
+// twice — gets its own table, so its bodies keep that activation's
+// captures instead of being displaced by the next run. The registry key
+// is therefore per-dispatcher and internal; only its `name\x1f` prefix is
+// user-facing (_jit_multifn_display). Returns the dispatcher with a +1 for
+// the caller (the env binding), which owns the matching release.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
 culebra_runtime_multifn_register_and_install(const char* name_cstr,
+                                             JitClosure* into,
                                              JitClosure* body,
                                              const char* const* param_types,
                                              int64_t n_param_types,
                                              int64_t variadic,
                                              int64_t min_arity,
                                              const char* const* param_names) {
-  std::string name(name_cstr);
   JitMultiMethodEntry method;
   // Caller's `body` arrives at +1; the table takes that ownership
   // outright. On replace, the displaced body's +1 is released below.
@@ -1330,28 +1369,35 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
         param_names && param_names[i] ? param_names[i] : "");
   }
 
-  // Resolve the dispatcher FIRST (find-or-create, +1 handed to the
-  // caller), before the displaced body's release below: that release
-  // can cascade into the previous declaration's whole capture chain and
-  // kill this very dispatcher mid-install — its forget would then erase
-  // the table entry the new body was just installed into (a re-declared
-  // `fn` would dispatch into a void). The caller's +1 pins the
-  // dispatcher across the cascade, so forget can only run once no newer
-  // registration owns the name.
+  // Resolve the dispatcher FIRST (+1 handed to the caller), before the
+  // displaced body's release below: that release can cascade into the
+  // previous declaration's whole capture chain and kill this very
+  // dispatcher mid-install — its forget would then erase the table entry
+  // the new body was just installed into (a re-declared `fn` would
+  // dispatch into a void). The caller's +1 pins the dispatcher across the
+  // cascade, so forget can only run once no newer registration owns it.
+  auto& names = _jit_multifn_dispatcher_names();
+  auto it = into ? names.find(into) : names.end();
   JitClosure* dispatcher = nullptr;
-  for (auto& [cls_ptr, n] : _jit_multifn_dispatcher_names()) {
-    if (n == name) {
-      cls_ptr->refcount++;  // hand a +1 back to the caller
-      dispatcher = cls_ptr;
-      break;
-    }
-  }
-  if (!dispatcher) {
+  std::string name;
+  if (it != names.end()) {
+    into->refcount++;  // hand a +1 back to the caller
+    dispatcher = into;
+    name = it->second;
+  } else {
+    // A fresh activation of this declaration: its own dispatcher over its
+    // own table. The suffix only has to be unique within the Runtime's
+    // table map; process-wide so a table deserialized from another
+    // Runtime (sendable_jit.h keeps the sender's key) can't be collided
+    // into by a locally minted one.
+    static std::atomic<uint64_t> gen{0};
+    name = std::string(name_cstr) + '\x1f' +
+           std::to_string(gen.fetch_add(1, std::memory_order_relaxed));
     // closure_new returns +1; the caller becomes the owner.
     dispatcher = culebra_runtime_closure_new(
         reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk),
         /*n_captures=*/0, /*arity=*/n_param_types);
-    _jit_multifn_dispatcher_names()[dispatcher] = name;
+    names[dispatcher] = name;
   }
 
   auto& tbl = _jit_multimethods();
@@ -1366,12 +1412,16 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
       JitClosure* displaced = existing.body;
       existing = std::move(method);
       replaced = true;
+      _jit_multifn_body_uplinks().erase(displaced);
       _culebra_value_release_impl(TAG_FUNC,
                                   reinterpret_cast<int64_t>(displaced));
       break;
     }
   }
   if (!replaced) methods.push_back(std::move(method));
+  // The body's self-recursion uplink (culebra_runtime_multifn_self); leaves
+  // with the table entry, so it can never outlive the dispatcher it names.
+  _jit_multifn_body_uplinks()[body] = dispatcher;
   return dispatcher;
 }
 

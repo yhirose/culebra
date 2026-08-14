@@ -364,10 +364,21 @@ enum class Op : uint8_t {
                // name` dispatcher cell read before its decl statement ran
                // (the JIT's emit_unbound_value_guard). Usually falls through.
   MultifnReg,  // regs[a] = dispatcher (+1) after registering closure regs[b]
-               // as an overload of multimethod key consts[c] (a chunk-owned
-               // string); d = the body's chunk index, whose param_names feed
-               // the registry (types stay null — arity-only dispatch in the
-               // slice). The registry absorbs the body's +1; regs[b] = nil.
+               // as one of its overloads. regs[c] (c >= 0) is the dispatcher
+               // an earlier arm of this same declaration installed, borrowed —
+               // c = -1 mints a fresh dispatcher over a fresh table, which is
+               // what makes a re-run declaration keep its own overloads. d =
+               // the body's chunk index, supplying the display name and the
+               // param_names the registry records (types stay null — arity-only
+               // dispatch in the slice). The registry absorbs the body's +1;
+               // regs[b] = nil.
+  MfSelf,      // regs[a] = this frame's multifn self-handle: the dispatcher
+               // the executing body was registered into (+1), or the unbound
+               // sentinel if it outlived it (culebra_runtime_multifn_self).
+               // Prologue-only; the binding it feeds is lazy, so reads guard
+               // the sentinel with the usual NameError.
+               // consts[a] — a well-known name that carries an overload set,
+               // Never falls through.
   ClassMeta,   // regs[a] = the shared class meta Object (+1) built from the
                // method closures in the run regs[b .. b+c), named by the
                // chunk's name table d (build_class_meta). object_set
@@ -1358,6 +1369,10 @@ struct Chunk {
   int32_t arity = 0;
   std::vector<std::string> param_names;  // for the ArityError message
   int32_t fn_slot = -1;
+  // Source name of an overload body (`fn name`, a class member, `new`), read
+  // by MultifnReg: it is the user-facing half of the registry key, so a
+  // DispatchError names the declaration rather than the internal id.
+  std::string multifn_name;
   // Receiver frames (a class method, a `new` body, the synthetic field-init
   // thunk) bind the JitFn ABI's receiver here; -1 means the frame takes no
   // receiver, and the incoming +1 is released on entry (the JIT's ctor thunk
@@ -1464,9 +1479,7 @@ class Compiler {
     // reads; the returned top-level info carries chunk 0's captured_locals.
     FuncInfo top_info = analysis.analyze_program(ast);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
-    int multifn_uid = 0;  // program-wide (the JIT's multifn_uid_counter_)
-    Compiler main(prog, analysis, /*in_function=*/false, &top_info,
-                  &multifn_uid);
+    Compiler main(prog, analysis, /*in_function=*/false, &top_info);
     // The top-level frame mark (JIT main's fn.mark): first insn, so a
     // throw at any pc finds it populated. The Halt epilogue runs to it —
     // before the top scope's releases, hence the inlined block below.
@@ -1492,12 +1505,11 @@ class Compiler {
 
  private:
   Compiler(VmProgram& prog, FnAnalysis& analysis, bool in_function,
-           const FuncInfo* info, int* multifn_uid)
+           const FuncInfo* info)
       : prog_(prog),
         analysis_(analysis),
         in_function_(in_function),
-        info_(info),
-        multifn_uid_(multifn_uid) {}
+        info_(info) {}
 
   struct Binding {
     std::string name;
@@ -1515,12 +1527,12 @@ class Compiler {
   struct Scope {
     std::vector<Binding> bindings;
     int32_t slot_watermark;  // next_slot_ at scope entry; pop rolls back
-    // Lexical key into the process-global multimethod registry for each
-    // `fn name` declared directly in this scope: same-scope overloads
-    // share one key (one dispatcher + method table), a same-named decl in
-    // a different scope gets a distinct key (the JIT's
-    // Scope::multifn_keys / multifn_scope_key).
-    std::map<std::string, std::string> multifn_keys;
+    // `fn name`s already declared directly in this scope. A later
+    // same-scope overload appends to the dispatcher the binding already
+    // holds; the first one mints a fresh dispatcher + table, so neither an
+    // unrelated scope's overloads nor the previous activation's bleed in
+    // (the JIT's Scope::multifn_decls).
+    std::set<std::string> multifn_decls;
   };
   struct LoopCtx {
     int32_t slot_watermark;  // slots >= this are inner to the loop scope
@@ -1540,7 +1552,6 @@ class Compiler {
   FnAnalysis& analysis_;
   bool in_function_;
   const FuncInfo* info_;  // this chunk's analysis (captured_locals gate)
-  int* multifn_uid_;      // shared across nested chunk compilers
   Chunk chunk_;
   std::vector<Scope> scopes_;
   std::vector<LoopCtx> loops_;
@@ -2099,8 +2110,8 @@ class Compiler {
   // `fn name(params) { body }` — a free named-function declaration. The
   // slice registers arity-dispatch overloads through the same runtime
   // multimethod registry the JIT uses (multifn_register_and_install):
-  // same-scope overloads merge into one dispatcher, a nested-scope decl
-  // shadows through its own per-scope registry key, a same-arity re-decl
+  // same-scope overloads merge into one dispatcher, a nested-scope decl —
+  // or another activation of this one — gets its own, a same-arity re-decl
   // replaces its table entry, and DispatchError kind/message/position come
   // from the shared dispatcher thunk. Installing stores the dispatcher
   // into the cell predeclare_multifns created, flipping it from the
@@ -2114,22 +2125,24 @@ class Compiler {
     auto name = std::string(head.outer);
     int32_t idx = compile_fn_chunk(ast, ast.nodes[1].get(),
                                    *ast.nodes.back());
+    prog_.chunks[idx].multifn_name = name;
     int32_t cls = alloc_temp(ast);
     emit(Op::MakeClosure, cls, idx);
-    // Same-scope overloads share one registry key (the binding's scope is
-    // the current one — predeclare ran at its entry).
-    auto& keys = scopes_.back().multifn_keys;
-    auto it = keys.find(name);
-    if (it == keys.end()) {
-      it = keys.emplace(name, name + '\x1f' +
-                                  std::to_string((*multifn_uid_)++)).first;
-    }
-    int32_t t = alloc_temp(ast);
-    emit(Op::MultifnReg, t, cls, kconst_str(it->second), idx);
-    forget_temp(cls);  // the registry absorbed the body's +1 (reg is nil)
     const Binding* b = lookup(name);
     if (!b || !b->is_cell)
       reject(ast, std::format("fn '{}' declared here", name));
+    // A same-scope overload appends to the dispatcher the binding already
+    // holds (the binding's scope is the current one — predeclare ran at its
+    // entry); the first decl passes none and mints a fresh one.
+    int32_t into = -1;
+    if (scopes_.back().multifn_decls.contains(name)) {
+      into = alloc_temp(ast);
+      emit(Op::CellGet, into, b->slot);
+    }
+    scopes_.back().multifn_decls.insert(name);
+    int32_t t = alloc_temp(ast);
+    emit(Op::MultifnReg, t, cls, into, idx);
+    forget_temp(cls);  // the registry absorbed the body's +1 (reg is nil)
     emit(Op::CellSet, b->slot, owned_src(ast, {t, true}));
   }
 
@@ -2368,7 +2381,7 @@ class Compiler {
                              const std::vector<int32_t>& caps) {
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();
-    Compiler fc(prog_, analysis_, /*in_function=*/true, info_, multifn_uid_);
+    Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
     fc.stamp(ast);
     fc.push_scope();
     fc.chunk_.capture_src_slots = caps;
@@ -2464,7 +2477,7 @@ class Compiler {
 
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
-    Compiler fc(prog_, analysis_, /*in_function=*/true, &info, multifn_uid_);
+    Compiler fc(prog_, analysis_, /*in_function=*/true, &info);
     fc.stamp(ast);
     fc.push_scope();  // the frame scope: params + captures + the `fn` handle
     fc.chunk_.arity =
@@ -2569,6 +2582,25 @@ class Compiler {
       } else {
         fc.scopes_.back().bindings.push_back({"self", s, false});
       }
+    }
+    // The multifn body's own name: delivered by the dispatch rather than
+    // captured — the capture would ring cell → dispatcher → body → cell
+    // (see FuncInfo::mf_self). A cell, so a nested closure captures it
+    // like any local's; lazy, so the escaped-past-its-dispatcher corner
+    // reads as the undeclared name's NameError.
+    if (!info.mf_self.empty() &&
+        (info.mf_self_used || info.captured_locals.contains(info.mf_self))) {
+      int32_t cslot = fc.alloc_slot(ast, info.mf_self);
+      {
+        TempScope mts(fc);
+        int32_t t = fc.alloc_temp(ast);
+        fc.emit(Op::MfSelf, t);
+        fc.emit(Op::CellNew, cslot, t);  // nils t; the sweep is a no-op
+        fc.mark_cell_slot(cslot);
+      }
+      fc.scopes_.back().bindings.push_back({info.mf_self, cslot,
+                                            /*is_mut=*/false, /*is_cell=*/true,
+                                            /*lazy=*/true});
     }
     // Unpack destructuring params, left to right: the test-then-bind walks
     // of compile_destructure_assign against the synthetic slot (borrowed —
@@ -4448,7 +4480,7 @@ inline std::string dump(const Chunk& c) {
       "JumpIfTag",
       "MakeClosure", "Call",    "CallM",      "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
-      "ImmutErr",  "UnboundErr", "MultifnReg",
+      "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",
       "ClassMeta", "ClassObj",  "BindStatic", "MakeInst",     "FieldInit",
       "RegGetter", "SelfMerge",
       "NsGet",
@@ -5765,7 +5797,9 @@ struct Exec {
           for (const auto& n : f.param_names) names.push_back(n.c_str());
           auto n = static_cast<int64_t>(f.param_names.size());
           auto* disp = culebra_runtime_multifn_register_and_install(
-              reinterpret_cast<const char*>(c.consts[in.c].data),
+              f.multifn_name.c_str(),
+              in.c >= 0 ? reinterpret_cast<JitClosure*>(regs[in.c].data)
+                        : nullptr,
               reinterpret_cast<JitClosure*>(regs[in.b].data),
               n ? types.data() : nullptr, n, /*variadic=*/0,
               /*min_arity=*/n, n ? names.data() : nullptr);
@@ -5774,6 +5808,11 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::MfSelf:
+          regs[in.a] = culebra_runtime_multifn_self(cls);
+          ++pc;
+          break;
+              reinterpret_cast<const char*>(c.consts[in.a].data));
         case Op::ClassMeta: {
           // Cold path (once per declaration): the names table lives in the
           // chunk, so the array of c_str()s is built here.
@@ -8384,9 +8423,7 @@ struct Lowering {
         }
         case Op::MultifnReg: {
           const Chunk& f = p.chunks[in.d];
-          auto keyG = j.get_or_create_global_str(
-              _str_sv(reinterpret_cast<const char*>(c.consts[in.c].data)),
-              ".vm.mfkey");
+          auto nameG = j.get_or_create_global_str(f.multifn_name, ".vm.mfname");
           // Arity-only dispatch: a null-typed entry per param, the chunk's
           // param names as .rodata (emit_multifn_register's arrays, via the
           // shared builder).
@@ -8401,15 +8438,33 @@ struct Lowering {
           auto typesPtr = j.build_str_ptr_array(typeCs, ".vm.mftypes");
           auto bodyPtr =
               b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
+          llvm::Value* intoPtr = llvm::ConstantPointerNull::get(ptrTy);
+          if (in.c >= 0)
+            intoPtr = b.CreateIntToPtr(j.extract_data(load_slot(in.c)), ptrTy);
           auto disp = j.emit_call(
               j.module_->getOrInsertFunction(
                   rt::multifn_register_and_install, ptrTy, ptrTy, ptrTy,
-                  ptrTy, i64Ty, i64Ty, i64Ty, ptrTy),
-              {keyG, bodyPtr, typesPtr, b.getInt64(nparams), b.getInt64(0),
-               b.getInt64(nparams), namesPtr},
+                  ptrTy, ptrTy, i64Ty, i64Ty, i64Ty, ptrTy),
+              {nameG, intoPtr, bodyPtr, typesPtr, b.getInt64(nparams),
+               b.getInt64(0), b.getInt64(nparams), namesPtr},
               "vm.mf.disp");
           b.CreateStore(j.make_nil(), slots[in.b]);
           b.CreateStore(j.make_func(disp), slots[in.a]);
+          break;
+        }
+        case Op::MfSelf: {
+          // 16-byte by-value return — emit_value_call for the Win64 sret ABI.
+          auto v = j.emit_value_call(
+              j.module_->getOrInsertFunction(rt::multifn_self, j.valueType_,
+                                             ptrTy),
+              {clsArg}, "mf.self");
+          b.CreateStore(v, slots[in.a]);
+          break;
+        }
+          j.emit_call(
+                                             b.getVoidTy(), ptrTy),
+              {j.get_or_create_global_str(
+                  _str_sv(reinterpret_cast<const char*>(c.consts[in.a].data)),
           break;
         }
         case Op::ClassMeta: {

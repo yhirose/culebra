@@ -2077,6 +2077,12 @@ enum RuntimeSlot : size_t {
   // registry instead of a destroyed thread_local. See _jit_multifn_forget.
   kSlotJitMultifnNames,
   kSlotJitMultimethods,
+  // Non-owning body→dispatcher uplinks (the multifn self-recursion handle).
+  // A body's lifetime is bounded by its dispatcher's — the table above holds
+  // the only +1 on a body — so the raw pointer can never dangle while the
+  // body runs; entries leave with the table entry (register's displacement,
+  // _jit_multifn_forget). Same placement rationale as its two siblings.
+  kSlotJitMultifnUplinks,
   // JIT trait default-method table (trait → method → closure), holding a +1
   // on each compiled default body. Same placement rationale as the multifn
   // registries above: it outlives the JitValue-holding tables (a teardown

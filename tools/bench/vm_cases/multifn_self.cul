@@ -1,0 +1,71 @@
+# The multifn self-handle: a body's own name is delivered by the dispatch
+# (culebra_runtime_multifn_self) rather than captured — the capture would be
+# a refcount ring cell → dispatcher → body → cell. Same value as the
+# binding, identity stable, nested-capturable, arity-dispatched in recursion.
+
+fn h(n) {
+  if n == 0 {
+    h
+  } else {
+    h(0)
+  }
+}
+println(h(1) == h)
+println(type_of(h(1)))
+
+fn m(a) {
+  "one:{a}"
+}
+fn m(a, b) {
+  m(a + b)
+}
+println(m(1, 2))
+
+fn cap(n) {
+  let f = fn () {
+    cap
+  }
+  f() == cap
+}
+println(cap(1))
+
+fn shadowed(n) {
+  let before = type_of(shadowed)
+  let shadowed = 99
+  "{before}/{shadowed}"
+}
+println(shadowed(1))
+
+# per-activation tables: captured values keep their activation's bodies
+fn make(tag) {
+  fn k(a) {
+    "{tag}-one"
+  }
+  fn k(a, b) {
+    "{tag}-two"
+  }
+  k
+}
+let a = make('A')
+let b = make('B')
+println(a(1))
+println(a(1, 2))
+println(b(1))
+println(b(1, 2))
+println(a == b)
+
+# recursion churn: the handle materializes per call and releases with the
+# frame; nothing accumulates
+fn fact(n) {
+  n <= 1 ? 1 : n * fact(n - 1)
+}
+mut acc = 0
+mut i = 0
+while i < 4000 {
+  fn local(x) {
+    x == 0 ? i : local(x - 1)
+  }
+  acc += local(3) + fact(6)
+  i += 1
+}
+println(acc)

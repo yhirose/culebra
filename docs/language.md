@@ -5200,6 +5200,23 @@ fn greet(name: String) { "hello, {name}" }   # overwrites
 greet("alice")  # → "hello, alice"
 ```
 
+Overwriting is confined to one **execution** of the declaring scope. A
+declaration inside a function or a loop body builds a fresh overload set
+every time it runs, so each body keeps the captures of the activation that
+declared it — an earlier `fn` value is never re-pointed at a later run's
+bodies. The same holds for the class overload sets below.
+
+```
+fn make(tag) {
+  fn m(a)    { "{tag}-one" }
+  fn m(a, b) { "{tag}-two" }
+  m
+}
+let a = make("A")
+let b = make("B")
+[a(1), b(1)]  # → ["A-one", "B-one"]
+```
+
 ### Coexistence with existing features
 
 * Ordinary local bindings `let f = fn(...) {...}` continue to work

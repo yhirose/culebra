@@ -92,27 +92,31 @@ inline JIT::Owned JIT::compile_class_decl(const peg::Ast& ast) {
     method_vals.push_back(std::move(mval));
   }
 
-  // An overload set on a well-known name can't satisfy the 0-arg
-  // contract (the interp rejects the grouped dispatcher via its params
-  // check); emit the contract error so it fires when the declaration
-  // executes — the same timing as the single-method check inside
-  // build_class_meta.
+  // An overload set on a well-known name can't satisfy the 0-arg contract
+  // (the interp rejects the grouped dispatcher via its params check); the
+  // throw is emitted where build_class_meta would raise the single-method
+  // one, so both fire at the same point in the declaration — after the
+  // static field initializers below have run, as on the interp.
+  std::vector<std::string> wk_overloaded;  // collected before the grouping
   {
-    std::set<std::string> seen, thrown;
-    for (const auto& n : method_names) {
+    std::set<std::string> seen, taken;
+    for (const auto& n : method_names)
       if (!seen.insert(n).second && is_well_known_prop(n) &&
-          thrown.insert(n).second) {
-        emit_set_op_pos();
-        emit_call(module_->getOrInsertFunction(rt::wk_contract_error,
-                                               builder_.getVoidTy(),
-                                               llvm::PointerType::get(ctx_, 0)),
-                  {get_or_create_global_str(n, ".wkname")});
-      }
-    }
+          taken.insert(n).second)
+        wk_overloaded.push_back(n);
   }
+  auto emit_wk_overload_errors = [&] {
+    for (const auto& n : wk_overloaded) {
+      emit_set_op_pos();
+      emit_call(module_->getOrInsertFunction(rt::wk_contract_error,
+                                             builder_.getVoidTy(),
+                                             llvm::PointerType::get(ctx_, 0)),
+                {get_or_create_global_str(n, ".wkname")});
+    }
+  };
   // Done before the @derive append; a derived method whose name a user
   // overloads is already skipped (user_defined check in collect).
-  group_method_overloads(method_names, method_vals, method_asts, class_name);
+  group_method_overloads(method_names, method_vals, method_asts);
   // Append @derive methods: captureless closures over shared runtime
   // thunks (mirrors the variant-ctor pattern). They land in the class
   // meta alongside user methods, so dispatch + Set/Object key lookup
@@ -160,15 +164,21 @@ inline JIT::Owned JIT::compile_class_decl(const peg::Ast& ast) {
     static_vals.push_back(compile_function(*m));
   }
   // Static methods overload too — merge same-named statics into one
-  // dispatcher (own per-class uid keeps them off the instance-method
-  // table). The picked static body ignores the forwarded `self`.
-  group_method_overloads(static_names, static_vals, static_asts, class_name);
+  // dispatcher (its own, so they stay off the instance-method table).
+  // The picked static body ignores the forwarded `self`.
+  group_method_overloads(static_names, static_vals, static_asts);
 
   std::vector<Owned> static_field_vals;
   static_field_vals.reserve(static_field_asts.size());
   for (auto* m : static_field_asts) {
     static_field_vals.push_back(compile(*m->nodes[2]));
   }
+
+  // An overloaded well-known name fails the same contract build_class_meta
+  // applies below, one instant earlier — the grouped dispatcher never
+  // reaches its per-method check. Raised here, while the method closures
+  // are still Owned, so the unwind releases them.
+  emit_wk_overload_errors();
 
   // Build the shared class meta object once per class declaration:
   // a JitObject with all method closures set as immutable props.
@@ -326,16 +336,17 @@ inline JIT::Owned JIT::compile_class_decl(const peg::Ast& ast) {
         build_ctor_closure(has_new ? new_asts[0] : nullptr,
                            /*keep_meta=*/false)));
   } else {
-    auto regKey =
-        class_multifn_key("new", class_name, multifn_uid_counter_++);
+    llvm::Value* intoPtr = nullptr;
     for (auto* na : new_asts) {
       auto ctorPtr = build_ctor_closure(na, /*keep_meta=*/true);
-      // Each registration hands back a +1 to the same shared dispatcher;
-      // keep only the last (own() releases the earlier +1s). The registry
-      // absorbs each ctor closure's +1 as its overload body.
+      // Each registration hands back a +1 to the same dispatcher; keep only
+      // the last (own() releases the earlier +1s). The registry absorbs each
+      // ctor closure's +1 as its overload body.
       ctorOwned = own(emit_multifn_register(
-          regKey, ctorPtr, *culebra::view_method(*na).params,
+          "new", intoPtr, ctorPtr, *culebra::view_method(*na).params,
           class_type_params_));
+      intoPtr =
+          builder_.CreateIntToPtr(extract_data(ctorOwned.borrow()), ptrTy);
     }
     // The keep_meta retains left metaVal's original +1 undistributed;
     // release it so meta is owned only by the N ctor closures (+ instances).

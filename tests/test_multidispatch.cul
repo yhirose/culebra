@@ -279,6 +279,100 @@ fn twice(n) {
 assert_eq(twice(10), 20)
 assert_eq(twice(21), 42)
 
+# Each activation of a declaration gets its own dispatcher and method table,
+# so a body keeps the captures of the activation that declared it. A registry
+# shared by name would let the later run displace the earlier one's bodies.
+fn make_pair(tag) {
+  fn m(a) {
+    "{tag}-one"
+  }
+  fn m(a, b) {
+    "{tag}-two"
+  }
+  m
+}
+let first = make_pair('A')
+let second = make_pair('B')
+assert_eq([first(1), first(1, 2)], ['A-one', 'A-two'])
+assert_eq([second(1), second(1, 2)], ['B-one', 'B-two'])
+assert_eq(first == second, false)
+
+# Same rule for a single-arm `fn` re-declared each iteration.
+mut kept = []
+for i in 0..3 {
+  fn per_round(x) {
+    "{i}:{x}"
+  }
+  kept.push(per_round)
+}
+assert_eq(kept.map(fn (f) { f(9) }), ['0:9', '1:9', '2:9'])
+
+# Re-entering the declaring frame from inside one of the overloads leaves the
+# outer activation's table alone.
+fn nest(depth) {
+  fn r(a) {
+    "d{depth}"
+  }
+  fn r(a, b) {
+    if depth > 0 {
+      nest(depth - 1)
+    } else {
+      'bottom'
+    }
+  }
+  let inner = r(1, 2)
+  "{r(0)}|{inner}"
+}
+assert_eq(nest(2), 'd2|d1|d0|bottom')
+
+# The body's own name is the dispatch-delivered self-handle (not a capture
+# of the binding cell — that capture would be a refcount ring only the
+# tracing backstop could reclaim). Same value as the binding, identity
+# stable, visible to nested closures, and usable via UFCS.
+fn sh(n) {
+  if n == 0 {
+    sh
+  } else {
+    sh(0)
+  }
+}
+assert_eq(sh(1) == sh, true)
+fn cap(n) {
+  let f = fn () {
+    cap
+  }
+  f() == cap
+}
+assert_eq(cap(1), true)
+fn shadowed(n) {
+  let before = type_of(shadowed)
+  let shadowed = 99
+  "{before}/{shadowed}"
+}
+assert_eq(shadowed(1), 'Function/99')
+
+# Sibling if-arm declarations share the enclosing scope slot, so each
+# executed path gets its own dispatcher — chosen by the runtime state of
+# the binding, like the interp's per-activation env frame. (The arm that
+# did not run this call must not contribute: this used to read a cell
+# that was never created and crash.)
+fn arms(c) {
+  if c {
+    fn ah(a) {
+      'then'
+    }
+    ah(1)
+  } else {
+    fn ah(a, b) {
+      'else'
+    }
+    ah(1, 2)
+  }
+}
+assert_eq(arms(true), 'then')
+assert_eq(arms(false), 'else')
+assert_eq(arms(true), 'then')
+
 # Handed to a builtin that calls it as a zero-argument thunk, a dispatcher
 # reports the same miss it would report at a bare `mm()` call site.
 fn mm(x: Long) {

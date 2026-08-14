@@ -342,6 +342,24 @@ inline JIT::Owned JIT::compile_fn_common(
     define_var(fv, cap);
   }
 
+  // The multifn body's own name: delivered by the dispatch
+  // (culebra_runtime_multifn_self) rather than captured — a capture would
+  // close the refcount ring cell → dispatcher → body → cell that only the
+  // tracing backstop can reclaim (see FuncInfo::mf_self). A cell, so a
+  // nested closure captures it like any local's; guarded, so a body handle
+  // that escaped via `fn` and outlived its dispatcher reads as the
+  // undeclared name's NameError. Bound with the captures, ahead of the
+  // params, so a default expression can reference it.
+  if (!info.mf_self.empty() &&
+      (info.mf_self_used || info.captured_locals.contains(info.mf_self))) {
+    auto selfFn = emit_value_call(
+        module_->getOrInsertFunction(rt::multifn_self, valueType_, ptrTy),
+        {clsArg}, info.mf_self);
+    auto slot = make_cell_slot(info.mf_self, selfFn);
+    slot.unbound_guard = true;
+    define_var(info.mf_self, slot);
+  }
+
   // Typed-param error positions resolve per call at runtime (interp
   // parity: a positional argument reports at its own expression, a
   // kwarg-/default-filled slot at the call site). The common case — no

@@ -66,6 +66,19 @@ struct FuncInfo {
   // per-frame bound-handle cache slot (see compile_identifier's `fn`
   // path); frames that never mention `fn` pay nothing.
   bool uses_fn = false;
+  // For an undecorated `fn name` (MULTIFN_DECL) body: the declared name,
+  // which the body sees as a prologue-bound local delivered by the
+  // dispatch (culebra_runtime_multifn_self) rather than as a capture of
+  // the declaring scope's binding cell. The capture would close a
+  // refcount ring — cell → dispatcher → (table) → body → cell — that
+  // only the tracing backstop could reclaim; the prologue read borrows
+  // the dispatcher from the caller instead, so no ring ever forms. Empty
+  // when the name is unavailable this way (decorated decl: the binding
+  // is the decorator's result, not the dispatcher; name shadowed by a
+  // parameter: the param wins). mf_self_used gates the prologue bind so
+  // non-recursive bodies pay nothing.
+  std::string mf_self;
+  bool mf_self_used = false;
 };
 
 // Hidden scope-slot name binding a class's synthetic field-init closure
@@ -361,6 +374,11 @@ struct FnAnalysis {
                      const std::set<std::string>& my_locals,
                      std::vector<const std::set<std::string>*>& outer,
                      FuncInfo& info, bool optional = false) {
+    // Any mention of a multifn body's own name — a direct read or a UFCS
+    // candidate — turns on the prologue self-handle bind. Checked before
+    // the locals cut: the name IS a local of the body (seeded by
+    // analyze_fn_common), which is exactly what keeps it out of free_vars.
+    if (name == info.mf_self) info.mf_self_used = true;
     if (my_locals.contains(name)) return;
     // `self` is always capturable: every frame defines a self slot (the
     // receiver, or the lexical fallback), so the outer-scope scan below
@@ -880,7 +898,8 @@ struct FnAnalysis {
       const peg::Ast* info_key,
       const peg::Ast& params_ast,
       const peg::Ast& body_ast,
-      std::vector<const std::set<std::string>*>& outer) {
+      std::vector<const std::set<std::string>*>& outer,
+      std::string_view mf_self_name = {}) {
     std::set<std::string> my_locals;
     for (auto& p : params_ast.nodes) {
       if (culebra::is_kw_only_sep(*p)) continue;
@@ -899,9 +918,18 @@ struct FnAnalysis {
       auto name = std::string(name_sv);
       my_locals.insert(name);
     }
-    collect_fn_locals(body_ast, my_locals, outer);
 
     FuncInfo info;
+    // The multifn's own name becomes a body-level local (the prologue
+    // binds it from the dispatch — see FuncInfo::mf_self), unless a
+    // same-named parameter shadows it. Seeded before collect so a nested
+    // fn's reference lands in captured_locals like any local's would.
+    if (!mf_self_name.empty() && !culebra::is_sink_name(mf_self_name) &&
+        my_locals.insert(std::string(mf_self_name)).second) {
+      info.mf_self = std::string(mf_self_name);
+    }
+    collect_fn_locals(body_ast, my_locals, outer);
+
     for (auto& p : params_ast.nodes) {
       if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p)) continue;
       if (auto* def = extract_default_expr(*p)) {
@@ -974,8 +1002,16 @@ struct FnAnalysis {
     }
     auto paramsIdx = name_idx + 1;
     auto bodyIdx = multifnAst.nodes.size() - 1;
+    // An undecorated body gets its own name as the prologue-bound
+    // self-handle (FuncInfo::mf_self). A decorated one keeps the plain
+    // capture: its binding is the decorator's result, which only the
+    // declaring scope's cell knows.
+    auto self_name =
+        name_idx == 0
+            ? culebra::parse_generic_head(multifnAst.nodes[0]->token).outer
+            : std::string_view{};
     return analyze_fn_common(&multifnAst, *multifnAst.nodes[paramsIdx],
-                             *multifnAst.nodes[bodyIdx], outer);
+                             *multifnAst.nodes[bodyIdx], outer, self_name);
   }
 
   // `defer { BODY }` behaves like a 0-parameter nested function that

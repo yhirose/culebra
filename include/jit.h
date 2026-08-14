@@ -36,6 +36,7 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Target/TargetMachine.h"
 
+#include <atomic>
 #include <cassert>
 #include <cctype>
 #include <charconv>
@@ -186,14 +187,14 @@ struct JIT {
     // list at compile time. Only same-scope direct bindings populate
     // this map; captured / reassigned closures do not.
     std::map<std::string, const peg::Ast*> fn_asts;
-    // Lexical key into the thread_local multimethod registry for each
-    // `fn name` dispatcher declared directly in this scope. Same-scope
-    // `fn name` overloads share one key (one dispatcher + method table);
-    // a same-named decl in a different scope gets a distinct key, so its
-    // overloads never bleed into an unrelated scope's table. Mirrors the
-    // interp, where the table lives on the dispatcher value bound per
-    // scope frame (see register_named_function's has_own decision).
-    std::map<std::string, std::string> multifn_keys;
+    // `fn name`s already declared directly in this scope. A later
+    // same-scope overload appends to the dispatcher this scope's slot
+    // already holds; the first one mints a fresh dispatcher + table, so a
+    // same-named decl in another scope — or in another activation of this
+    // one — never bleeds into it. Mirrors the interp, where the table
+    // lives on the dispatcher value bound per scope frame (see
+    // eval_multifn_decl's has_own decision).
+    std::set<std::string> multifn_decls;
   };
 
   // Marks IR compiled while inside an if/cond arm body (compile_if /
@@ -1807,40 +1808,10 @@ struct JIT {
 
   std::vector<Scope> scopes_;
 
-  // Monotonic source of unique suffixes for multimethod registry keys.
-  // One per fresh (per-scope) `fn name` dispatcher; see multifn_scope_key.
-  int multifn_uid_counter_ = 0;
-
-  // Compute the registry key for a `fn name` declared in the current
-  // scope. Same-scope overloads reuse the scope's recorded key (so they
-  // merge into one dispatcher / method table); the first decl in a scope
-  // mints a fresh key carrying a unique suffix. The plain source name is
-  // recoverable for diagnostics via _jit_multifn_display.
-  std::string multifn_scope_key(const std::string& name) {
-    auto& keys = scopes_.back().multifn_keys;
-    auto it = keys.find(name);
-    if (it != keys.end()) return it->second;
-    std::string key = name;
-    key.push_back('\x1f');  // unit separator: cannot occur in an identifier
-    key += std::to_string(multifn_uid_counter_++);
-    keys.emplace(name, key);
-    return key;
-  }
-
   // The shared front-end analysis (fn_analysis.h) and its results
   // (func_info / scope_has_defer), one instance per compilation.
   FnAnalysis analysis_{&is_builtin_var};
   FuncInfo main_info_;
-
-  // Registry key for an overloaded class member (instance/static method or
-  // `new`): `member\x1fClass#uid`. The per-decl uid keeps two same-named
-  // classes in different scopes on separate multimethod tables;
-  // _jit_multifn_display strips at the first \x1f to recover the diagnostic
-  // name. Shared by group_method_overloads and the ctor-overload path.
-  static std::string class_multifn_key(std::string_view member,
-                                       const std::string& class_name, int uid) {
-    return std::format("{}\x1f{}#{}", member, class_name, uid);
-  }
 
   // Holds the active function's Generic type-params ({"T", "U"}) while
   // its param annotations are compiled, so each can be lowered
@@ -9027,22 +8998,17 @@ struct JIT {
 
   // Group same-named instance-method overloads into one multimethod
   // dispatcher (method multidispatch). A name defined once keeps its bare
-  // closure (unchanged — zero overhead). For >=2 overloads, register each
-  // compiled body into the multimethod table under a per-class key and store
-  // the shared dispatcher closure once. `method_asts` supplies each overload's
-  // param signature (indexed by the pre-grouping position, so this must run
-  // before the arrays are reassigned). Mirrors interp's group_method_overloads.
+  // closure (unchanged — zero overhead). For >=2 overloads, chain the
+  // compiled bodies into one dispatcher (the first arm mints it, the rest
+  // append) and store that once. Each execution of the declaration builds
+  // its own dispatcher, so two same-named classes — and two activations of
+  // one — never share a table. `method_asts` supplies each overload's param
+  // signature (indexed by the pre-grouping position, so this must run before
+  // the arrays are reassigned). Mirrors interp's group_method_overloads.
   void group_method_overloads(std::vector<std::string>& method_names,
                               std::vector<Owned>& method_vals,
-                              const std::vector<const peg::Ast*>& method_asts,
-                              const std::string& class_name) {
+                              const std::vector<const peg::Ast*>& method_asts) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    // One unique suffix per class declaration so two same-named classes in
-    // different scopes don't share a global multimethod table (the key is
-    // `method\x1fClass#uid`; _jit_multifn_display strips at the first \x1f
-    // so DispatchError still shows the bare method name). Re-running this
-    // same compiled decl reuses the baked-in uid, so replacement still works.
-    auto class_uid = multifn_uid_counter_++;
     std::vector<std::string> grouped_names;
     std::vector<Owned> grouped_vals;
     for (size_t a = 0; a < method_names.size(); a++) {
@@ -9056,21 +9022,22 @@ struct JIT {
         grouped_names.push_back(method_names[a]);
         grouped_vals.push_back(std::move(method_vals[a]));
       } else {
-        std::string regKey =
-            class_multifn_key(method_names[a], class_name, class_uid);
         Owned disp;
+        llvm::Value* intoPtr = nullptr;
         for (size_t bi : idxs) {
           auto bodyPtr = builder_.CreateIntToPtr(
               extract_data(method_vals[bi].borrow()), ptrTy);
           method_vals[bi].consume();  // the multimethod registry absorbs it
           auto newDisp = emit_multifn_register(
-              regKey, bodyPtr, *culebra::view_method(*method_asts[bi]).params,
+              method_names[a], intoPtr, bodyPtr,
+              *culebra::view_method(*method_asts[bi]).params,
               class_type_params_);
-          // Every registration hands back a +1 to the same shared dispatcher
-          // (the first creates it, the rest bump its refcount). Only the last
-          // is stored in the meta; the move-assign releases the earlier +1s
-          // so the dispatcher does not strand one reference per overload.
+          // Every registration hands back a +1 to the same dispatcher (the
+          // first creates it, the rest bump its refcount). Only the last is
+          // stored in the meta; the move-assign releases the earlier +1s so
+          // the dispatcher does not strand one reference per overload.
           disp = own(newDisp);
+          intoPtr = builder_.CreateIntToPtr(extract_data(disp.borrow()), ptrTy);
         }
         grouped_names.push_back(method_names[a]);
         grouped_vals.push_back(std::move(disp));
@@ -9179,15 +9146,18 @@ struct JIT {
   // on the first decl per name and cached afterward) which we bind to
   // `name` in the surrounding scope. See _jit_multifn_dispatcher_thunk
   // for the dispatch logic. JIT counterpart of eval_multifn_decl.
-  // Register one overload body into the multimethod table under `regKey`
-  // (a `name\x1f<uid-or-class>` key whose suffix _jit_multifn_display strips
-  // for diagnostics) and return the shared dispatcher closure Value. Extracts
-  // the dispatch param-type/name arrays from `params_ast`, lowering bare
-  // Generic type-params via `type_params`. Shared by compile_multifn_decl
-  // (free fns) and compile_class_decl (instance-method overloads).
+  // Register one overload body into a multimethod table and return the
+  // dispatcher closure Value (+1). `intoPtr` is the dispatcher an earlier
+  // arm of this same declaration installed — null starts a fresh table, so
+  // re-running the declaration gives its bodies a dispatcher of their own
+  // (see culebra_runtime_multifn_register_and_install). `name` is only the
+  // user-facing half of the internal key. Extracts the dispatch param-type/
+  // name arrays from `params_ast`, lowering bare Generic type-params via
+  // `type_params`. Shared by compile_multifn_decl (free fns) and
+  // compile_class_decl (method / static / `new` overload sets).
   llvm::Value* emit_multifn_register(
-      const std::string& regKey, llvm::Value* bodyClosurePtr,
-      const peg::Ast& params_ast,
+      const std::string& name, llvm::Value* intoPtr,
+      llvm::Value* bodyClosurePtr, const peg::Ast& params_ast,
       const std::vector<std::string_view>& type_params) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
@@ -9226,12 +9196,13 @@ struct JIT {
     llvm::Value* paramTypesPtr = build_str_ptr_array(typePtrs, ".paramtypes");
     llvm::Value* paramNamesPtr = build_str_ptr_array(namePtrs, ".paramnames");
 
-    auto namePtr = get_or_create_global_str(regKey, ".mname");
+    auto namePtr = get_or_create_global_str(name, ".mname");
+    if (!intoPtr) intoPtr = llvm::ConstantPointerNull::get(ptrTy);
     auto dispatcherPtr = emit_call(
         module_->getOrInsertFunction(rt::multifn_register_and_install,
-                                     ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty,
-                                     i64Ty, ptrTy),
-        {namePtr, bodyClosurePtr, paramTypesPtr,
+                                     ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty,
+                                     i64Ty, i64Ty, ptrTy),
+        {namePtr, intoPtr, bodyClosurePtr, paramTypesPtr,
          builder_.getInt64(n_param_types),
          builder_.getInt64(mf_variadic ? 1 : 0),
          builder_.getInt64(mf_min_arity),
@@ -9307,19 +9278,51 @@ struct JIT {
     auto bodyClosurePtr =
         builder_.CreateIntToPtr(extract_data(bodyVal.borrow()), ptrTy);
 
-    // Key the registry per lexical scope so a same-named `fn` in an
-    // unrelated scope gets its own dispatcher + method table (interp
-    // parity — see Scope::multifn_keys).
+    // A same-scope overload appends to the dispatcher this scope already
+    // holds (loaded borrowed — the slot owns it); the first decl per scope
+    // passes null and gets a fresh dispatcher + table, so re-entering this
+    // scope leaves the previous activation's overloads alone. Interp
+    // parity: eval_multifn_decl's has_own check on the declaring env frame
+    // — which is RUNTIME state. Sibling if/cond arms share this compile
+    // scope (the runtime_decl sentinel design), so a later decl site can
+    // execute on a path where no earlier one ran: the cell is then null
+    // (never declared this call) or holds the unbound sentinel (data 0) —
+    // both read as "first declaration of this activation" and fall through
+    // to the fresh-dispatcher arm, exactly like the interp's fresh frame.
+    llvm::Value* intoPtr = llvm::ConstantPointerNull::get(ptrTy);
+    if (!scopes_.empty() && scopes_.back().multifn_decls.contains(name) &&
+        scopes_.back().slots.at(name).kind == VarSlot::Cell) {
+      auto fnc = builder_.GetInsertBlock()->getParent();
+      auto liveBB = llvm::BasicBlock::Create(ctx_, "mf.into.live", fnc);
+      auto contBB = llvm::BasicBlock::Create(ctx_, "mf.into.cont", fnc);
+      auto cellPtr = builder_.CreateLoad(
+          ptrTy, scopes_.back().slots.at(name).alloca, "mf.into.cellp");
+      auto fromBB = builder_.GetInsertBlock();
+      builder_.CreateCondBr(
+          builder_.CreateICmpEQ(cellPtr,
+                                llvm::ConstantPointerNull::get(ptrTy)),
+          contBB, liveBB);
+      builder_.SetInsertPoint(liveBB);
+      auto valPtr = builder_.CreateStructGEP(cellType_, cellPtr, 1, "mf.vp");
+      auto val = builder_.CreateLoad(valueType_, valPtr, "mf.into.val");
+      auto live = builder_.CreateIntToPtr(extract_data(val), ptrTy);
+      builder_.CreateBr(contBB);
+      builder_.SetInsertPoint(contBB);
+      auto phi = builder_.CreatePHI(ptrTy, 2, "mf.into");
+      phi->addIncoming(llvm::ConstantPointerNull::get(ptrTy), fromBB);
+      phi->addIncoming(live, liveBB);
+      intoPtr = phi;
+    }
     bodyVal.consume();  // the multimethod registry absorbs the body's +1
     auto dispatcherVal = emit_multifn_register(
-        multifn_scope_key(name), bodyClosurePtr, *params_ast, mf_type_params);
+        name, intoPtr, bodyClosurePtr, *params_ast, mf_type_params);
+    if (!scopes_.empty()) scopes_.back().multifn_decls.insert(name);
 
-    // Bind the dispatcher in the CURRENT scope only (the registry key
-    // is already per-scope — multifn_scope_key): the first decl per
-    // scope creates a cell slot, a same-scope overload re-decl
-    // overwrites it (+1 refresh of the same cached dispatcher). An
-    // outer-scope same-named `fn` must be shadowed, not overwritten —
-    // the interp binds into the declaring env.
+    // Bind the dispatcher in the CURRENT scope only: the first decl per
+    // scope creates a cell slot, a same-scope overload re-decl overwrites
+    // it (+1 refresh of the same dispatcher). An outer-scope same-named
+    // `fn` must be shadowed, not overwritten — the interp binds into the
+    // declaring env.
     if (!scopes_.empty() && scopes_.back().slots.contains(name)) {
       store_slot(scopes_.back().slots.at(name), dispatcherVal);
     } else {

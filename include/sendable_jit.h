@@ -357,11 +357,15 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         auto& methods = _jit_multimethods()[n.mf_name];
         for (size_t i = 0; i < n.elems.size(); i++) {
           JitValue body = jit_deserialize(n.elems[i], ctx);
+          auto* body_cls = reinterpret_cast<JitClosure*>(body.data);
           methods.push_back({n.mf_param_types[i],
                              n.mf_param_names[i],
-                             reinterpret_cast<JitClosure*>(body.data),
+                             body_cls,
                              n.mf_variadic[i],
                              n.mf_min_params[i]});
+          // The rebuilt body's self-recursion uplink, exactly as
+          // registration would have installed it.
+          _jit_multifn_body_uplinks()[body_cls] = c;
         }
         return cv;
       }

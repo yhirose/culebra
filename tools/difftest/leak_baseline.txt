@@ -1,3 +1,7 @@
+dmd|class M { new(v: Long){self.v=v} __mul__(n: Long){M(self.v*n)} __mul__(o: M){M(self.v*o.v)} }; to_string((M(3)*4).v) + to_string((M(3)*M(5)).v)
+dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((5+V(10)).x)
+dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((V(1)+V(2)).x) + to_string((V(1)+5).x)
+dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; try { V(1)+"s" } catch e { e.kind }
 drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; a.list = [a] }; g
 drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; a.me = a }; g
 drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; a.me = a; a.drop() }; g
