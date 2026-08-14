@@ -6,9 +6,10 @@
 // Assertions are written the way the backends' own tests have to be. The OS
 // decides how many events one change produces — FSEvents coalesces a burst
 // into a single event carrying the union of the flags, inotify reports each
-// change on its own — so a check waits for a *path* to show up and then looks
-// at the kind, and never fixes the event count or the interleaving of two
-// paths. Anything stricter would be testing the platform's batching.
+// change on its own — so a check waits for the arrival it is about (a path,
+// or a path carrying one kind) and never fixes the event count or the
+// interleaving of two paths. Anything stricter would be testing the
+// platform's batching.
 //
 // Built and run by CTest (see CMakeLists.txt).
 
@@ -71,12 +72,13 @@ static void write_file(const std::string& p, std::string_view text) {
   out << text;
 }
 
-// Pull events until `path` shows up, or give up after `budget`. Returns the
-// kind it carried. Every wait in this file goes through here rather than
-// sleeping for a fixed time: the OS decides when an event lands, so polling
-// until it does is both faster and immune to a slow machine.
-static std::optional<fw::Kind> await_path(
-    int64_t id, const std::string& path,
+// Pull events until one satisfies `match`, or give up after `budget`. Every
+// wait in this file goes through here rather than sleeping for a fixed time:
+// the OS decides when an event lands, so polling until it does is both faster
+// and immune to a slow machine.
+template <typename Match>
+static std::optional<fw::FsEvent> await_event(
+    int64_t id, Match match,
     std::chrono::milliseconds budget = std::chrono::seconds(5)) {
   auto deadline = std::chrono::steady_clock::now() + budget;
   for (;;) {
@@ -86,8 +88,24 @@ static std::optional<fw::Kind> await_path(
     fw::FsEvent e;
     if (fw::fs_watch_next(id, e, left.count()) != fw::Next::Event)
       return std::nullopt;
-    if (e.path == path) return e.kind;
+    if (match(e)) return e;
   }
+}
+
+// Wait for `path` to show up at all, and report the kind that arrival carried.
+static std::optional<fw::Kind> await_path(int64_t id, const std::string& path) {
+  auto found =
+      await_event(id, [&](const fw::FsEvent& e) { return e.path == path; });
+  if (!found) return std::nullopt;
+  return found->kind;
+}
+
+// Wait for `path` to show up carrying `want`: an earlier change to the same
+// path can still be sitting in the queue when this one lands.
+static bool await_kind(int64_t id, const std::string& path, fw::Kind want) {
+  return await_event(id, [&](const fw::FsEvent& e) {
+           return e.path == path && e.kind == want;
+         }).has_value();
 }
 
 // --- Tests ------------------------------------------------------------------
@@ -113,8 +131,7 @@ static void test_create_modify_delete() {
   CHECK(modified.has_value());
 
   fs::remove(file);
-  auto deleted = await_path(id, file);
-  CHECK(deleted == fw::Kind::Deleted);
+  CHECK(await_kind(id, file, fw::Kind::Deleted));
 
   fw::fs_watch_close(id);
 }

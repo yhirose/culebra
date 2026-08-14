@@ -2,9 +2,10 @@
 // Runs on interp / JIT / AOT via `just test`; identical stdout across all three.
 //
 // The OS decides how many events one change produces, so nothing here asserts
-// an event count or the order of two paths — only that a path shows up and
-// what kind it carried. Events queue from the moment the watch opens, so a
-// write before the first pull still lands: no concurrency is needed here.
+// an event count or the order of two paths — only that the arrival a check is
+// about shows up: a path, or a path carrying one kind. Events queue from the
+// moment the watch opens, so a write before the first pull still lands: no
+// concurrency is needed here.
 
 let tmpdir_env = Sys.env("TMPDIR")
 let tmp_root = tmpdir_env != "" ? tmpdir_env : "/tmp"
@@ -18,7 +19,7 @@ FS.mkdir(root)
 // Pull events until `name` shows up directly under `dir`, and report its kind.
 // A closed watch ends the loop, which turns a missing event into a failed
 // assertion instead of a hang.
-let await_kind = fn (w, dir, name) {
+let await_path = fn (w, dir, name) {
   let want = FS.join(dir, name)
   let mut kind = "none"
   for e in w {
@@ -38,19 +39,22 @@ FS.write(FS.join(root, "a.txt"), "one")
 // A create followed by a write inside one FSEvents window arrives as a single
 // "created"; inotify splits it into two events. Both are a correct report that
 // the path came into existence, so accept either rather than pin the platform.
-let k_created = await_kind(w, root, "a.txt")
+let k_created = await_path(w, root, "a.txt")
 assert_true(k_created == "created" || k_created == "modified")
 
 FS.write(FS.join(root, "a.txt"), "one two")
-assert_true(await_kind(w, root, "a.txt") != "none")
+assert_true(await_path(w, root, "a.txt") != "none")
 
 FS.remove(FS.join(root, "a.txt"))
-assert_eq(await_kind(w, root, "a.txt"), "deleted")
+// Waited for by kind, not read off the next arrival: an earlier change to the
+// same path can still be queued when this one lands.
+let gone = FS.join(root, "a.txt")
+assert_true(w.iter().any(|e| e.path == gone && e.kind == "deleted"))
 
 // A named handle survives `break`: the iterator does not close it, so the loop
 // above can be re-entered on the same watch.
 FS.write(FS.join(root, "again.txt"), "x")
-assert_true(await_kind(w, root, "again.txt") != "none")
+assert_true(await_path(w, root, "again.txt") != "none")
 w.close()
 
 // --- recursive --------------------------------------------------------------
@@ -59,7 +63,7 @@ let nested = FS.join(root, "sub")
 FS.mkdir(nested)
 let wr = FS.watch(root, recursive: true)
 FS.write(FS.join(nested, "deep.txt"), "d")
-assert_true(await_kind(wr, nested, "deep.txt") != "none")
+assert_true(await_path(wr, nested, "deep.txt") != "none")
 wr.close()
 
 // A directory created after the watch opens is watched too — including files
@@ -68,7 +72,7 @@ let wn = FS.watch(root, recursive: true)
 let late = FS.join(root, "late")
 FS.mkdir(late)
 FS.write(FS.join(late, "inside.txt"), "i")
-assert_true(await_kind(wn, late, "inside.txt") != "none")
+assert_true(await_path(wn, late, "inside.txt") != "none")
 wn.close()
 
 // --- match: extension filter ------------------------------------------------
@@ -77,9 +81,9 @@ wn.close()
 let wm = FS.watch(root, match: ["cul", ".toml"])
 FS.write(FS.join(root, "ignored.txt"), "x")
 FS.write(FS.join(root, "kept.cul"), "x")
-assert_true(await_kind(wm, root, "kept.cul") != "none")
+assert_true(await_path(wm, root, "kept.cul") != "none")
 FS.write(FS.join(root, "kept.toml"), "x")
-assert_true(await_kind(wm, root, "kept.toml") != "none")
+assert_true(await_path(wm, root, "kept.toml") != "none")
 // Everything up to kept.toml has been pulled, so the filtered .txt could only
 // appear later. Closing here and draining what remains proves it never queued.
 wm.close()
@@ -94,7 +98,7 @@ assert_true(!leaked)
 let wf = FS.watch(root, recursive: false)
 FS.write(FS.join(nested, "hidden.txt"), "h")
 FS.write(FS.join(root, "top.txt"), "t")
-// Drained rather than awaited: await_kind discards what it isn't looking for,
+// Drained rather than awaited: await_path discards what it isn't looking for,
 // so it could not tell a filtered nested write from a delivered one.
 let mut saw_nested = false
 for e in wf {
