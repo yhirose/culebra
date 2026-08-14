@@ -3204,8 +3204,13 @@ fieldを走査する (methodと内部class tagは除外) ので、field変更に
   上の通常デコレータとも併用できる。
 * **Nominal**: 派生`eq`は同じclass tagを要求するので、同一field
   を持つ別class同士は等しくならない。
-* **`cmp`の順序**は数値・文字列fieldを対象 (MVPのfield型)。
-  組み込み比較同様、任意のobject型fieldには順序を課さない。
+* **`cmp`の順序**は各field対を`<`とまったく同じ規則で比較する。
+  等しい (`==`) fieldは次へ進み、最初に等しくなかった対が結果を決める。
+  `<`が順序を付けられない対 — Array、Object、型違い — はそこでも同じ
+  `cannot compare` TypeErrorになるので、`cmp`が順序を課すのは数値と
+  文字列のfieldだけ。
+* **`eq`と`cmp`は`other`を取り**、`hash`と`to_s`は引数を取らない。
+  引数なしで呼べば通常のmissing required argumentのArityError。
 
 #### 制限 (Phase 4 MVP)
 

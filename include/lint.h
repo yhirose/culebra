@@ -438,6 +438,18 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t d = 0; d < i; d++) {
         walk(*node.nodes[d]);
         if (culebra::is_packable_decorator(*node.nodes[d])) is_packable = true;
+        // Four names are derivable. Reported here for the same reason the
+        // @packable field types are: pre-eval on every backend, so the
+        // diagnostic does not depend on whether the declaration ran. The
+        // decorator's own position is where the backends' safety-net throw
+        // lands (positionless, stamped at the declaration).
+        for (auto trait : culebra::view_derive(*node.nodes[d])) {
+          if (culebra::find_derive_method(trait)) continue;
+          diags_.push_back(Diagnostic{
+              "SyntaxError", culebra::derive_unknown_trait_message(trait),
+              static_cast<long>(node.nodes[d]->line),
+              static_cast<long>(node.nodes[d]->column), Severity::Error});
+        }
       }
       // `@packable` constrains typed fields to fixed scalar types. Validate
       // here so the error fires pre-eval on every backend at the field's

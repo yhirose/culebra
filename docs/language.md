@@ -3399,9 +3399,13 @@ tag), so they stay correct as fields change. Details:
   a SyntaxError). It composes with regular decorators on the same class.
 * **Nominal:** derived `eq` requires the same class tag, so two classes
   with identical fields never compare equal.
-* **`cmp` ordering** covers numeric and string fields (the MVP field
-  types); like the built-in comparison it does not impose an order on
-  arbitrary object-typed fields.
+* **`cmp` ordering** compares each field pair exactly as `<` does: equal
+  fields (by `==`) move on to the next, and the first unequal pair decides.
+  A pair `<` refuses to order — an Array, an Object, two different types —
+  is the same `cannot compare` TypeError there, so `cmp` orders the numeric
+  and string fields and no others.
+* **`eq` and `cmp` take `other`**, `hash` and `to_s` take nothing; calling
+  one without its argument is the ordinary missing-required ArityError.
 
 #### Limitations (Phase 4 MVP)
 

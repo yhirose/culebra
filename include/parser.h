@@ -943,16 +943,25 @@ struct DerivedMethod {
   std::string_view name;  // generated method name (static-lifetime literal)
   int kind;               // 0=eq, 1=hash, 2=show, 3=cmp
 };
+// nullopt for a name outside the derivable set. The static lint pass uses
+// this form to report pre-eval (like the @packable field types), which is
+// what keeps the diagnostic's *timing* backend-independent; the throwing
+// form below stays as each backend's safety net.
+inline std::optional<DerivedMethod> find_derive_method(std::string_view trait) {
+  if (trait == "Eq") return DerivedMethod{"eq", 0};
+  if (trait == "Hash") return DerivedMethod{"hash", 1};
+  if (trait == "Show") return DerivedMethod{"to_s", 2};
+  if (trait == "Comparable") return DerivedMethod{"cmp", 3};
+  return std::nullopt;
+}
+inline std::string derive_unknown_trait_message(std::string_view trait) {
+  return std::format("@derive: unknown trait `{}` (expected Eq, Hash, "
+                     "Show, or Comparable)",
+                     trait);
+}
 inline DerivedMethod derive_method_for(std::string_view trait) {
-  if (trait == "Eq") return {"eq", 0};
-  if (trait == "Hash") return {"hash", 1};
-  if (trait == "Show") return {"to_s", 2};
-  if (trait == "Comparable") return {"cmp", 3};
-  throw CulebraError(
-      "SyntaxError",
-      std::format("@derive: unknown trait `{}` (expected Eq, Hash, "
-                  "Show, or Comparable)",
-                  trait));
+  if (auto dm = find_derive_method(trait)) return *dm;
+  throw CulebraError("SyntaxError", derive_unknown_trait_message(trait));
 }
 
 // Reserved words that may not name a variable. Single source for the

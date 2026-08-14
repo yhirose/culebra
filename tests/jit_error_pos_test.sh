@@ -461,6 +461,23 @@ class P {
   new(x) { self.x = x }
 }
 println(P.new([1]) < P.new([2]))'
+# An unknown @derive trait is reported by the static pass, so it fires before
+# anything runs — the same instant on every backend, and independent of
+# whether the declaration is ever reached.
+check_same "derive unknown trait"      'println("before")
+@derive(Eq, Nope)
+class P {
+  new(x) { self.x = x }
+}'
+check_same "derive unknown in fn"      'println("before")
+fn mk() {
+  @derive(Nope)
+  class P {
+    new(x) { self.x = x }
+  }
+  P
+}
+println("declared")'
 
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1
