@@ -632,17 +632,70 @@ inline thread_local int64_t _jit_call_boundary_col = 0;
 inline thread_local int64_t _jit_pending_boundary_line = 0;
 inline thread_local int64_t _jit_pending_boundary_col = 0;
 
+// Per-argument source positions for an indirect (as-value) ns-method call,
+// threaded by the indirect-call codegen so a wrong-typed argument is rejected
+// at that argument's position with the interp binder's wording ("parameter
+// '<name>' expects <T>"), exactly like a direct call. `_jit_argpos_n` is the
+// count; 0 means "no per-arg positions" — a HOF callback path, where
+// set_call_site reset it and the dispatch's body-coercion arg0 check runs
+// instead (matching interp's callback wording). Capped at K; a longer arg list
+// leaves the overflow positions at the call site.
+// 64 covers any realistic positional arity; args past the cap fall back to
+// the call-site position (a known, deterministic divergence from interp,
+// which has no cap — see the typed-param position notes). Here rather than
+// with set_call_site for the same ODR reason as the pair above.
+inline constexpr int _JIT_ARGPOS_MAX = 64;
+inline thread_local int64_t _jit_argpos_line[_JIT_ARGPOS_MAX] = {};
+inline thread_local int64_t _jit_argpos_col[_JIT_ARGPOS_MAX] = {};
+inline thread_local int _jit_argpos_n = 0;
+
 // Run `op`, backfilling a positionless error from the published call site.
 // The entry-catch idiom for native thunks, whose ABI carries no line/col
 // (handle methods, derived-method thunks, ns adapters). A template needs
 // C++ linkage, and it must follow the thread-locals above, so the extern
-// "C" block pauses around it.
+// "C" block pauses around it. JitBorrowedCallSite below needs C++ linkage
+// for the same reason and rides the same pause.
 }  // extern "C" (resumed below)
 template <class F>
 inline auto _jit_at_call_site(F&& op) -> decltype(op()) {
   return _jit_at_pos(_jit_call_site_line, _jit_call_site_col,
                      std::forward<F>(op));
 }
+
+// Publish a call site for a method the runtime reaches on its own, rather
+// than from a codegen call site: the operator forms of `==` / `!=` and the
+// ordering ops dispatch to a user or derived `__eq__` / `eq` / `__lt__` /
+// `__le__` / `cmp` from inside the comparison helper, so nothing set one.
+// Explicit errors raised by that method's binder — an overload set's
+// DispatchError, an ArityError, a typed-param TypeError — read the call site
+// and would otherwise report wherever the last real call was. The operator's
+// own position is where the interp anchors them (its binary-expression node).
+// The per-argument positions go with it: the operand is handed over by the
+// runtime, not written at a call, so there is no argument expression to point
+// at — leaving the previous call's array live would report a typed-param
+// error somewhere else entirely. Restores on scope exit, throw included, so
+// an outer call site is unaffected.
+struct JitBorrowedCallSite {
+  int64_t line, col, bline, bcol;
+  int argn;
+  JitBorrowedCallSite(int64_t l, int64_t c)
+      : line(_jit_call_site_line), col(_jit_call_site_col),
+        bline(_jit_call_boundary_line), bcol(_jit_call_boundary_col),
+        argn(_jit_argpos_n) {
+    _jit_call_site_line = l;
+    _jit_call_site_col = c;
+    _jit_call_boundary_line = l;
+    _jit_call_boundary_col = c;
+    _jit_argpos_n = 0;
+  }
+  ~JitBorrowedCallSite() {
+    _jit_call_site_line = line;
+    _jit_call_site_col = col;
+    _jit_call_boundary_line = bline;
+    _jit_call_boundary_col = bcol;
+    _jit_argpos_n = argn;
+  }
+};
 extern "C" {
 
 // Recursion guard, compiled-code side. The counter itself lives in shared.h
@@ -1410,6 +1463,10 @@ inline bool _extract_bool_and_release(JitValue v) {
 // touches the operands' refs (the bytecode VM's contract).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  // The dispatches below are calls with no codegen call site; both backends
+  // publish the operator's position here before entering (the same hook the
+  // positionless backfill reads), so lend it to them.
+  JitBorrowedCallSite site{_jit_op_line, _jit_op_col};
   // `==` is commutative, so try either side's `__eq__`.
   if (auto r = _try_special_binop(t1, d1, t2, d2, "__eq__"))
     return _extract_bool_and_release(*r);
@@ -1489,11 +1546,13 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
 //     codegen `Owned` handles fire only on the normal path), so one guard over
 //     the whole body releases them on every throw — the user dispatch's and the
 //     direct type error's alike, matching _arith_guard_numeric.
+// The `fast_path` dispatches to a user method with no codegen call site, so
+// each expansion lends it the operator's own position (JitBorrowedCallSite).
 #define CUL_DEF_ORD_OP(name, cmp_op, fast_path)                         \
   inline bool _value_##name##_borrow(                                   \
       int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
       int64_t line, int64_t col) {                                      \
-    fast_path                                                           \
+    { JitBorrowedCallSite site{line, col}; fast_path }                  \
     return _culebra_value_ord(t1, d1, t2, d2,                           \
                               [](double a, double b) { return a cmp_op b; }, \
                               line, col);                               \
@@ -1502,7 +1561,7 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
       int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
       int64_t line, int64_t col) {                                      \
     JitUnwindRelease g{JitValue{t1, d1}, JitValue{t2, d2}};             \
-    fast_path                                                           \
+    { JitBorrowedCallSite site{line, col}; fast_path }                  \
     return _culebra_value_ord(t1, d1, t2, d2,                           \
                               [](double a, double b) { return a cmp_op b; }, \
                               line, col);                               \

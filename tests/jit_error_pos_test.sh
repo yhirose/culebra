@@ -422,5 +422,45 @@ mut i = 0
 while i < 6000 { v = [v]; i += 1 }
 v.println()'
 
+# `==` and the ordering operators reach a user `eq` / `cmp` from inside the
+# comparison helper, so the invocation has no codegen call site of its own.
+# An explicit error from that method's binder must report the operator's
+# position, not wherever the last real call happened to be.
+check_same "== overload dispatch"      'class P {
+  new(x) { self.x = x }
+  eq() { true }
+  eq(a, b) { true }
+}
+let a = P.new(1)
+let b = P.new(2)
+println(a == b)'
+check_same "< overload dispatch"       'class P {
+  new(x) { self.x = x }
+  cmp() { 0 }
+  cmp(a, b) { 0 }
+}
+let a = P.new(1)
+let b = P.new(2)
+println(a < b)'
+check_same "== typed eq param"         'class P {
+  new(x) { self.x = x }
+  eq(o: Long) { true }
+}
+let a = P.new(1)
+println(a == P.new(1))'
+# Derived eq/cmp declare `other`; calling one bare is a missing-required
+# ArityError at the call, and an unorderable field pair is the same
+# `cannot compare` TypeError the `<` operator raises.
+check_same "derived eq bare"           '@derive(Eq)
+class P {
+  new(x) { self.x = x }
+}
+P.new(1).eq()'
+check_same "derived cmp unorderable"   '@derive(Comparable)
+class P {
+  new(x) { self.x = x }
+}
+println(P.new([1]) < P.new([2]))'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

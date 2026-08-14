@@ -60,22 +60,6 @@ inline thread_local int64_t _jit_callback_arg_col = 0;
 inline thread_local int64_t _jit_call_arg0_line = 0;
 inline thread_local int64_t _jit_call_arg0_col = 0;
 
-// Per-argument source positions for an indirect (as-value) ns-method call,
-// threaded by the indirect-call codegen so a wrong-typed argument is rejected
-// at that argument's position with the interp binder's wording ("parameter
-// '<name>' expects <T>"), exactly like a direct call. `_jit_argpos_n` is the
-// count; 0 means "no per-arg positions" — a HOF callback path, where
-// set_call_site reset it and the dispatch's body-coercion arg0 check runs
-// instead (matching interp's callback wording). Capped at K; a longer arg list
-// leaves the overflow positions at the call site.
-// 64 covers any realistic positional arity; args past the cap fall back to
-// the call-site position (a known, deterministic divergence from interp,
-// which has no cap — see the typed-param position notes).
-inline constexpr int _JIT_ARGPOS_MAX = 64;
-inline thread_local int64_t _jit_argpos_line[_JIT_ARGPOS_MAX] = {};
-inline thread_local int64_t _jit_argpos_col[_JIT_ARGPOS_MAX] = {};
-inline thread_local int _jit_argpos_n = 0;
-
 // Build a variant instance: tagged with `class` = variant name and
 // `__enum` = parent enum name, with the `arity` declared payload fields
 // `_0.._{arity-1}` taking ownership of the caller's args (object_set
