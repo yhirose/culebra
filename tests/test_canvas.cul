@@ -551,6 +551,65 @@ assert_eq(_Canvas.get_pixel(0, 0), 0)
 // A huge size clamps rather than rasterizing (and allocating) unboundedly.
 assert_eq(_Canvas.ttf_advance(font, 65, 999999999), 1638)  // 800 * (2048/1000)
 
+// --- ttf_glyph_screen: the same glyph, into the screen layer ---
+// Headless has no display, so screen_scale() is 1.0 and the screen layer is
+// the framebuffer's size. That is what makes this checkable here: at scale 1
+// a screen glyph is rasterized at the same size and placed at the same
+// coordinates as a framebuffer one, so the two buffers must come out
+// byte-identical -- across interp, JIT and AOT alike. The scaling itself
+// (a real window's integer upscale, the Playground's pane width) has no
+// headless equivalent and is verified by eye.
+assert_eq(_Canvas.screen_scale(), 1.0)
+_Canvas.init(20, 20)
+assert_eq(_Canvas.screen_width(), _Canvas.width())
+assert_eq(_Canvas.screen_height(), _Canvas.height())
+
+_Canvas.clear(CLEAR)  // both buffers start transparent, so the blends match
+_Canvas.ttf_glyph(font, 65, 2, 10, WHITE, 10)
+_Canvas.ttf_glyph_screen(font, 65, 2, 10, WHITE, 10)
+mut screen_lit = 0
+mut screen_differs = 0
+for y in 0..20 {
+  for x in 0..20 {
+    let fb = _Canvas.get_pixel(x, y)
+    screen_lit = screen_lit + 1 if fb != 0
+    screen_differs = screen_differs + 1 if _Canvas.get_screen_pixel(x, y) != fb
+  }
+}
+assert_eq(screen_lit, 49)      // the same 7x7 block ttf_glyph draws
+assert_eq(screen_differs, 0)   // and the screen layer holds exactly it
+
+// A screen draw inside draw_to still goes to the screen, not the sprite: the
+// layer sits on top of the presented frame, and a sprite is never presented.
+let off = _Canvas.sprite_blank(20, 20, CLEAR)
+let prev = _Canvas.target(off)
+_Canvas.ttf_glyph_screen(font, 66, 0, 8, WHITE, 10)
+_Canvas.target(prev)
+assert_eq(_Canvas.get_screen_pixel(0, 7), WHITE)  // 'B' landed on the screen
+_Canvas.sprite_free(off)
+
+// An unknown handle draws nothing and reports no advance, like ttf_glyph.
+assert_eq(_Canvas.ttf_glyph_screen(999, 65, 0, 0, WHITE, 10), 0)
+// The advance is the LOGICAL one, so a caller's pen and text_width() agree
+// with the ttf_glyph path whatever the scale is.
+assert_eq(_Canvas.ttf_glyph_screen(font, 65, 0, 0, WHITE, 10),
+          _Canvas.ttf_advance(font, 65, 10))
+
+// present() clears the screen layer and leaves the framebuffer alone: screen
+// text is redrawn every frame, framebuffer drawing accumulates. Assertions on
+// screen pixels must come BEFORE any present() for that reason.
+_Canvas.present()
+mut after_present = 0
+mut fb_after_present = 0
+for y in 0..20 {
+  for x in 0..20 {
+    after_present = after_present + 1 if _Canvas.get_screen_pixel(x, y) != 0
+    fb_after_present = fb_after_present + 1 if _Canvas.get_pixel(x, y) != 0
+  }
+}
+assert_eq(after_present, 0)
+assert_eq(fb_after_present, 49)
+
 _Canvas.ttf_free(font)
 assert_eq(_Canvas.ttf_advance(font, 65, 10), 0)  // a freed handle is unknown
 _Canvas.ttf_free(font)                           // a second free is a no-op

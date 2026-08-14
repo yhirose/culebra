@@ -121,16 +121,33 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   display: flex; align-items: center; justify-content: center;
   background: #000; outline: none;
 }
-.pg-canvas canvas {
-  image-rendering: pixelated;
-  /* Fill the pane's width, but never its height: a replaced element with a
-     natural ratio keeps it under max-height by giving width back (CSS 2.1
-     §10.4), so any framebuffer shape — square 160x160, wide 640x380 —
-     letterboxes instead of cropping or squishing. The element box stays
-     equal to the drawn pixels, which sendMouse's coordinate mapping needs. */
+/* The framebuffer and the screen layer over it, kept exactly co-extensive.
+   The ratio is the framebuffer's, set inline by app.js when a frame's size is
+   known: the box used to size itself from #game's own width/height attributes
+   (a replaced element's natural ratio), and this wrapper has to carry that
+   ratio explicitly for both children to share it. Fill the pane's width but
+   never its height, so any framebuffer shape — square 160x160, wide 640x380 —
+   letterboxes instead of cropping or squishing. The boxes stay equal to the
+   drawn pixels, which sendMouse's coordinate mapping needs. */
+.pg-canvas-stack {
+  position: relative;
   width: 100%;
-  height: auto;
   max-height: 100%;
+  aspect-ratio: 1 / 1;  /* replaced by app.js once a frame arrives */
+}
+.pg-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+#game { image-rendering: pixelated; }
+/* Over the frame, at the displayed size rather than the framebuffer's, and
+   transparent to the pointer so the canvas pane's own mouse/key handlers
+   (which measure #game) keep seeing everything. */
+.pg-canvas-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 @media (max-width: 720px) {

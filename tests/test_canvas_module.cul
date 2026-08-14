@@ -417,6 +417,31 @@ for y in 0..20 {
 assert_eq(lit_mixed, 49 + 12)
 assert_eq(font.text_width("Aあ", 10), 8 + 6)  // 'A' 800 + diamond 600, at scale 0.01
 
+// draw_screen draws the same string with the same layout, into the screen
+// layer rather than the framebuffer. Headless has no display, so the scale is
+// 1 and the two land identically -- the point being that a call site swaps
+// one for the other by name alone. (test_canvas.cul pins the pixel identity
+// at the primitive level; here it is the preamble path that matters.)
+Canvas.clear(0)
+font.draw("Aあ", 2, 2, RED, 10)
+mut lit_fb = 0
+for y in 0..20 {
+  for x in 0..20 {
+    lit_fb = lit_fb + 1 if Canvas.get_pixel(x, y) == RED
+  }
+}
+Canvas.clear(0)
+font.draw_screen("Aあ", 2, 2, RED, 10)
+mut lit_screen = 0
+for y in 0..20 {
+  for x in 0..20 {
+    lit_screen = lit_screen + 1 if _Canvas.get_screen_pixel(x, y) == RED
+    // ...and nothing reached the framebuffer this time.
+    assert_eq(Canvas.get_pixel(x, y), 0)
+  }
+}
+assert_eq(lit_screen, lit_fb)
+
 // drop() frees the native handle -- no crash on later use via the same Font
 // object once its native side is gone.
 let disposable = Canvas.Font(Encoding.hex.decode(TTF_TEST_FONT))

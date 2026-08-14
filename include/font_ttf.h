@@ -164,13 +164,31 @@ inline const RasterizedGlyph* ttf_rasterize(TtfFont& f, int64_t codepoint,
   return &f.cache.emplace(key, std::move(g)).first->second;
 }
 
-// Draw one glyph, pen position on the baseline (x, y) — the stb_truetype
-// convention, not the top-left convention the 8x8 glyph() uses; the Font
-// preamble class derives the baseline from ascent() so Font.draw still reads
-// as "top-left" the way Canvas.text does. Coverage (0..255) and rgba's own
-// alpha combine with the exact rounding rule blit_scaled already uses
-// ((cov*a + 127)/255), so this rides put()'s existing blend_over() path
-// unmodified — no new compositing rule to keep symmetric across backends.
+// Composite a rasterized glyph into `t`, pen position on the baseline (x, y) —
+// the stb_truetype convention, not the top-left convention the 8x8 glyph()
+// uses; the Font preamble class derives the baseline from ascent() so Font.draw
+// still reads as "top-left" the way Canvas.text does. Coverage (0..255) and
+// rgba's own alpha combine with the exact rounding rule blit_scaled already
+// uses ((cov*a + 127)/255), so this rides put()'s existing blend_over() path
+// unmodified — no new compositing rule to keep symmetric across backends. The
+// framebuffer and the screen layer differ only in which Target and which
+// (x, y, size) resolve before this; the pixels are laid down the same way.
+inline void ttf_blit_glyph(const RasterizedGlyph& g, const Target& t, int x,
+                           int y, uint32_t rgba) {
+  uint32_t base_a = rgba >> 24;
+  if (base_a == 0 || g.w == 0 || g.h == 0) return;
+  uint32_t rgb = rgba & 0x00FFFFFFu;
+  for (int row = 0; row < g.h; row++) {
+    for (int col = 0; col < g.w; col++) {
+      uint32_t cov = g.coverage[static_cast<size_t>(row) * g.w + col];
+      if (cov == 0) continue;
+      uint32_t a = (cov * base_a + 127) / 255;
+      put(t, x + g.xoff + col, y + g.yoff + row, rgb | (a << 24));
+    }
+  }
+}
+
+// Draw one glyph into the current draw target (framebuffer or sprite).
 // Returns the glyph's own pixel advance (0 for an unknown handle/codepoint or
 // a non-positive size) — ttf_rasterize already has it, so the preamble's
 // draw() loop can step its cursor from this instead of a second lookup
@@ -181,20 +199,38 @@ inline int64_t ttf_glyph(int64_t font_id, int64_t codepoint, int x, int y,
   if (f == nullptr) return 0;
   const RasterizedGlyph* g = ttf_rasterize(*f, codepoint, size);
   if (g == nullptr) return 0;
-  uint32_t base_a = rgba >> 24;
-  if (base_a != 0 && g->w != 0 && g->h != 0) {
-    Target t = resolve_target();
-    uint32_t rgb = rgba & 0x00FFFFFFu;
-    for (int row = 0; row < g->h; row++) {
-      for (int col = 0; col < g->w; col++) {
-        uint32_t cov = g->coverage[static_cast<size_t>(row) * g->w + col];
-        if (cov == 0) continue;
-        uint32_t a = (cov * base_a + 127) / 255;
-        put(t, x + g->xoff + col, y + g->yoff + row, rgb | (a << 24));
-      }
+  ttf_blit_glyph(*g, resolve_target(), x, y, rgba);
+  return g->advance;
+}
+
+// Draw one glyph into the screen layer (canvas.h) instead of the framebuffer.
+// (x, y, size) arrive in the SAME logical units ttf_glyph takes and are scaled
+// here by screen_scale(), so the glyph is rasterized AT the presented size —
+// which is the whole point: magnifying a small raster is exactly the blockiness
+// this path exists to avoid.
+//
+// The advance returned is the LOGICAL one (ttf_rasterize at the original
+// `size`), not the scaled one. The pen a caller steps with it, and the width
+// text_width() predicts for the same string, therefore stay in the one
+// coordinate system draw() and draw_screen() share — the glyphs land at
+// different resolutions, the layout does not diverge.
+inline int64_t ttf_glyph_screen(int64_t font_id, int64_t codepoint, int x,
+                                int y, uint32_t rgba, int64_t size) {
+  TtfFont* f = ttf_of(font_id);
+  if (f == nullptr) return 0;
+  double scale = screen_scale();
+  const RasterizedGlyph* g =
+      ttf_rasterize(*f, codepoint, std::llround(size * scale));
+  if (g != nullptr) {
+    Target t = resolve_screen_target();
+    if (t.px != nullptr) {
+      ttf_blit_glyph(*g, t, static_cast<int>(std::llround(x * scale)),
+                     static_cast<int>(std::llround(y * scale)), rgba);
+      _screen_dirty() = true;
     }
   }
-  return g->advance;
+  const RasterizedGlyph* logical = ttf_rasterize(*f, codepoint, size);
+  return logical == nullptr ? 0 : logical->advance;
 }
 
 inline int64_t ttf_advance(int64_t font_id, int64_t codepoint, int64_t size) {

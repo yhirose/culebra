@@ -294,6 +294,25 @@ let _canvas_module = fn () {
         cx += _Canvas.ttf_glyph(self._id, cp, cx, baseline, color, size)
       }
     }
+    # draw(), but rasterized at the size the frame is actually presented at
+    # and drawn over it rather than into it. The frame is scaled up with
+    # nearest-neighbour pixels -- right for sprites and the bitmap font, but
+    # it magnifies a glyph's antialiased edge into blocks; this keeps the edge
+    # sharp at any window size or Playground pane width.
+    #
+    # Same arguments, same coordinates, same units as draw() -- including what
+    # text_width() predicts -- so a call switches between the two by name
+    # alone. Two differences to know: this layer is cleared every present(),
+    # so screen text is redrawn each frame (a `run` tick does that anyway),
+    # and Canvas.to_png() does not capture it (to_png reads the draw target;
+    # use draw() for text that has to appear in a saved image).
+    draw_screen(s, x, y, color, size) {
+      let baseline = y + self.ascent(size)
+      mut cx = x
+      for cp in s.code_points() {
+        cx += _Canvas.ttf_glyph_screen(self._id, cp, cx, baseline, color, size)
+      }
+    }
     # Pixel width `s` will occupy at `size` -- for right-aligning / centring.
     text_width(s, size) {
       mut w = 0

@@ -840,6 +840,30 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_ttf_glyph(
       font, codepoint, static_cast<int>(x), static_cast<int>(y),
       static_cast<uint32_t>(rgba), size);
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t
+culebra_runtime_canvas_ttf_glyph_screen(int64_t font, int64_t codepoint,
+                                        int64_t x, int64_t y, int64_t rgba,
+                                        int64_t size) {
+  return culebra::_canvas_detail::ttf_glyph_screen(
+      font, codepoint, static_cast<int>(x), static_cast<int>(y),
+      static_cast<uint32_t>(rgba), size);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_screen_width() {
+  return culebra::_canvas_detail::screen_width();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t
+culebra_runtime_canvas_screen_height() {
+  return culebra::_canvas_detail::screen_height();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t
+culebra_runtime_canvas_get_screen_pixel(int64_t x, int64_t y) {
+  return culebra::_canvas_detail::get_screen_pixel(static_cast<int>(x),
+                                                   static_cast<int>(y));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE double
+culebra_runtime_canvas_screen_scale() {
+  return culebra::_canvas_detail::screen_scale();
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_ttf_advance(
     int64_t font, int64_t codepoint, int64_t size) {
   return culebra::_canvas_detail::ttf_advance(font, codepoint, size);
@@ -8344,6 +8368,13 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_ttf_free, vt, i64);
   jit.module_->getOrInsertFunction(rt::canvas_ttf_glyph, i64, i64, i64, i64,
                                    i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_ttf_glyph_screen, i64, i64, i64,
+                                   i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_screen_width, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_screen_height, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_get_screen_pixel, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::canvas_screen_scale,
+                                   jit.builder_.getDoubleTy());
   jit.module_->getOrInsertFunction(rt::canvas_ttf_advance, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_ttf_ascent, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::canvas_target, i64, i64, i64, i64);
@@ -9571,6 +9602,11 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
                          {"rgba"}, {"size"}}))
         return jit.own(make_long(
             emit_call(module_->getFunction(rt::canvas_ttf_glyph), *v)));
+    if (method == "ttf_glyph_screen")
+      if (auto v = args({{"font"}, {"codepoint"}, {"x", Coord}, {"y", Coord},
+                         {"rgba"}, {"size"}}))
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_ttf_glyph_screen), *v)));
     if (method == "ttf_advance")
       if (auto v = args({{"font"}, {"codepoint"}, {"size"}}))
         return jit.own(make_long(
@@ -9720,6 +9756,19 @@ inline JIT::Owned JitExtension::compile_ns_call(JIT& jit,
     if (method == "height" && a.empty())
       return jit.own(make_long(
           emit_call(module_->getFunction(rt::canvas_height), {})));
+    if (method == "screen_width" && a.empty())
+      return jit.own(make_long(
+          emit_call(module_->getFunction(rt::canvas_screen_width), {})));
+    if (method == "screen_height" && a.empty())
+      return jit.own(make_long(
+          emit_call(module_->getFunction(rt::canvas_screen_height), {})));
+    if (method == "get_screen_pixel")
+      if (auto v = args({{"x", Coord}, {"y", Coord}}))
+        return jit.own(make_long(
+            emit_call(module_->getFunction(rt::canvas_get_screen_pixel), *v)));
+    if (method == "screen_scale" && a.empty())
+      return jit.own(make_float(
+          emit_call(module_->getFunction(rt::canvas_screen_scale), {})));
   }
 
   if (ns == "Random") {

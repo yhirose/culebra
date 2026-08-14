@@ -189,6 +189,83 @@ inline Target resolve_target() {
 inline int width() { return resolve_target().w; }
 inline int height() { return resolve_target().h; }
 
+// --- the screen layer ------------------------------------------------------
+// A SECOND buffer, at the size the framebuffer is actually presented at, for
+// the one thing the framebuffer's nearest-neighbour upscale cannot carry:
+// antialiased text. A glyph rasterized into the framebuffer has its soft edge
+// magnified into blocks by present(); rasterized at the presented size and
+// blitted 1:1 instead, it stays crisp. Everything else — sprites, shapes, the
+// 8x8 bitmap font — wants the blocky upscale and stays where it is.
+//
+// This is the standard split a 2D engine makes between a low-resolution game
+// world and a resolution-independent UI layer, with culebra's own constraint
+// on top: the glyphs are rasterized by the same stb_truetype code (font_ttf.h)
+// and composited through the same put()/blend_over() seam as everything else,
+// never by the host's text API — raylib's DrawText and the browser's fillText
+// would each round differently and break native/browser symmetry.
+//
+// The backend supplies exactly one fact, screen_scale(): framebuffer pixels ->
+// presented pixels, the window's upscale times the display's DPI scale. It is
+// 1.0 wherever there is no display (headless, a window that failed to open,
+// the browser before the page has measured itself), which makes headless a
+// real test of this path rather than a special case — at scale 1.0 a
+// screen-layer glyph must land pixel-identical to a framebuffer one, which is
+// what tests/test_canvas.cul asserts across all three backends.
+//
+// Declared here, defined per backend below. NOT inline: the window build's
+// definition is in culebra_rt_canvas.cc, and an inline one would be invisible
+// to every other translation unit.
+double screen_scale();
+
+inline int& _screen_w() { static int w = 0; return w; }
+inline int& _screen_h() { static int h = 0; return h; }
+inline std::vector<uint32_t>& _screen_fb() {
+  static std::vector<uint32_t> b;
+  return b;
+}
+// Whether anything drew here since the last present. Frames that drew no
+// screen text then skip the clear and the upload entirely, which is most
+// frames of most programs.
+inline bool& _screen_dirty() { static bool d = false; return d; }
+
+// Size the screen layer to the presented size, reallocating only when that
+// actually changes. Resolved per call rather than cached: a native window's
+// scale is fixed once it opens, but the browser's follows the pane and can
+// change between frames.
+inline void ensure_screen_buffer() {
+  if (!own_canvas()) return;
+  double s = screen_scale();
+  int w = static_cast<int>(std::llround(_fb_w() * s));
+  int h = static_cast<int>(std::llround(_fb_h() * s));
+  if (w < 0) w = 0;
+  if (h < 0) h = 0;
+  if (w == _screen_w() && h == _screen_h()) return;
+  _screen_w() = w;
+  _screen_h() = h;
+  _screen_fb().assign(static_cast<size_t>(w) * static_cast<size_t>(h), 0u);
+}
+
+// The screen layer as a draw target. Deliberately ignores _target_id(): unlike
+// every framebuffer draw, a screen-layer draw inside Canvas.draw_to still goes
+// to the screen, because the layer exists to sit on top of the presented frame
+// and a sprite is not presented.
+inline Target resolve_screen_target() {
+  if (!own_canvas()) return {nullptr, 0, 0};
+  ensure_screen_buffer();
+  return {_screen_fb().data(), _screen_w(), _screen_h()};
+}
+
+// Erase the screen layer — every backend's present() ends here, so unlike the
+// framebuffer it is redrawn every frame by contract. It has to be: antialiased
+// glyphs composited over themselves frame after frame darken every edge.
+// Owner-gated because present() itself is not, and skipped when nothing drew
+// (the only writer sets the flag, so a clean frame left it already zero).
+inline void screen_buffer_reset() {
+  if (!own_canvas() || !_screen_dirty()) return;
+  _screen_dirty() = false;
+  std::fill(_screen_fb().begin(), _screen_fb().end(), 0u);
+}
+
 // The pixels an id names for readback (PNG encoding): 0 follows the CURRENT
 // draw target, the way width/height/get_pixel do, so `Canvas.to_png()` inside
 // `draw_to` encodes the sprite being drawn into; any other id is that sprite.
@@ -285,6 +362,19 @@ inline void set_pixel(int x, int y, uint32_t rgba) {
 // `Canvas.get` for pixel-readback collision (reading back what was drawn).
 inline uint32_t get_pixel(int x, int y) {
   Target t = resolve_target();
+  if (x < 0 || y < 0 || x >= t.w || y >= t.h) return 0;
+  return t.px[static_cast<size_t>(y) * t.w + x];
+}
+
+// The screen layer's size and pixels. No `Canvas`-level surface wraps these:
+// a script draws to the screen layer in logical coordinates and never needs to
+// know what it was scaled to. They exist so the test suite can assert, in
+// headless (where screen_scale() is 1.0 by construction), that a screen-layer
+// glyph lands pixel-identical to a framebuffer one on all three backends.
+inline int screen_width() { return resolve_screen_target().w; }
+inline int screen_height() { return resolve_screen_target().h; }
+inline uint32_t get_screen_pixel(int x, int y) {
+  Target t = resolve_screen_target();
   if (x < 0 || y < 0 || x >= t.w || y >= t.h) return 0;
   return t.px[static_cast<size_t>(y) * t.w + x];
 }
@@ -827,20 +917,31 @@ inline int64_t sound_alloc_id() {
 // the TUI backend's read_key wait. Input and tone read/notify JS-side state
 // the frontend maintains; see playground/worker.js and app.js.
 
+// The screen layer rides along in the same message as the frame: one copy, one
+// suspend point. `slen` is 0 on frames that drew no screen-layer text, which is
+// most frames of most programs — the page then just clears its overlay.
 #if defined(CULEBRA_WASM_JSPI)
 // Post the frame, then suspend (via JSPI) until worker.js's self.__nextFrame
 // resolves — the main thread's requestAnimationFrame loop forwards a "tick"
 // that resolves it (with a setTimeout fallback so a backgrounded tab, where
 // rAF stalls, doesn't wedge the run).
-EM_ASYNC_JS(void, _wasm_present, (int w, int h, const uint8_t* buf, int len), {
-  postMessage({ type: "frame", w: w, h: h, buf: HEAPU8.slice(buf, buf + len) });
+EM_ASYNC_JS(void, _wasm_present,
+            (int w, int h, const uint8_t* buf, int len, int sw, int sh,
+             const uint8_t* sbuf, int slen), {
+  postMessage({ type: "frame", w: w, h: h, buf: HEAPU8.slice(buf, buf + len),
+                screenW: sw, screenH: sh,
+                screenBuf: slen ? HEAPU8.slice(sbuf, sbuf + slen) : null });
   await self.__nextFrame();
 });
 #else
 // No JSPI in this build: post the frame but don't wait — the loop runs as fast
 // as the interpreter allows and the page shows whatever it last received.
-EM_JS(void, _wasm_present, (int w, int h, const uint8_t* buf, int len), {
-  postMessage({ type: "frame", w: w, h: h, buf: HEAPU8.slice(buf, buf + len) });
+EM_JS(void, _wasm_present,
+      (int w, int h, const uint8_t* buf, int len, int sw, int sh,
+       const uint8_t* sbuf, int slen), {
+  postMessage({ type: "frame", w: w, h: h, buf: HEAPU8.slice(buf, buf + len),
+                screenW: sw, screenH: sh,
+                screenBuf: slen ? HEAPU8.slice(sbuf, sbuf + slen) : null });
 });
 #endif  // CULEBRA_WASM_JSPI
 
@@ -851,6 +952,13 @@ EM_JS(int, _wasm_canvas_buttons, (), { return self.__canvasButtons || 0; });
 EM_JS(int, _wasm_canvas_mouse_x, (), { return self.__canvasMouseX || 0; });
 EM_JS(int, _wasm_canvas_mouse_y, (), { return self.__canvasMouseY || 0; });
 EM_JS(int, _wasm_canvas_mouse_buttons, (), { return self.__canvasMouseButtons || 0; });
+// How far the page is stretching the framebuffer, kept current by app.js's
+// ResizeObserver on the canvas pane. Missing until the page has measured
+// itself (and in a hidden tab, which has no box to measure), so it defaults to
+// 1.0 — the screen layer then matches the framebuffer instead of vanishing.
+EM_JS(double, _wasm_canvas_screen_scale, (), {
+  return self.__canvasScreenScale || 1.0;
+});
 // Arbitrary keyboard state in Term's key vocabulary ("a", " ", "left", "f1",
 // …). worker.js keeps the held set and the pressed/typed queues current from
 // the page's normalized key events; the pops hand back "" when empty.
@@ -944,10 +1052,17 @@ EM_JS(void, _wasm_canvas_sound_free, (int id), {
   postMessage({ type: "sound", cmd: "free", id: id });
 });
 
+inline double screen_scale() { return _wasm_canvas_screen_scale(); }
 inline void present() {
   auto& fb = _fb();
+  ensure_screen_buffer();
+  auto& sfb = _screen_fb();
+  bool dirty = _screen_dirty() && !sfb.empty();
   _wasm_present(_fb_w(), _fb_h(), reinterpret_cast<const uint8_t*>(fb.data()),
-                static_cast<int>(fb.size() * 4));
+                static_cast<int>(fb.size() * 4), _screen_w(), _screen_h(),
+                reinterpret_cast<const uint8_t*>(sfb.data()),
+                dirty ? static_cast<int>(sfb.size() * 4) : 0);
+  screen_buffer_reset();
 }
 inline int64_t buttons() { return _wasm_canvas_buttons(); }
 inline int64_t mouse_x() { return _wasm_canvas_mouse_x(); }
@@ -1026,7 +1141,11 @@ inline void sound_free(int64_t id) {
 // raylib bodies in the canvas feature archive (culebra_rt_canvas.cc,
 // force-loaded only when the AST scan reports Canvas use) override them — the
 // same weak choke as compress / http / sqlite.
-__attribute__((weak)) void present() {}
+// Clears the screen layer for the same reason the headless present() does:
+// these stubs ARE the headless behaviour for a window build that linked no
+// raylib, and "a presented frame starts the screen layer over" has to hold
+// in every one of them or a program's output depends on which it linked.
+__attribute__((weak)) void present() { screen_buffer_reset(); }
 __attribute__((weak)) int64_t buttons() { return 0; }
 __attribute__((weak)) int64_t mouse_x() { return 0; }
 __attribute__((weak)) int64_t mouse_y() { return 0; }
@@ -1036,6 +1155,7 @@ __attribute__((weak)) std::string key_pop() { return ""; }
 __attribute__((weak)) std::string char_pop() { return ""; }
 __attribute__((weak)) bool closing() { return false; }
 __attribute__((weak)) bool windowed() { return false; }
+__attribute__((weak)) double screen_scale() { return 1.0; }
 __attribute__((weak)) const char* window_error() { return nullptr; }
 __attribute__((weak)) void set_title(const char*) {}
 __attribute__((weak)) void tone(int64_t, int64_t, int64_t, int64_t, int64_t,
@@ -1070,6 +1190,7 @@ std::string key_pop();
 std::string char_pop();
 bool closing();
 bool windowed();
+// screen_scale() is declared once for every backend, above.
 // Non-null after the window could not be opened with no headless mode
 // declared; the message for the error present() raises. Null while the window
 // is up, before anything asked for one, and in every declared-headless mode.
@@ -1095,7 +1216,10 @@ void sound_free(int64_t id);
 
 #else  // native headless (default): frame held, nothing shown, no input
 
-inline void present() {}  // headless: the framebuffer is held, nothing shown
+// Headless: the framebuffer is held, nothing shown. The screen layer is still
+// cleared, so "a frame was presented, redraw the screen layer" is one contract
+// across every backend rather than something only the displaying ones honour.
+inline void present() { screen_buffer_reset(); }
 inline int64_t buttons() { return 0; }
 inline int64_t mouse_x() { return 0; }
 inline int64_t mouse_y() { return 0; }
@@ -1105,6 +1229,7 @@ inline std::string key_pop() { return ""; }
 inline std::string char_pop() { return ""; }
 inline bool closing() { return false; }
 inline bool windowed() { return false; }  // no window to show frames in
+inline double screen_scale() { return 1.0; }  // ...and none to stretch into
 inline const char* window_error() { return nullptr; }  // ...by declaration
 inline void set_title(const char*) {}  // ...and none to title
 inline void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,

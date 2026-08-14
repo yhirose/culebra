@@ -77,7 +77,15 @@
         <pre id="output" class="pg-output pg-pane active"><span class="placeholder">Output appears here. Press Run.</span></pre>
         <div id="tui" class="pg-tui pg-pane"></div>
         <div id="canvas-pane" class="pg-canvas pg-pane" tabindex="0">
-          <canvas id="game" width="160" height="160"></canvas>
+          <!-- #game is the framebuffer at its own low resolution, stretched by
+               CSS with pixelated (nearest) sampling; #game-text is the screen
+               layer over it at the size it is actually displayed at, so
+               Font.draw_screen's antialiased edges are not magnified into
+               blocks. The stack keeps them exactly co-extensive. -->
+          <div id="canvas-stack" class="pg-canvas-stack">
+            <canvas id="game" width="160" height="160"></canvas>
+            <canvas id="game-text" class="pg-canvas-overlay"></canvas>
+          </div>
         </div>
       </div>
     </div>

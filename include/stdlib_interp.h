@@ -2193,6 +2193,28 @@ inline Value make_canvas_primitives_namespace() {
           "Long"sv)),
       false);
 
+  // _Canvas.ttf_glyph_screen(font, codepoint, x, y, rgba, size) -> Long. Same
+  // logical units as ttf_glyph, but rasterized at screen_scale() and drawn
+  // into the screen layer; the advance it returns is the logical one, so a
+  // caller's pen and text_width() agree with the ttf_glyph path.
+  ns.initialize("ttf_glyph_screen",
+      Value(FunctionValue({{"font", false, "Long"sv},
+                           {"codepoint", false, "Long"sv},
+                           {"x", false, "Long|Float"sv},
+                           {"y", false, "Long|Float"sv},
+                           {"rgba", false, "Long"sv},
+                           {"size", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<int64_t>(_canvas_detail::ttf_glyph_screen(
+                env->get("font").to_long(), env->get("codepoint").to_long(),
+                static_cast<int>(canvas_coord_arg(env, "x")),
+                static_cast<int>(canvas_coord_arg(env, "y")),
+                static_cast<uint32_t>(env->get("rgba").to_long()),
+                env->get("size").to_long())));
+          },
+          "Long"sv)),
+      false);
+
   // _Canvas.ttf_advance(font, codepoint, size) -> Long (pixel advance width;
   // 0 for an unknown handle or a non-positive size).
   ns.initialize("ttf_advance",
@@ -2569,6 +2591,41 @@ inline Value make_canvas_primitives_namespace() {
             return Value(static_cast<int64_t>(_canvas_detail::height()));
           },
           "Long"sv)),
+      false);
+
+  // _Canvas.screen_width() / screen_height() / get_screen_pixel(x, y) /
+  // screen_scale(): the screen layer's own size, pixels and scale. No Canvas-
+  // level surface wraps these — they exist so the test suite can pin that a
+  // screen-layer glyph matches a framebuffer one where the scale is 1.
+  ns.initialize("screen_width",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<int64_t>(_canvas_detail::screen_width()));
+          },
+          "Long"sv)),
+      false);
+  ns.initialize("screen_height",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<int64_t>(_canvas_detail::screen_height()));
+          },
+          "Long"sv)),
+      false);
+  ns.initialize("get_screen_pixel",
+      Value(FunctionValue({{"x", false, "Long|Float"sv},
+                           {"y", false, "Long|Float"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<int64_t>(_canvas_detail::get_screen_pixel(
+                canvas_coord_arg(env, "x"), canvas_coord_arg(env, "y"))));
+          },
+          "Long"sv)),
+      false);
+  ns.initialize("screen_scale",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(_canvas_detail::screen_scale());
+          },
+          "Float"sv)),
       false);
 
   return Value(std::move(ns));

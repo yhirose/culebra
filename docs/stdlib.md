@@ -4771,6 +4771,7 @@ range-check a malformed file's internal offsets.
 | Method | Effect |
 | --- | --- |
 | `font.draw(s, x, y, color, size)` | draw `s` at `(x, y)` (visual top-left) in `color` at `size` px |
+| `font.draw_screen(s, x, y, color, size)` | the same, but drawn at the resolution the frame is presented at |
 | `font.text_width(s, size) -> Long` | pixel width `s` will occupy at `size` — for right-aligning / centring |
 | `font.ascent(size) -> Long` | pixel ascent above the baseline at `size` |
 | `font.advance(codepoint, size) -> Long` | pixel advance of one codepoint at `size` |
@@ -4796,6 +4797,37 @@ Canvas.run(320, 240, fn () {
   true
 })
 ```
+
+#### Text at the display's resolution
+
+A frame is presented by scaling the framebuffer up with nearest-neighbour
+pixels: right for sprites and the bitmap font, but it magnifies a glyph's
+antialiased edge into blocks. **`font.draw_screen`** takes the same arguments
+in the same coordinates as `draw`, and the text it draws lands where `draw`
+would put it, but it is rasterized at the size the frame is actually shown at
+and composited over the frame instead of into it — so it stays sharp at any
+window size or Playground pane width. A call switches between the two by name
+alone; `text_width`, `ascent` and `advance` describe both.
+
+Two things follow from the screen layer being separate from the framebuffer:
+
+- **It is cleared every frame.** The framebuffer persists across `present()`,
+  so drawing into it can accumulate; screen text has to be drawn each frame,
+  which a `Canvas.run` tick does anyway. (It has to work this way: the glyphs
+  are antialiased, and compositing them over themselves frame after frame
+  would darken every edge.)
+- **`Canvas.to_png()` does not capture it.** `to_png` reads the draw target,
+  and the screen layer is not one — nor is it affected by `Canvas.draw_to`,
+  which redirects framebuffer drawing into a sprite. Use `draw` for text that
+  has to appear in a saved image.
+
+A native window rasterizes at the display's real pixel density, not the
+window's nominal size: on a 2x (Retina/HiDPI) screen a 640x380 window is
+1280x760 actual pixels, and that is what the text is drawn at. In the
+Playground it follows the pane's CSS size, so text is drawn at whatever width
+the canvas is displayed at rather than at the device's pixel density. Where
+there is no display to scale into — headless, or a window that could not open
+— the scale is 1 and `draw_screen` lands exactly where `draw` would.
 
 ### Input
 

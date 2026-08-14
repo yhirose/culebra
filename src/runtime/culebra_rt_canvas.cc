@@ -29,6 +29,7 @@
 #include <unicodelib_encodings.h>  // unicode::utf8::encode_codepoint
 
 #include "raylib.h"
+#include "rlgl.h"  // viewport + projection, to correct raylib's on a HighDPI window
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_video.h>
@@ -44,6 +45,18 @@ Texture2D g_tex;
 int g_tex_w = 0;
 int g_tex_h = 0;
 int g_scale = 1;
+// The screen layer's texture (canvas.h): the framebuffer at the drawable's own
+// pixel size, blitted 1:1 over the upscaled frame so its antialiased text keeps
+// the edges the nearest-neighbour upscale of g_tex would turn into blocks.
+Texture2D g_screen_tex;
+int g_screen_tex_w = 0;
+int g_screen_tex_h = 0;
+bool g_screen_tex_dirty = false;  // last frame drew into it; clear it once
+// The drawable's size in real device pixels, which is g_scale * the display's
+// DPI scale times the framebuffer — 2x that on a Retina panel. See
+// sync_render_size() for why this is tracked here rather than read off raylib.
+int g_render_w = 0;
+int g_render_h = 0;
 bool g_window_ready = false;
 bool g_window_failed = false;  // creation tried and failed; don't try again
 // Why the window could not open — the message present() raises. Headless is
@@ -153,6 +166,43 @@ bool gl_usable() {
   return ok;
 }
 
+// Record the drawable's real size in device pixels, and correct raylib's idea
+// of it.
+//
+// FLAG_WINDOW_HIGHDPI (set before InitWindow, below) makes SDL give the window
+// a high-density backing store — 1280x760 device pixels for a 640x380-point
+// window on a Retina panel — which is what lets the screen layer hold text at
+// the resolution the display can actually show. raylib's SDL backend creates
+// that window correctly but then records `render` as the POINT size and never
+// asks SDL for the pixel size, so its viewport and projection cover a quarter
+// of the drawable. Rather than patch the vendored raylib, ask SDL directly and
+// set the viewport/projection ourselves in present(): BeginDrawing() touches
+// only the modelview (and CORE.Window.screenScale, which stays identity here),
+// so nothing overwrites it per frame.
+//
+// On a non-Retina display the pixel size equals the point size and all of this
+// reduces to exactly what the code did before.
+void sync_render_size() {
+  // Point size is the floor, and the answer wherever the drawable is 1x.
+  g_render_w = GetScreenWidth();
+  g_render_h = GetScreenHeight();
+  // The SDL window has to come from SDL's own window list, the way
+  // stop_text_input() gets it: raylib's GetWindowHandle() hands back the
+  // PLATFORM window (an NSWindow* on macOS), not the SDL_Window*, so passing
+  // it to an SDL call quietly does nothing.
+  int count = 0;
+  SDL_Window** windows = SDL_GetWindows(&count);
+  if (windows == nullptr) return;
+  if (count == 1) {  // the process opens exactly one window
+    int pw = 0, ph = 0;
+    if (SDL_GetWindowSizeInPixels(windows[0], &pw, &ph) && pw > 0 && ph > 0) {
+      g_render_w = pw;
+      g_render_h = ph;
+    }
+  }
+  SDL_free(windows);
+}
+
 // (Re)create the window + texture to match the current framebuffer size. Called
 // on first use and again if the framebuffer is re-init()'d at a new size.
 void ensure_window() {
@@ -179,6 +229,10 @@ void ensure_window() {
           "CULEBRA_CANVAS_HEADLESS=1 to run without one";
       return;
     }
+    // Ask for a high-density backing store; harmless where there isn't one.
+    // Must precede InitWindow — raylib only maps this to SDL's window flag at
+    // creation (SetWindowState warns it cannot change it afterwards).
+    SetConfigFlags(FLAG_WINDOW_HIGHDPI);
     InitWindow(w * g_scale, h * g_scale, g_title.c_str());
     // No display (headless server / SSH): raylib fails to open a window and
     // IsWindowReady() stays false.
@@ -197,6 +251,7 @@ void ensure_window() {
     UnloadTexture(g_tex);
     SetWindowSize(w * g_scale, h * g_scale);
   }
+  sync_render_size();  // both arms changed the drawable
   Image img = GenImageColor(w, h, BLANK);
   ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
   g_tex = LoadTextureFromImage(img);
@@ -507,6 +562,7 @@ void exit_teardown() {
   }
   if (g_window_ready && IsWindowReady()) {
     UnloadTexture(g_tex);
+    if (g_screen_tex_w > 0) UnloadTexture(g_screen_tex);
     CloseWindow();
     g_window_ready = false;
   }
@@ -535,6 +591,28 @@ void music_pump() {
   if (g_music.loaded) UpdateMusicStream(g_music.music);
 }
 
+// (Re)create the screen layer's texture when its size changes, the same shape
+// ensure_window() uses for g_tex. No filter is set: this one is blitted 1:1,
+// so there is nothing to filter.
+void ensure_screen_texture() {
+  // Never drawn to, so never shown: a program that does not use the screen
+  // layer should not pay for a drawable-sized texture on the GPU.
+  if (g_screen_tex_w == 0 && !_screen_dirty()) return;
+  int w = _screen_w();
+  int h = _screen_h();
+  if (w == g_screen_tex_w && h == g_screen_tex_h) return;
+  if (g_screen_tex_w > 0) UnloadTexture(g_screen_tex);
+  g_screen_tex_w = 0;
+  g_screen_tex_h = 0;
+  if (w <= 0 || h <= 0) return;
+  Image img = GenImageColor(w, h, BLANK);
+  ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+  g_screen_tex = LoadTextureFromImage(img);
+  UnloadImage(img);
+  g_screen_tex_w = w;
+  g_screen_tex_h = h;
+}
+
 }  // namespace
 
 void present() {
@@ -542,17 +620,65 @@ void present() {
   // audible) run degrades to no window, and must still keep playing.
   music_pump();
   ensure_window();
-  if (!g_window_ready) return;
+  if (!g_window_ready) {
+    screen_buffer_reset();
+    return;
+  }
   const std::vector<uint32_t>& fb = _fb();
   if (!fb.empty()) UpdateTexture(g_tex, fb.data());
+  // The screen layer is uploaded only on frames that drew into it, plus the one
+  // frame after — a program that never draws screen text pays nothing per
+  // frame, and one that stops drawing it gets the layer cleared once rather
+  // than leaving its last text stuck on screen.
+  ensure_screen_buffer();
+  ensure_screen_texture();
+  bool blit_screen = g_screen_tex_w > 0 && (_screen_dirty() || g_screen_tex_dirty);
+  if (blit_screen) {
+    const std::vector<uint32_t>& sfb = _screen_fb();
+    if (!sfb.empty()) UpdateTexture(g_screen_tex, sfb.data());
+    g_screen_tex_dirty = _screen_dirty();
+  }
   BeginDrawing();
+  // Draw in device pixels: raylib sized its viewport and projection from the
+  // window's POINT size, which is half the drawable on a Retina panel (see
+  // sync_render_size). BeginDrawing leaves the projection alone, so setting it
+  // here holds for the frame.
+  rlViewport(0, 0, g_render_w, g_render_h);
+  rlMatrixMode(RL_PROJECTION);
+  rlLoadIdentity();
+  rlOrtho(0, g_render_w, g_render_h, 0, 0.0f, 1.0f);
+  rlMatrixMode(RL_MODELVIEW);
+  rlLoadIdentity();
   ClearBackground(BLACK);
   DrawTexturePro(g_tex, Rectangle{0, 0, (float)g_tex_w, (float)g_tex_h},
-                 Rectangle{0, 0, (float)(g_tex_w * g_scale),
-                           (float)(g_tex_h * g_scale)},
+                 Rectangle{0, 0, (float)g_render_w, (float)g_render_h},
                  Vector2{0, 0}, 0.0f, WHITE);
+  // 1:1 over the upscaled frame: g_screen_tex is sized fb * screen_scale(),
+  // and screen_scale() is defined as the drawable over the framebuffer, so it
+  // is exactly g_render_w x g_render_h — one texel per device pixel, which is
+  // the whole point of the layer.
+  if (blit_screen)
+    DrawTexturePro(g_screen_tex,
+                   Rectangle{0, 0, (float)g_screen_tex_w, (float)g_screen_tex_h},
+                   Rectangle{0, 0, (float)g_render_w, (float)g_render_h},
+                   Vector2{0, 0}, 0.0f, WHITE);
   EndDrawing();  // blocks to vsync / the 60 fps target
   drain_key_events();
+  screen_buffer_reset();
+}
+
+// Framebuffer pixels -> device pixels: the window's integer upscale times the
+// display's DPI scale, taken straight from the drawable's real size so the
+// screen layer comes out exactly one texel per device pixel.
+//
+// ensure_window() first: a script can draw screen text inside its very first
+// tick(), before any present() has opened the window, and the layer has to be
+// sized for the window that tick's frame will land in — every other backend
+// entry point resolves the window the same way.
+double screen_scale() {
+  ensure_window();
+  if (!g_window_ready || g_tex_w <= 0 || g_render_w <= 0) return 1.0;
+  return static_cast<double>(g_render_w) / static_cast<double>(g_tex_w);
 }
 
 int64_t buttons() {
