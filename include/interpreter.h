@@ -4460,7 +4460,9 @@ template <class EvalFn>
 inline std::optional<Value> resolve_param_default(const FunctionValue& f,
                                                   size_t p,
                                                   const Environment& earlier,
-                                                  EvalFn&& eval_fn) {
+                                                  EvalFn&& eval_fn,
+                                                  int64_t line = 0,
+                                                  int64_t col = 0) {
   const auto& param = (*f.params)[p];
   if (param.default_expr) {
     auto defEnv = std::make_shared<Environment>(f.def_env);
@@ -4470,6 +4472,11 @@ inline std::optional<Value> resolve_param_default(const FunctionValue& f,
       if (earlier.has(pj.name))
         defEnv->initialize(pj.name, earlier.get(pj.name), false);
     }
+    // The default runs before the callee's body frame is counted, so a
+    // default that re-enters the same function would recurse uncounted and
+    // die as an uncatchable stack overflow. Count the evaluation as one
+    // frame — the depth the JIT's default block enters and leaves around.
+    culebra::RecursionFrame rec_frame(line, col);
     return eval_fn(*param.default_expr, defEnv);
   }
   if (param.default_value) return *param.default_value;
@@ -4489,6 +4496,12 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
   const auto& params = *f.params;
   size_t regulars = regular_param_count(params);
   size_t pos = 0;
+  // Where a default's own RecursionError reports: the HOF call site the
+  // caller seeded, the same place the JIT's set_call_site published.
+  int64_t def_line =
+      frame.has("__LINE__") ? frame.get("__LINE__").to_long() : 0;
+  int64_t def_col =
+      frame.has("__COLUMN__") ? frame.get("__COLUMN__").to_long() : 0;
   // Typed params are enforced like any other call (the JIT's compiled
   // prologue checks them on every entry, callbacks included). Position is
   // left 0 for the eval wrapper to backfill from the HOF call site — the
@@ -4517,7 +4530,8 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
     if (p.kw_only) {
       // A callback receives positional args only, so a kw-only param always
       // takes its default (expression or literal), same as the full binder.
-      if (auto dv = resolve_param_default(f, i, frame, f.eval_default_expr)) {
+      if (auto dv = resolve_param_default(f, i, frame, f.eval_default_expr,
+                                          def_line, def_col)) {
         typed_check(p, *dv);
         frame.initialize(p.name, *dv, p.mut);
       }
@@ -4528,7 +4542,8 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
       typed_check(p, v);
       frame.initialize(p.name, v, p.mut);
       pos++;
-    } else if (auto dv = resolve_param_default(f, i, frame, f.eval_default_expr)) {
+    } else if (auto dv = resolve_param_default(
+                   f, i, frame, f.eval_default_expr, def_line, def_col)) {
       typed_check(p, *dv);
       frame.initialize(p.name, *dv, p.mut);
     }
@@ -10229,9 +10244,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                      [this](const peg::Ast& e,
                             const std::shared_ptr<Environment>& s) {
                        return eval(e, s);
-                     })) {
-        // Default (expression evaluated against def_env + earlier params, or
-        // a literal) — shared with the callback binder via resolve_param_default.
+                     },
+                     static_cast<int64_t>(call_line),
+                     static_cast<int64_t>(call_column))) {
+        // Default (expression evaluated against def_env + the frame's
+        // pre-parameter bindings, or a literal) — shared with the callback
+        // binder via resolve_param_default.
         v = std::move(*dv);
       } else {  // No default — required and missing.
         throw CulebraError("ArityError",

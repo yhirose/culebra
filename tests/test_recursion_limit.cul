@@ -157,4 +157,26 @@ let h = Isolate.spawn(fn () {
 })
 assert_eq(h.join(), ["RecursionError", 999])
 
+// --- a parameter default counts too --------------------------------------
+// A default expression runs before the callee's body frame is counted, so a
+// default that re-enters its own function used to recurse uncounted and die
+// as an uncatchable stack overflow on both backends. The evaluation itself
+// is one frame now.
+fn own_default(a = 5, b = own_default(1)) {
+  [a, b]
+}
+assert_eq(try { own_default() } catch e { e.kind }, "RecursionError")
+
+mut indirect = nil
+indirect = fn (a = indirect()) { a }
+assert_eq(try { indirect() } catch e { e.kind }, "RecursionError")
+
+// The budget comes back: the frames the defaults entered all left again.
+n = 0
+fn one_default(a = bump()) {
+  a
+}
+assert_eq(one_default(), 1)
+assert_eq(one_default(), 2)
+
 IO.inspect("test_recursion_limit OK")
