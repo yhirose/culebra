@@ -1,0 +1,4 @@
+# A slot the default filled has no argument expression to point at, so its
+# type error reports at the call site.
+let f = fn (a, b: Long = 'x') { a }
+println(f(2))

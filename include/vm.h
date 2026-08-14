@@ -442,16 +442,37 @@ enum class Op : uint8_t {
                // instruction of the declaration, where the interp's
                // register_trait sits: a well-known contract throw above
                // leaves the previous declaration's contract standing.
-  RetPos,      // regs[a] = the position a return-value type error reports,
-               // packed line<<32|col: the call site, or the declaration
-               // position consts[b] when the caller published none
-               // (culebra_runtime_param_pos with no argument index). Taken
-               // in the prologue — the body's own calls overwrite the
-               // caller's position long before the check.
-  RetChk,      // check regs[a] against the declared return type consts[b],
-               // reporting at the position in regs[c] (RetPos's snapshot).
-               // Emitted before the frame's defers run, as the JIT's
-               // return-value check is.
+  PosSnap,     // regs[a] = the position a type error on argument index c
+               // reports (c = -1: the return value), packed line<<32|col —
+               // the call site, or the declaration position consts[b] when
+               // the caller published none (culebra_runtime_param_pos).
+               // Taken in the prologue: the body's own calls (and a default
+               // expression's) overwrite the caller's position long before
+               // the check runs.
+  ChkTypeAt,   // check regs[a] against the type consts[b] in the context
+               // consts[c] ("return value", "parameter 'x'"), reporting at
+               // the position in regs[d] (PosSnap's snapshot). The return
+               // check is emitted before the frame's defers run, as the
+               // JIT's is.
+  ChkArg,      // check regs[a] against the declared type consts[b] for
+               // parameter consts[c] at argument index d, resolving the
+               // report position on the FAILURE path
+               // (culebra_runtime_type_check_param: the argument's own
+               // expression, or the call site for a default-filled slot).
+               // The eager form above is what a param after the first
+               // default takes instead — user code has run by then.
+  JumpIfFilled,  // jump to b when regs[a] is a supplied argument; falls
+               // through to the default expression when the prologue left
+               // the slot TAG_UNFILLED.
+  RecEnter,    // count a frame (culebra_runtime_recursion_enter). a=1 is
+               // this frame's own, emitted after the parameters bind so a
+               // typed-param TypeError outranks RecursionError (the JIT
+               // prologue's order); it also stashes the depth the frame's
+               // handlers restore to. a=0 brackets a default expression,
+               // which runs before the frame is counted and would otherwise
+               // recurse uncounted — paired with RecLeave.
+  RecLeave,    // uncount the default expression's frame. Skipped by a throw,
+               // like the JIT's; the enclosing frame's restore corrects it.
   NsGet,       // regs[a] = stdlib global consts[b] (+1), resolved through
                // culebra_runtime_namespace_get — the per-Runtime cached
                // closure the JIT's emit_builtin_var_get slow path returns,
@@ -1407,6 +1428,14 @@ struct Chunk {
   // handle when the body reads it (FuncInfo::uses_fn), -1 otherwise.
   int32_t arity = 0;
   std::vector<std::string> param_names;  // for the ArityError message
+  // Declared parameter types (empty = untyped), parallel to param_names —
+  // the overload signature MultifnReg registers. Dispatch reads them; the
+  // per-entry checks are ChkArg / ChkTypeAt instructions.
+  std::vector<std::string> param_types;
+  // Parameters that must be supplied: the leading run without a default
+  // (defaults are trailing). The prologue's arity guard counts against this
+  // and leaves each unsupplied slot TAG_UNFILLED for JumpIfFilled.
+  int32_t required = 0;
   int32_t fn_slot = -1;
   // Source name of an overload body (`fn name`, a class member, `new`), read
   // by MultifnReg: it is the user-facing half of the registry key, so a
@@ -1455,7 +1484,31 @@ struct Chunk {
   // the JIT's frame cleanup ladder. Slot releases still fall to the GC
   // backstop on that path (the known Phase 1 residual).
   int32_t defer_mark_slot = -1;
+  // The synthetic constructor chunk hands its ABI arguments to
+  // build_class_instance untouched (the JIT ctor thunk's shape), so the
+  // prologue neither copies them into slots nor releases the surplus — the
+  // `new` body it invokes owns both.
+  bool forwards_args = false;
+  // Per-call argument positions (packed line<<32|col, in argument order),
+  // keyed by the Call / CallM instruction's index and kept sorted by it.
+  // The JIT bakes the same array into .rodata and hands it to
+  // culebra_runtime_set_call_positions at the call site, which is what
+  // lets a callee's typed-parameter error report at the argument
+  // expression rather than at the call. Entries only exist for calls that
+  // pass arguments.
+  std::vector<std::pair<uint32_t, std::vector<int64_t>>> call_argpos;
 };
+
+// The argument positions the call at `ix` published, or null when it has
+// none (the call site stands in — the interp binder's own fallback).
+inline const std::vector<int64_t>* chunk_argpos_at(const Chunk& c, size_t ix) {
+  auto it = std::lower_bound(
+      c.call_argpos.begin(), c.call_argpos.end(), static_cast<uint32_t>(ix),
+      [](const auto& e, uint32_t k) { return e.first < k; });
+  if (it == c.call_argpos.end() || it->first != static_cast<uint32_t>(ix))
+    return nullptr;
+  return &it->second;
+}
 
 struct VmProgram;
 
@@ -1505,6 +1558,10 @@ struct MemberOpts {
   bool receiver = false;
   const std::vector<const peg::Ast*>* fields = nullptr;
   const peg::Ast* field_init_owner = nullptr;
+  // The enclosing class's Generic parameters (`class Box<T>`): a member's
+  // annotations lower against them, exactly as the JIT's class_type_params_
+  // does — an unbounded `T` is documentation and checks as Any.
+  const std::vector<std::string_view>* type_params = nullptr;
 };
 
 // One Compiler instance per chunk; the program and the analysis are shared.
@@ -1640,6 +1697,7 @@ class Compiler {
   // Declared return type of this frame (const index) and the slot holding
   // the position its violation reports; -1 when the function declares none.
   int32_t ret_type_ = -1;
+  int32_t ret_ctx_ = -1;
   int32_t ret_pos_slot_ = -1;
   // Mark slots of the open scopes that declared their own defers, outermost
   // first (the JIT's Scope::defer_mark, flattened): break/continue run to
@@ -1736,6 +1794,32 @@ class Compiler {
   }
 
   int32_t kconst_long(int64_t v) { return kconst({TAG_LONG, v}); }
+
+  // A declaration position packed for PosSnap's last-resort argument (the
+  // JIT bakes the same current_line_/column_ pair into its prologue call).
+  int32_t def_pos_const(const peg::Ast& at) {
+    return kconst_long((static_cast<int64_t>(at.line) << 32) |
+                       static_cast<int64_t>(at.column));
+  }
+
+  // Record where the just-emitted call's arguments were written, so a
+  // typed-parameter error in the callee reports at the argument expression
+  // (emit_call_position_publish's rodata array, per instruction). A null
+  // node — the UFCS receiver, which has no argument expression — takes the
+  // call's own position, as the JIT's null entry does.
+  void record_call_argpos(size_t ix, const peg::Ast& at,
+                          std::vector<const peg::Ast*> arg_asts) {
+    if (arg_asts.empty()) return;
+    std::vector<int64_t> packed;
+    packed.reserve(arg_asts.size());
+    for (const auto* a : arg_asts) {
+      const peg::Ast& n = a ? *a : at;
+      packed.push_back((static_cast<int64_t>(n.line) << 32) |
+                       static_cast<int64_t>(n.column));
+    }
+    chunk_.call_argpos.emplace_back(static_cast<uint32_t>(ix),
+                                    std::move(packed));
+  }
 
   // Runtime string layout via _str_init (jit_string.h — the same header +
   // NUL shape the JIT bakes into .rodata); the value points at the bytes
@@ -2115,7 +2199,9 @@ class Compiler {
   // the defers and the scope teardown, where the JIT emits it. No-op for a
   // function without one.
   void emit_return_type_check(int32_t rv) {
-    if (ret_type_ >= 0) emit(Op::RetChk, rv, ret_type_, ret_pos_slot_);
+    if (ret_type_ < 0) return;
+    if (ret_ctx_ < 0) ret_ctx_ = kconst_str("return value");
+    emit(Op::ChkTypeAt, rv, ret_type_, ret_ctx_, ret_pos_slot_);
   }
 
   // Frame-level defer mark (the JIT's fn.mark, gated on has_any_defer):
@@ -2305,11 +2391,12 @@ class Compiler {
       if (!culebra::view_derive(*ast.nodes[i]).empty()) continue;
       reject(*ast.nodes[i], "class decorator");
     }
-    // Generic params are documentation the runtime never sees (the JIT
-    // strips them the same way); typed params, which is what they would
-    // rewrite, are rejected inside every body anyway.
-    auto class_name =
-        std::string(culebra::parse_generic_head(ast.nodes[dec_end]->token).outer);
+    auto class_head =
+        culebra::parse_generic_head(ast.nodes[dec_end]->token);
+    auto class_name = std::string(class_head.outer);
+    // A member's annotations lower against the class's Generic params, as
+    // the JIT's class_type_params_ does.
+    auto type_params = culebra::split_generic_args(class_head.args);
 
     // Names may repeat: same-named members with distinct signatures are an
     // overload set (lint has already rejected two identical signatures, so
@@ -2425,7 +2512,8 @@ class Compiler {
     for (auto* m : method_asts) {
       auto mv = culebra::view_method(*m);
       method_chunks.push_back(
-          compile_fn_chunk(*m, mv.params, **mv.body, {.receiver = true}));
+          compile_fn_chunk(*m, mv.params, **mv.body,
+                           {.receiver = true, .type_params = &type_params}));
       auto& ch = prog_.chunks[method_chunks.back()];
       ch.multifn_name = std::string(mv.name);
       if (mv.is_getter) ch.is_getter = true;
@@ -2437,7 +2525,8 @@ class Compiler {
       // object as its `self`, which is what the interp's namespace call
       // does (probed — a detached `let f = S.f` keeps that receiver).
       static_chunks.push_back(
-          compile_fn_chunk(*m, mv.params, **mv.body, {.receiver = true}));
+          compile_fn_chunk(*m, mv.params, **mv.body,
+                           {.receiver = true, .type_params = &type_params}));
       prog_.chunks[static_chunks.back()].multifn_name = std::string(mv.name);
     }
     // The field-init thunk is compiled — and bound under its hidden name —
@@ -2445,8 +2534,9 @@ class Compiler {
     // at it.
     int32_t finit_slot = -1;
     if (!fields.empty()) {
-      int32_t idx = compile_fn_chunk(ast, /*params=*/nullptr, ast,
-                                     {.receiver = true, .fields = &fields});
+      int32_t idx = compile_fn_chunk(
+          ast, /*params=*/nullptr, ast,
+          {.receiver = true, .fields = &fields, .type_params = &type_params});
       int32_t t = alloc_temp(ast);
       emit(Op::MakeClosure, t, idx);
       finit_slot = alloc_slot(ast, "(field.init)");
@@ -2464,7 +2554,8 @@ class Compiler {
       body_chunks.push_back(compile_fn_chunk(
           *m, mv.params, **mv.body,
           {.receiver = true,
-           .field_init_owner = fields.empty() ? nullptr : &ast}));
+           .field_init_owner = fields.empty() ? nullptr : &ast,
+           .type_params = &type_params}));
     }
 
     // The shared meta: one closure per member name in a contiguous run —
@@ -2541,7 +2632,7 @@ class Compiler {
           na ? body_cell : cell_or_nil(-1)};
       int32_t ctor_chunk = compile_ctor_chunk(
           ast, class_name, na ? culebra::view_method(*na).params : nullptr,
-          ctor_caps);
+          ctor_caps, type_params);
       if (new_asts.size() < 2) {
         emit(Op::MakeClosure, ctor, ctor_chunk);
         break;
@@ -2634,29 +2725,44 @@ class Compiler {
   }
 
   // The synthetic constructor: `build_class_instance` over the captured
-  // {meta, field-init, body} triple and the frame's own arguments. It is
-  // the JIT's emit_constructor_fn thunk as a chunk — the arity check and
-  // its ArityError message come from the frame prologue, so they read the
-  // `new` body's parameter names and fire before any field initializer.
+  // {meta, field-init, body} triple and the frame's own arguments, which it
+  // forwards untouched. It is the JIT's emit_constructor_fn thunk as a
+  // chunk: the instance is allocated FIRST and the `new` body's own
+  // prologue binds the arguments, so an arity or typed-param error reports
+  // that body's parameter names, fires before any field initializer, and
+  // leaves a half-built instance behind for its `drop`.
   int32_t compile_ctor_chunk(const peg::Ast& ast, const std::string& class_name,
                              const peg::Ast* params,
-                             const std::vector<int32_t>& caps) {
+                             const std::vector<int32_t>& caps,
+                             const std::vector<std::string_view>& type_params) {
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();
     Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
     fc.stamp(ast);
     fc.push_scope();
     fc.chunk_.capture_src_slots = caps;
-    fc.chunk_.arity = params ? static_cast<int32_t>(params->nodes.size()) : 0;
+    fc.chunk_.forwards_args = true;
+    // The `new` signature still describes this constructor to the overload
+    // registry (MultifnReg reads it off the chunk); the prologue just does
+    // not bind it — build_class_instance hands the arguments to the body,
+    // whose own prologue does.
     if (params) {
+      fc.chunk_.arity = static_cast<int32_t>(params->nodes.size());
+      fc.chunk_.required = fc.chunk_.arity;
       for (const auto& p : params->nodes) {
         auto pv = culebra::view_parameter(*p);
-        auto name = pv.pattern
-                        ? std::string(culebra::destructure_param_name(
-                              fc.chunk_.param_names.size()))
-                        : std::string(pv.name);
-        fc.alloc_slot(*p, name);
-        fc.chunk_.param_names.push_back(name);
+        if (pv.default_value &&
+            fc.chunk_.required == fc.chunk_.arity)
+          fc.chunk_.required =
+              static_cast<int32_t>(fc.chunk_.param_names.size());
+        fc.chunk_.param_names.push_back(
+            pv.pattern ? std::string(culebra::destructure_param_name(
+                             fc.chunk_.param_names.size()))
+                       : std::string(pv.name));
+        fc.chunk_.param_types.push_back(
+            type_params.empty()
+                ? std::string(pv.type_annotation)
+                : culebra::lower_type_params(pv.type_annotation, type_params));
       }
     }
     int32_t cap0 = -1;
@@ -2674,8 +2780,7 @@ class Compiler {
       for (size_t i = 0; i < caps.size(); i++)
         fc.emit(Op::CellGet, fc.alloc_temp(ast),
                 cap0 + static_cast<int32_t>(i));
-      fc.emit(Op::MakeInst, rv, run, fc.kconst_str(class_name),
-              fc.chunk_.arity);
+      fc.emit(Op::MakeInst, rv, run, fc.kconst_str(class_name));
     }  // the sweep drops the three borrowed reads
     fc.pop_scope();
     fc.emit(Op::Ret, rv);
@@ -2729,11 +2834,9 @@ class Compiler {
       if (n->tag == "RETURN_TYPE"_) return_type = n->token;
     if (params) {
       for (const auto& p : params->nodes) {
-        if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
+        if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p) ||
+            culebra::is_args_rest(*p))
           reject(*p, "keyword-only / rest parameter");
-        if (culebra::extract_default_expr(*p)) reject(*p, "default argument");
-        for (const auto& pc : p->nodes)
-          if (pc->tag == "TYPE_ANNOTATION"_) reject(*p, "typed parameter");
       }
     }
     auto caps = resolve_captures(ast, info);
@@ -2765,6 +2868,22 @@ class Compiler {
       int32_t slot;
     };
     std::vector<PatParam> pat_params;
+    // The declared parameters, in ABI order. Slots and the name/type tables
+    // are laid out here; binding them (default fill, type check, cell
+    // promotion) waits until the captures are in place, since a default
+    // expression reads them — the JIT prologue's order.
+    struct ParamPlan {
+      const peg::Ast* at;
+      std::string name;
+      std::string type;
+      const peg::Ast* default_expr;
+      int32_t slot;
+      int32_t abi_index;
+      bool is_mut;
+      bool sink;
+      int32_t pos_slot = -1;  // PosSnap's eager snapshot, -1 = cold path
+    };
+    std::vector<ParamPlan> plans;
     if (params) {
       for (const auto& p : params->nodes) {
         auto pv = culebra::view_parameter(*p);
@@ -2773,20 +2892,37 @@ class Compiler {
               culebra::destructure_param_name(fc.chunk_.param_names.size()));
           int32_t slot = fc.alloc_slot(*p, synth);
           fc.chunk_.param_names.push_back(synth);
+          fc.chunk_.param_types.emplace_back();
           pat_params.push_back({pv.pattern, slot});
           continue;
         }
         auto name = std::string(pv.name);
         int32_t slot = fc.alloc_slot(*p, name);
+        auto type = mo.type_params && !mo.type_params->empty()
+                        ? culebra::lower_type_params(pv.type_annotation,
+                                                     *mo.type_params)
+                        : std::string(pv.type_annotation);
+        auto abi = static_cast<int32_t>(fc.chunk_.param_names.size());
         fc.chunk_.param_names.push_back(name);
-        if (is_sink_name(name)) continue;
-        if (info.captured_locals.contains(name)) {
-          promos.push_back({name, slot, pv.is_mut, p.get()});
-        } else {
-          fc.scopes_.back().bindings.push_back({name, slot, pv.is_mut});
-        }
+        fc.chunk_.param_types.push_back(type);
+        plans.push_back({p.get(), name, std::move(type), pv.default_value,
+                         slot, abi, pv.is_mut, is_sink_name(name)});
       }
     }
+    // Required parameters are the leading run without a default (lint
+    // rejects a required one after a defaulted one), so the arity guard is
+    // a single count and the unsupplied tail is exactly the defaulted one.
+    fc.chunk_.required = fc.chunk_.arity;
+    for (const auto& pl : plans)
+      if (pl.default_expr) {
+        fc.chunk_.required = pl.abi_index;
+        break;
+      }
+    // A destructuring parameter carries no default, so it is required
+    // wherever it sits — lint rejects one after a defaulted parameter, and
+    // this is the same safety net the JIT prologue keeps.
+    for (const auto& pp : pat_params)
+      if (pp.slot >= fc.chunk_.required) fc.chunk_.required = pp.slot + 1;
     // The ABI receiver. A receiver frame owns it in a slot of its own —
     // immutable, so `self = v` raises the interp's ImmutableError — and the
     // frame teardown releases it; every other frame releases it on entry.
@@ -2812,13 +2948,14 @@ class Compiler {
     }
     fc.establish_frame_defer_mark(ast, info);
     // Where a return-value type error reports: resolved once here, as the
-    // JIT's prologue snapshot does (see RetPos).
+    // JIT's prologue snapshot does (see PosSnap).
     if (!return_type.empty()) {
-      fc.ret_type_ = fc.kconst_str(std::string(return_type));
+      fc.ret_type_ = fc.kconst_str(
+          mo.type_params && !mo.type_params->empty()
+              ? culebra::lower_type_params(return_type, *mo.type_params)
+              : std::string(return_type));
       fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
-      fc.emit(Op::RetPos, fc.ret_pos_slot_,
-              fc.kconst_long((static_cast<int64_t>(ast.line) << 32) |
-                             static_cast<int64_t>(ast.column)));
+      fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
     }
     for (const auto& pr : promos) {
       int32_t cslot = fc.alloc_slot(*pr.at, pr.name);
@@ -2874,6 +3011,75 @@ class Compiler {
                                             /*is_mut=*/false, /*is_cell=*/true,
                                             /*lazy=*/true});
     }
+    // Bind the declared parameters, now that the captures, `self` and `fn`
+    // are in place for a default expression to read. Where a typed param's
+    // error reports resolves per call: the common case (no earlier default)
+    // on the check's failure path, but from the first default — or `_` sink,
+    // whose release can run a drop — onward user code runs inside this loop
+    // and would overwrite the caller's position, so those snapshot it here
+    // first. The JIT prologue's eagerPosFrom, instruction for instruction.
+    {
+      size_t eager_from = plans.size();
+      for (size_t i = 0; i < plans.size(); ++i)
+        if (plans[i].default_expr || plans[i].sink) {
+          eager_from = i;
+          break;
+        }
+      for (size_t i = eager_from; i < plans.size(); ++i) {
+        if (plans[i].type.empty()) continue;
+        plans[i].pos_slot =
+            fc.alloc_slot(*plans[i].at, plans[i].name + ".errpos");
+        fc.emit(Op::PosSnap, plans[i].pos_slot, fc.def_pos_const(ast),
+                plans[i].abi_index);
+      }
+    }
+    for (const auto& pl : plans) {
+      if (pl.default_expr) {
+        // The slot the prologue left TAG_UNFILLED takes the default's own
+        // +1 — the same ownership a passed argument transfers. The frame is
+        // not counted yet, so the evaluation counts as one of its own (a
+        // default that re-enters its function would otherwise overflow the
+        // C stack uncounted); a throw skips the leave and the enclosing
+        // frame's restore corrects the count, as in the JIT.
+        size_t filled = fc.emit(Op::JumpIfFilled, pl.slot);
+        {
+          TempScope ts(fc);
+          StampGuard pos(fc, *pl.default_expr);
+          fc.emit(Op::RecEnter, 0);
+          fc.store_into(pl.slot, fc.compile_expr(*pl.default_expr),
+                        /*dst_is_fresh=*/true);
+          fc.emit(Op::RecLeave);
+        }
+        fc.patch_to_here(filled);
+      }
+      if (!pl.type.empty()) {
+        int32_t ty = fc.kconst_str(pl.type);
+        int32_t ctx = fc.kconst_str(std::format("parameter '{}'", pl.name));
+        if (pl.pos_slot >= 0)
+          fc.emit(Op::ChkTypeAt, pl.slot, ty, ctx, pl.pos_slot);
+        else
+          fc.emit(Op::ChkArg, pl.slot, ty, ctx, pl.abi_index);
+      }
+      if (pl.sink) {
+        // `fn (_, x)`: the argument's +1 is dropped rather than bound, so a
+        // repeated `_` needs no slot of its own.
+        fc.emit(Op::Release, pl.slot);
+      } else if (info.captured_locals.contains(pl.name)) {
+        // A captured param moves into a fresh cell (the JIT's make_cell_slot
+        // on a param); the ABI slot stays behind as an anonymous drained one.
+        int32_t cslot = fc.alloc_slot(*pl.at, pl.name);
+        fc.emit(Op::CellNew, cslot, pl.slot);
+        fc.mark_cell_slot(cslot);
+        fc.scopes_.back().bindings.push_back({pl.name, cslot, pl.is_mut, true});
+      } else {
+        fc.scopes_.back().bindings.push_back({pl.name, pl.slot, pl.is_mut});
+      }
+    }
+    // Count the frame, after the parameters bound and their types checked
+    // (a TypeError there outranks RecursionError — the interp checks
+    // caller-side, before entering the body closure) and before any user
+    // code the body runs.
+    fc.emit(Op::RecEnter, 1);
     // Unpack destructuring params, left to right: the test-then-bind walks
     // of compile_destructure_assign against the synthetic slot (borrowed —
     // it stays behind as an anonymous drained slot). Every throw anchors at
@@ -3644,7 +3850,11 @@ class Compiler {
       emit(Op::BoundPos);  // ambient stamp = the chain node `at`
       {
         StampGuard call_pos(*this, args);
-        emit(Op::Call, t, candv.slot, base, argc + 1);
+        size_t ix = emit(Op::Call, t, candv.slot, base, argc + 1);
+        // positional[0] is the receiver, which has no argument expression.
+        std::vector<const peg::Ast*> asts{nullptr};
+        for (const auto& a : args.nodes) asts.push_back(a.get());
+        record_call_argpos(ix, args, std::move(asts));
       }
       store_into(out, {t, true}, /*dst_is_fresh=*/true);
     }
@@ -3669,7 +3879,10 @@ class Compiler {
       store_into(base + 1 + i, compile_expr(*args.nodes[i]),
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(at);
-    emit(Op::CallM, t, callee, base, argc);
+    size_t ix = emit(Op::CallM, t, callee, base, argc);
+    std::vector<const peg::Ast*> asts;
+    for (const auto& a : args.nodes) asts.push_back(a.get());
+    record_call_argpos(ix, args, std::move(asts));
     return {t, true};
   }
 
@@ -3711,7 +3924,14 @@ class Compiler {
     if (spec.nargs > argc)
       emit(Op::LoadConst, base + 2 + argc, kconst_str(spec.def));
     int32_t t = alloc_temp(at);
-    emit(Op::BMeth, t, base, static_cast<int32_t>(spec.id), spec.nargs);
+    size_t ix = emit(Op::BMeth, t, base, static_cast<int32_t>(spec.id),
+                     spec.nargs);
+    // A user method shadowing the built-in name takes the gate slot and is
+    // called from here, so this site publishes argument positions like any
+    // other call — its typed parameters report at the argument expression.
+    std::vector<const peg::Ast*> asts;
+    for (const auto& a : args.nodes) asts.push_back(a.get());
+    record_call_argpos(ix, args, std::move(asts));
     return {t, true};
   }
 
@@ -3740,7 +3960,10 @@ class Compiler {
       store_into(base + i, compile_expr(*args.nodes[i]),
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(ast);
-    emit(Op::Call, t, callee.slot, base, argc);
+    size_t ix = emit(Op::Call, t, callee.slot, base, argc);
+    std::vector<const peg::Ast*> asts;
+    for (const auto& a : args.nodes) asts.push_back(a.get());
+    record_call_argpos(ix, args, std::move(asts));
     return {t, true};
   }
 
@@ -4760,7 +4983,8 @@ inline std::string dump(const Chunk& c) {
       "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "WkErr",
       "ClassMeta", "DeriveFn",  "RegPack",    "ClassObj",     "BindStatic",
       "MakeInst",  "FieldInit", "RegGetter",  "SelfMerge",
-      "TraitReset", "TraitDefault", "TraitReg", "RetPos", "RetChk",
+      "TraitReset", "TraitDefault", "TraitReg", "PosSnap", "ChkTypeAt",
+      "ChkArg",    "JumpIfFilled", "RecEnter",   "RecLeave",
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
@@ -4886,13 +5110,14 @@ struct Exec {
     JitValue regs[kMaxSlots];
     std::memset(regs, 0, sizeof(JitValue) * static_cast<size_t>(c.num_slots));
     if (chunk_idx != 0) {
-      // Param binding, mirroring the JIT prologue: too few args raises the
-      // interp's ArityError at the published call site; extras drop (their
-      // +1 released) since __ARGS__ is outside the slice. The recursion
-      // guard runs after binding (TypeError-before-RecursionError order),
-      // and `leave` only on the normal return — unwinding skips it, like
-      // the JIT's frames.
-      if (n_args < c.arity) {
+      // Param binding, mirroring the JIT prologue: fewer args than the
+      // required count raises the interp's ArityError at the published call
+      // site; extras drop (their +1 released) since __ARGS__ is outside the
+      // slice. The recursion guard is a prologue instruction, after the
+      // parameters bind (TypeError-before-RecursionError order), and `leave`
+      // runs only on the normal return — unwinding skips it, like the JIT's
+      // frames.
+      if (!c.forwards_args && n_args < c.required) {
         for (int64_t i = 0; i < n_args; ++i)
           culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
                                         args[i].data);
@@ -4907,10 +5132,17 @@ struct Exec {
         for (const auto& nm : c.param_names) names.push_back(nm.c_str());
         culebra_runtime_arity_missing(names.data(), n_args, 0, 0);
       }
-      for (int32_t i = 0; i < c.arity; ++i) regs[i] = args[i];
-      for (int64_t i = c.arity; i < n_args; ++i)
-        culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
-                                      args[i].data);
+      // A slot the caller did not fill takes the sentinel its defaulted
+      // param's JumpIfFilled tests (the kwargs resolver's middle-gap tag,
+      // which is also what a compiled caller leaves in the slab). A frame
+      // that forwards its arguments (the ctor thunk) touches neither.
+      if (!c.forwards_args) {
+        for (int32_t i = 0; i < c.arity; ++i)
+          regs[i] = i < n_args ? args[i] : JitValue{TAG_UNFILLED, 0};
+        for (int64_t i = c.arity; i < n_args; ++i)
+          culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
+                                        args[i].data);
+      }
       // The receiver: a receiver frame's slot takes the +1 (and the frame
       // teardown releases it); every other frame drops it, like the JIT's
       // constructor thunk does with the class object it was called on. An
@@ -4931,11 +5163,13 @@ struct Exec {
     }
     // A try handler restores the recursion count to this frame's own level
     // (frames unwound between the throw and the handler never ran their
-    // `leave`) — the JIT's try.rec snapshot, hoisted to the prologue since
-    // the depth is constant within a frame.
-    int64_t frame_depth = chunk_idx != 0
-                              ? culebra_runtime_recursion_enter()
-                              : culebra_runtime_recursion_depth();
+    // `leave`) — the JIT's try.rec snapshot, taken where its prologue takes
+    // it: the RecEnter instruction, once the parameters are bound. Until it
+    // runs the frame is uncounted, and the "never entered" sentinel makes
+    // every restore below a no-op (a default expression that throws unwinds
+    // through a frame that never touched the count).
+    int64_t frame_depth = chunk_idx != 0 ? -1
+                                         : culebra_runtime_recursion_depth();
     const Insn* code = c.code.data();
     size_t pc = 0;
     // Dispatch, re-entering at a region's handler when a throw lands inside
@@ -4945,7 +5179,8 @@ struct Exec {
     // is_throw=0 and keeps unwinding (as does any throw outside a region).
     for (;;) {
       try {
-        return dispatch(p, c, code, regs, pc, chunk_idx, cls);
+        return dispatch(p, c, code, regs, pc, chunk_idx, cls, frame_depth,
+                        n_args, args);
       } catch (...) {
         const Chunk::EhRegion* r = nullptr;
         for (const auto& e : c.eh)
@@ -4981,11 +5216,25 @@ struct Exec {
     }
   }
 
+  // The call site, with this call's per-argument positions when it has any
+  // — one runtime entry publishes both, and set_call_site alone (which
+  // resets the count) is what an argument-less call wants.
+  static void publish_call_site(const Chunk& c, size_t pc, int64_t line,
+                                int64_t col) {
+    if (const auto* ap = chunk_argpos_at(c, pc))
+      culebra_runtime_set_call_positions(
+          line, col, static_cast<int64_t>(ap->size()), ap->data());
+    else
+      culebra_runtime_set_call_site(line, col);
+  }
+
   // The dispatch loop proper: runs until Ret/Halt, or unwinds with `pc`
   // still at the faulting instruction (run_frame's catch consults it).
   static JitValue dispatch(const VmProgram& p, const Chunk& c,
                            const Insn* code, JitValue* regs, size_t& pc,
-                           int32_t chunk_idx, JitClosure* cls) {
+                           int32_t chunk_idx, JitClosure* cls,
+                           int64_t& frame_depth, int64_t n_args,
+                           JitValue* args) {
     // Numeric conversions via the runtime's own bit-punning helpers; both
     // call sites guard with both_num, so coerce_num's throw arm is dead.
     auto as_double = [](const JitValue& v) {
@@ -5583,7 +5832,7 @@ struct Exec {
             bmeth_miss_error(line, col);  // the arguments have run by now
           if (gate.tag != TAG_NO_SELF) {
             // The shadowing user method: CallM's hand-off, one slot over.
-            culebra_runtime_set_call_site(line, col);
+            publish_call_site(c, pc, line, col);
             if (gate.tag != TAG_FUNC)
               culebra_runtime_type_error_typed(
                   line, col, "Function", static_cast<int8_t>(gate.tag));
@@ -5936,7 +6185,7 @@ struct Exec {
         case Op::Call: {
           const JitValue& callee = regs[in.b];
           auto [line, col] = chunk_pos_at(c, pc);
-          culebra_runtime_set_call_site(line, col);
+          publish_call_site(c, pc, line, col);
           JitValue target = callee;
           JitValue self{TAG_NO_SELF, 0};
           if (target.tag != TAG_FUNC) {
@@ -5982,7 +6231,7 @@ struct Exec {
         case Op::CallM: {
           const JitValue& callee = regs[in.b];
           auto [line, col] = chunk_pos_at(c, pc);
-          culebra_runtime_set_call_site(line, col);
+          publish_call_site(c, pc, line, col);
           JitValue target = callee;
           JitValue self = regs[in.c];
           if (target.tag != TAG_FUNC) {
@@ -6093,12 +6342,17 @@ struct Exec {
           break;
         case Op::MultifnReg: {
           const Chunk& f = p.chunks[in.d];
-          // Arity-only dispatch: null type strings, the chunk's stable
-          // param-name storage for kwarg coverage (unused in the slice).
+          // The overload's signature straight off the callee chunk: declared
+          // types (null where untyped) drive type dispatch, `required` is the
+          // arity floor a defaulted tail opens up, and the stable param-name
+          // storage covers kwargs (unused in the slice).
           std::vector<const char*> names;
-          std::vector<const char*> types(f.param_names.size(), nullptr);
+          std::vector<const char*> types;
           names.reserve(f.param_names.size());
+          types.reserve(f.param_names.size());
           for (const auto& n : f.param_names) names.push_back(n.c_str());
+          for (const auto& t : f.param_types)
+            types.push_back(t.empty() ? nullptr : t.c_str());
           auto n = static_cast<int64_t>(f.param_names.size());
           auto* disp = culebra_runtime_multifn_register_and_install(
               f.multifn_name.c_str(),
@@ -6106,7 +6360,7 @@ struct Exec {
                         : nullptr,
               reinterpret_cast<JitClosure*>(regs[in.b].data),
               n ? types.data() : nullptr, n, /*variadic=*/0,
-              /*min_arity=*/n, n ? names.data() : nullptr);
+              /*min_arity=*/f.required, n ? names.data() : nullptr);
           regs[in.b] = JitValue{TAG_NIL, 0};  // the registry took the +1
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(disp)};
           ++pc;
@@ -6182,22 +6436,14 @@ struct Exec {
           const JitValue& meta = regs[in.b];
           const JitValue& finit = regs[in.b + 1];
           const JitValue& body = regs[in.b + 2];
-          JitValue r;
-          try {
-            r = culebra_runtime_build_class_instance(
-                reinterpret_cast<const char*>(c.consts[in.c].data),
-                reinterpret_cast<JitObject*>(meta.data),
-                static_cast<int8_t>(finit.tag), finit.data,
-                static_cast<int8_t>(body.tag), body.data, in.d,
-                in.d ? &regs[0] : nullptr);
-          } catch (...) {
-            // The helper consumed each argument's +1 on its unwind path
-            // too (the `new` body's own ABI, or its field-init guard).
-            for (int32_t i = 0; i < in.d; ++i) regs[i] = JitValue{TAG_NIL, 0};
-            throw;
-          }
-          for (int32_t i = 0; i < in.d; ++i) regs[i] = JitValue{TAG_NIL, 0};
-          regs[in.a] = r;
+          // The frame's own arguments, forwarded: the helper consumes each
+          // +1 on every exit (the `new` body's ABI, its field-init guard,
+          // or its own release loop when there is no user `new`).
+          regs[in.a] = culebra_runtime_build_class_instance(
+              reinterpret_cast<const char*>(c.consts[in.c].data),
+              reinterpret_cast<JitObject*>(meta.data),
+              static_cast<int8_t>(finit.tag), finit.data,
+              static_cast<int8_t>(body.tag), body.data, n_args, args);
           ++pc;
           break;
         }
@@ -6250,24 +6496,50 @@ struct Exec {
           ++pc;
           break;
         }
-        case Op::RetPos: {
+        case Op::PosSnap: {
           int64_t def = c.consts[in.b].data;
           regs[in.a] = JitValue{
-              TAG_LONG, culebra_runtime_param_pos(-1, def >> 32,
+              TAG_LONG, culebra_runtime_param_pos(in.c, def >> 32,
                                                   def & 0xffffffff)};
           ++pc;
           break;
         }
-        case Op::RetChk: {
-          auto pos = _jit_unpack_pos(regs[in.c].data);
+        case Op::ChkTypeAt: {
+          auto pos = _jit_unpack_pos(regs[in.d].data);
           const JitValue& v = regs[in.a];
           culebra_runtime_type_check(
               static_cast<int8_t>(v.tag), v.data,
               reinterpret_cast<const char*>(c.consts[in.b].data),
-              "return value", pos.line, pos.col);
+              reinterpret_cast<const char*>(c.consts[in.c].data), pos.line,
+              pos.col);
           ++pc;
           break;
         }
+        case Op::ChkArg: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          const JitValue& v = regs[in.a];
+          culebra_runtime_type_check_param(
+              static_cast<int8_t>(v.tag), v.data,
+              reinterpret_cast<const char*>(c.consts[in.b].data),
+              reinterpret_cast<const char*>(c.consts[in.c].data), in.d, line,
+              col);
+          ++pc;
+          break;
+        }
+        case Op::JumpIfFilled:
+          pc = regs[in.a].tag == TAG_UNFILLED ? pc + 1
+                                              : static_cast<size_t>(in.b);
+          break;
+        case Op::RecEnter: {
+          int64_t d = culebra_runtime_recursion_enter();
+          if (in.a) frame_depth = d;
+          ++pc;
+          break;
+        }
+        case Op::RecLeave:
+          culebra_runtime_recursion_leave();
+          ++pc;
+          break;
         case Op::NsGet: {
           int8_t tag;
           int64_t data;
@@ -6511,8 +6783,9 @@ struct Lowering {
     // param binding, overflow-arg release, the `fn` handle, and the
     // recursion guard after binding.
     if (chunk_idx != 0) {
-      if (c.arity > 0) {
-        auto tooFew = b.CreateICmpSLT(nArgs, b.getInt64(c.arity), "too.few");
+      if (c.required > 0 && !c.forwards_args) {
+        auto tooFew =
+            b.CreateICmpSLT(nArgs, b.getInt64(c.required), "too.few");
         auto errBB = BasicBlock::Create(j.ctx_, "arity.err", fn);
         auto okBB = BasicBlock::Create(j.ctx_, "arity.ok", fn);
         b.CreateCondBr(tooFew, errBB, okBB);
@@ -6532,14 +6805,35 @@ struct Lowering {
                      {namesG, nArgs, b.getInt64(0), b.getInt64(0)});
         b.CreateUnreachable();
         b.SetInsertPoint(okBB);
-        for (int32_t i = 0; i < c.arity; ++i) {
+      }
+      // Required slots are there by the guard above; a defaulted one may not
+      // be, so its slot takes the TAG_UNFILLED sentinel its JumpIfFilled
+      // tests (reading past the caller's slab is the thing to avoid).
+      for (int32_t i = 0; !c.forwards_args && i < c.arity; ++i) {
+        if (i < c.required) {
           auto* src = b.CreateConstGEP1_64(j.valueType_, argsPtr,
                                            static_cast<uint64_t>(i));
           b.CreateStore(b.CreateLoad(j.valueType_, src), slots[i]);
+          continue;
         }
+        auto has = b.CreateICmpSGT(nArgs, b.getInt64(i), "arg.has");
+        auto takeBB = BasicBlock::Create(j.ctx_, "arg.take", fn);
+        auto unfBB = BasicBlock::Create(j.ctx_, "arg.unfilled", fn);
+        auto contBB = BasicBlock::Create(j.ctx_, "arg.cont", fn);
+        b.CreateCondBr(has, takeBB, unfBB);
+        b.SetInsertPoint(takeBB);
+        auto* src = b.CreateConstGEP1_64(j.valueType_, argsPtr,
+                                         static_cast<uint64_t>(i));
+        b.CreateStore(b.CreateLoad(j.valueType_, src), slots[i]);
+        b.CreateBr(contBB);
+        b.SetInsertPoint(unfBB);
+        b.CreateStore(j.make_value(b.getInt8(TAG_UNFILLED), b.getInt64(0)),
+                      slots[i]);
+        b.CreateBr(contBB);
+        b.SetInsertPoint(contBB);
       }
       // Release overflow args: for (iv = arity; iv < nArgs; iv++).
-      {
+      if (!c.forwards_args) {
         auto* fromBB = b.GetInsertBlock();
         auto hdrBB = BasicBlock::Create(j.ctx_, "extras.hdr", fn);
         auto bodyBB = BasicBlock::Create(j.ctx_, "extras.body", fn);
@@ -6581,26 +6875,20 @@ struct Lowering {
     }
     // Region handlers (and the frame pad below) restore the recursion count
     // to the frame's own level (Exec::run_frame's frame_depth, the JIT's
-    // try.rec snapshot hoisted to the prologue — the depth is constant
-    // within a frame).
+    // try.rec snapshot — the depth is constant within a frame). A function
+    // chunk's RecEnter instruction fills it once the parameters bind; the
+    // "never entered" sentinel keeps every restore a no-op until then, so a
+    // throw out of a default expression leaves the count alone.
     llvm::Value* depthSlot = nullptr;
-    {
-      bool need_depth = !c.eh.empty() || frame_defers;
-      llvm::Value* depth =
-          chunk_idx != 0
-              ? b.CreateCall(j.module_->getOrInsertFunction(
-                                 rt::recursion_enter, i64Ty),
-                             {}, "rec.depth")
-              : (need_depth
-                     ? b.CreateCall(j.module_->getOrInsertFunction(
-                                        rt::recursion_depth, i64Ty),
-                                    {}, "rec.depth")
-                     : nullptr);
-      if (need_depth) {
-        IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-        depthSlot = eb.CreateAlloca(i64Ty, nullptr, "eh.depth");
-        b.CreateStore(depth, depthSlot);
-      }
+    if (!c.eh.empty() || frame_defers) {
+      IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+      depthSlot = eb.CreateAlloca(i64Ty, nullptr, "eh.depth");
+      llvm::Value* depth0 = b.getInt64(-1);
+      if (chunk_idx == 0)
+        depth0 = b.CreateCall(
+            j.module_->getOrInsertFunction(rt::recursion_depth, i64Ty), {},
+            "rec.depth");
+      b.CreateStore(depth0, depthSlot);
     }
 
     // Pass 1: every jump target opens a basic block. A conditional jump's
@@ -6631,6 +6919,7 @@ struct Lowering {
         case Op::JumpIfNotNil:
         case Op::JumpIfNil:
         case Op::JumpIfTag:
+        case Op::JumpIfFilled:
         case Op::SeqChk:   // pattern mismatch edges, same encoding
         case Op::ObjGet:
           mark(in.b);
@@ -6673,10 +6962,35 @@ struct Lowering {
     // edge. Returns the call's result value.
     auto emit_invoke = [&](llvm::Value* calleeV, int32_t selfSlot,
                            int32_t argBase, int32_t argc, int64_t line,
-                           int64_t col) -> llvm::Value* {
-      b.CreateCall(j.module_->getOrInsertFunction(rt::set_call_site,
-                                                  b.getVoidTy(), i64Ty, i64Ty),
-                   {b.getInt64(line), b.getInt64(col)});
+                           int64_t col,
+                           const std::vector<int64_t>* argpos =
+                               nullptr) -> llvm::Value* {
+      // The call site, with this call's per-argument positions when it has
+      // any — the JIT's emit_call_position_publish, whose packed array is
+      // rodata here too (every position is a compile-time constant).
+      if (argpos) {
+        std::vector<Constant*> packed;
+        size_t n = std::min(argpos->size(),
+                            static_cast<size_t>(_JIT_ARGPOS_MAX));
+        packed.reserve(n);
+        for (size_t k = 0; k < n; ++k) packed.push_back(b.getInt64((*argpos)[k]));
+        auto* arrTy = llvm::ArrayType::get(i64Ty, n);
+        auto* posG = new llvm::GlobalVariable(
+            *j.module_, arrTy, /*isConstant=*/true,
+            llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantArray::get(arrTy, packed), ".vm.argpos");
+        b.CreateCall(
+            j.module_->getOrInsertFunction(rt::set_call_positions,
+                                           b.getVoidTy(), i64Ty, i64Ty,
+                                           i64Ty, ptrTy),
+            {b.getInt64(line), b.getInt64(col),
+             b.getInt64(static_cast<int64_t>(n)), posG});
+      } else {
+        b.CreateCall(
+            j.module_->getOrInsertFunction(rt::set_call_site, b.getVoidTy(),
+                                           i64Ty, i64Ty),
+            {b.getInt64(line), b.getInt64(col)});
+      }
       auto tag = j.extract_tag(calleeV);
       auto* fromBB = b.GetInsertBlock();
       auto probeBB = BasicBlock::Create(j.ctx_, "call.probe", fn);
@@ -7441,7 +7755,8 @@ struct Lowering {
 
           b.SetInsertPoint(userBB);
           // The shadowing user method: CallM's hand-off, one slot over.
-          b.CreateStore(emit_invoke(gate, in.b + 1, in.b + 2, in.d, line, col),
+          b.CreateStore(emit_invoke(gate, in.b + 1, in.b + 2, in.d, line, col,
+                                    chunk_argpos_at(c, i)),
                         slots[in.a]);
           b.CreateBr(mergeBB);
 
@@ -8738,7 +9053,8 @@ struct Lowering {
           bool meth = in.op == Op::CallM;
           auto [line, col] = chunk_pos_at(c, i);
           b.CreateStore(emit_invoke(load_slot(in.b), meth ? in.c : -1,
-                                    in.c + (meth ? 1 : 0), in.d, line, col),
+                                    in.c + (meth ? 1 : 0), in.d, line, col,
+                                    chunk_argpos_at(c, i)),
                         slots[in.a]);
           break;
         }
@@ -8828,15 +9144,20 @@ struct Lowering {
         case Op::MultifnReg: {
           const Chunk& f = p.chunks[in.d];
           auto nameG = j.get_or_create_global_str(f.multifn_name, ".vm.mfname");
-          // Arity-only dispatch: a null-typed entry per param, the chunk's
-          // param names as .rodata (emit_multifn_register's arrays, via the
-          // shared builder).
+          // The callee chunk's signature as .rodata (emit_multifn_register's
+          // arrays, via the shared builder): declared types where it has
+          // them, null where the param is untyped.
           auto nparams = static_cast<int64_t>(f.param_names.size());
           std::vector<llvm::Constant*> nameCs;
           std::vector<llvm::Constant*> typeCs;
-          for (const auto& nm : f.param_names) {
-            nameCs.push_back(j.get_or_create_global_str(nm, ".vm.mfpn"));
-            typeCs.push_back(llvm::ConstantPointerNull::get(ptrTy));
+          for (size_t k = 0; k < f.param_names.size(); ++k) {
+            nameCs.push_back(
+                j.get_or_create_global_str(f.param_names[k], ".vm.mfpn"));
+            typeCs.push_back(
+                f.param_types[k].empty()
+                    ? llvm::ConstantPointerNull::get(ptrTy)
+                    : llvm::cast<llvm::Constant>(j.get_or_create_global_str(
+                          f.param_types[k], ".vm.mfpt")));
           }
           auto namesPtr = j.build_str_ptr_array(nameCs, ".vm.mfnames");
           auto typesPtr = j.build_str_ptr_array(typeCs, ".vm.mftypes");
@@ -8850,7 +9171,7 @@ struct Lowering {
                   rt::multifn_register_and_install, ptrTy, ptrTy, ptrTy,
                   ptrTy, ptrTy, i64Ty, i64Ty, i64Ty, ptrTy),
               {nameG, intoPtr, bodyPtr, typesPtr, b.getInt64(nparams),
-               b.getInt64(0), b.getInt64(nparams), namesPtr},
+               b.getInt64(0), b.getInt64(f.required), namesPtr},
               "vm.mf.disp");
           b.CreateStore(j.make_nil(), slots[in.b]);
           b.CreateStore(j.make_func(disp), slots[in.a]);
@@ -8950,21 +9271,9 @@ struct Lowering {
           break;
         }
         case Op::MakeInst: {
-          // The argument run is the frame's own parameter slots, which the
-          // helper consumes on every exit — spill them into one entry-block
-          // slab and empty the slots, the Call op's arg-slab discipline.
-          llvm::Value* argSlab = llvm::ConstantPointerNull::get(ptrTy);
-          if (in.d) {
-            IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-            argSlab = eb.CreateAlloca(j.valueType_, b.getInt64(in.d),
-                                      "vm.ctor.args");
-            for (int32_t i = 0; i < in.d; ++i) {
-              b.CreateStore(load_slot(i),
-                            b.CreateInBoundsGEP(j.valueType_, argSlab,
-                                                {b.getInt64(i)}));
-              b.CreateStore(j.make_nil(), slots[i]);
-            }
-          }
+          // The frame's own ABI arguments, forwarded untouched — the helper
+          // consumes each +1 on every exit (the `new` body's ABI, its
+          // field-init guard, or its own release loop).
           auto meta = load_slot(in.b);
           auto finit = load_slot(in.b + 1);
           auto body = load_slot(in.b + 2);
@@ -8979,8 +9288,7 @@ struct Lowering {
                    c.consts[in.c].data))),
                b.CreateIntToPtr(j.extract_data(meta), ptrTy),
                j.extract_tag(finit), j.extract_data(finit),
-               j.extract_tag(body), j.extract_data(body), b.getInt64(in.d),
-               argSlab},
+               j.extract_tag(body), j.extract_data(body), nArgs, argsPtr},
               "vm.instance");
           b.CreateStore(inst, slots[in.a]);
           break;
@@ -9039,32 +9347,64 @@ struct Lowering {
                vm_str_const(in.b, ".vm.tspec"),
                vm_str_const(in.c, ".vm.tsuper")});
           break;
-        case Op::RetPos: {
+        case Op::PosSnap: {
           int64_t def = c.consts[in.b].data;
           auto packed = j.emit_call(
               j.module_->getOrInsertFunction(rt::param_pos, i64Ty, i64Ty,
                                              i64Ty, i64Ty),
-              {b.getInt64(-1), b.getInt64(def >> 32),
+              {b.getInt64(in.c), b.getInt64(def >> 32),
                b.getInt64(def & 0xffffffff)},
-              "vm.retpos");
+              "vm.errpos");
           b.CreateStore(j.make_value(b.getInt8(TAG_LONG), packed),
                         slots[in.a]);
           break;
         }
-        case Op::RetChk: {
+        case Op::ChkTypeAt: {
           auto v = load_slot(in.a);
-          auto packed = j.extract_data(load_slot(in.c));
+          auto packed = j.extract_data(load_slot(in.d));
           j.emit_call(
               j.module_->getOrInsertFunction(rt::type_check, b.getVoidTy(),
                                              b.getInt8Ty(), i64Ty, ptrTy,
                                              ptrTy, i64Ty, i64Ty),
               {j.extract_tag(v), j.extract_data(v),
-               vm_str_const(in.b, ".vm.rettype"),
-               j.get_or_create_global_str("return value", ".vm.retctx"),
+               vm_str_const(in.b, ".vm.chktype"),
+               vm_str_const(in.c, ".vm.chkctx"),
                b.CreateLShr(packed, b.getInt64(32)),
                b.CreateAnd(packed, b.getInt64(0xffffffff))});
           break;
         }
+        case Op::ChkArg: {
+          auto [line, col] = chunk_pos_at(c, i);
+          auto v = load_slot(in.a);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::type_check_param,
+                                             b.getVoidTy(), b.getInt8Ty(),
+                                             i64Ty, ptrTy, ptrTy, i64Ty,
+                                             i64Ty, i64Ty),
+              {j.extract_tag(v), j.extract_data(v),
+               vm_str_const(in.b, ".vm.chktype"),
+               vm_str_const(in.c, ".vm.chkctx"), b.getInt64(in.d),
+               b.getInt64(line), b.getInt64(col)});
+          break;
+        }
+        case Op::JumpIfFilled: {
+          auto unf = b.CreateICmpEQ(j.extract_tag(load_slot(in.a)),
+                                    b.getInt8(TAG_UNFILLED), "arg.unf");
+          b.CreateCondBr(unf, blocks.at(static_cast<int32_t>(i) + 1),
+                         blocks.at(in.b));
+          break;
+        }
+        case Op::RecEnter: {
+          auto d = j.emit_call(
+              j.module_->getOrInsertFunction(rt::recursion_enter, i64Ty), {},
+              "rec.depth");
+          if (in.a && depthSlot) b.CreateStore(d, depthSlot);
+          break;
+        }
+        case Op::RecLeave:
+          b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_leave,
+                                                      b.getVoidTy()));
+          break;
         case Op::NsGet: {
           // The JIT's own bare-builtin slow path; nothrow for allowlisted
           // names, so a plain call even inside a region.

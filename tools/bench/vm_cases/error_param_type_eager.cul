@@ -1,0 +1,7 @@
+# From the first default onward the prologue snapshots each typed slot's
+# report position: the default's own call would otherwise overwrite the
+# caller's, and the error would land on the wrong line.
+let note = fn (x) { x }
+let f = fn (a = note(1), b: Long = 2) { a }
+println(f(9,
+          'x'))

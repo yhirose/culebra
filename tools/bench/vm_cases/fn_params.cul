@@ -1,0 +1,176 @@
+# Declared parameter types and default arguments, on every fn form the
+# slice reaches: the prologue fills an unsupplied slot from its default
+# expression (evaluated after the captures, `self` and `fn` bind, so it can
+# read them) and checks each declared type where the interp binder checks
+# it — at the argument's own expression, or at the call site for a slot the
+# default filled.
+
+# --- Types on a function value, a lambda and a named fn ------------------
+let f1 = fn (a: Long) { a * 2 }
+println(f1(21))
+
+let f2 = |s: String| s + '!'
+println(f2('hi'))
+
+fn f3(n: Long) { n + 1 }
+println(f3(1))
+
+# Any is not a check, and an untyped param takes anything.
+let f4 = fn (a: Any, b) { [a, b] }
+println(f4(1, 'x'))
+println(f4('x', nil))
+
+# Union annotations.
+let f5 = fn (v: Long | String) { v }
+println(f5(3))
+println(f5('three'))
+
+# A built-in trait name resolves through the registry the prologue's
+# preamble filled.
+let f6 = fn (s: StringLike) { s }
+println(f6('abc'))
+println(f6('abcdef'.slice(0, 3)))
+
+# --- Defaults: evaluated per call, only when the slot is unfilled --------
+mut ticks = 0
+let bump = fn () { ticks += 1; ticks }
+let d1 = fn (a = bump()) { a }
+println(d1())
+println(d1())
+println(d1(100))
+println(ticks)
+
+# Earlier parameters are in scope, left to right.
+let d2 = fn (a, b = a + 1, c = b * 2) { [a, b, c] }
+println(d2(1))
+println(d2(1, 10))
+println(d2(1, 10, 100))
+
+# A default sees the captures of its closure.
+mut base = 5
+let d3 = fn (a = base) { a }
+println(d3())
+base = 9
+println(d3())
+
+# A fresh value per call — no sharing across calls.
+let d4 = fn (xs = [0]) { xs.push(1); xs }
+println(d4())
+println(d4())
+
+# Only the unfilled defaults run, left to right.
+let say = fn (t) { println(t); t }
+let d5 = fn (a = say('a'), b = say('b')) { 0 }
+println(d5())
+println(d5(1))
+println(d5(1, 2))
+
+# Surplus positionals are dropped, as always.
+let d6 = fn (a, b = 2) { [a, b] }
+println(d6(1, 2, 3, 4))
+
+# A `mut` default binds mutably; a typed default is checked like any slot.
+let d7 = fn (mut a = 1, b: Long = 2) { a += 10; a + b }
+println(d7())
+println(d7(5, 6))
+
+# A sink parameter's argument is checked, then dropped.
+let d8 = fn (_: Long, b = 7) { b }
+println(d8(1))
+println(d8(1, 8))
+
+# Defaults and a destructuring parameter side by side.
+let d9 = fn ([p, q], r: Long = 3) { [p, q, r] }
+println(d9([1, 2]))
+println(d9([1, 2], 4))
+
+# A captured defaulted parameter is cell-promoted after its default ran.
+let mk = fn (a: Long = 3) { fn () { a } }
+println(mk()())
+println(mk(9)())
+
+# --- Overload dispatch reads the declared signature ----------------------
+fn area(s: Long) { 'long ' + to_string(s) }
+fn area(s: String) { 'string ' + s }
+fn area(s) { 'any' }
+println(area(3))
+println(area('x'))
+println(area(1.5))
+
+# A defaulted arm covers an arity range; an exact arm takes the overlap.
+fn spread(a, b = 2) { 'two ' + to_string(a) + ' ' + to_string(b) }
+fn spread(a, b, c) { 'three' }
+println(spread(1))
+println(spread(1, 9))
+println(spread(1, 2, 3))
+
+# --- Class members -------------------------------------------------------
+class C {
+  n: Long = 4
+  new(v: Long = 7) { self.n = v }
+  plus(k: Long = 1) { self.n + k }
+  # A default reads the receiver, and the recursion handle is the frame's.
+  same(k = self.n) { k }
+  kind(h = fn) { type_of(h) }
+  static make(v: Long = 2) { v * 10 }
+  # Overloads separated by type, not just arity.
+  tag(x: Long) { 'L' }
+  tag(x: String) { 'S' }
+}
+let c = C.new()
+println(c.n)
+println(C.new(3).n)
+println(c.plus())
+println(c.plus(10))
+println(c.same())
+println(c.kind())
+println(C.make())
+println(C.make(5))
+println(c.tag(1))
+println(c.tag('s'))
+
+# A Generic class's parameter is documentation: it lowers to Any.
+class Box<T> {
+  v = nil
+  new(x: T) { self.v = x }
+  put(x: T, k: Long = 1) { [x, k] }
+}
+println(Box.new('anything').v)
+println(Box.new(1).put(2.5))
+
+# A trait default carries its own types and defaults.
+trait Greet {
+  hi(name: String = 'world') { 'hi ' + name }
+}
+class G { n = 1 }
+println(G.new().hi())
+println(G.new().hi('you'))
+
+# --- Errors, caught ------------------------------------------------------
+let e1 = try { f1('x') } catch e { e.kind }
+println(e1)
+let e2 = try { c.plus('x') } catch e { e.kind }
+println(e2)
+let e3 = try { area(true) } catch e { e.kind }
+println(e3)
+let e4 = try { d2() } catch e { e.kind }
+println(e4)
+let bad = fn (a: Long = 'nope') { a }
+let e5 = try { bad() } catch e { e.kind }
+println(e5)
+println(bad(1))
+# A default that throws leaves the frame before the body runs.
+let boom = fn (a = throw 'nope') { 'ran' }
+println(try { boom() } catch e { 'caught' })
+println(boom(1))
+
+# --- Churn: the default's +1 and the type check in a loop ----------------
+mut acc = 0
+for i in 0..2000 {
+  acc += d4().size()
+  acc += f1(1)
+  acc += C.new(i).plus()
+  acc += area(i).size()
+}
+println(acc)
+println('fn_params OK')

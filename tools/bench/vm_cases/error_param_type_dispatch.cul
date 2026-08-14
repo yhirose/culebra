@@ -1,0 +1,6 @@
+# Declared types are part of an overload's signature: an argument that
+# matches no arm is a DispatchError at the call, not a parameter TypeError.
+fn g(s: Long) { 'long' }
+fn g(s: String) { 'string' }
+println(g(1))
+println(g(1.5))

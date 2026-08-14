@@ -1,0 +1,4 @@
+# Defaults lower the required count; the message still names the first slot
+# the caller left unfilled.
+let f = fn (a, b, c = 3) { a }
+println(f(1))

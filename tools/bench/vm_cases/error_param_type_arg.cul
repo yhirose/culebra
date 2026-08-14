@@ -1,0 +1,6 @@
+# A positional argument's declared type reports at the argument expression,
+# not at the call — the interp binder's anchor, resolved on the check's
+# failure path from the positions the call site published.
+let f = fn (a, b: Long) { a }
+println(f(1,
+          'x'))
