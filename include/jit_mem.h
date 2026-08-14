@@ -1002,10 +1002,9 @@ inline constexpr auto type_check          = "culebra_runtime_type_check";
 inline constexpr auto type_matches        = "culebra_runtime_type_matches";
 inline constexpr auto register_trait_default
     = "culebra_runtime_register_trait_default";
-inline constexpr auto register_trait_method
-    = "culebra_runtime_register_trait_method";
-inline constexpr auto register_trait_super
-    = "culebra_runtime_register_trait_super";
+inline constexpr auto trait_defaults_reset
+    = "culebra_runtime_trait_defaults_reset";
+inline constexpr auto register_trait      = "culebra_runtime_register_trait";
 inline constexpr auto type_error          = "culebra_runtime_type_error";
 inline constexpr auto destructure_mismatch
     = "culebra_runtime_destructure_mismatch";

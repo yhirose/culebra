@@ -632,10 +632,12 @@ culebra_runtime_register_trait_default(const char* trait_name,
 }
 
 // Drop every registered default for `trait_name`, releasing each held +1.
-// Called when a trait declaration is re-compiled so the re-declared trait
-// starts clean instead of stranding the old bodies' refs. Detach before
-// release, same order as the register above.
-inline void _jit_trait_defaults_reset(const std::string& trait_name) {
+// Emitted at the top of a trait declaration so a re-declared trait starts
+// clean instead of stranding the old bodies' refs (the interp's
+// `defaults.clear()`). Detach before release, same order as the register
+// above.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_trait_defaults_reset(const char* trait_name) {
   auto& tbl = _jit_trait_default_impls();
   auto it = tbl.find(trait_name);
   if (it == tbl.end()) return;
@@ -647,50 +649,42 @@ inline void _jit_trait_defaults_reset(const std::string& trait_name) {
                                   reinterpret_cast<int64_t>(cls));
 }
 
-// Add (or refresh) a method entry on the registered trait. Called
-// once per declared method from compile_trait_decl's emitted IR so
-// trait_registry is populated at AOT-binary runtime (and at JIT
-// runtime — process-global registry survives the JIT phase but AOT
-// has a fresh process).
+// Install the trait contract when its declaration *executes* — the interp's
+// `register_trait` at the end of eval_trait_decl. A declaration replaces any
+// earlier one of the same name outright, so a re-declaration that drops a
+// required method or a supertrait really drops it.
+//
+// `spec` is `name:arity:has_default;...` and `supers` is `Name;...`, both
+// compile-time constants (the shape culebra_runtime_register_packable uses).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
-culebra_runtime_register_trait_method(const char* trait_name,
-                                       const char* method_name,
-                                       int64_t arity,
-                                       int8_t has_default) {
-  std::unique_lock lock(culebra::trait_mutex());
-  auto& reg = culebra::trait_registry();
-  std::string name(trait_name);
-  auto& def = reg[name];
-  if (def.name.empty()) def.name = name;
-  // Replace existing entry by method name (re-declaration safety).
-  for (auto& m : def.methods) {
-    if (m.name == method_name) {
-      m.arity = static_cast<size_t>(arity);
-      m.has_default = has_default != 0;
-      culebra::trait_conformance_cache().clear();
-      return;
-    }
+culebra_runtime_register_trait(const char* trait_name, const char* spec,
+                                const char* supers) {
+  culebra::TraitDef def;
+  def.name = trait_name;
+  std::string_view s(spec);
+  for (size_t i = 0; i < s.size();) {
+    size_t semi = s.find(';', i);
+    if (semi == std::string_view::npos) semi = s.size();
+    auto seg = s.substr(i, semi - i);
+    i = semi + 1;
+    auto c1 = seg.find(':');
+    if (c1 == std::string_view::npos) continue;
+    auto c2 = seg.find(':', c1 + 1);
+    if (c2 == std::string_view::npos) continue;
+    size_t arity = 0;
+    for (char ch : seg.substr(c1 + 1, c2 - c1 - 1))
+      arity = arity * 10 + static_cast<size_t>(ch - '0');
+    def.methods.push_back({std::string(seg.substr(0, c1)), arity,
+                           seg[c2 + 1] == '1'});
   }
-  def.methods.push_back({std::string(method_name),
-                          static_cast<size_t>(arity),
-                          has_default != 0});
-  culebra::trait_conformance_cache().clear();
-}
-
-// Flatten a supertrait's methods into `trait_name` at runtime (trait
-// inheritance). Emitted by compile_trait_decl after the trait's own
-// methods so the AOT-binary registry mirrors the interp register_trait
-// flatten. The supertrait is declared earlier, so it is already
-// registered when this runs.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
-culebra_runtime_register_trait_super(const char* trait_name,
-                                      const char* super_name) {
-  std::unique_lock lock(culebra::trait_mutex());
-  auto& reg = culebra::trait_registry();
-  auto& def = reg[trait_name];
-  if (def.name.empty()) def.name = trait_name;
-  culebra::merge_supertrait_into(def, super_name);
-  culebra::trait_conformance_cache().clear();
+  std::string_view sup(supers);
+  for (size_t i = 0; i < sup.size();) {
+    size_t semi = sup.find(';', i);
+    if (semi == std::string_view::npos) semi = sup.size();
+    if (semi > i) def.supertraits.emplace_back(sup.substr(i, semi - i));
+    i = semi + 1;
+  }
+  culebra::register_trait(std::move(def));
 }
 
 // Side table mapping a dispatcher closure pointer to its multimethod

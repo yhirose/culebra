@@ -645,8 +645,23 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);
       LoopDepthGuard g(loop_depth_, 0);
+      auto trait_name = culebra::parse_generic_head(
+          culebra::parse_trait_head(node.nodes[i]->token).name).outer;
+      std::set<std::string, std::less<>> method_names;
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto tv = culebra::view_trait_method(*node.nodes[j]);
+        // A trait's contract and its default bodies are both keyed by
+        // method name — a trait has no overload set to merge same-name
+        // methods into (a class does). Two `m` entries would silently drop
+        // one, so reject the declaration instead.
+        if (!method_names.insert(std::string(tv.name)).second) {
+          diags_.push_back(Diagnostic{
+              "SyntaxError",
+              std::format("duplicate method '{}' in trait `{}`", tv.name,
+                          trait_name),
+              static_cast<long>(tv.name_line),
+              static_cast<long>(tv.name_col), Severity::Error});
+        }
         check_dup_params(*tv.params);
         check_reserved_params(*tv.params);
         check_param_wellformed(*tv.params);

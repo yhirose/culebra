@@ -8679,56 +8679,29 @@ struct JIT {
   // type_matches / dispatch can see it. Default method bodies are
   // compiled into JitClosures and stashed in `_jit_trait_default_impls`
   // for the property-access fallback path.
+  //
+  // Every registration happens when the declaration *executes* (the interp's
+  // timing): a trait inside an unreached branch registers nothing, and a
+  // re-declaration replaces the earlier contract and defaults outright.
   Owned compile_trait_decl(const peg::Ast& ast) {
     using namespace peg::udl;
-    size_t k = 0;
-    k = culebra::first_non_decorator_index(ast);
-    // TRAIT_HEAD: name (+ Generic params) and optional supertraits.
-    auto th = culebra::parse_trait_head(ast.nodes[k]->token);
-    std::string trait_name(culebra::parse_generic_head(th.name).outer);
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto spec = culebra::trait_decl_spec(ast);
+    const std::string& trait_name = spec.name;
+    size_t k = culebra::first_non_decorator_index(ast);
 
-    culebra::TraitDef def;
-    def.name = trait_name;
-    for (auto super : th.supertraits) def.supertraits.emplace_back(super);
-    _jit_trait_defaults_reset(trait_name);
+    // Clear this trait's defaults first (interp's `defaults.clear()`), so a
+    // re-declaration that drops a default really drops it.
+    emit_call(module_->getOrInsertFunction(rt::trait_defaults_reset,
+                                           builder_.getVoidTy(), ptrTy),
+              {builder_.CreateGlobalString(trait_name,
+                                           ".trait." + trait_name + ".rst")});
 
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto tv = culebra::view_trait_method(m);
-      // Arity count (positional only). `has_param` instead tracks what the
-      // interp's FunctionValue::params holds — everything but the `*`
-      // separator — so the well-known check below rejects `next(*args)`
-      // on both backends.
-      size_t arity = 0;
       bool has_param = false;
-      for (const auto& p : tv.params->nodes) {
-        if (culebra::is_kw_only_sep(*p)) continue;
-        has_param = true;
-        if (culebra::is_kwargs_rest(*p) || culebra::is_args_rest(*p)) continue;
-        arity++;
-      }
-      bool has_body = static_cast<bool>(tv.body);
-      def.methods.push_back({std::string(tv.name), arity, has_body});
-
-      // Emit runtime registration of this method so the trait is
-      // populated when the AOT binary runs (and harmless on JIT).
-      {
-        auto ptrTy = llvm::PointerType::get(ctx_, 0);
-        auto trait_g = builder_.CreateGlobalString(
-            trait_name,
-            ".trait." + trait_name + "." + std::string(tv.name) + ".tn");
-        auto method_g = builder_.CreateGlobalString(
-            std::string(tv.name),
-            ".trait." + trait_name + "." + std::string(tv.name) + ".mn");
-        emit_call(
-            module_->getOrInsertFunction(
-                rt::register_trait_method,
-                builder_.getVoidTy(), ptrTy, ptrTy,
-                builder_.getInt64Ty(), builder_.getInt8Ty()),
-            {trait_g, method_g,
-             builder_.getInt64(static_cast<int64_t>(arity)),
-             builder_.getInt8(has_body ? 1 : 0)});
-      }
+      (void)culebra::trait_method_arity(*tv.params, &has_param);
 
       if (tv.body) {
         // A default impl lands on every conforming instance without passing
@@ -8747,12 +8720,11 @@ struct JIT {
         // Compile the default-method body as a closure. analyze_fn_body
         // has already populated analysis_.func_info[&m] via visit_for_frees.
         Owned fn_val = compile_fn_common(
-            &m, tv.params, tv.body, /*returnType=*/{},
+            &m, tv.params, tv.body, tv.return_type,
             std::string(tv.name));
         // fn_val is a JitValue (struct {i8 tag, i64 data}); the data
         // is the JitClosure*. Pull it out and register the default into
         // the runtime trait-default table.
-        auto ptrTy = llvm::PointerType::get(ctx_, 0);
         auto closure_data =
             builder_.CreateExtractValue(fn_val.borrow(), /*idx=*/1, "td.data");
         auto closure_ptr =
@@ -8770,25 +8742,18 @@ struct JIT {
             {trait_g, method_g, closure_ptr});
       }
     }
-    // Emit supertrait-merge calls so the AOT-binary runtime flattens
-    // inherited methods (mirrors interp's register_trait). The JIT-phase
-    // register_trait(def) below flattens in-process for the same effect.
-    {
-      auto ptrTy = llvm::PointerType::get(ctx_, 0);
-      for (auto super : th.supertraits) {
-        auto trait_g = builder_.CreateGlobalString(
-            trait_name, ".trait." + trait_name + ".sup.tn");
-        auto super_g = builder_.CreateGlobalString(
-            std::string(super),
-            ".trait." + trait_name + ".sup." + std::string(super));
-        emit_call(
-            module_->getOrInsertFunction(
-                rt::register_trait_super,
-                builder_.getVoidTy(), ptrTy, ptrTy),
-            {trait_g, super_g});
-      }
-    }
-    culebra::register_trait(std::move(def));
+    // Install the contract last, exactly where interp's register_trait sits:
+    // a mid-declaration throw (a well-known contract violation) leaves the
+    // previous declaration's contract in place on both backends.
+    emit_call(
+        module_->getOrInsertFunction(rt::register_trait, builder_.getVoidTy(),
+                                     ptrTy, ptrTy, ptrTy),
+        {builder_.CreateGlobalString(trait_name,
+                                     ".trait." + trait_name + ".name"),
+         builder_.CreateGlobalString(spec.methods,
+                                     ".trait." + trait_name + ".spec"),
+         builder_.CreateGlobalString(spec.supers,
+                                     ".trait." + trait_name + ".sup")});
     // A trait declaration is a statement with no value; yield nil (a real,
     // release-safe %Value) rather than undef — compile_statements releases the
     // previous statement's result, and releasing an undef derefs garbage at

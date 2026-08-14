@@ -1152,6 +1152,50 @@ inline std::string_view destructure_param_name(size_t i) {
   return names[i];
 }
 
+// Positional arity of a trait method's parameter list. `has_param` reports
+// what the interp's FunctionValue::params would hold — everything but the
+// `*` separator — which is what the well-known contract check reads.
+inline size_t trait_method_arity(const peg::Ast& params,
+                                 bool* has_param = nullptr) {
+  size_t arity = 0;
+  if (has_param) *has_param = false;
+  for (const auto& p : params.nodes) {
+    if (is_kw_only_sep(*p)) continue;
+    if (has_param) *has_param = true;
+    if (is_kwargs_rest(*p) || is_args_rest(*p)) continue;
+    arity++;
+  }
+  return arity;
+}
+
+// A trait declaration reduced to the constant strings the compiled
+// backends hand to culebra_runtime_register_trait when the declaration
+// executes: `name:arity:has_default;...` and `Super;...`.
+struct TraitDeclSpec {
+  std::string name;
+  std::string methods;
+  std::string supers;
+};
+
+inline TraitDeclSpec trait_decl_spec(const peg::Ast& ast) {
+  TraitDeclSpec spec;
+  size_t k = first_non_decorator_index(ast);
+  auto th = parse_trait_head(ast.nodes[k]->token);
+  spec.name = std::string(parse_generic_head(th.name).outer);
+  for (auto super : th.supertraits) {
+    spec.supers += std::string(super);
+    spec.supers += ';';
+  }
+  for (size_t i = k + 1; i < ast.nodes.size(); i++) {
+    auto tv = view_trait_method(*ast.nodes[i]);
+    spec.methods += std::string(tv.name);
+    spec.methods += ':';
+    spec.methods += std::to_string(trait_method_arity(*tv.params));
+    spec.methods += tv.body ? ":1;" : ":0;";
+  }
+  return spec;
+}
+
 // Returns (name, line, col) for a PARAMETER-shaped AST node. The
 // KWARGS_REST shape stores the name as the node's own token; normal
 // parameters keep it on the IDENTIFIER child at index 1.
