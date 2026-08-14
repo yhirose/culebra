@@ -1,0 +1,10 @@
+# A trait default lands on every conforming instance without passing the
+# property-write chokepoint, so a well-known protocol name declared with
+# parameters breaks its contract when the declaration runs.
+trait Bad {
+  q() -> Long
+  next(a) -> Long {
+    a
+  }
+}
+println('unreached')

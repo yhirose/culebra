@@ -1,0 +1,283 @@
+# `trait Name { req(); def() { ... } }` — a structural contract plus the
+# default bodies a conforming class inherits. The declaration binds no
+# name: everything it does lands in the shared trait registry, which the
+# property read consults after the class's own methods.
+
+trait Counter {
+  current() -> Long
+  bump() -> Long {
+    self.current() + 1
+  }
+}
+
+class Zero {
+  new() { }
+  current() {
+    0
+  }
+}
+
+class Five {
+  new() { }
+  current() {
+    5
+  }
+  bump() {
+    99
+  }
+}
+
+class NoCurrent {
+  new() { }
+  other() {
+    1
+  }
+}
+
+println(Zero.new().bump())   # the default
+println(Five.new().bump())   # the class's own method wins
+println(NoCurrent.new().bump)  # not conforming: no default in sight
+
+# A default is a method: it binds `self`, keeps its receiver when taken as
+# a value, calls the class's methods and other defaults, and recurses.
+trait Chain {
+  base() -> Long
+  once() -> Long {
+    self.base() + 1
+  }
+  twice() -> Long {
+    self.once() * 10
+  }
+  countdown(n) -> Long {
+    if n <= 0 {
+      self.base()
+    } else {
+      self.countdown(n - 1)
+    }
+  }
+  boxed() -> Function {
+    fn () {
+      self.base() * 3
+    }
+  }
+}
+
+class Two {
+  new(v) {
+    self.v = v
+  }
+  base() {
+    self.v
+  }
+}
+
+let t = Two.new(2)
+println(t.once())
+println(t.twice())
+println(t.countdown(4))
+println(t.boxed()())
+let detached = t.once     # a default taken as a value keeps its receiver
+println(detached())
+
+# Supertraits flatten: conforming to `Sub` needs `Base`'s methods too, and
+# `Base`'s defaults are available through it.
+trait Base {
+  a() -> Long
+  da() -> Long {
+    self.a() * 10
+  }
+}
+
+trait Sub: Base {
+  b() -> Long
+  db() -> Long {
+    self.a() + self.b()
+  }
+}
+
+class Both {
+  new() { }
+  a() {
+    1
+  }
+  b() {
+    2
+  }
+}
+
+class OnlyB {
+  new() { }
+  b() {
+    2
+  }
+}
+
+println(Both.new().da())
+println(Both.new().db())
+println(OnlyB.new().db)   # `Sub` wants `a` too
+
+# A default outranks the dict builtins and the synthesized `parameters()`
+# — it is a method the class inherited, not a fallback.
+trait Named {
+  tag() -> Long
+  size() -> Long {
+    42
+  }
+}
+
+class Tagged {
+  new() {
+    self.f = 1
+  }
+  tag() {
+    0
+  }
+}
+
+let tg = Tagged.new()
+println(tg.size())
+inspect(tg.keys())     # defaults live in the registry, not on the instance
+inspect(tg)
+
+# A declaration replaces the earlier one of the same name outright.
+trait Swap {
+  m() -> Long
+  d() -> Long {
+    1
+  }
+}
+
+class Swappy {
+  new() { }
+  m() {
+    0
+  }
+}
+
+println(Swappy.new().d())
+
+trait Swap {
+  m() -> Long
+  d() -> Long {
+    2
+  }
+}
+
+println(Swappy.new().d())
+
+trait Swap {
+  m() -> Long
+}
+
+println(Swappy.new().d)   # the default is gone with the re-declaration
+
+# Registration happens when the declaration runs, so an unreached one
+# registers nothing.
+if false {
+  trait Unreached {
+    m() -> Long
+    zz() -> Long {
+      7
+    }
+  }
+}
+
+println(Swappy.new().zz)
+
+# The built-in traits are in scope without an import: `eq` alone earns
+# `neq`, `cmp` alone earns the four comparisons.
+class Money {
+  new(cents) {
+    self.cents = cents
+  }
+  eq(other) {
+    self.cents == other.cents
+  }
+  cmp(other) {
+    self.cents - other.cents
+  }
+}
+
+let one = Money.new(100)
+let two = Money.new(200)
+println(one.eq(two))
+println(one.neq(two))
+println(one.neq(Money.new(100)))
+println(one.lt(two))
+println(one.le(two))
+println(one.gt(two))
+println(one.ge(two))
+println(two.gt(one))
+
+# A `__call__` default makes every conforming instance callable, the same
+# way an own `__call__` method does.
+trait Applicable {
+  base() -> Long
+  __call__(a) -> Long {
+    self.base() + a
+  }
+}
+
+println(Two.new(10)(5))
+
+class Adder {
+  new(n) {
+    self.n = n
+  }
+  __call__(a) {
+    self.n + a
+  }
+}
+
+println(Adder.new(1)(41))
+let host = {'m': Adder.new(2)}
+println(host.m(40))
+
+# A trait declared inside a function is registered when the call runs, and
+# its defaults capture that activation's bindings like any closure.
+fn declare(v) {
+  trait Local {
+    base() -> Long
+    plus() -> Long {
+      self.base() + v
+    }
+  }
+  Two.new(1).plus()
+}
+
+println(declare(10))
+println(declare(20))
+println(Two.new(1).plus())
+
+# The declared return type of a default is checked, at the call site.
+trait Strict {
+  base() -> Long
+  as_str() -> String {
+    self.base()
+  }
+}
+
+try {
+  t.as_str()
+} catch e {
+  println(e.kind)
+  println(e.message)
+}
+
+# --- Churn: defaults over many instances --------------------------------
+mut i = 0
+mut total = 0
+while i < 300 {
+  let m = Money.new(i)
+  let n = Money.new(i + 1)
+  if m.neq(n) {
+    total = total + 1
+  }
+  if m.lt(n) {
+    total = total + 1
+  }
+  total = total + Two.new(i).once()
+  total = total + Two.new(i)(1)
+  i = i + 1
+}
+println(total)

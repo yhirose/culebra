@@ -479,5 +479,61 @@ fn mk() {
 }
 println("declared")'
 
+# A declared return type is checked against the value the call produced, so
+# the violation reports at the CALL, not at the declaration — including the
+# implicit-return form, where the JIT has no `return` node to stamp.
+check_same "return type tail"          'fn f() -> String {
+  5
+}
+f()'
+check_same "return type explicit"      'fn f() -> String {
+  return 5
+}
+f()'
+check_same "return type lambda"        'let g = fn () -> String { 7 }
+g()'
+# A trait default is a function like any other: same check, same anchor.
+# (A class method cannot declare a return type — the grammar has no slot
+# for one — so a trait default is where a method-shaped body gets checked.)
+check_same "return type trait default" 'trait T {
+  base() -> Long
+  as_str() -> String {
+    self.base()
+  }
+}
+class C {
+  new() { }
+  base() {
+    2
+  }
+}
+C.new().as_str()'
+# Two same-name methods in one trait: the static pass rejects the
+# declaration (a trait has no overload set to merge them into).
+check_same "trait duplicate method"    'println("before")
+trait T {
+  m() -> Long
+  d() -> Long { 1 }
+  d(a) -> Long { a }
+}'
+# A packed field write reports at the member — the field name is what the
+# message is about — while the rest of a property write reports at the
+# statement.
+check_same "packed field write miss"   '@packable
+class Pt {
+  x: Long
+  new(v) { self.x = v }
+}
+let buf = SharedBuffer.new(2, Pt)
+buf[0].zz = 4'
+check_same "packed view write miss"    '@packable
+class Pt {
+  x: Long
+  new(v) { self.x = v }
+}
+let buf = SharedBuffer.new(2, Pt)
+let v = buf[0]
+v.zz = 4'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

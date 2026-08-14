@@ -1,0 +1,12 @@
+# A trait keys both its contract and its defaults by method name, so it has
+# no overload set to merge two `d`s into — the static pass rejects it.
+trait T {
+  m() -> Long
+  d() -> Long {
+    1
+  }
+  d(a) -> Long {
+    a
+  }
+}
+println('unreached')

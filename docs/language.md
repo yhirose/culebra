@@ -3250,6 +3250,21 @@ free; defining the same name on the class overrides:
     }
     Five.new().next()                # → 99
 
+A default is a method the conforming class inherits, so it ranks with
+the class's own methods: only an own property or a declared method
+outranks it, and it outranks everything the runtime supplies for an
+object — the `Object` built-in methods (`size`, `keys`, ...), the
+synthesized `parameters()`, and the duck-typed iterator method set.
+
+A trait declares each method name once. Two same-name methods are a
+`SyntaxError`: the contract and the default bodies are keyed by name,
+so a trait has no overload set to merge them into (a class does — see
+"Method overloading").
+
+A trait declaration takes effect when it runs, like a `class`: a trait
+inside a branch that is never taken registers nothing, and re-declaring
+a name replaces the earlier contract and defaults outright.
+
 #### Built-in traits
 
 The runtime ships seven foundational traits as a preamble — they

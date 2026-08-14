@@ -428,6 +428,30 @@ enum class Op : uint8_t {
                // regs[b] (rt::self_merge, +1 either way). Only a frame that
                // captured an enclosing `self` emits it — a method's own
                // receiver arrives through the chunk's self_slot.
+  TraitReset,  // drop every registered default of trait consts[a]
+               // (culebra_runtime_trait_defaults_reset). First instruction
+               // of a trait declaration, so a re-declaration that drops a
+               // default really drops it (the interp's defaults.clear()).
+  TraitDefault,  // register closure regs[c] as trait consts[a]'s default
+               // for method consts[b]
+               // (culebra_runtime_register_trait_default). The registry
+               // absorbs the +1; regs[c] = nil.
+  TraitReg,    // install the contract of trait consts[a] from its
+               // `name:arity:has_default;…` spec consts[b] and `Super;…`
+               // list consts[c] (culebra_runtime_register_trait). Last
+               // instruction of the declaration, where the interp's
+               // register_trait sits: a well-known contract throw above
+               // leaves the previous declaration's contract standing.
+  RetPos,      // regs[a] = the position a return-value type error reports,
+               // packed line<<32|col: the call site, or the declaration
+               // position consts[b] when the caller published none
+               // (culebra_runtime_param_pos with no argument index). Taken
+               // in the prologue — the body's own calls overwrite the
+               // caller's position long before the check.
+  RetChk,      // check regs[a] against the declared return type consts[b],
+               // reporting at the position in regs[c] (RetPos's snapshot).
+               // Emitted before the frame's defers run, as the JIT's
+               // return-value check is.
   NsGet,       // regs[a] = stdlib global consts[b] (+1), resolved through
                // culebra_runtime_namespace_get — the per-Runtime cached
                // closure the JIT's emit_builtin_var_get slow path returns,
@@ -1490,6 +1514,14 @@ class Compiler {
   static VmProgram compile_module(const peg::Ast& ast) {
     VmProgram prog;
     FnAnalysis analysis(&JIT::is_builtin_var);
+    // The built-in traits (Eq's `neq`, Comparable's four comparisons, ...)
+    // reach interp and JIT as a synthetic module `with_builtin_traits`
+    // prepends; this lane compiles a single module, so the very same
+    // declarations run as a prologue instead. A trait declaration binds no
+    // name, so nothing of it lands in the user's scope — only in the
+    // registry a property read consults.
+    const auto* preamble = culebra::parse_builtin_traits_preamble().get();
+    if (preamble) (void)analysis.analyze_program(*preamble);
     // lint::check_shadow (parity) + the per-fn FuncInfo compile_fn_chunk
     // reads; the returned top-level info carries chunk 0's captured_locals.
     FuncInfo top_info = analysis.analyze_program(ast);
@@ -1503,6 +1535,13 @@ class Compiler {
       using namespace peg::udl;
       main.push_scope();
       main.predeclare_multifns(ast);
+      if (preamble) {
+        if (preamble->tag == "STATEMENTS"_) {
+          for (const auto& n : preamble->nodes) main.compile_statement(*n);
+        } else {
+          main.compile_statement(*preamble);
+        }
+      }
       if (ast.tag == "STATEMENTS"_) {
         for (const auto& n : ast.nodes) main.compile_statement(*n);
       } else {
@@ -1598,6 +1637,10 @@ class Compiler {
   // has_any_defer): `return` and the Halt epilogue run to it, as does the
   // executor / frame pad when a throw escapes every region.
   int32_t frame_defer_mark_ = -1;
+  // Declared return type of this frame (const index) and the slot holding
+  // the position its violation reports; -1 when the function declares none.
+  int32_t ret_type_ = -1;
+  int32_t ret_pos_slot_ = -1;
   // Mark slots of the open scopes that declared their own defers, outermost
   // first (the JIT's Scope::defer_mark, flattened): break/continue run to
   // the first entry above the loop's defer_watermark.
@@ -1948,6 +1991,7 @@ class Compiler {
       case "DEFER"_:
       case "MULTIFN_DECL"_:  // a decl evaluates to nil (interp parity)
       case "CLASS_DECL"_:
+      case "TRAIT_DECL"_:
         compile_statement_inner(ast);
         break;
       case "ASSIGNMENT"_:
@@ -2002,6 +2046,9 @@ class Compiler {
       case "CLASS_DECL"_:
         compile_class_decl(ast);
         break;
+      case "TRAIT_DECL"_:
+        compile_trait_decl(ast);
+        break;
       case "BREAK"_:
       case "CONTINUE"_: {
         bool brk = ast.tag == "BREAK"_;
@@ -2043,6 +2090,7 @@ class Compiler {
             emit(Op::LoadConst, rv, kconst({TAG_NIL, 0}));
           sweep_temps(base, slot_base);
         }
+        emit_return_type_check(rv);
         // In-flight temps of enclosing statements (a match subject held
         // across arms, a half-built array) still hold their +1s; the frame
         // is exiting, so release them here like break/continue do instead
@@ -2061,6 +2109,13 @@ class Compiler {
         compile_expr(ast);  // expression statement; temps swept by the caller
         break;
     }
+  }
+
+  // The declared return type's check, at every exit the frame has: ahead of
+  // the defers and the scope teardown, where the JIT emits it. No-op for a
+  // function without one.
+  void emit_return_type_check(int32_t rv) {
+    if (ret_type_ >= 0) emit(Op::RetChk, rv, ret_type_, ret_pos_slot_);
   }
 
   // Frame-level defer mark (the JIT's fn.mark, gated on has_any_defer):
@@ -2542,6 +2597,42 @@ class Compiler {
     emit(Op::CellSet, class_slot, owned_src(ast, {cls, true}));
   }
 
+  // `trait Name: Super { req(); def() { ... } }` — a contract in the shared
+  // registry plus one closure per default body, and no binding: a trait is
+  // not a value (`inspect(T)` is the undeclared name's error on every
+  // backend), so the whole declaration is a run of registrations in the
+  // order the interp performs them.
+  void compile_trait_decl(const peg::Ast& ast) {
+    auto spec = culebra::trait_decl_spec(ast);
+    int32_t name_k = kconst_str(spec.name);
+    emit(Op::TraitReset, name_k);
+    for (size_t i = culebra::first_non_decorator_index(ast) + 1;
+         i < ast.nodes.size(); i++) {
+      const auto& m = *ast.nodes[i];
+      auto tv = culebra::view_trait_method(m);
+      if (!tv.body) continue;  // signature-only: contract, no body
+      bool has_param = false;
+      (void)culebra::trait_method_arity(*tv.params, &has_param);
+      // A default reaches every conforming instance without passing the
+      // object_set chokepoint, so the well-known contract is enforced at
+      // the declaration — before the closure exists for a +1 to strand on.
+      if (culebra::is_well_known_prop(tv.name) && has_param) {
+        emit(Op::SetOpPos);
+        emit(Op::WkErr, kconst_str(std::string(tv.name)));
+      }
+      // A default is a method: its frame owns the ABI receiver as `self`.
+      int32_t idx =
+          compile_fn_chunk(m, tv.params, *tv.body, {.receiver = true});
+      TempScope ts(*this);
+      int32_t t = alloc_temp(m);
+      emit(Op::MakeClosure, t, idx);
+      emit(Op::TraitDefault, name_k, kconst_str(std::string(tv.name)), t);
+      forget_temp(t);  // the registry took the +1
+    }
+    emit(Op::TraitReg, name_k, kconst_str(spec.methods),
+         kconst_str(spec.supers));
+  }
+
   // The synthetic constructor: `build_class_instance` over the captured
   // {meta, field-init, body} triple and the frame's own arguments. It is
   // the JIT's emit_constructor_fn thunk as a chunk — the arity check and
@@ -2633,8 +2724,9 @@ class Compiler {
     using namespace peg::udl;
     const FuncInfo& info = analysis_.func_info.at(&ast);
     if (info.uses_args) reject(ast, "__ARGS__");
+    std::string_view return_type;
     for (const auto& n : ast.nodes)
-      if (n->tag == "RETURN_TYPE"_) reject(*n, "return type annotation");
+      if (n->tag == "RETURN_TYPE"_) return_type = n->token;
     if (params) {
       for (const auto& p : params->nodes) {
         if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
@@ -2719,6 +2811,15 @@ class Compiler {
       fc.scopes_.back().bindings.push_back({"fn", fc.chunk_.fn_slot, false});
     }
     fc.establish_frame_defer_mark(ast, info);
+    // Where a return-value type error reports: resolved once here, as the
+    // JIT's prologue snapshot does (see RetPos).
+    if (!return_type.empty()) {
+      fc.ret_type_ = fc.kconst_str(std::string(return_type));
+      fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
+      fc.emit(Op::RetPos, fc.ret_pos_slot_,
+              fc.kconst_long((static_cast<int64_t>(ast.line) << 32) |
+                             static_cast<int64_t>(ast.column)));
+    }
     for (const auto& pr : promos) {
       int32_t cslot = fc.alloc_slot(*pr.at, pr.name);
       fc.emit(Op::CellNew, cslot, pr.abi_slot);
@@ -2820,6 +2921,7 @@ class Compiler {
     } else {
       fc.compile_block_into(body, rv);
     }
+    fc.emit_return_type_check(rv);
     // Frame defers run before the frame scope's releases (interp's
     // run_deferred(callEnv) order); `return` emits its own copy.
     if (fc.frame_defer_mark_ >= 0)
@@ -4600,7 +4702,9 @@ class Compiler {
       }
       case "FUNCTION"_:
       case "LAMBDA"_: {
-        int32_t idx = compile_fn_chunk(ast, ast.nodes[0].get(), *ast.nodes[1]);
+        // [PARAMETERS, RETURN_TYPE?, BLOCK] — the body is always last.
+        int32_t idx =
+            compile_fn_chunk(ast, ast.nodes[0].get(), *ast.nodes.back());
         int32_t t = alloc_temp(ast);
         emit(Op::MakeClosure, t, idx);
         return {t, true};
@@ -4656,6 +4760,7 @@ inline std::string dump(const Chunk& c) {
       "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "WkErr",
       "ClassMeta", "DeriveFn",  "RegPack",    "ClassObj",     "BindStatic",
       "MakeInst",  "FieldInit", "RegGetter",  "SelfMerge",
+      "TraitReset", "TraitDefault", "TraitReg", "RetPos", "RetChk",
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
@@ -5833,14 +5938,24 @@ struct Exec {
           auto [line, col] = chunk_pos_at(c, pc);
           culebra_runtime_set_call_site(line, col);
           JitValue target = callee;
+          JitValue self{TAG_NO_SELF, 0};
           if (target.tag != TAG_FUNC) {
-            // `C(args)` builds an instance: the class object's `new`,
-            // borrowed (the register keeps the class's own +1). The
-            // is_class gate keeps a plain dict holding a "new" key inert,
-            // so its TypeError is unchanged. The `call` overload — the
-            // JIT's other cold-path probe — is out of the slice.
-            target = culebra_runtime_class_new_method(
+            // The two cold-path probes, in the JIT's order: a callable
+            // instance (`obj(args)` with a `__call__` method, own or a
+            // trait default) becomes a method call on itself, and a class
+            // object's `new` builds an instance. Both are borrowed reads —
+            // the register keeps its own +1 — so the receiver a `__call__`
+            // frame consumes is minted here.
+            target = culebra_runtime_class_call_method(
                 static_cast<int8_t>(callee.tag), callee.data);
+            if (target.tag == TAG_FUNC) {
+              culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+                                           callee.data);
+              self = callee;
+            } else {
+              target = culebra_runtime_class_new_method(
+                  static_cast<int8_t>(callee.tag), callee.data);
+            }
           }
           if (target.tag != TAG_FUNC) {
             culebra_runtime_type_error_typed(
@@ -5848,9 +5963,8 @@ struct Exec {
           }
           JitValue r;
           try {
-            r = _jit_invoke(reinterpret_cast<JitClosure*>(target.data),
-                            JitValue{TAG_NO_SELF, 0}, in.d,
-                            in.d ? &regs[in.c] : nullptr);
+            r = _jit_invoke(reinterpret_cast<JitClosure*>(target.data), self,
+                            in.d, in.d ? &regs[in.c] : nullptr);
           } catch (...) {
             // The callee consumed each arg's +1 on its own unwind path too
             // (the JitFn ABI); nil the slab slots so an enclosing region's
@@ -5869,7 +5983,24 @@ struct Exec {
           const JitValue& callee = regs[in.b];
           auto [line, col] = chunk_pos_at(c, pc);
           culebra_runtime_set_call_site(line, col);
-          if (callee.tag != TAG_FUNC) {
+          JitValue target = callee;
+          JitValue self = regs[in.c];
+          if (target.tag != TAG_FUNC) {
+            // A method value that is itself a callable instance
+            // (`{m: Adder.new(1)}.m(41)`): it becomes both the callee and
+            // the receiver, and the original receiver — which nothing takes
+            // now — is released here, as the JIT's cold path does.
+            target = culebra_runtime_class_call_method(
+                static_cast<int8_t>(callee.tag), callee.data);
+            if (target.tag == TAG_FUNC) {
+              culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+                                           callee.data);
+              culebra_runtime_value_release(static_cast<int8_t>(self.tag),
+                                            self.data);
+              self = callee;
+            }
+          }
+          if (target.tag != TAG_FUNC) {
             // Where a missing method lands: the property read gave nil, so
             // this is the interp's "expected Function, got Nil". The receiver
             // and args stay register-owned — nothing has been handed over
@@ -5884,9 +6015,8 @@ struct Exec {
           // slice rejects outright.
           JitValue r;
           try {
-            r = _jit_invoke(reinterpret_cast<JitClosure*>(callee.data),
-                            regs[in.c], in.d,
-                            in.d ? &regs[in.c + 1] : nullptr);
+            r = _jit_invoke(reinterpret_cast<JitClosure*>(target.data), self,
+                            in.d, in.d ? &regs[in.c + 1] : nullptr);
           } catch (...) {
             for (int32_t i = 0; i <= in.d; ++i)
               regs[in.c + i] = JitValue{TAG_NIL, 0};
@@ -6093,6 +6223,48 @@ struct Exec {
           regs[in.a] = culebra_runtime_self_merge(
               static_cast<int8_t>(abi.tag), abi.data,
               reinterpret_cast<JitCell*>(regs[in.c].data));
+          ++pc;
+          break;
+        }
+        case Op::TraitReset: {
+          culebra_runtime_trait_defaults_reset(
+              reinterpret_cast<const char*>(c.consts[in.a].data));
+          ++pc;
+          break;
+        }
+        case Op::TraitDefault: {
+          JitValue fn = regs[in.c];
+          regs[in.c] = JitValue{TAG_NIL, 0};  // the registry takes the +1
+          culebra_runtime_register_trait_default(
+              reinterpret_cast<const char*>(c.consts[in.a].data),
+              reinterpret_cast<const char*>(c.consts[in.b].data),
+              reinterpret_cast<JitClosure*>(fn.data));
+          ++pc;
+          break;
+        }
+        case Op::TraitReg: {
+          culebra_runtime_register_trait(
+              reinterpret_cast<const char*>(c.consts[in.a].data),
+              reinterpret_cast<const char*>(c.consts[in.b].data),
+              reinterpret_cast<const char*>(c.consts[in.c].data));
+          ++pc;
+          break;
+        }
+        case Op::RetPos: {
+          int64_t def = c.consts[in.b].data;
+          regs[in.a] = JitValue{
+              TAG_LONG, culebra_runtime_param_pos(-1, def >> 32,
+                                                  def & 0xffffffff)};
+          ++pc;
+          break;
+        }
+        case Op::RetChk: {
+          auto pos = _jit_unpack_pos(regs[in.c].data);
+          const JitValue& v = regs[in.a];
+          culebra_runtime_type_check(
+              static_cast<int8_t>(v.tag), v.data,
+              reinterpret_cast<const char*>(c.consts[in.b].data),
+              "return value", pos.line, pos.col);
           ++pc;
           break;
         }
@@ -6325,6 +6497,14 @@ struct Lowering {
     auto load_slot = [&](int32_t s) {
       return b.CreateLoad(j.valueType_, slots[s]);
     };
+    // A const-table string as a plain C string global (the runtime entries
+    // that take `const char*` rather than a culebra String value).
+    auto vm_str_const = [&](int32_t k, const char* name) {
+      return j.get_or_create_global_str(
+          std::string(
+              _str_sv(reinterpret_cast<const char*>(c.consts[k].data))),
+          name);
+    };
 
     // Function-chunk prologue, mirroring both the JIT prologue and
     // Exec::run_frame: arity guard (ArityError at the published call site),
@@ -6502,16 +6682,37 @@ struct Lowering {
       auto probeBB = BasicBlock::Create(j.ctx_, "call.probe", fn);
       auto errBB = BasicBlock::Create(j.ctx_, "call.err", fn);
       auto okBB = BasicBlock::Create(j.ctx_, "call.ok", fn);
+      auto overloadBB = BasicBlock::Create(j.ctx_, "call.overload", fn);
+      auto ctorBB = BasicBlock::Create(j.ctx_, "call.tryctor", fn);
       b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_FUNC)), okBB, probeBB);
-      // `C(args)` builds an instance through the class object's borrowed
-      // `new`; the is_class gate keeps a plain dict with a "new" key inert,
-      // so its TypeError is unchanged. The JIT's other cold-path probe, the
-      // `call` overload, is out of the slice.
+      // The two cold-path probes, in the JIT's order: a callable instance
+      // (`obj(args)` with a `__call__` method, own or a trait default)
+      // becomes a method call on itself, and `C(args)` builds an instance
+      // through the class object's borrowed `new` — the is_class gate keeps
+      // a plain dict with a "new" key inert, so its TypeError is unchanged.
+      auto* callee0 = calleeV;
       b.SetInsertPoint(probeBB);
+      auto callM = j.emit_value_call(
+          j.module_->getOrInsertFunction(rt::class_call_method, j.valueType_,
+                                         b.getInt8Ty(), i64Ty),
+          {tag, j.extract_data(callee0)}, "call.method");
+      b.CreateCondBr(
+          b.CreateICmpEQ(j.extract_tag(callM), b.getInt8(TAG_FUNC)),
+          overloadBB, ctorBB);
+      // The instance becomes the receiver: mint the +1 its frame consumes,
+      // and release the receiver this call started with — on this arm
+      // nothing else takes it (the JIT's own_self_on_error release).
+      b.SetInsertPoint(overloadBB);
+      j.emit_value_retain(callee0);
+      if (selfSlot >= 0) j.emit_value_release(load_slot(selfSlot));
+      auto* overloadEndBB = b.GetInsertBlock();
+      b.CreateBr(okBB);
+
+      b.SetInsertPoint(ctorBB);
       auto ctorV = j.emit_value_call(
           j.module_->getOrInsertFunction(rt::class_new_method, j.valueType_,
                                          b.getInt8Ty(), i64Ty),
-          {tag, j.extract_data(calleeV)}, "ctor.method");
+          {tag, j.extract_data(callee0)}, "ctor.method");
       auto* probeEndBB = b.GetInsertBlock();
       b.CreateCondBr(
           b.CreateICmpEQ(j.extract_tag(ctorV), b.getInt8(TAG_FUNC)), okBB,
@@ -6524,10 +6725,17 @@ struct Lowering {
                    b.CreateGlobalString("Function"), tag});
       if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
       b.SetInsertPoint(okBB);
-      auto* calleePhi = b.CreatePHI(j.valueType_, 2, "call.callee");
-      calleePhi->addIncoming(calleeV, fromBB);
+      auto* calleePhi = b.CreatePHI(j.valueType_, 3, "call.callee");
+      calleePhi->addIncoming(callee0, fromBB);
+      calleePhi->addIncoming(callM, overloadEndBB);
       calleePhi->addIncoming(ctorV, probeEndBB);
       calleeV = calleePhi;
+      // True only on the `__call__` arm, where the receiver is the instance
+      // that was called rather than this instruction's own.
+      auto* ovPhi = b.CreatePHI(b.getInt1Ty(), 3, "call.overload");
+      ovPhi->addIncoming(b.getInt1(false), fromBB);
+      ovPhi->addIncoming(b.getInt1(true), overloadEndBB);
+      ovPhi->addIncoming(b.getInt1(false), probeEndBB);
       auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
       auto fnFieldPtr = b.CreateStructGEP(j.closureType_, clsPtr, 1, "fn.ptr");
       auto fnPtr = b.CreateLoad(ptrTy, fnFieldPtr, "fn");
@@ -6551,8 +6759,12 @@ struct Lowering {
       if (selfSlot >= 0) b.CreateStore(j.make_nil(), slots[selfSlot]);
       j.emit_call(jit_fn_type(b, ptrTy), fnPtr,
                   {retTmp, clsPtr,
-                   selfV ? j.extract_tag(selfV) : b.getInt8(TAG_NO_SELF),
-                   selfV ? j.extract_data(selfV) : b.getInt64(0),
+                   b.CreateSelect(ovPhi, j.extract_tag(callee0),
+                                  selfV ? j.extract_tag(selfV)
+                                        : b.getInt8(TAG_NO_SELF)),
+                   b.CreateSelect(ovPhi, j.extract_data(callee0),
+                                  selfV ? j.extract_data(selfV)
+                                        : b.getInt64(0)),
                    b.getInt64(argc), slab});
       return b.CreateLoad(j.valueType_, retTmp);
     };
@@ -8798,6 +9010,59 @@ struct Lowering {
                b.CreateIntToPtr(j.extract_data(load_slot(in.c)), ptrTy)},
               "vm.self");
           b.CreateStore(merged, slots[in.a]);
+          break;
+        }
+        case Op::TraitReset:
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::trait_defaults_reset,
+                                             b.getVoidTy(), ptrTy),
+              {vm_str_const(in.a, ".vm.tname")});
+          break;
+        case Op::TraitDefault: {
+          auto fn = load_slot(in.c);
+          b.CreateStore(j.make_nil(), slots[in.c]);  // the registry takes it
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::register_trait_default,
+                                             b.getVoidTy(), ptrTy, ptrTy,
+                                             ptrTy),
+              {vm_str_const(in.a, ".vm.tname"),
+               vm_str_const(in.b, ".vm.tmethod"),
+               b.CreateIntToPtr(j.extract_data(fn), ptrTy)});
+          break;
+        }
+        case Op::TraitReg:
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::register_trait,
+                                             b.getVoidTy(), ptrTy, ptrTy,
+                                             ptrTy),
+              {vm_str_const(in.a, ".vm.tname"),
+               vm_str_const(in.b, ".vm.tspec"),
+               vm_str_const(in.c, ".vm.tsuper")});
+          break;
+        case Op::RetPos: {
+          int64_t def = c.consts[in.b].data;
+          auto packed = j.emit_call(
+              j.module_->getOrInsertFunction(rt::param_pos, i64Ty, i64Ty,
+                                             i64Ty, i64Ty),
+              {b.getInt64(-1), b.getInt64(def >> 32),
+               b.getInt64(def & 0xffffffff)},
+              "vm.retpos");
+          b.CreateStore(j.make_value(b.getInt8(TAG_LONG), packed),
+                        slots[in.a]);
+          break;
+        }
+        case Op::RetChk: {
+          auto v = load_slot(in.a);
+          auto packed = j.extract_data(load_slot(in.c));
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::type_check, b.getVoidTy(),
+                                             b.getInt8Ty(), i64Ty, ptrTy,
+                                             ptrTy, i64Ty, i64Ty),
+              {j.extract_tag(v), j.extract_data(v),
+               vm_str_const(in.b, ".vm.rettype"),
+               j.get_or_create_global_str("return value", ".vm.retctx"),
+               b.CreateLShr(packed, b.getInt64(32)),
+               b.CreateAnd(packed, b.getInt64(0xffffffff))});
           break;
         }
         case Op::NsGet: {

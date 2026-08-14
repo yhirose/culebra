@@ -186,4 +186,106 @@ assert_eq({greet: fn () {
   "dict-slot"
 }}.greet(), "dict-slot")
 
+// --- A declaration registers when it runs, and replaces the earlier one ---
+class Swappy {
+  new() {}
+  m() {
+    0
+  }
+}
+
+trait Swap {
+  m() -> Long
+  d() -> Long {
+    1
+  }
+}
+assert_eq(Swappy.new().d(), 1)
+
+trait Swap {
+  m() -> Long
+  d() -> Long {
+    2
+  }
+}
+assert_eq(Swappy.new().d(), 2)
+
+// Re-declared without the default: the earlier body is gone, not shadowed.
+trait Swap {
+  m() -> Long
+}
+assert_eq(Swappy.new().d, nil)
+
+// A required method dropped by a re-declaration is really dropped.
+trait Shrink {
+  m() -> Long
+  gone() -> Long
+}
+
+fn conforms(x: Shrink) -> String {
+  "yes"
+}
+let missed = try {
+  conforms(Swappy.new())
+  nil
+} catch e {
+  e.kind
+}
+assert_eq(missed, "DispatchError")
+trait Shrink {
+  m() -> Long
+}
+assert_eq(conforms(Swappy.new()), "yes")
+
+// An unreached declaration registers nothing.
+if false {
+  trait Unreached {
+    m() -> Long
+    zz() -> Long {
+      7
+    }
+  }
+}
+assert_eq(Swappy.new().zz, nil)
+
+// --- A default outranks the built-in fallbacks ---
+// It is a method the class inherited, so it wins over the dict builtins
+// (`size`) and the synthesized `parameters()`, exactly as a method the
+// class declares itself does.
+trait Ranked {
+  m() -> Long
+  size() -> Long {
+    42
+  }
+  parameters() -> Long {
+    43
+  }
+}
+assert_eq(Swappy.new().size(), 42)
+assert_eq(Swappy.new().parameters(), 43)
+
+// --- A default's declared return type is checked ---
+trait Strict {
+  m() -> Long
+  as_str() -> String {
+    self.m()
+  }
+}
+let bad_ret = try {
+  Swappy.new().as_str()
+  nil
+} catch e {
+  e.kind
+}
+assert_eq(bad_ret, "TypeError")
+
+// --- A `__call__` default makes conforming instances callable ---
+trait Applicable {
+  m() -> Long
+  __call__(a) -> Long {
+    self.m() + a
+  }
+}
+assert_eq(Swappy.new()(5), 5)
+
 IO.inspect("test_traits OK")

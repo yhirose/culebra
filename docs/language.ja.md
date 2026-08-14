@@ -3031,6 +3031,21 @@ trait methodにbodyを付けるとdefault実装になり、適合クラスは
     }
     Five.new().next()                # → 99
 
+defaultは適合クラスが継承したmethodなので、クラス自身のmethodと
+同じ順位に立つ: これを上回るのはownプロパティか宣言されたmethod
+だけで、runtimeがオブジェクトに供給するもの — `Object`の組み込み
+method（`size`/`keys`等）・合成された`parameters()`・duck typing
+のiterator method群 — にはdefaultが勝つ。
+
+trait内でmethod名は1度だけ宣言する。同名を2つ書くと`SyntaxError`:
+contractもdefault bodyも名前をkeyに持つので、trait側にはそれらを
+まとめるoverload setが無い（クラスにはある — 「Method overloading」
+参照）。
+
+trait宣言は`class`と同じく実行された時点で効く: 通らない分岐の中の
+traitは何も登録せず、同名の再宣言は前のcontractとdefaultをまとめて
+置き換える。
+
 #### Built-in trait
 
 runtimeはpreambleとして7つの基本traitをship — `import`不要

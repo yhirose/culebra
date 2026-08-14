@@ -1,0 +1,18 @@
+# A default's declared return type is checked like any function's, and the
+# violation reports at the call.
+trait Strict {
+  base() -> Long
+  as_str() -> String {
+    self.base()
+  }
+}
+
+class Two {
+  new() { }
+  base() {
+    2
+  }
+}
+
+println('before')
+Two.new().as_str()
