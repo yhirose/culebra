@@ -200,6 +200,51 @@ struct InterpPiece {
   const peg::Ast* expr = nullptr;   // INTERP_EXPR / bare expr node, else nullptr
 };
 
+// View of an INTERP_EXPR AST node — see grammar:
+//   INTERP_EXPR <- '{' _ EXPRESSION (_ ':' FORMAT_SPEC)? _ '}'
+//   FORMAT_SPEC <- (SPEC_ARG / SPEC_TEXT)*
+// Layout: [EXPRESSION, (FORMAT_SPEC)?]; FORMAT_SPEC's children are SPEC_TEXT
+// (a literal chunk, in `token`) and SPEC_ARG (whose lone child is the
+// EXPRESSION spliced in). Both evaluators (interp append_interp_expr, JIT
+// emit_interp_fragment) read the layout through this view; `constant_spec`
+// keeps a field-free spec on their fixed-spec path.
+struct InterpExprView {
+  const peg::Ast* value;         // the expression being formatted
+  const peg::Ast* spec;          // FORMAT_SPEC node, or null when there is none
+  bool constant_spec;            // spec is absent or has no SPEC_ARG child
+  std::string_view spec_text;    // the whole spec, valid when constant_spec
+};
+
+// One piece of a FORMAT_SPEC: a literal chunk, or the field expression whose
+// value is spliced in. Both backends walk `spec->nodes` through this, so the
+// piece layout lives here with the rest of the interpolation shape.
+struct SpecPiece {
+  std::string_view text;           // literal chunk; valid when expr == nullptr
+  const peg::Ast* expr = nullptr;  // SPEC_ARG's EXPRESSION, else nullptr
+};
+
+inline SpecPiece view_spec_piece(const peg::Ast& piece) {
+  using namespace peg::udl;
+  if (piece.tag == "SPEC_TEXT"_) return {piece.token, nullptr};
+  return {{}, piece.nodes[0].get()};
+}
+
+inline InterpExprView view_interp_expr(const peg::Ast& node) {
+  using namespace peg::udl;
+  // Defensive: a bare expression node (no INTERP_EXPR wrapper) formats plain.
+  if (node.tag != "INTERP_EXPR"_) return {&node, nullptr, true, {}};
+  const peg::Ast* spec = node.nodes.size() > 1 ? node.nodes[1].get() : nullptr;
+  if (!spec) return {node.nodes[0].get(), nullptr, true, {}};
+  std::string_view text;
+  for (const auto& piece : spec->nodes) {
+    if (piece->tag != "SPEC_TEXT"_) {
+      return {node.nodes[0].get(), spec, false, {}};
+    }
+    text = piece->token;  // a constant spec is one chunk, or none
+  }
+  return {node.nodes[0].get(), spec, true, text};
+}
+
 // Swift-style "block string" normalization for a TRIPLE_STRING node. In BLOCK
 // form (opening `"""` followed by a newline) the surrounding newlines are
 // dropped and every line is dedented by the closing `"""`'s indentation (the
@@ -1440,6 +1485,11 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       "ARRAY_PATTERN", "OBJECT_PATTERN",
       "CTOR_PATTERN",
       "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
+      // FORMAT_SPEC wraps its chunks, and SPEC_ARG a single EXPRESSION; both
+      // would collapse onto that one child when a spec has exactly one piece
+      // (`{x:.2f}` / `{s:>{w}}` minus the literal), and the pieces would then
+      // be indistinguishable from each other. See view_interp_expr.
+      "FORMAT_SPEC", "SPEC_ARG",
       "TRIPLE_STRING", "REGEX_LIT", "REGEX_BODY", "REGEX_INTERP",
       "SPREAD_ELEM",
       "IMPORT_STMT", "EXPORT_STMT",

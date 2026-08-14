@@ -5334,22 +5334,64 @@ struct JIT {
     return own(make_object(objPtr));
   }
 
+  // Assemble a spec that carries nested `{expr}` fields (`"{s:>{w}}"`):
+  // literal chunks are compile-time constants, each field's Long becomes its
+  // decimal text. Mirrors the interp's build_format_spec piece for piece, so
+  // the two assemble the same spec (and reject the same non-Long field, at
+  // the field's own position).
+  llvm::Value* emit_format_spec(const peg::Ast& spec) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    llvm::Value* result = nullptr;
+    auto append = [&](llvm::Value* piece) {
+      result = result ? emit_call(module_->getOrInsertFunction(
+                                      rt::str_concat, ptrTy, ptrTy, ptrTy),
+                                  {result, piece}, "spec.concat")
+                      : piece;
+    };
+    for (const auto& node : spec.nodes) {
+      auto piece = culebra::view_spec_piece(*node);
+      if (!piece.expr) {
+        append(emit_str_literal(std::string(piece.text)));
+        continue;
+      }
+      const auto& field = *piece.expr;
+      // The field stays Owned across its own type check (the unwind-temp
+      // window releases it when the check throws) and across the display
+      // call, which only borrows.
+      auto v = compile(field);
+      emit_type_check(v.borrow(), "Long", culebra::kSpecFieldContext, &field);
+      append(emit_call(module_->getOrInsertFunction(rt::value_to_display, ptrTy,
+                                                    builder_.getInt8Ty(),
+                                                    builder_.getInt64Ty()),
+                       {extract_tag(v.borrow()), extract_data(v.borrow())},
+                       "spec.arg"));
+      v.drop();
+    }
+    return result ? result : emit_str_literal("");
+  }
+
   // Emit the string piece for a `{expr}` / `{expr:spec}` interpolation (or a
   // defensive bare expression node). Shared by the `"..."` and `"""..."""`
   // paths so the interpolation codegen stays single-sourced.
   llvm::Value* emit_interp_fragment(const peg::Ast& node) {
-    using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto view = culebra::view_interp_expr(node);
     // Both display helpers BORROW the value (their C++ callers — print, Path
     // join, the formatter — all hand borrowed values), and the string they
     // return is heap-allocated on its own. So the handle keeps the `+1`: it
     // releases after the piece is built and stays in the unwind-temp window,
     // which is what covers a throwing user `__str__`.
-    if (node.tag == "INTERP_EXPR"_ && node.nodes.size() > 1) {
-      // `{expr:spec}` — children [EXPRESSION, FORMAT_SPEC].
-      auto val = compile(*node.nodes[0]);
-      auto specPtr = get_or_create_global_str(
-          std::string(node.nodes[1]->token), ".fmtspec");
+    if (view.spec) {
+      auto val = compile(*view.value);
+      // A spec with nested `{expr}` fields is assembled at runtime; the
+      // ordinary constant spec keeps its compile-time global. `val` stays
+      // Owned while the fields compile, so the unwind-temp window covers a
+      // throwing one.
+      auto specPtr =
+          view.constant_spec
+              ? get_or_create_global_str(std::string(view.spec_text),
+                                         ".fmtspec")
+              : emit_format_spec(*view.spec);
       emit_set_op_pos();  // positionless ValueError on a too-deep value
       return emit_call(
           module_->getOrInsertFunction(rt::format_value, ptrTy,
@@ -5362,9 +5404,8 @@ struct JIT {
           "fmt");
     }
     // Bare `{expr}` — INTERP_EXPR with just [EXPRESSION], or (defensive) a
-    // bare expr node.
-    auto exprNode = (node.tag == "INTERP_EXPR"_) ? node.nodes[0].get() : &node;
-    auto val = compile(*exprNode);
+    // bare expr node. The view answers both shapes.
+    auto val = compile(*view.value);
     emit_set_op_pos();  // positionless ValueError on a too-deep value
     return emit_call(
         module_->getOrInsertFunction(rt::value_to_display, ptrTy,

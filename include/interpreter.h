@@ -11974,22 +11974,44 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // the interpolation semantics stay single-sourced.
   void append_interp_expr(std::string& s, const peg::Ast& node,
                           const std::shared_ptr<Environment>& env) {
-    using namespace peg::udl;
-    if (node.tag == "INTERP_EXPR"_) {
-      // `{expr}` → [EXPRESSION]; `{expr:spec}` → [EXPRESSION, FORMAT_SPEC].
-      const auto& val = eval(*node.nodes[0], env);
-      if (node.nodes.size() > 1) {
-        s += apply_format_spec(val, node.nodes[1]->token,
-                               static_cast<long>(node.line),
-                               static_cast<long>(node.column));
-      } else {
-        s += str_display_with_special(val);
-      }
-    } else {
-      // Defensive: a bare expression child (shouldn't occur now that
-      // INTERP_EXPR is kept, but keeps old ASTs working).
-      s += str_display_with_special(eval(node, env));
+    auto view = culebra::view_interp_expr(node);
+    const auto& val = eval(*view.value, env);
+    if (!view.spec) {
+      s += str_display_with_special(val);
+      return;
     }
+    auto line = static_cast<long>(node.line);
+    auto col = static_cast<long>(node.column);
+    // The constant spec is a view straight into the source — assembling it
+    // through the same expression as the computed one would copy it on every
+    // evaluation of an ordinary `{x:.2f}`.
+    if (view.constant_spec) {
+      s += apply_format_spec(val, view.spec_text, line, col);
+      return;
+    }
+    s += apply_format_spec(val, build_format_spec(*view.spec, env), line, col);
+  }
+
+  // Assemble a spec that carries nested `{expr}` fields (`"{s:>{w}}"`):
+  // literal chunks verbatim, each field's Long spliced in as decimal. Fields
+  // evaluate left to right, before the spec is applied — so a throwing field
+  // reports at its own expression, like any other interpolation.
+  std::string build_format_spec(const peg::Ast& spec,
+                                const std::shared_ptr<Environment>& env) {
+    std::string out;
+    for (const auto& node : spec.nodes) {
+      auto piece = culebra::view_spec_piece(*node);
+      if (!piece.expr) {
+        out += piece.text;
+        continue;
+      }
+      const auto& field = *piece.expr;
+      const auto& v = eval(field, env);
+      check_type(v, "Long", culebra::kSpecFieldContext, field.line,
+                 field.column);
+      out += std::to_string(v.to_long());
+    }
+    return out;
   }
 
   Value eval_interpolated_string(const peg::Ast& ast,

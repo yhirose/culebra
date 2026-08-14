@@ -937,6 +937,27 @@ value's type raises `ValueError`. `std::format` is followed exactly, so
 `,` digit grouping is not supported (the locale `L` option covers that
 case instead).
 
+A spec may itself carry `{expr}` fields, so a width or a precision can be
+computed rather than written out:
+
+    "{s:>{w}}"        # right-aligned in `w` columns
+    "{x:.{p}f}"       # `p` decimals
+    "{x:{w}.{p}f}"    # both, in one spec
+
+A field is an ordinary expression, evaluated where it stands (left to
+right, after the value being formatted). It must be a `Long` — it is
+spliced into the spec as decimal text, which is what a width or precision
+is — and anything else is a `TypeError` at the field's own position. A
+field means exactly what the same digits written by hand would mean, so a
+width of `0` reads as the zero-pad flag rather than "no width": fine for a
+number (`"{n:>{0}}"`), a `ValueError` for a string, just as `"{s:>0}"`
+already is. It works anywhere an interpolation does:
+
+```culebra
+let w = 6
+inspect(["a", "bb"].map(|s| "{s:>{w}}"))  # => ['     a', '    bb']
+```
+
 ### Display conversion
 
 When an expression inside `"..."` is not a `String`, its display form

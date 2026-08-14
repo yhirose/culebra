@@ -47,4 +47,40 @@ let e = try {
 }
 assert_eq(e, "ValueError")
 
+// --- computed fields inside the spec: `{expr:...{expr}...}` -----------
+let w = 8
+let s = "ab"
+assert_eq("[{s:>{w}}]", "[      ab]")
+assert_eq("[{s:<{w}}]", "[ab      ]")
+assert_eq("[{s:^{w}}]", "[   ab   ]")
+assert_eq("[{s:.>{w}}]", "[......ab]")
+assert_eq("[{42:0{w}}]", "[00000042]")
+// precision, and both fields in one spec
+let p = 3
+assert_eq("{pi:.{p}f}", "3.142")
+assert_eq("{pi:{w}.{p}f}", "   3.142")
+// the field is an arbitrary expression, evaluated where it stands
+assert_eq("[{s:>{w - 5}}]", "[ ab]")
+assert_eq("[{s:>{[4, 9][0]}}]", "[  ab]")
+// a width that varies per element — the case a fixed spec cannot express
+assert_eq([3, 6].map(|k| "[{s:>{k}}]"), ["[ ab]", "[    ab]"])
+// a spec that is only a field
+assert_eq("{42:{w}}", "      42")
+// triple-quoted strings take the same fields
+assert_eq("""{s:>{w}}""", "      ab")
+// a field must be a Long — it is spliced in as a width/precision
+assert_eq(try {
+  let _ = "{s:>{'x'}}"
+  nil
+} catch er {
+  er.kind
+}, "TypeError")
+// the assembled spec still has to be valid
+assert_eq(try {
+  let _ = "{s:>{w}z}"
+  nil
+} catch er {
+  er.kind
+}, "ValueError")
+
 IO.inspect("test_format_spec OK")

@@ -1878,6 +1878,12 @@ inline int64_t parse_integer_literal(std::string_view tok) {
 // Shared by interp and JIT so both render identically. A bad spec throws
 // a ValueError (mapped from std::format_error).
 
+// Context label for the type check on a nested spec field (`"{s:>{w}}"`).
+// Shared so interp and JIT render the same "type error: ... expects Long".
+// A field is spliced in as decimal text, and a computed width or precision
+// is the whole point of the shape, so Long is the only value that fits.
+inline constexpr std::string_view kSpecFieldContext = "format spec field";
+
 // Trailing type char of a spec (`f`, `x`, …), or 0 if none.
 inline char format_spec_type(std::string_view spec) {
   if (spec.empty()) return 0;

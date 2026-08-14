@@ -469,9 +469,17 @@
   # `{expr}` embeds an expression; `{expr:spec}` adds a std::format-style
   # format spec (`{x:.2f}`, `{n:05}`, `{n:x}`, `{s:>10}`). INTERP_EXPR
   # collapses to the bare EXPRESSION when no spec is present.
+  #
+  # A spec is a sequence of literal chunks and nested `{expr}` fields, so a
+  # width or precision can be computed (`{s:>{w}}`, `{x:.{p}f}`). A field's
+  # value is spliced into the spec as decimal text before the spec is
+  # applied. The nested `{...}` is consumed by SPEC_ARG, which is what
+  # leaves the outer `}` to close INTERP_EXPR.
   INTERPOLATED_STRING      <-  '"' (INTERP_EXPR / INTERPOLATED_CONTENT)* '"'
   INTERP_EXPR              <-  '{' _ EXPRESSION (_ ':' FORMAT_SPEC)? _ '}'
-  FORMAT_SPEC              <-  < (![}] .)* >
+  FORMAT_SPEC              <-  (SPEC_ARG / SPEC_TEXT)*
+  SPEC_ARG                 <-  '{' _ EXPRESSION _ '}'
+  SPEC_TEXT                <-  < (![{}] .)+ >
   # Inside interpolated strings, '\X' is one logical character: the parser
   # keeps both bytes in the captured token and the runtime decoder turns
   # recognized escapes (\n \r \t \\ \" \{ \xHH \uXXXX \UXXXXXXXX) into their
