@@ -260,6 +260,7 @@ struct JIT {
     llvm::Value* closure_arg;
     llvm::Value* sret;
     std::string_view return_type;
+    std::pair<llvm::Value*, llvm::Value*> return_pos;
     llvm::BasicBlock* lpad;
     // The cleanup ladder is per LLVM function: its rungs are blocks of the
     // outer function, so a nested body must start (and finish) with its own.
@@ -294,6 +295,7 @@ struct JIT {
           closure_arg(std::exchange(j.current_closure_arg_, nullptr)),
           sret(std::exchange(j.current_sret_, nullptr)),
           return_type(std::exchange(j.current_return_type_, {})),
+          return_pos(std::exchange(j.current_return_pos_, {nullptr, nullptr})),
           lpad(std::exchange(j.current_lpad_, nullptr)),
           frame_ladder(std::exchange(j.frame_ladder_, {})),
           frame_scope_depth(std::exchange(j.frame_scope_depth_, 0)),
@@ -341,6 +343,7 @@ struct JIT {
       jit->current_rec_depth_slot_ = rec_depth_slot;
       jit->current_lpad_ = lpad;
       jit->current_return_type_ = return_type;
+      jit->current_return_pos_ = return_pos;
       jit->current_closure_arg_ = closure_arg;
       jit->current_sret_ = sret;
       jit->current_info_ = info;
@@ -1915,6 +1918,11 @@ struct JIT {
   // owned by the AST, which outlives the compilation, so string_view is safe.
   std::string_view current_return_type_;
 
+  // Where a return-value type error reports: the call site, resolved once in
+  // the prologue (interp's check_type reads the caller's line/column). Null
+  // when the function declares no return type. See emit_return_pos_snapshot.
+  std::pair<llvm::Value*, llvm::Value*> current_return_pos_{nullptr, nullptr};
+
   // Defer-stack mark recorded at the current function's entry. `return`
   // lowers `defer_run_to(this mark)` before emitting `ret` so the
   // function's own defers run regardless of where the return sits.
@@ -3267,6 +3275,31 @@ struct JIT {
     auto colV = arg_ast ? builder_.getInt64(arg_ast->column)
                         : current_column_val();
     emit_type_check_at(val, expected_type, context, lineV, colV);
+  }
+
+  // Resolve where this frame's return-value type error reports — the call
+  // site (interp's check_type takes the caller's line/column), with the
+  // declaration position as the last resort for entries that never ran
+  // set_call_site. Taken in the prologue like the eager typed-param
+  // snapshot: the body's own calls overwrite the position thread-locals
+  // long before the check runs.
+  void emit_return_pos_snapshot() {
+    auto packed = emit_call(
+        module_->getOrInsertFunction(
+            rt::param_pos, builder_.getInt64Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {builder_.getInt64(-1), current_line_val(), current_column_val()},
+        "ret.errpos");
+    current_return_pos_ = {
+        builder_.CreateLShr(packed, builder_.getInt64(32)),
+        builder_.CreateAnd(packed, builder_.getInt64(0xffffffff))};
+  }
+
+  // The declared return type's check, reported at the prologue-resolved
+  // call site. Shared by `return v` and the body's tail value.
+  void emit_return_type_check(llvm::Value* val) {
+    emit_type_check_at(val, current_return_type_, "return value",
+                       current_return_pos_.first, current_return_pos_.second);
   }
 
   // Prologue typed-param check whose report position resolves on the
@@ -13119,7 +13152,7 @@ struct JIT {
     Owned valOwned = ast.nodes.empty() ? own(make_nil())
                                        : compile(*ast.nodes[0]);
     if (!current_return_type_.empty()) {
-      emit_type_check(valOwned.borrow(), current_return_type_, "return value");
+      emit_return_type_check(valOwned.borrow());
     }
     // When returning out of one or more for-in bodies, current_lpad_ is the
     // innermost loop's own exception landingpad (it drives that loop's

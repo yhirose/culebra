@@ -161,6 +161,8 @@ inline JIT::Owned JIT::compile_fn_common(
   builder_.SetInsertPoint(entryBB);
   push_scope();
 
+  if (!returnType.empty()) emit_return_pos_snapshot();
+
   llvm::Value* fnMark = nullptr;
   // Establish a defer-stack mark whenever the body has *any* defer (fn-level
   // or inside a nested lexical scope / match arm), so `compile_return` /
@@ -656,7 +658,7 @@ inline JIT::Owned JIT::compile_fn_common(
 
   if (!builder_.GetInsertBlock()->getTerminator()) {
     if (!returnType.empty()) {
-      emit_type_check(bodyOwned.borrow(), returnType, "return value");
+      emit_return_type_check(bodyOwned.borrow());
     }
     // Run function-level defers before returning.
     if (fnMark) {
