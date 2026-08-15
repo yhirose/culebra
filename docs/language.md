@@ -4602,8 +4602,12 @@ is called on every exit path — normal drain, `break`, early `return`, or
 an exception leaving the loop, whichever side raised it: the loop body,
 `has_next()` / `next()`, or a generator body that throws while suspended.
 Generators use it to run the defers registered inside a suspended body.
-A `dispose` that itself throws while an exception is already unwinding is
-swallowed, so the enclosing `catch` still sees the original error.
+It runs after the iteration's own bindings are released, so the loop
+variable's and the body's `drop`s precede it on every exit alike. A
+`dispose` that itself throws while an exception is already unwinding is
+swallowed, so the enclosing `catch` still sees the original error — and
+a loop variable whose pattern did not match the element is such an
+exception, so the mismatch is the error that reaches the `catch`.
 
 The same contract covers the **terminal iterator methods**: whoever
 drives the protocol closes it. Every terminal — draining

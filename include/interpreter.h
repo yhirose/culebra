@@ -7695,11 +7695,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // — normal, break, continue and unwind — by construction rather than by each
   // loop remembering to repeat the four handlers. `prologue` runs inside the
   // guarded region (for-in checks interrupts there so a signal still disposes
-  // its iterator); `on_unwind` is the loop's own teardown on the throw path.
-  template <typename Prologue, typename OnUnwind>
+  // its iterator). The loop's own teardown on the throw path belongs to the
+  // caller, which is the only one that can drop this iteration's scope before
+  // it runs (docs §18.5 closes the iterator after the iteration's bindings).
+  template <typename Prologue>
   LoopStep run_loop_body(const peg::Ast& body,
                          const std::shared_ptr<Environment>& scopeEnv,
-                         Prologue&& prologue, OnUnwind&& on_unwind) {
+                         Prologue&& prologue) {
     try {
       prologue();
       // The only statement boundary a collapsed single-statement body reaches,
@@ -7727,7 +7729,6 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       return flow_pending() ? LoopStep::Break : LoopStep::Next;
     } catch (...) {
       run_deferred(scopeEnv);
-      on_unwind();
       throw;
     }
   }
@@ -7758,7 +7759,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // iterations (so a bare immutable `x = …` re-declares each pass rather
       // than re-assigning), and a body `defer` fires on every iteration.
       auto scopeEnv = make_scope(loopEnv);
-      if (run_loop_body(*wv.body, scopeEnv, [] {}, [] {}) == LoopStep::Break) {
+      if (run_loop_body(*wv.body, scopeEnv, [] {}) == LoopStep::Break) {
         completed = false;
         break;
       }
@@ -7820,16 +7821,36 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         if (!v) { dispose(); break; }
 
         auto scopeEnv = make_scope(env);
+        // This iteration's bindings die before the iterator is closed, on
+        // every exit alike (docs §18.5) — so the two handles that keep the
+        // element alive go first and `dispose` runs in a world where the
+        // iteration is already over. Leaving them to the enclosing statement
+        // put the element's `drop` after `dispose` on the abrupt exits only.
+        auto end_iteration = [&] {
+          scopeEnv.reset();
+          v.reset();
+        };
         if (var_is_ident) {
           scopeEnv->initialize(var.token, std::move(*v), false);
         } else if (!try_pattern(var, *v, scopeEnv, /*mut=*/false)) {
-          dispose();
+          // The mismatch is an error leaving the loop, so a `dispose` that
+          // throws on the way out is swallowed like any other unwind.
+          end_iteration();
+          dispose_quietly();
           throw_destructure_mismatch_at(static_cast<long>(var.line),
                                         static_cast<long>(var.column));
         }
-        // The interrupt check is the prologue so a signal still disposes.
-        if (run_loop_body(body, scopeEnv, [this] { check_interrupt(); },
-                          dispose_quietly) == LoopStep::Break) {
+        LoopStep step;
+        try {
+          // The interrupt check is the prologue so a signal still disposes.
+          step = run_loop_body(body, scopeEnv, [this] { check_interrupt(); });
+        } catch (...) {
+          end_iteration();
+          dispose_quietly();
+          throw;
+        }
+        end_iteration();
+        if (step == LoopStep::Break) {
           completed = false;
           dispose();
           break;
@@ -13025,6 +13046,11 @@ inline void _call_drop_if_present(OrderedSymbolMap* m) {
 
   m->dropped = true;  // set before running: re-entrancy-safe, at-most-once
 
+  // A refcount hitting zero while a `return` travels to its function boundary
+  // is an ordinary place for this to run, so park the flow the way
+  // run_deferred does for `defer`: without it every statement of the body
+  // short-circuits and the drop is silently a no-op.
+  FlowPark park;
   ObjectValue self_view(ObjectValue::Synthetic{});
   self_view.properties =
       std::shared_ptr<OrderedSymbolMap>(m, [](OrderedSymbolMap*) {});

@@ -166,4 +166,76 @@ fn run_elem_ok() {
 }
 run_elem_ok()
 
+// docs §18.5 closes the iterator on the way out, after the iteration's own
+// bindings die — so the element's and the body's drops precede `dispose` on
+// every exit, not only on a natural drain.
+class Res {
+  id = ""
+  new(id) { self.id = id }
+  drop() { inspect("drop " + self.id) }
+}
+
+fn mk_source() {
+  {
+    mut n: 0,
+    iter: fn () { self },
+    has_next: fn () { self.n < 3 },
+    next: fn () {
+      let v = self.n
+      self.n = v + 1
+      Res.new("e" + to_string(v))
+    },
+    dispose: fn () { inspect("dispose") },
+  }
+}
+
+inspect("-- break")
+for r in mk_source() {
+  let local = Res.new("L")
+  break
+}
+
+inspect("-- throw")
+try {
+  for r in mk_source() {
+    let local = Res.new("L")
+    throw "boom"
+  }
+} catch e {
+  inspect("caught " + e)
+}
+
+// A `return` also travels through here. The element's refcount hits zero
+// while the return is still unwinding, and the drop body has to run there —
+// its statements used to short-circuit on the pending flow, so the drop was
+// silently a no-op.
+inspect("-- return")
+fn leave_early() {
+  for r in mk_source() {
+    let local = Res.new("L")
+    return "left"
+  }
+}
+inspect(leave_early())
+
+// A destructure mismatch is an error leaving the loop: it is the one that
+// reaches the `catch`, and a `dispose` throwing on the way out is swallowed
+// like any other unwind.
+inspect("-- mismatch")
+fn mk_bad() {
+  {
+    iter: fn () { self },
+    has_next: fn () { true },
+    next: fn () { 5 },
+    dispose: fn () { throw "from dispose" },
+  }
+}
+try {
+  for (a, b) in mk_bad() {
+    inspect("never")
+  }
+} catch e {
+  inspect("mismatch caught " + e.kind)
+}
+
 inspect("done")

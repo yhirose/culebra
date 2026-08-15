@@ -244,6 +244,13 @@ struct JIT {
     // for-in lets it out (the interp's eval_for calls the propagating
     // dispose() for `return` just as it does for `break`).
     bool swallow_on_return = true;
+    // The for-in's own scope, whose slots own the iterator. A `return`
+    // disposes just before that scope releases, so the iteration's bindings
+    // (the loop variable and the body's locals, one scope further in) die
+    // first — the order every other exit path uses. SIZE_MAX for the inlined
+    // HOF loops, whose iterator lives in a bare alloca: they dispose ahead of
+    // the walk, as they always have.
+    size_t scope_index = SIZE_MAX;
   };
 
  private:
@@ -2102,9 +2109,24 @@ struct JIT {
   // without `drop` to match the interpreter (whose global Environment is a
   // refcount cycle that is never torn down). Function returns leave it false
   // so ordinary scope-exit drop is unaffected.
-  void release_all_scopes_for_exit(bool suppress_drop = false) {
+  void release_all_scopes_for_exit(bool suppress_drop = false,
+                                   bool dispose_active_iters = false) {
     if (suppress_drop) emit_set_drop_suppressed(1);
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+      // A for-in's iterator closes once the scopes inside it have released —
+      // the loop variable and the body's locals go first, as they do on every
+      // other exit (docs §18.5), and the iterator's own slot is released by
+      // this very step.
+      if (dispose_active_iters) {
+        size_t depth = static_cast<size_t>(scopes_.rend() - it) - 1;
+        for (auto ic = iter_cleanup_stack_.rbegin();
+             ic != iter_cleanup_stack_.rend(); ++ic) {
+          if (ic->scope_index == depth) {
+            emit_iter_dispose_if_active(ic->iterAlloca, "for.ret",
+                                        ic->swallow_on_return);
+          }
+        }
+      }
       release_scope_slots(*it);
     }
     if (suppress_drop) emit_set_drop_suppressed(0);
@@ -7976,7 +7998,7 @@ struct JIT {
     // exitBB / excBB below.
     iter_cleanup_stack_.push_back(
         {cursor.iter, nullptr, /*fill_pending=*/true,
-         /*swallow_on_return=*/false});
+         /*swallow_on_return=*/false, /*scope_index=*/scopes_.size() - 1});
     emit_for_body_with_owned_binding(
         id, elemVal, body, headBB,
         for_break_target(exitBB, brokeFlag, "for"), cursor.elem);
@@ -13197,21 +13219,23 @@ struct JIT {
     llvm::BasicBlock* savedExitLpad = current_lpad_;
     if (!iter_cleanup_stack_.empty()) current_lpad_ = nullptr;
 
-    // Dispose every active for-in iterator we're returning out of (innermost
-    // first), matching the interpreter's dispose-on-early-return; the
-    // release_all_scopes_for_exit below then frees them with their scopes.
-    // break/throw/natural exit are handled by the loop's own cleanup /
+    // Run each active for-in body's defers before anything of that loop is
+    // torn down (interp's eval_for does run_deferred first), innermost first
+    // for nesting. The disposes themselves ride the scope walk below, so the
+    // iteration's bindings die before its iterator does; only the inlined HOF
+    // loops, whose iterator is a bare alloca outside every scope, still close
+    // here. break/throw/natural exit are handled by the loop's own cleanup /
     // landingpad, so this only fires for `return`.
-    // Each loop's body defers run *before* its dispose (interp's eval_for does
-    // run_deferred, then dispose_iter), interleaved per loop for nesting.
     for (auto it = iter_cleanup_stack_.rbegin();
          it != iter_cleanup_stack_.rend(); ++it) {
       if (it->body_defer_mark) {
         builder_.CreateCall(module_->getFunction(rt::defer_run_to),
                             {it->body_defer_mark});
       }
-      emit_iter_dispose_if_active(it->iterAlloca, "for.ret",
-                                  it->swallow_on_return);
+      if (it->scope_index == SIZE_MAX) {
+        emit_iter_dispose_if_active(it->iterAlloca, "for.ret",
+                                    it->swallow_on_return);
+      }
     }
     // Run any defers registered in this function's scopes before
     // returning to the caller. No invoke needed: we're exiting.
@@ -13227,7 +13251,8 @@ struct JIT {
                                                        builder_.getVoidTy()),
                           {});
     }
-    release_all_scopes_for_exit();
+    release_all_scopes_for_exit(/*suppress_drop=*/false,
+                                /*dispose_active_iters=*/true);
     // JitFn returns its result through the out-pointer (see JitFn), not by
     // value — so no 16-byte aggregate crosses the closure-call ABI boundary.
     auto retV = valOwned.consume();
