@@ -1,0 +1,29 @@
+# An uncaught throw at the module top level is program exit. The top level's
+# own bindings leak un-dropped there (docs §17 — the same exit that suppresses
+# `drop` when the program ends normally), while every scope the throw passes
+# through still releases deterministically, its defers first.
+
+class R {
+  n = 0
+  new(k) { self.n = k }
+  drop() { println('drop ' + to_string(self.n)) }
+}
+
+let top = R.new(1)  # never dropped: a top-level binding
+
+# A block that exits normally drops as usual, before any of this.
+{
+  let done = R.new(2)
+  println('block done')
+}
+
+# A loop body's binding: the completed iteration drops at its end, the one the
+# throw leaves drops on the way out.
+mut i = 0
+while i < 2 {
+  let each = R.new(10 + i)
+  defer { println('defer iter ' + to_string(i)) }
+  if i == 1 { throw 'x' }
+  i = i + 1
+}
+println('unreachable')

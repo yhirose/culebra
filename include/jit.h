@@ -691,8 +691,27 @@ struct JIT {
                           llvm::BasicBlock* foreignTarget,
                           llvm::Value* depthSlot, llvm::Value* caughtSlot,
                           llvm::BasicBlock* handlerBB) {
-    auto fn = lpadBB->getParent();
     emit_handler_prologue(lpadBB, "exc");
+    emit_classify_tail(foreignTarget, depthSlot, caughtSlot, handlerBB);
+  }
+
+  // Take over the exception a cleanup pad stored (emit_landingpad's
+  // `open=false` arm) so the classification below can end the throw. The VM
+  // lowering's try scopes run their scope cleanup between the two, which is
+  // why the pad head and the classification are separable here.
+  void emit_open_exception() {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    builder_.CreateCall(
+        module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
+        {builder_.CreateLoad(ptrTy, exception_slot(), "exc")});
+  }
+
+  // emit_lpad_classify's second half, from the current insertion point with
+  // the exception already open.
+  void emit_classify_tail(llvm::BasicBlock* foreignTarget,
+                          llvm::Value* depthSlot, llvm::Value* caughtSlot,
+                          llvm::BasicBlock* handlerBB) {
+    auto fn = builder_.GetInsertBlock()->getParent();
     builder_.CreateCall(module_->getOrInsertFunction(
         "culebra_runtime_try_translate", builder_.getVoidTy()));
     auto flagVal = builder_.CreateCall(

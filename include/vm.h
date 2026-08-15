@@ -58,6 +58,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -521,6 +522,9 @@ enum class Op : uint8_t {
                // to the body at b; else fall through.
   Println,     // culebra_runtime_println(regs[a])
   Safepoint,   // interrupt poll — every loop back edge carries one
+  DropSuppress,  // culebra_runtime_set_drop_suppressed(a): brackets the top
+                 // level's own release ladder, whose bindings leak
+                 // un-dropped at program exit (docs §17)
   Halt,
 };
 
@@ -1421,11 +1425,13 @@ struct Chunk {
   // chunk, like the JIT module's globals.
   std::vector<std::unique_ptr<char[]>> str_arena;
   int32_t num_slots = 0;
-  // Per-slot: does this slot own a cell (CellRelease) rather than a plain
-  // value (Release)? The frame's unwind ladder reads it, the way a region
-  // handler's compiled ladder chooses statically — sound because owned cell
-  // slots are pinned for the chunk's lifetime.
-  std::vector<uint8_t> slot_is_cell;
+  // Cell slots in creation order: a slot's rank, against a cleanup step's
+  // `cells_before`, says whether it already owned a cell at that point in the
+  // code. The plain "is this slot a cell" question has no chunk-wide answer —
+  // an index can be a temporary early on and a captured binding's cell later,
+  // and the ladders' Release / CellRelease choice differs between the two.
+  static constexpr uint32_t kNotACell = 0xffffffffu;
+  std::vector<uint32_t> slot_cell_rank;
   std::vector<PosEntry> positions;
   std::vector<std::string> slot_names;  // debug table, always emitted
   // Function-chunk metadata (chunk 0 — the module top level — has none).
@@ -1469,19 +1475,47 @@ struct Chunk {
   // creation site — its MakeClosure — so the list lives with the callee
   // chunk instead of being encoded into the instruction.
   std::vector<int32_t> capture_src_slots;
-  // try/catch region: a throw at pc in [start, end) lands at `handler` with
+  // One lexical scope's unwind step. A throw at pc runs, from the innermost
+  // scope containing it outward: that scope's pending defers, then its own
+  // named slots in reverse declaration order — the interpreter's per-scope
+  // unwind, which the JIT emits as one cleanup pad per region
+  // (finish_scope_cleanup). Chaining the steps rather than releasing the
+  // whole frame at once is what keeps `defer` and `drop` interleaved the way
+  // the other two backends interleave them.
+  //
+  // A try body's scope carries `handler`: reaching it ends the unwind, with
   // the caught value in `caught_slot` (written by the dispatcher / the
-  // lowered landingpad prelude before the jump). The handler opens with a
-  // bytecode release ladder for every slot the region allocated — sound
-  // because Release/CellRelease are destructive and nil-safe, and under the
+  // lowered landingpad prelude before the jump). Entries are recorded as
+  // scopes close, hence innermost-first: the first one containing pc is the
+  // innermost, and `parent` walks outward until -1 ends at the frame.
+  // Releasing a range is sound even where an inner step already emptied part
+  // of it — Release/CellRelease are destructive and nil-safe, and under the
   // borrow operand contract a throw leaves every register frame-owned.
-  // Entries are pushed innermost-first (a nested try compiles before its
-  // encloser finishes), so the first entry containing pc is the target.
-  struct EhRegion {
-    uint32_t start, end, handler;
-    int32_t caught_slot;
+  static constexpr uint32_t kNoHandler = 0xffffffffu;
+  struct Cleanup {
+    uint32_t start, end;
+    int32_t parent;
+    int32_t defer_mark_slot;   // -1: the scope declares no defer
+    int32_t slot_lo, slot_hi;  // its named slots, released hi-1 down to lo
+    uint32_t cells_before;     // cells that existed here (see slot_cell_rank)
+    uint32_t handler = kNoHandler;
+    int32_t caught_slot = -1;
   };
-  std::vector<EhRegion> eh;
+  std::vector<Cleanup> cleanups;
+  // The statement temporaries live at each pc, delta-coded (an entry only
+  // where the set changes; the last one at or before the faulting pc
+  // applies). They hold the in-flight `+1`s of the expression that threw and
+  // die before the innermost scope's defers — the JIT's release_unwind_temps,
+  // whose pool this table stands in for.
+  struct TempPoint {
+    uint32_t pc, off, len;
+  };
+  std::vector<TempPoint> temp_points;
+  std::vector<int32_t> temp_slots;  // flat backing for TempPoint
+  // Program exit releases the top level's own bindings without firing their
+  // `drop` (docs §17, and the JIT's suppressed __culebra_main exit): true for
+  // chunk 0 only, read by the frame step of both the normal and throw paths.
+  bool suppress_frame_drop = false;
   // Frame-level defer mark slot (-1 when the chunk has no defers). Taken by
   // the chunk's first instruction; a throw that no region catches runs the
   // frame's pending defers back to it before unwinding out (Exec::run_frame's
@@ -1513,6 +1547,35 @@ inline const std::vector<int64_t>* chunk_argpos_at(const Chunk& c, size_t ix) {
   if (it == c.call_argpos.end() || it->first != static_cast<uint32_t>(ix))
     return nullptr;
   return &it->second;
+}
+
+// Did slot `s` already own a cell where a cleanup step with this many cells
+// behind it runs? (Chunk::slot_cell_rank.)
+inline bool chunk_slot_is_cell(const Chunk& c, int32_t s,
+                               uint32_t cells_before) {
+  return s >= 0 && s < static_cast<int32_t>(c.slot_cell_rank.size()) &&
+         c.slot_cell_rank[s] < cells_before;
+}
+
+// The innermost scope whose range covers `pc`, or -1 when the throw is
+// outside every scope (the prologue) and only the frame step owes it
+// anything. Innermost-first table order makes the first hit the answer.
+inline int32_t chunk_innermost_cleanup(const Chunk& c, size_t pc) {
+  for (size_t k = 0; k < c.cleanups.size(); ++k)
+    if (c.cleanups[k].start <= pc && pc < c.cleanups[k].end)
+      return static_cast<int32_t>(k);
+  return -1;
+}
+
+// The statement temporaries live at `pc`, newest last (the unwind releases
+// them in reverse).
+inline std::span<const int32_t> chunk_temps_at(const Chunk& c, size_t pc) {
+  auto it = std::upper_bound(
+      c.temp_points.begin(), c.temp_points.end(), static_cast<uint32_t>(pc),
+      [](uint32_t k, const auto& e) { return k < e.pc; });
+  if (it == c.temp_points.begin()) return {};
+  --it;
+  return {c.temp_slots.data() + it->off, it->len};
 }
 
 struct VmProgram;
@@ -1611,9 +1674,16 @@ class Compiler {
       }
       if (main.frame_defer_mark_ >= 0)
         main.emit(Op::DeferRunTo, main.frame_defer_mark_);
+      // Program exit releases the top level's bindings without running their
+      // `drop` — docs §17, and the JIT's suppressed __culebra_main epilogue.
+      // The throw path is program exit too, so the frame step of the unwind
+      // walk suppresses the same way (Chunk::suppress_frame_drop).
+      main.emit(Op::DropSuppress, 1);
       main.pop_scope();
+      main.emit(Op::DropSuppress, 0);
     }
     main.emit(Op::Halt);
+    main.chunk_.suppress_frame_drop = true;
     main.finalize_chunk();
     prog.chunks[0] = std::move(main.chunk_);
     return prog;
@@ -1643,6 +1713,13 @@ class Compiler {
   struct Scope {
     std::vector<Binding> bindings;
     int32_t slot_watermark;  // next_slot_ at scope entry; pop rolls back
+    // Where the scope's current cleanup segment begins, the mark its own
+    // defers stand on (-1 when it declares none), and the segments it has
+    // left behind: together they are the Chunk::Cleanup entries the throw
+    // path walks.
+    uint32_t start_pc = 0;
+    int32_t defer_mark = -1;
+    std::vector<size_t> segments;
     // `fn name`s already declared directly in this scope. A later
     // same-scope overload appends to the dispatcher the binding already
     // holds; the first one mints a fresh dispatcher + table, so neither an
@@ -1688,12 +1765,10 @@ class Compiler {
   // scope exit emits CellRelease instead of Release. Borrowed capture slots
   // stay false — the closure owns their cell ref.
   std::vector<bool> slot_cell_;
-  // Owned cell slots are PINNED: never returned to the allocator, so a slot
-  // is cell-or-plain for the chunk's whole lifetime. A try handler's release
-  // ladder chooses Release vs CellRelease statically per slot — a slot that
-  // hosted a cell in one generation and a plain heap value in another would
-  // make that choice wrong at runtime. The wasted indices are bounded by the
-  // number of captured bindings (kMaxSlots rejects overflow).
+  // Owned cell slots never go back to the allocator, and alloc_cell_slot
+  // hands out only an index no earlier generation used, so a slot is
+  // cell-or-plain for the chunk's whole lifetime — what lets every release
+  // ladder pick Release vs CellRelease statically.
   int32_t pin_floor_ = 0;
   // Frame-level defer mark slot (mirrors the JIT's fn.mark, gated on
   // has_any_defer): `return` and the Halt epilogue run to it, as does the
@@ -1708,10 +1783,50 @@ class Compiler {
   // first (the JIT's Scope::defer_mark, flattened): break/continue run to
   // the first entry above the loop's defer_watermark.
   std::vector<int32_t> defer_scopes_;
+  // A mark taken for the scope that is about to be pushed (DeferScope and
+  // compile_try establish theirs before the push, since the slot has to
+  // outlive the scope's own releases). push_scope consumes it.
+  int32_t pending_scope_mark_ = -1;
+  // Cells created so far, and the cleanup segments of the frame scope (which
+  // answers for the whole chunk, prologue included).
+  uint32_t n_cells_ = 0;
+  std::vector<size_t> frame_segments_;
 
-  void mark_cell_slot(int32_t s) {
+  // A slot that owns a cell is pinned from here on, so it stays a cell for the
+  // rest of the chunk — but the generations BEFORE this point may have used
+  // the index for a temporary, and their ladders must still pick the plain
+  // Release. Ranking the cell and closing every open scope's current cleanup
+  // segment is what dates the two apart (Chunk::slot_cell_rank).
+  int32_t alloc_cell_slot(const peg::Ast& at, std::string name) {
+    split_cleanup_segments();
+    int32_t s = alloc_slot(at, std::move(name));
     slot_cell_[s] = true;
+    if (s >= static_cast<int32_t>(chunk_.slot_cell_rank.size()))
+      chunk_.slot_cell_rank.resize(s + 1, Chunk::kNotACell);
+    chunk_.slot_cell_rank[s] = n_cells_++;
     pin_floor_ = std::max(pin_floor_, s + 1);
+    return s;
+  }
+
+  // End every open scope's current cleanup segment here and start a new one:
+  // the segments differ only in how many cells existed, which is what decides
+  // Release vs CellRelease for the slots each releases.
+  void split_cleanup_segments() {
+    for (auto sc = scopes_.rbegin(); sc != scopes_.rend(); ++sc) {
+      auto pc = static_cast<uint32_t>(chunk_.code.size());
+      if (sc->start_pc == pc) continue;  // nothing emitted in this segment
+      record_cleanup(*sc, pc);
+      sc->start_pc = pc;
+    }
+  }
+
+  // One segment of a scope's unwind step, in the innermost-first order the
+  // walk relies on. compile_try turns the segments of a try body's scope into
+  // catching ones.
+  void record_cleanup(Scope& sc, uint32_t end) {
+    sc.segments.push_back(chunk_.cleanups.size());
+    chunk_.cleanups.push_back({sc.start_pc, end, /*parent=*/-1, sc.defer_mark,
+                               sc.slot_watermark, named_top_, n_cells_});
   }
   uint32_t pend_line_ = 0, pend_col_ = 0;
 
@@ -1753,8 +1868,31 @@ class Compiler {
       chunk_.positions.push_back(
           {static_cast<uint32_t>(chunk_.code.size()), pend_line_, pend_col_});
     }
+    record_temp_point();
     chunk_.code.push_back({op, a, b, c, d});
     return chunk_.code.size() - 1;
+  }
+
+  // Delta-code the live statement temporaries for the instruction about to be
+  // emitted: the unwind path releases exactly these before it runs any defer.
+  // Unchanged sets (whole runs of instructions inside one expression) reuse
+  // the previous entry.
+  void record_temp_point() {
+    if (!chunk_.temp_points.empty()) {
+      const auto& last = chunk_.temp_points.back();
+      if (last.len == stmt_temps_.size() &&
+          std::equal(stmt_temps_.begin(), stmt_temps_.end(),
+                     chunk_.temp_slots.begin() + last.off))
+        return;
+    } else if (stmt_temps_.empty()) {
+      return;
+    }
+    chunk_.temp_points.push_back(
+        {static_cast<uint32_t>(chunk_.code.size()),
+         static_cast<uint32_t>(chunk_.temp_slots.size()),
+         static_cast<uint32_t>(stmt_temps_.size())});
+    chunk_.temp_slots.insert(chunk_.temp_slots.end(), stmt_temps_.begin(),
+                             stmt_temps_.end());
   }
 
   // Jump-target operand encoding, single-sourced: an unconditional Jump
@@ -1842,19 +1980,50 @@ class Compiler {
     return it->second;
   }
 
-  // Freeze the frame layout the runtime needs: the slot count, and the
-  // per-slot cell flag the unwind ladder picks its release op from. The
-  // choice is static because owned cell slots are pinned (see pin_floor_),
-  // exactly as a region handler's ladder relies on.
+  // Freeze what the runtime needs of the frame layout: the slot count, the
+  // cell ranks each cleanup step reads to pick its release op, and the
+  // scope chain the throw path walks.
   void finalize_chunk() {
     chunk_.num_slots = high_water_;
-    chunk_.slot_is_cell.assign(static_cast<size_t>(high_water_), 0);
-    for (int32_t s = 0; s < high_water_ &&
-                        s < static_cast<int32_t>(slot_cell_.size()); ++s)
-      chunk_.slot_is_cell[s] = slot_cell_[s] ? 1 : 0;
+    chunk_.slot_cell_rank.resize(static_cast<size_t>(high_water_),
+                                 Chunk::kNotACell);
+    if (chunk_.cleanups.empty()) return;
+    // The frame scope's segments carry the frame's defers, and the outermost
+    // pair stretches over the whole chunk — a throw in the prologue, before
+    // any scope opened, still owes those defers and the frame's releases.
+    for (size_t ix : frame_segments_) {
+      auto& seg = chunk_.cleanups[ix];
+      if (seg.defer_mark_slot < 0) seg.defer_mark_slot = frame_defer_mark_;
+    }
+    if (!frame_segments_.empty()) {
+      chunk_.cleanups[frame_segments_.front()].start = 0;
+      chunk_.cleanups[frame_segments_.back()].end =
+          static_cast<uint32_t>(chunk_.code.size());
+    }
+    // Chain the scopes: segments are innermost-first, so a scope's encloser is
+    // the first later entry whose range contains it (splits close every open
+    // scope at once, so the two always nest cleanly). A frame segment has no
+    // encloser and keeps parent -1, which is what makes it the frame step.
+    for (size_t k = 0; k + 1 < chunk_.cleanups.size(); ++k) {
+      auto& cu = chunk_.cleanups[k];
+      for (size_t m = k + 1; m < chunk_.cleanups.size(); ++m) {
+        const auto& out = chunk_.cleanups[m];
+        if (out.start <= cu.start && cu.end <= out.end) {
+          cu.parent = static_cast<int32_t>(m);
+          break;
+        }
+      }
+    }
   }
 
-  void push_scope() { scopes_.push_back({{}, next_slot_}); }
+  // A scope opens where its first instruction will land, and adopts the mark
+  // its DeferScope took just before it (the mark slot belongs to the
+  // enclosing scope, so it is established outside this push).
+  void push_scope() {
+    scopes_.push_back({{}, next_slot_,
+                       static_cast<uint32_t>(chunk_.code.size()),
+                       std::exchange(pending_scope_mark_, -1)});
+  }
 
   // The release ladder every scope exit uses (reverse order, mirroring the
   // JIT's frame ladder). Releases only the named slots: statement temps in
@@ -1867,14 +2036,20 @@ class Compiler {
   }
 
   // Emits the scope's Releases and returns its slots to the allocator
-  // (pinned cell slots stay allocated; their stale named/cell flags only
-  // cost an outer ladder a redundant nil-safe CellRelease).
-  void pop_scope() {
-    const auto& sc = scopes_.back();
+  // (pinned cell slots stay allocated; their stale named flag only costs an
+  // outer ladder a redundant nil-safe release). The scope also leaves behind
+  // its cleanup segments — the same defers and the same ladder, for the
+  // throw path — and those are what compile_try turns into catching ones.
+  std::vector<size_t> pop_scope() {
+    auto& sc = scopes_.back();
+    record_cleanup(sc, static_cast<uint32_t>(chunk_.code.size()));
+    auto segments = std::move(sc.segments);
+    if (scopes_.size() == 1) frame_segments_ = segments;  // the frame scope
     release_down_to(sc.slot_watermark);
     next_slot_ = std::max(sc.slot_watermark, pin_floor_);
     named_top_ = std::min(named_top_, next_slot_);
     scopes_.pop_back();
+    return segments;
   }
 
   const Binding* lookup(std::string_view name) const {
@@ -2016,6 +2191,7 @@ class Compiler {
         mark = c.alloc_slot(key, "(defer.mark)");
         c.emit(Op::DeferMark, mark);
         c.defer_scopes_.push_back(mark);
+        c.pending_scope_mark_ = mark;  // the scope this brackets adopts it
       }
     }
     // Emit the fall-through run; pop before the caller's pop_scope so the
@@ -2268,12 +2444,12 @@ class Compiler {
     if (decls.empty()) return;
     TempScope ts(*this);
     std::vector<int32_t> cslots;
-    for (const auto& [at, name] : decls) cslots.push_back(alloc_slot(*at, name));
+    for (const auto& [at, name] : decls)
+      cslots.push_back(alloc_cell_slot(*at, name));
     int32_t tmp = alloc_temp(ast);
     for (size_t k = 0; k < decls.size(); ++k) {
       emit(Op::LoadConst, tmp, kconst({TAG_NO_SELF, 0}));
       emit(Op::CellNew, cslots[k], tmp);  // nils tmp; reloaded per name
-      mark_cell_slot(cslots[k]);
       scopes_.back().bindings.push_back({decls[k].second, cslots[k],
                                          /*is_mut=*/false, /*is_cell=*/true,
                                          /*lazy=*/true});
@@ -2500,14 +2676,13 @@ class Compiler {
     // `Name.new(...)` captures this cell, which the finished class value
     // lands in below (the JIT's pre-allocated class slot). A read before
     // the declaration ran stays the usual unresolved-identifier reject.
-    int32_t class_slot = alloc_slot(ast, class_name);
+    int32_t class_slot = alloc_cell_slot(ast, class_name);
     {
       TempScope ts(*this);
       int32_t t = alloc_temp(ast);
       emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
       emit(Op::CellNew, class_slot, t);
     }
-    mark_cell_slot(class_slot);
     scopes_.back().bindings.push_back(
         {class_name, class_slot, /*is_mut=*/false, /*is_cell=*/true});
 
@@ -2556,9 +2731,8 @@ class Compiler {
           {.receiver = true, .fields = &fields, .type_params = &type_params});
       int32_t t = alloc_temp(ast);
       emit(Op::MakeClosure, t, idx);
-      finit_slot = alloc_slot(ast, "(field.init)");
+      finit_slot = alloc_cell_slot(ast, "(field.init)");
       emit(Op::CellNew, finit_slot, owned_src(ast, {t, true}));
-      mark_cell_slot(finit_slot);
       if (new_ast) {
         scopes_.back().bindings.push_back(
             {culebra::field_init_slot_name(ast), finit_slot,
@@ -2608,9 +2782,8 @@ class Compiler {
 
     // The constructor closure captures {meta, field-init, `new` body}; each
     // capture is a cell in this frame, like every other closure's.
-    int32_t meta_cell = alloc_slot(ast, "(class.meta)");
+    int32_t meta_cell = alloc_cell_slot(ast, "(class.meta)");
     emit(Op::CellNew, meta_cell, owned_src(ast, {meta, true}));
-    mark_cell_slot(meta_cell);
     int32_t nil_cell = -1;
     auto cell_or_nil = [&](int32_t cell) {
       if (cell >= 0) return cell;
@@ -2618,9 +2791,8 @@ class Compiler {
         TempScope nts(*this);
         int32_t t = alloc_temp(ast);
         emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
-        nil_cell = alloc_slot(ast, "(class.absent)");
+        nil_cell = alloc_cell_slot(ast, "(class.absent)");
         emit(Op::CellNew, nil_cell, t);
-        mark_cell_slot(nil_cell);
       }
       return nil_cell;
     };
@@ -2640,9 +2812,8 @@ class Compiler {
         TempScope bts(*this);
         int32_t t = alloc_temp(*na);
         emit(Op::MakeClosure, t, body_chunks[k]);
-        body_cell = alloc_slot(*na, "(class.new)");
+        body_cell = alloc_cell_slot(*na, "(class.new)");
         emit(Op::CellNew, body_cell, owned_src(*na, {t, true}));
-        mark_cell_slot(body_cell);
       }
       std::vector<int32_t> ctor_caps{
           meta_cell, na ? cell_or_nil(-1) : cell_or_nil(finit_slot),
@@ -2975,9 +3146,8 @@ class Compiler {
       fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
     }
     for (const auto& pr : promos) {
-      int32_t cslot = fc.alloc_slot(*pr.at, pr.name);
+      int32_t cslot = fc.alloc_cell_slot(*pr.at, pr.name);
       fc.emit(Op::CellNew, cslot, pr.abi_slot);
-      fc.mark_cell_slot(cslot);
       fc.scopes_.back().bindings.push_back({pr.name, cslot, pr.is_mut, true});
     }
     // Bind the captures: borrowed cell pointers out of the closure. The
@@ -3001,9 +3171,8 @@ class Compiler {
       int32_t s = fc.alloc_slot(ast, "self");
       fc.emit(Op::SelfMerge, s, fc.chunk_.self_slot, self_cap);
       if (info.captured_locals.contains("self")) {
-        int32_t cslot = fc.alloc_slot(ast, "self");
+        int32_t cslot = fc.alloc_cell_slot(ast, "self");
         fc.emit(Op::CellNew, cslot, s);
-        fc.mark_cell_slot(cslot);
         fc.scopes_.back().bindings.push_back({"self", cslot, false, true});
       } else {
         fc.scopes_.back().bindings.push_back({"self", s, false});
@@ -3016,13 +3185,12 @@ class Compiler {
     // reads as the undeclared name's NameError.
     if (!info.mf_self.empty() &&
         (info.mf_self_used || info.captured_locals.contains(info.mf_self))) {
-      int32_t cslot = fc.alloc_slot(ast, info.mf_self);
+      int32_t cslot = fc.alloc_cell_slot(ast, info.mf_self);
       {
         TempScope mts(fc);
         int32_t t = fc.alloc_temp(ast);
         fc.emit(Op::MfSelf, t);
         fc.emit(Op::CellNew, cslot, t);  // nils t; the sweep is a no-op
-        fc.mark_cell_slot(cslot);
       }
       fc.scopes_.back().bindings.push_back({info.mf_self, cslot,
                                             /*is_mut=*/false, /*is_cell=*/true,
@@ -3084,9 +3252,8 @@ class Compiler {
       } else if (info.captured_locals.contains(pl.name)) {
         // A captured param moves into a fresh cell (the JIT's make_cell_slot
         // on a param); the ABI slot stays behind as an anonymous drained one.
-        int32_t cslot = fc.alloc_slot(*pl.at, pl.name);
+        int32_t cslot = fc.alloc_cell_slot(*pl.at, pl.name);
         fc.emit(Op::CellNew, cslot, pl.slot);
-        fc.mark_cell_slot(cslot);
         fc.scopes_.back().bindings.push_back({pl.name, cslot, pl.is_mut, true});
       } else {
         fc.scopes_.back().bindings.push_back({pl.name, pl.slot, pl.is_mut});
@@ -3192,10 +3359,9 @@ class Compiler {
       // becomes visible after the RHS (let x = x reads the outer x).
       auto name = std::string(tgt->token);
       bool cell = info_->captured_locals.contains(name);
-      int32_t slot = alloc_slot(*tgt, name);
+      int32_t slot = cell ? alloc_cell_slot(*tgt, name) : alloc_slot(*tgt, name);
       if (cell) {
         store_new_cell(*tgt, slot, compile_expr(*av.rhs));
-        mark_cell_slot(slot);
       } else {
         store_into(slot, compile_expr(*av.rhs), /*dst_is_fresh=*/true);
       }
@@ -3550,10 +3716,7 @@ class Compiler {
     alloc_slot(ast, "(for.done)");
     int32_t var = alloc_slot(id, cell ? "(for.val)" : std::string(id.token));
     int32_t bind = var;
-    if (cell) {
-      bind = alloc_slot(id, std::string(id.token));
-      mark_cell_slot(bind);
-    }
+    if (cell) bind = alloc_cell_slot(id, std::string(id.token));
 
     // Endpoints evaluate before the binding exists, in source order, with
     // errors attributed to the range expression — same as both backends.
@@ -4115,14 +4278,13 @@ class Compiler {
     return {res, true};
   }
 
-  // `try BODY catch name HANDLER` as an expression. The body's instructions
-  // form an EhRegion; the handler opens with the region's release ladder —
-  // every slot the body allocated, the Release/CellRelease choice static per
-  // slot thanks to cell-slot pinning — then binds the caught value (mutable,
+  // `try BODY catch name HANDLER` as an expression. The body's scope is an
+  // ordinary Cleanup entry that also carries a handler: the unwind walk has
+  // already run the nested scopes' steps and this scope's own (its defers,
+  // then its slots) by the time the handler binds the caught value (mutable,
   // the interp's catch-binding default) and runs into the same result slot.
   // Normal-path exits (fall-through, break/continue/return crossing the
-  // region) release through the regular scope machinery; the ladder only
-  // runs on the exception path, where every emit is nil-safe.
+  // region) release through the regular scope machinery.
   ExprResult compile_try(const peg::Ast& ast) {
     using namespace peg::udl;
     const auto& id = *ast.nodes[1];
@@ -4141,15 +4303,16 @@ class Compiler {
     }
     bool body_scope_defer =
         analysis_.scope_has_defer.contains(ast.nodes[0].get());
-    int32_t wm = next_slot_;
-    auto start = static_cast<uint32_t>(chunk_.code.size());
     // The body inline (compile_block_into minus its own DeferScope): the
-    // region must END before the body's fall-through defer run, because a
-    // defer throwing at the try body's NORMAL exit escapes this catch
-    // (interp runs run_deferred(tryEnv) outside its try/catch pair), while
-    // one throwing at a NESTED scope's exit — still inside the region — is
-    // caught here, exactly as the interp's nesting has it.
+    // catching part of the body's scope must END before its fall-through
+    // defer run, because a defer throwing at the try body's NORMAL exit
+    // escapes this catch (interp runs run_deferred(tryEnv) outside its
+    // try/catch pair), while one throwing at a NESTED scope's exit — still
+    // inside the region — is caught here, exactly as the interp's nesting has
+    // it. The tail keeps a cleanup entry of its own so the body's bindings
+    // still release as that escaping throw passes them.
     if (body_scope_defer) defer_scopes_.push_back(rmark);
+    pending_scope_mark_ = rmark;
     push_scope();
     predeclare_multifns(*ast.nodes[0]);
     compile_body_into(*ast.nodes[0], res);
@@ -4158,26 +4321,31 @@ class Compiler {
       emit(Op::DeferRunTo, rmark);
       defer_scopes_.pop_back();
     }
-    pop_scope();
+    auto region = pop_scope();
     size_t end_jump = emit(Op::Jump);
     auto handler = static_cast<uint32_t>(chunk_.code.size());
-    // Handler: pending defers first (they may still read captured cells),
-    // then the region's release ladder, then the catch binding. A defer
-    // throwing HERE is outside [start, end): it propagates to the next
-    // region out / the frame, never back into this catch (interp order).
-    if (rmark >= 0) emit(Op::DeferRunTo, rmark);
-    for (int32_t s = high_water_ - 1; s >= wm; --s)
-      emit(slot_cell_[s] ? Op::CellRelease : Op::Release, s);
+    for (size_t ix : region) {
+      auto& cu = chunk_.cleanups[ix];
+      if (cu.start >= end) continue;  // wholly in the fall-through tail
+      auto tail_end = cu.end;
+      cu.end = std::min(cu.end, end);
+      cu.handler = handler;
+      cu.caught_slot = caught;
+      // The tail releases the same bindings but catches nothing.
+      if (tail_end > end)
+        chunk_.cleanups.push_back({end, tail_end, /*parent=*/-1,
+                                   cu.defer_mark_slot, cu.slot_lo, cu.slot_hi,
+                                   cu.cells_before});
+    }
     push_scope();
     auto name = std::string(id.token);
     if (is_sink_name(name)) {
       emit(Op::Release, caught);  // `catch _`: drop the payload's +1
     } else {
       bool cell = info_->captured_locals.contains(name);
-      int32_t e = alloc_slot(id, name);
+      int32_t e = cell ? alloc_cell_slot(id, name) : alloc_slot(id, name);
       if (cell) {
         emit(Op::CellNew, e, caught);
-        mark_cell_slot(e);
       } else {
         emit(Op::Take, e, caught);
       }
@@ -4189,7 +4357,6 @@ class Compiler {
     compile_block_into(*ast.nodes[2], res, /*defer_key=*/ast.nodes[2].get());
     pop_scope();
     patch_to_here(end_jump);
-    chunk_.eh.push_back({start, end, handler, caught});
     return {res, true};
   }
 
@@ -4373,10 +4540,10 @@ class Compiler {
     ExprResult v{src, src_owned};
     if (declares) {
       bool cell = info_->captured_locals.contains(name);
-      int32_t slot = alloc_slot(ident, name);
+      int32_t slot =
+          cell ? alloc_cell_slot(ident, name) : alloc_slot(ident, name);
       if (cell) {
         store_new_cell(at, slot, v);
-        mark_cell_slot(slot);
       } else {
         store_into(slot, v, /*dst_is_fresh=*/true);
       }
@@ -5010,7 +5177,8 @@ inline std::string dump(const Chunk& c) {
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
-      "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "Halt"};
+      "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "DropSuppress",
+      "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
   out += std::format("; slots: {}\n", c.num_slots);
@@ -5194,69 +5362,88 @@ struct Exec {
                                          : culebra_runtime_recursion_depth();
     const Insn* code = c.code.data();
     size_t pc = 0;
-    // Dispatch, re-entering at a region's handler when a throw lands inside
-    // one. Classification shares the JIT landingpad's carrier machinery:
-    // try_translate materializes a CulebraError as an error Object, a user
-    // throw already carries a value, and a foreign exception leaves
-    // is_throw=0 and keeps unwinding (as does any throw outside a region).
+    // Dispatch, re-entering at a try scope's handler when a throw lands
+    // inside one. Classification shares the JIT landingpad's carrier
+    // machinery: try_translate materializes a CulebraError as an error
+    // Object, a user throw already carries a value, and a foreign exception
+    // leaves is_throw=0 and keeps unwinding (as does any throw with no
+    // enclosing try).
     for (;;) {
       try {
         return dispatch(p, c, code, regs, pc, chunk_idx, cls, frame_depth,
                         n_args, args);
       } catch (...) {
-        const Chunk::EhRegion* r = nullptr;
-        for (const auto& e : c.eh)
-          if (e.start <= pc && pc < e.end) {
-            r = &e;  // innermost-first table order: first hit wins
-            break;
-          }
-        if (!r) {
-          // No region: the JIT's frame cleanup ladder, in its order. Restore
-          // this frame's depth first — the unwound callees never ran their
-          // `leave`, and the defers (and any `drop` the releases fire) must
-          // count from here — then the pending defers, then the frame's own
-          // slots in reverse order, and finally uncount the frame on the way
-          // out. Every restore ignores the "never entered" sentinel, and the
-          // tag check is belt-and-braces: DeferMark is the chunk's first
-          // instruction.
-          culebra_runtime_recursion_restore(frame_depth);
-          if (c.defer_mark_slot >= 0 &&
-              regs[c.defer_mark_slot].tag == TAG_LONG)
-            culebra_runtime_defer_run_to(regs[c.defer_mark_slot].data);
-          if (chunk_idx != 0) {
-            release_frame_slots(c, regs);
-            culebra_runtime_recursion_restore(frame_depth - 1);
-          }
-          throw;
-        }
-        culebra_runtime_try_translate();
-        if (!culebra_runtime_get_is_throw()) throw;
-        culebra_runtime_clear_is_throw();
-        culebra_runtime_recursion_restore(frame_depth);
-        regs[r->caught_slot] = JitValue{culebra_runtime_get_thrown_tag(),
-                                        culebra_runtime_get_thrown_data()};
-        pc = static_cast<size_t>(r->handler);
+        if (unwind(c, regs, pc, chunk_idx, frame_depth)) continue;
+        throw;
       }
     }
   }
 
-  // The frame's release ladder for a throw that no region caught: every
-  // slot in reverse order, the op chosen per slot the way a region
-  // handler's compiled ladder chooses it. Releasing the whole frame is
-  // sound for the same reason the region ladder releases its whole range —
-  // under the borrow operand contract a throw leaves every register
-  // frame-owned — and Release is destructive and nil-safe, so a slot an
-  // inner handler already emptied costs one no-op.
-  static void release_frame_slots(const Chunk& c, JitValue* regs) {
-    for (int32_t s = c.num_slots - 1; s >= 0; --s) {
-      if (s < static_cast<int32_t>(c.slot_is_cell.size()) && c.slot_is_cell[s])
-        culebra_runtime_cell_release(
-            reinterpret_cast<JitCell*>(regs[s].data));
-      else
-        culebra_runtime_value_release(static_cast<int8_t>(regs[s].tag),
-                                      regs[s].data);
-      regs[s] = JitValue{TAG_NIL, 0};
+  // The throw path: the interpreter's scope-by-scope teardown, which the JIT
+  // emits as a chain of cleanup pads and the lowering mirrors block for
+  // block. The in-flight temporaries of the throwing expression die first,
+  // then each enclosing scope runs its pending defers and releases its own
+  // bindings, innermost outward — so a `defer` and the `drop`s of the scope
+  // it guards interleave the way they do on the other two backends. Returns
+  // true when a try scope caught it (`pc` then sits at its handler);
+  // otherwise the frame is uncounted and the caller re-raises.
+  static bool unwind(const Chunk& c, JitValue* regs, size_t& pc,
+                     int32_t chunk_idx, int64_t frame_depth) {
+    // Restore this frame's depth before any of it runs: the unwound callees
+    // never ran their `leave`, and the defers (and any `drop` the releases
+    // fire) must count from here. Every restore ignores the "never entered"
+    // sentinel.
+    culebra_runtime_recursion_restore(frame_depth);
+    // A temporary is never a cell in its own generation, so it always takes
+    // the plain release — and nils its slot, which is what makes the range
+    // release below safe on an index a later generation turned into a cell.
+    auto temps = chunk_temps_at(c, pc);
+    for (size_t i = temps.size(); i > 0; --i)
+      release_slot(c, regs, temps[i - 1], /*as_cell=*/false);
+    for (int32_t k = chunk_innermost_cleanup(c, pc); k >= 0;) {
+      const auto& cu = c.cleanups[static_cast<size_t>(k)];
+      bool frame = cu.parent < 0;
+      // The tag check is belt-and-braces: a scope's DeferMark runs before
+      // any instruction its range covers.
+      if (cu.defer_mark_slot >= 0 &&
+          regs[cu.defer_mark_slot].tag == TAG_LONG)
+        culebra_runtime_defer_run_to(regs[cu.defer_mark_slot].data);
+      bool hush = frame && c.suppress_frame_drop;
+      if (hush) culebra_runtime_set_drop_suppressed(1);
+      for (int32_t s = cu.slot_hi - 1; s >= cu.slot_lo; --s)
+        release_slot(c, regs, s, chunk_slot_is_cell(c, s, cu.cells_before));
+      if (hush) culebra_runtime_set_drop_suppressed(0);
+      if (cu.handler != Chunk::kNoHandler) {
+        culebra_runtime_try_translate();
+        if (culebra_runtime_get_is_throw()) {
+          culebra_runtime_clear_is_throw();
+          regs[cu.caught_slot] = JitValue{culebra_runtime_get_thrown_tag(),
+                                          culebra_runtime_get_thrown_data()};
+          pc = static_cast<size_t>(cu.handler);
+          return true;
+        }
+        // Foreign: keep unwinding, the enclosing scopes' cleanup included.
+      }
+      k = cu.parent;
     }
+    // Uncount the frame on the way out (chunk 0 is the program itself).
+    if (chunk_idx != 0) culebra_runtime_recursion_restore(frame_depth - 1);
+    return false;
+  }
+
+  // One slot's release, with the caller deciding cell or plain the way the
+  // compiled ladders do (per generation — see Chunk::slot_cell_rank).
+  // Release is destructive and nil-safe, so a slot an inner step already
+  // emptied costs one no-op.
+  static void release_slot(const Chunk& c, JitValue* regs, int32_t s,
+                           bool as_cell) {
+    if (s < 0 || s >= c.num_slots) return;
+    if (as_cell)
+      culebra_runtime_cell_release(reinterpret_cast<JitCell*>(regs[s].data));
+    else
+      culebra_runtime_value_release(static_cast<int8_t>(regs[s].tag),
+                                    regs[s].data);
+    regs[s] = JitValue{TAG_NIL, 0};
   }
 
   // The call site, with this call's per-argument positions when it has any
@@ -6696,6 +6883,10 @@ struct Exec {
             culebra::throw_if_interrupted();
           ++pc;
           break;
+        case Op::DropSuppress:
+          culebra_runtime_set_drop_suppressed(static_cast<int8_t>(in.a));
+          ++pc;
+          break;
         case Op::Halt:
           return JitValue{TAG_NIL, 0};
       }
@@ -6774,12 +6965,9 @@ struct Lowering {
     auto& b = j.builder_;
     auto i64Ty = b.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(j.ctx_, 0);
-    bool frame_defers = c.defer_mark_slot >= 0;
-    // A function chunk always carries a frame cleanup pad now (it releases
-    // the frame's slots on the way out), so it always needs a personality.
-    bool frame_pad_wanted = chunk_idx != 0;
-    if (!c.eh.empty() || frame_defers || frame_pad_wanted)
-      fn->setPersonalityFn(j.get_personality_fn());
+    // Every chunk carries a cleanup pad per lexical scope (they release the
+    // scope's slots on the way out), so it always needs a personality.
+    if (!c.cleanups.empty()) fn->setPersonalityFn(j.get_personality_fn());
     b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fn));
     // Per-LLVM-function JIT state, which the AST path resets through
     // CompilerStateSaver at each nested fn literal: one chunk is one
@@ -6926,7 +7114,7 @@ struct Lowering {
     // "never entered" sentinel keeps every restore a no-op until then, so a
     // throw out of a default expression leaves the count alone.
     llvm::Value* depthSlot = nullptr;
-    if (!c.eh.empty() || frame_defers || frame_pad_wanted) {
+    if (!c.cleanups.empty()) {
       IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
       depthSlot = eb.CreateAlloca(i64Ty, nullptr, "eh.depth");
       llvm::Value* depth0 = b.getInt64(-1);
@@ -6983,22 +7171,20 @@ struct Lowering {
       }
     }
 
-    // Each region opens a handler block at its handler pc (the bytecode
-    // release ladder lives there) and gets a landingpad prelude block,
-    // filled after the main walk. Setting current_lpad_ per instruction
-    // turns every may-throw helper call inside a region into an invoke —
-    // emit_call's standard behavior, no lowering-specific plumbing.
-    for (const auto& r : c.eh) mark(static_cast<int32_t>(r.handler));
-    std::vector<BasicBlock*> lpads(c.eh.size());
-    for (size_t k = 0; k < c.eh.size(); ++k)
-      lpads[k] = BasicBlock::Create(j.ctx_, std::format("eh.lpad.{}", k), fn);
-    // Frame-level cleanup pad: a throw outside every region runs the frame's
-    // pending defers and then releases the frame's own slots before
-    // unwinding out — the JIT's frame cleanup ladder, and the twin of
-    // Exec::run_frame's catch-all.
-    BasicBlock* framePad =
-        frame_pad_wanted ? BasicBlock::Create(j.ctx_, "vm.frame.pad", fn)
-                         : nullptr;
+    // One landingpad per lexical scope, chained outward: it runs that scope's
+    // pending defers, releases its own bindings, and hands the throw to its
+    // encloser — the JIT's per-region cleanup pads, and the twin of
+    // Exec::unwind. A try scope's pad classifies the exception after its
+    // cleanup and enters the catch (its handler pc opens a block for the
+    // binding). Setting current_lpad_ per instruction turns every may-throw
+    // helper call into an invoke — emit_call's standard behavior, no
+    // lowering-specific plumbing.
+    for (const auto& cu : c.cleanups)
+      if (cu.handler != Chunk::kNoHandler)
+        mark(static_cast<int32_t>(cu.handler));
+    std::vector<BasicBlock*> pads(c.cleanups.size());
+    for (size_t k = 0; k < c.cleanups.size(); ++k)
+      pads[k] = BasicBlock::Create(j.ctx_, std::format("vm.scope.{}", k), fn);
     // The JitFn hand-off, shared by Call / CallM and BMeth's user-method arm:
     // the TAG_FUNC gate, the arg slab, and the ABI call. `selfSlot < 0` is a
     // plain call (TAG_NO_SELF rides the receiver pair). The callee consumes
@@ -7129,10 +7315,33 @@ struct Lowering {
       return b.CreateLoad(j.valueType_, retTmp);
     };
 
+    // The temporaries in flight at a pc die before any scope's defers run, so
+    // an instruction that has some unwinds to a prelude of its own that
+    // releases them and then continues into the scope chain (the JIT's
+    // release_unwind_temps, whose pool this stands in for). Preludes are
+    // shared by every instruction with the same scope and the same set, and
+    // filled after the walk like the scope pads themselves.
+    struct TempPad {
+      BasicBlock* bb;
+      BasicBlock* chain;
+      std::span<const int32_t> temps;
+    };
+    std::vector<TempPad> temp_pads;
+    std::map<std::tuple<int32_t, const int32_t*, size_t>, BasicBlock*> temp_ix;
     auto lpad_for = [&](size_t pc) -> BasicBlock* {
-      for (size_t k = 0; k < c.eh.size(); ++k)
-        if (c.eh[k].start <= pc && pc < c.eh[k].end) return lpads[k];
-      return framePad;  // innermost-first table order: first hit wins
+      int32_t k = chunk_innermost_cleanup(c, pc);
+      if (k < 0) return nullptr;
+      BasicBlock* chain = pads[static_cast<size_t>(k)];
+      auto temps = chunk_temps_at(c, pc);
+      if (temps.empty()) return chain;
+      auto key = std::tuple{k, temps.data(), temps.size()};
+      auto it = temp_ix.find(key);
+      if (it != temp_ix.end()) return it->second;
+      auto* bb = BasicBlock::Create(
+          j.ctx_, std::format("vm.temps.{}", temp_pads.size()), fn);
+      temp_pads.push_back({bb, chain, temps});
+      temp_ix.emplace(key, bb);
+      return bb;
     };
 
     // Pass 2: linear walk over the instructions. The chunk's position table
@@ -9580,65 +9789,81 @@ struct Lowering {
         case Op::Safepoint:
           j.emit_safepoint();
           break;
+        case Op::DropSuppress:
+          b.CreateCall(
+              j.module_->getOrInsertFunction(rt::set_drop_suppressed,
+                                             b.getVoidTy(), b.getInt8Ty()),
+              {b.getInt8(static_cast<int8_t>(in.a))});
+          break;
         case Op::Halt:
           b.CreateRetVoid();
           break;
       }
     }
     j.current_lpad_ = nullptr;
+    auto release_slot_ir = [&](int32_t s, bool as_cell) {
+      if (s < 0 || s >= c.num_slots) return;
+      if (as_cell)
+        j.emit_cell_release(
+            b.CreateIntToPtr(j.extract_data(load_slot(s)), ptrTy));
+      else
+        j.emit_value_release(load_slot(s));
+      b.CreateStore(j.make_nil(), slots[s]);
+    };
+    auto restoreFn = j.module_->getOrInsertFunction(rt::recursion_restore,
+                                                    b.getVoidTy(), i64Ty);
 
-    // Fill the landingpad preludes: emit_lpad_classify (compile_try's pad,
-    // minus the AST path's scope state) classifies via the carriers, binds
-    // the caught value, and jumps to the bytecode handler — whose release
-    // ladder then runs as ordinary instructions.
-    for (size_t k = 0; k < c.eh.size(); ++k) {
-      const auto& r = c.eh[k];
-      // A foreign exception rethrows toward the enclosing region's pad; with
-      // no enclosing region it still owes the frame's defers on its way out
-      // (interp's catch(...) runs run_deferred too), hence the frame pad.
-      BasicBlock* outer = framePad;
-      for (size_t m = k + 1; m < c.eh.size(); ++m)
-        if (c.eh[m].start <= r.start && r.end <= c.eh[m].end) {
-          outer = lpads[m];
-          break;
-        }
-      j.emit_lpad_classify(lpads[k], outer, depthSlot, slots[r.caught_slot],
-                           blocks.at(static_cast<int32_t>(r.handler)));
+    // The temp preludes first: their re-raise edges are what keep the scope
+    // pads they continue into alive (a pad nothing unwinds to is erased).
+    for (const auto& tp : temp_pads) {
+      JIT::CleanupPad pad(j, tp.chain);
+      if (!pad.open(tp.bb, "vm.temps.exc")) continue;
+      for (size_t i = tp.temps.size(); i > 0; --i)
+        release_slot_ir(tp.temps[i - 1], /*as_cell=*/false);
     }
 
-    // Fill the frame pad (see its creation above). Ladder order: restore
-    // this frame's depth first — the unwound callees never ran their
-    // `leave`, and a defer body's own calls must count from here — then
-    // run the pending defers (a plain call: a defer throwing mid-handling
-    // propagates out, as the executor's catch does), uncount the frame,
-    // and re-raise out of the function.
-    if (framePad) {
-      JIT::CleanupPad pad(j, /*outerLpad=*/nullptr);
-      if (pad.open(framePad, "vm.frame.exc")) {
-        auto restoreFn = j.module_->getOrInsertFunction(
-            rt::recursion_restore, b.getVoidTy(), i64Ty);
-        auto d = b.CreateLoad(i64Ty, depthSlot, "rec.d");
-        b.CreateCall(restoreFn, {d});
-        if (frame_defers) {
-          auto markV = b.CreateLoad(j.valueType_, slots[c.defer_mark_slot]);
-          b.CreateCall(j.module_->getFunction(rt::defer_run_to),
-                       {j.extract_data(markV)});
-        }
-        // The frame's own slots, reverse order — Exec::release_frame_slots,
-        // and the descent chain of the JIT's ladder. A `drop` it fires runs
-        // at this frame's restored depth, before the frame is uncounted.
-        for (int32_t s = c.num_slots - 1; s >= 0; --s) {
-          if (s < static_cast<int32_t>(c.slot_is_cell.size()) &&
-              c.slot_is_cell[s])
-            j.emit_cell_release(
-                b.CreateIntToPtr(j.extract_data(load_slot(s)), ptrTy));
-          else
-            j.emit_value_release(load_slot(s));
-          b.CreateStore(j.make_nil(), slots[s]);
-        }
-        b.CreateCall(restoreFn,
-                     {b.CreateSub(d, b.getInt64(1), "rec.d1")});
+    // Then the scope pads, innermost outward, so each one's re-raise edge
+    // exists before its encloser decides whether anything reaches it. Order
+    // within a pad is Exec::unwind's: restore this frame's depth (the
+    // unwound callees never ran their `leave`, and a defer body's own calls
+    // must count from here), run the scope's pending defers, release its
+    // bindings in reverse declaration order, and — at the frame — uncount
+    // before the throw travels on.
+    for (size_t k = 0; k < c.cleanups.size(); ++k) {
+      const auto& cu = c.cleanups[k];
+      bool frame = cu.parent < 0;
+      JIT::CleanupPad pad(
+          j, frame ? nullptr : pads[static_cast<size_t>(cu.parent)]);
+      if (!pad.open(pads[k], "vm.scope.exc")) continue;
+      auto d = b.CreateLoad(i64Ty, depthSlot, "rec.d");
+      b.CreateCall(restoreFn, {d});
+      if (cu.defer_mark_slot >= 0) {
+        auto markV = b.CreateLoad(j.valueType_, slots[cu.defer_mark_slot]);
+        b.CreateCall(j.module_->getFunction(rt::defer_run_to),
+                     {j.extract_data(markV)});
       }
+      bool hush = frame && c.suppress_frame_drop;
+      auto suppress = [&](int v) {
+        b.CreateCall(j.module_->getOrInsertFunction(rt::set_drop_suppressed,
+                                                    b.getVoidTy(),
+                                                    b.getInt8Ty()),
+                     {b.getInt8(static_cast<int8_t>(v))});
+      };
+      if (hush) suppress(1);
+      for (int32_t s = cu.slot_hi - 1; s >= cu.slot_lo; --s)
+        release_slot_ir(s, chunk_slot_is_cell(c, s, cu.cells_before));
+      if (hush) suppress(0);
+      if (frame && chunk_idx != 0)
+        b.CreateCall(restoreFn, {b.CreateSub(d, b.getInt64(1), "rec.d1")});
+      if (cu.handler == Chunk::kNoHandler) continue;  // pad dtor re-raises
+      // A try scope classifies what it just cleaned up after: our own throw
+      // enters the catch, a foreign one travels on to the encloser (interp's
+      // catch(...) sees the same order — cleanup, then the decision).
+      j.emit_open_exception();
+      j.emit_classify_tail(frame ? nullptr
+                                 : pads[static_cast<size_t>(cu.parent)],
+                           depthSlot, slots[cu.caught_slot],
+                           blocks.at(static_cast<int32_t>(cu.handler)));
     }
   }
 };

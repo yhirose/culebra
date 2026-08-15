@@ -119,6 +119,71 @@ class D {
 println(try { D.new() } catch e { e.kind })
 println(try { D.new('x') } catch e { e.kind })
 
+# --- Scope by scope: each scope's defers, then its own bindings ----------
+# The unwind walks outward one scope at a time, so a `defer` and the drops of
+# the scope it guards interleave rather than running in two blocks.
+println('--- interleaved')
+fn interleaved() {
+  let a = R.new(50)
+  defer { println('defer frame') }
+  {
+    let b = R.new(51)
+    defer { println('defer inner') }
+    throw 'x'
+  }
+}
+println(try { interleaved() } catch e { 'caught' })
+
+# The same inside a try: the nested scope's step runs before the try body's,
+# and the catch only sees what is left.
+println('--- interleaved try')
+fn interleaved_try() {
+  try {
+    defer { println('defer try') }
+    {
+      let b = R.new(52)
+      throw 'x'
+    }
+  } catch e {
+    println('caught inside')
+  }
+}
+println(interleaved_try())
+
+# In-flight temporaries of the throwing expression die before any defer.
+println('--- temps first')
+fn temps(d: Long) {
+  defer { println('defer temps') }
+  let xs = [R.new(53), R.new(54), 1 / d]
+  xs
+}
+println(try { temps(0) } catch e { e.kind })
+
+# --- A captured local releases in declaration order ----------------------
+# Its cell is created ahead of the scope (forward-ref support), which must not
+# move its drop ahead of a local declared before it.
+println('--- captured')
+fn captured() {
+  let first = R.new(60)
+  let held = R.new(61)
+  println(to_string((fn () { held.n })()))
+  throw 'x'
+}
+println(try { captured() } catch e { 'caught' })
+
+# --- A drop body that throws is logged and swallowed ---------------------
+# The error already unwinding survives it (the thrown payload is carried in a
+# global the body's own throw would otherwise overwrite).
+println('--- noisy drop')
+class Noisy {
+  drop() { println('drop noisy') ; throw 'from drop' }
+}
+fn noisy() {
+  let n = Noisy.new()
+  throw 'original'
+}
+println(try { noisy() } catch e { 'caught ' + e })
+
 # --- Churn: the ladder runs on every one of these ------------------------
 # A counting drop rather than a printing one — the interest is that the
 # releases happen every time, not the transcript.
