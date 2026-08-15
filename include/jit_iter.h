@@ -1443,6 +1443,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
   return _range_iter_new(b.cur, b.end, b.step, b.inclusive, line, col);
 }
 
+// Defined below, next to the other Object walkers.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
+culebra_runtime_object_iter(JitObject* obj);
+
 inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
                                       int64_t col) {
   if (culebra_runtime_is_range(t, d)) {
@@ -1483,6 +1487,12 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
       culebra_runtime_value_retain(t, d);
       return _jit_invoke(iv_cls, JitValue{t, d}, 0, nullptr);
     }
+    // No `iter` of its own: the dict builtin answers, walking (key, value)
+    // pairs. Every Object is iterable that way — the interp resolves `iter`
+    // the same two-step way here — so an iterator-shaped class instance with
+    // no `iter` method is a dict to this coercion, not a non-iterable.
+    return {TAG_OBJECT, reinterpret_cast<int64_t>(culebra_runtime_object_iter(
+                            reinterpret_cast<JitObject*>(d)))};
   }
   // Match interp's for-in / flat_map coercion wording (throw_type_mismatch),
   // not a JIT-only "target is not iterable".
@@ -1490,12 +1500,23 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
                                _culebra_tag_name(t), line, col);
 }
 
+// A chain/zip receiver, at `+1` for the capture cell: the iterator itself.
+// Its shape was proved by the method's receiver gate, so there is nothing to
+// coerce — see the call site for why re-resolving `iter` would be wrong.
+inline JitValue _iter_receiver_iterator(int8_t t, int64_t d) {
+  culebra_runtime_value_retain(t, d);
+  return {t, d};
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chain(
     int8_t it1, int64_t id1, int8_t it2, int64_t id2, int64_t line,
     int64_t col) {
-  // Coerce both inputs so raw Arrays can be chained without the caller
-  // having to call `.iter()` first. Each coerce call returns a fresh +1.
-  auto iv1 = _iter_coerce_iterable(it1, id1, line, col);
+  // The ARGUMENT is coerced, which is what lets `chain([1, 2])` take a raw
+  // Array. The RECEIVER is not: the name only resolves on an iterator-shaped
+  // Object, so it is driven through the protocol like take/map/collect drive
+  // theirs — asking it for an `iter()` instead would walk something else
+  // entirely when it defines both. Each upstream reaches the cell at +1.
+  auto iv1 = _iter_receiver_iterator(it1, id1);
   auto iv2 = _iter_coerce_iterable(it2, id2, line, col);
   auto* u1 = culebra_runtime_cell_new(iv1.tag, iv1.data);
   auto* u2 = culebra_runtime_cell_new(iv2.tag, iv2.data);
@@ -1537,7 +1558,7 @@ inline void _iter_zip_fast_fn(JitClosure* cls, JitValue, bool* done,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_zip(
     int8_t it1, int64_t id1, int8_t it2, int64_t id2, int64_t line,
     int64_t col) {
-  auto iv1 = _iter_coerce_iterable(it1, id1, line, col);
+  auto iv1 = _iter_receiver_iterator(it1, id1);  // see iter_chain
   auto iv2 = _iter_coerce_iterable(it2, id2, line, col);
   auto* u1 = culebra_runtime_cell_new(iv1.tag, iv1.data);
   auto* u2 = culebra_runtime_cell_new(iv2.tag, iv2.data);

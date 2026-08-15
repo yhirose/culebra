@@ -417,3 +417,38 @@ assert_eq(
   [[0, 1, 2], [3, 4, 5]],
 )
 assert_eq(naturals2().map(|x| [x]).flatten().take(3).collect(), [0, 1, 2])
+
+# --- chain/zip drive their RECEIVER through the protocol -------------------
+# The name only resolves on an iterator-shaped Object, so the receiver already
+# IS an iterator: asking it for an `iter()` instead walks something else
+# entirely when it defines both. The ARGUMENT is still coerced, which is what
+# lets `chain([1, 2])` take a raw Array.
+class BothWays {
+  n: Long
+  new() { self.n = 0 }
+  iter() { [7, 8].iter() }
+  has_next() { self.n < 2 }
+  next() { self.n = self.n + 1; self.n }
+}
+assert_eq(BothWays.new().chain([9]).collect(), [1, 2, 9])
+assert_eq(BothWays.new().take(2).collect(), [1, 2])
+assert_eq(BothWays.new().zip([9, 9]).count(), 2)
+assert_eq([1].iter().chain(BothWays.new()).collect(), [1, 7, 8])
+
+# An Object with no `iter` of its own is walked by the dict builtin — (key,
+# value) pairs — rather than rejected as non-iterable.
+class Counter {
+  n: Long
+  new() { self.n = 0 }
+  has_next() { self.n < 2 }
+  next() { self.n = self.n + 1; self.n }
+}
+assert_eq(
+  [1].iter().chain(Counter.new()).collect(),
+  [1, ('class', 'Counter'), ('n', 0)],
+)
+assert_eq(
+  [Counter.new()].iter().flatten().collect(),
+  [('class', 'Counter'), ('n', 0)],
+)
+assert_eq([1].iter().chain({'a': 1}).collect(), [1, ('a', 1)])
