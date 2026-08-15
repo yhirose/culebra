@@ -1,0 +1,92 @@
+# UFCS where the free function's name is also a built-in method's. The gate
+# is the receiver: a receiver whose own table binds the name answers with the
+# built-in, everything else takes the free function — including the scalars,
+# which have no members at all.
+
+fn size(x) { 'free size ' + to_string(x) }
+fn push(a, v) { 'free push' }
+fn upper(s) { 'free upper' }
+fn add(s, v) { 'free add' }
+fn take(it, n) { 'free take' }
+fn keys(o) { 'free keys' }
+
+# Receivers whose table binds the name: the built-in wins.
+println(to_string([1, 2].size()))
+println(to_string('ab'.size()))
+println(to_string({'a': 1}.size()))
+println(to_string({1, 2}.size()))
+println(to_string((1, 2).size()))
+println(to_string(Math.size()))
+println(to_string(range(0, 3).size()))
+println(to_string([1, 2].push(3)))
+println(to_string('ab'.upper()))
+println(to_string({1, 2}.add(3)))
+println(to_string({'a': 1}.keys()))
+println(to_string(range(0, 3).take(2).collect()))
+
+# Receivers whose table does not: the free function answers, scalars too.
+println(to_string((5).size()))
+println(to_string(nil.size()))
+println(to_string(true.size()))
+println(to_string((1.5).size()))
+println(to_string((5).push(1)))
+println(to_string('ab'.push(1)))
+println(to_string((5).upper()))
+println(to_string([1].upper()))
+println(to_string([1].add(2)))
+println(to_string([1, 2].take(1)))
+println(to_string((5).keys()))
+println(to_string([1].keys()))
+
+# An arity the receiver's own table does not bind is still that receiver's
+# diagnostic, not an escape to the free function.
+println(to_string(try { [1, 2].size(1) } catch e { e.kind + '|' + e.message }))
+println(to_string(try { 'ab'.size(1) } catch e { e.kind + '|' + e.message }))
+println(to_string(try { Math.size(1) } catch e { e.kind + '|' + e.message }))
+
+# The resolution happens before any argument runs when the receiver answers,
+# and inside the UFCS arm when it does not.
+let seen = fn (v) {
+  println('  arg ' + to_string(v))
+  v
+}
+println(to_string(try { [1, 2].size(seen(1)) } catch e { e.kind }))
+println(to_string((5).push(seen(2))))
+
+# An own property wins over both, even holding a non-Function.
+println(to_string({'size': fn () { 'own size' }}.size()))
+println(to_string(try { {'push': 5}.push(1) } catch e { e.kind + '|' + e.message }))
+
+# A trait default counts as a property, so it blocks the free function.
+trait Loud {
+  upper() { 'trait upper' }
+}
+class C {
+  n: Long = 0
+  new(n) {}
+}
+class D {
+  n: Long = 0
+  new(n) {}
+  upper() { 'class upper' }
+}
+println(to_string(C.new(1).upper()))
+println(to_string(D.new(1).upper()))
+println(to_string(C.new(1).push(1)))
+
+# A binding of the name that is not a Function declines the gate: the
+# receiver answers for itself.
+let notfn = 5
+println(to_string(try { (7).notfn() } catch e { e.kind + '|' + e.message }))
+println(to_string(try { 'ab'.notfn() } catch e { e.kind + '|' + e.message }))
+
+# Churn: the gate and both arms in a loop.
+mut n = 0
+for i in 0..2000 {
+  n = n + [i].size()
+  if (i).size().size() > 0 {
+    n = n + 1
+  }
+  n = n + {'a': i}.size()
+}
+println(to_string(n))

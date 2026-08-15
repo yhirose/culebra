@@ -1,0 +1,60 @@
+# A UFCS candidate read from inside a closure. The candidate is an OPTIONAL
+# free variable: the enclosing frames may not bind it at all, and that is not
+# an error — the call site's Function gate declines and the receiver answers.
+
+fn zzz(x) { 'free zzz ' + to_string(x) }
+fn qqq(x, y) { 'free qqq ' + to_string(x) + '/' + to_string(y) }
+fn size(x) { 'free size ' + to_string(x) }
+
+let call_zzz = fn (v) { v.zzz() }
+println(call_zzz(5))
+println(call_zzz([1]))
+println(call_zzz('ab'))
+println(call_zzz({'a': 1}))
+println(to_string(fn (v, w) { v.qqq(w) }(1, 2)))
+
+# A built-in name reached through a capture takes the same gate.
+let call_size = fn (v) { v.size() }
+println(call_size(5))
+println(to_string(call_size([1, 2])))
+println(to_string(call_size('ab')))
+
+# Two levels down, and a candidate bound in a block.
+let outer = fn (v) {
+  let inner = fn (w) { w.zzz() }
+  inner(v)
+}
+println(outer(7))
+{
+  fn blocky(x) { 'blocky ' + to_string(x) }
+  println(fn (v) { v.blocky() }(3))
+}
+
+# Not in reach anywhere: the closure carries a nil cell and the gate declines.
+let no_cand = fn (v) { v.nope_at_all() }
+println(to_string(try { no_cand(5) } catch e { e.kind + '|' + e.message }))
+println(to_string(try { no_cand([1]) } catch e { e.kind + '|' + e.message }))
+println(to_string(try { no_cand({'a': 1}) } catch e { e.kind + '|' + e.message }))
+
+# An own property still wins inside a closure.
+println(fn (v) { v.zzz() }({'zzz': fn () { 'own zzz' }}))
+
+# The candidate is a parameter of the enclosing function.
+let with_param = fn (f) { return fn (v) { v.f() }(9) }
+println(to_string(with_param(fn (x) { 'param ' + to_string(x) })))
+println(to_string(try { with_param(5) } catch e { e.kind + '|' + e.message }))
+
+# Churn: a closure built per round, so the nil cell for an out-of-reach
+# candidate is made and released each time.
+mut n = 0
+for i in 0..2000 {
+  let f = fn (v) { v.never_bound_name() }
+  try {
+    f(i)
+  } catch e {
+    n = n + 1
+  }
+  let g = fn (v) { v.zzz() }
+  n = n + g(i).size()
+}
+println(to_string(n))

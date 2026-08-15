@@ -1,0 +1,27 @@
+# A binding of a built-in method's name that is NOT a Function declines the
+# UFCS gate. What answers then is the receiver's ordinary property read — not
+# the built-in: `to_string` has no receiver gate of its own, so routing the
+# declined arm back through it would let it take a receiver the gate had just
+# ruled out (a class instance resolves no `to_string` of its own).
+class Sc {
+  mut f: Long = 1
+  new() {}
+}
+
+let to_string = 5
+println(inspect(try { Sc.new().to_string() } catch e { e.kind + '|' + e.message }))
+println(inspect(try { (5).to_string() } catch e { e.kind + '|' + e.message }))
+println(inspect(try { [1].to_string() } catch e { e.kind + '|' + e.message }))
+println(inspect(try { 'ab'.to_string() } catch e { e.kind + '|' + e.message }))
+println(inspect(try { nil.to_string() } catch e { e.kind + '|' + e.message }))
+
+let size = 'not a function'
+println(inspect(try { Sc.new().size() } catch e { e.kind + '|' + e.message }))
+println(inspect(try { [1, 2].size() } catch e { e.kind + '|' + e.message }))
+println(inspect(try { (5).size() } catch e { e.kind + '|' + e.message }))
+# The receiver still owes its own arity diagnostic where it does resolve it.
+println(inspect(try { [1, 2].size(1) } catch e { e.kind + '|' + e.message }))
+
+let take = nil
+println(inspect(try { [1, 2].take(1) } catch e { e.kind + '|' + e.message }))
+println(inspect(try { range(0, 3).take(1).collect() } catch e { e.kind + '|' + e.message }))

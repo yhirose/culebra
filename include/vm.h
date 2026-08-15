@@ -1082,6 +1082,15 @@ inline std::span<const BMethSpec> bmeth_specs() {
   return kSpecs;
 }
 
+// The static half of the UFCS gate (interp's receiver_has_property, the JIT's
+// emit_receiver_has_property): the tags whose own built-in table binds this
+// name. Read from the very tables those two consult, so the three lanes
+// cannot disagree about which receiver owns a name. The Object arm is a
+// runtime probe and lives in the op itself; `kHasPropIterBit` rides along in
+// the same operand to say the name is an iterator-protocol one, which an
+// iterator-shaped Object resolves as well.
+inline constexpr int32_t kHasPropIterBit = 1 << 16;
+
 inline const BMethSpec* bmeth_lookup(std::string_view name, size_t argc) {
   for (const auto& s : bmeth_specs())
     if (s.name == name && s.argc == static_cast<int8_t>(argc)) return &s;
@@ -1099,6 +1108,31 @@ inline int32_t bmeth_spec_index(const BMethSpec& s) {
 inline bool bmeth_receiver_ok(BRecvMask recv, int8_t tag) {
   if (recv == kRecvAny) return true;  // no gate: every receiver resolves it
   return tag >= 0 && tag < 16 && (recv & bmeth_tag_bit(tag)) != 0;
+}
+
+// The UFCS gate's answer, executor-side (interp's receiver_has_property, the
+// JIT's emit_receiver_has_property). `tags` is the operand the compiler baked
+// from the very tables those two read — the static half. The Object arm is a
+// runtime probe, since own/proto membership needs the pointer.
+inline bool has_prop_apply(int32_t tags, const JitValue& recv,
+                           const char* key) {
+  if (bmeth_receiver_ok(static_cast<BRecvMask>(tags & 0xFFFF),
+                        static_cast<int8_t>(recv.tag)))
+    return true;
+  if (recv.tag != TAG_OBJECT) return false;
+  auto* obj = reinterpret_cast<JitObject*>(recv.data);
+  // A namespace has a closed member set, so it answers every name itself —
+  // as a member, or as eval_property's AttributeError. An own/proto property
+  // wins even holding a non-Function, and a conforming trait's default counts
+  // as a property too (both inside object_has_or_trait_default).
+  if (culebra_runtime_is_namespace(recv.data) ||
+      culebra_runtime_object_has_or_trait_default(obj, key))
+    return true;
+  // An iterator-shaped Object resolves the whole lazy method set through
+  // eval_property's duck-typed fallback; `next` is what shapes it — a
+  // concrete slot, like interp's is_iterator_shaped reads.
+  return (tags & kHasPropIterBit) != 0 &&
+         culebra_runtime_object_has(obj, "next");
 }
 
 // The name a parameter's declared type carries into the error message.
@@ -3872,9 +3906,23 @@ class Compiler {
   CaptureList resolve_captures(const peg::Ast& ast, const FuncInfo& info) {
     CaptureList caps;
     for (const auto& fv : info.free_vars) {
-      if (info.optional_free_vars.contains(fv))
-        reject(ast, std::format("UFCS candidate capture of '{}'", fv));
       const Binding* b = lookup(fv);
+      // A UFCS candidate read only as a method name is an OPTIONAL free
+      // variable: the enclosing frames may not bind it at all, and that is
+      // not an error — the call site's Function gate simply declines and the
+      // receiver answers for itself. Feed the closure a fresh nil cell, the
+      // same thing emit_closure_build does for a candidate out of reach.
+      if (!b && info.optional_free_vars.contains(fv)) {
+        int32_t s = alloc_cell_slot(ast, std::format("(ufcs.{})", fv));
+        TempScope ts(*this);
+        int32_t t = alloc_temp(ast);
+        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+        emit(Op::CellNew, s, t);
+        caps.slots.push_back(s);
+        caps.muts.push_back(false);
+        caps.lazys.push_back(false);
+        continue;
+      }
       // The JIT covers this with lazy forward-ref cells
       // (pre_allocate_forward_refs); outside the slice for now — except
       // `fn name` dispatcher cells, which predeclare_multifns creates at
@@ -5126,6 +5174,23 @@ class Compiler {
   // conversion on every receiver the global would have taken. Only the
   // stdlib half of the test is exempt — a name the user declared shadows
   // the built-in on both backends, and that stays out of slice.
+  // The static half of the UFCS gate, baked into the HasProp operand: the
+  // tags whose own built-in table binds this name, plus a bit saying the name
+  // is an iterator-protocol one (which an iterator-shaped Object resolves as
+  // well). Read from the very tables interp's receiver_has_property and the
+  // JIT's emit_receiver_has_property consult, so the three lanes cannot
+  // disagree about which receiver owns a name.
+  static int32_t has_prop_gate_operand(std::string_view name) {
+    int32_t m = 0;
+    for (auto& [t, tbl] : JIT::builtin_value_tables())
+      if (tbl->count(name)) m |= bmeth_tag_bit(t);
+    if (JIT::fn_introspection_name(name)) m |= bmeth_tag_bit(TAG_FUNC);
+    // A dict builtin resolves on every Object, whatever its shape.
+    if (JIT::dict_builtin_table()->count(name)) m |= bmeth_tag_bit(TAG_OBJECT);
+    if (culebra::iterator_builtins().count(name)) m |= kHasPropIterBit;
+    return m;
+  }
+
   enum class UfcsCand { None, Binding, Global };
   UfcsCand ufcs_candidate(std::string_view name, const BMethSpec* spec) {
     if (lookup(name)) return UfcsCand::Binding;
@@ -5143,9 +5208,12 @@ class Compiler {
     // UFCS arm) — `(5).map(f)` with a free `map` needs a gate ahead of
     // machinery the slice compiles differently. A candidate on any other
     // name compiles the runtime gate (compile_method_call's UFCS arms).
+    // `drop` and `parameters` reach their own dispatches (explicit_drop, the
+    // synthesized class walker) ahead of the UFCS arm, and those the slice
+    // does not compile — so a candidate on either name stays rejected, with
+    // the dispatch reject below covering the candidate-free case.
     if (ufcs_candidate(name, spec) != UfcsCand::None &&
-        (spec || culebra::is_builtin_method_name(name) || name == "drop" ||
-         name == "parameters"))
+        (name == "drop" || name == "parameters"))
       reject(post, std::format("UFCS candidate '{}'", name));
     if (spec) return;
     if (name == "drop" || name == "parameters")
@@ -5211,21 +5279,23 @@ class Compiler {
                                  const peg::Ast& args, ExprResult recv) {
     const BMethSpec* spec = bmeth_lookup(post.token, args.nodes.size());
     reject_out_of_slice_method(post, spec);
-    // A built-in method binds positionally; the one keyword shape they take
-    // (a kw-only parameter name) has no place in the specs' table, so it
-    // stays out of slice. Everything else routes through the resolver.
-    if (spec) {
-      reject_kwargs(args);
-      return compile_builtin_method(at, post, args, recv, *spec);
-    }
-    // A built-in method name at an arity the table does not carry: the
-    // receivers that DO resolve it owe a diagnostic, and the rest fall
-    // through to the ordinary property read — the JIT's
-    // emit_unresolved_builtin_method, arity check first.
-    emit_builtin_arity_check(at, post, args, recv);
+    // The call a receiver that DOES resolve this name gets: the built-in when
+    // the table carries this shape, otherwise the diagnostic those receivers
+    // owe (the JIT's emit_unresolved_builtin_method, arity check first) and
+    // then the ordinary property read.
+    auto resolved_call = [&](ExprResult r) {
+      // A built-in method binds positionally; the one keyword shape they take
+      // (a kw-only parameter name) has no place in the specs' table, so it
+      // stays out of slice. Everything else routes through the resolver.
+      if (spec) {
+        reject_kwargs(args);
+        return compile_builtin_method(at, post, args, r, *spec);
+      }
+      emit_builtin_arity_check(at, post, args, r);
+      return compile_property_call(at, post, args, r);
+    };
     UfcsCand cand = ufcs_candidate(post.token, spec);
-    if (cand == UfcsCand::None)
-      return compile_property_call(at, post, args, recv);
+    if (cand == UfcsCand::None) return resolved_call(recv);
     // A visible free function means the two arms below are both live, and
     // the UFCS one puts the receiver among the positionals — a shape the
     // keyword resolver is not handed anywhere else. Out of slice.
@@ -5238,11 +5308,11 @@ class Compiler {
     StampGuard pos(*this, at);
     int32_t out = alloc_temp(at);
     int32_t gate = alloc_temp(at);
-    emit(Op::HasProp, gate, recv.slot, kconst_str(post.token));
+    emit(Op::HasProp, gate, recv.slot, kconst_str(post.token),
+         has_prop_gate_operand(post.token));
     size_t to_ufcs = emit(Op::JumpIfFalse, gate);
     // hit arm: the receiver resolves the name itself.
-    store_into(out, compile_property_call(at, post, args, recv),
-               /*dst_is_fresh=*/true);
+    store_into(out, resolved_call(recv), /*dst_is_fresh=*/true);
     size_t done_hit = emit(Op::Jump);
     patch_to_here(to_ufcs);
     // The candidate load. A lazy dispatcher cell's sentinel declines the
@@ -5268,8 +5338,12 @@ class Compiler {
       patch_to_here(over);
     }
     size_t to_call = emit(Op::JumpIfTag, candv.slot, 0, TAG_FUNC);
-    // non-Function candidate: ordinary dispatch, the property read's own
-    // errors included (scalar member TypeError before the arguments run).
+    // A non-Function candidate declines, and the gate already said this
+    // receiver does not resolve the name — so what is left is the ordinary
+    // property read and its own errors (a scalar's member TypeError before
+    // the arguments run, an object-ish miss after). NOT resolved_call: a
+    // built-in with no receiver gate at all (`to_string`) would answer here
+    // over a receiver the gate just ruled out.
     store_into(out, compile_property_call(at, post, args, recv),
                /*dst_is_fresh=*/true);
     size_t done_miss = emit(Op::Jump);
@@ -7652,17 +7726,9 @@ struct Exec {
           break;
         }
         case Op::HasProp: {
-          const JitValue& recv = regs[in.b];
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
-          // The Object arm of the UFCS gate; every other tag is a static
-          // miss here (the compiler only emits HasProp for names outside
-          // the builtin method tables — see the op's comment).
-          bool has =
-              recv.tag == TAG_OBJECT &&
-              (culebra_runtime_object_has_or_trait_default(
-                   reinterpret_cast<JitObject*>(recv.data), key) ||
-               culebra_runtime_is_namespace(recv.data));
-          regs[in.a] = JitValue{TAG_BOOL, has ? 1 : 0};
+          regs[in.a] = JitValue{
+              TAG_BOOL, has_prop_apply(in.d, regs[in.b], key) ? 1 : 0};
           ++pc;
           break;
         }
@@ -9825,27 +9891,41 @@ struct Lowering {
           break;
         }
         case Op::HasProp: {
-          // The Object arm of the UFCS gate — compile_method_or_ufcs's test
-          // (emit_receiver_resolves_method) behind the same tag check; every
-          // other tag is a static miss for the names that reach a UFCS site.
+          // The UFCS gate — has_prop_apply's twin, term for term: the baked
+          // tag mask, then an Object receiver's own probe. The AST path's
+          // emit_receiver_has_property is NOT reusable here: it reads a
+          // concrete slot where interp's receiver_has_property also honours a
+          // trait default, a difference the AST path never feels because a
+          // built-in name reaches it through compile_user_method_over_builtin
+          // instead.
           std::string key(_str_sv(
               reinterpret_cast<const char*>(c.consts[in.c].data)));
           auto recv = load_slot(in.b);
+          auto tagv = j.extract_tag(recv);
+          llvm::Value* stat = b.getFalse();
+          for (int8_t t = 0; t < 16; ++t)
+            if (bmeth_receiver_ok(static_cast<BRecvMask>(in.d & 0xFFFF), t))
+              stat = b.CreateOr(stat, b.CreateICmpEQ(tagv, b.getInt8(t)));
           auto entryBB = b.GetInsertBlock();
           auto objBB = BasicBlock::Create(j.ctx_, "vhp.obj", fn);
           auto contBB = BasicBlock::Create(j.ctx_, "vhp.cont", fn);
-          b.CreateCondBr(
-              b.CreateICmpEQ(j.extract_tag(recv), b.getInt8(TAG_OBJECT)),
-              objBB, contBB);
+          b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_OBJECT)), objBB,
+                         contBB);
           b.SetInsertPoint(objBB);
-          auto objHit = j.emit_receiver_resolves_method(recv, key);
+          llvm::Value* objHit = j.emit_receiver_resolves_method(recv, key);
+          if (in.d & kHasPropIterBit)
+            objHit = b.CreateOr(
+                objHit,
+                j.emit_object_has(
+                    b.CreateIntToPtr(j.extract_data(recv), ptrTy),
+                    j.get_or_create_global_str("next", ".vhp.next")));
           auto objEnd = b.GetInsertBlock();
           b.CreateBr(contBB);
           b.SetInsertPoint(contBB);
-          auto hit = b.CreatePHI(b.getInt1Ty(), 2, "vhp.hit");
-          hit->addIncoming(b.getFalse(), entryBB);
-          hit->addIncoming(objHit, objEnd);
-          b.CreateStore(j.make_bool(hit), slots[in.a]);
+          auto objPhi = b.CreatePHI(b.getInt1Ty(), 2, "vhp.obj.hit");
+          objPhi->addIncoming(b.getFalse(), entryBB);
+          objPhi->addIncoming(objHit, objEnd);
+          b.CreateStore(j.make_bool(b.CreateOr(stat, objPhi)), slots[in.a]);
           break;
         }
         case Op::MethGate: {
