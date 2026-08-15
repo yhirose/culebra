@@ -5541,27 +5541,23 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
 // axis (lazy Tensor result) vs no arg (eager Float result).
 template <Op op>
 inline Value _make_tensor_reduction_method() {
+  using namespace std::literals;
   // Optional axis: `t.sum()` reduces all (Float), `t.sum(axis)` reduces
-  // along an axis (Tensor). Declared as a `*args` catch-all so the arity
-  // is honest (variadic, not the fixed-0 that a `{}` list would imply) —
-  // the positional-arity check keys off this. The body still reads the
-  // overflow via __ARGS__.
+  // along an axis (Tensor). `Long?` is the language's own spelling for an
+  // optional typed parameter, so a bad axis is reported by the binder at the
+  // argument's own position — the same treatment `.argmax(axis)` and
+  // `.dot(other)` get — and a surplus argument is rejected rather than
+  // silently dropped.
   return Value(FunctionValue(
-      {FunctionValue::Parameter::make_args_rest("axis")},
+      {{"axis", false, "Long?"sv, nullptr, kw_default_nil()}},
       [](std::shared_ptr<Environment> callEnv) {
         const auto& self = callEnv->get("self").to_tensor().impl;
-        if (callEnv->has("__ARGS__")) {
-          const auto& args = *callEnv->get("__ARGS__").to_array().values;
-          if (!args.empty()) {
-            if (args[0].type != Value::Long) {
-              throw_type_error_at(callEnv->get("__LINE__").to_long(),
-                                  callEnv->get("__COLUMN__").to_long());
-            }
-            return Value(TensorValue(
-                tensor_reduce_axis(op, self, args[0].to_long())));
-          }
+        const auto& axis = callEnv->get("axis");
+        if (axis.type == Value::Nil) {
+          return Value(tensor_reduce_all<op>(self));
         }
-        return Value(tensor_reduce_all<op>(self));
+        return Value(
+            TensorValue(tensor_reduce_axis(op, self, axis.to_long())));
       }));
 }
 

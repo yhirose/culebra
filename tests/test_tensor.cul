@@ -221,6 +221,30 @@ let idx = M3.argmax(1)
 Tensor.eval(idx)
 assert_eq(to_string(idx.shape()), "[2]")
 
+# The optional axis is a declared `Long?` parameter, so a bad one is the
+# binder's error at the argument's own position and an explicit nil reads as
+# "no axis" — the same as omitting it. argmax's axis is required, so it says
+# `Long`. A surplus argument is rejected rather than silently dropped.
+let axis_err = fn (f) {
+  try {
+    f()
+    "no throw"
+  } catch e {
+    e.message
+  }
+}
+assert_eq(axis_err(fn () { R.sum('x') }),
+          "type error: parameter 'axis' expects Long?")
+assert_eq(axis_err(fn () { R.mean(1.5) }),
+          "type error: parameter 'axis' expects Long?")
+assert_eq(axis_err(fn () { R.max(true) }),
+          "type error: parameter 'axis' expects Long?")
+assert_eq(axis_err(fn () { R.argmax('x') }),
+          "type error: parameter 'axis' expects Long")
+assert_eq(axis_err(fn () { R.sum(0, 1) }),
+          "takes 1 positional argument but 2 given")
+assert_eq(R.sum(nil), R.sum())
+
 # Reduction on a transposed view: stride-aware. ones(3,2).transpose()
 # is shape [2, 3]; sum(0) drops axis 0, leaving shape [3].
 let Rv = Tensor.ones(3, 2).transpose()

@@ -14550,16 +14550,41 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(tensorBB);
     auto tPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto axis = value_to_long(compile(*argsAst.nodes[0]).consume());
     int op_id =
         method == "sum"    ? static_cast<int>(culebra::Op::Sum)
       : method == "mean"   ? static_cast<int>(culebra::Op::Mean)
       : method == "max"    ? static_cast<int>(culebra::Op::Max)
                            : static_cast<int>(culebra::Op::Argmax);
+    // Only argmax requires the axis; the others declare it `Long?`, so an
+    // explicit nil means the axis-less reduction. Check against the declared
+    // type at the argument's own position, then the value is a Long or a Nil
+    // — neither refcounted, so it needs no handle past this point.
+    bool axis_optional = method != "argmax";
+    llvm::Value* axisVal;
+    {
+      auto a = compile(*argsAst.nodes[0]);
+      emit_type_check(a.borrow(), axis_optional ? "Long?" : "Long",
+                      "parameter 'axis'", argsAst.nodes[0].get());
+      axisVal = a.consume();
+    }
+    if (axis_optional) {
+      auto allBB = llvm::BasicBlock::Create(ctx_, "tred.all", fn);
+      auto axisBB = llvm::BasicBlock::Create(ctx_, "tred.axis", fn);
+      builder_.CreateCondBr(
+          builder_.CreateICmpEQ(extract_tag(axisVal),
+                                builder_.getInt8(TAG_NIL)),
+          allBB, axisBB);
+      builder_.SetInsertPoint(allBB);
+      tredMerge.add_incoming(emit_value_call(
+          module_->getFunction(rt::tensor_reduce_all),
+          {tPtr, builder_.getInt64(op_id)}, "trall"));
+      builder_.CreateBr(mergeBB);
+      builder_.SetInsertPoint(axisBB);
+    }
     emit_set_op_pos();  // tensor_reduce_axis raises positionless on bad axis
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_reduce_axis),
-        {tPtr, builder_.getInt64(op_id), axis}, "trax");
+        {tPtr, builder_.getInt64(op_id), value_to_long(axisVal)}, "trax");
     tredMerge.add_incoming(make_tensor(resultPtr));
     builder_.CreateBr(mergeBB);
 
