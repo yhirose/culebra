@@ -4739,7 +4739,8 @@ struct JIT {
 
   // Build a +1 Object containing the kwargs `merged` collected at a
   // call site that targets a `**rest` catch-all. Returns a Value
-  // (TAG_OBJECT) suitable to drop into the user-arg slab.
+  // (TAG_OBJECT) suitable to drop into the user-arg slab — the caller
+  // stamps TAG_KWREST on it once ownership has left the Owned handle.
   llvm::Value* emit_kwargs_rest_object(
       const std::map<std::string_view, const peg::Ast*>& kwargs,
       const peg::Ast& argsAst) {
@@ -12705,6 +12706,10 @@ struct JIT {
                           ? positional.size() - params.size()
                           : 0));
     argAsts.reserve(userArgs.capacity());
+    // Where the `**rest` Object lands, if any: its tag is stamped TAG_KWREST
+    // after the handles are consumed, so a throw while the rest of the slab
+    // compiles still releases it as the Object it is.
+    std::optional<size_t> rest_slab_idx;
     // Trim trailing TAG_UNFILLED slots — the callee prologue's
     // existing `n_args > i` check handles them via the default path
     // without needing the sentinel.
@@ -12722,6 +12727,7 @@ struct JIT {
             own(make_value(TAG_UNFILLED, builder_.getInt64(0))));
         argAsts.push_back(nullptr);
       } else if (sources[i] == Source::KwargsRest) {
+        rest_slab_idx = userArgs.size();
         userArgs.push_back(own(emit_kwargs_rest_object(kwargs, argsAst)));
         argAsts.push_back(nullptr);
       } else {
@@ -12733,13 +12739,28 @@ struct JIT {
                                                            : nullptr);
       }
     }
-    // Extras (past the formal arity) flow through to __ARGS__.
-    for (size_t i = params.size(); i < positional.size(); i++) {
+    // Extras flow through to __ARGS__. They begin past the last REGULAR
+    // parameter, not past the arity: a keyword-only slot and the `**rest`
+    // catch-all are named-only, so a positional at their index was always an
+    // overflow argument (the interp's regular_param_count boundary).
+    size_t regular_end = params.size();
+    if (auto cap = culebra::first_kw_only_index(params))
+      regular_end = *cap;
+    else if (rest_idx)
+      regular_end = *rest_idx;
+    for (size_t i = regular_end; i < positional.size(); i++) {
       userArgs.push_back(compile(*positional[i]));
       argAsts.push_back(positional[i]);
     }
-    return compile_function_call_raw(
-        callee, selfVal, consume_all(std::move(userArgs)), argAsts);
+    auto slab = consume_all(std::move(userArgs));
+    // The callee prologue reads this marker to tell a resolved slab from a
+    // plain positional call, where the same index carries an overflow
+    // argument instead (see TAG_KWREST).
+    if (rest_slab_idx)
+      slab[*rest_slab_idx] = make_value(builder_.getInt8(TAG_KWREST),
+                                        extract_data(slab[*rest_slab_idx]));
+    return compile_function_call_raw(callee, selfVal, std::move(slab),
+                                     argAsts);
   }
 
   Owned compile_function_call(const peg::Ast& argsAst,

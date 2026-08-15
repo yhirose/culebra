@@ -1851,13 +1851,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   // Build resolved slab: one entry per formal param, plus extras.
   // Required slots must be filled by positional or merged kwargs.
   size_t arity = meta->n_params;
-  size_t n_extras = (n_pos > static_cast<int64_t>(arity))
-                        ? static_cast<size_t>(n_pos) - arity
+  // Positionals only reach the regular parameters: a keyword-only slot and
+  // the `**rest` catch-all are named-only, so anything past the last regular
+  // one is an overflow argument (the interp's regular_param_count boundary).
+  size_t regular_end = arity;
+  if (meta->first_kw_only_idx >= 0)
+    regular_end = static_cast<size_t>(meta->first_kw_only_idx);
+  else if (meta->kwargs_rest_idx >= 0)
+    regular_end = static_cast<size_t>(meta->kwargs_rest_idx);
+  size_t n_extras = (n_pos > static_cast<int64_t>(regular_end))
+                        ? static_cast<size_t>(n_pos) - regular_end
                         : 0;
   std::vector<JitValue> slab(arity + n_extras);
   std::vector<bool> filled(arity, false);
 
-  for (size_t i = 0; i < arity && i < static_cast<size_t>(n_pos); i++) {
+  for (size_t i = 0; i < regular_end && i < static_cast<size_t>(n_pos); i++) {
     auto it = merged.find(meta->names[i]);
     if (it != merged.end()) {
       _culebra_value_release_impl(it->second.tag, it->second.data);
@@ -1884,7 +1892,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     filled[i] = true;
   }
 
-  for (size_t i = static_cast<size_t>(n_pos); i < arity; i++) {
+  for (size_t i = std::min(static_cast<size_t>(n_pos), regular_end);
+       i < arity; i++) {
     if (static_cast<int64_t>(i) == meta->kwargs_rest_idx) continue;
     auto it = merged.find(meta->names[i]);
     if (it != merged.end()) {
@@ -1940,7 +1949,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
                                   /*mut=*/false, v.tag, v.data, line, col);
     }
     merged.clear();
-    slab[meta->kwargs_rest_idx] = {TAG_OBJECT,
+    // TAG_KWREST, not TAG_OBJECT: the callee prologue reads this slot to tell
+    // a resolved slab from a plain positional call, where the same index
+    // carries an overflow argument instead.
+    slab[meta->kwargs_rest_idx] = {TAG_KWREST,
                                     reinterpret_cast<int64_t>(rest_obj)};
     filled[meta->kwargs_rest_idx] = true;
   } else if (!merged.empty()) {
@@ -1960,9 +1972,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
         culebra::unknown_kwarg_message(bad_name), line, col);
   }
 
-  // Extras past the formal arity flow into `__ARGS__`.
+  // Extras past the last regular parameter flow into `__ARGS__`, which the
+  // callee reads from the slab's tail — past the arity, so the named-only
+  // slots in between keep their bindings.
   for (size_t i = 0; i < n_extras; i++) {
-    slab[arity + i] = positional[arity + i];
+    slab[arity + i] = positional[regular_end + i];
   }
 
   // Splat Objects are no longer needed: their values were retained on

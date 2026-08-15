@@ -1818,6 +1818,20 @@ struct Chunk {
   // (defaults are trailing). The prologue's arity guard counts against this
   // and leaves each unsupplied slot TAG_UNFILLED for JumpIfFilled.
   int32_t required = 0;
+  // Which parameters carry a default, parallel to param_names: the resolver
+  // needs it to tell an unfilled middle slot (defaulted, so TAG_UNFILLED)
+  // from a missing required one. `**rest` counts as defaulted — its default
+  // is the empty Object the prologue builds.
+  std::vector<uint8_t> param_has_default;
+  // The `**rest` catch-all's ABI index, and the first keyword-only slot's
+  // (after a `*` separator), or -1. Both are what a keyword call resolves
+  // names against — see the JitParamMeta the program builds per chunk.
+  int32_t kwargs_rest_idx = -1;
+  int32_t first_kw_only_idx = -1;
+  // Positional callback-arity bounds (cb_max = -1 when a `*args` catch-all
+  // removes the upper bound), the same pair the JIT hands the HOF gate.
+  int32_t cb_min = 0;
+  int32_t cb_max = 0;
   int32_t fn_slot = -1;
   // Source name of an overload body (`fn name`, a class member, `new`), read
   // by MultifnReg: it is the user-facing half of the registry key, so a
@@ -1965,6 +1979,21 @@ struct VmFnDesc {
   int32_t chunk;
 };
 
+// A chunk's parameter metadata in the shape the runtime's keyword resolver
+// reads. The resolver is handed a `const JitParamMeta*` and indexes arrays of
+// cstrings out of it, so the strings and the arrays need somewhere stable to
+// live: this owns them for the program's lifetime, like the module-level
+// globals the AST path bakes for the same purpose.
+struct VmChunkMeta {
+  std::vector<const char*> names;
+  std::vector<const char*> types;
+  std::vector<uint8_t> has_default_bits;
+  std::vector<uint8_t> mut_bits;
+  std::string fn_name;
+  std::string return_type;
+  JitParamMeta meta{};
+};
+
 // A compiled module: chunk 0 is the top level; every function literal adds
 // one (reserved in creation order, so nested literals interleave freely).
 struct VmProgram {
@@ -1973,7 +2002,44 @@ struct VmProgram {
   // One shared descriptor cell per chunk (also Exec::run's): MakeClosure
   // retains it instead of allocating a cell per closure created.
   std::vector<JitCell*> desc_cells;
+  // One per chunk, built before the run: what a keyword call binds against.
+  std::vector<std::unique_ptr<VmChunkMeta>> param_metas;
 };
+
+// Build the keyword-resolver's view of every chunk. Called once, before the
+// program runs, from whichever lane is about to execute it.
+inline void build_param_metas(VmProgram& p) {
+  if (!p.param_metas.empty()) return;
+  p.param_metas.reserve(p.chunks.size());
+  for (const auto& c : p.chunks) {
+    auto m = std::make_unique<VmChunkMeta>();
+    m->fn_name = c.multifn_name;
+    for (size_t i = 0; i < c.param_names.size(); i++) {
+      m->names.push_back(c.param_names[i].c_str());
+      m->types.push_back(i < c.param_types.size() ? c.param_types[i].c_str()
+                                                  : "");
+    }
+    size_t n = m->names.size();
+    m->has_default_bits.assign((n + 7) / 8, 0);
+    m->mut_bits.assign((n + 7) / 8, 0);
+    for (size_t i = 0; i < n && i < c.param_has_default.size(); i++)
+      if (c.param_has_default[i])
+        m->has_default_bits[i / 8] |= static_cast<uint8_t>(1u << (i % 8));
+    m->meta = JitParamMeta{m->names.data(),
+                           m->has_default_bits.data(),
+                           n,
+                           c.kwargs_rest_idx,
+                           c.first_kw_only_idx,
+                           m->fn_name.c_str(),
+                           m->return_type.c_str(),
+                           m->mut_bits.data(),
+                           m->types.data(),
+                           m->types.data(),
+                           c.cb_min,
+                           c.cb_max};
+    p.param_metas.push_back(std::move(m));
+  }
+}
 
 inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
   // `positions` is built append-only in emit order, so it is sorted by

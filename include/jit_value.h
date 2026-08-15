@@ -556,6 +556,14 @@ static constexpr int8_t TAG_STRINGVIEW = 11;
 // is filled). The callee prologue treats it as "fall back to default";
 // it is NOT a valid value tag and must never escape into user values.
 static constexpr int8_t TAG_UNFILLED = 127;
+// Sentinel tag marking the `**rest` Object the kwargs resolver built, so the
+// callee prologue can tell a resolved slab from a plain positional call. The
+// two are otherwise indistinguishable at that slot — a call with no keyword
+// content skips the resolver and writes its positionals straight into the
+// slab, and a positional must never land in a rest slot (it is an overflow
+// argument, `__ARGS__`'s). Like TAG_UNFILLED it is not a valid value tag:
+// the prologue rewrites it to TAG_OBJECT as it binds.
+static constexpr int8_t TAG_KWREST = 125;
 
 static constexpr int8_t GC_TAG_FUNC = TAG_FUNC;
 static constexpr int8_t GC_TAG_ARRAY = TAG_ARRAY;

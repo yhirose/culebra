@@ -407,6 +407,32 @@ inline JIT::Owned JIT::compile_fn_common(
         builder_.CreateAnd(packed, builder_.getInt64(0xffffffff))};
   }
 
+  // Did the kwargs resolver build this slab? Only it marks the `**rest`
+  // slot, and only then do the slots between the last regular parameter and
+  // the arity hold bindings rather than overflow arguments. Computed once,
+  // under a range guard, and reused by the rest slot's binding and by the
+  // overflow boundary below.
+  llvm::Value* restMarked = nullptr;
+  if (kwargsRestIdx) {
+    auto ri = builder_.getInt64(static_cast<int64_t>(*kwargsRestIdx));
+    auto entryBB = builder_.GetInsertBlock();
+    auto loadBB = BasicBlock::Create(ctx_, "kwrest.probe", fn);
+    auto contBB = BasicBlock::Create(ctx_, "kwrest.cont", fn);
+    builder_.CreateCondBr(builder_.CreateICmpUGT(nArgsArg, ri), loadBB,
+                          contBB);
+    builder_.SetInsertPoint(loadBB);
+    auto slotPtr = builder_.CreateInBoundsGEP(valueType_, argsArg, {ri});
+    auto marked = builder_.CreateICmpEQ(
+        builder_.CreateLoad(builder_.getInt8Ty(), slotPtr),
+        builder_.getInt8(TAG_KWREST), "kwrest.marked");
+    builder_.CreateBr(contBB);
+    builder_.SetInsertPoint(contBB);
+    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "kwrest.resolved");
+    phi->addIncoming(builder_.getInt1(false), entryBB);
+    phi->addIncoming(marked, loadBB);
+    restMarked = phi;
+  }
+
   // Declared parameters: for non-defaulted params, load from args[i]
   // (the caller transferred each +1 into the slab). For defaulted
   // params, branch on `i < n_args && slab[i].tag != TAG_UNFILLED`:
@@ -416,10 +442,10 @@ inline JIT::Owned JIT::compile_fn_common(
   for (size_t i = 0; i < paramNames.size(); i++) {
     const auto& name = paramNames[i];
     llvm::Value* argVal = nullptr;
-    // The `**rest` slot binds like a defaulted param whose default is a
-    // fresh empty Object: a call with no keyword content never reaches the
-    // resolver, so the slot arrives unfilled (or past n_args entirely) and
-    // the callee must still see a bound variable, as the interp's does.
+    // The `**rest` slot is the resolver's alone: it binds the Object the
+    // resolver marked (TAG_KWREST), and a fresh empty one otherwise — a call
+    // with no keyword content never reaches the resolver, and whatever sits
+    // at this index there is an overflow argument, not a binding.
     bool isKwRest = kwargsRestIdx && *kwargsRestIdx == i;
     if (!paramDefaults[i] && !isKwRest) {
       auto slotPtr = builder_.CreateInBoundsGEP(
@@ -427,31 +453,48 @@ inline JIT::Owned JIT::compile_fn_common(
           name + ".slot");
       argVal = builder_.CreateLoad(valueType_, slotPtr, name);
     } else {
-      auto hasIdx = builder_.CreateICmpUGT(
-          nArgsArg, builder_.getInt64(static_cast<int64_t>(i)),
-          name + ".has");
       auto takeBB = BasicBlock::Create(ctx_, name + ".take", fn);
       auto checkBB = BasicBlock::Create(ctx_, name + ".check", fn);
       auto defBB = BasicBlock::Create(ctx_, name + ".def", fn);
       auto mergeBB = BasicBlock::Create(ctx_, name + ".merge", fn);
-      builder_.CreateCondBr(hasIdx, checkBB, defBB);
+      auto slotIdx = builder_.getInt64(static_cast<int64_t>(i));
+      if (isKwRest) {
+        // The rest slot takes its slab entry only when the resolver marked
+        // it; any other value there belongs to `__ARGS__`.
+        builder_.CreateCondBr(restMarked, checkBB, defBB);
+      } else {
+        builder_.CreateCondBr(
+            builder_.CreateICmpUGT(nArgsArg, slotIdx, name + ".has"), checkBB,
+            defBB);
+      }
 
       builder_.SetInsertPoint(checkBB);
-      auto slotPtr = builder_.CreateInBoundsGEP(
-          valueType_, argsArg, {builder_.getInt64(static_cast<int64_t>(i))},
-          name + ".slot");
-      // Load tag first; if TAG_UNFILLED, fall through to default. The
-      // value-load happens after the tag check so we never observe
-      // the sentinel's data.
-      auto slotTag = builder_.CreateLoad(builder_.getInt8Ty(),
-                                          slotPtr, name + ".tag");
-      auto isUnfilled = builder_.CreateICmpEQ(
-          slotTag, builder_.getInt8(TAG_UNFILLED), name + ".unf");
-      builder_.CreateCondBr(isUnfilled, defBB, takeBB);
+      auto slotPtr = builder_.CreateInBoundsGEP(valueType_, argsArg, {slotIdx},
+                                                name + ".slot");
+      if (isKwRest) {
+        builder_.CreateBr(takeBB);
+      } else {
+        // Load tag first; if TAG_UNFILLED, fall through to default. The
+        // value-load happens after the tag check so we never observe
+        // the sentinel's data.
+        auto slotTag = builder_.CreateLoad(builder_.getInt8Ty(),
+                                            slotPtr, name + ".tag");
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(slotTag, builder_.getInt8(TAG_UNFILLED),
+                                  name + ".unf"),
+            defBB, takeBB);
+      }
 
       OwnedPhi merge(this, name + ".phi");
       builder_.SetInsertPoint(takeBB);
-      merge.add_incoming(builder_.CreateLoad(valueType_, slotPtr, name));
+      if (isKwRest) {
+        // Rewrite the marker back to the Object tag it stands for.
+        merge.add_incoming(make_object(builder_.CreateIntToPtr(
+            extract_data(builder_.CreateLoad(valueType_, slotPtr, name)),
+            llvm::PointerType::get(ctx_, 0))));
+      } else {
+        merge.add_incoming(builder_.CreateLoad(valueType_, slotPtr, name));
+      }
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(defBB);
@@ -511,19 +554,32 @@ inline JIT::Owned JIT::compile_fn_common(
     }
   }
 
-  // __ARGS__: Array of overflow args (args[declaredArity..n_args)).
+  // __ARGS__: Array of overflow args (args[extrasStart..n_args)).
   // Built only when the body references it (FuncInfo::uses_args).
   // Otherwise we still need to release the +1 retains the caller
   // transferred for each overflow slot — but the dedicated helper
   // (release_overflow_args) skips the Array allocation entirely.
+  //
+  // Where the overflow begins depends on which layout arrived: a resolved
+  // slab binds every slot up to the arity, while a plain positional call to
+  // a rest-bearing function has nothing to bind past its last regular
+  // parameter — everything from there on is overflow, as the interp's own
+  // regular_param_count boundary has it.
+  llvm::Value* extrasStart =
+      builder_.getInt64(static_cast<int64_t>(declaredArity));
+  if (kwargsRestIdx) {
+    size_t regular_end =
+        firstKwOnlyIdx ? *firstKwOnlyIdx : *kwargsRestIdx;
+    extrasStart = builder_.CreateSelect(
+        restMarked, extrasStart,
+        builder_.getInt64(static_cast<int64_t>(regular_end)), "args.start");
+  }
   if (info.uses_args || argsRestName) {
     auto argsArr = emit_call(
         module_->getOrInsertFunction(
             rt::args_slice_to_array, ptrTy, ptrTy,
             builder_.getInt64Ty(), builder_.getInt64Ty()),
-        {argsArg,
-         builder_.getInt64(static_cast<int64_t>(declaredArity)),
-         nArgsArg},
+        {argsArg, extrasStart, nArgsArg},
         "args.arr");
     auto argsVal = make_array(argsArr);
     // The same overflow Array backs both `__ARGS__` and a named `*args`
@@ -553,9 +609,7 @@ inline JIT::Owned JIT::compile_fn_common(
     auto fn = builder_.GetInsertBlock()->getParent();
     auto needRelBB = llvm::BasicBlock::Create(ctx_, "args.release", fn);
     auto skipBB = llvm::BasicBlock::Create(ctx_, "args.no_release", fn);
-    auto declI64 =
-        builder_.getInt64(static_cast<int64_t>(declaredArity));
-    auto hasOverflow = builder_.CreateICmpUGT(nArgsArg, declI64,
+    auto hasOverflow = builder_.CreateICmpUGT(nArgsArg, extrasStart,
                                               "args.has_overflow");
     builder_.CreateCondBr(hasOverflow, needRelBB, skipBB);
     builder_.SetInsertPoint(needRelBB);
@@ -563,7 +617,7 @@ inline JIT::Owned JIT::compile_fn_common(
         module_->getOrInsertFunction(
             rt::release_overflow_args, builder_.getVoidTy(), ptrTy,
             builder_.getInt64Ty(), builder_.getInt64Ty()),
-        {argsArg, declI64, nArgsArg});
+        {argsArg, extrasStart, nArgsArg});
     builder_.CreateBr(skipBB);
     builder_.SetInsertPoint(skipBB);
   }

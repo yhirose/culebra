@@ -476,4 +476,22 @@ assert_eq(RestStatic.s(**src).keys(), ['a', 'b', 'c'])
 let via_value = rest_only
 assert_eq(via_value(**src).keys(), ['a', 'b', 'c'])
 
+# --- a positional never lands in the `**rest` slot ------------------------
+# Rest is named-only: everything past the last regular parameter is an
+# overflow argument, whether or not the call also carries keywords.
+let rest_args = fn (**kw) {
+  [kw, __ARGS__]
+}
+assert_eq(rest_args(), [{}, []])
+assert_eq(rest_args(1), [{}, [1]])
+assert_eq(rest_args(1, 2), [{}, [1, 2]])
+assert_eq(rest_args(1, a: 2), [{'a': 2}, [1]])
+let one_rest_args = fn (a, **kw) {
+  [a, kw, __ARGS__]
+}
+assert_eq(one_rest_args(1), [1, {}, []])
+assert_eq(one_rest_args(1, 2), [1, {}, [2]])
+assert_eq(one_rest_args(1, 2, 3), [1, {}, [2, 3]])
+assert_eq(one_rest_args(1, 2, k: 3), [1, {'k': 3}, [2]])
+
 IO.inspect('test_kwargs OK')
