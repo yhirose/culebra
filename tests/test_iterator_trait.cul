@@ -124,4 +124,49 @@ let cs = Counter.new(0, 5).map(fn (x) {
 assert_eq(cs.size(), 5)
 assert_true(cs[0] == 0 && cs[4] == 16)
 
+// --- has_next() is read for truthiness, not for a Bool tag ---
+// docs §18.5: `next()` runs when `has_next()` was *truthy*. A Long / Float
+// answer counts; anything else is the same type error a condition raises.
+class NumericGate {
+  n: Long
+  new() { self.n = 0 }
+  iter() { self }
+  has_next() { if self.n < 3 { 1 } else { 0 } }
+  next() { let v = self.n; self.n = v + 1; v }
+}
+mut gated = []
+for x in NumericGate.new() { gated.push(x) }
+assert_eq(gated, [0, 1, 2])
+assert_eq(NumericGate.new().iter().count(), 3)
+
+class StringGate {
+  iter() { self }
+  has_next() { 'yes' }
+  next() { 1 }
+}
+assert_throws('TypeError', fn () {
+  for x in StringGate.new() { break }
+})
+assert_throws('TypeError', fn () { StringGate.new().iter().count() })
+
+// --- A throwing dispose() is swallowed only while an exception unwinds ---
+// docs §18.5. `break` and a natural drain already let one out; `return` is an
+// ordinary exit too, so it does the same.
+class ThrowingDispose {
+  iter() { self }
+  has_next() { true }
+  next() { 1 }
+  dispose() { throw 'from dispose' }
+}
+assert_throws('String', fn () {
+  for x in ThrowingDispose.new() { return 'never delivered' }
+})
+mut swallowed = 'unset'
+try {
+  for x in ThrowingDispose.new() { throw 'body' }
+} catch e {
+  swallowed = e
+}
+assert_eq(swallowed, 'body')
+
 IO.inspect('test_iterator_trait OK')

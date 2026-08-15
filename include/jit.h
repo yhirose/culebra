@@ -239,6 +239,11 @@ struct JIT {
     llvm::Value* iterAlloca;
     llvm::Value* body_defer_mark = nullptr;
     bool fill_pending = false;
+    // Whether a throwing dispose() on the `return` path is swallowed. docs
+    // §18.5 swallows one only while an exception is already unwinding, so a
+    // for-in lets it out (the interp's eval_for calls the propagating
+    // dispose() for `return` just as it does for `break`).
+    bool swallow_on_return = true;
   };
 
  private:
@@ -7957,7 +7962,8 @@ struct JIT {
     auto bodyOuterLpad = current_lpad_;
     current_lpad_ = excBB;
     emit_for_advance_array(cursor, advArrayBB, bodyBB, exitBB);
-    emit_for_advance_protocol(cursor, advProtoBB, bodyBB, exitBB);
+    emit_for_advance_protocol(cursor, advProtoBB, bodyBB, exitBB, ast.line,
+                              ast.column);
     emit_for_advance_string(cursor, advStringBB, bodyBB, exitBB);
 
     builder_.SetInsertPoint(bodyBB);
@@ -7969,7 +7975,8 @@ struct JIT {
     // disposes on early return). break / natural exit / throw are covered by
     // exitBB / excBB below.
     iter_cleanup_stack_.push_back(
-        {cursor.iter, nullptr, /*fill_pending=*/true});
+        {cursor.iter, nullptr, /*fill_pending=*/true,
+         /*swallow_on_return=*/false});
     emit_for_body_with_owned_binding(
         id, elemVal, body, headBB,
         for_break_target(exitBB, brokeFlag, "for"), cursor.elem);
@@ -8480,12 +8487,19 @@ struct JIT {
 
   void emit_for_advance_protocol(const ForCursor& c, llvm::BasicBlock* advBB,
                                  llvm::BasicBlock* bodyBB,
-                                 llvm::BasicBlock* exitBB) {
+                                 llvm::BasicBlock* exitBB, size_t step_line,
+                                 size_t step_col) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = advBB->getParent();
     auto stepBB = llvm::BasicBlock::Create(ctx_, "for.next.proto.step", fn);
 
     builder_.SetInsertPoint(advBB);
+    // A step raises positionless (a non-truthy-typed `has_next()` answer, a
+    // broken protocol met mid-chain); the interpreter reports those at the
+    // statement it was running, so publish the `for` node for the backfill.
+    emit_call(module_->getFunction(rt::set_op_pos),
+              {builder_.getInt64(static_cast<int64_t>(step_line)),
+               builder_.getInt64(static_cast<int64_t>(step_col))});
     auto iterCur = builder_.CreateLoad(valueType_, c.iter, "iter.cur");
     auto ok = emit_call(
         module_->getFunction(rt::iter_advance),
@@ -13197,7 +13211,7 @@ struct JIT {
                             {it->body_defer_mark});
       }
       emit_iter_dispose_if_active(it->iterAlloca, "for.ret",
-                                  /*swallow_dispose=*/true);
+                                  it->swallow_on_return);
     }
     // Run any defers registered in this function's scopes before
     // returning to the caller. No invoke needed: we're exiting.

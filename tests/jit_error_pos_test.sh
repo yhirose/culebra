@@ -587,5 +587,30 @@ fn boom() { throw 'x' }
   let xs = [R.new(1), R.new(2), boom()]
 }"
 
+# A for-in step raises positionless when `has_next()` answers with something
+# that has no truthiness. The interpreter reports it at the statement it was
+# running, so the protocol advance publishes the `for` node for the backfill.
+GATE_CLASS='class S {
+  n = 0
+  iter() { self }
+  has_next() { "yes" }
+  next() { let v = self.n; self.n = v + 1; v }
+}'
+check_same "for-in has_next type"      "$GATE_CLASS
+let s = S.new()
+for x in s {
+  println(x)
+}"
+check_same "for-in has_next in fn"     "$GATE_CLASS
+fn go(s) {
+  for x in
+      s {
+    println(x)
+  }
+}
+go(S.new())"
+check_same "chained has_next type"     "$GATE_CLASS
+println(S.new().iter().count())"
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

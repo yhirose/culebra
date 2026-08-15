@@ -235,7 +235,19 @@ inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
   if (!has_next_cls || !next_cls) culebra::throw_iter_missing_protocol();
   culebra_runtime_value_retain(iter_val.tag, iter_val.data);
   auto hn = _jit_invoke(has_next_cls, iter_val, 0, nullptr);
-  bool has = (hn.tag == TAG_BOOL && hn.data != 0);
+  // docs §18.5: `next()` runs when `has_next()` was *truthy*, so a Long/Float
+  // answer counts and anything else is the type error the interp's `to_bool`
+  // raises here — treating a non-Bool as "drained" ended the walk in silence.
+  // Positionless like the protocol error above; the release happens first so
+  // the throw does not strand the answer's +1.
+  bool has;
+  if (hn.tag == TAG_BOOL) {
+    has = hn.data != 0;
+  } else {
+    JitUnwindRelease g{hn};  // the type error below leaves the answer to us
+    has = culebra_runtime_to_bool_borrow(static_cast<int8_t>(hn.tag), hn.data,
+                                         0, 0);
+  }
   _culebra_value_release_impl(hn.tag, hn.data);
   if (!has) return false;
   culebra_runtime_value_retain(iter_val.tag, iter_val.data);
