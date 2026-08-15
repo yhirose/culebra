@@ -1413,6 +1413,44 @@ jobs:
           test -f triv.exe || { echo "triv.exe missing (trivial-AOT step didn't run?)"; exit 1; }
           echo "=== binary size: non-Http vs Http (Windows AOT) ==="
           ls -la triv.exe httpsrv.exe
+      # tests/test_http.cul and tests/test_http_server.cul are the http.h
+      # conformance suite `just test` runs on Linux/macOS — the round trip
+      # above proves one request/response works, but not the rest of the
+      # namespace (error paths, routing, headers, the Isolate-hosted server
+      # lifecycle). This job is the only Windows configuration with Http ON
+      # in a real (non-width-gate) build, so it is the one place that gap can
+      # close. The oracle is the same one `just test` uses — interp and JIT
+      # must print identically — not a golden string, since test_http_server
+      # prints dozens of lines; AOT isn't compared here (its own narrower
+      # round trip is above) mainly because it would need its own golden
+      # copy of that multi-line output to diff against, not because AOT is
+      # expected to differ.
+      - name: Test — Http conformance (interp vs JIT diff)
+        run: |
+          set +e  # msys2 bash runs with -e; see run_all_backends.sh's comment
+          fail=0
+          for f in tests/test_http.cul tests/test_http_server.cul; do
+            name=$(basename "$f" .cul)
+            echo "=== $f ==="
+            out_interp=$(timeout 60 ./build-win-aot/culebra.exe "$f" 2>&1)
+            rc_interp=$?
+            out_jit=$(timeout 60 ./build-win-aot/culebra.exe --jit "$f" 2>&1)
+            rc_jit=$?
+            if [ $rc_interp -ne 0 ]; then
+              echo "${name}_INTERP_FAIL rc=$rc_interp"; echo "$out_interp"; fail=1; continue
+            fi
+            if [ $rc_jit -ne 0 ]; then
+              echo "${name}_JIT_FAIL rc=$rc_jit"; echo "$out_jit"; fail=1; continue
+            fi
+            if [ "$out_interp" = "$out_jit" ]; then
+              echo "${name}_PASS"
+            else
+              echo "${name}_DIVERGE"
+              diff <(printf '%s' "$out_interp") <(printf '%s' "$out_jit")
+              fail=1
+            fi
+          done
+          exit $fail
       # The step above proves the link; this one proves the window.
       - name: Smoke — Webview window + event loop (interp / JIT)
         run: misc/probe_webview_window.sh ./build-win-aot/culebra.exe
