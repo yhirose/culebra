@@ -13366,14 +13366,24 @@ struct JIT {
     // directly into the result store.
     Owned tryOwned = compile(*ast.nodes[0]);
     // Normal-path defer run, before the scope's slots release (interp's
-    // run_deferred order) and under the OUTER lpad: interp runs
+    // run_deferred order). It must not unwind into tryCleanupBB, whose
+    // re-raise lands at this try's own handler: interp runs
     // run_deferred(tryEnv) outside its own try/catch, so a defer throwing at
-    // normal exit propagates past this catch — it must not unwind into
-    // tryCleanupBB (whose re-raise lands at this try's own handler). The
-    // body value stays in its Owned across the run (the window spills it).
+    // normal exit propagates past this catch. It still owes the body's slot
+    // releases on the way out, though — the interpreter's tryEnv dies as that
+    // throw passes it — so the run gets a cleanup of its own that releases and
+    // re-raises outward without catching. The body value stays in its Owned
+    // across the run (the window spills it).
+    llvm::BasicBlock* tailCleanupBB = nullptr;
     if (body_has_defer && !builder_.GetInsertBlock()->getTerminator()) {
-      current_lpad_ = savedLpad;
+      tailCleanupBB = llvm::BasicBlock::Create(ctx_, "try.body.tail", fn);
+      current_lpad_ = tailCleanupBB;
       emit_call(module_->getFunction(rt::defer_run_to), {bodyMark});
+      current_lpad_ = savedLpad;
+      // Fill it while the scope is still live; the defers are already drained
+      // by the run that threw, so this pad only releases.
+      finish_scope_cleanup(tailCleanupBB, scopes_.back(), /*defer_mark=*/nullptr,
+                           savedLpad, "try.body.tail.exc");
     }
     // Fill/erase the body cleanup while the scope is live; it re-raises to the
     // catch pad (lpadBB), but the code after the try restores the outer lpad.
