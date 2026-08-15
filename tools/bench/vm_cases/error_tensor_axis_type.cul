@@ -1,0 +1,7 @@
+# The reduction axis is a declared `Long?`, so a bad one is the binder's
+# error at the argument's own position — and it says `Long?`, not `Long`,
+# because omitting it is legal.
+let t = Tensor.from([1.0, 2.0])
+println(
+  t.sum(
+    'x'))

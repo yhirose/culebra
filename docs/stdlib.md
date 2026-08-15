@@ -1464,7 +1464,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
 | `.reshape(dims: Array) -> Tensor` | view | contiguous input only; new shape |
 | `.sum() -> Float` | scalar | sum of all elements (forces eval) |
-| `.sum(axis: Long) -> Tensor` | lazy | reduce one axis |
+| `.sum(axis: Long?) -> Tensor` | lazy | reduce one axis; a nil axis reads as no axis, i.e. the scalar form |
 | `.mean() / .mean(axis)` | Float / Tensor | likewise |
 | `.max() / .max(axis)` | Float / Tensor | likewise |
 | `.argmax(axis: Long) -> Tensor` | lazy | reduce one axis to indices stored as Float |

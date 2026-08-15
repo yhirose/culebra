@@ -1,0 +1,6 @@
+# The engine's own rank complaint arrives positionless, so the anchor comes
+# from the stamp this call publishes — the head of the chain, not whatever
+# statement ran last.
+let t = Tensor.from([1.0, 2.0])
+let warm = t.reshape([2, 1])
+t.dot(t)

@@ -1427,7 +1427,7 @@ let l = p.log()           # 自然対数、elementwise
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
 | `.reshape(dims: Array) -> Tensor` | view | 連続入力のみ。新形状 |
 | `.sum() -> Float` | scalar | 全要素和（暗黙eval） |
-| `.sum(axis: Long) -> Tensor` | lazy | 軸を1つ畳む |
+| `.sum(axis: Long?) -> Tensor` | lazy | 軸を1つ畳む。axis が nil なら軸指定なし＝スカラー形と同じ |
 | `.mean() / .mean(axis)` | Float / Tensor | 同様 |
 | `.max() / .max(axis)` | Float / Tensor | 同様 |
 | `.argmax(axis: Long) -> Tensor` | lazy | 軸を畳んでインデックスをFloatで格納 |

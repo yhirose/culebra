@@ -1,0 +1,103 @@
+# Tensor's own value table: shape/transpose/clone, the activations, reshape,
+# the reductions (axis-less and axis-ful under one name), dot,
+# linear_sigmoid, and item. Every one of these names is bound by
+# TensorValue::builtins() alone, so a Tensor is the only receiver that
+# resolves them and everything else takes the flat resolution answer.
+
+let t = Tensor.from([1.0, 2.0, 3.0, 4.0])
+inspect(t.shape())
+inspect(t.to_array())
+inspect(t.clone().to_array())
+inspect(t.transpose().to_array())
+inspect(t.relu().to_array())
+inspect(t.sigmoid().to_array())
+inspect(t.softmax().to_array())
+inspect(t.log().to_array())
+inspect(t.pow(2).to_array())
+inspect(t.pow(2.0).to_array())
+inspect(t.pow(t).to_array())
+inspect(Tensor.from([7.0]).item())
+
+# Reductions. The axis-less form is an eager Float, the axis-ful one a Tensor
+# with that axis dropped — and an explicit nil axis reads as "no axis".
+inspect(t.sum())
+inspect(t.mean())
+inspect(t.max())
+inspect(t.sum(nil))
+inspect(t.mean(nil))
+inspect(t.max(nil))
+
+let m = t.reshape([2, 2])
+inspect(m.shape())
+inspect(m.to_array())
+inspect(m.transpose().to_array())
+inspect(m.sum(0).to_array())
+inspect(m.sum(1).to_array())
+inspect(m.mean(0).to_array())
+inspect(m.mean(1).to_array())
+inspect(m.max(0).to_array())
+inspect(m.max(1).to_array())
+inspect(m.argmax(0).to_array())
+inspect(m.argmax(1).to_array())
+inspect(m.dot(m).to_array())
+inspect(m.reshape([4]).to_array())
+inspect(m.slice(0, 1).to_array())
+
+# linear_sigmoid: W (rows x cols) applied to a column vector plus a bias.
+let W = Tensor.from([[1.0, 0.0], [0.0, 1.0]])
+let x = Tensor.from([[1.0], [2.0]])
+let bias = Tensor.from([[0.0], [0.0]])
+inspect(W.linear_sigmoid(x, bias).to_array())
+
+# Autograd. requires_grad / backward / zero_grad are chainable: each hands
+# back the receiver, so the result is the same tensor. grad / detach / clone
+# each build a new one.
+let w = Tensor.from([1.0, 2.0]).requires_grad()
+inspect(w.grad().to_array())
+let loss = w.pow(2).sum(0)
+loss.backward()
+inspect(w.grad().to_array())
+inspect(w == w.requires_grad())
+inspect(w == w.zero_grad())
+inspect(loss == loss.backward())
+inspect(w == w.clone())
+inspect(w == w.detach())
+inspect(w == w.grad())
+inspect(w.grad().to_array())
+inspect(w.detach().to_array())
+
+# Aliasing: the in-place mutations are visible through every handle, and the
+# copies are not.
+let alias = w
+alias.requires_grad()
+inspect(w.grad().to_array())
+let copy = w.clone()
+inspect(copy.to_array())
+
+# Array's in-place `sort` (nil-returning twin of `sorted`) and an Object's
+# `values` view.
+mut xs = [3, 1, 2]
+inspect(xs.sort())
+inspect(xs)
+inspect(['b', 'a'].sorted())
+let d = {'x': 1, 'y': 2, 'z': 3}
+inspect(d.values().collect())
+inspect(d.keys())
+let vi = d.values()
+inspect(vi.next())
+inspect(vi.has_next())
+
+# Churn: the reductions and the chainable autograd methods in a loop, so a
+# missing release or a doubled one shows up as growth rather than as a wrong
+# answer.
+mut acc = 0.0
+for i in 0..200 {
+    let c = Tensor.from([1.0, 2.0]).requires_grad()
+    let s = c.pow(2).sum(0)
+    s.backward()
+    acc = acc + c.grad().sum()
+    c.zero_grad()
+    let r = c.reshape([2, 1]).transpose().relu().sum(1)
+    acc = acc + r.item()
+}
+inspect(acc)

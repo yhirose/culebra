@@ -683,7 +683,34 @@ enum class BMeth : uint8_t {
   Take, Skip, TakeWhile, SkipWhile, Tap, ChunkBy, StepBy, Scan, Chunks,
   Windows, Chain, Zip,
   Collect, IterCount, First, Last, Nth, Position,
+  // Tensor-only. The autograd five and the activations are no-arg; the four
+  // axis reductions share tensor_reduce_axis and differ only by their op.
+  Shape, Pow, Transpose, Clone, RequiresGrad, Grad, Backward, ZeroGrad,
+  Detach, Relu, Sigmoid, Softmax, TensorLog, Reshape, Mean,
+  SumAxis, MeanAxis, MaxAxis, Argmax, Dot, LinearSigmoid, Item,
+  Sort,                                 // Array only, in place, returns nil
+  Values,                               // Object (dict) only
 };
+
+// The reduction each axis-ful id asks tensor_reduce_axis for.
+inline int64_t bmeth_reduce_op(BMeth id) {
+  switch (id) {
+    case BMeth::MeanAxis: return static_cast<int64_t>(culebra::Op::Mean);
+    case BMeth::MaxAxis: return static_cast<int64_t>(culebra::Op::Max);
+    case BMeth::Argmax: return static_cast<int64_t>(culebra::Op::Argmax);
+    default: return static_cast<int64_t>(culebra::Op::Sum);
+  }
+}
+
+// The elementwise unary each activation id asks tensor_unary for.
+inline int64_t bmeth_unary_op(BMeth id) {
+  switch (id) {
+    case BMeth::Sigmoid: return static_cast<int64_t>(culebra::Op::Sigmoid);
+    case BMeth::Softmax: return static_cast<int64_t>(culebra::Op::Softmax);
+    case BMeth::TensorLog: return static_cast<int64_t>(culebra::Op::Log);
+    default: return static_cast<int64_t>(culebra::Op::Relu);
+  }
+}
 
 // The receivers a built-in resolves on, one bit per value tag. A gate's set
 // must be exactly the set of receivers whose built-in table holds the name at
@@ -761,6 +788,10 @@ inline constexpr BRecvMask kRecvIterSource =
     bmeth_tag_bit(TAG_OBJECT) | bmeth_tag_bit(TAG_SET);
 // No gate at all: `to_string` is the display conversion every value has, so
 // no receiver can fail to resolve it.
+// TensorValue::builtins() is the only table binding shape/pow/transpose/
+// clone/the autograd five/the activations/reshape/mean/argmax/dot/
+// linear_sigmoid/item, so a Tensor is the only receiver that resolves them.
+inline constexpr BRecvMask kRecvTensor = bmeth_tag_bit(TAG_TENSOR);
 inline constexpr BRecvMask kRecvAny = 0xFFFF;
 
 // A parameter's declared type, checked with the interp binder's wording at the
@@ -768,7 +799,12 @@ inline constexpr BRecvMask kRecvAny = 0xFFFF;
 // so the compiler emits no ChkParam for it. `String` is strict (unlike
 // StrLike, a StringView fails it) — `join`'s `sep` is declared plain "String"
 // in the interp table, not the StringLike trait.
-enum class BParam : uint8_t { Any, Long, StrLike, Array, String, Set };
+enum class BParam : uint8_t {
+  Any, Long, StrLike, Array, String, Set, Tensor,
+  // `Long?` — the reduction axis, optional in the interp signature, so an
+  // explicit nil is as good as omitting it.
+  LongOpt,
+};
 
 struct BMethSpec {
   std::string_view name;
@@ -1002,6 +1038,46 @@ inline std::span<const BMethSpec> bmeth_specs() {
        /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
       {"last", 0, Last, kRecvIterOnly, 0, nullptr, {}, {}, {},
        /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      // Tensor-only. Each of these names appears in exactly one built-in
+      // table (TensorValue::builtins()), so the gate is the one tag and every
+      // other receiver takes the flat resolution answer.
+      {"shape", 0, Shape, kRecvTensor, 0, nullptr, {}, {}},
+      // `exp` is undeclared in the interp table — a Tensor or any number
+      // lifts, anything else is the generic type error from inside the binop.
+      {"pow", 1, Pow, kRecvTensor, 1, nullptr, {Any}, {"exp"}},
+      {"transpose", 0, Transpose, kRecvTensor, 0, nullptr, {}, {}},
+      {"clone", 0, Clone, kRecvTensor, 0, nullptr, {}, {}},
+      {"requires_grad", 0, RequiresGrad, kRecvTensor, 0, nullptr, {}, {}},
+      {"grad", 0, Grad, kRecvTensor, 0, nullptr, {}, {}},
+      {"backward", 0, Backward, kRecvTensor, 0, nullptr, {}, {}},
+      {"zero_grad", 0, ZeroGrad, kRecvTensor, 0, nullptr, {}, {}},
+      {"detach", 0, Detach, kRecvTensor, 0, nullptr, {}, {}},
+      {"relu", 0, Relu, kRecvTensor, 0, nullptr, {}, {}},
+      {"sigmoid", 0, Sigmoid, kRecvTensor, 0, nullptr, {}, {}},
+      {"softmax", 0, Softmax, kRecvTensor, 0, nullptr, {}, {}},
+      {"log", 0, TensorLog, kRecvTensor, 0, nullptr, {}, {}},
+      {"reshape", 1, Reshape, kRecvTensor, 1, nullptr, {Array}, {"dims"}},
+      // The reductions. `sum` and `max` already have an axis-less row above
+      // (Array / Tensor / iterator); `mean` has no such spelling outside
+      // Tensor, so both of its rows live here. The axis is `Long?` on the
+      // three that may omit it and plain `Long` on argmax, which may not —
+      // the interp's own signatures, so the wording follows.
+      {"mean", 0, Mean, kRecvTensor, 0, nullptr, {}, {}},
+      {"sum", 1, SumAxis, kRecvTensor, 1, nullptr, {LongOpt}, {"axis"}},
+      {"mean", 1, MeanAxis, kRecvTensor, 1, nullptr, {LongOpt}, {"axis"}},
+      {"max", 1, MaxAxis, kRecvTensor, 1, nullptr, {LongOpt}, {"axis"}},
+      {"argmax", 1, Argmax, kRecvTensor, 1, nullptr, {Long}, {"axis"}},
+      {"dot", 1, Dot, kRecvTensor, 1, nullptr, {Tensor}, {"other"}},
+      {"linear_sigmoid", 2, LinearSigmoid, kRecvTensor, 2, nullptr,
+       {Tensor, Tensor}, {"x", "b"}},
+      {"item", 0, Item, kRecvTensor, 0, nullptr, {}, {}},
+      // sort: Array's in-place, nil-returning twin of `sorted`, and kw-only
+      // `reverse:` in the same way — unreachable here, since the VM's call
+      // compiler rejects every keyword argument.
+      {"sort", 0, Sort, kRecvArray, 0, nullptr, {}, {}},
+      // values: the value-only view of an Object's `iter()`, a dict builtin
+      // like `keys` (so a namespace resolves it too).
+      {"values", 0, Values, kRecvObject, 0, nullptr, {}, {}},
   };
   return kSpecs;
 }
@@ -1032,6 +1108,8 @@ inline const char* bmeth_param_type(BParam p) {
     case BParam::Array: return "Array";
     case BParam::String: return "String";
     case BParam::Set: return "Set";
+    case BParam::Tensor: return "Tensor";
+    case BParam::LongOpt: return "Long?";
     default: return "StringLike";
   }
 }
@@ -1129,17 +1207,29 @@ inline bool bmeth_publishes_call_pos(BMeth id) {
 // culebra_runtime_type_check alone: `StringLike` is a built-in TRAIT, and its
 // registry entry comes from the preamble the VM lanes do not splice, so the
 // runtime check would reject a perfectly good String there.
-inline bool bmeth_param_ok(BParam p, int8_t tag) {
+//
+// One mask drives both lanes — the executor's test below and the lowering's
+// branch. Writing the tags out twice is how a new kind ends up silently
+// swallowed by the other lane's `default` arm (a String param once read as
+// StringLike, a Set param once rejected outright); with the set itself
+// shared, the two cannot drift.
+inline constexpr BRecvMask bmeth_param_tags(BParam p) {
   switch (p) {
-    case BParam::Any: return true;
-    case BParam::Long: return tag == TAG_LONG;
-    case BParam::Array: return tag == TAG_ARRAY;
-    case BParam::StrLike:
-      return tag == TAG_STRING || tag == TAG_STRINGVIEW;
-    case BParam::String: return tag == TAG_STRING;
-    case BParam::Set: return tag == TAG_SET;
+    case BParam::Any: return kRecvAny;
+    case BParam::Long: return bmeth_tag_bit(TAG_LONG);
+    case BParam::Array: return bmeth_tag_bit(TAG_ARRAY);
+    case BParam::StrLike: return kRecvStrLike;
+    case BParam::String: return bmeth_tag_bit(TAG_STRING);
+    case BParam::Set: return kRecvSet;
+    case BParam::Tensor: return kRecvTensor;
+    case BParam::LongOpt:
+      return bmeth_tag_bit(TAG_LONG) | bmeth_tag_bit(TAG_NIL);
   }
-  return false;
+  return 0;
+}
+
+inline bool bmeth_param_ok(BParam p, int8_t tag) {
+  return bmeth_receiver_ok(bmeth_param_tags(p), tag);
 }
 
 // Whether a parameter's check covers this receiver. A polymorphic built-in
@@ -1225,6 +1315,9 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
     return reinterpret_cast<JitArray*>(v.data);
   };
   auto st = [](const JitValue& v) { return reinterpret_cast<JitSet*>(v.data); };
+  auto ten = [](const JitValue& v) {
+    return reinterpret_cast<JitTensor*>(v.data);
+  };
   auto obj = [](JitObject* o) {
     return JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o)};
   };
@@ -1646,6 +1739,8 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
                           reinterpret_cast<int64_t>(
                               culebra_runtime_tuple_to_array(arr(recv)))};
         case TAG_TENSOR:
+          // Above rank 2 the conversion raises positionless.
+          culebra_runtime_set_op_pos(line, col);
           return JitValue{
               TAG_ARRAY,
               reinterpret_cast<int64_t>(culebra_runtime_tensor_to_array(
@@ -1826,6 +1921,100 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
                                       args[0].data, line, col, &tag, &data);
       return JitValue{tag, data};
     }
+    // Tensor-only. The gate proved TAG_TENSOR, so every arm reads the
+    // receiver as one. Each helper that can raise does so positionless (the
+    // engine has no notion of source), hence the stamp before the call.
+    case BMeth::Shape:
+      return JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(
+                                     culebra_runtime_tensor_shape(ten(recv)))};
+    case BMeth::Pow:
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{
+          TAG_TENSOR,
+          reinterpret_cast<int64_t>(culebra_runtime_tensor_binop(
+              static_cast<int8_t>(recv.tag), recv.data,
+              static_cast<int8_t>(args[0].tag), args[0].data,
+              static_cast<int64_t>(culebra::Op::Pow)))};
+    case BMeth::Transpose:
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(
+                          culebra_runtime_tensor_transpose(ten(recv)))};
+    case BMeth::Clone:
+      return JitValue{TAG_TENSOR, reinterpret_cast<int64_t>(
+                                      culebra_runtime_tensor_clone(ten(recv)))};
+    case BMeth::RequiresGrad:
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(
+                          culebra_runtime_tensor_requires_grad(ten(recv)))};
+    case BMeth::Grad:
+      return JitValue{TAG_TENSOR, reinterpret_cast<int64_t>(
+                                      culebra_runtime_tensor_grad(ten(recv)))};
+    case BMeth::Backward:
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(
+                          culebra_runtime_tensor_backward(ten(recv)))};
+    case BMeth::ZeroGrad:
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(
+                          culebra_runtime_tensor_zero_grad(ten(recv)))};
+    case BMeth::Detach:
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(
+                          culebra_runtime_tensor_detach(ten(recv)))};
+    case BMeth::Relu:
+    case BMeth::Sigmoid:
+    case BMeth::Softmax:
+    case BMeth::TensorLog:
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(culebra_runtime_tensor_unary(
+                          ten(recv), bmeth_unary_op(id)))};
+    case BMeth::Reshape:
+      // A bad element type, a count mismatch and a negative dim all arrive
+      // positionless.
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(culebra_runtime_tensor_reshape(
+                          ten(recv), arr(args[0])))};
+    case BMeth::Mean:
+      return culebra_runtime_tensor_reduce_all(
+          ten(recv), static_cast<int64_t>(culebra::Op::Mean));
+    case BMeth::SumAxis:
+    case BMeth::MeanAxis:
+    case BMeth::MaxAxis:
+    case BMeth::Argmax:
+      // The axis is `Long?` on all but argmax, so an explicit nil means the
+      // axis-less reduction — the same reading the interp's binder gives it.
+      if (args[0].tag == TAG_NIL)
+        return culebra_runtime_tensor_reduce_all(ten(recv),
+                                                 bmeth_reduce_op(id));
+      culebra_runtime_set_op_pos(line, col);  // out-of-range axis
+      return JitValue{
+          TAG_TENSOR,
+          reinterpret_cast<int64_t>(culebra_runtime_tensor_reduce_axis(
+              ten(recv), bmeth_reduce_op(id), args[0].data))};
+    case BMeth::Dot:
+      culebra_runtime_set_op_pos(line, col);  // rank check
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(culebra_runtime_tensor_dot(
+                          ten(recv), ten(args[0])))};
+    case BMeth::LinearSigmoid:
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{
+          TAG_TENSOR,
+          reinterpret_cast<int64_t>(culebra_runtime_tensor_linear_sigmoid(
+              ten(recv), ten(args[0]), ten(args[1])))};
+    case BMeth::Item:
+      culebra_runtime_set_op_pos(line, col);  // multi-element check
+      return culebra_runtime_tensor_item(ten(recv));
+    case BMeth::Sort:
+      // In place, answering nil. `reverse:` is kw-only and the VM rejects
+      // every keyword argument at compile time, so it is always false here.
+      culebra_runtime_array_sort(arr(recv), /*reverse=*/false, line, col);
+      return JitValue{TAG_NIL, 0};
+    case BMeth::Values:
+      return JitValue{TAG_OBJECT,
+                      reinterpret_cast<int64_t>(culebra_runtime_object_values(
+                          reinterpret_cast<JitObject*>(recv.data)))};
   }
   return JitValue{TAG_NIL, 0};  // unreachable: every id has an arm
 }
@@ -9836,26 +10025,14 @@ struct Lowering {
           // The accepted tags inline, like the JIT arms' own gates — see
           // bmeth_param_ok for why the runtime check can't stand alone.
           auto argTag = j.extract_tag(load_slot(in.a));
-          llvm::Value* ok = nullptr;
-          switch (kind) {
-            case BParam::Long:
-              ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_LONG));
-              break;
-            case BParam::Array:
-              ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_ARRAY));
-              break;
-            case BParam::String:
-              ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_STRING));
-              break;
-            case BParam::Set:
-              ok = b.CreateICmpEQ(argTag, b.getInt8(TAG_SET));
-              break;
-            default:  // StrLike; Any emits no check at all
-              ok = b.CreateOr(
-                  b.CreateICmpEQ(argTag, b.getInt8(TAG_STRING)),
-                  b.CreateICmpEQ(argTag, b.getInt8(TAG_STRINGVIEW)));
-              break;
-          }
+          // The same tag set the executor tests, walked bit by bit — see
+          // bmeth_param_tags. `Any` emits no ChkParam at all, so the mask
+          // here always names a real set.
+          llvm::Value* ok = b.getFalse();
+          auto tags = bmeth_param_tags(kind);
+          for (int8_t t = 0; t < 16; ++t)
+            if (bmeth_receiver_ok(tags, t))
+              ok = b.CreateOr(ok, b.CreateICmpEQ(argTag, b.getInt8(t)));
           b.CreateCondBr(ok, contBB, errBB);
           b.SetInsertPoint(errBB);
           auto [line, col] = chunk_pos_at(c, i);
@@ -10732,6 +10909,7 @@ struct Lowering {
                   out);
               b.CreateBr(joinBB);
               b.SetInsertPoint(tenBB);
+              j.emit_set_op_pos();  // positionless above rank 2
               b.CreateStore(
                   j.make_array(j.emit_call(
                       j.module_->getFunction(rt::tensor_to_array),
@@ -11107,6 +11285,129 @@ struct Lowering {
                                  b.CreateLoad(i64Ty, outData));
               break;
             }
+            // Tensor-only. The gate proved TAG_TENSOR, so `arr()` is the
+            // JitTensor*. Each helper that can raise does so positionless, so
+            // the arms that can stamp first, exactly as the executor's do.
+            case BMeth::Shape:
+              res = j.make_array(j.emit_call(
+                  j.module_->getFunction(rt::tensor_shape), {arr()},
+                  "vbm.tshape"));
+              break;
+            case BMeth::Pow:
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_binop),
+                  {j.extract_tag(recv), j.extract_data(recv),
+                   j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   b.getInt64(static_cast<int64_t>(culebra::Op::Pow))},
+                  "vbm.tpow"));
+              break;
+            case BMeth::Transpose:
+            case BMeth::Clone:
+            case BMeth::RequiresGrad:
+            case BMeth::Grad:
+            case BMeth::Backward:
+            case BMeth::ZeroGrad:
+            case BMeth::Detach: {
+              auto id2 = static_cast<BMeth>(in.c);
+              const char* sym =
+                  id2 == BMeth::Transpose      ? rt::tensor_transpose
+                  : id2 == BMeth::Clone        ? rt::tensor_clone
+                  : id2 == BMeth::RequiresGrad ? rt::tensor_requires_grad
+                  : id2 == BMeth::Grad         ? rt::tensor_grad
+                  : id2 == BMeth::Backward     ? rt::tensor_backward
+                  : id2 == BMeth::ZeroGrad     ? rt::tensor_zero_grad
+                                               : rt::tensor_detach;
+              res = j.make_tensor(j.emit_call(j.module_->getFunction(sym),
+                                              {arr()}, "vbm.tuna"));
+              break;
+            }
+            case BMeth::Relu:
+            case BMeth::Sigmoid:
+            case BMeth::Softmax:
+            case BMeth::TensorLog:
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_unary),
+                  {arr(),
+                   b.getInt64(bmeth_unary_op(static_cast<BMeth>(in.c)))},
+                  "vbm.tact"));
+              break;
+            case BMeth::Reshape:
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_reshape),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.tresh"));
+              break;
+            case BMeth::Mean:
+              res = val_fn(rt::tensor_reduce_all,
+                           {arr(), b.getInt64(static_cast<int64_t>(
+                                       culebra::Op::Mean))});
+              break;
+            case BMeth::SumAxis:
+            case BMeth::MeanAxis:
+            case BMeth::MaxAxis:
+            case BMeth::Argmax: {
+              // `Long?` on all but argmax, so an explicit nil is the axis-less
+              // reduction — one runtime test, the reading the interp's binder
+              // gives it.
+              auto op = b.getInt64(bmeth_reduce_op(static_cast<BMeth>(in.c)));
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.trd");
+              auto allBB = BasicBlock::Create(j.ctx_, "vbm.trd.all", fn);
+              auto axBB = BasicBlock::Create(j.ctx_, "vbm.trd.ax", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.trd.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(j.extract_tag(arg(0)),
+                                            b.getInt8(TAG_NIL)),
+                             allBB, axBB);
+              b.SetInsertPoint(allBB);
+              b.CreateStore(val_fn(rt::tensor_reduce_all, {arr(), op}), out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(axBB);
+              j.emit_set_op_pos();  // out-of-range axis
+              b.CreateStore(
+                  j.make_tensor(j.emit_call(
+                      j.module_->getFunction(rt::tensor_reduce_axis),
+                      {arr(), op, j.extract_data(arg(0))}, "vbm.trax")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::Dot:
+              j.emit_set_op_pos();  // rank check
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_dot),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.tdot"));
+              break;
+            case BMeth::LinearSigmoid:
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_linear_sigmoid),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy),
+                   b.CreateIntToPtr(j.extract_data(arg(1)), ptrTy)},
+                  "vbm.tls"));
+              break;
+            case BMeth::Item:
+              j.emit_set_op_pos();  // multi-element check
+              res = val_fn(rt::tensor_item, {arr()});
+              break;
+            case BMeth::Sort:
+              // In place, answering nil. `reverse:` is kw-only and the VM
+              // rejects every keyword argument, so it is always false here.
+              j.emit_call(j.module_->getFunction(rt::array_sort),
+                          {arr(), b.getInt1(false), b.getInt64(line),
+                           b.getInt64(col)});
+              res = j.make_nil();
+              break;
+            case BMeth::Values:
+              res = j.make_object(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::object_values, ptrTy,
+                                                 ptrTy),
+                  {arr()}, "vbm.values"));
+              break;
           }
           b.CreateStore(res, slots[in.a]);
           b.CreateBr(mergeBB);
