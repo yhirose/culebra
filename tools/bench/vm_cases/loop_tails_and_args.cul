@@ -1,0 +1,133 @@
+# Three things a call and a loop can carry that the slice used to turn away:
+# a `nobreak` tail, the overflow arguments (`__ARGS__` and a named `*args`),
+# and decorators on a `fn` declaration.
+
+# --- nobreak: runs when the loop was not broken out of --------------------
+for i in 0..3 {
+  inspect(i)
+} nobreak {
+  inspect('drained')
+}
+for i in 0..3 {
+  break if i == 1
+} nobreak {
+  inspect('never')
+}
+mut n = 0
+while n < 2 {
+  n = n + 1
+} nobreak {
+  inspect('while drained')
+}
+while n < 5 {
+  break
+} nobreak {
+  inspect('never')
+}
+for x in [1, 2] {
+  continue
+} nobreak {
+  inspect('continue still drains')
+}
+for x in [] {
+  inspect('no body')
+} nobreak {
+  inspect('empty drains')
+}
+# The tail runs after the iterator closed and the iteration's bindings died.
+class Res {
+  id: String
+  new(id) { self.id = id }
+  drop() { inspect('drop ' + self.id) }
+}
+class Src {
+  n: Long
+  new() { self.n = 0 }
+  iter() { self }
+  has_next() { self.n < 2 }
+  next() { let v = self.n; self.n = v + 1; v }
+  dispose() { inspect('dispose') }
+}
+for v in Src.new() {
+  let r = Res.new('e' + to_string(v))
+} nobreak {
+  inspect('after teardown')
+}
+# Nested loops keep their own flags; a `return` skips the tail entirely.
+for v in [1, 2] {
+  for w in [3] {
+    break
+  } nobreak {
+    inspect('inner never')
+  }
+} nobreak {
+  inspect('outer drained')
+}
+fn early() {
+  for i in 0..3 {
+    return 'returned'
+  } nobreak {
+    return 'nobreak'
+  }
+}
+inspect(early())
+
+# --- the overflow arguments ----------------------------------------------
+let f = fn (a) { [a, __ARGS__] }
+inspect(f(1))
+inspect(f(1, 2, 3))
+let g = fn (a, *rest) { [a, rest] }
+inspect(g(1))
+inspect(g(1, 2, 3))
+let h = fn (*rest) { rest }
+inspect(h())
+inspect(h(1, 2))
+let both = fn (a, *rest) { [__ARGS__, rest] }
+inspect(both(1, 2, 3))
+let kwmix = fn (a, **kw) { [a, __ARGS__, kw] }
+inspect(kwmix(1, 2, 3))
+inspect(kwmix(1, 2, k: 3))
+class M {
+  m(a) { __ARGS__ }
+}
+inspect(M.new().m(1, 2, 3))
+let captures = fn (a) { fn () { __ARGS__ } }
+inspect(captures(1, 5)())
+# A `*args` removes a callback's upper arity bound, and an overload set
+# registers it as variadic.
+inspect([1, 2].map(fn (x, *rest) { x * 2 }))
+inspect([1, 2].map(fn (*rest) { rest.size() }))
+fn over(a) { ['one', a] }
+fn over(a, b, *rest) { ['many', a, b, rest] }
+inspect(over(1))
+inspect(over(1, 2))
+inspect(over(1, 2, 3, 4))
+
+# --- decorators -----------------------------------------------------------
+fn twice(fx) {
+  fn (x) { fx(fx(x)) }
+}
+@twice
+fn inc(x) { x + 1 }
+inspect(inc(1))
+fn logged(fx) {
+  fn (x) { inspect('call'); fx(x) }
+}
+@logged
+@twice
+fn inc2(x) { x + 1 }
+inspect(inc2(1))
+let tenx = fn (fx) { fn (x) { fx(x) * 10 } }
+@tenx
+fn ident(x) { x }
+inspect(ident(3))
+
+# --- Churn: an overflow Array and a decorated call per round --------------
+mut i = 0
+while i < 2000 {
+  let r = f(i, (i, i), [i])
+  if r[1].size() != 2 { throw 'bad churn' }
+  if inc(i) != i + 2 { throw 'bad churn 2' }
+  i = i + 1
+}
+inspect(i)

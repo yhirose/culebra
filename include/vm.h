@@ -487,6 +487,11 @@ enum class Op : uint8_t {
   JumpIfFilled,  // jump to b when regs[a] is a supplied argument; falls
                // through to the default expression when the prologue left
                // the slot TAG_UNFILLED.
+  ArgsRest,    // regs[a] = the overflow arguments as a fresh Array: what the
+               // caller passed past the last regular parameter. Their `+1`s
+               // are the caller's transfer, taken over here (the prologue
+               // leaves them alone for chunks that reach them), so the Array
+               // is the sole owner. Backs `__ARGS__` and a named `*args`.
   KwRest,      // bind the `**rest` slot regs[a]: the keyword resolver's own
                // Object when it marked the slot (TAG_KWREST, retagged here),
                // and a fresh empty one otherwise. No positional can fill it —
@@ -1849,6 +1854,12 @@ struct Chunk {
   // removes the upper bound), the same pair the JIT hands the HOF gate.
   int32_t cb_min = 0;
   int32_t cb_max = 0;
+  // Whether the body reaches the overflow arguments (`__ARGS__`, or a named
+  // `*args`): the prologue keeps their `+1`s for the Array it builds instead
+  // of releasing them.
+  bool keeps_args = false;
+  // Whether a `*args` catch-all removes this overload's upper arity bound.
+  bool variadic = false;
   int32_t fn_slot = -1;
   // Source name of an overload body (`fn name`, a class member, `new`), read
   // by MultifnReg: it is the user-facing half of the registry key, so a
@@ -2206,6 +2217,10 @@ class Compiler {
                              // bounds every defer the iteration pushed
     std::vector<size_t> break_jumps;
     std::vector<size_t> continue_jumps;
+    // A `nobreak { … }` clause runs only when the loop was not broken out
+    // of, so a break has to say so: this slot (-1 without the clause) holds
+    // the flag the tail tests, in the scope enclosing the loop's own.
+    int32_t broke_slot = -1;
   };
   struct ExprResult {
     int32_t slot;
@@ -2839,6 +2854,8 @@ class Compiler {
         if (defer_scopes_.size() > lc.defer_watermark)
           emit(Op::DeferRunTo, defer_scopes_[lc.defer_watermark]);
         release_down_to(lc.slot_watermark);
+        if (brk && lc.broke_slot >= 0)
+          emit(Op::LoadConst, lc.broke_slot, kconst_long(1));
         (brk ? lc.break_jumps : lc.continue_jumps).push_back(emit(Op::Jump));
         break;
       }
@@ -2958,11 +2975,21 @@ class Compiler {
   // unbound sentinel.
   void compile_multifn_decl(const peg::Ast& ast) {
     using namespace peg::udl;
-    if (ast.nodes[0]->tag == "DECORATOR"_) reject(ast, "decorator");
-    auto head = culebra::parse_generic_head(ast.nodes[0]->token);
+    size_t dec_end = 0;
+    while (dec_end < ast.nodes.size() &&
+           ast.nodes[dec_end]->tag == "DECORATOR"_)
+      dec_end++;
+    auto head = culebra::parse_generic_head(ast.nodes[dec_end]->token);
     if (!head.args.empty())
-      reject(*ast.nodes[0], "generic type parameters");
+      reject(*ast.nodes[dec_end], "generic type parameters");
     auto name = std::string(head.outer);
+    if (dec_end > 0) {
+      // A decorated declaration binds what the decorators return, so it
+      // never reaches the multimethod registry: the name holds the
+      // outermost wrapper, and the innermost decorator is applied first.
+      compile_decorated_fn(ast, dec_end, name);
+      return;
+    }
     int32_t idx = compile_fn_chunk(ast, ast.nodes[1].get(),
                                    *ast.nodes.back());
     prog_.chunks[idx].multifn_name = name;
@@ -2984,6 +3011,31 @@ class Compiler {
     emit(Op::MultifnReg, t, cls, into, idx);
     forget_temp(cls);  // the registry absorbed the body's +1 (reg is nil)
     emit(Op::CellSet, b->slot, owned_src(ast, {t, true}));
+  }
+
+  // `@dec fn name(...) {…}` — the declaration binds the decorator's result.
+  // Innermost first: the decorator nearest the `fn` sees the raw function,
+  // and each one above wraps what the one below returned.
+  void compile_decorated_fn(const peg::Ast& ast, size_t dec_end,
+                            const std::string& name) {
+    int32_t idx = compile_fn_chunk(ast, ast.nodes[dec_end + 1].get(),
+                                   *ast.nodes.back());
+    int32_t val = alloc_temp(ast);
+    emit(Op::MakeClosure, val, idx);
+    for (size_t i = dec_end; i > 0; --i) {
+      const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
+      auto callee = compile_expr(dec_expr);
+      int32_t arg = alloc_temp(ast);  // the one-argument run
+      store_into(arg, {val, true}, /*dst_is_fresh=*/true);
+      int32_t out = alloc_temp(ast);
+      StampGuard pos(*this, dec_expr);
+      emit(Op::Call, out, callee.slot, arg, 1);
+      val = out;
+    }
+    const Binding* b = lookup(name);
+    if (!b || !b->is_cell)
+      reject(ast, std::format("fn '{}' declared here", name));
+    emit(Op::CellSet, b->slot, owned_src(ast, {val, true}));
   }
 
   // Group same-named class members, in first-appearance order: each entry
@@ -3507,14 +3559,9 @@ class Compiler {
                            const peg::Ast& body, MemberOpts mo = MemberOpts()) {
     using namespace peg::udl;
     const FuncInfo& info = analysis_.func_info.at(&ast);
-    if (info.uses_args) reject(ast, "__ARGS__");
     std::string_view return_type;
     for (const auto& n : ast.nodes)
       if (n->tag == "RETURN_TYPE"_) return_type = n->token;
-    if (params) {
-      for (const auto& p : params->nodes)
-        if (culebra::is_args_rest(*p)) reject(*p, "'*args' parameter");
-    }
     auto caps = resolve_captures(ast, info);
 
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
@@ -3566,6 +3613,8 @@ class Compiler {
     int32_t rest_slot = -1;
     std::string rest_name;
     const peg::Ast* rest_at = nullptr;
+    std::string args_rest_name;
+    const peg::Ast* args_rest_at = nullptr;
     if (params) {
       for (const auto& p : params->nodes) {
         auto pv = culebra::view_parameter(*p);
@@ -3575,6 +3624,14 @@ class Compiler {
           if (fc.chunk_.first_kw_only_idx < 0)
             fc.chunk_.first_kw_only_idx =
                 static_cast<int32_t>(fc.chunk_.param_names.size());
+          fc.chunk_.arity--;
+          continue;
+        }
+        if (pv.is_args_rest) {
+          // `*args` takes no ABI slot: it names the overflow Array the
+          // prologue builds, the same one `__ARGS__` reads.
+          args_rest_name = std::string(pv.name);
+          args_rest_at = p.get();
           fc.chunk_.arity--;
           continue;
         }
@@ -3641,7 +3698,8 @@ class Compiler {
                             : fc.chunk_.kwargs_rest_idx >= 0
                                 ? fc.chunk_.kwargs_rest_idx
                                 : fc.chunk_.arity;
-      fc.chunk_.cb_max = regular_end;
+      fc.chunk_.variadic = !args_rest_name.empty();
+      fc.chunk_.cb_max = fc.chunk_.variadic ? -1 : regular_end;
       fc.chunk_.cb_min = 0;
       for (int32_t i = 0; i < regular_end; i++)
         if (i >= static_cast<int32_t>(fc.chunk_.param_has_default.size()) ||
@@ -3794,6 +3852,36 @@ class Compiler {
         fc.scopes_.back().bindings.push_back({pl.name, cslot, pl.is_mut, true});
       } else {
         fc.scopes_.back().bindings.push_back({pl.name, pl.slot, pl.is_mut});
+      }
+    }
+    // The overflow arguments, as one Array: `__ARGS__` and a named `*args`
+    // are two names for it, so it is built once and both bindings share it.
+    fc.chunk_.keeps_args = info.uses_args || !args_rest_name.empty();
+    if (fc.chunk_.keeps_args) {
+      int32_t aslot = fc.alloc_slot(ast, "(args.rest)");
+      fc.emit(Op::ArgsRest, aslot);
+      auto bind_args = [&](const std::string& nm, const peg::Ast& at,
+                           int32_t src) {
+        int32_t slot = src;
+        if (info.captured_locals.contains(nm)) {
+          slot = fc.alloc_cell_slot(at, nm);
+          fc.emit(Op::CellNew, slot, src);
+          fc.scopes_.back().bindings.push_back({nm, slot, false, true});
+        } else {
+          fc.scopes_.back().bindings.push_back({nm, slot, false});
+        }
+      };
+      if (info.uses_args && !args_rest_name.empty()) {
+        // Both live: the second binding needs a `+1` of its own.
+        int32_t second = fc.alloc_slot(ast, "(args.rest.2)");
+        fc.emit(Op::Move, second, aslot);
+        fc.emit(Op::Retain, second);
+        bind_args("__ARGS__", ast, aslot);
+        bind_args(args_rest_name, *args_rest_at, second);
+      } else if (info.uses_args) {
+        bind_args("__ARGS__", ast, aslot);
+      } else {
+        bind_args(args_rest_name, *args_rest_at, aslot);
       }
     }
     // The `**rest` slot last: it is the resolver's alone, so the prologue
@@ -4242,7 +4330,6 @@ class Compiler {
   void compile_for(const peg::Ast& ast) {
     using namespace peg::udl;
     auto fv = culebra::view_for(ast);
-    if (fv.nobreak) reject(ast, "nobreak");
     const auto& id = *fv.binding;
     // Fast path: `for <ident> in <a>..<b>` walks a Long counter, as the JIT's
     // compile_for_counted_range does. Everything else — a pattern binding, a
@@ -4271,6 +4358,7 @@ class Compiler {
     bool cell =
         ident && !sink && info_->captured_locals.contains(std::string(id.token));
 
+    int32_t broke = alloc_broke_slot(ast, fv.nobreak);
     push_scope();
     int32_t base = alloc_slot(ast, "(for.disposed)");
     alloc_slot(ast, "(for.iterable)");
@@ -4294,7 +4382,7 @@ class Compiler {
                /*dst_is_fresh=*/true);
     emit(Op::ForOpen, base);
 
-    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}});
+    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke});
     size_t head_ix = chunk_.code.size();
     // A step's positionless throws report at the statement, not at the
     // iterable expression the open reports at.
@@ -4362,6 +4450,9 @@ class Compiler {
     emit(Op::ForDispose, base);
     for_bases_.pop_back();
     pop_scope();
+    // After the iterator is closed and the iteration's slots are gone: the
+    // order the other backends run it in.
+    compile_nobreak_tail(fv.nobreak, broke);
   }
 
   void compile_for_counted_range(const peg::Ast& ast,
@@ -4375,6 +4466,7 @@ class Compiler {
     // made in iteration N holds iteration N's value.
     bool cell = info_->captured_locals.contains(std::string(id.token));
 
+    int32_t broke = alloc_broke_slot(ast, fv.nobreak);
     push_scope();
     int32_t base = alloc_slot(ast, "(for.cur)");
     alloc_slot(ast, "(for.end)");
@@ -4397,7 +4489,7 @@ class Compiler {
     size_t prep = emit(Op::ForPrep, base);
 
     scopes_.back().bindings.push_back({std::string(id.token), bind, false, cell});
-    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}});
+    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke});
     size_t body_ix = chunk_.code.size();
     if (cell) emit(Op::CellNew, bind, var);
     compile_block(*fv.body);
@@ -4412,12 +4504,33 @@ class Compiler {
     for (size_t j : lc.break_jumps) patch_jump(j, exit_ix);
     loops_.pop_back();
     pop_scope();
+    compile_nobreak_tail(fv.nobreak, broke);
+  }
+
+  // A loop's `nobreak { … }` tail: run the block unless a break set the
+  // flag. Emitted where the loop's own teardown has already happened (the
+  // iterator is closed, the iteration's bindings are gone) — the point both
+  // other backends run it from.
+  void compile_nobreak_tail(const peg::Ast* nobreak, int32_t broke_slot) {
+    if (!nobreak) return;
+    size_t skip = emit(Op::JumpIfTrue, broke_slot);
+    compile_block(*nobreak);
+    patch_to_here(skip);
+  }
+
+  // The flag slot a loop with a `nobreak` clause needs, cleared before the
+  // loop runs; -1 when the loop has no clause.
+  int32_t alloc_broke_slot(const peg::Ast& ast, const peg::Ast* nobreak) {
+    if (!nobreak) return -1;
+    int32_t s = alloc_slot(ast, "(loop.broke)");
+    emit(Op::LoadConst, s, kconst_long(0));
+    return s;
   }
 
   void compile_while(const peg::Ast& ast) {
     auto wv = culebra::view_while(ast);
     if (wv.init) reject(*wv.init, "while init clause");
-    if (wv.nobreak) reject(ast, "nobreak");
+    int32_t broke = alloc_broke_slot(ast, wv.nobreak);
 
     // The condition re-evaluates every iteration, so its temps must be
     // swept inside the iteration — and before the exit branch, or a heap
@@ -4434,7 +4547,7 @@ class Compiler {
     }
     size_t exit_jump = emit(Op::JumpIfFalse, cond_slot);
 
-    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}});
+    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke});
     compile_block(*wv.body);
     emit(Op::Jump, static_cast<int32_t>(top_ix));
     size_t exit_ix = chunk_.code.size();
@@ -4444,13 +4557,22 @@ class Compiler {
     for (size_t j : lc.continue_jumps) patch_jump(j, top_ix);
     for (size_t j : lc.break_jumps) patch_jump(j, exit_ix);
     loops_.pop_back();
+    compile_nobreak_tail(wv.nobreak, broke);
   }
 
   // The stdlib names the slice reaches: kBuiltinFns' bare native globals,
   // resolvable through culebra_runtime_namespace_get with no preamble
   // splice. The effects primitives are excluded (their emitting transforms
-  // are rejected); lazy source modules (Time, assert_*, ...) need the
-  // preamble, so they fall through to the unresolved-identifier reject.
+  // are rejected).
+  //
+  // The lazy source modules (Time, Regex, `assert_*`, `replace`, ...) fall
+  // through to the unresolved-identifier reject, and the reason is not that
+  // the resolver cannot find them — it resolves both their namespaces and
+  // their bare functions on demand. It is that it does so by invoking a
+  // BUILDER closure the preamble's compilation registers, and a lane that
+  // never compiles the preamble registers none. Reaching them means
+  // compiling the preamble itself, which means the slice must first cover
+  // everything the preamble is written in.
   static bool is_stdlib_global(std::string_view name) {
     if (name.starts_with("__eff_")) return false;
     for (const auto& m : kBuiltinFns)
@@ -5941,7 +6063,8 @@ inline std::string dump(const Chunk& c) {
       "ClassMeta", "DeriveFn",  "RegPack",    "ClassObj",     "BindStatic",
       "MakeInst",  "FieldInit", "RegGetter",  "SelfMerge",
       "TraitReset", "TraitDefault", "TraitReg", "PosSnap", "ChkTypeAt",
-      "ChkArg",    "JumpIfFilled", "KwRest",     "RecEnter",   "RecLeave",
+      "ChkArg",    "JumpIfFilled", "ArgsRest",   "KwRest",     "RecEnter",
+      "RecLeave",
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
@@ -6130,9 +6253,12 @@ struct Exec {
         for (int32_t i = 0; i < c.arity; ++i)
           regs[i] = (i < from_args && i < n_args) ? args[i]
                                                   : JitValue{TAG_UNFILLED, 0};
-        for (int64_t i = from_args; i < n_args; ++i)
-          culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
-                                        args[i].data);
+        // A chunk that reads the overflow keeps their `+1`s for the Array
+        // its ArgsRest instruction builds.
+        if (!c.keeps_args)
+          for (int64_t i = from_args; i < n_args; ++i)
+            culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
+                                          args[i].data);
       }
       // The receiver: a receiver frame's slot takes the +1 (and the frame
       // teardown releases it); every other frame drops it, like the JIT's
@@ -7694,7 +7820,7 @@ struct Exec {
               in.c >= 0 ? reinterpret_cast<JitClosure*>(regs[in.c].data)
                         : nullptr,
               reinterpret_cast<JitClosure*>(regs[in.b].data),
-              n ? types.data() : nullptr, n, /*variadic=*/0,
+              n ? types.data() : nullptr, n, f.variadic ? 1 : 0,
               /*min_arity=*/min_arity, n ? names.data() : nullptr);
           regs[in.b] = JitValue{TAG_NIL, 0};  // the registry took the +1
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(disp)};
@@ -7865,6 +7991,22 @@ struct Exec {
           pc = regs[in.a].tag == TAG_UNFILLED ? pc + 1
                                               : static_cast<size_t>(in.b);
           break;
+        case Op::ArgsRest: {
+          // The caller's `+1` on each overflow argument moves into the
+          // Array; run_frame left them alone for this chunk.
+          int64_t from = c.arity;
+          if (c.kwargs_rest_idx >= 0 &&
+              !(c.kwargs_rest_idx < n_args &&
+                args[c.kwargs_rest_idx].tag == TAG_KWREST))
+            from = c.first_kw_only_idx >= 0 ? c.first_kw_only_idx
+                                            : c.kwargs_rest_idx;
+          regs[in.a] = JitValue{
+              TAG_ARRAY, reinterpret_cast<int64_t>(
+                             culebra_runtime_args_slice_to_array(
+                                 args, from, n_args))};
+          ++pc;
+          break;
+        }
         case Op::KwRest:
           // The marked Object arrives already owned by this slot; anything
           // else means no keyword content reached the call.
@@ -8191,6 +8333,9 @@ struct Lowering {
           name);
     };
 
+    // Where the overflow arguments begin, filled by the prologue and read
+    // by ArgsRest (the two are far apart in the instruction stream).
+    llvm::Value* argsFromSlot = nullptr;
     // Function-chunk prologue, mirroring both the JIT prologue and
     // Exec::run_frame: arity guard (ArityError at the published call site),
     // param binding, overflow-arg release, the `fn` handle, and the
@@ -8220,7 +8365,10 @@ struct Lowering {
         b.SetInsertPoint(okBB);
       }
       // Where the caller's values stop being bindings — see the executor's
-      // own run_frame for why the rest slot's marker decides it.
+      // own run_frame for why the rest slot's marker decides it. The same
+      // answer bounds the overflow, which ArgsRest reads back from the slot.
+      IRBuilder<> ebArgs(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+      argsFromSlot = ebArgs.CreateAlloca(i64Ty, nullptr, "args.from");
       llvm::Value* fromArgs = b.getInt64(c.arity);
       if (c.kwargs_rest_idx >= 0) {
         int64_t regular_end = c.first_kw_only_idx >= 0 ? c.first_kw_only_idx
@@ -8244,6 +8392,7 @@ struct Lowering {
         fromArgs = b.CreateSelect(phi, b.getInt64(c.arity),
                                   b.getInt64(regular_end), "args.from");
       }
+      b.CreateStore(fromArgs, argsFromSlot);
       // Required slots are there by the guard above; a defaulted one may not
       // be, so its slot takes the TAG_UNFILLED sentinel its JumpIfFilled
       // tests (reading past the caller's slab is the thing to avoid).
@@ -8272,8 +8421,10 @@ struct Lowering {
         b.CreateBr(contBB);
         b.SetInsertPoint(contBB);
       }
-      // Release overflow args: for (iv = arity; iv < nArgs; iv++).
-      if (!c.forwards_args) {
+      // Release overflow args: for (iv = fromArgs; iv < nArgs; iv++). A
+      // chunk that reads them keeps their `+1`s for the Array its ArgsRest
+      // instruction builds.
+      if (!c.forwards_args && !c.keeps_args) {
         auto* fromBB = b.GetInsertBlock();
         auto hdrBB = BasicBlock::Create(j.ctx_, "extras.hdr", fn);
         auto bodyBB = BasicBlock::Create(j.ctx_, "extras.body", fn);
@@ -11205,7 +11356,8 @@ struct Lowering {
                   rt::multifn_register_and_install, ptrTy, ptrTy, ptrTy,
                   ptrTy, ptrTy, i64Ty, i64Ty, i64Ty, ptrTy),
               {nameG, intoPtr, bodyPtr, typesPtr, b.getInt64(nparams),
-               b.getInt64(0), b.getInt64(min_arity), namesPtr},
+               b.getInt64(f.variadic ? 1 : 0), b.getInt64(min_arity),
+               namesPtr},
               "vm.mf.disp");
           b.CreateStore(j.make_nil(), slots[in.b]);
           b.CreateStore(j.make_func(disp), slots[in.a]);
@@ -11426,6 +11578,18 @@ struct Lowering {
                                     b.getInt8(TAG_UNFILLED), "arg.unf");
           b.CreateCondBr(unf, blocks.at(static_cast<int32_t>(i) + 1),
                          blocks.at(in.b));
+          break;
+        }
+        case Op::ArgsRest: {
+          // The caller's `+1` on each overflow argument moves into the
+          // Array; the prologue left them alone for this chunk.
+          b.CreateStore(
+              j.make_array(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::args_slice_to_array,
+                                                 ptrTy, ptrTy, i64Ty, i64Ty),
+                  {argsPtr, b.CreateLoad(i64Ty, argsFromSlot), nArgs},
+                  "args.arr")),
+              slots[in.a]);
           break;
         }
         case Op::KwRest: {

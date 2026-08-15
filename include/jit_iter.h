@@ -2657,6 +2657,11 @@ inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
   }
   if (cls->arity == JIT_VARIADIC_ARITY) return true;
   const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
+  // A closure whose code is not a distinct fn_ptr (the VM executor runs every
+  // chunk through one entry point) answers through the same hook the keyword
+  // resolver asks — without it a `*args` callback reads as its bare slot
+  // count and a defaulted one as its full arity.
+  if (!meta && _jit_closure_meta_hook) meta = _jit_closure_meta_hook(cls);
   if (meta) {
     return culebra::callback_arity_accepts(meta->cb_min, meta->cb_max,
                                            static_cast<long>(expected));
