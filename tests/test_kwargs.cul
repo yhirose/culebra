@@ -434,4 +434,46 @@ let p2 = try {
 assert_eq(p2.kind, 'SyntaxError')
 assert_true(p2.message.contains('positional argument follows'))
 
+# --- `**rest` is never a required argument --------------------------------
+# A call carrying no keyword content skips the resolver entirely; the callee
+# still sees the rest variable, bound to an empty Object.
+fn rest_only(**kw) {
+  kw
+}
+assert_eq(rest_only(), {})
+fn one_then_rest(a, **kw) {
+  [a, kw]
+}
+assert_eq(one_then_rest(1), [1, {}])
+class RestMethod {
+  m(**kw) {
+    kw
+  }
+}
+assert_eq(RestMethod.new().m(), {})
+
+# --- a `**rest` Object keeps the order its keys arrived in ----------------
+# Splat entries in operand order, then the explicit keywords; a repeat
+# overwrites in place. Objects are ordered, so every call shape — free
+# function, method, static, bound value — must agree on that order.
+let src = {'a': 1, 'b': 2, 'c': 7}
+assert_eq(rest_only(**src).keys(), ['a', 'b', 'c'])
+assert_eq(rest_only(**src, z: 0).keys(), ['a', 'b', 'c', 'z'])
+assert_eq(rest_only(z: 0, **src).keys(), ['a', 'b', 'c', 'z'])
+assert_eq(rest_only(**{'q': 1}, **src).keys(), ['q', 'a', 'b', 'c'])
+assert_eq(rest_only(m: 1, n: 2, o: 3).keys(), ['m', 'n', 'o'])
+assert_eq(rest_only(**src, b: 9), {'a': 1, 'b': 9, 'c': 7})
+let rm = RestMethod.new()
+let bound_m = rm.m
+assert_eq(rm.m(**src).keys(), ['a', 'b', 'c'])
+assert_eq(bound_m(**src).keys(), ['a', 'b', 'c'])
+class RestStatic {
+  static s(**kw) {
+    kw
+  }
+}
+assert_eq(RestStatic.s(**src).keys(), ['a', 'b', 'c'])
+let via_value = rest_only
+assert_eq(via_value(**src).keys(), ['a', 'b', 'c'])
+
 IO.inspect('test_kwargs OK')

@@ -261,6 +261,42 @@ inline std::string unknown_kwarg_message(std::string_view name) {
   return std::format("unknown keyword argument '{}'", name);
 }
 
+// The keyword bindings a call resolved, in the order they arrived: `**`
+// splat entries in operand order, then the explicit keywords, a repeat
+// overwriting the value where the name first landed. A `**rest` catch-all
+// hands this straight to the callee as an Object, and the language's objects
+// are ordered — so the container must be too. Both binders build one of
+// these; a hash map gave each backend its own permutation of the same keys.
+// A call's keyword count is small, so the linear scan IS the lookup.
+template <typename V>
+struct MergedKwargs {
+  std::vector<std::pair<std::string_view, V>> items;
+  using iterator = typename std::vector<std::pair<std::string_view, V>>::iterator;
+  using const_iterator =
+      typename std::vector<std::pair<std::string_view, V>>::const_iterator;
+  iterator begin() { return items.begin(); }
+  iterator end() { return items.end(); }
+  const_iterator begin() const { return items.begin(); }
+  const_iterator end() const { return items.end(); }
+  iterator find(std::string_view k) {
+    return std::find_if(items.begin(), items.end(),
+                        [&](const auto& e) { return e.first == k; });
+  }
+  bool contains(std::string_view k) { return find(k) != items.end(); }
+  // Insert, or overwrite in place so the name keeps the position it first
+  // arrived at.
+  void set(std::string_view k, V v) {
+    auto it = find(k);
+    if (it == items.end())
+      items.emplace_back(k, std::move(v));
+    else
+      it->second = std::move(v);
+  }
+  void erase(iterator it) { items.erase(it); }
+  void clear() { items.clear(); }
+  bool empty() const { return items.empty(); }
+};
+
 // Among leftover kwargs the callee can't accept, pick a backend-independent
 // one to name in the error. Every backend collects leftovers in a name-keyed
 // map, but the iteration order differs by backend and container (unordered_map

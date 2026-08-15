@@ -216,6 +216,12 @@ inline JIT::Owned JIT::compile_fn_common(
   // default (leading portion, since defaults must be trailing).
   size_t declaredArity = paramNames.size();
   size_t requiredArity = firstDefaulted.value_or(declaredArity);
+  // A `**rest` slot is never required: a call carrying no keyword content
+  // skips the resolver entirely and lands here directly, and the interp
+  // binds an empty Object there rather than reporting a missing argument.
+  // The slot itself is filled below, from the overflow or as `{}`.
+  if (kwargsRestIdx && *kwargsRestIdx < requiredArity)
+    requiredArity = *kwargsRestIdx;
   // A destructuring parameter takes no default, so it is required wherever
   // it sits. lint rejects one after a defaulted parameter; this keeps the
   // prologue from reading an unfilled slab entry if that check is bypassed.
@@ -410,7 +416,12 @@ inline JIT::Owned JIT::compile_fn_common(
   for (size_t i = 0; i < paramNames.size(); i++) {
     const auto& name = paramNames[i];
     llvm::Value* argVal = nullptr;
-    if (!paramDefaults[i]) {
+    // The `**rest` slot binds like a defaulted param whose default is a
+    // fresh empty Object: a call with no keyword content never reaches the
+    // resolver, so the slot arrives unfilled (or past n_args entirely) and
+    // the callee must still see a bound variable, as the interp's does.
+    bool isKwRest = kwargsRestIdx && *kwargsRestIdx == i;
+    if (!paramDefaults[i] && !isKwRest) {
       auto slotPtr = builder_.CreateInBoundsGEP(
           valueType_, argsArg, {builder_.getInt64(static_cast<int64_t>(i))},
           name + ".slot");
@@ -444,25 +455,31 @@ inline JIT::Owned JIT::compile_fn_common(
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(defBB);
-      // The default runs ahead of this frame's own `recursion_enter`, so a
-      // default that re-enters the same function (`fn h(a = 5, b = h(1))`)
-      // would recurse uncounted and die as an uncatchable stack overflow.
-      // Count the evaluation as one frame — the interp's RecursionFrame
-      // around resolve_param_default. A throw skips the leave; the enclosing
-      // frame's cleanup pad / catch entry restores the count, exactly as it
-      // does for an inlined HOF body (emit_unary_lambda_body).
-      emit_call(module_->getOrInsertFunction(rt::recursion_enter,
-                                             builder_.getInt64Ty()),
-                {}, "def.rec");
-      // compile() already yields a +1-owned value — the same ownership the
-      // caller transfers into the arg slab for a passed argument — so the
-      // slot below absorbs it directly. An extra retain here would leak the
-      // default's +1 (the slot only releases one ref at scope exit).
-      auto defVal = compile(*paramDefaults[i]);
-      builder_.CreateCall(module_->getOrInsertFunction(rt::recursion_leave,
-                                                       builder_.getVoidTy()),
-                          {});
-      merge.add_incoming(std::move(defVal));
+      if (isKwRest) {
+        merge.add_incoming(own(make_object(emit_call(
+            module_->getOrInsertFunction(rt::object_new, ptrTy), {},
+            name + ".empty"))));
+      } else {
+        // The default runs ahead of this frame's own `recursion_enter`, so a
+        // default that re-enters the same function (`fn h(a = 5, b = h(1))`)
+        // would recurse uncounted and die as an uncatchable stack overflow.
+        // Count the evaluation as one frame — the interp's RecursionFrame
+        // around resolve_param_default. A throw skips the leave; the enclosing
+        // frame's cleanup pad / catch entry restores the count, exactly as it
+        // does for an inlined HOF body (emit_unary_lambda_body).
+        emit_call(module_->getOrInsertFunction(rt::recursion_enter,
+                                               builder_.getInt64Ty()),
+                  {}, "def.rec");
+        // compile() already yields a +1-owned value — the same ownership the
+        // caller transfers into the arg slab for a passed argument — so the
+        // slot below absorbs it directly. An extra retain here would leak the
+        // default's +1 (the slot only releases one ref at scope exit).
+        auto defVal = compile(*paramDefaults[i]);
+        builder_.CreateCall(module_->getOrInsertFunction(rt::recursion_leave,
+                                                         builder_.getVoidTy()),
+                            {});
+        merge.add_incoming(std::move(defVal));
+      }
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(mergeBB);

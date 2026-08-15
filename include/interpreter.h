@@ -10236,7 +10236,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
 
     // A. Merge splats into a single name→value map (later splat wins).
-    std::unordered_map<std::string_view, Value> merged;
+    MergedKwargs<Value> merged;
     for (const auto& sv : args.splats) {
       if (sv.type != Value::Object) {
         throw CulebraError("TypeError", std::format(
@@ -10250,7 +10250,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             call_line, call_column);
       }
       for (const auto& [k, sym] : *obj.properties) {
-        merged[k] = sym.val;
+        merged.set(k, sym.val);
       }
     }
 
@@ -10265,7 +10265,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             std::format("duplicate keyword argument '{}'", name),
             static_cast<long>(ln), static_cast<long>(col));
       }
-      merged[name] = val;
+      merged.set(name, val);
     }
 
     // A mid-list `*` separator caps positional count; check before

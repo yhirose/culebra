@@ -1821,7 +1821,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   // Merge each splat Object's String-keyed entries into a single
   // name → JitValue map. Operands were already validated (Object +
   // String keys) at function entry, so no re-check here.
-  std::unordered_map<std::string_view, JitValue> merged;
+  culebra::MergedKwargs<JitValue> merged;
   for (int64_t i = 0; i < n_splat; i++) {
     auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
     if (!obj->shape) continue;
@@ -1832,12 +1832,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
       auto& sv_entry = obj->slots[k].value;
       culebra_runtime_value_retain(sv_entry.tag, sv_entry.data);
       auto it = merged.find(obj->shape->names[k]);
-      if (it != merged.end()) {
+      if (it != merged.end())
         _culebra_value_release_impl(it->second.tag, it->second.data);
-        it->second = sv_entry;
-      } else {
-        merged.emplace(obj->shape->names[k], sv_entry);
-      }
+      merged.set(obj->shape->names[k], sv_entry);
     }
   }
 
@@ -1846,12 +1843,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   // already rejected at the IR scan).
   for (int64_t i = 0; i < n_kw; i++) {
     auto it = merged.find(kw_keys[i]);
-    if (it != merged.end()) {
+    if (it != merged.end())
       _culebra_value_release_impl(it->second.tag, it->second.data);
-      it->second = kw_vals[i];
-    } else {
-      merged.emplace(kw_keys[i], kw_vals[i]);
-    }
+    merged.set(kw_keys[i], kw_vals[i]);
   }
 
   // Build resolved slab: one entry per formal param, plus extras.
