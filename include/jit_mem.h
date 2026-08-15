@@ -63,14 +63,28 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   const int64_t entry_rc = o->refcount;
   o->refcount = int64_t{1} << 40;
   JitValue self_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+  // What the body throws is logged and swallowed (§17), so the rest of the
+  // cascade proceeds — but the thrown/pending carriers are globals its
+  // `throw` overwrites even when the C++ exception dies here, which would
+  // hand the unwind in progress the wrong payload. Save them across the call,
+  // as JitIterDrive does for a throwing dispose(); the restore also releases
+  // the swallowed payload, since this catch is its handler.
+  int8_t saved_flag, saved_tag;
+  int64_t saved_data;
+  culebra_runtime_save_thrown(&saved_flag, &saved_tag, &saved_data);
   try {
     auto r = _jit_invoke(cls, self_val, 0, nullptr);
     _culebra_value_release_impl(r.tag, r.data);
+  } catch (const CulebraException& e) {
+    // Same line the interpreter logs for a user throw (str_display).
+    std::cerr << "drop: " << _culebra_uncaught_display(e.tag, e.data)
+              << std::endl;
   } catch (const std::exception& e) {
     std::cerr << "drop: " << e.what() << std::endl;
   } catch (...) {
     std::cerr << "drop: unknown error" << std::endl;
   }
+  culebra_runtime_restore_thrown(saved_flag, saved_tag, saved_data);
   o->refcount = entry_rc;
 }
 

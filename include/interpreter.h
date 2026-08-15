@@ -12998,6 +12998,11 @@ inline void _call_drop_if_present(OrderedSymbolMap* m) {
 
   try {
     fn.eval(_make_method_call_env(Value(std::move(self_view)), 0, 0));
+  } catch (const Value& v) {
+    // A user `throw` from the body: report the payload the way an uncaught
+    // one is reported, so both backends log the same line (the compiled ones
+    // reach the same text through _culebra_uncaught_display).
+    std::cerr << "drop: " << v.str_display() << std::endl;
   } catch (const std::exception& e) {
     std::cerr << "drop: " << e.what() << std::endl;
   } catch (...) {
