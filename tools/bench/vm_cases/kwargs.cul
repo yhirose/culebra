@@ -1,0 +1,98 @@
+# Keyword arguments: the call site names what it binds, and the callee may
+# collect the leftovers. The runtime resolver does the binding, against the
+# parameter metadata each chunk publishes — so the names, the defaults, the
+# keyword-only cap and the `**rest` catch-all all read the same table the
+# other backends read.
+
+let f = fn (a, b = 2) { [a, b] }
+inspect(f(1, 2))
+inspect(f(1, b: 3))
+inspect(f(a: 1, b: 3))
+inspect(f(b: 3, a: 1))
+inspect(f(a: 1))
+let g = f
+inspect(g(a: 4, b: 5))
+
+# --- `**` splat -----------------------------------------------------------
+let opts = {'a': 7, 'b': 8}
+inspect(f(**opts))
+inspect(f(**{'a': 1}, b: 9))
+inspect(f(**{'a': 1, 'b': 9}, b: 2))
+inspect(f(1, **{'b': 4}))
+
+# --- `**rest` collects what is left, in the order it arrived --------------
+let rest = fn (**kw) { kw }
+inspect(rest())
+inspect(rest(x: 1, y: 2))
+inspect(rest(**opts))
+inspect(rest(**opts, z: 0))
+inspect(rest(z: 0, **opts))
+inspect(rest(**opts).keys())
+let mixed = fn (x, y = 1, **kw) { [x, y, kw] }
+inspect(mixed(1))
+inspect(mixed(1, 2, k: 3))
+inspect(mixed(x: 1, k: 2))
+
+# --- keyword-only ---------------------------------------------------------
+let kwonly = fn (a, *, flag = false) { [a, flag] }
+inspect(kwonly(1))
+inspect(kwonly(1, flag: true))
+let allkw = fn (*, x, y = 2) { [x, y] }
+inspect(allkw(x: 1))
+inspect(allkw(x: 1, y: 5))
+let full = fn (x, y = 10, *, z, **kw) { [x, y, z, kw] }
+inspect(full(1, z: 100, bonus: 7))
+inspect(full(1, 2, z: 100, bonus: 7))
+inspect(full(1, **{'z': 50, 'bonus': 8, 'extra': 'x'}))
+
+# --- methods, constructors, and a captured callee -------------------------
+class C {
+  a: Long
+  b: String
+  new(a, b = 'x') { self.a = a; self.b = b }
+  m(p, q = 0, **kw) { [self.a, p, q, kw] }
+  static s(p = 1, **kw) { [p, kw] }
+}
+inspect(C.new(a: 1, b: 'y').b)
+inspect(C.new(b: 'z', a: 2).b)
+inspect(C.new(3).m(p: 1, extra: 9))
+inspect(C.new(4).m(1, q: 2))
+inspect(C.s(p: 5, k: 6))
+let bound = C.new(9).m
+inspect(bound(p: 1))
+
+# --- evaluation order is the source order --------------------------------
+mut log = []
+let t = fn (n) { log.push(n); n }
+inspect(f(t(1), b: t(2)))
+inspect(log)
+log = []
+inspect(f(b: t(1), a: t(2)))
+inspect(log)
+log = []
+inspect(f(**{'a': t(1)}, b: t(2)))
+inspect(log)
+
+# --- Errors ---------------------------------------------------------------
+fn probe(fx) { try { inspect(fx()) } catch e { inspect(e) } }
+probe(fn () { f(1, zz: 3) })
+probe(fn () { f(1, a: 1) })
+probe(fn () { f(**5) })
+probe(fn () { f(**{1: 2}) })
+probe(fn () { kwonly(1, true) })
+probe(fn () { allkw() })
+probe(fn () { C.new(zz: 1) })
+let typed = fn (a: Long, b: String = 'x') { [a, b] }
+probe(fn () { typed(a: 'no') })
+probe(fn () { typed(1, b: 5) })
+
+# --- Churn: every round builds and drops a rest Object --------------------
+mut i = 0
+while i < 2000 {
+  let r = rest(a: i, b: (i, i))
+  if r.a != i { throw 'bad churn' }
+  let m = f(a: i, b: i + 1)
+  if m[1] != i + 1 { throw 'bad churn 2' }
+  i = i + 1
+}
+inspect(i)

@@ -511,6 +511,14 @@ inline const std::string* _jit_first_mut_capture(void* fn_ptr) {
   return (it == tbl.end() || it->second.empty()) ? nullptr : &it->second.front();
 }
 
+// Hook for closures whose code is not a distinct fn_ptr: the VM executor
+// interprets every chunk through one entry point, so its closures cannot key
+// the per-fn JitParamMeta table either. It installs this to answer with the
+// chunk's own metadata; returns null for anything it does not recognise, so
+// the regular lookup stands. (The VM's lowering lane needs no hook — there
+// each chunk is its own function, and it registers like the AST path.)
+inline const JitParamMeta* (*_jit_closure_meta_hook)(JitClosure*) = nullptr;
+
 // Hook for stdlib namespace methods (FS/Proc/...). All such methods share
 // one trampoline fn_ptr, so they can't key the per-fn JitParamMeta table;
 // stdlib_jit.h installs this hook to resolve a kwarg call against the
@@ -542,6 +550,17 @@ inline bool (*_jit_ns_callback_arity_hook)(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count(
     void* fn_ptr, int64_t n_pos, int64_t line, int64_t col) {
   const JitParamMeta* meta = _jit_lookup_param_meta(fn_ptr);
+  if (!meta) return;
+  culebra::throw_if_too_many_positionals(meta->first_kw_only_idx, n_pos,
+                                          line, col);
+}
+
+// The same guard for a callee whose code is not a distinct fn_ptr (the VM
+// executor's closures all share one), asked by closure instead.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count_cls(
+    JitClosure* cls, int64_t n_pos, int64_t line, int64_t col) {
+  const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
+  if (!meta && _jit_closure_meta_hook) meta = _jit_closure_meta_hook(cls);
   if (!meta) return;
   culebra::throw_if_too_many_positionals(meta->first_kw_only_idx, n_pos,
                                           line, col);
@@ -1798,6 +1817,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   }
 
   const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
+  if (!meta && _jit_closure_meta_hook) meta = _jit_closure_meta_hook(cls);
   if (!meta) {
     // No parameter metadata means the closure's parameters live behind its
     // own prologue or trampoline (a VM function, a native builtin wrapper) —

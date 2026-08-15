@@ -355,6 +355,18 @@ enum class Op : uint8_t {
                // receiver and every arg, so the whole run is nil'd after),
                // and the same TAG_FUNC check — which is where a missing
                // method surfaces, as "expected Function, got Nil".
+  CallKw,      // regs[a] = call regs[b] with the keyword-carrying argument
+               // list described by kwcalls[d] over the run at c: the
+               // receiver (when the spec says so), then the positionals,
+               // the keyword values and the `**` operands, each kind in its
+               // own stretch. The runtime resolver binds names against the
+               // callee's parameter metadata and consumes every value, so
+               // the whole run is nil'd after — Call's contract, one
+               // resolver deeper.
+  RaiseErr,    // throw consts[b] (kind) / consts[c] (message) at this
+               // instruction's position. For an error the compiler can see
+               // but the language raises when control reaches it — a
+               // repeated keyword argument, say — so it stays catchable.
   Ret,         // return regs[a] from the frame (+1 transfers to the caller)
   CellNew,     // regs[a] = new JitCell absorbing regs[b]'s +1; regs[b] = nil.
                // Releases the cell previously in regs[a] (null on first run —
@@ -475,6 +487,11 @@ enum class Op : uint8_t {
   JumpIfFilled,  // jump to b when regs[a] is a supplied argument; falls
                // through to the default expression when the prologue left
                // the slot TAG_UNFILLED.
+  KwRest,      // bind the `**rest` slot regs[a]: the keyword resolver's own
+               // Object when it marked the slot (TAG_KWREST, retagged here),
+               // and a fresh empty one otherwise. No positional can fill it —
+               // whatever a plain call left at that index is an overflow
+               // argument, already released by the prologue.
   RecEnter,    // count a frame (culebra_runtime_recursion_enter). a=1 is
                // this frame's own, emitted after the parameters bind so a
                // typed-param TypeError outranks RecursionError (the JIT
@@ -1926,6 +1943,15 @@ struct Chunk {
   // expression rather than at the call. Entries only exist for calls that
   // pass arguments.
   std::vector<std::pair<uint32_t, std::vector<int64_t>>> call_argpos;
+  // One per CallKw: how its register run splits into positionals, keyword
+  // values and `**` operands, plus the keyword names (constant-pool indices)
+  // the resolver binds them by.
+  struct KwCall {
+    bool has_receiver;
+    int32_t n_pos, n_kw, n_splat;
+    std::vector<int32_t> kw_keys;
+  };
+  std::vector<KwCall> kwcalls;
 };
 
 // The argument positions the call at `ix` published, or null when it has
@@ -2289,6 +2315,14 @@ class Compiler {
     if (ast.line) {
       pend_line_ = static_cast<uint32_t>(ast.line);
       pend_col_ = static_cast<uint32_t>(ast.column);
+    }
+  }
+
+  // The same, from a position an analysis produced rather than a node.
+  void stamp_at(size_t line, size_t col) {
+    if (line) {
+      pend_line_ = static_cast<uint32_t>(line);
+      pend_col_ = static_cast<uint32_t>(col);
     }
   }
 
@@ -3478,11 +3512,8 @@ class Compiler {
     for (const auto& n : ast.nodes)
       if (n->tag == "RETURN_TYPE"_) return_type = n->token;
     if (params) {
-      for (const auto& p : params->nodes) {
-        if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p) ||
-            culebra::is_args_rest(*p))
-          reject(*p, "keyword-only / rest parameter");
-      }
+      for (const auto& p : params->nodes)
+        if (culebra::is_args_rest(*p)) reject(*p, "'*args' parameter");
     }
     auto caps = resolve_captures(ast, info);
 
@@ -3529,15 +3560,42 @@ class Compiler {
       int32_t pos_slot = -1;  // PosSnap's eager snapshot, -1 = cold path
     };
     std::vector<ParamPlan> plans;
+    // The `**rest` slot, bound at the end of the prologue: it is the one
+    // parameter no positional can fill, so its slot arrives holding either
+    // the resolver's marked Object or nothing at all.
+    int32_t rest_slot = -1;
+    std::string rest_name;
+    const peg::Ast* rest_at = nullptr;
     if (params) {
       for (const auto& p : params->nodes) {
         auto pv = culebra::view_parameter(*p);
+        if (culebra::is_kw_only_sep(*p)) {
+          // `*` takes no ABI slot: it only says where the keyword-only run
+          // begins, which is the cap on how many positionals may arrive.
+          if (fc.chunk_.first_kw_only_idx < 0)
+            fc.chunk_.first_kw_only_idx =
+                static_cast<int32_t>(fc.chunk_.param_names.size());
+          fc.chunk_.arity--;
+          continue;
+        }
+        if (pv.is_kwargs_rest) {
+          rest_name = std::string(pv.name);
+          rest_at = p.get();
+          rest_slot = fc.alloc_slot(*p, rest_name);
+          fc.chunk_.kwargs_rest_idx =
+              static_cast<int32_t>(fc.chunk_.param_names.size());
+          fc.chunk_.param_names.push_back(rest_name);
+          fc.chunk_.param_types.emplace_back();
+          fc.chunk_.param_has_default.push_back(1);  // the empty Object
+          continue;
+        }
         if (pv.pattern) {
           auto synth = std::string(
               culebra::destructure_param_name(fc.chunk_.param_names.size()));
           int32_t slot = fc.alloc_slot(*p, synth);
           fc.chunk_.param_names.push_back(synth);
           fc.chunk_.param_types.emplace_back();
+          fc.chunk_.param_has_default.push_back(0);
           pat_params.push_back({pv.pattern, slot});
           continue;
         }
@@ -3550,6 +3608,7 @@ class Compiler {
         auto abi = static_cast<int32_t>(fc.chunk_.param_names.size());
         fc.chunk_.param_names.push_back(name);
         fc.chunk_.param_types.push_back(type);
+        fc.chunk_.param_has_default.push_back(pv.default_value ? 1 : 0);
         plans.push_back({p.get(), name, std::move(type), pv.default_value,
                          slot, abi, pv.is_mut, is_sink_name(name)});
       }
@@ -3568,6 +3627,27 @@ class Compiler {
     // this is the same safety net the JIT prologue keeps.
     for (const auto& pp : pat_params)
       if (pp.slot >= fc.chunk_.required) fc.chunk_.required = pp.slot + 1;
+    // A `**rest` slot is never required: a call with no keyword content
+    // never reaches the resolver, and the prologue binds an empty Object.
+    if (fc.chunk_.kwargs_rest_idx >= 0 &&
+        fc.chunk_.kwargs_rest_idx < fc.chunk_.required)
+      fc.chunk_.required = fc.chunk_.kwargs_rest_idx;
+    // Positional callback-arity bounds: the regular parameters are those
+    // before the keyword-only run and the `**rest` slot (`*args` is out of
+    // slice, so the upper bound is always finite).
+    {
+      int32_t regular_end = fc.chunk_.first_kw_only_idx >= 0
+                                ? fc.chunk_.first_kw_only_idx
+                            : fc.chunk_.kwargs_rest_idx >= 0
+                                ? fc.chunk_.kwargs_rest_idx
+                                : fc.chunk_.arity;
+      fc.chunk_.cb_max = regular_end;
+      fc.chunk_.cb_min = 0;
+      for (int32_t i = 0; i < regular_end; i++)
+        if (i >= static_cast<int32_t>(fc.chunk_.param_has_default.size()) ||
+            !fc.chunk_.param_has_default[i])
+          fc.chunk_.cb_min++;
+    }
     // The ABI receiver. A receiver frame owns it in a slot of its own —
     // immutable, so `self = v` raises the interp's ImmutableError — and the
     // frame teardown releases it; every other frame releases it on entry.
@@ -3714,6 +3794,17 @@ class Compiler {
         fc.scopes_.back().bindings.push_back({pl.name, cslot, pl.is_mut, true});
       } else {
         fc.scopes_.back().bindings.push_back({pl.name, pl.slot, pl.is_mut});
+      }
+    }
+    // The `**rest` slot last: it is the resolver's alone, so the prologue
+    // either adopts the Object it marked or binds a fresh empty one.
+    if (rest_slot >= 0) {
+      fc.emit(Op::KwRest, rest_slot);
+      fc.scopes_.back().bindings.push_back({rest_name, rest_slot, false});
+      if (info.captured_locals.contains(rest_name)) {
+        int32_t cslot = fc.alloc_cell_slot(*rest_at, rest_name);
+        fc.emit(Op::CellNew, cslot, rest_slot);
+        fc.scopes_.back().bindings.back() = {rest_name, cslot, false, true};
       }
     }
     // Count the frame, after the parameters bound and their types checked
@@ -4552,11 +4643,20 @@ class Compiler {
                                  const peg::Ast& args, ExprResult recv) {
     const BMethSpec* spec = bmeth_lookup(post.token, args.nodes.size());
     reject_out_of_slice_method(post, spec);
-    reject_kwargs(args);
-    if (spec) return compile_builtin_method(at, post, args, recv, *spec);
+    // A built-in method binds positionally; the one keyword shape they take
+    // (a kw-only parameter name) has no place in the specs' table, so it
+    // stays out of slice. Everything else routes through the resolver.
+    if (spec) {
+      reject_kwargs(args);
+      return compile_builtin_method(at, post, args, recv, *spec);
+    }
     UfcsCand cand = ufcs_candidate(post.token, spec);
     if (cand == UfcsCand::None)
       return compile_property_call(at, post, args, recv);
+    // A visible free function means the two arms below are both live, and
+    // the UFCS one puts the receiver among the positionals — a shape the
+    // keyword resolver is not handed anywhere else. Out of slice.
+    reject_kwargs(args);
     // A visible candidate: the runtime gate decides, interp's eval_call
     // order — resolution first, arguments inside whichever arm runs. Every
     // arm writes the merge temp once per disjoint path (compile_if's
@@ -4637,6 +4737,8 @@ class Compiler {
     StampGuard pos(*this, at);
     int32_t callee = alloc_temp(at);
     emit(Op::PropRaw, callee, recv.slot, kconst_str(post.token));
+    if (has_kwargs(args))
+      return compile_kwargs_call(at, args, callee, &recv);
     int32_t argc = static_cast<int32_t>(args.nodes.size());
     int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
     alloc_temp(at);             // [0] = the receiver
@@ -4720,12 +4822,89 @@ class Compiler {
     }
   }
 
+  // Whether this argument list carries keyword content at all.
+  static bool has_kwargs(const peg::Ast& args) {
+    using namespace peg::udl;
+    for (const auto& a : args.nodes)
+      if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_ ||
+          a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_)
+        return true;
+    return false;
+  }
+
+  // `f(a, k: v, **o)` / `o.m(k: v)` — the runtime resolver binds the names
+  // against the callee's parameter metadata, so the whole list rides one op.
+  // The three kinds keep their own stretch of one contiguous run (that is
+  // how the resolver is handed them), while the VALUES evaluate in source
+  // order, which is the order both backends show.
+  ExprResult compile_kwargs_call(const peg::Ast& at, const peg::Ast& args,
+                                 int32_t callee_slot, ExprResult* recv) {
+    using namespace peg::udl;
+    // Structural errors — a positional after a keyword, a repeated keyword —
+    // are the interp's to raise where it scans the list: before any argument
+    // runs, and catchable.
+    if (auto e = culebra::check_arg_list(args)) {
+      emit_raise(e->kind, e->message, e->line, e->col);
+    }
+    struct Slotted {
+      const peg::Ast* value;
+      int32_t slot;
+    };
+    std::vector<Slotted> in_order;
+    std::vector<std::string_view> keys;
+    int32_t n_pos = 0, n_kw = 0, n_splat = 0;
+    for (const auto& a : args.nodes) {
+      if (a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_)
+        n_splat++;
+      else if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_)
+        n_kw++;
+      else
+        n_pos++;
+    }
+    int32_t off = recv ? 1 : 0;
+    int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
+    if (recv) alloc_temp(at);
+    for (int32_t i = 0; i < n_pos + n_kw + n_splat; i++) alloc_temp(at);
+    if (recv) store_into(base, *recv, /*dst_is_fresh=*/true);
+    int32_t pi = 0, ki = 0, si = 0;
+    for (const auto& a : args.nodes) {
+      if (a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_) {
+        in_order.push_back({a->nodes[0].get(),
+                            base + off + n_pos + n_kw + si++});
+      } else if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_) {
+        keys.push_back(a->nodes[0]->token);
+        in_order.push_back({a->nodes[1].get(), base + off + n_pos + ki++});
+      } else {
+        in_order.push_back({a.get(), base + off + pi++});
+      }
+    }
+    for (const auto& s : in_order)
+      store_into(s.slot, compile_expr(*s.value), /*dst_is_fresh=*/true);
+    int32_t t = alloc_temp(at);
+    auto spec = static_cast<int32_t>(chunk_.kwcalls.size());
+    Chunk::KwCall kc{recv != nullptr, n_pos, n_kw, n_splat, {}};
+    for (auto k : keys) kc.kw_keys.push_back(kconst_str(k));
+    chunk_.kwcalls.push_back(std::move(kc));
+    emit(Op::CallKw, t, callee_slot, base, spec);
+    return {t, true};
+  }
+
+  // Throw `kind`/`message` at the given source position when control
+  // reaches here — the shape an error the compiler can see but the language
+  // raises at run time takes (the interp's own timing, and catchable).
+  void emit_raise(std::string_view kind, const std::string& message,
+                  size_t line, size_t col) {
+    stamp_at(line, col);
+    emit(Op::RaiseErr, 0, kconst_str(kind), kconst_str(message));
+  }
+
   // One argument-list postfix: positional args in a contiguous run of
   // owned temps (the JitFn ABI's arg slab), one Call op. Evaluation order
   // is callee first, then args left to right — both backends' order.
   ExprResult compile_call_step(const peg::Ast& ast, const peg::Ast& args,
                                ExprResult callee) {
-    reject_kwargs(args);
+    if (has_kwargs(args))
+      return compile_kwargs_call(ast, args, callee.slot, nullptr);
     int32_t argc = static_cast<int32_t>(args.nodes.size());
     int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
     for (int32_t i = 0; i < argc; i++) alloc_temp(*args.nodes[i]);
@@ -5756,13 +5935,13 @@ inline std::string dump(const Chunk& c) {
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
       "JumpIfTag",
-      "MakeClosure", "Call",    "CallM",      "Ret",
+      "MakeClosure", "Call",    "CallM",      "CallKw",  "RaiseErr", "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "WkErr",
       "ClassMeta", "DeriveFn",  "RegPack",    "ClassObj",     "BindStatic",
       "MakeInst",  "FieldInit", "RegGetter",  "SelfMerge",
       "TraitReset", "TraitDefault", "TraitReg", "PosSnap", "ChkTypeAt",
-      "ChkArg",    "JumpIfFilled", "RecEnter",   "RecLeave",
+      "ChkArg",    "JumpIfFilled", "KwRest",     "RecEnter",   "RecLeave",
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
@@ -5812,7 +5991,27 @@ inline std::string dump(const VmProgram& p) {
 // yet); the abandoned frame's registers are reclaimed by the conservative
 // backstop, mirroring the JIT's uncaught-error path.
 struct Exec {
+  // What a keyword call binds against, for closures this executor runs. They
+  // all share one fn_ptr, so the per-fn table cannot hold them; the chunk
+  // behind the closure is in its descriptor capture, and the program built a
+  // JitParamMeta for each.
+  static const JitParamMeta* meta_for_closure(JitClosure* cls) {
+    if (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
+        cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline))
+      return nullptr;
+    if (cls->n_captures == 0 || !cls->captures || !cls->captures[0])
+      return nullptr;
+    const auto* d =
+        reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
+    if (!d || !d->prog ||
+        static_cast<size_t>(d->chunk) >= d->prog->param_metas.size())
+      return nullptr;
+    return &d->prog->param_metas[d->chunk]->meta;
+  }
+
   static void run(VmProgram& p) {
+    build_param_metas(p);
+    _jit_closure_meta_hook = &meta_for_closure;
     p.descs.resize(p.chunks.size());
     p.desc_cells.resize(p.chunks.size());
     for (size_t i = 0; i < p.chunks.size(); ++i) {
@@ -5917,9 +6116,21 @@ struct Exec {
       // which is also what a compiled caller leaves in the slab). A frame
       // that forwards its arguments (the ctor thunk) touches neither.
       if (!c.forwards_args) {
+        // Where the caller's values stop being bindings: a resolved slab
+        // fills every slot up to the arity, while a plain positional call to
+        // a function with a `**rest` has nothing to bind past its last
+        // regular parameter — the rest of what it passed is overflow. The
+        // resolver's marker on the rest slot is what tells the two apart.
+        int64_t from_args = c.arity;
+        if (c.kwargs_rest_idx >= 0 &&
+            !(c.kwargs_rest_idx < n_args &&
+              args[c.kwargs_rest_idx].tag == TAG_KWREST))
+          from_args = c.first_kw_only_idx >= 0 ? c.first_kw_only_idx
+                                               : c.kwargs_rest_idx;
         for (int32_t i = 0; i < c.arity; ++i)
-          regs[i] = i < n_args ? args[i] : JitValue{TAG_UNFILLED, 0};
-        for (int64_t i = c.arity; i < n_args; ++i)
+          regs[i] = (i < from_args && i < n_args) ? args[i]
+                                                  : JitValue{TAG_UNFILLED, 0};
+        for (int64_t i = from_args; i < n_args; ++i)
           culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
                                         args[i].data);
       }
@@ -7247,6 +7458,11 @@ struct Exec {
             culebra_runtime_type_error_typed(
                 line, col, "Function", static_cast<int8_t>(callee.tag));
           }
+          // A keyword-only parameter cannot be filled positionally, and the
+          // callee is only known here — the JIT's own guard, at the same
+          // point in its call.
+          culebra_runtime_check_pos_count_cls(
+              reinterpret_cast<JitClosure*>(target.data), in.d, line, col);
           JitValue r;
           try {
             r = _jit_invoke(reinterpret_cast<JitClosure*>(target.data), self,
@@ -7294,6 +7510,11 @@ struct Exec {
             culebra_runtime_type_error_typed(
                 line, col, "Function", static_cast<int8_t>(callee.tag));
           }
+          // A keyword-only parameter cannot be filled positionally, and the
+          // callee is only known here — the JIT's own guard, at the same
+          // point in its call.
+          culebra_runtime_check_pos_count_cls(
+              reinterpret_cast<JitClosure*>(target.data), in.d, line, col);
           // The run is receiver-then-args; the callee consumes all of it.
           // culebra_runtime_call_receiver is not mirrored: it only rewrites a
           // lowered state object's promoted body local into "no receiver",
@@ -7311,6 +7532,71 @@ struct Exec {
           for (int32_t i = 0; i <= in.d; ++i)
             regs[in.c + i] = JitValue{TAG_NIL, 0};
           regs[in.a] = r;
+          ++pc;
+          break;
+        }
+        case Op::CallKw: {
+          const Chunk::KwCall& kc = c.kwcalls[in.d];
+          auto [line, col] = chunk_pos_at(c, pc);
+          // A keyword call anchors every binder error at the call itself —
+          // the resolver reorders the values, so no argument's own position
+          // survives to report at (the interp's own answer here too).
+          culebra_runtime_set_call_site(line, col);
+          int32_t off = kc.has_receiver ? 1 : 0;
+          int32_t total = off + kc.n_pos + kc.n_kw + kc.n_splat;
+          JitValue callee = regs[in.b];
+          JitValue self = kc.has_receiver ? regs[in.c]
+                                          : JitValue{TAG_NO_SELF, 0};
+          if (callee.tag != TAG_FUNC) {
+            // The same two cold probes the plain call makes, in the same
+            // order: a callable instance becomes both callee and receiver
+            // (releasing the receiver this call started with, which nothing
+            // else takes now), and a class object hands over its `new`.
+            JitValue m = culebra_runtime_class_call_method(
+                static_cast<int8_t>(callee.tag), callee.data);
+            if (m.tag == TAG_FUNC) {
+              culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+                                           callee.data);
+              if (kc.has_receiver) {
+                culebra_runtime_value_release(static_cast<int8_t>(self.tag),
+                                              self.data);
+                regs[in.c] = JitValue{TAG_NIL, 0};
+              }
+              self = callee;
+            } else {
+              m = culebra_runtime_class_new_method(
+                  static_cast<int8_t>(callee.tag), callee.data);
+            }
+            if (m.tag != TAG_FUNC)
+              culebra_runtime_type_error_typed(
+                  line, col, "Function", static_cast<int8_t>(callee.tag));
+            callee = m;
+          }
+          // The resolver consumes the receiver and every value it is handed,
+          // so hand them over and nil the run first — it is their only owner
+          // from the call on, throw paths included.
+          std::vector<JitValue> vals(regs + in.c, regs + in.c + total);
+          vals.resize(static_cast<size_t>(total));
+          std::vector<const char*> keys;
+          keys.reserve(kc.kw_keys.size());
+          for (int32_t k : kc.kw_keys)
+            keys.push_back(reinterpret_cast<const char*>(c.consts[k].data));
+          for (int32_t i = 0; i < total; ++i)
+            regs[in.c + i] = JitValue{TAG_NIL, 0};
+          JitValue* pos_p = vals.data() + off;
+          regs[in.a] = culebra_runtime_call_with_kwargs(
+              reinterpret_cast<JitClosure*>(callee.data),
+              static_cast<int8_t>(self.tag), self.data, kc.n_pos, pos_p,
+              kc.n_kw, keys.data(), pos_p + kc.n_pos, kc.n_splat,
+              pos_p + kc.n_pos + kc.n_kw, line, col);
+          ++pc;
+          break;
+        }
+        case Op::RaiseErr: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_throw_error(
+              reinterpret_cast<const char*>(c.consts[in.b].data),
+              reinterpret_cast<const char*>(c.consts[in.c].data), line, col);
           ++pc;
           break;
         }
@@ -7383,21 +7669,33 @@ struct Exec {
           // types (null where untyped) drive type dispatch, `required` is the
           // arity floor a defaulted tail opens up, and the stable param-name
           // storage covers kwargs (unused in the slice).
+          // Only the REGULAR parameters take part in dispatch: a keyword-only
+          // slot and the `**rest` catch-all are never filled positionally, so
+          // an overload's positional arity stops where they begin.
+          auto regular_end = static_cast<size_t>(
+              f.first_kw_only_idx >= 0     ? f.first_kw_only_idx
+              : f.kwargs_rest_idx >= 0     ? f.kwargs_rest_idx
+                                           : f.arity);
           std::vector<const char*> names;
           std::vector<const char*> types;
-          names.reserve(f.param_names.size());
-          types.reserve(f.param_names.size());
-          for (const auto& n : f.param_names) names.push_back(n.c_str());
-          for (const auto& t : f.param_types)
-            types.push_back(t.empty() ? nullptr : t.c_str());
-          auto n = static_cast<int64_t>(f.param_names.size());
+          names.reserve(regular_end);
+          types.reserve(regular_end);
+          int64_t min_arity = 0;
+          for (size_t k = 0; k < regular_end; ++k) {
+            names.push_back(f.param_names[k].c_str());
+            types.push_back(f.param_types[k].empty() ? nullptr
+                                                     : f.param_types[k].c_str());
+            if (k >= f.param_has_default.size() || !f.param_has_default[k])
+              min_arity++;
+          }
+          auto n = static_cast<int64_t>(names.size());
           auto* disp = culebra_runtime_multifn_register_and_install(
               f.multifn_name.c_str(),
               in.c >= 0 ? reinterpret_cast<JitClosure*>(regs[in.c].data)
                         : nullptr,
               reinterpret_cast<JitClosure*>(regs[in.b].data),
               n ? types.data() : nullptr, n, /*variadic=*/0,
-              /*min_arity=*/f.required, n ? names.data() : nullptr);
+              /*min_arity=*/min_arity, n ? names.data() : nullptr);
           regs[in.b] = JitValue{TAG_NIL, 0};  // the registry took the +1
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(disp)};
           ++pc;
@@ -7566,6 +7864,16 @@ struct Exec {
         case Op::JumpIfFilled:
           pc = regs[in.a].tag == TAG_UNFILLED ? pc + 1
                                               : static_cast<size_t>(in.b);
+          break;
+        case Op::KwRest:
+          // The marked Object arrives already owned by this slot; anything
+          // else means no keyword content reached the call.
+          regs[in.a] =
+              regs[in.a].tag == TAG_KWREST
+                  ? JitValue{TAG_OBJECT, regs[in.a].data}
+                  : JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                             culebra_runtime_object_new())};
+          ++pc;
           break;
         case Op::RecEnter: {
           int64_t d = culebra_runtime_recursion_enter();
@@ -7911,17 +8219,44 @@ struct Lowering {
         b.CreateUnreachable();
         b.SetInsertPoint(okBB);
       }
+      // Where the caller's values stop being bindings — see the executor's
+      // own run_frame for why the rest slot's marker decides it.
+      llvm::Value* fromArgs = b.getInt64(c.arity);
+      if (c.kwargs_rest_idx >= 0) {
+        int64_t regular_end = c.first_kw_only_idx >= 0 ? c.first_kw_only_idx
+                                                       : c.kwargs_rest_idx;
+        auto* preBB = b.GetInsertBlock();
+        auto probeBB = BasicBlock::Create(j.ctx_, "kwrest.probe", fn);
+        auto joinBB = BasicBlock::Create(j.ctx_, "kwrest.join", fn);
+        b.CreateCondBr(b.CreateICmpSGT(nArgs, b.getInt64(c.kwargs_rest_idx)),
+                       probeBB, joinBB);
+        b.SetInsertPoint(probeBB);
+        auto* rp = b.CreateConstGEP1_64(
+            j.valueType_, argsPtr, static_cast<uint64_t>(c.kwargs_rest_idx));
+        auto* marked = b.CreateICmpEQ(
+            j.extract_tag(b.CreateLoad(j.valueType_, rp)),
+            b.getInt8(TAG_KWREST), "kwrest.marked");
+        b.CreateBr(joinBB);
+        b.SetInsertPoint(joinBB);
+        auto* phi = b.CreatePHI(b.getInt1Ty(), 2, "kwrest.resolved");
+        phi->addIncoming(b.getInt1(false), preBB);
+        phi->addIncoming(marked, probeBB);
+        fromArgs = b.CreateSelect(phi, b.getInt64(c.arity),
+                                  b.getInt64(regular_end), "args.from");
+      }
       // Required slots are there by the guard above; a defaulted one may not
       // be, so its slot takes the TAG_UNFILLED sentinel its JumpIfFilled
       // tests (reading past the caller's slab is the thing to avoid).
       for (int32_t i = 0; !c.forwards_args && i < c.arity; ++i) {
-        if (i < c.required) {
+        if (i < c.required && c.kwargs_rest_idx < 0) {
           auto* src = b.CreateConstGEP1_64(j.valueType_, argsPtr,
                                            static_cast<uint64_t>(i));
           b.CreateStore(b.CreateLoad(j.valueType_, src), slots[i]);
           continue;
         }
-        auto has = b.CreateICmpSGT(nArgs, b.getInt64(i), "arg.has");
+        auto has = b.CreateAnd(
+            b.CreateICmpSGT(nArgs, b.getInt64(i), "arg.has"),
+            b.CreateICmpSGT(fromArgs, b.getInt64(i), "arg.binds"));
         auto takeBB = BasicBlock::Create(j.ctx_, "arg.take", fn);
         auto unfBB = BasicBlock::Create(j.ctx_, "arg.unfilled", fn);
         auto contBB = BasicBlock::Create(j.ctx_, "arg.cont", fn);
@@ -7946,7 +8281,7 @@ struct Lowering {
         b.CreateBr(hdrBB);
         b.SetInsertPoint(hdrBB);
         auto* iv = b.CreatePHI(i64Ty, 2, "iv");
-        iv->addIncoming(b.getInt64(c.arity), fromBB);
+        iv->addIncoming(fromArgs, fromBB);
         b.CreateCondBr(b.CreateICmpSLT(iv, nArgs), bodyBB, doneBB);
         b.SetInsertPoint(bodyBB);
         auto* src = b.CreateGEP(j.valueType_, argsPtr, iv);
@@ -8160,6 +8495,14 @@ struct Lowering {
       auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
       auto fnFieldPtr = b.CreateStructGEP(j.closureType_, clsPtr, 1, "fn.ptr");
       auto fnPtr = b.CreateLoad(ptrTy, fnFieldPtr, "fn");
+      // A keyword-only parameter cannot be filled positionally, and the
+      // callee is only known here — the JIT's own guard, at the same point
+      // in its call.
+      j.emit_call(j.module_->getOrInsertFunction(rt::check_pos_count_cls,
+                                                 b.getVoidTy(), ptrTy, i64Ty,
+                                                 i64Ty, i64Ty),
+                  {clsPtr, b.getInt64(argc), b.getInt64(line),
+                   b.getInt64(col)});
       IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
       llvm::Value* slab;
       if (argc > 0) {
@@ -10560,6 +10903,20 @@ struct Lowering {
               {fns[in.b], b.getInt64(static_cast<int64_t>(n)),
                b.getInt64(f.arity)},
               "cls");
+          // Register this chunk's parameter metadata under its function's
+          // address, so a keyword call can resolve names against it. The
+          // registration is idempotent (same key, same pointer), which is
+          // why the AST path does it here too rather than at module init.
+          if (static_cast<size_t>(in.b) < p.param_metas.size()) {
+            j.emit_call(
+                j.module_->getOrInsertFunction(rt::register_param_meta,
+                                               b.getVoidTy(), ptrTy, ptrTy),
+                {fns[in.b],
+                 b.CreateIntToPtr(
+                     b.getInt64(reinterpret_cast<int64_t>(
+                         &p.param_metas[in.b]->meta)),
+                     ptrTy)});
+          }
           if (n > 0) {
             auto capsFieldPtr =
                 b.CreateStructGEP(j.closureType_, cls, 3, "caps.ptr");
@@ -10588,6 +10945,142 @@ struct Lowering {
                                     in.c + (meth ? 1 : 0), in.d, line, col,
                                     chunk_argpos_at(c, i)),
                         slots[in.a]);
+          break;
+        }
+        case Op::CallKw: {
+          const Chunk::KwCall& kc = c.kwcalls[in.d];
+          auto [line, col] = chunk_pos_at(c, i);
+          // A keyword call anchors every binder error at the call itself —
+          // see the executor's own arm.
+          b.CreateCall(j.module_->getOrInsertFunction(rt::set_call_site,
+                                                      b.getVoidTy(), i64Ty,
+                                                      i64Ty),
+                       {b.getInt64(line), b.getInt64(col)});
+          int32_t off = kc.has_receiver ? 1 : 0;
+          int32_t total = off + kc.n_pos + kc.n_kw + kc.n_splat;
+          auto callee = load_slot(in.b);
+          // The two cold probes, in the plain call's order: a callable
+          // instance becomes both callee and receiver, a class object hands
+          // over its `new`. Everything merges through entry-block scratch,
+          // the shape the rest of the lowering uses for a per-arm result.
+          IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+          auto* calleeSlot = eb.CreateAlloca(j.valueType_, nullptr, "kw.callee");
+          auto* selfSlot = eb.CreateAlloca(j.valueType_, nullptr, "kw.self");
+          b.CreateStore(callee, calleeSlot);
+          b.CreateStore(kc.has_receiver ? load_slot(in.c)
+                                        : j.make_value(b.getInt8(TAG_NO_SELF),
+                                                       b.getInt64(0)),
+                        selfSlot);
+          auto probeBB = BasicBlock::Create(j.ctx_, "kw.probe", fn);
+          auto readyBB = BasicBlock::Create(j.ctx_, "kw.ready", fn);
+          b.CreateCondBr(
+              b.CreateICmpEQ(j.extract_tag(callee), b.getInt8(TAG_FUNC)),
+              readyBB, probeBB);
+          b.SetInsertPoint(probeBB);
+          {
+            auto ovBB = BasicBlock::Create(j.ctx_, "kw.overload", fn);
+            auto ctorBB = BasicBlock::Create(j.ctx_, "kw.ctor", fn);
+            auto errBB = BasicBlock::Create(j.ctx_, "kw.err", fn);
+            auto callM = j.emit_value_call(
+                j.module_->getOrInsertFunction(rt::class_call_method,
+                                               j.valueType_, b.getInt8Ty(),
+                                               i64Ty),
+                {j.extract_tag(callee), j.extract_data(callee)}, "kw.method");
+            b.CreateCondBr(
+                b.CreateICmpEQ(j.extract_tag(callM), b.getInt8(TAG_FUNC)),
+                ovBB, ctorBB);
+            b.SetInsertPoint(ovBB);
+            j.emit_value_retain(callee);
+            if (kc.has_receiver) {
+              j.emit_value_release(load_slot(in.c));
+              b.CreateStore(j.make_nil(), slots[in.c]);
+            }
+            b.CreateStore(callee, selfSlot);
+            b.CreateStore(callM, calleeSlot);
+            b.CreateBr(readyBB);
+            b.SetInsertPoint(ctorBB);
+            auto ctorV = j.emit_value_call(
+                j.module_->getOrInsertFunction(rt::class_new_method,
+                                               j.valueType_, b.getInt8Ty(),
+                                               i64Ty),
+                {j.extract_tag(callee), j.extract_data(callee)}, "kw.ctor.m");
+            b.CreateStore(ctorV, calleeSlot);
+            b.CreateCondBr(
+                b.CreateICmpEQ(j.extract_tag(ctorV), b.getInt8(TAG_FUNC)),
+                readyBB, errBB);
+            b.SetInsertPoint(errBB);
+            j.emit_call(j.module_->getOrInsertFunction(
+                            rt::type_error_typed, b.getVoidTy(), i64Ty, i64Ty,
+                            ptrTy, b.getInt8Ty()),
+                        {b.getInt64(line), b.getInt64(col),
+                         b.CreateGlobalString("Function"),
+                         j.extract_tag(callee)});
+            if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          }
+          b.SetInsertPoint(readyBB);
+          // The values, in one slab: positionals, then keyword values, then
+          // the `**` operands. The resolver consumes every one of them, so
+          // the slots are nil'd before the call — it is their only owner
+          // from there on, throw paths included.
+          llvm::Value* slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
+          int32_t n_vals = total - off;
+          if (n_vals > 0) {
+            auto* arrTy = ArrayType::get(j.valueType_, n_vals);
+            slab = eb.CreateAlloca(arrTy, nullptr, "kw.args");
+            for (int32_t k = 0; k < n_vals; ++k)
+              b.CreateStore(load_slot(in.c + off + k),
+                            b.CreateConstGEP2_64(arrTy, slab, 0,
+                                                 static_cast<uint64_t>(k)));
+          }
+          std::vector<Constant*> keyPtrs;
+          for (int32_t k : kc.kw_keys)
+            keyPtrs.push_back(j.get_or_create_global_str(
+                std::string(_str_sv(
+                    reinterpret_cast<const char*>(c.consts[k].data))),
+                ".vm.kwname"));
+          llvm::Value* keys =
+              kc.n_kw > 0
+                  ? j.build_str_ptr_array(keyPtrs, ".vm.kwnames")
+                  : ConstantPointerNull::get(cast<PointerType>(ptrTy));
+          for (int32_t k = 0; k < total; ++k)
+            b.CreateStore(j.make_nil(), slots[in.c + k]);
+          auto self = b.CreateLoad(j.valueType_, selfSlot);
+          auto vslab = slab;
+          auto gep = [&](int32_t at) -> llvm::Value* {
+            if (n_vals == 0) return vslab;
+            return b.CreateConstGEP2_64(ArrayType::get(j.valueType_, n_vals),
+                                        vslab, 0, static_cast<uint64_t>(at));
+          };
+          b.CreateStore(
+              j.emit_value_call(
+                  j.module_->getOrInsertFunction(
+                      rt::call_with_kwargs, j.valueType_, ptrTy,
+                      b.getInt8Ty(), i64Ty, i64Ty, ptrTy, i64Ty, ptrTy, ptrTy,
+                      i64Ty, ptrTy, i64Ty, i64Ty),
+                  {b.CreateIntToPtr(j.extract_data(
+                                        b.CreateLoad(j.valueType_, calleeSlot)),
+                                    ptrTy),
+                   j.extract_tag(self), j.extract_data(self),
+                   b.getInt64(kc.n_pos), gep(0), b.getInt64(kc.n_kw), keys,
+                   gep(kc.n_pos), b.getInt64(kc.n_splat),
+                   gep(kc.n_pos + kc.n_kw), b.getInt64(line),
+                   b.getInt64(col)},
+                  "kw.res"),
+              slots[in.a]);
+          break;
+        }
+        case Op::RaiseErr: {
+          auto [line, col] = chunk_pos_at(c, i);
+          j.emit_throw_error(
+              reinterpret_cast<const char*>(c.consts[in.b].data),
+              std::string(_str_sv(
+                  reinterpret_cast<const char*>(c.consts[in.c].data))),
+              line, col);
+          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          // Instructions follow in the same run — the throw is unconditional,
+          // so they are dead, but they still need somewhere well-formed to
+          // land (a throw inside a region ends its block with an invoke).
+          b.SetInsertPoint(BasicBlock::Create(j.ctx_, "raise.after", fn));
           break;
         }
         case Op::Ret: {
@@ -10679,10 +11172,17 @@ struct Lowering {
           // The callee chunk's signature as .rodata (emit_multifn_register's
           // arrays, via the shared builder): declared types where it has
           // them, null where the param is untyped.
-          auto nparams = static_cast<int64_t>(f.param_names.size());
+          // Only the REGULAR parameters take part in dispatch — see the
+          // executor's own arm.
+          auto regular_end = static_cast<size_t>(
+              f.first_kw_only_idx >= 0 ? f.first_kw_only_idx
+              : f.kwargs_rest_idx >= 0 ? f.kwargs_rest_idx
+                                       : f.arity);
+          auto nparams = static_cast<int64_t>(regular_end);
+          int64_t min_arity = 0;
           std::vector<llvm::Constant*> nameCs;
           std::vector<llvm::Constant*> typeCs;
-          for (size_t k = 0; k < f.param_names.size(); ++k) {
+          for (size_t k = 0; k < regular_end; ++k) {
             nameCs.push_back(
                 j.get_or_create_global_str(f.param_names[k], ".vm.mfpn"));
             typeCs.push_back(
@@ -10690,6 +11190,8 @@ struct Lowering {
                     ? llvm::ConstantPointerNull::get(ptrTy)
                     : llvm::cast<llvm::Constant>(j.get_or_create_global_str(
                           f.param_types[k], ".vm.mfpt")));
+            if (k >= f.param_has_default.size() || !f.param_has_default[k])
+              min_arity++;
           }
           auto namesPtr = j.build_str_ptr_array(nameCs, ".vm.mfnames");
           auto typesPtr = j.build_str_ptr_array(typeCs, ".vm.mftypes");
@@ -10703,7 +11205,7 @@ struct Lowering {
                   rt::multifn_register_and_install, ptrTy, ptrTy, ptrTy,
                   ptrTy, ptrTy, i64Ty, i64Ty, i64Ty, ptrTy),
               {nameG, intoPtr, bodyPtr, typesPtr, b.getInt64(nparams),
-               b.getInt64(0), b.getInt64(f.required), namesPtr},
+               b.getInt64(0), b.getInt64(min_arity), namesPtr},
               "vm.mf.disp");
           b.CreateStore(j.make_nil(), slots[in.b]);
           b.CreateStore(j.make_func(disp), slots[in.a]);
@@ -10924,6 +11426,30 @@ struct Lowering {
                                     b.getInt8(TAG_UNFILLED), "arg.unf");
           b.CreateCondBr(unf, blocks.at(static_cast<int32_t>(i) + 1),
                          blocks.at(in.b));
+          break;
+        }
+        case Op::KwRest: {
+          // The marked Object arrives already owned by this slot; anything
+          // else means no keyword content reached the call.
+          auto v = load_slot(in.a);
+          auto markedBB = BasicBlock::Create(j.ctx_, "kwrest.take", fn);
+          auto emptyBB = BasicBlock::Create(j.ctx_, "kwrest.empty", fn);
+          auto joinBB = BasicBlock::Create(j.ctx_, "kwrest.done", fn);
+          b.CreateCondBr(b.CreateICmpEQ(j.extract_tag(v),
+                                        b.getInt8(TAG_KWREST)),
+                         markedBB, emptyBB);
+          b.SetInsertPoint(markedBB);
+          b.CreateStore(j.make_value(b.getInt8(TAG_OBJECT), j.extract_data(v)),
+                        slots[in.a]);
+          b.CreateBr(joinBB);
+          b.SetInsertPoint(emptyBB);
+          b.CreateStore(
+              j.make_object(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::object_new, ptrTy), {},
+                  "kwrest.new")),
+              slots[in.a]);
+          b.CreateBr(joinBB);
+          b.SetInsertPoint(joinBB);
           break;
         }
         case Op::RecEnter: {
@@ -11187,8 +11713,12 @@ struct Lowering {
   }
 };
 
-inline void run_program_via_llvm(const VmProgram& prog, bool emit_llvm,
+inline void run_program_via_llvm(VmProgram& prog, bool emit_llvm,
                                  int opt_level) {
+  // What a keyword call binds against: each chunk's function gets the
+  // metadata registered under its own address, the way the AST path
+  // registers each closure's.
+  build_param_metas(prog);
   Lowering::run_program(prog, emit_llvm, opt_level);
 }
 

@@ -915,6 +915,8 @@ inline constexpr auto iota                = "culebra_runtime_iota";
 inline constexpr auto math_range           = "culebra_runtime_math_range";
 inline constexpr auto grid_new             = "culebra_runtime_grid_new";
 inline constexpr auto check_pos_count      = "culebra_runtime_check_pos_count";
+inline constexpr auto check_pos_count_cls  =
+    "culebra_runtime_check_pos_count_cls";
 inline constexpr auto iter_collect         = "culebra_runtime_iter_collect";
 inline constexpr auto iter_join            = "culebra_runtime_iter_join";
 inline constexpr auto iter_count           = "culebra_runtime_iter_count";
