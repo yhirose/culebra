@@ -273,6 +273,16 @@ What it reports today:
   - **Unreachable code** — a statement that can never run because a
     `return` / `throw` / `break` / `continue` precedes it in the same
     block.
+  - **Non-exhaustive enum match** — a `match` whose arms name some but
+    not all of an `enum`'s variants, with no catch-all (`_`, a bare
+    binding, or a type pattern naming the enum itself). `match` returns
+    `nil` on no arm matching rather than raising, so a variant added
+    later — or simply forgotten — falls through silently. Only checked
+    when every arm's pattern unambiguously names one enum declared in
+    the same file; a variant name two enums in the file both declare is
+    skipped rather than guessed at. A guarded arm (`Circle(r) if r > 0
+    => …`) does not count as covering what it names, since the guard may
+    reject at runtime.
 
   A leading underscore (`_x`, or the bare sink `_`) marks a binding as
   intentionally unused and is never flagged. **Parameters are not

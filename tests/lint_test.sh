@@ -548,6 +548,56 @@ expect_lint_warns "range zero step"  'inspect(range(0, 9, step: 3).collect())' \
 expect_lint_clean "range one start"  'inspect(range(1, 5).collect())'
 expect_lint_clean "range single arg" 'inspect(range(5).collect())'
 
+# --- non-exhaustive enum match (falls through to nil, not an error) --------
+expect_lint_warns "missing nullary variant" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, Rect(w, h) => w * h } }
+inspect(area(Shape.Circle(2.0)))' "doesn't handle: Origin"
+expect_lint_warns "missing payload variant" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, x: Origin => 0.0 } }
+inspect(area(Shape.Circle(2.0)))' "doesn't handle: Rect"
+# A guarded arm may reject at runtime, so it does not count as covering the
+# variant it names, even though the variant appears in the source.
+expect_lint_warns "guarded arm does not count" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) if r > 0.0 => r, Rect(w, h) => w * h, x: Origin => 0.0 } }
+inspect(area(Shape.Circle(2.0)))' "doesn't handle: Circle"
+# Sound-negatives: every variant named (ctor patterns + a type pattern for
+# the nullary one), a bare `_` catch-all, and a type pattern naming the enum
+# itself (matches every variant, same as a bare catch-all).
+expect_lint_clean "all variants named" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, Rect(w, h) => w * h, x: Origin => 0.0 } }
+inspect(area(Shape.Circle(2.0)))'
+expect_lint_clean "wildcard catch-all" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, _ => 0.0 } }
+inspect(area(Shape.Circle(2.0)))'
+expect_lint_clean "enum-name type pattern is a catch-all" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, x: Shape => 0.0 } }
+inspect(area(Shape.Circle(2.0)))'
+# A variant name two enums in this file both declare is ambiguous when
+# referenced unqualified — skip rather than risk a false positive (the
+# runtime itself would match either enum'\''s instance by name alone).
+expect_lint_clean "ambiguous unqualified variant name" \
+'enum A { Foo(Long), Bar }
+enum B { Foo(String) }
+fn f(x) { match x { Foo(n) => n } }
+inspect(f(A.Foo(1)))'
+# The `Enum.Variant` qualifier disambiguates even when the bare variant name
+# collides across enums in this file.
+expect_lint_clean "qualified ctor disambiguates" \
+'enum A { Foo(Long), Bar }
+enum B { Foo(String) }
+fn f(x) { match x { A.Foo(n) => n, x: Bar => 0 } }
+inspect(f(A.Foo(1)))'
+# No enum declared in the file at all: nothing to check against.
+expect_lint_clean "no enum in file" \
+'fn f(x) { match x { 1 => "one", _ => "other" } }
+inspect(f(1))'
+
 # Errors propagate through the same CLI with exit 2:
 expect_lint_error "undefined var"      'fn f() { nope }'
 expect_lint_error "break outside loop" 'fn f() { break }'

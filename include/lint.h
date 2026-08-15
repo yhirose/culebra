@@ -1957,6 +1957,164 @@ inline void analyze_module(const peg::Ast& ast, std::vector<Diagnostic>& diags) 
 
 }  // namespace idiom
 
+// Non-exhaustive enum match: `match` returns `nil` on no arm matching
+// (docs/language.md), so a missing variant fails silently instead of
+// raising. Unlike Object shapes (unbounded key combinations, see
+// docs/language.md's exhaustiveness rationale), an enum's variant set is
+// closed by its declaration and every arm's pattern names its target
+// directly — no type inference needed, purely a syntactic tally.
+namespace enum_exhaustiveness {
+
+// One file's enum declarations, gathered before any match is checked so a
+// match can reference an enum declared later in the file (or never fully
+// declared — those enums just never appear in `by_variant`).
+struct Registry {
+  // enum name -> its declared variant names.
+  std::map<std::string, std::set<std::string, std::less<>>, std::less<>> variants;
+  // variant name -> owning enum name, or "" when 2+ enums in this file
+  // declare a variant with that name (unqualified references are then
+  // ambiguous; see resolve() below).
+  std::map<std::string, std::string, std::less<>> owner;
+};
+
+inline void collect_enums(const peg::Ast& node, Registry& reg) {
+  using namespace peg::udl;
+  if (node.tag == "ENUM_DECL"_) {
+    size_t i = culebra::first_non_decorator_index(node);
+    if (i < node.nodes.size()) {
+      auto enum_name =
+          std::string(culebra::parse_generic_head(node.nodes[i]->token).outer);
+      auto& vs = reg.variants[enum_name];
+      for (size_t j = i + 1; j < node.nodes.size(); j++) {
+        auto vname = std::string(culebra::view_variant(*node.nodes[j]).name);
+        vs.insert(vname);
+        auto [it, first] = reg.owner.try_emplace(vname, enum_name);
+        if (!first && it->second != enum_name) it->second.clear();
+      }
+    }
+  }
+  for (const auto& c : node.nodes) collect_enums(*c, reg);
+}
+
+// One `match`'s enum-coverage tally, built by folding every ungaurded arm's
+// pattern(s) through `consider`.
+struct MatchTally {
+  const Registry& reg;
+  std::string target;        // the one enum this match's patterns name
+  bool catch_all = false;    // an arm matches unconditionally
+  bool ambiguous = false;    // an unqualified name >1 enum in this file shares,
+                             // or patterns naming more than one enum
+  std::set<std::string, std::less<>> covered;
+
+  // `name` is a variant, optionally `Enum.Variant`-qualified. A qualified
+  // name trusts its own prefix over the file-wide registry when that prefix
+  // really is a declared enum owning that variant — `Shape.Circle` means
+  // Shape's Circle even if some unrelated enum also has a Circle variant
+  // (this is also the runtime's own reading: try_pattern's CTOR_PATTERN case
+  // discards the qualifier and matches by variant name alone).
+  void resolve(std::string_view name) {
+    auto dot = name.rfind('.');
+    std::string variant(dot == std::string_view::npos ? name : name.substr(dot + 1));
+    std::string owner;
+    if (dot != std::string_view::npos) {
+      std::string hint(name.substr(0, dot));
+      auto it = reg.variants.find(hint);
+      if (it != reg.variants.end() && it->second.count(variant)) owner = hint;
+    }
+    if (owner.empty()) {
+      auto it = reg.owner.find(variant);
+      if (it == reg.owner.end()) return;  // not a known variant at all
+      if (it->second.empty()) { ambiguous = true; return; }
+      owner = it->second;
+    }
+    if (!target.empty() && target != owner) { ambiguous = true; return; }
+    target = owner;
+    covered.insert(variant);
+  }
+
+  // One PRIMARY_PATTERN (already unwrapped from any top-level `|` OR).
+  void consider(const peg::Ast& p) {
+    using namespace peg::udl;
+    if (p.tag == "WILDCARD"_ || p.tag == "IDENTIFIER"_) {
+      catch_all = true;
+      return;
+    }
+    if (p.tag == "CTOR_PATTERN"_ && !p.nodes.empty()) {
+      resolve(p.nodes[0]->token);
+      return;
+    }
+    if (p.tag == "TYPED_IDENT"_ && p.nodes.size() > 1) {
+      std::string_view type_name = p.nodes[1]->token;
+      // `x: Shape` names the enum itself, not one variant — matches every
+      // instance of it, same as a bare catch-all.
+      auto head = std::string(culebra::parse_generic_head(type_name).outer);
+      if (reg.variants.count(head)) {
+        if (!target.empty() && target != head) { ambiguous = true; return; }
+        target = head;
+        catch_all = true;
+        return;
+      }
+      resolve(type_name);  // `x: Origin` / `x: Ok` — a nullary or named variant
+      return;
+    }
+    // NIL/BOOLEAN/NUMBER/STRING/ARRAY_PATTERN/OBJECT_PATTERN/TUPLE_PATTERN —
+    // not enum-related, neither covers a variant nor stands in for a catch-all.
+  }
+};
+
+inline void check_match(const peg::Ast& node, const Registry& reg,
+                        std::vector<Diagnostic>& diags) {
+  using namespace peg::udl;
+  if (reg.variants.empty()) return;  // no enum in this file to check against
+  auto mv = culebra::view_match(node);
+  MatchTally tally{reg};
+  for (const auto& arm : mv.arms->nodes) {
+    if (arm->nodes.empty()) continue;
+    // A guarded arm may reject at runtime (`Circle(r) if r > 0 => …`), so it
+    // cannot be trusted to fully dispose of what it names — conservatively,
+    // a guarded arm contributes nothing (design note: "保守的には数えない").
+    if (arm->nodes.size() > 1 && arm->nodes[1]->tag == "GUARD"_) continue;
+    const auto& pattern = *arm->nodes[0];
+    if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
+      for (const auto& sub : pattern.nodes) tally.consider(*sub);
+    } else {
+      tally.consider(pattern);
+    }
+  }
+  if (tally.ambiguous || tally.catch_all || tally.target.empty()) return;
+  const auto& all = reg.variants.at(tally.target);
+  std::vector<std::string> missing;
+  for (const auto& v : all)
+    if (!tally.covered.count(v)) missing.push_back(v);
+  if (missing.empty()) return;
+  std::string list;
+  for (size_t i = 0; i < missing.size(); i++) {
+    if (i) list += ", ";
+    list += missing[i];
+  }
+  diags.push_back(Diagnostic{
+      "NonExhaustiveMatch",
+      std::format("match on enum '{}' doesn't handle: {} (falls through to nil)",
+                 tally.target, list),
+      static_cast<long>(node.line), static_cast<long>(node.column),
+      Severity::Warning});
+}
+
+inline void analyze_walk(const peg::Ast& node, const Registry& reg,
+                         std::vector<Diagnostic>& diags) {
+  using namespace peg::udl;
+  if (node.tag == "MATCH"_) check_match(node, reg, diags);
+  for (const auto& c : node.nodes) analyze_walk(*c, reg, diags);
+}
+
+inline void analyze_module(const peg::Ast& ast, std::vector<Diagnostic>& diags) {
+  Registry reg;
+  collect_enums(ast, reg);
+  analyze_walk(ast, reg, diags);
+}
+
+}  // namespace enum_exhaustiveness
+
 // Which source lines an autofix may delete outright. `culebra lint --fix`
 // removes an unused `import` by dropping its line, so the line has to belong
 // to that import alone: the grammar lets `;` join statements, and a dead
@@ -2078,6 +2236,7 @@ inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
   _detail::toplevel::analyze_module(authored, diags);
   _detail::unreachable::analyze_module(authored, diags);
   _detail::idiom::analyze_module(authored, diags);
+  _detail::enum_exhaustiveness::analyze_module(authored, diags);
   std::sort(diags.begin(), diags.end(), [](const Diagnostic& a,
                                            const Diagnostic& b) {
     return a.line != b.line ? a.line < b.line : a.col < b.col;
