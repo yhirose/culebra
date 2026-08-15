@@ -830,3 +830,28 @@ let r_negnc = try {
   e
 }
 assert_eq(r_negnc.kind, 'IndexError')
+
+# A compound assignment through a container reads its current value as a
+# borrow, but the step's helper releases both operands on its unwind edge
+# (callee-cleans-on-throw). Without a ref minted for that edge, a throwing
+# step over-releases the element and the damage surfaces in an unrelated
+# allocation much later — so this churns rather than asserting once.
+compound_throw_churn = fn () {
+  mut caught = 0
+  for _ in 0..20000 {
+    let holder = [[1, 2, 3]]
+    let obj = {"k": [1, 2, 3]}
+    try {
+      holder[0] += 1
+    } catch e {
+      caught += 1
+    }
+    try {
+      obj.k += 1
+    } catch e {
+      caught += 1
+    }
+  }
+  caught
+}
+assert_eq(40000, compound_throw_churn())

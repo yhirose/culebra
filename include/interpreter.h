@@ -11534,13 +11534,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value eval_bin_op_step(const Value& lhs, const Value& rhs, char ope,
                          const std::shared_ptr<Environment>& env) {
     if (lhs.type == Value::Tensor || rhs.type == Value::Tensor) {
+      // An operator with no tensor form, or an operand that will not lift,
+      // reports the same canonical wording as every other arithmetic type
+      // error (`**` and the JIT's tensor path already route here).
+      auto bad = [&]() -> Value {
+        culebra::throw_arith_type_error(std::string_view(&ope, 1),
+                                        lhs.type_name(), rhs.type_name());
+      };
       auto tensor_op = op_to_tensor_op(std::string_view(&ope, 1));
-      if (!tensor_op) throw CulebraError("TypeError", "type error.");
+      if (!tensor_op) return bad();
       Dtype dt = (lhs.type == Value::Tensor) ? lhs.to_tensor().impl->dtype
                                              : rhs.to_tensor().impl->dtype;
       auto l = lift_to_tensor(lhs, dt);
       auto r = lift_to_tensor(rhs, dt);
-      if (!l || !r) throw CulebraError("TypeError", "type error.");
+      if (!l || !r) return bad();
       return Value(TensorValue(tensor_binop(*tensor_op, l, r)));
     }
     // Container operations on Set / Tuple use method form

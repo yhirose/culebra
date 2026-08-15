@@ -1312,8 +1312,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_binop(
 // Tensor. M2.0 requires both operands to be Tensor; scalar broadcast
 // lands in M2.1.
 inline std::optional<JitValue> _try_tensor_binop(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int op_id) {
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int op_id, const char* op,
+    int64_t line, int64_t col) {
   if (lt != TAG_TENSOR && rt != TAG_TENSOR) return std::nullopt;
+  // Only Tensor and numeric operands lift. Anything else is the same
+  // canonical arithmetic type error the interp reports, not the terse one
+  // `_culebra_coerce_num` would raise from inside the lift.
+  auto liftable = [](int8_t t) {
+    return t == TAG_TENSOR || t == TAG_LONG || t == TAG_FLOAT;
+  };
+  if (!liftable(lt) || !liftable(rt)) {
+    culebra::throw_arith_type_error(op, _culebra_tag_name(lt),
+                                    _culebra_tag_name(rt), line, col);
+  }
   auto* t = culebra_runtime_tensor_binop(lt, ld, rt, rd, op_id);
   return JitValue{TAG_TENSOR, reinterpret_cast<int64_t>(t)};
 }
@@ -1329,7 +1340,9 @@ inline std::optional<JitValue> _try_tensor_binop(
   culebra_runtime_num_##name##_borrow(                                  \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \
       int64_t line, int64_t col) {                                      \
-    if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id)) return *r;   \
+    if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id, opstr, line,  \
+                                   col))                                \
+      return *r;                                                        \
     if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method,        \
                                          reflect))                      \
       return *r;                                                        \
@@ -1360,7 +1373,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_concat(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
-                                  static_cast<int>(culebra::Op::Add)))
+                                  static_cast<int>(culebra::Op::Add), "+",
+                                  line, col))
     return *r;
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__add__", true))
     return *r;
@@ -1393,7 +1407,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
-                                  static_cast<int>(culebra::Op::Div)))
+                                  static_cast<int>(culebra::Op::Div), "/",
+                                  line, col))
     return *r;
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__div__", false))
     return *r;
@@ -1613,6 +1628,9 @@ inline JitValue _try_tensor_inplace(int8_t lt, int64_t ld,
   if (rt == TAG_TENSOR) {
     rhs = reinterpret_cast<JitTensor*>(rd)->impl;
   } else {
+    // A non-liftable rhs declines here rather than throwing, so the regular
+    // binop helper below is the single source of the type error's wording.
+    if (rt != TAG_LONG && rt != TAG_FLOAT) return {TAG_NIL, 0};
     rhs = culebra::tensor_scalar(_culebra_coerce_num(rt, rd),
                                  lhs_t->impl->dtype);
   }
@@ -2478,7 +2496,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reshape(
   new_dims.reserve(dims->size);
   for (size_t i = 0; i < dims->size; i++) {
     if (dims->items[i].tag != TAG_LONG) {
-      throw culebra::CulebraError("TypeError", "type error.");
+      throw culebra::CulebraError("TypeError", "type error");
     }
     new_dims.push_back(dims->items[i].data);
   }

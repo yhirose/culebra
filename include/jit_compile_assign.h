@@ -359,11 +359,14 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
         auto curTag = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
         auto curData = builder_.CreateLoad(builder_.getInt64Ty(), outData);
         llvm::Value* cur = make_value(curTag, curData);
-        // array_get returns a +0 borrow; emit_arith_step does not consume
-        // operands; the Tensor in-place path retains lhs itself before
-        // returning. So no retain/release is needed on `cur`.
+        // array_get returns a +0 borrow, but the step's helper releases both
+        // operands on its unwind edge (callee-cleans-on-throw). Mint a ref so
+        // that edge has one to take, and drop it again on the normal path —
+        // the same shape as the object-index arm below.
+        emit_value_retain(cur);
         to_store_arr = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
         emit_value_release(rval);
+        emit_value_release(cur);
       }
       emit_call(
           module_->getOrInsertFunction(
@@ -609,11 +612,14 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
         builder_.CreateUnreachable();
 
         builder_.SetInsertPoint(hasBB);
-        // emit_property_get returns +0 borrowed (no slot retain),
-        // so cur does not need a matching release; only rval does.
+        // emit_property_get returns +0 borrowed (no slot retain), but the
+        // step's helper releases both operands on its unwind edge. Mint a ref
+        // for that edge and drop it again on the normal path.
         auto cur = emit_property_get(lval, name);
+        emit_value_retain(cur);
         to_store = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
         emit_value_release(rval);
+        emit_value_release(cur);
       } else {
         // Plain `o.k = v` on a closed namespace: an absent own member
         // isn't a legitimate extension point (mirrors interp's

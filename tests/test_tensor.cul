@@ -481,4 +481,35 @@ tensor_drop_deep = fn () {
 }
 assert_eq(0, tensor_drop_deep())
 
+# An operand a Tensor operator cannot lift reports the canonical arithmetic
+# wording, the same as every other type error of that shape — including the
+# operators that have no tensor form at all (`%`, `@`).
+let op_err = fn (f) {
+  try {
+    f()
+    "no throw"
+  } catch e {
+    e.message
+  }
+}
+let ten_err = Tensor.from([1.0])
+assert_eq(op_err(fn () { ten_err + 'x' }),
+          "type error: cannot apply '+' to Tensor and String")
+assert_eq(op_err(fn () { 'x' * ten_err }),
+          "type error: cannot apply '*' to String and Tensor")
+assert_eq(op_err(fn () { ten_err - nil }),
+          "type error: cannot apply '-' to Tensor and Nil")
+assert_eq(op_err(fn () { ten_err / [1] }),
+          "type error: cannot apply '/' to Tensor and Array")
+assert_eq(op_err(fn () { ten_err % 2 }),
+          "type error: cannot apply '%' to Tensor and Long")
+assert_eq(op_err(fn () { ten_err @ ten_err }),
+          "type error: cannot apply '@' to Tensor and Tensor")
+# The compound forms route through the in-place helper, which declines a
+# non-liftable rhs so the wording has a single source.
+assert_eq(op_err(fn () {
+  mut c = Tensor.from([1.0])
+  c += 'x'
+}), "type error: cannot apply '+' to Tensor and String")
+
 inspect("test_tensor: OK")
