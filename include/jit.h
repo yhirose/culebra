@@ -7815,8 +7815,6 @@ struct JIT {
     auto iterable = compile(iter_expr).consume_unchecked();
     auto iterSlot = make_stack_slot("for.iterable", iterable);
     define_var("for.iterable", iterSlot);  // '.' name: unreachable by source
-    auto tag = extract_tag(iterable);
-    auto data = extract_data(iterable);
 
     // A Set walks a temporary Array of its members. Declaring the slot here
     // (nil on every other branch) keeps one release on every exit path —
@@ -7853,107 +7851,9 @@ struct JIT {
     cursor.obj = ownSlot.alloca;
     cursor.iter = protoIterSlot.alloca;
 
-    auto arrayBB = llvm::BasicBlock::Create(ctx_, "for.array", fn);
-    auto setBB    = llvm::BasicBlock::Create(ctx_, "for.set", fn);
-    auto objectBB = llvm::BasicBlock::Create(ctx_, "for.object", fn);
-    auto stringBB = llvm::BasicBlock::Create(ctx_, "for.string", fn);
-    auto badBB = llvm::BasicBlock::Create(ctx_, "for.bad_type", fn);
-    auto headBB = llvm::BasicBlock::Create(ctx_, "for.head", fn);
     auto endBB = llvm::BasicBlock::Create(ctx_, "for.end", fn);
-
-    auto sw = builder_.CreateSwitch(tag, badBB, 6);
-    sw->addCase(builder_.getInt8(TAG_ARRAY), arrayBB);
-    sw->addCase(builder_.getInt8(TAG_TUPLE), arrayBB);
-    sw->addCase(builder_.getInt8(TAG_SET), setBB);
-    sw->addCase(builder_.getInt8(TAG_OBJECT), objectBB);
-    sw->addCase(builder_.getInt8(TAG_STRING), stringBB);
-    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), stringBB);
-
-    builder_.SetInsertPoint(badBB);
-    // Attribute the not-iterable error to the iterable expression (like
-    // interp's _get_iterator), not the `for` keyword — compile(iter_expr)
-    // above restored current_line_/col to the loop head via PosGuard.
-    if (iter_expr.line) current_line_ = iter_expr.line;
-    if (iter_expr.column) current_column_ = iter_expr.column;
-    emit_type_error_typed("Array, Tuple, Set, Object, or String", tag);
-    builder_.CreateUnreachable();
-
-    builder_.SetInsertPoint(arrayBB);
-    emit_for_open_array(cursor, builder_.CreateIntToPtr(data, ptrTy));
-    builder_.CreateBr(headBB);
-
-    // Set: materialize members into a fresh Array, then walk it with the
-    // array cursor.
-    builder_.SetInsertPoint(setBB);
-    auto setSrcPtr = builder_.CreateIntToPtr(data, ptrTy);
-    auto setMembersArr = emit_call(
-        module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
-        {setSrcPtr}, "for.set.arr");
-    store_slot(setSlot, make_array(setMembersArr));
-    emit_for_open_array(cursor, setMembersArr);
-    builder_.CreateBr(headBB);
-
-    // Object branch picks which value drives the iterator protocol:
-    //   range        → its own range_iter (a fresh +1)
-    //   `iter` prop  → the object itself (Math.range, user iterators,
-    //                  generators, `.code_points()`/`.graphemes()` et al.)
-    //   otherwise    → the builtin key iterator (a fresh +1)
-    // All three converge on one protocol setup, so the loop below is
-    // emitted once no matter which arm ran.
-    builder_.SetInsertPoint(objectBB);
-    auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
-    // A range value iterates start..end (errors if unbounded). It carries
-    // no `iter` property, so it must be handled before the keys fallback.
-    auto rangeBB = llvm::BasicBlock::Create(ctx_, "for.obj.range", fn);
-    auto notRangeBB = llvm::BasicBlock::Create(ctx_, "for.obj.notrange", fn);
-    auto protoOpenBB = llvm::BasicBlock::Create(ctx_, "for.obj.open", fn);
-    builder_.CreateCondBr(emit_is_range(iterable), rangeBB, notRangeBB);
-
-    builder_.SetInsertPoint(rangeBB);
-    auto rangeIt = emit_call(
-        module_->getOrInsertFunction(rt::range_iter, ptrTy, builder_.getInt64Ty(),
-                                     builder_.getInt64Ty(), builder_.getInt64Ty()),
-        {data, current_line_val(), current_column_val()});
-    store_slot(ownSlot, make_object(rangeIt));
-    builder_.CreateBr(protoOpenBB);
-
-    builder_.SetInsertPoint(notRangeBB);
-    auto iterKeyPtr = get_or_create_global_str("iter", ".iter.key");
-    auto hasIter = emit_object_has(objPtr, iterKeyPtr);
-    auto keysBB = llvm::BasicBlock::Create(ctx_, "for.obj.keys", fn);
-    auto protoBB = llvm::BasicBlock::Create(ctx_, "for.obj.proto", fn);
-    builder_.CreateCondBr(hasIter, protoBB, keysBB);
-
-    builder_.SetInsertPoint(keysBB);
-    // No user-defined `iter`: drive the builtin object_iter so the same
-    // mut_count fail-fast that protects `obj.iter()` also covers the
-    // `for k in obj` sugar.
-    auto objIter = emit_call(module_->getFunction(rt::object_iter),
-                             {objPtr});
-    store_slot(ownSlot, make_object(objIter));
-    builder_.CreateBr(protoOpenBB);
-
-    builder_.SetInsertPoint(protoBB);
-    // The slot owns the value the iterator is derived from, so the borrowed
-    // receiver is retained to match the fresh +1 the other two arms hand
-    // over. For a self-returning iterator (a generator's iter() = this) that
-    // makes two refs on one object, released once each by the two slots.
-    store_slot(ownSlot, emit_borrow_to_owned(make_value(TAG_OBJECT, data)));
-    builder_.CreateBr(protoOpenBB);
-
-    builder_.SetInsertPoint(protoOpenBB);
-    emit_for_open_protocol(
-        cursor, builder_.getInt64(static_cast<int64_t>(iter_expr.line)),
-        builder_.getInt64(static_cast<int64_t>(iter_expr.column)));
-    builder_.CreateBr(headBB);
-
-    builder_.SetInsertPoint(stringBB);
-    // For StringView, materialize via strlike_to_cstr (TAG_STRING input
-    // returns the same ptr — no copy).
-    auto strDataPtr = emit_call(
-        module_->getFunction(rt::strlike_to_cstr), {tag, data});
-    emit_for_open_string(cursor, strDataPtr);
-    builder_.CreateBr(headBB);
+    auto headBB = emit_for_open_dispatch(cursor, iterable, setSlot, ownSlot,
+                                         iter_expr.line, iter_expr.column);
 
     // One head, one body. The head switches on the cursor kind and each
     // advance branches to the shared body with this iteration's element in
@@ -8540,6 +8440,131 @@ struct JIT {
         builder_.CreateLoad(builder_.getInt64Ty(), c.out_data, "for.p.data");
     builder_.CreateStore(make_value(t, d), c.elem);
     builder_.CreateBr(bodyBB);
+  }
+
+  // The for-in head: switch on the iterable's tag, fill `c` with the cursor
+  // that walks it, and hand back the block every arm branches to. Shared by
+  // compile_for and the bytecode VM's ForOpen, so a loop opens the same way
+  // whichever lane compiled it — including which value drives the protocol
+  // and which slot ends up owning it.
+  //
+  // `set_slot` and `own_slot` are the caller's owning Value slots (a scope
+  // slot in the AST path, a frame slot in the VM's): the Set arm parks its
+  // materialised member Array in the first, and the object arms park what
+  // `iter()` is called on in the second, so every exit path releases them.
+  // `iter_line` / `iter_col` are the iterable expression's position — where
+  // the interpreter reports both a non-iterable and a broken protocol.
+  llvm::BasicBlock* emit_for_open_dispatch(const ForCursor& c,
+                                           llvm::Value* iterable,
+                                           const VarSlot& set_slot,
+                                           const VarSlot& own_slot,
+                                           size_t iter_line, size_t iter_col) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto tag = extract_tag(iterable);
+    auto data = extract_data(iterable);
+
+    auto arrayBB = llvm::BasicBlock::Create(ctx_, "for.array", fn);
+    auto setBB    = llvm::BasicBlock::Create(ctx_, "for.set", fn);
+    auto objectBB = llvm::BasicBlock::Create(ctx_, "for.object", fn);
+    auto stringBB = llvm::BasicBlock::Create(ctx_, "for.string", fn);
+    auto badBB = llvm::BasicBlock::Create(ctx_, "for.bad_type", fn);
+    auto headBB = llvm::BasicBlock::Create(ctx_, "for.head", fn);
+
+    auto sw = builder_.CreateSwitch(tag, badBB, 6);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrayBB);
+    sw->addCase(builder_.getInt8(TAG_TUPLE), arrayBB);
+    sw->addCase(builder_.getInt8(TAG_SET), setBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), objectBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), stringBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), stringBB);
+
+    builder_.SetInsertPoint(badBB);
+    // Attribute the not-iterable error to the iterable expression (like
+    // interp's _get_iterator), not the `for` keyword — compile(iter_expr)
+    // above restored current_line_/col to the loop head via PosGuard.
+    if (iter_line) current_line_ = iter_line;
+    if (iter_col) current_column_ = iter_col;
+    emit_type_error_typed("Array, Tuple, Set, Object, or String", tag);
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(arrayBB);
+    emit_for_open_array(c, builder_.CreateIntToPtr(data, ptrTy));
+    builder_.CreateBr(headBB);
+
+    // Set: materialize members into a fresh Array, then walk it with the
+    // array cursor.
+    builder_.SetInsertPoint(setBB);
+    auto setSrcPtr = builder_.CreateIntToPtr(data, ptrTy);
+    auto setMembersArr = emit_call(
+        module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
+        {setSrcPtr}, "for.set.arr");
+    store_slot(set_slot, make_array(setMembersArr));
+    emit_for_open_array(c, setMembersArr);
+    builder_.CreateBr(headBB);
+
+    // Object branch picks which value drives the iterator protocol:
+    //   range        → its own range_iter (a fresh +1)
+    //   `iter` prop  → the object itself (Math.range, user iterators,
+    //                  generators, `.code_points()`/`.graphemes()` et al.)
+    //   otherwise    → the builtin key iterator (a fresh +1)
+    // All three converge on one protocol setup, so the loop below is
+    // emitted once no matter which arm ran.
+    builder_.SetInsertPoint(objectBB);
+    auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
+    // A range value iterates start..end (errors if unbounded). It carries
+    // no `iter` property, so it must be handled before the keys fallback.
+    auto rangeBB = llvm::BasicBlock::Create(ctx_, "for.obj.range", fn);
+    auto notRangeBB = llvm::BasicBlock::Create(ctx_, "for.obj.notrange", fn);
+    auto protoOpenBB = llvm::BasicBlock::Create(ctx_, "for.obj.open", fn);
+    builder_.CreateCondBr(emit_is_range(iterable), rangeBB, notRangeBB);
+
+    builder_.SetInsertPoint(rangeBB);
+    auto rangeIt = emit_call(
+        module_->getOrInsertFunction(rt::range_iter, ptrTy, builder_.getInt64Ty(),
+                                     builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {data, current_line_val(), current_column_val()});
+    store_slot(own_slot, make_object(rangeIt));
+    builder_.CreateBr(protoOpenBB);
+
+    builder_.SetInsertPoint(notRangeBB);
+    auto iterKeyPtr = get_or_create_global_str("iter", ".iter.key");
+    auto hasIter = emit_object_has(objPtr, iterKeyPtr);
+    auto keysBB = llvm::BasicBlock::Create(ctx_, "for.obj.keys", fn);
+    auto protoBB = llvm::BasicBlock::Create(ctx_, "for.obj.proto", fn);
+    builder_.CreateCondBr(hasIter, protoBB, keysBB);
+
+    builder_.SetInsertPoint(keysBB);
+    // No user-defined `iter`: drive the builtin object_iter so the same
+    // mut_count fail-fast that protects `obj.iter()` also covers the
+    // `for k in obj` sugar.
+    auto objIter = emit_call(module_->getFunction(rt::object_iter),
+                             {objPtr});
+    store_slot(own_slot, make_object(objIter));
+    builder_.CreateBr(protoOpenBB);
+
+    builder_.SetInsertPoint(protoBB);
+    // The slot owns the value the iterator is derived from, so the borrowed
+    // receiver is retained to match the fresh +1 the other two arms hand
+    // over. For a self-returning iterator (a generator's iter() = this) that
+    // makes two refs on one object, released once each by the two slots.
+    store_slot(own_slot, emit_borrow_to_owned(make_value(TAG_OBJECT, data)));
+    builder_.CreateBr(protoOpenBB);
+
+    builder_.SetInsertPoint(protoOpenBB);
+    emit_for_open_protocol(c,
+                           builder_.getInt64(static_cast<int64_t>(iter_line)),
+                           builder_.getInt64(static_cast<int64_t>(iter_col)));
+    builder_.CreateBr(headBB);
+
+    builder_.SetInsertPoint(stringBB);
+    // For StringView, materialize via strlike_to_cstr (TAG_STRING input
+    // returns the same ptr — no copy).
+    auto strDataPtr = emit_call(
+        module_->getFunction(rt::strlike_to_cstr), {tag, data});
+    emit_for_open_string(c, strDataPtr);
+    builder_.CreateBr(headBB);
+    return headBB;
   }
 
   void emit_for_open_string(const ForCursor& c, llvm::Value* strPtr) {

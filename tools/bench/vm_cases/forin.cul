@@ -1,0 +1,64 @@
+# Generic for-in: everything the iterator protocol reaches. An Array/Tuple
+# and a Set's members walk by index, a String by unicode scalar, and an
+# Object through `iter()` — its own for a user iterator or a generator, the
+# range iterator for a Range, the built-in key iterator otherwise. The
+# counted-range fast path (`for i in a..b`) is basic_ranges.cul's subject;
+# the per-iteration bindings are forin_capture.cul and the teardown is
+# forin_control.cul (one chunk only has 256 slots, and a cursor run is
+# twelve of them).
+
+# --- the container cursors ---
+for x in [1, 'a', nil, true] { inspect(x) }
+for x in (1, 2.5) { inspect(x) }
+for c in 'aβ漢' { inspect(c) }
+for c in 'ab'.view() { inspect(type_of(c)) }
+mut set_seen = []
+for x in {3, 1, 2} { set_seen.push(x) }
+inspect(set_seen.sorted())
+for x in [] { inspect('never') }
+for c in '' { inspect('never') }
+
+# --- the object arms ---
+let d = {a: 1, b: 2, c: 3}
+for kv in d { inspect(kv) }          # (key, value) pairs
+for (k, v) in d { inspect(k + '=' + to_string(v)) }
+for k, v in d { inspect(k) }         # bare-comma target
+for _ in d { inspect('tick') }
+let r = 0..3
+for x in r { inspect(x) }            # a Range value, not the literal form
+for x in 0..6 by 2 { inspect(x) }
+for x in 5..0 by -2 { inspect(x) }
+
+# A user iterator: `iter()` hands back self, `has_next()`/`next()` walk.
+class Countdown {
+  n: Long
+  new(n) { self.n = n }
+  iter() { self }
+  has_next() { self.n > 0 }
+  next() { let v = self.n; self.n = v - 1; v }
+}
+for x in Countdown.new(3) { inspect(x) }
+
+# has_next() is read for truthiness, not for a Bool tag (docs §18.5).
+class NumericGate {
+  n: Long
+  new() { self.n = 0 }
+  iter() { self }
+  has_next() { if self.n < 3 { 1 } else { 0 } }
+  next() { let v = self.n; self.n = v + 1; v }
+}
+for x in NumericGate.new() { inspect(x) }
+
+# A generator is an ordinary iterator-shaped Object here.
+fn gen() {
+  yield 1
+  yield 2
+  yield 3
+}
+for x in gen() { inspect(x) }
+
+# The lazy combinators hand back iterators, so they land on the same arm.
+for x in [1, 2, 3].map(fn (v) { v * 10 }) { inspect(x) }
+for x in [1, 2, 3, 4].filter(fn (v) { v % 2 == 0 }) { inspect(x) }
+
+inspect('forin OK')

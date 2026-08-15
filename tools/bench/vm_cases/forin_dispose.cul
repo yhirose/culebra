@@ -1,0 +1,42 @@
+# How a for-in tears down: whose `drop` fires before the iterator is closed,
+# and what a `dispose` that throws does on each exit path. Its own file
+# because a cursor run is twelve slots and one chunk has 256.
+
+# The iteration's bindings die before the iterator does, on every exit.
+class Res {
+  id: String
+  new(id) { self.id = id }
+  drop() { inspect('drop ' + self.id) }
+}
+class Source {
+  n: Long
+  new() { self.n = 0 }
+  iter() { self }
+  has_next() { self.n < 2 }
+  next() { let v = self.n; self.n = v + 1; Res.new('e' + to_string(v)) }
+  dispose() { inspect('dispose') }
+}
+fn source() { Source.new() }
+for res in source() { let local = Res.new('L'); inspect('saw ' + res.id) }
+for res in source() { let local = Res.new('L'); break }
+try { for res in source() { let local = Res.new('L'); throw 'x' } }
+catch e { inspect('caught') }
+fn leave_res() { for res in source() { let local = Res.new('L'); return 'left' } }
+inspect(leave_res())
+
+# A dispose that throws on a drain propagates (docs §18.5 swallows one only
+# while an exception is already unwinding) — and the loop's own scope still
+# releases on the way out, so the iterable's drop fires.
+class Sour {
+  n: Long
+  new() { self.n = 0 }
+  iter() { self }
+  has_next() { self.n < 2 }
+  next() { let v = self.n; self.n = v + 1; v }
+  dispose() { throw 'from dispose' }
+  drop() { inspect('drop sour') }
+}
+try { for v in Sour.new() { inspect(v) } } catch e { inspect('drain caught ' + e) }
+try { for v in Sour.new() { break } } catch e { inspect('break caught ' + e) }
+
+inspect('forin_dispose OK')

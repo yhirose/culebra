@@ -1,0 +1,25 @@
+# The per-iteration half of the generic for-in (forin.cul walks the arms):
+# a destructuring binding's leaves, and the closures a body makes over them.
+# Its own file because a captured binding pins its slot, so the cursor runs
+# of later loops in the same chunk stack up against the 256-slot frame.
+
+# --- destructuring loop bindings ---
+for (a, b) in [[1, 2], (3, 4)] { inspect(a + b) }
+for [x, ...rest] in [[1, 2, 3], [4]] { inspect((x, rest)) }
+for {k: v} in [{k: 9}, {k: 8}] { inspect(v) }
+for (a, _) in {p: 1, q: 2} { inspect(a) }
+
+# --- the loop variable is per-iteration ---
+mut fs = []
+for x in ['a', 'b', 'c'] { fs.push(fn () { x }) }
+for f in fs { inspect(f()) }
+mut gs = []
+for (k, v) in {p: 1, q: 2} { gs.push(fn () { k + to_string(v) }) }
+for g in gs { inspect(g()) }
+
+# It shadows an outer binding and is gone afterwards.
+let x = 'outer'
+for x in [1, 2] { inspect(x) }
+inspect(x)
+
+inspect('forin_capture OK')

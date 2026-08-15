@@ -511,6 +511,22 @@ enum class Op : uint8_t {
   DeferRunTo,  // culebra_runtime_defer_run_to(regs[a]): pop and run every
                // defer above the mark, LIFO. A defer body that throws drops
                // the rest to the mark and propagates (interp/Swift order).
+  ForOpen,     // open a for-in over the iterable in regs[a+kForIterable]:
+               // switch on its tag, fill the cursor run at a, and park what
+               // the protocol derives from and the iterator `iter()` returns
+               // in the run's own slots (so every exit path releases them).
+               // Throws for a non-iterable and for a broken protocol, both at
+               // the iterable expression — this instruction's position.
+  ForNext,     // advance the cursor at a: on a step, regs[a+kForElem] takes
+               // the element's +1 and execution falls through; on a drained
+               // iterator, jump to b. The element sits in that slot only
+               // until the binding below takes it over, which is what makes
+               // the unwind ladder's release of it exactly-once.
+  ForDispose,  // close the iterator at a+kForIter if it carries `dispose`,
+               // once (a's kForDisposed slot is the latch every exit path
+               // shares). d=1 swallows a throwing dispose — docs §18.5 only
+               // does that while an exception is already unwinding. Emitted
+               // by the release ladders, at the rung that frees the iterator.
   ForPrep,     // control quad at base=a: {cur, end, step, exhausted}. Rejects
                // a zero step (ValueError at the range expression's position,
                // like rt::range_step_check), zeroes the exhausted slot, jumps
@@ -531,6 +547,33 @@ enum class Op : uint8_t {
 struct Insn {
   Op op;
   int32_t a = 0, b = 0, c = 0, d = 0;
+};
+
+// A generic for-in's cursor: one contiguous slot run, allocated by
+// compile_for_generic and addressed by these offsets from its base. The
+// leading five hold Values the loop's scope owns, so the ordinary release
+// ladder frees them on every exit; the rest are plain Longs the walk keeps
+// its place in, whose release is a no-op. `kForIter` is the rung the ladder
+// disposes at — after the element, before the value it was derived from,
+// which is the order the other two backends tear a loop down in.
+enum ForSlot : int32_t {
+  // The latch sits at the base so the ladder — which walks the run downwards
+  // — clears it AFTER the dispose that sets it. Anywhere above kForIter and
+  // the write would outlive its own release, leaving a stale Long for
+  // whatever the slot index becomes next.
+  kForDisposed = 0,  // 1 once dispose ran: no exit path repeats it
+  kForIterable = 1,  // the iterable expression's result
+  kForSetArr = 2,    // a Set's materialised member Array (nil otherwise)
+  kForSrc = 3,       // what the protocol derives from (nil for array/string)
+  kForIter = 4,      // the iterator `iter()` returned (nil for array/string)
+  kForElem = 5,      // this iteration's element, nil outside the hand-over
+  kForKind = 6,      // ForKind: which cursor walks this iterable
+  kForPos = 7,       // element index / byte offset
+  kForCount = 8,     // element count / byte length
+  kForPtr = 9,       // array storage / string bytes
+  kForHasNext = 10,  // the hoisted has_next closure
+  kForNext = 11,     // the hoisted next closure
+  kForSlots = 12,
 };
 
 // --- Value-type built-in methods -------------------------------------------
@@ -1500,6 +1543,11 @@ struct Chunk {
     uint32_t cells_before;     // cells that existed here (see slot_cell_rank)
     uint32_t handler = kNoHandler;
     int32_t caught_slot = -1;
+    // A for-in's cursor base when this step is that loop's own scope: the
+    // ladder closes the iterator as it reaches `dispose_base + kForIter`,
+    // so the iteration's bindings — released by the inner steps already
+    // walked — die before it, as they do on every other exit.
+    int32_t dispose_base = -1;
   };
   std::vector<Cleanup> cleanups;
   // The statement temporaries live at each pc, delta-coded (an entry only
@@ -1720,6 +1768,9 @@ class Compiler {
     uint32_t start_pc = 0;
     int32_t defer_mark = -1;
     std::vector<size_t> segments;
+    // A generic for-in's cursor base when this is that loop's own scope
+    // (Chunk::Cleanup::dispose_base); -1 for every other scope.
+    int32_t dispose_base = -1;
     // `fn name`s already declared directly in this scope. A later
     // same-scope overload appends to the dispatcher the binding already
     // holds; the first one mints a fresh dispatcher + table, so neither an
@@ -1748,6 +1799,9 @@ class Compiler {
   Chunk chunk_;
   std::vector<Scope> scopes_;
   std::vector<LoopCtx> loops_;
+  // Cursor bases of the generic for-ins whose scope is still open, so every
+  // release ladder emitted inside them closes their iterators in place.
+  std::vector<int32_t> for_bases_;
   int32_t next_slot_ = 0;
   int32_t named_top_ = 0;  // one past the highest live named slot; the temp
                            // sweep rolls next_slot_ back to at most this, so
@@ -1826,7 +1880,8 @@ class Compiler {
   void record_cleanup(Scope& sc, uint32_t end) {
     sc.segments.push_back(chunk_.cleanups.size());
     chunk_.cleanups.push_back({sc.start_pc, end, /*parent=*/-1, sc.defer_mark,
-                               sc.slot_watermark, named_top_, n_cells_});
+                               sc.slot_watermark, named_top_, n_cells_,
+                               Chunk::kNoHandler, -1, sc.dispose_base});
   }
   uint32_t pend_line_ = 0, pend_col_ = 0;
 
@@ -2030,9 +2085,17 @@ class Compiler {
   // the range are owned by a live TempScope (or are a frame's return-value
   // slot), which release on their own paths.
   void release_down_to(int32_t watermark) {
-    for (int32_t s = next_slot_ - 1; s >= watermark; --s)
+    for (int32_t s = next_slot_ - 1; s >= watermark; --s) {
+      // An open for-in closes its iterator at the rung that frees it, so a
+      // `return` out of the body — and the loop's own exit — reach it with
+      // the iteration's bindings, released by the rungs above, already gone.
+      // The instruction is a no-op once the loop has disposed, so the two
+      // ladders a `break` walks cannot double-close it.
+      for (int32_t base : for_bases_)
+        if (s == base + kForIter) emit(Op::ForDispose, base);
       if (slot_named_[s])
         emit(slot_cell_[s] ? Op::CellRelease : Op::Release, s);
+    }
   }
 
   // Emits the scope's Releases and returns its slots to the allocator
@@ -3696,13 +3759,131 @@ class Compiler {
     auto fv = culebra::view_for(ast);
     if (fv.nobreak) reject(ast, "nobreak");
     const auto& id = *fv.binding;
-    if (id.tag != "IDENTIFIER"_ || !id.is_token)
-      reject(id, "pattern loop binding");
-    if (id.token == "_") reject(id, "sink loop binding");
-    if (fv.iter->tag != "RANGE"_) reject(*fv.iter, "non-range iterable");
-    auto lay = culebra::decode_range_layout(*fv.iter);
-    if (!lay.start || !lay.end) reject(*fv.iter, "open-ended range");
+    // Fast path: `for <ident> in <a>..<b>` walks a Long counter, as the JIT's
+    // compile_for_counted_range does. Everything else — a pattern binding, a
+    // sink, an unbounded range, any other iterable — opens the protocol.
+    if (id.tag == "IDENTIFIER"_ && id.is_token && id.token != "_" &&
+        fv.iter->tag == "RANGE"_) {
+      auto lay = culebra::decode_range_layout(*fv.iter);
+      if (lay.start && lay.end) {
+        compile_for_counted_range(ast, fv, lay);
+        return;
+      }
+    }
+    compile_for_generic(ast, fv);
+  }
 
+  // Walk anything the iterator protocol reaches: an Array/Tuple or a Set's
+  // members by index, a String by scalar, and an Object through `iter()` —
+  // its own for a user iterator or a generator, the range iterator for a
+  // Range, the built-in key iterator otherwise. One cursor run holds all of
+  // it, and the loop's scope owns every `+1` in it (see ForSlot).
+  void compile_for_generic(const peg::Ast& ast, const culebra::ForView& fv) {
+    using namespace peg::udl;
+    const auto& id = *fv.binding;
+    bool ident = id.tag == "IDENTIFIER"_ && id.is_token;
+    bool sink = ident && culebra::is_sink_name(std::string(id.token));
+    bool cell =
+        ident && !sink && info_->captured_locals.contains(std::string(id.token));
+
+    push_scope();
+    int32_t base = alloc_slot(ast, "(for.disposed)");
+    alloc_slot(ast, "(for.iterable)");
+    alloc_slot(ast, "(for.set.arr)");
+    alloc_slot(ast, "(for.src)");
+    alloc_slot(ast, "(for.iter)");
+    alloc_slot(ast, "(for.elem)");
+    alloc_slot(ast, "(for.kind)");
+    alloc_slot(ast, "(for.pos)");
+    alloc_slot(ast, "(for.count)");
+    alloc_slot(ast, "(for.ptr)");
+    alloc_slot(ast, "(for.has_next)");
+    alloc_slot(ast, "(for.next)");
+    scopes_.back().dispose_base = base;
+    for_bases_.push_back(base);
+
+    // The iterable is evaluated once, before the loop, and both the
+    // not-iterable error and a broken protocol report there.
+    stamp(*fv.iter);
+    store_into(base + kForIterable, compile_expr(*fv.iter),
+               /*dst_is_fresh=*/true);
+    emit(Op::ForOpen, base);
+
+    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}});
+    size_t head_ix = chunk_.code.size();
+    // A step's positionless throws report at the statement, not at the
+    // iterable expression the open reports at.
+    stamp(ast);
+    size_t next_ix = emit(Op::ForNext, base);
+    emit(Op::Safepoint);  // the JIT polls at the top of the body
+
+    {
+      // One scope per iteration, holding the binding and the body's own
+      // locals: the ladder that closes it releases the newest first, so the
+      // body's resources die before the element and both die before the
+      // iterator (docs §18.5).
+      DeferScope ds(*this, *fv.body);
+      push_scope();
+      if (sink) {
+        emit(Op::Release, base + kForElem);  // nothing binds it
+      } else if (ident) {
+        int32_t var = alloc_slot(id, cell ? "(for.val)" : std::string(id.token));
+        int32_t bind = cell ? alloc_cell_slot(id, std::string(id.token)) : var;
+        emit(Op::Take, var, base + kForElem);
+        if (cell) emit(Op::CellNew, bind, var);
+        scopes_.back().bindings.push_back(
+            {std::string(id.token), bind, false, cell});
+      } else {
+        // A destructuring binding: the leaves retain their own sub-elements,
+        // so the element's own `+1` is released once the shape matched. A
+        // mismatch is an error leaving the loop, and the unwind ladder
+        // closes the iterator on the way out.
+        StampGuard pos(*this, id);
+        std::vector<size_t> fail;
+        compile_pattern_test(id, base + kForElem, fail);
+        compile_pattern_bind(id, base + kForElem, /*subj_owned=*/false, fail,
+                             /*is_mut=*/false, /*declares=*/true);
+        size_t ok = emit(Op::Jump);
+        for (size_t ix : fail) patch_to_here(ix);
+        emit(Op::DestrErr);
+        patch_to_here(ok);
+        emit(Op::Release, base + kForElem);
+      }
+      predeclare_multifns(*fv.body);
+      if (fv.body->tag == "STATEMENTS"_) {
+        for (const auto& n : fv.body->nodes) compile_statement(*n);
+      } else {
+        compile_statement(*fv.body);
+      }
+      ds.close();
+      pop_scope();
+    }
+
+    emit(Op::Jump, static_cast<int32_t>(head_ix));
+    size_t exit_ix = chunk_.code.size();
+    patch_jump(next_ix, exit_ix);
+
+    auto& lc = loops_.back();
+    for (size_t j : lc.continue_jumps) patch_jump(j, head_ix);
+    for (size_t j : lc.break_jumps) patch_jump(j, exit_ix);
+    loops_.pop_back();
+    // The drain and break paths close the iterator here rather than from
+    // pop_scope's ladder: this instruction is still inside the scope's own
+    // unwind range, so a throwing dispose runs that scope's releases on its
+    // way out (the ladder itself sits past the range's end). A `return` and
+    // an unwind reach it through the ladder and the cleanup step instead —
+    // both from inside the range already — and the run's latch is what keeps
+    // the three from closing it twice.
+    emit(Op::ForDispose, base);
+    for_bases_.pop_back();
+    pop_scope();
+  }
+
+  void compile_for_counted_range(const peg::Ast& ast,
+                                 const culebra::ForView& fv,
+                                 const culebra::RangeLayout& lay) {
+    using namespace peg::udl;
+    const auto& id = *fv.binding;
     // A captured loop variable gets a fresh cell each iteration (the
     // interp's per-iteration scope): ForLoop keeps writing a hidden plain
     // slot, and the body opens with a CellNew from it — so every closure
@@ -5177,6 +5358,7 @@ inline std::string dump(const Chunk& c) {
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
+      "ForOpen",   "ForNext",   "ForDispose",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "DropSuppress",
       "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
@@ -5410,8 +5592,14 @@ struct Exec {
         culebra_runtime_defer_run_to(regs[cu.defer_mark_slot].data);
       bool hush = frame && c.suppress_frame_drop;
       if (hush) culebra_runtime_set_drop_suppressed(1);
-      for (int32_t s = cu.slot_hi - 1; s >= cu.slot_lo; --s)
+      for (int32_t s = cu.slot_hi - 1; s >= cu.slot_lo; --s) {
+        // A for-in's own step closes its iterator here: the rungs above have
+        // already released the element, and this one releases the iterator
+        // itself. The dispose is swallowed — an exception is in flight.
+        if (cu.dispose_base >= 0 && s == cu.dispose_base + kForIter)
+          for_dispose(regs + cu.dispose_base, /*swallow=*/true);
         release_slot(c, regs, s, chunk_slot_is_cell(c, s, cu.cells_before));
+      }
       if (hush) culebra_runtime_set_drop_suppressed(0);
       if (cu.handler != Chunk::kNoHandler) {
         culebra_runtime_try_translate();
@@ -5444,6 +5632,188 @@ struct Exec {
       culebra_runtime_value_release(static_cast<int8_t>(regs[s].tag),
                                     regs[s].data);
     regs[s] = JitValue{TAG_NIL, 0};
+  }
+
+  // --- for-in (the ForSlot cursor) --------------------------------------
+  // `cur` points at the run's base, so the three below read the same layout
+  // the compiler laid out and the lowering re-emits — each mirrors one of
+  // the JIT's for-in emitters, over the same runtime helpers.
+
+  // The tag dispatch: pick the cursor that walks this iterable and fill it.
+  // The JIT twin is emit_for_open_dispatch.
+  static void for_open(JitValue* cur, int64_t line, int64_t col) {
+    cur[kForDisposed] = JitValue{TAG_LONG, 0};  // re-entry: a fresh walk
+    JitValue it = cur[kForIterable];
+    auto proto_open = [&](JitValue src) {
+      // The slot owns what the protocol derives from, so the `iter()` frame
+      // gets its own `+1` for `self` and the two refs die with two slots.
+      cur[kForSrc] = src;
+      JitPropIC ic{};  // per-call scratch: the executor never reads a cache
+      JitValue iter_fn = culebra_runtime_prop_get(
+          static_cast<int8_t>(src.tag), src.data, "iter", &ic, line, col,
+          /*own_receiver=*/false);
+      if (iter_fn.tag != TAG_FUNC) {
+        culebra_runtime_type_error_typed(line, col, "Function",
+                                         static_cast<int8_t>(iter_fn.tag));
+      }
+      culebra_runtime_value_retain(static_cast<int8_t>(src.tag), src.data);
+      JitValue iter = _jit_invoke(reinterpret_cast<JitClosure*>(iter_fn.data),
+                                  src, 0, nullptr);
+      JitClosure* has_next = nullptr;
+      JitClosure* next = nullptr;
+      {
+        // The open validates before the slot takes the iterator over, so a
+        // broken one is released here rather than left to the ladder.
+        JitUnwindRelease guard{iter};
+        culebra_runtime_iter_protocol_open(static_cast<int8_t>(iter.tag),
+                                           iter.data, line, col, &has_next,
+                                           &next);
+      }
+      cur[kForIter] = iter;
+      cur[kForHasNext] = {TAG_LONG, reinterpret_cast<int64_t>(has_next)};
+      cur[kForNext] = {TAG_LONG, reinterpret_cast<int64_t>(next)};
+      cur[kForKind] = {TAG_LONG, JIT::FOR_PROTO};
+    };
+    auto open_counted = [&](int64_t ptr, int64_t count, int64_t kind) {
+      cur[kForPtr] = {TAG_LONG, ptr};
+      cur[kForCount] = {TAG_LONG, count};
+      cur[kForPos] = {TAG_LONG, 0};
+      cur[kForKind] = {TAG_LONG, kind};
+    };
+    switch (it.tag) {
+      case TAG_ARRAY:
+      case TAG_TUPLE: {
+        auto* arr = reinterpret_cast<JitArray*>(it.data);
+        open_counted(it.data, culebra_runtime_array_size(arr), JIT::FOR_ARRAY);
+        return;
+      }
+      case TAG_SET: {
+        // A Set walks a temporary Array of its members; the slot owns it.
+        auto* members = culebra_runtime_set_to_array(
+            reinterpret_cast<JitSet*>(it.data));
+        cur[kForSetArr] = {TAG_ARRAY, reinterpret_cast<int64_t>(members)};
+        open_counted(reinterpret_cast<int64_t>(members),
+                     culebra_runtime_array_size(members), JIT::FOR_ARRAY);
+        return;
+      }
+      case TAG_STRING:
+      case TAG_STRINGVIEW: {
+        auto* bytes = culebra_runtime_strlike_to_cstr(
+            static_cast<int8_t>(it.tag), it.data);
+        open_counted(reinterpret_cast<int64_t>(bytes),
+                     culebra_runtime_str_size(bytes), JIT::FOR_STRING);
+        return;
+      }
+      case TAG_OBJECT: {
+        // A Range walks its own iterator, a value carrying `iter` drives
+        // itself, and anything else takes the built-in key iterator — the
+        // JIT's three object arms, converging on one protocol open.
+        if (culebra_runtime_is_range(static_cast<int8_t>(it.tag), it.data)) {
+          auto* ri = culebra_runtime_range_iter(it.data, line, col);
+          proto_open({TAG_OBJECT, reinterpret_cast<int64_t>(ri)});
+          return;
+        }
+        auto* obj = reinterpret_cast<JitObject*>(it.data);
+        if (culebra_runtime_object_has(obj, "iter")) {
+          culebra_runtime_value_retain(static_cast<int8_t>(it.tag), it.data);
+          proto_open(it);
+          return;
+        }
+        auto* keys = culebra_runtime_object_iter(obj);
+        proto_open({TAG_OBJECT, reinterpret_cast<int64_t>(keys)});
+        return;
+      }
+      default:
+        culebra_runtime_type_error_typed(
+            line, col, "Array, Tuple, Set, Object, or String",
+            static_cast<int8_t>(it.tag));
+    }
+  }
+
+  // One step. True with the element's `+1` parked in kForElem, false when
+  // the walk is over (emit_for_advance_{array,protocol,string}).
+  static bool for_next(JitValue* cur) {
+    int8_t tag = TAG_NIL;
+    int64_t data = 0;
+    switch (cur[kForKind].data) {
+      case JIT::FOR_ARRAY: {
+        // Re-read the size rather than trust the opening count: the body may
+        // shrink the receiver, and the walk ends where the live array does.
+        auto* arr = reinterpret_cast<JitArray*>(cur[kForPtr].data);
+        int64_t i = cur[kForPos].data;
+        if (i >= culebra_runtime_array_size(arr)) return false;
+        cur[kForPos].data = i + 1;
+        culebra_runtime_array_get(arr, i, &tag, &data, 0, 0);
+        // Read straight out of the container: the slot wants its own +1.
+        culebra_runtime_value_retain(tag, data);
+        break;
+      }
+      case JIT::FOR_STRING: {
+        auto* bytes = reinterpret_cast<const char*>(cur[kForPtr].data);
+        int64_t off = cur[kForPos].data;
+        int64_t n = culebra_runtime_utf8_scalar_len(bytes, off,
+                                                    cur[kForCount].data);
+        if (n == 0) return false;
+        cur[kForPos].data = off + n;
+        // A 1-scalar view into the source buffer, as `s.iter()` yields.
+        data = reinterpret_cast<int64_t>(
+            culebra_runtime_str_scalar_view(bytes, off, n));
+        tag = TAG_STRINGVIEW;
+        culebra_runtime_value_retain(tag, data);
+        break;
+      }
+      default: {
+        // iter_advance transfers the step value's +1 already.
+        if (!culebra_runtime_iter_advance(
+                reinterpret_cast<JitClosure*>(cur[kForHasNext].data),
+                reinterpret_cast<JitClosure*>(cur[kForNext].data),
+                static_cast<int8_t>(cur[kForIter].tag), cur[kForIter].data,
+                &tag, &data))
+          return false;
+        break;
+      }
+    }
+    cur[kForElem] = JitValue{tag, data};
+    return true;
+  }
+
+  // Close the iterator if it carries `dispose`, once. The slot keeps its own
+  // ref throughout — the ladder that runs this frees it a rung later — so a
+  // throwing dispose strands nothing (emit_iter_dispose_if_active).
+  static void for_dispose(JitValue* cur, bool swallow) {
+    if (cur[kForDisposed].data) return;
+    cur[kForDisposed] = JitValue{TAG_LONG, 1};
+    JitValue iter = cur[kForIter];
+    if (iter.tag == TAG_NIL) return;
+    auto* obj = reinterpret_cast<JitObject*>(iter.data);
+    if (!culebra_runtime_object_has(obj, "dispose")) return;
+    JitPropIC ic{};
+    JitValue fn = culebra_runtime_prop_get(static_cast<int8_t>(iter.tag),
+                                           iter.data, "dispose", &ic, 0, 0,
+                                           /*own_receiver=*/false);
+    if (fn.tag != TAG_FUNC) return;
+    // The frame gets its own `+1` for `self`, as the iter() call above did.
+    auto call = [&] {
+      culebra_runtime_value_retain(static_cast<int8_t>(iter.tag), iter.data);
+      JitValue r = _jit_invoke(reinterpret_cast<JitClosure*>(fn.data), iter, 0,
+                               nullptr);
+      culebra_runtime_value_release(static_cast<int8_t>(r.tag), r.data);
+    };
+    if (!swallow) {
+      call();
+      return;
+    }
+    // An exception is already unwinding: the dispose's own throw must not
+    // replace it, and neither must the value it threw — the thrown-value
+    // carrier is a global that a culebra throw overwrites.
+    int8_t flag = 0, tag = 0;
+    int64_t data = 0;
+    culebra_runtime_save_thrown(&flag, &tag, &data);
+    try {
+      call();
+    } catch (...) {
+    }
+    culebra_runtime_restore_thrown(flag, tag, data);
   }
 
   // The call site, with this call's per-argument positions when it has any
@@ -6838,6 +7208,26 @@ struct Exec {
           culebra_runtime_defer_run_to(regs[in.a].data);
           ++pc;
           break;
+        case Op::ForOpen: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          for_open(regs + in.a, line, col);
+          ++pc;
+          break;
+        }
+        case Op::ForNext: {
+          // A step raises positionless (a `has_next()` answer with no
+          // truthiness, a protocol lost mid-walk); the interpreter reports
+          // those at the statement it was running.
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_set_op_pos(line, col);
+          if (for_next(regs + in.a)) ++pc;
+          else pc = static_cast<size_t>(in.b);
+          break;
+        }
+        case Op::ForDispose:
+          for_dispose(regs + in.a, in.d != 0);
+          ++pc;
+          break;
         case Op::ForPrep: {
           int64_t step = regs[in.a + 2].data;
           if (step == 0) {
@@ -6974,6 +7364,12 @@ struct Lowering {
     // function, and a cleanup pad's exception slot must be an alloca in
     // THIS function's entry block.
     j.exc_slot_ = nullptr;
+    // The unwind-temp pool is entry-block allocas too, so it belongs to one
+    // function as much as the exception slot does — the emitters this pass
+    // shares with the AST path (the for-in head's calls among them) spill
+    // through it.
+    j.unwind_temp_slots_.clear();
+    j.unwind_covered_.clear();
 
     // Frame-ABI arguments (function chunks only; see JitFn in jit_value.h).
     llvm::Value* retPtr = nullptr;
@@ -7002,6 +7398,44 @@ struct Lowering {
     }
     auto load_slot = [&](int32_t s) {
       return b.CreateLoad(j.valueType_, slots[s]);
+    };
+    // A frame slot in the shape the AST path's emitters take. Every slot here
+    // is a plain Value alloca the frame owns, which is what those emitters
+    // assume of the scope slots they are normally handed.
+    auto for_slot = [&](int32_t s) {
+      return JIT::VarSlot{JIT::VarSlot::Stack,
+                          llvm::cast<llvm::AllocaInst>(slots[s]),
+                          /*owned=*/true};
+    };
+    // One for-in cursor per statement, keyed by its slot run's base. The
+    // Values live in the run (so the ladders free them); the bookkeeping the
+    // walk needs in native types lives in entry-block scratch, invisible to
+    // the ladders because none of it is refcounted.
+    std::map<int32_t, JIT::ForCursor> for_cursors;
+    auto for_cursor = [&](int32_t base) -> JIT::ForCursor& {
+      auto it = for_cursors.find(base);
+      if (it != for_cursors.end()) return it->second;
+      auto cur = j.make_for_cursor();
+      cur.obj = slots[base + kForSrc];
+      cur.iter = slots[base + kForIter];
+      cur.elem = slots[base + kForElem];
+      return for_cursors.emplace(base, cur).first->second;
+    };
+    // ForDispose, and the same sequence the cleanup pads run at the rung that
+    // frees a loop's iterator. Guarded on the run's own latch, so the two
+    // ladders a `break` walks cannot close the iterator twice.
+    auto emit_for_dispose = [&](int32_t base, bool swallow) {
+      auto doBB = BasicBlock::Create(j.ctx_, "vm.for.dispose", fn);
+      auto doneBB = BasicBlock::Create(j.ctx_, "vm.for.disposed", fn);
+      b.CreateCondBr(b.CreateICmpNE(
+                         j.extract_data(load_slot(base + kForDisposed)),
+                         b.getInt64(0)),
+                     doneBB, doBB);
+      b.SetInsertPoint(doBB);
+      b.CreateStore(j.make_long(b.getInt64(1)), slots[base + kForDisposed]);
+      j.emit_iter_dispose_if_active(slots[base + kForIter], "vm.for", swallow);
+      b.CreateBr(doneBB);
+      b.SetInsertPoint(doneBB);
     };
     // A const-table string as a plain C string global (the runtime entries
     // that take `const char*` rather than a culebra String value).
@@ -7156,6 +7590,10 @@ struct Lowering {
         case Op::JumpIfFilled:
         case Op::SeqChk:   // pattern mismatch edges, same encoding
         case Op::ObjGet:
+          mark(in.b);
+          mark(static_cast<int32_t>(i) + 1);
+          break;
+        case Op::ForNext:  // the drained edge, and the step's own body
           mark(in.b);
           mark(static_cast<int32_t>(i) + 1);
           break;
@@ -9740,6 +10178,43 @@ struct Lowering {
           j.emit_call(j.module_->getFunction(rt::defer_run_to),
                       {j.extract_data(load_slot(in.a))});
           break;
+        case Op::ForOpen: {
+          auto [line, col] = chunk_pos_at(c, i);
+          auto& cur = for_cursor(in.a);
+          // A fresh walk: the latch belongs to this execution, not to the
+          // previous one that left the slot behind.
+          b.CreateStore(j.make_long(b.getInt64(0)),
+                        slots[in.a + kForDisposed]);
+          auto head = j.emit_for_open_dispatch(
+              cur, load_slot(in.a + kForIterable), for_slot(in.a + kForSetArr),
+              for_slot(in.a + kForSrc), static_cast<size_t>(line),
+              static_cast<size_t>(col));
+          b.SetInsertPoint(head);
+          break;
+        }
+        case Op::ForNext: {
+          auto& cur = for_cursor(in.a);
+          auto [line, col] = chunk_pos_at(c, i);
+          auto advArrayBB = BasicBlock::Create(j.ctx_, "vm.for.adv.arr", fn);
+          auto advProtoBB = BasicBlock::Create(j.ctx_, "vm.for.adv.proto", fn);
+          auto advStringBB = BasicBlock::Create(j.ctx_, "vm.for.adv.str", fn);
+          auto kindV = b.CreateLoad(b.getInt8Ty(), cur.kind, "vm.for.kind");
+          auto sw = b.CreateSwitch(kindV, advArrayBB, 3);
+          sw->addCase(b.getInt8(JIT::FOR_ARRAY), advArrayBB);
+          sw->addCase(b.getInt8(JIT::FOR_PROTO), advProtoBB);
+          sw->addCase(b.getInt8(JIT::FOR_STRING), advStringBB);
+          auto* bodyBB = blocks.at(static_cast<int32_t>(i) + 1);
+          auto* exitBB = blocks.at(in.b);
+          j.emit_for_advance_array(cur, advArrayBB, bodyBB, exitBB);
+          j.emit_for_advance_protocol(cur, advProtoBB, bodyBB, exitBB,
+                                      static_cast<size_t>(line),
+                                      static_cast<size_t>(col));
+          j.emit_for_advance_string(cur, advStringBB, bodyBB, exitBB);
+          break;
+        }
+        case Op::ForDispose:
+          emit_for_dispose(in.a, in.d != 0);
+          break;
         case Op::ForPrep: {
           auto [line, col] = chunk_pos_at(c, i);
           j.emit_range_step_check(j.extract_data(load_slot(in.a + 2)), line,
@@ -9850,8 +10325,13 @@ struct Lowering {
                      {b.getInt8(static_cast<int8_t>(v))});
       };
       if (hush) suppress(1);
-      for (int32_t s = cu.slot_hi - 1; s >= cu.slot_lo; --s)
+      for (int32_t s = cu.slot_hi - 1; s >= cu.slot_lo; --s) {
+        // A for-in's own step closes its iterator here, swallowing a
+        // throwing dispose — an exception is already in flight (docs §18.5).
+        if (cu.dispose_base >= 0 && s == cu.dispose_base + kForIter)
+          emit_for_dispose(cu.dispose_base, /*swallow=*/true);
         release_slot_ir(s, chunk_slot_is_cell(c, s, cu.cells_before));
+      }
       if (hush) suppress(0);
       if (frame && chunk_idx != 0)
         b.CreateCall(restoreFn, {b.CreateSub(d, b.getInt64(1), "rec.d1")});

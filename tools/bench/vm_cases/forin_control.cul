@@ -1,0 +1,83 @@
+# The teardown half of the generic for-in (forin.cul walks the arms): where
+# the walk stops, what the exits release, and in which order the iterator is
+# closed relative to the iteration's own bindings.
+
+class Countdown {
+  n: Long
+  new(n) { self.n = n }
+  iter() { self }
+  has_next() { self.n > 0 }
+  next() { let v = self.n; self.n = v - 1; v }
+}
+
+fn gen() {
+  defer { inspect('gen defer') }
+  yield 1
+  yield 2
+}
+
+# --- the walk ends where the live container ends ---
+mut a = [1, 2, 3]
+for v in a {
+  inspect(v)
+  if v == 1 { a.pop() }
+}
+inspect(a)
+
+# --- control flow ---
+for v in [1, 2, 3, 4] {
+  if v == 2 { continue }
+  if v == 4 { break }
+  inspect(v)
+}
+for c in 'abcd' {
+  if c == 'b' { continue }
+  if c == 'd' { break }
+  inspect(c)
+}
+for v in [1, 2] { for w in ['p', 'q'] { if w == 'q' { break }; inspect(to_string(v) + w) } }
+
+fn early() {
+  for v in [1, 2, 3] {
+    if v == 2 { return 'left at ' + to_string(v) }
+  }
+  'drained'
+}
+inspect(early())
+
+# A generator's dispose runs the defers registered in its suspended body,
+# on a drain, a break and a return alike.
+for v in gen() { inspect(v) }
+for v in gen() { if v == 1 { break } }
+fn leave_gen() { for v in gen() { return 'left' } }
+inspect(leave_gen())
+
+# A defer in the body fires every iteration, ahead of that iteration's drops.
+for v in [1, 2] {
+  defer { inspect('defer ' + to_string(v)) }
+  inspect('body ' + to_string(v))
+}
+
+# try/catch inside and around the body. A throw leaving the loop closes the
+# iterator on the way out.
+for v in [1, 2] {
+  try { if v == 1 { throw 'one' }; inspect('ok ' + to_string(v)) }
+  catch e { inspect('inner caught') }
+}
+try {
+  for v in Countdown.new(3) { if v == 2 { throw 'two' }; inspect(v) }
+} catch e { inspect('outer caught') }
+
+# --- churn: the walk allocates nothing that outlives its iteration ---
+mut rounds = 0
+while rounds < 300 {
+  mut total = 0
+  for v in [1, 2, 3] { let junk = [v, v]; total += junk.size() }
+  for c in 'abc' { total += c.size() }
+  for kv in {q: 1, w: 2} { total += kv.size() }
+  for v in Countdown.new(3) { total += v }
+  rounds += 1
+}
+inspect(rounds)
+
+inspect('forin_control OK')
