@@ -430,10 +430,13 @@ inline void reader_loop(Watcher* w) {
       auto* rec = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buf.data() + off);
       std::wstring_view name(rec->FileName,
                               rec->FileNameLength / sizeof(WCHAR));
-      // generic_string() also turns the backslashes ReadDirectoryChangesW
-      // reports subtree entries with (e.g. "sub\deep.txt") into "/".
-      std::string path =
-          w->root + "/" + std::filesystem::path(name).generic_string();
+      // path::operator/= joins with the native separator and understands the
+      // backslashes ReadDirectoryChangesW reports subtree entries with (e.g.
+      // "sub\deep.txt") as component boundaries. Plain string concatenation
+      // of w->root (native, backslash) with a forward-slash-forced name would
+      // mix separator styles within one path — inconsistent with every other
+      // absolute path this program builds (FS.join, FS.realpath, ...).
+      std::string path = (std::filesystem::path(w->root) / name).string();
       emit(w, std::move(path), classify(rec->Action));
       if (rec->NextEntryOffset == 0) break;
       off += rec->NextEntryOffset;
@@ -466,13 +469,12 @@ inline bool platform_start(Watcher* w, std::string& reason) {
       OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
       nullptr);
   if (w->dir_handle == INVALID_HANDLE_VALUE) {
-    reason = "CreateFileW failed (error " + std::to_string(GetLastError()) +
-             ")";
+    reason = "CreateFileW: " + std::system_category().message(GetLastError());
     return false;
   }
   w->stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!w->stop_event) {
-    reason = "CreateEventW failed";
+    reason = "CreateEventW: " + std::system_category().message(GetLastError());
     CloseHandle(w->dir_handle);
     w->dir_handle = INVALID_HANDLE_VALUE;
     return false;
