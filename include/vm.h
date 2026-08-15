@@ -576,6 +576,10 @@ enum class Op : uint8_t {
   DropSuppress,  // culebra_runtime_set_drop_suppressed(a): brackets the top
                  // level's own release ladder, whose bindings leak
                  // un-dropped at program exit (docs §17)
+  LazyNsReg,     // record regs[b] as the builder of the lazy stdlib module
+                 // named consts[c] — the `_lazy_ns_register` intrinsic the
+                 // preamble splice emits, which is how a compiled lane
+                 // reaches `Time` / `assert_eq` / `__Eff` at all
   FnHandle,      // regs[a] = the value-read of `fn` in a receiver frame: the
                  // wrapper binding regs[b] to the frame's own closure
                  // (regs[c] holds it), cached in regs[d]
@@ -2187,9 +2191,10 @@ struct Unsupported {
 // module, at run time for the function literal that holds it.
 class Compiler {
  public:
-  static VmProgram compile_module(const peg::Ast& ast) {
+  static VmProgram compile_module(const peg::Ast& ast,
+                                  const peg::Ast* stdlib = nullptr) {
     try {
-      return compile_module_impl(ast);
+      return compile_module_impl(ast, stdlib);
     } catch (const Unsupported& u) {
       throw CulebraError("VmError", "--vm: unsupported: " + u.what,
                          static_cast<int64_t>(u.line),
@@ -2198,7 +2203,8 @@ class Compiler {
   }
 
  private:
-  static VmProgram compile_module_impl(const peg::Ast& ast) {
+  static VmProgram compile_module_impl(const peg::Ast& ast,
+                                       const peg::Ast* stdlib) {
     VmProgram prog;
     FnAnalysis analysis(&JIT::is_builtin_var);
     // The built-in traits (Eq's `neq`, Comparable's four comparisons, ...)
@@ -2209,6 +2215,13 @@ class Compiler {
     // registry a property read consults.
     const auto* preamble = culebra::parse_builtin_traits_preamble().get();
     if (preamble) (void)analysis.analyze_program(*preamble);
+    // The stdlib preamble, which the loader splices as its own module ahead
+    // of the entry one: it declares each lazy module's builder and registers
+    // it, so a lane that skips it cannot resolve `Time` or `assert_eq` at
+    // all. It runs as a second prologue rather than a second module — the
+    // same shape the built-in traits take, and the JIT bundles it into the
+    // one IR for the same reason.
+    if (stdlib) (void)analysis.analyze_program(*stdlib);
     // lint::check_shadow (parity) + the per-fn FuncInfo compile_fn_chunk
     // reads; the returned top-level info carries chunk 0's captured_locals.
     FuncInfo top_info = analysis.analyze_program(ast);
@@ -2221,14 +2234,18 @@ class Compiler {
     {
       using namespace peg::udl;
       main.push_scope(ast, /*owned_mark=*/false);
-      main.predeclare_multifns(ast);
-      if (preamble) {
-        if (preamble->tag == "STATEMENTS"_) {
-          for (const auto& n : preamble->nodes) main.compile_statement(*n);
+      auto run_prologue = [&](const peg::Ast* p) {
+        if (!p) return;
+        main.predeclare_multifns(*p);
+        if (p->tag == "STATEMENTS"_) {
+          for (const auto& n : p->nodes) main.compile_statement(*n);
         } else {
-          main.compile_statement(*preamble);
+          main.compile_statement(*p);
         }
-      }
+      };
+      main.predeclare_multifns(ast);
+      run_prologue(preamble);
+      run_prologue(stdlib);
       if (ast.tag == "STATEMENTS"_) {
         for (const auto& n : ast.nodes) main.compile_statement(*n);
       } else {
@@ -2494,8 +2511,6 @@ class Compiler {
     // the one place the effects transform's lowered declarations can be
     // turned away: without them the lane runs half of an effect and answers
     // (a NameError where the others raise EffectError) instead of declining.
-    if (culebra::is_effects_internal_name(name))
-      reject(at, "effect declaration");
     if (next_slot_ >= kMaxSlots) reject(at, "frame larger than 256 slots");
     int32_t s = next_slot_++;
     if (s >= static_cast<int32_t>(chunk_.slot_names.size()))
@@ -2919,7 +2934,13 @@ class Compiler {
     using namespace peg::udl;
     switch (ast.tag) {
       case "STATEMENTS"_:
-        compile_block(ast);
+        // A statement list in STATEMENT position is a transform's expansion
+        // of one statement into several (the effects decl lowers to a pair),
+        // not a block: what it declares belongs to the enclosing scope, the
+        // way the one statement it replaced would have. A real `{ … }` is a
+        // LEXICAL_SCOPE and opens its own scope below.
+        predeclare_multifns(ast);
+        for (const auto& n : ast.nodes) compile_statement(*n);
         break;
       case "ASSIGNMENT"_:
         compile_assignment(ast);
@@ -4725,34 +4746,36 @@ class Compiler {
     compile_nobreak_tail(wv.nobreak, broke);
   }
 
-  // The stdlib names the slice reaches: kBuiltinFns' bare native globals,
-  // resolvable through culebra_runtime_namespace_get with no preamble
-  // splice. The effects primitives are excluded (their emitting transforms
-  // are rejected).
-  //
-  // The lazy source modules (Time, Regex, `assert_*`, `replace`, ...) fall
-  // through to the unresolved-identifier reject, and the reason is not that
-  // the resolver cannot find them — it resolves both their namespaces and
-  // their bare functions on demand. It is that it does so by invoking a
-  // BUILDER closure the preamble's compilation registers, and a lane that
-  // never compiles the preamble registers none. Reaching them means
-  // compiling the preamble itself, which means the slice must first cover
-  // everything the preamble is written in.
+  // The stdlib names the slice reaches: kBuiltinFns' bare native globals and
+  // the lazy source modules' bare functions (`assert_eq`, the matcher family,
+  // `replace`), all resolvable through culebra_runtime_namespace_get. The
+  // lazy half works because this lane compiles the preamble now, which is
+  // what registers the builder closure the resolver invokes. The effects
+  // primitives stay out (their lowered declarations are declined outright).
   static bool is_stdlib_global(std::string_view name) {
-    if (name.starts_with("__eff_")) return false;
     for (const auto& m : kBuiltinFns)
       if (name == m.name) return true;
-    return false;
+    return !culebra::lazy_fn_group_of(name).empty();
   }
 
   // The namespace VALUES the slice reaches: the natively built ones, taken
   // straight from the resolver's own predicate (kNsMethods / wrap.h classes /
-  // constant groups) so the two cannot drift. The lazy source modules (Time,
-  // Regex, Term, ...) are deliberately absent — their objects are produced by
-  // preamble builder closures the VM lane never splices, so they stay on the
-  // unresolved-identifier reject, same as their bare functions.
+  // constant groups) so the two cannot drift, plus the lazy source modules —
+  // built on demand by the builder the compiled preamble registered.
+  // Which bare names compile to a resolver lookup instead of a binding: the
+  // JIT's own answer (`is_builtin_var` — the same predicate the shared
+  // free-var analysis was handed), so the two cannot drift. It covers the
+  // natively built namespaces, the internal primitive ones the preamble
+  // itself calls (`_Time`, `_Canvas`, ...), and the lazy source modules.
   static bool is_stdlib_namespace(std::string_view name) {
-    return _is_known_ns(name);
+    // `_Time` / `_Term` / `_Canvas` are the exception: the JIT reaches their
+    // primitives through a compile-time peephole per method, so unlike every
+    // other namespace there is no object for the resolver to hand back. The
+    // three preamble modules built on them stay out of the slice until those
+    // primitives grow an ordinary namespace object — and only those three, a
+    // module at a time, since each one's builder is its own chunk.
+    if (name == "_Time" || name == "_Term" || name == "_Canvas") return false;
+    return JIT::is_builtin_var(std::string(name));
   }
 
   // Direct 1-positional-arg `println(<expr>)` — the dedicated-op peephole,
@@ -4799,6 +4822,7 @@ class Compiler {
                      ast.nodes[0]->token == "fn" &&
                      chunk_.fn_bound_slot >= 0 && ast.nodes.size() > 1 &&
                      ast.nodes[1]->original_tag == "ARGUMENTS"_;
+    if (auto r = compile_lazy_ns_register(ast)) return *r;
     auto res = fn_direct ? ExprResult{chunk_.fn_slot, false}
                          : compile_expr(*ast.nodes[0]);
     for (size_t i = 1; i < ast.nodes.size(); ++i) {
@@ -4916,13 +4940,6 @@ class Compiler {
         (spec || culebra::is_builtin_method_name(name) || name == "drop" ||
          name == "parameters"))
       reject(post, std::format("UFCS candidate '{}'", name));
-    // A lazy stdlib function (`s.replace(a, b)`) is a UFCS candidate the
-    // slice cannot load: those modules are source the VM lanes do not splice,
-    // so the candidate arm has nothing to call. Without this the receiver's
-    // own miss answers instead — a wrong answer, not a reject.
-    if (ufcs_candidate(name, spec) == UfcsCand::None &&
-        !culebra::lazy_fn_group_of(name).empty())
-      reject(post, std::format("lazy stdlib UFCS candidate '{}'", name));
     if (spec) return;
     if (culebra::is_builtin_method_name(name))
       reject(post, std::format("built-in method '{}'", name));
@@ -5226,6 +5243,30 @@ class Compiler {
     for (const auto& a : args.nodes) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
     return {t, true};
+  }
+
+  // `_lazy_ns_register("Name", fn () { … })` — the intrinsic the stdlib
+  // splice emits at top level, one per lazy source module. It is not a call
+  // the language has: the name resolves to nothing, and the builder must be
+  // recorded rather than invoked. arg0 is always a string literal, so the
+  // name is a constant here as it is a rodata pointer in the JIT's arm.
+  std::optional<ExprResult> compile_lazy_ns_register(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes[0]->tag != "IDENTIFIER"_ ||
+        ast.nodes[0]->token != "_lazy_ns_register" || ast.nodes.size() < 2 ||
+        ast.nodes[1]->original_tag != "ARGUMENTS"_)
+      return std::nullopt;
+    const auto& args = *ast.nodes[1];
+    if (args.nodes.size() != 2) return std::nullopt;
+    const peg::Ast* nameNode = args.nodes[0].get();
+    while (nameNode->nodes.size() == 1) nameNode = nameNode->nodes[0].get();
+    StampGuard pos(*this, ast);
+    auto builder = compile_expr(*args.nodes[1]);
+    emit(Op::LazyNsReg, 0, builder.slot,
+         kconst_str(std::string(nameNode->token)));
+    int32_t t = alloc_temp(ast);
+    emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+    return ExprResult{t, true};
   }
 
   // A direct `fn(...)` in a receiver frame: the frame's own closure called
@@ -6291,7 +6332,7 @@ inline std::string dump(const Chunk& c) {
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForOpen",   "ForNext",   "ForDispose",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "DropSuppress",
-      "FnHandle",  "OwnedMark", "OwnedExit",
+      "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
       "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
@@ -6354,9 +6395,20 @@ struct Exec {
     return &d->prog->param_metas[d->chunk]->meta;
   }
 
+  // The other half of that seam: the capture holding this closure's chunk, so
+  // the lazy-namespace registry can rebuild it later (see the desc hook).
+  static JitCell* desc_for_closure(JitClosure* cls) {
+    if (!cls || (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
+                 cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline)))
+      return nullptr;
+    if (cls->n_captures == 0 || !cls->captures) return nullptr;
+    return cls->captures[0];
+  }
+
   static void run(VmProgram& p) {
     build_param_metas(p);
     _jit_closure_meta_hook = &meta_for_closure;
+    _jit_closure_desc_hook = &desc_for_closure;
     p.descs.resize(p.chunks.size());
     p.desc_cells.resize(p.chunks.size());
     for (size_t i = 0; i < p.chunks.size(); ++i) {
@@ -8403,6 +8455,12 @@ struct Exec {
           break;
         case Op::DropSuppress:
           culebra_runtime_set_drop_suppressed(static_cast<int8_t>(in.a));
+          ++pc;
+          break;
+        case Op::LazyNsReg:
+          culebra_runtime_lazy_ns_register(
+              reinterpret_cast<const char*>(c.consts[in.c].data),
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
           ++pc;
           break;
         case Op::FnHandle:
@@ -12082,6 +12140,17 @@ struct Lowering {
                                              b.getVoidTy(), b.getInt8Ty()),
               {b.getInt8(static_cast<int8_t>(in.a))});
           break;
+        case Op::LazyNsReg: {
+          auto v = load_slot(in.b);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::lazy_ns_register,
+                                             b.getVoidTy(), ptrTy,
+                                             b.getInt8Ty(), i64Ty),
+              {j.emit_str_literal(std::string(_str_sv(
+                   reinterpret_cast<const char*>(c.consts[in.c].data)))),
+               j.extract_tag(v), j.extract_data(v)});
+          break;
+        }
         case Op::FnHandle: {
           auto selfV = load_slot(in.b);
           b.CreateStore(

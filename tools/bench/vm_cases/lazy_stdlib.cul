@@ -1,0 +1,54 @@
+# The lazy stdlib: modules written in culebra whose builder the preamble
+# declares and registers, resolved on first use. A lane that compiles the
+# preamble reaches them the same way the others do.
+
+# Bare functions from a group module (the matcher family, `replace`).
+assert_eq(1, 1)
+println(try {
+  assert_eq(1, 2)
+} catch e {
+  e.kind
+})
+println(replace('a-b-c', '-', '+'))
+
+# Namespace modules, built once per run and shared.
+println(type_of(Path))
+println(type_of(Args))
+println(type_of(Regex))
+println(Vector2.new(3.0, 4.0).x)
+println(Vector3.new(1.0, 2.0, 2.0).z)
+
+# The same module resolved twice is the same object, and the same bare
+# function read twice is the same value — one build per run.
+println(Path == Path)
+let a = replace
+let b = replace
+println(a == b)
+
+# Effects ride the same mechanism: the transform lowers them to `__Eff` calls,
+# and `__Eff` is one of those modules.
+effect fn ask()
+println(try {
+  ask()
+} catch e {
+  e.kind
+})
+effect fn ask2()
+fn use_it() {
+  perform ask2()
+}
+println(handle {
+  use_it()
+  'ran'
+} with ask2(resume) {
+  resume(nil)
+})
+
+# Churn: the build happens once, and repeated resolution neither leaks nor
+# rebuilds.
+mut n = 0
+for _ in 0..2000 {
+  n += Vector2.new(1.0, 0.0).x.to_long()
+  assert_eq(n, n)
+}
+println(n)

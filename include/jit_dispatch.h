@@ -519,6 +519,13 @@ inline const std::string* _jit_first_mut_capture(void* fn_ptr) {
 // each chunk is its own function, and it registers like the AST path.)
 inline const JitParamMeta* (*_jit_closure_meta_hook)(JitClosure*) = nullptr;
 
+// The other half of the same seam: which capture cell carries the chunk a
+// closure runs, for the one place that has to REBUILD a closure from what it
+// recorded rather than call the one it was handed — the lazy-namespace
+// builder registry, whose entries outlive the closure they came from. Null
+// for anything but a VM-executor closure (a distinct fn_ptr is enough there).
+inline JitCell* (*_jit_closure_desc_hook)(JitClosure*) = nullptr;
+
 // Hook for stdlib namespace methods (FS/Proc/...). All such methods share
 // one trampoline fn_ptr, so they can't key the per-fn JitParamMeta table;
 // stdlib_jit.h installs this hook to resolve a kwarg call against the

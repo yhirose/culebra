@@ -7902,18 +7902,26 @@ inline std::mutex& _lazy_ns_builder_mutex() {
   static std::mutex m;
   return m;
 }
-inline std::unordered_map<std::string, void*>& _lazy_ns_builders() {
-  static std::unordered_map<std::string, void*> r;
+// The builder's code, plus — on a lane whose closures share one fn_ptr — the
+// capture cell naming the chunk to run (see _jit_closure_desc_hook). Null
+// `desc` is the AST-JIT/AOT case, where the fn_ptr says everything.
+struct _LazyNsBuilder {
+  void* fn_ptr = nullptr;
+  JitCell* desc = nullptr;
+};
+inline std::unordered_map<std::string, _LazyNsBuilder>& _lazy_ns_builders() {
+  static std::unordered_map<std::string, _LazyNsBuilder> r;
   return r;
 }
-inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr) {
+inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr,
+                                      JitCell* desc) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
-  _lazy_ns_builders().insert_or_assign(name, fn_ptr);  // idempotent
+  _lazy_ns_builders().insert_or_assign(name, _LazyNsBuilder{fn_ptr, desc});
 }
-inline void* _lazy_ns_builder(const std::string& name) {
+inline _LazyNsBuilder _lazy_ns_builder(const std::string& name) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
   auto it = _lazy_ns_builders().find(name);
-  return it == _lazy_ns_builders().end() ? nullptr : it->second;
+  return it == _lazy_ns_builders().end() ? _LazyNsBuilder{} : it->second;
 }
 
 inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
@@ -7925,8 +7933,16 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
   // registered captureless builder closure (arity 0, no captures). The result
   // is the module Object (refcount 1); the table + pin hold that single ref for
   // the Runtime's lifetime, same discipline as the native path below.
-  if (void* fp = _lazy_ns_builder(name)) {
-    auto* cls = culebra_runtime_closure_new(fp, /*n_captures=*/0, /*arity=*/0);
+  if (auto bd = _lazy_ns_builder(name); bd.fn_ptr) {
+    // One capture where the lane needs the chunk named (the VM executor's
+    // descriptor cell, retained for the closure's own lifetime), none where
+    // the fn_ptr is the whole answer.
+    auto* cls = culebra_runtime_closure_new(bd.fn_ptr, bd.desc ? 1 : 0,
+                                            /*arity=*/0);
+    if (bd.desc) {
+      culebra_runtime_cell_retain(bd.desc);
+      cls->captures[0] = bd.desc;
+    }
     JitValue r = _culebra_invoke0(cls);
     culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(cls));
     if (r.tag != TAG_OBJECT) {
@@ -8060,6 +8076,10 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
                                   int64_t builder_data) {
   if (builder_tag != TAG_FUNC) return;  // splice only ever passes a closure
   auto* c = reinterpret_cast<JitClosure*>(builder_data);
+  // A lane whose closures share one fn_ptr keeps the chunk in capture 0, so
+  // that one does not count against the captureless rule below.
+  JitCell* desc = _jit_closure_desc_hook ? _jit_closure_desc_hook(c) : nullptr;
+  size_t n_own = c->n_captures - (desc ? 1 : 0);
   // A module builder closes over nothing (it references only builtins +
   // its own locals), so the per-Runtime rebuild uses 0 captures. A non-zero
   // count means the builder body accidentally referenced an entry-module
@@ -8068,16 +8088,16 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
   // see the dynamic-perform cycle notes); the rebuilt closure would then read
   // a capture cell that was never populated, a release-silent null deref.
   // Fail loudly here instead, at the point the mistake was made.
-  if (c->n_captures != 0) {
+  if (n_own != 0) {
     throw culebra::CulebraError(
         "InternalError",
         std::format("lazy-ns builder '{}' must be captureless (has {} "
                     "capture(s)) — a call-form method name in its body "
                     "likely collides with a user global fn",
-                    name ? name : "?", c->n_captures),
+                    name ? name : "?", n_own),
         0, 0);
   }
-  _lazy_ns_register_builder(name ? name : "", c->fn_ptr);
+  _lazy_ns_register_builder(name ? name : "", c->fn_ptr, desc);
 }
 
 // Cold arm of jit.h's emit_reject_bare_builtin_method. The codegen filter

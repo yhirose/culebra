@@ -1339,11 +1339,11 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   // backend for one program.
   bool splice = false;
 #ifdef CULEBRA_JIT_ENABLED
-  // The VM lane compiles the raw user AST — `--jit --vm` must not hand it a
-  // preamble-spliced module (the stdlib arrives through the runtime layer,
-  // not the preamble, as the slice grows).
-  splice = options.jit && !options.print_ast &&
-           options.vm == Options::Vm::Off;
+  // Both compiled paths take the spliced module: the preamble is where the
+  // lazy stdlib's builders are declared and registered, and a lane that never
+  // compiles it cannot resolve `Time`, `assert_eq` or `__Eff` at all.
+  splice = (options.jit || options.vm != Options::Vm::Off) &&
+           !options.print_ast;
 #endif
   std::vector<culebra::LoadedModule> modules;
   if (!load_entry_program(path, *user_src, splice, modules)) return false;
@@ -1360,13 +1360,21 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
 
 #ifdef CULEBRA_JIT_ENABLED
   if (options.vm != Options::Vm::Off) {
-    if (modules.size() != 1) {
+    // The splice puts the stdlib preamble first, as its own module; it is a
+    // prologue to the entry module here, not a module of its own. Anything
+    // beyond that pair is a real multi-module script.
+    const peg::Ast* stdlib = nullptr;
+    if (modules.size() == 2 &&
+        modules.front().abs_path == culebra::kStdlibPreamblePath) {
+      stdlib = modules.front().ast.get();
+    } else if (modules.size() != 1) {
       // Same shape as Compiler::reject — "--vm: unsupported: ..." is the
       // one out-of-slice contract the differential harness keys SKIP on.
       throw culebra::CulebraError(
           "VmError", "--vm: unsupported: multi-module script");
     }
-    auto prog = culebra::vm::Compiler::compile_module(*modules.front().ast);
+    auto prog =
+        culebra::vm::Compiler::compile_module(*modules.back().ast, stdlib);
     switch (options.vm) {
       case Options::Vm::Dump:
         cout << culebra::vm::dump(prog);

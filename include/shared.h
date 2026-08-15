@@ -107,16 +107,6 @@ inline bool is_object_builtin_method_name(std::string_view name) {
   return kNames.count(name) > 0;
 }
 
-// Names the effects transform introduces (`__eff_comp_f`, `__eff_decls__`,
-// the perform/handle wrappers). Its output is ordinary culebra source by the
-// time a backend sees it, so this is how a backend that does not implement
-// effects recognizes — and declines — the lowered shape rather than running
-// half of it. The `__Eff` namespace it also names is a lazy module, already
-// out of reach on such a backend.
-inline bool is_effects_internal_name(std::string_view name) {
-  return name.starts_with("__eff_");
-}
-
 // The culebra-source stdlib modules (src/preambles/*.cul) whose public binding
 // is a namespace object, so their unknown members raise like a C++ namespace's
 // instead of reading as nil. `Path` is absent on purpose: its module returns a
