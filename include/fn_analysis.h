@@ -705,22 +705,32 @@ struct FnAnalysis {
       auto fv = culebra::view_for(node);
       visit_for_frees(*fv.iter, my_locals, outer, info);
       auto extended = my_locals;
-      auto name = std::string(fv.binding->token);
-      extended.insert(name);
+      // A destructuring loop binding (`for (k, v) in …`) binds every leaf of
+      // the pattern, not one identifier — collect them all, as MATCH and
+      // DESTRUCTURE_ASSIGN do, or a closure in the body sees them as free
+      // variables and raises NameError.
+      std::vector<std::string> names;
+      culebra::for_each_pattern_binding(
+          *fv.binding, [&](std::string_view nm, size_t, size_t) {
+            names.emplace_back(nm);
+            extended.insert(std::string(nm));
+          });
       visit_for_frees(*fv.body, extended, outer, info);
       // A `nobreak { … }` runs after the loop with the loop variable OUT of
       // scope, so walk it in `my_locals` (not `extended`) — a closure there
       // must not resolve the loop binding.
       if (fv.nobreak) visit_for_frees(*fv.nobreak, my_locals, outer, info);
-      // If the body walk pulled `name` into the enclosing function's
+      // If the body walk pulled a name into the enclosing function's
       // free-vars (because a nested closure referenced it), we instead
       // mark it captured here and drop it from the free list — the
       // enclosing function owns it.
-      auto it = std::find(info.free_vars.begin(), info.free_vars.end(),
-                          name);
-      if (it != info.free_vars.end()) {
-        info.captured_locals.insert(name);
-        info.free_vars.erase(it);
+      for (const auto& name : names) {
+        auto it = std::find(info.free_vars.begin(), info.free_vars.end(),
+                            name);
+        if (it != info.free_vars.end()) {
+          info.captured_locals.insert(name);
+          info.free_vars.erase(it);
+        }
       }
       return;
     }

@@ -80,4 +80,32 @@ for {items: xs} in recs {
 }
 assert_eq(sizes_o, [2, 1, 2, 1])
 
+// A closure in the body captures the pattern's leaves. The analyzer registers
+// every leaf as visible in the body subtree (a single-identifier binding was
+// the only shape it used to collect), so each pass's names are the ones the
+// closure made in that pass sees.
+mut fs = []
+for (k, v) in [("a", 1), ("b", 2)] {
+  fs.push(fn () { k + to_string(v) })
+}
+mut fs_out = []
+for f in fs { fs_out.push(f()) }
+assert_eq(fs_out, ["a1", "b2"])
+
+mut gs = []
+for [h, ...t] in [[1, 2, 3], [4]] {
+  gs.push(fn () { (h, t.size()) })
+}
+mut gs_out = []
+for g in gs { gs_out.push(g()) }
+assert_eq(gs_out, [(1, 2), (4, 0)])
+
+mut hs = []
+for k, v in {p: 1, q: 2} {
+  hs.push(fn () { k + to_string(v) })
+}
+mut hs_out = []
+for h in hs { hs_out.push(h()) }
+assert_eq(hs_out, ["p1", "q2"])
+
 IO.inspect("test_for_destructure OK")
