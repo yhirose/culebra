@@ -124,3 +124,35 @@ while i < 300 {
 }
 inspect(ch.keys().size())
 println(i)
+
+# `remove` is two signatures under one name — a Set drops a member and says
+# whether it held one, an Object drops a dict key and answers nil. MethGate's
+# own read of the receiver's property still wins over both, which is how a
+# class's own `remove` shadows them.
+mut d = {'a': 1, 'b': 2}
+inspect(d.remove('a'))
+inspect(d)
+inspect(d.remove('zz'))
+mut s = {1, 2}
+inspect(s.remove(1))
+inspect(s)
+class OwnRemove {
+    remove(k) { 'mine ' + k }
+}
+inspect(OwnRemove.new().remove('x'))
+try {
+    ({'a': 1}).remove([1, 2])
+} catch err {
+    println("{err.kind}: {err.message}")
+}
+# Churn: heap keys in and out, hits and misses alternating.
+mut j = 0
+mut rm = {}
+while j < 300 {
+    let k = (j % 5, j % 2)
+    rm.get_or_put(k, || j)
+    rm.remove(k)
+    rm.remove((99, 99))
+    j = j + 1
+}
+inspect(rm.keys().size())

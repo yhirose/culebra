@@ -967,6 +967,8 @@ inline constexpr auto str_graphemes        = "culebra_runtime_str_graphemes";
 inline constexpr auto str_bytes            = "culebra_runtime_str_bytes";
 inline constexpr auto array_iter           = "culebra_runtime_array_iter";
 inline constexpr auto object_iter          = "culebra_runtime_object_iter";
+inline constexpr auto object_iter_dispatch =
+    "culebra_runtime_object_iter_dispatch";
 inline constexpr auto read_file           = "culebra_runtime_read_file";
 inline constexpr auto rethrow             = "culebra_runtime_rethrow";
 inline constexpr auto str_cmp             = "culebra_runtime_str_cmp";

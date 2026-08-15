@@ -1,0 +1,76 @@
+# The iterator-only family: the lazy adapters that wrap one iterator in
+# another, and the terminals that drive one to its end. All resolve on an
+# iterator-shaped Object alone — an Array takes the ordinary method miss.
+
+let it = fn () { [1, 2, 3, 4, 5].iter() }
+inspect(it().take(2).collect())
+inspect(it().take(0).collect())
+inspect(it().take(99).collect())
+inspect(it().skip(2).collect())
+inspect(it().skip(99).collect())
+inspect(it().step_by(2).collect())
+inspect(it().chunks(2).collect())
+inspect(it().windows(2).collect())
+inspect(it().take(3).skip(1).collect())
+
+let alt = fn () { [1, 2, 3, 4, 1].iter() }
+inspect(alt().take_while(fn (x) { x < 3 }).collect())
+inspect(alt().skip_while(fn (x) { x < 3 }).collect())
+inspect(alt().scan(0, fn (acc, x) { acc + x }).collect())
+inspect(alt().chunk_by(fn (x) { x % 2 }).collect())
+mut seen = []
+inspect(alt().tap(fn (x) { seen.push(x) }).collect())
+inspect(seen)
+
+inspect(it().chain([9, 8]).collect())
+inspect(it().chain('ab').collect())
+inspect(it().chain([1].iter()).collect())
+inspect(it().zip([9, 8]).collect())
+inspect(it().zip({4, 5}).collect())
+
+# --- Terminals ------------------------------------------------------------
+inspect(it().collect())
+inspect(it().count())
+inspect(it().first())
+inspect(it().last())
+inspect(it().nth(1))
+inspect(it().nth(9))
+inspect(it().position(fn (x) { x == 2 }))
+inspect(it().position(fn (x) { x == 9 }))
+inspect([].iter().first())
+inspect([].iter().last())
+inspect([].iter().count())
+
+# --- Lazy: nothing runs until the chain is drained -------------------------
+mut log = []
+let src = [1, 2, 3].iter().tap(fn (x) { log.push(x) })
+inspect(log)
+let mapped = src.map(fn (x) { x * 2 })
+inspect(log)
+inspect(mapped.take(2).collect())
+inspect(log)
+
+# --- Composition ----------------------------------------------------------
+let r = [5, 3, 8, 1, 9, 2, 7]
+inspect(r.iter().filter(fn (x) { x > 2 }).map(fn (x) { x * 2 }).take(3)
+         .collect())
+inspect(r.iter().windows(3).map(fn (w) { w.sum() }).collect())
+inspect(r.iter().chunks(3).map(fn (c) { c.size() }).collect())
+inspect(r.iter().step_by(2).sum())
+inspect(r.iter().distinct().take(2).collect())
+inspect(r.iter().scan(0, fn (a, x) { a + x }).last())
+inspect('a,b,c'.split_iter(',').enumerate().collect())
+
+# --- Errors ---------------------------------------------------------------
+fn probe(f) { try { inspect(f()) } catch e { inspect(e) } }
+probe(fn () { [1, 2].take(1) })            # no eager Array spelling
+probe(fn () { {'a': 1}.take(1) })          # a plain dict lacks the protocol
+probe(fn () { [1, 2].iter().take('x') })   # the argument's declared type
+probe(fn () { [1, 2].iter().chunks(0) })
+probe(fn () { [1, 2].iter().windows(0) })
+probe(fn () { [1, 2].iter().step_by(0) })
+probe(fn () { [1, 2].iter().nth(-1) })
+probe(fn () { [1, 2].iter().zip(5) })
+probe(fn () { [1, 2].iter().take_while(5) })
+probe(fn () { [1, 2].iter().scan(0, 5) })
+probe(fn () { [1, 2].iter().map(5) })      # the callback's own argument

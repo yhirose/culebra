@@ -271,6 +271,16 @@ enum class Op : uint8_t {
                // whether the check covers regs[b+1] (the receiver) at all:
                // `'ab'.contains(x)` wants StringLike, `[1].contains(x)` takes
                // anything.
+  ArityChk,    // the count-based ArityError a receiver owes when it resolves
+               // this name at a DIFFERENT arity than the one written — the
+               // one case a miss must not report as "expected Function, got
+               // Nil" (`'ab'.count()` is String.count(sub) called wrong, not
+               // the iterator's count). regs[a] is MethGate's gate slot,
+               // regs[a+1] the receiver, c the spec: only emitted where the
+               // table itself holds a rival arity for the name, and it runs
+               // BEFORE the arguments, where the interp's own check sits.
+               // Positioned at the ARGUMENTS node, interp's anchor for every
+               // count-based built-in ArityError.
   BMeth,       // regs[a] = built-in method c over the run at b: regs[b] is
                // MethGate's gate slot, regs[b+1] the receiver, and
                // regs[b+2..b+2+d) the arguments — defaults already
@@ -605,10 +615,22 @@ enum class BMeth : uint8_t {
   Map, Filter, ForEach, AnyOf, All, Find, FlatMap, MinBy, MaxBy, Reduce,
   GroupBy, Partition,
   SortBy, SortedBy,                     // Array only, mutates / eager
-  Union, Intersect, Diff, SymDiff, Subset, Superset, Add, Remove,
+  Union, Intersect, Diff, SymDiff, Subset, Superset, Add,
+  Remove,                               // Set element, or an Object's dict key
   ToArray,                              // Set only
   Keys, Has, GetOrPut,                   // Object (dict) only
   Get,                                    // Array or Object (dual, eager)
+  // The iterator sources: every spelling that turns a value into a fresh
+  // iterator object. `Iter` is the general one; the String walkers and
+  // SplitIter answer a String's own; Enumerate/ToObject/Unzip are
+  // Array-or-iterator duals like ToSet.
+  Iter, CodePoints, Bytes, Graphemes, SplitIter, StrCount,
+  Enumerate, ToObject, Unzip,
+  // Iterator-only, on an iterator-shaped Object: the lazy adapters that wrap
+  // one iterator in another, and the terminals that drive one to its end.
+  Take, Skip, TakeWhile, SkipWhile, Tap, ChunkBy, StepBy, Scan, Chunks,
+  Windows, Chain, Zip,
+  Collect, IterCount, First, Last, Nth, Position,
 };
 
 // The receivers a built-in resolves on, one bit per value tag. A gate's set
@@ -632,6 +654,13 @@ inline constexpr BRecvMask kRecvArray = bmeth_tag_bit(TAG_ARRAY);
 // through MethGate's object arm, which reads the object's own property
 // before this gate is ever tested, so the two never collide).
 inline constexpr BRecvMask kRecvSet = bmeth_tag_bit(TAG_SET);
+// remove: a Set drops a member, an Object drops a dict key — two unrelated
+// signatures (Bool vs nil) under one name, so the Object arm is as much a
+// receiver of it as the Set arm. MethGate's own read of the receiver's
+// property still wins first, which is how a class's own `remove` method (or a
+// Shared view's frozen-tree read) shadows both.
+inline constexpr BRecvMask kRecvSetOrObject =
+    kRecvSet | bmeth_tag_bit(TAG_OBJECT);
 // to_array: three unrelated value tables bind it — Set, Tuple, and Tensor
 // (`grep '"to_array"sv'` across interpreter.h's builtins tables), each with
 // its own conversion. No Array arm exists (an Array already is one).
@@ -671,6 +700,13 @@ inline constexpr BRecvMask kRecvObject = bmeth_tag_bit(TAG_OBJECT);
 // get: Array indexes by Long, Object looks up by key — both read-only,
 // neither requiring the iterator shape.
 inline constexpr BRecvMask kRecvArrayOrObject = kRecvArray | kRecvObject;
+// `iter`: five value tables bind it (Object, Array, String, Set, Tuple) and
+// each answers a different walker. Unlike the iterator-only names this one
+// needs no iterator shape on an Object — every dict has it, and it yields the
+// (key, value) pairs unless the object defines an `iter` of its own.
+inline constexpr BRecvMask kRecvIterSource =
+    kRecvStrLike | kRecvArray | bmeth_tag_bit(TAG_TUPLE) |
+    bmeth_tag_bit(TAG_OBJECT) | bmeth_tag_bit(TAG_SET);
 // No gate at all: `to_string` is the display conversion every value has, so
 // no receiver can fail to resolve it.
 inline constexpr BRecvMask kRecvAny = 0xFFFF;
@@ -830,7 +866,7 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"subset", 1, Subset, kRecvSet, 1, nullptr, {Set}, {"other"}},
       {"superset", 1, Superset, kRecvSet, 1, nullptr, {Set}, {"other"}},
       {"add", 1, Add, kRecvSet, 1, nullptr, {Any}, {"x"}},
-      {"remove", 1, Remove, kRecvSet, 1, nullptr, {Any}, {"x"}},
+      {"remove", 1, Remove, kRecvSetOrObject, 1, nullptr, {Any}, {"x"}},
       {"to_array", 0, ToArray, kRecvToArray, 0, nullptr, {}, {}},
       // Object (dict): keys/has/get_or_put resolve on any plain Object, not
       // just an iterator-shaped one — MethGate's Object arm already reads the
@@ -850,6 +886,70 @@ inline std::span<const BMethSpec> bmeth_specs() {
       // Object's key is never type-checked (an unhashable one just misses).
       {"get", 2, Get, kRecvArrayOrObject, 2, nullptr, {Long, Any},
        {"i", "fallback"}, {kRecvArray}},
+      // The iterator sources. `iter` walks whichever of the five receivers it
+      // is handed; the String walkers take one apiece. `split_iter` is the
+      // eager `split` wrapped in an Array walker, so it shares split's `sep`.
+      {"iter", 0, Iter, kRecvIterSource, 0, nullptr, {}, {}},
+      {"code_points", 0, CodePoints, kRecvStrLike, 0, nullptr, {}, {}},
+      {"bytes", 0, Bytes, kRecvStrLike, 0, nullptr, {}, {}},
+      {"graphemes", 0, Graphemes, kRecvStrLike, 0, nullptr, {}, {}},
+      {"split_iter", 1, SplitIter, kRecvStrLike, 1, nullptr, {StrLike},
+       {"sep"}},
+      // `count` is the one name two tables bind at DIFFERENT arities — a
+      // String counts a substring, an iterator counts what it yields — so the
+      // (name, argc) key alone keeps the two apart.
+      {"count", 1, StrCount, kRecvStrLike, 1, nullptr, {StrLike}, {"sub"}},
+      {"count", 0, IterCount, kRecvIterOnly, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      // Array-or-iterator duals, like ToSet: `enumerate` normalises both
+      // receivers through one runtime entry, to_object/unzip keep an arm each.
+      {"enumerate", 0, Enumerate, kRecvArrayIter, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"to_object", 0, ToObject, kRecvArrayIter, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"unzip", 0, Unzip, kRecvArrayIter, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      // Iterator-only. The `n` of take/skip/step_by/chunks/windows/nth is
+      // declared Long in the interp table and rejected by its binder, so it
+      // takes a ChkParam; a callback is `Any` here for the same reason the
+      // higher-order group's is (its own check lives in the runtime helper,
+      // already worded and positioned identically), and so is chain/zip's
+      // iterable (the "not iterable" error comes from the factory's own
+      // coercion, anchored at the call).
+      {"take", 1, Take, kRecvIterOnly, 1, nullptr, {Long}, {"n"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"skip", 1, Skip, kRecvIterOnly, 1, nullptr, {Long}, {"n"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"step_by", 1, StepBy, kRecvIterOnly, 1, nullptr, {Long}, {"n"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"chunks", 1, Chunks, kRecvIterOnly, 1, nullptr, {Long}, {"n"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"windows", 1, Windows, kRecvIterOnly, 1, nullptr, {Long}, {"n"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"nth", 1, Nth, kRecvIterOnly, 1, nullptr, {Long}, {"n"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"take_while", 1, TakeWhile, kRecvIterOnly, 1, nullptr, {Any}, {"p"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"skip_while", 1, SkipWhile, kRecvIterOnly, 1, nullptr, {Any}, {"p"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"tap", 1, Tap, kRecvIterOnly, 1, nullptr, {Any}, {"f"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"chunk_by", 1, ChunkBy, kRecvIterOnly, 1, nullptr, {Any}, {"f"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"position", 1, Position, kRecvIterOnly, 1, nullptr, {Any}, {"p"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"scan", 2, Scan, kRecvIterOnly, 2, nullptr, {Any, Any}, {"init", "f"},
+       {}, /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"chain", 1, Chain, kRecvIterOnly, 1, nullptr, {Any}, {"other"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"zip", 1, Zip, kRecvIterOnly, 1, nullptr, {Any}, {"other"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"collect", 0, Collect, kRecvIterOnly, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"first", 0, First, kRecvIterOnly, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+      {"last", 0, Last, kRecvIterOnly, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
   };
   return kSpecs;
 }
@@ -902,7 +1002,74 @@ inline bool bmeth_consumes_args(BMeth id) {
          // discipline (object_has_value / array_get_default /
          // object_get_default / object_get_or_put all consume what they are
          // handed).
-         id == BMeth::Has || id == BMeth::Get || id == BMeth::GetOrPut;
+         id == BMeth::Has || id == BMeth::Get || id == BMeth::GetOrPut ||
+         // The iterator adapters that capture a callback (and scan's seed):
+         // the factory owns it from entry, exactly as the AST arms' own
+         // `f.consume()` before the call hands it over.
+         id == BMeth::TakeWhile || id == BMeth::SkipWhile ||
+         id == BMeth::Tap || id == BMeth::ChunkBy || id == BMeth::Position ||
+         id == BMeth::Scan;
+}
+
+// The argument index a built-in's callback sits at, or -1 when it takes
+// none. Every callback-taking built-in declares it LAST (reduce and scan put
+// their seed first), and a non-Function there reports at that argument, not
+// at the call — the runtime helper reads the site this publishes
+// (culebra_runtime_set_callback_arg_site), the way the AST arms publish it
+// just before handing the callback over.
+inline int8_t bmeth_callback_arg(BMeth id, int8_t nargs) {
+  switch (id) {
+    case BMeth::Map: case BMeth::Filter: case BMeth::ForEach:
+    case BMeth::AnyOf: case BMeth::All: case BMeth::Find:
+    case BMeth::FlatMap: case BMeth::MinBy: case BMeth::MaxBy:
+    case BMeth::Reduce: case BMeth::GroupBy: case BMeth::Partition:
+    case BMeth::SortBy: case BMeth::SortedBy:
+    case BMeth::TakeWhile: case BMeth::SkipWhile: case BMeth::Tap:
+    case BMeth::ChunkBy: case BMeth::Position: case BMeth::Scan:
+      return static_cast<int8_t>(nargs - 1);
+    default:
+      return -1;
+  }
+}
+
+// Whether some OTHER row binds the same name — i.e. whether a receiver can
+// resolve this name at an arity the call did not write. `count` is the only
+// such name today (a String counts a substring, an iterator counts what it
+// yields), and it is why a miss cannot always take the flat resolution error.
+inline bool bmeth_has_rival_arity(const BMethSpec& s) {
+  for (const auto& o : bmeth_specs())
+    if (o.name == s.name && o.argc != s.argc) return true;
+  return false;
+}
+
+// The count-based ArityError this receiver owes: the arities the OTHER rows
+// of the name resolve on its tag, if any. Empty when the receiver simply
+// lacks the name, which is the flat "expected Function, got Nil" instead.
+inline std::string bmeth_rival_arity_message(const BMethSpec& s, int8_t tag,
+                                             bool iter_shaped) {
+  int8_t lo = -1, hi = -1;
+  for (const auto& o : bmeth_specs()) {
+    if (o.name != s.name || o.argc == s.argc) continue;
+    if (!bmeth_receiver_ok(o.recv, tag)) continue;
+    if (o.obj_iter_shaped && tag == TAG_OBJECT && !iter_shaped) continue;
+    if (lo < 0 || o.argc < lo) lo = o.argc;
+    if (o.argc > hi) hi = o.argc;
+  }
+  if (lo < 0) return {};
+  return culebra::builtin_arity_error_message(s.name, lo, hi, s.argc);
+}
+
+// Whether the call publishes its own position before the arguments run.
+// A terminal that drives a broken upstream raises the iterator-protocol
+// error without a position of its own — the chain was built elsewhere — and
+// the interp reports such a throw at the expression it is evaluating, i.e.
+// this call. Mirrors the JIT's expect_iter_receiver, which publishes at the
+// same point (after the receiver gate, before the arguments).
+inline bool bmeth_publishes_call_pos(BMeth id) {
+  return id == BMeth::Collect || id == BMeth::IterCount ||
+         id == BMeth::Take || id == BMeth::Skip || id == BMeth::TakeWhile ||
+         id == BMeth::Chunks || id == BMeth::Windows || id == BMeth::Chain ||
+         id == BMeth::Zip;
 }
 
 // The accepted tags, tested inline like the JIT arms' own gates
@@ -1006,6 +1173,9 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
     return reinterpret_cast<JitArray*>(v.data);
   };
   auto st = [](const JitValue& v) { return reinterpret_cast<JitSet*>(v.data); };
+  auto obj = [](JitObject* o) {
+    return JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+  };
   switch (id) {
     case BMeth::Size:
       return JitValue{TAG_LONG, bmeth_size(recv)};
@@ -1399,6 +1569,20 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
                                     st(recv), static_cast<int8_t>(args[0].tag),
                                     args[0].data, line, col)};
     case BMeth::Remove:
+      if (recv.tag == TAG_OBJECT) {
+        // Dict key deletion, a different signature under the same name: it
+        // answers nil, and the store takes the key's `+1`. The argument stays
+        // register-owned like the Set arm's, so mint the reference the store
+        // consumes rather than handing over the slot's. (A Shared view never
+        // reaches here — MethGate routes its every built-in name to the user
+        // arm — so the helper's own release-then-reject path is unreachable.)
+        culebra_runtime_value_retain(static_cast<int8_t>(args[0].tag),
+                                     args[0].data);
+        culebra_runtime_object_remove_any(
+            reinterpret_cast<JitObject*>(recv.data),
+            static_cast<int8_t>(args[0].tag), args[0].data, line, col);
+        return JitValue{TAG_NIL, 0};
+      }
       return JitValue{TAG_BOOL, culebra_runtime_set_remove(
                                     st(recv), static_cast<int8_t>(args[0].tag),
                                     args[0].data, line, col)};
@@ -1446,6 +1630,150 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
           reinterpret_cast<JitObject*>(recv.data),
           static_cast<int8_t>(args[0].tag), args[0].data,
           static_cast<int8_t>(args[1].tag), args[1].data, line, col);
+    // --- The iterator sources ---------------------------------------------
+    case BMeth::Iter:
+      switch (recv.tag) {
+        case TAG_ARRAY:
+        case TAG_TUPLE:  // a Tuple is a JitArray under another tag
+          return obj(culebra_runtime_array_iter(arr(recv)));
+        case TAG_SET:
+          // The members are snapshotted into an Array the walker owns: the
+          // fresh `+1` dies with the iterator, not with this expression.
+          return obj(culebra_runtime_array_iter(
+              culebra_runtime_set_to_array(st(recv))));
+        case TAG_OBJECT:
+          // A Range walks its start..end sequence — split it out before the
+          // generic Object path, which would walk the Range object's own
+          // key/value pairs.
+          if (culebra_runtime_is_range(static_cast<int8_t>(recv.tag),
+                                       recv.data))
+            return obj(culebra_runtime_range_iter(recv.data, line, col));
+          // An `iter` of the receiver's own is what MethGate would have found;
+          // reaching here means the dict builtin, which walks (key, value) —
+          // the dispatch still asks, matching the AST arm's own call.
+          return obj(culebra_runtime_object_iter_dispatch(
+              reinterpret_cast<JitObject*>(recv.data)));
+        default:  // TAG_STRING / TAG_STRINGVIEW, the gate's remaining cases
+          return obj(culebra_runtime_str_scalars(cstr(recv)));
+      }
+    case BMeth::CodePoints:
+      return obj(culebra_runtime_str_code_points(cstr(recv)));
+    case BMeth::Bytes:
+      return obj(culebra_runtime_str_bytes(cstr(recv)));
+    case BMeth::Graphemes:
+      return obj(culebra_runtime_str_graphemes(cstr(recv)));
+    case BMeth::SplitIter: {
+      // "Lazy in API, eager underneath": split first, then walk the pieces.
+      // array_iter takes its own `+1` on the Array, so split's fresh one is
+      // released here and the snapshot lives exactly as long as the iterator.
+      auto* pieces = culebra_runtime_str_split(cstr(recv), cstr(args[0]));
+      auto* it = culebra_runtime_array_iter(pieces);
+      culebra_runtime_value_release(TAG_ARRAY,
+                                    reinterpret_cast<int64_t>(pieces));
+      return obj(it);
+    }
+    case BMeth::StrCount:
+      return JitValue{TAG_LONG,
+                      culebra_runtime_str_count(cstr(recv), cstr(args[0]))};
+    case BMeth::Enumerate:
+      // One runtime entry for both receivers: it normalises an Array into a
+      // walker itself, then yields `(index, value)` tuples.
+      return obj(culebra_runtime_enumerate_any(static_cast<int8_t>(recv.tag),
+                                               recv.data));
+    case BMeth::ToObject:
+      if (recv.tag == TAG_ARRAY)
+        return obj(culebra_runtime_array_to_object(arr(recv), line, col));
+      culebra_runtime_set_op_pos(line, col);  // the drive's protocol error
+      return obj(culebra_runtime_iter_to_object(static_cast<int8_t>(recv.tag),
+                                                recv.data, line, col));
+    case BMeth::Unzip:
+      if (recv.tag == TAG_ARRAY)
+        return JitValue{TAG_TUPLE,
+                        reinterpret_cast<int64_t>(
+                            culebra_runtime_array_unzip(arr(recv), line, col))};
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{TAG_TUPLE,
+                      reinterpret_cast<int64_t>(culebra_runtime_iter_unzip(
+                          static_cast<int8_t>(recv.tag), recv.data, line,
+                          col))};
+    // --- Iterator-only: the gate proved an iterator-shaped Object ----------
+    case BMeth::Take:
+      return obj(culebra_runtime_iter_take(static_cast<int8_t>(recv.tag),
+                                           recv.data, args[0].data));
+    case BMeth::Skip:
+      return obj(culebra_runtime_iter_skip(static_cast<int8_t>(recv.tag),
+                                           recv.data, args[0].data));
+    case BMeth::StepBy:
+      return obj(culebra_runtime_iter_step_by(static_cast<int8_t>(recv.tag),
+                                              recv.data, args[0].data, line,
+                                              col));
+    case BMeth::Chunks:
+      return obj(culebra_runtime_iter_chunks(static_cast<int8_t>(recv.tag),
+                                             recv.data, args[0].data, line,
+                                             col));
+    case BMeth::Windows:
+      return obj(culebra_runtime_iter_windows(static_cast<int8_t>(recv.tag),
+                                              recv.data, args[0].data, line,
+                                              col));
+    case BMeth::TakeWhile:
+      return obj(culebra_runtime_iter_take_while(
+          static_cast<int8_t>(recv.tag), recv.data,
+          static_cast<int8_t>(args[0].tag), args[0].data, line, col));
+    case BMeth::SkipWhile:
+      return obj(culebra_runtime_iter_skip_while(
+          static_cast<int8_t>(recv.tag), recv.data,
+          static_cast<int8_t>(args[0].tag), args[0].data, line, col));
+    case BMeth::Tap:
+      return obj(culebra_runtime_iter_tap(
+          static_cast<int8_t>(recv.tag), recv.data,
+          static_cast<int8_t>(args[0].tag), args[0].data, line, col));
+    case BMeth::ChunkBy:
+      return obj(culebra_runtime_iter_chunk_by(
+          static_cast<int8_t>(recv.tag), recv.data,
+          static_cast<int8_t>(args[0].tag), args[0].data, line, col));
+    case BMeth::Scan:
+      return obj(culebra_runtime_iter_scan(
+          static_cast<int8_t>(recv.tag), recv.data,
+          static_cast<int8_t>(args[0].tag), args[0].data,
+          static_cast<int8_t>(args[1].tag), args[1].data, line, col));
+    case BMeth::Chain:
+      return obj(culebra_runtime_iter_chain(
+          static_cast<int8_t>(recv.tag), recv.data,
+          static_cast<int8_t>(args[0].tag), args[0].data, line, col));
+    case BMeth::Zip:
+      return obj(culebra_runtime_iter_zip(
+          static_cast<int8_t>(recv.tag), recv.data,
+          static_cast<int8_t>(args[0].tag), args[0].data, line, col));
+    case BMeth::Collect:
+      return JitValue{TAG_ARRAY,
+                      reinterpret_cast<int64_t>(culebra_runtime_iter_collect(
+                          static_cast<int8_t>(recv.tag), recv.data))};
+    case BMeth::IterCount:
+      return JitValue{TAG_LONG,
+                      culebra_runtime_iter_count(static_cast<int8_t>(recv.tag),
+                                                 recv.data)};
+    case BMeth::First:
+    case BMeth::Last:
+    case BMeth::Nth:
+    case BMeth::Position: {
+      // An exhausted iterator answers nil, so the element's `+1` arrives
+      // through out-params like Find's.
+      int8_t tag = TAG_NIL;
+      int64_t data = 0;
+      auto it = static_cast<int8_t>(recv.tag);
+      if (id == BMeth::First)
+        culebra_runtime_iter_first(it, recv.data, &tag, &data);
+      else if (id == BMeth::Last)
+        culebra_runtime_iter_last(it, recv.data, &tag, &data);
+      else if (id == BMeth::Nth)
+        culebra_runtime_iter_nth(it, recv.data, args[0].data, line, col, &tag,
+                                 &data);
+      else
+        culebra_runtime_iter_position(it, recv.data,
+                                      static_cast<int8_t>(args[0].tag),
+                                      args[0].data, line, col, &tag, &data);
+      return JitValue{tag, data};
+    }
   }
   return JitValue{TAG_NIL, 0};  // unreachable: every id has an arm
 }
@@ -4133,6 +4461,13 @@ class Compiler {
         (spec || culebra::is_builtin_method_name(name) || name == "drop" ||
          name == "parameters"))
       reject(post, std::format("UFCS candidate '{}'", name));
+    // A lazy stdlib function (`s.replace(a, b)`) is a UFCS candidate the
+    // slice cannot load: those modules are source the VM lanes do not splice,
+    // so the candidate arm has nothing to call. Without this the receiver's
+    // own miss answers instead — a wrong answer, not a reject.
+    if (ufcs_candidate(name, spec) == UfcsCand::None &&
+        !culebra::lazy_fn_group_of(name).empty())
+      reject(post, std::format("lazy stdlib UFCS candidate '{}'", name));
     if (spec) return;
     if (culebra::is_builtin_method_name(name))
       reject(post, std::format("built-in method '{}'", name));
@@ -4272,6 +4607,12 @@ class Compiler {
     emit(Op::MethGate, base, recv.slot, kconst_str(post.token),
          static_cast<int32_t>(spec.id));
     store_into(base + 1, recv, /*dst_is_fresh=*/true);
+    // A name two receivers spell at different arities owes an ArityError,
+    // not a method miss — and the interp raises it before the arguments run.
+    if (bmeth_has_rival_arity(spec)) {
+      StampGuard args_pos(*this, args);
+      emit(Op::ArityChk, base, 0, bmeth_spec_index(spec));
+    }
     for (int32_t i = 0; i < argc; i++)
       store_into(base + 2 + i, compile_expr(*args.nodes[i]),
                  /*dst_is_fresh=*/true);
@@ -5343,7 +5684,8 @@ inline std::string dump(const Chunk& c) {
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "PropSet",   "PropWr",    "PropCo",     "NsWrChk",
-      "PropVal",   "BareMethChk", "MethGate", "ChkParam", "BMeth", "PropRaw",
+      "PropVal",   "BareMethChk", "MethGate", "ChkParam", "ArityChk", "BMeth",
+      "PropRaw",
       "HasProp",
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
@@ -6402,6 +6744,26 @@ struct Exec {
               bmeth_scalar_receiver_error(static_cast<int8_t>(recv.tag), line,
                                           col);
             regs[in.a] = JitValue{TAG_NO_SELF, kBMethGateMiss};
+          } else if (bmeth_publishes_call_pos(static_cast<BMeth>(in.d))) {
+            culebra_runtime_set_op_pos(line, col);
+          }
+          ++pc;
+          break;
+        }
+        case Op::ArityChk: {
+          const JitValue& gate = regs[in.a];
+          if (gate.tag == TAG_NO_SELF && gate.data == kBMethGateMiss) {
+            const JitValue& recv = regs[in.a + 1];
+            bool shaped =
+                recv.tag == TAG_OBJECT &&
+                culebra_runtime_object_has(
+                    reinterpret_cast<JitObject*>(recv.data), "next");
+            auto msg = bmeth_rival_arity_message(
+                bmeth_specs()[in.c], static_cast<int8_t>(recv.tag), shaped);
+            if (!msg.empty()) {
+              auto [line, col] = chunk_pos_at(c, pc);
+              culebra_runtime_throw_error("ArityError", msg.c_str(), line, col);
+            }
           }
           ++pc;
           break;
@@ -6459,6 +6821,15 @@ struct Exec {
           // nil the run first, so the helper is their only owner from the
           // call on (`array_insert` releases on its own throw edge).
           auto id = static_cast<BMeth>(in.c);
+          // A non-Function callback reports at its own argument: publish the
+          // site the runtime helper's check reads.
+          if (int8_t cb = bmeth_callback_arg(id, static_cast<int8_t>(in.d));
+              cb >= 0) {
+            if (const auto* ap = chunk_argpos_at(c, pc);
+                ap && cb < static_cast<int8_t>(ap->size()))
+              culebra_runtime_set_callback_arg_site((*ap)[cb] >> 32,
+                                                    (*ap)[cb] & 0xffffffff);
+          }
           bool consumes = bmeth_consumes_args(id);
           JitValue argv[2] = {JitValue{TAG_NIL, 0}, JitValue{TAG_NIL, 0}};
           for (int32_t k = 0; consumes && k < in.d; ++k) {
@@ -8323,26 +8694,32 @@ struct Lowering {
           b.SetInsertPoint(gateBB);
           const BMethSpec& gate = bmeth_gate_spec(id);
           auto mask = gate.recv;
+          // The gate-passing edges land here first when this call publishes
+          // its own position (see bmeth_publishes_call_pos) — the user arm
+          // above must not, since its callee publishes its own call site.
+          auto okBB = bmeth_publishes_call_pos(id)
+                          ? BasicBlock::Create(j.ctx_, "vbm.pubpos", fn)
+                          : contBB;
           if (mask == kRecvAny) {
-            b.CreateBr(contBB);  // no gate: every receiver resolves the name
+            b.CreateBr(okBB);  // no gate: every receiver resolves the name
           } else {
             auto badBB = BasicBlock::Create(j.ctx_, "vbm.rcverr", fn);
             // An iterator-protocol name resolves on an Object only when the
             // object carries the protocol; a plain dict merely lacks it.
-            llvm::BasicBlock* shapeBB = contBB;
+            llvm::BasicBlock* shapeBB = okBB;
             if (gate.obj_iter_shaped && bmeth_receiver_ok(mask, TAG_OBJECT))
               shapeBB = BasicBlock::Create(j.ctx_, "vbm.itershape", fn);
             auto sw = b.CreateSwitch(tag, badBB, std::popcount(mask));
             for (int8_t t = 0; t < 16; ++t)
               if (bmeth_receiver_ok(mask, t))
-                sw->addCase(b.getInt8(t), t == TAG_OBJECT ? shapeBB : contBB);
-            if (shapeBB != contBB) {
+                sw->addCase(b.getInt8(t), t == TAG_OBJECT ? shapeBB : okBB);
+            if (shapeBB != okBB) {
               b.SetInsertPoint(shapeBB);
               b.CreateCondBr(
                   j.emit_object_has(
                       b.CreateIntToPtr(j.extract_data(recv), ptrTy),
                       j.get_or_create_global_str("next", ".it.next")),
-                  contBB, badBB);
+                  okBB, badBB);
             }
             // A scalar receiver fails here and now; anything else only lacks
             // the method, which BMeth reports once the arguments have run.
@@ -8359,7 +8736,64 @@ struct Lowering {
                           slots[in.a]);
             b.CreateBr(contBB);
           }
+          if (okBB != contBB) {
+            b.SetInsertPoint(okBB);
+            j.emit_set_op_pos();
+            b.CreateBr(contBB);
+          }
 
+          b.SetInsertPoint(contBB);
+          break;
+        }
+        case Op::ArityChk: {
+          // One arm per receiver tag the rival arity resolves on — the
+          // message is a compile-time fact of (tag, shape), so only the
+          // iterator-shape probe survives into the IR.
+          const BMethSpec& spec = bmeth_specs()[in.c];
+          auto [line, col] = chunk_pos_at(c, i);
+          auto gate = load_slot(in.a);
+          auto recv = load_slot(in.a + 1);
+          auto contBB = BasicBlock::Create(j.ctx_, "vbm.ar.cont", fn);
+          auto missBB = BasicBlock::Create(j.ctx_, "vbm.ar.miss", fn);
+          b.CreateCondBr(
+              b.CreateAnd(
+                  b.CreateICmpEQ(j.extract_tag(gate), b.getInt8(TAG_NO_SELF)),
+                  b.CreateICmpEQ(j.extract_data(gate),
+                                 b.getInt64(kBMethGateMiss))),
+              missBB, contBB);
+          b.SetInsertPoint(missBB);
+          auto throw_msg = [&](const std::string& msg) {
+            j.emit_throw_error("ArityError", msg, line, col);
+            if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          };
+          std::vector<std::pair<int8_t, llvm::BasicBlock*>> arms;
+          for (int8_t t = 0; t < 16; ++t) {
+            auto plain = bmeth_rival_arity_message(spec, t, false);
+            auto shaped = bmeth_rival_arity_message(spec, t, true);
+            if (plain.empty() && shaped.empty()) continue;
+            auto armBB = BasicBlock::Create(j.ctx_, "vbm.ar.t", fn);
+            arms.emplace_back(t, armBB);
+            b.SetInsertPoint(armBB);
+            if (t != TAG_OBJECT || plain == shaped) {
+              throw_msg(plain.empty() ? shaped : plain);
+              continue;
+            }
+            auto shapedBB = BasicBlock::Create(j.ctx_, "vbm.ar.shaped", fn);
+            auto plainBB = BasicBlock::Create(j.ctx_, "vbm.ar.plain", fn);
+            b.CreateCondBr(
+                j.emit_object_has(
+                    b.CreateIntToPtr(j.extract_data(recv), ptrTy),
+                    j.get_or_create_global_str("next", ".it.next")),
+                shapedBB, plainBB);
+            b.SetInsertPoint(shapedBB);
+            if (shaped.empty()) b.CreateBr(contBB); else throw_msg(shaped);
+            b.SetInsertPoint(plainBB);
+            if (plain.empty()) b.CreateBr(contBB); else throw_msg(plain);
+          }
+          b.SetInsertPoint(missBB);
+          auto sw = b.CreateSwitch(j.extract_tag(recv), contBB,
+                                   static_cast<unsigned>(arms.size()));
+          for (auto& [t, armBB] : arms) sw->addCase(b.getInt8(t), armBB);
           b.SetInsertPoint(contBB);
           break;
         }
@@ -8465,6 +8899,20 @@ struct Lowering {
           auto arr = [&] {
             return b.CreateIntToPtr(j.extract_data(recv), ptrTy);
           };
+          // A non-Function callback reports at its own argument: publish the
+          // site the runtime helper's check reads.
+          if (int8_t cb =
+                  bmeth_callback_arg(static_cast<BMeth>(in.c),
+                                     static_cast<int8_t>(in.d));
+              cb >= 0) {
+            if (const auto* ap = chunk_argpos_at(c, i);
+                ap && cb < static_cast<int8_t>(ap->size()))
+              j.emit_call(
+                  j.module_->getOrInsertFunction(rt::set_callback_arg_site,
+                                                 b.getVoidTy(), i64Ty, i64Ty),
+                  {b.getInt64((*ap)[cb] >> 32),
+                   b.getInt64((*ap)[cb] & 0xffffffff)});
+          }
           // The consuming built-ins take the arguments off the registers
           // before the call, so the helper is their only owner from there on.
           if (bmeth_consumes_args(static_cast<BMeth>(in.c)))
@@ -9208,17 +9656,50 @@ struct Lowering {
             // nils the slot above); `remove` only hashes it for lookup.
             case BMeth::Add:
             case BMeth::Remove: {
-              const char* rt_name = static_cast<BMeth>(in.c) == BMeth::Add
-                                        ? rt::set_add_method
-                                        : rt::set_remove;
-              auto r = j.emit_call(
-                  j.module_->getOrInsertFunction(
-                      rt_name, b.getInt8Ty(), ptrTy, b.getInt8Ty(), i64Ty,
-                      i64Ty, i64Ty),
+              bool is_add = static_cast<BMeth>(in.c) == BMeth::Add;
+              auto setArm = [&]() {
+                auto r = j.emit_call(
+                    j.module_->getOrInsertFunction(
+                        is_add ? rt::set_add_method : rt::set_remove,
+                        b.getInt8Ty(), ptrTy, b.getInt8Ty(), i64Ty, i64Ty,
+                        i64Ty),
+                    {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                     b.getInt64(line), b.getInt64(col)},
+                    "vbm.setm");
+                return j.make_bool(b.CreateICmpNE(r, b.getInt8(0)));
+              };
+              if (is_add) {  // an Object's `add` is a user property, never here
+                res = setArm();
+                break;
+              }
+              // `remove` splits by receiver: a Set drops a member and answers
+              // whether it held one, an Object drops a dict key and answers
+              // nil. The key stays slot-owned on both arms — the dict store
+              // takes a `+1`, so mint it (see the executor's own arm).
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.rm");
+              auto setBB = BasicBlock::Create(j.ctx_, "vbm.rm.set", fn);
+              auto objBB2 = BasicBlock::Create(j.ctx_, "vbm.rm.obj", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.rm.join", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_OBJECT)),
+                             objBB2, setBB);
+              b.SetInsertPoint(setBB);
+              b.CreateStore(setArm(), out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(objBB2);
+              j.emit_value_retain(arg(0));
+              j.emit_call(
+                  j.module_->getOrInsertFunction(rt::object_remove_any,
+                                                 b.getVoidTy(), ptrTy,
+                                                 b.getInt8Ty(), i64Ty, i64Ty,
+                                                 i64Ty),
                   {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
-                   b.getInt64(line), b.getInt64(col)},
-                  "vbm.setm");
-              res = j.make_bool(b.CreateICmpNE(r, b.getInt8(0)));
+                   b.getInt64(line), b.getInt64(col)});
+              b.CreateStore(j.make_nil(), out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
               break;
             }
             // Three unrelated value tables bind this name — Set, Tuple,
@@ -9327,6 +9808,298 @@ struct Lowering {
                    b.getInt64(line), b.getInt64(col)},
                   "vbm.gop");
               break;
+            // --- The iterator sources ---------------------------------
+            case BMeth::Iter: {
+              // One block per receiver family, merged through an entry-block
+              // alloca (ToArray's shape): Array/Tuple walk their members, a
+              // Set walks a snapshot of its own, an Object asks its `iter`
+              // before falling back to the (key, value) walk, and a String
+              // yields its scalars.
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.it");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.it.arr", fn);
+              auto setBB = BasicBlock::Create(j.ctx_, "vbm.it.set", fn);
+              auto objBB2 = BasicBlock::Create(j.ctx_, "vbm.it.obj", fn);
+              auto strBB = BasicBlock::Create(j.ctx_, "vbm.it.str", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.it.join", fn);
+              auto arrIterFn = j.module_->getOrInsertFunction(rt::array_iter,
+                                                              ptrTy, ptrTy);
+              auto sw = b.CreateSwitch(tagv, strBB, 4);
+              sw->addCase(b.getInt8(TAG_ARRAY), arrBB);
+              sw->addCase(b.getInt8(TAG_TUPLE), arrBB);
+              sw->addCase(b.getInt8(TAG_SET), setBB);
+              sw->addCase(b.getInt8(TAG_OBJECT), objBB2);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  j.make_object(j.emit_call(arrIterFn, {arr()}, "vbm.it.a")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(setBB);
+              {
+                // The members are snapshotted into an Array the walker owns:
+                // array_iter takes its own `+1`, so the snapshot's fresh one
+                // is released here and the copy lives with the iterator.
+                auto members = j.emit_call(
+                    j.module_->getOrInsertFunction(rt::set_to_array, ptrTy,
+                                                   ptrTy),
+                    {arr()}, "vbm.it.sa");
+                auto it = j.emit_call(arrIterFn, {members}, "vbm.it.s");
+                j.emit_value_release(j.make_array(members));
+                b.CreateStore(j.make_object(it), out);
+              }
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(objBB2);
+              {
+                // A Range walks its start..end sequence — split it out before
+                // the generic Object path, which would walk the Range
+                // object's own key/value pairs.
+                auto rangeBB = BasicBlock::Create(j.ctx_, "vbm.it.rng", fn);
+                auto plainBB = BasicBlock::Create(j.ctx_, "vbm.it.plain", fn);
+                b.CreateCondBr(j.emit_is_range(recv), rangeBB, plainBB);
+                b.SetInsertPoint(rangeBB);
+                b.CreateStore(
+                    j.make_object(j.emit_call(
+                        j.module_->getOrInsertFunction(rt::range_iter, ptrTy,
+                                                       i64Ty, i64Ty, i64Ty),
+                        {j.extract_data(recv), b.getInt64(line),
+                         b.getInt64(col)},
+                        "vbm.it.r")),
+                    out);
+                b.CreateBr(joinBB);
+                b.SetInsertPoint(plainBB);
+              }
+              b.CreateStore(
+                  j.make_object(j.emit_call(
+                      j.module_->getOrInsertFunction(rt::object_iter_dispatch,
+                                                     ptrTy, ptrTy),
+                      {arr()}, "vbm.it.o")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(strBB);
+              b.CreateStore(
+                  j.make_object(j.emit_call(
+                      j.module_->getOrInsertFunction(rt::str_scalars, ptrTy,
+                                                     ptrTy),
+                      {cstr(recv)}, "vbm.it.t")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            case BMeth::CodePoints:
+            case BMeth::Bytes:
+            case BMeth::Graphemes: {
+              auto id2 = static_cast<BMeth>(in.c);
+              const char* sym = id2 == BMeth::CodePoints ? rt::str_code_points
+                                : id2 == BMeth::Bytes    ? rt::str_bytes
+                                                         : rt::str_graphemes;
+              res = j.make_object(j.emit_call(
+                  j.module_->getOrInsertFunction(sym, ptrTy, ptrTy),
+                  {cstr(recv)}, "vbm.sw"));
+              break;
+            }
+            case BMeth::SplitIter: {
+              // "Lazy in API, eager underneath": split, then walk the pieces.
+              auto pieces = j.emit_call(
+                  j.module_->getFunction(rt::str_split),
+                  {cstr(recv), cstr(arg(0))}, "vbm.spi.a");
+              auto it = j.emit_call(
+                  j.module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy),
+                  {pieces}, "vbm.spi");
+              j.emit_value_release(j.make_array(pieces));
+              res = j.make_object(it);
+              break;
+            }
+            case BMeth::StrCount:
+              res = j.make_long(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::str_count, i64Ty, ptrTy,
+                                                 ptrTy),
+                  {cstr(recv), cstr(arg(0))}, "vbm.cnt"));
+              break;
+            case BMeth::Enumerate:
+              // One runtime entry for both receivers — it normalises an Array
+              // into a walker itself.
+              res = j.make_object(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::enumerate_any, ptrTy,
+                                                 b.getInt8Ty(), i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv)}, "vbm.enum"));
+              break;
+            case BMeth::ToObject:
+            case BMeth::Unzip: {
+              bool to_object = static_cast<BMeth>(in.c) == BMeth::ToObject;
+              auto tagv = j.extract_tag(recv);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.tou");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.tou.arr", fn);
+              auto iterBB = BasicBlock::Create(j.ctx_, "vbm.tou.iter", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.tou.join", fn);
+              auto wrap = [&](llvm::Value* p) {
+                return to_object ? j.make_object(p) : j.make_tuple(p);
+              };
+              b.CreateCondBr(b.CreateICmpEQ(tagv, b.getInt8(TAG_ARRAY)), arrBB,
+                             iterBB);
+              b.SetInsertPoint(arrBB);
+              b.CreateStore(
+                  wrap(j.emit_call(
+                      j.module_->getOrInsertFunction(
+                          to_object ? rt::array_to_object : rt::array_unzip,
+                          ptrTy, ptrTy, i64Ty, i64Ty),
+                      {arr(), b.getInt64(line), b.getInt64(col)}, "vbm.tou.a")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(iterBB);
+              j.emit_set_op_pos();  // the drive's own protocol error
+              b.CreateStore(
+                  wrap(j.emit_call(
+                      j.module_->getOrInsertFunction(
+                          to_object ? rt::iter_to_object : rt::iter_unzip,
+                          ptrTy, b.getInt8Ty(), i64Ty, i64Ty, i64Ty),
+                      {tagv, j.extract_data(recv), b.getInt64(line),
+                       b.getInt64(col)},
+                      "vbm.tou.i")),
+                  out);
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out);
+              break;
+            }
+            // --- Iterator-only: the gate proved an iterator-shaped Object ---
+            case BMeth::Take:
+            case BMeth::Skip:
+              // No position argument: neither can fail on its own, and the
+              // MethGate publish already covers the drive's protocol error.
+              res = j.make_object(j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      static_cast<BMeth>(in.c) == BMeth::Take ? rt::iter_take
+                                                              : rt::iter_skip,
+                      ptrTy, b.getInt8Ty(), i64Ty, i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv),
+                   j.extract_data(arg(0))},
+                  "vbm.itn"));
+              break;
+            case BMeth::StepBy:
+            case BMeth::Chunks:
+            case BMeth::Windows: {
+              auto id2 = static_cast<BMeth>(in.c);
+              const char* sym = id2 == BMeth::StepBy  ? rt::iter_step_by
+                                : id2 == BMeth::Chunks ? rt::iter_chunks
+                                                       : rt::iter_windows;
+              // Each raises "n must be at least 1" from its own position.
+              res = j.make_object(j.emit_call(
+                  j.module_->getOrInsertFunction(sym, ptrTy, b.getInt8Ty(),
+                                                 i64Ty, i64Ty, i64Ty, i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv),
+                   j.extract_data(arg(0)), b.getInt64(line), b.getInt64(col)},
+                  "vbm.itnp"));
+              break;
+            }
+            case BMeth::TakeWhile:
+            case BMeth::SkipWhile:
+            case BMeth::Tap:
+            case BMeth::ChunkBy: {
+              auto id2 = static_cast<BMeth>(in.c);
+              const char* sym = id2 == BMeth::TakeWhile ? rt::iter_take_while
+                                : id2 == BMeth::SkipWhile
+                                    ? rt::iter_skip_while
+                                : id2 == BMeth::Tap ? rt::iter_tap
+                                                    : rt::iter_chunk_by;
+              // The callback left the register run nil'd above
+              // (bmeth_consumes_args): the factory owns it from here on.
+              res = j.make_object(j.emit_call(
+                  j.module_->getOrInsertFunction(sym, ptrTy, b.getInt8Ty(),
+                                                 i64Ty, b.getInt8Ty(), i64Ty,
+                                                 i64Ty, i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv),
+                   j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   b.getInt64(line), b.getInt64(col)},
+                  "vbm.itcb"));
+              break;
+            }
+            case BMeth::Scan:
+              res = j.make_object(j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      rt::iter_scan, ptrTy, b.getInt8Ty(), i64Ty,
+                      b.getInt8Ty(), i64Ty, b.getInt8Ty(), i64Ty, i64Ty,
+                      i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv),
+                   j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   j.extract_tag(arg(1)), j.extract_data(arg(1)),
+                   b.getInt64(line), b.getInt64(col)},
+                  "vbm.scan"));
+              break;
+            case BMeth::Chain:
+            case BMeth::Zip:
+              // The other iterable is borrowed: the factory coerces it and
+              // retains what it stores, so the slot keeps its own `+1`.
+              res = j.make_object(j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      static_cast<BMeth>(in.c) == BMeth::Chain ? rt::iter_chain
+                                                               : rt::iter_zip,
+                      ptrTy, b.getInt8Ty(), i64Ty, b.getInt8Ty(), i64Ty, i64Ty,
+                      i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv),
+                   j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   b.getInt64(line), b.getInt64(col)},
+                  "vbm.itpair"));
+              break;
+            case BMeth::Collect:
+              res = j.make_array(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::iter_collect, ptrTy,
+                                                 b.getInt8Ty(), i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv)}, "vbm.coll"));
+              break;
+            case BMeth::IterCount:
+              res = j.make_long(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::iter_count, i64Ty,
+                                                 b.getInt8Ty(), i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv)}, "vbm.icnt"));
+              break;
+            case BMeth::First:
+            case BMeth::Last:
+            case BMeth::Nth:
+            case BMeth::Position: {
+              // An exhausted iterator answers nil, so the element's `+1`
+              // arrives through out-params like Find's.
+              auto id2 = static_cast<BMeth>(in.c);
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "vbm.io.t");
+              auto outData = eb.CreateAlloca(i64Ty, nullptr, "vbm.io.d");
+              llvm::SmallVector<llvm::Value*, 8> a{j.extract_tag(recv),
+                                                   j.extract_data(recv)};
+              llvm::SmallVector<llvm::Type*, 8> ty{b.getInt8Ty(), i64Ty};
+              if (id2 == BMeth::Nth) {
+                a.push_back(j.extract_data(arg(0)));
+                ty.push_back(i64Ty);
+              } else if (id2 == BMeth::Position) {
+                a.push_back(j.extract_tag(arg(0)));
+                a.push_back(j.extract_data(arg(0)));
+                ty.push_back(b.getInt8Ty());
+                ty.push_back(i64Ty);
+              }
+              if (id2 == BMeth::Nth || id2 == BMeth::Position) {
+                a.push_back(b.getInt64(line));
+                a.push_back(b.getInt64(col));
+                ty.push_back(i64Ty);
+                ty.push_back(i64Ty);
+              }
+              a.push_back(outTag);
+              a.push_back(outData);
+              ty.push_back(ptrTy);
+              ty.push_back(ptrTy);
+              const char* sym = id2 == BMeth::First  ? rt::iter_first
+                                : id2 == BMeth::Last ? rt::iter_last
+                                : id2 == BMeth::Nth  ? rt::iter_nth
+                                                     : rt::iter_position;
+              j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      sym, llvm::FunctionType::get(b.getVoidTy(), ty, false)),
+                  a);
+              res = j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
+                                 b.CreateLoad(i64Ty, outData));
+              break;
+            }
           }
           b.CreateStore(res, slots[in.a]);
           b.CreateBr(mergeBB);

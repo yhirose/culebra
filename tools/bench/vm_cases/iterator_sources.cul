@@ -1,0 +1,84 @@
+# Every spelling that turns a value into a fresh iterator: `iter` on the five
+# receivers whose tables bind it, the String walkers, and the Array-or-iterator
+# duals (enumerate / to_object / unzip). `count` is the one name two tables
+# bind at different arities — a String counts a substring, an iterator counts
+# what it yields — so the (name, argc) key alone keeps the two apart.
+
+inspect([1, 2, 3].iter().collect())
+inspect((4, 5).iter().collect())
+inspect({7, 8}.iter().collect())
+inspect('ab'.iter().collect())
+inspect({'a': 1, 'b': 2}.iter().collect())
+inspect([1, 2].iter().iter().collect())
+inspect([1].iter().keys())
+
+# --- String sources -------------------------------------------------------
+inspect('añb'.code_points().collect())
+inspect('ab'.bytes().collect())
+inspect('áb'.graphemes().collect())
+inspect('a,b,,c'.split_iter(',').collect())
+inspect(''.code_points().collect())
+inspect(''.split_iter(',').collect())
+inspect('ab'.view().code_points().collect())
+inspect('ab'.view().iter().collect())
+inspect('abcabc'.count('bc'))
+inspect('abcabc'.iter().count())
+
+# --- Array-or-iterator duals ---------------------------------------------
+inspect([7, 8].enumerate().collect())
+inspect([1, 2, 3].iter().enumerate().collect())
+inspect([(1, 2), (3, 4)].to_object())
+inspect([(1, 2), (3, 4)].iter().to_object())
+inspect([(1, 2), (3, 4)].unzip())
+inspect([(1, 2), (3, 4)].iter().unzip())
+
+# --- An Object's own `iter` wins over the dict walk ------------------------
+class Src {
+  iter() { [7, 9].iter() }
+}
+inspect(Src.new().iter().collect())
+class Cur {
+  i: Long
+  new() { self.i = 0 }
+  has_next() { self.i < 2 }
+  next() { self.i = self.i + 1; self.i }
+}
+# No `iter` of its own: the dict builtin answers, walking (key, value) pairs.
+inspect(Cur.new().iter().collect())
+# As a receiver it is an iterator, driven through the protocol.
+inspect(Cur.new().collect())
+
+# A Range walks its own sequence, not the key/value pairs of the object that
+# carries it — the split every `iter` dispatch makes before the generic
+# Object path (a generator's desugared `(0..n).iter()` rides on it).
+let lo = 0
+let hi = 3
+inspect((lo..hi).iter().collect())
+inspect((lo..hi).iter().take(2).collect())
+fn gen(n) {
+  for i in lo..n {
+    yield i * 10
+  }
+}
+inspect(gen(3).collect())
+
+# --- Errors ---------------------------------------------------------------
+fn probe(f) { try { inspect(f()) } catch e { inspect(e) } }
+probe(fn () { (5).iter() })            # scalar receiver: before the arguments
+probe(fn () { [1, 2].code_points() })  # a receiver that lacks the name
+probe(fn () { 'ab'.split_iter(5) })    # the argument's own type
+probe(fn () { [1, 2].iter().to_object() })
+probe(fn () { [1, 2].iter().unzip() })
+probe(fn () { 'abc'.count() })         # String.count(sub) at the wrong arity
+probe(fn () { [1].iter().count(9) })   # Iterator.count() at the wrong arity
+
+# --- Churn: the walkers are allocated per call ----------------------------
+mut rounds = 0
+while rounds < 2000 {
+  let a = [rounds, rounds + 1]
+  let n = a.iter().count() + 'ab'.code_points().count() +
+          a.enumerate().count() + 'a,b'.split_iter(',').count()
+  if n != 8 { throw 'bad churn' }
+  rounds = rounds + 1
+}
+inspect(rounds)

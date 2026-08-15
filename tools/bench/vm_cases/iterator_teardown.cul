@@ -1,0 +1,38 @@
+# What a wrapping adapter does to the iterator underneath it: whose dispose
+# runs, and when. Its own file — a for-in cursor is twelve slots and one chunk
+# has 256.
+
+class Src {
+  n: Long
+  new() { self.n = 0 }
+  has_next() { self.n < 5 }
+  next() { let v = self.n; self.n = v + 1; v }
+  dispose() { inspect('dispose') }
+}
+
+for x in Src.new().take(2) { inspect(x) }
+inspect('--')
+for x in Src.new().map(fn (v) { v }) { break }
+inspect('--')
+inspect(Src.new().take(2).collect())
+inspect('--')
+inspect(Src.new().skip(3).first())
+inspect('--')
+inspect(Src.new().zip([9, 9]).count())
+inspect('--')
+for p in [1, 2].iter().zip([3, 4]) { inspect(p) }
+
+# Errors raised while draining still close what was opened.
+fn probe(f) { try { inspect(f()) } catch e { inspect(e) } }
+probe(fn () { Src.new().map(fn (x) { throw 'inner' }).collect() })
+probe(fn () { Src.new().take_while(fn (x) { throw 'inner' }).collect() })
+probe(fn () { Src.new().position(fn (x) { throw 'inner' }) })
+
+# Churn: every round opens and closes one chain.
+mut rounds = 0
+while rounds < 1000 {
+  let n = [1, 2, 3].iter().take(2).chain([4]).count()
+  if n != 3 { throw 'bad churn' }
+  rounds = rounds + 1
+}
+inspect(rounds)

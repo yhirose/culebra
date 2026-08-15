@@ -16294,7 +16294,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     auto objPtr = builder_.CreateIntToPtr(d, ptrTy);
     auto objIter = emit_call(
         module_->getOrInsertFunction(
-            "culebra_runtime_object_iter_dispatch", ptrTy, ptrTy),
+            rt::object_iter_dispatch, ptrTy, ptrTy),
         {objPtr});
     iterMerge.add_incoming(make_object(objIter));
     builder_.CreateBr(mergeBB);
