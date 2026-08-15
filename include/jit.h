@@ -4737,24 +4737,6 @@ struct JIT {
     return builder_.CreateOr(has, emit_object_is_namespace(data));
   }
 
-  // Build a +1 Object containing the kwargs `merged` collected at a
-  // call site that targets a `**rest` catch-all. Returns a Value
-  // (TAG_OBJECT) suitable to drop into the user-arg slab — the caller
-  // stamps TAG_KWREST on it once ownership has left the Owned handle.
-  llvm::Value* emit_kwargs_rest_object(
-      const std::map<std::string_view, const peg::Ast*>& kwargs,
-      const peg::Ast& argsAst) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto objPtr = emit_call(
-        module_->getOrInsertFunction(rt::object_new, ptrTy), {}, "rest");
-    for (const auto& [name, val_ast] : kwargs) {
-      auto val = compile(*val_ast).consume();
-      emit_object_set(objPtr, std::string(name), /*mut=*/false,
-                      extract_tag(val), extract_data(val));
-    }
-    return make_object(objPtr);
-  }
-
   Owned compile_object(const peg::Ast& ast) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -9933,36 +9915,16 @@ struct JIT {
 
       switch (postfix.original_tag) {
         case "ARGUMENTS"_: {
-          // First postfix on an `f(x, y: 2)`-style call: if `f` is an
-          // IDENTIFIER bound directly to a `fn (...) {...}` literal in
-          // scope AND every splat is a literal Object, route through
-          // the compile-time resolver (zero runtime overhead). Any
-          // dynamic splat or indirect callee falls back to the
-          // runtime resolver via `compile_function_call`.
-          const peg::Ast* fnAst = nullptr;
-          if (i == 1 && calleeNode->tag == "IDENTIFIER"_) {
-            fnAst = lookup_fn_ast(std::string(calleeNode->token));
-          }
-          bool has_dynamic_splat = false;
-          bool fn_has_kw_marker = false;
-          if (fnAst) {
-            for (auto& c : postfix.nodes) {
-              if (c->tag == "KWARG_SPLAT"_ &&
-                  c->nodes[0]->tag != "OBJECT"_) {
-                has_dynamic_splat = true;
-                break;
-              }
-            }
-            for (auto& p : fnAst->nodes[0]->nodes) {
-              if (culebra::is_kw_only_sep(*p) ||
-                  culebra::is_kwargs_rest(*p)) {
-                fn_has_kw_marker = true;
-                break;
-              }
-            }
-          }
-          bool need_kwarg_path =
-              !arg_list_is_positional_only(postfix) || fn_has_kw_marker;
+          // Every call carrying keyword content goes to the same place:
+          // compile_function_call routes it to the runtime resolver, which
+          // binds names against the callee's registered parameter metadata.
+          // A compile-time binder used to shadow it whenever the callee was
+          // an IDENTIFIER bound to a visible `fn` literal — a second copy of
+          // the binder, and each copy drifted: it read splat keys off the
+          // AST (so `**{'a': 1}` was "not an identifier"), it evaluated
+          // keyword values in parameter order rather than source order, and
+          // it needed its own stamp on the `**rest` slot. One binder cannot
+          // disagree with itself.
           // The dispatch borrows the callee (compile_function_call_raw's
           // convention); the rolling handle owns the +1 temp and the
           // move-assign below releases it after the dispatch returns.
@@ -9992,14 +9954,9 @@ struct JIT {
               auto selfSlot = lookup_var("self");
               fnSelf = load_slot(*selfSlot, "self.fnrec");
             }
-            if (fnAst && !has_dynamic_splat && need_kwarg_path) {
-              result = compile_function_call_with_kwargs(
-                  postfix, callee.borrow(), *fnAst);
-            } else {
-              result = compile_function_call(postfix, callee.borrow(), fnSelf,
-                                             /*own_self_on_error=*/fnSelf !=
-                                                 nullptr);
-            }
+            result = compile_function_call(postfix, callee.borrow(), fnSelf,
+                                           /*own_self_on_error=*/fnSelf !=
+                                               nullptr);
           }
           callee = std::move(result);
           break;
@@ -12560,208 +12517,6 @@ struct JIT {
     return out;
   }
 
-  Owned compile_function_call_with_kwargs(
-      const peg::Ast& argsAst, llvm::Value* callee,
-      const peg::Ast& fnAst, llvm::Value* selfVal = nullptr) {
-    using namespace peg::udl;
-    emit_arg_list_check(argsAst, {selfVal});
-
-    // FUNCTION layout: [PARAMETERS, (RETURN_TYPE)?, BLOCK]. Each
-    // PARAMETER child: [MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?,
-    // (DEFAULT_VALUE)?].
-    const auto& paramsAst = *fnAst.nodes[0];
-    struct ParamInfo {
-      std::string_view name;
-      bool has_default;
-      bool kw_only;
-      bool kwargs_rest;
-    };
-    std::vector<ParamInfo> params;
-    params.reserve(paramsAst.nodes.size());
-    bool kw_only = false;
-    std::optional<size_t> rest_idx;
-    for (auto& p : paramsAst.nodes) {
-      auto pv = culebra::view_parameter(*p);
-      if (pv.is_kw_only_sep) {
-        kw_only = true;
-        continue;
-      }
-      if (pv.is_args_rest) continue;  // overflow slot, not a kwarg target
-      if (pv.is_kwargs_rest) {
-        params.push_back({pv.name, false, false, true});
-        rest_idx = params.size() - 1;
-        continue;
-      }
-      params.push_back({
-          pv.name,
-          pv.default_value != nullptr,
-          kw_only,
-          false,
-      });
-    }
-
-    // Scan ARG_LIST → positional + kwargs.
-    //
-    // Two passes so the semantics match the interp resolver
-    // (`bind_call_args` in interpreter.h): all splats merge first
-    // (later splat overrides earlier), then explicit kwargs layer on
-    // top regardless of source order. So `f(c: 3, **{c: 5})` always
-    // resolves to `c = 3` because the explicit wins, just like
-    // `f(**{c: 5}, c: 3)`.
-    auto [positional, explicit_kwargs, splats] = scan_arg_list(argsAst);
-    std::map<std::string_view, const peg::Ast*> kwargs;
-    // Caller (the CALL postfix dispatcher) only routes here when every splat
-    // is a literal OBJECT — dynamic splats fall back to
-    // `compile_function_call_runtime_kwargs`. So we can read the OBJECT
-    // literal's properties straight from the AST.
-    for (const peg::Ast* operand : splats) {
-      for (auto& prop : operand->nodes) {
-        const auto& key_node = *prop->nodes[1];
-        if (key_node.tag != "IDENTIFIER"_) {
-          // Emit a runtime throw and skip this entry — inserting a
-          // non-identifier token into the kwargs map would corrupt
-          // the subsequent resolver state for downstream IR even
-          // though the throw fires first at runtime.
-          emit_throw_error("TypeError",
-              "**: splat Object key must be an identifier",
-              argsAst.line, argsAst.column);
-          continue;
-        }
-        const peg::Ast* val_ast = prop->nodes.size() >= 3
-            ? prop->nodes[2].get()
-            : &key_node;
-        kwargs[key_node.token] = val_ast;
-      }
-    }
-    // Layer explicit kwargs on top of the splat-merged map.
-    for (const auto& [name, val] : explicit_kwargs) {
-      kwargs[name] = val;
-    }
-
-    // Resolve to positional order. Each slot gets filled from either
-    // positional or kwargs; if neither, the slot must have a default
-    // and is marked with TAG_UNFILLED so the callee prologue falls
-    // back to its inline default expression. Middle gaps work the
-    // same way as trailing gaps — both use the sentinel.
-    enum class Source { None, Positional, Kwarg, KwargsRest };
-    std::vector<Source> sources(params.size(), Source::None);
-    std::vector<const peg::Ast*> resolved(params.size(), nullptr);
-    {
-      auto cap = culebra::first_kw_only_index(params);
-      long cap_long = cap ? static_cast<long>(*cap) : -1;
-      int64_t n_pos = static_cast<long>(positional.size());
-      // Match throw_if_too_many_positionals' compile-time predicate
-      // (cap < 0 = no cap; cap == 0 = leading kw-only, zero positionals
-      // allowed) but route through emit_throw_error so the runtime throw
-      // is catchable by `try { ... } catch e { ... }`, the same way
-      // interp's eval-time call at interpreter.h:4220 is. Position: the
-      // call root (callee), matching interp's call_line/call_column —
-      // not argsAst, which points at the arg list instead.
-      if (cap_long >= 0 && n_pos > cap_long) {
-        emit_throw_error("TypeError",
-            too_many_positionals_message(cap_long, n_pos),
-            call_root_line_, call_root_col_);
-      }
-    }
-    for (size_t i = 0; i < params.size(); i++) {
-      if (params[i].kwargs_rest) continue;
-      if (i < positional.size() && !params[i].kw_only) {
-        if (kwargs.contains(params[i].name)) {
-          emit_throw_error("TypeError",
-              positional_kw_conflict_message(params[i].name),
-              call_root_line_, call_root_col_);
-        }
-        resolved[i] = positional[i];
-        sources[i] = Source::Positional;
-      } else if (auto it = kwargs.find(params[i].name); it != kwargs.end()) {
-        resolved[i] = it->second;
-        sources[i] = Source::Kwarg;
-        kwargs.erase(it);
-      } else if (!params[i].has_default) {
-        // Defer to runtime so `try { f(...) } catch e { ... }` can
-        // observe the same ArityError interp produces. The IR after
-        // the throw is dead at runtime; we leave the slot as
-        // Source::None so the surrounding slab-fill logic emits a
-        // syntactically valid TAG_UNFILLED placeholder.
-        emit_missing_required_arg_throw(std::string(params[i].name),
-                                         call_root_line_, call_root_col_);
-      }
-    }
-    if (rest_idx) {
-      sources[*rest_idx] = Source::KwargsRest;
-      // The rest slot is always emitted (Object), even when empty.
-    } else if (!kwargs.empty()) {
-      // Same rationale as the missing-required throw above — emit at
-      // runtime so the error is catchable. Clear the map so subsequent
-      // resolution paths see a consistent empty state.
-      auto bad_name = std::string(culebra::canonical_unknown_kwarg(kwargs));
-      emit_unknown_kwarg_throw(bad_name, call_root_line_, call_root_col_);
-      kwargs.clear();
-    }
-
-    std::vector<Owned> userArgs;
-    std::vector<const peg::Ast*> argAsts;
-    userArgs.reserve(params.size() +
-                     (positional.size() > params.size()
-                          ? positional.size() - params.size()
-                          : 0));
-    argAsts.reserve(userArgs.capacity());
-    // Where the `**rest` Object lands, if any: its tag is stamped TAG_KWREST
-    // after the handles are consumed, so a throw while the rest of the slab
-    // compiles still releases it as the Object it is.
-    std::optional<size_t> rest_slab_idx;
-    // Trim trailing TAG_UNFILLED slots — the callee prologue's
-    // existing `n_args > i` check handles them via the default path
-    // without needing the sentinel.
-    size_t fill_end = params.size();
-    while (fill_end > 0 && sources[fill_end - 1] == Source::None) {
-      fill_end--;
-    }
-    for (size_t i = 0; i < fill_end; i++) {
-      if (sources[i] == Source::None) {
-        // Middle gap with a default — emit TAG_UNFILLED sentinel. Built via
-        // make_value so the tag fills the whole i64 field: inserting the raw
-        // i8 left the upper 56 bits undef, the malformed shape that garbages
-        // a tag on the non-optimizing backend (see JitValue).
-        userArgs.push_back(
-            own(make_value(TAG_UNFILLED, builder_.getInt64(0))));
-        argAsts.push_back(nullptr);
-      } else if (sources[i] == Source::KwargsRest) {
-        rest_slab_idx = userArgs.size();
-        userArgs.push_back(own(emit_kwargs_rest_object(kwargs, argsAst)));
-        argAsts.push_back(nullptr);
-      } else {
-        userArgs.push_back(compile(*resolved[i]));
-        // Only a POSITIONAL argument reports a typed-param error at its
-        // own expression; a kwarg-filled slot reports at the call site
-        // (null → set_arg_pos records the call site), interp-binder style.
-        argAsts.push_back(sources[i] == Source::Positional ? resolved[i]
-                                                           : nullptr);
-      }
-    }
-    // Extras flow through to __ARGS__. They begin past the last REGULAR
-    // parameter, not past the arity: a keyword-only slot and the `**rest`
-    // catch-all are named-only, so a positional at their index was always an
-    // overflow argument (the interp's regular_param_count boundary).
-    size_t regular_end = params.size();
-    if (auto cap = culebra::first_kw_only_index(params))
-      regular_end = *cap;
-    else if (rest_idx)
-      regular_end = *rest_idx;
-    for (size_t i = regular_end; i < positional.size(); i++) {
-      userArgs.push_back(compile(*positional[i]));
-      argAsts.push_back(positional[i]);
-    }
-    auto slab = consume_all(std::move(userArgs));
-    // The callee prologue reads this marker to tell a resolved slab from a
-    // plain positional call, where the same index carries an overflow
-    // argument instead (see TAG_KWREST).
-    if (rest_slab_idx)
-      slab[*rest_slab_idx] = make_value(builder_.getInt8(TAG_KWREST),
-                                        extract_data(slab[*rest_slab_idx]));
-    return compile_function_call_raw(callee, selfVal, std::move(slab),
-                                     argAsts);
-  }
 
   Owned compile_function_call(const peg::Ast& argsAst,
                                      llvm::Value* callee,
