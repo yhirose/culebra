@@ -47,6 +47,8 @@ assert_eq(ran(fn () { 'abc'.tr(t(1), t('x')) }), [1, 'x'])
 assert_eq(ran(fn () { [1, 2].get(t('bad'), t('d')) }), ['bad', 'd'])
 assert_eq(ran(fn () { [1, 2].slice(t('bad'), t(1)) }), ['bad', 1])
 assert_eq(ran(fn () { [1].insert(t('bad'), t(9)) }), ['bad', 9])
+let ten_ord = Tensor.from([[1.0], [2.0]])
+assert_eq(ran(fn () { ten_ord.linear_sigmoid(t('bad'), t(9)) }), ['bad', 9])
 
 # A call nested in an argument reports as itself, not through the outer
 # method: the inner receiver decides both the order and the position.

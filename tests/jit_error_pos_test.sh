@@ -612,5 +612,31 @@ go(S.new())"
 check_same "chained has_next type"     "$GATE_CLASS
 println(S.new().iter().count())"
 
+# Tensor methods whose runtime helper throws without a position: the anchor
+# is the head of the chain on both backends. A parenthesized receiver is the
+# case that separates "head of the chain" from "wherever the call site
+# happens to point", so each of these appears in both spellings.
+TENSOR_T='let t = Tensor.from([1.0, 2.0])'
+check_same "tensor pow bad exponent"   "$TENSOR_T
+t.pow('x')"
+check_same "tensor pow parenthesized"  "$TENSOR_T
+(t).pow('x')"
+check_same "tensor reshape bad dim"    "$TENSOR_T
+t.reshape([1, 'x'])"
+check_same "tensor reshape paren"      "$TENSOR_T
+(t).reshape([1, 'x'])"
+check_same "tensor dot rank"           "$TENSOR_T
+t.dot(t)"
+check_same "tensor dot after step"     "$TENSOR_T
+let u = t.reshape([2, 1])
+t.dot(t)"
+check_same "tensor to_array rank"      "$TENSOR_T
+let s = t.sum(0)
+s.to_array()"
+check_same "tensor axis type"          "$TENSOR_T
+t.sum('x')"
+check_same "tensor argmax axis type"   "$TENSOR_T
+t.argmax('x')"
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

@@ -5592,9 +5592,11 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                          b = tensor_scalar(exp.to_double_coerce(),
                                            self->dtype);
                        } else {
-                         throw_type_error_at(
-                             callEnv->get("__LINE__").to_long(),
-                             callEnv->get("__COLUMN__").to_long());
+                         // Positionless: the eval boundary backfills the head
+                         // of the chain, which is where every other Tensor
+                         // error lands. Reading __LINE__/__COLUMN__ here would
+                         // point inside a parenthesized receiver instead.
+                         throw CulebraError("TypeError", "type error");
                        }
                        return Value(TensorValue(
                            tensor_binop(Op::Pow, self, std::move(b))));
@@ -5728,9 +5730,8 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                            new_dims.reserve(dims_v.size());
                            for (const auto& d : dims_v) {
                              if (d.type != Value::Long) {
-                               throw_type_error_at(
-                                   callEnv->get("__LINE__").to_long(),
-                                   callEnv->get("__COLUMN__").to_long());
+                               // Positionless — see the note on `pow` above.
+                               throw CulebraError("TypeError", "type error");
                              }
                              new_dims.push_back(d.to_long());
                            }
@@ -5812,7 +5813,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                               return Value(std::move(out));
                             }
                             throw CulebraError("ValueError",
-                                "to_array: rank > 2 not supported.");
+                                "Tensor.to_array: rank > 2 not supported.");
                           },
                           "Array"sv))},
       // .item(): scalar exit point. Forces eval and returns the lone

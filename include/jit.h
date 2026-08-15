@@ -14451,6 +14451,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   if (method == "pow" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_TENSOR, "pow");
     auto exp = compile(*argsAst.nodes[0]);
+    emit_set_op_pos();  // tensor_binop raises positionless on a bad exponent
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_binop),
         {extract_tag(receiver), extract_data(receiver),
@@ -14623,6 +14624,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     OwnedPhi taMerge(this, "ta.r");
     builder_.SetInsertPoint(tenBB);
     auto tenPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    emit_set_op_pos();  // tensor_to_array raises positionless above rank 2
     auto tenArr = emit_call(
         module_->getFunction(rt::tensor_to_array), {tenPtr}, "tta");
     taMerge.add_incoming(make_array(tenArr));
@@ -14653,6 +14655,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
     emit_type_check(other.borrow(), "Tensor", "parameter 'other'",
                     argsAst.nodes[0].get());
     auto bPtr = builder_.CreateIntToPtr(extract_data(other.borrow()), ptrTy);
+    emit_set_op_pos();  // tensor_dot raises positionless on a non-rank-2 input
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_dot), {aPtr, bPtr}, "td");
     other.drop();
@@ -14660,10 +14663,12 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   }
   if (method == "linear_sigmoid" && argsAst.nodes.size() == 2) {
     auto wPtr = expect_receiver_tag(receiver, TAG_TENSOR, "linear_sigmoid");
+    // The whole argument list runs before any of it is checked — a binder
+    // never stops half way through evaluating a call's arguments.
     auto xv = compile(*argsAst.nodes[0]);
+    auto bv = compile(*argsAst.nodes[1]);
     emit_type_check(xv.borrow(), "Tensor", "parameter 'x'",
                     argsAst.nodes[0].get());
-    auto bv = compile(*argsAst.nodes[1]);
     emit_type_check(bv.borrow(), "Tensor", "parameter 'b'",
                     argsAst.nodes[1].get());
     auto xp = builder_.CreateIntToPtr(extract_data(xv.borrow()), ptrTy);

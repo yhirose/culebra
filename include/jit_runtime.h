@@ -2352,10 +2352,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
 // backward / clear) mutate the shared TensorImpl and hand back a fresh
 // +1 JitTensor over the *same* impl, so refcounting stays uniform with
 // every other tensor runtime entry (no aliasing of the receiver). ---
+// `requires_grad` / `backward` / `zero_grad` are chainable: each returns the
+// receiver, not a second handle onto the same impl. Handing back a fresh
+// wrapper would break identity (`w == w.requires_grad()` is true to the
+// interpreter), so mint a ref on the receiver instead.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_requires_grad(
     JitTensor* t) {
   culebra::tensor_requires_grad(t->impl);
-  return _culebra_jit_tensor_register(t->impl);
+  t->refcount++;
+  return t;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_grad(
@@ -2366,13 +2371,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_grad(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_backward(
     JitTensor* t) {
   culebra::tensor_backward(t->impl);
-  return _culebra_jit_tensor_register(t->impl);
+  t->refcount++;
+  return t;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_zero_grad(
     JitTensor* t) {
   culebra::tensor_zero_grad(t->impl);
-  return _culebra_jit_tensor_register(t->impl);
+  t->refcount++;
+  return t;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_detach(

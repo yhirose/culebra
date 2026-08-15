@@ -536,4 +536,17 @@ assert_eq(op_err(fn () {
   c += 'x'
 }), "type error: cannot apply '+' to Tensor and String")
 
+# `requires_grad` / `backward` / `zero_grad` are chainable — each hands back
+# the receiver, so the result is the same tensor, not a second handle onto
+# the same storage. The methods that do produce a new tensor stay distinct.
+let same_t = Tensor.from([1.0, 2.0])
+assert_true(same_t == same_t.requires_grad())
+assert_true(same_t == same_t.zero_grad())
+let loss_t = (same_t * same_t).sum(0)
+assert_true(loss_t == loss_t.backward())
+assert_false(same_t == same_t.clone())
+assert_false(same_t == same_t.detach())
+assert_false(same_t == same_t.grad())
+assert_false(same_t == Tensor.from([1.0, 2.0]))
+
 inspect("test_tensor: OK")
