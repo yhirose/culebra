@@ -576,6 +576,12 @@ enum class Op : uint8_t {
   DropSuppress,  // culebra_runtime_set_drop_suppressed(a): brackets the top
                  // level's own release ladder, whose bindings leak
                  // un-dropped at program exit (docs §17)
+  BArity,        // the diagnostic a built-in method name owes when the table
+                 // that resolves it on regs[a] would not bind this argument
+                 // shape — one arm per receiver, baked from the interp's own
+                 // parameter lists (JIT::builtin_call_verdict). Falls through
+                 // for a receiver that does not resolve the name at all: the
+                 // property read after it answers that one.
   LazyNsReg,     // record regs[b] as the builder of the lazy stdlib module
                  // named consts[c] — the `_lazy_ns_register` intrinsic the
                  // preamble splice emits, which is how a compiled lane
@@ -1996,6 +2002,18 @@ struct Chunk {
     std::vector<int32_t> kw_keys;
   };
   std::vector<KwCall> kwcalls;
+  // One BArity check: the receivers that resolve the name, and what each owes.
+  // `tag` is a receiver tag, or kArityObj for any Object (the dict table) /
+  // kArityIter for an iterator-shaped one — the order eval_property resolves
+  // in, so at most one of the two ever applies.
+  static constexpr int8_t kArityObj = -1;
+  static constexpr int8_t kArityIter = -2;
+  struct ArityArm {
+    int8_t tag;
+    int32_t kind_k, msg_k, name_k;  // constant-pool indices
+    uint32_t line, col;
+  };
+  std::vector<std::vector<ArityArm>> arity_checks;
 
   // Take another chunk's signature as this one's: everything a caller binds
   // against, and nothing about the frame that binds it. The synthetic
@@ -4941,10 +4959,56 @@ class Compiler {
          name == "parameters"))
       reject(post, std::format("UFCS candidate '{}'", name));
     if (spec) return;
-    if (culebra::is_builtin_method_name(name))
-      reject(post, std::format("built-in method '{}'", name));
     if (name == "drop" || name == "parameters")
       reject(post, std::format("'{}' dispatch", name));
+  }
+
+  // The check the JIT emits in front of an unresolved built-in method call,
+  // as one op over a baked table. Every verdict comes from the interp's own
+  // parameter lists, so the three lanes cannot disagree; a receiver whose
+  // table BINDS this shape is one the slice has no implementation for, and
+  // that stays a rejection rather than a guess.
+  void emit_builtin_arity_check(const peg::Ast& at, const peg::Ast& post,
+                                const peg::Ast& args, ExprResult recv) {
+    std::string method(post.token);
+    if (!culebra::is_builtin_method_name(method)) return;
+    // A keyword on a built-in is its own boundary: the interp allows one only
+    // where it names a keyword-only parameter, and answers "does not accept
+    // keyword arguments" otherwise — a question this check does not ask.
+    if (has_kwargs(args))
+      reject(post, std::format("built-in method '{}'", method));
+    auto scan = JIT::scan_arg_list(args);
+    auto argc = static_cast<int64_t>(args.nodes.size());
+    std::vector<Chunk::ArityArm> arms;
+    auto take = [&](const auto& tbl, int8_t tag) {
+      auto v = JIT::builtin_call_verdict(tbl, method, scan, argc);
+      if (v.kind == JIT::BuiltinVerdict::Kind::Valid)
+        reject(post, std::format("built-in method '{}'", method));
+      if (v.kind != JIT::BuiltinVerdict::Kind::Error) return false;
+      // Rich errors anchor at the call's callee (a parenthesized receiver
+      // puts the CALL node on the `(`, which is not where the interp
+      // reports), count-based ones at the ARGUMENTS node.
+      auto [rl, rc] = culebra::call_callee_position(at);
+      arms.push_back({tag, kconst_str(v.err_kind), kconst_str(v.msg),
+                      kconst_str(method),
+                      static_cast<uint32_t>(v.at_call_root ? rl : args.line),
+                      static_cast<uint32_t>(v.at_call_root ? rc
+                                                           : args.column)});
+      return true;
+    };
+    for (auto& [t, tbl] : JIT::builtin_value_tables()) take(*tbl, t);
+    // Any Object resolves the dict table; only an iterator-shaped one reaches
+    // the iterator table — eval_property's order, so at most one applies. Both
+    // stand behind the receiver's OWN members, which win over either table
+    // (`range(0, 2)` carries its own `iter`, and takes no diagnostic from the
+    // dict one) — the arm carries the name so the check can ask.
+    if (!take(*JIT::dict_builtin_table(), Chunk::kArityObj))
+      take(culebra::iterator_builtins(), Chunk::kArityIter);
+    if (arms.empty()) return;
+    StampGuard pos(*this, args);
+    emit(Op::BArity, recv.slot,
+         static_cast<int32_t>(chunk_.arity_checks.size()));
+    chunk_.arity_checks.push_back(std::move(arms));
   }
 
   // `x.m(args)` — compile_method_call's property tail. The property resolves
@@ -4965,6 +5029,11 @@ class Compiler {
       reject_kwargs(args);
       return compile_builtin_method(at, post, args, recv, *spec);
     }
+    // A built-in method name at an arity the table does not carry: the
+    // receivers that DO resolve it owe a diagnostic, and the rest fall
+    // through to the ordinary property read — the JIT's
+    // emit_unresolved_builtin_method, arity check first.
+    emit_builtin_arity_check(at, post, args, recv);
     UfcsCand cand = ufcs_candidate(post.token, spec);
     if (cand == UfcsCand::None)
       return compile_property_call(at, post, args, recv);
@@ -6332,7 +6401,7 @@ inline std::string dump(const Chunk& c) {
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForOpen",   "ForNext",   "ForDispose",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "DropSuppress",
-      "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
+      "BArity",    "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
       "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
@@ -6850,6 +6919,16 @@ struct Exec {
   // The call site, with this call's per-argument positions when it has any
   // — one runtime entry publishes both, and set_call_site alone (which
   // resets the count) is what an argument-less call wants.
+  // Whether an Object receiver reaches the builtin tables at all. A view
+  // (Shared / packed / fixed-array) answers from what it wraps, so it misses
+  // the table rather than taking its diagnostic. A namespace is NOT excluded:
+  // the dict builtins are the one family it does resolve (`Math.size()` is
+  // 24), and every other name is absent from the table anyway, so it reaches
+  // its own AttributeError through the property read that follows.
+  static bool object_takes_builtin_table(JitObject* o) {
+    return culebra_runtime_nc_receiver_kind(reinterpret_cast<int64_t>(o)) == 0;
+  }
+
   // The owned stack's next id, read the way compiled code reads it: off the
   // hot fields whose address the runtime hands out (next_id is at offset 0).
   static int64_t owned_next_id() {
@@ -8457,6 +8536,30 @@ struct Exec {
           culebra_runtime_set_drop_suppressed(static_cast<int8_t>(in.a));
           ++pc;
           break;
+        case Op::BArity: {
+          const JitValue& r = regs[in.a];
+          for (const auto& arm : c.arity_checks[in.b]) {
+            bool hit;
+            if (arm.tag >= 0) {
+              hit = r.tag == arm.tag;
+            } else {
+              auto* o = reinterpret_cast<JitObject*>(r.data);
+              hit = r.tag == TAG_OBJECT && object_takes_builtin_table(o) &&
+                    !culebra_runtime_object_has(
+                        o, reinterpret_cast<const char*>(
+                               c.consts[arm.name_k].data)) &&
+                    (arm.tag == Chunk::kArityObj ||
+                     culebra_runtime_object_has(o, "next"));
+            }
+            if (!hit) continue;
+            culebra_runtime_throw_error(
+                reinterpret_cast<const char*>(c.consts[arm.kind_k].data),
+                reinterpret_cast<const char*>(c.consts[arm.msg_k].data),
+                arm.line, arm.col);
+          }
+          ++pc;
+          break;
+        }
         case Op::LazyNsReg:
           culebra_runtime_lazy_ns_register(
               reinterpret_cast<const char*>(c.consts[in.c].data),
@@ -12140,6 +12243,53 @@ struct Lowering {
                                              b.getVoidTy(), b.getInt8Ty()),
               {b.getInt8(static_cast<int8_t>(in.a))});
           break;
+        case Op::BArity: {
+          auto r = load_slot(in.a);
+          auto tag = j.extract_tag(r);
+          for (const auto& arm : c.arity_checks[in.b]) {
+            auto badBB = BasicBlock::Create(j.ctx_, "barity.bad", fn);
+            auto okBB = BasicBlock::Create(j.ctx_, "barity.ok", fn);
+            llvm::Value* hit = nullptr;
+            if (arm.tag >= 0) {
+              hit = b.CreateICmpEQ(tag, b.getInt8(arm.tag));
+            } else {
+              // object_has probes the pointer, so both questions are only
+              // safe once the tag is known — the JIT's own arm order.
+              auto shapeBB = BasicBlock::Create(j.ctx_, "barity.shape", fn);
+              b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)),
+                             shapeBB, okBB);
+              b.SetInsertPoint(shapeBB);
+              auto objPtr = b.CreateIntToPtr(j.extract_data(r), ptrTy);
+              auto name = std::string(_str_sv(reinterpret_cast<const char*>(
+                  c.consts[arm.name_k].data)));
+              auto own = j.emit_object_has(
+                  objPtr, j.get_or_create_global_str(name, ".vm.barity.name"));
+              // A view never takes the table's diagnostic —
+              // Exec::object_takes_builtin_table, in IR.
+              auto plain = b.CreateICmpEQ(
+                  j.emit_call(j.module_->getOrInsertFunction(
+                                  rt::nc_receiver_kind, b.getInt8Ty(), i64Ty),
+                              {j.extract_data(r)}, "barity.kind"),
+                  b.getInt8(0));
+              hit = b.CreateAnd(plain, b.CreateNot(own));
+              if (arm.tag == Chunk::kArityIter)
+                hit = b.CreateAnd(
+                    hit, j.emit_object_has(objPtr,
+                                           j.get_or_create_global_str(
+                                               "next", ".vm.it.next")));
+            }
+            b.CreateCondBr(hit, badBB, okBB);
+            b.SetInsertPoint(badBB);
+            j.emit_throw_error(
+                reinterpret_cast<const char*>(c.consts[arm.kind_k].data),
+                std::string(_str_sv(reinterpret_cast<const char*>(
+                    c.consts[arm.msg_k].data))),
+                arm.line, arm.col);
+            if (!b.GetInsertBlock()->getTerminator()) b.CreateBr(okBB);
+            b.SetInsertPoint(okBB);
+          }
+          break;
+        }
         case Op::LazyNsReg: {
           auto v = load_slot(in.b);
           j.emit_call(

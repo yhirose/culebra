@@ -11345,74 +11345,17 @@ struct JIT {
     };
     // Scanned once: error_for runs per builtin table, on the same ARG_LIST.
     auto scan = scan_arg_list(argsAst);
-    // The error `method` would raise on this arg shape when it resolves in
-    // `tbl`, or nullopt if the call is valid / the method is absent. A pure
-    // positional builtin uses the count-based ArityError; a kwarg-capable one
-    // (declares a defaulted / keyword-only / **rest param, e.g. sort_by's
-    // `reverse:`) mirrors interp's general binder, so adding a keyword-only
-    // param to any builtin method stays interp/JIT-symmetric with no
-    // per-method JIT error code. Generic over the mapped type: the value
-    // tables map to Value, iterator_builtins() to IterBuiltin{fn, kind}.
+    // Rich errors point at the call chain's root (interp's
+    // call_callee_position) — NOT current_line_/col, which for a
+    // parenthesized receiver is the `(` rather than the callee. Count-based
+    // ones point at the ARGUMENTS node.
+    size_t rl = call_root_line_ ? call_root_line_ : current_line_;
+    size_t rc = call_root_line_ ? call_root_col_ : current_column_;
     auto error_for = [&](const auto& tbl) -> std::optional<Err> {
-      auto it = tbl.find(method);
-      if (it == tbl.end()) return std::nullopt;
-      const Value& fnv = [&]() -> const Value& {
-        if constexpr (std::is_same_v<std::decay_t<decltype(it->second)>,
-                                     culebra::IterBuiltin>) {
-          return it->second.fn;
-        } else {
-          return it->second;
-        }
-      }();
-      if (fnv.type != Value::Function) return std::nullopt;
-      const auto& params = *fnv.to_function().params;
-      auto b = builtin_arity_bounds(params);
-      bool kwcap = b.min != b.max;
-      for (const auto& p : params)
-        if (p.kw_only || p.kwargs_rest) kwcap = true;
-      if (!kwcap) {
-        if (b.variadic || (argc >= b.min && argc <= b.max)) return std::nullopt;
-        return Err{"ArityError",
-                   builtin_arity_error_message(method, b.min, b.max, argc),
-                   argsAst.line, argsAst.column};
-      }
-      // Kwarg-capable: replicate interp's bind order (too-many positional →
-      // per-param missing / positional+keyword conflict → leftover unknown
-      // keyword). Args are static here, so the whole check is compile-time.
-      if (!scan.splats.empty()) return std::nullopt;  // **splat binds later
-      auto n_pos = static_cast<int64_t>(scan.positional.size());
-      bool has_rest = false;
-      for (const auto& p : params) if (p.kwargs_rest) has_rest = true;
-      auto named = [&](std::string_view n) { return scan.kwarg(n) != nullptr; };
-      // Rich errors point at the call chain's root (interp's
-      // call_callee_position) — NOT current_line_/col, which for a
-      // parenthesized receiver is the `(` rather than the callee.
-      size_t rl = call_root_line_ ? call_root_line_ : current_line_;
-      size_t rc = call_root_line_ ? call_root_col_ : current_column_;
-      if (!b.variadic && n_pos > b.max)
-        return Err{"TypeError", too_many_positionals_message(b.max, n_pos),
-                   rl, rc};
-      for (size_t i = 0; i < params.size(); i++) {
-        const auto& p = params[i];
-        if (p.kwargs_rest || p.args_rest) continue;
-        bool filled_pos = static_cast<long>(i) < n_pos && !p.kw_only;
-        if (filled_pos && named(p.name))
-          return Err{"TypeError", positional_kw_conflict_message(p.name),
-                     rl, rc};
-        bool has_def = p.default_expr != nullptr || p.default_value != nullptr;
-        if (!filled_pos && !named(p.name) && !has_def)
-          return Err{"ArityError", missing_required_arg_message(p.name),
-                     rl, rc};
-      }
-      if (!has_rest)
-        for (const auto& [kn, _val] : scan.explicit_kwargs) {
-          bool known = false;
-          for (const auto& p : params)
-            if (!p.kwargs_rest && p.name == kn) { known = true; break; }
-          if (!known)
-            return Err{"TypeError", unknown_kwarg_message(kn), rl, rc};
-        }
-      return std::nullopt;
+      auto v = builtin_call_verdict(tbl, method, scan, argc);
+      if (v.kind != BuiltinVerdict::Kind::Error) return std::nullopt;
+      return Err{v.err_kind, v.msg, v.at_call_root ? rl : argsAst.line,
+                 v.at_call_root ? rc : argsAst.column};
     };
 
     auto& valueTables = builtin_value_tables();
@@ -12492,6 +12435,90 @@ struct JIT {
       return nullptr;
     }
   };
+
+  // What a builtin table does with `method` for a given argument shape: it
+  // does not have the name (Absent), it binds cleanly (Valid), or it raises
+  // (Error). The single reader of the interp's own parameter lists, so no
+  // compiled lane can answer differently from it or from each other: the JIT
+  // turns Error into a tag-guarded throw, and the VM bakes the verdict per
+  // receiver tag — and treats Valid on a method it has no implementation for
+  // as out of its slice rather than guessing.
+  //
+  // A pure positional builtin uses the count-based ArityError; a kwarg-capable
+  // one (a defaulted / keyword-only / **rest param, e.g. sort_by's `reverse:`)
+  // mirrors interp's general binder, so adding a keyword-only param to any
+  // builtin stays symmetric with no per-method error code anywhere. Generic
+  // over the mapped type: the value tables map to Value, iterator_builtins()
+  // to IterBuiltin{fn, kind}.
+  struct BuiltinVerdict {
+    enum class Kind { Absent, Valid, Error };
+    Kind kind = Kind::Absent;
+    std::string err_kind, msg;
+    bool at_call_root = false;  // else the ARGUMENTS node
+  };
+  template <class Table>
+  static BuiltinVerdict builtin_call_verdict(const Table& tbl,
+                                             const std::string& method,
+                                             const ArgScan& scan,
+                                             int64_t argc) {
+    using K = BuiltinVerdict::Kind;
+    auto err = [](const char* k, std::string m, bool root) {
+      return BuiltinVerdict{K::Error, k, std::move(m), root};
+    };
+    auto it = tbl.find(method);
+    if (it == tbl.end()) return {};
+    const Value& fnv = [&]() -> const Value& {
+      if constexpr (std::is_same_v<std::decay_t<decltype(it->second)>,
+                                   culebra::IterBuiltin>) {
+        return it->second.fn;
+      } else {
+        return it->second;
+      }
+    }();
+    if (fnv.type != Value::Function) return {};
+    const auto& params = *fnv.to_function().params;
+    auto b = builtin_arity_bounds(params);
+    bool kwcap = b.min != b.max;
+    for (const auto& p : params)
+      if (p.kw_only || p.kwargs_rest) kwcap = true;
+    if (!kwcap) {
+      if (b.variadic || (argc >= b.min && argc <= b.max))
+        return {K::Valid, {}, {}, false};
+      return err("ArityError",
+                 builtin_arity_error_message(method, b.min, b.max, argc),
+                 false);
+    }
+    // Kwarg-capable: replicate interp's bind order (too-many positional →
+    // per-param missing / positional+keyword conflict → leftover unknown
+    // keyword). Args are static here, so the whole check is compile-time.
+    if (!scan.splats.empty()) return {K::Valid, {}, {}, false};  // binds later
+    auto n_pos = static_cast<int64_t>(scan.positional.size());
+    bool has_rest = false;
+    for (const auto& p : params) if (p.kwargs_rest) has_rest = true;
+    auto named = [&](std::string_view n) { return scan.kwarg(n) != nullptr; };
+    if (!b.variadic && n_pos > b.max)
+      return err("TypeError", too_many_positionals_message(b.max, n_pos), true);
+    for (size_t i = 0; i < params.size(); i++) {
+      const auto& p = params[i];
+      if (p.kwargs_rest || p.args_rest) continue;
+      bool filled_pos = static_cast<long>(i) < n_pos && !p.kw_only;
+      if (filled_pos && named(p.name))
+        return err("TypeError", positional_kw_conflict_message(p.name), true);
+      bool has_def = p.default_expr != nullptr || p.default_value != nullptr;
+      if (!filled_pos && !named(p.name) && !has_def)
+        return err("ArityError", missing_required_arg_message(p.name), true);
+    }
+    if (!has_rest)
+      for (const auto& [kn, _val] : scan.explicit_kwargs) {
+        bool known = false;
+        for (const auto& p : params)
+          if (!p.kwargs_rest && p.name == kn) { known = true; break; }
+        if (!known)
+          return err("TypeError", unknown_kwarg_message(kn), true);
+      }
+    return {K::Valid, {}, {}, false};
+  }
+
 
   // Split an ARG_LIST into its three buckets. Pure bucketing: it never reports
   // a malformed list. Callers come in three kinds: most run

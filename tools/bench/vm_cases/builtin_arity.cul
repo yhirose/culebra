@@ -1,0 +1,83 @@
+# A built-in method name called at an arity its table does not bind: the
+# receivers that resolve the name owe a diagnostic, the rest fall through to
+# the ordinary property read. Every answer comes from the interp's own
+# parameter lists, so the count-based and the binder-shaped ones both land.
+
+fn p(label, thunk) {
+  let r = try {
+    "ok=" + to_string(thunk())
+  } catch e {
+    "err=" + to_string(e.kind) + "|" + to_string(e.message)
+  }
+  print(label + " ::: " + r + "\n")
+}
+
+# Count-based: the receiver has the name at another arity.
+p("str.size(1)", fn () {
+  'ab'.size(1)
+})
+p("arr.push()", fn () {
+  [1, 2].push()
+})
+p("arr.push(1,2)", fn () {
+  [1, 2].push(1, 2)
+})
+p("str.repeat()", fn () {
+  'ab'.repeat()
+})
+p("dict.has()", fn () {
+  {'a': 1}.has()
+})
+
+# Binder-shaped: a defaulted or keyword-only parameter puts the call through
+# the interp's general binder instead of the count check.
+p("str.truncate()", fn () {
+  'abc'.truncate()
+})
+p("str.truncate(1,2,3)", fn () {
+  'abc'.truncate(1, 2, 3)
+})
+p("arr.sorted(1)", fn () {
+  [1, 2].sorted(1)
+})
+p("str.trim_end(1,2)", fn () {
+  'abc'.trim_end(1, 2)
+})
+
+# The receiver does not resolve the name at all: the property read answers.
+p("arr.upper()", fn () {
+  [1, 2].upper()
+})
+p("long.push(1)", fn () {
+  5.push(1)
+})
+p("nil.size(1)", fn () {
+  nil.size(1)
+})
+
+# A namespace resolves the dict builtins and nothing else.
+p("ns.size(1)", fn () {
+  Math.size(1)
+})
+p("ns.upper(1)", fn () {
+  Math.upper(1)
+})
+
+# An own member wins over either table, so it takes no diagnostic from one.
+p("iter.iter(1)", fn () {
+  type_of(range(2).iter(1))
+})
+p("iter.count(1)", fn () {
+  range(2).count(1)
+})
+
+# Churn: the check is a cold guard, and a throwing one strands nothing.
+mut n = 0
+for _ in 0..2000 {
+  n += try {
+    [1, 2].push()
+  } catch e {
+    1
+  }
+}
+println(n)
