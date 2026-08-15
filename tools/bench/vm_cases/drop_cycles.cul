@@ -1,0 +1,132 @@
+# Scope exit resolves the owned region above its watermark: what refcounting
+# alone cannot reclaim — a resource that escaped into a cycle — still gets a
+# deterministic `drop` where the scope ends, not at the next collection.
+# (The JIT's owned_scope_exit; here the OwnedMark / OwnedExit pair.)
+
+mut g = []
+
+# --- A two-object cycle: neither refcount reaches zero -------------------
+{
+  let a = {drop: fn () {
+    g.push(1)
+  }}
+  let b = {drop: fn () {
+    g.push(2)
+  }}
+  a.p = b
+  b.p = a
+}
+println(g)  # newest first, cycle members included
+
+# --- A self-reference, and one held through an Array --------------------
+g = []
+{
+  let a = {drop: fn () {
+    g.push('self')
+  }}
+  a.me = a
+}
+{
+  let a = {drop: fn () {
+    g.push('array')
+  }}
+  a.list = [a]
+}
+println(g)
+
+# --- Reachable from outside the scope: survives --------------------------
+g = []
+let keep = []
+{
+  let f = {drop: fn () {
+    g.push('kept')
+  }}
+  keep.push(f)
+}
+println(g)  # empty: `keep` still holds it
+
+# --- Every loop iteration is its own scope -------------------------------
+g = []
+for i in 0..3 {
+  let a = {drop: fn () {
+    g.push(i)
+  }}
+  a.me = a
+}
+println(g)
+
+# --- break leaves the body scope the same way ----------------------------
+g = []
+for i in 0..5 {
+  let a = {drop: fn () {
+    g.push(i)
+  }}
+  a.me = a
+  if i == 1 {
+    break
+  }
+}
+println(g)
+
+# --- while, and a nested scope inside one --------------------------------
+g = []
+mut i = 0
+while i < 3 {
+  let a = {drop: fn () {
+    g.push(i)
+  }}
+  a.me = a
+  i += 1
+}
+println(g)
+
+g = []
+{
+  {
+    let a = {drop: fn () {
+      g.push('inner')
+    }}
+    a.me = a
+  }
+  g.push('after')
+}
+println(g)
+
+# --- return and throw resolve the frame's region -------------------------
+g = []
+fn r() {
+  let a = {drop: fn () {
+    g.push('returned')
+  }}
+  a.me = a
+  return 1
+}
+println(r())
+println(g)
+
+g = []
+fn t() {
+  let a = {drop: fn () {
+    g.push('threw')
+  }}
+  a.me = a
+  throw 'x'
+}
+println(try {
+  t()
+} catch e {
+  'caught'
+})
+println(g)
+
+# --- Churn: the resolution neither leaks nor drops twice ------------------
+mut n = 0
+for _ in 0..2000 {
+  {
+    let a = {drop: fn () {
+      n += 1
+    }}
+    a.me = a
+  }
+}
+println(n)

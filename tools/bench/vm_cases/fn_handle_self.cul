@@ -1,0 +1,73 @@
+# The `fn` recursion handle inside a method IS the receiver-bound wrapper:
+# recursion keeps the receiver, and so does a handle that escapes the call.
+# A direct `fn(...)` re-passes the frame's own receiver instead of minting
+# the wrapper.
+
+class R {
+  n = 0
+  new(k) {
+    self.n = k
+  }
+  down(k) {
+    if k == 0 {
+      self.n
+    } else {
+      fn(k - 1)
+    }
+  }
+  via_value(k) {
+    let g = fn
+    if k == 0 {
+      self.n
+    } else {
+      g(k - 1)
+    }
+  }
+  same() {
+    fn == fn
+  }
+}
+
+println(R.new(5).down(0))
+println(R.new(5).down(3))
+println(R.new(5).via_value(3))
+println(R.new(5).same())
+
+# Detached, and called through another object: the receiver the wrapper was
+# built with wins over any later one.
+let b = R.new(7).down
+println(b(2))
+let w = {n: 100, h: b}
+println(w.h(2))
+
+# A plain function's `fn` stays the raw closure.
+fn plain(k) {
+  if k == 0 {
+    'done'
+  } else {
+    fn(k - 1)
+  }
+}
+println(plain(3))
+let p = plain
+println(p(2))
+
+# Churn: the cached wrapper is one +1 per frame, released with it.
+class C {
+  n = 0
+  new(k) {
+    self.n = k
+  }
+  walk(k) {
+    if k == 0 {
+      self.n
+    } else {
+      fn(k - 1)
+    }
+  }
+}
+mut acc = 0
+for i in 0..2000 {
+  acc += C.new(i).walk(3)
+}
+println(acc)

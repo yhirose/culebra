@@ -23,24 +23,37 @@ fn _cdump() {
 # Two-glyph 8x8 font for the glyph cases: index 0 is a solid block, index 1 a
 # single top-left pixel. A ZERO bit is lit, so 0x00 is solid and 0x7f lights
 # only the leftmost pixel.
-let _CFONT = _Canvas.font_load([
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  127,
-  255,
-  255,
-  255,
-  255,
-  255,
-  255,
-  255,
-])
+#
+# Loaded through a function, and guarded: every lane runs this file verbatim,
+# and one that cannot reach the Canvas module has to get past these fixtures
+# to run the rest of the corpus at all. Such a lane leaves `_CFONT` nil, which
+# no case observes — every case that touches it names `_Canvas` itself and so
+# fails on that first.
+fn _cfont_load() {
+  _Canvas.font_load([
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    127,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+  ])
+}
+let _CFONT = try {
+  _cfont_load()
+} catch e {
+  nil
+}
 
 # PNG fixtures for the sprite_from_png cases: one 2-pixel-wide image per colour
 # type the decoder accepts, plus a truncated header. Hex so the bytes survive as

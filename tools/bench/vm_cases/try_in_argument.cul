@@ -1,0 +1,83 @@
+# A `try` in argument position: the throw abandons the statements INSIDE the
+# try, and the catch resumes the one holding it — whose in-flight temporaries
+# (the callee among them) are still live and must not be released with the
+# rest. That floor is where the catching scope starts.
+
+println(to_string(try {
+  1
+} catch e {
+  2
+}))
+println(to_string(try {
+  throw 'x'
+} catch e {
+  2
+}))
+println(to_string(try {
+  throw 'x'
+} catch e {
+  e.kind
+}))
+println(to_string(try {
+  throw 'x'
+} catch e {
+  2
+}) + to_string(1))
+println(to_string(to_string(try {
+  throw 'x'
+} catch e {
+  2
+})))
+
+# Through a method call and an argument list of several values.
+fn two(a, b) {
+  a + b
+}
+println(two(to_string(try {
+  throw 'x'
+} catch e {
+  'a'
+}), 'b'))
+println(two('b', to_string(try {
+  throw 'x'
+} catch e {
+  'a'
+})))
+println([1, 2].map(fn (v) {
+  try {
+    throw 'x'
+  } catch e {
+    v
+  }
+}))
+
+# Nested tries: the inner one catches, the outer statement carries on.
+println(to_string(try {
+  try {
+    throw 'x'
+  } catch e {
+    'in'
+  }
+} catch e {
+  'out'
+}))
+
+# A throw from a scope INSIDE the try still abandons that try's statements.
+println(try {
+  to_string(if true {
+    throw 'x'
+  })
+} catch e {
+  'caught'
+})
+
+# Churn: neither the surviving temporaries nor the abandoned ones leak.
+mut n = 0
+for i in 0..20000 {
+  n += to_string(try {
+    throw 'x'
+  } catch e {
+    1
+  }).size()
+}
+println(n)

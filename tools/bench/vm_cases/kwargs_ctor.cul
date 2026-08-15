@@ -1,0 +1,72 @@
+# `C.new(...)` binds against the constructor closure, which speaks for the
+# `new` body's signature — defaults included. Plus the argument positions a
+# keyword call publishes: a positional reports at its own expression, a
+# keyword value at the call.
+
+class C {
+  s = 0
+  new(a, b = 12) {
+    self.s = a + b
+  }
+}
+println(C.new(1).s)
+println(C.new(1, 2).s)
+println(C.new(a: 1).s)
+println(C.new(a: 1, b: 2).s)
+println(C.new(b: 2, a: 1).s)
+println(C.new(1, b: 2).s)
+println(C.new(1, **{b: 5}).s)
+println(try {
+  C.new()
+} catch e {
+  e.kind
+})
+println(try {
+  C.new(1, bad: 2)
+} catch e {
+  e.kind
+})
+println(try {
+  C.new(1, a: 2)
+} catch e {
+  e.kind
+})
+println(try {
+  C.new(a: 1, a: 2)
+} catch e {
+  e.kind
+})
+
+# Keyword-only and catch-all parameters reach the constructor too.
+class K {
+  s = ''
+  new(a, *, flag = false, **rest) {
+    self.s = to_string(a) + to_string(flag) + to_string(rest.keys())
+  }
+}
+println(K.new(1).s)
+println(K.new(1, flag: true).s)
+println(K.new(1, flag: true, extra: 9).s)
+println(try {
+  K.new(1, true)
+} catch e {
+  e.kind
+})
+
+# An overload set dispatches before any instance is allocated.
+class O {
+  s = 0
+  new(a) {
+    self.s = 1
+  }
+  new(a, b) {
+    self.s = 2
+  }
+}
+println(O.new(1).s)
+println(O.new(1, 2).s)
+println(try {
+  O.new(1, 2, 3)
+} catch e {
+  e.kind
+})
