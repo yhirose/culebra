@@ -65,6 +65,9 @@
 namespace culebra::vm {
 
 inline constexpr int32_t kMaxSlots = 256;
+// How deeply one frame may nest lexical scopes: each one takes an entry in
+// the frame's owned-mark array (Op::OwnedMark).
+inline constexpr int32_t kMaxOwnedDepth = 64;
 
 // One fixed-width instruction. Registers are frame slots holding JitValue.
 // RC is explicit in the stream (vm.md §4): the compiler emits Retain/Release;
@@ -573,6 +576,23 @@ enum class Op : uint8_t {
   DropSuppress,  // culebra_runtime_set_drop_suppressed(a): brackets the top
                  // level's own release ladder, whose bindings leak
                  // un-dropped at program exit (docs §17)
+  FnHandle,      // regs[a] = the value-read of `fn` in a receiver frame: the
+                 // wrapper binding regs[b] to the frame's own closure
+                 // (regs[c] holds it), cached in regs[d]
+  OwnedMark,     // marks[a] = the owned stack's next id, taken at scope
+                 // entry. The marks are a small frame array of their own,
+                 // indexed by the scope's static depth, NOT registers: a
+                 // register a scope leaves behind gets reused, and a later
+                 // generation of that index may be a cell — whose CellNew
+                 // releases the previous generation blindly and would read
+                 // this Long as a pointer. (Defer marks dodge that by being
+                 // named slots their own ladder nils; there is no room for
+                 // that here, since the exit reads its mark AFTER the ladder.)
+  OwnedExit,     // resolve the owned region above marks[a] (deterministic
+                 // drop for what refcounting alone cannot reclaim: escaped
+                 // or cyclic resources). Emitted after the scope's release
+                 // ladder, so anything held only by its bindings has
+                 // already died the ordinary way.
   Halt,
 };
 
@@ -1861,6 +1881,10 @@ struct Chunk {
   // Whether a `*args` catch-all removes this overload's upper arity bound.
   bool variadic = false;
   int32_t fn_slot = -1;
+  // Where a receiver frame caches the receiver-bound wrapper a value-read of
+  // `fn` yields (-1 without a receiver, where the raw closure is the answer).
+  // Owned, so the frame ladder releases the single +1 the cache holds.
+  int32_t fn_bound_slot = -1;
   // Source name of an overload body (`fn name`, a class member, `new`), read
   // by MultifnReg: it is the user-facing half of the registry key, so a
   // DispatchError names the declaration rather than the internal id.
@@ -1934,6 +1958,11 @@ struct Chunk {
   // `drop` (docs §17, and the JIT's suppressed __culebra_main exit): true for
   // chunk 0 only, read by the frame step of both the normal and throw paths.
   bool suppress_frame_drop = false;
+  // The frame's own entry in the mark array (-1 for chunk 0, whose exit
+  // drops nothing), and how many entries the array needs. `return` and the
+  // unwind's frame step resolve from the frame's.
+  int32_t owned_frame_depth = -1;
+  int32_t owned_depths = 0;
   // Frame-level defer mark slot (-1 when the chunk has no defers). Taken by
   // the chunk's first instruction; a throw that no region catches runs the
   // frame's pending defers back to it before unwinding out (Exec::run_frame's
@@ -1963,6 +1992,22 @@ struct Chunk {
     std::vector<int32_t> kw_keys;
   };
   std::vector<KwCall> kwcalls;
+
+  // Take another chunk's signature as this one's: everything a caller binds
+  // against, and nothing about the frame that binds it. The synthetic
+  // constructor uses it to speak for the `new` body it forwards to.
+  void adopt_signature(const Chunk& src) {
+    arity = src.arity;
+    required = src.required;
+    param_names = src.param_names;
+    param_types = src.param_types;
+    param_has_default = src.param_has_default;
+    kwargs_rest_idx = src.kwargs_rest_idx;
+    first_kw_only_idx = src.first_kw_only_idx;
+    cb_min = src.cb_min;
+    cb_max = src.cb_max;
+    variadic = src.variadic;
+  }
 };
 
 // The argument positions the call at `ix` published, or null when it has
@@ -2003,6 +2048,22 @@ inline std::span<const int32_t> chunk_temps_at(const Chunk& c, size_t pc) {
   if (it == c.temp_points.begin()) return {};
   --it;
   return {c.temp_slots.data() + it->off, it->len};
+}
+
+// The lowest slot an in-flight temporary may sit at and still be abandoned by
+// a throw here. A culebra throw is caught by the first enclosing try, and the
+// statement it resumes into is the one holding that try — so a temporary
+// BELOW that scope belongs to a statement the catch carries on evaluating
+// (`to_string(try { … } catch e { … })` holds its callee in one), while
+// everything above it belongs to a statement the throw abandoned. With no try
+// on the way out, the throw leaves the frame and every temp is abandoned.
+inline int32_t chunk_temp_floor(const Chunk& c, size_t pc) {
+  for (int32_t k = chunk_innermost_cleanup(c, pc); k >= 0;) {
+    const auto& cu = c.cleanups[static_cast<size_t>(k)];
+    if (cu.handler != Chunk::kNoHandler) return cu.slot_lo;
+    k = cu.parent;
+  }
+  return 0;
 }
 
 struct VmProgram;
@@ -2111,11 +2172,33 @@ struct MemberOpts {
   const std::vector<std::string_view>* type_params = nullptr;
 };
 
+// What a construct outside the slice raises while the module compiles. A
+// function literal catches it and becomes a chunk whose whole body is the
+// rejection (compile_fn_chunk), so the rest of the module still compiles and
+// only a call that actually reaches the construct sees VmError; anywhere
+// else it reaches compile_module and the module is rejected as a whole.
+struct Unsupported {
+  std::string what;
+  size_t line, col;
+};
+
 // One Compiler instance per chunk; the program and the analysis are shared.
-// Everything outside the slice throws VmError at compile time.
+// Everything outside the slice raises VmError — at compile time for the
+// module, at run time for the function literal that holds it.
 class Compiler {
  public:
   static VmProgram compile_module(const peg::Ast& ast) {
+    try {
+      return compile_module_impl(ast);
+    } catch (const Unsupported& u) {
+      throw CulebraError("VmError", "--vm: unsupported: " + u.what,
+                         static_cast<int64_t>(u.line),
+                         static_cast<int64_t>(u.col));
+    }
+  }
+
+ private:
+  static VmProgram compile_module_impl(const peg::Ast& ast) {
     VmProgram prog;
     FnAnalysis analysis(&JIT::is_builtin_var);
     // The built-in traits (Eq's `neq`, Comparable's four comparisons, ...)
@@ -2137,7 +2220,7 @@ class Compiler {
     main.establish_frame_defer_mark(ast, top_info);
     {
       using namespace peg::udl;
-      main.push_scope();
+      main.push_scope(ast, /*owned_mark=*/false);
       main.predeclare_multifns(ast);
       if (preamble) {
         if (preamble->tag == "STATEMENTS"_) {
@@ -2168,7 +2251,6 @@ class Compiler {
     return prog;
   }
 
- private:
   Compiler(VmProgram& prog, FnAnalysis& analysis, bool in_function,
            const FuncInfo* info)
       : prog_(prog),
@@ -2208,6 +2290,10 @@ class Compiler {
     // unrelated scope's overloads nor the previous activation's bleed in
     // (the JIT's Scope::multifn_decls).
     std::set<std::string> multifn_decls;
+    // This scope's entry in the frame's owned-mark array — its own static
+    // depth, or -1 where the scope resolves nothing (chunk 0's frame scope,
+    // since program exit does not drop).
+    int32_t owned_mark = -1;
   };
   struct LoopCtx {
     int32_t slot_watermark;  // slots >= this are inner to the loop scope
@@ -2221,6 +2307,10 @@ class Compiler {
     // of, so a break has to say so: this slot (-1 without the clause) holds
     // the flag the tail tests, in the scope enclosing the loop's own.
     int32_t broke_slot = -1;
+    // The loop body's scope (pushed right after this context): its owned
+    // mark is the lowest of the scopes a break or continue abandons, so
+    // resolving from it covers them all.
+    size_t body_scope_index = 0;
   };
   struct ExprResult {
     int32_t slot;
@@ -2321,9 +2411,7 @@ class Compiler {
   uint32_t pend_line_ = 0, pend_col_ = 0;
 
   [[noreturn]] static void reject(const peg::Ast& ast, const std::string& what) {
-    throw CulebraError("VmError", "--vm: unsupported: " + what,
-                       static_cast<int64_t>(ast.line),
-                       static_cast<int64_t>(ast.column));
+    throw Unsupported{what, ast.line, ast.column};
   }
 
   void stamp(const peg::Ast& ast) {
@@ -2402,6 +2490,12 @@ class Compiler {
   void patch_to_here(size_t ix) { patch_jump(ix, chunk_.code.size()); }
 
   int32_t alloc_raw(const peg::Ast& at, std::string name, bool named) {
+    // Every binding this frame declares passes through here, which makes it
+    // the one place the effects transform's lowered declarations can be
+    // turned away: without them the lane runs half of an effect and answers
+    // (a NameError where the others raise EffectError) instead of declining.
+    if (culebra::is_effects_internal_name(name))
+      reject(at, "effect declaration");
     if (next_slot_ >= kMaxSlots) reject(at, "frame larger than 256 slots");
     int32_t s = next_slot_++;
     if (s >= static_cast<int32_t>(chunk_.slot_names.size()))
@@ -2517,10 +2611,35 @@ class Compiler {
   // A scope opens where its first instruction will land, and adopts the mark
   // its DeferScope took just before it (the mark slot belongs to the
   // enclosing scope, so it is established outside this push).
-  void push_scope() {
+  //
+  // Its own first slot is the owned-stack watermark its exit resolves — the
+  // JIT's per-scope `owned_mark` SSA value, which a register machine has to
+  // keep somewhere. A frame scope takes none here: its slots [0, arity) are
+  // the ABI's, so establish_frame_owned_mark places it once the parameters
+  // are laid out.
+  void push_scope(const peg::Ast& at, bool owned_mark = true) {
     scopes_.push_back({{}, next_slot_,
                        static_cast<uint32_t>(chunk_.code.size()),
                        std::exchange(pending_scope_mark_, -1)});
+    if (owned_mark) take_owned_mark(at);
+  }
+
+  // The frame's own watermark, taken after the parameter slots and before
+  // the prologue runs any user code (a default expression can already build
+  // a resource). `return` and the unwind's frame step resolve from it: it is
+  // the lowest mark in the frame, so one run covers every scope still open.
+  void establish_frame_owned_mark(const peg::Ast& at) {
+    take_owned_mark(at);
+    chunk_.owned_frame_depth = scopes_.front().owned_mark;
+  }
+
+  // The current scope's slot in the frame's mark array: its static depth.
+  void take_owned_mark(const peg::Ast& at) {
+    auto d = static_cast<int32_t>(scopes_.size()) - 1;
+    if (d >= kMaxOwnedDepth) reject(at, "scopes nested deeper than 64");
+    scopes_.back().owned_mark = d;
+    chunk_.owned_depths = std::max(chunk_.owned_depths, d + 1);
+    emit(Op::OwnedMark, d);
   }
 
   // The release ladder every scope exit uses (reverse order, mirroring the
@@ -2552,6 +2671,10 @@ class Compiler {
     auto segments = std::move(sc.segments);
     if (scopes_.size() == 1) frame_segments_ = segments;  // the frame scope
     release_down_to(sc.slot_watermark);
+    // After the ladder, so anything held only by this scope's bindings has
+    // already died through the ordinary refcount-0 path (the JIT's
+    // pop_scope order); what is left is escaped or cyclic.
+    if (sc.owned_mark >= 0) emit(Op::OwnedExit, sc.owned_mark);
     next_slot_ = std::max(sc.slot_watermark, pin_floor_);
     named_top_ = std::min(named_top_, next_slot_);
     scopes_.pop_back();
@@ -2716,7 +2839,7 @@ class Compiler {
   void compile_block(const peg::Ast& ast, const peg::Ast* defer_key = nullptr) {
     using namespace peg::udl;
     DeferScope ds(*this, defer_key ? *defer_key : ast);
-    push_scope();
+    push_scope(ast);
     predeclare_multifns(ast);
     if (ast.tag == "STATEMENTS"_) {
       for (const auto& n : ast.nodes) compile_statement(*n);
@@ -2735,7 +2858,7 @@ class Compiler {
                           const peg::Ast* defer_key = nullptr) {
     using namespace peg::udl;
     DeferScope ds(*this, defer_key ? *defer_key : ast);
-    push_scope();
+    push_scope(ast);
     predeclare_multifns(ast);
     compile_body_into(ast, dst);
     ds.close();
@@ -2854,6 +2977,10 @@ class Compiler {
         if (defer_scopes_.size() > lc.defer_watermark)
           emit(Op::DeferRunTo, defer_scopes_[lc.defer_watermark]);
         release_down_to(lc.slot_watermark);
+        // The body scope's mark bounds every scope this jump abandons.
+        if (lc.body_scope_index < scopes_.size() &&
+            scopes_[lc.body_scope_index].owned_mark >= 0)
+          emit(Op::OwnedExit, scopes_[lc.body_scope_index].owned_mark);
         if (brk && lc.broke_slot >= 0)
           emit(Op::LoadConst, lc.broke_slot, kconst_long(1));
         (brk ? lc.break_jumps : lc.continue_jumps).push_back(emit(Op::Jump));
@@ -2887,6 +3014,10 @@ class Compiler {
         // above it, so one run covers a return from any depth).
         if (frame_defer_mark_ >= 0) emit(Op::DeferRunTo, frame_defer_mark_);
         release_down_to(0);
+        // One resolution for every scope the return abandons: the frame's
+        // mark is the lowest of them (owned ids are monotonic).
+        if (chunk_.owned_frame_depth >= 0)
+          emit(Op::OwnedExit, chunk_.owned_frame_depth);
         emit(Op::Ret, rv);
         break;
       }
@@ -3362,8 +3493,7 @@ class Compiler {
           meta_cell, na ? cell_or_nil(-1) : cell_or_nil(finit_slot),
           na ? body_cell : cell_or_nil(-1)};
       int32_t ctor_chunk = compile_ctor_chunk(
-          ast, class_name, na ? culebra::view_method(*na).params : nullptr,
-          ctor_caps, type_params);
+          ast, class_name, ctor_caps, na ? body_chunks[k] : -1);
       if (new_asts.size() < 2) {
         emit(Op::MakeClosure, ctor, ctor_chunk);
         break;
@@ -3463,39 +3593,22 @@ class Compiler {
   // that body's parameter names, fires before any field initializer, and
   // leaves a half-built instance behind for its `drop`.
   int32_t compile_ctor_chunk(const peg::Ast& ast, const std::string& class_name,
-                             const peg::Ast* params,
                              const std::vector<int32_t>& caps,
-                             const std::vector<std::string_view>& type_params) {
+                             int32_t body_chunk) {
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();
     Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
     fc.stamp(ast);
-    fc.push_scope();
+    fc.push_scope(ast, /*owned_mark=*/false);
     fc.chunk_.capture_src_slots = caps;
     fc.chunk_.forwards_args = true;
-    // The `new` signature still describes this constructor to the overload
-    // registry (MultifnReg reads it off the chunk); the prologue just does
-    // not bind it — build_class_instance hands the arguments to the body,
-    // whose own prologue does.
-    if (params) {
-      fc.chunk_.arity = static_cast<int32_t>(params->nodes.size());
-      fc.chunk_.required = fc.chunk_.arity;
-      for (const auto& p : params->nodes) {
-        auto pv = culebra::view_parameter(*p);
-        if (pv.default_value &&
-            fc.chunk_.required == fc.chunk_.arity)
-          fc.chunk_.required =
-              static_cast<int32_t>(fc.chunk_.param_names.size());
-        fc.chunk_.param_names.push_back(
-            pv.pattern ? std::string(culebra::destructure_param_name(
-                             fc.chunk_.param_names.size()))
-                       : std::string(pv.name));
-        fc.chunk_.param_types.push_back(
-            type_params.empty()
-                ? std::string(pv.type_annotation)
-                : culebra::lower_type_params(pv.type_annotation, type_params));
-      }
-    }
+    // `C.new(...)` binds against this closure, so the constructor publishes
+    // the `new` body's signature verbatim — the overload registry reads it
+    // off the chunk, and so does the keyword resolver, whose view of which
+    // parameters carry a default decides an ArityError from a bind. The
+    // body's own prologue is the one that binds; describing the signature
+    // twice is what let the two drift.
+    if (body_chunk >= 0) fc.chunk_.adopt_signature(prog_.chunks[body_chunk]);
     int32_t cap0 = -1;
     for (size_t i = 0; i < caps.size(); i++) {
       int32_t s = fc.alloc_slot(ast, "(class.capture)");
@@ -3555,8 +3668,45 @@ class Compiler {
   // its own params/body children (its name child shifts them by one); a
   // `defer` body reuses it with `params` null — a 0-arity thunk over the
   // same closure machinery and frame epilogue.
+  //
+  // A function literal is also where the slice stops being fatal: anything
+  // inside one that the slice does not cover collapses the chunk to the
+  // rejection itself (see emit_poison_chunk), so the module still compiles
+  // and only a call that reaches the construct raises VmError. The chunks a
+  // discarded body appended are discarded with it — nothing outside it holds
+  // their indices.
   int32_t compile_fn_chunk(const peg::Ast& ast, const peg::Ast* params,
                            const peg::Ast& body, MemberOpts mo = MemberOpts()) {
+    size_t mark = prog_.chunks.size();
+    try {
+      return compile_fn_chunk_impl(ast, params, body, mo);
+    } catch (const Unsupported& u) {
+      prog_.chunks.resize(mark);
+      return emit_poison_chunk(ast, u);
+    }
+  }
+
+  // The whole body of a chunk the slice rejected: raise, at the position the
+  // rejected construct sits on. It declares no parameters and no captures —
+  // the caller's MakeClosure reads both from here — and `variadic` keeps
+  // every call shape (and every callback-arity probe) from reporting an
+  // arity error in front of the rejection.
+  int32_t emit_poison_chunk(const peg::Ast& ast, const Unsupported& u) {
+    int32_t idx = static_cast<int32_t>(prog_.chunks.size());
+    prog_.chunks.emplace_back();
+    Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
+    fc.chunk_.variadic = true;
+    fc.chunk_.cb_max = -1;
+    int32_t rv = fc.alloc_raw(ast, "(unsupported)", /*named=*/false);
+    fc.emit_raise("VmError", "--vm: unsupported: " + u.what, u.line, u.col);
+    fc.emit(Op::Ret, rv);  // dead: the raise above never falls through
+    fc.finalize_chunk();
+    prog_.chunks[idx] = std::move(fc.chunk_);
+    return idx;
+  }
+
+  int32_t compile_fn_chunk_impl(const peg::Ast& ast, const peg::Ast* params,
+                                const peg::Ast& body, MemberOpts mo) {
     using namespace peg::udl;
     const FuncInfo& info = analysis_.func_info.at(&ast);
     std::string_view return_type;
@@ -3568,7 +3718,9 @@ class Compiler {
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
     Compiler fc(prog_, analysis_, /*in_function=*/true, &info);
     fc.stamp(ast);
-    fc.push_scope();  // the frame scope: params + captures + the `fn` handle
+    // The frame scope: params + captures + the `fn` handle. Its owned mark
+    // waits until the ABI slots are laid out (establish_frame_owned_mark).
+    fc.push_scope(ast, /*owned_mark=*/false);
     fc.chunk_.arity =
         params ? static_cast<int32_t>(params->nodes.size()) : 0;
     fc.chunk_.capture_src_slots = std::move(caps.slots);
@@ -3728,8 +3880,15 @@ class Compiler {
     if (info.uses_fn) {
       fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
       fc.scopes_.back().bindings.push_back({"fn", fc.chunk_.fn_slot, false});
+      // A method's `fn` IS the bound wrapper (interp: the handle a method
+      // call binds), so recursion and any escapee keep the original
+      // receiver. The cache makes repeated reads compare equal and leaves
+      // exactly one +1 for the frame to release.
+      if (fc.chunk_.self_slot >= 0)
+        fc.chunk_.fn_bound_slot = fc.alloc_slot(ast, "(fn.bound)");
     }
     fc.establish_frame_defer_mark(ast, info);
+    fc.establish_frame_owned_mark(ast);
     // Where a return-value type error reports: resolved once here, as the
     // JIT's prologue snapshot does (see PosSnap).
     if (!return_type.empty()) {
@@ -3972,9 +4131,12 @@ class Compiler {
   int32_t compile_defer_chunk(const peg::Ast& ast) {
     // The JIT thunk binds only free vars, so an enclosing fn's recursion
     // handle is not reachable from a defer body there; keep the lanes
-    // symmetric by rejecting instead of quietly diverging.
+    // symmetric by rejecting instead of quietly diverging. The rejection
+    // rides the thunk like any other (compile_fn_chunk's poison window).
     if (analysis_.func_info.at(&ast).uses_fn)
-      reject(ast, "recursion handle `fn` inside defer");
+      return emit_poison_chunk(
+          ast, Unsupported{"recursion handle `fn` inside defer", ast.line,
+                           ast.column});
     return compile_fn_chunk(ast, /*params=*/nullptr, *ast.nodes[0]);
   }
 
@@ -4359,7 +4521,7 @@ class Compiler {
         ident && !sink && info_->captured_locals.contains(std::string(id.token));
 
     int32_t broke = alloc_broke_slot(ast, fv.nobreak);
-    push_scope();
+    push_scope(ast);
     int32_t base = alloc_slot(ast, "(for.disposed)");
     alloc_slot(ast, "(for.iterable)");
     alloc_slot(ast, "(for.set.arr)");
@@ -4382,7 +4544,8 @@ class Compiler {
                /*dst_is_fresh=*/true);
     emit(Op::ForOpen, base);
 
-    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke});
+    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
+                      scopes_.size()});
     size_t head_ix = chunk_.code.size();
     // A step's positionless throws report at the statement, not at the
     // iterable expression the open reports at.
@@ -4396,7 +4559,7 @@ class Compiler {
       // body's resources die before the element and both die before the
       // iterator (docs §18.5).
       DeferScope ds(*this, *fv.body);
-      push_scope();
+      push_scope(ast);
       if (sink) {
         emit(Op::Release, base + kForElem);  // nothing binds it
       } else if (ident) {
@@ -4467,7 +4630,7 @@ class Compiler {
     bool cell = info_->captured_locals.contains(std::string(id.token));
 
     int32_t broke = alloc_broke_slot(ast, fv.nobreak);
-    push_scope();
+    push_scope(ast);
     int32_t base = alloc_slot(ast, "(for.cur)");
     alloc_slot(ast, "(for.end)");
     alloc_slot(ast, "(for.step)");
@@ -4489,7 +4652,8 @@ class Compiler {
     size_t prep = emit(Op::ForPrep, base);
 
     scopes_.back().bindings.push_back({std::string(id.token), bind, false, cell});
-    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke});
+    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
+                      scopes_.size()});
     size_t body_ix = chunk_.code.size();
     if (cell) emit(Op::CellNew, bind, var);
     compile_block(*fv.body);
@@ -4547,7 +4711,8 @@ class Compiler {
     }
     size_t exit_jump = emit(Op::JumpIfFalse, cond_slot);
 
-    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke});
+    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
+                      scopes_.size()});
     compile_block(*wv.body);
     emit(Op::Jump, static_cast<int32_t>(top_ix));
     size_t exit_ix = chunk_.code.size();
@@ -4626,11 +4791,22 @@ class Compiler {
     }
     int32_t out = has_safe ? alloc_temp(ast) : -1;
     std::vector<size_t> nil_jumps;
-    auto res = compile_expr(*ast.nodes[0]);
+    // Direct `fn(...)` recursion in a receiver frame re-passes the frame's
+    // own receiver, so the callee sees the same one — the JIT's
+    // fn_direct_call, which reads the raw slot rather than minting the
+    // wrapper compile_expr would.
+    bool fn_direct = ast.nodes[0]->tag == "IDENTIFIER"_ &&
+                     ast.nodes[0]->token == "fn" &&
+                     chunk_.fn_bound_slot >= 0 && ast.nodes.size() > 1 &&
+                     ast.nodes[1]->original_tag == "ARGUMENTS"_;
+    auto res = fn_direct ? ExprResult{chunk_.fn_slot, false}
+                         : compile_expr(*ast.nodes[0]);
     for (size_t i = 1; i < ast.nodes.size(); ++i) {
       const auto& post = *ast.nodes[i];
       if (post.original_tag == "ARGUMENTS"_)
-        res = compile_call_step(ast, post, res);
+        res = i == 1 && fn_direct
+                  ? compile_self_call_step(ast, post, res)
+                  : compile_call_step(ast, post, res);
       else if (post.original_tag == "INDEX"_)
         res = compile_index_read(ast, post, res, Op::Index);
       else if (post.original_tag == "SAFE_INDEX"_) {
@@ -4840,8 +5016,9 @@ class Compiler {
       {
         StampGuard call_pos(*this, args);
         size_t ix = emit(Op::Call, t, candv.slot, base, argc + 1);
-        // positional[0] is the receiver, which has no argument expression.
-        std::vector<const peg::Ast*> asts{nullptr};
+        // positional[0] is the receiver: it has no argument expression, and
+        // the interp reports a parameter error on it at the method name.
+        std::vector<const peg::Ast*> asts{&post};
         for (const auto& a : args.nodes) asts.push_back(a.get());
         record_call_argpos(ix, args, std::move(asts));
       }
@@ -5007,7 +5184,17 @@ class Compiler {
     Chunk::KwCall kc{recv != nullptr, n_pos, n_kw, n_splat, {}};
     for (auto k : keys) kc.kw_keys.push_back(kconst_str(k));
     chunk_.kwcalls.push_back(std::move(kc));
-    emit(Op::CallKw, t, callee_slot, base, spec);
+    size_t ix = emit(Op::CallKw, t, callee_slot, base, spec);
+    // Only the positionals: they bind to the parameters of the same index,
+    // which is what an argument-position table indexes by. A keyword value
+    // reports at the call site on every backend, so leaving its parameter
+    // without an entry is the agreement, not a gap.
+    std::vector<const peg::Ast*> asts;
+    for (const auto& a : args.nodes)
+      if (!(a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_ ||
+            a->tag == "KWARG"_ || a->original_tag == "KWARG"_))
+        asts.push_back(a.get());
+    record_call_argpos(ix, args, std::move(asts));
     return {t, true};
   }
 
@@ -5035,6 +5222,31 @@ class Compiler {
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(ast);
     size_t ix = emit(Op::Call, t, callee.slot, base, argc);
+    std::vector<const peg::Ast*> asts;
+    for (const auto& a : args.nodes) asts.push_back(a.get());
+    record_call_argpos(ix, args, std::move(asts));
+    return {t, true};
+  }
+
+  // A direct `fn(...)` in a receiver frame: the frame's own closure called
+  // with the frame's own receiver. CallM's run already has that shape — the
+  // receiver at its head — so this is compile_property_call's tail with the
+  // callee taken from the `fn` slot instead of a property read.
+  ExprResult compile_self_call_step(const peg::Ast& at, const peg::Ast& args,
+                                    ExprResult callee) {
+    ExprResult recv{chunk_.self_slot, false};
+    if (has_kwargs(args))
+      return compile_kwargs_call(at, args, callee.slot, &recv);
+    int32_t argc = static_cast<int32_t>(args.nodes.size());
+    int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
+    alloc_temp(at);             // [0] = the receiver
+    for (int32_t i = 0; i < argc; i++) alloc_temp(*args.nodes[i]);
+    store_into(base, recv, /*dst_is_fresh=*/true);
+    for (int32_t i = 0; i < argc; i++)
+      store_into(base + 1 + i, compile_expr(*args.nodes[i]),
+                 /*dst_is_fresh=*/true);
+    int32_t t = alloc_temp(at);
+    size_t ix = emit(Op::CallM, t, callee.slot, base, argc);
     std::vector<const peg::Ast*> asts;
     for (const auto& a : args.nodes) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
@@ -5202,7 +5414,7 @@ class Compiler {
     // still release as that escaping throw passes them.
     if (body_scope_defer) defer_scopes_.push_back(rmark);
     pending_scope_mark_ = rmark;
-    push_scope();
+    push_scope(ast);
     predeclare_multifns(*ast.nodes[0]);
     compile_body_into(*ast.nodes[0], res);
     auto end = static_cast<uint32_t>(chunk_.code.size());
@@ -5226,7 +5438,7 @@ class Compiler {
                                    cu.defer_mark_slot, cu.slot_lo, cu.slot_hi,
                                    cu.cells_before});
     }
-    push_scope();
+    push_scope(ast);
     auto name = std::string(id.token);
     if (is_sink_name(name)) {
       emit(Op::Release, caught);  // `catch _`: drop the payload's +1
@@ -5268,7 +5480,7 @@ class Compiler {
     for (const auto& arm : mv.arms->nodes) {
       // arm->nodes: PATTERN (GUARD)? body
       const auto& pat = *arm->nodes[0];
-      push_scope();
+      push_scope(ast);
       std::vector<size_t> fail_jumps;  // patched to the next arm's start
       compile_pattern_test(pat, subj, fail_jumps);
       // Bind once every test passed. Arm bindings are mutable (interp's
@@ -5892,6 +6104,15 @@ class Compiler {
         return {t, true};
       }
       case "IDENTIFIER"_: {
+        // A receiver frame's `fn` reads as the bound wrapper (the JIT's
+        // fn.handle path); a direct `fn(...)` call skips it and re-passes
+        // the receiver instead — see compile_call.
+        if (ast.token == "fn" && chunk_.fn_bound_slot >= 0) {
+          int32_t t = alloc_temp(ast);
+          emit(Op::FnHandle, t, chunk_.self_slot, chunk_.fn_slot,
+               chunk_.fn_bound_slot);
+          return {t, true};
+        }
         const Binding* b = lookup(ast.token);
         if (b) return read_binding(ast, *b);
         if (is_stdlib_global(ast.token) || is_stdlib_namespace(ast.token)) {
@@ -6070,6 +6291,7 @@ inline std::string dump(const Chunk& c) {
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForOpen",   "ForNext",   "ForDispose",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "DropSuppress",
+      "FnHandle",  "OwnedMark", "OwnedExit",
       "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
@@ -6288,6 +6510,9 @@ struct Exec {
     int64_t frame_depth = chunk_idx != 0 ? -1
                                          : culebra_runtime_recursion_depth();
     const Insn* code = c.code.data();
+    // The frame's owned-stack watermarks, one per open scope depth. Kept
+    // out of the register file on purpose — see Op::OwnedMark.
+    int64_t marks[kMaxOwnedDepth];
     size_t pc = 0;
     // Dispatch, re-entering at a try scope's handler when a throw lands
     // inside one. Classification shares the JIT landingpad's carrier
@@ -6298,9 +6523,9 @@ struct Exec {
     for (;;) {
       try {
         return dispatch(p, c, code, regs, pc, chunk_idx, cls, frame_depth,
-                        n_args, args);
+                        n_args, args, marks);
       } catch (...) {
-        if (unwind(c, regs, pc, chunk_idx, frame_depth)) continue;
+        if (unwind(c, regs, pc, chunk_idx, frame_depth, marks)) continue;
         throw;
       }
     }
@@ -6315,7 +6540,8 @@ struct Exec {
   // true when a try scope caught it (`pc` then sits at its handler);
   // otherwise the frame is uncounted and the caller re-raises.
   static bool unwind(const Chunk& c, JitValue* regs, size_t& pc,
-                     int32_t chunk_idx, int64_t frame_depth) {
+                     int32_t chunk_idx, int64_t frame_depth,
+                     const int64_t* marks) {
     // Restore this frame's depth before any of it runs: the unwound callees
     // never ran their `leave`, and the defers (and any `drop` the releases
     // fire) must count from here. Every restore ignores the "never entered"
@@ -6325,8 +6551,10 @@ struct Exec {
     // the plain release — and nils its slot, which is what makes the range
     // release below safe on an index a later generation turned into a cell.
     auto temps = chunk_temps_at(c, pc);
+    int32_t floor = chunk_temp_floor(c, pc);
     for (size_t i = temps.size(); i > 0; --i)
-      release_slot(c, regs, temps[i - 1], /*as_cell=*/false);
+      if (temps[i - 1] >= floor)
+        release_slot(c, regs, temps[i - 1], /*as_cell=*/false);
     for (int32_t k = chunk_innermost_cleanup(c, pc); k >= 0;) {
       const auto& cu = c.cleanups[static_cast<size_t>(k)];
       bool frame = cu.parent < 0;
@@ -6346,6 +6574,12 @@ struct Exec {
         release_slot(c, regs, s, chunk_slot_is_cell(c, s, cu.cells_before));
       }
       if (hush) culebra_runtime_set_drop_suppressed(0);
+      // The frame's own step resolves the owned region once, after its
+      // releases — the JIT resolves at its frame cleanup pad and nowhere
+      // else on the throw path, so an inner scope's escaped resources wait
+      // for the frame here too. Suppressed at program exit.
+      if (frame && !hush && c.owned_frame_depth >= 0)
+        culebra_runtime_owned_scope_exit(marks[c.owned_frame_depth]);
       if (cu.handler != Chunk::kNoHandler) {
         culebra_runtime_try_translate();
         if (culebra_runtime_get_is_throw()) {
@@ -6564,6 +6798,13 @@ struct Exec {
   // The call site, with this call's per-argument positions when it has any
   // — one runtime entry publishes both, and set_call_site alone (which
   // resets the count) is what an argument-less call wants.
+  // The owned stack's next id, read the way compiled code reads it: off the
+  // hot fields whose address the runtime hands out (next_id is at offset 0).
+  static int64_t owned_next_id() {
+    return *reinterpret_cast<const int64_t*>(
+        static_cast<uintptr_t>(culebra_runtime_owned_hot()));
+  }
+
   static void publish_call_site(const Chunk& c, size_t pc, int64_t line,
                                 int64_t col) {
     if (const auto* ap = chunk_argpos_at(c, pc))
@@ -6579,7 +6820,7 @@ struct Exec {
                            const Insn* code, JitValue* regs, size_t& pc,
                            int32_t chunk_idx, JitClosure* cls,
                            int64_t& frame_depth, int64_t n_args,
-                           JitValue* args) {
+                           JitValue* args, int64_t* marks) {
     // Numeric conversions via the runtime's own bit-punning helpers; both
     // call sites guard with both_num, so coerce_num's throw arm is dead.
     auto as_double = [](const JitValue& v) {
@@ -7664,10 +7905,10 @@ struct Exec {
         case Op::CallKw: {
           const Chunk::KwCall& kc = c.kwcalls[in.d];
           auto [line, col] = chunk_pos_at(c, pc);
-          // A keyword call anchors every binder error at the call itself —
-          // the resolver reorders the values, so no argument's own position
-          // survives to report at (the interp's own answer here too).
-          culebra_runtime_set_call_site(line, col);
+          // The positionals bind by index and report at their own expression;
+          // a keyword value's parameter has no entry, so it falls back to the
+          // call site — the interp's own split (record_call_argpos).
+          publish_call_site(c, pc, line, col);
           int32_t off = kc.has_receiver ? 1 : 0;
           int32_t total = off + kc.n_pos + kc.n_kw + kc.n_splat;
           JitValue callee = regs[in.b];
@@ -8164,6 +8405,20 @@ struct Exec {
           culebra_runtime_set_drop_suppressed(static_cast<int8_t>(in.a));
           ++pc;
           break;
+        case Op::FnHandle:
+          regs[in.a] = culebra_runtime_fn_handle(
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data,
+              reinterpret_cast<JitClosure*>(regs[in.c].data), &regs[in.d]);
+          ++pc;
+          break;
+        case Op::OwnedMark:
+          marks[in.a] = owned_next_id();
+          ++pc;
+          break;
+        case Op::OwnedExit:
+          culebra_runtime_owned_scope_exit(marks[in.a]);
+          ++pc;
+          break;
         case Op::Halt:
           return JitValue{TAG_NIL, 0};
       }
@@ -8257,6 +8512,27 @@ struct Lowering {
     // through it.
     j.unwind_temp_slots_.clear();
     j.unwind_covered_.clear();
+    // Same reason: the owned stack's hot pointer is cached as an SSA value
+    // fetched in the function's prologue, so it cannot cross a chunk. Fetch
+    // it here rather than at first use — a first use inside a try region
+    // would be an invoke, whose result does not dominate the other blocks
+    // that go on to read the cache.
+    j.current_owned_hot_ = nullptr;
+    llvm::Value* markArr = nullptr;
+    if (c.owned_depths > 0) {
+      j.current_owned_hot_ = b.CreateCall(
+          j.module_->getOrInsertFunction(rt::owned_hot, b.getInt64Ty()), {},
+          "owned.hot");
+      // The frame's mark array, the executor's `marks` — entry-block, so a
+      // loop body's scope entry does not grow the stack every turn.
+      markArr = b.CreateAlloca(i64Ty, b.getInt64(c.owned_depths), "owned.marks");
+    }
+    auto owned_mark_ptr = [&](int32_t d) {
+      return b.CreateConstInBoundsGEP1_64(i64Ty, markArr, d, "owned.mark.p");
+    };
+    auto load_owned_mark = [&](int32_t d) {
+      return b.CreateLoad(i64Ty, owned_mark_ptr(d), "owned.mark");
+    };
 
     // Frame-ABI arguments (function chunks only; see JitFn in jit_value.h).
     llvm::Value* retPtr = nullptr;
@@ -8546,21 +8822,12 @@ struct Lowering {
     std::vector<BasicBlock*> pads(c.cleanups.size());
     for (size_t k = 0; k < c.cleanups.size(); ++k)
       pads[k] = BasicBlock::Create(j.ctx_, std::format("vm.scope.{}", k), fn);
-    // The JitFn hand-off, shared by Call / CallM and BMeth's user-method arm:
-    // the TAG_FUNC gate, the arg slab, and the ABI call. `selfSlot < 0` is a
-    // plain call (TAG_NO_SELF rides the receiver pair). The callee consumes
-    // the receiver and every argument on every exit, so those slots go nil
-    // BEFORE the call — the slab alloca keeps the values alive for the callee
-    // and a region's release ladder cannot double-release them on the unwind
-    // edge. Returns the call's result value.
-    auto emit_invoke = [&](llvm::Value* calleeV, int32_t selfSlot,
-                           int32_t argBase, int32_t argc, int64_t line,
-                           int64_t col,
-                           const std::vector<int64_t>* argpos =
-                               nullptr) -> llvm::Value* {
-      // The call site, with this call's per-argument positions when it has
-      // any — the JIT's emit_call_position_publish, whose packed array is
-      // rodata here too (every position is a compile-time constant).
+    // The call site, with this call's per-argument positions when it has
+    // any — the JIT's emit_call_position_publish, whose packed array is
+    // rodata here too (every position is a compile-time constant). The
+    // executor's publish_call_site is the same decision.
+    auto publish_site = [&](int64_t line, int64_t col,
+                            const std::vector<int64_t>* argpos) {
       if (argpos) {
         std::vector<Constant*> packed;
         size_t n = std::min(argpos->size(),
@@ -8584,6 +8851,20 @@ struct Lowering {
                                            i64Ty, i64Ty),
             {b.getInt64(line), b.getInt64(col)});
       }
+    };
+    // The JitFn hand-off, shared by Call / CallM and BMeth's user-method arm:
+    // the TAG_FUNC gate, the arg slab, and the ABI call. `selfSlot < 0` is a
+    // plain call (TAG_NO_SELF rides the receiver pair). The callee consumes
+    // the receiver and every argument on every exit, so those slots go nil
+    // BEFORE the call — the slab alloca keeps the values alive for the callee
+    // and a region's release ladder cannot double-release them on the unwind
+    // edge. Returns the call's result value.
+    auto emit_invoke = [&](llvm::Value* calleeV, int32_t selfSlot,
+                           int32_t argBase, int32_t argc, int64_t line,
+                           int64_t col,
+                           const std::vector<int64_t>* argpos =
+                               nullptr) -> llvm::Value* {
+      publish_site(line, col, argpos);
       auto tag = j.extract_tag(calleeV);
       auto* fromBB = b.GetInsertBlock();
       auto probeBB = BasicBlock::Create(j.ctx_, "call.probe", fn);
@@ -8693,7 +8974,7 @@ struct Lowering {
     struct TempPad {
       BasicBlock* bb;
       BasicBlock* chain;
-      std::span<const int32_t> temps;
+      std::vector<int32_t> temps;
     };
     std::vector<TempPad> temp_pads;
     std::map<std::tuple<int32_t, const int32_t*, size_t>, BasicBlock*> temp_ix;
@@ -8701,14 +8982,19 @@ struct Lowering {
       int32_t k = chunk_innermost_cleanup(c, pc);
       if (k < 0) return nullptr;
       BasicBlock* chain = pads[static_cast<size_t>(k)];
-      auto temps = chunk_temps_at(c, pc);
+      // Only what this throw abandons — Exec::unwind's own floor.
+      int32_t floor = chunk_temp_floor(c, pc);
+      std::vector<int32_t> temps;
+      for (int32_t s : chunk_temps_at(c, pc))
+        if (s >= floor) temps.push_back(s);
       if (temps.empty()) return chain;
-      auto key = std::tuple{k, temps.data(), temps.size()};
+      auto key = std::tuple{k, chunk_temps_at(c, pc).data(),
+                            chunk_temps_at(c, pc).size()};
       auto it = temp_ix.find(key);
       if (it != temp_ix.end()) return it->second;
       auto* bb = BasicBlock::Create(
           j.ctx_, std::format("vm.temps.{}", temp_pads.size()), fn);
-      temp_pads.push_back({bb, chain, temps});
+      temp_pads.push_back({bb, chain, std::move(temps)});
       temp_ix.emplace(key, bb);
       return bb;
     };
@@ -11101,12 +11387,9 @@ struct Lowering {
         case Op::CallKw: {
           const Chunk::KwCall& kc = c.kwcalls[in.d];
           auto [line, col] = chunk_pos_at(c, i);
-          // A keyword call anchors every binder error at the call itself —
-          // see the executor's own arm.
-          b.CreateCall(j.module_->getOrInsertFunction(rt::set_call_site,
-                                                      b.getVoidTy(), i64Ty,
-                                                      i64Ty),
-                       {b.getInt64(line), b.getInt64(col)});
+          // Positional arguments report at themselves, keyword ones at the
+          // call — see the executor's own arm.
+          publish_site(line, col, chunk_argpos_at(c, i));
           int32_t off = kc.has_receiver ? 1 : 0;
           int32_t total = off + kc.n_pos + kc.n_kw + kc.n_splat;
           auto callee = load_slot(in.b);
@@ -11799,6 +12082,30 @@ struct Lowering {
                                              b.getVoidTy(), b.getInt8Ty()),
               {b.getInt8(static_cast<int8_t>(in.a))});
           break;
+        case Op::FnHandle: {
+          auto selfV = load_slot(in.b);
+          b.CreateStore(
+              j.emit_value_call(
+                  j.module_->getOrInsertFunction(
+                      rt::fn_handle, j.valueType_, b.getInt8Ty(), i64Ty,
+                      ptrTy, ptrTy),
+                  {j.extract_tag(selfV), j.extract_data(selfV),
+                   b.CreateIntToPtr(j.extract_data(load_slot(in.c)), ptrTy),
+                   slots[in.d]},
+                  "fn.handle"),
+              slots[in.a]);
+          break;
+        }
+        case Op::OwnedMark:
+          // next_id sits at offset 0 of the hot fields, which the JIT's own
+          // scope entry loads the same way.
+          b.CreateStore(b.CreateLoad(i64Ty, b.CreateIntToPtr(
+                                                j.owned_hot_ptr(), ptrTy)),
+                        owned_mark_ptr(in.a));
+          break;
+        case Op::OwnedExit:
+          j.emit_owned_scope_exit(load_owned_mark(in.a));
+          break;
         case Op::Halt:
           b.CreateRetVoid();
           break;
@@ -11862,6 +12169,10 @@ struct Lowering {
         release_slot_ir(s, chunk_slot_is_cell(c, s, cu.cells_before));
       }
       if (hush) suppress(0);
+      // The frame's step resolves the owned region once — see the
+      // executor's own unwind for why only here.
+      if (frame && !hush && c.owned_frame_depth >= 0)
+        j.emit_owned_scope_exit(load_owned_mark(c.owned_frame_depth));
       if (frame && chunk_idx != 0)
         b.CreateCall(restoreFn, {b.CreateSub(d, b.getInt64(1), "rec.d1")});
       if (cu.handler == Chunk::kNoHandler) continue;  // pad dtor re-raises
