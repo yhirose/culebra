@@ -653,8 +653,8 @@ let sources = FS.glob('src/**/*.cul')
 ディレクトリでなければ`IOError`、`match`が文字列配列でなければ
 `TypeError`。
 
-バックエンドはmacOSがFSEvents、Linuxがinotify。**Windowsは未対応**で
-`IOError`を投げます。
+バックエンドはmacOSがFSEvents、Linuxがinotify、Windowsが
+`ReadDirectoryChangesW`。
 
 ```culebra
 # doctest: skip
@@ -5421,9 +5421,9 @@ run_with(IO, "via parameter")
 
 ### OS 拡張
 
-Windowsのファイル監視はありません（`FS.watch`はmacOSとLinuxのみ）。生ソケット
-のTLSもありません（`Net`は平文で、TLSは [§15 Http](#15-http) が自前で持ちます）。
-必要なら [§11 Proc](#11-proc) でサブプロセスに委譲してください。
+生ソケットのTLSはありません（`Net`は平文で、TLSは [§15 Http](#15-http) が
+自前で持ちます）。必要なら [§11 Proc](#11-proc) でサブプロセスに委譲して
+ください。
 
 ---
 

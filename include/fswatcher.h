@@ -51,6 +51,10 @@
 #include <cstring>
 #include <thread>
 #include <unordered_map>
+#elif defined(_WIN32)
+#include <os_compat.h>  // <windows.h> (guarded) — CreateFileW/ReadDirectoryChangesW
+
+#include <thread>
 #endif
 
 namespace culebra::fswatch {
@@ -108,6 +112,10 @@ struct Watcher {
   int fd = -1;                 // inotify
   int wake[2] = {-1, -1};      // self-pipe: the only way to break poll()
   std::unordered_map<int, std::string> wd_paths;  // watcher thread only
+#elif defined(_WIN32)
+  std::thread os_thread;
+  HANDLE dir_handle = INVALID_HANDLE_VALUE;
+  HANDLE stop_event = nullptr;  // manual-reset; set by platform_stop to break the wait
 #endif
 };
 
@@ -366,6 +374,109 @@ inline bool platform_start(Watcher* w, std::string& reason) {
   // wd — cheaper than a second copy of the walk that would then have to be
   // kept in step with add_tree's.
   if (w->recursive) add_tree(w, w->root, /*emit_found=*/false);
+  w->os_thread = std::thread(reader_loop, w);
+  return true;
+}
+
+// ---- Windows: ReadDirectoryChangesW -----------------------------------------
+
+#elif defined(_WIN32)
+
+constexpr DWORD kNotifyFilter =
+    FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+    FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE;
+
+inline Kind classify(DWORD action) {
+  switch (action) {
+    case FILE_ACTION_REMOVED:
+    case FILE_ACTION_RENAMED_OLD_NAME: return Kind::Deleted;
+    case FILE_ACTION_ADDED:
+    case FILE_ACTION_RENAMED_NEW_NAME: return Kind::Created;
+    default: return Kind::Modified;
+  }
+}
+
+inline void reader_loop(Watcher* w) {
+  std::vector<BYTE> buf(64 * 1024);  // the documented sync/overlapped ceiling
+  OVERLAPPED ov{};
+  ov.hEvent = CreateEventW(nullptr, /*manualReset=*/TRUE, FALSE, nullptr);
+  if (!ov.hEvent) { mark_closed(w); return; }
+
+  for (;;) {
+    ResetEvent(ov.hEvent);
+    DWORD unused = 0;  // must be NULL-ish (unread) for an overlapped call; MSDN
+    BOOL ok = ReadDirectoryChangesW(
+        w->dir_handle, buf.data(), static_cast<DWORD>(buf.size()),
+        w->recursive ? TRUE : FALSE, kNotifyFilter, &unused, &ov, nullptr);
+    if (!ok && GetLastError() != ERROR_IO_PENDING) break;
+
+    HANDLE waits[2] = {ov.hEvent, w->stop_event};
+    DWORD r = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+    if (r != WAIT_OBJECT_0) {
+      // Stop requested (or the wait itself failed). Cancel the pending read
+      // and drain its completion before this thread exits — otherwise the
+      // kernel could still be writing into `buf` after it is freed.
+      CancelIoEx(w->dir_handle, &ov);
+      DWORD drained = 0;
+      GetOverlappedResult(w->dir_handle, &ov, &drained, TRUE);
+      break;
+    }
+    DWORD bytes = 0;
+    if (!GetOverlappedResult(w->dir_handle, &ov, &bytes, FALSE)) break;
+    if (bytes == 0) continue;  // buffer overflowed — best effort, drop it
+
+    size_t off = 0;
+    for (;;) {
+      auto* rec = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buf.data() + off);
+      std::wstring_view name(rec->FileName,
+                              rec->FileNameLength / sizeof(WCHAR));
+      // generic_string() also turns the backslashes ReadDirectoryChangesW
+      // reports subtree entries with (e.g. "sub\deep.txt") into "/".
+      std::string path =
+          w->root + "/" + std::filesystem::path(name).generic_string();
+      emit(w, std::move(path), classify(rec->Action));
+      if (rec->NextEntryOffset == 0) break;
+      off += rec->NextEntryOffset;
+    }
+  }
+  CloseHandle(ov.hEvent);
+  mark_closed(w);
+}
+
+inline void platform_stop(Watcher* w) {
+  if (w->os_thread.joinable()) {
+    if (w->stop_event) SetEvent(w->stop_event);
+    w->os_thread.join();
+  }
+  if (w->stop_event) { CloseHandle(w->stop_event); w->stop_event = nullptr; }
+  if (w->dir_handle != INVALID_HANDLE_VALUE) {
+    CloseHandle(w->dir_handle);
+    w->dir_handle = INVALID_HANDLE_VALUE;
+  }
+}
+
+inline bool platform_start(Watcher* w, std::string& reason) {
+  // FILE_FLAG_BACKUP_SEMANTICS is what lets CreateFileW open a directory
+  // rather than a file; FILE_FLAG_OVERLAPPED is what makes the read
+  // cancellable (platform_stop cannot otherwise interrupt a blocked thread).
+  std::wstring wroot = std::filesystem::path(w->root).wstring();
+  w->dir_handle = CreateFileW(
+      wroot.c_str(), FILE_LIST_DIRECTORY,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+      nullptr);
+  if (w->dir_handle == INVALID_HANDLE_VALUE) {
+    reason = "CreateFileW failed (error " + std::to_string(GetLastError()) +
+             ")";
+    return false;
+  }
+  w->stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!w->stop_event) {
+    reason = "CreateEventW failed";
+    CloseHandle(w->dir_handle);
+    w->dir_handle = INVALID_HANDLE_VALUE;
+    return false;
+  }
   w->os_thread = std::thread(reader_loop, w);
   return true;
 }

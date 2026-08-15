@@ -1558,7 +1558,9 @@ add_test(NAME net_test COMMAND net_test)
 
 # fswatcher.h core test: drives create/modify/delete inside a temp directory and
 # pulls them back through fs_watch_next. Offline, no interpreter/JIT linkage.
-# Skipped where there is no backend (Windows), which the test itself asserts.
+# Backed by FSEvents (macOS), inotify (Linux) or ReadDirectoryChangesW
+# (Windows); a genuinely backend-less platform (e.g. wasm) still builds this
+# and the test itself asserts the "not supported" error path.
 add_executable(fswatcher_test test/fswatcher_test.cc)
 target_compile_features(fswatcher_test PRIVATE cxx_std_23)
 target_include_directories(fswatcher_test PRIVATE include

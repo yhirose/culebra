@@ -665,8 +665,8 @@ the same filter); the check happens before an event is queued, so a
 rejected change never reaches the queue. Throws `IOError` if `path`
 isn't a directory, `TypeError` if `match` isn't an array of strings.
 
-Backed by FSEvents on macOS and inotify on Linux; **not yet supported
-on Windows**, where it throws `IOError`.
+Backed by FSEvents on macOS, inotify on Linux and `ReadDirectoryChangesW`
+on Windows.
 
 ```culebra
 # doctest: skip
@@ -5579,10 +5579,9 @@ language built-ins (see [`docs/language.md`](language.md)); reach for
 
 ### OS extras
 
-No file watcher on Windows (`FS.watch` covers macOS and Linux), and no
-TLS on a raw socket (`Net` is plaintext; [§15 Http](#15-http) carries
-its own TLS). Shell out through [§11 Proc](#11-proc) when you need
-them.
+No TLS on a raw socket (`Net` is plaintext; [§15 Http](#15-http)
+carries its own TLS). Shell out through [§11 Proc](#11-proc) when you
+need it.
 
 ---
 

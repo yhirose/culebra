@@ -288,7 +288,7 @@ static void test_close_all() {
 }
 
 int main() {
-#if defined(__APPLE__) || defined(__linux__)
+#if defined(__APPLE__) || defined(__linux__) || defined(_WIN32)
   test_normalize_ext();
   test_open_errors();
   test_create_modify_delete();

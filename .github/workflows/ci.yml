@@ -852,6 +852,37 @@ jobs:
           check(Term.cols() > 0 && Term.rows() > 0, "Term size")
           check(Term.width("abc") == 3, "Term display width")
 
+          # FS.watch: ReadDirectoryChangesW backend (macOS/Linux use FSEvents/
+          # inotify — this is the only CI lane that exercises the Windows one).
+          # No per-wait timeout, same as tests/test_fs_watch.cul: a hang here
+          # is caught by this step's own `timeout 90` instead.
+          let wdir = "fswatch_smoke"
+          FS.remove(wdir, recursive: true) if FS.exists(wdir)
+          FS.mkdir(FS.join(wdir, "sub"))
+          let w = FS.watch(wdir)
+          FS.write(FS.join(wdir, "a.txt"), "one")
+          let mut created = "none"
+          for e in w {
+            if e.path.ends_with("a.txt") { created = e.kind; break }
+          }
+          check(created == "created" || created == "modified", "FS.watch create")
+          FS.write(FS.join(wdir, "sub", "deep.txt"), "d")
+          let mut saw_nested = false
+          for e in w {
+            if e.path.ends_with("deep.txt") { saw_nested = true; break }
+          }
+          check(saw_nested, "FS.watch recursive subtree")
+          FS.remove(FS.join(wdir, "a.txt"))
+          let mut saw_delete = false
+          for e in w {
+            if e.path.ends_with("a.txt") && e.kind == "deleted" {
+              saw_delete = true
+              break
+            }
+          }
+          check(saw_delete, "FS.watch delete")
+          w.close()
+
           print("smoke ok")
           EOF
           # Bound the run so a future regression that deadlocks fails the step in
