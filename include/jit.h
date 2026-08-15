@@ -2253,6 +2253,27 @@ struct JIT {
     return nullptr;
   }
 
+  // A forward-ref pre-allocation registers its release at the top of the
+  // scope, where the cell is created — but `drop` order is by declaration,
+  // newest first, so a captured local would otherwise finalize after locals
+  // declared before it (interp and the VM both release it in declaration
+  // order). Register the slot a second time here, at the statement that binds
+  // it: the reversed ladder now reaches it in its declared position, and the
+  // earlier entry — which still covers a throw before this point, when the
+  // cell holds only the unbound sentinel — becomes a no-op once this one has
+  // run, since release_slot_value nils the slot it releases.
+  void register_release_at_declaration(const std::string& name,
+                                       Scope::Slots::iterator it) {
+    if (it->second.kind != VarSlot::Cell || !it->second.lazy) return;
+    auto& scope = scopes_.back();
+    if (!scope.order.empty() && scope.order.back() == it) return;  // already
+    scope.order.push_back(it);
+    if (it->second.owned && !frame_ladder_.empty() &&
+        scopes_.size() == frame_scope_depth_) {
+      push_frame_cleanup_rung(scope.order.size() - 1);
+    }
+  }
+
   void define_var(const std::string& name, VarSlot slot) {
     auto& scope = scopes_.back();
     auto [it, inserted] = scope.slots.try_emplace(name, slot);
@@ -5390,6 +5411,7 @@ struct JIT {
           // first / re-running binding. Honor the user-declared mut
           // flag from the source.
           it->second.mut = mut;
+          register_release_at_declaration(name, it);
         } else {
           // Reassignment (`x = expr`) on an existing same-scope slot.
           if (!it->second.mut) emit_immutable_assign_throw(name, line, column);

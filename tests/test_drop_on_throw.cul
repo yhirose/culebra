@@ -137,6 +137,24 @@ try {
   print("caught\n")
 }
 
+# 8b. a captured local releases in DECLARATION order like any other, newest
+# first — the compiling backends pre-allocate its cell at the top of the scope
+# (forward-ref support), which must not move its drop ahead of locals declared
+# before it. The closure is a temporary, so nothing holds the cell at the throw
+# and all backends resolve it here rather than at a later collection.
+fn captured_order() {
+  let first = Res.new(70)
+  let held = Res.new(71)
+  print((fn () { held.id })().to_string() + "\n")
+  throw "x"
+}
+print("== captured order ==\n")
+try {
+  captured_order()
+} catch e {
+  print("caught\n")
+}
+
 # 9. for-in over a generator: body local dropped on throw, iterator disposed
 fn gen(n) {
   for i in 0..n {
