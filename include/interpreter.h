@@ -2056,6 +2056,21 @@ struct Environment : std::enable_shared_from_this<Environment> {
       : level(parent ? parent->level + 1 : 0),
         owned_mark(owned_stack().next_id) {}
 
+  // The scope a program's own top-level bindings live in (set by `interpret` /
+  // `interpret_modules`). Tearing it down is program exit, which releases
+  // those bindings without running their `drop` — docs §17, and how the JIT
+  // and AOT already end `__culebra_main` (a suppressed exit ladder). Ordinary
+  // scopes leave this false and finalize as usual.
+  bool program_scope = false;
+
+  ~Environment() {
+    if (!dictionary.empty() && program_scope) {
+      bool saved = std::exchange(_drop_suppressed(), true);
+      dictionary.clear();
+      _drop_suppressed() = saved;
+    }
+  }
+
   void append_outer(std::shared_ptr<Environment> outer) {
     if (this->outer) {
       this->outer->append_outer(outer);
@@ -2795,6 +2810,17 @@ inline void _owned_process_scope_exit(
   const uint64_t mark = env->owned_mark;
   // Common case: nothing registered under this scope.
   if (st.empty() || st.back().id < mark) return;
+  // Leaving the program's own top-level scope releases its resources without
+  // finalizing them (Environment::program_scope): the scope's `defer`s have
+  // already run above, and this is the exit the JIT and AOT suppress `drop`
+  // across. The flag is restored so an embedder's later scopes are unaffected.
+  struct DropHush {
+    bool saved;
+    explicit DropHush(bool on) : saved(_drop_suppressed()) {
+      if (on) _drop_suppressed() = true;
+    }
+    ~DropHush() { _drop_suppressed() = saved; }
+  } hush(env->program_scope);
 
   // Pop this scope's region, newest first. Locks keep each candidate
   // stable for the analysis (+1, credited there).
@@ -12533,6 +12559,10 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
     const auto& entry = modules.back();
     interp->module_stack_.push_back(entry.abs_path);
     auto entry_env = make_scope(env);
+    // Both exits are program exit: the throw path drops `entry_env` here, the
+    // normal one hands its bindings to `env` for the caller to outlive them.
+    entry_env->program_scope = true;
+    env->program_scope = true;
     try {
       // A bare `return` at module top level supplies the program's value.
       val = deliver_call(interp->eval(*entry.ast, entry_env));
@@ -12605,6 +12635,9 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     if (auto pre = parse_builtin_traits_preamble()) {
       try { interp->eval(*pre, env); } catch (...) {}
     }
+    // `env` hosts this program's top-level bindings, so its teardown is
+    // program exit (see Environment::program_scope).
+    env->program_scope = true;
     // bare `return` at top level is unusual but harmless — use its value
     val = deliver_call(interp->eval(*ast, env));
     flush_top_defers();

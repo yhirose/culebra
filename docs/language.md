@@ -4154,12 +4154,13 @@ make_thing = fn () {
 ```
 
 Binding a `drop`-bearing object at the **top level** leaves it alive
-until program exit *without* running `drop`, on every backend. The
-interpreter's top-level `Environment` is itself a reference cycle —
-the functions bound in it capture it — so it is never torn down and
-its bindings leak un-dropped; the JIT and AOT suppress `drop` at the
-top-level scope release to match. For script-wide resources, prefer
-`defer` (§15) or explicit cleanup.
+until program exit *without* running `drop`, on every backend: every
+backend suppresses `drop` where the top-level scope is released, and
+an **uncaught** error is the same exit — the scopes the error passes
+through release deterministically (each one's `defer`s, then its own
+bindings, innermost first), but the top level's own bindings still
+leak un-dropped. For script-wide resources, prefer `defer` (§15) or
+explicit cleanup, which run on both exits.
 
 **JIT**: auto-drop fires under `--jit` with the same timing as the
 interpreter — at scope exit, cycle members included. Closure-held

@@ -1,8 +1,8 @@
-// Top-level bindings must NOT run `drop` at program exit on any backend.
-// The interpreter's global Environment is itself a refcount cycle (the
-// closures bound in it capture it), so it is never torn down and its
-// bindings leak un-dropped; the JIT/AOT suppress drop at __culebra_main's
-// top-level scope release to match. Inner-scope drops MUST still fire.
+// Top-level bindings must NOT run `drop` at program exit on any backend:
+// each one suppresses drop where the top-level scope is released — the
+// interpreter around its top-level scope-exit pass, the JIT/AOT around
+// __culebra_main's exit ladder. Inner-scope drops MUST still fire.
+// (An uncaught error is the same exit; jit_error_pos_test.sh covers it.)
 //
 // Two guards: the `drop_count` assert proves the inner-scope drop fired
 // (it runs during make_inner's scope exit, before the assert); the printed

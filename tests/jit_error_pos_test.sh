@@ -555,5 +555,37 @@ let buf = SharedBuffer.new(2, Pt)
 let v = buf[0]
 v.zz = 4'
 
+# An uncaught top-level throw is program exit: the top level's own bindings
+# leak un-dropped (§17), while the scopes the throw passes through still
+# release deterministically, defers first. The interpreter used to finalize
+# its top-level bindings here (its scope-exit pass ran unsuppressed), which
+# showed up as an extra `drop` line the compiled backends never printed.
+DROP_CLASS='class R {
+  n = 0
+  new(k) { self.n = k }
+  drop() { println("drop " + to_string(self.n)) }
+}'
+check_eq "top-level binding leaks"     "$DROP_CLASS
+let a = R.new(1)
+throw 'x'"
+check_eq "top-level block drops"       "$DROP_CLASS
+let a = R.new(1)
+{
+  let b = R.new(2)
+  throw 'x'
+}"
+check_eq "top-level defer then drop"   "$DROP_CLASS
+{
+  defer { println('defer') }
+  let b = R.new(2)
+  throw 'x'
+}"
+check_eq "in-flight temp dies first"   "$DROP_CLASS
+fn boom() { throw 'x' }
+{
+  defer { println('defer') }
+  let xs = [R.new(1), R.new(2), boom()]
+}"
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1
