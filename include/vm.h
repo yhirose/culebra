@@ -2915,6 +2915,29 @@ class Compiler {
   // keep somewhere. A frame scope takes none here: its slots [0, arity) are
   // the ABI's, so establish_frame_owned_mark places it once the parameters
   // are laid out.
+  // The optional init clause of `if` / `while` / `match` (`if mut x = f(); …`)
+  // scopes its bindings to the whole construct: one scope around the lot,
+  // with the bindings as ordinary declarations inside it. They outlive every
+  // arm and every iteration (a captured one is a single cell, not one per
+  // turn) and die at the construct's exit, where this scope's ladder runs.
+  // A block of the construct is not a defer scope on any backend, and this
+  // scope does not make it one — no DeferScope is opened here.
+  struct InitScope {
+    Compiler& c;
+    bool open;
+    InitScope(Compiler& comp, const peg::Ast& at, const peg::Ast* init)
+        : c(comp), open(init != nullptr) {
+      if (!open) return;
+      c.push_scope(at);
+      for (const auto& b : init->nodes) c.compile_statement(*b);
+    }
+    ~InitScope() {
+      if (open) c.pop_scope();
+    }
+    InitScope(const InitScope&) = delete;
+    InitScope& operator=(const InitScope&) = delete;
+  };
+
   void push_scope(const peg::Ast& at, bool owned_mark = true) {
     scopes_.push_back({{}, next_slot_,
                        static_cast<uint32_t>(chunk_.code.size()),
@@ -5062,7 +5085,9 @@ class Compiler {
 
   void compile_while(const peg::Ast& ast) {
     auto wv = culebra::view_while(ast);
-    if (wv.init) reject(*wv.init, "while init clause");
+    // The init bindings are evaluated once, before the first condition, and
+    // stay live through the `nobreak` tail — hence the scope around it all.
+    InitScope init(*this, ast, wv.init);
     int32_t broke = alloc_broke_slot(ast, wv.nobreak);
 
     // The condition re-evaluates every iteration, so its temps must be
@@ -5971,8 +5996,10 @@ class Compiler {
   // No else-arm leaves it nil (interp parity).
   ExprResult compile_if(const peg::Ast& ast) {
     auto iv = culebra::view_if(ast);
-    if (iv.init) reject(*iv.init, "if init clause");
+    // The result outlives the init scope — it is the whole construct's value
+    // — so its slot is taken before that scope opens.
     int32_t res = alloc_temp(ast);
+    InitScope init(*this, ast, iv.init);
     std::vector<size_t> end_jumps;
     size_t i = iv.arm_off;
     for (; i + 1 < ast.nodes.size(); i += 2) {
@@ -6135,8 +6162,8 @@ class Compiler {
   ExprResult compile_match(const peg::Ast& ast) {
     using namespace peg::udl;
     auto mv = culebra::view_match(ast);
-    if (mv.init) reject(*mv.init, "match init clause");
-    int32_t res = alloc_temp(ast);
+    int32_t res = alloc_temp(ast);  // the construct's value: outside the scope
+    InitScope init(*this, ast, mv.init);
     int32_t subj = alloc_temp(ast);
     store_into(subj, compile_expr(*mv.subject), /*dst_is_fresh=*/true);
     std::vector<size_t> end_jumps;

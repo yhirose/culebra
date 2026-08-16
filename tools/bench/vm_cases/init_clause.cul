@@ -1,0 +1,163 @@
+# The init clause of `if` / `while` / `match` (`if mut x = f(); …`): its
+# bindings are scoped to the whole construct — visible in the condition, in
+# every arm and in a `nobreak` tail, gone after it — and they are bindings
+# only. A block of the construct is not a defer scope with or without one.
+
+fn f() { 7 }
+
+if let x = f(); x > 3 {
+  println(['then', x])
+} else {
+  println(['else', x])
+}
+if let y = 1; y > 3 {
+  println(['then', y])
+} else if y > 0 {
+  println(['elseif', y])
+} else {
+  println(['else', y])
+}
+
+# Evaluated once, before the first condition, and shared by every turn: a
+# captured init binding is one cell, not one per iteration.
+while mut i = 0; i < 3 {
+  print(to_string(i))
+  i = i + 1
+}
+println('')
+mut fs = []
+while mut n = 0; n < 3 {
+  fs.push(fn () { n })
+  n = n + 1
+}
+println(fs.map(fn (g) { g() }))
+
+# Several bindings, left to right, each seeing the ones before it.
+if let a = 1, let b = a + 1; b == 2 {
+  println([a, b])
+}
+mut total = 0
+while mut j = 0, let limit = 3; j < limit {
+  total = total + j
+  j = j + 1
+}
+println(total)
+
+# match: the subject and every arm see the bindings.
+match let v = 2; v {
+  1 => println('one'),
+  2 => println(['two', v]),
+  _ => println('other')
+}
+match mut w = 5; w {
+  k if k > 3 => println(['big', w]),
+  _ => println('small')
+}
+
+# Destructuring bindings, and an object pattern.
+let xs = [1, 2]
+if let [p, q] = xs; p < q {
+  println([p, q])
+}
+let d = {'a': 1, 'b': 2}
+if let {a} = d, let sum = d['a'] + d['b']; a < sum {
+  println([a, sum])
+}
+
+# Shadowing, and the value position.
+let outer = 'outer'
+if let outer = 'inner'; true {
+  println(outer)
+}
+println(outer)
+let r = if let z = 5; z > 3 { z * 2 } else { 0 }
+println(r)
+println(match let m = 2; m { 2 => "two-{m}", _ => 'other' })
+
+# A `nobreak` tail still sees them; a `break` skips it.
+while mut c = 0; c < 2 {
+  c = c + 1
+} nobreak {
+  println(['nobreak', c])
+}
+while mut e = 0; e < 5 {
+  if e == 1 { break }
+  e = e + 1
+} nobreak {
+  println('not printed')
+}
+
+# The bindings die at the construct's exit, before the next statement — and
+# on every exit path (`break`, `return`, a throw from the init list itself).
+class R {
+  new(id) { self.id = id }
+  drop() { println(['drop', self.id]) }
+}
+if let res = R.new('if'); true {
+  println('in then')
+}
+println('after if')
+while mut k = 0, let res2 = R.new('while'); k < 2 {
+  k = k + 1
+}
+println('after while')
+match let res3 = R.new('match'); 1 {
+  _ => println('arm')
+}
+println('after match')
+fn early() {
+  while mut i2 = 0, let res4 = R.new('return'); i2 < 5 {
+    return ['returned', i2]
+  }
+  'fell through'
+}
+println(early())
+while mut i3 = 0, let res5 = R.new('break'); i3 < 5 {
+  break
+}
+println('after break')
+fn boom() { throw 'boom' }
+let caught = try {
+  if let bad = boom(); true {
+    'unreachable'
+  }
+} catch err {
+  'caught'
+}
+println(caught)
+
+# A `defer` in one of the blocks belongs to the enclosing defer scope, the
+# same one it belongs to without the clause.
+fn deferred() {
+  if let g = 'g'; true {
+    defer { println(['defer', g]) }
+    println('body')
+  }
+  println('after')
+}
+deferred()
+mut loops = 0
+while loops < 2 {
+  if let h = loops; h >= 0 {
+    defer { println(['loop-defer', h]) }
+    println(['loop-body', h])
+  }
+  loops = loops + 1
+}
+
+# Churn: the scope is entered and left on every turn, with a resource in it.
+mut rounds = 0
+while rounds < 4000 {
+  if let churn = [rounds]; rounds % 2 == 0 {
+    rounds = rounds + 0
+  }
+  while mut jj = 0, let s = (rounds,); jj < 1 {
+    jj = jj + 1
+  }
+  match let mm = rounds; rounds % 3 {
+    0 => 0,
+    _ => 1
+  }
+  rounds = rounds + 1
+}
+println('churn done')
