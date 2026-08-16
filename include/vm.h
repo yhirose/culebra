@@ -5324,7 +5324,7 @@ class Compiler {
   // (the JIT emits that cold check under the same compile-time filter).
   ExprResult compile_property_read(const peg::Ast& at, const peg::Ast& post,
                                    ExprResult recv) {
-    reject_fn_introspection(post);
+    guard_fn_introspection(post, recv);
     int32_t t;
     {
       StampGuard pos(*this, at);
@@ -5366,9 +5366,24 @@ class Compiler {
   // there is nothing per-function to key on. Rejected by name on every
   // receiver rather than answered wrong on a Function one; no object the
   // slice can build carries a field of these names anyway.
-  void reject_fn_introspection(const peg::Ast& post) {
-    if (JIT::fn_introspection_name(post.token))
-      reject(post, std::format("function introspection '{}'", post.token));
+  // `.name` / `.params` / `.return_type` belong to a FUNCTION receiver, whose
+  // signature lives in a side table keyed by code address — and every
+  // executor closure shares one, so that half stays out of the slice. Every
+  // other receiver resolves an ordinary property of the name (a getter called
+  // `name`, a dict key), which is most of what the corpus writes. The
+  // boundary is therefore the receiver, and the receiver is a run-time fact:
+  // test it, and let the Function arm raise the out-of-slice error where a
+  // poisoned chunk would raise it.
+  void guard_fn_introspection(const peg::Ast& post, ExprResult recv) {
+    if (!JIT::fn_introspection_name(post.token)) return;
+    size_t to_err = emit(Op::JumpIfTag, recv.slot, 0, TAG_FUNC);
+    size_t over = emit(Op::Jump);
+    patch_to_here(to_err);
+    emit_raise("VmError",
+               std::format("--vm: unsupported: function introspection '{}'",
+                           post.token),
+               post.line, post.column);
+    patch_to_here(over);
   }
 
   // The compile-time UFCS candidate for `name` at this site, if any — the
@@ -5556,10 +5571,9 @@ class Compiler {
   // the JitFn ABI's receiver, instead of minting a bound-method wrapper.
   ExprResult compile_method_call(const peg::Ast& at, const peg::Ast& post,
                                  const peg::Ast& args, ExprResult recv) {
-    // The one method name the slice still turns away: a Function's signature
-    // lives in a side table keyed by code address, and every executor closure
-    // shares one (see reject_fn_introspection).
-    reject_fn_introspection(post);
+    // The one receiver the slice still turns away: a Function reading its own
+    // signature (see guard_fn_introspection), tested at run time.
+    guard_fn_introspection(post, recv);
     // The synthesized `parameters()`: a class instance that resolves no
     // `parameters` of its own answers with the walker over its fields, and
     // nothing else about the call matters — surplus positional arguments are

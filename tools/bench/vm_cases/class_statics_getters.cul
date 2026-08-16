@@ -134,6 +134,19 @@ println(a.v2)
 println(a.set_by_ctor)
 inspect(a.keys())
 
+# --- A member named like a function's own metadata -----------------------
+# `.name` / `.params` / `.return_type` belong to a Function receiver; every
+# other receiver resolves an ordinary property of that name, getters included.
+class N {
+  new(a) { self.a = a }
+  get name() { 'g' }
+  params() { ['p'] }
+}
+let n = N.new(1)
+println([n.name, n.name(), n.params()])
+println({'name': 'dict', 'return_type': 'r'}.name)
+println([(5).name, 'ab'.params, [1, 2].return_type, nil.name])
+
 # --- Churn: statics, getters and instances -------------------------------
 mut i = 0
 mut total = 0
