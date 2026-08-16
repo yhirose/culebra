@@ -7918,6 +7918,25 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // returned by value, refcounted). With no init clause `scope` is just env,
     // and the arm pairing starts at index 0 (arm_off).
     auto scope = iv.init ? make_scope(env) : env;
+    // An `if` block is not a defer scope on either backend: a `defer` inside
+    // one belongs to the enclosing frame (or loop body), and the init clause
+    // scopes BINDINGS, not defers — so the same block must fire the same defer
+    // at the same place with or without it. Nothing calls run_deferred on this
+    // scope, so hand its entries to the owner on every exit path (normal,
+    // `return`, `throw`). Each entry holds its env weakly, hence the wrapper
+    // that keeps this scope alive until the owner runs it; the resulting
+    // env→entry→scope→outer cycle is broken when the owner drains its queue.
+    struct DeferHandoff {
+      const std::shared_ptr<Environment>& owner;
+      const std::shared_ptr<Environment>& inner;
+      ~DeferHandoff() {
+        if (inner == owner) return;
+        for (auto& d : inner->deferred)
+          owner->deferred.push_back(
+              [keep = inner, run = std::move(d)] { run(); });
+        inner->deferred.clear();
+      }
+    } handoff{env, scope};
     if (iv.init)
       for (const auto& binding : iv.init->nodes) eval(*binding, scope);
 

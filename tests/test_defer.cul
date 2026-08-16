@@ -204,4 +204,65 @@ for i in 0..3 {
 }
 assert_eq(log, 'b0;d0;d1;b2;d2;')
 
+# An `if` with an init clause scopes its bindings, not its defers: the
+# block is not a defer scope with or without one, so the defer belongs to
+# the enclosing frame either way. The interpreter used to register it on
+# the init scope, which nothing ever ran — the defer was lost on every
+# exit path.
+fn init_if_defer() {
+  if let x = 'init'; true {
+    defer {
+      log = "{log}defer-{x};"
+    }
+    log = "{log}body;"
+  }
+  log = "{log}after;"
+}
+log = ''
+init_if_defer()
+assert_eq(log, 'body;after;defer-init;')
+
+fn init_if_defer_return() {
+  if let x = 'r'; true {
+    defer {
+      log = "{log}defer-{x};"
+    }
+    return 'early'
+  }
+  'late'
+}
+log = ''
+assert_eq(init_if_defer_return(), 'early')
+assert_eq(log, 'defer-r;')
+
+fn init_if_defer_throw() {
+  if let x = 't'; true {
+    defer {
+      log = "{log}defer-{x};"
+    }
+    throw 'boom'
+  }
+}
+log = ''
+try {
+  init_if_defer_throw()
+} catch e {
+  log = "{log}caught;"
+}
+assert_eq(log, 'defer-t;caught;')
+
+# The enclosing defer scope can be a loop body rather than the frame.
+log = ''
+mut n = 0
+while n < 2 {
+  if let x = n; x >= 0 {
+    defer {
+      log = "{log}d{x};"
+    }
+    log = "{log}b{x};"
+  }
+  n = n + 1
+}
+assert_eq(log, 'b0;d0;b1;d1;')
+
 IO.inspect('test_defer OK')
