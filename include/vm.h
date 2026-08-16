@@ -445,7 +445,18 @@ enum class Op : uint8_t {
                // the "name:Type;…" spec consts[b] (culebra_runtime_register_
                // packable), at the declaration — the layout must land in the
                // running process, which under AOT is not the compiling one.
-               // The field types are lint-validated, so nothrow.
+               // The field types are lint-validated, so nothrow. d=1 reads
+               // the spec as an enum's tagged union instead.
+  EnumVariant, // regs[a] = one variant of enum consts[d], named consts[c]:
+               // with arity b=0 the singleton instance it always is
+               // (build_variant), otherwise the constructor closure that
+               // builds one from b positional payload fields
+               // (make_variant_ctor). Both yield a fresh +1.
+  TypeMatch,   // a pattern's type test: unless regs[a] satisfies the type
+               // name consts[c] (culebra_runtime_type_matches — a class tag,
+               // an enum's variant, a trait's conformance), jump to b. The
+               // caller gates on TAG_OBJECT first, since a primitive whose
+               // name collides answers true.
   ClassObj,    // regs[a] = fresh Object (+1) marked `is_class`, so `C(args)`
                // finds its `new` (object_new + mark_class)
   BindStatic,  // bind regs[c] into class object regs[a] under name consts[b]
@@ -3226,6 +3237,7 @@ class Compiler {
       case "DEFER"_:
       case "MULTIFN_DECL"_:  // a decl evaluates to nil (interp parity)
       case "CLASS_DECL"_:
+      case "ENUM_DECL"_:
       case "TRAIT_DECL"_:
         compile_statement_inner(ast);
         break;
@@ -3286,6 +3298,9 @@ class Compiler {
         break;
       case "CLASS_DECL"_:
         compile_class_decl(ast);
+        break;
+      case "ENUM_DECL"_:
+        compile_enum_decl(ast);
         break;
       case "TRAIT_DECL"_:
         compile_trait_decl(ast);
@@ -3882,6 +3897,69 @@ class Compiler {
       forget_temp(marker);  // the slot absorbed the +1
     }
     emit(Op::CellSet, class_slot, owned_src(ast, {cls, true}));
+  }
+
+  // `enum Name { A(Long), B }` — a namespace object whose members are the
+  // variants: a nullary one is the singleton instance it always is, a
+  // payload one the constructor that builds an instance with positional
+  // `_0.._n` fields. Both other backends build exactly this object, so
+  // `E.A(5)`, `E.B`, `type_of`, matching and `@packable` all follow from it
+  // with nothing else to teach. The name binds through a cell first, like a
+  // class's, so a variant referenced from inside the declaration resolves.
+  void compile_enum_decl(const peg::Ast& ast) {
+    using namespace peg::udl;
+    size_t dec_end = culebra::first_non_decorator_index(ast);
+    bool is_packable = false;
+    for (size_t i = 0; i < dec_end; i++) {
+      if (culebra::is_packable_decorator(*ast.nodes[i])) {
+        is_packable = true;
+        continue;
+      }
+      reject(*ast.nodes[i], "enum decorator");
+    }
+    auto enum_name =
+        std::string(culebra::parse_generic_head(ast.nodes[dec_end]->token).outer);
+    StampGuard pos(*this, ast);
+    int32_t enum_slot = alloc_cell_slot(ast, enum_name);
+    {
+      TempScope ts(*this);
+      int32_t t = alloc_temp(ast);
+      emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+      emit(Op::CellNew, enum_slot, t);
+    }
+    scopes_.back().bindings.push_back(
+        {enum_name, enum_slot, /*is_mut=*/false, /*is_cell=*/true});
+
+    TempScope ts(*this);
+    int32_t obj = alloc_temp(ast);
+    emit(Op::ObjectNew, obj);
+    std::string spec;
+    for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
+      auto vv = culebra::view_variant(*ast.nodes[i]);
+      std::string variant(vv.name);
+      if (is_packable) {
+        if (!spec.empty()) spec += ';';
+        spec += variant;
+        spec += ':';
+        for (size_t f = 0; f < vv.field_types.size(); f++) {
+          if (f) spec += ',';
+          spec += std::string(vv.field_types[f]);
+        }
+      }
+      int32_t v = alloc_temp(*ast.nodes[i]);
+      emit(Op::EnumVariant, v, static_cast<int32_t>(vv.arity),
+           kconst_str(variant), kconst_str(enum_name));
+      // The member is immutable, as it is on both other backends — a
+      // variant is not reassignable through the enum object.
+      emit(Op::ObjectSet, obj, v, kconst_str(variant), 0);
+      forget_temp(v);  // the store absorbed the +1
+    }
+    // @packable: the tagged-union layout has to land in the process that
+    // RUNS, which under AOT is not the one that compiled — so it registers
+    // at the declaration, like a class's.
+    if (is_packable)
+      emit(Op::RegPack, kconst_str(enum_name), kconst_str(spec), 0, 1);
+    emit(Op::CellSet, enum_slot, owned_src(ast, {obj, true}));
   }
 
   // `trait Name: Super { req(); def() { ... } }` — a contract in the shared
@@ -6302,6 +6380,20 @@ class Compiler {
         }
         return;
       }
+      case "CTOR_PATTERN"_: {
+        // The test walk already proved the variant and every payload field,
+        // so this walk only reads what a sub-pattern binds.
+        for (size_t i = 1; i < pat.nodes.size(); i++) {
+          if (!culebra::find_pattern_binding(*pat.nodes[i])) continue;
+          int32_t t = alloc_temp(*pat.nodes[i]);
+          fail.push_back(
+              emit(Op::ObjGet, t, 0, subj,
+                   kconst_str(culebra::positional_field_name(i - 1))));
+          compile_pattern_bind(*pat.nodes[i], t, /*subj_owned=*/true, fail,
+                               is_mut, declares);
+        }
+        return;
+      }
       case "OBJECT_PATTERN"_: {
         for (const auto& entry : pat.nodes) {
           bool full = entry->tag == "OBJECT_PAT_ENTRY"_;
@@ -6469,6 +6561,9 @@ class Compiler {
       case "OBJECT_PATTERN"_:
         compile_obj_pattern_test(pat, subj, fail);
         return;
+      case "CTOR_PATTERN"_:
+        compile_ctor_pattern_test(pat, subj, fail);
+        return;
       default:
         reject(pat, std::format("pattern '{}'", pat.name));
     }
@@ -6532,6 +6627,31 @@ class Compiler {
   // `{k}` / `{k: p}`: an Object, then every named key present (extra keys are
   // ignored). The tag gate stands on its own so `{}` still rejects a
   // non-Object, which no entry would be left to catch.
+  // `Ok(x)` / `Result.Ok(x)`: an enum variant by its name (the part after
+  // any `.`), then its positional payload fields against the sub-patterns.
+  // The TAG_OBJECT gate comes first because type_matches answers true for a
+  // primitive whose name the variant collides with (`Long(x)`), and the
+  // field reads below would take that scalar for an object.
+  void compile_ctor_pattern_test(const peg::Ast& pat, int32_t subj,
+                                 std::vector<size_t>& fail) {
+    auto path = pat.nodes[0]->token;
+    auto dot = path.rfind('.');
+    auto variant =
+        dot == std::string_view::npos ? path : path.substr(dot + 1);
+    std::vector<size_t> ok;
+    ok.push_back(emit(Op::JumpIfTag, subj, 0, TAG_OBJECT));
+    fail.push_back(emit(Op::Jump));
+    for (size_t ix : ok) patch_to_here(ix);
+    fail.push_back(emit(Op::TypeMatch, subj, 0, kconst_str(variant)));
+    for (size_t i = 1; i < pat.nodes.size(); i++) {
+      int32_t t = alloc_temp(*pat.nodes[i]);
+      fail.push_back(emit(Op::ObjGet, t, 0, subj,
+                          kconst_str(culebra::positional_field_name(i - 1))));
+      if (pattern_has_test(*pat.nodes[i]))
+        compile_pattern_test(*pat.nodes[i], t, fail);
+    }
+  }
+
   void compile_obj_pattern_test(const peg::Ast& pat, int32_t subj,
                                 std::vector<size_t>& fail) {
     using namespace peg::udl;
@@ -6991,7 +7111,8 @@ inline std::string dump(const Chunk& c) {
       "MakeClosure", "Call",    "CallM",      "CallKw",  "RaiseErr", "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "WkErr",
-      "ClassMeta", "DeriveFn",  "RegPack",    "ClassObj",     "BindStatic",
+      "ClassMeta", "DeriveFn",  "RegPack",    "EnumVariant",  "TypeMatch",
+      "ClassObj",  "BindStatic",
       "MakeInst",  "FieldInit", "RegGetter",  "SelfMerge",
       "TraitReset", "TraitDefault", "TraitReg", "PosSnap", "ChkTypeAt",
       "ChkArg",    "JumpIfFilled", "ArgsRest",   "KwRest",     "RecEnter",
@@ -8877,11 +8998,43 @@ struct Exec {
           break;
         }
         case Op::RegPack:
-          culebra_runtime_register_packable(
-              reinterpret_cast<const char*>(c.consts[in.a].data),
-              reinterpret_cast<const char*>(c.consts[in.b].data));
+          if (in.d)
+            culebra_runtime_register_packable_enum(
+                reinterpret_cast<const char*>(c.consts[in.a].data),
+                reinterpret_cast<const char*>(c.consts[in.b].data));
+          else
+            culebra_runtime_register_packable(
+                reinterpret_cast<const char*>(c.consts[in.a].data),
+                reinterpret_cast<const char*>(c.consts[in.b].data));
           ++pc;
           break;
+        case Op::EnumVariant: {
+          const char* variant =
+              reinterpret_cast<const char*>(c.consts[in.c].data);
+          const char* en = reinterpret_cast<const char*>(c.consts[in.d].data);
+          auto [line, col] = chunk_pos_at(c, pc);
+          if (in.b == 0) {
+            regs[in.a] = culebra_runtime_build_variant(variant, en, 0, nullptr,
+                                                       0, line, col);
+          } else {
+            regs[in.a] = JitValue{
+                TAG_FUNC, reinterpret_cast<int64_t>(
+                              culebra_runtime_make_variant_ctor(variant, en,
+                                                                in.b))};
+          }
+          ++pc;
+          break;
+        }
+        case Op::TypeMatch: {
+          const JitValue& v = regs[in.a];
+          if (culebra_runtime_type_matches(
+                  static_cast<int8_t>(v.tag), v.data,
+                  reinterpret_cast<const char*>(c.consts[in.c].data)))
+            ++pc;
+          else
+            pc = static_cast<size_t>(in.b);
+          break;
+        }
         case Op::ClassObj: {
           auto* o = culebra_runtime_object_new();
           culebra_runtime_mark_class(o);
@@ -9583,6 +9736,7 @@ struct Lowering {
         case Op::JumpIfFilled:
         case Op::SeqChk:   // pattern mismatch edges, same encoding
         case Op::ObjGet:
+        case Op::TypeMatch:
           mark(in.b);
           mark(static_cast<int32_t>(i) + 1);
           break;
@@ -10168,6 +10322,50 @@ struct Lowering {
               {arr, b.getInt64(in.c), b.CreateSub(n, b.getInt64(in.d))},
               "vrest.arr");
           b.CreateStore(j.make_array(out), slots[in.a]);
+          break;
+        }
+        case Op::EnumVariant: {
+          auto [line, col] = chunk_pos_at(c, i);
+          // Header-backed literals: build_variant stores both names as
+          // culebra Strings, whose length lives in the bytes before the
+          // pointer (a bare C global would read garbage there).
+          auto name = [&](int32_t k) {
+            return j.emit_str_literal(std::string(
+                _str_sv(reinterpret_cast<const char*>(c.consts[k].data))));
+          };
+          auto variant = name(in.c);
+          auto en = name(in.d);
+          if (in.b == 0) {
+            auto inst = j.emit_value_call(
+                j.module_->getOrInsertFunction(rt::build_variant, j.valueType_,
+                                               ptrTy, ptrTy, i64Ty, ptrTy,
+                                               i64Ty, i64Ty, i64Ty),
+                {variant, en, b.getInt64(0),
+                 llvm::ConstantPointerNull::get(ptrTy), b.getInt64(0),
+                 b.getInt64(line), b.getInt64(col)},
+                "vm.variant");
+            b.CreateStore(inst, slots[in.a]);
+          } else {
+            auto ctor = j.emit_call(
+                j.module_->getOrInsertFunction(rt::make_variant_ctor, ptrTy,
+                                               ptrTy, ptrTy, i64Ty),
+                {variant, en, b.getInt64(in.b)}, "vm.varctor");
+            b.CreateStore(j.make_func(ctor), slots[in.a]);
+          }
+          break;
+        }
+        case Op::TypeMatch: {
+          auto v = load_slot(in.a);
+          auto expected = j.get_or_create_global_str(
+              std::string(_str_sv(
+                  reinterpret_cast<const char*>(c.consts[in.c].data))),
+              ".vm.tm.name");
+          auto ok = j.emit_call(
+              j.module_->getOrInsertFunction(rt::type_matches, b.getInt1Ty(),
+                                             b.getInt8Ty(), i64Ty, ptrTy),
+              {j.extract_tag(v), j.extract_data(v), expected}, "vm.tm");
+          b.CreateCondBr(ok, blocks.at(static_cast<int32_t>(i) + 1),
+                         blocks.at(in.b));
           break;
         }
         case Op::ObjGet: {
@@ -12706,8 +12904,9 @@ struct Lowering {
                 nm);
           };
           j.emit_call(
-              j.module_->getOrInsertFunction(rt::register_packable,
-                                             b.getVoidTy(), ptrTy, ptrTy),
+              j.module_->getOrInsertFunction(
+                  in.d ? rt::register_packable_enum : rt::register_packable,
+                  b.getVoidTy(), ptrTy, ptrTy),
               {arg(in.a, ".vm.pkg.name"), arg(in.b, ".vm.pkg.spec")});
           break;
         }

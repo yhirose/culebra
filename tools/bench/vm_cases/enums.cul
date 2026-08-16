@@ -1,0 +1,113 @@
+# `enum Name { A(Long), B }` is a namespace object of variants: a nullary one
+# is the singleton instance it always is, a payload one the constructor that
+# builds an instance carrying positional `_0.._n` fields. A ctor pattern
+# matches one by its variant name and destructures those fields.
+
+enum E {
+  A(Long),
+  B
+}
+println(E.A(5))
+println(E.B)
+println(type_of(E.A(5)))
+println(E.A(5).class)
+println(E.A(5)._0)
+println(E.keys())
+
+# Matching: by variant, with the payload destructured; a bare name is an
+# ordinary identifier pattern, so it matches anything and binds.
+println(match E.A(7) { A(x) => x, _ => -1 })
+println(match E.B { A(x) => x, B => 0, _ => -1 })
+println(match E.A(5) { B => 'bare-binds', _ => 'no' })
+
+enum Shape {
+  Circle(Float),
+  Rect(Float, Float),
+  Empty
+}
+fn area(s) {
+  match s {
+    Rect(w, h) => w * h,
+    Circle(r) => r * r,
+    _ => 0.0
+  }
+}
+println([area(Shape.Rect(2.0, 3.0)), area(Shape.Circle(1.5)),
+         area(Shape.Empty)])
+println(Shape.Rect(2.0, 3.0)._1)
+
+# Nested sub-patterns, and the dotted `Enum.Variant` path.
+enum R {
+  Ok(Any),
+  Err(String)
+}
+mut out = []
+for it in [R.Ok(1), R.Err('bad'), R.Ok([2, 3])] {
+  out.push(match it {
+    Ok([a, b]) => "pair-{a}-{b}",
+    Ok(n) => "ok-{n}",
+    Err(m) => "err-{m}",
+    _ => 'other'
+  })
+}
+println(out)
+println(match R.Ok(1) { R.Ok(n) => "path-{n}", _ => 'no' })
+
+# The enum is a value like any other: a variant constructor can be held, the
+# object can be held, and a declaration inside a function is local to it.
+let ctor = E.A
+println(ctor(9))
+let held = E
+println(held.B)
+println(E.A(1) == E.A(1))
+fn make() {
+  enum Local {
+    One,
+    Two(Long)
+  }
+  [Local.One, Local.Two(2)]
+}
+println(make())
+
+# A generic head is documentation, and @packable lays the variants out.
+enum Opt<T> {
+  Some(T),
+  Nothing
+}
+println([Opt.Some(3), Opt.Nothing])
+@packable
+enum Tag {
+  N(Long),
+  F(Float),
+  None
+}
+println([Tag.N(7)._0, match Tag.None { N(x) => x, _ => 'none' }])
+
+# Errors: a missing payload field, and a member the enum does not carry.
+fn p(label, thunk) {
+  let r = try {
+    "ok=" + to_string(thunk())
+  } catch e {
+    "err=" + to_string(e.kind) + "|" + to_string(e.message)
+  }
+  print(label + " ::: " + r + "\n")
+}
+p("missing payload", fn () {
+  E.A()
+})
+p("unknown member", fn () {
+  E.Zzz
+})
+p("nullary called", fn () {
+  E.B()
+})
+
+# Churn: a variant instance per turn, matched and dropped.
+mut n = 0
+mut i = 0
+while i < 4000 {
+  n = n + match E.A(i) { A(x) => 1, _ => 0 }
+  n = n + match E.B { A(x) => 0, _ => 1 }
+  i = i + 1
+}
+println(n)
