@@ -1,0 +1,82 @@
+# `_Time` / `_Term` / `_Canvas` — the ABI primitive namespaces the user-facing
+# Time / Term / Canvas modules are written against. The compiled backends
+# peephole each method into a direct runtime call; these exercise the other
+# ways the same method is reached (as a value, from the bytecode VM) plus the
+# modules built on top.
+
+# --- _Time ---------------------------------------------------------------
+println('--- time')
+println(_Time.iso_nanos(0, true))
+println(to_string(_Time.weekday_nanos(0, true)))
+println(inspect(_Time.parts_nanos(0, true)))
+println(to_string(_Time.from_iso_nanos('1970-01-01T00:00:00Z')))
+println(to_string(_Time.add_nanos(0, 1, 0, 0, 0, 0, 0, true)))
+println(to_string(_Time.start_of_nanos(123456789012345, 'day', true)))
+println(_Time.format_nanos(0, '%Y', true))
+println(to_string(_Time.parse_nanos('1970-01-02', '%Y-%m-%d')))
+println(to_string(_Time.from_parts_nanos(_Time.parts_nanos(0, true), true)))
+
+# Read as a value: the namespace object hands back a closure.
+let iso = _Time.iso_nanos
+println(iso(86400000000000, true))
+let parts = _Time.parts_nanos
+println(inspect(parts(0, true)))
+
+# --- _Term ---------------------------------------------------------------
+println('--- term')
+println(to_string(_Term.width('abc')))
+let tw = _Term.width
+println(to_string(tw('aあb')))
+println(to_string(_Term.color_level() >= 0))
+println(to_string(_Term.resized()))
+
+# --- _Canvas -------------------------------------------------------------
+println('--- canvas')
+_Canvas.init(8, 4)
+_Canvas.clear(255)
+_Canvas.set_pixel(1, 1, 4278190335)
+println(to_string(_Canvas.get_pixel(1, 1)))
+_Canvas.rect(0.0, 0.0, 3.0, 2.0, 16711935, 1)
+println(to_string(_Canvas.get_pixel(0, 0)))
+println(to_string(_Canvas.width()))
+println(to_string(_Canvas.height()))
+println(to_string(_Canvas.windowed()))
+println(to_string(_Canvas.mouse_buttons()))
+
+let gp = _Canvas.get_pixel
+println(to_string(gp(1, 1)))
+let blank = _Canvas.sprite_blank
+let sid = blank(2, 3, 16711935)
+println(to_string(_Canvas.sprite_width(sid)))
+println(to_string(_Canvas.sprite_height(sid)))
+_Canvas.sprite_free(sid)
+
+# --- The modules written on top ------------------------------------------
+println('--- modules')
+let at = Time.from_unix(0)
+println(at.iso(true))
+println(to_string(at.parts(true).year))
+# (`at + Time.hours(2)` stays out of the slice: Instant's `__add__` matches on
+# the class type name `Duration`, which the VM still rejects — see the pattern
+# arms batch 7 left out.)
+println(to_string(Time.hours(2).seconds()))
+println(to_string(Term.width('abc')))
+
+# --- Errors --------------------------------------------------------------
+println('--- errors')
+println(try { _Canvas.set_pixel('x', 1, 0) } catch e { e.kind + ': ' + e.message })
+println(try { _Time.iso_nanos(0, 1) } catch e { e.kind + ': ' + e.message })
+println(try { _Time.iso_nanos(0) } catch e { e.kind + ': ' + e.message })
+println(try { _Canvas.width(1) } catch e { e.kind + ': ' + e.message })
+let bad = _Time.iso_nanos
+println(try { bad(0, 1) } catch e { e.kind + ': ' + e.message })
+println(try { bad(0, true, 3) } catch e { e.kind + ': ' + e.message })
+
+# --- Churn: the closures are minted and released every round -------------
+println('--- churn')
+mut acc = 0
+for i in 0..2000 {
+  let w = _Term.width
+  acc = acc + w('ab') + _Canvas.get_pixel(0, 0) - _Canvas.get_pixel(0, 0)
+}
+println(to_string(acc))

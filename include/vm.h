@@ -5462,13 +5462,6 @@ class Compiler {
   // natively built namespaces, the internal primitive ones the preamble
   // itself calls (`_Time`, `_Canvas`, ...), and the lazy source modules.
   static bool is_stdlib_namespace(std::string_view name) {
-    // `_Time` / `_Term` / `_Canvas` are the exception: the JIT reaches their
-    // primitives through a compile-time peephole per method, so unlike every
-    // other namespace there is no object for the resolver to hand back. The
-    // three preamble modules built on them stay out of the slice until those
-    // primitives grow an ordinary namespace object — and only those three, a
-    // module at a time, since each one's builder is its own chunk.
-    if (name == "_Time" || name == "_Term" || name == "_Canvas") return false;
     return JIT::is_builtin_var(std::string(name));
   }
 

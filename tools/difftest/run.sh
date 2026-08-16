@@ -80,13 +80,22 @@ for cf in "${chunks[@]}"; do cat "$HERE/preamble.cul" "$HERE/canvas_fixtures.cul
 # line numbers depend only on the (preamble + chunk) text, identical for both
 # backends, so the byte diff stays exact regardless of CHUNK or scheduling.
 JOBS="${DIFFTEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
+# Streams are captured apart and then concatenated, never merged live: a
+# third-party library that writes to stderr (ALSA, when the canvas fixtures
+# touch audio on a machine with no sound card) interleaves at whatever byte
+# the two buffers happen to meet, which splices its text mid-word into a
+# record and makes two lanes differ over nothing. Appending stderr after
+# stdout is the same rearrangement on every lane, so the byte diff stays
+# exact and the error text is still compared.
 run_one() {
-  local cf="$1" backend="$2"
+  local cf="$1" backend="$2" flag=""
   case "$backend" in
-    i) "$CULEBRA"       "$cf.cul" > "$cf.i" 2>&1 ;;
-    j) "$CULEBRA" --jit "$cf.cul" > "$cf.j" 2>&1 ;;
-    v) "$CULEBRA" --vm  "$cf.cul" > "$cf.v" 2>&1 ;;
+    j) flag="--jit" ;;
+    v) flag="--vm" ;;
   esac
+  "$CULEBRA" $flag "$cf.cul" > "$cf.$backend" 2> "$cf.$backend.err"
+  cat "$cf.$backend.err" >> "$cf.$backend"
+  rm -f "$cf.$backend.err"
 }
 export -f run_one; export CULEBRA
 for cf in "${chunks[@]}"; do

@@ -4166,6 +4166,326 @@ inline JitValue _ns_math_wrap(JitValue* a, int64_t) {
       _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), 0, 0));
 }
 
+// _Time / _Term / _Canvas — the three ABI primitive namespaces the user-facing
+// `Time` / `Term` / `Canvas` modules are written against. compile_ns_call
+// peepholes each method into a direct runtime call, which serves the syntactic
+// `_Canvas.rect(...)` form; these adapters serve every other way the method can
+// be reached — read as a value, called from the bytecode VM, handed to a
+// higher-order function — so the namespace object resolves like any other.
+// The declared types come from the canonical interp params (NsParamMeta), so
+// each adapter only unwraps what its runtime twin takes.
+
+// A geometry argument as a pixel index: `Long|Float`, where a Float rounds
+// through canvas.h's shared rule (the peephole's value_to_canvas_coord).
+inline int64_t _ns_coord(JitValue v) {
+  return v.tag == TAG_LONG
+             ? v.data
+             : culebra_runtime_canvas_coord(_ns_adapt::take_double(v));
+}
+
+inline JitValue _ns_time_now_nanos(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_time_now_nanos());
+}
+inline JitValue _ns_time_monotonic(JitValue*, int64_t) {
+  return _ns_adapt::v_float(culebra_runtime_time_monotonic());
+}
+inline JitValue _ns_time_sleep(JitValue* a, int64_t) {
+  culebra_runtime_time_sleep(_ns_adapt::take_double(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_time_from_iso_nanos(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_time_from_iso_nanos(_ns_adapt::take_str(a[0]), 0, 0));
+}
+inline JitValue _ns_time_parse_nanos(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_time_parse_nanos(
+      _ns_adapt::take_str(a[0]), _ns_adapt::take_str(a[1]), 0, 0));
+}
+inline JitValue _ns_time_iso_nanos(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_time_iso_nanos(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_bool(a[1])));
+}
+inline JitValue _ns_time_format_nanos(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_time_format_nanos(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_str(a[1]),
+      _ns_adapt::take_bool(a[2])));
+}
+inline JitValue _ns_time_parts_nanos(JitValue* a, int64_t) {
+  return _ns_adapt::v_object(culebra_runtime_time_parts_nanos(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_bool(a[1])));
+}
+inline JitValue _ns_time_from_parts_nanos(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_time_from_parts_nanos(
+      _ns_adapt::take_object(a[0]), _ns_adapt::take_bool(a[1])));
+}
+inline JitValue _ns_time_weekday_nanos(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_time_weekday_nanos(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_bool(a[1])));
+}
+inline JitValue _ns_time_add_nanos(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_time_add_nanos(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
+      _ns_adapt::take_long(a[2]), _ns_adapt::take_long(a[3]),
+      _ns_adapt::take_long(a[4]), _ns_adapt::take_long(a[5]),
+      _ns_adapt::take_long(a[6]), _ns_adapt::take_bool(a[7])));
+}
+inline JitValue _ns_time_start_of_nanos(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_time_start_of_nanos(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_str(a[1]),
+      _ns_adapt::take_bool(a[2]), 0, 0));
+}
+
+inline JitValue _ns_term_cols(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_term_cols());
+}
+inline JitValue _ns_term_rows(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_term_rows());
+}
+inline JitValue _ns_term_raw_on(JitValue*, int64_t) {
+  culebra_runtime_term_raw_on();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_term_raw_off(JitValue*, int64_t) {
+  culebra_runtime_term_raw_off();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_term_flush(JitValue*, int64_t) {
+  culebra_runtime_term_flush();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_term_color_level(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_term_color_level());
+}
+inline JitValue _ns_term_width(JitValue* a, int64_t) {
+  // StringLike: a StringView reaches the C ABI through the shared view.
+  return _ns_adapt::v_long(culebra_runtime_term_width(
+      std::string(_culebra_str_view(a[0].tag, a[0].data)).c_str()));
+}
+inline JitValue _ns_term_resized(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_term_resized());
+}
+inline JitValue _ns_term_read_key(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_term_read_key(_ns_adapt::take_double(a[0])));
+}
+inline JitValue _ns_term_attach_tty(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_term_attach_tty());
+}
+
+inline JitValue _ns_canvas_init(JitValue* a, int64_t) {
+  culebra_runtime_canvas_init(_ns_adapt::take_long(a[0]),
+                              _ns_adapt::take_long(a[1]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_clear(JitValue* a, int64_t) {
+  culebra_runtime_canvas_clear(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_set_pixel(JitValue* a, int64_t) {
+  culebra_runtime_canvas_set_pixel(_ns_coord(a[0]), _ns_coord(a[1]),
+                                   _ns_adapt::take_long(a[2]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_get_pixel(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_canvas_get_pixel(_ns_coord(a[0]), _ns_coord(a[1])));
+}
+inline JitValue _ns_canvas_rect(JitValue* a, int64_t) {
+  culebra_runtime_canvas_rect(_ns_coord(a[0]), _ns_coord(a[1]),
+                              _ns_coord(a[2]), _ns_coord(a[3]),
+                              _ns_adapt::take_long(a[4]),
+                              _ns_adapt::take_long(a[5]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_line(JitValue* a, int64_t) {
+  culebra_runtime_canvas_line(_ns_coord(a[0]), _ns_coord(a[1]),
+                              _ns_coord(a[2]), _ns_coord(a[3]),
+                              _ns_adapt::take_long(a[4]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_ellipse(JitValue* a, int64_t) {
+  culebra_runtime_canvas_ellipse(_ns_coord(a[0]), _ns_coord(a[1]),
+                                 _ns_coord(a[2]), _ns_coord(a[3]),
+                                 _ns_adapt::take_long(a[4]),
+                                 _ns_adapt::take_long(a[5]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_triangle(JitValue* a, int64_t) {
+  culebra_runtime_canvas_triangle(
+      _ns_coord(a[0]), _ns_coord(a[1]), _ns_coord(a[2]), _ns_coord(a[3]),
+      _ns_coord(a[4]), _ns_coord(a[5]), _ns_adapt::take_long(a[6]),
+      _ns_adapt::take_long(a[7]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_polygon(JitValue* a, int64_t) {
+  culebra_runtime_canvas_polygon(_ns_adapt::take_array(a[0]),
+                                 _ns_adapt::take_long(a[1]),
+                                 _ns_adapt::take_long(a[2]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_font_load(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_canvas_font_load(_ns_adapt::take_array(a[0])));
+}
+inline JitValue _ns_canvas_glyph(JitValue* a, int64_t) {
+  culebra_runtime_canvas_glyph(_ns_adapt::take_long(a[0]),
+                               _ns_adapt::take_long(a[1]), _ns_coord(a[2]),
+                               _ns_coord(a[3]), _ns_adapt::take_long(a[4]),
+                               _ns_adapt::take_long(a[5]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_sprite_load(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_sprite_load(
+      _ns_adapt::take_array(a[0]), _ns_adapt::take_long(a[1]),
+      _ns_adapt::take_long(a[2])));
+}
+inline JitValue _ns_canvas_sprite_from_png(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_sprite_from_png(
+      static_cast<uint8_t>(a[0].tag), a[0].data, 0, 0));
+}
+inline JitValue _ns_canvas_sprite_to_png(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_canvas_sprite_to_png(_ns_adapt::take_long(a[0]), 0, 0));
+}
+inline JitValue _ns_canvas_sprite_width(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_canvas_sprite_width(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_sprite_height(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_canvas_sprite_height(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_sprite_blank(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_sprite_blank(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
+      _ns_adapt::take_long(a[2])));
+}
+inline JitValue _ns_canvas_sprite_free(JitValue* a, int64_t) {
+  culebra_runtime_canvas_sprite_free(_ns_adapt::take_long(a[0]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_target(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_canvas_target(_ns_adapt::take_long(a[0]), 0, 0));
+}
+inline JitValue _ns_canvas_blit(JitValue* a, int64_t) {
+  culebra_runtime_canvas_blit(_ns_adapt::take_long(a[0]), _ns_coord(a[1]),
+                              _ns_coord(a[2]), _ns_coord(a[3]),
+                              _ns_coord(a[4]), _ns_coord(a[5]),
+                              _ns_coord(a[6]), _ns_adapt::take_long(a[7]), 0,
+                              0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_blit_scaled(JitValue* a, int64_t) {
+  culebra_runtime_canvas_blit_scaled(
+      _ns_adapt::take_long(a[0]), _ns_coord(a[1]), _ns_coord(a[2]),
+      _ns_coord(a[3]), _ns_coord(a[4]), _ns_coord(a[5]), _ns_coord(a[6]),
+      _ns_coord(a[7]), _ns_coord(a[8]), _ns_adapt::take_long(a[9]),
+      _ns_adapt::take_long(a[10]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_present(JitValue*, int64_t) {
+  culebra_runtime_canvas_present(0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_buttons(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_buttons());
+}
+inline JitValue _ns_canvas_mouse_x(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_mouse_x());
+}
+inline JitValue _ns_canvas_mouse_y(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_mouse_y());
+}
+inline JitValue _ns_canvas_mouse_buttons(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_mouse_buttons());
+}
+inline JitValue _ns_canvas_key(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(
+      culebra_runtime_canvas_key(static_cast<uint8_t>(a[0].tag), a[0].data));
+}
+inline JitValue _ns_canvas_key_pop(JitValue*, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_canvas_key_pop());
+}
+inline JitValue _ns_canvas_char_pop(JitValue*, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_canvas_char_pop());
+}
+inline JitValue _ns_canvas_closing(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_closing());
+}
+inline JitValue _ns_canvas_windowed(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_windowed());
+}
+inline JitValue _ns_canvas_title(JitValue* a, int64_t) {
+  culebra_runtime_canvas_title(static_cast<uint8_t>(a[0].tag), a[0].data);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_tone(JitValue* a, int64_t) {
+  culebra_runtime_canvas_tone(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
+      _ns_adapt::take_long(a[2]), _ns_adapt::take_long(a[3]),
+      _ns_adapt::take_long(a[4]), _ns_adapt::take_long(a[5]),
+      _ns_adapt::take_long(a[6]), _ns_adapt::take_long(a[7]),
+      _ns_adapt::take_long(a[8]), _ns_adapt::take_long(a[9]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_music_play(JitValue* a, int64_t) {
+  culebra_runtime_canvas_music_play(
+      static_cast<uint8_t>(a[0].tag), a[0].data, _ns_adapt::take_long(a[1]),
+      _ns_adapt::take_long(a[2]), _ns_adapt::take_double(a[3]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_music_stop(JitValue*, int64_t) {
+  culebra_runtime_canvas_music_stop();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_music_pause(JitValue*, int64_t) {
+  culebra_runtime_canvas_music_pause();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_music_resume(JitValue*, int64_t) {
+  culebra_runtime_canvas_music_resume();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_music_volume(JitValue* a, int64_t) {
+  culebra_runtime_canvas_music_volume(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_music_seek(JitValue* a, int64_t) {
+  culebra_runtime_canvas_music_seek(_ns_adapt::take_double(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_music_playing(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_music_playing());
+}
+inline JitValue _ns_canvas_sound_load(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_sound_load(
+      static_cast<uint8_t>(a[0].tag), a[0].data, 0, 0));
+}
+inline JitValue _ns_canvas_sound_play(JitValue* a, int64_t) {
+  culebra_runtime_canvas_sound_play(_ns_adapt::take_long(a[0]),
+                                    _ns_adapt::take_long(a[1]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_sound_stop(JitValue* a, int64_t) {
+  culebra_runtime_canvas_sound_stop(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_sound_playing(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(
+      culebra_runtime_canvas_sound_playing(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_sound_free(JitValue* a, int64_t) {
+  culebra_runtime_canvas_sound_free(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_width(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_width());
+}
+inline JitValue _ns_canvas_height(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_height());
+}
+
 // FS
 inline JitValue _ns_fs_join(JitValue* a, int64_t n) {
   return _ns_adapt::v_string(culebra_runtime_fs_join(a, n, 0, 0));
@@ -7117,6 +7437,78 @@ inline const NsMethod kNsMethods[] = {
   {"Tensor", "use_auto",      0, &_ns_tensor_use_auto},
   {"Tensor", "gpu_available", 0, &_ns_tensor_gpu_available},
   {"Tensor", "device",        0, &_ns_tensor_device},
+
+  {"_Time",  "now_nanos",        0, &_ns_time_now_nanos},
+  {"_Time",  "monotonic",        0, &_ns_time_monotonic},
+  {"_Time",  "sleep",            1, &_ns_time_sleep},
+  {"_Time",  "from_iso_nanos",   1, &_ns_time_from_iso_nanos},
+  {"_Time",  "parse_nanos",      2, &_ns_time_parse_nanos},
+  {"_Time",  "iso_nanos",        2, &_ns_time_iso_nanos},
+  {"_Time",  "format_nanos",     3, &_ns_time_format_nanos},
+  {"_Time",  "parts_nanos",      2, &_ns_time_parts_nanos},
+  {"_Time",  "from_parts_nanos", 2, &_ns_time_from_parts_nanos},
+  {"_Time",  "weekday_nanos",    2, &_ns_time_weekday_nanos},
+  {"_Time",  "add_nanos",        8, &_ns_time_add_nanos},
+  {"_Time",  "start_of_nanos",   3, &_ns_time_start_of_nanos},
+
+  {"_Term",  "cols",        0, &_ns_term_cols},
+  {"_Term",  "rows",        0, &_ns_term_rows},
+  {"_Term",  "raw_on",      0, &_ns_term_raw_on},
+  {"_Term",  "raw_off",     0, &_ns_term_raw_off},
+  {"_Term",  "flush",       0, &_ns_term_flush},
+  {"_Term",  "color_level", 0, &_ns_term_color_level},
+  {"_Term",  "width",       1, &_ns_term_width},
+  {"_Term",  "resized",     0, &_ns_term_resized},
+  {"_Term",  "read_key",    1, &_ns_term_read_key},
+  {"_Term",  "attach_tty",  0, &_ns_term_attach_tty},
+
+  {"_Canvas", "init",            2,  &_ns_canvas_init},
+  {"_Canvas", "clear",           1,  &_ns_canvas_clear},
+  {"_Canvas", "set_pixel",       3,  &_ns_canvas_set_pixel},
+  {"_Canvas", "get_pixel",       2,  &_ns_canvas_get_pixel},
+  {"_Canvas", "rect",            6,  &_ns_canvas_rect},
+  {"_Canvas", "line",            5,  &_ns_canvas_line},
+  {"_Canvas", "ellipse",         6,  &_ns_canvas_ellipse},
+  {"_Canvas", "triangle",        8,  &_ns_canvas_triangle},
+  {"_Canvas", "polygon",         3,  &_ns_canvas_polygon},
+  {"_Canvas", "font_load",       1,  &_ns_canvas_font_load},
+  {"_Canvas", "glyph",           6,  &_ns_canvas_glyph},
+  {"_Canvas", "sprite_load",     3,  &_ns_canvas_sprite_load},
+  {"_Canvas", "sprite_from_png", 1,  &_ns_canvas_sprite_from_png},
+  {"_Canvas", "sprite_to_png",   1,  &_ns_canvas_sprite_to_png},
+  {"_Canvas", "sprite_width",    1,  &_ns_canvas_sprite_width},
+  {"_Canvas", "sprite_height",   1,  &_ns_canvas_sprite_height},
+  {"_Canvas", "sprite_blank",    3,  &_ns_canvas_sprite_blank},
+  {"_Canvas", "sprite_free",     1,  &_ns_canvas_sprite_free},
+  {"_Canvas", "target",          1,  &_ns_canvas_target},
+  {"_Canvas", "blit",            8,  &_ns_canvas_blit},
+  {"_Canvas", "blit_scaled",     11, &_ns_canvas_blit_scaled},
+  {"_Canvas", "present",         0,  &_ns_canvas_present},
+  {"_Canvas", "buttons",         0,  &_ns_canvas_buttons},
+  {"_Canvas", "mouse_x",         0,  &_ns_canvas_mouse_x},
+  {"_Canvas", "mouse_y",         0,  &_ns_canvas_mouse_y},
+  {"_Canvas", "mouse_buttons",   0,  &_ns_canvas_mouse_buttons},
+  {"_Canvas", "key",             1,  &_ns_canvas_key},
+  {"_Canvas", "key_pop",         0,  &_ns_canvas_key_pop},
+  {"_Canvas", "char_pop",        0,  &_ns_canvas_char_pop},
+  {"_Canvas", "closing",         0,  &_ns_canvas_closing},
+  {"_Canvas", "windowed",        0,  &_ns_canvas_windowed},
+  {"_Canvas", "title",           1,  &_ns_canvas_title},
+  {"_Canvas", "tone",            10, &_ns_canvas_tone},
+  {"_Canvas", "music_play",      4,  &_ns_canvas_music_play},
+  {"_Canvas", "music_stop",      0,  &_ns_canvas_music_stop},
+  {"_Canvas", "music_pause",     0,  &_ns_canvas_music_pause},
+  {"_Canvas", "music_resume",    0,  &_ns_canvas_music_resume},
+  {"_Canvas", "music_volume",    1,  &_ns_canvas_music_volume},
+  {"_Canvas", "music_seek",      1,  &_ns_canvas_music_seek},
+  {"_Canvas", "music_playing",   0,  &_ns_canvas_music_playing},
+  {"_Canvas", "sound_load",      1,  &_ns_canvas_sound_load},
+  {"_Canvas", "sound_play",      2,  &_ns_canvas_sound_play},
+  {"_Canvas", "sound_stop",      1,  &_ns_canvas_sound_stop},
+  {"_Canvas", "sound_playing",   1,  &_ns_canvas_sound_playing},
+  {"_Canvas", "sound_free",      1,  &_ns_canvas_sound_free},
+  {"_Canvas", "width",           0,  &_ns_canvas_width},
+  {"_Canvas", "height",          0,  &_ns_canvas_height},
 };
 
 // Namespace-level constants (Math.pi, etc). Slot values are immutable
@@ -8017,13 +8409,10 @@ inline JitClosure* _jit_lazy_fn_closure(_JitNamespaceTable& t,
 // canonical interp params by _ns_meta), so there is nothing else to verify.
 inline void _check_ns_drift_once() {
   static const bool checked = []() {
-    static const std::set<std::string_view> kInternalNs = {"_Time", "_Term",
-                                                            "_Canvas"};
     const auto& env = _canonical_env();
     for (const auto& [key, sym] : env.dictionary) {
       if (sym.val.type != culebra::Value::Object) continue;
       std::string_view n(key);
-      if (kInternalNs.contains(n)) continue;
       if (!_is_known_ns(n)) {
         std::fprintf(stderr,
             "culebra: JIT namespace drift — interp binds '%s' but "
