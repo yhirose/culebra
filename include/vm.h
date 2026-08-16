@@ -5965,9 +5965,13 @@ class Compiler {
     chunk_.kwcalls.push_back(std::move(kc));
     // The binder's own errors report at the CALLEE, which a parenthesized
     // one puts past the `(` the call node starts at — the anchor the arity
-    // check already reads out of the same helper.
-    auto [cl, cc] = culebra::call_callee_position(at);
-    stamp_at(cl, cc);
+    // check already reads out of the same helper. A UFCS call is the
+    // exception: interp's eval_ufcs_call sets its site at the ARGUMENTS
+    // node, which is the stamp this already carries.
+    if (!pos0) {
+      auto [cl, cc] = culebra::call_callee_position(at);
+      stamp_at(cl, cc);
+    }
     size_t ix = emit(Op::CallKw, t, callee_slot, base, spec);
     // Only the positionals: they bind to the parameters of the same index,
     // which is what an argument-position table indexes by. A keyword value
