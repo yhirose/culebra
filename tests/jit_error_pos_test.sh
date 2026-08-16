@@ -658,6 +658,10 @@ check_same "callback type before kw"   "[3, 1].sorted_by(5, reverse: 5)"
 check_same "ns member before list"     "Math.zzz(a: 1, 2)"
 check_same "ns member before dup kw"   "Math.zzz(a: 1, a: 2)"
 check_same "ns member keeps list err"  "Math.abs(x: 1, 2)"
+# `_` is a sink for a plain assignment only: a compound one reads its target
+# first, and nothing ever binds that name.
+check_same "compound sink"             "_ += 1"
+check_same "coalesce sink"             "_ ??= 1"
 check_same "sort_by type before kw"    "mut a = [3, 1]
 a.sort_by(5, reverse: 5)"
 

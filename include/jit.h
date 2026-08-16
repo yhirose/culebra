@@ -5283,8 +5283,10 @@ struct JIT {
     // effects matter); the value passes through as the assignment's
     // result with its +1 from compile() intact, since no slot absorbs
     // it. Caller (compile_statements) drops the result like any other
-    // unused value.
-    if (is_sink_name(name)) {
+    // unused value. A COMPOUND assignment is not a sink: it reads its
+    // target first, and `_` is a name nothing ever binds, so it takes the
+    // undefined-name path below exactly as the interpreter does.
+    if (is_sink_name(name) && !compound) {
       return own(rval);
     }
 
