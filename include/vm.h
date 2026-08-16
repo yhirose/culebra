@@ -274,6 +274,13 @@ enum class Op : uint8_t {
                // whether the check covers regs[b+1] (the receiver) at all:
                // `'ab'.contains(x)` wants StringLike, `[1].contains(x)` takes
                // anything.
+  CbType,      // a callback parameter's declared `Function` type, checked on
+               // its own so a keyword-only sibling's check cannot answer
+               // first (`sorted_by(5, reverse: 5)` names `f`, the parameter
+               // the binder reaches first). regs[a] is the callback, regs[b]
+               // MethGate's gate slot, consts[c] the parameter name. The
+               // arity half stays inside the sorter, where interp's own body
+               // checks it. Positioned at the callback's argument.
   ArityChk,    // the count-based ArityError a receiver owes when it resolves
                // this name at a DIFFERENT arity than the one written — the
                // one case a miss must not report as "expected Function, got
@@ -816,6 +823,9 @@ enum class BParam : uint8_t {
   // `Long?` — the reduction axis, optional in the interp signature, so an
   // explicit nil is as good as omitting it.
   LongOpt,
+  // The sort family's `reverse:`, the one declared type a keyword-only
+  // parameter carries. Strict: `nil` is as wrong as a Long.
+  Bool,
 };
 
 struct BMethSpec {
@@ -840,6 +850,17 @@ struct BMethSpec {
   // iterator receiver gate — both reduce to an own/proto `next`, since `iter`
   // is a dict builtin every Object "has").
   bool obj_iter_shaped;
+  // The keyword-only parameter this built-in declares, or null. It occupies
+  // the trailing slot the way `def`'s optional positional does — the call
+  // site fills it from the keyword of that name, and the compiler loads the
+  // interp's default (`false`, the only one any built-in declares) when the
+  // call leaves it out. `builtin_method_accepts_keyword` is the rule this
+  // mirrors: a keyword may name a keyword-only parameter and nothing else.
+  const char* kw = nullptr;
+  // The positional parameter whose declared type is `Function`, if the
+  // keyword shares the signature with one. Its check comes first — the binder
+  // walks parameters in order — and the sorter's own would be too late.
+  int8_t callback_param = -1;
 };
 
 inline std::span<const BMethSpec> bmeth_specs() {
@@ -913,10 +934,11 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"to_set", 0, ToSet, kRecvArrayIter, 0, nullptr, {}, {}, {},
        /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
       // sorted: Array only — no iterator arm, no Tensor (both probed misses).
-      // `reverse:` is kw-only in the interp/JIT signature; the VM's call
-      // compiler rejects every keyword argument at compile time already
-      // (reject_kwargs), so this arm is reachable only without it.
-      {"sorted", 0, Sorted, kRecvArray, 0, nullptr, {}, {}},
+      // `reverse:` is the keyword-only parameter, so the op reads one slot
+      // more than the call writes positionally: the keyword's value, or the
+      // declared default when the call omits it.
+      {"sorted", 0, Sorted, kRecvArray, 1, nullptr, {Bool}, {"reverse"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/"reverse"},
       {"distinct", 0, Distinct, kRecvIterOnly, 0, nullptr, {}, {}, {},
        /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
       {"flatten", 0, Flatten, kRecvIterOnly, 0, nullptr, {}, {}, {},
@@ -952,8 +974,14 @@ inline std::span<const BMethSpec> bmeth_specs() {
       // sort_by/sorted_by: Array only (no iterator arm exists). `reverse:`
       // is kw-only in the interp/JIT signature; the VM's reject_kwargs makes
       // this arm reachable only without it, so the call is always `(f)`.
-      {"sort_by", 1, SortBy, kRecvArray, 1, nullptr, {Any}, {"f"}, {}},
-      {"sorted_by", 1, SortedBy, kRecvArray, 1, nullptr, {Any}, {"f"}, {}},
+      {"sort_by", 1, SortBy, kRecvArray, 2, nullptr, {Any, Bool},
+       {"f", "reverse"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/"reverse",
+       /*callback_param=*/0},
+      {"sorted_by", 1, SortedBy, kRecvArray, 2, nullptr, {Any, Bool},
+       {"f", "reverse"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/"reverse",
+       /*callback_param=*/0},
       // Set: no polymorphism, so no param_when narrowing — `other` is
       // declared plain "Set" in the interp table, checked on the one
       // receiver that ever reaches here. `add`/`remove`'s element is `Any`
@@ -1083,10 +1111,10 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"linear_sigmoid", 2, LinearSigmoid, kRecvTensor, 2, nullptr,
        {Tensor, Tensor}, {"x", "b"}},
       {"item", 0, Item, kRecvTensor, 0, nullptr, {}, {}},
-      // sort: Array's in-place, nil-returning twin of `sorted`, and kw-only
-      // `reverse:` in the same way — unreachable here, since the VM's call
-      // compiler rejects every keyword argument.
-      {"sort", 0, Sort, kRecvArray, 0, nullptr, {}, {}},
+      // sort: Array's in-place, nil-returning twin of `sorted`, keyword-only
+      // `reverse:` in the same way.
+      {"sort", 0, Sort, kRecvArray, 1, nullptr, {Bool}, {"reverse"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/"reverse"},
       // values: the value-only view of an Object's `iter()`, a dict builtin
       // like `keys` (so a namespace resolves it too).
       {"values", 0, Values, kRecvObject, 0, nullptr, {}, {}},
@@ -1156,6 +1184,7 @@ inline const char* bmeth_param_type(BParam p) {
     case BParam::Set: return "Set";
     case BParam::Tensor: return "Tensor";
     case BParam::LongOpt: return "Long?";
+    case BParam::Bool: return "Bool";
     default: return "StringLike";
   }
 }
@@ -1195,11 +1224,14 @@ inline bool bmeth_consumes_args(BMeth id) {
 // just before handing the callback over.
 inline int8_t bmeth_callback_arg(BMeth id, int8_t nargs) {
   switch (id) {
+    // The sort family's callback is not the last slot: the keyword-only
+    // `reverse:` rides behind it (see BMethSpec::callback_param).
+    case BMeth::SortBy: case BMeth::SortedBy:
+      return 0;
     case BMeth::Map: case BMeth::Filter: case BMeth::ForEach:
     case BMeth::AnyOf: case BMeth::All: case BMeth::Find:
     case BMeth::FlatMap: case BMeth::MinBy: case BMeth::MaxBy:
     case BMeth::Reduce: case BMeth::GroupBy: case BMeth::Partition:
-    case BMeth::SortBy: case BMeth::SortedBy:
     case BMeth::TakeWhile: case BMeth::SkipWhile: case BMeth::Tap:
     case BMeth::ChunkBy: case BMeth::Position: case BMeth::Scan:
       return static_cast<int8_t>(nargs - 1);
@@ -1270,6 +1302,7 @@ inline constexpr BRecvMask bmeth_param_tags(BParam p) {
     case BParam::Tensor: return kRecvTensor;
     case BParam::LongOpt:
       return bmeth_tag_bit(TAG_LONG) | bmeth_tag_bit(TAG_NIL);
+    case BParam::Bool: return bmeth_tag_bit(TAG_BOOL);
   }
   return 0;
 }
@@ -1357,6 +1390,9 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
   auto str = [](const char* s) {
     return JitValue{TAG_STRING, reinterpret_cast<int64_t>(s)};
   };
+  // A keyword-only slot: the type check ran before the call, so the value is
+  // a Bool (or the compiler's own default) by the time it lands here.
+  auto kw_flag = [](const JitValue& v) { return v.data != 0; };
   auto arr = [](const JitValue& v) {
     return reinterpret_cast<JitArray*>(v.data);
   };
@@ -1553,11 +1589,9 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
           reinterpret_cast<int64_t>(culebra_runtime_iter_to_set(
               static_cast<int8_t>(recv.tag), recv.data, line, col))};
     case BMeth::Sorted:
-      // `reverse:` is kw-only and the VM rejects every keyword argument at
-      // compile time, so this arm is reachable only without it.
       return JitValue{TAG_ARRAY,
                       reinterpret_cast<int64_t>(culebra_runtime_array_sorted(
-                          arr(recv), /*reverse=*/false, line, col))};
+                          arr(recv), kw_flag(args[0]), line, col))};
     case BMeth::Distinct:
       // The gate proved TAG_OBJECT (iterator-shaped) — no other tag reaches
       // here.
@@ -1716,18 +1750,15 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
                           static_cast<int8_t>(args[0].tag), args[0].data,
                           line, col))};
     case BMeth::SortBy:
-      // `reverse:` is kw-only and the VM rejects every keyword argument at
-      // compile time, so this arm is reachable only without it.
       culebra_runtime_array_sort_by(arr(recv), static_cast<int8_t>(args[0].tag),
-                                    args[0].data, /*reverse=*/false, line,
-                                    col);
+                                    args[0].data, kw_flag(args[1]), line, col);
       return JitValue{TAG_NIL, 0};
     case BMeth::SortedBy:
       return JitValue{
           TAG_ARRAY,
           reinterpret_cast<int64_t>(culebra_runtime_array_sorted_by(
               arr(recv), static_cast<int8_t>(args[0].tag), args[0].data,
-              /*reverse=*/false, line, col))};
+              kw_flag(args[1]), line, col))};
     // Set-only: union/intersect/diff/sym_diff/subset/superset borrow both
     // operands (the runtime helper retains fresh copies into a new Set, or
     // just compares), so `args[0]` stays register-owned like Contains'.
@@ -2053,9 +2084,8 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       culebra_runtime_set_op_pos(line, col);  // multi-element check
       return culebra_runtime_tensor_item(ten(recv));
     case BMeth::Sort:
-      // In place, answering nil. `reverse:` is kw-only and the VM rejects
-      // every keyword argument at compile time, so it is always false here.
-      culebra_runtime_array_sort(arr(recv), /*reverse=*/false, line, col);
+      // In place, answering nil.
+      culebra_runtime_array_sort(arr(recv), kw_flag(args[0]), line, col);
       return JitValue{TAG_NIL, 0};
     case BMeth::Values:
       return JitValue{TAG_OBJECT,
@@ -5272,11 +5302,6 @@ class Compiler {
                                 const peg::Ast& args, ExprResult recv) {
     std::string method(post.token);
     if (!culebra::is_builtin_method_name(method)) return;
-    // A keyword on a built-in is its own boundary: the interp allows one only
-    // where it names a keyword-only parameter, and answers "does not accept
-    // keyword arguments" otherwise — a question this check does not ask.
-    if (has_kwargs(args))
-      reject(post, std::format("built-in method '{}'", method));
     auto scan = JIT::scan_arg_list(args);
     auto argc = static_cast<int64_t>(args.nodes.size());
     std::vector<Chunk::ArityArm> arms;
@@ -5309,6 +5334,57 @@ class Compiler {
     emit(Op::BArity, recv.slot,
          static_cast<int32_t>(chunk_.arity_checks.size()));
     chunk_.arity_checks.push_back(std::move(arms));
+  }
+
+  // The keyword diagnostics a BUILT-IN owes, over the same per-receiver arms
+  // the arity check uses. Two errors live here, in the interp's own order:
+  // a keyword a built-in cannot bind (any name but a keyword-only
+  // parameter's, and every `**` splat), and then the argument list's
+  // structural errors. Both are raised before a single argument runs, and
+  // only by a receiver that resolves the name in a built-in table — a member
+  // of the receiver's own binds the call itself, which the arms' name test
+  // leaves alone. Answers whether the call is doomed, so the caller can send
+  // what is left (a member of that name, a miss) down the property read.
+  bool emit_builtin_kwargs_error(const peg::Ast& post, const peg::Ast& args,
+                                 ExprResult recv) {
+    std::string method(post.token);
+    if (!culebra::is_builtin_method_name(method)) return false;
+    std::string kind, msg;
+    auto line = static_cast<uint32_t>(args.line);
+    auto col = static_cast<uint32_t>(args.column);
+    if (!JIT::builtin_method_keywords_bindable(method, args)) {
+      kind = "TypeError";
+      msg = culebra::builtin_method_kwargs_error_message(method);
+    } else if (auto e = culebra::check_arg_list(args)) {
+      kind = e->kind;
+      msg = e->message;
+      line = static_cast<uint32_t>(e->line);
+      col = static_cast<uint32_t>(e->col);
+    } else {
+      return false;
+    }
+    std::vector<Chunk::ArityArm> arms;
+    auto add = [&](int8_t tag) {
+      arms.push_back({tag, kconst_str(kind), kconst_str(msg),
+                      kconst_str(method), line, col});
+    };
+    auto has_name = [&](const auto& tbl) {
+      return JIT::builtin_method_params(tbl, method) != nullptr;
+    };
+    for (auto& [t, tbl] : JIT::builtin_value_tables())
+      if (has_name(*tbl)) add(t);
+    // eval_property's order: any Object resolves the dict table, and only an
+    // iterator-shaped one reaches the iterator table.
+    if (has_name(*JIT::dict_builtin_table()))
+      add(Chunk::kArityObj);
+    else if (has_name(culebra::iterator_builtins()))
+      add(Chunk::kArityIter);
+    if (arms.empty()) return false;
+    StampGuard pos(*this, args);
+    emit(Op::BArity, recv.slot,
+         static_cast<int32_t>(chunk_.arity_checks.size()));
+    chunk_.arity_checks.push_back(std::move(arms));
+    return true;
   }
 
   // Whether the argument list carries anything the keyword resolver owns.
@@ -5386,7 +5462,10 @@ class Compiler {
 
   ExprResult compile_method_tail(const peg::Ast& at, const peg::Ast& post,
                                  const peg::Ast& args, ExprResult recv) {
-    const BMethSpec* spec = bmeth_lookup(post.token, args.nodes.size());
+    // By POSITIONAL count: a keyword binds by name, so it is not one of the
+    // arguments a built-in's shape is written in.
+    const BMethSpec* spec =
+        bmeth_lookup(post.token, positional_args(args).size());
     // Explicit `x.drop()` runs the at-most-once guard rather than a method:
     // an explicit drop suppresses the automatic one. interp's UFCS block sits
     // ABOVE it, so a receiver resolving no `drop` of its own hands the call to
@@ -5398,13 +5477,20 @@ class Compiler {
     // then the ordinary property read.
     auto resolved_call = [&](ExprResult r) -> ExprResult {
       if (is_drop) return emit_explicit_drop(at, r);
-      // A built-in method binds positionally; the one keyword shape they take
-      // (a kw-only parameter name) has no place in the specs' table, so it
-      // stays out of slice. Everything else routes through the resolver.
-      if (spec) {
-        reject_kwargs(args);
-        return compile_builtin_method(at, post, args, r, *spec);
+      // A built-in method binds positionally; the one keyword it takes names
+      // a keyword-only parameter, and the spec carries that slot. A keyword
+      // it cannot bind dooms the call for every receiver that resolves the
+      // name as a built-in, and what is left — a member of that name, a miss
+      // — takes the ordinary property read either way.
+      if (has_kwargs(args)) {
+        if (emit_builtin_kwargs_error(post, args, r))
+          return compile_property_call(at, post, args, r);
+        if (spec && spec->kw)
+          return compile_builtin_method(at, post, args, r, *spec);
+        emit_builtin_arity_check(at, post, args, r);
+        return compile_property_call(at, post, args, r);
       }
+      if (spec) return compile_builtin_method(at, post, args, r, *spec);
       emit_builtin_arity_check(at, post, args, r);
       return compile_property_call(at, post, args, r);
     };
@@ -5414,12 +5500,12 @@ class Compiler {
       if (is_drop) return emit_explicit_drop(at, r);
       return compile_property_call(at, post, args, r);
     };
-    UfcsCand cand = ufcs_candidate(post.token, spec);
+    // A built-in that subsumes its same-named global (`to_string`) does so
+    // only for a call it can bind: with a keyword it cannot, the global is
+    // the callee the interp reaches, and its own binder answers.
+    UfcsCand cand =
+        ufcs_candidate(post.token, has_kwargs(args) ? nullptr : spec);
     if (cand == UfcsCand::None) return resolved_call(recv);
-    // A visible free function means the two arms below are both live, and
-    // the UFCS one puts the receiver among the positionals — a shape the
-    // keyword resolver is not handed anywhere else. Out of slice.
-    reject_kwargs(args);
     // A visible candidate: the runtime gate decides, interp's eval_call
     // order — resolution first, arguments inside whichever arm runs. Every
     // arm writes the merge temp once per disjoint path (compile_if's
@@ -5470,7 +5556,17 @@ class Compiler {
     // UFCS: `name(receiver, args...)`. The receiver rides as positional[0];
     // the call site is the ARGUMENTS node (interp's eval_ufcs_call, the
     // JIT's CallSiteAt(argsAst)).
-    {
+    if (has_kwargs(args)) {
+      // The resolver binds the names against the candidate's own parameters.
+      // No call boundary is published here — the JIT leaves its kwargs arm
+      // unwired too, so a position-less error keeps reporting at the call
+      // site on every backend.
+      StampGuard call_pos(*this, args);
+      store_into(out,
+                 compile_kwargs_call(at, args, candv.slot, /*recv=*/nullptr,
+                                     &recv, &post),
+                 /*dst_is_fresh=*/true);
+    } else {
       int32_t argc = static_cast<int32_t>(args.nodes.size());
       int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
       alloc_temp(at);             // [0] = the receiver
@@ -5533,14 +5629,32 @@ class Compiler {
                                     const peg::Ast& args, ExprResult recv,
                                     const BMethSpec& spec) {
     StampGuard pos(*this, at);  // the chain head: the gate's and BMeth's anchor
-    int32_t argc = static_cast<int32_t>(args.nodes.size());
+    auto pos_args = positional_args(args);
+    const peg::Ast* kw_val = spec.kw ? kwarg_value(args, spec.kw) : nullptr;
+    int32_t argc = static_cast<int32_t>(pos_args.size());
+    // A keyword-bearing call needs its own merge temp: the gate's answer
+    // decides between the built-in and the resolver, and only one arm runs.
+    int32_t out = kw_val ? alloc_temp(at) : -1;
     int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
     alloc_temp(at);             // [0] = the gate (user method or sentinel)
     alloc_temp(at);             // [1] = the receiver
     for (int32_t i = 0; i < spec.nargs; i++)
-      alloc_temp(i < argc ? *args.nodes[i] : at);
+      alloc_temp(i < argc ? *pos_args[i] : at);
     emit(Op::MethGate, base, recv.slot, kconst_str(post.token),
          static_cast<int32_t>(spec.id));
+    size_t to_builtin = 0;
+    size_t done_user = 0;
+    if (kw_val) {
+      // A member of the receiver's own binds the keyword the way any other
+      // call does — through the resolver, against that member's parameters.
+      // The gate slot IS that member, so the property is read only once (a
+      // getter of the name must not run twice).
+      to_builtin = emit(Op::JumpIfTag, base, 0, TAG_NO_SELF);
+      store_into(out, compile_kwargs_call(at, args, base, &recv),
+                 /*dst_is_fresh=*/true);
+      done_user = emit(Op::Jump);
+      patch_to_here(to_builtin);
+    }
     store_into(base + 1, recv, /*dst_is_fresh=*/true);
     // A name two receivers spell at different arities owes an ArityError,
     // not a method miss — and the interp raises it before the arguments run.
@@ -5549,22 +5663,43 @@ class Compiler {
       emit(Op::ArityChk, base, 0, bmeth_spec_index(spec));
     }
     for (int32_t i = 0; i < argc; i++)
-      store_into(base + 2 + i, compile_expr(*args.nodes[i]),
+      store_into(base + 2 + i, compile_expr(*pos_args[i]),
+                 /*dst_is_fresh=*/true);
+    // The keyword's value is written last, which is also where the source
+    // puts it: a keyword may not precede a positional argument.
+    if (kw_val)
+      store_into(base + 2 + argc, compile_expr(*kw_val),
                  /*dst_is_fresh=*/true);
     // Every argument runs before any is bound — the interp binder's order,
     // so the checks come as one run after the whole list, each still stamped
     // at its own argument.
     for (int32_t i = 0; i < argc; i++) {
       if (spec.params[i] == BParam::Any) continue;  // undeclared: no check
-      StampGuard arg_pos(*this, *args.nodes[i]);
+      StampGuard arg_pos(*this, *pos_args[i]);
       // The spec's own index is the whole operand: type, parameter name and
       // the receivers the check covers all come back out of the table.
       emit(Op::ChkParam, base + 2 + i, base, bmeth_spec_index(spec), i);
     }
-    // The omitted optional argument: the interp's declared default, so the
-    // op's arity is fixed per built-in and needs no absent-argument arm.
-    if (spec.nargs > argc)
+    if (kw_val) {
+      // Parameter order, not argument order: an undeclared callback ahead of
+      // the keyword still owes its `Function` check first.
+      if (spec.callback_param >= 0) {
+        StampGuard cb_pos(*this, *pos_args[spec.callback_param]);
+        emit(Op::CbType, base + 2 + spec.callback_param, base,
+             kconst_str(spec.pnames[spec.callback_param]));
+      }
+      // A keyword-capable built-in reports its binder errors at the call
+      // root, where the interp's own rich errors point — not at the value.
+      emit(Op::ChkParam, base + 2 + argc, base, bmeth_spec_index(spec), argc);
+    } else if (spec.kw) {
+      // The keyword the call left out: its declared default is `false`, the
+      // only one any built-in's keyword-only parameter carries.
+      emit(Op::LoadConst, base + 2 + argc, kconst({TAG_BOOL, 0}));
+    } else if (spec.nargs > argc) {
+      // The omitted optional argument: the interp's declared default, so the
+      // op's arity is fixed per built-in and needs no absent-argument arm.
       emit(Op::LoadConst, base + 2 + argc, kconst_str(spec.def));
+    }
     int32_t t = alloc_temp(at);
     size_t ix = emit(Op::BMeth, t, base, static_cast<int32_t>(spec.id),
                      spec.nargs);
@@ -5572,9 +5707,36 @@ class Compiler {
     // called from here, so this site publishes argument positions like any
     // other call — its typed parameters report at the argument expression.
     std::vector<const peg::Ast*> asts;
-    for (const auto& a : args.nodes) asts.push_back(a.get());
+    for (const auto* a : pos_args) asts.push_back(a);
     record_call_argpos(ix, args, std::move(asts));
-    return {t, true};
+    if (!kw_val) return {t, true};
+    store_into(out, {t, true}, /*dst_is_fresh=*/true);
+    patch_to_here(done_user);
+    return {out, true};
+  }
+
+  // The call's positional arguments: a keyword binds by name, so it takes no
+  // slot in the run the built-in reads.
+  static std::vector<const peg::Ast*> positional_args(const peg::Ast& args) {
+    using namespace peg::udl;
+    std::vector<const peg::Ast*> out;
+    for (const auto& a : args.nodes)
+      if (!(a->tag == "KWARG"_ || a->original_tag == "KWARG"_ ||
+            a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_))
+        out.push_back(a.get());
+    return out;
+  }
+
+  // The expression this call gives the keyword `name`, or null. First wins,
+  // like the binder — a repeat is a structural error raised before any of it.
+  static const peg::Ast* kwarg_value(const peg::Ast& args,
+                                     std::string_view name) {
+    using namespace peg::udl;
+    for (const auto& a : args.nodes)
+      if ((a->tag == "KWARG"_ || a->original_tag == "KWARG"_) &&
+          a->nodes[0]->token == name)
+        return a->nodes[1].get();
+    return nullptr;
   }
 
   // Positional-only argument lists: the runtime kwarg resolver is out of
@@ -5604,8 +5766,13 @@ class Compiler {
   // The three kinds keep their own stretch of one contiguous run (that is
   // how the resolver is handed them), while the VALUES evaluate in source
   // order, which is the order both backends show.
+  // `pos0` is a value that rides as positional[0] with no argument expression
+  // of its own — the UFCS receiver, whose parameter errors report at the
+  // method name (`pos0_at`), the way the positional UFCS call reports them.
   ExprResult compile_kwargs_call(const peg::Ast& at, const peg::Ast& args,
-                                 int32_t callee_slot, ExprResult* recv) {
+                                 int32_t callee_slot, ExprResult* recv,
+                                 ExprResult* pos0 = nullptr,
+                                 const peg::Ast* pos0_at = nullptr) {
     using namespace peg::udl;
     // Structural errors — a positional after a keyword, a repeated keyword —
     // are the interp's to raise where it scans the list: before any argument
@@ -5629,11 +5796,14 @@ class Compiler {
         n_pos++;
     }
     int32_t off = recv ? 1 : 0;
+    int32_t lead = pos0 ? 1 : 0;  // the UFCS receiver, positional[0]
+    n_pos += lead;
     int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
     if (recv) alloc_temp(at);
     for (int32_t i = 0; i < n_pos + n_kw + n_splat; i++) alloc_temp(at);
     if (recv) store_into(base, *recv, /*dst_is_fresh=*/true);
-    int32_t pi = 0, ki = 0, si = 0;
+    if (pos0) store_into(base + off, *pos0, /*dst_is_fresh=*/true);
+    int32_t pi = lead, ki = 0, si = 0;
     for (const auto& a : args.nodes) {
       if (a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_) {
         in_order.push_back({a->nodes[0].get(),
@@ -5658,6 +5828,7 @@ class Compiler {
     // reports at the call site on every backend, so leaving its parameter
     // without an entry is the agreement, not a gap.
     std::vector<const peg::Ast*> asts;
+    if (pos0_at) asts.push_back(pos0_at);
     for (const auto& a : args.nodes)
       if (!(a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_ ||
             a->tag == "KWARG"_ || a->original_tag == "KWARG"_))
@@ -6774,7 +6945,8 @@ inline std::string dump(const Chunk& c) {
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "PropSet",   "PropWr",    "PropCo",     "NsWrChk",
-      "PropVal",   "BareMethChk", "MethGate", "ChkParam", "ArityChk", "BMeth",
+      "PropVal",   "BareMethChk", "MethGate", "ChkParam", "CbType",
+      "ArityChk",  "BMeth",
       "PropRaw",
       "HasProp",   "Drop",      "ClsParamsChk", "ClsParamsWalk",
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
@@ -7931,6 +8103,21 @@ struct Exec {
             regs[in.a] = JitValue{TAG_NO_SELF, kBMethGateMiss};
           } else if (bmeth_publishes_call_pos(static_cast<BMeth>(in.d))) {
             culebra_runtime_set_op_pos(line, col);
+          }
+          ++pc;
+          break;
+        }
+        case Op::CbType: {
+          if (regs[in.b].tag == TAG_NO_SELF &&
+              regs[in.b].data == kBMethGateBuiltin) {
+            // The helper reports at the callback's own argument, which it
+            // reads from the site BMeth publishes later — publish it here,
+            // where this check is the first reader.
+            auto [line, col] = chunk_pos_at(c, pc);
+            culebra_runtime_set_callback_arg_site(line, col);
+            culebra_runtime_check_callback_type(
+                static_cast<int8_t>(regs[in.a].tag), regs[in.a].data,
+                reinterpret_cast<const char*>(c.consts[in.c].data));
           }
           ++pc;
           break;
@@ -10226,6 +10413,32 @@ struct Lowering {
           b.SetInsertPoint(contBB);
           break;
         }
+        case Op::CbType: {
+          auto [line, col] = chunk_pos_at(c, i);
+          auto gate = load_slot(in.b);
+          auto chkBB = BasicBlock::Create(j.ctx_, "vbm.cb.chk", fn);
+          auto contBB = BasicBlock::Create(j.ctx_, "vbm.cb.cont", fn);
+          b.CreateCondBr(
+              b.CreateAnd(
+                  b.CreateICmpEQ(j.extract_tag(gate), b.getInt8(TAG_NO_SELF)),
+                  b.CreateICmpEQ(j.extract_data(gate),
+                                 b.getInt64(kBMethGateBuiltin))),
+              chkBB, contBB);
+          b.SetInsertPoint(chkBB);
+          // Same two calls the executor makes: publish the argument's site
+          // (the helper's throw reads it), then check the declared type.
+          j.emit_call(j.module_->getFunction(rt::set_callback_arg_site),
+                      {b.getInt64(line), b.getInt64(col)});
+          auto cb = load_slot(in.a);
+          j.emit_call(j.module_->getFunction(rt::check_callback_type),
+                      {j.extract_tag(cb), j.extract_data(cb),
+                       j.get_or_create_global_str(
+                           reinterpret_cast<const char*>(c.consts[in.c].data),
+                           ".cb.param")});
+          b.CreateBr(contBB);
+          b.SetInsertPoint(contBB);
+          break;
+        }
         case Op::ArityChk: {
           // One arm per receiver tag the rival arity resolves on — the
           // message is a compile-time fact of (tag, shape), so only the
@@ -10367,6 +10580,12 @@ struct Lowering {
           auto arg = [&](int32_t k) { return argv[k]; };
           auto arr = [&] {
             return b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+          };
+          // A keyword-only slot as the helper's `bool`: the type check ran
+          // before the call, so the payload is the Bool's own bit.
+          auto kw_flag = [&](int32_t k) {
+            return b.CreateICmpNE(j.extract_data(arg(k)), b.getInt64(0),
+                                  "vbm.kw");
           };
           // A non-Function callback reports at its own argument: publish the
           // site the runtime helper's check reads.
@@ -10785,12 +11004,11 @@ struct Lowering {
               break;
             }
             case BMeth::Sorted:
-              // `reverse:` is kw-only and the VM rejects every keyword
-              // argument at compile time, so this arm is reachable only
-              // without it — the gate already proved Array.
+              // The gate already proved Array; `reverse:` rides the trailing
+              // keyword-only slot, type-checked before the call.
               res = j.make_array(j.emit_call(
                   j.module_->getFunction(rt::array_sorted),
-                  {arr(), b.getInt1(false), b.getInt64(line), b.getInt64(col)},
+                  {arr(), kw_flag(0), b.getInt64(line), b.getInt64(col)},
                   "vbm.srt"));
               break;
             case BMeth::Distinct:
@@ -11051,20 +11269,17 @@ struct Lowering {
               break;
             }
             case BMeth::SortBy:
-              // `reverse:` is kw-only and the VM rejects every keyword
-              // argument at compile time, so this arm is reachable only
-              // without it — the gate already proved Array.
               j.emit_call(
                   j.module_->getFunction(rt::array_sort_by),
                   {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
-                   b.getInt1(false), b.getInt64(line), b.getInt64(col)});
+                   kw_flag(1), b.getInt64(line), b.getInt64(col)});
               res = j.make_nil();
               break;
             case BMeth::SortedBy:
               res = j.make_array(j.emit_call(
                   j.module_->getFunction(rt::array_sorted_by),
                   {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
-                   b.getInt1(false), b.getInt64(line), b.getInt64(col)},
+                   kw_flag(1), b.getInt64(line), b.getInt64(col)},
                   "vbm.sb"));
               break;
             case BMeth::Pop:
@@ -11680,10 +11895,9 @@ struct Lowering {
               res = val_fn(rt::tensor_item, {arr()});
               break;
             case BMeth::Sort:
-              // In place, answering nil. `reverse:` is kw-only and the VM
-              // rejects every keyword argument, so it is always false here.
+              // In place, answering nil.
               j.emit_call(j.module_->getFunction(rt::array_sort),
-                          {arr(), b.getInt1(false), b.getInt64(line),
+                          {arr(), kw_flag(0), b.getInt64(line),
                            b.getInt64(col)});
               res = j.make_nil();
               break;

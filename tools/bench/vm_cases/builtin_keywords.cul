@@ -1,0 +1,219 @@
+# The one keyword shape a built-in method takes: the name of a keyword-only
+# parameter. The sort family is the whole of it (`reverse:`), and everything
+# else a keyword can be written as — an ordinary parameter's name, an unknown
+# name, a `**` splat — is the interp's "does not accept keyword arguments",
+# owed by whichever receiver resolves the name.
+
+fn p(label, thunk) {
+  let r = try {
+    "ok=" + to_string(thunk())
+  } catch e {
+    "err=" + to_string(e.kind) + "|" + to_string(e.message)
+  }
+  print(label + " ::: " + r + "\n")
+}
+
+# The keyword bound, and the same call without it.
+p("sorted(reverse: true)", fn () {
+  [3, 1, 2].sorted(reverse: true)
+})
+p("sorted(reverse: false)", fn () {
+  [3, 1, 2].sorted(reverse: false)
+})
+p("sorted()", fn () {
+  [3, 1, 2].sorted()
+})
+p("sorted_by(f, reverse: true)", fn () {
+  [3, 1, 2].sorted_by(fn (x) { -x }, reverse: true)
+})
+p("sorted_by(f)", fn () {
+  [3, 1, 2].sorted_by(fn (x) { -x })
+})
+p("chained", fn () {
+  [3, 1, 2].sorted(reverse: true).join(",")
+})
+
+# The mutating twins answer nil and leave the receiver sorted.
+mut a = [3, 1, 2]
+a.sort(reverse: true)
+println(a)
+mut b = [3, 1, 2]
+println(b.sort(reverse: false))
+println(b)
+mut c = [3, 1, 2]
+c.sort_by(fn (x) { -x }, reverse: true)
+println(c)
+
+# The keyword's declared type, at the call root — and the callback's own
+# declared type first, since the binder walks parameters in order.
+p("sorted(reverse: 5)", fn () {
+  [3, 1].sorted(reverse: 5)
+})
+p("sorted(reverse: nil)", fn () {
+  [3, 1].sorted(reverse: nil)
+})
+p("sorted_by(5, reverse: 5)", fn () {
+  [3, 1].sorted_by(5, reverse: 5)
+})
+p("sorted_by(5, reverse: true)", fn () {
+  [3, 1].sorted_by(5, reverse: true)
+})
+p("sorted_by(2-param, reverse: 5)", fn () {
+  [3, 1].sorted_by(fn (x, y) { x }, reverse: 5)
+})
+
+# A keyword-only parameter has no positional slot at all.
+p("sorted(true)", fn () {
+  [3, 1].sorted(true)
+})
+p("sorted(1, reverse: true)", fn () {
+  [3, 1].sorted(1, reverse: true)
+})
+
+# Keywords a built-in cannot bind: an ordinary parameter's name, an unknown
+# name, a splat. The receiver must resolve the name first — a scalar's member
+# error and a miss both outrank the keyword one.
+p("truncate(max: 3)", fn () {
+  'abcdefgh'.truncate(max: 3)
+})
+p("truncate(5, ellipsis: '!')", fn () {
+  'abcdefgh'.truncate(5, ellipsis: '!')
+})
+p("trim_start(chars: 'x')", fn () {
+  'xxabxx'.trim_start(chars: 'x')
+})
+p("sorted(rev: true)", fn () {
+  [3, 1].sorted(rev: true)
+})
+p("sorted(**m)", fn () {
+  let m = {'reverse': true}
+  [3, 1].sorted(**m)
+})
+p("push(1, x: 2)", fn () {
+  [1, 2].push(1, x: 2)
+})
+p("set.add(x: 1)", fn () {
+  {1, 2}.add(x: 1)
+})
+p("dict.get(0, fallback: 9)", fn () {
+  [1, 2].get(0, fallback: 9)
+})
+p("ns.size(reverse: true)", fn () {
+  Math.size(reverse: true)
+})
+p("scalar.sorted(reverse: true)", fn () {
+  (5).sorted(reverse: true)
+})
+p("str.sorted(reverse: true)", fn () {
+  'ab'.sorted(reverse: true)
+})
+p("scalar.truncate(max: 3)", fn () {
+  (5).truncate(max: 3)
+})
+p("iter.take(n: 1)", fn () {
+  range(0, 3).take(n: 1)
+})
+
+# The argument list's own structural errors, which the interp scans for after
+# it has read the property and accepted the keyword.
+p("kw then positional", fn () {
+  [3, 1].sorted_by(reverse: true, fn (x) { x })
+})
+p("kw then surplus", fn () {
+  [3, 1].sorted(reverse: true, 5)
+})
+p("duplicate kw", fn () {
+  [3, 1].sorted(reverse: true, reverse: false)
+})
+p("miss outranks list", fn () {
+  (5).sorted(reverse: true, 5)
+})
+
+# The keyword's value runs in source order, and only when the receiver
+# resolves the name: a member error fires before it.
+mut trace = ''
+fn note(s, v) {
+  trace = trace + s
+  return v
+}
+p("value order", fn () {
+  trace = ''
+  [3, 1].sorted_by(note('f;', fn (x) { x }), reverse: note('rev;', true))
+  trace
+})
+p("unresolved skips the value", fn () {
+  trace = ''
+  let r = try {
+    (5).sorted(reverse: note('rev;', true))
+  } catch e {
+    'caught'
+  }
+  trace + r
+})
+
+# A member of the receiver's own binds the keyword itself — the resolver
+# against that member's parameters, not the built-in's.
+class Own {
+  sorted(reverse) { ['own', reverse] }
+  size(k) { ['own-size', k] }
+}
+p("own method", fn () {
+  Own.new().sorted(reverse: true)
+})
+p("own method unknown kw", fn () {
+  Own.new().sorted(nope: true)
+})
+p("own size", fn () {
+  Own.new().size(k: 2)
+})
+let dict_with_fn = {'sorted': fn (reverse) { ['dict', reverse] }}
+p("dict member", fn () {
+  dict_with_fn.sorted(reverse: 9)
+})
+
+# A visible free function of the same name: the receiver decides, and the
+# UFCS arm hands the receiver to the resolver as positional[0].
+fn size(x, k) { ['ufcs-size', x, k] }
+p("ufcs candidate, miss", fn () {
+  (5).size(k: 1)
+})
+p("ufcs candidate, resolved", fn () {
+  [1, 2].size(k: 1)
+})
+p("ufcs splat", fn () {
+  let m = {'k': 7}
+  (5).size(**m)
+})
+p("ufcs duplicate kw", fn () {
+  (5).size(k: 1, k: 2)
+})
+
+# to_string: the String value method on a String, the global everywhere else.
+p("str.to_string(k: 1)", fn () {
+  'ab'.to_string(k: 1)
+})
+p("long.to_string(k: 1)", fn () {
+  (5).to_string(k: 1)
+})
+p("dict.to_string(k: 1)", fn () {
+  {'a': 1}.to_string(k: 1)
+})
+p("ns.to_string(k: 1)", fn () {
+  Math.to_string(k: 1)
+})
+
+# Churn: the keyword path allocates nothing that outlives the call, and the
+# throwing shapes leave the receiver to the ordinary sweep.
+mut i = 0
+while i < 4000 {
+  let s = [3, 1, 2].sorted(reverse: true)
+  mut m = [3, 1, 2]
+  m.sort_by(fn (x) { -x }, reverse: true)
+  let t = try {
+    [3, 1].sorted(rev: true)
+  } catch e {
+    'x'
+  }
+  i = i + 1
+}
+println('churn done')
