@@ -133,4 +133,28 @@ try {
 assert_eq(all_heap_rejected, true)
 hh.drop()
 
+# --- share: survives a call the keyword peephole never sees ----------------
+# `share` used to be implemented only in the compile-time keyword form, so a
+# call that reached the runtime resolver instead — a namespace function read
+# as a value on any backend, or any direct call on the bytecode VM, which has
+# no peephole — dropped it and the child could not attach the buffer.
+let vg = SharedBuffer.shared(2, Cell)
+let run_via_value = Proc.run
+let vr = run_via_value([Sys.executable, add_worker], share: {grid: vg})
+assert_eq(vr.ok, true)
+assert_eq(vg[0].v, 10)
+assert_eq(vg[1].v, 20)
+vg.drop()
+
+let sg = SharedBuffer.shared(1, Cell)
+let spawn_via_value = Proc.spawn
+let sh = spawn_via_value(
+  [Sys.executable, slot_worker],
+  share: {grid: sg},
+  env: {SLOT: "0"},
+)
+sh.wait()
+assert_eq(sg[0].v, 100)
+sg.drop()
+
 inspect("proc share ok")

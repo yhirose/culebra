@@ -1365,6 +1365,50 @@ inline bool _ns_env_object_pairs(
 // layer on top regardless of order). Each map entry owns a +1 ref to
 // its value — the destructor drops any leftover entries on every
 // exit path, so error throws during typed-take don't leak.
+
+// A `share` Object (name -> SharedBuffer) resolved for a child process, in
+// two halves so each caller keeps its own cleanup discipline: collect the
+// (name, buffer id) pairs while nothing has been allocated yet, then turn
+// them into the CULEBRA_SHARE_* env entries and the fds the child inherits.
+// Borrows the Object. Shared by the kwarg resolver and the positional
+// adapters below — `share:` reached only the resolver before, so a call the
+// compile-time keyword peephole did not handle (the VM's direct call, or
+// `let f = Proc.run; f(cmd, share: ...)` on any backend) dropped it silently
+// and the child could not attach the buffer.
+inline std::string _ns_proc_share_ids(
+    JitValue raw, std::string_view ctx,
+    std::vector<std::pair<std::string, long>>& out) {
+  if (raw.tag != TAG_OBJECT)
+    return std::string(ctx) +
+           ": share must be an Object of name -> SharedBuffer";
+  auto* obj = reinterpret_cast<JitObject*>(raw.data);
+  if (!obj->shape) return {};
+  for (size_t k = 0; k < obj->shape->names.size(); k++) {
+    const std::string& name = obj->shape->names[k];
+    const JitValue& bv = obj->slots[k].value;
+    size_t si = (bv.tag == TAG_OBJECT)
+                    ? reinterpret_cast<JitObject*>(bv.data)
+                          ->find_slot("__sharedbuffer_id__")
+                    : static_cast<size_t>(-1);
+    if (si == static_cast<size_t>(-1))
+      return std::format("{}: share `{}` must be a SharedBuffer", ctx, name);
+    out.emplace_back(
+        name, reinterpret_cast<JitObject*>(bv.data)->slots[si].value.data);
+  }
+  return {};
+}
+
+inline void _ns_proc_share_apply(
+    const std::vector<std::pair<std::string, long>>& ids,
+    std::vector<std::pair<std::string, std::string>>& env_out,
+    std::vector<int>& fds_out) {
+  for (const auto& [name, id] : ids) {
+    auto [fd, env_val] = culebra::prepare_share_buffer(id, name);
+    env_out.emplace_back(culebra::share_env_key(name), std::move(env_val));
+    fds_out.push_back(fd);
+  }
+}
+
 class _JitKwargResolver {
  public:
   _JitKwargResolver(int64_t n_kw, const char* const* kw_keys,
@@ -1489,36 +1533,12 @@ class _JitKwargResolver {
     auto raw = it->second;
     merged_.erase(it);
     if (raw.tag == TAG_NIL) return false;
-    if (raw.tag != TAG_OBJECT) {
-      _culebra_value_release_impl(raw.tag, raw.data);
-      fail(std::string(ctx_) +
-           ": share must be an Object of name -> SharedBuffer");
-    }
     // Collect (name, buffer id) first so a validation throw can't leak `raw`.
     std::vector<std::pair<std::string, long>> entries;
-    auto* obj = reinterpret_cast<JitObject*>(raw.data);
-    if (obj->shape) {
-      for (size_t k = 0; k < obj->shape->names.size(); k++) {
-        const std::string& name = obj->shape->names[k];
-        const JitValue& bv = obj->slots[k].value;
-        size_t si = (bv.tag == TAG_OBJECT)
-                        ? reinterpret_cast<JitObject*>(bv.data)
-                              ->find_slot("__sharedbuffer_id__")
-                        : static_cast<size_t>(-1);
-        if (si == static_cast<size_t>(-1)) {
-          _culebra_value_release_impl(raw.tag, raw.data);
-          fail(std::format("{}: share `{}` must be a SharedBuffer", ctx_, name));
-        }
-        entries.emplace_back(
-            name, reinterpret_cast<JitObject*>(bv.data)->slots[si].value.data);
-      }
-    }
+    std::string err = _ns_proc_share_ids(raw, ctx_, entries);
     _culebra_value_release_impl(raw.tag, raw.data);
-    for (auto& [name, id] : entries) {
-      auto [fd, env_val] = culebra::prepare_share_buffer(id, name);
-      env_out.emplace_back(culebra::share_env_key(name), std::move(env_val));
-      fds_out.push_back(fd);
-    }
+    if (!err.empty()) fail(err);
+    _ns_proc_share_apply(entries, env_out, fds_out);
     return true;
   }
 
@@ -4765,6 +4785,22 @@ inline bool env_slot(JitValue v,
   }
   return true;
 }
+
+// The `share` slot of a positional slab: the last canonical parameter of
+// every Proc entry point. Borrows the Object; the dispatch releases the
+// slab afterwards. Returns whether anything was shared, so the caller knows
+// to hand the impl its env overrides.
+inline bool share_slot(JitValue sv, std::string_view ctx,
+                       std::vector<std::pair<std::string, std::string>>& env,
+                       std::vector<int>& fds) {
+  if (sv.tag == TAG_NIL) return false;
+  std::vector<std::pair<std::string, long>> ids;
+  std::string err = _ns_proc_share_ids(sv, ctx, ids);
+  if (!err.empty()) culebra::throw_runtime_error_at("TypeError", err, 0, 0);
+  _ns_proc_share_apply(ids, env, fds);
+  return true;
+}
+
 }  // namespace _proc_adapt
 
 // --- Net ---------------------------------------------------------------------
@@ -4860,8 +4896,13 @@ inline JitValue _ns_proc_run(JitValue* a, int64_t n) {
   bool check = chk.tag == TAG_BOOL && chk.data != 0;
   JitValue to = _proc_adapt::at(a, n, 5);
   int64_t timeout = to.tag == TAG_LONG ? to.data : 0;
+  std::vector<int> fds;
+  bool has_share =
+      _proc_adapt::share_slot(_proc_adapt::at(a, n, 6), "Proc.run", over, fds);
+  if (has_share) env = &over;
   return _culebra_proc_run_impl(a[0].tag, a[0].data, cwd, env, stdin_data,
-                                check, timeout, 0, 0);
+                                check, timeout, 0, 0,
+                                fds.empty() ? nullptr : &fds);
 }
 inline JitValue _ns_proc_all(JitValue* a, int64_t n) {
   // slab: commands, limit, timeout, fail_fast, retries
@@ -4869,13 +4910,24 @@ inline JitValue _ns_proc_all(JitValue* a, int64_t n) {
   JitValue to = _proc_adapt::at(a, n, 2);
   JitValue ff = _proc_adapt::at(a, n, 3);
   JitValue rt = _proc_adapt::at(a, n, 4);
+  std::vector<std::pair<std::string, std::string>> over;
+  std::vector<int> fds;
+  bool has_share =
+      _proc_adapt::share_slot(_proc_adapt::at(a, n, 5), "Proc.all", over, fds);
   return _culebra_proc_all_impl(
       a[0].tag, a[0].data, lim.tag == TAG_LONG ? lim.data : 0,
       to.tag == TAG_LONG ? to.data : 0, ff.tag == TAG_BOOL && ff.data != 0,
-      rt.tag == TAG_LONG ? rt.data : 0, 0, 0);
+      rt.tag == TAG_LONG ? rt.data : 0, 0, 0, has_share ? &over : nullptr,
+      fds.empty() ? nullptr : &fds);
 }
-inline JitValue _ns_proc_race(JitValue* a, int64_t) {
-  return culebra_runtime_proc_race(a[0].tag, a[0].data, 0, 0);
+inline JitValue _ns_proc_race(JitValue* a, int64_t n) {
+  std::vector<std::pair<std::string, std::string>> over;
+  std::vector<int> fds;
+  bool has_share =
+      _proc_adapt::share_slot(_proc_adapt::at(a, n, 1), "Proc.race", over, fds);
+  return _culebra_proc_race_impl(a[0].tag, a[0].data, 0, 0,
+                                 has_share ? &over : nullptr,
+                                 fds.empty() ? nullptr : &fds);
 }
 
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -6219,8 +6271,12 @@ inline JitValue _ns_proc_spawn(JitValue* a, int64_t n) {
                         ? &over : nullptr;
   std::string stdin_data;
   _proc_adapt::str_slot(_proc_adapt::at(a, n, 3), stdin_data);
+  std::vector<int> fds;
+  bool has_share = _proc_adapt::share_slot(_proc_adapt::at(a, n, 4),
+                                           "Proc.spawn", over, fds);
+  if (has_share) env = &over;
   return _culebra_proc_spawn_build(a[0].tag, a[0].data, cwd, env, stdin_data,
-                                   0, 0);
+                                   0, 0, fds.empty() ? nullptr : &fds);
 }
 
 // JSON.stringify(v, indent=0, sort_keys=false, lines=false): the resolver

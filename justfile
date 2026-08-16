@@ -623,20 +623,28 @@ _run-tests BACKEND:
         {
             printf 'interp %s\n' tests/isolate/*.cul
             printf 'jit %s\n' tests/isolate/*_jit.cul
+            printf 'vm %s\n' tests/isolate/*.cul
+            printf 'vm-llvm %s\n' tests/isolate/*.cul
             printf 'overcap-interp %s\n' tests/isolate/test_spawn_overcap*.cul
             printf 'overcap-jit %s\n' tests/isolate/test_spawn_overcap*.cul
+            printf 'overcap-vm %s\n' tests/isolate/test_spawn_overcap*.cul
         } | xargs -P "$(( JOBS < 4 ? JOBS : 4 ))" -I '{}' bash -c '
             mode=${1%% *}; f=${1#* }; d="$2"
             name=$(basename "$f" .cul).$mode
-            [[ $mode == *jit ]] && jit=--jit || jit=
+            case "$mode" in
+                jit|overcap-jit) flag=--jit ;;
+                vm|overcap-vm)   flag=--vm ;;
+                vm-llvm)         flag=--vm-llvm ;;
+                *)               flag= ;;
+            esac
             [[ $mode == overcap-* ]] && export CULEBRA_ISOLATE_LIMIT=1
-            cul $jit "$f" > /dev/null 2> "$d/$name.err" || {
+            cul $flag "$f" > /dev/null 2> "$d/$name.err" || {
                 echo "test isolate FAIL (or timed out) [$mode]: $f" >> "$d/$name.err"
                 touch "$d/$name.fail"
             }
         ' _ '{}' "$d"
         collect_failures "$d" "isolate" || exit 1
-        echo "test isolate OK (interp + jit symmetry)"
+        echo "test isolate OK (interp + jit + both VM lanes)"
     }
 
     # Differential corpus: generate the template-combinator programs and
@@ -857,7 +865,7 @@ _run-tests BACKEND:
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery; }
         phase "ctest (embedding smokes)"; run_embed
         phase "culebra-test self"; run_culebra_test_self
-        phase "isolate (interp + jit)"; run_isolate
+        phase "isolate (interp + jit + VM)"; run_isolate
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "AOT (== jit)"; run_aot; }
         # Opt-in rather than skip-by-flag: wrap rebuilds the whole tree, which
         # doubled this gate, and only a wrap/CMake/AOT change can break it.
@@ -878,7 +886,7 @@ _run-tests BACKEND:
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "culebra-test self"; run_culebra_test_self
-        phase "isolate (interp + jit)"; run_isolate
+        phase "isolate (interp + jit + VM)"; run_isolate
         phase "done"; echo "test OK (fast)"
         ;;
       interp) run_interp; run_isolate ;;
@@ -915,7 +923,7 @@ _run-tests BACKEND:
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
         phase "culebra-test self"; run_culebra_test_self
-        phase "isolate (interp + jit)"; run_isolate
+        phase "isolate (interp + jit + VM)"; run_isolate
         phase "done"; echo "test OK (ci-light)"
         ;;
       ci-diff)
