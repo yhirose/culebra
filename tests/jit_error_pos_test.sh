@@ -652,6 +652,12 @@ check_same "kw error outranks"         "'abcdef'.truncate(max: 3, 5)"
 # so the callback's declared type answers before the keyword's — the sorter
 # checks the callback from the body, which is one step too late.
 check_same "callback type before kw"   "[3, 1].sorted_by(5, reverse: 5)"
+# A namespace answers the member before the argument list is scanned, so a
+# name it does not carry outranks the list's structural errors; a member it
+# does carry lets them through.
+check_same "ns member before list"     "Math.zzz(a: 1, 2)"
+check_same "ns member before dup kw"   "Math.zzz(a: 1, a: 2)"
+check_same "ns member keeps list err"  "Math.abs(x: 1, 2)"
 check_same "sort_by type before kw"    "mut a = [3, 1]
 a.sort_by(5, reverse: 5)"
 

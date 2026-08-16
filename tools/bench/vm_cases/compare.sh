@@ -23,15 +23,17 @@ for f in *.cul; do
   # SyntaxError — so it passes while testing nothing. Two files raise one on
   # purpose (a getter with parameters, a duplicate trait method); both are
   # named error_*, which is the exemption.
-  case "$a" in
-    *SyntaxError*)
-      case "$f" in
-        error_*) ;;
-        *) echo "FAIL $f does not parse (a case that cannot run is not a test)"
-           printf '%s\n' "$a" | head -2 | sed 's/^/     /'
-           fail=1; continue;;
-      esac;;
-  esac
+  # An UNCAUGHT diagnostic starts its own line ("SyntaxError: … at L:C."); a
+  # case that catches one and prints it (`err=SyntaxError|…`) is testing the
+  # error, not failing to parse.
+  if printf '%s\n' "$a" | grep -q '^SyntaxError: '; then
+    case "$f" in
+      error_*) ;;
+      *) echo "FAIL $f does not parse (a case that cannot run is not a test)"
+         printf '%s\n' "$a" | head -2 | sed 's/^/     /'
+         fail=1; continue;;
+    esac
+  fi
   for lane in "${LANES[@]}"; do
     # The runtime checks CULEBRA_GC_STRESS for presence, not value, so only
     # set it when stressing.

@@ -11290,8 +11290,8 @@ struct JIT {
   // receiver's type is a run-time fact, so this over-approximates across the
   // tables, exactly like emit_builtin_arity_check's own lookup; a receiver
   // that turns out not to resolve the name took the UFCS arm before this.
-  bool builtin_method_keywords_bindable(const std::string& method,
-                                        const peg::Ast& argsAst) {
+  static bool builtin_method_keywords_bindable(const std::string& method,
+                                               const peg::Ast& argsAst) {
     auto scan = scan_arg_list(argsAst);
     if (!scan.splats.empty()) return false;
     for (const auto& [kw, _val] : scan.explicit_kwargs) {
@@ -12995,10 +12995,12 @@ struct JIT {
     if (calleeNode->tag == "IDENTIFIER"_ && ast.nodes.size() >= 2 &&
         ast.nodes[1]->original_tag == "ARGUMENTS"_) {
       auto name = std::string(calleeNode->token);
-      // A malformed argument list pre-empts the builtin's own (divergent)
-      // kwarg-name check, matching the interp + the generic path.
-      emit_arg_list_check(*ast.nodes[1]);
-      start = try_compile_core_global(name, *ast.nodes[1]);
+      // A malformed argument list leaves the fast paths to the generic one,
+      // which resolves the callee and only then scans the list — the interp's
+      // order, and the one that keeps a namespace's AttributeError for a name
+      // it does not carry ahead of the list's own structural error.
+      if (!culebra::check_arg_list(*ast.nodes[1]))
+        start = try_compile_core_global(name, *ast.nodes[1]);
       if (!start.borrow() && h.compile_global) {
         start = h.compile_global(*this, name, *ast.nodes[1], ast);
       }
@@ -13012,8 +13014,8 @@ struct JIT {
       auto prop = ast.nodes[1]->token;
       if (ast.nodes.size() >= 3 &&
           ast.nodes[2]->original_tag == "ARGUMENTS"_ &&
-          h.compile_ns_call) {
-        emit_arg_list_check(*ast.nodes[2]);
+          h.compile_ns_call &&
+          !culebra::check_arg_list(*ast.nodes[2])) {
         start = h.compile_ns_call(*this, ns, prop, *ast.nodes[2], ast);
         if (start.borrow()) next_idx = 3;
       }
@@ -13024,8 +13026,8 @@ struct JIT {
       if (!start.borrow() && ast.nodes.size() >= 4 &&
           ast.nodes[2]->original_tag == "DOT"_ &&
           ast.nodes[3]->original_tag == "ARGUMENTS"_ &&
-          h.compile_nested_ns_call) {
-        emit_arg_list_check(*ast.nodes[3]);
+          h.compile_nested_ns_call &&
+          !culebra::check_arg_list(*ast.nodes[3])) {
         start = h.compile_nested_ns_call(*this, ns, prop, ast.nodes[2]->token,
                                          *ast.nodes[3], ast);
         if (start.borrow()) next_idx = 4;
