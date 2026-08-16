@@ -5948,6 +5948,11 @@ class Compiler {
     Chunk::KwCall kc{recv != nullptr, n_pos, n_kw, n_splat, {}};
     for (auto k : keys) kc.kw_keys.push_back(kconst_str(k));
     chunk_.kwcalls.push_back(std::move(kc));
+    // The binder's own errors report at the CALLEE, which a parenthesized
+    // one puts past the `(` the call node starts at — the anchor the arity
+    // check already reads out of the same helper.
+    auto [cl, cc] = culebra::call_callee_position(at);
+    stamp_at(cl, cc);
     size_t ix = emit(Op::CallKw, t, callee_slot, base, spec);
     // Only the positionals: they bind to the parameters of the same index,
     // which is what an argument-position table indexes by. A keyword value
