@@ -301,13 +301,25 @@ enum class Op : uint8_t {
                // itself, compile_method_call's property tail.
   HasProp,     // regs[a] = Bool: does regs[b] resolve consts[c] as a property
                // of its own? The UFCS gate (interp's receiver_has_property /
-               // the JIT's method-or-UFCS branch). Only names outside every
-               // builtin method table reach a UFCS site (the builtin-name
-               // collision stays a compile-time reject), so the value-table
-               // and iterator arms of the full gate are statically false and
-               // the question collapses to its Object arm: an own/proto slot,
-               // a conforming instance's trait default, or a closed namespace
-               // (which answers every name itself). Nothrow.
+               // the JIT's method-or-UFCS branch). `d` carries the static half
+               // — the tags whose own built-in table binds the name, plus
+               // kHasPropIterBit for an iterator-protocol name — and the Object
+               // arm is probed here: an own/proto slot, a conforming
+               // instance's trait default, or a closed namespace (which
+               // answers every name itself). Nothrow.
+  Drop,        // regs[a] = nil, running regs[b]'s `drop` through the
+               // at-most-once guard (culebra_runtime_explicit_drop). The
+               // receiver is borrowed; a receiver with no `drop` is a no-op.
+               // Explicit `x.drop()` only — the automatic one rides the
+               // scope ladder.
+  ClsParamsChk,  // regs[a] = Bool: is regs[b] a class instance with no
+               // `parameters` of its own (own/proto slot or trait default)?
+               // That is exactly when the synthesized walker below answers,
+               // and its negation hands the call to the ordinary gate.
+  ClsParamsWalk,  // regs[a] = the synthesized `parameters()` of the class
+               // instance regs[b] — a flat Array of the fields that hold
+               // class instances (culebra_runtime_class_parameters_walk).
+               // Borrows the receiver.
   SeqChk,      // destructuring gate: unless regs[a] is an Array or Tuple of
                // exactly c elements (d=0) — at least c, when the pattern has
                // a `...rest` (d=1) — pc = b. One JitArray backs both tags, so
@@ -5199,26 +5211,6 @@ class Compiler {
     return UfcsCand::None;
   }
 
-  void reject_out_of_slice_method(const peg::Ast& post,
-                                  const BMethSpec* spec) {
-    reject_fn_introspection(post);
-    std::string_view name = post.token;
-    // A candidate on a BUILT-IN method name stays rejected: its hit arm is
-    // the inline tag dispatch (or the specs' MethGate, whose gate has no
-    // UFCS arm) — `(5).map(f)` with a free `map` needs a gate ahead of
-    // machinery the slice compiles differently. A candidate on any other
-    // name compiles the runtime gate (compile_method_call's UFCS arms).
-    // `drop` and `parameters` reach their own dispatches (explicit_drop, the
-    // synthesized class walker) ahead of the UFCS arm, and those the slice
-    // does not compile — so a candidate on either name stays rejected, with
-    // the dispatch reject below covering the candidate-free case.
-    if (ufcs_candidate(name, spec) != UfcsCand::None &&
-        (name == "drop" || name == "parameters"))
-      reject(post, std::format("UFCS candidate '{}'", name));
-    if (spec) return;
-    if (name == "drop" || name == "parameters")
-      reject(post, std::format("'{}' dispatch", name));
-  }
 
   // The check the JIT emits in front of an unresolved built-in method call,
   // as one op over a baked table. Every verdict comes from the interp's own
@@ -5268,6 +5260,54 @@ class Compiler {
     chunk_.arity_checks.push_back(std::move(arms));
   }
 
+  // Whether the argument list carries anything the keyword resolver owns.
+  static bool args_have_kwargs(const peg::Ast& args) {
+    using namespace peg::udl;
+    for (const auto& a : args.nodes)
+      if (a->tag == "KWARG"_ || a->tag == "SPLAT"_) return true;
+    return false;
+  }
+
+  // The at-most-once explicit drop. The receiver is borrowed — the guard only
+  // reads it — so the statement sweep stays its releaser, and the call's value
+  // is nil whatever the drop body returned.
+  ExprResult emit_explicit_drop(const peg::Ast& at, ExprResult r) {
+    int32_t t = alloc_temp(at);
+    emit(Op::Drop, t, r.slot);
+    return {t, true};
+  }
+
+  // `x.parameters(...)`: the synthesized walker when the receiver is a class
+  // instance resolving no `parameters` of its own, and the ordinary dispatch
+  // otherwise. compile_class_parameters_call's shape, with its `useAuto`
+  // check as one op and its other two arms folded into the general tail —
+  // that tail's HasProp gate asks exactly what the JIT's propBB asks.
+  ExprResult compile_class_parameters(const peg::Ast& at, const peg::Ast& post,
+                                      const peg::Ast& args, ExprResult recv) {
+    StampGuard pos(*this, at);
+    int32_t out = alloc_temp(at);
+    int32_t gate = alloc_temp(at);
+    emit(Op::ClsParamsChk, gate, recv.slot);
+    size_t to_normal = emit(Op::JumpIfFalse, gate);
+    {
+      // The arguments run on every arm; here they are only evaluated.
+      TempScope ts(*this);
+      for (const auto& a : args.nodes) compile_expr(*a);
+    }
+    emit(Op::ClsParamsWalk, out, recv.slot);
+    // The walker only borrows, but this arm is the receiver's last reader —
+    // and the other arms consume it. Release here rather than leaving it to
+    // the statement sweep: a temporary receiver's automatic drop runs as soon
+    // as the call is over, ahead of whatever the result feeds.
+    if (recv.owned) emit(Op::Release, recv.slot);
+    size_t done = emit(Op::Jump);
+    patch_to_here(to_normal);
+    store_into(out, compile_method_tail(at, post, args, recv),
+               /*dst_is_fresh=*/true);
+    patch_to_here(done);
+    return {out, true};
+  }
+
   // `x.m(args)` — compile_method_call's property tail. The property resolves
   // FIRST, before any argument compiles: that is the probed order on both
   // backends (a namespace's AttributeError fires without evaluating the
@@ -5277,13 +5317,36 @@ class Compiler {
   // the JitFn ABI's receiver, instead of minting a bound-method wrapper.
   ExprResult compile_method_call(const peg::Ast& at, const peg::Ast& post,
                                  const peg::Ast& args, ExprResult recv) {
+    // The one method name the slice still turns away: a Function's signature
+    // lives in a side table keyed by code address, and every executor closure
+    // shares one (see reject_fn_introspection).
+    reject_fn_introspection(post);
+    // The synthesized `parameters()`: a class instance that resolves no
+    // `parameters` of its own answers with the walker over its fields, and
+    // nothing else about the call matters — surplus positional arguments are
+    // evaluated and ignored, as they are for any other 0-parameter method.
+    // Everything the check rules out falls into the ordinary dispatch, whose
+    // HasProp gate asks the very question the JIT's own `else` arm asks (an
+    // own slot, a trait default, or a namespace).
+    if (post.token == "parameters" && !args_have_kwargs(args))
+      return compile_class_parameters(at, post, args, recv);
+    return compile_method_tail(at, post, args, recv);
+  }
+
+  ExprResult compile_method_tail(const peg::Ast& at, const peg::Ast& post,
+                                 const peg::Ast& args, ExprResult recv) {
     const BMethSpec* spec = bmeth_lookup(post.token, args.nodes.size());
-    reject_out_of_slice_method(post, spec);
+    // Explicit `x.drop()` runs the at-most-once guard rather than a method:
+    // an explicit drop suppresses the automatic one. interp's UFCS block sits
+    // ABOVE it, so a receiver resolving no `drop` of its own hands the call to
+    // a free `drop`, and a non-Function binding of the name comes back here.
+    bool is_drop = post.token == "drop" && args.nodes.empty();
     // The call a receiver that DOES resolve this name gets: the built-in when
     // the table carries this shape, otherwise the diagnostic those receivers
     // owe (the JIT's emit_unresolved_builtin_method, arity check first) and
     // then the ordinary property read.
-    auto resolved_call = [&](ExprResult r) {
+    auto resolved_call = [&](ExprResult r) -> ExprResult {
+      if (is_drop) return emit_explicit_drop(at, r);
       // A built-in method binds positionally; the one keyword shape they take
       // (a kw-only parameter name) has no place in the specs' table, so it
       // stays out of slice. Everything else routes through the resolver.
@@ -5292,6 +5355,12 @@ class Compiler {
         return compile_builtin_method(at, post, args, r, *spec);
       }
       emit_builtin_arity_check(at, post, args, r);
+      return compile_property_call(at, post, args, r);
+    };
+    // What a declined candidate leaves behind. For `drop` that is the guard
+    // again (the JIT hands compile_resolved_or_ufcs the same body twice).
+    auto declined_call = [&](ExprResult r) -> ExprResult {
+      if (is_drop) return emit_explicit_drop(at, r);
       return compile_property_call(at, post, args, r);
     };
     UfcsCand cand = ufcs_candidate(post.token, spec);
@@ -5344,8 +5413,7 @@ class Compiler {
     // the arguments run, an object-ish miss after). NOT resolved_call: a
     // built-in with no receiver gate at all (`to_string`) would answer here
     // over a receiver the gate just ruled out.
-    store_into(out, compile_property_call(at, post, args, recv),
-               /*dst_is_fresh=*/true);
+    store_into(out, declined_call(recv), /*dst_is_fresh=*/true);
     size_t done_miss = emit(Op::Jump);
     patch_to_here(to_call);
     // UFCS: `name(receiver, args...)`. The receiver rides as positional[0];
@@ -6647,7 +6715,7 @@ inline std::string dump(const Chunk& c) {
       "PropSet",   "PropWr",    "PropCo",     "NsWrChk",
       "PropVal",   "BareMethChk", "MethGate", "ChkParam", "ArityChk", "BMeth",
       "PropRaw",
-      "HasProp",
+      "HasProp",   "Drop",      "ClsParamsChk", "ClsParamsWalk",
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
       "JumpIfTag",
@@ -7732,6 +7800,32 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::Drop: {
+          const JitValue& recv = regs[in.b];
+          culebra_runtime_explicit_drop(static_cast<int8_t>(recv.tag),
+                                        recv.data);
+          regs[in.a] = JitValue{TAG_NIL, 0};
+          ++pc;
+          break;
+        }
+        case Op::ClsParamsChk: {
+          const JitValue& recv = regs[in.b];
+          bool use_auto = false;
+          if (recv.tag == TAG_OBJECT) {
+            auto* obj = reinterpret_cast<JitObject*>(recv.data);
+            use_auto =
+                culebra_runtime_object_has(obj, "class") &&
+                !culebra_runtime_object_has_or_trait_default(obj, "parameters");
+          }
+          regs[in.a] = JitValue{TAG_BOOL, use_auto ? 1 : 0};
+          ++pc;
+          break;
+        }
+        case Op::ClsParamsWalk:
+          regs[in.a] = culebra_runtime_class_parameters_walk(
+              reinterpret_cast<JitObject*>(regs[in.b].data));
+          ++pc;
+          break;
         case Op::MethGate: {
           const JitValue& recv = regs[in.b];
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
@@ -9928,6 +10022,56 @@ struct Lowering {
           b.CreateStore(j.make_bool(b.CreateOr(stat, objPhi)), slots[in.a]);
           break;
         }
+        case Op::Drop: {
+          // The at-most-once guard, borrowing the receiver — the AST path's
+          // emit_explicit_drop without its consume (a register keeps owning
+          // what it holds).
+          auto recv = load_slot(in.b);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::explicit_drop, b.getVoidTy(),
+                                             b.getInt8Ty(), i64Ty),
+              {j.extract_tag(recv), j.extract_data(recv)});
+          b.CreateStore(j.make_nil(), slots[in.a]);
+          break;
+        }
+        case Op::ClsParamsChk: {
+          // compile_class_parameters_call's `useAuto`: an Object carrying a
+          // `class` tag and resolving no `parameters` of its own.
+          auto recv = load_slot(in.b);
+          auto entryBB = b.GetInsertBlock();
+          auto objBB = BasicBlock::Create(j.ctx_, "vcp.obj", fn);
+          auto contBB = BasicBlock::Create(j.ctx_, "vcp.cont", fn);
+          b.CreateCondBr(
+              b.CreateICmpEQ(j.extract_tag(recv), b.getInt8(TAG_OBJECT)), objBB,
+              contBB);
+          b.SetInsertPoint(objBB);
+          auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+          auto hasClass = j.emit_object_has(
+              objPtr, j.get_or_create_global_str("class", ".vcp.ck"));
+          auto hasUser = j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_has_or_trait_default,
+                                             b.getInt1Ty(), ptrTy, ptrTy),
+              {objPtr, j.get_or_create_global_str("parameters", ".vcp.pk")},
+              "vcp.has.user");
+          auto useAuto = b.CreateAnd(hasClass, b.CreateNot(hasUser));
+          auto objEnd2 = b.GetInsertBlock();
+          b.CreateBr(contBB);
+          b.SetInsertPoint(contBB);
+          auto phi = b.CreatePHI(b.getInt1Ty(), 2, "vcp.auto");
+          phi->addIncoming(b.getFalse(), entryBB);
+          phi->addIncoming(useAuto, objEnd2);
+          b.CreateStore(j.make_bool(phi), slots[in.a]);
+          break;
+        }
+        case Op::ClsParamsWalk:
+          b.CreateStore(
+              j.emit_value_call(
+                  j.module_->getOrInsertFunction(rt::class_parameters_walk,
+                                                 j.valueType_, ptrTy),
+                  {b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy)},
+                  "vcp.walk"),
+              slots[in.a]);
+          break;
         case Op::MethGate: {
           // checkBB then the receiver gate, in compile_user_method_over_
           // builtin's order, with the AST path's own property emitter.

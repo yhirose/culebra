@@ -1,0 +1,87 @@
+# The two dispatches that sit ahead of an ordinary method call: explicit
+# `x.drop()` (the at-most-once guard) and the synthesized `x.parameters()`
+# (the walker over a class instance's fields). Both decide against the same
+# receiver gate the UFCS arm uses, so a free function of either name can
+# still claim the receivers that resolve nothing.
+
+class R {
+    new(v) { self.n = v }
+    drop() { println('  drop ' + to_string(self.n)) }
+}
+class Plain {
+    new(v) { self.n = v }
+}
+class Owns {
+    new(v) { self.n = v }
+    parameters() { 'own parameters' }
+}
+class Nested {
+    new() {
+        self.a = Plain.new(1)
+        self.b = 3
+    }
+}
+let say = fn (v) { println('  = ' + to_string(v)) }
+
+# An explicit drop suppresses the automatic one, and a second is a no-op.
+println('explicit then scope exit')
+let once = fn () {
+    let r = R.new(1)
+    say(r.drop())
+    println('  after')
+}
+once()
+println('automatic only')
+let auto = fn () {
+    let r = R.new(2)
+    println('  body')
+}
+auto()
+println('explicit twice')
+let twice = fn () {
+    let r = R.new(3)
+    r.drop()
+    r.drop()
+}
+twice()
+
+# A receiver with no drop of its own is a silent no-op yielding nil.
+say(try { Plain.new(4).drop() } catch e { e.kind + '|' + e.message })
+say(try { {'a': 1}.drop() } catch e { e.kind + '|' + e.message })
+say(try { [1, 2].drop() } catch e { e.kind + '|' + e.message })
+say(try { 'ab'.drop() } catch e { e.kind + '|' + e.message })
+say(try { (5).drop() } catch e { e.kind + '|' + e.message })
+say(try { nil.drop() } catch e { e.kind + '|' + e.message })
+say(try { Math.drop() } catch e { e.kind + '|' + e.message })
+# A dict whose own `drop` is a function still goes through the guard, which
+# answers nil whatever the body returned.
+say(try { {'drop': fn () { println('  own drop'); 7 }}.drop() }
+    catch e { e.kind + '|' + e.message })
+# With an argument it is an ordinary method call again.
+say(try { R.new(5).drop(1) } catch e { e.kind + '|' + e.message })
+say(try { Plain.new(6).drop(1) } catch e { e.kind + '|' + e.message })
+
+# The synthesized walker: the fields that hold class instances, in order.
+say(try { Plain.new(7).parameters() } catch e { e.kind + '|' + e.message })
+say(try { Nested.new().parameters() } catch e { e.kind + '|' + e.message })
+say(try { Owns.new(8).parameters() } catch e { e.kind + '|' + e.message })
+# Surplus positional arguments are evaluated and ignored.
+say(try { Nested.new().parameters(1, 2) } catch e { e.kind + '|' + e.message })
+say(try { {'a': 1}.parameters() } catch e { e.kind + '|' + e.message })
+say(try { [1].parameters() } catch e { e.kind + '|' + e.message })
+say(try { (5).parameters() } catch e { e.kind + '|' + e.message })
+say(try { Math.parameters() } catch e { e.kind + '|' + e.message })
+say(try { {'parameters': fn () { 'dict parameters' }}.parameters() }
+    catch e { e.kind + '|' + e.message })
+
+# Churn: the guard and the walker in a loop, so a missing release shows up as
+# a missing drop rather than as a wrong answer.
+mut n = 0
+for i in 0..2000 {
+    let p = Plain.new(i)
+    p.drop()
+    p.drop()
+    n = n + Nested.new().parameters().size()
+    n = n + to_long({'a': i}.drop() ?? 1)
+}
+println(to_string(n))
