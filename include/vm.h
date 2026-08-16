@@ -2212,6 +2212,12 @@ struct Chunk {
   // creation site — its MakeClosure — so the list lives with the callee
   // chunk instead of being encoded into the instruction.
   std::vector<int32_t> capture_src_slots;
+  // Names of the `mut` bindings this chunk closes over, in capture order.
+  // `Isolate.spawn` rejects a closure that captures one (the child's copy
+  // would silently diverge from the parent's), and the check needs the
+  // name for its message. The AST path keys the same fact by fn_ptr; the
+  // executor's closures all share one, so the chunk carries it instead.
+  std::vector<std::string> mut_capture_names;
   // One lexical scope's unwind step. A throw at pc runs, from the innermost
   // scope containing it outward: that scope's pending defers, then its own
   // named slots in reverse declaration order — the interpreter's per-scope
@@ -4396,6 +4402,8 @@ class Compiler {
     fc.chunk_.arity =
         params ? static_cast<int32_t>(params->nodes.size()) : 0;
     fc.chunk_.capture_src_slots = std::move(caps.slots);
+    for (size_t i = 0; i < caps.muts.size() && i < info.free_vars.size(); ++i)
+      if (caps.muts[i]) fc.chunk_.mut_capture_names.push_back(info.free_vars[i]);
     // Params occupy the ABI slots [0, arity). A captured param moves into a
     // fresh cell right after (the JIT's make_cell_slot on a param); the ABI
     // slot stays behind as an anonymous drained slot.
@@ -7440,6 +7448,43 @@ struct Exec {
     return &d->prog->param_metas[d->chunk]->meta;
   }
 
+  // Third consumer of the same seam: whether this closure captures a `mut`
+  // binding, which is what makes it unsendable. The chunk recorded the
+  // names at compile time (see Chunk::mut_capture_names).
+  static const std::string* mut_capture_for_closure(JitClosure* cls) {
+    if (!cls || (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
+                 cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline)))
+      return nullptr;
+    if (cls->n_captures == 0 || !cls->captures || !cls->captures[0])
+      return nullptr;
+    const auto* d =
+        reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
+    if (!d || !d->prog ||
+        static_cast<size_t>(d->chunk) >= d->prog->chunks.size())
+      return nullptr;
+    const auto& names = d->prog->chunks[d->chunk].mut_capture_names;
+    return names.empty() ? nullptr : &names.front();
+  }
+
+  // A constructor thunk is this executor's answer to the JIT's
+  // emit_constructor_fn, and the other backends register that as native —
+  // which is what makes sending a class object (it carries its `new`) the
+  // SendError it is everywhere else. An ordinary chunk closure stays
+  // sendable: its descriptor names a chunk of the same program.
+  static bool is_native_closure(JitClosure* cls) {
+    if (!cls || (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
+                 cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline)))
+      return false;
+    if (cls->n_captures == 0 || !cls->captures || !cls->captures[0])
+      return false;
+    const auto* d =
+        reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
+    if (!d || !d->prog ||
+        static_cast<size_t>(d->chunk) >= d->prog->chunks.size())
+      return false;
+    return d->prog->chunks[d->chunk].forwards_args;
+  }
+
   // The other half of that seam: the capture holding this closure's chunk, so
   // the lazy-namespace registry can rebuild it later (see the desc hook).
   static JitCell* desc_for_closure(JitClosure* cls) {
@@ -7454,6 +7499,8 @@ struct Exec {
     build_param_metas(p);
     _jit_closure_meta_hook = &meta_for_closure;
     _jit_closure_desc_hook = &desc_for_closure;
+    _jit_closure_mut_capture_hook = &mut_capture_for_closure;
+    _jit_closure_is_native_hook = &is_native_closure;
     p.descs.resize(p.chunks.size());
     p.desc_cells.resize(p.chunks.size());
     for (size_t i = 0; i < p.chunks.size(); ++i) {
@@ -12833,6 +12880,37 @@ struct Lowering {
                      b.getInt64(reinterpret_cast<int64_t>(
                          &p.param_metas[in.b]->meta)),
                      ptrTy)});
+          }
+          // A constructor thunk is native as far as sendability goes — the
+          // AST path registers its own the same way (jit_compile_class.h),
+          // and it is what makes sending a class object a SendError.
+          if (f.forwards_args) {
+            j.emit_call(
+                j.module_->getOrInsertFunction(rt::register_native_fn,
+                                               b.getVoidTy(), ptrTy),
+                {fns[in.b]});
+          }
+          // Same for the `mut` bindings it closes over, the fact
+          // `Isolate.spawn` rejects it on. Each lowered chunk is its own
+          // function, so the fn_ptr-keyed table works here exactly as it
+          // does for the AST path (the executor, whose closures share one
+          // entry point, answers through a hook instead).
+          if (!f.mut_capture_names.empty()) {
+            std::vector<llvm::Constant*> names;
+            for (const auto& nm : f.mut_capture_names)
+              names.push_back(b.CreateGlobalString(nm, ".vm.mutcap"));
+            auto arrTy =
+                llvm::ArrayType::get(ptrTy, names.size());
+            auto namesG = new llvm::GlobalVariable(
+                *j.module_, arrTy, /*isConstant=*/true,
+                llvm::GlobalValue::PrivateLinkage,
+                llvm::ConstantArray::get(arrTy, names), ".vm.mutcaps");
+            j.emit_call(
+                j.module_->getOrInsertFunction(rt::register_mut_captures,
+                                               b.getVoidTy(), ptrTy, ptrTy,
+                                               i64Ty),
+                {fns[in.b], namesG,
+                 b.getInt64(static_cast<int64_t>(names.size()))});
           }
           if (n > 0) {
             auto capsFieldPtr =

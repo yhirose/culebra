@@ -224,11 +224,12 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // (iterator wrappers, ns-method NsMethod*). Matches the interp's
       // body==nullptr rejection; without this the child dereferences
       // parent-heap state and hangs or crashes.
-      if (_jit_is_native_fn(c->fn_ptr))
+      if (_jit_is_native_fn(c->fn_ptr) ||
+          (_jit_closure_is_native_hook && _jit_closure_is_native_hook(c)))
         sendable::send_error("a native/builtin function is not Sendable");
       // A `mut` capture is not Sendable: the value would silently diverge from
       // the parent's. Reject at the boundary, matching the interp (sendable.h).
-      if (auto* nm = _jit_first_mut_capture(c->fn_ptr))
+      if (auto* nm = _jit_first_mut_capture_of(c))
         sendable::send_error(
             "closure captures the mutable variable '" + *nm +
             "' (mutable captures are not Sendable — pass it as an "

@@ -511,6 +511,28 @@ inline const std::string* _jit_first_mut_capture(void* fn_ptr) {
   return (it == tbl.end() || it->second.empty()) ? nullptr : &it->second.front();
 }
 
+// Same question for a closure whose code is not a distinct fn_ptr — see
+// _jit_closure_meta_hook, which this mirrors. The VM executor installs it;
+// null for anything it does not recognise, so the fn_ptr table stands.
+inline const std::string* (*_jit_closure_mut_capture_hook)(JitClosure*) =
+    nullptr;
+
+// The question every sendability check actually asks: does THIS closure
+// capture a mutable binding? Routes to whichever of the two knows.
+inline const std::string* _jit_first_mut_capture_of(JitClosure* c) {
+  if (_jit_closure_mut_capture_hook) {
+    if (const std::string* nm = _jit_closure_mut_capture_hook(c)) return nm;
+  }
+  return _jit_first_mut_capture(c->fn_ptr);
+}
+
+// Third question of the same shape: is this closure's body something no
+// other Runtime can rebuild? The fn_ptr registry answers for a C++-bodied
+// closure; the executor's constructor thunks are ordinary chunks, so they
+// need the hook to be rejected as their interp/JIT twins are (a class
+// object carries its ctor, so this is what makes sending one an error).
+inline bool (*_jit_closure_is_native_hook)(JitClosure*) = nullptr;
+
 // Hook for closures whose code is not a distinct fn_ptr: the VM executor
 // interprets every chunk through one entry point, so its closures cannot key
 // the per-fn JitParamMeta table either. It installs this to answer with the
