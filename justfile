@@ -390,13 +390,45 @@ _run-tests BACKEND:
                     diff <(printf "%s" "$out_interp") <(printf "%s" "$out_jit") || true
                 } > "$d/$name.err"
                 touch "$d/$name.fail"
+                exit 0
+            fi
+            # The two VM lanes on the same file. Matching interp is a pass
+            # however it was reached, so the slice question is only asked
+            # about a MISMATCH: a construct outside the slice is a skip (the
+            # poisoned chunk says so when a call reaches it, or the compiler
+            # said so statically and the dump shows an `(unsupported)`
+            # slot), anything else is a failure exactly as the JIT would
+            # be. Asking only on mismatch keeps the common file to one extra
+            # run per lane instead of a dump as well.
+            vm_skipped() {
+                grep -q -- "--vm: unsupported:" "$1" && return 0
+                cul --vm-dump "$f" 2>/dev/null | grep -q "(unsupported)"
+            }
+            out_vm=$(cul --vm "$f" 2> "$d/$name.vm.err")
+            if [[ "$out_interp" != "$out_vm" ]]; then
+                vm_skipped "$d/$name.vm.err" && exit 0
+                {
+                    echo "interpreter and --vm outputs differ for $f:"
+                    diff <(printf "%s" "$out_interp") <(printf "%s" "$out_vm") || true
+                } > "$d/$name.err"
+                touch "$d/$name.fail"
+                exit 0
+            fi
+            out_llvm=$(cul --vm-llvm "$f" 2> "$d/$name.llvm.err")
+            if [[ "$out_interp" != "$out_llvm" ]]; then
+                vm_skipped "$d/$name.llvm.err" && exit 0
+                {
+                    echo "interpreter and --vm-llvm outputs differ for $f:"
+                    diff <(printf "%s" "$out_interp") <(printf "%s" "$out_llvm") || true
+                } > "$d/$name.err"
+                touch "$d/$name.fail"
             fi
         ' _ '{}' "$d" "$jit_out"
-        if ! collect_results "$d" "(interp vs jit)"; then
-            echo "test (interp vs jit) FAIL" >&2
+        if ! collect_results "$d" "(interp vs jit vs VM)"; then
+            echo "test (interp vs jit vs VM) FAIL" >&2
             exit 1
         fi
-        echo "test (interp vs jit) OK"
+        echo "test (interp vs jit vs VM) OK"
     }
 
     # Guard the non-default JIT codegen paths (--jit -O0 = unoptimized IR over
@@ -854,7 +886,7 @@ _run-tests BACKEND:
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
-        phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        phase "interp/jit/VM symmetry (real test files)"; run_diff_interp_jit
         phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (generated corpus)"; run_difftest; }
@@ -883,7 +915,7 @@ _run-tests BACKEND:
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
-        phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        phase "interp/jit/VM symmetry (real test files)"; run_diff_interp_jit
         phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit + VM)"; run_isolate
@@ -918,7 +950,7 @@ _run-tests BACKEND:
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
-        phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        phase "interp/jit/VM symmetry (real test files)"; run_diff_interp_jit
         phase "vm_cases (three-lane VM parity)"; run_vm_cases
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort

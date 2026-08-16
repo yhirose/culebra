@@ -2218,6 +2218,12 @@ struct Chunk {
   // name for its message. The AST path keys the same fact by fn_ptr; the
   // executor's closures all share one, so the chunk carries it instead.
   std::vector<std::string> mut_capture_names;
+  // Does this frame count itself against the recursion limit? Every body
+  // does, in its prologue; a constructor thunk forwards its arguments and
+  // has no prologue, so it must not uncount on the way out either. It did,
+  // and the drift was observable: one `C.new()` left the counter at -1, so
+  // a method chain after it got one frame more than the other backends.
+  bool counts_frame = false;
   // One lexical scope's unwind step. A throw at pc runs, from the innermost
   // scope containing it outward: that scope's pending defers, then its own
   // named slots in reverse declaration order — the interpreter's per-scope
@@ -4745,6 +4751,7 @@ class Compiler {
     // caller-side, before entering the body closure) and before any user
     // code the body runs.
     fc.emit(Op::RecEnter, 1);
+    fc.chunk_.counts_frame = true;
     // Unpack destructuring params, left to right: the test-then-bind walks
     // of compile_destructure_assign against the synthetic slot (borrowed —
     // it stays behind as an anonymous drained slot). Every throw anchors at
@@ -9169,7 +9176,7 @@ struct Exec {
         }
         case Op::Ret: {
           JitValue rv = regs[in.a];
-          if (chunk_idx != 0) culebra_runtime_recursion_leave();
+          if (c.counts_frame) culebra_runtime_recursion_leave();
           return rv;
         }
         case Op::CellNew: {
@@ -13076,8 +13083,10 @@ struct Lowering {
           break;
         }
         case Op::Ret: {
-          b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_leave,
-                                                      b.getVoidTy()));
+          if (c.counts_frame) {
+            b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_leave,
+                                                        b.getVoidTy()));
+          }
           b.CreateStore(load_slot(in.a), retPtr);
           b.CreateRetVoid();
           break;
