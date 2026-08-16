@@ -1,0 +1,83 @@
+# The call-depth limit is one budget shared by every backend, and running
+# out of it is a catchable RecursionError — never a crash. The executor
+# recurses in C++ per culebra frame, so its register window has to stay
+# small enough that 1000 of them fit an ordinary 8 MB stack: a ctor nests
+# two frames per level (the thunk that forwards its arguments, then the
+# `new` body) and used to take SIGSEGV at ~760.
+#
+# The depths themselves are not pinned — a collection shifts them by a frame
+# under CULEBRA_GC_STRESS — so each case checks the kind, that the recursion
+# actually went deep, and that the budget comes back.
+
+mut n = 0
+
+fn count() {
+  n = n + 1
+  count()
+}
+
+println('--- fn')
+n = 0
+println(try { count() } catch e { e.kind })
+println(to_string(n > 500))
+
+println('--- lambda')
+mut lam = nil
+lam = fn () {
+  n = n + 1
+  lam()
+}
+n = 0
+println(try { lam() } catch e { e.kind })
+println(to_string(n > 500))
+
+println('--- static')
+class S {
+  static go() {
+    n = n + 1
+    S.go()
+  }
+}
+n = 0
+println(try { S.go() } catch e { e.kind })
+println(to_string(n > 500))
+
+println('--- ctor')
+class C {
+  new() {
+    n = n + 1
+    C.new()
+  }
+}
+n = 0
+println(try { C.new() } catch e { e.kind })
+println(to_string(n > 500))
+
+println('--- ctor with a field initializer')
+class F {
+  v: Long = 7
+  new() {
+    n = n + 1
+    F.new()
+  }
+}
+n = 0
+println(try { F.new() } catch e { e.kind })
+println(to_string(n > 500))
+
+# The budget comes back after a catch — one deep run must not shrink the
+# next one.
+println('--- budget returns')
+n = 0
+println(try { C.new() } catch e { e.kind })
+let first = n
+n = 0
+println(try { C.new() } catch e { e.kind })
+# The second run gets the same budget back; the exact depth is not pinnable
+# (GC_STRESS moves it by a frame), the recovery is.
+println(to_string(n > first - 5 && n < first + 5))
+
+# (Instance-method recursion is deliberately absent: the VM lanes allow one
+# frame more than interp/JIT for any chain containing one — a pre-existing
+# accounting difference recorded in the memory, not something this file can
+# pin.)

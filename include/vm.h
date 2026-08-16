@@ -7525,10 +7525,17 @@ struct Exec {
     const Chunk& c = p.chunks[chunk_idx];
     if (c.num_slots > kMaxSlots)
       throw CulebraError("VmError", "--vm: frame too large");
-    // Nil only the frame's live window (zero-init == {TAG_NIL, 0}); the
-    // executor never touches slots >= num_slots, and the conservative GC
-    // scan tolerates stack garbage above them.
-    JitValue regs[kMaxSlots];
+    // Only the frame's live window, and only as much machine stack as it
+    // needs. A fixed kMaxSlots array cost 4 KB of C stack per culebra
+    // frame whatever the chunk's size, which put the recursion limit out
+    // of reach on any shape that nests two frames per level: a `new`
+    // recursing through its ctor thunk ran out of an 8 MB stack at ~760
+    // levels and took SIGSEGV where the other backends raise
+    // RecursionError. The window stays on the machine stack so the
+    // conservative collector keeps finding these roots by scanning it
+    // (a heap buffer would be invisible without registering it).
+    // zero-init == {TAG_NIL, 0}; the executor never reads past num_slots.
+    JitValue regs[c.num_slots > 0 ? c.num_slots : 1];
     std::memset(regs, 0, sizeof(JitValue) * static_cast<size_t>(c.num_slots));
     if (chunk_idx != 0) {
       // Param binding, mirroring the JIT prologue: fewer args than the
