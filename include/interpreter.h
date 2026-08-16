@@ -11865,6 +11865,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                     bool declare = false, bool mut = false) {
     check_assignable_name(ident_node);
     const auto& ident = ident_node.token;
+    // `self` is an immutable binding of every frame — the receiver, or the
+    // placeholder a frame without one carries — so a bare write to it is a
+    // reassignment, never the implicit declaration a free name would get.
+    // Without this, the same line means different things depending on whether
+    // some enclosing frame happens to be a method.
+    if (!declare && ident == "self" && !env->has(ident)) {
+      culebra::throw_immutable_assign_at("self", ident_node.line,
+                                         ident_node.column);
+    }
     if (!declare && env->has(ident)) {
       env->assign(ident, val);
     } else {

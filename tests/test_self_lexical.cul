@@ -234,4 +234,29 @@ class S {
 assert_eq(S.new(1).shadow(), 99)
 assert_eq(kind_of(|| S.new(1).reassign()), 'ImmutableError')
 
+# `self` is a binding of EVERY frame — the receiver, or the placeholder a
+# frame without one carries — so a bare write is a reassignment there too,
+# not the implicit declaration a free name would get. Without this the same
+# line means different things depending on whether an enclosing frame
+# happens to be a method.
+no_recv_write = fn () {
+  self = 5
+  self
+}
+assert_eq(kind_of(no_recv_write), 'ImmutableError')
+no_recv_nested = fn () {
+  let inner = fn () {
+    self = 5
+    1
+  }
+  inner()
+}
+assert_eq(kind_of(no_recv_nested), 'ImmutableError')
+# A `let` still declares one, as it does inside a method.
+no_recv_let = fn () {
+  let self = 9
+  self
+}
+assert_eq(no_recv_let(), 9)
+
 inspect('self-lexical OK')
