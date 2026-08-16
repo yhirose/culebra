@@ -1,0 +1,69 @@
+# `_` binds nothing: the right-hand side runs for its effects, its value is
+# the assignment's, and the statement's own temp is what releases it — so a
+# resource written to `_` dies at the end of that statement. A `let` / `mut`
+# prefix on a complex target declares nothing either: the write is the same
+# write with or without it.
+
+class R {
+  new(id) { self.id = id }
+  drop() { println(['drop', self.id]) }
+}
+fn f() {
+  println('ran')
+  return 7
+}
+
+let _ = f()
+println('after let sink')
+_ = f()
+println('after bare sink')
+mut _ = 5
+let _ = {'a': 1}
+fn sink_scope() {
+  let _ = R.new(1)
+  println('body')
+}
+sink_scope()
+println('after sink scope')
+fn sink_value() {
+  let _ = 5
+}
+println(sink_value())
+
+# The prefixed forms of a complex target, and the plain ones beside them.
+mut bag = {}
+mut bag['k'] = 'v'
+println(bag)
+bag['k'] = 'w'
+println(bag)
+mut arr = [1, 2]
+mut arr[0] = 9
+println(arr)
+mut obj = {}
+mut obj.p = 1
+obj.p = 2
+println(obj)
+class B {
+  new(v) { mut self.v = v }
+}
+println(B.new(5).v)
+
+# The prefix does not re-declare an immutable property.
+let frozen = {'k': 1}
+let r = try {
+  mut frozen.k = 3
+  'wrote'
+} catch e {
+  "{e.kind}"
+}
+println([r, frozen])
+
+# Churn: a discarded resource is released once per turn, not accumulated.
+mut i = 0
+while i < 4000 {
+  let _ = [i]
+  mut m = {}
+  mut m['x'] = i
+  i = i + 1
+}
+println('churn done')

@@ -4532,7 +4532,13 @@ class Compiler {
       if (av.lvalcnt > 1) return compile_assign_index(ast, av);
       reject(ast, "non-identifier assignment target");
     }
-    if (tgt->token == "_") reject(*tgt, "sink binding");
+    // Sink: `let _ = expr` / `_ = expr` binds nothing. The RHS runs for its
+    // effects and its value is the assignment's, held by the statement temp
+    // that releases it — so a resource written to `_` is dropped where the
+    // statement ends, not at the end of the scope. A COMPOUND assignment is
+    // not a sink: it reads its target, and nothing ever binds `_`, so it
+    // takes the undefined-name path below.
+    if (tgt->token == "_" && !av.compound) return compile_expr(*av.rhs);
     if (av.compound) return compile_compound_assign(ast, av, *tgt);
     if (av.is_let || av.is_mut) {  // interp's assign_name: let||mut declares
       // Slot reserved before the RHS so temps stack above it; the name only
@@ -4668,7 +4674,10 @@ class Compiler {
   ExprResult compile_assign_index(const peg::Ast& ast,
                                   const culebra::AssignmentView& av) {
     using namespace peg::udl;
-    if (av.is_let || av.is_mut) reject(ast, "declaring a complex target");
+    // A `let` / `mut` prefix on a complex target declares nothing: an
+    // element or a property write is the same write with or without it (a
+    // dict's own key comes out mutable either way, and an immutable one
+    // still refuses — probed on both backends), so the prefix is dropped.
     StampGuard pos(*this, ast);
     size_t end = av.lvaloff + static_cast<size_t>(av.lvalcnt) - 1;
     const auto& fin = *ast.nodes[end];
