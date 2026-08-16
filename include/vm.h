@@ -274,6 +274,11 @@ enum class Op : uint8_t {
                // whether the check covers regs[b+1] (the receiver) at all:
                // `'ab'.contains(x)` wants StringLike, `[1].contains(x)` takes
                // anything.
+  CallRecv,    // the receiver a method call hands over, filtered through
+               // culebra_runtime_call_receiver: a promoted body local named
+               // by an own slot of a lowering's state object is storage, so
+               // calling it passes no receiver. regs[a] is the run head,
+               // consts[c] the property name; the drop releases in place.
   CbType,      // a callback parameter's declared `Function` type, checked on
                // its own so a keyword-only sibling's check cannot answer
                // first (`sorted_by(5, reverse: 5)` names `f`, the parameter
@@ -2193,6 +2198,10 @@ struct Chunk {
   // Method-name tables for ClassMeta, indexed by its `d` operand. Stable
   // storage: the executor hands build_class_meta an array of these c_str()s.
   std::vector<std::vector<std::string>> name_tables;
+  // Parallel to name_tables: whether that class is a lowering's state class,
+  // whose own slots are promoted body locals rather than methods (the flag
+  // build_class_meta stores on the meta, and the receiver rule reads back).
+  std::vector<uint8_t> name_table_lowered;
   // Capture list: for each free var, the slot (in the CREATING frame's
   // numbering) holding its cell pointer. A fn literal has exactly one
   // creation site — its MakeClosure — so the list lives with the callee
@@ -3795,6 +3804,8 @@ class Compiler {
       }
       auto table = static_cast<int32_t>(chunk_.name_tables.size());
       chunk_.name_tables.push_back(std::move(names));
+      chunk_.name_table_lowered.push_back(
+          culebra::is_lowered_state_class(class_name, ast.path) ? 1 : 0);
       // Both contract throws below are positionless and the interp stamps
       // them at the declaration.
       emit(Op::SetOpPos);
@@ -5733,6 +5744,10 @@ class Compiler {
     alloc_temp(at);             // [0] = the receiver
     for (int32_t i = 0; i < argc; i++) alloc_temp(*args.nodes[i]);
     store_into(base, recv, /*dst_is_fresh=*/true);
+    // A promoted body local of a lowering's state object is storage, not a
+    // method: calling one passes no receiver, which is a run-time fact about
+    // the receiver's proto (the JIT's emit_call_receiver, at the same point).
+    emit(Op::CallRecv, base, 0, kconst_str(post.token));
     for (int32_t i = 0; i < argc; i++)
       store_into(base + 1 + i, compile_expr(*args.nodes[i]),
                  /*dst_is_fresh=*/true);
@@ -7120,7 +7135,8 @@ inline std::string dump(const Chunk& c) {
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "PropSet",   "PropWr",    "PropCo",     "NsWrChk",
-      "PropVal",   "BareMethChk", "MethGate", "ChkParam", "CbType",
+      "PropVal",   "BareMethChk", "MethGate", "ChkParam", "CallRecv",
+      "CbType",
       "ArityChk",  "BMeth",
       "PropRaw",
       "HasProp",   "Drop",      "ClsParamsChk", "ClsParamsWalk",
@@ -8283,6 +8299,12 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::CallRecv:
+          regs[in.a] = culebra_runtime_call_receiver(
+              static_cast<int8_t>(regs[in.a].tag), regs[in.a].data,
+              reinterpret_cast<const char*>(c.consts[in.c].data));
+          ++pc;
+          break;
         case Op::CbType: {
           if (regs[in.b].tag == TAG_NO_SELF &&
               regs[in.b].data == kBMethGateBuiltin) {
@@ -8998,7 +9020,8 @@ struct Exec {
           JitObject* meta;
           try {
             meta = culebra_runtime_build_class_meta(
-                names.data(), &regs[in.b], n_methods, /*lowered_state=*/0);
+                names.data(), &regs[in.b], n_methods,
+                c.name_table_lowered[in.d]);
           } catch (...) {
             for (int32_t i = 0; i < in.c; ++i)
               regs[in.b + i] = JitValue{TAG_NIL, 0};
@@ -10664,6 +10687,22 @@ struct Lowering {
           }
 
           b.SetInsertPoint(contBB);
+          break;
+        }
+        case Op::CallRecv: {
+          auto recv = load_slot(in.a);
+          auto key = j.get_or_create_global_str(
+              std::string(_str_sv(
+                  reinterpret_cast<const char*>(c.consts[in.c].data))),
+              ".vm.callrecv.key");
+          b.CreateStore(
+              j.emit_value_call(
+                  j.module_->getOrInsertFunction(rt::call_receiver,
+                                                 j.valueType_, b.getInt8Ty(),
+                                                 i64Ty, ptrTy),
+                  {j.extract_tag(recv), j.extract_data(recv), key},
+                  "vm.callrecv"),
+              slots[in.a]);
           break;
         }
         case Op::CbType: {
@@ -12902,7 +12941,8 @@ struct Lowering {
           auto meta = j.emit_call(
               j.module_->getOrInsertFunction(rt::build_class_meta, ptrTy,
                                              ptrTy, ptrTy, i64Ty, i64Ty),
-              {namesPtr, slab, b.getInt64(in.c), b.getInt64(0)},
+              {namesPtr, slab, b.getInt64(in.c),
+               b.getInt64(c.name_table_lowered[in.d])},
               "vm.class.meta");
           b.CreateStore(j.make_object(meta), slots[in.a]);
           break;
