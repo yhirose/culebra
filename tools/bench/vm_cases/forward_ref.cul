@@ -1,0 +1,111 @@
+# Forward-reference capture: a closure that names a binding declared later
+# in the same statement list, and the rule that makes it work — a
+# declaration only takes effect from the statement that runs it, so before
+# that the name still means whatever it meant outside.
+
+# --- Self-recursion through a plain `let` --------------------------------
+println('--- self')
+let rec = fn (n) { if n <= 0 { 0 } else { rec(n - 1) + 1 } }
+println(to_string(rec(4)))
+
+# --- A later sibling, and mutual recursion -------------------------------
+println('--- siblings')
+let first = fn () { second() }
+let second = fn () { 'from second' }
+println(first())
+
+let even = fn (n) { if n == 0 { true } else { odd(n - 1) } }
+let odd = fn (n) { if n == 0 { false } else { even(n - 1) } }
+println(to_string(even(6)))
+println(to_string(odd(6)))
+
+# --- Reading before the declaration runs is still NameError --------------
+println('--- unbound')
+let early = fn () { later_one }
+println(try { early() } catch e { e.kind })
+let later_one = 41
+println(to_string(early()))
+
+# --- Writing a forward-declared binding from the closure -----------------
+println('--- write')
+let bump = fn () { counter = counter + 1 }
+mut counter = 0
+bump()
+bump()
+println(to_string(counter))
+
+let poke = fn () { fixed = 1 }
+let fixed = 0
+println(try { poke() } catch e { e.kind })
+
+# --- A forward-referenced class and enum ---------------------------------
+println('--- class')
+let make = fn () { Later.new(3) }
+class Later {
+  n: Long = 0
+  new(v) { self.n = v }
+  get_n() { self.n }
+}
+println(to_string(make().get_n()))
+
+# --- The shadow rule -----------------------------------------------------
+# The enclosing binding answers a read that runs before the declaration,
+# and the declaration still creates this frame's own binding.
+println('--- shadow')
+let sh = 7
+{
+  let hold = fn () { sh }
+  let sh = sh + 1
+  println(to_string(hold()))
+  println(to_string(sh))
+}
+println(to_string(sh))
+
+let cross = fn () {
+  let peek = fn () { sh }
+  let sh = sh + 1
+  [peek(), sh]
+}
+println(inspect(cross()))
+println(to_string(sh))
+
+mut sh_mut = 7
+{
+  sh_mut = 9
+  let hold = fn () { sh_mut }
+  let sh_mut = sh_mut + 1
+  println(to_string(hold()))
+  println(to_string(sh_mut))
+}
+println(to_string(sh_mut))
+
+# A block's declaration dies with the block.
+let after_block = fn () {
+  { let sh = 1 }
+  sh + 1
+}
+println(to_string(after_block()))
+
+# Shadowing a stdlib global, read through a closure built before it.
+{
+  let use_g = fn () { type_of(1) }
+  let type_of = type_of
+  println(use_g())
+  println(type_of('s'))
+}
+
+# (Drop order for a forward-referenced binding is checked outside this file:
+# a closure holding a drop-bearing binding defers its drop to the next
+# collection in the interp — the known difference docs/language.md §17
+# records — so the transcript cannot be pinned against the interp here.
+# --jit and both VM lanes agree: the binding declared last drops first.)
+
+# --- Churn: the cells are minted and released every round ----------------
+println('--- churn')
+mut rounds = 0
+for _ in 0..2000 {
+  let step = fn () { target(2) }
+  let target = fn (v) { v * 2 }
+  rounds = rounds + step()
+}
+println(to_string(rounds))

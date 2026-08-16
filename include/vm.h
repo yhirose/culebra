@@ -2136,6 +2136,11 @@ struct Chunk {
   // and the ladders' Release / CellRelease choice differs between the two.
   static constexpr uint32_t kNotACell = 0xffffffffu;
   std::vector<uint32_t> slot_cell_rank;
+  // Declaration order of each slot's binding: the release ladders walk a
+  // scope's slots newest-declaration first, which is slot order everywhere
+  // except a forward-ref pre-declaration (its cell is minted at the head of
+  // the statement list, its binding lands later).
+  std::vector<uint32_t> slot_rank;
   std::vector<PosEntry> positions;
   std::vector<std::string> slot_names;  // debug table, always emitted
   // Function-chunk metadata (chunk 0 — the module top level — has none).
@@ -2334,6 +2339,25 @@ inline bool chunk_slot_is_cell(const Chunk& c, int32_t s,
                                uint32_t cells_before) {
   return s >= 0 && s < static_cast<int32_t>(c.slot_cell_rank.size()) &&
          c.slot_cell_rank[s] < cells_before;
+}
+
+// The slots of a cleanup step's range, in the order its ladder releases
+// them: newest declaration first. Equivalent to walking hi-1 down to lo
+// whenever declaration order and slot order agree, which is everywhere a
+// forward reference did not move a cell ahead of its binding.
+inline std::vector<int32_t> chunk_release_order(const Chunk& c, int32_t lo,
+                                                int32_t hi) {
+  std::vector<int32_t> order;
+  for (int32_t s = hi - 1; s >= lo; --s) order.push_back(s);
+  std::stable_sort(order.begin(), order.end(), [&](int32_t a, int32_t b) {
+    auto rank = [&](int32_t s) {
+      return s < static_cast<int32_t>(c.slot_rank.size())
+                 ? c.slot_rank[s]
+                 : static_cast<uint32_t>(s);
+    };
+    return rank(a) > rank(b);
+  });
+  return order;
 }
 
 // The innermost scope whose range covers `pc`, or -1 when the throw is
@@ -2539,14 +2563,14 @@ class Compiler {
       main.push_scope(ast, /*owned_mark=*/false);
       auto run_prologue = [&](const peg::Ast* p) {
         if (!p) return;
-        main.predeclare_multifns(*p);
+        main.predeclare_forward_refs(*p);
         if (p->tag == "STATEMENTS"_) {
           for (const auto& n : p->nodes) main.compile_statement(*n);
         } else {
           main.compile_statement(*p);
         }
       };
-      main.predeclare_multifns(ast);
+      main.predeclare_forward_refs(ast);
       run_prologue(preamble);
       run_prologue(stdlib);
       if (ast.tag == "STATEMENTS"_) {
@@ -2590,6 +2614,13 @@ class Compiler {
     // cell holds the unbound sentinel until the decl statement runs, so
     // reads emit UnboundErr (the JIT's lazy forward-ref read guard).
     bool lazy = false;
+    // What a lazy pre-declaration shadows, when a binding of the same
+    // name was already visible where it landed. A declaration only takes
+    // effect from the statement that runs it, so until then reads and
+    // writes go here instead (the JIT's VarSlot::shadowed).
+    // `shadowed_builtin` says the same for a stdlib global.
+    std::shared_ptr<Binding> shadowed;
+    bool shadowed_builtin = false;
   };
   struct Scope {
     std::vector<Binding> bindings;
@@ -2660,6 +2691,13 @@ class Compiler {
   // temp is allocated before the body's named slots, so that ordering
   // assumption does not hold once functions exist.
   std::vector<bool> slot_named_;
+  // Order the release ladder walks, newest declaration first — the JIT's
+  // per-binding release registration. Slot order says the same thing
+  // everywhere except a forward-ref pre-declaration, whose cell is minted
+  // at the head of the statement list but whose binding is the statement
+  // that fills it, so its rank is re-stamped there.
+  std::vector<uint32_t> slot_rank_;
+  uint32_t next_rank_ = 0;
   // Parallel: the slot owns a cell (a captured local's CellNew target), so
   // scope exit emits CellRelease instead of Release. Borrowed capture slots
   // stay false — the closure owns their cell ref.
@@ -2822,9 +2860,11 @@ class Compiler {
     if (s >= static_cast<int32_t>(slot_named_.size())) {
       slot_named_.resize(s + 1);
       slot_cell_.resize(s + 1);
+      slot_rank_.resize(s + 1);
     }
     slot_named_[s] = named;
     slot_cell_[s] = false;
+    slot_rank_[s] = next_rank_++;
     high_water_ = std::max(high_water_, next_slot_);
     return s;
   }
@@ -2897,6 +2937,8 @@ class Compiler {
     chunk_.num_slots = high_water_;
     chunk_.slot_cell_rank.resize(static_cast<size_t>(high_water_),
                                  Chunk::kNotACell);
+    slot_rank_.resize(static_cast<size_t>(high_water_));
+    chunk_.slot_rank = slot_rank_;
     if (chunk_.cleanups.empty()) return;
     // The frame scope's segments carry the frame's defers, and the outermost
     // pair stretches over the whole chunk — a throw in the prologue, before
@@ -2987,8 +3029,20 @@ class Compiler {
   // JIT's frame ladder). Releases only the named slots: statement temps in
   // the range are owned by a live TempScope (or are a frame's return-value
   // slot), which release on their own paths.
+  // The compile-time twin of chunk_release_order (the ranks are final by
+  // the time any ladder is emitted, so both answer the same order).
+  std::vector<int32_t> release_order(int32_t lo, int32_t hi) const {
+    std::vector<int32_t> order;
+    for (int32_t s = hi - 1; s >= lo; --s) order.push_back(s);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int32_t a, int32_t b) {
+                       return slot_rank_[a] > slot_rank_[b];
+                     });
+    return order;
+  }
+
   void release_down_to(int32_t watermark) {
-    for (int32_t s = next_slot_ - 1; s >= watermark; --s) {
+    for (int32_t s : release_order(watermark, next_slot_)) {
       // An open for-in closes its iterator at the rung that frees it, so a
       // `return` out of the body — and the loop's own exit — reach it with
       // the iteration's bindings, released by the rungs above, already gone.
@@ -3136,8 +3190,68 @@ class Compiler {
   // cell still holding its sentinel must decline the gate like any other
   // non-Function (interp's env->has is false before the decl ran), not
   // raise the read's NameError — the JIT's optional-candidate rule.
+  // The lazy cell this scope pre-declared for `name`, if the declaration
+  // has not landed yet — the statement that binds the name fills that
+  // cell rather than allocating its own (see predeclare_forward_refs).
+  Binding* predeclared_here(const std::string& name) {
+    for (auto& b : scopes_.back().bindings)
+      if (b.lazy && b.name == name) return &b;
+    return nullptr;
+  }
+
+  // Read a forward-ref pre-declaration that shadows an outer binding:
+  // while the cell still holds the unbound sentinel the declaration has
+  // not run, so the name means the shadowed binding — what the interp's
+  // environment chain answers.
+  ExprResult read_shadowing(const peg::Ast& at, const Binding& b) {
+    int32_t out = alloc_temp(at);
+    emit(Op::CellGet, out, b.slot);
+    size_t to_outer = emit(Op::JumpIfTag, out, 0, TAG_NO_SELF);
+    size_t to_join = emit(Op::Jump, 0);
+    patch_to_here(to_outer);
+    if (b.shadowed) {
+      store_into(out, read_binding(at, *b.shadowed));
+    } else {
+      emit(Op::Release, out);
+      emit(Op::NsGet, out, kconst_str(b.name));
+    }
+    patch_to_here(to_join);
+    return {out, true};
+  }
+
+  // Write half of read_shadowing: the sentinel still in the cell means
+  // the declaration has not run, so the assignment goes to the shadowed
+  // binding under that binding's `mut`; afterwards to the cell under its
+  // own. Only one arm ever executes, so both may consume the RHS temp.
+  ExprResult assign_shadowing(const peg::Ast& ast, const peg::Ast& tgt,
+                              const Binding& b, ExprResult r) {
+    int32_t probe = alloc_temp(tgt);
+    emit(Op::CellGet, probe, b.slot);
+    size_t to_outer = emit(Op::JumpIfTag, probe, 0, TAG_NO_SELF);
+    if (!b.is_mut) {
+      StampGuard pos(*this, ast);
+      emit(Op::ImmutErr, kconst_str(b.name));
+    } else {
+      store_cell(tgt, b.slot, r);
+    }
+    size_t to_join = emit(Op::Jump, 0);
+    patch_to_here(to_outer);
+    if (!b.shadowed->is_mut) {
+      StampGuard pos(*this, ast);
+      emit(Op::ImmutErr, kconst_str(b.name));
+    } else if (b.shadowed->is_cell) {
+      store_cell(tgt, b.shadowed->slot, r);
+    } else {
+      store_into(b.shadowed->slot, r);
+    }
+    patch_to_here(to_join);
+    return read_binding(tgt, b);
+  }
+
   ExprResult read_binding(const peg::Ast& at, const Binding& b,
                           bool unbound_guard = true) {
+    if (b.lazy && unbound_guard && (b.shadowed || b.shadowed_builtin))
+      return read_shadowing(at, b);
     if (!b.is_cell) {
       // A plain slot can carry the sentinel too: a frame that captured `self`
       // where no enclosing frame had a receiver holds one until a call
@@ -3189,7 +3303,7 @@ class Compiler {
     using namespace peg::udl;
     DeferScope ds(*this, defer_key ? *defer_key : ast);
     push_scope(ast);
-    predeclare_multifns(ast);
+    predeclare_forward_refs(ast);
     if (ast.tag == "STATEMENTS"_) {
       for (const auto& n : ast.nodes) compile_statement(*n);
     } else {
@@ -3208,7 +3322,7 @@ class Compiler {
     using namespace peg::udl;
     DeferScope ds(*this, defer_key ? *defer_key : ast);
     push_scope(ast);
-    predeclare_multifns(ast);
+    predeclare_forward_refs(ast);
     compile_body_into(ast, dst);
     ds.close();
     pop_scope();
@@ -3274,7 +3388,7 @@ class Compiler {
         // not a block: what it declares belongs to the enclosing scope, the
         // way the one statement it replaced would have. A real `{ … }` is a
         // LEXICAL_SCOPE and opens its own scope below.
-        predeclare_multifns(ast);
+        predeclare_forward_refs(ast);
         for (const auto& n : ast.nodes) compile_statement(*n);
         break;
       case "ASSIGNMENT"_:
@@ -3413,18 +3527,78 @@ class Compiler {
   // and a read before the decl statement ran raises NameError through the
   // binding's lazy guard. One reused temp feeds every CellNew, so the only
   // lasting slots are the pinned cells themselves.
-  void predeclare_multifns(const peg::Ast& ast) {
+  // Every name a function literal inside this subtree closes over. The
+  // analysis already computed each literal's free_vars, so this is just a
+  // union over the nodes it keyed.
+  void collect_literal_frees(const peg::Ast& node,
+                             std::set<std::string>& out) const {
+    if (auto it = analysis_.func_info.find(&node);
+        it != analysis_.func_info.end()) {
+      out.insert(it->second.free_vars.begin(), it->second.free_vars.end());
+    }
+    for (const auto& c : node.nodes) collect_literal_frees(*c, out);
+  }
+
+  void predeclare_forward_refs(const peg::Ast& ast) {
     using namespace peg::udl;
+    // `fn name` always pre-declares (its dispatcher cell is how self- and
+    // mutual recursion resolve); every other declaration only when a
+    // nested closure in this list captures the name, which is exactly the
+    // JIT's pre_allocate_forward_refs gate.
     std::vector<std::pair<const peg::Ast*, std::string>> decls;
-    auto handle = [&](const peg::Ast& node) {
-      if (node.tag != "MULTIFN_DECL"_) return;
-      size_t i = 0;
-      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) i++;
-      auto name = std::string(
-          culebra::parse_generic_head(node.nodes[i]->token).outer);
+    std::vector<bool> muts;
+    auto add = [&](const peg::Ast* at, std::string name, bool is_mut) {
       for (const auto& [n_, nm] : decls)
         if (nm == name) return;  // overloads share the first decl's cell
-      decls.emplace_back(node.nodes[i].get(), std::move(name));
+      decls.emplace_back(at, std::move(name));
+      muts.push_back(is_mut);
+    };
+    // `referenced` grows with the free vars of every function literal
+    // already passed, so a declaration is pre-declared only when its name
+    // is genuinely referred to ahead of it. Widening it to every captured
+    // local would move the cell's slot — and with it the release ladder's
+    // position — ahead of locals declared earlier, reordering their drops.
+    std::set<std::string> referenced;
+    auto handle = [&](const peg::Ast& node) {
+      std::set<std::string> here;
+      collect_literal_frees(node, here);
+      auto forward_ref = [&](const std::string& name) {
+        return referenced.contains(name) || here.contains(name);
+      };
+      if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_ ||
+          node.tag == "ENUM_DECL"_) {
+        size_t i = 0;
+        while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) i++;
+        auto name = std::string(
+            culebra::parse_generic_head(node.nodes[i]->token).outer);
+        // `fn name` always pre-declares: its dispatcher cell is how self-
+        // and mutual recursion resolve, and a dispatcher has no drop.
+        if (node.tag == "MULTIFN_DECL"_ ||
+            (info_->captured_locals.contains(name) && forward_ref(name))) {
+          add(node.nodes[i].get(), std::move(name), /*is_mut=*/false);
+        }
+        referenced.insert(here.begin(), here.end());
+        return;
+      }
+      if (node.tag != "ASSIGNMENT"_) {
+        referenced.insert(here.begin(), here.end());
+        return;
+      }
+      auto av = culebra::view_assignment(node);
+      const auto* target =
+          av.compound ? nullptr : culebra::assign_name_target(node, av);
+      if (target) {
+        auto name = std::string(target->token);
+        // A bare `x = ...` declares only where nothing named `x` is in
+        // scope; otherwise the statement reassigns, and pre-declaring
+        // here would shadow what it means to write.
+        if (!culebra::is_sink_name(name) &&
+            info_->captured_locals.contains(name) && forward_ref(name) &&
+            (av.is_let || av.is_mut || !lookup(name))) {
+          add(target, std::move(name), av.is_mut);
+        }
+      }
+      referenced.insert(here.begin(), here.end());
     };
     if (ast.tag == "STATEMENTS"_) {
       // One level of list nesting, like the JIT's pre-pass: a `{ ... }`
@@ -3440,6 +3614,15 @@ class Compiler {
       handle(ast);
     }
     if (decls.empty()) return;
+    // What each name means until its declaration runs, captured before
+    // any of the new bindings shadow it.
+    std::vector<std::shared_ptr<Binding>> shadowed;
+    std::vector<bool> shadowed_builtin;
+    for (const auto& [at_, name] : decls) {
+      const Binding* prev = lookup(name);
+      shadowed.push_back(prev ? std::make_shared<Binding>(*prev) : nullptr);
+      shadowed_builtin.push_back(!prev && is_stdlib_global(name));
+    }
     TempScope ts(*this);
     std::vector<int32_t> cslots;
     for (const auto& [at, name] : decls)
@@ -3448,9 +3631,11 @@ class Compiler {
     for (size_t k = 0; k < decls.size(); ++k) {
       emit(Op::LoadConst, tmp, kconst({TAG_NO_SELF, 0}));
       emit(Op::CellNew, cslots[k], tmp);  // nils tmp; reloaded per name
-      scopes_.back().bindings.push_back({decls[k].second, cslots[k],
-                                         /*is_mut=*/false, /*is_cell=*/true,
-                                         /*lazy=*/true});
+      Binding b{decls[k].second, cslots[k], muts[k], /*is_cell=*/true,
+                /*lazy=*/true};
+      b.shadowed = shadowed[k];
+      b.shadowed_builtin = shadowed_builtin[k];
+      scopes_.back().bindings.push_back(std::move(b));
     }
   }
 
@@ -3461,7 +3646,7 @@ class Compiler {
   // or another activation of this one — gets its own, a same-arity re-decl
   // replaces its table entry, and DispatchError kind/message/position come
   // from the shared dispatcher thunk. Installing stores the dispatcher
-  // into the cell predeclare_multifns created, flipping it from the
+  // into the cell predeclare_forward_refs created, flipping it from the
   // unbound sentinel.
   void compile_multifn_decl(const peg::Ast& ast) {
     using namespace peg::udl;
@@ -3707,17 +3892,28 @@ class Compiler {
 
     // The class name binds before any body compiles: a method that says
     // `Name.new(...)` captures this cell, which the finished class value
-    // lands in below (the JIT's pre-allocated class slot). A read before
-    // the declaration ran stays the usual unresolved-identifier reject.
-    int32_t class_slot = alloc_cell_slot(ast, class_name);
-    {
-      TempScope ts(*this);
-      int32_t t = alloc_temp(ast);
-      emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
-      emit(Op::CellNew, class_slot, t);
+    // lands in below (the JIT's pre-allocated class slot). When a closure
+    // earlier in the statement list already forward-referenced the name,
+    // predeclare_forward_refs minted that cell — fill it rather than mint
+    // a second one, so both readers see the same class.
+    int32_t class_slot;
+    if (Binding* pre = predeclared_here(class_name)) {
+      class_slot = pre->slot;
+      slot_rank_[class_slot] = next_rank_++;
+      pre->lazy = false;
+      pre->shadowed.reset();
+      pre->shadowed_builtin = false;
+    } else {
+      class_slot = alloc_cell_slot(ast, class_name);
+      {
+        TempScope ts(*this);
+        int32_t t = alloc_temp(ast);
+        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+        emit(Op::CellNew, class_slot, t);
+      }
+      scopes_.back().bindings.push_back(
+          {class_name, class_slot, /*is_mut=*/false, /*is_cell=*/true});
     }
-    scopes_.back().bindings.push_back(
-        {class_name, class_slot, /*is_mut=*/false, /*is_cell=*/true});
 
     TempScope ts(*this);
     // Static field values evaluate here, at the declaration, in the
@@ -3931,15 +4127,26 @@ class Compiler {
     auto enum_name =
         std::string(culebra::parse_generic_head(ast.nodes[dec_end]->token).outer);
     StampGuard pos(*this, ast);
-    int32_t enum_slot = alloc_cell_slot(ast, enum_name);
-    {
-      TempScope ts(*this);
-      int32_t t = alloc_temp(ast);
-      emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
-      emit(Op::CellNew, enum_slot, t);
+    // A closure earlier in the list may already hold this name's cell
+    // (predeclare_forward_refs); fill that one, as compile_class_decl does.
+    int32_t enum_slot;
+    if (Binding* pre = predeclared_here(enum_name)) {
+      enum_slot = pre->slot;
+      slot_rank_[enum_slot] = next_rank_++;
+      pre->lazy = false;
+      pre->shadowed.reset();
+      pre->shadowed_builtin = false;
+    } else {
+      enum_slot = alloc_cell_slot(ast, enum_name);
+      {
+        TempScope ts(*this);
+        int32_t t = alloc_temp(ast);
+        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+        emit(Op::CellNew, enum_slot, t);
+      }
+      scopes_.back().bindings.push_back(
+          {enum_name, enum_slot, /*is_mut=*/false, /*is_cell=*/true});
     }
-    scopes_.back().bindings.push_back(
-        {enum_name, enum_slot, /*is_mut=*/false, /*is_cell=*/true});
 
     TempScope ts(*this);
     int32_t obj = alloc_temp(ast);
@@ -4112,10 +4319,10 @@ class Compiler {
         caps.lazys.push_back(false);
         continue;
       }
-      // The JIT covers this with lazy forward-ref cells
-      // (pre_allocate_forward_refs); outside the slice for now — except
-      // `fn name` dispatcher cells, which predeclare_multifns creates at
-      // scope entry, so mutual recursion resolves right here.
+      // predeclare_forward_refs put a lazy cell in place for every name
+      // this statement list declares and a closure here captures, so a
+      // forward reference resolves above. Anything still missing is a
+      // name no statement list on the way in declares.
       if (!b) reject(ast, std::format("forward-reference capture of '{}'", fv));
       caps.slots.push_back(b->slot);
       caps.muts.push_back(b->is_mut);
@@ -4579,7 +4786,7 @@ class Compiler {
       // JIT's "the body BLOCK is this frame's scope"): its locals belong to
       // the frame, so they are released after the frame's defers run, not
       // before — and the unwind ladder covers them.
-      fc.predeclare_multifns(body);
+      fc.predeclare_forward_refs(body);
       fc.compile_body_into(body, rv);
     }
     fc.emit_return_type_check(rv);
@@ -4633,6 +4840,18 @@ class Compiler {
       // Slot reserved before the RHS so temps stack above it; the name only
       // becomes visible after the RHS (let x = x reads the outer x).
       auto name = std::string(tgt->token);
+      // A forward reference already gave this name its cell — closures
+      // built above hold it, so the declaration fills that cell instead
+      // of minting a second one, and the binding stops being lazy.
+      if (Binding* pre = predeclared_here(name)) {
+        store_cell(*tgt, pre->slot, compile_expr(*av.rhs));
+        slot_rank_[pre->slot] = next_rank_++;  // released as declared here
+        pre->is_mut = av.is_mut;
+        pre->lazy = false;
+        pre->shadowed.reset();
+        pre->shadowed_builtin = false;
+        return read_binding(*tgt, *pre);
+      }
       bool cell = info_->captured_locals.contains(name);
       int32_t slot = cell ? alloc_cell_slot(*tgt, name) : alloc_slot(*tgt, name);
       if (cell) {
@@ -4656,6 +4875,10 @@ class Compiler {
     }
     if (!b) reject(*tgt, "assignment to an undeclared name");
     auto r = compile_expr(*av.rhs);
+    // Before its declaration runs the name still means the binding the
+    // pre-declaration shadows, so the write lands there and is checked
+    // against that binding's own mutability.
+    if (b->lazy && b->shadowed) return assign_shadowing(ast, *tgt, *b, r);
     if (!b->is_mut) {
       // Runtime ImmutableError, after the RHS ran — matching the interp/JIT
       // order and keeping a never-executed assignment silent. The RHS temp
@@ -5075,7 +5298,7 @@ class Compiler {
         patch_to_here(ok);
         emit(Op::Release, base + kForElem);
       }
-      predeclare_multifns(*fv.body);
+      predeclare_forward_refs(*fv.body);
       if (fv.body->tag == "STATEMENTS"_) {
         for (const auto& n : fv.body->nodes) compile_statement(*n);
       } else {
@@ -6230,7 +6453,7 @@ class Compiler {
     if (body_scope_defer) defer_scopes_.push_back(rmark);
     pending_scope_mark_ = rmark;
     push_scope(ast);
-    predeclare_multifns(*ast.nodes[0]);
+    predeclare_forward_refs(*ast.nodes[0]);
     compile_body_into(*ast.nodes[0], res);
     auto end = static_cast<uint32_t>(chunk_.code.size());
     if (body_scope_defer) {
@@ -7446,7 +7669,7 @@ struct Exec {
         culebra_runtime_defer_run_to(regs[cu.defer_mark_slot].data);
       bool hush = frame && c.suppress_frame_drop;
       if (hush) culebra_runtime_set_drop_suppressed(1);
-      for (int32_t s = cu.slot_hi - 1; s >= cu.slot_lo; --s) {
+      for (int32_t s : chunk_release_order(c, cu.slot_lo, cu.slot_hi)) {
         // A for-in's own step closes its iterator here: the rungs above have
         // already released the element, and this one releases the iterator
         // itself. The dispose is swallowed — an exception is in flight.
@@ -13478,7 +13701,7 @@ struct Lowering {
                      {b.getInt8(static_cast<int8_t>(v))});
       };
       if (hush) suppress(1);
-      for (int32_t s = cu.slot_hi - 1; s >= cu.slot_lo; --s) {
+      for (int32_t s : chunk_release_order(c, cu.slot_lo, cu.slot_hi)) {
         // A for-in's own step closes its iterator here, swallowing a
         // throwing dispose — an exception is already in flight (docs §18.5).
         if (cu.dispose_base >= 0 && s == cu.dispose_base + kForIter)
