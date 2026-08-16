@@ -1,0 +1,92 @@
+# `self` is a free variable of any function that mentions it, so the mention
+# is always a capture. What it captures when no enclosing frame has a
+# receiver is a sentinel: a call may still supply one dynamically, and where
+# none does, reading it is a NameError at the read — not a compile-time
+# matter, and not an error at the point the closure is built.
+
+class A {
+    new(v) { self.n = v }
+    m() {
+        let f = fn () { self.n }
+        return f()
+    }
+    deep() {
+        let g = fn () {
+            let h = fn () { self.n }
+            return h()
+        }
+        return g()
+    }
+    mk() { fn () { self.n } }
+}
+let say = fn (v) { println('  = ' + to_string(v)) }
+
+say(A.new(1).m())
+say(A.new(2).deep())
+
+# Escaping the method keeps the captured receiver...
+let esc = A.new(3).mk()
+say(try { esc() } catch e { e.kind + '|' + e.message })
+# ...and a dynamic receiver still wins over it.
+say(try { {'f': A.new(4).mk(), 'n': 99}.f() } catch e { e.kind + '|' + e.message })
+say(try { {'f': A.new(5).mk()}.f() } catch e { e.kind + '|' + e.message })
+
+# No enclosing receiver at all: building is fine, reading is the NameError.
+let built = fn () { self }
+println('built')
+say(try { built() } catch e { e.kind + '|' + e.message })
+let member = fn () { self.n }
+say(try { member() } catch e { e.kind + '|' + e.message })
+let nested = fn () {
+    let inner = fn () { self }
+    return inner()
+}
+say(try { nested() } catch e { e.kind + '|' + e.message })
+# The same capture-free-looking closure, called through a host object.
+say(try { {'f': member, 'n': 42}.f() } catch e { e.kind + '|' + e.message })
+# A read the control flow never reaches raises nothing.
+let unread = fn () {
+    if false {
+        return self
+    }
+    return 'not read'
+}
+say(try { unread() } catch e { e.kind + '|' + e.message })
+# Outside any function.
+say(try { self } catch e { e.kind + '|' + e.message })
+# Writing it is a reassignment wherever it appears.
+let writes = fn () {
+    self = 5
+    return 1
+}
+say(try { writes() } catch e { e.kind + '|' + e.message })
+
+# A static method's self is the class object, and a getter's nested fn sees
+# the instance.
+class S {
+    new() {}
+    static tag() {
+        let inner = fn () { self }
+        return type_of(inner())
+    }
+    get twice() {
+        let h = fn () { 2 }
+        return h()
+    }
+}
+say(try { S.tag() } catch e { e.kind + '|' + e.message })
+
+# Churn: a sentinel cell per closure built, and a real one per method call.
+mut n = 0
+for i in 0..2000 {
+    let none = fn () { self }
+    try {
+        none()
+    } catch e {
+        n = n + 1
+    }
+    n = n + A.new(i).m()
+    let bound = A.new(1).mk()
+    n = n + bound()
+}
+println(to_string(n))

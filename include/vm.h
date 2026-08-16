@@ -3065,7 +3065,15 @@ class Compiler {
   // raise the read's NameError — the JIT's optional-candidate rule.
   ExprResult read_binding(const peg::Ast& at, const Binding& b,
                           bool unbound_guard = true) {
-    if (!b.is_cell) return {b.slot, false};
+    if (!b.is_cell) {
+      // A plain slot can carry the sentinel too: a frame that captured `self`
+      // where no enclosing frame had a receiver holds one until a call
+      // supplies a dynamic one, and reading it there is the interp's
+      // NameError.
+      if (b.lazy && unbound_guard)
+        emit(Op::UnboundErr, b.slot, kconst_str(b.name));
+      return {b.slot, false};
+    }
     int32_t t = alloc_temp(at);
     emit(Op::CellGet, t, b.slot);
     if (b.lazy && unbound_guard) emit(Op::UnboundErr, t, kconst_str(b.name));
@@ -3915,6 +3923,25 @@ class Compiler {
     std::vector<bool> muts;
     std::vector<bool> lazys;  // the JIT's free_var_lazy snapshot
   };
+  // A capture with nothing to capture: a cell holding `v`, in a slot shared
+  // by every such site in this chunk. The contents never change — nothing can
+  // assign to `self`, and a name with no binding has nothing to assign
+  // through — so one slot serves them all, which is what keeps a chunk full
+  // of such closures inside the 256 a frame has (a cell slot is pinned for
+  // the frame's life). Each site still writes it, so the cell is always
+  // created on the path that captures it.
+  int32_t self_none_slot_ = -1;
+  int32_t ufcs_none_slot_ = -1;
+  int32_t none_cell(const peg::Ast& at, JitValue v, int32_t& slot,
+                    const char* name) {
+    if (slot < 0) slot = alloc_cell_slot(at, name);
+    TempScope ts(*this);
+    int32_t t = alloc_temp(at);
+    emit(Op::LoadConst, t, kconst(v));
+    emit(Op::CellNew, slot, t);
+    return slot;
+  }
+
   CaptureList resolve_captures(const peg::Ast& ast, const FuncInfo& info) {
     CaptureList caps;
     for (const auto& fv : info.free_vars) {
@@ -3924,13 +3951,21 @@ class Compiler {
       // not an error — the call site's Function gate simply declines and the
       // receiver answers for itself. Feed the closure a fresh nil cell, the
       // same thing emit_closure_build does for a candidate out of reach.
+      // `self` is a free variable of any function that mentions it, and no
+      // enclosing frame need have a receiver: a call may still supply one
+      // dynamically, and where none does, reading it is a NameError rather
+      // than a compile-time matter. Feed the closure a sentinel cell — what
+      // emit_closure_build hands the same capture.
+      if (!b && fv == "self") {
+        caps.slots.push_back(
+            none_cell(ast, {TAG_NO_SELF, 0}, self_none_slot_, "(self.none)"));
+        caps.muts.push_back(false);
+        caps.lazys.push_back(false);
+        continue;
+      }
       if (!b && info.optional_free_vars.contains(fv)) {
-        int32_t s = alloc_cell_slot(ast, std::format("(ufcs.{})", fv));
-        TempScope ts(*this);
-        int32_t t = alloc_temp(ast);
-        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
-        emit(Op::CellNew, s, t);
-        caps.slots.push_back(s);
+        caps.slots.push_back(
+            none_cell(ast, {TAG_NIL, 0}, ufcs_none_slot_, "(ufcs.none)"));
         caps.muts.push_back(false);
         caps.lazys.push_back(false);
         continue;
@@ -4212,12 +4247,18 @@ class Compiler {
     if (self_cap >= 0) {
       int32_t s = fc.alloc_slot(ast, "self");
       fc.emit(Op::SelfMerge, s, fc.chunk_.self_slot, self_cap);
+      // Guarded either way: the merge yields the sentinel when neither the
+      // call nor the capture supplied a receiver, and reading it is the
+      // interp's NameError. A real receiver is never the sentinel, so the
+      // guard costs a compare on the frames that do have one.
       if (info.captured_locals.contains("self")) {
         int32_t cslot = fc.alloc_cell_slot(ast, "self");
         fc.emit(Op::CellNew, cslot, s);
-        fc.scopes_.back().bindings.push_back({"self", cslot, false, true});
+        fc.scopes_.back().bindings.push_back(
+            {"self", cslot, false, true, /*lazy=*/true});
       } else {
-        fc.scopes_.back().bindings.push_back({"self", s, false});
+        fc.scopes_.back().bindings.push_back(
+            {"self", s, false, /*is_cell=*/false, /*lazy=*/true});
       }
     }
     // The multifn body's own name: delivered by the dispatch rather than
@@ -4455,6 +4496,16 @@ class Compiler {
       return read_binding(*tgt, scopes_.back().bindings.back());
     }
     const Binding* b = lookup(tgt->token);
+    // `self` is a binding of every frame, so a write to it is a reassignment
+    // even where nothing bound it here — the same ImmutableError the frames
+    // that do have a receiver give, after the RHS has run.
+    if (!b && tgt->token == "self") {
+      compile_expr(*av.rhs);
+      StampGuard pos(*this, ast);
+      emit(Op::ImmutErr, kconst_str(tgt->token));
+      int32_t t = alloc_temp(*tgt);
+      return {t, true};  // unreachable
+    }
     if (!b) reject(*tgt, "assignment to an undeclared name");
     auto r = compile_expr(*av.rhs);
     if (!b->is_mut) {
@@ -6559,6 +6610,16 @@ class Compiler {
         if (is_stdlib_global(ast.token) || is_stdlib_namespace(ast.token)) {
           int32_t t = alloc_temp(ast);
           emit(Op::NsGet, t, kconst_str(ast.token));
+          return {t, true};
+        }
+        // `self` is not an unresolved name: every frame has one, and a frame
+        // with no receiver holds the sentinel whose read is the interp's
+        // NameError. Outside any function there is no slot to hold it, so
+        // materialize the sentinel and let the same guard answer.
+        if (ast.token == "self") {
+          int32_t t = alloc_temp(ast);
+          emit(Op::LoadConst, t, kconst({TAG_NO_SELF, 0}));
+          emit(Op::UnboundErr, t, kconst_str("self"));
           return {t, true};
         }
         reject(ast, std::format("unresolved identifier '{}'", ast.token));
