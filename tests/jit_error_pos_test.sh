@@ -638,5 +638,22 @@ t.sum('x')"
 check_same "tensor argmax axis type"   "$TENSOR_T
 t.argmax('x')"
 
+# A built-in method call whose keyword IS bindable (the sort family's
+# keyword-only `reverse:`) still owes the argument list's structural errors,
+# which the interpreter raises from its argument scan. The receiver must
+# resolve the name first — a member error outranks them — and an unbindable
+# keyword outranks them too.
+check_same "kw then positional"        "[3, 1].sorted_by(reverse: true, fn (x) { x })"
+check_same "kw then surplus"           "[3, 1].sorted(reverse: true, 5)"
+check_same "duplicate kw builtin"      "[3, 1].sorted(reverse: true, reverse: false)"
+check_same "member error outranks"     "(5).sorted(reverse: true, 5)"
+check_same "kw error outranks"         "'abcdef'.truncate(max: 3, 5)"
+# The sort family binds a typed positional parameter and a keyword-only one,
+# so the callback's declared type answers before the keyword's — the sorter
+# checks the callback from the body, which is one step too late.
+check_same "callback type before kw"   "[3, 1].sorted_by(5, reverse: 5)"
+check_same "sort_by type before kw"    "mut a = [3, 1]
+a.sort_by(5, reverse: 5)"
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

@@ -4052,6 +4052,10 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
+    // check_callback_type (fn_tag, fn_data, param_name) -> void
+    module_->getOrInsertFunction(
+        rt::check_callback_type, builder_.getVoidTy(), builder_.getInt8Ty(),
+        builder_.getInt64Ty(), ptrTy);
     // sort_by (arr, fn_tag, fn_data, reverse, line, col)
     module_->getOrInsertFunction(
         rt::array_sort_by, builder_.getVoidTy(), ptrTy,
@@ -11746,9 +11750,20 @@ struct JIT {
     // builtin, which binds positionally — every keyword but a keyword-only
     // parameter's raises the same TypeError the interp does.
     Owned builtinRes;
-    if (!arg_list_is_positional_only(argsAst) &&
-        !builtin_method_keywords_bindable(method, argsAst) &&
-        !builtin_method_errors_by_receiver(method)) {
+    bool has_kw = !arg_list_is_positional_only(argsAst);
+    bool kw_bindable =
+        has_kw && builtin_method_keywords_bindable(method, argsAst);
+    bool kw_rejects =
+        has_kw && !kw_bindable && !builtin_method_errors_by_receiver(method);
+    // The structural errors of the list itself — a positional after a
+    // keyword, a repeated keyword — come from interp's argument scan, which
+    // runs after it has read the property and accepted the keyword. So they
+    // reach only a receiver that resolves the name (`(5).sorted(reverse: true,
+    // 5)` is the member error) and only a keyword a builtin can bind
+    // (`truncate(max: 3, 5)` is the keyword error). Every other call shape
+    // gets this check from the general call path.
+    bool list_bad = kw_bindable && culebra::check_arg_list(argsAst).has_value();
+    if (kw_rejects || list_bad) {
       // "Resolves the name" is the condition, not "is not an Object": the
       // interp reads the property before it binds a single argument, so
       // `[1, 2].take(n: 1)` — a name Array does not carry — is the method
@@ -11770,10 +11785,14 @@ struct JIT {
       // callee frame, so release it before the throw or it strands (the Set
       // in `{1, 2}.add(x: 3)`). emit_throw_error only reads the message, not
       // the receiver's data, so release-before-throw is safe.
-      emit_value_release(receiver);
-      emit_throw_error("TypeError",
-                       culebra::builtin_method_kwargs_error_message(method),
-                       argsAst.line, argsAst.column);
+      if (kw_rejects) {
+        emit_value_release(receiver);
+        emit_throw_error("TypeError",
+                         culebra::builtin_method_kwargs_error_message(method),
+                         argsAst.line, argsAst.column);
+      } else {
+        emit_arg_list_check(argsAst, {receiver});
+      }
       builtinRes = own(llvm::UndefValue::get(valueType_));
     } else {
       // Try the builtin; if it declines (e.g. an arity it doesn't implement —
@@ -16165,13 +16184,24 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
   // The sort family's `reverse:` keyword, as the interp binder sees it: the
   // declared parameter is `Bool`, checked before the sorter runs and reported
   // at the call root (where every rich binder error of a builtin points).
-  auto compile_sort_reverse = [&](const peg::Ast* rev_expr) -> llvm::Value* {
+  // `callback` (sort_by / sorted_by only) is the value bound to the preceding
+  // positional parameter: the binder walks parameters in order, so that one's
+  // declared `Function` type answers first — the sorter's own check of it runs
+  // from the body, which is a step too late once `reverse:` is also wrong.
+  auto compile_sort_reverse = [&](const peg::Ast* rev_expr,
+                                  llvm::Value* callback = nullptr,
+                                  const char* cb_param = nullptr)
+      -> llvm::Value* {
     if (!rev_expr) return builder_.getInt1(false);
     auto rev = compile(*rev_expr);
     {
       // A failing check skips this value's straight-line release below, so
       // guard the `+1` on the unwind edge (`sorted(reverse: [1])`).
       ThrowGuard rev_guard(this, {rev.borrow()});
+      if (callback)
+        emit_call(module_->getFunction(rt::check_callback_type),
+                  {extract_tag(callback), extract_data(callback),
+                   get_or_create_global_str(cb_param, ".cb.param")});
       emit_type_check_at(
           rev.borrow(), "Bool", "parameter 'reverse'",
           builder_.getInt64(call_root_line_ ? call_root_line_ : current_line_),
@@ -16207,7 +16237,7 @@ inline JIT::Owned JIT::compile_builtin_method(const std::string& method,
         // window; the guard closes before the call, keeping the two
         // releasers mutually exclusive.
         ThrowGuard rev_guard(this, {f.borrow()});
-        rev = compile_sort_reverse(rev_expr);
+        rev = compile_sort_reverse(rev_expr, f.borrow(), "f");
       }
       auto fv = f.consume();  // callee-consumes from here
       if (method == "sort_by") {

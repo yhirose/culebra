@@ -611,6 +611,7 @@ inline constexpr auto is_range            = "culebra_runtime_is_range";
 inline constexpr auto range_iter          = "culebra_runtime_range_iter";
 inline constexpr auto range_step_check    = "culebra_runtime_range_step_check";
 inline constexpr auto array_slice2        = "culebra_runtime_array_slice2";
+inline constexpr auto check_callback_type = "culebra_runtime_check_callback_type";
 inline constexpr auto array_sort_by       = "culebra_runtime_array_sort_by";
 inline constexpr auto array_sorted_by     = "culebra_runtime_array_sorted_by";
 inline constexpr auto array_sort          = "culebra_runtime_array_sort";

@@ -2669,6 +2669,32 @@ inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
   return cls->arity == expected;
 }
 
+// The `__call__` a class instance answers a call with, or null. The gate for
+// the structural-callable rule (Option A) both the type check below and the
+// adapter in _culebra_expect_callback read, so one answer serves both.
+inline const JitValue* _culebra_call_operator(int8_t fn_tag, int64_t fn_data) {
+  if (fn_tag != TAG_OBJECT) return nullptr;
+  auto* obj = reinterpret_cast<JitObject*>(fn_data);
+  auto* e = obj->proto ? _find_property(obj, "__call__") : nullptr;
+  return e && e->value.tag == TAG_FUNC ? &e->value : nullptr;
+}
+
+// A callback parameter's declared `Function` type, checked on its own and
+// borrowing. The interpreter binds every parameter — checking each declared
+// type — before the body runs, so a builtin whose signature pairs a callback
+// with a keyword-only parameter (`sort_by(f, reverse:)`) must report a
+// non-callable `f` before `reverse:`'s Bool check, which the sorter's own
+// _culebra_expect_callback (called from the body) would be too late for. The
+// arity half stays there: interp checks it in the body too.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_callback_type(
+    int8_t fn_tag, int64_t fn_data, const char* param_name) {
+  if (fn_tag == TAG_FUNC || _culebra_call_operator(fn_tag, fn_data)) return;
+  throw culebra::CulebraError(
+      "TypeError",
+      std::format("type error: parameter '{}' expects Function", param_name),
+      _jit_callback_arg_line, _jit_callback_arg_col);
+}
+
 inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             size_t expected_arity,
                                             const char* method_name,
@@ -2694,33 +2720,28 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
     // function: synthesize an adapter closure that forwards to __call__
     // with `self` bound (Option A: structural callable). Mirrors interp's
     // as_callback. proto-gated so a plain dict isn't callable.
-    if (fn_tag == TAG_OBJECT) {
-      auto* obj = reinterpret_cast<JitObject*>(fn_data);
-      auto* e = obj->proto ? _find_property(obj, "__call__") : nullptr;
-      if (e && e->value.tag == TAG_FUNC) {
-        auto* call_cls = reinterpret_cast<JitClosure*>(e->value.data);
-        if (!accepts(call_cls)) {
-          throw culebra::CulebraError("TypeError", std::format(
-              "type error: {} expects a {}-parameter function",
-              method_name, expected_arity), line, col);
-        }
-        // Capture the instance and its __call__ closure (each +1, released
-        // when the adapter is collected). The instance's +1 is the incoming
-        // callee-consumes ref, transferred into the capture cell; the
-        // resolved closure is a borrowed property read, so it takes a fresh
-        // retain. Capturing the closure lets the per-element forward skip
-        // the property lookup.
-        culebra_runtime_value_retain(TAG_FUNC, e->value.data);
-        _jit_register_native_fn(
-            reinterpret_cast<const void*>(&_culebra_callable_adapter));
-        auto* adapter = culebra_runtime_closure_new(
-            reinterpret_cast<void*>(&_culebra_callable_adapter), 2,
-            expected_arity);
-        adapter->captures[0] = culebra_runtime_cell_new(fn_tag, fn_data);
-        adapter->captures[1] =
-            culebra_runtime_cell_new(TAG_FUNC, e->value.data);
-        return adapter;
+    if (const JitValue* e = _culebra_call_operator(fn_tag, fn_data)) {
+      auto* call_cls = reinterpret_cast<JitClosure*>(e->data);
+      if (!accepts(call_cls)) {
+        throw culebra::CulebraError("TypeError", std::format(
+            "type error: {} expects a {}-parameter function",
+            method_name, expected_arity), line, col);
       }
+      // Capture the instance and its __call__ closure (each +1, released
+      // when the adapter is collected). The instance's +1 is the incoming
+      // callee-consumes ref, transferred into the capture cell; the
+      // resolved closure is a borrowed property read, so it takes a fresh
+      // retain. Capturing the closure lets the per-element forward skip
+      // the property lookup.
+      culebra_runtime_value_retain(TAG_FUNC, e->data);
+      _jit_register_native_fn(
+          reinterpret_cast<const void*>(&_culebra_callable_adapter));
+      auto* adapter = culebra_runtime_closure_new(
+          reinterpret_cast<void*>(&_culebra_callable_adapter), 2,
+          expected_arity);
+      adapter->captures[0] = culebra_runtime_cell_new(fn_tag, fn_data);
+      adapter->captures[1] = culebra_runtime_cell_new(TAG_FUNC, e->data);
+      return adapter;
     }
     // A non-Function (non-callable) argument: the interp routes it through
     // the method's typed-param check (`<param>: Function`), which reports
