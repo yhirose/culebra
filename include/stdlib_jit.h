@@ -6825,6 +6825,20 @@ inline const NsParamMeta* _ns_meta(const NsMethod* m);
 // position, matching the interp binder. See definition below kBuiltinFns.
 inline const NsParamMeta* _ns_type_meta(const NsMethod* m);
 
+// Does this positional count fit the method's shape? An args-rest method
+// (range/iota) absorbs any number, one with param metadata takes required
+// through full, and one without keeps its fixed arity. The single source
+// for the dispatch's own ArityError and for the closure trampoline's gate
+// — the interp's binder counts before it binds, so a wrong count outranks
+// a per-parameter type error.
+inline bool _ns_positional_count_ok(const NsMethod* m, int64_t n) {
+  if (const NsParamMeta* pm = _ns_meta(m)) {
+    return pm->args_rest_idx >= 0 ||
+           (n >= pm->min_arity && n <= pm->max_arity);
+  }
+  return m->arity < 0 || n == m->arity;
+}
+
 // NsMethod rows for wrap.h-declared classes (wrapped_ns_rows), built
 // lazily once — after static-init froze the registry, so the c_str
 // pointers into its strings are stable — and merged into every table
@@ -7248,7 +7262,7 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     // bare positional calls pass a prefix. Methods without params keep the
     // strict fixed-arity check.
     if (pm) {
-      if (n_args < pm->min_arity || n_args > pm->max_arity) {
+      if (!_ns_positional_count_ok(m, n_args)) {
         release_args();
         // Too few → required count; too many → the cap (interp parity).
         _ns_adapt::arity_error(
@@ -7256,7 +7270,7 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
             n_args > pm->max_arity ? pm->max_arity : pm->min_arity, n_args,
             line, col);
       }
-    } else if (m->arity >= 0 && n_args != m->arity) {
+    } else if (!_ns_positional_count_ok(m, n_args)) {
       release_args();
       _ns_adapt::arity_error(m->ns, m->name, m->arity, n_args, line, col);
     }
@@ -7304,18 +7318,13 @@ inline void _jit_ns_method_trampoline(
   // so this is skipped and the dispatch's body-coercion arg0 check runs below
   // (matching the interp's callback wording). Args-rest methods (range/iota)
   // bind positionals into the rest Array, so they keep the dispatch path.
-  //
-  // Gate on arity first: interp's binder always checks the positional/keyword
-  // count against the declared params before binding (type-checking) any of
-  // them, so a wrong-arity call reports ArityError even when the first arg's
-  // type would also fail (`{a:1}.repeat()` → ArityError, not "parameter 'n'
-  // expects Long"). Without this gate the loop below type-checks whatever
-  // positions exist regardless of count, letting a bad-typed arg0 preempt a
-  // dispatch-side ArityError this same call would otherwise raise.
+  // A wrong positional count is the interp's first answer (its binder
+  // counts before it binds), so leave the report to the dispatch's arity
+  // check below rather than type-checking arguments the call cannot fill.
+  // `pm` is resolved once here and handed to the dispatch below, which would
+  // otherwise look it up again under the same key.
   const NsParamMeta* pm = _ns_meta(m);
-  bool arity_ok = pm ? (n_args >= pm->min_arity && n_args <= pm->max_arity)
-                     : (m->arity < 0 || n_args == m->arity);
-  if (arity_ok && _jit_argpos_n > 0) {
+  if (_jit_argpos_n > 0 && _ns_positional_count_ok(m, n_args)) {
     // `_ns_type_meta` carries every method's per-positional type (derived from
     // the canonical params), so all positionals — not just arg0 — are checked
     // here, matching the interp binder. Args-rest methods (range/iota) bind
@@ -10185,17 +10194,19 @@ inline JIT::Owned JitExtension::compile_ns_method_kwargs(
 
   // Arity gate, after all arguments are evaluated — interp's strict_arity block
   // fires here, before the per-param type checks and before splat validation.
-  // (Non-pm codecs keep the resolver's own checks.) args-rest methods carry no
-  // positional cap.
-  if (pm && pm->args_rest_idx < 0) {
+  // args-rest methods carry no positional cap. A codec without param metadata
+  // is counted against its fixed arity, which is what the interp and the
+  // closure trampoline both do (`Encoding.base64.encode('s', 2)` is an
+  // ArityError, not a type error on the argument that does fit).
+  {
     long npos = static_cast<long>(positional.size());
-    if (npos < pm->min_arity || npos > pm->max_arity) {
-      jit.emit_throw_error(
-          "ArityError",
-          culebra::ns_fn_arity_error_message(
-              npos < pm->min_arity ? pm->min_arity : pm->max_arity, npos),
-          static_cast<size_t>(callAst.line),
-          static_cast<size_t>(callAst.column));
+    if (!_ns_positional_count_ok(m, npos)) {
+      long want = pm ? (npos < pm->min_arity ? pm->min_arity : pm->max_arity)
+                     : m->arity;
+      jit.emit_throw_error("ArityError",
+                           culebra::ns_fn_arity_error_message(want, npos),
+                           static_cast<size_t>(callAst.line),
+                           static_cast<size_t>(callAst.column));
       return jit.own(make_nil());  // unreachable: emit_throw_error is noreturn
     }
   }

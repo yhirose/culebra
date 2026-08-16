@@ -113,4 +113,48 @@ let e_decl = try {
 }
 assert_eq(e_decl.kind, 'DispatchError')
 
+// --- a namespace function counts positionals before it binds them --------
+// Direct or through a value, a surplus positional is an ArityError; the
+// compiled backends used to type-check the arguments that did fit first and
+// report whichever parameter the wrong-typed one landed on.
+let e_ns_value = try {
+  let f = JSON.stringify
+  f(1, 2, 3, 4, 5)
+  nil
+} catch e {
+  e
+}
+assert_eq(e_ns_value.kind, 'ArityError')
+assert_eq(e_ns_value.message, 'expected 4 positional arguments, got 5')
+
+let e_ns_direct = try {
+  JSON.stringify(1, 2, 3, 4, 5)
+  nil
+} catch e {
+  e
+}
+assert_eq(e_ns_direct.kind, 'ArityError')
+assert_eq(e_ns_direct.message, 'expected 4 positional arguments, got 5')
+
+// A nested namespace whose method carries no parameter metadata is counted
+// against its fixed arity just the same.
+let e_nested = try {
+  Encoding.base64.encode('s', 2)
+  nil
+} catch e {
+  e
+}
+assert_eq(e_nested.kind, 'ArityError')
+assert_eq(e_nested.message, 'expected 1 positional argument, got 2')
+
+// The count only outranks the type check when it is actually wrong.
+let e_ns_type = try {
+  let f = JSON.stringify
+  f(1, 'x')
+  nil
+} catch e {
+  e
+}
+assert_eq(e_ns_type.kind, 'TypeError')
+
 IO.inspect("test_positional_overflow OK")
