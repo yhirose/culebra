@@ -19,6 +19,19 @@ cd "$(dirname "$0")"
 fail=0
 for f in *.cul; do
   a="$("$BIN" "$f" 2>&1)"; a_rc=$?
+  # A case that fails to PARSE agrees on every lane — they all print the same
+  # SyntaxError — so it passes while testing nothing. Two files raise one on
+  # purpose (a getter with parameters, a duplicate trait method); both are
+  # named error_*, which is the exemption.
+  case "$a" in
+    *SyntaxError*)
+      case "$f" in
+        error_*) ;;
+        *) echo "FAIL $f does not parse (a case that cannot run is not a test)"
+           printf '%s\n' "$a" | head -2 | sed 's/^/     /'
+           fail=1; continue;;
+      esac;;
+  esac
   for lane in "${LANES[@]}"; do
     # The runtime checks CULEBRA_GC_STRESS for presence, not value, so only
     # set it when stressing.

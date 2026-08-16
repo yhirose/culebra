@@ -23,9 +23,11 @@ let f = fn (n) { if n > 2 { throw n * 100 } else { n } }
 println(try { f(1) + f(5) } catch e { e })
 
 # try in a loop: the result/caught slots reset every iteration.
-let mut acc = 0
+mut acc = 0
 for i in 0..6 {
-    acc = acc + try { if i % 2 == 1 { throw i * 10 } else { i } } catch e { e }
+    # `try` is not a binary operand, so the result lands in a binding first.
+    let v = try { if i % 2 == 1 { throw i * 10 } else { i } } catch e { e }
+    acc = acc + v
 }
 println(acc)
 
