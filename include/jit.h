@@ -10800,7 +10800,11 @@ struct JIT {
     // property of every class instance (interp's receiver_has_property says
     // so), so a free `parameters` may only claim the receivers that lack it —
     // the dispatch below routes those to the same UFCS arm.
-    if (method == "parameters" && argsAst.nodes.empty()) {
+    // Arity is not part of the question: a 0-parameter method ignores surplus
+    // positional arguments everywhere else in the language (a user's own
+    // `parameters(1)` answers, and so does any other method), so the
+    // synthesized one does too — it just evaluates them first, like interp.
+    if (method == "parameters" && arg_list_is_positional_only(argsAst)) {
       return compile_class_parameters_call(argsAst, receiver.consume(),
                                            ufcs_free_fn_loader(method),
                                            dot_ast);
@@ -10964,8 +10968,11 @@ struct JIT {
       builder_.CreateBr(mergeBB);
     }
 
-    // autoBB: call the runtime walker.
+    // autoBB: call the runtime walker. The arguments still run — every other
+    // arm compiles them, and the interpreter evaluates a call's list before
+    // it ever looks at what it is calling.
     builder_.SetInsertPoint(autoBB);
+    for (const auto& a : argsAst.nodes) compile(*a);
     Owned walkResult = own(emit_value_call(
         module_->getOrInsertFunction(rt::class_parameters_walk, valueType_,
                                      ptrTy),
@@ -11458,10 +11465,17 @@ struct JIT {
     auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
     // An own/proto property wins over UFCS even when it isn't a Function
     // (interp's `obj.has()`): `{map: 5}.map(f)` must raise "expected Function,
-    // got Long", not call a free `map`.
+    // got Long", not call a free `map`. A conforming trait's default is an
+    // inherited method and counts the same — interp's receiver_has_property
+    // asks `_find_trait_default`, and so does the sibling gate
+    // emit_receiver_resolves_method.
     objHit = builder_.CreateOr(
         objHit,
-        emit_object_has(objPtr, get_or_create_global_str(method, ".rhp.key")));
+        emit_call(
+            module_->getOrInsertFunction(rt::object_has_or_trait_default,
+                                         builder_.getInt1Ty(), ptrTy, ptrTy),
+            {objPtr, get_or_create_global_str(method, ".rhp.key")},
+            "rhp.has.trait"));
     if (iter_hit)
       objHit = builder_.CreateOr(
           objHit,

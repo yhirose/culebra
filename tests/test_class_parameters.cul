@@ -128,4 +128,19 @@ assert_eq(after[1].data, 3.0)
 assert_eq(m7.W[0][0].data, 1.0)
 assert_eq(m7.W[0][1].data, 3.0)
 
+# The synthesized method takes no parameters, and — like every other
+# 0-parameter method — a surplus positional argument is evaluated and then
+# ignored rather than turning the call into a member miss.
+let arg_ran = fn () {
+  arg_seen = arg_seen + 1
+  9
+}
+mut arg_seen = 0
+class Pw {
+  new(a) { self.a = a }
+}
+assert_eq(to_string(Pw.new(1).parameters(arg_ran())), '[]')
+assert_eq(to_string(Pw.new(1).parameters(1, 2)), '[]')
+assert_eq(arg_seen, 1)
+
 inspect("test_class_parameters: OK")

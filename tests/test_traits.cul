@@ -288,4 +288,25 @@ trait Applicable {
 }
 assert_eq(Swappy.new()(5), 5)
 
+# A trait default is an inherited method, so it makes the receiver RESOLVE
+# that name — which is what keeps a same-named free function from claiming
+# the call. `drop` asks this question through its own gate, so it is the one
+# that shows a gate reading only own/proto membership.
+trait Closeable {
+  drop() { 'trait drop' }
+  tagged() { 'trait tagged' }
+}
+fn drop(x) { 'free drop' }
+fn tagged(x) { 'free tagged' }
+class Res {
+  new(a) { self.a = a }
+}
+# The trait's `drop` resolves, so this is the drop intercept (which answers
+# nil), not the free function.
+assert_eq(Res.new(1).drop(), nil)
+assert_eq(Res.new(1).tagged(), 'trait tagged')
+# A receiver that conforms to nothing still hands both names over.
+assert_eq((5).drop(), 'free drop')
+assert_eq((5).tagged(), 'free tagged')
+
 IO.inspect("test_traits OK")
