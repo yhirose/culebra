@@ -156,6 +156,16 @@ struct JIT {
     // longer tell "declaration never ran". Never set on hot ordinary
     // captures, so they pay nothing.
     bool unbound_guard = false;
+    // Set on a lazy forward-ref cell that shadows a binding already
+    // visible where the pre-allocation lands. A declaration only takes
+    // effect from the statement that runs it, so until then the name
+    // still means that outer binding — the interp answers the read from
+    // the environment chain. Reads of the still-unbound cell therefore
+    // land here instead of raising NameError. `shadowed_builtin` says
+    // the same for a host global (`type_of`), which has no slot of its
+    // own.
+    std::shared_ptr<VarSlot> shadowed;
+    bool shadowed_builtin = false;
   };
 
   // The front-end analysis (FuncInfo, the locals/free-var/EH-defer passes)
@@ -2400,12 +2410,20 @@ struct JIT {
       // here would shadow it (an `if` branch shares the enclosing scope).
       if (implicit && lookup_var(name)) return;
       if (auto it = slots.find(name); it != slots.end()) {
-        // Already pre-allocated (e.g. by a sibling if-branch sharing
-        // this scope): re-emit the materialization guard here so
-        // whichever branch actually runs creates the cell.
-        emit_lazy_cell_materialize(it->second);
-        return;
+        // A capture of the same name is the enclosing frame's binding,
+        // not this list's: `let x = ...` below declares a fresh local,
+        // so pre-allocate over it (and remember it as the fallback for
+        // reads before the declaration). Anything else in this scope is
+        // already this list's own slot — re-emit the materialization
+        // guard so whichever sibling if-branch runs creates the cell.
+        if (it->second.kind != VarSlot::Cell || it->second.owned) {
+          emit_lazy_cell_materialize(it->second);
+          return;
+        }
       }
+      // Reads that run before the declaration still mean whatever the
+      // name meant here — an enclosing binding, or the host's global.
+      auto prev = lookup_var(name);
       // Lazy: the alloca is entry-block null-init; the cell itself is
       // created by the guard below, which runs only when this statement
       // list does (an if branch shares the enclosing scope, so this
@@ -2420,6 +2438,11 @@ struct JIT {
       VarSlot slot{VarSlot::Cell, cellSlotAlloca, /*owned=*/true, is_mut};
       slot.lazy = true;
       slot.awaits_implicit_decl = implicit;
+      if (prev) {
+        slot.shadowed = std::make_shared<VarSlot>(*prev);
+      } else if (is_builtin_var(name)) {
+        slot.shadowed_builtin = true;
+      }
       emit_lazy_cell_materialize(slot);
       define_var(name, slot);
     };
@@ -2490,6 +2513,9 @@ struct JIT {
   // forward-ref cell that was never materialized (declaration's branch
   // never ran) reads as the interp's NameError, not a null deref.
   llvm::Value* load_slot(const VarSlot& slot, const std::string& name) {
+    if (slot.lazy && (slot.shadowed || slot.shadowed_builtin)) {
+      return load_shadowing_slot(slot, name);
+    }
     emit_lazy_cell_read_guard(slot, name);
     auto val = load_slot_raw(slot, name);
     emit_unbound_value_guard(slot, val, name);
@@ -2497,6 +2523,53 @@ struct JIT {
     emit_runtime_decl_read_guard(slot, val, name);
     emit_value_retain(val);
     return val;
+  }
+
+  // Read a forward-ref pre-allocation that shadows an outer binding (see
+  // VarSlot::shadowed). While the cell is missing or still holds the
+  // unbound sentinel the declaration has not run, so the name means the
+  // shadowed binding — what the interp's environment chain answers.
+  // Returns +1 on both paths.
+  llvm::Value* load_shadowing_slot(const VarSlot& slot,
+                                   const std::string& name) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    // The two arms join through an entry-block slot rather than a phi:
+    // only a `br` sits between the store and the load, so the `+1` never
+    // crosses a throw edge bare (and the ownership layer keeps its
+    // no-hand-built-%Value-phi rule).
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto outSlot = entryB.CreateAlloca(valueType_, nullptr, "fwd.out");
+    auto outerBB = llvm::BasicBlock::Create(ctx_, "fwd.outer", fn);
+    auto liveBB = llvm::BasicBlock::Create(ctx_, "fwd.live", fn);
+    auto boundBB = llvm::BasicBlock::Create(ctx_, "fwd.bound", fn);
+    auto joinBB = llvm::BasicBlock::Create(ctx_, "fwd.join", fn);
+    auto cellPtr = builder_.CreateLoad(ptrTy, slot.alloca, "fwd.cellp");
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(cellPtr, llvm::ConstantPointerNull::get(ptrTy),
+                              "fwd.isnull"),
+        outerBB, liveBB);
+
+    builder_.SetInsertPoint(liveBB);
+    auto val = load_slot_raw(slot, name);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(extract_tag(val), builder_.getInt8(TAG_NO_SELF),
+                              "fwd.unbound"),
+        outerBB, boundBB);
+
+    builder_.SetInsertPoint(boundBB);
+    emit_value_retain(val);
+    builder_.CreateStore(val, outSlot);
+    builder_.CreateBr(joinBB);
+
+    builder_.SetInsertPoint(outerBB);
+    builder_.CreateStore(slot.shadowed ? load_slot(*slot.shadowed, name)
+                                       : emit_builtin_var_get(name),
+                         outSlot);
+    builder_.CreateBr(joinBB);
+
+    builder_.SetInsertPoint(joinBB);
+    return builder_.CreateLoad(valueType_, outSlot, name);
   }
 
   // A runtime_decl slot (see VarSlot::runtime_decl) still holding the
@@ -5433,6 +5506,25 @@ struct JIT {
     if (!scopes_.empty()) {
       auto& slots = scopes_.back().slots;
       auto it = slots.find(name);
+      // A declaration never writes through a capture: the enclosing
+      // frame owns that binding, and `let x = ...` introduces this
+      // frame's own `x` (the interp declares into the callee env, so the
+      // captured one keeps its value). Borrowed cells are exactly the
+      // captures — every same-frame binding, including a parameter or a
+      // forward-ref pre-allocation, owns its cell and is reused below.
+      if (it != slots.end() && declare && it->second.kind == VarSlot::Cell &&
+          !it->second.owned) {
+        it = slots.end();
+      }
+      // A reassignment that runs before the declaration writes the
+      // binding the name still means — the shadowed one — with that
+      // binding's own mutability. Once the declaration has run the cell
+      // holds a value and the placeholder's own rules apply.
+      if (it != slots.end() && !declare && !it->second.awaits_implicit_decl &&
+          it->second.lazy && it->second.shadowed) {
+        emit_shadowing_assign(it->second, name, rval, line, column);
+        return false;
+      }
       if (it != slots.end()) {
         if (it->second.runtime_decl) {
           emit_runtime_decl_assign(it->second, name, rval, declare, mut,
@@ -5480,6 +5572,43 @@ struct JIT {
 
     declare_local(name, rval, /*is_mut=*/mut);
     return true;
+  }
+
+  // Write half of load_shadowing_slot: while the forward-ref cell is
+  // still unbound the assignment lands on the shadowed binding (and is
+  // checked against its `mut`), afterwards on the cell.
+  void emit_shadowing_assign(const VarSlot& slot, const std::string& name,
+                             llvm::Value* rval, size_t line, size_t column) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto outerBB = llvm::BasicBlock::Create(ctx_, "fwdw.outer", fn);
+    auto liveBB = llvm::BasicBlock::Create(ctx_, "fwdw.live", fn);
+    auto innerBB = llvm::BasicBlock::Create(ctx_, "fwdw.inner", fn);
+    auto joinBB = llvm::BasicBlock::Create(ctx_, "fwdw.join", fn);
+    auto cellPtr = builder_.CreateLoad(ptrTy, slot.alloca, "fwdw.cellp");
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(cellPtr, llvm::ConstantPointerNull::get(ptrTy),
+                              "fwdw.isnull"),
+        outerBB, liveBB);
+
+    builder_.SetInsertPoint(liveBB);
+    auto cur = load_slot_raw(slot, name);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(extract_tag(cur), builder_.getInt8(TAG_NO_SELF),
+                              "fwdw.unbound"),
+        outerBB, innerBB);
+
+    builder_.SetInsertPoint(innerBB);
+    if (!slot.mut) emit_immutable_assign_throw(name, line, column);
+    store_slot(slot, rval);
+    builder_.CreateBr(joinBB);
+
+    builder_.SetInsertPoint(outerBB);
+    if (!slot.shadowed->mut) emit_immutable_assign_throw(name, line, column);
+    store_slot(*slot.shadowed, rval);
+    builder_.CreateBr(joinBB);
+
+    builder_.SetInsertPoint(joinBB);
   }
 
   // Complex lvalue: `obj.prop = e`, `arr[idx] = e`, and chains

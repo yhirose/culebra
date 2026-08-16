@@ -133,9 +133,11 @@ struct FnAnalysis {
     lint::check_shadow(programAst);
     std::vector<const std::set<std::string>*> outer;
     std::set<std::string> my_locals;
-    collect_fn_locals(programAst, my_locals, outer);
+    DeclKinds kinds;
+    collect_fn_locals(programAst, my_locals, outer, &kinds);
 
     FuncInfo info;
+    DeclaredScope declared(*this, my_locals, kinds);
     visit_for_frees(programAst, my_locals, outer, info);
     scan_eh_defer(programAst, true, info);
     return info;
@@ -144,6 +146,54 @@ struct FnAnalysis {
  private:
   IsBuiltinVar is_builtin_var_;
   int defer_count_ = 0;  // DEFER nodes seen so far, across all scans
+
+  // How a local gets its binding, collected alongside the locals set.
+  // `from_assign` names are bound by the statement that assigns them, so
+  // before that statement the name still means whatever it meant outside
+  // (the interp resolves through the environment chain at the moment the
+  // read runs). `scope_wide` names — parameters, loop / catch / match
+  // bindings, `fn` / `class` / `enum` / `import` declarations — are in
+  // scope for the whole body, exactly as they are today.
+  struct DeclKinds {
+    std::set<std::string> from_assign;
+    std::set<std::string> scope_wide;
+  };
+
+  // Locals of the function being walked that are already bound at the
+  // current point. Seeded with everything but the not-yet-assigned names;
+  // visit_for_frees adds each as it passes its declaration.
+  std::set<std::string> declared_;
+
+  // Save/restore `declared_` across a nested function's walk.
+  struct DeclaredScope {
+    FnAnalysis& fa;
+    std::set<std::string> saved;
+    DeclaredScope(FnAnalysis& fa, const std::set<std::string>& my_locals,
+                  const DeclKinds& kinds)
+        : fa(fa), saved(std::move(fa.declared_)) {
+      fa.declared_.clear();
+      for (const auto& name : my_locals) {
+        if (kinds.from_assign.contains(name) &&
+            !kinds.scope_wide.contains(name)) {
+          continue;  // bound by its own assignment, walked below
+        }
+        fa.declared_.insert(name);
+      }
+    }
+    ~DeclaredScope() { fa.declared_ = std::move(saved); }
+  };
+
+  // A block's own declarations die with it: after `{ let x = 1 }` the
+  // name means again whatever it meant outside the block. The locals set
+  // is flat per function, so this is where block granularity lives.
+  // Sites match lint.h's ScopeWalker (LEXICAL_SCOPE, loop bodies, match
+  // arms, try/catch bodies); `if` deliberately shares its enclosing one.
+  struct DeclaredBlock {
+    FnAnalysis& fa;
+    std::set<std::string> saved;
+    explicit DeclaredBlock(FnAnalysis& fa) : fa(fa), saved(fa.declared_) {}
+    ~DeclaredBlock() { fa.declared_ = std::move(saved); }
+  };
 
   // Collect names introduced by `let x = ...` or by bare `x = ...` where x is
   // not in any outer scope (auto-local). Does not descend into nested
@@ -160,9 +210,17 @@ struct FnAnalysis {
 
   void collect_fn_locals(
       const peg::Ast& node, std::set<std::string>& locals,
-      const std::vector<const std::set<std::string>*>& outer) const {
+      const std::vector<const std::set<std::string>*>& outer,
+      DeclKinds* kinds = nullptr) const {
     using namespace peg::udl;
     if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return;
+    // Record which bucket a freshly collected local belongs to; see
+    // DeclKinds. Called next to every `locals.insert` below.
+    auto note = [&](std::string_view name, bool from_assign) {
+      if (!kinds) return;
+      (from_assign ? kinds->from_assign : kinds->scope_wide)
+          .insert(std::string(name));
+    };
 
     if (node.tag == "MATCH"_) {
       // MATCH = [(INIT_CLAUSE)?, subject, MATCH_ARMS]; MATCH_ARM =
@@ -177,6 +235,7 @@ struct FnAnalysis {
             *arm->nodes[0],
             [&](std::string_view name, size_t, size_t) {
               locals.insert(std::string(name));
+              note(name, /*from_assign=*/false);
             });
       }
       // fall through to normal recursive walk
@@ -196,8 +255,10 @@ struct FnAnalysis {
         for_each_pattern_binding(
             *node.nodes[2],
             [&](std::string_view name, size_t, size_t) {
-              if (is_declare || !visible_in_outer(name, outer))
+              if (is_declare || !visible_in_outer(name, outer)) {
                 locals.insert(std::string(name));
+                note(name, /*from_assign=*/true);
+              }
             });
       }
       // fall through to walk the RHS
@@ -212,8 +273,10 @@ struct FnAnalysis {
       culebra::for_each_place_target(
           node, [](const peg::Ast&) {},
           [&](const peg::Ast& name) {
-            if (!visible_in_outer(name.token, outer))
+            if (!visible_in_outer(name.token, outer)) {
               locals.insert(std::string(name.token));
+              note(name.token, /*from_assign=*/true);
+            }
           });
       // fall through to walk the targets' subexpressions and the RHS
     }
@@ -225,7 +288,10 @@ struct FnAnalysis {
       // `try ... catch _ { ... }` is the sink form (drop the value).
       auto& id = *node.nodes[1];
       auto name = std::string(id.token);
-      if (!is_sink_name(name)) locals.insert(name);
+      if (!is_sink_name(name)) {
+        locals.insert(name);
+        note(name, /*from_assign=*/false);
+      }
       // fall through to walk the bodies
     }
 
@@ -238,11 +304,11 @@ struct FnAnalysis {
       // binding in their `outer`. Subtree-local visibility for closures
       // inside the body is re-established in visit_for_frees' FOR handler.
       auto fv = culebra::view_for(node);
-      collect_fn_locals(*fv.iter, locals, outer);
-      collect_fn_locals(*fv.body, locals, outer);
+      collect_fn_locals(*fv.iter, locals, outer, kinds);
+      collect_fn_locals(*fv.body, locals, outer, kinds);
       // A `nobreak { … }` block can define closures too; walk it so their
       // captured locals are registered (compile_for emits it).
-      if (fv.nobreak) collect_fn_locals(*fv.nobreak, locals, outer);
+      if (fv.nobreak) collect_fn_locals(*fv.nobreak, locals, outer, kinds);
       return;
     }
 
@@ -254,13 +320,17 @@ struct FnAnalysis {
           bool is_declare = av.is_let || av.is_mut;
 
           if (is_declare) {
-            if (!is_sink_name(name)) locals.insert(name);
+            if (!is_sink_name(name)) {
+              locals.insert(name);
+              note(name, /*from_assign=*/true);
+            }
           } else if (!visible_in_outer(name, outer) && !is_sink_name(name)) {
             locals.insert(name);  // bare assignment: local only if not in outer
+            note(name, /*from_assign=*/true);
           }
         }
       }
-      collect_fn_locals(*node.nodes.back(), locals, outer);
+      collect_fn_locals(*node.nodes.back(), locals, outer, kinds);
       return;
     }
 
@@ -272,13 +342,14 @@ struct FnAnalysis {
       // Generic params so `class Pair<K, V>` binds under `Pair`.
       size_t i = 0;
       while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-        collect_fn_locals(*node.nodes[i], locals, outer);
+        collect_fn_locals(*node.nodes[i], locals, outer, kinds);
         i++;
       }
       auto& id = *node.nodes[i];
       auto name = std::string(
           culebra::parse_generic_head(id.token).outer);
       locals.insert(name);
+      note(name, /*from_assign=*/false);
       return;
     }
 
@@ -287,12 +358,13 @@ struct FnAnalysis {
       // CLASS_DECL. Variants are namespaced (`Name.Ok`), not bound bare.
       size_t i = 0;
       while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-        collect_fn_locals(*node.nodes[i], locals, outer);
+        collect_fn_locals(*node.nodes[i], locals, outer, kinds);
         i++;
       }
       auto& id = *node.nodes[i];
       auto name = std::string(culebra::parse_generic_head(id.token).outer);
       locals.insert(name);
+      note(name, /*from_assign=*/false);
       return;
     }
 
@@ -310,13 +382,14 @@ struct FnAnalysis {
       // Generic params (`<T: Bound>`) are stripped from the binding.
       size_t i = 0;
       while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-        collect_fn_locals(*node.nodes[i], locals, outer);
+        collect_fn_locals(*node.nodes[i], locals, outer, kinds);
         i++;
       }
       auto& id = *node.nodes[i];
       auto name = std::string(
           culebra::parse_generic_head(id.token).outer);
       locals.insert(name);
+      note(name, /*from_assign=*/false);
       return;
     }
 
@@ -325,11 +398,12 @@ struct FnAnalysis {
       auto& id = *node.nodes[0];
       auto name = std::string(id.token);
       locals.insert(name);
+      note(name, /*from_assign=*/false);
       return;
     }
 
     for (auto& c : node.nodes) {
-      collect_fn_locals(*c, locals, outer);
+      collect_fn_locals(*c, locals, outer, kinds);
     }
   }
 
@@ -379,7 +453,13 @@ struct FnAnalysis {
     // the locals cut: the name IS a local of the body (seeded by
     // analyze_fn_common), which is exactly what keeps it out of free_vars.
     if (name == info.mf_self) info.mf_self_used = true;
-    if (my_locals.contains(name)) return;
+    // A local only means "this frame's binding" from the statement that
+    // binds it onward. Before that the declaration has not run, so the
+    // name still resolves outward — the interp walks the environment
+    // chain at the moment of the read, and an enclosing binding (or a
+    // global) answers. Fall through to the outer scan so the compiled
+    // backends capture the same thing the interp would find.
+    if (my_locals.contains(name) && declared_.contains(name)) return;
     // `self` is always capturable: every frame defines a self slot (the
     // receiver, or the lexical fallback), so the outer-scope scan below
     // would never see it in a locals set. Register it unconditionally;
@@ -715,11 +795,17 @@ struct FnAnalysis {
             names.emplace_back(nm);
             extended.insert(std::string(nm));
           });
-      visit_for_frees(*fv.body, extended, outer, info);
+      {
+        DeclaredBlock body_scope(*this);
+        visit_for_frees(*fv.body, extended, outer, info);
+      }
       // A `nobreak { … }` runs after the loop with the loop variable OUT of
       // scope, so walk it in `my_locals` (not `extended`) — a closure there
       // must not resolve the loop binding.
-      if (fv.nobreak) visit_for_frees(*fv.nobreak, my_locals, outer, info);
+      if (fv.nobreak) {
+        DeclaredBlock nobreak_scope(*this);
+        visit_for_frees(*fv.nobreak, my_locals, outer, info);
+      }
       // If the body walk pulled a name into the enclosing function's
       // free-vars (because a nested closure referenced it), we instead
       // mark it captured here and drop it from the free list — the
@@ -766,6 +852,66 @@ struct FnAnalysis {
         }
       }
       visit_for_frees(*av.rhs, my_locals, outer, info);
+      // The binding exists from here on: a later read of the name is this
+      // frame's local, not the enclosing one it resolved to above.
+      if (!av.compound && av.lvalcnt == 1) {
+        if (const auto* target = culebra::assign_name_target(node, av))
+          declared_.insert(std::string(target->token));
+      }
+      return;
+    }
+
+    if (node.tag == "DESTRUCTURE_ASSIGN"_ && node.nodes.size() >= 4 &&
+        (node.nodes[0]->token == "let" || node.nodes[1]->token == "mut")) {
+      // A declaring destructure binds the pattern's leaves; they are not
+      // reads, so walk the right-hand side alone and then mark them bound
+      // (the `let`-less form assigns to existing bindings and falls to the
+      // generic walk below, which reads the leaves as it should).
+      visit_for_frees(*node.nodes[3], my_locals, outer, info);
+      for_each_pattern_binding(*node.nodes[2],
+                               [&](std::string_view nm, size_t, size_t) {
+                                 declared_.insert(std::string(nm));
+                               });
+      return;
+    }
+
+    if (node.tag == "LEXICAL_SCOPE"_) {
+      DeclaredBlock block(*this);
+      for (auto& c : node.nodes) visit_for_frees(*c, my_locals, outer, info);
+      return;
+    }
+
+    if (node.tag == "WHILE"_) {
+      // The init clause binds for the whole loop (its scope wraps the
+      // body); the body and the nobreak tail are each their own.
+      auto wv = culebra::view_while(node);
+      DeclaredBlock loop(*this);
+      if (wv.init) visit_for_frees(*wv.init, my_locals, outer, info);
+      visit_for_frees(*wv.cond, my_locals, outer, info);
+      {
+        DeclaredBlock body(*this);
+        visit_for_frees(*wv.body, my_locals, outer, info);
+      }
+      if (wv.nobreak) {
+        DeclaredBlock tail(*this);
+        visit_for_frees(*wv.nobreak, my_locals, outer, info);
+      }
+      return;
+    }
+
+    if (node.tag == "TRY"_) {
+      // [body BLOCK, catch IDENTIFIER, catch BLOCK] — two sibling scopes;
+      // the catch binding itself is scope-wide (collect_fn_locals).
+      for (auto& c : node.nodes) {
+        DeclaredBlock block(*this);
+        visit_for_frees(*c, my_locals, outer, info);
+      }
+      return;
+    }
+
+    if (node.tag == "MATCH_ARM"_) {
+      DeclaredBlock arm(*this);
+      for (auto& c : node.nodes) visit_for_frees(*c, my_locals, outer, info);
       return;
     }
 
@@ -911,6 +1057,7 @@ struct FnAnalysis {
       std::vector<const std::set<std::string>*>& outer,
       std::string_view mf_self_name = {}) {
     std::set<std::string> my_locals;
+    DeclKinds kinds;
     for (auto& p : params_ast.nodes) {
       if (culebra::is_kw_only_sep(*p)) continue;
       // A destructuring param (`fn ({a, b})`) binds the pattern's names,
@@ -921,12 +1068,14 @@ struct FnAnalysis {
         for_each_pattern_binding(
             *p, [&](std::string_view nm, size_t, size_t) {
               my_locals.insert(std::string(nm));
+              kinds.scope_wide.insert(std::string(nm));
             });
         continue;
       }
       auto [name_sv, line, col] = culebra::extract_param_name_loc(*p);
       auto name = std::string(name_sv);
       my_locals.insert(name);
+      kinds.scope_wide.insert(name);
     }
 
     FuncInfo info;
@@ -937,9 +1086,11 @@ struct FnAnalysis {
     if (!mf_self_name.empty() && !culebra::is_sink_name(mf_self_name) &&
         my_locals.insert(std::string(mf_self_name)).second) {
       info.mf_self = std::string(mf_self_name);
+      kinds.scope_wide.insert(info.mf_self);
     }
-    collect_fn_locals(body_ast, my_locals, outer);
+    collect_fn_locals(body_ast, my_locals, outer, &kinds);
 
+    DeclaredScope declared(*this, my_locals, kinds);
     for (auto& p : params_ast.nodes) {
       if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p)) continue;
       if (auto* def = extract_default_expr(*p)) {
@@ -1031,9 +1182,11 @@ struct FnAnalysis {
       const peg::Ast& deferAst,
       std::vector<const std::set<std::string>*>& outer) {
     std::set<std::string> my_locals;
-    collect_fn_locals(*deferAst.nodes[0], my_locals, outer);
+    DeclKinds kinds;
+    collect_fn_locals(*deferAst.nodes[0], my_locals, outer, &kinds);
 
     FuncInfo info;
+    DeclaredScope declared(*this, my_locals, kinds);
     visit_for_frees(*deferAst.nodes[0], my_locals, outer, info);
     scan_eh_defer(*deferAst.nodes[0], true, info);
 

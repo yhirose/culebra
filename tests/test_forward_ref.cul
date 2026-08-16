@@ -134,3 +134,71 @@ k = fn (b = 0) {
 
 assert_eq(k(b: 1), "b1")
 assert_eq(reads_k()(b: 2), "b2")
+
+# --- (8) A declaration only shadows from the statement that runs it ---
+# Before that point the name still means whatever it meant outside, which
+# is what the interp's environment chain answers. The compiled backends
+# used to bind the whole statement list to the not-yet-run declaration and
+# raised NameError instead.
+let sh_outer = 7
+{
+  let sh_outer = sh_outer + 1     # reads the enclosing binding
+  assert_eq(sh_outer, 8)
+}
+assert_eq(sh_outer, 7)
+
+# The same across a frame boundary, with and without a capture in play.
+let cross = fn () {
+  let sh_outer = sh_outer + 1
+  sh_outer
+}
+assert_eq(cross(), 8)
+assert_eq(sh_outer, 7)
+
+# A closure built before the declaration sees the declaration once it runs
+# (both live in the same frame), while the enclosing binding is untouched.
+let sees_later = fn () {
+  let peek = fn () { sh_outer }
+  let sh_outer = sh_outer + 1
+  [peek(), sh_outer]
+}
+assert_eq(sees_later(), [8, 8])
+assert_eq(sh_outer, 7)
+
+# A plain read before a later `let` of the same name, and the `let` itself
+# declaring into this frame rather than writing the captured one.
+mut sh_mut = 7
+let reads_then_declares = fn () {
+  let before = sh_mut
+  let sh_mut = 99
+  [before, sh_mut]
+}
+assert_eq(reads_then_declares(), [7, 99])
+assert_eq(sh_mut, 7)
+
+# A reassignment that runs before the declaration writes the binding the
+# name still means, with that binding's own mutability.
+{
+  sh_mut = 9
+  let hold = fn () { sh_mut }
+  let sh_mut = sh_mut + 1
+  assert_eq(hold(), 10)
+  assert_eq(sh_mut, 10)
+}
+assert_eq(sh_mut, 9)
+
+# A block's declaration dies with the block: the read after it is the
+# enclosing binding again, not the closed block's local.
+let after_block = fn () {
+  { let sh_outer = 1 }
+  sh_outer + 1
+}
+assert_eq(after_block(), 8)
+
+# Shadowing a builtin, read through a closure built before the shadow.
+{
+  let use_builtin = fn () { type_of(1) }
+  let type_of = type_of
+  assert_eq(use_builtin(), 'Long')
+  assert_eq(type_of('s'), 'String')
+}
