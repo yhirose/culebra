@@ -1,16 +1,20 @@
 A Shared Bytecode VM: Design Proposal
 =====================================
 
-**Status: proposal; Phase 0 spike passed.** Sections 1–9 record the
-motivation, the target architecture, and the migration plan for
-replacing the tree-walking interpreter with a bytecode VM that shares
-its value representation — and its front end — with the JIT. The
-Phase 0 spike (§7) has since been run and answered both exit
-questions yes — results in [§10](#10-phase-0-spike-results);
-everything beyond the spike remains unimplemented. The observable language contract in
-[`language.md`](../language.md) is unaffected: this is a change of
-engine, not of language. Where this document and `language.md`
-disagree, `language.md` wins.
+**Status: Phases 0–2 done on branch `vm-spike`; Phase 3 not
+started.** Sections 1–9 record the motivation, the target
+architecture, and the migration plan for replacing the tree-walking
+interpreter with a bytecode VM that shares its value representation —
+and its front end — with the JIT. The Phase 0 spike (§7) answered
+both exit questions yes ([§10](#10-phase-0-spike-results)), Phase 1
+built the third backend on the same branch (§10's postscript), and
+Phase 2 took it to the parity bar §7 sets
+([§11](#11-phase-2-full-parity-results)). Phases 3 and 4 — folding
+`jit.h` onto the bytecode, then retiring the tree-walker — remain
+unimplemented, and the branch is not merged. The observable language
+contract in [`language.md`](../language.md) is unaffected: this is a
+change of engine, not of language. Where this document and
+`language.md` disagree, `language.md` wins.
 
 The Japanese mirror of this file is [`vm.ja.md`](vm.ja.md).
 
@@ -27,6 +31,7 @@ Contents
 8. [Risks and open questions](#8-risks-and-open-questions)
 9. [Prior art](#9-prior-art)
 10. [Phase 0 spike: results](#10-phase-0-spike-results)
+11. [Phase 2: full parity — results](#11-phase-2-full-parity-results)
 
 ---
 
@@ -314,15 +319,21 @@ unchanged.
 
 ## 8. Risks and open questions
 
-- **DAP/debugger semantics** (`dap.h`, 873 lines, deeply coupled to
-  `Value`/`Environment`). Step semantics and scope enumeration must
-  be reimplemented over debug tables. Standard machinery, real
-  work; part of Phase 2's parity bar.
-- **Lazy stdlib resolution.** `Environment::initialize_lazy` resolves
-  stdlib modules on first *name lookup* — a mechanism that assumes
-  name-based access. Slot resolution needs a different trigger
+- ~~**DAP/debugger semantics**~~ (`dap.h`, 873 lines, deeply coupled
+  to `Value`/`Environment`). Step semantics and scope enumeration
+  must be reimplemented over debug tables. Standard machinery, real
+  work; part of Phase 2's parity bar. **Settled in Phase 2** (§11.2):
+  `dap.h` kept the protocol and gave everything else to a six-question
+  `DebugEngine` interface, and the VM answers it from per-binding live
+  ranges plus a frame stack. The unforeseen part was not the tables
+  but the threading — see §11.2.
+- ~~**Lazy stdlib resolution.**~~ `Environment::initialize_lazy`
+  resolves stdlib modules on first *name lookup* — a mechanism that
+  assumes name-based access. Slot resolution needs a different trigger
   (likely: resolve at bytecode-compile time when the compiler sees
-  the name).
+  the name). **Settled in Phase 2** as predicted: the VM compiles the
+  preamble itself, so a stdlib name resolves when the compiler sees
+  it.
 - **Generator/effects transforms** (`generator_transform.h` 1.5k,
   `effects_transform.h` 1.9k lines) stay AST→AST through the
   three-backend period — the VM compiles their output, so the three
@@ -623,3 +634,151 @@ textually prepended with the probe preamble, which sits far outside
 the slice (classes, method calls), so every chunk would reject at
 compile time; a per-case skip mechanism only earns its keep with
 Phase 2 coverage, and that is where it belongs.
+
+## 11. Phase 2: full parity — results
+
+Run 2026-08-10 through 2026-08-17 on the same `vm-spike` branch, in
+46 batches, one construct family per batch. §7 states the bar: *every
+gate that today runs interp + JIT runs all three, green, and the
+corpus finds no divergence.* That bar is met. This section records
+where the gates stand, what the bytecode grew into, what the third
+lane found in the other two, and what is still outside the slice.
+§10's postscript describes the slice as Phase 1 left it and is kept
+as that record; §11.4 below is the current boundary.
+
+### 11.1 Where the gates stand
+
+| gate | three-lane status |
+|---|---|
+| generated difftest corpus | 15,845 cases through interp / `--jit` / `--vm`; 0 divergences, **0 skips** (`tools/difftest/vm_skip_ceiling.txt` is a ratchet, currently 0) |
+| curated `tools/bench/vm_cases/` | 172 cases, `--vm` and `--vm-llvm` each diffed against interp, then the same sweep again under `CULEBRA_GC_STRESS=1` |
+| `tests/*.cul` symmetry, and the isolate suite | four lanes: interp, `--jit`, `--vm`, `--vm-llvm` |
+| `just doctest` | 461 documentation blocks on all three engines (`just doctest LANE=interp\|vm\|jit\|all`) |
+| `dap_test` (ctest) | the debug-adapter scenarios on both debug engines |
+
+The three surfaces the tree-walker used to own were rebuilt as seams
+rather than duplicated. The doctest runner takes a `BlockRunner` —
+`(name, code) -> {ok, kind, message}` — and keeps block extraction,
+stdout capture and marker matching for itself.
+`dap.h` was reduced to the protocol layer over a six-question
+`DebugEngine` interface (`include/debug_engine.h`), with the VM's
+answers in `include/vm_debug.h`. And the REPL runs on the VM through
+session cells. The user-visible surface is `culebra --vm` (a REPL when
+given no file), `culebra test --doc --vm`, and `culebra dap --vm`;
+`--vm` and `--vm-llvm` remain hidden flags, so `language.md` and the
+CLI documentation are unchanged.
+
+### 11.2 What the bytecode grew into
+
+138 opcodes; `include/vm.h` is ~14.7k lines. Three structural
+decisions carried most of the surface area, and are the parts worth
+knowing before Phase 3 touches this format:
+
+- **The stdlib arrives through the runtime layer, then through the
+  preamble.** Phase 1's `NsGet` reached every native builtin global
+  by name. Phase 2 added the second half: the VM compiles the stdlib
+  preamble itself, which is what made `Path`, `Regex`, `Vector`, the
+  `assert_*` family and the effects runtime work. §8's lazy-stdlib
+  question resolved the way it predicted — resolution happens when
+  the compiler sees the name.
+- **Built-in methods are a table, not code.** One `BMethSpec` row per
+  `(name, argc)` — receiver tag mask, per-argument declared type,
+  optional-argument defaults, an id — drives the executor, the LLVM
+  lowering, and the reject decision from a single place, carried by
+  three ops (`MethGate` → `ChkParam` → `BMeth`). The invariant that
+  makes it safe is narrow and easy to get wrong: **a spec's receiver
+  mask must equal the set of receivers that resolve that name at that
+  arity**, because everything outside the mask is answered as a method
+  miss. Adding a `BParam` kind means adding a case in *both* the
+  executor's predicate and the lowering's switch; a missing case falls
+  into a `default` that silently accepts the wrong types on one lane
+  only.
+- **The debugger reads debug tables and nothing else.** Per-binding
+  live ranges (`Chunk::SlotDebug`, fed exclusively through
+  `push_binding` so the ranges cannot drift from name lookup), a frame
+  stack pushed by `run_frame`, and one op (`DbgStmt`) for statement
+  boundaries. The part that did not follow from the tables was the
+  threading: a frame's register window is the debuggee thread's
+  machine stack and the GC is thread-local, so every debugger query
+  runs *on the parked debuggee thread* through a job pump — the old
+  implementation querying from the DAP thread had been true by luck.
+  `evaluate` reuses the REPL session machinery, which is what makes
+  `setVariable`'s ImmutableError correct without a second
+  implementation of name resolution.
+
+### 11.3 What the third lane found
+
+§2 predicted that a third implementation would surface asymmetries
+the two hand-maintained ones had kept between them. It did, in nearly
+every batch that reached a new construct, and the method that produced
+them is the transferable part: **before compiling a construct, run a
+probe of it on interp and the JIT and diff the two.** A batch's probe
+was 50–200 one-line programs; where they disagreed, the fix landed in
+`interpreter.h` / `jit.h` as its own commit *before* the VM work
+started, so the VM was never written against a moving target.
+Representative findings:
+
+- A `for` body of exactly one statement never reached a GC safe point
+  in the interpreter. The parser collapses a one-statement body, and
+  the statement dispatch was the only poll site, so
+  `for i in 0..4M { let a = [i] }` held 1,406 MB where it should hold
+  34 MB — 5,094 MB when the body was a call to a one-statement
+  function.
+- The same collapse, on the debugger side: no breakpoint could land in
+  a one-line lambda, a one-statement `try` body, a `catch` arm, or a
+  `cond` / `match` arm.
+- `next()` past the end of a drained iterator threw `StopIteration` in
+  the interpreter and returned nil in the JIT — for all ten built-in
+  iterator sources, and *inside the interpreter itself* between
+  built-ins and generators. Settled as nil, documented in
+  `language.md` §18.5.
+- Keyword arguments to built-in methods: the JIT compiled `KWARG`
+  nodes as positional values for every shape but one, so
+  `'ab'.truncate(max: 3)` disagreed. Built-ins now accept a keyword
+  only as a kw-only parameter name, decided by one predicate.
+- Argument-list evaluation order: an object-ish receiver miss skipped
+  argument evaluation in the JIT at ~25 sites, where the interpreter
+  runs the whole list first. Only a scalar receiver's error precedes
+  its arguments.
+- Name resolution: a declaration takes effect from the point it runs,
+  not across the whole statement list. Six shapes disagreed, one of
+  them with no closure involved at all.
+- A `Range`'s `class` slot held a bare `static const char[]` in the
+  JIT, so a structural `==` on two ranges read a length prefix that
+  was not there and died.
+
+The VM's own bugs are less interesting except for one class, which is
+structural: **an unverified LLVM module runs anyway.** `run_program`'s
+`verifyFunction` call had been discarding its verdict since it was
+written; giving it a stream and letting it throw immediately exposed a
+cross-chunk `alloca` leak in the lowering that every gate had been
+green over.
+`culebra --vm-llvm --emit-llvm f.cul | opt -passes=verify` is the
+standing check for lowering work, and IR diffing against `-O0
+--emit-llvm` is the standing check for refactors that must not change
+codegen.
+
+### 11.4 What is still outside the slice
+
+Phase 2's bar is the gates, and the symmetry gate counts an
+out-of-slice reject as a visible SKIP rather than a failure. Eleven of
+the 204 `tests/*.cul` still take that exit, in four clusters:
+
+| shape | tests | note |
+|---|---|---|
+| typed variable declarations (`let x: Long = 5`) | 4 | the annotation is rejected at the declaration; the same type names already work in patterns and in parameters |
+| generic type parameters (`fn id<T>(x)`) | 2 | erased documentation in the other two backends |
+| the `@` matmul operator | 2 | the one operator still rejecting |
+| multi-module scripts (`import`) | 3 | rejected in `main.cc`, not in the compiler |
+
+Three interp-vs-compiled divergences are also open. All three
+pre-date the VM, none is reached by the corpus, and each is a language
+question rather than an implementation gap: `[self] = [5]` inside a
+function declares in the interpreter and raises ImmutableError on both
+compiled engines (at top level all three declare); a native builtin's
+`.params` has one element in the interpreter and none on the compiled
+engines; and an `Isolate.spawn` handle shows an internal `_core_id`
+field when inspected on the compiled engines only.
+
+Phase 3 — rewriting `jit.h` to lower bytecode instead of AST — is
+next, and unstarted. The branch is not merged.
