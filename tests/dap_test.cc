@@ -284,6 +284,56 @@ static void scenario_conditional_bp() {
   disconnect_and_wait();
 }
 
+// Scenario 4: the bodies a parser collapses past their STATEMENT wrapper —
+// a one-expression lambda, a `cond` arm, a one-statement `try` — are still
+// places a breakpoint lands, and a call from the debug console does not
+// re-enter the machinery that is holding the thread.
+static void scenario_collapsed_bodies() {
+  std::string path = write_program(
+      "culebra_dap_collapsed.cul",
+      "fn pick(n) {\n"                  // 1
+      "  cond {\n"                      // 2
+      "    n > 1 => n * 10,\n"          // 3  <- breakpoint (a cond arm)
+      "    _ => 0,\n"                   // 4
+      "  }\n"                           // 5
+      "}\n"                             // 6
+      "let double = fn (v) { v + v }\n" // 7
+      "let a = try { pick(2) } catch e { 0 }\n"  // 8
+      "IO.inspect(double(a))\n");       // 9
+  spawn_adapter();
+
+  send("{\"type\":\"request\",\"command\":\"initialize\"}");
+  read_until("\"event\":\"initialized\"");
+  send("{\"type\":\"request\",\"command\":\"launch\",\"arguments\":{"
+       "\"program\":" + S(path) + ",\"stopOnEntry\":false}}");
+  send("{\"type\":\"request\",\"command\":\"setBreakpoints\","
+       "\"arguments\":{\"source\":{\"path\":" + S(path) +
+       "},\"breakpoints\":[{\"line\":3}]}}");
+  send("{\"type\":\"request\",\"command\":\"configurationDone\"}");
+  read_until("\"event\":\"stopped\"");
+
+  // The arm's own line, inside pick, called from the try body on line 8.
+  send("{\"type\":\"request\",\"command\":\"stackTrace\","
+       "\"arguments\":{\"threadId\":1}}");
+  read_until("\"command\":\"stackTrace\"");
+  must_contain("\"name\":\"pick\",\"line\":3");
+  must_contain("\"name\":\"main\",\"line\":8");
+
+  // Calling a user function from the console runs it to completion instead of
+  // stopping again at the breakpoint it passes through.
+  send("{\"type\":\"request\",\"command\":\"evaluate\","
+       "\"arguments\":{\"expression\":\"pick(3)\",\"frameId\":1,"
+       "\"context\":\"repl\"}}");
+  read_until("\"command\":\"evaluate\"");
+  must_contain("\"result\":\"30\"");
+
+  send("{\"type\":\"request\",\"command\":\"continue\","
+       "\"arguments\":{\"threadId\":1}}");
+  read_until("\"event\":\"terminated\"");
+  must_contain("40");  // double(pick(2))
+  disconnect_and_wait();
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr, "usage: dap_test <culebra>\n");
@@ -300,6 +350,7 @@ int main(int argc, char** argv) {
     scenario_basic();
     scenario_call_stack();
     scenario_conditional_bp();
+    scenario_collapsed_bodies();
     std::printf("dap_test OK (%s)\n", *engine ? engine : "interp");
   }
   return 0;

@@ -8189,7 +8189,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         if (!eval_operand(test, env, t)) return Value();
         matched = t.to_bool();
       }
-      if (matched) return eval(*arm->nodes[1], env);
+      if (matched) {
+        if (debugger_ && is_collapsed_single_statement(*arm->nodes[1]))
+          statement_boundary(*arm->nodes[1], env);  // breakpoint on the arm
+        return eval(*arm->nodes[1], env);
+      }
     }
     return Value();  // no arm matched → nil
   }
@@ -8228,6 +8232,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // (LIFO, the arm value stays alive across them). A single-expression
       // arm registers no defers, so this is a no-op for it.
       Value result;
+      if (debugger_ && is_collapsed_single_statement(*arm->nodes[next]))
+        statement_boundary(*arm->nodes[next], armEnv);  // breakpoint on the arm
       try {
         result = eval(*arm->nodes[next], armEnv);
       } catch (...) {
@@ -8363,6 +8369,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                   static_cast<long>(pat->line), static_cast<long>(pat->column));
             }
           }
+          // A one-statement body is collapsed past its STATEMENT wrapper, so
+          // this is the only boundary it reaches — without it no breakpoint
+          // can land on `fn (x) { x * 2 }`'s single line (eval_if and
+          // run_loop_body cover the same shape for their bodies).
+          if (self->debugger_ && is_collapsed_single_statement(*body))
+            self->statement_boundary(*body, callEnv);
           try {
             auto r = self->eval(*body, callEnv);
             self->run_deferred(callEnv);
@@ -9828,6 +9840,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
               // defining scope, not callEnv, so `new` params stay invisible.
               self->init_instance_fields(*shared_fields, env, inst);
               callEnv->initialize("self", inst, false);
+              if (self->debugger_ && is_collapsed_single_statement(*body))
+                self->statement_boundary(*body, callEnv);
               try {
                 self->eval(*body, callEnv);
                 // Explicit `return` inside `new` is fine — we still hand
@@ -12468,6 +12482,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     Value tryResult;
     bool threw = false;
     Value thrown;
+    if (debugger_ && is_collapsed_single_statement(*ast.nodes[0]))
+      statement_boundary(*ast.nodes[0], tryEnv);  // breakpoint on a 1-stmt body
     try {
       tryResult = eval(*ast.nodes[0], tryEnv);
     } catch (const Value& e) {
@@ -12493,6 +12509,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // check as parameters and pattern bindings.
     bind_pattern_name(catchEnv, *ast.nodes[1], thrown);
     Value catchResult;
+    if (debugger_ && is_collapsed_single_statement(*ast.nodes[2]))
+      statement_boundary(*ast.nodes[2], catchEnv);  // ... and on a 1-stmt catch
     try {
       catchResult = eval(*ast.nodes[2], catchEnv);
     } catch (...) {
@@ -12517,6 +12535,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // not the enclosing function. This matches the JIT's semantics
       // (the defer body compiles to its own LLVM function whose `ret`
       // stays local). A user `throw` from here still propagates.
+      if (self->debugger_ && is_collapsed_single_statement(*body))
+        self->statement_boundary(*body, scopeEnv);
       self->eval(*body, scopeEnv);
       flow_discard();
     });
