@@ -9,6 +9,11 @@
 // are enough, and the driver waits for the `stopped` event before requesting
 // state (the inspection requests must follow the pause).
 //
+// The same scenarios run against every engine the adapter speaks for (`dap`,
+// `dap --vm`): the DAP surface is engine-independent, so a stop, a frame, a
+// variable and an evaluated expression must read identically whichever engine
+// executed the program.
+//
 // Usage: dap_test <path-to-culebra>
 
 #include <fcntl.h>
@@ -71,6 +76,8 @@ static void must_contain(const char* needle) {
 }
 
 static const char* g_culebra = nullptr;
+// The engine flag the adapter is spawned with ("" = the default interpreter).
+static const char* g_engine = "";
 
 // Write `src` to a temp file and return its path.
 static std::string write_program(const char* name, const char* src) {
@@ -97,7 +104,10 @@ static void spawn_adapter() {
     ::dup2(out_pipe[1], 1);
     ::close(in_pipe[0]); ::close(in_pipe[1]);
     ::close(out_pipe[0]); ::close(out_pipe[1]);
-    ::execlp(g_culebra, g_culebra, "dap", (char*)nullptr);
+    if (*g_engine)
+      ::execlp(g_culebra, g_culebra, "dap", g_engine, (char*)nullptr);
+    else
+      ::execlp(g_culebra, g_culebra, "dap", (char*)nullptr);
     _exit(127);
   }
   ::close(in_pipe[0]);
@@ -281,10 +291,16 @@ int main(int argc, char** argv) {
   }
   g_culebra = argv[1];
 
-  scenario_basic();
-  scenario_call_stack();
-  scenario_conditional_bp();
-
-  std::printf("dap_test OK\n");
+  // Every engine the adapter can debug on. The bytecode lane answers from
+  // chunk debug tables where the interpreter answers from its environment
+  // chain, so running the identical script against both is what keeps the two
+  // debuggers reporting the same thing.
+  for (const char* engine : {"", "--vm"}) {
+    g_engine = engine;
+    scenario_basic();
+    scenario_call_stack();
+    scenario_conditional_bp();
+    std::printf("dap_test OK (%s)\n", *engine ? engine : "interp");
+  }
   return 0;
 }

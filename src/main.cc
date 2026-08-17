@@ -2118,9 +2118,15 @@ int main(int argc, const char** argv) {
   }
 #endif
   if (argc >= 2 && string(argv[1]) == "dap") {
-    // Debug Adapter Protocol server over stdio (interp-backed). The program to
-    // debug + its args arrive in the `launch` request, not on the command line.
-    culebra::DapServer server(/*in=*/0, /*out=*/1, /*argv=*/{});
+    // Debug Adapter Protocol server over stdio. The program to debug + its
+    // args arrive in the `launch` request, not on the command line; the one
+    // thing the command line picks is which engine runs it.
+    auto engine = culebra::DebugEngineKind::Interp;
+#ifdef CULEBRA_JIT_ENABLED
+    for (int i = 2; i < argc; i++)
+      if (string(argv[i]) == "--vm") engine = culebra::DebugEngineKind::Vm;
+#endif
+    culebra::DapServer server(/*in=*/0, /*out=*/1, /*argv=*/{}, engine);
     return server.run();
   }
 #ifdef CULEBRA_JIT_ENABLED

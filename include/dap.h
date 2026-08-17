@@ -13,8 +13,13 @@
 //
 // Supported: line + conditional breakpoints, a named multi-frame call stack
 // (with per-frame variables, evaluate, and setVariable), stepping, continue,
-// and watch / hover / debug-console evaluation. interp only — the tree-walker
-// exposes the AST + Environment a source-level debugger needs.
+// and watch / hover / debug-console evaluation.
+//
+// Nothing here knows which engine runs the program: the frames, the names in
+// scope and the meaning of an evaluated expression all come from a
+// DebugEngine (include/debug_engine.h). Those queries run on the debuggee's
+// own thread while it is parked — the frame state belongs to it — so this
+// file hands them over as jobs rather than reaching across (see run_parked).
 
 #include <climits>
 #include <cstdlib>
@@ -38,6 +43,7 @@
 #include <vector>
 
 #include <culebra.h>
+#include <debug_engine.h>
 #include <module_loader.h>
 #include <stdlib_interp.h>
 
@@ -65,8 +71,12 @@ inline int64_t write_fd(int fd, const char* buf, size_t n) {
 
 class DapServer {
  public:
-  DapServer(int in_fd, int out_fd, std::vector<std::string> argv)
-      : in_(in_fd), out_(out_fd), argv_(std::move(argv)) {}
+  DapServer(int in_fd, int out_fd, std::vector<std::string> argv,
+            DebugEngineKind engine = DebugEngineKind::Interp)
+      : in_(in_fd),
+        out_(out_fd),
+        argv_(std::move(argv)),
+        engine_(make_debug_engine(engine)) {}
 
   int run() {
     setup_output_capture();
@@ -307,87 +317,24 @@ class DapServer {
     respond(req, Obj().set("breakpoints", arr(std::move(verified))).v());
   }
 
-  // One reconstructed call-stack frame: its name, current execution point
-  // (file:line), the env to read its variables from, and the AST node whose
-  // enclosing function bounds the in-scope identifiers.
-  struct UiFrame {
-    std::string name;
-    int64_t line;
-    std::string path;
-    Environment* env;
-    const peg::Ast* ast;
-  };
-
-  // The debuggee thread's GC substate (holds dap_frames_). Null until the
-  // debuggee starts. Safe to read from the DAP thread only while paused.
-  InterpGC* debuggee_gc() const {
-    if (!debuggee_rt_) return nullptr;
-    return static_cast<InterpGC*>(debuggee_rt_->substate[kSlotInterpGc]);
-  }
-
-  // Reconstruct the call stack (top frame first) from the debuggee's
-  // dap_frames(). Internal delegations (a multifn dispatcher calling the picked
-  // overload, marked by a null call_ast) are collapsed into the user-visible
-  // call so the stack reads as written. Must be called under mu_ while paused.
-  std::vector<UiFrame> build_frames_locked() {
-    std::vector<UiFrame> out;
-    if (!paused_ || !cur_ast_ || !cur_env_) return out;
-    InterpGC* gc = debuggee_gc();
-    if (!gc) {
-      out.push_back({"main", cur_line_, cur_path_, cur_env_, cur_ast_});
-      return out;
-    }
-    // Group raw call entries (bottom -> top) into user frames, folding each
-    // internal delegation's function frame into the real call it implements.
-    struct UF {
-      std::string name;
-      int64_t line;
-      std::string path;
-      const peg::Ast* call_ast;
-      Environment* exec;    // the function frame actually executing
-      Environment* caller;  // the scope that made the call
-    };
-    std::vector<UF> ufs;
-    for (const auto& e : gc->dap_frames()) {
-      if (e.call_ast != nullptr || ufs.empty()) {
-        ufs.push_back({e.name, e.line, e.path, e.call_ast, e.callee_env,
-                       e.caller_env});
-      } else if (e.callee_env) {
-        ufs.back().exec = e.callee_env;  // dispatcher -> picked overload
-      }
-    }
-    int64_t m = static_cast<int64_t>(ufs.size());
-    // Top: the current execution point in the innermost function.
-    out.push_back({m ? ufs[m - 1].name : std::string("main"), cur_line_,
-                   cur_path_, cur_env_, cur_ast_});
-    // Each lower frame executes at the call site of the frame just above it.
-    for (int64_t i = m - 1; i >= 1; i--) {
-      out.push_back({ufs[i - 1].name, ufs[i].line,
-                     ufs[i].path.empty() ? cur_path_ : ufs[i].path,
-                     ufs[i - 1].exec, ufs[i].call_ast});
-    }
-    if (m >= 1) {
-      out.push_back({"main", ufs[0].line,
-                     ufs[0].path.empty() ? cur_path_ : ufs[0].path,
-                     ufs[0].caller, ufs[0].call_ast});
-    }
-    return out;
-  }
-
-  // Resolve a 1-based DAP frame id to its env + scope AST (under mu_).
-  bool frame_target_locked(int64_t frame_id, Environment*& env,
-                           const peg::Ast*& ast) {
-    auto frames = build_frames_locked();
-    if (frame_id < 1 || static_cast<size_t>(frame_id) > frames.size())
-      return false;
-    env = frames[frame_id - 1].env;
-    ast = frames[frame_id - 1].ast;
+  // Runs `fn` on the parked debuggee thread and waits for it. Everything a
+  // client asks about a stopped program — frames, variables, evaluate — is a
+  // question about state that belongs to that thread, so this is the only way
+  // the DAP loop is allowed to ask. Returns false when nothing is parked,
+  // which is the "not paused" every such request answers with.
+  bool run_parked(const std::function<void()>& fn) {
+    std::unique_lock<std::mutex> lk(mu_);
+    if (!paused_) return false;
+    job_ = &fn;
+    job_done_ = false;
+    cv_.notify_all();
+    job_done_cv_.wait(lk, [this] { return job_done_; });
     return true;
   }
 
   void do_stack_trace(const Value& req) {
-    std::lock_guard<std::mutex> lk(mu_);
-    auto frames = build_frames_locked();
+    std::vector<DebugFrame> frames;
+    run_parked([&] { frames = engine_->frames(); });
     std::vector<Value> out;
     int64_t id = 1;
     for (auto& fr : frames) {
@@ -412,107 +359,34 @@ class DapServer {
                      .v());
   }
 
-  // Identifiers referenced in `node`, not descending into nested functions
-  // (their locals belong to a different scope). Mirrors the CLI debugger so the
-  // pane shows names in scope rather than every stdlib binding in the root env.
-  static void enum_idents(const peg::Ast& node,
-                          std::set<std::string>& out) {
-    using namespace peg::udl;
-    for (const auto& c : node.nodes) {
-      if (c->tag == "IDENTIFIER"_)
-        out.insert(std::string(c->token));
-      else if (c->tag != "FUNCTION"_)
-        enum_idents(*c, out);
-    }
-  }
-  // The enclosing function subtree, or the whole program when at top level.
-  static const peg::Ast* scope_node(const peg::Ast& ast) {
-    using namespace peg::udl;
-    const peg::Ast* node = &ast;
-    std::shared_ptr<peg::Ast> root;
-    for (auto p = ast.parent.lock(); p; p = p->parent.lock()) {
-      if (p->tag == "FUNCTION"_) return p.get();
-      root = p;
-    }
-    return root ? root.get() : node;
-  }
-
   // Variables in scope at a given frame. `var_ref` is the DAP
   // variablesReference, which we set equal to the 1-based frame id (see
-  // `scopes`), so a client inspecting a selected frame gets that frame's locals.
+  // `scopes`), so a client inspecting a selected frame gets that frame's
+  // locals.
   Value collect_variables(int64_t var_ref) {
-    std::lock_guard<std::mutex> lk(mu_);
-    Environment* env = nullptr;
-    const peg::Ast* ast = nullptr;
-    if (!frame_target_locked(var_ref, env, ast) || !env || !ast) return arr({});
-    // Builtin globals (IO, the exception types, namespaces, ...) are in scope
-    // everywhere; listing them as "locals" is just noise, so skip them.
-    static const std::set<std::string, std::less<>> builtins =
-        builtin_global_names();
-    std::set<std::string> names;
-    enum_idents(*scope_node(*ast), names);
-    std::vector<Value> vars;
-    for (const auto& n : names) {
-      if (n.empty() || n[0] == '_') continue;       // injected (__LINE__ etc.)
-      if (builtins.count(n)) continue;               // builtin global, not local
-      if (!env->has(n)) continue;                    // not yet bound / unknown
-      const Value& val = env->get(n);
-      if (val.type == Value::Function) continue;     // hide fns / builtins
-      vars.push_back(Obj()
-                         .set("name", S(n))
-                         .set("value", S(val.str()))
-                         .set("type", S(val.type_name()))
-                         .set("variablesReference", L(0))
-                         .v());
-    }
-    return arr(std::move(vars));
+    std::vector<DebugVar> vars;
+    run_parked([&] { vars = engine_->variables(frame_index(var_ref)); });
+    std::vector<Value> out;
+    for (auto& v : vars)
+      out.push_back(Obj()
+                        .set("name", S(v.name))
+                        .set("value", S(v.value))
+                        .set("type", S(v.type))
+                        .set("variablesReference", L(0))
+                        .v());
+    return arr(std::move(out));
   }
 
-  // Parse and evaluate an expression string against `frame` on a fresh
-  // Interpreter. The debuggee is parked, so reading its env is race-free, and
-  // the frame's values stay alive through the env's own refcounted references
-  // regardless of which thread's GC the eval allocates on. Uses the bare `eval`
-  // (not `interpret`, which would flush the frame's pending defers). The fresh
-  // Interpreter carries no debugger, so evaluating a call won't re-enter the
-  // hook.
-  bool eval_in_env(const std::shared_ptr<Environment>& frame,
-                   const std::string& expr, Value& out, std::string& err) {
-    if (!frame) { err = "no frame"; return false; }
-    std::vector<std::string> msgs;
-    auto ast = parse_with_transforms("(dap)", expr, msgs);
-    if (!ast) { err = msgs.empty() ? "parse error" : msgs.front(); return false; }
-    try {
-      out = std::make_shared<Interpreter>()->eval(*ast, frame);
-      return true;
-    } catch (const CulebraError& e) {
-      err = std::string(e.kind) + ": " + e.what();
-    } catch (const std::exception& e) {
-      err = e.what();
-    }
-    return false;
-  }
-
-  // The env of the requested frame (default: top), as a shared_ptr safe to use
-  // after releasing mu_. The debuggee thread is parked, so this read is safe.
-  std::shared_ptr<Environment> resolve_frame(int64_t frame_id, std::string& err) {
-    std::lock_guard<std::mutex> lk(mu_);
-    if (!paused_) { err = "not paused"; return nullptr; }
-    Environment* env = nullptr;
-    const peg::Ast* ast = nullptr;
-    if (!frame_target_locked(frame_id, env, ast) || !env) {
-      err = "no such frame";
-      return nullptr;
-    }
-    return env->shared_from_this();
-  }
-
-  // A frame id arg (`frameId`, or `variablesReference` which we set equal to the
-  // frame id) clamped to a 1-based frame index; 0 / absent / negative means the
-  // top frame.
+  // A frame id arg (`frameId`, or `variablesReference` which we set equal to
+  // the frame id) clamped to a 1-based frame index; 0 / absent / negative
+  // means the top frame.
   static int64_t frame_id_arg(const Value& a, const char* key = "frameId") {
     const Value& f = at(a, key);
     int64_t id = f.type == Value::Long ? f.to_long() : 0;
     return id >= 1 ? id : 1;
+  }
+  static size_t frame_index(int64_t frame_id) {
+    return static_cast<size_t>(frame_id >= 1 ? frame_id - 1 : 0);
   }
 
   void do_evaluate(const Value& req) {
@@ -520,17 +394,20 @@ class DapServer {
     std::string expr = at(a, "expression").type == Value::String
                            ? std::string(at(a, "expression").to_string())
                            : "";
-    std::string err;
-    auto frame = resolve_frame(frame_id_arg(a), err);
-    Value v;
-    if (frame && eval_in_env(frame, expr, v, err)) {
+    size_t ix = frame_index(frame_id_arg(a));
+    std::string err = "not paused";
+    DebugVar v;
+    bool ok = false;
+    run_parked([&] { ok = engine_->evaluate(ix, expr, v, err); });
+    if (ok) {
       respond(req, Obj()
-                       .set("result", S(v.str()))
-                       .set("type", S(v.type_name()))
+                       .set("result", S(v.value))
+                       .set("type", S(v.type))
                        .set("variablesReference", L(0))
                        .v());
     } else {
-      respond(req, Obj().set("result", S(err)).set("variablesReference", L(0)).v(),
+      respond(req,
+              Obj().set("result", S(err)).set("variablesReference", L(0)).v(),
               /*success=*/false, err);
     }
   }
@@ -545,54 +422,46 @@ class DapServer {
                               : "";
     // variablesReference is the frame id (see `scopes`), so a set targets the
     // variable in the selected frame's scope, not always the top frame.
-    int64_t frame_id = frame_id_arg(a, "variablesReference");
-    std::string err;
-    auto frame = resolve_frame(frame_id, err);
-    Value v;
-    if (!frame || !eval_in_env(frame, valexpr, v, err)) {
+    size_t ix = frame_index(frame_id_arg(a, "variablesReference"));
+    std::string err = "not paused";
+    DebugVar v;
+    bool ok = false;
+    run_parked([&] {
+      // A name the frame does not have is the client's mistake, not the
+      // engine's: report it before an assignment invents a binding.
+      if (!engine_->has_name(ix, name)) {
+        err = "no variable '" + name + "' in scope";
+        return;
+      }
+      ok = engine_->set_variable(ix, name, valexpr, v, err);
+    });
+    if (!ok) {
       respond(req, Obj().v(), /*success=*/false, err);
       return;
     }
-    // assign() walks the outer chain and asserts the name exists — that assert
-    // is compiled out in release, so an unknown name (a non-conformant client)
-    // would deref a null root. Guard with the same chained lookup first.
-    if (!frame->has(name)) {
-      respond(req, Obj().v(), false, "no variable '" + name + "' in scope");
-      return;
-    }
-    try {
-      frame->assign(name, v);  // honours immutability (throws if `let`-bound)
-    } catch (const CulebraError& e) {
-      respond(req, Obj().v(), false, std::string(e.kind) + ": " + e.what());
-      return;
-    } catch (const std::exception& e) {
-      respond(req, Obj().v(), false, e.what());
-      return;
-    }
     respond(req, Obj()
-                     .set("value", S(v.str()))
-                     .set("type", S(v.type_name()))
+                     .set("value", S(v.value))
+                     .set("type", S(v.type))
                      .set("variablesReference", L(0))
                      .v());
   }
 
   // Evaluate a breakpoint condition against the live frame (we are on the
-  // debuggee thread at a statement safe point). Stop when it is truthy; also
-  // stop — and report once — when it can't be evaluated or isn't boolean, so a
-  // bad condition surfaces instead of silently disabling the breakpoint.
-  bool eval_breakpoint_condition(const std::string& cond, Environment& env) {
-    Value v;
+  // debuggee thread at a statement safe point, so the engine answers
+  // directly). Stop when it is truthy; also stop — and report once — when it
+  // can't be evaluated or isn't boolean, so a bad condition surfaces instead
+  // of silently disabling the breakpoint.
+  bool eval_breakpoint_condition(const std::string& cond) {
+    DebugVar v;
     std::string err;
-    if (!eval_in_env(env.shared_from_this(), cond, v, err)) {
+    if (!engine_->evaluate(0, cond, v, err)) {
       emit_stderr("breakpoint condition error: " + err + "\n");
       return true;
     }
-    try {
-      return v.to_bool();
-    } catch (const std::exception&) {
-      emit_stderr("breakpoint condition is not a boolean: " + cond + "\n");
-      return true;
-    }
+    if (v.value == "true") return true;
+    if (v.value == "false") return false;
+    emit_stderr("breakpoint condition is not a boolean: " + cond + "\n");
+    return true;
   }
 
   // ---- debuggee lifecycle ----------------------------------------------
@@ -609,70 +478,17 @@ class DapServer {
     // program ends. Stream it live by flushing std::cout after every write.
     // (Debug-only — a normal `culebra <file>` run keeps the buffered stdout.)
     std::cout << std::unitbuf;
-
-    std::ifstream ifs(program_, std::ios::binary);
-    std::string src((std::istreambuf_iterator<char>(ifs)),
-                    std::istreambuf_iterator<char>());
-    if (!ifs && src.empty()) {
-      event("output", Obj()
-                          .set("category", S("stderr"))
-                          .set("output", S("cannot open '" + program_ + "'\n"))
-                          .v());
-      finish(1);
-      return;
-    }
-    std::vector<std::string> msgs;
-    ModuleLoader loader;
-    std::vector<LoadedModule> modules;
-    try {
-      modules = loader.load_program(program_, src, msgs);
-    } catch (const CulebraError& e) {
-      emit_error(e);
-      finish(1);
-      return;
-    }
-    culebra::sys_argv() = argv_;
-    auto env = culebra::environment();
-    // CLI-style global aliases so a script using bare inspect/print/println
-    // behaves like a normal `culebra <file>` run.
-    const auto& io = env->get("IO").to_object();
-    env->initialize("inspect", io.get("inspect"), false);
-    env->initialize("print", io.get("print"), false);
-    env->initialize("println", io.get("println"), false);
-
-    Debugger dbg = [this](const peg::Ast& a, Environment& e, bool f) {
-      on_statement(a, e, f);
-    };
-    // The interpreter's runtime substate (incl. the GC + dap_frames_) is
-    // thread-local, so the DAP thread can't reach it through interp_gc(). Record
-    // this thread's Runtime so frame queries can read the debuggee's instance
-    // while it's parked.
-    debuggee_rt_ = &current_runtime();
-    // Track the named call stack for the duration of the run. Enabled here (the
-    // env is built, so any preamble calls during setup stayed untracked) and
-    // cleared in finish(); a normal `culebra <file>` run never sets this.
-    interp_gc().dap_set_tracking(true);
-    Value val;
-    int code = 0;
-    try {
-      if (!interpret_modules(modules, env, val, msgs, dbg)) {
-        for (const auto& m : msgs) emit_stderr(m + "\n");
-        code = 1;
-      }
-    } catch (const CulebraError& e) {
-      emit_error(e);
-      code = 1;
-    } catch (...) {
-      code = 1;
-    }
-    interp_gc().dap_set_tracking(false);
+    int code = engine_->run(
+        program_, argv_,
+        [this](const std::string& path, int64_t line, bool force,
+               size_t depth) { on_statement(path, line, force, depth); },
+        [this](const std::string& text) { emit_stderr(text); });
     finish(code);
   }
 
   // Per-statement hook (runs on the debuggee thread).
-  void on_statement(const peg::Ast& ast, Environment& env, bool force) {
-    int64_t line = static_cast<long>(ast.line);
-    const std::string& path = ast.path;
+  void on_statement(const std::string& path, int64_t line, bool force,
+                    size_t depth) {
     // The lazy stdlib preamble (Time/Args/Log/...) evaluates as statements with
     // a synthetic `<builtin>` path. Never stop there — the debugger only stops
     // in user source. (Breakpoints are file:line-keyed so they were already
@@ -699,8 +515,8 @@ class DapServer {
           }
         }
       }
-      // Evaluate any condition outside bp_mu_ (it runs the interpreter).
-      if (matched) hit = cond.empty() || eval_breakpoint_condition(cond, env);
+      // Evaluate any condition outside bp_mu_ (it runs the program).
+      if (matched) hit = cond.empty() || eval_breakpoint_condition(cond);
     }
     if (!hit) {
       // Snapshot the step intent under mu_: request_resume writes it from the
@@ -715,9 +531,9 @@ class DapServer {
       }
       if (m == Step::STEP_IN)
         hit = true, reason = "step";
-      else if (m == Step::NEXT && env.level <= lvl)
+      else if (m == Step::NEXT && depth <= lvl)
         hit = true, reason = "step";
-      else if (m == Step::STEP_OUT && env.level < lvl)
+      else if (m == Step::STEP_OUT && depth < lvl)
         hit = true, reason = "step";
     }
     entered_ = true;
@@ -725,10 +541,7 @@ class DapServer {
 
     {
       std::unique_lock<std::mutex> lk(mu_);
-      cur_ast_ = &ast;
-      cur_env_ = &env;
-      cur_path_ = path;
-      cur_line_ = line;
+      cur_depth_ = depth;
       paused_ = true;
     }
     event("stopped", Obj()
@@ -736,11 +549,19 @@ class DapServer {
                          .set("threadId", L(1))
                          .set("allThreadsStopped", Bv(true))
                          .v());
-    {
-      std::unique_lock<std::mutex> lk(mu_);
-      cv_.wait(lk, [this] { return !paused_; });
-      cur_ast_ = nullptr;
-      cur_env_ = nullptr;
+    // Park, serving the DAP loop's queries in between: they read frames and
+    // registers that belong to this thread, so this thread is what runs them.
+    std::unique_lock<std::mutex> lk(mu_);
+    while (paused_) {
+      cv_.wait(lk, [this] { return !paused_ || job_; });
+      if (!job_) continue;
+      const auto* job = job_;
+      lk.unlock();
+      (*job)();
+      lk.lock();
+      job_ = nullptr;
+      job_done_ = true;
+      job_done_cv_.notify_all();
     }
   }
 
@@ -752,7 +573,7 @@ class DapServer {
       return;
     }
     step_ = mode;
-    step_level_ = cur_env_ ? cur_env_->level : 0;
+    step_level_ = cur_depth_;
     paused_ = false;
     cv_.notify_all();
   }
@@ -780,12 +601,6 @@ class DapServer {
   }
   void emit_stderr(const std::string& s) {
     event("output", Obj().set("category", S("stderr")).set("output", S(s)).v());
-  }
-  void emit_error(const CulebraError& e) {
-    std::string m = std::string(e.kind) + ": " + e.what();
-    if (e.line > 0 || e.col > 0)
-      m += " at " + std::to_string(e.line) + ":" + std::to_string(e.col) + ".";
-    emit_stderr(m + "\n");
   }
 
   // ---- output capture (debuggee stdout/stderr -> `output` events) -------
@@ -837,18 +652,20 @@ class DapServer {
   std::atomic<long> seq_{1};
   std::mutex write_mu_;
 
+  std::unique_ptr<DebugEngine> engine_;
   culebra::SizedThread debuggee_;
-  Runtime* debuggee_rt_ = nullptr;  // the debuggee thread's runtime substate
   std::mutex mu_;
   std::condition_variable cv_;
   bool paused_ = false;
   Step step_ = Step::RUN;
   size_t step_level_ = 0;
-  const peg::Ast* cur_ast_ = nullptr;
-  Environment* cur_env_ = nullptr;
-  std::string cur_path_;
-  int64_t cur_line_ = 0;
+  size_t cur_depth_ = 0;  // the parked frame's depth, for step over / out
   bool entered_ = false;
+  // A query for the parked debuggee thread to run, and the handshake back.
+  // One at a time: the DAP loop is what posts them, and it is sequential.
+  const std::function<void()>* job_ = nullptr;
+  bool job_done_ = false;
+  std::condition_variable job_done_cv_;
 
   // path -> (line -> condition). An empty condition means an unconditional
   // breakpoint; a non-empty one is an expression evaluated in the stopped
