@@ -21,8 +21,10 @@ fn ran(body) {
   seen
 }
 
-# A scalar carries no members at all: nothing runs.
-assert_eq(ran(fn () { (5).repeat(t('a')) }), [])
+# A scalar carries no members at all: nothing runs. (Not `repeat` — that is
+# a global, so `(5).repeat(x)` is the UFCS call `repeat(5, x)` and its
+# argument does run.)
+assert_eq(ran(fn () { (5).trim_start(t('a')) }), [])
 assert_eq(ran(fn () { nil.push(t('a')) }), [])
 
 # Object-ish receivers that simply lack the method: the arguments run first.

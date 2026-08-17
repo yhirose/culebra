@@ -589,9 +589,12 @@ enum class Op : uint8_t {
   Disp,        // regs[a] = display string of regs[b] (value_to_display,
                // borrow) — a bare `{expr}` piece. The result is a fresh
                // heap string: TAG_STRING, so outside RC entirely.
-  Fmt,         // regs[a] = format_value(regs[b], spec consts[c]) with this
-               // instruction's line/col (the piece node's position — spec
-               // errors report there) — a `{expr:spec}` piece
+  Fmt,         // regs[a] = format_value(regs[b], spec) with this instruction's
+               // line/col (the piece node's position — spec errors report
+               // there) — a `{expr:spec}` piece. The spec is consts[c], or
+               // regs[c] when d=1: a spec carrying its own `{field}`
+               // (`"{s:>{w}}"`) is assembled at run time out of the same
+               // literal/display pieces the other engines concatenate.
   StrCat,      // regs[a] = str_concat(regs[b], regs[c]); both operands are
                // Strings by construction (interpolation pieces)
   Throw,       // user `throw`: regs[a]'s +1 transfers to the thrown-value
@@ -1508,7 +1511,8 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
     case BMeth::Split:
       return JitValue{TAG_ARRAY,
                       reinterpret_cast<int64_t>(culebra_runtime_str_split(
-                          cstr(recv), cstr(args[0])))};
+                          cstr(recv), cstr(args[0]), /*limit=*/0,
+                          /*from_right=*/false, line, col))};
     case BMeth::StartsWith:
       return JitValue{TAG_BOOL, culebra_runtime_str_starts_with(
                                     cstr(recv), cstr(args[0])) ? 1 : 0};
@@ -1954,7 +1958,9 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       // "Lazy in API, eager underneath": split first, then walk the pieces.
       // array_iter takes its own `+1` on the Array, so split's fresh one is
       // released here and the snapshot lives exactly as long as the iterator.
-      auto* pieces = culebra_runtime_str_split(cstr(recv), cstr(args[0]));
+      auto* pieces = culebra_runtime_str_split(cstr(recv), cstr(args[0]),
+                                              /*limit=*/0,
+                                              /*from_right=*/false, line, col);
       auto* it = culebra_runtime_array_iter(pieces);
       culebra_runtime_value_release(TAG_ARRAY,
                                     reinterpret_cast<int64_t>(pieces));
@@ -7889,21 +7895,24 @@ class Compiler {
       }
       flush();
       const peg::Ast& node = *p.expr;
-      const peg::Ast* expr_node = &node;
-      const peg::Ast* spec = nullptr;
-      if (node.tag == "INTERP_EXPR"_) {
-        expr_node = node.nodes[0].get();
-        if (node.nodes.size() > 1) spec = node.nodes[1].get();
-      }
-      auto v = compile_expr(*expr_node);
+      auto view = culebra::view_interp_expr(node);
+      auto v = compile_expr(*view.value);
+      // A spec with its own `{field}` is built before the render op, out of
+      // the value that is already in hand — the fields are ordinary
+      // expressions and run in source order, as the other engines run them.
+      int32_t spec_slot = -1;
+      if (view.spec && !view.constant_spec)
+        spec_slot = compile_format_spec(*view.spec);
       // SetOpPos rides the enclosing string literal's stamp (the pending
       // position here); the render op itself is stamped at the piece so
       // Fmt's spec errors report the `{expr:spec}` node.
       emit(Op::SetOpPos);
       int32_t t = alloc_temp(ast);
       StampGuard pos(*this, node);
-      if (spec)
-        emit(Op::Fmt, t, v.slot, kconst_str(spec->token));
+      if (spec_slot >= 0)
+        emit(Op::Fmt, t, v.slot, spec_slot, 1);
+      else if (view.spec)
+        emit(Op::Fmt, t, v.slot, kconst_str(view.spec_text));
       else
         emit(Op::Disp, t, v.slot);
       cat(t);
@@ -7914,6 +7923,48 @@ class Compiler {
       emit(Op::LoadConst, acc, kconst_str(""));
     }
     return {acc, true};
+  }
+
+  // A spec carrying nested `{field}`s (`"{s:>{w}}"`): literal chunks are
+  // constants, each field's Long becomes its decimal text, and the pieces
+  // concatenate left to right — the JIT's emit_format_spec and the interp's
+  // build_format_spec piece for piece, so all three assemble the same spec
+  // and reject the same non-Long field at the field's own position.
+  int32_t compile_format_spec(const peg::Ast& spec) {
+    int32_t acc = -1;
+    auto append = [&](int32_t piece) {
+      if (acc < 0) {
+        acc = piece;
+        return;
+      }
+      int32_t t = alloc_temp(spec);
+      emit(Op::StrCat, t, acc, piece);
+      acc = t;
+    };
+    for (const auto& node : spec.nodes) {
+      auto piece = culebra::view_spec_piece(*node);
+      if (!piece.expr) {
+        int32_t t = alloc_temp(spec);
+        emit(Op::LoadConst, t, kconst_str(piece.text));
+        append(t);
+        continue;
+      }
+      const auto& field = *piece.expr;
+      auto v = compile_expr(field);
+      {
+        StampGuard fpos(*this, field);
+        emit(Op::ChkTypeAt, v.slot, kconst_str("Long"),
+             kconst_str(culebra::kSpecFieldContext), -1);
+      }
+      int32_t t = alloc_temp(field);
+      emit(Op::Disp, t, v.slot);
+      append(t);
+    }
+    if (acc < 0) {
+      acc = alloc_temp(spec);
+      emit(Op::LoadConst, acc, kconst_str(""));
+    }
+    return acc;
   }
 
   ExprResult compile_expr(const peg::Ast& ast) {
@@ -10079,6 +10130,13 @@ struct Exec {
               culebra_runtime_value_release(static_cast<int8_t>(self.tag),
                                             self.data);
               self = callee;
+            } else {
+              // A class object reached as a member (`Canvas.Font(bytes)`):
+              // its `new` builds the instance, and the receiver stays the one
+              // the call started with — the plain-call and kwargs arms probe
+              // in this same order.
+              target = culebra_runtime_class_new_method(
+                  static_cast<int8_t>(callee.tag), callee.data);
             }
           }
           if (target.tag != TAG_FUNC) {
@@ -10547,12 +10605,13 @@ struct Exec {
           break;
         case Op::Fmt: {
           auto [line, col] = chunk_pos_at(c, pc);
+          const char* spec = reinterpret_cast<const char*>(
+              in.d ? regs[in.c].data : c.consts[in.c].data);
           regs[in.a] = JitValue{
               TAG_STRING,
               reinterpret_cast<int64_t>(culebra_runtime_format_value(
-                  static_cast<int8_t>(regs[in.b].tag), regs[in.b].data,
-                  reinterpret_cast<const char*>(c.consts[in.c].data), line,
-                  col))};
+                  static_cast<int8_t>(regs[in.b].tag), regs[in.b].data, spec,
+                  line, col))};
           ++pc;
           break;
         }
@@ -12361,7 +12420,9 @@ struct Lowering {
             case BMeth::Split:
               res = j.make_array(j.emit_call(
                   j.module_->getFunction(rt::str_split),
-                  {cstr(recv), cstr(arg(0))}, "vbm.sp"));
+                  {cstr(recv), cstr(arg(0)), b.getInt64(0), b.getInt1(false),
+                   j.current_line_val(), j.current_column_val()},
+                  "vbm.sp"));
               break;
             case BMeth::StartsWith:
             case BMeth::EndsWith:
@@ -13253,7 +13314,9 @@ struct Lowering {
               // "Lazy in API, eager underneath": split, then walk the pieces.
               auto pieces = j.emit_call(
                   j.module_->getFunction(rt::str_split),
-                  {cstr(recv), cstr(arg(0))}, "vbm.spi.a");
+                  {cstr(recv), cstr(arg(0)), b.getInt64(0), b.getInt1(false),
+                   j.current_line_val(), j.current_column_val()},
+                  "vbm.spi.a");
               auto it = j.emit_call(
                   j.module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy),
                   {pieces}, "vbm.spi");
@@ -14602,10 +14665,13 @@ struct Lowering {
         }
         case Op::Fmt: {
           auto v = load_slot(in.b);
-          auto specPtr = j.get_or_create_global_str(
-              std::string(
-                  _str_sv(reinterpret_cast<const char*>(c.consts[in.c].data))),
-              ".fmtspec");
+          // d=1: the spec was assembled into a register by the pieces above.
+          llvm::Value* specPtr =
+              in.d ? b.CreateIntToPtr(j.extract_data(load_slot(in.c)), ptrTy)
+                   : j.get_or_create_global_str(
+                         std::string(_str_sv(reinterpret_cast<const char*>(
+                             c.consts[in.c].data))),
+                         ".fmtspec");
           auto [line, col] = chunk_pos_at(c, i);
           auto s = j.emit_call(
               j.module_->getOrInsertFunction(rt::format_value, ptrTy,

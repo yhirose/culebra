@@ -4354,6 +4354,48 @@ inline JitValue _ns_canvas_glyph(JitValue* a, int64_t) {
                                _ns_adapt::take_long(a[5]));
   return _ns_adapt::v_nil();
 }
+inline JitValue _ns_canvas_ttf_load(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_ttf_load(
+      static_cast<uint8_t>(a[0].tag), a[0].data, 0, 0));
+}
+inline JitValue _ns_canvas_ttf_free(JitValue* a, int64_t) {
+  culebra_runtime_canvas_ttf_free(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_ttf_glyph(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_ttf_glyph(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), _ns_coord(a[2]),
+      _ns_coord(a[3]), _ns_adapt::take_long(a[4]),
+      _ns_adapt::take_long(a[5])));
+}
+inline JitValue _ns_canvas_ttf_glyph_screen(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_ttf_glyph_screen(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), _ns_coord(a[2]),
+      _ns_coord(a[3]), _ns_adapt::take_long(a[4]),
+      _ns_adapt::take_long(a[5])));
+}
+inline JitValue _ns_canvas_ttf_advance(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_ttf_advance(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
+      _ns_adapt::take_long(a[2])));
+}
+inline JitValue _ns_canvas_ttf_ascent(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_ttf_ascent(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1])));
+}
+inline JitValue _ns_canvas_screen_width(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_screen_width());
+}
+inline JitValue _ns_canvas_screen_height(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_screen_height());
+}
+inline JitValue _ns_canvas_get_screen_pixel(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_canvas_get_screen_pixel(_ns_coord(a[0]), _ns_coord(a[1])));
+}
+inline JitValue _ns_canvas_screen_scale(JitValue*, int64_t) {
+  return _ns_adapt::v_float(culebra_runtime_canvas_screen_scale());
+}
 inline JitValue _ns_canvas_sprite_load(JitValue* a, int64_t) {
   return _ns_adapt::v_long(culebra_runtime_canvas_sprite_load(
       _ns_adapt::take_array(a[0]), _ns_adapt::take_long(a[1]),
@@ -7519,6 +7561,16 @@ inline const NsMethod kNsMethods[] = {
   {"_Term",  "attach_tty",  0, &_ns_term_attach_tty},
 
   {"_Canvas", "init",            2,  &_ns_canvas_init},
+  {"_Canvas", "ttf_load",        1,  &_ns_canvas_ttf_load},
+  {"_Canvas", "ttf_free",        1,  &_ns_canvas_ttf_free},
+  {"_Canvas", "ttf_glyph",       6,  &_ns_canvas_ttf_glyph},
+  {"_Canvas", "ttf_glyph_screen", 6, &_ns_canvas_ttf_glyph_screen},
+  {"_Canvas", "ttf_advance",     3,  &_ns_canvas_ttf_advance},
+  {"_Canvas", "ttf_ascent",      2,  &_ns_canvas_ttf_ascent},
+  {"_Canvas", "screen_width",    0,  &_ns_canvas_screen_width},
+  {"_Canvas", "screen_height",   0,  &_ns_canvas_screen_height},
+  {"_Canvas", "get_screen_pixel", 2, &_ns_canvas_get_screen_pixel},
+  {"_Canvas", "screen_scale",    0,  &_ns_canvas_screen_scale},
   {"_Canvas", "clear",           1,  &_ns_canvas_clear},
   {"_Canvas", "set_pixel",       3,  &_ns_canvas_set_pixel},
   {"_Canvas", "get_pixel",       2,  &_ns_canvas_get_pixel},
