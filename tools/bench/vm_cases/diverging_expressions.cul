@@ -1,0 +1,101 @@
+# `return` / `break` / `continue` are statements, but the grammar lets them
+# stand where an expression does. They never produce a value: control leaves
+# before anything could read one, so the statement they are compiles as
+# itself and whatever was going to consume the value never runs.
+
+fn early(n) {
+  let y = n > 0 ? return 'positive' : 0
+  'fell through'
+}
+println([early(1), early(0)])
+
+fn diverges() {
+  let y = return 'from the declaration'
+  'after'
+}
+println(diverges())
+
+fn bare() {
+  let y = return
+  'after'
+}
+println(bare())
+
+# Nothing after it runs, at any depth of the expression it sits in.
+mut trace = []
+fn traced() {
+  trace.push('before')
+  let y = return 'r'
+  trace.push('after')
+  'end'
+}
+println([traced(), trace])
+
+fn in_argument() {
+  let f = fn (n) {
+    n
+  }
+  f(return 'from an argument')
+  'after'
+}
+println(in_argument())
+
+fn in_or() {
+  let y = false || return 'from the right of ||'
+  'after'
+}
+println(in_or())
+
+fn in_array() {
+  let a = [1, return 'from an array literal', 3]
+  'after'
+}
+println(in_array())
+
+# `break` and `continue` reach the loop the same way.
+mut seen = []
+for i in 0..4 {
+  let y = i == 2 ? break : 0
+  seen.push(i)
+}
+println(seen)
+
+mut kept = []
+for i in 0..4 {
+  let y = i % 2 == 1 ? continue : 0
+  kept.push(i)
+}
+println(kept)
+
+mut nested = []
+for i in 0..3 {
+  for j in 0..3 {
+    let y = j == 1 ? break : 0
+    nested.push([i, j])
+  }
+}
+println(nested)
+
+# The value the diverging expression carries is the frame's, not the
+# statement's — a `defer` still runs, and a heap value still releases.
+fn with_defer() {
+  defer {
+    trace.push('deferred')
+  }
+  let y = return [1, 2]
+  'after'
+}
+println([with_defer(), trace])
+
+# Churn: a diverging declaration per turn, over a heap value.
+fn churned(i) {
+  let y = return [i]
+  'after'
+}
+mut n = 0
+mut i = 0
+while i < 4000 {
+  n = n + churned(i).size()
+  i = i + 1
+}
+println(n)

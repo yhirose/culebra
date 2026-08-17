@@ -1,0 +1,51 @@
+# A multi-module program: every dependency runs to completion, in
+# dependency order, before the module that imports it — each in a scope of
+# its own, so only the names it exports are reachable from here.
+
+import nums from './import_helpers/nums.cul'
+import chained from './import_helpers/chained.cul'
+import silent from './import_helpers/silent.cul'
+
+println(nums.scale(3))
+println(nums.Pt.new(2, 5).sum())
+println(chained.twice(4))
+println(chained.tag)
+
+# A name the module has but does not export is not on the export Object, and
+# a missing property is nil rather than an error.
+println(nums.hidden)
+println(silent.unreachable)
+println(silent.size())
+
+# The export Object is built once and cached: a second import of the same
+# path is the same module, not a second run of its body.
+import again from './import_helpers/nums.cul'
+println([nums.bump(), again.bump(), nums.bump()])
+
+# The dependency's top level is not this one's. A name it binds is not
+# visible here, and one this module binds does not reach into it.
+base = 'entry-owned'
+println(base)
+println(nums.scale(1))
+
+# A dependency's own names are not in scope here at all — a bare read is a
+# pre-execution NameError on every engine, so the reach is tested through
+# the export Object above rather than by running one.
+
+# The imported values are ordinary values: held, passed, and used to build
+# instances that outlive the statement.
+let held = nums.Pt
+let made = held.new(1, 1)
+println(made.sum())
+let f = chained.twice
+println(f(1))
+
+# Churn: an instance per turn out of an imported class, so a retain the
+# import path leaks would show as growth.
+mut n = 0
+mut i = 0
+while i < 4000 {
+  n = n + nums.Pt.new(i, 1).sum() - i
+  i = i + 1
+}
+println(n)

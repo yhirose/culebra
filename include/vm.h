@@ -172,6 +172,16 @@ enum class Op : uint8_t {
                // position, which compile_object stamps at the SPREAD_ELEM
                // node (compile_array's ArrayExtend precedent), not the
                // literal's own position.
+  ModReg,      // hand the runtime module table regs[a] — a dependency
+               // module's export Object — under the absolute path consts[b],
+               // absorbing the register's +1 (module_register). The importing
+               // module's ModGet reads it back out by the same key, which is
+               // why both spell the path the way resolve_module_path does.
+  ModGet,      // regs[a] = the export Object registered for the absolute path
+               // consts[b], as a fresh +1 (module_get). A path nothing
+               // registered is an ImportError at this instruction — the
+               // loader makes that unreachable from a normal run, since it
+               // walks every `import` before any of them compiles.
   RangeNew,    // regs[a] = fresh Range object (+1) from the contiguous run
                // regs[b..b+2] = start, end, step (each Long — ChkLong ran
                // right after its endpoint compiled; step defaults via a
@@ -2780,10 +2790,15 @@ struct Unsupported {
 // module, at run time for the function literal that holds it.
 class Compiler {
  public:
-  static VmProgram compile_module(const peg::Ast& ast,
-                                  const peg::Ast* stdlib = nullptr,
-                                  Debug debug = Debug::Off) {
-    return compile_unit(ast, {.stdlib = stdlib, .debug = debug});
+  // `deps` are the entry module's dependencies in the loader's topological
+  // order (every module after the ones it imports), which is the order the
+  // JIT's emit_main_fn walks them in: each runs to completion, in a scope of
+  // its own, before the module that imports it.
+  static VmProgram compile_module(
+      const peg::Ast& ast, const peg::Ast* stdlib = nullptr,
+      Debug debug = Debug::Off,
+      const std::vector<const peg::Ast*>& deps = {}) {
+    return compile_unit(ast, {.stdlib = stdlib, .debug = debug, .deps = &deps});
   }
 
   // One REPL input. The line's top-level bindings land in the session's
@@ -2813,6 +2828,9 @@ class Compiler {
     // Top-level bindings live in the REPL session's cells (see ReplSession).
     bool repl = false;
     Debug debug = Debug::Off;
+    // The entry module's dependencies, deps-first. Null (the REPL's and the
+    // prologue's case) reads as none.
+    const std::vector<const peg::Ast*>* deps = nullptr;
   };
 
   static VmProgram compile_unit(const peg::Ast& ast, UnitOpts opts) {
@@ -2846,6 +2864,14 @@ class Compiler {
     // same shape the built-in traits take, and the JIT bundles it into the
     // one IR for the same reason.
     if (stdlib) (void)analysis.analyze_program(*stdlib);
+    // Each dependency's top-level analysis is its own — free variables and
+    // which locals need cells are per module, as the JIT's per-module
+    // main_info_ is. A deque so the pointers handed to `main` stay put.
+    std::deque<FuncInfo> dep_infos;
+    if (opts.deps) {
+      for (const auto* d : *opts.deps)
+        dep_infos.push_back(analysis.analyze_program(*d));
+    }
     // lint::check_shadow (parity) + the per-fn FuncInfo compile_fn_chunk
     // reads; the returned top-level info carries chunk 0's captured_locals.
     FuncInfo top_info = analysis.analyze_program(ast);
@@ -2877,6 +2903,26 @@ class Compiler {
       main.predeclare_forward_refs(ast);
       run_prologue(preamble);
       run_prologue(stdlib);
+      // Each dependency runs to completion in a scope of its own, then hands
+      // the runtime module table the Object its `export` statements name.
+      // The scope closes before the next module opens, which is what keeps a
+      // dependency's top-level names out of every other module (the interp's
+      // per-module env, the JIT's per-module push_scope).
+      for (size_t i = 0; opts.deps && i < opts.deps->size(); i++) {
+        const peg::Ast& dep = *(*opts.deps)[i];
+        const FuncInfo* saved = main.info_;
+        main.info_ = &dep_infos[i];
+        main.push_scope(dep, /*owned_mark=*/false);
+        main.predeclare_forward_refs(dep);
+        if (dep.tag == "STATEMENTS"_) {
+          for (const auto& n : dep.nodes) main.compile_statement(*n);
+        } else {
+          main.compile_statement(dep);
+        }
+        main.emit_module_export(dep);
+        main.pop_scope();
+        main.info_ = saved;
+      }
       if (opts.repl) {
         // The interp REPL echoes what `interpret()` returns — the value of
         // the last statement — so the line's body compiles the way a
@@ -3905,6 +3951,15 @@ class Compiler {
         // The break itself is emit_dbg_stmt's, at the head of the statement:
         // one boundary, forced. Without `--debug` the statement compiles to
         // nothing at all, which is what it does on the other two backends.
+        break;
+      case "IMPORT_STMT"_:
+        compile_import(ast);
+        break;
+      case "EXPORT_STMT"_:
+        // Nothing at the point it is written: emit_module_export walks the
+        // module's statements once its body is done, so the whole binding
+        // dance lives in one place (the interp's eval, the JIT's
+        // emit_build_and_register_export).
         break;
       case "DEFER"_: {
         // `defer { ... }` — the body becomes a 0-arity chunk (the same
@@ -5492,6 +5547,57 @@ class Compiler {
           ast, Unsupported{"recursion handle `fn` inside defer", ast.line,
                            ast.column});
     return compile_fn_chunk(ast, /*params=*/nullptr, *ast.nodes[0]);
+  }
+
+  // `import name from './rel.cul'` — the dependency already ran (the loader
+  // orders every module after the ones it imports), so its export Object is
+  // in the runtime table under the absolute path both sides spell through
+  // resolve_module_path. The name binds immutably here, like the interp's
+  // env->initialize and the JIT's declare_local.
+  void compile_import(const peg::Ast& ast) {
+    if (ast.path.empty()) {
+      // No module to resolve against: the REPL and a direct eval, in the
+      // wording both other engines use.
+      throw CulebraError(
+          "ImportError",
+          "`import` is not supported in this context (REPL or direct "
+          "eval); run via `culebra script.cul`",
+          static_cast<int>(ast.line), static_cast<int>(ast.column));
+    }
+    auto canon = culebra::resolve_module_path(
+        std::string(ast.nodes[1]->token),
+        std::filesystem::path(ast.path).parent_path());
+    StampGuard pos(*this, ast);
+    int32_t t = alloc_temp(ast);
+    emit(Op::ModGet, t, kconst_str(canon.string()));
+    bind_pattern_name(ast, *ast.nodes[0], t, /*src_owned=*/true,
+                      /*is_mut=*/false, /*declares=*/true);
+  }
+
+  // A dependency module's body is done: collect what its `export` statements
+  // name into one Object and hand it to the module table. Read through
+  // compile_expr, so a name no statement bound raises the same NameError the
+  // interp's extract_export does — at run time, where the read happens.
+  void emit_module_export(const peg::Ast& mod) {
+    using namespace peg::udl;
+    StampGuard pos(*this, mod);
+    int32_t obj = alloc_temp(mod);
+    emit(Op::ObjectNew, obj);
+    const peg::Ast* stmts =
+        mod.tag == "STATEMENTS"_ || mod.original_tag == "STATEMENTS"_
+            ? &mod
+            : (mod.nodes.empty() ? nullptr : mod.nodes[0].get());
+    if (stmts) {
+      for (const auto& s : stmts->nodes) {
+        if (s->tag != "EXPORT_STMT"_) continue;
+        for (const auto& id : s->nodes) {
+          auto v = compile_expr(*id);
+          emit(Op::ObjectSet, obj, owned_src(*id, v), kconst_str(id->token),
+               /*mut=*/0);
+        }
+      }
+    }
+    emit(Op::ModReg, obj, kconst_str(std::string(mod.path)));
   }
 
   // An assignment's RHS, with `x: T = e`'s annotation checked the moment the
@@ -8128,6 +8234,18 @@ class Compiler {
         emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
         return {t, true};
       }
+      case "RETURN"_:
+      case "BREAK"_:
+      case "CONTINUE"_: {
+        // The other diverging statements, reached wherever an expression is
+        // (`let y = return e`, `f(return e)`, `[1, break]`): they never
+        // produce a value, so the statement compiles as itself and the
+        // dummy nil above stands in for the one nothing reads.
+        compile_statement_inner(ast);
+        int32_t t = alloc_temp(ast);
+        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+        return {t, true};
+      }
       case "FUNCTION"_:
       case "LAMBDA"_: {
         // [PARAMETERS, RETURN_TYPE?, BLOCK] — the body is always last.
@@ -8176,6 +8294,7 @@ inline std::string dump(const Chunk& c) {
       "ArrayPush", "ArrayExtend", "ArrayResize",
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
       "ObjectNew", "ObjectSet", "ObjectSetAny", "ObjectMerge",
+      "ModReg",    "ModGet",
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "PropSet",   "PropWr",    "PropCo",     "NsWrChk",
@@ -9245,6 +9364,26 @@ struct Exec {
               reinterpret_cast<JitObject*>(regs[in.a].data),
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data, line,
               col);
+          ++pc;
+          break;
+        }
+        case Op::ModReg: {
+          const JitValue& v = regs[in.a];
+          culebra_runtime_module_register(
+              reinterpret_cast<const char*>(c.consts[in.b].data),
+              static_cast<int8_t>(v.tag), v.data);
+          regs[in.a] = JitValue{TAG_NIL, 0};  // the table took the +1
+          ++pc;
+          break;
+        }
+        case Op::ModGet: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          int8_t tag = TAG_NIL;
+          int64_t data = 0;
+          culebra_runtime_module_get(
+              reinterpret_cast<const char*>(c.consts[in.b].data), &tag, &data,
+              line, col);
+          regs[in.a] = JitValue{tag, data};
           ++pc;
           break;
         }
@@ -11477,6 +11616,33 @@ struct Lowering {
                   i64Ty, i64Ty, i64Ty),
               {obj, j.extract_tag(v), j.extract_data(v),
                j.current_line_val(), j.current_column_val()});
+          break;
+        }
+        case Op::ModReg: {
+          auto v = load_slot(in.a);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::module_register,
+                                             b.getVoidTy(), ptrTy,
+                                             b.getInt8Ty(), i64Ty),
+              {vm_str_const(in.b, ".vm.modpath"), j.extract_tag(v),
+               j.extract_data(v)});
+          b.CreateStore(j.make_nil(), slots[in.a]);  // the table took the +1
+          break;
+        }
+        case Op::ModGet: {
+          auto [line, col] = chunk_pos_at(c, i);
+          IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+          auto tagSlot = eb.CreateAlloca(b.getInt8Ty(), nullptr, "mod.tag");
+          auto dataSlot = eb.CreateAlloca(i64Ty, nullptr, "mod.data");
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::module_get, b.getVoidTy(),
+                                             ptrTy, ptrTy, ptrTy, i64Ty,
+                                             i64Ty),
+              {vm_str_const(in.b, ".vm.modpath"), tagSlot, dataSlot,
+               b.getInt64(line), b.getInt64(col)});
+          b.CreateStore(j.make_value(b.CreateLoad(b.getInt8Ty(), tagSlot),
+                                     b.CreateLoad(i64Ty, dataSlot)),
+                        slots[in.a]);
           break;
         }
         case Op::RangeNew: {

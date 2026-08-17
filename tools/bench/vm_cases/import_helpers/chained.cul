@@ -1,0 +1,12 @@
+# A dependency of a dependency: its own import resolves against this file's
+# directory, and it runs before the module that imports it.
+
+import nums from './nums.cul'
+
+fn twice(n) {
+  nums.scale(n) + nums.scale(n)
+}
+
+let tag = 'chained'
+
+export {twice, tag}

@@ -1365,20 +1365,24 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     // prologue to the entry module here, not a module of its own. Anything
     // beyond that pair is a real multi-module script.
     const peg::Ast* stdlib = nullptr;
-    if (modules.size() == 2 &&
+    size_t first_dep = 0;
+    if (!modules.empty() &&
         modules.front().abs_path == culebra::kStdlibPreamblePath) {
       stdlib = modules.front().ast.get();
-    } else if (modules.size() != 1) {
-      // Same shape as Compiler::reject — "--vm: unsupported: ..." is the
-      // one out-of-slice contract the differential harness keys SKIP on.
-      throw culebra::CulebraError(
-          "VmError", "--vm: unsupported: multi-module script");
+      first_dep = 1;
+    }
+    // Everything between the preamble and the entry module is a dependency,
+    // already in the loader's topological order.
+    std::vector<const peg::Ast*> deps;
+    for (size_t i = first_dep; i + 1 < modules.size(); i++) {
+      deps.push_back(modules[i].ast.get());
     }
     auto prog = culebra::vm::Compiler::compile_module(
         *modules.back().ast, stdlib,
         // `--debug` gives `debugger` the minimal break the JIT's gives it;
         // stepping and inspection live behind `culebra dap --vm`.
-        options.debug ? culebra::vm::Debug::Break : culebra::vm::Debug::Off);
+        options.debug ? culebra::vm::Debug::Break : culebra::vm::Debug::Off,
+        deps);
     switch (options.vm) {
       case Options::Vm::Dump:
         cout << culebra::vm::dump(prog);

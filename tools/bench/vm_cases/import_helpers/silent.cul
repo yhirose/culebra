@@ -1,0 +1,7 @@
+# A module with no `export` at all: the import binds an empty Object.
+
+let unreachable = 'not exported'
+
+fn also_unreachable() {
+  unreachable
+}

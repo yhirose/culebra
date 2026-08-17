@@ -1,0 +1,33 @@
+# A dependency module: only the exported names cross the boundary, and its
+# own top-level scope stays its own.
+
+let base = 10
+
+fn scale(n) {
+  n * base
+}
+
+fn hidden(n) {
+  n + 1
+}
+
+class Pt {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+  sum() {
+    self.x + self.y
+  }
+}
+
+export {scale}
+
+mut counter = 0
+
+fn bump() {
+  counter = counter + 1
+  counter
+}
+
+export {Pt, bump}
