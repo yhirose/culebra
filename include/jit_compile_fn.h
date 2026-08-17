@@ -155,7 +155,18 @@ inline JIT::Owned JIT::compile_fn_common(
 
   CompilerStateSaver saver(*this);
   current_info_ = &info;
-  current_return_type_ = returnType;
+  // The return annotation gets the parameters' treatment: a bare `T` (or
+  // `Array<T>`, `T | Long`) lowers to the type-param's runtime form for the
+  // check, so `fn f<T>(x: T) -> T` returns rather than always throwing, while
+  // the meta below keeps the raw text so `fn.return_type` still reads `T`
+  // (interp's declared_return_type). Outlives every nested compile in this
+  // body, which is what current_return_type_'s view needs.
+  std::string checkedReturnType(returnType);
+  if (!active_class_type_params.empty() && !checkedReturnType.empty()) {
+    checkedReturnType =
+        culebra::lower_type_params(checkedReturnType, active_class_type_params);
+  }
+  current_return_type_ = checkedReturnType;
 
   auto entryBB = BasicBlock::Create(ctx_, "entry", fn);
   builder_.SetInsertPoint(entryBB);

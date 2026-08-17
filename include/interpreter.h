@@ -660,6 +660,11 @@ struct FunctionValue {
   std::shared_ptr<std::vector<Parameter>> params;
   std::function<Value(const std::shared_ptr<Environment>& env)> eval;
   std::string_view return_type;  // empty = no annotation
+  // The return annotation as written, kept when neutralize_fn_type_params
+  // lowers `return_type` for the runtime check — so `fn.return_type` still
+  // reads `T` on a Generic signature, the way `fn.params[i].type` does
+  // through Parameter::declared_type_name. Empty when nothing was lowered.
+  std::string_view declared_return_type;
   // Definition environment — used only to evaluate parameter defaults
   // (for body execution, `eval` closes over this env itself).
   std::shared_ptr<Environment> def_env;
@@ -8574,6 +8579,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       p.declared_type_name = p.type_name;
       neutralize_type_slot(p.type_name, type_params);
     }
+    fn.declared_return_type = fn.return_type;
     neutralize_type_slot(fn.return_type, type_params);
   }
 
@@ -10748,6 +10754,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto& wf = wrapped.get<FunctionValue>();
     wf.name = method_name.empty() ? pf.name : method_name;
     wf.return_type = pf.return_type;
+    wf.declared_return_type = pf.declared_return_type;
     wf.introspection_target = pf.introspection_target;
     wf.is_builtin_method = is_builtin;
     // Parameter-default machinery must survive the wrapper: defaults are
@@ -10924,7 +10931,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& source = fn.introspection_target ? *fn.introspection_target : fn;
       if (name == "name") return Value(std::string(fn.name));
       if (name == "return_type") {
-        return Value(canonicalize_type_annotation(source.return_type));
+        // Prefer the declared annotation, the way `params` does below: a
+        // Generic signature reports `T`, not the lowered form the check uses.
+        return Value(canonicalize_type_annotation(
+            source.declared_return_type.empty() ? source.return_type
+                                                : source.declared_return_type));
       }
       if (name == "params") {
         ArrayValue arr;
