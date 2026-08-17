@@ -664,6 +664,23 @@ check_same "compound sink"             "_ += 1"
 check_same "coalesce sink"             "_ ??= 1"
 check_same "sort_by type before kw"    "mut a = [3, 1]
 a.sort_by(5, reverse: 5)"
+# A stdlib global is an ordinary immutable root-env binding: a bare write to
+# one is a reassignment, not a declaration, wherever it appears — and the RHS
+# has already run when it throws.
+check_same "assign builtin fn"         "println = 5"
+check_same "assign builtin ns"         "Math = 5"
+check_same "assign lazy module"        "assert_eq = 5"
+check_same "assign builtin in fn"      "fn f() { range = 5 }
+f()"
+check_same "assign builtin in block"   "{
+  iota = 5
+}"
+check_same "assign builtin in arm"     "if true {
+  Time = 5
+}"
+check_same "assign builtin destructure" "[println] = [5]"
+check_same "assign builtin before let" "println = 5
+let println = 1"
 
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

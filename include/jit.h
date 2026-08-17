@@ -5556,6 +5556,16 @@ struct JIT {
       }
     }
 
+    // A bare `x = v` naming a stdlib global is a write to an existing
+    // (immutable) root-env binding for the interp, not a declaration — only
+    // `let` / `mut` may shadow the name. Same rule the compound arm already
+    // follows; the RHS has run by now, as it has there.
+    if (!declare && is_builtin_var(name)) {
+      emit_value_release(rval);
+      emit_immutable_assign_throw(name, line, column);
+      return false;
+    }
+
     // A name never seen before in this scope, first sighted while
     // compiling inside an if/cond arm: only one arm ever runs per call,
     // so a sibling arm's own first bare declare of the same name can't

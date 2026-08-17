@@ -838,8 +838,11 @@ struct FnAnalysis {
         auto ident_node = node.nodes[av.lvaloff];
         if (ident_node->tag == "IDENTIFIER"_) {
           auto name = std::string(ident_node->token);
-          if ((!av.is_let || av.compound) && !my_locals.contains(name) &&
-              !is_builtin_var_(name)) {
+          // A builtin name is not skipped here: note_free_var only records a
+          // name an enclosing scope actually declares, so `println = 9` inside
+          // a closure captures an enclosing `mut println` — and stays a
+          // non-capture when nothing shadows the global.
+          if ((!av.is_let || av.compound) && !my_locals.contains(name)) {
             visit_for_frees(*ident_node, my_locals, outer, info);
           }
         }

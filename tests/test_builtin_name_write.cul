@@ -1,0 +1,55 @@
+// Writing a name that a stdlib global already owns. A bare `println = 5` is a
+// reassignment of that root-env binding (immutable — see jit_error_pos_test.sh
+// for the diagnostics); only `let` / `mut` declares a shadow. Once a shadow
+// exists it behaves like any other binding, including from a nested function,
+// which is what the JIT used to miss: the analysis skipped builtin names on the
+// write side, so the closure declared its own local instead of capturing.
+
+// --- a mut shadow is written through from a nested function ---
+mut println = 0
+fn bump() {
+  println = 9
+}
+bump()
+assert_eq(println, 9)
+
+// ... and from a lambda, which reads back what the enclosing frame sees
+mut range = 1
+let set_range = fn () {
+  range = 2
+}
+set_range()
+assert_eq(range, 2)
+
+// --- an immutable shadow still reads as its value everywhere ---
+let iota = 7
+fn read_iota() {
+  iota
+}
+assert_eq(read_iota(), 7)
+let iota_lambda = || iota
+assert_eq(iota_lambda(), 7)
+
+// --- the declaring forms shadow freely (no write to the global involved) ---
+for hash in 0..1 {
+  assert_eq(hash, 0)
+}
+match 5 {
+  inspect => assert_eq(inspect, 5),
+}
+try {
+  throw "x"
+} catch type_of {
+  assert_eq(type_of, "x")
+}
+fn takes(to_string) {
+  to_string
+}
+assert_eq(takes(3), 3)
+
+// --- the global is untouched outside the shadow's scope ---
+{
+  let to_long = 4
+  assert_eq(to_long, 4)
+}
+assert_eq(to_long("5"), 5)
