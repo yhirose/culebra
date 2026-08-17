@@ -2797,6 +2797,10 @@ class Compiler {
     // without settling the binding: it stays lazy, so every arm finds the
     // same cell and a read still asks the sentinel whether any arm ran.
     bool conditional = false;
+    // Pre-declared for a bare `x = v` site, which IS the declaration: that
+    // write fills the cell instead of being checked against it (the JIT's
+    // VarSlot::awaits_implicit_decl). Cleared once it lands.
+    bool awaits_implicit = false;
     // A REPL session binding: the slot holds the session's cell for the
     // name (borrowed), and its mutability is the session's to answer, so
     // every write asks at run time rather than trusting `is_mut` — see
@@ -3395,6 +3399,14 @@ class Compiler {
     return nullptr;
   }
 
+  // A settled cell binding of `name` in this scope — what a re-declaration
+  // writes through, since a closure may already hold that cell.
+  Binding* captured_here(const std::string& name) {
+    for (auto& b : scopes_.back().bindings)
+      if (!b.lazy && !b.session && b.is_cell && b.name == name) return &b;
+    return nullptr;
+  }
+
   // A REPL line's own top level — where a declaration binds into the
   // session instead of this program's frame. A block or a function inside
   // the line scopes its locals the ordinary way, exactly as the interp does
@@ -3446,6 +3458,23 @@ class Compiler {
   // The mutability check and the store behind `x = v` on a binding already
   // in scope. Returns false when the check is a compile-time one and already
   // lost, so the caller knows its own trailing code is unreachable.
+  // Whether a bare `x = v` on this name declares rather than reassigns —
+  // interp's assign_name, where a name the environment chain cannot answer is
+  // bound by the write. `self` is bound in every frame there, and a stdlib
+  // global is an ordinary immutable binding of the root env, so both are
+  // reassignments (and refuse). At the REPL the session owns every unbound
+  // name, and Op::ReplBind decides the same question when the write runs.
+  bool declares_implicitly(const std::string& name) {
+    if (repl_) return false;
+    // A cell pre-declared for this very write (a closure above captured the
+    // name ahead of it): the write is still the declaration, so it fills the
+    // cell rather than being mut-checked against the placeholder.
+    if (Binding* pre = predeclared_here(name)) return pre->awaits_implicit;
+    if (lookup(name)) return false;
+    return name != "self" && !is_stdlib_namespace(name) &&
+           !is_stdlib_global(name);
+  }
+
   bool emit_rebind(const peg::Ast& at, const Binding& b, ExprResult r) {
     if (b.session) {
       emit(Op::ReplBind, static_cast<int32_t>(ReplBindMode::Assign),
@@ -3799,14 +3828,22 @@ class Compiler {
     for (const auto& c : node.nodes) collect_literal_frees(*c, out);
   }
 
-  using DeclList = std::vector<std::pair<const peg::Ast*, std::string>>;
+  // One name a statement list will declare, and how. `implicit` marks a bare
+  // `x = v` site: that statement IS the declaration, so the write must fill
+  // the cell rather than be checked against it.
+  struct Decl {
+    const peg::Ast* at;
+    std::string name;
+    bool is_mut;
+    bool implicit;
+  };
+  using DeclList = std::vector<Decl>;
 
-  static void add_decl(DeclList& decls, std::vector<bool>& muts,
-                       const peg::Ast* at, std::string name, bool is_mut) {
-    for (const auto& [n_, nm] : decls)
-      if (nm == name) return;  // overloads share the first decl's cell
-    decls.emplace_back(at, std::move(name));
-    muts.push_back(is_mut);
+  static void add_decl(DeclList& decls, const peg::Ast* at, std::string name,
+                       bool is_mut, bool implicit = false) {
+    for (const auto& d : decls)
+      if (d.name == name) return;  // overloads share the first decl's cell
+    decls.push_back({at, std::move(name), is_mut, implicit});
   }
 
   // Mint one lazy cell per name and register it in the current scope,
@@ -3815,17 +3852,16 @@ class Compiler {
   // the NameError); the declaration statement fills the cell it finds rather
   // than minting its own (predeclared_here).
   void predeclare_cells(const peg::Ast& ast, const DeclList& decls,
-                        const std::vector<bool>& muts,
                         bool conditional = false) {
     if (decls.empty()) return;
     // What each name means until its declaration runs, captured before
     // any of the new bindings shadow it.
     std::vector<std::shared_ptr<Binding>> shadowed;
     std::vector<bool> shadowed_builtin;
-    for (const auto& [at_, name] : decls) {
-      const Binding* prev = lookup(name);
+    for (const auto& d : decls) {
+      const Binding* prev = lookup(d.name);
       shadowed.push_back(prev ? std::make_shared<Binding>(*prev) : nullptr);
-      shadowed_builtin.push_back(!prev && is_stdlib_global(name));
+      shadowed_builtin.push_back(!prev && is_stdlib_global(d.name));
     }
     // At the REPL's top level the cell is the session's and already holds
     // whatever an earlier line put in the name, so a pre-declaration does not
@@ -3833,8 +3869,8 @@ class Compiler {
     // it meant, which is what the read guards below would have said anyway.
     if (repl_top()) {
       for (size_t k = 0; k < decls.size(); ++k) {
-        Binding& b = bind_session(*decls[k].first, decls[k].second);
-        b.is_mut = muts[k];
+        Binding& b = bind_session(*decls[k].at, decls[k].name);
+        b.is_mut = decls[k].is_mut;
         b.shadowed = shadowed[k];
         b.conditional = conditional;
       }
@@ -3842,17 +3878,18 @@ class Compiler {
     }
     TempScope ts(*this);
     std::vector<int32_t> cslots;
-    for (const auto& [at, name] : decls)
-      cslots.push_back(alloc_cell_slot(*at, name));
+    for (const auto& d : decls)
+      cslots.push_back(alloc_cell_slot(*d.at, d.name));
     int32_t tmp = alloc_temp(ast);
     for (size_t k = 0; k < decls.size(); ++k) {
       emit(Op::LoadConst, tmp, kconst({TAG_NO_SELF, 0}));
       emit(Op::CellNew, cslots[k], tmp);  // nils tmp; reloaded per name
-      Binding b{decls[k].second, cslots[k], muts[k], /*is_cell=*/true,
+      Binding b{decls[k].name, cslots[k], decls[k].is_mut, /*is_cell=*/true,
                 /*lazy=*/true};
       b.shadowed = shadowed[k];
       b.shadowed_builtin = shadowed_builtin[k];
       b.conditional = conditional;
+      b.awaits_implicit = decls[k].implicit;
       scopes_.back().bindings.push_back(std::move(b));
     }
   }
@@ -3879,8 +3916,7 @@ class Compiler {
   // What such an arm body declares into the scope around the `if`. A nested
   // one-statement `if` passes its own arms' declarations up the same way,
   // which is why this recurses.
-  void collect_escaping_decls(const peg::Ast& node, DeclList& decls,
-                              std::vector<bool>& muts) {
+  void collect_escaping_decls(const peg::Ast& node, DeclList& decls) {
     using namespace peg::udl;
     if (node.tag == "IF"_) {
       auto iv = culebra::view_if(node);
@@ -3891,16 +3927,16 @@ class Compiler {
       size_t i = iv.arm_off;
       for (; i + 1 < node.nodes.size(); i += 2)
         if (is_collapsed_block(*node.nodes[i + 1]))
-          collect_escaping_decls(*node.nodes[i + 1], decls, muts);
+          collect_escaping_decls(*node.nodes[i + 1], decls);
       if (i < node.nodes.size() && is_collapsed_block(*node.nodes[i]))
-        collect_escaping_decls(*node.nodes[i], decls, muts);
+        collect_escaping_decls(*node.nodes[i], decls);
       return;
     }
     if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_ ||
         node.tag == "ENUM_DECL"_) {
       size_t i = 0;
       while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) i++;
-      add_decl(decls, muts, node.nodes[i].get(),
+      add_decl(decls, node.nodes[i].get(),
                std::string(culebra::parse_generic_head(node.nodes[i]->token).outer),
                /*is_mut=*/false);
       return;
@@ -3912,16 +3948,20 @@ class Compiler {
       if (node.nodes[0]->token != "let" && !is_mut) return;
       culebra::for_each_pattern_binding(
           *node.nodes[2], [&](std::string_view name, size_t, size_t) {
-            add_decl(decls, muts, &node, std::string(name), is_mut);
+            add_decl(decls, &node, std::string(name), is_mut);
           });
       return;
     }
     if (node.tag != "ASSIGNMENT"_) return;
     auto av = culebra::view_assignment(node);
-    if (av.compound || (!av.is_let && !av.is_mut)) return;
+    if (av.compound) return;
     if (const auto* target = culebra::assign_name_target(node, av))
-      if (!culebra::is_sink_name(target->token))
-        add_decl(decls, muts, target, std::string(target->token), av.is_mut);
+      if (!culebra::is_sink_name(target->token)) {
+        bool implicit = !av.is_let && !av.is_mut;
+        // A bare write declares only where nothing already answers the name.
+        if (implicit && !declares_implicitly(std::string(target->token))) return;
+        add_decl(decls, target, std::string(target->token), av.is_mut, implicit);
+      }
   }
 
   void predeclare_forward_refs(const peg::Ast& ast) {
@@ -3931,9 +3971,9 @@ class Compiler {
     // nested closure in this list captures the name, which is exactly the
     // JIT's pre_allocate_forward_refs gate.
     DeclList decls;
-    std::vector<bool> muts;
-    auto add = [&](const peg::Ast* at, std::string name, bool is_mut) {
-      add_decl(decls, muts, at, std::move(name), is_mut);
+    auto add = [&](const peg::Ast* at, std::string name, bool is_mut,
+                   bool implicit = false) {
+      add_decl(decls, at, std::move(name), is_mut, implicit);
     };
     // `referenced` grows with the free vars of every function literal
     // already passed, so a declaration is pre-declared only when its name
@@ -3974,10 +4014,11 @@ class Compiler {
         // A bare `x = ...` declares only where nothing named `x` is in
         // scope; otherwise the statement reassigns, and pre-declaring
         // here would shadow what it means to write.
+        bool implicit = !av.is_let && !av.is_mut;
         if (!culebra::is_sink_name(name) &&
             info_->captured_locals.contains(name) && forward_ref(name) &&
-            (av.is_let || av.is_mut || !lookup(name))) {
-          add(target, std::move(name), av.is_mut);
+            (!implicit || !lookup(name))) {
+          add(target, std::move(name), av.is_mut, implicit);
         }
       }
       referenced.insert(here.begin(), here.end());
@@ -3995,7 +4036,7 @@ class Compiler {
     } else {
       handle(ast);
     }
-    predeclare_cells(ast, decls, muts);
+    predeclare_cells(ast, decls);
   }
 
   // `fn name(params) { body }` — a free named-function declaration. The
@@ -5235,7 +5276,13 @@ class Compiler {
     // takes the undefined-name path below.
     if (tgt->token == "_" && !av.compound) return compile_expr(*av.rhs);
     if (av.compound) return compile_compound_assign(ast, av, *tgt);
-    if (av.is_let || av.is_mut) {  // interp's assign_name: let||mut declares
+    // interp's assign_name: `let` / `mut` declares, and so does a bare write
+    // to a name nothing here binds — immutably, in this scope, so a second
+    // write refuses. `self` and the stdlib globals are bound already (below).
+    bool declares = av.is_let || av.is_mut ||
+                    declares_implicitly(std::string(tgt->token));
+    bool decl_mut = av.is_mut;
+    if (declares) {
       // Slot reserved before the RHS so temps stack above it; the name only
       // becomes visible after the RHS (let x = x reads the outer x).
       auto name = std::string(tgt->token);
@@ -5245,10 +5292,21 @@ class Compiler {
       if (Binding* pre = predeclared_here(name)) {
         store_cell(*tgt, pre->slot, compile_expr(*av.rhs));
         slot_rank_[pre->slot] = next_rank_++;  // released as declared here
-        emit_session_decl_bind(*pre, av.is_mut);
-        pre->is_mut = av.is_mut;
+        emit_session_decl_bind(*pre, decl_mut);
+        pre->is_mut = decl_mut;
         settle_predeclared(*pre);
         return read_binding(*tgt, *pre);
+      }
+      // Re-declaring a captured name in the same scope writes the cell the
+      // closures already hold, rather than minting a second one: the interp
+      // overwrites the environment's entry, so a closure built before the
+      // second declaration reads its value (probed on both backends).
+      if (Binding* held = captured_here(name)) {
+        store_cell(*tgt, held->slot, compile_expr(*av.rhs));
+        slot_rank_[held->slot] = next_rank_++;  // redeclared here
+        emit_session_decl_bind(*held, decl_mut);
+        held->is_mut = decl_mut;
+        return read_binding(*tgt, *held);
       }
       // A REPL line's top-level declaration binds in the session, so the
       // next line still finds it — and a redeclaration lands in the very
@@ -5260,8 +5318,8 @@ class Compiler {
       if (repl_top()) {
         Binding& sb = bind_session(*tgt, name);
         store_cell(*tgt, sb.slot, compile_expr(*av.rhs));
-        emit_session_decl_bind(sb, av.is_mut);
-        sb.is_mut = av.is_mut;
+        emit_session_decl_bind(sb, decl_mut);
+        sb.is_mut = decl_mut;
         sb.lazy = false;
         sb.shadowed_builtin = false;
         return read_binding(*tgt, sb);
@@ -5273,14 +5331,14 @@ class Compiler {
       } else {
         store_into(slot, compile_expr(*av.rhs), /*dst_is_fresh=*/true);
       }
-      scopes_.back().bindings.push_back({name, slot, av.is_mut, cell});
+      scopes_.back().bindings.push_back({name, slot, decl_mut, cell});
       return read_binding(*tgt, scopes_.back().bindings.back());
     }
     const Binding* b = lookup(tgt->token);
-    // `self` is a binding of every frame, so a write to it is a reassignment
-    // even where nothing bound it here — the same ImmutableError the frames
-    // that do have a receiver give, after the RHS has run.
-    if (!b && tgt->token == "self") {
+    // `self` is a binding of every frame, and a stdlib global an immutable
+    // root-env one, so a write to either is a reassignment even where nothing
+    // bound it here — the same ImmutableError, after the RHS has run.
+    if (!b && !repl_) {
       compile_expr(*av.rhs);
       StampGuard pos(*this, ast);
       emit(Op::ImmutErr, kconst_str(tgt->token));
@@ -5291,8 +5349,7 @@ class Compiler {
     // write to one it has never declared declares it — immutably, so a
     // second write refuses (probed: `w = 3` then `w = 4`). Op::ReplBind
     // decides all of that when the write runs.
-    if (!b && repl_) b = &bind_session(*tgt, std::string(tgt->token));
-    if (!b) reject(*tgt, "assignment to an undeclared name");
+    if (!b) b = &bind_session(*tgt, std::string(tgt->token));
     auto r = compile_expr(*av.rhs);
     // Before its declaration runs the name still means the binding the
     // pre-declaration shadows, so the write lands there and is checked
@@ -5327,22 +5384,21 @@ class Compiler {
     }
     auto base = av.op_base;
     const Binding* b = lookup(tgt.token);
-    if (!b && repl_) {
-      // Unlike a bare `x = v`, a compound one never declares: the interp
-      // raises before the RHS runs and before `??=` tests anything (probed —
-      // `zz += 1` is a NameError). Only a name the session has bound, or a
-      // stdlib global, has a current value to step from.
-      if (!repl_session().declared(tgt.token) && !is_stdlib_global(tgt.token) &&
-          !is_stdlib_namespace(tgt.token)) {
-        emit(Op::RaiseErr, 0, kconst_str("NameError"),
-             kconst_str(std::format(
-                 "compound assignment on undefined name '{}'", tgt.token)));
-        return {alloc_temp(tgt), true};  // unreachable
-      }
+    // Only a name that already holds a value has one to step from: a stdlib
+    // global does, and at the REPL so does anything the session declared.
+    bool global = is_stdlib_global(tgt.token) || is_stdlib_namespace(tgt.token);
+    if (!b && repl_ && (global || repl_session().declared(tgt.token)))
       b = &bind_session(tgt, std::string(tgt.token));
+    if (!b && !global) {
+      // Unlike a bare `x = v`, a compound one never declares — it is a
+      // NameError. `op=` raises it with the RHS already run (probed); `??=`
+      // reads the target before the RHS, so nothing of it runs.
+      if (base != "??") compile_expr(*av.rhs);
+      emit(Op::RaiseErr, 0, kconst_str("NameError"),
+           kconst_str(std::format(
+               "compound assignment on undefined name '{}'", tgt.token)));
+      return {alloc_temp(tgt), true};  // unreachable
     }
-    if (!b && !is_stdlib_global(tgt.token))
-      reject(tgt, "compound assignment to an undeclared name");
 
     if (base == "??") {
       if (!b) {
@@ -5556,8 +5612,7 @@ class Compiler {
   // written (both backends' probed order — unlike DESTRUCTURE_ASSIGN's
   // two-phase all-or-nothing). Shape mismatch is the destructure
   // ValueError at the statement, checked before anything writes. A
-  // plain-name target must already be visible: the form's implicit
-  // declare stays out of the slice, the bare `x = v` boundary.
+  // plain-name target follows bare `x = v`, declare included.
   ExprResult compile_place_assign(const peg::Ast& ast) {
     using namespace peg::udl;
     auto pv = culebra::view_place_assign(ast);
@@ -5581,18 +5636,11 @@ class Compiler {
         compile_place_target(t, elems[i]);
         continue;
       }
-      // Bare name: `x = v` semantics minus the declare. The element temp's
+      // Bare name: `x = v` semantics, declare included. The element temp's
       // +1 moves into the binding; an immutable name throws here, after
       // the earlier targets already wrote (left-to-right).
-      const Binding* b = lookup(t.token);
-      if (!b) reject(t, "assignment to an undeclared name");
-      if (!b->is_mut) {
-        emit(Op::ImmutErr, kconst_str(t.token));
-      } else if (b->is_cell) {
-        store_cell(t, b->slot, {elems[i], true});
-      } else {
-        store_into(b->slot, {elems[i], true});
-      }
+      bind_pattern_name(t, t, elems[i], /*src_owned=*/true, /*is_mut=*/false,
+                        /*declares=*/false);
     }
     size_t done = emit(Op::Jump);
     for (size_t ix : fail) patch_to_here(ix);
@@ -6773,9 +6821,8 @@ class Compiler {
     // arm declared it. An init clause opens a scope of its own, so nothing
     // there escapes and collect_escaping_decls declines to look.
     DeclList escaping;
-    std::vector<bool> escaping_muts;
-    collect_escaping_decls(ast, escaping, escaping_muts);
-    predeclare_cells(ast, escaping, escaping_muts, /*conditional=*/true);
+    collect_escaping_decls(ast, escaping);
+    predeclare_cells(ast, escaping, /*conditional=*/true);
     // With the cells in place the arm body compiles into THIS scope: a block
     // of its own would take its declaration back down with it.
     auto compile_arm = [&](const peg::Ast& body) {
@@ -7160,12 +7207,21 @@ class Compiler {
       scopes_.back().bindings.push_back({name, slot, is_mut, cell});
       return;
     }
+    // A leaf naming nothing visible declares it, exactly as bare `x = v`
+    // does — immutably. (`self` is not special here: the interp's pattern
+    // walk binds it like any other leaf, probed on both backends.)
+    if (!lookup(name) && !repl_ && !is_stdlib_namespace(name) &&
+        !is_stdlib_global(name)) {
+      bind_pattern_name(at, ident, src, src_owned, /*is_mut=*/false,
+                        /*declares=*/true);
+      return;
+    }
     const Binding* b = lookup(name);
     if (!b && repl_) b = &bind_session(ident, name);
-    // A name nothing visible holds would be declared by the interp; the VM
-    // rejects that for bare `x = v` too (compile_assignment), so the two
-    // assignment forms stay on the same slice boundary.
-    if (!b) reject(ident, "assignment to an undeclared name");
+    if (!b) {  // a stdlib global: an existing immutable binding, so it refuses
+      emit(Op::ImmutErr, kconst_str(name));
+      return;
+    }
     emit_rebind(at, *b, v);  // at the statement's stamp
   }
 

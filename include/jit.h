@@ -5471,6 +5471,16 @@ struct JIT {
     // interp's `declare = let || mut` rule. Implicit `x = ...`
     // first-occurrence is also a declaration.
     bool declare = let || mut;
+    // ... except `self`, which the interp treats as bound everywhere: a bare
+    // write to it is the same ImmutableError at the top level, where no frame
+    // bound one, as inside a method. A destructure leaf named `self` does
+    // declare (both backends), so the test lives here and not in
+    // emit_assign_name, which that form shares.
+    if (!declare && name == "self" && !lookup_var(name)) {
+      emit_value_release(rval);
+      emit_immutable_assign_throw(name, ast.line, ast.column);
+      return own(make_nil());
+    }
     bool declares =
         emit_assign_name(name, rval, declare, mut, ast.line, ast.column);
     emit_value_retain(rval);

@@ -1,0 +1,85 @@
+# A bare `x = v` on a name nothing answers is the declaration — immutable, in
+# the scope that runs it. `self` and the stdlib globals are bound already, so a
+# write to one of those is a reassignment and refuses.
+
+# --- It declares, and a second write refuses -----------------------------
+println('--- declares')
+a = 1
+println(to_string(a))
+println(try { a = 2 } catch e { e.kind })
+
+# --- Scoped where it ran -------------------------------------------------
+println('--- scope')
+let b = 'outer'
+{
+  b2 = 'inner'
+  println(b2)
+}
+println(b)  # the block's own binding is gone; this is still the outer one
+
+fn local_only() {
+  c = 'fn local'
+  c
+}
+println(local_only())
+
+# --- A closure captures it, before or after ------------------------------
+println('--- capture')
+d = 'captured'
+let read_d = fn () { d }
+println(read_d())
+
+let read_e = fn () { e }
+e = 'forward'
+println(read_e())
+
+# ... and a later declaration of the same name lands in the same cell
+let read_f = fn () { f }
+f = 'first'
+let f = 'second'
+println(read_f())
+println(f)
+
+# --- Every other form declares its leaves the same way -------------------
+println('--- destructure')
+[g, h] = [1, 2]
+println(to_string(g + h))
+{k: i} = {k: 3}
+println(to_string(i))
+[j, ...rest] = [4, 5, 6]
+println(to_string(j) + ' ' + to_string(rest.size()))
+
+# --- A stdlib global is an existing immutable binding --------------------
+println('--- globals')
+println(try { println = 5 } catch e { e.kind })
+println(try { Math = 5 } catch e { e.kind })
+println(try { [range] = [5] } catch e { e.kind })
+# ... and only `let` / `mut` may shadow one
+let hash = 'shadow'
+println(hash)
+mut iota = 0
+iota = 1
+println(to_string(iota))
+
+# --- The RHS runs before the refusal -------------------------------------
+println('--- order')
+fn noisy() {
+  println('rhs ran')
+  1
+}
+m = 0
+println(try { m = noisy() } catch e { e.kind })
+
+# --- Compound assignment never declares ----------------------------------
+println('--- compound')
+println(try { undeclared_name += 1 } catch e { e.kind })
+println(try { undeclared_name ??= 1 } catch e { e.kind })
+
+# --- Churn: the binding is one slot, not a leak --------------------------
+println('--- churn')
+mut total = 0
+for x in 0..2000 {
+  n = x
+  total = total + n
+}
+println(to_string(total))

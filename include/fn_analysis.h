@@ -324,8 +324,13 @@ struct FnAnalysis {
               locals.insert(name);
               note(name, /*from_assign=*/true);
             }
-          } else if (!visible_in_outer(name, outer) && !is_sink_name(name)) {
-            locals.insert(name);  // bare assignment: local only if not in outer
+          } else if (!visible_in_outer(name, outer) && !is_sink_name(name) &&
+                     !is_builtin_var_(name)) {
+            // A bare assignment declares only where nothing already answers
+            // the name: not in an enclosing scope, and not as a stdlib global
+            // (writing one is a reassignment that throws, so the frame gains
+            // no binding — a nested read still means the global).
+            locals.insert(name);
             note(name, /*from_assign=*/true);
           }
         }
