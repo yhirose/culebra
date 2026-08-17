@@ -18,6 +18,7 @@
 #include <runtime/aot_scan.h>
 #include <stdlib_jit.h>
 #include <vm.h>
+#include <vm_repl.h>
 #include "culebra_rt_assets.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
@@ -2079,15 +2080,22 @@ int main(int argc, const char** argv) {
 
     if (options.shell) {
 #ifdef CULEBRA_JIT_ENABLED
-      // The REPL always runs on the interpreter (tier 0). A REPL line is never
-      // a hot loop, so JIT-compiling each input only adds compile latency for
-      // no gain — the same reason V8 / the JVM / LuaJIT start interpreted and
-      // only JIT hot code. `--jit` is for scripts (`culebra --jit FILE`), where
-      // a hot loop can pay off; combined with the REPL it's a no-op, so note it.
-      if (options.jit) {
+      // The REPL always runs on a tier-0 engine: the interpreter, or the VM's
+      // executor under `--vm`. A REPL line is never a hot loop, so compiling
+      // each input only adds latency for no gain — the same reason V8 / the
+      // JVM / LuaJIT start interpreted and only JIT hot code. The compiled
+      // lanes are for scripts (`culebra --jit FILE`), where a hot loop can pay
+      // off; combined with the REPL they are a no-op, so note it.
+      if (options.jit || options.vm == Options::Vm::Llvm) {
         std::fprintf(stderr,
-            "note: the REPL runs on the interpreter; --jit applies to scripts "
-            "(culebra --jit FILE)\n");
+            "note: the REPL runs on a tier-0 engine; %s applies to scripts "
+            "(culebra %s FILE)\n",
+            options.jit ? "--jit" : "--vm-llvm",
+            options.jit ? "--jit" : "--vm-llvm");
+      }
+      if (options.vm != Options::Vm::Off) {
+        return culebra::vm_repl(options.print_ast,
+                                options.vm == Options::Vm::Dump);
       }
 #endif
       culebra::repl(env, options.print_ast);

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <linenoise.hpp>
 #include "interpreter.h"
 #include "stdlib_interp.h"  // culebra::environment()
@@ -87,12 +88,23 @@ inline std::string repl_history_path() {
   return std::string(home) + "/.culebra_history";
 }
 
-// The REPL always runs on the interpreter (tier 0). A REPL line is never a hot
-// loop, so JIT-compiling each input only adds latency for no gain — the same
-// reason V8 / the JVM / LuaJIT start interpreted and only JIT hot code. `--jit`
-// is for scripts (`culebra --jit FILE`); the CLI routes the REPL here regardless
-// (see main.cc). There is no JIT REPL path — the JIT compiles whole scripts.
-inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
+// One accepted input, handed to whichever engine the session runs on. The
+// engine prints its own echo — the two hold a result differently, an interp
+// `Value` against the VM's tagged pair — and returns false when it put a
+// report in `msgs` for the loop to print.
+using ReplEval = std::function<bool(const std::shared_ptr<peg::Ast>&,
+                                    std::vector<std::string>& msgs)>;
+
+// The REPL always runs on a tier-0 engine: the interpreter, or the bytecode
+// VM's executor under `--vm` (see vm_repl.h). A REPL line is never a hot loop,
+// so compiling each input only adds latency for no gain — the same reason V8 /
+// the JVM / LuaJIT start interpreted and only JIT hot code. The compiled lanes
+// (`--jit`, `--vm-llvm`) are for scripts; combined with the REPL they are a
+// no-op the CLI notes and ignores (see main.cc).
+//
+// This is the line editor and session bookkeeping both engines share; `eval`
+// is the engine.
+inline int repl_loop(bool print_ast, const ReplEval& eval) {
   using namespace std;
 
   // Ctrl+C interrupts the running eval and returns to the prompt (rather than
@@ -114,9 +126,6 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
   // reaping after every `interpret()` call below would cancel legitimate
   // in-flight work instead of just clearing stragglers at session exit.
   ScriptTeardownGuard script_teardown_guard;
-
-  // The interp REPL relies on the env's lazy Time / Args / Regex bindings
-  // registered by `environment()`; no explicit preamble load is needed.
 
   // Default linenoise cap is 100 entries, which is small by REPL
   // convention (bash ≈ 500, python / node ≈ 1000). Bump before
@@ -232,12 +241,7 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
         // wedged eval.
         culebra_g_sigint.store(false, std::memory_order_relaxed);
 
-        Value val;
-        if (interpret(ast, env, val, msgs)) {
-          // A nil result isn't echoed: `println(...)`, a `fn` declaration and
-          // an `if` without else all evaluate to nil, so echoing would double
-          // every line of output (matches the python REPL convention).
-          if (val.type != Value::Nil) cout << val << endl;
+        if (eval(ast, msgs)) {
           add_history(full_line);
           continue;
         }
@@ -250,6 +254,24 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
   }
 
   return 0;
+}
+
+// The interpreter engine: each input is parsed on its own and evaluated
+// against the one `Environment` that persists for the session, which is where
+// a line's declarations live on for the next line to see.
+inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
+  // The interp REPL relies on the env's lazy Time / Args / Regex bindings
+  // registered by `environment()`; no explicit preamble load is needed.
+  return repl_loop(print_ast, [&](const std::shared_ptr<peg::Ast>& ast,
+                                  std::vector<std::string>& msgs) {
+    Value val;
+    if (!interpret(ast, env, val, msgs)) return false;
+    // A nil result isn't echoed: `println(...)`, a `fn` declaration and an
+    // `if` without else all evaluate to nil, so echoing would double every
+    // line of output (matches the python REPL convention).
+    if (val.type != Value::Nil) std::cout << val << std::endl;
+    return true;
+  });
 }
 
 }  // namespace culebra

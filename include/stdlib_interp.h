@@ -7813,6 +7813,24 @@ inline std::string stdlib_preamble_for(
   return preamble;
 }
 
+// Which names in `names` made stdlib_preamble_for emit something — module
+// names, and every member of a bare-function group one of whose members was
+// named (naming any one pulls in the whole group). The REPL splices one line
+// at a time and has to remember what it has already registered: a builder
+// registered twice would mint a second instance of the namespace, and values
+// an earlier line built would stop matching it.
+inline std::unordered_set<std::string_view> stdlib_preamble_triggers(
+    const std::unordered_set<std::string_view>& names) {
+  std::unordered_set<std::string_view> out;
+  for (const auto& m : lazy_ns_modules())
+    if (names.contains(m.name)) out.insert(m.name);
+  for (const auto& g : lazy_fn_groups())
+    if (std::any_of(g.members.begin(), g.members.end(),
+                    [&](std::string_view m) { return names.contains(m); }))
+      out.insert(g.members.begin(), g.members.end());
+  return out;
+}
+
 // Path stamped on the synthesized preamble module, so it is distinguishable
 // from user modules.
 inline constexpr const char* kStdlibPreamblePath = "<stdlib>";

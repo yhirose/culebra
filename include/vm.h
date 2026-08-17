@@ -54,6 +54,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <format>
 #include <iterator>
 #include <map>
@@ -638,6 +639,22 @@ enum class Op : uint8_t {
                  // or cyclic resources). Emitted after the scope's release
                  // ladder, so anything held only by its bindings has
                  // already died the ordinary way.
+  ReplCell,      // regs[a] = the REPL session's cell for name consts[b], as
+                 // a Long. Minted holding the unbound sentinel on first
+                 // reference, so reading a name no line has declared raises
+                 // the same NameError a forward reference does. Borrowed:
+                 // the session owns the cell for the whole session, which is
+                 // what lets the closure one line builds and the line that
+                 // later fills the name share it — and why the slot takes
+                 // the ladder's plain (no-op) Release, like a capture's.
+  ReplBind,      // record what name consts[b] means in the session now.
+                 // a = 0 / 1: the declaration that just stored bound it
+                 // `let` / `mut`, so a later line can take a `mut` back.
+                 // a = 2: a plain `x = v` is about to store — the name's own
+                 // mutability decides (ImmutableError when it has none), and
+                 // an undeclared name is simply declared by the store that
+                 // follows, unless c says the name is a built-in root
+                 // binding, which is immutable (`println = 5`).
   Halt,
 };
 
@@ -2482,6 +2499,101 @@ inline void build_param_metas(VmProgram& p) {
   }
 }
 
+// What `ReplBind` records — the three ways a name's mutability is decided.
+enum class ReplBindMode : int32_t { Let = 0, Mut = 1, Assign = 2 };
+
+// The REPL's top level: one cell per name, alive for the whole session. It
+// is the interp REPL's single persistent Environment, entry for entry — a
+// line compiles to its own program and nothing of that program's frame
+// survives it, so what a declaration must outlive the line in is here. Cells
+// are also the currency of the VM's closure captures, which is what makes a
+// closure built on one line see the value a later line puts in the name
+// (probed: `let h = fn(){ later }` then `let later = 5`).
+class ReplSession {
+ public:
+  // The cell for `name`, minted holding the unbound sentinel — so a name no
+  // line has declared reads as the NameError a lazy forward reference gives.
+  JitCell* cell(std::string_view name) {
+    if (auto it = entries_.find(name); it != entries_.end()) return it->second.cell;
+    auto* c = culebra_runtime_cell_new(TAG_NO_SELF, 0);
+    // A map node is a C++-held root the conservative stack scan cannot see,
+    // so every cell is pinned for the session — Exec::run's descriptor
+    // cells, same reason.
+    _gc_heap().pin(c);
+    return entries_.emplace(std::string(name), Entry{c, false}).first->second.cell;
+  }
+
+  // Whether a declaration for `name` has actually run. Derived from the cell
+  // rather than tracked separately: `let x = boom()` mints the cell and then
+  // throws, and the interp leaves `x` undeclared for exactly that reason.
+  bool declared(std::string_view name) {
+    auto it = entries_.find(name);
+    return it != entries_.end() && it->second.cell->value.tag != TAG_NO_SELF;
+  }
+
+  bool is_mut(std::string_view name) {
+    auto it = entries_.find(name);
+    return it != entries_.end() && it->second.is_mut;
+  }
+
+  // What the name holds right now. The compiler reads this to decide whether
+  // a `fn name` declaration appends to a dispatcher an earlier line
+  // installed; the session cannot change between compiling a line and
+  // running it, so the answer still holds when the code runs.
+  JitValue value(std::string_view name) {
+    auto it = entries_.find(name);
+    return it == entries_.end() ? JitValue{TAG_NO_SELF, 0} : it->second.cell->value;
+  }
+
+  void set_mut(std::string_view name, bool is_mut) {
+    (void)cell(name);  // ReplCell has normally minted it already
+    entries_.find(name)->second.is_mut = is_mut;
+  }
+
+ private:
+  struct Entry {
+    JitCell* cell;
+    bool is_mut;
+  };
+  std::map<std::string, Entry, std::less<>> entries_;
+};
+
+// One session per process: only the REPL opens one, and the compiler and the
+// executor have to agree on which it is.
+inline ReplSession& repl_session() {
+  static ReplSession s;
+  return s;
+}
+
+// ReplBind's work. What mutability a REPL name carries is session state, not
+// something the line writing it can settle on its own: an earlier line may
+// have declared it `mut` and a later one may take that back while a closure
+// compiled in between still holds the cell — which the interp gets right by
+// checking its env entry on every write, and so does this.
+inline void repl_bind(const char* name, ReplBindMode mode, bool builtin,
+                      std::pair<int64_t, int64_t> pos) {
+  auto& s = repl_session();
+  if (mode != ReplBindMode::Assign) {
+    s.set_mut(name, mode == ReplBindMode::Mut);
+    return;
+  }
+  // A write to a name no line has declared: the store that follows declares
+  // it, immutably (`w = 3` then `w = 4` is an ImmutableError). A stdlib name
+  // is the exception — a bare assignment does not shadow a root binding, it
+  // is refused by it (`println = 5`).
+  if (!s.declared(name)) {
+    if (builtin) culebra_runtime_immutable_assign(name, pos.first, pos.second);
+    return;
+  }
+  if (!s.is_mut(name))
+    culebra_runtime_immutable_assign(name, pos.first, pos.second);
+}
+
+// Where the value of a line's last statement lands, for the prompt to echo.
+// `\x1f` cannot appear in an identifier, so the name collides with nothing a
+// user can type (field_init_slot_name's trick).
+inline constexpr const char* kReplResultName = "\x1f__repl_result";
+
 inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
   // `positions` is built append-only in emit order, so it is sorted by
   // first_insn — binary-search the covering entry (this runs on the
@@ -2532,8 +2644,40 @@ class Compiler {
  public:
   static VmProgram compile_module(const peg::Ast& ast,
                                   const peg::Ast* stdlib = nullptr) {
+    return compile_unit(ast, {.stdlib = stdlib});
+  }
+
+  // One REPL input. The line's top-level bindings land in the session's
+  // cells rather than this program's slots, so the next line still sees them
+  // (and a closure this line builds sees what a later one puts there), and
+  // the last statement's value goes to the session's result cell for the
+  // prompt to echo. The prologues are the session's, not the line's — see
+  // compile_repl_prologue.
+  static VmProgram compile_repl_line(const peg::Ast& ast) {
+    return compile_unit(ast, {.builtin_traits = false, .repl = true});
+  }
+
+  // What a REPL session runs before its first input, and again whenever a
+  // later line first names a stdlib namespace: the built-in traits, then the
+  // lazy-namespace registrations. An ordinary module — a registration binds
+  // no name, so none of it has to outlive the program.
+  static VmProgram compile_repl_prologue(const peg::Ast& ast,
+                                         bool builtin_traits) {
+    return compile_unit(ast, {.builtin_traits = builtin_traits});
+  }
+
+ private:
+  struct UnitOpts {
+    // The `<stdlib>` module the loader splices ahead of the entry one.
+    const peg::Ast* stdlib = nullptr;
+    bool builtin_traits = true;
+    // Top-level bindings live in the REPL session's cells (see ReplSession).
+    bool repl = false;
+  };
+
+  static VmProgram compile_unit(const peg::Ast& ast, UnitOpts opts) {
     try {
-      return compile_module_impl(ast, stdlib);
+      return compile_module_impl(ast, opts);
     } catch (const Unsupported& u) {
       throw CulebraError("VmError", "--vm: unsupported: " + u.what,
                          static_cast<int64_t>(u.line),
@@ -2541,9 +2685,8 @@ class Compiler {
     }
   }
 
- private:
-  static VmProgram compile_module_impl(const peg::Ast& ast,
-                                       const peg::Ast* stdlib) {
+  static VmProgram compile_module_impl(const peg::Ast& ast, UnitOpts opts) {
+    const peg::Ast* stdlib = opts.stdlib;
     VmProgram prog;
     FnAnalysis analysis(&JIT::is_builtin_var);
     // The built-in traits (Eq's `neq`, Comparable's four comparisons, ...)
@@ -2552,7 +2695,9 @@ class Compiler {
     // declarations run as a prologue instead. A trait declaration binds no
     // name, so nothing of it lands in the user's scope — only in the
     // registry a property read consults.
-    const auto* preamble = culebra::parse_builtin_traits_preamble().get();
+    const auto* preamble = opts.builtin_traits
+                               ? culebra::parse_builtin_traits_preamble().get()
+                               : nullptr;
     if (preamble) (void)analysis.analyze_program(*preamble);
     // The stdlib preamble, which the loader splices as its own module ahead
     // of the entry one: it declares each lazy module's builder and registers
@@ -2566,6 +2711,7 @@ class Compiler {
     FuncInfo top_info = analysis.analyze_program(ast);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
     Compiler main(prog, analysis, /*in_function=*/false, &top_info);
+    main.repl_ = opts.repl;
     // The top-level frame mark (JIT main's fn.mark): first insn, so a
     // throw at any pc finds it populated. The Halt epilogue runs to it —
     // before the top scope's releases, hence the inlined block below.
@@ -2585,7 +2731,19 @@ class Compiler {
       main.predeclare_forward_refs(ast);
       run_prologue(preamble);
       run_prologue(stdlib);
-      if (ast.tag == "STATEMENTS"_) {
+      if (opts.repl) {
+        // The interp REPL echoes what `interpret()` returns — the value of
+        // the last statement — so the line's body compiles the way a
+        // function's does, and the result goes where the prompt can read it
+        // after the program ends. Storing it into a session cell rather than
+        // handing it back keeps the temp's own lifetime honest: the driver
+        // releases the cell right after echoing, which is where the interp's
+        // `val` dies too (probed — a `drop` fires before the next prompt).
+        int32_t rv = main.alloc_slot(ast, "(repl.result)");
+        main.compile_body_into(ast, rv);
+        int32_t cell = main.session_slot(ast, kReplResultName);
+        main.store_cell(ast, cell, {rv, true});
+      } else if (ast.tag == "STATEMENTS"_) {
         for (const auto& n : ast.nodes) main.compile_statement(*n);
       } else {
         main.compile_statement(ast);
@@ -2639,9 +2797,19 @@ class Compiler {
     // without settling the binding: it stays lazy, so every arm finds the
     // same cell and a read still asks the sentinel whether any arm ran.
     bool conditional = false;
+    // A REPL session binding: the slot holds the session's cell for the
+    // name (borrowed), and its mutability is the session's to answer, so
+    // every write asks at run time rather than trusting `is_mut` — see
+    // Op::ReplBind.
+    bool session = false;
   };
   struct Scope {
-    std::vector<Binding> bindings;
+    // A deque, not a vector: a `Binding*` from lookup / predeclared_here is
+    // held across the RHS compile that follows it, and compiling a closure
+    // there can register a REPL session binding in this same scope — a
+    // vector's reallocation would leave the caller writing through a dangling
+    // pointer.
+    std::deque<Binding> bindings;
     int32_t slot_watermark;  // next_slot_ at scope entry; pop rolls back
     // Where the scope's current cleanup segment begins, the mark its own
     // defers stand on (-1 when it declares none), and the segments it has
@@ -2689,9 +2857,19 @@ class Compiler {
   VmProgram& prog_;
   FnAnalysis& analysis_;
   bool in_function_;
+  // Compiling one REPL input: a name this program does not bind is the
+  // session's rather than a rejection, and the top level's own declarations
+  // bind there too. Inherited by every nested chunk's Compiler — a free
+  // variable resolves to a session cell from any depth, the way the interp's
+  // environment chain reaches the REPL's one global env from any closure.
+  bool repl_ = false;
   const FuncInfo* info_;  // this chunk's analysis (captured_locals gate)
   Chunk chunk_;
-  std::vector<Scope> scopes_;
+  // A deque for the same reason Scope::bindings is one, one level up: a
+  // vector reallocating on push_scope relocates every Scope (their deques'
+  // move constructors are not noexcept, so it copies them), and a `Binding*`
+  // held across the RHS that opened the scope would be left dangling.
+  std::deque<Scope> scopes_;
   std::vector<LoopCtx> loops_;
   // Cursor bases of the generic for-ins whose scope is still open, so every
   // release ladder emitted inside them closes their iterators in place.
@@ -3217,6 +3395,70 @@ class Compiler {
     return nullptr;
   }
 
+  // A REPL line's own top level — where a declaration binds into the
+  // session instead of this program's frame. A block or a function inside
+  // the line scopes its locals the ordinary way, exactly as the interp does
+  // with a nested Environment.
+  bool repl_top() const { return repl_ && !in_function_ && scopes_.size() == 1; }
+
+  // A slot holding the session's cell for `name`. Plain, not a cell slot:
+  // the session owns the cell, so the scope's ladder must leave it alone —
+  // the borrowed-capture treatment, where Release on a Long is a no-op.
+  int32_t session_slot(const peg::Ast& at, std::string_view name) {
+    int32_t slot = alloc_slot(at, std::string(name));
+    emit(Op::ReplCell, slot, kconst_str(name));
+    return slot;
+  }
+
+  // Register the session's binding for `name` in this scope, so every later
+  // read, write and capture in the line goes through the one slot. Lazy: the
+  // cell may still hold the unbound sentinel, and then the name means the
+  // stdlib global of that name, or nothing at all (`read_shadowing` /
+  // `UnboundErr` answer either way, at run time — which is the only time the
+  // answer is known).
+  Binding& bind_session(const peg::Ast& at, const std::string& name) {
+    Binding b{name, session_slot(at, name), repl_session().is_mut(name),
+              /*is_cell=*/true, /*lazy=*/true};
+    b.shadowed_builtin = is_stdlib_global(name) || is_stdlib_namespace(name);
+    b.session = true;
+    scopes_.back().bindings.push_back(std::move(b));
+    return scopes_.back().bindings.back();
+  }
+
+  // The binding `name` reads as, materializing the session's when nothing in
+  // scope holds it. Null only outside REPL mode.
+  const Binding* lookup_or_session(const peg::Ast& at, const std::string& name) {
+    if (const Binding* b = lookup(name)) return b;
+    return repl_ ? &bind_session(at, name) : nullptr;
+  }
+
+  // Record what a declaration just bound. Only session bindings need it:
+  // a frame binding's mutability is settled by the `let` / `mut` the
+  // compiler is looking at, while a session name outlives this line and may
+  // have been declared the other way by an earlier one.
+  void emit_session_decl_bind(const Binding& b, bool is_mut) {
+    if (!b.session) return;
+    emit(Op::ReplBind,
+         static_cast<int32_t>(is_mut ? ReplBindMode::Mut : ReplBindMode::Let),
+         kconst_str(b.name));
+  }
+
+  // The mutability check and the store behind `x = v` on a binding already
+  // in scope. Returns false when the check is a compile-time one and already
+  // lost, so the caller knows its own trailing code is unreachable.
+  bool emit_rebind(const peg::Ast& at, const Binding& b, ExprResult r) {
+    if (b.session) {
+      emit(Op::ReplBind, static_cast<int32_t>(ReplBindMode::Assign),
+           kconst_str(b.name), b.shadowed_builtin ? 1 : 0);
+    } else if (!b.is_mut) {
+      emit(Op::ImmutErr, kconst_str(b.name));
+      return false;
+    }
+    if (b.is_cell) store_cell(at, b.slot, r);
+    else store_into(b.slot, r);
+    return true;
+  }
+
   // Read a forward-ref pre-declaration that shadows an outer binding:
   // while the cell still holds the unbound sentinel the declaration has
   // not run, so the name means the shadowed binding — what the interp's
@@ -3585,6 +3827,19 @@ class Compiler {
       shadowed.push_back(prev ? std::make_shared<Binding>(*prev) : nullptr);
       shadowed_builtin.push_back(!prev && is_stdlib_global(name));
     }
+    // At the REPL's top level the cell is the session's and already holds
+    // whatever an earlier line put in the name, so a pre-declaration does not
+    // blank it: until this line's declaration runs the name still means what
+    // it meant, which is what the read guards below would have said anyway.
+    if (repl_top()) {
+      for (size_t k = 0; k < decls.size(); ++k) {
+        Binding& b = bind_session(*decls[k].first, decls[k].second);
+        b.is_mut = muts[k];
+        b.shadowed = shadowed[k];
+        b.conditional = conditional;
+      }
+      return;
+    }
     TempScope ts(*this);
     std::vector<int32_t> cslots;
     for (const auto& [at, name] : decls)
@@ -3780,8 +4035,15 @@ class Compiler {
     // A same-scope overload appends to the dispatcher the binding already
     // holds (the binding's scope is the current one — predeclare ran at its
     // entry); the first decl passes none and mints a fresh one.
+    // At the REPL the session IS that scope: a `fn f(a)` line appends to the
+    // dispatcher `fn f()` installed earlier, keeping both arities, exactly
+    // as two declarations in one script's statement list do (probed). The
+    // registry sorts out a value that is not one of its dispatchers, so the
+    // test is only that the name holds a function at all.
+    bool session_overload =
+        b->session && repl_session().value(name).tag == TAG_FUNC;
     int32_t into = -1;
-    if (scopes_.back().multifn_decls.contains(name)) {
+    if (scopes_.back().multifn_decls.contains(name) || session_overload) {
       into = alloc_temp(ast);
       emit(Op::CellGet, into, b->slot);
     }
@@ -3790,6 +4052,7 @@ class Compiler {
     emit(Op::MultifnReg, t, cls, into, idx);
     forget_temp(cls);  // the registry absorbed the body's +1 (reg is nil)
     emit(Op::CellSet, b->slot, owned_src(ast, {t, true}));
+    emit_session_decl_bind(*b, /*is_mut=*/false);
   }
 
   // `@dec fn name(...) {…}` — the declaration binds the decorator's result.
@@ -3815,6 +4078,7 @@ class Compiler {
     if (!b || !b->is_cell)
       reject(ast, std::format("fn '{}' declared here", name));
     emit(Op::CellSet, b->slot, owned_src(ast, {val, true}));
+    emit_session_decl_bind(*b, /*is_mut=*/false);
   }
 
   // Group same-named class members, in first-appearance order: each entry
@@ -4001,10 +4265,20 @@ class Compiler {
     // predeclare_forward_refs minted that cell — fill it rather than mint
     // a second one, so both readers see the same class.
     int32_t class_slot;
+    const Binding* decl_binding = nullptr;
     if (Binding* pre = predeclared_here(class_name)) {
       class_slot = pre->slot;
       slot_rank_[class_slot] = next_rank_++;
       settle_predeclared(*pre);
+      decl_binding = pre;
+    } else if (repl_top()) {
+      // The REPL's top level binds classes in the session too, so the next
+      // line can still say `C.new(...)`.
+      Binding& sb = bind_session(ast, class_name);
+      sb.lazy = false;
+      sb.shadowed_builtin = false;
+      class_slot = sb.slot;
+      decl_binding = &sb;
     } else {
       class_slot = alloc_cell_slot(ast, class_name);
       {
@@ -4015,6 +4289,7 @@ class Compiler {
       }
       scopes_.back().bindings.push_back(
           {class_name, class_slot, /*is_mut=*/false, /*is_cell=*/true});
+      decl_binding = &scopes_.back().bindings.back();
     }
 
     TempScope ts(*this);
@@ -4206,6 +4481,7 @@ class Compiler {
       forget_temp(marker);  // the slot absorbed the +1
     }
     emit(Op::CellSet, class_slot, owned_src(ast, {cls, true}));
+    emit_session_decl_bind(*decl_binding, /*is_mut=*/false);
   }
 
   // `enum Name { A(Long), B }` — a namespace object whose members are the
@@ -4232,10 +4508,18 @@ class Compiler {
     // A closure earlier in the list may already hold this name's cell
     // (predeclare_forward_refs); fill that one, as compile_class_decl does.
     int32_t enum_slot;
+    const Binding* decl_binding = nullptr;
     if (Binding* pre = predeclared_here(enum_name)) {
       enum_slot = pre->slot;
       slot_rank_[enum_slot] = next_rank_++;
       settle_predeclared(*pre);
+      decl_binding = pre;
+    } else if (repl_top()) {
+      Binding& sb = bind_session(ast, enum_name);
+      sb.lazy = false;
+      sb.shadowed_builtin = false;
+      enum_slot = sb.slot;
+      decl_binding = &sb;
     } else {
       enum_slot = alloc_cell_slot(ast, enum_name);
       {
@@ -4246,6 +4530,7 @@ class Compiler {
       }
       scopes_.back().bindings.push_back(
           {enum_name, enum_slot, /*is_mut=*/false, /*is_cell=*/true});
+      decl_binding = &scopes_.back().bindings.back();
     }
 
     TempScope ts(*this);
@@ -4278,6 +4563,7 @@ class Compiler {
     if (is_packable)
       emit(Op::RegPack, kconst_str(enum_name), kconst_str(spec), 0, 1);
     emit(Op::CellSet, enum_slot, owned_src(ast, {obj, true}));
+    emit_session_decl_bind(*decl_binding, /*is_mut=*/false);
   }
 
   // `trait Name: Super { req(); def() { ... } }` — a contract in the shared
@@ -4329,6 +4615,7 @@ class Compiler {
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();
     Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
+    fc.repl_ = repl_;
     fc.stamp(ast);
     fc.push_scope(ast, /*owned_mark=*/false);
     fc.chunk_.capture_src_slots = caps;
@@ -4412,6 +4699,13 @@ class Compiler {
         caps.lazys.push_back(false);
         continue;
       }
+      // A REPL line's free variable that nothing here binds is the session's.
+      // The captured cell is the one a later line's declaration fills, which
+      // is what lets a closure see a name declared after it (probed) — and it
+      // subsumes the UFCS-candidate case below, since an unbound session cell
+      // holds the sentinel that declines the call site's Function gate just
+      // as a nil one does.
+      if (!b && repl_) b = &bind_session(ast, fv);
       if (!b && info.optional_free_vars.contains(fv)) {
         caps.slots.push_back(
             none_cell(ast, {TAG_NIL, 0}, ufcs_none_slot_, "(ufcs.none)"));
@@ -4467,6 +4761,7 @@ class Compiler {
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();
     Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
+    fc.repl_ = repl_;
     fc.chunk_.variadic = true;
     fc.chunk_.cb_max = -1;
     int32_t rv = fc.alloc_raw(ast, "(unsupported)", /*named=*/false);
@@ -4489,6 +4784,7 @@ class Compiler {
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
     Compiler fc(prog_, analysis_, /*in_function=*/true, &info);
+    fc.repl_ = repl_;
     fc.stamp(ast);
     // The frame scope: params + captures + the `fn` handle. Its owned mark
     // waits until the ABI slots are laid out (establish_frame_owned_mark).
@@ -4949,9 +5245,26 @@ class Compiler {
       if (Binding* pre = predeclared_here(name)) {
         store_cell(*tgt, pre->slot, compile_expr(*av.rhs));
         slot_rank_[pre->slot] = next_rank_++;  // released as declared here
+        emit_session_decl_bind(*pre, av.is_mut);
         pre->is_mut = av.is_mut;
         settle_predeclared(*pre);
         return read_binding(*tgt, *pre);
+      }
+      // A REPL line's top-level declaration binds in the session, so the
+      // next line still finds it — and a redeclaration lands in the very
+      // cell the closures of earlier lines hold, which is what makes them
+      // read the new value (probed).
+      // It is registered before the RHS compiles, and still lazy there, so
+      // `let x = x` reads what the name meant before this statement — the
+      // store is what changes it, as everywhere else.
+      if (repl_top()) {
+        Binding& sb = bind_session(*tgt, name);
+        store_cell(*tgt, sb.slot, compile_expr(*av.rhs));
+        emit_session_decl_bind(sb, av.is_mut);
+        sb.is_mut = av.is_mut;
+        sb.lazy = false;
+        sb.shadowed_builtin = false;
+        return read_binding(*tgt, sb);
       }
       bool cell = info_->captured_locals.contains(name);
       int32_t slot = cell ? alloc_cell_slot(*tgt, name) : alloc_slot(*tgt, name);
@@ -4974,22 +5287,24 @@ class Compiler {
       int32_t t = alloc_temp(*tgt);
       return {t, true};  // unreachable
     }
+    // At the REPL a name nothing here binds is the session's, and a bare
+    // write to one it has never declared declares it — immutably, so a
+    // second write refuses (probed: `w = 3` then `w = 4`). Op::ReplBind
+    // decides all of that when the write runs.
+    if (!b && repl_) b = &bind_session(*tgt, std::string(tgt->token));
     if (!b) reject(*tgt, "assignment to an undeclared name");
     auto r = compile_expr(*av.rhs);
     // Before its declaration runs the name still means the binding the
     // pre-declaration shadows, so the write lands there and is checked
     // against that binding's own mutability.
     if (b->lazy && b->shadowed) return assign_shadowing(ast, *tgt, *b, r);
-    if (!b->is_mut) {
+    {
       // Runtime ImmutableError, after the RHS ran — matching the interp/JIT
       // order and keeping a never-executed assignment silent. The RHS temp
       // strands like any value abandoned by a throw (conservative backstop).
       StampGuard pos(*this, ast);
-      emit(Op::ImmutErr, kconst_str(tgt->token));
-      return {b->slot, false};  // unreachable
+      if (!emit_rebind(*tgt, *b, r)) return {b->slot, false};  // unreachable
     }
-    if (b->is_cell) store_cell(*tgt, b->slot, r);
-    else store_into(b->slot, r);
     return read_binding(*tgt, *b);
   }
 
@@ -5012,6 +5327,20 @@ class Compiler {
     }
     auto base = av.op_base;
     const Binding* b = lookup(tgt.token);
+    if (!b && repl_) {
+      // Unlike a bare `x = v`, a compound one never declares: the interp
+      // raises before the RHS runs and before `??=` tests anything (probed —
+      // `zz += 1` is a NameError). Only a name the session has bound, or a
+      // stdlib global, has a current value to step from.
+      if (!repl_session().declared(tgt.token) && !is_stdlib_global(tgt.token) &&
+          !is_stdlib_namespace(tgt.token)) {
+        emit(Op::RaiseErr, 0, kconst_str("NameError"),
+             kconst_str(std::format(
+                 "compound assignment on undefined name '{}'", tgt.token)));
+        return {alloc_temp(tgt), true};  // unreachable
+      }
+      b = &bind_session(tgt, std::string(tgt.token));
+    }
     if (!b && !is_stdlib_global(tgt.token))
       reject(tgt, "compound assignment to an undeclared name");
 
@@ -5026,13 +5355,7 @@ class Compiler {
       auto cur = read_binding(tgt, *b);
       size_t skip = emit(Op::JumpIfNotNil, cur.slot);
       auto rhs = compile_expr(*av.rhs);
-      if (!b->is_mut) {
-        emit(Op::ImmutErr, kconst_str(tgt.token));
-      } else if (b->is_cell) {
-        store_cell(tgt, b->slot, rhs);
-      } else {
-        store_into(b->slot, rhs);
-      }
+      emit_rebind(tgt, *b, rhs);
       patch_to_here(skip);
       return read_binding(tgt, *b);
     }
@@ -5050,15 +5373,14 @@ class Compiler {
     }
     int32_t t = alloc_temp(ast);
     emit(op, t, cur.slot, rhs.slot, /*inplace=*/1);
-    if (!b || !b->is_mut) {
+    if (!b) {
       // Runtime ImmutableError after the step ran (builtins are immutable
       // root bindings); the step result strands like any throw-abandoned
       // temp (conservative backstop).
       emit(Op::ImmutErr, kconst_str(tgt.token));
       return {t, false};  // unreachable
     }
-    if (b->is_cell) store_cell(tgt, b->slot, {t, true});
-    else store_into(b->slot, {t, true});
+    if (!emit_rebind(tgt, *b, {t, true})) return {t, false};  // unreachable
     return read_binding(tgt, *b);
   }
 
@@ -6812,8 +7134,19 @@ class Compiler {
       if (Binding* pre = predeclared_here(name)) {
         store_cell(at, pre->slot, v);
         slot_rank_[pre->slot] = next_rank_++;
+        emit_session_decl_bind(*pre, is_mut);
         pre->is_mut = is_mut;
         settle_predeclared(*pre);
+        return;
+      }
+      // A REPL line's top-level leaf binds in the session, like `let x = v`.
+      if (repl_top()) {
+        Binding& sb = bind_session(ident, name);
+        store_cell(at, sb.slot, v);
+        emit_session_decl_bind(sb, is_mut);
+        sb.is_mut = is_mut;
+        sb.lazy = false;
+        sb.shadowed_builtin = false;
         return;
       }
       bool cell = info_->captured_locals.contains(name);
@@ -6828,16 +7161,12 @@ class Compiler {
       return;
     }
     const Binding* b = lookup(name);
+    if (!b && repl_) b = &bind_session(ident, name);
     // A name nothing visible holds would be declared by the interp; the VM
     // rejects that for bare `x = v` too (compile_assignment), so the two
     // assignment forms stay on the same slice boundary.
     if (!b) reject(ident, "assignment to an undeclared name");
-    if (!b->is_mut) {
-      emit(Op::ImmutErr, kconst_str(name));  // at the statement's stamp
-      return;  // never falls through
-    }
-    if (b->is_cell) store_cell(at, b->slot, v);
-    else store_into(b->slot, v);
+    emit_rebind(at, *b, v);  // at the statement's stamp
   }
 
   // Emits the tests for one leaf pattern: fall through on match, jump (via
@@ -7319,11 +7648,6 @@ class Compiler {
         }
         const Binding* b = lookup(ast.token);
         if (b) return read_binding(ast, *b);
-        if (is_stdlib_global(ast.token) || is_stdlib_namespace(ast.token)) {
-          int32_t t = alloc_temp(ast);
-          emit(Op::NsGet, t, kconst_str(ast.token));
-          return {t, true};
-        }
         // `self` is not an unresolved name: every frame has one, and a frame
         // with no receiver holds the sentinel whose read is the interp's
         // NameError. Outside any function there is no slot to hold it, so
@@ -7332,6 +7656,18 @@ class Compiler {
           int32_t t = alloc_temp(ast);
           emit(Op::LoadConst, t, kconst({TAG_NO_SELF, 0}));
           emit(Op::UnboundErr, t, kconst_str("self"));
+          return {t, true};
+        }
+        // A REPL line's unresolved names belong to the session, and its cell
+        // outranks the stdlib global of the same name — `let to_string = 7`
+        // on one line makes `to_string` read 7 on the next. Which of the two
+        // it is stays a run-time question (the cell is still unbound when the
+        // stdlib wins), and read_shadowing already asks it that way.
+        if (repl_)
+          return read_binding(ast, bind_session(ast, std::string(ast.token)));
+        if (is_stdlib_global(ast.token) || is_stdlib_namespace(ast.token)) {
+          int32_t t = alloc_temp(ast);
+          emit(Op::NsGet, t, kconst_str(ast.token));
           return {t, true};
         }
         reject(ast, std::format("unresolved identifier '{}'", ast.token));
@@ -7509,6 +7845,7 @@ inline std::string dump(const Chunk& c) {
       "ForOpen",   "ForNext",   "ForDispose",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "DropSuppress",
       "BArity",    "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
+      "ReplCell",  "ReplBind",
       "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
@@ -7619,6 +7956,36 @@ struct Exec {
   }
 
   static void run(VmProgram& p) {
+    prepare(p);
+    // Drop the pin and the program's +1 on every exit path; a closure still
+    // alive on the uncaught-throw path holds its own retain (GC backstop
+    // territory).
+    struct CellGuard {
+      VmProgram& p;
+      ~CellGuard() { release_descs(p); }
+    } guard{p};
+    run_prepared(p);
+  }
+
+  // The REPL's form: the program outlives its own execution, so its
+  // descriptor cells have to as well. A closure one line built is called by a
+  // later one, and running that closure's body reads desc_cells again — every
+  // MakeClosure in it does. The session owns them from here and hands them
+  // back with release_descs when it ends.
+  static void run_retained(VmProgram& p) {
+    prepare(p);
+    run_prepared(p);
+  }
+
+  static void release_descs(VmProgram& p) {
+    for (auto* cl : p.desc_cells) {
+      _gc_heap().unpin(cl);
+      culebra_runtime_cell_release(cl);
+    }
+    p.desc_cells.clear();
+  }
+
+  static void prepare(VmProgram& p) {
     build_param_metas(p);
     _jit_closure_meta_hook = &meta_for_closure;
     _jit_closure_desc_hook = &desc_for_closure;
@@ -7634,19 +8001,9 @@ struct Exec {
       // see (a heap vector) — pin for the run, the namespace-cache pattern.
       _gc_heap().pin(p.desc_cells[i]);
     }
-    // Drop the pin and the program's +1 on every exit path; a closure still
-    // alive on the uncaught-throw path holds its own retain (GC backstop
-    // territory).
-    struct CellGuard {
-      VmProgram& p;
-      ~CellGuard() {
-        for (auto* cl : p.desc_cells) {
-          _gc_heap().unpin(cl);
-          culebra_runtime_cell_release(cl);
-        }
-        p.desc_cells.clear();
-      }
-    } guard{p};
+  }
+
+  static void run_prepared(VmProgram& p) {
     try {
       run_frame(p, 0, nullptr, 0, nullptr);
     } catch (const CulebraException& e) {
@@ -9805,6 +10162,21 @@ struct Exec {
           culebra_runtime_owned_scope_exit(marks[in.a]);
           ++pc;
           break;
+        case Op::ReplCell: {
+          auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
+          regs[in.a] = JitValue{
+              TAG_LONG,
+              reinterpret_cast<int64_t>(repl_session().cell(nm))};
+          ++pc;
+          break;
+        }
+        case Op::ReplBind: {
+          auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
+          repl_bind(nm, static_cast<ReplBindMode>(in.a), in.c != 0,
+                    chunk_pos_at(c, pc));
+          ++pc;
+          break;
+        }
         case Op::Halt:
           return JitValue{TAG_NIL, 0};
       }
@@ -13849,6 +14221,14 @@ struct Lowering {
         case Op::OwnedExit:
           j.emit_owned_scope_exit(load_owned_mark(in.a));
           break;
+        case Op::ReplCell:
+        case Op::ReplBind:
+          // REPL-only, and the REPL runs on the executor: it is tier 0, and
+          // a line is never a hot loop (include/repl.h — the same reason
+          // `--jit` does not get its own REPL). No lane emits these into a
+          // chunk this pass can be handed, so there is nothing here to
+          // write that could be tested.
+          throw std::runtime_error("vm: REPL op in a lowered chunk");
         case Op::Halt:
           b.CreateRetVoid();
           break;
