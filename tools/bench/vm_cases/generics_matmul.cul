@@ -1,0 +1,112 @@
+# A declaration's Generic parameters (`fn id<T>(x: T)`) are erased: the name
+# is the outer half, and an annotation naming a type parameter checks as the
+# parameter's bound — Any when it has none. Introspection still reports the
+# annotation as written.
+
+fn id<T>(x: T) {
+  x
+}
+println([id(5), id('a'), id([1])])
+
+fn ret<T>(x: T) -> T {
+  x
+}
+println(ret(3))
+println(ret('s'))
+
+fn pair<A, B>(a: A, b: B) {
+  [a, b]
+}
+println(pair(1, 'x'))
+
+fn mixed<T>(x: T, n: Long) {
+  [x, n]
+}
+println(mixed('a', 1))
+
+# The type parameter's name wins over a real type of the same name, so the
+# annotation is not a check at all.
+fn shadowy<Long>(x: Long) {
+  x
+}
+println(shadowy('not a long'))
+
+# Introspection reports `T`, not the lowered form the check uses — the same
+# rule `params[i].type` follows.
+println(id.name)
+println(id.params.size())
+println(id.params[0].type)
+println(ret.return_type)
+
+# The type parameters do not enter the overload key: two arities of one name
+# still merge into one dispatcher.
+fn over<T>(a: T) {
+  'one'
+}
+fn over(a, b) {
+  'two'
+}
+println([over(1), over(1, 2)])
+
+# A bounded parameter checks against the bound, so a value that does not
+# conform finds no overload.
+trait Sized2 {
+  two() -> Long
+}
+class Two {
+  new() {}
+  two() {
+    2
+  }
+}
+fn needs<T: Sized2>(x: T) {
+  x.two()
+}
+println(needs(Two.new()))
+
+# `@` is always a `__matmul__` dispatch — no numeric meaning, no reflected
+# form, and no in-place variant, so `@=` steps through the same operator.
+class M {
+  new(v) {
+    self.v = v
+  }
+  __matmul__(other) {
+    M.new(self.v + other.v)
+  }
+}
+println((M.new(1) @ M.new(2)).v)
+mut acc = M.new(1)
+acc @= M.new(4)
+println(acc.v)
+println((M.new(1) @ M.new(2) @ M.new(4)).v)
+
+fn probe(label, thunk) {
+  let r = try {
+    "ok=" + to_string(thunk())
+  } catch e {
+    "err=" + to_string(e.kind) + "|" + to_string(e.message)
+  }
+  print(label + " ::: " + r + "\n")
+}
+probe("matmul on scalars", fn () {
+  1 @ 2
+})
+probe("matmul without the method", fn () {
+  M.new(1) @ 2
+})
+probe("matmul reversed operands", fn () {
+  2 @ M.new(1)
+})
+probe("bounded generic rejects a non-conformer", fn () {
+  needs(5)
+})
+
+# Churn: a generic call and a matmul per turn, both over heap values.
+mut n = 0
+mut i = 0
+while i < 4000 {
+  n = n + id([i]).size()
+  n = n + (M.new(i) @ M.new(1)).v - i - 1
+  i = i + 1
+}
+println(n)

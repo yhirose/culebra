@@ -5954,16 +5954,13 @@ struct JIT {
                                std::string_view op, bool inplace = false) {
     // Callee-cleans (same as emit_binop_dispatch, which covers again for
     // its own callers): matmul/pow below call their helpers directly.
-    // Matmul has no `_borrow` twin, so the VM slice must not reach it —
-    // fail loudly instead of silently violating the contract.
-    if (vm_borrow_ops_ && op == "@")
-      throw std::runtime_error("vm: matmul lacks a borrow-contract helper");
     UnwindCovered cover(this, {lhs, rhs});
     if (op == "@") {
       // No in-place matmul (output shape differs from lhs).
       return emit_value_call(
           module_->getOrInsertFunction(
-              rt::num_matmul, valueType_,
+              vm_borrow_ops_ ? rt::num_matmul_borrow : rt::num_matmul,
+              valueType_,
               builder_.getInt8Ty(), builder_.getInt64Ty(),
               builder_.getInt8Ty(), builder_.getInt64Ty(),
               builder_.getInt64Ty(), builder_.getInt64Ty()),

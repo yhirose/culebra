@@ -700,6 +700,7 @@ inline constexpr auto num_add             = "culebra_runtime_num_add";
 inline constexpr auto num_sub             = "culebra_runtime_num_sub";
 inline constexpr auto num_mul             = "culebra_runtime_num_mul";
 inline constexpr auto num_matmul          = "culebra_runtime_num_matmul";
+inline constexpr auto num_matmul_borrow   = "culebra_runtime_num_matmul_borrow";
 inline constexpr auto num_div             = "culebra_runtime_num_div";
 inline constexpr auto num_mod             = "culebra_runtime_num_mod";
 inline constexpr auto num_pow             = "culebra_runtime_num_pow";

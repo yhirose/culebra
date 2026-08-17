@@ -1,0 +1,145 @@
+# `x: T = e` checks the value against T the moment the RHS produces it, in
+# every assignment shape the annotation is grammatical on. It is a check on
+# this statement, not a type for the slot: a later write to the same `mut` is
+# unchecked.
+
+let a: Long = 5
+println(a)
+mut b: String = 'hi'
+println(b)
+b = 42
+println(b)
+
+# The annotation checks the RHS itself. `+= 1.0` throws on the 1.0 even where
+# the sum would be a Long, and a Float sum passes because the RHS was a Long.
+mut c = 1.0
+c: Long += 1
+println(c)
+
+# Every named-type form the runtime understands.
+let opt: String? = nil
+println(opt)
+let opt2: String? = 'here'
+println(opt2)
+let uni: Long | String = 'either'
+println(uni)
+let gen: Array<Long> = [1, 2]
+println(gen)
+let any: Any = 1.5
+println(any)
+
+class P {
+  new(v) {
+    self.v = v
+  }
+}
+let inst: P = P.new(3)
+println(inst.v)
+let str: Stringer = 'ab'
+println(str)
+
+# The sink still checks, and a declaration still declares a local an inner
+# closure can capture.
+let _: Long = 7
+let cap: Long = 5
+let read = fn () {
+  cap
+}
+println(read())
+mut counted: Long = 0
+let bump = fn () {
+  counted = counted + 1
+}
+bump()
+bump()
+println(counted)
+
+# Non-declaring shapes: a rebind, a property write, an index write, and the
+# two compound forms.
+mut re = 1
+re: Long = 2
+println(re)
+let obj = P.new(1)
+obj.v: Long = 9
+println(obj.v)
+mut arr = [1]
+arr[0]: Long = 8
+println(arr)
+mut co = nil
+co: Long ??= 5
+println(co)
+mut keep = 'kept'
+keep: Long ??= 5
+println(keep)
+
+# Errors: the RHS runs first, then the check throws a TypeError anchored at
+# the assignment. A `??=` whose target is not nil never evaluates its RHS, so
+# it never checks.
+fn probe(label, thunk) {
+  let r = try {
+    "ok=" + to_string(thunk())
+  } catch e {
+    "err=" + to_string(e.kind) + "|" + to_string(e.message)
+  }
+  print(label + " ::: " + r + "\n")
+}
+probe("wrong type", fn () {
+  let x: Long = 'a'
+  x
+})
+probe("optional wrong type", fn () {
+  let x: String? = 42
+  x
+})
+probe("union wrong type", fn () {
+  let x: Long | String = 1.5
+  x
+})
+probe("class wrong type", fn () {
+  let x: P = 5
+  x
+})
+probe("no such type name", fn () {
+  let x: Bogus = 5
+  x
+})
+probe("sink wrong type", fn () {
+  let _: Long = 'a'
+  'unreached'
+})
+probe("rhs ran before the check", fn () {
+  mut side = 0
+  let f = fn () {
+    side = side + 1
+    'a'
+  }
+  let caught = try {
+    let x: Long = f()
+    'no'
+  } catch e {
+    'yes'
+  }
+  [caught, side]
+})
+probe("coalesce skips the check when it skips the RHS", fn () {
+  mut side = 0
+  mut held = 'kept'
+  held: Long ??= fn () {
+    side = side + 1
+    1
+  }()
+  [held, side]
+})
+
+# Churn: a checked declaration per turn, over a heap value, so a retain the
+# check leaks would show as growth.
+mut n = 0
+mut i = 0
+while i < 4000 {
+  let t: Array<Long> = [i]
+  n = n + t.size()
+  let u: P = P.new(i)
+  n = n + u.v - u.v
+  i = i + 1
+}
+println(n)

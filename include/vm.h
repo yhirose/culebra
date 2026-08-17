@@ -98,6 +98,16 @@ enum class Op : uint8_t {
                // fast path (the AST JIT's generic tail is the same call; its
                // literal-exponent peepholes are numeric-guarded, so every
                // input agrees with the helper)
+  JumpIfSame,  // jump to b when regs[a] is a Tensor and regs[c] holds the very
+               // same handle: the compound step mutated its receiver in place
+               // rather than producing a new value, so the assignment rebinds
+               // nothing and the target's mutability does not gate it (the
+               // interp returns before env->assign; the JIT branches around
+               // its compound.rebind block on the same test).
+  MatMul,      // regs[a] = regs[b] @ regs[c] via num_matmul_borrow. `@` has
+               // no numeric meaning and no in-place form (the result's shape
+               // is not the lhs's), so `@=` steps through this op too: it is
+               // always a `__matmul__` dispatch, and a TypeError otherwise.
   BitAnd,      // regs[a] = regs[b] & regs[c]; the five bitwise ops are
   BitOr,       // Long-only — anything else raises the typed TypeError
   BitXor,      // ("expected Long, got X", lhs reported first), matching
@@ -516,9 +526,10 @@ enum class Op : uint8_t {
                // the check runs.
   ChkTypeAt,   // check regs[a] against the type consts[b] in the context
                // consts[c] ("return value", "parameter 'x'"), reporting at
-               // the position in regs[d] (PosSnap's snapshot). The return
-               // check is emitted before the frame's defers run, as the
-               // JIT's is.
+               // the position in regs[d] (PosSnap's snapshot) — or, with
+               // d < 0, at this instruction's own position, which is what an
+               // assignment's `x: T = e` annotation wants. The return check
+               // is emitted before the frame's defers run, as the JIT's is.
   ChkArg,      // check regs[a] against the declared type consts[b] for
                // parameter consts[c] at argument index d, resolving the
                // report position on the FAILURE path
@@ -4256,18 +4267,24 @@ class Compiler {
            ast.nodes[dec_end]->tag == "DECORATOR"_)
       dec_end++;
     auto head = culebra::parse_generic_head(ast.nodes[dec_end]->token);
-    if (!head.args.empty())
-      reject(*ast.nodes[dec_end], "generic type parameters");
     auto name = std::string(head.outer);
+    // `fn id<T>(x: T)`: the declaration's own Generic parameters, which its
+    // annotations lower against the way a Generic class's members lower
+    // against the class's. The name is the outer half — the type parameters
+    // are erased everywhere else, so two arities of `id` still overload.
+    std::vector<std::string_view> type_params;
+    if (!head.args.empty()) type_params = culebra::split_generic_args(head.args);
+    MemberOpts mo;
+    if (!type_params.empty()) mo.type_params = &type_params;
     if (dec_end > 0) {
       // A decorated declaration binds what the decorators return, so it
       // never reaches the multimethod registry: the name holds the
       // outermost wrapper, and the innermost decorator is applied first.
-      compile_decorated_fn(ast, dec_end, name);
+      compile_decorated_fn(ast, dec_end, name, mo);
       return;
     }
     int32_t idx = compile_fn_chunk(ast, ast.nodes[1].get(),
-                                   *ast.nodes.back());
+                                   *ast.nodes.back(), mo);
     prog_.chunks[idx].multifn_name = name;
     int32_t cls = alloc_temp(ast);
     emit(Op::MakeClosure, cls, idx);
@@ -4321,9 +4338,9 @@ class Compiler {
 
   // `@dec fn name(...) {…}` — the declaration binds the decorator's result.
   void compile_decorated_fn(const peg::Ast& ast, size_t dec_end,
-                            const std::string& name) {
+                            const std::string& name, MemberOpts mo) {
     int32_t idx = compile_fn_chunk(ast, ast.nodes[dec_end + 1].get(),
-                                   *ast.nodes.back());
+                                   *ast.nodes.back(), mo);
     int32_t val = alloc_temp(ast);
     emit(Op::MakeClosure, val, idx);
     val = apply_decorators(ast, dec_end, val);
@@ -5217,11 +5234,14 @@ class Compiler {
     // Where a return-value type error reports: resolved once here, as the
     // JIT's prologue snapshot does (see PosSnap).
     if (!return_type.empty()) {
-      fc.chunk_.return_type =
+      // Two forms, as the parameters have: the chunk keeps the annotation as
+      // written, which is what `f.return_type` reports, while the check runs
+      // against the lowered one — a Generic's unbounded `T` checks as Any.
+      fc.chunk_.return_type = std::string(return_type);
+      fc.ret_type_ = fc.kconst_str(
           mo.type_params && !mo.type_params->empty()
               ? culebra::lower_type_params(return_type, *mo.type_params)
-              : std::string(return_type);
-      fc.ret_type_ = fc.kconst_str(fc.chunk_.return_type);
+              : std::string(return_type));
       fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
       fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
     }
@@ -5474,11 +5494,29 @@ class Compiler {
     return compile_fn_chunk(ast, /*params=*/nullptr, *ast.nodes[0]);
   }
 
+  // An assignment's RHS, with `x: T = e`'s annotation checked the moment the
+  // value exists. Every shape the annotation is grammatical on — a
+  // declaration, a rebind, a property or index write, `op=`, `??=` — checks
+  // the RHS and nothing else: `x: Long += 1.0` throws on the 1.0 even where
+  // the sum would be a Long, and a Float sum passes silently (probed on both
+  // backends). This is the JIT's compile_rhs lambda, at the one point every
+  // caller here already funnels through. `??=` inherits the short-circuit for
+  // free, because it compiles its RHS inside the nil branch.
+  ExprResult compile_assign_rhs(const peg::Ast& ast,
+                                const culebra::AssignmentView& av) {
+    auto r = compile_expr(*av.rhs);
+    if (!av.type_annotation.empty()) {
+      StampGuard pos(*this, ast);
+      emit(Op::ChkTypeAt, r.slot, kconst_str(av.type_annotation),
+           kconst_str("assignment"), -1);  // d<0: report at this instruction
+    }
+    return r;
+  }
+
   // Evaluates to the assigned value (interp parity: `let c = if true
   // { let x = 5 }` reads 5) — returned as a borrow of the target slot.
   ExprResult compile_assignment(const peg::Ast& ast) {
     auto av = culebra::view_assignment(ast);
-    if (!av.type_annotation.empty()) reject(ast, "type annotation");
     auto* tgt = culebra::assign_name_target(ast, av);
     if (!tgt) {
       if (av.lvalcnt > 1) return compile_assign_index(ast, av);
@@ -5490,7 +5528,7 @@ class Compiler {
     // statement ends, not at the end of the scope. A COMPOUND assignment is
     // not a sink: it reads its target, and nothing ever binds `_`, so it
     // takes the undefined-name path below.
-    if (tgt->token == "_" && !av.compound) return compile_expr(*av.rhs);
+    if (tgt->token == "_" && !av.compound) return compile_assign_rhs(ast, av);
     if (av.compound) return compile_compound_assign(ast, av, *tgt);
     // interp's assign_name: `let` / `mut` declares, and so does a bare write
     // to a name nothing here binds — immutably, in this scope, so a second
@@ -5506,7 +5544,7 @@ class Compiler {
       // built above hold it, so the declaration fills that cell instead
       // of minting a second one, and the binding stops being lazy.
       if (Binding* pre = predeclared_here(name)) {
-        store_cell(*tgt, pre->slot, compile_expr(*av.rhs));
+        store_cell(*tgt, pre->slot, compile_assign_rhs(ast, av));
         slot_rank_[pre->slot] = next_rank_++;  // released as declared here
         emit_session_decl_bind(*pre, decl_mut);
         pre->is_mut = decl_mut;
@@ -5518,7 +5556,7 @@ class Compiler {
       // overwrites the environment's entry, so a closure built before the
       // second declaration reads its value (probed on both backends).
       if (Binding* held = captured_here(name)) {
-        store_cell(*tgt, held->slot, compile_expr(*av.rhs));
+        store_cell(*tgt, held->slot, compile_assign_rhs(ast, av));
         slot_rank_[held->slot] = next_rank_++;  // redeclared here
         emit_session_decl_bind(*held, decl_mut);
         held->is_mut = decl_mut;
@@ -5533,7 +5571,7 @@ class Compiler {
       // store is what changes it, as everywhere else.
       if (repl_top()) {
         Binding& sb = bind_session(*tgt, name);
-        store_cell(*tgt, sb.slot, compile_expr(*av.rhs));
+        store_cell(*tgt, sb.slot, compile_assign_rhs(ast, av));
         emit_session_decl_bind(sb, decl_mut);
         sb.is_mut = decl_mut;
         sb.lazy = false;
@@ -5543,9 +5581,9 @@ class Compiler {
       bool cell = info_->captured_locals.contains(name);
       int32_t slot = cell ? alloc_cell_slot(*tgt, name) : alloc_slot(*tgt, name);
       if (cell) {
-        store_new_cell(*tgt, slot, compile_expr(*av.rhs));
+        store_new_cell(*tgt, slot, compile_assign_rhs(ast, av));
       } else {
-        store_into(slot, compile_expr(*av.rhs), /*dst_is_fresh=*/true);
+        store_into(slot, compile_assign_rhs(ast, av), /*dst_is_fresh=*/true);
       }
       push_binding({name, slot, decl_mut, cell});
       return read_binding(*tgt, scopes_.back().bindings.back());
@@ -5555,7 +5593,7 @@ class Compiler {
     // root-env one, so a write to either is a reassignment even where nothing
     // bound it here — the same ImmutableError, after the RHS has run.
     if (!b && !repl_) {
-      compile_expr(*av.rhs);
+      compile_assign_rhs(ast, av);
       StampGuard pos(*this, ast);
       emit(Op::ImmutErr, kconst_str(tgt->token));
       int32_t t = alloc_temp(*tgt);
@@ -5566,7 +5604,7 @@ class Compiler {
     // second write refuses (probed: `w = 3` then `w = 4`). Op::ReplBind
     // decides all of that when the write runs.
     if (!b) b = &bind_session(*tgt, std::string(tgt->token));
-    auto r = compile_expr(*av.rhs);
+    auto r = compile_assign_rhs(ast, av);
     // Before its declaration runs the name still means the binding the
     // pre-declaration shadows, so the write lands there and is checked
     // against that binding's own mutability.
@@ -5609,7 +5647,7 @@ class Compiler {
       // Unlike a bare `x = v`, a compound one never declares — it is a
       // NameError. `op=` raises it with the RHS already run (probed); `??=`
       // reads the target before the RHS, so nothing of it runs.
-      if (base != "??") compile_expr(*av.rhs);
+      if (base != "??") compile_assign_rhs(ast, av);
       emit(Op::RaiseErr, 0, kconst_str("NameError"),
            kconst_str(std::format(
                "compound assignment on undefined name '{}'", tgt.token)));
@@ -5626,7 +5664,7 @@ class Compiler {
       }
       auto cur = read_binding(tgt, *b);
       size_t skip = emit(Op::JumpIfNotNil, cur.slot);
-      auto rhs = compile_expr(*av.rhs);
+      auto rhs = compile_assign_rhs(ast, av);
       emit_rebind(tgt, *b, rhs);
       patch_to_here(skip);
       return read_binding(tgt, *b);
@@ -5634,7 +5672,7 @@ class Compiler {
 
     Op op = compound_op(ast, base);
 
-    auto rhs = compile_expr(*av.rhs);
+    auto rhs = compile_assign_rhs(ast, av);
     ExprResult cur;
     if (b) {
       cur = read_binding(tgt, *b);
@@ -5652,7 +5690,14 @@ class Compiler {
       emit(Op::ImmutErr, kconst_str(tgt.token));
       return {t, false};  // unreachable
     }
-    if (!emit_rebind(tgt, *b, {t, true})) return {t, false};  // unreachable
+    // A Tensor step mutates its receiver and hands back that same handle, so
+    // nothing is rebound and the target's `mut` does not gate it: the interp
+    // returns before env->assign, and the JIT branches around its rebind.
+    // Only the rebinding arm consumes the step's temp; the other leaves it to
+    // the statement sweep (assign_shadowing's arms are the same shape).
+    size_t in_place = emit(Op::JumpIfSame, cur.slot, 0, t);
+    emit_rebind(tgt, *b, {t, true});
+    patch_to_here(in_place);
     return read_binding(tgt, *b);
   }
 
@@ -5665,6 +5710,7 @@ class Compiler {
     if (base == "/") return Op::Div;
     if (base == "%") return Op::Mod;
     if (base == "**") return Op::Pow;
+    if (base == "@") return Op::MatMul;
     reject(ast, std::format("operator '{}='", base));
   }
 
@@ -5715,7 +5761,7 @@ class Compiler {
         int32_t cur = alloc_temp(ast);
         emit(Op::PropCo, cur, recv.slot, name, dotpos);
         size_t skip = emit(Op::JumpIfNotNil, cur);
-        auto rhs = compile_expr(*av.rhs);
+        auto rhs = compile_assign_rhs(ast, av);
         emit_prop_set(fin, recv.slot, rhs.slot, /*ns_check=*/false);
         store_into(cur, rhs);
         patch_to_here(skip);
@@ -5723,7 +5769,7 @@ class Compiler {
       }
       if (av.compound) {
         Op op = compound_op(ast, av.op_base);
-        auto rhs = compile_expr(*av.rhs);
+        auto rhs = compile_assign_rhs(ast, av);
         auto recv = chain_prefix();
         int32_t cur = alloc_temp(ast);
         emit(Op::PropWr, cur, recv.slot, name, dotpos);
@@ -5731,11 +5777,16 @@ class Compiler {
         emit(op, t, cur, rhs.slot, /*inplace=*/1);
         // No namespace check on the write-back: a namespace's unknown
         // member already fell out of PropWr, and a known one overwrites
-        // into its own (immutable) slot — the interp's order.
+        // into its own (immutable) slot — the interp's order. A Tensor step
+        // that mutated the receiver in place writes nothing back at all, so
+        // an immutable slot does not refuse it (the plain-variable arm above
+        // makes the same test).
+        size_t in_place = emit(Op::JumpIfSame, cur, 0, t);
         emit_prop_set(fin, recv.slot, t, /*ns_check=*/false);
+        patch_to_here(in_place);
         return {t, true};
       }
-      auto rhs = compile_expr(*av.rhs);
+      auto rhs = compile_assign_rhs(ast, av);
       auto recv = chain_prefix();
       emit_prop_set(fin, recv.slot, rhs.slot, /*ns_check=*/true);
       return rhs;
@@ -5748,7 +5799,7 @@ class Compiler {
       int32_t cur = alloc_temp(ast);
       emit(Op::IndexCo, cur, recv.slot, key.slot);
       size_t skip = emit(Op::JumpIfNotNil, cur);
-      auto rhs = compile_expr(*av.rhs);
+      auto rhs = compile_assign_rhs(ast, av);
       emit(Op::IndexSet, recv.slot, key.slot, rhs.slot);
       store_into(cur, rhs);
       patch_to_here(skip);
@@ -5756,7 +5807,7 @@ class Compiler {
     }
     if (av.compound) {
       Op op = compound_op(ast, av.op_base);
-      auto rhs = compile_expr(*av.rhs);
+      auto rhs = compile_assign_rhs(ast, av);
       auto recv = chain_prefix();
       auto key = compile_expr(fin);
       int32_t cur = alloc_temp(ast);
@@ -5766,7 +5817,7 @@ class Compiler {
       emit(Op::IndexSet, recv.slot, key.slot, t);
       return {t, true};
     }
-    auto rhs = compile_expr(*av.rhs);
+    auto rhs = compile_assign_rhs(ast, av);
     auto recv = chain_prefix();
     auto key = compile_expr(fin);
     emit(Op::IndexSet, recv.slot, key.slot, rhs.slot);
@@ -8036,6 +8087,7 @@ class Compiler {
           else if (op_tok == "*") op = Op::Mul;
           else if (op_tok == "/") op = Op::Div;
           else if (op_tok == "%") op = Op::Mod;
+          else if (op_tok == "@") op = Op::MatMul;
           else reject(*ast.nodes[i], std::format("operator '{}'", op_tok));
           auto rhs = compile_expr(*ast.nodes[i + 1]);
           int32_t t = alloc_temp(ast);
@@ -8116,8 +8168,9 @@ inline std::string dump(const Chunk& c) {
   static constexpr const char* kNames[] = {
       "LoadConst", "Move",      "Take",       "Retain",       "Release",
       "Neg",       "Not",       "Add",        "Sub",          "Mul",
-      "Div",       "Mod",       "Pow",        "BitAnd",       "BitOr",
-      "BitXor",    "Shl",       "Shr",        "BitNot",
+      "Div",       "Mod",       "Pow",        "JumpIfSame",   "MatMul",
+      "BitAnd",    "BitOr",     "BitXor",     "Shl",          "Shr",
+      "BitNot",
       "Eq",        "Ne",        "Lt",
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "ArrayPush", "ArrayExtend", "ArrayResize",
@@ -8947,6 +9000,24 @@ struct Exec {
                                                             r.data, line, col)
                    : culebra_runtime_num_pow_borrow(lt, l.data, rt, r.data,
                                                     line, col);
+          ++pc;
+          break;
+        }
+        case Op::JumpIfSame: {
+          const JitValue& cur = regs[in.a];
+          if (cur.tag == TAG_TENSOR && cur.data == regs[in.c].data)
+            pc = static_cast<size_t>(in.b);
+          else
+            ++pc;
+          break;
+        }
+        case Op::MatMul: {
+          const JitValue& l = regs[in.b];
+          const JitValue& r = regs[in.c];
+          auto [line, col] = chunk_pos_at(c, pc);
+          regs[in.a] = culebra_runtime_num_matmul_borrow(
+              static_cast<int8_t>(l.tag), l.data, static_cast<int8_t>(r.tag),
+              r.data, line, col);
           ++pc;
           break;
         }
@@ -10242,13 +10313,17 @@ struct Exec {
           break;
         }
         case Op::ChkTypeAt: {
-          auto pos = _jit_unpack_pos(regs[in.d].data);
+          auto [line, col] = chunk_pos_at(c, pc);
+          if (in.d >= 0) {
+            auto pos = _jit_unpack_pos(regs[in.d].data);
+            line = pos.line;
+            col = pos.col;
+          }
           const JitValue& v = regs[in.a];
           culebra_runtime_type_check(
               static_cast<int8_t>(v.tag), v.data,
               reinterpret_cast<const char*>(c.consts[in.b].data),
-              reinterpret_cast<const char*>(c.consts[in.c].data), pos.line,
-              pos.col);
+              reinterpret_cast<const char*>(c.consts[in.c].data), line, col);
           ++pc;
           break;
         }
@@ -10884,6 +10959,7 @@ struct Lowering {
         case Op::JumpIfTrue:
         case Op::JumpIfNotNil:
         case Op::JumpIfNil:
+        case Op::JumpIfSame:
         case Op::JumpIfTag:
         case Op::JumpIfFilled:
         case Op::SeqChk:   // pattern mismatch edges, same encoding
@@ -11188,6 +11264,25 @@ struct Lowering {
           // VM operand contract (vm_borrow_ops_), in-place when d=1.
           auto r = j.emit_arith_step(load_slot(in.b), load_slot(in.c), "**",
                                      /*inplace=*/in.d != 0);
+          b.CreateStore(r, slots[in.a]);
+          break;
+        }
+        case Op::JumpIfSame: {
+          auto cur = load_slot(in.a);
+          auto isTensor = b.CreateICmpEQ(j.extract_tag(cur),
+                                         b.getInt8(TAG_TENSOR), "same.ten");
+          auto sameData = b.CreateICmpEQ(j.extract_data(cur),
+                                         j.extract_data(load_slot(in.c)),
+                                         "same.data");
+          b.CreateCondBr(b.CreateAnd(isTensor, sameData, "same.inplace"),
+                         blocks.at(in.b),
+                         blocks.at(static_cast<int32_t>(i) + 1));
+          break;
+        }
+        case Op::MatMul: {
+          // emit_arith_step's "@" arm has no in-place twin to choose; the
+          // `_borrow` one is the VM's, as everywhere else.
+          auto r = j.emit_arith_step(load_slot(in.b), load_slot(in.c), "@");
           b.CreateStore(r, slots[in.a]);
           break;
         }
@@ -14229,16 +14324,21 @@ struct Lowering {
         }
         case Op::ChkTypeAt: {
           auto v = load_slot(in.a);
-          auto packed = j.extract_data(load_slot(in.d));
+          auto [line, col] = chunk_pos_at(c, i);
+          llvm::Value* lineV = b.getInt64(line);
+          llvm::Value* colV = b.getInt64(col);
+          if (in.d >= 0) {
+            auto packed = j.extract_data(load_slot(in.d));
+            lineV = b.CreateLShr(packed, b.getInt64(32));
+            colV = b.CreateAnd(packed, b.getInt64(0xffffffff));
+          }
           j.emit_call(
               j.module_->getOrInsertFunction(rt::type_check, b.getVoidTy(),
                                              b.getInt8Ty(), i64Ty, ptrTy,
                                              ptrTy, i64Ty, i64Ty),
               {j.extract_tag(v), j.extract_data(v),
                vm_str_const(in.b, ".vm.chktype"),
-               vm_str_const(in.c, ".vm.chkctx"),
-               b.CreateLShr(packed, b.getInt64(32)),
-               b.CreateAnd(packed, b.getInt64(0xffffffff))});
+               vm_str_const(in.c, ".vm.chkctx"), lineV, colV});
           break;
         }
         case Op::ChkArg: {

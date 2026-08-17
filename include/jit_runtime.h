@@ -1443,13 +1443,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod(
 }
 
 // `@` (matmul) has no numeric meaning — always dispatches through
-// `__matmul__`. Non-commutative, so no reflection.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul(
+// `__matmul__`. Non-commutative, so no reflection. Split into the borrow
+// twin the VM's operand contract needs and the callee-cleans wrapper the
+// AST path calls, the same pair `**` has.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__matmul__")) return *r;
   culebra::throw_arith_type_error("@", _culebra_tag_name(lt),
                                   _culebra_tag_name(rt), line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
+  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
+  return culebra_runtime_num_matmul_borrow(lt, ld, rt, rd, line, col);
 }
 
 // Extract a boolean from a special method's +1 return value and release

@@ -1,0 +1,97 @@
+# A compound assignment whose step mutates a Tensor in place rebinds
+# nothing — the same handle stays where it was — so the target's
+# mutability does not gate it. Every other step produces a new value and
+# is an ordinary rebind, which an immutable target refuses.
+
+let t = Tensor.ones(2, 2)
+t -= Tensor.ones(2, 2)
+Tensor.eval(t)
+println(t.to_array())
+
+let acc = Tensor.ones(2, 2)
+acc += Tensor.ones(2, 2)
+acc *= Tensor.from([[2.0, 2.0], [2.0, 2.0]])
+Tensor.eval(acc)
+println(acc.to_array())
+
+# A scalar rhs lifts, so it is still in place.
+let sc = Tensor.ones(2, 2)
+sc -= 1.0
+Tensor.eval(sc)
+println(sc.to_array())
+
+# The same rule through an immutable property and a captured binding.
+let obj = {t: Tensor.ones(2, 2)}
+obj.t -= Tensor.ones(2, 2)
+Tensor.eval(obj.t)
+println(obj.t.to_array())
+
+let cap = Tensor.ones(2, 2)
+let hit = fn () {
+  cap += Tensor.ones(2, 2)
+  Tensor.eval(cap)
+  cap.to_array()
+}
+println(hit())
+
+# In place means in place: a second name for the same tensor sees it.
+let src = Tensor.ones(2, 2)
+let alias = src
+alias -= Tensor.ones(2, 2)
+Tensor.eval(src)
+println(src.to_array())
+
+# `clone` breaks the aliasing, which is what makes the in-place rule safe
+# to rely on.
+let base = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+let copy = base.clone()
+copy -= Tensor.ones(2, 2)
+Tensor.eval(copy)
+println(base.to_array())
+println(copy.to_array())
+
+# Everything else is a rebind, and an immutable target still refuses.
+fn probe(label, thunk) {
+  let r = try {
+    "ok=" + to_string(thunk())
+  } catch e {
+    "err=" + to_string(e.kind) + "|" + to_string(e.message)
+  }
+  print(label + " ::: " + r + "\n")
+}
+probe("immutable Long", fn () {
+  let n = 5
+  n -= 1
+  n
+})
+probe("immutable Array", fn () {
+  let a = [1]
+  a += [2]
+  a
+})
+probe("immutable property, non-Tensor", fn () {
+  let o = {n: 5}
+  o.n -= 1
+  o.n
+})
+probe("a rhs the tensor op cannot lift", fn () {
+  let x = Tensor.ones(2, 2)
+  x -= 'nope'
+  x
+})
+probe("matmul has no in-place form", fn () {
+  let x = Tensor.ones(2, 2)
+  x @= x
+  x
+})
+
+# Churn: the in-place branch on every turn, over a tensor that outlives it.
+let held = Tensor.ones(2, 2)
+mut i = 0
+while i < 2000 {
+  held += Tensor.ones(2, 2)
+  held -= Tensor.ones(2, 2)
+  i = i + 1
+}
+Tensor.eval(held)
+println(held.to_array())
