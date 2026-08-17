@@ -27,8 +27,8 @@
 // error like both backends);
 // fn literals with closures (captured locals promoted to JitCells, the
 // JIT's cell mechanism — forward-reference capture is still rejected);
-// patterns — literals, `_`, bindings, typed bindings over primitive type
-// names, or-patterns of non-binding alternatives, and array / tuple / object
+// patterns — literals, `_`, bindings, typed bindings over any type name,
+// or-patterns of non-binding alternatives, and array / tuple / object
 // patterns with nesting, `...rest` and sinks — driving both `match` arms
 // (with guards) and destructuring declarations / parallel assignment;
 // `fn name` declarations with arity-dispatch overloads through the shared
@@ -460,9 +460,12 @@ enum class Op : uint8_t {
                // (make_variant_ctor). Both yield a fresh +1.
   TypeMatch,   // a pattern's type test: unless regs[a] satisfies the type
                // name consts[c] (culebra_runtime_type_matches — a class tag,
-               // an enum's variant, a trait's conformance), jump to b. The
-               // caller gates on TAG_OBJECT first, since a primitive whose
-               // name collides answers true.
+               // an enum's variant or parent, a trait's conformance, `T?`,
+               // `fn(…) -> R`), jump to b. A constructor pattern gates on
+               // TAG_OBJECT first, since a primitive whose name the variant
+               // collides with answers true; a `v: T` annotation needs no
+               // such gate, having already taken the inline tag compare for
+               // every name that is a primitive's.
   ClassObj,    // regs[a] = fresh Object (+1) marked `is_class`, so `C(args)`
                // finds its `new` (object_new + mark_class)
   BindStatic,  // bind regs[c] into class object regs[a] under name consts[b]
@@ -7484,11 +7487,9 @@ class Compiler {
       case "WILDCARD"_:
       case "IDENTIFIER"_:
         return;  // always matches; IDENTIFIER binds in the caller
-      case "TYPED_IDENT"_: {
-        auto tags = type_name_tags(*pat.nodes[1]);
-        if (!tags.empty()) tag_gate(tags);
+      case "TYPED_IDENT"_:
+        compile_type_gate(*pat.nodes[1], subj, fail);
         return;
-      }
       case "NIL"_:
         tag_gate({TAG_NIL});
         return;
@@ -7650,32 +7651,50 @@ class Compiler {
     }
   }
 
-  // Type-annotation name(s) → accepted tag set over the shared
-  // _culebra_primitive_type_tag table (the JIT's TYPED_IDENT emitter reads
-  // the same one): generic args stripped (`Array<Long>` gates on Array),
-  // unions OR their alternatives, `Any` gates nothing (empty result).
-  // Trait / user-class names need the runtime's type system — outside the
-  // slice.
-  std::vector<int8_t> type_name_tags(const peg::Ast& type_node) {
+  // A pattern's type annotation: fall through when the subject satisfies it,
+  // jump (via `fail`) when it doesn't. Mirrors the JIT's TYPED_IDENT emitter
+  // alternative for alternative — a primitive name is a tag compare over the
+  // shared _culebra_primitive_type_tag table (generic args stripped, so
+  // `Array<Long>` gates on Array), and every other name — a user class, an
+  // enum, a trait, `T?`, `fn(…) -> R` — asks the runtime's type_matches, the
+  // one the interp's type_matches mirrors. A union ORs its alternatives, and
+  // an `Any` alternative gates nothing at all.
+  void compile_type_gate(const peg::Ast& type_node, int32_t subj,
+                         std::vector<size_t>& fail) {
     auto full = type_node.token;
-    std::vector<int8_t> tags;
+    // (tag, name): a set tag takes the inline compare, otherwise the name
+    // goes to the runtime. Collected before emitting so an `Any` alternative
+    // can drop the whole gate without leaving half of it behind.
+    std::vector<std::pair<std::optional<int8_t>, std::string_view>> alts;
     auto add_single = [&](std::string_view tn) -> bool {  // false: Any
-      if (tn.find('<') != std::string_view::npos)
-        tn = culebra::parse_generic_head(tn).outer;
-      if (tn == "Any") return false;
-      auto t = _culebra_primitive_type_tag(tn);
-      if (!t) reject(type_node, std::format("type name '{}' in pattern", tn));
-      if (std::find(tags.begin(), tags.end(), *t) == tags.end())
-        tags.push_back(*t);
+      auto head = tn;
+      if (head.find('<') != std::string_view::npos)
+        head = culebra::parse_generic_head(head).outer;
+      if (head == "Any") return false;
+      alts.push_back({_culebra_primitive_type_tag(head), head});
       return true;
     };
     if (full.find('|') != std::string_view::npos) {
       for (auto cand : culebra::split_union_types(full))
-        if (!add_single(cand)) return {};  // Any alternative: no gate
+        if (!add_single(cand)) return;
     } else if (!add_single(full)) {
-      return {};
+      return;
     }
-    return tags;
+    std::vector<size_t> ok;
+    for (const auto& [tag, name] : alts) {
+      if (tag) {
+        ok.push_back(emit(Op::JumpIfTag, subj, 0, *tag));
+        continue;
+      }
+      // TypeMatch falls through on a match; this chain wants the opposite
+      // polarity, so the mismatch edge is what continues to the next
+      // alternative.
+      size_t nomatch = emit(Op::TypeMatch, subj, 0, kconst_str(name));
+      ok.push_back(emit(Op::Jump));
+      patch_to_here(nomatch);
+    }
+    fail.push_back(emit(Op::Jump));
+    for (size_t ix : ok) patch_to_here(ix);
   }
 
   // Interpolated / triple strings over a normalized piece list: literal

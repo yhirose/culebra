@@ -1,0 +1,234 @@
+# A `v: T` pattern gates on the type before it binds. A primitive name is a
+# tag compare; every other name — a user class, a trait, an enum, `T?`,
+# `fn(…) -> R` — asks the same runtime type test the interpreter uses.
+
+class Point {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
+class Other {
+  new() {}
+}
+let p = Point.new(1, 2)
+let o = Other.new()
+
+println(match p {
+  v: Point => 'point',
+  v: Other => 'other',
+  _ => 'none',
+})
+println(match o {
+  v: Point => 'point',
+  v: Other => 'other',
+  _ => 'none',
+})
+println(match 5 {
+  v: Point => 'point',
+  _ => 'none',
+})
+println(match p {
+  v: Point => v.x + v.y,
+  _ => -1,
+})
+
+# A name that no class, enum or trait declares never matches — it is a
+# runtime answer, not a compile-time error.
+println(match p {
+  v: Bogus => 'bogus',
+  _ => 'none',
+})
+println(match 5 {
+  v: Bogus => 'bogus',
+  _ => 'none',
+})
+
+# Primitive names still take the tag compare, and `Object` covers instances.
+println(match 5 {
+  v: Long => 'long',
+  _ => 'none',
+})
+println(match p {
+  v: Object => 'object',
+  _ => 'none',
+})
+println(match 'ab' {
+  v: String => 'string',
+  _ => 'none',
+})
+
+# Unions OR their alternatives, mixing a class with a primitive; `Any` as an
+# alternative gates nothing.
+println(match p {
+  v: Point | Long => 'either',
+  _ => 'none',
+})
+println(match 5 {
+  v: Point | Long => 'either',
+  _ => 'none',
+})
+println(match 'ab' {
+  v: Point | Long => 'either',
+  _ => 'none',
+})
+println(match 'ab' {
+  v: Point | Any => 'either',
+  _ => 'none',
+})
+
+# `T?` accepts Nil, a generic head matches its outer name, and an optional
+# generic keeps both halves.
+println(match p {
+  v: Point? => 'opt',
+  _ => 'none',
+})
+println(match nil {
+  v: Point? => 'opt',
+  _ => 'none',
+})
+println(match 'ab' {
+  v: Point? => 'opt',
+  _ => 'none',
+})
+println(match [1] {
+  v: Array<Long> => 'arr',
+  _ => 'none',
+})
+println(match nil {
+  v: Array<Long>? => 'arr',
+  _ => 'none',
+})
+println(match [1] {
+  v: Array<Long | Float> => 'arr',
+  _ => 'none',
+})
+
+# A function type is a structural callable test.
+let f = fn (n) {
+  n + 1
+}
+println(match f {
+  v: fn(Long) -> Long => 'callable',
+  _ => 'none',
+})
+println(match 5 {
+  v: fn(Long) -> Long => 'callable',
+  _ => 'none',
+})
+
+# Trait conformance: structural, so a class supplying the method matches
+# without declaring anything, and a built-in tag can satisfy a built-in trait.
+trait Greet {
+  greet() -> String
+}
+class Hi {
+  new() {}
+  greet() {
+    'hi'
+  }
+}
+println(match Hi.new() {
+  v: Greet => v.greet(),
+  _ => 'none',
+})
+println(match p {
+  v: Greet => 'greet',
+  _ => 'none',
+})
+println(match 'ab' {
+  v: Stringer => 'stringer',
+  _ => 'none',
+})
+
+# An enum instance matches at either level — the variant's name and the
+# enum's.
+enum Res {
+  Ok(Long),
+  Err(String),
+}
+println(match Res.Ok(1) {
+  v: Res => 'res',
+  _ => 'none',
+})
+println(match Res.Ok(1) {
+  v: Ok => 'variant',
+  _ => 'none',
+})
+println(match Res.Err('x') {
+  v: Ok => 'variant',
+  _ => 'none',
+})
+
+# Nested inside array / tuple / object patterns, and under a guard.
+println(match [p] {
+  [v: Point] => 'arr-point',
+  _ => 'none',
+})
+println(match [o] {
+  [v: Point] => 'arr-point',
+  _ => 'none',
+})
+println(match (p, 1) {
+  (v: Point, n) => v.x + n,
+  _ => -1,
+})
+println(match {'k': p} {
+  {k: v: Point} => 'obj-point',
+  _ => 'none',
+})
+println(match p {
+  v: Point if v.x > 5 => 'big',
+  v: Point => 'small',
+  _ => 'none',
+})
+println(match Point.new(9, 0) {
+  v: Point if v.x > 5 => 'big',
+  v: Point => 'small',
+  _ => 'none',
+})
+
+# The same gate drives a destructuring declaration, where a mismatch is a
+# ValueError rather than the next arm.
+let [a: Point] = [p]
+println(a.y)
+fn probe(label, thunk) {
+  let r = try {
+    "ok=" + to_string(thunk())
+  } catch e {
+    "err=" + to_string(e.kind)
+  }
+  print(label + " ::: " + r + "\n")
+}
+probe("typed leaf mismatch", fn () {
+  let [b: Other] = [p]
+  b
+})
+probe("typed leaf match", fn () {
+  let [b: Point] = [p]
+  b.x
+})
+
+# The standard library's own use: `Instant.__add__` dispatches on a
+# `Duration` type name, so time arithmetic needs this gate.
+let t = Time.now()
+let d = Time.hours(2)
+println([(t + d).class, (t - d).class, (t - t).class, (d + d).class])
+
+# Churn: an instance per turn, gated and dropped, so a leaked retain shows up
+# as growth rather than a wrong answer.
+mut n = 0
+mut i = 0
+while i < 4000 {
+  n = n + match Point.new(i, 0) {
+    v: Point => 1,
+    _ => 0,
+  }
+  n = n + match Point.new(i, 0) {
+    v: Other => 1,
+    v: Greet => 2,
+    _ => 3,
+  }
+  i = i + 1
+}
+println(n)
