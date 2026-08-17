@@ -1,0 +1,105 @@
+# A one-statement `if` arm is not a block: the parser collapses `{ stmt }`
+# to the statement itself, and a declaration there lands in the scope AROUND
+# the `if` — on every backend. Whether it landed is a run-time fact, so the
+# name reads as the sentinel's NameError until an arm actually declares it.
+
+# --- The declaration escapes the arm -------------------------------------
+println('--- escapes')
+if true { let a = 1 }
+println(to_string(a))
+
+# --- Arms share one binding: whichever ran is what the name holds ---------
+println('--- arms share')
+if true { let b = 'then' } else { let b = 'else' }
+println(b)
+if false { let c = 'then' } else { let c = 'else' }
+println(c)
+if false { let d = 1 } else if true { let d = 2 } else { let d = 3 }
+println(to_string(d))
+
+# --- An arm that never ran leaves the name undeclared --------------------
+println('--- never ran')
+if false { let e = 9 }
+println(try { e } catch err { err.kind })
+
+# --- It overwrites what the name meant before, but only once it runs -----
+println('--- shadowing')
+let f = 'outer'
+if false { let f = 'inner' }
+println(f)
+if true { let f = 'inner' }
+println(f)
+
+# --- Every declaring shape escapes the same way --------------------------
+println('--- shapes')
+if true { fn g() { 'from g' } }
+println(g())
+if true { class K { new(n) { self.n = n } } }
+println(to_string(K.new(3).n))
+if true { enum E { A, B } }
+println(to_string(E.A.__enum))
+if true { let [h, i] = [4, 5] }
+println(to_string(h + i))
+if true { mut j = 6 }
+j = j + 1
+println(to_string(j))
+
+# --- A nested one-statement `if` passes its arms up ----------------------
+println('--- nested')
+if true { if true { let k = 7 } }
+println(to_string(k))
+
+# --- A declaring condition is a plain condition, and escapes too ---------
+println('--- declaring condition')
+if let m = 8 { let n = m + 1 }
+println(to_string(m + n))
+
+# --- A closure built after the `if` captures the same cell ---------------
+println('--- capture')
+if true { let p = 'captured' }
+let read_p = fn () { p }
+println(read_p())
+
+# --- Inside a function, and in value position ----------------------------
+println('--- in fn / value position')
+let q = fn () {
+  if true { let r = 'inner fn' }
+  r
+}
+println(q())
+let s = if true { let t = 'value' }
+println(s)
+println(t)
+
+# --- Two statements is a real block, and scopes ---------------------------
+println('--- real block')
+mut u = 0
+if true {
+  let v = 'scoped'
+  u = 1
+}
+println(to_string(u))
+
+# --- Resources: the value lives on in the enclosing scope ----------------
+println('--- drop')
+class R {
+  new(n) { self.n = n }
+  drop() { println("drop {self.n}") }
+}
+let run = fn () {
+  if true { let w = R.new(1) }
+  println('inside')
+}
+run()
+println('after')
+
+# --- Churn: the cell is reused every turn, nothing accumulates ------------
+println('--- churn')
+mut total = 0
+for x in 0..2000 {
+  if x % 2 == 0 {
+    let y = x
+    total = total + 1
+  }
+}
+println(to_string(total))

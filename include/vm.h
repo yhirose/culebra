@@ -2633,6 +2633,12 @@ class Compiler {
     // `shadowed_builtin` says the same for a stdlib global.
     std::shared_ptr<Binding> shadowed;
     bool shadowed_builtin = false;
+    // Pre-declared for a collapsed `if` arm, whose declaration may not run
+    // at all — and, when the `if` has several arms declaring the name, runs
+    // in exactly one of them. So the declaration statement fills the cell
+    // without settling the binding: it stays lazy, so every arm finds the
+    // same cell and a read still asks the sentinel whether any arm ran.
+    bool conditional = false;
   };
   struct Scope {
     std::vector<Binding> bindings;
@@ -3551,19 +3557,128 @@ class Compiler {
     for (const auto& c : node.nodes) collect_literal_frees(*c, out);
   }
 
+  using DeclList = std::vector<std::pair<const peg::Ast*, std::string>>;
+
+  static void add_decl(DeclList& decls, std::vector<bool>& muts,
+                       const peg::Ast* at, std::string name, bool is_mut) {
+    for (const auto& [n_, nm] : decls)
+      if (nm == name) return;  // overloads share the first decl's cell
+    decls.emplace_back(at, std::move(name));
+    muts.push_back(is_mut);
+  }
+
+  // Mint one lazy cell per name and register it in the current scope,
+  // shadowing whatever the name meant here. A read before the declaration
+  // runs finds the sentinel and falls through to the shadowed binding (or to
+  // the NameError); the declaration statement fills the cell it finds rather
+  // than minting its own (predeclared_here).
+  void predeclare_cells(const peg::Ast& ast, const DeclList& decls,
+                        const std::vector<bool>& muts,
+                        bool conditional = false) {
+    if (decls.empty()) return;
+    // What each name means until its declaration runs, captured before
+    // any of the new bindings shadow it.
+    std::vector<std::shared_ptr<Binding>> shadowed;
+    std::vector<bool> shadowed_builtin;
+    for (const auto& [at_, name] : decls) {
+      const Binding* prev = lookup(name);
+      shadowed.push_back(prev ? std::make_shared<Binding>(*prev) : nullptr);
+      shadowed_builtin.push_back(!prev && is_stdlib_global(name));
+    }
+    TempScope ts(*this);
+    std::vector<int32_t> cslots;
+    for (const auto& [at, name] : decls)
+      cslots.push_back(alloc_cell_slot(*at, name));
+    int32_t tmp = alloc_temp(ast);
+    for (size_t k = 0; k < decls.size(); ++k) {
+      emit(Op::LoadConst, tmp, kconst({TAG_NO_SELF, 0}));
+      emit(Op::CellNew, cslots[k], tmp);  // nils tmp; reloaded per name
+      Binding b{decls[k].second, cslots[k], muts[k], /*is_cell=*/true,
+                /*lazy=*/true};
+      b.shadowed = shadowed[k];
+      b.shadowed_builtin = shadowed_builtin[k];
+      b.conditional = conditional;
+      scopes_.back().bindings.push_back(std::move(b));
+    }
+  }
+
+  // A declaration filling a pre-declared cell settles the binding — unless
+  // the pre-declaration was a conditional one, which stays lazy forever.
+  static void settle_predeclared(Binding& pre) {
+    if (pre.conditional) return;
+    pre.lazy = false;
+    pre.shadowed.reset();
+    pre.shadowed_builtin = false;
+  }
+
+  // A block of one statement is not a block: the parser collapses `{ stmt }`
+  // to the statement itself, and interp's eval_if runs an arm body in the
+  // enclosing environment when it arrives in that shape (run_loop_body
+  // guards for it; eval_if does not). So a `let` in a one-statement `if` arm
+  // declares OUTSIDE the `if`, on every backend — probed.
+  static bool is_collapsed_block(const peg::Ast& body) {
+    using namespace peg::udl;
+    return body.tag != "STATEMENTS"_;
+  }
+
+  // What such an arm body declares into the scope around the `if`. A nested
+  // one-statement `if` passes its own arms' declarations up the same way,
+  // which is why this recurses.
+  void collect_escaping_decls(const peg::Ast& node, DeclList& decls,
+                              std::vector<bool>& muts) {
+    using namespace peg::udl;
+    if (node.tag == "IF"_) {
+      auto iv = culebra::view_if(node);
+      // An init clause opens a scope of its own around the whole `if`, so
+      // nothing inside can reach past it.
+      if (iv.init) return;
+      // compile_if's own walk: (cond, body) pairs, then a trailing else.
+      size_t i = iv.arm_off;
+      for (; i + 1 < node.nodes.size(); i += 2)
+        if (is_collapsed_block(*node.nodes[i + 1]))
+          collect_escaping_decls(*node.nodes[i + 1], decls, muts);
+      if (i < node.nodes.size() && is_collapsed_block(*node.nodes[i]))
+        collect_escaping_decls(*node.nodes[i], decls, muts);
+      return;
+    }
+    if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_ ||
+        node.tag == "ENUM_DECL"_) {
+      size_t i = 0;
+      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) i++;
+      add_decl(decls, muts, node.nodes[i].get(),
+               std::string(culebra::parse_generic_head(node.nodes[i]->token).outer),
+               /*is_mut=*/false);
+      return;
+    }
+    if (node.tag == "DESTRUCTURE_ASSIGN"_) {
+      // `let [a, b] = …`: every leaf it binds escapes too, each anchored at
+      // the statement (compile_destructure_assign's own reading of the node).
+      bool is_mut = node.nodes[1]->token == "mut";
+      if (node.nodes[0]->token != "let" && !is_mut) return;
+      culebra::for_each_pattern_binding(
+          *node.nodes[2], [&](std::string_view name, size_t, size_t) {
+            add_decl(decls, muts, &node, std::string(name), is_mut);
+          });
+      return;
+    }
+    if (node.tag != "ASSIGNMENT"_) return;
+    auto av = culebra::view_assignment(node);
+    if (av.compound || (!av.is_let && !av.is_mut)) return;
+    if (const auto* target = culebra::assign_name_target(node, av))
+      if (!culebra::is_sink_name(target->token))
+        add_decl(decls, muts, target, std::string(target->token), av.is_mut);
+  }
+
   void predeclare_forward_refs(const peg::Ast& ast) {
     using namespace peg::udl;
     // `fn name` always pre-declares (its dispatcher cell is how self- and
     // mutual recursion resolve); every other declaration only when a
     // nested closure in this list captures the name, which is exactly the
     // JIT's pre_allocate_forward_refs gate.
-    std::vector<std::pair<const peg::Ast*, std::string>> decls;
+    DeclList decls;
     std::vector<bool> muts;
     auto add = [&](const peg::Ast* at, std::string name, bool is_mut) {
-      for (const auto& [n_, nm] : decls)
-        if (nm == name) return;  // overloads share the first decl's cell
-      decls.emplace_back(at, std::move(name));
-      muts.push_back(is_mut);
+      add_decl(decls, muts, at, std::move(name), is_mut);
     };
     // `referenced` grows with the free vars of every function literal
     // already passed, so a declaration is pre-declared only when its name
@@ -3625,30 +3740,7 @@ class Compiler {
     } else {
       handle(ast);
     }
-    if (decls.empty()) return;
-    // What each name means until its declaration runs, captured before
-    // any of the new bindings shadow it.
-    std::vector<std::shared_ptr<Binding>> shadowed;
-    std::vector<bool> shadowed_builtin;
-    for (const auto& [at_, name] : decls) {
-      const Binding* prev = lookup(name);
-      shadowed.push_back(prev ? std::make_shared<Binding>(*prev) : nullptr);
-      shadowed_builtin.push_back(!prev && is_stdlib_global(name));
-    }
-    TempScope ts(*this);
-    std::vector<int32_t> cslots;
-    for (const auto& [at, name] : decls)
-      cslots.push_back(alloc_cell_slot(*at, name));
-    int32_t tmp = alloc_temp(ast);
-    for (size_t k = 0; k < decls.size(); ++k) {
-      emit(Op::LoadConst, tmp, kconst({TAG_NO_SELF, 0}));
-      emit(Op::CellNew, cslots[k], tmp);  // nils tmp; reloaded per name
-      Binding b{decls[k].second, cslots[k], muts[k], /*is_cell=*/true,
-                /*lazy=*/true};
-      b.shadowed = shadowed[k];
-      b.shadowed_builtin = shadowed_builtin[k];
-      scopes_.back().bindings.push_back(std::move(b));
-    }
+    predeclare_cells(ast, decls, muts);
   }
 
   // `fn name(params) { body }` — a free named-function declaration. The
@@ -3912,9 +4004,7 @@ class Compiler {
     if (Binding* pre = predeclared_here(class_name)) {
       class_slot = pre->slot;
       slot_rank_[class_slot] = next_rank_++;
-      pre->lazy = false;
-      pre->shadowed.reset();
-      pre->shadowed_builtin = false;
+      settle_predeclared(*pre);
     } else {
       class_slot = alloc_cell_slot(ast, class_name);
       {
@@ -4145,9 +4235,7 @@ class Compiler {
     if (Binding* pre = predeclared_here(enum_name)) {
       enum_slot = pre->slot;
       slot_rank_[enum_slot] = next_rank_++;
-      pre->lazy = false;
-      pre->shadowed.reset();
-      pre->shadowed_builtin = false;
+      settle_predeclared(*pre);
     } else {
       enum_slot = alloc_cell_slot(ast, enum_name);
       {
@@ -4862,9 +4950,7 @@ class Compiler {
         store_cell(*tgt, pre->slot, compile_expr(*av.rhs));
         slot_rank_[pre->slot] = next_rank_++;  // released as declared here
         pre->is_mut = av.is_mut;
-        pre->lazy = false;
-        pre->shadowed.reset();
-        pre->shadowed_builtin = false;
+        settle_predeclared(*pre);
         return read_binding(*tgt, *pre);
       }
       bool cell = info_->captured_locals.contains(name);
@@ -6356,17 +6442,37 @@ class Compiler {
     // — so its slot is taken before that scope opens.
     int32_t res = alloc_temp(ast);
     InitScope init(*this, ast, iv.init);
+    // A one-statement arm body declares into the scope around the `if`
+    // (is_collapsed_block). Whether it ran is a run-time fact, so the names
+    // take the pre-declaration a forward reference takes: one lazy cell per
+    // name for the whole `if` — shared by the arms, so `if c { let a = 1 }
+    // else { let a = 2 }` reads whichever arm ran — shadowing what the name
+    // meant before, and still holding the sentinel (hence NameError) when no
+    // arm declared it. An init clause opens a scope of its own, so nothing
+    // there escapes and collect_escaping_decls declines to look.
+    DeclList escaping;
+    std::vector<bool> escaping_muts;
+    collect_escaping_decls(ast, escaping, escaping_muts);
+    predeclare_cells(ast, escaping, escaping_muts, /*conditional=*/true);
+    // With the cells in place the arm body compiles into THIS scope: a block
+    // of its own would take its declaration back down with it.
+    auto compile_arm = [&](const peg::Ast& body) {
+      if (escaping.empty() || !is_collapsed_block(body))
+        compile_block_into(body, res);
+      else
+        compile_value_into(body, res);
+    };
     std::vector<size_t> end_jumps;
     size_t i = iv.arm_off;
     for (; i + 1 < ast.nodes.size(); i += 2) {
       auto cond = compile_expr(*ast.nodes[i]);
       size_t skip = emit(Op::JumpIfFalse, cond.slot);
-      compile_block_into(*ast.nodes[i + 1], res);
+      compile_arm(*ast.nodes[i + 1]);
       end_jumps.push_back(emit(Op::Jump));
       patch_to_here(skip);
     }
     if (i < ast.nodes.size()) {  // trailing else block
-      compile_block_into(*ast.nodes[i], res);
+      compile_arm(*ast.nodes[i]);
     }
     for (size_t j : end_jumps) patch_to_here(j);
     return {res, true};
@@ -6700,6 +6806,16 @@ class Compiler {
     if (culebra::is_sink_name(name)) return;
     ExprResult v{src, src_owned};
     if (declares) {
+      // A leaf whose name was pre-declared here fills that cell instead of
+      // minting a second one — compile_assign_var's rule, which a collapsed
+      // `if` arm's declaring destructure now reaches too.
+      if (Binding* pre = predeclared_here(name)) {
+        store_cell(at, pre->slot, v);
+        slot_rank_[pre->slot] = next_rank_++;
+        pre->is_mut = is_mut;
+        settle_predeclared(*pre);
+        return;
+      }
       bool cell = info_->captured_locals.contains(name);
       int32_t slot =
           cell ? alloc_cell_slot(ident, name) : alloc_slot(ident, name);
