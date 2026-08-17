@@ -1374,8 +1374,11 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
       throw culebra::CulebraError(
           "VmError", "--vm: unsupported: multi-module script");
     }
-    auto prog =
-        culebra::vm::Compiler::compile_module(*modules.back().ast, stdlib);
+    auto prog = culebra::vm::Compiler::compile_module(
+        *modules.back().ast, stdlib,
+        // `--debug` gives `debugger` the minimal break the JIT's gives it;
+        // stepping and inspection live behind `culebra dap --vm`.
+        options.debug ? culebra::vm::Debug::Break : culebra::vm::Debug::Off);
     switch (options.vm) {
       case Options::Vm::Dump:
         cout << culebra::vm::dump(prog);

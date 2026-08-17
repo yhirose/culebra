@@ -655,6 +655,13 @@ enum class Op : uint8_t {
                  // an undeclared name is simply declared by the store that
                  // follows, unless c says the name is a built-in root
                  // binding, which is immutable (`println = 5`).
+  DbgStmt,       // a statement boundary in user source, emitted only when the
+                 // unit was compiled for debugging. a = 1 for the `debugger`
+                 // statement, which breaks whether or not anything asked to
+                 // stop here. With a debug session attached the instruction
+                 // hands it this frame; with none (a plain `--debug` run) a
+                 // forced one drops into the same minimal break the JIT's
+                 // `debugger` compiles to.
   Halt,
 };
 
@@ -2160,6 +2167,25 @@ struct Chunk {
   std::vector<uint32_t> slot_rank;
   std::vector<PosEntry> positions;
   std::vector<std::string> slot_names;  // debug table, always emitted
+  // One binding's live range, which is what a debugger's scope enumeration
+  // asks for: the names a frame paused at pc can see, and where their values
+  // are. A slot alone cannot answer it — the same index is a temporary in one
+  // scope and a binding in the next — so each binding records the instruction
+  // its declaration landed at and the one its scope closed at. Emitted only
+  // for a unit compiled for debugging (see UnitOpts::debug).
+  struct SlotDebug {
+    int32_t slot;
+    uint32_t start, end;  // [start, end): where the name is in scope
+    bool is_mut;
+    bool is_cell;  // the slot holds the cell, not the value
+    std::string name;
+  };
+  std::vector<SlotDebug> slot_debug;
+  // Does this chunk carry statement boundaries? A frame whose chunk has
+  // none is not user code (a constructor thunk, a stdlib module's body):
+  // it has no line to show and nowhere to stop, so a call stack folds it
+  // away the way the interpreter's folds its internal delegations.
+  bool has_dbg = false;
   // Function-chunk metadata (chunk 0 — the module top level — has none).
   // Params occupy slots [0, arity); `fn_slot` binds the `fn` recursion
   // handle when the body reads it (FuncInfo::uses_fn), -1 otherwise.
@@ -2471,6 +2497,10 @@ struct VmProgram {
   std::vector<JitCell*> desc_cells;
   // One per chunk, built before the run: what a keyword call binds against.
   std::vector<std::unique_ptr<VmChunkMeta>> param_metas;
+  // The entry module's path, for the debug instructions: they only exist in
+  // statements compiled from it (the stdlib prologues get none), so one path
+  // per program answers "where is this frame stopped".
+  std::string source_path;
 };
 
 // Build the keyword-resolver's view of every chunk. Called once, before the
@@ -2518,6 +2548,47 @@ inline void build_param_metas(VmProgram& p) {
 
 // What `ReplBind` records — the three ways a name's mutability is decided.
 enum class ReplBindMode : int32_t { Let = 0, Mut = 1, Assign = 2 };
+
+// How much debug instrumentation a compiled unit carries. `Off` is what a
+// plain run compiles: `debugger` is the no-op it is on the other backends,
+// and no statement costs an instruction it would not otherwise emit.
+enum class Debug : int32_t {
+  Off = 0,
+  Break = 1,  // `--debug`: only `debugger` breaks (the JIT's `debugger`)
+  Step = 2,   // a debug session: every statement in user source can stop
+};
+
+// One live executor frame, as a debugger reads it. The register window is on
+// the executor's machine stack, so an entry means something only while that
+// frame is still on it — which is exactly as long as the hook holds the
+// thread. `line` is the boundary the frame is stopped at: for the innermost
+// frame the statement about to run, for every other one the call it is
+// waiting on, which is what a call stack shows.
+struct DbgFrame {
+  const VmProgram* prog;
+  const Chunk* chunk;
+  JitValue* regs;
+  size_t pc = 0;
+  int64_t line = 0, col = 0;
+};
+
+// What a statement boundary reports. `force` marks the `debugger` statement,
+// which breaks whether or not anything asked to stop here.
+using DbgHook = std::function<void(bool force, int64_t line, int64_t col)>;
+
+// Per-thread, for the reason the interpreter's debug substate is: the frames
+// belong to whichever thread runs the program, and every query runs on that
+// thread while it is parked inside the hook.
+struct DbgState {
+  DbgHook hook;
+  std::vector<DbgFrame> frames;
+  bool tracking = false;  // a session is attached, so frames are kept
+};
+
+inline DbgState& dbg_state() {
+  static thread_local DbgState s;
+  return s;
+}
 
 // The REPL's top level: one cell per name, alive for the whole session. It
 // is the interp REPL's single persistent Environment, entry for entry — a
@@ -2567,6 +2638,17 @@ class ReplSession {
     entries_.find(name)->second.is_mut = is_mut;
   }
 
+  // Hands every cell back. The REPL's own session lives as long as the
+  // process and never calls this; a debugger's does, since it builds one
+  // session per expression it evaluates (see ReplSessionSwap).
+  void release_all() {
+    for (auto& [name, e] : entries_) {
+      _gc_heap().unpin(e.cell);
+      culebra_runtime_cell_release(e.cell);
+    }
+    entries_.clear();
+  }
+
  private:
   struct Entry {
     JitCell* cell;
@@ -2576,11 +2658,36 @@ class ReplSession {
 };
 
 // One session per process: only the REPL opens one, and the compiler and the
-// executor have to agree on which it is.
-inline ReplSession& repl_session() {
-  static ReplSession s;
-  return s;
+// executor have to agree on which it is. A debugger evaluating an expression
+// in a paused frame borrows the same machinery for the length of that one
+// expression — the frame's names are its session — so which session is
+// current is a swappable pointer rather than a fixed object.
+inline ReplSession*& current_repl_session() {
+  static ReplSession* cur = nullptr;
+  return cur;
 }
+
+inline ReplSession& repl_session() {
+  static ReplSession process_wide;  // the REPL's, for the whole session
+  auto* cur = current_repl_session();
+  return cur ? *cur : process_wide;
+}
+
+// Makes `session` the one the compiler and the executor see, and hands its
+// cells back on the way out.
+struct ReplSessionSwap {
+  ReplSession session;
+  ReplSession* saved;
+  ReplSessionSwap() : saved(current_repl_session()) {
+    current_repl_session() = &session;
+  }
+  ~ReplSessionSwap() {
+    current_repl_session() = saved;
+    session.release_all();
+  }
+  ReplSessionSwap(const ReplSessionSwap&) = delete;
+  ReplSessionSwap& operator=(const ReplSessionSwap&) = delete;
+};
 
 // ReplBind's work. What mutability a REPL name carries is session state, not
 // something the line writing it can settle on its own: an earlier line may
@@ -2660,8 +2767,9 @@ struct Unsupported {
 class Compiler {
  public:
   static VmProgram compile_module(const peg::Ast& ast,
-                                  const peg::Ast* stdlib = nullptr) {
-    return compile_unit(ast, {.stdlib = stdlib});
+                                  const peg::Ast* stdlib = nullptr,
+                                  Debug debug = Debug::Off) {
+    return compile_unit(ast, {.stdlib = stdlib, .debug = debug});
   }
 
   // One REPL input. The line's top-level bindings land in the session's
@@ -2690,6 +2798,7 @@ class Compiler {
     bool builtin_traits = true;
     // Top-level bindings live in the REPL session's cells (see ReplSession).
     bool repl = false;
+    Debug debug = Debug::Off;
   };
 
   static VmProgram compile_unit(const peg::Ast& ast, UnitOpts opts) {
@@ -2729,6 +2838,12 @@ class Compiler {
     prog.chunks.emplace_back();  // reserve index 0 for the top level
     Compiler main(prog, analysis, /*in_function=*/false, &top_info);
     main.repl_ = opts.repl;
+    // A statement carries a debug instruction only when it comes from the
+    // entry module: the prologues below are the stdlib's, and a debugger
+    // stops in user source (the interp's hook is keyed the same way, by the
+    // `<builtin>` path its lazy modules evaluate under).
+    main.debug_ = opts.debug;
+    prog.source_path = ast.path;
     // The top-level frame mark (JIT main's fn.mark): first insn, so a
     // throw at any pc finds it populated. The Halt epilogue runs to it —
     // before the top scope's releases, hence the inlined block below.
@@ -2823,6 +2938,9 @@ class Compiler {
     // every write asks at run time rather than trusting `is_mut` — see
     // Op::ReplBind.
     bool session = false;
+    // Where the name became visible, for Chunk::SlotDebug. Set by
+    // push_binding, the one door into a scope.
+    uint32_t debug_start = 0;
   };
   struct Scope {
     // A deque, not a vector: a `Binding*` from lookup / predeclared_here is
@@ -2884,6 +3002,9 @@ class Compiler {
   // variable resolves to a session cell from any depth, the way the interp's
   // environment chain reaches the REPL's one global env from any closure.
   bool repl_ = false;
+  // How much debug instrumentation this unit carries, inherited by every
+  // nested chunk's Compiler (a breakpoint has to reach a function body).
+  Debug debug_ = Debug::Off;
   const FuncInfo* info_;  // this chunk's analysis (captured_locals gate)
   Chunk chunk_;
   // A deque for the same reason Scope::bindings is one, one level up: a
@@ -3224,6 +3345,27 @@ class Compiler {
     if (owned_mark) take_owned_mark(at);
   }
 
+  // The one door into a scope's binding list, so the debug table's live
+  // ranges cannot drift from what `lookup` answers: a name is visible from
+  // the instruction its declaration landed at until its scope closes.
+  Binding& push_binding(Binding b) {
+    b.debug_start = static_cast<uint32_t>(chunk_.code.size());
+    scopes_.back().bindings.push_back(std::move(b));
+    return scopes_.back().bindings.back();
+  }
+
+  // A closing scope's bindings, as the ranges a paused frame is read
+  // through. Only a unit compiled for debugging carries them.
+  void record_slot_debug(const Scope& sc) {
+    if (debug_ == Debug::Off) return;
+    auto end = static_cast<uint32_t>(chunk_.code.size());
+    for (const auto& b : sc.bindings) {
+      if (b.slot < 0 || b.session) continue;  // a session cell is not a slot
+      chunk_.slot_debug.push_back({b.slot, b.debug_start, end, b.is_mut,
+                                   b.is_cell, b.name});
+    }
+  }
+
   // The frame's own watermark, taken after the parameter slots and before
   // the prologue runs any user code (a default expression can already build
   // a resource). `return` and the unwind's frame step resolve from it: it is
@@ -3279,6 +3421,7 @@ class Compiler {
   // throw path — and those are what compile_try turns into catching ones.
   std::vector<size_t> pop_scope() {
     auto& sc = scopes_.back();
+    record_slot_debug(sc);
     record_cleanup(sc, static_cast<uint32_t>(chunk_.code.size()));
     auto segments = std::move(sc.segments);
     if (scopes_.size() == 1) frame_segments_ = segments;  // the frame scope
@@ -3450,8 +3593,7 @@ class Compiler {
               /*is_cell=*/true, /*lazy=*/true};
     b.shadowed_builtin = is_stdlib_global(name) || is_stdlib_namespace(name);
     b.session = true;
-    scopes_.back().bindings.push_back(std::move(b));
-    return scopes_.back().bindings.back();
+    return push_binding(std::move(b));
   }
 
   // The binding `name` reads as, materializing the session's when nothing in
@@ -3666,6 +3808,7 @@ class Compiler {
   void compile_value_into(const peg::Ast& ast, int32_t dst) {
     using namespace peg::udl;
     stamp(ast);
+    emit_dbg_stmt(ast);
     TempScope ts(*this);
     switch (ast.tag) {
       case "STATEMENTS"_:
@@ -3682,6 +3825,7 @@ class Compiler {
       case "CLASS_DECL"_:
       case "ENUM_DECL"_:
       case "TRAIT_DECL"_:
+      case "DEBUGGER"_:
         compile_statement_inner(ast);
         break;
       case "ASSIGNMENT"_:
@@ -3693,8 +3837,25 @@ class Compiler {
     }
   }
 
+  // The statement boundary a debugger stops at — the interpreter's
+  // statement_boundary, in instruction form. Only statements written in the
+  // entry module carry one: the stdlib prologues compile into this same
+  // chunk, and a debugger stops in user source (the interp's hook skips its
+  // `<builtin>` path for the same reason). `debugger` breaks under plain
+  // `--debug` too, which is all that mode emits.
+  void emit_dbg_stmt(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (debug_ == Debug::Off || ast.tag == "STATEMENTS"_) return;
+    bool force = ast.tag == "DEBUGGER"_;
+    if (!force && debug_ != Debug::Step) return;
+    if (ast.path != prog_.source_path) return;
+    emit(Op::DbgStmt, force ? 1 : 0);
+    chunk_.has_dbg = true;
+  }
+
   void compile_statement(const peg::Ast& ast) {
     stamp(ast);
+    emit_dbg_stmt(ast);
     TempScope ts(*this);
     compile_statement_inner(ast);
   }
@@ -3725,6 +3886,11 @@ class Compiler {
         // (scan_eh_defer keys the LEXICAL_SCOPE node; the child is the
         // STATEMENTS list, or a lone collapsed statement).
         compile_block(*ast.nodes[0], /*defer_key=*/&ast);
+        break;
+      case "DEBUGGER"_:
+        // The break itself is emit_dbg_stmt's, at the head of the statement:
+        // one boundary, forced. Without `--debug` the statement compiles to
+        // nothing at all, which is what it does on the other two backends.
         break;
       case "DEFER"_: {
         // `defer { ... }` — the body becomes a 0-arity chunk (the same
@@ -3921,7 +4087,7 @@ class Compiler {
       b.shadowed_builtin = shadowed_builtin[k];
       b.conditional = conditional;
       b.awaits_implicit = decls[k].implicit;
-      scopes_.back().bindings.push_back(std::move(b));
+      push_binding(std::move(b));
     }
   }
 
@@ -4365,7 +4531,7 @@ class Compiler {
         emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
         emit(Op::CellNew, class_slot, t);
       }
-      scopes_.back().bindings.push_back(
+      push_binding(
           {class_name, class_slot, /*is_mut=*/false, /*is_cell=*/true});
       decl_binding = &scopes_.back().bindings.back();
     }
@@ -4418,7 +4584,7 @@ class Compiler {
       finit_slot = alloc_cell_slot(ast, "(field.init)");
       emit(Op::CellNew, finit_slot, owned_src(ast, {t, true}));
       if (new_ast) {
-        scopes_.back().bindings.push_back(
+        push_binding(
             {culebra::field_init_slot_name(ast), finit_slot,
              /*is_mut=*/false, /*is_cell=*/true});
       }
@@ -4604,7 +4770,7 @@ class Compiler {
         emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
         emit(Op::CellNew, enum_slot, t);
       }
-      scopes_.back().bindings.push_back(
+      push_binding(
           {enum_name, enum_slot, /*is_mut=*/false, /*is_cell=*/true});
       decl_binding = &scopes_.back().bindings.back();
     }
@@ -4693,6 +4859,7 @@ class Compiler {
     prog_.chunks.emplace_back();
     Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
     fc.repl_ = repl_;
+    fc.debug_ = debug_;
     fc.stamp(ast);
     fc.push_scope(ast, /*owned_mark=*/false);
     fc.chunk_.capture_src_slots = caps;
@@ -4839,6 +5006,7 @@ class Compiler {
     prog_.chunks.emplace_back();
     Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
     fc.repl_ = repl_;
+    fc.debug_ = debug_;
     fc.chunk_.variadic = true;
     fc.chunk_.cb_max = -1;
     int32_t rv = fc.alloc_raw(ast, "(unsupported)", /*named=*/false);
@@ -4862,6 +5030,7 @@ class Compiler {
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
     Compiler fc(prog_, analysis_, /*in_function=*/true, &info);
     fc.repl_ = repl_;
+    fc.debug_ = debug_;
     fc.stamp(ast);
     // The frame scope: params + captures + the `fn` handle. Its owned mark
     // waits until the ABI slots are laid out (establish_frame_owned_mark).
@@ -5026,13 +5195,13 @@ class Compiler {
       if (info.captured_locals.contains("self")) {
         promos.push_back({"self", fc.chunk_.self_slot, false, &ast});
       } else {
-        fc.scopes_.back().bindings.push_back(
+        fc.push_binding(
             {"self", fc.chunk_.self_slot, false});
       }
     }
     if (info.uses_fn) {
       fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
-      fc.scopes_.back().bindings.push_back({"fn", fc.chunk_.fn_slot, false});
+      fc.push_binding({"fn", fc.chunk_.fn_slot, false});
       // A method's `fn` IS the bound wrapper (interp: the handle a method
       // call binds), so recursion and any escapee keep the original
       // receiver. The cache makes repeated reads compare equal and leaves
@@ -5056,7 +5225,7 @@ class Compiler {
     for (const auto& pr : promos) {
       int32_t cslot = fc.alloc_cell_slot(*pr.at, pr.name);
       fc.emit(Op::CellNew, cslot, pr.abi_slot);
-      fc.scopes_.back().bindings.push_back({pr.name, cslot, pr.is_mut, true});
+      fc.push_binding({pr.name, cslot, pr.is_mut, true});
     }
     // Bind the captures: borrowed cell pointers out of the closure. The
     // slots are named-but-not-cell, so frame teardown's Release is a no-op
@@ -5072,7 +5241,7 @@ class Compiler {
         self_cap = s;
         continue;
       }
-      fc.scopes_.back().bindings.push_back(
+      fc.push_binding(
           {info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]});
     }
     if (self_cap >= 0) {
@@ -5085,10 +5254,10 @@ class Compiler {
       if (info.captured_locals.contains("self")) {
         int32_t cslot = fc.alloc_cell_slot(ast, "self");
         fc.emit(Op::CellNew, cslot, s);
-        fc.scopes_.back().bindings.push_back(
+        fc.push_binding(
             {"self", cslot, false, true, /*lazy=*/true});
       } else {
-        fc.scopes_.back().bindings.push_back(
+        fc.push_binding(
             {"self", s, false, /*is_cell=*/false, /*lazy=*/true});
       }
     }
@@ -5106,7 +5275,7 @@ class Compiler {
         fc.emit(Op::MfSelf, t);
         fc.emit(Op::CellNew, cslot, t);  // nils t; the sweep is a no-op
       }
-      fc.scopes_.back().bindings.push_back({info.mf_self, cslot,
+      fc.push_binding({info.mf_self, cslot,
                                             /*is_mut=*/false, /*is_cell=*/true,
                                             /*lazy=*/true});
     }
@@ -5168,9 +5337,9 @@ class Compiler {
         // on a param); the ABI slot stays behind as an anonymous drained one.
         int32_t cslot = fc.alloc_cell_slot(*pl.at, pl.name);
         fc.emit(Op::CellNew, cslot, pl.slot);
-        fc.scopes_.back().bindings.push_back({pl.name, cslot, pl.is_mut, true});
+        fc.push_binding({pl.name, cslot, pl.is_mut, true});
       } else {
-        fc.scopes_.back().bindings.push_back({pl.name, pl.slot, pl.is_mut});
+        fc.push_binding({pl.name, pl.slot, pl.is_mut});
       }
     }
     // The overflow arguments, as one Array: `__ARGS__` and a named `*args`
@@ -5185,9 +5354,9 @@ class Compiler {
         if (info.captured_locals.contains(nm)) {
           slot = fc.alloc_cell_slot(at, nm);
           fc.emit(Op::CellNew, slot, src);
-          fc.scopes_.back().bindings.push_back({nm, slot, false, true});
+          fc.push_binding({nm, slot, false, true});
         } else {
-          fc.scopes_.back().bindings.push_back({nm, slot, false});
+          fc.push_binding({nm, slot, false});
         }
       };
       if (info.uses_args && !args_rest_name.empty()) {
@@ -5207,11 +5376,12 @@ class Compiler {
     // either adopts the Object it marked or binds a fresh empty one.
     if (rest_slot >= 0) {
       fc.emit(Op::KwRest, rest_slot);
-      fc.scopes_.back().bindings.push_back({rest_name, rest_slot, false});
+      fc.push_binding({rest_name, rest_slot, false});
       if (info.captured_locals.contains(rest_name)) {
         int32_t cslot = fc.alloc_cell_slot(*rest_at, rest_name);
         fc.emit(Op::CellNew, cslot, rest_slot);
-        fc.scopes_.back().bindings.back() = {rest_name, cslot, false, true};
+        fc.scopes_.back().bindings.pop_back();
+        fc.push_binding({rest_name, cslot, false, true});
       }
     }
     // Count the frame, after the parameters bound and their types checked
@@ -5374,7 +5544,7 @@ class Compiler {
       } else {
         store_into(slot, compile_expr(*av.rhs), /*dst_is_fresh=*/true);
       }
-      scopes_.back().bindings.push_back({name, slot, decl_mut, cell});
+      push_binding({name, slot, decl_mut, cell});
       return read_binding(*tgt, scopes_.back().bindings.back());
     }
     const Binding* b = lookup(tgt->token);
@@ -5794,7 +5964,7 @@ class Compiler {
         int32_t bind = cell ? alloc_cell_slot(id, std::string(id.token)) : var;
         emit(Op::Take, var, base + kForElem);
         if (cell) emit(Op::CellNew, bind, var);
-        scopes_.back().bindings.push_back(
+        push_binding(
             {std::string(id.token), bind, false, cell});
       } else {
         // A destructuring binding: the leaves retain their own sub-elements,
@@ -5878,7 +6048,7 @@ class Compiler {
     }
     size_t prep = emit(Op::ForPrep, base);
 
-    scopes_.back().bindings.push_back({std::string(id.token), bind, false, cell});
+    push_binding({std::string(id.token), bind, false, cell});
     loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
                       scopes_.size()});
     size_t body_ix = chunk_.code.size();
@@ -7012,7 +7182,7 @@ class Compiler {
       } else {
         emit(Op::Take, e, caught);
       }
-      scopes_.back().bindings.push_back({name, e, /*is_mut=*/true, cell});
+      push_binding({name, e, /*is_mut=*/true, cell});
     }
     // The catch body is its own defer scope (scan_eh_defer keys the node);
     // handler code sits outside the region, so its defers behave like any
@@ -7245,7 +7415,7 @@ class Compiler {
       } else {
         store_into(slot, v, /*dst_is_fresh=*/true);
       }
-      scopes_.back().bindings.push_back({name, slot, is_mut, cell});
+      push_binding({name, slot, is_mut, cell});
       return;
     }
     // A leaf naming nothing visible declares it, exactly as bare `x = v`
@@ -7749,7 +7919,11 @@ class Compiler {
         // with no receiver holds the sentinel whose read is the interp's
         // NameError. Outside any function there is no slot to hold it, so
         // materialize the sentinel and let the same guard answer.
-        if (ast.token == "self") {
+        // The exception is a session that already holds a `self`: only a
+        // debugger builds one, and it does so from a paused method frame,
+        // where `self` is exactly the receiver that frame is running on.
+        if (ast.token == "self" &&
+            !(repl_ && repl_session().declared("self"))) {
           int32_t t = alloc_temp(ast);
           emit(Op::LoadConst, t, kconst({TAG_NO_SELF, 0}));
           emit(Op::UnboundErr, t, kconst_str("self"));
@@ -7956,7 +8130,7 @@ inline std::string dump(const Chunk& c) {
       "ForOpen",   "ForNext",   "ForDispose",
       "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "DropSuppress",
       "BArity",    "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
-      "ReplCell",  "ReplBind",
+      "ReplCell",  "ReplBind",  "DbgStmt",
       "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
@@ -8175,6 +8349,18 @@ struct Exec {
     // zero-init == {TAG_NIL, 0}; the executor never reads past num_slots.
     JitValue regs[c.num_slots > 0 ? c.num_slots : 1];
     std::memset(regs, 0, sizeof(JitValue) * static_cast<size_t>(c.num_slots));
+    // A debug session keeps the frame stack: the entry goes up as soon as
+    // the window exists and comes down on every exit, throw included.
+    struct DbgFrameGuard {
+      bool on;
+      DbgFrameGuard(bool on, const VmProgram& p, const Chunk& c, JitValue* regs)
+          : on(on) {
+        if (on) dbg_state().frames.push_back({&p, &c, regs});
+      }
+      ~DbgFrameGuard() {
+        if (on) dbg_state().frames.pop_back();
+      }
+    } dbg_frame{dbg_state().tracking, p, c, regs};
     if (chunk_idx != 0) {
       // Param binding, mirroring the JIT prologue: fewer args than the
       // required count raises the interp's ArityError at the published call
@@ -10292,6 +10478,25 @@ struct Exec {
           repl_bind(nm, static_cast<ReplBindMode>(in.a), in.c != 0,
                     chunk_pos_at(c, pc));
           ++pc;
+          break;
+        }
+        case Op::DbgStmt: {
+          auto [line, col] = chunk_pos_at(c, pc);
+          auto& st = dbg_state();
+          if (st.tracking && !st.frames.empty()) {
+            auto& f = st.frames.back();
+            f.pc = pc;
+            f.line = line;
+            f.col = col;
+          }
+          ++pc;
+          if (st.hook) {
+            st.hook(in.a != 0, line, col);
+          } else if (in.a) {
+            // Plain `--debug`, no session: the minimal break the JIT's
+            // `debugger` compiles to (show the source, any input resumes).
+            culebra_runtime_debugger_break(p.source_path.c_str(), line, col);
+          }
           break;
         }
         case Op::Halt:
@@ -14347,6 +14552,20 @@ struct Lowering {
           // chunk this pass can be handed, so there is nothing here to
           // write that could be tested.
           throw std::runtime_error("vm: REPL op in a lowered chunk");
+        case Op::DbgStmt:
+          // Only a forced boundary reaches this pass: a debug session runs
+          // on the executor (it reads register windows and frame stacks
+          // that native code does not keep), so `--debug` — where the
+          // `debugger` statement is the only boundary emitted — is the one
+          // mode a lowered chunk carries. Same minimal break as the JIT's.
+          if (!in.a) throw std::runtime_error("vm: step boundary in a lowered chunk");
+          j.emit_call(j.module_->getOrInsertFunction(
+                          rt::debugger_break, b.getVoidTy(), ptrTy, i64Ty,
+                          i64Ty),
+                      {b.CreateGlobalString(p.source_path, ".dbgpath"),
+                       b.getInt64(static_cast<int64_t>(j.current_line_)),
+                       b.getInt64(static_cast<int64_t>(j.current_column_))});
+          break;
         case Op::Halt:
           b.CreateRetVoid();
           break;

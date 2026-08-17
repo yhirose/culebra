@@ -1,0 +1,69 @@
+# `debugger` is a no-op unless the program runs under `--debug`, which is what
+# it is on every backend. Under a debug session it is the one boundary that
+# breaks whether or not a breakpoint asked for it (that half is exercised by
+# tests/dap_test.cc, which drives a real DAP session on each engine); here the
+# point is that the statement itself compiles and costs nothing observable.
+
+println('--- top level')
+debugger
+println('after')
+
+# --- Inside every kind of body -------------------------------------------
+println('--- bodies')
+let f = fn (x) {
+  debugger
+  x * 2
+}
+println(f(3))
+
+for i in 0..2 {
+  debugger
+  println(i)
+}
+
+mut n = 0
+while n < 2 {
+  debugger
+  n = n + 1
+}
+println(n)
+
+# --- In value position, and as the only statement of a block -------------
+println('--- value position')
+let r = if true {
+  debugger
+  'then'
+} else {
+  'else'
+}
+println(r)
+
+let t = try {
+  debugger
+  1
+} catch e {
+  2
+}
+println(t)
+
+# `debugger` is a statement, so a block whose last statement is one has the
+# value that statement has: nil.
+println(to_string(if true { debugger }))
+
+# --- It does not disturb the values around it ----------------------------
+println('--- neighbours')
+mut acc = 0
+for j in 0..4 {
+  debugger
+  acc = acc + j
+  debugger
+}
+println(acc)
+
+let g = fn () {
+  debugger
+  defer { println('deferred') }
+  debugger
+  'done'
+}
+println(g())
