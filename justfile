@@ -972,15 +972,31 @@ _run-tests BACKEND:
       *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|interp|jit|aot|embed|isolate|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
     esac
 
-# Run the doctest examples in the public docs (interp). Both en and ja
-# are run — their code blocks are mostly shared but a few string literals
-# are localized, so ja needs its own pass. Not part of `just test` — run
-# on demand / before publishing docs. The self-test fixture under
-# tests/doctest/ guards the runner itself.
-[doc("Run ` ```culebra ` doctest blocks in docs/ (interp)")]
+# Run the doctest examples in the public docs on all three engines. Both en
+# and ja are run — their code blocks are mostly shared but a few string
+# literals are localized, so ja needs its own pass. Not part of `just test` —
+# run on demand / before publishing docs. The self-test fixture under
+# tests/doctest/ guards the runner itself. LANE=interp|vm|jit|all (default
+# all); the JIT lane costs ~1 min (one LLVM module per block) against ~2s for
+# the other two, and every block is an example a reader will run, so all three
+# have to agree on what it prints.
+[doc("Run ` ```culebra ` doctest blocks in docs/ (interp + VM + JIT)")]
 [group("test")]
-doctest: build
-    ./build/culebra test --doc tests/doctest docs
+doctest LANE="all": build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    run_lane() {
+      local label="$1"; shift
+      echo ">>> doctest ($label)"
+      ./build/culebra test --doc "$@" tests/doctest docs | tail -1
+    }
+    case "{{LANE}}" in
+      interp) run_lane interp ;;
+      vm)     run_lane vm --vm ;;
+      jit)    run_lane jit --jit ;;
+      all)    run_lane interp; run_lane vm --vm; run_lane jit --jit ;;
+      *) echo "doctest: unknown lane '{{LANE}}' (expected: interp|vm|jit|all)" >&2; exit 2 ;;
+    esac
 
 # Rewrite the signature index inside docs/quick-guide.md and
 # docs/quick-guide.ja.md from language.md and stdlib.md, so the context pack

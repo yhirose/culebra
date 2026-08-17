@@ -181,6 +181,7 @@ culebra test --bail                # 最初の失敗で停止
 culebra test --bail 3              # 3 件失敗したら停止
 culebra test --list                # 探索のみ。テスト名を表示
 culebra test --doc docs            # markdown 中の doctest を実行
+culebra test --doc --vm docs       # ... をバイトコード VM で（--jit も可）
 ```
 
 探索規則: ファイルを指すパスはそのまま対象になり、ディレクトリを指すパスは
@@ -221,6 +222,11 @@ culebra test --doc docs            # markdown 中の doctest を実行
 `compile-only` とバックエンド指定は予約済み（該当ブロックは通常どおり実行
 されます）。
 
+`--jit`と`--vm`は同じブロックをインタプリタではなくJIT／バイトコードVMで
+走らせます。ドキュメントの例が、それを実行しうるすべてのエンジンで同じ
+出力・同じthrowになることを確認できます。`--doc`を付けない`culebra test`
+（ユニットテストのランナー）はインタプリタ専用です。
+
 例を書くときに知っておく価値のある帰結が 2 つあります。式を単に置いても
 何も出力されないので、検証される例は `inspect(...)` か `println(...)` を
 通す必要があります。そして Culebra では `#` と同様に `//` も行コメントを
@@ -228,8 +234,8 @@ culebra test --doc docs            # markdown 中の doctest を実行
 認識されず**、そのブロックは無検証で実行されます。
 
 **予定**: `culebra test` 経由で走らないコード向けの明示的な
-`import { test } from "std/test"`、`--backend interp|jit|aot`（現在ランナーは
-インタプリタを使います）、並列実行。
+`import { test } from "std/test"`、`--jit` / `--vm`に並ぶAOTのdoctest
+レーン、並列実行。
 
 ---
 

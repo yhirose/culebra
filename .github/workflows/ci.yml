@@ -129,11 +129,14 @@ jobs:
       - name: Test (build-tree phases - ratchets + rt archives + ctest)
         run: BIN=./build/culebra just _run-tests ci-buildtree
 
-      # Run the ```culebra examples in docs/ (interp only). Invoke the
+      # Run the ```culebra examples in docs/ on all three engines. Invoke the
       # binary directly rather than `just doctest` so it reuses the build
       # above instead of re-running `just build` without the ccache flags.
-      - name: Doctest (docs examples, interp)
-        run: ./build/culebra test --doc tests/doctest docs
+      - name: Doctest (docs examples, interp + VM + JIT)
+        run: |
+          ./build/culebra test --doc tests/doctest docs
+          ./build/culebra test --doc --vm tests/doctest docs
+          ./build/culebra test --doc --jit tests/doctest docs
 
       # docs/quick-guide.md's signature index is generated from language.md
       # and stdlib.md; fail if a reference edit landed without regenerating
@@ -348,8 +351,11 @@ jobs:
         # gate via plain `just test`.)
         run: BIN=./build/culebra just _run-tests all
 
-      - name: Doctest (docs examples, interp)
-        run: ./build/culebra test --doc tests/doctest docs
+      - name: Doctest (docs examples, interp + VM + JIT)
+        run: |
+          ./build/culebra test --doc tests/doctest docs
+          ./build/culebra test --doc --vm tests/doctest docs
+          ./build/culebra test --doc --jit tests/doctest docs
 
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt

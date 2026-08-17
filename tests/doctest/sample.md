@@ -49,3 +49,20 @@ A `#` inside a string literal must NOT be parsed as an expectation
 ```culebra
 print("not a # => marker")
 ```
+
+A name nothing declares is a run-time error, not a refusal to run the
+block — the compiled lanes (`--jit`, `--vm`) have to reach it too:
+
+```culebra
+print("before\n")  # => before
+no_such_name_in_this_fixture  # !! undefined variable 'no_such_name_in_this_fixture'
+```
+
+The lazy stdlib resolves on every engine — a compiled lane that never
+registered the builders would not find these at all:
+
+```culebra
+assert_eq(1 + 1, 2)
+let started = Time.now()
+print("{Path.new('a') / 'b'}\n")  # => a/b
+```

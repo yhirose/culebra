@@ -1410,6 +1410,126 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   return false;
 }
 
+// Which engine `culebra test --doc` runs its blocks on. The unit-test runner
+// (`culebra test` with no --doc) is interp-only: its `test(...)` registry
+// holds interpreter values and calls them through `culebra::call`.
+enum class DocEngine { Interp, Jit, Vm };
+
+// A block's diagnostic in the text this CLI prints for that failure, so a
+// `# !!` pattern matches the same string whichever engine ran it (the
+// interpreter's own wording, from interpret_modules' catch).
+culebra::DocRunOutcome doc_error_outcome(const culebra::CulebraError& e) {
+  if (e.line > 0 || e.col > 0) {
+    return {false, "RuntimeError",
+            std::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col)};
+  }
+  return {false, "RuntimeError", std::format("{}: {}", e.kind, e.what())};
+}
+
+#ifdef CULEBRA_JIT_ENABLED
+// One doc block as the compiled lanes see a script: its own module, with the
+// stdlib preamble spliced ahead of it (where the lazy stdlib's builders are
+// declared — a lane that never compiles it cannot resolve `Time` or
+// `assert_eq` at all). The loader is not involved: a doc block has no
+// imports, and the interpreter lane parses it the same bare way.
+bool doc_block_modules(const std::string& name, const std::string& code,
+                       std::vector<culebra::LoadedModule>& modules,
+                       culebra::DocRunOutcome& fail) {
+  auto buf = std::make_shared<std::string>(code);
+  std::vector<std::string> msgs;
+  culebra::LoadedModule m;
+  try {
+    m.ast = culebra::parse_with_transforms(name, *buf, msgs);
+  } catch (const culebra::CulebraError& e) {
+    // A transform's reject (`yield` outside a generator, ...) throws rather
+    // than reporting through msgs.
+    fail = {false, "SyntaxError", std::string(e.what())};
+    return false;
+  }
+  if (!m.ast) {
+    std::string joined;
+    for (const auto& s : msgs) joined += (joined.empty() ? "" : "; ") + s;
+    fail = {false, "SyntaxError", joined};
+    return false;
+  }
+  m.abs_path = name;
+  m.source = std::move(buf);
+  modules.push_back(std::move(m));
+  culebra::splice_stdlib_preamble(modules);
+  return true;
+}
+#endif
+
+// The engine half of the doctest runner: parse and run one block, reporting
+// what the CLI would have printed. Each block gets state of its own — a fresh
+// environment for the interpreter, a fresh Runtime for the compiled lanes,
+// whose namespace caches and class / overload registries live there.
+culebra::BlockRunner doc_block_runner(DocEngine engine) {
+#ifdef CULEBRA_JIT_ENABLED
+  if (engine != DocEngine::Interp) {
+    bool vm = engine == DocEngine::Vm;
+    // What the compiled lanes name the stdlib through — `culebra build`
+    // installs it the same way before it loads anything. Without it every
+    // namespace beyond the core globals is an unresolved identifier.
+    culebra::install_jit_stdlib();
+    return [vm](const std::string& name,
+                const std::string& code) -> culebra::DocRunOutcome {
+      // A block is independent of every other: its own Runtime, where the
+      // namespace caches and the class / overload registries live (the
+      // interpreter lane gets the same isolation from a fresh env).
+      culebra::Runtime rt;
+      culebra::RuntimeScope scope(rt);
+      std::vector<culebra::LoadedModule> modules;
+      culebra::DocRunOutcome fail;
+      if (!doc_block_modules(name, code, modules, fail)) return fail;
+      try {
+        if (vm) {
+          const peg::Ast* stdlib =
+              modules.size() == 2 ? modules.front().ast.get() : nullptr;
+          auto prog = culebra::vm::Compiler::compile_module(
+              *modules.back().ast, stdlib);
+          culebra::vm::Exec::run(prog);
+        } else {
+          culebra::JIT::run_modules(modules);
+        }
+      } catch (const culebra::CulebraError& e) {
+        return doc_error_outcome(e);
+      } catch (const std::exception& e) {
+        // An uncaught user `throw` arrives here as "uncaught: <value>",
+        // already in the interpreter's wording (Exec::run_prepared /
+        // JIT::exec formats it at the engine boundary).
+        return {false, "RuntimeError", std::string(e.what())};
+      }
+      return {true, "", ""};
+    };
+  }
+#endif
+  (void)engine;
+  return [](const std::string& name,
+            const std::string& code) -> culebra::DocRunOutcome {
+    std::vector<std::string> msgs;
+    std::shared_ptr<peg::Ast> ast;
+    try {
+      ast = culebra::parse_with_transforms(name, code, msgs);
+    } catch (const culebra::CulebraError& e) {
+      return {false, "SyntaxError", std::string(e.what())};
+    }
+    if (!ast) {
+      std::string joined;
+      for (const auto& s : msgs) joined += (joined.empty() ? "" : "; ") + s;
+      return {false, "SyntaxError", joined};
+    }
+    auto env = culebra::environment();
+    install_cli_aliases(*env);
+    culebra::install_doctest_exit_guard(*env);
+    culebra::Value val;
+    std::vector<std::string> emsgs;
+    // interpret() turns an uncaught throw into a message and returns false.
+    if (culebra::interpret(ast, env, val, emsgs)) return {true, "", ""};
+    return {false, "RuntimeError", emsgs.empty() ? "" : emsgs.front()};
+  };
+}
+
 int run_test(int argc, const char** argv) {
   std::vector<std::string> roots;
   std::string filter;
@@ -1417,6 +1537,7 @@ int run_test(int argc, const char** argv) {
   int bail_after = 0;
   bool list_only = false;
   bool doc_mode = false;
+  auto engine = DocEngine::Interp;
   auto parse_reporter = [&](std::string_view v) {
     if (v == "default") reporter = culebra::Reporter::Default;
     else if (v == "json") reporter = culebra::Reporter::Json;
@@ -1461,6 +1582,10 @@ int run_test(int argc, const char** argv) {
                    "  --bail [n]      stop after the first failure, or after n\n"
                    "  --list          print the discovered test names, run none\n"
                    "  --doc           run the ```culebra blocks in *.md instead\n"
+#ifdef CULEBRA_JIT_ENABLED
+                   "  --jit / --vm    run the doc blocks on that backend\n"
+                   "                  instead of the interpreter (--doc only)\n"
+#endif
                    "  paths           files, or directories scanned recursively");
       return 0;
     }
@@ -1485,6 +1610,12 @@ int run_test(int argc, const char** argv) {
       list_only = true;
     } else if (arg == "--doc") {
       doc_mode = true;
+#ifdef CULEBRA_JIT_ENABLED
+    } else if (arg == "--jit") {
+      engine = DocEngine::Jit;
+    } else if (arg == "--vm") {
+      engine = DocEngine::Vm;
+#endif
     } else if (arg.starts_with("--")) {
       std::println(stderr, "culebra test: unknown option '{}'", arg);
       return 2;
@@ -1503,15 +1634,15 @@ int run_test(int argc, const char** argv) {
       std::println(stderr, "culebra test --doc: no .md files found");
       return 1;
     }
-    auto make_env = [] {
-      auto e = culebra::environment();
-      install_cli_aliases(*e);
-      culebra::install_doctest_exit_guard(*e);
-      return e;
-    };
-    summary = culebra::run_doctests(
-        files, filter, make_env, reporter, bail_after, list_only);
+    summary = culebra::run_doctests(files, filter, doc_block_runner(engine),
+                                    reporter, bail_after, list_only);
   } else {
+    if (engine != DocEngine::Interp) {
+      std::println(stderr,
+                   "culebra test: --jit / --vm are for --doc blocks; the unit "
+                   "test runner is the interpreter's");
+      return 2;
+    }
     auto env = culebra::environment();
     install_cli_aliases(*env);
     culebra::install_test_ambient(*env);

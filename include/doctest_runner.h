@@ -1,11 +1,12 @@
 #pragma once
 
 // Doctest runner: extract ` ```culebra ` blocks from Markdown docs,
-// run each in a fresh interpreter, and check output against the
-// convention markers (`# =>`, `# => |`, `# !!`, `# doctest:`).
-// See docs/handbook.md §16.1 for the convention. MVP runs interp only;
-// backend-filter directives (jit-only/aot-only) and `compile-only`
-// are not yet honored — see the per-marker notes below.
+// run each on the engine the caller supplies (a BlockRunner — the CLI has
+// one per backend), and check output against the convention markers
+// (`# =>`, `# => |`, `# !!`, `# doctest:`).
+// See docs/handbook.md §16.1 for the convention. The backend-filter
+// directives (jit-only/aot-only) and `compile-only` are not yet honored —
+// see the per-marker notes below.
 
 #include <filesystem>
 #include <fstream>
@@ -211,17 +212,32 @@ inline void install_doctest_exit_guard(Environment& env) {
       false);
 }
 
-// Factory producing a fresh, fully-aliased environment per block. The
-// CLI provides this (composing `install_cli_aliases` from stdlib_interp.h),
-// keeping the runner decoupled from CLI-specific globals.
-using EnvFactory = std::function<std::shared_ptr<Environment>()>;
+// What running one block produced. `message` carries the diagnostic in the
+// text the CLI prints for that failure — which is what a `# !!` pattern is
+// matched against, so every engine has to spell it the same way.
+struct DocRunOutcome {
+  bool ok = false;
+  std::string kind;  // "SyntaxError" when it never ran, else "RuntimeError"
+  std::string message;
+};
+
+// How one block is parsed and run. The runner owns everything around it —
+// finding the blocks, capturing stdout, comparing the markers, reporting —
+// so an engine is exactly this function: the interpreter's is `interpret`
+// against a fresh env, and each compiled lane's is its own compile + run.
+// A block is independent of every other, which for the compiled lanes means
+// a Runtime of its own (their namespace caches, class and overload
+// registries live there, as the interpreter's live in its env).
+using BlockRunner =
+    std::function<DocRunOutcome(const std::string& name,
+                                const std::string& code)>;
 
 // Run the doctest blocks in each file. Mirrors run_tests' reporter
 // output (Default human lines / Json NDJSON) and summary/exit
 // semantics. Each block runs in a fresh env (blocks are independent).
 inline TestRunSummary run_doctests(
     const std::vector<std::filesystem::path>& files,
-    const std::string& filter, const EnvFactory& make_env,
+    const std::string& filter, const BlockRunner& run_block,
     Reporter reporter = Reporter::Default, int bail_after = 0,
     bool list_only = false) {
   using namespace doctest_detail;
@@ -295,25 +311,11 @@ inline TestRunSummary run_doctests(
         continue;  // skipped blocks are not counted as passed or failed
       }
 
-      // Parse (with generator transforms, matching every other backend).
-      std::vector<std::string> pmsgs;
-      auto ast = parse_with_transforms(name, blk.code, pmsgs);
-      if (!ast) {
-        std::string m;
-        for (const auto& s : pmsgs) m += (m.empty() ? "" : "; ") + s;
-        emit_fail(name, source, "SyntaxError", m, {});
-        if (bail_after > 0 && summary.failed >= bail_after) break;
-        continue;
-      }
-
-      auto env = make_env();
-      Value val;
-      std::vector<std::string> emsgs;
       std::string captured;
-      bool ok;
+      DocRunOutcome outcome;
       {
         StdoutCapture cap(true);
-        ok = interpret(ast, env, val, emsgs);
+        outcome = run_block(name, blk.code);
         captured = cap.take();
       }
       // Reap whatever this block left outstanding (e.g. a doc example that
@@ -323,8 +325,13 @@ inline TestRunSummary run_doctests(
       // (interpret_modules) or once per REPL session (repl.h): each doc
       // block is its own fresh env / run.
       ScriptTeardownGuard script_teardown_guard;
-      // interpret() converts uncaught throws into emsgs and returns false.
-      std::string err = emsgs.empty() ? "" : emsgs.front();
+      if (!outcome.ok && outcome.kind == "SyntaxError") {
+        emit_fail(name, source, outcome.kind, outcome.message, captured);
+        if (bail_after > 0 && summary.failed >= bail_after) break;
+        continue;
+      }
+      bool ok = outcome.ok;
+      const std::string& err = outcome.message;
 
       if (blk.expect_throw) {
         if (ok) {

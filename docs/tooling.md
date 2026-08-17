@@ -181,6 +181,7 @@ culebra test --bail                # stop after the first failure
 culebra test --bail 3              # stop after 3 failures
 culebra test --list                # discover only; print test names
 culebra test --doc docs            # run the doctests in markdown files
+culebra test --doc --vm docs       # ... on the bytecode VM (or --jit)
 ```
 
 Discovery: any path that is a file is included as-is; any path that is a
@@ -222,6 +223,11 @@ so an example needing several steps has to be one block. The runner
 currently honors `skip`; `compile-only` and the backend filters are
 reserved (such blocks run normally for now).
 
+`--jit` and `--vm` run the same blocks on the JIT and on the bytecode VM
+instead of the interpreter, so a documented example is checked against
+every engine that will run it — the same output, the same throw. The
+unit-test runner (`culebra test` without `--doc`) is the interpreter's.
+
 Two consequences are worth knowing when writing examples. An expression
 on its own prints nothing, so a checked example has to go through
 `inspect(...)` or `println(...)`. And `//` opens a line comment in
@@ -229,8 +235,8 @@ Culebra just as `#` does, so a `// => value` marker parses fine but is
 **not** recognized as an expectation — the block then runs unchecked.
 
 **Still planned**: an explicit `import { test } from "std/test"` for code
-that doesn't run under `culebra test`; `--backend interp|jit|aot` (the
-runner uses the interpreter today); and parallel execution.
+that doesn't run under `culebra test`; an AOT doctest lane beside `--jit`
+and `--vm`; and parallel execution.
 
 ---
 

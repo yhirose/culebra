@@ -7767,7 +7767,19 @@ class Compiler {
           emit(Op::NsGet, t, kconst_str(ast.token));
           return {t, true};
         }
-        reject(ast, std::format("unresolved identifier '{}'", ast.token));
+        // Nothing here binds the name and no stdlib global answers it: the
+        // read is the interpreter's run-time NameError, raised where it
+        // stands. Compile-time rejection would decline programs that only
+        // mention the name on a path they never take (a doc example whose
+        // point IS the error, `if false { … }`), and the differential gates
+        // are what still catch a name the VM failed to bind — the
+        // interpreter answers those, so the lanes diverge rather than agree.
+        {
+          int32_t t = alloc_temp(ast);
+          emit(Op::RaiseErr, 0, kconst_str("NameError"),
+               kconst_str(std::format("undefined variable '{}'", ast.token)));
+          return {t, true};  // unreachable
+        }
       }
       case "UNARY_MINUS"_: {
         auto r = compile_expr(*ast.nodes[1]);  // nodes[0] is the operator
