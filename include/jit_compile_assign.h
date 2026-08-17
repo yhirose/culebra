@@ -564,6 +564,12 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
       }
       // For compound (`o.x += rhs`), read current → apply op → write back.
       llvm::Value* to_store = rval;
+      // Set when the step handed back the very Tensor it was given: it
+      // mutated the buffer in place, so there is nothing to write back and
+      // the slot's mut flag does not gate it. The interp returns before its
+      // property write for exactly this case, and the plain-variable arm
+      // (compile_assign_var) tests the same way.
+      llvm::Value* inPlace = nullptr;
       if (compound) {
         // A Shared.new view is immutable on every write surface, and the
         // interp checks that ahead of its find_prop — so the missing-
@@ -620,6 +626,11 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
         to_store = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
         emit_value_release(rval);
         emit_value_release(cur);
+        inPlace = builder_.CreateAnd(
+            builder_.CreateICmpEQ(extract_tag(cur),
+                                  builder_.getInt8(TAG_TENSOR)),
+            builder_.CreateICmpEQ(extract_data(cur), extract_data(to_store)),
+            "cprop.inplace");
       } else {
         // Plain `o.k = v` on a closed namespace: an absent own member
         // isn't a legitimate extension point (mirrors interp's
@@ -647,10 +658,25 @@ JIT::Owned JIT::compile_assign_complex(const peg::Ast& ast,
       // release would double free. Retaining first balances both paths:
       // the set consumes the original ref, this retained ref is the
       // expression result.
-      emit_value_retain(to_store);
-      emit_object_set(objPtr, name, mut, extract_tag(to_store),
-                      extract_data(to_store), /*is_init=*/false,
-                      &finalPostfix);
+      auto emit_write_back = [&] {
+        emit_value_retain(to_store);
+        emit_object_set(objPtr, name, mut, extract_tag(to_store),
+                        extract_data(to_store), /*is_init=*/false,
+                        &finalPostfix);
+      };
+      if (inPlace) {
+        // The retain rides the writing arm only: the step's own +1 is what
+        // the expression hands back when nothing is written.
+        auto setBB = llvm::BasicBlock::Create(ctx_, "cprop.set", fn);
+        auto doneBB = llvm::BasicBlock::Create(ctx_, "cprop.done", fn);
+        builder_.CreateCondBr(inPlace, doneBB, setBB);
+        builder_.SetInsertPoint(setBB);
+        emit_write_back();
+        builder_.CreateBr(doneBB);
+        builder_.SetInsertPoint(doneBB);
+      } else {
+        emit_write_back();
+      }
       emit_value_release(lval);  // release the lvalue's ref
       return own(to_store);
     }
