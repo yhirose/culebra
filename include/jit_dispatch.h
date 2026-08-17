@@ -793,8 +793,14 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
   // through to the captured method before resolving the metadata.
   if (cls && cls->fn_ptr == reinterpret_cast<void*>(&_jit_bound_method_thunk))
     cls = reinterpret_cast<JitClosure*>(cls->captures[1]->value.data);
-  const JitParamMeta* meta =
-      cls ? _jit_lookup_param_meta(cls->fn_ptr) : nullptr;
+  // A closure whose code is not a distinct fn_ptr (the VM executor's all
+  // share one) answers by closure instead — the check_pos_count_cls seam.
+  auto meta_of = [](JitClosure* c) -> const JitParamMeta* {
+    if (!c) return nullptr;
+    if (const JitParamMeta* m = _jit_lookup_param_meta(c->fn_ptr)) return m;
+    return _jit_closure_meta_hook ? _jit_closure_meta_hook(c) : nullptr;
+  };
+  const JitParamMeta* meta = meta_of(cls);
   // Multifn dispatcher fallback: dispatchers share a single thunk
   // address, so per-name body meta isn't keyed by fn_ptr. Walk the
   // dispatcher→name registry to find the body's meta — surfaces the
@@ -807,7 +813,7 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
       auto& tbl = _jit_multimethods();
       auto method_it = tbl.find(disp_it->second);
       if (method_it != tbl.end() && !method_it->second.empty()) {
-        meta = _jit_lookup_param_meta(method_it->second.front().body->fn_ptr);
+        meta = meta_of(method_it->second.front().body);
       }
     }
   }

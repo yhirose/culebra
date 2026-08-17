@@ -80,6 +80,6 @@ println('--- churn')
 mut total = 0
 for x in 0..2000 {
   n = x
-  total = total + n
+  total += n
 }
 println(to_string(total))

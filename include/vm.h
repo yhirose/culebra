@@ -2165,10 +2165,13 @@ struct Chunk {
   // handle when the body reads it (FuncInfo::uses_fn), -1 otherwise.
   int32_t arity = 0;
   std::vector<std::string> param_names;  // for the ArityError message
-  // Declared parameter types (empty = untyped), parallel to param_names —
+  // Effective parameter types (empty = untyped), parallel to param_names —
   // the overload signature MultifnReg registers. Dispatch reads them; the
-  // per-entry checks are ChkArg / ChkTypeAt instructions.
+  // per-entry checks are ChkArg / ChkTypeAt instructions. A Generic class's
+  // type params are neutralized to Any here, so `param_declared_types` keeps
+  // the annotation as written for `f.params[i].type` to report.
   std::vector<std::string> param_types;
+  std::vector<std::string> param_declared_types;
   // Parameters that must be supplied: the leading run without a default
   // (defaults are trailing). The prologue's arity guard counts against this
   // and leaves each unsupplied slot TAG_UNFILLED for JumpIfFilled.
@@ -2200,8 +2203,13 @@ struct Chunk {
   int32_t fn_bound_slot = -1;
   // Source name of an overload body (`fn name`, a class member, `new`), read
   // by MultifnReg: it is the user-facing half of the registry key, so a
-  // DispatchError names the declaration rather than the internal id.
+  // DispatchError names the declaration rather than the internal id. It is
+  // also what `f.name` reports, so a plain `fn f` carries it too.
   std::string multifn_name;
+  // What `f.params[i].mut` and `f.return_type` report, parallel to
+  // param_names for the first (a declared type is param_types').
+  std::vector<uint8_t> param_mut;
+  std::string return_type;
   // Receiver frames (a class method, a `new` body, the synthetic field-init
   // thunk) bind the JitFn ABI's receiver here; -1 means the frame takes no
   // receiver, and the incoming +1 is released on entry (the JIT's ctor thunk
@@ -2445,6 +2453,7 @@ struct VmFnDesc {
 struct VmChunkMeta {
   std::vector<const char*> names;
   std::vector<const char*> types;
+  std::vector<const char*> declared_types;
   std::vector<uint8_t> has_default_bits;
   std::vector<uint8_t> mut_bits;
   std::string fn_name;
@@ -2472,10 +2481,15 @@ inline void build_param_metas(VmProgram& p) {
   for (const auto& c : p.chunks) {
     auto m = std::make_unique<VmChunkMeta>();
     m->fn_name = c.multifn_name;
+    m->return_type = c.return_type;
     for (size_t i = 0; i < c.param_names.size(); i++) {
       m->names.push_back(c.param_names[i].c_str());
       m->types.push_back(i < c.param_types.size() ? c.param_types[i].c_str()
                                                   : "");
+      m->declared_types.push_back(
+          i < c.param_declared_types.size()
+              ? c.param_declared_types[i].c_str()
+              : "");
     }
     size_t n = m->names.size();
     m->has_default_bits.assign((n + 7) / 8, 0);
@@ -2483,6 +2497,9 @@ inline void build_param_metas(VmProgram& p) {
     for (size_t i = 0; i < n && i < c.param_has_default.size(); i++)
       if (c.param_has_default[i])
         m->has_default_bits[i / 8] |= static_cast<uint8_t>(1u << (i % 8));
+    for (size_t i = 0; i < n && i < c.param_mut.size(); i++)
+      if (c.param_mut[i])
+        m->mut_bits[i / 8] |= static_cast<uint8_t>(1u << (i % 8));
     m->meta = JitParamMeta{m->names.data(),
                            m->has_default_bits.data(),
                            n,
@@ -2492,7 +2509,7 @@ inline void build_param_metas(VmProgram& p) {
                            m->return_type.c_str(),
                            m->mut_bits.data(),
                            m->types.data(),
-                           m->types.data(),
+                           m->declared_types.data(),
                            c.cb_min,
                            c.cb_max};
     p.param_metas.push_back(std::move(m));
@@ -3617,6 +3634,20 @@ class Compiler {
     pop_scope();
   }
 
+  // An `if` / `cond` arm body in value position. It gets no scope of its own:
+  // the enclosing one holds what it declares (collect_escaping_decls pinned
+  // those names to lazy cells first) and owns any `defer` it registers, which
+  // is the interpreter's eval_if / eval_cond — and its DeferHandoff — exactly.
+  void compile_arm_into(const peg::Ast& body, int32_t dst) {
+    using namespace peg::udl;
+    if (body.tag == "STATEMENTS"_) {
+      TempScope ts(*this);
+      compile_body_into(body, dst);
+      return;
+    }
+    compile_value_into(body, dst);
+  }
+
   // compile_block_into's core, scope management left to the caller —
   // compile_try brackets it with the region's own mark/end placement.
   void compile_body_into(const peg::Ast& ast, int32_t dst) {
@@ -3903,21 +3934,24 @@ class Compiler {
     pre.shadowed_builtin = false;
   }
 
-  // A block of one statement is not a block: the parser collapses `{ stmt }`
-  // to the statement itself, and interp's eval_if runs an arm body in the
-  // enclosing environment when it arrives in that shape (run_loop_body
-  // guards for it; eval_if does not). So a `let` in a one-statement `if` arm
-  // declares OUTSIDE the `if`, on every backend — probed.
-  static bool is_collapsed_block(const peg::Ast& body) {
-    using namespace peg::udl;
-    return body.tag != "STATEMENTS"_;
-  }
-
-  // What such an arm body declares into the scope around the `if`. A nested
-  // one-statement `if` passes its own arms' declarations up the same way,
-  // which is why this recurses.
+  // What an `if` / `cond` arm body declares into the scope AROUND it. Neither
+  // construct opens a scope for its arms — interp's eval_if and eval_cond run
+  // the body in the enclosing environment (run_loop_body guards for a block;
+  // these do not) — so a `let` there declares outside, on every backend,
+  // whatever the statement count. A nested arm passes its own declarations up
+  // the same way, which is why this recurses; a `{ ... }` statement inside one
+  // is a LEXICAL_SCOPE and keeps its own.
   void collect_escaping_decls(const peg::Ast& node, DeclList& decls) {
     using namespace peg::udl;
+    if (node.tag == "STATEMENTS"_) {
+      for (const auto& n : node.nodes) collect_escaping_decls(*n, decls);
+      return;
+    }
+    if (node.tag == "COND"_) {
+      for (const auto& arm : node.nodes)
+        collect_escaping_decls(*arm->nodes[1], decls);
+      return;
+    }
     if (node.tag == "IF"_) {
       auto iv = culebra::view_if(node);
       // An init clause opens a scope of its own around the whole `if`, so
@@ -3926,10 +3960,8 @@ class Compiler {
       // compile_if's own walk: (cond, body) pairs, then a trailing else.
       size_t i = iv.arm_off;
       for (; i + 1 < node.nodes.size(); i += 2)
-        if (is_collapsed_block(*node.nodes[i + 1]))
-          collect_escaping_decls(*node.nodes[i + 1], decls);
-      if (i < node.nodes.size() && is_collapsed_block(*node.nodes[i]))
-        collect_escaping_decls(*node.nodes[i], decls);
+        collect_escaping_decls(*node.nodes[i + 1], decls);
+      if (i < node.nodes.size()) collect_escaping_decls(*node.nodes[i], decls);
       return;
     }
     if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_ ||
@@ -4096,17 +4128,17 @@ class Compiler {
     emit_session_decl_bind(*b, /*is_mut=*/false);
   }
 
-  // `@dec fn name(...) {…}` — the declaration binds the decorator's result.
-  // Innermost first: the decorator nearest the `fn` sees the raw function,
-  // and each one above wraps what the one below returned.
-  void compile_decorated_fn(const peg::Ast& ast, size_t dec_end,
-                            const std::string& name) {
-    int32_t idx = compile_fn_chunk(ast, ast.nodes[dec_end + 1].get(),
-                                   *ast.nodes.back());
-    int32_t val = alloc_temp(ast);
-    emit(Op::MakeClosure, val, idx);
+  // Feed `val` through the declaration's decorators, innermost first: the one
+  // nearest the declaration sees the raw value, and each above wraps what the
+  // one below returned. `@packable` and `@derive(...)` are compiler
+  // directives, not callable, and are the reason the loop can skip an entry.
+  // Returns the slot holding the outermost result (+1).
+  int32_t apply_decorators(const peg::Ast& ast, size_t dec_end, int32_t val) {
     for (size_t i = dec_end; i > 0; --i) {
-      const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
+      const auto& dec = *ast.nodes[i - 1];
+      if (culebra::is_packable_decorator(dec)) continue;
+      if (!culebra::view_derive(dec).empty()) continue;
+      const auto& dec_expr = *dec.nodes[0];
       auto callee = compile_expr(dec_expr);
       int32_t arg = alloc_temp(ast);  // the one-argument run
       store_into(arg, {val, true}, /*dst_is_fresh=*/true);
@@ -4115,6 +4147,17 @@ class Compiler {
       emit(Op::Call, out, callee.slot, arg, 1);
       val = out;
     }
+    return val;
+  }
+
+  // `@dec fn name(...) {…}` — the declaration binds the decorator's result.
+  void compile_decorated_fn(const peg::Ast& ast, size_t dec_end,
+                            const std::string& name) {
+    int32_t idx = compile_fn_chunk(ast, ast.nodes[dec_end + 1].get(),
+                                   *ast.nodes.back());
+    int32_t val = alloc_temp(ast);
+    emit(Op::MakeClosure, val, idx);
+    val = apply_decorators(ast, dec_end, val);
     const Binding* b = lookup(name);
     if (!b || !b->is_cell)
       reject(ast, std::format("fn '{}' declared here", name));
@@ -4200,17 +4243,11 @@ class Compiler {
            ast.nodes[dec_end]->tag == "DECORATOR"_)
       dec_end++;
     // `@derive(...)` and `@packable` are compiler-recognized directives, not
-    // callable decorators — neither is applied to the finished class value, so
-    // neither needs the decorator-application machinery the rest would.
+    // callable decorators — apply_decorators skips them; every other one is
+    // called on the finished class value below.
     bool is_packable = false;
-    for (size_t i = 0; i < dec_end; i++) {
-      if (culebra::is_packable_decorator(*ast.nodes[i])) {
-        is_packable = true;
-        continue;
-      }
-      if (!culebra::view_derive(*ast.nodes[i]).empty()) continue;
-      reject(*ast.nodes[i], "class decorator");
-    }
+    for (size_t i = 0; i < dec_end; i++)
+      if (culebra::is_packable_decorator(*ast.nodes[i])) is_packable = true;
     auto class_head =
         culebra::parse_generic_head(ast.nodes[dec_end]->token);
     auto class_name = std::string(class_head.outer);
@@ -4521,6 +4558,9 @@ class Compiler {
       emit(Op::BindStatic, cls, kconst_str("__packable__"), marker);
       forget_temp(marker);  // the slot absorbed the +1
     }
+    // The name binds what the decorators return — the class object itself when
+    // they hand it back, as `@mark` does, and anything else when they do not.
+    cls = apply_decorators(ast, dec_end, cls);
     emit(Op::CellSet, class_slot, owned_src(ast, {cls, true}));
     emit_session_decl_bind(*decl_binding, /*is_mut=*/false);
   }
@@ -4536,13 +4576,8 @@ class Compiler {
     using namespace peg::udl;
     size_t dec_end = culebra::first_non_decorator_index(ast);
     bool is_packable = false;
-    for (size_t i = 0; i < dec_end; i++) {
-      if (culebra::is_packable_decorator(*ast.nodes[i])) {
-        is_packable = true;
-        continue;
-      }
-      reject(*ast.nodes[i], "enum decorator");
-    }
+    for (size_t i = 0; i < dec_end; i++)
+      if (culebra::is_packable_decorator(*ast.nodes[i])) is_packable = true;
     auto enum_name =
         std::string(culebra::parse_generic_head(ast.nodes[dec_end]->token).outer);
     StampGuard pos(*this, ast);
@@ -4603,6 +4638,7 @@ class Compiler {
     // at the declaration, like a class's.
     if (is_packable)
       emit(Op::RegPack, kconst_str(enum_name), kconst_str(spec), 0, 1);
+    obj = apply_decorators(ast, dec_end, obj);
     emit(Op::CellSet, enum_slot, owned_src(ast, {obj, true}));
     emit_session_decl_bind(*decl_binding, /*is_mut=*/false);
   }
@@ -4906,7 +4942,9 @@ class Compiler {
               static_cast<int32_t>(fc.chunk_.param_names.size());
           fc.chunk_.param_names.push_back(rest_name);
           fc.chunk_.param_types.emplace_back();
+          fc.chunk_.param_declared_types.emplace_back();
           fc.chunk_.param_has_default.push_back(1);  // the empty Object
+          fc.chunk_.param_mut.push_back(0);
           continue;
         }
         if (pv.pattern) {
@@ -4915,7 +4953,9 @@ class Compiler {
           int32_t slot = fc.alloc_slot(*p, synth);
           fc.chunk_.param_names.push_back(synth);
           fc.chunk_.param_types.emplace_back();
+          fc.chunk_.param_declared_types.emplace_back();
           fc.chunk_.param_has_default.push_back(0);
+          fc.chunk_.param_mut.push_back(0);
           pat_params.push_back({pv.pattern, slot});
           continue;
         }
@@ -4928,7 +4968,9 @@ class Compiler {
         auto abi = static_cast<int32_t>(fc.chunk_.param_names.size());
         fc.chunk_.param_names.push_back(name);
         fc.chunk_.param_types.push_back(type);
+        fc.chunk_.param_declared_types.emplace_back(pv.type_annotation);
         fc.chunk_.param_has_default.push_back(pv.default_value ? 1 : 0);
+        fc.chunk_.param_mut.push_back(pv.is_mut ? 1 : 0);
         plans.push_back({p.get(), name, std::move(type), pv.default_value,
                          slot, abi, pv.is_mut, is_sink_name(name)});
       }
@@ -5003,10 +5045,11 @@ class Compiler {
     // Where a return-value type error reports: resolved once here, as the
     // JIT's prologue snapshot does (see PosSnap).
     if (!return_type.empty()) {
-      fc.ret_type_ = fc.kconst_str(
+      fc.chunk_.return_type =
           mo.type_params && !mo.type_params->empty()
               ? culebra::lower_type_params(return_type, *mo.type_params)
-              : std::string(return_type));
+              : std::string(return_type);
+      fc.ret_type_ = fc.kconst_str(fc.chunk_.return_type);
       fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
       fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
     }
@@ -6022,7 +6065,6 @@ class Compiler {
   // (the JIT emits that cold check under the same compile-time filter).
   ExprResult compile_property_read(const peg::Ast& at, const peg::Ast& post,
                                    ExprResult recv) {
-    guard_fn_introspection(post, recv);
     int32_t t;
     {
       StampGuard pos(*this, at);
@@ -6058,31 +6100,12 @@ class Compiler {
   // as a free variable of the reading function, so resolve_captures rejects it
   // at the fn literal ("UFCS candidate capture of ..."), and a candidate that
   // is a builtin never enters scopes_ at all — is_stdlib_global catches those.
-  // `.name` / `.params` / `.return_type` resolve a Function receiver's
-  // signature out of the JitParamMeta side table, which is keyed by fn_ptr —
-  // and the executor's closures all share one fn_ptr (Exec::trampoline), so
-  // there is nothing per-function to key on. Rejected by name on every
-  // receiver rather than answered wrong on a Function one; no object the
-  // slice can build carries a field of these names anyway.
-  // `.name` / `.params` / `.return_type` belong to a FUNCTION receiver, whose
-  // signature lives in a side table keyed by code address — and every
-  // executor closure shares one, so that half stays out of the slice. Every
-  // other receiver resolves an ordinary property of the name (a getter called
-  // `name`, a dict key), which is most of what the corpus writes. The
-  // boundary is therefore the receiver, and the receiver is a run-time fact:
-  // test it, and let the Function arm raise the out-of-slice error where a
-  // poisoned chunk would raise it.
-  void guard_fn_introspection(const peg::Ast& post, ExprResult recv) {
-    if (!JIT::fn_introspection_name(post.token)) return;
-    size_t to_err = emit(Op::JumpIfTag, recv.slot, 0, TAG_FUNC);
-    size_t over = emit(Op::Jump);
-    patch_to_here(to_err);
-    emit_raise("VmError",
-               std::format("--vm: unsupported: function introspection '{}'",
-                           post.token),
-               post.line, post.column);
-    patch_to_here(over);
-  }
+  // `.name` / `.params` / `.return_type` on a Function receiver are answered
+  // by culebra_runtime_fn_introspect_get, which reads the signature out of a
+  // side table keyed by code address. The executor's closures all share one
+  // address, so they answer through _jit_closure_meta_hook instead — the seam
+  // the keyword resolver and the arity check already use — and the chunk meta
+  // the hook hands back carries the name, the return type and the parameters.
 
   // The compile-time UFCS candidate for `name` at this site, if any — the
   // JIT's ufcs_free_fn_loader: a scope binding first (Function-ness is a
@@ -6269,9 +6292,6 @@ class Compiler {
   // the JitFn ABI's receiver, instead of minting a bound-method wrapper.
   ExprResult compile_method_call(const peg::Ast& at, const peg::Ast& post,
                                  const peg::Ast& args, ExprResult recv) {
-    // The one receiver the slice still turns away: a Function reading its own
-    // signature (see guard_fn_introspection), tested at run time.
-    guard_fn_introspection(post, recv);
     // The synthesized `parameters()`: a class instance that resolves no
     // `parameters` of its own answers with the walker over its fields, and
     // nothing else about the call matters — surplus positional arguments are
@@ -6812,25 +6832,18 @@ class Compiler {
     // — so its slot is taken before that scope opens.
     int32_t res = alloc_temp(ast);
     InitScope init(*this, ast, iv.init);
-    // A one-statement arm body declares into the scope around the `if`
-    // (is_collapsed_block). Whether it ran is a run-time fact, so the names
-    // take the pre-declaration a forward reference takes: one lazy cell per
-    // name for the whole `if` — shared by the arms, so `if c { let a = 1 }
-    // else { let a = 2 }` reads whichever arm ran — shadowing what the name
-    // meant before, and still holding the sentinel (hence NameError) when no
-    // arm declared it. An init clause opens a scope of its own, so nothing
-    // there escapes and collect_escaping_decls declines to look.
+    // An arm body declares into the scope around the `if`. Whether it ran is
+    // a run-time fact, so the names take the pre-declaration a forward
+    // reference takes: one lazy cell per name for the whole `if` — shared by
+    // the arms, so `if c { let a = 1 } else { let a = 2 }` reads whichever arm
+    // ran — shadowing what the name meant before, and still holding the
+    // sentinel (hence NameError) when no arm declared it. An init clause opens
+    // a scope of its own, so nothing there escapes and collect_escaping_decls
+    // declines to look.
     DeclList escaping;
     collect_escaping_decls(ast, escaping);
     predeclare_cells(ast, escaping, /*conditional=*/true);
-    // With the cells in place the arm body compiles into THIS scope: a block
-    // of its own would take its declaration back down with it.
-    auto compile_arm = [&](const peg::Ast& body) {
-      if (escaping.empty() || !is_collapsed_block(body))
-        compile_block_into(body, res);
-      else
-        compile_value_into(body, res);
-    };
+    auto compile_arm = [&](const peg::Ast& body) { compile_arm_into(body, res); };
     std::vector<size_t> end_jumps;
     size_t i = iv.arm_off;
     for (; i + 1 < ast.nodes.size(); i += 2) {
@@ -6842,6 +6855,34 @@ class Compiler {
     }
     if (i < ast.nodes.size()) {  // trailing else block
       compile_arm(*ast.nodes[i]);
+    }
+    for (size_t j : end_jumps) patch_to_here(j);
+    return {res, true};
+  }
+
+  // `cond { test => body, ..., _ => default }` — the subjectless conditional,
+  // compile_if's shape with a test per arm. A `_` WILDCARD test is the
+  // unconditional default, so the arms after it are dead and never compiled;
+  // with none reached the result stays nil. Arm bodies declare into the scope
+  // around the `cond`, as an `if` arm's do.
+  ExprResult compile_cond(const peg::Ast& ast) {
+    using namespace peg::udl;
+    int32_t res = alloc_temp(ast);
+    DeclList escaping;
+    collect_escaping_decls(ast, escaping);
+    predeclare_cells(ast, escaping, /*conditional=*/true);
+    std::vector<size_t> end_jumps;
+    for (const auto& arm : ast.nodes) {  // each COND_ARM: [test, body]
+      const auto& test = *arm->nodes[0];
+      if (test.tag == "WILDCARD"_) {
+        compile_arm_into(*arm->nodes[1], res);
+        break;
+      }
+      auto c = compile_expr(test);
+      size_t skip = emit(Op::JumpIfFalse, c.slot);
+      compile_arm_into(*arm->nodes[1], res);
+      end_jumps.push_back(emit(Op::Jump));
+      patch_to_here(skip);
     }
     for (size_t j : end_jumps) patch_to_here(j);
     return {res, true};
@@ -7809,6 +7850,8 @@ class Compiler {
       case "IF"_:
       case "CONDITIONAL"_:
         return compile_if(ast);
+      case "COND"_:
+        return compile_cond(ast);
       case "ASSIGNMENT"_:  // expression position: `let r = (w += 2)`
         return compile_assignment(ast);
       case "DESTRUCTURE_ASSIGN"_:
@@ -9006,10 +9049,16 @@ struct Exec {
           // emit_property_get without its per-site inline cache: the executor
           // always takes the cold funnel, and object_get_ic only WRITES the
           // cache (the fast path that reads it lives in emitted code), so one
-          // scratch entry per execution is all it needs. emit_property_get's
-          // fn_mode branch has no mirror here — the three introspection names
-          // are a compile-time reject, so `view` is always the borrowed
-          // object-slot form.
+          // scratch entry per execution is all it needs.
+          // emit_property_get's fn_mode branch, mirrored: a Function receiver
+          // answers the three signature names from its own metadata, and the
+          // result is a fresh value rather than a borrowed object slot.
+          if (recv.tag == TAG_FUNC && JIT::fn_introspection_name(key)) {
+            regs[in.a] = culebra_runtime_fn_introspect_get(
+                reinterpret_cast<JitClosure*>(recv.data), key);
+            ++pc;
+            break;
+          }
           JitPropIC ic{};
           JitValue view = culebra_runtime_prop_get(
               static_cast<int8_t>(recv.tag), recv.data, key, &ic, line, col,
@@ -11323,9 +11372,10 @@ struct Lowering {
           // and the handler ladder is its sole releaser on a throw edge.
           auto view = j.emit_property_get(recv, key);
           if (in.op == Op::PropRaw) {
-            // Always the borrowed object-slot form: the three introspection
-            // names, whose fn_mode view arrives +1, are a compile-time reject.
-            j.emit_value_retain(view);
+            // A borrowed object-slot view, which the register must own — except
+            // for the three introspection names, whose fn_mode merge hands back
+            // a +1 on every arm already.
+            if (!JIT::fn_introspection_name(key)) j.emit_value_retain(view);
             b.CreateStore(view, slots[in.a]);
           } else {
             b.CreateStore(j.emit_property_value_read(recv, view, key),

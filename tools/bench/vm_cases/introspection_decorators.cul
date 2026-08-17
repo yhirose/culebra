@@ -1,0 +1,123 @@
+# A function's own signature (`.name` / `.params` / `.return_type`), and the
+# decorators a class / enum / fn declaration binds through. The signature
+# lives in a side table keyed by code address, which every executor closure
+# shares — the chunk's own metadata answers instead.
+
+# --- A named function reports its signature ------------------------------
+println('--- signature')
+fn greet(name: String, *, prefix = 'hi') -> String {
+  '{prefix}, {name}'
+}
+println(greet.name)
+println(greet.return_type)
+let ps = greet.params
+println(to_string(ps.size()))
+println(ps[0].name + ' ' + ps[0].type)
+println(to_string(ps[1].kw_only) + ' ' + to_string(ps[1].has_default))
+
+# --- Anonymous, lambda, mut, defaults, rests -----------------------------
+println('--- shapes')
+let anon = fn (a) { a }
+println("[{anon.name}] {to_string(anon.params.size())} {anon.params[0].name}")
+let lam = |x| x
+println("[{lam.name}] {lam.params[0].name}")
+fn taking_mut(mut a) {
+  a = 1
+  a
+}
+println(to_string(taking_mut.params[0].mut))
+fn defaulted(a = 5) { a }
+println(to_string(defaulted.params[0].has_default))
+fn variadic(*args) { args }
+println("{variadic.name} {to_string(variadic.params.size())}")
+fn kwrest(a, **rest) { a }
+println("{to_string(kwrest.params.size())} {kwrest.params[1].name}")
+
+# --- Overloads report the first arm; recursion still resolves ------------
+println('--- overloads')
+fn over(a) { a }
+fn over(a, b) { a }
+println("{over.name} {to_string(over.params.size())}")
+fn fib(x) {
+  if x < 2 {
+    x
+  } else {
+    fn(x - 2) + fn(x - 1)
+  }
+}
+println("{to_string(fib(10))} {fib.name}")
+
+# --- Any other receiver reads an ordinary property -----------------------
+println('--- other receivers')
+println({name: 'dict'}.name)
+println(to_string({params: 7}.params))
+class Bare {
+  new() {}
+}
+println(to_string(Bare.name))
+
+# --- Decorators: innermost first, and the name binds the result ----------
+println('--- decorators')
+let mark = fn (cls) {
+  cls.marked = true
+  cls
+}
+@mark
+class Point {
+  new(x) {
+    self.x = x
+  }
+  get doubled() {
+    self.x * 2
+  }
+}
+println(to_string(Point.marked))
+println(to_string(Point.new(3).doubled))
+
+let outer = fn (c) {
+  println('outer')
+  c
+}
+let inner = fn (c) {
+  println('inner')
+  c
+}
+@outer
+@inner
+class Ordered {
+  new() {}
+}
+println(type_of(Ordered))
+
+let replace_it = fn (c) { 42 }
+@replace_it
+class Replaced {
+  new() {}
+}
+println(to_string(Replaced))
+
+@mark
+enum Tagged {
+  A,
+  B,
+}
+println(to_string(Tagged.marked) + ' ' + to_string(Tagged.A.__enum))
+
+# --- A decorator that is not callable, and one that throws ---------------
+println('--- decorator errors')
+let not_a_fn = 5
+println(try {
+  @not_a_fn
+  class NeverBound {
+    new() {}
+  }
+  'no throw'
+} catch e { e.kind })
+
+# --- Churn: reading a signature allocates nothing that stays -------------
+println('--- churn')
+mut total = 0
+for i in 0..2000 {
+  total += greet.params.size() + greet.name.size() + greet.return_type.size()
+}
+println(to_string(total))

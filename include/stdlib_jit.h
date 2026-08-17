@@ -7937,29 +7937,52 @@ inline bool _jit_ns_kwarg_resolve_core(
   // and dispatch, mirroring _jit_ns_dispatch_owned_slab's args-rest path.
   culebra::gc::Heap::CollectPause _pause(_gc_heap());
   std::vector<bool> filled(n, false);
+  // Everything this frame still owns when the positional pass gives up at
+  // `i`: the slab cells already taken, the positionals not yet moved into
+  // one, and every merged keyword.
+  auto release_partial_bind = [&](int64_t i) {
+    for (int64_t k = 0; k < i; k++)
+      _culebra_value_release_impl(slab[k].tag, slab[k].data);
+    for (int64_t k = i; k < n_pos; k++)
+      _culebra_value_release_impl(positional[k].tag, positional[k].data);
+    for (auto& [_, v] : merged)
+      _culebra_value_release_impl(v.tag, v.data);
+  };
   // Positional args bind leftmost params; reject if also given by keyword.
   for (int64_t i = 0; i < n_pos && i < n; i++) {
     if (merged.count(pm->params[i].name)) {
-      for (int64_t k = 0; k < i; k++)
-        _culebra_value_release_impl(slab[k].tag, slab[k].data);
-      for (int64_t k = i; k < n_pos; k++)
-        _culebra_value_release_impl(positional[k].tag, positional[k].data);
-      for (auto& [_, v] : merged)
-        _culebra_value_release_impl(v.tag, v.data);
+      release_partial_bind(i);
       throw culebra::CulebraError("TypeError",
           culebra::positional_kw_conflict_message(pm->params[i].name),
           line, col);
+    }
+    // The positional's declared type. The JIT's direct kwargs path emits a
+    // per-argument check of its own before the call (compile_ns_method_kwargs)
+    // — nothing else does, so a call through a value (`let f = Sys.env; f(42,
+    // fallback: "x")`) or from the VM, which has no such path, bound an
+    // ill-typed positional where the interp's binder throws. Reported at the
+    // argument's own position when the caller published one, as the
+    // as-value trampoline does, else at the call.
+    if (!pm->params[i].type.empty() &&
+        !_culebra_value_matches_type(positional[i].tag, positional[i].data,
+                                     pm->params[i].type)) {
+      release_partial_bind(i);
+      int64_t l = line, cl = col;
+      if (i < _jit_argpos_n) {
+        l = _jit_argpos_line[i];
+        cl = _jit_argpos_col[i];
+      }
+      throw culebra::CulebraError(
+          "TypeError",
+          std::format("type error: parameter '{}' expects {}",
+                      pm->params[i].name, pm->params[i].type),
+          l, cl);
     }
     slab[i] = positional[i];
     filled[i] = true;
   }
   if (n_pos > n) {  // too many positionals
-    for (int64_t k = 0; k < n; k++)
-      _culebra_value_release_impl(slab[k].tag, slab[k].data);
-    for (int64_t k = n; k < n_pos; k++)
-      _culebra_value_release_impl(positional[k].tag, positional[k].data);
-    for (auto& [_, v] : merged)
-      _culebra_value_release_impl(v.tag, v.data);
+    release_partial_bind(n);
     _ns_adapt::arity_error(m->ns, m->name, n, n_pos, line, col);
   }
   // Remaining params: from merged kwargs, else default, else ArityError.

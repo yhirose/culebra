@@ -1,0 +1,132 @@
+# `cond { test => body, ..., _ => default }` — the subjectless conditional.
+# Tests run in order until one is truthy (to_bool, not the strict Bool `&&`
+# wants); `_` is the unconditional default and nothing after it runs; no arm
+# reached is nil. Arm bodies declare into the scope around the `cond`.
+
+# --- Which arm wins ------------------------------------------------------
+println('--- arms')
+println(cond {
+  false => 'a',
+  true => 'b',
+})
+println(to_string(cond {
+  false => 'a',
+}))
+println(cond {
+  false => 'a',
+  _ => 'z',
+})
+println(cond {
+  _ => 'z',
+  true => 'a',
+})
+
+# --- Truthiness is the conversion, and it can fail ------------------------
+println('--- truthiness')
+println(cond {
+  1 => 'long',
+  _ => 'z',
+})
+println(cond {
+  0 => 'long',
+  _ => 'z',
+})
+println(cond {
+  0.5 => 'float',
+  _ => 'z',
+})
+println(try {
+  cond {
+    'x' => 'string',
+    _ => 'z',
+  }
+} catch e { e.kind })
+
+# --- Tests run in order, and stop at the first match ---------------------
+println('--- order')
+fn noisy(n, answer) {
+  println('test ' + to_string(n))
+  answer
+}
+println(cond {
+  noisy(1, false) => 'a',
+  noisy(2, true) => 'b',
+  noisy(3, true) => 'c',
+})
+
+# --- Value position, nesting, statement position -------------------------
+println('--- shapes')
+fn grade(n) {
+  cond {
+    n >= 90 => 'A',
+    n >= 80 => 'B',
+    _ => 'C',
+  }
+}
+println(grade(95) + grade(85) + grade(10))
+println(cond {
+  true => cond {
+    false => 'a',
+    _ => 'inner',
+  },
+})
+cond {
+  true => println('statement form'),
+}
+
+# --- Control flow out of an arm ------------------------------------------
+println('--- control flow')
+fn early() {
+  cond {
+    true => return 'returned',
+  }
+  'fell through'
+}
+println(early())
+for i in 0..4 {
+  cond {
+    i == 2 => break,
+    _ => println(to_string(i)),
+  }
+}
+
+# --- An arm's declaration lands outside the `cond` -----------------------
+println('--- scope')
+let r = cond {
+  true => {
+    let inside = 'declared in the arm'
+    inside
+  },
+}
+println(r)
+println(inside)
+# ... whichever arm ran is what the name holds
+cond {
+  false => {
+    let picked = 'then'
+  },
+  _ => {
+    let picked = 'else'
+  },
+}
+println(picked)
+# ... and a closure built after the `cond` reads the same cell
+cond {
+  true => {
+    let captured = 'from the arm'
+  },
+}
+let read_it = fn () { captured }
+println(read_it())
+
+# --- Churn: the arms reuse their slots -----------------------------------
+println('--- churn')
+mut total = 0
+for x in 0..2000 {
+  total += cond {
+    x % 3 == 0 => 2,
+    x % 3 == 1 => 1,
+    _ => 0,
+  }
+}
+println(to_string(total))
