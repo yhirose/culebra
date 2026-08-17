@@ -651,7 +651,7 @@ as that record; §11.4 below is the current boundary.
 | gate | three-lane status |
 |---|---|
 | generated difftest corpus | 15,845 cases through interp / `--jit` / `--vm`; 0 divergences, **0 skips** (`tools/difftest/vm_skip_ceiling.txt` is a ratchet, currently 0) |
-| curated `tools/bench/vm_cases/` | 172 cases, `--vm` and `--vm-llvm` each diffed against interp, then the same sweep again under `CULEBRA_GC_STRESS=1` |
+| curated `tools/bench/vm_cases/` | 177 cases, `--vm` and `--vm-llvm` each diffed against interp, then the same sweep again under `CULEBRA_GC_STRESS=1` |
 | `tests/*.cul` symmetry, and the isolate suite | four lanes: interp, `--jit`, `--vm`, `--vm-llvm` |
 | `just doctest` | 461 documentation blocks on all three engines (`just doctest LANE=interp\|vm\|jit\|all`) |
 | `dap_test` (ctest) | the debug-adapter scenarios on both debug engines |
@@ -670,7 +670,7 @@ CLI documentation are unchanged.
 
 ### 11.2 What the bytecode grew into
 
-138 opcodes; `include/vm.h` is ~14.7k lines. Three structural
+142 opcodes; `include/vm.h` is ~14.9k lines. Three structural
 decisions carried most of the surface area, and are the parts worth
 knowing before Phase 3 touches this format:
 
@@ -758,27 +758,52 @@ standing check for lowering work, and IR diffing against `-O0
 --emit-llvm` is the standing check for refactors that must not change
 codegen.
 
-### 11.4 What is still outside the slice
+### 11.4 The slice closed, and what that took
 
-Phase 2's bar is the gates, and the symmetry gate counts an
-out-of-slice reject as a visible SKIP rather than a failure. Eleven of
-the 204 `tests/*.cul` still take that exit, in four clusters:
+The grammar is in. Every one of the 204 `tests/*.cul` compiles and
+runs on the VM lanes: no module rejects, and no function literal is
+left as a poisoned chunk.
 
-| shape | tests | note |
-|---|---|---|
-| typed variable declarations (`let x: Long = 5`) | 4 | the annotation is rejected at the declaration; the same type names already work in patterns and in parameters |
-| generic type parameters (`fn id<T>(x)`) | 2 | erased documentation in the other two backends |
-| the `@` matmul operator | 2 | the one operator still rejecting |
-| multi-module scripts (`import`) | 3 | rejected in `main.cc`, not in the compiler |
+Getting there meant reading the gate carefully, because a green gate
+was not saying what it looked like it was saying. The symmetry gate
+excuses a file's mismatch as a skip on either of two signals: the run
+printed `--vm: unsupported:`, or *the dump holds a poisoned chunk
+anywhere in the file*. The second one is the wide net — one
+out-of-slice construct inside one lambda excuses every divergence in
+the file, including divergences that have nothing to do with it. The
+last four constructs to land (typed variable declarations, Generic
+type parameters, `@`, multi-module scripts) each removed a poison
+marker and, in doing so, published divergences that had been sitting
+behind it:
 
-Three interp-vs-compiled divergences are also open. All three
-pre-date the VM, none is reached by the corpus, and each is a language
-question rather than an implementation gap: `[self] = [5]` inside a
-function declares in the interpreter and raises ImmutableError on both
-compiled engines (at top level all three declare); a native builtin's
-`.params` has one element in the interpreter and none on the compiled
-engines; and an `Isolate.spawn` handle shows an internal `_core_id`
-field when inspected on the compiled engines only.
+- a compound assignment whose step mutates a Tensor in place was an
+  ImmutableError on the VM and a mutation on both other engines — and
+  through an immutable *property* it was a mutation-then-throw on the
+  JIT, the worst of the three;
+- `return` / `break` / `continue` in expression position (`let y =
+  return e`, `f(return e)`, `[1, break]`) compiled on the VM as if
+  they produced a value and fell through, where both other engines
+  leave the frame. The VM had no diverging-statement arm in
+  `compile_expr` at all;
+- a Generic's type parameter in the return position (§11.3's list)
+  came from the same sweep.
+
+The lesson generalises past this project: **a skip predicate that
+keys on a whole file is a mask, not a filter.** Whatever it excuses,
+it excuses completely.
+
+Two smaller divergences are known and open. Neither is reached by the
+corpus and neither involves the VM, which matches the JIT on both:
+`(return x).size()` — a diverging expression in *receiver* position —
+evaluates to nil in the interpreter and raises a TypeError on the
+method call, where both compiled engines leave the frame; and
+`(return x)` in every other position leaves the frame on all three.
+Three older ones also stand: `[self] = [5]` inside a function declares
+in the interpreter and raises ImmutableError on both compiled engines
+(at top level all three declare); a native builtin's `.params` has one
+element in the interpreter and none on the compiled engines; and an
+`Isolate.spawn` handle shows an internal `_core_id` field when
+inspected on the compiled engines only.
 
 Phase 3 — rewriting `jit.h` to lower bytecode instead of AST — is
 next, and unstarted. The branch is not merged.
