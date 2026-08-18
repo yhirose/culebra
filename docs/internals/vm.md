@@ -660,6 +660,9 @@ as that record; §11.4 below is the current boundary.
 | `just doctest` | 465 documentation blocks on all three engines (`just doctest LANE=interp\|vm\|jit\|all`) |
 | `dap_test` (ctest) | the debug-adapter scenarios on both debug engines |
 
+This is the table as Phase 2 left it. The `--vm-llvm` lanes in it are
+`--jit` lanes today — §12.11 says why the flag went.
+
 The three surfaces the tree-walker used to own were rebuilt as seams
 rather than duplicated. The doctest runner takes a `BlockRunner` —
 `(name, code) -> {ok, kind, message}` — and keeps block extraction,
@@ -757,10 +760,10 @@ structural: **an unverified LLVM module runs anyway.** `run_program`'s
 written; giving it a stream and letting it throw immediately exposed a
 cross-chunk `alloca` leak in the lowering that every gate had been
 green over.
-`culebra --vm-llvm --emit-llvm f.cul | opt -passes=verify` is the
+`culebra --jit --emit-llvm f.cul | opt -passes=verify` is the
 standing check for lowering work, and IR diffing against `-O0
 --emit-llvm` is the standing check for refactors that must not change
-codegen.
+codegen. (The lane was spelled `--vm-llvm` until §12.11 retired it.)
 
 ### 11.4 The slice closed, and what that took
 
@@ -1119,9 +1122,8 @@ bytecode — the front end itself is not where the second is going.
   price of promoting the bytecode register file to SSA, which is the
   same property that makes the lowered code faster to run. Four pad
   shapes were measured; the one in the tree is the best of them.
-- `--vm-llvm` is the same engine as `--jit` today, which makes it a
-  duplicate flag rather than a lane. Retiring it means re-pointing
-  every gate that names it.
+- ~~`--vm-llvm` is the same engine as `--jit` today, which makes it a
+  duplicate flag rather than a lane.~~ Retired (§12.11).
 
 ### 12.7 A shared cell is a shared heap
 
@@ -1369,3 +1371,46 @@ cleanup step reads out of SSA — which is giving back the run-time win
 to buy compile time, and on a language where `--jit` compiles once and
 runs a loop, that is the wrong trade. Phase 3 stops here: 1.2× to
 compile, 2–4.5× faster to run.
+
+### 12.11 Retiring `--vm-llvm`
+
+A flag is a lane only while something runs differently behind it.
+`--vm-llvm` stopped being one in §12.2, and the two were diffed before
+it came out: `--emit-llvm` from each over five files differed in one
+line, a `__finit_<hex>` symbol name in `test_class.cul` — which changes
+between two runs of `--jit` as well. What was left were two properties
+of the invocation rather than of the engine. `--vm-llvm` did not accept
+`--jit-faststart`, and it named its module `"vm"`, so the object cache
+never keyed on it; the cache is off unless `CULEBRA_JIT_CACHE` is set,
+so no gate had been using it either way.
+
+Which left the gates saying something untrue.
+`check_alloca_discipline.sh` scanned one probe twice through one
+emitter and printed `alloca-discipline OK (jit + vm lowering: ...)`.
+`check_eh_balance.sh` reported a `jit` lane and a `vm` lane over the
+same codegen. The symmetry sweep ran all 207 `tests/*.cul` through
+`--jit` and then again through `--vm-llvm`. A gate that names two
+engines where there is one is worse than a gate that names one: the
+extra name is exactly the part a reader has no way to check. That is
+the reason to retire the flag, and the minutes are a side effect.
+
+They are real minutes. Restoring the fourth lane as what it was — a
+second `--jit` pass — puts the sweep at 84 s against 42 s for three,
+and `just test-dev` at 226 s against 186 s.
+
+Two sites named the flag for a reason and were re-pointed rather than
+cut. `tools/bench/vm_cases/compare.sh` has its own 177-case corpus, and
+that lane was real coverage of the lowering; it is spelled `--jit` now
+and costs the same. The isolate suite was the one place where deleting
+would have deleted coverage: its `jit` lane ran only the 18
+`*_jit.cul`, while the `--vm-llvm` lane ran all 20, so two files would
+have been left compiled by nothing. They pass under `--jit` —
+`Isolate.spawn`, `Channel` and `Parallel` have been symmetric since
+Phase 2 — so the `jit` lane takes the whole directory, which is what
+the `--vm-llvm` lane had been proving all along. In the eh gate the
+`vm` lane's small probe was kept and re-pointed too: a try/catch
+entered once per loop iteration is a shape the full probe does not
+have.
+
+`--vm` and `--vm-dump` stay. The executor is a second engine, and
+neither flag has an equivalent under `--jit`.
