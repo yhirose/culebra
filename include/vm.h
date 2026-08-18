@@ -6415,12 +6415,19 @@ class Compiler {
     if (cell) bind = alloc_cell_slot(id, std::string(id.token));
 
     // Endpoints evaluate before the binding exists, in source order, with
-    // errors attributed to the range expression — same as both backends.
+    // errors attributed to the range expression — same as both backends. Each
+    // is ChkLong'd right after it compiles, compile_range's order and for its
+    // reason: the counter is a Long, and a Float bound is the interpreter's
+    // TypeError rather than something to truncate (`for i in 1.5..3` ran no
+    // iterations here, and `by 0.5` walked a step of its own invention).
     stamp(*fv.iter);
     store_into(base + 0, compile_expr(*lay.start), /*dst_is_fresh=*/true);
+    emit(Op::ChkLong, base + 0);
     store_into(base + 1, compile_expr(*lay.end), /*dst_is_fresh=*/true);
+    emit(Op::ChkLong, base + 1);
     if (lay.step) {
       store_into(base + 2, compile_expr(*lay.step), /*dst_is_fresh=*/true);
+      emit(Op::ChkLong, base + 2);
     } else {
       emit(Op::LoadConst, base + 2, kconst_long(1));
     }
