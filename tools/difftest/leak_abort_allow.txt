@@ -15,7 +15,3 @@
 # refcounts so nothing frees it. Same class as leak_baseline.txt's drop| cycles
 # (this one aborts the audit because its residue reads as inflated, not a keep).
 drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; let k = {hash: fn () { 42 }, eq: fn () { true }, back: a}; a[k] = 1 }; g
-# A self-recursive nested function captures itself — a closure cycle that leaks
-# equally on interp (shared_ptr) and JIT, exactly like Rust's Rc. Same class as
-# leak_baseline.txt's nestedfn| cycles; the audit flags this one as inflated.
-nestedfn|match 1 { Long => { fn h(n) { n > 0 ? h(n - 1) : 17 }; h(2) }, _ => nil }
