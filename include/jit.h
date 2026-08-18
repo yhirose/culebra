@@ -9644,10 +9644,14 @@ struct JIT {
   // table via the side map keyed by `fn_ptr`. Returns nullptr when
   // there are no params — built-in closures and zero-arg functions
   // skip metadata entirely (kwargs against them error cleanly).
+  // Takes "does this parameter have a default" as bits rather than the
+  // default expressions themselves: the bitmask is all the metadata needs,
+  // and asking for bits is what lets the bytecode lowering — which has no
+  // AST to hand — emit the same globals.
   llvm::Constant* emit_param_meta_global(
       llvm::Function* fn,
       const std::vector<std::string>& paramNames,
-      const std::vector<const peg::Ast*>& paramDefaults,
+      const std::vector<bool>& paramHasDefault,
       std::optional<size_t> kwargsRestIdx = std::nullopt,
       std::optional<size_t> firstKwOnlyIdx = std::nullopt,
       const std::string& fnName = {},
@@ -9706,12 +9710,12 @@ struct JIT {
         llvm::GlobalValue::PrivateLinkage, namesInit,
         fnBase + ".pmeta.names");
 
-    // has_default bitmask: ceil(N/8) bytes, bit i = paramDefaults[i].
+    // has_default bitmask: ceil(N/8) bytes, bit i = paramHasDefault[i].
     size_t n_bytes = (paramNames.size() + 7) / 8;
     std::vector<llvm::Constant*> bit_consts(n_bytes,
                                              builder_.getInt8(0));
-    for (size_t i = 0; i < paramDefaults.size(); i++) {
-      if (paramDefaults[i]) {
+    for (size_t i = 0; i < paramHasDefault.size(); i++) {
+      if (paramHasDefault[i]) {
         auto byte_idx = i / 8;
         auto cur = llvm::cast<llvm::ConstantInt>(bit_consts[byte_idx])
                        ->getZExtValue();

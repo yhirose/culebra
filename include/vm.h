@@ -2902,6 +2902,27 @@ class Compiler {
     return compile_unit(ast, {.stdlib = stdlib, .debug = debug, .deps = &deps});
   }
 
+  // A loader's module list — dependencies first, the entry module last, with
+  // the synthesized stdlib preamble spliced in front when the engine asked
+  // for it — as one program. The preamble is a prologue to the entry module
+  // rather than a module of its own (compile_module_impl runs it as one), so
+  // it comes off the front here; everything between it and the entry is a
+  // real dependency, already topologically ordered.
+  static VmProgram compile_modules(const std::vector<LoadedModule>& modules,
+                                   Debug debug = Debug::Off) {
+    if (modules.empty()) return {};
+    const peg::Ast* stdlib = nullptr;
+    size_t first_dep = 0;
+    if (modules.front().abs_path == kStdlibPreamblePath) {
+      stdlib = modules.front().ast.get();
+      first_dep = 1;
+    }
+    std::vector<const peg::Ast*> deps;
+    for (size_t i = first_dep; i + 1 < modules.size(); i++)
+      deps.push_back(modules[i].ast.get());
+    return compile_module(*modules.back().ast, stdlib, debug, deps);
+  }
+
   // One REPL input. The line's top-level bindings land in the session's
   // cells rather than this program's slots, so the next line still sees them
   // (and a closure this line builds sees what a later one puts there), and
@@ -6300,7 +6321,15 @@ class Compiler {
         // so the element's own `+1` is released once the shape matched. A
         // mismatch is an error leaving the loop, and the unwind ladder
         // closes the iterator on the way out.
+        //
+        // The bind gets its own temp scope because this one runs per
+        // iteration: a nested pattern's intermediate reads a container into a
+        // temp and leaves it to the sweep (compile_pattern_bind's contract),
+        // and the enclosing statement's sweep fires once for the whole loop —
+        // so every iteration but the last stranded that `+1`
+        // (`for k, (a, b) in {...}` leaked one object per extra entry).
         StampGuard pos(*this, id);
+        TempScope pts(*this);
         std::vector<size_t> fail;
         compile_pattern_test(id, base + kForElem, fail);
         compile_pattern_bind(id, base + kForElem, /*subj_owned=*/false, fail,
@@ -6733,12 +6762,23 @@ class Compiler {
     return true;
   }
 
-  // The at-most-once explicit drop. The receiver is borrowed — the guard only
-  // reads it — so the statement sweep stays its releaser, and the call's value
-  // is nil whatever the drop body returned.
+  // The at-most-once explicit drop. The guard only reads the receiver, so the
+  // op borrows it — but this call is still the receiver's last reader on its
+  // path, so an owned one is released here rather than left to the statement
+  // sweep. It has to be: inside the UFCS dispatch the candidate arm hands the
+  // same receiver to the call, and that Take drops the temp from the sweep
+  // list for every arm, so a borrow here stranded the +1 whenever the drop
+  // arm was the one that ran (`let drop = 5; ([1, 2]).drop()` leaked the
+  // array). Consuming unconditionally keeps one rule for every arm instead of
+  // one per dispatch shape. The call's value is nil whatever the drop body
+  // returned.
   ExprResult emit_explicit_drop(const peg::Ast& at, ExprResult r) {
     int32_t t = alloc_temp(at);
     emit(Op::Drop, t, r.slot);
+    if (r.owned) {
+      emit(Op::Release, r.slot);
+      forget_temp(r.slot);
+    }
     return {t, true};
   }
 
@@ -10959,6 +10999,34 @@ class RetainedRuns {
 // (emit_arith_step, emit_comparison_i1, value_to_bool) — one dispatch
 // definition, two consumers.
 struct Lowering {
+  // One chunk's parameter metadata, as globals of the module being built —
+  // the AST path's emit_param_meta_global, fed from the chunk instead of from
+  // a function literal's AST. Called from the MakeClosure site that first
+  // needs it and cached by the caller: the globals are constant and the
+  // registration idempotent, so every site naming a chunk registers the same
+  // one. It has to be a site rather than a prepass because
+  // IRBuilder::CreateGlobalString takes the module from the insertion block,
+  // which only a chunk being lowered has.
+  static llvm::Constant* param_meta_global(
+      JIT& j, const VmProgram& p, int32_t chunk_idx,
+      const std::vector<llvm::Function*>& fns) {
+    const Chunk& c = p.chunks[chunk_idx];
+    std::vector<bool> has_default, muts;
+    for (size_t k = 0; k < c.param_names.size(); k++) {
+      has_default.push_back(k < c.param_has_default.size() &&
+                            c.param_has_default[k] != 0);
+      muts.push_back(k < c.param_mut.size() && c.param_mut[k] != 0);
+    }
+    auto idx = [](int32_t v) {
+      return v >= 0 ? std::optional<size_t>(static_cast<size_t>(v))
+                    : std::nullopt;
+    };
+    return j.emit_param_meta_global(
+        fns[chunk_idx], c.param_names, has_default, idx(c.kwargs_rest_idx),
+        idx(c.first_kw_only_idx), c.multifn_name, c.return_type, muts,
+        c.param_types, c.param_declared_types, c.cb_min, c.cb_max);
+  }
+
   // The JitFn ABI signature (jit_value.h), spelled once for both the chunk
   // function creation and the indirect call site.
   static llvm::FunctionType* jit_fn_type(llvm::IRBuilder<>& b,
@@ -10969,34 +11037,125 @@ struct Lowering {
         false);
   }
 
-  static void run_program(const VmProgram& p, bool emit_llvm, int opt_level) {
+  // `module_name` keys the backend object cache (JIT::jit_module_name): the
+  // caller passes the name derived from the sources it compiled, or leaves it
+  // empty for a program with nothing stable to key on. `fast_codegen` is
+  // `--jit-faststart`, which skips the IR pipeline and takes the backend's
+  // fast paths.
+  static void run_program(const VmProgram& p, bool emit_llvm, int opt_level,
+                          bool fast_codegen = false,
+                          const std::string& module_name = "vm") {
     using namespace llvm;
     JIT::ensure_native_target_init();
     auto ctx = std::make_unique<LLVMContext>();
-    auto mod = std::make_unique<Module>("vm", *ctx);
+    auto mod = std::make_unique<Module>(
+        module_name.empty() ? "vm" : module_name, *ctx);
     JIT::apply_target(*mod, Triple(sys::getDefaultTargetTriple()));
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
-    jit.declare_runtime_functions();
+    lower_program(jit, p);
+    if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
+    if (emit_llvm) {
+      mod->print(outs(), nullptr);
+    } else {
+      JIT::exec(std::move(ctx), std::move(mod), fast_codegen);
+    }
+  }
+
+  // AOT: the same lowering, to a TargetMachine object file instead of ORC,
+  // plus the C `int main(int, char**)` that hands `__culebra_main` to
+  // `culebra_aot_bootstrap` (libculebra_rt.a). An empty `target_triple` means
+  // the host. Returns 0 on success. JIT::build_object's tail, over bytecode.
+  static int build_object(const VmProgram& p, const std::string& out_path,
+                          int opt_level, bool emit_llvm,
+                          const std::string& target_triple) {
+    using namespace llvm;
+    if (target_triple.empty()) {
+      JIT::ensure_native_target_init();
+    } else {
+      JIT::ensure_all_targets_init();
+    }
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>("culebra", *ctx);
+    std::string err;
+    auto tm = JIT::apply_target(
+        *mod,
+        Triple(target_triple.empty() ? sys::getDefaultTargetTriple()
+                                     : target_triple),
+        &err);
+    if (!tm) {
+      std::fprintf(stderr, "culebra build: %s\n", err.c_str());
+      return 1;
+    }
+
+    IRBuilder<> builder(*ctx);
+    JIT jit(ctx.get(), mod.get(), builder);
+    auto* mainFn = lower_program(jit, p);
+
+    auto i32 = builder.getInt32Ty();
+    auto ptrTy = PointerType::get(*ctx, 0);
+    auto bootstrapFn = Function::Create(
+        FunctionType::get(i32, {i32, ptrTy, ptrTy}, false),
+        GlobalValue::ExternalLinkage, "culebra_aot_bootstrap", mod.get());
+    auto cMain = Function::Create(
+        FunctionType::get(i32, {i32, ptrTy}, false),
+        GlobalValue::ExternalLinkage, "main", mod.get());
+    builder.SetInsertPoint(BasicBlock::Create(*ctx, "entry", cMain));
+    auto argIt = cMain->arg_begin();
+    llvm::Value* argcArg = &*argIt++;
+    llvm::Value* argvArg = &*argIt;
+    builder.CreateRet(
+        builder.CreateCall(bootstrapFn, {argcArg, argvArg, mainFn}));
+    verifyFunction(*cMain);
+
+    if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
+    if (emit_llvm) mod->print(outs(), nullptr);
+
+    std::error_code EC;
+    raw_fd_ostream OS(out_path, EC, sys::fs::OF_None);
+    if (EC) {
+      std::fprintf(stderr, "culebra build: cannot open %s: %s\n",
+                   out_path.c_str(), EC.message().c_str());
+      return 1;
+    }
+    legacy::PassManager pm;
+    if (tm->addPassesToEmitFile(pm, OS, nullptr, CodeGenFileType::ObjectFile)) {
+      std::fprintf(stderr,
+                   "culebra build: target does not support object emission\n");
+      return 1;
+    }
+    pm.run(*mod);
+    OS.flush();
+    return 0;
+  }
+
+  // Lower the whole program into `j`'s module and return `__culebra_main`.
+  // Shared by the two things a lowered program can become: code in this
+  // process (run_program) and an object file (build_object).
+  static llvm::Function* lower_program(JIT& j, const VmProgram& p) {
+    using namespace llvm;
+    j.declare_runtime_functions();
     // Registers are borrowed by the dispatch helpers; a region's release
     // ladder owns the throw path (see the Op enum's contract notes).
-    jit.vm_borrow_ops_ = true;
+    j.vm_borrow_ops_ = true;
 
     // One LLVM function per chunk: the top level keeps the __culebra_main
     // entry shape; function chunks get the JitFn ABI, so MakeClosure hands
     // their address to closure_new exactly like a JIT-compiled function.
-    auto ptrTy = PointerType::get(*ctx, 0);
-    auto jitFnTy = jit_fn_type(builder, ptrTy);
+    auto ptrTy = PointerType::get(j.ctx_, 0);
+    auto jitFnTy = jit_fn_type(j.builder_, ptrTy);
     std::vector<Function*> fns(p.chunks.size());
-    fns[0] = Function::Create(FunctionType::get(builder.getVoidTy(), false),
+    fns[0] = Function::Create(FunctionType::get(j.builder_.getVoidTy(), false),
                               Function::ExternalLinkage, "__culebra_main",
-                              mod.get());
+                              j.module_);
     for (size_t i = 1; i < p.chunks.size(); ++i) {
       fns[i] = Function::Create(jitFnTy, Function::InternalLinkage,
-                                std::format("__vm_fn_{}", i), mod.get());
+                                std::format("__vm_fn_{}", i), j.module_);
     }
+    // Filled on first use, per chunk (see param_meta_global).
+    std::vector<llvm::Constant*> metas(p.chunks.size(), nullptr);
     for (size_t i = 0; i < p.chunks.size(); ++i) {
-      lower_chunk(jit, p, i, fns);
+      lower_chunk(j, p, i, fns, metas);
       // Report and stop: verifyFunction's one-argument form returns the
       // verdict and prints nothing, so ignoring it let malformed IR (an
       // i1 result compared against an i8 zero, from a runtime helper whose
@@ -11006,16 +11165,12 @@ struct Lowering {
       if (verifyFunction(*fns[i], &os))
         throw std::runtime_error("vm: lowered IR failed verification: " + err);
     }
-    if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
-    if (emit_llvm) {
-      mod->print(outs(), nullptr);
-    } else {
-      JIT::exec(std::move(ctx), std::move(mod));
-    }
+    return fns[0];
   }
 
   static void lower_chunk(JIT& j, const VmProgram& p, size_t chunk_idx,
-                          const std::vector<llvm::Function*>& fns) {
+                          const std::vector<llvm::Function*>& fns,
+                          std::vector<llvm::Constant*>& metas) {
     using namespace llvm;
     const Chunk& c = p.chunks[chunk_idx];
     auto* fn = fns[chunk_idx];
@@ -14261,15 +14416,16 @@ struct Lowering {
           // address, so a keyword call can resolve names against it. The
           // registration is idempotent (same key, same pointer), which is
           // why the AST path does it here too rather than at module init.
-          if (static_cast<size_t>(in.b) < p.param_metas.size()) {
+          // The metadata is a global of THIS module, not a pointer into the
+          // compiler's heap: an AOT object outlives the process that wrote
+          // it, so a baked address would be dangling by the time the built
+          // program ran.
+          if (!metas[in.b]) metas[in.b] = param_meta_global(j, p, in.b, fns);
+          if (auto* meta = metas[in.b]) {
             j.emit_call(
                 j.module_->getOrInsertFunction(rt::register_param_meta,
                                                b.getVoidTy(), ptrTy, ptrTy),
-                {fns[in.b],
-                 b.CreateIntToPtr(
-                     b.getInt64(reinterpret_cast<int64_t>(
-                         &p.param_metas[in.b]->meta)),
-                     ptrTy)});
+                {fns[in.b], meta});
           }
           // A constructor thunk is native as far as sendability goes — the
           // AST path registers its own the same way (jit_compile_class.h),
@@ -15214,12 +15370,45 @@ struct Lowering {
 };
 
 inline void run_program_via_llvm(VmProgram& prog, bool emit_llvm,
-                                 int opt_level) {
+                                 int opt_level, bool fast_codegen = false,
+                                 const std::string& module_name = "vm") {
   // What a keyword call binds against: each chunk's function gets the
   // metadata registered under its own address, the way the AST path
   // registers each closure's.
   build_param_metas(prog);
-  Lowering::run_program(prog, emit_llvm, opt_level);
+  Lowering::run_program(prog, emit_llvm, opt_level, fast_codegen, module_name);
+}
+
+// The compiled lane for a loader's module list: what `--jit` runs. One
+// bytecode program, lowered to one LLVM module, keyed for the object cache
+// exactly as the AST path keyed it.
+inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
+                                 bool emit_llvm = false, bool debug = false,
+                                 int opt_level = 2,
+                                 bool fast_codegen = false) {
+  if (modules.empty()) return;
+  auto prog = Compiler::compile_modules(
+      modules, debug ? Debug::Break : Debug::Off);
+  run_program_via_llvm(
+      prog, emit_llvm, opt_level, fast_codegen,
+      JIT::jit_module_name(modules, fast_codegen, opt_level));
+}
+
+// `culebra build`: the same program the JIT lane runs, emitted as an object
+// file. Nothing host-side is registered here — the metadata a keyword call
+// resolves against is a global of the module (Lowering::param_meta_globals),
+// so the built binary carries its own.
+inline int build_object_from_modules(
+    const std::vector<LoadedModule>& modules, const std::string& out_path,
+    int opt_level = 2, bool emit_llvm = false,
+    const std::string& target_triple = "") {
+  if (modules.empty()) {
+    std::fprintf(stderr, "culebra build: empty module list\n");
+    return 1;
+  }
+  auto prog = Compiler::compile_modules(modules);
+  return Lowering::build_object(prog, out_path, opt_level, emit_llvm,
+                                target_triple);
 }
 
 }  // namespace culebra::vm

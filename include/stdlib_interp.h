@@ -7831,10 +7831,6 @@ inline std::unordered_set<std::string_view> stdlib_preamble_triggers(
   return out;
 }
 
-// Path stamped on the synthesized preamble module, so it is distinguishable
-// from user modules.
-inline constexpr const char* kStdlibPreamblePath = "<stdlib>";
-
 // JIT/AOT only: prepend the synthesized `<stdlib>` preamble module.
 //
 // The preamble registers the builders behind the helpers user code calls

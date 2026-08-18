@@ -30,6 +30,13 @@ struct LoadedModule {
   std::vector<std::filesystem::path> deps;
 };
 
+// Path stamped on the synthesized preamble module, so it is distinguishable
+// from user modules. Lives here rather than beside the splice that mints it
+// (stdlib_interp.h) because every engine that has to tell the prologue apart
+// from a real dependency reads it — the bytecode compiler among them, which
+// stdlib_interp.h is above.
+inline constexpr const char* kStdlibPreamblePath = "<stdlib>";
+
 // Prepend a synthetic module declaring the built-in traits (Stringer /
 // Eq / Comparable), so they are registered before any user code runs.
 // Interp and JIT/AOT share this one definition — the synthetic module's

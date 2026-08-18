@@ -806,8 +806,11 @@ inline JIT::Owned JIT::compile_fn_common(
     if (!paramDefaults[i]) cbMin++;
   }
   long cbMax = argsRestName ? -1 : static_cast<long>(regular_end);
+  std::vector<bool> paramHasDefault;
+  paramHasDefault.reserve(paramDefaults.size());
+  for (const auto* d : paramDefaults) paramHasDefault.push_back(d != nullptr);
   auto* paramMeta = emit_param_meta_global(
-      fn, paramNames, paramDefaults, kwargsRestIdx, firstKwOnlyIdx,
+      fn, paramNames, paramHasDefault, kwargsRestIdx, firstKwOnlyIdx,
       std::string(declName), std::string(returnType), paramMuts,
       paramTypeNames, paramDeclaredTypeNames, cbMin, cbMax);
   if (outParamMeta) *outParamMeta = paramMeta;

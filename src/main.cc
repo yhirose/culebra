@@ -823,8 +823,8 @@ int run_build(const BuildOptions& opts) {
     }
   }
 
-  int rc = culebra::JIT::build_object(modules, obj, opts.opt_level,
-                                       opts.emit_llvm, opts.target);
+  int rc = culebra::vm::build_object_from_modules(
+      modules, obj, opts.opt_level, opts.emit_llvm, opts.target);
   if (rc != 0) return rc;
 
   // --- Embedded assets: bake each `Embed.dir("...")` directory into an object
@@ -1361,28 +1361,11 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
 
 #ifdef CULEBRA_JIT_ENABLED
   if (options.vm != Options::Vm::Off) {
-    // The splice puts the stdlib preamble first, as its own module; it is a
-    // prologue to the entry module here, not a module of its own. Anything
-    // beyond that pair is a real multi-module script.
-    const peg::Ast* stdlib = nullptr;
-    size_t first_dep = 0;
-    if (!modules.empty() &&
-        modules.front().abs_path == culebra::kStdlibPreamblePath) {
-      stdlib = modules.front().ast.get();
-      first_dep = 1;
-    }
-    // Everything between the preamble and the entry module is a dependency,
-    // already in the loader's topological order.
-    std::vector<const peg::Ast*> deps;
-    for (size_t i = first_dep; i + 1 < modules.size(); i++) {
-      deps.push_back(modules[i].ast.get());
-    }
-    auto prog = culebra::vm::Compiler::compile_module(
-        *modules.back().ast, stdlib,
-        // `--debug` gives `debugger` the minimal break the JIT's gives it;
-        // stepping and inspection live behind `culebra dap --vm`.
-        options.debug ? culebra::vm::Debug::Break : culebra::vm::Debug::Off,
-        deps);
+    // `--debug` gives `debugger` the minimal break the JIT's gives it;
+    // stepping and inspection live behind `culebra dap --vm`.
+    auto prog = culebra::vm::Compiler::compile_modules(
+        modules,
+        options.debug ? culebra::vm::Debug::Break : culebra::vm::Debug::Off);
     switch (options.vm) {
       case Options::Vm::Dump:
         cout << culebra::vm::dump(prog);
@@ -1398,9 +1381,13 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     return true;
   }
 
+  // `--jit` is the bytecode compiler's LLVM lane: one program, lowered.
+  // `--vm-llvm` above reaches the same lowering by hand for a program the
+  // dump can be asked about in the same breath.
   if (options.jit) {
-    culebra::JIT::run_modules(modules, options.emit_llvm, options.debug,
-                               options.opt_level, options.jit_faststart);
+    culebra::vm::run_modules_via_llvm(modules, options.emit_llvm, options.debug,
+                                      options.opt_level,
+                                      options.jit_faststart);
     return true;
   }
 #endif
@@ -1485,13 +1472,10 @@ culebra::BlockRunner doc_block_runner(DocEngine engine) {
       if (!doc_block_modules(name, code, modules, fail)) return fail;
       try {
         if (vm) {
-          const peg::Ast* stdlib =
-              modules.size() == 2 ? modules.front().ast.get() : nullptr;
-          auto prog = culebra::vm::Compiler::compile_module(
-              *modules.back().ast, stdlib);
+          auto prog = culebra::vm::Compiler::compile_modules(modules);
           culebra::vm::Exec::run(prog);
         } else {
-          culebra::JIT::run_modules(modules);
+          culebra::vm::run_modules_via_llvm(modules);
         }
       } catch (const culebra::CulebraError& e) {
         return doc_error_outcome(e);
