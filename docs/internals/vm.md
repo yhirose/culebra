@@ -1112,13 +1112,13 @@ bytecode — the front end itself is not where the second is going.
 
 ### 12.6 What Phase 3 still owes
 
-- **The cleanup that is left.** The IR volume of §12.5 is gone (§12.8),
-  and the residual `-O2` second is machine-code generation, not the
-  optimizer (§12.9): a quarter of the optimized module is still unwind
-  cleanup, against a tenth of the AST codegen's. Removing that excess
-  closes the gap outright, and it means one landing pad per scope
-  rather than one per abandoned-temporary set — which means unwind
-  slots the lowering owns instead of reused bytecode registers.
+- ~~**The cleanup that is left.**~~ Settled, and not by a fix: the IR
+  volume of §12.5 is gone (§12.8), the residual `-O2` second is
+  machine-code generation rather than the optimizer (§12.9), and it is
+  register pressure rather than instruction count (§12.10). It is the
+  price of promoting the bytecode register file to SSA, which is the
+  same property that makes the lowered code faster to run. Four pad
+  shapes were measured; the one in the tree is the best of them.
 - `--vm-llvm` is the same engine as `--jit` today, which makes it a
   duplicate flag rather than a lane. Retiring it means re-pointing
   every gate that names it.
@@ -1291,3 +1291,81 @@ larger piece of work than §12.8 was.
 
 [the test splits]: the ~N^1.9 in single-function size that made the
 JIT-lane test files worth splitting.
+
+### 12.10 The throw path costs registers, not instructions
+
+§12.9 ends on a prediction — remove the cleanup excess and the gap
+closes — and names one landing pad per scope as the way to do it. Both
+halves were built and measured. The prediction is wrong, and the way it
+is wrong says what the residual second actually buys.
+
+Start with the obstacle §12.9 named, because it turned out to be
+removable. A coarse release cannot reach a live binding as long as no
+register is ever both a temporary and a binding of the same scope, and
+the compiler can simply guarantee that: `Scope::temp_high` remembers
+how far up the scope has spent registers on temporaries, and
+`alloc_slot` steps over it. Then a step can release the union of every
+temporary its segment ever held — a register the throw did not reach is
+nil — and the per-site sets are not load-bearing after all. That costs
+about a sixth more registers per frame, and it works.
+
+It also produces the smallest optimized module of anything measured
+here — 89,984 instructions against master's 95,925 — and takes `llc`
+**33.8 seconds**. Every invoke in the scope now unwinds to one block,
+and mem2reg answers a block with 705 predecessors that reads a dozen
+registers with a phi per register 705 entries wide. Total phi weight
+goes from 72,519 to 640,872.
+
+So volume is not the metric. The measurement that settles what is:
+leave the pads and their edges exactly where they are and have them
+release *nothing*.
+
+| `tests/test_core.cul` | `-O0` IR | `-O2` IR | `opt` | `llc` | sum |
+|---|---|---|---|---|---|
+| master (AST codegen) | 234,293 | 95,925 | 1.72 | 1.66 | 3.38 |
+| branch, as it stands | 232,289 | 102,699 | 1.84 | 2.42 | **4.26** |
+| branch, pads release nothing | 202,134 | 81,935 | 1.43 | 1.60 | **3.03** |
+
+The EH structure is free. **The entire gap is what the pads read.**
+
+`llc -time-passes` says where it goes: Greedy Register Allocator 0.43 s
+against master's 0.17, Register Coalescer 0.29 against 0.07 — 0.47 s of
+the 0.76 s difference. Instruction selection is the same on both. And
+the assembly shows it directly: 43,703 stack references against 19,790
+with the pads emptied, over the same 175 functions. A value live into a
+landing pad has to be spilled — the unwinder restores callee-saved
+registers per the frame's CFI and nothing else — so every register a
+step still needs crosses the edge in memory, at every site that can
+throw.
+
+That is why the AST codegen's throw path is cheap to compile and this
+one is not. Master keeps far more of its frame in memory: 6,051 stores
+survive `-O2` against the branch's 2,726. Its scope slots were never
+SSA values to begin with, so releasing them at a pad costs no live
+range. The lowering promotes the bytecode register file with mem2reg —
+which is exactly what makes the lowered code 2–4.5× faster than the
+codegen it replaced (§12.5). The compile-time bill and the run-time win
+are the same fact.
+
+Four pad shapes, all measured on the same file:
+
+| pad shape | `-O0` IR | `-O2` IR | max phi | `opt`+`llc` |
+|---|---|---|---|---|
+| one per abandoned set, shared chain (§12.8) | 232,289 | 102,699 | 63 | **4.26** |
+| one per scope, union release | 225,282 | **89,984** | 705 | 37.6 |
+| one per statement, shared chain | 246,801 | 105,519 | 73 | 4.95 |
+| one per statement, straight-line | 328,994 | 113,705 | 176 | 5.55 |
+
+The shape §12.8 arrived at is the best of them, and the two axes pull
+against each other: sharing a pad across sites shrinks the module and
+widens the phis, splitting it narrows the phis and grows the module.
+One more thing was tried and did nothing — having a temp prelude branch
+straight into its scope step instead of re-raising into it, which drops
+a landing pad and an `_Unwind_Resume_or_Rethrow` per prelude (4.18 s
+against 4.24 s; SimplifyCFG had been folding the round trip already).
+
+What would close it is not a pad shape. It is keeping the registers a
+cleanup step reads out of SSA — which is giving back the run-time win
+to buy compile time, and on a language where `--jit` compiles once and
+runs a loop, that is the wrong trade. Phase 3 stops here: 1.2× to
+compile, 2–4.5× faster to run.
