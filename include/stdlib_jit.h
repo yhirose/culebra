@@ -8487,18 +8487,21 @@ inline std::mutex& _lazy_ns_builder_mutex() {
   return m;
 }
 // The builder's code, plus — on a lane whose closures share one fn_ptr — the
-// capture cell naming the chunk to run (see _jit_closure_desc_hook). Null
-// `desc` is the AST-JIT/AOT case, where the fn_ptr says everything.
+// chunk descriptor to run (the payload of capture 0, see
+// _jit_closure_desc_hook). It is the descriptor value and not the cell
+// carrying it: cells belong to the Runtime that allocated them, and every
+// isolate rebuilds this builder on its own. Zero `desc` is the AST-JIT/AOT
+// case, where the fn_ptr says everything.
 struct _LazyNsBuilder {
   void* fn_ptr = nullptr;
-  JitCell* desc = nullptr;
+  int64_t desc = 0;
 };
 inline std::unordered_map<std::string, _LazyNsBuilder>& _lazy_ns_builders() {
   static std::unordered_map<std::string, _LazyNsBuilder> r;
   return r;
 }
 inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr,
-                                      JitCell* desc) {
+                                      int64_t desc) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
   _lazy_ns_builders().insert_or_assign(name, _LazyNsBuilder{fn_ptr, desc});
 }
@@ -8519,14 +8522,11 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
   // the Runtime's lifetime, same discipline as the native path below.
   if (auto bd = _lazy_ns_builder(name); bd.fn_ptr) {
     // One capture where the lane needs the chunk named (the VM executor's
-    // descriptor cell, retained for the closure's own lifetime), none where
-    // the fn_ptr is the whole answer.
+    // descriptor, in a cell of this Runtime's own), none where the fn_ptr is
+    // the whole answer.
     auto* cls = culebra_runtime_closure_new(bd.fn_ptr, bd.desc ? 1 : 0,
                                             /*arity=*/0);
-    if (bd.desc) {
-      culebra_runtime_cell_retain(bd.desc);
-      cls->captures[0] = bd.desc;
-    }
+    if (bd.desc) cls->captures[0] = culebra_runtime_cell_new(TAG_LONG, bd.desc);
     JitValue r = _culebra_invoke0(cls);
     culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(cls));
     if (r.tag != TAG_OBJECT) {
@@ -8678,7 +8678,8 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
                     name ? name : "?", n_own),
         0, 0);
   }
-  _lazy_ns_register_builder(name ? name : "", c->fn_ptr, desc);
+  _lazy_ns_register_builder(name ? name : "", c->fn_ptr,
+                            desc ? desc->value.data : 0);
 }
 
 // Cold arm of jit.h's emit_reject_bare_builtin_method. The codegen filter

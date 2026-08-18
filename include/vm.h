@@ -2630,9 +2630,6 @@ struct VmChunkMeta {
 struct VmProgram {
   std::vector<Chunk> chunks;
   std::vector<VmFnDesc> descs;  // filled by Exec::run, one per chunk
-  // One shared descriptor cell per chunk (also Exec::run's): MakeClosure
-  // retains it instead of allocating a cell per closure created.
-  std::vector<JitCell*> desc_cells;
   // One per chunk, built before the run: what a keyword call binds against.
   std::vector<std::unique_ptr<VmChunkMeta>> param_metas;
   // The entry module's path, for the debug instructions: they only exist in
@@ -8696,32 +8693,15 @@ struct Exec {
 
   static void run(VmProgram& p) {
     prepare(p);
-    // Drop the pin and the program's +1 on every exit path; a closure still
-    // alive on the uncaught-throw path holds its own retain (GC backstop
-    // territory).
-    struct CellGuard {
-      VmProgram& p;
-      ~CellGuard() { release_descs(p); }
-    } guard{p};
     run_prepared(p);
   }
 
-  // The REPL's form: the program outlives its own execution, so its
-  // descriptor cells have to as well. A closure one line built is called by a
-  // later one, and running that closure's body reads desc_cells again — every
-  // MakeClosure in it does. The session owns them from here and hands them
-  // back with release_descs when it ends.
+  // The REPL's form: the program outlives its own execution, so a closure one
+  // line built stays callable from a later one. Nothing extra to hand back —
+  // the descriptor a closure carries is its own cell.
   static void run_retained(VmProgram& p) {
     prepare(p);
     run_prepared(p);
-  }
-
-  static void release_descs(VmProgram& p) {
-    for (auto* cl : p.desc_cells) {
-      _gc_heap().unpin(cl);
-      culebra_runtime_cell_release(cl);
-    }
-    p.desc_cells.clear();
   }
 
   static void prepare(VmProgram& p) {
@@ -8731,15 +8711,8 @@ struct Exec {
     _jit_closure_mut_capture_hook = &mut_capture_for_closure;
     _jit_closure_is_native_hook = &is_native_closure;
     p.descs.resize(p.chunks.size());
-    p.desc_cells.resize(p.chunks.size());
-    for (size_t i = 0; i < p.chunks.size(); ++i) {
+    for (size_t i = 0; i < p.chunks.size(); ++i)
       p.descs[i] = {&p, static_cast<int32_t>(i)};
-      p.desc_cells[i] = culebra_runtime_cell_new(
-          TAG_LONG, reinterpret_cast<int64_t>(&p.descs[i]));
-      // desc_cells is a C++-held root the conservative stack scan cannot
-      // see (a heap vector) — pin for the run, the namespace-cache pattern.
-      _gc_heap().pin(p.desc_cells[i]);
-    }
   }
 
   static void run_prepared(VmProgram& p) {
@@ -10264,8 +10237,12 @@ struct Exec {
               f.is_getter ? reinterpret_cast<void*>(&getter_trampoline)
                           : reinterpret_cast<void*>(&trampoline),
               1 + n, static_cast<size_t>(f.arity));
-          culebra_runtime_cell_retain(p.desc_cells[in.b]);
-          mc->captures[0] = p.desc_cells[in.b];
+          // The descriptor rides in a cell of this closure's own, like every
+          // other capture: cells are refcounted non-atomically and freed into
+          // the slab of the Runtime that allocated them, so one shared per
+          // chunk would be retained and released by every isolate at once.
+          mc->captures[0] = culebra_runtime_cell_new(
+              TAG_LONG, reinterpret_cast<int64_t>(&p.descs[in.b]));
           // Fill the captures from the creating frame's cell slots, each
           // retained — emit_closure_build's loop.
           for (size_t i = 0; i < n; ++i) {
@@ -11021,15 +10998,10 @@ struct RetainedProgram {
   std::unique_ptr<VmProgram> prog;
 };
 
-// The session-lifetime owner of retained programs: it holds every program's
-// descriptor cells pinned and hands them back when no retained closure can
-// be called again.
+// The session-lifetime owner of retained programs: every program a line
+// compiled stays alive until no retained closure can be called again.
 class RetainedRuns {
  public:
-  ~RetainedRuns() {
-    for (auto& r : runs_)
-      if (r.prog) Exec::release_descs(*r.prog);
-  }
   RetainedProgram& keep(std::shared_ptr<std::string> source,
                         std::shared_ptr<peg::Ast> ast,
                         std::unique_ptr<VmProgram> prog) {
