@@ -15329,6 +15329,15 @@ struct Lowering {
       if (!pad.open(pads[k], "vm.scope.exc")) continue;
       auto d = b.CreateLoad(i64Ty, depthSlot, "rec.d");
       b.CreateCall(restoreFn, {d});
+      // Drain the JIT's own unwind-temp pool too. A shared emitter called from
+      // an arm above can park a `+1` in an Owned handle rather than a register
+      // — emit_for_open_protocol holds the iterator that way while it
+      // validates the protocol — and that pool lives in the LLVM function, so
+      // the bytecode temp table (which the preludes above stand on) cannot see
+      // it. Without this a rejected iterator stranded its object
+      // (`for x in {iter: fn () { {a: 1} }}`). Releasing nil-clears each slot,
+      // so an enclosing pad draining again is a no-op.
+      j.release_unwind_temps();
       if (cu.defer_mark_slot >= 0) {
         auto markV = b.CreateLoad(j.valueType_, slots[cu.defer_mark_slot]);
         b.CreateCall(j.module_->getFunction(rt::defer_run_to),

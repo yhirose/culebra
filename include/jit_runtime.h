@@ -1919,6 +1919,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_superset(JitSet* a,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_add_method(
     JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
   JitValue v{tag, data};
+  // Hashing the element is where an unhashable one raises, and this helper
+  // owns the `+1` it was handed on every exit — so the throw path is the
+  // guard's (`({1, 2, 3}).add([1])` stranded the array otherwise).
+  JitUnwindRelease g{v};
   bool inserted =
       _jit_at_pos(line, col, [&] { return set->index->insert(v).second; });
   if (!inserted) {
