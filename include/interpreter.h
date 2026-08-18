@@ -7999,6 +7999,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                          bool mut = true) {
     if (!pattern_bind_) return;
     auto name = ident_node.token;
+    // A leaf named `self` inside a call is a reassignment, never the implicit
+    // declaration a free name would get: `self` is a binding of every frame,
+    // and the compiled engines give even a plain lambda's frame its
+    // placeholder slot where this walker binds one only for a receiver. At
+    // the top level no frame carries one, and all three engines declare.
+    if (!pattern_declare_ && name == "self" && culebra::_culebra_call_depth > 0 &&
+        !env->has(name)) {
+      culebra::throw_immutable_assign_at("self", ident_node.line,
+                                         ident_node.column);
+    }
     if (!pattern_declare_ && env->has(name)) {
       env->assign(name, std::move(val));
     } else {
@@ -11108,6 +11118,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     using namespace peg::udl;
 
     Value val = eval(*ast.nodes[0], env);
+    // A diverging receiver (`(return x).size()`) left a completion pending:
+    // it produced no value, so the chain has nothing to walk. eval() bails on
+    // entry for the same reason, but a postfix is dispatched on the value in
+    // hand rather than through eval, so the check belongs here — every other
+    // position a `return` can sit in already leaves the frame on all three
+    // engines.
+    if (culebra::flow_pending()) return val;
 
     for (auto i = 1u; i < ast.nodes.size(); i++) {
       const auto& postfix = *ast.nodes[i];

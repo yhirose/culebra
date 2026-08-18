@@ -1603,9 +1603,24 @@ inline Value make_parallel_namespace() {
 
 // Build the live handle Object: `join` / `poll` / `drop` methods closing over
 // the shared core, plus a `__nonsendable__` marker (a handle can't be sent).
+// The id the handle carries is the same counter the compiled engines'
+// registry hands out (they need it to find the core again through a
+// captureless native method; this walker closes over `core` directly). It is
+// on the handle for the same reason a Channel endpoint carries
+// `__channel_id__` on every engine — a handle's identity is observable, and
+// all three must show the same one.
+inline std::atomic<long>& isolate_next_id() {
+  static std::atomic<long> n{1};
+  return n;
+}
+
 inline Value make_isolate_handle(std::shared_ptr<IsolateCore> core) {
   using namespace std::literals;
   ObjectValue h;
+  h.initialize("_core_id",
+               Value(static_cast<int64_t>(isolate_next_id().fetch_add(
+                   1, std::memory_order_relaxed))),
+               true);
   h.initialize("__nonsendable__", Value(true), false);
 
   h.initialize(
