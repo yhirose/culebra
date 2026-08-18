@@ -10,11 +10,11 @@ representation — and its front end — with the JIT. The Phase 0 spike
 ([§10](#10-phase-0-spike-results)), Phase 1 built the third backend
 on the same branch (§10's postscript), and Phase 2 took it to the
 parity bar §7 sets ([§11](#11-phase-2-full-parity-results)). Phase 3
-has moved both compiled entries — `--jit` and `culebra build` — onto
-the bytecode, but has not yet deleted the AST codegen they left
-behind, so its exit criterion is not met
-([§12](#12-phase-3-folding-the-jit-onto-the-bytecode)). Phase 4 —
-retiring the tree-walker — is unimplemented. The observable language
+moved both compiled entries — `--jit` and `culebra build` — onto the
+bytecode and deleted the AST codegen they left behind, meeting §7's
+exit criterion: one consumer reads the AST, and it is the bytecode
+compiler ([§12](#12-phase-3-folding-the-jit-onto-the-bytecode)).
+Phase 4 — retiring the tree-walker — is unimplemented. The observable language
 contract in [`language.md`](../language.md) is unaffected: this is a
 change of engine, not of language. Where this document and
 `language.md` disagree, `language.md` wins.
@@ -829,12 +829,11 @@ where this section ends; §12 is its record.
 ## 12. Phase 3: folding the JIT onto the bytecode
 
 Started 2026-08-18 on branch `vm-phase3`, from the `master` commit
-Phase 2 landed at. Three batches in, both compiled entries — `--jit`
-and `culebra build` — lower bytecode, and no path outside `jit.h`
-reaches its AST codegen. The codegen is still there: `include/jit.h`
-is 16,446 lines, 80 of whose members take a `peg::Ast` and are now
-dead. §7's exit criterion — exactly one AST consumer — is therefore
-not met; §12.4 is what remains.
+Phase 2 landed at. Both compiled entries — `--jit` and `culebra build`
+— lower bytecode (§12.2), and the AST codegen they left behind is
+gone (§12.4): `include/jit.h` went from 16,446 lines to 5,271, and one
+consumer reads the AST, which is what §7 asked for. §12.5 is what the
+phase still owes.
 
 ### 12.1 A lane's exit code is half of its answer
 
@@ -1006,26 +1005,79 @@ an implementation, not a name.** Behavioural equivalence carried over
 on the first run, because the corpus had been comparing that lowering
 for a phase already. Nothing that names `--jit` did.
 
-### 12.4 What Phase 3 still owes
+### 12.4 Deleting the codegen
 
-- **The deletion.** `jit.h`'s AST codegen is unreachable but present.
-  The cut line is mechanical — a member is dead if its signature
-  takes a `peg::Ast` — and the two halves do not intersect: 80
-  members qualify, the lowering depends on 81 JIT members, and none
-  of those 81 takes an AST. (`compile_function_call_raw` and its
-  neighbours are value-based despite the name, and stay;
-  `emit_for_open_protocol` calls them.) The verification is stronger
-  than a build: the `-O0 --emit-llvm` output of every test program
-  must not change by a byte. What does not work is deleting them with
-  a brace counter — string literals and comments in this file hold
-  braces, and a counter that believes them walks off the end of a
-  member and takes the class's closing brace with it.
+`include/jit.h` went from 16,446 lines to 5,271; `stdlib_jit.h` lost
+1,996; three fragment headers (`jit_compile_assign.h`,
+`jit_compile_class.h`, `jit_compile_fn.h`) went entirely.
+
+Membership is decided per overload and per parameter: a member goes if
+it takes an AST it cannot do without. "Mentions `peg::Ast`" is the
+wrong predicate twice over. Several value-based helpers carry a
+`const peg::Ast* at = nullptr` tail for error positions
+(`emit_type_check`, `emit_object_set`, `compile_function_call_raw`),
+and several names carry both an AST overload and a value overload the
+lowering still calls. Either mistake takes live code with it, and the
+build says so — but only after a full rebuild, which is why the
+predicate is worth getting right before the first cut rather than
+after.
+
+The mechanical part had failed once already, on brace counting: string
+literals and comments in this file hold braces, so a counter that
+believes them walks off the end of a member and takes the class's
+closing brace with it. What works is indentation — clang-format puts
+every member of a top-level struct at two spaces and closes its body
+with a line that is exactly `  }` — which is exact, and cheap enough
+to re-run from a clean tree each time the predicate is refined.
+
+Three things the cut surfaced that a smaller change would not have:
+
+- **The AST codegen extended past `jit.h`.** `stdlib_jit.h`'s
+  `JitExtension` compiled `Math.sin(x)`, `IO.print(x)` and the bare
+  globals from their ASTs, reached through eight `ExtensionHooks`
+  function pointers. Six of the eight took an AST; the hook table is
+  down to the two that do not (`declare_runtime`, `is_builtin_var`).
+- **What the deletion stranded was larger than the deletion.**
+  Removing the AST members left some sixty more members, structs and
+  fields that only they had called: closure building, constructor
+  emission, the variable-slot constructors, the safe-navigation
+  helpers, an unwritten call-root position. C++ says nothing about a
+  private member nobody calls, so the way to find them is to iterate —
+  scan for members with no call site, delete, scan again — which took
+  four rounds to reach a fixed point.
+- **Two public entries had to come back.** `JIT::run` and
+  `JIT::build_object` are what [`deployment.md`](../deployment.md)
+  tells embedders to call. They are declared in `jit.h` and defined in
+  `vm.h` over the bytecode lanes, so the documented API is unchanged
+  and the engine underneath it is the new one.
+
+Two helpers stayed but moved. `ArgScan` and `scan_arg_list` are AST
+*analysis* rather than codegen and belong to the bytecode compiler
+now: the struct and the scan sit in `parser.h` beside
+`check_arg_list`, and the built-in keyword predicate moved into the
+compiler itself.
+
+The ratchet that compared the two AST walkers was re-pointed rather
+than retired. `tools/check_dispatch_symmetry.sh` diffed interp's
+`_eval_dispatch` case labels against `JIT::compile`'s; it now diffs
+them against the compiler's two switches (statement position and
+expression position). The allowlist shrank to one tag, `STRING`, which
+the interpreter folds through its `is_token` fallthrough.
+
+The deletion is verified by IR rather than by the gates: `--jit -O0
+--emit-llvm` over all 207 `tests/*.cul`, byte-identical before and
+after, stderr included. That is what makes a fourteen-thousand-line
+deletion a mechanical change instead of a risky one — a passing gate
+would only say the tests still pass.
+
+### 12.5 What Phase 3 still owes
+
 - **Performance parity, unmeasured since the switch.** `--jit`
   reaches LLVM through a different front end now; §10's numbers are
   for the other one.
 - `--vm-llvm` is the same engine as `--jit` today, which makes it a
-  duplicate flag rather than a lane. It stays until the deletion,
-  because it is what the gates name.
+  duplicate flag rather than a lane. Retiring it means re-pointing
+  every gate that names it.
 - One defect that is not this phase's but is on the VM: under
   parallel load `tests/isolate/test_lazy_ns_parse_race_jit.cul`
   segfaults on `--vm` alone — 7 runs in 40 at ten processes wide,
