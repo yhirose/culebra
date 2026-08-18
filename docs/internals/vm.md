@@ -650,10 +650,10 @@ as that record; §11.4 below is the current boundary.
 
 | gate | three-lane status |
 |---|---|
-| generated difftest corpus | 15,845 cases through interp / `--jit` / `--vm`; 0 divergences, **0 skips** (`tools/difftest/vm_skip_ceiling.txt` is a ratchet, currently 0) |
+| generated difftest corpus | 17,262 cases through interp / `--jit` / `--vm`; 0 divergences, **0 skips** (`tools/difftest/vm_skip_ceiling.txt` is a ratchet, currently 0) |
 | curated `tools/bench/vm_cases/` | 177 cases, `--vm` and `--vm-llvm` each diffed against interp, then the same sweep again under `CULEBRA_GC_STRESS=1` |
 | `tests/*.cul` symmetry, and the isolate suite | four lanes: interp, `--jit`, `--vm`, `--vm-llvm` |
-| `just doctest` | 461 documentation blocks on all three engines (`just doctest LANE=interp\|vm\|jit\|all`) |
+| `just doctest` | 465 documentation blocks on all three engines (`just doctest LANE=interp\|vm\|jit\|all`) |
 | `dap_test` (ctest) | the debug-adapter scenarios on both debug engines |
 
 The three surfaces the tree-walker used to own were rebuilt as seams
@@ -762,7 +762,8 @@ codegen.
 
 The grammar is in. Every one of the 204 `tests/*.cul` compiles and
 runs on the VM lanes: no module rejects, and no function literal is
-left as a poisoned chunk.
+left as a poisoned chunk. (207 and 17,262 after the branch was rebased
+onto master, which brought its own tests and corpus cases with it.)
 
 Getting there meant reading the gate carefully, because a green gate
 was not saying what it looked like it was saying. The symmetry gate
@@ -792,18 +793,29 @@ The lesson generalises past this project: **a skip predicate that
 keys on a whole file is a mask, not a filter.** Whatever it excuses,
 it excuses completely.
 
-Two smaller divergences are known and open. Neither is reached by the
-corpus and neither involves the VM, which matches the JIT on both:
-`(return x).size()` — a diverging expression in *receiver* position —
-evaluates to nil in the interpreter and raises a TypeError on the
-method call, where both compiled engines leave the frame; and
-`(return x)` in every other position leaves the frame on all three.
-Three older ones also stand: `[self] = [5]` inside a function declares
-in the interpreter and raises ImmutableError on both compiled engines
-(at top level all three declare); a native builtin's `.params` has one
-element in the interpreter and none on the compiled engines; and an
-`Isolate.spawn` handle shows an internal `_core_id` field when
-inspected on the compiled engines only.
+Every divergence this phase surfaced is closed but one, and the
+exception is closed by construction rather than by a fix. A diverging
+expression in receiver position (`(return x).size()`) leaves the frame
+on all three now — `eval()` bails on a pending completion at entry, and
+a postfix chain, which dispatches on the value in hand rather than
+through `eval`, had to learn the same check. `[self] = [5]` inside a
+function is ImmutableError everywhere and a declaration at the top
+level everywhere. A native builtin reports its real signature —
+derived from the canonical interpreter parameter list that already
+feeds the JIT's binder, answered through the closure-keyed seam the
+VM's chunks established. An `Isolate.spawn` handle carries its id
+visibly on every engine, which is what a `Channel` endpoint and an
+`FS.watch` handle already did.
+
+The one left is the JIT's alone: two sibling `if` arms that bare-assign
+the same name, where a closure captures it, raise ImmutableError there
+while the interpreter and both VM lanes bind it correctly. The runtime
+sentinel that fixed the uncaptured case is documented in its own code
+as never set for cell slots, and setting it there means moving where a
+cell is created — which is what gives a captured loop variable a fresh
+cell per iteration. Phase 3 removes the question instead of answering
+it: once `jit.h` lowers bytecode, the JIT inherits the VM's decision,
+which is already right.
 
 Phase 3 — rewriting `jit.h` to lower bytecode instead of AST — is
 next, and unstarted. The branch is not merged.
