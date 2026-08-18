@@ -738,6 +738,15 @@ enum class BMeth : uint8_t {
   Size, Empty, Presence,                        // any sized receiver
   Upper, Lower, Capitalize, Trim, Lines, View,  // String/StringView, no args
   Repeat, Truncate, TrimStart, TrimEnd, Tr, Split, StartsWith, EndsWith,
+  // String, added alongside the rest of the String surface: `reverse` and
+  // `index_of` are not here because an Array binds those names too — they
+  // share one spec whose arm dispatches on the receiver's tag.
+  Title, Normalize, EqIgnoreCase, LastIndexOf, StripPrefix, StripSuffix,
+  // `index_of(sub, start)` is String-only where the 1-arg form is also an
+  // Array's, and MethGate reads a gate's receiver mask from the id alone —
+  // so the two arities cannot share one.
+  IndexOfFrom,
+  RSplit, SplitWhitespace, IsDigit, IsAlpha, IsAlnum, IsSpace, IsAscii,
   Push, Pop, Insert, RemoveAt, Extend, Reverse, IndexOf,  // Array
   Slice, Contains, ToString,                    // polymorphic, eager
   Join, Sum, Product, Min, Max, ToSet,  // Array(+Tensor)+iterator, eager
@@ -785,6 +794,18 @@ inline int64_t bmeth_reduce_op(BMeth id) {
     case BMeth::MaxAxis: return static_cast<int64_t>(culebra::Op::Max);
     case BMeth::Argmax: return static_cast<int64_t>(culebra::Op::Argmax);
     default: return static_cast<int64_t>(culebra::Op::Sum);
+  }
+}
+
+// The `which` selector culebra_runtime_str_is_class switches on, in its
+// order — the JIT's kClasses table reads the same one.
+inline int64_t bmeth_str_class(BMeth id) {
+  switch (id) {
+    case BMeth::IsDigit: return 0;
+    case BMeth::IsAlpha: return 1;
+    case BMeth::IsAlnum: return 2;
+    case BMeth::IsSpace: return 3;
+    default:             return 4;  // IsAscii
   }
 }
 
@@ -959,11 +980,42 @@ inline std::span<const BMethSpec> bmeth_specs() {
        {StrLike}, {"chars"}},
       {"tr", 2, Tr, kRecvStrLike, 2, nullptr,
        {StrLike, StrLike}, {"from", "to"}},
-      {"split", 1, Split, kRecvStrLike, 1, nullptr, {StrLike}, {"sep"}},
+      {"split", 1, Split, kRecvStrLike, 2, "0", {StrLike, Long},
+       {"sep", "limit"}},
       {"starts_with", 1, StartsWith, kRecvStrLike, 1, nullptr,
        {StrLike}, {"prefix"}},
       {"ends_with", 1, EndsWith, kRecvStrLike, 1, nullptr,
        {StrLike}, {"suffix"}},
+      {"split", 2, Split, kRecvStrLike, 2, nullptr,
+       {StrLike, Long}, {"sep", "limit"}},
+      {"rsplit", 1, RSplit, kRecvStrLike, 2, "0", {StrLike, Long},
+       {"sep", "limit"}},
+      {"rsplit", 2, RSplit, kRecvStrLike, 2, nullptr, {StrLike, Long},
+       {"sep", "limit"}},
+      {"split_whitespace", 0, SplitWhitespace, kRecvStrLike, 0, nullptr,
+       {}, {}},
+      {"title", 0, Title, kRecvStrLike, 0, nullptr, {}, {}},
+      {"normalize", 0, Normalize, kRecvStrLike, 1, "NFC", {StrLike},
+       {"form"}},
+      {"normalize", 1, Normalize, kRecvStrLike, 1, nullptr, {StrLike},
+       {"form"}},
+      {"eq_ignore_case", 1, EqIgnoreCase, kRecvStrLike, 1, nullptr,
+       {StrLike}, {"other"}},
+      {"index_of", 2, IndexOfFrom, kRecvStrLike, 2, nullptr, {StrLike, Long},
+       {"sub", "start"}},
+      {"last_index_of", 1, LastIndexOf, kRecvStrLike, 1, nullptr,
+       {StrLike}, {"sub"}},
+      {"strip_prefix", 1, StripPrefix, kRecvStrLike, 1, nullptr,
+       {StrLike}, {"prefix"}},
+      {"strip_suffix", 1, StripSuffix, kRecvStrLike, 1, nullptr,
+       {StrLike}, {"suffix"}},
+      // The is_* family: one selector apart, the order
+      // culebra_runtime_str_is_class switches on.
+      {"is_digit", 0, IsDigit, kRecvStrLike, 0, nullptr, {}, {}},
+      {"is_alpha", 0, IsAlpha, kRecvStrLike, 0, nullptr, {}, {}},
+      {"is_alnum", 0, IsAlnum, kRecvStrLike, 0, nullptr, {}, {}},
+      {"is_space", 0, IsSpace, kRecvStrLike, 0, nullptr, {}, {}},
+      {"is_ascii", 0, IsAscii, kRecvStrLike, 0, nullptr, {}, {}},
       // Array. `push`/`insert` take the value's +1 off the register, so the
       // compiler nils the run before the call (see bmeth_consumes_args);
       // `pop`/`remove_at` hand one back the other way.
@@ -972,8 +1024,13 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"insert", 2, Insert, kRecvArray, 2, nullptr, {Long, Any}, {"i", "x"}},
       {"remove_at", 1, RemoveAt, kRecvArray, 1, nullptr, {Long}, {"i"}},
       {"extend", 1, Extend, kRecvArray, 1, nullptr, {Array}, {"other"}},
-      {"reverse", 0, Reverse, kRecvArray, 0, nullptr, {}, {}},
-      {"index_of", 1, IndexOf, kRecvArray, 1, nullptr, {Any}, {"v"}},
+      // Two receivers, two meanings under one name: an Array reverses itself
+      // in place and answers nil, a String hands back a fresh reversed one.
+      // `index_of` likewise — an Array searches by value equality (Any), a
+      // String by substring (StringLike), which is what param_when says.
+      {"reverse", 0, Reverse, kRecvArray | kRecvStrLike, 0, nullptr, {}, {}},
+      {"index_of", 1, IndexOf, kRecvArray | kRecvStrLike, 2, "0",
+       {StrLike, Long}, {"sub", "start"}, {kRecvStrLike, kRecvStrLike}},
       // Polymorphic: one name, several receivers, and — for `contains` — a
       // declared parameter on the String arm alone.
       {"slice", 2, Slice, kRecvSliceable, 2, nullptr, {Long, Long},
@@ -1511,7 +1568,7 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
     case BMeth::Split:
       return JitValue{TAG_ARRAY,
                       reinterpret_cast<int64_t>(culebra_runtime_str_split(
-                          cstr(recv), cstr(args[0]), /*limit=*/0,
+                          cstr(recv), cstr(args[0]), args[1].data,
                           /*from_right=*/false, line, col))};
     case BMeth::StartsWith:
       return JitValue{TAG_BOOL, culebra_runtime_str_starts_with(
@@ -1546,14 +1603,54 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
                                    args[0].data, line, col);
       return JitValue{TAG_NIL, 0};
     case BMeth::Reverse:
+      if (recv.tag != TAG_ARRAY) return str(culebra_runtime_str_reverse(cstr(recv)));
       culebra_runtime_array_reverse(arr(recv));
       return JitValue{TAG_NIL, 0};
+    case BMeth::IndexOfFrom:
     case BMeth::IndexOf:
+      if (recv.tag != TAG_ARRAY) {
+        return JitValue{TAG_LONG,
+                        culebra_runtime_str_index_of(
+                            cstr(recv), cstr(args[0]), args[1].data)};
+      }
       // A too-deep element raises a positionless ValueError from the compare.
       culebra_runtime_set_op_pos(line, col);
       return JitValue{TAG_LONG, culebra_runtime_array_index_of(
                                     arr(recv), static_cast<int8_t>(args[0].tag),
                                     args[0].data)};
+    case BMeth::Title:
+      return str(culebra_runtime_str_title(cstr(recv)));
+    case BMeth::Normalize:
+      return str(culebra_runtime_str_normalize(cstr(recv), cstr(args[0]), line,
+                                               col));
+    case BMeth::EqIgnoreCase:
+      return JitValue{TAG_BOOL, culebra_runtime_str_eq_ignore_case(
+                                    cstr(recv), cstr(args[0])) ? 1 : 0};
+    case BMeth::LastIndexOf:
+      return JitValue{TAG_LONG, culebra_runtime_str_last_index_of(
+                                    cstr(recv), cstr(args[0]))};
+    case BMeth::StripPrefix:
+      return str(culebra_runtime_str_strip_prefix(cstr(recv), cstr(args[0])));
+    case BMeth::StripSuffix:
+      return str(culebra_runtime_str_strip_suffix(cstr(recv), cstr(args[0])));
+    case BMeth::RSplit:
+      return JitValue{TAG_ARRAY,
+                      reinterpret_cast<int64_t>(culebra_runtime_str_split(
+                          cstr(recv), cstr(args[0]), args[1].data,
+                          /*from_right=*/true, line, col))};
+    case BMeth::SplitWhitespace:
+      return JitValue{TAG_ARRAY,
+                      reinterpret_cast<int64_t>(
+                          culebra_runtime_str_split_whitespace(cstr(recv)))};
+    case BMeth::IsDigit:
+    case BMeth::IsAlpha:
+    case BMeth::IsAlnum:
+    case BMeth::IsSpace:
+    case BMeth::IsAscii:
+      return JitValue{TAG_BOOL,
+                      culebra_runtime_str_is_class(cstr(recv),
+                                                   bmeth_str_class(id))
+                          ? 1 : 0};
     // The polymorphic arms dispatch on the receiver the gate let through.
     // String/StringView is the default arm here and in the lowering's switch,
     // so the two lanes read the same way.
@@ -6882,7 +6979,12 @@ class Compiler {
     } else if (spec.nargs > argc) {
       // The omitted optional argument: the interp's declared default, so the
       // op's arity is fixed per built-in and needs no absent-argument arm.
-      emit(Op::LoadConst, base + 2 + argc, kconst_str(spec.def));
+      // The literal is materialised in the type the parameter it fills
+      // declares — `truncate`'s ellipsis is a String, `split`'s limit a Long.
+      emit(Op::LoadConst, base + 2 + argc,
+           spec.params[argc] == BParam::Long
+               ? kconst_long(std::strtoll(spec.def, nullptr, 10))
+               : kconst_str(spec.def));
     }
     int32_t t = alloc_temp(at);
     size_t ix = emit(Op::BMeth, t, base, static_cast<int32_t>(spec.id),
@@ -12420,8 +12522,9 @@ struct Lowering {
             case BMeth::Split:
               res = j.make_array(j.emit_call(
                   j.module_->getFunction(rt::str_split),
-                  {cstr(recv), cstr(arg(0)), b.getInt64(0), b.getInt1(false),
-                   j.current_line_val(), j.current_column_val()},
+                  {cstr(recv), cstr(arg(0)), j.extract_data(arg(1)),
+                   b.getInt1(false), j.current_line_val(),
+                   j.current_column_val()},
                   "vbm.sp"));
               break;
             case BMeth::StartsWith:
@@ -12462,18 +12565,110 @@ struct Lowering {
               res = j.make_nil();
               break;
             case BMeth::Reverse:
-              j.emit_call(j.module_->getOrInsertFunction(
-                              rt::array_reverse, b.getVoidTy(), ptrTy),
-                          {arr()});
-              res = j.make_nil();
+            case BMeth::IndexOfFrom:
+            case BMeth::IndexOf: {
+              // Two receivers under one name: the Array arm and the String
+              // arm, joined through an entry-block alloca like the other
+              // polymorphic ones. String/StringView is the default, which is
+              // how the executor reads it too.
+              bool is_rev = static_cast<BMeth>(in.c) == BMeth::Reverse;
+              IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+              auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.rio");
+              auto arrBB = BasicBlock::Create(j.ctx_, "vbm.rio.arr", fn);
+              auto strBB = BasicBlock::Create(j.ctx_, "vbm.rio.str", fn);
+              auto joinBB = BasicBlock::Create(j.ctx_, "vbm.rio.join", fn);
+              auto sw = b.CreateSwitch(j.extract_tag(recv), strBB, 1);
+              sw->addCase(b.getInt8(TAG_ARRAY), arrBB);
+              b.SetInsertPoint(arrBB);
+              if (is_rev) {
+                j.emit_call(j.module_->getOrInsertFunction(
+                                rt::array_reverse, b.getVoidTy(), ptrTy),
+                            {arr()});
+                b.CreateStore(j.make_nil(), out);
+              } else {
+                // A too-deep element raises a positionless ValueError from
+                // the compare.
+                j.emit_set_op_pos();
+                b.CreateStore(
+                    j.make_long(j.emit_call(
+                        j.module_->getOrInsertFunction(
+                            rt::array_index_of, i64Ty, ptrTy, b.getInt8Ty(),
+                            i64Ty),
+                        {arr(), j.extract_tag(arg(0)),
+                         j.extract_data(arg(0))},
+                        "vbm.iof")),
+                    out);
+              }
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(strBB);
+              if (is_rev) {
+                b.CreateStore(
+                    j.make_string(j.emit_call(
+                        j.module_->getFunction(rt::str_reverse), {cstr(recv)},
+                        "vbm.srev")),
+                    out);
+              } else {
+                b.CreateStore(
+                    j.make_long(j.emit_call(
+                        j.module_->getFunction(rt::str_index_of),
+                        {cstr(recv), cstr(arg(0)), j.extract_data(arg(1))},
+                        "vbm.siof")),
+                    out);
+              }
+              b.CreateBr(joinBB);
+              b.SetInsertPoint(joinBB);
+              res = b.CreateLoad(j.valueType_, out, "vbm.rio.v");
               break;
-            case BMeth::IndexOf:
-              j.emit_set_op_pos();  // positionless ValueError on a deep element
+            }
+            case BMeth::Title:
+              res = str_fn(rt::str_title, {cstr(recv)});
+              break;
+            case BMeth::Normalize:
+              res = str_fn(rt::str_normalize,
+                           {cstr(recv), cstr(arg(0)), b.getInt64(line),
+                            b.getInt64(col)});
+              break;
+            case BMeth::StripPrefix:
+              res = str_fn(rt::str_strip_prefix, {cstr(recv), cstr(arg(0))});
+              break;
+            case BMeth::StripSuffix:
+              res = str_fn(rt::str_strip_suffix, {cstr(recv), cstr(arg(0))});
+              break;
+            case BMeth::EqIgnoreCase:
+              // Declared i1-returning, so the result rides straight into the
+              // Bool (the StartsWith/EndsWith shape).
+              res = j.make_bool(j.emit_call(
+                  j.module_->getFunction(rt::str_eq_ignore_case),
+                  {cstr(recv), cstr(arg(0))}, "vbm.eqic"));
+              break;
+            case BMeth::LastIndexOf:
               res = j.make_long(j.emit_call(
-                  j.module_->getOrInsertFunction(rt::array_index_of, i64Ty,
-                                                 ptrTy, b.getInt8Ty(), i64Ty),
-                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0))},
-                  "vbm.iof"));
+                  j.module_->getFunction(rt::str_last_index_of),
+                  {cstr(recv), cstr(arg(0))}, "vbm.liof"));
+              break;
+            case BMeth::RSplit:
+              res = j.make_array(j.emit_call(
+                  j.module_->getFunction(rt::str_split),
+                  {cstr(recv), cstr(arg(0)), j.extract_data(arg(1)),
+                   b.getInt1(true), j.current_line_val(),
+                   j.current_column_val()},
+                  "vbm.rsp"));
+              break;
+            case BMeth::SplitWhitespace:
+              res = j.make_array(j.emit_call(
+                  j.module_->getFunction(rt::str_split_whitespace),
+                  {cstr(recv)}, "vbm.spw"));
+              break;
+            case BMeth::IsDigit:
+            case BMeth::IsAlpha:
+            case BMeth::IsAlnum:
+            case BMeth::IsSpace:
+            case BMeth::IsAscii:
+              res = j.make_bool(j.emit_call(
+                  j.module_->getFunction(rt::str_is_class),
+                  {cstr(recv),
+                   b.getInt64(bmeth_str_class(static_cast<BMeth>(in.c)))},
+                  "vbm.isc"));
               break;
             case BMeth::Slice:
             case BMeth::Contains: {
