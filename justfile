@@ -392,14 +392,15 @@ _run-tests BACKEND:
                 touch "$d/$name.fail"
                 exit 0
             fi
-            # The two VM lanes on the same file. Matching interp is a pass
-            # however it was reached, so the slice question is only asked
-            # about a MISMATCH: a construct outside the slice is a skip (the
-            # poisoned chunk says so when a call reaches it, or the compiler
-            # said so statically and the dump shows an `(unsupported)`
-            # slot), anything else is a failure exactly as the JIT would
-            # be. Asking only on mismatch keeps the common file to one extra
-            # run per lane instead of a dump as well.
+            # The bytecode executor on the same file. The format has one other
+            # consumer, the LLVM lowering, which is what --jit above just ran.
+            # Matching interp is a pass however it was reached, so the slice
+            # question is only asked about a MISMATCH: a construct outside the
+            # slice is a skip (the poisoned chunk says so when a call reaches
+            # it, or the compiler said so statically and the dump shows an
+            # `(unsupported)` slot), anything else is a failure exactly as the
+            # JIT would be. Asking only on mismatch keeps the common file to
+            # one extra run instead of a dump as well.
             #
             # A nonzero exit is a mismatch in its own right, not just a
             # different stdout: an out-of-slice reject leaves rc!=0 too, which
@@ -411,25 +412,16 @@ _run-tests BACKEND:
                 grep -q -- "--vm: unsupported:" "$1" && return 0
                 cul --vm-dump "$f" 2>/dev/null | grep -q "(unsupported)"
             }
-            vm_lane_failed() {
-                local lane="$1" err="$2" got="$3" rc="$4"
-                vm_skipped "$err" && return 0
+            err="$d/$name.vm.err"
+            out_vm=$(cul --vm "$f" 2> "$err"); rc_vm=$?
+            if [[ "$out_interp" != "$out_vm" || "$rc_vm" -ne 0 ]] \
+                   && ! vm_skipped "$err"; then
                 {
-                    echo "interpreter and $lane differ for $f (rc=$rc):"
-                    diff <(printf "%s" "$out_interp") <(printf "%s" "$got") || true
-                    [[ -s "$err" ]] && { echo "--- $lane stderr ---"; cat "$err"; }
+                    echo "interpreter and --vm differ for $f (rc=$rc_vm):"
+                    diff <(printf "%s" "$out_interp") <(printf "%s" "$out_vm") || true
+                    [[ -s "$err" ]] && { echo "--- --vm stderr ---"; cat "$err"; }
                 } > "$d/$name.err"
                 touch "$d/$name.fail"
-                return 1
-            }
-            out_vm=$(cul --vm "$f" 2> "$d/$name.vm.err"); rc_vm=$?
-            if [[ "$out_interp" != "$out_vm" || "$rc_vm" -ne 0 ]]; then
-                vm_lane_failed "--vm" "$d/$name.vm.err" "$out_vm" "$rc_vm"
-                exit 0
-            fi
-            out_llvm=$(cul --vm-llvm "$f" 2> "$d/$name.llvm.err"); rc_llvm=$?
-            if [[ "$out_interp" != "$out_llvm" || "$rc_llvm" -ne 0 ]]; then
-                vm_lane_failed "--vm-llvm" "$d/$name.llvm.err" "$out_llvm" "$rc_llvm"
             fi
         ' _ '{}' "$d" "$jit_out"
         if ! collect_results "$d" "(interp vs jit vs VM)"; then
@@ -647,10 +639,10 @@ _run-tests BACKEND:
     }
 
     # Isolate tests live in a subdir kept out of the `tests/*.cul` interp-vs-JIT
-    # diff glob. All run under interp; `*_jit.cul` additionally run under --jit.
-    # Isolate.spawn, Channel, and Parallel are all symmetric across backends now;
-    # the interp-only files (no `_jit` suffix) cover surface that doesn't apply
-    # under --jit (e.g. the runtime mut-capture SendError and the `limit:` kwarg).
+    # diff glob. Every file runs under all three engines: Isolate.spawn,
+    # Channel, and Parallel are symmetric across backends now, including the
+    # files named without a `_jit` suffix (the surface that was interp-only
+    # once — the runtime mut-capture SendError and the `limit:` kwarg).
     # The `overcap-*` modes force the isolate cap to 1 so every spawned producer
     # takes the over-cap path, which must still run on a real thread —
     # inline-over-cap deadlocks a streaming producer (it fills a bounded channel
@@ -662,9 +654,8 @@ _run-tests BACKEND:
         mkdir -p "$d"
         {
             printf 'interp %s\n' tests/isolate/*.cul
-            printf 'jit %s\n' tests/isolate/*_jit.cul
+            printf 'jit %s\n' tests/isolate/*.cul
             printf 'vm %s\n' tests/isolate/*.cul
-            printf 'vm-llvm %s\n' tests/isolate/*.cul
             printf 'overcap-interp %s\n' tests/isolate/test_spawn_overcap*.cul
             printf 'overcap-jit %s\n' tests/isolate/test_spawn_overcap*.cul
             printf 'overcap-vm %s\n' tests/isolate/test_spawn_overcap*.cul
@@ -674,7 +665,6 @@ _run-tests BACKEND:
             case "$mode" in
                 jit|overcap-jit) flag=--jit ;;
                 vm|overcap-vm)   flag=--vm ;;
-                vm-llvm)         flag=--vm-llvm ;;
                 *)               flag= ;;
             esac
             [[ $mode == overcap-* ]] && export CULEBRA_ISOLATE_LIMIT=1
@@ -684,7 +674,7 @@ _run-tests BACKEND:
             }
         ' _ '{}' "$d"
         collect_failures "$d" "isolate" || exit 1
-        echo "test isolate OK (interp + jit + both VM lanes)"
+        echo "test isolate OK (interp + jit + VM executor)"
     }
 
     # Differential corpus: generate the template-combinator programs and
@@ -707,7 +697,7 @@ _run-tests BACKEND:
         ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh "$BIN"
     }
     # VM three-lane parity (tools/bench/vm_cases): the curated bytecode-VM
-    # corpus, interp vs --vm vs --vm-llvm, then the same sweep with
+    # corpus, interp vs --vm vs --jit, then the same sweep with
     # collect-on-every-allocation. The corpus holds only programs inside the
     # VM slice, so a VmError here is an output mismatch — a slice regression
     # fails the gate instead of skipping. Quiet on success (the scripts print
@@ -718,7 +708,7 @@ _run-tests BACKEND:
             || { printf '%s\n' "$out"; exit 1; }
         out="$(STRESS=1 ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
             || { printf '%s\n' "$out"; exit 1; }
-        echo "vm_cases OK (interp == --vm == --vm-llvm, + GC_STRESS)"
+        echo "vm_cases OK (interp == --vm == --jit, + GC_STRESS)"
     }
     # Leak-fuzz: rerun the same corpus under CULEBRA_GC_NEVER and fail on any
     # JIT RC leak not already in tools/difftest/leak_baseline.txt. A regression

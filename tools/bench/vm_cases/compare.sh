@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Diff the VM lanes against the interpreter on every case file.
+# Diff the bytecode VM's two consumers against the interpreter on every case
+# file: its executor (--vm) and its LLVM lowering (--jit).
 # Usage: [STRESS=1] compare.sh <culebra-binary> [lane-flag]
-# With no lane flag, both VM lanes (--vm, --vm-llvm) are asserted in one
-# run — the three-lane agreement the docs claim. STRESS=1 runs the VM lanes
-# under CULEBRA_GC_STRESS=1 (allocations forced to collect); the interp
-# reference run stays unstressed either way.
+# With no lane flag, both are asserted in one run — the three-lane agreement
+# the docs claim. STRESS=1 runs the compiled lanes under CULEBRA_GC_STRESS=1
+# (allocations forced to collect); the interp reference run stays unstressed
+# either way.
 set -u
 BIN="${1:-./build-dev/culebra}"
 BIN="$(realpath "$BIN" 2>/dev/null || echo "$BIN")"
@@ -12,7 +13,7 @@ if [ ! -x "$BIN" ]; then
   echo "compare.sh: binary not found or not executable: $BIN" >&2
   exit 1
 fi
-if [ $# -ge 2 ]; then LANES=("$2"); else LANES=(--vm --vm-llvm); fi
+if [ $# -ge 2 ]; then LANES=("$2"); else LANES=(--vm --jit); fi
 STRESS="${STRESS:-}"
 tag="${STRESS:+ (GC_STRESS)}"
 cd "$(dirname "$0")"

@@ -180,10 +180,10 @@ struct Options {
   bool emit_llvm = false;
   int opt_level = 2;
   bool opt_level_explicit = false;
-  // Bytecode-VM lane (docs/internals/vm.md §7 Phase 1). Hidden flags while
-  // the slice grows: run the bytecode compiler + VM executor, its LLVM
-  // lowering, or dump the bytecode.
-  enum class Vm { Off, Exec, Llvm, Dump } vm = Vm::Off;
+  // The bytecode VM's executor (docs/internals/vm.md §7). Hidden flags: run
+  // the program on the executor, or dump the bytecode. Its other consumer,
+  // the LLVM lowering, is what `--jit` runs.
+  enum class Vm { Off, Exec, Dump } vm = Vm::Off;
 #endif
   // The entry script, if one was given. At most one: the first non-flag
   // argument is the script and everything after it is its argv.
@@ -1290,7 +1290,6 @@ Options parse_command_line(int argc, const char** argv) {
       }
       if (arg == "--emit-llvm") { options.emit_llvm = true; continue; }
       if (arg == "--vm") { options.vm = Options::Vm::Exec; continue; }
-      if (arg == "--vm-llvm") { options.vm = Options::Vm::Llvm; continue; }
       if (arg == "--vm-dump") { options.vm = Options::Vm::Dump; continue; }
       if (arg.starts_with("-O")) {
         if (!parse_opt_level(arg, options.opt_level, options.error)) return options;
@@ -1366,24 +1365,14 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     auto prog = culebra::vm::Compiler::compile_modules(
         modules,
         options.debug ? culebra::vm::Debug::Break : culebra::vm::Debug::Off);
-    switch (options.vm) {
-      case Options::Vm::Dump:
-        cout << culebra::vm::dump(prog);
-        break;
-      case Options::Vm::Llvm:
-        culebra::vm::run_program_via_llvm(prog, options.emit_llvm,
-                                          options.opt_level);
-        break;
-      default:
-        culebra::vm::Exec::run(prog);
-        break;
-    }
+    if (options.vm == Options::Vm::Dump)
+      cout << culebra::vm::dump(prog);
+    else
+      culebra::vm::Exec::run(prog);
     return true;
   }
 
   // `--jit` is the bytecode compiler's LLVM lane: one program, lowered.
-  // `--vm-llvm` above reaches the same lowering by hand for a program the
-  // dump can be asked about in the same breath.
   if (options.jit) {
     culebra::vm::run_modules_via_llvm(modules, options.emit_llvm, options.debug,
                                       options.opt_level,
@@ -2203,15 +2192,13 @@ int main(int argc, const char** argv) {
       // The REPL always runs on a tier-0 engine: the interpreter, or the VM's
       // executor under `--vm`. A REPL line is never a hot loop, so compiling
       // each input only adds latency for no gain — the same reason V8 / the
-      // JVM / LuaJIT start interpreted and only JIT hot code. The compiled
-      // lanes are for scripts (`culebra --jit FILE`), where a hot loop can pay
-      // off; combined with the REPL they are a no-op, so note it.
-      if (options.jit || options.vm == Options::Vm::Llvm) {
+      // JVM / LuaJIT start interpreted and only JIT hot code. `--jit` is for
+      // scripts, where a hot loop can pay off; combined with the REPL it is a
+      // no-op, so note it.
+      if (options.jit) {
         std::fprintf(stderr,
-            "note: the REPL runs on a tier-0 engine; %s applies to scripts "
-            "(culebra %s FILE)\n",
-            options.jit ? "--jit" : "--vm-llvm",
-            options.jit ? "--jit" : "--vm-llvm");
+            "note: the REPL runs on a tier-0 engine; --jit applies to scripts "
+            "(culebra --jit FILE)\n");
       }
       if (options.vm != Options::Vm::Off) {
         return culebra::vm_repl(options.print_ast,

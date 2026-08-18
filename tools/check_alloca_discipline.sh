@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Entry-block alloca gate (JIT + VM lowering codegen).
+# Entry-block alloca gate (the bytecode VM's LLVM lowering = `--jit`).
 #
 # LLVM only folds an `alloca` into the frame layout when it is a constant size
 # AND sits in the function's entry block (AllocaInst::isStaticAlloca). One left
@@ -8,13 +8,13 @@
 # every pass and eventually SIGSEGVs, with no leak gate and no test able to see
 # it short of running millions of rounds.
 #
-# Both codegens therefore build their scratch slots through an entry-block
+# The lowering therefore builds its scratch slots through an entry-block
 # builder (`entryB` in jit.h, `eb` in vm.h). Two real crashes came from sites
 # that missed it: the class meta's method slab (`class` declared in a loop) and
 # the compound / `??=` index read-back slots (`a[i] += 1` in a loop).
 #
 # Checked over emitted IR rather than the source, so it holds for whichever
-# emitter produced the alloca and covers both lanes at once.
+# emitter produced the alloca.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,8 +28,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Probe: the shapes whose emitters allocate scratch slots, each inside a loop
-# body so a stray alloca lands outside the entry block. Kept to constructs both
-# lanes compile, since the VM lowering is scanned from the same file.
+# body so a stray alloca lands outside the entry block.
 cat > "$TMP/probe.cul" <<'CUL'
 fn helper(x) {
   x + 1
@@ -89,10 +88,9 @@ scan() {  # $1 = lane flag, $2 = label
 
 fail=0
 scan --jit jit || fail=1
-scan --vm-llvm vm || fail=1
 if (( fail )); then
   echo "alloca-discipline FAIL: alloca outside the entry block (see above)." >&2
   echo "  Build scratch slots with the entry-block IRBuilder (entryB / eb)." >&2
   exit 1
 fi
-echo "alloca-discipline OK (jit + vm lowering: every alloca is entry-block)"
+echo "alloca-discipline OK (every alloca is entry-block)"

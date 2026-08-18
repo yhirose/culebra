@@ -4,10 +4,10 @@
 // grown out of the Phase 0 spike: a register-based, RC-explicit,
 // lowering-friendly bytecode; a compiler whose front end is the shared
 // FnAnalysis (fn_analysis.h); a VM executor running on the JIT's runtime
-// value model; and an LLVM lowering of the same bytecode, kept alive so the
-// format stays consumable by both engines. Hidden behind --vm / --vm-dump /
-// --vm-llvm; constructs outside the supported slice are rejected at compile
-// time ("VmError") — no interp fallback. The format is an in-memory
+// value model; and an LLVM lowering of the same bytecode, which is what
+// `--jit` and `culebra build` (AOT) compile. The executor is hidden behind
+// --vm / --vm-dump; constructs outside the supported slice are rejected at
+// compile time ("VmError") — no interp fallback. The format is an in-memory
 // contract only.
 //
 // Current slice (the expression core + basic control flow): Long / Float /

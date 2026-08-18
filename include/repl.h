@@ -98,9 +98,9 @@ using ReplEval = std::function<bool(const std::shared_ptr<peg::Ast>&,
 // The REPL always runs on a tier-0 engine: the interpreter, or the bytecode
 // VM's executor under `--vm` (see vm_repl.h). A REPL line is never a hot loop,
 // so compiling each input only adds latency for no gain — the same reason V8 /
-// the JVM / LuaJIT start interpreted and only JIT hot code. The compiled lanes
-// (`--jit`, `--vm-llvm`) are for scripts; combined with the REPL they are a
-// no-op the CLI notes and ignores (see main.cc).
+// the JVM / LuaJIT start interpreted and only JIT hot code. The compiled lane
+// (`--jit`) is for scripts; combined with the REPL it is a no-op the CLI notes
+// and ignores (see main.cc).
 //
 // This is the line editor and session bookkeeping both engines share; `eval`
 // is the engine.

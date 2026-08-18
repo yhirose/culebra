@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exception-handler balance gate (JIT + VM lowering codegen).
+# Exception-handler balance gate (the bytecode VM's LLVM lowering = `--jit`).
 #
 # A landingpad that opens the in-flight exception with `__cxa_begin_catch`
 # owes exactly one `__cxa_end_catch`, or the exception object's handler count
@@ -16,8 +16,7 @@
 #     on the rethrow's own unwind edge (emit_handler_rethrow's relay, the
 #     shape GCC emits for `catch (...) { throw; }`).
 #
-# Checked here over emitted IR, so it holds for whatever path produced the pad
-# and covers the VM lowering (which shares the same emitters):
+# Checked here over emitted IR, so it holds for whatever path produced the pad:
 #
 #   1. every `invoke @__cxa_rethrow` unwinds to a block that calls
 #      `__cxa_end_catch`
@@ -70,8 +69,8 @@ fn run() {
 try { run() } catch e { println("done {e}") }
 CUL
 
-# Minimal probe for the VM lane: the bytecode slice rejects most of the above,
-# and one try/catch is enough — the lowering has a single region pad shape.
+# Loop probe: the region pad entered once per iteration, the shape a leak in
+# the handler grows linearly in.
 cat > "$TMP/min.cul" <<'CUL'
 mut n = 0
 for i in 0..3 {
@@ -151,8 +150,8 @@ check() { # <label> <lane flag> <probe>
   echo "eh-balance OK ($label): $opens handler prologue(s), $sites re-raise(s), all closed"
 }
 
-check jit --jit "$TMP/full.cul"
-check vm --vm-llvm "$TMP/min.cul"
+check full --jit "$TMP/full.cul"
+check loop --jit "$TMP/min.cul"
 
 # Source ceiling: one place builds landingpads, so a new pad has to go through
 # the cleanup/handler split rather than hand-rolling its own prologue.
