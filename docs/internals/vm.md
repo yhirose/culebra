@@ -1112,8 +1112,10 @@ bytecode — the front end itself is not where the second is going.
 
 ### 12.6 What Phase 3 still owes
 
-- **The IR volume above.** A JIT pays its compile time on every run,
-  so 30% is worth going after.
+- **The optimizer's share.** The IR volume of §12.5 is gone (§12.8),
+  but `-O2` still costs 1.22× the AST path's on IR of the same size,
+  so the remaining second is a shape the optimizer works harder on
+  rather than a quantity of work handed to it.
 - `--vm-llvm` is the same engine as `--jit` today, which makes it a
   duplicate flag rather than a lane. Retiring it means re-pointing
   every gate that names it.
@@ -1158,3 +1160,55 @@ where a closure is built once and called in the loop.
 
 TSan goes to 0 reports on that test and 0 across all twenty isolate
 tests; the stress repro goes from 7/40 to 0/80.
+
+### 12.8 The IR volume was all cleanup
+
+§12.5 left "about 30% more IR" as a volume to go after without saying
+where it sat. Attributing a `-O0` module to its basic-block families
+answers that in one pass. For a hello-world, of 2,763 instructions:
+
+| block family | branch | master (AST) |
+|---|---|---|
+| unwind cleanup | **1,045 (37.8%)** | 291 (15.5%) |
+| everything else | 1,718 | 1,581 |
+| landing pads | 38 | 13 |
+| `_Unwind_Resume_or_Rethrow` | 39 | 8 |
+
+The non-cleanup IR was within 8% of the AST path's. The whole
+regression was in the pads — 86% of the excess instructions.
+
+The cause is a shape, not an amount of work. A throw abandons whatever
+temporaries are in flight, and the lowering asked for that set at every
+site that can throw, memoized it, and gave each distinct set a landing
+pad carrying its own straight-line copy of the releases and its own
+re-raise edge. The AST codegen had spent its cleanup differently: one
+pad per scope, descending a chain of one-slot release blocks entered at
+the rung the pad needs (`fn.release.3 → fn.release.2 → fn.release.1 →
+fn.unwind`), so a slot's release exists once no matter how many sites
+abandon it.
+
+The chain was already there for the frame's bindings — `CleanupPad`
+documents "a multi-entry region (the frame's ladder) points the builder
+at the end of its shared descent chain". The temporaries just were not
+using it. They are now: one chain per scope, a rung per temporary
+shared by prefix (the sets of a scope are stacks over a common floor,
+so a set that is another's prefix costs no rung of its own), a single
+re-raise at the foot, and an entry that is a landing pad and a branch.
+The pad index is keyed by what it releases rather than by the span it
+was asked for, so two statements abandoning the same temporaries share
+one entry.
+
+| `tests/test_core.cul` | master (AST) | branch before | branch after |
+|---|---|---|---|
+| `-O0` IR instructions | 234,293 | 353,220 | **232,289** |
+| `-O0` compile | 3.06 s | 4.05 s | **2.99 s** |
+| `-O2` compile | 3.56 s | 5.30 s | **4.35 s** |
+
+The volume is gone: the lowering now emits marginally less IR than the
+codegen it replaced, and at `-O0` it is no longer slower to compile.
+What is left is the `-O2` row. It is a different problem from the one
+§12.5 identified — the optimizer spends 1.36 s where the AST path's
+spends 0.50 s on IR of the same size, with fewer basic blocks (33,206
+against 43,173), fewer allocas, fewer invokes and a lower Σn^1.9 over
+function sizes. None of the coarse shape metrics explain it, so the
+next step there is a pass-level profile rather than another count.
