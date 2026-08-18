@@ -11690,11 +11690,13 @@ struct Lowering {
     // filled after the walk like the scope pads themselves.
     struct TempPad {
       BasicBlock* bb;
-      BasicBlock* chain;
+      int32_t scope;
       std::vector<int32_t> temps;
     };
     std::vector<TempPad> temp_pads;
-    std::map<std::tuple<int32_t, const int32_t*, size_t>, BasicBlock*> temp_ix;
+    // Keyed by what the pad releases, not by where it was asked for: two
+    // statements abandoning the same temporaries want the same entry.
+    std::map<std::pair<int32_t, std::vector<int32_t>>, BasicBlock*> temp_ix;
     auto lpad_for = [&](size_t pc) -> BasicBlock* {
       int32_t k = chunk_innermost_cleanup(c, pc);
       if (k < 0) return nullptr;
@@ -11705,14 +11707,13 @@ struct Lowering {
       for (int32_t s : chunk_temps_at(c, pc))
         if (s >= floor) temps.push_back(s);
       if (temps.empty()) return chain;
-      auto key = std::tuple{k, chunk_temps_at(c, pc).data(),
-                            chunk_temps_at(c, pc).size()};
+      auto key = std::pair{k, temps};
       auto it = temp_ix.find(key);
       if (it != temp_ix.end()) return it->second;
       auto* bb = BasicBlock::Create(
           j.ctx_, std::format("vm.temps.{}", temp_pads.size()), fn);
-      temp_pads.push_back({bb, chain, std::move(temps)});
-      temp_ix.emplace(key, bb);
+      temp_pads.push_back({bb, k, std::move(temps)});
+      temp_ix.emplace(std::move(key), bb);
       return bb;
     };
 
@@ -15327,11 +15328,51 @@ struct Lowering {
 
     // The temp preludes first: their re-raise edges are what keep the scope
     // pads they continue into alive (a pad nothing unwinds to is erased).
-    for (const auto& tp : temp_pads) {
-      JIT::CleanupPad pad(j, tp.chain);
-      if (!pad.open(tp.bb, "vm.temps.exc")) continue;
-      for (size_t i = tp.temps.size(); i > 0; --i)
-        release_slot_ir(tp.temps[i - 1], /*as_cell=*/false);
+    //
+    // A scope's entries share one descent chain rather than each carrying its
+    // own copy of the releases — the frame ladder's shape. The abandoned sets
+    // of one scope are stacks with a common floor, so a set that is another's
+    // prefix costs no rung of its own, and the whole scope continues the
+    // unwind through a single re-raise edge at the foot.
+    std::map<int32_t, std::vector<const TempPad*>> temps_by_scope;
+    for (const auto& tp : temp_pads) temps_by_scope[tp.scope].push_back(&tp);
+    for (const auto& [k, group] : temps_by_scope) {
+      JIT::CleanupPad pad(j, pads[static_cast<size_t>(k)]);
+      BasicBlock* foot = nullptr;
+      std::map<std::vector<int32_t>, BasicBlock*> rungs;
+      // The block that releases `t.back()` and descends the rest, building
+      // whatever rungs of the chain do not exist yet.
+      auto rung_for = [&](const std::vector<int32_t>& t) {
+        if (!foot) foot = BasicBlock::Create(j.ctx_, "vm.temps.done", fn);
+        BasicBlock* next = foot;
+        for (size_t n = 1; n <= t.size(); ++n) {
+          std::vector<int32_t> pre(t.begin(), t.begin() + n);
+          if (auto it = rungs.find(pre); it != rungs.end()) {
+            next = it->second;
+            continue;
+          }
+          auto* bb = BasicBlock::Create(
+              j.ctx_, std::format("vm.temps.rel{}", pre.back()), fn);
+          auto* saved = b.GetInsertBlock();
+          b.SetInsertPoint(bb);
+          release_slot_ir(pre.back(), /*as_cell=*/false);
+          b.CreateBr(next);
+          b.SetInsertPoint(saved);
+          rungs.emplace(std::move(pre), bb);
+          next = bb;
+        }
+        return next;
+      };
+      for (const auto* tp : group) {
+        if (!pad.open(tp->bb, "vm.temps.exc")) continue;
+        auto* entry = b.GetInsertBlock();
+        auto* target = rung_for(tp->temps);
+        b.SetInsertPoint(entry);
+        b.CreateBr(target);
+      }
+      // The re-raise the pad's destructor emits belongs at the foot, where
+      // every entry has finished descending.
+      if (foot) b.SetInsertPoint(foot);
     }
 
     // Then the scope pads, innermost outward, so each one's re-raise edge
