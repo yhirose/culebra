@@ -1070,11 +1070,50 @@ after, stderr included. That is what makes a fourteen-thousand-line
 deletion a mechanical change instead of a risky one — a passing gate
 would only say the tests still pass.
 
-### 12.5 What Phase 3 still owes
+### 12.5 Faster code, slower compiles
 
-- **Performance parity, unmeasured since the switch.** `--jit`
-  reaches LLVM through a different front end now; §10's numbers are
-  for the other one.
+`--jit` reaches LLVM through a different front end now, so the phase
+owed a measurement. Both binaries are `just build` (-O3 + LTO) from
+this tree — master's AST codegen against the branch's bytecode
+lowering, the same LLVM underneath — hyperfine, 10 runs, idle machine:
+
+| bench | master (AST) | branch (bytecode) | |
+|---|---|---|---|
+| `for_range.cul` (25M iterations, minimal body) | 478.5 ms | **106.8 ms** | 4.48× faster |
+| `for_range_dense.cul` (4M, dense body) | 343.4 ms | **149.9 ms** | 2.29× faster |
+| `fib.cul` (fib(28), recursion) | 585.9 ms | 603.1 ms | 1.03× slower |
+| `hello.cul` (startup + compile) | 41.3 ms | 55.3 ms | 1.34× slower |
+| `tests/test_core.cul` (compile-dominated) | 3.58 s | 5.32 s | 1.49× slower |
+
+The split is clean: **loop-heavy code runs several times faster, and
+everything pays more to compile.** The runtime win is the counted loop
+— the lowering emits the shape the optimizer wants — and `fib` shows
+that a call-dominated program is unchanged, which is what "same LLVM
+underneath" predicts.
+
+The compile-time loss is one cause measured twice. The lowering emits
+**about 30% more IR** than the AST codegen (`test_core` 329,785 lines
+against 429,311 at `-O0`; `hello` 3,329 against 4,218), and that
+volume is paid once in codegen and again in the optimizer (a separate
+run, so its `-O2` row sits a little above the table above):
+
+| `test_core` | master | branch | |
+|---|---|---|---|
+| `-O0` (no optimizer) | 3.18 s | 4.22 s | +1.03 s |
+| `-O2` (default) | 3.69 s | 5.33 s | +1.64 s |
+| → what the optimizer costs | 0.51 s | 1.11 s | +0.60 s |
+| `-O0 --jit-faststart` | 1.26 s | 1.70 s | +0.44 s |
+
+The ratio holds near 1.3–1.4× at every optimization level, including
+the fast-codegen path, which is what a volume problem looks like: no
+single pass is at fault. So the target for a later cycle is the IR the
+lowering emits per bytecode op, not the front end that produces the
+bytecode — the front end itself is not where the second is going.
+
+### 12.6 What Phase 3 still owes
+
+- **The IR volume above.** A JIT pays its compile time on every run,
+  so 30% is worth going after.
 - `--vm-llvm` is the same engine as `--jit` today, which makes it a
   duplicate flag rather than a lane. Retiring it means re-pointing
   every gate that names it.
