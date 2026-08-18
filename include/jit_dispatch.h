@@ -541,6 +541,14 @@ inline bool (*_jit_closure_is_native_hook)(JitClosure*) = nullptr;
 // each chunk is its own function, and it registers like the AST path.)
 inline const JitParamMeta* (*_jit_closure_meta_hook)(JitClosure*) = nullptr;
 
+// The same seam for the other kind of shared entry point: every native stdlib
+// closure runs through one trampoline, so its signature cannot key the per-fn
+// table either. stdlib_jit.h installs this — it owns the derivation from the
+// canonical interp parameter list, which is where a native's signature lives.
+// Kept separate from the hook above because both can be installed at once (a
+// VM run reaches native closures too).
+inline const JitParamMeta* (*_jit_native_meta_hook)(JitClosure*) = nullptr;
+
 // The other half of the same seam: which capture cell carries the chunk a
 // closure runs, for the one place that has to REBUILD a closure from what it
 // recorded rather than call the one it was handed — the lazy-namespace
@@ -798,7 +806,10 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
   auto meta_of = [](JitClosure* c) -> const JitParamMeta* {
     if (!c) return nullptr;
     if (const JitParamMeta* m = _jit_lookup_param_meta(c->fn_ptr)) return m;
-    return _jit_closure_meta_hook ? _jit_closure_meta_hook(c) : nullptr;
+    if (_jit_closure_meta_hook) {
+      if (const JitParamMeta* m = _jit_closure_meta_hook(c)) return m;
+    }
+    return _jit_native_meta_hook ? _jit_native_meta_hook(c) : nullptr;
   };
   const JitParamMeta* meta = meta_of(cls);
   // Multifn dispatcher fallback: dispatchers share a single thunk

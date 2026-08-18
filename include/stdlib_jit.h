@@ -7202,6 +7202,44 @@ _canon_params(const NsMethod* m) {
   return fnv->to_function().params.get();
 }
 
+// The canonical FunctionValue's declared return type, resolved the same way
+// (empty when the method declares none, or when the lookup fails). Split out
+// so the introspection view can read it without a second resolver.
+inline std::string_view _canon_return_type(const NsMethod* m) {
+  const auto& env = _canonical_env();
+  const culebra::Value* fnv = nullptr;
+  auto pick = [&](const culebra::Value& v) {
+    if (v.type == culebra::Value::Function) fnv = &v;
+  };
+  if (m->ns == nullptr || m->ns[0] == '\0') {
+    auto it = env.dictionary.find(std::string(m->name));
+    if (it != env.dictionary.end()) {
+      pick(it->second.val);
+    } else if (auto io = env.dictionary.find("IO");
+               io != env.dictionary.end() &&
+               io->second.val.type == culebra::Value::Object &&
+               io->second.val.to_object().has(m->name)) {
+      pick(io->second.val.to_object().get(m->name));
+    }
+  } else if (auto it = env.dictionary.find(std::string(m->ns));
+             it != env.dictionary.end() &&
+             it->second.val.type == culebra::Value::Object) {
+    const auto& ns_obj = it->second.val.to_object();
+    if (m->sub != nullptr) {
+      if (ns_obj.has(m->sub)) {
+        const auto& sub_v = ns_obj.get(m->sub);
+        if (sub_v.type == culebra::Value::Object &&
+            sub_v.to_object().has(m->name)) {
+          pick(sub_v.to_object().get(m->name));
+        }
+      }
+    } else if (ns_obj.has(m->name)) {
+      pick(ns_obj.get(m->name));
+    }
+  }
+  return fnv ? fnv->to_function().return_type : std::string_view{};
+}
+
 // Whether this method's JIT adapter consumes a kwarg/default slab (built by the
 // shared resolver) rather than taking raw positional args. This is a JIT-adapter
 // contract, NOT derivable from the canonical spec: several raw-adapter methods
@@ -7242,6 +7280,7 @@ inline const NsParamMeta* _ns_meta(const NsMethod* m);
 // the closure trampoline to type-check each positional at the argument's source
 // position, matching the interp binder. See definition below kBuiltinFns.
 inline const NsParamMeta* _ns_type_meta(const NsMethod* m);
+inline const JitParamMeta* _jit_ns_introspect_meta(JitClosure* cls);
 
 // Does this positional count fit the method's shape? An args-rest method
 // (range/iota) absorbs any number, one with param metadata takes required
@@ -8138,6 +8177,7 @@ inline bool _jit_ns_callback_arity(JitClosure* cls, int64_t* cb_min,
 // Install the kwarg + callback-arity hooks once, before any JIT call runs.
 inline const bool _jit_ns_kwarg_hook_installed = [] {
   _jit_ns_kwarg_hook = &_jit_ns_kwarg_resolve;
+  _jit_native_meta_hook = &_jit_ns_introspect_meta;  // defined below
   _jit_ns_callback_arity_hook = &_jit_ns_callback_arity;
   return true;
 }();
@@ -8362,6 +8402,102 @@ inline const NsParamMeta* _ns_type_meta(const NsMethod* m) {
   auto it = table.find(m);
   return it == table.end() ? nullptr : it->second;
 }
+
+// Introspection view of a native stdlib closure. `fn.params` / `.return_type`
+// read a JitParamMeta keyed by fn_ptr, and every native closure shares one
+// trampoline, so nothing was ever registered for them and the compiled
+// engines reported an empty signature where the interpreter — reading the
+// canonical FunctionValue directly — reported the real one. Derived here from
+// that same canonical source, so the two cannot drift.
+namespace _ns_introspect_detail {
+struct NativeMeta {
+  std::vector<std::string> names;      // stable storage for the cstrings
+  std::vector<std::string> types;
+  std::vector<const char*> name_ptrs;
+  std::vector<const char*> type_ptrs;
+  std::vector<uint8_t> has_default_bits;
+  std::vector<uint8_t> mut_bits;
+  std::string return_type;
+  JitParamMeta meta{};
+};
+
+inline std::unique_ptr<NativeMeta> build(const NsMethod* m) {
+  const auto* cps = _canon_params(m);
+  if (!cps) return nullptr;
+  auto nm = std::make_unique<NativeMeta>();
+  size_t n = cps->size();
+  nm->names.reserve(n);
+  nm->types.reserve(n);
+  nm->has_default_bits.assign((n + 7) / 8, 0);
+  nm->mut_bits.assign((n + 7) / 8, 0);
+  int64_t kwargs_rest_idx = -1, first_kw_only_idx = -1;
+  for (size_t i = 0; i < n; i++) {
+    const auto& cp = (*cps)[i];
+    // `*args` is a synthetic overflow slot, not a positional parameter — the
+    // interp's own params view omits it, so this one does too.
+    if (cp.args_rest) continue;
+    size_t k = nm->names.size();
+    nm->names.emplace_back(cp.name);
+    nm->types.emplace_back(cp.type_name);
+    if (cp.default_expr != nullptr || cp.default_value != nullptr)
+      nm->has_default_bits[k / 8] |= static_cast<uint8_t>(1u << (k % 8));
+    if (cp.mut) nm->mut_bits[k / 8] |= static_cast<uint8_t>(1u << (k % 8));
+    if (cp.kwargs_rest && kwargs_rest_idx < 0)
+      kwargs_rest_idx = static_cast<int64_t>(k);
+    if (cp.kw_only && first_kw_only_idx < 0)
+      first_kw_only_idx = static_cast<int64_t>(k);
+  }
+  for (auto& s : nm->names) nm->name_ptrs.push_back(s.c_str());
+  for (auto& s : nm->types) nm->type_ptrs.push_back(s.c_str());
+  nm->return_type = std::string(_canon_return_type(m));
+  auto b = culebra::builtin_arity_bounds(*cps);
+  nm->meta = JitParamMeta{nm->name_ptrs.data(),
+                          nm->has_default_bits.data(),
+                          nm->name_ptrs.size(),
+                          kwargs_rest_idx,
+                          first_kw_only_idx,
+                          // A native FunctionValue carries no name of its own;
+                          // the interp adopts the name a member read looked
+                          // up, so a namespace's method reports it and a bare
+                          // global (`println`, read through no member) does
+                          // not.
+                          (m->ns && m->ns[0] != '\0') ? m->name : "",
+                          nm->return_type.c_str(),
+                          nm->mut_bits.data(),
+                          nm->type_ptrs.data(),
+                          // Nothing neutralizes a native's annotations, so the
+                          // declared and effective views are the same one.
+                          nm->type_ptrs.data(),
+                          b.min,
+                          b.variadic ? -1 : b.max};
+  return nm;
+}
+}  // namespace _ns_introspect_detail
+
+inline const JitParamMeta* _jit_ns_introspect_meta(JitClosure* cls) {
+  if (!cls || cls->fn_ptr != reinterpret_cast<void*>(_jit_ns_method_trampoline))
+    return nullptr;
+  const auto* m = reinterpret_cast<const NsMethod*>(
+      cls->captures[0]->value.data);
+  static std::vector<std::unique_ptr<_ns_introspect_detail::NativeMeta>> storage;
+  static const std::unordered_map<const NsMethod*, const JitParamMeta*> table =
+      [&] {
+        std::unordered_map<const NsMethod*, const JitParamMeta*> t;
+        auto add = [&](const NsMethod& nm) {
+          auto built = _ns_introspect_detail::build(&nm);
+          if (!built) return;
+          t.emplace(&nm, &built->meta);
+          storage.push_back(std::move(built));
+        };
+        for (const auto& nm : kNsMethods) add(nm);
+        for (const auto& nm : kBuiltinFns) add(nm);
+        for (const auto& nm : _wrapped_ns_methods()) add(nm);
+        return t;
+      }();
+  auto it = table.find(m);
+  return it == table.end() ? nullptr : it->second;
+}
+
 
 // Materialize (once, cached + pinned for the isolate's lifetime) the closure
 // for a bare builtin function name, or null if `name` is not one. Mirrors
