@@ -1,17 +1,20 @@
 A Shared Bytecode VM: Design Proposal
 =====================================
 
-**Status: Phases 0–2 done on branch `vm-spike`; Phase 3 not
-started.** Sections 1–9 record the motivation, the target
-architecture, and the migration plan for replacing the tree-walking
-interpreter with a bytecode VM that shares its value representation —
-and its front end — with the JIT. The Phase 0 spike (§7) answered
-both exit questions yes ([§10](#10-phase-0-spike-results)), Phase 1
-built the third backend on the same branch (§10's postscript), and
-Phase 2 took it to the parity bar §7 sets
-([§11](#11-phase-2-full-parity-results)). Phases 3 and 4 — folding
-`jit.h` onto the bytecode, then retiring the tree-walker — remain
-unimplemented, and the branch is not merged. The observable language
+**Status: Phases 0–2 done and merged to `master`; Phase 3 under way
+on branch `vm-phase3`.** Sections 1–9 record the motivation, the
+target architecture, and the migration plan for replacing the
+tree-walking interpreter with a bytecode VM that shares its value
+representation — and its front end — with the JIT. The Phase 0 spike
+(§7) answered both exit questions yes
+([§10](#10-phase-0-spike-results)), Phase 1 built the third backend
+on the same branch (§10's postscript), and Phase 2 took it to the
+parity bar §7 sets ([§11](#11-phase-2-full-parity-results)). Phase 3
+has moved both compiled entries — `--jit` and `culebra build` — onto
+the bytecode, but has not yet deleted the AST codegen they left
+behind, so its exit criterion is not met
+([§12](#12-phase-3-folding-the-jit-onto-the-bytecode)). Phase 4 —
+retiring the tree-walker — is unimplemented. The observable language
 contract in [`language.md`](../language.md) is unaffected: this is a
 change of engine, not of language. Where this document and
 `language.md` disagree, `language.md` wins.
@@ -32,6 +35,7 @@ Contents
 9. [Prior art](#9-prior-art)
 10. [Phase 0 spike: results](#10-phase-0-spike-results)
 11. [Phase 2: full parity — results](#11-phase-2-full-parity-results)
+12. [Phase 3: folding the JIT onto the bytecode](#12-phase-3-folding-the-jit-onto-the-bytecode)
 
 ---
 
@@ -817,5 +821,212 @@ cell per iteration. Phase 3 removes the question instead of answering
 it: once `jit.h` lowers bytecode, the JIT inherits the VM's decision,
 which is already right.
 
-Phase 3 — rewriting `jit.h` to lower bytecode instead of AST — is
-next, and unstarted. The branch is not merged.
+Phase 3 — rewriting `jit.h` to lower bytecode instead of AST — began
+where this section ends; §12 is its record.
+
+---
+
+## 12. Phase 3: folding the JIT onto the bytecode
+
+Started 2026-08-18 on branch `vm-phase3`, from the `master` commit
+Phase 2 landed at. Three batches in, both compiled entries — `--jit`
+and `culebra build` — lower bytecode, and no path outside `jit.h`
+reaches its AST codegen. The codegen is still there: `include/jit.h`
+is 16,446 lines, 80 of whose members take a `peg::Ast` and are now
+dead. §7's exit criterion — exactly one AST consumer — is therefore
+not met; §12.4 is what remains.
+
+### 12.1 A lane's exit code is half of its answer
+
+The phase opened with a probe rather than a change: all 207
+`tests/*.cul` through `--jit` and `--vm-llvm`, diffed. It reported
+203 matches, four differences, no skips — and the four should not
+have been news, because the symmetry gate runs that comparison on
+every `just test-dev`.
+
+It ran it with the VM lanes' exit status thrown away. Only stdout was
+compared, so a lane that printed nothing and then died read as equal
+to the interpreter: an uncaught throw (rc 255) and a segfault
+(rc 139) both leave stdout empty, which is exactly what a file whose
+asserts all hold prints. The status was dropped for a reason — an
+out-of-slice reject also exits nonzero, and the sweep wants that to
+be a skip. The fix is to ask the skip question about the status too
+rather than not asking: rc≠0 enters the same mismatch branch stdout
+does, and `vm_skipped` decides skip-or-fail there as it already did.
+The report gained the rc and the lane's stderr, without which a crash
+reads as an empty diff.
+
+Three files had been green this way, and all three were one
+mechanism. An `if` / `cond` hoists what its arms declare, because
+neither opens a scope for them; the compiler minted a cell per hoist
+and chained the cells through `Binding::shadowed`. So a name declared
+inside nested arms got one cell per level, and a name two sequential
+`if`s both declare got one cell each, where the JIT registers a
+single `VarSlot::runtime_decl` slot per name and lets a later arm
+find it. The chain also crashed: a nested hoist's `CellNew` sits
+inside one arm, so a sibling arm reading the name walked the chain
+into a cell its path never allocated and dereferenced a zeroed slot —
+`tests/test_args.cul` segfaulted on any short non-Bool option,
+through the two structurally identical option arms in
+`Args.try_parse`.
+
+The repair follows the JIT twice over. One cell for the name, shared
+by every arm — and, since several arms now write one binding, the
+compiler stops answering for its mutability: which declaration ran is
+this call's fact, so it goes in a slot beside the cell
+(`Binding::mut_slot`, the JIT's `VarSlot::mut_alloca`). A declaration
+records its own `mut` there; a bare write asks the cell whether any
+declaration has landed at all before checking it. Without the runtime
+bit the last arm compiled spoke for every arm, and
+`if a { let n = 1 }` / `if !a { mut n = 2 }` accepted a write the
+interpreter refuses. The third divergence was adjacent: a declaration
+must not write through a borrowed capture, which reads as a cell
+binding like any other, so `fn () { let sh = sh + 1 }` had been
+assigning the enclosing `sh` instead of shadowing it. Owning the cell
+is what distinguishes the two.
+
+### 12.2 Both compiled entries lower bytecode
+
+`--jit` is now `run_modules_via_llvm` and `culebra build` is
+`build_object_from_modules`. The corpus had been checking that
+lowering as `--vm-llvm` since Phase 2, so the behavioural risk was
+small and the behavioural result was uneventful: 17,262 cases,
+`interp == jit`, from the first run.
+
+Three things the AST entries had and the lowering did not:
+
+- `--jit-faststart` and the backend object cache. Both are properties
+  of how a module is executed rather than of how it was built, so
+  `run_program` took `fast_codegen` and a module name, and
+  `JIT::jit_module_name` keys the cache from the same sources as
+  before.
+- **Parameter metadata that outlives the compiler.** The lowering
+  registered `&VmProgram::param_metas[i]`, a pointer into the
+  compiling process's heap — fine for a JIT, dangling for an object
+  file, and the only real obstacle AOT presented. The AST path
+  already emitted that metadata as globals of the module being built
+  (`emit_param_meta_global`); the lowering uses it, and the function
+  lost its last AST parameter on the way (it only ever asked whether
+  a default existed). The rest of the lowering was audited for the
+  same mistake: every other host value reaches the module through a
+  runtime extraction, and this was the only pointer burnt into IR.
+- The module/program split, hand-written in three places — main.cc's
+  script lane, its doctest lane, and the AOT driver.
+  `Compiler::compile_modules` takes the loader's list and peels the
+  spliced `<stdlib>` prologue off the front once.
+
+One mechanical trap is worth recording: `IRBuilder::CreateGlobalString`
+takes its module from the insertion point's basic block, so it cannot
+be called before lowering starts. The metadata globals are built at
+the first `MakeClosure` site that needs one and cached, not in a
+prepass.
+
+### 12.3 Moving a consumer moves what the gates measure
+
+That was the cost of the switch, and none of it was visible in a
+behavioural comparison. `--jit` is a lane several gates name
+explicitly; when the lane changed engines those gates began measuring
+a different implementation, and what the bytecode path had been
+getting wrong in private became a regression in public. In the order
+it surfaced:
+
+- **leak-fuzz** (corpus RC-leak regression, interp against the JIT
+  lane) reported 11 new leaks in two clusters, both pre-existing —
+  `--vm` leaks them identically — and both the same shape, a rule
+  stated in one place and not kept on one path. An explicit
+  `x.drop()` borrows its receiver and leaves the statement sweep to
+  release it, but inside the UFCS dispatch the candidate arm hands
+  that same receiver to a call whose `Take` drops the temp from the
+  sweep list for *every* arm, so the drop arm stranded the `+1` (ten
+  receiver shapes). And a for-in destructuring bind runs per
+  iteration while a nested pattern's intermediate container was left
+  to a sweep that fires once for the whole loop, stranding it on
+  every iteration but the last. `leak_baseline.txt` shrank by one on
+  the way: a nested-fn recursion case the AST path leaked and the
+  bytecode path does not.
+- **leak-abort-suite** is a different gate, not a stricter one:
+  leak-fuzz discards a case whose warm-up throws, so it does not see
+  throw paths at all. It found three more clusters. Two were runtime
+  helpers that release the value they are handed on every normal exit
+  — `culebra_runtime_set_add_method`,
+  `culebra_runtime_object_remove_any` — and therefore own it, but
+  left the unwind edge out; hashing the argument is where an
+  unhashable one raises, which is exactly the path that skipped the
+  release. `JitUnwindRelease` is the RAII form of that convention and
+  now covers both. The third is the transferable one: **a shared
+  emitter brings its own cleanup assumptions with it.**
+  `emit_for_open_protocol` holds the iterator in an `Owned` handle
+  while it validates the protocol — its comment says so, and that is
+  what makes a rejected protocol throw with the `+1` still in flight
+  — but that pool lives in the LLVM function, where the bytecode temp
+  table the VM's cleanup pads stand on cannot see it, and nothing
+  drained it. Each scope pad now drains the pool as the AST path's
+  pads do; releasing nil-clears a slot, so an enclosing pad draining
+  again is a no-op.
+- **Two capacity limits sized for an opt-in lane.** The rc-leak
+  battery (`tools/analysis/gc_leak_check.sh`) reported `error` on all
+  40 rows, which is not a leak but a failure to measure: its pattern
+  file compiles to a 382-slot frame and `kMaxSlots` was 256, so
+  `--jit` rejected a program the AST path had compiled. Nothing about
+  the format wanted 256 — an instruction's operands are `int32`, and
+  both engines size their register window from the chunk's own
+  `num_slots`. What the number bounds is how much machine stack one
+  executor frame may claim, and the frames that approach it are top
+  levels, whose slots count their bindings and temps and which never
+  recurse. It is 8192, and overflow stays a clean `VmError`.
+  `kMaxOwnedDepth`, the nested-scope depth, was the same limit in the
+  same disguise: 64, where the interpreter accepts 200 with no limit
+  at all, and it stayed at 64 because `run_frame` declared a fixed
+  `int64_t marks[kMaxOwnedDepth]` — charging every frame for the
+  deepest nesting the budget allows. That is the trap Phase 2 already
+  fixed for the register window, one array over. Sized from the
+  chunk's own `owned_depths`, the budget can be 1024 while only a
+  frame that nests that deep pays for it.
+- A leak this work itself introduced, visible the moment the battery
+  could run again: 5,086 live objects where 89 were expected, one per
+  pass. `emit_conditional_rebind` opened a temp scope for its
+  sentinel probe, so the slot number rolled back when the scope
+  closed and the read the assignment returns took that same number,
+  overwriting the probe's `+1` rather than releasing it. In a
+  register VM a temp scope is a numbering as much as a lifetime; the
+  identical probe in `assign_shadowing` already lived in the
+  enclosing statement's temps, which is where this one belongs.
+- **A counted `for i in a..b` never checked its bounds were Longs.**
+  The fast path walks a Long counter. `compile_range` `ChkLong`s each
+  endpoint right where it compiles it — for the evaluation order that
+  puts a bad bound's error before a later bound's side effects — and
+  the counted path was the one range site without those checks. So
+  `for i in 1.5..3` ran no iterations and said nothing where the
+  interpreter raises, and `for i in 1..3 by 0.5` walked a step of its
+  own invention, which loops forever: that is what timed
+  `jit_error_pos_test` out rather than merely failing it.
+
+The general form: **a green gate is scoped to a lane, and a lane is
+an implementation, not a name.** Behavioural equivalence carried over
+on the first run, because the corpus had been comparing that lowering
+for a phase already. Nothing that names `--jit` did.
+
+### 12.4 What Phase 3 still owes
+
+- **The deletion.** `jit.h`'s AST codegen is unreachable but present.
+  The cut line is mechanical — a member is dead if its signature
+  takes a `peg::Ast` — and the two halves do not intersect: 80
+  members qualify, the lowering depends on 81 JIT members, and none
+  of those 81 takes an AST. (`compile_function_call_raw` and its
+  neighbours are value-based despite the name, and stay;
+  `emit_for_open_protocol` calls them.) The verification is stronger
+  than a build: the `-O0 --emit-llvm` output of every test program
+  must not change by a byte. What does not work is deleting them with
+  a brace counter — string literals and comments in this file hold
+  braces, and a counter that believes them walks off the end of a
+  member and takes the class's closing brace with it.
+- **Performance parity, unmeasured since the switch.** `--jit`
+  reaches LLVM through a different front end now; §10's numbers are
+  for the other one.
+- `--vm-llvm` is the same engine as `--jit` today, which makes it a
+  duplicate flag rather than a lane. It stays until the deletion,
+  because it is what the gates name.
+- One defect that is not this phase's but is on the VM: under
+  parallel load `tests/isolate/test_lazy_ns_parse_race_jit.cul`
+  segfaults on `--vm` alone — 7 runs in 40 at ten processes wide,
+  against 0 in 40 on each of interp, `--jit` and `--vm-llvm`.
