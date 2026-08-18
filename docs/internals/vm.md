@@ -1117,7 +1117,44 @@ bytecode — the front end itself is not where the second is going.
 - `--vm-llvm` is the same engine as `--jit` today, which makes it a
   duplicate flag rather than a lane. Retiring it means re-pointing
   every gate that names it.
-- One defect that is not this phase's but is on the VM: under
-  parallel load `tests/isolate/test_lazy_ns_parse_race_jit.cul`
-  segfaults on `--vm` alone — 7 runs in 40 at ten processes wide,
-  against 0 in 40 on each of interp, `--jit` and `--vm-llvm`.
+
+### 12.7 A shared cell is a shared heap
+
+One defect was on the VM rather than on this phase: under parallel
+load `tests/isolate/test_lazy_ns_parse_race_jit.cul` segfaulted on
+`--vm` alone — 7 runs in 40 at ten processes wide, against 0 in 40 on
+each of interp, `--jit` and `--vm-llvm`. The lane split was the whole
+clue. A closure the executor builds reaches its bytecode through a
+descriptor in capture 0, and `Exec::prepare` minted one descriptor cell
+per chunk for the entire program: every closure built from that chunk
+retained that one cell. The lowered lanes have no such cell — each
+chunk is its own native function, so the fn_ptr says everything.
+
+A shared cell is a shared heap object under a discipline that has none.
+`JitCell::refcount` is a plain `int64_t`, because the runtime is
+single-threaded by construction: one `Runtime` per isolate, each with
+its own slab and its own GC heap. When a `Parallel.map` starts
+twenty-four children and every one of them resolves `Regex`, `Path`,
+`Term`, `Time` and `Canvas` on its own thread, the closures in those
+module bodies retain and release the parent's cell at once. Lost
+updates drive the count to zero while references remain, and whichever
+child gets there frees the parent's memory into its own slab.
+
+ThreadSanitizer named it on the first run — 59 reports, every one on a
+cell `Exec::prepare` had allocated, from the two sites that retain one
+(`MakeClosure` and the lazy-namespace builder rebuild). ASan had
+nothing to say, the same split the earlier parse-ledger races showed.
+
+The fix is to stop sharing. The descriptor rides in a cell of the
+closure's own, like every other capture and like the deserializer had
+always rebuilt one; `desc_cells`, its pin, `release_descs` and the run
+guard go with it, and the lazy-namespace registry keeps the descriptor
+value rather than the cell so each Runtime builds a module through a
+cell it allocated itself. That is 27 lines less code. The price is one
+cell allocation — a slab pop plus a GC registration — per closure
+built: 15% on a loop whose whole body is building and calling one (3M
+iterations, 0.41s to 0.47s), and nothing measurable on `tests/perf`,
+where a closure is built once and called in the loop.
+
+TSan goes to 0 reports on that test and 0 across all twenty isolate
+tests; the stress repro goes from 7/40 to 0/80.
