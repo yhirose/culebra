@@ -3085,6 +3085,13 @@ class Compiler {
     // without settling the binding: it stays lazy, so every arm finds the
     // same cell and a read still asks the sentinel whether any arm ran.
     bool conditional = false;
+    // A conditional binding's `mut` is the runtime fact its declaration
+    // wrote, not something the compiler can name: the arms declare the same
+    // name with their own mutability and only one of them runs, so a later
+    // write must ask which did (the JIT's VarSlot::mut_alloca). Holds a Bool,
+    // false until a declaration lands. -1 for every other binding, whose
+    // `is_mut` above is already the whole answer.
+    int32_t mut_slot = -1;
     // Pre-declared for a bare `x = v` site, which IS the declaration: that
     // write fills the cell instead of being checked against it (the JIT's
     // VarSlot::awaits_implicit_decl). Cleared once it lands.
@@ -3708,11 +3715,37 @@ class Compiler {
     return nullptr;
   }
 
+  // The conditional pre-declaration this scope already holds for `name`.
+  // An `if`/`cond` hoists what its arms declare, and collect_escaping_decls
+  // recurses into nested arms — so an enclosing construct has already minted
+  // the cell a nested one would, and an earlier construct in the same scope
+  // has minted the one a later one would. The name is a single binding here,
+  // the way the JIT registers a single VarSlot::runtime_decl slot and lets a
+  // later arm find it, so both cases must reuse this cell rather than mint a
+  // second one: minting again put the `CellNew` inside one arm, leaving a
+  // sibling arm's read to walk the shadow chain into a cell that path never
+  // allocated (a segfault), and made a second `if`'s bare declare of the
+  // name a fresh binding instead of the reassignment interp reports.
+  Binding* conditional_here(const std::string& name) {
+    for (auto& b : scopes_.back().bindings)
+      if (b.lazy && b.conditional && b.name == name) return &b;
+    return nullptr;
+  }
+
   // A settled cell binding of `name` in this scope — what a re-declaration
-  // writes through, since a closure may already hold that cell.
+  // writes through, since a closure may already hold that cell. Only a cell
+  // this frame OWNS (slot_cell_) qualifies: a capture bound from the closure
+  // reads as a cell too, but it belongs to the frame that made it, and a
+  // declaration shadows such a name rather than writing the enclosing
+  // binding — the JIT's rule that a declaration never reuses a borrowed
+  // capture. Writing through it made `let sh = 7` visible as 8 outside a
+  // `fn () { let sh = sh + 1 }` that ran.
   Binding* captured_here(const std::string& name) {
     for (auto& b : scopes_.back().bindings)
-      if (!b.lazy && !b.session && b.is_cell && b.name == name) return &b;
+      if (!b.lazy && !b.session && b.is_cell && b.name == name &&
+          b.slot < static_cast<int32_t>(slot_cell_.size()) &&
+          slot_cell_[b.slot])
+        return &b;
     return nullptr;
   }
 
@@ -3777,7 +3810,11 @@ class Compiler {
     // A cell pre-declared for this very write (a closure above captured the
     // name ahead of it): the write is still the declaration, so it fills the
     // cell rather than being mut-checked against the placeholder.
-    if (Binding* pre = predeclared_here(name)) return pre->awaits_implicit;
+    // A conditional one cannot answer here at all: whether an arm already
+    // declared the name is this call's fact, so emit_rebind asks the cell
+    // when the write runs (the JIT's emit_runtime_decl_assign).
+    if (Binding* pre = predeclared_here(name))
+      return !pre->conditional && pre->awaits_implicit;
     if (lookup(name)) return false;
     return name != "self" && !is_stdlib_namespace(name) &&
            !is_stdlib_global(name);
@@ -3787,12 +3824,41 @@ class Compiler {
     if (b.session) {
       emit(Op::ReplBind, static_cast<int32_t>(ReplBindMode::Assign),
            kconst_str(b.name), b.shadowed_builtin ? 1 : 0);
+    } else if (b.conditional && b.mut_slot >= 0) {
+      return emit_conditional_rebind(at, b, r);
     } else if (!b.is_mut) {
       emit(Op::ImmutErr, kconst_str(b.name));
       return false;
     }
     if (b.is_cell) store_cell(at, b.slot, r);
     else store_into(b.slot, r);
+    return true;
+  }
+
+  // A bare write to a conditionally-declared name, where "is this the
+  // declaration or a reassignment" is a runtime fact: only one arm runs, so
+  // the sentinel still in the cell means no declaration has landed and this
+  // write is one (immutably — a bare declare never carries `mut`), while a
+  // value there means the arm that ran already bound the name and this write
+  // is checked against the mutability THAT arm wrote. The JIT's
+  // emit_runtime_decl_assign, op for op.
+  bool emit_conditional_rebind(const peg::Ast& at, const Binding& b,
+                               ExprResult r) {
+    TempScope ts(*this);
+    int32_t probe = alloc_temp(at);
+    emit(Op::CellGet, probe, b.slot);
+    size_t to_declare = emit(Op::JumpIfTag, probe, 0, TAG_NO_SELF);
+    // Reassignment: the declaration's own `mut` decides.
+    size_t to_immut = emit(Op::JumpIfFalse, b.mut_slot);
+    store_cell(at, b.slot, r);
+    size_t to_join = emit(Op::Jump, 0);
+    patch_to_here(to_immut);
+    emit(Op::ImmutErr, kconst_str(b.name));
+    // Declaration: fill the cell and record that it was not a `mut` one.
+    patch_to_here(to_declare);
+    store_cell(at, b.slot, r);
+    emit(Op::LoadConst, b.mut_slot, kconst({TAG_BOOL, 0}));
+    patch_to_here(to_join);
     return true;
   }
 
@@ -4235,6 +4301,13 @@ class Compiler {
     std::vector<int32_t> cslots;
     for (const auto& d : decls)
       cslots.push_back(alloc_cell_slot(*d.at, d.name));
+    // A conditional binding's mutability is decided when a declaration runs,
+    // so it needs a slot to say so in (Binding::mut_slot). Taken before the
+    // shared temp below so it outlives the statement, like the cells.
+    std::vector<int32_t> mslots;
+    if (conditional)
+      for (const auto& d : decls)
+        mslots.push_back(alloc_slot(*d.at, "(" + d.name + ".decl_mut)"));
     int32_t tmp = alloc_temp(ast);
     for (size_t k = 0; k < decls.size(); ++k) {
       emit(Op::LoadConst, tmp, kconst({TAG_NO_SELF, 0}));
@@ -4245,8 +4318,22 @@ class Compiler {
       b.shadowed_builtin = shadowed_builtin[k];
       b.conditional = conditional;
       b.awaits_implicit = decls[k].implicit;
+      if (conditional) {
+        b.mut_slot = mslots[k];
+        emit(Op::LoadConst, b.mut_slot, kconst({TAG_BOOL, 0}));
+      }
       push_binding(std::move(b));
     }
+  }
+
+  // predeclare_cells for an `if`/`cond` hoist: the names this scope already
+  // pre-declared conditionally keep the cell they have (conditional_here).
+  void predeclare_conditional_cells(const peg::Ast& ast,
+                                    const DeclList& decls) {
+    DeclList fresh;
+    for (const auto& d : decls)
+      if (!conditional_here(d.name)) fresh.push_back(d);
+    predeclare_cells(ast, fresh, /*conditional=*/true);
   }
 
   // A declaration filling a pre-declared cell settles the binding — unless
@@ -5724,7 +5811,14 @@ class Compiler {
         store_cell(*tgt, pre->slot, compile_assign_rhs(ast, av));
         slot_rank_[pre->slot] = next_rank_++;  // released as declared here
         emit_session_decl_bind(*pre, decl_mut);
-        pre->is_mut = decl_mut;
+        // A conditional binding is shared by every arm that declares the
+        // name, so its mutability is whatever the arm that RAN said — recorded
+        // where a later write can read it rather than in `is_mut`, which the
+        // last arm compiled would otherwise answer for all of them.
+        if (pre->mut_slot >= 0)
+          emit(Op::LoadConst, pre->mut_slot, kconst({TAG_BOOL, decl_mut}));
+        else
+          pre->is_mut = decl_mut;
         settle_predeclared(*pre);
         return read_binding(*tgt, *pre);
       }
@@ -7231,7 +7325,7 @@ class Compiler {
     // declines to look.
     DeclList escaping;
     collect_escaping_decls(ast, escaping);
-    predeclare_cells(ast, escaping, /*conditional=*/true);
+    predeclare_conditional_cells(ast, escaping);
     auto compile_arm = [&](const peg::Ast& body) { compile_arm_into(body, res); };
     std::vector<size_t> end_jumps;
     size_t i = iv.arm_off;
@@ -7259,7 +7353,7 @@ class Compiler {
     int32_t res = alloc_temp(ast);
     DeclList escaping;
     collect_escaping_decls(ast, escaping);
-    predeclare_cells(ast, escaping, /*conditional=*/true);
+    predeclare_conditional_cells(ast, escaping);
     std::vector<size_t> end_jumps;
     for (const auto& arm : ast.nodes) {  // each COND_ARM: [test, body]
       const auto& test = *arm->nodes[0];

@@ -117,6 +117,50 @@ assert_throws("ImmutableError", fn () {
   mixed_mut(false)
 })
 
+// --- Mutability across two SEPARATE ifs, where the arm that runs is not
+// the arm compiled last: whichever declaration ran owns the answer, so a
+// compiler that lets the last-compiled `mut` speak for the name accepts a
+// write the interp refuses (and vice versa). ---
+fn mut_first_compiled(a) {
+  if a { let n = 1 }
+  if !a { mut n = 2 }
+  n = 9
+  n
+}
+assert_eq(mut_first_compiled(false), 9)
+assert_throws("ImmutableError", fn () {
+  mut_first_compiled(true)
+})
+
+// --- Sibling arms each holding a NESTED if that declares the same name:
+// the outer construct already hoisted it, so the inner ones must share
+// that cell. Minting one per site put its allocation inside a single arm
+// and left the other arm reading a cell its path never made — a segfault
+// (tests/test_args.cul was hitting exactly this through Args.try_parse). ---
+fn nested_sibling_arms(argv) {
+  mut got = nil
+  let tok = argv[0]
+  if tok.starts_with("--") {
+    if tok == "--zzz" {
+      got = "long-zzz"
+    } else {
+      let raw = if false { "x" } else { argv[1] }
+      got = "long-{raw}"
+    }
+  } else {
+    if tok == "-zzz" {
+      got = "short-zzz"
+    } else {
+      let raw = if false { "y" } else { argv[1] }
+      got = "short-{raw}"
+    }
+  }
+  got
+}
+assert_eq(nested_sibling_arms(["-n", "7"]), "short-7")
+assert_eq(nested_sibling_arms(["--count", "9"]), "long-9")
+assert_eq(nested_sibling_arms(["--zzz", "9"]), "long-zzz")
+
 // --- Loop body: a conditionally-declared name must re-arm to "not yet
 // declared" every pass, not leak the previous iteration's value or its
 // slot's storage across iterations. ---
