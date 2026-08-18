@@ -36,16 +36,10 @@ Makefile
 CMakeFiles
 CMakeCache.txt
 
-# Build directory
-build/
-build-dev/
-build-gate/
-build-asan/
-build-assert/
-build-no-jit/
-build-gfx/
+# Build directories. A glob rather than a list: build-tsan/ was not on the
+# list and got committed, binary and all.
+build*/
 raylib_ext_build/
-build-webview/
 
 # Extended `culebra wrap` binaries (default + spike outputs)
 culebra-wrapped
@@ -88,9 +82,6 @@ docs/_history.ja.md
 # in sync with the code, not embedded, not part of the public doc set.
 docs/_internals.md
 docs/_internals.ja.md
-
-# Playground incremental-build bookkeeping (the wasm it guards is committed)
-build-playground/
 
 # Python bytecode from the asset generator
 __pycache__/
