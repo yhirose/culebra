@@ -400,28 +400,36 @@ _run-tests BACKEND:
             # slot), anything else is a failure exactly as the JIT would
             # be. Asking only on mismatch keeps the common file to one extra
             # run per lane instead of a dump as well.
+            #
+            # A nonzero exit is a mismatch in its own right, not just a
+            # different stdout: an out-of-slice reject leaves rc!=0 too, which
+            # is why the skip question is asked the same way for both. Reading
+            # only stdout let an uncaught throw — and a SEGV — pass as "equal"
+            # whenever the file printed nothing (test_args, test_forward_ref
+            # and test_conditional_decl were all silently green that way).
             vm_skipped() {
                 grep -q -- "--vm: unsupported:" "$1" && return 0
                 cul --vm-dump "$f" 2>/dev/null | grep -q "(unsupported)"
             }
-            out_vm=$(cul --vm "$f" 2> "$d/$name.vm.err")
-            if [[ "$out_interp" != "$out_vm" ]]; then
-                vm_skipped "$d/$name.vm.err" && exit 0
+            vm_lane_failed() {
+                local lane="$1" err="$2" got="$3" rc="$4"
+                vm_skipped "$err" && return 0
                 {
-                    echo "interpreter and --vm outputs differ for $f:"
-                    diff <(printf "%s" "$out_interp") <(printf "%s" "$out_vm") || true
+                    echo "interpreter and $lane differ for $f (rc=$rc):"
+                    diff <(printf "%s" "$out_interp") <(printf "%s" "$got") || true
+                    [[ -s "$err" ]] && { echo "--- $lane stderr ---"; cat "$err"; }
                 } > "$d/$name.err"
                 touch "$d/$name.fail"
+                return 1
+            }
+            out_vm=$(cul --vm "$f" 2> "$d/$name.vm.err"); rc_vm=$?
+            if [[ "$out_interp" != "$out_vm" || "$rc_vm" -ne 0 ]]; then
+                vm_lane_failed "--vm" "$d/$name.vm.err" "$out_vm" "$rc_vm"
                 exit 0
             fi
-            out_llvm=$(cul --vm-llvm "$f" 2> "$d/$name.llvm.err")
-            if [[ "$out_interp" != "$out_llvm" ]]; then
-                vm_skipped "$d/$name.llvm.err" && exit 0
-                {
-                    echo "interpreter and --vm-llvm outputs differ for $f:"
-                    diff <(printf "%s" "$out_interp") <(printf "%s" "$out_llvm") || true
-                } > "$d/$name.err"
-                touch "$d/$name.fail"
+            out_llvm=$(cul --vm-llvm "$f" 2> "$d/$name.llvm.err"); rc_llvm=$?
+            if [[ "$out_interp" != "$out_llvm" || "$rc_llvm" -ne 0 ]]; then
+                vm_lane_failed "--vm-llvm" "$d/$name.llvm.err" "$out_llvm" "$rc_llvm"
             fi
         ' _ '{}' "$d" "$jit_out"
         if ! collect_results "$d" "(interp vs jit vs VM)"; then
