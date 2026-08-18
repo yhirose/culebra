@@ -79,7 +79,11 @@ namespace culebra::vm {
 inline constexpr int32_t kMaxSlots = 8192;
 // How deeply one frame may nest lexical scopes: each one takes an entry in
 // the frame's owned-mark array (Op::OwnedMark).
-inline constexpr int32_t kMaxOwnedDepth = 64;
+// Now that each frame's mark array is sized from its own owned_depths (see
+// run_frame), this bounds only the frame that actually nests that deep — and
+// 64 was inside the range a program may ask for, which the interpreter accepts
+// without a limit at all.
+inline constexpr int32_t kMaxOwnedDepth = 1024;
 
 // One fixed-width instruction. Registers are frame slots holding JitValue.
 // RC is explicit in the stream (vm.md §4): the compiler emits Retain/Release;
@@ -3572,7 +3576,8 @@ class Compiler {
   // The current scope's slot in the frame's mark array: its static depth.
   void take_owned_mark(const peg::Ast& at) {
     auto d = static_cast<int32_t>(scopes_.size()) - 1;
-    if (d >= kMaxOwnedDepth) reject(at, "scopes nested deeper than 64");
+    if (d >= kMaxOwnedDepth)
+      reject(at, std::format("scopes nested deeper than {}", kMaxOwnedDepth));
     scopes_.back().owned_mark = d;
     chunk_.owned_depths = std::max(chunk_.owned_depths, d + 1);
     emit(Op::OwnedMark, d);
@@ -3877,7 +3882,10 @@ class Compiler {
   // emit_runtime_decl_assign, op for op.
   bool emit_conditional_rebind(const peg::Ast& at, const Binding& b,
                                ExprResult r) {
-    TempScope ts(*this);
+    // The probe belongs to the enclosing statement's temps, as
+    // assign_shadowing's does: a scope of its own here would roll the slot
+    // number back, and the read this assignment returns would take the same
+    // number and overwrite the probe's `+1` instead of releasing it.
     int32_t probe = alloc_temp(at);
     emit(Op::CellGet, probe, b.slot);
     size_t to_declare = emit(Op::JumpIfTag, probe, 0, TAG_NO_SELF);
@@ -8859,8 +8867,12 @@ struct Exec {
                                          : culebra_runtime_recursion_depth();
     const Insn* code = c.code.data();
     // The frame's owned-stack watermarks, one per open scope depth. Kept
-    // out of the register file on purpose — see Op::OwnedMark.
-    int64_t marks[kMaxOwnedDepth];
+    // out of the register file on purpose — see Op::OwnedMark. Sized from the
+    // chunk like the register window above, not from kMaxOwnedDepth: a fixed
+    // array charges every frame for the deepest nesting the budget allows,
+    // which is what put the register window's recursion limit out of reach
+    // before Phase 2 shrank it.
+    int64_t marks[c.owned_depths > 0 ? c.owned_depths : 1];
     size_t pc = 0;
     // Dispatch, re-entering at a try scope's handler when a throw lands
     // inside one. Classification shares the JIT landingpad's carrier
