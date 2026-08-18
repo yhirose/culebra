@@ -245,10 +245,14 @@ test BACKEND='all': check-generated build-gate
 # Run this after each edit; `just test` is the heavier pre-commit gate.
 # check-generated runs ahead of the build: `just land` runs this recipe as its
 # only gate before fast-forwarding master, so a stale generated file would
-# otherwise reach master with only CI left to notice.
+# otherwise reach master with only CI left to notice. The quick-guide index is
+# generated too, but its check parses the reference with culebra itself, so it
+# runs after the build instead of inside check-generated (0.7s; a stale index
+# reached master without it).
 [doc("Fast inner-loop tests vs build-dev/ (no LTO). BACKEND=fast|interp|jit|isolate (default: fast).")]
 [group("test")]
 test-dev BACKEND='fast': check-generated dev
+    @./build-dev/culebra misc/gen_quick_guide.cul --check
     @BIN=./build-dev/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
 
 # The same sweep as test-dev against the assert-enabled binary (`just
