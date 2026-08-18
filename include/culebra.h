@@ -12,6 +12,9 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 #include "jit.h"
+// The compiled lanes run bytecode: vm.h holds the compiler and the LLVM
+// lowering, and defines JIT::run / JIT::build_object over them.
+#include "vm.h"
 
 #ifndef NDEBUG
 #include <cstdio>

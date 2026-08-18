@@ -9545,7 +9545,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // ObjectValue store keys and avoiding dangling views from moved strings in
   // captured lambdas. Static-field values are already eval'd against `env`;
   // instance-field initializers stay as ASTs (evaluated per instance at
-  // construction time). Mirrors JIT's collect_class_members.
+  // construction time). Mirrors the bytecode compiler's compile_class_decl.
   struct ClassMembers {
     std::string_view class_name;
     std::vector<std::string_view> type_params;
@@ -9696,7 +9696,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // dispatcher (Julia-style: scored on the explicit arg types, with `self`
   // fixed by the property lookup). A name defined once stays a bare
   // Function — zero overhead and byte-identical to the pre-overload path.
-  // Mirrors JIT's group_method_overloads.
+  // The bytecode compiler groups a class's overloads the same way
+  // (compile_class_decl).
   void group_method_overloads(
       std::vector<std::pair<std::string_view, Value>>& method_template) {
     std::vector<std::pair<std::string_view, Value>> grouped;
@@ -11868,7 +11869,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // Two disjoint shapes: a simple variable target (the common case, with
     // its compound / `??=` / declare variants) and a complex lvalue
     // (`obj.prop`, `arr[idx]`, chains). Split so each keeps its own local
-    // reasoning; mirrors the JIT's compile_assign_var / _complex.
+    // reasoning; the compiler splits the same way (compile_assignment /
+    // compile_place_assign).
     if (av.lvalcnt == 1)
       return eval_assign_var(ast, av, env, std::move(rval), nil_coalesce,
                              eval_rhs);

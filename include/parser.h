@@ -1044,6 +1044,46 @@ inline std::optional<ArgListError> check_arg_list(const peg::Ast& args_ast) {
   return std::nullopt;
 }
 
+// An ARG_LIST split into its three buckets.
+struct ArgScan {
+  std::vector<const peg::Ast*> positional;
+  std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
+  std::vector<const peg::Ast*> splats;  // `**` operands, in source order
+
+  // The value expression given for `name`, or null. First wins, matching
+  // the binder. Callers that skipped check_arg_list can be handed a repeat,
+  // so they either decline one first (the sort family gates on a single
+  // kwarg) or ask presence only (the builtin arity check).
+  const peg::Ast* kwarg(std::string_view name) const {
+    for (const auto& [kw, val] : explicit_kwargs)
+      if (kw == name) return val;
+    return nullptr;
+  }
+};
+
+// Pure bucketing: it never reports a malformed list. Callers come in three
+// kinds: most run check_arg_list first, which raises the structural errors —
+// duplicate keyword, positional after keyword — with a precedence a linear
+// scan here would get wrong; the builtin-method fast paths skip it and
+// decline any shape they do not recognise; and the builtin arity check skips
+// it and is itself the report.
+inline ArgScan scan_arg_list(const peg::Ast& args_ast) {
+  using namespace peg::udl;
+  ArgScan out;
+  out.positional.reserve(args_ast.nodes.size());
+  for (auto& child : args_ast.nodes) {
+    if (child->tag == "KWARG_SPLAT"_) {
+      out.splats.push_back(child->nodes[0].get());
+    } else if (child->tag == "KWARG"_) {
+      out.explicit_kwargs.emplace_back(child->nodes[0]->token,
+                                       child->nodes[1].get());
+    } else {
+      out.positional.push_back(child.get());
+    }
+  }
+  return out;
+}
+
 // `_` is the non-binding sink in patterns and parameters.
 inline bool is_sink_name(std::string_view s) { return s == "_"; }
 

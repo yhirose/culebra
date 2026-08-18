@@ -433,7 +433,7 @@ enum class Op : uint8_t {
   Ret,         // return regs[a] from the frame (+1 transfers to the caller)
   CellNew,     // regs[a] = new JitCell absorbing regs[b]'s +1; regs[b] = nil.
                // Releases the cell previously in regs[a] (null on first run —
-               // a loop's per-iteration redeclaration, like make_cell_slot).
+               // a loop's per-iteration redeclaration).
                // The cell pointer rides the reg as a Long, so the plain
                // Release/Retain ops are no-ops on it (the descriptor-cell
                // precedent); only CellRelease touches the cell's refcount.
@@ -1263,10 +1263,10 @@ inline std::span<const BMethSpec> bmeth_specs() {
   return kSpecs;
 }
 
-// The static half of the UFCS gate (interp's receiver_has_property, the JIT's
-// emit_receiver_has_property): the tags whose own built-in table binds this
-// name. Read from the very tables those two consult, so the three lanes
-// cannot disagree about which receiver owns a name. The Object arm is a
+// The static half of the UFCS gate (interp's receiver_has_property): the
+// tags whose own built-in table binds this name. Read from the very tables
+// the interpreter consults, so the lanes cannot disagree about which
+// receiver owns a name. The Object arm is a
 // runtime probe and lives in the op itself; `kHasPropIterBit` rides along in
 // the same operand to say the name is an iterator-protocol one, which an
 // iterator-shaped Object resolves as well.
@@ -1291,8 +1291,7 @@ inline bool bmeth_receiver_ok(BRecvMask recv, int8_t tag) {
   return tag >= 0 && tag < 16 && (recv & bmeth_tag_bit(tag)) != 0;
 }
 
-// The UFCS gate's answer, executor-side (interp's receiver_has_property, the
-// JIT's emit_receiver_has_property). `tags` is the operand the compiler baked
+// The UFCS gate's answer, executor-side (interp's receiver_has_property). `tags` is the operand the compiler baked
 // from the very tables those two read — the static half. The Object arm is a
 // runtime probe, since own/proto membership needs the pointer.
 inline bool has_prop_apply(int32_t tags, const JitValue& recv,
@@ -1407,8 +1406,7 @@ inline std::string bmeth_rival_arity_message(const BMethSpec& s, int8_t tag,
 // A terminal that drives a broken upstream raises the iterator-protocol
 // error without a position of its own — the chain was built elsewhere — and
 // the interp reports such a throw at the expression it is evaluating, i.e.
-// this call. Mirrors the JIT's expect_iter_receiver, which publishes at the
-// same point (after the receiver gate, before the arguments).
+// this call: after the receiver gate, before the arguments.
 inline bool bmeth_publishes_call_pos(BMeth id) {
   return id == BMeth::Collect || id == BMeth::IterCount ||
          id == BMeth::Take || id == BMeth::Skip || id == BMeth::TakeWhile ||
@@ -2907,8 +2905,8 @@ struct Unsupported {
 class Compiler {
  public:
   // `deps` are the entry module's dependencies in the loader's topological
-  // order (every module after the ones it imports), which is the order the
-  // JIT's emit_main_fn walks them in: each runs to completion, in a scope of
+  // order (every module after the ones it imports), which is the order they
+  // are compiled in: each runs to completion, in a scope of
   // its own, before the module that imports it.
   static VmProgram compile_module(
       const peg::Ast& ast, const peg::Ast* stdlib = nullptr,
@@ -3850,7 +3848,7 @@ class Compiler {
     // cell rather than being mut-checked against the placeholder.
     // A conditional one cannot answer here at all: whether an arm already
     // declared the name is this call's fact, so emit_rebind asks the cell
-    // when the write runs (the JIT's emit_runtime_decl_assign).
+    // when the write runs.
     if (Binding* pre = predeclared_here(name))
       return !pre->conditional && pre->awaits_implicit;
     if (lookup(name)) return false;
@@ -4270,8 +4268,7 @@ class Compiler {
     emit(Op::DeferMark, frame_defer_mark_);
   }
 
-  // Scope-entry pre-declaration of `fn name` dispatcher cells (the multifn
-  // slice of the JIT's pre_allocate_forward_refs): every name a
+  // Scope-entry pre-declaration of `fn name` dispatcher cells: every name a
   // MULTIFN_DECL in this statement list declares gets an owned cell holding
   // the unbound sentinel before any statement runs, so a closure built
   // earlier in the list captures a real cell (mutual recursion resolves)
@@ -4452,8 +4449,7 @@ class Compiler {
     using namespace peg::udl;
     // `fn name` always pre-declares (its dispatcher cell is how self- and
     // mutual recursion resolve); every other declaration only when a
-    // nested closure in this list captures the name, which is exactly the
-    // JIT's pre_allocate_forward_refs gate.
+    // nested closure in this list captures the name.
     DeclList decls;
     auto add = [&](const peg::Ast* at, std::string name, bool is_mut,
                    bool implicit = false) {
@@ -5121,8 +5117,7 @@ class Compiler {
 
   // The synthetic constructor: `build_class_instance` over the captured
   // {meta, field-init, body} triple and the frame's own arguments, which it
-  // forwards untouched. It is the JIT's emit_constructor_fn thunk as a
-  // chunk: the instance is allocated FIRST and the `new` body's own
+  // forwards untouched: the instance is allocated FIRST and the `new` body's own
   // prologue binds the arguments, so an arity or typed-param error reports
   // that body's parameter names, fires before any field initializer, and
   // leaves a half-built instance behind for its `drop`.
@@ -5315,8 +5310,8 @@ class Compiler {
     for (size_t i = 0; i < caps.muts.size() && i < info.free_vars.size(); ++i)
       if (caps.muts[i]) fc.chunk_.mut_capture_names.push_back(info.free_vars[i]);
     // Params occupy the ABI slots [0, arity). A captured param moves into a
-    // fresh cell right after (the JIT's make_cell_slot on a param); the ABI
-    // slot stays behind as an anonymous drained slot.
+    // fresh cell right after; the ABI slot stays behind as an anonymous
+    // drained slot.
     struct CellPromo {
       std::string name;
       int32_t abi_slot;
@@ -5610,8 +5605,8 @@ class Compiler {
         // repeated `_` needs no slot of its own.
         fc.emit(Op::Release, pl.slot);
       } else if (info.captured_locals.contains(pl.name)) {
-        // A captured param moves into a fresh cell (the JIT's make_cell_slot
-        // on a param); the ABI slot stays behind as an anonymous drained one.
+        // A captured param moves into a fresh cell; the ABI slot stays
+        // behind as an anonymous drained one.
         int32_t cslot = fc.alloc_cell_slot(*pl.at, pl.name);
         fc.emit(Op::CellNew, cslot, pl.slot);
         fc.push_binding({pl.name, cslot, pl.is_mut, true});
@@ -5752,7 +5747,7 @@ class Compiler {
   // orders every module after the ones it imports), so its export Object is
   // in the runtime table under the absolute path both sides spell through
   // resolve_module_path. The name binds immutably here, like the interp's
-  // env->initialize and the JIT's declare_local.
+  // env->initialize.
   void compile_import(const peg::Ast& ast) {
     if (ast.path.empty()) {
       // No module to resolve against: the REPL and a direct eval, in the
@@ -6661,8 +6656,8 @@ class Compiler {
   // the keyword resolver and the arity check already use — and the chunk meta
   // the hook hands back carries the name, the return type and the parameters.
 
-  // The compile-time UFCS candidate for `name` at this site, if any — the
-  // JIT's ufcs_free_fn_loader: a scope binding first (Function-ness is a
+  // The compile-time UFCS candidate for `name` at this site, if any:
+  // a scope binding first (Function-ness is a
   // runtime fact; a non-Function declines the gate there), then a bare
   // stdlib global the resolver owns. A built-in that subsumes its global
   // (`to_string`) needs no UFCS arm: the built-in performs the same
@@ -6672,9 +6667,8 @@ class Compiler {
   // The static half of the UFCS gate, baked into the HasProp operand: the
   // tags whose own built-in table binds this name, plus a bit saying the name
   // is an iterator-protocol one (which an iterator-shaped Object resolves as
-  // well). Read from the very tables interp's receiver_has_property and the
-  // JIT's emit_receiver_has_property consult, so the three lanes cannot
-  // disagree about which receiver owns a name.
+  // well). Read from the very tables interp's receiver_has_property
+  // consults, so the lanes cannot disagree about which receiver owns a name.
   static int32_t has_prop_gate_operand(std::string_view name) {
     int32_t m = 0;
     for (auto& [t, tbl] : JIT::builtin_value_tables())
@@ -6695,6 +6689,32 @@ class Compiler {
   }
 
 
+  // Whether every keyword this call supplies is one a builtin `method` can
+  // take — i.e. names a keyword-only parameter (`sort_by(f, reverse: true)`),
+  // the sole keyword shape built-ins accept (builtin_method_accepts_keyword).
+  // A `**` splat names nothing statically, so it never qualifies. The
+  // receiver's type is a run-time fact, so this over-approximates across the
+  // tables, exactly like emit_builtin_arity_check's own lookup; a receiver
+  // that turns out not to resolve the name took the UFCS arm before this.
+  static bool builtin_method_keywords_bindable(const std::string& method,
+                                               const peg::Ast& args_ast) {
+    auto scan = culebra::scan_arg_list(args_ast);
+    if (!scan.splats.empty()) return false;
+    for (const auto& [kw, _val] : scan.explicit_kwargs) {
+      auto accepts = [&](const std::vector<FunctionValue::Parameter>* params) {
+        return params && culebra::builtin_method_accepts_keyword(*params, kw);
+      };
+      bool ok = accepts(JIT::builtin_method_params(*JIT::dict_builtin_table(),
+                                                   method)) ||
+                accepts(JIT::builtin_method_params(iterator_builtins(),
+                                                   method));
+      for (auto& [tag, table] : JIT::builtin_value_tables())
+        ok = ok || accepts(JIT::builtin_method_params(*table, method));
+      if (!ok) return false;
+    }
+    return true;
+  }
+
   // The check the JIT emits in front of an unresolved built-in method call,
   // as one op over a baked table. Every verdict comes from the interp's own
   // parameter lists, so the three lanes cannot disagree; a receiver whose
@@ -6704,7 +6724,7 @@ class Compiler {
                                 const peg::Ast& args, ExprResult recv) {
     std::string method(post.token);
     if (!culebra::is_builtin_method_name(method)) return;
-    auto scan = JIT::scan_arg_list(args);
+    auto scan = culebra::scan_arg_list(args);
     auto argc = static_cast<int64_t>(args.nodes.size());
     std::vector<Chunk::ArityArm> arms;
     auto take = [&](const auto& tbl, int8_t tag) {
@@ -6754,7 +6774,7 @@ class Compiler {
     std::string kind, msg;
     auto line = static_cast<uint32_t>(args.line);
     auto col = static_cast<uint32_t>(args.column);
-    if (!JIT::builtin_method_keywords_bindable(method, args)) {
+    if (!builtin_method_keywords_bindable(method, args)) {
       kind = "TypeError";
       msg = culebra::builtin_method_kwargs_error_message(method);
     } else if (auto e = culebra::check_arg_list(args)) {
@@ -6874,7 +6894,7 @@ class Compiler {
     bool is_drop = post.token == "drop" && args.nodes.empty();
     // The call a receiver that DOES resolve this name gets: the built-in when
     // the table carries this shape, otherwise the diagnostic those receivers
-    // owe (the JIT's emit_unresolved_builtin_method, arity check first) and
+    // owe (arity check first) and
     // then the ordinary property read.
     auto resolved_call = [&](ExprResult r) -> ExprResult {
       if (is_drop) return emit_explicit_drop(at, r);
@@ -7010,7 +7030,7 @@ class Compiler {
     store_into(base, recv, /*dst_is_fresh=*/true);
     // A promoted body local of a lowering's state object is storage, not a
     // method: calling one passes no receiver, which is a run-time fact about
-    // the receiver's proto (the JIT's emit_call_receiver, at the same point).
+    // the receiver's proto, asked at this same point.
     emit(Op::CallRecv, base, 0, kconst_str(post.token));
     for (int32_t i = 0; i < argc; i++)
       store_into(base + 1 + i, compile_expr(*args.nodes[i]),
@@ -8154,9 +8174,9 @@ class Compiler {
 
   // A spec carrying nested `{field}`s (`"{s:>{w}}"`): literal chunks are
   // constants, each field's Long becomes its decimal text, and the pieces
-  // concatenate left to right — the JIT's emit_format_spec and the interp's
-  // build_format_spec piece for piece, so all three assemble the same spec
-  // and reject the same non-Long field at the field's own position.
+  // concatenate left to right — the interp's build_format_spec piece for
+  // piece, so both assemble the same spec and reject the same non-Long
+  // field at the field's own position.
   int32_t compile_format_spec(const peg::Ast& spec) {
     StrCatAcc acc{*this, spec};
     for (const auto& node : spec.nodes) {
@@ -8665,10 +8685,9 @@ struct Exec {
     return names.empty() ? nullptr : &names.front();
   }
 
-  // A constructor thunk is this executor's answer to the JIT's
-  // emit_constructor_fn, and the other backends register that as native —
-  // which is what makes sending a class object (it carries its `new`) the
-  // SendError it is everywhere else. An ordinary chunk closure stays
+  // A constructor thunk is this executor's synthetic `new`, and the interp
+  // registers its own as native — which is what makes sending a class object
+  // (it carries its `new`) the SendError it is everywhere else. An ordinary chunk closure stays
   // sendable: its descriptor names a chunk of the same program.
   static bool is_native_closure(JitClosure* cls) {
     const auto* d = closure_desc(cls);
@@ -12290,12 +12309,10 @@ struct Lowering {
         }
         case Op::HasProp: {
           // The UFCS gate — has_prop_apply's twin, term for term: the baked
-          // tag mask, then an Object receiver's own probe. The AST path's
-          // emit_receiver_has_property is NOT reusable here: it reads a
+          // tag mask, then an Object receiver's own probe. It reads a
           // concrete slot where interp's receiver_has_property also honours a
-          // trait default, a difference the AST path never feels because a
-          // built-in name reaches it through compile_user_method_over_builtin
-          // instead.
+          // trait default; a built-in name reaches this gate only after the
+          // user-method arm has declined, which is what makes the two agree.
           std::string key(_str_sv(
               reinterpret_cast<const char*>(c.consts[in.c].data)));
           auto recv = load_slot(in.b);
@@ -14661,7 +14678,7 @@ struct Lowering {
         }
         case Op::CellNew: {
           // Release the previous generation's cell (null on the first pass),
-          // then wrap the value — make_cell_slot's declaration-point shape.
+          // then wrap the value, at the declaration point.
           j.emit_cell_release(
               b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy));
           auto v = load_slot(in.b);
@@ -15452,5 +15469,30 @@ inline int build_object_from_modules(
 }
 
 }  // namespace culebra::vm
+
+namespace culebra {
+
+// The embedding entries declared in jit.h. They are the same two lanes the
+// driver takes, under the names docs/deployment.md publishes.
+inline void JIT::run(const std::shared_ptr<peg::Ast>& ast, bool emit_llvm,
+                     bool debug, int opt_level) {
+  run_modules({{.ast = ast}}, emit_llvm, debug, opt_level);
+}
+
+inline void JIT::run_modules(const std::vector<LoadedModule>& modules,
+                             bool emit_llvm, bool debug, int opt_level,
+                             bool fast_codegen) {
+  vm::run_modules_via_llvm(modules, emit_llvm, debug, opt_level, fast_codegen);
+}
+
+inline int JIT::build_object(const std::vector<LoadedModule>& modules,
+                             const std::string& out_path, int opt_level,
+                             bool emit_llvm,
+                             const std::string& target_triple) {
+  return vm::build_object_from_modules(modules, out_path, opt_level, emit_llvm,
+                                       target_triple);
+}
+
+}  // namespace culebra
 
 #endif  // CULEBRA_JIT_ENABLED
