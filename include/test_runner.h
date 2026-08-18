@@ -433,9 +433,7 @@ inline TestRunSummary run_tests(
     Value val;
     Debugger dbg;
     if (!interpret_modules(modules, env, val, msgs, dbg)) {
-      std::string joined;
-      for (auto& m : msgs) { if (!joined.empty()) joined += "; "; joined += m; }
-      emit_file_error(path_str, "interpret_failed", joined);
+      emit_file_error(path_str, "interpret_failed", join_messages(msgs));
       summary.errored_files++;
       continue;
     }

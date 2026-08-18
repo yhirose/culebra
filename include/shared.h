@@ -235,6 +235,27 @@ inline void culebra_note_pending_error(const CulebraError& e) {
   culebra_note_pending_error(e.kind, e.what(), e.line, e.col);
 }
 
+// The one spelling of an uncaught error: "Kind: msg", plus " at L:C." when
+// the error carries a position. Every engine and runner prints this same
+// text — doctest `# !!` patterns match against it, so a reworded copy in one
+// lane would split doc-block results between engines.
+inline std::string format_error_message(const CulebraError& e) {
+  if (e.line > 0 || e.col > 0)
+    return std::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col);
+  return std::format("{}: {}", e.kind, e.what());
+}
+
+// Diagnostics joined into one "; "-separated line — the text the doctest
+// and unit-test runners report a failed parse as.
+inline std::string join_messages(const std::vector<std::string>& msgs) {
+  std::string joined;
+  for (const auto& m : msgs) {
+    if (!joined.empty()) joined += "; ";
+    joined += m;
+  }
+  return joined;
+}
+
 // --- Call-binding error messages (single source for both backends) ---
 //
 // Builders for the error texts the argument binder can produce. The

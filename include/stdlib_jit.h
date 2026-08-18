@@ -7158,11 +7158,13 @@ inline const culebra::Environment& _canonical_env() {
   return *env;
 }
 
-// Resolve an NsMethod to its canonical interp parameter list, or null. Handles
-// namespace methods (Ns.method), nested sub-namespace methods (Ns.sub.method),
-// and bare globals (ns == "" → e.g. range / iota in the global dictionary).
-inline const std::vector<culebra::FunctionValue::Parameter>*
-_canon_params(const NsMethod* m) {
+// Resolve an NsMethod to its canonical interp FunctionValue, or null.
+// Handles namespace methods (Ns.method), nested sub-namespace methods
+// (Ns.sub.method), and bare globals (ns == "" → e.g. range / iota in the
+// global dictionary). The one resolver both projections below share, so
+// `fn.params` and `fn.return_type` can never disagree about which
+// FunctionValue answers for a native.
+inline const culebra::FunctionValue* _canon_fn(const NsMethod* m) {
   const auto& env = _canonical_env();
   const culebra::Value* fnv = nullptr;
   if (m->ns == nullptr || m->ns[0] == '\0') {
@@ -7172,8 +7174,8 @@ _canon_params(const NsMethod* m) {
     } else {
       // `inspect`/`print`/`println` are CLI aliases of IO members
       // (install_cli_aliases), not entries of the canonical dictionary
-      // itself — fall back to the IO namespace so their canonical params
-      // (defaults included) still resolve for the bare-global form.
+      // itself — fall back to the IO namespace so their canonical spec
+      // (defaults included) still resolves for the bare-global form.
       auto io_it = env.dictionary.find("IO");
       if (io_it != env.dictionary.end() &&
           io_it->second.val.type == culebra::Value::Object) {
@@ -7199,45 +7201,20 @@ _canon_params(const NsMethod* m) {
     }
   }
   if (fnv == nullptr || fnv->type != culebra::Value::Function) return nullptr;
-  return fnv->to_function().params.get();
+  return &fnv->get<culebra::FunctionValue>();
 }
 
-// The canonical FunctionValue's declared return type, resolved the same way
-// (empty when the method declares none, or when the lookup fails). Split out
-// so the introspection view can read it without a second resolver.
+inline const std::vector<culebra::FunctionValue::Parameter>*
+_canon_params(const NsMethod* m) {
+  const auto* fn = _canon_fn(m);
+  return fn ? fn->params.get() : nullptr;
+}
+
+// The canonical FunctionValue's declared return type (empty when the method
+// declares none, or when the lookup fails).
 inline std::string_view _canon_return_type(const NsMethod* m) {
-  const auto& env = _canonical_env();
-  const culebra::Value* fnv = nullptr;
-  auto pick = [&](const culebra::Value& v) {
-    if (v.type == culebra::Value::Function) fnv = &v;
-  };
-  if (m->ns == nullptr || m->ns[0] == '\0') {
-    auto it = env.dictionary.find(std::string(m->name));
-    if (it != env.dictionary.end()) {
-      pick(it->second.val);
-    } else if (auto io = env.dictionary.find("IO");
-               io != env.dictionary.end() &&
-               io->second.val.type == culebra::Value::Object &&
-               io->second.val.to_object().has(m->name)) {
-      pick(io->second.val.to_object().get(m->name));
-    }
-  } else if (auto it = env.dictionary.find(std::string(m->ns));
-             it != env.dictionary.end() &&
-             it->second.val.type == culebra::Value::Object) {
-    const auto& ns_obj = it->second.val.to_object();
-    if (m->sub != nullptr) {
-      if (ns_obj.has(m->sub)) {
-        const auto& sub_v = ns_obj.get(m->sub);
-        if (sub_v.type == culebra::Value::Object &&
-            sub_v.to_object().has(m->name)) {
-          pick(sub_v.to_object().get(m->name));
-        }
-      }
-    } else if (ns_obj.has(m->name)) {
-      pick(ns_obj.get(m->name));
-    }
-  }
-  return fnv ? fnv->to_function().return_type : std::string_view{};
+  const auto* fn = _canon_fn(m);
+  return fn ? std::string_view(fn->return_type) : std::string_view{};
 }
 
 // Whether this method's JIT adapter consumes a kwarg/default slab (built by the

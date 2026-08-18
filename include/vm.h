@@ -280,7 +280,7 @@ enum class Op : uint8_t {
                // compile_user_method_over_builtin's checkBB (a Function-valued
                // read, an own/proto slot of the name, or a Shared view of a
                // dict-builtin name). Every other receiver takes the built-in,
-               // whose receiver gate (built-in d's tag mask, else the
+               // whose receiver gate (specs[d]'s tag mask, else the
                // resolution error) runs here too — ahead of the arguments,
                // both backends' order: `(5).repeat(boom())` never evaluates
                // boom(). consts[c] names the method; positioned at the chain
@@ -617,9 +617,11 @@ enum class Op : uint8_t {
                // the iterable expression — this instruction's position.
   ForNext,     // advance the cursor at a: on a step, regs[a+kForElem] takes
                // the element's +1 and execution falls through; on a drained
-               // iterator, jump to b. The element sits in that slot only
-               // until the binding below takes it over, which is what makes
-               // the unwind ladder's release of it exactly-once.
+               // iterator, jump to b. c/d carry the statement's line/col as
+               // immediates (the step runs per iteration; no table search).
+               // The element sits in that slot only until the binding below
+               // takes it over, which is what makes the unwind ladder's
+               // release of it exactly-once.
   ForDispose,  // close the iterator at a+kForIter if it carries `dispose`,
                // once (a's kForDisposed slot is the latch every exit path
                // shares). d=1 swallows a throwing dispose — docs §18.5 only
@@ -1096,8 +1098,8 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"partition", 1, Partition, kRecvArrayIter, 1, nullptr, {Any}, {"p"},
        {}, /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
       // sort_by/sorted_by: Array only (no iterator arm exists). `reverse:`
-      // is kw-only in the interp/JIT signature; the VM's reject_kwargs makes
-      // this arm reachable only without it, so the call is always `(f)`.
+      // is kw-only in the interp/JIT signature; the spec's kw field is what
+      // keeps a keyword call on this arm (resolved_call's spec->kw gate).
       {"sort_by", 1, SortBy, kRecvArray, 2, nullptr, {Any, Bool},
        {"f", "reverse"}, {},
        /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/"reverse",
@@ -1314,54 +1316,49 @@ inline const char* bmeth_param_type(BParam p) {
 }
 
 // Whether the built-in takes its arguments' `+1` off the registers.
+// The higher-order group, listed once: built-ins whose callback (declared
+// LAST — reduce and scan put their seed first) the runtime helper owns from
+// entry on every exit, like a JIT AST callsite's hof_owned list. The sort
+// family sits outside it: its callback is not the last slot (the
+// keyword-only `reverse:` rides behind it, see BMethSpec::callback_param).
+inline bool bmeth_is_hof(BMeth id) {
+  switch (id) {
+    case BMeth::Map: case BMeth::Filter: case BMeth::ForEach:
+    case BMeth::AnyOf: case BMeth::All: case BMeth::Find:
+    case BMeth::FlatMap: case BMeth::MinBy: case BMeth::MaxBy:
+    case BMeth::Reduce: case BMeth::GroupBy: case BMeth::Partition:
+    // The iterator adapters that capture a callback (and scan's seed): the
+    // factory owns it from entry, exactly as the AST arms' own
+    // `f.consume()` before the call hands it over.
+    case BMeth::TakeWhile: case BMeth::SkipWhile: case BMeth::Tap:
+    case BMeth::ChunkBy: case BMeth::Position: case BMeth::Scan:
+      return true;
+    default:
+      return false;
+  }
+}
+
 inline bool bmeth_consumes_args(BMeth id) {
-  return id == BMeth::Push || id == BMeth::Insert || id == BMeth::Add ||
-         // The higher-order group: the runtime helper owns the callback (and
-         // reduce's seed) from entry on every exit, like a JIT AST callsite's
-         // hof_owned list.
-         id == BMeth::Map || id == BMeth::Filter || id == BMeth::ForEach ||
-         id == BMeth::AnyOf || id == BMeth::All || id == BMeth::Find ||
-         id == BMeth::FlatMap || id == BMeth::MinBy || id == BMeth::MaxBy ||
-         id == BMeth::Reduce || id == BMeth::GroupBy ||
-         id == BMeth::Partition || id == BMeth::SortBy ||
-         id == BMeth::SortedBy ||
+  return bmeth_is_hof(id) || id == BMeth::SortBy || id == BMeth::SortedBy ||
+         id == BMeth::Push || id == BMeth::Insert || id == BMeth::Add ||
          // has/get/get_or_put: the runtime store takes the key's (and, on a
          // hit or a String key aside, the fallback/init's) `+1` off the
          // registers, mirroring the JIT AST arms' own Owned-consuming
          // discipline (object_has_value / array_get_default /
          // object_get_default / object_get_or_put all consume what they are
          // handed).
-         id == BMeth::Has || id == BMeth::Get || id == BMeth::GetOrPut ||
-         // The iterator adapters that capture a callback (and scan's seed):
-         // the factory owns it from entry, exactly as the AST arms' own
-         // `f.consume()` before the call hands it over.
-         id == BMeth::TakeWhile || id == BMeth::SkipWhile ||
-         id == BMeth::Tap || id == BMeth::ChunkBy || id == BMeth::Position ||
-         id == BMeth::Scan;
+         id == BMeth::Has || id == BMeth::Get || id == BMeth::GetOrPut;
 }
 
 // The argument index a built-in's callback sits at, or -1 when it takes
-// none. Every callback-taking built-in declares it LAST (reduce and scan put
-// their seed first), and a non-Function there reports at that argument, not
-// at the call — the runtime helper reads the site this publishes
+// none. A non-Function there reports at that argument, not at the call —
+// the runtime helper reads the site this publishes
 // (culebra_runtime_set_callback_arg_site), the way the AST arms publish it
 // just before handing the callback over.
 inline int8_t bmeth_callback_arg(BMeth id, int8_t nargs) {
-  switch (id) {
-    // The sort family's callback is not the last slot: the keyword-only
-    // `reverse:` rides behind it (see BMethSpec::callback_param).
-    case BMeth::SortBy: case BMeth::SortedBy:
-      return 0;
-    case BMeth::Map: case BMeth::Filter: case BMeth::ForEach:
-    case BMeth::AnyOf: case BMeth::All: case BMeth::Find:
-    case BMeth::FlatMap: case BMeth::MinBy: case BMeth::MaxBy:
-    case BMeth::Reduce: case BMeth::GroupBy: case BMeth::Partition:
-    case BMeth::TakeWhile: case BMeth::SkipWhile: case BMeth::Tap:
-    case BMeth::ChunkBy: case BMeth::Position: case BMeth::Scan:
-      return static_cast<int8_t>(nargs - 1);
-    default:
-      return -1;
-  }
+  if (id == BMeth::SortBy || id == BMeth::SortedBy) return 0;
+  return bmeth_is_hof(id) ? static_cast<int8_t>(nargs - 1)
+                          : static_cast<int8_t>(-1);
 }
 
 // Whether some OTHER row binds the same name — i.e. whether a receiver can
@@ -1446,14 +1443,6 @@ inline bool bmeth_param_applies(const BMethSpec& s, int32_t i, int8_t tag) {
 inline std::string bmeth_param_message(const BMethSpec& s, int32_t i) {
   return std::format("type error: parameter '{}' expects {}", s.pnames[i],
                      bmeth_param_type(s.params[i]));
-}
-
-// The gate fields (receiver mask, iterator shape) are the same across an id's
-// arities, so the first row answers for all of them.
-inline const BMethSpec& bmeth_gate_spec(BMeth id) {
-  for (const auto& s : bmeth_specs())
-    if (s.id == id) return s;
-  return bmeth_specs()[0];  // unreachable: every id has a spec
 }
 
 // emit_receiver_resolution_error's two halves, executor-side. A scalar
@@ -2474,12 +2463,13 @@ struct Chunk {
   // pass arguments.
   std::vector<std::pair<uint32_t, std::vector<int64_t>>> call_argpos;
   // One per CallKw: how its register run splits into positionals, keyword
-  // values and `**` operands, plus the keyword names (constant-pool indices)
-  // the resolver binds them by.
+  // values and `**` operands, plus the keyword names the resolver binds them
+  // by — interned into this chunk's str_arena, so the executor hands the
+  // array straight to the runtime resolver.
   struct KwCall {
     bool has_receiver;
     int32_t n_pos, n_kw, n_splat;
-    std::vector<int32_t> kw_keys;
+    std::vector<const char*> kw_keys;
   };
   std::vector<KwCall> kwcalls;
   // One BArity check: the receivers that resolve the name, and what each owes.
@@ -2531,23 +2521,31 @@ inline bool chunk_slot_is_cell(const Chunk& c, int32_t s,
          c.slot_cell_rank[s] < cells_before;
 }
 
-// The slots of a cleanup step's range, in the order its ladder releases
-// them: newest declaration first. Equivalent to walking hi-1 down to lo
-// whenever declaration order and slot order agree, which is everywhere a
-// forward reference did not move a cell ahead of its binding.
-inline std::vector<int32_t> chunk_release_order(const Chunk& c, int32_t lo,
-                                                int32_t hi) {
+// The slots of a range, in the order a release ladder drops them: newest
+// declaration first. Equivalent to walking hi-1 down to lo whenever
+// declaration order and slot order agree, which is everywhere a forward
+// reference did not move a cell ahead of its binding. The one
+// implementation both the emitted scope ladders (Compiler::release_order)
+// and the runtime unwind (chunk_release_order) call, so throw-path drop
+// order agrees with normal-exit drop order by construction.
+inline std::vector<int32_t> release_order_by_rank(
+    std::span<const uint32_t> ranks, int32_t lo, int32_t hi) {
   std::vector<int32_t> order;
   for (int32_t s = hi - 1; s >= lo; --s) order.push_back(s);
   std::stable_sort(order.begin(), order.end(), [&](int32_t a, int32_t b) {
     auto rank = [&](int32_t s) {
-      return s < static_cast<int32_t>(c.slot_rank.size())
-                 ? c.slot_rank[s]
+      return s < static_cast<int32_t>(ranks.size())
+                 ? ranks[s]
                  : static_cast<uint32_t>(s);
     };
     return rank(a) > rank(b);
   });
   return order;
+}
+
+inline std::vector<int32_t> chunk_release_order(const Chunk& c, int32_t lo,
+                                                int32_t hi) {
+  return release_order_by_rank(c.slot_rank, lo, hi);
 }
 
 // The innermost scope whose range covers `pc`, or -1 when the throw is
@@ -2917,10 +2915,10 @@ class Compiler {
   // What a REPL session runs before its first input, and again whenever a
   // later line first names a stdlib namespace: the built-in traits, then the
   // lazy-namespace registrations. An ordinary module — a registration binds
-  // no name, so none of it has to outlive the program.
-  static VmProgram compile_repl_prologue(const peg::Ast& ast,
-                                         bool builtin_traits) {
-    return compile_unit(ast, {.builtin_traits = builtin_traits});
+  // no name, so none of it has to outlive the program. The session feeds the
+  // built-in traits in as source, so nothing is spliced here.
+  static VmProgram compile_repl_prologue(const peg::Ast& ast) {
+    return compile_unit(ast, {.builtin_traits = false});
   }
 
  private:
@@ -3016,12 +3014,7 @@ class Compiler {
         const FuncInfo* saved = main.info_;
         main.info_ = &dep_infos[i];
         main.push_scope(dep, /*owned_mark=*/false);
-        main.predeclare_forward_refs(dep);
-        if (dep.tag == "STATEMENTS"_) {
-          for (const auto& n : dep.nodes) main.compile_statement(*n);
-        } else {
-          main.compile_statement(dep);
-        }
+        run_prologue(&dep);
         main.emit_module_export(dep);
         main.pop_scope();
         main.info_ = saved;
@@ -3349,10 +3342,8 @@ class Compiler {
   void patch_to_here(size_t ix) { patch_jump(ix, chunk_.code.size()); }
 
   int32_t alloc_raw(const peg::Ast& at, std::string name, bool named) {
-    // Every binding this frame declares passes through here, which makes it
-    // the one place the effects transform's lowered declarations can be
-    // turned away: without them the lane runs half of an effect and answers
-    // (a NameError where the others raise EffectError) instead of declining.
+    // Every binding this frame declares passes through here — the one gate
+    // on the frame's slot budget.
     if (next_slot_ >= kMaxSlots) reject(at, "frame larger than 256 slots");
     int32_t s = next_slot_++;
     if (s >= static_cast<int32_t>(chunk_.slot_names.size()))
@@ -3551,16 +3542,11 @@ class Compiler {
   // JIT's frame ladder). Releases only the named slots: statement temps in
   // the range are owned by a live TempScope (or are a frame's return-value
   // slot), which release on their own paths.
-  // The compile-time twin of chunk_release_order (the ranks are final by
-  // the time any ladder is emitted, so both answer the same order).
+  // The compile-time caller of the same release_order_by_rank the runtime
+  // unwind uses (the ranks are final by the time any ladder is emitted, so
+  // both answer the same order).
   std::vector<int32_t> release_order(int32_t lo, int32_t hi) const {
-    std::vector<int32_t> order;
-    for (int32_t s = hi - 1; s >= lo; --s) order.push_back(s);
-    std::stable_sort(order.begin(), order.end(),
-                     [&](int32_t a, int32_t b) {
-                       return slot_rank_[a] > slot_rank_[b];
-                     });
-    return order;
+    return release_order_by_rank(slot_rank_, lo, hi);
   }
 
   void release_down_to(int32_t watermark) {
@@ -4580,6 +4566,38 @@ class Compiler {
   // runs after its parameters bound. Same-named members with distinct
   // signatures merge into one dispatcher through the runtime multimethod
   // registry, exactly as a free `fn name` overload set does.
+  // The declaration cell a class or enum name binds through before its body
+  // compiles: fill the cell an earlier forward reference already minted (so
+  // both readers see the same value), bind in the session at the REPL's top
+  // level, or mint a fresh nil cell. The binding comes back for
+  // emit_session_decl_bind.
+  struct DeclCell {
+    int32_t slot;
+    const Binding* binding;
+  };
+  DeclCell bind_decl_cell(const peg::Ast& ast, const std::string& name) {
+    if (Binding* pre = predeclared_here(name)) {
+      slot_rank_[pre->slot] = next_rank_++;
+      settle_predeclared(*pre);
+      return {pre->slot, pre};
+    }
+    if (repl_top()) {
+      Binding& sb = bind_session(ast, name);
+      sb.lazy = false;
+      sb.shadowed_builtin = false;
+      return {sb.slot, &sb};
+    }
+    int32_t slot = alloc_cell_slot(ast, name);
+    {
+      TempScope ts(*this);
+      int32_t t = alloc_temp(ast);
+      emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+      emit(Op::CellNew, slot, t);
+    }
+    push_binding({name, slot, /*is_mut=*/false, /*is_cell=*/true});
+    return {slot, &scopes_.back().bindings.back()};
+  }
+
   void compile_class_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     size_t dec_end = 0;
@@ -4686,33 +4704,7 @@ class Compiler {
     // earlier in the statement list already forward-referenced the name,
     // predeclare_forward_refs minted that cell — fill it rather than mint
     // a second one, so both readers see the same class.
-    int32_t class_slot;
-    const Binding* decl_binding = nullptr;
-    if (Binding* pre = predeclared_here(class_name)) {
-      class_slot = pre->slot;
-      slot_rank_[class_slot] = next_rank_++;
-      settle_predeclared(*pre);
-      decl_binding = pre;
-    } else if (repl_top()) {
-      // The REPL's top level binds classes in the session too, so the next
-      // line can still say `C.new(...)`.
-      Binding& sb = bind_session(ast, class_name);
-      sb.lazy = false;
-      sb.shadowed_builtin = false;
-      class_slot = sb.slot;
-      decl_binding = &sb;
-    } else {
-      class_slot = alloc_cell_slot(ast, class_name);
-      {
-        TempScope ts(*this);
-        int32_t t = alloc_temp(ast);
-        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
-        emit(Op::CellNew, class_slot, t);
-      }
-      push_binding(
-          {class_name, class_slot, /*is_mut=*/false, /*is_cell=*/true});
-      decl_binding = &scopes_.back().bindings.back();
-    }
+    auto [class_slot, decl_binding] = bind_decl_cell(ast, class_name);
 
     TempScope ts(*this);
     // Static field values evaluate here, at the declaration, in the
@@ -4927,31 +4919,7 @@ class Compiler {
     StampGuard pos(*this, ast);
     // A closure earlier in the list may already hold this name's cell
     // (predeclare_forward_refs); fill that one, as compile_class_decl does.
-    int32_t enum_slot;
-    const Binding* decl_binding = nullptr;
-    if (Binding* pre = predeclared_here(enum_name)) {
-      enum_slot = pre->slot;
-      slot_rank_[enum_slot] = next_rank_++;
-      settle_predeclared(*pre);
-      decl_binding = pre;
-    } else if (repl_top()) {
-      Binding& sb = bind_session(ast, enum_name);
-      sb.lazy = false;
-      sb.shadowed_builtin = false;
-      enum_slot = sb.slot;
-      decl_binding = &sb;
-    } else {
-      enum_slot = alloc_cell_slot(ast, enum_name);
-      {
-        TempScope ts(*this);
-        int32_t t = alloc_temp(ast);
-        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
-        emit(Op::CellNew, enum_slot, t);
-      }
-      push_binding(
-          {enum_name, enum_slot, /*is_mut=*/false, /*is_cell=*/true});
-      decl_binding = &scopes_.back().bindings.back();
-    }
+    auto [enum_slot, decl_binding] = bind_decl_cell(ast, enum_name);
 
     TempScope ts(*this);
     int32_t obj = alloc_temp(ast);
@@ -5911,7 +5879,7 @@ class Compiler {
   }
 
   // The compound-step op table, shared by the scalar and index forms;
-  // anything else (`@=`) is out of slice.
+  // an operator the table doesn't know is rejected.
   Op compound_op(const peg::Ast& ast, std::string_view base) {
     if (base == "+") return Op::Add;
     if (base == "-") return Op::Sub;
@@ -6046,7 +6014,7 @@ class Compiler {
       if (post.original_tag == "ARGUMENTS"_)
         recv = compile_call_step(at, post, recv);
       else if (post.original_tag == "INDEX"_)
-        recv = compile_index_read(at, post, recv, Op::Index);
+        recv = compile_index_read(at, post, recv);
       else if (post.original_tag == "DOT"_) {
         if (i + 1 < end && at.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
           recv = compile_method_call(at, post, *at.nodes[i + 1], recv);
@@ -6208,9 +6176,13 @@ class Compiler {
                       scopes_.size()});
     size_t head_ix = chunk_.code.size();
     // A step's positionless throws report at the statement, not at the
-    // iterable expression the open reports at.
+    // iterable expression the open reports at. The position rides in c/d as
+    // immediates: the step runs once per iteration, and a positions-table
+    // search there is the loop's hottest constant.
     stamp(ast);
-    size_t next_ix = emit(Op::ForNext, base);
+    size_t next_ix = emit(Op::ForNext, base, 0,
+                          static_cast<int32_t>(pend_line_),
+                          static_cast<int32_t>(pend_col_));
     emit(Op::Safepoint);  // the JIT polls at the top of the body
 
     {
@@ -6426,8 +6398,7 @@ class Compiler {
         ast.nodes[1]->nodes.size() != 1)
       return false;
     const auto& a0 = *ast.nodes[1]->nodes[0];
-    return a0.tag != "KWARG"_ && a0.original_tag != "KWARG"_ &&
-           a0.tag != "KWARG_SPLAT"_ && a0.original_tag != "KWARG_SPLAT"_;
+    return !is_kwarg(a0) && !is_kwarg_splat(a0);
   }
 
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
@@ -6466,10 +6437,10 @@ class Compiler {
                   ? compile_self_call_step(ast, post, res)
                   : compile_call_step(ast, post, res);
       else if (post.original_tag == "INDEX"_)
-        res = compile_index_read(ast, post, res, Op::Index);
+        res = compile_index_read(ast, post, res);
       else if (post.original_tag == "SAFE_INDEX"_) {
         nil_jumps.push_back(emit(Op::JumpIfNil, res.slot));
-        res = compile_index_read(ast, post, res, Op::Index);
+        res = compile_index_read(ast, post, res);
       } else if (post.original_tag == "DOT"_ ||
                  post.original_tag == "SAFE_DOT"_) {
         if (post.original_tag == "SAFE_DOT"_)
@@ -6668,14 +6639,6 @@ class Compiler {
     return true;
   }
 
-  // Whether the argument list carries anything the keyword resolver owns.
-  static bool args_have_kwargs(const peg::Ast& args) {
-    using namespace peg::udl;
-    for (const auto& a : args.nodes)
-      if (a->tag == "KWARG"_ || a->tag == "SPLAT"_) return true;
-    return false;
-  }
-
   // The at-most-once explicit drop. The receiver is borrowed — the guard only
   // reads it — so the statement sweep stays its releaser, and the call's value
   // is nil whatever the drop body returned.
@@ -6732,7 +6695,7 @@ class Compiler {
     // Everything the check rules out falls into the ordinary dispatch, whose
     // HasProp gate asks the very question the JIT's own `else` arm asks (an
     // own slot, a trait default, or a namespace).
-    if (post.token == "parameters" && !args_have_kwargs(args))
+    if (post.token == "parameters" && !has_kwargs(args))
       return compile_class_parameters(at, post, args, recv);
     return compile_method_tail(at, post, args, recv);
   }
@@ -6922,7 +6885,7 @@ class Compiler {
     for (int32_t i = 0; i < spec.nargs; i++)
       alloc_temp(i < argc ? *pos_args[i] : at);
     emit(Op::MethGate, base, recv.slot, kconst_str(post.token),
-         static_cast<int32_t>(spec.id));
+         bmeth_spec_index(spec));
     size_t to_builtin = 0;
     size_t done_user = 0;
     if (kw_val) {
@@ -7001,15 +6964,23 @@ class Compiler {
     return {out, true};
   }
 
+  // KWARG / KWARG_SPLAT argument nodes, under whichever of tag/original_tag
+  // the AST optimizer left them.
+  static bool is_kwarg(const peg::Ast& a) {
+    using namespace peg::udl;
+    return a.tag == "KWARG"_ || a.original_tag == "KWARG"_;
+  }
+  static bool is_kwarg_splat(const peg::Ast& a) {
+    using namespace peg::udl;
+    return a.tag == "KWARG_SPLAT"_ || a.original_tag == "KWARG_SPLAT"_;
+  }
+
   // The call's positional arguments: a keyword binds by name, so it takes no
   // slot in the run the built-in reads.
   static std::vector<const peg::Ast*> positional_args(const peg::Ast& args) {
-    using namespace peg::udl;
     std::vector<const peg::Ast*> out;
     for (const auto& a : args.nodes)
-      if (!(a->tag == "KWARG"_ || a->original_tag == "KWARG"_ ||
-            a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_))
-        out.push_back(a.get());
+      if (!is_kwarg(*a) && !is_kwarg_splat(*a)) out.push_back(a.get());
     return out;
   }
 
@@ -7017,33 +6988,15 @@ class Compiler {
   // like the binder — a repeat is a structural error raised before any of it.
   static const peg::Ast* kwarg_value(const peg::Ast& args,
                                      std::string_view name) {
-    using namespace peg::udl;
     for (const auto& a : args.nodes)
-      if ((a->tag == "KWARG"_ || a->original_tag == "KWARG"_) &&
-          a->nodes[0]->token == name)
-        return a->nodes[1].get();
+      if (is_kwarg(*a) && a->nodes[0]->token == name) return a->nodes[1].get();
     return nullptr;
-  }
-
-  // Positional-only argument lists: the runtime kwarg resolver is out of
-  // slice, so both call forms turn a keyword away at compile time.
-  void reject_kwargs(const peg::Ast& args) {
-    using namespace peg::udl;
-    for (const auto& a : args.nodes) {
-      if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_)
-        reject(*a, "keyword argument");
-      if (a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_)
-        reject(*a, "kwargs splat");
-    }
   }
 
   // Whether this argument list carries keyword content at all.
   static bool has_kwargs(const peg::Ast& args) {
-    using namespace peg::udl;
     for (const auto& a : args.nodes)
-      if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_ ||
-          a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_)
-        return true;
+      if (is_kwarg(*a) || is_kwarg_splat(*a)) return true;
     return false;
   }
 
@@ -7074,9 +7027,9 @@ class Compiler {
     std::vector<std::string_view> keys;
     int32_t n_pos = 0, n_kw = 0, n_splat = 0;
     for (const auto& a : args.nodes) {
-      if (a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_)
+      if (is_kwarg_splat(*a))
         n_splat++;
-      else if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_)
+      else if (is_kwarg(*a))
         n_kw++;
       else
         n_pos++;
@@ -7091,10 +7044,10 @@ class Compiler {
     if (pos0) store_into(base + off, *pos0, /*dst_is_fresh=*/true);
     int32_t pi = lead, ki = 0, si = 0;
     for (const auto& a : args.nodes) {
-      if (a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_) {
+      if (is_kwarg_splat(*a)) {
         in_order.push_back({a->nodes[0].get(),
                             base + off + n_pos + n_kw + si++});
-      } else if (a->tag == "KWARG"_ || a->original_tag == "KWARG"_) {
+      } else if (is_kwarg(*a)) {
         keys.push_back(a->nodes[0]->token);
         in_order.push_back({a->nodes[1].get(), base + off + n_pos + ki++});
       } else {
@@ -7106,7 +7059,9 @@ class Compiler {
     int32_t t = alloc_temp(at);
     auto spec = static_cast<int32_t>(chunk_.kwcalls.size());
     Chunk::KwCall kc{recv != nullptr, n_pos, n_kw, n_splat, {}};
-    for (auto k : keys) kc.kw_keys.push_back(kconst_str(k));
+    for (auto k : keys)
+      kc.kw_keys.push_back(
+          reinterpret_cast<const char*>(chunk_.consts[kconst_str(k)].data));
     chunk_.kwcalls.push_back(std::move(kc));
     // The binder's own errors report at the CALLEE, which a parenthesized
     // one puts past the `(` the call node starts at — the anchor the arity
@@ -7125,9 +7080,7 @@ class Compiler {
     std::vector<const peg::Ast*> asts;
     if (pos0_at) asts.push_back(pos0_at);
     for (const auto& a : args.nodes)
-      if (!(a->tag == "KWARG_SPLAT"_ || a->original_tag == "KWARG_SPLAT"_ ||
-            a->tag == "KWARG"_ || a->original_tag == "KWARG"_))
-        asts.push_back(a.get());
+      if (!is_kwarg(*a) && !is_kwarg_splat(*a)) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
     return {t, true};
   }
@@ -7211,21 +7164,19 @@ class Compiler {
     return {t, true};
   }
 
-  // One `[k]` postfix applied to `recv`. `op` picks the read flavor: Index
-  // for an rvalue read, IndexWr/IndexCo for compile_assign_index's
-  // write-context reads. A range key — literal (`xs[1..3]`) or stored —
-  // rides the same Index op: its runtime is-range dispatch slices before
-  // the receiver arms (emit_index_step's order). The write-context reads
-  // stay point-only like the JIT's compound dispatch: a range key falls
-  // into their Long-key check ("expected Long, got Object"). The op is
-  // stamped at the enclosing node `at`, where both backends anchor every
-  // index error.
+  // One `[k]` postfix applied to `recv`, as an rvalue read (the write-context
+  // IndexWr/IndexCo reads, emitted inline by compile_assign_index, stay
+  // point-only like the JIT's compound dispatch: a range key falls into their
+  // Long-key check). A range key — literal (`xs[1..3]`) or stored — rides the
+  // same Index op: its runtime is-range dispatch slices before the receiver
+  // arms (emit_index_step's order). The op is stamped at the enclosing node
+  // `at`, where both backends anchor every index error.
   ExprResult compile_index_read(const peg::Ast& at, const peg::Ast& post,
-                                ExprResult recv, Op op) {
+                                ExprResult recv) {
     auto key = compile_expr(post);
     StampGuard pos(*this, at);
     int32_t t = alloc_temp(at);
-    emit(op, t, recv.slot, key.slot);
+    emit(Op::Index, t, recv.slot, key.slot);
     return {t, true};
   }
 
@@ -7708,6 +7659,16 @@ class Compiler {
   // `fail`) on mismatch. Bindings are NOT emitted here — the caller binds
   // after the whole pattern passed, which is what makes the fail edges
   // release-free.
+  // The pattern testers' shared tag gate: fall through when the subject's
+  // tag is in `tags`, otherwise jump via `fail`.
+  void emit_tag_gate(int32_t subj, std::initializer_list<int8_t> tags,
+                     std::vector<size_t>& fail) {
+    std::vector<size_t> ok;
+    for (int8_t t : tags) ok.push_back(emit(Op::JumpIfTag, subj, 0, t));
+    fail.push_back(emit(Op::Jump));
+    for (size_t ix : ok) patch_to_here(ix);
+  }
+
   void compile_pattern_test(const peg::Ast& pat, int32_t subj,
                             std::vector<size_t>& fail) {
     using namespace peg::udl;
@@ -7731,12 +7692,8 @@ class Compiler {
       return;
     }
     // Tag gate: fall through when the subject's tag is in `tags`.
-    auto tag_gate = [&](const std::vector<int8_t>& tags) {
-      std::vector<size_t> ok;
-      for (int8_t t : tags)
-        ok.push_back(emit(Op::JumpIfTag, subj, 0, t));
-      fail.push_back(emit(Op::Jump));
-      for (size_t ix : ok) patch_to_here(ix);
+    auto tag_gate = [&](std::initializer_list<int8_t> tags) {
+      emit_tag_gate(subj, tags, fail);
     };
     // Value check after the gate: Eq against the literal constant. The
     // gate makes Eq's dispatch exact (a Float subject never numerically
@@ -7885,10 +7842,7 @@ class Compiler {
     auto dot = path.rfind('.');
     auto variant =
         dot == std::string_view::npos ? path : path.substr(dot + 1);
-    std::vector<size_t> ok;
-    ok.push_back(emit(Op::JumpIfTag, subj, 0, TAG_OBJECT));
-    fail.push_back(emit(Op::Jump));
-    for (size_t ix : ok) patch_to_here(ix);
+    emit_tag_gate(subj, {TAG_OBJECT}, fail);
     fail.push_back(emit(Op::TypeMatch, subj, 0, kconst_str(variant)));
     for (size_t i = 1; i < pat.nodes.size(); i++) {
       int32_t t = alloc_temp(*pat.nodes[i]);
@@ -7902,10 +7856,7 @@ class Compiler {
   void compile_obj_pattern_test(const peg::Ast& pat, int32_t subj,
                                 std::vector<size_t>& fail) {
     using namespace peg::udl;
-    std::vector<size_t> ok;
-    ok.push_back(emit(Op::JumpIfTag, subj, 0, TAG_OBJECT));
-    fail.push_back(emit(Op::Jump));
-    for (size_t ix : ok) patch_to_here(ix);
+    emit_tag_gate(subj, {TAG_OBJECT}, fail);
     for (const auto& entry : pat.nodes) {
       bool full = entry->tag == "OBJECT_PAT_ENTRY"_;
       const peg::Ast* sub = full ? entry->nodes[1].get() : nullptr;
@@ -7969,26 +7920,43 @@ class Compiler {
   // or Fmt with its spec, and StrCat chains the accumulator left-to-right
   // (compile_interpolated_string's order). Strings aren't RC'd, so the
   // temps carry no release pressure.
-  ExprResult compile_interp_pieces(
-      const peg::Ast& ast, const std::vector<culebra::InterpPiece>& pieces) {
-    using namespace peg::udl;
-    std::string pending;
+  // Left-fold StrCat accumulator: the first piece becomes the accumulator,
+  // later ones chain through a temp, and finish() answers the empty string
+  // when nothing was added. Shared by the interpolation and format-spec
+  // builders — the ownership-sensitive concat logic lives once.
+  struct StrCatAcc {
+    Compiler& c;
+    const peg::Ast& at;
     int32_t acc = -1;
-    auto cat = [&](int32_t piece) {
+    void add(int32_t piece) {
       if (acc < 0) {
         acc = piece;
         return;
       }
-      int32_t t = alloc_temp(ast);
-      emit(Op::StrCat, t, acc, piece);
+      int32_t t = c.alloc_temp(at);
+      c.emit(Op::StrCat, t, acc, piece);
       acc = t;
-    };
+    }
+    int32_t finish() {
+      if (acc < 0) {
+        acc = c.alloc_temp(at);
+        c.emit(Op::LoadConst, acc, c.kconst_str(""));
+      }
+      return acc;
+    }
+  };
+
+  ExprResult compile_interp_pieces(
+      const peg::Ast& ast, const std::vector<culebra::InterpPiece>& pieces) {
+    using namespace peg::udl;
+    std::string pending;
+    StrCatAcc cat{*this, ast};
     auto flush = [&] {
       if (pending.empty()) return;
       int32_t t = alloc_temp(ast);
       emit(Op::LoadConst, t, kconst_str(pending));
       pending.clear();
-      cat(t);
+      cat.add(t);
     };
     for (const auto& p : pieces) {
       if (!p.expr) {
@@ -8017,14 +7985,10 @@ class Compiler {
         emit(Op::Fmt, t, v.slot, kconst_str(view.spec_text));
       else
         emit(Op::Disp, t, v.slot);
-      cat(t);
+      cat.add(t);
     }
     flush();
-    if (acc < 0) {  // no pieces at all: the empty string
-      acc = alloc_temp(ast);
-      emit(Op::LoadConst, acc, kconst_str(""));
-    }
-    return {acc, true};
+    return {cat.finish(), true};
   }
 
   // A spec carrying nested `{field}`s (`"{s:>{w}}"`): literal chunks are
@@ -8033,22 +7997,13 @@ class Compiler {
   // build_format_spec piece for piece, so all three assemble the same spec
   // and reject the same non-Long field at the field's own position.
   int32_t compile_format_spec(const peg::Ast& spec) {
-    int32_t acc = -1;
-    auto append = [&](int32_t piece) {
-      if (acc < 0) {
-        acc = piece;
-        return;
-      }
-      int32_t t = alloc_temp(spec);
-      emit(Op::StrCat, t, acc, piece);
-      acc = t;
-    };
+    StrCatAcc acc{*this, spec};
     for (const auto& node : spec.nodes) {
       auto piece = culebra::view_spec_piece(*node);
       if (!piece.expr) {
         int32_t t = alloc_temp(spec);
         emit(Op::LoadConst, t, kconst_str(piece.text));
-        append(t);
+        acc.add(t);
         continue;
       }
       const auto& field = *piece.expr;
@@ -8060,13 +8015,9 @@ class Compiler {
       }
       int32_t t = alloc_temp(field);
       emit(Op::Disp, t, v.slot);
-      append(t);
+      acc.add(t);
     }
-    if (acc < 0) {
-      acc = alloc_temp(spec);
-      emit(Op::LoadConst, acc, kconst_str(""));
-    }
-    return acc;
+    return acc.finish();
   }
 
   ExprResult compile_expr(const peg::Ast& ast) {
@@ -8317,7 +8268,11 @@ class Compiler {
       case "BIT_OR"_:
       case "BIT_XOR"_:
       case "BIT_AND"_:
-      case "SHIFT"_: {
+      case "SHIFT"_:
+      case "ADDITIVE"_:
+      case "MULTIPLICATIVE"_: {
+        // One left fold for every [operand, op-token]* chain; the eleven
+        // tokens are disjoint across the levels, so one lookup serves all.
         auto acc = compile_expr(*ast.nodes[0]);
         for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
           auto op_tok = ast.nodes[i]->token;
@@ -8327,21 +8282,7 @@ class Compiler {
           else if (op_tok == "&") op = Op::BitAnd;
           else if (op_tok == "<<") op = Op::Shl;
           else if (op_tok == ">>") op = Op::Shr;
-          else reject(*ast.nodes[i], std::format("operator '{}'", op_tok));
-          auto rhs = compile_expr(*ast.nodes[i + 1]);
-          int32_t t = alloc_temp(ast);
-          emit(op, t, acc.slot, rhs.slot);
-          acc = {t, true};
-        }
-        return acc;
-      }
-      case "ADDITIVE"_:
-      case "MULTIPLICATIVE"_: {
-        auto acc = compile_expr(*ast.nodes[0]);
-        for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
-          auto op_tok = ast.nodes[i]->token;
-          Op op;
-          if (op_tok == "+") op = Op::Add;
+          else if (op_tok == "+") op = Op::Add;
           else if (op_tok == "-") op = Op::Sub;
           else if (op_tok == "*") op = Op::Mul;
           else if (op_tok == "/") op = Op::Div;
@@ -8519,20 +8460,36 @@ inline std::string dump(const VmProgram& p) {
 // yet); the abandoned frame's registers are reclaimed by the conservative
 // backstop, mirroring the JIT's uncaught-error path.
 struct Exec {
+  // The capture holding this closure's chunk descriptor, or null when the
+  // closure is not one of ours (its fn_ptr is not a VM trampoline). The
+  // lazy-namespace registry rebuilds closures from it (see the desc hook).
+  static JitCell* desc_for_closure(JitClosure* cls) {
+    if (!cls || (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
+                 cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline)))
+      return nullptr;
+    if (cls->n_captures == 0 || !cls->captures) return nullptr;
+    return cls->captures[0];
+  }
+
+  // The validation every other consumer of the seam shares: captures[0]
+  // carries a descriptor naming a chunk of a live program.
+  static const VmFnDesc* closure_desc(JitClosure* cls) {
+    auto* cell = desc_for_closure(cls);
+    if (!cell) return nullptr;
+    const auto* d = reinterpret_cast<const VmFnDesc*>(cell->value.data);
+    if (!d || !d->prog ||
+        static_cast<size_t>(d->chunk) >= d->prog->chunks.size())
+      return nullptr;
+    return d;
+  }
+
   // What a keyword call binds against, for closures this executor runs. They
   // all share one fn_ptr, so the per-fn table cannot hold them; the chunk
   // behind the closure is in its descriptor capture, and the program built a
   // JitParamMeta for each.
   static const JitParamMeta* meta_for_closure(JitClosure* cls) {
-    if (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
-        cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline))
-      return nullptr;
-    if (cls->n_captures == 0 || !cls->captures || !cls->captures[0])
-      return nullptr;
-    const auto* d =
-        reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
-    if (!d || !d->prog ||
-        static_cast<size_t>(d->chunk) >= d->prog->param_metas.size())
+    const auto* d = closure_desc(cls);
+    if (!d || static_cast<size_t>(d->chunk) >= d->prog->param_metas.size())
       return nullptr;
     return &d->prog->param_metas[d->chunk]->meta;
   }
@@ -8541,16 +8498,8 @@ struct Exec {
   // binding, which is what makes it unsendable. The chunk recorded the
   // names at compile time (see Chunk::mut_capture_names).
   static const std::string* mut_capture_for_closure(JitClosure* cls) {
-    if (!cls || (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
-                 cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline)))
-      return nullptr;
-    if (cls->n_captures == 0 || !cls->captures || !cls->captures[0])
-      return nullptr;
-    const auto* d =
-        reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
-    if (!d || !d->prog ||
-        static_cast<size_t>(d->chunk) >= d->prog->chunks.size())
-      return nullptr;
+    const auto* d = closure_desc(cls);
+    if (!d) return nullptr;
     const auto& names = d->prog->chunks[d->chunk].mut_capture_names;
     return names.empty() ? nullptr : &names.front();
   }
@@ -8561,27 +8510,8 @@ struct Exec {
   // SendError it is everywhere else. An ordinary chunk closure stays
   // sendable: its descriptor names a chunk of the same program.
   static bool is_native_closure(JitClosure* cls) {
-    if (!cls || (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
-                 cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline)))
-      return false;
-    if (cls->n_captures == 0 || !cls->captures || !cls->captures[0])
-      return false;
-    const auto* d =
-        reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
-    if (!d || !d->prog ||
-        static_cast<size_t>(d->chunk) >= d->prog->chunks.size())
-      return false;
-    return d->prog->chunks[d->chunk].forwards_args;
-  }
-
-  // The other half of that seam: the capture holding this closure's chunk, so
-  // the lazy-namespace registry can rebuild it later (see the desc hook).
-  static JitCell* desc_for_closure(JitClosure* cls) {
-    if (!cls || (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
-                 cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline)))
-      return nullptr;
-    if (cls->n_captures == 0 || !cls->captures) return nullptr;
-    return cls->captures[0];
+    const auto* d = closure_desc(cls);
+    return d && d->prog->chunks[d->chunk].forwards_args;
   }
 
   static void run(VmProgram& p) {
@@ -9720,7 +9650,9 @@ struct Exec {
               break;
             }
           }
-          const BMethSpec& gate = bmeth_gate_spec(static_cast<BMeth>(in.d));
+          // d indexes the spec row (gate fields are identical across an
+          // id's arities, so this call's own row answers).
+          const BMethSpec& gate = bmeth_specs()[in.d];
           bool ok = bmeth_receiver_ok(gate.recv, static_cast<int8_t>(recv.tag));
           // An iterator-protocol name resolves on an Object only when the
           // object carries the protocol; a plain dict merely lacks it.
@@ -9732,7 +9664,7 @@ struct Exec {
               bmeth_scalar_receiver_error(static_cast<int8_t>(recv.tag), line,
                                           col);
             regs[in.a] = JitValue{TAG_NO_SELF, kBMethGateMiss};
-          } else if (bmeth_publishes_call_pos(static_cast<BMeth>(in.d))) {
+          } else if (bmeth_publishes_call_pos(gate.id)) {
             culebra_runtime_set_op_pos(line, col);
           }
           ++pc;
@@ -10315,18 +10247,13 @@ struct Exec {
           // so hand them over and nil the run first — it is their only owner
           // from the call on, throw paths included.
           std::vector<JitValue> vals(regs + in.c, regs + in.c + total);
-          vals.resize(static_cast<size_t>(total));
-          std::vector<const char*> keys;
-          keys.reserve(kc.kw_keys.size());
-          for (int32_t k : kc.kw_keys)
-            keys.push_back(reinterpret_cast<const char*>(c.consts[k].data));
           for (int32_t i = 0; i < total; ++i)
             regs[in.c + i] = JitValue{TAG_NIL, 0};
           JitValue* pos_p = vals.data() + off;
           regs[in.a] = culebra_runtime_call_with_kwargs(
               reinterpret_cast<JitClosure*>(callee.data),
               static_cast<int8_t>(self.tag), self.data, kc.n_pos, pos_p,
-              kc.n_kw, keys.data(), pos_p + kc.n_pos, kc.n_splat,
+              kc.n_kw, kc.kw_keys.data(), pos_p + kc.n_pos, kc.n_splat,
               pos_p + kc.n_pos + kc.n_kw, line, col);
           ++pc;
           break;
@@ -10336,8 +10263,7 @@ struct Exec {
           culebra_runtime_throw_error(
               reinterpret_cast<const char*>(c.consts[in.b].data),
               reinterpret_cast<const char*>(c.consts[in.c].data), line, col);
-          ++pc;
-          break;
+          break;  // unreachable — the helper always throws
         }
         case Op::Ret: {
           JitValue rv = regs[in.a];
@@ -10755,9 +10681,9 @@ struct Exec {
         case Op::ForNext: {
           // A step raises positionless (a `has_next()` answer with no
           // truthiness, a protocol lost mid-walk); the interpreter reports
-          // those at the statement it was running.
-          auto [line, col] = chunk_pos_at(c, pc);
-          culebra_runtime_set_op_pos(line, col);
+          // those at the statement it was running — baked into c/d at
+          // compile time.
+          culebra_runtime_set_op_pos(in.c, in.d);
           if (for_next(regs + in.a)) ++pc;
           else pc = static_cast<size_t>(in.b);
           break;
@@ -10898,6 +10824,37 @@ struct Exec {
       }
     }
   }
+};
+
+// A program and everything its compilation read. Chunks intern their own
+// string constants, but a closure the program built reaches its bytecode
+// through a descriptor pointing into the program, so a session that can call
+// the closure later must keep the program — and the source and AST it was
+// compiled from — alive too (see Exec::run_retained).
+struct RetainedProgram {
+  std::shared_ptr<std::string> source;  // null when the AST has no file
+  std::shared_ptr<peg::Ast> ast;
+  std::unique_ptr<VmProgram> prog;
+};
+
+// The session-lifetime owner of retained programs: it holds every program's
+// descriptor cells pinned and hands them back when no retained closure can
+// be called again.
+class RetainedRuns {
+ public:
+  ~RetainedRuns() {
+    for (auto& r : runs_)
+      if (r.prog) Exec::release_descs(*r.prog);
+  }
+  RetainedProgram& keep(std::shared_ptr<std::string> source,
+                        std::shared_ptr<peg::Ast> ast,
+                        std::unique_ptr<VmProgram> prog) {
+    return runs_.emplace_back(
+        RetainedProgram{std::move(source), std::move(ast), std::move(prog)});
+  }
+
+ private:
+  std::deque<RetainedProgram> runs_;
 };
 
 // Bytecode -> LLVM IR, reusing the JIT object as the codegen context and the
@@ -11081,6 +11038,19 @@ struct Lowering {
           std::string(
               _str_sv(reinterpret_cast<const char*>(c.consts[k].data))),
           name);
+    };
+
+    // The property writes' shared receiver gate: fall through only for an
+    // Object receiver, otherwise the interp's own error text from a
+    // terminated block.
+    auto require_object_recv = [&](llvm::Value* tag, const char* pfx) {
+      auto okBB = BasicBlock::Create(j.ctx_, std::string(pfx) + ".ok", fn);
+      auto errBB = BasicBlock::Create(j.ctx_, std::string(pfx) + ".err", fn);
+      b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), okBB, errBB);
+      b.SetInsertPoint(errBB);
+      j.emit_type_error_typed("Object, Array, or Tensor", tag);
+      b.CreateUnreachable();
+      b.SetInsertPoint(okBB);
     };
 
     // Where the overflow arguments begin, filled by the prologue and read
@@ -11930,10 +11900,7 @@ struct Lowering {
         }
         case Op::TypeMatch: {
           auto v = load_slot(in.a);
-          auto expected = j.get_or_create_global_str(
-              std::string(_str_sv(
-                  reinterpret_cast<const char*>(c.consts[in.c].data))),
-              ".vm.tm.name");
+          auto expected = vm_str_const(in.c, ".vm.tm.name");
           auto ok = j.emit_call(
               j.module_->getOrInsertFunction(rt::type_matches, b.getInt1Ty(),
                                              b.getInt8Ty(), i64Ty, ptrTy),
@@ -12134,7 +12101,8 @@ struct Lowering {
           // builtin's order, with the AST path's own property emitter.
           std::string key(_str_sv(
               reinterpret_cast<const char*>(c.consts[in.c].data)));
-          auto id = static_cast<BMeth>(in.d);
+          const BMethSpec& gate = bmeth_specs()[in.d];
+          auto id = gate.id;
           auto recv = load_slot(in.b);
           auto tag = j.extract_tag(recv);
           b.CreateStore(j.make_no_self(), slots[in.a]);
@@ -12169,7 +12137,6 @@ struct Lowering {
           b.CreateBr(contBB);
 
           b.SetInsertPoint(gateBB);
-          const BMethSpec& gate = bmeth_gate_spec(id);
           auto mask = gate.recv;
           // The gate-passing edges land here first when this call publishes
           // its own position (see bmeth_publishes_call_pos) — the user arm
@@ -12224,10 +12191,7 @@ struct Lowering {
         }
         case Op::CallRecv: {
           auto recv = load_slot(in.a);
-          auto key = j.get_or_create_global_str(
-              std::string(_str_sv(
-                  reinterpret_cast<const char*>(c.consts[in.c].data))),
-              ".vm.callrecv.key");
+          auto key = vm_str_const(in.c, ".vm.callrecv.key");
           b.CreateStore(
               j.emit_value_call(
                   j.module_->getOrInsertFunction(rt::call_receiver,
@@ -12257,9 +12221,7 @@ struct Lowering {
           auto cb = load_slot(in.a);
           j.emit_call(j.module_->getFunction(rt::check_callback_type),
                       {j.extract_tag(cb), j.extract_data(cb),
-                       j.get_or_create_global_str(
-                           reinterpret_cast<const char*>(c.consts[in.c].data),
-                           ".cb.param")});
+                       vm_str_const(in.c, ".cb.param")});
           b.CreateBr(contBB);
           b.SetInsertPoint(contBB);
           break;
@@ -12280,7 +12242,6 @@ struct Lowering {
                   b.CreateICmpEQ(j.extract_data(gate),
                                  b.getInt64(kBMethGateMiss))),
               missBB, contBB);
-          b.SetInsertPoint(missBB);
           auto throw_msg = [&](const std::string& msg) {
             j.emit_throw_error("ArityError", msg, line, col);
             if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
@@ -14049,14 +14010,7 @@ struct Lowering {
           auto recv = load_slot(in.a);
           auto val = load_slot(in.b);
           auto tag = j.extract_tag(recv);
-          auto okBB = BasicBlock::Create(j.ctx_, "pset.ok", fn);
-          auto errBB = BasicBlock::Create(j.ctx_, "pset.err", fn);
-          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), okBB,
-                         errBB);
-          b.SetInsertPoint(errBB);
-          j.emit_type_error_typed("Object, Array, or Tensor", tag);
-          b.CreateUnreachable();
-          b.SetInsertPoint(okBB);
+          require_object_recv(tag, "pset");
           // The retain feeds object_set's consuming store; the slot keeps
           // its +1 (IndexSet's rule) so the expression still reads it.
           j.emit_value_retain(val);
@@ -14077,14 +14031,7 @@ struct Lowering {
         case Op::PropWr: {
           auto recv = load_slot(in.b);
           auto tag = j.extract_tag(recv);
-          auto okBB = BasicBlock::Create(j.ctx_, "pwr.ok", fn);
-          auto errBB = BasicBlock::Create(j.ctx_, "pwr.err", fn);
-          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), okBB,
-                         errBB);
-          b.SetInsertPoint(errBB);
-          j.emit_type_error_typed("Object, Array, or Tensor", tag);
-          b.CreateUnreachable();
-          b.SetInsertPoint(okBB);
+          require_object_recv(tag, "pwr");
           auto objData = j.extract_data(recv);
           auto objPtr = b.CreateIntToPtr(objData, ptrTy);
           // Shared-view reject ahead of the existence check (the interp's
@@ -14129,14 +14076,7 @@ struct Lowering {
         case Op::PropCo: {
           auto recv = load_slot(in.b);
           auto tag = j.extract_tag(recv);
-          auto okBB = BasicBlock::Create(j.ctx_, "pco.ok", fn);
-          auto errBB = BasicBlock::Create(j.ctx_, "pco.err", fn);
-          b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), okBB,
-                         errBB);
-          b.SetInsertPoint(errBB);
-          j.emit_type_error_typed("Object, Array, or Tensor", tag);
-          b.CreateUnreachable();
-          b.SetInsertPoint(okBB);
+          require_object_recv(tag, "pco");
           auto objData = j.extract_data(recv);
           // The nc receiver-kind rejects ahead of the read (the JIT's nc
           // DOT dispatch: Shared view / packed field), at the statement.
@@ -14381,11 +14321,9 @@ struct Lowering {
                                                  static_cast<uint64_t>(k)));
           }
           std::vector<Constant*> keyPtrs;
-          for (int32_t k : kc.kw_keys)
+          for (const char* k : kc.kw_keys)
             keyPtrs.push_back(j.get_or_create_global_str(
-                std::string(_str_sv(
-                    reinterpret_cast<const char*>(c.consts[k].data))),
-                ".vm.kwname"));
+                std::string(_str_sv(k)), ".vm.kwname"));
           llvm::Value* keys =
               kc.n_kw > 0
                   ? j.build_str_ptr_array(keyPtrs, ".vm.kwnames")
@@ -14575,9 +14513,7 @@ struct Lowering {
           j.emit_call(
               j.module_->getOrInsertFunction(rt::wk_contract_error,
                                              b.getVoidTy(), ptrTy),
-              {j.get_or_create_global_str(
-                  _str_sv(reinterpret_cast<const char*>(c.consts[in.a].data)),
-                  ".vm.wkname")});
+              {vm_str_const(in.a, ".vm.wkname")});
           if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
           break;
         }
@@ -14619,17 +14555,12 @@ struct Lowering {
           break;
         }
         case Op::RegPack: {
-          auto arg = [&](int32_t k, const char* nm) {
-            return j.get_or_create_global_str(
-                std::string(_str_sv(
-                    reinterpret_cast<const char*>(c.consts[k].data))),
-                nm);
-          };
           j.emit_call(
               j.module_->getOrInsertFunction(
                   in.d ? rt::register_packable_enum : rt::register_packable,
                   b.getVoidTy(), ptrTy, ptrTy),
-              {arg(in.a, ".vm.pkg.name"), arg(in.b, ".vm.pkg.spec")});
+              {vm_str_const(in.a, ".vm.pkg.name"),
+               vm_str_const(in.b, ".vm.pkg.spec")});
           break;
         }
         case Op::ClassObj: {
@@ -14649,10 +14580,7 @@ struct Lowering {
                                              b.getVoidTy(), ptrTy, ptrTy,
                                              b.getInt8Ty(), i64Ty),
               {b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy),
-               j.get_or_create_global_str(
-                   std::string(_str_sv(reinterpret_cast<const char*>(
-                       c.consts[in.b].data))),
-                   ".vm.key"),
+               vm_str_const(in.b, ".vm.key"),
                j.extract_tag(v), j.extract_data(v)});
           b.CreateStore(j.make_nil(), slots[in.c]);  // the slot took the +1
           break;
@@ -14863,10 +14791,7 @@ struct Lowering {
           // d=1: the spec was assembled into a register by the pieces above.
           llvm::Value* specPtr =
               in.d ? b.CreateIntToPtr(j.extract_data(load_slot(in.c)), ptrTy)
-                   : j.get_or_create_global_str(
-                         std::string(_str_sv(reinterpret_cast<const char*>(
-                             c.consts[in.c].data))),
-                         ".fmtspec");
+                   : vm_str_const(in.c, ".fmtspec");
           auto [line, col] = chunk_pos_at(c, i);
           auto s = j.emit_call(
               j.module_->getOrInsertFunction(rt::format_value, ptrTy,
@@ -14932,7 +14857,7 @@ struct Lowering {
         }
         case Op::ForNext: {
           auto& cur = for_cursor(in.a);
-          auto [line, col] = chunk_pos_at(c, i);
+          int32_t line = in.c, col = in.d;  // baked at the emit site
           auto advArrayBB = BasicBlock::Create(j.ctx_, "vm.for.adv.arr", fn);
           auto advProtoBB = BasicBlock::Create(j.ctx_, "vm.for.adv.proto", fn);
           auto advStringBB = BasicBlock::Create(j.ctx_, "vm.for.adv.str", fn);

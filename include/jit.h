@@ -5955,11 +5955,22 @@ struct JIT {
     // Callee-cleans (same as emit_binop_dispatch, which covers again for
     // its own callers): matmul/pow below call their helpers directly.
     UnwindCovered cover(this, {lhs, rhs});
+    // One selection point for the (op, ownership-contract) → helper-name
+    // mapping: callee-cleans by default, the Tensor-aware in-place variant,
+    // and each with a `_borrow` twin for the VM lowering's contract. A
+    // mispaired name here compiles fine and only shows as a runtime
+    // leak/double-free, so every op routes through this one lambda.
+    auto pick = [&](const char* plain, const char* inpl,
+                    const char* plain_borrow, const char* inpl_borrow) {
+      return vm_borrow_ops_ ? (inplace ? inpl_borrow : plain_borrow)
+                            : (inplace ? inpl : plain);
+    };
     if (op == "@") {
       // No in-place matmul (output shape differs from lhs).
       return emit_value_call(
           module_->getOrInsertFunction(
-              vm_borrow_ops_ ? rt::num_matmul_borrow : rt::num_matmul,
+              pick(rt::num_matmul, rt::num_matmul, rt::num_matmul_borrow,
+                   rt::num_matmul_borrow),
               valueType_,
               builder_.getInt8Ty(), builder_.getInt64Ty(),
               builder_.getInt8Ty(), builder_.getInt64Ty(),
@@ -5969,11 +5980,9 @@ struct JIT {
            current_line_val(), current_column_val()}, "cmp.matmul");
     }
     if (op == "**") {
-      const char* rt_name = vm_borrow_ops_
-                                ? (inplace ? rt::num_inplace_pow_borrow
-                                           : rt::num_pow_borrow)
-                            : inplace ? rt::num_inplace_pow
-                                      : rt::num_pow;
+      const char* rt_name = pick(rt::num_pow, rt::num_inplace_pow,
+                                 rt::num_pow_borrow,
+                                 rt::num_inplace_pow_borrow);
       return emit_value_call(
           module_->getOrInsertFunction(
               rt_name, valueType_,
@@ -5984,34 +5993,28 @@ struct JIT {
            extract_tag(rhs), extract_data(rhs),
            current_line_val(), current_column_val()}, "cmp.pow");
     }
-    // One selection point for the (op, ownership-contract) → helper-name
-    // mapping: callee-cleans by default, the Tensor-aware in-place variant,
-    // and each with a `_borrow` twin for the VM lowering's contract.
     char ope = op[0];
     const char* rt_name = nullptr;
     switch (ope) {
-      case '+': rt_name = vm_borrow_ops_
-                              ? (inplace ? rt::num_inplace_add_borrow
-                                         : rt::num_add_borrow)
-                          : inplace ? rt::num_inplace_add
-                                    : rt::num_add; break;
-      case '-': rt_name = vm_borrow_ops_
-                              ? (inplace ? rt::num_inplace_sub_borrow
-                                         : rt::num_sub_borrow)
-                          : inplace ? rt::num_inplace_sub
-                                    : rt::num_sub; break;
-      case '*': rt_name = vm_borrow_ops_
-                              ? (inplace ? rt::num_inplace_mul_borrow
-                                         : rt::num_mul_borrow)
-                          : inplace ? rt::num_inplace_mul
-                                    : rt::num_mul; break;
-      case '/': rt_name = vm_borrow_ops_
-                              ? (inplace ? rt::num_inplace_div_borrow
-                                         : rt::num_div_borrow)
-                          : inplace ? rt::num_inplace_div
-                                    : rt::num_div; break;
+      case '+':
+        rt_name = pick(rt::num_add, rt::num_inplace_add, rt::num_add_borrow,
+                       rt::num_inplace_add_borrow);
+        break;
+      case '-':
+        rt_name = pick(rt::num_sub, rt::num_inplace_sub, rt::num_sub_borrow,
+                       rt::num_inplace_sub_borrow);
+        break;
+      case '*':
+        rt_name = pick(rt::num_mul, rt::num_inplace_mul, rt::num_mul_borrow,
+                       rt::num_inplace_mul_borrow);
+        break;
+      case '/':
+        rt_name = pick(rt::num_div, rt::num_inplace_div, rt::num_div_borrow,
+                       rt::num_inplace_div_borrow);
+        break;
       case '%':  // mod has no Tensor in-place
-        rt_name = vm_borrow_ops_ ? rt::num_mod_borrow : rt::num_mod;
+        rt_name = pick(rt::num_mod, rt::num_mod, rt::num_mod_borrow,
+                       rt::num_mod_borrow);
         break;
       default:
         throw std::runtime_error("invalid compound assignment operator");
@@ -11780,11 +11783,8 @@ struct JIT {
                                                  {receiver}, dot_ast);
     } else {
       std::vector<const peg::Ast*> argAsts;
-      // The receiver rides as positional[0]; hold it as Owned so the
-      // unwind-temp window covers it while the argument expressions compile.
-      Owned recvHold = own(receiver);
-      auto ownedArgs = compile_positional_args(argsAst, argAsts);
-      recvHold.consume();  // handed to the raw call below
+      // The receiver rides as positional[0].
+      auto ownedArgs = compile_args_holding(receiver, argsAst, argAsts);
       auto [ufcsArgs, ufcsArgAsts] = ufcs_call_args(
           receiver, dot_ast, consume_all(std::move(ownedArgs)), argAsts);
       emit_set_call_boundary();  // the chain node, before CallSiteAt repins
@@ -12154,12 +12154,8 @@ struct JIT {
     Owned introView;
     if (fn_introspection_name(method)) introView = own(methodVal);
     std::vector<const peg::Ast*> methodArgAsts;
-    // The argument expressions can throw (`x.f(g())`), and the releases of
-    // the receiver sit past that edge — hold its +1 as Owned so the
-    // unwind-temp window covers it while they compile.
-    Owned methodRecvHold = own(receiver);
-    auto methodOwnedArgs = compile_positional_args(argsAst, methodArgAsts);
-    methodRecvHold.consume();  // handed to the call below
+    auto methodOwnedArgs =
+        compile_args_holding(receiver, argsAst, methodArgAsts);
     auto methodRes = compile_function_call_raw(
         methodVal, receiver, consume_all(std::move(methodOwnedArgs)),
         /*check_kw_only=*/false, /*allow_call_overload=*/true, methodArgAsts,
@@ -12196,9 +12192,7 @@ struct JIT {
     Owned missView;
     if (fn_introspection_name(method)) missView = own(missProp);
     std::vector<const peg::Ast*> missArgAsts;
-    Owned missRecvHold = own(receiver);
-    auto missOwnedArgs = compile_positional_args(argsAst, missArgAsts);
-    missRecvHold.consume();  // handed to the call below
+    auto missOwnedArgs = compile_args_holding(receiver, argsAst, missArgAsts);
     auto missRes = compile_function_call_raw(
         missProp, receiver, consume_all(std::move(missOwnedArgs)),
         /*check_kw_only=*/false, /*allow_call_overload=*/true, missArgAsts,
@@ -12217,11 +12211,9 @@ struct JIT {
     // cleanup.
     Owned freeHold = own(freeFn);
     std::vector<const peg::Ast*> ufcsArgAstList;
-    // The receiver rides as positional[0]; hold it as Owned so the
-    // unwind-temp window covers it while the argument expressions compile.
-    Owned ufcsRecvHold = own(receiver);
-    auto ufcsOwnedArgs = compile_positional_args(argsAst, ufcsArgAstList);
-    ufcsRecvHold.consume();  // handed to the raw call below
+    // The receiver rides as positional[0].
+    auto ufcsOwnedArgs =
+        compile_args_holding(receiver, argsAst, ufcsArgAstList);
     auto [ufcsArgs, ufcsArgAsts] =
         ufcs_call_args(receiver, dot_ast,
                        consume_all(std::move(ufcsOwnedArgs)), ufcsArgAstList);
@@ -12309,6 +12301,20 @@ struct JIT {
       asts.push_back(argNode.get());
     }
     return vals;
+  }
+
+  // The receiver-hold discipline every dispatch arm repeats: compile the
+  // positional arguments while the receiver's +1 rides the unwind-temp
+  // window (an argument expression can throw — `x.f(g())` — and the
+  // receiver's releases sit past that edge), then consume the hold because
+  // the caller hands the receiver to the call it makes next.
+  std::vector<Owned> compile_args_holding(llvm::Value* receiver,
+                                          const peg::Ast& argsAst,
+                                          std::vector<const peg::Ast*>& asts) {
+    Owned recvHold = own(receiver);
+    auto owned = compile_positional_args(argsAst, asts);
+    recvHold.consume();  // handed to the caller's call
+    return owned;
   }
 
   // Raw call emission: caller has already compiled the user args.
@@ -12646,18 +12652,9 @@ struct JIT {
     auto err = [](const char* k, std::string m, bool root) {
       return BuiltinVerdict{K::Error, k, std::move(m), root};
     };
-    auto it = tbl.find(method);
-    if (it == tbl.end()) return {};
-    const Value& fnv = [&]() -> const Value& {
-      if constexpr (std::is_same_v<std::decay_t<decltype(it->second)>,
-                                   culebra::IterBuiltin>) {
-        return it->second.fn;
-      } else {
-        return it->second;
-      }
-    }();
-    if (fnv.type != Value::Function) return {};
-    const auto& params = *fnv.to_function().params;
+    const auto* pp = builtin_method_params(tbl, method);
+    if (!pp) return {};
+    const auto& params = *pp;
     auto b = builtin_arity_bounds(params);
     bool kwcap = b.min != b.max;
     for (const auto& p : params)

@@ -1426,11 +1426,7 @@ enum class DocEngine { Interp, Jit, Vm };
 // `# !!` pattern matches the same string whichever engine ran it (the
 // interpreter's own wording, from interpret_modules' catch).
 culebra::DocRunOutcome doc_error_outcome(const culebra::CulebraError& e) {
-  if (e.line > 0 || e.col > 0) {
-    return {false, "RuntimeError",
-            std::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col)};
-  }
-  return {false, "RuntimeError", std::format("{}: {}", e.kind, e.what())};
+  return {false, "RuntimeError", culebra::format_error_message(e)};
 }
 
 #ifdef CULEBRA_JIT_ENABLED
@@ -1454,9 +1450,7 @@ bool doc_block_modules(const std::string& name, const std::string& code,
     return false;
   }
   if (!m.ast) {
-    std::string joined;
-    for (const auto& s : msgs) joined += (joined.empty() ? "" : "; ") + s;
-    fail = {false, "SyntaxError", joined};
+    fail = {false, "SyntaxError", culebra::join_messages(msgs)};
     return false;
   }
   m.abs_path = name;
@@ -1522,9 +1516,7 @@ culebra::BlockRunner doc_block_runner(DocEngine engine) {
       return {false, "SyntaxError", std::string(e.what())};
     }
     if (!ast) {
-      std::string joined;
-      for (const auto& s : msgs) joined += (joined.empty() ? "" : "; ") + s;
-      return {false, "SyntaxError", joined};
+      return {false, "SyntaxError", culebra::join_messages(msgs)};
     }
     auto env = culebra::environment();
     install_cli_aliases(*env);

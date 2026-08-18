@@ -1,8 +1,8 @@
 #pragma once
 
+#include <debug_types.h>
 #include <vm.h>
 
-#include <deque>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -23,27 +23,9 @@ namespace culebra {
 // runs real bytecode against all three.
 class VmDebugSession {
  public:
-  struct Frame {
-    std::string name;
-    std::string path;
-    int64_t line;
-  };
-  struct Var {
-    std::string name;
-    std::string value;
-    std::string type;
-  };
-
-  ~VmDebugSession() {
-    // The evaluated expressions' descriptor cells, which run_retained left
-    // pinned so a closure one of them built could still be called.
-    for (auto& r : retained_)
-      if (r.prog) vm::Exec::release_descs(*r.prog);
-  }
-
   // Innermost first, the order a call stack is shown in.
-  std::vector<Frame> frames() const {
-    std::vector<Frame> out;
+  std::vector<DebugFrame> frames() const {
+    std::vector<DebugFrame> out;
     for (const auto* f : user_frames())
       out.push_back({frame_name(*f), f->prog->source_path, f->line});
     return out;
@@ -53,8 +35,8 @@ class VmDebugSession {
   // own live bindings plus the module top level's, which are in scope
   // everywhere the frame does not shadow them. Functions are hidden (a
   // variables pane shows data), as are the compiler's own slots.
-  std::vector<Var> variables(size_t frame_ix) const {
-    std::vector<Var> out;
+  std::vector<DebugVar> variables(size_t frame_ix) const {
+    std::vector<DebugVar> out;
     for (const auto& [name, v] : visible(frame_ix)) {
       if (!user_name(name)) continue;
       JitValue val = read(v);
@@ -73,7 +55,7 @@ class VmDebugSession {
   // session — the machinery a line's top-level names already use — so name
   // resolution, mutability and closure capture behave the way they do at the
   // prompt, and whatever the expression writes lands back in the frame.
-  bool evaluate(size_t frame_ix, const std::string& expr, Var& out,
+  bool evaluate(size_t frame_ix, const std::string& expr, DebugVar& out,
                 std::string& err) {
     auto vis = visible(frame_ix);
     vm::ReplSessionSwap swap;
@@ -120,22 +102,13 @@ class VmDebugSession {
   // immutability answer — a `let` name raises ImmutableError here exactly as
   // it does in the program.
   bool set_variable(size_t frame_ix, const std::string& name,
-                    const std::string& expr, Var& out, std::string& err) {
+                    const std::string& expr, DebugVar& out, std::string& err) {
     if (!evaluate(frame_ix, name + " = (" + expr + ")", out, err)) return false;
     out.name = name;
     return true;
   }
 
  private:
-  // A program and everything its compilation read, kept for the session:
-  // a closure the expression built reaches its bytecode through a descriptor
-  // pointing into that program (vm_repl.h's Retained, same reason).
-  struct Retained {
-    std::shared_ptr<std::string> source;
-    std::shared_ptr<peg::Ast> ast;
-    std::unique_ptr<vm::VmProgram> prog;
-  };
-
   // One visible name: where its value lives in the frame that owns it.
   struct Visible {
     const vm::Chunk::SlotDebug* sd;
@@ -147,8 +120,7 @@ class VmDebugSession {
     try {
       auto prog =
           std::make_unique<vm::VmProgram>(vm::Compiler::compile_repl_line(*ast));
-      auto& kept =
-          retained_.emplace_back(Retained{std::move(source), ast, std::move(prog)});
+      auto& kept = retained_.keep(std::move(source), ast, std::move(prog));
       // The expression is not a statement of the program being debugged: its
       // own boundaries must not re-enter the hook that is holding this thread.
       auto& st = vm::dbg_state();
@@ -256,7 +228,9 @@ class VmDebugSession {
     return _culebra_inspect_repr(v.tag, v.data);
   }
 
-  std::deque<Retained> retained_;
+  // Kept for the session: a closure an evaluated expression built reaches
+  // its bytecode through a descriptor pointing into that program.
+  vm::RetainedRuns retained_;
 };
 
 }  // namespace culebra

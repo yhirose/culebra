@@ -11470,8 +11470,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // resolve_class_method — mirroring the JIT's _jit_find_trait_default.
   const Value* _find_trait_default(const Value& val, std::string_view name) {
     if (!class_tag(val)) return nullptr;
+    const std::string key(name);  // one allocation, not one per trait
     for (const auto& [trait_name, default_methods] : trait_default_impls_) {
-      auto it = default_methods.find(std::string(name));
+      auto it = default_methods.find(key);
       if (it == default_methods.end()) continue;
       if (type_matches(val, trait_name)) return &it->second;
     }
@@ -12691,12 +12692,7 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
     // normal error to format: propagate it so the CLI can exit 130. Top-level
     // defers already ran above.
     if (e.kind == "Interrupted") throw;
-    if (e.line > 0 || e.col > 0) {
-      msgs.push_back(std::format("{}: {} at {}:{}.",
-                                  e.kind, e.what(), e.line, e.col));
-    } else {
-      msgs.push_back(std::format("{}: {}", e.kind, e.what()));
-    }
+    msgs.push_back(format_error_message(e));
   } catch (const std::runtime_error& e) {
     flush_top_defers();
     msgs.push_back(std::format("RuntimeError: {}", e.what()));
@@ -12761,12 +12757,7 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     // Mirror main.cc's CulebraError formatter: append the source
     // location from the structured fields when present so both
     // backends produce identical uncaught-error output.
-    if (e.line > 0 || e.col > 0) {
-      msgs.push_back(std::format("{}: {} at {}:{}.",
-                                  e.kind, e.what(), e.line, e.col));
-    } else {
-      msgs.push_back(std::format("{}: {}", e.kind, e.what()));
-    }
+    msgs.push_back(format_error_message(e));
   } catch (const std::runtime_error& e) {
     flush_top_defers();
     msgs.push_back(std::format("RuntimeError: {}", e.what()));

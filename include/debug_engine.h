@@ -18,6 +18,7 @@
 // their Runtime and GC per-thread).
 
 #include <culebra.h>
+#include <debug_types.h>
 #include <module_loader.h>
 #include <stdlib_interp.h>
 
@@ -33,18 +34,6 @@
 #endif
 
 namespace culebra {
-
-struct DebugFrame {
-  std::string name;
-  std::string path;
-  int64_t line;
-};
-
-struct DebugVar {
-  std::string name;
-  std::string value;
-  std::string type;
-};
 
 // One statement boundary. `force` marks the `debugger` statement, which
 // breaks whether or not anything asked to stop here; `depth` is the engine's
@@ -96,17 +85,14 @@ class InterpDebugEngine : public DebugEngine {
     try {
       modules = loader.load_program(program, src, msgs);
     } catch (const CulebraError& e) {
-      diag(error_text(e));
+      diag(format_error_message(e) + "\n");
       return 1;
     }
     culebra::sys_argv() = argv;
     auto env = culebra::environment();
     // CLI-style global aliases so a script using bare inspect/print/println
     // behaves like a normal `culebra <file>` run.
-    const auto& io = env->get("IO").to_object();
-    env->initialize("inspect", io.get("inspect"), false);
-    env->initialize("print", io.get("print"), false);
-    env->initialize("println", io.get("println"), false);
+    install_cli_aliases(*env);
 
     Debugger dbg = [&](const peg::Ast& a, Environment& e, bool force) {
       // An expression the debugger is evaluating is not a statement of the
@@ -133,7 +119,7 @@ class InterpDebugEngine : public DebugEngine {
         code = 1;
       }
     } catch (const CulebraError& e) {
-      diag(error_text(e));
+      diag(format_error_message(e) + "\n");
       code = 1;
     } catch (...) {
       code = 1;
@@ -239,13 +225,6 @@ class InterpDebugEngine : public DebugEngine {
     Environment* env;
     const peg::Ast* ast;
   };
-
-  static std::string error_text(const CulebraError& e) {
-    std::string m = std::string(e.kind) + ": " + e.what();
-    if (e.line > 0 || e.col > 0)
-      m += " at " + std::to_string(e.line) + ":" + std::to_string(e.col) + ".";
-    return m + "\n";
-  }
 
   // Reconstruct the call stack (top frame first) from the debuggee's
   // dap_frames(). Internal delegations (a multifn dispatcher calling the
@@ -399,7 +378,7 @@ class VmDebugEngine : public DebugEngine {
       modules = loader.load_program(program, src, msgs);
       splice_stdlib_preamble(modules);
     } catch (const CulebraError& e) {
-      diag(error_text(e));
+      diag(format_error_message(e) + "\n");
       return 1;
     }
     if (modules.empty()) {
@@ -426,7 +405,7 @@ class VmDebugEngine : public DebugEngine {
           *modules.back().ast, stdlib, vm::Debug::Step));
       vm::Exec::run(*prog_);
     } catch (const CulebraError& e) {
-      diag(error_text(e));
+      diag(format_error_message(e) + "\n");
       code = 1;
     } catch (const std::exception& e) {
       // Exec::run has already turned an uncaught user throw into the
@@ -441,18 +420,10 @@ class VmDebugEngine : public DebugEngine {
     return code;
   }
 
-  std::vector<DebugFrame> frames() override {
-    std::vector<DebugFrame> out;
-    for (const auto& f : session_.frames())
-      out.push_back({f.name, f.path, f.line});
-    return out;
-  }
+  std::vector<DebugFrame> frames() override { return session_.frames(); }
 
   std::vector<DebugVar> variables(size_t frame_ix) override {
-    std::vector<DebugVar> out;
-    for (const auto& v : session_.variables(frame_ix))
-      out.push_back({v.name, v.value, v.type});
-    return out;
+    return session_.variables(frame_ix);
   }
 
   bool has_name(size_t frame_ix, const std::string& name) override {
@@ -461,29 +432,16 @@ class VmDebugEngine : public DebugEngine {
 
   bool evaluate(size_t frame_ix, const std::string& expr, DebugVar& out,
                 std::string& err) override {
-    VmDebugSession::Var v;
-    if (!session_.evaluate(frame_ix, expr, v, err)) return false;
-    out = {v.name, v.value, v.type};
-    return true;
+    return session_.evaluate(frame_ix, expr, out, err);
   }
 
   bool set_variable(size_t frame_ix, const std::string& name,
                     const std::string& expr, DebugVar& out,
                     std::string& err) override {
-    VmDebugSession::Var v;
-    if (!session_.set_variable(frame_ix, name, expr, v, err)) return false;
-    out = {v.name, v.value, v.type};
-    return true;
+    return session_.set_variable(frame_ix, name, expr, out, err);
   }
 
  private:
-  static std::string error_text(const CulebraError& e) {
-    std::string m = std::string(e.kind) + ": " + e.what();
-    if (e.line > 0 || e.col > 0)
-      m += " at " + std::to_string(e.line) + ":" + std::to_string(e.col) + ".";
-    return m + "\n";
-  }
-
   std::unique_ptr<vm::VmProgram> prog_;
   VmDebugSession session_;
 };

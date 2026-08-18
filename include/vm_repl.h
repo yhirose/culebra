@@ -4,7 +4,6 @@
 #include <stdlib_interp.h>  // stdlib_preamble_for / stdlib_preamble_triggers
 #include <vm.h>
 
-#include <deque>
 #include <memory>
 #include <set>
 #include <string>
@@ -22,19 +21,12 @@ namespace culebra {
 // Environment. Cells are not all that has to outlive a line, though: a
 // closure the line built reaches its bytecode through a descriptor pointing
 // into that line's program, so the programs — and the sources and ASTs they
-// were compiled from — are retained for the whole session too. Memory is
-// O(session length), the same bound repl_loop accepts for its sources.
+// were compiled from — are retained for the whole session too
+// (vm::RetainedRuns). Memory is O(session length), the same bound repl_loop
+// accepts for its sources.
 class VmRepl {
  public:
   explicit VmRepl(bool dump) : dump_(dump) {}
-
-  ~VmRepl() {
-    // The session is what owned every program's descriptor cells (see
-    // Exec::run_retained); hand them back now that no line can call into
-    // one again.
-    for (auto& r : retained_)
-      if (r.prog) vm::Exec::release_descs(*r.prog);
-  }
 
   int run(bool print_ast) {
     // The built-in traits (Eq's `neq`, Comparable's four comparisons, ...)
@@ -52,16 +44,6 @@ class VmRepl {
   }
 
  private:
-  // A program and everything its compilation read. Chunks intern their own
-  // string constants, but retaining the source and the AST beside the program
-  // is what makes "a line's closure still works three lines later" true
-  // without auditing every field for a borrowed token.
-  struct Retained {
-    std::shared_ptr<std::string> source;  // null for the traits preamble
-    std::shared_ptr<peg::Ast> ast;
-    std::unique_ptr<vm::VmProgram> prog;
-  };
-
   bool eval_line(const std::shared_ptr<peg::Ast>& ast,
                  std::vector<std::string>& msgs) {
     if (!run_stdlib_delta(*ast, msgs)) return false;
@@ -103,23 +85,15 @@ class VmRepl {
                 std::vector<std::string>& msgs) {
     try {
       auto prog = std::make_unique<vm::VmProgram>(
-          repl_line
-              ? vm::Compiler::compile_repl_line(*ast)
-              : vm::Compiler::compile_repl_prologue(*ast,
-                                                    /*builtin_traits=*/false));
+          repl_line ? vm::Compiler::compile_repl_line(*ast)
+                    : vm::Compiler::compile_repl_prologue(*ast));
       if (dump_ && repl_line) std::cout << vm::dump(*prog);
-      auto& kept = retained_.emplace_back(
-          Retained{std::move(source), ast, std::move(prog)});
+      auto& kept = retained_.keep(std::move(source), ast, std::move(prog));
       vm::Exec::run_retained(*kept.prog);
       return true;
     } catch (const CulebraError& e) {
-      // interpret()'s formatter, which is main.cc's: the structured position
-      // when the error carries one.
-      if (e.line > 0 || e.col > 0)
-        msgs.push_back(
-            std::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col));
-      else
-        msgs.push_back(std::format("{}: {}", e.kind, e.what()));
+      // interpret()'s formatter, which is main.cc's.
+      msgs.push_back(format_error_message(e));
     } catch (const std::exception& e) {
       // Exec::run has already turned an uncaught user throw into the
       // "uncaught: ..." line both other backends print for one.
@@ -145,7 +119,7 @@ class VmRepl {
   }
 
   bool dump_;
-  std::deque<Retained> retained_;
+  vm::RetainedRuns retained_;
   std::set<std::string, std::less<>> registered_;
 };
 

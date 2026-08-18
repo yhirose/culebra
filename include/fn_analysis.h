@@ -134,7 +134,7 @@ struct FnAnalysis {
     std::vector<const std::set<std::string>*> outer;
     std::set<std::string> my_locals;
     DeclKinds kinds;
-    collect_fn_locals(programAst, my_locals, outer, &kinds);
+    collect_fn_locals(programAst, my_locals, outer, kinds);
 
     FuncInfo info;
     DeclaredScope declared(*this, my_locals, kinds);
@@ -208,17 +208,25 @@ struct FnAnalysis {
     return false;
   }
 
+  // free_vars keeps first-seen order, so "add if absent" is a linear probe
+  // rather than a set. Returns whether the name was new.
+  static bool add_free_var(FuncInfo& info, const std::string& name) {
+    auto& fvs = info.free_vars;
+    if (std::find(fvs.begin(), fvs.end(), name) != fvs.end()) return false;
+    fvs.push_back(name);
+    return true;
+  }
+
   void collect_fn_locals(
       const peg::Ast& node, std::set<std::string>& locals,
       const std::vector<const std::set<std::string>*>& outer,
-      DeclKinds* kinds = nullptr) const {
+      DeclKinds& kinds) const {
     using namespace peg::udl;
     if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return;
     // Record which bucket a freshly collected local belongs to; see
     // DeclKinds. Called next to every `locals.insert` below.
     auto note = [&](std::string_view name, bool from_assign) {
-      if (!kinds) return;
-      (from_assign ? kinds->from_assign : kinds->scope_wide)
+      (from_assign ? kinds.from_assign : kinds.scope_wide)
           .insert(std::string(name));
     };
 
@@ -339,35 +347,20 @@ struct FnAnalysis {
       return;
     }
 
-    if (node.tag == "CLASS_DECL"_) {
-      // `class Name { ... }` binds `Name` in the enclosing scope.
-      // Method bodies are analyzed separately (visit_for_frees), not
-      // as part of the enclosing function's local set. Optional
-      // leading DECORATOR children precede the CLASS_HEAD. Strip
-      // Generic params so `class Pair<K, V>` binds under `Pair`.
+    if (node.tag == "CLASS_DECL"_ || node.tag == "ENUM_DECL"_ ||
+        node.tag == "MULTIFN_DECL"_) {
+      // `class/enum/fn Name ...` binds `Name` in the enclosing scope. The
+      // bodies are analyzed separately (visit_for_frees), enum variants are
+      // namespaced (`Name.Ok`), not bound bare, and leading DECORATOR
+      // children precede the head. Generic params are stripped so
+      // `class Pair<K, V>` binds under `Pair`.
       size_t i = 0;
       while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
         collect_fn_locals(*node.nodes[i], locals, outer, kinds);
         i++;
       }
-      auto& id = *node.nodes[i];
-      auto name = std::string(
-          culebra::parse_generic_head(id.token).outer);
-      locals.insert(name);
-      note(name, /*from_assign=*/false);
-      return;
-    }
-
-    if (node.tag == "ENUM_DECL"_) {
-      // `enum Name { ... }` binds `Name` in the enclosing scope, like
-      // CLASS_DECL. Variants are namespaced (`Name.Ok`), not bound bare.
-      size_t i = 0;
-      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-        collect_fn_locals(*node.nodes[i], locals, outer, kinds);
-        i++;
-      }
-      auto& id = *node.nodes[i];
-      auto name = std::string(culebra::parse_generic_head(id.token).outer);
+      auto name =
+          std::string(culebra::parse_generic_head(node.nodes[i]->token).outer);
       locals.insert(name);
       note(name, /*from_assign=*/false);
       return;
@@ -377,24 +370,6 @@ struct FnAnalysis {
       // trait declarations don't bind a name in the value env (they
       // live in culebra::trait_registry()). Default-method bodies are
       // analyzed in visit_for_frees, not here.
-      return;
-    }
-
-    if (node.tag == "MULTIFN_DECL"_) {
-      // `fn name(params) body` binds `name` in the enclosing scope.
-      // Body is analyzed separately by visit_for_frees as a nested
-      // function. Same shape as CLASS_DECL above; CLASS_HEAD's
-      // Generic params (`<T: Bound>`) are stripped from the binding.
-      size_t i = 0;
-      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-        collect_fn_locals(*node.nodes[i], locals, outer, kinds);
-        i++;
-      }
-      auto& id = *node.nodes[i];
-      auto name = std::string(
-          culebra::parse_generic_head(id.token).outer);
-      locals.insert(name);
-      note(name, /*from_assign=*/false);
       return;
     }
 
@@ -473,19 +448,13 @@ struct FnAnalysis {
     // capture a NO_SELF cell (emit_closure_build's fallback) so the read
     // guard still raises the interp's NameError.
     if (name == "self") {
-      if (std::find(info.free_vars.begin(), info.free_vars.end(), name) ==
-          info.free_vars.end()) {
-        info.free_vars.push_back(name);
-      }
+      add_free_var(info, name);
       return;
     }
     for (auto* scope : outer) {
       if (scope->contains(name)) {
-        if (std::find(info.free_vars.begin(), info.free_vars.end(), name) ==
-            info.free_vars.end()) {
-          info.free_vars.push_back(name);
-          if (optional) info.optional_free_vars.insert(name);
-        }
+        if (add_free_var(info, name) && optional)
+          info.optional_free_vars.insert(name);
         if (!optional) info.optional_free_vars.erase(name);
         return;
       }
@@ -540,19 +509,13 @@ struct FnAnalysis {
           // (An explicit `let self` shadow lands in my_locals and takes
           // the plain-local arm above instead.)
           info.captured_locals.insert(fv);
-          if (std::find(info.free_vars.begin(), info.free_vars.end(), fv) ==
-              info.free_vars.end()) {
-            info.free_vars.push_back(fv);
-          }
+          add_free_var(info, fv);
         } else {
-          if (std::find(info.free_vars.begin(), info.free_vars.end(), fv) ==
-              info.free_vars.end()) {
-            info.free_vars.push_back(fv);
-            // A candidate stays optional as it travels outward: no frame on
-            // the way holds a binding for it either.
-            if (nested_info.optional_free_vars.contains(fv)) {
-              info.optional_free_vars.insert(fv);
-            }
+          // A candidate stays optional as it travels outward: no frame on
+          // the way holds a binding for it either.
+          if (add_free_var(info, fv) &&
+              nested_info.optional_free_vars.contains(fv)) {
+            info.optional_free_vars.insert(fv);
           }
           if (!nested_info.optional_free_vars.contains(fv)) {
             info.optional_free_vars.erase(fv);
@@ -585,25 +548,16 @@ struct FnAnalysis {
       }
       // node.nodes[i] is CLASS_HEAD; methods follow.
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
-        const auto& method = *node.nodes[j];
-        bool has_body = false;
-        for (size_t k = 2; k < method.nodes.size(); k++) {
-          if (method.nodes[k]->tag == "TRAIT_BODY"_) {
-            has_body = true; break;
-          }
-        }
-        if (!has_body) continue;
+        // A signature-only method analyzes to {} (analyze_trait_method finds
+        // no TRAIT_BODY), so its propagate loop is a no-op.
         outer.push_back(&my_locals);
-        auto method_info = analyze_trait_method(method, outer);
+        auto method_info = analyze_trait_method(*node.nodes[j], outer);
         outer.pop_back();
         for (const auto& fv : method_info.free_vars) {
           if (my_locals.contains(fv)) {
             info.captured_locals.insert(fv);
           } else {
-            if (std::find(info.free_vars.begin(), info.free_vars.end(),
-                          fv) == info.free_vars.end()) {
-              info.free_vars.push_back(fv);
-            }
+            add_free_var(info, fv);
           }
         }
       }
@@ -635,10 +589,7 @@ struct FnAnalysis {
           if (my_locals.contains(fv)) {
             info.captured_locals.insert(fv);
           } else {
-            if (std::find(info.free_vars.begin(), info.free_vars.end(),
-                          fv) == info.free_vars.end()) {
-              info.free_vars.push_back(fv);
-            }
+            add_free_var(info, fv);
           }
         }
       };
@@ -686,13 +637,8 @@ struct FnAnalysis {
       // enclosing function's free list (nothing outside resolves it).
       if (has_instance_fields) {
         auto slot_name = field_init_slot_name(node);
-        for (auto* new_method_ast : new_method_asts) {
-          auto& new_info = func_info[new_method_ast];
-          if (std::find(new_info.free_vars.begin(), new_info.free_vars.end(),
-                        slot_name) == new_info.free_vars.end()) {
-            new_info.free_vars.push_back(slot_name);
-          }
-        }
+        for (auto* new_method_ast : new_method_asts)
+          add_free_var(func_info[new_method_ast], slot_name);
       }
       return;
     }
@@ -1096,7 +1042,7 @@ struct FnAnalysis {
       info.mf_self = std::string(mf_self_name);
       kinds.scope_wide.insert(info.mf_self);
     }
-    collect_fn_locals(body_ast, my_locals, outer, &kinds);
+    collect_fn_locals(body_ast, my_locals, outer, kinds);
 
     DeclaredScope declared(*this, my_locals, kinds);
     for (auto& p : params_ast.nodes) {
@@ -1191,7 +1137,7 @@ struct FnAnalysis {
       std::vector<const std::set<std::string>*>& outer) {
     std::set<std::string> my_locals;
     DeclKinds kinds;
-    collect_fn_locals(*deferAst.nodes[0], my_locals, outer, &kinds);
+    collect_fn_locals(*deferAst.nodes[0], my_locals, outer, kinds);
 
     FuncInfo info;
     DeclaredScope declared(*this, my_locals, kinds);

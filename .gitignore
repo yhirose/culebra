@@ -54,6 +54,7 @@ webview-app
 
 # examples/webview/desktop_app.cul's persisted visit counter
 examples/webview/visits.db
+/visits.db
 
 # macOS metadata
 .DS_Store
