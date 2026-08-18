@@ -4,7 +4,7 @@
 # range iterator for a Range, the built-in key iterator otherwise. The
 # counted-range fast path (`for i in a..b`) is basic_ranges.cul's subject;
 # the per-iteration bindings are forin_capture.cul and the teardown is
-# forin_control.cul (one chunk only has 256 slots, and a cursor run is
+# forin_control.cul (a chunk's slot budget is finite, and a cursor run is
 # twelve of them).
 
 # --- the container cursors ---

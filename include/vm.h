@@ -65,7 +65,18 @@
 
 namespace culebra::vm {
 
-inline constexpr int32_t kMaxSlots = 256;
+// The frame's slot budget. Nothing about the format needs one — an
+// instruction's operands are int32, and both engines size their register
+// window from the chunk's own `num_slots` — so this only bounds how much
+// machine stack one executor frame may claim (16 bytes a slot). It was 256
+// while the compiled lanes were opt-in, which measurement says is inside the
+// range real programs use: the leak battery's pattern file wants 382 and the
+// widest file in tests/ wants 253. A top level is what grows (its slots count
+// its bindings and temps) and a top level does not recurse, so the frames that
+// can approach this are the ones that only ever exist once; a recursive
+// function's own frame stays small. Exceeding it is still a clean VmError
+// rather than a stack overflow.
+inline constexpr int32_t kMaxSlots = 8192;
 // How deeply one frame may nest lexical scopes: each one takes an entry in
 // the frame's owned-mark array (Op::OwnedMark).
 inline constexpr int32_t kMaxOwnedDepth = 64;
@@ -3372,7 +3383,8 @@ class Compiler {
   int32_t alloc_raw(const peg::Ast& at, std::string name, bool named) {
     // Every binding this frame declares passes through here — the one gate
     // on the frame's slot budget.
-    if (next_slot_ >= kMaxSlots) reject(at, "frame larger than 256 slots");
+    if (next_slot_ >= kMaxSlots)
+      reject(at, std::format("frame larger than {} slots", kMaxSlots));
     int32_t s = next_slot_++;
     if (s >= static_cast<int32_t>(chunk_.slot_names.size()))
       chunk_.slot_names.resize(s + 1);
