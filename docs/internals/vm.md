@@ -1112,10 +1112,13 @@ bytecode — the front end itself is not where the second is going.
 
 ### 12.6 What Phase 3 still owes
 
-- **The optimizer's share.** The IR volume of §12.5 is gone (§12.8),
-  but `-O2` still costs 1.22× the AST path's on IR of the same size,
-  so the remaining second is a shape the optimizer works harder on
-  rather than a quantity of work handed to it.
+- **The cleanup that is left.** The IR volume of §12.5 is gone (§12.8),
+  and the residual `-O2` second is machine-code generation, not the
+  optimizer (§12.9): a quarter of the optimized module is still unwind
+  cleanup, against a tenth of the AST codegen's. Removing that excess
+  closes the gap outright, and it means one landing pad per scope
+  rather than one per abandoned-temporary set — which means unwind
+  slots the lowering owns instead of reused bytecode registers.
 - `--vm-llvm` is the same engine as `--jit` today, which makes it a
   duplicate flag rather than a lane. Retiring it means re-pointing
   every gate that names it.
@@ -1206,9 +1209,85 @@ one entry.
 
 The volume is gone: the lowering now emits marginally less IR than the
 codegen it replaced, and at `-O0` it is no longer slower to compile.
-What is left is the `-O2` row. It is a different problem from the one
-§12.5 identified — the optimizer spends 1.36 s where the AST path's
-spends 0.50 s on IR of the same size, with fewer basic blocks (33,206
-against 43,173), fewer allocas, fewer invokes and a lower Σn^1.9 over
-function sizes. None of the coarse shape metrics explain it, so the
-next step there is a pass-level profile rather than another count.
+What is left is the `-O2` row, and it is a different problem from the
+one §12.5 identified — §12.9 takes it apart.
+
+### 12.9 The rest of `-O2` is not the optimizer
+
+Subtracting the `-O0` compile from the `-O2` one and calling the
+difference "the optimizer" is wrong, and it sent §12.5 after the wrong
+half. Both runs also generate machine code, and they generate it from
+different IR: `-O0` hands the codegen the module as emitted, `-O2`
+hands it a module a third the size. The difference is optimizer time
+*minus* whatever the codegen saves on smaller input, and those two move
+independently.
+
+Run them apart instead. The JIT's pipeline is
+`buildPerModuleDefaultPipeline(O2)`, which is what `opt
+-passes='default<O2>'` runs, so the same `-O0` module each binary emits
+can be pushed through `opt` and then `llc` outside culebra
+(`tests/test_core.cul`, wall clock):
+
+| | master (AST) | branch (bytecode) | |
+|---|---|---|---|
+| `opt -O2` | 1.48 s | 1.58 s | +7% |
+| `llc` on the `-O0` IR | 3.13 s | 2.81 s | branch cheaper |
+| `llc` on the `-O2` IR | 1.76 s | **2.36 s** | **+34%** |
+| opt + llc at `-O2` | 3.24 s | 3.94 s | 1.22× |
+
+The last row is culebra's own 3.56 s against 4.35 s, same ratio, and
+the `-O0` row is culebra's own 3.06 s against 2.99 s — the branch
+really is cheaper there. **The optimizer was never the problem: it
+costs 7% more. Machine-code generation costs 34% more.**
+
+Why: codegen is superlinear in function size, and the two modules
+divide the same work differently.
+
+| after `-O2` | master | branch |
+|---|---|---|
+| instructions | 95,925 | 102,699 |
+| functions | 199 | 148 |
+| Σ n^1.9 over function sizes | 1.393e8 | **1.838e8 (1.32×)** |
+
+1.32× predicted against 1.34× measured. The exponent is the one
+[the test splits] already established for this codebase's compile
+times, so the fit is not a coincidence — it is the same law seen from
+the other end.
+
+Two things follow, and they point opposite ways. The branch's smaller
+function count is not a defect: the AST codegen was **duplicating**
+callback bodies. `xs.map(fn (x) { … }).filter(fn (x) { … }).sum()`
+makes master emit four copies of each lambda — one per dispatch arm —
+where the lowering emits one chunk each (15 functions against 9 on that
+line alone). Deduplicating is right, and it is why the branch's
+non-cleanup IR is 9,379 instructions *smaller* after `-O2`.
+
+What is left is cleanup, again, and §12.8 did not finish it:
+
+| after `-O2` | master | branch |
+|---|---|---|
+| cleanup instructions | 8,826 (9.2%) | **24,979 (24.3%)** |
+
+The 16,153-instruction excess is more than the 6,774 the branch is
+larger overall. Scale the branch's functions down by removing it and
+Σ n^1.9 falls by a factor of 0.73, which puts `llc` at 1.72 s against
+master's 1.76 s — **the whole remaining gap is that cleanup**.
+
+Closing it means fewer landing pads, not shorter ones: §12.8 shortened
+each pad, but there is still one per distinct set of abandoned
+temporaries where master had one per scope. Master could afford that
+because its pending temporaries lived in dedicated slots
+(`build.guard`) that nothing else ever reuses, so one pad draining them
+covers every site in the scope. The lowering's temporaries are
+bytecode registers, and a register is reused across generations — the
+executor's own unwind says so, in the comment explaining why a
+temporary nils its slot ("safe on an index a later generation turned
+into a cell"). Releasing a scope's union of temp slots would therefore
+release a later generation's *cell* with a plain release. So the
+per-site sets are load-bearing, and collapsing them means giving the
+lowering unwind slots of its own rather than reusing the register file
+— a change to the temp discipline both VM lanes share, which is a
+larger piece of work than §12.8 was.
+
+[the test splits]: the ~N^1.9 in single-function size that made the
+JIT-lane test files worth splitting.
