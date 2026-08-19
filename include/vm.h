@@ -42,6 +42,7 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
+#include <builtin_signatures.h>
 #include <fn_analysis.h>
 #include <jit.h>
 #include <parser.h>
@@ -659,7 +660,7 @@ enum class Op : uint8_t {
   BArity,        // the diagnostic a built-in method name owes when the table
                  // that resolves it on regs[a] would not bind this argument
                  // shape — one arm per receiver, baked from the interp's own
-                 // parameter lists (JIT::builtin_call_verdict). Falls through
+                 // parameter lists (builtin_call_verdict). Falls through
                  // for a receiver that does not resolve the name at all: the
                  // property read after it answers that one.
   LazyNsReg,     // record regs[b] as the builder of the lazy stdlib module
@@ -6665,11 +6666,11 @@ class Compiler {
   // consults, so the lanes cannot disagree about which receiver owns a name.
   static int32_t has_prop_gate_operand(std::string_view name) {
     int32_t m = 0;
-    for (auto& [t, tbl] : JIT::builtin_value_tables())
+    for (auto& [t, tbl] : builtin_value_tables())
       if (tbl->count(name)) m |= bmeth_tag_bit(t);
     if (JIT::fn_introspection_name(name)) m |= bmeth_tag_bit(TAG_FUNC);
     // A dict builtin resolves on every Object, whatever its shape.
-    if (JIT::dict_builtin_table()->count(name)) m |= bmeth_tag_bit(TAG_OBJECT);
+    if (dict_builtin_table()->count(name)) m |= bmeth_tag_bit(TAG_OBJECT);
     if (culebra::iterator_builtins().count(name)) m |= kHasPropIterBit;
     return m;
   }
@@ -6680,37 +6681,6 @@ class Compiler {
     bool subsumes = spec && spec->subsumes_global;
     if (is_stdlib_global(name) && !subsumes) return UfcsCand::Global;
     return UfcsCand::None;
-  }
-
-
-  // Whether every keyword this call supplies is one a builtin `method` can
-  // take — i.e. names a keyword-only parameter (`sort_by(f, reverse: true)`),
-  // the sole keyword shape built-ins accept (builtin_method_accepts_keyword).
-  // A `**` splat names nothing statically, so it never qualifies. The
-  // receiver's type is a run-time fact, so this over-approximates across the
-  // tables, exactly like emit_builtin_arity_check's own lookup; a receiver
-  // that turns out not to resolve the name took the UFCS arm before this.
-  static bool builtin_method_keywords_bindable(const std::string& method,
-                                               const peg::Ast& args_ast) {
-    auto scan = culebra::scan_arg_list(args_ast);
-    if (!scan.splats.empty()) return false;
-    if (scan.explicit_kwargs.empty()) return true;
-    // The parameter lists depend only on `method`; look each table up once.
-    std::vector<const std::vector<FunctionValue::Parameter>*> params;
-    auto note = [&](const std::vector<FunctionValue::Parameter>* p) {
-      if (p) params.push_back(p);
-    };
-    note(JIT::builtin_method_params(*JIT::dict_builtin_table(), method));
-    note(JIT::builtin_method_params(iterator_builtins(), method));
-    for (auto& [tag, table] : JIT::builtin_value_tables())
-      note(JIT::builtin_method_params(*table, method));
-    for (const auto& [kw, _val] : scan.explicit_kwargs) {
-      bool ok = std::any_of(params.begin(), params.end(), [&](const auto* p) {
-        return culebra::builtin_method_accepts_keyword(*p, kw);
-      });
-      if (!ok) return false;
-    }
-    return true;
   }
 
   // The check the JIT emits in front of an unresolved built-in method call,
@@ -6726,10 +6696,10 @@ class Compiler {
     auto argc = static_cast<int64_t>(args.nodes.size());
     std::vector<Chunk::ArityArm> arms;
     auto take = [&](const auto& tbl, int8_t tag) {
-      auto v = JIT::builtin_call_verdict(tbl, method, scan, argc);
-      if (v.kind == JIT::BuiltinVerdict::Kind::Valid)
+      auto v = builtin_call_verdict(tbl, method, scan, argc);
+      if (v.kind == BuiltinVerdict::Kind::Valid)
         reject(post, std::format("built-in method '{}'", method));
-      if (v.kind != JIT::BuiltinVerdict::Kind::Error) return false;
+      if (v.kind != BuiltinVerdict::Kind::Error) return false;
       // Rich errors anchor at the call's callee (a parenthesized receiver
       // puts the CALL node on the `(`, which is not where the interp
       // reports), count-based ones at the ARGUMENTS node.
@@ -6741,13 +6711,13 @@ class Compiler {
                                                            : args.column)});
       return true;
     };
-    for (auto& [t, tbl] : JIT::builtin_value_tables()) take(*tbl, t);
+    for (auto& [t, tbl] : builtin_value_tables()) take(*tbl, t);
     // Any Object resolves the dict table; only an iterator-shaped one reaches
     // the iterator table — eval_property's order, so at most one applies. Both
     // stand behind the receiver's OWN members, which win over either table
     // (`range(0, 2)` carries its own `iter`, and takes no diagnostic from the
     // dict one) — the arm carries the name so the check can ask.
-    if (!take(*JIT::dict_builtin_table(), Chunk::kArityObj))
+    if (!take(*dict_builtin_table(), Chunk::kArityObj))
       take(culebra::iterator_builtins(), Chunk::kArityIter);
     if (arms.empty()) return;
     StampGuard pos(*this, args);
@@ -6789,13 +6759,13 @@ class Compiler {
                       kconst_str(method), line, col});
     };
     auto has_name = [&](const auto& tbl) {
-      return JIT::builtin_method_params(tbl, method) != nullptr;
+      return builtin_method_params(tbl, method) != nullptr;
     };
-    for (auto& [t, tbl] : JIT::builtin_value_tables())
+    for (auto& [t, tbl] : builtin_value_tables())
       if (has_name(*tbl)) add(t);
     // eval_property's order: any Object resolves the dict table, and only an
     // iterator-shaped one reaches the iterator table.
-    if (has_name(*JIT::dict_builtin_table()))
+    if (has_name(*dict_builtin_table()))
       add(Chunk::kArityObj);
     else if (has_name(culebra::iterator_builtins()))
       add(Chunk::kArityIter);
