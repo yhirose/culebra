@@ -368,8 +368,11 @@ inline void throw_if_too_many_positionals(int64_t cap, int64_t n_pos,
 // two backends overflow the C stack at wildly different depths (interp
 // ~4.7KB of eval frames per call, JIT ~350B) and die as an uncatchable
 // SIGSEGV. 1000 matches CPython's default; the deepest recursion in the
-// test corpus is ~614, and 1000 interp frames need ~4.7MB — inside every
-// thread stack the runtime guarantees (see isolate.h's spawn helper).
+// test corpus is ~614. 1000 interp frames measure 6.6MB (gcc-14 -O3+LTO,
+// x86-64) and more under clang, so every thread that runs user code is
+// given 16MB: SizedThread below sizes the ones it spawns, and CMakeLists
+// reserves it at link time for the main thread, which neither can size
+// (macOS -stack_size, Windows PE reserve).
 inline constexpr int64_t kCulebraRecursionLimit = 1000;
 inline thread_local int64_t _culebra_call_depth = 0;
 
@@ -518,16 +521,16 @@ class Trashcan {
 };
 
 // A thread for running culebra code: std::thread's join surface, but with
-// an explicit 8MB stack on POSIX. macOS gives non-main pthreads 512KB by
+// an explicit 16MB stack on POSIX. macOS gives non-main pthreads 512KB by
 // default — barely 100 interp eval frames — while the recursion limit above
-// assumes every thread executing user code has the main thread's headroom.
-// Windows threads inherit the PE stack reserve (set at link time), so the
-// std::thread arm is already right there; Linux pthreads default to the
-// rlimit (8MB) and the explicit size just pins that down. IO-only threads
-// (pipe drains, accept loops) stay plain std::thread.
+// needs 6.6MB of headroom and more from a wider-framed compiler. Windows
+// threads inherit the PE stack reserve (set at link time to the same 16MB),
+// so the std::thread arm is already right there; Linux pthreads default to
+// the rlimit (8MB), which the explicit size lifts. IO-only threads (pipe
+// drains, accept loops) stay plain std::thread.
 class SizedThread {
  public:
-  static constexpr size_t kStackBytes = 8ull << 20;
+  static constexpr size_t kStackBytes = 16ull << 20;
 
   SizedThread() = default;
 

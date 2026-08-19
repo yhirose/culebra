@@ -151,6 +151,18 @@ if(WIN32)
   # `culebra build` passes the same flag to AOT links (src/main.cc).
   add_link_options(-Wl,--stack,16777216)
 endif()
+if(APPLE)
+  # The same 16MB, for the one thread SizedThread cannot size: macOS fixes the
+  # main thread's stack at exec time from the LC_MAIN header, and its 8MB
+  # default is under what the interpreter needs. A 1000-frame sweep
+  # (kCulebraRecursionLimit) measures 6.6MB built with gcc-14 -O3+LTO and
+  # overruns 8MB built with clang, which is why the macOS CI lane crashed in
+  # tests/test_recursion_limit.cul while every Linux lane passed. Only the main
+  # thread reads this; spawned threads carry SizedThread's own size, and AOT
+  # binaries need neither (compiled frames are ~350B — the same sweep runs in
+  # under 1MB).
+  add_link_options(-Wl,-stack_size,0x1000000)
+endif()
 find_package(ZLIB REQUIRED)
 message(STATUS "Found ZLIB ${ZLIB_VERSION_STRING}")
 include_directories(${ZLIB_INCLUDE_DIRS})
