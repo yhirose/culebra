@@ -184,6 +184,52 @@ fn noisy() {
 }
 println(try { noisy() } catch e { 'caught ' + e })
 
+# --- Construction interrupted mid-way ------------------------------------
+# A throw while a call's argument list / a container literal is still being
+# built releases the temporaries already evaluated. The release order must
+# not depend on how the host STL tears down the staging buffer (libstdc++
+# destroys a vector forward, libc++ backward) — the three lanes must agree.
+println('--- args interrupted')
+fn bad() { throw 'x' }
+fn takes3(a, b, c) { nil }
+println(try { takes3(R.new(70), R.new(71), bad()) ; 0 } catch e { 'caught' })
+
+println('--- tuple interrupted')
+fn tuple_interrupted() {
+  let t = (R.new(72), R.new(73), bad())
+}
+println(try { tuple_interrupted() ; 0 } catch e { 'caught' })
+
+println('--- dict interrupted')
+fn dict_interrupted() {
+  let d = {'a': R.new(74), 'b': R.new(75), 'c': bad()}
+}
+println(try { dict_interrupted() ; 0 } catch e { 'caught' })
+
+# --- Non-string-keyed props and Set members --------------------------------
+# These live in stores of their own (the non-string prop table, the Set's
+# member vector) — their teardown order must be as pinned as the others'.
+println('--- non-string keys')
+fn nsk() {
+  let d = {10: R.new(76), 20: R.new(77), 30: R.new(78)}
+  throw 'x'
+}
+println(try { nsk() ; 0 } catch e { 'caught' })
+
+println('--- set members')
+class H {
+  n = 0
+  new(k) { self.n = k }
+  drop() { println('drop ' + to_string(self.n)) }
+  hash() { self.n }
+  eq(other) { self.n == other.n }
+}
+fn setdrop() {
+  let s = {H.new(85), H.new(86), H.new(87)}
+  throw 'x'
+}
+println(try { setdrop() ; 0 } catch e { 'caught' })
+
 # --- Churn: the ladder runs on every one of these ------------------------
 # A counting drop rather than a printing one — the interest is that the
 # releases happen every time, not the transcript.

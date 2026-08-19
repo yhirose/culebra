@@ -155,6 +155,25 @@ try {
   print("caught\n")
 }
 
+# 8b'. the same shape with the names' alphabetical order REVERSED from their
+# declaration order. A closure literal in the scope routes the interp's
+# finalization through the environment's own teardown, and its dictionary is
+# name-ordered — the release must still run in reverse DECLARATION order, not
+# whatever node order the names hash the tree into (this diverged per-STL:
+# libstdc++ and Apple's libc++ tore the tree down differently).
+fn captured_order_rev() {
+  let z = Res.new(80)
+  let a = Res.new(81)
+  print((fn () { a.id })().to_string() + "\n")
+  throw "x"
+}
+print("== captured order, names reversed ==\n")
+try {
+  captured_order_rev()
+} catch e {
+  print("caught\n")
+}
+
 # 8c. a `drop` body that throws is logged and swallowed, and the error already
 # unwinding survives it — the compiled backends carry the thrown payload in a
 # global the body's own throw would otherwise overwrite.

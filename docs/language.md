@@ -4060,9 +4060,9 @@ File.open = fn (path) {
 **Cascade**: when a parent's `drop` returns, its properties map is
 cleared, which decrements each child's reference count. Children
 whose count reaches zero have their own `drop` invoked, and so on.
-Parent-before-child order is guaranteed; sibling order among a
-single parent's properties is **not specified** (currently follows
-`std::map` destruction order but that is an implementation detail).
+Parent-before-child order is guaranteed, and siblings under a single
+parent release in property-declaration order (Array/Tuple/Set
+elements in element order) — the same on every backend and platform.
 
 **Exceptions**: an exception thrown from `drop` is logged to stderr
 and swallowed so that the rest of the cleanup cascade proceeds.

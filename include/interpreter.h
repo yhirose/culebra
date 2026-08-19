@@ -909,9 +909,7 @@ struct ObjectValue {
 };
 
 struct ArrayValue : public ObjectValue {
-  ArrayValue() : values(std::make_shared<std::vector<Value>>()) {
-    interp_gc().track_vec(values);
-  }
+  ArrayValue();  // defined after ValueVec (below Value) is complete
   std::unordered_map<std::string_view, Value>& builtins() override;
 
   std::shared_ptr<std::vector<Value>> values;
@@ -921,13 +919,8 @@ struct ArrayValue : public ObjectValue {
 struct TupleValue {
   std::shared_ptr<std::vector<Value>> elements;
 
-  TupleValue() : elements(std::make_shared<std::vector<Value>>()) {
-    interp_gc().track_vec(elements);
-  }
-  explicit TupleValue(std::vector<Value> v)
-      : elements(std::make_shared<std::vector<Value>>(std::move(v))) {
-    interp_gc().track_vec(elements);
-  }
+  TupleValue();  // both defined after ValueVec (below Value) is complete
+  explicit TupleValue(std::vector<Value> v);
 };
 
 // Defined after ValueHash/ValueEq are complete (see below).
@@ -1464,9 +1457,49 @@ struct Value {
   std::any v;
 };
 
+// The element store behind Array/Tuple/Set (and a prop map's key_order):
+// releases its elements FRONT-TO-BACK on destruction. The standard leaves a
+// vector's element-destruction order unspecified and the two big STLs
+// disagree (libstdc++ destroys forward, libc++ backward); the order is
+// observable through `drop`, and the JIT/VM container cascade releases
+// elements in index order. Always created via make_shared<ValueVec> and
+// handed around as shared_ptr<std::vector<Value>> — the control block's
+// deleter keeps the derived destructor, so no virtual dtor is needed.
+// Defined here, after Value: deriving from std::vector<Value> instantiates
+// the class template, which libc++ rejects for an incomplete element type.
+struct ValueVec : std::vector<Value> {
+  ValueVec() = default;
+  explicit ValueVec(std::vector<Value>&& v)
+      : std::vector<Value>(std::move(v)) {}
+  explicit ValueVec(const std::vector<Value>& v) : std::vector<Value>(v) {}
+  // Emptying the elements here makes the base vector's own teardown
+  // order-inert on every STL.
+  ~ValueVec() {
+    for (auto& v : *this) v = Value();
+  }
+};
+
+inline ArrayValue::ArrayValue() : values(std::make_shared<ValueVec>()) {
+  interp_gc().track_vec(values);
+}
+
+inline TupleValue::TupleValue() : elements(std::make_shared<ValueVec>()) {
+  interp_gc().track_vec(elements);
+}
+inline TupleValue::TupleValue(std::vector<Value> v)
+    : elements(std::make_shared<ValueVec>(std::move(v))) {
+  interp_gc().track_vec(elements);
+}
+
 struct Symbol {
   Value val;
   bool mut;
+  // Declaration sequence within the owning Environment (assigned by
+  // initialize, re-assigned on redeclaration). ~Environment releases
+  // bindings in descending rank so the finalization cascade runs in
+  // reverse declaration order — the JIT/VM slot-release order — instead
+  // of std::map's teardown order. Unused for object property maps.
+  uint32_t rank = 0;
 };
 
 // Hash + equality for Value as a dictionary key. Numerically-equal
@@ -1575,7 +1608,7 @@ struct SetValue {
   std::shared_ptr<std::unordered_map<Value, size_t, ValueHash, ValueEq>> index;
 
   SetValue()
-      : members(std::make_shared<std::vector<Value>>()),
+      : members(std::make_shared<ValueVec>()),
         index(std::make_shared<
               std::unordered_map<Value, size_t, ValueHash, ValueEq>>()) {
     interp_gc().track_set(members, index);
@@ -1685,6 +1718,21 @@ struct OrderedSymbolMap {
   // pays no extra refcount, and a raw-map holder — _call_drop_if_present, the
   // owned stack — can still reach the methods.
   std::shared_ptr<OrderedSymbolMap> proto;
+
+  // Release the entries front-to-back (field declaration order — the
+  // JIT/VM object cascade's order) before the entries_ vector's own
+  // teardown, whose element order is STL-specific. Values only: the
+  // canonical key strings in index_ hold no finalizable state. The
+  // declared destructor would otherwise suppress the implicit
+  // copies/moves — restore them.
+  ~OrderedSymbolMap() {
+    for (auto& e : entries_) e.second.val = Value();
+  }
+  OrderedSymbolMap() = default;
+  OrderedSymbolMap(const OrderedSymbolMap&) = default;
+  OrderedSymbolMap& operator=(const OrderedSymbolMap&) = default;
+  OrderedSymbolMap(OrderedSymbolMap&&) = default;
+  OrderedSymbolMap& operator=(OrderedSymbolMap&&) = default;
 
   bool contains(std::string_view k) const { return index_.contains(k); }
 
@@ -1946,7 +1994,7 @@ inline ObjectValue::ObjectValue() {
   // mutate a per-copy shared_ptr field and never propagate.
   non_string_props = std::make_shared<
       std::unordered_map<Value, Symbol, ValueHash, ValueEq>>();
-  key_order = std::make_shared<std::vector<Value>>();
+  key_order = std::make_shared<ValueVec>();
   // Register the prop map (+ its sidecars) as a cycle-collector node so a
   // pure Object↔Object cycle is reclaimed (GAP2). Fresh map, tracked exactly
   // once (§3b). A TensorValue's base map is tracked too but is inert — a
@@ -2069,11 +2117,62 @@ struct Environment : std::enable_shared_from_this<Environment> {
   bool program_scope = false;
 
   ~Environment() {
-    if (!dictionary.empty() && program_scope) {
+    if (dictionary.empty()) return;
+    if (program_scope) {
       bool saved = std::exchange(_drop_suppressed(), true);
       dictionary.clear();
       _drop_suppressed() = saved;
+      return;
     }
+    // Release the bindings whose death a `drop` could observe in reverse
+    // declaration order (the JIT/VM slot-release order). Leaving them to
+    // the dictionary's own teardown runs the cascade in std::map's node
+    // order — a function of the NAMES' alphabetical tree shape, and
+    // STL-specific. Only Object/container/closure bindings can reach a
+    // finalizer; with fewer than two, no relative order is observable and
+    // the plain teardown is fine.
+    Symbol* observable[2];
+    size_t n = 0;
+    for (auto& [_, sym] : dictionary) {
+      switch (sym.val.type) {
+        case Value::Object:
+        case Value::Array:
+        case Value::Function:
+        case Value::Tuple:
+        case Value::Set:
+          if (n < 2) observable[n] = &sym;
+          n++;
+          break;
+        default:
+          break;
+      }
+    }
+    if (n < 2) return;
+    if (n == 2) {
+      if (observable[0]->rank < observable[1]->rank)
+        std::swap(observable[0], observable[1]);
+      observable[0]->val = Value();
+      observable[1]->val = Value();
+      return;
+    }
+    std::vector<Symbol*> syms;
+    syms.reserve(n);
+    for (auto& [_, sym] : dictionary) {
+      switch (sym.val.type) {
+        case Value::Object:
+        case Value::Array:
+        case Value::Function:
+        case Value::Tuple:
+        case Value::Set:
+          syms.push_back(&sym);
+          break;
+        default:
+          break;
+      }
+    }
+    std::sort(syms.begin(), syms.end(),
+              [](const Symbol* a, const Symbol* b) { return a->rank > b->rank; });
+    for (auto* s : syms) s->val = Value();
   }
 
   void append_outer(std::shared_ptr<Environment> outer) {
@@ -2170,9 +2269,9 @@ struct Environment : std::enable_shared_from_this<Environment> {
   void initialize(std::string_view s, Value val, bool mut) {
     if (is_sink_name(s)) return;
     if (auto it = dictionary.find(s); it != dictionary.end()) {
-      it->second = Symbol{std::move(val), mut};
+      it->second = Symbol{std::move(val), mut, decl_seq_++};
     } else {
-      dictionary.emplace(std::string(s), Symbol{std::move(val), mut});
+      dictionary.emplace(std::string(s), Symbol{std::move(val), mut, decl_seq_++});
     }
   }
 
@@ -2187,6 +2286,11 @@ struct Environment : std::enable_shared_from_this<Environment> {
   // every callsite keep its `string_view` argument shape — only
   // new-entry insertion in `initialize` allocates.
   std::map<std::string, Symbol, std::less<>> dictionary;
+  // Next Symbol::rank — see Symbol. uint32_t wraps only past 4G
+  // declarations in ONE scope (a REPL session's env is the only
+  // unbounded one, and wrapping there mis-orders finalizers, nothing
+  // worse).
+  uint32_t decl_seq_ = 0;
   bool is_function_frame = false;
   // Set once this env has been registered with InterpGC as a collectable
   // node (it became some closure's def_env). Dedupes repeat track_env calls.
@@ -3576,7 +3680,7 @@ inline Value _iter_over_grid(RangeBounds x_template, RangeBounds y_bounds) {
 // the indices).
 inline Value _iter_over_set(const Value& set) {
   return _iter_over_vector(
-      std::make_shared<std::vector<Value>>(*set.get<SetValue>().members));
+      std::make_shared<ValueVec>(*set.get<SetValue>().members));
 }
 
 // `(index, value)` tuple yielded by enumerate (on arrays and iterators).
@@ -7587,7 +7691,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       case "ARRAY"_:
         return eval_array(ast, env);
       case "TUPLE"_: {
-        std::vector<Value> elems;
+        // ValueVec, not vector: a throw mid-literal must release the
+        // staged elements in element order on every STL.
+        ValueVec elems;
         elems.reserve(ast.nodes.size());
         for (const auto& n : ast.nodes) elems.push_back(eval(*n, env));
         return Value(TupleValue(std::move(elems)));
@@ -10164,6 +10270,26 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     std::vector<std::pair<std::string_view, Value>> kwargs;
     std::vector<std::pair<size_t, size_t>> kwarg_locs;
     std::vector<Value> splats;
+    // A throw while the list is still being built — or after it, before
+    // binding completes — releases the evaluated arguments newest-first,
+    // the JIT/VM frame ladder's slot order, rather than whatever order
+    // the host STL tears the vectors down in (libstdc++ forward, libc++
+    // backward — observable through `drop`). Positional args precede any
+    // kwarg/splat in source order, so reversing per bucket, newest
+    // bucket first, is reverse evaluation order. The declared destructor
+    // would otherwise suppress the implicit moves — restore them.
+    ~CallArgs() {
+      for (auto it = splats.rbegin(); it != splats.rend(); ++it) *it = Value();
+      for (auto it = kwargs.rbegin(); it != kwargs.rend(); ++it)
+        it->second = Value();
+      for (auto it = positional.rbegin(); it != positional.rend(); ++it)
+        *it = Value();
+    }
+    CallArgs() = default;
+    CallArgs(CallArgs&&) = default;
+    CallArgs& operator=(CallArgs&&) = default;
+    CallArgs(const CallArgs&) = default;
+    CallArgs& operator=(const CallArgs&) = default;
   };
 
   // Walks an ARGUMENTS node (post-optimization, so it's the ARG_LIST
