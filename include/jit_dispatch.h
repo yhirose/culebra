@@ -1002,13 +1002,21 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
     case GC_TAG_OBJECT: {
       auto* o = static_cast<JitObject*>(obj);
       for (auto& e : o->slots) _gc_push_value(out, e.value);
-      if (o->key_order && o->non_string_props) {
-        for (const auto& k : *o->key_order) {
+      // Walk each sidecar it still has, independently — NOT the map
+      // through key_order. The release cascade tears key_order down
+      // before it releases the map's entries, so a collect fired from an
+      // entry's drop body mid-cascade would otherwise see no non-string
+      // children at all and condemn the not-yet-released ones (their
+      // finalize/sweep frees them under the cascade's feet — a
+      // nondeterministic early drop, then a slab-corrupting release).
+      // Marking is set-based, so pushing a key from both sidecars is
+      // harmless.
+      if (o->key_order)
+        for (const auto& k : *o->key_order) _gc_push_value(out, k);
+      if (o->non_string_props) {
+        for (const auto& [k, e] : *o->non_string_props) {
           _gc_push_value(out, k);
-          if (k.tag == TAG_STRING) continue;
-          auto it = o->non_string_props->find(k);
-          if (it != o->non_string_props->end())
-            _gc_push_value(out, it->second.value);
+          _gc_push_value(out, e.value);
         }
       }
       if (o->proto) out.push_back(o->proto);
