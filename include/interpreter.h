@@ -3908,7 +3908,7 @@ inline bool _invoke_user_eq(const Value& a, const Value& b) {
 // primitive `Value::operator<` decides (throwing for incomparable operands).
 // Mirrors compare_values' `<` branch so keyless sort()/sorted() order Paths and
 // other user types exactly like `a < b` — the interp twin of the JIT's
-// culebra_runtime_value_less.
+// culebra_runtime_value_less_borrow.
 inline Value _invoke_binary_method(const Value& receiver,
                                    std::string_view method_name,
                                    const Value& arg) {

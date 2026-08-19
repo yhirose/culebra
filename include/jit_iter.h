@@ -3019,9 +3019,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
 // Keyless natural-order sort (in place). Elements compare by the same rule as
 // `<`: `_value_less_borrow` honors an Object's __lt__/cmp (so a Path array
 // sorts) and throws for incomparable operands. It is the borrow-contract core
-// (no ref consumed), so the array's elements stay owned by `arr` — the public
-// `culebra_runtime_value_less` entry would release them on the type-error edge,
-// which is correct for codegen operand temps but would corrupt `arr` here.
+// (no ref consumed), so the array's elements stay owned by `arr` on the
+// type-error edge too.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort(
     JitArray* arr, bool reverse, int64_t line, int64_t col) {
   if (culebra::ordering_unobservable(arr->items, arr->items + arr->size,

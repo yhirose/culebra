@@ -109,345 +109,21 @@ class Compiler;
 // --- JIT compiler implementation ---
 
 struct JIT {
-  // Per-variable slot in a scope: either a stack-allocated value or a cell
-  // (heap-allocated box for closure capture).
-  struct VarSlot {
-    enum Kind { Stack, Cell };
-    Kind kind;
-    llvm::AllocaInst* alloca;  // Stack: holds Value. Cell: holds Cell pointer.
-    // True when the slot owns the +1 ref it holds — its value will be
-    // released on scope exit. False for borrowed views: capture cells
-    // (the closure object owns the cell) and any other slot whose ref
-    // count is managed elsewhere. Required to keep callers honest;
-    // every binding has a clear ownership story.
-    bool owned;
-    // True if declared via `let mut`. Reassigning a non-mut binding
-    // raises ImmutableError, matching the interp; forward-ref
-    // pre-allocated cells default to false and get updated when the
-    // eventual `let mut` lands.
-    bool mut = false;
-    // True for a forward-ref pre-allocated cell whose cell_new runs
-    // lazily (guarded) at each statement-list entry instead of
-    // unconditionally: an if branch shares the enclosing scope, so a
-    // pre-allocation there may never execute — readers must treat a
-    // still-null cell as "declaration never ran" (NameError, interp
-    // parity), and writers/captures materialize it first.
-    bool lazy = false;
-    // True while a forward-ref pre-allocated cell is still waiting for an
-    // implicit declaration (`x = ...` with no `let`/`mut`). That statement
-    // is the binding's declaration, so it must not be mut-checked against
-    // this placeholder — the flag clears when it lands.
-    bool awaits_implicit_decl = false;
-    // True for a Stack slot first declared inside an if/cond arm (see
-    // conditional_depth_): only one arm runs per call, so declare-vs-
-    // reassign can't be told apart from a sibling arm's own first touch
-    // at compile time. Holds a runtime sentinel (TAG_NO_SELF) until
-    // whichever arm actually runs replaces it. Never set for Cell slots
-    // (see pre_allocate_forward_refs).
-    bool runtime_decl = false;
-    // Runtime mut bit for a runtime_decl slot, null otherwise — a
-    // static `mut` above can't say "whichever arm ran, declared mut or
-    // not" when JIT compiles every arm once but only one ever executes.
-    llvm::AllocaInst* mut_alloca = nullptr;
-    // True for a callee-side capture of a lazy forward-ref cell (see
-    // FuncInfo::free_var_lazy): reads check the cell's value for the
-    // unbound sentinel and raise NameError, since the capture itself
-    // materialized the cell and the null-pointer read guard can no
-    // longer tell "declaration never ran". Never set on hot ordinary
-    // captures, so they pay nothing.
-    bool unbound_guard = false;
-    // Set on a lazy forward-ref cell that shadows a binding already
-    // visible where the pre-allocation lands. A declaration only takes
-    // effect from the statement that runs it, so until then the name
-    // still means that outer binding — the interp answers the read from
-    // the environment chain. Reads of the still-unbound cell therefore
-    // land here instead of raising NameError. `shadowed_builtin` says
-    // the same for a host global (`type_of`), which has no slot of its
-    // own.
-    std::shared_ptr<VarSlot> shadowed;
-    bool shadowed_builtin = false;
-  };
-
   // The front-end analysis (FuncInfo, the locals/free-var/EH-defer passes)
   // lives in fn_analysis.h, shared with the bytecode compiler
   // (docs/internals/vm.md §7); `analysis_` below holds this compilation's
   // instance and its accumulated results.
 
-  // Variable scoping: `slots` for lookup, `order` for LIFO release.
-  // `std::map` iterators are stable under try_emplace, so `order` can
-  // hold them directly — no second string copy and no per-release
-  // lookup.
-  struct Scope {
-    using Slots = std::map<std::string, VarSlot>;
-    Slots slots;
-    std::vector<Slots::iterator> order;
-    // Owned-stack watermark captured at scope entry (an SSA i64 loaded
-    // straight off the owned stack's hot fields — scope entry dominates
-    // every in-scope exit, so no alloca is needed). Consumed by the
-    // inline empty-region check at scope exit. See push_scope.
-    llvm::Value* owned_mark = nullptr;
-    // Defer-stack mark for a scope that contains its own defers (null
-    // otherwise). break/continue scan the open scopes above the loop body
-    // for the outermost non-null mark, so defers pending in a nested
-    // lexical scope run on the way out (interp unwinds scope by scope;
-    // the loop body's own mark alone would skip them).
-    llvm::Value* defer_mark = nullptr;
-    // `fn name`s already declared directly in this scope. A later
-    // same-scope overload appends to the dispatcher this scope's slot
-    // already holds; the first one mints a fresh dispatcher + table, so a
-    // same-named decl in another scope — or in another activation of this
-    // one — never bleeds into it. Mirrors the interp, where the table
-    // lives on the dispatcher value bound per scope frame (see
-    // eval_multifn_decl's has_own decision).
-    std::set<std::string> multifn_decls;
-  };
-
-  // Marks IR compiled while inside an if/cond arm body (compile_if /
-  // compile_cond): scoped so an early return out of compile() (a throw
-  // from deep inside the arm) still decrements via the destructor. See
-  // conditional_depth_ and VarSlot::runtime_decl.
-  struct ConditionalArmGuard {
-    JIT* jit;
-    explicit ConditionalArmGuard(JIT* j) : jit(j) { ++jit->conditional_depth_; }
-    ~ConditionalArmGuard() { --jit->conditional_depth_; }
-    ConditionalArmGuard(const ConditionalArmGuard&) = delete;
-    ConditionalArmGuard& operator=(const ConditionalArmGuard&) = delete;
-  };
-
-  // One rung of a frame's cleanup ladder — its throw-path teardown.
-  //
-  // A single fn-wide pad would collect every throwing call's unwind edge, and
-  // releasing the frame's slots there needs a PHI per slot per edge: a
-  // 200-statement body reached 1.4M PHI operands, and the optimizer plus the
-  // backend spent minutes on them (117s to compile, against 1.4s for the same
-  // statements at the top level, which had no pad). So each frame-scope owned
-  // binding gets a rung of its own instead, and a call unwinds to the rung for
-  // the bindings alive where it stands: rung k releases its slot, then falls
-  // into rung k-1, down to the base. A rung is only reachable from after its
-  // own binding's store, so the ladder needs no PHI for the slots at all. This
-  // is the shape Clang and Rust emit (a "drop ladder"); the cost is now linear
-  // in the frame's size. See open_/finish_frame_cleanup_ladder.
-  struct FrameCleanupRung {
-    llvm::BasicBlock* pad;  // landingpad: the unwind target for this rung
-    // Index into the frame scope's `order` of the slot this rung releases.
-    // SIZE_MAX for the base rung, which releases nothing — it covers the
-    // prologue, before the first owned binding exists.
-    size_t order_index;
-    // Widest unwind-temp window any edge into this rung can arrive with. The
-    // pool is armed from slot 0 up, so everything above this is nil here and
-    // the pad need not drain it (see release_unwind_temps).
-    size_t pool_live = 0;
-  };
-
-  // Active for-in protocol-loop iterator record (see iter_cleanup_stack_).
-  struct IterCleanup {
-    llvm::Value* iterAlloca;
-    llvm::Value* body_defer_mark = nullptr;
-    bool fill_pending = false;
-    // Whether a throwing dispose() on the `return` path is swallowed. docs
-    // §18.5 swallows one only while an exception is already unwinding, so a
-    // for-in lets it out (the interp's eval_for calls the propagating
-    // dispose() for `return` just as it does for `break`).
-    bool swallow_on_return = true;
-    // The for-in's own scope, whose slots own the iterator. A `return`
-    // disposes just before that scope releases, so the iteration's bindings
-    // (the loop variable and the body's locals, one scope further in) die
-    // first — the order every other exit path uses. SIZE_MAX for the inlined
-    // HOF loops, whose iterator lives in a bare alloca: they dispose ahead of
-    // the walk, as they always have.
-    size_t scope_index = SIZE_MAX;
-  };
-
  private:
   struct Owned;  // defined below (the +1 ownership handle)
 
  public:
-  // RAII snapshot of compiler per-function state. Entering a nested
-  // LLVM function body (compile_function / compile_defer) constructs
-  // one; the dtor (or an explicit `restore()` before the caller's
-  // closure-build) restores the outer context. Ctor resets all fields
-  // to safe defaults — outer's lpad, fn-mark, scopes, etc. are
-  // intentionally not inherited since they live in a different LLVM
-  // function. `restore()` is idempotent.
-  struct CompilerStateSaver {
-    JIT* jit;
-    llvm::BasicBlock* insert_block;
-    std::vector<Scope> scopes;
-    const FuncInfo* info;
-    llvm::Value* closure_arg;
-    llvm::Value* sret;
-    std::string_view return_type;
-    std::pair<llvm::Value*, llvm::Value*> return_pos;
-    llvm::BasicBlock* lpad;
-    // The cleanup ladder is per LLVM function: its rungs are blocks of the
-    // outer function, so a nested body must start (and finish) with its own.
-    std::vector<FrameCleanupRung> frame_ladder;
-    size_t frame_scope_depth;
-    llvm::BasicBlock* ladder_stand_in;
-    llvm::Value* fn_defer_mark;
-    llvm::Value* owned_hot;
-    llvm::Value* rec_depth_slot;
-    std::vector<IterCleanup> iter_cleanup;
-    // The unwind-temp window state is per LLVM function: the outer
-    // frame's live handles, slot pool and coverage belong to the outer
-    // function's IR and must not leak into a nested body's windows.
-    std::vector<Owned*> live_owned;
-    std::vector<llvm::Value*> unwind_temp_slots;
-    std::vector<llvm::Value*> unwind_covered;
-    bool emitting_unwind_cleanup;
-    // The nested body's cleanup pads need a slot in *their* entry block.
-    llvm::Value* exc_slot;
-    bool in_receiver_frame;
-    // A nested fn's own if/cond arms start counting from zero — the
-    // enclosing fn's still-open conditional context (if the nested fn
-    // literal is itself declared inside an if arm) says nothing about
-    // scoping inside the nested body.
-    size_t conditional_depth;
-
-    explicit CompilerStateSaver(JIT& j)
-        : jit(&j),
-          insert_block(j.builder_.GetInsertBlock()),
-          scopes(std::exchange(j.scopes_, {})),
-          info(std::exchange(j.current_info_, nullptr)),
-          closure_arg(std::exchange(j.current_closure_arg_, nullptr)),
-          sret(std::exchange(j.current_sret_, nullptr)),
-          return_type(std::exchange(j.current_return_type_, {})),
-          return_pos(std::exchange(j.current_return_pos_, {nullptr, nullptr})),
-          lpad(std::exchange(j.current_lpad_, nullptr)),
-          frame_ladder(std::exchange(j.frame_ladder_, {})),
-          frame_scope_depth(std::exchange(j.frame_scope_depth_, 0)),
-          ladder_stand_in(std::exchange(j.ladder_stand_in_, nullptr)),
-          fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)),
-          owned_hot(std::exchange(j.current_owned_hot_, nullptr)),
-          rec_depth_slot(std::exchange(j.current_rec_depth_slot_, nullptr)),
-          // A nested fn's `return` must not clean up an enclosing fn's for-in
-          // iterators (their allocas belong to the outer function).
-          iter_cleanup(std::exchange(j.iter_cleanup_stack_, {})),
-          live_owned(std::exchange(j.live_owned_, {})),
-          unwind_temp_slots(std::exchange(j.unwind_temp_slots_, {})),
-          unwind_covered(std::exchange(j.unwind_covered_, {})),
-          emitting_unwind_cleanup(
-              std::exchange(j.emitting_unwind_cleanup_, false)),
-          exc_slot(std::exchange(j.exc_slot_, nullptr)),
-          in_receiver_frame(std::exchange(j.in_receiver_frame_, false)),
-          conditional_depth(std::exchange(j.conditional_depth_, 0)) {}
-
-    void restore() {
-      if (!jit) return;
-      // Caller is expected to pop every scope it pushed; anything left
-      // behind signals a push/pop imbalance that would silently leak.
-      assert(jit->scopes_.empty() && "unbalanced push_scope/pop_scope");
-      // Every Owned created while compiling the nested body must be dead by
-      // its end — a survivor would deregister into the restored (outer)
-      // registry and corrupt it.
-      assert(jit->live_owned_.empty() && "Owned outlived its LLVM function");
-      // Every rung is either filled or erased by the body's own epilogue;
-      // a survivor would be an empty block left in the finished function.
-      assert(jit->frame_ladder_.empty() && "cleanup ladder outlived its fn");
-      jit->frame_ladder_ = std::move(frame_ladder);
-      jit->frame_scope_depth_ = frame_scope_depth;
-      jit->ladder_stand_in_ = ladder_stand_in;
-      jit->live_owned_ = std::move(live_owned);
-      jit->unwind_temp_slots_ = std::move(unwind_temp_slots);
-      jit->unwind_covered_ = std::move(unwind_covered);
-      jit->emitting_unwind_cleanup_ = emitting_unwind_cleanup;
-      jit->exc_slot_ = exc_slot;
-      jit->in_receiver_frame_ = in_receiver_frame;
-      jit->conditional_depth_ = conditional_depth;
-      jit->iter_cleanup_stack_ = std::move(iter_cleanup);
-      jit->current_owned_hot_ = owned_hot;
-      jit->current_fn_defer_mark_ = fn_defer_mark;
-      jit->current_rec_depth_slot_ = rec_depth_slot;
-      jit->current_lpad_ = lpad;
-      jit->current_return_type_ = return_type;
-      jit->current_return_pos_ = return_pos;
-      jit->current_closure_arg_ = closure_arg;
-      jit->current_sret_ = sret;
-      jit->current_info_ = info;
-      jit->scopes_ = std::move(scopes);
-      jit->builder_.SetInsertPoint(insert_block);
-      jit = nullptr;
-    }
-
-    ~CompilerStateSaver() { restore(); }
-
-    CompilerStateSaver(const CompilerStateSaver&) = delete;
-    CompilerStateSaver& operator=(const CompilerStateSaver&) = delete;
-    CompilerStateSaver(CompilerStateSaver&&) = delete;
-    CompilerStateSaver& operator=(CompilerStateSaver&&) = delete;
-  };
-
   // When inside a `try { ... }` region, points at the landingpad BB
   // that catches `CulebraException` for that region. Any call emitted
   // while this is non-null is emitted as `invoke` with this as the
   // unwind destination, so a user `throw` propagates back to the
   // nearest enclosing `try`. Nested try blocks save/restore.
-  // May also hold `ladder_stand_in_`, which is not a block anything can unwind
-  // to — resolve_lpad turns it into the frame ladder's current rung.
   llvm::BasicBlock* current_lpad_ = nullptr;
-
-  // Operand-ownership contract for the dispatch emitters. The AST path hands
-  // +1 operand temps and relies on the helpers' callee-cleans-on-throw; the
-  // bytecode VM's lowering (vm::Lowering) hands borrowed register loads and
-  // sets this so the emitters pick the `_borrow` helper twins — a try
-  // handler's release ladder is then the one releaser on the throw path.
-  bool vm_borrow_ops_ = false;
-
-  // The frame's throw-path teardown (see FrameCleanupRung), innermost last.
-  std::vector<FrameCleanupRung> frame_ladder_;
-  // scopes_.size() while the frame scope is the innermost one, so define_var
-  // can tell a frame binding (which grows the ladder) from a nested one.
-  size_t frame_scope_depth_ = 0;
-  // Stand-in for "unwind to the frame's cleanup ladder", held by current_lpad_
-  // instead of a concrete rung. Nested regions save and restore current_lpad_
-  // around their own pads, so a concrete rung would go stale the moment a
-  // binding inside such a region added one; the stand-in resolves to whichever
-  // rung is current at the point the unwind edge is finally emitted. Unwinding
-  // to a later rung is always safe — the extra slots are still zero-init on
-  // any path that reaches it, and releasing nil is a no-op — and it is what
-  // keeps a binding declared inside an `if` arm from being skipped.
-  llvm::BasicBlock* ladder_stand_in_ = nullptr;
-
-  // Concrete unwind destination for an lpad slot that may hold the stand-in.
-  // `pool_live` is how many unwind-temp slots this edge can arrive with still
-  // armed; the rung widens its drain to cover the worst edge it collects.
-  llvm::BasicBlock* resolve_lpad(llvm::BasicBlock* lpad, size_t pool_live) {
-    if (lpad && lpad == ladder_stand_in_) {
-      auto& rung = frame_ladder_.back();
-      rung.pool_live = std::max(rung.pool_live,
-                                std::min(pool_live, unwind_temp_slots_.size()));
-      return rung.pad;
-    }
-    return lpad;
-  }
-
-
-  // Targets for the innermost enclosing loop. `break` jumps to the
-  // break target (after the loop); `continue` jumps to the continue
-  // target (loop-header / increment). Loops push a frame on entry and
-  // pop on exit; nested loops stack correctly.
-  struct LoopBlocks {
-    llvm::BasicBlock* continue_target;
-    llvm::BasicBlock* break_target;
-    // Index into scopes_ of this loop's per-iteration body scope (the scope
-    // pushed just before the loop_stack_ entry). break/continue release the
-    // owned slots of every scope from the innermost open one down to this one
-    // (inclusive), mirroring the body's normal pop_scope — see
-    // emit_loop_scope_exit / GAP1.
-    size_t body_scope_index = 0;
-  };
-  std::vector<LoopBlocks> loop_stack_;
-
-  // Active for-in protocol-loop iterators, innermost last. Each holds the
-  // iterator slot a `return` inside the body must dispose before exiting the
-  // function (break/throw/natural exit are handled by the loop's own cleanup /
-  // landingpad; the release is the slot's own), plus that loop body's
-  // per-iteration defer mark so the `return` runs the body's defers *before*
-  // the dispose — interp order (eval_for runs run_deferred, then
-  // dispose_iter). The mark is filled by emit_for_body_with_owned_binding
-  // (which creates it) via fill_pending, since the push happens before the
-  // body is compiled.
-  std::vector<IterCleanup> iter_cleanup_stack_;
 
   // Unified call-site emitter: `invoke` if inside a try, else `call`.
   // All JIT-generated call sites (runtime functions, user functions,
@@ -465,8 +141,8 @@ struct JIT {
       auto armed = open_unwind_window();
       auto fn = builder_.GetInsertBlock()->getParent();
       auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
-      auto inv = builder_.CreateInvoke(
-          callee, contBB, resolve_lpad(current_lpad_, armed), args, name);
+      auto inv =
+          builder_.CreateInvoke(callee, contBB, current_lpad_, args, name);
       builder_.SetInsertPoint(contBB);
       close_unwind_window(armed);
       return inv;
@@ -564,13 +240,11 @@ struct JIT {
   //
   // If `outerLpad` is non-null the exception reaches that pad within the same
   // LLVM function; otherwise it propagates out to the caller.
-  void emit_handler_rethrow(llvm::BasicBlock* outerLpad,
-                            bool drained = false) {
+  void emit_handler_rethrow(llvm::BasicBlock* outerLpad) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto rethrowFn = module_->getOrInsertFunction(
         "__cxa_rethrow", builder_.getVoidTy());
     auto fn = builder_.GetInsertBlock()->getParent();
-    outerLpad = resolve_lpad(outerLpad, drained ? 0 : SIZE_MAX);
 
     // `__cxa_rethrow` negates the exception's handler count and restarts the
     // unwind; the ABI closes the rethrowing handler on the rethrow's own
@@ -752,7 +426,7 @@ struct JIT {
   void finish_construction_cleanup(llvm::BasicBlock* cleanupBB,
                                    llvm::ArrayRef<llvm::Value*> guards,
                                    llvm::BasicBlock* outerLpad) {
-    CleanupPad pad(*this, outerLpad, /*drained=*/true);
+    CleanupPad pad(*this, outerLpad);
     if (!pad.open(cleanupBB, "build.lpad")) return;
     // In-flight expression temporaries die first, then the partial
     // container — the same order as finish_scope_cleanup / the frame ladder.
@@ -1248,7 +922,7 @@ struct JIT {
     void (*declare_runtime)(JIT&);
     // True if `name` is provided by the extension (inspect/Math/IO/...).
     // Free-variable analysis uses this to skip names that don't live in
-    // user scopes_.
+    // user bindings.
     bool (*is_builtin_var)(const std::string& name);
   };
   // Inside a RuntimeScope: install into that Runtime (overrides the
@@ -1288,8 +962,6 @@ struct JIT {
   llvm::StructType* cellType_;     // {Value}
   llvm::StructType* closureType_;  // {ptr fn, i64 n, ptr captures}
 
-  std::vector<Scope> scopes_;
-
   // The shared front-end analysis (fn_analysis.h) and its results
   // (func_info / scope_has_defer), one instance per compilation.
   FnAnalysis analysis_{&is_builtin_var};
@@ -1314,13 +986,6 @@ struct JIT {
   // Compiling a body the language guarantees a receiver for: it folds
   // TAG_NO_SELF to nil on entry, so `self` reads there skip the guard.
   bool in_receiver_frame_ = false;
-
-  // > 0 while compiling an if/cond arm body (see ConditionalArmGuard):
-  // gates whether a brand-new bare-declared name gets a runtime_decl
-  // slot instead of an ordinary one. A counter, not a bool, so nested
-  // if-in-if composes without an inner if's exit clearing the outer's
-  // still-open conditional context.
-  size_t conditional_depth_ = 0;
 
   // Current AST position for error reporting
   size_t current_line_ = 0;
@@ -1383,8 +1048,8 @@ struct JIT {
   // --- Scope management ---
 
   // Stable address of the owned stack's hot fields, fetched once per
-  // function invocation (lazily, at the function's first push_scope —
-  // which dominates every later scope). Lets scope entry/exit read
+  // function invocation (lazily, at the first scope entry — which
+  // dominates every later scope). Lets scope entry/exit read
   // next_id / top_stamp with plain loads instead of runtime calls:
   // tight loop bodies (whose per-iteration scope is almost always an
   // empty region) pay ~3 inline instructions, not two calls.
@@ -1395,18 +1060,6 @@ struct JIT {
           {}, "owned.hot");
     }
     return current_owned_hot_;
-  }
-
-  void push_scope() {
-    scopes_.emplace_back();
-    // Capture the owned-stack watermark at scope entry (deterministic
-    // drop). Object creation is a runtime event, so
-    // every scope carries a mark: a plain load of the hot next_id.
-    auto i64Ty = builder_.getInt64Ty();
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto hot = builder_.CreateIntToPtr(owned_hot_ptr(), ptrTy, "owned.hot.p");
-    scopes_.back().owned_mark =
-        builder_.CreateLoad(i64Ty, hot, "owned.mark");  // next_id @ offset 0
   }
 
   // Inline empty-region fast path: only when an entry with id >= mark
@@ -1437,172 +1090,12 @@ struct JIT {
     builder_.SetInsertPoint(contBB);
   }
 
-  // Emit IR to release every owned binding in `scope` and zero the
-  // underlying allocas so a subsequent re-entry (loop iteration,
-  // recursive call) starts from a clean slate. Borrowed slots — the
-  // function's `fn` / `self` / params and capture cells — are
-  // skipped: their refcounts belong to the caller or the enclosing
-  // closure, not to the callee's frame.
-  //
-  // Releases in reverse declaration order (LIFO) so a later-declared
-  // binding is destroyed before an earlier one it may reference.
-  // Release one owned slot's current value at the builder's insertion point
-  // and zero the alloca (so a later read/release sees nil). A borrow slot
-  // (owned=false) or a still-zero-init alloca is a no-op. Shared by scope
-  // teardown and define_var's same-scope rebinding.
-  void release_slot_value(const VarSlot& slot) {
-    if (!slot.owned) return;
-    if (slot.kind == VarSlot::Stack) {
-      emit_value_release(builder_.CreateLoad(valueType_, slot.alloca));
-      if (slot.runtime_decl) {
-        // Re-arm to the unbound sentinel, not a generic zero/nil: a
-        // runtime_decl slot living in a loop body's per-iteration scope
-        // must look "never declared" again next pass, exactly like the
-        // interp's fresh Environment per call/iteration (see
-        // make_runtime_decl_stack_slot).
-        builder_.CreateStore(make_no_self(), slot.alloca);
-        builder_.CreateStore(builder_.getInt1(false), slot.mut_alloca);
-      } else {
-        builder_.CreateStore(
-            llvm::ConstantAggregateZero::get(valueType_), slot.alloca);
-      }
-    } else {
-      auto ptrTy = llvm::PointerType::get(ctx_, 0);
-      emit_cell_release(builder_.CreateLoad(ptrTy, slot.alloca));
-      builder_.CreateStore(llvm::ConstantPointerNull::get(ptrTy), slot.alloca);
-    }
-  }
-
-  void release_scope_slots(const Scope& scope) {
-    for (auto it = scope.order.rbegin(); it != scope.order.rend(); ++it) {
-      release_slot_value((*it)->second);
-    }
-  }
-
-
-
-
-
-
-  void pop_scope() {
-    if (!builder_.GetInsertBlock()->getTerminator()) {
-      release_scope_slots(scopes_.back());
-      // After the slot release, so non-escaped resources die through
-      // the ordinary refcount-0 path first (tombstoning their entries);
-      // the inline check resolves only the escaped/cyclic remainder.
-      emit_owned_scope_exit(scopes_.back().owned_mark);
-    }
-    scopes_.pop_back();
-  }
-
-
-
-
-
-  // Raw load (no retain) - for internal ownership transfer
-  llvm::Value* load_slot_raw(const VarSlot& slot, const std::string& name) {
-    if (slot.kind == VarSlot::Stack) {
-      return builder_.CreateLoad(valueType_, slot.alloca, name);
-    }
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto cellPtr = builder_.CreateLoad(ptrTy, slot.alloca, name + ".cellp");
-    auto valPtr = builder_.CreateStructGEP(cellType_, cellPtr, 1, name + ".vp");
-    return builder_.CreateLoad(valueType_, valPtr, name);
-  }
-
-  // Load a value from a slot with retain (+1 for caller). A lazy
-  // forward-ref cell that was never materialized (declaration's branch
-  // never ran) reads as the interp's NameError, not a null deref.
-  llvm::Value* load_slot(const VarSlot& slot, const std::string& name) {
-    if (slot.lazy && (slot.shadowed || slot.shadowed_builtin)) {
-      return load_shadowing_slot(slot, name);
-    }
-    emit_lazy_cell_read_guard(slot, name);
-    auto val = load_slot_raw(slot, name);
-    emit_unbound_value_guard(slot, val, name);
-    emit_no_self_read_guard(val, name);
-    emit_runtime_decl_read_guard(slot, val, name);
-    emit_value_retain(val);
-    return val;
-  }
-
-  // Read a forward-ref pre-allocation that shadows an outer binding (see
-  // VarSlot::shadowed). While the cell is missing or still holds the
-  // unbound sentinel the declaration has not run, so the name means the
-  // shadowed binding — what the interp's environment chain answers.
-  // Returns +1 on both paths.
-  llvm::Value* load_shadowing_slot(const VarSlot& slot,
-                                   const std::string& name) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto fn = builder_.GetInsertBlock()->getParent();
-    // The two arms join through an entry-block slot rather than a phi:
-    // only a `br` sits between the store and the load, so the `+1` never
-    // crosses a throw edge bare (and the ownership layer keeps its
-    // no-hand-built-%Value-phi rule).
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-    auto outSlot = entryB.CreateAlloca(valueType_, nullptr, "fwd.out");
-    auto outerBB = llvm::BasicBlock::Create(ctx_, "fwd.outer", fn);
-    auto liveBB = llvm::BasicBlock::Create(ctx_, "fwd.live", fn);
-    auto boundBB = llvm::BasicBlock::Create(ctx_, "fwd.bound", fn);
-    auto joinBB = llvm::BasicBlock::Create(ctx_, "fwd.join", fn);
-    auto cellPtr = builder_.CreateLoad(ptrTy, slot.alloca, "fwd.cellp");
-    builder_.CreateCondBr(
-        builder_.CreateICmpEQ(cellPtr, llvm::ConstantPointerNull::get(ptrTy),
-                              "fwd.isnull"),
-        outerBB, liveBB);
-
-    builder_.SetInsertPoint(liveBB);
-    auto val = load_slot_raw(slot, name);
-    builder_.CreateCondBr(
-        builder_.CreateICmpEQ(extract_tag(val), builder_.getInt8(TAG_NO_SELF),
-                              "fwd.unbound"),
-        outerBB, boundBB);
-
-    builder_.SetInsertPoint(boundBB);
-    emit_value_retain(val);
-    builder_.CreateStore(val, outSlot);
-    builder_.CreateBr(joinBB);
-
-    builder_.SetInsertPoint(outerBB);
-    builder_.CreateStore(slot.shadowed ? load_slot(*slot.shadowed, name)
-                                       : emit_builtin_var_get(name),
-                         outSlot);
-    builder_.CreateBr(joinBB);
-
-    builder_.SetInsertPoint(joinBB);
-    return builder_.CreateLoad(valueType_, outSlot, name);
-  }
-
-  // A runtime_decl slot (see VarSlot::runtime_decl) still holding the
-  // unbound sentinel means the if/cond arm that declares this name
-  // didn't run on this call — exactly the interp's NameError for a bare
-  // declare inside a branch that wasn't taken this time.
-  void emit_runtime_decl_read_guard(const VarSlot& slot, llvm::Value* val,
-                                    const std::string& name) {
-    if (!slot.runtime_decl) return;
-    auto absent = builder_.CreateICmpEQ(
-        extract_tag(val), builder_.getInt8(TAG_NO_SELF), "decl.absent");
-    emit_unbound_name_guard(absent, name, "decl");
-  }
-
-  // Store a value into a slot (does NOT retain/release — caller's responsibility).
-  void store_slot_raw(const VarSlot& slot, llvm::Value* val) {
-    if (slot.kind == VarSlot::Stack) {
-      builder_.CreateStore(val, slot.alloca);
-      return;
-    }
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto cellPtr = builder_.CreateLoad(ptrTy, slot.alloca);
-    auto valPtr = builder_.CreateStructGEP(cellType_, cellPtr, 1);
-    builder_.CreateStore(val, valPtr);
-  }
-
-  // Store with RC semantics: releases previous slot contents (after replacing).
-  // Caller's `val` ownership is absorbed into the slot.
-  void store_slot(const VarSlot& slot, llvm::Value* val) {
-    emit_lazy_cell_materialize(slot);
-    auto old = load_slot_raw(slot, "old");
-    store_slot_raw(slot, val);
+  // Store with RC semantics into a frame-owned Value slot: releases the
+  // previous contents (after replacing). Caller's `val` ownership is
+  // absorbed into the slot.
+  void store_slot(llvm::Value* slot, llvm::Value* val) {
+    auto old = builder_.CreateLoad(valueType_, slot, "old");
+    builder_.CreateStore(val, slot);
     emit_value_release(old);
   }
 
@@ -1834,8 +1327,8 @@ struct JIT {
   // the pool (release_unwind_temps). Coverage is complete by construction:
   // the only runtime events that can unwind are the calls emit_call emits.
   //
-  // live_owned_ is the registry of in-flight handles (per LLVM function;
-  // CompilerStateSaver swaps it), unwind_temp_slots_ the slot pool (slot i is
+  // live_owned_ is the registry of in-flight handles (per LLVM function),
+  // unwind_temp_slots_ the slot pool (slot i is
   // reused across calls — windows never overlap at runtime, a frame executes
   // one call at a time), and unwind_covered_ the values currently excluded
   // from windows because a callee-cleans contract names another
@@ -1925,14 +1418,11 @@ struct JIT {
   // expression's temporaries die as its eval frames unwind, ahead of any
   // enclosing block's defers.
   //
-  // `n` bounds how many slots this pad's edges can arrive with armed. A window
-  // fills the pool from slot 0 up and clears it again in the call's
-  // continuation, so above the widest window reaching here every slot is nil
-  // and its release is dead code. The whole pool is the safe default; a frame
-  // ladder rung knows its own bound (FrameCleanupRung::pool_live), which
-  // matters because the ladder repeats this per rung.
-  void release_unwind_temps(size_t n = SIZE_MAX) {
-    for (size_t i = 0; i < std::min(n, unwind_temp_slots_.size()); i++)
+  // A window fills the pool from slot 0 up and clears it again in the call's
+  // continuation, so above the widest window every slot is nil and its
+  // release is dead code — releasing the whole pool is always safe.
+  void release_unwind_temps() {
+    for (size_t i = 0; i < unwind_temp_slots_.size(); i++)
       release_pending_guard(unwind_temp_slots_[i]);
   }
 
@@ -1971,10 +1461,9 @@ struct JIT {
   // chain before this object dies.
   class CleanupPad {
    public:
-    CleanupPad(JIT& jit, llvm::BasicBlock* outerLpad, bool drained = false)
+    CleanupPad(JIT& jit, llvm::BasicBlock* outerLpad)
         : jit_(jit),
           outer_(outerLpad),
-          drained_(drained),
           saved_insert_(jit.builder_.GetInsertBlock()),
           cleanup_scope_(&jit) {}
 
@@ -2004,12 +1493,9 @@ struct JIT {
         auto exc = b.CreateLoad(ptrTy, jit_.exception_slot(), "exc");
         auto resumeFn = jit_.module_->getOrInsertFunction(
             rt_unwind_resume, b.getInt32Ty(), ptrTy);
-        // Resolved here, not at construction: the ladder's stand-in becomes
-        // whichever rung is current when the edge is actually emitted.
-        auto outer = jit_.resolve_lpad(outer_, drained_ ? 0 : SIZE_MAX);
-        if (outer) {
+        if (outer_) {
           auto goneBB = llvm::BasicBlock::Create(jit_.ctx_, "unwind.gone", fn);
-          b.CreateInvoke(resumeFn, goneBB, outer, {exc});
+          b.CreateInvoke(resumeFn, goneBB, outer_, {exc});
           b.SetInsertPoint(goneBB);
         } else {
           b.CreateCall(resumeFn, {exc});
@@ -2025,7 +1511,6 @@ struct JIT {
    private:
     JIT& jit_;
     llvm::BasicBlock* outer_;
-    bool drained_;
     llvm::BasicBlock* saved_insert_;
     UnwindCleanupEmission cleanup_scope_;
     bool opened_ = false;
@@ -2403,103 +1888,6 @@ struct JIT {
   }
 
 
-  // Materialize a lazy forward-ref cell if its statement list hasn't
-  // run yet (cell pointer still null): allocate a cell so a writer /
-  // closure capture has a real cell to land in. The placeholder value is
-  // the unbound sentinel (TAG_NO_SELF, the no-receiver precedent), NOT
-  // nil — a capture materializes the cell before the declaration runs,
-  // and a read through that capture must still be the interp's NameError
-  // (see emit_unbound_value_guard), not a nil flowing into user code.
-  // The declaring statement's store replaces the sentinel. Idempotent.
-  void emit_lazy_cell_materialize(const VarSlot& slot) {
-    if (slot.kind != VarSlot::Cell || !slot.lazy) return;
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto cur = builder_.CreateLoad(ptrTy, slot.alloca, "lazy.cellp");
-    auto isNull = builder_.CreateICmpEQ(
-        cur, llvm::ConstantPointerNull::get(ptrTy), "lazy.isnull");
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto matBB = llvm::BasicBlock::Create(ctx_, "lazy.mat", fn);
-    auto contBB = llvm::BasicBlock::Create(ctx_, "lazy.cont", fn);
-    builder_.CreateCondBr(isNull, matBB, contBB);
-    builder_.SetInsertPoint(matBB);
-    auto cellPtr = emit_call(
-        module_->getOrInsertFunction(rt::cell_new, ptrTy,
-                                     builder_.getInt8Ty(),
-                                     builder_.getInt64Ty()),
-        {builder_.getInt8(TAG_NO_SELF), builder_.getInt64(0)}, "lazy.cell");
-    builder_.CreateStore(cellPtr, slot.alloca);
-    builder_.CreateBr(contBB);
-    builder_.SetInsertPoint(contBB);
-  }
-
-  // Shared skeleton for every "this name isn't bound yet" read guard:
-  // if `unbound` (i1), raise the interp's NameError; otherwise continue.
-  // Callers differ only in how they compute `unbound` (a null cell
-  // pointer, a sentinel tag, ...); `label` keeps each caller's blocks
-  // distinguishable in --emit-llvm output.
-  void emit_unbound_name_guard(llvm::Value* unbound, const std::string& name,
-                               const char* label) {
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto throwBB = llvm::BasicBlock::Create(ctx_, std::string(label) + ".unbound", fn);
-    auto contBB = llvm::BasicBlock::Create(ctx_, std::string(label) + ".bound", fn);
-    builder_.CreateCondBr(unbound, throwBB, contBB);
-    builder_.SetInsertPoint(throwBB);
-    emit_throw_error("NameError",
-                     std::format("undefined variable '{}'", name),
-                     current_line_, current_column_);
-    builder_.CreateUnreachable();
-    builder_.SetInsertPoint(contBB);
-  }
-
-  // Read guard for a lazy cell: a still-null cell means the declaring
-  // statement list never executed — the name is unbound, exactly the
-  // interp's runtime NameError (catchable), not a null deref.
-  void emit_lazy_cell_read_guard(const VarSlot& slot,
-                                 const std::string& name) {
-    if (slot.kind != VarSlot::Cell || !slot.lazy) return;
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto cur = builder_.CreateLoad(ptrTy, slot.alloca, "lazy.cellp");
-    auto isNull = builder_.CreateICmpEQ(
-        cur, llvm::ConstantPointerNull::get(ptrTy), "lazy.isnull");
-    emit_unbound_name_guard(isNull, name, "lazy");
-  }
-
-  // Companion value guard for the materialized case: the cell exists (a
-  // capture or a sibling branch materialized it) but still holds the
-  // unbound sentinel — the declaration has not run. Emitted only for
-  // lazy creator-side slots and for captures flagged unbound_guard, so
-  // ordinary reads pay nothing. `self` never takes this path (it is not
-  // a forward-ref pre-declaration); its NO_SELF handling stays in
-  // emit_no_self_read_guard.
-  void emit_unbound_value_guard(const VarSlot& slot, llvm::Value* val,
-                                const std::string& name) {
-    if (!slot.lazy && !slot.unbound_guard) return;
-    auto unbound = builder_.CreateICmpEQ(
-        extract_tag(val), builder_.getInt8(TAG_NO_SELF), "lazy.tag.unbound");
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto throwBB = llvm::BasicBlock::Create(ctx_, "lazy.val.unbound", fn);
-    auto contBB = llvm::BasicBlock::Create(ctx_, "lazy.val.bound", fn);
-    builder_.CreateCondBr(unbound, throwBB, contBB);
-    builder_.SetInsertPoint(throwBB);
-    emit_throw_error("NameError",
-                     std::format("undefined variable '{}'", name),
-                     current_line_, current_column_);
-    builder_.CreateUnreachable();
-    builder_.SetInsertPoint(contBB);
-  }
-
-  // A `self` read outside a receiver frame: TAG_NO_SELF means the call
-  // supplied no receiver, which is the interp's unbound `self`. Checked on
-  // read rather than on entry so the throw lands where the interp's does —
-  // `fn (x) { if x { 1 } else { self } }` only raises on the branch that
-  // reads it.
-  void emit_no_self_read_guard(llvm::Value* val, const std::string& name) {
-    if (name != "self" || in_receiver_frame_) return;
-    auto absent = builder_.CreateICmpEQ(
-        extract_tag(val), builder_.getInt8(TAG_NO_SELF), "self.absent");
-    emit_unbound_name_guard(absent, name, "self");
-  }
-
   // --- Value helpers ---
 
   // `data` must already be i64; callers zext/bitcast/ptrtoint as needed.
@@ -2626,11 +2014,11 @@ struct JIT {
 
   // value_to_bool: returns i1. Bool is the monomorphic hot case (comparisons,
   // `&&`/`||`, loop guards) so it is inlined; Long/Float/error funnel through
-  // culebra_runtime_to_bool, which keeps the strict-truthiness semantics (Nil
-  // and other tags raise the same TypeError as the interpreter) in one place.
+  // culebra_runtime_to_bool_borrow, which keeps the strict-truthiness
+  // semantics (Nil and other tags raise the same TypeError as the
+  // interpreter) in one place. The operand stays frame-owned (borrow
+  // contract): a region's release ladder owns the throw path.
   llvm::Value* value_to_bool(llvm::Value* v) {
-    // Callee-cleans: culebra_runtime_to_bool releases the operand on its
-    // direct TypeError, so the unwind-temp window must not spill it too.
     UnwindCovered cover(this, {v});
     auto tag = extract_tag(v);
     auto data = extract_data(v);
@@ -2652,7 +2040,7 @@ struct JIT {
     auto i64Ty = builder_.getInt64Ty();
     auto slowVal = emit_call(
         module_->getOrInsertFunction(
-            vm_borrow_ops_ ? rt::to_bool_borrow : rt::to_bool,
+            rt::to_bool_borrow,
             builder_.getInt1Ty(), i8Ty, i64Ty, i64Ty, i64Ty),
         {tag, data, current_line_val(), current_column_val()});
     // emit_call may have split the block (invoke continuation); the phi's
@@ -3209,10 +2597,10 @@ struct JIT {
                                    const char* rt_name,
                                    LongPath long_path,
                                    FloatPath float_path) {
-    // Callee-cleans: on the helper's unwind edge the operands already have
-    // exactly one releaser — the arith helper's body-wide guard, covering a
-    // direct type error and a user `__op__` dispatch alike — so the unwind-temp
-    // window must not spill them (the ASan-confirmed overlap trap).
+    // The operands stay frame-owned (the `_borrow` helper contract): a
+    // region's release ladder is their one releaser on the throw path, so
+    // the unwind-temp window must not spill them (the ASan-confirmed
+    // overlap trap).
     UnwindCovered cover(this, {lhs, rhs});
     auto fn = builder_.GetInsertBlock()->getParent();
     auto intBB = llvm::BasicBlock::Create(ctx_, "binop.int", fn);
@@ -3260,10 +2648,9 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(numBB);
-    // Slow path: callee-cleans. The runtime helper guards its whole body, so
-    // it releases the operand temps on every throw — a user `__add__` body's
-    // and a builtin TypeError's (`1 + "a"`) alike. Exclude them from the
-    // unwind-temp window so the two cleaners do not double-free.
+    // Slow path: the `_borrow` helper leaves the operands' refs alone on
+    // every throw — a user `__add__` body's and a builtin TypeError's
+    // (`1 + "a"`) alike.
     merge.add_incoming(emit_value_call(
         module_->getOrInsertFunction(rt_name, valueType_,
                                      builder_.getInt8Ty(),
@@ -3286,25 +2673,23 @@ struct JIT {
   // in-place doesn't apply).
   llvm::Value* emit_arith_step(llvm::Value* lhs, llvm::Value* rhs,
                                std::string_view op, bool inplace = false) {
-    // Callee-cleans (same as emit_binop_dispatch, which covers again for
-    // its own callers): matmul/pow below call their helpers directly.
+    // Frame-owned operands (same as emit_binop_dispatch, which covers again
+    // for its own callers): matmul/pow below call their helpers directly.
     UnwindCovered cover(this, {lhs, rhs});
-    // One selection point for the (op, ownership-contract) → helper-name
-    // mapping: callee-cleans by default, the Tensor-aware in-place variant,
-    // and each with a `_borrow` twin for the VM lowering's contract. A
-    // mispaired name here compiles fine and only shows as a runtime
-    // leak/double-free, so every op routes through this one lambda.
-    auto pick = [&](const char* plain, const char* inpl,
-                    const char* plain_borrow, const char* inpl_borrow) {
-      return vm_borrow_ops_ ? (inplace ? inpl_borrow : plain_borrow)
-                            : (inplace ? inpl : plain);
+    // One selection point for the (op, in-place) → helper-name mapping:
+    // the `_borrow` helper (the lowering's operand contract — registers
+    // are frame-owned, a region's release ladder owns the throw path), or
+    // its Tensor-aware in-place twin. A mispaired name here compiles fine
+    // and only shows as a runtime leak/double-free, so every op routes
+    // through this one lambda.
+    auto pick = [&](const char* plain, const char* inpl) {
+      return inplace ? inpl : plain;
     };
     if (op == "@") {
       // No in-place matmul (output shape differs from lhs).
       return emit_value_call(
           module_->getOrInsertFunction(
-              pick(rt::num_matmul, rt::num_matmul, rt::num_matmul_borrow,
-                   rt::num_matmul_borrow),
+              rt::num_matmul_borrow,
               valueType_,
               builder_.getInt8Ty(), builder_.getInt64Ty(),
               builder_.getInt8Ty(), builder_.getInt64Ty(),
@@ -3314,9 +2699,8 @@ struct JIT {
            current_line_val(), current_column_val()}, "cmp.matmul");
     }
     if (op == "**") {
-      const char* rt_name = pick(rt::num_pow, rt::num_inplace_pow,
-                                 rt::num_pow_borrow,
-                                 rt::num_inplace_pow_borrow);
+      const char* rt_name =
+          pick(rt::num_pow_borrow, rt::num_inplace_pow_borrow);
       return emit_value_call(
           module_->getOrInsertFunction(
               rt_name, valueType_,
@@ -3331,24 +2715,19 @@ struct JIT {
     const char* rt_name = nullptr;
     switch (ope) {
       case '+':
-        rt_name = pick(rt::num_add, rt::num_inplace_add, rt::num_add_borrow,
-                       rt::num_inplace_add_borrow);
+        rt_name = pick(rt::num_add_borrow, rt::num_inplace_add_borrow);
         break;
       case '-':
-        rt_name = pick(rt::num_sub, rt::num_inplace_sub, rt::num_sub_borrow,
-                       rt::num_inplace_sub_borrow);
+        rt_name = pick(rt::num_sub_borrow, rt::num_inplace_sub_borrow);
         break;
       case '*':
-        rt_name = pick(rt::num_mul, rt::num_inplace_mul, rt::num_mul_borrow,
-                       rt::num_inplace_mul_borrow);
+        rt_name = pick(rt::num_mul_borrow, rt::num_inplace_mul_borrow);
         break;
       case '/':
-        rt_name = pick(rt::num_div, rt::num_inplace_div, rt::num_div_borrow,
-                       rt::num_inplace_div_borrow);
+        rt_name = pick(rt::num_div_borrow, rt::num_inplace_div_borrow);
         break;
       case '%':  // mod has no Tensor in-place
-        rt_name = pick(rt::num_mod, rt::num_mod, rt::num_mod_borrow,
-                       rt::num_mod_borrow);
+        rt_name = rt::num_mod_borrow;
         break;
       default:
         throw std::runtime_error("invalid compound assignment operator");
@@ -3404,14 +2783,13 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(slowBB);
-    // Callee-cleans: num_neg releases the operand on every throw — its direct
-    // type error and a user `__neg__` alike — so exclude it from the
-    // unwind-temp window (see emit_binop_dispatch). The borrow twin leaves
-    // operands frame-owned instead (no pool entries exist under the VM).
+    // The operand stays frame-owned (borrow contract) on every throw — the
+    // helper's direct type error and a user `__neg__` alike (see
+    // emit_binop_dispatch).
     UnwindCovered cover(this, {v});
     merge.add_incoming(emit_value_call(
         module_->getOrInsertFunction(
-            vm_borrow_ops_ ? rt::num_neg_borrow : rt::num_neg, valueType_,
+            rt::num_neg_borrow, valueType_,
             builder_.getInt8Ty(), builder_.getInt64Ty(),
             builder_.getInt64Ty(), builder_.getInt64Ty()),
         {extract_tag(v), extract_data(v),
@@ -3511,10 +2889,9 @@ struct JIT {
   // `(a < b) && (b < c)` with each middle operand evaluated once.
   llvm::Value* emit_comparison_i1(llvm::Value* lhs, llvm::Value* rhs,
                                      const std::string& ope_str) {
-    // Callee-cleans: every throw edge of the eq/ordering helpers already has
-    // exactly one releaser for the operands (the helper's body-wide guard:
-    // direct type error, non-Bool coercion, and a user `__eq__`/`__lt__`
-    // dispatch alike) — exclude them from the unwind-temp window.
+    // The operands stay frame-owned (borrow contract) on every throw edge of
+    // the eq/ordering helpers — direct type error, non-Bool coercion, and a
+    // user `__eq__`/`__lt__` dispatch alike.
     UnwindCovered cover(this, {lhs, rhs});
     auto ltag = extract_tag(lhs);
     auto ldata = extract_data(lhs);
@@ -3548,12 +2925,12 @@ struct JIT {
       // a positionless error; publish the operator position so the exception
       // boundary backfills it (the ordering ops carry line/col explicitly).
       emit_set_op_pos();
-      // Not guarded on the unwind edge: culebra_runtime_value_equal releases
-      // the operand temps on every throw of its own. See the callee-cleans
-      // note in emit_binop_dispatch.
+      // Not guarded on the unwind edge: the operands stay frame-owned
+      // (borrow contract), so a region's release ladder is the one
+      // releaser on the throw path.
       auto slowEq = emit_call(
           module_->getOrInsertFunction(
-              vm_borrow_ops_ ? rt::value_equal_borrow : rt::value_equal,
+              rt::value_equal_borrow,
               builder_.getInt1Ty(),
               builder_.getInt8Ty(),
               builder_.getInt64Ty(),
@@ -3609,18 +2986,17 @@ struct JIT {
     builder_.SetInsertPoint(slowBB);
     const char* ord_rt = nullptr;
     if (ope_str == "<")
-      ord_rt = vm_borrow_ops_ ? rt::value_less_borrow : rt::value_less;
+      ord_rt = rt::value_less_borrow;
     else if (ope_str == "<=")
-      ord_rt = vm_borrow_ops_ ? rt::value_leq_borrow : rt::value_leq;
+      ord_rt = rt::value_leq_borrow;
     else if (ope_str == ">")
-      ord_rt = vm_borrow_ops_ ? rt::value_greater_borrow : rt::value_greater;
+      ord_rt = rt::value_greater_borrow;
     else if (ope_str == ">=")
-      ord_rt = vm_borrow_ops_ ? rt::value_geq_borrow : rt::value_geq;
+      ord_rt = rt::value_geq_borrow;
     else throw std::runtime_error("invalid comparison operator");
 
     // Not guarded on the unwind edge (same reason as the eq slow path and
-    // emit_binop_dispatch): the ordering entry releases the operand temps on
-    // every throw of its own.
+    // emit_binop_dispatch): the operands stay frame-owned.
     auto slowResult = emit_call(
         module_->getOrInsertFunction(ord_rt,
                                      builder_.getInt1Ty(),
@@ -3783,11 +3159,11 @@ struct JIT {
   // iterator and it carries one. The array and string cursors leave the slot
   // nil, so they skip the whole sequence, and built-in iterators have no
   // dispose. Releasing the iterator is not this function's job — `iterAlloca`
-  // is a scope slot, so the ordinary teardown frees it on every exit, which is
+  // is a frame slot, so the ordinary teardown frees it on every exit, which is
   // also why a throw out of dispose needs no local pad here. Shared by the
-  // for-in protocol loop's natural-exit / break (exitBB), exception (excBB),
-  // and early-`return` (compile_return, via iter_cleanup_stack_) paths — the
-  // last is what keeps dispose-on-early-return symmetric with the interpreter.
+  // for-in protocol loop's natural-exit / break, exception, and
+  // early-`return` paths (the lowering's emit_for_dispose) — the last is what
+  // keeps dispose-on-early-return symmetric with the interpreter.
   void emit_iter_dispose_if_active(llvm::Value* iterAlloca,
                                    const char* label_prefix,
                                    bool swallow_dispose = false) {
@@ -3964,16 +3340,16 @@ struct JIT {
   // whichever lane compiled it — including which value drives the protocol
   // and which slot ends up owning it.
   //
-  // `set_slot` and `own_slot` are the caller's owning Value slots (a scope
-  // slot in the AST path, a frame slot in the VM's): the Set arm parks its
-  // materialised member Array in the first, and the object arms park what
-  // `iter()` is called on in the second, so every exit path releases them.
+  // `set_slot` and `own_slot` are the caller's frame-owned Value slots: the
+  // Set arm parks its materialised member Array in the first, and the object
+  // arms park what `iter()` is called on in the second, so every exit path
+  // releases them.
   // `iter_line` / `iter_col` are the iterable expression's position — where
   // the interpreter reports both a non-iterable and a broken protocol.
   llvm::BasicBlock* emit_for_open_dispatch(const ForCursor& c,
                                            llvm::Value* iterable,
-                                           const VarSlot& set_slot,
-                                           const VarSlot& own_slot,
+                                           llvm::Value* set_slot,
+                                           llvm::Value* own_slot,
                                            size_t iter_line, size_t iter_col) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -4132,9 +3508,9 @@ struct JIT {
   // Emit module-level globals describing this function's parameter
   // list, then return a constant pointer to a JitParamMeta struct. The
   // runtime resolver `culebra_runtime_call_with_kwargs` consults this
-  // table via the side map keyed by `fn_ptr`. Returns nullptr when
-  // there are no params — built-in closures and zero-arg functions
-  // skip metadata entirely (kwargs against them error cleanly).
+  // table via the side map keyed by `fn_ptr`. Every function gets a
+  // meta global — a nullary one still needs fn.name / fn.return_type
+  // for introspection (the minimal-meta arm below).
   // Takes "does this parameter have a default" as bits rather than the
   // default expressions themselves: the bitmask is all the metadata needs,
   // and asking for bits is what lets the bytecode lowering — which has no

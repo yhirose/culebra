@@ -29,7 +29,7 @@ struct JitOwnedStack {
   // The two hot fields sit first at fixed offsets: compiled code reads
   // them directly through the pointer culebra_runtime_owned_hot()
   // returns, so scope entry (load next_id) and the empty-region exit
-  // check (top_stamp <= mark) cost no runtime call. See push_scope /
+  // check (top_stamp <= mark) cost no runtime call. See
   // emit_owned_scope_exit in the JIT class.
   uint64_t next_id = 0;
   uint64_t top_stamp = 0;  // entries.back().id + 1, or 0 when empty

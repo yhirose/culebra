@@ -394,15 +394,15 @@ class VmDebugEngine : public DebugEngine {
     };
     int code = 0;
     try {
-      const peg::Ast* stdlib = nullptr;
-      if (modules.size() == 2 &&
-          modules.front().abs_path == culebra::kStdlibPreamblePath) {
-        stdlib = modules.front().ast.get();
-      } else if (modules.size() != 1) {
+      // The debug lane takes a single script (plus the spliced stdlib
+      // preamble); real dependencies stay unsupported here.
+      bool has_preamble =
+          modules.front().abs_path == culebra::kStdlibPreamblePath;
+      if (modules.size() > (has_preamble ? 2u : 1u)) {
         throw CulebraError("VmError", "--vm: unsupported: multi-module script");
       }
-      prog_ = std::make_unique<vm::VmProgram>(vm::Compiler::compile_module(
-          *modules.back().ast, stdlib, vm::Debug::Step));
+      prog_ = std::make_unique<vm::VmProgram>(
+          vm::Compiler::compile_modules(modules, vm::Debug::Step));
       vm::Exec::run(*prog_);
     } catch (const CulebraError& e) {
       diag(format_error_message(e) + "\n");

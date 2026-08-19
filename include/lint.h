@@ -110,7 +110,8 @@ class ScopeWalker {
   // RAII override of loop_depth_ for the span of a body walk: a loop body
   // bumps it (+1), a function / lambda / method / class / trait body resets
   // it to 0 — break/continue cannot cross a function boundary, matching the
-  // JIT's per-function loop_stack_ and every mainstream language. (The interp
+  // compiled backends' per-function loop scoping and every mainstream
+  // language. (The interp
   // completes them through its flow slot, which likewise travels only to the
   // nearest enclosing loop, so this rule is the same shape in both backends.)
   struct LoopDepthGuard {

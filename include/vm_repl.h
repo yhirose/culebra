@@ -89,7 +89,7 @@ class VmRepl {
                     : vm::Compiler::compile_repl_prologue(*ast));
       if (dump_ && repl_line) std::cout << vm::dump(*prog);
       auto& kept = retained_.keep(std::move(source), ast, std::move(prog));
-      vm::Exec::run_retained(*kept.prog);
+      vm::Exec::run(*kept.prog);
       return true;
     } catch (const CulebraError& e) {
       // interpret()'s formatter, which is main.cc's.

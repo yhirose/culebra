@@ -696,20 +696,13 @@ inline constexpr auto math_round          = "culebra_runtime_math_round";
 inline constexpr auto math_abs            = "culebra_runtime_math_abs";
 inline constexpr auto math_min            = "culebra_runtime_math_min";
 inline constexpr auto math_max            = "culebra_runtime_math_max";
-inline constexpr auto num_add             = "culebra_runtime_num_add";
-inline constexpr auto num_sub             = "culebra_runtime_num_sub";
-inline constexpr auto num_mul             = "culebra_runtime_num_mul";
-inline constexpr auto num_matmul          = "culebra_runtime_num_matmul";
-inline constexpr auto num_matmul_borrow   = "culebra_runtime_num_matmul_borrow";
-inline constexpr auto num_div             = "culebra_runtime_num_div";
-inline constexpr auto num_mod             = "culebra_runtime_num_mod";
-inline constexpr auto num_pow             = "culebra_runtime_num_pow";
-inline constexpr auto num_neg             = "culebra_runtime_num_neg";
-// Borrow-contract twins (the bytecode VM's lanes): full semantics, no
-// operand release on throw — the frame's registers stay the owners.
+// Arithmetic entries are all borrow-contract: full semantics, no operand
+// release on throw — the frame's registers stay the owners, a region's
+// release ladder owns the throw path.
 inline constexpr auto num_add_borrow      = "culebra_runtime_num_add_borrow";
 inline constexpr auto num_sub_borrow      = "culebra_runtime_num_sub_borrow";
 inline constexpr auto num_mul_borrow      = "culebra_runtime_num_mul_borrow";
+inline constexpr auto num_matmul_borrow   = "culebra_runtime_num_matmul_borrow";
 inline constexpr auto num_div_borrow      = "culebra_runtime_num_div_borrow";
 inline constexpr auto num_mod_borrow      = "culebra_runtime_num_mod_borrow";
 inline constexpr auto num_pow_borrow      = "culebra_runtime_num_pow_borrow";
@@ -718,13 +711,6 @@ inline constexpr auto to_bool_borrow      = "culebra_runtime_to_bool_borrow";
 // In-place variants for compound assignment (`t += x`). Tensor lhs
 // mutates in place and returns the same Tensor; non-Tensor lhs is
 // equivalent to the plain num_OP helper.
-inline constexpr auto num_inplace_add     = "culebra_runtime_num_inplace_add";
-inline constexpr auto num_inplace_sub     = "culebra_runtime_num_inplace_sub";
-inline constexpr auto num_inplace_mul     = "culebra_runtime_num_inplace_mul";
-inline constexpr auto num_inplace_div     = "culebra_runtime_num_inplace_div";
-inline constexpr auto num_inplace_pow     = "culebra_runtime_num_inplace_pow";
-// Borrow-contract in-place twins: the VM's compound step, where the
-// Tensor mutation must still happen but the operands stay register-owned.
 inline constexpr auto num_inplace_add_borrow = "culebra_runtime_num_inplace_add_borrow";
 inline constexpr auto num_inplace_sub_borrow = "culebra_runtime_num_inplace_sub_borrow";
 inline constexpr auto num_inplace_mul_borrow = "culebra_runtime_num_inplace_mul_borrow";
@@ -857,7 +843,6 @@ inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto prop_get            = "culebra_runtime_prop_get";
 inline constexpr auto bind_method_value   = "culebra_runtime_bind_method_value";
 inline constexpr auto call_receiver       = "culebra_runtime_call_receiver";
-inline constexpr auto to_bool             = "culebra_runtime_to_bool";
 inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto class_new_method    = "culebra_runtime_class_new_method";
 inline constexpr auto mark_class          = "culebra_runtime_mark_class";
@@ -1059,12 +1044,7 @@ inline constexpr auto args_slice_to_array =
 inline constexpr auto release_overflow_args =
     "culebra_runtime_release_overflow_args";
 inline constexpr auto type_of             = "culebra_runtime_type_of";
-inline constexpr auto value_equal         = "culebra_runtime_value_equal";
-inline constexpr auto value_less          = "culebra_runtime_value_less";
-inline constexpr auto value_leq           = "culebra_runtime_value_leq";
-inline constexpr auto value_greater       = "culebra_runtime_value_greater";
-inline constexpr auto value_geq           = "culebra_runtime_value_geq";
-// Borrow-contract twins (see num_*_borrow above).
+// Borrow-contract entries (see num_*_borrow above).
 inline constexpr auto value_equal_borrow  = "culebra_runtime_value_equal_borrow";
 inline constexpr auto value_less_borrow   = "culebra_runtime_value_less_borrow";
 inline constexpr auto value_leq_borrow    = "culebra_runtime_value_leq_borrow";

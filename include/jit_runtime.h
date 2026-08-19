@@ -1329,12 +1329,10 @@ inline std::optional<JitValue> _try_tensor_binop(
   return JitValue{TAG_TENSOR, reinterpret_cast<int64_t>(t)};
 }
 
-// Each arithmetic operator expands to two entries (the ordering-op pattern
-// below): `culebra_runtime_num_<name>_borrow` is the full semantics WITHOUT
-// touching the operands' refs — the bytecode VM's contract, where operands
-// stay owned by the frame's registers and a try handler's release ladder is
-// the one releaser — and `culebra_runtime_num_<name>` wraps it in the
-// callee-cleans-on-throw guard for the JIT's +1-operand-temp contract.
+// `culebra_runtime_num_<name>_borrow` is the full semantics WITHOUT
+// touching the operands' refs — the lowering's contract, where operands
+// stay owned by the frame's registers and a try handler's release ladder
+// is the one releaser.
 #define CUL_NUM_BINOP(name, opstr, method, expr, reflect, op_id)        \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue                            \
   culebra_runtime_num_##name##_borrow(                                  \
@@ -1350,12 +1348,6 @@ inline std::optional<JitValue> _try_tensor_binop(
     auto a = _culebra_coerce_num(lt, ld);                               \
     auto b = _culebra_coerce_num(rt, rd);                               \
     return {TAG_FLOAT, _culebra_double_to_bits(expr)};                  \
-  }                                                                     \
-  CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_##name(     \
-      int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \
-      int64_t line, int64_t col) {                                      \
-    JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};             \
-    return culebra_runtime_num_##name##_borrow(lt, ld, rt, rd, line, col); \
   }
 CUL_NUM_BINOP(sub, "-", "__sub__", a - b, false, static_cast<int>(culebra::Op::Sub))
 CUL_NUM_BINOP(mul, "*", "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
@@ -1398,12 +1390,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add_borrow(
   return {TAG_FLOAT, _culebra_double_to_bits(a + b)};
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
-  return culebra_runtime_num_add_borrow(lt, ld, rt, rd, line, col);
-}
-
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
@@ -1419,12 +1405,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
   return {TAG_FLOAT, _culebra_double_to_bits(a / b)};
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
-  return culebra_runtime_num_div_borrow(lt, ld, rt, rd, line, col);
-}
-
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__mod__", false))
@@ -1436,27 +1416,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
   return {TAG_FLOAT, _culebra_double_to_bits(std::fmod(a, b))};
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
-  return culebra_runtime_num_mod_borrow(lt, ld, rt, rd, line, col);
-}
-
 // `@` (matmul) has no numeric meaning — always dispatches through
-// `__matmul__`. Non-commutative, so no reflection. Split into the borrow
-// twin the VM's operand contract needs and the callee-cleans wrapper the
-// AST path calls, the same pair `**` has.
+// `__matmul__`. Non-commutative, so no reflection.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__matmul__")) return *r;
   culebra::throw_arith_type_error("@", _culebra_tag_name(lt),
                                   _culebra_tag_name(rt), line, col);
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
-  return culebra_runtime_num_matmul_borrow(lt, ld, rt, rd, line, col);
 }
 
 // Extract a boolean from a special method's +1 return value and release
@@ -1504,16 +1470,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
   return _culebra_value_equal(t1, d1, t2, d2);
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal(
-    int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
-  // One guard over the whole body: the `==` codegen hands `+1` operand temps
-  // and strands them on the unwind edge, and every throw from here — a user
-  // `__eq__`/`eq` body, or the Bool coercion of a bad return — must release
-  // them (callee-cleans-on-throw, C①). The dispatch itself only borrows them.
-  JitUnwindRelease g{JitValue{t1, d1}, JitValue{t2, d2}};
-  return culebra_runtime_value_equal_borrow(t1, d1, t2, d2);
-}
-
 // Comparable-trait fallback: derive ordering from a user/derived
 // `cmp(other)` when no `__lt__`/`__le__` dunder is present. Mirrors the
 // interpreter's `try_cmp` in compare_values.
@@ -1554,20 +1510,18 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
   return l || e;
 }
 
-// Each ordering operator expands to two functions:
+// Each ordering operator expands to a borrow-contract core plus its named
+// export:
 //
-//   _value_<name>_borrow  — borrow-contract core: the full `<`/`<=`/… semantics
+//   _value_<name>_borrow  — the full `<`/`<=`/… semantics
 //     (user `__lt__`/`__le__`/`cmp` dispatch, then numeric/String/Nil ordering)
 //     raising the canonical compare type error WITHOUT touching the operands'
 //     refs. The sort comparators call this directly: the array still owns its
 //     elements, so releasing them on an incomparable-element throw would corrupt
 //     its refcounts.
 //
-//   culebra_runtime_value_<name>  — public operator entry, callee-cleans-on-
-//     throw. Its `+1`-owned operand temps strand on the unwind edge (the
-//     codegen `Owned` handles fire only on the normal path), so one guard over
-//     the whole body releases them on every throw — the user dispatch's and the
-//     direct type error's alike, matching _arith_guard_numeric.
+//   culebra_runtime_value_<name>_borrow  — the same core under the extern name
+//     the lowering emits calls to.
 // The `fast_path` dispatches to a user method with no codegen call site, so
 // each expansion lends it the operator's own position (JitBorrowedCallSite).
 #define CUL_DEF_ORD_OP(name, cmp_op, fast_path)                         \
@@ -1579,16 +1533,6 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
                               [](double a, double b) { return a cmp_op b; }, \
                               line, col);                               \
   }                                                                     \
-  CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_##name(       \
-      int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
-      int64_t line, int64_t col) {                                      \
-    JitUnwindRelease g{JitValue{t1, d1}, JitValue{t2, d2}};             \
-    { JitBorrowedCallSite site{line, col}; fast_path }                  \
-    return _culebra_value_ord(t1, d1, t2, d2,                           \
-                              [](double a, double b) { return a cmp_op b; }, \
-                              line, col);                               \
-  }                                                                     \
-  /* Named export of the borrow core for the bytecode VM's lowering. */ \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool                                \
   culebra_runtime_value_##name##_borrow(                                \
       int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
@@ -1648,10 +1592,9 @@ inline JitValue _try_tensor_inplace(int8_t lt, int64_t ld,
   return {TAG_NIL, 0};  // sentinel: in-place did not run
 }
 
-// Two entries per operator, like CUL_NUM_BINOP: the `_borrow` twin keeps
-// the VM's register-ownership contract (the Tensor still mutates in
-// place — _try_tensor_inplace only mints the +1 result ref), and the
-// plain name falls back to the callee-cleans-on-throw helper.
+// The `_borrow` register-ownership contract, like CUL_NUM_BINOP (the
+// Tensor still mutates in place — _try_tensor_inplace only mints the +1
+// result ref).
 #define CUL_NUM_INPLACE(name, op_enum)                                  \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue                                 \
   culebra_runtime_num_inplace_##name##_borrow(                          \
@@ -1663,22 +1606,12 @@ inline JitValue _try_tensor_inplace(int8_t lt, int64_t ld,
     }                                                                   \
     return culebra_runtime_num_##name##_borrow(lt, ld, rt, rd, line,    \
                                                col);                    \
-  }                                                                     \
-  CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue                                 \
-  culebra_runtime_num_inplace_##name(                                   \
-      int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \
-      int64_t line, int64_t col) {                                      \
-    if (lt == TAG_TENSOR) {                                             \
-      auto r = _try_tensor_inplace(lt, ld, rt, rd, culebra::op_enum);   \
-      if (r.tag != TAG_NIL) return r;                                   \
-    }                                                                   \
-    return culebra_runtime_num_##name(lt, ld, rt, rd, line, col);       \
   }
 CUL_NUM_INPLACE(add, Op::Add)
 CUL_NUM_INPLACE(sub, Op::Sub)
 CUL_NUM_INPLACE(mul, Op::Mul)
 CUL_NUM_INPLACE(div, Op::Div)
-// Pow expansion is further down — it needs `culebra_runtime_num_pow`.
+// Pow expansion is further down — it needs `culebra_runtime_num_pow_borrow`.
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
@@ -1700,12 +1633,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow_borrow(
   return {TAG_FLOAT, _culebra_double_to_bits(std::pow(a, b))};
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  JitUnwindRelease g{JitValue{lt, ld}, JitValue{rt, rd}};
-  return culebra_runtime_num_pow_borrow(lt, ld, rt, rd, line, col);
-}
-
 CUL_NUM_INPLACE(pow, Op::Pow)
 #undef CUL_NUM_INPLACE
 
@@ -1721,12 +1648,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg_borrow(
   }
   culebra::throw_type_mismatch("Long or Float", _culebra_tag_name(t),
                                line, col);
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg(
-    int8_t t, int64_t d, int64_t line, int64_t col) {
-  JitUnwindRelease g{JitValue{t, d}};
-  return culebra_runtime_num_neg_borrow(t, d, line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_debugger_break(

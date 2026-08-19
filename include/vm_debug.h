@@ -131,7 +131,7 @@ class VmDebugSession {
         vm::DbgHook& saved;
         ~Restore() { st.hook = std::move(saved); }
       } restore{st, saved_hook};
-      vm::Exec::run_retained(*kept.prog);
+      vm::Exec::run(*kept.prog);
       return true;
     } catch (const CulebraError& e) {
       err = std::string(e.kind) + ": " + e.what();

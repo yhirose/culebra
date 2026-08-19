@@ -1513,17 +1513,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool_borrow(
   return false;  // unreachable: type_error_typed throws
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool(
-    int8_t tag, int64_t data, int64_t line, int64_t col) {
-  // Direct type error path (a non-numeric condition/operand, e.g. `if [1]` or
-  // `![1]`): the codegen hands a `+1`-owned temp and does not release it
-  // on this unwind edge, so the guard does — callee-cleans-on-throw,
-  // matching the arithmetic and comparison operator entries. The `_borrow`
-  // twin (the bytecode VM's contract) leaves the operand alone.
-  JitUnwindRelease g{JitValue{tag, data}};
-  return culebra_runtime_to_bool_borrow(tag, data, line, col);
-}
-
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj,
                                                              const char* key) {
   // A packed view's "properties" are its @packable fields (not real

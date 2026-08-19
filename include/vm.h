@@ -2395,7 +2395,7 @@ struct Chunk {
   // Names of the `mut` bindings this chunk closes over, in capture order.
   // `Isolate.spawn` rejects a closure that captures one (the child's copy
   // would silently diverge from the parent's), and the check needs the
-  // name for its message. The AST path keys the same fact by fn_ptr; the
+  // name for its message. The lowering keys the same fact by fn_ptr; the
   // executor's closures all share one, so the chunk carries it instead.
   std::vector<std::string> mut_capture_names;
   // Does this frame count itself against the recursion limit? Every body
@@ -2613,7 +2613,7 @@ struct VmFnDesc {
 // reads. The resolver is handed a `const JitParamMeta*` and indexes arrays of
 // cstrings out of it, so the strings and the arrays need somewhere stable to
 // live: this owns them for the program's lifetime, like the module-level
-// globals the AST path bakes for the same purpose.
+// globals the lowering bakes for the same purpose.
 struct VmChunkMeta {
   std::vector<const char*> names;
   std::vector<const char*> types;
@@ -2870,7 +2870,7 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
 // analysis are backend-symmetric by construction (captured_locals decides
 // which bindings live in cells; free_vars becomes each chunk's capture
 // list; uses_fn places the recursion handle). Slot assignment itself is
-// the scope stack below, mirroring the JIT's Scope/VarSlot walk.
+// the scope stack below.
 // A class member's body: what compile_fn_chunk has to add on top of a plain
 // function frame. `receiver` binds the ABI's `self`; `fields` replaces the
 // AST body with the declared-field stores of the synthetic field-init thunk;
@@ -3039,7 +3039,7 @@ class Compiler {
       // the runtime module table the Object its `export` statements name.
       // The scope closes before the next module opens, which is what keeps a
       // dependency's top-level names out of every other module (the interp's
-      // per-module env, the JIT's per-module push_scope).
+      // per-module env).
       for (size_t i = 0; opts.deps && i < opts.deps->size(); i++) {
         const peg::Ast& dep = *(*opts.deps)[i];
         const FuncInfo* saved = main.info_;
@@ -3106,7 +3106,7 @@ class Compiler {
     // What a lazy pre-declaration shadows, when a binding of the same
     // name was already visible where it landed. A declaration only takes
     // effect from the statement that runs it, so until then reads and
-    // writes go here instead (the JIT's VarSlot::shadowed).
+    // writes go here instead.
     // `shadowed_builtin` says the same for a stdlib global.
     std::shared_ptr<Binding> shadowed;
     bool shadowed_builtin = false;
@@ -3119,13 +3119,13 @@ class Compiler {
     // A conditional binding's `mut` is the runtime fact its declaration
     // wrote, not something the compiler can name: the arms declare the same
     // name with their own mutability and only one of them runs, so a later
-    // write must ask which did (the JIT's VarSlot::mut_alloca). Holds a Bool,
-    // false until a declaration lands. -1 for every other binding, whose
-    // `is_mut` above is already the whole answer.
+    // write must ask which did. Holds a Bool, false until a declaration
+    // lands. -1 for every other binding, whose `is_mut` above is already
+    // the whole answer.
     int32_t mut_slot = -1;
     // Pre-declared for a bare `x = v` site, which IS the declaration: that
-    // write fills the cell instead of being checked against it (the JIT's
-    // VarSlot::awaits_implicit_decl). Cleared once it lands.
+    // write fills the cell instead of being checked against it. Cleared
+    // once it lands.
     bool awaits_implicit = false;
     // A REPL session binding: the slot holds the session's cell for the
     // name (borrowed), and its mutability is the session's to answer, so
@@ -3732,7 +3732,7 @@ class Compiler {
   }
 
   // A read of a cell binding: the value comes out retained, so the result
-  // is an owned temp (JIT load_slot), unlike a plain slot's borrow. A lazy
+  // is an owned temp, unlike a plain slot's borrow. A lazy
   // dispatcher cell read before its decl ran guards for the unbound
   // sentinel (NameError at the reference, interp parity).
   // `unbound_guard=false` is the UFCS candidate load: a lazy dispatcher
@@ -3753,16 +3753,14 @@ class Compiler {
   // recurses into nested arms — so an enclosing construct has already minted
   // the cell a nested one would, and an earlier construct in the same scope
   // has minted the one a later one would. The name is a single binding here,
-  // the way the JIT registers a single VarSlot::runtime_decl slot and lets a
-  // later arm find it, so both cases must reuse this cell rather than mint a
-  // second one: minting again put the `CellNew` inside one arm, leaving a
-  // sibling arm's read to walk the shadow chain into a cell that path never
-  // allocated (a segfault), and made a second `if`'s bare declare of the
-  // name a fresh binding instead of the reassignment interp reports.
+  // and a later arm finds it, so both cases must reuse this cell rather than
+  // mint a second one: minting again put the `CellNew` inside one arm,
+  // leaving a sibling arm's read to walk the shadow chain into a cell that
+  // path never allocated (a segfault), and made a second `if`'s bare declare
+  // of the name a fresh binding instead of the reassignment interp reports.
   Binding* conditional_here(const std::string& name) {
-    for (auto& b : scopes_.back().bindings)
-      if (b.lazy && b.conditional && b.name == name) return &b;
-    return nullptr;
+    auto* b = predeclared_here(name);
+    return b && b->conditional ? b : nullptr;
   }
 
   // A settled cell binding of `name` in this scope — what a re-declaration
@@ -3873,8 +3871,7 @@ class Compiler {
   // the sentinel still in the cell means no declaration has landed and this
   // write is one (immutably — a bare declare never carries `mut`), while a
   // value there means the arm that ran already bound the name and this write
-  // is checked against the mutability THAT arm wrote. The JIT's
-  // emit_runtime_decl_assign, op for op.
+  // is checked against the mutability THAT arm wrote.
   bool emit_conditional_rebind(const peg::Ast& at, const Binding& b,
                                ExprResult r) {
     // The probe belongs to the enclosing statement's temps, as
@@ -6697,16 +6694,20 @@ class Compiler {
                                                const peg::Ast& args_ast) {
     auto scan = culebra::scan_arg_list(args_ast);
     if (!scan.splats.empty()) return false;
+    if (scan.explicit_kwargs.empty()) return true;
+    // The parameter lists depend only on `method`; look each table up once.
+    std::vector<const std::vector<FunctionValue::Parameter>*> params;
+    auto note = [&](const std::vector<FunctionValue::Parameter>* p) {
+      if (p) params.push_back(p);
+    };
+    note(JIT::builtin_method_params(*JIT::dict_builtin_table(), method));
+    note(JIT::builtin_method_params(iterator_builtins(), method));
+    for (auto& [tag, table] : JIT::builtin_value_tables())
+      note(JIT::builtin_method_params(*table, method));
     for (const auto& [kw, _val] : scan.explicit_kwargs) {
-      auto accepts = [&](const std::vector<FunctionValue::Parameter>* params) {
-        return params && culebra::builtin_method_accepts_keyword(*params, kw);
-      };
-      bool ok = accepts(JIT::builtin_method_params(*JIT::dict_builtin_table(),
-                                                   method)) ||
-                accepts(JIT::builtin_method_params(iterator_builtins(),
-                                                   method));
-      for (auto& [tag, table] : JIT::builtin_value_tables())
-        ok = ok || accepts(JIT::builtin_method_params(*table, method));
+      bool ok = std::any_of(params.begin(), params.end(), [&](const auto* p) {
+        return culebra::builtin_method_accepts_keyword(*p, kw);
+      });
       if (!ok) return false;
     }
     return true;
@@ -8691,15 +8692,10 @@ struct Exec {
     return d && d->prog->chunks[d->chunk].forwards_args;
   }
 
-  static void run(VmProgram& p) {
-    prepare(p);
-    run_prepared(p);
-  }
-
-  // The REPL's form: the program outlives its own execution, so a closure one
-  // line built stays callable from a later one. Nothing extra to hand back —
+  // Safe for programs that outlive their own execution too (the REPL's
+  // case): a closure one line built stays callable from a later one, since
   // the descriptor a closure carries is its own cell.
-  static void run_retained(VmProgram& p) {
+  static void run(VmProgram& p) {
     prepare(p);
     run_prepared(p);
   }
@@ -10991,7 +10987,7 @@ struct Exec {
 // string constants, but a closure the program built reaches its bytecode
 // through a descriptor pointing into the program, so a session that can call
 // the closure later must keep the program — and the source and AST it was
-// compiled from — alive too (see Exec::run_retained).
+// compiled from — alive too.
 struct RetainedProgram {
   std::shared_ptr<std::string> source;  // null when the AST has no file
   std::shared_ptr<peg::Ast> ast;
@@ -11022,17 +11018,15 @@ class RetainedRuns {
 // definition, two consumers.
 struct Lowering {
   // One chunk's parameter metadata, as globals of the module being built —
-  // the AST path's emit_param_meta_global, fed from the chunk instead of from
+  // JIT::emit_param_meta_global, fed from the chunk instead of from
   // a function literal's AST. Called from the MakeClosure site that first
   // needs it and cached by the caller: the globals are constant and the
   // registration idempotent, so every site naming a chunk registers the same
   // one. It has to be a site rather than a prepass because
   // IRBuilder::CreateGlobalString takes the module from the insertion block,
   // which only a chunk being lowered has.
-  static llvm::Constant* param_meta_global(
-      JIT& j, const VmProgram& p, int32_t chunk_idx,
-      const std::vector<llvm::Function*>& fns) {
-    const Chunk& c = p.chunks[chunk_idx];
+  static llvm::Constant* param_meta_global(JIT& j, const Chunk& c,
+                                           llvm::Function* fn) {
     std::vector<bool> has_default, muts;
     for (size_t k = 0; k < c.param_names.size(); k++) {
       has_default.push_back(k < c.param_has_default.size() &&
@@ -11044,7 +11038,7 @@ struct Lowering {
                     : std::nullopt;
     };
     return j.emit_param_meta_global(
-        fns[chunk_idx], c.param_names, has_default, idx(c.kwargs_rest_idx),
+        fn, c.param_names, has_default, idx(c.kwargs_rest_idx),
         idx(c.first_kw_only_idx), c.multifn_name, c.return_type, muts,
         c.param_types, c.param_declared_types, c.cb_min, c.cb_max);
   }
@@ -11157,9 +11151,6 @@ struct Lowering {
   static llvm::Function* lower_program(JIT& j, const VmProgram& p) {
     using namespace llvm;
     j.declare_runtime_functions();
-    // Registers are borrowed by the dispatch helpers; a region's release
-    // ladder owns the throw path (see the Op enum's contract notes).
-    j.vm_borrow_ops_ = true;
 
     // One LLVM function per chunk: the top level keeps the __culebra_main
     // entry shape; function chunks get the JitFn ABI, so MakeClosure hands
@@ -11203,15 +11194,12 @@ struct Lowering {
     // scope's slots on the way out), so it always needs a personality.
     if (!c.cleanups.empty()) fn->setPersonalityFn(j.get_personality_fn());
     b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fn));
-    // Per-LLVM-function JIT state, which the AST path resets through
-    // CompilerStateSaver at each nested fn literal: one chunk is one
-    // function, and a cleanup pad's exception slot must be an alloca in
-    // THIS function's entry block.
+    // Per-LLVM-function JIT state: one chunk is one function, and a cleanup
+    // pad's exception slot must be an alloca in THIS function's entry block.
     j.exc_slot_ = nullptr;
     // The unwind-temp pool is entry-block allocas too, so it belongs to one
-    // function as much as the exception slot does — the emitters this pass
-    // shares with the AST path (the for-in head's calls among them) spill
-    // through it.
+    // function as much as the exception slot does — the shared emitters (the
+    // for-in head's calls among them) spill through it.
     j.unwind_temp_slots_.clear();
     j.unwind_covered_.clear();
     // Same reason: the owned stack's hot pointer is cached as an SSA value
@@ -11253,8 +11241,7 @@ struct Lowering {
     }
 
     // One Value alloca per slot, nil-initialized — mem2reg turns these into
-    // SSA; this is what replaces the AST path's Scope/VarSlot machinery.
-    // (llvm::Value spelled out: the enclosing namespace's culebra::Value
+    // SSA. (llvm::Value spelled out: the enclosing namespace's culebra::Value
     // wins over the using-directive.)
     std::vector<llvm::Value*> slots(c.num_slots);
     for (int32_t s = 0; s < c.num_slots; ++s) {
@@ -11263,14 +11250,6 @@ struct Lowering {
     }
     auto load_slot = [&](int32_t s) {
       return b.CreateLoad(j.valueType_, slots[s]);
-    };
-    // A frame slot in the shape the AST path's emitters take. Every slot here
-    // is a plain Value alloca the frame owns, which is what those emitters
-    // assume of the scope slots they are normally handed.
-    auto for_slot = [&](int32_t s) {
-      return JIT::VarSlot{JIT::VarSlot::Stack,
-                          llvm::cast<llvm::AllocaInst>(slots[s]),
-                          /*owned=*/true};
     };
     // One for-in cursor per statement, keyed by its slot run's base. The
     // Values live in the run (so the ladders free them); the bookkeeping the
@@ -11707,12 +11686,14 @@ struct Lowering {
       for (int32_t s : chunk_temps_at(c, pc))
         if (s >= floor) temps.push_back(s);
       if (temps.empty()) return chain;
-      auto key = std::pair{k, temps};
+      // This runs per instruction, so the hit path (many pcs share one pad)
+      // builds one vector, not two.
+      auto key = std::pair{k, std::move(temps)};
       auto it = temp_ix.find(key);
       if (it != temp_ix.end()) return it->second;
       auto* bb = BasicBlock::Create(
           j.ctx_, std::format("vm.temps.{}", temp_pads.size()), fn);
-      temp_pads.push_back({bb, k, std::move(temps)});
+      temp_pads.push_back({bb, k, key.second});
       temp_ix.emplace(std::move(key), bb);
       return bb;
     };
@@ -11720,7 +11701,7 @@ struct Lowering {
     // Pass 2: linear walk over the instructions. The chunk's position table
     // feeds the JIT's position state, so every emitter that bakes line/col
     // into calls (arith, comparisons, to_bool) attributes exactly as the
-    // AST path would.
+    // interp reports.
     for (size_t i = 0; i < c.code.size(); ++i) {
       if (auto it = blocks.find(static_cast<int32_t>(i)); it != blocks.end()) {
         if (!b.GetInsertBlock()->getTerminator()) b.CreateBr(it->second);
@@ -11802,8 +11783,7 @@ struct Lowering {
           break;
         }
         case Op::Pow: {
-          // emit_arith_step's "**" arm picks the `_borrow` twin under the
-          // VM operand contract (vm_borrow_ops_), in-place when d=1.
+          // emit_arith_step's "**" arm, in-place when d=1.
           auto r = j.emit_arith_step(load_slot(in.b), load_slot(in.c), "**",
                                      /*inplace=*/in.d != 0);
           b.CreateStore(r, slots[in.a]);
@@ -12260,7 +12240,7 @@ struct Lowering {
         }
         case Op::PropVal:
         case Op::PropRaw: {
-          // The AST path's own emitters, so the resolve, the inline cache and
+          // The JIT's own emitters, so the resolve, the inline cache and
           // the `self` binding are the same IR a `x.name` read compiles to.
           std::string key(_str_sv(
               reinterpret_cast<const char*>(c.consts[in.c].data)));
@@ -12317,7 +12297,7 @@ struct Lowering {
           break;
         }
         case Op::Drop: {
-          // The at-most-once guard, borrowing the receiver — the AST path's
+          // The at-most-once guard, borrowing the receiver — the compiler's
           // emit_explicit_drop without its consume (a register keeps owning
           // what it holds).
           auto recv = load_slot(in.b);
@@ -12368,7 +12348,7 @@ struct Lowering {
           break;
         case Op::MethGate: {
           // checkBB then the receiver gate, in compile_user_method_over_
-          // builtin's order, with the AST path's own property emitter.
+          // builtin's order, with the JIT's own property emitter.
           std::string key(_str_sv(
               reinterpret_cast<const char*>(c.consts[in.c].data)));
           const BMethSpec& gate = bmeth_specs()[in.d];
@@ -14072,9 +14052,9 @@ struct Lowering {
           auto [line, col] = chunk_pos_at(c, i);
           auto recv = load_slot(in.b);
           // has-own is computed here rather than carried from PropVal: the
-          // receiver's register is live until the statement sweep, so there
-          // is no window the AST path's "while the receiver is still live"
-          // ordering protects against.
+          // receiver's register is live until the statement sweep, so no
+          // "receiver died between the two reads" window exists to protect
+          // against.
           j.emit_reject_bare_builtin_method(load_slot(in.a),
                                             j.emit_has_own_field(recv, key),
                                             recv, key, line, col);
@@ -14435,22 +14415,20 @@ struct Lowering {
               "cls");
           // Register this chunk's parameter metadata under its function's
           // address, so a keyword call can resolve names against it. The
-          // registration is idempotent (same key, same pointer), which is
-          // why the AST path does it here too rather than at module init.
+          // registration is idempotent (same key, same pointer), so it can
+          // run at every MakeClosure site rather than at module init.
           // The metadata is a global of THIS module, not a pointer into the
           // compiler's heap: an AOT object outlives the process that wrote
           // it, so a baked address would be dangling by the time the built
           // program ran.
-          if (!metas[in.b]) metas[in.b] = param_meta_global(j, p, in.b, fns);
-          if (auto* meta = metas[in.b]) {
-            j.emit_call(
-                j.module_->getOrInsertFunction(rt::register_param_meta,
-                                               b.getVoidTy(), ptrTy, ptrTy),
-                {fns[in.b], meta});
-          }
-          // A constructor thunk is native as far as sendability goes — the
-          // AST path registers its own the same way (jit_compile_class.h),
-          // and it is what makes sending a class object a SendError.
+          if (!metas[in.b])
+            metas[in.b] = param_meta_global(j, p.chunks[in.b], fns[in.b]);
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::register_param_meta,
+                                             b.getVoidTy(), ptrTy, ptrTy),
+              {fns[in.b], metas[in.b]});
+          // A constructor thunk is native as far as sendability goes,
+          // which is what makes sending a class object a SendError.
           if (f.forwards_args) {
             j.emit_call(
                 j.module_->getOrInsertFunction(rt::register_native_fn,
@@ -14459,9 +14437,9 @@ struct Lowering {
           }
           // Same for the `mut` bindings it closes over, the fact
           // `Isolate.spawn` rejects it on. Each lowered chunk is its own
-          // function, so the fn_ptr-keyed table works here exactly as it
-          // does for the AST path (the executor, whose closures share one
-          // entry point, answers through a hook instead).
+          // function, so the fn_ptr-keyed table works here (the executor,
+          // whose closures share one entry point, answers through a hook
+          // instead).
           if (!f.mut_capture_names.empty()) {
             std::vector<llvm::Constant*> names;
             for (const auto& nm : f.mut_capture_names)
@@ -15120,8 +15098,8 @@ struct Lowering {
           b.CreateStore(j.make_long(b.getInt64(0)),
                         slots[in.a + kForDisposed]);
           auto head = j.emit_for_open_dispatch(
-              cur, load_slot(in.a + kForIterable), for_slot(in.a + kForSetArr),
-              for_slot(in.a + kForSrc), static_cast<size_t>(line),
+              cur, load_slot(in.a + kForIterable), slots[in.a + kForSetArr],
+              slots[in.a + kForSrc], static_cast<size_t>(line),
               static_cast<size_t>(col));
           b.SetInsertPoint(head);
           break;
@@ -15345,8 +15323,10 @@ struct Lowering {
       auto rung_for = [&](const std::vector<int32_t>& t) {
         if (!foot) foot = BasicBlock::Create(j.ctx_, "vm.temps.done", fn);
         BasicBlock* next = foot;
+        std::vector<int32_t> pre;  // grown in place; copied only per new rung
+        pre.reserve(t.size());
         for (size_t n = 1; n <= t.size(); ++n) {
-          std::vector<int32_t> pre(t.begin(), t.begin() + n);
+          pre.push_back(t[n - 1]);
           if (auto it = rungs.find(pre); it != rungs.end()) {
             next = it->second;
             continue;
@@ -15358,7 +15338,7 @@ struct Lowering {
           release_slot_ir(pre.back(), /*as_cell=*/false);
           b.CreateBr(next);
           b.SetInsertPoint(saved);
-          rungs.emplace(std::move(pre), bb);
+          rungs.emplace(pre, bb);
           next = bb;
         }
         return next;
@@ -15442,16 +15422,16 @@ struct Lowering {
 inline void run_program_via_llvm(VmProgram& prog, bool emit_llvm,
                                  int opt_level, bool fast_codegen = false,
                                  const std::string& module_name = "vm") {
-  // What a keyword call binds against: each chunk's function gets the
-  // metadata registered under its own address, the way the AST path
-  // registers each closure's.
-  build_param_metas(prog);
+  // Nothing host-side to prepare: keyword-call metadata is a global of the
+  // lowered module, registered by each MakeClosure site (see
+  // Lowering's param_meta_global). Exec::prepare's host-side tables are the
+  // executor lane's alone.
   Lowering::run_program(prog, emit_llvm, opt_level, fast_codegen, module_name);
 }
 
 // The compiled lane for a loader's module list: what `--jit` runs. One
 // bytecode program, lowered to one LLVM module, keyed for the object cache
-// exactly as the AST path keyed it.
+// by the module set and the compile options.
 inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
                                  bool emit_llvm = false, bool debug = false,
                                  int opt_level = 2,
