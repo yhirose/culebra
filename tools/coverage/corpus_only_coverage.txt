@@ -1,0 +1,25 @@
+# Ratchet for `just coverage` (tools/coverage/report.py).
+#
+# Each non-comment line names a function on the shared-fate surface — the
+# bytecode compiler, the shared runtime helpers, the shared emitter — that the
+# generated difftest corpus reaches and the hand-maintained suites do not,
+# either because nothing durable enters it at all or because nothing durable
+# takes one of its branches. The report FAILS on any such function that is NOT
+# listed here (a new hole); a listed name the durable suites have since reached
+# is reported so this file can shrink.
+#
+# Blank lines and `#` comments are ignored, and a name is the whole line — put
+# the reason for an entry in a comment *above* it, the way
+# tools/difftest/leak_abort_allow.txt does. An entry is a decision, not a
+# backlog item: it says "this code is reachable only by generated input, and
+# that is acceptable".
+#
+# Why it matters: after the tree-walker goes, the executor and the LLVM
+# lowering both consume bytecode from one compiler, so a bug in the shared
+# surface makes both lanes give the same wrong answer and the corpus stays
+# green. Code only the corpus has ever run is code no durable test pins.
+#
+# The list is empty — see docs/internals/vm.md §13.3 for how it got that way,
+# and for when this has to be re-run: before B5 re-points the corpus at
+# executor-vs-lowering, since after that the measurement answers a different
+# question.

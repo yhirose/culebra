@@ -855,3 +855,24 @@ compound_throw_churn = fn () {
   caught
 }
 assert_eq(40000, compound_throw_churn())
+
+# --- the tag names an index error can report ------------------------------
+# `expected Long, got X` renders the tag it was handed; Function and Set are
+# the two arms nothing durable had ever produced.
+let by_fn = try { [1, 2][fn () { 1 }]; nil } catch e { e }
+assert_eq(by_fn.message, 'type error: expected Long, got Function')
+let by_set = try { [1, 2][{1, 2}]; nil } catch e { e }
+assert_eq(by_set.message, 'type error: expected Long, got Set')
+
+# --- arithmetic guards on the two operators that carry their own ----------
+assert_eq(try { let _ = 1 / 'a'; nil } catch e { e.kind }, 'TypeError')
+assert_eq(try { let _ = -'a'; nil } catch e { e.kind }, 'TypeError')
+
+# --- writing past the end of an array is an IndexError, not a grow --------
+let oob = try {
+  mut xs = [1, 2]
+  xs[99] = 5
+  nil
+} catch e { e }
+assert_eq(oob.kind, 'IndexError')
+

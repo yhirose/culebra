@@ -382,3 +382,7 @@ assert_eq(range(0, 0).map(|x| x).join(","), "")  # empty iterator
 assert_eq(range(1, 4).join(""), "123")           # range is lazy
 # Array.join still works (eager receiver, same dispatch site)
 assert_eq([1, 2, 3].map(|x| x + 1).join(" "), "2 3 4")
+
+# join over an iterator of Strings takes the string bytes straight, where a
+# non-String element goes through to_str first.
+assert_eq(['a', 'b', 'c'].iter().join('-'), 'a-b-c')

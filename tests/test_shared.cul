@@ -179,4 +179,23 @@ for (k, v) in Shared.new({a: [1, 2], b: [3]}) {
 }
 assert_eq(seen, ['a=2', 'b=1'])
 
+# A key that isn't there is a KeyError, not a nil.
+assert_throws('KeyError', fn () { cfg['zz'] })
+
+# A frozen Object can carry non-String keys, and they compare by their own
+# kind rather than by string form.
+mut mixed = {}
+mixed[1] = 'one'
+mixed[true] = 'yes'
+let sv = Shared.new(mixed)
+assert_eq(sv[1], 'one')
+assert_eq(sv[true], 'yes')
+assert_throws('KeyError', fn () { sv[9] })
+
+# An Array view takes a Long and says so; the interpreter's key.to_long()
+# does not truncate a Float or accept a String either.
+let bad_key = try { arr_view['x']; nil } catch e { e }
+assert_eq(bad_key.message, 'type error: expected Long, got String')
+assert_throws('IndexError', fn () { arr_view[99] })
+
 IO.inspect('test_shared OK')

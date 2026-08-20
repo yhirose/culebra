@@ -117,4 +117,8 @@ assert_eq(area(Shape.Circle(9.0)), 9.0)
 assert_eq(area(Shape.Rect(2, 3)), 2)
 assert_eq(area(Shape.Origin), 0)
 
+// Extra positional arguments to a variant constructor are dropped, matching
+// the interpreter; the arity that counts is the one the variant declares.
+assert_eq(Result.Ok(1, 2)._0, 1)
+
 IO.inspect("test_enum OK")

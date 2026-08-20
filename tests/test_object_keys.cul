@@ -210,4 +210,12 @@ while j < 2000 {
   j = j + 1
 }
 
+// Removing a non-String key from an object that holds none is a no-op, but it
+// still hashes the key — an unhashable one has to raise here the way the
+// interpreter's sidecar does, rather than silently do nothing.
+mut only_str = {a: 1}
+only_str.remove(42)
+assert_eq(only_str.size(), 1)
+assert_throws('TypeError', fn () { only_str.remove([1]) })
+
 IO.inspect("test_object_keys OK")

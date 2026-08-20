@@ -1527,37 +1527,52 @@ it the `--jit` lane at `-O0`.
 |---|---|---|---|---|---|---|
 | | total | live | corpus-only | total | live | corpus-only |
 | compiler | 265 | 238 | **0** | 3169 | 3034 | **0** |
-| emitter | 186 | 163 | **0** | 2158 | 1996 | **0** |
-| runtime | 748 | 677 | 10 | 5226 | 4683 | 56 |
+| emitter | 186 | 163 | **0** | 2152 | 1996 | **0** |
+| runtime | 923 | 830 | 2 | 6017 | 5406 | 24 |
 
 **The compiler and the shared emitter have nothing the corpus reaches alone.**
 A function-level zero on its own would prove little — a function both sets
 execute can still hold a branch only the corpus takes — which is why the line
 column is there, and it agrees. Everything the corpus adds is in the runtime:
-56 lines across 21 functions.
+24 lines across 12 functions.
 
-They fall into three groups. Canvas audio is the largest (`music_play` through
-`music_resume`, `canvas_target`, two sprite refusal paths) and is a fixture
-question, not a semantics one. Most of the rest are error edges — the
-`TAG_FUNC` and `TAG_SET` arms of `type_error_typed`, the arithmetic guards for
-`/` and unary `-`, `array_set`'s `IndexError`, `Tensor.item`'s arity message,
-the release-on-throw line in `build_variant`. Two are neither: the non-string
-property walk in `culebra_runtime_owned_scope_exit` — the code the cascade fix
-in `82720f5f` rewrote — and shared-view indexing in `sendable_jit.h`, where the
-`KeyError` edge, the object-entry scan and the `Long`/`Bool` key comparison are
-all corpus-only.
+Those numbers took three corrections to reach — the parallelism above, the two
+retired prefixes below, and one more. The script had been launched directly
+rather than through `just`, so it ran without `CULEBRA_CANVAS_HEADLESS`;
+`tests/test_canvas_module.cul` fails an assertion a third of the way in without
+it, and every Canvas call past that line went unexecuted, presenting nine
+Canvas functions as holes that were never holes.
+
+All three pushed the same way, and that is the part worth keeping. A durable
+half that loses coverage can only *inflate* the corpus-only set, never deflate
+it, so the two zeros were never at risk; only the work list was. `run.sh` now
+pins that environment rather than inheriting it, and — the general form of the
+same bug — counts the durable invocations that exit non-zero and refuses to
+report a corpus-only set while any did, since a program that died early has
+executed less than it should and every line it missed lands in the corpus
+column.
+
+What is left is mostly error edges — the `TAG_FUNC` and `TAG_SET` arms of
+`type_error_typed`, the arithmetic guards for `/` and unary `-`, `array_set`'s
+`IndexError`, `Tensor.item`'s arity message, the release-on-throw line in
+`build_variant`, the stale-handle refusal in `canvas_target`. Two are not:
+`Tensor.no_grad` had never been called by anything hand-written, and shared-view
+indexing in `sendable_jit.h` — the `KeyError` edge, the scan over non-String
+keys and the `Long`/`Bool` key comparison — was reached only by generated
+input.
 
 Two things the report prints about itself, because a headline of zeros is
 exactly the shape a broken measurement takes. A `SHARED` prefix that matches
 no function at all is an error rather than an empty row — the first run of the
 check retired two prefixes that had stopped existing, one of them removed in
 Phase 3. And the surface is an allowlist, so the report ends with a tally of
-this repo's own functions that no prefix claimed and no exclusion named: 5260
-of them today, led by `culebra::gc`, `_canvas_detail`, `wrap_detail` and
-`iterator_builtins`. Several of those are shared fate on any reading and the
-table above does not yet count them, so the boundary is a live question rather
-than a settled one; printing it every run is what keeps it from becoming
-invisible.
+this repo's own functions that no prefix claimed and no exclusion named. That
+tally is what moved `culebra::gc` and `culebra::_canvas_detail` into the table
+above: reached through the runtime helpers rather than named by either engine,
+but a bug in them is a bug both engines inherit. Around 5100 functions remain
+outside it — `_make_iterator`, `wrap_detail`, `http`, `EffectsLowerer` and the
+tooling — so the boundary is a live question rather than a settled one, and
+printing it every run is what keeps it from going quiet.
 
 One caveat this measurement cannot answer: coverage is reachability, not
 verification. A line both sets execute is a line the durable suite *runs*, not
@@ -1565,3 +1580,63 @@ one whose behaviour it pins — an assertion has to exist for that. What the
 zero establishes is narrower and still worth having: after the corpus is
 re-pointed at executor-vs-lowering, the hand-written suites are not walking
 past whole regions of the compiler unexecuted.
+
+### 13.3 Writing the tests the corpus was standing in for
+
+Twenty-four lines in twelve functions, and the tree-walker's last job was to
+say what each of them should do. That is the part of the oracle that expires:
+once there is one engine, a new test's expected value is whatever that engine
+prints, and "the test agrees with the implementation" is not evidence. While
+the tree-walker is still here, a case can be written against it and confirmed
+byte-identical on `--vm` and `--jit` before being frozen — which is what
+happened to every case below.
+
+They went into the suites that already owned the behaviour rather than into a
+file of their own. `tests/test_shared.cul` gained the read edges of a frozen
+view: a missing String key, an Object frozen with `Long` and `Bool` keys, an
+Array view indexed by a String (`expected Long, got String`) and one indexed
+past its end. `tests/test_runtime_errors.cul` gained the two tag names an
+index error had never had to render — `got Function` and `got Set` — plus the
+guards on `/` and unary `-` and the `IndexError` from writing past an array.
+`tests/test_tensor.cul` gained `Tensor.no_grad`, which nothing hand-written had
+ever called, and `.item()` on a two-element tensor. The rest are one case each:
+removing a non-String key from an object holding none
+(`tests/test_object_keys.cul`), excess positional arguments to a variant
+constructor (`tests/test_enum.cul`), `join` over an iterator of Strings
+(`tests/test_iter_terminal.cul`), `draw_to` into a sprite whose pixels are
+already freed (`tests/test_canvas_module.cul`), and `Math.max()` with nothing
+to reduce (`tests/test_math_kernels.cul`) — that last one reaching a lambda
+that exists only to supply a source position to a throw.
+
+Re-measured, the corpus-only set is empty: zero functions and zero lines, in
+all three columns. `tools/coverage/corpus_only_coverage.txt` records that as a
+ratchet with the same two-sided contract the leak-abort allowlist has — a
+corpus-only function not listed there fails the report, and a listed one the
+suites have since reached is reported so the file can shrink. Both directions
+were exercised before the file was committed: a name that no longer qualifies
+prints "shrink", and a profile with an empty durable half produces 1231 new
+entries and exit 1. A ratchet nobody has seen fail is a comment.
+
+It keys on the function in both columns, not just the first. A new branch that
+only the corpus takes, inside a function both sets already enter, adds no
+corpus-only *function* but does add corpus-only *lines* — and the owner of
+those lines has to be listed too, or the report fails. Keying the line side on
+`(file, line)` would have been the obvious alternative and is wrong for the
+reason §13.2 gives for the function side: line numbers move under every edit,
+and a ratchet that churns is a ratchet people delete.
+
+What it does not have is a cadence. `just coverage` is a 35-minute
+instrumented measurement, correctly outside `just test` and outside per-PR CI,
+which leaves the file's state discoverable only by someone who volunteers the
+time. Rather than leave that implicit, the moment is named in the file: re-run
+before B5 re-points the corpus at executor-vs-lowering, because after that the
+measurement is answering a different question and this baseline stops being
+comparable. A weekly scheduled job is the alternative and would cost an
+instrumented LLVM build plus a serial sweep on a 4-core runner; that is a real
+bill, and it is not paid here.
+
+The list being empty is not the same as the suites pinning the behaviour of
+everything they run — §13.2's caveat still holds, and coverage cannot tell an
+assertion from a bare call. What it does settle is narrower: when the corpus is
+re-pointed at executor-vs-lowering, no region of the shared surface is left
+with generated input as its only reader.

@@ -499,6 +499,19 @@ Canvas.draw_to(bg, fn () {
   assert_eq(Canvas.width(), 4)
 })
 
+// Redirecting into a sprite whose pixels have already been freed is refused
+// rather than silently drawing somewhere: the handle resolves to no live
+// sprite, and the target is left where it was.
+let freed = Canvas.Sprite.blank(2, 2)
+freed.drop()
+let stale = try {
+  Canvas.draw_to(freed, fn () { Canvas.clear(0) })
+  nil
+} catch e { e }
+assert_eq(stale.kind, 'ValueError')
+assert_eq(stale.message, 'not a live sprite handle')
+assert_eq(Canvas.width(), 8)  // the refusal left the target alone
+
 // Input edge detector (headless: buttons read 0, so nothing is pressed).
 let inp = Canvas.Input.new()
 inp.update()

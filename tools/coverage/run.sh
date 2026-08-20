@@ -47,6 +47,14 @@ command -v "$GCOV_TOOL" > /dev/null ||
 cd "$ROOT"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
+# The environment the gate runs its suites in, pinned rather than inherited:
+# this script measures what the gate measures however it was launched, and
+# neither of these has a reading here other than the gate's. (The justfile
+# defaults them instead, because a developer may legitimately want a window;
+# in a measurement, a windowed run just means a shorter one — see §13.2.)
+export CULEBRA_CANVAS_HEADLESS=1
+export CULEBRA_REQUIRE_EXPLICIT_ENGINE=1
+
 # Every culebra process gets its own gcda directory, named by its pid. The
 # suites run whatever binary $BIN names, so pointing them at this is the whole
 # of the wiring.
@@ -81,12 +89,19 @@ fold() {
 }
 
 # --- the durable suites ----------------------------------------------------
-# Not a gate: a program that exits non-zero has still executed the code it
-# reached, and reachability is the whole question here. Failures are ignored.
+# A failure does not stop the sweep — a program that exits non-zero has still
+# executed the code it reached — but it is not ignored either. This is a
+# *difference* measurement, and a durable program that dies early has executed
+# less than it should, which inflates the corpus-only set by exactly the code
+# it did not get to. That is how nine Canvas functions once looked like holes.
+# So: keep going, and count.
+#
 # `culebra test` without --doc is absent for a reason rather than an
 # oversight — the unit-test runner is the interpreter's, so it touches none of
 # the surface below.
 export COV_SET=durable
+durable_runs=0 durable_bad=0
+declare -a durable_failed=()
 JOBS="${COVERAGE_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 
 # Run a list of files through the shim, one process per file, serially.
@@ -101,7 +116,17 @@ JOBS="${COVERAGE_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 sweep() {
   local label="$1" lane="$2" f; shift 2
   echo ">>> durable: $label ($lane)"
-  for f in "$@"; do "$SHIM" "$lane" "$f" > /dev/null 2>&1; done
+  for f in "$@"; do note_run "$lane $f" "$SHIM" "$lane" "$f"; done
+}
+
+# Run one durable invocation, remembering whether it succeeded.
+note_run() {
+  local what="$1"; shift
+  durable_runs=$((durable_runs + 1))
+  "$@" > /dev/null 2>&1 || {
+    durable_bad=$((durable_bad + 1))
+    durable_failed+=("$what")
+  }
 }
 
 for lane in --vm --jit; do
@@ -110,7 +135,7 @@ for lane in --vm --jit; do
   sweep "isolate" "$lane" tests/isolate/*.cul
   sweep "leak-abort probes" "$lane" tools/difftest/leak_abort_bare.d/*.cul
   echo ">>> durable: doctest ($lane)"
-  "$SHIM" test --doc "$lane" tests/doctest docs > /dev/null 2>&1
+  note_run "doctest $lane" "$SHIM" test --doc "$lane" tests/doctest docs
 done
 
 # The fast-codegen emitter path: same programs, a different route through the
@@ -120,7 +145,11 @@ sweep "fast codegen" --jit-faststart tests/*.cul
 # The CLI scripts ctest owns. ctest itself bakes the binary path at configure
 # time, so it cannot be pointed at the shim — the scripts take it as $1.
 echo ">>> durable: CLI scripts"
-for s in tests/*_test.sh; do bash "$s" "$SHIM" > /dev/null 2>&1; done
+for s in tests/*_test.sh; do note_run "$s" bash "$s" "$SHIM"; done
+
+printf '%s\n' "$durable_bad" > "$OUT/durable_failures"
+printf '%s\n' "${durable_failed[@]:-}" >> "$OUT/durable_failures"
+echo ">>> durable: $durable_runs invocation(s), $durable_bad non-zero"
 
 # --- the generated corpus --------------------------------------------------
 export COV_SET=corpus

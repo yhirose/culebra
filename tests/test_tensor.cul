@@ -549,4 +549,13 @@ assert_false(same_t == same_t.detach())
 assert_false(same_t == same_t.grad())
 assert_false(same_t == Tensor.from([1.0, 2.0]))
 
+# `Tensor.no_grad(fn)` runs fn with tape recording suppressed and returns
+# whatever fn returns, tensor or not.
+assert_eq(Tensor.no_grad(fn () { 7 }), 7)
+let ng = Tensor.no_grad(fn () { Tensor.from([1.0, 2.0]) + Tensor.from([3.0, 4.0]) })
+assert_eq(ng.to_array(), [4.0, 6.0])
+
+# .item() is for exactly one element; two is an error, not the first of them.
+assert_throws('ValueError', fn () { Tensor.from([1.0, 2.0]).item() })
+
 inspect("test_tensor: OK")

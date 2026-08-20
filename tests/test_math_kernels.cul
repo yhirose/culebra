@@ -73,4 +73,9 @@ assert_eq(err(fn () {
   Math.atan2(1, 'a')
 }).kind, 'TypeError')
 
+# max with nothing to reduce raises rather than answers, and the position the
+# error carries comes from a supplier the happy path never calls. (min's is a
+# separate instantiation, already reached above.)
+assert_eq(err(fn () { Math.max() }).kind, 'TypeError')
+
 inspect('math kernels: ok')

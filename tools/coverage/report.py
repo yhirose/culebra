@@ -18,6 +18,10 @@ not.  Lines are the work list, and they are also the check on the function
 count: a function both sets reach can still hold a branch only the corpus
 takes, so a function-level zero means nothing until the line-level zero agrees.
 
+The corpus-only set is also a ratchet: `corpus_only_coverage.txt` beside this
+script lists the functions allowed to be in it, and a name that is not listed
+fails the report the way a new leak fails the leak-abort suite.
+
 Usage: report.py <profile-dir>
        (profile-dir holds json/durable/ and json/all/)
 """
@@ -37,6 +41,12 @@ SHARED = (
     ("culebra::JIT::", "emitter"),
     ("culebra::_jit_", "runtime"),
     ("culebra_runtime_", "runtime"),
+    # The GC heap (jit_gc.h) and the Canvas natives (canvas.h, font_ttf.h) are
+    # reached through the runtime helpers above rather than named by the
+    # engines, but a bug in either is a bug both engines inherit — same fate,
+    # so the same accounting.
+    ("culebra::gc::", "runtime"),
+    ("culebra::_canvas_detail::", "runtime"),
 )
 # Being an allowlist, this table has a second blind spot the `matched` check
 # cannot see: a shared component in a namespace nobody added is absent from
@@ -47,6 +57,7 @@ SHARED = (
 # Consumers of the bytecode rather than shared fate: a bug in one of these is
 # still caught by diffing the two lanes against each other. Named so the report
 # can separate "excluded on purpose" from "nobody has classified this yet".
+RATCHET = "corpus_only_coverage.txt"
 EXCLUDED = (
     "culebra::vm::Exec::",
     "culebra::vm::Lowering::",
@@ -128,6 +139,16 @@ def load(dirpath, own):
                 else:
                     row[0] += ln["count"]
     return functions, lines, matched, unclassified
+
+
+def read_ratchet(path):
+    """The names allowed to be corpus-only. Missing file means none are."""
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return set()
+    return {n for n in (line.strip() for line in text.splitlines())
+            if n and not n.startswith("#")}
 
 
 def source_line(path, lineno, cache):
@@ -225,6 +246,41 @@ def main():
           % (sum(unclass.values()), len(unclass)))
     for name, n in sorted(unclass.items(), key=lambda x: -x[1])[:15]:
         print("# %6d  %s" % (n, name))
+
+    # A function nothing durable enters and a function both enter but only the
+    # corpus takes a branch of are the same failure, so both key the ratchet on
+    # the owning function. Keying the second on (file, line) was the obvious
+    # alternative and is wrong: line numbers move under every edit to the file.
+    allowed = read_ratchet(Path(__file__).resolve().parent / RATCHET)
+    found = {r[3] for r in only} | {owner for owner, _ in by_owner}
+    fresh, fixed = sorted(found - allowed), sorted(allowed - found)
+    if fixed:
+        print("report: %d allowed name(s) are no longer corpus-only — shrink "
+              "%s:" % (len(fixed), RATCHET), file=sys.stderr)
+        for name in fixed:
+            print("  covered: %s" % name, file=sys.stderr)
+    if fresh:
+        print("report: %d function(s) the corpus reaches alone and %s does not "
+              "list:" % (len(fresh), RATCHET), file=sys.stderr)
+        for name in fresh:
+            print("  NEW: %s" % name, file=sys.stderr)
+        print("  Write a durable test for it, or list it with the reason it is "
+              "acceptable on the line above.", file=sys.stderr)
+        return 1
+
+    # A durable program that died early executed less than it should have, and
+    # every line it missed is attributed to the corpus. The zero above means
+    # nothing if this is not also zero.
+    failures = root / "durable_failures"
+    if failures.exists():
+        head, *names = failures.read_text().splitlines()
+        if head.strip() not in ("", "0"):
+            print("report: %s durable invocation(s) exited non-zero, so the "
+                  "corpus-only set above is inflated by whatever they did not "
+                  "reach:" % head.strip(), file=sys.stderr)
+            for name in filter(None, names):
+                print("  failed: %s" % name, file=sys.stderr)
+            return 1
     return 0
 
 
