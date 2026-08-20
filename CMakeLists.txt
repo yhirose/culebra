@@ -57,6 +57,17 @@ if(CULEBRA_DEV_O1)
   string(REGEX REPLACE "-O[0-9gsz]+" "-O1"
          CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
 endif()
+# Coverage build for the Phase 4 question in docs/internals/vm.md §7: which
+# of the surface the two compiled engines share — the bytecode compiler, the
+# shared C++ runtime fragments, the shared emitter — is reached only by the
+# generated corpus. That surface is header-only and lands in the driver TU, so
+# the flags go on the `culebra` target alone and vendor targets stay clean.
+# -O0 leaves every `inline` helper a function of its own, which is the
+# granularity the ratchet is keyed on (-fno-inline is belt: nothing here is
+# always_inline, and GCC does not inline at -O0); -fprofile-update=atomic keeps
+# the isolates from losing counts to a non-atomic increment.
+option(CULEBRA_COVERAGE "Instrument the driver for gcov (docs/internals/vm.md)" OFF)
+
 # `just asan` is the one entry point that sanitizes, and it passes the flags
 # through CMAKE_CXX_FLAGS. Decided once here because the driver's link options
 # key off it in two places.
@@ -65,9 +76,18 @@ if(CMAKE_CXX_FLAGS MATCHES "sanitize")
 else()
   set(_culebra_sanitized FALSE)
 endif()
+# Sanitized and coverage builds want the same two things a shipped driver does
+# not: no whole-program transform, and every symbol kept. Deriving it once
+# means a third instrumented mode adds one name here rather than three guards.
+if(_culebra_sanitized OR CULEBRA_COVERAGE)
+  set(_culebra_diagnostic_build TRUE)
+else()
+  set(_culebra_diagnostic_build FALSE)
+endif()
 include(CheckIPOSupported)
 check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_err)
-if(CULEBRA_LTO AND _ipo_supported AND CMAKE_BUILD_TYPE STREQUAL "Release")
+if(CULEBRA_LTO AND NOT _culebra_diagnostic_build AND _ipo_supported
+   AND CMAKE_BUILD_TYPE STREQUAL "Release")
   set(_culebra_enable_lto TRUE)
 else()
   set(_culebra_enable_lto FALSE)
@@ -773,11 +793,20 @@ if(_culebra_enable_lto)
   endif()
 endif()
 
+if(CULEBRA_COVERAGE)
+  target_compile_options(culebra PRIVATE -O0 -fno-inline --coverage
+                                         -fprofile-update=atomic)
+  target_link_options(culebra PRIVATE --coverage)
+endif()
+
 # Shed what a shipped driver never uses. Both halves are what the AOT link has
 # always done to its outputs (src/main.cc: strip_syms, dead_strip); the driver
 # was the one binary still keeping it all. Sanitizer builds opt out of both —
-# the locals and the unreached code are what make their reports readable.
-if(NOT _culebra_sanitized)
+# the locals and the unreached code are what make their reports readable, and
+# a coverage build has a reason of its own: --gc-sections is free to drop the
+# counter section of a function nothing calls, which is the population being
+# measured.
+if(NOT _culebra_diagnostic_build)
   # Local symbols: __LINKEDIT 16.8 -> 4.6 MB, binary 112.7 -> 101.0 MB on macOS
   # arm64 (-Wl,-x since f90a3cc). Not on Windows, whose PE export table is
   # tuned separately below.

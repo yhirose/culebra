@@ -1478,3 +1478,90 @@ would decay; with the ratchet in place a new recipe that launches the
 binary bare aborts the first time it runs. Nothing outside `just`
 changed: a bare `culebra prog.cul` still runs the tree-walker, and
 will until the default flips.
+
+### 13.2 Measuring what only the corpus reaches
+
+Deleting the tree-walker costs the differential oracle: after it, the executor
+and the LLVM lowering consume bytecode from the same compiler, so a bug in the
+compiler — or in a runtime helper, or in the shared emitter — makes both lanes
+give the same wrong answer and the corpus stays green (§7). The question this
+batch answers is how much of that shared surface the hand-maintained suites
+would still hold up if the corpus went away.
+
+`-DCULEBRA_COVERAGE=ON` instruments the driver: `-O0 -fno-inline`, so every
+`inline` helper in the shared headers keeps a body of its own to count, and
+`-fprofile-update=atomic`, because the isolate suite runs counters from several
+threads. The flags go on the `culebra` target alone — the measured surface is
+header-only and lands in that translation unit, so vendor targets stay clean —
+and the build opts out of `--gc-sections`, which is otherwise free to discard
+the counter section of a function nothing calls, which is the population being
+measured.
+
+The surface is keyed on the demangled name, not the file. `vm.h` holds the
+bytecode compiler, the executor and the lowering in one file, and only the
+first is shared fate; `culebra::vm::Compiler::`, `culebra::JIT::` and the
+`culebra_runtime_*` / `culebra::_jit_*` helpers are counted, `vm::Exec::` and
+`vm::Lowering::` are not. That also spares the report a line-range map that
+every edit to `vm.h` would invalidate.
+
+Two profiles, not one: the durable suites and those plus the generated corpus.
+The durable half is the gate's `ci-light` lane — the largest that carries no
+generated corpus — plus the `tests/*_test.sh` CLI scripts, the doctest blocks
+and a `--jit-faststart` pass, each on `--vm` and `--jit` and never on `--tree`,
+which shares neither the compiler nor the runtime. gcda files are written
+through `GCOV_PREFIX` rather than into the build tree, because libgcov's
+read-modify-write is not concurrency-safe; a shim gives every process its own
+prefix and `gcov-tool merge` folds them.
+
+The durable half runs serially, and that is a finding rather than a default.
+Run at `xargs -P 20`, it measured *less* of the runtime than the serial version
+had — 605 live functions against 663 — because twenty instrumented `-O0`
+processes make the load-sensitive suites (the Http server, net, isolate) start
+losing runs. Per-process startup is indeed most of the wall clock, but buying
+it back moves the number being measured, and a measurement that follows machine
+load is not one. The corpus keeps its parallelism: those chunks are pure
+computation, bind no ports and start no children. Thirty-two minutes, most of
+it the `--jit` lane at `-O0`.
+
+| | functions | | | lines | | |
+|---|---|---|---|---|---|---|
+| | total | live | corpus-only | total | live | corpus-only |
+| compiler | 265 | 238 | **0** | 3169 | 3034 | **0** |
+| emitter | 186 | 163 | **0** | 2158 | 1996 | **0** |
+| runtime | 748 | 677 | 10 | 5226 | 4683 | 56 |
+
+**The compiler and the shared emitter have nothing the corpus reaches alone.**
+A function-level zero on its own would prove little — a function both sets
+execute can still hold a branch only the corpus takes — which is why the line
+column is there, and it agrees. Everything the corpus adds is in the runtime:
+56 lines across 21 functions.
+
+They fall into three groups. Canvas audio is the largest (`music_play` through
+`music_resume`, `canvas_target`, two sprite refusal paths) and is a fixture
+question, not a semantics one. Most of the rest are error edges — the
+`TAG_FUNC` and `TAG_SET` arms of `type_error_typed`, the arithmetic guards for
+`/` and unary `-`, `array_set`'s `IndexError`, `Tensor.item`'s arity message,
+the release-on-throw line in `build_variant`. Two are neither: the non-string
+property walk in `culebra_runtime_owned_scope_exit` — the code the cascade fix
+in `82720f5f` rewrote — and shared-view indexing in `sendable_jit.h`, where the
+`KeyError` edge, the object-entry scan and the `Long`/`Bool` key comparison are
+all corpus-only.
+
+Two things the report prints about itself, because a headline of zeros is
+exactly the shape a broken measurement takes. A `SHARED` prefix that matches
+no function at all is an error rather than an empty row — the first run of the
+check retired two prefixes that had stopped existing, one of them removed in
+Phase 3. And the surface is an allowlist, so the report ends with a tally of
+this repo's own functions that no prefix claimed and no exclusion named: 5260
+of them today, led by `culebra::gc`, `_canvas_detail`, `wrap_detail` and
+`iterator_builtins`. Several of those are shared fate on any reading and the
+table above does not yet count them, so the boundary is a live question rather
+than a settled one; printing it every run is what keeps it from becoming
+invisible.
+
+One caveat this measurement cannot answer: coverage is reachability, not
+verification. A line both sets execute is a line the durable suite *runs*, not
+one whose behaviour it pins — an assertion has to exist for that. What the
+zero establishes is narrower and still worth having: after the corpus is
+re-pointed at executor-vs-lowering, the hand-written suites are not walking
+past whole regions of the compiler unexecuted.

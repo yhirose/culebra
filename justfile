@@ -176,6 +176,30 @@ install PREFIX='/usr/local': build
       *) echo "note: $dest is not on your PATH" >&2 ;;
     esac
 
+# Instrumented build for `just coverage`. -O0 and no inlining, so every helper
+# in the shared headers keeps a body of its own to be counted; no LTO, and no
+# --gc-sections (see CULEBRA_COVERAGE in CMakeLists.txt). Its own build dir, and
+# nothing in it is cacheable anyway — the flags are unique to this config.
+[group("test")]
+coverage-build *extra:
+    mkdir -p build-cov
+    cd build-cov && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON \
+        -DCULEBRA_DEV_NO_RT=ON -DCULEBRA_COVERAGE=ON {{extra}} .. > /dev/null
+    cd build-cov && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} culebra
+
+# Which of the surface the two compiled engines share does only the generated
+# corpus reach? Runs the durable suites, then the corpus, on the instrumented
+# binary and prints the difference function by function (docs/internals/vm.md
+# §7, Phase 4 B2). Not part of `just test`: a measurement, not a gate.
+[doc("Rank the shared-engine functions only the generated corpus reaches")]
+[group("test")]
+coverage: coverage-build
+    tools/coverage/run.sh
+    # Written first, then shown: a pipe would swallow the report's exit status.
+    tools/coverage/report.py build-cov/profile > build-cov/corpus_only.txt
+    @head -12 build-cov/corpus_only.txt
+    @echo "coverage: full list in build-cov/corpus_only.txt"
+
 # Build with ASan+UBSan (no-LTO Release) and smoke the JIT GC paths.
 # The conservative stack scanner (scan_range, jit_gc.h) is exempted from
 # ASan via no_sanitize("address"); without that, every JIT GC collect
@@ -211,7 +235,7 @@ asan:
 # Clean build directories + local editor/cache scratch (all regenerable)
 [group("build")]
 clean:
-    rm -rf build build-dev build-gate build-asan build-assert build-no-jit
+    rm -rf build build-dev build-gate build-asan build-assert build-no-jit build-cov
     rm -rf .cache-ccache .zed .vscode .vimspector.json misc/*/.zed
 
 # Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/parser.h
