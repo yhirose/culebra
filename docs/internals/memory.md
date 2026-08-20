@@ -449,12 +449,15 @@ otherwise dead" unambiguously means "leaked" rather than "not yet
 observed to be reachable" — runs the classifier and aborts with the
 leaked object's birth site if it finds one. This runs as a standing
 phase of continuous integration over the full conformance test corpus,
-including every exception-throwing code path, with an explicit
-allowlist for the reference-cycle case (which is not a bug). It is
-restricted to debug, non-LTO builds, because LTO's altered stack
-layout under-reports conservative roots; production builds keep
-reclaiming leaked objects quietly rather than aborting, since an
-abort would itself be a denial-of-service vector in a shipped binary.
+including every exception-throwing code path. It carries an explicit
+allowlist for cases that abort without being bugs — a reference cycle
+is the shape that qualifies — and that list is currently empty: no
+case in the corpus reaches the quiescent point with an inflated
+refcount. It is restricted to debug, non-LTO builds, because LTO's
+altered stack layout under-reports conservative roots; production
+builds keep reclaiming leaked objects quietly rather than aborting,
+since an abort would itself be a denial-of-service vector in a shipped
+binary.
 
 ### 5.3 Distinguishing ownership bugs from rooting gaps
 

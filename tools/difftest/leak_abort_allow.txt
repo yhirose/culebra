@@ -4,14 +4,12 @@
 # CULEBRA_GC_LEAK_ABORT=1 and is structurally out of reach of the current JIT
 # ownership convention. The gate FAILS on any abort whose label is NOT listed
 # here (a new regression); an allowlisted label that stops aborting is reported
-# so this file can shrink. This is now cycle-only — every non-comment line is a
-# legitimate reference cycle (the backstop's job), so the acyclic-leak-freedom
-# milestone is reached. Blank lines and `#` comments are ignored. Regenerate
+# so this file can shrink. Blank lines and `#` comments are ignored. Regenerate
 # the abort set with `just leak-abort-suite-update`, but keep the "why"
 # comments by hand.
-
-# --- legitimate reference cycles (the backstop's job, not RC bugs) -----------
-# A drop-object reachable through a hashable key's back-edge; the cycle balances
-# refcounts so nothing frees it. Same class as leak_baseline.txt's drop| cycles
-# (this one aborts the audit because its residue reads as inflated, not a keep).
-drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; let k = {hash: fn () { 42 }, eq: fn () { true }, back: a}; a[k] = 1 }; g
+#
+# The list is empty: no case in the corpus reaches teardown with an inflated
+# refcount, reference cycles included. The last entry was a drop-object held
+# through a hashable key's back-edge, whose residue used to read as inflated
+# rather than as a keep; it stopped aborting and was removed. Anything that
+# aborts now is a regression, and the gate reports it as one.
