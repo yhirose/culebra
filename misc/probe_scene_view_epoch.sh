@@ -68,8 +68,8 @@ CUL
 
 fail=0
 ref=""
-for backend in "" "--jit"; do
-  tag=${backend:-interp}
+for backend in "--tree" "--jit"; do
+  tag=${backend#--}
   for mode in ctrl late early; do
     shot="$work/$tag.$mode.png"
     if ! xvfb-run -a "$bin" $backend "$work/epoch.cul" "$mode" "$shot" \

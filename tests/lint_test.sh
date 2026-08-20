@@ -14,7 +14,7 @@ fail=0
 # "RAN" never prints and the diagnostic is ImmutableError.
 expect_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  out=$("$CULEBRA" --tree "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *ImmutableError* ]]; then
     echo "FAIL reject [$1]: $out"; fail=1
   fi
@@ -22,7 +22,7 @@ expect_reject() {
 
 expect_accept() {
   printf '%s\n' "$2" > "$TMP/t.cul"
-  if ! out=$("$CULEBRA" "$TMP/t.cul" 2>&1); then
+  if ! out=$("$CULEBRA" --tree "$TMP/t.cul" 2>&1); then
     echo "FAIL accept [$1]: $out"; fail=1
   fi
 }
@@ -32,7 +32,7 @@ expect_accept() {
 # (matching what the JIT already raises at compile time).
 expect_loop_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  out=$("$CULEBRA" --tree "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"outside loop"* ]]; then
     echo "FAIL loop-reject [$1]: $out"; fail=1
   fi
@@ -94,7 +94,7 @@ expect_accept "nested loop in fn"       'for i in [1] {
 # last-wins), so it aborts before eval with "SyntaxError: duplicate parameter".
 expect_dup_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  out=$("$CULEBRA" --tree "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *"duplicate parameter"* ]]; then
     echo "FAIL dup-reject [$1]: $out"; fail=1
   fi
@@ -122,7 +122,7 @@ expect_accept "param shadowed by let"   'fn f(x) { let mut x = 1 }'
 # before eval with "SyntaxError: '<name>' is a reserved name".
 expect_reserved_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  out=$("$CULEBRA" --tree "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *"is a reserved name"* ]]; then
     echo "FAIL reserved-reject [$1]: $out"; fail=1
   fi
@@ -148,7 +148,7 @@ expect_accept "this param"              'fn f(this) { this }'
 # top-level return value goes nowhere).
 expect_syntax_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  out=$("$CULEBRA" --tree "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *"return outside function"* ]]; then
     echo "FAIL return-reject [$1]: $out"; fail=1
   fi
@@ -173,7 +173,7 @@ expect_accept "return in top defer"     'for i in [1] { defer { return } }'
 # of the expected SyntaxError message.
 expect_param_reject() {
   printf 'inspect("RAN")\n%s\n' "$3" > "$TMP/t.cul"
-  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  out=$("$CULEBRA" --tree "$TMP/t.cul" 2>&1)
   if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"$2"* ]]; then
     echo "FAIL param-reject [$1]: $out"; fail=1
   fi
@@ -275,18 +275,18 @@ o[0] = 9'
 # captured by closures there — shadowing one was previously missed by the interp.
 expect_shadow_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  for be in "" "--jit"; do
+  for be in "--tree" "--jit"; do
     out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
     if [[ "$out" == *RAN* || "$out" != *ShadowError* ]]; then
-      echo "FAIL shadow-reject [$1${be:+ jit}]: $out"; fail=1
+      echo "FAIL shadow-reject [$1 ${be#--}]: $out"; fail=1
     fi
   done
 }
 expect_shadow_accept() {
   printf '%s\n' "$2" > "$TMP/t.cul"
-  for be in "" "--jit"; do
+  for be in "--tree" "--jit"; do
     if ! out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1); then
-      echo "FAIL shadow-accept [$1${be:+ jit}]: $out"; fail=1
+      echo "FAIL shadow-accept [$1 ${be#--}]: $out"; fail=1
     fi
   done
 }
@@ -308,19 +308,19 @@ fn f() { let x = 2; x }'
 # catchable runtime error. Load-stage check, so it fires on every backend.
 expect_undef_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  for be in "" "--jit"; do
+  for be in "--tree" "--jit"; do
     out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
     if [[ "$out" == *RAN* || "$out" != *NameError* ||
           "$out" != *"undefined variable"* ]]; then
-      echo "FAIL undef-reject [$1${be:+ jit}]: $out"; fail=1
+      echo "FAIL undef-reject [$1 ${be#--}]: $out"; fail=1
     fi
   done
 }
 expect_undef_accept() {
   printf '%s\n' "$2" > "$TMP/t.cul"
-  for be in "" "--jit"; do
+  for be in "--tree" "--jit"; do
     if ! out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1); then
-      echo "FAIL undef-accept [$1${be:+ jit}]: $out"; fail=1
+      echo "FAIL undef-accept [$1 ${be#--}]: $out"; fail=1
     fi
   done
 }
@@ -359,18 +359,18 @@ inspect(Color.Red)'
 # namespaces, so a static/instance same-name pair stays accepted.
 expect_dup_member_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  for be in "" "--jit"; do
+  for be in "--tree" "--jit"; do
     out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
     if [[ "$out" == *RAN* || "$out" != *"duplicate member"* ]]; then
-      echo "FAIL dup-member reject [$1${be:+ jit}]: $out"; fail=1
+      echo "FAIL dup-member reject [$1 ${be#--}]: $out"; fail=1
     fi
   done
 }
 expect_dup_member_accept() {
   printf '%s\n' "$2" > "$TMP/t.cul"
-  for be in "" "--jit"; do
+  for be in "--tree" "--jit"; do
     if ! out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1); then
-      echo "FAIL dup-member accept [$1${be:+ jit}]: $out"; fail=1
+      echo "FAIL dup-member accept [$1 ${be#--}]: $out"; fail=1
     fi
   done
 }
@@ -384,10 +384,10 @@ expect_dup_member_reject "field/method" 'class A { foo(x){1} foo: Long = 0 }'
 # unreachable / ambiguous — rejected with a distinct message.
 identical_sig_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  for be in "" "--jit"; do
+  for be in "--tree" "--jit"; do
     out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
     if [[ "$out" == *RAN* || "$out" != *"identical signature"* ]]; then
-      echo "FAIL identical-sig reject [$1${be:+ jit}]: $out"; fail=1
+      echo "FAIL identical-sig reject [$1 ${be#--}]: $out"; fail=1
     fi
   done
 }

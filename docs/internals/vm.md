@@ -1414,3 +1414,59 @@ have.
 
 `--vm` and `--vm-dump` stay. The executor is a second engine, and
 neither flag has an equivalent under `--jit`.
+
+## 13. Phase 4: retiring the tree-walker
+
+### 13.1 Naming the engine
+
+The default engine had no name. `--jit` and `--vm` each set a field,
+and the tree-walker was whatever ran when neither did — `vm == Off &&
+!jit`, a definition by exclusion that no caller could spell. That
+costs nothing while the default stays put. Phase 4 moves it, and every
+caller that never said which engine it wanted moves with it in
+silence: a lane that had been measuring the tree-walker starts
+measuring the VM and prints the same OK either way.
+
+So the first batch adds the missing name and then makes its absence
+loud. `--tree` selects the tree-walker explicitly. It is hidden from
+`--help` — it exists for the callers inside this repo, and the
+deletion batch removes it again — and it is parsed outside the
+`CULEBRA_JIT_ENABLED` guard, so the same command line works against
+the no-JIT build, which has exactly one engine to name.
+
+Finding the callers was not a grep. `CULEBRA_REQUIRE_EXPLICIT_ENGINE=1`
+turns an implicit pick into an abort, and the full gate then reports
+them by failing. The check sits at each site that picks a default of
+its own, because there are five and they are unrelated: a script run,
+the REPL, `dap`, the doctest runner and the unit-test runner each
+carry their own `Interp`. `fmt`, `lint`, `docs`, `--ast` and
+`--version` run no user code, so they are never asked.
+
+It aborts rather than exiting non-zero. Several lanes expect a
+non-zero status — the leak-abort suite reads SIGABRT as its own
+signal, the CLI tests assert on `rc` — and a tidy failure exit would
+have been read as the thing those lanes were testing for.
+
+That turned up 105 launches across 24 files: the justfile's interp
+lanes, the difftest generator and its three runners, twelve of the
+fourteen `tests/*.sh`, `dap_test.cc`'s `execlp` of the adapter, the CI
+steps that invoke the binary without going through `just`, and one
+place with no shell in it at all — `tests/isolate/test_proc_share_jit.cul`
+starts child culebra processes through `Proc.run`, and a child
+inherits the variable from its parent. The generator deserves its own
+line: `tools/difftest/gen.cul` is the program that writes the corpus
+every other lane is compared over (§2), so which engine runs it is not
+a detail.
+
+Two of them appeared only under the full gate. `just test-dev` was
+green with `lint_test` and `dap_test` still launching bare, because
+ctest runs in `just test` alone — §12.3 from the other side: what a
+gate measures is not what its name suggests, and the fast lane is a
+subset picked for speed.
+
+The variable is now set by default for every justfile recipe and in
+both workflows, which is the point of the batch. A one-time sweep
+would decay; with the ratchet in place a new recipe that launches the
+binary bare aborts the first time it runs. Nothing outside `just`
+changed: a bare `culebra prog.cul` still runs the tree-walker, and
+will until the default flips.

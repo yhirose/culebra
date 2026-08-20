@@ -13,12 +13,12 @@ fail=0
 
 # A script arriving through a pipe has no size to seek to. Sizing it up front
 # yielded 0 and ran an empty program, exiting 0 with no output at all.
-out=$("$CULEBRA" <(printf 'IO.println("piped")\n') 2>&1); rc=$?
+out=$("$CULEBRA" --tree <(printf 'IO.println("piped")\n') 2>&1); rc=$?
 [[ $rc -eq 0 && "$out" == "piped" ]] || { echo "FAIL pipe: rc=$rc out=$out"; fail=1; }
 
 # A directory opens like a file, so it used to reach the reader and blow up
 # there (a huge seek size, then a throw out of the stream).
-out=$("$CULEBRA" "$TMP" 2>&1); rc=$?
+out=$("$CULEBRA" --tree "$TMP" 2>&1); rc=$?
 [[ $rc -ne 0 ]] || { echo "FAIL dir: expected failure, got rc=0"; fail=1; }
 [[ "$out" == *"can't open"* ]] || { echo "FAIL dir: unexpected message: $out"; fail=1; }
 
@@ -68,18 +68,18 @@ fn fails_three() { assert_eq(5, 6) }
 EOF
 # The path has to be relative and start with a digit — an absolute /tmp/... one
 # fails std::stoi outright and never reproduces the bug.
-out=$(cd "$TMP" && "$CULEBRA" test --bail 3rd_party 2>&1)
+out=$(cd "$TMP" && "$CULEBRA" test --tree --bail 3rd_party 2>&1)
 [[ "$out" == *"0 passed, 1 failed"* ]] || {
   echo "FAIL --bail <path>: the path was read as a count: $(tail -1 <<<"$out")"; fail=1; }
-out=$(cd "$TMP" && "$CULEBRA" test --bail 2 3rd_party 2>&1)
+out=$(cd "$TMP" && "$CULEBRA" test --tree --bail 2 3rd_party 2>&1)
 [[ "$out" == *"0 passed, 2 failed"* ]] || {
   echo "FAIL --bail 2: $(tail -1 <<<"$out")"; fail=1; }
-out=$(cd "$TMP" && "$CULEBRA" test 3rd_party 2>&1)
+out=$(cd "$TMP" && "$CULEBRA" test --tree 3rd_party 2>&1)
 [[ "$out" == *"0 passed, 3 failed"* ]] || {
   echo "FAIL no --bail: $(tail -1 <<<"$out")"; fail=1; }
 # A count that disables bailing while looking like it asks for one is rejected.
 for bad in "--bail=abc" "--bail=0" "--bail=3x"; do
-  out=$("$CULEBRA" test "$bad" "$TMP/3rd_party" 2>&1); rc=$?
+  out=$("$CULEBRA" test --tree "$bad" "$TMP/3rd_party" 2>&1); rc=$?
   [[ $rc -eq 2 && "$out" == *"--bail needs a count"* ]] || {
     echo "FAIL $bad: rc=$rc out=$(tail -1 <<<"$out")"; fail=1; }
 done
@@ -112,7 +112,7 @@ chmod 644 "$TMP/emb/assets/a.txt"
 
 # `culebra -` reads the script from stdin (the Python / Ruby convention),
 # instead of trying to open a file literally named `-`.
-out=$(printf 'IO.println("from stdin")\n' | "$CULEBRA" - 2>&1); rc=$?
+out=$(printf 'IO.println("from stdin")\n' | "$CULEBRA" --tree - 2>&1); rc=$?
 [[ $rc -eq 0 && "$out" == "from stdin" ]] || {
   echo "FAIL culebra -: rc=$rc out=$out"; fail=1; }
 
@@ -124,19 +124,19 @@ fi
 
 # `Sys.script` has no real file to point at when the script came from stdin —
 # it reads back as nil there, same as the REPL.
-out=$(printf 'IO.println(Sys.script)\n' | "$CULEBRA" - 2>&1); rc=$?
+out=$(printf 'IO.println(Sys.script)\n' | "$CULEBRA" --tree - 2>&1); rc=$?
 [[ $rc -eq 0 && "$out" == "nil" ]] || {
   echo "FAIL culebra - Sys.script: rc=$rc out=$out"; fail=1; }
 
 # Arguments after `-` still land in Sys.argv, same as after a real path.
-out=$(printf 'IO.println(Sys.argv)\n' | "$CULEBRA" - a b 2>&1); rc=$?
+out=$(printf 'IO.println(Sys.argv)\n' | "$CULEBRA" --tree - a b 2>&1); rc=$?
 [[ $rc -eq 0 && "$out" == "['a', 'b']" ]] || {
   echo "FAIL culebra - argv: rc=$rc out=$out"; fail=1; }
 
 # A file actually named `-` is unambiguous once it's spelled as a path
 # (`./-`), so bare `-` staying reserved for stdin costs nothing.
 printf 'IO.println("literal dash file")\n' > "$TMP/-"
-out=$(cd "$TMP" && "$CULEBRA" "./-" 2>&1); rc=$?
+out=$(cd "$TMP" && "$CULEBRA" --tree "./-" 2>&1); rc=$?
 [[ $rc -eq 0 && "$out" == "literal dash file" ]] || {
   echo "FAIL ./- : rc=$rc out=$out"; fail=1; }
 

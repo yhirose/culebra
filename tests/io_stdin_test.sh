@@ -48,8 +48,8 @@ LINES_IN=$'alpha\nbeta\ngamma'
 LINES_OUT='[alpha],[beta],[gamma]'
 
 # --- interpreter ---
-check "interp lines" "$LINES_IN" "$LINES_OUT" -- "$CULEBRA" "$TMP/lines.cul"
-check "interp readn" "abcdefgh"  "abcd|efgh"  -- "$CULEBRA" "$TMP/readn.cul"
+check "interp lines" "$LINES_IN" "$LINES_OUT" -- "$CULEBRA" --tree "$TMP/lines.cul"
+check "interp readn" "abcdefgh"  "abcd|efgh"  -- "$CULEBRA" --tree "$TMP/readn.cul"
 
 # --- JIT ---
 check "jit lines" "$LINES_IN" "$LINES_OUT" -- "$CULEBRA" --jit "$TMP/lines.cul"

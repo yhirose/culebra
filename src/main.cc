@@ -185,12 +185,52 @@ struct Options {
   // the LLVM lowering, is what `--jit` runs.
   enum class Vm { Off, Exec, Dump } vm = Vm::Off;
 #endif
+  // `--tree`: name the tree-walking interpreter explicitly. Hidden, and a
+  // no-op while it is still the default — its job is to let a caller say
+  // which engine it means, so `require_explicit_engine` can reject the ones
+  // that never said (docs/internals/vm.md §7, Phase 4). Parsed outside the
+  // JIT guard so the same command line works against a no-JIT build.
+  bool tree = false;
   // The entry script, if one was given. At most one: the first non-flag
   // argument is the script and everything after it is its argv.
   optional<string> script_path;
   vector<string> script_argv;
   string error;  // non-empty: a malformed flag; main reports it and exits
 };
+
+// Did the command line name an engine, rather than take whatever this build
+// defaults to?
+bool engine_named(const Options& options) {
+#ifdef CULEBRA_JIT_ENABLED
+  if (options.jit || options.vm != Options::Vm::Off) return true;
+#endif
+  return options.tree;
+}
+
+// Phase 4 ratchet (docs/internals/vm.md §7). While the tree-walker is still
+// the default, CULEBRA_REQUIRE_EXPLICIT_ENGINE=1 makes every implicit pick a
+// hard failure, so no caller can keep measuring an engine it never named —
+// the switch in Phase 4's B6 moves what a defaulted lane runs. Call it from
+// each site that picks a default of its own; the sites that run no user code
+// (fmt / lint / docs / --ast / --version) have no engine to name.
+// Aborting rather than exiting non-zero is deliberate: lanes that expect a
+// non-zero status (the leak-abort suite) would swallow a clean exit.
+void require_explicit_engine(bool named, const char* site) {
+  // Off by default, but on under every justfile recipe — so unlike the
+  // presence-tested CULEBRA_GC_* knobs this one needs a way to say "no"
+  // (`=0`, or empty, matching CULEBRA_NICE / CULEBRA_GATE_LOCK).
+  static const bool required = []() {
+    const char* v = std::getenv("CULEBRA_REQUIRE_EXPLICIT_ENGINE");
+    return v && *v && std::string_view(v) != "0";
+  }();
+  if (named || !required) return;
+  std::println(stderr,
+               "culebra: CULEBRA_REQUIRE_EXPLICIT_ENGINE is set and {} picked "
+               "an engine by default; name one (--tree / --jit / --vm)",
+               site);
+  std::fflush(stderr);
+  std::abort();
+}
 
 #ifdef CULEBRA_JIT_ENABLED
 // Quote a path so $TMPDIR / paths with spaces survive verbatim through
@@ -1281,6 +1321,7 @@ Options parse_command_line(int argc, const char** argv) {
       if (arg == "--shell") { options.shell = true; continue; }
       if (arg == "--ast") { options.print_ast = true; continue; }
       if (arg == "--debug") { options.debug = true; continue; }
+      if (arg == "--tree") { options.tree = true; continue; }
 #ifdef CULEBRA_JIT_ENABLED
       if (arg == "--jit") { options.jit = true; continue; }
       if (arg == "--jit-faststart") {
@@ -1380,6 +1421,8 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     return true;
   }
 #endif
+
+  require_explicit_engine(engine_named(options), "running a script");
 
   culebra::Value val;
   vector<string> run_msgs;
@@ -1510,6 +1553,7 @@ int run_test(int argc, const char** argv) {
   bool list_only = false;
   bool doc_mode = false;
   auto engine = DocEngine::Interp;
+  bool named = false;
   auto parse_reporter = [&](std::string_view v) {
     if (v == "default") reporter = culebra::Reporter::Default;
     else if (v == "json") reporter = culebra::Reporter::Json;
@@ -1582,11 +1626,15 @@ int run_test(int argc, const char** argv) {
       list_only = true;
     } else if (arg == "--doc") {
       doc_mode = true;
+    } else if (arg == "--tree") {
+      named = true;
 #ifdef CULEBRA_JIT_ENABLED
     } else if (arg == "--jit") {
       engine = DocEngine::Jit;
+      named = true;
     } else if (arg == "--vm") {
       engine = DocEngine::Vm;
+      named = true;
 #endif
     } else if (arg.starts_with("--")) {
       std::println(stderr, "culebra test: unknown option '{}'", arg);
@@ -1596,6 +1644,8 @@ int run_test(int argc, const char** argv) {
     }
   }
   culebra::TestRunSummary summary;
+  require_explicit_engine(named, doc_mode ? "culebra test --doc"
+                                          : "culebra test");
   if (doc_mode) {
     // Doctest mode: extract ` ```culebra ` blocks from Markdown docs and
     // run each in a fresh env. A directory root is walked for `*.md`.
@@ -2091,10 +2141,18 @@ int main(int argc, const char** argv) {
     // args arrive in the `launch` request, not on the command line; the one
     // thing the command line picks is which engine runs it.
     auto engine = culebra::DebugEngineKind::Interp;
+    bool named = false;
+    for (int i = 2; i < argc; i++) {
+      string arg(argv[i]);
+      if (arg == "--tree") named = true;
 #ifdef CULEBRA_JIT_ENABLED
-    for (int i = 2; i < argc; i++)
-      if (string(argv[i]) == "--vm") engine = culebra::DebugEngineKind::Vm;
+      if (arg == "--vm") {
+        engine = culebra::DebugEngineKind::Vm;
+        named = true;
+      }
 #endif
+    }
+    require_explicit_engine(named, "dap");
     culebra::DapServer server(/*in=*/0, /*out=*/1, /*argv=*/{}, engine);
     return server.run();
   }
@@ -2205,6 +2263,7 @@ int main(int argc, const char** argv) {
                                 options.vm == Options::Vm::Dump);
       }
 #endif
+      require_explicit_engine(engine_named(options), "the REPL");
       culebra::repl(env, options.print_ast);
     }
   } catch (const culebra::CulebraError& e) {

@@ -34,7 +34,7 @@ THRESH="${LEAKFUZZ_THRESH:-20}"
 mkdir -p "$WORK"
 
 # Generate cases, then prepend the leak-measuring preamble (not difftest's).
-if ! "$CULEBRA" "$HERE/gen.cul" > "$WORK/cases.cul"; then
+if ! "$CULEBRA" --tree "$HERE/gen.cul" > "$WORK/cases.cul"; then
   echo "leakfuzz: FAIL — generator gen.cul did not run cleanly" >&2; exit 1
 fi
 cases=$(grep -c '^_p(' "$WORK/cases.cul")
@@ -52,7 +52,7 @@ for cf in "${chunks[@]}"; do cat "$HERE/leak_preamble.cul" "$HERE/canvas_fixture
 JOBS="${LEAKFUZZ_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 run_one() {
   local cf="$1" backend="$2"
-  if [ "$backend" = i ]; then CULEBRA_GC_NEVER=1 "$CULEBRA"       "$cf.cul" > "$cf.i" 2>&1
+  if [ "$backend" = i ]; then CULEBRA_GC_NEVER=1 "$CULEBRA" --tree "$cf.cul" > "$cf.i" 2>&1
   else                        CULEBRA_GC_NEVER=1 "$CULEBRA" --jit "$cf.cul" > "$cf.j" 2>&1; fi
 }
 export -f run_one; export CULEBRA

@@ -27,7 +27,7 @@ for pair in "webview_probe:WEBVIEW_PROBE_OK" \
             "webview_pending_quit:WEBVIEW_PROBE_PENDING_QUIT_OK"; do
   probe=${pair%%:*}
   want=${pair#*:}
-  for mode in "" "--jit"; do
+  for mode in "--tree" "--jit"; do
     echo "=== culebra $mode $probe.cul ==="
     set +e
     out=$("$tmo" 60 "$bin" $mode "tests/gui/$probe.cul" 2>&1); rc=$?

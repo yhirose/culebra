@@ -19,7 +19,7 @@ tag="${STRESS:+ (GC_STRESS)}"
 cd "$(dirname "$0")"
 fail=0
 for f in *.cul; do
-  a="$("$BIN" "$f" 2>&1)"; a_rc=$?
+  a="$("$BIN" --tree "$f" 2>&1)"; a_rc=$?
   # A case that fails to PARSE agrees on every lane — they all print the same
   # SyntaxError — so it passes while testing nothing. Two files raise one on
   # purpose (a getter with parameters, a duplicate trait method); both are

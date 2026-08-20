@@ -20,7 +20,7 @@ expected=${3:?}
 label=${4:?}
 
 fail=0
-for mode in "" "--jit" "--vm"; do
+for mode in "--tree" "--jit" "--vm"; do
   echo "=== $exe $mode $script ==="
   out=$(timeout 60 "$exe" $mode "$script" 2>&1); rc=$?
   echo "out=[$out] rc=$rc"
@@ -35,7 +35,7 @@ for mode in "" "--jit" "--vm"; do
         continue
       fi ;;
   esac
-  echo "${label}_${mode:---interp}_FAIL"; fail=1
+  echo "${label}_${mode}_FAIL"; fail=1
 done
 
 echo "=== $exe build $script ==="

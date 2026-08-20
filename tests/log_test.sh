@@ -44,7 +44,7 @@ run_checks() {  # run_checks <label> <stderr-text> <stdout-text>
 }
 
 # interp / JIT: pass the script; AOT: run the prebuilt binary.
-ERR="$("$CULEBRA" "$TMP/w.cul" 2>"$TMP/err")"; run_checks interp "$(cat "$TMP/err")" "$ERR"
+ERR="$("$CULEBRA" --tree "$TMP/w.cul" 2>"$TMP/err")"; run_checks interp "$(cat "$TMP/err")" "$ERR"
 ERR="$("$CULEBRA" --jit "$TMP/w.cul" 2>"$TMP/err")"; run_checks jit "$(cat "$TMP/err")" "$ERR"
 
 if "$CULEBRA" build "$TMP/w.cul" -o "$TMP/w_aot" >/dev/null 2>&1; then

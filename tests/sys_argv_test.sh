@@ -31,7 +31,7 @@ check() {  # check <label> <expected> <actual>
 want="argv=['a', 'b c', '--x']
 isolate=['a', 'b c', '--x']"
 
-out=$("$CULEBRA" "$TMP/argv.cul" a "b c" --x 2>&1)
+out=$("$CULEBRA" --tree "$TMP/argv.cul" a "b c" --x 2>&1)
 check interp "$want" "$out"
 
 out=$("$CULEBRA" --jit "$TMP/argv.cul" a "b c" --x 2>&1)
@@ -40,7 +40,7 @@ check jit "$want" "$out"
 # No trailing arguments: empty, not the culebra flags or the script path.
 none="argv=[]
 isolate=[]"
-out=$("$CULEBRA" "$TMP/argv.cul" 2>&1)
+out=$("$CULEBRA" --tree "$TMP/argv.cul" 2>&1)
 check "interp (none)" "$none" "$out"
 out=$("$CULEBRA" --jit "$TMP/argv.cul" 2>&1)
 check "jit (none)" "$none" "$out"

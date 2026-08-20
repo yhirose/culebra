@@ -47,7 +47,7 @@ for f in "${files[@]}"; do
         echo "perf: $f missing '# perf: min_speedup N' directive in header" >&2
         exit 2
     fi
-    t_interp=$({ /usr/bin/time -p "$BIN"       "$f" > /dev/null; } 2>&1 | awk '/^real/ {print $2}')
+    t_interp=$({ /usr/bin/time -p "$BIN" --tree "$f" > /dev/null; } 2>&1 | awk '/^real/ {print $2}')
     t_jit=$(   { /usr/bin/time -p "$BIN" --jit "$f" > /dev/null; } 2>&1 | awk '/^real/ {print $2}')
     speedup=$(awk -v i="$t_interp" -v j="$t_jit" 'BEGIN {
         if (j+0 == 0) print "inf"; else printf "%.2f", i/j

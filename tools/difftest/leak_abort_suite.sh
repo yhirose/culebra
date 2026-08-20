@@ -54,7 +54,7 @@ for bf in "$HERE"/leak_abort_bare.d/*.cul; do
   name=$(basename "$bf")
   grep -qx "$name" "$BARE_ALLOW" 2>/dev/null && allowed=1 || allowed=0
   bi=$(CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1 ASAN_OPTIONS=detect_leaks=0 \
-         "$CULEBRA" "$bf" 2>&1); bi_rc=$?
+         "$CULEBRA" --tree "$bf" 2>&1); bi_rc=$?
   bj=$(CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1 ASAN_OPTIONS=detect_leaks=0 \
          "$CULEBRA" --jit "$bf" 2>&1); bj_rc=$?
   # SIGABRT (134) is the audit firing; anything else is the program's own exit.
@@ -79,7 +79,7 @@ done
 # Generate cases, then chunk. Chunk size balances JIT compile time against the
 # per-case fallback cost (a bigger chunk clears more clean cases per process but
 # means more solo re-runs when it aborts). 471 keeps ~12 chunks over the corpus.
-if ! "$CULEBRA" "$HERE/gen.cul" > "$WORK/cases.cul"; then
+if ! "$CULEBRA" --tree "$HERE/gen.cul" > "$WORK/cases.cul"; then
   echo "leak-abort-suite: FAIL — generator gen.cul did not run cleanly" >&2; exit 1
 fi
 cases=$(grep -c '^_p(' "$WORK/cases.cul")

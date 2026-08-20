@@ -13,7 +13,7 @@ fail=0
 export CULEBRA_HISTFILE="$TMP/history"
 
 # Feed lines to the REPL and capture everything it wrote.
-repl() { printf '%s\n' "$@" | "$CULEBRA" 2>&1; }
+repl() { printf '%s\n' "$@" | "$CULEBRA" --tree 2>&1; }
 
 # A nil result is not echoed. `println` writes its own line and evaluates to
 # nil; echoing that doubled every line of output ("hello" then "nil").
@@ -56,7 +56,7 @@ out=$(repl "undefined_name" "1 + 1")
 parity() {
   local label=$1; shift
   local a b
-  a=$(printf '%s\n' "$@" | "$CULEBRA" 2>&1)
+  a=$(printf '%s\n' "$@" | "$CULEBRA" --tree 2>&1)
   b=$(printf '%s\n' "$@" | "$CULEBRA" --vm 2>&1)
   if [[ "$a" != "$b" ]]; then
     echo "FAIL vm parity [$label]"

@@ -19,7 +19,7 @@ check_same() {
   local name="$1" prog="$2"
   printf '%s\n' "$prog" > "$TMP/t.cul"
   local out_i out_j
-  out_i=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  out_i=$("$CULEBRA" --tree "$TMP/t.cul" 2>&1)
   out_j=$("$CULEBRA" --jit "$TMP/t.cul" 2>&1)
   if [[ "$out_i" != "$out_j" ]]; then
     echo "FAIL [$name]: interp/jit diverge"
@@ -38,7 +38,7 @@ check_eq() {
   local name="$1" prog="$2"
   printf '%s\n' "$prog" > "$TMP/t.cul"
   local out_i out_j
-  out_i=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  out_i=$("$CULEBRA" --tree "$TMP/t.cul" 2>&1)
   out_j=$("$CULEBRA" --jit "$TMP/t.cul" 2>&1)
   if [[ "$out_i" != "$out_j" ]]; then
     echo "FAIL [$name]: interp/jit diverge"
@@ -247,7 +247,7 @@ check_same "range iter unbounded"     'let x = (0..).iter()'
 # wrapped entry point. Every case fails offline (refused / unbound / bad path).
 # Skipped when the binary was built without Http.
 printf 'Http\n' > "$TMP/probe.cul"
-if "$CULEBRA" "$TMP/probe.cul" >/dev/null 2>&1; then
+if "$CULEBRA" --tree "$TMP/probe.cul" >/dev/null 2>&1; then
   check_same "client transport"      'let c = Http.client("http://127.0.0.1:1")
 c.get("/")'
   # `into` is checked by a helper shared with the Http.* adapters, which throw

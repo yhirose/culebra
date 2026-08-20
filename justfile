@@ -31,6 +31,16 @@ export CCACHE_BASEDIR := justfile_directory()
 # window by invoking the binary directly, or with CULEBRA_CANVAS_HEADLESS=0.
 export CULEBRA_CANVAS_HEADLESS := env_var_or_default("CULEBRA_CANVAS_HEADLESS", "1")
 
+# Make every recipe name the engine it runs on. The tree-walker is still the
+# default (docs/internals/vm.md §7, Phase 4), so a lane that launches culebra
+# bare picks one by accident — and the switch in B6 would silently move what
+# such a lane measures. With this set an implicit pick aborts instead: `--tree`
+# names the tree-walker, `--jit` / `--vm` the compiled lanes. On by default so
+# a new recipe cannot reintroduce a bare launch unnoticed; set the variable to
+# 0 to opt out. Only recipes get it — a bare `./build/culebra prog.cul` in a
+# shell is unaffected either way.
+export CULEBRA_REQUIRE_EXPLICIT_ENGINE := env_var_or_default("CULEBRA_REQUIRE_EXPLICIT_ENGINE", "1")
+
 # List recipes
 default:
     @just --list
@@ -252,7 +262,7 @@ test BACKEND='all': check-generated build-gate
 [doc("Fast inner-loop tests vs build-dev/ (no LTO). BACKEND=fast|interp|jit|isolate (default: fast).")]
 [group("test")]
 test-dev BACKEND='fast': check-generated dev
-    @./build-dev/culebra misc/gen_quick_guide.cul --check
+    @./build-dev/culebra --tree misc/gen_quick_guide.cul --check
     @BIN=./build-dev/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
 
 # The same sweep as test-dev against the assert-enabled binary (`just
@@ -346,7 +356,7 @@ _run-tests BACKEND:
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"
             name=$(basename "$f" .cul)
-            if ! cul "$f" > "$d/$name.out" 2> "$d/$name.err"; then
+            if ! cul --tree "$f" > "$d/$name.out" 2> "$d/$name.err"; then
                 touch "$d/$name.fail"
             fi
         ' _ '{}' "$d"
@@ -377,7 +387,7 @@ _run-tests BACKEND:
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"; jit_out="$3"
             name=$(basename "$f" .cul)
-            out_interp=$(cul "$f" 2> "$d/$name.interp.err") || \
+            out_interp=$(cul --tree "$f" 2> "$d/$name.interp.err") || \
                 { touch "$d/$name.fail"; echo "interp crashed for $f:" > "$d/$name.err"; \
                   cat "$d/$name.interp.err" >> "$d/$name.err"; exit 0; }
             out_jit=$(cul --jit "$f" 2> "$d/$name.jit.err") || \
@@ -480,7 +490,7 @@ _run-tests BACKEND:
             # (nice reporting it cannot setpriority, say) read as a codegen
             # mismatch on every file; and stderr is half of what interp/JIT
             # symmetry is about, so it belongs in the comparison anyway.
-            ref=$(cul "$f" 2>&1) || {
+            ref=$(cul --tree "$f" 2>&1) || {
                 echo "interp failed: $f" > "$d/$name.err"; touch "$d/$name.fail"; exit 0
             }
             got=$(cul $flags "$f" 2>&1) || {
@@ -617,12 +627,12 @@ _run-tests BACKEND:
     # @parametrize). The subdir layout keeps these out of the
     # `tests/*.cul` glob that direct interp/JIT runs use.
     run_culebra_test_self() {
-        cul test tests/culebra_test_self/ > /dev/null
+        cul test --tree tests/culebra_test_self/ > /dev/null
         # Sanity-check the JSON reporter: final line is a run_end with
         # failed=0 and errored_files=0; every other line begins with
         # one of the documented event tags.
         local last
-        last=$(cul test --reporter json tests/culebra_test_self/ | tail -1)
+        last=$(cul test --tree --reporter json tests/culebra_test_self/ | tail -1)
         case "$last" in
             *'"event":"run_end"'*'"failed":0'*'"errored_files":0'*) ;;
             *) echo "json reporter: bad run_end line: $last" >&2; exit 1 ;;
@@ -633,7 +643,7 @@ _run-tests BACKEND:
         # because the test fails by design — what matters is that the
         # runner itself doesn't crash.
         local throw_out
-        throw_out=$(cul test --reporter json \
+        throw_out=$(cul test --tree --reporter json \
             tests/culebra_test_throw_self/ 2>&1) || true
         case "$throw_out" in
             *'"event":"test_fail"'*'"kind":"RawThrowKind"'*'"event":"run_end"'*) ;;
@@ -669,7 +679,7 @@ _run-tests BACKEND:
             case "$mode" in
                 jit|overcap-jit) flag=--jit ;;
                 vm|overcap-vm)   flag=--vm ;;
-                *)               flag= ;;
+                *)               flag=--tree ;;
             esac
             [[ $mode == overcap-* ]] && export CULEBRA_ISOLATE_LIMIT=1
             cul $flag "$f" > /dev/null 2> "$d/$name.err" || {
@@ -993,10 +1003,10 @@ doctest LANE="all": build
       ./build/culebra test --doc "$@" tests/doctest docs | tail -1
     }
     case "{{LANE}}" in
-      interp) run_lane interp ;;
+      interp) run_lane interp --tree ;;
       vm)     run_lane vm --vm ;;
       jit)    run_lane jit --jit ;;
-      all)    run_lane interp; run_lane vm --vm; run_lane jit --jit ;;
+      all)    run_lane interp --tree; run_lane vm --vm; run_lane jit --jit ;;
       *) echo "doctest: unknown lane '{{LANE}}' (expected: interp|vm|jit|all)" >&2; exit 2 ;;
     esac
 
@@ -1007,12 +1017,12 @@ doctest LANE="all": build
 [doc("Regenerate the signature index in docs/quick-guide.md (en+ja)")]
 [group("docs")]
 gen-quick-guide: build
-    ./build/culebra misc/gen_quick_guide.cul
+    ./build/culebra --tree misc/gen_quick_guide.cul
 
 [doc("Fail if docs/quick-guide.md's signature index is stale")]
 [group("docs")]
 check-quick-guide: build
-    ./build/culebra misc/gen_quick_guide.cul --check
+    ./build/culebra --tree misc/gen_quick_guide.cul --check
 
 # Differential test: generate the template-combinator corpus (tools/difftest)
 # and assert interp == jit byte-for-byte over every case. Enumerates the full
@@ -1090,7 +1100,7 @@ perf: build
 [doc("Run microgpt 5 training steps on both backends (large-scale JIT smoke)")]
 [group("bench")]
 smoke-microgpt: build fetch-names
-    ./build/culebra       benchmarks/microgpt/microgpt.cul 5 0 > /dev/null
+    ./build/culebra --tree benchmarks/microgpt/microgpt.cul 5 0 > /dev/null
     ./build/culebra --jit benchmarks/microgpt/microgpt.cul 5 0 > /dev/null
     @echo "smoke-microgpt OK: 5 steps completed on both backends"
 

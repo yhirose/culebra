@@ -28,7 +28,7 @@ if ! "$CULEBRA" wrap "$ROOT/examples/wrap/vec2_binding.cpp" -o "$EXT"; then
 fi
 
 DEMO="$ROOT/examples/wrap/demo.cul"
-if ! "$EXT" "$DEMO" > "$OUT/interp.txt" 2>&1; then
+if ! "$EXT" --tree "$DEMO" > "$OUT/interp.txt" 2>&1; then
   echo "wrap_test FAIL: extended binary (interp) crashed:" >&2
   cat "$OUT/interp.txt" >&2
   exit 1
@@ -45,7 +45,7 @@ fi
 
 # The stock binary must NOT know the wrapped namespace (proves the
 # binding came from the declaration, not from the core).
-if "$CULEBRA" "$DEMO" > /dev/null 2>&1; then
+if "$CULEBRA" --tree "$DEMO" > /dev/null 2>&1; then
   echo "wrap_test FAIL: stock binary unexpectedly resolves Geo.Vec2" >&2
   exit 1
 fi

@@ -293,14 +293,14 @@ check_repl() {
 # --- interpreter ---
 run_interp_group() {
   fail=0
-  check "interp uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" "$TMP/uncaught.cul"
-  check "interp caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" "$TMP/caught.cul"
-  check "interp iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" "$TMP/iterdispose.cul"
-  check_stdin "interp stdin" -- "$CULEBRA" "$TMP/stdin.cul"
-  check_http  "interp http"  -- "$CULEBRA" "$TMP/http.cul"
-  check_proc  "interp proc"  -- "$CULEBRA" "$TMP/proc.cul"
-  check_signotify "interp signotify" -- "$CULEBRA" "$TMP/signotify.cul"
-  check_repl  "interp repl" 1.5 -- "$CULEBRA"
+  check "interp uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" --tree "$TMP/uncaught.cul"
+  check "interp caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" --tree "$TMP/caught.cul"
+  check "interp iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" --tree "$TMP/iterdispose.cul"
+  check_stdin "interp stdin" -- "$CULEBRA" --tree "$TMP/stdin.cul"
+  check_http  "interp http"  -- "$CULEBRA" --tree "$TMP/http.cul"
+  check_proc  "interp proc"  -- "$CULEBRA" --tree "$TMP/proc.cul"
+  check_signotify "interp signotify" -- "$CULEBRA" --tree "$TMP/signotify.cul"
+  check_repl  "interp repl" 1.5 -- "$CULEBRA" --tree
   exit $fail
 }
 

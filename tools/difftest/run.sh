@@ -47,7 +47,7 @@ VM_SKIP_CEILING="$HERE/vm_skip_ceiling.txt"
 CHUNK="${DIFFTEST_CHUNK:-400}"
 
 # Generate cases (the static probe preamble is prepended per chunk below).
-if ! "$CULEBRA" "$HERE/gen.cul" > "$WORK/cases.cul"; then
+if ! "$CULEBRA" --tree "$HERE/gen.cul" > "$WORK/cases.cul"; then
   echo "difftest: FAIL — generator gen.cul did not run cleanly" >&2
   exit 1
 fi
@@ -88,7 +88,7 @@ JOBS="${DIFFTEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 # stdout is the same rearrangement on every lane, so the byte diff stays
 # exact and the error text is still compared.
 run_one() {
-  local cf="$1" backend="$2" flag=""
+  local cf="$1" backend="$2" flag="--tree"
   case "$backend" in
     j) flag="--jit" ;;
     v) flag="--vm" ;;

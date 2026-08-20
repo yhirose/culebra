@@ -45,14 +45,14 @@ run_ok() {  # run_ok <label> <expected-stdout> <culebra-args...>
 for shape in "[ ]" "{ }" "( )"; do
   set -- $shape
   deep "$1" "$2" 20000 > "$TMP/deep.cul"
-  for cmd in "" "fmt --check" "lint"; do
+  for cmd in "--tree" "fmt --check" "lint"; do
     out=$("$CULEBRA" $cmd "$TMP/deep.cul" 2>&1)
     rc=$?
     if [ $rc -ge 128 ] && [ $rc -lt 255 ]; then
-      echo "FAIL ${cmd:-run} deep '$1': died with signal (rc=$rc), expected a diagnostic"
+      echo "FAIL $cmd deep '$1': died with signal (rc=$rc), expected a diagnostic"
       fail=1
     elif ! printf '%s' "$out" | grep -q "nesting too deep"; then
-      echo "FAIL ${cmd:-run} deep '$1': expected 'nesting too deep', got: ${out:0:120}"
+      echo "FAIL $cmd deep '$1': expected 'nesting too deep', got: ${out:0:120}"
       fail=1
     fi
   done
@@ -60,7 +60,7 @@ done
 
 # --- realistic generated nesting still parses and runs ---------------------
 deep "[" "]" 500 > "$TMP/ok.cul"
-run_ok "500-deep array" 1 "$TMP/ok.cul"
+run_ok "500-deep array" 1 --tree "$TMP/ok.cul"
 run_ok "500-deep array (jit)" 1 --jit "$TMP/ok.cul"
 
 # --- nesting that parses must not backtrack exponentially ------------------
@@ -70,7 +70,7 @@ run_ok "500-deep array (jit)" 1 --jit "$TMP/ok.cul"
 # re-parse PATTERN at the same position. 200 parens took 2^200 steps until
 # peglib's packrat filter started memoizing across a shared prefix.
 deep "(" ")" 200 > "$TMP/paren.cul"
-run_ok "200-deep parens" 1 "$TMP/paren.cul"
+run_ok "200-deep parens" 1 --tree "$TMP/paren.cul"
 
 # The same tower through TUPLE_PATTERN itself: nested single-element tuples,
 # pattern and value alike.
@@ -81,7 +81,7 @@ run_ok "200-deep parens" 1 "$TMP/paren.cul"
   printf '(%.0s' $(seq 1 100); printf '1'; printf ',)%.0s' $(seq 1 100)
   printf '\nIO.println(a)\n'
 } > "$TMP/tuple.cul"
-run_ok "100-deep tuple pattern" 1 "$TMP/tuple.cul"
+run_ok "100-deep tuple pattern" 1 --tree "$TMP/tuple.cul"
 
 # --- flat width is not depth: long operator chains stay fine ---------------
 {
@@ -89,7 +89,7 @@ run_ok "100-deep tuple pattern" 1 "$TMP/tuple.cul"
   printf '1+%.0s' $(seq 1 50000)
   printf '1\nIO.println(x)\n'
 } > "$TMP/wide.cul"
-run_ok "50k-term chain" 50001 "$TMP/wide.cul"
+run_ok "50k-term chain" 50001 --tree "$TMP/wide.cul"
 
 if [ $fail -eq 0 ]; then
   echo "parse_depth_test OK"

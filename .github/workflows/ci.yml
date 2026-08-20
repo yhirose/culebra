@@ -27,6 +27,16 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
+# Every step that launches culebra must name the engine it means. The
+# tree-walker is still the default (docs/internals/vm.md §7, Phase 4), so a
+# bare launch measures whatever the default happens to be — and the switch in
+# B6 would move that silently. With this set an implicit pick aborts instead;
+# `--tree` names the tree-walker, `--jit` / `--vm` the compiled lanes. The
+# justfile sets the same variable for its recipes: this covers the steps that
+# invoke the binary directly.
+env:
+  CULEBRA_REQUIRE_EXPLICIT_ENGINE: "1"
+
 jobs:
   # Ubuntu used to be one job (build + `_run-tests all`), and on the 4-core
   # standard runner that serialized ~24 min of test phases behind the build,
@@ -134,7 +144,7 @@ jobs:
       # above instead of re-running `just build` without the ccache flags.
       - name: Doctest (docs examples, interp + VM + JIT)
         run: |
-          ./build/culebra test --doc tests/doctest docs
+          ./build/culebra test --doc --tree tests/doctest docs
           ./build/culebra test --doc --vm tests/doctest docs
           ./build/culebra test --doc --jit tests/doctest docs
 
@@ -142,7 +152,7 @@ jobs:
       # and stdlib.md; fail if a reference edit landed without regenerating
       # it.
       - name: Check the generated signature index (docs/quick-guide.md)
-        run: ./build/culebra misc/gen_quick_guide.cul --check
+        run: ./build/culebra --tree misc/gen_quick_guide.cul --check
 
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
@@ -353,7 +363,7 @@ jobs:
 
       - name: Doctest (docs examples, interp + VM + JIT)
         run: |
-          ./build/culebra test --doc tests/doctest docs
+          ./build/culebra test --doc --tree tests/doctest docs
           ./build/culebra test --doc --vm tests/doctest docs
           ./build/culebra test --doc --jit tests/doctest docs
 
@@ -495,11 +505,11 @@ jobs:
         run: |
           fail=0
           for t in tests/test_canvas.cul tests/test_canvas_module.cul; do
-            for flag in "" "--jit"; do
+            for flag in "--tree" "--jit"; do
               if ./build/culebra $flag "$t" > /dev/null; then
-                echo "PASS $t${flag:+ (jit)}"
+                echo "PASS $t ($flag)"
               else
-                echo "::error::FAIL $t${flag:+ (jit)}"; fail=1
+                echo "::error::FAIL $t ($flag)"; fail=1
               fi
             done
           done
@@ -533,7 +543,7 @@ jobs:
           println("window ok")
           EOF
           out=$(CULEBRA_CANVAS_HEADLESS=0 LIBGL_ALWAYS_SOFTWARE=1 \
-            xvfb-run -a ./build/culebra canvas_window.cul)
+            xvfb-run -a ./build/culebra --tree canvas_window.cul)
           [ "$out" = "window ok" ] || { echo "::error::windowed run: [$out]" >&2; exit 1; }
           echo "OK: window opened and presented"
 
@@ -699,9 +709,9 @@ jobs:
           sudo mv /usr/lib/x86_64-linux-gnu/libgtk-4.so.1 /tmp/gtk.hidden
           ./build/culebra --version || { echo "::error::the driver needs the engine to start" >&2; exit 1; }
           echo 'println("no window here")' > plain.cul
-          out=$(./build/culebra plain.cul)
+          out=$(./build/culebra --tree plain.cul)
           [ "$out" = "no window here" ] || { echo "::error::plain program: [$out]" >&2; exit 1; }
-          out=$(timeout 60 ./build/culebra tests/gui/webview_probe.cul 2>&1 || true)
+          out=$(timeout 60 ./build/culebra --tree tests/gui/webview_probe.cul 2>&1 || true)
           case "$out" in
             *"failed to create window"*) echo "OK: starts, runs, and fails only at the window" ;;
             *) echo "::error::expected the create-window failure, got: [$out]" >&2; exit 1 ;;
@@ -908,7 +918,7 @@ jobs:
           EOF
           # Bound the run so a future regression that deadlocks fails the step in
           # ~90s (exit 124) instead of hanging the whole job to its timeout.
-          timeout 90 ./build-win/culebra.exe smoke.cul
+          timeout 90 ./build-win/culebra.exe --tree smoke.cul
 
       # Phase 3: cross-process SharedBuffer via CreateFileMapping + MapViewOfFile
       # + a named mutex (POSIX uses mmap + fd inheritance + an in-region
@@ -973,7 +983,7 @@ jobs:
 
           print("sharedbuffer cross-process ok")
           EOF
-          timeout 90 ./build-win/culebra.exe sb_parent.cul
+          timeout 90 ./build-win/culebra.exe --tree sb_parent.cul
 
   # Windows in-process JIT (Phase 4). Builds culebra with CULEBRA_ENABLE_JIT ON
   # under the mingw LLVM toolchain and runs a regression smoke over every codegen
@@ -1358,13 +1368,13 @@ jobs:
         run: |
           set +e  # as above: keep the captured output printable
           printf '_Canvas.init(8, 8)\nprint(_Canvas.windowed())\n' > win.cul
-          out=$(timeout 60 ./build-win-aot/culebra.exe win.cul 2>&1); rc=$?
+          out=$(timeout 60 ./build-win-aot/culebra.exe --tree win.cul 2>&1); rc=$?
           echo "out=[$out] rc=$rc"
           if [ $rc -ne 0 ]; then
             echo "ERROR: window probe exited $rc (124 = hung, 139 = crashed)" >&2
             # Where it died, so a crash here is actionable from the log alone
             # rather than costing a round trip to find out.
-            gdb -batch -ex run -ex bt --args ./build-win-aot/culebra.exe win.cul \
+            gdb -batch -ex run -ex bt --args ./build-win-aot/culebra.exe --tree win.cul \
               2>&1 | tail -30
             exit 1
           fi
@@ -1450,7 +1460,7 @@ jobs:
           for f in tests/test_http.cul tests/test_http_server.cul; do
             name=$(basename "$f" .cul)
             echo "=== $f ==="
-            out_interp=$(timeout 60 ./build-win-aot/culebra.exe "$f" 2>&1)
+            out_interp=$(timeout 60 ./build-win-aot/culebra.exe --tree "$f" 2>&1)
             rc_interp=$?
             out_jit=$(timeout 60 ./build-win-aot/culebra.exe --jit "$f" 2>&1)
             rc_jit=$?
@@ -1602,12 +1612,12 @@ jobs:
           fail=0
           run() {  # $1=label $2=source $3=expected
             printf '%s' "$2" > p.cul
-            for flag in "" "--jit"; do
+            for flag in "--tree" "--jit"; do
               out=$(./build-arch-jit/culebra $flag p.cul 2>&1); rc=$?
               if [ "$out" = "$3" ]; then
-                echo "${1}${flag:+_JIT}_PASS"
+                echo "${1}_${flag#--}_PASS"
               else
-                echo "${1}${flag:+_JIT}_FAIL out=[$out] rc=$rc"
+                echo "${1}_${flag#--}_FAIL out=[$out] rc=$rc"
                 fail=1
               fi
             done
