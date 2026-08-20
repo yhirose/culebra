@@ -1,14 +1,12 @@
 #pragma once
 
-#ifdef CULEBRA_JIT_ENABLED
-
 // JIT value model: Shape / JitValue / JitArray / JitTensor / JitObject /
 // JitCell / JitClosure / JitSet, hash & equality functors, the cycle
 // collector callbacks and the backstop-GC heap glue.
 //
-// Runtime-layer fragment of jit.h, split out for readability. These
-// fragments rely on jit.h's #include block and are included by jit.h in a
-// fixed sequence (see jit.h); they are not standalone headers.
+// Runtime-layer fragment of rt.h, split out for readability. These
+// fragments rely on rt.h's #include block and are included by rt.h in a
+// fixed sequence (see rt.h); they are not standalone headers.
 
 namespace culebra {
 
@@ -772,6 +770,3 @@ inline culebra::gc::Heap& _gc_heap() {
   }
   return h;
 }
-
-
-#endif  // CULEBRA_JIT_ENABLED

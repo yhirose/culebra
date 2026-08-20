@@ -27,11 +27,9 @@
 #include <string>
 #include <vector>
 
-#ifdef CULEBRA_JIT_ENABLED
 #include <stdlib_jit.h>
 #include <vm.h>
 #include <vm_debug.h>
-#endif
 
 namespace culebra {
 
@@ -346,8 +344,6 @@ class InterpDebugEngine : public DebugEngine {
   bool evaluating_ = false;
 };
 
-#ifdef CULEBRA_JIT_ENABLED
-
 // ---------------------------------------------------------------------------
 // The bytecode VM's executor
 //
@@ -446,17 +442,11 @@ class VmDebugEngine : public DebugEngine {
   VmDebugSession session_;
 };
 
-#endif  // CULEBRA_JIT_ENABLED
-
 // Which engine `culebra dap` debugs on.
 enum class DebugEngineKind { Interp, Vm };
 
 inline std::unique_ptr<DebugEngine> make_debug_engine(DebugEngineKind kind) {
-#ifdef CULEBRA_JIT_ENABLED
   if (kind == DebugEngineKind::Vm) return std::make_unique<VmDebugEngine>();
-#else
-  (void)kind;
-#endif
   return std::make_unique<InterpDebugEngine>();
 }
 

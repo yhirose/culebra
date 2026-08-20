@@ -21,7 +21,7 @@
 #include <unordered_map>
 
 #include "isolate.h"  // IsolateCore, sendable::SendNode, isolate_cap, g_live_isolates
-#include "jit.h"      // JitValue and the runtime constructors
+#include "rt.h"       // JitValue and the runtime constructors
 
 namespace culebra {
 

@@ -10,10 +10,11 @@
 
 #include <culebra.h>
 #include <stdlib_interp.h>
+#include <stdlib_jit.h>
 
+// The AOT entry itself, which only a build that can emit an object needs.
 #ifdef CULEBRA_JIT_ENABLED
 #include <runtime/runtime_aot.h>
-#include <stdlib_jit.h>
 #endif
 
 // Link anchor for the Shared.new view readers — the AOT counterpart of the one

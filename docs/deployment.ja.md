@@ -231,7 +231,7 @@ Runtimeに紐付いています。
 
 ### Runtime ごとの拡張フック
 
-`JIT::install_extension()`（およびそのラッパー
+`culebra::install_extension()`（およびそのラッパー
 `culebra::install_jit_stdlib()`）は、現在アクティブなRuntimeを
 ターゲットにします。これにより、Runtimeごとに異なるホストAPIを
 公開できます:

@@ -244,13 +244,16 @@ jobs:
       - name: Test (${{ matrix.lane }})
         run: BIN=./build/culebra just _run-tests ${{ matrix.lane }}
 
-  # Interpreter-only build gate (CULEBRA_ENABLE_JIT=OFF). The `culebra`
-  # driver is the one TU with #ifdef CULEBRA_JIT_ENABLED gating, so a
-  # mismatched guard there breaks the no-JIT build while the default JIT
-  # build stays green. Ubuntu-only — the breakage is compiler/define driven,
-  # not platform-specific. Its own job with its own ccache key: the JIT
-  # define flips every ccache key, so this build shares nothing with
-  # build-ubuntu's cache and would only churn it from inside that job.
+  # No-LLVM gate (CULEBRA_ENABLE_JIT=OFF). The `culebra` driver is the one TU
+  # with #ifdef CULEBRA_JIT_ENABLED gating, so a mismatched guard there breaks
+  # this build while the default JIT build stays green. It runs as well as
+  # builds: such a binary has two engines (the tree-walker and the bytecode
+  # VM's executor), and only executing a program on the second one proves the
+  # VM stayed out of the LLVM guard. Ubuntu-only — the breakage is
+  # compiler/define driven, not platform-specific. Its own job with its own
+  # ccache key: the JIT define flips every ccache key, so this build shares
+  # nothing with build-ubuntu's cache and would only churn it from inside
+  # that job.
   build-no-jit:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -278,8 +281,8 @@ jobs:
           restore-keys: |
             linux-nojit-ccache-
 
-      - name: Build (interpreter only, no JIT)
-        run: just build-no-jit
+      - name: Build and run (no LLVM)
+        run: just test-no-jit
 
       - name: Report ccache stats
         run: ccache -s
@@ -776,7 +779,7 @@ jobs:
       - name: Report ccache stats
         run: ccache -s || true
 
-  # Windows port — interpreter-only driver (no JIT/AOT) with the OS-heavy
+  # Windows port — the no-LLVM driver (no JIT/AOT) with the OS-heavy
   # optional features off, proving the core language + stdlib + SQLite compile
   # and run on Windows. Phase 1 landed the core; Phase 2 added Proc (subprocess)
   # and Term (terminal raw-mode); Phase 3 added cross-process SharedBuffer
@@ -824,7 +827,7 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-zlib
 
-      - name: Configure (interpreter only, static, Phase 1 feature set)
+      - name: Configure (no LLVM, static, Phase 1 feature set)
         run: |
           cmake -S . -B build-win -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \

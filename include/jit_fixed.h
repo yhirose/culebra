@@ -1,14 +1,12 @@
 #pragma once
 
-#ifdef CULEBRA_JIT_ENABLED
-
 // FixedArray / FixedSet / FixedMap views (byte ops shared with the
 // [i] index hooks), packable registration, object any-key runtime,
 // inline caches and class meta/instance construction.
 //
-// Runtime-layer fragment of jit.h, split out for readability. These
-// fragments rely on jit.h's #include block and are included by jit.h in a
-// fixed sequence (see jit.h); they are not standalone headers.
+// Runtime-layer fragment of rt.h, split out for readability. These
+// fragments rely on rt.h's #include block and are included by rt.h in a
+// fixed sequence (see rt.h); they are not standalone headers.
 
 // Continues the runtime extern "C" block opened in jit_runtime.h
 // (split across jit_fixed.h / jit_dispatch.h / jit_iter.h).
@@ -1842,4 +1840,3 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(
 
 }  // extern "C" (block continues in jit_dispatch.h)
 
-#endif  // CULEBRA_JIT_ENABLED

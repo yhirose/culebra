@@ -1,12 +1,10 @@
 #pragma once
 
-#ifdef CULEBRA_JIT_ENABLED
-
 // Deterministic drop: the owned-resource stack (design section 14.3).
 //
-// Runtime-layer fragment of jit.h, split out for readability. These
-// fragments rely on jit.h's #include block and are included by jit.h in a
-// fixed sequence (see jit.h); they are not standalone headers.
+// Runtime-layer fragment of rt.h, split out for readability. These
+// fragments rely on rt.h's #include block and are included by rt.h in a
+// fixed sequence (see rt.h); they are not standalone headers.
 
 // --- Deterministic drop: the owned-resource stack ---
 //
@@ -117,4 +115,3 @@ inline void _gc_note_free(void* obj, int8_t tag) {
   _gc_heap().forget(obj);
 }
 
-#endif  // CULEBRA_JIT_ENABLED

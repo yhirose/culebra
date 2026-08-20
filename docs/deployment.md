@@ -228,7 +228,7 @@ Runtime hosted the value's allocation.
 
 ### Per-Runtime extension hooks
 
-`JIT::install_extension()` (and the convenience wrapper
+`culebra::install_extension()` (and the convenience wrapper
 `culebra::install_jit_stdlib()`) targets the currently-active Runtime.
 That makes it possible to expose different host APIs to different
 Runtimes:

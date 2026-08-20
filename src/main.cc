@@ -16,13 +16,15 @@
 #define CULEBRA_WRAP_LINK_FLAGS ""
 #endif
 #include <runtime/aot_scan.h>
-#include <stdlib_jit.h>
-#include <vm.h>
-#include <vm_repl.h>
 #include "culebra_rt_assets.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #endif
+// The bytecode compiler, its executor and the stdlib they run on: no LLVM,
+// so the CLI has these engines whether or not this build has the JIT.
+#include <stdlib_jit.h>
+#include <vm.h>
+#include <vm_repl.h>
 #include <algorithm>
 #include <chrono>
 #include <mutex>
@@ -167,8 +169,22 @@ struct Options {
   bool debug = false;
   bool help = false;
   bool version = false;
-#ifdef CULEBRA_JIT_ENABLED
+  // The three engines a command line can name. `--jit` and the knobs below it
+  // are parsed only where the lowering exists, so `jit` simply never becomes
+  // true in a build without it — which is why the flag itself is unguarded:
+  // every reader can then ask "which engine?" without asking "which build?".
   bool jit = false;
+  // The bytecode VM's executor (docs/internals/vm.md §7). Hidden flags: run
+  // the program on the executor, or dump the bytecode. Its other consumer is
+  // the LLVM lowering `--jit` runs; the executor itself needs no LLVM, so a
+  // build without the JIT still has it.
+  enum class Vm { Off, Exec, Dump } vm = Vm::Off;
+  // `--tree`: name the tree-walking interpreter explicitly. Hidden, and a
+  // no-op while it is still the default — its job is to let a caller say
+  // which engine it means, so `require_explicit_engine` can reject the ones
+  // that never said (docs/internals/vm.md §7, Phase 4).
+  bool tree = false;
+#ifdef CULEBRA_JIT_ENABLED
   // Unoptimized IR pipeline + unoptimized backend: collapses JIT warmup
   // (startup/compile time) by ~40x at a small steady-state cost (~12% on
   // pure-script hot loops; ~0% when the hot work lives in the C++/BLAS
@@ -180,17 +196,7 @@ struct Options {
   bool emit_llvm = false;
   int opt_level = 2;
   bool opt_level_explicit = false;
-  // The bytecode VM's executor (docs/internals/vm.md §7). Hidden flags: run
-  // the program on the executor, or dump the bytecode. Its other consumer,
-  // the LLVM lowering, is what `--jit` runs.
-  enum class Vm { Off, Exec, Dump } vm = Vm::Off;
 #endif
-  // `--tree`: name the tree-walking interpreter explicitly. Hidden, and a
-  // no-op while it is still the default — its job is to let a caller say
-  // which engine it means, so `require_explicit_engine` can reject the ones
-  // that never said (docs/internals/vm.md §7, Phase 4). Parsed outside the
-  // JIT guard so the same command line works against a no-JIT build.
-  bool tree = false;
   // The entry script, if one was given. At most one: the first non-flag
   // argument is the script and everything after it is its argv.
   optional<string> script_path;
@@ -198,13 +204,15 @@ struct Options {
   string error;  // non-empty: a malformed flag; main reports it and exits
 };
 
+// Did the command line ask for one of the two compiled lanes?
+bool compiled_lane(const Options& options) {
+  return options.jit || options.vm != Options::Vm::Off;
+}
+
 // Did the command line name an engine, rather than take whatever this build
 // defaults to?
 bool engine_named(const Options& options) {
-#ifdef CULEBRA_JIT_ENABLED
-  if (options.jit || options.vm != Options::Vm::Off) return true;
-#endif
-  return options.tree;
+  return options.tree || compiled_lane(options);
 }
 
 // Phase 4 ratchet (docs/internals/vm.md §7). While the tree-walker is still
@@ -1322,6 +1330,8 @@ Options parse_command_line(int argc, const char** argv) {
       if (arg == "--ast") { options.print_ast = true; continue; }
       if (arg == "--debug") { options.debug = true; continue; }
       if (arg == "--tree") { options.tree = true; continue; }
+      if (arg == "--vm") { options.vm = Options::Vm::Exec; continue; }
+      if (arg == "--vm-dump") { options.vm = Options::Vm::Dump; continue; }
 #ifdef CULEBRA_JIT_ENABLED
       if (arg == "--jit") { options.jit = true; continue; }
       if (arg == "--jit-faststart") {
@@ -1330,8 +1340,6 @@ Options parse_command_line(int argc, const char** argv) {
         continue;
       }
       if (arg == "--emit-llvm") { options.emit_llvm = true; continue; }
-      if (arg == "--vm") { options.vm = Options::Vm::Exec; continue; }
-      if (arg == "--vm-dump") { options.vm = Options::Vm::Dump; continue; }
       if (arg.starts_with("-O")) {
         if (!parse_opt_level(arg, options.opt_level, options.error)) return options;
         options.opt_level_explicit = true;
@@ -1373,19 +1381,14 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   }
   startup_profile::mark("read_file");
 
-  // Walk the dependency graph via ModuleLoader. The same vector feeds both
-  // backends — JIT bundles every module into one IR, interp evaluates them
-  // sequentially — but only the JIT path needs the preamble spliced in.
-  // --ast never reaches either, and the splice would make the dump differ by
-  // backend for one program.
-  bool splice = false;
-#ifdef CULEBRA_JIT_ENABLED
-  // Both compiled paths take the spliced module: the preamble is where the
-  // lazy stdlib's builders are declared and registered, and a lane that never
-  // compiles it cannot resolve `Time`, `assert_eq` or `__Eff` at all.
-  splice = (options.jit || options.vm != Options::Vm::Off) &&
-           !options.print_ast;
-#endif
+  // Walk the dependency graph via ModuleLoader. The same vector feeds every
+  // engine — the compiled lanes bundle each module into one program, interp
+  // evaluates them sequentially — but only the compiled lanes need the
+  // preamble spliced in: it is where the lazy stdlib's builders are declared
+  // and registered, and a lane that never compiles it cannot resolve `Time`,
+  // `assert_eq` or `__Eff` at all. --ast never reaches an engine, and the
+  // splice would make the dump differ by backend for one program.
+  bool splice = compiled_lane(options) && !options.print_ast;
   std::vector<culebra::LoadedModule> modules;
   if (!load_entry_program(path, *user_src, splice, modules)) return false;
   startup_profile::mark("ModuleLoader::load_program (parse)");
@@ -1399,7 +1402,6 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     return true;
   }
 
-#ifdef CULEBRA_JIT_ENABLED
   if (options.vm != Options::Vm::Off) {
     // `--debug` gives `debugger` the minimal break the JIT's gives it;
     // stepping and inspection live behind `culebra dap --vm`.
@@ -1413,6 +1415,7 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     return true;
   }
 
+#ifdef CULEBRA_JIT_ENABLED
   // `--jit` is the bytecode compiler's LLVM lane: one program, lowered.
   if (options.jit) {
     culebra::vm::run_modules_via_llvm(modules, options.emit_llvm, options.debug,
@@ -1448,7 +1451,6 @@ culebra::DocRunOutcome doc_error_outcome(const culebra::CulebraError& e) {
   return {false, "RuntimeError", culebra::format_error_message(e)};
 }
 
-#ifdef CULEBRA_JIT_ENABLED
 // One doc block as the compiled lanes see a script: its own module, with the
 // stdlib preamble spliced ahead of it (where the lazy stdlib's builders are
 // declared — a lane that never compiles it cannot resolve `Time` or
@@ -1478,22 +1480,34 @@ bool doc_block_modules(const std::string& name, const std::string& code,
   culebra::splice_stdlib_preamble(modules);
   return true;
 }
-#endif
 
 // The engine half of the doctest runner: parse and run one block, reporting
 // what the CLI would have printed. Each block gets state of its own — a fresh
 // environment for the interpreter, a fresh Runtime for the compiled lanes,
 // whose namespace caches and class / overload registries live there.
 culebra::BlockRunner doc_block_runner(DocEngine engine) {
-#ifdef CULEBRA_JIT_ENABLED
   if (engine != DocEngine::Interp) {
-    bool vm = engine == DocEngine::Vm;
+    // Which consumer of the bytecode runs the block. Picked once here rather
+    // than per block, so the guard sits around a name that does not exist
+    // instead of around half of an if/else.
+    using Run = void (*)(const std::vector<culebra::LoadedModule>&);
+    Run run = [](const std::vector<culebra::LoadedModule>& modules) {
+      auto prog = culebra::vm::Compiler::compile_modules(modules);
+      culebra::vm::Exec::run(prog);
+    };
+#ifdef CULEBRA_JIT_ENABLED
+    if (engine == DocEngine::Jit) {
+      run = [](const std::vector<culebra::LoadedModule>& modules) {
+        culebra::vm::run_modules_via_llvm(modules);
+      };
+    }
+#endif
     // What the compiled lanes name the stdlib through — `culebra build`
     // installs it the same way before it loads anything. Without it every
     // namespace beyond the core globals is an unresolved identifier.
     culebra::install_jit_stdlib();
-    return [vm](const std::string& name,
-                const std::string& code) -> culebra::DocRunOutcome {
+    return [run](const std::string& name,
+                 const std::string& code) -> culebra::DocRunOutcome {
       // A block is independent of every other: its own Runtime, where the
       // namespace caches and the class / overload registries live (the
       // interpreter lane gets the same isolation from a fresh env).
@@ -1503,12 +1517,7 @@ culebra::BlockRunner doc_block_runner(DocEngine engine) {
       culebra::DocRunOutcome fail;
       if (!doc_block_modules(name, code, modules, fail)) return fail;
       try {
-        if (vm) {
-          auto prog = culebra::vm::Compiler::compile_modules(modules);
-          culebra::vm::Exec::run(prog);
-        } else {
-          culebra::vm::run_modules_via_llvm(modules);
-        }
+        run(modules);
       } catch (const culebra::CulebraError& e) {
         return doc_error_outcome(e);
       } catch (const std::exception& e) {
@@ -1520,8 +1529,6 @@ culebra::BlockRunner doc_block_runner(DocEngine engine) {
       return {true, "", ""};
     };
   }
-#endif
-  (void)engine;
   return [](const std::string& name,
             const std::string& code) -> culebra::DocRunOutcome {
     std::vector<std::string> msgs;
@@ -1600,8 +1607,10 @@ int run_test(int argc, const char** argv) {
                    "  --doc           run the ```culebra blocks in *.md instead\n"
 #ifdef CULEBRA_JIT_ENABLED
                    "  --jit / --vm    run the doc blocks on that backend\n"
-                   "                  instead of the interpreter (--doc only)\n"
+#else
+                   "  --vm            run the doc blocks on the bytecode VM\n"
 #endif
+                   "                  instead of the interpreter (--doc only)\n"
                    "  paths           files, or directories scanned recursively");
       return 0;
     }
@@ -1628,12 +1637,12 @@ int run_test(int argc, const char** argv) {
       doc_mode = true;
     } else if (arg == "--tree") {
       named = true;
+    } else if (arg == "--vm") {
+      engine = DocEngine::Vm;
+      named = true;
 #ifdef CULEBRA_JIT_ENABLED
     } else if (arg == "--jit") {
       engine = DocEngine::Jit;
-      named = true;
-    } else if (arg == "--vm") {
-      engine = DocEngine::Vm;
       named = true;
 #endif
     } else if (arg.starts_with("--")) {
@@ -2145,12 +2154,10 @@ int main(int argc, const char** argv) {
     for (int i = 2; i < argc; i++) {
       string arg(argv[i]);
       if (arg == "--tree") named = true;
-#ifdef CULEBRA_JIT_ENABLED
       if (arg == "--vm") {
         engine = culebra::DebugEngineKind::Vm;
         named = true;
       }
-#endif
     }
     require_explicit_engine(named, "dap");
     culebra::DapServer server(/*in=*/0, /*out=*/1, /*argv=*/{}, engine);
@@ -2185,12 +2192,13 @@ int main(int argc, const char** argv) {
     return 0;
   }
   if (options.version) {
-    // Name the backends the build actually has: a no-JIT build cannot run
-    // --jit or `culebra build`, so a bug report needs to say which binary.
+    // Name the backends the build actually has: a no-JIT build has the
+    // interpreter and the VM's executor but cannot run --jit or
+    // `culebra build`, so a bug report needs to say which binary.
 #ifdef CULEBRA_JIT_ENABLED
-    constexpr auto backends = "interp+jit";
+    constexpr auto backends = "interp+vm+jit";
 #else
-    constexpr auto backends = "interp";
+    constexpr auto backends = "interp+vm";
 #endif
     std::println(cout, "culebra {} ({})", CULEBRA_VERSION, backends);
     return 0;
@@ -2211,10 +2219,13 @@ int main(int argc, const char** argv) {
     return 1;
   }
   if (options.jit_faststart) options.opt_level = 0;
+#endif
 
+  // What every compiled lane names the stdlib through. Unconditional: the
+  // executor resolves `Math` / `IO` / `Time` through the same hooks the
+  // lowering does, so a build without the JIT needs it just as much.
   culebra::install_jit_stdlib();
   startup_profile::mark("install_jit_stdlib");
-#endif
 
   // `Sys.script` — the entry script's absolute path, baked into the Sys
   // namespace when it is built (below). Set before `environment()` so the
@@ -2246,7 +2257,6 @@ int main(int argc, const char** argv) {
     }
 
     if (options.shell) {
-#ifdef CULEBRA_JIT_ENABLED
       // The REPL always runs on a tier-0 engine: the interpreter, or the VM's
       // executor under `--vm`. A REPL line is never a hot loop, so compiling
       // each input only adds latency for no gain — the same reason V8 / the
@@ -2262,7 +2272,6 @@ int main(int argc, const char** argv) {
         return culebra::vm_repl(options.print_ast,
                                 options.vm == Options::Vm::Dump);
       }
-#endif
       require_explicit_engine(engine_named(options), "the REPL");
       culebra::repl(env, options.print_ast);
     }

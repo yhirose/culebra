@@ -1,16 +1,14 @@
 #pragma once
 
-#ifdef CULEBRA_JIT_ENABLED
-
 // What the interp's own parameter tables say a built-in method's signature is,
 // and whether a given call site binds against it. Read at compile time by
 // vm::Compiler, which bakes the verdict into the chunk so both compiled lanes
-// raise the same diagnostic; nothing here touches LLVM, so it sits beside
-// jit.h rather than inside it, and one copy of the interp binder's rules
-// serves the whole front end.
+// raise the same diagnostic; nothing here touches LLVM, so it sits beside the
+// runtime layer rather than inside the JIT, and one copy of the interp binder's
+// rules serves the whole front end.
 
 #include <interpreter.h>  // the builtin tables, FunctionValue, IterBuiltin
-#include <jit.h>          // the TAG_* receiver tags (jit_value.h)
+#include <rt.h>           // the TAG_* receiver tags (jit_value.h)
 #include <parser.h>       // ArgScan, scan_arg_list, builtin_arity_bounds
 #include <shared.h>       // the arity / kwargs error message builders
 
@@ -186,4 +184,3 @@ inline bool builtin_method_keywords_bindable(const std::string& method,
 
 }  // namespace culebra
 
-#endif  // CULEBRA_JIT_ENABLED

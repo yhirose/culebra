@@ -1,13 +1,11 @@
 #pragma once
 
-#ifdef CULEBRA_JIT_ENABLED
-
 // JIT string representation: value-to-string conversion, JitStrHeader
 // (inline length header), string interning and JitStringView helpers.
 //
-// Runtime-layer fragment of jit.h, split out for readability. These
-// fragments rely on jit.h's #include block and are included by jit.h in a
-// fixed sequence (see jit.h); they are not standalone headers.
+// Runtime-layer fragment of rt.h, split out for readability. These
+// fragments rely on rt.h's #include block and are included by rt.h in a
+// fixed sequence (see rt.h); they are not standalone headers.
 
 // Cycle detection during string conversion. Core-owned: a feature archive that
 // pulls in the JIT headers (Webview via wrap.h) must borrow, not redefine.
@@ -395,4 +393,3 @@ inline std::string_view _culebra_str_view(int8_t tag, int64_t data) {
   return {};
 }
 
-#endif  // CULEBRA_JIT_ENABLED

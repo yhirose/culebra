@@ -1,13 +1,11 @@
 #pragma once
 
-#ifdef CULEBRA_JIT_ENABLED
-
 // Multimethod dispatch, enum (sum type) support, @derive reflective
 // methods, JitParamMeta and the call/kwargs machinery.
 //
-// Runtime-layer fragment of jit.h, split out for readability. These
-// fragments rely on jit.h's #include block and are included by jit.h in a
-// fixed sequence (see jit.h); they are not standalone headers.
+// Runtime-layer fragment of rt.h, split out for readability. These
+// fragments rely on rt.h's #include block and are included by rt.h in a
+// fixed sequence (see rt.h); they are not standalone headers.
 
 // Continues the runtime extern "C" block opened in jit_runtime.h
 // (split across jit_fixed.h / jit_dispatch.h / jit_iter.h).
@@ -2066,4 +2064,3 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
 
 }  // extern "C" (block continues in jit_iter.h)
 
-#endif  // CULEBRA_JIT_ENABLED

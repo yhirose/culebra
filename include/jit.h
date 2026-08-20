@@ -2,20 +2,14 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
-// Conservative backstop collector.
-#include <fn_analysis.h>
-#include <jit_gc.h>
-#include <jit_slab.h>
-#include <module_loader.h>
-#include <packable.h>
-#include <parser.h>
-#include <rt_shared_tls.h>  // CULEBRA_RT_CORE_OWNED (one owner per thread_local)
-#include <runtime/rt_macros.h>
-#include <shared.h>
-#include <tensor.h>
-#include <unicode_str.h>
-#include <unicodelib.h>
-#include <unicodelib_encodings.h>
+// The value model, the extern "C" helpers and the front-end contract that
+// this compiler and the VM executor both build on. Conservative backstop
+// collector included from there too.
+#include <rt.h>
+
+#include <module_loader.h>  // LoadedModule — the embedding entries' argument
+
+#include <filesystem>  // the object cache's directory
 
 #include "llvm/ExecutionEngine/ObjectCache.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
@@ -36,33 +30,6 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Target/TargetMachine.h"
 
-#include <atomic>
-#include <cassert>
-#include <cctype>
-#include <charconv>
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
-#include <exception>
-#include <filesystem>
-#include <format>
-#include <fstream>
-#include <functional>
-#include <iostream>
-#include <iterator>
-#include <map>
-#include <memory>
-#include <mutex>
-#include <optional>
-#include <print>
-#include <queue>
-#include <string>
-#include <string_view>
-#include <type_traits>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
-
 #ifdef _WIN32
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"  // orc::absoluteSymbols
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"  // RTDyld layer
@@ -71,7 +38,8 @@
 #include <cxxabi.h>  // __cxa_begin_catch / __cxa_end_catch / __cxa_rethrow
 #include <unwind.h>  // _Unwind_Resume_or_Rethrow (the rethrow relay's exit)
 // The mingw SEH personality has no public header; declare it to take its address
-// for the JIT's absolute-symbol map (see JIT::define_windows_eh_symbols).
+// for the absolute-symbol map (see define_windows_eh_symbols) and for the
+// unwind-table fixup in WinSEHMemoryManager below.
 extern "C" int __gxx_personality_seh0(...);
 // libgcc's stack-probe helper. LLVM's X86 backend emits a call to `___chkstk_ms`
 // in the prologue of any JIT'd function whose frame exceeds one page (4 KB) — a
@@ -83,28 +51,183 @@ extern "C" int __gxx_personality_seh0(...);
 extern "C" void ___chkstk_ms();
 #endif
 
-// The JIT runtime layer (the types and extern "C" functions callable from
-// JIT'd code, formerly the first ~10,600 lines of this file) is split across
-// the fragment headers below. They rely on the #include block above and MUST
-// be included in exactly this order.
-#include <jit_value.h>
-#include <jit_owned.h>
-#include <jit_string.h>
-#include <jit_runtime.h>
-#include <jit_fixed.h>
-#include <jit_dispatch.h>
-#include <jit_iter.h>
-#include <jit_mem.h>
-
 namespace culebra {
 
-// The bytecode VM (vm.h): its LLVM lowering is a JIT friend like
-// JitExtension below, and its compiler shares the is_builtin_var predicate.
+// The bytecode VM's LLVM lowering (vm_lowering.h) reuses this compiler as its
+// codegen context, so it is a JIT friend like JitExtension below. The compiler
+// and executor it shares a bytecode with need nothing from here — they build
+// on rt.h alone.
 namespace vm {
 struct Lowering;
-struct Exec;
-class Compiler;
 }
+
+#ifdef _WIN32
+// RTDyld memory manager that registers Win64 unwind tables for JIT'd code, so a
+// throw can unwind *through* a JIT frame in-process (reaching its defers and an
+// outer catch). Without this the seh0 personality is emitted correctly but the
+// OS SEH unwinder never learns the JIT'd frames exist: LLVM's RTDyld collects
+// each object's `.pdata` (an array of RUNTIME_FUNCTION) and calls
+// registerEHFrames(), but its in-process body is a Win64 no-op (llvm#24607). We
+// override it to call RtlAddFunctionTable against the object's image base — the
+// lowest section address, which all the `.pdata`/`.xdata` RVAs are relative to.
+// This is the mingw/Itanium half of the old clang-interpreter Win64 example;
+// culebra throws via __cxa_throw + __gxx_personality_seh0 (not MSVC
+// _CxxThrowException), so none of that example's throw-record image-base fixup
+// is needed.
+//
+// Reachability: the `.xdata` handler field and RtlAddFunctionTable's base are
+// both 32-bit image-relative, so the whole thing only works when the JIT slab
+// lands within 4 GB of the runtime's __gxx_personality_seh0. By default
+// VirtualAlloc puts the slab in the low address space, gigabytes below the
+// ASLR'd main image — the personality RVA can't reach it and the OS unwinder
+// jumps into the slab instead. NearImageMapper (below) forces every page just
+// under the main image so the RVA fits.
+//
+// Maps LLVM's page requests (SectionMemoryManager's default source) into a
+// 2 GB window immediately below the main module, via VirtualAlloc2 with an
+// address requirement. That keeps personality - slab_base positive and well
+// under 4 GB, so RTDyld writes a correct ADDR32NB RVA and the OS computes the
+// handler as slab_base + RVA == the real personality. Resolved dynamically so a
+// mingw import lib without VirtualAlloc2, or a failed reservation, falls back to
+// the default allocator (JIT still runs; that object just won't unwind).
+class NearImageMapper : public llvm::SectionMemoryManager::MemoryMapper {
+  using Purpose = llvm::SectionMemoryManager::AllocationPurpose;
+  using VirtualAlloc2Fn = PVOID(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG,
+                                         MEM_EXTENDED_PARAMETER*, ULONG);
+
+ public:
+  llvm::sys::MemoryBlock allocateMappedMemory(
+      Purpose /*P*/, size_t NumBytes,
+      const llvm::sys::MemoryBlock* const NearBlock, unsigned Flags,
+      std::error_code& EC) override {
+    static VirtualAlloc2Fn va2 = reinterpret_cast<VirtualAlloc2Fn>(
+        ::GetProcAddress(::GetModuleHandleW(L"kernelbase.dll"), "VirtualAlloc2"));
+    if (va2) {
+      if (!low_) compute_window();
+      const size_t gran = 0x10000;  // Windows allocation granularity
+      size_t sz = (NumBytes + gran - 1) & ~(gran - 1);
+      MEM_ADDRESS_REQUIREMENTS req{};
+      req.LowestStartingAddress = reinterpret_cast<PVOID>(low_);
+      req.HighestEndingAddress = reinterpret_cast<PVOID>(high_);
+      req.Alignment = 0;
+      MEM_EXTENDED_PARAMETER ep{};
+      ep.Type = MemExtendedParameterAddressRequirements;
+      ep.Pointer = &req;
+      void* p = va2(nullptr, nullptr, sz, MEM_RESERVE | MEM_COMMIT,
+                    to_win_prot(Flags), &ep, 1);
+      if (p) {
+        EC = std::error_code();
+        return llvm::sys::MemoryBlock(p, sz);
+      }
+    }
+    // No VirtualAlloc2, or the window is full: fall back to the OS default.
+    return llvm::sys::Memory::allocateMappedMemory(NumBytes, NearBlock, Flags, EC);
+  }
+  std::error_code protectMappedMemory(const llvm::sys::MemoryBlock& Block,
+                                      unsigned Flags) override {
+    return llvm::sys::Memory::protectMappedMemory(Block, Flags);
+  }
+  std::error_code releaseMappedMemory(llvm::sys::MemoryBlock& M) override {
+    return llvm::sys::Memory::releaseMappedMemory(M);
+  }
+
+ private:
+  void compute_window() {
+    auto base = reinterpret_cast<uintptr_t>(::GetModuleHandleW(nullptr));
+    // Reserve strictly below the image base so every personality RVA is
+    // positive; a 2 GB window keeps it comfortably under the 4 GB ADDR32NB cap.
+    high_ = base - 1;  // module base is 64K-aligned, so this ends in 0xFFFF
+    uintptr_t span = 0x80000000ull;
+    low_ = base > span ? base - span : 0x10000;
+  }
+  static DWORD to_win_prot(unsigned f) {
+    using M = llvm::sys::Memory;
+    bool w = f & M::MF_WRITE, x = f & M::MF_EXEC, r = f & M::MF_READ;
+    if (x) return w ? PAGE_EXECUTE_READWRITE : (r ? PAGE_EXECUTE_READ : PAGE_EXECUTE);
+    if (w) return PAGE_READWRITE;
+    if (r) return PAGE_READONLY;
+    return PAGE_NOACCESS;
+  }
+  uintptr_t low_ = 0, high_ = 0;
+};
+
+inline NearImageMapper& near_image_mapper() {
+  static NearImageMapper m;
+  return m;
+}
+
+class WinSEHMemoryManager : public llvm::SectionMemoryManager {
+ public:
+  WinSEHMemoryManager() : llvm::SectionMemoryManager(&near_image_mapper()) {}
+
+  uint8_t* allocateCodeSection(uintptr_t Size, unsigned Align, unsigned ID,
+                               llvm::StringRef Name) override {
+    uint8_t* p = SectionMemoryManager::allocateCodeSection(Size, Align, ID, Name);
+    note_base(p);
+    return p;
+  }
+  uint8_t* allocateDataSection(uintptr_t Size, unsigned Align, unsigned ID,
+                               llvm::StringRef Name, bool RO) override {
+    uint8_t* p =
+        SectionMemoryManager::allocateDataSection(Size, Align, ID, Name, RO);
+    note_base(p);
+    return p;
+  }
+  // Addr points at the loaded `.pdata` section = a RUNTIME_FUNCTION array. We do
+  // not chain to the base implementation: its in-process path feeds the block to
+  // the DWARF __register_frame machinery, which would misread these COFF unwind
+  // records. We keep our own list for teardown instead.
+  void registerEHFrames(uint8_t* Addr, uint64_t /*LoadAddr*/,
+                        size_t Size) override {
+    auto* fns = reinterpret_cast<PRUNTIME_FUNCTION>(Addr);
+    DWORD n = static_cast<DWORD>(Size / sizeof(RUNTIME_FUNCTION));
+    if (n && image_base_ && ::RtlAddFunctionTable(fns, n, image_base_)) {
+      registered_.push_back(fns);
+      fixup_personality(fns, n);
+    }
+  }
+  void deregisterEHFrames() override {
+    for (auto* fns : registered_) ::RtlDeleteFunctionTable(fns);
+    registered_.clear();
+  }
+
+ private:
+  // RTDyld loads .xdata (with setProcessAllSections) but does not relocate the
+  // exception-handler RVA inside each UNWIND_INFO — it keeps the object-file
+  // placeholder, so the OS unwinder dispatches into the middle of .xdata and
+  // crashes. Point every EH/UH handler at the real __gxx_personality_seh0. The
+  // near-image mapper guarantees personality - image_base fits in the 32-bit
+  // RVA. See the Win64 UNWIND_INFO layout: byte0 = Version:3|Flags:5, byte2 =
+  // CountOfCodes, then that many 2-byte codes (padded to an even count),
+  // immediately followed by the handler RVA when UNW_FLAG_[EU]HANDLER is set.
+  void fixup_personality(PRUNTIME_FUNCTION fns, DWORD n) {
+    const uintptr_t base = image_base_;
+    const uint32_t rva = static_cast<uint32_t>(
+        reinterpret_cast<uintptr_t>(&__gxx_personality_seh0) - base);
+    for (DWORD i = 0; i < n; ++i) {
+      uint32_t unwind = reinterpret_cast<const uint32_t*>(&fns[i])[2];
+      auto* ui = reinterpret_cast<uint8_t*>(base + unwind);
+      if (!((ui[0] >> 3) & 0x3)) continue;  // no EH/UH handler on this frame
+      uint8_t codes = ui[2];
+      auto* handler =
+          reinterpret_cast<uint32_t*>(ui + 4 + ((codes + 1) & ~1) * 2);
+      DWORD old;
+      if (::VirtualProtect(handler, sizeof(uint32_t), PAGE_READWRITE, &old)) {
+        *handler = rva;
+        DWORD tmp;
+        ::VirtualProtect(handler, sizeof(uint32_t), old, &tmp);
+      }
+    }
+  }
+  void note_base(uint8_t* p) {
+    if (!p) return;
+    auto a = reinterpret_cast<uintptr_t>(p);
+    if (!image_base_ || a < image_base_) image_base_ = a;
+  }
+  uintptr_t image_base_ = 0;
+  std::vector<PRUNTIME_FUNCTION> registered_;
+};
+#endif  // _WIN32
 
 // --- JIT compiler implementation ---
 
@@ -873,23 +996,11 @@ struct JIT {
     ~InlinedInfoGuard() { jit.current_info_ = saved; }
   };
 
-  // Method names the JIT lowers natively rather than as a property call —
-  // compile_builtin_method for nearly all of them, compile_set_mutate_dispatch
-  // for the one-arg `add`/`remove`. Exposed so a startup self-check (see
-  // culebra.h) can guard against drift from the interpreter's builtin tables.
-  // Single source in shared.h (culebra::builtin_method_names), shared with the
-  // interp + both backends' bare-method-reference rejection so the list can't
-  // drift. Array/String/Set/Tuple/Object-dict/Iterator/Tensor methods are
-  // tag-dispatched in compile_builtin_method; a user class defining a same-named
-  // method gets priority via compile_user_method_over_builtin.
-  static const std::unordered_set<std::string_view>& known_builtin_methods() {
-    return culebra::builtin_method_names();
-  }
-
   // The embedding entries (docs/deployment.md): run a program through LLVM
   // in this process, or emit it as an object file. Both compile the program
-  // to bytecode and hand that to the lowering, so they are defined in vm.h
-  // where the lowering lives — the JIT itself no longer reads an AST.
+  // to bytecode and hand that to the lowering, so they are defined in
+  // vm_lowering.h where the lowering lives — the JIT itself no longer reads
+  // an AST.
   static void run(const std::shared_ptr<peg::Ast>& ast, bool emit_llvm = false,
                   bool debug = false, int opt_level = 2);
   // `modules` comes from ModuleLoader in topological order (deps first,
@@ -905,55 +1016,12 @@ struct JIT {
                           bool emit_llvm = false,
                           const std::string& target_triple = "");
 
-  // Extension hooks. Built-in functions and namespaces (Math, IO, Random,
-  // Sys, ...) live outside the language core; an embedder installs them
-  // by passing a populated ExtensionHooks struct via install_extension().
-  // Either field may be nullptr — coalesced as a no-op at the call site,
-  // so the core compiles to a "no extensions" JIT when nothing is
-  // registered. What a call to an extension global or namespace *emits*
-  // is decided by the bytecode compiler now, so no hook here takes an AST.
-  // Each pointer is zero-initialized via `hooks_{}` below; per-field
-  // `= nullptr` would force the compiler to evaluate `JIT&` while JIT
-  // itself is still being defined (clang error: default member
-  // initializer needed within definition of enclosing class).
-  struct ExtensionHooks {
-    // Declare runtime function signatures on the LLVM module so emitted
-    // calls into the extension link cleanly.
-    void (*declare_runtime)(JIT&);
-    // True if `name` is provided by the extension (inspect/Math/IO/...).
-    // Free-variable analysis uses this to skip names that don't live in
-    // user bindings.
-    bool (*is_builtin_var)(const std::string& name);
-  };
-  // Inside a RuntimeScope: install into that Runtime (overrides the
-  // default, for sandboxing). Outside any scope: install into the
-  // process-wide default that all Runtimes fall back to.
-  static void install_extension(const ExtensionHooks& hooks) {
-    if (culebra::_culebra_current_runtime) {
-      culebra::runtime_substate<ExtensionHooks>(culebra::kSlotJitHooks) = hooks;
-    } else {
-      default_hooks_ = hooks;
-    }
-  }
-
-  static const ExtensionHooks& current_hooks() {
-    auto& rt = culebra::current_runtime();
-    if (auto* p =
-            static_cast<ExtensionHooks*>(rt.substate[culebra::kSlotJitHooks])) {
-      return *p;
-    }
-    return default_hooks_;
-  }
-
  private:
-  static inline ExtensionHooks default_hooks_{};
   // Friend declared so extension implementations (e.g. JitExtension in
   // stdlib_jit.h) can reach JIT internals (builder_/module_/make_long/
   // extract_tag/...) without those being part of the public surface.
   friend struct JitExtension;
   friend struct vm::Lowering;
-  friend struct vm::Exec;
-  friend class vm::Compiler;
 
   llvm::LLVMContext& ctx_;
   llvm::Module* module_;
@@ -2078,20 +2146,6 @@ struct JIT {
 
   // --- Builtin-name predicate (fed to FnAnalysis, fn_analysis.h) ---
 
-  // `fn` is the implicit recursion handle (the enclosing function's own
-  // value), bound in every function frame. `self` is NOT here: it is a
-  // lexically capturable binding (FnAnalysis::note_free_var special-cases
-  // it) so a nested closure inherits the enclosing frame's receiver,
-  // interp-style. `range`/`iota`/`grid` are core globals (see
-  // `try_compile_core_global`); everything else (inspect/Math/IO/...) is
-  // supplied by the registered extension.
-  static bool is_builtin_var(const std::string& name) {
-    if (name == "fn") return true;
-    if (name == "range" || name == "iota" || name == "grid") return true;
-    auto& h = current_hooks();
-    return h.is_builtin_var && h.is_builtin_var(name);
-  }
-
   // --- Runtime function declarations ---
 
   void declare_runtime_functions() {
@@ -3043,9 +3097,6 @@ struct JIT {
                builder_.getInt64(static_cast<int64_t>(col))});
   }
 
-  // Cursor kinds the unified for-in head switches on (see compile_for).
-  enum ForKind : int8_t { FOR_ARRAY = 0, FOR_PROTO = 1, FOR_STRING = 2 };
-
   // Per-loop iteration state. One set of allocas per for-in statement; each
   // container kind fills the subset it needs and the shared head dispatches
   // on `kind`. Uniform state is what lets the body be emitted once.
@@ -3717,14 +3768,6 @@ struct JIT {
         intro ? "getter.or.value" : "bind.method");
   }
 
-
-  // The three function-introspection properties (`g.name` / `g.params` /
-  // `g.return_type`) — the only names a Function receiver owns
-  // (interp's receiver_has_property Function arm). Their property reads
-  // return a +1-owned view (emit_property_get's fn_mode retains).
-  static bool fn_introspection_name(std::string_view name) {
-    return name == "name" || name == "params" || name == "return_type";
-  }
 
   // Get a property from an object (TAG_OBJECT required).
   //

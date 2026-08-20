@@ -13,7 +13,7 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
-#include <jit.h>
+#include <rt.h>
 
 #include <cstdio>
 #include <exception>

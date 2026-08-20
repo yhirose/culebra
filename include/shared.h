@@ -50,8 +50,8 @@ namespace culebra {
 // reject it (call it, or wrap it in a lambda). A user-defined property/method
 // of the same name on an Object/class is found first and stays first-class, so
 // this set is only consulted after the stored-property lookup misses. Single
-// source for both backends' bare-method-reference check AND the JIT's
-// known_builtin_methods() (which delegates here so the list never drifts).
+// source for both backends' bare-method-reference check AND the startup
+// drift self-check in culebra.h.
 inline const std::unordered_set<std::string_view>& builtin_method_names() {
   static const std::unordered_set<std::string_view> kNames = {
       "size",       "empty",       "presence",   "push",       "pop",

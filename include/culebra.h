@@ -10,11 +10,15 @@
 #include "module_loader.h"
 #include "repl.h"
 
+// The compiled lanes run bytecode: vm.h holds the compiler and the executor,
+// and needs no LLVM. vm_lowering.h adds the second consumer of the same
+// bytecode and defines JIT::run / JIT::build_object over it.
+#include "vm.h"
+
 #ifdef CULEBRA_JIT_ENABLED
 #include "jit.h"
-// The compiled lanes run bytecode: vm.h holds the compiler and the LLVM
-// lowering, and defines JIT::run / JIT::build_object over them.
-#include "vm.h"
+#include "vm_lowering.h"
+#endif
 
 #ifndef NDEBUG
 #include <cstdio>
@@ -25,17 +29,17 @@
 namespace culebra {
 
 // Runs at program startup in debug builds: asserts that every method
-// name defined in any interpreter builtin table has native JIT codegen.
-// Drift (e.g. new method added to ArrayValue::builtins() but forgotten
-// in JIT::known_builtin_methods()) otherwise silently falls through to
-// user-dispatch at runtime and errors with a confusing message.
+// name defined in any interpreter builtin table is one the compiler lowers
+// natively. Drift (e.g. new method added to ArrayValue::builtins() but
+// forgotten in culebra::builtin_method_names()) otherwise silently falls
+// through to user-dispatch at runtime and errors with a confusing message.
 //
 // Must enumerate EVERY interp builtin method table — Object/Array/String
 // plus Set/Tuple/iterator/Tensor — or the missing tables' methods show up
-// as bogus "JIT has X, interpreter does not" drift. TensorValue::builtins()
+// as bogus "compiler has X, interpreter does not" drift. TensorValue::builtins()
 // returns a static map and never touches `impl`, so a null-backed instance
 // is enough to reach it.
-[[maybe_unused]] inline const bool _culebra_jit_method_drift_check = []() {
+[[maybe_unused]] inline const bool _culebra_builtin_method_drift_check = []() {
   std::set<std::string_view> interp;
   ObjectValue obj;
   ArrayValue arr;
@@ -46,21 +50,23 @@ namespace culebra {
   for (auto& [k, _] : tuple_builtins()) interp.insert(k);
   for (auto& [k, _] : iterator_builtins()) interp.insert(k);
   for (auto& [k, _] : TensorValue(TensorPtr{}).builtins()) interp.insert(k);
-  const auto& jit_set = JIT::known_builtin_methods();
+  const auto& compiled = builtin_method_names();
   bool ok = true;
   for (auto& m : interp) {
-    if (!jit_set.contains(m)) {
-      std::fprintf(stderr,
-                   "JIT method drift: interpreter has '%.*s', JIT does not.\n",
-                   static_cast<int>(m.size()), m.data());
+    if (!compiled.contains(m)) {
+      std::fprintf(
+          stderr,
+          "builtin method drift: interpreter has '%.*s', compiler does not.\n",
+          static_cast<int>(m.size()), m.data());
       ok = false;
     }
   }
-  for (auto& m : jit_set) {
+  for (auto& m : compiled) {
     if (!interp.contains(m)) {
-      std::fprintf(stderr,
-                   "JIT method drift: JIT has '%.*s', interpreter does not.\n",
-                   static_cast<int>(m.size()), m.data());
+      std::fprintf(
+          stderr,
+          "builtin method drift: compiler has '%.*s', interpreter does not.\n",
+          static_cast<int>(m.size()), m.data());
       ok = false;
     }
   }
@@ -70,4 +76,3 @@ namespace culebra {
 
 }  // namespace culebra
 #endif  // NDEBUG
-#endif

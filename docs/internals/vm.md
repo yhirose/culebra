@@ -1640,3 +1640,113 @@ everything they run — §13.2's caveat still holds, and coverage cannot tell an
 assertion from a bare call. What it does settle is narrower: when the corpus is
 re-pointed at executor-vs-lowering, no region of the shared surface is left
 with generated input as its only reader.
+
+### 13.4 Giving the no-LLVM build an engine
+
+Deleting the tree-walker takes an engine away from every build. Most builds
+have a second one; three do not. The CMake option that enables the JIT
+defaults to `OFF`, so a plain `cmake ..` produces one of them; the
+`build-no-jit` CI lane is another; the WASM Playground is the third, built by
+emcc against no LLVM at all. Under §13's plan that deletion lands in B7, and
+if it landed with the guard as it stood, those three would have gone from one
+engine to none.
+
+The obstacle was never the VM. Measured before any of this: the first
+`llvm::` in `vm.h` was 11,000 lines in, inside `Lowering`; the compiler and
+the executor above it named LLVM nowhere. Seven of the eight runtime
+fragments did not either. What stood in the way was the guard. Every one of
+those fragments opened with `#ifdef CULEBRA_JIT_ENABLED`, so a build without
+LLVM had no `JitValue`, no runtime helpers, no `builtin_signatures.h` — not
+"an engine it could not reach" but the value model that engine is written in.
+
+So the batch is a split, not a port. `rt.h` is new and holds what both
+consumers stand on: the include prelude those fragments were relying on
+`jit.h` to have opened, the eight fragments themselves, and the small
+front-end contract below. `jit.h` keeps the LLVM includes and `struct JIT`.
+`vm.h` keeps the compiler and the executor; `vm_lowering.h` is new and holds
+the lowering, `run_modules_via_llvm`, `build_object_from_modules` and the
+three `JIT::` embedding entries defined over them. `CULEBRA_JIT_ENABLED` now
+reads as "LLVM is linked", and what it guards is `jit.h`, `vm_lowering.h`, one
+member of `stdlib_jit.h`, and the AOT bootstrap — which needs no LLVM itself
+but only exists where `culebra build` can emit an object to link it into.
+
+Four things had to leave `struct JIT`, because the bytecode compiler read
+them through it and would otherwise have needed a class it cannot have:
+`ExtensionHooks` with `install_extension` / `current_hooks`, the
+`is_builtin_var` predicate free-variable analysis consults, the
+`fn_introspection_name` predicate, and the `ForKind` cursor tags both engines
+switch on. None of them ever needed a JIT — they are the compile-time
+contract between the front end and whatever the stdlib installed, parked in
+the class that happened to be the only compiler at the time. They are
+namespace-scope in `rt.h` now. `install_extension` is the one with a
+published name (`docs/deployment.md`), and it moved with it.
+
+Two places in the "LLVM-free" runtime did need LLVM, and both are about
+handing something to LLVM rather than about the runtime. `jit_mem.h` ended
+with the Win64 RTDyld memory manager that calls `RtlAddFunctionTable` on each
+object RTDyld loads, so a throw can unwind through a frame the JIT just wrote.
+Guarding it in place looked sufficient and is not: those two classes *derive*
+from `llvm::SectionMemoryManager`, and `rt.h` is read before `jit.h` opens the
+LLVM headers, so on Windows with the JIT on they would be parsed against an
+undeclared base. Nothing on Linux can show that — the only lane that would
+have is `windows-jit-build`. They moved to `jit.h`, beside the ORC layer that
+is their one caller, and the mingw EH declarations they share with it went
+along; the guard disappeared with the move, which is the tell that in-place
+was the wrong depth. The other case is `JitExtension::declare_runtime`, which
+declares the runtime's signatures on the module being built — one member of a
+9,000-line header, holding its only `llvm::` line. That one is guarded where
+it sits: the hook is documented as nullable, and an omitted designated
+initializer is the null a no-LLVM build wants.
+
+One seam is left twisted and is worth naming rather than hiding. `vm.h`
+includes `stdlib_jit.h` for the stdlib the executor resolves against, and
+`stdlib_jit.h` includes `jit.h` for that one member's definition — so in a
+build that *has* the JIT, `vm.h` still reaches LLVM transitively. No
+translation unit pays for it (a JIT build's `culebra.h` includes `jit.h`
+directly anyway), and the claim that `vm.h` needs no LLVM is settled by a
+configuration that compiles rather than by the include graph. Straightening it
+means splitting `stdlib_jit.h` the way `jit.h` was split here, which is B7's
+neighbourhood — `stdlib_jit.h`'s other half is the native module binding that
+batch has to move anyway.
+
+Three things fell out. `JIT::known_builtin_methods()` was a forwarder to
+`culebra::builtin_method_names()` in `shared.h`, and the startup drift check
+that was its only caller now reads the source directly — which also means the
+check runs in every configuration instead of only where LLVM is. `repl.h`
+included `jit.h` and used nothing from it. And `vm::Exec` and `vm::Compiler`
+were declared friends of `JIT` to reach exactly the members that just left, so
+those two friendships went with them; `vm::Lowering`, which really does use
+the JIT's emitters, is the only one left.
+
+The move needed no IR diff, because it is provably not a change. Everything
+from `Lowering` to the end of the file went to `vm_lowering.h` byte for byte;
+the only textual edit anywhere in the moved region is dropping a `JIT::`
+qualifier from five names that now resolve in the enclosing namespace to the
+same values. A script reconstructs the new file from `HEAD`'s and diffs, which
+says more than re-emitting IR would, and costs seconds. The full gate ran the
+lowering over the corpus anyway.
+
+The gate around this configuration changed shape, for §13.1's reason.
+`build-no-jit` proved a link, and a link cannot notice an engine going
+missing: the whole failure this batch exists to prevent — a binary with one
+engine where there should be two — compiles and links perfectly. `just
+test-no-jit` runs the thing: the `vm_cases` corpus on both `--vm` and
+`--tree` through the same `compare.sh` the gate's own VM phase uses, plus the
+REPL, plus `--version` — which now names what the build has (`interp+vm`, or
+`interp+vm+jit`) rather than implying that a build without LLVM has only the
+interpreter. The CI job runs that instead of the build alone. Reusing
+`compare.sh` rather than writing the comparison again is not only economy: it
+already folds each lane's **exit code** into the comparison, and a hand-rolled
+`diff <(a) <(b)` discards both — §12.3's lesson, which this repo has paid for
+once, is that reading only stdout lets a SEGV pass as "equal".
+
+One of the three is only half done, and saying so is the point of naming it
+here. The `build-no-jit` lane and a default `cmake ..` now have the executor
+and run on it under `--vm`; the Playground does not, because
+`playground/wasm_main.cc` includes `interpreter.h` and calls
+`interpret_modules` directly and has never had a second engine to pick
+between. What this batch changes there is that it now *could*: `vm.h` no
+longer requires LLVM, which is the only reason it could not before. Making it
+so is a default-engine switch, which is B6's, and it is on B6's list rather
+than assumed — a build nothing in this repo exercises by hand is exactly the
+one that would be discovered missing an engine after B7.

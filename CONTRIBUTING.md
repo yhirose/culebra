@@ -5,14 +5,15 @@ Building from source
 --------------------
 
 Requires a C++23 compiler and [`just`](https://github.com/casey/just).
-The JIT and AOT (`culebra build`) backends also need LLVM 20+; the
-interpreter-only build has no LLVM dependency. The toolchain versions
+The JIT and AOT (`culebra build`) backends also need LLVM 20+; a build
+without them still has the interpreter and the bytecode VM, and no LLVM
+dependency. The toolchain versions
 CI builds against are in
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ```bash
 just build              # with JIT (Release + LTO)
-just build-no-jit       # interpreter only, ~1 MB binary, no LLVM
+just build-no-jit       # no LLVM: interpreter + bytecode VM, ~1 MB binary
 just clean              # remove build/, build-dev/, build-asan/
 ```
 

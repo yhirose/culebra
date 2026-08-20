@@ -1,14 +1,12 @@
 #pragma once
 
-#ifdef CULEBRA_JIT_ENABLED
-
 // Core extern "C" runtime callable from JIT'd code: printing, errors,
 // throw/defer machinery, type checks, numeric / array / set / tuple /
 // tensor / object runtime, and @packable SharedBuffer views.
 //
-// Runtime-layer fragment of jit.h, split out for readability. These
-// fragments rely on jit.h's #include block and are included by jit.h in a
-// fixed sequence (see jit.h); they are not standalone headers.
+// Runtime-layer fragment of rt.h, split out for readability. These
+// fragments rely on rt.h's #include block and are included by rt.h in a
+// fixed sequence (see rt.h); they are not standalone headers.
 
 // Bitcast the i64 payload of a Float JitValue back to double.
 inline double _culebra_float_to_double(int64_t data) {
@@ -3047,4 +3045,3 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
 
 }  // extern "C" (block continues in jit_fixed.h)
 
-#endif  // CULEBRA_JIT_ENABLED

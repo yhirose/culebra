@@ -1,12 +1,15 @@
 #pragma once
 
-// JIT-side implementation of the Culebra standard library.
+// The compiled lanes' implementation of the Culebra standard library.
 //
-// Independent header. Include from main.cc (or any embedder) after
-// jit.h. Provides the runtime functions called from JIT'd code and the
-// `JitExtension` struct that fills `JIT::ExtensionHooks`. Embedders
-// install the stdlib by calling `culebra::install_jit_stdlib()` once
-// before `JIT::run()`.
+// Independent header. Include from main.cc (or any embedder). Provides the
+// runtime functions compiled code calls and the `JitExtension` struct that
+// fills `culebra::ExtensionHooks`. Embedders install the stdlib by calling
+// `culebra::install_jit_stdlib()` once before running a program.
+//
+// Only one member needs LLVM — `declare_runtime`, which declares those
+// functions on the module being built — so the body of this header sits on
+// rt.h and a build without the JIT gets the whole stdlib anyway.
 
 #include <compress.h>
 #include <csv.h>
@@ -16,7 +19,7 @@
 #include <toml.h>
 #include <uuid.h>
 #include <vfs.h>
-#include <jit.h>
+#include <rt.h>
 #include <net.h>
 #include <proc.h>
 #include <canvas.h>
@@ -33,6 +36,9 @@
 #include <regexlib.h>
 #include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
 #include <stdlib_math.h>   // Math kernels shared with the interp
+#ifdef CULEBRA_JIT_ENABLED
+#include <jit.h>  // JitExtension::declare_runtime emits on the module
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -3665,32 +3671,40 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn_kw(
 
 }  // extern "C"
 
-// --- JIT compile-side dispatch (extension hook implementation) ---
+// --- Compile-side dispatch (extension hook implementation) ---
 
 namespace culebra {
 
-// JitExtension fills the JIT::ExtensionHooks for the standard library
+// JitExtension fills the ExtensionHooks for the standard library
 // (Math/IO/Random/Sys + bare globals like inspect/to_long/type_of and the
 // `Math.range(N).<HOF>(...)` fusion peephole). Declared as a friend of
-// JIT in jit.h so each member can reach the JIT internals it needs
+// JIT in jit.h so declare_runtime can reach the JIT internals it needs
 // (builder_/module_/valueType_/make_*/extract_*/...) without the JIT
 // class having to expose them publicly.
 struct NsMethod;     // defined below; referenced by compile_ns_method_kwargs
 struct NsParamMeta;  // defined below; referenced by compile_single_positional_kwargs
 
 struct JitExtension {
+#ifdef CULEBRA_JIT_ENABLED
+  // Defined at the end of this header — the one member that emits IR.
   static void declare_runtime(JIT& jit);
+#endif
   static bool is_builtin_var(const std::string& name);
 
   static void install() {
-    JIT::install_extension({
+    // Omitted with no JIT: there is no module to declare on, the executor
+    // calls the same helpers directly, and an omitted designated initializer
+    // is value-initialized — which is the nullptr the hook documents.
+    install_extension({
+#ifdef CULEBRA_JIT_ENABLED
         .declare_runtime = &declare_runtime,
+#endif
         .is_builtin_var = &is_builtin_var,
     });
   }
 };
 
-// Convenience wrapper for embedders. Call once before JIT::run().
+// Convenience wrapper for embedders. Call once before running a program.
 inline void install_jit_stdlib() { JitExtension::install(); }
 
 // --- Stdlib namespace as first-class JIT object ---
@@ -8778,6 +8792,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_ns_method_call_kw(
 }
 }  // extern "C"
 
+#ifdef CULEBRA_JIT_ENABLED
 inline void JitExtension::declare_runtime(JIT& jit) {
   auto ptrTy = llvm::PointerType::get(jit.ctx_, 0);
 
@@ -9215,6 +9230,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                 ptrTy, jit.builder_.getInt8Ty(),
                                 jit.builder_.getInt8Ty());
 }
+#endif  // CULEBRA_JIT_ENABLED
 
 inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {

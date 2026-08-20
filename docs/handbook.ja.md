@@ -126,7 +126,7 @@ masterを追う場合とCulebra自体を開発する場合にだけ必要。`jus
 
 ```bash
 just build              # JIT付き
-just build-no-jit       # インタプリタのみ、~23 MB
+just build-no-jit       # LLVM 無し: インタプリタ + bytecode VM、~23 MB
 just dev                # LTO無し -O1の高速ビルド → build-dev/ (内側ループ用)
 just test-dev           # build-dev/ でinterp==JITを素早く確認 (各編集ごと)
 just test               # 全backend + embedスモークテスト (並列; JOBS=1で逐次化)

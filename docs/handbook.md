@@ -132,7 +132,7 @@ produces the interpreter, and the JIT too if LLVM 20+ is installed:
 
 ```bash
 just build              # with JIT
-just build-no-jit       # interpreter only, ~23 MB
+just build-no-jit       # no LLVM: interpreter + bytecode VM, ~23 MB
 just dev                # fast no-LTO -O1 build into build-dev/ (inner loop)
 just test-dev           # quick interp==JIT check vs build-dev/ (after each edit)
 just test               # all backends + embed smoke (parallel; JOBS=1 to serialize)

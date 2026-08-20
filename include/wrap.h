@@ -27,19 +27,17 @@
 // holds one share, primitives go through cpp_to_value. U must itself be
 // wrapped (its class_info carries the display name the handle shows).
 //
-// Phase 4 sub-phasing: P4-1 = the interp artifacts, P4-2 = the JIT
-// thunks + NsMethod registry rows (below, CULEBRA_JIT_ENABLED), P4-3 =
-// the `culebra wrap` build pipeline.
+// Phase 4 sub-phasing: P4-1 = the interp artifacts, P4-2 = the compiled
+// lanes' thunks + NsMethod registry rows (below), P4-3 = the
+// `culebra wrap` build pipeline.
 
 #include <foreign.h>
 #include <interpreter.h>
-#ifdef CULEBRA_JIT_ENABLED
-// wrap.h can be reached before culebra.h pulls jit.h (repl.h includes
-// stdlib_interp.h first), so include it here — after interpreter.h,
-// preserving the interpreter-before-jit order jit.h's inline bodies
-// rely on.
-#include <jit.h>
-#endif
+// wrap.h can be reached before culebra.h pulls the runtime layer (repl.h
+// includes stdlib_interp.h first), so include it here — after
+// interpreter.h, preserving the interpreter-before-runtime order rt.h's
+// inline bodies rely on.
+#include <rt.h>
 
 #include <cassert>
 #include <cstring>
@@ -377,11 +375,9 @@ inline Value make_static_proto(Fn fn, std::vector<std::string> names) {
                              std::move(eval), return_annotation<R>()));
 }
 
-#ifdef CULEBRA_JIT_ENABLED
-
-// --- JIT artifacts (P4-2) ---------------------------------------------------
+// --- Compiled-lane artifacts (P4-2) ------------------------------------------
 //
-// The same declaration instantiates the JIT side: per-method handle
+// The same declaration instantiates the compiled side: per-method handle
 // thunks (plain functions — the member-fn pointer is a NON-TYPE template
 // argument, so each method gets its own static thunk, exactly the
 // hand-written Phase 3 shape), ns adapters for the kNsMethods-style
@@ -761,11 +757,8 @@ JitValue jit_static_adapter(JitValue* a, int64_t) {
       [&] { return invoke(std::index_sequence_for<Args...>{}); });
 }
 
-#endif  // CULEBRA_JIT_ENABLED
-
 }  // namespace wrap_detail
 
-#ifdef CULEBRA_JIT_ENABLED
 // One kNsMethods-shaped row per ctor/static of a wrapped class.
 // stdlib_jit.h materializes NsMethod rows from these (lazily, after
 // static-init froze the registry, so the c_str pointers are stable) and
@@ -785,7 +778,6 @@ inline std::vector<WrappedNsRow>& wrapped_ns_rows() {
   static std::vector<WrappedNsRow> v;
   return v;
 }
-#endif  // CULEBRA_JIT_ENABLED
 
 // Per-method dispatch policy. `standard` derives the generation
 // bump from C++ const-ness (non-const = bump); `preserves_borrows` is
@@ -840,10 +832,8 @@ class ClassBinder {
         "new", wrap_detail::make_static_proto<decltype(make),
                                               std::unique_ptr<T>, Args...>(
                    make, names));
-#ifdef CULEBRA_JIT_ENABLED
     push_ns_row<Args...>("new", &wrap_detail::jit_ctor_adapter<T, Args...>,
                          std::move(names));
-#endif
     return *this;
   }
 
@@ -913,7 +903,6 @@ class ClassBinder {
     wrap_detail::class_info<T>::methods.emplace_back(
         name, wrap_detail::make_method_proto<T, decltype(Mf), R, Args...>(
                   Mf, names, bump));
-#ifdef CULEBRA_JIT_ENABLED
     auto pinned = wrap_detail::pin_param_names(std::move(names),
                                                sizeof...(Args));
     wrap_detail::jit_method_info<T, Mf>::param_names = *pinned;
@@ -927,7 +916,6 @@ class ClassBinder {
          bump ? &wrap_detail::jit_method_thunk<T, Mf, R, true, Args...>
               : &wrap_detail::jit_method_thunk<T, Mf, R, false, Args...>,
          sizeof...(Args), meta});
-#endif
     return *this;
   }
 
@@ -938,7 +926,6 @@ class ClassBinder {
         name,
         wrap_detail::make_borrowed_proto<T, decltype(Mf), T2, Args...>(
             Mf, names));
-#ifdef CULEBRA_JIT_ENABLED
     auto pinned = wrap_detail::pin_param_names(std::move(names),
                                                sizeof...(Args));
     wrap_detail::jit_method_info<T, Mf>::param_names = *pinned;
@@ -951,7 +938,6 @@ class ClassBinder {
         {std::move(name),
          &wrap_detail::jit_borrowed_thunk<T, Mf, T2, Args...>,
          sizeof...(Args), meta});
-#endif
     return *this;
   }
 
@@ -961,15 +947,12 @@ class ClassBinder {
     statics_.emplace_back(
         name, wrap_detail::make_static_proto<decltype(Fn), R, Args...>(
                   Fn, names));
-#ifdef CULEBRA_JIT_ENABLED
     push_ns_row<Args...>(std::move(name),
                          &wrap_detail::jit_static_adapter<Fn, R, Args...>,
                          std::move(names));
-#endif
     return *this;
   }
 
-#ifdef CULEBRA_JIT_ENABLED
   template <class... Args>
   void push_ns_row(std::string method_name,
                    JitValue (*adapter)(JitValue*, int64_t),
@@ -987,7 +970,6 @@ class ClassBinder {
          std::move(arg0_name), static_cast<int8_t>(sizeof...(Args)),
          adapter});
   }
-#endif
 
   std::string ns_;
   std::string name_;

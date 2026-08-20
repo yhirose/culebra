@@ -8,10 +8,6 @@
 #include "interpreter.h"
 #include "stdlib_interp.h"  // culebra::environment()
 
-#ifdef CULEBRA_JIT_ENABLED
-#include "jit.h"
-#endif
-
 namespace culebra {
 
 // Best-effort "is this input syntactically complete?" check. Returns

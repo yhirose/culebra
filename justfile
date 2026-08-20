@@ -121,18 +121,55 @@ check-difftest-coverage:
 [private]
 check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage
 
-# Build without JIT (interpreter only, no LLVM). Builds just the `culebra`
-# driver — the only TU with CULEBRA_JIT_ENABLED #ifdef gating, so this is the
-# compile gate that catches interp-only build breakage (the rest of the tree is
-# backend-agnostic). Uses its own build-no-jit/ dir so it doesn't clobber the
-# JIT `build/`'s cmake cache (the JIT define flips every ccache key anyway).
+# Such a build still has two engines — the tree-walker and the bytecode VM's
+# executor — because everything below the LLVM lowering (rt.h, vm.h) is
+# LLVM-free; what it cannot do is `--jit` or `culebra build`. Builds just the
+# `culebra` driver, the only TU with CULEBRA_JIT_ENABLED #ifdef gating, so this
+# is the compile gate for that configuration. Its own build-no-jit/ dir keeps
+# it off the JIT `build/`'s cmake cache (the JIT define flips every ccache key
+# anyway). `just test-no-jit` runs what it built.
+[doc("Compile the driver without LLVM (CULEBRA_ENABLE_JIT=OFF)")]
 [group("build")]
 build-no-jit:
     mkdir -p build-no-jit
-    # LTO off: this lane proves the interp-only build compiles and links, and
+    # LTO off: this lane proves the no-LLVM build compiles and links, and
     # a whole-driver relink proves nothing more than the link it already does.
     cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF -DCULEBRA_LTO=OFF .. > /dev/null
     cd build-no-jit && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
+
+# A link is not the gate here: the point of keeping the VM out of the LLVM
+# guard is that a no-LLVM binary HAS an engine besides the tree-walker, and a
+# binary with one engine where there should be two compiles and links
+# perfectly. Only running a program says so. The corpus is the one
+# `just test`'s vm_cases phase uses, for the same two reasons: it is
+# contractually inside the VM slice (so a mismatch is a mismatch, not a
+# rejected construct), and compare.sh folds each lane's EXIT CODE into the
+# comparison — reading only stdout let a SEGV pass as "equal" once already
+# (see run_diff_interp_jit below).
+[doc("Run the no-LLVM build's two engines over the VM corpus and compare")]
+[group("test")]
+test-no-jit: build-no-jit
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bin=./build-no-jit/culebra
+    case "$("$bin" --version)" in
+        *interp+vm*) ;;
+        *) echo "check failed: --version does not name the VM"; exit 1 ;;
+    esac
+    TIMEOUT_BIN=""
+    if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
+    elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
+    out="$({{nice_cmd}} ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$bin" --vm 2>&1)" \
+        || { printf '%s\n' "$out"; exit 1; }
+    # The REPL is a separate entry point with its own engine pick, and no
+    # corpus reaches it. No `| grep`: grep -q exits on the first match and
+    # pipefail would read the producer's SIGPIPE as the failure.
+    repl="$(printf 'let x = 6 * 7\nx\n' | {{nice_cmd}} ${TIMEOUT_BIN:+$TIMEOUT_BIN 60} "$bin" --vm --shell)"
+    case "$repl" in
+        *42*) ;;
+        *) echo "check failed: the no-LLVM REPL does not run on --vm"; exit 1 ;;
+    esac
+    echo "no-LLVM build: --vm runs the VM corpus and agrees with --tree"
 
 # Same Release + JIT shape as `just dev`, minus -DNDEBUG, so the tree's asserts
 # actually execute. Every other lane is Release, so without this one NO build
