@@ -954,6 +954,8 @@ jobs:
           fn check(cond, msg) { if !cond { throw "check failed: " + msg } }
           @packable class Cell { v: Int64 = 0 }
 
+          # `--tree` because a child inherits CULEBRA_REQUIRE_EXPLICIT_ENGINE
+          # and must name its engine like any other launch (vm.md §13.1).
           let exe = Sys.executable
           check(exe != "", "Sys.executable resolved")
 
@@ -961,8 +963,8 @@ jobs:
           # each bump the shared counter once (named mutex must lose none) and
           # write their own disjoint slot (named mapping shared by name).
           let grid = SharedBuffer.shared(3, Cell)
-          let h0 = Proc.spawn([exe, "sbworker/slot.cul"], env: {"SLOT": "0"}, share: {"grid": grid})
-          let h1 = Proc.spawn([exe, "sbworker/slot.cul"], env: {"SLOT": "1"}, share: {"grid": grid})
+          let h0 = Proc.spawn([exe, "--tree", "sbworker/slot.cul"], env: {"SLOT": "0"}, share: {"grid": grid})
+          let h1 = Proc.spawn([exe, "--tree", "sbworker/slot.cul"], env: {"SLOT": "1"}, share: {"grid": grid})
           let r0 = h0.wait()
           let r1 = h1.wait()
           check(r0.ok && r1.ok, "share workers exit ok")
@@ -975,7 +977,7 @@ jobs:
           let fbuf = SharedBuffer.file(path, 4, Cell)
           fbuf[0].v = 41
           fbuf.flush()
-          let fr = Proc.run([exe, "sbworker/file.cul"], env: {"SBPATH": path})
+          let fr = Proc.run([exe, "--tree", "sbworker/file.cul"], env: {"SBPATH": path})
           check(fr.ok, "file worker exit ok: " + fr.stderr)
           check(fbuf[1].v == 42, "child's file write visible in parent's mapping")
           fbuf.drop()

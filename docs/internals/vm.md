@@ -1464,6 +1464,14 @@ ctest runs in `just test` alone — §12.3 from the other side: what a
 gate measures is not what its name suggests, and the fast lane is a
 subset picked for speed.
 
+One more appeared only in CI, and it is the same shape as the isolate
+test: the Windows SharedBuffer smoke writes its program as a heredoc
+inside `ci.yml` and starts two children with `Proc.spawn([exe, ...])`.
+A culebra program spelled inside a workflow file is reachable by
+neither the sweep over `.cul` files nor the sweep over shell commands,
+and no local lane runs it. The ratchet found it the only way it could
+be found — by running.
+
 The variable is now set by default for every justfile recipe and in
 both workflows, which is the point of the batch. A one-time sweep
 would decay; with the ratchet in place a new recipe that launches the
