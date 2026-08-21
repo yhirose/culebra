@@ -10954,6 +10954,17 @@ struct Exec {
   }
 };
 
+// The executor lane for a loader's module list: what `--vm` runs, and the
+// twin of run_modules_via_llvm (vm_lowering.h) for the consumer that only
+// wants the program run. A consumer whose closures outlive the run compiles
+// it itself and keeps it (RetainedProgram below, `culebra dap --vm`).
+inline void run_modules(const std::vector<LoadedModule>& modules,
+                        Debug dbg = Debug::Off) {
+  if (modules.empty()) return;
+  auto prog = Compiler::compile_modules(modules, dbg);
+  Exec::run(prog);
+}
+
 // A program and everything its compilation read. Chunks intern their own
 // string constants, but a closure the program built reaches its bytecode
 // through a descriptor pointing into the program, so a session that can call

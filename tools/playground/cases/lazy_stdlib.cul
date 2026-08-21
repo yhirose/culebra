@@ -1,0 +1,9 @@
+# The lazy stdlib: every module here is built on first mention and cached in
+# the Runtime, which is what a run that reuses one dangles into.
+let t = Time.now()
+println(type_of(t))
+println(to_string(re'a+b'.test("aaab")))
+assert_eq(2 + 2, 4)
+println(Path("/a/b/c.cul").stem())
+println(to_string(Vector2(3.0, 4.0).length()))
+println(replace("a-b-c", "-", "+"))

@@ -1,0 +1,12 @@
+# Enough allocation to make the collector run, which is the only thing that
+# reads Heap::stack_base — the wasm arm of it has no other exercise.
+let mut acc = 0
+for i in range(0, 20000) {
+  let g = |x| x + i
+  acc = acc + g(1)
+}
+println(to_string(acc))
+
+fn fib(n) { n < 2 ? n : fib(n - 1) + fib(n - 2) }
+println(to_string(fib(20)))
+println(to_string([1, 2, 3, 4].map(|x| x * x).sum()))

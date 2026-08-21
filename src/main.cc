@@ -1492,8 +1492,7 @@ culebra::BlockRunner doc_block_runner(DocEngine engine) {
     // instead of around half of an if/else.
     using Run = void (*)(const std::vector<culebra::LoadedModule>&);
     Run run = [](const std::vector<culebra::LoadedModule>& modules) {
-      auto prog = culebra::vm::Compiler::compile_modules(modules);
-      culebra::vm::Exec::run(prog);
+      culebra::vm::run_modules(modules);
     };
 #ifdef CULEBRA_JIT_ENABLED
     if (engine == DocEngine::Jit) {

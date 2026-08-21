@@ -21,17 +21,22 @@
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
-#if !defined(_WIN32)
-#include <pthread.h>  // pthread_get_stackaddr_np / getattr_np (stack_base, POSIX)
-// backtrace() for GAP5 birth-site capture (macOS, glibc Linux).
-#include <execinfo.h>
-#else
+#ifdef _WIN32
 #include <os_compat.h>  // guarded <windows.h> for GetCurrentThreadStackLimits
-// mingw has no <execinfo.h>; GAP5 birth-site capture degrades gracefully —
-// the audit still fires, printing "(no birth site)" (n==0 / null symbols are
-// already handled at the report site).
+#else
+#include <pthread.h>  // pthread_get_stackaddr_np / getattr_np (stack_base, POSIX)
+#endif
+#ifdef __EMSCRIPTEN__
+#include <emscripten/stack.h>  // emscripten_stack_get_base (stack_base)
+#endif
+// backtrace() for GAP5 birth-site capture. mingw and emscripten have no
+// <execinfo.h>; capture degrades to "(no birth site)", which the report site
+// already renders (n==0 / null symbols).
+#if defined(_WIN32) || defined(__EMSCRIPTEN__)
 static inline int backtrace(void**, int) { return 0; }
 static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
+#else
+#include <execinfo.h>
 #endif
 
 #include <algorithm>
@@ -888,6 +893,11 @@ class Heap {
     ULONG_PTR low = 0, high = 0;
     GetCurrentThreadStackLimits(&low, &high);
     return reinterpret_cast<void*>(high);
+#elif defined(__EMSCRIPTEN__)
+    // wasm's value stack lives outside linear memory, where nothing can scan
+    // it; the user stack emscripten reserves inside it is where an
+    // address-taken local goes — the only locals a conservative scan finds.
+    return reinterpret_cast<void*>(emscripten_stack_get_base());
 #else
 #error "conservative GC stack_base: unsupported platform"
 #endif

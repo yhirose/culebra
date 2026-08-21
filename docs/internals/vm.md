@@ -1866,3 +1866,104 @@ where they belong, by `compare.sh` holding the three lanes to the same one.
 Those two sweeps now accept 255 and nothing else, so a signal still counts. A
 detector that fires on every run is not a detector, and this one had been
 reporting a real number about the wrong population since it was written.
+
+### 13.6 The Playground picks an engine
+
+§13.4 left the Playground as the build it had made ready and not moved:
+`playground/wasm_main.cc` still included `interpreter.h` and called
+`interpret_modules`, because until `vm.h` stopped requiring LLVM there was no
+second engine there to pick between. The switch itself is the same three calls
+`main.cc`'s `--vm` path makes, in the same order — `install_jit_stdlib()` for
+the stdlib the executor resolves names through, `splice_stdlib_preamble()` for
+the module that declares the lazy builders, then `Compiler::compile_modules`
+and `Exec::run`.
+
+It did not compile, and what it printed is the reason this section exists.
+§13.4's claim was that a build without LLVM has an engine, and `just
+test-no-jit` runs one to prove it — but that lane is a native Linux build.
+wasm is a *different* build without LLVM, and the three things that broke are
+about the platform rather than the engine. All three are headers that batch
+made reachable, handed to a toolchain that had never read them:
+
+- `jit_gc.h` included `<execinfo.h>` on every platform that is not Windows,
+  for the birth-site backtrace GAP5 prints. Emscripten's sysroot has pthreads
+  and not that. It degrades the way mingw already did — a `backtrace` that
+  returns 0, and an audit that still fires and says "(no birth site)".
+- `Heap::stack_base` ended in `#error "unsupported platform"`. wasm keeps its
+  value stack outside linear memory, where nothing can scan it; what
+  `emscripten_stack_get_base()` returns is the base of the user stack
+  emscripten reserves *inside* linear memory, and that is where an
+  address-taken local lives — the only locals a conservative scan could ever
+  have found.
+- `static_assert(sizeof(JitParamMeta) == 12 * sizeof(int64_t))` fails on
+  wasm32. It weighs a struct of pointers against a count of `int64_t`, so it
+  is a statement about a 64-bit target as much as about the field list, and
+  what it exists to catch is drift from the LLVM struct
+  `emit_param_meta_global` emits — which is only there where LLVM is. It sits
+  under `CULEBRA_JIT_ENABLED` now.
+
+The fourth was the switch's own doing and the switch resolved it. §13.4 signed
+off owing a warning: `_jit_shared_val_prop` and `_jit_shared_val_index` are
+declared in `jit_runtime.h` and defined in `sendable_jit.h`, which the no-LLVM
+include chain does not reach. The executor's lane includes `stdlib_jit.h`,
+which does.
+
+So B4's entry needs correcting rather than annotating. "The Playground can now
+be switched" was true of `vm.h` and false of the Playground, which that same
+batch had stopped compiling, and nothing noticed because nothing built it. The
+lesson is narrower than §13.4's own ("a link is not a claim") and sharper:
+**`build-no-jit` and the Playground are two configurations, and the ratchet
+compiles one of them.** No CI runner has emsdk. §13.4 closed by saying that a
+build nothing exercises by hand is the one that would be found missing an
+engine after B7; it was already missing a compile, one batch earlier than
+predicted.
+
+One more thing fell out of the first rebuild in a while, and it is not about
+any of this: `emcc` links this translation unit as C, and 6.0.8 leaves
+`operator new` and the libc++ internals undefined where older toolchains
+inferred C++ from the input's extension. The driver is `em++`.
+
+Verification is the difftest lanes' in miniature — a script that reaches the
+lazy stdlib, a class with a getter, `fib(22)`, the String methods master added,
+and twenty thousand closures whose only job is to make the collector run, which
+is what exercises the second item above. Its output is byte-identical between
+the wasm build and a native `--vm`.
+
+Run it twice, though, and the second one traps. That is the finding this batch
+would have shipped, and it is worth the space because nothing about it is
+specific to wasm. The page holds one instance for every Run click, so a
+`Runtime` outlives a run — and the namespace caches live there, while the
+closures a cached namespace holds point into the `VmProgram` that built it,
+which the call that built it owns and destroys. Any program naming a lazy
+module (`Time`, `Canvas`, `Regex`, the matchers, …) reads a dangling descriptor
+the next time. The tree-walker was not exposed to it: it built a fresh
+`Environment` per run and its lazy modules were bound there.
+
+The fix was already written down elsewhere in the tree. `doc_block_runner`
+gives every doctest block its own `Runtime`, and its comment says why in the
+same words — the namespace caches and the class and overload registries live
+there. `run_culebra` does that now, with `install_jit_stdlib()` deliberately
+left outside it so the hooks land in the process-wide default rather than in
+one run's copy. What made the two engines differ here is that per-run
+teardown used to be free: the interpreter's state hung off an `Environment`
+that the run released, and moving the engine moved that state into a Runtime
+that nobody was ending.
+
+The way it was found is the other half. A single run passed — twice, in two
+sessions — because a single run is what a smoke test naturally does. It took
+running the same program a second time in one instance, which is the thing the
+page does and the harness did not.
+
+So the batch ends by making that a lane. `just check-playground`
+(`tools/playground/smoke.mjs`) loads the committed wasm under node, runs four
+cases twice each in one instance, and holds the output to the same program on
+the native executor. It needs no emsdk, which is the whole point: what it
+checks is the artifact under `site/playground/` that Pages serves, not one it
+builds — so it runs in CI, on every push, beside `release-diff` and on the same
+downloaded binary. Both directions were exercised before it landed: with the
+per-run `Runtime` commented back out it reports `lazy_stdlib.cul run 2: wasm
+trapped: memory access out of bounds` and exits 1, and the other three cases
+still pass twice, which is the shape of the bug rather than a blanket failure.
+The `full` variant is out of its reach — a JSPI build cannot be instantiated
+without `WebAssembly.Suspending` — but the two builds are the same translation
+unit, so the engine question is answered by either.

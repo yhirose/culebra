@@ -1,4 +1,6 @@
-// culebra playground — interp-only core compiled to WebAssembly.
+// culebra playground — the core compiled to WebAssembly, running on the
+// bytecode VM's executor. There is no LLVM here, so `--jit`'s lowering is the
+// one lane this build cannot have (docs/internals/vm.md §13.4).
 // Call-based (no main): JS calls run_culebra(src).
 //
 // Output streams live via a custom std::streambuf that posts to JS the
@@ -12,10 +14,11 @@
 // change needed. IO.print alone doesn't auto-flush; run_culebra flushes
 // once more at the end so a plain script's trailing print()-without-\n text
 // is never lost, matching the old behavior for non-TUI scripts.
-#include <interpreter.h>
 #include <module_loader.h>
 #include <stdlib_interp.h>
+#include <stdlib_jit.h>  // the stdlib the executor resolves through
 #include <vfs.h>
+#include <vm.h>
 
 #include <emscripten.h>
 #include <emscripten/emscripten.h>
@@ -108,6 +111,18 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
     }
   }
 
+  // Outside the Runtime below, so it lands in the process-wide default hooks
+  // every per-run Runtime falls back to rather than in one run's copy.
+  culebra::install_jit_stdlib();
+
+  // A run is independent of every other, the way a doctest block is: the
+  // namespace caches and the class / overload registries live in the Runtime,
+  // and a cached namespace's closures point into the VmProgram that built it —
+  // which this call owns and destroys. The page keeps one wasm instance for
+  // every Run click, so a Runtime carried between them dangles on the second.
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+
   int rc = 0;
   std::vector<std::string> msgs;
   culebra::ModuleLoader loader;
@@ -119,19 +134,14 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
       rc = 1;
     } else {
       culebra::sys_argv() = argv;
-      auto env = culebra::environment();
-      culebra::install_cli_aliases(*env);
-      culebra::Value val;
-      culebra::Debugger dbg;
-      if (!culebra::interpret_modules(modules, env, val, msgs, dbg)) {
-        for (auto& m : msgs) std::cerr << m << "\n";
-        rc = 1;
-      }
+      // The preamble declares the lazy stdlib's builders; the compiled lanes
+      // cannot resolve `Time` or `assert_eq` without it. Everything else
+      // arrives as an exception the handlers below print.
+      culebra::splice_stdlib_preamble(modules);
+      culebra::vm::run_modules(modules);
     }
   } catch (const culebra::CulebraError& e) {
-    std::cerr << e.kind << ": " << e.what();
-    if (e.line > 0 || e.col > 0) std::cerr << " at " << e.line << ":" << e.col << ".";
-    std::cerr << "\n";
+    std::cerr << culebra::format_error_message(e) << "\n";
     rc = 1;
   } catch (const std::exception& e) {
     std::cerr << "error: " << e.what() << "\n";

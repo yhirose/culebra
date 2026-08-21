@@ -1,0 +1,16 @@
+# Classes and enums register in the Runtime too, next to the namespace caches.
+class Point {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+  get length2() { self.x * self.x + self.y * self.y }
+  scaled(k) { Point(self.x * k, self.y * k) }
+}
+
+enum Shape { Dot, Line(Long) }
+
+let p = Point(3, 4)
+println(to_string(p.length2))
+println(to_string(p.scaled(2).length2))
+inspect(Shape.Line(7))

@@ -409,8 +409,11 @@ struct JitParamMeta {
 };
 
 // Layout matches the LLVM struct emitted in emit_param_meta_global.
-// Adding a field requires updating both — the assert catches drift.
-static_assert(sizeof(JitParamMeta) == 12 * sizeof(int64_t),
+// Adding a field requires updating both — the assert catches drift. Twelve
+// machine words is a size proxy for that field list, so it speaks only where a
+// pointer is 8 bytes; wasm32 packs the same fields smaller, which is not drift.
+static_assert(sizeof(void*) != 8 ||
+                  sizeof(JitParamMeta) == 12 * sizeof(int64_t),
               "JitParamMeta C++ / LLVM layout drift");
 
 // Build (once) a stable JitParamMeta from a handle method's param names

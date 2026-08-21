@@ -1238,14 +1238,25 @@ fetch-mnist:
 vendor-update *extra:
     ./tools/vendor_update.sh {{extra}}
 
-# Build the browser playground (interp-only wasm via emscripten) into
-# site/playground/. Artifacts are committed — .github/workflows/pages.yml
-# uploads site/ to Pages as-is, so this is the only place they are produced.
+# Build the browser playground (wasm via emscripten, no LLVM — the bytecode
+# VM's executor is its engine) into site/playground/. Artifacts are committed —
+# .github/workflows/pages.yml uploads site/ to Pages as-is, so this is the only
+# place they are produced.
 # Needs emsdk (default ~/Projects/emsdk, override with EMSDK_DIR).
 [group("site")]
 [doc("Build the browser playground (wasm) into site/playground/")]
 site-build:
     ./playground/build.sh
+
+# Run the committed wasm and hold it to the native executor. Separate from
+# site-build because it checks the artifact that ships rather than the one just
+# produced — the CI job runs it on every push, where no emsdk exists and the
+# committed .wasm is all there is. Every case runs twice in one instance, which
+# is the page's own shape and the only one that sees state a run leaves behind.
+[group("site")]
+[doc("Check the committed playground wasm against native --vm")]
+check-playground bin="./build/culebra":
+    node tools/playground/smoke.mjs {{bin}}
 
 [group("site")]
 [doc("Serve site/ locally (run `just site-build` first if the playground needs rebuilding)")]

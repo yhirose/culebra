@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build the culebra playground (interp-only, WebAssembly) into site/playground/.
+# Build the culebra playground (WebAssembly, no LLVM) into site/playground/.
 # The wasm artifacts are committed, and .github/workflows/pages.yml uploads
 # site/ as-is — no runner has emsdk, so this never runs in CI. Invoke it via
 # `just site-build`. Only a changed input triggers a recompile, so re-running
-# it after editing only the frontend costs a copy rather than two interpreter
+# it after editing only the frontend costs a copy rather than two engine
 # builds.
 #
 # Two builds, and worker.js picks one at load time:
@@ -22,7 +22,7 @@
 # the basic build is expected to become unnecessary once that ships. Each
 # visitor downloads exactly one of the two.
 #
-# Both builds share the interpreter, so they differ by roughly the size of
+# Both builds share the engine, so they differ by roughly the size of
 # the emdawnwebgpu port (tens of KB), not by a meaningful fraction. The basic
 # build still runs a TUI script — Term.read_key stubs to "no key yet" (see
 # term.h), so it degrades to non-interactive the way piped stdin does
@@ -72,7 +72,7 @@ COMMON=(
   -Ivendor/stb
 )
 
-# Each build is the whole interpreter in one TU, and `just site-serve` asks for
+# Each build is the whole engine in one TU, and `just site-serve` asks for
 # one on every invocation, so skip a compile whose inputs are all unchanged.
 # The file list comes from the compiler (-MD) rather than being enumerated
 # here, which is what covers the generated preambles and the vendored headers;
@@ -102,14 +102,17 @@ compile() {  # $1 = label, $2 = output .js, $3… = flags on top of COMMON
     return
   fi
   echo "[playground] compiling ${label}…"
-  emcc "${cmd[@]}" -MD -MF "$dep"
+  # em++, not emcc: this is one C++ TU compiled and linked in a single step,
+  # and emcc links as C — 6.0.8 leaves operator new and the libc++ internals
+  # undefined, where older toolchains inferred C++ from the input's extension.
+  em++ "${cmd[@]}" -MD -MF "$dep"
   fingerprint "$dep" "$out" "${cmd[@]}" >"$stamp" || rm -f "$stamp"
 }
 
 compile "culebra-basic.wasm" "$OUT/culebra-basic.js"
 
 # JSPI (not Asyncify) because it composes with -fwasm-exceptions, which the
-# interpreter needs. JSPI_EXPORTS makes run_culebra return a Promise, so
+# engine needs. JSPI_EXPORTS makes run_culebra return a Promise, so
 # worker.js awaits it — harmless for the basic build, where it stays
 # synchronous. CULEBRA_WASM_JSPI switches on the real Term.read_key (term.h)
 # and IO.*_is_terminal (os_compat.h) instead of their "not interactive" stubs.

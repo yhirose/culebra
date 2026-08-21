@@ -1,0 +1,5 @@
+# A failing run has to report the same way and leave the instance usable for
+# the next one. Nothing prints before the throw: the wasm build streams stdout
+# and stderr through one channel, so the comparison stays order-independent.
+let xs = [1, 2, 3]
+println(to_string(xs[10]))

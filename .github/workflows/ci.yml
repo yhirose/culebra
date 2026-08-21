@@ -344,6 +344,34 @@ jobs:
           base=$(ls -d build/baseline/culebra-*/culebra)
           tools/difftest/release_diff.sh "$base" ./build/culebra
 
+  # The Playground is a build no runner can make — nothing here has emsdk — so
+  # what ships is the committed site/playground/*.wasm. This runs it: node
+  # loads the artifact, every case runs twice in one instance, and the output
+  # has to match the same program on the native executor. Twice, because the
+  # page keeps one instance across Run clicks, and a run that leaves state in
+  # the Runtime is invisible to any check that runs a program once
+  # (docs/internals/vm.md §13.6). No build of its own — the binary is
+  # build-ubuntu's artifact, the way release-diff takes it.
+  playground-smoke:
+    needs: build-ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the built culebra
+        uses: actions/download-artifact@v4
+        with:
+          name: culebra-ubuntu-latest
+          path: build
+
+      # Artifacts drop file modes.
+      - name: Restore the exec bit
+        run: chmod +x build/culebra
+
+      - name: Run the committed wasm against native --vm
+        run: node tools/playground/smoke.mjs ./build/culebra
+
   # The macOS leg of what used to be a two-OS test matrix, unchanged in what
   # it runs: the clean-env build + the SKIP_HEAVY `_run-tests all` sweep +
   # the macOS-only smokes. The test suite's heavy phases (the generated
