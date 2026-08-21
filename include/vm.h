@@ -4605,6 +4605,10 @@ class Compiler {
                             const std::string& name, MemberOpts mo) {
     int32_t idx = compile_fn_chunk(ast, ast.nodes[dec_end + 1].get(),
                                    *ast.nodes.back(), mo);
+    // The declaration's own name, as the undecorated path sets it: what the
+    // decorator receives is still `fn <name>`, and a decorator that dispatches
+    // on `f.name` is the ordinary reason to have written one.
+    prog_.chunks[idx].multifn_name = name;
     int32_t val = alloc_temp(ast);
     emit(Op::MakeClosure, val, idx);
     val = apply_decorators(ast, dec_end, val);

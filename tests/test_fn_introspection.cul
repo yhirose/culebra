@@ -108,4 +108,22 @@ let bx = Box.new(7)
 let g = bx.get
 assert_true(g.name == "get" || g.name == "")
 
+// --- a decorator receives the declaration's name ---
+// What a decorator is handed is still `fn <name>`, and the compiled lanes
+// used to hand it an anonymous closure — the chunk carried no name because
+// the decorated path skipped the assignment the plain path makes.
+mut seen = ""
+let record = fn (f) {
+  seen = f.name
+  f
+}
+
+@record
+fn decorated_target() {
+  1
+}
+
+assert_eq(seen, "decorated_target")
+assert_eq(decorated_target.name, "decorated_target")
+
 IO.inspect("test_fn_introspection OK")
