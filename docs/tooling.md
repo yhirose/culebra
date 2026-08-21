@@ -260,6 +260,11 @@ culebra lint .          # recurse into every .cul under the current directory,
 Paths holding no `.cul` file exit 2 rather than reporting a clean run, so a
 mistyped directory can't pass the gate.
 
+A file named `test_*.cul` — the same convention `culebra test` discovers by
+— is linted as that runner would run it, so `test` and `parametrize` count
+as bound there. In any other file they are the undefined names they have
+always been, and `culebra lint .` gets both right in one pass.
+
 What it reports today:
 
 - **Errors** — the sound, certain-to-fail set: `break` / `continue` /

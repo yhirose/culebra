@@ -1,0 +1,41 @@
+# The three registration forms `docs/tooling.md` §1 documents, and the one it
+# documented while the load-stage lint rejected it: naming `test` as a value
+# only resolves because `culebra test` registers it as an ambient global
+# (culebra::ambient_globals). The decorator form never needed that — a
+# decorator's name is not walked as a variable read — which is why the call
+# form went unnoticed. Run by:
+#   ./build/culebra test tests/culebra_test_self/
+
+# --- call form ---
+
+test("call form registers", fn () {
+  assert_eq(1 + 1, 2)
+})
+
+fn call_form_fixture() {
+  "injected"
+}
+
+test("call form gets fixtures", fn (call_form_fixture) {
+  assert_eq(call_form_fixture, "injected")
+})
+
+# `test` is a value, not only a call target.
+test("test is an ordinary global", fn () {
+  assert_eq(type_of(test), "Function")
+  assert_eq(type_of(parametrize), "Function")
+})
+
+# --- decorator form, one arg ---
+
+@test
+fn decorator_form_registers() {
+  assert_true(true)
+}
+
+# --- parametrize ---
+
+@parametrize([(1, 2, 3), (10, 20, 30)])
+fn parametrize_registers_one_per_case(a, b, want) {
+  assert_eq(a + b, want)
+}

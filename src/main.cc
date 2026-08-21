@@ -1807,6 +1807,10 @@ int run_lint(int argc, const char** argv) {
   int errors = 0, warnings = 0;
   bool had_failure = !expand_ok;
   for (const auto& path : files) {
+    // Per file, because `culebra lint .` sees both kinds in one pass — and
+    // keyed on the runner's own matcher, so the two cannot come to disagree
+    // about what a test file is.
+    culebra::set_test_ambients(culebra::default_test_cul_matcher(path));
     auto contents = read_file(path.c_str());
     if (!contents) {
       std::println(stderr, "culebra lint: can't open '{}'", path);

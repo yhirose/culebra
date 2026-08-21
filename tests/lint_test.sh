@@ -696,6 +696,19 @@ if [[ $rc -ne 1 || "$out" != *"dirty.cul"*"unused import 'Math'"* || "$out" == *
 fi
 rm -rf "$DIRTMP"
 
+# --- `test` / `parametrize` are ambient in a test file and nowhere else ---
+# One pass over a directory holding both kinds has to get each right, which is
+# why the ambients are set per file rather than once.
+AMBTMP=$(mktemp -d)
+printf 'test("named", fn () {\n  assert_eq(1, 1)\n})\n' > "$AMBTMP/test_amb.cul"
+printf 'test("named", fn () {\n  assert_eq(1, 1)\n})\n' > "$AMBTMP/notatest.cul"
+out=$("$CULEBRA" lint "$AMBTMP" 2>&1); rc=$?
+if [[ $rc -ne 2 || "$out" == *"test_amb.cul"* ||
+      "$out" != *"notatest.cul"*"undefined variable 'test'"* ]]; then
+  echo "FAIL lint-test-ambients: rc=$rc out=$out"; fail=1
+fi
+rm -rf "$AMBTMP"
+
 # --- `--fix`: mechanically remove unused-import lines ---
 # A used import is left alone; an unused one is deleted and the file re-lints
 # clean afterward. `--fix` reports the file it rewrote and exits 0.

@@ -1210,7 +1210,9 @@ inline bool always_bound(std::string_view n) {
 inline bool resolves(std::string_view name, const Chain& chain,
                      const NameSet& globals) {
   if (is_sink(name) || always_bound(name)) return true;
-  if (globals.contains(name)) return true;
+  // Separate from `globals`: that set is built once and cached, the ambients
+  // are per run (shared.h).
+  if (globals.contains(name) || culebra::is_ambient_global(name)) return true;
   for (const auto* frame : chain)
     if (frame->contains(name)) return true;
   return false;

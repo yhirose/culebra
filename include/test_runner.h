@@ -159,6 +159,16 @@ inline Value register_test(std::string name, Value fn,
   return Value();
 }
 
+// Whether a program being loaded is one `culebra test` runs. Binding the two
+// values is only half the job — a bare name is resolved before anything runs
+// — so the runner turns this on, and `culebra lint` turns it on per file for
+// the ones it would have run.
+inline void set_test_ambients(bool on) {
+  static constexpr std::string_view kNames[] = {"test", "parametrize"};
+  ambient_globals() = on ? std::span<const std::string_view>(kNames)
+                         : std::span<const std::string_view>{};
+}
+
 // Inject ambient bindings used only under `culebra test`: `test` /
 // `parametrize` for registration. The matcher family (assert_true /
 // assert_eq / etc.) is a 3-backend global via stdlib MATCHERS_MODULE_SOURCE
@@ -169,6 +179,11 @@ inline Value register_test(std::string name, Value fn,
 // `test` is polymorphic: `test("name", fn)` or `test(fn)` (decorator).
 inline void install_test_ambient(Environment& env) {
   using namespace std::literals;
+
+  // Before any module is loaded: without it `test("name", fn)` is rejected by
+  // the load-stage lint. (`@test` was never rejected — the lint skips
+  // decorator subtrees outright, deliberately, for soundness.)
+  set_test_ambients(true);
 
   // `parametrize(cases)` returns a decorator that registers one
   // entry per case under `<fn.name>[i]`. Single-arg fns can pass

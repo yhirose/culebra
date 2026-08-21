@@ -2293,6 +2293,26 @@ inline std::vector<std::string>& sys_argv() {
   return v;
 }
 
+// Globals a subcommand binds on top of the stdlib, for the length of one run:
+// `culebra test` adds `test` and `parametrize`, and `culebra prog.cul` has
+// neither. Process-wide for sys_argv's reason, and down here rather than in
+// the stdlib because a bare name is resolved before any of it runs — by the
+// load-stage undefined-variable lint, and by the bytecode compiler. The
+// storage is the caller's: a static table of names, set as a whole.
+// (Not this: `install_cli_aliases`' inspect / print / println, which are
+// unconditional entries in the compiled lanes' own table and so are named
+// unconditionally in builtin_global_names.)
+inline std::span<const std::string_view>& ambient_globals() {
+  static std::span<const std::string_view> names;
+  return names;
+}
+
+inline bool is_ambient_global(std::string_view name) {
+  for (auto n : ambient_globals())
+    if (n == name) return true;
+  return false;
+}
+
 inline Runtime& default_runtime() {
   static thread_local Runtime rt;
   return rt;
