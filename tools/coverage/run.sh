@@ -120,20 +120,32 @@ sweep() {
 }
 
 # Run one durable invocation, remembering whether it succeeded.
+#
+# A case that ends in an uncaught throw is not a failed run. Half of vm_cases
+# and four of the leak-abort probes are curated around error behaviour and
+# exit non-zero by design — 84 of 177 and 4 of 8 here — and where their exit
+# code matters it is checked properly: compare.sh holds all three lanes to the
+# same one. Suites like that are swept with NOTE_RUN_MAY_THROW, which accepts
+# exactly the status an uncaught throw leaves (255). Anything else is still a
+# failure, a signal included, because those are the runs that stopped early
+# and left the corpus-only set inflated by what they did not reach.
+THROW_STATUS=255
 note_run() {
-  local what="$1"; shift
+  local what="$1" rc; shift
   durable_runs=$((durable_runs + 1))
-  "$@" > /dev/null 2>&1 || {
-    durable_bad=$((durable_bad + 1))
-    durable_failed+=("$what")
-  }
+  "$@" > /dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ] && return
+  [ "${NOTE_RUN_MAY_THROW:-0}" = 1 ] && [ "$rc" = "$THROW_STATUS" ] && return
+  durable_bad=$((durable_bad + 1))
+  durable_failed+=("$what (rc=$rc)")
 }
 
 for lane in --vm --jit; do
   sweep "tests" "$lane" tests/*.cul
-  sweep "vm_cases" "$lane" tools/bench/vm_cases/*.cul
+  NOTE_RUN_MAY_THROW=1 sweep "vm_cases" "$lane" tools/bench/vm_cases/*.cul
   sweep "isolate" "$lane" tests/isolate/*.cul
-  sweep "leak-abort probes" "$lane" tools/difftest/leak_abort_bare.d/*.cul
+  NOTE_RUN_MAY_THROW=1 sweep "leak-abort probes" "$lane" \
+    tools/difftest/leak_abort_bare.d/*.cul
   echo ">>> durable: doctest ($lane)"
   note_run "doctest $lane" "$SHIM" test --doc "$lane" tests/doctest docs
 done
