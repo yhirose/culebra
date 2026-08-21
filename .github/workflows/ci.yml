@@ -287,6 +287,63 @@ jobs:
       - name: Report ccache stats
         run: ccache -s
 
+  # Release-to-release differential (tools/difftest/release_diff.sh): the
+  # generated corpus under the latest published binary and under this commit,
+  # each on its own default engine, with every behavioural change named in
+  # release_diff_allow.txt.
+  #
+  # This is the lane that outlives the tree-walker. The executor and the LLVM
+  # lowering are handed bytecode by the same compiler, so after the deletion
+  # they can only agree with each other; a released binary is an independent
+  # implementation that cannot drift with the working tree (vm.md §13.5).
+  #
+  # master pushes only. It compares against a release, so it says nothing about
+  # a topic branch that has not landed yet, and what the default-engine switch
+  # needs watched is exactly the landed commits.
+  #
+  # The two binaries are configured differently — a release is built with the
+  # Canvas desktop window on, build-ubuntu's artifact with it off — and the
+  # corpus does not notice, because its Canvas cases only ever read and write
+  # an offscreen framebuffer. Nothing in the corpus opens a window.
+  release-diff:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build-ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The justfile defaults this for its recipes and the script below is run
+      # directly. A runner has no display, and the released binary — unlike
+      # build-ubuntu's artifact — does have the window backend compiled in, so
+      # without the declaration its Canvas cases would all fail to open one.
+      CULEBRA_CANVAS_HEADLESS: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the built culebra
+        uses: actions/download-artifact@v4
+        with:
+          name: culebra-ubuntu-latest
+          path: build
+
+      # Artifacts drop file modes.
+      - name: Restore the exec bit
+        run: chmod +x build/culebra
+
+      # No tag: the baseline is whatever is published, so a release moves this
+      # gate forward on its own.
+      - name: Fetch the latest release binary
+        run: |
+          mkdir -p build/baseline
+          gh release download --pattern 'culebra-linux-x64.tar.gz' \
+            --dir build/baseline
+          tar xzf build/baseline/culebra-linux-x64.tar.gz -C build/baseline
+
+      - name: Diff against the previous release
+        run: |
+          base=$(ls -d build/baseline/culebra-*/culebra)
+          tools/difftest/release_diff.sh "$base" ./build/culebra
+
   # The macOS leg of what used to be a two-OS test matrix, unchanged in what
   # it runs: the clean-env build + the SKIP_HEAVY `_run-tests all` sweep +
   # the macOS-only smokes. The test suite's heavy phases (the generated

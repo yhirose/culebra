@@ -19,7 +19,11 @@
 # surface makes both lanes give the same wrong answer and the corpus stays
 # green. Code only the corpus has ever run is code no durable test pins.
 #
-# The list is empty — see docs/internals/vm.md §13.3 for how it got that way,
-# and for when this has to be re-run: before B5 re-points the corpus at
-# executor-vs-lowering, since after that the measurement answers a different
-# question.
+# The list is empty — see docs/internals/vm.md §13.3 for how it got that way.
+#
+# Re-run it whenever a batch changes what the corpus compares, since after
+# such a change the old measurement is answering a different question. B5 did
+# (the corpus now diffs the executor against the lowering) and re-measured
+# first: still empty, functions and lines, compiler and emitter and runtime.
+# The next moment that calls for it is B7, where the durable suites become the
+# only readers this surface has.

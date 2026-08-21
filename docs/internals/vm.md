@@ -654,7 +654,7 @@ as that record; §11.4 below is the current boundary.
 
 | gate | three-lane status |
 |---|---|
-| generated difftest corpus | 17,262 cases through interp / `--jit` / `--vm`; 0 divergences, **0 skips** (`tools/difftest/vm_skip_ceiling.txt` is a ratchet, currently 0) |
+| generated difftest corpus | 17,262 cases through interp / `--jit` / `--vm`; 0 divergences, **0 skips** (the skips were a ratchet; it reached 0 and was retired in §13.5) |
 | curated `tools/bench/vm_cases/` | 177 cases, `--vm` and `--vm-llvm` each diffed against interp, then the same sweep again under `CULEBRA_GC_STRESS=1` |
 | `tests/*.cul` symmetry, and the isolate suite | four lanes: interp, `--jit`, `--vm`, `--vm-llvm` |
 | `just doctest` | 465 documentation blocks on all three engines (`just doctest LANE=interp\|vm\|jit\|all`) |
@@ -1750,3 +1750,119 @@ longer requires LLVM, which is the only reason it could not before. Making it
 so is a default-engine switch, which is B6's, and it is on B6's list rather
 than assumed — a build nothing in this repo exercises by hand is exactly the
 one that would be discovered missing an engine after B7.
+
+### 13.5 The oracle a release leaves behind
+
+The tree-walker's last remaining job is to be a second opinion. §13.2 measured
+how much of the shared surface the hand-written suites reach and §13.3 wrote
+the tests for what they did not, but neither closes the hole §7 names: after
+the deletion, the executor and the LLVM lowering are handed bytecode by one
+compiler, and a compiler bug makes both lanes give the same wrong answer.
+Coverage says the code was executed, not that anything checked what it did.
+
+There is one second implementation that does not have to be maintained,
+because it is already built and cannot change: the previous release's binary.
+It answers for everything the language could express on the day it shipped, it
+is downloadable for three platforms, and no edit to this working tree moves
+it. Deleting the tree-walker does not destroy the differential oracle so much
+as seal it — for the frozen subset, an independent implementation keeps
+answering, release after release.
+
+`tools/difftest/release_diff.sh` is that comparison. It builds the same
+generated corpus run.sh uses, runs it under a baseline binary and under this
+build, and reports every case whose behaviour changed.
+
+**Both sides run on their default engine, with no flag.** That is the one
+place in this repo that leaves the choice implicit, and it is deliberate
+enough that the ratchet is unset for those runs: the question here is what
+changed for someone who types `culebra prog.cul`, so the default is the
+subject rather than an oversight. The baseline predates `--tree` and could not
+be told otherwise anyway. It also means that when B6 flips the default, this
+gate compares the tree-walker against the VM without being edited — the check
+that switch wants most, arriving free.
+
+Not a byte diff, and for a reason run.sh no longer has. The older binary
+answers `err=` where this one answers `ok=` for every built-in a release
+added, and an `ok=` case may print lines the failing one never reaches, so the
+two files stop lining up as text long before they stop lining up as cases.
+`_p` emits exactly one record per case under any binary, so the records are
+walked positionally and each carries the output printed after it.
+
+A case can also be written in syntax the baseline predates, and that one does
+not fail alone — the chunk it sits in fails to parse and every record after it
+disappears. The completion guard catches the short chunk and reruns it one
+process per case, in parallel; a case that still produces no record is emitted
+as `<label> ::: unsupported`. The two sides stay aligned record for record,
+and the report can say exactly what the older binary could not express. The
+same marker on the head side is a failure rather than a change: that binary
+generated the corpus, so a case it cannot run is a case it should not have
+written.
+
+Both sides take that path together even though only the baseline ever needs
+it, because an error record carries the line and column the throw came from
+and those are positions in the chunk program. Rerunning one side per case
+renumbers every error record on that side, which would invent a difference in
+every case that threw — the whole population the gate exists to read. The
+path is otherwise unreachable on demand (it needs a release that predates a
+syntax now in the corpus), so `RELEASE_DIFF_FORCE_FALLBACK=1` takes it for
+every chunk: run that way against v0.2.0, all 88 chunk-sides rerun per case
+and the report is identical to the chunked one, 261 and 261.
+
+**Every difference has to be named in `release_diff_allow.txt`**, which is
+what makes that file the draft of the release notes. The contract runs both
+ways, like the leak-abort allowlist: an unlisted change fails the gate, and a
+listed pattern matching nothing is reported so the file can shrink once the
+release that needed it ships. The first run against v0.2.0 found 261 of 17,262
+cases changed, and writing them up is what the file now holds:
+
+| what changed | cases |
+|---|---|
+| String answers fifteen more method names — thirteen new, plus `index_of` and `reverse`, whose receiver mask had admitted only Array | 150 |
+| reading one of those fifteen without calling it: nil in 0.2.0, "cannot be used as a value" now | 15 |
+| `repeat(n, value)` is a new global, and UFCS puts a global in method position for every receiver the corpus sweeps | 90 |
+| a native's declared signature is now canonical on every engine, so a bad call names the parameter instead of counting arguments in a hand-written arm | 6 |
+
+Patterns are globs over the case label, where `*` and `?` are the only
+wildcards and everything else — brackets included — is literal. `fnmatch`
+was the obvious choice and is wrong: a label is a fragment of culebra source,
+so `kw|[1, 2, 3].sorted(bad: 1)` reads as a character class, and an entry
+written to name one case would quietly match a hundred.
+
+The comparator has its own smoke test, which is not ceremony. This gate runs
+on master pushes only and prints OK when nothing changed, so a comparator that
+stopped comparing looks exactly like a quiet week. `release_diff_selftest.sh`
+gives it ten synthetic cases — each one a way the comparator has to be able to
+*fail* — and `release_diff.sh` runs it before it runs anything else, so a green
+report is a comparison that was checked rather than one that merely printed OK.
+
+CI runs it on every master push, against whatever binary is published: no tag,
+so a release moves the baseline forward by itself. Not on pull requests —
+it compares against a *release*, which says nothing about a branch that has
+not landed, and what B6's switch needs watched is the landed commits. It is
+also the one lane that cannot run on this machine: release binaries are built
+on ubuntu-latest and want a glibc newer than this box has, which is why the
+script takes the baseline as an argument rather than fetching it. The
+measurement above came from building the v0.2.0 tag locally instead.
+
+Finally, the corpus itself changed sides. run.sh's primary comparison is now
+`--vm` against `--jit` — executor against lowering, the two consumers that
+outlive the tree-walker — with `--tree == --vm` as the third lane and the
+answer for the compiler between them, for as long as there is a tree-walker to
+ask. All three are compared byte for byte now: the VM lane used to be walked
+record by record against a ceiling on its skips, because a case outside the
+supported slice answered VmError, and that slice closed in Phase 2 with the
+ceiling at 0. A VmError in the corpus is an ordinary divergence today, and
+`vm_skip_ceiling.txt` is gone.
+
+Re-running `just coverage` before all this — the moment §13.3 named — turned
+up a broken instrument rather than a new hole. The corpus-only set is still
+empty in all six columns, but 176 of the 1,039 durable invocations exited
+non-zero, and the guard B2 added for exactly that ("a durable run that died
+early inflates the corpus-only set by what it did not reach") was firing on
+every run and had stopped meaning anything. All 176 are curated error cases —
+84 of `vm_cases`, 4 of the leak-abort probes, on two lanes each — which end in
+an uncaught throw and exit 255 by design, and whose exit codes are checked
+where they belong, by `compare.sh` holding the three lanes to the same one.
+Those two sweeps now accept 255 and nothing else, so a signal still counts. A
+detector that fires on every run is not a detector, and this one had been
+reporting a real number about the wrong population since it was written.

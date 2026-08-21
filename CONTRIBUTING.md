@@ -58,7 +58,8 @@ just test               # commit gate: interp vs JIT vs AOT + embedding smoke
 just test wrap          # `culebra wrap` end-to-end (not in the gate; see below)
 just test-assert        # the same sweep with asserts live (not in the gate)
 just doctest            # run the `# =>` doctests in docs and tests/doctest
-just difftest           # differential interp-vs-JIT corpus (tools/difftest)
+just difftest           # differential corpus, every engine (tools/difftest)
+just release-diff path/to/culebra    # ... against a previous release's binary
 just perf               # microbench regression check (tests/perf/*.cul)
 ```
 

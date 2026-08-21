@@ -771,6 +771,12 @@ _run-tests BACKEND:
         # only a genuine hang trips it.
         ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh "$BIN"
     }
+    # The release-diff comparator's own smoke test. The gate it serves runs on
+    # master pushes only and prints OK when nothing changed, so a comparator
+    # that stopped comparing would look exactly like a quiet release.
+    run_release_diff_selftest() {
+        tools/difftest/release_diff_selftest.sh || exit 1
+    }
     # VM three-lane parity (tools/bench/vm_cases): the curated bytecode-VM
     # corpus, interp vs --vm vs --jit, then the same sweep with
     # collect-on-every-allocation. The corpus holds only programs inside the
@@ -936,8 +942,10 @@ _run-tests BACKEND:
     # interp/jit sweep — emit nothing until they finish).
     phase() { echo ">>> [${SECONDS}s] $1"; }
 
-    # The five source-only ratchets, shared by the all/fast/ci-buildtree cases.
+    # The checks that need neither the binary nor a build tree, shared by the
+    # all/fast/ci-buildtree cases.
     run_source_ratchets() {
+        phase "release-diff selftest (the comparator's own smoke)"; run_release_diff_selftest
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
         phase "long width (language values are int64_t, not long)"; run_long_width
         phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
@@ -1086,13 +1094,26 @@ check-quick-guide: build
     ./build/culebra --tree misc/gen_quick_guide.cul --check
 
 # Differential test: generate the template-combinator corpus (tools/difftest)
-# and assert interp == jit byte-for-byte over every case. Enumerates the full
-# current interp/JIT divergence population in one run; exits non-zero on any
+# and assert --vm == --jit == --tree byte-for-byte over every case. Enumerates
+# the full current divergence population in one run; exits non-zero on any
 # asymmetry. AOT is covered transitively (`just test` asserts aot == jit).
-[doc("Differential interp-vs-JIT test over the generated corpus")]
+[doc("Differential test over the generated corpus (--vm vs --jit vs --tree)")]
 [group("test")]
 difftest: build
     tools/difftest/run.sh ./build/culebra
+
+# Release-to-release differential: the same corpus under a previous release's
+# binary and under this build, each on its own default engine, with every
+# behavioural change named in tools/difftest/release_diff_allow.txt. CI runs
+# this on every master push against the latest published binary; locally it
+# takes the baseline as an argument, e.g.
+#   just release-diff /tmp/culebra-v0.2.0/culebra
+# (a release binary is built on ubuntu-latest and needs its glibc, so on an
+# older distro build the tag instead — the script only wants an executable).
+[doc("Diff this build against a previous release over the generated corpus")]
+[group("test")]
+release-diff BASELINE: build
+    tools/difftest/release_diff.sh {{BASELINE}} ./build/culebra
 
 # Leak-fuzz gate: reuse the difftest corpus (each case is a re-runnable thunk)
 # as an RC-leak oracle — run every case under CULEBRA_GC_NEVER (backstop off)
