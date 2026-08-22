@@ -62,16 +62,21 @@ if [ "$want" != "$got" ]; then
   exit 1
 fi
 
-# Both backends: the interpreter needs no symbols, but the JIT resolves its
-# helpers by name, so a strip that reached too far shows up here. Each run is
-# ~10 ms. `|| said=` keeps a crash reportable — under `set -e` a failing
-# substitution would otherwise end the script before the message.
+# Every engine the download ships with. The executor and the tree-walker need
+# no symbols; the JIT resolves its helpers by name, so a strip that reached too
+# far shows up there. Each run is ~10 ms. `|| said=` keeps a crash reportable —
+# under `set -e` a failing substitution would otherwise end the script before
+# the message.
+#
+# Each lane names its engine. It has to: release.yml sets
+# CULEBRA_REQUIRE_EXPLICIT_ENGINE, so a bare launch aborts rather than running
+# — which is exactly what happened the first time this workflow ran after that
+# variable was introduced, because a `v*` tag is the only thing that starts it.
 printf 'print(6 * 7)\n' >"$tmp/smoke.cul"
-for lane in interp jit; do
-  [ "$lane" = jit ] && flag=--jit || flag=
-  said=$("$staged" $flag "$tmp/smoke.cul") || said="exited $?"
+for flag in --vm --tree --jit; do
+  said=$("$staged" "$flag" "$tmp/smoke.cul") || said="exited $?"
   if [ "$said" != "42" ]; then
-    echo "package_release: the stripped binary failed the $lane smoke" >&2
+    echo "package_release: the stripped binary failed the ${flag#--} smoke" >&2
     echo "  (expected 42, got '$said')" >&2
     exit 1
   fi

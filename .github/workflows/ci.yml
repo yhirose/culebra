@@ -131,6 +131,19 @@ jobs:
           retention-days: 1
           compression-level: 1  # ~5x faster than the default, 12% larger
 
+      # The packaging step release.yml runs, on every push rather than only on
+      # a `v*` tag. It strips the binary and smokes each engine — and a `v*` tag
+      # is the only thing that starts release.yml, so when the explicit-engine
+      # ratchet landed, that smoke's bare launch stayed broken until a release
+      # tried to build and all three platforms failed on it. The tag argument is
+      # the binary's own version, since the script refuses a mismatch. The
+      # archives land in the work directory and are not uploaded: what is being
+      # checked is that the script runs at all.
+      - name: Dry-run the release packaging
+        run: |
+          v=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
+          misc/package_release.sh ./build/culebra "v$v" linux x64
+
       - name: Report ccache stats
         run: ccache -s
 
