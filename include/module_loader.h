@@ -37,6 +37,10 @@ struct LoadedModule {
 // stdlib_interp.h is above.
 inline constexpr const char* kStdlibPreamblePath = "<stdlib>";
 
+// `culebra test`'s ambient bindings (src/preambles/test_ambient.cul), by the
+// path their diagnostics carry. Same reason as above: both engines run it.
+inline constexpr const char* kTestAmbientPath = "<test>";
+
 // Prepend a synthetic module declaring the built-in traits (Stringer /
 // Eq / Comparable), so they are registered before any user code runs.
 // Interp and JIT/AOT share this one definition — the synthetic module's

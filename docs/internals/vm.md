@@ -1967,3 +1967,88 @@ still pass twice, which is the shape of the bug rather than a blanket failure.
 The `full` variant is out of its reach — a JSPI build cannot be instantiated
 without `WebAssembly.Suspending` — but the two builds are the same translation
 unit, so the engine question is answered by either.
+
+### 13.7 The unit-test runner
+
+Four of the five sites §13.1 found already had a VM lane: a script run, the
+REPL, `dap` and the doctest runner each gained one in Phase 2. The fifth had
+none. `culebra test`'s unit runner held `Value`s in a C++ registry, called them
+through the interpreter's `call` helper, and resolved fixtures out of an
+`Environment` — and it said so, rejecting `--vm` outright. Switching the
+default without moving it would have left the one subcommand that runs a user's
+own suite on the engine being retired.
+
+The engine seam is `debug_engine.h`'s again — an interface with one
+implementation per engine, everything above it shared. What made it small is
+what went *below* it. `test` and `parametrize` were 90 lines of C++ building
+`FunctionValue`s; they are now `src/preambles/test_ambient.cul`, one culebra
+source both engines run, and the registry they fill is an ordinary culebra
+Array. That moves the parts the runner would otherwise have had to ask an
+engine about into the program itself: which parameters a test takes fixtures
+for is `f.params.filter(...)` there, and a `@parametrize` case is spread into
+an argument list there. What is left for the host is running a program, reading
+a global, walking an Array or an Object, and calling a function — nine methods,
+none of which lets the two value models meet. Values cross as an index into the
+host's own store, released to a mark when the test that used them ends, which
+is how a fixture's `drop` still fires into the right test's captured output.
+
+The VM host compiles each file the way the REPL compiles a line: as a session
+unit, so its top-level bindings land in `vm::ReplSession`'s cells rather than
+in the frame that ran it. That is the whole reason it can work at all — the
+runner calls back into a file *after* it has returned, so a registered closure
+has to still be callable and a fixture has to still be a name to look up. It is
+reuse rather than a workaround: the capability already had a name, and the
+debugger was already its second consumer. What it did *not* have was a home —
+the REPL owned it — so the retained programs, the token set that keeps a lazy
+namespace's builder from being registered twice, and the unit runner itself are
+now `vm_session.h`, held by a `vm::Session` the REPL and the test host each
+have one of. Owning one rather than borrowing the process-wide session is what
+keeps a second run in one process from seeing the first one's registry, which
+is the guarantee the deleted C++ registry used to give by clearing itself.
+
+Three bugs surfaced, and the first two are the same bug in two engines'
+clothing: *what keeps a value alive*. The interpreter's ambient was parsed from
+`TEST_AMBIENT_MODULE_SOURCE`, a `const char*` — which materializes a temporary
+`std::string` that dies at the end of the call, leaving every AST token a view
+into freed memory and `test` reporting `undefined variable '` with a name made
+of whatever was there. The VM host's store retained the result of a call that
+already handed it a reference, so a fixture's refcount never reached zero and
+`drop` never ran. Both are the shape §13.6 met on the Playground: moving an
+engine moves what owns the values, and the previous owner's guarantees do not
+come with it.
+
+The third was in the compiler, and it is worth stating on its own because
+nothing in this batch caused it.
+
+**A session name reached from two branches of one function crashed the VM.**
+The slot holding a session binding's cell is filled by a `ReplCell`
+instruction, and the compiler emits instructions in source order — so that
+`ReplCell` lands wherever the name was *first mentioned*, which may be inside
+an `if` arm. A later mention reuses the binding (correctly: the two mean the
+same name) and therefore the same slot, without re-emitting anything. Call the
+function so that the first arm is skipped and the second one's `CellGet` reads
+a slot nothing filled:
+
+```culebra
+let helper = fn () { 7 }
+let pick = fn (n) {
+  if n == 2 { return helper() }
+  if n == 1 { return helper() + 1 }   # segfault: `helper`'s slot is empty
+  0
+}
+```
+
+That is `culebra --vm`'s REPL, on master, with no part of this batch involved
+— and it was about to become far easier to reach, because under the test host
+*every* top-level binding of a test file is a session binding. The fix
+re-emits the `ReplCell` at each use rather than trying to hoist it: the binding
+is scope-wide by design and it is the instruction that is not, and re-emitting
+is idempotent because the session hands back the one cell it owns. The
+regression case lives in `tests/repl_test.sh`, where it segfaults the
+pre-fix binary and passes the fixed one.
+
+`culebra test` runs on `--vm` now; the default is still `--tree`, and the gate
+holds the two to byte-identical output over both self-suites and both
+reporters. `--jit` stays refused, for the reason the REPL and the debugger
+refuse it: a test body is not a hot loop, and compiling every one of them buys
+latency and nothing else.

@@ -1,0 +1,109 @@
+#pragma once
+
+// A session on the bytecode VM's executor: a scope whose top-level bindings
+// outlive the program that made them.
+//
+// Two consumers need that and need it for the same reason. The REPL calls back
+// into an earlier line; `culebra test` calls back into a file after it has run.
+// Both compile each input as a session unit (vm::Compiler::compile_repl_line),
+// so its top-level bindings land in vm::ReplSession's cells rather than in the
+// frame that ran it — and both must then keep the program alive, because a
+// closure reaches its bytecode through a descriptor pointing into it.
+//
+// The stdlib delta is the other shared half. A script's loader sees the whole
+// token set before it splices; a session sees one input at a time, so the set
+// grows with the session and each input registers only what is new —
+// registering a builder twice would mint a second instance of the namespace,
+// and values an earlier input built would stop matching it.
+
+#include <stdlib_interp.h>  // stdlib_preamble_for / stdlib_preamble_triggers
+#include <vm.h>
+
+#include <functional>
+#include <memory>
+#include <set>
+#include <string>
+#include <unordered_set>
+#include <vector>
+
+namespace culebra::vm {
+
+class Session {
+ public:
+  // The built-in traits (Eq's `neq`, Comparable's four comparisons, ...) are a
+  // session-wide registration, not a per-input one: run them once, where the
+  // script lane runs them once as chunk 0's prologue.
+  bool run_builtin_traits(std::vector<std::string>& msgs) {
+    auto traits = parse_builtin_traits_preamble();
+    return !traits || run_unit(traits, nullptr, /*session=*/false, msgs);
+  }
+
+  // The stdlib modules this input names that no earlier one pulled in.
+  bool run_stdlib_delta(const peg::Ast& ast, std::vector<std::string>& msgs) {
+    std::unordered_set<std::string_view> tokens;
+    collect_ast_tokens(ast, tokens);
+    std::unordered_set<std::string_view> fresh;
+    for (auto t : tokens)
+      if (!registered_.contains(t)) fresh.insert(t);
+    auto triggers = stdlib_preamble_triggers(fresh);
+    if (triggers.empty()) return true;
+    auto src = std::make_shared<std::string>(stdlib_preamble_for(fresh));
+    for (auto t : triggers) registered_.emplace(t);
+    std::vector<std::string> parse_msgs;
+    auto pre = parse_with_transforms(kStdlibPreamblePath, *src, parse_msgs);
+    if (!pre) {  // the stdlib is trusted; a parse failure is a build bug
+      msgs.insert(msgs.end(), parse_msgs.begin(), parse_msgs.end());
+      return false;
+    }
+    return run_unit(pre, src, /*session=*/false, msgs);
+  }
+
+  // Compile and run one program, retaining it for the session. Errors are
+  // reported the way interpret() reports them, so an input that throws prints
+  // the same text on either engine and the session carries on. `session` picks
+  // whether the input's top-level bindings are the session's (an input) or the
+  // program's own (a prologue, which binds nothing that has to outlive it).
+  bool run_unit(const std::shared_ptr<peg::Ast>& ast,
+                std::shared_ptr<std::string> source, bool session,
+                std::vector<std::string>& msgs,
+                const std::function<void(const VmProgram&)>& before_run = {}) {
+    try {
+      auto prog = std::make_unique<VmProgram>(
+          session ? Compiler::compile_repl_line(*ast)
+                  : Compiler::compile_repl_prologue(*ast));
+      if (before_run) before_run(*prog);
+      auto& kept = retained_.keep(std::move(source), ast, std::move(prog));
+      Exec::run(*kept.prog);
+      return true;
+    } catch (const CulebraError& e) {
+      // interpret()'s formatter, which is main.cc's.
+      msgs.push_back(format_error_message(e));
+    } catch (const std::exception& e) {
+      // Exec::run has already turned an uncaught user throw into the
+      // "uncaught: ..." line both other backends print for one.
+      msgs.push_back(e.what());
+    }
+    return false;
+  }
+
+  // Take the value a session unit left in the result cell, clearing it. The
+  // REPL echoes it; a caller that has no prompt still has to take it, or the
+  // input's last value stays pinned for the rest of the session.
+  JitValue take_result() {
+    auto* cell = repl_session().cell(kReplResultName);
+    JitValue v = cell->value;
+    cell->value = JitValue{TAG_NIL, 0};
+    return v;
+  }
+
+  void drop_result() {
+    JitValue v = take_result();
+    _culebra_value_release_impl(v.tag, v.data);
+  }
+
+ private:
+  RetainedRuns retained_;
+  std::set<std::string, std::less<>> registered_;
+};
+
+}  // namespace culebra::vm

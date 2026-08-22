@@ -2888,3 +2888,104 @@ let _eff_module = fn () {
 let __Eff = _eff_module()
 )=culpre=";
 
+inline constexpr const char* TEST_AMBIENT_MODULE_SOURCE = R"=culpre=(# `culebra test`'s ambient bindings, in culebra so that both engines run the
+# same ones. The runner (include/test_runner.h) reads __TestRegistry back and
+# calls each entry; every field it needs is computed here, so nothing but the
+# function value itself has to cross the C++ boundary.
+#
+# An entry is {name, fn, params, args}: `params` is the positional parameter
+# list dependency injection resolves against, and `args` is the fixed argument
+# list a `@parametrize` case carries (nil when the entry takes fixtures).
+let __TestRegistry = []
+
+# A keyword-only parameter and a `**kwargs` rest have no fixture to bind to.
+let __test_params = fn (f) {
+  f.params.filter(|p| !p.kw_only && !p.kwargs_rest).map(|p| p.name)
+}
+
+let __test_add = fn (name, f, args) {
+  __TestRegistry.push({name: name, fn: f, params: __test_params(f), args: args})
+}
+
+# `@parametrize` registers `<fn>[i]` entries; a `@test` stacked over it would
+# add a bare one that then fails fixture injection, so it stands aside.
+let __test_has_cases = fn (fname) {
+  __TestRegistry.any(|e| e.name.starts_with("{fname}["))
+}
+
+# `test("name", fn)` or `test(fn)` — the decorator form takes the function's
+# own name and hands it back, so `@test` leaves the binding alone.
+let test = fn (*args) {
+  if args.size() == 2 {
+    if type_of(args[0]) != "String" {
+      throw {
+        kind: "TypeError",
+        message: "test(name, fn): name must be a String",
+      }
+    }
+    if type_of(args[1]) != "Function" {
+      throw {
+        kind: "TypeError",
+        message: "test(name, fn): fn must be a Function",
+      }
+    }
+    __test_add(args[0], args[1], nil)
+    return nil
+  }
+  if args.size() == 1 {
+    let f = args[0]
+    if type_of(f) != "Function" {
+      throw {
+        kind: "TypeError",
+        message: "test(fn): argument must be a Function",
+      }
+    }
+    if f.name == "" {
+      throw {
+        kind: "ValueError",
+        message: "@test requires a named function (got anonymous); use test(\"name\", fn) for anonymous bodies",
+      }
+    }
+    __test_add(f.name, f, nil) if !__test_has_cases(f.name)
+    return f
+  }
+  throw {
+    kind: "ArityError",
+    message: "test() expects 1 or 2 arguments (got {args.size()})",
+  }
+}
+
+# `@parametrize(cases)` — one entry per case, named `<fn>[i]`. A case that is
+# a Tuple or an Array spreads across the parameters; anything else is a single
+# argument.
+let parametrize = fn (cases) {
+  if type_of(cases) != "Array" {
+    throw {
+      kind: "TypeError",
+      message: "parametrize(cases): cases must be an Array",
+    }
+  }
+  fn (f) {
+    if type_of(f) != "Function" {
+      throw {
+        kind: "TypeError",
+        message: "parametrize(cases): the decorated value must be a Function",
+      }
+    }
+    if f.name == "" {
+      throw {
+        kind: "ValueError",
+        message: "@parametrize requires a named function",
+      }
+    }
+    for i in range(cases.size()) {
+      let c = cases[i]
+      let t = type_of(c)
+      let spread = t == "Tuple" || t == "Array"
+      __test_add("{f.name}[{i}]", f, spread ? c.to_array() : [c])
+    }
+    f
+  }
+}
+)=culpre=";
+

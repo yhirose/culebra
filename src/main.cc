@@ -8,6 +8,7 @@
 #include <init_cmd.h>
 #include <source_dir.h>
 #include <stdlib_interp.h>
+#include <test_engine.h>
 #include <test_runner.h>
 #include <vfs.h>  // main_script_dir() — set here for Embed's dev disk fallback
                   // (pulled transitively only on the JIT/AOT path otherwise)
@@ -1667,24 +1668,27 @@ int run_test(int argc, const char** argv) {
     summary = culebra::run_doctests(files, filter, doc_block_runner(engine),
                                     reporter, bail_after, list_only);
   } else {
-    if (engine != DocEngine::Interp) {
+    if (engine == DocEngine::Jit) {
+      // There is no JIT host: the lowering has no seam here yet, unlike the
+      // doc-block lane. Tier 0 is also the defensible place for a test body,
+      // which is never a hot loop — but the reason it is refused today is the
+      // first one.
       std::println(stderr,
-                   "culebra test: --jit / --vm are for --doc blocks; the unit "
-                   "test runner is the interpreter's");
+                   "culebra test: --jit is for --doc blocks; the unit test "
+                   "runner has a tier-0 lane only (--tree / --vm)");
       return 2;
     }
-    auto env = culebra::environment();
-    install_cli_aliases(*env);
-    culebra::install_test_ambient(*env);
-
     auto files = culebra::discover_test_files(roots);
     if (files.empty()) {
       std::println(stderr,
           "culebra test: no test files found (looking for test_*.cul)");
       return 1;
     }
+    auto host = culebra::make_test_host(engine == DocEngine::Vm
+                                            ? culebra::TestEngineKind::Vm
+                                            : culebra::TestEngineKind::Interp);
     summary = culebra::run_tests(
-        files, filter, env, reporter, bail_after, list_only);
+        *host, files, filter, reporter, bail_after, list_only);
   }
 
   if (list_only) {

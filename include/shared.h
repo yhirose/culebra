@@ -2156,7 +2156,6 @@ enum RuntimeSlot : size_t {
   kSlotJitHooks,
   kSlotJitModuleTable,
   kSlotJitNamespaceTable,
-  kSlotTestRegistry,
   kSlotFileTable,
   // Per-scope owned-resource stacks for deterministic drop (one per
   // backend; see interpreter.h / jit.h "owned stack"). Entries are
@@ -2190,8 +2189,7 @@ enum RuntimeSlot : size_t {
 // this fails to compile rather than corrupting memory at teardown.
 static_assert(kSlotJitSlab < kSlotJitGc &&
                   kSlotJitSlab < kSlotJitModuleTable &&
-                  kSlotJitSlab < kSlotJitNamespaceTable &&
-                  kSlotJitSlab < kSlotTestRegistry,
+                  kSlotJitSlab < kSlotJitNamespaceTable,
               "kSlotJitSlab must outlive the GC heap and all struct-holding "
               "table substates during reverse-order Runtime teardown");
 

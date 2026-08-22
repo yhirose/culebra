@@ -688,28 +688,49 @@ _run-tests BACKEND:
     # @parametrize). The subdir layout keeps these out of the
     # `tests/*.cul` glob that direct interp/JIT runs use.
     run_culebra_test_self() {
-        cul test --tree tests/culebra_test_self/ > /dev/null
+        # Both tier-0 lanes over both suites and both reporters, held to the
+        # same output AND the same exit code. `test` / `parametrize` are one
+        # culebra source either way (src/preambles/test_ambient.cul), so a
+        # difference here is the engine's, not the ambient's. The throw suite
+        # fails by design, which is why the status is compared rather than
+        # required to be zero.
+        local tree_out vm_out tree_rc vm_rc
+        local self_json="" throw_json=""
+        for suite in culebra_test_self culebra_test_throw_self; do
+            for rep in "" "--reporter json"; do
+                # `|| rc=$?`, not a bare assignment: `set -e` would abort on
+                # the throw suite, which fails by design.
+                tree_rc=0 vm_rc=0
+                tree_out=$(cul test --tree $rep "tests/$suite/" 2>&1) || tree_rc=$?
+                vm_out=$(cul test --vm $rep "tests/$suite/" 2>&1) || vm_rc=$?
+                if [[ "$tree_out" != "$vm_out" || "$tree_rc" != "$vm_rc" ]]; then
+                    echo "culebra test: --tree and --vm disagree on $suite $rep" \
+                         "(rc $tree_rc vs $vm_rc)" >&2
+                    diff <(printf '%s\n' "$tree_out") \
+                         <(printf '%s\n' "$vm_out") | head -20 >&2
+                    exit 1
+                fi
+                [[ -n "$rep" ]] || continue
+                case "$suite" in
+                    culebra_test_self) self_json=$tree_out ;;
+                    *) throw_json=$tree_out ;;
+                esac
+            done
+        done
         # Sanity-check the JSON reporter: final line is a run_end with
-        # failed=0 and errored_files=0; every other line begins with
-        # one of the documented event tags.
-        local last
-        last=$(cul test --tree --reporter json tests/culebra_test_self/ | tail -1)
+        # failed=0 and errored_files=0.
+        local last=${self_json##*$'\n'}
         case "$last" in
             *'"event":"run_end"'*'"failed":0'*'"errored_files":0'*) ;;
             *) echo "json reporter: bad run_end line: $last" >&2; exit 1 ;;
         esac
         # The runner must catch a raw user `throw {...}` from inside a
         # test body and surface it as a structured test_fail (kind and
-        # message lifted from the thrown Object). Exit code is non-zero
-        # because the test fails by design — what matters is that the
-        # runner itself doesn't crash.
-        local throw_out
-        throw_out=$(cul test --tree --reporter json \
-            tests/culebra_test_throw_self/ 2>&1) || true
-        case "$throw_out" in
+        # message lifted from the thrown Object) rather than crashing.
+        case "$throw_json" in
             *'"event":"test_fail"'*'"kind":"RawThrowKind"'*'"event":"run_end"'*) ;;
             *) echo "runner did not catch raw user throw:" >&2;
-               echo "$throw_out" >&2; exit 1 ;;
+               echo "$throw_json" >&2; exit 1 ;;
         esac
     }
 

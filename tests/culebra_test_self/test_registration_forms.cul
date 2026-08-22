@@ -39,3 +39,45 @@ fn decorator_form_registers() {
 fn parametrize_registers_one_per_case(a, b, want) {
   assert_eq(a + b, want)
 }
+
+# --- misuse ---
+# The ambient is culebra source, so these are the same diagnostics on every
+# engine. A call that raises registers nothing, which is why running them from
+# inside a test does not disturb the registry the runner is walking.
+
+@test
+fn test_rejects_wrong_arity() {
+  assert_throws("ArityError", fn () {
+    test()
+  })
+}
+
+@test
+fn test_rejects_wrong_types() {
+  assert_throws("TypeError", fn () {
+    test(123, fn () { nil })
+  })
+  assert_throws("TypeError", fn () {
+    test("name", 5)
+  })
+  assert_throws("TypeError", fn () {
+    test(5)
+  })
+}
+
+@test
+fn test_rejects_anonymous_decorator_target() {
+  assert_throws("ValueError", fn () {
+    test(fn () { nil })
+  })
+}
+
+@test
+fn parametrize_rejects_anonymous_target() {
+  assert_throws("ValueError", fn () {
+    parametrize([1])(fn () { nil })
+  })
+  assert_throws("TypeError", fn () {
+    parametrize("not an array")
+  })
+}

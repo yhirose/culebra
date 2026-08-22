@@ -115,6 +115,17 @@ parity errors "1 + 'a'" "undefined_name" "let z = 1" "z = 2" "z" \
 parity drop "class R {" "  new(n) { self.n = n }" "  drop() { println('DROP') }" "}" \
             "R.new(9)" "println('after')" >/dev/null
 
+# A session name reached from two arms of the same function. The slot holding
+# the session's cell is filled by an instruction the compiler emits where the
+# name is first mentioned, and that is inside whichever arm mentioned it — so
+# a call taking the other arm used to read an empty slot and segfault.
+out=$(parity session-branches \
+      "let helper = fn () { 7 }" \
+      "let pick = fn (n) { if n == 2 { return helper() }; if n == 1 { return helper() + 1 }; 0 }" \
+      "pick(1)" "pick(2)")
+[[ "$out" == *$'\n'"8"$'\n'"7" ]] ||
+  { echo "FAIL vm session branches: $out"; fail=1; }
+
 # Out of the VM's slice is a report the session survives, not a crash.
 out=$(printf '%s\n' "let t = Tensor.from([[1.0]])" "1 + 1" | "$CULEBRA" --vm 2>&1)
 [[ "$out" == *$'\n'"2" ]] || { echo "FAIL vm slice recovery: $out"; fail=1; }

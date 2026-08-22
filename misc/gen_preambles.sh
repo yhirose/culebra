@@ -1,9 +1,11 @@
 #!/bin/sh
-# Generate include/stdlib_preambles.gen.h from the stdlib preamble sources in
+# Generate include/stdlib_preambles.gen.h from the culebra sources in
 # src/preambles/*.cul (the editable single source of truth). Each .cul is
 # embedded verbatim as a `<NAME>_MODULE_SOURCE` raw-string constant, so the
-# single self-contained `culebra` binary keeps carrying them. Run after editing
-# a .cul; `--check` (CI gate) fails if the committed header is stale.
+# single self-contained `culebra` binary keeps carrying them. Most are stdlib
+# modules, listed in lazy_ns_modules() / lazy_fn_groups(); test_ambient.cul is
+# not — `culebra test` runs it directly. Run after editing a .cul; `--check`
+# (CI gate) fails if the committed header is stale.
 set -eu
 DIR=$(cd "$(dirname "$0")/.." && pwd)
 SRC="$DIR/src/preambles"
@@ -12,7 +14,7 @@ gen() {
   printf '// Generated from src/preambles/*.cul by misc/gen_preambles.sh — do not edit.\n'
   printf '// Edit the .cul sources, then run `just gen-preambles` (CI checks sync).\n'
   printf '#pragma once\n\n'
-  for base in time term canvas args matchers regex string_fns log desktop path vector2 vector3 effects; do
+  for base in time term canvas args matchers regex string_fns log desktop path vector2 vector3 effects test_ambient; do
     name=$(printf '%s' "$base" | tr 'a-z' 'A-Z')
     printf 'inline constexpr const char* %s_MODULE_SOURCE = R"=culpre=(' "$name"
     cat "$SRC/$base.cul"

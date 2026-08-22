@@ -3797,6 +3797,21 @@ class Compiler {
     return slot;
   }
 
+  // Refill a session binding's slot before it is used. The ReplCell that
+  // fills it is emitted where the name is FIRST mentioned, which can be inside
+  // a branch a later use skips — the binding is scope-wide by design, the
+  // instruction is not. Idempotent: the session hands back the one cell it
+  // owns. Skipped when it would repeat the instruction just emitted, which is
+  // the common case of materializing a binding and reading it at once.
+  void ensure_session_slot(const Binding& b) {
+    if (!b.session) return;
+    if (!chunk_.code.empty()) {
+      const auto& last = chunk_.code.back();
+      if (last.op == Op::ReplCell && last.a == b.slot) return;
+    }
+    emit(Op::ReplCell, b.slot, kconst_str(b.name));
+  }
+
   // Register the session's binding for `name` in this scope, so every later
   // read, write and capture in the line goes through the one slot. Lazy: the
   // cell may still hold the unbound sentinel, and then the name means the
@@ -3854,6 +3869,7 @@ class Compiler {
   }
 
   bool emit_rebind(const peg::Ast& at, const Binding& b, ExprResult r) {
+    ensure_session_slot(b);
     if (b.session) {
       emit(Op::ReplBind, static_cast<int32_t>(ReplBindMode::Assign),
            kconst_str(b.name), b.shadowed_builtin ? 1 : 0);
@@ -3948,6 +3964,7 @@ class Compiler {
 
   ExprResult read_binding(const peg::Ast& at, const Binding& b,
                           bool unbound_guard = true) {
+    ensure_session_slot(b);
     if (b.lazy && unbound_guard && (b.shadowed || b.shadowed_builtin))
       return read_shadowing(at, b);
     if (!b.is_cell) {
@@ -5231,6 +5248,9 @@ class Compiler {
       // forward reference resolves above. Anything still missing is a
       // name no statement list on the way in declares.
       if (!b) reject(ast, std::format("forward-reference capture of '{}'", fv));
+      // Same reason a read refills it: MakeClosure may sit in a branch the
+      // slot's own ReplCell does not dominate.
+      ensure_session_slot(*b);
       caps.slots.push_back(b->slot);
       caps.muts.push_back(b->is_mut);
       caps.lazys.push_back(b->lazy);
