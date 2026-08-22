@@ -2052,3 +2052,40 @@ holds the two to byte-identical output over both self-suites and both
 reporters. `--jit` stays refused, for the reason the REPL and the debugger
 refuse it: a test body is not a hot loop, and compiling every one of them buys
 latency and nothing else.
+
+### 13.8 Moving the default
+
+Every site now has a lane on the bytecode VM, so the switch itself is one
+line. `parse_command_line` records whether the command line named an engine and
+then, if it did not, sets the executor — after which every reader downstream
+sees an `Options` that names one, and no site spells the default a second time.
+`culebra test`, `culebra dap` and the REPL each carry their own parser and each
+gained the same two lines. What did need care is ordering: the ratchet's
+`require_explicit_engine` has to be asked *before* the engine branch, or a
+defaulted run would take the VM lane and return before the check it exists for.
+
+The latency question §13 raised has an answer that depends entirely on what is
+being measured, and both halves are worth writing down. On a script that names
+several lazy stdlib modules and then does nothing, the VM is **7 ms slower**
+(35 → 42 ms). The startup profile says where it goes, and it is not where the
+Phase 0 spike guessed: the preamble *parse* costs about the same on both lanes
+— the tree-walker pays it too, spread through `interpret_modules` as each
+module is first used — and the executor's extra is the bytecode compilation of
+that preamble. On a script that names none, the two are within 2%.
+
+On real programs the sign flips. `tests/test_object_keys.cul` is **42% faster**
+on the executor, `test_core.cul` slightly faster, the rest even. That is Phase
+3's 2–4.5× loop speedup paying back a fixed 7 ms almost immediately, and it is
+why the preamble-bytecode blob (`grammar_blob.h`'s shape, named in §13 as the
+mitigation) is *not* being built: it would buy back a cost that only a script
+doing no work can feel.
+
+One thing the switch cost is visibility. Every gate lane names its engine —
+that is what B1's ratchet enforces — so after the default moved, not one of
+them would have noticed if it had not. `tests/cli_input_test.sh` is where that
+is checked now, and it is the only place in the tree that must run the binary
+*without* `CULEBRA_REQUIRE_EXPLICIT_ENGINE`, dropping it the way
+`release_diff.sh` does. The observation is the startup profile: the
+`interpret_modules` mark exists on the tree-walker's path alone, so its absence
+says the executor ran. The exit code is asserted alongside it, because an abort
+prints no mark either and would otherwise pass.

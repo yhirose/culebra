@@ -140,5 +140,50 @@ out=$(cd "$TMP" && "$CULEBRA" --tree "./-" 2>&1); rc=$?
 [[ $rc -eq 0 && "$out" == "literal dash file" ]] || {
   echo "FAIL ./- : rc=$rc out=$out"; fail=1; }
 
+# --- which engine a command line that names none means ---
+# The only place the default itself is observable: every other lane names an
+# engine, which is what CULEBRA_REQUIRE_EXPLICIT_ENGINE is for — so these runs
+# drop it, the way tools/difftest/release_diff.sh does, and are the one thing
+# in the tree that must NOT name one. The startup profile is the observation,
+# and the assertion is POSITIVE (the executor's own mark) rather than "not the
+# interpreter's": a default that drifted to the JIT would satisfy the negative
+# one. `rc` is asserted too, since an abort prints no mark either.
+bare() { env -u CULEBRA_REQUIRE_EXPLICIT_ENGINE "$CULEBRA" "$@"; }
+
+printf 'IO.println("engine")\n' > "$TMP/engine.cul"
+out=$(CULEBRA_PROFILE_STARTUP=1 bare "$TMP/engine.cul" 2>&1 >/dev/null); rc=$?
+[[ $rc -eq 0 && "$out" == *"vm::Exec::run"* && "$out" != *"interpret_modules"* ]] || {
+  echo "FAIL default engine: a bare run did not take the executor (rc=$rc)"
+  echo "$out"; fail=1; }
+out=$(CULEBRA_PROFILE_STARTUP=1 bare --tree "$TMP/engine.cul" 2>&1 >/dev/null)
+[[ "$out" == *"interpret_modules"* ]] || {
+  echo "FAIL --tree: it no longer names the tree-walker"; fail=1; }
+
+# The REPL is the second reader of that default, and `--jit` means the same
+# tier-0 engine there rather than falling through to the tree-walker.
+for flag in "" "--jit"; do
+  out=$(printf 'let x = 6 * 7\nx\n' | bare $flag --shell 2>&1)
+  [[ "$out" == *"42" ]] || { echo "FAIL default REPL [$flag]: $out"; fail=1; }
+done
+
+# `culebra test` and `culebra test --doc` pick their own defaults, in their own
+# parser. Each is checked twice: that it still routes through a default-picking
+# branch (the ratchet aborts it), and that the branch it picks runs the suite.
+mkdir -p "$TMP/suite"
+printf '@test\nfn one() {\n  assert_eq(1, 1)\n}\n' > "$TMP/suite/test_one.cul"
+printf 'A doc.\n\n```culebra\nIO.inspect(1 + 1)  # => 2\n```\n' > "$TMP/suite/a.md"
+out=$(bare test "$TMP/suite" 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == *"ok  one"* ]] || {
+  echo "FAIL default test runner: rc=$rc out=$out"; fail=1; }
+out=$(bare test --doc "$TMP/suite" 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == *"1 passed"* ]] || {
+  echo "FAIL default doctest runner: rc=$rc out=$out"; fail=1; }
+for mode in "" "--doc"; do
+  out=$(CULEBRA_REQUIRE_EXPLICIT_ENGINE=1 "$CULEBRA" test $mode "$TMP/suite" 2>&1)
+  rc=$?
+  [[ $rc -eq 134 && "$out" == *"picked an engine by default"* ]] || {
+    echo "FAIL test runner default site [$mode]: rc=$rc out=$out"; fail=1; }
+done
+
 if [[ $fail -eq 0 ]]; then echo "cli_input_test OK"; exit 0; fi
 echo "cli_input_test FAILED"; exit 1

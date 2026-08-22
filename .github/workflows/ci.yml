@@ -27,13 +27,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
-# Every step that launches culebra must name the engine it means. The
-# tree-walker is still the default (docs/internals/vm.md §7, Phase 4), so a
-# bare launch measures whatever the default happens to be — and the switch in
-# B6 would move that silently. With this set an implicit pick aborts instead;
-# `--tree` names the tree-walker, `--jit` / `--vm` the compiled lanes. The
-# justfile sets the same variable for its recipes: this covers the steps that
-# invoke the binary directly.
+# Every step that launches culebra must name the engine it means. A bare
+# launch measures whatever the default happens to be, and the default has
+# moved once already (docs/internals/vm.md §13.8) — silently, for anything
+# that had not said. With this set an implicit pick aborts instead; `--tree`
+# names the tree-walker, `--jit` / `--vm` the compiled lanes. The justfile sets
+# the same variable for its recipes: this covers the steps that invoke the
+# binary directly. The one lane that must NOT set it is the one that measures
+# the default itself (tests/cli_input_test.sh).
 env:
   CULEBRA_REQUIRE_EXPLICIT_ENGINE: "1"
 

@@ -180,11 +180,13 @@ struct Options {
   // the LLVM lowering `--jit` runs; the executor itself needs no LLVM, so a
   // build without the JIT still has it.
   enum class Vm { Off, Exec, Dump } vm = Vm::Off;
-  // `--tree`: name the tree-walking interpreter explicitly. Hidden, and a
-  // no-op while it is still the default — its job is to let a caller say
-  // which engine it means, so `require_explicit_engine` can reject the ones
-  // that never said (docs/internals/vm.md §7, Phase 4).
+  // `--tree`: name the tree-walking interpreter, which a command line saying
+  // nothing no longer means. Hidden — it exists for the callers inside this
+  // repo, and the deletion batch removes it again (docs/internals/vm.md §7).
   bool tree = false;
+  // Whether the command line named an engine at all. Recorded before the
+  // default is applied, since after that every Options carries one.
+  bool engine_named = false;
 #ifdef CULEBRA_JIT_ENABLED
   // Unoptimized IR pipeline + unoptimized backend: collapses JIT warmup
   // (startup/compile time) by ~40x at a small steady-state cost (~12% on
@@ -205,23 +207,20 @@ struct Options {
   string error;  // non-empty: a malformed flag; main reports it and exits
 };
 
-// Did the command line ask for one of the two compiled lanes?
+// Is this a compiled lane? Asked before the default is applied to learn
+// whether the command line named one, and after it to decide what a lane
+// needs — the preamble splice, which the executor wants and the tree-walker
+// does not.
 bool compiled_lane(const Options& options) {
   return options.jit || options.vm != Options::Vm::Off;
 }
 
-// Did the command line name an engine, rather than take whatever this build
-// defaults to?
-bool engine_named(const Options& options) {
-  return options.tree || compiled_lane(options);
-}
-
-// Phase 4 ratchet (docs/internals/vm.md §7). While the tree-walker is still
-// the default, CULEBRA_REQUIRE_EXPLICIT_ENGINE=1 makes every implicit pick a
-// hard failure, so no caller can keep measuring an engine it never named —
-// the switch in Phase 4's B6 moves what a defaulted lane runs. Call it from
-// each site that picks a default of its own; the sites that run no user code
-// (fmt / lint / docs / --ast / --version) have no engine to name.
+// Phase 4 ratchet (docs/internals/vm.md §7). CULEBRA_REQUIRE_EXPLICIT_ENGINE=1
+// makes every implicit pick a hard failure, so no caller can keep measuring an
+// engine it never named — the default has moved once and the deletion batch
+// takes the other one away. Call it from each site that picks a default of its
+// own; the sites that run no user code (fmt / lint / docs / --ast / --version)
+// have no engine to name.
 // Aborting rather than exiting non-zero is deliberate: lanes that expect a
 // non-zero status (the leak-abort suite) would swallow a clean exit.
 void require_explicit_engine(bool named, const char* site) {
@@ -1356,6 +1355,12 @@ Options parse_command_line(int argc, const char** argv) {
     options.shell = !options.script_path.has_value();
   }
 
+  // Phase 4's switch: a command line that names no engine means the bytecode
+  // VM's executor. Applied here, so every reader downstream sees an Options
+  // that names one and no site has to spell the default a second time.
+  options.engine_named = options.tree || compiled_lane(options);
+  if (!options.engine_named) options.vm = Options::Vm::Exec;
+
   return options;
 }
 
@@ -1403,16 +1408,20 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     return true;
   }
 
+  require_explicit_engine(options.engine_named, "running a script");
+
   if (options.vm != Options::Vm::Off) {
     // `--debug` gives `debugger` the minimal break the JIT's gives it;
     // stepping and inspection live behind `culebra dap --vm`.
     auto prog = culebra::vm::Compiler::compile_modules(
         modules,
         options.debug ? culebra::vm::Debug::Break : culebra::vm::Debug::Off);
+    startup_profile::mark("vm::Compiler::compile_modules");
     if (options.vm == Options::Vm::Dump)
       cout << culebra::vm::dump(prog);
     else
       culebra::vm::Exec::run(prog);
+    startup_profile::mark("vm::Exec::run");
     return true;
   }
 
@@ -1422,11 +1431,10 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     culebra::vm::run_modules_via_llvm(modules, options.emit_llvm, options.debug,
                                       options.opt_level,
                                       options.jit_faststart);
+    startup_profile::mark("vm::run_modules_via_llvm");
     return true;
   }
 #endif
-
-  require_explicit_engine(engine_named(options), "running a script");
 
   culebra::Value val;
   vector<string> run_msgs;
@@ -1440,10 +1448,9 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   return false;
 }
 
-// Which engine `culebra test --doc` runs its blocks on. The unit-test runner
-// (`culebra test` with no --doc) is interp-only: its `test(...)` registry
-// holds interpreter values and calls them through `culebra::call`.
-enum class DocEngine { Interp, Jit, Vm };
+// Which engine `culebra test` runs on, with or without --doc. Both runners
+// read it; only the doc-block lane has a JIT host (test_engine.h).
+enum class RunnerEngine { Interp, Jit, Vm };
 
 // A block's diagnostic in the text this CLI prints for that failure, so a
 // `# !!` pattern matches the same string whichever engine ran it (the
@@ -1486,8 +1493,8 @@ bool doc_block_modules(const std::string& name, const std::string& code,
 // what the CLI would have printed. Each block gets state of its own — a fresh
 // environment for the interpreter, a fresh Runtime for the compiled lanes,
 // whose namespace caches and class / overload registries live there.
-culebra::BlockRunner doc_block_runner(DocEngine engine) {
-  if (engine != DocEngine::Interp) {
+culebra::BlockRunner doc_block_runner(RunnerEngine engine) {
+  if (engine != RunnerEngine::Interp) {
     // Which consumer of the bytecode runs the block. Picked once here rather
     // than per block, so the guard sits around a name that does not exist
     // instead of around half of an if/else.
@@ -1496,7 +1503,7 @@ culebra::BlockRunner doc_block_runner(DocEngine engine) {
       culebra::vm::run_modules(modules);
     };
 #ifdef CULEBRA_JIT_ENABLED
-    if (engine == DocEngine::Jit) {
+    if (engine == RunnerEngine::Jit) {
       run = [](const std::vector<culebra::LoadedModule>& modules) {
         culebra::vm::run_modules_via_llvm(modules);
       };
@@ -1559,7 +1566,7 @@ int run_test(int argc, const char** argv) {
   int bail_after = 0;
   bool list_only = false;
   bool doc_mode = false;
-  auto engine = DocEngine::Interp;
+  auto engine = RunnerEngine::Interp;
   bool named = false;
   auto parse_reporter = [&](std::string_view v) {
     if (v == "default") reporter = culebra::Reporter::Default;
@@ -1606,11 +1613,9 @@ int run_test(int argc, const char** argv) {
                    "  --list          print the discovered test names, run none\n"
                    "  --doc           run the ```culebra blocks in *.md instead\n"
 #ifdef CULEBRA_JIT_ENABLED
-                   "  --jit / --vm    run the doc blocks on that backend\n"
-#else
-                   "  --vm            run the doc blocks on the bytecode VM\n"
+                   "  --jit           run the doc blocks through the LLVM JIT\n"
+                   "                  (--doc only)\n"
 #endif
-                   "                  instead of the interpreter (--doc only)\n"
                    "  paths           files, or directories scanned recursively");
       return 0;
     }
@@ -1638,11 +1643,11 @@ int run_test(int argc, const char** argv) {
     } else if (arg == "--tree") {
       named = true;
     } else if (arg == "--vm") {
-      engine = DocEngine::Vm;
+      engine = RunnerEngine::Vm;
       named = true;
 #ifdef CULEBRA_JIT_ENABLED
     } else if (arg == "--jit") {
-      engine = DocEngine::Jit;
+      engine = RunnerEngine::Jit;
       named = true;
 #endif
     } else if (arg.starts_with("--")) {
@@ -1655,6 +1660,7 @@ int run_test(int argc, const char** argv) {
   culebra::TestRunSummary summary;
   require_explicit_engine(named, doc_mode ? "culebra test --doc"
                                           : "culebra test");
+  if (!named) engine = RunnerEngine::Vm;
   if (doc_mode) {
     // Doctest mode: extract ` ```culebra ` blocks from Markdown docs and
     // run each in a fresh env. A directory root is walked for `*.md`.
@@ -1668,7 +1674,7 @@ int run_test(int argc, const char** argv) {
     summary = culebra::run_doctests(files, filter, doc_block_runner(engine),
                                     reporter, bail_after, list_only);
   } else {
-    if (engine == DocEngine::Jit) {
+    if (engine == RunnerEngine::Jit) {
       // There is no JIT host: the lowering has no seam here yet, unlike the
       // doc-block lane. Tier 0 is also the defensible place for a test body,
       // which is never a hot loop — but the reason it is refused today is the
@@ -1684,7 +1690,7 @@ int run_test(int argc, const char** argv) {
           "culebra test: no test files found (looking for test_*.cul)");
       return 1;
     }
-    auto host = culebra::make_test_host(engine == DocEngine::Vm
+    auto host = culebra::make_test_host(engine == RunnerEngine::Vm
                                             ? culebra::TestEngineKind::Vm
                                             : culebra::TestEngineKind::Interp);
     summary = culebra::run_tests(
@@ -2167,6 +2173,7 @@ int main(int argc, const char** argv) {
       }
     }
     require_explicit_engine(named, "dap");
+    if (!named) engine = culebra::DebugEngineKind::Vm;
     culebra::DapServer server(/*in=*/0, /*out=*/1, /*argv=*/{}, engine);
     return server.run();
   }
@@ -2264,22 +2271,24 @@ int main(int argc, const char** argv) {
     }
 
     if (options.shell) {
-      // The REPL always runs on a tier-0 engine: the interpreter, or the VM's
-      // executor under `--vm`. A REPL line is never a hot loop, so compiling
-      // each input only adds latency for no gain — the same reason V8 / the
-      // JVM / LuaJIT start interpreted and only JIT hot code. `--jit` is for
-      // scripts, where a hot loop can pay off; combined with the REPL it is a
-      // no-op, so note it.
+      // The REPL always runs on a tier-0 engine: the VM's executor, or the
+      // tree-walker under `--tree`. A REPL line is never a hot loop, so
+      // compiling each input only adds latency for no gain — the same reason
+      // V8 / the JVM / LuaJIT start interpreted and only JIT hot code.
+      // `--jit` is for scripts, where a hot loop can pay off; here it means
+      // the executor, like naming no engine at all, so note it. (It must not
+      // fall through to the tree-walker: that would make `--jit` the one
+      // spelling other than `--tree` that reaches the retiring engine.)
       if (options.jit) {
         std::fprintf(stderr,
             "note: the REPL runs on a tier-0 engine; --jit applies to scripts "
             "(culebra --jit FILE)\n");
       }
-      if (options.vm != Options::Vm::Off) {
+      require_explicit_engine(options.engine_named, "the REPL");
+      if (!options.tree) {
         return culebra::vm_repl(options.print_ast,
                                 options.vm == Options::Vm::Dump);
       }
-      require_explicit_engine(engine_named(options), "the REPL");
       culebra::repl(env, options.print_ast);
     }
   } catch (const culebra::CulebraError& e) {
