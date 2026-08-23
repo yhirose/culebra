@@ -266,26 +266,15 @@ jobs:
       # than linking them (webview_gtk_dynload.cc). Note the standalone
       # check below scans the import table, which the engine is deliberately
       # outside of — it proves no stray DLL, not that WebView2 is reachable.
-      # The Canvas window is left to CMake's default (ON), like the macOS and
-      # Linux jobs — spelling it out would make the verification below
-      # unfalsifiable.
+      #
+      # The flag list lives in misc/configure_windows_release.sh, which ci.yml's
+      # windows-aot-build runs too: this configuration disagreeing between the
+      # two workflows is what killed v0.1.0, and it now has one definition.
       - name: Configure
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
           CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
-        run: |
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_C_COMPILER=gcc \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
-            -DCULEBRA_ENABLE_JIT=ON \
-            -DCULEBRA_ENABLE_HTTP=ON \
-            -DCULEBRA_ENABLE_WEBVIEW=ON \
-            -DCULEBRA_DEV_NO_RT=OFF \
-            -DCULEBRA_LTO=OFF
+        run: misc/configure_windows_release.sh build
       # Before the build, not after: unlike the macOS and Linux jobs (whose
       # `just build` is one step) this one can catch a lost window backend
       # without first paying the ~40 min LTO link.

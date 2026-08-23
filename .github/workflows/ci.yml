@@ -1429,25 +1429,19 @@ jobs:
           path: ${{ github.workspace }}/.deps
           key: ${{ steps.deps.outputs.key }}
       # The widest Windows configuration, and the only job that builds Http
-      # (static OpenSSL) and Webview (WebView2) on Windows.
-      - name: Configure (JIT ON, runtime archives embedded, static, Canvas window)
+      # (static OpenSSL) and Webview (WebView2) on Windows — which is to say it
+      # is the Windows download's, so it runs the same script release.yml does.
+      # The window used to be pinned ON here; leaving it to CMake's default and
+      # asserting it below is what release.yml does, and an assertion beats a
+      # setting that cannot fail.
+      - name: Configure (the Windows download's configuration)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
           CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
-        run: |
-          cmake -S . -B build-win-aot -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_C_COMPILER=gcc \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
-            -DCULEBRA_ENABLE_JIT=ON \
-            -DCULEBRA_ENABLE_HTTP=ON \
-            -DCULEBRA_ENABLE_WEBVIEW=ON \
-            -DCULEBRA_ENABLE_CANVAS_WINDOW=ON \
-            -DCULEBRA_DEV_NO_RT=OFF \
-            -DCULEBRA_LTO=OFF
+        run: misc/configure_windows_release.sh build-win-aot
+
+      - name: Verify the Canvas window backend is in this build
+        run: misc/verify_canvas_window.sh build-win-aot
       - name: Build (culebra driver + runtime archives)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
