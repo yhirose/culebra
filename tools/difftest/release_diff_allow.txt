@@ -16,58 +16,8 @@
 # `unsupported` on the baseline side means the older binary could not even
 # parse the case — syntax that release predates.
 
-# --- since v0.2.0 ---------------------------------------------------------
-
-# String answers fifteen more method names. Thirteen are new; `index_of` and
-# `reverse` existed, but their receiver mask admitted only Array, so a String
-# receiver got the wrong answer rather than an error. Under 0.2.0 each of
-# these is a missing member, which reads as nil and then fails as "expected
-# Function, got Nil" wherever the corpus calls it.
-m|*|eq_ignore_case|*
-m|*|index_of|*
-m|*|is_alnum|*
-m|*|is_alpha|*
-m|*|is_ascii|*
-m|*|is_digit|*
-m|*|is_space|*
-m|*|last_index_of|*
-m|*|normalize|*
-m|*|reverse|*
-m|*|rsplit|*
-m|*|split_whitespace|*
-m|*|strip_prefix|*
-m|*|strip_suffix|*
-m|*|title|*
-
-# Reading one of those names without calling it. 0.2.0 answers nil, because a
-# missing property is nil; this build recognises the name as a built-in method
-# and says it cannot be used as a value.
-bareread|*|eq_ignore_case
-bareread|*|index_of
-bareread|*|is_alnum
-bareread|*|is_alpha
-bareread|*|is_ascii
-bareread|*|is_digit
-bareread|*|is_space
-bareread|*|last_index_of
-bareread|*|normalize
-bareread|*|reverse
-bareread|*|rsplit
-bareread|*|split_whitespace
-bareread|*|strip_prefix
-bareread|*|strip_suffix
-bareread|*|title
-
-# `repeat(n, value)` is a new global function, and UFCS puts a global in
-# method position for every receiver the corpus sweeps. 0.2.0 has only the
-# Object/Array/Tensor member of that name, which answers "expected Object,
-# Array, or Tensor" to the other receivers.
-m|*|repeat|*
-
-# A native's declared signature is now the canonical one on every engine, so
-# the errors a built-in raises for a bad call name the parameter and count
-# arguments the way a user function's do, instead of coming from a
-# hand-written arm per method.
-m|*|split|*
-kw|[1, 2, 3].sort_by(key: |x| x)
-kw|[3, 1, 2].sorted(bad: 1)
+# Empty since v0.3.0 shipped: its 34 entries all described the v0.2.0 baseline
+# and the gate reported every one of them as matching nothing once the baseline
+# moved. That is the shrink the header describes, and it is what an empty file
+# means here — not "nothing is checked" but "nothing has changed yet". The
+# first behaviour change after a release adds the first entry back.
