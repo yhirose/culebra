@@ -16,8 +16,4 @@
 # `unsupported` on the baseline side means the older binary could not even
 # parse the case — syntax that release predates.
 
-# Empty since v0.3.0 shipped: its 34 entries all described the v0.2.0 baseline
-# and the gate reported every one of them as matching nothing once the baseline
-# moved. That is the shrink the header describes, and it is what an empty file
-# means here — not "nothing is checked" but "nothing has changed yet". The
-# first behaviour change after a release adds the first entry back.
+# Empty since v0.3.0 shipped — no behaviour change since that release yet.

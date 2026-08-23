@@ -116,10 +116,18 @@ check-blob: _gen-blob-tool
 check-difftest-coverage:
     tools/check_difftest_coverage.sh
 
-# Every committed file a generator produces, checked against its source. Needs
-# no build, and costs ~0.7 s — cheap enough to gate both test recipes.
+# Every script release.yml runs, ci.yml runs too — a `v*` tag must not be the
+# first execution of anything. Both release failures were that shape.
+[group("test")]
+[doc("Verify CI exercises every script a release runs")]
+check-release-coverage:
+    tools/check_release_covered_by_ci.sh
+
+# Every committed file a generator produces, checked against its source, plus
+# the workflow-coverage ratchet. Needs no build, and costs ~0.7 s — cheap
+# enough to gate both test recipes.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage
 
 # Such a build still has two engines — the tree-walker and the bytecode VM's
 # executor — because everything below the LLVM lowering (rt.h, vm.h) is

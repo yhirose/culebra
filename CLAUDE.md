@@ -61,8 +61,9 @@ difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全�
 
 **CI の穴（ローカルでしか塞げない点）**:
 - macOS CI は `CULEBRA_TEST_SKIP_HEAVY=1`。**macOS の difftest は走らない**（Ubuntu で代替）。
-  AOT は `macos-canvas-window` が1本だけリンクするので、「macOS だけで壊れる AOT リンク」
-  （実例あり）は**そのジョブが Canvas 経路については見る**。それ以外の AOT はローカルだけ
+  AOT リンクは `test-macos` が1本（dead-strip 越し）、`macos-canvas-window` が1本
+  （`culebra_rt_canvas` の force-load）を見る。**per-test の AOT スイープは走らない**ので、
+  「macOS だけで壊れる AOT リンク」（実例あり）のうちこの2軸以外はローカルだけ
 - **実際にウィンドウが開くこと**の macOS 側。Linux は Xvfb 下で実窓生成まで見るが、
   macOS ランナーにディスプレイサーバが無いので raylib の window path に入るのはローカルだけ
 

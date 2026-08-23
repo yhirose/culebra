@@ -53,30 +53,37 @@ fi
 
 # The binary self-reports the version it was compiled with (include/culebra.h);
 # the tag is what the release claims. A mismatch means the version bump missed
-# the header, which would otherwise ship silently — fail here instead.
+# the header, which would otherwise ship silently — fail here instead. The same
+# line names the engines this build has, which is the next check's subject.
+# (`--version` runs no user code, so it needs no engine named.)
+version_line=$("$staged" --version)
 want=${tag#v}
-got=$("$staged" --version | awk '{print $2}')
+got=$(echo "$version_line" | awk '{print $2}')
 if [ "$want" != "$got" ]; then
   echo "package_release: tag says $want but the binary reports $got" >&2
   echo "  (did the release commit update CULEBRA_VERSION in include/culebra.h?)" >&2
   exit 1
 fi
 
-# Every engine the download ships with. The executor and the tree-walker need
-# no symbols; the JIT resolves its helpers by name, so a strip that reached too
-# far shows up there. Each run is ~10 ms. `|| said=` keeps a crash reportable —
-# under `set -e` a failing substitution would otherwise end the script before
-# the message.
-#
-# Each lane names its engine. It has to: release.yml sets
-# CULEBRA_REQUIRE_EXPLICIT_ENGINE, so a bare launch aborts rather than running
-# — which is exactly what happened the first time this workflow ran after that
-# variable was introduced, because a `v*` tag is the only thing that starts it.
+# One smoke per engine the binary says it has, ~10 ms each: the executor and
+# the tree-walker need no symbols, but the JIT resolves its helpers by name, so
+# a strip that reached too far shows up there. Read off `(interp+vm+jit)`
+# rather than listed here, because the list moves — a build without LLVM has no
+# `--jit`, and the tree-walker is on its way out. Each lane names its engine:
+# release.yml sets CULEBRA_REQUIRE_EXPLICIT_ENGINE, so a bare launch aborts.
+# `|| said=` keeps a crash reportable — under `set -e` a failing substitution
+# would end the script before the message.
 printf 'print(6 * 7)\n' >"$tmp/smoke.cul"
-for flag in --vm --tree --jit; do
+engines=$(echo "$version_line" | sed -n 's/.*(\(.*\)).*/\1/p' | tr '+' ' ')
+[ -n "$engines" ] || { echo "package_release: no engines in '$version_line'" >&2; exit 1; }
+for engine in $engines; do
+  case $engine in
+    interp) flag=--tree ;;   # the version string's name for it predates the flag
+    *)      flag=--$engine ;;
+  esac
   said=$("$staged" "$flag" "$tmp/smoke.cul") || said="exited $?"
   if [ "$said" != "42" ]; then
-    echo "package_release: the stripped binary failed the ${flag#--} smoke" >&2
+    echo "package_release: the stripped binary failed the $engine smoke" >&2
     echo "  (expected 42, got '$said')" >&2
     exit 1
   fi

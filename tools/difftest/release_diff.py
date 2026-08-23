@@ -69,11 +69,11 @@ def compile_glob(pattern):
 
 def read_allow(path):
     """Read the allowlist into [(text, regex)], keeping the text for reports."""
+    # No FileNotFoundError arm: the file is committed, so a missing one means a
+    # mistyped --allow, and returning [] there would report every difference as
+    # unlisted or — with no differences — print OK having read nothing.
     patterns = []
-    try:
-        text = open(path, encoding="utf-8").read()
-    except FileNotFoundError:
-        return patterns
+    text = open(path, encoding="utf-8").read()
     for line in text.splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
