@@ -577,10 +577,17 @@ jobs:
       # Full `just build`, not the DEV_NO_RT inner-loop build: the window knob
       # also splits culebra_rt's Canvas ops into weak headless stubs and adds
       # the culebra_rt_canvas archive, and DEV_NO_RT skips every AOT archive.
-      # LTO off — this job proves compiles and links; build-ubuntu already
-      # pays for the LTO link on this OS.
-      - name: Build (window backend ON)
-        run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold -DCULEBRA_LTO=OFF
+      #
+      # LTO on, which is `just build`'s default — this is the Linux download's
+      # exact configuration, and it used to exist nowhere but a `v*` tag.
+      # build-ubuntu pays for an LTO link with the window OFF and this job used
+      # to pay for the window with LTO OFF, so each half was covered and the
+      # product was not. That is the shape both release failures have taken:
+      # v0.1.0's Windows link (LTO ON only in release.yml) and v0.3.0's bare
+      # smoke (a path only a tag reaches). A release is not the place to find
+      # out that a combination does not build.
+      - name: Build (window backend ON, LTO on — the Linux download's config)
+        run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
 
       - name: Report ccache stats
         run: ccache -s || true
