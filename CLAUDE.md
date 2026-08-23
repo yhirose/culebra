@@ -60,15 +60,18 @@ difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全�
 | push 後 | **CI の両 OS を確認**（toolchain 差異はここでしか出ない） |
 
 **CI の穴（ローカルでしか塞げない点）**:
-- macOS CI は `CULEBRA_TEST_SKIP_HEAVY=1`。**macOS の AOT と difftest は走らない**（Ubuntu で代替。ただし
-  「macOS だけで壊れる AOT リンク」は CI では出ない — 実例あり）
-- Canvas window backend の **macOS 側**。`linux-canvas-window` ジョブ（下記）が Linux は見るが、
-  raylib の macOS パスをビルド・実行するのはローカルだけ
+- macOS CI は `CULEBRA_TEST_SKIP_HEAVY=1`。**macOS の difftest は走らない**（Ubuntu で代替）。
+  AOT は `macos-canvas-window` が1本だけリンクするので、「macOS だけで壊れる AOT リンク」
+  （実例あり）は**そのジョブが Canvas 経路については見る**。それ以外の AOT はローカルだけ
+- **実際にウィンドウが開くこと**の macOS 側。Linux は Xvfb 下で実窓生成まで見るが、
+  macOS ランナーにディスプレイサーバが無いので raylib の window path に入るのはローカルだけ
 
 `test` マトリクスは今も全ジョブ `CULEBRA_CANVAS_WINDOW_DEFAULT=OFF` だが、**`linux-canvas-window`
-ジョブが Linux で window ON をビルドする**（SDL3 の build deps を入れて CMake 既定に任せる）。
-window ON ビルドでの headless 動作・AOT の `culebra_rt_canvas` force-load・Xvfb 下の実窓生成まで見る。
-`release.yml` も window ON だが `v*` tag でしか走らない（初回の `v0.1.0` で実走済み）。
+と `macos-canvas-window` が window ON をビルドする**（CMake 既定に任せる。Linux は SDL3 の
+build deps を入れる）。**両ジョブとも LTO ON ＝ 配布バイナリと同じ構成**で、window ON ビルドでの
+headless 動作と AOT の `culebra_rt_canvas` force-load を見る（Linux はさらに Xvfb 下の実窓生成と
+DT_NEEDED 検査）。`release.yml` も同じ構成だが `v*` tag でしか走らない — **タグでしか到達しない
+構成は、そこを変更したバッチが検証できない**（v0.1.0 と v0.3.0 のリリースが2回ともこれで落ちた）。
 
 **`linux-assert` ジョブ**が Ubuntu で `just test-assert` を回す（`NDEBUG` なしビルド + 同じスイープ）。
 assert が本当に compile-in されたかを binary 内の assert 文字列 grep で検証してから走るので、

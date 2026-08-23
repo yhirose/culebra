@@ -672,6 +672,118 @@ jobs:
           fi
           echo "OK: no display runtime dependency"
 
+  # The macOS half of the job above, and of the same gap: test-macos pins
+  # CULEBRA_CANVAS_WINDOW_DEFAULT=OFF, so raylib's macOS bodies and the weak-stub
+  # split compiled nowhere but a `v*` tag — which is where a break in them would
+  # have surfaced. This is the macOS download's exact configuration (CMake's own
+  # ON default, LTO on), built on every push.
+  #
+  # Narrower than the Linux job by two steps, both deliberately. A runner has no
+  # display server and no Xvfb, so nothing here enters raylib's window path —
+  # what is proved is that it compiles, links and stays out of the way. And the
+  # DT_NEEDED check has no macOS counterpart worth writing: SDL3 dlopens X11/GL
+  # on Linux, while macOS links system frameworks by design, so `otool -L`
+  # naming them is expected rather than a regression.
+  #
+  # The AOT step is the reason this is not just a build. macOS CI runs with
+  # CULEBRA_TEST_SKIP_HEAVY, so no macOS lane links an AOT binary at all — and
+  # "an AOT link that breaks only on macOS" is a failure this project has
+  # already had once.
+  macos-canvas-window:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      # Deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT — CMake's own macOS
+      # default is this job's subject, the way it is the Linux job's.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps-cache
+      # The macOS runner has 3 cores and an LLVM-header TU peaks near 3 GB.
+      CULEBRA_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - run: brew install llvm just ccache
+
+      - name: Vendored SDL3 + raylib revisions
+        id: vendor
+        run: |
+          echo "key=$(git rev-parse HEAD:vendor/SDL)-$(git rev-parse HEAD:vendor/raylib)" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Restore SDL3 + raylib statics
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps-cache
+          key: macos-canvas-deps-${{ steps.vendor.outputs.key }}
+
+      # Falls back to test-macos's ccache so a first run starts warm; only the
+      # Canvas TUs are unique to this job.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: macos-canvas-ccache-${{ github.sha }}
+          restore-keys: |
+            macos-canvas-ccache-
+            ${{ runner.os }}-ccache-
+
+      - name: Build (window backend ON, LTO on — the macOS download's config)
+        run: just build
+
+      - name: Report ccache stats
+        run: ccache -s || true
+
+      # Fails loudly rather than informatively: every step below still passes
+      # against a headless build, so without this the job would go green while
+      # proving nothing it was added for.
+      - name: Verify the window backend is actually in this build
+        run: |
+          if ! grep -qx 'CULEBRA_ENABLE_CANVAS_WINDOW:BOOL=ON' build/CMakeCache.txt; then
+            echo "::error::built without the Canvas desktop window — CULEBRA_CANVAS_WINDOW_DEFAULT leaked in. This job then proves nothing." >&2
+            grep -i canvas build/CMakeCache.txt >&2 || true
+            exit 1
+          fi
+          echo "OK: window backend built"
+
+      # A window-enabled binary must still take the headless path on demand,
+      # byte-identically. Set explicitly — the binary is invoked directly here,
+      # so it does not pick up the export every `just` recipe gets.
+      - name: Canvas tests (headless inside the window build)
+        env:
+          CULEBRA_CANVAS_HEADLESS: "1"
+        run: |
+          fail=0
+          for t in tests/test_canvas.cul tests/test_canvas_module.cul; do
+            for flag in "--tree" "--jit"; do
+              if ./build/culebra $flag "$t" > /dev/null; then
+                echo "PASS $t ($flag)"
+              else
+                echo "::error::FAIL $t ($flag)"; fail=1
+              fi
+            done
+          done
+          exit $fail
+
+      # Naming Canvas has to force-load libculebra_rt_canvas.a so its strong
+      # raylib bodies override culebra_rt's weak headless stubs. The driver
+      # links that archive directly, and this is the only macOS lane that links
+      # an AOT binary at all.
+      - name: AOT link + run (Canvas force-load axis)
+        run: |
+          cat > canvas_aot.cul <<'EOF'
+          Canvas.init(8, 8)
+          Canvas.clear(Canvas.rgba(0, 0, 255))
+          Canvas.present()
+          println(Canvas.get_pixel(0, 0) == Canvas.rgba(0, 0, 255))
+          EOF
+          ./build/culebra build canvas_aot.cul -o canvas_aot
+          out=$(CULEBRA_CANVAS_HEADLESS=1 ./canvas_aot)
+          [ "$out" = "true" ] || { echo "::error::AOT canvas run: [$out]" >&2; exit 1; }
+          echo "OK: AOT force-load resolved"
+
   # Linux is the only platform where culebra has to find the WebView engine
   # itself (macOS links a system framework; Windows lets webview.h's own loader
   # locate the Edge runtime), and the Ubuntu test jobs above install no gtk4 or
