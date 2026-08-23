@@ -1,0 +1,20 @@
+# The per-frame pipeline shape a Canvas game runs every tick: map with an
+# object spread, filter, a count — plus a little string churn (traced-only
+# bytes only the collector reclaims). Crosses the collector's allocation
+# threshold every few thousand iterations, which is what exercises the wasm
+# safepoint protocol (jit_gc.h kDeferToSafepoint): before it, a threshold
+# collect fired at the allocation site, swept a value whose only reference
+# sat in a wasm local the conservative scan cannot see, and this loop
+# trapped with "memory access out of bounds" around iteration ~10k.
+let shift_left = |p| {...p, x: p.x - 1}
+mut xs = iota(15).map(|i| {x: i * 12, type: i % 5})
+mut hits = 0
+for n in 1..20001 {
+  xs.push({x: 160, type: n % 5}) if n % 12 == 0
+  hits += xs.map(shift_left).filter(|p| p.x == 22).size()
+  xs = xs.map(shift_left).filter(|p| p.x >= -12)
+  let s = "frame {n} of 20000"
+  hits += s.size() if n % 4096 == 0
+}
+println(hits)
+println(xs.size())

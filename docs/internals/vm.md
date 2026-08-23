@@ -2089,3 +2089,59 @@ is checked now, and it is the only place in the tree that must run the binary
 `interpret_modules` mark exists on the tree-walker's path alone, so its absence
 says the executor ran. The exit code is asserted alongside it, because an abort
 prints no mark either and would otherwise pass.
+
+### 13.9 The collector meets wasm locals
+
+Two days after v0.3.0 shipped, Rocci Bird died in the Playground with
+`RuntimeError: memory access out of bounds` around the ten-thousandth frame.
+The crash reduces to eight lines with no Canvas in them — a per-frame
+`map(spread).filter().size()` pipeline — and to a one-line cause:
+`CULEBRA_GC_NEVER=1` completes the same run. §13.6's smoke was standing right
+next to this and could not see it: twenty thousand closures die by refcount
+before the collector matters, while what breaks is the collector's *sweep*, on
+a value the mark phase never found.
+
+The mark phase never found it because on wasm the conservative scan's central
+assumption is false. `scan_roots` flushes callee-saved registers with a
+`setjmp` and walks the machine stack; wasm locals — the register file the
+values actually live in — sit outside linear memory, and `setjmp` spills
+nothing there. §13.4 already wrote down the halfway version of this when
+`Heap::stack_base` grew its `__EMSCRIPTEN__` arm: the linear-memory stack
+holds "an address-taken local … the only locals a conservative scan could
+ever have found". The frame windows of `run_frame` are VLAs, so *they* are
+visible; what is not is every value whose only reference sits in a wasm local
+— the string `num_add` just built and has not yet stored, or the half-built
+array inside `iter_collect` while the mapped closure runs. A threshold
+collect fires at an allocation site inside such a helper, the sweep frees the
+object, and the freed block corrupts the slab free-list — which is why the
+trap surfaces later, inside `SlabAllocator::alloc`, wearing whatever face the
+reuse gives it. The tree-walker never met this: its strings are refcounted
+(`GC.stat` shows `live == rc` there), so the collector decides no string's
+lifetime, and the engine switch is what carried the traced-only
+representation into a build whose scanner cannot back it.
+
+The fix defines where collection is legal instead of patching where it was
+found illegal. Under `kDeferToSafepoint` (jit_gc.h, on for `__EMSCRIPTEN__`
+only) no collect runs inline, ever: a threshold trip sets a pending flag, and
+the executor polls `safepoint_collect()` at its instruction boundaries, where
+every live value of every frame sits in a register window the scan does see.
+One hazard survives the move — a helper suspended *between* two VM frames
+(the iterator op whose callback is running) may hold the only reference in
+its own locals — and the invariant covering it is: **no collection while any
+such frame is on the stack.** Enforcement is one choke point, not a
+per-helper audit: every helper-to-user call passes through `_jit_invoke`
+(jit_value.h), whose `SafepointUnsafeScope` defers the poll for the call's
+duration. The dispatch arms audited to keep callee, receiver and arguments in
+registers for the whole call — `Call`, `CallM`, and the builtin gate's
+user-method hand-off — use `_jit_invoke_rooted` and stay collectable, which
+is what keeps a `Canvas.run` game loop collecting every tick. The marking is
+fail-safe by construction: a new call path that never gets audited only
+defers collection until the next eligible poll — memory grows, nothing is
+freed wrongly — and `CULEBRA_GC_STRESS`, whose threshold of 1 now means
+"collect at every eligible poll", hammers exactly this protocol.
+`tools/playground/cases/pipeline_churn.cul` runs the reducing pipeline
+through `check-playground`, twice per instance like everything there, so the
+lane that missed this class of bug once now trips on it in CI. On native
+builds the whole protocol folds away to the previous behavior; explicit
+collects (`GC.stat`) gate the same way on wasm, so under a helper they defer
+rather than sweep.

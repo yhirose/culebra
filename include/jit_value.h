@@ -448,12 +448,27 @@ static constexpr int8_t TAG_NO_SELF = 126;
 // and recovers the result from the out-pointer. Callers own retain/release
 // around the call as before; this wraps the ABI hand-off (out-ptr return + the
 // two receiver scalars), so a future ABI tweak is a one-line change here.
-inline JitValue _jit_invoke(JitClosure* fn, JitValue recv, int64_t n_args,
-                            JitValue* args) {
+//
+// The `_rooted` variant is for call sites audited to keep every value they
+// hold in scanned memory (the VM frame's register window) for the call's
+// whole duration — the dispatch's BMeth/Call/CallM arms. Everything else goes
+// through `_jit_invoke`, whose guard tells the wasm safepoint (jit_gc.h
+// kDeferToSafepoint) that a helper frame which may hold the only reference
+// to a live object in unscannable wasm locals is on the stack, so no
+// collection may run beneath this call. Native builds: the guard is a no-op
+// (the machine-stack scan sees helper frames).
+inline JitValue _jit_invoke_rooted(JitClosure* fn, JitValue recv,
+                                   int64_t n_args, JitValue* args) {
   JitValue __ret;
   reinterpret_cast<JitFn>(fn->fn_ptr)(
       &__ret, fn, static_cast<int8_t>(recv.tag), recv.data, n_args, args);
   return __ret;
+}
+
+inline JitValue _jit_invoke(JitClosure* fn, JitValue recv, int64_t n_args,
+                            JitValue* args) {
+  culebra::gc::SafepointUnsafeScope unsafe;
+  return _jit_invoke_rooted(fn, recv, n_args, args);
 }
 
 // Invocation helpers for the common runtime-callback arities. Each

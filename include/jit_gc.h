@@ -175,6 +175,54 @@ class GcRegistry {
   size_t mask_ = 0;
 };
 
+// --- wasm safepoint protocol ------------------------------------------------
+//
+// On wasm the conservative scan cannot reach wasm locals: they live outside
+// linear memory, and setjmp spills nothing there. So an allocation site is
+// never a safe place to collect — the object just allocated, and any value a
+// runtime helper holds only in a local, are invisible to scan_roots. The wasm
+// build therefore NEVER collects inline. A threshold trip only sets a pending
+// flag, and the VM executor polls safepoint_collect() at its instruction
+// boundaries (vm.h dispatch), where every live value of every frame sits in a
+// register window — a linear-memory array the scan does see.
+//
+// One hazard remains at that poll: a runtime helper suspended BETWEEN two VM
+// frames (an iterator op mid-collect invoking a user closure) may hold the
+// only reference to a live object in its wasm locals. SafepointUnsafeScope
+// brackets exactly those closure invocations (jit_value.h `_jit_invoke`, the
+// single choke point every helper-to-user call passes through); while any
+// such frame is on the stack the poll — and every explicit collect — defers.
+// The dispatch call sites audited to keep all their values in registers for
+// the call's whole duration use `_jit_invoke_rooted` and stay collectable.
+// Marking is fail-safe by default: an unmarked new call path only delays
+// collection (memory grows until the next eligible poll), never frees a live
+// object.
+//
+// On native builds all of this folds away to the current behavior: the
+// setjmp register flush plus the machine-stack walk make every frame
+// scannable, and collect stays inline at the allocation site.
+inline constexpr bool kDeferToSafepoint =
+#ifdef __EMSCRIPTEN__
+    true;
+#else
+    false;
+#endif
+
+// Helper frames between VM frames that may hold sole references (see above).
+// Per-thread, like the Heap itself.
+inline thread_local int safepoint_unsafe_depth = 0;
+
+struct SafepointUnsafeScope {
+  SafepointUnsafeScope() {
+    if constexpr (kDeferToSafepoint) ++safepoint_unsafe_depth;
+  }
+  ~SafepointUnsafeScope() {
+    if constexpr (kDeferToSafepoint) --safepoint_unsafe_depth;
+  }
+  SafepointUnsafeScope(const SafepointUnsafeScope&) = delete;
+  SafepointUnsafeScope& operator=(const SafepointUnsafeScope&) = delete;
+};
+
 class Heap {
  public:
   // Standalone (unit-test) allocation: malloc `size` bytes and register the
@@ -240,6 +288,16 @@ class Heap {
     explicit CollectPause(Heap& heap) : h(heap) { h.pause_collect(); }
     ~CollectPause() { h.resume_collect(); }
   };
+
+  // The wasm safepoint poll (vm.h dispatch, kDeferToSafepoint above). Cheap
+  // pending check first; the actual collect re-arms the thresholds the same
+  // way the native inline path does. Pending survives an ineligible poll
+  // (paused, or a helper frame on the stack) — the next eligible one runs it.
+  bool safepoint_pending() const { return collect_pending_; }
+  void safepoint_collect() {
+    if (collect_paused_ || safepoint_unsafe_depth > 0) return;
+    collect_and_rearm();
+  }
 
   // De-register an object whose memory the CALLER frees (RC release-to-zero
   // `delete`s the struct, then calls forget). No free/poison here — the
@@ -356,6 +414,16 @@ class Heap {
   // "reachable survives"; the exact reclaimed set is non-deterministic.
   size_t collect() {
     if (never()) return 0;
+    // wasm: a helper frame between VM frames may hold the only reference to
+    // a live object in wasm locals the scan cannot reach — defer to the next
+    // eligible safepoint poll instead (kDeferToSafepoint above). This gates
+    // the explicit entry points (GC.stat) the same way as threshold trips.
+    if constexpr (kDeferToSafepoint) {
+      if (safepoint_unsafe_depth > 0) {
+        collect_pending_ = true;
+        return 0;
+      }
+    }
     // Experimental refcount-based cycle collection (CPython gc_refs): seed
     // roots purely from the reference counts the compiler already maintains —
     // no stack scan, no shadow stack. Because a live value's refcount counts
@@ -717,8 +785,27 @@ class Heap {
     if (alloc_since_collect_ < collect_threshold_ &&
         live_bytes_ < byte_threshold_)
       return;
+    // wasm: never collect at the allocation site — the object just adopted
+    // (and anything a helper holds only in wasm locals) is invisible to the
+    // scan. Flag it; the VM's safepoint poll runs the collect.
+    if constexpr (kDeferToSafepoint) {
+      collect_pending_ = true;
+      return;
+    }
+    collect_and_rearm();
+  }
+
+  // Run a collect and reset/re-arm the trigger state as one unit — shared by
+  // the native inline path above and the wasm safepoint path, so a future
+  // collect entry point cannot forget the re-arm half.
+  void collect_and_rearm() {
+    collect_pending_ = false;
     alloc_since_collect_ = 0;
     collect();
+    rearm_thresholds();
+  }
+
+  void rearm_thresholds() {
     // The backstop is only the reclaimer of reference CYCLES — RC frees
     // everything acyclic immediately and deterministically (now leak-free on
     // the normal path), so the whole-heap subtraction pass can run far less
@@ -926,6 +1013,7 @@ class Heap {
   size_t live_bytes_ = 0;
   bool callbacks_wired_ = false;
   int collect_paused_ = 0;
+  bool collect_pending_ = false;  // wasm safepoint flag (kDeferToSafepoint)
   size_t alloc_since_collect_ = 0;
   size_t collect_threshold_ = stress() ? 1 : kMinThreshold;
   size_t byte_threshold_ = kByteFloor;

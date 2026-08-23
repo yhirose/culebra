@@ -9206,7 +9206,23 @@ struct Exec {
                                             v.data, line, col);
     };
 
+    // The safepoint poll below runs per instruction, so resolve the heap
+    // once: the Heap lives in the Runtime's substate for this frame's whole
+    // execution (RuntimeScope restores any nested switch before control
+    // returns here), and hoisting skips the thread-local + lazy-init chain
+    // the opaque calls in the loop would otherwise force per iteration.
+    [[maybe_unused]] gc::Heap* sp_heap = nullptr;
+    if constexpr (gc::kDeferToSafepoint) sp_heap = &_gc_heap();
     for (;;) {
+      // The wasm safepoint: the only place a deferred collect runs (jit_gc.h
+      // kDeferToSafepoint). Between instructions every live value of every
+      // frame sits in a register window on the linear-memory stack, which
+      // the conservative scan does see — unless a helper frame that may hold
+      // sole references is suspended below us, which safepoint_collect
+      // checks. Folds away on native builds.
+      if constexpr (gc::kDeferToSafepoint) {
+        if (sp_heap->safepoint_pending()) sp_heap->safepoint_collect();
+      }
       const Insn& in = code[pc];
       switch (in.op) {
         case Op::LoadConst:
@@ -9889,9 +9905,12 @@ struct Exec {
                   line, col, "Function", static_cast<int8_t>(gate.tag));
             JitValue r;
             try {
-              r = _jit_invoke(reinterpret_cast<JitClosure*>(gate.data),
-                              regs[in.b + 1], in.d,
-                              in.d ? &regs[in.b + 2] : nullptr);
+              // Rooted: gate (regs[b]), receiver (regs[b+1]) and args
+              // (regs[b+2..], nil'd only after the return) stay in this
+              // frame's registers for the call's duration (jit_value.h).
+              r = _jit_invoke_rooted(reinterpret_cast<JitClosure*>(gate.data),
+                                     regs[in.b + 1], in.d,
+                                     in.d ? &regs[in.b + 2] : nullptr);
             } catch (...) {
               for (int32_t i = 1; i <= in.d + 1; ++i)
                 regs[in.b + i] = JitValue{TAG_NIL, 0};
@@ -10281,8 +10300,12 @@ struct Exec {
               reinterpret_cast<JitClosure*>(target.data), in.d, line, col);
           JitValue r;
           try {
-            r = _jit_invoke(reinterpret_cast<JitClosure*>(target.data), self,
-                            in.d, in.d ? &regs[in.c] : nullptr);
+            // Rooted: callee (regs[b]), receiver (== callee on the __call__
+            // path) and args (regs[c..], nil'd only after the return) all
+            // stay in this frame's registers for the call's duration, so a
+            // safepoint collect beneath it sees them (jit_value.h).
+            r = _jit_invoke_rooted(reinterpret_cast<JitClosure*>(target.data),
+                                   self, in.d, in.d ? &regs[in.c] : nullptr);
           } catch (...) {
             // The callee consumed each arg's +1 on its own unwind path too
             // (the JitFn ABI); nil the slab slots so an enclosing region's
@@ -10345,8 +10368,12 @@ struct Exec {
           // slice rejects outright.
           JitValue r;
           try {
-            r = _jit_invoke(reinterpret_cast<JitClosure*>(target.data), self,
-                            in.d, in.d ? &regs[in.c + 1] : nullptr);
+            // Rooted: callee (regs[b]), receiver (regs[c]) and args
+            // (regs[c+1..], nil'd only after the return) stay in this
+            // frame's registers for the call's duration (jit_value.h).
+            r = _jit_invoke_rooted(reinterpret_cast<JitClosure*>(target.data),
+                                   self, in.d,
+                                   in.d ? &regs[in.c + 1] : nullptr);
           } catch (...) {
             for (int32_t i = 0; i <= in.d; ++i)
               regs[in.c + i] = JitValue{TAG_NIL, 0};
