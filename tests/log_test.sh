@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Log writes structured records to stderr; this checks the actual content
-# across interp / JIT / AOT. Timestamps vary per run, so it asserts substrings,
+# across vm / JIT / AOT. Timestamps vary per run, so it asserts substrings,
 # not exact lines. (A tests/*.cul sweep test only sees stdout, where logs never
 # appear, so it can't verify the records.)
 #
@@ -43,8 +43,8 @@ run_checks() {  # run_checks <label> <stderr-text> <stdout-text>
   has   "$l child-bound"   "$err" '"req":"r1"'      # with() field on the record
 }
 
-# interp / JIT: pass the script; AOT: run the prebuilt binary.
-ERR="$("$CULEBRA" --tree "$TMP/w.cul" 2>"$TMP/err")"; run_checks interp "$(cat "$TMP/err")" "$ERR"
+# vm / JIT: pass the script; AOT: run the prebuilt binary.
+ERR="$("$CULEBRA" --vm "$TMP/w.cul" 2>"$TMP/err")"; run_checks vm "$(cat "$TMP/err")" "$ERR"
 ERR="$("$CULEBRA" --jit "$TMP/w.cul" 2>"$TMP/err")"; run_checks jit "$(cat "$TMP/err")" "$ERR"
 
 if "$CULEBRA" build "$TMP/w.cul" -o "$TMP/w_aot" >/dev/null 2>&1; then

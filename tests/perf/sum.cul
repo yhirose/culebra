@@ -1,5 +1,5 @@
 # Tight iteration loop (integer arithmetic)
-# perf: min_speedup 4.0
+# perf: min_speedup 2.5   # recalibrated B7-c: vm (not interp) is the reference lane
 mut i = 0
 mut acc = 0
 while i < 10000000 {

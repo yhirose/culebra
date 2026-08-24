@@ -1,5 +1,5 @@
 # Object allocation + property access churn
-# perf: min_speedup 0.5
+# perf: min_speedup 0.25   # recalibrated B7-c: vm (not interp) is the reference lane
 mut i = 0
 mut total = 0
 while i < 100000 {

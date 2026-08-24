@@ -146,12 +146,11 @@ jobs:
       - name: Test (build-tree phases - ratchets + rt archives + ctest)
         run: BIN=./build/culebra just _run-tests ci-buildtree
 
-      # Run the ```culebra examples in docs/ on all three engines. Invoke the
+      # Run the ```culebra examples in docs/ on both compiled lanes. Invoke the
       # binary directly rather than `just doctest` so it reuses the build
       # above instead of re-running `just build` without the ccache flags.
-      - name: Doctest (docs examples, interp + VM + JIT)
+      - name: Doctest (docs examples, VM + JIT)
         run: |
-          ./build/culebra test --doc --tree tests/doctest docs
           ./build/culebra test --doc --vm tests/doctest docs
           ./build/culebra test --doc --jit tests/doctest docs
 
@@ -159,7 +158,7 @@ jobs:
       # and stdlib.md; fail if a reference edit landed without regenerating
       # it.
       - name: Check the generated signature index (docs/quick-guide.md)
-        run: ./build/culebra --tree misc/gen_quick_guide.cul --check
+        run: ./build/culebra --vm misc/gen_quick_guide.cul --check
 
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
@@ -182,7 +181,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # jit host symbols + interp/JIT symmetry + codegen backends +
+          # jit host symbols + vm/JIT symmetry + codegen backends +
           # leak-abort smoke + culebra-test self + isolate
           - lane: ci-light
           # generated difftest corpus + the corpus RC-leak regression gate
@@ -449,16 +448,15 @@ jobs:
       - name: Report ccache stats
         run: ccache -s
 
-      - name: Test (interp/JIT diff + embedding smoke + culebra-test self)
+      - name: Test (vm/JIT diff + embedding smoke + culebra-test self)
         # Reuse the LTO build/ from the Build step rather than letting `just
         # test` spin up a second no-LTO build-gate/ — this also keeps the
         # gate exercising the LTO binary. (Local dev gets the fast no-LTO
         # gate via plain `just test`.)
         run: BIN=./build/culebra just _run-tests all
 
-      - name: Doctest (docs examples, interp + VM + JIT)
+      - name: Doctest (docs examples, VM + JIT)
         run: |
-          ./build/culebra test --doc --tree tests/doctest docs
           ./build/culebra test --doc --vm tests/doctest docs
           ./build/culebra test --doc --jit tests/doctest docs
 
@@ -468,7 +466,7 @@ jobs:
       # macOS builds Webview by default and needs no packages, so this costs
       # only the run. (Ubuntu self-disables it for want of gtk4/webkitgtk,
       # where `Webview` is then an undefined name — skip rather than pretend.)
-      - name: Smoke — Webview window + event loop (interp / JIT)
+      - name: Smoke — Webview window + event loop (vm / JIT)
         run: misc/probe_webview_window.sh ./build/culebra
 
       # The driver is dead-stripped (CMakeLists, -Wl,-dead_strip) and the AOT
@@ -594,7 +592,7 @@ jobs:
         run: |
           fail=0
           for t in tests/test_canvas.cul tests/test_canvas_module.cul; do
-            for flag in "--vm" "--tree" "--jit"; do
+            for flag in "--vm" "--jit"; do
               if ./build/culebra $flag "$t" > /dev/null; then
                 echo "PASS $t ($flag)"
               else
@@ -619,7 +617,7 @@ jobs:
           println("window ok")
           EOF
           out=$(CULEBRA_CANVAS_HEADLESS=0 LIBGL_ALWAYS_SOFTWARE=1 \
-            xvfb-run -a ./build/culebra --tree canvas_window.cul)
+            xvfb-run -a ./build/culebra --vm canvas_window.cul)
           [ "$out" = "window ok" ] || { echo "::error::windowed run: [$out]" >&2; exit 1; }
           echo "OK: window opened and presented"
 
@@ -715,7 +713,7 @@ jobs:
         run: |
           fail=0
           for t in tests/test_canvas.cul tests/test_canvas_module.cul; do
-            for flag in "--vm" "--tree" "--jit"; do
+            for flag in "--vm" "--jit"; do
               if ./build/culebra $flag "$t" > /dev/null; then
                 echo "PASS $t ($flag)"
               else
@@ -845,7 +843,7 @@ jobs:
       # developer's headless box and wrong here: it would let a broken Xvfb turn
       # this into a green job that opened nothing. So the output is checked for
       # that outcome as well as for the exit status.
-      - name: Window + event loop (Xvfb, interp / JIT)
+      - name: Window + event loop (Xvfb, vm / JIT)
         run: |
           # `|| rc=$?` rather than a bare assignment: the step runs under
           # `bash -e`, where a failing command substitution ends the step at the
@@ -883,9 +881,9 @@ jobs:
           sudo mv /usr/lib/x86_64-linux-gnu/libgtk-4.so.1 /tmp/gtk.hidden
           ./build/culebra --version || { echo "::error::the driver needs the engine to start" >&2; exit 1; }
           echo 'println("no window here")' > plain.cul
-          out=$(./build/culebra --tree plain.cul)
+          out=$(./build/culebra --vm plain.cul)
           [ "$out" = "no window here" ] || { echo "::error::plain program: [$out]" >&2; exit 1; }
-          out=$(timeout 60 ./build/culebra --tree tests/gui/webview_probe.cul 2>&1 || true)
+          out=$(timeout 60 ./build/culebra --vm tests/gui/webview_probe.cul 2>&1 || true)
           case "$out" in
             *"failed to create window"*) echo "OK: starts, runs, and fails only at the window" ;;
             *) echo "::error::expected the create-window failure, got: [$out]" >&2; exit 1 ;;
@@ -1511,7 +1509,7 @@ jobs:
       # is 32 bits under LLP64, and the interpreter carried the payload in one —
       # so the shared test runs on the one runner that can tell, across all
       # three backends, which is where the widths used to disagree.
-      - name: Test — Long is 64-bit (interp / JIT / AOT)
+      - name: Test — Long is 64-bit (vm / JIT / AOT)
         run: |
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \
             tests/test_long_width.cul "long width ok" LONG
@@ -1523,7 +1521,7 @@ jobs:
       #
       # Windows ran an inline copy of this until Long became 64-bit; the shared
       # test failed on nothing but that width.
-      - name: Smoke — Canvas window build (interp / JIT / AOT)
+      - name: Smoke — Canvas window build (vm / JIT / AOT)
         env:
           CULEBRA_CANVAS_HEADLESS: "1"
           CULEBRA_VERBOSE: "1"
@@ -1619,38 +1617,38 @@ jobs:
       # above only proves one request/response, not routing/errors/the
       # Isolate-hosted server lifecycle. This is the only Windows config
       # with Http ON in a real build, so it's the one place to close that
-      # gap. Oracle is interp-vs-JIT output equality (same as `just test`),
+      # gap. Oracle is vm-vs-JIT output equality (same as `just test`),
       # not a golden string — test_http_server prints too much for that.
       # AOT isn't compared here: it would need its own golden copy, not
       # evidence it's expected to diverge.
-      - name: Test — Http conformance (interp vs JIT diff)
+      - name: Test — Http conformance (vm vs JIT diff)
         run: |
           set +e  # msys2 bash runs with -e; see run_all_backends.sh's comment
           fail=0
           for f in tests/test_http.cul tests/test_http_server.cul; do
             name=$(basename "$f" .cul)
             echo "=== $f ==="
-            out_interp=$(timeout 60 ./build-win-aot/culebra.exe --tree "$f" 2>&1)
-            rc_interp=$?
+            out_vm=$(timeout 60 ./build-win-aot/culebra.exe --vm "$f" 2>&1)
+            rc_vm=$?
             out_jit=$(timeout 60 ./build-win-aot/culebra.exe --jit "$f" 2>&1)
             rc_jit=$?
-            if [ $rc_interp -ne 0 ]; then
-              echo "${name}_INTERP_FAIL rc=$rc_interp"; echo "$out_interp"; fail=1; continue
+            if [ $rc_vm -ne 0 ]; then
+              echo "${name}_VM_FAIL rc=$rc_vm"; echo "$out_vm"; fail=1; continue
             fi
             if [ $rc_jit -ne 0 ]; then
               echo "${name}_JIT_FAIL rc=$rc_jit"; echo "$out_jit"; fail=1; continue
             fi
-            if [ "$out_interp" = "$out_jit" ]; then
+            if [ "$out_vm" = "$out_jit" ]; then
               echo "${name}_PASS"
             else
               echo "${name}_DIVERGE"
-              diff <(printf '%s' "$out_interp") <(printf '%s' "$out_jit")
+              diff <(printf '%s' "$out_vm") <(printf '%s' "$out_jit")
               fail=1
             fi
           done
           exit $fail
       # The step above proves the link; this one proves the window.
-      - name: Smoke — Webview window + event loop (interp / JIT)
+      - name: Smoke — Webview window + event loop (vm / JIT)
         run: misc/probe_webview_window.sh ./build-win-aot/culebra.exe
       # AOT regression smoke: string concat + caught-value integrity (16-byte
       # runtime helpers, sret ABI), classes, getters and callable class objects.
@@ -1782,7 +1780,7 @@ jobs:
           fail=0
           run() {  # $1=label $2=source $3=expected
             printf '%s' "$2" > p.cul
-            for flag in "--vm" "--tree" "--jit"; do
+            for flag in "--vm" "--jit"; do
               out=$(./build-arch-jit/culebra $flag p.cul 2>&1); rc=$?
               if [ "$out" = "$3" ]; then
                 echo "${1}_${flag#--}_PASS"

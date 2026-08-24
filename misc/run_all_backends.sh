@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run one .cul file through interp, JIT, the VM executor and AOT, and require
-# the same output from every lane that runs it. The `--vm` lane rejects
+# the same output from every lane that runs it (the compiled lanes + AOT;
+# the tree-walker lane retired in B7-c). The `--vm` lane rejects
 # out-of-slice constructs at compile time ("--vm: unsupported: ..."); that
 # reports the lane as SKIP (visible, still green), so each test's VM lane
 # lights up on its own as the slice grows. Any other VM mismatch — including a
@@ -20,7 +21,7 @@ expected=${3:?}
 label=${4:?}
 
 fail=0
-for mode in "--tree" "--jit" "--vm"; do
+for mode in "--jit" "--vm"; do
   echo "=== $exe $mode $script ==="
   out=$(timeout 60 "$exe" $mode "$script" 2>&1); rc=$?
   echo "out=[$out] rc=$rc"

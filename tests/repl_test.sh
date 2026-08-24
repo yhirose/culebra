@@ -13,6 +13,8 @@ fail=0
 export CULEBRA_HISTFILE="$TMP/history"
 
 # Feed lines to the REPL and capture everything it wrote.
+# The tree-walker REPL's own sessions below stay until B7-e retires the
+# engine; they are self-asserted (no cross-engine diff).
 repl() { printf '%s\n' "$@" | "$CULEBRA" --tree 2>&1; }
 
 # A nil result is not echoed. `println` writes its own line and evaluates to
@@ -47,43 +49,36 @@ out=$(repl "undefined_name" "1 + 1")
 [[ "$out" == *$'\n'"2" ]] || { echo "FAIL error recovery: $out"; fail=1; }
 
 # ---------------------------------------------------------------------------
-# The VM executor is the other tier-0 engine (`culebra --vm` with no script).
-# Every session below has to read the same on both, which is what makes the
+# The VM executor REPL (`culebra --vm` with no script). Each session below
+# asserts its own expected echo, which is what makes the
 # bytecode lane a REPL and not just a script runner: bindings that outlive the
 # line they were made on, closures that see a name a later line declares, and
 # the mutability of a name as something the session — not the line — carries.
 # ---------------------------------------------------------------------------
-parity() {
+# Each session's expected output is asserted explicitly by the caller — the
+# cross-engine diff this helper used to make retired with the tree-walker's
+# oracle duty (B7-c).
+session() {
   local label=$1; shift
-  local a b
-  a=$(printf '%s\n' "$@" | "$CULEBRA" --tree 2>&1)
-  b=$(printf '%s\n' "$@" | "$CULEBRA" --vm 2>&1)
-  if [[ "$a" != "$b" ]]; then
-    echo "FAIL vm parity [$label]"
-    diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") | sed 's/^/    /'
-    fail=1
-  fi
-  # A wrong-but-equal answer would pass the diff above, so every session ends
-  # on a line whose echo the caller can also assert.
-  printf '%s' "$a"
+  printf '%s\n' "$@" | "$CULEBRA" --vm 2>&1
 }
 
-out=$(parity echo "println('hello')" "nil" "1 + 2" "'str'" "[1, 2]" "{'k': 1}")
+out=$(session echo "println('hello')" "nil" "1 + 2" "'str'" "[1, 2]" "{'k': 1}")
 [[ "$out" == "hello"$'\n'"3"$'\n'"'str'"$'\n'"[1, 2]"$'\n'"{k: 1}" ]] ||
   { echo "FAIL vm echo: $out"; fail=1; }
 
-out=$(parity bindings "let x = 1" "x + 1" "mut m = 5" "m = m + 1" "m")
+out=$(session bindings "let x = 1" "x + 1" "mut m = 5" "m = m + 1" "m")
 [[ "$out" == "1"$'\n'"2"$'\n'"5"$'\n'"6"$'\n'"6" ]] ||
   { echo "FAIL vm bindings: $out"; fail=1; }
 
 # A redeclaration lands in the same binding, so a closure made before it reads
 # the new value — the interp's one persistent Environment, entry for entry.
-out=$(parity redeclare "mut c = 0" "let bump = fn () {" "  c = c + 1" "}" \
+out=$(session redeclare "mut c = 0" "let bump = fn () {" "  c = c + 1" "}" \
                        "bump()" "mut c = 100" "bump()" "c")
 [[ "$out" == *$'\n'"101" ]] || { echo "FAIL vm redeclare: $out"; fail=1; }
 
 # ...and a closure can name a binding no line has made yet.
-out=$(parity forward "let h = fn () { later }" "h()" "let later = 5" "h()")
+out=$(session forward "let h = fn () { later }" "h()" "let later = 5" "h()")
 [[ "$out" == *"NameError"*$'\n'"5"$'\n'"5" ]] ||
   { echo "FAIL vm forward ref: $out"; fail=1; }
 
@@ -93,7 +88,7 @@ parity mutability "mut v = 1" "v = 2" "let v = 3" "v = 4" "w = 7" "w = 8" >/dev/
 
 # `fn` overloads accumulate across lines the way they do down a statement list,
 # and a same-arity redeclaration replaces just that arm.
-out=$(parity multifn "fn f() { 1 }" "fn f(a) { 2 }" "f()" "f(1)" \
+out=$(session multifn "fn f() { 1 }" "fn f(a) { 2 }" "f()" "f(1)" \
                      "fn f() { 9 }" "f()" "f(1)")
 [[ "$out" == "1"$'\n'"2"$'\n'"9"$'\n'"2" ]] || { echo "FAIL vm multifn: $out"; fail=1; }
 
@@ -119,7 +114,7 @@ parity drop "class R {" "  new(n) { self.n = n }" "  drop() { println('DROP') }"
 # the session's cell is filled by an instruction the compiler emits where the
 # name is first mentioned, and that is inside whichever arm mentioned it — so
 # a call taking the other arm used to read an empty slot and segfault.
-out=$(parity session-branches \
+out=$(session session-branches \
       "let helper = fn () { 7 }" \
       "let pick = fn (n) { if n == 2 { return helper() }; if n == 1 { return helper() + 1 }; 0 }" \
       "pick(1)" "pick(2)")

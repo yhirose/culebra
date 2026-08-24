@@ -2,7 +2,7 @@
 # IO.stdin() reader handle — .lines() streams lines (trailing newline
 # stripped, including a final unterminated line), .read() slurps the rest,
 # .read(n) takes up to n bytes off the same shared buffer. Driven over a real
-# pipe across interp, JIT, and AOT.
+# pipe across vm, JIT, and AOT.
 #
 # This can't be a plain tests/*.cul sweep test: the sweep feeds no stdin, and
 # in an AOT binary `Sys.executable` is the program itself (so a child-driver
@@ -47,9 +47,9 @@ check() {
 LINES_IN=$'alpha\nbeta\ngamma'
 LINES_OUT='[alpha],[beta],[gamma]'
 
-# --- interpreter ---
-check "interp lines" "$LINES_IN" "$LINES_OUT" -- "$CULEBRA" --tree "$TMP/lines.cul"
-check "interp readn" "abcdefgh"  "abcd|efgh"  -- "$CULEBRA" --tree "$TMP/readn.cul"
+# --- VM executor ---
+check "vm lines" "$LINES_IN" "$LINES_OUT" -- "$CULEBRA" --vm "$TMP/lines.cul"
+check "vm readn" "abcdefgh"  "abcd|efgh"  -- "$CULEBRA" --vm "$TMP/readn.cul"
 
 # --- JIT ---
 check "jit lines" "$LINES_IN" "$LINES_OUT" -- "$CULEBRA" --jit "$TMP/lines.cul"

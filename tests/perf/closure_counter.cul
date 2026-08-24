@@ -1,5 +1,5 @@
 # Closure with mutable captured state (cell reads/writes)
-# perf: min_speedup 1.3
+# perf: min_speedup 0.85   # recalibrated B7-c: vm (not interp) is the reference lane
 make_counter = fn () {
   mut n = 0
   fn () {

@@ -1,5 +1,5 @@
 # Recursive Fibonacci (compute-bound, function calls)
-# perf: min_speedup 8.0
+# perf: min_speedup 1.7   # recalibrated B7-c: vm (not interp) is the reference lane
 fib = fn (x) {
   if x < 2 {
     x

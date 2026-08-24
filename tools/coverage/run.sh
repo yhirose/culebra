@@ -96,9 +96,10 @@ fold() {
 # it did not get to. That is how nine Canvas functions once looked like holes.
 # So: keep going, and count.
 #
-# `culebra test` without --doc is absent for a reason rather than an
-# oversight — the unit-test runner is the interpreter's, so it touches none of
-# the surface below.
+# `culebra test` without --doc runs here too since B7-c: the unit runner
+# has been the VM's since B6b (vm::Session + the shared ambient), which is
+# exactly the shared-fate surface this script measures. Its old exclusion
+# rationale ("the runner is the interpreter's") stopped being true then.
 export COV_SET=durable
 durable_runs=0 durable_bad=0
 declare -a durable_failed=()
@@ -148,6 +149,7 @@ for lane in --vm --jit; do
     tools/difftest/leak_abort_bare.d/*.cul
   echo ">>> durable: doctest ($lane)"
   note_run "doctest $lane" "$SHIM" test --doc "$lane" tests/doctest docs
+  [ "$lane" = --vm ] && note_run "culebra test $lane" "$SHIM" test "$lane" tests/culebra_test_self/
 done
 
 # The fast-codegen emitter path: same programs, a different route through the
@@ -167,7 +169,7 @@ echo ">>> durable: $durable_runs invocation(s), $durable_bad non-zero"
 export COV_SET=corpus
 echo ">>> corpus: generating"
 # The generator is not the workload: its own coverage goes to a throwaway.
-COV_SET=gen "$SHIM" --tree tools/difftest/gen.cul > "$OUT/cases.cul" ||
+COV_SET=gen "$SHIM" --vm tools/difftest/gen.cul > "$OUT/cases.cul" ||
   fail "gen.cul did not run cleanly"
 cases=$(grep -c '^_p(' "$OUT/cases.cul")
 # Same floor difftest carries. A degraded generator would otherwise show up as

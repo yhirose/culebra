@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cooperative Ctrl+C (SIGINT) behaviour, asserted identically across interp,
+# Cooperative Ctrl+C (SIGINT) behaviour, asserted identically across vm,
 # JIT, and AOT. Signal delivery can't be expressed in a plain .cul test (the
 # harness compares deterministic output), so this drives the binary, sends a
 # SIGINT mid-run, and checks the exit code + output.
@@ -290,17 +290,17 @@ check_repl() {
 # past its window and flake the exit-code assertion. Compiling first keeps the
 # concurrent phase to lightweight timing checks only.
 
-# --- interpreter ---
-run_interp_group() {
+# --- VM executor (the default engine; took the tree-walker's seat, B7-c) ---
+run_vm_group() {
   fail=0
-  check "interp uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" --tree "$TMP/uncaught.cul"
-  check "interp caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" --tree "$TMP/caught.cul"
-  check "interp iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" --tree "$TMP/iterdispose.cul"
-  check_stdin "interp stdin" -- "$CULEBRA" --tree "$TMP/stdin.cul"
-  check_http  "interp http"  -- "$CULEBRA" --tree "$TMP/http.cul"
-  check_proc  "interp proc"  -- "$CULEBRA" --tree "$TMP/proc.cul"
-  check_signotify "interp signotify" -- "$CULEBRA" --tree "$TMP/signotify.cul"
-  check_repl  "interp repl" 1.5 -- "$CULEBRA" --tree
+  check "vm uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" --vm "$TMP/uncaught.cul"
+  check "vm caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" --vm "$TMP/caught.cul"
+  check "vm iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" --vm "$TMP/iterdispose.cul"
+  check_stdin "vm stdin" -- "$CULEBRA" --vm "$TMP/stdin.cul"
+  check_http  "vm http"  -- "$CULEBRA" --vm "$TMP/http.cul"
+  check_proc  "vm proc"  -- "$CULEBRA" --vm "$TMP/proc.cul"
+  check_signotify "vm signotify" -- "$CULEBRA" --vm "$TMP/signotify.cul"
+  check_repl  "vm repl" 1.5 -- "$CULEBRA" --vm
   exit $fail
 }
 
@@ -314,8 +314,8 @@ run_jit_group() {
   check_http  "jit http"  -- "$CULEBRA" --jit "$TMP/http.cul"
   check_proc  "jit proc"  -- "$CULEBRA" --jit "$TMP/proc.cul"
   check_signotify "jit signotify" -- "$CULEBRA" --jit "$TMP/signotify.cul"
-  # No JIT REPL case: `--jit --shell` prints a note and runs the interpreter
-  # REPL, so the interp group's `check_repl` above already covers it.
+  # No JIT REPL case: `--jit` with no script runs the VM REPL, so the vm
+  # group's `check_repl` above already covers it.
   exit $fail
 }
 
@@ -348,13 +348,13 @@ run_aot_group() {
   exit $fail
 }
 
-run_interp_group > "$TMP/log.interp" 2>&1 & ip=$!
-run_jit_group    > "$TMP/log.jit"    2>&1 & jp=$!
-run_aot_group    > "$TMP/log.aot"    2>&1 & ap=$!
+run_vm_group  > "$TMP/log.vm"  2>&1 & ip=$!
+run_jit_group > "$TMP/log.jit" 2>&1 & jp=$!
+run_aot_group > "$TMP/log.aot" 2>&1 & ap=$!
 wait "$ip"; ic=$?
 wait "$jp"; jc=$?
 wait "$ap"; ac=$?
-cat "$TMP/log.interp" "$TMP/log.jit" "$TMP/log.aot"
+cat "$TMP/log.vm" "$TMP/log.jit" "$TMP/log.aot"
 [ "$ic" = 0 ] && [ "$jc" = 0 ] && [ "$ac" = 0 ] || fail=1
 
 if [ "$fail" = 0 ]; then echo "signal_test OK"; fi

@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
 # Differential test: generate the template-combinator corpus, run it under
-# every engine and diff the outputs byte-for-byte.
+# both compiled lanes and diff the outputs byte-for-byte.
 #
-# The primary comparison is `--vm` against `--jit` — the executor and the LLVM
-# lowering, the two consumers that outlive Phase 4. Both are handed the same
-# bytecode by the same compiler, so this holds the backends to each other and
-# says nothing about the compiler between them. That is what the third lane is
-# for: while the tree-walker exists it is an independently written second
-# implementation, and `--tree == --vm` is the check that answers for the
-# compiler itself. When it goes, so does that check (docs/internals/vm.md §7).
+# The comparison is `--vm` against `--jit` — the executor and the LLVM
+# lowering. Both are handed the same bytecode by the same compiler, so this
+# holds the backends to each other and says nothing about the compiler
+# between them; the answer for the compiler itself is the release-diff gate
+# (tools/difftest/release_diff.sh), where the previous release's binary is
+# the independent second opinion (docs/internals/vm.md §13.5). The
+# tree-walker used to be a third lane here until B7-c retired its oracle
+# duty.
 #
 # AOT is covered transitively — `just test` already asserts aot == jit.
-#
-# All three lanes are compared byte-for-byte. They were not always: the VM's
-# supported slice used to be partial, and a case outside it answered VmError
-# where the others answered, so that lane was walked record by record with a
-# ceiling on the skips. The slice closed in Phase 2 and the ceiling reached 0,
-# which makes a VmError here an ordinary divergence.
 #
 # Usage: tools/difftest/run.sh [culebra-binary]
 #        (binary defaults to ./build/culebra)
@@ -27,7 +22,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/corpus.sh"
 WORK="${DIFFTEST_WORK:-build/difftest}"
 
-out_interp="$WORK/out_interp.txt"
 out_jit="$WORK/out_jit.txt"
 out_vm="$WORK/out_vm.txt"
 
@@ -53,10 +47,9 @@ JOBS="${DIFFTEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 # stdout is the same rearrangement on every lane, so the byte diff stays
 # exact and the error text is still compared.
 run_one() {
-  local cf="$1" backend="$2" flag="--tree"
+  local cf="$1" backend="$2" flag="--vm"
   case "$backend" in
     j) flag="--jit" ;;
-    v) flag="--vm" ;;
   esac
   "$CULEBRA" $flag "$cf.cul" > "$cf.$backend" 2> "$cf.$backend.err"
   cat "$cf.$backend.err" >> "$cf.$backend"
@@ -64,7 +57,7 @@ run_one() {
 }
 export -f run_one; export CULEBRA
 for cf in "${chunks[@]}"; do
-  printf '%s\ti\n%s\tj\n%s\tv\n' "$cf" "$cf" "$cf"
+  printf '%s\tj\n%s\tv\n' "$cf" "$cf"
 done | xargs -P "$JOBS" -L1 bash -c 'run_one "$1" "$2"' _
 
 # Completion guard (the invariant that makes this test non-vacuous): every
@@ -74,21 +67,20 @@ done | xargs -P "$JOBS" -L1 bash -c 'run_one "$1" "$2"' _
 # backends emit the same short error, which the byte diff would otherwise wave
 # through as a lane agreeing with itself. Fail loudly instead. Concatenate in
 # chunk order so the byte diff aligns case by case.
-: > "$out_interp"; : > "$out_jit"; : > "$out_vm"
+: > "$out_jit"; : > "$out_vm"
 fail=0
 for cf in "${chunks[@]}"; do
   cc=$(grep -c '^_p(' "$cf")
-  ci=$(grep -c '' "$cf.i"); cj=$(grep -c '' "$cf.j"); cv=$(grep -c '' "$cf.v")
-  if [ "$ci" -lt "$cc" ] || [ "$cj" -lt "$cc" ] || [ "$cv" -lt "$cc" ]; then
+  cj=$(grep -c '' "$cf.j"); cv=$(grep -c '' "$cf.v")
+  if [ "$cj" -lt "$cc" ] || [ "$cv" -lt "$cc" ]; then
     echo "difftest: FAIL — chunk $(basename "$cf") did not run to completion" >&2
-    echo "  chunk_cases=$cc  interp_lines=$ci  jit_lines=$cj  vm_lines=$cv" \
+    echo "  chunk_cases=$cc  jit_lines=$cj  vm_lines=$cv" \
          "(expected >= cases)" >&2
-    echo "  --- interp tail ---" >&2; tail -3 "$cf.i" >&2
-    echo "  --- jit tail ---"    >&2; tail -3 "$cf.j" >&2
-    echo "  --- vm tail ---"     >&2; tail -3 "$cf.v" >&2
+    echo "  --- jit tail ---" >&2; tail -3 "$cf.j" >&2
+    echo "  --- vm tail ---"  >&2; tail -3 "$cf.v" >&2
     fail=1
   fi
-  cat "$cf.i" >> "$out_interp"; cat "$cf.j" >> "$out_jit"
+  cat "$cf.j" >> "$out_jit"
   cat "$cf.v" >> "$out_vm"
 done
 [ "$fail" = 0 ] || exit 1
@@ -115,8 +107,5 @@ compare_lanes() {
   return 1
 }
 
-status=0
-compare_lanes --vm --jit "$out_vm" "$out_jit" || status=1
-compare_lanes --tree --vm "$out_interp" "$out_vm" || status=1
-
-exit "$status"
+compare_lanes --vm --jit "$out_vm" "$out_jit"
+exit $?

@@ -45,8 +45,9 @@ mkdir -p "$WORK"
 # corpus cannot express "an uncaught error leaves the top-level frame". These
 # run as whole programs, with no preamble and no wrapper. A fixture leaks only
 # if leak_abort_bare_allow.txt says it may; one that stops leaking is reported
-# so the entry can be dropped. Both backends run: the audit is JIT-side, but a
-# divergence in what the two print is a bug either way.
+# so the entry can be dropped. Both compiled lanes run (the executor took the
+# tree-walker's seat in B7-c): the audit fires on either, and a divergence in
+# what the two print is a bug either way.
 BARE_ALLOW="$HERE/leak_abort_bare_allow.txt"
 bare_fail=0
 for bf in "$HERE"/leak_abort_bare.d/*.cul; do
@@ -54,13 +55,13 @@ for bf in "$HERE"/leak_abort_bare.d/*.cul; do
   name=$(basename "$bf")
   grep -qx "$name" "$BARE_ALLOW" 2>/dev/null && allowed=1 || allowed=0
   bi=$(CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1 ASAN_OPTIONS=detect_leaks=0 \
-         "$CULEBRA" --tree "$bf" 2>&1); bi_rc=$?
+         "$CULEBRA" --vm "$bf" 2>&1); bi_rc=$?
   bj=$(CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1 ASAN_OPTIONS=detect_leaks=0 \
          "$CULEBRA" --jit "$bf" 2>&1); bj_rc=$?
   # SIGABRT (134) is the audit firing; anything else is the program's own exit.
   if [ "$bj_rc" = 134 ] || [ "$bi_rc" = 134 ]; then
     if [ "$allowed" = 0 ]; then
-      echo "leak-abort-suite: FAIL — $name leaked (interp rc=$bi_rc jit rc=$bj_rc)" >&2
+      echo "leak-abort-suite: FAIL — $name leaked (vm rc=$bi_rc jit rc=$bj_rc)" >&2
       printf '%s\n' "$bj" | sed 's/^/    /' >&2
       bare_fail=1
     fi
@@ -69,7 +70,7 @@ for bf in "$HERE"/leak_abort_bare.d/*.cul; do
          "$(basename "$BARE_ALLOW")"
   elif [ "$bi" != "$bj" ] || [ "$bi_rc" != "$bj_rc" ]; then
     echo "leak-abort-suite: FAIL — $name differs between backends" >&2
-    echo "  interp (rc=$bi_rc): $bi" >&2
+    echo "  vm  (rc=$bi_rc): $bi" >&2
     echo "  jit    (rc=$bj_rc): $bj" >&2
     bare_fail=1
   fi
@@ -79,7 +80,7 @@ done
 # Generate cases, then chunk. Chunk size balances JIT compile time against the
 # per-case fallback cost (a bigger chunk clears more clean cases per process but
 # means more solo re-runs when it aborts). 471 keeps ~12 chunks over the corpus.
-if ! "$CULEBRA" --tree "$HERE/gen.cul" > "$WORK/cases.cul"; then
+if ! "$CULEBRA" --vm "$HERE/gen.cul" > "$WORK/cases.cul"; then
   echo "leak-abort-suite: FAIL — generator gen.cul did not run cleanly" >&2; exit 1
 fi
 cases=$(grep -c '^_p(' "$WORK/cases.cul")

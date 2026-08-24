@@ -68,7 +68,7 @@ CUL
 
 fail=0
 ref=""
-for backend in "--tree" "--jit"; do
+for backend in "--vm" "--jit"; do
   tag=${backend#--}
   for mode in ctrl late early; do
     shot="$work/$tag.$mode.png"

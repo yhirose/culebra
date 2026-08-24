@@ -192,7 +192,7 @@ build-no-jit:
 # contractually inside the VM slice (so a mismatch is a mismatch, not a
 # rejected construct), and compare.sh folds each lane's EXIT CODE into the
 # comparison — reading only stdout let a SEGV pass as "equal" once already
-# (see run_diff_interp_jit below).
+# (see run_diff_vm_jit below).
 [doc("Run the no-LLVM build's two engines over the VM corpus and compare")]
 [group("test")]
 test-no-jit: build-no-jit
@@ -216,7 +216,7 @@ test-no-jit: build-no-jit
         *42*) ;;
         *) echo "check failed: the no-LLVM REPL does not run on --vm"; exit 1 ;;
     esac
-    echo "no-LLVM build: --vm runs the VM corpus and agrees with --tree"
+    echo "no-LLVM build: --vm runs the VM corpus against the frozen expected outputs"
 
 # Same Release + JIT shape as `just dev`, minus -DNDEBUG, so the tree's asserts
 # actually execute. Every other lane is Release, so without this one NO build
@@ -343,22 +343,21 @@ check-preambles:
     misc/gen_preambles.sh --check
 
 # Run the test suite. BACKEND selects what to run:
-#   all     (default) — interp vs JIT diff + AOT vs JIT diff + C++
+#   all     (default) — vm vs JIT diff + AOT vs JIT diff + C++
 #                       embedding smoke. Run before every commit.
-#   interp            — every tests/*.cul on the tree-walking interp.
 #   jit               — every tests/*.cul on the LLVM ORC JIT.
 #   aot               — every tests/*.cul through `culebra build`,
 #                       assert stdout matches `--jit`.
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 #   wrap              — `culebra wrap` end-to-end (rebuilds the tree).
 # The single-backend modes are for focused debugging.
-[doc("Full gate (no-LTO gate build). BACKEND=all|fast|interp|jit|aot|embed|isolate|wrap (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner); CULEBRA_TEST_WRAP=1 adds the wrap lane (CI runs it as its own lane instead).")]
+[doc("Full gate (no-LTO gate build). BACKEND=all|fast|jit|aot|embed|isolate|wrap (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner); CULEBRA_TEST_WRAP=1 adds the wrap lane (CI runs it as its own lane instead).")]
 [group("test")]
 test BACKEND='all': check-generated build-gate
     @BIN=./build-gate/culebra {{lock_cmd}} just _run-tests {{BACKEND}}
 
 # Fast inner-loop tests against the no-LTO build-dev/ binary (`just dev`).
-# Runs only the phases that don't need LTO/AOT/embed exes: the interp==JIT
+# Runs only the phases that don't need LTO/AOT/embed exes: the vm==JIT
 # symmetry sweep + culebra-test self + isolate (BACKEND=fast, the default).
 # Run this after each edit; `just test` is the heavier pre-commit gate.
 # check-generated runs ahead of the build: `just land` runs this recipe as its
@@ -367,15 +366,15 @@ test BACKEND='all': check-generated build-gate
 # generated too, but its check parses the reference with culebra itself, so it
 # runs after the build instead of inside check-generated (0.7s; a stale index
 # reached master without it).
-[doc("Fast inner-loop tests vs build-dev/ (no LTO). BACKEND=fast|interp|jit|isolate (default: fast).")]
+[doc("Fast inner-loop tests vs build-dev/ (no LTO). BACKEND=fast|jit|isolate (default: fast).")]
 [group("test")]
 test-dev BACKEND='fast': check-generated dev
-    @./build-dev/culebra --tree misc/gen_quick_guide.cul --check
+    @./build-dev/culebra --vm misc/gen_quick_guide.cul --check
     @BIN=./build-dev/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
 
 # The same sweep as test-dev against the assert-enabled binary (`just
 # build-assert`). Not part of `just test`; Ubuntu CI runs it as linux-assert.
-[doc("Tests vs an assert-enabled build (no NDEBUG). BACKEND=fast|interp|jit|isolate (default: fast).")]
+[doc("Tests vs an assert-enabled build (no NDEBUG). BACKEND=fast|jit|isolate (default: fast).")]
 [group("test")]
 test-assert BACKEND='fast': build-assert
     @BIN=./build-assert/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
@@ -458,19 +457,6 @@ _run-tests BACKEND:
         collect_failures "$d" "$label"
     }
 
-    run_interp() {
-        local d="$job_dir/interp"
-        mkdir -p "$d"
-        printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
-            f="$1"; d="$2"
-            name=$(basename "$f" .cul)
-            if ! cul --tree "$f" > "$d/$name.out" 2> "$d/$name.err"; then
-                touch "$d/$name.fail"
-            fi
-        ' _ '{}' "$d"
-        collect_results "$d" "interp"
-    }
-
     run_jit() {
         local d="$job_dir/jit"
         mkdir -p "$d"
@@ -489,75 +475,53 @@ _run-tests BACKEND:
     # the slowest file that is 27 s of JIT compile paid twice.
     jit_out="$job_dir/jit-out"
 
-    run_diff_interp_jit() {
+    run_diff_vm_jit() {
         local d="$job_dir/diff"
         mkdir -p "$d" "$jit_out"
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"; jit_out="$3"
             name=$(basename "$f" .cul)
-            out_interp=$(cul --tree "$f" 2> "$d/$name.interp.err") || \
-                { touch "$d/$name.fail"; echo "interp crashed for $f:" > "$d/$name.err"; \
-                  cat "$d/$name.interp.err" >> "$d/$name.err"; exit 0; }
-            out_jit=$(cul --jit "$f" 2> "$d/$name.jit.err") || \
-                { touch "$d/$name.fail"; echo "jit crashed for $f:" > "$d/$name.err"; \
-                  cat "$d/$name.jit.err" >> "$d/$name.err"; exit 0; }
-            # Only a run that agreed with interp is worth reusing; a mismatch
-            # fails the gate here anyway.
-            if [[ "$out_interp" == "$out_jit" ]]; then
-                printf "%s" "$out_jit" > "$jit_out/$name.txt"
+            # The executor is the reference lane (the default engine; the
+            # tree-walker oracle seat retired in B7-c — behavior intent is
+            # answered by suite assertions and the release-diff gate). A nonzero exit is a failure in its own right: reading
+            # only stdout let an uncaught throw — and a SEGV — pass as
+            # "equal" whenever the file printed nothing.
+            out_vm=$(cul --vm "$f" 2> "$d/$name.vm.err"); rc_vm=$?
+            if [[ "$rc_vm" -ne 0 ]]; then
+                { echo "--vm failed for $f (rc=$rc_vm):"; \
+                  cat "$d/$name.vm.err"; } > "$d/$name.err"
+                touch "$d/$name.fail"; exit 0
             fi
-            if [[ "$out_interp" != "$out_jit" ]]; then
+            out_jit=$(cul --jit "$f" 2> "$d/$name.jit.err"); rc_jit=$?
+            if [[ "$rc_jit" -ne 0 ]]; then
+                { echo "--jit failed for $f (rc=$rc_jit):"; \
+                  cat "$d/$name.jit.err"; } > "$d/$name.err"
+                touch "$d/$name.fail"; exit 0
+            fi
+            if [[ "$out_vm" != "$out_jit" ]]; then
                 {
-                    echo "interpreter and JIT outputs differ for $f:"
-                    diff <(printf "%s" "$out_interp") <(printf "%s" "$out_jit") || true
+                    echo "--vm and --jit outputs differ for $f:"
+                    diff <(printf "%s" "$out_vm") <(printf "%s" "$out_jit") || true
                 } > "$d/$name.err"
                 touch "$d/$name.fail"
                 exit 0
             fi
-            # The bytecode executor on the same file. The format has one other
-            # consumer, the LLVM lowering, which is what --jit above just ran.
-            # Matching interp is a pass however it was reached, so the slice
-            # question is only asked about a MISMATCH: a construct outside the
-            # slice is a skip (the poisoned chunk says so when a call reaches
-            # it, or the compiler said so statically and the dump shows an
-            # `(unsupported)` slot), anything else is a failure exactly as the
-            # JIT would be. Asking only on mismatch keeps the common file to
-            # one extra run instead of a dump as well.
-            #
-            # A nonzero exit is a mismatch in its own right, not just a
-            # different stdout: an out-of-slice reject leaves rc!=0 too, which
-            # is why the skip question is asked the same way for both. Reading
-            # only stdout let an uncaught throw — and a SEGV — pass as "equal"
-            # whenever the file printed nothing (test_args, test_forward_ref
-            # and test_conditional_decl were all silently green that way).
-            vm_skipped() {
-                grep -q -- "--vm: unsupported:" "$1" && return 0
-                cul --vm-dump "$f" 2>/dev/null | grep -q "(unsupported)"
-            }
-            err="$d/$name.vm.err"
-            out_vm=$(cul --vm "$f" 2> "$err"); rc_vm=$?
-            if [[ "$out_interp" != "$out_vm" || "$rc_vm" -ne 0 ]] \
-                   && ! vm_skipped "$err"; then
-                {
-                    echo "interpreter and --vm differ for $f (rc=$rc_vm):"
-                    diff <(printf "%s" "$out_interp") <(printf "%s" "$out_vm") || true
-                    [[ -s "$err" ]] && { echo "--- --vm stderr ---"; cat "$err"; }
-                } > "$d/$name.err"
-                touch "$d/$name.fail"
-            fi
+            # Only an agreed run is worth reusing (run_aot rereads it); a
+            # mismatch fails the gate here anyway.
+            printf "%s" "$out_jit" > "$jit_out/$name.txt"
         ' _ '{}' "$d" "$jit_out"
-        if ! collect_results "$d" "(interp vs jit vs VM)"; then
-            echo "test (interp vs jit vs VM) FAIL" >&2
+        if ! collect_results "$d" "(vm vs jit)"; then
+            echo "test (vm vs jit) FAIL" >&2
             exit 1
         fi
-        echo "test (interp vs jit vs VM) OK"
+        echo "test (vm vs jit) OK"
     }
 
     # Guard the non-default JIT codegen paths (--jit -O0 = unoptimized IR over
     # the default optimizing backend, --jit-faststart = neither optimizer)
     # against the malformed-Value class of bug that O2 silently legalizes but
     # those paths abort or miscompile on (see
-    # tests/test_forin_codegen.cul). Behavior must equal interp on every
+    # tests/test_forin_codegen.cul). Behavior must equal --vm on every
     # backend. Cheap: a handful of codegen-sensitive files, not the corpus.
     # Files are chosen for IR shapes that stress the unoptimized backend:
     # for-in tag handling, phi merges (cond/match), destructure, invoke/unwind
@@ -596,10 +560,10 @@ _run-tests BACKEND:
             # Both sides capture stderr. Comparing a stderr-inclusive run
             # against a stderr-free one makes anything the wrapper writes there
             # (nice reporting it cannot setpriority, say) read as a codegen
-            # mismatch on every file; and stderr is half of what interp/JIT
+            # mismatch on every file; and stderr is half of what lane
             # symmetry is about, so it belongs in the comparison anyway.
-            ref=$(cul --tree "$f" 2>&1) || {
-                echo "interp failed: $f" > "$d/$name.err"; touch "$d/$name.fail"; exit 0
+            ref=$(cul --vm "$f" 2>&1) || {
+                echo "--vm failed: $f" > "$d/$name.err"; touch "$d/$name.fail"; exit 0
             }
             got=$(cul $flags "$f" 2>&1) || {
                 echo "FAIL ($flags aborted): $f" > "$d/$name.err"
@@ -607,7 +571,7 @@ _run-tests BACKEND:
             }
             if [[ "$got" != "$ref" ]]; then
                 {
-                    echo "FAIL ($flags != interp): $f"
+                    echo "FAIL ($flags != --vm): $f"
                     diff <(printf "%s" "$ref") <(printf "%s" "$got") || true
                 } > "$d/$name.err"
                 touch "$d/$name.fail"
@@ -733,34 +697,42 @@ _run-tests BACKEND:
 
     # Exercises `culebra test`-only ambient bindings (matchers, DI,
     # @parametrize). The subdir layout keeps these out of the
-    # `tests/*.cul` glob that direct interp/JIT runs use.
+    # `tests/*.cul` glob that the vm/jit sweep uses.
     run_culebra_test_self() {
-        # Both tier-0 lanes over both suites and both reporters, held to the
-        # same output AND the same exit code. `test` / `parametrize` are one
-        # culebra source either way (src/preambles/test_ambient.cul), so a
-        # difference here is the engine's, not the ambient's. The throw suite
-        # fails by design, which is why the status is compared rather than
-        # required to be zero.
-        local tree_out vm_out tree_rc vm_rc
+        # The unit runner on its own suites, both reporters. The runner's
+        # `test` / `parametrize` are one culebra source
+        # (src/preambles/test_ambient.cul); the cross-engine comparison this
+        # phase used to make retired with the tree-walker's oracle duty
+        # (B7-c), so what remains is the runner's structural contract: the
+        # human reporter exits 0/1 as the suite dictates, and the JSON
+        # reporter's records are checked below. The throw suite fails by
+        # design, which is why the status is captured rather than required
+        # to be zero.
+        local vm_out vm_rc
         local self_json="" throw_json=""
         for suite in culebra_test_self culebra_test_throw_self; do
             for rep in "" "--reporter json"; do
                 # `|| rc=$?`, not a bare assignment: `set -e` would abort on
                 # the throw suite, which fails by design.
-                tree_rc=0 vm_rc=0
-                tree_out=$(cul test --tree $rep "tests/$suite/" 2>&1) || tree_rc=$?
+                vm_rc=0
                 vm_out=$(cul test --vm $rep "tests/$suite/" 2>&1) || vm_rc=$?
-                if [[ "$tree_out" != "$vm_out" || "$tree_rc" != "$vm_rc" ]]; then
-                    echo "culebra test: --tree and --vm disagree on $suite $rep" \
-                         "(rc $tree_rc vs $vm_rc)" >&2
-                    diff <(printf '%s\n' "$tree_out") \
-                         <(printf '%s\n' "$vm_out") | head -20 >&2
-                    exit 1
-                fi
+                case "$suite" in
+                    culebra_test_self)
+                        if [[ "$vm_rc" != 0 ]]; then
+                            echo "culebra test: self suite failed (rc $vm_rc)" >&2
+                            printf '%s\n' "$vm_out" | tail -20 >&2
+                            exit 1
+                        fi ;;
+                    *)
+                        if [[ "$vm_rc" == 0 ]]; then
+                            echo "culebra test: throw suite unexpectedly passed" >&2
+                            exit 1
+                        fi ;;
+                esac
                 [[ -n "$rep" ]] || continue
                 case "$suite" in
-                    culebra_test_self) self_json=$tree_out ;;
-                    *) throw_json=$tree_out ;;
+                    culebra_test_self) self_json=$vm_out ;;
+                    *) throw_json=$vm_out ;;
                 esac
             done
         done
@@ -781,7 +753,7 @@ _run-tests BACKEND:
         esac
     }
 
-    # Isolate tests live in a subdir kept out of the `tests/*.cul` interp-vs-JIT
+    # Isolate tests live in a subdir kept out of the `tests/*.cul` vm-vs-JIT
     # diff glob. Every file runs under all three engines: Isolate.spawn,
     # Channel, and Parallel are symmetric across backends now, including the
     # files named without a `_jit` suffix (the surface that was interp-only
@@ -796,10 +768,8 @@ _run-tests BACKEND:
         local d="$job_dir/isolate"
         mkdir -p "$d"
         {
-            printf 'interp %s\n' tests/isolate/*.cul
             printf 'jit %s\n' tests/isolate/*.cul
             printf 'vm %s\n' tests/isolate/*.cul
-            printf 'overcap-interp %s\n' tests/isolate/test_spawn_overcap*.cul
             printf 'overcap-jit %s\n' tests/isolate/test_spawn_overcap*.cul
             printf 'overcap-vm %s\n' tests/isolate/test_spawn_overcap*.cul
         } | xargs -P "$(( JOBS < 4 ? JOBS : 4 ))" -I '{}' bash -c '
@@ -807,8 +777,7 @@ _run-tests BACKEND:
             name=$(basename "$f" .cul).$mode
             case "$mode" in
                 jit|overcap-jit) flag=--jit ;;
-                vm|overcap-vm)   flag=--vm ;;
-                *)               flag=--tree ;;
+                *)               flag=--vm ;;
             esac
             [[ $mode == overcap-* ]] && export CULEBRA_ISOLATE_LIMIT=1
             cul $flag "$f" > /dev/null 2> "$d/$name.err" || {
@@ -817,12 +786,12 @@ _run-tests BACKEND:
             }
         ' _ '{}' "$d"
         collect_failures "$d" "isolate" || exit 1
-        echo "test isolate OK (interp + jit + VM executor)"
+        echo "test isolate OK (jit + VM executor)"
     }
 
     # Differential corpus: generate the template-combinator programs and
-    # diff interp vs JIT byte-for-byte (tools/difftest). Complements the
-    # per-file run_diff_interp_jit above with systematic seam coverage.
+    # diff --vm vs --jit byte-for-byte (tools/difftest). Complements the
+    # per-file run_diff_vm_jit above with systematic seam coverage.
     # run.sh exits non-zero on any divergence, which aborts `test`.
     # `culebra wrap` end-to-end: extended binary from the examples/wrap
     # declaration, interp==jit==AOT on the wrapped class. Rebuilds the
@@ -845,8 +814,8 @@ _run-tests BACKEND:
     run_release_diff_selftest() {
         tools/difftest/release_diff_selftest.sh || exit 1
     }
-    # VM three-lane parity (tools/bench/vm_cases): the curated bytecode-VM
-    # corpus, interp vs --vm vs --jit, then the same sweep with
+    # vm_cases (tools/bench/vm_cases): the curated bytecode-VM corpus, both
+    # compiled lanes against the frozen expected outputs, then the same sweep with
     # collect-on-every-allocation. The corpus holds only programs inside the
     # VM slice, so a VmError here is an output mismatch — a slice regression
     # fails the gate instead of skipping. Quiet on success (the scripts print
@@ -857,7 +826,7 @@ _run-tests BACKEND:
             || { printf '%s\n' "$out"; exit 1; }
         out="$(STRESS=1 ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
             || { printf '%s\n' "$out"; exit 1; }
-        echo "vm_cases OK (interp == --vm == --jit, + GC_STRESS)"
+        echo "vm_cases OK (both lanes == frozen expected, + GC_STRESS)"
     }
     # Leak-fuzz: rerun the same corpus under CULEBRA_GC_NEVER and fail on any
     # JIT RC leak not already in tools/difftest/leak_baseline.txt. A regression
@@ -945,11 +914,12 @@ _run-tests BACKEND:
     run_long_width() { bash tools/check_long_width.sh; }
     run_flow_discipline() { bash tools/check_flow_discipline.sh; }
 
-    # Dispatch-tag symmetry gate: the AST tag sets handled by the interp
-    # _eval_dispatch and the JIT compile() switches must stay equal, so a
-    # grammar node added to one walker but not the other fails here instead
-    # of becoming a one-backend bug (tools/check_dispatch_symmetry.sh).
-    run_dispatch_symmetry() { bash tools/check_dispatch_symmetry.sh; }
+    # Include-closure ratchet: the compiled lanes' headers must not reach the
+    # tree-walker's, directly or through a carrier header — the B7-b cut
+    # stays cut (tools/check_interp_includes.sh). The old dispatch-symmetry
+    # gate (eval_X vs compile_X tag sets) retired with the interp's oracle
+    # duty in B7-c: with one AST consumer left, an unhandled tag is a plain
+    # compile error the suites hit, not a two-walker drift channel.
     run_interp_includes() { bash tools/check_interp_includes.sh; }
 
     # Iterator wiring ratchet: terminals drive through JitIterDrive (which
@@ -1018,7 +988,6 @@ _run-tests BACKEND:
         phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
         phase "long width (language values are int64_t, not long)"; run_long_width
         phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
-        phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
         phase "interp includes (compiled lanes stay interp-free)"; run_interp_includes
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
         phase "rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)"; run_rt_keep_scope
@@ -1037,9 +1006,9 @@ _run-tests BACKEND:
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
-        phase "interp/jit/VM symmetry (real test files)"; run_diff_interp_jit
-        phase "vm_cases (three-lane VM parity)"; run_vm_cases
-        phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
+        phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
+        phase "vm_cases (frozen expected outputs)"; run_vm_cases
+        phase "codegen backends (-O0, fast vs --vm)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (generated corpus)"; run_difftest; }
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-fuzz (corpus RC-leak regression)"; run_leak_fuzz; }
         phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
@@ -1048,7 +1017,7 @@ _run-tests BACKEND:
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery; }
         phase "ctest (embedding smokes)"; run_embed
         phase "culebra-test self"; run_culebra_test_self
-        phase "isolate (interp + jit + VM)"; run_isolate
+        phase "isolate (jit + VM)"; run_isolate
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "AOT (== jit)"; run_aot; }
         # Opt-in rather than skip-by-flag: wrap rebuilds the whole tree, which
         # doubled this gate, and only a wrap/CMake/AOT change can break it.
@@ -1057,7 +1026,7 @@ _run-tests BACKEND:
         [[ -z "${CULEBRA_TEST_WRAP:-}" ]] || { phase "wrap (extended binary, 3 backends)"; run_wrap_test; }
         phase "done"; echo "test OK"
         ;;
-      # Inner-loop core: the interp==JIT correctness invariant plus the two
+      # Inner-loop core: the vm==JIT correctness invariant plus the two
       # cheap symmetric suites. No difftest/AOT/embed, so it runs against the
       # no-LTO build-dev/ binary too (see `test-dev`). This is the green-light
       # check after a single edit; `all` is the pre-commit gate.
@@ -1066,13 +1035,12 @@ _run-tests BACKEND:
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
-        phase "interp/jit/VM symmetry (real test files)"; run_diff_interp_jit
-        phase "vm_cases (three-lane VM parity)"; run_vm_cases
+        phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
+        phase "vm_cases (frozen expected outputs)"; run_vm_cases
         phase "culebra-test self"; run_culebra_test_self
-        phase "isolate (interp + jit + VM)"; run_isolate
+        phase "isolate (jit + VM)"; run_isolate
         phase "done"; echo "test OK (fast)"
         ;;
-      interp) run_interp; run_isolate ;;
       jit)    run_jit ;;
       aot)    run_aot ;;
       embed)  run_embed ;;
@@ -1101,12 +1069,12 @@ _run-tests BACKEND:
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
-        phase "interp/jit/VM symmetry (real test files)"; run_diff_interp_jit
-        phase "vm_cases (three-lane VM parity)"; run_vm_cases
-        phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
+        phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
+        phase "vm_cases (frozen expected outputs)"; run_vm_cases
+        phase "codegen backends (-O0, fast vs --vm)"; run_codegen_backends
         phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
         phase "culebra-test self"; run_culebra_test_self
-        phase "isolate (interp + jit + VM)"; run_isolate
+        phase "isolate (jit + VM)"; run_isolate
         phase "done"; echo "test OK (ci-light)"
         ;;
       ci-diff)
@@ -1120,14 +1088,14 @@ _run-tests BACKEND:
         phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery
         phase "done"; echo "test OK (ci-leak)"
         ;;
-      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|interp|jit|aot|embed|isolate|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
+      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|jit|aot|embed|isolate|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
     esac
 
 # Run the doctest examples in the public docs on all three engines. Both en
 # and ja are run — their code blocks are mostly shared but a few string
 # literals are localized, so ja needs its own pass. Not part of `just test` —
 # run on demand / before publishing docs. The self-test fixture under
-# tests/doctest/ guards the runner itself. LANE=interp|vm|jit|all (default
+# tests/doctest/ guards the runner itself. LANE=vm|jit|all (default
 # all); the JIT lane costs ~1 min (one LLVM module per block) against ~2s for
 # the other two, and every block is an example a reader will run, so all three
 # have to agree on what it prints.
@@ -1142,11 +1110,10 @@ doctest LANE="all": build
       ./build/culebra test --doc "$@" tests/doctest docs | tail -1
     }
     case "{{LANE}}" in
-      interp) run_lane interp --tree ;;
       vm)     run_lane vm --vm ;;
       jit)    run_lane jit --jit ;;
-      all)    run_lane interp --tree; run_lane vm --vm; run_lane jit --jit ;;
-      *) echo "doctest: unknown lane '{{LANE}}' (expected: interp|vm|jit|all)" >&2; exit 2 ;;
+      all)    run_lane vm --vm; run_lane jit --jit ;;
+      *) echo "doctest: unknown lane '{{LANE}}' (expected: vm|jit|all)" >&2; exit 2 ;;
     esac
 
 # Rewrite the signature index inside docs/quick-guide.md and
@@ -1156,18 +1123,18 @@ doctest LANE="all": build
 [doc("Regenerate the signature index in docs/quick-guide.md (en+ja)")]
 [group("docs")]
 gen-quick-guide: build
-    ./build/culebra --tree misc/gen_quick_guide.cul
+    ./build/culebra --vm misc/gen_quick_guide.cul
 
 [doc("Fail if docs/quick-guide.md's signature index is stale")]
 [group("docs")]
 check-quick-guide: build
-    ./build/culebra --tree misc/gen_quick_guide.cul --check
+    ./build/culebra --vm misc/gen_quick_guide.cul --check
 
 # Differential test: generate the template-combinator corpus (tools/difftest)
-# and assert --vm == --jit == --tree byte-for-byte over every case. Enumerates
+# and assert --vm == --jit byte-for-byte over every case. Enumerates
 # the full current divergence population in one run; exits non-zero on any
 # asymmetry. AOT is covered transitively (`just test` asserts aot == jit).
-[doc("Differential test over the generated corpus (--vm vs --jit vs --tree)")]
+[doc("Differential test over the generated corpus (--vm vs --jit)")]
 [group("test")]
 difftest: build
     tools/difftest/run.sh ./build/culebra
@@ -1246,15 +1213,15 @@ leak-abort-suite-update: build-gate
 perf: build
     ./tests/perf/run.sh
 
-# Smoke: run microgpt 5 training steps (no inference) on both backends
-# to catch regressions in the JIT value-ownership / special-method
+# Smoke: run microgpt 5 training steps (no inference) on both compiled
+# lanes to catch regressions in the value-ownership / special-method
 # dispatch paths that the unit tests don't exercise at scale.
-[doc("Run microgpt 5 training steps on both backends (large-scale JIT smoke)")]
+[doc("Run microgpt 5 training steps on both compiled lanes (large-scale smoke)")]
 [group("bench")]
 smoke-microgpt: build fetch-names
-    ./build/culebra --tree benchmarks/microgpt/microgpt.cul 5 0 > /dev/null
+    ./build/culebra --vm benchmarks/microgpt/microgpt.cul 5 0 > /dev/null
     ./build/culebra --jit benchmarks/microgpt/microgpt.cul 5 0 > /dev/null
-    @echo "smoke-microgpt OK: 5 steps completed on both backends"
+    @echo "smoke-microgpt OK: 5 steps completed on both compiled lanes"
 
 # Opens a real window, so it is out of `just test` (and out of tests/*.cul,
 # which that sweeps) — but the window backend is the one thing CI cannot fully
