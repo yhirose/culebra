@@ -1327,8 +1327,8 @@ inline ArityBounds builtin_arity_bounds(const std::vector<P>& params) {
 // so a built-in never accepts one. Both backends gate on this, which is what
 // keeps a built-in's keyword surface inside what the JIT's per-method codegen
 // can bind statically.
-template <class P>
-inline bool builtin_method_accepts_keyword(const std::vector<P>& params,
+template <class Ps>  // any range of parameters (vector / span)
+inline bool builtin_method_accepts_keyword(const Ps& params,
                                            std::string_view name) {
   for (const auto& p : params)
     if (p.kw_only && p.name == name) return true;

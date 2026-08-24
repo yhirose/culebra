@@ -19,6 +19,16 @@ lock_cmd := justfile_directory() / "misc/one_at_a_time.sh"
 # Compiler for the one tool built outside CMake (tools/gen_grammar_blob.cc).
 blob_cxx := if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else { env_var_or_default("CXX", "c++") }
 
+# Compiler pair for the signature-table generator (tools/gen_canon_sigs.cc),
+# whose TU is the full interp + JIT-runtime header stack and needs the same
+# C++23 surface the main build uses — the bare `c++` may be too old (this is
+# why it doesn't just reuse blob_cxx).
+canon_cxx := if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else if path_exists("/usr/bin/g++-14") == "true" { "g++-14" } else { env_var_or_default("CXX", "c++") }
+canon_cc := if path_exists("/usr/bin/gcc-14") == "true" { "gcc-14" } else { env_var_or_default("CC", "cc") }
+# macOS: OpenSSL is keg-only, so the generator needs Homebrew's paths spelled.
+canon_ssl_flags := if path_exists("/opt/homebrew/opt/openssl@3/include") == "true" { "-I /opt/homebrew/opt/openssl@3/include" } else { "" }
+canon_ssl_ldflags := if path_exists("/opt/homebrew/opt/openssl@3/lib") == "true" { "-L /opt/homebrew/opt/openssl@3/lib" } else { "" }
+
 # Share ccache entries between worktrees of the same commit: every -I CMake
 # generates is an absolute path into this checkout, so without a base_dir each
 # new worktree pays a full cold build. Only sound while no cacheable TU bakes in
@@ -110,6 +120,34 @@ gen-blob: _gen-blob-tool
 check-blob: _gen-blob-tool
     ./build-dev/gen_grammar_blob --check include/grammar_blob.h
 
+# Signature-table generator (include/canon_sigs.gen.h). The TU includes the
+# whole interp + JIT-runtime stack and MUST be compiled with the full feature
+# set (HTTP + SQLite) so the emitted table is the superset every build
+# configuration can serve from — a binary built without a feature never looks
+# its rows up. Compile and link separately for ccache, like _gen-blob-tool.
+# The include dirs / defines / link libs mirror what CMakeLists resolves for
+# the main target (kept by hand so check-generated stays CMake-free) — a
+# vendored-dir move or feature-flag rename must be applied here too.
+[private]
+_gen-canon-sigs-tool:
+    mkdir -p build-dev
+    ccache=$(command -v ccache || true); $ccache "{{canon_cxx}}" -std=c++23 -O0 -DCULEBRA_HTTP_ENABLED -DCPPHTTPLIB_OPENSSL_SUPPORT -DCULEBRA_SQLITE_ENABLED -I include -I vendor/cpp-peglib -I vendor/cpp-linenoise -I vendor/cpp-unicodelib -I vendor/cpp-regexlib -I vendor/cpp-httplib -I vendor/stb -I vendor/cpp-tensorlib/include -I vendor/sqlite {{canon_ssl_flags}} -c tools/gen_canon_sigs.cc -o build-dev/gen_canon_sigs.o
+    ccache=$(command -v ccache || true); $ccache "{{canon_cc}}" -O1 -I vendor/sqlite -c vendor/sqlite/sqlite3.c -o build-dev/gen_canon_sigs_sqlite3.o
+    "{{canon_cxx}}" build-dev/gen_canon_sigs.o build-dev/gen_canon_sigs_sqlite3.o -o build-dev/gen_canon_sigs {{canon_ssl_ldflags}} -lssl -lcrypto -lz -lpthread -ldl
+
+# Regenerate include/canon_sigs.gen.h — the canonical native/built-in
+# signature tables the compiled lanes bind and diagnose against. Run after
+# changing any stdlib signature (a parameter, a default, a return type).
+# `just check-canon-sigs` is the gate that catches a stale table.
+[group("build")]
+gen-canon-sigs: _gen-canon-sigs-tool
+    ./build-dev/gen_canon_sigs include/canon_sigs.gen.h
+
+# Verify include/canon_sigs.gen.h is in sync with the stdlib (CI gate).
+[group("build")]
+check-canon-sigs: _gen-canon-sigs-tool
+    ./build-dev/gen_canon_sigs --check include/canon_sigs.gen.h
+
 # Every built-in method name reaches the differential corpus (tools/difftest).
 [group("build")]
 [doc("Verify the difftest corpus applies every built-in method name")]
@@ -124,10 +162,11 @@ check-release-coverage:
     tools/check_release_covered_by_ci.sh
 
 # Every committed file a generator produces, checked against its source, plus
-# the workflow-coverage ratchet. Needs no build, and costs ~0.7 s — cheap
-# enough to gate both test recipes.
+# the workflow-coverage ratchet. Cheap enough to gate both test recipes:
+# ~0.7 s once the two generator tools are ccache-warm (canon-sigs adds a
+# ~50 s one-time cold compile after a header change in its include stack).
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage
+check-generated: check-grammar-sync check-preambles check-blob check-canon-sigs check-site-version check-difftest-coverage check-release-coverage
 
 # Such a build still has two engines — the tree-walker and the bytecode VM's
 # executor — because everything below the LLVM lowering (rt.h, vm.h) is

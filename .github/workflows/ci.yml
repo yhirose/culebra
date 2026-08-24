@@ -106,6 +106,12 @@ jobs:
       - name: Check grammar blob sync (grammar_def.h -> grammar_blob.h)
         run: just check-blob
 
+      # The canonical signature tables the compiled lanes bind against —
+      # regenerated from the stdlib's own parameter lists; a stale table means
+      # a signature edit that no lane's binder sees.
+      - name: Check canonical signature sync (stdlib -> canon_sigs.gen.h)
+        run: just check-canon-sigs
+
       # Regenerating the served page needs emsdk, which no runner has, so a
       # version bump can land with it still naming the old version.
       - name: Check Playground version sync (culebra.h -> site/playground)

@@ -1,23 +1,22 @@
 #pragma once
 
-// What the interp's own parameter tables say a built-in method's signature is,
+// What the canonical signature tables say a built-in method's signature is,
 // and whether a given call site binds against it. Read at compile time by
 // vm::Compiler, which bakes the verdict into the chunk so both compiled lanes
-// raise the same diagnostic; nothing here touches LLVM, so it sits beside the
-// runtime layer rather than inside the JIT, and one copy of the interp binder's
-// rules serves the whole front end.
+// raise the same diagnostic. The data is canon_sigs.h — generated from the
+// tree-walker's own parameter tables while both engines existed — so one copy
+// of the binder's rules serves the whole front end; nothing here touches LLVM.
 
-#include <interpreter.h>  // the builtin tables, FunctionValue, IterBuiltin
+#include <canon_sigs.h>   // CanonSig / the per-receiver signature tables
 #include <rt.h>           // the TAG_* receiver tags (jit_value.h)
-#include <parser.h>       // ArgScan, scan_arg_list, builtin_arity_bounds
+#include <parser.h>       // ArgScan, scan_arg_list
 #include <shared.h>       // the arity / kwargs error message builders
 
 #include <algorithm>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
-#include <type_traits>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -25,62 +24,38 @@ namespace culebra {
 
 // Value-typed receiver tags paired with their builtin method table —
 // the single source for both the arity check and the iterator-method
-// receiver gate. `builtins()` returns a function-local static, so
-// throwaway instances suffice and the table pointers outlive them;
-// built once.
-using BuiltinTable = std::unordered_map<std::string_view, Value>;
+// receiver gate.
+using BuiltinTable = CanonSigTable;
 inline const std::vector<std::pair<int8_t, const BuiltinTable*>>&
 builtin_value_tables() {
-  static const std::vector<std::pair<int8_t, const BuiltinTable*>> tables =
-      [] {
-        ArrayValue arr;
-        TensorValue ten{nullptr};
-        return std::vector<std::pair<int8_t, const BuiltinTable*>>{
-            {TAG_ARRAY, &arr.builtins()},
-            {TAG_STRING, &string_builtins()},
-            {TAG_STRINGVIEW, &string_builtins()},
-            {TAG_SET, &set_builtins()},
-            {TAG_TUPLE, &tuple_builtins()},
-            {TAG_TENSOR, &ten.builtins()},
-        };
-      }();
+  static const std::vector<std::pair<int8_t, const BuiltinTable*>> tables{
+      {TAG_ARRAY, &canon_array_sigs()},
+      {TAG_STRING, &canon_string_sigs()},
+      {TAG_STRINGVIEW, &canon_string_sigs()},
+      {TAG_SET, &canon_set_sigs()},
+      {TAG_TUPLE, &canon_tuple_sigs()},
+      {TAG_TENSOR, &canon_tensor_sigs()},
+  };
   return tables;
 }
 
 // The dict table — the builtins any Object receiver resolves
-// (keys/has/size/...). Same throwaway-instance reasoning as above.
+// (keys/has/size/...).
 inline const BuiltinTable* dict_builtin_table() {
-  static const BuiltinTable* table = [] {
-    ObjectValue o;
-    return &o.builtins();
-  }();
-  return table;
+  return &canon_object_sigs();
 }
 
-// The declared parameters of `method` in one builtin table, or null when
-// that table has no Function-valued entry of the name. Generic over the
-// mapped type: the value tables map to Value, iterator_builtins() to
-// IterBuiltin{fn, kind}.
-template <class Table>
-inline const std::vector<FunctionValue::Parameter>* builtin_method_params(
-    const Table& tbl, const std::string& method) {
+// The declared signature of `method` in one builtin table, or null when the
+// table has no entry of the name.
+inline const CanonSig* builtin_method_sig(const BuiltinTable& tbl,
+                                          const std::string& method) {
   auto it = tbl.find(method);
-  if (it == tbl.end()) return nullptr;
-  const Value& fnv = [&]() -> const Value& {
-    if constexpr (std::is_same_v<std::decay_t<decltype(it->second)>,
-                                 IterBuiltin>) {
-      return it->second.fn;
-    } else {
-      return it->second;
-    }
-  }();
-  if (fnv.type != Value::Function) return nullptr;
-  return fnv.get<FunctionValue>().params.get();
+  return it == tbl.end() ? nullptr : it->second;
 }
 
 // What a builtin table does with `method` for a given argument shape: it
 // does not have the name (Absent), it binds cleanly (Valid), or it raises
-// (Error). The single reader of the interp's own parameter lists, so no
+// (Error). The single reader of the canonical parameter lists, so no
 // compiled lane can answer differently from it or from each other: the JIT
 // turns Error into a tag-guarded throw, and the VM bakes the verdict per
 // receiver tag — and treats Valid on a method it has no implementation for
@@ -88,18 +63,15 @@ inline const std::vector<FunctionValue::Parameter>* builtin_method_params(
 //
 // A pure positional builtin uses the count-based ArityError; a kwarg-capable
 // one (a defaulted / keyword-only / **rest param, e.g. sort_by's `reverse:`)
-// mirrors interp's general binder, so adding a keyword-only param to any
-// builtin stays symmetric with no per-method error code anywhere. Generic
-// over the mapped type: the value tables map to Value, iterator_builtins()
-// to IterBuiltin{fn, kind}.
+// mirrors the general binder, so adding a keyword-only param to any builtin
+// stays symmetric with no per-method error code anywhere.
 struct BuiltinVerdict {
   enum class Kind { Absent, Valid, Error };
   Kind kind = Kind::Absent;
   std::string err_kind, msg;
   bool at_call_root = false;  // else the ARGUMENTS node
 };
-template <class Table>
-inline BuiltinVerdict builtin_call_verdict(const Table& tbl,
+inline BuiltinVerdict builtin_call_verdict(const BuiltinTable& tbl,
                                            const std::string& method,
                                            const ArgScan& scan,
                                            int64_t argc) {
@@ -107,38 +79,37 @@ inline BuiltinVerdict builtin_call_verdict(const Table& tbl,
   auto err = [](const char* k, std::string m, bool root) {
     return BuiltinVerdict{K::Error, k, std::move(m), root};
   };
-  const auto* pp = builtin_method_params(tbl, method);
-  if (!pp) return {};
-  const auto& params = *pp;
-  auto b = builtin_arity_bounds(params);
-  bool kwcap = b.min != b.max;
-  for (const auto& p : params)
-    if (p.kw_only || p.kwargs_rest) kwcap = true;
+  const auto* sig = builtin_method_sig(tbl, method);
+  if (!sig) return {};
+  bool kwcap = sig->min_arity != sig->max_arity ||
+               sig->first_kw_only_idx >= 0 || sig->kwargs_rest_idx >= 0;
   if (!kwcap) {
-    if (b.variadic || (argc >= b.min && argc <= b.max))
+    if (sig->variadic || (argc >= sig->min_arity && argc <= sig->max_arity))
       return {K::Valid, {}, {}, false};
     return err("ArityError",
-               builtin_arity_error_message(method, b.min, b.max, argc),
+               builtin_arity_error_message(method, sig->min_arity,
+                                           sig->max_arity, argc),
                false);
   }
-  // Kwarg-capable: replicate interp's bind order (too-many positional →
+  // Kwarg-capable: replicate the binder's order (too-many positional →
   // per-param missing / positional+keyword conflict → leftover unknown
   // keyword). Args are static here, so the whole check is compile-time.
+  std::span<const CanonParam> params(sig->params,
+                                     static_cast<size_t>(sig->n_params));
   if (!scan.splats.empty()) return {K::Valid, {}, {}, false};  // binds later
   auto n_pos = static_cast<int64_t>(scan.positional.size());
-  bool has_rest = false;
-  for (const auto& p : params) if (p.kwargs_rest) has_rest = true;
+  bool has_rest = sig->kwargs_rest_idx >= 0;
   auto named = [&](std::string_view n) { return scan.kwarg(n) != nullptr; };
-  if (!b.variadic && n_pos > b.max)
-    return err("TypeError", too_many_positionals_message(b.max, n_pos), true);
+  if (!sig->variadic && n_pos > sig->max_arity)
+    return err("TypeError", too_many_positionals_message(sig->max_arity, n_pos),
+               true);
   for (size_t i = 0; i < params.size(); i++) {
     const auto& p = params[i];
     if (p.kwargs_rest || p.args_rest) continue;
     bool filled_pos = static_cast<long>(i) < n_pos && !p.kw_only;
     if (filled_pos && named(p.name))
       return err("TypeError", positional_kw_conflict_message(p.name), true);
-    bool has_def = p.default_expr != nullptr || p.default_value != nullptr;
-    if (!filled_pos && !named(p.name) && !has_def)
+    if (!filled_pos && !named(p.name) && !p.has_default)
       return err("ArityError", missing_required_arg_message(p.name), true);
   }
   if (!has_rest)
@@ -164,18 +135,20 @@ inline bool builtin_method_keywords_bindable(const std::string& method,
   auto scan = scan_arg_list(args_ast);
   if (!scan.splats.empty()) return false;
   if (scan.explicit_kwargs.empty()) return true;
-  // The parameter lists depend only on `method`; look each table up once.
-  std::vector<const std::vector<FunctionValue::Parameter>*> params;
-  auto note = [&](const std::vector<FunctionValue::Parameter>* p) {
-    if (p) params.push_back(p);
+  // The signatures depend only on `method`; look each table up once.
+  std::vector<std::span<const CanonParam>> params;
+  auto note = [&](const CanonSig* s) {
+    if (s)
+      params.push_back(
+          std::span(s->params, static_cast<size_t>(s->n_params)));
   };
-  note(builtin_method_params(*dict_builtin_table(), method));
-  note(builtin_method_params(iterator_builtins(), method));
+  note(builtin_method_sig(*dict_builtin_table(), method));
+  note(builtin_method_sig(canon_iterator_sigs(), method));
   for (auto& [tag, table] : builtin_value_tables())
-    note(builtin_method_params(*table, method));
+    note(builtin_method_sig(*table, method));
   for (const auto& [kw, _val] : scan.explicit_kwargs) {
-    bool ok = std::any_of(params.begin(), params.end(), [&](const auto* p) {
-      return builtin_method_accepts_keyword(*p, kw);
+    bool ok = std::any_of(params.begin(), params.end(), [&](const auto& ps) {
+      return builtin_method_accepts_keyword(ps, kw);
     });
     if (!ok) return false;
   }
@@ -183,4 +156,3 @@ inline bool builtin_method_keywords_bindable(const std::string& method,
 }
 
 }  // namespace culebra
-

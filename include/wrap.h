@@ -773,6 +773,19 @@ struct WrappedNsRow {
   std::string arg0_name;
   int8_t arity;
   JitValue (*adapter)(JitValue*, int64_t);
+  // The full declared signature, so the compiled lanes can rebuild the
+  // canonical spec (NsParamMeta / introspection) without the interp
+  // environment: wrap methods are always all-required positionals whose
+  // names/types come straight from the declaration (typed_params emits the
+  // same), and the return annotation is return_annotation<R>(). Storage is
+  // stable once static-init froze the registry, like the c_str fields above.
+  // B7-f note: these subsume arg0_type/arg0_name (== param_types[0] /
+  // param_names[0]), and since every wrap row now synthesizes a full
+  // CanonSig, the "canonical lookup failed → arg0 only" fallbacks in
+  // stdlib_jit.h are unreachable for wrap rows — delete, don't rediscover.
+  std::vector<std::string> param_names;
+  std::vector<std::string> param_types;
+  std::string return_type;
 };
 inline std::vector<WrappedNsRow>& wrapped_ns_rows() {
   static std::vector<WrappedNsRow> v;
@@ -832,8 +845,8 @@ class ClassBinder {
         "new", wrap_detail::make_static_proto<decltype(make),
                                               std::unique_ptr<T>, Args...>(
                    make, names));
-    push_ns_row<Args...>("new", &wrap_detail::jit_ctor_adapter<T, Args...>,
-                         std::move(names));
+    push_ns_row<std::unique_ptr<T>, Args...>(
+        "new", &wrap_detail::jit_ctor_adapter<T, Args...>, std::move(names));
     return *this;
   }
 
@@ -947,13 +960,13 @@ class ClassBinder {
     statics_.emplace_back(
         name, wrap_detail::make_static_proto<decltype(Fn), R, Args...>(
                   Fn, names));
-    push_ns_row<Args...>(std::move(name),
-                         &wrap_detail::jit_static_adapter<Fn, R, Args...>,
-                         std::move(names));
+    push_ns_row<R, Args...>(std::move(name),
+                            &wrap_detail::jit_static_adapter<Fn, R, Args...>,
+                            std::move(names));
     return *this;
   }
 
-  template <class... Args>
+  template <class R, class... Args>
   void push_ns_row(std::string method_name,
                    JitValue (*adapter)(JitValue*, int64_t),
                    std::vector<std::string> names) {
@@ -965,10 +978,13 @@ class ClassBinder {
       arg0_type = std::string(_detail::type_annotation_for<A0>());
       arg0_name = (*pinned)[0];
     }
+    std::vector<std::string> ptypes = {
+        std::string(_detail::type_annotation_for<Args>())...};
     wrapped_ns_rows().push_back(
         {ns_, std::move(method_name), name_, std::move(arg0_type),
          std::move(arg0_name), static_cast<int8_t>(sizeof...(Args)),
-         adapter});
+         adapter, *pinned, std::move(ptypes),
+         std::string(wrap_detail::return_annotation<R>())});
   }
 
   std::string ns_;

@@ -6696,7 +6696,7 @@ class Compiler {
     if (fn_introspection_name(name)) m |= bmeth_tag_bit(TAG_FUNC);
     // A dict builtin resolves on every Object, whatever its shape.
     if (dict_builtin_table()->count(name)) m |= bmeth_tag_bit(TAG_OBJECT);
-    if (culebra::iterator_builtins().count(name)) m |= kHasPropIterBit;
+    if (culebra::canon_iterator_sigs().count(name)) m |= kHasPropIterBit;
     return m;
   }
 
@@ -6743,7 +6743,7 @@ class Compiler {
     // (`range(0, 2)` carries its own `iter`, and takes no diagnostic from the
     // dict one) — the arm carries the name so the check can ask.
     if (!take(*dict_builtin_table(), Chunk::kArityObj))
-      take(culebra::iterator_builtins(), Chunk::kArityIter);
+      take(culebra::canon_iterator_sigs(), Chunk::kArityIter);
     if (arms.empty()) return;
     StampGuard pos(*this, args);
     emit(Op::BArity, recv.slot,
@@ -6784,7 +6784,7 @@ class Compiler {
                       kconst_str(method), line, col});
     };
     auto has_name = [&](const auto& tbl) {
-      return builtin_method_params(tbl, method) != nullptr;
+      return builtin_method_sig(tbl, method) != nullptr;
     };
     for (auto& [t, tbl] : builtin_value_tables())
       if (has_name(*tbl)) add(t);
@@ -6792,7 +6792,7 @@ class Compiler {
     // iterator-shaped one reaches the iterator table.
     if (has_name(*dict_builtin_table()))
       add(Chunk::kArityObj);
-    else if (has_name(culebra::iterator_builtins()))
+    else if (has_name(culebra::canon_iterator_sigs()))
       add(Chunk::kArityIter);
     if (arms.empty()) return false;
     StampGuard pos(*this, args);

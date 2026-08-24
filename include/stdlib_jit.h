@@ -32,6 +32,7 @@
 #if defined(CULEBRA_SQLITE_ENABLED)
 #include <sqlite.h>
 #endif
+#include <canon_sigs.h>  // the canonical native/built-in signature tables
 #include <shared.h>
 #include <regexlib.h>
 #include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
@@ -41,9 +42,11 @@
 #endif
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -2782,7 +2785,7 @@ CULEBRA_RT_INLINE JitValue _culebra_stdin_build_handle() {
 // stdlib_interp.h). The value-neutral cursor core (sqlite.h) is shared; only
 // the value marshalling differs (JitValue/JitObject/JitArray here, Value/
 // ObjectValue there). Kept byte-for-byte symmetric with the interp; the debug
-// drift check (_check_ns_drift_once) catches a forgotten JIT registration.
+// drift check (_check_canon_sigs_once) catches a forgotten JIT registration.
 // ===========================================================================
 
 [[noreturn]] CULEBRA_RT_INLINE void _jit_sqlite_throw(const std::string& msg,
@@ -3141,7 +3144,7 @@ CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
 // Net — JIT/AOT mirror of the interp Socket/Listener/UdpSocket handles (see
 // stdlib_interp.h). The value-neutral socket core (net.h) is shared, framing
 // and all: only the value marshalling differs (JitValue/JitObject here,
-// Value/ObjectValue there). The debug drift check (_check_ns_drift_once)
+// Value/ObjectValue there). The debug drift check (_check_canon_sigs_once)
 // catches a forgotten JIT registration.
 // ===========================================================================
 
@@ -3681,8 +3684,10 @@ namespace culebra {
 // JIT in jit.h so declare_runtime can reach the JIT internals it needs
 // (builder_/module_/valueType_/make_*/extract_*/...) without the JIT
 // class having to expose them publicly.
-struct NsMethod;     // defined below; referenced by compile_ns_method_kwargs
-struct NsParamMeta;  // defined below; referenced by compile_single_positional_kwargs
+struct NsMethod;  // defined below; referenced by compile_ns_method_kwargs
+// The per-method spec is the canonical signature row (canon_sigs.h);
+// referenced by compile_single_positional_kwargs.
+using NsParamMeta = CanonSig;
 
 struct JitExtension {
 #ifdef CULEBRA_JIT_ENABLED
@@ -7012,48 +7017,17 @@ inline JitValue _ns_regex_split(JitValue* a, int64_t) {
   return _ns_adapt::v_array(arr);
 }
 
-// Per-parameter view for stdlib methods that accept kwargs / have defaults.
-// Derived once (per process) from the canonical interp FunctionValue::Parameter
-// list — never hand-authored — so the JIT binder and the interp binder cannot
-// drift. `name`/`type` are string_views into the canonical params (stable for
-// the process); `canon_default` points at the canonical default Value and is
-// converted fresh to a JitValue per use (so heap defaults like "" stay
-// per-call owned). Built by `_ns_meta` from the canonical params.
-struct NsParam {
-  std::string_view name;
-  bool has_default;
-  bool kw_only;
-  const culebra::Value* canon_default;  // null iff !has_default
-  // Declared type of a *required* leading positional ("String" / "Function" /
-  // "Array"); empty for defaulted params. When set, the compile side emits an
-  // inline type check at the argument's source position (matching interp's
-  // binder) instead of letting the runtime adapter reject it positionlessly.
-  std::string_view type;
-};
-
-struct NsParamMeta {
-  const NsParam* params;
-  int n_params;
-  int kwargs_rest_idx;    // -1 = none
-  int first_kw_only_idx;  // -1 = none
-  // Index of the positional catch-all (`*args`) slot, or -1. All positional
-  // arguments collect into an Array here (range/iota: the 1-2 start/end args),
-  // letting a method mix variadic positionals with keyword-only params the
-  // way the interp binder does. Assumes no regular positional param precedes
-  // it (true for range/iota). Default-initialized so existing aggregate
-  // initializers (which omit it) keep -1.
-  int args_rest_idx = -1;
-  // Minimum required positional arity, computed once at derivation by the
-  // shared `culebra::builtin_arity_bounds` (the single source of the arity
-  // rule, also used by the interp binder) — not recomputed per call.
-  int min_arity = 0;
-  // Maximum positional arity (positional-bindable param count), from the same
-  // `builtin_arity_bounds`. The resolver checks `n_pos` against [min,max] up
-  // front — before merging splats/kwargs — exactly as the interp's strict_arity
-  // block does, so kwargs/splats never satisfy a required positional and the
-  // arity error fires at the same point on both backends.
-  int max_arity = 0;
-};
+// NsParamMeta — the per-parameter view for stdlib methods that accept
+// kwargs / have defaults — is exactly the canonical signature row
+// (canon_sigs.h, generated from the interp's own parameter lists while both
+// engines existed; alias declared above JitExtension), never hand-authored
+// per method, so the JIT binder cannot drift from the canonical spec. The
+// resolver checks `n_pos` against [min_arity, max_arity] up front — before
+// merging splats/kwargs — as the strict_arity rule requires, and an
+// `args_rest_idx >= 0` method collects every positional into an Array at
+// that slot (range/iota). A default is converted fresh to a JitValue per
+// use (so heap defaults like "" stay per-call owned); see
+// _jit_default_from_canon.
 
 struct NsMethod {
   const char* ns;
@@ -7076,98 +7050,73 @@ struct NsMethod {
 };
 
 // --- Single source of truth for the calling convention -----------------------
-// The JIT binder's per-parameter view (NsParamMeta / NsParam) is DERIVED, once
-// per process, from the canonical interp FunctionValue::Parameter list — never
-// hand-authored — so the interp and JIT binders cannot drift. Only the choice
-// of *which* methods use a kwarg/default slab (a JIT codegen-strategy decision,
-// see _ns_method_uses_kwarg_slab) is JIT-side; the param data all flows from
+// The JIT binder's per-parameter view (NsParamMeta) is read, once per
+// process, from the canonical signature table (canon_sigs.h) — generated
+// from the interp's own FunctionValue::Parameter lists, never hand-authored
+// — so the binders cannot drift. Only the choice of *which* methods use a
+// kwarg/default slab (a JIT codegen-strategy decision, see
+// _ns_method_uses_kwarg_slab) is JIT-side; the param data all flows from
 // the canonical spec.
 
-// A fresh JitValue for a canonical stdlib default Value. Stdlib defaults are
+// A fresh JitValue for a canonical stdlib default. Stdlib defaults are
 // scalars (nil / bool / long / float / string); heap strings are re-allocated
 // per call so each binding owns its own +1.
-inline JitValue _jit_default_from_value(const culebra::Value& v) {
-  switch (v.type) {
-    case culebra::Value::Nil:    return {TAG_NIL, 0};
-    case culebra::Value::Bool:   return {TAG_BOOL, v.get<bool>() ? 1 : 0};
-    case culebra::Value::Long:   return {TAG_LONG, v.get<int64_t>()};
-    case culebra::Value::Float:  return jit_float(v.get<double>());
-    case culebra::Value::String:
+inline JitValue _jit_default_from_canon(const CanonParam& p) {
+  switch (p.default_kind) {
+    case CanonDefault::Nil: return {TAG_NIL, 0};
+    case CanonDefault::Bool: return {TAG_BOOL, p.default_bits};
+    case CanonDefault::Long: return {TAG_LONG, p.default_bits};
+    case CanonDefault::Float:
+      return jit_float(std::bit_cast<double>(p.default_bits));
+    case CanonDefault::Str:
       return {TAG_STRING,
-              reinterpret_cast<int64_t>(_culebra_heap_str(v.to_string()))};
+              reinterpret_cast<int64_t>(_culebra_heap_str(p.default_str))};
     default:
       throw culebra::CulebraError("InternalError",
           "unsupported stdlib default value", 0, 0);
   }
 }
 
-// The canonical interp environment, built once. Param specs are immutable, so a
-// single shared instance serves every isolate / thread. environment() is a
-// standalone factory available at JIT compile time, JIT runtime, and inside the
-// AOT runtime archive (culebra_rt.cc includes stdlib_interp.h).
-inline const culebra::Environment& _canonical_env() {
-  static const std::shared_ptr<culebra::Environment> env =
-      culebra::environment();
-  return *env;
-}
-
-// Resolve an NsMethod to its canonical interp FunctionValue, or null.
-// Handles namespace methods (Ns.method), nested sub-namespace methods
-// (Ns.sub.method), and bare globals (ns == "" → e.g. range / iota in the
-// global dictionary). The one resolver both projections below share, so
-// `fn.params` and `fn.return_type` can never disagree about which
-// FunctionValue answers for a native.
-inline const culebra::FunctionValue* _canon_fn(const NsMethod* m) {
-  const auto& env = _canonical_env();
-  const culebra::Value* fnv = nullptr;
-  if (m->ns == nullptr || m->ns[0] == '\0') {
-    auto it = env.dictionary.find(std::string(m->name));
-    if (it != env.dictionary.end()) {
-      fnv = &it->second.val;
-    } else {
-      // `inspect`/`print`/`println` are CLI aliases of IO members
-      // (install_cli_aliases), not entries of the canonical dictionary
-      // itself — fall back to the IO namespace so their canonical spec
-      // (defaults included) still resolves for the bare-global form.
-      auto io_it = env.dictionary.find("IO");
-      if (io_it != env.dictionary.end() &&
-          io_it->second.val.type == culebra::Value::Object) {
-        const auto& io_obj = io_it->second.val.to_object();
-        if (io_obj.has(m->name)) fnv = &io_obj.get(m->name);
+// Resolve an NsMethod to its canonical signature, or null. One registry,
+// built once (lock-free reads after init): the generated rows
+// (kCanonNsSigs) seeded first, then the wrap.h-declared rows — which
+// register at static-init time so they cannot be in a generated file —
+// synthesized from the wrap registry (always all-required positionals, see
+// WrappedNsRow). Seeding order is the collision policy: a wrap row can
+// never shadow a generated one.
+inline const CanonSig* _canon_sig(const NsMethod* m) {
+  struct Registry {
+    std::deque<std::vector<CanonParam>> wrap_params;  // stable addresses
+    std::deque<CanonSig> wrap_sigs;
+    std::unordered_map<std::string, const CanonSig*> table;
+  };
+  static const Registry reg = [] {
+    Registry r;
+    r.table.reserve(std::size(culebra::kCanonNsSigs) +
+                    culebra::wrapped_ns_rows().size());
+    for (const auto& s : culebra::kCanonNsSigs)
+      r.table.emplace(culebra::canon_sig_key(s.ns, s.sub, s.name), &s);
+    for (const auto& row : culebra::wrapped_ns_rows()) {
+      auto& ps = r.wrap_params.emplace_back();
+      ps.reserve(row.param_names.size());
+      for (size_t i = 0; i < row.param_names.size(); i++) {
+        ps.push_back(CanonParam{row.param_names[i], false, false, false,
+                                false, false, row.param_types[i],
+                                CanonDefault::None, 0, {}});
       }
+      int n = static_cast<int>(ps.size());
+      r.wrap_sigs.push_back(CanonSig{row.ns, row.sub, row.name,
+                                     ps.empty() ? nullptr : ps.data(), n,
+                                     row.return_type, n, n, false, -1, -1,
+                                     -1});
+      r.table.emplace(culebra::canon_sig_key(row.ns, row.sub, row.name),
+                      &r.wrap_sigs.back());
     }
-  } else {
-    auto it = env.dictionary.find(std::string(m->ns));
-    if (it == env.dictionary.end() ||
-        it->second.val.type != culebra::Value::Object) return nullptr;
-    const auto& ns_obj = it->second.val.to_object();
-    if (m->sub != nullptr) {
-      if (!ns_obj.has(m->sub)) return nullptr;
-      const auto& sub_v = ns_obj.get(m->sub);
-      if (sub_v.type != culebra::Value::Object) return nullptr;
-      const auto& sub_obj = sub_v.to_object();
-      if (!sub_obj.has(m->name)) return nullptr;
-      fnv = &sub_obj.get(m->name);
-    } else {
-      if (!ns_obj.has(m->name)) return nullptr;
-      fnv = &ns_obj.get(m->name);
-    }
-  }
-  if (fnv == nullptr || fnv->type != culebra::Value::Function) return nullptr;
-  return &fnv->get<culebra::FunctionValue>();
-}
-
-inline const std::vector<culebra::FunctionValue::Parameter>*
-_canon_params(const NsMethod* m) {
-  const auto* fn = _canon_fn(m);
-  return fn ? fn->params.get() : nullptr;
-}
-
-// The canonical FunctionValue's declared return type (empty when the method
-// declares none, or when the lookup fails).
-inline std::string_view _canon_return_type(const NsMethod* m) {
-  const auto* fn = _canon_fn(m);
-  return fn ? std::string_view(fn->return_type) : std::string_view{};
+    return r;
+  }();
+  auto it = reg.table.find(culebra::canon_sig_key(
+      m->ns ? m->ns : "", m->sub ? m->sub : "", m->name));
+  return it == reg.table.end() ? nullptr : it->second;
 }
 
 // Whether this method's JIT adapter consumes a kwarg/default slab (built by the
@@ -7231,10 +7180,10 @@ inline bool _ns_positional_count_ok(const NsMethod* m, int64_t n) {
 // pointers into its strings are stable — and merged into every table
 // consumer below alongside the static kNsMethods rows. The class name
 // rides in `sub` (a nested `Ns.Class.method`, slow-path only, the
-// Encoding.html shape), and the param spec still derives from the
-// CANONICAL interp params via _canon_params: the interp env builds the
-// same namespaces from the same registry, so the calling-convention
-// single source covers generated bindings unchanged.
+// Encoding.html shape), and the param spec is synthesized from the same
+// registry rows by _canon_sig (a wrap method is always all-required
+// positionals — see WrappedNsRow), so the calling-convention single
+// source covers generated bindings unchanged.
 inline const std::vector<NsMethod>& _wrapped_ns_methods() {
   static const std::vector<NsMethod> rows = [] {
     std::vector<NsMethod> v;
@@ -7646,7 +7595,7 @@ inline std::vector<JitValue> _jit_ns_build_args_rest_slab(
       slab[i] = it->second;
       merged.erase(it);
     } else if (pm->params[i].has_default) {
-      slab[i] = _jit_default_from_value(*pm->params[i].canon_default);
+      slab[i] = _jit_default_from_canon(pm->params[i]);
     } else {
       cleanup();
       throw culebra::CulebraError("ArityError",
@@ -8030,7 +7979,7 @@ inline bool _jit_ns_kwarg_resolve_core(
             pm->params[i].type), line, col);
       }
     } else if (pm->params[i].has_default) {
-      slab[i] = _jit_default_from_value(*pm->params[i].canon_default);
+      slab[i] = _jit_default_from_canon(pm->params[i]);
       filled[i] = true;
     } else {
       for (int k = 0; k < n; k++)
@@ -8085,10 +8034,13 @@ inline bool _jit_ns_kwarg_resolve(
                                     out);
 }
 
-// Callback-arity bounds for an ns-method closure handed to a HOF. Derives
-// (cb_min, cb_max) from the SAME canonical params interp's check_callback_arity
-// reads (builtin_arity_bounds over _canon_params), so both backends gate an
-// ns-method callback identically. Returns false for non-ns closures.
+// Callback-arity bounds for an ns-method closure handed to a HOF. Reads the
+// SAME canonical bounds interp's check_callback_arity derived (the sig's
+// builtin_arity_bounds result, precomputed at generation), so both backends
+// gate an ns-method callback identically. Returns false for non-ns closures.
+// Goes through _ns_type_meta (pointer-keyed, covers every method) rather
+// than _canon_sig — this runs once per HOF call, and the string-keyed
+// registry lookup would allocate on that path.
 inline bool _jit_ns_callback_arity(JitClosure* cls, int64_t* cb_min,
                                    int64_t* cb_max) {
   if (cls->fn_ptr != reinterpret_cast<void*>(_jit_ns_method_trampoline)) {
@@ -8096,11 +8048,10 @@ inline bool _jit_ns_callback_arity(JitClosure* cls, int64_t* cb_min,
   }
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
-  const auto* cps = _canon_params(m);
-  if (!cps) return false;  // no canonical params → fall back to closure arity
-  auto b = culebra::builtin_arity_bounds(*cps);
-  *cb_min = b.min;
-  *cb_max = b.variadic ? -1 : b.max;
+  const NsParamMeta* s = _ns_type_meta(m);
+  if (!s) return false;  // no canonical sig → fall back to closure arity
+  *cb_min = s->min_arity;
+  *cb_max = s->variadic ? -1 : s->max_arity;
   return true;
 }
 
@@ -8239,69 +8190,30 @@ inline const NsMethod kBuiltinFns[] = {
 };
 
 namespace _ns_spec_detail {
-struct DerivedSpec {
-  std::vector<NsParam> params;  // params.data() backs meta.params
-  NsParamMeta meta;
-};
-
-// Build the derived param spec for one method from its canonical interp params,
-// or null if the canonical lookup fails. The per-parameter data (names, types,
-// defaults, *args/**kwargs/kw-only indices, arity bounds) is the SINGLE SOURCE
-// shared by `_ns_meta` (kwarg-slab subset, drives kwarg/arity dispatch) and
-// `_ns_type_meta` (every method, drives the trampoline's positional type
-// checks) — so the two views can never drift from each other or from interp.
-inline std::unique_ptr<DerivedSpec> build_ns_spec(const NsMethod* m) {
-  const auto* cps = _canon_params(m);
-  if (cps == nullptr) return nullptr;  // canonical lookup failed — skip
-  auto sp = std::make_unique<DerivedSpec>();
-  sp->params.reserve(cps->size());
-  int kwargs_rest_idx = -1, first_kw_only_idx = -1, args_rest_idx = -1;
-  for (int i = 0; i < static_cast<int>(cps->size()); i++) {
-    const auto& cp = (*cps)[i];
-    bool has_default = cp.default_expr != nullptr || cp.default_value != nullptr;
-    sp->params.push_back(NsParam{
-        cp.name, has_default, cp.kw_only,
-        has_default ? cp.default_value.get() : nullptr,
-        // Canonical declared type for every param. The compile side / trampoline
-        // emits a runtime type check at the argument's source position for any
-        // positional bound to a typed param, matching the interp binder.
-        cp.type_name});
-    if (cp.kwargs_rest && kwargs_rest_idx < 0) kwargs_rest_idx = i;
-    if (cp.kw_only && first_kw_only_idx < 0) first_kw_only_idx = i;
-    if (cp.args_rest && args_rest_idx < 0) args_rest_idx = i;
-  }
-  auto _ab = culebra::builtin_arity_bounds(*cps);
-  sp->meta = NsParamMeta{sp->params.data(),
-                         static_cast<int>(sp->params.size()),
-                         kwargs_rest_idx, first_kw_only_idx, args_rest_idx,
-                         static_cast<int>(_ab.min), static_cast<int>(_ab.max)};
-  return sp;
+// The NsMethod* → canonical-sig table for the rows `pred` admits (null pred
+// = every row). Pointer-keyed so the per-call lookups below never build a
+// string key — `_canon_sig` (string-keyed, allocates) runs only here, once
+// per row at build time.
+inline std::unordered_map<const NsMethod*, const NsParamMeta*> sig_table(
+    bool (*pred)(const NsMethod*)) {
+  std::unordered_map<const NsMethod*, const NsParamMeta*> t;
+  auto add = [&](const NsMethod& nm) {
+    if (pred && !pred(&nm)) return;
+    if (const CanonSig* s = _canon_sig(&nm)) t.emplace(&nm, s);
+    // else: canonical lookup failed — skip, callers fall back
+  };
+  for (const auto& nm : kNsMethods) add(nm);
+  for (const auto& nm : kBuiltinFns) add(nm);
+  for (const auto& nm : _wrapped_ns_methods()) add(nm);
+  return t;
 }
 }  // namespace _ns_spec_detail
 
-// Build (once, lock-free reads after) the derived NsParamMeta for every method
-// whose adapter consumes a kwarg/default slab, reading the canonical interp
-// FunctionValue params. Specs live in `storage` (unique_ptr → stable address);
-// `meta.params` points at each spec's vector buffer (sized exactly, never
-// reallocated after build), and `canon_default` points into the canonical
-// param's default Value (kept alive by `_canonical_env`).
+// The canonical spec for every method whose adapter consumes a kwarg/default
+// slab (drives kwarg/arity dispatch), or null for the rest.
 inline const NsParamMeta* _ns_meta(const NsMethod* m) {
-  static std::vector<std::unique_ptr<_ns_spec_detail::DerivedSpec>> storage;
-  static const std::unordered_map<const NsMethod*, const NsParamMeta*> table =
-      [&] {
-        std::unordered_map<const NsMethod*, const NsParamMeta*> t;
-        auto add = [&](const NsMethod& nm) {
-          if (!_ns_method_uses_kwarg_slab(&nm)) return;
-          auto sp = _ns_spec_detail::build_ns_spec(&nm);
-          if (!sp) return;
-          t.emplace(&nm, &sp->meta);
-          storage.push_back(std::move(sp));
-        };
-        for (const auto& nm : kNsMethods) add(nm);
-        for (const auto& nm : kBuiltinFns) add(nm);
-        for (const auto& nm : _wrapped_ns_methods()) add(nm);
-        return t;
-      }();
+  static const auto table = _ns_spec_detail::sig_table(
+      [](const NsMethod* nm) { return _ns_method_uses_kwarg_slab(nm); });
   auto it = table.find(m);
   return it == table.end() ? nullptr : it->second;
 }
@@ -8312,23 +8224,9 @@ inline const NsParamMeta* _ns_meta(const NsMethod* m) {
 // — instead of letting a pure-positional adapter coerce a wrong-typed arg (e.g.
 // `FS.rename(a, 5)` silently running rename on ""). Distinct from `_ns_meta`,
 // which gates kwarg/arity DISPATCH; widening this type-only view to all methods
-// cannot change dispatch. Same canonical source (build_ns_spec) → no drift.
+// cannot change dispatch. Same canonical source (_canon_sig) → no drift.
 inline const NsParamMeta* _ns_type_meta(const NsMethod* m) {
-  static std::vector<std::unique_ptr<_ns_spec_detail::DerivedSpec>> storage;
-  static const std::unordered_map<const NsMethod*, const NsParamMeta*> table =
-      [&] {
-        std::unordered_map<const NsMethod*, const NsParamMeta*> t;
-        auto add = [&](const NsMethod& nm) {
-          auto sp = _ns_spec_detail::build_ns_spec(&nm);
-          if (!sp) return;
-          t.emplace(&nm, &sp->meta);
-          storage.push_back(std::move(sp));
-        };
-        for (const auto& nm : kNsMethods) add(nm);
-        for (const auto& nm : kBuiltinFns) add(nm);
-        for (const auto& nm : _wrapped_ns_methods()) add(nm);
-        return t;
-      }();
+  static const auto table = _ns_spec_detail::sig_table(nullptr);
   auto it = table.find(m);
   return it == table.end() ? nullptr : it->second;
 }
@@ -8352,24 +8250,24 @@ struct NativeMeta {
 };
 
 inline std::unique_ptr<NativeMeta> build(const NsMethod* m) {
-  const auto* cps = _canon_params(m);
-  if (!cps) return nullptr;
+  const CanonSig* sig = _canon_sig(m);
+  if (!sig) return nullptr;
   auto nm = std::make_unique<NativeMeta>();
-  size_t n = cps->size();
+  size_t n = static_cast<size_t>(sig->n_params);
   nm->names.reserve(n);
   nm->types.reserve(n);
   nm->has_default_bits.assign((n + 7) / 8, 0);
   nm->mut_bits.assign((n + 7) / 8, 0);
   int64_t kwargs_rest_idx = -1, first_kw_only_idx = -1;
   for (size_t i = 0; i < n; i++) {
-    const auto& cp = (*cps)[i];
+    const auto& cp = sig->params[i];
     // `*args` is a synthetic overflow slot, not a positional parameter — the
-    // interp's own params view omits it, so this one does too.
+    // interp's own params view omitted it, so this one does too.
     if (cp.args_rest) continue;
     size_t k = nm->names.size();
     nm->names.emplace_back(cp.name);
-    nm->types.emplace_back(cp.type_name);
-    if (cp.default_expr != nullptr || cp.default_value != nullptr)
+    nm->types.emplace_back(cp.type);
+    if (cp.has_default)
       nm->has_default_bits[k / 8] |= static_cast<uint8_t>(1u << (k % 8));
     if (cp.mut) nm->mut_bits[k / 8] |= static_cast<uint8_t>(1u << (k % 8));
     if (cp.kwargs_rest && kwargs_rest_idx < 0)
@@ -8379,8 +8277,7 @@ inline std::unique_ptr<NativeMeta> build(const NsMethod* m) {
   }
   for (auto& s : nm->names) nm->name_ptrs.push_back(s.c_str());
   for (auto& s : nm->types) nm->type_ptrs.push_back(s.c_str());
-  nm->return_type = std::string(_canon_return_type(m));
-  auto b = culebra::builtin_arity_bounds(*cps);
+  nm->return_type = std::string(sig->return_type);
   nm->meta = JitParamMeta{nm->name_ptrs.data(),
                           nm->has_default_bits.data(),
                           nm->name_ptrs.size(),
@@ -8398,8 +8295,8 @@ inline std::unique_ptr<NativeMeta> build(const NsMethod* m) {
                           // Nothing neutralizes a native's annotations, so the
                           // declared and effective views are the same one.
                           nm->type_ptrs.data(),
-                          b.min,
-                          b.variadic ? -1 : b.max};
+                          sig->min_arity,
+                          sig->variadic ? -1 : sig->max_arity};
   return nm;
 }
 }  // namespace _ns_introspect_detail
@@ -8598,40 +8495,192 @@ inline JitClosure* _jit_lazy_fn_closure(_JitNamespaceTable& t,
 }
 
 #ifndef NDEBUG
-// One-shot namespace-coverage check: if interp's setup_built_in_functions binds
-// a namespace this dispatcher doesn't know about, abort with a clear message at
-// first slow-path resolve. Catches adding a new stdlib namespace (e.g. `Net`)
-// to stdlib_interp.h while forgetting to add adapters + kNsMethods rows here.
-// Per-parameter drift is no longer possible (NsParamMeta is derived from the
-// canonical interp params by _ns_meta), so there is nothing else to verify.
-inline void _check_ns_drift_once() {
+// TEMPORARY (Phase 4 B7-a → deleted with the tree-walker in B7-f): while both
+// engines exist, verify at first slow-path resolve that the generated
+// canonical signature table — and the runtime lookup over it (_canon_sig's
+// keying, the wrap-row synthesis) — answers exactly what the interp's own
+// parameter lists say, field for field. `just check-canon-sigs` already pins
+// the generated FILE to the interp source; this check pins the LOOKUP: a
+// keying bug (wrong ns/sub split, a wrap row missing its params) would pass
+// the file gate and still be caught here. Also keeps the old
+// namespace-coverage drift check (now also enforced at generation time).
+inline void _check_canon_sigs_once() {
   static const bool checked = []() {
-    const auto& env = _canonical_env();
+    static const std::shared_ptr<culebra::Environment> env_holder =
+        culebra::environment();
+    const auto& env = *env_holder;
+    auto fail = [](const std::string& what) {
+      std::fprintf(stderr, "culebra: canonical-signature drift — %s\n",
+                   what.c_str());
+      std::abort();
+    };
+    // The interp-side resolution the deleted _canon_fn performed. A copy of
+    // the same logic the generator uses, so it cannot answer differently
+    // from generation — the value of this check is pinning the RUNTIME
+    // LOOKUP (the registry keying, the wrap-row synthesis), which the
+    // `--check` file gate cannot see.
+    auto interp_fn =
+        [&](const NsMethod& m) -> const culebra::FunctionValue* {
+      const culebra::Value* fnv = nullptr;
+      if (m.ns == nullptr || m.ns[0] == '\0') {
+        auto it = env.dictionary.find(std::string(m.name));
+        if (it != env.dictionary.end()) {
+          fnv = &it->second.val;
+        } else {
+          auto io_it = env.dictionary.find("IO");
+          if (io_it != env.dictionary.end() &&
+              io_it->second.val.type == culebra::Value::Object) {
+            const auto& io_obj = io_it->second.val.to_object();
+            if (io_obj.has(m.name)) fnv = &io_obj.get(m.name);
+          }
+        }
+      } else {
+        auto it = env.dictionary.find(std::string(m.ns));
+        if (it == env.dictionary.end() ||
+            it->second.val.type != culebra::Value::Object) return nullptr;
+        const auto& ns_obj = it->second.val.to_object();
+        if (m.sub != nullptr && m.sub[0] != '\0') {
+          if (!ns_obj.has(m.sub)) return nullptr;
+          const auto& sub_v = ns_obj.get(m.sub);
+          if (sub_v.type != culebra::Value::Object) return nullptr;
+          const auto& sub_obj = sub_v.to_object();
+          if (!sub_obj.has(m.name)) return nullptr;
+          fnv = &sub_obj.get(m.name);
+        } else {
+          if (!ns_obj.has(m.name)) return nullptr;
+          fnv = &ns_obj.get(m.name);
+        }
+      }
+      if (fnv == nullptr || fnv->type != culebra::Value::Function)
+        return nullptr;
+      return &fnv->get<culebra::FunctionValue>();
+    };
+    auto compare = [&](const std::string& label, const CanonSig* s,
+                       const culebra::FunctionValue* fn) {
+      if ((s == nullptr) != (fn == nullptr)) {
+        fail(label + ": table " + (s ? "resolves" : "misses") +
+             " but interp " + (fn ? "resolves" : "misses"));
+      }
+      if (!s) return;
+      const auto& ps = *fn->params;
+      if (static_cast<int>(ps.size()) != s->n_params)
+        fail(label + ": param count " + std::to_string(s->n_params) + " vs " +
+             std::to_string(ps.size()));
+      for (int i = 0; i < s->n_params; i++) {
+        const auto& a = s->params[i];
+        const auto& b = ps[static_cast<size_t>(i)];
+        bool b_has_default =
+            b.default_expr != nullptr || b.default_value != nullptr;
+        if (a.name != b.name || a.type != b.type_name ||
+            a.kw_only != b.kw_only || a.kwargs_rest != b.kwargs_rest ||
+            a.args_rest != b.args_rest || a.mut != b.mut ||
+            a.has_default != b_has_default) {
+          fail(label + ": param " + std::to_string(i) + " ('" +
+               std::string(b.name) + "') differs");
+        }
+        if (a.has_default) {
+          const auto& v = *b.default_value;
+          bool ok = false;
+          switch (a.default_kind) {
+            case CanonDefault::Nil: ok = v.type == culebra::Value::Nil; break;
+            case CanonDefault::Bool:
+              ok = v.type == culebra::Value::Bool &&
+                   (v.get<bool>() ? 1 : 0) == a.default_bits;
+              break;
+            case CanonDefault::Long:
+              ok = v.type == culebra::Value::Long &&
+                   v.get<int64_t>() == a.default_bits;
+              break;
+            case CanonDefault::Float:
+              ok = v.type == culebra::Value::Float &&
+                   std::bit_cast<int64_t>(v.get<double>()) == a.default_bits;
+              break;
+            case CanonDefault::Str:
+              ok = v.type == culebra::Value::String &&
+                   v.to_string_view() == a.default_str;
+              break;
+            default: break;
+          }
+          if (!ok)
+            fail(label + ": param '" + std::string(b.name) +
+                 "' default value differs");
+        }
+      }
+      if (s->return_type != std::string_view(fn->return_type))
+        fail(label + ": return type differs");
+      auto bnd = culebra::builtin_arity_bounds(ps);
+      if (bnd.min != s->min_arity || bnd.max != s->max_arity ||
+          bnd.variadic != s->variadic)
+        fail(label + ": arity bounds differ");
+    };
+    auto check_row = [&](const NsMethod& m) {
+      std::string label = std::string(m.ns ? m.ns : "");
+      if (m.sub && m.sub[0]) label += std::string(".") + m.sub;
+      if (!label.empty()) label += ".";
+      label += m.name;
+      compare(label, _canon_sig(&m), interp_fn(m));
+    };
+    for (const auto& m : kNsMethods) check_row(m);
+    for (const auto& m : kBuiltinFns) check_row(m);
+    for (const auto& m : _wrapped_ns_methods()) check_row(m);
+    // The value-type built-in tables, both directions.
+    auto check_table = [&](const auto& interp_tbl,
+                           const culebra::CanonSigTable& canon_tbl,
+                           const char* tname) {
+      size_t fn_entries = 0;
+      for (const auto& [name, mapped] : interp_tbl) {
+        const culebra::Value& fnv = [&]() -> const culebra::Value& {
+          if constexpr (std::is_same_v<std::decay_t<decltype(mapped)>,
+                                       culebra::IterBuiltin>) {
+            return mapped.fn;
+          } else {
+            return mapped;
+          }
+        }();
+        if (fnv.type != culebra::Value::Function) continue;
+        fn_entries++;
+        auto it = canon_tbl.find(name);
+        std::string label = std::string(tname) + "." + std::string(name);
+        if (it == canon_tbl.end()) fail(label + ": missing from canon table");
+        compare(label, it->second, &fnv.get<culebra::FunctionValue>());
+      }
+      if (fn_entries != canon_tbl.size())
+        fail(std::string(tname) + ": canon table has extra entries");
+    };
+    check_table(culebra::ObjectValue().builtins(), culebra::canon_object_sigs(),
+                "Object");
+    check_table(culebra::ArrayValue().builtins(), culebra::canon_array_sigs(),
+                "Array");
+    check_table(culebra::string_builtins(), culebra::canon_string_sigs(),
+                "String");
+    check_table(culebra::set_builtins(), culebra::canon_set_sigs(), "Set");
+    check_table(culebra::tuple_builtins(), culebra::canon_tuple_sigs(),
+                "Tuple");
+    check_table(culebra::TensorValue(culebra::TensorPtr{}).builtins(),
+                culebra::canon_tensor_sigs(), "Tensor");
+    check_table(culebra::iterator_builtins(), culebra::canon_iterator_sigs(),
+                "Iterator");
+    // Namespace coverage (kept from the original drift check; also enforced
+    // by the generator at generation time).
     for (const auto& [key, sym] : env.dictionary) {
       if (sym.val.type != culebra::Value::Object) continue;
-      std::string_view n(key);
-      if (!_is_known_ns(n)) {
-        std::fprintf(stderr,
-            "culebra: JIT namespace drift — interp binds '%s' but "
-            "stdlib_jit.h::kNsMethods does not cover it. Add adapters "
-            "and table rows for it.\n",
-            std::string(n).c_str());
-        std::abort();
-      }
+      if (!_is_known_ns(key))
+        fail("interp binds namespace '" + std::string(key) +
+             "' but stdlib_jit.h::kNsMethods does not cover it");
     }
     return true;
   }();
   (void)checked;
 }
 #else
-inline void _check_ns_drift_once() {}
+inline void _check_canon_sigs_once() {}
 #endif
 
 extern "C" {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_namespace_get(const char* name,
                                int8_t* out_tag, int64_t* out_data) {
-  _check_ns_drift_once();
+  _check_canon_sigs_once();
   std::string nm(name ? name : "");
   // Bare builtin function used as a value (`let f = inspect`, `map(type_of)`,
   // `assert_eq`). Checked before the namespace lookup since these names are
@@ -8697,14 +8746,13 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
 }
 
 // Cold arm of jit.h's emit_reject_bare_builtin_method. The codegen filter
-// (builtin method name + Nil read + no own slot) is receiver-blind, but the
-// interp rejects a bare `x.map` only when the receiver's own builtin table
-// would have dispatched it (eval_property's reject_if_bare sites); any other
-// miss — class object, class instance, plain dict, range — reads as nil.
-// Decide with the interp's tables themselves so the two can never drift:
-// throw the shared TypeError when the interp would, else return and the Nil
-// read stands. Lives here (not jit_dispatch.h) because only this header sees
-// interpreter.h via the embedding TU, like _check_ns_drift_once.
+// (builtin method name + Nil read + no own slot) is receiver-blind, but a
+// bare `x.map` is rejected only when the receiver's own builtin table would
+// have dispatched it (the tree-walker's eval_property reject_if_bare rule);
+// any other miss — class object, class instance, plain dict, range — reads
+// as nil. Decide with the canonical tables so the lanes can never drift:
+// throw the shared TypeError when the binder would dispatch, else return and
+// the Nil read stands.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_bare_builtin_reject(
     int8_t tag, int64_t data, const char* key, int64_t line, int64_t col) {
   std::string_view name(key);
@@ -8712,22 +8760,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_bare_builtin_reject(
   switch (tag) {
     case TAG_STRING:
     case TAG_STRINGVIEW:
-      would_dispatch = culebra::string_builtins().contains(name);
+      would_dispatch = culebra::canon_string_sigs().contains(name);
       break;
     case TAG_SET:
-      would_dispatch = culebra::set_builtins().contains(name);
+      would_dispatch = culebra::canon_set_sigs().contains(name);
       break;
     case TAG_TUPLE:
-      would_dispatch = culebra::tuple_builtins().contains(name);
+      would_dispatch = culebra::canon_tuple_sigs().contains(name);
       break;
     case TAG_ARRAY:
-      // Throwaway instances reach the static tables, as the drift check in
-      // culebra.h does; the ctor cost is fine on this throw-candidate path.
-      would_dispatch = culebra::ArrayValue().builtins().contains(name);
+      would_dispatch = culebra::canon_array_sigs().contains(name);
       break;
     case TAG_TENSOR:
-      would_dispatch =
-          culebra::TensorValue(culebra::TensorPtr{}).builtins().contains(name);
+      would_dispatch = culebra::canon_tensor_sigs().contains(name);
       break;
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(data);
@@ -8737,7 +8782,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_bare_builtin_reject(
       // A user property — own or proto, e.g. a getter that returned nil —
       // is first-class on both backends; never reject it.
       if (_find_property(obj, key)) return;
-      // interp's ObjectValue::has(): own props ∪ the dict builtins.
+      // interp's ObjectValue::has(): own props ∪ the dict builtins. This arm
+      // deliberately stays on the hand-written shared.h set rather than
+      // canon_object_sigs(): the interp's own TAG_OBJECT reject site reads
+      // is_object_builtin_method_name — not the builtins table — so lockstep
+      // with it is what keeps the lanes symmetric. Unified in B7-f.
       auto has = [&](const char* k) {
         return _find_property(obj, k) != nullptr ||
                culebra::is_object_builtin_method_name(k);
@@ -8745,7 +8794,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_bare_builtin_reject(
       would_dispatch =
           culebra::is_object_builtin_method_name(name) ||
           (has("next") && (has("has_next") || has("iter")) &&
-           culebra::iterator_builtins().contains(name));
+           culebra::canon_iterator_sigs().contains(name));
       break;
     }
     default:
