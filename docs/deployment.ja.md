@@ -146,36 +146,55 @@ file ./my-program-linux
 ## 2. C++ ホストへの Culebra 埋め込み
 
 Culebraはheader-onlyです。ヘッダをincludeし、JITを使う場合は
-LLVMをリンクすれば、C++ からインタプリタやJITを駆動できます。
+LLVMをリンクすれば、C++ からbytecode VMやJITを駆動できます。
 
 ### 最小例
 
 ```cpp
 #include <culebra.h>
-#include <stdlib_interp.h>
+#include <vm_embed.h>
 
 int main() {
-  auto env = culebra::environment();  // stdlib をバインド
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;   // stdlib install 済み・trait 登録済み
 
-  // parse() が返す AST は string_view でこのバッファを参照するので、
-  // AST より先に破棄されてはいけない — 一時オブジェクトではなく変数に。
-  std::string src = "1 + 2";
+  culebra::vm::Value val;
   std::vector<std::string> msgs;
-  auto ast = culebra::parse("<inline>", src, msgs);
-
-  culebra::Value val;
-  culebra::interpret(ast, env, val, msgs, culebra::Debugger());
+  embed.run_source("<inline>", "1 + 2", val, msgs);
   // val.to_long() == 3
 }
 ```
 
-JITを使う場合は`<stdlib_jit.h>`を追加し、起動時に
-`culebra::install_jit_stdlib()`を1回呼んで、`interpret`の代わりに
-`culebra::JIT::run(ast)`を呼びます。
+`vm::Embed`はセッションです。各`run_source`はそれまでの実行が
+作ったトップレベル束縛を見ることができ、ホストは実行後にそれを
+読み戻したり（`embed.global("x")`）、呼び出したり（後述の
+`embed.call`）できます。独立したエンジンインスタンスごとに1つの
+`Embed`を使ってください。`run_source`はソースをコピーして保持
+します（parse の AST はそのコピーを string_view で参照し、
+参照するプログラムが生きている間セッションが所有します）。
+ホスト側で parse 済みの入力には低レベルの
+`run(ast, source, ...)`を使い、AST のトークンが参照するバッファを
+渡してください。
 
-スクリプトが`Sys.argv`として見る値は`environment()`の引数ではなく
-プロセス全体のホルダです（`environment()`はworkerスレッド上でも
-遅延構築されるため）。起動時に1回入れてください:
+CLI と同じようにプログラム全体（import 解決・stdlib preamble の
+splice 込み）を動かすには、loader で読み込んで module list を
+渡します:
+
+```cpp
+culebra::ModuleLoader loader;
+auto modules = loader.load_program(path, entry_source, msgs);
+culebra::splice_stdlib_preamble(modules);
+culebra::vm::Value val;
+embed.run(modules, val, msgs);
+```
+
+LLVMレーンを使う場合は`<stdlib_jit.h>`を追加し、起動時に
+`culebra::install_jit_stdlib()`を1回呼んで、
+`culebra::JIT::run(ast)`を使います。
+
+スクリプトが`Sys.argv`として見る値はプロセス全体のホルダです。
+起動時に1回入れてください:
 
 ```cpp
 culebra::sys_argv() = {"--verbose", "input.txt"};
@@ -189,7 +208,9 @@ culebra::sys_argv() = {"--verbose", "input.txt"};
 
 ```cpp
 std::thread([&]{
-  auto env = culebra::environment();
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;
   // ... メインスレッドとは独立 ...
 }).detach();
 ```
@@ -258,20 +279,21 @@ culebra::Runtime trusted, sandbox;
 
 ### C++ からスクリプト関数を呼ぶ
 
-スクリプト実行後、トップレベルの`fn`や`let f = fn ...`は
-`Environment`に登録されています。`culebra::call`でC++ から呼べます:
+実行後、トップレベルの`fn`や`let f = fn ...`はセッションに
+残っています。`Embed::call`でC++ から呼べます:
 
 ```cpp
 // スクリプト: fn update(x, y) { x + y * 2 }
-auto v = culebra::call(env, "update",
-                      {culebra::Value(1L), culebra::Value(2L)});
+std::vector<culebra::vm::Value> args;
+args.emplace_back(int64_t{1});
+args.emplace_back(int64_t{2});
+auto v = embed.call("update", std::move(args));
 // v.to_long() == 5
 ```
 
-`call`は位置引数を位置パラメータにバインドし、あふれた分を
-`__ARGS__`にまとめ、トップレベルの`return`を戻り値として返します。
-デフォルト値付きパラメータの解決はこのヘルパーでは行わないので、
-位置引数はすべて明示的に渡してください。
+`call`は位置引数を位置パラメータにバインドします。`vm::Value`の
+引数は呼び出しが消費します（新しい vector を渡す）。結果は
+返されたハンドルが所有します。
 
 ### スクリプトエラーの扱い
 
@@ -288,12 +310,16 @@ public:
 };
 ```
 
-`culebra::interpret` / `culebra::call` / `culebra::JIT::run`など
-ユーザコードを駆動する経路をくるむ形でcatchします:
+`Embed::call` / `culebra::JIT::run`などユーザコードを駆動する
+経路をくるむ形でcatchします（`Embed::run*`は例外でなく`msgs`で
+報告します — CLI が印字するのと同じテキストです）:
 
 ```cpp
 try {
-  culebra::call(env, "update", {culebra::Value(1L), culebra::Value("oops")});
+  std::vector<culebra::vm::Value> args;
+  args.emplace_back(int64_t{1});
+  args.emplace_back(std::string_view("oops"));
+  embed.call("update", std::move(args));
 } catch (const culebra::CulebraError& e) {
   std::println(stderr, "{}: {} at {}:{}",
                e.kind, e.what(), e.line, e.col);
@@ -310,53 +336,36 @@ try {
 `IndexError`, `KeyError`, `AssertionError`, `InternalError`）は
 [言語仕様 §15](language.ja.md) を参照。
 
-スクリプト側`throw expr`でユーザが投げた値は別の
-`culebra::CulebraException`として届きます（生の`JitValue`を保
-持）。通常は埋め込み側でこれを直接catchせず、スクリプト側で
-`try`/`catch`してからkind付きの`CulebraError`として届けるの
-が定石です。
+`Embed::call`に届いたスクリプト側`throw expr`はホスト向けに
+変換されます: 投げられたオブジェクトの`kind`/`message`がそのまま
+`CulebraError`のフィールドになる（それ以外は表示形で届く）ので、
+「catch CulebraError」の契約は user throw にも通用します。
+（`Embed::run*`は例外でなく`msgs`で報告します — CLI が印字する
+のと同じテキストです。）
 
 ### ホスト関数の定義
 
-`culebra::define`でC++ のcallableをスクリプトから見える関数
-として登録します。引数の型と戻り値の型はcallableのシグネチャ
-から自動推論されます。
+`Embed::define`でC++ のcallableをスクリプトから見える関数として
+登録します。引数の型と戻り値の型はcallableのシグネチャから
+自動推論されます。
 
 ```cpp
-culebra::define(env, "log", [](const std::string& msg) {
+embed.define("log", [](std::string msg) {
   std::cout << msg << "\n";
 }, {"msg"});
 
-culebra::define(env, "host_add",
-                [](long a, long b) { return a + b; }, {"a", "b"});
+embed.define("host_add",
+             [](int64_t a, int64_t b) { return a + b; }, {"a", "b"});
 ```
 
-サポートする引数・戻り値の型: `long`, `int`, `double`, `float`,
-`bool`, `std::string`, `std::string_view`, `const std::string&`,
-`culebra::Value`（透過）。推論された型はスクリプト側パラメータの
-型注釈（`Long`, `Float`, `Bool`, `String`）にマップされるので、
-誤った型の引数はcallableに入る前に呼び出し側で弾かれます。
-
-パラメータ名を省略すると`_arg0`, `_arg1`, ... になります —
-スクリプトから`fn.parameters()`で内省される場合は明示的に
-指定してください。
-
-`FunctionValue`を直接組みたい場合（可変長、デフォルト値、envを
-直接触りたい等）はraw形式で:
-
-```cpp
-env->initialize("custom",
-    culebra::Value(culebra::FunctionValue(
-        {{"msg", false}},
-        [](std::shared_ptr<culebra::Environment> env) {
-          // 手書き: env から引数を取って Value を返す
-          return culebra::Value();
-        })),
-    /*mut=*/false);
-```
-
-raw形式の実例は`include/stdlib_interp.h`のMath.abs / IO.print /
-Random.uniform等に多数あります。
+サポートする引数・戻り値の型: `int64_t`, `long long`, `int`,
+`double`, `float`, `bool`, `std::string`, `std::string_view`,
+`culebra::vm::Value`（透過）。誤った型の引数は callable に入る前に
+呼び出し側で catch 可能な`TypeError`として弾かれ、引数の個数違いは
+`ArityError`になります。バインドは位置引数のみ（ホスト関数は
+キーワード引数を取りません）。メソッド・ハンドル・キーワード束縛
+などのより豊かな表面が要る場合は`culebra wrap`（§3）でクラスを
+宣言してください — AOT 含む全レーンに効きます。
 
 ### 自分の embedder から AOT 経路を組み込む
 
@@ -384,7 +393,7 @@ preambleが`println` / `inspect`を定義している。（`Stringer` / `Eq` /
 ```cpp
 #include <culebra.h>
 #include <module_loader.h>
-#include <stdlib_interp.h>
+#include <stdlib_preamble.h>
 #include <stdlib_jit.h>
 
 int main() {
@@ -440,13 +449,14 @@ defineしてはいけない**。AOT archiveの生成元TU
 
 * [`tests/embedding/mt_smoke.cc`](../tests/embedding/mt_smoke.cc) —
   4つのホストスレッドがそれぞれtry/catch付きスクリプトをparse +
-  interpret、加えてJITパスでも4スレッド。合計240並行実行。
+  Embed セッションを実行、加えてJITパスでも4スレッド。合計240並行実行。
 * [`tests/embedding/mi_smoke.cc`](../tests/embedding/mi_smoke.cc) —
-  1スレッド内で2つのRuntimeを交互に切替え、独立したPRNG状態
+  1スレッド内で2つのRuntime（それぞれ自分のEmbedを持つ）を
+  交互に切替え、独立したPRNG状態
   と独立したJITフックセットを検証。
 * [`tests/embedding/define_smoke.cc`](../tests/embedding/define_smoke.cc)
-  — `culebra::define`を経由してスクリプトと`culebra::call`両方から
-  C++ 関数を呼び、自動付与される型注釈の動作も確認。
+  — `Embed::define`を経由してスクリプトと`Embed::call`両方から
+  C++ 関数を呼び、推論型による誤引数の拒否も確認。
 
 ## 3. C++ ライブラリのラッピング（`culebra wrap`）
 

@@ -86,6 +86,35 @@ class Session {
     return false;
   }
 
+  // A loader's whole module list as one session unit (the embedding lane;
+  // Compiler::compile_session_modules holds the module-isolation story). The
+  // modules are retained for the session — a closure the host later calls
+  // reaches its bytecode through the program, and its tokens through the
+  // module sources. The spliced stdlib preamble's registrations are noted so
+  // a later per-input delta cannot register a module twice (a second
+  // registration mints a second namespace instance).
+  bool run_modules(const std::vector<LoadedModule>& modules,
+                   std::vector<std::string>& msgs) {
+    try {
+      auto prog =
+          std::make_unique<VmProgram>(Compiler::compile_session_modules(modules));
+      for (const auto& m : modules) {
+        std::unordered_set<std::string_view> tokens;
+        if (m.ast) collect_ast_tokens(*m.ast, tokens);
+        for (auto t : stdlib_preamble_triggers(tokens)) registered_.emplace(t);
+      }
+      retained_modules_.push_back(modules);  // shared_ptrs: sources + ASTs
+      auto& kept = retained_.keep(nullptr, modules.back().ast, std::move(prog));
+      Exec::run(*kept.prog);
+      return true;
+    } catch (const CulebraError& e) {
+      msgs.push_back(format_error_message(e));
+    } catch (const std::exception& e) {
+      msgs.push_back(e.what());
+    }
+    return false;
+  }
+
   // Take the value a session unit left in the result cell, clearing it. The
   // REPL echoes it; a caller that has no prompt still has to take it, or the
   // input's last value stays pinned for the rest of the session.
@@ -103,6 +132,9 @@ class Session {
 
  private:
   RetainedRuns retained_;
+  // Module lists run_modules kept alive (shared_ptr'd sources + ASTs): a
+  // retained program's chunks hold string_views into them.
+  std::vector<std::vector<LoadedModule>> retained_modules_;
   std::set<std::string, std::less<>> registered_;
 };
 

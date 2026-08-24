@@ -2,41 +2,23 @@
 // strings, so a String can hold bytes that aren't valid UTF-8. The
 // character-level methods (iter / code_points / graphemes) must map an
 // invalid byte to U+FFFD (the replacement character) and advance one
-// byte — never silently drop it. This pins that behavior on the interp
-// (the JIT shares the same _decode_one_utf8 / decode_codepoint policy).
+// byte — never silently drop it. This pins that behavior on the VM
+// executor (the JIT shares the same decode_codepoint policy).
 //
 // We can't write a lone 0xFF from culebra source (no \x escape), so the
 // invalid String is supplied from C++ via a host function.
 
-#include <deque>
 #include <iostream>
 #include <string>
 
 #include <culebra.h>
-#include <stdlib_interp.h>
+#include <vm_embed.h>
 
 // Unity-TU entry (smoke_suite.cc): the named namespace keeps
 // this file's internals from colliding with the other smokes.
 namespace utf8_invalid_smoke_ns {
 
 namespace {
-
-// parse()'s AST holds string_view tokens into its source buffer, and
-// callers here keep using the returned AST beyond this call, so the buffer
-// needs a stable, permanent home. A deque never relocates existing elements
-// on growth (unlike vector, which could move a short string's SSO storage),
-// matching repl.h's retained_sources_.
-std::shared_ptr<peg::Ast> parse_or_die(const char* code) {
-  static std::deque<std::string> sources;
-  sources.emplace_back(code);
-  std::vector<std::string> msgs;
-  auto ast = culebra::parse("<utf8>", sources.back(), msgs);
-  if (!ast) {
-    for (auto& m : msgs) std::cerr << m;
-    std::exit(1);
-  }
-  return ast;
-}
 
 bool check(bool cond, const char* what) {
   if (!cond) std::cerr << "FAIL: " << what << "\n";
@@ -46,19 +28,20 @@ bool check(bool cond, const char* what) {
 }  // namespace
 
 int run() {
-  auto env = culebra::environment();
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;
   bool ok = true;
 
   // Supply "a\xffb" — 'a', a lone 0xFF (invalid UTF-8), 'b'.
-  culebra::define(env, "bad_utf8",
-                  []() -> std::string { return std::string("a\xff" "b"); }, {});
+  embed.define("bad_utf8",
+               []() -> std::string { return std::string("a\xff" "b"); }, {});
 
   auto run_long = [&](const char* code, long expected, const char* what) {
-    auto ast = parse_or_die(code);
-    culebra::Value v;
+    culebra::vm::Value v;
     std::vector<std::string> msgs;
-    if (!culebra::interpret(ast, env, v, msgs, culebra::Debugger())) {
-      for (auto& m : msgs) std::cerr << m;
+    if (!embed.run_source("<utf8>", code, v, msgs)) {
+      for (auto& m : msgs) std::cerr << m << "\n";
       ok &= check(false, what);
       return;
     }

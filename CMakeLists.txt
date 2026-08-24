@@ -1531,12 +1531,12 @@ endif()
 if(CULEBRA_ENABLE_HTTP)
   target_link_libraries(smoke_suite ${_ssl_libs})
 endif()
-# The embedding TUs include stdlib_interp.h -> compress.h inline, which calls
+# The embedding TUs include vm_embed.h -> stdlib_jit.h -> compress.h inline, which calls
 # zlib directly, so the suite needs libz.
 target_link_libraries(smoke_suite ZLIB::ZLIB)
-# ... and stdlib_interp.h -> fswatcher.h calls FSEvents on macOS.
+# ... and the same stack reaches fswatcher.h, which calls FSEvents on macOS.
 target_link_libraries(smoke_suite ${_core_frameworks})
-# stdlib_interp.h -> sqlite.h inline wrappers call sqlite3_* directly.
+# ... and sqlite.h inline wrappers, which call sqlite3_* directly.
 if(CULEBRA_ENABLE_SQLITE)
   target_link_libraries(smoke_suite culebra_sqlite3)
 endif()

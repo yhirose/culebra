@@ -794,7 +794,7 @@ _run-tests BACKEND:
     # per-file run_diff_vm_jit above with systematic seam coverage.
     # run.sh exits non-zero on any divergence, which aborts `test`.
     # `culebra wrap` end-to-end: extended binary from the examples/wrap
-    # declaration, interp==jit==AOT on the wrapped class. Rebuilds the
+    # declaration, vm==jit==AOT on the wrapped class. Rebuilds the
     # tree into ~/.cache/culebra-wrap (ccache-incremental when available)
     # — the toolchain-sensitive Phase 4 lane, exercised on both CI OSes
     # unless SKIP_HEAVY (the slow macOS runner skips it like the other

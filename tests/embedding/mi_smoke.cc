@@ -1,15 +1,17 @@
-// Multi-instance smoke test: two Runtimes coexist on the same thread,
-// holding independent state (RNG seed, exception carriers, GC).
-// Verifies the RuntimeScope + isolated-state guarantee.
+// Multiple-instance smoke test: two Runtimes (each with its own Embed
+// session) on ONE host thread must stay fully independent — closure state,
+// PRNG state, per-Runtime JIT hook sets. (The interp-era env/call surface
+// this exercised retired with the tree-walker — Phase 4 B7-d; an Embed's
+// per-instance session is what the two env shared_ptrs used to be.)
 
+#include <cstdint>
 #include <deque>
 #include <iostream>
+#include <string>
 
 #include <culebra.h>
-#include <stdlib_interp.h>
-#ifdef CULEBRA_JIT_ENABLED
 #include <stdlib_jit.h>
-#endif
+#include <vm_embed.h>
 
 // Unity-TU entry (smoke_suite.cc): the named namespace keeps
 // this file's internals from colliding with the other smokes.
@@ -17,10 +19,6 @@ namespace mi_smoke_ns {
 
 namespace {
 
-// Script A maintains its own counter; Script B does too. Each is seeded
-// independently. Without isolation, B's writes would leak into A.
-// Script defines a stateful function the host can call repeatedly via
-// culebra::call. Each Runtime keeps its own closed-over state.
 const char* kScriptInit = R"(
 let mut counter = 0
 fn step() {
@@ -30,11 +28,9 @@ fn step() {
 )";
 
 // parse()'s AST holds string_view tokens into its source buffer, and
-// callers here keep the returned AST — and anything built from it, like a
-// `fn` bound into an Environment — alive well past this call, so the buffer
-// needs a stable, permanent home. A deque never relocates existing elements
-// on growth (unlike vector, which could move a short string's SSO storage),
-// matching repl.h's retained_sources_.
+// callers keep using the returned AST beyond this call, so the buffer
+// needs a stable, permanent home (JIT::run below; Embed::run_source owns
+// its own copy).
 std::shared_ptr<peg::Ast> parse_or_die(const char* code) {
   static std::deque<std::string> sources;
   sources.emplace_back(code);
@@ -52,33 +48,33 @@ std::shared_ptr<peg::Ast> parse_or_die(const char* code) {
 int run() {
   culebra::Runtime rt_a, rt_b;
 
-  std::shared_ptr<culebra::Environment> env_a, env_b;
+  // One Embed per Runtime; constructed under that Runtime's scope so its
+  // stdlib install and traits land there.
+  std::unique_ptr<culebra::vm::Embed> embed_a, embed_b;
 
   // Initialize each Runtime independently.
   {
     culebra::RuntimeScope scope(rt_a);
-    env_a = culebra::environment();
-    culebra::Value v;
+    embed_a = std::make_unique<culebra::vm::Embed>();
+    culebra::vm::Value v;
     std::vector<std::string> msgs;
-    culebra::interpret(parse_or_die(kScriptInit), env_a, v, msgs,
-                       culebra::Debugger());
+    embed_a->run_source("<mi>", kScriptInit, v, msgs);
   }
   {
     culebra::RuntimeScope scope(rt_b);
-    env_b = culebra::environment();
-    culebra::Value v;
+    embed_b = std::make_unique<culebra::vm::Embed>();
+    culebra::vm::Value v;
     std::vector<std::string> msgs;
-    culebra::interpret(parse_or_die(kScriptInit), env_b, v, msgs,
-                       culebra::Debugger());
+    embed_b->run_source("<mi>", kScriptInit, v, msgs);
   }
 
-  // Alternate calls into each Runtime's `step` function via the
-  // embedding helper. Each Runtime should see only its own counter.
+  // Alternate calls into each Runtime's `step` function via the embedding
+  // helper. Each Runtime should see only its own counter.
   bool ok = true;
   for (int i = 1; i <= 5; ++i) {
     {
       culebra::RuntimeScope scope(rt_a);
-      auto v = culebra::call(env_a, "step", {});
+      auto v = embed_a->call("step");
       if (v.to_long() != i) {
         std::cerr << "A step " << i << " got " << v.to_long() << "\n";
         ok = false;
@@ -86,7 +82,7 @@ int run() {
     }
     {
       culebra::RuntimeScope scope(rt_b);
-      auto v = culebra::call(env_b, "step", {});
+      auto v = embed_b->call("step");
       if (v.to_long() != i) {
         std::cerr << "B step " << i << " got " << v.to_long() << "\n";
         ok = false;
@@ -143,6 +139,17 @@ int run() {
     std::cerr << "B's state contaminated by A: a2=" << a_second
               << " b2=" << b_second << "\n";
     ok = false;
+  }
+
+  // Tear the Embeds down under their own Runtime's scope (their cells and
+  // teardown hooks belong to it).
+  {
+    culebra::RuntimeScope scope(rt_a);
+    embed_a.reset();
+  }
+  {
+    culebra::RuntimeScope scope(rt_b);
+    embed_b.reset();
   }
 
 #ifdef CULEBRA_JIT_ENABLED

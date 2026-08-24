@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end test for `culebra wrap` (Phase 4 / P4-3): build
 # an extended binary from the examples/wrap declaration, then assert the
-# wrapped class behaves identically under interp, --jit, and an AOT
+# wrapped class behaves identically under --vm, --jit, and an AOT
 # binary produced BY the extended binary. Requires a source checkout
 # (the path baked into the driver) and a working cmake toolchain — this
 # is the toolchain-sensitive phase, exercised on both CI OSes.
@@ -28,9 +28,9 @@ if ! "$CULEBRA" wrap "$ROOT/examples/wrap/vec2_binding.cpp" -o "$EXT"; then
 fi
 
 DEMO="$ROOT/examples/wrap/demo.cul"
-if ! "$EXT" --tree "$DEMO" > "$OUT/interp.txt" 2>&1; then
-  echo "wrap_test FAIL: extended binary (interp) crashed:" >&2
-  cat "$OUT/interp.txt" >&2
+if ! "$EXT" --vm "$DEMO" > "$OUT/vm.txt" 2>&1; then
+  echo "wrap_test FAIL: extended binary (--vm) crashed:" >&2
+  cat "$OUT/vm.txt" >&2
   exit 1
 fi
 if ! "$EXT" --jit "$DEMO" > "$OUT/jit.txt" 2>&1; then
@@ -38,14 +38,14 @@ if ! "$EXT" --jit "$DEMO" > "$OUT/jit.txt" 2>&1; then
   cat "$OUT/jit.txt" >&2
   exit 1
 fi
-if ! diff "$OUT/interp.txt" "$OUT/jit.txt"; then
-  echo "wrap_test FAIL: interp vs jit output diverged" >&2
+if ! diff "$OUT/vm.txt" "$OUT/jit.txt"; then
+  echo "wrap_test FAIL: vm vs jit output diverged" >&2
   exit 1
 fi
 
 # The stock binary must NOT know the wrapped namespace (proves the
 # binding came from the declaration, not from the core).
-if "$CULEBRA" --tree "$DEMO" > /dev/null 2>&1; then
+if "$CULEBRA" --vm "$DEMO" > /dev/null 2>&1; then
   echo "wrap_test FAIL: stock binary unexpectedly resolves Geo.Vec2" >&2
   exit 1
 fi

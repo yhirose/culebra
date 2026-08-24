@@ -1,36 +1,19 @@
-// culebra::define smoke test: register C++ callables as host functions
+// vm::Embed::define smoke test: register C++ callables as host functions
 // with auto-deduced signatures, then invoke them from script and from
-// C++ via culebra::call.
+// C++ via Embed::call. (The interp-era culebra::define/call surface this
+// exercised retired with the tree-walker — Phase 4 B7-d.)
 
-#include <deque>
 #include <iostream>
 #include <string>
 
 #include <culebra.h>
-#include <stdlib_interp.h>
+#include <vm_embed.h>
 
 // Unity-TU entry (smoke_suite.cc): the named namespace keeps
 // this file's internals from colliding with the other smokes.
 namespace define_smoke_ns {
 
 namespace {
-
-// parse()'s AST holds string_view tokens into its source buffer, and
-// callers here keep using the returned AST beyond this call, so the buffer
-// needs a stable, permanent home. A deque never relocates existing elements
-// on growth (unlike vector, which could move a short string's SSO storage),
-// matching repl.h's retained_sources_.
-std::shared_ptr<peg::Ast> parse_or_die(const char* code) {
-  static std::deque<std::string> sources;
-  sources.emplace_back(code);
-  std::vector<std::string> msgs;
-  auto ast = culebra::parse("<dfn>", sources.back(), msgs);
-  if (!ast) {
-    for (auto& m : msgs) std::cerr << m;
-    std::exit(1);
-  }
-  return ast;
-}
 
 bool check(bool cond, const char* what) {
   if (!cond) std::cerr << "FAIL: " << what << "\n";
@@ -40,47 +23,56 @@ bool check(bool cond, const char* what) {
 }  // namespace
 
 int run() {
-  auto env = culebra::environment();
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;
   bool ok = true;
 
   // long, long -> long
-  culebra::define(env, "host_add",
-                  [](long a, long b) -> long { return a + b; }, {"a", "b"});
+  embed.define("host_add",
+               [](int64_t a, int64_t b) -> int64_t { return a + b; },
+               {"a", "b"});
 
-  // const string& -> void (side effect captures into the host)
+  // const string -> void (side effect captures into the host)
   std::string last_msg;
-  culebra::define(env, "host_log",
-                  [&last_msg](const std::string& m) { last_msg = m; }, {"m"});
+  embed.define("host_log", [&last_msg](std::string m) { last_msg = m; },
+               {"m"});
 
   // double -> double
-  culebra::define(env, "host_neg",
-                  [](double x) -> double { return -x; }, {"x"});
+  embed.define("host_neg", [](double x) -> double { return -x; }, {"x"});
 
   // Value passthrough
-  culebra::define(env, "host_id",
-                  [](culebra::Value v) -> culebra::Value { return v; }, {"v"});
+  embed.define("host_id",
+               [](culebra::vm::Value v) -> culebra::vm::Value { return v; },
+               {"v"});
 
-  // (1) Call from C++ via culebra::call
-  ok &= check(culebra::call(env, "host_add",
-                            {culebra::Value(int64_t{3}), culebra::Value(int64_t{4})})
-                  .to_long() == 7,
-              "host_add via call");
+  // (1) Call from C++ via Embed::call
+  {
+    std::vector<culebra::vm::Value> args;
+    args.emplace_back(int64_t{3});
+    args.emplace_back(int64_t{4});
+    ok &= check(embed.call("host_add", std::move(args)).to_long() == 7,
+                "host_add via call");
+  }
+  {
+    std::vector<culebra::vm::Value> args;
+    args.emplace_back(std::string_view("hello"));
+    embed.call("host_log", std::move(args));
+    ok &= check(last_msg == "hello", "host_log captured msg");
+  }
+  {
+    std::vector<culebra::vm::Value> args;
+    args.emplace_back(2.5);
+    ok &= check(embed.call("host_neg", std::move(args)).to_double() == -2.5,
+                "host_neg");
+  }
 
-  culebra::call(env, "host_log",
-                {culebra::Value(std::string("hello"))});
-  ok &= check(last_msg == "hello", "host_log captured msg");
-
-  ok &= check(culebra::call(env, "host_neg", {culebra::Value(2.5)})
-                  .get<double>() == -2.5,
-              "host_neg");
-
-  // (2) Call from script via interpret
+  // (2) Call from script via run_source
   auto run = [&](const char* code, long expected) {
-    auto ast = parse_or_die(code);
-    culebra::Value v;
+    culebra::vm::Value v;
     std::vector<std::string> msgs;
-    if (!culebra::interpret(ast, env, v, msgs, culebra::Debugger())) {
-      for (auto& m : msgs) std::cerr << m;
+    if (!embed.run_source("<dfn>", code, v, msgs)) {
+      for (auto& m : msgs) std::cerr << m << "\n";
       return false;
     }
     return v.to_long() == expected;
@@ -88,14 +80,15 @@ int run() {
   ok &= check(run("host_add(10, 20)", 30), "script: host_add(10, 20)");
   ok &= check(run("host_id(99)", 99), "script: host_id passthrough");
 
-  // (3) Type annotation surfaces at call sites — passing a String
-  // where Long is expected should raise.
+  // (3) The deduced parameter type surfaces at call sites — passing a
+  // String where Long is expected raises a catchable TypeError.
   {
-    auto ast = parse_or_die("host_add('x', 1)");
-    culebra::Value v;
+    culebra::vm::Value v;
     std::vector<std::string> msgs;
-    bool threw = !culebra::interpret(ast, env, v, msgs, culebra::Debugger());
-    ok &= check(threw, "type annotation rejects wrong-typed arg");
+    bool ran = embed.run_source(
+        "<dfn>", "try { host_add('x', 1) } catch e { e.kind }", v, msgs);
+    ok &= check(ran && v.to_string() == "TypeError",
+                "wrong-typed arg raises TypeError");
   }
 
   std::cout << (ok ? "OK\n" : "FAIL\n");

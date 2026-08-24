@@ -2800,7 +2800,10 @@ class ReplSession {
 // expression — the frame's names are its session — so which session is
 // current is a swappable pointer rather than a fixed object.
 inline ReplSession*& current_repl_session() {
-  static ReplSession* cur = nullptr;
+  // thread_local (the dbg_state shape): an embedding host may run sessions
+  // on several threads, and a debugger's expression session must not leak
+  // into another thread's REPL.
+  static thread_local ReplSession* cur = nullptr;
   return cur;
 }
 
@@ -2922,17 +2925,7 @@ class Compiler {
   // real dependency, already topologically ordered.
   static VmProgram compile_modules(const std::vector<LoadedModule>& modules,
                                    Debug debug = Debug::Off) {
-    if (modules.empty()) return {};
-    const peg::Ast* stdlib = nullptr;
-    size_t first_dep = 0;
-    if (modules.front().abs_path == kStdlibPreamblePath) {
-      stdlib = modules.front().ast.get();
-      first_dep = 1;
-    }
-    std::vector<const peg::Ast*> deps;
-    for (size_t i = first_dep; i + 1 < modules.size(); i++)
-      deps.push_back(modules[i].ast.get());
-    return compile_module(*modules.back().ast, stdlib, debug, deps);
+    return compile_module_list(modules, /*repl=*/false, debug);
   }
 
   // One REPL input. The line's top-level bindings land in the session's
@@ -2945,6 +2938,21 @@ class Compiler {
     return compile_unit(ast, {.builtin_traits = false, .repl = true});
   }
 
+  // A loader's whole module list as one SESSION unit — the embedding lane
+  // (vm_embed.h). The entry module's top-level bindings land in the current
+  // session's cells so the host can read a global or call a function after
+  // the run returns; the dependencies compile exactly as compile_modules'
+  // do (each in a scope of its own, so a dep never sees the entry's
+  // later-declared names — running the modules one by one through
+  // compile_repl_line instead would late-bind a dep's closures to session
+  // cells the entry fills afterwards, breaking that isolation). The built-in
+  // traits are the session's one-time prologue (Session::run_builtin_traits),
+  // not this unit's.
+  static VmProgram compile_session_modules(
+      const std::vector<LoadedModule>& modules, Debug debug = Debug::Off) {
+    return compile_module_list(modules, /*repl=*/true, debug);
+  }
+
   // What a REPL session runs before its first input, and again whenever a
   // later line first names a stdlib namespace: the built-in traits, then the
   // lazy-namespace registrations. An ordinary module — a registration binds
@@ -2955,6 +2963,28 @@ class Compiler {
   }
 
  private:
+  // The one home of the loader-list splitting rule: an optional spliced
+  // stdlib preamble up front, dependencies in topological order, the entry
+  // module last. Both public module entries above are two-liners over this.
+  // A session unit compiles without the built-in traits prologue — they are
+  // the session's one-time registration (Session::run_builtin_traits).
+  static VmProgram compile_module_list(
+      const std::vector<LoadedModule>& modules, bool repl, Debug debug) {
+    if (modules.empty()) return {};
+    const peg::Ast* stdlib = nullptr;
+    size_t first_dep = 0;
+    if (modules.front().abs_path == kStdlibPreamblePath) {
+      stdlib = modules.front().ast.get();
+      first_dep = 1;
+    }
+    std::vector<const peg::Ast*> deps;
+    for (size_t i = first_dep; i + 1 < modules.size(); i++)
+      deps.push_back(modules[i].ast.get());
+    return compile_unit(*modules.back().ast,
+                        {.stdlib = stdlib, .builtin_traits = !repl,
+                         .repl = repl, .debug = debug, .deps = &deps});
+  }
+
   struct UnitOpts {
     // The `<stdlib>` module the loader splices ahead of the entry one.
     const peg::Ast* stdlib = nullptr;
@@ -3045,12 +3075,20 @@ class Compiler {
       for (size_t i = 0; opts.deps && i < opts.deps->size(); i++) {
         const peg::Ast& dep = *(*opts.deps)[i];
         const FuncInfo* saved = main.info_;
+        // A dependency is module-scoped even in a session unit
+        // (compile_session_modules): under repl_ its unresolved names would
+        // fall back to session cells — which the ENTRY fills — so a dep
+        // could read a name the entry declares after the import (measured:
+        // module_scope_smoke's read-side contract broke exactly this way).
+        const bool saved_repl = main.repl_;
+        main.repl_ = false;
         main.info_ = &dep_infos[i];
         main.push_scope(dep, /*owned_mark=*/false);
         run_prologue(&dep);
         main.emit_module_export(dep);
         main.pop_scope();
         main.info_ = saved;
+        main.repl_ = saved_repl;
       }
       if (opts.repl) {
         // The interp REPL echoes what `interpret()` returns — the value of

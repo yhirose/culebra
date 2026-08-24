@@ -1,18 +1,17 @@
-// Single-AST embedder entries must behave like the module path. `culebra::
-// interpret(ast)` and `culebra::JIT::run(ast)` bypass interpret_modules /
-// run_modules, and both have to see the built-in trait preamble — otherwise
-// `Comparable` is an undefined name and its default methods (lt/le/gt/ge,
-// Eq's neq) are missing on the embedder API only.
+// Single-input embedder entries must behave like the module path.
+// `vm::Embed::run_source` and `culebra::JIT::run(ast)` bypass the loader,
+// and both have to see the built-in trait preamble — otherwise `Comparable`
+// is an undefined name and its default methods (lt/le/gt/ge, Eq's neq) are
+// missing on the embedder API only. (The interp-era `culebra::interpret`
+// lane this exercised retired with the tree-walker — Phase 4 B7-d.)
 
 #include <deque>
 #include <iostream>
 #include <string>
 
 #include <culebra.h>
-#include <stdlib_interp.h>
-#ifdef CULEBRA_JIT_ENABLED
 #include <stdlib_jit.h>
-#endif
+#include <vm_embed.h>
 
 // Unity-TU entry (smoke_suite.cc): the named namespace keeps
 // this file's internals from colliding with the other smokes.
@@ -22,8 +21,8 @@ namespace {
 
 // Exercises only preamble-provided machinery: the six Comparable defaults on
 // top of a hand-written `cmp`, Eq's default `neq`, and `Comparable` as a
-// parameter type. Every check throws on failure, so both backends report the
-// same way — interpret via `msgs`, JIT via std::runtime_error.
+// parameter type. Every check throws on failure, so both lanes report the
+// same way — Embed via `msgs`, JIT via std::runtime_error.
 constexpr const char* kScript = R"(
 class Pri {
   new(v) {
@@ -50,7 +49,8 @@ if only_comparable(lo) != 0 { throw 'trait param' }
 )";
 
 // parse()'s AST holds string_view tokens into its source buffer, and the AST
-// outlives this call, so the buffer needs a stable home (see define_smoke).
+// outlives this call, so the buffer needs a stable home (see repl.h's
+// retained_sources_; Embed::run_source owns its copy instead).
 std::shared_ptr<peg::Ast> parse_or_die(const char* code) {
   static std::deque<std::string> sources;
   sources.emplace_back(code);
@@ -74,19 +74,22 @@ int run() {
   bool ok = true;
 
   {
-    auto env = culebra::environment();
-    culebra::Value v;
+    culebra::Runtime rt;
+    culebra::RuntimeScope scope(rt);
+    culebra::vm::Embed embed;
+    culebra::vm::Value v;
     std::vector<std::string> msgs;
-    bool ran = culebra::interpret(parse_or_die(kScript), env, v, msgs,
-                                  culebra::Debugger());
+    bool ran = embed.run_source("<single-ast>", kScript, v, msgs);
     if (!ran) {
-      for (auto& m : msgs) std::cerr << m;
+      for (auto& m : msgs) std::cerr << m << "\n";
     }
-    ok &= check(ran, "interpret(ast) sees the built-in traits");
+    ok &= check(ran, "Embed::run_source sees the built-in traits");
   }
 
 #ifdef CULEBRA_JIT_ENABLED
   {
+    culebra::Runtime rt;
+    culebra::RuntimeScope scope(rt);
     culebra::install_jit_stdlib();
     bool ran = true;
     try {

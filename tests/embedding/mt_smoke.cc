@@ -1,6 +1,7 @@
-// Smoke test: multiple host threads each parse + interpret a script
+// Smoke test: multiple host threads each parse + run a script
 // independently. Verifies thread_local isolation of GC, defer stack,
-// exception carriers, PRNG, and the PEG parser itself.
+// exception carriers, PRNG, the PEG parser, and the embedding session
+// (vm::Embed swaps a thread_local session pointer — Phase 4 B7-d).
 
 #include <atomic>
 #include <iostream>
@@ -9,10 +10,8 @@
 #include <vector>
 
 #include <culebra.h>
-#include <stdlib_interp.h>
-#ifdef CULEBRA_JIT_ENABLED
 #include <stdlib_jit.h>
-#endif
+#include <vm_embed.h>
 
 // Unity-TU entry (smoke_suite.cc): the named namespace keeps
 // this file's internals from colliding with the other smokes.
@@ -20,10 +19,6 @@ namespace mt_smoke_ns {
 
 namespace {
 
-// parse()'s AST holds string_view tokens into its source buffer, and
-// run_interp/run_jit below use the AST well past the parse call — so these
-// need a real, permanently-owned std::string, not a const char* (which
-// would force a short-lived temporary at each culebra::parse call).
 const std::string kScript = R"(
 let mut acc = 0
 for i in 0..1000 {
@@ -60,26 +55,22 @@ if acc != 428429 { throw "bad" }
 
 std::atomic<int> failures{0};
 
-void run_interp(int tid) {
+void run_vm(int tid) {
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;
   for (int rep = 0; rep < 50; ++rep) {
+    culebra::vm::Value val;
     std::vector<std::string> msgs;
-    auto ast = culebra::parse("<mt>", kScript, msgs);
-    if (!ast) {
-      std::cerr << "parse tid=" << tid << " rep=" << rep << " failed\n";
-      ++failures;
-      continue;
-    }
-    auto env = culebra::environment();
-    culebra::Value val;
-    if (!culebra::interpret(ast, env, val, msgs, culebra::Debugger())) {
-      std::cerr << "interp tid=" << tid << " rep=" << rep << " threw:";
+    if (!embed.run_source("<mt>", kScript, val, msgs)) {
+      std::cerr << "vm tid=" << tid << " rep=" << rep << " threw:";
       for (auto& m : msgs) std::cerr << " " << m;
       std::cerr << "\n";
       ++failures;
       continue;
     }
     if (val.to_long() != expected_sum()) {
-      std::cerr << "interp tid=" << tid << " rep=" << rep
+      std::cerr << "vm tid=" << tid << " rep=" << rep
                 << " got=" << val.to_long() << "\n";
       ++failures;
     }
@@ -90,6 +81,8 @@ void run_interp(int tid) {
 
 #ifdef CULEBRA_JIT_ENABLED
 void run_jit(int tid) {
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
   for (int rep = 0; rep < 10; ++rep) {
     std::vector<std::string> msgs;
     auto ast = culebra::parse("<mt-jit>", kCheckedScript, msgs);
@@ -110,11 +103,9 @@ void run_jit(int tid) {
 #endif
 
 int run() {
-#ifdef CULEBRA_JIT_ENABLED
   culebra::install_jit_stdlib();
-#endif
   std::vector<std::thread> ts;
-  for (int i = 0; i < 4; ++i) ts.emplace_back(run_interp, i);
+  for (int i = 0; i < 4; ++i) ts.emplace_back(run_vm, i);
 #ifdef CULEBRA_JIT_ENABLED
   for (int i = 0; i < 4; ++i) ts.emplace_back(run_jit, i);
 #endif

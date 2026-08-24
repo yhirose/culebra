@@ -5,7 +5,7 @@
 // Windows CI and is mildly timing-sensitive. This test exercises the portable
 // half — the cooperative throw itself — by setting the process SIGINT flag
 // directly (no signal, no child process, no sleeps) and checking that the
-// interpreter and the JIT throw a catchable `Interrupted`, that the flag is
+// VM executor and the JIT throw a catchable `Interrupted`, that the flag is
 // one-shot (consumed on the throw, so a `catch` can resume), and that an
 // isolate-style sticky cancel keeps its own message and is not consumed. Runs
 // on any platform that builds culebra.
@@ -18,12 +18,8 @@
 #include <vector>
 
 #include <culebra.h>
-#include <interpreter.h>
-#include <stdlib_interp.h>
-#ifdef CULEBRA_JIT_ENABLED
-#include <jit.h>
 #include <stdlib_jit.h>
-#endif
+#include <vm_embed.h>
 
 // Unity-TU entry (smoke_suite.cc): the named namespace keeps
 // this file's internals from colliding with the other smokes.
@@ -69,9 +65,9 @@ const char* kCatchLoop =
 }  // namespace
 
 int run() {
-#ifdef CULEBRA_JIT_ENABLED
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
   culebra::install_jit_stdlib();
-#endif
 
   // --- 1. throw_if_interrupted: throws "interrupted" and consumes (one-shot).
   culebra::request_interrupt();
@@ -109,22 +105,31 @@ int run() {
     culebra::current_runtime().interrupt_flag = nullptr;
   }
 
-  // --- 3. interpreter: a running program throws Interrupted, flag consumed.
+  // --- 3. VM executor: a running program throws Interrupted, flag consumed.
   {
-    auto ast = parse_or_die(kLoop);
-    auto env = culebra::environment();
-    auto interp = std::make_shared<culebra::Interpreter>();
-    interp->interrupt_flag_ = &culebra::culebra_g_sigint;
+    culebra::vm::Embed embed;
     culebra::request_interrupt();
-    bool threw = false;
-    try {
-      interp->eval(*ast, env);
-    } catch (const culebra::CulebraError& e) {
-      threw = true;
-      expect(e.kind == "Interrupted", "interp interrupted kind");
-    }
-    expect(threw, "interp program interrupted");
-    expect(!culebra::culebra_g_sigint.load(), "interp consumed flag");
+    culebra::vm::Value v;
+    std::vector<std::string> msgs;
+    bool ran = embed.run_source("<sig>", kLoop, v, msgs);
+    expect(!ran, "vm program interrupted");
+    expect(!msgs.empty() &&
+               msgs.back().find("Interrupted") != std::string::npos,
+           "vm interrupted kind");
+    expect(!culebra::culebra_g_sigint.load(), "vm consumed flag");
+  }
+
+  // --- 3b. VM catch-continue: the interrupt is caught in-script and the
+  // program resumes — the run succeeds.
+  {
+    culebra::vm::Embed embed;
+    culebra::request_interrupt();
+    culebra::vm::Value v;
+    std::vector<std::string> msgs;
+    bool ran = embed.run_source("<sig>", kCatchLoop, v, msgs);
+    expect(ran, "vm catch-continue: interrupt caught, not propagated");
+    expect(!culebra::culebra_g_sigint.load(),
+           "vm catch-continue consumed flag");
   }
 
 #ifdef CULEBRA_JIT_ENABLED

@@ -253,13 +253,7 @@ class VmTestHost : public TestHost {
     try {
       throw;
     } catch (const CulebraException& e) {
-      JitValue v{e.tag, e.data};
-      if (v.tag == TAG_OBJECT) {
-        auto* o = reinterpret_cast<JitObject*>(v.data);
-        kind = str_member(o, "kind");
-        message = str_member(o, "message");
-      }
-      if (message.empty()) message = _culebra_uncaught_display(v.tag, v.data);
+      describe_thrown_value({e.tag, e.data}, kind, message);
       return true;
     } catch (...) {
       return false;
@@ -278,13 +272,6 @@ class VmTestHost : public TestHost {
   ~VmTestHost() override { release_to(0); }
 
  private:
-  static std::string str_member(JitObject* o, std::string_view name) {
-    auto slot = o ? o->find_slot(name) : static_cast<size_t>(-1);
-    if (slot == static_cast<size_t>(-1)) return {};
-    auto v = o->slots[slot].value;
-    if (v.tag != TAG_STRING) return {};
-    return std::string(_str_sv(reinterpret_cast<const char*>(v.data)));
-  }
 
   // A session unit, plus the housekeeping a prompt would do: the value the
   // unit's last statement left in the result cell has no one to echo it here,

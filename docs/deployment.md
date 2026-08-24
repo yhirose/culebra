@@ -146,36 +146,52 @@ file ./my-program-linux
 ## 2. Embedding Culebra in a C++ host
 
 Culebra is header-only. Include the headers, link LLVM if you want the
-JIT, and you can drive the interpreter or JIT from C++.
+JIT, and you can drive the bytecode VM or the JIT from C++.
 
 ### Minimal example
 
 ```cpp
 #include <culebra.h>
-#include <stdlib_interp.h>
+#include <vm_embed.h>
 
 int main() {
-  auto env = culebra::environment();  // stdlib bound
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;   // stdlib installed, traits registered
 
-  // parse()'s AST holds string_view tokens into this buffer, so it must
-  // outlive the AST — keep it in a named variable, not a temporary.
-  std::string src = "1 + 2";
+  culebra::vm::Value val;
   std::vector<std::string> msgs;
-  auto ast = culebra::parse("<inline>", src, msgs);
-
-  culebra::Value val;
-  culebra::interpret(ast, env, val, msgs, culebra::Debugger());
+  embed.run_source("<inline>", "1 + 2", val, msgs);
   // val.to_long() == 3
 }
 ```
 
-For the JIT, add `<stdlib_jit.h>`, call `culebra::install_jit_stdlib()`
-once at startup, and use `culebra::JIT::run(ast)` instead of
-`interpret`.
+`vm::Embed` is a session: each `run_source` sees the top-level bindings
+every earlier run made, and the host reads them back afterwards
+(`embed.global("x")`) or calls into them (`embed.call`, below). Use one
+`Embed` per independent engine instance. `run_source` copies its source
+(the parse's AST views into that copy, and the session owns it as long
+as the programs that reference it); `run(ast, source, ...)` is the
+lower-level entry when the host parsed the input itself — pass the
+buffer the AST's tokens view into.
 
-What the script sees as `Sys.argv` is a process-wide holder rather
-than an argument to `environment()`, which is also built lazily on
-worker threads. Fill it once at startup:
+To run a whole program the way the CLI does — imports resolved, stdlib
+preamble spliced — load it and hand the module list over:
+
+```cpp
+culebra::ModuleLoader loader;
+auto modules = loader.load_program(path, entry_source, msgs);
+culebra::splice_stdlib_preamble(modules);
+culebra::vm::Value val;
+embed.run(modules, val, msgs);
+```
+
+For the LLVM lane, add `<stdlib_jit.h>`, call
+`culebra::install_jit_stdlib()` once at startup, and use
+`culebra::JIT::run(ast)`.
+
+What the script sees as `Sys.argv` is a process-wide holder. Fill it
+once at startup:
 
 ```cpp
 culebra::sys_argv() = {"--verbose", "input.txt"};
@@ -188,7 +204,9 @@ multiple host threads, give each thread its own work:
 
 ```cpp
 std::thread([&]{
-  auto env = culebra::environment();
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;
   // ... independent of the main thread ...
 }).detach();
 ```
@@ -255,20 +273,21 @@ embedding path.
 
 ### Calling script functions from C++
 
-After a script has run, any top-level `fn` or `let f = fn ...` lands
-in the `Environment`. Call it from C++ via `culebra::call`:
+After a run, any top-level `fn` or `let f = fn ...` lands in the
+session. Call it from C++ via `Embed::call`:
 
 ```cpp
 // Script: fn update(x, y) { x + y * 2 }
-auto v = culebra::call(env, "update",
-                      {culebra::Value(1L), culebra::Value(2L)});
+std::vector<culebra::vm::Value> args;
+args.emplace_back(int64_t{1});
+args.emplace_back(int64_t{2});
+auto v = embed.call("update", std::move(args));
 // v.to_long() == 5
 ```
 
-`call` binds positional args to positional params, packs any overflow
-into `__ARGS__`, and translates a top-level `return` into the return
-value. Default-valued parameters aren't resolved through this helper —
-supply all positional arguments explicitly.
+`call` binds positional args to positional params. `vm::Value` args are
+consumed by the call (pass a fresh vector); the result comes back
+owned by the returned handle.
 
 ### Handling script errors
 
@@ -284,12 +303,16 @@ public:
 };
 ```
 
-Catch it around `culebra::interpret`, `culebra::call`,
-`culebra::JIT::run`, or any path that drives user code:
+Catch it around `Embed::call`, `culebra::JIT::run`, or any path that
+drives user code (`Embed::run*` reports through `msgs` instead, the
+same text the CLI prints):
 
 ```cpp
 try {
-  culebra::call(env, "update", {culebra::Value(1L), culebra::Value("oops")});
+  std::vector<culebra::vm::Value> args;
+  args.emplace_back(int64_t{1});
+  args.emplace_back(std::string_view("oops"));
+  embed.call("update", std::move(args));
 } catch (const culebra::CulebraError& e) {
   std::println(stderr, "{}: {} at {}:{}",
                e.kind, e.what(), e.line, e.col);
@@ -306,53 +329,34 @@ shape and the standard kinds (`TypeError`, `ArityError`, `IOError`,
 `ValueError`, `NameError`, `IndexError`, `KeyError`, `AssertionError`,
 `InternalError`).
 
-User-thrown values via script `throw expr` arrive as a separate
-`culebra::CulebraException` carrying the raw `JitValue`; embedders
-typically don't catch this directly — wrap the script-side `throw`
-in a `try`/`catch` so it lands as a `CulebraError` with a chosen
-`kind`.
+A script `throw expr` reaching `Embed::call` is converted for the host:
+the thrown object's `kind`/`message` become the `CulebraError`'s fields
+(anything else renders through its display form), so the
+"catch CulebraError" contract covers user throws too.
 
 ### Defining host functions
 
-`culebra::define` registers a C++ callable as a script-visible
-function. Argument types and return type are deduced from the
-callable's signature.
+`Embed::define` registers a C++ callable as a script-visible function.
+Argument types and return type are deduced from the callable's
+signature.
 
 ```cpp
-culebra::define(env, "log", [](const std::string& msg) {
+embed.define("log", [](std::string msg) {
   std::cout << msg << "\n";
 }, {"msg"});
 
-culebra::define(env, "host_add",
-                [](long a, long b) { return a + b; }, {"a", "b"});
+embed.define("host_add",
+             [](int64_t a, int64_t b) { return a + b; }, {"a", "b"});
 ```
 
-Supported argument and return types: `long`, `int`, `double`, `float`,
-`bool`, `std::string`, `std::string_view`, `const std::string&`, and
-`culebra::Value` (passthrough). The deduced type maps to an annotation
-on the script-side parameter (`Long`, `Float`, `Bool`, `String`), so a
-mistyped argument fails at the call site rather than inside the
-callable.
-
-Parameter names default to `_arg0`, `_arg1`, ... when omitted — pass
-explicit names if scripts will introspect via `fn.parameters()`.
-
-For control over the raw `FunctionValue` (variadics, default values,
-manual env access), bind the value directly:
-
-```cpp
-env->initialize("custom",
-    culebra::Value(culebra::FunctionValue(
-        {{"msg", false}},
-        [](std::shared_ptr<culebra::Environment> env) {
-          // hand-roll: pull args from env, return Value
-          return culebra::Value();
-        })),
-    /*mut=*/false);
-```
-
-`include/stdlib_interp.h` has many examples of the raw form (Math.abs,
-IO.print, Random.uniform, ...).
+Supported argument and return types: `int64_t`, `long long`, `int`,
+`double`, `float`, `bool`, `std::string`, `std::string_view`, and
+`culebra::vm::Value` (passthrough). A mistyped argument raises a
+catchable `TypeError` at the call site rather than inside the
+callable; a wrong argument count raises `ArityError`. Binding is
+positional (host functions take no keyword arguments); for a richer
+surface — methods, handles, keyword binding — declare a class through
+`culebra wrap` (§3), which serves every lane including AOT.
 
 ### Bundling the AOT pathway from your own embedder
 
@@ -381,7 +385,7 @@ splice the stdlib preamble *before* handing the modules to
 ```cpp
 #include <culebra.h>
 #include <module_loader.h>
-#include <stdlib_interp.h>
+#include <stdlib_preamble.h>
 #include <stdlib_jit.h>
 
 int main() {
@@ -437,22 +441,23 @@ embedders **must not** define it; the AOT archive's source
 The repository includes small samples that exercise the contract:
 
 * [`tests/embedding/mt_smoke.cc`](../tests/embedding/mt_smoke.cc) —
-  four host threads each parse + interpret a script with try/catch,
-  plus four more on the JIT path. 240 concurrent runs.
+  four host threads each run an Embed session with try/catch, plus
+  four more on the JIT path. 240 concurrent runs.
 * [`tests/embedding/mi_smoke.cc`](../tests/embedding/mi_smoke.cc) —
-  two Runtimes on a single thread, alternating between them, with
-  independent PRNG state and independent JIT hook sets.
+  two Runtimes (each with its own Embed) on a single thread,
+  alternating between them, with independent PRNG state and
+  independent JIT hook sets.
 * [`tests/embedding/define_smoke.cc`](../tests/embedding/define_smoke.cc)
-  — `culebra::define` round-trips through scripts and via
-  `culebra::call`, including the auto-attached type annotation.
+  — `Embed::define` round-trips through scripts and via `Embed::call`,
+  including the deduced-type rejection.
 
 ## 3. Wrapping C++ libraries (`culebra wrap`)
 
 `culebra wrap` builds an **extended culebra binary** with your own C++
 classes available as builtins — no fork of the interpreter, no plugin
 ABI. You write a short declaration TU; the C++ compiler instantiates
-the glue (pybind11-style), and the result works identically under the
-interpreter, `--jit`, and AOT binaries produced by the extended
+the glue (pybind11-style), and the result works identically under
+`--vm`, `--jit`, and AOT binaries produced by the extended
 `culebra build`.
 
 ### Declare

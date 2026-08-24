@@ -759,6 +759,27 @@ class CulebraException : public std::exception {
   const char* what() const noexcept override { return "CulebraException"; }
 };
 
+// Unpack a script-thrown value for a host-facing report: an Object's
+// `kind`/`message` slots when present, the display form otherwise. The one
+// shape both the test host (test_engine.h) and the embedding API
+// (vm_embed.h) surface a raw CulebraException through.
+inline void describe_thrown_value(JitValue v, std::string& kind,
+                                  std::string& message) {
+  auto str_slot = [&](JitObject* o, const char* k) -> std::string {
+    size_t i = o->find_slot(k);
+    if (i == static_cast<size_t>(-1)) return {};
+    auto sv = o->slots[i].value;
+    if (sv.tag != TAG_STRING && sv.tag != TAG_STRINGVIEW) return {};
+    return std::string(_str_sv(reinterpret_cast<const char*>(sv.data)));
+  };
+  if (v.tag == TAG_OBJECT) {
+    auto* o = reinterpret_cast<JitObject*>(v.data);
+    if (auto k = str_slot(o, "kind"); !k.empty()) kind = k;
+    message = str_slot(o, "message");
+  }
+  if (message.empty()) message = _culebra_uncaught_display(v.tag, v.data);
+}
+
 CULEBRA_RT_KEEP void culebra_runtime_value_retain(int8_t tag,
                                                         int64_t data);
 
