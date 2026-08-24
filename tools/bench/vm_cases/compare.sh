@@ -68,11 +68,51 @@ if [ "$FREEZE" = 1 ]; then
 fi
 
 if [ ${#ARGS[@]} -ge 1 ]; then LANES=("${ARGS[0]}"); else LANES=(--vm --jit); fi
+
+# Each (case, lane) pair is an independent process, so the sweep runs them in
+# parallel like the gate's other per-file phases. Serial, this was the gate's
+# largest phase (177 cases x 2 lanes x 2 passes). JOBS=1 recovers the old
+# behavior when debugging.
+JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
+work="${TMPDIR:-/tmp}/culebra-vmcases-$$"
+rm -rf "$work" && mkdir -p "$work"
+trap 'rm -rf "$work"' EXIT
+
+# One case on one lane. Writes its report to a per-pair file (replayed in case
+# order below, so output is stable whatever the completion order) and marks a
+# mismatch with a .fail file.
+check_one() {
+  local n="$1" lane="$2" want_rc="$3" log b b_rc
+  log="$work/$n.${lane#--}.log"
+  # The runtime checks CULEBRA_GC_STRESS for presence, not value, so only
+  # set it when stressing.
+  if [ -n "$STRESS" ]; then
+    b="$(CULEBRA_GC_STRESS=1 "$BIN" "$lane" "$n.cul" 2>&1)"; b_rc=$?
+  else
+    b="$("$BIN" "$lane" "$n.cul" 2>&1)"; b_rc=$?
+  fi
+  if [ "$b_rc" = "$want_rc" ] && printf '%s' "$b" | cmp -s - "expected/$n.out"; then
+    echo "OK   $n.cul $lane$tag" > "$log"
+  else
+    {
+      echo "FAIL $n.cul (expected rc=$want_rc, $lane$tag rc=$b_rc)"
+      diff "expected/$n.out" <(printf '%s' "$b") | sed 's/^/     /'
+    } > "$log"
+    : > "$work/$n.${lane#--}.fail"
+  fi
+}
+export -f check_one
+export work BIN STRESS tag
+
+# What the sweep cannot answer per lane: a case with no frozen expectation, and
+# one whose expectation is a parse error. Both reject the case itself, so they
+# run here and keep it out of the job list.
 fail=0
 for f in *.cul; do
   n="${f%.cul}"
   if [ ! -f "expected/$n.out" ]; then
-    echo "FAIL $f has no expected/$n.out — freeze it: compare.sh --freeze <bin> $f"
+    echo "FAIL $f has no expected/$n.out — freeze it: compare.sh --freeze <bin> $f" \
+      > "$work/$n.pre.log"
     fail=1; continue
   fi
   # A case whose expected output IS an uncaught SyntaxError agrees on every
@@ -83,31 +123,41 @@ for f in *.cul; do
   if grep -q '^SyntaxError: ' "expected/$n.out"; then
     case "$f" in
       error_*) ;;
-      *) echo "FAIL $f does not parse (a case that cannot run is not a test)"
-         head -2 "expected/$n.out" | sed 's/^/     /'
+      *) { echo "FAIL $f does not parse (a case that cannot run is not a test)"
+           head -2 "expected/$n.out" | sed 's/^/     /'; } > "$work/$n.pre.log"
          fail=1; continue;;
     esac
   fi
   want_rc=$(awk -F'\t' -v n="$n" '$1==n{print $2}' expected/rc.tsv)
   if [ -z "$want_rc" ]; then
-    echo "FAIL $f has no rc.tsv row — freeze it: compare.sh --freeze <bin> $f"
+    echo "FAIL $f has no rc.tsv row — freeze it: compare.sh --freeze <bin> $f" \
+      > "$work/$n.pre.log"
     fail=1; continue
   fi
+  # The expected code travels with the job so the sweep reads rc.tsv once per
+  # case rather than once per (case, lane).
+  for lane in "${LANES[@]}"; do printf '%s %s %s\n' "$n" "$lane" "$want_rc"; done
+done > "$work/jobs"
+
+# `-r` is a GNU extension, so guard the empty job list here instead: every case
+# was rejected above, and there is nothing to sweep.
+if [ -s "$work/jobs" ]; then
+  xargs -n3 -P "$JOBS" bash -c 'check_one "$1" "$2" "$3"' _ < "$work/jobs" || fail=1
+fi
+
+# A pair with no report was never checked — a job that could not start, a
+# worker that was killed. Silence is not agreement, so say so and fail.
+for f in *.cul; do
+  n="${f%.cul}"
+  if [ -f "$work/$n.pre.log" ]; then cat "$work/$n.pre.log"; continue; fi
   for lane in "${LANES[@]}"; do
-    # The runtime checks CULEBRA_GC_STRESS for presence, not value, so only
-    # set it when stressing.
-    if [ -n "$STRESS" ]; then
-      b="$(CULEBRA_GC_STRESS=1 "$BIN" "$lane" "$f" 2>&1)"; b_rc=$?
+    if [ -f "$work/$n.${lane#--}.log" ]; then
+      cat "$work/$n.${lane#--}.log"
     else
-      b="$("$BIN" "$lane" "$f" 2>&1)"; b_rc=$?
-    fi
-    if [ "$b_rc" = "$want_rc" ] && printf '%s' "$b" | cmp -s - "expected/$n.out"; then
-      echo "OK   $f $lane$tag"
-    else
-      echo "FAIL $f (expected rc=$want_rc, $lane$tag rc=$b_rc)"
-      diff "expected/$n.out" <(printf '%s' "$b") | sed 's/^/     /'
+      echo "FAIL $f $lane$tag: the check did not run"
       fail=1
     fi
   done
 done
+compgen -G "$work/*.fail" > /dev/null && fail=1
 exit $fail
