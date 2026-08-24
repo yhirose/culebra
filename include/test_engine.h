@@ -1,19 +1,17 @@
 #pragma once
 
-// The two engines `culebra test` can run a suite on, behind test_runner.h's
+// The engine `culebra test` runs a suite on, behind test_runner.h's
 // TestHost. Split from that header the way debug_engine.h is split from the
 // DAP: everything above the engine — discovery, fixture injection, the
-// reporters, the summary — is the same either way, and what differs is a
+// reporters, the summary — is the same for any host, and what differs is a
 // handful of questions about values that only the engine holding them can
 // answer.
 //
-// `test` and `parametrize` themselves are neither engine's: they are culebra
-// source (src/preambles/test_ambient.cul), so the registry both hosts read
+// `test` and `parametrize` themselves are not the engine's: they are culebra
+// source (src/preambles/test_ambient.cul), so the registry the host reads
 // back was built by the same program.
 
-#include <interpreter.h>
 #include <module_loader.h>
-#include <stdlib_interp.h>
 #include <stdlib_jit.h>
 #include <test_runner.h>
 #include <vm_session.h>
@@ -42,125 +40,6 @@ inline bool load_test_file(const std::string& path, const std::string& source,
   }
   return true;
 }
-
-// ---------------------------------------------------------------------------
-// The tree-walking interpreter
-// ---------------------------------------------------------------------------
-
-class InterpTestHost : public TestHost {
- public:
-  InterpTestHost() : env_(environment()) {
-    install_cli_aliases(*env_);
-  }
-
-  bool begin_run(std::vector<std::string>& msgs) override {
-    std::vector<std::string> parse_msgs;
-    // Both held for the run: a bound FunctionValue points into the AST, and
-    // every token in the AST is a view into the source it was parsed from.
-    ambient_source_ = TEST_AMBIENT_MODULE_SOURCE;
-    ambient_ = parse_with_transforms(kTestAmbientPath, ambient_source_,
-                                     parse_msgs);
-    if (!ambient_) {  // the ambient is ours; a parse failure is a build bug
-      msgs.insert(msgs.end(), parse_msgs.begin(), parse_msgs.end());
-      return false;
-    }
-    Value val;
-    return interpret(ambient_, env_, val, msgs);
-  }
-
-  bool run_file(const std::string& path, const std::string& source,
-                TestFileError& err) override {
-    std::vector<LoadedModule> modules;
-    if (!load_test_file(path, source, modules, err)) return false;
-    Value val;
-    Debugger dbg;
-    std::vector<std::string> msgs;
-    if (!interpret_modules(modules, env_, val, msgs, dbg)) {
-      err = {"interpret_failed", join_messages(msgs), 0, 0};
-      return false;
-    }
-    // A registered function reads its AST tokens out of the module's source
-    // buffer, so the modules outlive the run rather than this call.
-    for (auto& m : modules) loaded_.push_back(std::move(m));
-    return true;
-  }
-
-  ValueRef global(std::string_view name) override {
-    if (!env_->has(name)) return kNoValue;
-    return keep(env_->get(name));
-  }
-  bool is_function(ValueRef v) override {
-    return at(v).type == Value::Function;
-  }
-  bool is_nil(ValueRef v) override { return at(v).type == Value::Nil; }
-  int64_t array_size(ValueRef v) override {
-    return static_cast<int64_t>(at(v).to_array().values->size());
-  }
-  ValueRef array_at(ValueRef v, int64_t i) override {
-    return keep((*at(v).to_array().values)[static_cast<size_t>(i)]);
-  }
-  ValueRef member(ValueRef v, std::string_view name) override {
-    const auto& obj = at(v).to_object();
-    std::string key(name);
-    return keep(obj.has(key) ? obj.get(key) : Value());
-  }
-  std::string as_string(ValueRef v) override {
-    return std::string(at(v).to_string());
-  }
-
-  ValueRef call(ValueRef fn, const std::vector<ValueRef>& args) override {
-    // The public `call` helper takes a name, so the value is bound to a
-    // private slot first — the interpreter's own call internals stay private.
-    // One slot, overwritten per call: the runner exits right after.
-    static constexpr std::string_view kSlot = "__test_call";
-    env_->initialize(kSlot, at(fn), false);
-    std::vector<Value> vals;
-    vals.reserve(args.size());
-    for (auto a : args) vals.push_back(at(a));
-    return keep(culebra::call(env_, kSlot, std::move(vals)));
-  }
-
-  bool describe_current_throw(std::string& kind,
-                              std::string& message) override {
-    try {
-      throw;
-    } catch (const Value& v) {
-      // `throw <value>`: keep kind / message when the payload has the
-      // conventional shape.
-      if (v.type == Value::Object) {
-        const auto& obj = v.to_object();
-        if (obj.has("kind")) {
-          auto kv = obj.get("kind");
-          if (kv.type == Value::String) kind = std::string(kv.to_string());
-        }
-        if (obj.has("message")) {
-          auto mv = obj.get("message");
-          if (mv.type == Value::String) message = std::string(mv.to_string());
-        }
-      }
-      if (message.empty()) message = v.str_display();
-      return true;
-    } catch (...) {
-      return false;
-    }
-  }
-
-  size_t mark() override { return store_.size(); }
-  void release_to(size_t mark) override { store_.resize(mark); }
-
- private:
-  ValueRef keep(Value v) {
-    store_.push_back(std::move(v));
-    return static_cast<ValueRef>(store_.size() - 1);
-  }
-  const Value& at(ValueRef v) { return store_[static_cast<size_t>(v)]; }
-
-  std::shared_ptr<Environment> env_;
-  std::string ambient_source_;
-  std::shared_ptr<peg::Ast> ambient_;
-  std::vector<LoadedModule> loaded_;
-  std::vector<Value> store_;
-};
 
 // ---------------------------------------------------------------------------
 // The bytecode VM's executor
@@ -295,20 +174,14 @@ class VmTestHost : public TestHost {
   JitValue at(ValueRef v) { return store_[static_cast<size_t>(v)]; }
 
   // Owns the session rather than borrowing the process-wide one: a second
-  // run in one process must not see the first's registry, and the interp host
-  // owns its environment for the same reason.
+  // run in one process must not see the first's registry.
   vm::ReplSessionSwap swap_;
   vm::Session session_;
   std::vector<JitValue> store_;
 };
 
-// Which engine a run happens on, and the one place that names the two hosts —
-// the shape debug_engine.h's make_debug_engine has.
-enum class TestEngineKind { Interp, Vm };
-
-inline std::unique_ptr<TestHost> make_test_host(TestEngineKind kind) {
-  if (kind == TestEngineKind::Vm) return std::make_unique<VmTestHost>();
-  return std::make_unique<InterpTestHost>();
+inline std::unique_ptr<TestHost> make_test_host() {
+  return std::make_unique<VmTestHost>();
 }
 
 }  // namespace culebra

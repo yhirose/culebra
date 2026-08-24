@@ -30,8 +30,8 @@ concurrency:
 # Every step that launches culebra must name the engine it means. A bare
 # launch measures whatever the default happens to be, and the default has
 # moved once already (docs/internals/vm.md §13.8) — silently, for anything
-# that had not said. With this set an implicit pick aborts instead; `--tree`
-# names the tree-walker, `--jit` / `--vm` the compiled lanes. The justfile sets
+# that had not said. With this set an implicit pick aborts instead; `--jit` /
+# `--vm` name the engines. The justfile sets
 # the same variable for its recipes: this covers the steps that invoke the
 # binary directly. The one lane that must NOT set it is the one that measures
 # the default itself (tests/cli_input_test.sh).
@@ -253,8 +253,7 @@ jobs:
   # No-LLVM gate (CULEBRA_ENABLE_JIT=OFF). The `culebra` driver is the one TU
   # with #ifdef CULEBRA_JIT_ENABLED gating, so a mismatched guard there breaks
   # this build while the default JIT build stays green. It runs as well as
-  # builds: such a binary has two engines (the tree-walker and the bytecode
-  # VM's executor), and only executing a program on the second one proves the
+  # builds: only executing a program on the bytecode VM's executor proves the
   # VM stayed out of the LLVM guard. Ubuntu-only — the breakage is
   # compiler/define driven, not platform-specific. Its own job with its own
   # ccache key: the JIT define flips every ccache key, so this build shares
@@ -298,10 +297,11 @@ jobs:
   # each on its own default engine, with every behavioural change named in
   # release_diff_allow.txt.
   #
-  # This is the lane that outlives the tree-walker. The executor and the LLVM
-  # lowering are handed bytecode by the same compiler, so after the deletion
-  # they can only agree with each other; a released binary is an independent
-  # implementation that cannot drift with the working tree (vm.md §13.5).
+  # This is the differential oracle now that the tree-walker is gone. The
+  # executor and the LLVM lowering are handed bytecode by the same compiler,
+  # so they can only agree with each other; a released binary is an
+  # independent implementation that cannot drift with the working tree
+  # (vm.md §13.5).
   #
   # master pushes only. It compares against a release, so it says nothing about
   # a topic branch that has not landed yet, and what the default-engine switch
@@ -1090,7 +1090,7 @@ jobs:
           EOF
           # Bound the run so a future regression that deadlocks fails the step in
           # ~90s (exit 124) instead of hanging the whole job to its timeout.
-          timeout 90 ./build-win/culebra.exe --tree smoke.cul
+          timeout 90 ./build-win/culebra.exe --vm smoke.cul
 
       # Phase 3: cross-process SharedBuffer via CreateFileMapping + MapViewOfFile
       # + a named mutex (POSIX uses mmap + fd inheritance + an in-region
@@ -1126,7 +1126,7 @@ jobs:
           fn check(cond, msg) { if !cond { throw "check failed: " + msg } }
           @packable class Cell { v: Int64 = 0 }
 
-          # `--tree` because a child inherits CULEBRA_REQUIRE_EXPLICIT_ENGINE
+          # `--vm` because a child inherits CULEBRA_REQUIRE_EXPLICIT_ENGINE
           # and must name its engine like any other launch (vm.md §13.1).
           let exe = Sys.executable
           check(exe != "", "Sys.executable resolved")
@@ -1135,8 +1135,8 @@ jobs:
           # each bump the shared counter once (named mutex must lose none) and
           # write their own disjoint slot (named mapping shared by name).
           let grid = SharedBuffer.shared(3, Cell)
-          let h0 = Proc.spawn([exe, "--tree", "sbworker/slot.cul"], env: {"SLOT": "0"}, share: {"grid": grid})
-          let h1 = Proc.spawn([exe, "--tree", "sbworker/slot.cul"], env: {"SLOT": "1"}, share: {"grid": grid})
+          let h0 = Proc.spawn([exe, "--vm", "sbworker/slot.cul"], env: {"SLOT": "0"}, share: {"grid": grid})
+          let h1 = Proc.spawn([exe, "--vm", "sbworker/slot.cul"], env: {"SLOT": "1"}, share: {"grid": grid})
           let r0 = h0.wait()
           let r1 = h1.wait()
           check(r0.ok && r1.ok, "share workers exit ok")
@@ -1149,7 +1149,7 @@ jobs:
           let fbuf = SharedBuffer.file(path, 4, Cell)
           fbuf[0].v = 41
           fbuf.flush()
-          let fr = Proc.run([exe, "--tree", "sbworker/file.cul"], env: {"SBPATH": path})
+          let fr = Proc.run([exe, "--vm", "sbworker/file.cul"], env: {"SBPATH": path})
           check(fr.ok, "file worker exit ok: " + fr.stderr)
           check(fbuf[1].v == 42, "child's file write visible in parent's mapping")
           fbuf.drop()
@@ -1157,7 +1157,7 @@ jobs:
 
           print("sharedbuffer cross-process ok")
           EOF
-          timeout 90 ./build-win/culebra.exe --tree sb_parent.cul
+          timeout 90 ./build-win/culebra.exe --vm sb_parent.cul
 
   # Windows in-process JIT (Phase 4). Builds culebra with CULEBRA_ENABLE_JIT ON
   # under the mingw LLVM toolchain and runs a regression smoke over every codegen
@@ -1536,13 +1536,13 @@ jobs:
         run: |
           set +e  # as above: keep the captured output printable
           printf '_Canvas.init(8, 8)\nprint(_Canvas.windowed())\n' > win.cul
-          out=$(timeout 60 ./build-win-aot/culebra.exe --tree win.cul 2>&1); rc=$?
+          out=$(timeout 60 ./build-win-aot/culebra.exe --vm win.cul 2>&1); rc=$?
           echo "out=[$out] rc=$rc"
           if [ $rc -ne 0 ]; then
             echo "ERROR: window probe exited $rc (124 = hung, 139 = crashed)" >&2
             # Where it died, so a crash here is actionable from the log alone
             # rather than costing a round trip to find out.
-            gdb -batch -ex run -ex bt --args ./build-win-aot/culebra.exe --tree win.cul \
+            gdb -batch -ex run -ex bt --args ./build-win-aot/culebra.exe --vm win.cul \
               2>&1 | tail -30
             exit 1
           fi

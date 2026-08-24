@@ -145,22 +145,19 @@ out=$(cd "$TMP" && "$CULEBRA" --vm "./-" 2>&1); rc=$?
 # engine, which is what CULEBRA_REQUIRE_EXPLICIT_ENGINE is for — so these runs
 # drop it, the way tools/difftest/release_diff.sh does, and are the one thing
 # in the tree that must NOT name one. The startup profile is the observation,
-# and the assertion is POSITIVE (the executor's own mark) rather than "not the
-# interpreter's": a default that drifted to the JIT would satisfy the negative
-# one. `rc` is asserted too, since an abort prints no mark either.
+# and the assertion is POSITIVE (the executor's own mark), so a default that
+# drifted to the JIT cannot satisfy it. `rc` is asserted too, since an abort
+# prints no mark either.
 bare() { env -u CULEBRA_REQUIRE_EXPLICIT_ENGINE "$CULEBRA" "$@"; }
 
 printf 'IO.println("engine")\n' > "$TMP/engine.cul"
 out=$(CULEBRA_PROFILE_STARTUP=1 bare "$TMP/engine.cul" 2>&1 >/dev/null); rc=$?
-[[ $rc -eq 0 && "$out" == *"vm::Exec::run"* && "$out" != *"interpret_modules"* ]] || {
+[[ $rc -eq 0 && "$out" == *"vm::Exec::run"* ]] || {
   echo "FAIL default engine: a bare run did not take the executor (rc=$rc)"
   echo "$out"; fail=1; }
-out=$(CULEBRA_PROFILE_STARTUP=1 bare --tree "$TMP/engine.cul" 2>&1 >/dev/null)
-[[ "$out" == *"interpret_modules"* ]] || {
-  echo "FAIL --tree: it no longer names the tree-walker"; fail=1; }
 
 # The REPL is the second reader of that default, and `--jit` means the same
-# tier-0 engine there rather than falling through to the tree-walker.
+# tier-0 engine there.
 for flag in "" "--jit"; do
   out=$(printf 'let x = 6 * 7\nx\n' | bare $flag --shell 2>&1)
   [[ "$out" == *"42" ]] || { echo "FAIL default REPL [$flag]: $out"; fail=1; }

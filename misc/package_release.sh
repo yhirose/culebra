@@ -65,23 +65,18 @@ if [ "$want" != "$got" ]; then
   exit 1
 fi
 
-# One smoke per engine the binary says it has, ~10 ms each: the executor and
-# the tree-walker need no symbols, but the JIT resolves its helpers by name, so
-# a strip that reached too far shows up there. Read off `(interp+vm+jit)`
-# rather than listed here, because the list moves — a build without LLVM has no
-# `--jit`, and the tree-walker is on its way out. Each lane names its engine:
-# release.yml sets CULEBRA_REQUIRE_EXPLICIT_ENGINE, so a bare launch aborts.
-# `|| said=` keeps a crash reportable — under `set -e` a failing substitution
-# would end the script before the message.
+# One smoke per engine the binary says it has, ~10 ms each: the executor
+# needs no symbols, but the JIT resolves its helpers by name, so a strip that
+# reached too far shows up there. Read off `(vm+jit)` rather than listed
+# here, because the list moves — a build without LLVM has no `--jit`. Each
+# lane names its engine: release.yml sets CULEBRA_REQUIRE_EXPLICIT_ENGINE,
+# so a bare launch aborts. `|| said=` keeps a crash reportable — under
+# `set -e` a failing substitution would end the script before the message.
 printf 'print(6 * 7)\n' >"$tmp/smoke.cul"
 engines=$(echo "$version_line" | sed -n 's/.*(\(.*\)).*/\1/p' | tr '+' ' ')
 [ -n "$engines" ] || { echo "package_release: no engines in '$version_line'" >&2; exit 1; }
 for engine in $engines; do
-  case $engine in
-    interp) flag=--tree ;;   # the version string's name for it predates the flag
-    *)      flag=--$engine ;;
-  esac
-  said=$("$staged" "$flag" "$tmp/smoke.cul") || said="exited $?"
+  said=$("$staged" "--$engine" "$tmp/smoke.cul") || said="exited $?"
   if [ "$said" != "42" ]; then
     echo "package_release: the stripped binary failed the $engine smoke" >&2
     echo "  (expected 42, got '$said')" >&2

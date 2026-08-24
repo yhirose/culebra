@@ -41,14 +41,12 @@ export CCACHE_BASEDIR := justfile_directory()
 # window by invoking the binary directly, or with CULEBRA_CANVAS_HEADLESS=0.
 export CULEBRA_CANVAS_HEADLESS := env_var_or_default("CULEBRA_CANVAS_HEADLESS", "1")
 
-# Make every recipe name the engine it runs on. The tree-walker is still the
-# default (docs/internals/vm.md §7, Phase 4), so a lane that launches culebra
-# bare picks one by accident — and the switch in B6 would silently move what
-# such a lane measures. With this set an implicit pick aborts instead: `--tree`
-# names the tree-walker, `--jit` / `--vm` the compiled lanes. On by default so
-# a new recipe cannot reintroduce a bare launch unnoticed; set the variable to
-# 0 to opt out. Only recipes get it — a bare `./build/culebra prog.cul` in a
-# shell is unaffected either way.
+# Make every recipe name the engine it runs on: a lane that launches culebra
+# bare picks one by accident, and a future default switch would silently move
+# what such a lane measures. With this set an implicit pick aborts instead
+# (`--jit` / `--vm`). On by default so a new recipe cannot reintroduce a bare
+# launch unnoticed; set the variable to 0 to opt out. Only recipes get it — a
+# bare `./build/culebra prog.cul` in a shell is unaffected either way.
 export CULEBRA_REQUIRE_EXPLICIT_ENGINE := env_var_or_default("CULEBRA_REQUIRE_EXPLICIT_ENGINE", "1")
 
 # List recipes
@@ -168,9 +166,9 @@ check-release-coverage:
 [private]
 check-generated: check-grammar-sync check-preambles check-blob check-canon-sigs check-site-version check-difftest-coverage check-release-coverage
 
-# Such a build still has two engines — the tree-walker and the bytecode VM's
-# executor — because everything below the LLVM lowering (rt.h, vm.h) is
-# LLVM-free; what it cannot do is `--jit` or `culebra build`. Builds just the
+# Such a build still runs programs — everything below the LLVM lowering
+# (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it
+# cannot do is `--jit` or `culebra build`. Builds just the
 # `culebra` driver, the only TU with CULEBRA_JIT_ENABLED #ifdef gating, so this
 # is the compile gate for that configuration. Its own build-no-jit/ dir keeps
 # it off the JIT `build/`'s cmake cache (the JIT define flips every ccache key
@@ -185,22 +183,22 @@ build-no-jit:
     cd build-no-jit && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
 # A link is not the gate here: the point of keeping the VM out of the LLVM
-# guard is that a no-LLVM binary HAS an engine besides the tree-walker, and a
-# binary with one engine where there should be two compiles and links
-# perfectly. Only running a program says so. The corpus is the one
+# guard is that a no-LLVM binary HAS a working engine, and a binary whose one
+# engine is broken can still compile and link perfectly. Only running a
+# program says so. The corpus is the one
 # `just test`'s vm_cases phase uses, for the same two reasons: it is
 # contractually inside the VM slice (so a mismatch is a mismatch, not a
 # rejected construct), and compare.sh folds each lane's EXIT CODE into the
 # comparison — reading only stdout let a SEGV pass as "equal" once already
 # (see run_diff_vm_jit below).
-[doc("Run the no-LLVM build's two engines over the VM corpus and compare")]
+[doc("Run the no-LLVM build over the VM corpus and compare with the gate's goldens")]
 [group("test")]
 test-no-jit: build-no-jit
     #!/usr/bin/env bash
     set -euo pipefail
     bin=./build-no-jit/culebra
     case "$("$bin" --version)" in
-        *interp+vm*) ;;
+        *"(vm)"*) ;;
         *) echo "check failed: --version does not name the VM"; exit 1 ;;
     esac
     TIMEOUT_BIN=""
@@ -754,7 +752,7 @@ _run-tests BACKEND:
     }
 
     # Isolate tests live in a subdir kept out of the `tests/*.cul` vm-vs-JIT
-    # diff glob. Every file runs under all three engines: Isolate.spawn,
+    # diff glob. Every file runs under both engines: Isolate.spawn,
     # Channel, and Parallel are symmetric across backends now, including the
     # files named without a `_jit` suffix (the surface that was interp-only
     # once — the runtime mut-capture SendError and the `limit:` kwarg).
@@ -866,7 +864,7 @@ _run-tests BACKEND:
         local d="$job_dir/gcstress"
         mkdir -p "$d"
         # Only crash/no-crash matters here (correctness is covered by the
-        # interp-vs-JIT diff), so discard stdout and keep stderr for triage.
+        # vm-vs-JIT diff), so discard stdout and keep stderr for triage.
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"
             name=$(basename "$f" .cul)
@@ -1091,15 +1089,15 @@ _run-tests BACKEND:
       *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|jit|aot|embed|isolate|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
     esac
 
-# Run the doctest examples in the public docs on all three engines. Both en
+# Run the doctest examples in the public docs on both engines. Both en
 # and ja are run — their code blocks are mostly shared but a few string
 # literals are localized, so ja needs its own pass. Not part of `just test` —
 # run on demand / before publishing docs. The self-test fixture under
 # tests/doctest/ guards the runner itself. LANE=vm|jit|all (default
 # all); the JIT lane costs ~1 min (one LLVM module per block) against ~2s for
-# the other two, and every block is an example a reader will run, so all three
+# the VM lane, and every block is an example a reader will run, so both
 # have to agree on what it prints.
-[doc("Run ` ```culebra ` doctest blocks in docs/ (interp + VM + JIT)")]
+[doc("Run ` ```culebra ` doctest blocks in docs/ (VM + JIT)")]
 [group("test")]
 doctest LANE="all": build
     #!/usr/bin/env bash
@@ -1154,7 +1152,7 @@ release-diff BASELINE: build
 
 # Leak-fuzz gate: reuse the difftest corpus (each case is a re-runnable thunk)
 # as an RC-leak oracle — run every case under CULEBRA_GC_NEVER (backstop off)
-# and flag cases whose JIT live-object growth exceeds the interpreter's. Fails
+# and flag cases whose live-object growth exceeds each lane's baseline. Fails
 # on any NEW leak vs tools/difftest/leak_baseline.txt (a regression gate; the
 # JIT still has a known carve-out leak set the ownership work is closing).
 # Regenerate the baseline with `just leak-fuzz-update` after fixing leaks.
@@ -1204,8 +1202,8 @@ leak-abort-suite: build-gate
 leak-abort-suite-update: build-gate
     tools/difftest/leak_abort_suite.sh ./build-gate/culebra --update-allowlist
 
-# Microbenchmark regression check: every tests/perf/*.cul on interp
-# and JIT, asserts speedup meets the per-bench `# perf: min_speedup N`
+# Microbenchmark regression check: every tests/perf/*.cul on the VM
+# and the JIT, asserts speedup meets the per-bench `# perf: min_speedup N`
 # directive declared in the file header. Not part of `just test`
 # because runtimes are noisy and machine-dependent.
 [doc("Microbench regression check (per-bench thresholds in tests/perf/*.cul)")]

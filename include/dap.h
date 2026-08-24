@@ -69,14 +69,11 @@ inline int64_t write_fd(int fd, const char* buf, size_t n) {
 
 class DapServer {
  public:
-  // No default engine: which one a debug session runs on is the caller's to
-  // say, the way make_debug_engine / make_test_host take it as a parameter.
-  DapServer(int in_fd, int out_fd, std::vector<std::string> argv,
-            DebugEngineKind engine)
+  DapServer(int in_fd, int out_fd, std::vector<std::string> argv)
       : in_(in_fd),
         out_(out_fd),
         argv_(std::move(argv)),
-        engine_(make_debug_engine(engine)) {}
+        engine_(make_debug_engine()) {}
 
   int run() {
     setup_output_capture();

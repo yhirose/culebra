@@ -28,7 +28,7 @@ permissions:
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
   # Same ratchet as ci.yml and the justfile: a step that launches culebra names
-  # the engine it means (`--tree` / `--jit` / `--vm`) instead of taking the
+  # the engine it means (`--jit` / `--vm`) instead of taking the
   # build's default, which Phase 4 moves (docs/internals/vm.md §7).
   CULEBRA_REQUIRE_EXPLICIT_ENGINE: "1"
   # Note there is deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT here, unlike
@@ -302,7 +302,7 @@ jobs:
           test -f build/libculebra_rt_webview.a \
             || { echo "ERROR: Webview silently disabled (WebView2.h not found?)"; exit 1; }
           printf 'let srv = Http.server()\nprint("http ok")\n' > http.cul
-          ./build/culebra.exe --tree http.cul | grep -qx 'http ok' \
+          ./build/culebra.exe --vm http.cul | grep -qx 'http ok' \
             || { echo "ERROR: Http silently disabled"; exit 1; }
           echo "OK: Webview and Http are built into this asset"
       - name: Package and upload

@@ -17,7 +17,7 @@ let lock_worker = "tests/isolate/proc_share_worker/lock.cul"
 let g1 = SharedBuffer.shared(4, Cell)
 g1[0].v = 100
 g1[1].v = 200
-let r1 = Proc.run([Sys.executable, "--tree", add_worker], share: {grid: g1})
+let r1 = Proc.run([Sys.executable, "--vm", add_worker], share: {grid: g1})
 assert_eq(r1.ok, true)
 assert_eq(g1.count, 4)
 assert_eq(g1[0].v, 110)  # 100 + 1*10  (child wrote it)
@@ -43,7 +43,7 @@ let grid = SharedBuffer.shared(4, Cell)
 let handles = []
 for w in 0..4 {
   handles.push(Proc.spawn(
-    [Sys.executable, "--tree", slot_worker],
+    [Sys.executable, "--vm", slot_worker],
     share: {grid: grid},
     env: {SLOT: w.to_string()},
   ))
@@ -66,7 +66,7 @@ let tally = SharedBuffer.shared(1, Cell)
 let bumpers = []
 for w in 0..4 {
   let argv = if w % 2 == 0 {
-    [Sys.executable, "--tree", lock_worker]
+    [Sys.executable, "--vm", lock_worker]
   } else {
     [Sys.executable, "--jit", lock_worker]
   }
@@ -92,7 +92,7 @@ assert_eq(missing, true)
 mut heap_rejected = false
 let h = SharedBuffer.new(2, Cell)
 try {
-  Proc.run([Sys.executable, "--tree", add_worker], share: {grid: h})
+  Proc.run([Sys.executable, "--vm", add_worker], share: {grid: h})
 } catch e {
   heap_rejected = e.kind == "ValueError"
 }
@@ -106,7 +106,7 @@ let count_worker = "tests/isolate/proc_share_worker/count.cul"
 let allg = SharedBuffer.shared(1, Cell)
 mut allcmds = []
 for w in 0..3 {
-  allcmds.push([Sys.executable, "--tree", count_worker])
+  allcmds.push([Sys.executable, "--vm", count_worker])
 }
 let allres = Proc.all(allcmds, share: {grid: allg})
 for r in allres {
@@ -117,7 +117,7 @@ allg.drop()
 
 # --- Proc.race with share: (the winner writes the shared buffer) ----------
 let raceg = SharedBuffer.shared(2, Cell)
-let racer = Proc.race([[Sys.executable, "--tree", add_worker]], share: {grid: raceg})
+let racer = Proc.race([[Sys.executable, "--vm", add_worker]], share: {grid: raceg})
 assert_eq(racer.ok, true)
 assert_eq(raceg[0].v, 10)  # add_worker bumped cell 0 by 1*10
 raceg.drop()
@@ -126,7 +126,7 @@ raceg.drop()
 mut all_heap_rejected = false
 let hh = SharedBuffer.new(1, Cell)
 try {
-  Proc.all([[Sys.executable, "--tree", count_worker]], share: {grid: hh})
+  Proc.all([[Sys.executable, "--vm", count_worker]], share: {grid: hh})
 } catch e {
   all_heap_rejected = e.kind == "ValueError"
 }
@@ -140,7 +140,7 @@ hh.drop()
 # no peephole — dropped it and the child could not attach the buffer.
 let vg = SharedBuffer.shared(2, Cell)
 let run_via_value = Proc.run
-let vr = run_via_value([Sys.executable, "--tree", add_worker], share: {grid: vg})
+let vr = run_via_value([Sys.executable, "--vm", add_worker], share: {grid: vg})
 assert_eq(vr.ok, true)
 assert_eq(vg[0].v, 10)
 assert_eq(vg[1].v, 20)
@@ -149,7 +149,7 @@ vg.drop()
 let sg = SharedBuffer.shared(1, Cell)
 let spawn_via_value = Proc.spawn
 let sh = spawn_via_value(
-  [Sys.executable, "--tree", slot_worker],
+  [Sys.executable, "--vm", slot_worker],
   share: {grid: sg},
   env: {SLOT: "0"},
 )
