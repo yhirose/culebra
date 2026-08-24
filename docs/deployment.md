@@ -349,7 +349,8 @@ embed.define("host_add",
              [](int64_t a, int64_t b) { return a + b; }, {"a", "b"});
 ```
 
-Supported argument and return types: `int64_t`, `long long`, `int`,
+Supported argument and return types: `int64_t`, `long`, `long long`,
+`int`,
 `double`, `float`, `bool`, `std::string`, `std::string_view`, and
 `culebra::vm::Value` (passthrough). A mistyped argument raises a
 catchable `TypeError` at the call site rather than inside the

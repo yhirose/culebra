@@ -171,14 +171,14 @@ int main() {
 読み戻したり（`embed.global("x")`）、呼び出したり（後述の
 `embed.call`）できます。独立したエンジンインスタンスごとに1つの
 `Embed`を使ってください。`run_source`はソースをコピーして保持
-します（parse の AST はそのコピーを string_view で参照し、
+します（parseのASTはそのコピーをstring_viewで参照し、
 参照するプログラムが生きている間セッションが所有します）。
-ホスト側で parse 済みの入力には低レベルの
-`run(ast, source, ...)`を使い、AST のトークンが参照するバッファを
+ホスト側でparse済みの入力には低レベルの
+`run(ast, source, ...)`を使い、ASTのトークンが参照するバッファを
 渡してください。
 
-CLI と同じようにプログラム全体（import 解決・stdlib preamble の
-splice 込み）を動かすには、loader で読み込んで module list を
+CLIと同じようにプログラム全体（import解決・stdlib preambleの
+splice込み）を動かすには、loaderで読み込んでmodule listを
 渡します:
 
 ```cpp
@@ -292,7 +292,7 @@ auto v = embed.call("update", std::move(args));
 ```
 
 `call`は位置引数を位置パラメータにバインドします。`vm::Value`の
-引数は呼び出しが消費します（新しい vector を渡す）。結果は
+引数は呼び出しが消費します（新しいvectorを渡す）。結果は
 返されたハンドルが所有します。
 
 ### スクリプトエラーの扱い
@@ -312,7 +312,7 @@ public:
 
 `Embed::call` / `culebra::JIT::run`などユーザコードを駆動する
 経路をくるむ形でcatchします（`Embed::run*`は例外でなく`msgs`で
-報告します — CLI が印字するのと同じテキストです）:
+報告します — CLIが印字するのと同じテキストです）:
 
 ```cpp
 try {
@@ -339,8 +339,8 @@ try {
 `Embed::call`に届いたスクリプト側`throw expr`はホスト向けに
 変換されます: 投げられたオブジェクトの`kind`/`message`がそのまま
 `CulebraError`のフィールドになる（それ以外は表示形で届く）ので、
-「catch CulebraError」の契約は user throw にも通用します。
-（`Embed::run*`は例外でなく`msgs`で報告します — CLI が印字する
+「catch CulebraError」の契約はuser throwにも通用します。
+（`Embed::run*`は例外でなく`msgs`で報告します — CLIが印字する
 のと同じテキストです。）
 
 ### ホスト関数の定義
@@ -358,14 +358,14 @@ embed.define("host_add",
              [](int64_t a, int64_t b) { return a + b; }, {"a", "b"});
 ```
 
-サポートする引数・戻り値の型: `int64_t`, `long long`, `int`,
+サポートする引数・戻り値の型: `int64_t`, `long`, `long long`, `int`,
 `double`, `float`, `bool`, `std::string`, `std::string_view`,
-`culebra::vm::Value`（透過）。誤った型の引数は callable に入る前に
-呼び出し側で catch 可能な`TypeError`として弾かれ、引数の個数違いは
+`culebra::vm::Value`（透過）。誤った型の引数はcallableに入る前に
+呼び出し側でcatch可能な`TypeError`として弾かれ、引数の個数違いは
 `ArityError`になります。バインドは位置引数のみ（ホスト関数は
 キーワード引数を取りません）。メソッド・ハンドル・キーワード束縛
 などのより豊かな表面が要る場合は`culebra wrap`（§3）でクラスを
-宣言してください — AOT 含む全レーンに効きます。
+宣言してください — AOT含む全レーンに効きます。
 
 ### 自分の embedder から AOT 経路を組み込む
 

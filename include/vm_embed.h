@@ -155,19 +155,25 @@ struct ArgCtx {
   std::string_view fn;
   std::string_view param;
 };
+// int64_t aliases `long` on LP64 and `long long` on macOS/LLP64; specialize
+// the fundamental types so each ABI sees exactly one definition per type.
 template <>
-struct FromJit<int64_t> {
-  static int64_t get(const JitValue& v, ArgCtx c) {
+struct FromJit<long long> {
+  static long long get(const JitValue& v, ArgCtx c) {
     if (v.tag != TAG_LONG) _arg_type_error(c.fn, c.param, "Long");
     return v.data;
   }
 };
 template <>
-struct FromJit<long long> : FromJit<int64_t> {};
+struct FromJit<long> {
+  static long get(const JitValue& v, ArgCtx c) {
+    return static_cast<long>(FromJit<long long>::get(v, c));
+  }
+};
 template <>
 struct FromJit<int> {
   static int get(const JitValue& v, ArgCtx c) {
-    return static_cast<int>(FromJit<int64_t>::get(v, c));
+    return static_cast<int>(FromJit<long long>::get(v, c));
   }
 };
 template <>
@@ -213,8 +219,10 @@ struct FromJit<Value> {
 };
 
 // C++ return -> owned runtime value.
-inline JitValue to_jit(int64_t n) { return {TAG_LONG, n}; }
-inline JitValue to_jit(long long n) { return {TAG_LONG, n}; }
+inline JitValue to_jit(long long n) {
+  return {TAG_LONG, static_cast<int64_t>(n)};
+}
+inline JitValue to_jit(long n) { return {TAG_LONG, static_cast<int64_t>(n)}; }
 inline JitValue to_jit(int n) { return {TAG_LONG, n}; }
 inline JitValue to_jit(double d) { return jit_float(d); }
 inline JitValue to_jit(float d) { return jit_float(d); }
