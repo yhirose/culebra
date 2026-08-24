@@ -206,6 +206,29 @@ using BlockRunner =
     std::function<DocRunOutcome(const std::string& name,
                                 const std::string& code)>;
 
+// Which slice of the corpus one process runs. `culebra test --doc --jobs N`
+// re-runs itself N times, one shard each; the default is the whole corpus.
+struct DocShard {
+  int index = 0;
+  int count = 1;
+};
+
+// How a shard hands its counts back: one stderr line, so the parent can pass
+// the child's stdout through untouched whichever reporter is in use.
+inline constexpr const char* kDocShardSummary = "culebra test: shard";
+
+// The JSON reporter's closing record. A parallel run emits it once, from the
+// parent, over the summed counts — which is why it is not inlined into
+// run_doctests' tail.
+inline void emit_doc_run_end(const TestRunSummary& summary, bool bailed,
+                             Reporter reporter) {
+  if (reporter != Reporter::Json) return;
+  std::cout << R"({"event":"run_end","passed":)" << summary.passed
+            << R"(,"failed":)" << summary.failed
+            << R"(,"errored_files":)" << summary.errored_files
+            << R"(,"bailed":)" << (bailed ? "true" : "false") << "}\n";
+}
+
 // Run the doctest blocks in each file. Mirrors run_tests' reporter
 // output (Default human lines / Json NDJSON) and summary/exit
 // semantics. Each block runs in a fresh env (blocks are independent).
@@ -213,7 +236,7 @@ inline TestRunSummary run_doctests(
     const std::vector<std::filesystem::path>& files,
     const std::string& filter, const BlockRunner& run_block,
     Reporter reporter = Reporter::Default, int bail_after = 0,
-    bool list_only = false) {
+    bool list_only = false, DocShard shard = {}) {
   using namespace doctest_detail;
   TestRunSummary summary;
 
@@ -245,10 +268,24 @@ inline TestRunSummary run_doctests(
     }
   };
 
+  // Every block that will run, in source order. Collected before any of them
+  // runs so that a shard can be a contiguous slice of one list: each child of
+  // a `--jobs N` run builds the same list (same roots, same filter), takes its
+  // own slice, and the parent recovers source order by concatenating the
+  // children's output in index order.
+  struct DocItem {
+    std::string source;
+    std::string name;
+    DocBlock blk;
+  };
+  std::vector<DocItem> items;
   for (const auto& path : files) {
     auto source = path.string();
     std::ifstream ifs(source, std::ios::binary);
     if (!ifs) {
+      // One unreadable file is one failure, not one per shard: only the first
+      // child reports it, and the parent sums what its children counted.
+      if (shard.index != 0) continue;
       summary.errored_files++;
       if (reporter == Reporter::Json) {
         std::cout << R"({"event":"file_error","source":)" << json_escape(source)
@@ -262,104 +299,134 @@ inline TestRunSummary run_doctests(
     std::string md((std::istreambuf_iterator<char>(ifs)),
                    std::istreambuf_iterator<char>());
 
-    auto blocks = extract_doc_blocks(md);
-    for (const auto& blk : blocks) {
+    for (auto& blk : extract_doc_blocks(md)) {
       std::string name = source + "#" + std::to_string(blk.start_line);
       if (!filter.empty() && name.find(filter) == std::string::npos) continue;
-
-      if (list_only) {
-        if (reporter == Reporter::Json) {
-          std::cout << R"({"event":"doc_list","name":)" << json_escape(name)
-                    << "}\n";
-        } else {
-          std::cout << name << "\n";
-        }
-        continue;
-      }
-
-      if (blk.directive == DocBlock::Directive::Skip) {
-        if (reporter == Reporter::Json) {
-          std::cout << R"({"event":"doc_skip","name":)" << json_escape(name)
-                    << "}\n";
-        }
-        continue;  // skipped blocks are not counted as passed or failed
-      }
-
-      std::string captured;
-      DocRunOutcome outcome;
-      {
-        StdoutCapture cap(true);
-        outcome = run_block(name, blk.code);
-        captured = cap.take();
-      }
-      // Reap whatever this block left outstanding (e.g. a doc example that
-      // throws past an unreached join()) — ScriptTeardownGuard
-      // (script_teardown.h), scoped to the rest of this loop iteration, so it
-      // fires once per doc block instead of once per script run or REPL
-      // session: each doc block is its own fresh run.
-      ScriptTeardownGuard script_teardown_guard;
-      if (!outcome.ok && outcome.kind == "SyntaxError") {
-        emit_fail(name, source, outcome.kind, outcome.message, captured);
-        if (bail_after > 0 && summary.failed >= bail_after) break;
-        continue;
-      }
-      bool ok = outcome.ok;
-      const std::string& err = outcome.message;
-
-      if (blk.expect_throw) {
-        if (ok) {
-          emit_fail(name, source, "ExpectError",
-                    "expected throw matching \"" + blk.throw_pattern +
-                        "\" but block completed normally",
-                    captured);
-        } else if (err.find(blk.throw_pattern) == std::string::npos) {
-          emit_fail(name, source, "ErrorMismatch",
-                    "expected throw matching \"" + blk.throw_pattern +
-                        "\" but got: " + err,
-                    captured);
-        } else {
-          emit_pass(name);
-        }
-        if (bail_after > 0 && summary.failed >= bail_after) break;
-        continue;
-      }
-
-      if (!ok) {
-        emit_fail(name, source, "RuntimeError", err, captured);
-        if (bail_after > 0 && summary.failed >= bail_after) break;
-        continue;
-      }
-
-      if (blk.has_expectations) {
-        // Compare captured stdout, line by line, against the markers.
-        auto got = split_lines(captured);
-        if (!got.empty() && got.back().empty()) got.pop_back();  // trailing LF
-        bool match = got.size() == blk.expected.size();
-        for (size_t k = 0; match && k < got.size(); k++) {
-          if (got[k] != blk.expected[k]) match = false;
-        }
-        if (!match) {
-          std::string want, have;
-          for (const auto& l : blk.expected) want += l + "\\n";
-          for (const auto& l : got) have += l + "\\n";
-          emit_fail(name, source, "OutputMismatch",
-                    "expected [" + want + "] but got [" + have + "]", captured);
-          if (bail_after > 0 && summary.failed >= bail_after) break;
-          continue;
-        }
-      }
-
-      emit_pass(name);
+      items.push_back({source, std::move(name), std::move(blk)});
     }
-    if (bail_after > 0 && summary.failed >= bail_after) break;
   }
 
-  bool bailed = bail_after > 0 && summary.failed >= bail_after;
-  if (reporter == Reporter::Json) {
-    std::cout << R"({"event":"run_end","passed":)" << summary.passed
-              << R"(,"failed":)" << summary.failed
-              << R"(,"errored_files":)" << summary.errored_files
-              << R"(,"bailed":)" << (bailed ? "true" : "false") << "}\n";
+  size_t first = 0, last = items.size();
+  if (shard.count > 1) {
+    // Cut on the blocks that actually run: a skipped block costs nothing and
+    // they cluster, so cutting by raw index hands one shard 6 runnable blocks
+    // and another 38 (measured over docs/ at --jobs 20).
+    auto runs = [](const DocItem& it) {
+      return it.blk.directive != DocBlock::Directive::Skip ? 1u : 0u;
+    };
+    size_t total = 0;
+    for (const auto& it : items) total += runs(it);
+    // The first index with `k/count` of the runnable blocks behind it. Skips
+    // ride along with the shard that precedes them; the last shard takes the
+    // tail so a trailing run of them is still reported.
+    auto cut = [&](int k) {
+      size_t want = total * static_cast<size_t>(k) /
+                    static_cast<size_t>(shard.count);
+      size_t seen = 0;
+      for (size_t i = 0; i < items.size(); i++) {
+        if (seen == want) return i;
+        seen += runs(items[i]);
+      }
+      return items.size();
+    };
+    first = cut(shard.index);
+    last = shard.index + 1 == shard.count ? items.size() : cut(shard.index + 1);
+  }
+  for (size_t i = first; i < last; i++) {
+    const std::string& source = items[i].source;
+    const std::string& name = items[i].name;
+    const DocBlock& blk = items[i].blk;
+
+    if (list_only) {
+      if (reporter == Reporter::Json) {
+        std::cout << R"({"event":"doc_list","name":)" << json_escape(name)
+                  << "}\n";
+      } else {
+        std::cout << name << "\n";
+      }
+      continue;
+    }
+
+    if (blk.directive == DocBlock::Directive::Skip) {
+      if (reporter == Reporter::Json) {
+        std::cout << R"({"event":"doc_skip","name":)" << json_escape(name)
+                  << "}\n";
+      }
+      continue;  // skipped blocks are not counted as passed or failed
+    }
+
+    std::string captured;
+    DocRunOutcome outcome;
+    {
+      StdoutCapture cap(true);
+      outcome = run_block(name, blk.code);
+      captured = cap.take();
+    }
+    // Reap whatever this block left outstanding (e.g. a doc example that
+    // throws past an unreached join()) — ScriptTeardownGuard
+    // (script_teardown.h), scoped to the rest of this loop iteration, so it
+    // fires once per doc block instead of once per script run or REPL
+    // session: each doc block is its own fresh run.
+    ScriptTeardownGuard script_teardown_guard;
+    if (!outcome.ok && outcome.kind == "SyntaxError") {
+      emit_fail(name, source, outcome.kind, outcome.message, captured);
+      if (bail_after > 0 && summary.failed >= bail_after) break;
+      continue;
+    }
+    bool ok = outcome.ok;
+    const std::string& err = outcome.message;
+
+    if (blk.expect_throw) {
+      if (ok) {
+        emit_fail(name, source, "ExpectError",
+                  "expected throw matching \"" + blk.throw_pattern +
+                      "\" but block completed normally",
+                  captured);
+      } else if (err.find(blk.throw_pattern) == std::string::npos) {
+        emit_fail(name, source, "ErrorMismatch",
+                  "expected throw matching \"" + blk.throw_pattern +
+                      "\" but got: " + err,
+                  captured);
+      } else {
+        emit_pass(name);
+      }
+      if (bail_after > 0 && summary.failed >= bail_after) break;
+      continue;
+    }
+
+    if (!ok) {
+      emit_fail(name, source, "RuntimeError", err, captured);
+      if (bail_after > 0 && summary.failed >= bail_after) break;
+      continue;
+    }
+
+    if (blk.has_expectations) {
+      // Compare captured stdout, line by line, against the markers.
+      auto got = split_lines(captured);
+      if (!got.empty() && got.back().empty()) got.pop_back();  // trailing LF
+      bool match = got.size() == blk.expected.size();
+      for (size_t k = 0; match && k < got.size(); k++) {
+        if (got[k] != blk.expected[k]) match = false;
+      }
+      if (!match) {
+        std::string want, have;
+        for (const auto& l : blk.expected) want += l + "\\n";
+        for (const auto& l : got) have += l + "\\n";
+        emit_fail(name, source, "OutputMismatch",
+                  "expected [" + want + "] but got [" + have + "]", captured);
+        if (bail_after > 0 && summary.failed >= bail_after) break;
+        continue;
+      }
+    }
+
+    emit_pass(name);
+  }
+
+  // A shard's records are half a run: the parent closes the stream once it has
+  // every child's counts.
+  if (shard.count == 1) {
+    emit_doc_run_end(summary, bail_after > 0 && summary.failed >= bail_after,
+                     reporter);
   }
   return summary;
 }

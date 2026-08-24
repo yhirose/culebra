@@ -182,6 +182,7 @@ culebra test --bail 3              # stop after 3 failures
 culebra test --list                # discover only; print test names
 culebra test --doc docs            # run the doctests in markdown files
 culebra test --doc --vm docs       # ... on the bytecode VM (or --jit)
+culebra test --doc --jit --jobs 8 docs  # ... in 8 processes
 ```
 
 Discovery: any path that is a file is included as-is; any path that is a
@@ -228,6 +229,13 @@ documented example is checked against every engine that will run it —
 the same output, the same throw. The unit-test runner (`culebra test`
 without `--doc`) runs on the VM.
 
+`--jobs <n>` runs the blocks in `n` copies of this process, each taking a
+contiguous slice of the block list; the parent replays their output in
+source order, so the report reads the same as a serial run. The JIT lane
+compiles one LLVM module per block and is the reason the flag exists.
+`--bail` and `--list` stay serial: "stop at the first failure" has no
+meaning across processes racing each other, and a listing runs nothing.
+
 Two consequences are worth knowing when writing examples. An expression
 on its own prints nothing, so a checked example has to go through
 `inspect(...)` or `println(...)`. And `//` opens a line comment in
@@ -235,8 +243,8 @@ Culebra just as `#` does, so a `// => value` marker parses fine but is
 **not** recognized as an expectation — the block then runs unchecked.
 
 **Still planned**: an explicit `import { test } from "std/test"` for code
-that doesn't run under `culebra test`; an AOT doctest lane beside `--jit`
-and `--vm`; and parallel execution.
+that doesn't run under `culebra test`; and an AOT doctest lane beside
+`--jit` and `--vm`.
 
 ---
 

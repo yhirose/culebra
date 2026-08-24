@@ -7,8 +7,10 @@
                               // (tests/test_foreign.cul); registers via
                               // static init, reached only when named
 #include <doctest_runner.h>
+#include <exe_path.h>  // current_executable_path — `--doc --jobs` re-runs this
 #include <formatter.h>
 #include <init_cmd.h>
+#include <proc.h>  // run_all — the doc shards are child processes
 #include <source_dir.h>
 #include <test_engine.h>
 #include <test_runner.h>
@@ -40,6 +42,7 @@
 #include <optional>
 #include <print>
 #include <set>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -1502,6 +1505,91 @@ culebra::BlockRunner doc_block_runner(RunnerEngine engine) {
   };
 }
 
+// The stderr line a shard closes with, and the scanf that reads it back.
+std::string doc_shard_summary_format() {
+  return std::string(culebra::kDocShardSummary) +
+         " %d passed=%d failed=%d errored=%d";
+}
+
+// Fan `--doc --jobs N` out over N copies of this process, one shard of the
+// block list each. A doc block's state is process-wide — the stdout capture,
+// the Sys.exit guard and the compiled lanes' Runtime all live in globals — so
+// the unit of parallelism here is a process, not a thread. Every child builds
+// the same block list and takes a contiguous slice of it, which is what lets
+// the parent replay their stdout in shard order and get source order back.
+// Returns false if a shard could not be started or did not report its counts.
+bool run_doc_shards(int jobs, RunnerEngine engine, culebra::Reporter reporter,
+                    const std::string& filter,
+                    const std::vector<std::string>& roots,
+                    culebra::TestRunSummary& summary) {
+  auto self = culebra::current_executable_path();
+  if (self.empty()) {
+    std::println(stderr, "culebra test: --jobs cannot find this executable");
+    return false;
+  }
+  const char* lane = engine == RunnerEngine::Jit ? "--jit" : "--vm";
+  std::vector<std::vector<std::string>> cmds;
+  for (int i = 0; i < jobs; i++) {
+    std::vector<std::string> a{self, "test", "--doc", lane};
+    if (reporter == culebra::Reporter::Json) {
+      a.emplace_back("--reporter");
+      a.emplace_back("json");
+    }
+    if (!filter.empty()) {
+      a.emplace_back("--filter");
+      a.push_back(filter);
+    }
+    a.emplace_back("--shard");
+    a.push_back(std::to_string(i) + "/" + std::to_string(jobs));
+    a.insert(a.end(), roots.begin(), roots.end());
+    cmds.push_back(std::move(a));
+  }
+
+  auto outs = culebra::proc::run_all(cmds, static_cast<size_t>(jobs));
+  const std::string scan = doc_shard_summary_format();
+  bool ok = true;
+  for (size_t i = 0; i < outs.size(); i++) {
+    if (!outs[i].spawned) {
+      std::println(stderr, "culebra test: shard {} did not start ({})", i,
+                   culebra::proc::outcome_detail(outs[i]));
+      ok = false;
+      continue;
+    }
+    std::cout << outs[i].result.out;
+    // stderr is the shard's counts plus whatever else it had to say: the
+    // counts are consumed here, the rest is passed through.
+    std::istringstream lines(outs[i].result.err);
+    std::string line;
+    bool counted = false;
+    int failed = 0, errored = 0;
+    while (std::getline(lines, line)) {
+      int idx = 0, passed = 0;
+      if (std::sscanf(line.c_str(), scan.c_str(), &idx, &passed, &failed,
+                      &errored) == 4) {
+        summary.passed += passed;
+        summary.failed += failed;
+        summary.errored_files += errored;
+        counted = true;
+        continue;
+      }
+      std::println(stderr, "{}", line);
+    }
+    if (!counted) {
+      std::println(stderr, "culebra test: shard {} reported no counts ({})", i,
+                   culebra::proc::outcome_detail(outs[i]));
+      ok = false;
+    } else if (failed == 0 && errored == 0 && !outs[i].result.ok) {
+      // The counts leave on unbuffered stderr, so they arrive even from a
+      // child that then dies flushing the report itself. A clean tally next
+      // to a nonzero exit means the shard did not finish saying what it ran.
+      std::println(stderr, "culebra test: shard {} reported no failures but {}",
+                   i, culebra::proc::failure_detail(outs[i].result));
+      ok = false;
+    }
+  }
+  return ok;
+}
+
 int run_test(int argc, const char** argv) {
   std::vector<std::string> roots;
   std::string filter;
@@ -1509,6 +1597,8 @@ int run_test(int argc, const char** argv) {
   int bail_after = 0;
   bool list_only = false;
   bool doc_mode = false;
+  int jobs = 1;
+  culebra::DocShard shard;
   auto engine = RunnerEngine::Vm;
   bool named = false;
   auto parse_reporter = [&](std::string_view v) {
@@ -1527,7 +1617,7 @@ int run_test(int argc, const char** argv) {
     return !v.empty() &&
            v.find_first_not_of("0123456789") == std::string_view::npos;
   };
-  auto parse_bail = [&](std::string_view v) {
+  auto parse_count = [&](std::string_view v, const char* flag, int& out) {
     int n = 0;
     if (all_digits(v)) {
       try {
@@ -1538,11 +1628,38 @@ int run_test(int argc, const char** argv) {
     }
     if (n < 1) {
       std::println(stderr,
-                   "culebra test: --bail needs a count of 1 or more, got '{}'",
+                   "culebra test: {} needs a count of 1 or more, got '{}'", flag,
                    v);
       return false;
     }
-    bail_after = n;
+    out = n;
+    return true;
+  };
+  // `--shard i/n` is how a --jobs parent addresses its children; it is not
+  // part of the documented surface, which is why it is absent from --help.
+  auto parse_shard = [&](std::string_view v) {
+    auto slash = v.find('/');
+    auto index = v.substr(0, slash);
+    auto count = slash == std::string_view::npos ? std::string_view()
+                                                 : v.substr(slash + 1);
+    if (!all_digits(index) || !all_digits(count)) {
+      std::println(stderr, "culebra test: --shard wants i/n, got '{}'", v);
+      return false;
+    }
+    auto to_int = [](std::string_view s) {
+      try {
+        return std::stoi(std::string(s));  // digits checked; this catches overflow
+      } catch (...) {
+        return -1;                         // rejected by the range check below
+      }
+    };
+    shard.index = to_int(index);
+    shard.count = to_int(count);
+    if (shard.count < 1 || shard.index < 0 || shard.index >= shard.count) {
+      std::println(stderr, "culebra test: --shard i/n needs 0 <= i < n, got '{}'",
+                   v);
+      return false;
+    }
     return true;
   };
   for (int i = 2; i < argc; i++) {
@@ -1555,6 +1672,8 @@ int run_test(int argc, const char** argv) {
                    "  --bail [n]      stop after the first failure, or after n\n"
                    "  --list          print the discovered test names, run none\n"
                    "  --doc           run the ```culebra blocks in *.md instead\n"
+                   "  --jobs <n>      run the doc blocks in n processes\n"
+                   "                  (--doc only; not with --bail / --list)\n"
 #ifdef CULEBRA_JIT_ENABLED
                    "  --jit           run the doc blocks through the LLVM JIT\n"
                    "                  (--doc only)\n"
@@ -1573,12 +1692,20 @@ int run_test(int argc, const char** argv) {
     } else if (arg == "--bail") {
       // `--bail` alone means 1; anything but a count after it is a path.
       if (i + 1 < argc && all_digits(argv[i + 1])) {
-        if (!parse_bail(argv[++i])) return 2;
+        if (!parse_count(argv[++i], "--bail", bail_after)) return 2;
       } else {
         bail_after = 1;
       }
     } else if (arg.starts_with("--bail=")) {
-      if (!parse_bail(arg.substr(7))) return 2;
+      if (!parse_count(arg.substr(7), "--bail", bail_after)) return 2;
+    } else if (arg.starts_with("--jobs=")) {
+      if (!parse_count(arg.substr(7), "--jobs", jobs)) return 2;
+    } else if (arg == "--jobs" && i + 1 < argc) {
+      if (!parse_count(argv[++i], "--jobs", jobs)) return 2;
+    } else if (arg.starts_with("--shard=")) {
+      if (!parse_shard(arg.substr(8))) return 2;
+    } else if (arg == "--shard" && i + 1 < argc) {
+      if (!parse_shard(argv[++i])) return 2;
     } else if (arg == "--list") {
       list_only = true;
     } else if (arg == "--doc") {
@@ -1610,9 +1737,22 @@ int run_test(int argc, const char** argv) {
       std::println(stderr, "culebra test --doc: no .md files found");
       return 1;
     }
-    summary = culebra::run_doctests(files, filter, doc_block_runner(engine),
-                                    reporter, bail_after, list_only);
+    // --bail is "stop at the first failure", which N processes racing each
+    // other cannot mean, and --list walks names rather than running anything.
+    // Both stay serial instead of quietly meaning something else.
+    if (jobs > 1 && !list_only && bail_after == 0) {
+      if (!run_doc_shards(jobs, engine, reporter, filter, roots, summary))
+        return 1;
+      culebra::emit_doc_run_end(summary, false, reporter);
+    } else {
+      summary = culebra::run_doctests(files, filter, doc_block_runner(engine),
+                                      reporter, bail_after, list_only, shard);
+    }
   } else {
+    if (jobs > 1) {
+      std::println(stderr, "culebra test: --jobs is for --doc blocks");
+      return 2;
+    }
     if (engine == RunnerEngine::Jit) {
       // There is no JIT host: the lowering has no seam here yet, unlike the
       // doc-block lane. Tier 0 is also the defensible place for a test body,
@@ -1636,6 +1776,13 @@ int run_test(int argc, const char** argv) {
 
   if (list_only) {
     return summary.errored_files == 0 ? 0 : 1;
+  }
+  // A shard's counts belong to its parent, which prints the run's summary.
+  if (shard.count > 1) {
+    std::println(stderr, "{} {} passed={} failed={} errored={}",
+                 culebra::kDocShardSummary, shard.index, summary.passed,
+                 summary.failed, summary.errored_files);
+    return (summary.failed == 0 && summary.errored_files == 0) ? 0 : 1;
   }
   if (reporter == culebra::Reporter::Default) {
     if (summary.errored_files > 0) {

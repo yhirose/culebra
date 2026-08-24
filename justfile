@@ -710,6 +710,25 @@ _run-tests BACKEND:
             *) echo "runner did not catch raw user throw:" >&2;
                echo "$throw_json" >&2; exit 1 ;;
         esac
+        # `--doc --jobs n` splits the block list across n child processes; the
+        # report has to come back identical to the serial one, same order and
+        # all. The fixture is one small file, and `just test` has no other
+        # doctest phase (`just doctest` is its own step), so assert it here.
+        # `|| rc=$?`, not a bare assignment: `set -e` would abort here with the
+        # fixture's own output still captured and never shown.
+        local doc_one doc_par doc_rc=0
+        doc_one=$(cul test --doc --vm tests/doctest 2>&1) || doc_rc=$?
+        doc_par=$(cul test --doc --vm --jobs 4 tests/doctest 2>&1) || doc_rc=$?
+        if [[ "$doc_rc" != 0 ]]; then
+            echo "culebra test --doc: the fixture itself failed (rc $doc_rc)" >&2
+            printf '%s\n' "$doc_one" "$doc_par" | tail -20 >&2
+            exit 1
+        fi
+        if [[ "$doc_one" != "$doc_par" ]]; then
+            echo "culebra test --doc: --jobs 4 disagrees with the serial run" >&2
+            diff <(printf '%s\n' "$doc_one") <(printf '%s\n' "$doc_par") >&2
+            exit 1
+        fi
     }
 
     # Isolate tests live in a subdir kept out of the `tests/*.cul` vm-vs-JIT
@@ -1052,10 +1071,14 @@ _run-tests BACKEND:
 doctest LANE="all": build
     #!/usr/bin/env bash
     set -euo pipefail
+    # One process per core: the JIT lane compiles an LLVM module per block, so
+    # serially it is minutes against seconds for the other lane. The runner
+    # keeps the report in source order whatever the shards finish in.
+    JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
     run_lane() {
       local label="$1"; shift
       echo ">>> doctest ($label)"
-      ./build/culebra test --doc "$@" tests/doctest docs | tail -1
+      {{nice_cmd}} ./build/culebra test --doc --jobs "$JOBS" "$@" tests/doctest docs | tail -1
     }
     case "{{LANE}}" in
       vm)     run_lane vm --vm ;;
