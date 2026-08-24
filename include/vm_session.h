@@ -16,7 +16,7 @@
 // registering a builder twice would mint a second instance of the namespace,
 // and values an earlier input built would stop matching it.
 
-#include <stdlib_interp.h>  // stdlib_preamble_for / stdlib_preamble_triggers
+#include <stdlib_preamble.h>  // stdlib_preamble_for / stdlib_preamble_triggers
 #include <vm.h>
 
 #include <functional>

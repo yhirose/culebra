@@ -8,6 +8,7 @@
 #include <init_cmd.h>
 #include <source_dir.h>
 #include <stdlib_interp.h>
+#include <interp_sig_check.h>  // interp vs canon-sig 1:1 (assert lane; B7-f)
 #include <test_engine.h>
 #include <test_runner.h>
 #include <vfs.h>  // main_script_dir() — set here for Embed's dev disk fallback
@@ -1417,10 +1418,15 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
         modules,
         options.debug ? culebra::vm::Debug::Break : culebra::vm::Debug::Off);
     startup_profile::mark("vm::Compiler::compile_modules");
-    if (options.vm == Options::Vm::Dump)
+    if (options.vm == Options::Vm::Dump) {
       cout << culebra::vm::dump(prog);
-    else
+    } else {
+      // Join outstanding isolates + close FS.watch handles when the run
+      // ends, as the other lanes' run boundaries do (the tree-walker's
+      // interpret_modules, JIT::exec's guard) — this lane had no guard.
+      culebra::ScriptTeardownGuard teardown;
       culebra::vm::Exec::run(prog);
+    }
     startup_profile::mark("vm::Exec::run");
     return true;
   }
@@ -1513,6 +1519,9 @@ culebra::BlockRunner doc_block_runner(RunnerEngine engine) {
     // installs it the same way before it loads anything. Without it every
     // namespace beyond the core globals is an unresolved identifier.
     culebra::install_jit_stdlib();
+    // Sys.exit must fail the block, not the run — the compiled-lane twin of
+    // the interp runner's install_doctest_exit_guard below.
+    culebra::doctest_exit_guard() = true;
     return [run](const std::string& name,
                  const std::string& code) -> culebra::DocRunOutcome {
       // A block is independent of every other: its own Runtime, where the

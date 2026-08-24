@@ -33,6 +33,7 @@
 
 #include <foreign.h>
 #include <interpreter.h>
+#include <wrap_registry.h>
 // wrap.h can be reached before culebra.h pulls the runtime layer (repl.h
 // includes stdlib_interp.h first), so include it here — after
 // interpreter.h, preserving the interpreter-before-runtime order rt.h's
@@ -759,38 +760,8 @@ JitValue jit_static_adapter(JitValue* a, int64_t) {
 
 }  // namespace wrap_detail
 
-// One kNsMethods-shaped row per ctor/static of a wrapped class.
-// stdlib_jit.h materializes NsMethod rows from these (lazily, after
-// static-init froze the registry, so the c_str pointers are stable) and
-// merges them into every table consumer. The class name rides in `sub`:
-// `Ns.Class.method` is a nested namespace, slow-path only — the same
-// shape as Encoding.html.
-struct WrappedNsRow {
-  std::string ns;
-  std::string name;
-  std::string sub;
-  std::string arg0_type;  // empty = none
-  std::string arg0_name;
-  int8_t arity;
-  JitValue (*adapter)(JitValue*, int64_t);
-  // The full declared signature, so the compiled lanes can rebuild the
-  // canonical spec (NsParamMeta / introspection) without the interp
-  // environment: wrap methods are always all-required positionals whose
-  // names/types come straight from the declaration (typed_params emits the
-  // same), and the return annotation is return_annotation<R>(). Storage is
-  // stable once static-init froze the registry, like the c_str fields above.
-  // B7-f note: these subsume arg0_type/arg0_name (== param_types[0] /
-  // param_names[0]), and since every wrap row now synthesizes a full
-  // CanonSig, the "canonical lookup failed → arg0 only" fallbacks in
-  // stdlib_jit.h are unreachable for wrap rows — delete, don't rediscover.
-  std::vector<std::string> param_names;
-  std::vector<std::string> param_types;
-  std::string return_type;
-};
-inline std::vector<WrappedNsRow>& wrapped_ns_rows() {
-  static std::vector<WrappedNsRow> v;
-  return v;
-}
+// (WrappedNsRow and its registry moved to wrap_registry.h in Phase 4
+// B7-b, so the compiled lanes read them without this header.)
 
 // Per-method dispatch policy. `standard` derives the generation
 // bump from C++ const-ness (non-const = bump); `preserves_borrows` is
@@ -895,6 +866,7 @@ class ClassBinder {
 
   ~ClassBinder() {
     auto statics = std::move(statics_);
+    wrapped_class_names().push_back({ns_, name_});
     wrapped_classes().push_back(
         {std::move(ns_), std::move(name_), [statics]() {
            ObjectValue cls;

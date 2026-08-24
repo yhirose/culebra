@@ -11,6 +11,7 @@
 #include <culebra.h>
 #include <stdlib_interp.h>
 #include <stdlib_jit.h>
+#include <interp_sig_check.h>  // interp vs canon-sig 1:1 (assert lane; B7-f)
 
 // The AOT entry itself, which only a build that can emit an object needs.
 #ifdef CULEBRA_JIT_ENABLED

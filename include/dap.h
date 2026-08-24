@@ -42,10 +42,8 @@
 #include <thread>
 #include <vector>
 
-#include <culebra.h>
+#include <dap_json.h>
 #include <debug_engine.h>
-#include <module_loader.h>
-#include <stdlib_interp.h>
 
 namespace culebra {
 
@@ -85,7 +83,7 @@ class DapServer {
     std::string body;
     while (!should_exit_ && read_message(body)) {
       try {
-        handle(json_parse(body, "auto"));
+        handle(dapjson::parse(body));
       } catch (const std::exception&) {
         // A malformed message shouldn't kill the session.
       }
@@ -100,29 +98,31 @@ class DapServer {
  private:
   enum class Step { RUN, NEXT, STEP_IN, STEP_OUT };
 
-  // ---- value builders (DAP JSON is built as culebra Values, serialized by
-  // the interpreter's json_stringify) -------------------------------------
+  // ---- value builders (DAP JSON is built as dapjson Values — the wire
+  // format is engine-independent; see dap_json.h) --------------------------
+  using Value = dapjson::Value;  // shadows the interp's inside this class
   static Value S(std::string s) { return Value(std::move(s)); }
   static Value L(int64_t n) { return Value(n); }
   static Value Bv(bool b) { return Value(b); }
   struct Obj {
-    ObjectValue o;
+    Value o;
+    Obj() { o.type = Value::Object; }
     Obj& set(std::string_view k, Value v) {
-      o.initialize(k, v, false);
+      o.set(std::string(k), std::move(v));
       return *this;
     }
-    Value v() { return Value(std::move(o)); }
+    Value v() { return std::move(o); }
   };
   static Value arr(std::vector<Value> xs) {
-    ArrayValue a;
-    for (auto& x : xs) a.values->push_back(std::move(x));
-    return Value(std::move(a));
+    Value a;
+    a.type = Value::Array;
+    a.elems = std::move(xs);
+    return a;
   }
   static const Value& at(const Value& v, const char* k) {
     static const Value kNil;
-    if (v.type != Value::Object) return kNil;
-    const auto& o = v.to_object();
-    return o.has(k) ? o.get(k) : kNil;
+    const Value* f = v.type == Value::Object ? v.find(k) : nullptr;
+    return f ? *f : kNil;
   }
 
   // ---- transport --------------------------------------------------------
@@ -152,7 +152,7 @@ class DapServer {
     return true;
   }
   void send(const Value& msg) {
-    std::string body = json_stringify(msg, 0, false);
+    std::string body = dapjson::stringify(msg);
     std::string frame =
         "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
     std::lock_guard<std::mutex> lk(write_mu_);
@@ -298,7 +298,7 @@ class DapServer {
     std::vector<Value> verified;
     const Value& bpArr = at(a, "breakpoints");
     if (bpArr.type == Value::Array) {
-      for (const auto& bp : *bpArr.to_array().values) {
+      for (const auto& bp : bpArr.elements()) {
         int64_t line = at(bp, "line").type == Value::Long ? at(bp, "line").to_long()
                                                        : 0;
         std::string cond = at(bp, "condition").type == Value::String

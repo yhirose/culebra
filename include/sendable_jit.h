@@ -20,7 +20,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "isolate.h"  // IsolateCore, sendable::SendNode, isolate_cap, g_live_isolates
+#include "isolate_core.h"  // IsolateCore, SendNode, isolate_cap, g_live_isolates
 #include "rt.h"       // JitValue and the runtime constructors
 
 namespace culebra {

@@ -2982,4 +2982,276 @@ trait Iterable {
   return src;
 }
 
+
+// --- Multimethod dispatch (shared between interp and JIT) ---
+
+// True for the reserved type-tag names value_dyn_type returns for
+// non-Object values. Class instances surface their class name here,
+// so a name that isn't on this list is always a class name.
+inline bool is_primitive_type_label(std::string_view n) {
+  return n == "Nil" || n == "Bool" || n == "Long" || n == "Float" ||
+         n == "String" || n == "StringView" || n == "Array" ||
+         n == "Function" || n == "Tensor" || n == "Tuple" || n == "Set";
+}
+
+// Specificity score for a (param_type, arg_type) pair. Higher = more
+// specific. -1 means no match.
+//
+// Ordering: Any (0) < Object catch-all (1) < Union exact (2) <
+// concrete exact (3) < Generic full match (4). A concrete `Long`
+// param therefore wins over `Long | Float`; `Array<Long>` wins over
+// bare `Array` when both happen to match.
+//
+// `Object` param is a catch-all for class instances ONLY (matches
+// type_matches: primitives stay -1 so pick doesn't claim a match
+// that the post-pick check_type would reject).
+//
+// Generic param (`Array<Long>`) matches an arg whose type label
+// equals the outer name (`Array`) — element info isn't on the arg
+// side in the MVP, so it tie-breaks only against bare `Array`.
+inline int multifn_specificity(std::string_view param_type,
+                                std::string_view arg_type) {
+  // Tiers (×2 from the pre-trait era so trait can slot strictly
+  // between Object and Union):
+  //   0  Any
+  //   2  Object catch-all (class instance via `Object` param)
+  //   3  trait conformance
+  //   4  Union exact (downgrade from any concrete alt inside)
+  //   6  concrete exact / Generic outer-only / bare dict via Object param
+  //   8  Generic full match (param has args and outer matches concrete)
+  if (param_type.empty() || param_type == "Any") return 0;
+  // Union branch must use the depth-aware top-level check — a bare
+  // `find('|')` on `Array<Long | Float>` triggers the branch but
+  // split_union_types yields one candidate, causing self-recursion.
+  if (has_toplevel_pipe(param_type)) {
+    int best = -1;
+    for (auto cand : split_union_types(param_type)) {
+      int s = multifn_specificity(cand, arg_type);
+      if (s > best) best = s;
+    }
+    if (best < 0) return -1;
+    // A concrete alt inside a Union scored 6; downgrade to 4 so a
+    // bare concrete param outranks it. Lower-tier alts pass through.
+    return best >= 6 ? 4 : best;
+  }
+  // Composite bound (`A + B`): all-of. The arg must satisfy every
+  // part; score is the best part's tier (parts are traits → 3).
+  if (has_toplevel_plus(param_type)) {
+    int best = -1;
+    for (auto part : split_intersection_types(param_type)) {
+      int s = multifn_specificity(part, arg_type);
+      if (s < 0) return -1;
+      if (s > best) best = s;
+    }
+    return best;
+  }
+  // Function type `fn(...) -> R`: ranks like `Function` (structural
+  // callable). A closure arg (label "Function") is an exact-ish match (6);
+  // a non-primitive arg (callable class instance / bare Object) scores at
+  // the Object-catch tier (2) and the value-aware post-pick check confirms
+  // `__call__`. Checked before `?` so an `fn(A) -> B?` param isn't read as
+  // optional. Mirrors the `Function` param branch below.
+  if (is_fn_type(param_type)) {
+    if (arg_type == "Function") return 6;
+    if (!is_primitive_type_label(arg_type)) return 2;
+    return -1;
+  }
+  // `T?` Optional sugar = `T | Nil`: score like a two-alt Union. A Nil
+  // arg matches at the Union tier; a non-nil arg scores its base type,
+  // downgraded (concrete-in-Union -> 4) so a bare `T` param outranks it.
+  if (!param_type.empty() && param_type.back() == '?') {
+    auto base = param_type.substr(0, param_type.size() - 1);
+    if (arg_type == "Nil") return 4;
+    int s = multifn_specificity(base, arg_type);
+    if (s < 0) return -1;
+    return s >= 6 ? 4 : s;
+  }
+  // Generic: outer-match against arg label (arg side carries no
+  // type args today, so the args part only tie-breaks against bare
+  // outer-only annotations).
+  if (param_type.find('<') != std::string_view::npos) {
+    auto outer = parse_generic_head(param_type).outer;
+    int base = multifn_specificity(outer, arg_type);
+    if (base < 0) return -1;
+    return base == 6 ? 8 : base;
+  }
+  if (param_type == "Object") {
+    if (arg_type == "Object") return 6;        // bare dict — exact
+    if (is_primitive_type_label(arg_type)) return -1;
+    return 2;                                  // class instance catch
+  }
+  if (param_type == arg_type) return 6;
+  // A callable class instance satisfies `Function` (Option A: structural
+  // callable). The arg side carries only a type label here, so score any
+  // non-primitive (class instance / bare Object) at the Object-catch tier
+  // and let the value-aware post-pick check_type confirm it actually has
+  // `__call__` — a non-callable is rejected there, and an exact class
+  // overload (6) still outranks this catch.
+  if (param_type == "Function" && !is_primitive_type_label(arg_type)) {
+    return 2;
+  }
+  // Trait conformance: a registered trait scores below concrete and
+  // below Union exact, but above the bare-Object catch.
+  if (auto* trait = lookup_trait(param_type)) {
+    if (arg_type == "Object") {
+      // Bare Object literal — `ObjectValue::builtins()` provides
+      // default methods (`iter`, etc.) so the built-in table is the
+      // authority on which traits the literal conforms to.
+      return builtin_conforms_to_trait(arg_type, param_type) ? 3 : -1;
+    }
+    // Primitive arg: consult the hard-coded built-in conformance
+    // table directly (no instance methods to walk).
+    if (is_primitive_type_label(arg_type)) {
+      return builtin_conforms_to_trait(arg_type, param_type) ? 3 : -1;
+    }
+    // Read-only path: `multifn_specificity` only reads the cache and
+    // returns -1 on miss. Use `.find()` (not `operator[]`) so a miss
+    // doesn't materialize an empty by_trait entry, and take a shared
+    // lock so dispatchers don't serialize on this hot path.
+    std::shared_lock lock(trait_mutex());
+    auto& cache = trait_conformance_cache();
+    auto outer = cache.find(std::string(arg_type));
+    if (outer == cache.end()) return -1;
+    auto it = outer->second.find(std::string(param_type));
+    if (it != outer->second.end()) return it->second ? 3 : -1;
+    return -1;
+  }
+  return -1;
+}
+
+// Pick the most specific matching entry. Returns:
+//   idx >= 0  : matching entry index
+//   -1        : no match
+//   -2        : ambiguous (tie at the top)
+// `params_of(entry)` must return a container of (regular) param-type
+// strings; `is_variadic_of(entry)` reports whether the entry has a
+// `*args` catch-all. A variadic entry matches any arity >= its regular
+// count; the surplus positions score as Any (0), and on an otherwise
+// exact tie a non-variadic (fixed-arity) entry wins.
+// `min_arity_of(entry)` returns how many regular params are *required* (have no
+// default). A fixed-arity entry matches arg counts in `[min, params.size()]`;
+// the unsupplied tail is filled by each param's default at call time. A
+// variadic entry matches any arity >= its required count. Among equal-
+// type-specificity fixed-arity matches, the entry that fills fewer params by
+// default (smaller regular count) wins; a genuine tie is ambiguous.
+//
+// `names_of(entry)` returns the regular param names (parallel to params_of) and
+// `kwarg_keys` lists the keyword-argument names supplied at the call. A required
+// param not covered by a positional argument may instead be covered by a kwarg
+// of the same name (CLOS-style: keywords contribute to *applicability* only).
+// Selection still scores on positional args, so overloads that differ only by
+// keyword are ambiguous — a deliberate, runtime-dispatch-friendly choice.
+template <class Entry, class ParamsOf, class IsVariadic, class MinArityOf,
+          class NamesOf>
+inline int64_t multifn_pick(const std::vector<Entry>& methods,
+                             const std::vector<std::string_view>& arg_types,
+                             const std::vector<std::string_view>& kwarg_keys,
+                             ParamsOf params_of, IsVariadic is_variadic_of,
+                             MinArityOf min_arity_of, NamesOf names_of) {
+  auto has_kwarg = [&](std::string_view n) {
+    for (auto k : kwarg_keys) if (k == n) return true;
+    return false;
+  };
+  std::vector<int> score(arg_types.size());
+  std::vector<int> best_score(arg_types.size());
+  size_t best_idx = 0;
+  bool have_best = false;
+  bool best_variadic = false;
+  size_t best_regular = 0;
+  bool ambiguous = false;
+  for (size_t i = 0; i < methods.size(); i++) {
+    const auto& params = params_of(methods[i]);
+    bool variadic = is_variadic_of(methods[i]);
+    size_t min_a = min_arity_of(methods[i]);
+    // Too many positional args (a fixed-arity entry can't absorb them).
+    if (!variadic && arg_types.size() > params.size()) continue;
+    // Every required param past the positional prefix must be named by a kwarg
+    // (defaults are trailing, so required params are the leading [0, min_a)).
+    if (arg_types.size() < min_a) {
+      const auto& names = names_of(methods[i]);
+      bool covered = true;
+      for (size_t r = arg_types.size(); r < min_a; r++) {
+        if (r >= names.size() || !has_kwarg(names[r])) { covered = false; break; }
+      }
+      if (!covered) continue;
+    }
+    bool ok = true;
+    for (size_t p = 0; p < arg_types.size(); p++) {
+      // Positions beyond the regular params are absorbed by `*args` and
+      // score as Any (0) so concrete fixed-arity matches outrank them.
+      int s = p < params.size()
+                  ? multifn_specificity(params[p], arg_types[p])
+                  : 0;
+      if (s < 0) { ok = false; break; }
+      score[p] = s;
+    }
+    if (!ok) continue;
+    if (!have_best) {
+      best_idx = i;
+      best_score = score;
+      best_variadic = variadic;
+      best_regular = params.size();
+      have_best = true;
+      continue;
+    }
+    bool better_any = false, worse_any = false;
+    for (size_t p = 0; p < arg_types.size(); p++) {
+      if (score[p] > best_score[p]) better_any = true;
+      if (score[p] < best_score[p]) worse_any = true;
+    }
+    auto take = [&] {
+      best_idx = i;
+      best_score = score;
+      best_variadic = variadic;
+      best_regular = params.size();
+      ambiguous = false;
+    };
+    if (better_any && !worse_any) {
+      take();
+    } else if (!better_any && !worse_any) {
+      // Equal type-specificity. Break the tie by, in order: a fixed-arity
+      // entry beats a variadic one (`*args` is the fallback); among two
+      // variadic entries, the one with more regular params is more
+      // specific. Anything still even is genuinely ambiguous.
+      if (best_variadic && !variadic) {
+        take();
+      } else if (best_variadic && variadic) {
+        if (params.size() > best_regular) take();
+        else if (params.size() == best_regular) ambiguous = true;
+      } else if (!best_variadic && !variadic) {
+        // Both fixed-arity, equal type-specificity: prefer the entry that
+        // fills fewer params by default (the more exact arity match). Equal
+        // regular counts are genuinely ambiguous.
+        if (params.size() < best_regular) take();
+        else if (params.size() == best_regular) ambiguous = true;
+      }
+    }
+  }
+  if (!have_best) return -1;
+  if (ambiguous)  return -2;
+  return static_cast<int64_t>(best_idx);
+}
+
+// Normalize a slice range against a sequence length: resolve negative
+// indices from the end, apply the inclusive end (`..=`), then clamp both
+// ends to [0, len] and force an empty window when start > end. Returns a
+// half-open [start, end). Shared by interp + JIT slicing so the two
+// backends stay symmetric.
+inline std::pair<size_t, size_t> _slice_bounds(int64_t lo, int64_t hi,
+                                               bool inclusive, size_t len) {
+  int64_t n = static_cast<int64_t>(len);
+  if (lo < 0) lo += n;
+  if (hi < 0) hi += n;
+  // `..=` includes the end. Skip the increment at LONG_MAX so a huge
+  // endpoint (`xs[0..=<LONG_MAX>]`) doesn't signed-overflow; it clamps to
+  // `n` below either way, so the result is unchanged for every other input.
+  if (inclusive && hi != std::numeric_limits<int64_t>::max()) hi += 1;
+  if (lo < 0) lo = 0;
+  if (lo > n) lo = n;
+  if (hi < 0) hi = 0;
+  if (hi > n) hi = n;
+  if (hi < lo) hi = lo;
+  return {static_cast<size_t>(lo), static_cast<size_t>(hi)};
+}
+
 }  // namespace culebra

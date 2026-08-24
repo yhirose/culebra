@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "effects_transform.h"
-#include "interpreter.h"
+#include <script_teardown.h>  // ScriptTeardownGuard (B7-b)
 #include "test_runner.h"  // StdoutCapture, Reporter, TestRunSummary, json_escape
 
 namespace culebra {
@@ -187,30 +187,6 @@ inline std::vector<DocBlock> extract_doc_blocks(const std::string& md) {
   return blocks;
 }
 
-// Override Sys.exit so a doc example that exits (directly, or indirectly
-// via Args.parse on bad/missing args) raises a catchable error instead
-// of calling std::exit() and tearing down the whole doctest process —
-// which would otherwise look like a clean exit-0 success with the run
-// summary silently missing.
-inline void install_doctest_exit_guard(Environment& env) {
-  using namespace std::literals;
-  if (!env.has("Sys")) return;
-  // env.get returns a const ref into env storage; const_cast to mutate
-  // the actual stored Sys namespace object. `initialize` overwrites the
-  // existing (immutable) `exit` slot.
-  auto& sys = const_cast<Value&>(env.get("Sys"));
-  if (sys.type != Value::Object) return;
-  sys.to_object().initialize(
-      "exit",
-      Value(FunctionValue({{"code", false, "Long"sv}},
-                          [](std::shared_ptr<Environment> e) -> Value {
-                            auto code = e->get("code").to_long();
-                            throw CulebraError(
-                                "ExitError",
-                                std::format("Sys.exit({}) called", code));
-                          })),
-      false);
-}
 
 // What running one block produced. `message` carries the diagnostic in the
 // text the CLI prints for that failure — which is what a `# !!` pattern is
@@ -320,7 +296,7 @@ inline TestRunSummary run_doctests(
       }
       // Reap whatever this block left outstanding (e.g. a doc example that
       // throws past an unreached join()) — ScriptTeardownGuard
-      // (interpreter.h), scoped to the rest of this loop iteration, so it
+      // (script_teardown.h), scoped to the rest of this loop iteration, so it
       // fires once per doc block instead of once per script run
       // (interpret_modules) or once per REPL session (repl.h): each doc
       // block is its own fresh env / run.

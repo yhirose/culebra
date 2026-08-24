@@ -1,6 +1,6 @@
 #pragma once
 
-#include <repl.h>
+#include <repl_core.h>
 #include <vm_session.h>
 
 #include <memory>

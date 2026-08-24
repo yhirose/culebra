@@ -950,6 +950,7 @@ _run-tests BACKEND:
     # grammar node added to one walker but not the other fails here instead
     # of becoming a one-backend bug (tools/check_dispatch_symmetry.sh).
     run_dispatch_symmetry() { bash tools/check_dispatch_symmetry.sh; }
+    run_interp_includes() { bash tools/check_interp_includes.sh; }
 
     # Iterator wiring ratchet: terminals drive through JitIterDrive (which
     # owns dispose-on-every-exit) and lazy combinators forward their
@@ -1018,6 +1019,7 @@ _run-tests BACKEND:
         phase "long width (language values are int64_t, not long)"; run_long_width
         phase "flow-discipline (return-completion ratchet)"; run_flow_discipline
         phase "dispatch symmetry (eval_X vs compile_X tag sets)"; run_dispatch_symmetry
+        phase "interp includes (compiled lanes stay interp-free)"; run_interp_includes
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
         phase "rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)"; run_rt_keep_scope
     }
