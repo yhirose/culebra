@@ -19,9 +19,14 @@
 #
 # CULEBRA_CANVAS_HEADLESS is pinned here as well as in the gate: a freeze or
 # check without it bakes/reads `_Canvas.windowed() == true` and diverges
-# (measured).
+# (measured). TZ is pinned unconditionally for the same reason: the _Time
+# cases do local-time calendar arithmetic, and a golden frozen in one zone
+# fails the check in another (measured: JST-frozen values failed CI's UTC by
+# five hours; the old live-reference comparison ran both sides on one
+# machine, so the zone cancelled out and could never be seen).
 set -u
 export CULEBRA_CANVAS_HEADLESS="${CULEBRA_CANVAS_HEADLESS:-1}"
+export TZ=UTC
 
 FREEZE=0
 if [ "${1:-}" = --freeze ]; then FREEZE=1; shift; fi
