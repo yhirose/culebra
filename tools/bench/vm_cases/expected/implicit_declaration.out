@@ -1,0 +1,30 @@
+--- declares
+1
+ImmutableError
+--- scope
+inner
+outer
+fn local
+--- capture
+captured
+forward
+second
+second
+--- destructure
+3
+3
+4 2
+--- globals
+ImmutableError
+ImmutableError
+ImmutableError
+shadow
+1
+--- order
+rhs ran
+ImmutableError
+--- compound
+NameError
+NameError
+--- churn
+1999000

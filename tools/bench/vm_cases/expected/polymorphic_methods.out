@@ -1,0 +1,96 @@
+[2, 3]
+[3, 4]
+[]
+[]
+[1, 2, 3, 4]
+'hello'
+'StringView'
+'world'
+'el'
+''
+Tensor 2 f32
+'Tensor'
+true
+false
+false
+true
+true
+false
+true
+true
+false
+true
+true
+false
+true
+false
+true
+false
+true
+2
+-1
+1
+'5'
+'nil'
+'true'
+'1.5'
+'[1, 2, 3, 4]'
+'(7, 8)'
+'{1, 2}'
+'[[1, 'a'], nil]'
+'hello world'
+'String'
+'Tensor 4 f32'
+true
+'5'
+true
+1
+'HELLO'
+'el'
+300
+['[300, 301]']
+TypeError: type error: expected Object, Array, or Tensor, got Long
+ran 2
+TypeError: type error: expected Function, got Nil
+ran 3
+TypeError: type error: expected Function, got Nil
+ran 4
+TypeError: type error: expected Function, got Nil
+TypeError: type error: parameter 'start' expects Long
+TypeError: type error: parameter 'end' expects Long
+TypeError: type error: parameter 'sub' expects StringLike
+TypeError: unhashable type: 'Array'
+IndexError: Tensor: slice out of bounds.
+7
+6
+1
+3
+'3-1-2-1'
+{3, 1, 2}
+[1, 1, 2, 3]
+[3, 1, 2, 1]
+6.0
+3.0
+10
+24
+0
+4
+'0-1-2-3'
+{0, 1, 2, 3}
+{iter: [function], has_next: [function], next: [function]}
+{iter: [function], has_next: [function], next: [function]}
+3
+0
+0
+1
+[]
+{}
+TypeError: type error: expected Object, Array, or Tensor, got Long
+ValueError: min of empty Array
+TypeError: type error: expected Function, got Nil
+TypeError: type error: expected Function, got Nil
+ran 5
+TypeError: type error: parameter 'sep' expects String
+TypeError: type error: parameter 'sep' expects String
+300
+181800

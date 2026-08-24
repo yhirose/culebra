@@ -1,0 +1,38 @@
+2
+2
+1
+2
+2
+24
+3
+nil
+AB
+true
+['a']
+[0, 1]
+free size 5
+free size nil
+free size true
+free size 1.5
+free push
+free push
+free upper
+free upper
+free add
+free take
+free keys
+free keys
+ArityError|'size' takes 0 arguments but 1 given
+ArityError|'size' takes 0 arguments but 1 given
+ArityError|'size' takes 0 arguments but 1 given
+ArityError
+  arg 2
+free push
+own size
+TypeError|type error: expected Function, got Long
+trait upper
+class upper
+free push
+TypeError|type error: expected Object, Array, or Tensor, got Long
+TypeError|type error: expected Function, got Nil
+6000

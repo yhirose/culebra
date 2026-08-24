@@ -1,0 +1,68 @@
+3
+2
+3
+3
+5
+3
+3
+true
+true
+false
+true
+false
+false
+false
+[1]
+nil
+'a'
+nil
+{1}
+(1,)
+200
+ABC
+abc
+Hello world
+
+CAFÉ
+[a b]
+[\n\ta\t\n]
+['a\nb\n']
+[]
+StringView
+ababab
+[]
+hello...
+hello
+hell..
+hel
+[axx]
+[xxa]
+[a  ]
+[  a]
+xyc
+xxx
+[]
+['a', 'b', 'c']
+['abc']
+['a', '', 'b']
+true
+true
+true
+false
+3
+A,B
+['a', 'b']
+a,b
+a,ba,b
+'a,b'
+aaa
+3
+2
+arg a
+arg x
+xb
+abc
+2
+200
+200
+1200

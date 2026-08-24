@@ -1,0 +1,41 @@
+10
+30
+30
+10
+20
+30
+3
+6
+[[1, 12], [9, 4]]
+[9, 7, 3]
+42
+8
+[40, 24, 3]
+[0.25]
+[32]
+[5, 1]
+1
+1
+val
+recv
+key
+val
+recv
+key
+[6, 0]
+5
+7
+9
+9
+oob
+key_type
+neg_compound
+neg_coalesce
+neg_oob
+not_indexable
+not_writable
+deep_oob
+from_key
+1
+[[1], [3], [6]]
+y

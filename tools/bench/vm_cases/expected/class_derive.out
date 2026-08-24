@@ -1,0 +1,65 @@
+true
+false
+true
+false
+Point(1, 2)
+-1
+1
+0
+true
+false
+true
+true
+true
+false
+true
+['class', 'x', 'y']
+Point
+Object
+true
+Point(1, 2)
+false
+false
+false
+Point(1, 2)
+Other(1, 2)
+false
+false
+0
+custom-1
+true
+true
+-1
+m0
+m1-7
+Over(1)
+true
+eq0
+eq2
+OverEq(1)
+DispatchError
+Fielded(1, 'z', 3.5)
+['class', 'a', 'b', 'c']
+true
+true
+0
+2
+true
+false
+again
+1
+ArityError
+ArityError
+true
+Point(1, 2)
+-1
+1
+0
+TypeError
+TypeError
+0
+Loop(0)
+Loop(1)
+Loop(2)
+3
+4882

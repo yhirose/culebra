@@ -1,0 +1,2 @@
+rhs
+AttributeError: compound assignment on missing property. at 5:3.

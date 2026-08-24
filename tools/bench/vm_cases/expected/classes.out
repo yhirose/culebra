@@ -1,0 +1,346 @@
+15
+Car
+['class', 'miles', 'mpr']
+Car {mut miles: 15, mut mpr: 5}
+8
+hi
+['class']
+3
+NoCtor {mut a: 1, mut b: 2, mut c: ''}
+['class', 'a', 'b', 'c']
+ctor sees n=1
+1/plain/[]/7/0
+ctor sees n=1
+[]
+[9]
+['class', 'n', 'tag', 'items', 'bare', 'extra']
+6
+R {mut x: 1}
+ImmutableError
+3
+10
+[3, 6]
+[3, 6]
+9
+9
+100
+3
+3
+50
+Object
+['new']
+nil
+TypeError
+3
+Function
+42
+ctor
+field
+ok
+caught
+['body', 'defer', 'unwound']
+[P {mut x: 1}, P {mut x: 2}]
+1
+1
+Wrap {mut inner: P {mut x: 1}}
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+ctor sees n=1
+45150

@@ -1,0 +1,2 @@
+traced
+TypeError: type error: expected Long, got Float at 4:9.

@@ -1,0 +1,23 @@
+A {mut __enum: 'E', mut _0: 5}
+B {mut __enum: 'E'}
+Object
+A
+5
+['A', 'B']
+7
+0
+bare-binds
+[6.0, 2.25, 0.0]
+3.0
+['ok-1', 'err-bad', 'pair-2-3']
+path-1
+A {mut __enum: 'E', mut _0: 9}
+B {mut __enum: 'E'}
+true
+[One {mut __enum: 'Local'}, Two {mut __enum: 'Local', mut _0: 2}]
+[Some {mut __enum: 'Opt', mut _0: 3}, Nothing {mut __enum: 'Opt'}]
+[7, 'none']
+missing payload ::: err=ArityError|missing required argument '_0'
+unknown member ::: ok=nil
+nullary called ::: err=TypeError|type error: expected Function, got Object
+8000

@@ -1,0 +1,47 @@
+['a', 'b']
+[]
+true
+false
+false
+['a', (7, 8), 2]
+true
+true
+false
+10
+30
+-1
+-1
+1
+-1
+'tup'
+false
+1
+99
+{a: 1, mut z: 99}
+{mut k: [1, 2]}
+42
+42
+1
+ArityError: missing required argument 'a'
+ArityError: expected 1 positional argument, got 0
+TypeError: type error: parameter 'i' expects Long
+TypeError: unhashable type: 'Array'
+TypeError: unhashable type: 'Array'
+TypeError: type error: expected Object, Array, or Tensor, got Long
+ran 3
+ran 4
+TypeError: type error: expected Function, got Nil
+'mine'
+ran 5
+ran 6
+TypeError: type error: expected Function, got Long
+21
+300
+nil
+{b: 2}
+nil
+true
+{2}
+'mine x'
+TypeError: unhashable type: 'Array'
+0

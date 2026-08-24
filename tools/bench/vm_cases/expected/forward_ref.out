@@ -1,0 +1,29 @@
+--- self
+4
+--- siblings
+from second
+true
+false
+--- unbound
+NameError
+41
+--- write
+2
+ImmutableError
+--- class
+3
+--- shadow
+8
+8
+7
+[8, 8]
+nil
+7
+10
+10
+9
+8
+Long
+String
+--- churn
+8000

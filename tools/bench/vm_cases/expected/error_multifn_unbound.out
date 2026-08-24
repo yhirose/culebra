@@ -1,0 +1,2 @@
+before
+NameError: undefined variable 'early' at 3:9.

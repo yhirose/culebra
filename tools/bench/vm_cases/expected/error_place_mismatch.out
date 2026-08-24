@@ -1,0 +1,2 @@
+rhs
+ValueError: destructure pattern did not match value at 6:1.

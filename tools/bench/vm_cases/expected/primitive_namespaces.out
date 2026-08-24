@@ -1,0 +1,43 @@
+--- time
+1970-01-01T00:00:00Z
+3
+{year: 1970, month: 1, day: 1, hour: 0, minute: 0, second: 0, nanosecond: 0, weekday: 3, dayofyear: 1}
+nil
+0
+31536000000000000
+86400000000000
+1970
+104400000000000
+0
+1970-01-02T00:00:00Z
+{year: 1970, month: 1, day: 1, hour: 0, minute: 0, second: 0, nanosecond: 0, weekday: 3, dayofyear: 1}
+nil
+--- term
+3
+4
+true
+false
+--- canvas
+4278190335
+255
+8
+4
+false
+0
+4278190335
+2
+3
+--- modules
+1970-01-01T00:00:00Z
+1970
+7200.0
+3
+--- errors
+TypeError: type error: parameter 'x' expects Long|Float
+TypeError: type error: parameter 'utc' expects Bool
+ArityError: expected 2 positional arguments, got 1
+ArityError: expected 0 positional arguments, got 1
+TypeError: type error: parameter 'utc' expects Bool
+ArityError: expected 2 positional arguments, got 3
+--- churn
+4000

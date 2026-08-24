@@ -1,0 +1,27 @@
+5
+hi
+42
+2.0
+nil
+here
+either
+[1, 2]
+1.5
+3
+ab
+5
+2
+2
+9
+[8]
+5
+kept
+wrong type ::: err=TypeError|type error: assignment expects Long
+optional wrong type ::: err=TypeError|type error: assignment expects String?
+union wrong type ::: err=TypeError|type error: assignment expects Long | String
+class wrong type ::: err=TypeError|type error: assignment expects P
+no such type name ::: err=TypeError|type error: assignment expects Bogus
+sink wrong type ::: err=TypeError|type error: assignment expects Long
+rhs ran before the check ::: ok=['yes', 1]
+coalesce skips the check when it skips the RHS ::: ok=['kept', 0]
+4000

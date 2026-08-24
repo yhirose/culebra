@@ -1,0 +1,48 @@
+[1, 2]
+[1, 3]
+[1, 3]
+[1, 3]
+[1, 2]
+[4, 5]
+[7, 8]
+[1, 9]
+[1, 2]
+[1, 4]
+{}
+{x: 1, y: 2}
+{a: 7, b: 8}
+{a: 7, b: 8, z: 0}
+{a: 7, b: 8, z: 0}
+['a', 'b']
+[1, 1, {}]
+[1, 2, {k: 3}]
+[1, 1, {k: 2}]
+[1, false]
+[1, true]
+[1, 2]
+[1, 5]
+[1, 10, 100, {bonus: 7}]
+[1, 2, 100, {bonus: 7}]
+[1, 10, 50, {bonus: 8, extra: 'x'}]
+'y'
+'z'
+[3, 1, 0, {extra: 9}]
+[4, 1, 2, {}]
+[5, {k: 6}]
+[9, 1, 0, {}]
+[1, 2]
+[1, 2]
+[2, 1]
+[1, 2]
+[1, 2]
+[1, 2]
+{kind: 'TypeError', message: 'unknown keyword argument 'zz'', line: 78, col: 15}
+{kind: 'TypeError', message: 'got argument 'a' both positionally and as a keyword', line: 79, col: 15}
+{kind: 'TypeError', message: '**: splat operand must be Object, got Long', line: 80, col: 15}
+{kind: 'TypeError', message: '**: splat key must be String', line: 81, col: 15}
+{kind: 'TypeError', message: 'takes 1 positional argument but 2 given', line: 82, col: 15}
+{kind: 'ArityError', message: 'missing required argument 'x'', line: 83, col: 15}
+{kind: 'ArityError', message: 'missing required argument 'a'', line: 84, col: 15}
+{kind: 'TypeError', message: 'type error: parameter 'a' expects Long', line: 86, col: 15}
+{kind: 'TypeError', message: 'type error: parameter 'b' expects String', line: 87, col: 15}
+2000

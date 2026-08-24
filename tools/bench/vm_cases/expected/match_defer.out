@@ -1,0 +1,18 @@
+arm body
+arm defer
+value
+body2
+d2
+d1
+after2
+1
+break arm
+defer at break
+after loop
+2
+defer at return
+early
+late
+defer at throw
+caught boom
+done

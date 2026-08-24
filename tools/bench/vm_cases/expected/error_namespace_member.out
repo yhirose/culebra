@@ -1,0 +1,11 @@
+{kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 6, col: 7}
+{kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 8, col: 7}
+{kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 13, col: 7}
+{kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 14, col: 7}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 15, col: 7}
+{kind: 'ArityError', message: 'expected 1 positional argument, got 0', line: 18, col: 7}
+{kind: 'ArityError', message: 'expected 1 positional argument, got 2', line: 19, col: 7}
+{kind: 'TypeError', message: 'type error', line: 20, col: 7}
+{kind: 'TypeError', message: 'type error', line: 22, col: 7}
+{kind: 'TypeError', message: 'type error: expected Function, got Float', line: 25, col: 7}
+AttributeError: namespace 'Math' has no member 'nope' at 26:1.

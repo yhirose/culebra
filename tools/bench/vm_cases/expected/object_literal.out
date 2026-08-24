@@ -1,0 +1,18 @@
+{a: 1, x: 10, b: 2}
+{a: 3}
+{s: 1, 2: 'two', 3.5: 'float', nil: 'n', true: 't', (1, 2): 'tup'}
+{2: 'b'}
+{mut a: 1, b: 3, c: 4}
+{mut b: 2, mut a: 1}
+{mut a: 2}
+{mut p: 1, mut q: 2}
+true
+{outer: {inner: [1, 2], t: (3, 4)}}
+300
+DropContractError: type error: 'next' must be a Function taking no arguments.
+DropContractError: type error: 'has_next' must be a Function taking no arguments.
+TypeError: unhashable type: 'Array'
+TypeError: cannot spread Array into an object (Object only)
+TypeError: cannot spread Long into an object (Object only)
+ran 1
+ZeroDivisionError

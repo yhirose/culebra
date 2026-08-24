@@ -1,0 +1,17 @@
+str.size(1) ::: err=ArityError|'size' takes 0 arguments but 1 given
+arr.push() ::: err=ArityError|'push' takes 1 argument but 0 given
+arr.push(1,2) ::: err=ArityError|'push' takes 1 argument but 2 given
+str.repeat() ::: err=ArityError|'repeat' takes 1 argument but 0 given
+dict.has() ::: err=ArityError|'has' takes 1 argument but 0 given
+str.truncate() ::: err=ArityError|missing required argument 'max'
+str.truncate(1,2,3) ::: err=TypeError|takes 2 positional arguments but 3 given
+arr.sorted(1) ::: err=TypeError|takes 0 positional arguments but 1 given
+str.trim_end(1,2) ::: err=TypeError|takes 1 positional argument but 2 given
+arr.upper() ::: err=TypeError|type error: expected Function, got Nil
+long.push(1) ::: err=TypeError|type error: expected Object, Array, or Tensor, got Long
+nil.size(1) ::: err=TypeError|type error: expected Object, Array, or Tensor, got Nil
+ns.size(1) ::: err=ArityError|'size' takes 0 arguments but 1 given
+ns.upper(1) ::: err=AttributeError|namespace 'Math' has no member 'upper'
+iter.iter(1) ::: ok=Object
+iter.count(1) ::: err=ArityError|'count' takes 0 arguments but 1 given
+2000

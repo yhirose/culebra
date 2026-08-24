@@ -1,0 +1,1 @@
+SyntaxError: getter `bad` in class `E` must take no parameters at 5:7.

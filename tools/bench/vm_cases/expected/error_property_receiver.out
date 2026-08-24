@@ -1,0 +1,7 @@
+{kind: 'TypeError', message: 'type error: expected Object, Array, or Tensor, got Long', line: 5, col: 7}
+{kind: 'TypeError', message: 'type error: expected Object, Array, or Tensor, got Long', line: 6, col: 7}
+{kind: 'TypeError', message: 'type error: expected Object, Array, or Tensor, got Bool', line: 7, col: 7}
+{kind: 'TypeError', message: 'type error: expected Object, Array, or Tensor, got Nil', line: 8, col: 7}
+{kind: 'TypeError', message: 'type error: expected Object, Array, or Tensor, got Float', line: 9, col: 7}
+{kind: 'TypeError', message: 'type error: expected Object, Array, or Tensor, got Long', line: 14, col: 7}
+TypeError: type error: expected Object, Array, or Tensor, got Long at 15:1.

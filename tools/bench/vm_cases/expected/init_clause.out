@@ -1,0 +1,36 @@
+['then', 7]
+['elseif', 1]
+012
+[3, 3, 3]
+[1, 2]
+3
+['two', 2]
+['big', 5]
+[1, 2]
+[1, 3]
+inner
+outer
+10
+two-2
+['nobreak', 2]
+in then
+['drop', 'if']
+after if
+['drop', 'while']
+after while
+arm
+['drop', 'match']
+after match
+['drop', 'return']
+['returned', 0]
+['drop', 'break']
+after break
+caught
+body
+after
+['defer', 'g']
+['loop-body', 0]
+['loop-defer', 0]
+['loop-body', 1]
+['loop-defer', 1]
+churn done

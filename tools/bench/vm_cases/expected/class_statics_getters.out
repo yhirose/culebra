@@ -1,0 +1,43 @@
+circle
+3
+circle/square
+1
+1
+shape:circle
+['new', 'circle', 'square', 'both', 'unit', 'UNIT']
+Function
+ImmutableError
+Object
+Object
+instance
+nil
+TypeError
+nil
+TypeError
+--- decl
+static-A
+static-B
+--- done
+3
+42
+nil
+['new', 'A', 'FROM_OUTER', 'B']
+42
+v=21
+21
+Long
+Function
+[function]
+99
+['class', 'v']
+C {mut v: 21}
+getter
+2
+[2, 4]
+8
+1
+5
+['class', 'v', 'set_by_ctor']
+['g', 'g', ['p']]
+dict
+TypeError: type error: expected Object, Array, or Tensor, got Long at 148:10.

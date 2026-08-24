@@ -1,0 +1,2 @@
+before
+TypeError: type error: expected Bool, Long, or Float, got String at 5:9.

@@ -1,0 +1,9 @@
+42
+1.5
+true
+nil
+already
+[1, [2, 3], 'x']
+8
+3
+TypeError: type error at 12:9.

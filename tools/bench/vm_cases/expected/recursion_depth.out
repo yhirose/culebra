@@ -1,0 +1,19 @@
+--- fn
+RecursionError
+true
+--- lambda
+RecursionError
+true
+--- static
+RecursionError
+true
+--- ctor
+RecursionError
+true
+--- ctor with a field initializer
+RecursionError
+true
+--- budget returns
+RecursionError
+RecursionError
+true

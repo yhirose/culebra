@@ -1,0 +1,35 @@
+1
+99
+nil
+3
+30
+2
+6
+3
+10
+3
+nil
+42
+['class', 'f']
+Tagged {mut f: 1}
+1
+2
+nil
+nil
+false
+true
+false
+true
+true
+false
+false
+true
+15
+42
+42
+11
+21
+21
+TypeError
+type error: return value expects String
+90900

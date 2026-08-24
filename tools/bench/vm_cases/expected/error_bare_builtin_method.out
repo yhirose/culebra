@@ -1,0 +1,8 @@
+{kind: 'TypeError', message: 'built-in method 'size' cannot be used as a value (call it, or wrap it in a lambda)', line: 7, col: 9}
+{kind: 'TypeError', message: 'built-in method 'size' cannot be used as a value (call it, or wrap it in a lambda)', line: 8, col: 14}
+{kind: 'TypeError', message: 'built-in method 'size' cannot be used as a value (call it, or wrap it in a lambda)', line: 9, col: 14}
+{kind: 'TypeError', message: 'built-in method 'has' cannot be used as a value (call it, or wrap it in a lambda)', line: 10, col: 12}
+{kind: 'TypeError', message: 'built-in method 'has' cannot be used as a value (call it, or wrap it in a lambda)', line: 11, col: 19}
+nil
+nil
+TypeError: built-in method 'size' cannot be used as a value (call it, or wrap it in a lambda) at 16:16.

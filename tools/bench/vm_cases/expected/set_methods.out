@@ -1,0 +1,38 @@
+[1, 2, 3, 4]
+[2, 3]
+[1]
+[1, 4]
+false
+true
+false
+true
+[1, 2, 3]
+true
+false
+[1, 2, 3]
+true
+false
+[2, 3]
+[1, 2]
+[1, 2]
+true
+true
+[1, 2]
+[(1, 2), 's', (3, 4)]
+true
+['s', (3, 4)]
+[]
+true
+300
+TypeError: type error: parameter 'other' expects Set
+TypeError: type error: parameter 'other' expects Set
+TypeError: unhashable type: 'Array'
+TypeError: unhashable type: 'Array'
+TypeError: type error: expected Object, Array, or Tensor, got Long
+ran 2
+TypeError: type error: expected Function, got Nil
+ran 3
+TypeError: type error: expected Function, got Nil
+ran 4
+ZeroDivisionError
+[1]

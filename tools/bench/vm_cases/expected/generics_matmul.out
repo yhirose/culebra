@@ -1,0 +1,20 @@
+[5, 'a', [1]]
+3
+s
+[1, 'x']
+['a', 1]
+not a long
+id
+1
+T
+T
+['one', 'two']
+2
+3
+5
+7
+matmul on scalars ::: err=TypeError|type error: cannot apply '@' to Long and Long
+matmul without the method ::: err=TypeError|type error: expected Object, Array, or Tensor, got Long
+matmul reversed operands ::: err=TypeError|type error: cannot apply '@' to Long and Object
+bounded generic rejects a non-conformer ::: err=DispatchError|no matching method for `needs`
+4000

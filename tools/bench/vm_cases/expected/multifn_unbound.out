@@ -1,0 +1,4 @@
+{kind: 'NameError', message: 'undefined variable 'early'', line: 3, col: 26}
+{kind: 'NameError', message: 'undefined variable 'early'', line: 5, col: 15}
+2
+3

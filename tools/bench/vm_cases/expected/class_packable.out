@@ -1,0 +1,38 @@
+3
+[1.5, 2.5]
+0.0
+['new', '__packable__']
+FP
+9.0
+7
+true
+['class', 'a', 'b']
+P
+Object
+14
+9
+P
+nil
+[-8, 300, 70000, 5000000000, 255]
+[0.25, 2.25, true]
+[0, 0, false]
+-1
+hi
+2
+4
+CapacityError
+IndexError
+Both(1, false)
+true
+true
+0
+0
+IndexError
+AttributeError
+TypeError
+TypeError
+TypeError
+1
+5
+0
+49200

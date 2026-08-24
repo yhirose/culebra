@@ -1,0 +1,93 @@
+drop 2
+drop 1
+drop 3
+caught
+--- defers
+defer 2
+defer 1
+drop 5
+drop 4
+caught
+--- normal path
+defer normal
+drop 6
+0
+--- cascade
+drop holder
+drop 7
+drop 8
+caught
+drop 9
+drop 10
+caught
+--- scopes
+drop 12
+drop 11
+caught
+drop 20
+drop 21
+caught
+--- rethrow
+drop 31
+caught inside
+drop 30
+caught outside
+--- receiver
+drop 41
+drop instance
+drop 40
+caught
+--- ctor
+drop D
+ArityError
+drop D
+TypeError
+--- interleaved
+defer inner
+drop 51
+defer frame
+drop 50
+caught
+--- interleaved try
+drop 52
+defer try
+caught inside
+nil
+--- temps first
+drop 53
+drop 54
+defer temps
+ZeroDivisionError
+--- captured
+61
+drop 61
+drop 60
+caught
+--- noisy drop
+drop noisy
+drop: from drop
+caught original
+--- args interrupted
+drop 71
+drop 70
+caught
+--- tuple interrupted
+drop 72
+drop 73
+caught
+--- dict interrupted
+drop 74
+drop 75
+caught
+--- non-string keys
+drop 78
+drop 77
+drop 76
+caught
+--- set members
+drop 85
+drop 86
+drop 87
+caught
+[2000, 6000]
+drop_on_throw OK

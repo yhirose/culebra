@@ -1,0 +1,15 @@
+ran
+after let sink
+ran
+after bare sink
+['drop', 1]
+body
+after sink scope
+5
+{mut k: 'v'}
+{mut k: 'w'}
+[9, 2]
+{mut p: 2}
+5
+['ImmutableError', {k: 1}]
+churn done

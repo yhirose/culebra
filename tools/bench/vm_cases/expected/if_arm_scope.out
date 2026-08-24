@@ -1,0 +1,35 @@
+--- escapes
+1
+--- arms share
+then
+else
+2
+--- never ran
+NameError
+--- shadowing
+outer
+inner
+--- shapes
+from g
+3
+E
+9
+7
+--- nested
+7
+--- declaring condition
+17
+--- capture
+captured
+--- in fn / value position
+inner fn
+value
+value
+--- real block
+1
+--- drop
+inside
+drop 1
+after
+--- churn
+1000

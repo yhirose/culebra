@@ -1,0 +1,49 @@
+11
+13
+16
+no dispatcher
+11/13
+Function
+['class', 'base']
+15
+21
+one:1
+two:1,2
+plain
+inst:1
+inst2:1,2
+['new', 'make', 'plain']
+[function]
+Object
+helper:1
+empty
+one:1
+two:1,2
+one:9
+0
+['new']
+one:1
+two
+one:3
+Function
+method:1
+plain:4
+A-one
+A-two
+A-s1
+A-s2
+A-c1
+A-c2
+B-one
+B-s2
+B-c1
+0:7
+0:7,8
+1:7
+1:7,8
+2:7
+2:7,8
+method: no matching method for `plus`
+static: no matching method for `make`
+ctor: no matching method for `new`
+21000

@@ -1,0 +1,12 @@
+['positive', 'fell through']
+from the declaration
+nil
+['r', ['before']]
+from an argument
+from the right of ||
+from an array literal
+[0, 1]
+[0, 2]
+[[0, 0], [1, 0], [2, 0]]
+[[1, 2], ['before', 'deferred']]
+4000

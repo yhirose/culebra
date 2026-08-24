@@ -1,0 +1,10 @@
+3
+42
+boom
+{kind: 'ZeroDivisionError', message: 'divide by 0 error', line: 11, col: 15}
+{kind: 'TypeError', message: 'type error: expected Bool, Long, or Float, got Nil', line: 12, col: 15}
+11
+12
+500
+96
+big

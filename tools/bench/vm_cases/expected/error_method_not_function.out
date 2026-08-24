@@ -1,0 +1,9 @@
+{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 9, col: 7}
+side
+{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 10, col: 7}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 11, col: 7}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 12, col: 7}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 13, col: 7}
+{kind: 'TypeError', message: 'type error: expected Function, got Long', line: 16, col: 7}
+0
+TypeError: type error: expected Function, got Nil at 21:1.

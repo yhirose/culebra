@@ -1,0 +1,8 @@
+{kind: 'TypeError', message: 'type error', line: 3, col: 7}
+{kind: 'TypeError', message: 'type error', line: 4, col: 7}
+{kind: 'TypeError', message: 'type error', line: 5, col: 7}
+{kind: 'TypeError', message: 'unhashable type: 'Array'', line: 6, col: 7}
+{kind: 'TypeError', message: 'type error: parameter 'x_range' expects Range', line: 7, col: 7}
+{kind: 'TypeError', message: 'type error: expected Long, got String', line: 8, col: 7}
+{kind: 'TypeError', message: 'type error', line: 10, col: 7}
+TypeError: type error at 11:1.

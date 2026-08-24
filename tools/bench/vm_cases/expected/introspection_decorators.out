@@ -1,0 +1,32 @@
+--- signature
+greet
+String
+2
+name String
+true true
+--- shapes
+[] 1 a
+[] x
+true
+true
+variadic 0
+2 rest
+--- overloads
+over 1
+55 fib
+--- other receivers
+dict
+7
+nil
+--- decorators
+true
+6
+inner
+outer
+Object
+42
+true Tagged
+--- decorator errors
+TypeError
+--- churn
+26000

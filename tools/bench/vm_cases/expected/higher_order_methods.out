@@ -1,0 +1,58 @@
+[6, 2, 8, 2, 10]
+[3, 4, 5]
+[3, 1, 4, 1, 5]
+true
+true
+4
+nil
+[1, 2, 3]
+5
+1
+14
+'31415'
+{mut 1: [3, 1, 1, 5], mut 0: [4]}
+([4], [3, 1, 1, 5])
+[3, 1, 4, 1, 5]
+[5, 4, 3, 1, 1]
+[5, 4, 3, 1, 1]
+14
+[13, 11, 14, 11, 15]
+'boom'
+{iter: [function], has_next: [function], next: [function]}
+[]
+0
+[0]
+{iter: [function], has_next: [function], next: [function]}
+[0, 1, 2, 3, 4]
+true
+true
+4
+{iter: [function], has_next: [function], next: [function]}
+4
+0
+10
+{mut 0: [0, 2, 4], mut 1: [1, 3]}
+([0, 2, 4], [1, 3])
+false
+false
+[]
+false
+true
+nil
+0
+nil
+TypeError: type error: expected Object, Array, or Tensor, got Long
+ran 2
+TypeError: type error: expected Function, got Nil
+ran 3
+ran 4
+TypeError: type error: expected Function, got Nil
+TypeError: type error: parameter 'f' expects Function
+TypeError: type error: parameter 'f' expects Function
+TypeError: type error: map expects a 1-parameter function
+ValueError: min_by of empty Array
+TypeError: type error: flat_map callback must return an Array
+[30, 40, 50]
+1
+300
+273000

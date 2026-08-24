@@ -22,6 +22,8 @@
 # Executables
 *.exe
 *.out
+# ...but the vm_cases frozen expectations are data, not build output
+!tools/bench/vm_cases/expected/*.out
 *.app
 
 # Debug symbols

@@ -1,0 +1,3 @@
+before
+static field ran
+DropContractError: type error: 'next' must be a Function taking no arguments. at 10:1.

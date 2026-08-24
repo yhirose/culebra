@@ -1,0 +1,33 @@
+3
+12
+7
+11
+42
+15
+2
+4
+10
+95
+6
+1|[2, 3]
+1|[]
+1|[2, 3, 4]|5
+2
+9
+7
+ValueError
+3
+ValueError
+2
+nil
+miss
+42
+42
+120
+pattern
+three
+ValueError
+3
+mismatch
+mismatch
+46350

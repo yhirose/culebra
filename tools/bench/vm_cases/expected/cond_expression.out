@@ -1,0 +1,29 @@
+--- arms
+b
+nil
+z
+z
+--- truthiness
+long
+z
+float
+TypeError
+--- order
+test 1
+test 2
+b
+--- shapes
+ABC
+inner
+statement form
+--- control flow
+returned
+0
+1
+--- scope
+declared in the arm
+declared in the arm
+else
+from the arm
+--- churn
+2001

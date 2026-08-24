@@ -1,0 +1,28 @@
+[0, nil, nil]
+[1, 2, 9, 9, 9]
+[1, 2, 3]
+[]
+[0, 8, 8, 8]
+200
+[1, 2, 3]
+[0, 1, 2, 3]
+[1, 2]
+[9, 8]
+[5, 6, 5, 6]
+[5, 6]
+(1, 'two', 3.0)
+two
+3.0
+true
+false
+([1, 2], (3, 4))
+{2, 1}
+true
+false
+[2, 1]
+(99, [99])
+{99, 100}
+caught-spread
+caught-unhashable
+caught-negative
+caught-count-type

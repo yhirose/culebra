@@ -1,0 +1,7 @@
+block done
+drop 2
+defer iter 1
+drop 10
+defer iter 1
+drop 11
+uncaught: x

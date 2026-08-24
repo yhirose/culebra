@@ -1,0 +1,49 @@
+sorted(reverse: true) ::: ok=[3, 2, 1]
+sorted(reverse: false) ::: ok=[1, 2, 3]
+sorted() ::: ok=[1, 2, 3]
+sorted_by(f, reverse: true) ::: ok=[1, 2, 3]
+sorted_by(f) ::: ok=[3, 2, 1]
+chained ::: ok=3,2,1
+[3, 2, 1]
+nil
+[1, 2, 3]
+[1, 2, 3]
+sorted(reverse: 5) ::: err=TypeError|type error: parameter 'reverse' expects Bool
+sorted(reverse: nil) ::: err=TypeError|type error: parameter 'reverse' expects Bool
+sorted_by(5, reverse: 5) ::: err=TypeError|type error: parameter 'f' expects Function
+sorted_by(5, reverse: true) ::: err=TypeError|type error: parameter 'f' expects Function
+sorted_by(2-param, reverse: 5) ::: err=TypeError|type error: parameter 'reverse' expects Bool
+sorted(true) ::: err=TypeError|takes 0 positional arguments but 1 given
+sorted(1, reverse: true) ::: err=TypeError|takes 0 positional arguments but 1 given
+truncate(max: 3) ::: err=TypeError|built-in method 'truncate' does not accept keyword arguments
+truncate(5, ellipsis: '!') ::: err=TypeError|built-in method 'truncate' does not accept keyword arguments
+trim_start(chars: 'x') ::: err=TypeError|built-in method 'trim_start' does not accept keyword arguments
+sorted(rev: true) ::: err=TypeError|built-in method 'sorted' does not accept keyword arguments
+sorted(**m) ::: err=TypeError|built-in method 'sorted' does not accept keyword arguments
+push(1, x: 2) ::: err=TypeError|built-in method 'push' does not accept keyword arguments
+set.add(x: 1) ::: err=TypeError|built-in method 'add' does not accept keyword arguments
+dict.get(0, fallback: 9) ::: err=TypeError|built-in method 'get' does not accept keyword arguments
+ns.size(reverse: true) ::: err=TypeError|built-in method 'size' does not accept keyword arguments
+scalar.sorted(reverse: true) ::: err=TypeError|type error: expected Object, Array, or Tensor, got Long
+str.sorted(reverse: true) ::: err=TypeError|type error: expected Function, got Nil
+scalar.truncate(max: 3) ::: err=TypeError|type error: expected Object, Array, or Tensor, got Long
+iter.take(n: 1) ::: err=TypeError|built-in method 'take' does not accept keyword arguments
+kw then positional ::: err=SyntaxError|positional argument follows keyword argument
+kw then surplus ::: err=SyntaxError|positional argument follows keyword argument
+duplicate kw ::: err=TypeError|duplicate keyword argument 'reverse'
+miss outranks list ::: err=TypeError|type error: expected Object, Array, or Tensor, got Long
+value order ::: ok=f;rev;
+unresolved skips the value ::: ok=caught
+own method ::: ok=['own', true]
+own method unknown kw ::: err=ArityError|missing required argument 'reverse'
+own size ::: ok=['own-size', 2]
+dict member ::: ok=['dict', 9]
+ufcs candidate, miss ::: ok=['ufcs-size', 5, 1]
+ufcs candidate, resolved ::: err=TypeError|built-in method 'size' does not accept keyword arguments
+ufcs splat ::: ok=['ufcs-size', 5, 7]
+ufcs duplicate kw ::: err=TypeError|duplicate keyword argument 'k'
+str.to_string(k: 1) ::: err=TypeError|built-in method 'to_string' does not accept keyword arguments
+long.to_string(k: 1) ::: err=TypeError|function does not accept keyword arguments
+dict.to_string(k: 1) ::: err=TypeError|function does not accept keyword arguments
+ns.to_string(k: 1) ::: err=AttributeError|namespace 'Math' has no member 'to_string'
+churn done

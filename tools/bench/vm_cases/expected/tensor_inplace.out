@@ -1,0 +1,14 @@
+[[0.0, 0.0], [0.0, 0.0]]
+[[4.0, 4.0], [4.0, 4.0]]
+[[0.0, 0.0], [0.0, 0.0]]
+[[0.0, 0.0], [0.0, 0.0]]
+[[2.0, 2.0], [2.0, 2.0]]
+[[0.0, 0.0], [0.0, 0.0]]
+[[1.0, 2.0], [3.0, 4.0]]
+[[0.0, 1.0], [2.0, 3.0]]
+immutable Long ::: err=ImmutableError|cannot reassign 'n' (declared without 'mut')
+immutable Array ::: err=ImmutableError|cannot reassign 'a' (declared without 'mut')
+immutable property, non-Tensor ::: err=ImmutableError|immutable property 'n'
+a rhs the tensor op cannot lift ::: err=TypeError|type error: cannot apply '-' to Tensor and String
+matmul has no in-place form ::: err=TypeError|type error: cannot apply '@' to Tensor and Tensor
+[[1.0, 1.0], [1.0, 1.0]]

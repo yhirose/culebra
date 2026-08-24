@@ -1,0 +1,2 @@
+rhs
+AttributeError: namespace 'Math' has no member 'zzz' at 4:6.

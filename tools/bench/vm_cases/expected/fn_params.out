@@ -1,0 +1,65 @@
+42
+hi!
+2
+[1, 'x']
+['x', nil]
+3
+three
+abc
+abc
+1
+2
+100
+2
+[1, 2, 4]
+[1, 10, 20]
+[1, 10, 100]
+5
+9
+[0, 1]
+[0, 1]
+a
+b
+0
+b
+0
+0
+[1, 2]
+13
+21
+7
+8
+[1, 2, 3]
+[1, 2, 4]
+3
+9
+long 3
+string x
+any
+two 1 2
+two 1 9
+three
+7
+3
+8
+17
+7
+Function
+20
+50
+L
+S
+anything
+[2.5, 1]
+hi world
+hi you
+TypeError
+TypeError
+any
+ArityError
+TypeError
+1
+caught
+ran
+2025890
+fn_params OK

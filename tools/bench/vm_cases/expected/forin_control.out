@@ -1,0 +1,26 @@
+1
+2
+[1, 2]
+1
+3
+'a'
+'c'
+'1p'
+'2p'
+'left at 2'
+1
+2
+'gen defer'
+'gen defer'
+'gen defer'
+'left'
+'body 1'
+'defer 1'
+'body 2'
+'defer 2'
+'inner caught'
+'ok 2'
+3
+'outer caught'
+300
+'forin_control OK'

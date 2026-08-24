@@ -1,0 +1,32 @@
+explicit then scope exit
+  drop 1
+  = nil
+  after
+automatic only
+  body
+  drop 2
+explicit twice
+  drop 3
+  = nil
+  = nil
+  = nil
+  = nil
+  = nil
+  = nil
+  = nil
+  own drop
+  = nil
+  drop 5
+  drop 5
+  = nil
+  = TypeError|type error: expected Function, got Nil
+  = []
+  = [Plain {mut n: 1}]
+  = own parameters
+  = [Plain {mut n: 1}]
+  = TypeError|type error: expected Function, got Nil
+  = TypeError|type error: expected Function, got Nil
+  = TypeError|type error: expected Object, Array, or Tensor, got Long
+  = AttributeError|namespace 'Math' has no member 'parameters'
+  = dict parameters
+4000

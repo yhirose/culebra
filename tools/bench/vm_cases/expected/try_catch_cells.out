@@ -1,0 +1,8 @@
+99
+6
+41
+42
+{kind: 'ArityError', message: 'missing required argument 'b'', line: 35, col: 15}
+{kind: 'RecursionError', message: 'maximum recursion depth exceeded (1000)', line: 36, col: 21}
+again
+99

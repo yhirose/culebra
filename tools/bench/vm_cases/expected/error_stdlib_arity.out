@@ -1,0 +1,8 @@
+{kind: 'ArityError', message: 'expected 1 positional argument, got 0', line: 3, col: 7}
+{kind: 'ArityError', message: 'expected 1 positional argument, got 2', line: 4, col: 7}
+{kind: 'ArityError', message: 'expected 1 positional argument, got 2', line: 5, col: 7}
+{kind: 'ArityError', message: 'expected 1 positional argument, got 0', line: 7, col: 7}
+{kind: 'ArityError', message: ''range' takes 1 to 2 arguments but 0 given', line: 8, col: 7}
+{kind: 'ArityError', message: ''range' takes 1 to 2 arguments but 3 given', line: 9, col: 7}
+{kind: 'ArityError', message: ''iota' takes 1 to 2 arguments but 0 given', line: 10, col: 7}
+ArityError: expected 1 positional argument, got 0 at 11:1.

@@ -1,0 +1,3 @@
+v=42 f=3.14159
+pi=3.14 hex=ff oct=10 bin=101 pad=0007
+ValueError: invalid format spec '.1%' for Float at 6:34.

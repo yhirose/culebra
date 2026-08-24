@@ -1,0 +1,38 @@
+point
+other
+none
+3
+none
+none
+long
+object
+string
+either
+either
+none
+either
+opt
+opt
+none
+arr
+arr
+arr
+callable
+none
+hi
+none
+stringer
+res
+variant
+none
+arr-point
+none
+2
+obj-point
+small
+big
+2
+typed leaf mismatch ::: err=ValueError
+typed leaf match ::: ok=1
+['Instant', 'Instant', 'Duration', 'Duration']
+16000

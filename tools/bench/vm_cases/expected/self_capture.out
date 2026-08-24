@@ -1,0 +1,15 @@
+  = 1
+  = 2
+  = 3
+  = 99
+  = nil
+built
+  = NameError|undefined variable 'self'
+  = NameError|undefined variable 'self'
+  = NameError|undefined variable 'self'
+  = 42
+  = not read
+  = NameError|undefined variable 'self'
+  = ImmutableError|cannot reassign 'self' (declared without 'mut')
+  = Object
+2003000

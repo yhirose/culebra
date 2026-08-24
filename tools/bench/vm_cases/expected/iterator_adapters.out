@@ -1,0 +1,53 @@
+[1, 2]
+[]
+[1, 2, 3, 4, 5]
+[3, 4, 5]
+[]
+[1, 3, 5]
+[[1, 2], [3, 4], [5]]
+[[1, 2], [2, 3], [3, 4], [4, 5]]
+[2, 3]
+[1, 2]
+[3, 4, 1]
+[1, 3, 6, 10, 11]
+[[1], [2], [3], [4], [1]]
+[1, 2, 3, 4, 1]
+[1, 2, 3, 4, 1]
+[1, 2, 3, 4, 5, 9, 8]
+[1, 2, 3, 4, 5, 'a', 'b']
+[1, 2, 3, 4, 5, 1]
+[{first: 1, second: 9}, {first: 2, second: 8}]
+[{first: 1, second: 4}, {first: 2, second: 5}]
+[1, 2, 3, 4, 5]
+5
+1
+5
+2
+nil
+1
+nil
+nil
+nil
+0
+[]
+[]
+[2, 4]
+[1, 2]
+[10, 6, 16]
+[16, 12, 18, 12, 18]
+[3, 3, 1]
+29
+[5, 3]
+35
+[(0, 'a'), (1, 'b'), (2, 'c')]
+{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 66, col: 15}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 67, col: 15}
+{kind: 'TypeError', message: 'type error: parameter 'n' expects Long', line: 68, col: 34}
+{kind: 'ValueError', message: 'chunks() n must be at least 1', line: 69, col: 15}
+{kind: 'ValueError', message: 'windows() n must be at least 1', line: 70, col: 15}
+{kind: 'ValueError', message: 'step_by() n must be at least 1', line: 71, col: 15}
+{kind: 'ValueError', message: 'nth() n must not be negative', line: 72, col: 15}
+{kind: 'TypeError', message: 'type error: expected Array, Tuple, Set, Object, or String, got Long', line: 73, col: 15}
+{kind: 'TypeError', message: 'type error: parameter 'p' expects Function', line: 74, col: 40}
+{kind: 'TypeError', message: 'type error: parameter 'f' expects Function', line: 75, col: 37}
+{kind: 'TypeError', message: 'type error: parameter 'f' expects Function', line: 76, col: 33}

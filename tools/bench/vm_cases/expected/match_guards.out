@@ -1,0 +1,16 @@
+big
+small
+even-long
+plain
+wild-guard
+b
+1
+long0: F
+long2: T
+neg: T
+f0: F
+f25: T
+str: ERR
+nil: ERR
+arr: ERR
+bool: T

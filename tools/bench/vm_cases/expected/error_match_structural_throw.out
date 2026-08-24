@@ -1,0 +1,3 @@
+before
+2
+ZeroDivisionError: divide by 0 error at 8:24.

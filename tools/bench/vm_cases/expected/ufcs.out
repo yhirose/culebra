@@ -1,0 +1,39 @@
+6
+12
+7
+7.0
+7
+['ab']
+[nil]
+(1, 2)
+own
+['a']
+iter-ufcs
+AttributeError: namespace 'Math' has no member 'dbl'
+TypeError: type error: expected Object, Array, or Tensor, got Long
+caught: B
+10
+one
+two
+1
+2
+[1, 9]
+nil
+12
+3
+nil
+Long
+42
+3.0
+[0, 1]
+[nil, nil, nil]
+true
+4
+mine
+DispatchError: no matching method for `two`
+ArityError: expected 1 positional argument, got 2
+TypeError: unhashable type: 'Array'
+TypeError: type error
+TypeError: type error: expected Long, got Float
+300
+TypeError: unhashable type: 'Array' at 92:1.

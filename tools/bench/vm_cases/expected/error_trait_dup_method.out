@@ -1,0 +1,1 @@
+SyntaxError: duplicate method 'd' in trait `T` at 8:3.
