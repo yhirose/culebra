@@ -27,6 +27,7 @@
 // holds one share, primitives lower to their tagged values. U must itself be
 // wrapped (its jit_class_info carries the display name the handle shows).
 
+#include <fn_traits.h>
 #include <foreign.h>
 #include <wrap_registry.h>
 // wrap.h can be reached before culebra.h pulls the runtime layer, so
@@ -47,32 +48,6 @@
 namespace culebra {
 
 namespace _detail {
-
-// Extract arg types and return type from a callable. Specialized for
-// function pointers and member functions (const and not).
-template <class T>
-struct fn_traits : fn_traits<decltype(&std::decay_t<T>::operator())> {};
-
-template <class R, class... Args>
-struct fn_traits<R (*)(Args...)> {
-  using ret = R;
-  using args = std::tuple<Args...>;
-  static constexpr size_t arity = sizeof...(Args);
-};
-
-template <class C, class R, class... Args>
-struct fn_traits<R (C::*)(Args...) const> {
-  using ret = R;
-  using args = std::tuple<Args...>;
-  static constexpr size_t arity = sizeof...(Args);
-};
-
-template <class C, class R, class... Args>
-struct fn_traits<R (C::*)(Args...)> {
-  using ret = R;
-  using args = std::tuple<Args...>;
-  static constexpr size_t arity = sizeof...(Args);
-};
 
 // Type annotation matching Culebra's "Bool"/"Long"/"Float"/"String"
 // names. Empty for types that don't map cleanly — an empty annotation
@@ -593,7 +568,7 @@ class ClassBinder {
   template <auto Mf>
   ClassBinder& method(std::string name, std::vector<std::string> names = {},
                       wrap_policy policy = wrap_policy::standard) {
-    using traits = _detail::fn_traits<decltype(Mf)>;
+    using traits = culebra::fn_traits<decltype(Mf)>;
     return method_impl<Mf, typename traits::ret>(
         std::move(name), std::move(names), policy,
         static_cast<typename traits::args*>(nullptr));
@@ -606,7 +581,7 @@ class ClassBinder {
   template <auto Mf>
   ClassBinder& borrowed_method(std::string name,
                                std::vector<std::string> names = {}) {
-    using traits = _detail::fn_traits<decltype(Mf)>;
+    using traits = culebra::fn_traits<decltype(Mf)>;
     using R = typename traits::ret;
     static_assert(std::is_lvalue_reference_v<R>,
                   "wrap.h: borrowed_method needs a method returning T2& / "
@@ -622,7 +597,7 @@ class ClassBinder {
   template <auto Fn>
   ClassBinder& static_method(std::string name,
                              std::vector<std::string> names = {}) {
-    using traits = _detail::fn_traits<decltype(Fn)>;
+    using traits = culebra::fn_traits<decltype(Fn)>;
     return static_impl<Fn, typename traits::ret>(
         std::move(name), std::move(names),
         static_cast<typename traits::args*>(nullptr));

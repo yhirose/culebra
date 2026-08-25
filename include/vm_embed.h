@@ -15,6 +15,7 @@
 // thread do not share globals — the mi_smoke contract). Every public method
 // swaps this Embed's session in for its own duration.
 
+#include <fn_traits.h>
 #include <script_teardown.h>  // ScriptTeardownGuard (run boundaries)
 #include <stdlib_jit.h>       // install_jit_stdlib, the runtime helpers
 #include <vm.h>
@@ -236,31 +237,6 @@ inline JitValue to_jit(const std::string& s) {
 inline JitValue to_jit(const char* s) { return to_jit(std::string_view(s)); }
 inline JitValue to_jit(Value v) { return v.release(); }
 
-// Callable-signature introspection for define() — a function pointer or any
-// lambda/functor with a non-overloaded operator().
-template <class T>
-struct FnTraits : FnTraits<decltype(&T::operator())> {};
-template <class R, class... A>
-struct FnTraits<R (*)(A...)> {
-  using Ret = R;
-  using Args = std::tuple<A...>;
-};
-template <class C, class R, class... A>
-struct FnTraits<R (C::*)(A...) const> {
-  using Ret = R;
-  using Args = std::tuple<A...>;
-};
-template <class C, class R, class... A>
-struct FnTraits<R (C::*)(A...)> {  // mutable lambda / non-const functor
-  using Ret = R;
-  using Args = std::tuple<A...>;
-};
-template <class R, class... A>
-struct FnTraits<std::function<R(A...)>> {
-  using Ret = R;
-  using Args = std::tuple<A...>;
-};
-
 template <class Fn, class R, class... A>
 HostFn make_adapter(Fn fn, std::string name,
                     std::vector<std::string> param_names, std::tuple<A...>*) {
@@ -402,8 +378,8 @@ class Embed {
   template <class Fn>
   void define(std::string_view name, Fn&& fn,
               std::vector<std::string> param_names = {}) {
-    using Traits = _embed_detail::FnTraits<std::decay_t<Fn>>;
-    using Args = typename Traits::Args;
+    using Traits = culebra::fn_traits<std::decay_t<Fn>>;
+    using Args = typename Traits::args;
     constexpr size_t arity = std::tuple_size_v<Args>;
     Swap in(*this);
     param_names.resize(arity);
@@ -418,7 +394,7 @@ class Embed {
     // the per-argument TypeError text. A host needing keyword binding
     // declares a wrap.h class instead.
     fns.push_back(_embed_detail::make_adapter<std::decay_t<Fn>,
-                                              typename Traits::Ret>(
+                                              typename Traits::ret>(
         std::forward<Fn>(fn), std::string(name), std::move(param_names),
         static_cast<Args*>(nullptr)));
     auto idx = static_cast<int64_t>(fns.size() - 1);
