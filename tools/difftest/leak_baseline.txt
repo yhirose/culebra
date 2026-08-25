@@ -1,11 +1,18 @@
 # leak.sh baseline — "<lane>\t<label>" per known leak (see leak.sh header).
 # Lines starting with # are notes; blank lines are ignored.
 #
+# The gate measures under GC_NEVER, which cannot tell a reference cycle from
+# a retain that is never dropped: both read as growth. The one diagnostic
+# that separates them is cutting a single edge in the program (nil the
+# field, reassign the binding): a cycle's growth falls to 0, a leaked
+# retain's does not. Classify a new entry that way before filing it below.
+#
 # --- true cycles: the cycle collector's job, permanent under GC_NEVER ---
-# A reference cycle leaking with the collector off is correct behavior,
-# not an RC bug (the same call leak_abort_suite makes for benign cycles).
-# These entries stay; a "no longer leaks" report for one means the corpus
-# or the collector changed, which is worth looking at either way.
+# A reference cycle the program itself writes is correct behavior with the
+# collector off, not an RC bug (the same call leak_abort_suite makes for
+# benign cycles). These entries stay; a "no longer leaks" report for one
+# means the corpus or the collector changed, which is worth looking at
+# either way.
 jit	drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; a.list = [a] }; g
 jit	drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; a.me = a }; g
 jit	drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; a.me = a; a.drop() }; g
@@ -20,12 +27,31 @@ vm	drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () 
 vm	drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () { g.push(2) }}; a.p = b; b.p = a }; let n = g.size(); n
 vm	drop|mut g = []; { let a = {drop: fn () { g.push(1) }}; let k = {hash: fn () { 42 }, eq: fn () { true }, back: a}; a[k] = 1 }; g
 vm	drop|mut g = []; { mut x = {drop: fn () { g.push(1) }}; x.me = x; x = nil }; g
+# A closure stored on the instance whose `self` it captures is `a.me = a`
+# in another spelling (instance -> closure -> self cell -> instance): the
+# program wrote the cycle, and a weak `self` would change what `cb()` sees.
+jit	selflex|class K4 { new(){ self.cb = fn () { type_of(self) } } }; let c = K4.new().cb; c()
+vm	selflex|class K4 { new(){ self.cb = fn () { type_of(self) } } }; let c = K4.new().cb; c()
+# A reassignable self-recursive binding needs its cell: the closure holds
+# the cell to read the binding's current value, and the cell holds the
+# closure. (The `let` twin is below — it can never be rebound.)
+jit	nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
+vm	nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
 #
-# --- RC leaks: drive this section to empty ---
-# The B7-c re-measure (absolute per-lane growth) surfaced entries the old
-# interp-diff gate was structurally blind to: the eff cases leak the same
-# amount on every engine (the subtraction read 0), and the vm-only pair
-# (borrowthrow, m|iter) leaks on the lane the old gate never measured.
+# --- compiler-made cycles: drive this section to empty ---
+# What the B7-c re-measure (absolute per-lane growth) surfaced, less what
+# the edge-cutting diagnostic reclassified above. None of these is a retain
+# the runtime forgot to drop: each is a cycle the compiler synthesizes for a
+# program that wrote none, so the fix is in how the construct lowers, not in
+# a release at a call site.
+#   dmd      — a method that names its own class (the label's operator
+#              overloads are incidental): the method closure captures the
+#              class cell, and the class holds its methods.
+#   nestedfn — `let rec = fn ... rec ...`: the closure captures the cell it
+#              is stored in, though a `let` can never be rebound.
+#   eff      — effects_transform's named-fn field, `self.r = (fn (s) {
+#              ... })(self)`: the computation holds a closure that holds the
+#              computation, for a body that never wrote `self`.
 jit	dmd|class M { new(v: Long){self.v=v} __mul__(n: Long){M(self.v*n)} __mul__(o: M){M(self.v*o.v)} }; to_string((M(3)*4).v) + to_string((M(3)*M(5)).v)
 jit	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((5+V(10)).x)
 jit	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((V(1)+V(2)).x) + to_string((V(1)+5).x)
@@ -34,8 +60,6 @@ jit	eff|effect fn a(); effect fn f() { let b = perform a(); fn r(n) { if n <= 1 
 jit	eff|effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })
 jit	eff|effect fn a(); to_string(handle { let x = perform a(); fn g(n) { yield n * x }; g(3).collect() } with a(k) { k(7) })
 jit	nestedfn|{ let rec = fn (n) { n > 0 ? rec(n - 1) : 12 }; rec(2) }
-jit	nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
-jit	selflex|class K4 { new(){ self.cb = fn () { type_of(self) } } }; let c = K4.new().cb; c()
 vm	dmd|class M { new(v: Long){self.v=v} __mul__(n: Long){M(self.v*n)} __mul__(o: M){M(self.v*o.v)} }; to_string((M(3)*4).v) + to_string((M(3)*M(5)).v)
 vm	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((5+V(10)).x)
 vm	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((V(1)+V(2)).x) + to_string((V(1)+5).x)
@@ -44,5 +68,3 @@ vm	eff|effect fn a(); effect fn f() { let b = perform a(); fn r(n) { if n <= 1 {
 vm	eff|effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })
 vm	eff|effect fn a(); to_string(handle { let x = perform a(); fn g(n) { yield n * x }; g(3).collect() } with a(k) { k(7) })
 vm	nestedfn|{ let rec = fn (n) { n > 0 ? rec(n - 1) : 12 }; rec(2) }
-vm	nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
-vm	selflex|class K4 { new(){ self.cb = fn () { type_of(self) } } }; let c = K4.new().cb; c()
