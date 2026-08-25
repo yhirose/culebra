@@ -18,6 +18,7 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 
 1. `EnterWorktree` を `name: <topic>` で呼ぶ。worktree は `~/Projects/culebra/.claude/worktrees/<topic>`（branch は `worktree-<topic>`）に作られ、セッションの cwd が移る。`.claude/settings.json` の `worktree.baseRef = head` により分岐元はローカル `master` の HEAD（既定の `fresh` は `origin/master` 基準で、未 push のコミットを取りこぼす）。**`path` で `~/Projects/culebra-<topic>` のような repo 外のパスを渡さない** — `.claude/worktrees/` の外へ移るたびに "permission-root relocation" の確認が出て、これは設定で抑制できない
 2. `git -C ~/Projects/culebra/.claude/worktrees/<topic> submodule update --init --recursive`（必須。`EnterWorktree` は submodule を初期化しないので、未初期化のまま build すると死ぬ）
+   直後に `git log --oneline -1` が `master` の HEAD と一致するか確認し、ずれていれば `git rebase master`（`baseRef` の設定はセッション開始時に読まれるので、同じセッション内で変えた直後は `origin/master` 基準のままだった実例あり）
 3. **以後そのセッションの全パスは worktree の絶対パスで統一する。** `EnterWorktree` は cwd を移すだけで、Edit/Write に渡した絶対パスは worktree 内へ正規化されない（main tree を直接汚した実例あり）
 4. worktree は main tree の中にネストするので、main tree で cwd 再帰型のコマンド（`culebra test`／`culebra fmt -i .`／`culebra lint .`）を打つと `.claude/worktrees/*` まで拾う。main tree は ff マージ点専用（build も test もしない）という上のルールを守っていれば踏まない
 5. マージ = **rebase → 再テスト → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テストする。ただし**再テストは既定で `just test-dev`（~80s）**であって全ゲートではない（下の「どこまで回すか」）。master は他セッションで頻繁に動くので、rebase のたびに全ゲートを回すとマシンが占有され全員が止まる

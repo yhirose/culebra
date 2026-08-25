@@ -34,8 +34,11 @@ test-dev` → ff-only merge を1プロセス・machine-wide ロック下で実�
 ## クリーンアップ
 
 5. `ExitWorktree` を `action: "remove"` で呼ぶ。worktree と branch が消え、セッションの cwd が
-   main tree に戻る（このセッションの `EnterWorktree name:` で作った worktree のみ対象。着地済みの
-   commit は master に含まれるので `discard_changes` は不要 — 要求されたら着地が失敗している）。
+   main tree に戻る（このセッションの `EnterWorktree name:` で作った worktree のみ対象）。
+   `ExitWorktree` は worktree **作成時点**の base と比較するので、ff 着地済みでも「N commit を
+   discard する」と拒否される。`git merge-base --is-ancestor HEAD master` で branch が master に
+   含まれることを確認してから `discard_changes: true` を付けて再実行する（含まれていなければ
+   着地が失敗しているので中断する）。
    - `ExitWorktree` の対象外（`git worktree add` で手動作成した worktree、別セッションで作った
      worktree）や remove が失敗した場合は `action: "keep"` で戻ってから手で消す
      （`dangerouslyDisableSandbox: true` 必須 — `.git/worktrees/<dir>` の削除がサンドボックスで
