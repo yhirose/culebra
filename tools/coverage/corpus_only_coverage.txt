@@ -28,3 +28,8 @@
 # B7-f re-measured after the tree-walker's deletion (the report's EXCLUDED
 # list dropped culebra::Interpreter:: — there is nothing left to exclude):
 # still empty, all three kinds, functions and lines.
+#
+# Re-measured again at 64147dd8, nine commits past B7-f (residual-interp
+# sweep, fn_traits header hoist, doctest/vm_cases gate parallelism among
+# them): still empty, all three kinds, functions and lines. 1040/1040
+# durable invocations exited zero.
