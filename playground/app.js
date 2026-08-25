@@ -5,7 +5,42 @@ import { createEditor } from "./editor.js";
 import { Terminal } from "https://esm.sh/@xterm/xterm@5.5.0";
 
 const $ = (id) => document.getElementById(id);
-const editor = createEditor($("editor"), "");
+
+// --- editor draft persistence ------------------------------------------------
+//
+// Sys.data_dir's IDBFS mount (worker.js) is the wasm program's filesystem —
+// a visitor who never presses Run never touches it, and the editor's own text
+// is this page's state, not the program's. localStorage is the page's
+// equivalent: synchronous, no worker round trip, nothing to flush on a
+// timer. Debounced so a fast typist isn't writing on every keystroke; a
+// pending write is flushed immediately before the page can disappear (see
+// pagehide below).
+const DRAFT_KEY = "culebra-playground-draft";
+let draftTimer = null;
+
+function loadDraft() {
+  try { return localStorage.getItem(DRAFT_KEY); } catch { return null; }
+}
+
+function writeDraft(text) {
+  try { localStorage.setItem(DRAFT_KEY, text); } catch {
+    // Private browsing, storage disabled, or quota exceeded: edits just don't
+    // survive a reload, same as before this feature existed.
+  }
+}
+
+function saveDraft(text) {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => writeDraft(text), 400);
+}
+
+function flushDraft() {
+  clearTimeout(draftTimer);
+  draftTimer = null;
+  writeDraft(editor.getValue());
+}
+
+const editor = createEditor($("editor"), "", { onChange: saveDraft });
 const output = $("output");
 const runBtn = $("run");
 const stopBtn = $("stop");
@@ -940,6 +975,9 @@ gameCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 const params = new URLSearchParams(location.search);
 const seeded = decodeSource(params.get("code"));
 const exampleParam = params.get("example");
+// A saved draft loses to either URL form: a visitor who followed a link
+// wants what the link names, not last time's edits.
+const draft = seeded === null && exampleParam === null ? loadDraft() : null;
 let pendingAutorun = params.get("run") === "1";
 let seedApplied = false;
 
@@ -970,6 +1008,7 @@ loadExampleCatalog()
   .then(() => {
     if (seeded !== null) return seeded;
     if (exampleParam === null) {
+      if (draft !== null) return draft;
       selectExample("Hello");
       return loadExample("Hello");
     }
@@ -993,10 +1032,15 @@ loadExampleCatalog()
 // they are just evictable when the origin's storage comes under pressure.
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 
-// A save written mid-game sits in the wasm filesystem until a flush; ask for
-// one while the page is going away. pagehide rather than unload: it is the
-// event that also fires on the mobile/bfcache path, where unload does not.
+// A save written mid-game sits in the wasm filesystem until a flush, and a
+// debounced draft write may still be pending too; settle both while the page
+// is going away. pagehide rather than unload: it is the event that also fires
+// on the mobile/bfcache path, where unload does not. Best effort like the
+// worker's own flush below: the process can still die before either write
+// lands, which is why the debounce (usually already caught up by the time a
+// visitor navigates away) is the main mechanism and this is only the tail.
 addEventListener("pagehide", () => {
+  flushDraft();
   if (worker) worker.postMessage({ type: "flush" });
 });
 

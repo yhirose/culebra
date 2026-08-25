@@ -59,7 +59,7 @@ const theme = EditorView.theme({
   },
 });
 
-export function createEditor(parent, doc) {
+export function createEditor(parent, doc, { onChange } = {}) {
   const view = new EditorView({
     doc,
     extensions: [
@@ -69,6 +69,12 @@ export function createEditor(parent, doc) {
       syntaxHighlighting(culebraHighlightStyle),
       errorLineField,
       theme,
+      // Fires on every edit AND on setValue() below (an example load, or the
+      // draft restore itself) — app.js wants "whatever the editor shows now"
+      // either way, not just hand-typed changes.
+      ...(onChange ? [EditorView.updateListener.of((update) => {
+        if (update.docChanged) onChange(update.state.doc.toString());
+      })] : []),
     ],
     parent,
   });
