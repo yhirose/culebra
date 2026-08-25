@@ -987,5 +987,18 @@ loadExampleCatalog()
     maybeAutorun();
   })
   .catch((err) => console.error("failed to load example catalog", err));
+// Ask the browser to keep the save directory (worker.js's IDBFS mount) out of
+// its eviction pool. Only the page can ask — a Worker has no
+// navigator.storage.persist — and a refusal costs nothing: saves still land,
+// they are just evictable when the origin's storage comes under pressure.
+if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+
+// A save written mid-game sits in the wasm filesystem until a flush; ask for
+// one while the page is going away. pagehide rather than unload: it is the
+// event that also fires on the mobile/bfcache path, where unload does not.
+addEventListener("pagehide", () => {
+  if (worker) worker.postMessage({ type: "flush" });
+});
+
 setStatus("loading…");
 spawnWorker();

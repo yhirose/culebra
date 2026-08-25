@@ -66,6 +66,9 @@ COMMON=(
   # own path — both need a filesystem. Nothing is preloaded: worker.js fetches
   # what examples.json lists and writes it into MEMFS before the run.
   -sFORCE_FILESYSTEM=1
+  # IDBFS backs the one subtree that has to outlive the page: `Sys.data_dir`'s
+  # (worker.js mounts it). MEMFS serves everything else.
+  -lidbfs.js
   -Iinclude
   -Ivendor/cpp-peglib -Ivendor/cpp-unicodelib -Ivendor/cpp-regexlib
   -Ivendor/cpp-tensorlib/include -Ivendor/cpp-tensorlib/kernels

@@ -47,6 +47,46 @@ const mod = await createCulebra(
   device ? { preinitializedWebGPUDevice: device } : {}
 );
 
+// --- Durable save directory -----------------------------------------------
+//
+// `Sys.data_dir(app)` resolves through HOME, which emscripten sets to
+// /home/web_user — so the engine needs no wasm branch of its own and a
+// program that saves natively saves here too, from the same source. What
+// MEMFS cannot do is outlive the page, so that one subtree is IDBFS:
+// populated before the first run, flushed after each one. Everything else
+// stays MEMFS — /work is re-staged per run and holds nothing worth keeping.
+const SAVE_ROOT = "/home/web_user/.local/share";
+let saveDurable = false;
+// syncfs is not reentrant over one mount, so flushes queue rather than race.
+let saveFlush = Promise.resolve();
+
+function syncfs(populate) {
+  return new Promise((resolve, reject) => {
+    mod.FS.syncfs(populate, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+function flushSaves() {
+  if (!saveDurable) return saveFlush;
+  saveFlush = saveFlush.then(() => syncfs(false)).catch(() => {});
+  return saveFlush;
+}
+
+try {
+  // `-lidbfs.js` registers the backend on FS.filesystems; Module.IDBFS is the
+  // same object when the glue exports it, and neither is worth guessing at.
+  const idbfs = mod.FS.filesystems?.IDBFS || mod.IDBFS;
+  mod.FS.mkdirTree(SAVE_ROOT);
+  mod.FS.mount(idbfs, {}, SAVE_ROOT);
+  await syncfs(true);  // whatever an earlier visit left
+  saveDurable = true;
+} catch (err) {
+  // Private browsing, storage turned off, or a build without IDBFS. The
+  // directory still exists and still takes writes — it just does not survive
+  // the page. A program must not fail over where it happens to be running.
+  saveDurable = false;
+}
+
 // --- TUI key/mouse input --------------------------------------------------
 //
 // Term.read_key (full build only; see term.h) suspends the wasm call via
@@ -245,6 +285,13 @@ onmessage = async (e) => {
     self.__termRows = e.data.rows;
     return;
   }
+  if (type === "flush") {
+    // The page is going away (app.js's pagehide). Best effort by nature: the
+    // browser may kill this worker before the write lands, which is why a run
+    // also flushes on its own cadence below.
+    await flushSaves();
+    return;
+  }
   if (type !== "run" || running) return;  // ignore a Run while one is in flight
   running = true;
   keyQueue.length = 0;
@@ -261,6 +308,10 @@ onmessage = async (e) => {
 
   const t0 = performance.now();
   let rc = 1;
+  // A game loop never returns, so flushing only at the end would never flush
+  // it at all. Canvas.present yields to this worker's event loop every frame
+  // (JSPI), which is what lets a timer fire while a run is in flight.
+  const saveTimer = saveDurable ? setInterval(flushSaves, 5000) : 0;
   try {
     // JSPI makes run_culebra return a promise in the full build; TUI/GPU
     // waits suspend beneath it. Nothing in the C++ call chain is async.
@@ -273,6 +324,9 @@ onmessage = async (e) => {
   } catch (err) {
     postMessage({ type: "output", text: "internal error: " + err });
   }
+  clearInterval(saveTimer);
+  const ms = performance.now() - t0;  // the program's time, not the flush's
+  await flushSaves();
   running = false;
-  postMessage({ type: "done", rc, ms: performance.now() - t0 });
+  postMessage({ type: "done", rc, ms });
 };

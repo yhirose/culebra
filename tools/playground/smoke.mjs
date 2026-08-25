@@ -78,6 +78,31 @@ async function wasm(name, src) {
 }
 
 let bad = 0;
+
+// One wasm-only property, with no native side to compare against: the engine's
+// answer for where a program saves has to be inside the subtree worker.js
+// mounts IDBFS on. `Sys.data_dir` resolves through HOME, which emscripten sets
+// rather than this repo, so nothing here would notice the two drifting apart —
+// and the failure is silent, since a write to the unmounted path succeeds and
+// then disappears with the page. Asked before the cases run, because a case is
+// free to move HOME (data_dir.cul does) and this must read the default. The
+// mount point is read out of the shipped worker rather than restated here —
+// otherwise the comparison only ever holds this file to itself.
+const workerSrc = fs.readFileSync(
+    path.join(root, "site/playground/worker.js"), "utf8");
+const SAVE_ROOT = workerSrc.match(/^const SAVE_ROOT = "([^"]+)";$/m)?.[1];
+if (!SAVE_ROOT) {
+  console.error("smoke: no SAVE_ROOT in site/playground/worker.js");
+  process.exit(2);
+}
+const probe = await wasm("save_root_probe.cul",
+                         'println(Sys.data_dir("probe"))\n');
+if (probe.out.trim() !== `${SAVE_ROOT}/probe`) {
+  console.error(`FAIL save root: worker.js mounts IDBFS at ${SAVE_ROOT}, ` +
+                `but Sys.data_dir("probe") answers ${probe.out.trim()}`);
+  bad++;
+}
+
 for (const name of cases) {
   const file = path.join(caseDir, name);
   const src = fs.readFileSync(file, "utf8");

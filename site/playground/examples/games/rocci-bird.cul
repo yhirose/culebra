@@ -11,8 +11,9 @@
 # WASM-4 draws indexed 2BPP art through a per-draw "draw colors" remap; this
 # game uses a fixed remap per asset, so each sheet is baked once into an indexed
 # Canvas.Sprite (index 0 transparent for the sprites, the background colour for
-# the ground). Persistence is run-lifetime: the high score survives restarts
-# within a session but not a reload, matching the Playground's in-memory disk.
+# the ground). The high score is kept in `Sys.data_dir`, so it survives a
+# restart natively and a reload in the Playground, which makes that one
+# directory durable.
 
 # --- palette ---------------------------------------------------------------
 let C1 = Canvas.rgba(0xe6, 0xe6, 0xc0)  # background / lightest
@@ -251,6 +252,33 @@ let draw_score = fn (score, base_x, y) {
   Canvas.text(to_string(score), x, y, C4)
 }
 
+# --- high score ------------------------------------------------------------
+# The platform's per-user data directory, which is also the one directory the
+# Playground makes durable — so the score survives a reload in the browser and
+# a restart natively, from the same two lines.
+let score_file = fn () {
+  FS.join(Sys.data_dir("rocci-bird"), "score.json")
+}
+
+let load_high_score = fn () {
+  try {
+    let f = score_file()
+    FS.exists(f) ? to_long(JSON.parse(FS.read(f)).high) : 0
+  } catch e {
+    0  # a file this game did not write, or wrote in an older shape
+  }
+}
+
+let save_high_score = fn (score) {
+  try {
+    let f = score_file()
+    FS.mkdir(FS.dirname(f))
+    FS.write(f, JSON.stringify({high: score}))
+  } catch e {
+    nil  # nowhere to write is not a reason to stop the game
+  }
+}
+
 # --- app -------------------------------------------------------------------
 enum Mode {
   Title,
@@ -262,7 +290,7 @@ class App {
   # Session state, alive across restarts.
   interactive = IO.stdin_is_terminal()
   input = Canvas.Input.new()
-  high_score = 0
+  high_score = load_high_score()
   fc = 0
   # Per-mode state, owned by the enter_* transitions below.
   mode: Mode
@@ -317,6 +345,7 @@ class App {
     self.mode = Mode.Over
     self.new_high = self.max_score > self.high_score
     self.high_score = self.max_score if self.new_high
+    save_high_score(self.high_score) if self.new_high
     self.rocci = fall_anim(self.fc)
     self.hiscore = hiscore_anim(self.fc)
     death_tone()

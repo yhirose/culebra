@@ -84,10 +84,32 @@ let err = try {
 }
 assert_eq(err, "IOError")
 
+// --- data_dir ---
+// An absolute path under the platform's per-user data directory, ending in
+// the app name. The directory itself is not created.
+let dd = Sys.data_dir("culebra_sys_test_app")
+assert_true(FS.is_abs(dd))
+assert_eq(FS.basename(dd), "culebra_sys_test_app")
+assert_true(!FS.exists(dd))
+// Two calls agree, and the app name is the only part that varies.
+assert_eq(Sys.data_dir("culebra_sys_test_app"), dd)
+assert_eq(FS.dirname(Sys.data_dir("other_app")), FS.dirname(dd))
+
+// `app` must be a single path segment: nothing that could escape the base.
+assert_throws("ValueError", || Sys.data_dir(""))
+assert_throws("ValueError", || Sys.data_dir("a/b"))
+// `:` too: on Windows a drive letter replaces the base instead of extending it.
+assert_throws("ValueError", || Sys.data_dir("D:evil"))
+assert_throws("ValueError", || Sys.data_dir("../escape"))
+assert_throws("ValueError", || Sys.data_dir("."))
+assert_throws("ValueError", || Sys.data_dir(".."))
+assert_throws("TypeError", || Sys.data_dir(42))
+
 // --- Bare-resolve (slow path): namespace as a first-class value ---
 let m = Sys
 m.set_env("CULEBRA_SYS_BARE", "ok")
 assert_eq(m.env("CULEBRA_SYS_BARE"), "ok")
 assert_true(m.getcwd() != "")
+assert_eq(m.data_dir("culebra_sys_test_app"), dd)
 
 IO.inspect("test_sys OK")

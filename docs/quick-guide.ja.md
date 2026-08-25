@@ -663,7 +663,7 @@ inspect([1, 2].size())  # => 2
 
 **Random** — Random.seed(n: Long) -> Nil; Random.int(lo: Long, hi: Long) -> Long; Random.uniform(lo: Float, hi: Float) -> Float; Random.gauss(mu: Float, sigma: Float) -> Float; Random.shuffle(a: Array) -> Nil; Random.weighted_choice(pop: Array, weights: Array) -> Any; Random.choice(pop: Array) -> Any
 
-**Sys** — Sys.exit(code: Long) -> Nil; Sys.env(name: String, fallback = '') -> Any; Sys.set_env(name: String, value: String) -> Nil; Sys.getcwd() -> String; Sys.chdir(path: String) -> Nil; Sys.time() -> Float
+**Sys** — Sys.exit(code: Long) -> Nil; Sys.env(name: String, fallback = '') -> Any; Sys.set_env(name: String, value: String) -> Nil; Sys.getcwd() -> String; Sys.chdir(path: String) -> Nil; Sys.data_dir(app: String) -> String; Sys.time() -> Float
 
 **Tensor** — Tensor.zeros(...) -> Tensor; Tensor.ones(...); Tensor.randn(...); Tensor.from(arr: Array) -> Tensor; Tensor.concat(parts: Array) -> Tensor; Tensor.from_csv(path: String) -> Tensor; Tensor.eval(t1, t2, ...) -> Nil; .shape() -> Array; .dot(other: Tensor) -> Tensor; .linear_sigmoid(x, b) -> Tensor; .pow(exp) -> Tensor; .transpose() -> Tensor; .slice(start, end) -> Tensor; .reshape(dims: Array) -> Tensor; .sum() -> Float; .sum(axis: Long?) -> Tensor; .mean() / .mean(axis); .max() / .max(axis); .argmax(axis: Long) -> Tensor; .to_array() -> Array; .item() -> Float; .requires_grad() -> Tensor; .backward() -> Nil; .grad() -> Tensor; .zero_grad() -> Nil; .detach() -> Tensor; Tensor.use_cpu() -> Nil; Tensor.use_gpu() -> Nil; Tensor.use_auto() -> Nil; Tensor.gpu_available() -> Bool; Tensor.device() -> String
 

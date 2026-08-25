@@ -1,0 +1,32 @@
+# Sys.data_dir in the browser build: it resolves, and the directory it names
+# takes a write and reads back — which is all a game's high score needs of it.
+#
+# HOME is redirected first, so the case writes under a temp root instead of
+# the real per-user directory (identical on both sides, and it leaves the
+# machine running the comparison alone). Only the shape is printed: the middle
+# of the path is the platform's convention and differs by design.
+let tmp = Sys.env("TMPDIR")
+let root = FS.join(tmp != "" ? tmp : "/tmp", "culebra_data_dir_case")
+FS.remove(root, recursive: true) if FS.exists(root)
+FS.mkdir(root)
+let home = Sys.env("HOME")
+let xdg = Sys.env("XDG_DATA_HOME")
+Sys.set_env("HOME", root)
+Sys.set_env("XDG_DATA_HOME", "")  # empty reads as unset, so HOME decides
+
+let dir = Sys.data_dir("smoke_app")
+println(FS.is_abs(dir))
+println(FS.basename(dir))
+
+FS.mkdir(dir)
+let f = FS.join(dir, "save.json")
+FS.write(f, JSON.stringify({score: 42}))
+println(JSON.parse(FS.read(f)).score)
+
+# Leave nothing behind: every case runs twice in one wasm instance and both
+# runs are compared against a single native one. The environment is part of
+# what the second run inherits, so put HOME back too.
+FS.remove(root, recursive: true)
+Sys.set_env("HOME", home)
+Sys.set_env("XDG_DATA_HOME", xdg)
+println(FS.exists(dir))

@@ -721,6 +721,7 @@ inline constexpr auto sys_time            = "culebra_runtime_sys_time";
 inline constexpr auto sys_getcwd          = "culebra_runtime_sys_getcwd";
 inline constexpr auto sys_chdir           = "culebra_runtime_sys_chdir";
 inline constexpr auto sys_set_env         = "culebra_runtime_sys_set_env";
+inline constexpr auto sys_data_dir        = "culebra_runtime_sys_data_dir";
 inline constexpr auto random_seed         = "culebra_runtime_random_seed";
 inline constexpr auto random_int          = "culebra_runtime_random_int";
 inline constexpr auto random_uniform      = "culebra_runtime_random_uniform";

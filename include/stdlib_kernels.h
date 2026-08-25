@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <format>
@@ -225,6 +226,62 @@ inline void _fs_do_chown(const std::filesystem::path&, int64_t, int64_t,
 }
 
 #endif  // !_WIN32
+
+// --- Per-user data directory (shared by interp + JIT/AOT/VM) ---
+//
+// Where a program keeps what outlives the process. The platform decides the
+// base (APPDATA / Library/Application Support / XDG_DATA_HOME); the path is
+// returned, not created — FS.mkdir makes the parents. `app` must be a single
+// path segment, so the result cannot escape the base.
+inline std::string _sys_data_dir(std::string_view app, int64_t line,
+                                 int64_t col) {
+  if (app.empty()) {
+    throw CulebraError("ValueError", "Sys.data_dir: app must not be empty",
+                       line, col);
+  }
+  // `:` with the separators: on Windows a name carrying a drive letter
+  // replaces the base outright (path::operator/= takes the new root name),
+  // so it escapes without ever holding a separator.
+  if (app.find_first_of("/\\:") != std::string_view::npos) {
+    throw CulebraError(
+        "ValueError",
+        std::format("Sys.data_dir: app must be a single path segment "
+                    "(got '{}')",
+                    app),
+        line, col);
+  }
+  if (app == "." || app == "..") {
+    throw CulebraError("ValueError",
+                       "Sys.data_dir: app must not be '.' or '..'", line, col);
+  }
+
+  const auto env = [](const char* name) -> const char* {
+    const char* v = std::getenv(name);
+    return (v && *v) ? v : nullptr;
+  };
+  const auto join = [&](std::string_view base, std::string_view tail = "") {
+    return (std::filesystem::path(base) / tail / app).string();
+  };
+
+#if defined(_WIN32)
+  if (const char* appdata = env("APPDATA")) return join(appdata);
+  if (const char* profile = env("USERPROFILE"))
+    return join(profile, "AppData\\Roaming");
+  _io_throw("Sys.data_dir: no data directory (APPDATA and USERPROFILE are "
+            "both unset)",
+            line, col);
+#elif defined(__APPLE__)
+  if (const char* home = env("HOME"))
+    return join(home, "Library/Application Support");
+  _io_throw("Sys.data_dir: no data directory (HOME is unset)", line, col);
+#else
+  if (const char* xdg = env("XDG_DATA_HOME")) return join(xdg);
+  if (const char* home = env("HOME")) return join(home, ".local/share");
+  _io_throw("Sys.data_dir: no data directory (XDG_DATA_HOME and HOME are "
+            "both unset)",
+            line, col);
+#endif
+}
 
 // --- File handle side table (file-scope, shared between interp + JIT) ---
 //

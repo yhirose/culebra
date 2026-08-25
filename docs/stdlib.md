@@ -94,6 +94,7 @@ Conventions used below:
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.choice`, `.weighted_choice` |
 | CLI argument parsing | [§10 Args](#10-args) |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.set_env`, `Sys.getcwd`, `Sys.chdir`, `Sys.executable`, `Sys.script` |
+| Save data that outlives the process | [§7 Sys](#7-sys) — `Sys.data_dir("myapp")` (the platform's per-user data directory) |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | Serve HTTP — routes, static files, WebSocket | [§15 `Http.server()`](#httpserver---object) — `Http.server().get("/", h).listen(8080)` |
@@ -1274,6 +1275,32 @@ does not exist or is not a directory.
 # doctest: skip
 Sys.chdir('/tmp')
 inspect(Sys.getcwd())  # '/tmp' (or its resolved path)
+```
+
+### `Sys.data_dir(app: String) -> String`
+
+Return the per-user directory where `app` keeps data that outlives the process
+— a save file, a high score, a settings blob. The convention is the platform's:
+
+| platform | directory |
+|---|---|
+| macOS | `~/Library/Application Support/<app>` |
+| Windows | `%APPDATA%\<app>` (falling back to `%USERPROFILE%\AppData\Roaming\<app>`) |
+| other | `$XDG_DATA_HOME/<app>`, or `~/.local/share/<app>` when it is unset |
+
+The directory is **not created** — `FS.mkdir` makes the parents when the program
+first writes. `app` must be a single path segment: an empty name, one holding a
+`/`, `\` or `:`, and `.` / `..` all raise `ValueError`, so the result cannot
+point outside the base directory (a Windows drive letter would otherwise
+replace the base rather than extend it). Raises `IOError` when the platform's base directory
+cannot be determined (no `HOME`, or no `APPDATA` and no `USERPROFILE`).
+
+```culebra
+# doctest: skip
+let dir = Sys.data_dir('samegame')
+FS.mkdir(dir)
+FS.write(FS.join(dir, 'scores.json'), JSON.stringify(scores))
+inspect(dir)  # '/Users/alice/Library/Application Support/samegame'
 ```
 
 ### `Sys.executable -> String`

@@ -145,6 +145,7 @@ assert_eq(
     "getcwd",
     "chdir",
     "set_env",
+    "data_dir",
     "time",
   ],
 )

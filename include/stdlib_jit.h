@@ -1212,6 +1212,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_chdir(
       std::format("Sys.chdir('{}')", path ? path : ""), line, col, ec);
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_sys_data_dir(
+    const char* app, int64_t line, int64_t col) {
+  return _culebra_heap_str(
+      culebra::_sys_data_dir(app ? app : "", line, col));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_set_env(
     const char* name, const char* value, int64_t line, int64_t col) {
   if (culebra::os_setenv(name ? name : "", value ? value : "", 1) != 0) {
@@ -4734,6 +4740,10 @@ inline JitValue _ns_sys_chdir(JitValue* a, int64_t) {
   culebra_runtime_sys_chdir(_ns_adapt::take_str(a[0]), 0, 0);
   return _ns_adapt::v_nil();
 }
+inline JitValue _ns_sys_data_dir(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_sys_data_dir(_ns_adapt::take_str(a[0]), 0, 0));
+}
 inline JitValue _ns_sys_set_env(JitValue* a, int64_t) {
   culebra_runtime_sys_set_env(_ns_adapt::take_str(a[0]),
                               _ns_adapt::take_str(a[1]), 0, 0);
@@ -7354,6 +7364,7 @@ inline const NsMethod kNsMethods[] = {
   {"Sys",    "getcwd",  0, &_ns_sys_getcwd},
   {"Sys",    "chdir",   1, &_ns_sys_chdir, nullptr, "String", "path"},
   {"Sys",    "set_env", 2, &_ns_sys_set_env, nullptr, "String", "name"},
+  {"Sys",    "data_dir", 1, &_ns_sys_data_dir, nullptr, "String", "app"},
   {"Sys",    "time",    0, &_ns_sys_time},
 
   {"GC",     "stat", 0, &_ns_gc_stat},
@@ -8753,6 +8764,9 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::sys_chdir, jit.builder_.getVoidTy(),
                                ptrTy, jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::sys_data_dir, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::sys_set_env, jit.builder_.getVoidTy(),
                                ptrTy, ptrTy, jit.builder_.getInt64Ty(),

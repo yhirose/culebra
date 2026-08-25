@@ -21,8 +21,8 @@ MAX_MOVES = !Sys.argv.empty() ? to_long(Sys.argv[0]) : -1
 SEED = Sys.argv.size() > 1 ? to_long(Sys.argv[1]) : -1
 INTERACTIVE = IO.stdin_is_terminal()
 
-SCORE_DIR = Sys.env("HOME") + "/.samegame"
-SCORE_FILE = SCORE_DIR + "/score.json"
+SCORE_DIR = Sys.data_dir("samegame")
+SCORE_FILE = FS.join(SCORE_DIR, "score.json")
 
 fn new_board() {
   Random.seed(SEED >= 0 ? SEED : to_long(Time.now().unix()))

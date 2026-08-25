@@ -92,6 +92,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.choice`、`.weighted_choice` |
 | CLI引数解析 | [§10 Args](#10-args) |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.set_env`、`Sys.getcwd`、`Sys.chdir`、`Sys.executable`、`Sys.script` |
+| プロセスを越えて残すデータの保存先 | [§7 Sys](#7-sys) — `Sys.data_dir("myapp")`（プラットフォームごとのユーザーデータディレクトリ） |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | HTTP/HTTPS APIを呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | HTTPを提供する（ルーティング・静的ファイル・WebSocket） | [§15 `Http.server()`](#httpserver---object) — `Http.server().get("/", h).listen(8080)` |
@@ -1243,6 +1244,34 @@ inspect(Sys.getcwd())  # '/Users/alice/project'
 # doctest: skip
 Sys.chdir('/tmp')
 inspect(Sys.getcwd())  # '/tmp'（または解決後のパス）
+```
+
+### `Sys.data_dir(app: String) -> String`
+
+`app`がプロセスを越えて残すデータ（セーブファイル、ハイスコア、設定）を
+置くユーザーごとのディレクトリを返します。規約はプラットフォームのものに
+従います:
+
+| プラットフォーム | ディレクトリ |
+|---|---|
+| macOS | `~/Library/Application Support/<app>` |
+| Windows | `%APPDATA%\<app>`（未設定なら`%USERPROFILE%\AppData\Roaming\<app>`） |
+| その他 | `$XDG_DATA_HOME/<app>`、未設定なら`~/.local/share/<app>` |
+
+ディレクトリは**作成しません** — 最初に書き込むときに`FS.mkdir`が親ごと作ります。
+`app`は単一のパスセグメントでなければならず、空文字列・`/`や`\`や`:`を含む
+名前・`.`・`..`はいずれも`ValueError`になります。したがって戻り値がベース
+ディレクトリの外を指すことはありません（Windowsのドライブレターは、付け足す
+のではなくベースを置き換えてしまうため）。プラットフォームのベースディレクトリを
+決定できない場合（`HOME`が無い、`APPDATA`も`USERPROFILE`も無い）は`IOError`を
+送出します。
+
+```culebra
+# doctest: skip
+let dir = Sys.data_dir('samegame')
+FS.mkdir(dir)
+FS.write(FS.join(dir, 'scores.json'), JSON.stringify(scores))
+inspect(dir)  # '/Users/alice/Library/Application Support/samegame'
 ```
 
 ### `Sys.executable -> String`
