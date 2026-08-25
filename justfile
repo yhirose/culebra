@@ -129,11 +129,19 @@ check-release-coverage:
 check-spec-examples:
     tools/check_spec_examples.sh
 
+# Every namespace function docs/quick-guide.md documents, and every grammar
+# keyword, has a durable caller — a tests/*.cul, tests/*.sh or executed
+# doctest block. Catches the class of hole Http.put/FS.abspath sat in.
+[group("test")]
+[doc("Verify every documented Ns.fn and grammar keyword has a durable caller")]
+check-api-coverage:
+    tools/check_api_coverage.sh
+
 # Every committed file a generator produces, checked against its source, plus
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

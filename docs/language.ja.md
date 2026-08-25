@@ -5636,13 +5636,25 @@ backend固有の対話的機能（REPL stateを駆動するデバッガhook等�
 は`.cul`スクリプトではなく`tests/embedding/`のC++ smoke
 テストで検証します。
 
-上の表は手で維持するもので、章を指しています。より細かい問い —
-個々の節が述べる規則を何も実行していないのではないか — は
-ratchetが持ちます: `tools/check_spec_examples.sh`が、実行される
+上の表は手で維持するもので、章を指しています。より細かい問い2つは
+ratchetが持ちます。
+
+個々の節が述べる規則を何も実行していないのではないか、は
+`tools/check_spec_examples.sh`が、実行される
 ` ```culebra `ブロック（`# doctest: skip`が付いていないもの。
 残りは`just doctest`が両エンジンで走らせます）を持たない節を数え、
 `tools/spec_unpinned_sections.txt`と突き合わせます。例を失った節も、
 最初から持たない新しい節も検査に落ちます。逆に、リストにある節が
 例を得た場合も落ちるので、このファイルは減る方向にしか動きません。
-`check-generated`の一部として走るため、`just test-dev`とCIの両方が
-これを回します。
+
+stdlibリファレンスが文書化する個々の`Ns.fn`やgrammar keywordに
+実際の呼び出し元があるか、は`tools/check_api_coverage.sh`が
+`docs/quick-guide.md`に生成される署名索引とPEG grammarから
+抜き出したkeyword集合を読み、それぞれの名前を`tests/*.cul`・
+`tests/*.sh`・`just doctest`が走らせるdoctestブロックと突き合わせます。
+呼び出し元がどこにも無い文書化済みの名前は`tools/api_untested.txt`
+に記載されていない限り検査に落ち、記載済みの名前が呼び出し元を
+得た場合も落ちるので、このファイルも減る方向にしか動きません。
+
+どちらも`check-generated`の一部として走るため、`just test-dev`と
+CIの両方がこれを回します。
