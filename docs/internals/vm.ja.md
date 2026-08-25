@@ -580,6 +580,29 @@ class objectから（staticのフレームではクラス自身から）束縛�
 クラスも同様 — 後続行が再宣言しうるので、`let`リテラルがcellに
 残したのと同じ角。`tests/test_class_own_name.cul`が固定する。
 
+ゲートの「コンパイラが作った環」の最後の1本はコンパイラではなく
+source-to-source変換（§8）にあった。generator / effect bodyは
+ローカルをstate instanceに載せた状態機械になるので、body内に書かれた
+closureはそれらを`self.<name>`として読み、instanceをcaptureする —
+一方instanceはそのclosureを持ち返す（`let h = fn …`もbodyローカル
+だから）。effects変換はnamed fnについてだけ同じ環を手で閉じていた:
+宣言をIIFEで包み、instanceを`_eff_self`として渡していた。2つの変更で
+両方を退役させる。named fnは*宣言のまま*になり、書かれた場所に出して
+promotedスロットへ格納する — generatorになれる綴りはこれだけで、
+再帰は格納したばかりのスロットを読み返すのではなく宣言自身
+（multifnのuplink）へ束縛される。そしてbody内のどれかのclosureが読む
+promotedローカルはboxに入る: state instanceは1フィールドのboxを持ち、
+状態機械の各メソッドが入口で1回それをplain localに束縛し、closureは
+*それ*をcaptureする。どちらの端も相手に届かないので、closureが何を
+見るかを変えずに環が消える — closureを持たないbodyのlowerは以前と
+完全に同じ。ベースラインに残る環は、普通のプログラムが同じ形で書く
+ものだけ: 相互再帰する`fn`宣言はどこに書かれてもdispatcher cell経由で
+環になり、effect body版は素の版と同じ数字を出す。角は
+`tests/test_generator.cul`と`tests/test_effects_resume.cul`が固定する
+— closure経由の書き込み、defer body、boxedローカルを跨ぐmulti-shot
+resume、closureの前後どちらで宣言してもそこから呼べるnamed fn、
+closureとネストしたhandleが同時に読むローカル。
+
 続いてstdlibがruntime層経由で届いた — Phase 1の見取り図の
 「stdlibの大部分はruntime束縛経由で届く（3つ目のstdlib移植は
 しない）」そのままに。新opは`NsGet`の1つだけ:

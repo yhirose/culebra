@@ -633,6 +633,32 @@ decorated `fn`s — and so does a REPL session's top-level class, which
 a later line may redeclare, the same corner the `let` literal leaves
 to the cell. `tests/test_class_own_name.cul` pins these.
 
+The last of the gate's compiler-made rings was not in a compiler at all
+but in the source-to-source transforms (§8). A generator / effect body
+becomes a state machine whose locals live on a state instance, so a
+closure written in the body read them as `self.<name>` and captured the
+instance — while the instance held the closure back, because `let h =
+fn …` is a body local too. The effects transform closed the same ring by
+hand for a named fn, wrapping the declaration in an IIFE that passed the
+instance in as `_eff_self`. Two changes retire both. A named fn now
+*stays a declaration*, emitted where it was written and then stored into
+its promoted slot — the only spelling that can be a generator, and its
+recursion binds to the declaration (the multifn uplink) rather than
+reading back the slot it was just stored into. And a promoted local that
+any closure in the body reads is boxed: the state instance holds a
+one-field box, each state-machine method binds it once at entry as a
+plain local, and the closure captures *that*. Neither end reaches the
+other, so the ring is gone without changing what the closure sees —
+a body with no closures lowers exactly as before. The rings that remain
+in the gate's baseline are the ones an ordinary program writes in the
+same shape: mutually recursive `fn` declarations ring through their
+dispatcher cells wherever they appear, and the effect-body twin measures
+the same as the plain one. `tests/test_generator.cul` and
+`tests/test_effects_resume.cul` pin the corners — writes through a
+closure, a defer body, multi-shot resume over a boxed local, a named fn
+called from a closure declared before or after it, and a local read by a
+closure and a nested handle at once.
+
 The stdlib then arrived through the runtime layer, exactly as the
 Phase 1 sketch has it ("most of the stdlib arrives through the
 runtime binding — no third stdlib port"): one new op, `NsGet`,

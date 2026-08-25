@@ -636,9 +636,39 @@ inline std::string next_fragment_label(const char* stem) {
                      counter.fetch_add(1, std::memory_order_relaxed));
 }
 
+// The locals a lowered body promotes onto its state instance. `names` is all
+// of them (the enclosing fn's params included); `boxed` is the subset some
+// closure written in the body reads. A boxed local lives in a one-field box:
+// the instance holds the box and the closure captures the box, so neither
+// reaches the other. Unboxed, the closure would read the local through `self`
+// while the instance held the closure back (`let h = fn …` is a local too) —
+// a reference cycle for a body that never wrote one.
+struct PromotedLocals {
+  std::set<std::string> names;
+  std::set<std::string> boxed;
+};
+
+// The plain local a boxed name is reached through. `emit_box_prologue` binds
+// it once at each state-machine method's entry, so one spelling serves both
+// inside a closure (which captures this local) and outside it.
+inline std::string box_local(std::string_view name) {
+  return "_bx_" + std::string(name);
+}
+
+// Bind every boxed local at a state-machine method's entry.
+inline std::string emit_box_prologue(const PromotedLocals& promoted,
+                                     std::string_view indent) {
+  std::string out;
+  for (const auto& n : promoted.boxed) {
+    out += std::format("{}let {} = self.{}\n", indent, box_local(n), n);
+  }
+  return out;
+}
+
 inline std::string rewrite_locals_to_self(std::string_view src,
-                                          const std::set<std::string>& names) {
-  // The two declaration-strip patterns are name-independent — hoist
+                                          const PromotedLocals& promoted) {
+  const auto& names = promoted.names;
+  // The declaration-strip patterns are name-independent — hoist
   // them to file scope so each Stage 2 transform doesn't recompile
   // them. `std::regex` construction is the famously expensive part.
   static const std::regex strip_let_self(R"(\blet\s+self\.)");
@@ -659,17 +689,26 @@ inline std::string rewrite_locals_to_self(std::string_view src,
   // `self.<name>` after this. Neither is decided here — both backends check
   // the slot's owner (culebra::is_lowered_state_class), which is the only
   // place that sees every spelling a call can take.
+  // A boxed name absorbs a `let` / `mut` in front of it in the same pass (its
+  // declaration is a store into the box the ctor already made). The `self.`
+  // spelling can't: it is also produced by the strips above, which have to
+  // run after every name is in place.
   std::vector<std::regex> pats;
   pats.reserve(sorted.size());
   for (const auto& name : sorted) {
-    pats.emplace_back("(^|\\.\\.|[^.A-Za-z0-9_])" + name + "\\b");
+    std::string decl =
+        promoted.boxed.contains(name) ? "(?:let\\s+|mut\\s+)?" : "";
+    pats.emplace_back("(^|\\.\\.|[^.A-Za-z0-9_])" + decl + name + "\\b");
   }
   // Rewrite only the code spans (see rewrite_outside_strings): an identifier
   // that appears as literal text inside a string / comment is left untouched.
   auto rewrite_code = [&](std::string_view code) -> std::string {
     std::string out(code);
     for (size_t k = 0; k < sorted.size(); k++) {
-      out = std::regex_replace(out, pats[k], "$1self." + sorted[k]);
+      out = std::regex_replace(out, pats[k],
+                               promoted.boxed.contains(sorted[k])
+                                   ? "$1" + box_local(sorted[k]) + ".v"
+                                   : "$1self." + sorted[k]);
     }
     out = std::regex_replace(out, strip_let_self, "self.");
     out = std::regex_replace(out, strip_mut_self, "self.");
@@ -699,6 +738,46 @@ inline std::set<std::string> collect_local_names(const peg::Ast& body) {
     for (auto& c : n.nodes) walk(*c);
   };
   walk(body);
+  return out;
+}
+
+// The promoted names some closure written in the body reads — the ones that
+// have to be boxed (see PromotedLocals). A named fn's references to its OWN
+// name don't count: those bind to the declaration itself (the multifn uplink),
+// not through the instance. A nested HANDLE is NOT a stop: only closures
+// matter here, and a name this body promoted keeps its meaning inside one
+// (a handle body cannot redeclare an enclosing binding). What a handle reads
+// outside any closure still goes through the enclosing-instance path.
+inline std::set<std::string> collect_captured_names(
+    const peg::Ast& body, const std::set<std::string>& promoted) {
+  using namespace peg::udl;
+  std::set<std::string> out;
+  std::set<std::string> own;  // named fns whose own name is in scope here
+  std::function<void(const peg::Ast&, bool)> walk = [&](const peg::Ast& n,
+                                                        bool in_fn) {
+    if (in_fn && n.tag == "IDENTIFIER"_ && n.original_tag != "DOT"_ &&
+        n.original_tag != "SAFE_DOT"_) {
+      auto name = std::string(n.token);
+      if (promoted.contains(name) && !own.contains(name)) out.insert(name);
+    }
+    std::optional<std::string> pushed;
+    if (n.tag == "MULTIFN_DECL"_ && !n.nodes.empty()) {
+      auto name = std::string(n.nodes[first_non_decorator_index(n)]->token);
+      if (own.insert(name).second) pushed = std::move(name);
+    }
+    bool inner = in_fn || is_fn_boundary(n.tag);
+    for (size_t i = 0; i < n.nodes.size(); i++) {
+      const auto& c = *n.nodes[i];
+      // Label positions, not references — the same two the `self` walk skips.
+      if (c.tag == "IDENTIFIER"_ &&
+          ((n.tag == "OBJECT_PROPERTY"_ && i == 1 && n.nodes.size() >= 3) ||
+           (n.tag == "KWARG"_ && i == 0)))
+        continue;
+      walk(c, inner);
+    }
+    if (pushed) own.erase(*pushed);
+  };
+  walk(body, false);
   return out;
 }
 
@@ -930,9 +1009,17 @@ inline std::vector<std::string_view> collect_positional_param_names(
 inline void emit_ctor_param_and_local_inits(
     const std::vector<std::string_view>& param_names,
     const std::set<std::string>& locals,
+    const std::set<std::string>& boxed,
     std::string& ctor_params,
     std::string& ctor_call_args,
     std::string& ctor_inits) {
+  // A boxed slot holds the box, made once here; every later store goes into
+  // its `v` field, so the box the closures captured stays the live one.
+  auto init = [&](const std::string& name, std::string_view value) {
+    return boxed.contains(name)
+               ? std::format("      self.{} = {{mut v: {}}}\n", name, value)
+               : std::format("      self.{} = {}\n", name, value);
+  };
   std::set<std::string> param_set;
   for (size_t j = 0; j < param_names.size(); j++) {
     auto pn = std::string(param_names[j]);
@@ -943,13 +1030,11 @@ inline void emit_ctor_param_and_local_inits(
     }
     ctor_params += slot;
     ctor_call_args += pn;
-    ctor_inits += std::format("      self.{} = {}\n", pn, slot);
+    ctor_inits += init(pn, slot);
     param_set.insert(std::move(pn));
   }
   for (const auto& l : locals) {
-    if (!param_set.contains(l)) {
-      ctor_inits += std::format("      self.{} = nil\n", l);
-    }
+    if (!param_set.contains(l)) ctor_inits += init(l, "nil");
   }
 }
 
@@ -999,7 +1084,7 @@ inline bool has_escaping_loop_ctrl(const peg::Ast& node, int loop_depth = 0) {
 
 struct CpsBuilder {
   const std::string& src;
-  const std::set<std::string>& rewrite_set;
+  const PromotedLocals& rewrite_set;
   std::vector<std::string> states;
   int terminal = -1;  // state that sets drained + returns false
   // (header, exit) of each enclosing CPS-managed loop, innermost last.
@@ -1203,8 +1288,10 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
 
   auto param_names = collect_positional_param_names(params_ast);
   auto locals = collect_local_names(*ast->nodes.back());
-  std::set<std::string> rewrite_set = locals;
-  for (auto& pn : param_names) rewrite_set.insert(std::string(pn));
+  PromotedLocals rewrite_set{locals, {}};
+  for (auto& pn : param_names) rewrite_set.names.insert(std::string(pn));
+  rewrite_set.boxed =
+      collect_captured_names(*ast->nodes.back(), rewrite_set.names);
 
   CpsBuilder b{src, rewrite_set, {}};
   b.terminal = b.fresh();
@@ -1226,7 +1313,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   for (size_t k = 0; k < b.defer_bodies.size(); k++) {
     ctor_inits += std::format("      self._g_defer_{} = false\n", k);
   }
-  emit_ctor_param_and_local_inits(param_names, locals,
+  emit_ctor_param_and_local_inits(param_names, locals, rewrite_set.boxed,
                                   ctor_params, ctor_call_args, ctor_inits);
 
   std::string dispatch;
@@ -1243,6 +1330,10 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
     defer_runs += std::format(
         "      if self._g_defer_{} {{ {} }}\n", k, b.defer_bodies[k]);
   }
+  // Boxed locals are reached as plain locals; bind them at the entry of each
+  // method whose body can name one (the dispatch, and the defers dispose runs).
+  auto box_prologue = emit_box_prologue(rewrite_set, "      ");
+  if (!defer_runs.empty()) defer_runs = box_prologue + defer_runs;
 
   auto synthesized = std::make_shared<std::string>(std::format(
       "fn __gen_wrapper__() {{\n"
@@ -1250,6 +1341,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
       "    new({1}) {{\n{2}    }}\n"
       "    iter() {{ self }}\n"
       "    has_next() {{\n"
+      "{6}"
       "      while true {{\n"
       "        if self._g_drained {{ return false }}\n"
       "        if self._g_has_la {{ return true }}\n"
@@ -1286,7 +1378,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
       "  {0}.new({4})\n"
       "}}\n",
       gen_name, ctor_params, ctor_inits, dispatch, ctor_call_args,
-      defer_runs));
+      defer_runs, box_prologue));
   // Final parse: read the provenance markers back and rebuild the body with
   // original line numbers (machinery lines fall back to the fn's decl line).
   auto label = next_fragment_label("gen");

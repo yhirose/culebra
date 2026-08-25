@@ -203,8 +203,10 @@ assert_eq(handle { sc2_body() } with sc2_o(k) { k(5) }, "5|path is self.foo|1")
 
 // --- named fns and generators inside effect / handle bodies ---------------
 // A named fn declared at the body's statement level persists across
-// suspensions (it lives as an instance field, bound through the `_eff_self`
-// IIFE so references to effect locals stay symmetric).
+// suspensions: it stays a real `fn` declaration, emitted where it was
+// written, and is then stored in the name's promoted slot (each state block
+// is a fresh scope). Effect locals it reads come from the instance, or — when
+// a closure reads them too — from the box that closure captures.
 effect fn nf_ask()
 effect fn nf_body() {
   fn h(n) { n * 2 }
@@ -213,7 +215,8 @@ effect fn nf_body() {
 }
 assert_eq(handle { nf_body() } with nf_ask(k) { k(5) }, 10)
 
-// recursion through the instance field
+// recursion binds to the declaration itself (the multifn uplink), not back
+// through the slot the decl was just stored in
 effect fn nf_rec() {
   let base = perform nf_ask()
   fn fact(n) {
@@ -223,6 +226,70 @@ effect fn nf_rec() {
   fact(4)
 }
 assert_eq(handle { nf_rec() } with nf_ask(k) { k(1) }, 24)
+
+// mutual recursion between two named fns of one body
+effect fn nf_mutual() {
+  let base = perform nf_ask()
+  fn ev(n) {
+    if n == 0 { return base }
+    od(n - 1)
+  }
+  fn od(n) {
+    if n == 0 { return base + 1 }
+    ev(n - 1)
+  }
+  [ev(4), od(4)]
+}
+assert_eq(handle { nf_mutual() } with nf_ask(k) { k(100) }, [100, 101])
+
+// a named fn called from inside a closure: the name is read through its slot
+// there, and the closure gets it whether it was declared before or after
+effect fn nf_from_closure() {
+  let base = perform nf_ask()
+  fn dbl(n) { n * 2 + base }
+  let via = fn (n) { dbl(n) }
+  let early = fn () { late(1) }
+  fn late(n) { n + base }
+  [dbl(3), via(3), early()]
+}
+assert_eq(handle { nf_from_closure() } with nf_ask(k) { k(1) }, [7, 7, 2])
+
+// a body local read by a closure AND by a nested handle: the closure captures
+// it directly, the handle reaches it the same way it always did
+effect fn nf_in()
+effect fn nf_both() {
+  let base = perform nf_ask()
+  let via = fn (n) { n + base }
+  let inner = handle { base + perform nf_in() } with nf_in(k) { k(5) }
+  [via(1), inner]
+}
+assert_eq(handle { nf_both() } with nf_ask(k) { k(10) }, [11, 15])
+
+// a closure over a suspension-bound local, resumed twice: each fork gets the
+// value its own resume bound
+effect fn nf_pick(a, b)
+effect fn nf_multi() {
+  let x = perform nf_pick(1, 2)
+  let f = fn (k) { k + x }
+  f(10)
+}
+assert_eq(
+  handle { nf_multi() } with nf_pick(a, b, r) { [r(a), r(b)] },
+  [11, 12],
+)
+
+// a closure that WRITES a body local: the write is visible to the body and to
+// the next call, across a suspension
+effect fn nf_write() {
+  let start = perform nf_ask()
+  mut acc = start
+  let bump = fn (k) { acc = acc + k }
+  bump(1)
+  let more = perform nf_ask()
+  bump(more)
+  acc
+}
+assert_eq(handle { nf_write() } with nf_ask(k) { k(5) }, 11)
 
 // a nested named generator fn captures effect locals and works in an effect
 // body, a handle body, and a handler clause; the fragment re-parse runs the

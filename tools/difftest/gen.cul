@@ -520,7 +520,12 @@ let gens = ['fn gg() { yield 1; yield 2; yield 3 }; gg().collect()',
             'fn gg() { yield 7 }; gg().next()',
             'mut s = 0; fn gg() { yield 1; yield 2 }; for x in gg() { s = s + x }; s',
             # a local name as literal string text is not rewritten; interpolation is
-            'fn gg() { let base = 9; yield "the base v"; yield "b={base}" }; to_string(gg().collect())']
+            'fn gg() { let base = 9; yield "the base v"; yield "b={base}" }; to_string(gg().collect())',
+            # a closure over a promoted body local: it captures the local's box,
+            # not the state instance (which holds the closure back)
+            'fn gg(n) { let h = fn (k) { k + n }; yield h(1); yield h(2) }; to_string(gg(10).collect())',
+            'fn gg(n) { mut acc = n; let b = fn (k) { acc = acc + k }; b(1); yield acc; b(10); yield acc }; to_string(gg(5).collect())',
+            'fn gg(n) { let s = [n]; let a = fn (k) { s.push(k) }; defer { a(99) }; a(1); yield s.size() }; let g = gg(7); let v = g.next(); g.dispose(); to_string(v)']
 for g in gens {
   case("gen|" + g, g)
 }
@@ -1536,10 +1541,25 @@ let eff = [
   'effect fn a(); effect fn f() { let base = perform a(); let y = /* just base */ base + 1; y }; to_string(handle { f() } with a(k) { k(10) })',
   # an effectful effect fn called with no driver raises EffectError
   'effect fn g(); effect fn f() { perform g() }; try { f() } catch e { e.kind }',
-  # a named fn at statement level persists across a suspension (instance field)
+  # a named fn at statement level persists across a suspension (it stays a
+  # decl, stored into the name's promoted slot)
   'effect fn a(); effect fn f() { fn h(n) { n * 2 }; let x = perform a(); h(x) }; handle { f() } with a(k) { k(5) }',
-  # recursion through the field binding
+  # recursion binds to the declaration, not back through the slot
   'effect fn a(); effect fn f() { let b = perform a(); fn r(n) { if n <= 1 { return b }; n * r(n - 1) }; r(4) }; handle { f() } with a(k) { k(1) }',
+  # mutual recursion between two named fns of one body
+  'effect fn a(); effect fn f() { let b = perform a(); fn ev(n) { if n == 0 { return b }; od(n - 1) }; fn od(n) { if n == 0 { return b + 1 }; ev(n - 1) }; to_string([ev(4), od(4)]) }; handle { f() } with a(k) { k(100) }',
+  # a named fn called through its slot from inside a closure, declared before
+  # and after the closure that calls it
+  'effect fn a(); effect fn f() { let b = perform a(); fn d(n) { n * 2 + b }; let via = fn (n) { d(n) }; let early = fn () { late(1) }; fn late(n) { n + b }; to_string([d(3), via(3), early()]) }; handle { f() } with a(k) { k(1) }',
+  # a body local read by a closure: it lives in a box the closure captures, so
+  # neither the computation nor the closure holds the other
+  'effect fn a(); effect fn f() { let b = perform a(); let h = fn (k) { k + b }; h(1) + h(2) }; handle { f() } with a(k) { k(5) }',
+  # ... written through the closure, across a suspension
+  'effect fn a(); effect fn f() { let s = perform a(); mut acc = s; let bump = fn (k) { acc = acc + k }; bump(1); let m = perform a(); bump(m); acc }; handle { f() } with a(k) { k(5) }',
+  # ... and read by a nested handle too
+  'effect fn a(); effect fn i(); effect fn f() { let b = perform a(); let via = fn (n) { n + b }; let inner = handle { b + perform i() } with i(k) { k(5) }; to_string([via(1), inner]) }; handle { f() } with a(k) { k(10) }',
+  # a closure over a suspension-bound local under a multi-shot resume
+  'effect fn c(a, b); effect fn f() { let x = perform c(1, 2); let g = fn (k) { k + x }; g(10) }; to_string(handle { f() } with c(a, b, r) { [r(a), r(b)] })',
   # a nested named generator fn captures an effect local (effect body)
   'effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })',
   # ... in a handle body

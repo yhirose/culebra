@@ -243,4 +243,78 @@ class GenHost {
 }
 assert_eq(GenHost.new().m(7), [7, 14])
 
+// --- closures over promoted body locals -----------------------------------
+// A generator's locals live on its state instance, so a closure written in
+// the body would read them through `self` and the instance would hold the
+// closure back. The locals a closure reads live in a box the closure captures
+// instead; these pin what that has to keep working.
+
+// read across suspensions
+fn cl_across(n) {
+  let h = fn (k) {
+    k + n
+  }
+  yield h(1)
+  yield h(2)
+  yield h(3)
+}
+assert_eq(cl_across(10).collect(), [11, 12, 13])
+
+// a closure that WRITES a body local, seen by the body and by later calls
+fn cl_write(n) {
+  mut acc = n
+  let bump = fn (k) {
+    acc = acc + k
+  }
+  bump(1)
+  yield acc
+  bump(10)
+  yield acc
+}
+assert_eq(cl_write(5).collect(), [6, 16])
+
+// two closures over one local read the same binding
+fn cl_two(n) {
+  mut base = n
+  let a = fn () {
+    base + 1
+  }
+  let b = fn () {
+    base + 2
+  }
+  yield a()
+  base = base * 10
+  yield b()
+}
+assert_eq(cl_two(3).collect(), [4, 32])
+
+// a deferred body runs the closure at dispose
+fn cl_defer(n) {
+  let seen = [n]
+  let add = fn (k) {
+    seen.push(k)
+  }
+  defer {
+    add(99)
+  }
+  add(1)
+  yield seen
+}
+let cl_g = cl_defer(7)
+let cl_seen = cl_g.next()
+cl_g.dispose()
+assert_eq(cl_seen, [7, 1, 99])
+
+// a closure over a local declared AFTER it (the box exists from construction)
+fn cl_later(n) {
+  let f = fn () {
+    later
+  }
+  mut later = n * 2
+  yield f()
+  later = later + 1
+  yield f()
+}
+assert_eq(cl_later(4).collect(), [8, 9])
+
 IO.inspect('test_generator OK')

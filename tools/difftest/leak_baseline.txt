@@ -38,21 +38,23 @@ vm	selflex|class K4 { new(){ self.cb = fn () { type_of(self) } } }; let c = K4.n
 # it no longer appears here.)
 jit	nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
 vm	nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
+# Mutually recursive `fn` declarations: each dispatcher cell holds the other's
+# body, so the pair is a ring wherever it is written. The effect-body twin
+# measures the same as the plain one (a `fn ev` / `fn od` pair nested in an
+# ordinary fn, 360 on the executor), which is what says the transform did not
+# add it — a self-recursive `fn` in the same position is 0.
+jit	eff|effect fn a(); effect fn f() { let b = perform a(); fn ev(n) { if n == 0 { return b }; od(n - 1) }; fn od(n) { if n == 0 { return b + 1 }; ev(n - 1) }; to_string([ev(4), od(4)]) }; handle { f() } with a(k) { k(100) }
+vm	eff|effect fn a(); effect fn f() { let b = perform a(); fn ev(n) { if n == 0 { return b }; od(n - 1) }; fn od(n) { if n == 0 { return b + 1 }; ev(n - 1) }; to_string([ev(4), od(4)]) }; handle { f() } with a(k) { k(100) }
 #
 # --- compiler-made cycles: drive this section to empty ---
-# What the B7-c re-measure (absolute per-lane growth) surfaced, less what
-# the edge-cutting diagnostic reclassified above and what FuncInfo::own_name
-# resolved (the nestedfn `let` twin reads its own closure; dmd's methods —
-# the label's operator overloads were incidental — read their class through
-# the receiver). None of these is a retain the runtime forgot to drop: each
-# is a cycle the compiler synthesizes for a program that wrote none, so the
-# fix is in how the construct lowers, not in a release at a call site.
-#   eff      — effects_transform's named-fn field, `self.r = (fn (s) {
-#              ... })(self)`: the computation holds a closure that holds the
-#              computation, for a body that never wrote `self`.
-jit	eff|effect fn a(); effect fn f() { let b = perform a(); fn r(n) { if n <= 1 { return b }; n * r(n - 1) }; r(4) }; handle { f() } with a(k) { k(1) }
-jit	eff|effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })
-jit	eff|effect fn a(); to_string(handle { let x = perform a(); fn g(n) { yield n * x }; g(3).collect() } with a(k) { k(7) })
-vm	eff|effect fn a(); effect fn f() { let b = perform a(); fn r(n) { if n <= 1 { return b }; n * r(n - 1) }; r(4) }; handle { f() } with a(k) { k(1) }
-vm	eff|effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })
-vm	eff|effect fn a(); to_string(handle { let x = perform a(); fn g(n) { yield n * x }; g(3).collect() } with a(k) { k(7) })
+# EMPTY. What the B7-c re-measure (absolute per-lane growth) surfaced is
+# gone: the edge-cutting diagnostic reclassified two labels above, and the
+# rest were rings the compiler synthesized for programs that wrote none —
+# resolved where the construct lowers, never by a release at a call site.
+# The nestedfn `let` twin and dmd's methods read their own name from the
+# frame (FuncInfo::own_name, ClsSelf); the eff entries were the effects
+# transform's named-fn field, `self.r = (fn (s) { ... })(self)`, whose
+# computation held a closure that held the computation — the decl now stays
+# a decl and the locals a closure reads live in boxes it captures instead
+# of the instance. A new entry here is a lowering to fix, not a leak to
+# patch.
