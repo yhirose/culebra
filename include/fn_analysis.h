@@ -66,19 +66,24 @@ struct FuncInfo {
   // per-frame bound-handle cache slot (see compile_identifier's `fn`
   // path); frames that never mention `fn` pay nothing.
   bool uses_fn = false;
-  // For an undecorated `fn name` (MULTIFN_DECL) body: the declared name,
-  // which the body sees as a prologue-bound local delivered by the
-  // dispatch (culebra_runtime_multifn_self) rather than as a capture of
-  // the declaring scope's binding cell. The capture would close a
-  // refcount ring — cell → dispatcher → (table) → body → cell — that
-  // only the tracing backstop could reclaim; the prologue read borrows
-  // the dispatcher from the caller instead, so no ring ever forms. Empty
-  // when the name is unavailable this way (decorated decl: the binding
-  // is the decorator's result, not the dispatcher; name shadowed by a
-  // parameter: the param wins). mf_self_used gates the prologue bind so
-  // non-recursive bodies pay nothing.
-  std::string mf_self;
-  bool mf_self_used = false;
+  // The body's own name: for an undecorated `fn name` (MULTIFN_DECL) the
+  // declared name, for a `let name = fn …` literal the binding it
+  // initializes. The body sees it as a prologue-bound local delivered by
+  // the frame — the dispatch (culebra_runtime_multifn_self) for a multifn,
+  // the running closure itself for a literal — rather than as a capture
+  // of the declaring scope's binding cell. The capture would close a
+  // refcount ring — cell → dispatcher/closure → body → cell — that only
+  // the tracing backstop could reclaim; the prologue read borrows from
+  // the caller instead, so no ring ever forms. Empty when the name is
+  // unavailable this way (decorated decl: the binding is the decorator's
+  // result; name shadowed by a parameter: the param wins; a `let` the
+  // statement list declares again, or a REPL session's top-level `let`:
+  // both may rebind, and a read through the cell is what sees the
+  // rebinding). own_name_used gates the prologue bind so non-recursive
+  // bodies pay nothing.
+  std::string own_name;
+  bool own_name_used = false;
+  bool own_name_dispatched = false;  // multifn: MfSelf; literal: fn_slot
 };
 
 // Hidden scope-slot name binding a class's synthetic field-init closure
@@ -126,7 +131,9 @@ struct FnAnalysis {
   // the VM's region handler needs a mark exactly when the node is in here.
   std::unordered_set<const peg::Ast*> try_region_has_defer;
 
-  FuncInfo analyze_program(const peg::Ast& programAst) {
+  FuncInfo analyze_program(const peg::Ast& programAst,
+                           bool session_top = false) {
+    session_top_ = session_top;
     // Shadow analysis is single-sourced in lint.h (the same check the
     // interpreter runs). collect_fn_locals/visit_for_frees below only collect
     // locals + free variables for codegen; they no longer check shadowing.
@@ -157,21 +164,36 @@ struct FnAnalysis {
   struct DeclKinds {
     std::set<std::string> from_assign;
     std::set<std::string> scope_wide;
+    // Declared more than once in the function's flat locals (a second
+    // `let`, a block-scoped shadow, a parameter's name): a literal bound
+    // to such a name keeps reading the cell (FuncInfo::own_name).
+    std::set<std::string> redeclared;
   };
 
   // Locals of the function being walked that are already bound at the
   // current point. Seeded with everything but the not-yet-assigned names;
   // visit_for_frees adds each as it passes its declaration.
   std::set<std::string> declared_;
+  // The function being walked's DeclKinds::redeclared.
+  std::set<std::string> redeclared_;
+  // The program being analyzed is a REPL line: its top-level `let`s are
+  // session cells a later line may rebind (analyze_program's flag).
+  bool session_top_ = false;
+  // `let name = fn …` literals whose body reads `name` as itself: filled
+  // by the assignment's walk, read when the literal's own walk starts.
+  std::map<const peg::Ast*, std::string> literal_own_names_;
 
   // Save/restore `declared_` across a nested function's walk.
   struct DeclaredScope {
     FnAnalysis& fa;
-    std::set<std::string> saved;
+    std::set<std::string> saved, saved_redeclared;
     DeclaredScope(FnAnalysis& fa, const std::set<std::string>& my_locals,
                   const DeclKinds& kinds)
-        : fa(fa), saved(std::move(fa.declared_)) {
+        : fa(fa),
+          saved(std::move(fa.declared_)),
+          saved_redeclared(std::move(fa.redeclared_)) {
       fa.declared_.clear();
+      fa.redeclared_ = kinds.redeclared;
       for (const auto& name : my_locals) {
         if (kinds.from_assign.contains(name) &&
             !kinds.scope_wide.contains(name)) {
@@ -180,7 +202,10 @@ struct FnAnalysis {
         fa.declared_.insert(name);
       }
     }
-    ~DeclaredScope() { fa.declared_ = std::move(saved); }
+    ~DeclaredScope() {
+      fa.declared_ = std::move(saved);
+      fa.redeclared_ = std::move(saved_redeclared);
+    }
   };
 
   // A block's own declarations die with it: after `{ let x = 1 }` the
@@ -329,7 +354,7 @@ struct FnAnalysis {
 
           if (is_declare) {
             if (!is_sink_name(name)) {
-              locals.insert(name);
+              if (!locals.insert(name).second) kinds.redeclared.insert(name);
               note(name, /*from_assign=*/true);
             }
           } else if (!visible_in_outer(name, outer) && !is_sink_name(name) &&
@@ -409,6 +434,15 @@ struct FnAnalysis {
                : nullptr;
   }
 
+  // The function literal an expression IS — the AST optimizer has already
+  // folded the EXPRESSION wrapper onto it, so this is a tag test, not a
+  // descent: `[fn …]` is an Array holding one, not one.
+  static const peg::Ast* fn_literal_of(const peg::Ast& expr) {
+    using namespace peg::udl;
+    return (expr.tag == "FUNCTION"_ || expr.tag == "LAMBDA"_) ? &expr
+                                                               : nullptr;
+  }
+
   // Record `name` as a free variable of the function under analysis when it
   // resolves to an enclosing lexical scope. Shared by the IDENTIFIER read path
   // and the UFCS method-name path.
@@ -432,7 +466,7 @@ struct FnAnalysis {
     // candidate — turns on the prologue self-handle bind. Checked before
     // the locals cut: the name IS a local of the body (seeded by
     // analyze_fn_common), which is exactly what keeps it out of free_vars.
-    if (name == info.mf_self) info.mf_self_used = true;
+    if (name == info.own_name) info.own_name_used = true;
     // A local only means "this frame's binding" from the statement that
     // binds it onward. Before that the declaration has not run, so the
     // name still resolves outward — the interp walks the environment
@@ -496,7 +530,11 @@ struct FnAnalysis {
       } else if (node.tag == "MULTIFN_DECL"_) {
         nested_info = analyze_multifn(node, outer);
       } else {
-        nested_info = analyze_function(node, outer);
+        std::string_view own_name;
+        if (auto it = literal_own_names_.find(&node);
+            it != literal_own_names_.end())
+          own_name = it->second;
+        nested_info = analyze_function(node, outer, own_name);
       }
       outer.pop_back();
       for (const auto& fv : nested_info.free_vars) {
@@ -796,6 +834,11 @@ struct FnAnalysis {
           if ((!av.is_let || av.compound) && !my_locals.contains(name)) {
             visit_for_frees(*ident_node, my_locals, outer, info);
           }
+          // A bare write to the body's own name is a write to that
+          // (immutable) binding — it has to be bound for the write to be
+          // refused, rather than declare a body-local of the same name.
+          if (!av.is_let && !av.is_mut && name == info.own_name)
+            info.own_name_used = true;
         }
       } else {
         // Complex lvalue: primary + postfixes. TYPE_ANNOTATION and
@@ -803,6 +846,19 @@ struct FnAnalysis {
         // `lvaloff + lvalcnt` naturally skips them.
         for (int i = 0; i < av.lvalcnt; i++) {
           visit_for_frees(*node.nodes[av.lvaloff + i], my_locals, outer, info);
+        }
+      }
+      // `let name = fn …`: the literal reads `name` as itself (see
+      // FuncInfo::own_name) wherever nothing can rebind the name behind
+      // it — an immutable binding the list declares once, outside a REPL
+      // session's top level.
+      if (av.is_let && !av.is_mut && !av.compound && av.lvalcnt == 1 &&
+          !(session_top_ && outer.empty())) {
+        if (const auto* target = culebra::assign_name_target(node, av)) {
+          auto name = std::string(target->token);
+          if (!is_sink_name(name) && !redeclared_.contains(name))
+            if (const auto* lit = fn_literal_of(*av.rhs))
+              literal_own_names_[lit] = std::move(name);
         }
       }
       visit_for_frees(*av.rhs, my_locals, outer, info);
@@ -1009,7 +1065,7 @@ struct FnAnalysis {
       const peg::Ast& params_ast,
       const peg::Ast& body_ast,
       std::vector<const std::set<std::string>*>& outer,
-      std::string_view mf_self_name = {}) {
+      std::string_view own_name = {}, bool own_name_dispatched = false) {
     std::set<std::string> my_locals;
     DeclKinds kinds;
     for (auto& p : params_ast.nodes) {
@@ -1033,14 +1089,15 @@ struct FnAnalysis {
     }
 
     FuncInfo info;
-    // The multifn's own name becomes a body-level local (the prologue
-    // binds it from the dispatch — see FuncInfo::mf_self), unless a
-    // same-named parameter shadows it. Seeded before collect so a nested
-    // fn's reference lands in captured_locals like any local's would.
-    if (!mf_self_name.empty() && !culebra::is_sink_name(mf_self_name) &&
-        my_locals.insert(std::string(mf_self_name)).second) {
-      info.mf_self = std::string(mf_self_name);
-      kinds.scope_wide.insert(info.mf_self);
+    // The body's own name becomes a body-level local (the prologue binds
+    // it — see FuncInfo::own_name), unless a same-named parameter shadows
+    // it. Seeded before collect so a nested fn's reference lands in
+    // captured_locals like any local's would.
+    if (!own_name.empty() && !culebra::is_sink_name(own_name) &&
+        my_locals.insert(std::string(own_name)).second) {
+      info.own_name = std::string(own_name);
+      info.own_name_dispatched = own_name_dispatched;
+      kinds.scope_wide.insert(info.own_name);
     }
     collect_fn_locals(body_ast, my_locals, outer, kinds);
 
@@ -1076,8 +1133,10 @@ struct FnAnalysis {
   // distinguish them when extracting the return type at compile time.
   FuncInfo analyze_function(
       const peg::Ast& fnAst,
-      std::vector<const std::set<std::string>*>& outer) {
-    return analyze_fn_common(&fnAst, *fnAst.nodes[0], *fnAst.nodes[1], outer);
+      std::vector<const std::set<std::string>*>& outer,
+      std::string_view own_name = {}) {
+    return analyze_fn_common(&fnAst, *fnAst.nodes[0], *fnAst.nodes[1], outer,
+                             own_name);
   }
 
   // METHOD ast: [IDENTIFIER, PARAMETERS, BLOCK]. Analyzed just like a
@@ -1118,7 +1177,7 @@ struct FnAnalysis {
     auto paramsIdx = name_idx + 1;
     auto bodyIdx = multifnAst.nodes.size() - 1;
     // An undecorated body gets its own name as the prologue-bound
-    // self-handle (FuncInfo::mf_self). A decorated one keeps the plain
+    // self-handle (FuncInfo::own_name). A decorated one keeps the plain
     // capture: its binding is the decorator's result, which only the
     // declaring scope's cell knows.
     auto self_name =
@@ -1126,7 +1185,8 @@ struct FnAnalysis {
             ? culebra::parse_generic_head(multifnAst.nodes[0]->token).outer
             : std::string_view{};
     return analyze_fn_common(&multifnAst, *multifnAst.nodes[paramsIdx],
-                             *multifnAst.nodes[bodyIdx], outer, self_name);
+                             *multifnAst.nodes[bodyIdx], outer, self_name,
+                             /*own_name_dispatched=*/true);
   }
 
   // `defer { BODY }` behaves like a 0-parameter nested function that

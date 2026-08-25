@@ -543,6 +543,22 @@ null-pointer読み出しガードの頼る「宣言未実行」信号を消す�
 素の`let`でも。まず`jit.h`側を修正（sentinel+値ガード。VMは今回
 その設計をミラーする）、回帰は`tests/test_forward_ref.cul`。
 
+本体の*自名*はcellとは別の経路を通る。`fn name`の本体はdispatcher
+cellをcaptureしない: `FuncInfo::own_name`が名前を本体のlocalとして
+種まきし、prologueがdispatch（`MfSelf`）から束縛する — captureすると
+cell → dispatcher → body → cell の環になり、参照カウントでは切れない
+からだ。`let name = fn …`は自分のclosure経由で同じ環を閉じていて、
+leakゲートのレーン別絶対計測（§13）がそれを可視化した: 自己再帰する
+`let`ごとに、呼び出し1回あたりcell 1個とclosure 1個が両レーンで残る。
+そこで不変束縛を直接初期化するリテラルも同じ継ぎ目を通すようにした —
+自名はフレームが実行中のclosure（`fn`ハンドルのslot）に束縛された
+localで、ネストしたclosureがcaptureすればcellに昇格する。読み出しは
+観測上は束縛のそれと同じ（文リストが1回だけ宣言する`let`は再束縛
+できない）で、再束縛が可能な2箇所だけがcellのまま残る: 同じ文リスト
+での同名の再宣言と、後続行が同じセッションcellへ再宣言しうるREPL
+セッションのトップレベル`let`。角は`tests/test_fn_own_name.cul`が
+固定する。
+
 続いてstdlibがruntime層経由で届いた — Phase 1の見取り図の
 「stdlibの大部分はruntime束縛経由で届く（3つ目のstdlib移植は
 しない）」そのままに。新opは`NsGet`の1つだけ:

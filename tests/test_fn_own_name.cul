@@ -1,0 +1,64 @@
+# `let name = fn …`: inside the literal, `name` is the function itself
+# (FuncInfo::own_name) — observably the same as reading the binding, since
+# a `let` the list declares once can never be rebound, but it leaves no
+# closure → cell → closure ring behind (the leak gate's nestedfn entries).
+
+fn direct() {
+  let rec = fn (n) { n > 0 ? rec(n - 1) : 'base' }
+  rec(3)
+}
+assert_eq(direct(), 'base')
+
+# The name read as a value is the literal itself.
+fn as_value() {
+  let me = fn () { me }
+  me() == me
+}
+assert_eq(as_value(), true)
+
+# A nested literal capturing the name goes through a cell of the frame's own.
+fn nested_capture() {
+  let rec = fn (n) {
+    let again = fn () { rec(n - 1) }
+    n > 0 ? again() : 'inner'
+  }
+  rec(2)
+}
+assert_eq(nested_capture(), 'inner')
+
+# `fn` and the name coexist and agree.
+fn both_handles() {
+  let rec = fn (n) { n > 0 ? fn(n - 1) : rec == fn }
+  rec(2)
+}
+assert_eq(both_handles(), true)
+
+# Assigning the name inside the body is the immutable binding's error.
+fn assign_inside() {
+  let rec = fn () { rec = 1 }
+  try {
+    rec()
+    'no'
+  } catch e {
+    e.kind
+  }
+}
+assert_eq(assign_inside(), 'ImmutableError')
+
+# Not the direct initializer: the binding cell answers, as before.
+fn wrapped() {
+  let rec = [fn (n) { n > 0 ? rec[0](n - 1) : 'wrapped' }]
+  rec[0](2)
+}
+assert_eq(wrapped(), 'wrapped')
+
+# Declared again in the same list: reads follow the rebinding, as before.
+fn redeclared() {
+  let r = fn (n) { n == 0 ? 'old' : r(n - 1) }
+  let keep = r
+  let r = fn (n) { 'new' }
+  keep(1)
+}
+assert_eq(redeclared(), 'new')
+
+inspect('own-name literals: ok')

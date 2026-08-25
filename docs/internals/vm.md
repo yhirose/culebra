@@ -591,6 +591,24 @@ into user code where the interp raises NameError — with a plain
 value-guard design the VM now mirrors), regression in
 `tests/test_forward_ref.cul`.
 
+A body's *own* name takes a different route from its cell. A `fn name`
+body never captures the dispatcher cell: `FuncInfo::own_name` seeds the
+name as a local of the body and the prologue binds it from the dispatch
+(`MfSelf`), because the capture would be a ring — cell → dispatcher →
+body → cell — that refcounting cannot break. `let name = fn …` closes
+the same ring through its own closure, and the leak gate's absolute
+per-lane measure (§13) showed it: one cell and one closure retained per
+call, on both lanes, for every self-recursive `let`. So a literal that
+directly initializes an immutable binding now goes through the same
+seam — its own name is a local bound to the frame's running closure
+(the `fn` handle's slot), cell-promoted when a nested closure captures
+it. The read is observably the binding's, since a `let` the statement
+list declares once can never be rebound; the two places a rebinding IS
+possible are exactly where the cell stays — a second declaration of the
+name in the same list, and a REPL session's top-level `let`, which a
+later line may redeclare into the same session cell.
+`tests/test_fn_own_name.cul` pins the corners.
+
 The stdlib then arrived through the runtime layer, exactly as the
 Phase 1 sketch has it ("most of the stdlib arrives through the
 runtime binding — no third stdlib port"): one new op, `NsGet`,

@@ -2315,8 +2315,10 @@ struct Chunk {
   // away the way the interpreter's folds its internal delegations.
   bool has_dbg = false;
   // Function-chunk metadata (chunk 0 — the module top level — has none).
-  // Params occupy slots [0, arity); `fn_slot` binds the `fn` recursion
-  // handle when the body reads it (FuncInfo::uses_fn), -1 otherwise.
+  // Params occupy slots [0, arity); `fn_slot` holds the frame's own closure
+  // when the body reads it — as the `fn` recursion handle
+  // (FuncInfo::uses_fn) or as the `let` name a literal initializes
+  // (FuncInfo::own_name) — and is -1 otherwise.
   int32_t arity = 0;
   std::vector<std::string> param_names;  // for the ArityError message
   // Effective parameter types (empty = untyped), parallel to param_names —
@@ -3035,7 +3037,7 @@ class Compiler {
     }
     // lint::check_shadow (parity) + the per-fn FuncInfo compile_fn_chunk
     // reads; the returned top-level info carries chunk 0's captured_locals.
-    FuncInfo top_info = analysis.analyze_program(ast);
+    FuncInfo top_info = analysis.analyze_program(ast, opts.repl);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
     Compiler main(prog, analysis, /*in_function=*/false, &top_info);
     main.repl_ = opts.repl;
@@ -5523,8 +5525,14 @@ class Compiler {
             {"self", fc.chunk_.self_slot, false});
       }
     }
-    if (info.uses_fn) {
+    // The frame's own closure: the `fn` handle, and a literal's own `let`
+    // name (bound below, once the captures are in place).
+    bool own_name_live =
+        !info.own_name.empty() &&
+        (info.own_name_used || info.captured_locals.contains(info.own_name));
+    if (info.uses_fn || (own_name_live && !info.own_name_dispatched))
       fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
+    if (info.uses_fn) {
       fc.push_binding({"fn", fc.chunk_.fn_slot, false});
       // A method's `fn` IS the bound wrapper (interp: the handle a method
       // call binds), so recursion and any escapee keep the original
@@ -5588,23 +5596,36 @@ class Compiler {
             {"self", s, false, /*is_cell=*/false, /*lazy=*/true});
       }
     }
-    // The multifn body's own name: delivered by the dispatch rather than
-    // captured — the capture would ring cell → dispatcher → body → cell
-    // (see FuncInfo::mf_self). A cell, so a nested closure captures it
-    // like any local's; lazy, so the escaped-past-its-dispatcher corner
-    // reads as the undeclared name's NameError.
-    if (!info.mf_self.empty() &&
-        (info.mf_self_used || info.captured_locals.contains(info.mf_self))) {
-      int32_t cslot = fc.alloc_cell_slot(ast, info.mf_self);
-      {
-        TempScope mts(fc);
-        int32_t t = fc.alloc_temp(ast);
-        fc.emit(Op::MfSelf, t);
-        fc.emit(Op::CellNew, cslot, t);  // nils t; the sweep is a no-op
+    // The body's own name: delivered by the frame rather than captured —
+    // the capture would ring cell → dispatcher/closure → body → cell (see
+    // FuncInfo::own_name). A multifn's arrives through the dispatch; lazy,
+    // so the escaped-past-its-dispatcher corner reads as the undeclared
+    // name's NameError. A literal's is the closure the prologue already
+    // put in fn_slot. Either becomes a cell when a nested closure captures
+    // it, like any local's.
+    if (own_name_live) {
+      if (info.own_name_dispatched) {
+        int32_t cslot = fc.alloc_cell_slot(ast, info.own_name);
+        {
+          TempScope mts(fc);
+          int32_t t = fc.alloc_temp(ast);
+          fc.emit(Op::MfSelf, t);
+          fc.emit(Op::CellNew, cslot, t);  // nils t; the sweep is a no-op
+        }
+        fc.push_binding({info.own_name, cslot, /*is_mut=*/false,
+                         /*is_cell=*/true, /*lazy=*/true});
+      } else if (info.captured_locals.contains(info.own_name)) {
+        int32_t cslot = fc.alloc_cell_slot(ast, info.own_name);
+        {
+          TempScope mts(fc);
+          fc.emit(Op::CellNew, cslot,
+                  fc.owned_src(ast, {fc.chunk_.fn_slot, false}));
+        }
+        fc.push_binding({info.own_name, cslot, /*is_mut=*/false,
+                         /*is_cell=*/true});
+      } else {
+        fc.push_binding({info.own_name, fc.chunk_.fn_slot, false});
       }
-      fc.push_binding({info.mf_self, cslot,
-                                            /*is_mut=*/false, /*is_cell=*/true,
-                                            /*lazy=*/true});
     }
     // Bind the declared parameters, now that the captures, `self` and `fn`
     // are in place for a default expression to read. Where a typed param's
