@@ -51,6 +51,15 @@ iso = Isolate.spawn(fn () {
   srv.get("/empty", fn (req) {
     nil
   })
+  # PUT / DELETE routes, for the client verbs of the same name. HEAD has no
+  # route of its own: the server answers it from the matching GET handler
+  # (cpp-httplib routes the two together), which is what /json pins below.
+  srv.put("/item", fn (req) {
+    "put:" + req.body
+  })
+  srv.delete("/item", fn (req) {
+    {status: 204}
+  })
   # Malformed response objects: a wrong-typed field is a TypeError → 500, with
   # an identical message across interp/JIT (the trampoline puts e.what() in the
   # body). These lock the apply-response type checks symmetric.
@@ -132,6 +141,33 @@ inspect("nil return -> " +
 
 r8 = Http.get(BASE + "/missing")
 inspect("unmatched -> " + r8.status.to_string())
+
+# The client verbs past get/post. `put` carries a body like `post`; `delete`
+# takes none and its 204 arrives with an empty one; `head` reaches the GET
+# handler and keeps its status and headers while the body is dropped — the
+# property that makes it worth a request at all.
+rput = Http.put(BASE + "/item", body: "v2")
+inspect("PUT -> " + rput.status.to_string() + " | " + rput.body)
+
+rdel = Http.delete(BASE + "/item")
+inspect("DELETE -> " +
+  rdel.status.to_string() +
+  " | len=" +
+  rdel.body.size().to_string())
+
+rhead = Http.head(BASE + "/json")
+inspect("HEAD -> " +
+  rhead.status.to_string() +
+  " | ok=" +
+  rhead.ok.to_string() +
+  " | reason=" +
+  rhead.reason +
+  " | len=" +
+  rhead.body.size().to_string() +
+  " | ct=" +
+  rhead.headers["Content-Type"] +
+  " | x=" +
+  rhead.headers["X-Test"])
 
 for bad in ["/bad_status", "/bad_ct", "/bad_body", "/bad_hdr"] {
   let rb = Http.get(BASE + bad)

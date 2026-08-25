@@ -5635,3 +5635,14 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表
 backend固有の対話的機能（REPL stateを駆動するデバッガhook等）
 は`.cul`スクリプトではなく`tests/embedding/`のC++ smoke
 テストで検証します。
+
+上の表は手で維持するもので、章を指しています。より細かい問い —
+個々の節が述べる規則を何も実行していないのではないか — は
+ratchetが持ちます: `tools/check_spec_examples.sh`が、実行される
+` ```culebra `ブロック（`# doctest: skip`が付いていないもの。
+残りは`just doctest`が両エンジンで走らせます）を持たない節を数え、
+`tools/spec_unpinned_sections.txt`と突き合わせます。例を失った節も、
+最初から持たない新しい節も検査に落ちます。逆に、リストにある節が
+例を得た場合も落ちるので、このファイルは減る方向にしか動きません。
+`check-generated`の一部として走るため、`just test-dev`とCIの両方が
+これを回します。

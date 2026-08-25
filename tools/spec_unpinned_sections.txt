@@ -1,0 +1,146 @@
+# Ratchet for tools/check_spec_examples.sh.
+#
+# Each line names a section of docs/language.md that states a rule and has no
+# runnable ` ```culebra ` block — only prose, a table, or an example marked
+# `# doctest: skip`, which runs nowhere. The key is `<chapter> > <section>`,
+# or the chapter alone where it has no `###` sections of its own.
+#
+# The check FAILS on an unpinned section that is NOT listed here (a new rule
+# with nothing executing it), and on a listed section that HAS since gained a
+# runnable block (shrink the file — `--update` does it).
+#
+# Blank lines and `#` comments are ignored, and a key is the whole line. Put
+# the reason for an entry in a comment *above* it, the way
+# tools/difftest/leak_abort_allow.txt does.
+#
+# An entry is not a decision the way that file's are — it is a backlog item.
+# A runnable block in the spec is the only check that lives in the same file
+# as the rule it pins, and since the tree-walker retired
+# (docs/essays/one-front-end.md) nothing else in the tree disagrees with the
+# compiler on its own. This file should shrink. Some entries never will:
+# lexical structure, grammar tables and CLI prose have nothing to execute.
+1. Overview and philosophy
+10. Objects > Access and mutation
+10. Objects > Auto-reflection
+10. Objects > Auto-synthesized `parameters()`
+10. Objects > Construction
+10. Objects > Custom string representation (`__str__`)
+10. Objects > Display conventions
+10. Objects > Enumeration
+10. Objects > Non-String keys
+10. Objects > Subscript assignment
+10. Objects > `class` sugar
+11. Functions and closures > Closures
+11. Functions and closures > Function literals
+11. Functions and closures > Keyword arguments and `**` splat
+11. Functions and closures > Lambda sugar `|x| ...`
+11. Functions and closures > Methods: `self`
+11. Functions and closures > Parameters
+11. Functions and closures > Recursion: `fn`
+11. Functions and closures > Return
+12. Control flow > Diverging expressions
+12. Control flow > `break` and `continue`
+12. Control flow > `debugger`
+12. Control flow > `if`
+12. Control flow > `nobreak` (loop-else)
+12. Control flow > `return`
+12. Control flow > `while`
+13. Pattern matching > Arm bodies
+13. Pattern matching > Exhaustiveness
+13. Pattern matching > Patterns
+13. Pattern matching > Semantics
+14. Optional type annotations > Function types (`fn(T) -> U`)
+14. Optional type annotations > Generic types
+14. Optional type annotations > Nil and annotations (null-safety policy)
+14. Optional type annotations > Optional types (`T?`)
+14. Optional type annotations > Recognized type names
+14. Optional type annotations > Sum types (`enum`)
+14. Optional type annotations > Syntax
+14. Optional type annotations > Traits and protocols
+14. Optional type annotations > Union types
+14. Optional type annotations > Where annotations are *not* checked
+15. Error handling > Assertion API
+15. Error handling > Compile-time errors
+15. Error handling > Interruption (Ctrl+C)
+15. Error handling > JIT support
+15. Error handling > Runtime errors
+15. Error handling > Scope guard pattern
+15. Error handling > The value-nesting bound
+15. Error handling > `defer`
+15. Error handling > `throw` / `try` / `catch`
+16. Algebraic effects > Declaring an effect
+16. Algebraic effects > Semantics and limitations
+17. Memory model > Cycle collection
+17. Memory model > Display of cycles
+17. Memory model > Reference counting
+18. Built-in type methods > 18.4 Special identifiers
+2. Lexical structure > Comments
+2. Lexical structure > Identifiers
+2. Lexical structure > Keywords
+2. Lexical structure > Line terminators and whitespace
+2. Lexical structure > Literals
+2. Lexical structure > Operators and punctuation
+2. Lexical structure > Source encoding
+2. Lexical structure > Statement separators
+20. Multimethods > Class instance dispatch
+20. Multimethods > Coexistence with existing features
+20. Multimethods > Constraints
+20. Multimethods > Keyword arguments and multimethods
+20. Multimethods > Same-name, same-signature redeclaration
+20. Multimethods > Specificity rules
+20. Multimethods > Syntax
+21. Decorators > Built-in decorator: `@packable`
+21. Decorators > Decorator expression
+21. Decorators > Interaction with multimethods
+21. Decorators > Why `@` doesn't collide with the matmul operator
+22. Command-line interface > CLI-installed globals
+22. Command-line interface > Flags
+22. Command-line interface > Subcommands
+23. Known limitations
+24. Modules > Backend equivalence
+24. Modules > Conformance tests
+24. Modules > Errors
+24. Modules > Evaluation rules
+24. Modules > Exports
+24. Modules > Module syntax
+24. Modules > Statements
+24. Modules > Top-level only
+25. Appendix: VM ↔ JIT divergence > Identical observable behavior
+25. Appendix: VM ↔ JIT divergence > Permitted internal optimizations
+25. Appendix: VM ↔ JIT divergence > Technical differences without behavioral impact
+25. Appendix: VM ↔ JIT divergence > Top-level drop note (§17)
+26. Appendix: conformance test mapping
+3. Grammar > Expression-oriented syntax
+4. Types
+5. Values and identity
+6. Variables and scope > Assignment targets
+6. Variables and scope > Compound assignment
+6. Variables and scope > Declaration and assignment
+6. Variables and scope > Design note: why three-tier shadow rules
+6. Variables and scope > Mutability
+6. Variables and scope > Scope
+6. Variables and scope > Shadow prohibition
+6. Variables and scope > The `_` sink
+7. Expressions > Arithmetic
+7. Expressions > Bitwise
+7. Expressions > Comparison
+7. Expressions > Evaluation order
+7. Expressions > Logical
+7. Expressions > Method call
+7. Expressions > Null-safe access
+7. Expressions > Parentheses
+7. Expressions > Truthiness
+7. Expressions > Unary
+8. Strings and interpolation > Backtick raw string literals
+8. Strings and interpolation > Concatenation
+8. Strings and interpolation > Display conversion
+8. Strings and interpolation > Interpolated strings
+8. Strings and interpolation > Raw string literals
+8. Strings and interpolation > Regex literals
+8. Strings and interpolation > Triple-quoted strings
+9. Arrays > Access and mutation
+9. Arrays > Construction
+9. Arrays > Equality and ordering
+Sets
+Table of contents
+Tuples > Destructuring

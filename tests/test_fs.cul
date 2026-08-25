@@ -126,6 +126,20 @@ assert_eq(FS.normpath("a/./b/../c"), "a/c")
 assert_eq(FS.is_abs("/tmp"), true)
 assert_eq(FS.is_abs("rel/path"), false)
 
+// abspath: normalize lexically, resolve a relative path against the cwd, and
+// touch the disk for neither — a path that does not exist comes back
+// unchanged, and a symlink is left as it is (that is realpath's job).
+// Compared against Sys.getcwd() rather than a literal, since the absolute
+// answer is whatever directory the runner started in.
+assert_eq(FS.abspath("/tmp/./a/../b"), "/tmp/b")
+assert_eq(FS.abspath("/a//b/./c/"), "/a/b/c/")
+assert_eq(FS.abspath("/no/such/path/at/all"), "/no/such/path/at/all")
+assert_eq(FS.abspath("rel/x"), FS.join(Sys.getcwd(), "rel/x"))
+assert_eq(FS.abspath("a/../b"), FS.join(Sys.getcwd(), "b"))
+assert_true(FS.is_abs(FS.abspath(".")))
+// The empty path is left to the platform (libstdc++ reports an error where
+// another library may answer the cwd), so nothing is pinned for it here.
+
 let xdir = FS.join(tmp_root, "culebra_fs_ext")
 FS.remove(xdir, recursive: true) if FS.exists(xdir)
 FS.mkdir(FS.join(xdir, "sub"))

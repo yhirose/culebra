@@ -121,11 +121,19 @@ check-difftest-coverage:
 check-release-coverage:
     tools/check_release_covered_by_ci.sh
 
+# Every section of the spec that states a rule carries a runnable example, or
+# is filed in tools/spec_unpinned_sections.txt. A runnable block is the only
+# check that lives in the same file as the rule it pins.
+[group("test")]
+[doc("Verify docs/language.md sections carry runnable examples (ratchet)")]
+check-spec-examples:
+    tools/check_spec_examples.sh
+
 # Every committed file a generator produces, checked against its source, plus
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

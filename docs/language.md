@@ -5913,3 +5913,15 @@ with identical stdout — `just test` enforces it. Interactive
 features that are inherently backend-specific (debugger hooks
 exercised by REPL state) are tested through `tests/embedding/`
 C++ smoke tests rather than as `.cul` scripts.
+
+The table above is maintained by hand and points at chapters. The
+finer question — whether an individual section states a rule that
+nothing executes — is held by a ratchet instead:
+`tools/check_spec_examples.sh` counts the sections of this document
+with no runnable ` ```culebra ` block (one not marked
+`# doctest: skip`, since `just doctest` runs the rest on both
+engines) and compares them against
+`tools/spec_unpinned_sections.txt`. A section that loses its example,
+or a new one that never had one, fails the check; a listed section
+that gains one fails it too, so the file only shrinks. It runs as
+part of `check-generated`, so `just test-dev` and CI both carry it.
