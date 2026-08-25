@@ -635,9 +635,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_fs_glob(
 
 // --- _Time primitives ---
 // Calendar logic is shared with the interpreter via `culebra::_time_detail`
-// (see stdlib_interp.h). The user-facing `Time` module (Instant /
+// (stdlib_kernels.h). The user-facing `Time` module (Instant /
 // Duration classes) is built from culebra source (`TIME_MODULE_SOURCE`
-// in stdlib_interp.h) — interp registers it lazily, JIT/AOT register its
+// as a lazy source module) — the engines register its
 // builder ahead of every module via `splice_stdlib_preamble`.
 // Timestamps are
 // i64 nanos since Unix epoch; `monotonic` / `sleep` stay Float
@@ -984,7 +984,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_tone(
                                 release, vol, peak, channel, duty);
 }
 // The MP3/Ogg sniff runs here, before the backend branch, mirroring interp —
-// same ValueError, same site, on every backend (see stdlib_interp.h).
+// same ValueError, same site, on every backend.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_play(
     uint8_t tag, int64_t data, int64_t looping, int64_t vol, double start,
     int64_t line, int64_t col) {
@@ -1235,7 +1235,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
 // --- JSON ---
 
 // JSON logic lives in json.h (culebra::json), shared with the interp
-// (stdlib_interp.h) so values, error texts, and positions stay
+// (stdlib_kernels.h) so values, error texts, and positions stay
 // byte-identical across backends. These policies adapt the neutral core
 // to JitValues.
 
@@ -2404,7 +2404,7 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(int64_t pid, int out_fd,
 
 // --- File handle (JIT) ---
 // Methods read `_id` (Long) from the handle and operate on the shared
-// side table (culebra::_file_* helpers, defined in stdlib_interp.h). Same
+// side table (culebra::_file_* helpers, stdlib_kernels.h). Same
 // method ABI as the Proc handle: self arrives +1 and is released here,
 // except drop (called from the destructor's drop protocol, which manages
 // refcount itself — see _jit_handle_drop).
@@ -6855,7 +6855,7 @@ inline JitValue _ns_tensor_device(JitValue*, int64_t) {
 //===------------------------------------------------------------------------//
 inline std::shared_ptr<reg::Regex> _jit_regex_compile(std::string_view pat) {
   // Stateless cache keyed by pattern (own thread-local; see the /simplify note
-  // about sharing with stdlib_interp's regex_compile_cached).
+  // about cross-engine cache sharing).
   static thread_local std::unordered_map<std::string,
                                          std::shared_ptr<reg::Regex>>
       cache;
@@ -6891,7 +6891,7 @@ inline JitValue _jit_regex_group(const reg::Match& c, size_t offset = 0) {
 
 // Templated over match-like type (`reg::MatchResult` owning / `reg::Match` view)
 // so search/match and find_all share one builder. `named` is the Regex's
-// name->index map; `offset` the absolute shift. Mirrors stdlib_interp's twin.
+// name->index map; `offset` the absolute shift.
 template <typename MatchT>
 inline JitValue _jit_regex_match(
     const MatchT& m, const std::unordered_map<std::string, int>& named,
@@ -6995,7 +6995,7 @@ inline JitValue _ns_regex_replace_first(JitValue* a, int64_t) {
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
 }
 // find_from(pattern, s, pos) -> { m: Match|nil, next: Int }. See the interp
-// twin in stdlib_interp.h: one stateless find_at scan step (absolute offsets,
+// one stateless find_at scan step (absolute offsets,
 // engine-owned empty-match resume rule, anchors see the full subject).
 inline JitValue _ns_regex_find_from(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
@@ -8579,7 +8579,7 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
 // Cold arm of jit.h's emit_reject_bare_builtin_method. The codegen filter
 // (builtin method name + Nil read + no own slot) is receiver-blind, but a
 // bare `x.map` is rejected only when the receiver's own builtin table would
-// have dispatched it (the tree-walker's eval_property reject_if_bare rule);
+// have dispatched it (the retired tree-walker's reject_if_bare rule);
 // any other miss — class object, class instance, plain dict, range — reads
 // as nil. Decide with the canonical tables so the lanes can never drift:
 // throw the shared TypeError when the binder would dispatch, else return and

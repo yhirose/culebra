@@ -1152,7 +1152,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
 
 // --- Numeric runtime helpers (Float-aware arithmetic slow paths) ---
 //
-// Mirror eval_bin_op_step / eval_power in interpreter.h. The JIT
+// The binary-op step / power algorithm both engines fixed on. The JIT
 // emits an inline "both Long" fast path and only calls these when at
 // least one operand is Float or the types are mixed.
 

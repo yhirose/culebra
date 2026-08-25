@@ -4463,7 +4463,7 @@ struct JIT {
     // living in this LLJIT (sendable_jit.h); one still running when the
     // module's code memory is freed returns into memory the teardown just
     // unmapped. See isolate_teardown_join_hook (shared.h). A watch left open
-    // is stopped for the reason interpreter.h's ScriptTeardownGuard gives.
+    // is stopped for the reason script_teardown.h gives.
     struct ScriptTeardownGuard {
       ~ScriptTeardownGuard() {
         if (auto& fn = isolate_teardown_join_hook()) fn();

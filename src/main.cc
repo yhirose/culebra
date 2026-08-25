@@ -1091,7 +1091,7 @@ int run_build(const BuildOptions& opts) {
   // std::print, so the AOT'd binary needs it too. Placed before the driver's
   // implicit -lstdc++ so the experimental lib resolves against the base.
   // ws2_32 mirrors the driver link (see CMakeLists WIN32 block): net.h reaches
-  // the base runtime archive via stdlib_interp.h, so even a socket-free program
+  // the base runtime archive via stdlib_jit.h, so even a socket-free program
   // pulls Winsock out of libculebra_rt.a. OpenSSL/zlib do NOT need the same
   // treatment: the core archive declares no httplib type (http.h gates the
   // include), so only the Http axis below supplies CULEBRA_SSL_LINK.

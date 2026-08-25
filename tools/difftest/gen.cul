@@ -23,7 +23,7 @@ fn case(label, body) {
   emit("_p('" + label + "', fn () " + '{ ' + body + ' }' + ")")
 }
 
-# Receiver expressions spanning every Value::Type variant (interpreter.h's
+# Receiver expressions spanning every runtime type variant (the engines'
 # `enum Type`) except Tensor and StringView, which get their own dedicated
 # sweeps (Dimension 15, Dimension 19/24) because neither is reachable through
 # a plain literal. Parenthesized so a scalar receiver (`(1).size()`) and a

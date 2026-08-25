@@ -89,7 +89,7 @@ struct Scope {
 };
 
 // Walks the AST modeling culebra's exact scope boundaries, verified
-// against interpreter.h's `make_scope` sites: LEXICAL_SCOPE, FOR, WHILE
+// against the engines' scope-opening sites: LEXICAL_SCOPE, FOR, WHILE
 // body, MATCH arms, TRY/catch bodies, DEFER, and function/lambda/method
 // bodies open a child scope; IF shares the enclosing one.
 class ScopeWalker {
@@ -223,7 +223,7 @@ class ScopeWalker {
 
   // Reject a malformed parameter list — ordering rules that are certain to
   // fail. Faithfully mirrors the interpreter's parameter builder (the state
-  // machine in interpreter.h `build_parameters`), matching its message and
+  // machine the engines run when binding parameters), matching its message and
   // position so every backend rejects the same shapes pre-eval. The JIT
   // historically checked only a subset (it silently accepted `**kw` not-last,
   // a duplicate `*`, and a bare trailing `*`); hoisting the full set here
@@ -337,7 +337,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
     case "WHILE"_: {
       // [(INIT_CLAUSE)?, condition, BLOCK]: the condition is evaluated before
       // each iteration in the enclosing scope; the body is a fresh child scope
-      // per iteration (like FOR — see interpreter.h eval_while /
+      // per iteration (like FOR — see the engines' while lowering /
       // jit.h compile_while). The condition stays at the enclosing loop depth;
       // the body is inside the loop.
       if (node.nodes.size() < 2) { walk_children(node); return; }

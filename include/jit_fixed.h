@@ -1457,7 +1457,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
 //   - container-ish receiver -> missing member reads as Nil (mirrors the
 //     interpreter's permissive member read; a `.foo()` on that Nil then
 //     fails with the usual "expected Function, got Nil")
-//   - scalar -> TypeError, same wording as interpreter.h to_object.
+//   - scalar -> TypeError, the fixed engine-wide wording.
 //
 // `own_receiver` gate (C⑧, mirrors object_get_any's C③ contract): a bare
 // property read `recv.key` on a +1-owned receiver (the postfix chain's rolling
@@ -1493,7 +1493,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_get(
 // Cold path for JIT truthiness. The JIT inlines only the monomorphic Bool
 // fast path (data != 0); Long/Float/error funnel here, so the strict to_bool
 // semantics live in one place instead of a 5-block switch at every condition
-// site. Nil and other tags raise (mirrors interpreter.h to_bool); NaN is
+// site. Nil and other tags raise; NaN is
 // truthy (d != 0.0 is true for NaN, matching Python's bool(float('nan'))).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool_borrow(
     int8_t tag, int64_t data, int64_t line, int64_t col) {

@@ -3,7 +3,7 @@
 // UUID generation for the `UUID` stdlib namespace.
 //
 // Value-neutral core (no culebra types), shared by the interp
-// (stdlib_interp.h) and the JIT/AOT slow-path adapters (stdlib_jit.h). Two
+// and the JIT/AOT slow-path adapters (stdlib_jit.h). Two
 // variants, both returned in the canonical lowercase 8-4-4-4-12 hyphenated
 // form: v4 (random) and v7 (Unix-millisecond timestamp prefix + random, so
 // values sort by creation time — handy as database keys). Entropy comes from

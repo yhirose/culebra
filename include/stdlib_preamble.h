@@ -5,10 +5,9 @@
 // Runtime, the AST token scan that decides which modules a program names,
 // and splice_stdlib_preamble — the compiled lanes' way of putting those
 // builders ahead of every program. Engine-neutral (pure AST/string work;
-// no Value / Environment / JitValue), moved verbatim from stdlib_interp.h
-// (Phase 4 B7-b): the tree-walker registers the same sources lazily via
-// register_stdlib_lazy_modules (stdlib_interp.h), the compiled lanes and
-// vm::Session splice or diff them from here.
+// no Value / Environment / JitValue), moved verbatim from the old stdlib
+// binding header (Phase 4 B7-b); the engines and vm::Session splice or
+// diff the sources from here.
 
 #include <module_loader.h>  // LoadedModule, kStdlibPreamblePath
 #include <parser.h>         // parse_with_transforms, peg::Ast

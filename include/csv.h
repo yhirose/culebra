@@ -3,7 +3,7 @@
 // CSV parse / stringify for the `CSV` stdlib namespace.
 //
 // Value-neutral core (no culebra types), shared by the interp
-// (stdlib_interp.h) and the JIT/AOT slow-path adapters (stdlib_jit.h) so the
+// and the JIT/AOT slow-path adapters (stdlib_jit.h) so the
 // three backends agree byte-for-byte. RFC 4180-ish: comma-separated fields,
 // records ended by LF / CRLF / CR, fields quoted with double quotes when they
 // contain a delimiter / quote / newline, and an embedded quote escaped by

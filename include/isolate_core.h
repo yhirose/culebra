@@ -5,11 +5,8 @@
 // fan_in merge machinery, Signal.notify delivery, the Parallel worker-pool
 // state, and the teardown join helpers. Everything here speaks SendNode and
 // plain C++ — no Value / Environment / JitValue — so the compiled lanes
-// (sendable_jit.h) include this alone; the tree-walker's half stays in
-// isolate.h, which includes this first. Moved verbatim from isolate.h
-// (Phase 4 B7-b); the one edit is IsolateCore's inline-fallback slots,
-// which held interp Values by type and now hold them type-erased (the
-// interp lane is their only reader/writer).
+// (sendable_jit.h) include this alone. Moved verbatim from isolate.h
+// (Phase 4 B7-b), whose tree-walker half retired with the engine (B7-f).
 
 #include <packable.h>       // shared_buffer_drop
 #include <send_node.h>      // SendNode
@@ -75,19 +72,12 @@ struct IsolateCore {
   std::condition_variable cv;
   bool finished = false;
   bool joined = false;
-  bool ran_inline = false;
   std::atomic<bool> interrupt{false};           // set by drop() to cancel
   std::atomic<bool> cancel_counted{false};      // contributed to g_cancel_pending
 
-  // ran_inline: parent-heap result / user throw, type-erased. Only the
-  // tree-walker's inline-over-cap fallback writes or reads these (it boxes
-  // its Value; the deleter keeps destruction correct across the erasure) —
-  // the compiled lanes never run inline, so the core stays engine-neutral.
-  std::shared_ptr<void> inline_result;
-  sendable::SendNode result;                    // threaded: neutral result
+  sendable::SendNode result;                    // neutral result
   std::optional<culebra::CulebraError> error;   // structured error crossed back
   std::optional<sendable::SendNode> thrown;     // threaded user `throw` value
-  std::shared_ptr<void> inline_thrown;          // inline user `throw` value
 
   // Safety net: a joinable std::thread destroyed without join() calls
   // std::terminate. `join`/`drop` normally join first; this covers the rest.

@@ -282,7 +282,7 @@ for (x, y) in grid(0..2, 0..2) {
 assert_eq(cells, [0, 1, 1, 2])
 
 # Non-Range arguments raise the same TypeError both backends give any
-# Parameter-annotated arg (see grid() in interpreter.h).
+# Parameter-annotated arg (grid()'s declared signature).
 assert_throws("TypeError", fn () {
   grid(1, 2..3)
 })

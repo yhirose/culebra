@@ -1651,7 +1651,7 @@ inline std::shared_ptr<peg::Ast> desugar_postfix_modifiers(
 // original_tag is set to STATEMENT — deliberately different from the BLOCK
 // tag a hand-written `{ stmt }` body gets, so `then` fires the debugger's
 // statement hook via _eval_dispatch's unconditional `original_tag ==
-// STATEMENT` check (interpreter.h) instead of eval_if's
+// STATEMENT` check instead of the if-arm's
 // is_collapsed_single_statement fallback, the same way any ordinary
 // top-level statement does.
 inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {

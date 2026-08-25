@@ -4,7 +4,7 @@
 //
 // No dependency on culebra Value / JitValue / GC: both the interp and JIT
 // backends call these and adapt RunOutcome into their own object
-// representation. Keeping this header value-neutral lets stdlib_interp.h and
+// representation. Keeping this header value-neutral lets the binding layer and
 // stdlib_jit.h include it without pulling each other in.
 //
 //   run_command — one command, blocking. Captures stdout/stderr without

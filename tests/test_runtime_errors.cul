@@ -4,7 +4,7 @@
 # Internal runtime errors are surfaced to user `try/catch` as
 # structured Error Objects: `{kind, message, line, col}`.
 # Each case here pins the expected `kind` for one of the throw sites
-# converted in shared.h / interpreter.h / tensor.h / stdlib_interp.h.
+# converted in shared.h / tensor.h / the stdlib binding layer.
 
 # --- TypeError ---
 let r1 = try {

@@ -3,9 +3,8 @@
 // The engine-neutral REPL core: the input-completeness check, the history
 // path, and repl_loop — linenoise, multi-line accumulation, Ctrl+C, and the
 // per-line ReplEval seam an engine plugs its evaluator into (the VM's is
-// vm_repl.h). Split out of repl.h in Phase 4 B7-b so the compiled lanes'
-// REPL includes no interp header; repl.h keeps the tree-walker's engine and
-// includes this.
+// vm_repl.h; split out of the interp REPL in Phase 4 B7-b, which retired
+// with the tree-walker in B7-f).
 
 #include <cstdlib>
 #include <deque>
@@ -130,7 +129,7 @@ inline int repl_loop(bool print_ast, const ReplEval& eval) {
 
   // Reap whatever is still outstanding once the REPL session itself ends
   // (Ctrl-D, `exit`/`quit`, or an unexpected early return) —
-  // ScriptTeardownGuard (interpreter.h) is function-scoped here instead of
+  // ScriptTeardownGuard (script_teardown.h) is function-scoped here instead of
   // per-input: an Isolate.spawn'd background task (or a watch bound to a
   // variable) is expected to keep running across multiple REPL lines, so
   // reaping after every `interpret()` call below would cancel legitimate

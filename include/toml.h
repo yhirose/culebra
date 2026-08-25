@@ -3,7 +3,7 @@
 // TOML parse / serialize for the `TOML` stdlib namespace.
 //
 // Value-neutral core (no culebra types), shared by the interp
-// (stdlib_interp.h) and the JIT/AOT runtime helpers (stdlib_jit.h) so the
+// and the JIT/AOT runtime helpers (stdlib_jit.h) so the
 // three backends agree byte-for-byte. Parsing produces a neutral `Node`
 // tree (Table / Array / String / Int / Float / Bool); each backend converts
 // that tree to its own Value type. Serialization is the dual: a backend
@@ -78,7 +78,7 @@ struct ParseError {
 // so the guard bounds tree depth, not just parser recursion. 1000 matches
 // kCulebraRecursionLimit (shared.h — not included: this core is value-neutral).
 // The message is shared with the backends' stringify-side converters and
-// mirrors shared.h's nesting_too_deep_message; stdlib_interp.h static_asserts
+// mirrors shared.h's nesting_too_deep_message; the binding layer static_asserts
 // the limits stay equal.
 inline constexpr int64_t kTomlDepthLimit = 1000;
 inline std::string depth_message() {

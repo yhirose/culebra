@@ -4,7 +4,7 @@
 // runtime so both backends agree scalar for scalar. Byte-level helpers that
 // need no character data stay in shared.h; everything here reaches into
 // cpp-unicodelib's tables, so only the headers that already include them
-// (interpreter.h, jit.h) pull this in.
+// (jit.h and the runtime headers) pull this in.
 
 #include <shared.h>
 #include <unicodelib.h>

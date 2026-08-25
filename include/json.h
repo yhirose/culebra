@@ -2,7 +2,7 @@
 
 // JSON parse / stringify core for the `JSON` stdlib namespace.
 //
-// Single logic source shared by the interp (stdlib_interp.h) and the
+// Single logic source shared by the binding layer (stdlib_jit.h) and the
 // JIT/AOT runtime helpers (stdlib_jit.h) so the three backends agree
 // byte-for-byte on values, error kinds/messages, and 1-based error
 // positions. Unlike toml.h there is no intermediate node tree: JSON.parse

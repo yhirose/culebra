@@ -5,7 +5,7 @@
 // const and mutating methods over primitive and string types, a body
 // that throws, and the three return-value ownership shapes: by value,
 // unique_ptr, shared_ptr. It stands in for "the user's own C++ asset";
-// the binding that wraps it (stdlib_interp.h / stdlib_jit.h, `__Foreign`
+// the binding that wraps it (foreign_binding.h, `__Foreign`
 // namespace) is the shape Phase 4's codegen will emit.
 //
 // `live()` counts constructed-but-not-destroyed instances, so scripts

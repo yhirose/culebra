@@ -1,6 +1,6 @@
 #pragma once
 
-// Engine-neutral native kernels shared by the tree-walking interpreter and
+// Engine-neutral native kernels behind the binding layer:
 // the compiled lanes (JIT / AOT / VM executor): the glob matcher and FS
 // syscall helpers, the File handle side table, the Time calendar/ISO
 // helpers, the Net error mapping, and the Regex compile cache. No Value /

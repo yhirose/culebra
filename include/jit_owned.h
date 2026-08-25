@@ -8,7 +8,7 @@
 
 // --- Deterministic drop: the owned-resource stack ---
 //
-// JIT mirror of the interp's owned_stack (interpreter.h). Drop-having
+// The owned stack: deterministic scope-exit drop. Drop-having
 // objects are registered the moment `drop` is bound (instance
 // construction / property write); codegen emits a scope-exit call —
 // after the scope's slot release — that resolves the entries above the

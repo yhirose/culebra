@@ -1126,7 +1126,7 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
 // `_culebra_tag_name`, but for class instances (TAG_OBJECT with a
 // `class:` String slot) we substitute the class name — that's why
 // this can't share `_culebra_tag_name`'s tag-only switch. Mirrors
-// `value_dyn_type` in interpreter.h.
+// `value_dyn_type` rule (one dynamic type name per tag).
 inline std::string_view _jit_value_dyn_type(JitValue v) {
   switch (v.tag) {
     case TAG_NIL:        return "Nil";
@@ -1156,7 +1156,7 @@ inline std::string_view _jit_value_dyn_type(JitValue v) {
 }
 
 // Adapter: supplies the param-types accessor for the shared pick
-// algorithm in interpreter.h.
+// algorithm both engines fixed on.
 inline int64_t _jit_multifn_pick(
     const std::vector<JitMultiMethodEntry>& methods,
     const std::vector<std::string_view>& arg_types,
@@ -1476,7 +1476,7 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
 }
 
 // Auto-synthesized `class.parameters()` walker, mirroring the interp
-// helper in interpreter.h::_walk_collect_params. Walks `val`
+// parameters() walker. Walks `val`
 // recursively: Arrays are descended element-wise, plain Object dicts
 // (no `class:` tag) are descended into their property values, and
 // class instances are collected as leaves. Scalars are skipped.

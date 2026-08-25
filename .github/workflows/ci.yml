@@ -83,7 +83,7 @@ jobs:
 
       # Compiler cache for incremental CI builds. Without it every PR
       # push re-compiles culebra from scratch (~7 min, dominated by
-      # LLVM-header-heavy interpreter.h + jit.h translation units). LLVM
+      # LLVM-header-heavy jit.h translation units). LLVM
       # static link itself is not cached. CCACHE_DIR is pinned under the
       # workspace so the path is identical between actions/cache and
       # ccache itself.
@@ -416,7 +416,7 @@ jobs:
 
       # Compiler cache for incremental CI builds. Without it every PR push
       # re-compiles culebra from scratch (~4 min, dominated by
-      # LLVM-header-heavy interpreter.h + jit.h translation units). The LLVM
+      # LLVM-header-heavy jit.h translation units). The LLVM
       # static link itself is not cached.
       - name: Restore ccache
         uses: actions/cache@v4

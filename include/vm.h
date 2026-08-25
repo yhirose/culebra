@@ -867,7 +867,7 @@ inline constexpr BRecvMask kRecvSet = bmeth_tag_bit(TAG_SET);
 inline constexpr BRecvMask kRecvSetOrObject =
     kRecvSet | bmeth_tag_bit(TAG_OBJECT);
 // to_array: three unrelated value tables bind it — Set, Tuple, and Tensor
-// (`grep '"to_array"sv'` across interpreter.h's builtins tables), each with
+// (the canon tables' method rows), each with
 // its own conversion. No Array arm exists (an Array already is one).
 inline constexpr BRecvMask kRecvToArray =
     kRecvSet | bmeth_tag_bit(TAG_TUPLE) | bmeth_tag_bit(TAG_TENSOR);

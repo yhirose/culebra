@@ -37,9 +37,9 @@
 #include <shared.h>  // CulebraError
 
 // @packable fixed-layout structs and the SharedBuffer backing store.
-// This header is pure metadata + raw byte storage — it knows nothing
-// about Value (the Value<->bytes bridge lives in interpreter.h, where
-// Value is complete).
+// This header is pure metadata + raw byte storage — the engine-value
+// <-> bytes bridges live above it, in the layers where those value
+// types are complete.
 namespace culebra {
 
 // Byte size + alignment of a packable scalar type. Reference types

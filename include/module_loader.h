@@ -32,9 +32,8 @@ struct LoadedModule {
 
 // Path stamped on the synthesized preamble module, so it is distinguishable
 // from user modules. Lives here rather than beside the splice that mints it
-// (stdlib_interp.h) because every engine that has to tell the prologue apart
-// from a real dependency reads it — the bytecode compiler among them, which
-// stdlib_interp.h is above.
+// (stdlib_preamble.h) because every reader that has to tell the prologue
+// apart from a real dependency needs it — the bytecode compiler among them.
 inline constexpr const char* kStdlibPreamblePath = "<stdlib>";
 
 // `culebra test`'s ambient bindings (src/preambles/test_ambient.cul), by the

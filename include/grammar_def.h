@@ -140,7 +140,7 @@ const auto grammar_ = R"(
   # DESTRUCTURE_ASSIGN, so an all-plain-name tuple still takes that (pattern)
   # path — a PATTERN cannot match a postfix chain, so only a target list with
   # at least one chain reaches here. Each target is assigned exactly as the
-  # single-target form would (see interpreter.h eval_place_assign), so this
+  # single-target form would, so this
   # form declares nothing new beyond what `x = v` does.
   PLACE_ASSIGN             <-  '(' _ PLACE _ ',' _ PLACE (_ ',' _ PLACE)* _ ','? _ ')' _ '=' _ EXPRESSION
                             /  '(' _ PLACE _ ',' _ ')' _ '=' _ EXPRESSION

@@ -42,7 +42,7 @@
 // SIGKILL has no Windows equivalent; it is passed only to proc::kill_pid on the
 // Proc handle-management path, which is a stub that raises "not supported on
 // Windows" before the value is ever used. Define it so those call sites compile
-// unchanged rather than scattering #if guards through stdlib_interp.h.
+// unchanged rather than scattering #if guards through the binding layer.
 #ifndef SIGKILL
 #define SIGKILL 9
 #endif

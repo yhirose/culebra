@@ -5,8 +5,8 @@
 # immutable) inside any already-loaded dependency's functions, raising
 # ImmutableError on a same-named, wholly independent local. Fixed by
 # running the entry in its own child scope and flattening it into `env`
-# only after it finishes (interpreter.h's interpret_modules). interp-only
-# fix — the JIT was never exposed (it resets its compile-time scope
+# only after it finished (the retired tree-walker's module runner) — an
+# interp-only fix; the JIT was never exposed (it resets its compile-time scope
 # stack per module/function and never shares a live Environment chain
 # across a module boundary), so this is expected to already pass under
 # both backends.

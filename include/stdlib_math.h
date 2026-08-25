@@ -1,6 +1,6 @@
 #pragma once
 
-// Math-namespace kernels shared by the interpreter (stdlib_interp.h) and
+// Math-namespace kernels shared by the binding layer (stdlib_jit.h) and
 // the JIT/AOT runtime (stdlib_jit.h).
 //
 // Each kernel owns one semantic decision — Long/Float promotion, exact

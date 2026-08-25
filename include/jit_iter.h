@@ -1691,7 +1691,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitStringView* culebra_runtime_str_scalar_view
 
 // graphemes: lazy walk yielding Extended Grapheme Cluster boundaries (UAX
 // #29) as zero-copy StringViews — one user-perceived character per step.
-// Mirrors the interp's streaming `graphemes` (interpreter.h, string_builtins
+// Streaming `graphemes` (the shape string_builtins
 // `"graphemes"sv`): decode just enough of the source into a rolling window
 // of codepoints to confirm the next cluster boundary, so `.take(n)` on a
 // multi-MB string only touches the prefix it consumes.
@@ -2497,7 +2497,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iota(int64_t start,
 }
 
 // Decode a `grid()` argument into its RangeBounds, mirroring the interp's
-// range_bounds() (interpreter.h): reject a non-Range value with the same
+// range_bounds(): reject a non-Range value with the same
 // "parameter 'x_range'/'y_range' expects Range" wording the interp's
 // generic type check would give a Parameter-annotated arg, then the same
 // "cannot iterate an unbounded range" / "step must not be zero" wording
@@ -2525,7 +2525,7 @@ inline culebra::RangeBounds _grid_bounds_from_range(int8_t t, int64_t d,
 // grid: cartesian product of two RangeBounds, x varying fastest. Captures
 // the x template (const: start/end/step/inclusive) plus a mutable x
 // cursor and a mutable y cursor, mirroring the interp's _iter_over_grid
-// (interpreter.h) state machine field-for-field so both backends walk the
+// state machine field-for-field so both lanes walk the
 // identical sequence at the int64 boundary.
 inline void _grid_fast_fn(JitClosure* cls, JitValue, bool* done,
                           int8_t* out_tag, int64_t* out_data) {

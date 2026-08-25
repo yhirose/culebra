@@ -3,7 +3,7 @@
 // Self-hosted message digests + HMAC for the `Hash` stdlib namespace.
 //
 // Value-neutral core (no culebra types), shared verbatim by the interp
-// (stdlib_interp.h) and the JIT/AOT slow-path adapters (stdlib_jit.h) so the
+// and the JIT/AOT slow-path adapters (stdlib_jit.h) so the
 // three backends cannot drift — same byte-for-byte digest everywhere. Pure
 // header-only `inline`, no external dependency (unlike Compress's zlib), so it
 // needs no AOT gating: the algorithms live in the binary regardless.

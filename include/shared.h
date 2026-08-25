@@ -2155,7 +2155,7 @@ enum RuntimeSlot : size_t {
   kSlotJitNamespaceTable,
   kSlotFileTable,
   // Per-scope owned-resource stacks for deterministic drop (one per
-  // backend; see interpreter.h / jit.h "owned stack"). Entries are
+  // backend; see jit_owned.h "owned stack"). Entries are
   // non-owning, so destruction order relative to the GC slots is moot —
   // but ~InterpGC's collect resolves this slot after it was nulled, so
   // every Runtime that ran interp code revives it empty. ~Runtime's sweep
