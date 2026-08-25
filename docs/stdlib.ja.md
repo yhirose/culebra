@@ -1091,7 +1091,7 @@ a < b, a <= b, a == b                 # 両クラスで自然な順序
 ## 6. `Random`
 
 乱数生成。プロセスごとに単一のMersenne-Twister-64エンジンを
-持ち、インタプリタとJITで共有しています。`Random.seed(n)`は
+持ち、VMとJITで共有しています。`Random.seed(n)`は
 エンジンをリセットし、以降の呼び出しを1回のプログラム実行内で
 再現可能にします。`seed`を呼ばなければ`std::random_device`で
 初期化されます。
@@ -1248,7 +1248,7 @@ inspect(Sys.getcwd())  # '/tmp'（または解決後のパス）
 ### `Sys.executable -> String`
 
 実行中のculebraバイナリの絶対パス。`culebra`が`PATH`にあることに頼らず、
-インタプリタのワーカーコピーを起動するのに使う — 例
+culebraのワーカーコピーを起動するのに使う — 例
 `Proc.run([Sys.executable, "worker.cul"], ...)`。（AOTビルドされたプログラムでは
 その単体バイナリ自身のパスになる。）
 
@@ -1552,7 +1552,7 @@ Tensorで意味づけしておらず、`@`は出力形状が変わるためin-pl
   カーネルにAccelerateを使用
 - **GPU** — macOSはMetal、Linux / WindowsはCUDA
 
-デバイスはプロセスグローバル（interp / JIT / AOTで共有）で、実行時に
+デバイスはプロセスグローバル（VM / JIT / AOTで共有）で、実行時に
 切り替えられます:
 
 | 関数 | 効果 |
@@ -1708,7 +1708,7 @@ inspect(JSON.stringify([1, 2, 3], lines: true))
 
 JITメモ: ビルトインの`JSON.{stringify, parse}`は他の名前空間
 メソッドと同じ正準呼び出しリゾルバを経由するため、すべての呼び出し
-形がインタプリタと同一に振る舞います。位置引数の束縛
+形がVMと同一に振る舞います。位置引数の束縛
 （`JSON.stringify(v, 2)`は`indent`、`JSON.parse(s, true)`は
 `lines`）、キーワード引数、リテラル`**{...}`と動的`**variable`
 splatの両方。第一級の値として使った場合も束縛は同じです
@@ -2035,8 +2035,8 @@ CPU並列を得ます。isolate間で可変メモリは共有されません。�
 **コピー**されるため、2つのisolateが同じオブジェクトで競合することは決して
 ありません。[§11 `Proc`](#11-proc)（プロセス並列）のスレッド版に当たります。
 
-> `Isolate.spawn`・`Channel`・`Parallel`はいずれもインタプリタと`--jit`の
-> 両方で動作します（クロージャは共有コード参照 — インタプリタはAST、JITは
+> `Isolate.spawn`・`Channel`・`Parallel`はいずれもVMと`--jit`の
+> 両方で動作します（クロージャは共有コード参照 — VMはバイトコード、JITは
 > コンパイル済み`fn_ptr` — とコピーした捕獲で越境し、子の自前ヒープで実行）。
 
 ### `Isolate.spawn(fn, *args) -> handle`
@@ -2545,7 +2545,7 @@ grid.drop()
 レコードサイズの一致を確認して、レイアウト不一致・未知の名前・
 `SharedBuffer.shared(...)`でないbufferのときは`ValueError`を投げる（ヒープと
 ファイルのbufferはこの方法では渡せない — ファイルbufferは`path`を開き直して
-共有する）。`Sys.executable`は実行中のculebraバイナリのパスで、インタプリタの
+共有する）。`Sys.executable`は実行中のculebraバイナリのパスで、culebraの
 ワーカーコピーを起動するのに使う。
 
 `Proc.run`は子の終了までブロックするので、戻った時点で子の書き込みは完了して
@@ -2926,7 +2926,7 @@ assert_close(3.14, 3.1415, 0.01)
 ### 実装ノート
 
 matcher一族はculebraソース (cppではなく) で定義されており、
-lazy module機構で3 backend (interp / JIT / AOT) に共通でbind
+lazy module機構で3 backend (VM / JIT / AOT) に共通でbind
 されます。matcher内部の`==` / `<`等の演算子dispatchは各
 backendが既に実装している演算子dispatchそのもので、matcher専用
 のdrift防止ロジックは不要です。
@@ -3626,7 +3626,7 @@ ws.close()
 `Embed.dir(name)`はアセットディレクトリのハンドルを返し、**バックエンドごとに**
 （コード変更なしで）解決されます:
 
-- **ソース実行**（インタプリタ / JIT）: `name`のディスク上ディレクトリをライブに
+- **ソース実行**（VM / JIT）: `name`のディスク上ディレクトリをライブに
   読む（エントリスクリプト相対で解決）。ファイルを編集して実行し直せば即反映
   ＝開発ループ。
 - **`culebra build`**（AOT）: ビルド時にディレクトリを走査してバイト列をバイナリ
@@ -3681,7 +3681,7 @@ srv.listen(8080)
 
 テキストコーデックを**スキームごとのサブ名前空間**にまとめた名前空間
 （`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）。
-コーデックのロジックはインタプリタとJIT/AOT両バックエンドで共有しており、
+コーデックのロジックはVMとJIT/AOT両バックエンドで共有しており、
 いずれもバイナリセーフ（埋め込みNULバイトも往復で保持）です。
 
 ### `Encoding.html`
@@ -4185,7 +4185,7 @@ log.error("upstream failed", {status: 502})
 ## 24. `TOML`
 
 [TOML](https://toml.io) 設定のparse / 生成。文法と直列化は値中立コアに置かれ、
-インタプリタ・JIT・AOTがバイト単位で一致する。
+VM・JIT・AOTがバイト単位で一致する。
 
 | 関数 | 結果 |
 | --- | --- |
@@ -4385,7 +4385,7 @@ raylib + SDL3を使い）**実際のデスクトップウィンドウを開く**
 ループが終わる。**ヘッドレスは宣言するもので、推測されるものではない**:
 ウィンドウバックエンド無しのビルド、および`CULEBRA_CANVAS_HEADLESS`が
 `0` / `off`以外に設定された実行では**ヘッドレス**: ピクセル / スプライト操作は同一に
-動く（振る舞いはinterpreter / JIT / AOTで一致し`Canvas.get_pixel`で検証可能）が、
+動く（振る舞いはVM / JIT / AOTで一致し`Canvas.get_pixel`で検証可能）が、
 何も表示されず、入力は「ボタンなし」を返し、`tone`は無音。この環境変数が、
 ディスプレイの無いサーバや（`just`の全レシピがexportするので）テストスイートが
 ウィンドウ対応バイナリを走らせる方法。`-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`は

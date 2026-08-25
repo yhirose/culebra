@@ -3,12 +3,13 @@
 #include <culebra.h>
 #include <dap.h>
 #include <docs_cmd.h>
+#include <foreign_binding.h>  // the __Foreign.Counter wrap fixture
+                              // (tests/test_foreign.cul); registers via
+                              // static init, reached only when named
 #include <doctest_runner.h>
 #include <formatter.h>
 #include <init_cmd.h>
 #include <source_dir.h>
-#include <stdlib_interp.h>
-#include <interp_sig_check.h>  // interp vs canon-sig 1:1 (assert lane; B7-f)
 #include <test_engine.h>
 #include <test_runner.h>
 #include <vfs.h>  // main_script_dir() — set here for Embed's dev disk fallback
@@ -44,22 +45,12 @@
 
 using namespace std;
 
-// --- Link anchor: force out-of-line emission of the Shared.new view readers.
-// interpreter.h forward-declares shared_val_get_prop / _get_index / _make_iter
-// (non-inline) and calls them from eval_property; their inline definitions
-// live in sharedval.h, reached here via stdlib_interp.h -> isolate.h. A
-// `culebra wrap` extension TU sees only the forward declarations (wrap.h is
-// included before `environment()` exists, so it cannot pull isolate.h), so its
-// out-of-line eval_property copy leaves an undefined reference on linkers that
-// don't fold it (Linux/mold). Taking their addresses in this TU — which DOES
-// have the definitions and is always in the driver/wrap link — forces a weak
-// out-of-line copy the wrap link resolves against.
 namespace culebra {
-[[gnu::used]] void* const _shared_val_reader_anchor[] = {
-    reinterpret_cast<void*>(&shared_val_get_prop),
-    reinterpret_cast<void*>(&shared_val_get_index),
-    reinterpret_cast<void*>(&shared_val_make_iter),
-};
+// Point the load-stage undefined-variable lint at the engines' own name
+// universe (builtin_global_names, stdlib_jit.h).
+void install_undefined_var_lint() {
+  lint::builtin_names_hook = [] { return &builtin_global_names(); };
+}
 }  // namespace culebra
 
 // Startup profiler — gated by CULEBRA_PROFILE_STARTUP=1. Prints each
@@ -845,7 +836,7 @@ int run_build(const BuildOptions& opts) {
   // rather than a literal, so a binary built by a wrap-extended driver links
   // none of the wrapped library unless the script names one of its namespaces.
   std::vector<std::string_view> wrap_namespaces;
-  for (const auto& wc : culebra::wrapped_classes()) {
+  for (const auto& wc : culebra::wrapped_class_names()) {
     if (std::find(wrap_namespaces.begin(), wrap_namespaces.end(), wc.ns) ==
         wrap_namespaces.end())
       wrap_namespaces.push_back(wc.ns);

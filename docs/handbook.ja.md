@@ -2,9 +2,9 @@ Culebraガイド
 ================
 
 動的型付けスクリプト言語。束縛は既定で不変、ブロックは値に
-評価され、パターンマッチが言語の中核にあります。ツリー
-ウォーキング型インタプリタとLLVM ORC JITの2バックエンドが1つの
-ASTを共有します。このガイドは "hello" からC++ ホストへの埋め込み
+評価され、パターンマッチが言語の中核にあります。バイトコード
+VMとLLVM ORC JITの2バックエンドが1つのパーサ・AST・バイトコード
+コンパイラを共有します。このガイドは "hello" からC++ ホストへの埋め込み
 までを案内します。厳密な文法は [`language.ja.md`](language.ja.md)、
 APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してください。
 
@@ -48,8 +48,8 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
 
 ここを 1 度読めば、以降の章は前提知識として扱えます。
 
-- **2 バックエンド、1 AST。** ツリーウォーキング型インタプリタと
-  LLVM ORC JIT が同じ AST を共有。 インタプリタは LLVM 非依存
+- **2 バックエンド、1 コンパイラ。** バイトコードVMとLLVM ORC JITが
+  同じパーサ・AST・バイトコードコンパイラを共有。VMはLLVM非依存
   (ドライバ ~23 MB。 LLVM を含めると ~82 MB)、JIT は `-O2` で同じ
   プログラムを実行。 両方を維持 — どちらも捨てません。
 - **日常的に使う 8 つの型。** `Nil` / `Bool` / `Long` / `Float` /
@@ -122,13 +122,13 @@ culebra init
 ### 1.2 ソースからビルド
 
 masterを追う場合とCulebra自体を開発する場合にだけ必要。`just build`は
-インタプリタを、LLVM 20+があればJITも生成する:
+バイトコードVMを、LLVM 20+があればJITも生成する:
 
 ```bash
 just build              # JIT付き
-just build-no-jit       # LLVM 無し: インタプリタ + bytecode VM、~23 MB
+just build-no-jit       # LLVM 無し: bytecode VMのみ、~23 MB
 just dev                # LTO無し -O1の高速ビルド → build-dev/ (内側ループ用)
-just test-dev           # build-dev/ でinterp==JITを素早く確認 (各編集ごと)
+just test-dev           # build-dev/ でVM==JITを素早く確認 (各編集ごと)
 just test               # 全backend + embedスモークテスト (並列; JOBS=1で逐次化)
 just test wrap          # `culebra wrap`の端から端まで (`just test`には含まれない)
 just test-assert        # 同じスイープをNDEBUGなしでビルドしassertを実行させる
@@ -145,14 +145,14 @@ Culebraソースの拡張子は`.cul`。`culebra`バイナリで実行:
 
 ```bash
 echo "inspect('hello, culebra!')" > hello.cul
-culebra hello.cul                    # インタプリタ
+culebra hello.cul                    # バイトコードVM (既定)
 culebra --jit hello.cul              # JIT (出力は同じ)
 culebra --jit-faststart hello.cul    # JIT・起動が速い
-culebra --shell                      # REPL (常にインタプリタ)
+culebra --shell                      # REPL (常にVM)
 culebra --help                       # 全オプション・コマンド一覧
 ```
 
-3 バックエンドとも観測可能な出力は同一 (interp↔JIT の差分コーパス全件で
+3 バックエンドとも観測可能な出力は同一 (VM↔JIT の差分コーパス全件で
 検証済み)。`--jit-faststart` は IR と機械語の両方の最適化を省き、
 **JIT warmup (起動・コード生成時間) を約 40 分の 1**にする代わりに steady-state を
 少し犠牲にする — 純スクリプトの hot loop で約 12%、重い処理が C++/BLAS ランタイム
@@ -1779,7 +1779,7 @@ VSCode・Zed・Vim統合はすでにこれに繋いであります。
 `culebra dap`はDebug Adapter Protocolをstdioで話します。ブレークポイント、
 ステップ実行、コールスタック、ウォッチ式、実行中の`mut`変数の書き換えが、
 DAPに対応した任意のエディタで動きます。アダプタを起動するのはエディタ側で、
-手で走らせることはまずありません。デバッグはインタプリタで動くので`--jit`
+手で走らせることはまずありません。デバッグはVMで動くので`--jit`
 は付けないでください。
 
 ソース中に裸の`debugger`文を置けば、設定なしでもその場所で必ず停止します。

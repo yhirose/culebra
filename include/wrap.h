@@ -1,5 +1,5 @@
 #pragma once
-// Declarative C++ class wrapping — Phase 4 (P4-1).
+// Declarative C++ class wrapping — Phase 4.
 //
 // The "codegen" is the C++ compiler, pybind11-style: a thin declaration
 // instantiates the glue (conversion thunks, method prototypes, Foreign
@@ -24,20 +24,13 @@
 // Phase 1/2 lifetime machinery (scope-exit drop, cycles, GC backstop,
 // exactly-once) for free. Return values lower by ownership shape: a by-value or
 // unique_ptr<U> return becomes an owning handle of U, shared_ptr<U>
-// holds one share, primitives go through cpp_to_value. U must itself be
-// wrapped (its class_info carries the display name the handle shows).
-//
-// Phase 4 sub-phasing: P4-1 = the interp artifacts, P4-2 = the compiled
-// lanes' thunks + NsMethod registry rows (below), P4-3 = the
-// `culebra wrap` build pipeline.
+// holds one share, primitives lower to their tagged values. U must itself be
+// wrapped (its jit_class_info carries the display name the handle shows).
 
 #include <foreign.h>
-#include <interpreter.h>
 #include <wrap_registry.h>
-// wrap.h can be reached before culebra.h pulls the runtime layer (repl.h
-// includes stdlib_interp.h first), so include it here — after
-// interpreter.h, preserving the interpreter-before-runtime order rt.h's
-// inline bodies rely on.
+// wrap.h can be reached before culebra.h pulls the runtime layer, so
+// include it here.
 #include <rt.h>
 
 #include <cassert>
@@ -53,6 +46,50 @@
 
 namespace culebra {
 
+namespace _detail {
+
+// Extract arg types and return type from a callable. Specialized for
+// function pointers and member functions (const and not).
+template <class T>
+struct fn_traits : fn_traits<decltype(&std::decay_t<T>::operator())> {};
+
+template <class R, class... Args>
+struct fn_traits<R (*)(Args...)> {
+  using ret = R;
+  using args = std::tuple<Args...>;
+  static constexpr size_t arity = sizeof...(Args);
+};
+
+template <class C, class R, class... Args>
+struct fn_traits<R (C::*)(Args...) const> {
+  using ret = R;
+  using args = std::tuple<Args...>;
+  static constexpr size_t arity = sizeof...(Args);
+};
+
+template <class C, class R, class... Args>
+struct fn_traits<R (C::*)(Args...)> {
+  using ret = R;
+  using args = std::tuple<Args...>;
+  static constexpr size_t arity = sizeof...(Args);
+};
+
+// Type annotation matching Culebra's "Bool"/"Long"/"Float"/"String"
+// names. Empty for types that don't map cleanly — an empty annotation
+// then means "no annotation" (any).
+template <class T> constexpr std::string_view type_annotation_for() { return {}; }
+template <> constexpr std::string_view type_annotation_for<long>()              { return "Long"; }
+template <> constexpr std::string_view type_annotation_for<long long>()         { return "Long"; }
+template <> constexpr std::string_view type_annotation_for<int>()               { return "Long"; }
+template <> constexpr std::string_view type_annotation_for<double>()            { return "Float"; }
+template <> constexpr std::string_view type_annotation_for<float>()             { return "Float"; }
+template <> constexpr std::string_view type_annotation_for<bool>()              { return "Bool"; }
+template <> constexpr std::string_view type_annotation_for<std::string>()       { return "String"; }
+template <> constexpr std::string_view type_annotation_for<std::string_view>()  { return "String"; }
+template <> constexpr std::string_view type_annotation_for<const std::string&>(){ return "String"; }
+
+}  // namespace _detail
+
 namespace wrap_detail {
 
 template <class T>
@@ -63,175 +100,6 @@ template <class T>
 struct is_shared_ptr : std::false_type {};
 template <class U>
 struct is_shared_ptr<std::shared_ptr<U>> : std::true_type {};
-
-// Per-T binding info, filled once by the binder's static-init run and
-// read by make_foreign_handle on every construction. The prototypes
-// capture nothing per-instance (the foreign table resolves per call,
-// `self` per invocation), so each handle just copies the shared Values
-// into its property map — the hand-written Phase 3 binding's shape.
-// constinit pins the constant-initialization the registration scheme
-// relies on: the binder's dynamic initializer writes into these, so they
-// must never be dynamically (re)initialized themselves — templated
-// statics have no ordering guarantee against other TUs' initializers.
-template <class T>
-struct class_info {
-  static constinit inline std::string name;
-  static constinit inline std::vector<std::pair<std::string, Value>> methods;
-};
-
-template <class T>
-inline int64_t handle_id(const std::shared_ptr<Environment>& env) {
-  return static_cast<int64_t>(
-      env->get("self").to_object().get("_id").to_long());
-}
-
-// Generation of a handle, or -1 when it is no longer valid.
-// Owning handles read their table entry through the type-erased
-// _state_fn; a borrowing handle (`_bid`) resolves through the borrow
-// table — both indirections, so a forged slot is a table miss, never a
-// dereferenced raw pointer.
-inline int64_t handle_gen(const ObjectValue& h) {
-  if (h.has("_state_fn")) {
-    return foreign::owner_gen_via(h.get("_state_fn").to_long(),
-                                  h.get("_id").to_long());
-  }
-  if (h.has("_bid")) return foreign::borrow_gen(h.get("_bid").to_long());
-  return -1;
-}
-
-// The live instance, or ClosedError — every method's first step. A
-// borrowing handle resolves its raw pointer from the borrow table only
-// after the parent chain validates; the pointer is never read from a
-// script-writable slot.
-template <class T>
-inline T* handle_self(const std::shared_ptr<Environment>& env) {
-  int64_t line = env->get("__LINE__").to_long();
-  int64_t col = env->get("__COLUMN__").to_long();
-  const auto& h = env->get("self").to_object();
-  if (h.has("_bid")) {
-    int64_t bid = h.get("_bid").to_long();
-    if (!foreign::borrow_valid(bid))
-      foreign::throw_borrow_invalid(class_info<T>::name, line, col);
-    return reinterpret_cast<T*>(foreign::borrow_ptr(bid));
-  }
-  return foreign::get_or_throw<T>(handle_id<T>(env), class_info<T>::name,
-                                  line, col);
-}
-
-// The per-instance handle: data slots + the shared method prototypes +
-// the drop event (erase the table entry — ~T() runs NOW; idempotent,
-// exactly-once via the Phase 1 `dropped` flag on the handle).
-template <class T>
-Value make_foreign_handle(int64_t id) {
-  ObjectValue h;
-  h.initialize("__foreign__", Value(std::string(class_info<T>::name)), false);
-  h.initialize("_id", Value(static_cast<int64_t>(id)), false);
-  // Type-erased closed+gen read for the borrow validation chain.
-  h.initialize("_state_fn",
-               Value(static_cast<int64_t>(foreign::state_fn_id<T>())), false);
-  // A foreign instance lives in a process-local table — not Sendable.
-  h.initialize("__nonsendable__", Value(true), false);
-  for (const auto& [name, proto] : class_info<T>::methods) {
-    h.initialize(name, proto, false);
-  }
-  static const Value drop_proto(
-      FunctionValue({}, [](std::shared_ptr<Environment> env) {
-        foreign::table<T>().erase(handle_id<T>(env));
-        return Value();
-      }));
-  h.initialize("drop", drop_proto, false);
-  return Value(std::move(h));
-}
-
-// The borrow id of a parent handle (owning or borrowing): owning
-// parents have no borrow id, so they pass -1 and an owning parent_state.
-inline void parent_link(const ObjectValue& parent, int64_t* state,
-                        int64_t* owner_id, int64_t* bid) {
-  if (parent.has("_bid")) {
-    *state = -1;
-    *owner_id = 0;
-    *bid = parent.get("_bid").to_long();
-  } else {
-    *state = parent.get("_state_fn").to_long();
-    *owner_id = parent.get("_id").to_long();
-    *bid = -1;
-  }
-}
-
-// A borrowing handle: the raw pointer + parent link live in the
-// borrow table (forgery-safe — the handle holds only the opaque id).
-// `__parent__` is an ordinary GC reference keeping the whole chain
-// alive. The handle owns nothing, but it DOES carry an internal `drop`
-// (erase the borrow id) and registers on the owned stack, so its table
-// entry is reclaimed deterministically when the handle dies — and an
-// explicit `.drop()` closes this borrow (without touching the parent's
-// resource).
-template <class T2>
-inline Value make_borrow_handle(T2* p, const Value& parent, int64_t pgen) {
-  int64_t state = -1, owner_id = 0, parent_bid = -1;
-  parent_link(parent.to_object(), &state, &owner_id, &parent_bid);
-  int64_t bid = foreign::borrow_adopt(p, state, owner_id, parent_bid, pgen);
-
-  ObjectValue h;
-  h.initialize("__foreign__", Value(std::string(class_info<T2>::name)),
-               false);
-  h.initialize("_bid", Value(static_cast<int64_t>(bid)), false);
-  h.initialize("__parent__", parent, false);
-  h.initialize("__nonsendable__", Value(true), false);
-  for (const auto& [name, proto] : class_info<T2>::methods) {
-    h.initialize(name, proto, false);
-  }
-  static const Value borrow_drop(
-      FunctionValue({}, [](std::shared_ptr<Environment> env) {
-        foreign::borrow_erase(env->get("self").to_object().get("_bid").to_long());
-        return Value();
-      }));
-  h.initialize("drop", borrow_drop, false);
-  return Value(std::move(h));
-}
-
-// Non-const method dispatch bumps the instance's generation,
-// staling its outstanding borrows: the foreign table entry for an
-// owning handle, the borrow table entry for a borrow (a mutation
-// through a borrow stales its children, not its siblings).
-template <class T>
-inline void bump_handle_gen(const std::shared_ptr<Environment>& env) {
-  const auto& h = env->get("self").to_object();
-  if (h.has("_bid")) {
-    foreign::borrow_bump(h.get("_bid").to_long());
-  } else {
-    foreign::table<T>().bump_gen(handle_id<T>(env));
-  }
-}
-
-// Return-value lowering. `R` decayed: handles for wrapped
-// class values / unique_ptr / shared_ptr, cpp_to_value for the rest.
-template <class R>
-inline Value lower_return(R r) {
-  using D = std::decay_t<R>;
-  if constexpr (is_unique_ptr<D>::value) {
-    using U = typename D::element_type;
-    auto id = foreign::table<U>().adopt(std::move(r));
-    return make_foreign_handle<U>(id);
-  } else if constexpr (is_shared_ptr<D>::value) {
-    using U = typename D::element_type;
-    auto id = foreign::table<U>().adopt_shared(std::move(r));
-    return make_foreign_handle<U>(id);
-  } else if constexpr (requires(D v) { _detail::cpp_to_value(std::move(v)); }) {
-    return _detail::cpp_to_value(std::move(r));
-  } else {
-    // A wrapped-class reference return is not an ownership shape:
-    // lowering it by value would silently move from (T&) or shadow-copy
-    // (const T&) the live instance. Borrowing is Phase 5.
-    static_assert(!std::is_reference_v<R>,
-                  "wrap.h: a method returning T& / const T& of a wrapped "
-                  "class has no ownership shape — return T, unique_ptr<T>, "
-                  "or shared_ptr<T> (borrowing lands in Phase 5)");
-    // By value = the unique shape after one move-in (foreign.h).
-    auto id = foreign::table<D>().adopt(std::make_unique<D>(std::move(r)));
-    return make_foreign_handle<D>(id);
-  }
-}
 
 // The Culebra-visible return annotation: handles surface as "Object",
 // primitives via type_annotation_for, void/unknown stay unannotated.
@@ -244,7 +112,7 @@ constexpr std::string_view return_annotation() {
     return "Object";
   } else if constexpr (!_detail::type_annotation_for<D>().empty()) {
     return _detail::type_annotation_for<D>();
-  } else if constexpr (requires(D v) { _detail::cpp_to_value(std::move(v)); }) {
+  } else if constexpr (std::is_same_v<D, const char*>) {
     return {};
   } else {
     return "Object";
@@ -253,10 +121,9 @@ constexpr std::string_view return_annotation() {
 
 // Surface a wrapped body's own C++ exception (a ctor refusing construction, a
 // method reporting failure) as a RuntimeError the script can catch — without
-// this the interp bakes the position into the message while the JIT lets the
-// exception escape the process. Position stays 0:0, backfilled at each
-// backend's boundary like every positionless lib helper; CulebraError passes
-// through untouched. The conversion is outlined and non-templated on purpose:
+// this the exception would escape the process. Position stays 0:0, backfilled
+// at the engine boundary like every positionless lib helper; CulebraError
+// passes through untouched. The conversion is outlined and non-templated on purpose:
 // with the handlers inside the template, GCC outlined the whole wrapper at
 // every instantiation (~93 KB of duplicated catch code per archive) and the
 // wrapped body stopped inlining.
@@ -278,120 +145,32 @@ auto surface_native_error(F&& f) -> decltype(f()) {
   }
 }
 
-// Fill omitted parameter names with `_arg<i>` and pin the storage —
-// FunctionValue::Parameter holds string_views into it.
-inline std::shared_ptr<std::vector<std::string>> pin_param_names(
-    std::vector<std::string> names, size_t arity) {
+// Fill omitted parameter names with `_arg<i>`. Every consumer copies the
+// names into storage of its own (jit_method_info, the handle meta, the ns
+// registry rows), so plain value return is the whole contract.
+inline std::vector<std::string> pin_param_names(std::vector<std::string> names,
+                                                size_t arity) {
   names.resize(arity);
   for (size_t i = 0; i < arity; i++) {
     if (names[i].empty()) names[i] = "_arg" + std::to_string(i);
   }
-  return std::make_shared<std::vector<std::string>>(std::move(names));
+  return names;
 }
 
-template <class... Args>
-inline std::vector<FunctionValue::Parameter> typed_params(
-    const std::vector<std::string>& storage) {
-  std::vector<FunctionValue::Parameter> params;
-  params.reserve(sizeof...(Args));
-  size_t i = 0;
-  (params.push_back({std::string_view(storage[i++]), false,
-                     _detail::type_annotation_for<Args>()}),
-   ...);
-  return params;
-}
-
-// One method prototype: resolve self (ClosedError when dropped),
-// convert each declared param, call, lower the return. `bump` (a
-// non-const method without preserves_borrows) increments the
-// generation BEFORE the call, so a borrow the call itself returns
-// snapshots the post-bump value.
-template <class T, class Mf, class R, class... Args>
-inline Value make_method_proto(Mf mf, std::vector<std::string> names,
-                               bool bump = false) {
-  auto storage = pin_param_names(std::move(names), sizeof...(Args));
-  auto eval = [storage, mf, bump](std::shared_ptr<Environment> env) -> Value {
-    T* self = handle_self<T>(env);
-    if (bump) bump_handle_gen<T>(env);
-    auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> Value {
-      if constexpr (std::is_void_v<R>) {
-        (self->*mf)(_detail::ValueAs<Args>::convert(
-            env->get(std::string_view((*storage)[I])))...);
-        return Value();
-      } else {
-        return lower_return<R>((self->*mf)(_detail::ValueAs<Args>::convert(
-            env->get(std::string_view((*storage)[I])))...));
-      }
-    };
-    return surface_native_error(
-        [&] { return invoke(std::index_sequence_for<Args...>{}); });
-  };
-  return Value(FunctionValue(typed_params<Args...>(*storage),
-                             std::move(eval), return_annotation<R>()));
-}
-
-// A borrowed-return method: the reference points INTO self, so
-// the result is a borrowing handle snapshotting the parent's current
-// generation. Taking a borrow never bumps — the declaration already
-// states the method returns a view, and multiple live borrows are the
-// point.
-template <class T, class Mf, class T2, class... Args>
-inline Value make_borrowed_proto(Mf mf, std::vector<std::string> names) {
-  auto storage = pin_param_names(std::move(names), sizeof...(Args));
-  auto eval = [storage, mf](std::shared_ptr<Environment> env) -> Value {
-    T* self = handle_self<T>(env);
-    const Value parent = env->get("self");
-    int64_t pgen = handle_gen(parent.to_object());
-    auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> Value {
-      auto& r = (self->*mf)(_detail::ValueAs<Args>::convert(
-          env->get(std::string_view((*storage)[I])))...);
-      return make_borrow_handle<T2>(const_cast<T2*>(&r), parent, pgen);
-    };
-    return surface_native_error(
-        [&] { return invoke(std::index_sequence_for<Args...>{}); });
-  };
-  return Value(FunctionValue(typed_params<Args...>(*storage),
-                             std::move(eval), "Object"));
-}
-
-// A free / static function entry (no self).
-template <class Fn, class R, class... Args>
-inline Value make_static_proto(Fn fn, std::vector<std::string> names) {
-  auto storage = pin_param_names(std::move(names), sizeof...(Args));
-  auto eval = [storage, fn](std::shared_ptr<Environment> env) -> Value {
-    auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> Value {
-      if constexpr (std::is_void_v<R>) {
-        fn(_detail::ValueAs<Args>::convert(
-            env->get(std::string_view((*storage)[I])))...);
-        return Value();
-      } else {
-        return lower_return<R>(fn(_detail::ValueAs<Args>::convert(
-            env->get(std::string_view((*storage)[I])))...));
-      }
-    };
-    return surface_native_error(
-        [&] { return invoke(std::index_sequence_for<Args...>{}); });
-  };
-  return Value(FunctionValue(typed_params<Args...>(*storage),
-                             std::move(eval), return_annotation<R>()));
-}
-
-// --- Compiled-lane artifacts (P4-2) ------------------------------------------
+// --- The thunks and registry rows --------------------------------------------
 //
-// The same declaration instantiates the compiled side: per-method handle
-// thunks (plain functions — the member-fn pointer is a NON-TYPE template
-// argument, so each method gets its own static thunk, exactly the
-// hand-written Phase 3 shape), ns adapters for the kNsMethods-style
-// dispatch, and a row registry stdlib_jit.h merges with its static
-// table. Type checks and error positions follow the Phase 3 thunk
-// conventions: param type-check BEFORE the closed check (interp binder
-// order), TypeError at the argument's threaded position (argpos /
-// call_arg0 fallback), ClosedError at the call site.
+// The declaration instantiates per-method handle thunks (plain functions —
+// the member-fn pointer is a NON-TYPE template argument, so each method gets
+// its own static thunk, exactly the hand-written Phase 3 shape), ns adapters
+// for the kNsMethods-style dispatch, and a row registry stdlib_jit.h merges
+// with its static table. Type checks and error positions follow the Phase 3
+// thunk conventions: param type-check BEFORE the closed check, TypeError at
+// the argument's threaded position (argpos / call_arg0 fallback),
+// ClosedError at the call site.
 
-// Annotation check through the JIT's canonical matcher — the SAME
-// predicate the kNsMethods trampoline applies to ctor/static params
-// (and the interp's type_matches mirror), so a String param rejects a
-// StringView slice identically on every path.
+// Annotation check through the canonical matcher — the SAME predicate the
+// kNsMethods trampoline applies to ctor/static params, so a String param
+// rejects a StringView slice identically on every path.
 template <class A>
 inline bool jit_arg_matches(const JitValue& v) {
   return _culebra_value_matches_type(
@@ -416,15 +195,20 @@ inline std::decay_t<A> jit_arg_get(const JitValue& v) {
 
 // Per-(T, method) param names for the thunk's error wording. Filled by
 // the binder at static-init; constinit for the same ordering reason as
-// class_info.
+// jit_class_info.
 template <class T, auto Mf>
 struct jit_method_info {
   static constinit inline std::vector<std::string> param_names;
 };
 
-// Per-T handle method table consumed by the handle builder. `meta`
-// carries the param names so the method binds keyword arguments like
-// the interp (null for the auto-bound `drop`).
+// Per-T binding info, filled once by the binder's static-init run: the
+// display name handles carry, and the method table the handle builder
+// consumes. `meta` carries the param names so a method binds keyword
+// arguments (null for the auto-bound `drop`). constinit pins the
+// constant-initialization the registration scheme relies on: the binder's
+// dynamic initializer writes into these, so they must never be dynamically
+// (re)initialized themselves — templated statics have no ordering guarantee
+// against other TUs' initializers.
 template <class T>
 struct jit_class_info {
   struct Method {
@@ -433,10 +217,11 @@ struct jit_class_info {
     size_t arity;
     const JitParamMeta* meta;
   };
+  static constinit inline std::string name;
   static constinit inline std::vector<Method> methods;
 };
 
-// JitObject mirror of handle_gen: generation, or -1 when invalid. Both
+// Generation of a handle, or -1 when it is no longer valid. Both
 // owning (_state_fn + table) and borrowing (_bid + borrow table) read
 // through an indirection — a forged slot misses, never derefs.
 inline int64_t jit_handle_gen(JitObject* h) {
@@ -459,16 +244,17 @@ inline T* jit_handle_self(JitValue self) {
   if (h->find_slot("_bid") != static_cast<size_t>(-1)) {
     int64_t bid = _jit_handle_long(h, "_bid");
     if (!foreign::borrow_valid(bid))
-      foreign::throw_borrow_invalid(class_info<T>::name,
+      foreign::throw_borrow_invalid(jit_class_info<T>::name,
                                     _jit_call_site_line, _jit_call_site_col);
     return reinterpret_cast<T*>(foreign::borrow_ptr(bid));
   }
   return foreign::get_or_throw<T>(_jit_handle_long(h, "_id"),
-                                  class_info<T>::name, _jit_call_site_line,
+                                  jit_class_info<T>::name, _jit_call_site_line,
                                   _jit_call_site_col);
 }
 
-// Non-const dispatch bump — the JitValue mirror of bump_handle_gen.
+// Non-const method dispatch bumps the instance's generation, staling its
+// outstanding borrows.
 template <class T>
 inline void jit_bump_handle_gen(JitValue self) {
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -482,7 +268,8 @@ inline void jit_bump_handle_gen(JitValue self) {
 template <class T>
 JitValue jit_make_handle(int64_t id);
 
-// Return lowering — the JitValue mirror of lower_return.
+// Return-value lowering: handles for wrapped class values / unique_ptr /
+// shared_ptr, tagged scalars and strings for the rest.
 template <class R>
 inline JitValue jit_lower_return(R r) {
   using D = std::decay_t<R>;
@@ -508,8 +295,6 @@ inline JitValue jit_lower_return(R r) {
                        std::is_same_v<D, const char*>) {
     return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(r))};
   } else {
-    static_assert(!std::is_same_v<D, Value>,
-                  "wrap.h: a culebra::Value return has no JitValue lowering");
     static_assert(!std::is_reference_v<R>,
                   "wrap.h: a method returning T& / const T& of a wrapped "
                   "class has no ownership shape — return T, unique_ptr<T>, "
@@ -538,7 +323,7 @@ JitValue jit_make_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("__foreign__",
                    JitValue{TAG_STRING, reinterpret_cast<int64_t>(_intern_str(
-                                            class_info<T>::name))},
+                                            jit_class_info<T>::name))},
                    false);
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   h->set_or_append("_state_fn",
@@ -594,7 +379,7 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("__foreign__",
                    JitValue{TAG_STRING, reinterpret_cast<int64_t>(_intern_str(
-                                            class_info<T2>::name))},
+                                            jit_class_info<T2>::name))},
                    false);
   h->set_or_append("_bid", JitValue{TAG_LONG, bid}, false);
   culebra_runtime_value_retain(parent.tag, parent.data);
@@ -779,43 +564,23 @@ template <class R, class C, class... A>
 struct is_const_member<R (C::*)(A...) const> : std::true_type {};
 }  // namespace wrap_detail
 
-// Process-wide registry of wrapped classes, populated at static-init
-// time by the wrap<T>() declarations and consumed by the stdlib setup
-// (one namespace object per distinct `ns`, holding one class object —
-// ctor + statics — per class).
-struct WrappedClass {
-  std::string ns;
-  std::string name;
-  std::function<Value()> build_class_object;
-};
-inline std::vector<WrappedClass>& wrapped_classes() {
-  static std::vector<WrappedClass> v;
-  return v;
-}
-
-// Builder. Destruction finalizes: the collected ctor/static entries
-// become the class object, registered under (ns, name).
+// Builder. Destruction finalizes: the class registers under (ns, name)
+// (wrap_registry.h), and its ctor / statics land in the shared ns-row
+// registry stdlib_jit.h merges with its static table.
 template <class T>
 class ClassBinder {
  public:
   ClassBinder(std::string ns, std::string name) : ns_(std::move(ns)) {
-    assert(wrap_detail::class_info<T>::name.empty() &&
+    assert(wrap_detail::jit_class_info<T>::name.empty() &&
            "wrap<T>: this class is already wrapped");
-    wrap_detail::class_info<T>::name = name;
+    wrap_detail::jit_class_info<T>::name = name;
     name_ = std::move(name);
   }
 
-  // Constructor: `Ns.Name.new(args...)` → owning handle. A static proto
-  // returning unique_ptr<T> — lower_return's adopt branch does the rest.
+  // Constructor: `Ns.Name.new(args...)` → owning handle. The ns adapter
+  // returns unique_ptr<T> — jit_lower_return's adopt branch does the rest.
   template <class... Args>
   ClassBinder& ctor(std::vector<std::string> names = {}) {
-    auto make = [](Args... args) {
-      return std::make_unique<T>(std::move(args)...);
-    };
-    statics_.emplace_back(
-        "new", wrap_detail::make_static_proto<decltype(make),
-                                              std::unique_ptr<T>, Args...>(
-                   make, names));
     push_ns_row<std::unique_ptr<T>, Args...>(
         "new", &wrap_detail::jit_ctor_adapter<T, Args...>, std::move(names));
     return *this;
@@ -823,8 +588,7 @@ class ClassBinder {
 
   // The member fn is a NON-TYPE template argument so the JIT side gets a
   // distinct static thunk per method (the closure ABI needs a plain
-  // function pointer). The interp proto uses the same constant at runtime.
-  // A non-const method bumps the instance's generation (staling its
+  // function pointer). A non-const method bumps the instance's generation (staling its
   // borrows) unless declared wrap_policy::preserves_borrows.
   template <auto Mf>
   ClassBinder& method(std::string name, std::vector<std::string> names = {},
@@ -864,16 +628,7 @@ class ClassBinder {
         static_cast<typename traits::args*>(nullptr));
   }
 
-  ~ClassBinder() {
-    auto statics = std::move(statics_);
-    wrapped_class_names().push_back({ns_, name_});
-    wrapped_classes().push_back(
-        {std::move(ns_), std::move(name_), [statics]() {
-           ObjectValue cls;
-           for (const auto& [n, v] : statics) cls.initialize(n, v, false);
-           return Value(std::move(cls));
-         }});
-  }
+  ~ClassBinder() { wrapped_class_names().push_back({ns_, name_}); }
 
   ClassBinder(const ClassBinder&) = delete;
   ClassBinder& operator=(const ClassBinder&) = delete;
@@ -885,16 +640,13 @@ class ClassBinder {
     const bool bump =
         !wrap_detail::is_const_member<decltype(Mf)>::value &&
         policy != wrap_policy::preserves_borrows;
-    wrap_detail::class_info<T>::methods.emplace_back(
-        name, wrap_detail::make_method_proto<T, decltype(Mf), R, Args...>(
-                  Mf, names, bump));
     auto pinned = wrap_detail::pin_param_names(std::move(names),
                                                sizeof...(Args));
-    wrap_detail::jit_method_info<T, Mf>::param_names = *pinned;
+    wrap_detail::jit_method_info<T, Mf>::param_names = pinned;
     const JitParamMeta* meta =
         sizeof...(Args) == 0
             ? nullptr
-            : _jit_make_handle_meta(*pinned,
+            : _jit_make_handle_meta(pinned,
                                     std::vector<bool>(sizeof...(Args), false));
     wrap_detail::jit_class_info<T>::methods.push_back(
         {std::move(name),
@@ -907,17 +659,13 @@ class ClassBinder {
   template <auto Mf, class T2, class... Args>
   ClassBinder& borrowed_impl(std::string name, std::vector<std::string> names,
                              std::tuple<Args...>*) {
-    wrap_detail::class_info<T>::methods.emplace_back(
-        name,
-        wrap_detail::make_borrowed_proto<T, decltype(Mf), T2, Args...>(
-            Mf, names));
     auto pinned = wrap_detail::pin_param_names(std::move(names),
                                                sizeof...(Args));
-    wrap_detail::jit_method_info<T, Mf>::param_names = *pinned;
+    wrap_detail::jit_method_info<T, Mf>::param_names = pinned;
     const JitParamMeta* meta =
         sizeof...(Args) == 0
             ? nullptr
-            : _jit_make_handle_meta(*pinned,
+            : _jit_make_handle_meta(pinned,
                                     std::vector<bool>(sizeof...(Args), false));
     wrap_detail::jit_class_info<T>::methods.push_back(
         {std::move(name),
@@ -929,9 +677,6 @@ class ClassBinder {
   template <auto Fn, class R, class... Args>
   ClassBinder& static_impl(std::string name, std::vector<std::string> names,
                            std::tuple<Args...>*) {
-    statics_.emplace_back(
-        name, wrap_detail::make_static_proto<decltype(Fn), R, Args...>(
-                  Fn, names));
     push_ns_row<R, Args...>(std::move(name),
                             &wrap_detail::jit_static_adapter<Fn, R, Args...>,
                             std::move(names));
@@ -948,20 +693,19 @@ class ClassBinder {
     if constexpr (sizeof...(Args) > 0) {
       using A0 = std::tuple_element_t<0, std::tuple<Args...>>;
       arg0_type = std::string(_detail::type_annotation_for<A0>());
-      arg0_name = (*pinned)[0];
+      arg0_name = pinned[0];
     }
     std::vector<std::string> ptypes = {
         std::string(_detail::type_annotation_for<Args>())...};
     wrapped_ns_rows().push_back(
         {ns_, std::move(method_name), name_, std::move(arg0_type),
          std::move(arg0_name), static_cast<int8_t>(sizeof...(Args)),
-         adapter, *pinned, std::move(ptypes),
+         adapter, pinned, std::move(ptypes),
          std::string(wrap_detail::return_annotation<R>())});
   }
 
   std::string ns_;
   std::string name_;
-  std::vector<std::pair<std::string, Value>> statics_;
 };
 
 template <class T>

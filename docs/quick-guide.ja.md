@@ -26,7 +26,7 @@ Culebraクイックガイド
 ## 1. プログラムを実行する
 
 ```bash
-culebra prog.cul                 # ツリーウォーク型インタプリタ
+culebra prog.cul                 # バイトコードVM (既定)
 culebra --jit prog.cul           # LLVM ORC JIT — 出力は同一
 culebra build prog.cul -o prog   # AOT、自己完結バイナリ
 culebra test                     # cwd以下のtest_*.culを全実行

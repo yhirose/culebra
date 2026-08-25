@@ -206,7 +206,7 @@ context.
 ### Doctests
 
 `culebra test --doc <path>` extracts every ` ```culebra ` block from the
-markdown under `<path>` and runs it in a fresh interpreter, checking its
+markdown under `<path>` and runs it in a fresh VM Runtime, checking its
 output against the markers below. Every block in `handbook.md`,
 `language.md` and `stdlib.md` follows this convention:
 
@@ -216,17 +216,17 @@ output against the markers below. Every block in `handbook.md`,
 - `# doctest: <directive>` (block-leading line) — modes:
   - `skip` — illustration only, do not run (e.g. *Planned* features)
   - `compile-only` — syntax check only
-  - `interp-only` / `jit-only` / `aot-only` — backend filter
+  - `jit-only` / `aot-only` — backend filter
 
 Blocks are independent; there is no `setup` / `teardown` across blocks,
 so an example needing several steps has to be one block. The runner
 currently honors `skip`; `compile-only` and the backend filters are
 reserved (such blocks run normally for now).
 
-`--jit` and `--vm` run the same blocks on the JIT and on the bytecode VM
-instead of the interpreter, so a documented example is checked against
-every engine that will run it — the same output, the same throw. The
-unit-test runner (`culebra test` without `--doc`) is the interpreter's.
+`--jit` runs the same blocks on the LLVM JIT instead of the VM, so a
+documented example is checked against every engine that will run it —
+the same output, the same throw. The unit-test runner (`culebra test`
+without `--doc`) runs on the VM.
 
 Two consequences are worth knowing when writing examples. An expression
 on its own prints nothing, so a checked example has to go through
@@ -442,11 +442,11 @@ setup below).
   an absolute path in the editor config below. (Quick check:
   `echo | culebra dap` should hang waiting for DAP input; `Ctrl+C` to
   quit. If it errors, fix the path first.)
-- **Debugging runs in the interpreter** — don't pass `--jit`. The adapter
-  runs your program in interpreter mode; the JIT/AOT backends compile to
+- **Debugging runs on the VM** — don't pass `--jit`. The adapter
+  runs your program on the bytecode VM; the JIT/AOT backends compile to
   machine code and aren't source-debuggable.
 
-**How it works.** The adapter uses the interpreter's per-statement hook
+**How it works.** The adapter reads the VM's bytecode debug tables
 to pause on a breakpoint, a `debugger` statement, or a step, while the
 DAP loop answers the editor's requests and resumes execution. Your
 program's `stdout`/`stderr` is forwarded to the editor's debug console as

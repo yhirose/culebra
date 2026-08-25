@@ -587,9 +587,9 @@ inline void _jit_isolate_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int
 // `joined` and make this a no-op walk; the gap is a top-level throw that
 // unwinds straight past an unreached join(), leaving one still running when
 // the LLJIT that owns its compiled body is about to be freed out from under
-// it. Installed into isolate_teardown_join_hook (shared.h) below — jit.h
-// can't call into isolate.h's registries directly (isolate.h reaches back to
-// jit.h through stdlib_interp.h), so the hook meets both sides there.
+// it. Installed into isolate_teardown_join_hook (shared.h) below, where the
+// consumers that must stay light (script_teardown.h) reach it without
+// pulling this header.
 inline void _jit_isolate_teardown_join_all() {
   std::vector<std::shared_ptr<IsolateCore>> live;
   {

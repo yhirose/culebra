@@ -61,7 +61,6 @@ RATCHET = "corpus_only_coverage.txt"
 EXCLUDED = (
     "culebra::vm::Exec::",
     "culebra::vm::Lowering::",
-    "culebra::Interpreter::",
 )
 
 

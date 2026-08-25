@@ -1,7 +1,7 @@
 // Unity translation unit for the embedding smoke tests. Each smoke
-// includes the full interpreter + JIT header stack, and that stack's
-// codegen (the odr-used interp stdlib plus the `used`-pinned JIT
-// runtime helpers) costs minutes per TU on the 3-core macOS CI runner
+// includes the full runtime header stack, and that stack's codegen
+// (the `used`-pinned runtime helpers) costs minutes per TU on the
+// 3-core macOS CI runner
 // — five separate executables made the smokes ~28 of the ~33 CI build
 // minutes whenever a core header changed. One TU emits it once.
 //

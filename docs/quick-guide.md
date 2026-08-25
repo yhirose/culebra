@@ -26,7 +26,7 @@ Contents
 ## 1. Running a program
 
 ```bash
-culebra prog.cul                 # tree-walking interpreter
+culebra prog.cul                 # the bytecode VM (default)
 culebra --jit prog.cul           # LLVM ORC JIT — identical output
 culebra build prog.cul -o prog   # AOT, self-contained binary
 culebra test                     # run every test_*.cul below the cwd

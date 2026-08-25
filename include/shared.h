@@ -92,14 +92,11 @@ inline bool is_builtin_method_name(std::string_view name) {
   return builtin_method_names().count(name) > 0;
 }
 
-// The subset of builtin methods that apply to a plain Object/dict receiver —
-// exactly the keys of interpreter.h's `ObjectValue::builtins()`. Kept in sync
-// with that table (add a name here when you add one there). A builtin namespace
-// (IO, FS, ...) reads its unknown members as an AttributeError, EXCEPT these:
-// `IO.keys()` / `Sys.has("script")` and the like still dispatch the dict
-// builtin, matching the interp (whose `ObjectValue::has()` reports them
-// present). Array/Set/Tensor/String method names are deliberately excluded so
-// `IO.push()` / `FS.split()` raise on both backends.
+// The subset of builtin methods that apply to a plain Object/dict receiver.
+// A builtin namespace (IO, FS, ...) reads its unknown members as an
+// AttributeError, EXCEPT these: `IO.keys()` / `Sys.has("script")` and the
+// like still dispatch the dict builtin. Array/Set/Tensor/String method names
+// are deliberately excluded so `IO.push()` / `FS.split()` raise.
 inline bool is_object_builtin_method_name(std::string_view name) {
   static const std::unordered_set<std::string_view> kNames = {
       "size",  "empty", "presence",   "keys",   "has", "get", "get_or_put",
@@ -2391,28 +2388,16 @@ inline void _consume_sigint() {
 inline std::atomic<bool> culebra_g_signal_notify{false};
 inline std::atomic<bool> culebra_g_signal_pending{false};
 
-// Hook jit.h calls into and sendable_jit.h fills in at load — jit.h can't
-// include sendable_jit.h/isolate.h directly (they reach back to jit.h through
-// stdlib_interp.h), so the two meet here instead, same as
-// culebra_g_signal_notify above. Called once, right before JIT::exec tears
+// Hook sendable_jit.h fills in at load, read by jit.h and the script
+// teardown guard — kept as a hook so script_teardown.h stays light instead
+// of pulling the whole isolate stack into every consumer. Called right
+// before JIT::exec tears
 // down the LLJIT: every isolate's compiled body is the SAME JitClosure::fn_ptr
 // living in that LLJIT (sendable_jit.h), so a spawn still running when the
 // module's code memory is freed returns into unmapped memory. Cancels + joins
 // whatever is still outstanding — a no-op once every isolate has already been
 // joined (the normal case), which is the vast majority of runs.
 inline std::function<void()>& isolate_teardown_join_hook() {
-  static std::function<void()> fn;
-  return fn;
-}
-
-// Interp counterpart of the hook above. interpreter.h calls this once, right
-// after a top-level script run finishes (success, uncaught throw, or any
-// other exit) — before returning control to main() and letting the process
-// tear down process-wide statics (channel_registry, merge_registry, ...) that
-// an isolate thread still running past that point would touch. Filled in by
-// isolate.h at load, same indirection and same reason: interpreter.h can't
-// include isolate.h (isolate.h needs the Interpreter type it declares).
-inline std::function<void()>& interp_isolate_teardown_join_hook() {
   static std::function<void()> fn;
   return fn;
 }

@@ -19,6 +19,7 @@
 #include <culebra.h>
 #include <debug_types.h>
 #include <module_loader.h>
+#include <stdlib_preamble.h>
 
 #include <functional>
 #include <memory>

@@ -2,7 +2,7 @@
 
 culebra は個人の趣味プロジェクト（プログラミング言語処理系）。**repo は公開済み**（`github.com/yhirose/culebra`）で、**2026-08-22 に `v0.3.0` をリリース**した — 3 OS のバイナリを GitHub Release で配布し、docs サイトと WASM Playground を GitHub Pages で公開している。
 
-**エンジンは bytecode VM が既定**（v0.3.0 以降）。`vm::Compiler` が bytecode に落とし、`vm::Exec` が実行する。`--jit` と `culebra build`（AOT）は**同じ bytecode**を LLVM IR に降ろす消費者で、フロントエンドは1つ。tree-walking interpreter は隠しフラグ `--tree` でのみ届き、Phase 4 の最終バッチ（B7）で削除する — 仕様と進捗は `docs/internals/vm.md` §13。
+**エンジンは bytecode VM が既定**（v0.3.0 以降）。`vm::Compiler` が bytecode に落とし、`vm::Exec` が実行する。`--jit` と `culebra build`（AOT）は**同じ bytecode**を LLVM IR に降ろす消費者で、フロントエンドは1つ。tree-walking interpreter は Phase 4 B7 で**削除済み**（v0.3.1 が両エンジンを持つ最後のリリース）— 経緯は `docs/internals/vm.md` §13。
 
 ## 言語・コミュニケーション
 
@@ -39,7 +39,7 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 
 ## テスト（速い順に段階的に）
 
-1. 単発確認: `./build-dev/culebra <file>.cul`（+ `--jit` / `--tree`）
+1. 単発確認: `./build-dev/culebra <file>.cul`（+ `--jit`）
 2. 全レーン対称確認: **`just test-dev`**（~80s、no-LTO）— 通常はここまで。生成物ゲート `check-generated`（grammar sync / preamble / blob / site version）を前段で回すので、生成物のずれは着地前にここで落ちる
 3. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）
 4. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
@@ -87,7 +87,7 @@ assert が本当に compile-in されたかを binary 内の assert 文字列 gr
 
 ## 最重要要件
 
-- **全レーンの完全対称化。** 同じプログラムは executor（既定）/ `--jit` / AOT、そして `--tree` が生きている間はそれも含めて、同じ結果・同じエラーを返す。①振る舞い ②エラーメッセージ（kind+文面+位置） ③検査/throw のタイミングと順序 — 3次元すべて一致させる。既知の差は niche でも直す（放置しない）。**B7 で `--tree` が消えると独立第二実装によるオラクルを失う**ので、それまでに見つかる差は全部潰す（詳細は `docs/internals/vm.md` §13.5）。
+- **全レーンの完全対称化。** 同じプログラムは executor（既定）/ `--jit` / AOT で、同じ結果・同じエラーを返す。①振る舞い ②エラーメッセージ（kind+文面+位置） ③検査/throw のタイミングと順序 — 3次元すべて一致させる。既知の差は niche でも直す（放置しない）。独立第二実装のオラクルは**前リリースのバイナリとの差分**（release-diff、`docs/internals/vm.md` §13.5）が担う。
 - **JIT のメモリ管理はリークが構造的に起こり得ない形にする。** RAII/ownership 流。場当たり的な leak fix は禁止。
 - 修正は手戻りがあってもきれい・エレガントに。他言語の確立した実装（V8/Ruby/Go 等）を参照して正しい抽象を選ぶ。その場しのぎのハックにしない。
 

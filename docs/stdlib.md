@@ -1117,7 +1117,7 @@ any other type is `false`, never an error.
 ## 6. `Random`
 
 Random-number generation. The process has a single shared
-Mersenne-Twister-64 engine, shared between the interpreter and JIT
+Mersenne-Twister-64 engine, shared between the VM and JIT
 backends; `Random.seed(n)` resets it and makes every subsequent draw
 reproducible within one program execution. Without a `seed` call the
 engine is initialised from `std::random_device`.
@@ -1279,7 +1279,7 @@ inspect(Sys.getcwd())  # '/tmp' (or its resolved path)
 ### `Sys.executable -> String`
 
 Absolute path to the running culebra binary. Use it to launch a worker copy of
-the interpreter — e.g. `Proc.run([Sys.executable, "worker.cul"], ...)` — instead
+culebra — e.g. `Proc.run([Sys.executable, "worker.cul"], ...)` — instead
 of relying on `culebra` being on `PATH`. (In an AOT-built program it is the path
 to that standalone binary.)
 
@@ -1592,7 +1592,7 @@ and the device backends:
   BLAS-shaped kernels on macOS.
 - **GPU** — Metal on macOS, CUDA on Linux / Windows.
 
-The device is process-global (shared by interpreter, JIT, and AOT) and
+The device is process-global (shared by VM, JIT, and AOT) and
 switchable at runtime:
 
 | Function | Effect |
@@ -1752,7 +1752,7 @@ inspect(JSON.stringify([1, 2, 3], lines: true))
 
 JIT note: built-in `JSON.{stringify, parse}` route through the same
 canonical call resolver every other namespace method uses, so every
-call shape behaves identically to the interpreter: positional binding
+call shape behaves identically to the VM: positional binding
 (`JSON.stringify(v, 2)` sets `indent`, `JSON.parse(s, true)` sets
 `lines`), keyword arguments, and both literal `**{...}` and dynamic
 `**variable` splats. Used as a first-class value the binding is the
@@ -2099,9 +2099,9 @@ boundary by being **copied**, so two isolates can never race on the same
 object. This is the thread-level counterpart to [§11 `Proc`](#11-proc) (which
 parallelizes across processes).
 
-> `Isolate.spawn`, `Channel`, and `Parallel` all work under both the interpreter
-> and `--jit` (a closure crosses as a shared code reference — the AST in the
-> interpreter, the compiled `fn_ptr` in the JIT — plus copied captures, and runs
+> `Isolate.spawn`, `Channel`, and `Parallel` all work under both the VM
+> and `--jit` (a closure crosses as a shared code reference — the bytecode in
+> the VM, the compiled `fn_ptr` in the JIT — plus copied captures, and runs
 > on the child's own heap).
 
 ### `Isolate.spawn(fn, *args) -> handle`
@@ -2621,7 +2621,7 @@ from the parent (so `grid.count` matches). The child declares the same
 `ValueError` on a layout mismatch, an unknown name, or a buffer that wasn't a
 `SharedBuffer.shared(...)` (heap and file buffers don't cross this way — a file
 buffer is shared by re-opening its `path`). `Sys.executable` is the path to the
-running culebra binary, for launching a worker copy of the interpreter.
+running culebra binary, for launching a worker copy of culebra.
 
 `Proc.run` blocks until the child exits, so its writes are complete on return.
 For concurrent children, `Proc.spawn` each and `wait()` them; as with isolates,
@@ -3016,7 +3016,7 @@ assert_close(3.14, 3.1415, 0.01)
 
 The matcher family is defined in culebra source (not native C++) and
 bound via the lazy module mechanism so that all three backends
-(interp / JIT / AOT) share one implementation. Operator dispatch
+(VM / JIT / AOT) share one implementation. Operator dispatch
 (`==`, `<` etc.) inside the matchers is the same operator dispatch
 each backend already implements, so `__eq__` / `__lt__` semantics
 agree without any matcher-specific drift logic.
@@ -3736,7 +3736,7 @@ ws.close()
 `Embed.dir(name)` returns a handle over a directory of assets that resolves
 *per backend*, with no code change:
 
-- **Run from source** (interpreter / JIT): it reads the live on-disk directory
+- **Run from source** (VM / JIT): it reads the live on-disk directory
   `name`, resolved relative to the entry script — so editing a file and running
   again shows the change immediately (a real dev loop).
 - **`culebra build`** (AOT): the directory is walked at build time and its bytes
@@ -3792,7 +3792,7 @@ than producing a binary.
 
 Text codecs, grouped into a **sub-namespace per scheme** (`Encoding.html`,
 `Encoding.base64`, `Encoding.hex`, `Encoding.url`). The codec logic is shared
-between the interpreter and the JIT/AOT backends, and every codec is
+between the VM and the JIT/AOT backends, and every codec is
 binary-safe (embedded NUL bytes survive a round trip).
 
 ### `Encoding.html`
@@ -4318,7 +4318,7 @@ namespace in json mode. For a fatal condition, log at `error` then
 
 Parse and render [TOML](https://toml.io) configuration, shared byte-for-byte
 across backends. The grammar and serialization live in a value-neutral core,
-so the interpreter, JIT, and AOT agree exactly.
+so the VM, JIT, and AOT agree exactly.
 
 | Function | Result |
 | --- | --- |
@@ -4521,7 +4521,7 @@ window (or Esc) ends the `run` loop. **Headless is declared, never inferred**:
 in a build without the window backend — or in any run with
 `CULEBRA_CANVAS_HEADLESS` set to anything but `0`/`off` — the backend is
 **headless**: the pixel and sprite ops run identically (so behaviour is the same
-across interpreter / JIT / AOT and testable via `Canvas.get_pixel`), but nothing
+across VM / JIT / AOT and testable via `Canvas.get_pixel`), but nothing
 is displayed, input reads as "no button", and `tone` is silent. That variable is
 how a displayless server — or the test suite, since every `just` recipe exports
 it — runs a window-capable binary; `-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF` goes

@@ -5,8 +5,8 @@ This document describes how Culebra's memory management is
 implemented. It is not a specification: the observable contract —
 what a program can rely on — is normative in
 [`language.md` §17](../language.md#17-memory-model) and
-[§25](../language.md#25-appendix-interpreter--jit-divergence). This
-document explains *how* that contract is met, on each backend, and
+[§25](../language.md#25-appendix-vm--jit-divergence). This
+document explains *how* that contract is met and
 why the implementation takes the shape it does. Where this document
 and `language.md` disagree, `language.md` wins.
 
@@ -19,7 +19,7 @@ Contents
 --------
 
 1. [Two engines, one contract](#1-two-engines-one-contract)
-2. [The interpreter: exact reference counting](#2-the-interpreter-exact-reference-counting)
+2. [The retired tree-walker: exact reference counting](#2-the-retired-tree-walker-exact-reference-counting)
 3. [The JIT's problem: reference counting without `shared_ptr`](#3-the-jits-problem-reference-counting-without-shared_ptr)
 4. [The JIT's ownership discipline](#4-the-jits-ownership-discipline)
 5. [Detecting reference-counting bugs](#5-detecting-reference-counting-bugs)
@@ -31,8 +31,11 @@ Contents
 ## 1. Two engines, one contract
 
 Culebra's memory management is **reference counting (RC), primary,
-with a tracing collector as a backstop** — on both the interpreter
-and the JIT. Neither engine is retirable in favor of the other:
+with a tracing collector as a backstop**. The two lanes — the VM's
+executor and the LLVM lowering — share one runtime and one collector;
+the section titles below still say "the JIT's" because that lowering
+is where the discipline was built. Neither half of the design is
+retirable in favor of the other:
 
 - **RC alone is not leak-free.** A reference cycle (`a.c = a`) keeps
   every member's count above zero forever; no amount of correct RC
@@ -73,15 +76,21 @@ Getting placement right on every control-flow path — fall-through,
 several scopes — by hand, is hard. §3 and §4 describe why the two
 backends face this problem to a very different degree.
 
-## 2. The interpreter: exact reference counting
+## 2. The retired tree-walker: exact reference counting
 
-The interpreter represents every heap value as a C++ `shared_ptr`.
-Its reference-counting is therefore **exact and automatic by
-construction**: the compiler, not a human, emits every increment and
-decrement, and `shared_ptr`'s destructor cannot be skipped by a
+This section is design lineage: the tree-walking interpreter it
+describes was deleted in Phase 4 B7 (v0.3.1 is the last release that
+carries it), but its memory model is the contrast that motivates
+everything below, and it served as the differential oracle the
+current discipline was proven against.
+
+The interpreter represented every heap value as a C++ `shared_ptr`.
+Its reference-counting was therefore **exact and automatic by
+construction**: the compiler, not a human, emitted every increment
+and decrement, and `shared_ptr`'s destructor cannot be skipped by a
 control-flow path the way a hand-placed `release()` call can. Leaks
-and double-frees from RC placement are not a class of bug the
-interpreter has — its only remaining exposure is reference cycles,
+and double-frees from RC placement were not a class of bug the
+interpreter had — its only remaining exposure was reference cycles,
 handled by `InterpGC`.
 
 ### `InterpGC`: a precise, CPython-style collector
@@ -123,8 +132,8 @@ stack-only liveness require explicit rooting to satisfy this:
   reached, the value has already been stored into a rooted
   environment.
 
-Because collection never runs mid-statement, the interpreter needs no
-conservative stack scan at all — safety here is a scheduling
+Because collection never ran mid-statement, the interpreter needed no
+conservative stack scan at all — safety there was a scheduling
 guarantee, not a scanning one.
 
 ## 3. The JIT's problem: reference counting without `shared_ptr`
@@ -385,14 +394,15 @@ where one arm consumes a value and a different arm releases it.
 - **Values are tagged 64-bit integers, not typed pointers.** Deciding
   whether a value is a heap pointer at all requires reading its tag.
   This, combined with raw pointers escaping to C++ interop (Tensor,
-  interpreter boundary crossings), is why a moving collector using
+  engine boundary crossings), is why a moving collector using
   LLVM Statepoints was not adopted as the rooting mechanism (§6.4) —
   supporting it would require a value-representation rewrite far
   larger than this ownership discipline.
-- **The two backends must remain behaviorally symmetric.** A change
-  to this discipline is JIT-internal by construction and must never
+- **The two lanes must remain behaviorally symmetric.** A change
+  to this discipline is internal by construction and must never
   alter observable behavior, error messages, or the order in which
-  checks run, relative to the interpreter.
+  checks run, relative to the other lane and the released binary the
+  gates diff against.
 - **Dispatch is resolved at runtime.** Method and operator targets are
   not known statically, so ownership contracts are enforced at the
   call boundary dynamically, not by the static type of a callee.
@@ -585,7 +595,7 @@ deferred, because two of its hard prerequisites are unmet:
    objects safely requires precise roots as a prerequisite, not
    something that can be added alongside conservatism.
 2. **No raw pointers escaping to collector-uncooperative code.**
-   Culebra hands raw pointers to C++ for Tensor and interpreter
+   Culebra hands raw pointers to C++ for Tensor and host
    interop, and the tagged-integer value representation (§4.5) stuffs
    pointers into plain integers — a representation LLVM's Statepoint
    mechanism, the standard way to make a JIT's roots precise, cannot
@@ -602,23 +612,20 @@ decision would require either measuring that heap fragmentation is a
 real, material cost, or a separate redesign of raw-pointer interop
 behind handles or pinning.
 
-### 6.5 The interpreter's collector, by comparison
+### 6.5 The retired interpreter's collector, by comparison
 
-`InterpGC` (§2) and this collector reclaim the same cycle shapes,
-which keeps the two backends behaviorally symmetric — a program that
-leaks or fails to leak a given cycle shape does so identically on
-either backend. The two differ entirely in mechanism: `InterpGC` is
-precise because exact `shared_ptr` refcounts make a stack scan
-unnecessary; this collector is conservative because the JIT's
+`InterpGC` (§2) and this collector reclaimed the same cycle shapes,
+which is what kept the two engines behaviorally symmetric while both
+existed — a program that leaked or failed to leak a given cycle shape
+did so identically on either. The two differed entirely in mechanism:
+`InterpGC` was precise because exact `shared_ptr` refcounts made a
+stack scan unnecessary; this collector is conservative because the
 hand-emitted RC gives it no such exactness to rely on, so it falls
 back to scanning for anything that merely looks like a pointer.
 
-Objects that cross the interpreter/JIT boundary — a `Tensor`'s
-implementation, held as a `shared_ptr` regardless of which backend is
-driving it — keep the same handle across a collection under either
-collector, because neither collector moves anything. Raw pointers
-handed to C++ interop code therefore remain valid across a collection
-on both backends.
+Nothing here moves objects: a `Tensor`'s implementation, held as a
+`shared_ptr`, keeps the same handle across a collection, and raw
+pointers handed to C++ interop code remain valid across one.
 
 ### 6.6 Safety devices
 
@@ -629,9 +636,10 @@ on both backends.
   uses); the full conformance suite runs green under this mode.
 - A statistics query exposes live-object and live-byte counts for
   diagnostic use.
-- A dedicated set of leak-regression tests forms the JIT's memory
-  acceptance gate, mirrored from the interpreter's already-green
-  baseline for the same test shapes.
+- A dedicated set of leak-regression tests forms the memory
+  acceptance gate, with a per-lane absolute baseline (originally
+  mirrored from the interpreter's then-green baseline for the same
+  test shapes).
 - In debug builds, freed slots are poisoned with a recognizable fill
   pattern, so a use-after-free reads garbage that asserts loudly
   instead of silently returning plausible-looking data.

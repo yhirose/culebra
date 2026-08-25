@@ -1,10 +1,11 @@
 # Culebra Language Specification
 
 This document defines the syntax and runtime semantics of the Culebra
-programming language. It is normative: where the two backends
-(interpreter in `include/interpreter.h` and JIT in `include/jit.h`)
-disagree, the interpreter is considered authoritative and the JIT
-tracks its behavior.
+programming language. It is normative: both engines — the bytecode
+VM's executor (`include/vm.h`) and its LLVM lowering
+(`include/vm_lowering.h`, `--jit` and AOT) — are required to implement
+what this document says, and a divergence between them or from this
+text is a bug.
 
 For an introductory tour with runnable examples, see
 [`handbook.md`](handbook.md). For API reference of the standard library see
@@ -43,7 +44,7 @@ For an introductory tour with runnable examples, see
 22. [Command-line interface](#22-command-line-interface)
 23. [Known limitations](#23-known-limitations)
 24. [Modules](#24-modules)
-25. [Appendix: interpreter ↔ JIT divergence](#25-appendix-interpreter--jit-divergence)
+25. [Appendix: VM ↔ JIT divergence](#25-appendix-vm--jit-divergence)
 26. [Appendix: conformance test mapping](#26-appendix-conformance-test-mapping)
 
 ---
@@ -55,10 +56,10 @@ are:
 
 * **Orthogonal features.** New capability arrives as a feature that
   composes with the rest, not as a special case in the grammar.
-* **Two backends, one AST.** A tree-walking interpreter and an LLVM
-  ORC JIT share the same parser and AST, so features must be
-  implementable in both.
-* **Predictable memory.** Reference counting in both backends; a
+* **One front end, two engines.** A bytecode VM and an LLVM ORC JIT
+  are two consumers of the same parser, AST, and bytecode compiler,
+  so features must be implementable in both.
+* **Predictable memory.** Reference counting in both engines; a
   cycle collector reclaims cyclic garbage.
 
 The language is dynamic at its core. Type annotations are optional and
@@ -323,11 +324,10 @@ value raise `type error` (see §15).
 
 `Any` is only valid in type annotations and matches any value.
 
-**Both backends**: `Float` is fully supported in the tree-walking
-interpreter and the LLVM ORC JIT. Long-only code paths keep their
-existing inline integer codegen under `--jit`; Float values take a
-narrow Long↔Float promotion slow path that matches interpreter
-semantics bit-for-bit.
+**Both engines**: `Float` is fully supported on the VM and the LLVM
+ORC JIT. Long-only code paths keep their existing inline integer
+codegen under `--jit`; Float values take a narrow Long↔Float
+promotion slow path with bit-for-bit identical semantics.
 
 ---
 
@@ -1601,8 +1601,8 @@ Semantics:
   no parameters (`get f (x)` is a syntax error), and `get` is contextual:
   a member literally named `get` (`get () { ... }`) is still an ordinary
   method. Both spellings (`obj.name` and `obj.name()`) invoke the getter
-  identically on the interpreter, the JIT, and AOT.
-* Both the interpreter and the JIT compile classes. Instance
+  identically on the VM, the JIT, and AOT.
+* Both engines compile classes. Instance
   construction is a small runtime call — `new` itself is a regular
   JIT closure whose captures are the method closures plus the user's
   `new` body, and a runtime helper wires them into the fresh object.
@@ -1619,8 +1619,8 @@ can participate in arithmetic and comparison by defining special
 methods. Dispatch happens at runtime: if the left operand is an
 `Object` with the matching special method, it is called with the
 right operand as its sole argument; otherwise the built-in numeric
-path runs. **Both the interpreter and the JIT** route through the
-same special-method protocol, so `Object` arithmetic compiles.
+path runs. **Both engines** route through the same special-method
+protocol, so `Object` arithmetic compiles.
 Classes defined via `class` sugar participate identically since
 their instances are plain `Object`s with methods attached.
 
@@ -1821,9 +1821,8 @@ treat as the actual parameters.
 
 A user-defined `parameters` method (any property of that name) takes
 precedence over the synthesized one — useful when the field walk is
-not the intended enumeration. Both the interpreter and the JIT
-synthesize the method through the same walker; output ordering is
-identical.
+not the intended enumeration. Both engines synthesize the method
+through the same walker; output ordering is identical.
 
 ---
 
@@ -1973,7 +1972,7 @@ for elements that survive. `.add(x)` and `.remove(x)` may shadow a
 user-defined Object method of the same name (e.g. a `Calculator.add(1)`
 class method), so both backends emit a runtime tag dispatch at the
 call site: Set receivers go to the set primitive, Object receivers go
-to the user property. Works on interp and JIT (and AOT).
+to the user property. Works on the VM and JIT (and AOT).
 
 Set operations are method-only: `union`, `intersect`, `diff`,
 `sym_diff`. There are no `|` / `&` / `-` / `^` operator forms —
@@ -2158,10 +2157,9 @@ JIT limitations:
   per-built-in kwarg adapter (`JSON.stringify` and `JSON.parse`
   ship adapters; other namespaces are positional-only and still
   reject kwargs at compile time).
-* Compile-time JIT errors (e.g. `positional argument follows keyword
-  argument`) are detected during IR emission and bypass `try/catch`;
-  interp throws the same errors at runtime where they can be caught.
-  This is a structural difference between the two execution models.
+* Compile-time errors (e.g. `positional argument follows keyword
+  argument`) are detected during compilation and bypass `try/catch`
+  on both engines.
 
 ### Return
 
@@ -2363,9 +2361,9 @@ for v in two() {
   an `effect fn`; a self-contained `handle { ... }` expression inside
   the body does work (§16).
 
-Generators are compiled by a source-level transform shared by all three
-backends, so an identical program yields identical values under the
-interpreter, the JIT, and an AOT binary.
+Generators are compiled by a source-level transform shared by every
+lane, so an identical program yields identical values under the VM,
+the JIT, and an AOT binary.
 
 ---
 
@@ -2589,9 +2587,8 @@ direct iteration over `Array`, `Object` (yields `(key, value)` pairs in
 insertion order), and `String` (UTF-8 scalar walk). Objects that carry their
 own `iter` property (user-defined iterators, `range`,
 `String.code_points()` / `.graphemes()`, iterator method chains) are
-driven through the iterator protocol at runtime — same semantics as
-the interpreter, with a native-loop fast path preserved for the
-Array/String/keys cases.
+driven through the iterator protocol at runtime, with a native-loop
+fast path preserved for the Array/String/keys cases.
 
 ### `break` and `continue`
 
@@ -3561,7 +3558,7 @@ To receive Ctrl+C as a value instead of a throw — the graceful-shutdown
 pattern for a long-running service — register a channel with `Signal.notify`
 (see the stdlib guide's *Signal* section).
 
-The behaviour is identical under the interpreter, JIT, and AOT binaries.
+The behaviour is identical under the VM, JIT, and AOT binaries.
 `Interrupted` carries no source position (`line`/`col` are `0`): the
 interrupt is asynchronous, not tied to a particular expression.
 
@@ -3620,8 +3617,8 @@ User code can branch on `e.kind`:
 
 Standard `kind` values, with the exact trigger condition and
 catchability for each. Every kind populates `e.kind`, `e.message`,
-`e.line`, and `e.col` identically on the interpreter, the JIT, and
-AOT builds (unless noted).
+`e.line`, and `e.col` identically on the VM, the JIT, and AOT
+builds (unless noted).
 
 | Kind | Trigger | Catchable |
 |---|---|---|
@@ -3645,7 +3642,7 @@ AOT builds (unless noted).
 | `ParallelError` | A `Parallel.map` / `Parallel.each` element threw; carries the failing element's index and cause (fail-fast). | yes |
 | `DropContractError` | `drop` / `iter` / `has_next` / `next` property bound to a non-Function or non-zero-arity function. | yes |
 | `RecursionError` | Function-call depth exceeded the fixed limit of 1000 frames. Every user-function entry counts one frame (fn, lambda, method, constructor — field initializers run inside the constructor's frame); built-in helpers and multimethod dispatch do not. The limit and the reported depth are identical on every backend, and reported at the call site. The count unwinds with `throw`, so a `catch` regains the full budget. | yes |
-| `RuntimeError` | Fallback when interp catches an unconverted `std::runtime_error` from a not-yet-migrated throw site. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
+| `RuntimeError` | Fallback when the engine catches an unconverted `std::runtime_error` from a not-yet-migrated throw site. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 
 Uncaught errors print as `Kind: message` and exit with non-zero
 status. User-thrown values via `throw expr` print as `uncaught: {value}`.
@@ -3718,8 +3715,8 @@ keyword that a build flag can switch off.
 
 ### JIT support
 
-The JIT backend supports `throw` / `try` / `catch` / `defer` with
-semantics matching the tree interpreter for the common cases:
+The JIT lane supports `throw` / `try` / `catch` / `defer` with
+semantics identical to the VM's:
 
 * `throw` / `try` / `catch` propagate across function boundaries via
   LLVM `invoke` / `landingpad` and the Itanium C++ personality.
@@ -4013,10 +4010,9 @@ backends) and at program exit.
   environments captured by closures (plus `Closure` / `Cell` in the
   JIT). Both backends reclaim every container cycle shape, including
   one routed purely through `Object` property maps.
-* `String` is not refcounted. The interpreter manages it with a
-  `shared_ptr` (freed deterministically, so it is never leaked). The
-  JIT allocates string bytes from a per-`Runtime` slab and treats
-  `String` as a **traced-only** value: it carries no refcount to hit
+* `String` is not refcounted. String bytes come from a per-`Runtime`
+  slab, and `String` is a **traced-only** value: it carries no
+  refcount to hit
   zero, so the tracing sweep above is its sole reclaimer rather than
   a cycle-only backstop.
 
@@ -4107,10 +4103,8 @@ The owning scope is wherever the cycle last escaped to: a cycle that
 rides out of a function as its return value drops at the *caller's*
 scope exit once discarded. A resource captured by a sibling
 **closure**, or cycled through its own closure slot, also drops at the
-owning scope's exit under the JIT and AOT; under the interpreter,
-whole-env capture defers those shapes to its next **collection**
-instead — the same drops, one collection later. Two shapes miss the
-deterministic window on every backend: a closure-only cycle that holds
+owning scope's exit. Two shapes miss the
+deterministic window on every lane: a closure-only cycle that holds
 the resource without the resource referencing it back (e.g. a
 recursive local `fn` capturing it), and cyclic garbage discarded
 directly at the **top level** (a scope that never exits). Those fire
@@ -4163,9 +4157,8 @@ leak un-dropped. For script-wide resources, prefer `defer` (§15) or
 explicit cleanup, which run on both exits.
 
 **JIT**: auto-drop fires under `--jit` with the same timing as the
-interpreter — at scope exit, cycle members included. Closure-held
-shapes also resolve at scope exit under the JIT (the interpreter
-defers those to its next collection; backstop-only shapes as above);
+VM — at scope exit, cycle members included, closure-held shapes too
+(backstop-only shapes as above);
 top-level orphans go to the GC backstop on both, and top-level
 *bindings* still leak un-dropped at program exit. The well-known property contract
 (`drop`/`iter`/`has_next`/`next` must be a 0-arg `Function`) is enforced at
@@ -4350,7 +4343,7 @@ without interfering with each other.
 
 **JIT**: `iter` / `code_points` / `graphemes` return iterator Objects
 that the JIT drives through the same protocol path as user-defined
-iterators. Semantics match the interpreter; throughput is dominated
+iterators. Semantics match the VM's; throughput is dominated
 by the per-step closure dispatch. For maximum speed over Arrays and
 direct String scalars, prefer `for c in s { ... }` (native loop).
 
@@ -4493,7 +4486,7 @@ inspect([1, 2, 3].reduce(0, fn (a, *xs) {
 ```
 
 This is why `range` / `iota` (variadic builtins) can be passed directly as
-callbacks. The rule is identical under the interpreter, `--jit`, and AOT.
+callbacks. The rule is identical under the VM, `--jit`, and AOT.
 
 **Callback parameter types.** A type annotation on a callback parameter is
 enforced on every invocation, exactly like a direct call — the first
@@ -4832,7 +4825,7 @@ for x in countdown(3) {
 user-defined iterators, lazy iterator method chains, `range`,
 `String.code_points()` / `.graphemes()`, and Array-eager method
 chaining on `[...].map(...).filter(...)` — runs under `--jit` with
-interpreter-equivalent semantics. The Array/String/keys fast paths
+VM-equivalent semantics. The Array/String/keys fast paths
 stay native (one load per element); iterator-protocol driving pays a
 per-step closure dispatch, which is inherent to a dynamic-language
 iterator chain. Use `iota` + `Array.map` / `.filter` / `.reduce`
@@ -5550,8 +5543,8 @@ file actually named `-` is still reachable by spelling the path, e.g. `./-`.
 | `--shell`      | Start the REPL (the default when no script is given).     |
 | `--ast`        | Print the parsed AST instead of running it.               |
 | `--debug`      | Print debug diagnostics while running.                    |
-| `--jit`        | Use the LLVM ORC JIT instead of the tree-walking interpreter. |
-| `--jit-faststart` | Like `--jit`, but skips both the IR and the machine-code optimizers, cutting JIT warmup time ~40x at a small steady-state throughput cost (~12% on pure-script hot loops, ~0% when hot work is in the C++/BLAS runtime). Implies `-O0`. Output matches `--jit`/interp. |
+| `--jit`        | Use the LLVM ORC JIT instead of the bytecode VM. |
+| `--jit-faststart` | Like `--jit`, but skips both the IR and the machine-code optimizers, cutting JIT warmup time ~40x at a small steady-state throughput cost (~12% on pure-script hot loops, ~0% when hot work is in the C++/BLAS runtime). Implies `-O0`. Output matches `--jit`. |
 | `--emit-llvm`  | With `--jit`, print the generated IR and exit.            |
 | `-O0`..`-O3`   | With `--jit`, select the LLVM optimization level. Default `-O2`. |
 | `-h`, `--help` | Print the option / command summary and exit.              |
@@ -5574,7 +5567,7 @@ packaging ones in [`deployment.md`](deployment.md).
 
 
 If no script is provided, the REPL is launched automatically. It
-always runs on the interpreter — a prompt line is never a hot loop,
+always runs on the VM's executor — a prompt line is never a hot loop,
 so `--jit` applies to scripts only and passing it here just prints a
 note. Session state is preserved across inputs: `let`, `mut`, and
 `fn` declarations from one input are visible to subsequent inputs,
@@ -5754,21 +5747,13 @@ is added for the circular-dependency case (catchable).
 
 ### Backend equivalence
 
-Both backends produce identical observable behavior for any
-module program. They differ only in how dependencies are wired
-internally:
-
-* **Interpreter.** Walks the loader's vector, evaluates each
-  dependency in a fresh `Environment`, and stores its export
-  Object in `Interpreter::module_cache_` keyed by absolute path.
-  `IMPORT_STMT` reads the cache and binds the resulting Object
-  in the importer's scope.
-* **JIT / AOT.** Compiles every module's body into the same
-  `__culebra_main` function, scope-isolated. After each
-  dependency's body, IR emits `culebra_runtime_module_register`
-  with the absolute path and the export Object. `IMPORT_STMT`
-  IR emits `culebra_runtime_module_get` with the same path and
-  binds the result.
+Both engines produce identical observable behavior for any
+module program, and both wire dependencies the same way: every
+module's body compiles into one scope-isolated program. After each
+dependency's body, the compiled code calls
+`culebra_runtime_module_register` with the absolute path and the
+export Object; `IMPORT_STMT` compiles to `culebra_runtime_module_get`
+with the same path and binds the result.
 
 The module table is a `thread_local` keyed by absolute path, so
 the same module compiled into different JIT sessions on the
@@ -5787,20 +5772,22 @@ where the failing source is itself another helper.
 
 ---
 
-## 25. Appendix: interpreter ↔ JIT divergence
+## 25. Appendix: VM ↔ JIT divergence
 
-The interpreter (`include/interpreter.h`) is normative. The JIT
-(`include/jit.h`) compiles the same AST and is required to produce
-**identical observable behavior** for every program — same return
-values, same side-effect ordering, same error `kind` / `message` /
-location. Internal representation is free to differ as long as the
-externally observable behavior matches; any deviation in observable
-behavior is a bug in the JIT.
+This document is normative. The VM's executor (`include/vm.h`) and
+the LLVM lowering (`include/vm_lowering.h`) consume the same bytecode
+from the same compiler and are required to produce **identical
+observable behavior** for every program — same return values, same
+side-effect ordering, same error `kind` / `message` / location.
+Internal representation is free to differ as long as the externally
+observable behavior matches; any deviation in observable behavior is
+a bug. A released binary is the independent second implementation the
+gates compare against (`tools/difftest/release_diff.sh`).
 
 ### Identical observable behavior
 
-The following are guaranteed identical across interpreter, JIT, and
-AOT builds:
+The following are guaranteed identical across VM, JIT, and AOT
+builds:
 
 * **Numerics (§7).** Long overflow wrap, Float IEEE-754 (NaN, inf,
   signed zero), division/modulo by zero raising
@@ -5835,44 +5822,37 @@ AOT builds:
 
 These change how the program executes but not what it observes:
 
-* **Object property storage.** The JIT uses a process-interned
-  hidden-class (Shape) layout with vector-backed slots and
-  per-callsite inline caches. The interpreter uses an insertion-
-  ordered map. Iteration order over an Object's keys is insertion
-  order on both.
-* **HOF inlining.** `array.map / filter / for_each / reduce` and
-  `range(N).<HOF>(...)` / `iter.map(λ).collect()` compile their
-  lambda bodies directly into the iteration loop. Side-effect
+* **Object property storage.** Both engines share a process-interned
+  hidden-class (Shape) layout with vector-backed slots; the JIT adds
+  per-callsite inline caches. Iteration order over an Object's keys
+  is insertion order on both.
+* **HOF inlining.** Under `--jit`, `array.map / filter / for_each /
+  reduce` and `range(N).<HOF>(...)` / `iter.map(λ).collect()` compile
+  their lambda bodies directly into the iteration loop. Side-effect
   order is preserved.
-* **Class method storage.** The JIT places methods on a shared
-  per-class meta object reached via prototype delegation; the
-  interpreter copies methods onto each instance. `obj.m` returns a
-  bound function on either backend.
-* **Cycle-collector scheduling.** Both backends run a full,
-  non-generational mark-sweep on an adaptive threshold — the
-  interpreter re-arms at twice the surviving live set (floored at
-  10,000 allocations), the JIT additionally weighs live bytes — so the
-  collect *timing* differs between backends and between runs. What a
-  program observes does not: cycle members still fire `drop` in the
-  pre-sweep pass either way (§17).
-* **Forward-reference pre-allocation.** The JIT scans each function
-  body and pre-allocates capture cells so closures compiled before
-  their `let` declaration still see the post-declaration value.
-  The interpreter resolves names dynamically against the live env.
+* **Class method storage.** Methods live on a shared per-class meta
+  object reached via prototype delegation. `obj.m` returns a bound
+  function on either engine.
+* **Cycle-collector scheduling.** Both engines share one full,
+  non-generational mark-sweep on an adaptive threshold (re-armed
+  from the surviving live set and live bytes), so the collect
+  *timing* differs between runs. What a program observes does not:
+  cycle members still fire `drop` in the pre-sweep pass (§17).
+* **Forward-reference pre-allocation.** Both engines scan each
+  function body and pre-allocate capture cells, so closures compiled
+  before their `let` declaration still see the post-declaration
+  value.
 
 ### Technical differences without behavioral impact
 
 These do not affect any program-visible behavior, but operators
 embedding Culebra should be aware:
 
-* **Cycle collector internals.** The interpreter's `InterpGC` runs a
-  precise gc_refs mark-sweep over its tracked containers (`Array`,
-  `Object`, `Tuple`, `Set`, and captured `Environment`s); the JIT uses
-  a conservative stack-scanning mark-sweep. Both reclaim every cycle
-  shape — including one routed purely through `Object` property maps —
-  so this is an implementation difference, not a behavioral one.
-* **Thread safety.** Most runtime state — the interpreter and JIT
-  garbage collectors, the defer stack, the interrupt flag — lives in
+* **Cycle collector internals.** Both engines share one conservative
+  stack-scanning mark-sweep. It reclaims every cycle shape —
+  including one routed purely through `Object` property maps.
+* **Thread safety.** Most runtime state — the garbage collector,
+  the defer stack, the interrupt flag — lives in
   a `thread_local` `Runtime`, so concurrent isolates on separate
   threads do not share it. The two process-global intern tables, the
   `ShapeRegistry` and the trait registry, are mutex-guarded.
@@ -5883,21 +5863,21 @@ embedding Culebra should be aware:
 ### Top-level drop note (§17)
 
 Top-level bindings to `drop`-bearing objects live until program exit
-without running `drop`, on either backend (see §17 for the worked
-example): the interpreter never tears down its cyclic global
-environment, and the JIT/AOT suppress drop at the top-level scope
-release to match. Use `defer` or a factory function for script-wide
-resources regardless of which backend you run on.
+without running `drop`, on either engine (see §17 for the worked
+example): the engines suppress drop at the top-level scope release.
+Use `defer` or a factory function for script-wide resources
+regardless of which lane you run on.
 
-When in doubt, the interpreter is authoritative — any JIT deviation
-in observable behavior is treated as a bug.
+When in doubt, this document is authoritative — a deviation in
+observable behavior on any lane is treated as a bug, and the two
+lanes plus the released-binary differential are what detect it.
 
 ---
 
 ## 26. Appendix: conformance test mapping
 
 Every section of this spec has at least one corresponding test file
-under `tests/`. `just test` runs interp/JIT diff, AOT diff, and
+under `tests/`. `just test` runs VM/JIT diff, AOT diff, and
 embedding C++ smoke in one pass; `just test aot` runs only the AOT
 diff. The mapping below points to the primary owner; some tests
 touch multiple sections, marked "(broad)".

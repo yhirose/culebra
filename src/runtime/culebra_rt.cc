@@ -9,26 +9,12 @@
 // `culebra_rt` CMake target.
 
 #include <culebra.h>
-#include <stdlib_interp.h>
 #include <stdlib_jit.h>
-#include <interp_sig_check.h>  // interp vs canon-sig 1:1 (assert lane; B7-f)
+#include <foreign_binding.h>  // the __Foreign.Counter wrap fixture
+                              // (tests/test_foreign.cul); registers via
+                              // static init, reached only when named
 
 // The AOT entry itself, which only a build that can emit an object needs.
 #ifdef CULEBRA_JIT_ENABLED
 #include <runtime/runtime_aot.h>
 #endif
-
-// Link anchor for the Shared.new view readers — the AOT counterpart of the one
-// in main.cc, which explains the shape. A TU that includes wrap.h (a `culebra
-// wrap` extension, or the Webview binding's feature archive) sees only
-// interpreter.h's forward declarations, so its out-of-line eval_property copy
-// leaves an undefined reference. main.cc anchors the driver and wrap links;
-// this archive is what an AOT link has instead. Internal linkage, so the two
-// anchors cannot collide if a future link ever holds both.
-namespace {
-[[gnu::used]] void* const _shared_val_reader_anchor_rt[] = {
-    reinterpret_cast<void*>(&culebra::shared_val_get_prop),
-    reinterpret_cast<void*>(&culebra::shared_val_get_index),
-    reinterpret_cast<void*>(&culebra::shared_val_make_iter),
-};
-}  // namespace

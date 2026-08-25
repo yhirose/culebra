@@ -25,5 +25,6 @@
 # such a change the old measurement is answering a different question. B5 did
 # (the corpus now diffs the executor against the lowering) and re-measured
 # first: still empty, functions and lines, compiler and emitter and runtime.
-# The next moment that calls for it is B7, where the durable suites become the
-# only readers this surface has.
+# B7-f re-measured after the tree-walker's deletion (the report's EXCLUDED
+# list dropped culebra::Interpreter:: — there is nothing left to exclude):
+# still empty, all three kinds, functions and lines.

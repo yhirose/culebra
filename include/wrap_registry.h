@@ -46,10 +46,9 @@ inline std::vector<WrappedNsRow>& wrapped_ns_rows() {
   return v;
 }
 // Every wrapped class's (ns, name), whether or not it declared any
-// ctor/static rows: the compiled lanes bind an (empty) class sub-object for
-// a rowless class too, mirroring the interp's registry walk. Pushed by
-// ~ClassBinder alongside wrapped_classes() (wrap.h, the interp-side builder
-// registry, which dies with the tree-walker).
+// ctor/static rows: the engines bind an (empty) class sub-object for a
+// rowless class too. Pushed by ~ClassBinder (wrap.h); the AOT gate reads
+// the ns column to decide whether a program links the wrapped library.
 struct WrappedClassName {
   std::string ns;
   std::string name;

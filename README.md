@@ -6,7 +6,7 @@ Culebra Programming Language
 > **Status:** pre-1.0 and under active development — APIs and syntax may change.
 
 A dynamically-typed cross-platform scripting language with three
-backends: an interpreter, an LLVM JIT, and an ahead-of-time build that
+backends: a bytecode VM, an LLVM JIT, and an ahead-of-time build that
 emits a standalone binary. Write scripts, CLI tools, machine learning,
 desktop apps, and games.
 
@@ -38,7 +38,7 @@ for p in people.sorted_by(|p| p.name) {
 }
 EOF
 
-culebra hello.cul                            # interpreter
+culebra hello.cul                            # the bytecode VM (default)
 culebra --jit hello.cul                      # JIT
 culebra build hello.cul -o hello && ./hello  # AOT: compile once, ship the binary
 cat hello.cul | culebra -                    # stdin (curl ... | culebra - also works)
@@ -90,7 +90,7 @@ Highlights
 - **CLI script.** Cold start in tens of milliseconds.
 - **Standalone binary.** `culebra build` emits a single executable —
   nothing to install alongside it, no runtime dependencies.
-- **Embedded library.** Embeds the interpreter into a C++ host.
+- **Embedded library.** Embeds the bytecode VM into a C++ host.
 - **Cross-platform.** macOS / Linux / Windows; cross-compile to any
   LLVM target from any host.
 
@@ -154,7 +154,7 @@ Tensor.eval(y)  # [[5.0, 11.0], [11.0, 25.0]]
 ### Embedded assets
 
 `Embed.dir(name)` hands a directory of files to your program with no
-code change across backends: the interpreter and JIT read it live
+code change across backends: the VM and JIT read it live
 from disk — edit a file, rerun — and `culebra build` bakes every byte
 into the executable, so the shipped binary needs nothing alongside it.
 
@@ -214,7 +214,7 @@ Language features
   Union, Optional, Tuple, Trait and Generic all check today.
 - **UFCS.** Free functions callable as methods (`x.f(y)` ≡ `f(x, y)`).
 - **Multiple dispatch.** Free functions dispatch on argument types
-  across interp / JIT / AOT.
+  across VM / JIT / AOT.
 - **Traits.** Built-in `Iterable` / `Iterator`; user-defined traits
   with default methods.
 - **Closures and `class` form.** Both supported, same encapsulation
@@ -273,24 +273,21 @@ Cross-compile is also supported. Binary sizes per feature axis are in
 Embedding in a C++ host
 -----------------------
 
-The interpreter (no LLVM dependency) embeds into a C++23 host
-via a minimal environment API:
+The bytecode VM (no LLVM dependency) embeds into a C++23 host
+via a minimal session API:
 
 ```cpp
 #include <culebra.h>
-#include <stdlib_interp.h>
+#include <vm_embed.h>
 
 int main() {
-  auto env = culebra::environment();  // stdlib bound
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;   // stdlib installed, traits registered
 
-  // parse()'s AST holds string_view tokens into this buffer, so it must
-  // outlive the AST — keep it in a named variable, not a temporary.
-  std::string src = "1 + 2";
+  culebra::vm::Value val;
   std::vector<std::string> msgs;
-  auto ast = culebra::parse("<inline>", src, msgs);
-
-  culebra::Value val;
-  culebra::interpret(ast, env, val, msgs, culebra::Debugger());
+  embed.run_source("<inline>", "1 + 2", val, msgs);
   // val.to_long() == 3
 }
 ```
@@ -301,8 +298,9 @@ for the JIT path, threading, and host-function registration.
 Design choices
 --------------
 
-- **Two backends, one AST.** Interpreter and JIT both maintained;
-  no plan to consolidate.
+- **Two backends, one compiler.** The bytecode VM and the JIT share
+  one parser, AST, and bytecode compiler; both maintained, no plan to
+  consolidate.
 - **Predictable threaded concurrency.** No `async`/`await`. Stack
   traces stay readable, the debugger sees every frame, and library
   authors don't write a colored version of every function. Targeted
@@ -347,9 +345,9 @@ binaries, and BLAS-class numerics.
 - Tensor lands in the BLAS-bound cluster with numpy / Julia / PyTorch
   CPU on the MNIST MLP. See [`benchmarks/mnist/`](benchmarks/mnist/)
   and [`benchmarks/microgpt/`](benchmarks/microgpt/).
-- JIT is tens of times faster than the interpreter on compute-bound
-  loops.
-- Allocator-heavy code can favor the interpreter.
+- The JIT is fastest on compute-bound loops.
+- The bytecode VM is the tier-0 default: no JIT warmup, no LLVM
+  dependency.
 
 Documentation
 -------------

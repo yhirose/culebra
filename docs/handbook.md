@@ -3,8 +3,8 @@ The Culebra Guide
 
 A dynamically-typed scripting language: immutable bindings by default,
 blocks that evaluate to a value, and pattern matching in the core. Two
-backends share one AST — a tree-walking interpreter and an LLVM ORC
-JIT. This guide walks you from "hello" to embedding Culebra in a C++
+backends share one parser, AST, and bytecode compiler — a bytecode VM
+and an LLVM ORC JIT. This guide walks you from "hello" to embedding Culebra in a C++
 host. For the formal grammar see [`language.md`](language.md); for the
 API reference see [`stdlib.md`](stdlib.md).
 
@@ -50,11 +50,11 @@ Contents
 
 Read this once; the rest of the guide assumes these choices.
 
-- **Two backends, one AST.** A tree-walking interpreter and an LLVM
-  ORC JIT share the same AST. The interpreter has no LLVM dependency
-  (a ~23 MB driver against ~82 MB once LLVM is linked in); the JIT
-  runs the same program at `-O2`. Both are maintained — neither is
-  going away.
+- **Two backends, one compiler.** A bytecode VM and an LLVM ORC JIT
+  share the same parser, AST, and bytecode compiler. The VM has no
+  LLVM dependency (a ~23 MB driver against ~82 MB once LLVM is linked
+  in); the JIT runs the same program at `-O2`. Both are maintained —
+  neither is going away.
 - **Eight everyday types.** `Nil`, `Bool`, `Long`, `Float`, `String`,
   `Array`, `Object`, `Function`, plus four specialized ones
   (`StringView`, `Tuple`, `Set`, `Tensor`). Everything else (classes,
@@ -128,13 +128,13 @@ culebra init
 ### 1.2 Build from source
 
 Needed only to track master or to work on Culebra itself. `just build`
-produces the interpreter, and the JIT too if LLVM 20+ is installed:
+produces the bytecode VM, and the JIT too if LLVM 20+ is installed:
 
 ```bash
 just build              # with JIT
-just build-no-jit       # no LLVM: interpreter + bytecode VM, ~23 MB
+just build-no-jit       # no LLVM: the bytecode VM only, ~23 MB
 just dev                # fast no-LTO -O1 build into build-dev/ (inner loop)
-just test-dev           # quick interp==JIT check vs build-dev/ (after each edit)
+just test-dev           # quick VM==JIT check vs build-dev/ (after each edit)
 just test               # all backends + embed smoke (parallel; JOBS=1 to serialize)
 just test wrap          # `culebra wrap` end-to-end (not part of `just test`)
 just test-assert        # same sweep, built without NDEBUG so asserts run
@@ -152,15 +152,15 @@ A Culebra source file uses the `.cul` extension. Run it with the
 
 ```bash
 echo "inspect('hello, culebra!')" > hello.cul
-culebra hello.cul                    # interpreter
+culebra hello.cul                    # the bytecode VM (default)
 culebra --jit hello.cul              # JIT (same output)
 culebra --jit-faststart hello.cul    # JIT, fast startup
-culebra --shell                      # REPL (always the interpreter)
+culebra --shell                      # REPL (always the VM)
 culebra --help                       # all options and commands
 ```
 
 All three backends produce identical observable output (the whole
-interp↔JIT differential corpus is verified). `--jit-faststart` skips both
+VM↔JIT differential corpus is verified). `--jit-faststart` skips both
 the IR and the machine-code optimizers, which cuts **JIT warmup**
 (startup/codegen time) by roughly **40x** for a small steady-state cost —
 about 12% on pure-script hot loops, and ~0% when the heavy work lives in
@@ -1807,7 +1807,7 @@ bundled VSCode, Zed and Vim integrations are already wired to it.
 `culebra dap` speaks the Debug Adapter Protocol over stdio, so
 breakpoints, stepping, call stacks, watch expressions and editing a `mut`
 variable mid-run all work in any DAP-capable editor. Your editor launches
-the adapter; you rarely run it by hand. Debugging runs in the interpreter
+the adapter; you rarely run it by hand. Debugging runs on the VM
 — don't pass `--jit`.
 
 A bare `debugger` statement in the source forces a stop wherever you put

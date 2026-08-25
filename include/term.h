@@ -23,6 +23,27 @@
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
+// termios.h defines CR0..CR3, NL0..NL1, TAB0..TAB3, BS0..BS1, FF0..FF1,
+// VT0..VT1 as numeric constants for output-mode delay flags. They leak into
+// every includer and clash with downstream identifiers (LLVM's
+// ConstantRange.h takes parameters named CR1/CR2), so drop them here —
+// the same cleanup vendor/cpp-linenoise/linenoise.hpp does.
+#undef CR0
+#undef CR1
+#undef CR2
+#undef CR3
+#undef NL0
+#undef NL1
+#undef TAB0
+#undef TAB1
+#undef TAB2
+#undef TAB3
+#undef BS0
+#undef BS1
+#undef FF0
+#undef FF1
+#undef VT0
+#undef VT1
 #endif
 
 #include <os_compat.h>  // os_isatty + guarded <windows.h> (console size on Windows)

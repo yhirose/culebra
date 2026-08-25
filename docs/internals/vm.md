@@ -2145,3 +2145,63 @@ lane that missed this class of bug once now trips on it in CI. On native
 builds the whole protocol folds away to the previous behavior; explicit
 collects (`GC.stat`) gate the same way on wasm, so under a helper they defer
 rather than sweep.
+
+### 13.10 The deletion
+
+Seven batches, ordered by one principle borrowed from §3: put the
+verifications that need both engines alive before the deletions that end
+that condition. Everything up to the embedding switch was reversible;
+`--tree` was still answering right until the batch that removed it.
+
+The plan's inventory missed three loads the tree-walker was still
+carrying, and finding them — not deleting files — was most of the work.
+First, **the signatures were the interpreter's.** Every compiled lane
+answered "what are `Math.pow`'s parameters" by building the interp's
+entire stdlib environment at runtime and reading the `FunctionValue` —
+1,601 of the AOT archive's 7,322 `culebra::` symbols were that
+machinery. The replacement is a generated table (`canon_sigs.gen.h`),
+emitted by a tool that ran while both existed and asserted 1:1 agreement
+with the environment it replaced; the generator retired with the engine,
+and the table is now the canon a signature edit maintains by hand.
+Second, **the compiler's include graph ran through the engine it was
+outliving**: `vm.h` reached `interpreter.h` transitively, so B7-b split
+the carrier headers (the kernels, the preamble machinery, the isolate
+core, the send-tree) until a TU holding `vm.h` alone compiled with zero
+interp headers, and a ratchet held the cut. Third, **the oracles**: the
+vm_cases baseline, the leak-fuzz reference lane and the corpus generator
+were all pinned to `--tree`. Each was re-pointed while the tree-walker
+could still countersign the goldens it was handing over (§13.5's
+release-diff is the independent second opinion that outlives it).
+
+The embedding API moved last among the reversible batches: `vm::Embed`
+(deployment.md §2) replaces `environment()` / `interpret` / `call` /
+`define`, with the smokes keeping their contracts across the switch.
+Then the two irreversible batches: B7-e deleted the five engine sites
+and the flag — after which `--tree` is an unknown option and
+`--version` says `vm+jit` — and B7-f deleted the body: `interpreter.h`,
+what remained of `stdlib_interp.h`, the interp REPL and debugger, the
+interp halves of `wrap.h` and the isolate/sendable layer, and the
+drift checks whose other side no longer existed.
+
+Two details from the last batch are worth keeping. The undefined-variable
+lint's builtin-name set had been read out of the interp environment; it
+is now materialized from the same predicates the compilers resolve names
+with (`builtin_var_names` + the ns tables + the lazy groups), so the
+lint and the engine cannot disagree about what a bare name means. And
+the first compile after the deletion failed inside LLVM's headers:
+`termios.h` defines `CR1` as a macro, `term.h` had always leaked it, and
+the include order that used to shield LLVM — linenoise's `#undef` block
+arriving first via the interp REPL — left with the REPL that carried it.
+The `#undef` now lives where the include is.
+
+The bill, measured on the same machine before and after B7-f: the AOT
+runtime archive halved (20.2 → 10.3 MB), the driver binary lost 6 MB
+(84.8 → 78.7 MB), and the archive's defined `culebra::` symbols went
+from 6,433 to 1,472 — with the interp-environment machinery's share at
+exactly zero, which is what the inventory's 1,601-symbol figure had
+predicted the deletion was worth.
+
+What the deletion did not change is the point of the whole phase:
+`tools/difftest/release_diff.sh` compares this tree against the last
+released binary — v0.3.1, the final release with both engines — and the
+deletion batches landed with its allowlist empty.

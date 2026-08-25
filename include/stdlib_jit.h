@@ -54,6 +54,7 @@
 #include <fstream>
 #include <limits>
 #include <numbers>  // std::numbers::pi / ::e (Math.pi / Math.e; portable vs M_PI)
+#include <set>      // builtin_global_names (the lint's name universe)
 #include <os_compat.h>  // os_setenv / os_strptime (setenv / strptime shims)
 #include <system_error>
 #include <unistd.h>  // isatty (IO.*_is_terminal)
@@ -2784,11 +2785,9 @@ CULEBRA_RT_INLINE JitValue _culebra_stdin_build_handle() {
 
 #if defined(CULEBRA_SQLITE_ENABLED)
 // ===========================================================================
-// SQLite — JIT/AOT mirror of the interp Database/Statement handles (see
-// stdlib_interp.h). The value-neutral cursor core (sqlite.h) is shared; only
-// the value marshalling differs (JitValue/JitObject/JitArray here, Value/
-// ObjectValue there). Kept byte-for-byte symmetric with the interp; the debug
-// drift check (_check_canon_sigs_once) catches a forgotten JIT registration.
+// SQLite — Database/Statement handles over the value-neutral cursor core
+// (sqlite.h); this layer only does the JitValue/JitObject/JitArray
+// marshalling.
 // ===========================================================================
 
 [[noreturn]] CULEBRA_RT_INLINE void _jit_sqlite_throw(const std::string& msg,
@@ -3144,11 +3143,9 @@ CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
 #endif  // CULEBRA_SQLITE_ENABLED
 
 // ===========================================================================
-// Net — JIT/AOT mirror of the interp Socket/Listener/UdpSocket handles (see
-// stdlib_interp.h). The value-neutral socket core (net.h) is shared, framing
-// and all: only the value marshalling differs (JitValue/JitObject here,
-// Value/ObjectValue there). The debug drift check (_check_canon_sigs_once)
-// catches a forgotten JIT registration.
+// Net — Socket/Listener/UdpSocket handles over the value-neutral socket
+// core (net.h), framing and all; this layer only does the JitValue/JitObject
+// marshalling.
 // ===========================================================================
 
 [[noreturn]] CULEBRA_RT_INLINE void _jit_net_throw(const char* ctx,
@@ -8511,25 +8508,10 @@ inline JitClosure* _jit_lazy_fn_closure(_JitNamespaceTable& t,
   return cls;
 }
 
-// The interp-vs-generated-table 1:1 check moved to interp_sig_check.h
-// (Phase 4 B7-b): it reads the tree-walker's own tables, which this header
-// no longer sees. TUs that hold both stacks (main.cc, culebra_rt.cc)
-// include that header, whose static init installs the check here; a TU
-// without the interp simply has nothing to run. Hook and check both go
-// away with the tree-walker in B7-f.
-inline void (*&_canon_sig_check_hook())() {
-  static void (*hook)() = nullptr;
-  return hook;
-}
-inline void _check_canon_sigs_once() {
-  if (auto* h = _canon_sig_check_hook()) h();
-}
-
 extern "C" {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_namespace_get(const char* name,
                                int8_t* out_tag, int64_t* out_data) {
-  _check_canon_sigs_once();
   std::string nm(name ? name : "");
   // Bare builtin function used as a value (`let f = inspect`, `map(type_of)`,
   // `assert_eq`). Checked before the namespace lookup since these names are
@@ -9130,7 +9112,10 @@ inline void JitExtension::declare_runtime(JIT& jit) {
 }
 #endif  // CULEBRA_JIT_ENABLED
 
-inline bool JitExtension::is_builtin_var(const std::string& name) {
+// The namespaces and bare native globals the compiled lanes resolve without
+// a binding. Named so the undefined-variable lint (main.cc) can materialize
+// the same universe is_builtin_var answers for.
+inline const std::unordered_set<std::string_view>& builtin_var_names() {
   static const std::unordered_set<std::string_view> names = {
       "inspect", "print",   "println",   "repeat",
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
@@ -9159,7 +9144,11 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Desktop",
 #endif
   };
-  if (names.contains(name)) return true;
+  return names;
+}
+
+inline bool JitExtension::is_builtin_var(const std::string& name) {
+  if (builtin_var_names().contains(name)) return true;
   if (!culebra::lazy_fn_group_of(name).empty()) return true;
   // wrap.h-declared namespaces (e.g. __Foreign) — registry-driven.
   for (const auto& m : _wrapped_ns_methods()) {
@@ -9168,5 +9157,25 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   return false;
 }
 
+// Every bare name the engines resolve without a binding, materialized as a
+// set for the load-stage undefined-variable lint (lint.h's
+// builtin_names_hook; main.cc installs it). Built here, from the same tables
+// is_builtin_var and the compilers' is_stdlib_global read, so the lint and
+// the engines cannot disagree about what a bare name means: a clause added
+// to either predicate is a table this composition already walks.
+inline const std::set<std::string, std::less<>>& builtin_global_names() {
+  static const std::set<std::string, std::less<>> names = [] {
+    std::set<std::string, std::less<>> s;
+    for (auto n : builtin_var_names()) s.emplace(n);
+    for (const auto& m : kBuiltinFns) s.emplace(m.name);
+    for (const auto& g : lazy_fn_groups())
+      for (auto m : g.members) s.emplace(m);
+    // wrapped_class_names, not _wrapped_ns_methods: a rowless wrapped class
+    // still binds its (empty) class object, so its ns is a resolvable name.
+    for (const auto& m : wrapped_class_names()) s.emplace(m.ns);
+    return s;
+  }();
+  return names;
+}
 
 }  // namespace culebra

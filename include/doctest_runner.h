@@ -199,11 +199,9 @@ struct DocRunOutcome {
 
 // How one block is parsed and run. The runner owns everything around it —
 // finding the blocks, capturing stdout, comparing the markers, reporting —
-// so an engine is exactly this function: the interpreter's is `interpret`
-// against a fresh env, and each compiled lane's is its own compile + run.
-// A block is independent of every other, which for the compiled lanes means
-// a Runtime of its own (their namespace caches, class and overload
-// registries live there, as the interpreter's live in its env).
+// so an engine is exactly this function: each lane's own compile + run.
+// A block is independent of every other, which means a Runtime of its own
+// (the namespace caches, class and overload registries live there).
 using BlockRunner =
     std::function<DocRunOutcome(const std::string& name,
                                 const std::string& code)>;
@@ -297,9 +295,8 @@ inline TestRunSummary run_doctests(
       // Reap whatever this block left outstanding (e.g. a doc example that
       // throws past an unreached join()) — ScriptTeardownGuard
       // (script_teardown.h), scoped to the rest of this loop iteration, so it
-      // fires once per doc block instead of once per script run
-      // (interpret_modules) or once per REPL session (repl.h): each doc
-      // block is its own fresh env / run.
+      // fires once per doc block instead of once per script run or REPL
+      // session: each doc block is its own fresh run.
       ScriptTeardownGuard script_teardown_guard;
       if (!outcome.ok && outcome.kind == "SyntaxError") {
         emit_fail(name, source, outcome.kind, outcome.message, captured);
