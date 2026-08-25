@@ -107,7 +107,19 @@ inline bool fn_body_has_yield(const peg::Ast& node) {
 // class/trait declaration in a lowered body is refused a few checks later as
 // unsupported control flow; stopping here just picks that accurate error over
 // a misleading one about `self`. Non-reference identifiers are skipped too:
-// property names (`x.self`), object keys, and kwarg labels.
+// property names (`x.self`) and the label positions `is_label_position` names.
+// A plain-identifier child that is a label, not a reference: OBJECT_PROPERTY
+// `{name: v}` (key at 1, after MUTABLE; the 2-child shorthand `{name}` IS a
+// reference and falls through) and KWARG `f(name: v)` (key at 0). Every walk
+// that asks "is this name read here" has to skip these.
+inline bool is_label_position(const peg::Ast& parent, size_t i) {
+  using namespace peg::udl;
+  if (parent.nodes[i]->tag != "IDENTIFIER"_) return false;
+  return (parent.tag == "OBJECT_PROPERTY"_ && i == 1 &&
+          parent.nodes.size() >= 3) ||
+         (parent.tag == "KWARG"_ && i == 0);
+}
+
 inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
   using namespace peg::udl;
   if (node.tag == "CLASS_DECL"_ || node.tag == "TRAIT_DECL"_) return nullptr;
@@ -116,14 +128,7 @@ inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
     return &node;
   for (size_t i = 0; i < node.nodes.size(); i++) {
     const auto& c = *node.nodes[i];
-    // A plain-identifier key is a label, not a reference: OBJECT_PROPERTY
-    // `{self: v}` (key at 1, after MUTABLE; the 2-child shorthand `{self}`
-    // IS a reference and falls through) and KWARG `f(self: v)` (key at 0).
-    if (c.tag == "IDENTIFIER"_ &&
-        ((node.tag == "OBJECT_PROPERTY"_ && i == 1 &&
-          node.nodes.size() >= 3) ||
-         (node.tag == "KWARG"_ && i == 0)))
-      continue;
+    if (is_label_position(node, i)) continue;
     if (node.tag == "OBJECT_PROPERTY"_ && is_fn_boundary(c.tag)) continue;
     if (auto* s = find_self_ref_in_fn_body(c)) return s;
   }
@@ -267,9 +272,10 @@ inline std::string_view strip_block_braces(std::string_view s) {
   return s;
 }
 
-// Rewrite every standalone `<name>` in `src` to `self.<name>` for each
-// name in `names`, then strip `let `/`mut ` prefixes that now sit in
-// front of `self.X` (assignment, no longer declaration).
+// Rewrite every standalone `<name>` in `src` to where that promoted local
+// lives — `self.<name>`, or `_bx_<name>.v` for a boxed one (`promoted_slot`)
+// — then strip the `let `/`mut ` prefixes that now sit in front of an
+// assignment rather than a declaration.
 //
 // The match requires the identifier NOT be preceded by `.` — so a
 // member access like `arr.size()` is left alone even when a local/param
@@ -655,12 +661,29 @@ inline std::string box_local(std::string_view name) {
   return "_bx_" + std::string(name);
 }
 
-// Bind every boxed local at a state-machine method's entry.
+// Where a promoted name lives, as source: the box's field when it is boxed,
+// the instance slot otherwise. The single definition of the spelling — the
+// locals rewrite reads through it and every synthesized store writes through
+// it, so the two cannot drift.
+inline std::string promoted_slot(const PromotedLocals& promoted,
+                                 const std::string& name) {
+  return promoted.boxed.contains(name) ? box_local(name) + ".v"
+                                       : "self." + name;
+}
+
+// Bind the boxed locals `body` names, for prepending to it. Every emitted
+// method that carries body source needs this — the box is reached as a plain
+// local, so without the binding the lowered source names a free `_bx_<name>`.
+// Taking the body rather than a flag is what keeps that rule from being
+// re-decided per method: a method that mentions no box gets no prologue, and
+// one that mentions a box cannot be given the wrong set.
 inline std::string emit_box_prologue(const PromotedLocals& promoted,
-                                     std::string_view indent) {
+                                     std::string_view body) {
   std::string out;
   for (const auto& n : promoted.boxed) {
-    out += std::format("{}let {} = self.{}\n", indent, box_local(n), n);
+    auto local = box_local(n);
+    if (body.find(local) == std::string_view::npos) continue;
+    out += std::format("      let {} = self.{}\n", local, n);
   }
   return out;
 }
@@ -689,26 +712,29 @@ inline std::string rewrite_locals_to_self(std::string_view src,
   // `self.<name>` after this. Neither is decided here — both backends check
   // the slot's owner (culebra::is_lowered_state_class), which is the only
   // place that sees every spelling a call can take.
-  // A boxed name absorbs a `let` / `mut` in front of it in the same pass (its
-  // declaration is a store into the box the ctor already made). The `self.`
-  // spelling can't: it is also produced by the strips above, which have to
-  // run after every name is in place.
+  // A boxed name absorbs a `let` / `mut` in front of it in the same pass: its
+  // declaration is a store into the box the ctor already made. Stripping the
+  // keyword by prefix instead (the way the two statics above do it for
+  // `self.`) would also strip it from a local a closure declares under a
+  // `_bx_`-shaped name of its own, which this pass never rewrote.
+  // The replacement is built here too, so the span loop below does no per-name
+  // work — the same reason the patterns are.
   std::vector<std::regex> pats;
+  std::vector<std::string> reps;
   pats.reserve(sorted.size());
+  reps.reserve(sorted.size());
   for (const auto& name : sorted) {
     std::string decl =
         promoted.boxed.contains(name) ? "(?:let\\s+|mut\\s+)?" : "";
     pats.emplace_back("(^|\\.\\.|[^.A-Za-z0-9_])" + decl + name + "\\b");
+    reps.emplace_back("$1" + promoted_slot(promoted, name));
   }
   // Rewrite only the code spans (see rewrite_outside_strings): an identifier
   // that appears as literal text inside a string / comment is left untouched.
   auto rewrite_code = [&](std::string_view code) -> std::string {
     std::string out(code);
     for (size_t k = 0; k < sorted.size(); k++) {
-      out = std::regex_replace(out, pats[k],
-                               promoted.boxed.contains(sorted[k])
-                                   ? "$1" + box_local(sorted[k]) + ".v"
-                                   : "$1self." + sorted[k]);
+      out = std::regex_replace(out, pats[k], reps[k]);
     }
     out = std::regex_replace(out, strip_let_self, "self.");
     out = std::regex_replace(out, strip_mut_self, "self.");
@@ -748,37 +774,52 @@ inline std::set<std::string> collect_local_names(const peg::Ast& body) {
 // matter here, and a name this body promoted keeps its meaning inside one
 // (a handle body cannot redeclare an enclosing binding). What a handle reads
 // outside any closure still goes through the enclosing-instance path.
+//
+// The answer must be a SUPERSET of the true capture set: an extra box costs
+// one object, a missing one silently restores the cycle this exists to break
+// (which only the leak-fuzz corpus would notice, and only for a shape it
+// already carries). That is why the boundary set is `is_fn_boundary` and NOT
+// fn_analysis.h's — DEFER is a closure boundary there, and these transforms
+// inline defer bodies into the dispose / finalize methods, where they run in
+// the same scope as the rest of the body.
 inline std::set<std::string> collect_captured_names(
     const peg::Ast& body, const std::set<std::string>& promoted) {
   using namespace peg::udl;
   std::set<std::string> out;
-  std::set<std::string> own;  // named fns whose own name is in scope here
+  // Named fns whose own name is in scope, innermost last.
+  std::vector<std::string_view> own;
   std::function<void(const peg::Ast&, bool)> walk = [&](const peg::Ast& n,
                                                         bool in_fn) {
     if (in_fn && n.tag == "IDENTIFIER"_ && n.original_tag != "DOT"_ &&
-        n.original_tag != "SAFE_DOT"_) {
+        n.original_tag != "SAFE_DOT"_ &&
+        std::find(own.begin(), own.end(), n.token) == own.end()) {
       auto name = std::string(n.token);
-      if (promoted.contains(name) && !own.contains(name)) out.insert(name);
+      if (promoted.contains(name)) out.insert(std::move(name));
     }
-    std::optional<std::string> pushed;
-    if (n.tag == "MULTIFN_DECL"_ && !n.nodes.empty()) {
-      auto name = std::string(n.nodes[first_non_decorator_index(n)]->token);
-      if (own.insert(name).second) pushed = std::move(name);
-    }
+    bool decl = n.tag == "MULTIFN_DECL"_ && !n.nodes.empty();
+    if (decl) own.push_back(n.nodes[first_non_decorator_index(n)]->token);
     bool inner = in_fn || is_fn_boundary(n.tag);
     for (size_t i = 0; i < n.nodes.size(); i++) {
-      const auto& c = *n.nodes[i];
-      // Label positions, not references — the same two the `self` walk skips.
-      if (c.tag == "IDENTIFIER"_ &&
-          ((n.tag == "OBJECT_PROPERTY"_ && i == 1 && n.nodes.size() >= 3) ||
-           (n.tag == "KWARG"_ && i == 0)))
-        continue;
-      walk(c, inner);
+      if (is_label_position(n, i)) continue;
+      walk(*n.nodes[i], inner);
     }
-    if (pushed) own.erase(*pushed);
+    if (decl) own.pop_back();
   };
   walk(body, false);
   return out;
+}
+
+// Everything a lowered body promotes: its locals plus the enclosing fn's
+// params, and which of them a closure reads. One factory so the two transforms
+// cannot compute `boxed` from a different body or a different name set than
+// the rewrite will use.
+inline PromotedLocals make_promoted_locals(
+    const peg::Ast& body, std::set<std::string> locals,
+    const std::vector<std::string_view>& param_names) {
+  PromotedLocals p{std::move(locals), {}};
+  for (auto& pn : param_names) p.names.insert(std::string(pn));
+  p.boxed = collect_captured_names(body, p.names);
+  return p;
 }
 
 // Unwrap a STATEMENT wrapper down to the concrete tag (CLASS_DECL,
@@ -1009,14 +1050,15 @@ inline std::vector<std::string_view> collect_positional_param_names(
 inline void emit_ctor_param_and_local_inits(
     const std::vector<std::string_view>& param_names,
     const std::set<std::string>& locals,
-    const std::set<std::string>& boxed,
+    const PromotedLocals& promoted,
     std::string& ctor_params,
     std::string& ctor_call_args,
     std::string& ctor_inits) {
   // A boxed slot holds the box, made once here; every later store goes into
-  // its `v` field, so the box the closures captured stays the live one.
+  // its `v` field (promoted_slot), so the box the closures captured stays the
+  // live one.
   auto init = [&](const std::string& name, std::string_view value) {
-    return boxed.contains(name)
+    return promoted.boxed.contains(name)
                ? std::format("      self.{} = {{mut v: {}}}\n", name, value)
                : std::format("      self.{} = {}\n", name, value);
   };
@@ -1288,10 +1330,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
 
   auto param_names = collect_positional_param_names(params_ast);
   auto locals = collect_local_names(*ast->nodes.back());
-  PromotedLocals rewrite_set{locals, {}};
-  for (auto& pn : param_names) rewrite_set.names.insert(std::string(pn));
-  rewrite_set.boxed =
-      collect_captured_names(*ast->nodes.back(), rewrite_set.names);
+  auto rewrite_set =
+      make_promoted_locals(*ast->nodes.back(), locals, param_names);
 
   CpsBuilder b{src, rewrite_set, {}};
   b.terminal = b.fresh();
@@ -1313,7 +1353,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   for (size_t k = 0; k < b.defer_bodies.size(); k++) {
     ctor_inits += std::format("      self._g_defer_{} = false\n", k);
   }
-  emit_ctor_param_and_local_inits(param_names, locals, rewrite_set.boxed,
+  emit_ctor_param_and_local_inits(param_names, locals, rewrite_set,
                                   ctor_params, ctor_call_args, ctor_inits);
 
   std::string dispatch;
@@ -1330,10 +1370,9 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
     defer_runs += std::format(
         "      if self._g_defer_{} {{ {} }}\n", k, b.defer_bodies[k]);
   }
-  // Boxed locals are reached as plain locals; bind them at the entry of each
-  // method whose body can name one (the dispatch, and the defers dispose runs).
-  auto box_prologue = emit_box_prologue(rewrite_set, "      ");
-  if (!defer_runs.empty()) defer_runs = box_prologue + defer_runs;
+  // Each method that carries body source binds the boxes that source names.
+  defer_runs = emit_box_prologue(rewrite_set, defer_runs) + defer_runs;
+  auto box_prologue = emit_box_prologue(rewrite_set, dispatch);
 
   auto synthesized = std::make_shared<std::string>(std::format(
       "fn __gen_wrapper__() {{\n"

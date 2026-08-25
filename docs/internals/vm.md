@@ -659,6 +659,15 @@ closure, a defer body, multi-shot resume over a boxed local, a named fn
 called from a closure declared before or after it, and a local read by a
 closure and a nested handle at once.
 
+One thing a box is not free to change is what a *fork* isolates. A
+multi-shot `resume` forks by shallow-copying every frame, so a promoted
+scalar was copied per fork; a box is a heap value, and the copy aliased
+it — two forks would have written the same local. The frame therefore
+finishes its own clone: every computation now also exposes
+`_eff_refork()`, which re-boxes its boxed locals, and the driver's
+`_fork` calls it on each copy. What the body itself shares — an array it
+pushes into — stays aliased across forks, as it always did.
+
 The stdlib then arrived through the runtime layer, exactly as the
 Phase 1 sketch has it ("most of the stdlib arrives through the
 runtime binding — no third stdlib port"): one new op, `NsGet`,

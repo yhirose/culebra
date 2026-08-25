@@ -278,6 +278,33 @@ assert_eq(
   [11, 12],
 )
 
+// ... and the same when the closure ESCAPES the fork. A fork is a shallow copy
+// of the frame, so the box a closure reads a local through has to be re-made
+// per fork (`_eff_refork`) or every fork would share the one the snapshot
+// holds — the scalar it replaced was copied per fork.
+effect fn nf_escape() {
+  let x = perform nf_pick(1, 2)
+  let g = fn () { x }
+  g
+}
+let nf_gs = handle { nf_escape() } with nf_pick(a, b, r) { [r(a), r(b)] }
+assert_eq([nf_gs[0](), nf_gs[1]()], [1, 2])
+
+// a heap value the body itself shares stays aliased across forks, as ever
+effect fn nf_alias() {
+  let acc = []
+  let push = fn (k) { acc.push(k) }
+  let x = perform nf_pick(1, 2)
+  push(x)
+  acc
+}
+mut nf_seen = []
+handle { nf_alias() } with nf_pick(a, b, r) {
+  nf_seen.push(r(a))
+  nf_seen.push(r(b))
+}
+assert_eq(nf_seen[0], [1, 2])
+
 // a closure that WRITES a body local: the write is visible to the body and to
 // the next call, across a suspension
 effect fn nf_write() {

@@ -20,8 +20,8 @@
 # reaching a non-tail clause captures the WHOLE frame stack as the
 # continuation, so `resume` re-runs the enclosing computation across
 # delegate boundaries. Each `resume` clones every
-# frame (`__eff_copy`, a native shallow object copy) and drives the fresh copy,
-# leaving the snapshot intact — that is what makes a continuation multi-shot.
+# frame (`_fork` below) and drives the fresh copy, leaving the snapshot intact
+# — that is what makes a continuation multi-shot.
 #
 # Handler clauses are classified at parse time (t on each frame entry):
 #   "t" tail-resumptive — `resume(v)` exactly once, in tail position
@@ -77,6 +77,18 @@ let _eff_module = fn () {
       message: "effect '{op}' reached a full-control handler (non-tail `resume`) from outside an `effect fn`; declare the performing fn as `effect fn` so the continuation can be captured",
       line: line,
     }
+  }
+
+  # One frame of a fork: the native shallow copy, then the frame's own chance
+  # to finish it. A body local some closure reads lives in a box (so the
+  # closure captures the box rather than the frame), and the shallow copy
+  # aliases that box — every fork would then write the same one, where the
+  # scalar it replaced was copied per fork. `_eff_refork` re-boxes them, so a
+  # fork's locals are its own whether or not a closure reads them.
+  fn _fork(comp) {
+    let c = __eff_copy(comp)
+    c._eff_refork()
+    c
   }
 
   # Run each abandoned frame's deferred cleanup, innermost (deepest) first.
@@ -184,7 +196,7 @@ let _eff_module = fn () {
         let is_abort = h.t == "a"
         let snapshot = stack  # frozen at the suspend point; forks clone it
         let resume = fn (v) {
-          _drive(snapshot.map(|c| __eff_copy(c)), v, ret)
+          _drive(snapshot.map(fn (c) { _fork(c) }), v, ret)
         }
         # An "a" clause never mentions `resume`, so — like the tail path — a
         # throw out of it abandons the frames: finalize. An "f" clause may

@@ -97,7 +97,6 @@ inline std::set<std::string> collect_effect_fn_names(const peg::Ast& root) {
 struct EffSuspension {
   enum Kind { Perform, Delegate } kind;
   std::string target;      // local bound to the result (empty = discarded)
-  std::string slot;        // lvalue `target` stores through (promoted_slot)
   bool binds = false;      // true when the statement was `let target = …`
   std::string op;          // Perform: operation name
   std::string args_array;  // Perform: `[a, b, …]` source (rewritten)
@@ -327,7 +326,6 @@ class EffectsLowerer {
     EffSuspension su;
     su.kind = EffSuspension::Perform;
     su.target = std::move(target);
-    su.slot = promoted_slot(rewrite, su.target);
     su.binds = binds;
     su.op = std::string(perform.nodes[0]->token);
     su.args_array = perform_args_array(*perform.nodes[1], rewrite);
@@ -342,7 +340,6 @@ class EffectsLowerer {
     EffSuspension su;
     su.kind = EffSuspension::Delegate;
     su.target = std::move(target);
-    su.slot = promoted_slot(rewrite, su.target);
     su.binds = binds;
     // A delegate site needs the un-driven computation, not a driven result:
     // route to the maker half of the decl pair (`f(…)` -> `__eff_comp_f(…)`).
@@ -875,22 +872,16 @@ class EffectsLowerer {
     }
     std::string name(decl.nodes[k]->token);
     // Rewrite only past the name token so the header keeps a plain inner name
-    // (the locals rewrite would turn it into `fn self.<name>(`).
+    // (the locals rewrite would turn it into `fn <promoted spelling>(`).
     size_t after = decl.nodes[k]->position + decl.nodes[k]->length -
                    decl.position;
+    // `rewrite_locals_to_self` only asks `boxed` about a name it is
+    // rewriting, so dropping it from `names` is the whole exclusion.
     PromotedLocals inner = rw;
     inner.names.erase(name);
-    inner.boxed.erase(name);
     return "fn " + name +
            rewrite_locals_to_self(slice(decl).substr(after), inner) +
            "\n      " + promoted_slot(rw, name) + " = " + name;
-  }
-
-  // The lvalue a promoted name is stored through: a boxed one goes into the
-  // box's field, so every closure that captured the box sees the store.
-  static std::string promoted_slot(const PromotedLocals& p,
-                                   const std::string& name) {
-    return p.boxed.contains(name) ? box_local(name) + ".v" : "self." + name;
   }
 
   // Statement-level emission source: a named fn decl is emitted and stored
@@ -929,15 +920,16 @@ class EffectsLowerer {
   // position). On resume the driver re-enters `_step` at the resume state,
   // where `_rv` holds the resumed value.
   int cps_emit_suspension(CpsState& st, const EffSuspension& su, int cont,
-                          bool tail) const {
+                          bool tail, const PromotedLocals& rw) const {
     int after = cont;
     if (su.binds || tail) {
       int resume = st.fresh();
       std::string b;
       if (su.binds)
-        b += std::format("      {} = {}\n", su.slot, st.rv);
+        b += std::format("      {} = {}\n", promoted_slot(rw, su.target),
+                         st.rv);
       if (tail) {
-        std::string v = su.binds ? su.slot : st.rv;
+        std::string v = su.binds ? promoted_slot(rw, su.target) : st.rv;
         b += std::format("      self._eff_val = {}\n", v);
       }
       b += std::format("      self._eff_state = {}\n      continue\n", cont);
@@ -986,7 +978,7 @@ class EffectsLowerer {
   }
 
   // A top-level `defer { B }` registers B into the computation's defer list
-  // (rewritten to `self.`) and marks a reach flag; the body runs, LIFO, when
+  // (locals rewritten) and marks a reach flag; the body runs, LIFO, when
   // the effect body completes or throws (see `build_dispatch`), not when this
   // state's `_step` invocation returns at a suspension. `defer` nested in
   // control flow is rejected upstream (block-scope semantics the flat state
@@ -1169,7 +1161,7 @@ class EffectsLowerer {
     // hidden one.
     EffStmtClass c = classify(u, rw);
     if (c.kind == EffStmtClass::Suspend)
-      return cps_emit_suspension(st, c.susp, cont, tail);
+      return cps_emit_suspension(st, c.susp, cont, tail, rw);
     st.failed = true;  // FOR (must be desugared) / anything unexpected
     return -1;
   }
@@ -1201,7 +1193,7 @@ class EffectsLowerer {
     if (has_suspension(*u)) {
       EffStmtClass c = classify(u, rw);
       if (c.kind == EffStmtClass::Suspend)
-        return cps_emit_suspension(st, c.susp, cont, /*tail=*/true);
+        return cps_emit_suspension(st, c.susp, cont, /*tail=*/true, rw);
       reject_hidden(*u);
     }
     return cps_tail_value(st, u, rw);
@@ -1573,9 +1565,7 @@ class EffectsLowerer {
       const std::string& rv_name) const {
     auto locals = collect_local_names(program);
     for (auto& fname : collect_named_fn_decls(program)) locals.insert(fname);
-    PromotedLocals rewrite{locals, {}};
-    for (auto& p : param_names) rewrite.names.insert(std::string(p));
-    rewrite.boxed = collect_captured_names(program, rewrite.names);
+    auto rewrite = make_promoted_locals(program, locals, param_names);
 
     auto disp = build_dispatch(program, rewrite, rv_name);
 
@@ -1593,25 +1583,34 @@ class EffectsLowerer {
       for (int k = 0; k < disp.n_defers; k++)
         ctor_inits += std::format("      self._eff_defer_{} = false\n", k);
     }
-    emit_ctor_param_and_local_inits(param_names, locals, rewrite.boxed,
+    emit_ctor_param_and_local_inits(param_names, locals, rewrite,
                                     ctor_params, ctor_call_args, ctor_inits);
 
-    // Boxed locals are reached as plain locals; bind them at the entry of each
-    // method whose body can name one (the dispatch, and the deferred bodies).
-    auto box_prologue = emit_box_prologue(rewrite, "      ");
-    auto finalize_body = disp.finalize_body;
-    if (!finalize_body.empty()) finalize_body = box_prologue + finalize_body;
+    // Each method that carries body source binds the boxes that source names.
+    auto step_prologue = emit_box_prologue(rewrite, disp.step);
+    auto finalize_body =
+        emit_box_prologue(rewrite, disp.finalize_body) + disp.finalize_body;
+
+    // Forking a suspended continuation shallow-copies the frame, which aliases
+    // the boxes instead of copying them; `_eff_refork` gives each fork its own,
+    // so a boxed local stays as fork-private as the scalar it replaced (see the
+    // driver's `_fork`).
+    std::string refork_body;
+    for (const auto& n : rewrite.boxed)
+      refork_body += std::format("      self.{0} = {{mut v: self.{0}.v}}\n", n);
 
     // Every computation exposes `_eff_finalize()` so the driver can call it
-    // uniformly on the abort path; it is empty when the body has no defers.
+    // uniformly on the abort path; it is empty when the body has no defers,
+    // and `_eff_refork()` likewise when the body has no boxes.
     return std::format(
         "  class {0} {{\n"
         "    new({1}) {{\n{2}    }}\n"
         "    _step({3}) {{\n{6}{4}    }}\n"
         "    _eff_finalize() {{\n{5}    }}\n"
+        "    _eff_refork() {{\n{7}    }}\n"
         "  }}\n",
         class_name, ctor_params, ctor_inits, rv_name, disp.step,
-        finalize_body, box_prologue);
+        finalize_body, step_prologue, refork_body);
   }
 
   // `effect fn f(params) { BODY }` -> `fn f(params) { class …; ….new(args) }`
@@ -1723,11 +1722,17 @@ class EffectsLowerer {
     const auto& body = *ast->nodes[0];
 
     // A nested `handle` whose body / clauses read an enclosing computation's
-    // binding (a `self.` access, from the outer locals-to-`self` rewrite) is
-    // lowered to reach that binding through the enclosing instance: the body
+    // binding through the instance (a `self.` access, from the outer locals
+    // rewrite) is lowered to reach it through the enclosing instance: the body
     // class takes it as an `_eff_outer` ctor arg, the handler closures capture
-    // it as a plain `_eff_self` local. Neither leans on lexical `self` capture
-    // (which the interp does and the JIT doesn't), so both backends agree.
+    // it as a plain `_eff_self` local, so nothing leans on lexical `self`
+    // capture. A binding some closure in the outer body also reads is BOXED
+    // instead, and a box is an ordinary local both the handler closures and
+    // the body class capture lexically — so it never reaches this path, and
+    // which mechanism carries a given name depends on whether a closure
+    // elsewhere in the body happens to read it. Folding this path into the
+    // box (hand the nested computation the boxes it names) would leave one
+    // mechanism; it has not been done.
     bool captures = captures_outer(*ast);
     auto self_name = std::format("_eff_self_{}_{}", ast->line, ast->column);
 

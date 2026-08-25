@@ -603,6 +603,14 @@ promotedローカルはboxに入る: state instanceは1フィールドのboxを�
 resume、closureの前後どちらで宣言してもそこから呼べるnamed fn、
 closureとネストしたhandleが同時に読むローカル。
 
+boxが自由に変えられないものが1つある: *fork*が何を隔離するか。multi-shotの
+`resume`は各フレームをshallow copyしてforkするので、昇格スカラーはfork
+ごとにコピーされていた。boxはヒープ値なのでコピーはそれをaliasする —
+2つのforkが同じローカルに書いてしまう。そこでフレーム自身が自分のcloneを
+仕上げる: どのcomputationも`_eff_refork()`を持ち、自分のboxedローカルを
+作り直す。driverの`_fork`がコピーごとにそれを呼ぶ。body自身が共有する
+もの（pushしていく配列など）は従来どおりforkを跨いでaliasされたまま。
+
 続いてstdlibがruntime層経由で届いた — Phase 1の見取り図の
 「stdlibの大部分はruntime束縛経由で届く（3つ目のstdlib移植は
 しない）」そのままに。新opは`NsGet`の1つだけ:

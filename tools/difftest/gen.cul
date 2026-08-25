@@ -1560,6 +1560,10 @@ let eff = [
   'effect fn a(); effect fn i(); effect fn f() { let b = perform a(); let via = fn (n) { n + b }; let inner = handle { b + perform i() } with i(k) { k(5) }; to_string([via(1), inner]) }; handle { f() } with a(k) { k(10) }',
   # a closure over a suspension-bound local under a multi-shot resume
   'effect fn c(a, b); effect fn f() { let x = perform c(1, 2); let g = fn (k) { k + x }; g(10) }; to_string(handle { f() } with c(a, b, r) { [r(a), r(b)] })',
+  # ... and when that closure escapes the fork (each fork re-boxes its locals)
+  'effect fn c(a, b); effect fn f() { let x = perform c(1, 2); let g = fn () { x }; g }; let gs = handle { f() } with c(a, b, r) { [r(a), r(b)] }; to_string([gs[0](), gs[1]()])',
+  # ... while a heap value the body shares stays aliased across forks
+  'effect fn c(a, b); effect fn f() { let acc = []; let p = fn (k) { acc.push(k) }; let x = perform c(1, 2); p(x); acc }; mut sn = []; handle { f() } with c(a, b, r) { sn.push(r(a)); sn.push(r(b)) }; to_string(sn[0])',
   # a nested named generator fn captures an effect local (effect body)
   'effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })',
   # ... in a handle body
