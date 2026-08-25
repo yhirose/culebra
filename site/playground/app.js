@@ -29,14 +29,13 @@ function writeDraft(text) {
   }
 }
 
-function saveDraft(text) {
+function saveDraft() {
   clearTimeout(draftTimer);
-  draftTimer = setTimeout(() => writeDraft(text), 400);
+  draftTimer = setTimeout(() => writeDraft(editor.getValue()), 400);
 }
 
 function flushDraft() {
   clearTimeout(draftTimer);
-  draftTimer = null;
   writeDraft(editor.getValue());
 }
 
@@ -975,9 +974,6 @@ gameCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 const params = new URLSearchParams(location.search);
 const seeded = decodeSource(params.get("code"));
 const exampleParam = params.get("example");
-// A saved draft loses to either URL form: a visitor who followed a link
-// wants what the link names, not last time's edits.
-const draft = seeded === null && exampleParam === null ? loadDraft() : null;
 let pendingAutorun = params.get("run") === "1";
 let seedApplied = false;
 
@@ -1008,6 +1004,10 @@ loadExampleCatalog()
   .then(() => {
     if (seeded !== null) return seeded;
     if (exampleParam === null) {
+      // A saved draft loses to ?example= but wins over the "Hello" default:
+      // a visitor who followed a link wants what the link names, not last
+      // time's edits, but one who didn't gets their own work back.
+      const draft = loadDraft();
       if (draft !== null) return draft;
       selectExample("Hello");
       return loadExample("Hello");

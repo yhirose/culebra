@@ -71,10 +71,12 @@ export function createEditor(parent, doc, { onChange } = {}) {
       theme,
       // Fires on every edit AND on setValue() below (an example load, or the
       // draft restore itself) — app.js wants "whatever the editor shows now"
-      // either way, not just hand-typed changes.
-      ...(onChange ? [EditorView.updateListener.of((update) => {
-        if (update.docChanged) onChange(update.state.doc.toString());
-      })] : []),
+      // either way, not just hand-typed changes. No document text is built
+      // here; a debounced caller reads it lazily via getValue() when it's
+      // actually ready to use it, not on every keystroke.
+      EditorView.updateListener.of((update) => {
+        if (onChange && update.docChanged) onChange();
+      }),
     ],
     parent,
   });
