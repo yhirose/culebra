@@ -16,16 +16,16 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 
 **あらゆる作業（コード変更・プロファイル計測・ベンチ・ビルドを含む）は着手前に専用 worktree+branch で開始する。** main tree (`~/Projects/culebra`) は ff マージ点専用とし、そこで編集・commit・build しない。
 
-1. `git worktree add ~/Projects/culebra-<topic> -b <topic>`
-2. `git -C ~/Projects/culebra-<topic> submodule update --init --recursive`（必須。未初期化だと build が死ぬ）
-3. `EnterWorktree` に `path` でその worktree を渡し、セッションの cwd 自体を移す（`name` での新規作成は使わない — submodule init が入らず build が死ぬ）
-4. **以後そのセッションの全パスは worktree の絶対パスで統一する。** `EnterWorktree` は cwd を移すだけで、Edit/Write に渡した絶対パスは worktree 内へ正規化されない（main tree を直接汚した実例あり）
+1. `EnterWorktree` を `name: <topic>` で呼ぶ。worktree は `~/Projects/culebra/.claude/worktrees/<topic>`（branch は `worktree-<topic>`）に作られ、セッションの cwd が移る。`.claude/settings.json` の `worktree.baseRef = head` により分岐元はローカル `master` の HEAD（既定の `fresh` は `origin/master` 基準で、未 push のコミットを取りこぼす）。**`path` で `~/Projects/culebra-<topic>` のような repo 外のパスを渡さない** — `.claude/worktrees/` の外へ移るたびに "permission-root relocation" の確認が出て、これは設定で抑制できない
+2. `git -C ~/Projects/culebra/.claude/worktrees/<topic> submodule update --init --recursive`（必須。`EnterWorktree` は submodule を初期化しないので、未初期化のまま build すると死ぬ）
+3. **以後そのセッションの全パスは worktree の絶対パスで統一する。** `EnterWorktree` は cwd を移すだけで、Edit/Write に渡した絶対パスは worktree 内へ正規化されない（main tree を直接汚した実例あり）
+4. worktree は main tree の中にネストするので、main tree で cwd 再帰型のコマンド（`culebra test`／`culebra fmt -i .`／`culebra lint .`）を打つと `.claude/worktrees/*` まで拾う。main tree は ff マージ点専用（build も test もしない）という上のルールを守っていれば踏まない
 5. マージ = **rebase → 再テスト → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テストする。ただし**再テストは既定で `just test-dev`（~80s）**であって全ゲートではない（下の「どこまで回すか」）。master は他セッションで頻繁に動くので、rebase のたびに全ゲートを回すとマシンが占有され全員が止まる
-6. 完了後 `git worktree remove --force` + `git branch -d`
+6. 完了後 `ExitWorktree` を `action: "remove"` で呼ぶ（worktree と branch を消して cwd を main tree に戻す）
 
 **Step 5-6 は `/ff-merge` skill で自動化されている**（`disable-model-invocation` なのでユーザーが明示的に呼ぶ）。内部で `just land`（`misc/land.sh`）が rebase → `just test-dev` → ff-only merge を machine-wide ロック下で1プロセス実行し、着地レース（他セッションが先に master を進めた場合）は自動リトライする。全て commit 済みならこれを使う。上記 5-6 は手動でやる場合の内訳。
 
-**Claude Code の sandbox について**: `git worktree add`／`submodule update`／`just dev`／`just test-dev` は `.claude/settings.local.json` の `sandbox.filesystem.allowWrite`（ccache tmp dir 追加済み）と `sandbox.network.allowLocalBinding` で sandbox 有効のまま通る。**`git worktree remove` だけは例外** — `.git/worktrees/` 配下の削除は sandbox 下で常に拒否される（`.git` メタデータ削除への意図的な保護とみられる）ので、この一手だけ `dangerouslyDisableSandbox` が要る。
+**Claude Code の sandbox について**: `git worktree add`／`submodule update`／`just dev`／`just test-dev` は `.claude/settings.local.json` の `sandbox.filesystem.allowWrite`（ccache tmp dir 追加済み）と `sandbox.network.allowLocalBinding` で sandbox 有効のまま通る。**Bash からの `git worktree remove` だけは例外** — `.git/worktrees/` 配下の削除は sandbox 下で常に拒否される（`.git` メタデータ削除への意図的な保護とみられる）ので、`ExitWorktree` の `remove` が使えず手で消すときはこの一手だけ `dangerouslyDisableSandbox` が要る。
 
 複数セッションが同じ repo で並行作業しうる。作業開始時は `git log --oneline master` と `git worktree list` を確認し、`git status` に自分が作っていない未コミット変更がある場合はそれを触らずユーザーに確認する。
 

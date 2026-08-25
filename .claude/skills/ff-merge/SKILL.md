@@ -33,16 +33,18 @@ test-dev` → ff-only merge を1プロセス・machine-wide ロック下で実�
 
 ## クリーンアップ
 
-5. `ExitWorktree` を `action: "keep"` で呼び、セッションの cwd を main tree に戻す
-   （この worktree は `git worktree add` で手動作成したものなので、`ExitWorktree` の
-   スコープ外 — `action: "remove"` は効かない。必ず `keep` で戻ってから手動で消す）。
-6. 手動でクリーンアップする（`dangerouslyDisableSandbox: true` 必須 — submodule 入り worktree の
-   `.git/worktrees/<dir>` 削除がサンドボックスで拒否されるため）:
-   ```
-   git worktree remove --force <worktree-path>
-   git branch -d <branch>
-   ```
-7. `git worktree list` で worktree エントリが消えたことを確認し、最終的な master の HEAD
+5. `ExitWorktree` を `action: "remove"` で呼ぶ。worktree と branch が消え、セッションの cwd が
+   main tree に戻る（このセッションの `EnterWorktree name:` で作った worktree のみ対象。着地済みの
+   commit は master に含まれるので `discard_changes` は不要 — 要求されたら着地が失敗している）。
+   - `ExitWorktree` の対象外（`git worktree add` で手動作成した worktree、別セッションで作った
+     worktree）や remove が失敗した場合は `action: "keep"` で戻ってから手で消す
+     （`dangerouslyDisableSandbox: true` 必須 — `.git/worktrees/<dir>` の削除がサンドボックスで
+     拒否されるため）:
+     ```
+     git worktree remove --force <worktree-path>
+     git branch -d <branch>
+     ```
+6. `git worktree list` で worktree エントリが消えたことを確認し、最終的な master の HEAD
    （手順4で出力された hash）をユーザーに報告する。
 
 $ARGUMENTS

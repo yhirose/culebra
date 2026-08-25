@@ -1,3 +1,6 @@
 {
-  "plansDirectory": "./.claude/plans"
+  "plansDirectory": "./.claude/plans",
+  "worktree": {
+    "baseRef": "head"
+  }
 }
