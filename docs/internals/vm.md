@@ -1,12 +1,11 @@
 A Shared Bytecode VM: Design Proposal
 =====================================
 
-**Status: Phases 0–2 done and merged to `master`; Phase 3 under way
-on branch `vm-phase3`.** Sections 1–9 record the motivation, the
-target architecture, and the migration plan for replacing the
-tree-walking interpreter with a bytecode VM that shares its value
-representation — and its front end — with the JIT. The Phase 0 spike
-(§7) answered both exit questions yes
+**Status: Phases 0–4 done and merged to `master`.** Sections 1–9
+record the motivation, the target architecture, and the migration
+plan for replacing the tree-walking interpreter with a bytecode VM
+that shares its value representation — and its front end — with the
+JIT. The Phase 0 spike (§7) answered both exit questions yes
 ([§10](#10-phase-0-spike-results)), Phase 1 built the third backend
 on the same branch (§10's postscript), and Phase 2 took it to the
 parity bar §7 sets ([§11](#11-phase-2-full-parity-results)). Phase 3
@@ -14,7 +13,10 @@ moved both compiled entries — `--jit` and `culebra build` — onto the
 bytecode and deleted the AST codegen they left behind, meeting §7's
 exit criterion: one consumer reads the AST, and it is the bytecode
 compiler ([§12](#12-phase-3-folding-the-jit-onto-the-bytecode)).
-Phase 4 — retiring the tree-walker — is unimplemented. The observable language
+Phase 4 retired the tree-walking interpreter itself — its body, the
+`--tree` flag, and the oracles that were still pinned to it — leaving
+the bytecode VM as the sole executor
+([§13](#13-phase-4-retiring-the-tree-walker)). The observable language
 contract in [`language.md`](../language.md) is unaffected: this is a
 change of engine, not of language. Where this document and
 `language.md` disagree, `language.md` wins.
@@ -36,6 +38,7 @@ Contents
 10. [Phase 0 spike: results](#10-phase-0-spike-results)
 11. [Phase 2: full parity — results](#11-phase-2-full-parity-results)
 12. [Phase 3: folding the JIT onto the bytecode](#12-phase-3-folding-the-jit-onto-the-bytecode)
+13. [Phase 4: retiring the tree-walker](#13-phase-4-retiring-the-tree-walker)
 
 ---
 

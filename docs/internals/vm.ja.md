@@ -1,8 +1,7 @@
 共有バイトコードVM: 設計提案
 =====================================
 
-**Status: Phase 0〜2は完了して`master`にマージ済み、Phase 3はbranch
-`vm-phase3`で進行中。**
+**Status: Phase 0〜4は完了して`master`にマージ済み。**
 §1〜9はtree-walkingインタプリタをバイトコードVMに置き換え、値表現と
 フロントエンドをJITと共有するための動機・目標アーキテクチャ・移行
 計画を記録する。§7のPhase 0 spikeは出口の2問とも yes で通過し
@@ -12,8 +11,11 @@ backendを建て（§10の追記）、Phase 2は§7が定める同等性バー�
 入口2つ — `--jit`と`culebra build` — をバイトコードの上へ移し、
 残されたASTコードジェンを削除して§7の出口条件を満たした: ASTを読む
 消費者は1つで、それはバイトコードコンパイラである
-（[§12](#12-phase-3-jitをバイトコードの上に畳む)）。Phase 4 —
-tree-walkerの退役 — は未実装である。
+（[§12](#12-phase-3-jitをバイトコードの上に畳む)）。Phase 4は
+tree-walkingインタプリタ自体を退役させた — その本体、`--tree`
+フラグ、まだそこに固定されていたオラクル群を削除し、バイトコードVMを
+唯一の実行系として残した
+（[§13](#13-phase-4-tree-walkerの退役)）。
 [`language.ja.md`](../language.ja.md)にある観測可能な言語契約は影響を
 受けない — これはエンジンの変更であって言語の変更ではない。本書と
 `language.ja.md`が食い違う場合は`language.ja.md`が勝つ。
@@ -35,6 +37,7 @@ tree-walkerの退役 — は未実装である。
 10. [Phase 0 spikeの結果](#10-phase-0-spikeの結果)
 11. [Phase 2: 完全同等性の結果](#11-phase-2-完全同等性の結果)
 12. [Phase 3: JITをバイトコードの上に畳む](#12-phase-3-jitをバイトコードの上に畳む)
+13. [Phase 4: tree-walkerの退役](#13-phase-4-tree-walkerの退役)
 
 ---
 

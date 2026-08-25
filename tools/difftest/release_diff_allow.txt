@@ -16,4 +16,4 @@
 # `unsupported` on the baseline side means the older binary could not even
 # parse the case — syntax that release predates.
 
-# Empty since v0.3.0 shipped — no behaviour change since that release yet.
+# Empty since v0.4.0 shipped — no behaviour change since that release yet.
