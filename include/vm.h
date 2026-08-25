@@ -2030,10 +2030,7 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
         case TAG_TUPLE:  // a Tuple is a JitArray under another tag
           return obj(culebra_runtime_array_iter(arr(recv)));
         case TAG_SET:
-          // The members are snapshotted into an Array the walker owns: the
-          // fresh `+1` dies with the iterator, not with this expression.
-          return obj(culebra_runtime_array_iter(
-              culebra_runtime_set_to_array(st(recv))));
+          return obj(culebra_runtime_set_iter(st(recv)));
         case TAG_OBJECT:
           // A Range walks its start..end sequence — split it out before the
           // generic Object path, which would walk the Range object's own

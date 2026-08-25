@@ -1444,6 +1444,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
 // Defined below, next to the other Object walkers.
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
 culebra_runtime_object_iter(JitObject* obj);
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
+culebra_runtime_set_iter(JitSet* set);
 
 inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
                                       int64_t col) {
@@ -1460,13 +1462,7 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
   // named in the error below and both work in the interp, so the coercion
   // used by flat_map / flatten / chain / zip has to accept them too.
   if (t == TAG_SET) {
-    auto* members = culebra_runtime_set_to_array(reinterpret_cast<JitSet*>(d));
-    auto* wrapped = _iter_from_array_obj(
-        TAG_ARRAY, reinterpret_cast<int64_t>(members));
-    // _iter_from_array_obj took its own +1; drop set_to_array's fresh one so
-    // the snapshot dies with the iterator (mirrors the `.iter()` call site).
-    _culebra_value_release_impl(TAG_ARRAY,
-                                reinterpret_cast<int64_t>(members));
+    auto* wrapped = culebra_runtime_set_iter(reinterpret_cast<JitSet*>(d));
     return {TAG_OBJECT, reinterpret_cast<int64_t>(wrapped)};
   }
   if (t == TAG_STRING || t == TAG_STRINGVIEW) {
@@ -1867,6 +1863,19 @@ inline JitObject* _iter_from_array_obj(int8_t at, int64_t ad) {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_array_iter(
     JitArray* arr) {
   return _iter_from_array_obj(TAG_ARRAY, reinterpret_cast<int64_t>(arr));
+}
+
+// `set.iter()`: the members are snapshotted into an Array the walker owns.
+// array_iter takes its own +1, so the snapshot's fresh one is released here
+// and the copy lives exactly as long as the iterator. The one owner of that
+// pairing — every `.iter()` consumer (executor, lowering, the iterable
+// coercion) calls this rather than spelling the release itself.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_set_iter(
+    JitSet* set) {
+  auto* members = culebra_runtime_set_to_array(set);
+  auto* it = culebra_runtime_array_iter(members);
+  culebra_runtime_value_release(TAG_ARRAY, reinterpret_cast<int64_t>(members));
+  return it;
 }
 
 // `recv.enumerate()`: lazy `(index, value)` iterator over any iterable.

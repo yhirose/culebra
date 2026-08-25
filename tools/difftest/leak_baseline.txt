@@ -36,7 +36,6 @@ jit	eff|effect fn a(); to_string(handle { let x = perform a(); fn g(n) { yield n
 jit	nestedfn|{ let rec = fn (n) { n > 0 ? rec(n - 1) : 12 }; rec(2) }
 jit	nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
 jit	selflex|class K4 { new(){ self.cb = fn () { type_of(self) } } }; let c = K4.new().cb; c()
-vm	borrowthrow|class Bk { new(v){ self.v = v } hash(){ 1 } eq(o){ if self.v == 9 { 1 / 0 }; self.v == o.v } }; let s = [Bk.new(9)].to_set(); try { s.contains(Bk.new(1)) } catch e { nil }; s.iter().map(fn (k) { k.v }).collect()
 vm	dmd|class M { new(v: Long){self.v=v} __mul__(n: Long){M(self.v*n)} __mul__(o: M){M(self.v*o.v)} }; to_string((M(3)*4).v) + to_string((M(3)*M(5)).v)
 vm	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((5+V(10)).x)
 vm	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((V(1)+V(2)).x) + to_string((V(1)+5).x)
@@ -44,7 +43,6 @@ vm	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: 
 vm	eff|effect fn a(); effect fn f() { let b = perform a(); fn r(n) { if n <= 1 { return b }; n * r(n - 1) }; r(4) }; handle { f() } with a(k) { k(1) }
 vm	eff|effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })
 vm	eff|effect fn a(); to_string(handle { let x = perform a(); fn g(n) { yield n * x }; g(3).collect() } with a(k) { k(7) })
-vm	m|{1, 2, 3}|iter|
 vm	nestedfn|{ let rec = fn (n) { n > 0 ? rec(n - 1) : 12 }; rec(2) }
 vm	nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
 vm	selflex|class K4 { new(){ self.cb = fn () { type_of(self) } } }; let c = K4.new().cb; c()

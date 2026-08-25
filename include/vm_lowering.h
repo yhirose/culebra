@@ -2659,18 +2659,12 @@ struct Lowering {
                   out);
               b.CreateBr(joinBB);
               b.SetInsertPoint(setBB);
-              {
-                // The members are snapshotted into an Array the walker owns:
-                // array_iter takes its own `+1`, so the snapshot's fresh one
-                // is released here and the copy lives with the iterator.
-                auto members = j.emit_call(
-                    j.module_->getOrInsertFunction(rt::set_to_array, ptrTy,
-                                                   ptrTy),
-                    {arr()}, "vbm.it.sa");
-                auto it = j.emit_call(arrIterFn, {members}, "vbm.it.s");
-                j.emit_value_release(j.make_array(members));
-                b.CreateStore(j.make_object(it), out);
-              }
+              b.CreateStore(
+                  j.make_object(j.emit_call(
+                      j.module_->getOrInsertFunction(rt::set_iter, ptrTy,
+                                                     ptrTy),
+                      {arr()}, "vbm.it.s")),
+                  out);
               b.CreateBr(joinBB);
               b.SetInsertPoint(objBB2);
               {

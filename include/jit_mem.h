@@ -954,6 +954,7 @@ inline constexpr auto str_scalar_view      = "culebra_runtime_str_scalar_view";
 inline constexpr auto str_graphemes        = "culebra_runtime_str_graphemes";
 inline constexpr auto str_bytes            = "culebra_runtime_str_bytes";
 inline constexpr auto array_iter           = "culebra_runtime_array_iter";
+inline constexpr auto set_iter             = "culebra_runtime_set_iter";
 inline constexpr auto object_iter          = "culebra_runtime_object_iter";
 inline constexpr auto object_iter_dispatch =
     "culebra_runtime_object_iter_dispatch";
