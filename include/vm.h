@@ -467,6 +467,11 @@ enum class Op : uint8_t {
                // sentinel if it outlived it (culebra_runtime_multifn_self).
                // Prologue-only; the binding it feeds is lazy, so reads guard
                // the sentinel with the usual NameError.
+  ClsSelf,     // regs[a] = the class a member frame runs for: the receiver
+               // regs[b]'s class object (an instance's JitObject::cls, or
+               // the receiver itself when a static's), +1, or the unbound
+               // sentinel with no receiver of the kind
+               // (culebra_runtime_class_self). Prologue-only, like MfSelf.
   WkErr,       // throw the well-known-property contract error for name
                // consts[a] — a well-known name that carries an overload set,
                // whose dispatcher build_class_meta would never get to reject.
@@ -512,8 +517,10 @@ enum class Op : uint8_t {
                // absorbs the +1; regs[c] = nil.
   MakeInst,    // regs[a] = a fresh instance (+1) of class consts[c]:
                // build_class_instance over the borrowed {meta, field-init,
-               // new-body} triple at regs[b .. b+3) and the argument run
-               // regs[0 .. d). The helper consumes every argument's +1 on
+               // new-body} triple at regs[b .. b+3), the constructor's
+               // receiver regs[d] — the class object, which the instance
+               // keeps a +1 on (JitObject::cls) — and the frame's own
+               // argument run. The helper consumes every argument's +1 on
                // every exit (the body absorbs them, a default ctor releases
                // them), so the argument run is nil'd. Emitted as the whole
                // body of a synthetic constructor chunk.
@@ -2387,7 +2394,7 @@ struct Chunk {
   // Parallel to name_tables: whether that class is a lowering's state class,
   // whose own slots are promoted body locals rather than methods (the flag
   // build_class_meta stores on the meta, and the receiver rule reads back).
-  std::vector<uint8_t> name_table_lowered;
+  std::vector<uint8_t> name_table_flags;
   // Capture list: for each free var, the slot (in the CREATING frame's
   // numbering) holding its cell pointer. A fn literal has exactly one
   // creation site — its MakeClosure — so the list lives with the callee
@@ -4969,8 +4976,21 @@ class Compiler {
       }
       auto table = static_cast<int32_t>(chunk_.name_tables.size());
       chunk_.name_tables.push_back(std::move(names));
-      chunk_.name_table_lowered.push_back(
-          culebra::is_lowered_state_class(class_name, ast.path) ? 1 : 0);
+      // A method that names its class (in its body, or in a closure it
+      // builds) needs the class object with it: the send path ships the
+      // two together, which is where such an instance is refused.
+      bool names_class = false;
+      for (auto* m : method_asts) {
+        const auto& mi = analysis_.func_info.at(m);
+        if (!mi.own_name.empty() &&
+            (mi.own_name_used || mi.captured_locals.contains(mi.own_name)))
+          names_class = true;
+      }
+      chunk_.name_table_flags.push_back(static_cast<uint8_t>(
+          (culebra::is_lowered_state_class(class_name, ast.path)
+               ? kClassMetaLoweredState
+               : 0) |
+          (names_class ? kClassMetaNamesClass : 0)));
       // Both contract throws below are positionless and the interp stamps
       // them at the declaration.
       emit(Op::SetOpPos);
@@ -5187,6 +5207,11 @@ class Compiler {
     fc.push_scope(ast, /*owned_mark=*/false);
     fc.chunk_.capture_src_slots = caps;
     fc.chunk_.forwards_args = true;
+    // The receiver is the class object — `C(...)` and `C.new(...)` both
+    // hand it over — and the instance keeps a +1 on it (JitObject::cls).
+    // Raw: a call with no receiver builds an instance of no class.
+    fc.chunk_.self_slot = fc.alloc_slot(ast, "self");
+    fc.chunk_.self_raw = true;
     // `C.new(...)` binds against this closure, so the constructor publishes
     // the `new` body's signature verbatim — the overload registry reads it
     // off the chunk, and so does the keyword resolver, whose view of which
@@ -5209,7 +5234,8 @@ class Compiler {
       for (size_t i = 0; i < caps.size(); i++)
         fc.emit(Op::CellGet, fc.alloc_temp(ast),
                 cap0 + static_cast<int32_t>(i));
-      fc.emit(Op::MakeInst, rv, run, fc.kconst_str(class_name));
+      fc.emit(Op::MakeInst, rv, run, fc.kconst_str(class_name),
+              fc.chunk_.self_slot);
     }  // the sweep drops the three borrowed reads
     fc.pop_scope();
     fc.emit(Op::Ret, rv);
@@ -5530,7 +5556,9 @@ class Compiler {
     bool own_name_live =
         !info.own_name.empty() &&
         (info.own_name_used || info.captured_locals.contains(info.own_name));
-    if (info.uses_fn || (own_name_live && !info.own_name_dispatched))
+    if (info.uses_fn ||
+        (own_name_live &&
+         info.own_name_source == FuncInfo::OwnNameSource::Closure))
       fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
     if (info.uses_fn) {
       fc.push_binding({"fn", fc.chunk_.fn_slot, false});
@@ -5556,6 +5584,41 @@ class Compiler {
               : std::string(return_type));
       fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
       fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
+    }
+    // The body's own name: delivered by the frame rather than captured —
+    // the capture would ring cell → dispatcher/closure/class → body → cell
+    // (see FuncInfo::own_name). A multifn's arrives through the dispatch
+    // and a class member's through its receiver, lazy either way so the
+    // escaped-past-its-owner corners read as the undeclared name's
+    // NameError; a literal's is the closure the prologue already put in
+    // fn_slot. Each becomes a cell when a nested closure captures it, like
+    // any local's. Ahead of the promotions below, which move a captured
+    // `self` out of the receiver slot the class member's read wants.
+    if (own_name_live) {
+      using Src = FuncInfo::OwnNameSource;
+      bool captured = info.captured_locals.contains(info.own_name);
+      if (info.own_name_source == Src::Closure && !captured) {
+        fc.push_binding({info.own_name, fc.chunk_.fn_slot, false});
+      } else {
+        int32_t cslot = fc.alloc_cell_slot(ast, info.own_name);
+        {
+          TempScope mts(fc);
+          if (info.own_name_source == Src::Closure) {
+            fc.emit(Op::CellNew, cslot,
+                    fc.owned_src(ast, {fc.chunk_.fn_slot, false}));
+          } else {
+            int32_t t = fc.alloc_temp(ast);
+            if (info.own_name_source == Src::Dispatch)
+              fc.emit(Op::MfSelf, t);
+            else
+              fc.emit(Op::ClsSelf, t, fc.chunk_.self_slot);
+            fc.emit(Op::CellNew, cslot, t);  // nils t; the sweep is a no-op
+          }
+        }
+        fc.push_binding({info.own_name, cslot, /*is_mut=*/false,
+                         /*is_cell=*/true,
+                         /*lazy=*/info.own_name_source != Src::Closure});
+      }
     }
     for (const auto& pr : promos) {
       int32_t cslot = fc.alloc_cell_slot(*pr.at, pr.name);
@@ -5594,37 +5657,6 @@ class Compiler {
       } else {
         fc.push_binding(
             {"self", s, false, /*is_cell=*/false, /*lazy=*/true});
-      }
-    }
-    // The body's own name: delivered by the frame rather than captured —
-    // the capture would ring cell → dispatcher/closure → body → cell (see
-    // FuncInfo::own_name). A multifn's arrives through the dispatch; lazy,
-    // so the escaped-past-its-dispatcher corner reads as the undeclared
-    // name's NameError. A literal's is the closure the prologue already
-    // put in fn_slot. Either becomes a cell when a nested closure captures
-    // it, like any local's.
-    if (own_name_live) {
-      if (info.own_name_dispatched) {
-        int32_t cslot = fc.alloc_cell_slot(ast, info.own_name);
-        {
-          TempScope mts(fc);
-          int32_t t = fc.alloc_temp(ast);
-          fc.emit(Op::MfSelf, t);
-          fc.emit(Op::CellNew, cslot, t);  // nils t; the sweep is a no-op
-        }
-        fc.push_binding({info.own_name, cslot, /*is_mut=*/false,
-                         /*is_cell=*/true, /*lazy=*/true});
-      } else if (info.captured_locals.contains(info.own_name)) {
-        int32_t cslot = fc.alloc_cell_slot(ast, info.own_name);
-        {
-          TempScope mts(fc);
-          fc.emit(Op::CellNew, cslot,
-                  fc.owned_src(ast, {fc.chunk_.fn_slot, false}));
-        }
-        fc.push_binding({info.own_name, cslot, /*is_mut=*/false,
-                         /*is_cell=*/true});
-      } else {
-        fc.push_binding({info.own_name, fc.chunk_.fn_slot, false});
       }
     }
     // Bind the declared parameters, now that the captures, `self` and `fn`
@@ -8632,7 +8664,7 @@ inline std::string dump(const Chunk& c) {
       "JumpIfTag",
       "MakeClosure", "Call",    "CallM",      "CallKw",  "RaiseErr", "Ret",
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
-      "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "WkErr",
+      "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "ClsSelf",      "WkErr",
       "ClassMeta", "DeriveFn",  "RegPack",    "EnumVariant",  "TypeMatch",
       "ClassObj",  "BindStatic",
       "MakeInst",  "FieldInit", "RegGetter",  "SelfMerge",
@@ -10341,8 +10373,15 @@ struct Exec {
                                            callee.data);
               self = callee;
             } else {
+              // `C(args)`: the class object is the constructor's receiver
+              // — the instance keeps a +1 on it (JitObject::cls).
               target = culebra_runtime_class_new_method(
                   static_cast<int8_t>(callee.tag), callee.data);
+              if (target.tag == TAG_FUNC) {
+                culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+                                             callee.data);
+                self = callee;
+              }
             }
           }
           if (target.tag != TAG_FUNC) {
@@ -10397,11 +10436,18 @@ struct Exec {
               self = callee;
             } else {
               // A class object reached as a member (`Canvas.Font(bytes)`):
-              // its `new` builds the instance, and the receiver stays the one
-              // the call started with — the plain-call and kwargs arms probe
-              // in this same order.
+              // its `new` builds the instance, with the class object as its
+              // receiver in place of the one the call started with — the
+              // plain-call and kwargs arms probe in this same order.
               target = culebra_runtime_class_new_method(
                   static_cast<int8_t>(callee.tag), callee.data);
+              if (target.tag == TAG_FUNC) {
+                culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+                                             callee.data);
+                culebra_runtime_value_release(static_cast<int8_t>(self.tag),
+                                              self.data);
+                self = callee;
+              }
             }
           }
           if (target.tag != TAG_FUNC) {
@@ -10472,6 +10518,16 @@ struct Exec {
             } else {
               m = culebra_runtime_class_new_method(
                   static_cast<int8_t>(callee.tag), callee.data);
+              if (m.tag == TAG_FUNC) {
+                culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+                                             callee.data);
+                if (kc.has_receiver) {
+                  culebra_runtime_value_release(
+                      static_cast<int8_t>(self.tag), self.data);
+                  regs[in.c] = JitValue{TAG_NIL, 0};
+                }
+                self = callee;
+              }
             }
             if (m.tag != TAG_FUNC)
               culebra_runtime_type_error_typed(
@@ -10605,6 +10661,11 @@ struct Exec {
           regs[in.a] = culebra_runtime_multifn_self(cls);
           ++pc;
           break;
+        case Op::ClsSelf:
+          regs[in.a] = culebra_runtime_class_self(
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
+          ++pc;
+          break;
         case Op::WkErr:
           culebra_runtime_wk_contract_error(
               reinterpret_cast<const char*>(c.consts[in.a].data));
@@ -10628,7 +10689,7 @@ struct Exec {
           try {
             meta = culebra_runtime_build_class_meta(
                 names.data(), &regs[in.b], n_methods,
-                c.name_table_lowered[in.d]);
+                c.name_table_flags[in.d]);
           } catch (...) {
             for (int32_t i = 0; i < in.c; ++i)
               regs[in.b + i] = JitValue{TAG_NIL, 0};
@@ -10710,6 +10771,7 @@ struct Exec {
           regs[in.a] = culebra_runtime_build_class_instance(
               reinterpret_cast<const char*>(c.consts[in.c].data),
               reinterpret_cast<JitObject*>(meta.data),
+              static_cast<int8_t>(regs[in.d].tag), regs[in.d].data,
               static_cast<int8_t>(finit.tag), finit.data,
               static_cast<int8_t>(body.tag), body.data, n_args, args);
           ++pc;

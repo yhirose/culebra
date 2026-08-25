@@ -172,6 +172,14 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
               {TAG_OBJECT, reinterpret_cast<int64_t>(o->proto)}, ctx));
           n.elems.back().ref_id = proto_ref;
         }
+        // A method that names its class reads the class object through the
+        // instance (JitObject::cls), so the instance needs it along — and
+        // the class object carries its constructor, a native closure, so
+        // the walk refuses exactly where the method's cell capture used to.
+        // Every other instance leaves its class behind, as before.
+        if (o->proto->names_class && o->cls)
+          n.elems.push_back(jit_serialize(
+              {TAG_OBJECT, reinterpret_cast<int64_t>(o->cls)}, ctx));
       }
       // Non-string keys: ship them after the string keys, matching the
       // interp serializer's order (string props, then non_string_props),

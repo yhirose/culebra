@@ -1,0 +1,168 @@
+# A class member names its class through its receiver (FuncInfo::own_name
+# read by ClsSelf): the instance keeps a +1 on the class object, the method
+# body no longer captures the declaring scope's cell, and the ring
+# cls -> ctor -> meta -> method -> cell -> cls (the leak gate's dmd entries)
+# never forms. Observably the same as the capture, except where no receiver
+# of the class is there to read through.
+
+# A local class escapes through an instance; its methods still name it
+# after the declaring scope is gone.
+fn mk() {
+  class M {
+    new(v) {
+      self.v = v
+    }
+    twin() {
+      M(self.v)
+    }
+    twin_new() {
+      M.new(self.v + 1)
+    }
+    is_own() {
+      M == self.klass()
+    }
+    klass() {
+      M
+    }
+  }
+  M.new(1)
+}
+let i = mk()
+assert_eq(i.twin().v, 1)
+assert_eq(i.twin_new().v, 2)
+assert_eq(i.twin().twin_new().v, 2)
+assert_eq(i.is_own(), true)
+
+# A bound method outlives everything but the instance it carries.
+let f = mk().twin
+assert_eq(f().v, 1)
+
+# Both construction spellings hand the class over, so instances built by
+# `M(...)` and `M.new(...)` are the same kind.
+fn both() {
+  class M {
+    new(v) {
+      self.v = v
+    }
+    kind() {
+      M
+    }
+  }
+  [M(1).kind() == M, M.new(2).kind() == M, M(3).kind() == M.new(4).kind()]
+}
+assert_eq(both(), [true, true, true])
+
+# A static runs on the class object, which is the class it names.
+fn statics() {
+  class M {
+    new(v) {
+      self.v = v
+    }
+    static make(v) {
+      M.new(v)
+    }
+    static me() {
+      M == self
+    }
+  }
+  [M.make(5).v, M.me()]
+}
+assert_eq(statics(), [5, true])
+
+# `new` and a field initializer read the class too (the instance's class is
+# set before either runs). Statics are immutable, so the counter lives in a
+# static's own object.
+fn in_new() {
+  class M {
+    static tally = {mut n: 0}
+    static dx = 7
+    x = M.dx
+    new() {
+      M.tally.n = M.tally.n + 1
+    }
+  }
+  M.new()
+  let m = M.new()
+  [M.tally.n, m.x]
+}
+assert_eq(in_new(), [2, 7])
+
+# A closure built in a method captures the name like any local.
+fn nested() {
+  class M {
+    new() {
+    }
+    later() {
+      fn () { M }
+    }
+  }
+  let m = M.new()
+  m.later()() == M
+}
+assert_eq(nested(), true)
+
+# Writing the name inside a member is the immutable binding's error.
+fn assign_inside() {
+  class M {
+    new() {
+    }
+    clobber() {
+      M = 1
+    }
+  }
+  try {
+    M.new().clobber()
+    'no'
+  } catch e {
+    e.kind
+  }
+}
+assert_eq(assign_inside(), 'ImmutableError')
+
+# A decorated class binds the decorator's result, and its members keep
+# reading the binding, as before.
+let wrap = fn (c) { {inner: c} }
+fn decorated() {
+  @wrap class N {
+    new() {
+    }
+    m() {
+      N
+    }
+  }
+  N.inner.new().m() == N
+}
+assert_eq(decorated(), true)
+
+# Sending: an instance whose methods name the class needs the class object
+# along, whose constructor is native — refused exactly as its cell capture
+# was. One whose methods do not still travels.
+fn sends() {
+  class Named {
+    new() {
+    }
+    m() {
+      Named
+    }
+  }
+  class Plain {
+    new() {
+      self.v = 3
+    }
+    m() {
+      self.v
+    }
+  }
+  let n = Named.new()
+  let p = Plain.new()
+  let refused = try {
+    Isolate.spawn(|| n.m()).join()
+    'shipped'
+  } catch e {
+    e.kind
+  }
+  [refused, Isolate.spawn(|| p.m()).join()]
+}
+assert_eq(sends(), ['SendError', 3])
+
+inspect('class own-name: ok')

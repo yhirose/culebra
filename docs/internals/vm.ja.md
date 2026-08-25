@@ -559,6 +559,27 @@ localで、ネストしたclosureがcaptureすればcellに昇格する。読み
 セッションのトップレベル`let`。角は`tests/test_fn_own_name.cul`が
 固定する。
 
+クラスメンバはこの環の最大版 — cls → ctor → meta → method → cell →
+cls、関数内で宣言されたクラスなら呼び出しごとにclass object・meta・
+メソッドclosure一式が残る（ゲートのdmdエントリ）— を閉じていて、
+同じ継ぎ目を*receiver*経由で通す: `ClsSelf`がクラス名をinstanceの
+class objectから（staticのフレームではクラス自身から）束縛する。
+構造的な変更は2つ。instanceが自分のclass objectへの+1を持つ
+（`JitObject::cls`。`ns_name`と役割排他なので同じ末尾スロットを
+共有し、128バイトのslabクラスに収まる）— これが宣言スコープの死後も
+メソッドから`M`に答えられる理由 — と、両方の構築綴りがクラスを
+コンストラクタのreceiverとして渡す（`C(...)`が`C.new(...)`と同じに
+なった）。receiverを持たずに走るメンバ — 生closureを退避した
+デコレータ、他isolateが再構築したinstance — はNameErrorのsentinelを
+読む（multifnの前例）。送信の答えはmetaのフラグ（`names_class`）で
+以前のまま: クラス名を使うメソッドを持つinstanceはclass objectを
+道連れにし、そのnative constructorで拒否される — 従来cellのcapture
+が拒否されていた場所そのもの。それ以外のinstanceはクラスを置いて
+行く。デコレータ付きクラスはcaptureのまま（束縛はデコレータの
+戻り値）で、デコレータ付き`fn`と同じ。REPLセッションのトップレベル
+クラスも同様 — 後続行が再宣言しうるので、`let`リテラルがcellに
+残したのと同じ角。`tests/test_class_own_name.cul`が固定する。
+
 続いてstdlibがruntime層経由で届いた — Phase 1の見取り図の
 「stdlibの大部分はruntime束縛経由で届く（3つ目のstdlib移植は
 しない）」そのままに。新opは`NsGet`の1つだけ:

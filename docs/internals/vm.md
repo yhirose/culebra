@@ -609,6 +609,30 @@ name in the same list, and a REPL session's top-level `let`, which a
 later line may redeclare into the same session cell.
 `tests/test_fn_own_name.cul` pins the corners.
 
+A class member closes the widest of these rings — cls → ctor → meta →
+method → cell → cls, one class object, meta and method-closure set
+retained per call for a class declared in a function (the gate's dmd
+entries) — and takes the same seam through its *receiver*: `ClsSelf`
+binds the class name from the instance's own class object, or from the
+class itself in a static's frame. That took two structural moves. An
+instance now holds a +1 on its class object (`JitObject::cls`, sharing
+the trailing slot with `ns_name` — the roles are exclusive — to stay
+inside the 128-byte slab class), which is what keeps `M` answerable
+from a method after the declaring scope died; and both construction
+spellings hand the class over as the constructor's receiver (`C(...)`
+now does what `C.new(...)` always did), which is where the ctor reads
+it. A member run with no receiver of its class — a decorator that
+stashed the raw closure, an instance another isolate rebuilt — reads
+the NameError sentinel, the multifn precedent. Sending keeps its old
+answer through a meta flag (`names_class`): an instance whose methods
+name the class ships the class object along and is refused on its
+native constructor, exactly where the old cell capture was; every
+other instance leaves its class behind, as before. Decorated classes
+keep the capture (the binding is the decorator's result), like
+decorated `fn`s — and so does a REPL session's top-level class, which
+a later line may redeclare, the same corner the `let` literal leaves
+to the cell. `tests/test_class_own_name.cul` pins these.
+
 The stdlib then arrived through the runtime layer, exactly as the
 Phase 1 sketch has it ("most of the stdlib arrives through the
 runtime binding — no third stdlib port"): one new op, `NsGet`,

@@ -785,6 +785,27 @@ culebra_runtime_multifn_self(JitClosure* body) {
   return JitValue{TAG_FUNC, reinterpret_cast<int64_t>(it->second)};
 }
 
+// The class-name read a class member's prologue emits: the class object its
+// receiver was built by (an instance's JitObject::cls), or the receiver
+// itself when the frame is a static's, +1 for the frame — alive for the
+// whole call, since the receiver holds it. A miss — a member run with no
+// receiver of its class, which only a decorator that stashed the raw
+// closure can arrange, or an instance another isolate rebuilt — returns
+// the unbound sentinel, which the binding's read guard turns into the
+// NameError an undeclared name gets (the multifn_self precedent).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
+culebra_runtime_class_self(int8_t self_tag, int64_t self_data) {
+  if (self_tag == TAG_OBJECT) {
+    auto* o = reinterpret_cast<JitObject*>(self_data);
+    JitObject* cls = o->proto ? o->cls : o->is_class ? o : nullptr;
+    if (cls) {
+      cls->refcount++;
+      return JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(cls)};
+    }
+  }
+  return JitValue{TAG_NO_SELF, 0};
+}
+
 // Function-value introspection. `cls` is a JitClosure*; `prop` is
 // one of "name" / "return_type" / "params". Mirrors the interp side's
 // Value::eval_property dispatch for Value::Function. Unknown
@@ -1020,7 +1041,10 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
           _gc_push_value(out, e.value);
         }
       }
-      if (o->proto) out.push_back(o->proto);
+      if (o->proto) {
+        out.push_back(o->proto);
+        if (o->cls) out.push_back(o->cls);
+      }
       break;
     }
     case GC_TAG_CELL:

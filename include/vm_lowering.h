@@ -604,10 +604,19 @@ struct Lowering {
           j.module_->getOrInsertFunction(rt::class_new_method, j.valueType_,
                                          b.getInt8Ty(), i64Ty),
           {tag, j.extract_data(callee0)}, "ctor.method");
-      auto* probeEndBB = b.GetInsertBlock();
+      auto ctorOkBB = BasicBlock::Create(j.ctx_, "call.ctor", fn);
       b.CreateCondBr(
-          b.CreateICmpEQ(j.extract_tag(ctorV), b.getInt8(TAG_FUNC)), okBB,
+          b.CreateICmpEQ(j.extract_tag(ctorV), b.getInt8(TAG_FUNC)), ctorOkBB,
           errBB);
+      // The class object becomes the constructor's receiver (the instance
+      // keeps a +1 on it, JitObject::cls), exactly as the `__call__` arm
+      // hands over the instance: mint its +1, release the one this call
+      // started with.
+      b.SetInsertPoint(ctorOkBB);
+      j.emit_value_retain(callee0);
+      if (selfSlot >= 0) j.emit_value_release(load_slot(selfSlot));
+      auto* ctorEndBB = b.GetInsertBlock();
+      b.CreateBr(okBB);
       b.SetInsertPoint(errBB);
       j.emit_call(j.module_->getOrInsertFunction(rt::type_error_typed,
                                                  b.getVoidTy(), i64Ty, i64Ty,
@@ -619,14 +628,15 @@ struct Lowering {
       auto* calleePhi = b.CreatePHI(j.valueType_, 3, "call.callee");
       calleePhi->addIncoming(callee0, fromBB);
       calleePhi->addIncoming(callM, overloadEndBB);
-      calleePhi->addIncoming(ctorV, probeEndBB);
+      calleePhi->addIncoming(ctorV, ctorEndBB);
       calleeV = calleePhi;
-      // True only on the `__call__` arm, where the receiver is the instance
-      // that was called rather than this instruction's own.
+      // True on the two probe arms, where the receiver is the value that
+      // was called — the callable instance, or the class object — rather
+      // than this instruction's own.
       auto* ovPhi = b.CreatePHI(b.getInt1Ty(), 3, "call.overload");
       ovPhi->addIncoming(b.getInt1(false), fromBB);
       ovPhi->addIncoming(b.getInt1(true), overloadEndBB);
-      ovPhi->addIncoming(b.getInt1(false), probeEndBB);
+      ovPhi->addIncoming(b.getInt1(true), ctorEndBB);
       auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
       auto fnFieldPtr = b.CreateStructGEP(j.closureType_, clsPtr, 1, "fn.ptr");
       auto fnPtr = b.CreateLoad(ptrTy, fnFieldPtr, "fn");
@@ -3543,9 +3553,20 @@ struct Lowering {
                                                i64Ty),
                 {j.extract_tag(callee), j.extract_data(callee)}, "kw.ctor.m");
             b.CreateStore(ctorV, calleeSlot);
+            auto ctorOkBB = BasicBlock::Create(j.ctx_, "kw.ctor.ok", fn);
             b.CreateCondBr(
                 b.CreateICmpEQ(j.extract_tag(ctorV), b.getInt8(TAG_FUNC)),
-                readyBB, errBB);
+                ctorOkBB, errBB);
+            // The class object becomes the constructor's receiver, as the
+            // callable instance does on the arm above.
+            b.SetInsertPoint(ctorOkBB);
+            j.emit_value_retain(callee);
+            if (kc.has_receiver) {
+              j.emit_value_release(load_slot(in.c));
+              b.CreateStore(j.make_nil(), slots[in.c]);
+            }
+            b.CreateStore(callee, selfSlot);
+            b.CreateBr(readyBB);
             b.SetInsertPoint(errBB);
             j.emit_call(j.module_->getOrInsertFunction(
                             rt::type_error_typed, b.getVoidTy(), i64Ty, i64Ty,
@@ -3759,6 +3780,16 @@ struct Lowering {
           b.CreateStore(v, slots[in.a]);
           break;
         }
+        case Op::ClsSelf: {
+          auto selfV = load_slot(in.b);
+          b.CreateStore(
+              j.emit_value_call(
+                  j.module_->getOrInsertFunction(rt::class_self, j.valueType_,
+                                                 b.getInt8Ty(), i64Ty),
+                  {j.extract_tag(selfV), j.extract_data(selfV)}, "cls.self"),
+              slots[in.a]);
+          break;
+        }
         case Op::WkErr: {
           j.emit_call(
               j.module_->getOrInsertFunction(rt::wk_contract_error,
@@ -3791,7 +3822,7 @@ struct Lowering {
               j.module_->getOrInsertFunction(rt::build_class_meta, ptrTy,
                                              ptrTy, ptrTy, i64Ty, i64Ty),
               {namesPtr, slab, b.getInt64(in.c),
-               b.getInt64(c.name_table_lowered[in.d])},
+               b.getInt64(c.name_table_flags[in.d])},
               "vm.class.meta");
           b.CreateStore(j.make_object(meta), slots[in.a]);
           break;
@@ -3842,16 +3873,19 @@ struct Lowering {
           auto meta = load_slot(in.b);
           auto finit = load_slot(in.b + 1);
           auto body = load_slot(in.b + 2);
+          auto clsV = load_slot(in.d);  // the receiver: the class object
           auto inst = j.emit_value_call(
               j.module_->getOrInsertFunction(
                   rt::build_class_instance, j.valueType_, ptrTy, ptrTy,
-                  b.getInt8Ty(), i64Ty, b.getInt8Ty(), i64Ty, i64Ty, ptrTy),
+                  b.getInt8Ty(), i64Ty, b.getInt8Ty(), i64Ty, b.getInt8Ty(),
+                  i64Ty, i64Ty, ptrTy),
               {// The instance stores this as its `class` TAG_STRING, so it
                // must be header-backed (the length sits at data[-8]) — a
                // bare C global would make every later read walk garbage.
                j.emit_str_literal(_str_sv(reinterpret_cast<const char*>(
                    c.consts[in.c].data))),
                b.CreateIntToPtr(j.extract_data(meta), ptrTy),
+               j.extract_tag(clsV), j.extract_data(clsV),
                j.extract_tag(finit), j.extract_data(finit),
                j.extract_tag(body), j.extract_data(body), nArgs, argsPtr},
               "vm.instance");

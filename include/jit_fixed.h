@@ -1660,9 +1660,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
 // OrderedSymbolMap::lowered_state on the same object.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
     const char* const* method_names, const JitValue* method_vals,
-    int64_t n_methods, int64_t lowered_state) {
+    int64_t n_methods, int64_t flags) {
   auto* meta = culebra_runtime_object_new();
-  meta->is_lowered_state = lowered_state != 0;
+  meta->is_lowered_state = (flags & kClassMetaLoweredState) != 0;
+  meta->names_class = (flags & kClassMetaNamesClass) != 0;
   int64_t i = 0;
   try {
     for (; i < n_methods; i++) {
@@ -1723,11 +1724,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_run_field_init(
 // `finit_tag`/`finit_data` and `body_tag`/`body_data` describe the
 // field-init / user-body closures (TAG_FUNC) or TAG_NIL when absent.
 // `class_meta` is borrowed; this helper retains it once per instance to
-// balance the matching release in the Object destructor.
+// balance the matching release in the Object destructor. `cls_tag`/`cls_data`
+// is the constructor's receiver — the class object, when the call came
+// through one — retained the same way (JitObject::cls).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
-    const char* class_name, JitObject* class_meta, int8_t finit_tag,
-    int64_t finit_data, int8_t body_tag, int64_t body_data, int64_t n_args,
-    JitValue* args) {
+    const char* class_name, JitObject* class_meta, int8_t cls_tag,
+    int64_t cls_data, int8_t finit_tag, int64_t finit_data, int8_t body_tag,
+    int64_t body_data, int64_t n_args, JitValue* args) {
   auto* inst = culebra_runtime_object_new();
 
   inst->proto = class_meta;
@@ -1735,6 +1738,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   // any of its instances. The matching release runs in the JitObject
   // destructor (release_impl GC_TAG_OBJECT path).
   if (class_meta) class_meta->refcount++;
+  if (cls_tag == TAG_OBJECT &&
+      reinterpret_cast<JitObject*>(cls_data)->is_class) {
+    inst->cls = reinterpret_cast<JitObject*>(cls_data);
+    inst->cls->refcount++;
+  }
   // Mirror inherited `drop` so the destructor's `has_drop` gate fires,
   // and register the instance on the owned stack (deterministic drop).
   if (class_meta && _find_property(class_meta, "drop"))

@@ -2484,7 +2484,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
   auto* o = new JitObject();
   o->refcount = 1;
   o->proto = src->proto;   // shared class meta (methods)
-  if (o->proto) o->proto->refcount++;   // each instance holds a +1 (see dtor)
+  if (o->proto) {
+    o->proto->refcount++;   // each instance holds a +1 (see dtor)
+    o->cls = src->cls;      // and one on its class object
+    if (o->cls) o->cls->refcount++;
+  }
   o->shape = src->shape;   // interned, immortal
   o->slots = src->slots;   // per-field value copy
   for (auto& e : o->slots) {

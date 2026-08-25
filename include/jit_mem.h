@@ -245,9 +245,13 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
         // is outside the subgraph, so the meta stays externally
         // reachable and everything it owns survives with it) — following
         // it keeps the counts exact for instance-only cycles.
-        if (o->proto)
+        if (o->proto) {
           self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->proto)}, id,
                self);
+          if (o->cls)
+            self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->cls)}, id,
+                 self);
+        }
         break;
       }
       case TAG_ARRAY:
@@ -410,9 +414,14 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
         _culebra_call_drop_if_present(o);
         if (o->proto) {
           auto* proto = o->proto;
+          auto* cls = o->cls;
           o->proto = nullptr;
+          o->cls = nullptr;
           _culebra_value_release_impl(GC_TAG_OBJECT,
                                        reinterpret_cast<int64_t>(proto));
+          if (cls)
+            _culebra_value_release_impl(GC_TAG_OBJECT,
+                                         reinterpret_cast<int64_t>(cls));
         }
         for (auto& entry : o->slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
@@ -1037,6 +1046,7 @@ inline constexpr auto class_parameters_walk =
 inline constexpr auto multifn_register_and_install =
     "culebra_runtime_multifn_register_and_install";
 inline constexpr auto multifn_self        = "culebra_runtime_multifn_self";
+inline constexpr auto class_self          = "culebra_runtime_class_self";
 inline constexpr auto arity_error         = "culebra_runtime_arity_error";
 inline constexpr auto arity_missing       = "culebra_runtime_arity_missing";
 inline constexpr auto args_slice_to_array =

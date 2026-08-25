@@ -83,7 +83,12 @@ struct FuncInfo {
   // bodies pay nothing.
   std::string own_name;
   bool own_name_used = false;
-  bool own_name_dispatched = false;  // multifn: MfSelf; literal: fn_slot
+  // Where the prologue reads it from: the running closure itself (a `let`
+  // literal, fn_slot), the dispatch (a multifn, MfSelf), or the receiver
+  // (a class member — the instance's class object, or the class object a
+  // static runs on; ClsSelf).
+  enum class OwnNameSource : uint8_t { Closure, Dispatch, Receiver };
+  OwnNameSource own_name_source = OwnNameSource::Closure;
 };
 
 // Hidden scope-slot name binding a class's synthetic field-init closure
@@ -612,6 +617,16 @@ struct FnAnalysis {
         visit_for_frees(*node.nodes[i], my_locals, outer, info);
         i++;
       }
+      // An undecorated class's members name it through their receiver
+      // (FuncInfo::own_name) rather than capturing the declaring scope's
+      // cell — the ring cls → ctor → meta → method → cell → cls. A decorated
+      // one's keep the capture: the binding is the decorator's result. So
+      // does a REPL session's top-level class, which a later line may
+      // redeclare into the same session cell — and whose binding never
+      // drops, so the ring costs nothing there.
+      std::string_view class_own;
+      if (i == 0 && !(session_top_ && outer.empty()))
+        class_own = culebra::parse_generic_head(node.nodes[0]->token).outer;
       // Typed-field initializers execute per instance inside a synthetic
       // field-init function (invoked after the `new` body's parameter
       // binding, or by build_class_instance for a class with no `new`),
@@ -622,6 +637,14 @@ struct FnAnalysis {
       // in the enclosing scope.
       FuncInfo field_info;
       std::set<std::string> field_locals;
+      // The class name is already in declared_ (a scope-wide local of the
+      // enclosing frame), so seeding it here is what makes a field
+      // initializer's read the frame's own — analyze_fn_common's seed.
+      if (!class_own.empty() &&
+          field_locals.insert(std::string(class_own)).second) {
+        field_info.own_name = std::string(class_own);
+        field_info.own_name_source = FuncInfo::OwnNameSource::Receiver;
+      }
       auto propagate = [&](const FuncInfo& nested) {
         for (const auto& fv : nested.free_vars) {
           if (my_locals.contains(fv)) {
@@ -654,7 +677,7 @@ struct FnAnalysis {
         }
         if (!mv.is_static && mv.name == "new") new_method_asts.push_back(&method);
         outer.push_back(&my_locals);
-        auto method_info = analyze_method(method, outer);
+        auto method_info = analyze_method(method, outer, class_own);
         outer.pop_back();
         propagate(method_info);
       }
@@ -1065,7 +1088,9 @@ struct FnAnalysis {
       const peg::Ast& params_ast,
       const peg::Ast& body_ast,
       std::vector<const std::set<std::string>*>& outer,
-      std::string_view own_name = {}, bool own_name_dispatched = false) {
+      std::string_view own_name = {},
+      FuncInfo::OwnNameSource own_name_source =
+          FuncInfo::OwnNameSource::Closure) {
     std::set<std::string> my_locals;
     DeclKinds kinds;
     for (auto& p : params_ast.nodes) {
@@ -1096,7 +1121,7 @@ struct FnAnalysis {
     if (!own_name.empty() && !culebra::is_sink_name(own_name) &&
         my_locals.insert(std::string(own_name)).second) {
       info.own_name = std::string(own_name);
-      info.own_name_dispatched = own_name_dispatched;
+      info.own_name_source = own_name_source;
       kinds.scope_wide.insert(info.own_name);
     }
     collect_fn_locals(body_ast, my_locals, outer, kinds);
@@ -1142,11 +1167,15 @@ struct FnAnalysis {
   // METHOD ast: [IDENTIFIER, PARAMETERS, BLOCK]. Analyzed just like a
   // nested FUNCTION — the implicit `self` arrives as the dispatched
   // receiver (analyze_fn_common drops the lexical-fallback capture).
+  // `class_own` is the class's name for a member that reads it through its
+  // receiver (FuncInfo::own_name), empty when the class is decorated.
   FuncInfo analyze_method(
       const peg::Ast& methodAst,
-      std::vector<const std::set<std::string>*>& outer) {
+      std::vector<const std::set<std::string>*>& outer,
+      std::string_view class_own = {}) {
     auto mv = culebra::view_method(methodAst);
-    return analyze_fn_common(&methodAst, *mv.params, **mv.body, outer);
+    return analyze_fn_common(&methodAst, *mv.params, **mv.body, outer,
+                             class_own, FuncInfo::OwnNameSource::Receiver);
   }
 
   // TRAIT_METHOD: only default-body methods need analysis (sig-only
@@ -1186,7 +1215,7 @@ struct FnAnalysis {
             : std::string_view{};
     return analyze_fn_common(&multifnAst, *multifnAst.nodes[paramsIdx],
                              *multifnAst.nodes[bodyIdx], outer, self_name,
-                             /*own_name_dispatched=*/true);
+                             FuncInfo::OwnNameSource::Dispatch);
   }
 
   // `defer { BODY }` behaves like a 0-parameter nested function that

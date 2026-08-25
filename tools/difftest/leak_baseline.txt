@@ -41,27 +41,18 @@ vm	nestedfn|{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }
 #
 # --- compiler-made cycles: drive this section to empty ---
 # What the B7-c re-measure (absolute per-lane growth) surfaced, less what
-# the edge-cutting diagnostic reclassified above. None of these is a retain
-# the runtime forgot to drop: each is a cycle the compiler synthesizes for a
-# program that wrote none, so the fix is in how the construct lowers, not in
-# a release at a call site.
-#   dmd      — a method that names its own class (the label's operator
-#              overloads are incidental): the method closure captures the
-#              class cell, and the class holds its methods.
+# the edge-cutting diagnostic reclassified above and what FuncInfo::own_name
+# resolved (the nestedfn `let` twin reads its own closure; dmd's methods —
+# the label's operator overloads were incidental — read their class through
+# the receiver). None of these is a retain the runtime forgot to drop: each
+# is a cycle the compiler synthesizes for a program that wrote none, so the
+# fix is in how the construct lowers, not in a release at a call site.
 #   eff      — effects_transform's named-fn field, `self.r = (fn (s) {
 #              ... })(self)`: the computation holds a closure that holds the
 #              computation, for a body that never wrote `self`.
-jit	dmd|class M { new(v: Long){self.v=v} __mul__(n: Long){M(self.v*n)} __mul__(o: M){M(self.v*o.v)} }; to_string((M(3)*4).v) + to_string((M(3)*M(5)).v)
-jit	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((5+V(10)).x)
-jit	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((V(1)+V(2)).x) + to_string((V(1)+5).x)
-jit	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; try { V(1)+"s" } catch e { e.kind }
 jit	eff|effect fn a(); effect fn f() { let b = perform a(); fn r(n) { if n <= 1 { return b }; n * r(n - 1) }; r(4) }; handle { f() } with a(k) { k(1) }
 jit	eff|effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })
 jit	eff|effect fn a(); to_string(handle { let x = perform a(); fn g(n) { yield n * x }; g(3).collect() } with a(k) { k(7) })
-vm	dmd|class M { new(v: Long){self.v=v} __mul__(n: Long){M(self.v*n)} __mul__(o: M){M(self.v*o.v)} }; to_string((M(3)*4).v) + to_string((M(3)*M(5)).v)
-vm	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((5+V(10)).x)
-vm	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; to_string((V(1)+V(2)).x) + to_string((V(1)+5).x)
-vm	dmd|class V { new(x: Long){self.x=x} __add__(o: V){V(self.x+o.x)} __add__(n: Long){V(self.x+n)} }; try { V(1)+"s" } catch e { e.kind }
 vm	eff|effect fn a(); effect fn f() { let b = perform a(); fn r(n) { if n <= 1 { return b }; n * r(n - 1) }; r(4) }; handle { f() } with a(k) { k(1) }
 vm	eff|effect fn a(); effect fn f() { let x = perform a(); fn g(n) { yield n; yield n + x }; g(10).collect() }; to_string(handle { f() } with a(k) { k(5) })
 vm	eff|effect fn a(); to_string(handle { let x = perform a(); fn g(n) { yield n * x }; g(3).collect() } with a(k) { k(7) })

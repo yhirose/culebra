@@ -275,7 +275,21 @@ struct JitObject {
   // through `proto`, which is how bind_method_value knows its own slots are
   // compiler storage. Passed to build_class_meta, never GEP'd by codegen.
   bool is_lowered_state = false;
-  const char* ns_name = nullptr;
+  // Set on a CLASS META whose methods name their class (FuncInfo::own_name
+  // read through the receiver): the send path ships the class object with
+  // such an instance — and so refuses it, exactly as the cell capture it
+  // replaced did — and leaves it behind otherwise. Never GEP'd.
+  bool names_class = false;
+  // One trailing pointer, two exclusive roles: a builtin namespace's name,
+  // or the class object a class-sugar instance (the only kind with a
+  // `proto`) was built by. The instance holds a +1 on its class, released
+  // with it, so a method can name the class through its receiver after the
+  // declaring scope is gone (culebra_runtime_class_self); sharing the slot
+  // is what keeps JitObject inside its 128-byte slab class. Never GEP'd.
+  union {
+    const char* ns_name = nullptr;
+    JitObject* cls;
+  };
 
   // --- Shape-based property access helpers ---
 
@@ -360,6 +374,10 @@ struct JitObject {
   static void operator delete(void* p, size_t n) { _slab().free(p, n); }
 };
 static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
+
+// culebra_runtime_build_class_meta's flag bits (Chunk::name_table_flags).
+inline constexpr int64_t kClassMetaLoweredState = 1;
+inline constexpr int64_t kClassMetaNamesClass = 2;
 
 // Per-callsite inline cache for `obj.prop` reads. Allocated as a JIT
 // module global per property-get site; the slow path (object_get_ic)
