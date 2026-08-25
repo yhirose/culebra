@@ -27,10 +27,11 @@ let STEP = 1.0 / FPS
 # where it lies; the number is how many segments are drawn ahead of the camera
 # (v4's own tweak UI allows 100..500). Both defaults are v4's.
 #
-# The two knobs are what a host without a JIT is given instead of a smaller
-# game: the frame cost is dominated by how many segments the loops walk, and
-# the catch-up below by how much one car step costs, so the browser runs the
-# same source with both turned down (see playground/examples.json).
+# The two knobs exist for a host that needs a smaller game instead of a
+# JIT: the frame cost is dominated by how many segments the loops walk, and
+# the catch-up below by how much one car step costs. The Playground (no JIT
+# in a browser) has run both at these same defaults since the VM became the
+# executor everywhere (Phase 4 B6c) — see playground/examples.json.
 let args = fn () {
   mut dir = nil
   mut distance = 300
