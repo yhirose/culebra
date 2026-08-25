@@ -10,13 +10,13 @@
 // TUI one: Term.app's event loop doesn't return until the user quits, so
 // nothing would ever reach the page while a game is being played. IO.inspect
 // (which ends in std::endl) and Screen.flush() (one TUI frame) already
-// flush, so streaming falls out of the existing stdlib for free — no interp
+// flush, so streaming falls out of the existing stdlib for free — no engine
 // change needed. IO.print alone doesn't auto-flush; run_culebra flushes
 // once more at the end so a plain script's trailing print()-without-\n text
 // is never lost, matching the old behavior for non-TUI scripts.
 #include <module_loader.h>
-#include <stdlib_interp.h>
 #include <stdlib_jit.h>  // the stdlib the executor resolves through
+#include <stdlib_preamble.h>
 #include <vfs.h>
 #include <vm.h>
 
