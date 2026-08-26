@@ -4,8 +4,8 @@ Source files are `.cul`. There is no manifest and no package manager;
 the whole standard library is in scope without an `import`.
 
 ```bash
-culebra prog.cul          # run
-culebra --jit prog.cul    # the same output, through the LLVM JIT
+culebra prog.cul          # run (the bytecode VM's executor)
+culebra --jit prog.cul    # the same output, that bytecode lowered to LLVM
 culebra test              # run every test_*.cul below the cwd
 culebra fmt -i .          # format in place (no style options)
 culebra lint .            # static checks

@@ -4,8 +4,8 @@
 標準ライブラリは`import`なしで全て見えている。
 
 ```bash
-culebra prog.cul          # 実行
-culebra --jit prog.cul    # 同じ出力を LLVM JIT で
+culebra prog.cul          # 実行（バイトコードVMのexecutor）
+culebra --jit prog.cul    # 同じ出力、そのバイトコードをLLVMへ降ろす
 culebra test              # cwd 以下の test_*.cul を実行
 culebra fmt -i .          # その場で整形（スタイル設定は無い）
 culebra lint .            # 静的検査

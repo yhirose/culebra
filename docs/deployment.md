@@ -1,7 +1,7 @@
 # Deployment: Binaries, Embedding, Wrapping
 
-Three ways to get Culebra code running outside the plain interpreter:
-a standalone AOT binary (`culebra build`), an embedded interpreter/JIT
+Three ways to get Culebra code running beyond a plain `culebra` run:
+a standalone AOT binary (`culebra build`), an embedded VM/JIT
 inside a C++ host, and an extended `culebra` binary that exposes your
 own C++ classes as builtins (`culebra wrap`). They share one runtime
 archive layout, described once in [§4](#4-shared-runtime-archive-layout)
@@ -455,7 +455,7 @@ The repository includes small samples that exercise the contract:
 ## 3. Wrapping C++ libraries (`culebra wrap`)
 
 `culebra wrap` builds an **extended culebra binary** with your own C++
-classes available as builtins — no fork of the interpreter, no plugin
+classes available as builtins — no fork of the runtime, no plugin
 ABI. You write a short declaration TU; the C++ compiler instantiates
 the glue (pybind11-style), and the result works identically under
 `--vm`, `--jit`, and AOT binaries produced by the extended
@@ -503,7 +503,7 @@ const bool registered = [] {
 
 The member function is a *template* argument (`method<&T::m>`), so each
 method gets its own compiled thunk. Parameter names are optional; they
-drive error messages and keyword binding on the interpreter.
+drive error messages and keyword binding at runtime.
 
 You declare construction (`ctor`) but never destruction: there is no
 `.dtor` builder. The wrapped type's `~T()` is invoked automatically by

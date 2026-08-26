@@ -205,7 +205,7 @@ culebra build examples/webview/desktop_app.cul -o app
 開発中は毎回ビルドせず、完成したアプリをそのまま実行すればよい。
 
 ```sh
-culebra examples/webview/desktop_app.cul          # インタプリタ
+culebra examples/webview/desktop_app.cul          # バイトコードVM (既定)
 culebra --jit examples/webview/desktop_app.cul    # 同じ出力、JIT経由
 ```
 

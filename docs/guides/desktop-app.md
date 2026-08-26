@@ -204,7 +204,7 @@ use either links none of it.
 Run the finished app during development instead of building it every time:
 
 ```sh
-culebra examples/webview/desktop_app.cul          # interpreter
+culebra examples/webview/desktop_app.cul          # the bytecode VM (default)
 culebra --jit examples/webview/desktop_app.cul    # same output, through the JIT
 ```
 

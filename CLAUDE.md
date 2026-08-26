@@ -1,6 +1,6 @@
 # CLAUDE.md — culebra
 
-culebra は個人の趣味プロジェクト（プログラミング言語処理系）。**repo は公開済み**（`github.com/yhirose/culebra`）で、**2026-08-22 に `v0.3.0` をリリース**した — 3 OS のバイナリを GitHub Release で配布し、docs サイトと WASM Playground を GitHub Pages で公開している。
+culebra は個人の趣味プロジェクト（プログラミング言語処理系）。**repo は公開済み**（`github.com/yhirose/culebra`）で、**2026-08-25 に `v0.4.0` をリリース**した — 3 OS のバイナリを GitHub Release で配布し、docs サイトと WASM Playground を GitHub Pages で公開している。
 
 **エンジンは bytecode VM が既定**（v0.3.0 以降）。`vm::Compiler` が bytecode に落とし、`vm::Exec` が実行する。`--jit` と `culebra build`（AOT）は**同じ bytecode**を LLVM IR に降ろす消費者で、フロントエンドは1つ。tree-walking interpreter は Phase 4 B7 で**削除済み**（v0.3.1 が両エンジンを持つ最後のリリース）— 経緯は `docs/internals/vm.md` §13。
 

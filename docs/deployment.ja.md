@@ -1,7 +1,7 @@
 # デプロイ: バイナリ・埋め込み・ラッピング
 
-素のインタプリタ以外でCulebraコードを動かす3つの方法: standalone
-AOTバイナリ（`culebra build`）、C++ ホスト内への埋め込み、自分の
+素の`culebra`実行以外でCulebraコードを動かす3つの方法: standalone
+AOTバイナリ（`culebra build`）、C++ ホスト内へのVM/JIT埋め込み、自分の
 C++ クラスをビルトインとして公開する拡張`culebra`バイナリ
 （`culebra wrap`）。3つは1つのruntime archiveレイアウトを共有し、
 [§4](#4-共有-runtime-archive-レイアウト) にまとめて記述し各章から参照する。
@@ -461,9 +461,9 @@ defineしてはいけない**。AOT archiveの生成元TU
 ## 3. C++ ライブラリのラッピング（`culebra wrap`）
 
 `culebra wrap`は、あなたのC++ クラスをビルトインとして組み込んだ
-**拡張culebraバイナリ**を作ります — インタプリタのforkもplugin
+**拡張culebraバイナリ**を作ります — ランタイムのforkもplugin
 ABIも不要です。短い宣言TUを書くとC++ コンパイラがglueを実体化し
-（pybind11流）、インタプリタ・`--jit`・拡張バイナリの`culebra build`
+（pybind11流）、`--vm`・`--jit`・拡張バイナリの`culebra build`
 が作るAOTバイナリのすべてで同一に動きます。
 
 ### 宣言する
@@ -508,7 +508,7 @@ const bool registered = [] {
 
 メンバ関数は*テンプレート*引数（`method<&T::m>`）なので、メソッドごとに
 専用のthunkがコンパイルされます。引数名は省略可能で、エラーメッセージと
-インタプリタのキーワード束縛に使われます。
+実行時のキーワード束縛に使われます。
 
 宣言するのは構築（`ctor`）だけで、破棄は宣言しません — `.dtor`ビルダーは
 ありません。ラップした型の`~T()`は、ハンドルが継承する確定drop機構
