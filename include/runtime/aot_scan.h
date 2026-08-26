@@ -94,13 +94,17 @@ inline void aot_collect_embed_dirs(const peg::Ast& node,
 // flip the flag. A false positive only inflates the binary; a false negative
 // leaves runtime calls unresolved (or a wrapped namespace unregistered), so
 // over-matching is the safe direction. `names` holds one or two entries per
-// axis, so the linear scan per identifier is fine.
+// axis, so the linear scan per identifier is fine. `_X` is the native
+// namespace behind stdlib `X` (`_Canvas`, `_Regex`, …), which the preamble
+// and the tests call directly, so it counts as a use of `X`.
 inline bool aot_uses_any_name(const peg::Ast& node,
                               std::span<const std::string_view> names) {
   using namespace peg::udl;
   if (node.tag == "IDENTIFIER"_) {
+    std::string_view id = node.token;
+    if (id.starts_with('_')) id.remove_prefix(1);
     for (auto n : names)
-      if (node.token == n) return true;
+      if (id == n) return true;
   }
   for (const auto& child : node.nodes) {
     if (aot_uses_any_name(*child, names)) return true;

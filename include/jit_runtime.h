@@ -231,7 +231,7 @@ inline auto _jit_at_pos(int64_t line, int64_t col, F&& op) -> decltype(op()) {
 
 // Source position of the operation currently executing, published by the JIT
 // right before a fallible runtime call whose helper raises a *positionless*
-// CulebraError (the value-neutral lib helpers in tensor.h / regexlib.h / ...
+// CulebraError (the value-neutral lib helpers in tensor.h / regex.h / ...
 // throw with no line/col). This is the JIT/AOT mirror of the interpreter's
 // eval() boundary, which stamps the location of the node it evaluates: the
 // interp walks nodes so position is implicit, whereas compiled code must

@@ -909,7 +909,10 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     CULEBRA_RT_TENSOR_EVAL_WEAK=1
     CULEBRA_RT_HTTP_REQUEST_WEAK=1
     CULEBRA_RT_COMPRESS_WEAK=1
-    CULEBRA_RT_SQLITE_WEAK=1)
+    CULEBRA_RT_SQLITE_WEAK=1
+    CULEBRA_RT_REGEX_WEAK=1
+    CULEBRA_RT_PROC_WEAK=1
+    CULEBRA_RT_CANVAS_ASSETS_WEAK=1)
   # In a window build the Canvas backend is the raylib one: the base archive
   # carries weak headless present/input stubs (no raylib), overridden by the
   # strong bodies force-loaded from culebra_rt_canvas on Canvas use. In a
@@ -997,6 +1000,28 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     "${_rt_compress_archive}")
   set(_rt_embed_deps culebra_rt culebra_rt_tensor culebra_rt_http
     culebra_rt_compress)
+  # Regex / Proc / Canvas-assets feature objects: the same weak choke, applied
+  # to self-hosted subsystems (regex.h / proc.h / image.h + font_ttf.h) that
+  # link nothing external but cost every binary their code otherwise. No link
+  # flags; embedded like the three above.
+  foreach(_rt_self_contained culebra_rt_regex culebra_rt_proc
+                             culebra_rt_canvas_assets)
+    add_library(${_rt_self_contained} STATIC
+      ./src/runtime/${_rt_self_contained}.cc)
+    target_compile_features(${_rt_self_contained} PRIVATE cxx_std_23)
+    target_compile_options(${_rt_self_contained} PRIVATE
+      -ffunction-sections -fdata-sections)
+    list(APPEND _rt_embed_files
+      "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}${_rt_self_contained}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    list(APPEND _rt_embed_deps ${_rt_self_contained})
+  endforeach()
+  # Same backend selection as the core archive: ttf_glyph_screen reads
+  # screen_scale(), which a window build must leave to the link (the core's
+  # weak stub or the raylib archive), not inline as the headless 1.0.
+  if(CULEBRA_ENABLE_CANVAS_WINDOW)
+    target_compile_definitions(culebra_rt_canvas_assets PRIVATE
+      CULEBRA_CANVAS_WINDOW=1)
+  endif()
   # SQLite feature archive (gated), appended like Scene/Webview below.
   if(CULEBRA_ENABLE_SQLITE)
     list(APPEND _rt_embed_files
@@ -1084,6 +1109,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # archives may define, tools/check_jit_host_symbols.sh for what the driver
   # must still define.
   foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_compress
+                      culebra_rt_regex culebra_rt_proc culebra_rt_canvas_assets
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
                       culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})

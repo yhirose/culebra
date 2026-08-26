@@ -656,6 +656,9 @@ _run-tests BACKEND:
         # The sweep above runs every binary with no arguments, so this is the
         # one place an AOT build is asked what it does with some.
         {{nice_cmd}} bash tests/sys_argv_test.sh "$BIN" --aot || exit 1
+        # The self-contained axes are silent when lost (no link error, no
+        # ldd); tools/check_aot_feature_axes.sh reads the linked outputs.
+        {{nice_cmd}} bash tools/check_aot_feature_axes.sh "$(dirname "$BIN")" || exit 1
         echo "test aot OK: AOT binaries match --jit"
     }
 

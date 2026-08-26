@@ -58,7 +58,11 @@ Each feature axis force-loads independently (mechanism: [§4](#4-shared-runtime-
 so a program using neither `Tensor` nor `Http` links only the base
 archive. Dropping OpenSSL alone is worth ~4.7 MB (a non-Http binary is
 ~7.6 MB vs ~12.2 MB for an Http one, since OpenSSL is statically
-linked).
+linked). The same gating covers three self-hosted subsystems that link
+no external library but carry their own code: the regex engine
+(`Regex`, including `re'...'` literals), the subprocess layer (`Proc`)
+and the PNG decoder / TTF rasterizer behind `Canvas.Sprite.from_png` /
+`Canvas.Font`. A program that names none of them is ~0.5 MB smaller.
 
 Verify with `otool -L` (macOS) / `ldd` (Linux):
 
@@ -417,8 +421,9 @@ cc prog.o libculebra_rt.a -Wl,-dead_strip -Wl,-x -lc++ -o prog
 cc prog.o libculebra_rt.a -Wl,--gc-sections -Wl,-x -no-pie -lstdc++ -lm -o prog
 ```
 
-A program that references `Tensor`, `Http`, `Compress` or `SQLite`
-additionally needs that feature's archive **force-loaded** —
+A program that references a feature namespace (`Tensor`, `Http`,
+`Compress`, `SQLite`, `Regex`, `Proc`, `Canvas`, …; the [§4](#4-shared-runtime-archive-layout)
+table) additionally needs that feature's archive **force-loaded** —
 `-Wl,-force_load,<archive>` on Mach-O, `-Wl,--whole-archive <archive>
 -Wl,--no-whole-archive` on ELF — plus the feature's own external
 libraries. A plain append does *not* work: the base archive's weak stub
@@ -609,17 +614,25 @@ emits it as a base archive plus one small archive per heavy feature
 
 | Archive | Contents |
 |---|---|
-| `libculebra_rt.a` | base — everything, but with **weak stubs** for the tensor / http / compress chokes (so nothing it can call reaches BLAS, OpenSSL, or zlib) |
+| `libculebra_rt.a` | base — everything, but with **weak stubs** for each feature's choke (so nothing it can call reaches BLAS, OpenSSL, zlib, sqlite3, raylib, the regex engine, the subprocess layer or the image decoders) |
 | `libculebra_rt_tensor.a` | strong tensor choke (pulls BLAS / Accelerate) |
 | `libculebra_rt_http.a` | strong http choke (pulls OpenSSL + zlib) |
-| `libculebra_rt_compress.a` | strong compress choke (pulls zlib) |
+| `libculebra_rt_compress.a` | strong compress choke (pulls zlib; `to_png` rides it too) |
+| `libculebra_rt_sqlite.a` | strong sqlite choke plus the sqlite3 amalgamation |
+| `libculebra_rt_regex.a` | strong regex choke (the cpp-regexlib engine, ~320 KB) |
+| `libculebra_rt_proc.a` | strong proc choke (fork/exec/poll, or CreateProcess) |
+| `libculebra_rt_canvas_assets.a` | strong PNG decoder + TTF rasterizer chokes (stb_image / stb_truetype) |
+| `libculebra_rt_canvas.a` | the raylib window backend (window builds only; the base carries headless stubs) |
+| `libculebra_rt_scene.a` | Scene's wrap registrar (pulls raylib; not in the base at all) |
+| `libculebra_rt_webview.a` | Webview's wrap registrar (the OS WebView framework; not in the base at all) |
 | `libculebra_rt_wrap.a` | `culebra wrap` bindings |
 
 `culebra build` (and extended `ext-culebra build` binaries) always
 link the base archive, then **force-load** a feature archive only when
 the source AST references its namespace (`Tensor` / `Http` /
-`Compress`, or a wrapped namespace), appending that feature's external
-libraries (BLAS / OpenSSL / zlib) on the same condition. The strong
+`Compress` / `SQLite` / `Regex` / `Proc` / `Canvas` / `Scene` /
+`Webview`, or a wrapped namespace), appending that feature's external
+libraries (BLAS / OpenSSL / zlib / …) on the same condition. The strong
 choke overrides the base's weak stub, so a program that uses none of
 these features links none of them.
 

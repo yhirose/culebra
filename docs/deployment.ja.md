@@ -57,7 +57,12 @@ culebra build path/to/program.cul -o ./program
 [§4](#4-共有-runtime-archive-レイアウト) 参照）ので、`Tensor`も
 `Http`も使わないプログラムはbaseのみをlinkする。OpenSSLを
 落とすだけで約4.7 MB効く（非Httpバイナリ ~7.6 MBに対しHttp版は
-~12.2 MB、OpenSSLは静的リンクのため）。
+~12.2 MB、OpenSSLは静的リンクのため）。同じゲーティングは、外部
+ライブラリを引かないが自前のコードを抱える3つのサブシステムにも
+効く: 正規表現エンジン（`Regex`、`re'...'`リテラルを含む）、
+サブプロセス層（`Proc`）、`Canvas.Sprite.from_png` / `Canvas.Font`の
+背後のPNGデコーダ / TTFラスタライザ。どれも名指ししないプログラムは
+約0.5 MB小さくなる。
 
 `otool -L`（macOS）や`ldd`（Linux）で確認できます:
 
@@ -423,8 +428,9 @@ cc prog.o libculebra_rt.a -Wl,-dead_strip -Wl,-x -lc++ -o prog
 cc prog.o libculebra_rt.a -Wl,--gc-sections -Wl,-x -no-pie -lstdc++ -lm -o prog
 ```
 
-`Tensor` / `Http` / `Compress` / `SQLite`を参照するプログラムは、
-その機能のarchiveを **force-load** する必要がある — Mach-Oなら
+機能のnamespace（`Tensor` / `Http` / `Compress` / `SQLite` / `Regex` /
+`Proc` / `Canvas` / …、[§4](#4-共有-runtime-archive-レイアウト) の表）を
+参照するプログラムは、その機能のarchiveを **force-load** する必要がある — Mach-Oなら
 `-Wl,-force_load,<archive>`、ELFなら`-Wl,--whole-archive <archive>
 -Wl,--no-whole-archive` — さらにその機能の外部ライブラリも要る。
 単にappendしても効かない: base archiveの弱シンボルスタブが既に
@@ -608,17 +614,25 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 
 | Archive | 内容 |
 |---|---|
-| `libculebra_rt.a` | base — 全部入りだがtensor / http / compressのchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlibに到達しない） |
+| `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・raylib・正規表現エンジン・サブプロセス層・画像デコーダに到達しない） |
 | `libculebra_rt_tensor.a` | 強いtensor choke（BLAS / Accelerateを引く） |
 | `libculebra_rt_http.a` | 強いhttp choke（OpenSSL + zlibを引く） |
-| `libculebra_rt_compress.a` | 強いcompress choke（zlibを引く） |
+| `libculebra_rt_compress.a` | 強いcompress choke（zlibを引く。`to_png`もこれに乗る） |
+| `libculebra_rt_sqlite.a` | 強いsqlite choke＋sqlite3 amalgamation |
+| `libculebra_rt_regex.a` | 強いregex choke（cpp-regexlibエンジン、約320 KB） |
+| `libculebra_rt_proc.a` | 強いproc choke（fork/exec/poll、またはCreateProcess） |
+| `libculebra_rt_canvas_assets.a` | 強いPNGデコーダ＋TTFラスタライザのchoke（stb_image / stb_truetype） |
+| `libculebra_rt_canvas.a` | raylibのwindowバックエンド（windowビルドのみ。baseはheadlessスタブを持つ） |
+| `libculebra_rt_scene.a` | Sceneのwrap registrar（raylibを引く。baseには一切入っていない） |
+| `libculebra_rt_webview.a` | Webviewのwrap registrar（OSのWebViewフレームワーク。baseには一切入っていない） |
 | `libculebra_rt_wrap.a` | `culebra wrap`のバインディング |
 
 `culebra build`（および拡張された`ext-culebra build`バイナリ）は
 常にbaseをlinkし、ソースASTがそのnamespace（`Tensor` / `Http` /
-`Compress`、あるいはラップされたnamespace）を参照する時だけ機能
+`Compress` / `SQLite` / `Regex` / `Proc` / `Canvas` / `Scene` /
+`Webview`、あるいはラップされたnamespace）を参照する時だけ機能
 archiveを **force-load** し、同じ条件でその外部ライブラリ（BLAS /
-OpenSSL / zlib）を付けます。強いchokeがbaseの弱スタブを上書きする
+OpenSSL / zlib / …）を付けます。強いchokeがbaseの弱スタブを上書きする
 ので、これらの機能をどれも使わないプログラムはどれもlinkしません。
 
 これらのアーカイブはcpp-embedlibによって **`culebra`ドライバに

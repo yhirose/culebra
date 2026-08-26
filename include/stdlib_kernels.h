@@ -3,7 +3,7 @@
 // Engine-neutral native kernels behind the binding layer:
 // the compiled lanes (JIT / AOT / VM executor): the glob matcher and FS
 // syscall helpers, the File handle side table, the Time calendar/ISO
-// helpers, the Net error mapping, and the Regex compile cache. No Value /
+// helpers, and the Net error mapping. No Value /
 // Environment / JitValue here — only plain C++ over shared.h's error type
 // and the runtime substate slots — so either engine can include it without
 // pulling the other in. Moved verbatim from stdlib_interp.h (Phase 4 B7-b),
@@ -11,7 +11,6 @@
 
 #include <net.h>
 #include <os_compat.h>   // os_strptime (Time), os_* shims
-#include <regexlib.h>
 #include <shared.h>      // CulebraError, runtime_substate, kSlot*
 
 #include <chrono>
@@ -621,29 +620,6 @@ inline void _net_bound_addr(int64_t id, const char* ctx, std::string& host,
     culebra::net::close_handle(id);
     _net_throw(ctx, err, line, col);
   }
-}
-
-// Compile (or cache-hit) a Regex for `pattern`. The Regex namespace functions
-// are stateless — the pattern string is the identity — so a small thread-local
-// cache gives reuse without a handle. Flags are written inline ((?i)/(?m)/(?s))
-// in the pattern, so the cache key is just the pattern.
-inline std::shared_ptr<reg::Regex> regex_compile_cached(
-    const std::string& pattern, int64_t line, int64_t col) {
-  static thread_local std::unordered_map<std::string,
-                                          std::shared_ptr<reg::Regex>>
-      cache;
-  auto it = cache.find(pattern);
-  if (it != cache.end()) return it->second;
-  std::shared_ptr<reg::Regex> re;
-  try {
-    re = std::make_shared<reg::Regex>(pattern);
-  } catch (const reg::RegexError& e) {
-    throw CulebraError("RegexError", std::format("Regex: {}", e.what()), line,
-                       col);
-  }
-  if (cache.size() > 256) cache.clear();  // bound growth
-  cache.emplace(pattern, re);
-  return re;
 }
 
 }  // namespace culebra

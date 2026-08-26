@@ -37,7 +37,7 @@
 #include <wrap_registry.h>  // the wrap.h compiled-lane rows
 #include <stdlib_kernels.h>  // File/FS/Time/Net/Regex kernels shared with interp
 #include <shared.h>
-#include <regexlib.h>
+#include <regex.h>  // the value-neutral Regex choke (the Regex AOT axis)
 #include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
 #include <stdlib_math.h>   // Math kernels shared with the interp
 #ifdef CULEBRA_JIT_ENABLED
@@ -6862,159 +6862,149 @@ inline JitValue _ns_tensor_device(JitValue*, int64_t) {
 // and build the JitObject/JitArray results directly. All take (pattern,
 // subject, ...); flags are inline ((?i)/(?m)/(?s)). A Match is a data object
 // { value, start, end, groups:[Group|nil], named:{name:Group} }; no-match nil.
+// The engine sits behind regex.h's value-neutral choke (the Regex AOT axis):
+// the spans it returns are absolute byte offsets into the subject.
 //===------------------------------------------------------------------------//
-inline std::shared_ptr<reg::Regex> _jit_regex_compile(std::string_view pat) {
-  // Stateless cache keyed by pattern (own thread-local; see the /simplify note
-  // about cross-engine cache sharing).
-  static thread_local std::unordered_map<std::string,
-                                         std::shared_ptr<reg::Regex>>
-      cache;
-  std::string p(pat);
-  auto it = cache.find(p);
-  if (it != cache.end()) return it->second;
-  std::shared_ptr<reg::Regex> re;
-  try {
-    re = std::make_shared<reg::Regex>(p);
-  } catch (const reg::RegexError& e) {
-    throw culebra::CulebraError("RegexError",
-                                std::format("Regex: {}", e.what()), 0, 0);
-  }
-  if (cache.size() > 256) cache.clear();
-  cache.emplace(std::move(p), re);
-  return re;
+inline culebra::regex::Handle _jit_regex_compile(JitValue pattern) {
+  return culebra::regex::compile(
+      _ns_adapt::require_sv(pattern, "pattern", "StringLike"));
 }
 
-// `offset` shifts byte spans to absolute positions (find_from searches a suffix);
-// the engine's match views are immutable, so the shift is applied at build time.
-inline JitValue _jit_regex_group(const reg::Match& c, size_t offset = 0) {
-  if (!c.matched()) return _ns_adapt::v_nil();
-  auto* g = culebra_runtime_object_new();
-  culebra_runtime_object_set(
-      g, "value", false, TAG_STRING,
-      reinterpret_cast<int64_t>(_culebra_heap_str(c.str())), 0, 0);
-  culebra_runtime_object_set(g, "start", false, TAG_LONG,
-                             static_cast<int64_t>(c.begin() + offset), 0, 0);
-  culebra_runtime_object_set(g, "end", false, TAG_LONG,
-                             static_cast<int64_t>(c.end() + offset), 0, 0);
-  return _ns_adapt::v_object(g);
-}
-
-// Templated over match-like type (`reg::MatchResult` owning / `reg::Match` view)
-// so search/match and find_all share one builder. `named` is the Regex's
-// name->index map; `offset` the absolute shift.
-template <typename MatchT>
-inline JitValue _jit_regex_match(
-    const MatchT& m, const std::unordered_map<std::string, int>& named,
-    size_t offset = 0) {
+// { value, start, end } for one group; nil for an unmatched one.
+inline JitValue _jit_regex_group(std::string_view subject,
+                                 const culebra::regex::Span& g) {
+  if (!g.matched) return _ns_adapt::v_nil();
   auto* o = culebra_runtime_object_new();
-  o->is_match = true;  // route `m[i]` / `m["name"]` to capture groups
   culebra_runtime_object_set(
       o, "value", false, TAG_STRING,
-      reinterpret_cast<int64_t>(_culebra_heap_str(m.str())), 0, 0);
+      reinterpret_cast<int64_t>(_culebra_heap_str(g.text(subject))), 0, 0);
   culebra_runtime_object_set(o, "start", false, TAG_LONG,
-                             static_cast<int64_t>(m.begin() + offset), 0, 0);
+                             static_cast<int64_t>(g.begin), 0, 0);
   culebra_runtime_object_set(o, "end", false, TAG_LONG,
-                             static_cast<int64_t>(m.end() + offset), 0, 0);
-  auto* groups = culebra_runtime_array_new();  // [0]=whole match, then 1..n
-  for (size_t i = 0; i <= m.group_count(); i++) {
-    auto gv = _jit_regex_group(m.group(i), offset);
+                             static_cast<int64_t>(g.end), 0, 0);
+  return _ns_adapt::v_object(o);
+}
+
+// A Match object from one row of a Matches table (group 0 first); `named` is
+// the Regex's name->index map.
+inline JitValue _jit_regex_match(
+    std::string_view subject, std::span<const culebra::regex::Span> row,
+    const std::unordered_map<std::string, int>& named) {
+  auto mv = _jit_regex_group(subject, row[0]);  // the whole match, always set
+  auto* o = reinterpret_cast<JitObject*>(mv.data);
+  o->is_match = true;  // route `m[i]` / `m["name"]` to capture groups
+  auto* groups = culebra_runtime_array_new();
+  for (const auto& g : row) {
+    auto gv = _jit_regex_group(subject, g);
     culebra_runtime_array_push(groups, gv.tag, gv.data);
   }
   culebra_runtime_object_set(o, "groups", false, TAG_ARRAY,
                              reinterpret_cast<int64_t>(groups), 0, 0);
   auto* named_o = culebra_runtime_object_new();
   for (const auto& kv : named) {
-    auto gv = _jit_regex_group(m.group(kv.second), offset);
+    auto gv = _jit_regex_group(subject, row[kv.second]);
     culebra_runtime_object_set(named_o, kv.first.c_str(), false, gv.tag, gv.data,
                                0, 0);
   }
   culebra_runtime_object_set(o, "named", false, TAG_OBJECT,
                              reinterpret_cast<int64_t>(named_o), 0, 0);
-  return _ns_adapt::v_object(o);
+  return mv;
 }
 
 inline JitValue _ns_regex_check(JitValue* a, int64_t) {
-  _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));  // validate; throws on bad pattern
+  _jit_regex_compile(a[0]);  // validate; throws on bad pattern
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_regex_test(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
-  return _ns_adapt::v_bool(re->test(_ns_adapt::require_sv(a[1], "s", "StringLike")));
+  auto re = _jit_regex_compile(a[0]);
+  return _ns_adapt::v_bool(
+      culebra::regex::test(*re, _ns_adapt::require_sv(a[1], "s", "StringLike")));
 }
 inline JitValue _ns_regex_find(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
-  auto m = re->search(_ns_adapt::require_sv(a[1], "s", "StringLike"));
-  return m.matched() ? _jit_regex_match(m, re->named_groups())
-                     : _ns_adapt::v_nil();
+  auto re = _jit_regex_compile(a[0]);
+  auto s = _ns_adapt::require_sv(a[1], "s", "StringLike");
+  auto m = culebra::regex::search(*re, s);
+  return m.size() ? _jit_regex_match(s, m[0], culebra::regex::named_groups(*re))
+                  : _ns_adapt::v_nil();
 }
 inline JitValue _ns_regex_match(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
-  auto m = re->match(_ns_adapt::require_sv(a[1], "s", "StringLike"));
-  return m.matched() ? _jit_regex_match(m, re->named_groups())
-                     : _ns_adapt::v_nil();
+  auto re = _jit_regex_compile(a[0]);
+  auto s = _ns_adapt::require_sv(a[1], "s", "StringLike");
+  auto m = culebra::regex::match(*re, s);
+  return m.size() ? _jit_regex_match(s, m[0], culebra::regex::named_groups(*re))
+                  : _ns_adapt::v_nil();
 }
 inline JitValue _ns_regex_find_all(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  auto re = _jit_regex_compile(a[0]);
+  auto s = _ns_adapt::require_sv(a[1], "s", "StringLike");
+  const auto& named = culebra::regex::named_groups(*re);
+  auto ms = culebra::regex::find_all(*re, s);
   auto* arr = culebra_runtime_array_new();
-  for (auto m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
-    auto mv = _jit_regex_match(m, re->named_groups());
+  for (size_t i = 0; i < ms.size(); i++) {
+    auto mv = _jit_regex_match(s, ms[i], named);
     culebra_runtime_array_push(arr, mv.tag, mv.data);
   }
   return _ns_adapt::v_array(arr);
 }
 // find_all_str(pattern, s) -> [String]: matched texts only, no Match objects
-// (the per-match Object structure dominated match-dense workloads). See interp.
+// (the per-match Object structure dominated match-dense workloads).
 inline JitValue _ns_regex_find_all_str(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  auto re = _jit_regex_compile(a[0]);
+  auto s = _ns_adapt::require_sv(a[1], "s", "StringLike");
   auto* arr = culebra_runtime_array_new();
-  for (auto m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
+  for (const auto& m : culebra::regex::find_all_spans(*re, s)) {
     culebra_runtime_array_push(
-        arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(m.str())));
+        arr, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(m.text(s))));
   }
   return _ns_adapt::v_array(arr);
 }
 // count(pattern, s) -> Long: number of non-overlapping matches, no objects.
 inline JitValue _ns_regex_count(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
-  return JitValue{TAG_LONG, static_cast<int64_t>(
-                                re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike")).size())};
+  auto re = _jit_regex_compile(a[0]);
+  return JitValue{TAG_LONG, static_cast<int64_t>(culebra::regex::count(
+                                *re, _ns_adapt::require_sv(a[1], "s", "StringLike")))};
 }
 // find_all_index(pattern, s) -> [Int]: flat byte spans [s0,e0,s1,e1,...].
 // Longs are inline in the JitArray, so the whole result is one allocation.
 inline JitValue _ns_regex_find_all_index(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  auto re = _jit_regex_compile(a[0]);
+  auto s = _ns_adapt::require_sv(a[1], "s", "StringLike");
   auto* arr = culebra_runtime_array_new();
-  for (auto m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
-    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.begin()));
-    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.end()));
+  for (const auto& m : culebra::regex::find_all_spans(*re, s)) {
+    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.begin));
+    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.end));
   }
   return _ns_adapt::v_array(arr);
 }
 inline JitValue _ns_regex_replace_all(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
-  std::string out = re->replace_all(_ns_adapt::require_sv(a[1], "s", "StringLike"),
-                                    _ns_adapt::require_sv(a[2], "repl", "StringLike"));
+  auto re = _jit_regex_compile(a[0]);
+  std::string out = culebra::regex::replace_all(
+      *re, _ns_adapt::require_sv(a[1], "s", "StringLike"),
+      _ns_adapt::require_sv(a[2], "repl", "StringLike"));
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
 }
 // replace_first(pattern, s, repl) -> String: like replace_all but only the
 // leftmost match. Same $-template grammar (regexlib::replace_first).
 inline JitValue _ns_regex_replace_first(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
-  std::string out = re->replace_first(_ns_adapt::require_sv(a[1], "s", "StringLike"),
-                                      _ns_adapt::require_sv(a[2], "repl", "StringLike"));
+  auto re = _jit_regex_compile(a[0]);
+  std::string out = culebra::regex::replace_first(
+      *re, _ns_adapt::require_sv(a[1], "s", "StringLike"),
+      _ns_adapt::require_sv(a[2], "repl", "StringLike"));
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
 }
-// find_from(pattern, s, pos) -> { m: Match|nil, next: Int }. See the interp
-// one stateless find_at scan step (absolute offsets,
-// engine-owned empty-match resume rule, anchors see the full subject).
+// find_from(pattern, s, pos) -> { m: Match|nil, nxt: Int }: one stateless
+// find_at scan step (absolute offsets, engine-owned empty-match resume rule,
+// anchors see the full subject).
 inline JitValue _ns_regex_find_from(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
-  std::string s(_ns_adapt::require_sv(a[1], "s", "StringLike"));
+  auto re = _jit_regex_compile(a[0]);
+  auto s = _ns_adapt::require_sv(a[1], "s", "StringLike");
   int64_t pos = a[2].data;
   auto* out = culebra_runtime_object_new();
-  auto r = re->find_at(s, pos < 0 ? s.size() + 1 : static_cast<size_t>(pos));
-  if (r.m.matched()) {
-    auto mv = _jit_regex_match(r.m, re->named_groups());
+  auto r = culebra::regex::find_at(
+      *re, s, pos < 0 ? s.size() + 1 : static_cast<size_t>(pos));
+  if (r.m.size()) {
+    auto mv = _jit_regex_match(s, r.m[0], culebra::regex::named_groups(*re));
     culebra_runtime_object_set(out, "m", false, mv.tag, mv.data, 0, 0);
   } else {
     culebra_runtime_object_set(out, "m", false, TAG_NIL, 0, 0, 0);
@@ -7024,15 +7014,15 @@ inline JitValue _ns_regex_find_from(JitValue* a, int64_t) {
   return _ns_adapt::v_object(out);
 }
 inline JitValue _ns_regex_split(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
-  std::string s(_ns_adapt::require_sv(a[1], "s", "StringLike"));
+  auto re = _jit_regex_compile(a[0]);
+  auto s = _ns_adapt::require_sv(a[1], "s", "StringLike");
   auto* arr = culebra_runtime_array_new();
   size_t cursor = 0;
-  for (auto m : re->find_all(s)) {
-    auto piece = s.substr(cursor, m.begin() - cursor);
+  for (const auto& m : culebra::regex::find_all_spans(*re, s)) {
+    auto piece = s.substr(cursor, m.begin - cursor);
     culebra_runtime_array_push(
         arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(piece)));
-    cursor = m.end();
+    cursor = m.end;
   }
   auto last = s.substr(cursor);
   culebra_runtime_array_push(
