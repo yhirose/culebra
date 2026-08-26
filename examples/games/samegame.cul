@@ -183,10 +183,6 @@ fn record_score(score) {
   (list, made_top5 ? entry : nil)
 }
 
-fn spaces(n) {
-  [](n, " ").join("")
-}
-
 let BOX_BODY = Term.style(bg: 236, fg: 255)
 let BOX_TITLE = Term.style(bg: 236, fg: 226, bold: true)
 let BOX_FOOTER = Term.style(bg: 236, fg: 244)
@@ -201,7 +197,7 @@ fn draw_box(s, w, title, lines, pick, footer) {
   let bx = (s.cols() - w) / 2
   let by = (s.rows() - h) / 2
 
-  let blank = spaces(w)
+  let blank = " ".repeat(w)
   for r in 0..h {
     s.put(bx, by + r, blank, BOX_BODY)
   }

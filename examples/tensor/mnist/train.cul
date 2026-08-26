@@ -76,10 +76,7 @@ let load_t0 = Sys.time()
 let labels_all = load_labels("{DATA}/train-labels-idx1-ubyte.gz")
 
 mut order = range(labels_all.size()).collect()
-for i in 0..order.size() {
-  let j = Random.int(i, order.size())
-  (order[i], order[j]) = (order[j], order[i])
-}
+Random.shuffle(order)
 order = order.slice(0, n_train)
 
 mut y = []

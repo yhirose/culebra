@@ -141,6 +141,12 @@ class Parser {
     self.tokens[self.pos + offset]
   }
 
+  take() {
+    t = self.peek()
+    self.pos += 1
+    t.value
+  }
+
   dump_state(msg = nil) {
     IO.eprintln(JSON.stringify([msg, self.pos, self.rest_head()], 2))
   }
@@ -193,14 +199,10 @@ class Parser {
       []
     } else {
       mut args = [first_arg]
-      mut go = true
-      while go {
+      while true {
         rest_arg = self.parse_args_rest()
-        if rest_arg == nil {
-          go = false
-        } else {
-          args.push(rest_arg)
-        }
+        break if rest_arg == nil
+        args.push(rest_arg)
       }
       args
     }
@@ -209,9 +211,7 @@ class Parser {
   parse_func() {
     self.consume('func')
 
-    t = self.peek()
-    self.pos += 1
-    fn_name = t.value
+    fn_name = self.take()
 
     self.consume('(')
     args = self.parse_args()
@@ -235,9 +235,7 @@ class Parser {
   }
 
   parse_var_declare() {
-    t = self.peek()
-    self.pos += 1
-    var_name = t.value
+    var_name = self.take()
 
     self.consume(';')
 
@@ -245,9 +243,7 @@ class Parser {
   }
 
   parse_var_init() {
-    t = self.peek()
-    self.pos += 1
-    var_name = t.value
+    var_name = self.take()
 
     self.consume('=')
 
@@ -316,9 +312,7 @@ class Parser {
   parse_set() {
     self.consume('set')
 
-    t = self.peek()
-    self.pos += 1
-    var_name = t.value
+    var_name = self.take()
 
     self.consume('=')
 
@@ -340,9 +334,7 @@ class Parser {
   }
 
   parse_funcall() {
-    t = self.peek()
-    self.pos += 1
-    fn_name = t.value
+    fn_name = self.take()
 
     self.consume('(')
     args = self.parse_args()
@@ -354,9 +346,7 @@ class Parser {
   parse_call_set() {
     self.consume('call_set')
 
-    t = self.peek()
-    self.pos += 1
-    var_name = t.value
+    var_name = self.take()
 
     self.consume('=')
 
@@ -405,14 +395,10 @@ class Parser {
     self.consume('{')
 
     mut when_clauses = []
-    mut go = true
-    while go {
+    while true {
       when_clause = self.parse_when_clause()
-      if when_clause == nil {
-        go = false
-      } else {
-        when_clauses.push(when_clause)
-      }
+      break if when_clause == nil
+      when_clauses.push(when_clause)
     }
 
     throw ParseError("At least one when clause is required") if when_clauses.empty()
@@ -440,9 +426,7 @@ class Parser {
     self.consume('_cmt')
     self.consume('(')
 
-    t = self.peek()
-    self.pos += 1
-    comment = t.value
+    comment = self.take()
 
     self.consume(')')
     self.consume(';')
