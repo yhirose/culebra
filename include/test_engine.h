@@ -69,17 +69,25 @@ class VmTestHost : public TestHost {
                 TestFileError& err) override {
     std::vector<LoadedModule> modules;
     if (!load_test_file(path, source, modules, err)) return false;
-    if (modules.size() > 1) {
-      err = {"VmError", "--vm: unsupported: a test file with imports", 0, 0};
-      return false;
-    }
     std::vector<std::string> msgs;
-    auto& m = modules.front();
-    if (!session_.run_stdlib_delta(*m.ast, msgs) ||
-        !run_session_unit(m.ast, m.source, msgs)) {
+    // Every module gets a delta, not just the entry: a dependency that names
+    // a lazy namespace needs it registered before the unit runs, and the
+    // session dedupes what it has already registered.
+    for (const auto& m : modules) {
+      if (!session_.run_stdlib_delta(*m.ast, msgs)) {
+        err = {"interpret_failed", join_messages(msgs), 0, 0};
+        return false;
+      }
+    }
+    // One session unit for the whole list: the dependencies compile each in a
+    // scope of its own, and the entry's top-level bindings land in the
+    // session's cells — which is what lets the runner call a registered test
+    // back after the file has returned.
+    if (!session_.run_modules(modules, msgs)) {
       err = {"interpret_failed", join_messages(msgs), 0, 0};
       return false;
     }
+    session_.drop_result();
     return true;
   }
 
