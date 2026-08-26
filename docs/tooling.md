@@ -189,6 +189,23 @@ Discovery: any path that is a file is included as-is; any path that is a
 directory is walked recursively for files matching `test_*.cul`. Exit
 code is `0` when all tests pass, `1` when any fail.
 
+**Each file is its own program.** A file gets its own scope, and the
+runner runs that file's tests before it loads the next one. What a file
+writes at the top level is the file's — a `mut range = 5` leaves `range`
+a function everywhere else — and so are its classes, its overloads, its
+`Sys.script`, and the directory `Embed.dir(...)` resolves against. A
+fixture declared in one file is not visible from another; pass it through
+a parameter, or declare it in each file that wants it. A file may
+`import`, and its modules run as one unit the way they do in a script.
+
+A file's top level runs in a *session* scope rather than a script's.
+Scoping reads the same either way — a bare write inside a function is
+that function's own local unless something already declared the name —
+with one consequence: the runner declares `test` / `parametrize` and the
+matcher family before the file, so those names count as declared. A bare
+write to one from inside a function reassigns it, and is refused, where
+in a script the same line would declare a local.
+
 **Reporters.** Default is human-readable. `--reporter json` emits one
 JSON object per line (NDJSON) — useful for agent loops and CI:
 
@@ -196,8 +213,12 @@ JSON object per line (NDJSON) — useful for agent loops and CI:
 {"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul","stdout":""}
 {"event":"test_fail","name":"divides_correctly","kind":"AssertionError",
  "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,"stdout":""}
-{"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
+{"event":"run_end","passed":42,"failed":1,"files":7,"errored_files":0,"bailed":false}
 ```
+
+`files` counts the test files that ran — the number `--list` would print
+paths for. A `--doc` run reports blocks, not files, and its `run_end`
+carries no `files`.
 
 User `inspect(...)` from inside a test is captured into the event's
 `stdout` field rather than interleaved with the NDJSON stream, and

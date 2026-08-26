@@ -611,6 +611,25 @@ delta** — a session sees one input at a time, so each input registers
 only the lazy modules no earlier input named; registering a builder
 twice would mint a second instance of a namespace.
 
+A function literal in a session unit **captures the cell** for every name
+it does not bind, rather than leaving the body to load it by name. A body
+that loads a name by name does it on whatever thread runs it, and an
+isolate or a `Parallel` worker has neither the session nor the `Runtime`
+the cell was minted in — a closure crosses a thread boundary as
+fn_ptr-plus-captures, no names (§3.4). The capture carries the binding's
+`shadowed_builtin` flag with it, so a cell that is still unbound means
+the stdlib global of that name, resolved on the thread that reads it; the
+sendable encoding has a kind for that sentinel so such a capture can
+cross at all. The cost is a capture per distinct free name, stdlib names
+included — measured at ~30 ns per capture per closure instantiation.
+
+Teardown runs the other way round from construction: a session's cells go
+back before its retained programs and before the `Runtime`, because
+releasing a cell can run Culebra code — a `drop` body — and that code
+reaches its bytecode through a descriptor pointing into a program.
+`release_all` drains its map rather than walking it, since a `drop` can
+mint a cell behind the cursor.
+
 The REPL (`vm_repl.h`) is one `Session` fed line by line, with the last
 statement's value echoed from the session's result cell.
 
@@ -626,6 +645,22 @@ unit, which is what lets the runner call back into it after it has
 returned. Values cross the interface as indices into the host's own
 store, released to a mark when the test that used them ends, so a
 fixture's `drop` fires into the right test's captured output.
+
+**A file is a program.** Each gets its own `Runtime` — where the
+namespace caches and the class and overload registries live — its own
+session and cells, its own entry script (`Sys.script`, and the directory
+`Embed.dir(...)` resolves against), and its own isolate-join guard; and
+the runner runs that file's own tests while the scope is open rather than
+loading every file first. Nothing a file writes at the top level reaches
+the next one. A file may `import`: its module list runs as one session
+unit, and `Session::run_modules` asks for the stdlib delta itself when
+the list does not already carry a spliced preamble.
+
+The gate runs every `tests/*.cul` through the runner, asserting the exit
+code and the file count — these files register no `test(...)`, so
+`passed` says nothing about coverage. It is the only lane that exercises
+session scoping over the suite; the symmetry sweep runs the same files as
+scripts.
 
 The doctest runner (`doctest_runner.h`) needs no session: it takes a
 `BlockRunner` — `(name, code) → {ok, kind, message}` — and `main.cc`
