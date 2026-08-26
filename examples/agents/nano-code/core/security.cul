@@ -36,8 +36,8 @@ let DANGEROUS_COMMAND_PATTERNS = [
   re'\$\{[^}]*##',   # variable-expansion obfuscation
 ]
 
-# The reason it is dangerous, or nil when it is not — so a caller writes
-# `if let why = is_dangerous_command(c)` instead of unpacking a pair whose
+# The reason it is dangerous, or nil when it is not — a caller tests the
+# reason it is going to report anyway, rather than unpacking a pair whose
 # second half is meaningless half the time.
 fn is_dangerous_command(command) {
   cond {

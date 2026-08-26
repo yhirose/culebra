@@ -1,0 +1,31 @@
+import files from './files.cul'
+import exec from './exec_command.cul'
+import schema from './schema.cul'
+
+# The tools an agent is given, keyed by the name the model calls them by.
+#
+# A tool is an Object, not a class: it is a description plus one function, and
+# the agent looks it up by name rather than dispatching over a family of types.
+# The schema each one advertises is derived from its `params` (tools/schema.cul)
+# instead of written out, which is what keeps these declarations to the part
+# that differs.
+
+fn make_tools(ws) {
+  [
+    files.make_read_file(ws),
+    files.make_write_file(ws),
+    files.make_edit_file(ws),
+    exec.make_exec_command(ws),
+  ].map(|t| (t.name, t)).to_object()
+}
+
+# What goes on the wire: the model needs the schema, not the implementation.
+fn tool_specs(tools) {
+  tools.values().collect().map(|t| {
+    name: t.name,
+    description: t.description,
+    parameters: schema.to_json_schema(t.params),
+  })
+}
+
+export {make_tools, tool_specs}

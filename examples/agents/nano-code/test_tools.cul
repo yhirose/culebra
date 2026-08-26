@@ -1,0 +1,216 @@
+import ws from './core/workspace.cul'
+import exec from './tools/exec_command.cul'
+import tools from './tools/index.cul'
+
+# Ported from upstream's execCommand.test.ts, readFile.test.ts,
+# writeFile.test.ts and editFile.test.ts. Upstream asserts on the Japanese text
+# of each error; these assert on `reason`, which says the same thing without
+# tying a test to a wording.
+
+fn temp_ws() {
+  let dir = FS.join(Sys.env('TMPDIR', '/tmp'), 'nano-code-t-' + UUID.v4())
+  FS.mkdir(dir)
+  ws.Workspace.new(dir)
+}
+
+fn reason_of(f) {
+  try {
+    f()
+    nil
+  } catch e {
+    e.reason
+  }
+}
+
+# --- parse_command: the bash-compatible split -------------------------------
+
+@test
+fn splits_on_whitespace() {
+  assert_eq(exec.parse_command('ls -la src/'), ['ls', '-la', 'src/'])
+  assert_eq(exec.parse_command('  ls   -la  '), ['ls', '-la'])
+  assert_eq(exec.parse_command(''), [])
+}
+
+@test
+fn keeps_a_quoted_run_together() {
+  assert_eq(exec.parse_command('git commit -m "one two"'),
+            ['git', 'commit', '-m', 'one two'])
+  assert_eq(exec.parse_command("git commit -m 'one two'"),
+            ['git', 'commit', '-m', 'one two'])
+  assert_eq(exec.parse_command('cat "a b.txt"'), ['cat', 'a b.txt'])
+}
+
+@test
+fn a_backslash_escapes_only_a_quote() {
+  # These are single-quoted, so culebra passes the backslashes through as
+  # written and the split sees exactly what a shell user would type.
+  # Inside double quotes it escapes.
+  assert_eq(exec.parse_command('cat "a\"b"'), ['cat', 'a"b'])
+  # Before a quote character it escapes.
+  assert_eq(exec.parse_command('cat a\"b'), ['cat', 'a"b'])
+  # Anywhere else it is a character, so a Windows path survives.
+  assert_eq(exec.parse_command('cat C:\dir\f.txt'), ['cat', 'C:\dir\f.txt'])
+}
+
+@test
+fn an_unclosed_quote_is_an_error() {
+  assert_eq(reason_of(fn () { exec.parse_command('cat "a b') }),
+            'unclosed_quote')
+  assert_eq(reason_of(fn () { exec.parse_command("cat 'a b") }),
+            'unclosed_quote')
+}
+
+# --- execCommand: everything that refuses before running --------------------
+
+@test
+fn refuses_a_command_outside_the_whitelist() {
+  let t = tools.make_tools(temp_ws()).execCommand
+  assert_eq(reason_of(fn () { t.run({command: 'whoami'}) }), 'not_allowed')
+  assert_eq(reason_of(fn () { t.run({command: ''}) }), 'not_allowed')
+}
+
+@test
+fn refuses_shell_metacharacters() {
+  let t = tools.make_tools(temp_ws()).execCommand
+  # `;` and `|` are only metacharacters; the rest security.cul also names, and
+  # it answers first — either way the command does not run.
+  assert_eq(reason_of(fn () { t.run({command: 'ls; whoami'}) }),
+            'shell_metachar')
+  assert_eq(reason_of(fn () { t.run({command: 'ls | whoami'}) }),
+            'shell_metachar')
+  for c in ['ls `whoami`', 'ls $(whoami)', 'sudo ls'] {
+    assert_true(reason_of(fn () { t.run({command: c}) }) != nil)
+  }
+}
+
+@test
+fn refuses_dangerous_options() {
+  let t = tools.make_tools(temp_ws()).execCommand
+  let bad = [
+    'bun run --help rm -rf',
+    'find . -delete',
+    'git --git-dir=../.git status',
+    'git --work-tree=/tmp status',
+  ]
+  for c in bad {
+    assert_eq(reason_of(fn () { t.run({command: c}) }), 'dangerous_pattern')
+  }
+}
+
+@test
+fn refuses_a_path_argument_that_leaves() {
+  let t = tools.make_tools(temp_ws()).execCommand
+  assert_eq(reason_of(fn () { t.run({command: 'ls ../'}) }),
+            'outside_workspace')
+  assert_eq(reason_of(fn () { t.run({command: 'ls /etc'}) }),
+            'outside_workspace')
+}
+
+@test
+fn runs_an_allowed_command() {
+  let w = temp_ws()
+  defer { FS.remove(w.root, recursive: true) }
+  FS.write(FS.join(w.root, 'hello.txt'), 'hi')
+  let t = tools.make_tools(w).execCommand
+  assert_true(t.run({command: 'ls'}).contains('hello.txt'))
+}
+
+@test
+fn reports_a_failing_command_as_an_error() {
+  let w = temp_ws()
+  defer { FS.remove(w.root, recursive: true) }
+  let t = tools.make_tools(w).execCommand
+  assert_eq(reason_of(fn () { t.run({command: 'ls no-such-file-xyz'}) }),
+            'nonzero_exit')
+}
+
+# --- the file tools ---------------------------------------------------------
+
+@test
+fn reads_and_writes_inside_the_workspace() {
+  let w = temp_ws()
+  defer { FS.remove(w.root, recursive: true) }
+  let t = tools.make_tools(w)
+  # writeFile creates the missing directories on the way.
+  t.writeFile.run({path: 'a/b/c.txt', content: 'hello'})
+  assert_eq(t.readFile.run({path: 'a/b/c.txt'}), 'hello')
+}
+
+@test
+fn refuses_to_read_a_directory_or_a_missing_file() {
+  let w = temp_ws()
+  defer { FS.remove(w.root, recursive: true) }
+  let t = tools.make_tools(w)
+  FS.mkdir(FS.join(w.root, 'sub'))
+  assert_eq(reason_of(fn () { t.readFile.run({path: 'sub'}) }), 'not_a_file')
+  assert_eq(reason_of(fn () { t.readFile.run({path: 'nope.txt'}) }), 'not_found')
+}
+
+@test
+fn refuses_a_file_over_the_size_limit() {
+  let w = temp_ws()
+  defer { FS.remove(w.root, recursive: true) }
+  let t = tools.make_tools(w)
+  FS.write(FS.join(w.root, 'big.txt'), 'x'.repeat(100 * 1024 + 1))
+  assert_eq(reason_of(fn () { t.readFile.run({path: 'big.txt'}) }), 'too_large')
+}
+
+@test
+fn edits_only_an_unambiguous_passage() {
+  let w = temp_ws()
+  defer { FS.remove(w.root, recursive: true) }
+  let t = tools.make_tools(w)
+  t.writeFile.run({path: 'f.txt', content: "alpha\nbeta\nalpha\n"})
+
+  # Two hits: refuse rather than pick one.
+  assert_eq(reason_of(fn () {
+    t.editFile.run({path: 'f.txt', old_text: 'alpha', new_text: 'x'})
+  }), 'ambiguous_match')
+  # No hits.
+  assert_eq(reason_of(fn () {
+    t.editFile.run({path: 'f.txt', old_text: 'gamma', new_text: 'x'})
+  }), 'no_match')
+  # One hit: the edit lands, and nothing else moves.
+  t.editFile.run({path: 'f.txt', old_text: 'beta', new_text: 'BETA'})
+  assert_eq(t.readFile.run({path: 'f.txt'}), "alpha\nBETA\nalpha\n")
+}
+
+@test
+fn every_tool_is_confined_through_symlinks() {
+  let w = temp_ws()
+  defer { FS.remove(w.root, recursive: true) }
+  FS.symlink('/etc', FS.join(w.root, 'escape'))
+  let t = tools.make_tools(w)
+  assert_eq(reason_of(fn () { t.readFile.run({path: 'escape/hosts'}) }),
+            'symlink_escape')
+  assert_eq(reason_of(fn () {
+    t.writeFile.run({path: 'escape/x', content: 'no'})
+  }), 'symlink_escape')
+  assert_eq(reason_of(fn () {
+    t.editFile.run({path: 'escape/hosts', old_text: 'a', new_text: 'b'})
+  }), 'symlink_escape')
+  assert_eq(reason_of(fn () { t.run_missing }), nil)  # no such member: nil
+}
+
+@test
+fn refuses_a_credential_file_by_name() {
+  let w = temp_ws()
+  defer { FS.remove(w.root, recursive: true) }
+  let t = tools.make_tools(w)
+  assert_eq(reason_of(fn () { t.readFile.run({path: '.env'}) }), 'not_allowed')
+  assert_eq(reason_of(fn () {
+    t.writeFile.run({path: '.aws/credentials', content: 'x'})
+  }), 'not_allowed')
+}
+
+@test
+fn advertises_a_schema_for_every_tool() {
+  let specs = tools.tool_specs(tools.make_tools(temp_ws()))
+  assert_eq(specs.map(|s| s.name).sorted(),
+            ['editFile', 'execCommand', 'readFile', 'writeFile'])
+  for s in specs {
+    assert_eq(s.parameters.type, 'object')
+    assert_true(!s.description.empty())
+    assert_true(!s.parameters.required.empty())
+  }
+}

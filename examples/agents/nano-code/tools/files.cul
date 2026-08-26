@@ -1,0 +1,122 @@
+import schema from './schema.cul'
+import err from '../core/errors.cul'
+import sec from '../core/security.cul'
+
+# Reading, writing and editing one file inside the workspace.
+#
+# Upstream keeps these in three files that are three quarters the same: the
+# containment check, copied, then a hand-written JSON Schema. Both of those
+# live elsewhere now (core/workspace.cul, tools/schema.cul), so what is left
+# here is the part that actually differs between the three.
+
+# Big enough for source files, small enough that one read cannot spend the
+# model's whole context.
+let MAX_FILE_BYTES = 100 * 1024
+
+fn guard_sensitive(tool, path) {
+  if sec.is_sensitive_file(path) {
+    throw err.tool_error(tool, 'not_allowed',
+                         "{path} looks like a credential file")
+  }
+}
+
+fn make_read_file(ws) {
+  {
+    name: 'readFile',
+    description: 'Read a file inside the workspace and return its contents. ' +
+                 'Files over 100KB are refused.',
+    needs_approval: false,
+    params: {
+      path: {type: 'string', doc: "path to read, e.g. 'README.md'"},
+    },
+    run: fn (args) {
+      let rel = args.path ?? ''
+      guard_sensitive('readFile', rel)
+      let abs = ws.resolve_real(rel)
+      if !FS.exists(abs) {
+        throw err.tool_error('readFile', 'not_found', "no such file: {rel}")
+      }
+      if !FS.is_file(abs) {
+        throw err.tool_error('readFile', 'not_a_file',
+                             "{rel} is not a regular file")
+      }
+      let size = FS.size(abs)
+      if size > MAX_FILE_BYTES {
+        throw err.tool_error('readFile', 'too_large',
+          "{rel} is {size / 1024}KB; only files up to 100KB can be read")
+      }
+      FS.read(abs)
+    },
+  }
+}
+
+fn make_write_file(ws) {
+  {
+    name: 'writeFile',
+    description: 'Create or overwrite a file inside the workspace. ' +
+                 'Missing directories are created.',
+    needs_approval: true,
+    params: {
+      path: {type: 'string', doc: 'path to write'},
+      content: {type: 'string', doc: 'the full contents to write'},
+    },
+    run: fn (args) {
+      let rel = args.path ?? ''
+      guard_sensitive('writeFile', rel)
+      # resolve_real answers for a path that does not exist yet, so creating a
+      # file is the same call as reading one.
+      let abs = ws.resolve_real(rel)
+      FS.mkdir(FS.dirname(abs))
+      FS.write(abs, args.content ?? '')
+      "wrote {rel}"
+    },
+  }
+}
+
+fn make_edit_file(ws) {
+  {
+    name: 'editFile',
+    description: 'Replace one passage in a file. `old_text` must appear ' +
+                 'exactly once, so give enough context to be unambiguous. ' +
+                 'Cheaper than rewriting the whole file.',
+    needs_approval: true,
+    params: {
+      path: {type: 'string', doc: 'path to edit'},
+      old_text: {type: 'string', doc: 'the passage to replace, appearing once'},
+      new_text: {type: 'string', doc: 'what to put in its place'},
+    },
+    run: fn (args) {
+      let rel = args.path ?? ''
+      guard_sensitive('editFile', rel)
+      let abs = ws.resolve_real(rel)
+      if !FS.exists(abs) {
+        throw err.tool_error('editFile', 'not_found', "no such file: {rel}")
+      }
+      let old_text = args.old_text ?? ''
+      if old_text.empty() {
+        throw err.tool_error('editFile', 'no_match', 'old_text is empty')
+      }
+      let content = FS.read(abs)
+      let hits = content.count(old_text)
+      if hits == 0 {
+        throw err.tool_error('editFile', 'no_match',
+                             "{preview(old_text)} does not appear in {rel}")
+      }
+      if hits > 1 {
+        throw err.tool_error('editFile', 'ambiguous_match',
+          "{preview(old_text)} appears {hits} times in {rel}; give more context")
+      }
+      # `replace` substitutes every occurrence, unlike JS's string overload —
+      # harmless only because the count above is known to be 1. Dropping that
+      # check would silently change what this does.
+      FS.write(abs, content.replace(old_text, args.new_text ?? ''))
+      "edited {rel}"
+    },
+  }
+}
+
+fn preview(s) {
+  s.size() <= 40 ? "'{s}'" : "'{s.slice(0, 40)}…'"
+}
+
+export {make_read_file, make_write_file, make_edit_file, MAX_FILE_BYTES}

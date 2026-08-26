@@ -1,0 +1,186 @@
+import schema from './schema.cul'
+import err from '../core/errors.cul'
+import sec from '../core/security.cul'
+
+# Run one of a fixed set of commands inside the workspace, without a shell.
+#
+# No shell is the load-bearing part: the command line is split here, and the
+# pieces are handed to Proc.run as argv, so nothing in them can be re-read as
+# syntax. The metacharacter and pattern checks below are the second line —
+# a command line carrying them is one the model expects to be interpreted,
+# and running it as plain argv would do something other than what it asked.
+
+let ALLOWED_COMMANDS = ['bun', 'ls', 'cat', 'grep', 'find', 'pwd', 'mkdir',
+                        'git', 'gh']
+
+# Characters that only mean anything to a shell. Their presence says the model
+# wrote for one.
+let SHELL_METACHARS = re'[;&`$|]'
+
+# Dangerous shapes that survive being plain argv, so the split does not help.
+let DANGEROUS_OPTIONS = [
+  re'rm\s+-rf',
+  re'>\s*/dev',
+  re'curl.*\|.*sh',
+  re'wget.*\|.*sh',
+  re'\s+--git-dir\b',    # git, pointed at another repository
+  re'\s+--work-tree\b',
+  re'\s+-exec\b',        # find, running something of its own
+  re'\s+-delete\b',
+]
+
+let MAX_OUTPUT = 2048
+let TIMEOUT_MS = 30000
+
+# Named, because the literal for it is the one place a single-quoted string
+# will not do: single quotes do no escape processing, so '\\' is two
+# characters and would never equal the one the split is looking at.
+let BACKSLASH = "\\"
+
+# A bash-compatible split into argv. Quotes group, a backslash escapes inside
+# double quotes and before a quote character, and everything else splits on
+# whitespace. An unclosed quote is an error rather than a guess, since the
+# argv it would produce is not the one the model wrote.
+fn parse_command(input) {
+  # `graphemes()` is a lazy iterator; the split reads one character ahead of
+  # itself, so it needs the whole thing addressable.
+  let chars = input.graphemes().collect()
+  mut tokens = []
+  mut current = ''
+  mut quote = nil
+  mut escaped = false
+  mut i = 0
+
+  while i < chars.size() {
+    let ch = chars[i]
+    if quote != nil {
+      cond {
+        escaped => { current = current + ch; escaped = false },
+        ch == BACKSLASH && quote == '"' => escaped = true,
+        ch == quote => quote = nil,
+        _ => current = current + ch,
+      }
+    } else if ch == BACKSLASH {
+      # A backslash before a quote is an escape; anywhere else it is a
+      # character, so a Windows path survives being written literally.
+      let next = i + 1 < chars.size() ? chars[i + 1] : ''
+      if next == '"' || next == "'" {
+        current = current + next
+        i = i + 1
+      } else {
+        current = current + ch
+      }
+    } else if ch == '"' || ch == "'" {
+      quote = ch
+    } else if ch.is_space() {
+      if !current.empty() {
+        tokens.push(current)
+        current = ''
+      }
+    } else {
+      current = current + ch
+    }
+    i = i + 1
+  }
+
+  if quote != nil {
+    throw err.tool_error('execCommand', 'unclosed_quote',
+                         "unclosed quote: {quote}")
+  }
+  if !current.empty() {
+    tokens.push(current)
+  }
+  tokens
+}
+
+# Which arguments name a path. Anything with a separator, or starting at the
+# root or the current directory — the rest are flags and operands.
+fn looks_like_path(arg) {
+  arg.starts_with('/') || arg.starts_with('.') ||
+    arg.contains('/') || arg.contains(BACKSLASH)
+}
+
+fn make_exec_command(ws) {
+  {
+    name: 'execCommand',
+    description: 'Run an allowed command inside the workspace. Available: ' +
+                 ALLOWED_COMMANDS.join(', ') + '.',
+    needs_approval: true,
+    params: {
+      command: {
+        type: 'string',
+        doc: 'the command to run, e.g. "bun test" or "ls -la src/"',
+      },
+    },
+    run: fn (args) {
+      let command = args.command ?? ''
+      if command.trim().empty() {
+        throw err.tool_error('execCommand', 'not_allowed', 'no command given')
+      }
+
+      # security.cul first: it names sudo specifically, which is more useful
+      # than "contains a metacharacter".
+      let why = sec.is_dangerous_command(command)
+      if why != nil {
+        throw err.tool_error('execCommand', 'dangerous_pattern', why)
+      }
+      if SHELL_METACHARS.test(command) {
+        throw err.tool_error('execCommand', 'shell_metachar',
+          'the command contains shell metacharacters, which this tool does not interpret')
+      }
+      for pattern in DANGEROUS_OPTIONS {
+        if pattern.test(command) {
+          throw err.tool_error('execCommand', 'dangerous_pattern',
+                               'the command matches a forbidden pattern')
+        }
+      }
+
+      let argv = parse_command(command)
+      if argv.empty() {
+        throw err.tool_error('execCommand', 'not_allowed', 'no command given')
+      }
+      if !ALLOWED_COMMANDS.contains(argv[0]) {
+        throw err.tool_error('execCommand', 'not_allowed',
+                             "command {argv[0]} is not allowed")
+      }
+
+      # Every path argument is confined the same way the file tools are —
+      # through the filesystem, which upstream's lexical-only check here does
+      # not do.
+      for arg in argv.slice(1, argv.size()) {
+        if looks_like_path(arg) {
+          ws.resolve_real(arg)
+        }
+      }
+
+      let r = Proc.run(argv, cwd: ws.root, timeout: TIMEOUT_MS,
+                       inherit_env: false, env: sec.safe_env())
+      if r.timed_out {
+        throw err.tool_error('execCommand', 'nonzero_exit',
+                             "the command ran longer than {TIMEOUT_MS}ms")
+      }
+      if !r.ok {
+        # Failure goes back as an error so the agent notices and can recover,
+        # rather than reading an empty result as success.
+        throw err.tool_error('execCommand', 'nonzero_exit',
+          "the command exited with {r.code}\n" + clip(r.stderr))
+      }
+      # stderr is not necessarily failure — git narrates a branch switch there.
+      let out = clip(r.stdout)
+      r.stderr.trim().empty() ? out : out + "\n(stderr: {clip(r.stderr).trim()})"
+    },
+  }
+}
+
+fn clip(s) {
+  s.size() <= MAX_OUTPUT
+    ? s
+    : s.slice(0, MAX_OUTPUT) + "\n... (truncated at {MAX_OUTPUT} bytes)"
+}
+
+export {make_exec_command, parse_command, ALLOWED_COMMANDS}
+
+# Standalone: check the split without starting an agent.
+if Sys.script != nil && FS.basename(Sys.script) == 'exec_command.cul' {
+  println(JSON.stringify(parse_command(Sys.argv.join(' '))))
+}
