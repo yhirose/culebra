@@ -3888,6 +3888,18 @@ class Compiler {
          kconst_str(b.name));
   }
 
+  // Whether a bare write to `name`, which nothing in scope binds, lands in
+  // the session's cell rather than declaring here. At a line's top level it
+  // always does (Op::ReplBind decides declare-or-reassign when the write
+  // runs); inside a block or a function only when an earlier input declared
+  // the name — the interp's environment chain answering it. Otherwise the
+  // write declares a local of that scope, exactly as in a script: two test
+  // functions each writing `z = …` must not share one session `z` (probed:
+  // the second call was an ImmutableError).
+  bool session_owns(const std::string& name) const {
+    return repl_ && (repl_top() || repl_session().declared(name));
+  }
+
   // The mutability check and the store behind `x = v` on a binding already
   // in scope. Returns false when the check is a compile-time one and already
   // lost, so the caller knows its own trailing code is unreachable.
@@ -3895,10 +3907,9 @@ class Compiler {
   // interp's assign_name, where a name the environment chain cannot answer is
   // bound by the write. `self` is bound in every frame there, and a stdlib
   // global is an ordinary immutable binding of the root env, so both are
-  // reassignments (and refuse). At the REPL the session owns every unbound
-  // name, and Op::ReplBind decides the same question when the write runs.
+  // reassignments (and refuse).
   bool declares_implicitly(const std::string& name) {
-    if (repl_) return false;
+    if (session_owns(name)) return false;
     // A cell pre-declared for this very write (a closure above captured the
     // name ahead of it): the write is still the declaration, so it fills the
     // cell rather than being mut-checked against the placeholder.
@@ -6007,7 +6018,7 @@ class Compiler {
     // `self` is a binding of every frame, and a stdlib global an immutable
     // root-env one, so a write to either is a reassignment even where nothing
     // bound it here — the same ImmutableError, after the RHS has run.
-    if (!b && !repl_) {
+    if (!b && !session_owns(std::string(tgt->token))) {
       compile_assign_rhs(ast, av);
       StampGuard pos(*this, ast);
       emit(Op::ImmutErr, kconst_str(tgt->token));
@@ -7902,14 +7913,14 @@ class Compiler {
     // A leaf naming nothing visible declares it, exactly as bare `x = v`
     // does — immutably. (`self` is not special here: the interp's pattern
     // walk binds it like any other leaf, probed on both backends.)
-    if (!lookup(name) && !repl_ && !is_stdlib_namespace(name) &&
+    if (!lookup(name) && !session_owns(name) && !is_stdlib_namespace(name) &&
         !is_stdlib_global(name)) {
       bind_pattern_name(at, ident, src, src_owned, /*is_mut=*/false,
                         /*declares=*/true);
       return;
     }
     const Binding* b = lookup(name);
-    if (!b && repl_) b = &bind_session(ident, name);
+    if (!b && session_owns(name)) b = &bind_session(ident, name);
     if (!b) {  // a stdlib global: an existing immutable binding, so it refuses
       emit(Op::ImmutErr, kconst_str(name));
       return;
