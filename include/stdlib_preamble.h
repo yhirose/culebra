@@ -202,29 +202,50 @@ inline void collect_ast_tokens(const peg::Ast& ast,
 // closure — resolves through the builder registry to a single instance per
 // Runtime. That is what makes the JIT match the interp, which binds each
 // stdlib module once in the global environment every module can see.
+// Which stdlib modules a token set names. The one place that rule lives:
+// the preamble source, the trigger set the REPL remembers, and the baked/
+// unbaked split all read it, so they cannot disagree about what a program
+// pulled in. Matching the parsed token set rather than the raw source keeps
+// a mention in a comment — or a longer identifier that merely contains the
+// name — from inlining a whole module: "Terminal" in a comment used to pull
+// in Term, and `side_effect` the effects runtime, each about a second of JIT
+// compile for nothing. A `re'...'` / `re"..."` / `` re`...` `` regex literal
+// desugars to `Regex.compile(...)` in the parser, so it shows up as a plain
+// `Regex` token and needs no extra marker. Bare-function modules come in
+// whole: naming any one member pulls in its group, since they share a source
+// (one `assert_*` brings the family, as on the interp side, where
+// initialize_lazy_group binds all ten at once).
+struct StdlibSelection {
+  std::vector<const LazyNsModule*> modules;
+  std::vector<const LazyFnGroup*> groups;
+};
+inline StdlibSelection select_stdlib_modules(
+    const std::unordered_set<std::string_view>& names) {
+  StdlibSelection sel;
+  for (const auto& m : lazy_ns_modules())
+    if (names.contains(m.name)) sel.modules.push_back(&m);
+  for (const auto& g : lazy_fn_groups())
+    if (std::any_of(g.members.begin(), g.members.end(),
+                    [&](std::string_view n) { return names.contains(n); }))
+      sel.groups.push_back(&g);
+  return sel;
+}
+
+// The registration source for one selected module — what the preamble is
+// made of, one entry at a time (culebra_preamble_cc bakes exactly this).
+inline std::string stdlib_module_source(const LazyNsModule& m) {
+  return _wrap_lazy_ns_module(m.source, m.name, m.builder);
+}
+inline std::string stdlib_module_source(const LazyFnGroup& g) {
+  return _wrap_lazy_fn_group(g);
+}
+
 inline std::string stdlib_preamble_for(
     const std::unordered_set<std::string_view>& names) {
-  auto has = [&](std::string_view m) { return names.contains(m); };
-  // Each module is pulled in when the program names it. Matching the parsed
-  // token set rather than the raw source keeps a mention in a comment — or a
-  // longer identifier that merely contains the name — from inlining a whole
-  // module: "Terminal" in a comment used to pull in Term, and `side_effect`
-  // the effects runtime, each about a second of JIT compile for nothing.
-  // A `re'...'` / `re"..."` / `` re`...` `` regex literal desugars to
-  // `Regex.compile(...)` in the parser, so it shows up as a plain `Regex`
-  // token here and needs no extra marker.
+  auto sel = select_stdlib_modules(names);
   std::string preamble;
-  for (const auto& m : lazy_ns_modules()) {
-    if (has(m.name))
-      preamble.append(_wrap_lazy_ns_module(m.source, m.name, m.builder));
-  }
-  // Bare-function modules: naming any one member pulls in its whole group,
-  // since they share a source (one `assert_*` brings the family, as on the
-  // interp side, where initialize_lazy_group binds all ten at once).
-  for (const auto& g : lazy_fn_groups()) {
-    if (std::any_of(g.members.begin(), g.members.end(), has))
-      preamble.append(_wrap_lazy_fn_group(g));
-  }
+  for (const auto* m : sel.modules) preamble.append(stdlib_module_source(*m));
+  for (const auto* g : sel.groups) preamble.append(stdlib_module_source(*g));
   return preamble;
 }
 
@@ -236,13 +257,11 @@ inline std::string stdlib_preamble_for(
 // an earlier line built would stop matching it.
 inline std::unordered_set<std::string_view> stdlib_preamble_triggers(
     const std::unordered_set<std::string_view>& names) {
+  auto sel = select_stdlib_modules(names);
   std::unordered_set<std::string_view> out;
-  for (const auto& m : lazy_ns_modules())
-    if (names.contains(m.name)) out.insert(m.name);
-  for (const auto& g : lazy_fn_groups())
-    if (std::any_of(g.members.begin(), g.members.end(),
-                    [&](std::string_view m) { return names.contains(m); }))
-      out.insert(g.members.begin(), g.members.end());
+  for (const auto* m : sel.modules) out.insert(m->name);
+  for (const auto* g : sel.groups)
+    out.insert(g->members.begin(), g->members.end());
   return out;
 }
 
@@ -277,6 +296,101 @@ inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
   pre.source = std::move(buf);
   pre.ast = std::move(ast);
   modules.insert(modules.begin(), std::move(pre));
+}
+
+// --- Baked preamble (the JIT/AOT lanes) -------------------------------------
+//
+// A stdlib module compiled into this binary at build time (CMake's
+// culebra_preamble_cc step, src/preamble_cc.cc): the machine code the splice
+// above would have lowered at every start-up, with an entry that performs
+// the module's registration. A lowered program calls that entry instead of
+// carrying the module — Args alone was 20k lines of IR and ~2 s of codegen
+// per run — while the executor keeps compiling the spliced source, which is
+// what the symmetry gate compares the baked code against. Only the driver
+// carries a table (its generated baked_preambles.gen.cc, compiled under
+// CULEBRA_HAS_BAKED_PREAMBLES): the list of what is baked, the anchor that
+// keeps the objects in the driver, and the addresses the JIT defines the
+// entries from (JIT::define_baked_preambles). Everyone else who reaches the
+// lowering — the inner-loop driver (CULEBRA_DEV_NO_RT), a header-only
+// embedder, culebra_preamble_cc itself — gets the empty one below and
+// splices as before. CULEBRA_PREAMBLE_SOURCE=1 forces that for A/B measurements (read once at
+// the resolver, beside the lane's own force_source, so one flag reaches the
+// decision by one path).
+struct BakedPreamble {
+  const char* name;  // the registered name: `Time`, `__Matchers`, …
+  void (*init)();    // baked_preamble_symbol(name): registers the builder
+};
+#ifdef CULEBRA_HAS_BAKED_PREAMBLES
+std::span<const BakedPreamble> baked_preambles();
+#else
+inline std::span<const BakedPreamble> baked_preambles() { return {}; }
+#endif
+
+// The entry a baked module's object defines, spelled once — the lowering
+// emits it, the tool names it, the gate greps it (ns_group_symbol's rule).
+inline std::string baked_preamble_symbol(std::string_view name) {
+  return "culebra_preamble_" + std::string(name);
+}
+
+inline const BakedPreamble* baked_preamble(std::string_view name) {
+  for (const auto& b : baked_preambles())
+    if (name == b.name) return &b;
+  return nullptr;
+}
+
+// The lowering's view of a spliced module list: the `<stdlib>` module is
+// replaced by one registering only the modules this binary has not baked
+// (and dropped when that is none), and `baked` lists the entries the
+// program calls first — where the spliced registrations used to run.
+// `force_source` keeps the splice whole (a cross build links an archive
+// that may not carry the objects).
+struct BakedResolution {
+  std::vector<LoadedModule> modules;
+  std::vector<const BakedPreamble*> baked;
+};
+inline BakedResolution resolve_baked_preamble(
+    const std::vector<LoadedModule>& modules, bool force_source) {
+  BakedResolution r;
+  r.modules = modules;
+  if (force_source || baked_preambles().empty() ||
+      std::getenv("CULEBRA_PREAMBLE_SOURCE") || modules.empty() ||
+      modules.front().abs_path != kStdlibPreamblePath)
+    return r;
+  // The same scan the splice made, over the same (user) modules: what the
+  // program names decides what it registers, baked or not.
+  std::unordered_set<std::string_view> names;
+  for (size_t i = 1; i < modules.size(); ++i)
+    if (modules[i].ast) collect_ast_tokens(*modules[i].ast, names);
+  auto sel = select_stdlib_modules(names);
+  // One pass: a baked module becomes an entry to call, an unbaked one stays
+  // source for this lane to lower — in the order stdlib_preamble_for emits.
+  std::string rest;
+  auto take = [&](std::string_view name, auto&& src) {
+    if (auto* b = baked_preamble(name)) {
+      r.baked.push_back(b);
+    } else {
+      rest.append(src());
+    }
+  };
+  for (const auto* m : sel.modules)
+    take(m->name, [&] { return stdlib_module_source(*m); });
+  for (const auto* g : sel.groups)
+    take(g->name, [&] { return stdlib_module_source(*g); });
+  if (r.baked.empty()) return r;
+  if (rest.empty()) {
+    r.modules.erase(r.modules.begin());
+    return r;
+  }
+  auto buf = std::make_shared<std::string>(std::move(rest));
+  std::vector<std::string> msgs;
+  auto ast = parse_with_transforms(kStdlibPreamblePath, *buf, msgs);
+  if (!ast) {  // a build bug; keep the full splice rather than lose a module
+    r.baked.clear();
+    return r;  // r.modules is still the caller's list
+  }
+  r.modules.front().source = std::move(buf);
+  r.modules.front().ast = std::move(ast);
+  return r;
 }
 
 }  // namespace culebra

@@ -659,6 +659,10 @@ _run-tests BACKEND:
         # The self-contained axes are silent when lost (no link error, no
         # ldd); tools/check_aot_feature_axes.sh reads the linked outputs.
         {{nice_cmd}} bash tools/check_aot_feature_axes.sh "$(dirname "$BIN")" || exit 1
+        # Losing the baked stdlib preamble is silent too (the lanes splice
+        # the source again, two seconds slower per module); read it off the
+        # emitted IR and the linked outputs.
+        {{nice_cmd}} bash tools/check_baked_preamble.sh "$(dirname "$BIN")" || exit 1
         echo "test aot OK: AOT binaries match --jit"
     }
 

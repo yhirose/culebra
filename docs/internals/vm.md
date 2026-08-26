@@ -96,6 +96,17 @@ are now shared by both engines.
    builders of exactly the lazy modules the program names
    (`stdlib_preamble.h`, sources in `stdlib_preambles.gen.h`). A stdlib
    name therefore resolves at compile time, when the compiler sees it.
+   The two lowering lanes then take the modules this binary has **baked**
+   out of the preamble again (`resolve_baked_preamble`): the build compiled
+   each stdlib module to a native object of its own
+   (`culebra_preamble_cc`, one `culebra_preamble_<Name>` entry each,
+   carried by the driver and by `libculebra_rt.a`), and the lowered
+   program opens with a call to each entry — which performs the same
+   `_lazy_ns_register` the spliced source would — instead of carrying
+   ~20k lines of IR per module.
+   The executor keeps compiling the spliced source, so the symmetry gate
+   compares the baked code against it on every run;
+   `CULEBRA_PREAMBLE_SOURCE=1` makes the lowering lanes splice again.
 3. **Compile.** `vm::Compiler::compile_modules` peels the preamble off
    the front, compiles each dependency in a scope of its own, then the
    entry module, into one `VmProgram`. The program's chunk 0 is the entry
@@ -527,7 +538,15 @@ what makes the same lowering valid for an object file.
 `--jit-faststart` skips the IR pipeline and takes the backend's fast
 paths (`JIT::apply_fast_codegen`; the two levels move together), and
 `CULEBRA_JIT_CACHE` enables an object cache keyed by
-`JIT::jit_module_name` (sources, options).
+`JIT::jit_module_name` (sources, options). Neither is what makes a
+`--jit` start-up cheap: the stdlib modules a program names are not in
+the module at all (§2, the baked preamble), so what gets lowered is the
+user's code. `Lowering::build_preamble_object` is the same lowering
+under a per-module entry name, run by `culebra_preamble_cc` at build;
+`lower_program` opens `__culebra_main` with a call to each baked entry
+the program names, and the lane's link supplies the symbol — the JIT
+defines it from the driver's table (`JIT::define_baked_preambles`), the
+built binary pulls the archive member.
 
 ### 7.1 Ownership in the lowering
 

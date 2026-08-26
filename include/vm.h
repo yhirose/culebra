@@ -2935,7 +2935,11 @@ class Compiler {
   // lazy-namespace registrations. An ordinary module — a registration binds
   // no name, so none of it has to outlive the program. The session feeds the
   // built-in traits in as source, so nothing is spliced here.
-  static VmProgram compile_repl_prologue(const peg::Ast& ast) {
+  // Also how culebra_preamble_cc compiles one stdlib module for baking: the
+  // unit is the same shape, registrations with no traits prologue. Handing
+  // that module to compile_modules instead would peel it off as the preamble
+  // and compile it again as the entry, doubling every baked object.
+  static VmProgram compile_stdlib_prologue(const peg::Ast& ast) {
     return compile_unit(ast, {.builtin_traits = false});
   }
 

@@ -852,8 +852,14 @@ int run_build(const BuildOptions& opts) {
       if (culebra::aot_named(names, ns)) uses_wrap = true;
   }
 
+  // Only a host build links the archives embedded in THIS driver — a cross
+  // build links the user's, and --rt-lib names one. The baked stdlib
+  // preamble lives in those archives, so the same predicate decides whether
+  // the program object may refer to it or has to lower the modules itself.
+  bool host_build = opts.rt_lib.empty() && !cross;
   int rc = culebra::vm::build_object_from_modules(
-      modules, obj, opts.opt_level, opts.emit_llvm, opts.target);
+      modules, obj, opts.opt_level, opts.emit_llvm, opts.target,
+      /*preamble_from_source=*/!host_build);
   if (rc != 0) return rc;
 
   // --- Embedded assets: bake each `Embed.dir("...")` directory into an object
@@ -1045,10 +1051,9 @@ int run_build(const BuildOptions& opts) {
   };
 
   // Every force-load fragment precedes every plain link flag on the command
-  // line, so collect the two runs separately and splice them in below. A
-  // --rt-lib build gets the flags but none of the embedded objects: the archive
-  // it points at is expected to carry the feature bodies itself.
-  bool host_build = opts.rt_lib.empty() && !cross;
+  // line, so collect the two runs separately and splice them in below.
+  // (host_build is computed above, before the object is emitted: the baked
+  // stdlib preamble rides the same policy.)
   std::vector<std::string> feature_objs, feature_links;
   for (size_t i = 0; i < std::size(kFeatureAxes); i++) {
     if (!used[i]) continue;

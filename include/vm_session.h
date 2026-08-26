@@ -70,7 +70,7 @@ class Session {
     try {
       auto prog = std::make_unique<VmProgram>(
           session ? Compiler::compile_repl_line(*ast)
-                  : Compiler::compile_repl_prologue(*ast));
+                  : Compiler::compile_stdlib_prologue(*ast));
       if (before_run) before_run(*prog);
       auto& kept = retained_.keep(std::move(source), ast, std::move(prog));
       Exec::run(*kept.prog);

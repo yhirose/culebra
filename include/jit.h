@@ -8,6 +8,7 @@
 #include <rt.h>
 
 #include <module_loader.h>  // LoadedModule — the embedding entries' argument
+#include <stdlib_preamble.h>  // baked_preambles — symbols every JITDylib defines
 
 #include <filesystem>  // the object cache's directory
 
@@ -848,10 +849,30 @@ struct JIT {
         orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
             jit->getDataLayout().getGlobalPrefix()));
     jd.addGenerator(std::move(gen));
+    define_baked_preambles(*jit, jd);
 #ifdef _WIN32
     define_windows_eh_symbols(*jit, jd);
 #endif
     return jit;
+  }
+
+  // The baked stdlib modules' entries (stdlib_preamble.h), which a lowered
+  // program calls by name (Lowering::lower_program). Defined from the
+  // driver's own table rather than found through the process resolver: that
+  // one reads each platform's dynamic-symbol/export view, and whether a
+  // `culebra_preamble_<Name>` shows up there differs by OS and linker flags
+  // (the same seam that once lost every runtime helper to macOS's
+  // dead_strip). The table is the address in every build.
+  static void define_baked_preambles(llvm::orc::LLJIT& jit,
+                                     llvm::orc::JITDylib& jd) {
+    using namespace llvm;
+    orc::SymbolMap syms;
+    for (const auto& bp : baked_preambles())
+      syms[jit.mangleAndIntern(baked_preamble_symbol(bp.name))] =
+          orc::ExecutorSymbolDef(
+              orc::ExecutorAddr::fromPtr(bp.init),
+              JITSymbolFlags::Exported | JITSymbolFlags::Callable);
+    if (!syms.empty()) cantFail(jd.define(orc::absoluteSymbols(std::move(syms))));
   }
 
 #ifdef _WIN32
@@ -896,7 +917,7 @@ struct JIT {
   // arg-slab would break.
   static inline std::unique_ptr<llvm::TargetMachine> apply_target(
       llvm::Module& mod, const llvm::Triple& triple,
-      std::string* err = nullptr) {
+      std::string* err = nullptr, bool pic = false) {
     std::string lookup_err;
     auto* target = llvm::TargetRegistry::lookupTarget(triple, lookup_err);
     if (!target) {
@@ -905,8 +926,10 @@ struct JIT {
       }
       return nullptr;
     }
-    std::unique_ptr<llvm::TargetMachine> tm(
-        target->createTargetMachine(triple, "", "", {}, {}));
+    std::unique_ptr<llvm::TargetMachine> tm(target->createTargetMachine(
+        triple, "", "", {},
+        pic ? std::optional<llvm::Reloc::Model>(llvm::Reloc::PIC_)
+            : std::nullopt));
     if (!tm) {
       if (err) *err = "target machine creation failed";
       return nullptr;

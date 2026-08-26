@@ -9,6 +9,7 @@
 
 #include <jit.h>
 #include <runtime/aot_scan.h>  // aot_collect_names — which namespaces to link
+#include <stdlib_preamble.h>    // resolve_baked_preamble — which not to lower
 #include <vm.h>
 
 #include <memory>
@@ -69,7 +70,8 @@ struct Lowering {
   // fast paths.
   static void run_program(const VmProgram& p, bool emit_llvm, int opt_level,
                           bool fast_codegen = false,
-                          const std::string& module_name = "vm") {
+                          const std::string& module_name = "vm",
+                          const std::vector<const BakedPreamble*>& baked = {}) {
     using namespace llvm;
     JIT::ensure_native_target_init();
     auto ctx = std::make_unique<LLVMContext>();
@@ -78,7 +80,7 @@ struct Lowering {
     JIT::apply_target(*mod, Triple(sys::getDefaultTargetTriple()));
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
-    lower_program(jit, p);
+    lower_program(jit, p, "__culebra_main", baked);
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
     if (emit_llvm) {
       mod->print(outs(), nullptr);
@@ -87,16 +89,70 @@ struct Lowering {
     }
   }
 
+  // Write `mod` to `out_path` as an object file. The tail both object
+  // emitters share; `who` names the failing command in a diagnostic.
+  static int emit_object_file(llvm::TargetMachine& tm, llvm::Module& mod,
+                              const std::string& out_path, const char* who) {
+    using namespace llvm;
+    std::error_code EC;
+    raw_fd_ostream OS(out_path, EC, sys::fs::OF_None);
+    if (EC) {
+      std::fprintf(stderr, "%s: cannot open %s: %s\n", who, out_path.c_str(),
+                   EC.message().c_str());
+      return 1;
+    }
+    legacy::PassManager pm;
+    if (tm.addPassesToEmitFile(pm, OS, nullptr, CodeGenFileType::ObjectFile)) {
+      std::fprintf(stderr, "%s: target does not support object emission\n",
+                   who);
+      return 1;
+    }
+    pm.run(mod);
+    OS.flush();
+    return 0;
+  }
+
+  // A stdlib preamble module as an object of its own (culebra_preamble_cc):
+  // the lowering of its program with the top level under `entry` — one name
+  // per module, so every module's object links into one binary — and no C
+  // main or namespace list. Position-independent, since the driver links it
+  // too. Symmetry is by construction: the same Compiler and lowering the
+  // spliced source would go through at start-up.
+  static int build_preamble_object(const VmProgram& p,
+                                   const std::string& out_path, int opt_level,
+                                   const std::string& entry) {
+    using namespace llvm;
+    JIT::ensure_native_target_init();
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>(entry, *ctx);
+    std::string err;
+    auto tm = JIT::apply_target(*mod, Triple(sys::getDefaultTargetTriple()),
+                                &err, /*pic=*/true);
+    if (!tm) {
+      std::fprintf(stderr, "culebra build-preamble: %s\n", err.c_str());
+      return 1;
+    }
+    IRBuilder<> builder(*ctx);
+    JIT jit(ctx.get(), mod.get(), builder);
+    lower_program(jit, p, entry.c_str());
+    if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
+    return emit_object_file(*tm, *mod, out_path, "culebra build-preamble");
+  }
+
   // AOT: the same lowering, to a TargetMachine object file instead of ORC,
   // plus the C `int main(int, char**)` that hands `__culebra_main` to
   // `culebra_aot_bootstrap` (libculebra_rt.a), and the stdlib namespace list
-  // the archive's ns_groups() reads, from `names` (aot_collect_names). An
-  // empty `target_triple` means the host. Returns 0 on success.
+  // the archive's ns_groups() reads, from `names` (aot_collect_names). The
+  // `baked` entries are plain calls in __culebra_main (lower_program), so
+  // each is an undefined symbol the link resolves from the archive — one
+  // member per named module, none for the rest. An empty `target_triple`
+  // means the host. Returns 0 on success.
   // JIT::build_object's tail, over bytecode.
   static int build_object(const VmProgram& p, const std::string& out_path,
                           int opt_level, bool emit_llvm,
                           const std::string& target_triple,
-                          const AotNames& names) {
+                          const AotNames& names,
+                          const std::vector<const BakedPreamble*>& baked = {}) {
     using namespace llvm;
     if (target_triple.empty()) {
       JIT::ensure_native_target_init();
@@ -118,7 +174,7 @@ struct Lowering {
 
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
-    auto* mainFn = lower_program(jit, p);
+    auto* mainFn = lower_program(jit, p, "__culebra_main", baked);
 
     auto i32 = builder.getInt32Ty();
     auto ptrTy = PointerType::get(*ctx, 0);
@@ -167,28 +223,22 @@ struct Lowering {
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
     if (emit_llvm) mod->print(outs(), nullptr);
 
-    std::error_code EC;
-    raw_fd_ostream OS(out_path, EC, sys::fs::OF_None);
-    if (EC) {
-      std::fprintf(stderr, "culebra build: cannot open %s: %s\n",
-                   out_path.c_str(), EC.message().c_str());
-      return 1;
-    }
-    legacy::PassManager pm;
-    if (tm->addPassesToEmitFile(pm, OS, nullptr, CodeGenFileType::ObjectFile)) {
-      std::fprintf(stderr,
-                   "culebra build: target does not support object emission\n");
-      return 1;
-    }
-    pm.run(*mod);
-    OS.flush();
-    return 0;
+    return emit_object_file(*tm, *mod, out_path, "culebra build");
   }
 
-  // Lower the whole program into `j`'s module and return `__culebra_main`.
-  // Shared by the two things a lowered program can become: code in this
-  // process (run_program) and an object file (build_object).
-  static llvm::Function* lower_program(JIT& j, const VmProgram& p) {
+  // Lower the whole program into `j`'s module and return its top-level
+  // function, named `entry`. Shared by everything a lowered program can
+  // become: code in this process (run_program), a program object
+  // (build_object), and one baked stdlib module (build_preamble_object,
+  // which is why the name is a parameter). `baked` names the stdlib modules
+  // resolve_baked_preamble took out of the program: the entry opens with a
+  // call to each one's `culebra_preamble_<Name>`, where the spliced
+  // registrations used to be, and the lane's link supplies the symbol —
+  // the JIT from the driver's table (JIT::define_baked_preambles), the
+  // built binary from libculebra_rt.a.
+  static llvm::Function* lower_program(
+      JIT& j, const VmProgram& p, const char* entry = "__culebra_main",
+      const std::vector<const BakedPreamble*>& baked = {}) {
     using namespace llvm;
     j.declare_runtime_functions();
 
@@ -199,23 +249,29 @@ struct Lowering {
     auto jitFnTy = jit_fn_type(j.builder_, ptrTy);
     std::vector<Function*> fns(p.chunks.size());
     fns[0] = Function::Create(FunctionType::get(j.builder_.getVoidTy(), false),
-                              Function::ExternalLinkage, "__culebra_main",
-                              j.module_);
+                              Function::ExternalLinkage, entry, j.module_);
     for (size_t i = 1; i < p.chunks.size(); ++i) {
       fns[i] = Function::Create(jitFnTy, Function::InternalLinkage,
                                 std::format("__vm_fn_{}", i), j.module_);
     }
     // Filled on first use, per chunk (see param_meta_global).
     std::vector<llvm::Constant*> metas(p.chunks.size(), nullptr);
-    for (size_t i = 0; i < p.chunks.size(); ++i) {
-      lower_chunk(j, p, i, fns, metas);
+    for (size_t i = 0; i < p.chunks.size(); ++i) lower_chunk(j, p, i, fns, metas);
+    if (!baked.empty()) {
+      auto& entryBB = fns[0]->getEntryBlock();
+      IRBuilder<> b(&entryBB, entryBB.begin());
+      for (const auto* bp : baked)
+        b.CreateCall(j.module_->getOrInsertFunction(
+            baked_preamble_symbol(bp->name), b.getVoidTy()));
+    }
+    for (auto* fn : fns) {
       // Report and stop: verifyFunction's one-argument form returns the
       // verdict and prints nothing, so ignoring it let malformed IR (an
       // i1 result compared against an i8 zero, from a runtime helper whose
       // declared return type the arm mis-read) reach the optimizer and run.
       std::string err;
       raw_string_ostream os(err);
-      if (verifyFunction(*fns[i], &os))
+      if (verifyFunction(*fn, &os))
         throw std::runtime_error("vm: lowered IR failed verification: " + err);
     }
     return fns[0];
@@ -4487,16 +4543,6 @@ struct Lowering {
   }
 };
 
-inline void run_program_via_llvm(VmProgram& prog, bool emit_llvm,
-                                 int opt_level, bool fast_codegen = false,
-                                 const std::string& module_name = "vm") {
-  // Nothing host-side to prepare: keyword-call metadata is a global of the
-  // lowered module, registered by each MakeClosure site (see
-  // Lowering's param_meta_global). Exec::prepare's host-side tables are the
-  // executor lane's alone.
-  Lowering::run_program(prog, emit_llvm, opt_level, fast_codegen, module_name);
-}
-
 // The compiled lane for a loader's module list: what `--jit` runs. One
 // bytecode program, lowered to one LLVM module, keyed for the object cache
 // by the module set and the compile options.
@@ -4505,11 +4551,19 @@ inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
                                  int opt_level = 2,
                                  bool fast_codegen = false) {
   if (modules.empty()) return;
+  // The stdlib modules baked into this binary are not lowered again: the
+  // program calls their entries instead (stdlib_preamble.h,
+  // resolve_baked_preamble; Lowering::lower_program).
+  auto res = resolve_baked_preamble(modules, /*force_source=*/false);
   auto prog = Compiler::compile_modules(
-      modules, debug ? Debug::Break : Debug::Off);
-  run_program_via_llvm(
+      res.modules, debug ? Debug::Break : Debug::Off);
+  // Nothing host-side to prepare: keyword-call metadata is a global of the
+  // lowered module, registered by each MakeClosure site (see Lowering's
+  // param_meta_global). Exec::prepare's host-side tables are the executor
+  // lane's alone.
+  Lowering::run_program(
       prog, emit_llvm, opt_level, fast_codegen,
-      JIT::jit_module_name(modules, fast_codegen, opt_level));
+      JIT::jit_module_name(res.modules, fast_codegen, opt_level), res.baked);
 }
 
 // `culebra build`: the same program the JIT lane runs, emitted as an object
@@ -4523,17 +4577,26 @@ inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
 inline int build_object_from_modules(
     const std::vector<LoadedModule>& modules, const std::string& out_path,
     int opt_level = 2, bool emit_llvm = false,
-    const std::string& target_triple = "") {
+    const std::string& target_triple = "", bool preamble_from_source = false) {
   if (modules.empty()) {
     std::fprintf(stderr, "culebra build: empty module list\n");
     return 1;
   }
-  auto prog = Compiler::compile_modules(modules);
+  // Baked stdlib modules become references into the archive rather than
+  // code in this object (stdlib_preamble.h); a cross build keeps the
+  // source, since its archive is the user's.
+  auto res = resolve_baked_preamble(modules, preamble_from_source);
+  auto prog = Compiler::compile_modules(res.modules);
+  // Over `modules`, NOT `res.modules`: a baked module's source is what names
+  // the namespaces it needs (the Canvas preamble's `_Canvas`, ...), and the
+  // resolver just took that source out of the list. Scanning the resolved
+  // list would link no group for them and the baked code would raise
+  // "namespace is not linked" at its first use.
   AotNames names;
   for (const auto& m : modules)
     if (m.ast) aot_collect_names(*m.ast, names);
   return Lowering::build_object(prog, out_path, opt_level, emit_llvm,
-                                target_triple, names);
+                                target_triple, names, res.baked);
 }
 
 }  // namespace culebra::vm
