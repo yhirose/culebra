@@ -1,45 +1,14 @@
 #pragma once
 
-// The bytecode VM — the third backend (docs/internals/vm.md §7, Phase 1),
-// grown out of the Phase 0 spike: a register-based, RC-explicit,
+// The bytecode VM (docs/internals/vm.md): a register-based, RC-explicit,
 // lowering-friendly bytecode; a compiler whose front end is the shared
-// FnAnalysis (fn_analysis.h); and a VM executor running on the shared runtime
-// value model (rt.h). The same bytecode's other consumer, the LLVM lowering
-// that `--jit` and `culebra build` (AOT) compile, lives in vm_lowering.h —
-// this header needs no LLVM, so it is the engine of a build without the JIT.
-// The executor is hidden behind --vm / --vm-dump; constructs outside the
-// supported slice are rejected at compile time ("VmError") — no interp
-// fallback. The format is an in-memory contract only.
-//
-// Current slice (the expression core + basic control flow): Long / Float /
-// Bool / nil / String literals; Array (incl. sized `[v](n, d)` and `...`
-// spread elements), Tuple, and Set literals; interpolated and triple strings
-// (embedded expressions, format specs, the shared block dedent);
-// `let` / `let mut` / reassignment /
-// compound assignment (op= and ??=) of plain identifiers; arithmetic
-// + - * / % ** and unary - ! + ~ with the JIT's dispatch shape; the
-// Long-only bitwise/shift ops & | ^ << >>;
-// comparisons (including chains) and `&&` / `||` / `??`;
-// `if` / `else if` / `else` (as an expression) and the ternary; `while`;
-// counted range `for`; `break` / `continue`; single-argument `println`;
-// range values (`a..b`, `a..=b`, `by step`, open ends, the bare `..`) and
-// slicing (`xs[1..3]` and stored-range keys — Array copy / String view /
-// Tuple new tuple; write-context range keys fall to the runtime Long-key
-// error like both backends);
-// fn literals with closures (captured locals promoted to JitCells, the
-// JIT's cell mechanism — forward-reference capture is still rejected);
-// patterns — literals, `_`, bindings, typed bindings over any type name,
-// or-patterns of non-binding alternatives, and array / tuple / object
-// patterns with nesting, `...rest` and sinks — driving both `match` arms
-// (with guards) and destructuring declarations / parallel assignment;
-// `fn name` declarations with arity-dispatch overloads through the shared
-// multimethod runtime, incl. self/mutual recursion via pre-declared
-// dispatcher cells (reads before the decl runs raise NameError);
-// the bare stdlib globals (to_string, type_of, range, ... — kBuiltinFns'
-// native functions), resolved per-Runtime through the JIT's namespace_get
-// slow path and called like any closure. Lazy source modules (Time,
-// assert_*, ...) need the preamble splice, which the VM lane skips, so
-// those names stay rejected.
+// FnAnalysis (fn_analysis.h); and the executor — the default engine — running
+// on the shared runtime value model (rt.h). The same bytecode's other
+// consumer, the LLVM lowering that `--jit` and `culebra build` (AOT) compile,
+// lives in vm_lowering.h; this header needs no LLVM, so it is the engine of a
+// build without the JIT. `--vm` names the executor explicitly and `--vm-dump`
+// prints the bytecode. The format is an in-memory contract only: a construct
+// the compiler cannot express is a compile-time "VmError", never a fallback.
 
 #include <builtin_signatures.h>
 #include <fn_analysis.h>
@@ -88,7 +57,7 @@ inline constexpr int32_t kMaxSlots = 8192;
 inline constexpr int32_t kMaxOwnedDepth = 1024;
 
 // One fixed-width instruction. Registers are frame slots holding JitValue.
-// RC is explicit in the stream (vm.md §4): the compiler emits Retain/Release;
+// RC is explicit in the stream (vm.md §5.2): the compiler emits Retain/Release;
 // the VM and the LLVM lowering only execute them. Constants are scalars or
 // chunk-owned strings — neither is refcounted — so LoadConst is a raw copy;
 // Array is the slice's RC-real type, and its +1 flows through the same

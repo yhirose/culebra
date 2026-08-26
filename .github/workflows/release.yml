@@ -29,7 +29,7 @@ env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
   # Same ratchet as ci.yml and the justfile: a step that launches culebra names
   # the engine it means (`--jit` / `--vm`) instead of taking the
-  # build's default, which Phase 4 moves (docs/internals/vm.md §7).
+  # build's default (docs/internals/vm.md §2).
   CULEBRA_REQUIRE_EXPLICIT_ENGINE: "1"
   # Note there is deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT here, unlike
   # ci.yml which pins it OFF for the jobs that do not want it. Each platform

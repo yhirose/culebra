@@ -15,7 +15,7 @@ corpus_generate() {
   mkdir -p "$work"
   # Which engine writes the corpus is not a detail: this is the program every
   # other lane is then compared over, so it is spelled rather than defaulted
-  # (docs/internals/vm.md §13.1).
+  # (docs/internals/vm.md §2).
   if ! "$bin" --vm "$CORPUS_DIR/gen.cul" > "$work/cases.cul"; then
     echo "corpus: FAIL — generator gen.cul did not run cleanly" >&2
     return 1

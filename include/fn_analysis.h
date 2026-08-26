@@ -1,7 +1,7 @@
 #pragma once
 
 // Front-end analysis over the AST, shared by every backend that compiles
-// functions (docs/internals/vm.md §7): per-function locals, free-variable /
+// functions (docs/internals/vm.md §4): per-function locals, free-variable /
 // capture sets, and EH/defer emission flags. Lifted out of jit.h so the
 // bytecode compiler can consume the same passes as the JIT; deliberately
 // LLVM-free.

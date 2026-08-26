@@ -170,7 +170,7 @@ struct Options {
   // true in a build without it — which is why the flag itself is unguarded:
   // every reader can then ask "which engine?" without asking "which build?".
   bool jit = false;
-  // The bytecode VM's executor (docs/internals/vm.md §7). Hidden flags: run
+  // The bytecode VM's executor (docs/internals/vm.md §2). Hidden flags: run
   // the program on the executor, or dump the bytecode. Its other consumer is
   // the LLVM lowering `--jit` runs; the executor itself needs no LLVM, so a
   // build without the JIT still has it.
@@ -198,10 +198,10 @@ struct Options {
   string error;  // non-empty: a malformed flag; main reports it and exits
 };
 
-// Phase 4 ratchet (docs/internals/vm.md §7). CULEBRA_REQUIRE_EXPLICIT_ENGINE=1
-// makes every implicit pick a hard failure, so no caller can keep measuring an
-// engine it never named — the default has moved once and the deletion batch
-// takes the other one away. Call it from each site that picks a default of its
+// The explicit-engine ratchet (docs/internals/vm.md §2).
+// CULEBRA_REQUIRE_EXPLICIT_ENGINE=1 makes every implicit pick a hard failure,
+// so no caller can keep measuring an engine it never named — the default has
+// moved once already. Call it from each site that picks a default of its
 // own; the sites that run no user code (fmt / lint / docs / --ast / --version)
 // have no engine to name.
 // Aborting rather than exiting non-zero is deliberate: lanes that expect a

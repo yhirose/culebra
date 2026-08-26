@@ -8,7 +8,7 @@
 // Nothing here touches LLVM, so it builds in every configuration. That is the
 // point: the bytecode VM (vm.h) compiles and runs on this layer alone, which
 // is what makes it the engine of a build without the JIT (docs/internals/vm.md
-// §7). `CULEBRA_JIT_ENABLED` now reads as "LLVM is linked": it guards jit.h,
+// §9). `CULEBRA_JIT_ENABLED` reads as "LLVM is linked": it guards jit.h,
 // vm_lowering.h, the one member of stdlib_jit.h that declares this layer's
 // helpers on a module, and the AOT bootstrap — which needs no LLVM itself but
 // only exists where `culebra build` can emit an object to link it into.

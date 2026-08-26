@@ -29,7 +29,7 @@ concurrency:
 
 # Every step that launches culebra must name the engine it means. A bare
 # launch measures whatever the default happens to be, and the default has
-# moved once already (docs/internals/vm.md §13.8) — silently, for anything
+# moved once already (docs/internals/vm.md §2) — silently, for anything
 # that had not said. With this set an implicit pick aborts instead; `--jit` /
 # `--vm` name the engines. The justfile sets
 # the same variable for its recipes: this covers the steps that invoke the
@@ -296,7 +296,7 @@ jobs:
   # executor and the LLVM lowering are handed bytecode by the same compiler,
   # so they can only agree with each other; a released binary is an
   # independent implementation that cannot drift with the working tree
-  # (vm.md §13.5).
+  # (docs/internals/vm.md §10.3).
   #
   # master pushes only. It compares against a release, so it says nothing about
   # a topic branch that has not landed yet, and what the default-engine switch
@@ -351,7 +351,7 @@ jobs:
   # has to match the same program on the native executor. Twice, because the
   # page keeps one instance across Run clicks, and a run that leaves state in
   # the Runtime is invisible to any check that runs a program once
-  # (docs/internals/vm.md §13.6). No build of its own — the binary is
+  # (docs/internals/vm.md §9). No build of its own — the binary is
   # build-ubuntu's artifact, the way release-diff takes it.
   playground-smoke:
     needs: build-ubuntu
@@ -1123,7 +1123,7 @@ jobs:
           @packable class Cell { v: Int64 = 0 }
 
           # `--vm` because a child inherits CULEBRA_REQUIRE_EXPLICIT_ENGINE
-          # and must name its engine like any other launch (vm.md §13.1).
+          # and must name its engine like any other launch (docs/internals/vm.md §2).
           let exe = Sys.executable
           check(exe != "", "Sys.executable resolved")
 

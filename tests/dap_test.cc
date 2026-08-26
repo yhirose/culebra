@@ -75,7 +75,7 @@ static void must_contain(const char* needle) {
 
 static const char* g_culebra = nullptr;
 // The engine flag the adapter is spawned with. Always named, never left to
-// the default (docs/internals/vm.md §13.1).
+// the default (docs/internals/vm.md §2).
 static constexpr const char* g_engine = "--vm";
 
 // Write `src` to a temp file and return its path.

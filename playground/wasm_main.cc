@@ -1,6 +1,6 @@
 // culebra playground — the core compiled to WebAssembly, running on the
 // bytecode VM's executor. There is no LLVM here, so `--jit`'s lowering is the
-// one lane this build cannot have (docs/internals/vm.md §13.4).
+// one lane this build cannot have (docs/internals/vm.md §9).
 // Call-based (no main): JS calls run_culebra(src).
 //
 // Output streams live via a custom std::streambuf that posts to JS the

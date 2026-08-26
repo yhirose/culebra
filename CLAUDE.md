@@ -2,7 +2,7 @@
 
 culebra は個人の趣味プロジェクト（プログラミング言語処理系）。**repo は公開済み**（`github.com/yhirose/culebra`）で、継続的にリリースして3 OS のバイナリを GitHub Release で配布し、docs サイトと WASM Playground を GitHub Pages で公開している（最新版は `git tag` または `include/culebra.h` の `CULEBRA_VERSION` を参照）。
 
-**エンジンは bytecode VM が既定**（v0.3.0 以降）。`vm::Compiler` が bytecode に落とし、`vm::Exec` が実行する。`--jit` と `culebra build`（AOT）は**同じ bytecode**を LLVM IR に降ろす消費者で、フロントエンドは1つ。tree-walking interpreter は Phase 4 B7 で**削除済み**（v0.3.1 が両エンジンを持つ最後のリリース）— 経緯は `docs/internals/vm.md` §13。
+**エンジンは bytecode VM が既定**（v0.3.0 以降）。`vm::Compiler` が bytecode に落とし、`vm::Exec` が実行する。`--jit` と `culebra build`（AOT）は**同じ bytecode**を LLVM IR に降ろす消費者で、フロントエンドは1つ。tree-walking interpreter は**削除済み**（v0.3.1 が両エンジンを持つ最後のリリース）。アーキテクチャは `docs/internals/vm.md`、メモリ管理は `docs/internals/memory.md`。
 
 ## 言語・コミュニケーション
 
@@ -88,7 +88,7 @@ assert が本当に compile-in されたかを binary 内の assert 文字列 gr
 
 ## 最重要要件
 
-- **全レーンの完全対称化。** 同じプログラムは executor（既定）/ `--jit` / AOT で、同じ結果・同じエラーを返す。①振る舞い ②エラーメッセージ（kind+文面+位置） ③検査/throw のタイミングと順序 — 3次元すべて一致させる。既知の差は niche でも直す（放置しない）。独立第二実装のオラクルは**前リリースのバイナリとの差分**（release-diff、`docs/internals/vm.md` §13.5）が担う。
+- **全レーンの完全対称化。** 同じプログラムは executor（既定）/ `--jit` / AOT で、同じ結果・同じエラーを返す。①振る舞い ②エラーメッセージ（kind+文面+位置） ③検査/throw のタイミングと順序 — 3次元すべて一致させる。既知の差は niche でも直す（放置しない）。独立第二実装のオラクルは**前リリースのバイナリとの差分**（release-diff、`docs/internals/vm.md` §10.3）が担う。
 - **JIT のメモリ管理はリークが構造的に起こり得ない形にする。** RAII/ownership 流。場当たり的な leak fix は禁止。
 - 修正は手戻りがあってもきれい・エレガントに。他言語の確立した実装（V8/Ruby/Go 等）を参照して正しい抽象を選ぶ。その場しのぎのハックにしない。
 

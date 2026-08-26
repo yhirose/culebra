@@ -3,22 +3,19 @@
 # release's binary and under this one, and report every case whose behaviour
 # changed.
 #
-# What it is for. Once the tree-walker goes, the executor and the LLVM lowering
-# consume bytecode from one compiler, so a bug in that compiler makes both
-# lanes give the same wrong answer and run.sh stays green (docs/internals/vm.md
-# §7). A released binary is the one oracle that cannot drift with the working
-# tree: it is a second implementation, frozen. Deleting the tree-walker does
-# not destroy that oracle so much as seal it — for the language the last
-# release could already express, an independent implementation keeps answering
-# here, release after release.
+# What it is for. The executor and the LLVM lowering consume bytecode from one
+# compiler, so a bug in that compiler makes both lanes give the same wrong
+# answer and run.sh stays green (docs/internals/vm.md §10.3). A released
+# binary is the one oracle that cannot drift with the working tree: it is a
+# second implementation, frozen — for the language the last release could
+# already express, an independent implementation keeps answering here,
+# release after release.
 #
 # Both sides run on their DEFAULT engine, with no flag. That is deliberate and
 # it is the only place in the repo that leaves the choice implicit: the
 # question is what changed for someone who types `culebra prog.cul`, so the
 # default is the subject rather than an oversight, and it is why
-# CULEBRA_REQUIRE_EXPLICIT_ENGINE is unset for these runs (§13.1). When the
-# default flips in B6 this gate compares the tree-walker against the VM
-# without being edited, which is the check that release wants most.
+# CULEBRA_REQUIRE_EXPLICIT_ENGINE is unset for these runs (vm.md §2).
 #
 # Differences are expected — a release adds built-ins the older binary has
 # never heard of. Each one has to be named in release_diff_allow.txt as a glob

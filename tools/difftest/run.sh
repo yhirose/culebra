@@ -7,9 +7,7 @@
 # holds the backends to each other and says nothing about the compiler
 # between them; the answer for the compiler itself is the release-diff gate
 # (tools/difftest/release_diff.sh), where the previous release's binary is
-# the independent second opinion (docs/internals/vm.md §13.5). The
-# tree-walker used to be a third lane here until B7-c retired its oracle
-# duty.
+# the independent second opinion (docs/internals/vm.md §10.3).
 #
 # AOT is covered transitively — `just test` already asserts aot == jit.
 #

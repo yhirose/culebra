@@ -249,7 +249,7 @@ coverage-build *extra:
 # Which of the surface the two compiled engines share does only the generated
 # corpus reach? Runs the durable suites, then the corpus, on the instrumented
 # binary and prints the difference function by function (docs/internals/vm.md
-# §7, Phase 4 B2). Not part of `just test`: a measurement, not a gate.
+# §10.4). Not part of `just test`: a measurement, not a gate.
 [doc("Rank the shared-engine functions only the generated corpus reaches")]
 [group("test")]
 coverage: coverage-build

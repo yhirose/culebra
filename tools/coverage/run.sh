@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Measure which of the surface the two compiled engines share is reached only
-# by the generated corpus (docs/internals/vm.md §7, Phase 4).
+# by the generated corpus (docs/internals/vm.md §10.4).
 #
 # Two profiles are produced, not one:
 #   durable/  the hand-maintained suites, driven through the gate itself

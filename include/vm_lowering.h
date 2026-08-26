@@ -3,7 +3,7 @@
 // The bytecode's second consumer: LLVM IR. `--jit` and `culebra build` (AOT)
 // compile the very chunks vm.h's executor would have run, so this is the one
 // part of the VM that needs LLVM — and the only reason the compiled lanes
-// still split on CULEBRA_JIT_ENABLED (docs/internals/vm.md §7).
+// still split on CULEBRA_JIT_ENABLED (docs/internals/vm.md §9).
 
 #ifdef CULEBRA_JIT_ENABLED
 
