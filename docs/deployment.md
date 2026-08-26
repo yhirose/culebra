@@ -662,8 +662,13 @@ and only a named group's rows survive dead-stripping, along with
 whatever only they reached. The scan is textual over the program and
 its spliced preamble, so `let m = Math; m.abs(x)` counts as naming
 `Math`, and a lazy module's `_Canvas` counts once `Canvas` pulled the
-module in. Together with the feature axes this is what keeps a
-`print("hello")` binary under 1 MB. A namespace the scan missed does
+module in. The isolate transfer code (value serialization, channel
+endpoints, `Shared` views) rides the same mechanism: the generic
+property and index paths reach a `Shared` view's reader through a hook
+the view's constructor installs, never by symbol, so only the
+`Shared` / `Isolate` / `Parallel` / `Net` adapters refer to that code
+and it goes with their groups. Together with the feature axes this is
+what keeps a `print("hello")` binary under 0.5 MB. A namespace the scan missed does
 not silently read as `nil`: reaching it raises an `InternalError`
 naming the namespace.
 

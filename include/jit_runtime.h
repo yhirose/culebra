@@ -2700,20 +2700,49 @@ inline bool _jit_is_shared_buffer(JitObject* obj) {
 }
 
 inline bool _jit_is_shared_val(JitObject* obj) { return obj->is_shared_val; }
-// Shared.new view readers — defined in sendable_jit.h (that header sits
-// in namespace culebra with C++ linkage), declared here for the object
-// get/index interceptions. Plain (non-CULEBRA_RT_INLINE) on purpose: a
-// feature-archive TU like culebra_rt_webview.cc reaches this declaration
-// through rt.h without ever pulling in sendable_jit.h, so it can't see a
-// body here — the call resolves at final link against whichever TU does
-// compile sendable_jit.h (stdlib_jit.h consumers). ODR only requires
-// `inline` on the definition, not on every declaration.
+// Shared.new view readers. The bodies live in sendable_jit.h and are reached
+// through these hooks rather than by symbol: the generic get/index paths
+// would otherwise name the SharedVal reader, and through it the whole
+// SendNode / channel / serialize graph, in every binary — a hello-world AOT
+// output carried ~115 KB of it. A view cannot exist before
+// _jit_make_shared_val_view ran, and that constructor installs both hooks,
+// so the reader is reachable only from the adapters that create views
+// (Shared / Isolate / Parallel / Net) and a program naming none of them
+// links none of it (namespace-group dead-stripping, stdlib_jit.h
+// ns_groups()). A null hook on a shared view is a broken invariant, not a
+// missing feature, and is reported as such.
 extern "C++" {
 namespace culebra {
-JitValue _jit_shared_val_prop(JitObject* view, const char* name,
-                              int64_t line, int64_t col);
-JitValue _jit_shared_val_index(JitObject* view, int8_t key_tag,
-                               int64_t key_data, int64_t line, int64_t col);
+using SharedValPropFn = JitValue (*)(JitObject*, const char*, int64_t,
+                                     int64_t);
+using SharedValIndexFn = JitValue (*)(JitObject*, int8_t, int64_t, int64_t,
+                                      int64_t);
+inline std::atomic<SharedValPropFn>& _jit_shared_val_prop_hook() {
+  static std::atomic<SharedValPropFn> fn{nullptr};
+  return fn;
+}
+inline std::atomic<SharedValIndexFn>& _jit_shared_val_index_hook() {
+  static std::atomic<SharedValIndexFn> fn{nullptr};
+  return fn;
+}
+[[noreturn]] inline void _jit_shared_val_unhooked(int64_t line, int64_t col) {
+  throw CulebraError("InternalError",
+                     "Shared value read before any Shared value was created",
+                     line, col);
+}
+inline JitValue _jit_shared_val_prop(JitObject* view, const char* name,
+                                     int64_t line, int64_t col) {
+  auto fn = _jit_shared_val_prop_hook().load(std::memory_order_acquire);
+  if (!fn) _jit_shared_val_unhooked(line, col);
+  return fn(view, name, line, col);
+}
+inline JitValue _jit_shared_val_index(JitObject* view, int8_t key_tag,
+                                      int64_t key_data, int64_t line,
+                                      int64_t col) {
+  auto fn = _jit_shared_val_index_hook().load(std::memory_order_acquire);
+  if (!fn) _jit_shared_val_unhooked(line, col);
+  return fn(view, key_tag, key_data, line, col);
+}
 }  // namespace culebra
 }
 

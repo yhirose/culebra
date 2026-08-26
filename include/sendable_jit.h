@@ -610,12 +610,15 @@ inline void _jit_isolate_teardown_join_all() {
   collect_live_merge_producers(live);  // isolate.h; shared with the interp side
   cancel_and_join_isolates(std::move(live));
 }
-inline bool _install_jit_isolate_teardown_hook() {
-  isolate_teardown_join_hook() = _jit_isolate_teardown_join_all;
-  return true;
+// Installed by the first spawn (below) rather than a static initializer: an
+// initializer would pin this join and the registry behind it into every
+// binary, while a program that never spawns has nothing to join.
+inline void _install_jit_isolate_teardown_hook() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    isolate_teardown_join_hook() = _jit_isolate_teardown_join_all;
+  });
 }
-inline const bool _jit_isolate_teardown_hook_installed =
-    _install_jit_isolate_teardown_hook();
 
 // _jit_native_method (captureless native method closure) now lives in jit.h.
 
@@ -668,6 +671,7 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
 
   auto core = std::make_shared<IsolateCore>();
   int64_t id = jit_isolate_next_id().fetch_add(1, std::memory_order_relaxed);
+  _install_jit_isolate_teardown_hook();
   {
     std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
     jit_isolate_reg()[id] = core;
@@ -1106,12 +1110,10 @@ inline JitValue _jit_shared_val_child(JitObject* view, int64_t id,
 }
 
 // `view.name` data read on an own-slot miss — Object-node field, nil on
-// miss (mirroring a plain Object). Declared in jit_runtime.h for the get_ic
-// hook; CULEBRA_RT_INLINE, not `inline`, because feature TUs see only that
-// declaration (tools/check_rt_keep_scope.sh's exception).
-CULEBRA_RT_INLINE JitValue _jit_shared_val_prop(JitObject* view,
-                                                const char* name,
-                                                int64_t line, int64_t col) {
+// miss (mirroring a plain Object). Reached through jit_runtime.h's
+// _jit_shared_val_prop_hook, which _jit_make_shared_val_view installs.
+inline JitValue _jit_shared_val_prop_impl(JitObject* view, const char* name,
+                                          int64_t line, int64_t col) {
   auto [core, n, id, node_id] = _jit_shared_val_node_of(view, line, col);
   using K = sendable::SendNode::K;
   if (n->kind != K::Object) return {TAG_NIL, 0};
@@ -1144,10 +1146,9 @@ inline bool _jit_shared_val_key_eq(const sendable::SendNode& k, int8_t tag,
 // `view[key]` — Object key lookup (KeyError on miss) or Array/Tuple
 // positional read (IndexError). Key is BORROWED here (the caller
 // consumes it per the object_get_any contract).
-CULEBRA_RT_INLINE JitValue _jit_shared_val_index(JitObject* view,
-                                                 int8_t key_tag,
-                                                 int64_t key_data,
-                                                 int64_t line, int64_t col) {
+inline JitValue _jit_shared_val_index_impl(JitObject* view, int8_t key_tag,
+                                           int64_t key_data, int64_t line,
+                                           int64_t col) {
   auto [core, n, id, node_id] = _jit_shared_val_node_of(view, line, col);
   using K = sendable::SendNode::K;
   switch (n->kind) {
@@ -1420,6 +1421,12 @@ inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node) {
   meth("drop", _jit_sv_drop);
   h->is_shared_val = true;
   h->has_drop = true;
+  // The one place a view comes into being, so the one place the generic
+  // get/index paths learn how to read it (jit_runtime.h).
+  _jit_shared_val_prop_hook().store(_jit_shared_val_prop_impl,
+                                    std::memory_order_release);
+  _jit_shared_val_index_hook().store(_jit_shared_val_index_impl,
+                                     std::memory_order_release);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 

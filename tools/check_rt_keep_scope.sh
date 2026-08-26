@@ -10,12 +10,10 @@ cd "$(dirname "$0")/.."
 # culebra_aot_bootstrap (include/runtime/runtime_aot.h) is looked up by name
 # from JIT-generated IR for the AOT entry point (include/jit.h, mod.get()
 # symbol lookup) exactly like a culebra_runtime_* helper, just without the
-# prefix.
-#
-# _jit_shared_val_prop / _jit_shared_val_index: declared in jit_runtime.h,
-# defined only in sendable_jit.h, so a feature TU links against the archive's
-# out-of-line body — INLINE's strong definition is what guarantees one exists.
-EXCEPTIONS='culebra_aot_bootstrap|_jit_shared_val_prop|_jit_shared_val_index'
+# prefix. (The Shared.new readers used to be here too — declared in
+# jit_runtime.h, defined only in sendable_jit.h — until they became hooks the
+# view constructor installs, so nothing links against them by name any more.)
+EXCEPTIONS='culebra_aot_bootstrap'
 
 # One pass per file: a non-comment macro line opens a window that runs
 # through the function's `{`, a prototype's closing `;`, or the next macro
@@ -59,8 +57,7 @@ if (( fail )); then
   Drop the macro pair to a bare `inline` (see 39559596 / 83ceea96 and
   rt_macros.h), or add the name to EXCEPTIONS in tools/check_rt_keep_scope.sh
   with a comment saying why codegen looks it up by name
-  (culebra_aot_bootstrap) or why another TU links against its out-of-line
-  body (_jit_shared_val_prop).
+  (culebra_aot_bootstrap).
 EOF
   exit 1
 fi

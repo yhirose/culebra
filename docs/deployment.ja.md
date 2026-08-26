@@ -660,8 +660,13 @@ namespace分。ソースが名指ししないものはnullエントリ）を運�
 ものも一緒に落ちます。走査はプログラムとspliceされたpreambleに対する字句
 単位なので、`let m = Math; m.abs(x)`は`Math`を名指ししたと数え、lazy
 モジュール内の`_Canvas`は`Canvas`がそのモジュールを引き込んだ時点で数え
-ます。機能軸と合わせて、これが`print("hello")`のバイナリを1 MB未満に
-保っています。走査が見落としたnamespaceは黙って`nil`に読めたりはせず、
+ます。isolate間の値転送コード（値のシリアライズ、channelのendpoint、
+`Shared`のview）も同じ仕組みに乗ります: 汎用のプロパティ／添字読み取り
+経路は`Shared` viewの読み手にviewのコンストラクタが設定するフック経由で
+届き、シンボルでは参照しないので、そのコードを参照するのは`Shared` /
+`Isolate` / `Parallel` / `Net`のadapterだけになり、それらのgroupと一緒に
+落ちます。機能軸と合わせて、これが`print("hello")`のバイナリを0.5 MB未満
+に保っています。走査が見落としたnamespaceは黙って`nil`に読めたりはせず、
 到達した時点でそのnamespace名を含む`InternalError`になります。
 
 これらのアーカイブはcpp-embedlibによって **`culebra`ドライバに

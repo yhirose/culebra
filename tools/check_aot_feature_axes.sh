@@ -128,6 +128,12 @@ expect_absent none ' reg::' "regexlib"
 expect_absent none 'culebra::proc::_detail::' "the fork/exec layer"
 expect_absent none 'culebra::_canvas_detail::ttf_rasterize' "stb_truetype"
 expect_absent none 'culebra::foreign_fixture::' "the fixture's own C++ class"
+# The isolate transfer graph (serialize / SharedVal readers / channel
+# endpoints) is reached only through the hooks _jit_make_shared_val_view
+# installs (jit_runtime.h), never by symbol from the generic property paths.
+expect_absent none 'culebra::jit_serialize[(]' "the isolate transfer graph"
+expect_absent none 'culebra::_jit_shared_val_prop_impl[(]' "the SharedVal reader"
+expect_absent none '_jit_isolate_teardown_join_all' "the isolate teardown join"
 expect_output none "none"
 # The namespace groups (stdlib_jit.h ns_groups()): a namespace's dispatch rows
 # and adapters link only when the program names it. No axis, no choke — the
@@ -175,6 +181,15 @@ expect_present foreign "$foreign_choke" "__Foreign named"
 expect_stub_or_absent foreign "$regex_choke" "__Foreign only"
 expect_output foreign "15"
 
+# A Shared.new view: its reader arrives through the hook, and the view's
+# `copy` reaches the deserializer, which reaches everything else.
+build shared 'let s = Shared.new({a: 1, xs: [10, 20]})
+IO.print(s.a + s.xs[1])'
+expect_present shared 'culebra::_jit_shared_val_prop_impl[(]' "Shared named"
+expect_present shared 'culebra::jit_serialize[(]' "Shared named"
+expect_stub_or_absent shared "$regex_choke" "Shared only"
+expect_output shared "21"
+
 if (( fail )); then
   cat >&2 <<'EOF'
   Regex 'W' (or nothing) where 'T' was expected: the axis did not force-load —
@@ -192,4 +207,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / __Foreign by axis; Proc/Canvas by namespace group; groups linked only when named)"
+echo "aot-feature-axes OK (Regex / __Foreign by axis; Proc/Canvas/Shared by namespace group; groups linked only when named)"
