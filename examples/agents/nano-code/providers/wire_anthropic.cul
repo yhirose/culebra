@@ -1,6 +1,7 @@
 import msg from '../core/message.cul'
 import clean from '../core/clean_messages.cul'
 import err from '../core/errors.cul'
+import api_error from './api_error.cul'
 
 # The Anthropic Messages wire format: how to say it.
 #
@@ -45,7 +46,8 @@ class AnthropicWire {
 
     let res = self.http.post('/messages', json: body)
     if !res.ok {
-      throw err.llm_api_error(res.status, PROVIDER, api_message(res))
+      throw err.llm_api_error(res.status, PROVIDER,
+                              api_error.explain(PROVIDER, res))
     }
     read_reply(res.json())
   }
@@ -161,21 +163,6 @@ fn usage_of(u) {
   let received = u.output_tokens ?? 0
   {prompt_tokens: sent, completion_tokens: received,
    total_tokens: sent + received}
-}
-
-# A refused request says why in the body. Reading it beats reporting the
-# status alone, which for a 400 is never the interesting half.
-fn api_message(res) {
-  let detail = try {
-    res.json().error.message ?? res.body
-  } catch _e {
-    res.body
-  }
-  "{PROVIDER} wire: the API answered {res.status} — {clip(detail)}"
-}
-
-fn clip(s) {
-  s.size() <= 300 ? s : s.slice(0, 300) + '...'
 }
 
 export {AnthropicWire}

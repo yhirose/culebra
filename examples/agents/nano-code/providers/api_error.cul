@@ -1,0 +1,39 @@
+# Why a request was refused, in as many words as the other end gave.
+#
+# Both wires ask the same question of a failed response, so they ask it here.
+#
+# The status alone is never the interesting half, and neither is `message` on
+# its own: a gateway answers for someone else, so its own text is generic
+# ("Provider returned error") and the upstream's words arrive under
+# `metadata`. A 429 from a free model says which provider and what limit only
+# there — which is the difference between a message worth reading and one
+# worth ignoring.
+
+let MAX_DETAIL = 400
+
+fn explain(provider, res) {
+  "{provider} wire: the API answered {res.status} — {clip(detail_of(res))}"
+}
+
+fn detail_of(res) {
+  try {
+    said_by(res.json())
+  } catch _e {
+    # Not JSON at all: a proxy or a gateway page. The body is all there is.
+    res.body
+  }
+}
+
+fn said_by(payload) {
+  let failure = payload.error ?? payload
+  let said = failure.message ?? ''
+  let extra = failure.metadata ?? failure.type
+  let more = extra == nil ? '' : ' ' + JSON.stringify(extra)
+  (said.empty() ? JSON.stringify(payload) : said) + more
+}
+
+fn clip(s) {
+  s.size() <= MAX_DETAIL ? s : s.slice(0, MAX_DETAIL) + '...'
+}
+
+export {explain, detail_of}

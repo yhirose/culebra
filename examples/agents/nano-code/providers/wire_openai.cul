@@ -1,6 +1,7 @@
 import msg from '../core/message.cul'
 import clean from '../core/clean_messages.cul'
 import err from '../core/errors.cul'
+import api_error from './api_error.cul'
 
 # The OpenAI chat-completions wire format: the same conversation, said
 # differently.
@@ -39,7 +40,8 @@ class OpenAIWire {
 
     let res = self.http.post('/chat/completions', json: body)
     if !res.ok {
-      throw err.llm_api_error(res.status, PROVIDER, api_message(res))
+      throw err.llm_api_error(res.status, PROVIDER,
+                              api_error.explain(PROVIDER, res))
     }
     read_reply(res.json())
   }
@@ -155,19 +157,6 @@ fn usage_of(u) {
     completion_tokens: u.completion_tokens ?? 0,
     total_tokens: u.total_tokens ?? 0,
   }
-}
-
-fn api_message(res) {
-  let detail = try {
-    res.json().error.message ?? res.body
-  } catch _e {
-    res.body
-  }
-  "{PROVIDER} wire: the API answered {res.status} — {clip(detail)}"
-}
-
-fn clip(s) {
-  s.size() <= 300 ? s : s.slice(0, 300) + '...'
 }
 
 export {OpenAIWire}

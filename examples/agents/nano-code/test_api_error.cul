@@ -1,0 +1,76 @@
+import api_error from './providers/api_error.cul'
+
+# What a refused request is worth reading. A gateway answers for someone else,
+# so its own `message` is generic and the upstream's words are somewhere else;
+# a message that stops at the generic half sends the reader looking in the
+# wrong place. The 429 in the table below is the one a free model actually
+# returns.
+
+fn a_refusal(status, payload) {
+  {
+    ok: false,
+    status: status,
+    body: JSON.stringify(payload),
+    json: fn () { payload },
+  }
+}
+
+fn a_page(status, body) {
+  {
+    ok: false,
+    status: status,
+    body: body,
+    json: fn () { throw {kind: 'JSONError', message: 'not JSON'} },
+  }
+}
+
+@test
+fn keeps_what_the_upstream_said_under_metadata() {
+  let told = api_error.explain('anthropic', a_refusal(429, {
+    error: {
+      message: 'Provider returned error',
+      code: 429,
+      metadata: {provider_name: 'Google AI Studio',
+                 raw: 'rate limit exceeded for free tier'},
+    },
+  }))
+
+  assert_true(told.contains('429'))
+  assert_true(told.contains('Provider returned error'))
+  # The half that says what to do about it.
+  assert_true(told.contains('Google AI Studio'))
+  assert_true(told.contains('rate limit exceeded'))
+}
+
+@test
+fn names_the_kind_of_refusal_when_there_is_no_metadata() {
+  let told = api_error.explain('openai', a_refusal(404,
+    {error: {message: 'model not found', type: 'invalid_request_error'}}))
+  assert_true(told.contains('openai wire'))
+  assert_true(told.contains('model not found'))
+  assert_true(told.contains('invalid_request_error'))
+}
+
+@test
+fn falls_back_to_the_whole_body_when_it_is_shaped_differently() {
+  # No `error` envelope: report what did arrive rather than an empty string.
+  let told = api_error.explain('openai', a_refusal(500, {detail: 'upstream down'}))
+  assert_true(told.contains('upstream down'))
+}
+
+@test
+fn a_body_that_is_not_json_is_still_the_body() {
+  # A proxy or a gateway page, which is exactly when the status alone tells
+  # you nothing.
+  let told = api_error.explain('anthropic',
+    a_page(502, '<html><body>Bad Gateway</body></html>'))
+  assert_true(told.contains('502'))
+  assert_true(told.contains('Bad Gateway'))
+}
+
+@test
+fn a_long_body_is_clipped() {
+  let told = api_error.explain('anthropic', a_page(500, 'x'.repeat(5000)))
+  assert_true(told.size() < 500)
+  assert_true(told.ends_with('...'))
+}
