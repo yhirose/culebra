@@ -196,6 +196,13 @@ iterator protocol, `throw`/`try` translation and the defer stack, and
 message and the policy for which position it reports — so both lanes
 report the same error because they call the same function.
 
+The multimethod registry resolves only when it has to. A dispatcher
+whose table holds exactly one untyped overload records that overload as
+a monomorphic shortcut (`JitMultifnDispatcher`, refreshed on every
+table mutation), and a positional call its arity accepts invokes it
+directly — the plain annotation-free `fn name`, which would otherwise
+pay type scoring and a trait walk to choose among one candidate.
+
 Helpers follow a small set of ownership contracts for the values they
 are handed (borrow, consume-on-every-exit, transfer); `memory.md` §4.3
 tabulates them. Two RAII forms recur in the helpers' own C++:

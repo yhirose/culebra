@@ -102,7 +102,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
 
 // Side table mapping a payload-variant constructor closure to its
 // (variant, enum) names — recovered by the shared thunk below. Mirrors
-// _jit_multifn_dispatcher_names: the closure carries no captures.
+// _jit_multifn_dispatchers: the closure carries no captures.
 // thread_local: keyed by per-thread JIT-compiled closure pointers, so
 // there is nothing to share across host threads. Isolating per thread
 // removes the data race that a process-wide static would have (unlike
@@ -747,20 +747,43 @@ culebra_runtime_register_trait(const char* trait_name, const char* spec,
   culebra::register_trait(std::move(def));
 }
 
-// Side table mapping a dispatcher closure pointer to its multimethod
-// name, so the shared static thunk can recover which name to dispatch
-// for. A dispatcher is kept alive only by its env/module binding (a
-// normal GC root) and owns its bodies via _jit_gc_enumerate_children, so
-// it is reclaimed when its scope dies (entry dropped in _jit_multifn_forget).
-// Per-Runtime substate (not thread_local): keyed by this Runtime's dispatcher
-// closure pointers. A substate (paired with _jit_multimethods) so it outlives
-// the module/namespace tables under ~Runtime's slot-ordered teardown — those
+// A dispatcher's registry record: its `_jit_multimethods` key, plus the
+// monomorphic shortcut. With exactly one untyped overload in the table, that
+// overload is the only method `multifn_pick` could ever return, so a
+// positional call its arity accepts skips resolution and invokes it directly
+// — the plain annotation-free `fn name`, on every call. `mono` is non-owning
+// and points into the table (the entry holds the body's +1); refreshed by
+// `_jit_multifn_refresh_mono` after each table mutation.
+struct JitMultifnDispatcher {
+  std::string name;
+  const JitMultiMethodEntry* mono = nullptr;
+};
+
+// Side table mapping a dispatcher closure pointer to its record, so the
+// shared static thunk can recover which name to dispatch for. A dispatcher
+// is kept alive only by its env/module binding (a normal GC root) and owns
+// its bodies via _jit_gc_enumerate_children, so it is reclaimed when its
+// scope dies (entry dropped in _jit_multifn_forget). Per-Runtime substate
+// (not thread_local): keyed by this Runtime's dispatcher closure pointers.
+// A substate (paired with _jit_multimethods) so it outlives the
+// module/namespace tables under ~Runtime's slot-ordered teardown — those
 // tables release dispatcher closures that consult this map. One Runtime per
 // thread, so no cross-thread sharing. See the kSlotJitMultifnNames note.
-inline std::map<JitClosure*, std::string>&
-_jit_multifn_dispatcher_names() {
-  return culebra::runtime_substate<std::map<JitClosure*, std::string>>(
+inline std::map<JitClosure*, JitMultifnDispatcher>& _jit_multifn_dispatchers() {
+  return culebra::runtime_substate<
+      std::map<JitClosure*, JitMultifnDispatcher>>(
       culebra::kSlotJitMultifnNames);
+}
+
+inline void _jit_multifn_refresh_mono(JitMultifnDispatcher& d) {
+  d.mono = nullptr;
+  auto& tbl = _jit_multimethods();
+  auto it = tbl.find(d.name);
+  if (it == tbl.end() || it->second.size() != 1) return;
+  const auto& m = it->second.front();
+  for (const auto& t : m.param_types)
+    if (!t.empty()) return;
+  d.mono = &m;
 }
 
 // Non-owning body→dispatcher uplinks: the multifn self-recursion handle.
@@ -843,11 +866,11 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
   // first registered method's signature (interp parity with the
   // dispatcher exposing the first method's params/name/return_type).
   if (!meta && cls) {
-    auto& dispatchers = _jit_multifn_dispatcher_names();
+    auto& dispatchers = _jit_multifn_dispatchers();
     auto disp_it = dispatchers.find(cls);
     if (disp_it != dispatchers.end()) {
       auto& tbl = _jit_multimethods();
-      auto method_it = tbl.find(disp_it->second);
+      auto method_it = tbl.find(disp_it->second.name);
       if (method_it != tbl.end() && !method_it->second.empty()) {
         meta = meta_of(method_it->second.front().body);
       }
@@ -945,10 +968,10 @@ inline bool _jit_is_multifn_dispatcher(JitClosure* c) {
 inline size_t _jit_dispatcher_max_arity(JitClosure* cls) {
   size_t arity = cls ? cls->arity : 0;
   if (_jit_is_multifn_dispatcher(cls)) {
-    auto& names = _jit_multifn_dispatcher_names();
-    if (auto nit = names.find(cls); nit != names.end()) {
+    auto& dispatchers = _jit_multifn_dispatchers();
+    if (auto dit = dispatchers.find(cls); dit != dispatchers.end()) {
       auto& tbl = _jit_multimethods();
-      if (auto mit = tbl.find(nit->second); mit != tbl.end())
+      if (auto mit = tbl.find(dit->second.name); mit != tbl.end())
         for (const auto& e : mit->second)
           arity = std::max(arity, e.param_types.size());
     }
@@ -958,11 +981,11 @@ inline size_t _jit_dispatcher_max_arity(JitClosure* cls) {
 
 // Push a dispatcher's overload bodies as mark-phase children.
 inline void _jit_multifn_push_bodies(JitClosure* c, std::vector<void*>& out) {
-  auto& names = _jit_multifn_dispatcher_names();
-  auto nit = names.find(c);
-  if (nit == names.end()) return;
+  auto& dispatchers = _jit_multifn_dispatchers();
+  auto dit = dispatchers.find(c);
+  if (dit == dispatchers.end()) return;
   auto& tbl = _jit_multimethods();
-  auto mit = tbl.find(nit->second);
+  auto mit = tbl.find(dit->second.name);
   if (mit == tbl.end()) return;
   for (auto& e : mit->second)
     if (e.body) out.push_back(e.body);
@@ -974,9 +997,9 @@ inline void _jit_multifn_push_bodies(JitClosure* c, std::vector<void*>& out) {
 // sweep path (the bodies are reclaimed by their own sweep entries — releasing
 // here would double-free).
 inline void _jit_multifn_forget(JitClosure* c, bool release_bodies) {
-  auto& names = _jit_multifn_dispatcher_names();
-  auto nit = names.find(c);
-  if (nit == names.end()) return;
+  auto& dispatchers = _jit_multifn_dispatchers();
+  auto dit = dispatchers.find(c);
+  if (dit == dispatchers.end()) return;
   auto& tbl = _jit_multimethods();
   // Detach the table + name entries FIRST, then release: the natural
   // refcount-0 cascade fires pending `drop`s (user code) that may
@@ -984,7 +1007,7 @@ inline void _jit_multifn_forget(JitClosure* c, bool release_bodies) {
   // dispatcher, not the dying one. (Cycle-held remains park for the GC
   // backstop's finalize pass.)
   std::vector<JitMultiMethodEntry> doomed;
-  if (auto mit = tbl.find(nit->second); mit != tbl.end()) {
+  if (auto mit = tbl.find(dit->second.name); mit != tbl.end()) {
     // The bodies' self-recursion uplinks die with the table entry on both
     // paths — the sweep reclaims the bodies through their own entries, and
     // a stale uplink would dangle at the raw-pointer layer.
@@ -993,7 +1016,7 @@ inline void _jit_multifn_forget(JitClosure* c, bool release_bodies) {
     if (release_bodies) doomed = std::move(mit->second);
     tbl.erase(mit);
   }
-  names.erase(nit);
+  dispatchers.erase(dit);
   for (auto& e : doomed)
     if (e.body)
       _culebra_value_release_impl(TAG_FUNC,
@@ -1213,17 +1236,17 @@ inline MultifnPick _jit_multifn_resolve(
     int64_t line, int64_t col,
     std::function<void()> release = nullptr,
     const std::vector<std::string_view>& kwarg_keys = {}) {
-  auto name_it = _jit_multifn_dispatcher_names().find(cls);
-  if (name_it == _jit_multifn_dispatcher_names().end()) {
+  auto name_it = _jit_multifn_dispatchers().find(cls);
+  if (name_it == _jit_multifn_dispatchers().end()) {
     if (release) release();
     throw std::runtime_error("internal: multimethod dispatcher missing name");
   }
+  const std::string& name = name_it->second.name;
   auto& tbl = _jit_multimethods();
-  auto m_it = tbl.find(name_it->second);
+  auto m_it = tbl.find(name);
   auto fail = [&](const char* what) -> std::string {
     if (release) release();
-    return std::format("{} for `{}`", what,
-                       _jit_multifn_display(name_it->second));
+    return std::format("{} for `{}`", what, _jit_multifn_display(name));
   };
   if (m_it == tbl.end()) {
     throw culebra::CulebraError("DispatchError",
@@ -1251,19 +1274,31 @@ inline MultifnPick _jit_multifn_resolve(
     throw culebra::CulebraError("DispatchError",
         fail("ambiguous dispatch"), line, col);
   }
-  return {m_it->second[static_cast<size_t>(pick)].body, name_it->second};
+  return {m_it->second[static_cast<size_t>(pick)].body, name};
 }
 
 // JitFn-ABI shared thunk installed as `fn_ptr` on every multimethod
 // dispatcher closure. The `cls` identity (load-bearing comparison in
 // `culebra_runtime_call_with_kwargs` to intercept the kwargs path) is
-// resolved through `_jit_multifn_dispatcher_names()` to recover the
+// resolved through `_jit_multifn_dispatchers()` to recover the
 // multimethod name, then dispatched via `_jit_multifn_resolve`.
 inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
                                           int8_t self_val_tag,
                                           int64_t self_val_data,
                                           int64_t n_args, JitValue* args) {
   JitValue self_val{self_val_tag, self_val_data};
+  // Monomorphic shortcut (see JitMultifnDispatcher): no resolution, and
+  // nothing that could throw before the hand-off below.
+  auto& dispatchers = _jit_multifn_dispatchers();
+  if (auto it = dispatchers.find(cls); it != dispatchers.end()) {
+    const auto* m = it->second.mono;
+    auto n = static_cast<size_t>(n_args);
+    if (m && n >= m->min_params &&
+        (m->variadic || n <= m->param_types.size())) {
+      *__ret = _jit_invoke(m->body, self_val, n_args, args);
+      return;
+    }
+  }
   // On a normal dispatch `self_val` (a method receiver) and every arg are
   // forwarded to the picked body, which consumes them (callee-consumes). A
   // DispatchError throws before that hand-off, so the receiver + args would
@@ -1453,14 +1488,16 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
   // the new body was just installed into (a re-declared `fn` would
   // dispatch into a void). The caller's +1 pins the dispatcher across the
   // cascade, so forget can only run once no newer registration owns it.
-  auto& names = _jit_multifn_dispatcher_names();
-  auto it = into ? names.find(into) : names.end();
+  auto& dispatchers = _jit_multifn_dispatchers();
+  auto it = into ? dispatchers.find(into) : dispatchers.end();
   JitClosure* dispatcher = nullptr;
+  JitMultifnDispatcher* rec = nullptr;
   std::string name;
-  if (it != names.end()) {
+  if (it != dispatchers.end()) {
     into->refcount++;  // hand a +1 back to the caller
     dispatcher = into;
-    name = it->second;
+    rec = &it->second;
+    name = rec->name;
   } else {
     // A fresh activation of this declaration: its own dispatcher over its
     // own table. The suffix only has to be unique within the Runtime's
@@ -1474,31 +1511,34 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
     dispatcher = culebra_runtime_closure_new(
         reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk),
         /*n_captures=*/0, /*arity=*/n_param_types);
-    names[dispatcher] = name;
+    rec = &dispatchers[dispatcher];
+    rec->name = name;
   }
 
   auto& tbl = _jit_multimethods();
   auto& methods = tbl[name];
-  bool replaced = false;
+  JitClosure* displaced = nullptr;
   for (auto& existing : methods) {
     if (existing.param_types == method.param_types) {
-      // Install the new entry BEFORE releasing the displaced body's
-      // table +1: the cascade fires pending `drop`s (user code) that
-      // may dispatch this very name, so the table must not hold the
-      // freed body. Cycle-held remains park for the GC backstop.
-      JitClosure* displaced = existing.body;
+      displaced = existing.body;
       existing = std::move(method);
-      replaced = true;
-      _jit_multifn_body_uplinks().erase(displaced);
-      _culebra_value_release_impl(TAG_FUNC,
-                                  reinterpret_cast<int64_t>(displaced));
       break;
     }
   }
-  if (!replaced) methods.push_back(std::move(method));
+  if (!displaced) methods.push_back(std::move(method));
   // The body's self-recursion uplink (culebra_runtime_multifn_self); leaves
   // with the table entry, so it can never outlive the dispatcher it names.
   _jit_multifn_body_uplinks()[body] = dispatcher;
+  // Table and shortcut are final BEFORE the displaced body's table +1 goes:
+  // the cascade fires pending `drop`s (user code) that may dispatch this
+  // very name, so neither may still hold the freed body. Cycle-held remains
+  // park for the GC backstop.
+  _jit_multifn_refresh_mono(*rec);
+  if (displaced) {
+    _jit_multifn_body_uplinks().erase(displaced);
+    _culebra_value_release_impl(TAG_FUNC,
+                                reinterpret_cast<int64_t>(displaced));
+  }
   return dispatcher;
 }
 

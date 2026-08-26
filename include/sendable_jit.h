@@ -213,9 +213,9 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       n.i = static_cast<int64_t>(c->arity);
       // `fn name` is a dispatcher thunk: its overloads live in a thread_local
       // table, so ship each method body + its dispatch types explicitly.
-      if (auto dit = _jit_multifn_dispatcher_names().find(c);
-          dit != _jit_multifn_dispatcher_names().end()) {
-        n.mf_name = dit->second;
+      if (auto dit = _jit_multifn_dispatchers().find(c);
+          dit != _jit_multifn_dispatchers().end()) {
+        n.mf_name = dit->second.name;
         const auto& methods = _jit_multimethods()[n.mf_name];
         for (const auto& mth : methods) {
           n.mf_param_types.push_back(mth.param_types);
@@ -361,7 +361,8 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         auto* c = culebra_runtime_closure_new(n.jit_fn, 0,
                                               static_cast<size_t>(n.i));
         JitValue cv{TAG_FUNC, reinterpret_cast<int64_t>(c)};
-        _jit_multifn_dispatcher_names()[c] = n.mf_name;
+        auto& rec = _jit_multifn_dispatchers()[c];
+        rec.name = n.mf_name;
         ctx.closures.emplace(n.ref_id, cv);
         auto& methods = _jit_multimethods()[n.mf_name];
         for (size_t i = 0; i < n.elems.size(); i++) {
@@ -376,6 +377,7 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
           // registration would have installed it.
           _jit_multifn_body_uplinks()[body_cls] = c;
         }
+        _jit_multifn_refresh_mono(rec);
         return cv;
       }
       auto* c = culebra_runtime_closure_new(n.jit_fn, n.elems.size(),

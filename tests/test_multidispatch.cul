@@ -386,4 +386,66 @@ assert_throws('DispatchError', fn () {
   tally.get_or_put('k', mm)
 })
 
+# --- Monomorphic shortcut ---
+#
+# A dispatcher over exactly one untyped overload invokes it without
+# resolution. The cached body must track every table change and never
+# change what resolution would have answered.
+
+# A later same-scope overload turns a monomorphic dispatcher polymorphic.
+fn grow(x) {
+  "any"
+}
+assert_eq(grow(1), "any")
+fn grow(x: Long) {
+  "long"
+}
+assert_eq(grow(1), "long")
+assert_eq(grow("s"), "any")
+
+# Same-signature re-declaration swaps the cached body.
+fn swap(x) {
+  "old"
+}
+assert_eq(swap(1), "old")
+fn swap(x) {
+  "new"
+}
+assert_eq(swap(1), "new")
+
+# Defaults and *args widen the accepted count; outside it the miss is the
+# generic DispatchError, not a bad call.
+fn wide(a, b = 2, *rest) {
+  a + b + rest.size()
+}
+assert_eq(wide(1), 3)
+assert_eq(wide(1, 5), 6)
+assert_eq(wide(1, 5, 0, 0), 8)
+let under = try {
+  wide()
+  "no error"
+} catch e {
+  "{e.kind}: {e.message}"
+}
+assert_eq(under, "DispatchError: no matching method for `wide`")
+fn narrow(a) {
+  a
+}
+let over = try {
+  narrow(1, 2)
+  "no error"
+} catch e {
+  "{e.kind}: {e.message}"
+}
+assert_eq(over, "DispatchError: no matching method for `narrow`")
+
+# Shipped to an isolate, the rebuilt dispatcher answers the same way.
+fn twice(x) {
+  x * 2
+}
+let iso = Isolate.spawn(fn (f) {
+  f(21)
+}, twice)
+assert_eq(iso.join(), 42)
+
 inspect("test_multidispatch: OK")
