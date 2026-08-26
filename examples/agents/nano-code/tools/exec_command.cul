@@ -1,4 +1,3 @@
-import schema from './schema.cul'
 import err from '../core/errors.cul'
 import sec from '../core/security.cul'
 
@@ -55,20 +54,20 @@ fn parse_command(input) {
     let ch = chars[i]
     if quote != nil {
       cond {
-        escaped => { current = current + ch; escaped = false },
+        escaped => { current += ch; escaped = false },
         ch == BACKSLASH && quote == '"' => escaped = true,
         ch == quote => quote = nil,
-        _ => current = current + ch,
+        _ => current += ch,
       }
     } else if ch == BACKSLASH {
       # A backslash before a quote is an escape; anywhere else it is a
       # character, so a Windows path survives being written literally.
       let next = i + 1 < chars.size() ? chars[i + 1] : ''
       if next == '"' || next == "'" {
-        current = current + next
-        i = i + 1
+        current += next
+        i += 1
       } else {
-        current = current + ch
+        current += ch
       }
     } else if ch == '"' || ch == "'" {
       quote = ch
@@ -78,9 +77,9 @@ fn parse_command(input) {
         current = ''
       }
     } else {
-      current = current + ch
+      current += ch
     }
-    i = i + 1
+    i += 1
   }
 
   if quote != nil {

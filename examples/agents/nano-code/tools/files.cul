@@ -1,4 +1,3 @@
-import schema from './schema.cul'
 import err from '../core/errors.cul'
 import sec from '../core/security.cul'
 
