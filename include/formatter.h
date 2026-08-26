@@ -762,6 +762,13 @@ class Printer {
       DocP doc;
       if (has_mid_comment(k)) {
         auto [vs, ve] = verbatim_span(k);
+        // The slice runs to the item's closing delimiter, so it carries every
+        // comment in those bytes — including one past the last token, inside
+        // a `]`. Widening the item's reach is what stops the list from also
+        // trailing that comment onto it. (has_mid_comment has already read
+        // head/tail for this item; the readers left run after this loop.)
+        head[k] = std::min(head[k], vs);
+        tail[k] = std::max(tail[k], ve);
         doc = doc_text(std::string(src_.substr(vs, ve - vs)));
       } else {
         doc = render(k);
@@ -1512,16 +1519,24 @@ class Printer {
                        print_nobreak(fv.nobreak, *fv.body)});
   }
 
+  // print_defer / print_try: the `{` follows the keyword directly, so the scan
+  // starts at the body's own position rather than the statement's. A lone
+  // `defer` / `try` inherits its block's span (the optimizer's single-child
+  // widening), and `node.position` would then find the ENCLOSING brace,
+  // handing the body comments the block already prints. print_lexical_scope
+  // shakes off the same fold, and print_cond sheds it a third way.
   DocP print_defer(const peg::Ast& node) {
     return doc_concat({doc_text("defer "),
-                       print_block(*node.nodes[0], node.position, true)});
+                       print_block(*node.nodes[0], node.nodes[0]->position,
+                                   true)});
   }
 
   DocP print_try(const peg::Ast& node) {
     // [BLOCK, IDENTIFIER, BLOCK]. The try block's `{` follows `try`; the catch
     // block's `{` follows the bound identifier.
     return doc_concat({doc_text("try "),
-                       print_block(*node.nodes[0], node.position, false),
+                       print_block(*node.nodes[0], node.nodes[0]->position,
+                                   false),
                        doc_text(" catch " + std::string(node.nodes[1]->token) + " "),
                        print_block(*node.nodes[2], node_end(*node.nodes[1]), false)});
   }
@@ -1597,8 +1612,15 @@ class Printer {
       return doc_concat({testd, doc_text(" => "),
                          print_arm_body(*arm.nodes[1], node_end(test))});
     };
+    // `cond` is the third keyword whose `{` follows it directly, so a lone one
+    // inherits its block's span and `node.position` is the ENCLOSING brace.
+    // There is no body node to scan from here — the arms start inside the
+    // brace — so shed the swallowed layer instead: a span that opens on a
+    // code `{` is the fold, and the next `{` past it is the cond's own.
+    size_t from = node.position;
+    if (from < src_.size() && is_code_[from] && src_[from] == '{') from++;
     return doc_concat({doc_text("cond "),
-                       print_braced(items, node.position, ",", /*empty_ok=*/true, render)});
+                       print_braced(items, from, ",", /*empty_ok=*/true, render)});
   }
 
   // Leading `@deco` children shared by class / trait / enum / fn declarations:

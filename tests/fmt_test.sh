@@ -495,6 +495,147 @@ if ! diff -u "$TMP/chn_want.cul" "$TMP/chn_got.cul" > "$TMP/chn_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1l. Golden fixture: a comment past a sliced item's last token ---------
+# A comment between two elements has no slot in the printed list, so the whole
+# statement is copied verbatim to keep it. That slice runs to the closing
+# bracket — so a second comment sitting after the LAST element is already in
+# it, and trailing it onto the item as well printed it twice, which the
+# comment-preservation net refused. A list with only the late comment has no
+# slice and still collapses. See include/formatter.h print_items.
+cat > "$TMP/slc_in.cul" <<'EOF'
+let pats = [
+  re'a',        # first
+  re'b',        # second
+]
+let one = [
+  re'c',
+  re'd',        # only after the last element
+]
+println(pats.size()+one.size())
+EOF
+cat > "$TMP/slc_want.cul" <<'EOF'
+let pats = [
+  re'a',  # first
+  re'b',  # second
+]
+let one = [re'c', re'd']  # only after the last element
+println(pats.size() + one.size())
+EOF
+"$CULEBRA" fmt "$TMP/slc_in.cul" > "$TMP/slc_got.cul" 2>"$TMP/slc_err"
+if ! diff -u "$TMP/slc_want.cul" "$TMP/slc_got.cul" > "$TMP/slc_diff" 2>&1; then
+  echo "FAIL golden (comment past a sliced item): output differs"
+  cat "$TMP/slc_diff"
+  fail=1
+fi
+
+# --- 1m. Golden fixture: a comment above a lone `try` / `defer` ------------
+# Nothing stands between those keywords and their `{`, so the body's brace was
+# located by scanning from the statement's own position — and a `try`/`defer`
+# that is the sole statement of a block inherits that block's span (the
+# optimizer's single-child widening). The scan then found the ENCLOSING brace
+# and gave the body that block's interior, so the comment above the keyword
+# was printed a second time inside the body. See include/formatter.h
+# print_try / print_defer.
+cat > "$TMP/lone_in.cul" <<'EOF'
+fn f(a) {
+  if a==1 {
+    println(1)
+  } else {
+    # leading a lone try
+    try {
+      println(a)
+    } catch e {
+      println('error')
+    }
+  }
+}
+fn g(a) {
+  if a==1 {
+    println(1)
+  } else {
+    # leading a lone defer
+    defer {
+      println(a)
+    }
+  }
+}
+EOF
+cat > "$TMP/lone_want.cul" <<'EOF'
+fn f(a) {
+  if a == 1 {
+    println(1)
+  } else {
+    # leading a lone try
+    try {
+      println(a)
+    } catch e {
+      println('error')
+    }
+  }
+}
+fn g(a) {
+  if a == 1 {
+    println(1)
+  } else {
+    # leading a lone defer
+    defer {
+      println(a)
+    }
+  }
+}
+EOF
+"$CULEBRA" fmt "$TMP/lone_in.cul" > "$TMP/lone_got.cul" 2>"$TMP/lone_err"
+if ! diff -u "$TMP/lone_want.cul" "$TMP/lone_got.cul" > "$TMP/lone_diff" 2>&1; then
+  echo "FAIL golden (comment above a lone try/defer): output differs"
+  cat "$TMP/lone_diff"
+  fail=1
+fi
+
+# --- 1n. Golden fixture: a comment around a lone `cond` --------------------
+# `cond` is the third keyword whose `{` follows it directly, so it inherits an
+# enclosing block's span the same way a lone `try` / `defer` does — and it has
+# no body node to scan from, since its arms start inside the brace. Both a
+# comment above the keyword and one inside the arms once came out twice.
+# See include/formatter.h print_cond.
+cat > "$TMP/cnd_in.cul" <<'EOF'
+fn grade(n) {
+  # above a sole cond
+  cond {
+    n>90 => 'A',
+    _ => 'C',
+  }
+}
+fn arms(n) {
+  cond {
+    # about the first arm
+    n>90 => 'A',
+    _ => 'C',
+  }
+}
+EOF
+cat > "$TMP/cnd_want.cul" <<'EOF'
+fn grade(n) {
+  # above a sole cond
+  cond {
+    n > 90 => 'A',
+    _ => 'C',
+  }
+}
+fn arms(n) {
+  cond {
+    # about the first arm
+    n > 90 => 'A',
+    _ => 'C',
+  }
+}
+EOF
+"$CULEBRA" fmt "$TMP/cnd_in.cul" > "$TMP/cnd_got.cul" 2>"$TMP/cnd_err"
+if ! diff -u "$TMP/cnd_want.cul" "$TMP/cnd_got.cul" > "$TMP/cnd_diff" 2>&1; then
+  echo "FAIL golden (comment around a lone cond): output differs"
+  cat "$TMP/cnd_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are
