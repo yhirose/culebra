@@ -31,6 +31,54 @@ let e = Proc.run(["env"], env: {MYVAR: "xyz"})
 assert_true(e.stdout.contains("MYVAR=xyz"))
 assert_true(e.stdout.contains("PATH="))
 
+// --- inherit_env: false drops the parent's environment ---
+Sys.set_env("PROC_INHERIT_PROBE", "parent-value")
+
+// Inherited by default, and by an explicit true.
+assert_true(Proc.run(["env"]).stdout.contains("PROC_INHERIT_PROBE=parent-value"))
+assert_true(Proc.run(["env"], inherit_env: true).stdout
+              .contains("PROC_INHERIT_PROBE=parent-value"))
+
+// Gone when the child does not inherit — this is what keeps a secret in the
+// parent's environment out of a child the parent did not choose it for.
+let bare = Proc.run(["env"], inherit_env: false)
+assert_false(bare.stdout.contains("PROC_INHERIT_PROBE"))
+
+// `env` composes with it: those vars and nothing else. `env` on its own still
+// merges, so the two axes are independent.
+let only = Proc.run(["env"], inherit_env: false, env: {MYVAR: "xyz"})
+assert_true(only.stdout.contains("MYVAR=xyz"))
+assert_false(only.stdout.contains("PROC_INHERIT_PROBE"))
+
+// An ill-typed inherit_env is a TypeError, like `check`.
+assert_throws("TypeError", fn () { Proc.run(["true"], inherit_env: "nope") })
+
+// The other three entry points take it too, through the same spec.
+assert_false(Proc.all([["env"]], inherit_env: false)[0].stdout
+               .contains("PROC_INHERIT_PROBE"))
+assert_false(Proc.race([["env"]], inherit_env: false).stdout
+               .contains("PROC_INHERIT_PROBE"))
+assert_false(Proc.spawn(["env"], inherit_env: false).wait().stdout
+               .contains("PROC_INHERIT_PROBE"))
+
+// Not just the compile-time keyword peephole: the generic binder too.
+let run_fn = Proc.run
+assert_false(run_fn(["env"], inherit_env: false).stdout
+               .contains("PROC_INHERIT_PROBE"))
+
+// `share` reaches the child as CULEBRA_SHARE_* environment variables, so
+// dropping the parent's environment must not drop the buffer with it.
+@packable
+class ShareProbeSlot {
+  n: Long
+}
+let probe_buf = SharedBuffer.shared(1, ShareProbeSlot)
+let share_count = ["sh", "-c", "env | grep -c CULEBRA_SHARE || true"]
+assert_eq(Proc.run(share_count, share: {slot: probe_buf}).stdout.trim(), "1")
+assert_eq(Proc.run(share_count, share: {slot: probe_buf},
+                   inherit_env: false).stdout.trim(), "1")
+assert_eq(Proc.run(share_count, inherit_env: false).stdout.trim(), "0")
+
 // --- cwd changes the child's working directory ---
 let tmpdir_env = Sys.env("TMPDIR")
 let tmp_root = if tmpdir_env != "" {

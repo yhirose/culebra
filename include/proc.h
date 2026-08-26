@@ -95,6 +95,19 @@ struct SpawnResult {
   std::string err_what;     // failing step when !spawned.
 };
 
+// What environment a child gets. Two independent facts, kept together because
+// neither answers the question alone: `vars` is what the caller sets, and
+// `inherit` is whether the parent's environment is the base they land on.
+// A null EnvSpec* means "inherit the parent unchanged" — the spelling for a
+// caller with nothing to say, and the same child environment as {{}, true}.
+struct EnvSpec {
+  std::vector<std::pair<std::string, std::string>> vars;
+  bool inherit = true;
+
+  // Nothing to build when the parent's own block already is the answer.
+  bool is_default() const { return inherit && vars.empty(); }
+};
+
 #if !defined(_WIN32)
 inline std::string signal_name(int sig) {
   switch (sig) {
@@ -387,7 +400,7 @@ struct Slots { int out = -1, err = -1, in = -1; };
 inline Child spawn_child(
     const std::vector<std::string>& argv,
     const std::string* cwd,
-    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const EnvSpec* env,
     const std::string* stdin_data,
     size_t index,
     const std::vector<int>* inherit_fds = nullptr) {
@@ -407,21 +420,23 @@ inline Child spawn_child(
   for (const auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
   cargv.push_back(nullptr);
 
-  const bool custom_env = (env_overrides != nullptr);
+  const bool custom_env = env && !env->is_default();
   std::vector<std::string> env_storage;
   std::vector<char*> cenvp;
   if (custom_env) {
-    for (char** e = environ; e && *e; ++e) {
-      std::string entry(*e);
-      auto eq = entry.find('=');
-      std::string key = (eq == std::string::npos) ? entry : entry.substr(0, eq);
-      bool overridden = false;
-      for (const auto& kv : *env_overrides) {
-        if (kv.first == key) { overridden = true; break; }
+    if (env->inherit) {
+      for (char** e = environ; e && *e; ++e) {
+        std::string entry(*e);
+        auto eq = entry.find('=');
+        std::string key = (eq == std::string::npos) ? entry : entry.substr(0, eq);
+        bool overridden = false;
+        for (const auto& kv : env->vars) {
+          if (kv.first == key) { overridden = true; break; }
+        }
+        if (!overridden) env_storage.push_back(std::move(entry));
       }
-      if (!overridden) env_storage.push_back(std::move(entry));
     }
-    for (const auto& kv : *env_overrides) {
+    for (const auto& kv : env->vars) {
       env_storage.push_back(kv.first + "=" + kv.second);
     }
     cenvp.reserve(env_storage.size() + 1);
@@ -711,8 +726,10 @@ struct ScopeKiller {
 
 // Runs argv[0] (PATH-resolved) synchronously.
 //   cwd            : working directory, or nullptr to inherit.
-//   env_overrides  : key/value pairs merged onto the parent environment
-//                    (parent kept so PATH survives), or nullptr to inherit.
+//   env  : the child's environment, or nullptr to inherit the
+//                    parent's unchanged. Its vars land on the parent's
+//                    environment when EnvSpec::inherit (so PATH survives) and
+//                    on an empty one when it does not.
 //   stdin_data     : bytes written to the child's stdin, then closed.
 //   timeout_ms     : kill (SIGTERM then SIGKILL) the child if it runs longer
 //                    than this many ms; 0 == no timeout. A timed-out result has
@@ -720,14 +737,14 @@ struct ScopeKiller {
 CULEBRA_RT_PROC_LINKAGE RunOutcome run_command(
     const std::vector<std::string>& argv,
     const std::string* cwd,
-    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const EnvSpec* env,
     const std::string& stdin_data,
     int64_t timeout_ms = 0,
     const std::vector<int>* inherit_fds = nullptr) {
   _detail::SigpipeGuard guard;
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
   _detail::Child c =
-      _detail::spawn_child(argv, cwd, env_overrides, sp, 0, inherit_fds);
+      _detail::spawn_child(argv, cwd, env, sp, 0, inherit_fds);
   if (c.done) return std::move(c.outcome);
   if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
 
@@ -761,7 +778,7 @@ CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
     const std::vector<std::vector<std::string>>& commands,
     size_t limit = 0,
     const std::string* cwd = nullptr,
-    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const EnvSpec* env = nullptr,
     const std::vector<std::string>* stdins = nullptr,
     int64_t timeout_ms = 0,
     bool fail_fast = false,
@@ -826,7 +843,7 @@ CULEBRA_RT_PROC_LINKAGE std::pair<size_t, RunOutcome> run_race(
     const std::vector<std::vector<std::string>>& commands,
     size_t limit = 0,
     const std::string* cwd = nullptr,
-    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const EnvSpec* env = nullptr,
     const std::vector<std::string>* stdins = nullptr,
     const std::vector<int>* inherit_fds = nullptr) {
   size_t n = commands.size();
@@ -935,12 +952,12 @@ inline std::string build_command_line(const std::vector<std::string>& argv) {
   return cl;
 }
 
-// Merged environment block ("K=V\0K=V\0\0") = parent env with overrides applied
-// (Windows env keys are case-insensitive). Empty return => caller passes NULL so
-// the child inherits the parent environment unchanged.
-inline std::string build_env_block(
-    const std::vector<std::pair<std::string, std::string>>* overrides) {
-  if (!overrides) return {};
+// Environment block ("K=V\0K=V\0\0") for `spec`: its vars, laid on the parent's
+// block when `spec->inherit` and on nothing when it does not (Windows env keys
+// are case-insensitive). Empty return => caller passes NULL so the child
+// inherits the parent environment unchanged.
+inline std::string build_env_block(const EnvSpec* spec) {
+  if (!spec || spec->is_default()) return {};
   auto ieq = [](const std::string& a, const std::string& b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); i++)
@@ -949,28 +966,34 @@ inline std::string build_env_block(
     return true;
   };
   std::string block;
-  char* env = GetEnvironmentStringsA();
-  for (char* p = env; env && *p;) {
-    std::string entry(p);
-    p += entry.size() + 1;
-    // "=X:=..." drive-letter cwd vars start with '=' — keep them verbatim.
-    if (!entry.empty() && entry[0] != '=') {
-      auto eq = entry.find('=');
-      std::string key = eq == std::string::npos ? entry : entry.substr(0, eq);
-      bool overridden = false;
-      for (auto& kv : *overrides)
-        if (ieq(kv.first, key)) { overridden = true; break; }
-      if (overridden) continue;
+  if (spec->inherit) {
+    char* env = GetEnvironmentStringsA();
+    for (char* p = env; env && *p;) {
+      std::string entry(p);
+      p += entry.size() + 1;
+      // "=X:=..." drive-letter cwd vars start with '=' — keep them verbatim.
+      if (!entry.empty() && entry[0] != '=') {
+        auto eq = entry.find('=');
+        std::string key = eq == std::string::npos ? entry : entry.substr(0, eq);
+        bool overridden = false;
+        for (auto& kv : spec->vars)
+          if (ieq(kv.first, key)) { overridden = true; break; }
+        if (overridden) continue;
+      }
+      block += entry;
+      block.push_back('\0');
     }
-    block += entry;
-    block.push_back('\0');
+    if (env) FreeEnvironmentStringsA(env);
   }
-  if (env) FreeEnvironmentStringsA(env);
-  for (auto& kv : *overrides) {
+  for (auto& kv : spec->vars) {
     block += kv.first; block.push_back('='); block += kv.second;
     block.push_back('\0');
   }
-  block.push_back('\0');  // block terminator
+  // Block terminator: each entry already ends in a NUL, and the block ends in
+  // one more. An environment with no entries at all has no first NUL to borrow,
+  // so it needs both written here to come out as CreateProcess's "\0\0".
+  if (block.empty()) block.push_back('\0');
+  block.push_back('\0');
   return block;
 }
 
@@ -987,7 +1010,7 @@ struct SpawnHandles {
 };
 inline SpawnHandles spawn_process(
     const std::vector<std::string>& argv, const std::string* cwd,
-    const std::vector<std::pair<std::string, std::string>>* env_overrides) {
+    const EnvSpec* env) {
   SpawnHandles h;
   if (argv.empty()) { h.err_no = ERROR_INVALID_PARAMETER; h.err_what = "argv"; return h; }
 
@@ -1012,7 +1035,7 @@ inline SpawnHandles spawn_process(
   std::string cmdline_s = build_command_line(argv);
   std::vector<char> cmdline(cmdline_s.begin(), cmdline_s.end());
   cmdline.push_back('\0');  // CreateProcessA may write into this buffer.
-  std::string envblock = build_env_block(env_overrides);
+  std::string envblock = build_env_block(env);
   std::string cwds = cwd ? *cwd : std::string();
 
   STARTUPINFOA si{};
@@ -1105,11 +1128,11 @@ struct WinChild {
 
 inline WinChild spawn_child(
     const std::vector<std::string>& argv, const std::string* cwd,
-    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const EnvSpec* env,
     const std::string* stdin_data, size_t index) {
   WinChild c;
   c.index = index;
-  SpawnHandles h = spawn_process(argv, cwd, env_overrides);
+  SpawnHandles h = spawn_process(argv, cwd, env);
   if (!h.ok) {
     c.outcome.err_no = h.err_no; c.outcome.err_what = h.err_what; c.done = true;
     return c;
@@ -1203,11 +1226,11 @@ struct ScopeKiller {
 
 CULEBRA_RT_PROC_LINKAGE RunOutcome run_command(
     const std::vector<std::string>& argv, const std::string* cwd,
-    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const EnvSpec* env,
     const std::string& stdin_data, int64_t timeout_ms = 0,
     const std::vector<int>* = nullptr) {
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
-  _detail::WinChild c = _detail::spawn_child(argv, cwd, env_overrides, sp, 0);
+  _detail::WinChild c = _detail::spawn_child(argv, cwd, env, sp, 0);
   if (c.done) return std::move(c.outcome);
   if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
 
@@ -1229,7 +1252,7 @@ CULEBRA_RT_PROC_LINKAGE RunOutcome run_command(
 CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
     const std::vector<std::vector<std::string>>& commands, size_t limit = 0,
     const std::string* cwd = nullptr,
-    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const EnvSpec* env = nullptr,
     const std::vector<std::string>* stdins = nullptr, int64_t timeout_ms = 0,
     bool fail_fast = false, size_t* out_failed = nullptr, int64_t retries = 0,
     const std::vector<int>* = nullptr) {
@@ -1280,7 +1303,7 @@ CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
 CULEBRA_RT_PROC_LINKAGE std::pair<size_t, RunOutcome> run_race(
     const std::vector<std::vector<std::string>>& commands, size_t limit = 0,
     const std::string* cwd = nullptr,
-    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const EnvSpec* env = nullptr,
     const std::vector<std::string>* stdins = nullptr,
     const std::vector<int>* = nullptr) {
   size_t n = commands.size();
@@ -1334,12 +1357,12 @@ CULEBRA_RT_PROC_LINKAGE std::pair<size_t, RunOutcome> run_race(
 // spawn failure returns spawned=false with errno/step.
 CULEBRA_RT_PROC_LINKAGE SpawnResult spawn_detached(
     const std::vector<std::string>& argv, const std::string* cwd,
-    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const EnvSpec* env,
     const std::string& stdin_data,
     const std::vector<int>* inherit_fds = nullptr) {
   _detail::SigpipeGuard guard;
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
-  _detail::Child c = _detail::spawn_child(argv, cwd, env_overrides, sp, 0,
+  _detail::Child c = _detail::spawn_child(argv, cwd, env, sp, 0,
                                           inherit_fds);
   SpawnResult sr;
   if (c.done) {
@@ -1468,10 +1491,10 @@ inline void live_join_close(WinLive& lv) {
 // mirrors it so drain_reaped (which is handed only the fds) finds the entry too.
 CULEBRA_RT_PROC_LINKAGE SpawnResult spawn_detached(
     const std::vector<std::string>& argv, const std::string* cwd,
-    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const EnvSpec* env,
     const std::string& stdin_data, const std::vector<int>* = nullptr) {
   SpawnResult sr;
-  _detail::SpawnHandles h = _detail::spawn_process(argv, cwd, env_overrides);
+  _detail::SpawnHandles h = _detail::spawn_process(argv, cwd, env);
   if (!h.ok) { sr.err_no = h.err_no; sr.err_what = h.err_what; return sr; }
   int64_t id;
   _detail::WinLive* lv;

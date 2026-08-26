@@ -1950,7 +1950,7 @@ output. The command is an `Array<String>` — `cmd[0]` is the executable
 quoting or injection concerns: `["git", "commit", "-m", msg]` passes
 `msg` verbatim however it's spelled.
 
-### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil) -> Object`
+### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil, inherit_env=true) -> Object`
 
 Runs `cmd` to completion and returns a result Object:
 
@@ -1967,9 +1967,24 @@ Runs `cmd` to completion and returns a result Object:
 Keyword arguments:
 
 - `cwd: String` — working directory for the child (default: inherit the parent's).
-- `env: Object` — environment variables, merged onto the parent's so
-  `PATH` and friends survive (default: inherit unchanged). Values must
-  be `String`.
+- `env: Object` — environment variables to set in the child (default: none
+  beyond what it inherits). Values must be `String`.
+- `inherit_env: Bool` — whether the parent's own environment is the base
+  `env` lands on (default: `true`, so `PATH` and friends survive). With
+  `false` the child starts from nothing and gets exactly what `env` gives
+  it — the way to keep a secret that lives in the parent's environment out
+  of a child that has no business reading it:
+
+  ```culebra
+  # doctest: skip
+  Proc.run(cmd, inherit_env: false,
+           env: {PATH: Sys.env("PATH"), HOME: "/tmp"})
+  ```
+
+  The two are independent: `env` alone adds, `inherit_env: false` alone
+  empties, and together they build one exact environment. Buffers passed
+  with `share` travel as environment variables of their own and reach the
+  child either way.
 - `stdin: String` — bytes written to the child's standard input, which
   is then closed (default: empty).
 - `check: Bool` — when `true`, a non-zero exit, signal death, or timeout
@@ -2018,7 +2033,7 @@ child process (which re-attaches each with `SharedBuffer.receive(name, Class)`).
 The child must be a culebra process — typically `[Sys.executable, "worker.cul"]`.
 See [SharedBuffer › Sharing across processes](#sharing-across-processes-zero-copy).
 
-### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0, share: Object? = nil) -> Array<Object>`
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0, share: Object? = nil, inherit_env: Bool = true) -> Array<Object>`
 
 Runs many commands in parallel and returns their result Objects in input
 order. Each command is its own `Array<String>` (same form as `Proc.run`'s
@@ -2047,7 +2062,8 @@ as failed once its retries are exhausted.
 **`share: {name: buf}`** hands the same `SharedBuffer.shared(...)` buffers to
 *every* child (each re-attaches with `SharedBuffer.receive`), exactly as
 `Proc.run`'s `share:` does — so a pool of workers can write a shared result
-buffer (use `buf.with_lock` for contended cells).
+buffer (use `buf.with_lock` for contended cells). `inherit_env: false` gives
+every child an environment of its own, as it does for `Proc.run`.
 
 ```culebra
 # doctest: skip
@@ -2062,12 +2078,13 @@ for r in results {
 }
 ```
 
-### `Proc.race(commands: Array<Array<String>>, share: Object? = nil) -> Object`
+### `Proc.race(commands: Array<Array<String>>, share: Object? = nil, inherit_env: Bool = true) -> Object`
 
 Starts every command, returns the result Object of the **first to finish**,
 and sends `SIGKILL` to the rest (then reaps them). Useful for racing
 redundant providers or "first mirror to respond wins". An empty list throws
-`ValueError`. `share: {name: buf}` hands shared buffers to the children, as in
+`ValueError`. `share: {name: buf}` hands shared buffers to the children, and
+`inherit_env: false` withholds the parent's environment from them, both as in
 `Proc.run` / `Proc.all`.
 
 ```culebra
@@ -2079,7 +2096,7 @@ let fastest = Proc.race([
 IO.print(fastest.stdout)
 ```
 
-### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="", share=nil) -> handle`
+### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="", share=nil, inherit_env=true) -> handle`
 
 Starts a command and returns immediately with a **live handle**, without
 waiting for it. The handle has three methods:
@@ -2093,7 +2110,8 @@ waiting for it. The handle has three methods:
 `wait()` / `poll()` are idempotent — once the child has been reaped, both
 return the same cached result Object (the usual `{code, stdout, stderr, ok,
 signal, error, timed_out}`). A spawn failure throws `ProcessError`, like
-`Proc.run`. A handle that is dropped without ever being waited on is reaped by
+`Proc.run`, whose `cwd` / `env` / `stdin` / `share` / `inherit_env` mean the
+same here. A handle that is dropped without ever being waited on is reaped by
 the GC (the child is `SIGKILL`ed), so it won't linger as a zombie — but
 explicitly `wait()`ing or `kill()`ing is clearer. As with the other verbs, only
 the direct child is signalled, not any grandchildren.

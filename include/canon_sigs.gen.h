@@ -384,29 +384,33 @@ inline constexpr CanonParam kCanonParams_Proc[] = {
   {"check", true, false, false, false, false, "Bool", CanonDefault::Bool, 0, {}},
   {"timeout", true, false, false, false, false, "Long", CanonDefault::Long, 0, {}},
   {"share", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  // 7: Proc.all
+  {"inherit_env", true, false, false, false, false, "Bool", CanonDefault::Bool, 1, {}},
+  // 8: Proc.all
   {"commands", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"limit", true, false, false, false, false, "Long", CanonDefault::Long, 0, {}},
   {"timeout", true, false, false, false, false, "Long", CanonDefault::Long, 0, {}},
   {"fail_fast", true, false, false, false, false, "Bool", CanonDefault::Bool, 0, {}},
   {"retries", true, false, false, false, false, "Long", CanonDefault::Long, 0, {}},
   {"share", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  // 13: Proc.race
+  {"inherit_env", true, false, false, false, false, "Bool", CanonDefault::Bool, 1, {}},
+  // 15: Proc.race
   {"commands", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"share", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  // 15: Proc.spawn
+  {"inherit_env", true, false, false, false, false, "Bool", CanonDefault::Bool, 1, {}},
+  // 18: Proc.spawn
   {"cmd", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"cwd", true, false, false, false, false, "String?", CanonDefault::Nil, 0, {}},
   {"env", true, false, false, false, false, "Object?", CanonDefault::Nil, 0, {}},
   {"stdin", true, false, false, false, false, "String", CanonDefault::Str, 0, ""},
   {"share", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  {"inherit_env", true, false, false, false, false, "Bool", CanonDefault::Bool, 1, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Proc[] = {
-  {"Proc", "", "run", kCanonParams_Proc + 0, 7, "Object", 1, 7, false, -1, -1, -1},
-  {"Proc", "", "all", kCanonParams_Proc + 7, 6, "Array", 1, 6, false, -1, -1, -1},
-  {"Proc", "", "race", kCanonParams_Proc + 13, 2, "Object", 1, 2, false, -1, -1, -1},
-  {"Proc", "", "spawn", kCanonParams_Proc + 15, 5, "Object", 1, 5, false, -1, -1, -1},
+  {"Proc", "", "run", kCanonParams_Proc + 0, 8, "Object", 1, 8, false, -1, -1, -1},
+  {"Proc", "", "all", kCanonParams_Proc + 8, 7, "Array", 1, 7, false, -1, -1, -1},
+  {"Proc", "", "race", kCanonParams_Proc + 15, 3, "Object", 1, 3, false, -1, -1, -1},
+  {"Proc", "", "spawn", kCanonParams_Proc + 18, 6, "Object", 1, 6, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Http[] = {

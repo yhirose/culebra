@@ -1900,7 +1900,7 @@ throw値の`kind`は次のいずれか:
 シェルを介さないのでクォートやインジェクションの心配がありません
 （`["git", "commit", "-m", msg]`は`msg`をそのまま渡します）。
 
-### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil) -> Object`
+### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil, inherit_env=true) -> Object`
 
 `cmd`を完了まで実行し、結果Objectを返します:
 
@@ -1917,8 +1917,22 @@ throw値の`kind`は次のいずれか:
 キーワード引数:
 
 - `cwd: String` — 子プロセスの作業ディレクトリ（既定: 親を継承）。
-- `env: Object` — 環境変数。親の環境にマージされるので`PATH`等は維持されます
-  （既定: そのまま継承）。値は`String`であること。
+- `env: Object` — 子プロセスに設定する環境変数（既定: 継承する分以外は無し）。
+  値は`String`であること。
+- `inherit_env: Bool` — `env`が乗る土台が親自身の環境かどうか（既定: `true`
+  なので`PATH`等は維持されます）。`false`にすると子は何も無い状態から始まり、
+  `env`が与えたものだけを持ちます。親の環境にある秘密を、それを読む理由の無い
+  子プロセスから遠ざける手段です:
+
+  ```culebra
+  # doctest: skip
+  Proc.run(cmd, inherit_env: false,
+           env: {PATH: Sys.env("PATH"), HOME: "/tmp"})
+  ```
+
+  2つは独立しています — `env`だけなら追加、`inherit_env: false`だけなら空、
+  両方でちょうど1つの環境を組み立てます。`share`で渡したバッファはそれ自身が
+  環境変数として運ばれるので、どちらの場合も子に届きます。
 - `stdin: String` — 子プロセスの標準入力に書き込むバイト列。書き込み後にクローズ
   されます（既定: 空）。
 - `check: Bool` — `true`のとき、非0終了・シグナル死・timeoutで`{ok: false}`を
@@ -1964,7 +1978,7 @@ stderrは並行して読み出すので、両方を埋めるコマンドでも�
 プロセスである必要があり、通常は`[Sys.executable, "worker.cul"]`。詳細は
 [SharedBuffer › プロセス間での共有](#プロセス間での共有zero-copy)。
 
-### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0, share: Object? = nil) -> Array<Object>`
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0, share: Object? = nil, inherit_env: Bool = true) -> Array<Object>`
 
 複数コマンドを並列実行し、結果Objectを入力順で返します。各コマンドは
 `Array<String>`（`Proc.run`の第1引数と同形）。同時実行数は最大`limit`（既定 =
@@ -1989,6 +2003,7 @@ throwしません。空リストは`[]`を返します。
 **`share: {name: buf}`** は`SharedBuffer.shared(...)`バッファを**全**子に渡す
 （各子が`SharedBuffer.receive`で再アタッチ）。`Proc.run`の`share:`と同じで、
 ワーカープールが共有結果バッファに書ける（競合するセルは`buf.with_lock`）。
+`inherit_env: false`は`Proc.run`と同様に、各子へ独自の環境を与えます。
 
 ```culebra
 # doctest: skip
@@ -2003,12 +2018,12 @@ for r in results {
 }
 ```
 
-### `Proc.race(commands: Array<Array<String>>, share: Object? = nil) -> Object`
+### `Proc.race(commands: Array<Array<String>>, share: Object? = nil, inherit_env: Bool = true) -> Object`
 
 全コマンドを起動し、**最初に完了した1個**の結果Objectを返し、残りに`SIGKILL`
 を送ってreapします。冗長なプロバイダの競争や「最速のミラーが勝ち」に有用。空
-リストは`ValueError`をthrowします。`share: {name: buf}`は`Proc.run`/`Proc.all`
-と同様に共有バッファを子に渡します。
+リストは`ValueError`をthrowします。`share: {name: buf}`が共有バッファを子に渡し、
+`inherit_env: false`が親の環境を子から遠ざけるのは`Proc.run`/`Proc.all`と同様です。
 
 ```culebra
 # doctest: skip
@@ -2019,7 +2034,7 @@ let fastest = Proc.race([
 IO.print(fastest.stdout)
 ```
 
-### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="", share=nil) -> handle`
+### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="", share=nil, inherit_env=true) -> handle`
 
 コマンドを起動し、完了を待たずに即座に**ライブハンドル**を返します。ハンドルは
 3つのメソッドを持ちます:
@@ -2032,7 +2047,8 @@ IO.print(fastest.stdout)
 
 `wait()` / `poll()`は冪等で、子をreapした後はどちらも同じキャッシュ済み結果
 Object（通常の`{code, stdout, stderr, ok, signal, error, timed_out}`）を返します。
-起動失敗は`Proc.run`と同様`ProcessError`をthrowします。一度もwaitされずに
+起動失敗は`Proc.run`と同様`ProcessError`をthrowし、`cwd` / `env` / `stdin` /
+`share` / `inherit_env`の意味も`Proc.run`と同じです。一度もwaitされずに
 捨てられたハンドルはGCがreapし（子を`SIGKILL`）、ゾンビとして残りません — ただし
 明示的に`wait()` / `kill()`する方が明快です。他のverbと同様、シグナルは直接の子
 にのみ送られます（孫には届きません）。

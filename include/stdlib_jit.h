@@ -1744,7 +1744,7 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
 // Does not consume `cmd` — the compile side / trampoline releases it.
 inline JitValue _culebra_proc_run_impl(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
-    const std::vector<std::pair<std::string, std::string>>* env_over,
+    const culebra::proc::EnvSpec* env_over,
     const std::string& stdin_data, bool check, int64_t timeout,
     int64_t line, int64_t col,
     const std::vector<int>* inherit_fds = nullptr) {
@@ -1802,17 +1802,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
     int64_t line, int64_t col) {
   _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
                        "Proc.run");
-  // Resolve in interp's param-declaration order (cwd, env, stdin, check,
-  // timeout) so that when several kwargs are ill-typed the *first* reported
-  // error matches the interp binder.
+  // Resolve in param-declaration order (cwd, env, stdin, check, timeout,
+  // share, inherit_env) so that when several kwargs are ill-typed the *first*
+  // reported error is the one the canonical binder reports.
   std::string cwd_str;
   const std::string* cwd_ptr = nullptr;
   if (auto v = kw.take_string_or_nil("cwd")) {
     cwd_str = std::move(*v);
     cwd_ptr = &cwd_str;
   }
-  std::vector<std::pair<std::string, std::string>> overrides;
-  bool has_env = kw.take_env(overrides);
+  culebra::proc::EnvSpec env_spec;
+  kw.take_env(env_spec.vars);
   std::string stdin_data;
   if (auto v = kw.take_string("stdin")) {
     stdin_data = std::move(*v);
@@ -1824,9 +1824,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
   int64_t timeout = 0;
   if (auto v = kw.take_typed("timeout", TAG_LONG, "Long")) timeout = v->data;
   std::vector<int> share_fds;
-  bool has_share = kw.take_share(overrides, share_fds);
-  const std::vector<std::pair<std::string, std::string>>* env_ptr =
-      (has_env || has_share) ? &overrides : nullptr;
+  // `share` rides in as env vars, so it must survive inherit_env:false — it
+  // does, because these are the spec's own vars, not the parent's block.
+  kw.take_share(env_spec.vars, share_fds);
+  if (auto v = kw.take_typed("inherit_env", TAG_BOOL, "Bool")) {
+    env_spec.inherit = v->data != 0;
+  }
+  const culebra::proc::EnvSpec* env_ptr =
+      env_spec.is_default() ? nullptr : &env_spec;
   const std::vector<int>* fds_ptr = share_fds.empty() ? nullptr : &share_fds;
   kw.validate_consumed();
   return _culebra_proc_run_impl(cmd_tag, cmd_data, cwd_ptr, env_ptr,
@@ -1838,7 +1843,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
 inline JitValue _culebra_proc_all_impl(
     int8_t commands_tag, int64_t commands_data, int64_t limit, int64_t timeout,
     bool fail_fast, int64_t retries, int64_t line, int64_t col,
-    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const culebra::proc::EnvSpec* env = nullptr,
     const std::vector<int>* inherit_fds = nullptr) {
   auto commands = _culebra_proc_parse_commands(commands_tag, commands_data,
                                                "Proc.all", line, col);
@@ -1885,13 +1890,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all_kw(
     fail_fast = v->data != 0;
   int64_t retries = 0;
   if (auto v = kw.take_typed("retries", TAG_LONG, "Long")) retries = v->data;
-  std::vector<std::pair<std::string, std::string>> overrides;
+  culebra::proc::EnvSpec env_spec;
   std::vector<int> share_fds;
-  bool has_share = kw.take_share(overrides, share_fds);
+  kw.take_share(env_spec.vars, share_fds);
+  if (auto v = kw.take_typed("inherit_env", TAG_BOOL, "Bool")) {
+    env_spec.inherit = v->data != 0;
+  }
   kw.validate_consumed();
   return _culebra_proc_all_impl(
       commands_tag, commands_data, limit, timeout, fail_fast, retries, line,
-      col, has_share ? &overrides : nullptr,
+      col, env_spec.is_default() ? nullptr : &env_spec,
       share_fds.empty() ? nullptr : &share_fds);
 }
 
@@ -1899,7 +1907,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all_kw(
 // is not consumed. Empty list throws ValueError.
 inline JitValue _culebra_proc_race_impl(
     int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col,
-    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const culebra::proc::EnvSpec* env = nullptr,
     const std::vector<int>* inherit_fds = nullptr) {
   auto commands = _culebra_proc_parse_commands(commands_tag, commands_data,
                                                "Proc.race", line, col);
@@ -1923,12 +1931,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race_kw(
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col) {
   _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
                        "Proc.race");
-  std::vector<std::pair<std::string, std::string>> overrides;
+  culebra::proc::EnvSpec env_spec;
   std::vector<int> share_fds;
-  bool has_share = kw.take_share(overrides, share_fds);
+  kw.take_share(env_spec.vars, share_fds);
+  if (auto v = kw.take_typed("inherit_env", TAG_BOOL, "Bool")) {
+    env_spec.inherit = v->data != 0;
+  }
   kw.validate_consumed();
   return _culebra_proc_race_impl(commands_tag, commands_data, line, col,
-                                 has_share ? &overrides : nullptr,
+                                 env_spec.is_default() ? nullptr : &env_spec,
                                  share_fds.empty() ? nullptr : &share_fds);
 }
 
@@ -3610,7 +3621,7 @@ inline JitValue _culebra_net_build_udp_handle(int64_t id,
 // Spawn core: parse argv, spawn detached, return a live handle (or throw).
 inline JitValue _culebra_proc_spawn_build(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
-    const std::vector<std::pair<std::string, std::string>>* env_over,
+    const culebra::proc::EnvSpec* env_over,
     const std::string& stdin_data, int64_t line, int64_t col,
     const std::vector<int>* inherit_fds = nullptr) {
   if (cmd_tag != TAG_ARRAY) {
@@ -3657,21 +3668,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn_kw(
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col) {
   _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
                        "Proc.spawn");
-  // Param-declaration order: cwd, env, stdin, share (see Proc.run note).
+  // Param-declaration order: cwd, env, stdin, share, inherit_env (see the
+  // Proc.run note).
   std::string cwd_str;
   const std::string* cwd_ptr = nullptr;
   if (auto v = kw.take_string_or_nil("cwd")) {
     cwd_str = std::move(*v);
     cwd_ptr = &cwd_str;
   }
-  std::vector<std::pair<std::string, std::string>> overrides;
-  bool has_env = kw.take_env(overrides);
+  culebra::proc::EnvSpec env_spec;
+  kw.take_env(env_spec.vars);
   std::string stdin_data;
   if (auto v = kw.take_string("stdin")) stdin_data = std::move(*v);
   std::vector<int> share_fds;
-  bool has_share = kw.take_share(overrides, share_fds);
-  const std::vector<std::pair<std::string, std::string>>* env_ptr =
-      (has_env || has_share) ? &overrides : nullptr;
+  kw.take_share(env_spec.vars, share_fds);
+  if (auto v = kw.take_typed("inherit_env", TAG_BOOL, "Bool")) {
+    env_spec.inherit = v->data != 0;
+  }
+  const culebra::proc::EnvSpec* env_ptr =
+      env_spec.is_default() ? nullptr : &env_spec;
   const std::vector<int>* fds_ptr = share_fds.empty() ? nullptr : &share_fds;
   kw.validate_consumed();
   return _culebra_proc_spawn_build(cmd_tag, cmd_data, cwd_ptr, env_ptr,
@@ -4807,10 +4822,10 @@ inline bool env_slot(JitValue v,
   return true;
 }
 
-// The `share` slot of a positional slab: the last canonical parameter of
-// every Proc entry point. Borrows the Object; the dispatch releases the
-// slab afterwards. Returns whether anything was shared, so the caller knows
-// to hand the impl its env overrides.
+// The `share` slot of a positional slab: the second-to-last canonical
+// parameter of every Proc entry point (`inherit_env` follows it). Borrows the
+// Object; the dispatch releases the slab afterwards. Returns whether anything
+// was shared, so the caller knows to hand the impl its env spec.
 inline bool share_slot(JitValue sv, std::string_view ctx,
                        std::vector<std::pair<std::string, std::string>>& env,
                        std::vector<int>& fds) {
@@ -4820,6 +4835,13 @@ inline bool share_slot(JitValue sv, std::string_view ctx,
   if (!err.empty()) culebra::throw_runtime_error_at("TypeError", err, 0, 0);
   _ns_proc_share_apply(ids, env, fds);
   return true;
+}
+
+// The `inherit_env` slot: the last canonical parameter of every Proc entry
+// point. Absent (past the slab's end) reads as the `true` default, so an
+// old-shaped call keeps inheriting.
+inline bool inherit_env_slot(JitValue v) {
+  return !(v.tag == TAG_BOOL && v.data == 0);
 }
 
 }  // namespace _proc_adapt
@@ -4904,13 +4926,12 @@ inline JitValue _ns_net_resolve(JitValue* a, int64_t) {
 }
 
 inline JitValue _ns_proc_run(JitValue* a, int64_t n) {
-  // slab: cmd, cwd, env, stdin, check, timeout
+  // slab: cmd, cwd, env, stdin, check, timeout, share, inherit_env
   std::string cwd_str;
   const std::string* cwd = _proc_adapt::str_slot(_proc_adapt::at(a, n, 1),
                                                  cwd_str) ? &cwd_str : nullptr;
-  std::vector<std::pair<std::string, std::string>> over;
-  const auto* env = _proc_adapt::env_slot(_proc_adapt::at(a, n, 2), over, 0, 0)
-                        ? &over : nullptr;
+  culebra::proc::EnvSpec spec;
+  _proc_adapt::env_slot(_proc_adapt::at(a, n, 2), spec.vars, 0, 0);
   std::string stdin_data;
   _proc_adapt::str_slot(_proc_adapt::at(a, n, 3), stdin_data);
   JitValue chk = _proc_adapt::at(a, n, 4);
@@ -4918,36 +4939,38 @@ inline JitValue _ns_proc_run(JitValue* a, int64_t n) {
   JitValue to = _proc_adapt::at(a, n, 5);
   int64_t timeout = to.tag == TAG_LONG ? to.data : 0;
   std::vector<int> fds;
-  bool has_share =
-      _proc_adapt::share_slot(_proc_adapt::at(a, n, 6), "Proc.run", over, fds);
-  if (has_share) env = &over;
+  _proc_adapt::share_slot(_proc_adapt::at(a, n, 6), "Proc.run", spec.vars, fds);
+  spec.inherit = _proc_adapt::inherit_env_slot(_proc_adapt::at(a, n, 7));
+  const auto* env = spec.is_default() ? nullptr : &spec;
   return _culebra_proc_run_impl(a[0].tag, a[0].data, cwd, env, stdin_data,
                                 check, timeout, 0, 0,
                                 fds.empty() ? nullptr : &fds);
 }
 inline JitValue _ns_proc_all(JitValue* a, int64_t n) {
-  // slab: commands, limit, timeout, fail_fast, retries
+  // slab: commands, limit, timeout, fail_fast, retries, share, inherit_env
   JitValue lim = _proc_adapt::at(a, n, 1);
   JitValue to = _proc_adapt::at(a, n, 2);
   JitValue ff = _proc_adapt::at(a, n, 3);
   JitValue rt = _proc_adapt::at(a, n, 4);
-  std::vector<std::pair<std::string, std::string>> over;
+  culebra::proc::EnvSpec spec;
   std::vector<int> fds;
-  bool has_share =
-      _proc_adapt::share_slot(_proc_adapt::at(a, n, 5), "Proc.all", over, fds);
+  _proc_adapt::share_slot(_proc_adapt::at(a, n, 5), "Proc.all", spec.vars, fds);
+  spec.inherit = _proc_adapt::inherit_env_slot(_proc_adapt::at(a, n, 6));
   return _culebra_proc_all_impl(
       a[0].tag, a[0].data, lim.tag == TAG_LONG ? lim.data : 0,
       to.tag == TAG_LONG ? to.data : 0, ff.tag == TAG_BOOL && ff.data != 0,
-      rt.tag == TAG_LONG ? rt.data : 0, 0, 0, has_share ? &over : nullptr,
+      rt.tag == TAG_LONG ? rt.data : 0, 0, 0,
+      spec.is_default() ? nullptr : &spec,
       fds.empty() ? nullptr : &fds);
 }
 inline JitValue _ns_proc_race(JitValue* a, int64_t n) {
-  std::vector<std::pair<std::string, std::string>> over;
+  // slab: commands, share, inherit_env
+  culebra::proc::EnvSpec spec;
   std::vector<int> fds;
-  bool has_share =
-      _proc_adapt::share_slot(_proc_adapt::at(a, n, 1), "Proc.race", over, fds);
+  _proc_adapt::share_slot(_proc_adapt::at(a, n, 1), "Proc.race", spec.vars, fds);
+  spec.inherit = _proc_adapt::inherit_env_slot(_proc_adapt::at(a, n, 2));
   return _culebra_proc_race_impl(a[0].tag, a[0].data, 0, 0,
-                                 has_share ? &over : nullptr,
+                                 spec.is_default() ? nullptr : &spec,
                                  fds.empty() ? nullptr : &fds);
 }
 
@@ -6283,19 +6306,18 @@ inline JitValue _ns_parallel_race(JitValue* a, int64_t n) {
   return _ns_parallel_dispatch(a, n, culebra::PMode::Race);
 }
 inline JitValue _ns_proc_spawn(JitValue* a, int64_t n) {
-  // slab: cmd, cwd, env, stdin
+  // slab: cmd, cwd, env, stdin, share, inherit_env
   std::string cwd_str;
   const std::string* cwd = _proc_adapt::str_slot(_proc_adapt::at(a, n, 1),
                                                  cwd_str) ? &cwd_str : nullptr;
-  std::vector<std::pair<std::string, std::string>> over;
-  const auto* env = _proc_adapt::env_slot(_proc_adapt::at(a, n, 2), over, 0, 0)
-                        ? &over : nullptr;
+  culebra::proc::EnvSpec spec;
+  _proc_adapt::env_slot(_proc_adapt::at(a, n, 2), spec.vars, 0, 0);
   std::string stdin_data;
   _proc_adapt::str_slot(_proc_adapt::at(a, n, 3), stdin_data);
   std::vector<int> fds;
-  bool has_share = _proc_adapt::share_slot(_proc_adapt::at(a, n, 4),
-                                           "Proc.spawn", over, fds);
-  if (has_share) env = &over;
+  _proc_adapt::share_slot(_proc_adapt::at(a, n, 4), "Proc.spawn", spec.vars, fds);
+  spec.inherit = _proc_adapt::inherit_env_slot(_proc_adapt::at(a, n, 5));
+  const auto* env = spec.is_default() ? nullptr : &spec;
   return _culebra_proc_spawn_build(a[0].tag, a[0].data, cwd, env, stdin_data,
                                    0, 0, fds.empty() ? nullptr : &fds);
 }
