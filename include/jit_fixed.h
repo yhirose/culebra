@@ -132,7 +132,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_native_fn(
 // Foreign / wrap.h-generated handles): a typed slot read, the
 // captureless method-closure constructor, and the bind helper. Live
 // here (not stdlib_jit.h) so wrap.h's generated thunks can use them.
-CULEBRA_RT_INLINE int64_t _jit_handle_long(JitObject* h, const char* key) {
+inline int64_t _jit_handle_long(JitObject* h, const char* key) {
   size_t i = h->find_slot(key);
   return i == static_cast<size_t>(-1) ? -1 : h->slots[i].value.data;
 }
@@ -146,7 +146,7 @@ inline const JitParamMeta* _jit_make_handle_meta(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_param_meta(
     void* fn_ptr, const JitParamMeta* meta);
 
-CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
+inline JitClosure* _jit_make_handle_method(
     void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t arity,
     const JitParamMeta* meta = nullptr) {
   _jit_register_native_fn(reinterpret_cast<const void*>(fn));
@@ -178,7 +178,7 @@ CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
 // surface_native_error_at_call_site for every wrapped C++ class).
 // Not done here for all of them: a `drop` runs from the drop protocol at scope
 // exit, where the published call site belongs to some unrelated earlier call.
-CULEBRA_RT_INLINE void _jit_handle_bind_method(
+inline void _jit_handle_bind_method(
     JitObject* h, const char* name,
     void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t ar,
     const JitParamMeta* meta = nullptr) {
@@ -873,7 +873,7 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
 // in the same String slot as `obj["k"]`, releasing the view's +1. `owned` must
 // outlive the lookup that follows — it backs the cstr. Other tags are left
 // untouched, so the String/Long/sidecar fast paths pay only one branch.
-CULEBRA_RT_INLINE void _jit_normalize_str_key(int8_t& key_tag, int64_t& key_data,
+inline void _jit_normalize_str_key(int8_t& key_tag, int64_t& key_data,
                                               std::string& owned) {
   if (key_tag == TAG_STRINGVIEW) {
     auto* sv = reinterpret_cast<JitStringView*>(key_data);

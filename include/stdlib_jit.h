@@ -1935,13 +1935,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race_kw(
 #if defined(CULEBRA_HTTP_ENABLED)
 // Defined in jit.h (forward-declared there too); HTTP's `json` method
 // needs it before this point.
-CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
+inline JitClosure* _jit_make_handle_method(
     void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t arity,
     const JitParamMeta* meta);
 
 // `r.json()` — parse the response body as JSON. Method ABI: self arrives +1
 // (release before returning), mirroring the proc/file handle methods.
-CULEBRA_RT_INLINE void _jit_http_json(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+inline void _jit_http_json(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                           JitValue*) {
   JitValue self{self_tag, self_data};
   auto* o = reinterpret_cast<JitObject*>(self.data);
@@ -2285,7 +2285,7 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
 // `self` argument. Result is cached on first wait/poll (idempotent); `drop`
 // (GC) best-effort reaps a child that was never waited on.
 
-CULEBRA_RT_INLINE JitObject* _culebra_proc_result_to_object(
+inline JitObject* _culebra_proc_result_to_object(
     culebra::proc::ProcResult&& pr, int64_t line, int64_t col) {
   culebra::proc::RunOutcome oc;
   oc.spawned = true;
@@ -2293,13 +2293,13 @@ CULEBRA_RT_INLINE JitObject* _culebra_proc_result_to_object(
   return _culebra_proc_outcome_to_object(oc, line, col);
 }
 
-CULEBRA_RT_INLINE bool _jit_handle_done(JitObject* h) {
+inline bool _jit_handle_done(JitObject* h) {
   size_t i = h->find_slot("_done");
   return i != static_cast<size_t>(-1) &&
          h->slots[i].value.tag == TAG_BOOL && h->slots[i].value.data;
 }
 // Returns the cached _result with a +1 for the caller.
-CULEBRA_RT_INLINE JitValue _jit_handle_cached(JitObject* h) {
+inline JitValue _jit_handle_cached(JitObject* h) {
   size_t i = h->find_slot("_result");
   JitValue r = (i == static_cast<size_t>(-1)) ? JitValue{TAG_NIL, 0}
                                               : h->slots[i].value;
@@ -2309,7 +2309,7 @@ CULEBRA_RT_INLINE JitValue _jit_handle_cached(JitObject* h) {
 // Cache `res_obj` + mark done; returns the result with a +1 for the caller.
 // `res_obj` arrives with refcount 1 (object_new); the slot adopts that ref
 // (set_or_append doesn't retain), so we only retain once for the caller.
-CULEBRA_RT_INLINE JitValue _jit_handle_finish(JitObject* h, JitObject* res_obj) {
+inline JitValue _jit_handle_finish(JitObject* h, JitObject* res_obj) {
   JitValue res{TAG_OBJECT, reinterpret_cast<int64_t>(res_obj)};
   h->set_or_append("_done", JitValue{TAG_BOOL, 1}, true);
   h->set_or_append("_result", res, true);     // slot adopts object_new's +1
@@ -2321,7 +2321,7 @@ CULEBRA_RT_INLINE JitValue _jit_handle_finish(JitObject* h, JitObject* res_obj) 
 // which retains `self`; the callee must consume that +1. Each releases `self`
 // before returning. (drop, below, is called from the destructor's drop
 // protocol, which manages the object's refcount itself — it must NOT release.)
-CULEBRA_RT_INLINE void _jit_handle_wait(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_handle_wait(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -2339,7 +2339,7 @@ CULEBRA_RT_INLINE void _jit_handle_wait(JitValue* __ret, JitClosure*, int8_t sel
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = ret; return; }
 }
-CULEBRA_RT_INLINE void _jit_handle_poll(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_handle_poll(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -2361,7 +2361,7 @@ CULEBRA_RT_INLINE void _jit_handle_poll(JitValue* __ret, JitClosure*, int8_t sel
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = ret; return; }
 }
-CULEBRA_RT_INLINE void _jit_handle_kill(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_handle_kill(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -2373,7 +2373,7 @@ CULEBRA_RT_INLINE void _jit_handle_kill(JitValue* __ret, JitClosure*, int8_t sel
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_handle_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_handle_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -2387,7 +2387,7 @@ CULEBRA_RT_INLINE void _jit_handle_drop(JitValue* __ret, JitClosure*, int8_t sel
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(int64_t pid, int out_fd,
+inline JitValue _culebra_proc_build_handle(int64_t pid, int out_fd,
                                                       int err_fd) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_pid", JitValue{TAG_LONG, pid}, true);
@@ -2420,18 +2420,18 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(int64_t pid, int out_fd,
 // ArityError at the call site, a wrong-typed one a TypeError at the
 // argument's threaded position. A TAG_UNFILLED slot (defaulted kwarg the
 // resolver left empty) counts as absent, never wrong-typed.
-CULEBRA_RT_INLINE bool _jit_file_arg_present(int64_t n, JitValue* args,
+inline bool _jit_file_arg_present(int64_t n, JitValue* args,
                                              size_t i) {
   return static_cast<int64_t>(i) < n && args[i].tag != TAG_UNFILLED;
 }
-[[noreturn]] CULEBRA_RT_INLINE void _jit_file_missing_arg(JitValue self,
+[[noreturn]] inline void _jit_file_missing_arg(JitValue self,
                                                           const char* pname) {
   culebra_runtime_value_release(self.tag, self.data);
   throw culebra::CulebraError(
       "ArityError", culebra::missing_required_arg_message(pname),
       _jit_call_site_line, _jit_call_site_col);
 }
-[[noreturn]] CULEBRA_RT_INLINE void _jit_file_param_type_error(
+[[noreturn]] inline void _jit_file_param_type_error(
     JitValue self, const char* pname, const char* expected, size_t i) {
   culebra_runtime_value_release(self.tag, self.data);
   const bool ap = static_cast<int>(i) < _jit_argpos_n;
@@ -2445,14 +2445,14 @@ CULEBRA_RT_INLINE bool _jit_file_arg_present(int64_t n, JitValue* args,
 }
 // Untyped-param body check ("expected X, got Y" at the call site), the
 // shape the interp's to_long()/to_string() conversions produce.
-[[noreturn]] CULEBRA_RT_INLINE void _jit_file_body_type_error(
+[[noreturn]] inline void _jit_file_body_type_error(
     JitValue self, const char* expected, int8_t got_tag) {
   culebra_runtime_value_release(self.tag, self.data);
   culebra_runtime_type_error_typed(_jit_call_site_line, _jit_call_site_col,
                                    expected, got_tag);
 }
 
-CULEBRA_RT_INLINE void _jit_file_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_file_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                           int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -2471,7 +2471,7 @@ CULEBRA_RT_INLINE void _jit_file_read(JitValue* __ret, JitClosure*, int8_t self_
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))}; return; }
 }
-CULEBRA_RT_INLINE void _jit_file_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_file_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                            int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -2486,7 +2486,7 @@ CULEBRA_RT_INLINE void _jit_file_write(JitValue* __ret, JitClosure*, int8_t self
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_file_flush(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_file_flush(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                            int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::_file_flush(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
@@ -2495,7 +2495,7 @@ CULEBRA_RT_INLINE void _jit_file_flush(JitValue* __ret, JitClosure*, int8_t self
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_file_seek(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_file_seek(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                           int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -2518,7 +2518,7 @@ CULEBRA_RT_INLINE void _jit_file_seek(JitValue* __ret, JitClosure*, int8_t self_
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_file_tell(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_file_tell(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                           int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   int64_t pos = culebra::_file_tell(
@@ -2527,7 +2527,7 @@ CULEBRA_RT_INLINE void _jit_file_tell(JitValue* __ret, JitClosure*, int8_t self_
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_LONG, pos}; return; }
 }
-CULEBRA_RT_INLINE void _jit_file_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_file_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                            int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::_file_close(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
@@ -2535,7 +2535,7 @@ CULEBRA_RT_INLINE void _jit_file_close(JitValue* __ret, JitClosure*, int8_t self
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_file_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_file_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                           int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   // drop runs from the destructor's drop protocol — must NOT release self.
@@ -2617,7 +2617,7 @@ inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
       JitValue{TAG_FUNC, reinterpret_cast<int64_t>(dispose_cls)}, false);
   return it;
 }
-CULEBRA_RT_INLINE void _jit_file_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_file_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                            int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   // dispose's close needs the handle; transfer self's +1 into the iterator
@@ -2626,7 +2626,7 @@ CULEBRA_RT_INLINE void _jit_file_lines(JitValue* __ret, JitClosure*, int8_t self
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-CULEBRA_RT_INLINE void _jit_file_chunks(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_file_chunks(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "n");
@@ -2637,7 +2637,7 @@ CULEBRA_RT_INLINE void _jit_file_chunks(JitValue* __ret, JitClosure*, int8_t sel
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_file_build_handle(int64_t id) {
+inline JitValue _culebra_file_build_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   // A native handle is not Sendable — reject it at the serialize boundary
@@ -2702,7 +2702,7 @@ inline void _watch_events_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = reinterpret_cast<int64_t>(o);
 }
 
-CULEBRA_RT_INLINE void _jit_watch_iter(JitValue* __ret, JitClosure*, int8_t self_tag,
+inline void _jit_watch_iter(JitValue* __ret, JitClosure*, int8_t self_tag,
                                            int64_t self_data, int64_t, JitValue*) {
   // self arrives +1-owned (callee-consumes); the guard releases it on every
   // path, including the throw out of a failed iterator build.
@@ -2715,14 +2715,14 @@ CULEBRA_RT_INLINE void _jit_watch_iter(JitValue* __ret, JitClosure*, int8_t self
   auto* it = _iter_wrap_fast<&_watch_events_fast_fn>({id_cell});
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-CULEBRA_RT_INLINE void _jit_watch_close(JitValue* __ret, JitClosure*, int8_t self_tag,
+inline void _jit_watch_close(JitValue* __ret, JitClosure*, int8_t self_tag,
                                             int64_t self_data, int64_t, JitValue*) {
   JitOwnedVal self(JitValue{self_tag, self_data});
   culebra::fswatch::fs_watch_close(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.borrow().data), "_id"));
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_watch_drop(JitValue* __ret, JitClosure*, int8_t self_tag,
+inline void _jit_watch_drop(JitValue* __ret, JitClosure*, int8_t self_tag,
                                            int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   // drop runs from the destructor's drop protocol — must NOT release self.
@@ -2731,7 +2731,7 @@ CULEBRA_RT_INLINE void _jit_watch_drop(JitValue* __ret, JitClosure*, int8_t self
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_watch_build_handle(int64_t id) {
+inline JitValue _culebra_watch_build_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
@@ -2756,7 +2756,7 @@ inline void _stdin_lines_fast_fn(JitClosure*, JitValue, bool* done,
   *out_tag = TAG_STRING;
   *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
 }
-CULEBRA_RT_INLINE void _jit_stdin_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+inline void _jit_stdin_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                             JitValue*) {
   JitValue self{self_tag, self_data};
   // The iterator reads the thread-local stdin buffer, not the handle, so no
@@ -2767,7 +2767,7 @@ CULEBRA_RT_INLINE void _jit_stdin_lines(JitValue* __ret, JitClosure*, int8_t sel
 }
 // read(n=nil): nil → rest of stdin, Long → up to n bytes. A non-Long n is the
 // interp's to_long() body error (mirrors _jit_file_read).
-CULEBRA_RT_INLINE void _jit_stdin_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_stdin_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                            int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   const bool has_n = _jit_file_arg_present(n, args, 0) &&
@@ -2780,7 +2780,7 @@ CULEBRA_RT_INLINE void _jit_stdin_read(JitValue* __ret, JitClosure*, int8_t self
   culebra_runtime_value_release(self.tag, self.data);  // method ABI: self is +1
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))}; return; }
 }
-CULEBRA_RT_INLINE JitValue _culebra_stdin_build_handle() {
+inline JitValue _culebra_stdin_build_handle() {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   static const JitParamMeta* read_meta = _jit_make_handle_meta({"n"}, {true});
@@ -2796,7 +2796,7 @@ CULEBRA_RT_INLINE JitValue _culebra_stdin_build_handle() {
 // marshalling.
 // ===========================================================================
 
-[[noreturn]] CULEBRA_RT_INLINE void _jit_sqlite_throw(const std::string& msg,
+[[noreturn]] inline void _jit_sqlite_throw(const std::string& msg,
                                                       int64_t line, int64_t col) {
   throw culebra::CulebraError("SQLiteError", std::format("SQLite: {}", msg),
                               line, col);
@@ -2971,11 +2971,11 @@ inline JitValue _jit_sqlite_query(int64_t db_id, const std::string& sql,
 // --- Statement handle methods (self arrives +1; released before return, except
 // drop which runs from the destructor protocol). ---------------------------
 
-CULEBRA_RT_INLINE int64_t _jit_sqlite_stmt_id(JitValue self) {
+inline int64_t _jit_sqlite_stmt_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 // The owning Database id via the __parent__ slot.
-CULEBRA_RT_INLINE int64_t _jit_sqlite_stmt_db_id(JitValue self) {
+inline int64_t _jit_sqlite_stmt_db_id(JitValue self) {
   auto* h = reinterpret_cast<JitObject*>(self.data);
   size_t pi = h->find_slot("__parent__");
   if (pi == static_cast<size_t>(-1)) return -1;
@@ -2983,7 +2983,7 @@ CULEBRA_RT_INLINE int64_t _jit_sqlite_stmt_db_id(JitValue self) {
   return _jit_handle_long(parent, "_id");
 }
 
-CULEBRA_RT_INLINE void _jit_sqlite_stmt_run(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_stmt_run(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t st = _jit_sqlite_stmt_id(self);
@@ -2995,7 +2995,7 @@ CULEBRA_RT_INLINE void _jit_sqlite_stmt_run(JitValue* __ret, JitClosure*, int8_t
   _jit_sqlite_drain(st, _jit_call_site_line, _jit_call_site_col);
   { *__ret = JitValue{TAG_LONG, culebra::sqlite::changes(db)}; return; }
 }
-CULEBRA_RT_INLINE void _jit_sqlite_stmt_query(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_stmt_query(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t st = _jit_sqlite_stmt_id(self);
@@ -3005,14 +3005,14 @@ CULEBRA_RT_INLINE void _jit_sqlite_stmt_query(JitValue* __ret, JitClosure*, int8
   _jit_sqlite_bind_params(st, params, _jit_call_site_line, _jit_call_site_col);
   { *__ret = _jit_sqlite_collect_rows(st, _jit_call_site_line, _jit_call_site_col); return; }
 }
-CULEBRA_RT_INLINE void _jit_sqlite_stmt_finalize(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_stmt_finalize(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                      int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::sqlite::finalize(_jit_sqlite_stmt_id(self));
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_sqlite_stmt_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_stmt_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   // drop runs from the destructor's drop protocol — must NOT release self.
@@ -3020,7 +3020,7 @@ CULEBRA_RT_INLINE void _jit_sqlite_stmt_drop(JitValue* __ret, JitClosure*, int8_
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_stmt_handle(int64_t stmt_id,
+inline JitValue _culebra_sqlite_build_stmt_handle(int64_t stmt_id,
                                                              JitValue db_handle) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, stmt_id}, false);
@@ -3041,13 +3041,13 @@ CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_stmt_handle(int64_t stmt_id,
 
 // --- Database handle methods ------------------------------------------------
 
-CULEBRA_RT_INLINE int64_t _jit_sqlite_db_id(JitValue self) {
+inline int64_t _jit_sqlite_db_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
 // Reads the required `sql` String arg (arity-checks + type-checks, releasing
 // self on error like the File thunks), returning it by value.
-CULEBRA_RT_INLINE std::string _jit_sqlite_take_sql(JitValue self, int64_t n,
+inline std::string _jit_sqlite_take_sql(JitValue self, int64_t n,
                                                    JitValue* args) {
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "sql");
   if (args[0].tag != TAG_STRING)
@@ -3055,7 +3055,7 @@ CULEBRA_RT_INLINE std::string _jit_sqlite_take_sql(JitValue self, int64_t n,
   return std::string(_culebra_str_view(args[0].tag, args[0].data));
 }
 
-CULEBRA_RT_INLINE void _jit_sqlite_db_execute(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_db_execute(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t db = _jit_sqlite_db_id(self);
@@ -3065,7 +3065,7 @@ CULEBRA_RT_INLINE void _jit_sqlite_db_execute(JitValue* __ret, JitClosure*, int8
   { *__ret = _jit_sqlite_execute(db, sql, params, _jit_call_site_line,
                              _jit_call_site_col); return; }
 }
-CULEBRA_RT_INLINE void _jit_sqlite_db_query(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_db_query(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t db = _jit_sqlite_db_id(self);
@@ -3075,7 +3075,7 @@ CULEBRA_RT_INLINE void _jit_sqlite_db_query(JitValue* __ret, JitClosure*, int8_t
   { *__ret = _jit_sqlite_query(db, sql, params, _jit_call_site_line,
                            _jit_call_site_col); return; }
 }
-CULEBRA_RT_INLINE void _jit_sqlite_db_prepare(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_db_prepare(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t db = _jit_sqlite_db_id(self);
@@ -3088,7 +3088,7 @@ CULEBRA_RT_INLINE void _jit_sqlite_db_prepare(JitValue* __ret, JitClosure*, int8
   // still releases this method's +1.
   { *__ret = _culebra_sqlite_build_stmt_handle(st, self); return; }
 }
-CULEBRA_RT_INLINE void _jit_sqlite_db_transaction(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_db_transaction(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                       int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t db = _jit_sqlite_db_id(self);
@@ -3112,14 +3112,14 @@ CULEBRA_RT_INLINE void _jit_sqlite_db_transaction(JitValue* __ret, JitClosure*, 
     throw;
   }
 }
-CULEBRA_RT_INLINE void _jit_sqlite_db_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_db_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::sqlite::close_db(_jit_sqlite_db_id(self));
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_sqlite_db_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_sqlite_db_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   // drop runs from the destructor's drop protocol — must NOT release self.
@@ -3127,7 +3127,7 @@ CULEBRA_RT_INLINE void _jit_sqlite_db_drop(JitValue* __ret, JitClosure*, int8_t 
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
+inline JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, db_id}, false);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
@@ -3154,7 +3154,7 @@ CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
 // marshalling.
 // ===========================================================================
 
-[[noreturn]] CULEBRA_RT_INLINE void _jit_net_throw(const char* ctx,
+[[noreturn]] inline void _jit_net_throw(const char* ctx,
                                                    const std::string& msg,
                                                    int64_t line, int64_t col) {
   throw culebra::CulebraError("NetError", std::format("{}: {}", ctx, msg), line,
@@ -3163,7 +3163,7 @@ CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
 
 // Mirrors the interp `_net_check`: Eof is the caller's business, only
 // Timeout/Error become NetError (with the core's shared wording).
-CULEBRA_RT_INLINE void _jit_net_check(culebra::net::IoStatus st, const char* ctx,
+inline void _jit_net_check(culebra::net::IoStatus st, const char* ctx,
                                       const std::string& err, int64_t line,
                                       int64_t col) {
   if (st == culebra::net::IoStatus::Timeout ||
@@ -3172,15 +3172,15 @@ CULEBRA_RT_INLINE void _jit_net_check(culebra::net::IoStatus st, const char* ctx
   }
 }
 
-CULEBRA_RT_INLINE int64_t _jit_net_id(JitValue self) {
+inline int64_t _jit_net_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
-CULEBRA_RT_INLINE JitValue _jit_net_str(const std::string& s) {
+inline JitValue _jit_net_str(const std::string& s) {
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(s))};
 }
 
-CULEBRA_RT_INLINE JitValue _jit_net_addr_object(const std::string& host,
+inline JitValue _jit_net_addr_object(const std::string& host,
                                                 int port) {
   auto* o = culebra_runtime_object_new();
   o->set_or_append("host", _jit_net_str(host), false);
@@ -3190,7 +3190,7 @@ CULEBRA_RT_INLINE JitValue _jit_net_addr_object(const std::string& host,
 
 // --- Shared handle methods (all three shapes) -------------------------------
 
-CULEBRA_RT_INLINE void _jit_net_set_timeout(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_set_timeout(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "ms");
@@ -3203,21 +3203,21 @@ CULEBRA_RT_INLINE void _jit_net_set_timeout(JitValue* __ret, JitClosure*, int8_t
                    _jit_call_site_col);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_net_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   bool open = culebra::net::is_open(_jit_net_id(self));
   { *__ret = {TAG_BOOL, open ? 1 : 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_net_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                           int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   culebra::net::close_handle(_jit_net_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_net_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                          int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   // drop runs from the destructor's drop protocol — must NOT release self.
@@ -3226,7 +3226,7 @@ CULEBRA_RT_INLINE void _jit_net_drop(JitValue* __ret, JitClosure*, int8_t self_t
 }
 
 // Bind the `_id` + set_timeout/is_open/close/drop set every Net handle shares.
-CULEBRA_RT_INLINE void _jit_net_bind_common(JitObject* h, int64_t id) {
+inline void _jit_net_bind_common(JitObject* h, int64_t id) {
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   // A native handle is not Sendable — reject it at the serialize boundary
   // (jit_serialize checks __nonsendable__), mirroring the interp handle.
@@ -3244,9 +3244,9 @@ CULEBRA_RT_INLINE void _jit_net_bind_common(JitObject* h, int64_t id) {
 
 // --- Socket (connected TCP stream) ------------------------------------------
 
-CULEBRA_RT_INLINE JitValue _culebra_net_build_socket_handle(int64_t id);
+inline JitValue _culebra_net_build_socket_handle(int64_t id);
 
-CULEBRA_RT_INLINE void _jit_net_sock_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_sock_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                               int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   const bool has_n = _jit_file_arg_present(n, args, 0) && args[0].tag != TAG_NIL;
@@ -3265,7 +3265,7 @@ CULEBRA_RT_INLINE void _jit_net_sock_read(JitValue* __ret, JitClosure*, int8_t s
   _jit_net_check(st, "Net.read", err, _jit_call_site_line, _jit_call_site_col);
   { *__ret = _jit_net_str(out); return; }  // Eof -> ""
 }
-CULEBRA_RT_INLINE void _jit_net_sock_read_line(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_sock_read_line(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
@@ -3276,7 +3276,7 @@ CULEBRA_RT_INLINE void _jit_net_sock_read_line(JitValue* __ret, JitClosure*, int
                  _jit_call_site_col);
   { *__ret = _jit_net_str(out); return; }
 }
-CULEBRA_RT_INLINE void _jit_net_sock_read_exact(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_sock_read_exact(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                     int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "n");
@@ -3314,7 +3314,7 @@ inline void _net_lines_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_tag = TAG_STRING;
   *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
 }
-CULEBRA_RT_INLINE void _jit_net_sock_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_sock_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_net_id(self);
@@ -3331,7 +3331,7 @@ CULEBRA_RT_INLINE void _jit_net_sock_lines(JitValue* __ret, JitClosure*, int8_t 
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 
-CULEBRA_RT_INLINE void _jit_net_sock_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_sock_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
@@ -3345,7 +3345,7 @@ CULEBRA_RT_INLINE void _jit_net_sock_write(JitValue* __ret, JitClosure*, int8_t 
   _jit_net_check(st, "Net.write", err, _jit_call_site_line, _jit_call_site_col);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_net_sock_shutdown_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_sock_shutdown_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                         int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
@@ -3355,7 +3355,7 @@ CULEBRA_RT_INLINE void _jit_net_sock_shutdown_write(JitValue* __ret, JitClosure*
                    _jit_call_site_col);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_net_sock_set_nodelay(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_sock_set_nodelay(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                      int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   const bool has_on = _jit_file_arg_present(n, args, 0);
@@ -3369,7 +3369,7 @@ CULEBRA_RT_INLINE void _jit_net_sock_set_nodelay(JitValue* __ret, JitClosure*, i
                    _jit_call_site_col);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_net_sock_local_addr(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_sock_local_addr(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                     int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
@@ -3380,7 +3380,7 @@ CULEBRA_RT_INLINE void _jit_net_sock_local_addr(JitValue* __ret, JitClosure*, in
                    _jit_call_site_col);
   { *__ret = _jit_net_addr_object(host, port); return; }
 }
-CULEBRA_RT_INLINE void _jit_net_sock_peer_addr(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_sock_peer_addr(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
@@ -3392,7 +3392,7 @@ CULEBRA_RT_INLINE void _jit_net_sock_peer_addr(JitValue* __ret, JitClosure*, int
   { *__ret = _jit_net_addr_object(host, port); return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_net_build_socket_handle(int64_t id) {
+inline JitValue _culebra_net_build_socket_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   _jit_net_bind_common(h, id);
   static const JitParamMeta* read_meta = _jit_make_handle_meta({"n"}, {true});
@@ -3416,7 +3416,7 @@ CULEBRA_RT_INLINE JitValue _culebra_net_build_socket_handle(int64_t id) {
 
 // --- Listener ---------------------------------------------------------------
 
-CULEBRA_RT_INLINE void _jit_net_listener_accept(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_listener_accept(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                     int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
@@ -3442,7 +3442,7 @@ inline void _net_accept_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_tag = static_cast<int8_t>(conn.tag);
   *out_data = conn.data;
 }
-CULEBRA_RT_INLINE void _jit_net_listener_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_listener_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_net_id(self);
@@ -3462,7 +3462,7 @@ CULEBRA_RT_INLINE void _jit_net_listener_iter(JitValue* __ret, JitClosure*, int8
 // releases it (no hand-placed RC op), mirroring the interp's g_net_w_handler.
 inline thread_local std::optional<JitOwnedVal> g_jit_net_w_handler;
 
-CULEBRA_RT_INLINE void _jit_net_listener_serve(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_listener_serve(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "handler");
@@ -3514,7 +3514,7 @@ CULEBRA_RT_INLINE void _jit_net_listener_serve(JitValue* __ret, JitClosure*, int
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_net_build_listener_handle(
+inline JitValue _culebra_net_build_listener_handle(
     int64_t id, const std::string& host, int port) {
   auto* h = culebra_runtime_object_new();
   _jit_net_bind_common(h, id);
@@ -3530,7 +3530,7 @@ CULEBRA_RT_INLINE JitValue _culebra_net_build_listener_handle(
 
 // --- UdpSocket --------------------------------------------------------------
 
-CULEBRA_RT_INLINE void _jit_net_udp_send_to(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_udp_send_to(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
@@ -3552,7 +3552,7 @@ CULEBRA_RT_INLINE void _jit_net_udp_send_to(JitValue* __ret, JitClosure*, int8_t
     _jit_net_throw("Net.send_to", err, _jit_call_site_line, _jit_call_site_col);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_net_udp_recv_from(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_udp_recv_from(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   const bool has_max = _jit_file_arg_present(n, args, 0);
@@ -3574,7 +3574,7 @@ CULEBRA_RT_INLINE void _jit_net_udp_recv_from(JitValue* __ret, JitClosure*, int8
   o->set_or_append("port", JitValue{TAG_LONG, port}, false);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(o)}; return; }
 }
-CULEBRA_RT_INLINE void _jit_net_udp_set_broadcast(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_net_udp_set_broadcast(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                       int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   const bool has_on = _jit_file_arg_present(n, args, 0);
@@ -3589,7 +3589,7 @@ CULEBRA_RT_INLINE void _jit_net_udp_set_broadcast(JitValue* __ret, JitClosure*, 
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_net_build_udp_handle(int64_t id,
+inline JitValue _culebra_net_build_udp_handle(int64_t id,
                                                          const std::string& host,
                                                          int port) {
   auto* h = culebra_runtime_object_new();
@@ -3608,7 +3608,7 @@ CULEBRA_RT_INLINE JitValue _culebra_net_build_udp_handle(int64_t id,
 }
 
 // Spawn core: parse argv, spawn detached, return a live handle (or throw).
-CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
+inline JitValue _culebra_proc_spawn_build(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_over,
     const std::string& stdin_data, int64_t line, int64_t col,
@@ -5127,7 +5127,7 @@ inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
 // default headers under each request. The handle owns a +1 on `self`; the
 // required-arg checks release it on error (file-thunk convention), then a
 // _JitValueGuard releases it on every later exit (normal or throw).
-CULEBRA_RT_INLINE int64_t _jit_http_client_id(JitValue self) {
+inline int64_t _jit_http_client_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
@@ -5199,32 +5199,32 @@ inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
   });
 }
 
-CULEBRA_RT_INLINE void _jit_http_client_get(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_client_get(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_client_bodyless(self, n, args, "GET", "client.get"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_client_delete(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_client_delete(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_client_bodyless(self, n, args, "DELETE", "client.delete"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_client_head(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_client_head(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_client_bodyless(self, n, args, "HEAD", "client.head"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_client_post(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_client_post(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_client_withbody(self, n, args, "POST", "client.post"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_client_put(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_client_put(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_client_withbody(self, n, args, "PUT", "client.put"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_client_request(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_client_request(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                     int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_http_client_id(self);
@@ -5254,14 +5254,14 @@ CULEBRA_RT_INLINE void _jit_http_client_request(JitValue* __ret, JitClosure*, in
     return _http_run_client_into(id, req, st, "client.request");
   });
 }
-CULEBRA_RT_INLINE void _jit_http_client_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_client_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::http::http_client_close(_jit_http_client_id(self));
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_http_client_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_client_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   // drop runs from the destructor's drop protocol — must NOT release self.
@@ -5269,7 +5269,7 @@ CULEBRA_RT_INLINE void _jit_http_client_drop(JitValue* __ret, JitClosure*, int8_
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_http_build_client_handle(int64_t id) {
+inline JitValue _culebra_http_build_client_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
@@ -5459,7 +5459,7 @@ inline void _jit_http_apply_response(JitValue ret,
 // make_http_sink_handle's write. Returns Bool (false if the client has gone
 // away or the sink has been invalidated). A `String` param rejects a StringView
 // slice on every path, matching the interp/File handle-method convention.
-CULEBRA_RT_INLINE void _jit_http_sink_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_sink_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -5549,7 +5549,7 @@ inline void _ws_messages_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
 }
 
-CULEBRA_RT_INLINE void _jit_ws_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
+inline void _jit_ws_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                         JitValue* args) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
@@ -5562,7 +5562,7 @@ CULEBRA_RT_INLINE void _jit_ws_send(JitValue* __ret, JitClosure*, int8_t self_ta
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_ws_receive(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+inline void _jit_ws_receive(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                            JitValue*) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws");
@@ -5572,7 +5572,7 @@ CULEBRA_RT_INLINE void _jit_ws_receive(JitValue* __ret, JitClosure*, int8_t self
   if (got == 0) { *__ret = {TAG_NIL, 0}; return; }  // nil = closed
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))}; return; }
 }
-CULEBRA_RT_INLINE void _jit_ws_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+inline void _jit_ws_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                          JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::http::ws_close(
@@ -5580,7 +5580,7 @@ CULEBRA_RT_INLINE void _jit_ws_close(JitValue* __ret, JitClosure*, int8_t self_t
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_ws_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+inline void _jit_ws_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                            JitValue*) {
   JitValue self{self_tag, self_data};
   bool open = culebra::http::ws_is_open(
@@ -5588,7 +5588,7 @@ CULEBRA_RT_INLINE void _jit_ws_is_open(JitValue* __ret, JitClosure*, int8_t self
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_BOOL, open ? 1 : 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_ws_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+inline void _jit_ws_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws");
@@ -5597,7 +5597,7 @@ CULEBRA_RT_INLINE void _jit_ws_iter(JitValue* __ret, JitClosure*, int8_t self_ta
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-CULEBRA_RT_INLINE void _jit_ws_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+inline void _jit_ws_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
   JitValue self{self_tag, self_data};
   // client drop (from the drop protocol — must NOT release self): close + free
@@ -5663,43 +5663,43 @@ inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
   return self;
 }
 
-CULEBRA_RT_INLINE void _jit_http_server_get(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_get(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_route(self, n, args, "GET"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_post(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_post(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_route(self, n, args, "POST"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_put(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_put(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_route(self, n, args, "PUT"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_delete(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_delete(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_route(self, n, args, "DELETE"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_patch(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_patch(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_route(self, n, args, "PATCH"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_options(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_options(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                     int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_route(self, n, args, "OPTIONS"); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_ws(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_ws(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_route(self, n, args, "WS"); return; }
 }
 
-CULEBRA_RT_INLINE void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
@@ -5855,7 +5855,7 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
   }
 }
 
-CULEBRA_RT_INLINE int64_t _jit_http_server_id(JitValue self) {
+inline int64_t _jit_http_server_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
@@ -5888,7 +5888,7 @@ inline int64_t _jit_http_server_workers_arg(int64_t n, JitValue* args,
   return args[idx].data;
 }
 
-CULEBRA_RT_INLINE void _jit_http_server_bind(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_bind(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
@@ -5911,12 +5911,12 @@ inline JitValue _jit_http_server_serve_impl(JitValue self, int64_t n,
         async ? "server.serve_async" : "server.serve");
   });
 }
-CULEBRA_RT_INLINE void _jit_http_server_serve(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_serve(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_serve_impl(self, n, args, /*async=*/false); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_serve_async(JitValue* __ret, JitClosure*,
+inline void _jit_http_server_serve_async(JitValue* __ret, JitClosure*,
                                                         int8_t self_tag, int64_t self_data,
                                                         int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
@@ -5938,19 +5938,19 @@ inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
     return async ? JitValue{TAG_LONG, bound} : r;
   });
 }
-CULEBRA_RT_INLINE void _jit_http_server_listen(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_listen(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_listen_impl(self, n, args, /*async=*/false); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_listen_async(JitValue* __ret, JitClosure*,
+inline void _jit_http_server_listen_async(JitValue* __ret, JitClosure*,
                                                          int8_t self_tag, int64_t self_data,
                                                          int64_t n,
                                                          JitValue* args) {
   JitValue self{self_tag, self_data};
   { *__ret = _jit_http_server_listen_impl(self, n, args, /*async=*/true); return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_stop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_stop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::http::http_server_stop(
@@ -5968,7 +5968,7 @@ inline void _jit_http_server_clear_routes(int64_t id) {
     culebra_runtime_value_release(rec.handler.tag, rec.handler.data);
   g_jit_srv_routes.erase(it);
 }
-CULEBRA_RT_INLINE void _jit_http_server_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
@@ -5977,7 +5977,7 @@ CULEBRA_RT_INLINE void _jit_http_server_close(JitValue* __ret, JitClosure*, int8
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
-CULEBRA_RT_INLINE void _jit_http_server_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_http_server_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   // drop runs from the destructor's drop protocol — must NOT release self.
@@ -5987,7 +5987,7 @@ CULEBRA_RT_INLINE void _jit_http_server_drop(JitValue* __ret, JitClosure*, int8_
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-CULEBRA_RT_INLINE JitValue _culebra_http_build_server_handle(int64_t id) {
+inline JitValue _culebra_http_build_server_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
@@ -7226,14 +7226,14 @@ inline const std::vector<NsMethod>& _wrapped_ns_methods() {
 // consumed by `srv.static`. Mirrors interp make_embed_dir_handle; the
 // bake-vs-disk decision happens in vfs.h's open_embed_dir (table present →
 // embedded, else live disk), so the handle just carries the name.
-CULEBRA_RT_INLINE std::string _jit_embed_dir_name(JitObject* h) {
+inline std::string _jit_embed_dir_name(JitObject* h) {
   size_t i = h->find_slot("name");
   if (i == static_cast<size_t>(-1)) return {};
   JitValue v = h->slots[i].value;
   return std::string(_culebra_str_view(v.tag, v.data));
 }
 
-CULEBRA_RT_INLINE void _jit_embed_dir_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_embed_dir_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
@@ -7250,7 +7250,7 @@ CULEBRA_RT_INLINE void _jit_embed_dir_read(JitValue* __ret, JitClosure*, int8_t 
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(bytes))}; return; }
 }
 
-CULEBRA_RT_INLINE void _jit_embed_dir_exists(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+inline void _jit_embed_dir_exists(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");

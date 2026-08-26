@@ -28,6 +28,15 @@
 // report it). tools/check_rt_archive_tls.sh checks the result instead of
 // trusting it.
 //
+// Only the `culebra_runtime_*` ABI helpers — the ones codegen names — are on
+// this pair. An internal helper (`_jit_*` / `_culebra_*`) is plain `inline`
+// in every build, the archive's included: nothing references it by name, so
+// the core archive gains nothing from a strong definition, and a copy a
+// feature TU fails to inline is then COMDAT against COMDAT, which PE folds
+// like ELF does. Strong against COMDAT is the one shape it refuses, and
+// `_jit_handle_bind_method` was exactly that until it left the pair (mingw's
+// GCC 16 kept it out of line). tools/check_rt_keep_scope.sh holds the line.
+//
 // Scoped to the archive targets, and never to a source file: the binding TUs
 // (culebra_rt_webview.cc and its siblings) compile into BOTH the archive and
 // the driver, and a source-file property reaches every target that names the

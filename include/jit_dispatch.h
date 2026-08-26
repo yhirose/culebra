@@ -813,7 +813,7 @@ culebra_runtime_class_self(int8_t self_tag, int64_t self_data) {
 // receiver tag is TAG_FUNC.
 // Bound-method trampoline address (defined below): a method read as a value
 // captures its receiver in a wrapper closure whose fn_ptr is this thunk.
-CULEBRA_RT_INLINE void _jit_bound_method_thunk(JitValue* __ret, JitClosure*, int8_t, int64_t,
+inline void _jit_bound_method_thunk(JitValue* __ret, JitClosure*, int8_t, int64_t,
                                                    int64_t, JitValue*);
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
@@ -1639,7 +1639,7 @@ inline JitClosure* _jit_unwrap_bound_method(JitClosure* cls) {
 // result. The receiver is only borrowed (_culebra_invoke_method0 mints the
 // callee's own +1), so a throwing getter leaves the caller's ref intact.
 // Shared by the bare-read and introspection-name paths.
-CULEBRA_RT_INLINE JitValue _jit_invoke_getter(JitClosure* method,
+inline JitValue _jit_invoke_getter(JitClosure* method,
                                               int8_t recv_tag,
                                               int64_t recv_data) {
   return _culebra_invoke_method0(method, {recv_tag, recv_data});
@@ -1649,7 +1649,7 @@ CULEBRA_RT_INLINE JitValue _jit_invoke_getter(JitClosure* method,
 // reads and the `fn` handle). Registers the thunk as native so
 // sendable_jit rejects an escapee with the interp's SendError (a bound
 // method has no params_ast there). Returns a +1-owned TAG_FUNC value.
-CULEBRA_RT_INLINE JitValue _jit_make_bound_method(int8_t recv_tag,
+inline JitValue _jit_make_bound_method(int8_t recv_tag,
                                                   int64_t recv_data,
                                                   JitClosure* method) {
   _jit_register_native_fn(

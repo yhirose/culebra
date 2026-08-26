@@ -2608,7 +2608,7 @@ inline void _culebra_check_well_known_prop(std::string_view name,
 // and the store — the interp's `assign` order (ImmutableError wins, and a
 // failed check leaves the old value in place). The IC paths pass false:
 // codegen routes well-known literal names around the IC entirely.
-CULEBRA_RT_INLINE void _jit_overwrite_slot(JitObjectEntry& entry,
+inline void _jit_overwrite_slot(JitObjectEntry& entry,
                                            const char* key, int8_t tag,
                                            int64_t data, bool mut, bool is_init,
                                            int64_t line, int64_t col,
