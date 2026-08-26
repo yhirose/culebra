@@ -43,6 +43,12 @@ class Session {
   bool run_stdlib_delta(const peg::Ast& ast, std::vector<std::string>& msgs) {
     std::unordered_set<std::string_view> tokens;
     collect_ast_tokens(ast, tokens);
+    return run_stdlib_delta(tokens, msgs);
+  }
+
+ private:
+  bool run_stdlib_delta(const std::unordered_set<std::string_view>& tokens,
+                        std::vector<std::string>& msgs) {
     std::unordered_set<std::string_view> fresh;
     for (auto t : tokens)
       if (!registered_.contains(t)) fresh.insert(t);
@@ -57,6 +63,8 @@ class Session {
     }
     return run_unit(pre.ast, pre.source, /*session=*/false, msgs);
   }
+
+ public:
 
   // Compile and run one program, retaining it for the session. Errors are
   // reported the way interpret() reports them, so an input that throws prints
@@ -95,6 +103,20 @@ class Session {
   // registration mints a second namespace instance).
   bool run_modules(const std::vector<LoadedModule>& modules,
                    std::vector<std::string>& msgs) {
+    // The stdlib the list names, unless the list already carries it: the CLI
+    // splices a `<stdlib>` module in front, and registering a builder twice
+    // mints a second instance of the namespace. A caller that hands over a
+    // bare loader result — the embedding lane, and `culebra test` on a file
+    // that imports — gets the delta here, over the union of every module's
+    // tokens, which is the one preamble the splice would have produced.
+    bool spliced = !modules.empty() &&
+                   modules.front().abs_path == kStdlibPreamblePath;
+    if (!spliced) {
+      std::unordered_set<std::string_view> tokens;
+      for (const auto& m : modules)
+        if (m.ast) collect_ast_tokens(*m.ast, tokens);
+      if (!run_stdlib_delta(tokens, msgs)) return false;
+    }
     try {
       auto prog =
           std::make_unique<VmProgram>(Compiler::compile_session_modules(modules));

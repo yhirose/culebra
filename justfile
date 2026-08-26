@@ -754,6 +754,32 @@ _run-tests BACKEND:
         fi
     }
 
+    # The same `tests/*.cul` the sweep above runs as scripts, through the unit
+    # runner, which compiles each as a session unit: a different scope, a
+    # different rule for a bare write, and the only lane where a closure sent
+    # to another thread has to carry its file's names. None of that is visible
+    # to the script lane — a shared session leaked one file's `mut range = 5`
+    # into every file after it, and a worker thread resolved names it had no
+    # session for. No skip list: a file that cannot run here is a bug. The
+    # file count is asserted too, since these files register no `test(...)`,
+    # so a runner that quietly ran nothing would exit 0 all the same.
+    run_unit_runner_sweep() {
+        local out rc=0 want
+        want=$(ls tests/*.cul | wc -l | tr -d ' ')
+        out=$(cul test --vm --reporter json tests/*.cul 2>&1) || rc=$?
+        if [[ "$rc" != 0 ]]; then
+            echo "culebra test: the tests/*.cul sweep failed (rc $rc)" >&2
+            printf '%s\n' "$out" | grep '"event":"file_error"' | tail -20 >&2
+            printf '%s\n' "$out" | tail -3 >&2
+            exit 1
+        fi
+        case "${out##*$'\n'}" in
+            *'"files":'"$want"',"errored_files":0'*) ;;
+            *) echo "culebra test: sweep ran the wrong file count (want $want)" >&2
+               printf '%s\n' "$out" | tail -1 >&2; exit 1 ;;
+        esac
+    }
+
     # Isolate tests live in a subdir kept out of the `tests/*.cul` vm-vs-JIT
     # diff glob. Every file runs under both engines: Isolate.spawn,
     # Channel, and Parallel are symmetric across backends now, including the
@@ -1007,6 +1033,7 @@ _run-tests BACKEND:
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery; }
         phase "ctest (embedding smokes)"; run_embed
         phase "culebra-test self"; run_culebra_test_self
+        phase "culebra-test sweep (tests/*.cul as session units)"; run_unit_runner_sweep
         phase "isolate (jit + VM)"; run_isolate
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "AOT (== jit)"; run_aot; }
         # Opt-in rather than skip-by-flag: wrap rebuilds the whole tree, which
@@ -1028,6 +1055,7 @@ _run-tests BACKEND:
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
         phase "culebra-test self"; run_culebra_test_self
+        phase "culebra-test sweep (tests/*.cul as session units)"; run_unit_runner_sweep
         phase "isolate (jit + VM)"; run_isolate
         phase "done"; echo "test OK (fast)"
         ;;
@@ -1064,6 +1092,7 @@ _run-tests BACKEND:
         phase "codegen backends (-O0, fast vs --vm)"; run_codegen_backends
         phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
         phase "culebra-test self"; run_culebra_test_self
+        phase "culebra-test sweep (tests/*.cul as session units)"; run_unit_runner_sweep
         phase "isolate (jit + VM)"; run_isolate
         phase "done"; echo "test OK (ci-light)"
         ;;

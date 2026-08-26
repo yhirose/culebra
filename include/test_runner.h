@@ -240,6 +240,9 @@ struct TestRunSummary {
   int passed = 0;
   int failed = 0;
   int errored_files = 0;
+  // Files the runner actually ran. A suite of plain scripts registers no
+  // tests, so `passed` says nothing about coverage there and this does.
+  int files = 0;
   std::vector<std::string> failure_messages;
 };
 
@@ -535,6 +538,7 @@ inline TestRunSummary run_tests(
       summary.errored_files++;
       continue;
     }
+    summary.files++;
     // The registry is the file's own, so every entry in it is new.
     std::vector<TestCase> cases;
     collect_new_cases(host, 0, path_str, cases);
@@ -554,6 +558,7 @@ inline TestRunSummary run_tests(
       std::cout << R"({"event":"list_end","count":)" << listed << "}\n";
     std::cout << R"({"event":"run_end","passed":)" << summary.passed
               << R"(,"failed":)" << summary.failed
+              << R"(,"files":)" << summary.files
               << R"(,"errored_files":)" << summary.errored_files
               << R"(,"bailed":)"
               << (bailed_out(summary, bail_after) ? "true" : "false")

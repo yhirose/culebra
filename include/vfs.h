@@ -174,6 +174,20 @@ inline void set_main_script(const std::string& path) {
                    : std::filesystem::path(path).parent_path().string();
 }
 
+// The entry script for the length of one program. A process that runs several
+// — `culebra test` runs each test file as its own — has an entry script per
+// program, not per process, and `Embed.dir(...)` resolves against it.
+struct MainScriptScope {
+  std::string saved;
+  explicit MainScriptScope(const std::string& path)
+      : saved(main_script_path()) {
+    set_main_script(path);
+  }
+  ~MainScriptScope() { set_main_script(saved); }
+  MainScriptScope(const MainScriptScope&) = delete;
+  MainScriptScope& operator=(const MainScriptScope&) = delete;
+};
+
 // Content-Type from a file extension — the common web set; anything unknown is
 // served as application/octet-stream (the browser sniffs or downloads).
 inline std::string content_type_for(std::string_view path) {

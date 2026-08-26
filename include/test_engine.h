@@ -15,8 +15,10 @@
 #include <script_teardown.h>
 #include <stdlib_jit.h>
 #include <test_runner.h>
+#include <vfs.h>  // MainScriptScope — Embed.dir / Sys.script are per program
 #include <vm_session.h>
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -78,20 +80,25 @@ class VmTestHost : public TestHost {
                 TestFileError& err) override {
     std::vector<LoadedModule> modules;
     if (!load_test_file(path, source, modules, err)) return false;
-    if (modules.size() > 1) {
-      err = {"VmError", "--vm: unsupported: a test file with imports", 0, 0};
-      return false;
-    }
-    unit_.emplace();
+    // The error_code overload, as the script lane uses: a path the filesystem
+    // will not answer for should fail this one file, not the run.
+    std::error_code ec;
+    auto abs = std::filesystem::absolute(path, ec);
+    unit_.emplace(ec ? path : abs.string());
     std::vector<std::string> msgs;
     if (!unit_->session.run_builtin_traits(msgs) ||
         !run_session_unit(ambient_, ambient_source_, msgs)) {
       err = {"internal_error", join_messages(msgs), 0, 0};
       return false;
     }
+    // A file that imports is its whole module list as one session unit;
+    // run_modules asks for the stdlib the list names itself.
     auto& m = modules.front();
-    if (!unit_->session.run_stdlib_delta(*m.ast, msgs) ||
-        !run_session_unit(m.ast, m.source, msgs)) {
+    bool ok = modules.size() > 1
+                  ? run_session_modules(modules, msgs)
+                  : unit_->session.run_stdlib_delta(*m.ast, msgs) &&
+                        run_session_unit(m.ast, m.source, msgs);
+    if (!ok) {
       err = {"interpret_failed", join_messages(msgs), 0, 0};
       return false;
     }
@@ -186,8 +193,12 @@ class VmTestHost : public TestHost {
   // reaches its bytecode through a descriptor pointing into a retained program
   // — so both the programs and the Runtime must outlive the cells holding them.
   struct Unit {
+    explicit Unit(const std::string& path) : script(path) {}
     Runtime rt;
     RuntimeScope scope{rt};
+    // `Sys.script` and Embed.dir's base. Before the session, so a `drop`
+    // body running as the cells are handed back still sees its own file's.
+    MainScriptScope script;
     vm::Session session;
     vm::ReplSessionSwap names;  // makes its ReplSession the current one
     ScriptTeardownGuard threads;
@@ -201,6 +212,13 @@ class VmTestHost : public TestHost {
                         std::vector<std::string>& msgs) {
     bool ok =
         unit_->session.run_unit(ast, std::move(source), /*session=*/true, msgs);
+    unit_->session.drop_result();
+    return ok;
+  }
+
+  bool run_session_modules(const std::vector<LoadedModule>& modules,
+                           std::vector<std::string>& msgs) {
+    bool ok = unit_->session.run_modules(modules, msgs);
     unit_->session.drop_result();
     return ok;
   }
