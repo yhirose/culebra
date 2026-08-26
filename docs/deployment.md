@@ -40,7 +40,7 @@ The default invocation targets the host platform.
 | `-o <path>` | Output executable path (required). |
 | `-O<level>` | Optimization level 0–3 (default 2). |
 | `--emit-llvm` | Also write the program's LLVM IR (for debugging). |
-| `--keep-symbols` | Keep local symbols in the output, for debugging (see [Symbol stripping](#symbol-stripping) below). |
+| `--keep-symbols` | Keep the symbol table in the output, for debugging (see [Symbol stripping](#symbol-stripping) below). |
 | `--target=<triple>` | Cross-compile for the given LLVM triple. |
 | `--sysroot=<path>` | Forwarded to `cc` as `--sysroot=`. |
 | `--rt-lib=<path>` | Override the runtime archive path (required for cross-compile). |
@@ -86,13 +86,19 @@ $ otool -L /tmp/microgpt_tensor
 
 ### Symbol stripping
 
-The embedded runtime archive carries thousands of local symbols
-(`GCC_except_table*`, template and string instantiations) useless in a
-distributed executable. The link discards them by default (`-Wl,-x` —
-understood by ld64, GNU ld and lld alike), shrinking the binary by
-~33% (e.g. a Term/IO program drops from ~9.8 MB to ~6.5 MB) while
-keeping the global/dynamic symbols the loader needs. Pass
-`--keep-symbols` to retain them for debugging.
+Nothing in the output reads its own symbol table — the runtime resolves
+no symbol by name — so the build removes it in two steps. The link
+discards the local symbols (`-Wl,-x`, understood by ld64, GNU ld and
+lld alike: the embedded runtime archive carries thousands of
+`GCC_except_table*`, template and string instantiations), then the
+platform's `strip` tool removes the global symbol table the linker
+leaves behind, the same step the release packaging applies to
+`culebra` itself. Together they take a `print("hello")` binary from
+2.8 MB to 2.5 MB; the dynamic symbols the loader needs survive
+both. Pass `--keep-symbols` to skip both for debugging. Cross-compiled
+outputs (`--target`) stop after the link step, since the host's
+`strip` does not read a foreign object format; a `strip` missing from
+`PATH` is likewise not an error.
 
 ### Cross-compilation
 
@@ -419,6 +425,9 @@ cc prog.o libculebra_rt.a -Wl,-dead_strip -Wl,-x -lc++ -o prog
 
 # Linux (the object is non-PIC, so -no-pie is required on PIE-by-default distros)
 cc prog.o libculebra_rt.a -Wl,--gc-sections -Wl,-x -no-pie -lstdc++ -lm -o prog
+
+# Either: drop the remaining symbol table (what `culebra build` does by default)
+strip prog
 ```
 
 A program that references a feature namespace (`Tensor`, `Http`,

@@ -26,8 +26,10 @@ trap 'rm -rf "$work"' EXIT
 
 fail=0
 build() {  # build <name> <source>: the binary plus one nm listing of it
+  # (--keep-symbols: the default post-link strip would leave nm nothing to
+  # read; which bodies got linked is the question here, not the symbol table)
   printf '%s\n' "$2" > "$work/$1.cul"
-  if ! "$bin" build "$work/$1.cul" -o "$work/$1" > "$work/$1.err" 2>&1; then
+  if ! "$bin" build --keep-symbols "$work/$1.cul" -o "$work/$1" > "$work/$1.err" 2>&1; then
     echo "check_aot_feature_axes FAIL: $1 did not build:" >&2
     cat "$work/$1.err" >&2
     exit 1

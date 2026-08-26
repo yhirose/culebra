@@ -39,7 +39,7 @@ culebra build path/to/program.cul -o ./program
 | `-o <path>` | 出力実行ファイルのパス（必須） |
 | `-O<level>` | 最適化レベル0–3（デフォルト2） |
 | `--emit-llvm` | プログラムのLLVM IRも書き出す（デバッグ用） |
-| `--keep-symbols` | デバッグ用にローカルシンボルを出力に残す（詳細は後述の[シンボルの除去](#シンボルの除去)を参照） |
+| `--keep-symbols` | デバッグ用にシンボルテーブルを出力に残す（詳細は後述の[シンボルの除去](#シンボルの除去)を参照） |
 | `--target=<triple>` | 指定LLVM triple向けにクロスコンパイル |
 | `--sysroot=<path>` | `cc`の`--sysroot=`にそのまま渡す |
 | `--rt-lib=<path>` | ランタイムアーカイブのパスを上書き（cross-compileでは必須） |
@@ -87,13 +87,19 @@ $ otool -L /tmp/microgpt_tensor
 
 ### シンボルの除去
 
-埋め込みランタイムアーカイブには、配布実行ファイルでは無用な
-ローカルシンボル（`GCC_except_table*`、テンプレートや文字列の
-実体化など）が数千個含まれる。リンクは既定でこれらを破棄し
-（`-Wl,-x` — ld64・GNU ld・lldのいずれも解釈する）、ローダが必要
-とするグローバル／動的シンボルは保持したままバイナリを約33% 縮める
-（例: Term/IOプログラムが ~9.8 MB → ~6.5 MB）。デバッグ用に残したい
-場合は`--keep-symbols`を渡す。
+出力バイナリは自分のシンボルテーブルを読まない（ランタイムは
+名前でシンボルを解決しない）ので、ビルドは2段階でこれを取り除く。
+まずリンクがローカルシンボルを破棄し（`-Wl,-x` — ld64・GNU ld・
+lldのいずれも解釈する。埋め込みランタイムアーカイブには
+`GCC_except_table*`、テンプレートや文字列の実体化が数千個ある）、
+次にプラットフォームの`strip`ツールがリンカの残したグローバル
+シンボルテーブルを除去する（リリースパッケージが`culebra`本体に
+掛けているのと同じ処理）。この2つで`print("hello")`のバイナリは
+2.8 MB → 2.5 MBになる。ローダが必要とする動的シンボルは
+どちらの段階でも残る。デバッグ用に両方を飛ばすには`--keep-symbols`
+を渡す。クロスコンパイル（`--target`）の出力はリンク段階で止まる
+（ホストの`strip`は他形式のオブジェクトを読めない）。`PATH`に
+`strip`が無い場合も同様にエラーにはならない。
 
 ### クロスコンパイル
 
@@ -426,6 +432,9 @@ cc prog.o libculebra_rt.a -Wl,-dead_strip -Wl,-x -lc++ -o prog
 
 # Linux (オブジェクトは非 PIC なので PIE 既定のディストロでは -no-pie が要る)
 cc prog.o libculebra_rt.a -Wl,--gc-sections -Wl,-x -no-pie -lstdc++ -lm -o prog
+
+# どちらも: 残ったシンボルテーブルを落とす (`culebra build` の既定動作)
+strip prog
 ```
 
 機能のnamespace（`Tensor` / `Http` / `Compress` / `SQLite` / `Regex` /

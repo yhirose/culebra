@@ -528,7 +528,7 @@ struct BuildOptions {
   string sysroot;    // forwarded to `cc` as `--sysroot=`
   string rt_lib;     // override runtime archive path (for cross-compile)
   bool emit_llvm = false;
-  bool keep_symbols = false;  // skip link-time symbol strip (for debugging)
+  bool keep_symbols = false;  // skip the symbol strip (for debugging)
   int opt_level = 2;
 };
 #endif  // CULEBRA_JIT_ENABLED — end of build/wrap-only helpers
@@ -619,8 +619,8 @@ void print_build_usage(ostream& os) {
         "  -O<level>          Optimization level (0-3, default 2)\n"
         "  --emit-llvm        Also write the program's LLVM IR alongside\n"
         "                     the output (for debugging)\n"
-        "  --keep-symbols     Keep local symbols in the output (default:\n"
-        "                     stripped, ~30% smaller). Use for debugging.\n"
+        "  --keep-symbols     Keep the symbol table in the output (default:\n"
+        "                     stripped). Use for debugging.\n"
         "  --target=<triple>  Cross-compile for the given LLVM target\n"
         "                     triple (e.g. x86_64-unknown-linux-gnu).\n"
         "                     Default: host triple.\n"
@@ -1025,12 +1025,11 @@ int run_build(const BuildOptions& opts) {
   const char* dead_strip = target_is_macho ? "-Wl,-dead_strip"
                                            : "-Wl,--gc-sections";
 
-  // Discard local symbols at link time (~30% smaller binary: the embedded
-  // runtime archive carries thousands of local symbols — GCC_except_table*,
-  // string/template instantiations — useless in a distributed executable).
-  // `-Wl,-x` ("discard all local symbols") is understood by ld64, GNU ld and
-  // lld alike, and keeps the global/dynamic symbols the loader needs, so the
-  // binary still runs. --keep-symbols opts out for debugging.
+  // Discard local symbols at link time (the embedded runtime archive carries
+  // thousands — GCC_except_table*, string/template instantiations — useless in
+  // a distributed executable). `-Wl,-x` ("discard all local symbols") is
+  // understood by ld64, GNU ld and lld alike; the globals it leaves are the
+  // post-link strip's job below. --keep-symbols opts out of both for debugging.
   const char* strip_syms = opts.keep_symbols ? "" : "-Wl,-x";
 
   // Emit the force-load fragment for one feature archive (see kFeatureAxes for
@@ -1151,6 +1150,20 @@ int run_build(const BuildOptions& opts) {
   if (link_rc != 0) {
     std::println(stderr, "culebra build: link failed (rc={})", link_rc);
     return 1;
+  }
+
+  // The global symbol table -Wl,-x leaves behind is another ~8% of a small
+  // program, and nothing in the binary reads it: the runtime resolves no
+  // symbol by name. No linker drops it as a flag on every platform (ld64
+  // treats -s as obsolete), so this is the strip tool's job, the same one
+  // the release packaging runs on the driver. Host builds only — a cross
+  // target's object format is not one the host's strip reads. A missing
+  // strip is not an error: the binary is already at the link-time floor.
+  if (!opts.keep_symbols && !cross) {
+    auto scmd = std::format("strip {} 2>{}", shq(opts.output), kNullDevice);
+    if (verbose) std::println(stderr, "culebra build: strip: {}", scmd);
+    if (std::system(scmd.c_str()) != 0 && verbose)
+      std::println(stderr, "culebra build: strip skipped (not available)");
   }
 
   return 0;
