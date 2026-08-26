@@ -187,6 +187,45 @@ struct Parser {
       throw;
     }
   }
+  // Four hex digits of a `\u` escape, consumed. Positioned at the first one.
+  uint32_t read_hex4() {
+    uint32_t cp = 0;
+    for (int k = 0; k < 4; k++) {
+      if (p >= end) fail("bad unicode escape");
+      char h = *p;
+      cp <<= 4;
+      if      (h >= '0' && h <= '9') cp |= static_cast<uint32_t>(h - '0');
+      else if (h >= 'a' && h <= 'f') cp |= static_cast<uint32_t>(h - 'a' + 10);
+      else if (h >= 'A' && h <= 'F') cp |= static_cast<uint32_t>(h - 'A' + 10);
+      else fail("bad unicode escape");
+      advance();
+    }
+    return cp;
+  }
+  [[noreturn]] void fail_not_scalar(uint32_t cp) {
+    fail(std::format("unicode escape U+{:04X} is not a Unicode scalar value",
+                     cp).c_str());
+  }
+  // One `\uXXXX`, entered on the `u`. JSON has no escape for a character
+  // outside the BMP: it spells one as the UTF-16 surrogate pair (`\uD83D`
+  // `\uDE00`), so a high surrogate reads its partner and the two combine.
+  // Half a pair on its own names no character and is rejected — the same
+  // boundary the language's own `\u` escape and TOML's draw.
+  void read_unicode_escape(std::string& out) {
+    advance();  // the 'u'
+    uint32_t cp = read_hex4();
+    if (cp >= 0xD800 && cp <= 0xDBFF) {
+      if (!(p + 1 < end && *p == '\\' && p[1] == 'u')) fail_not_scalar(cp);
+      advance(); advance();  // the '\' and the 'u'
+      uint32_t low = read_hex4();
+      if (low < 0xDC00 || low > 0xDFFF) fail_not_scalar(cp);
+      cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+    }
+    // What is left is either a scalar value or a low surrogate with nothing
+    // in front of it.
+    if (!is_unicode_scalar_value(cp)) fail_not_scalar(cp);
+    append_utf8(out, cp);
+  }
   V parse_string() { return B::string(parse_string_raw()); }
   std::string parse_string_raw() {
     if (*p != '"') fail("expected string");
@@ -204,6 +243,9 @@ struct Parser {
           case 't':  out += '\t'; break;
           case 'b':  out += '\b'; break;
           case 'f':  out += '\f'; break;
+          // Consumes its own digits (and a surrogate partner), so it skips
+          // the trailing advance() the one-character escapes need.
+          case 'u':  read_unicode_escape(out); continue;
           default:   fail("bad escape");
         }
         advance();

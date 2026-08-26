@@ -325,4 +325,52 @@ let de2 = try {
 assert_true(de2.kind == 'ValueError' &&
   de2.message == 'JSON.stringify: nesting too deep (limit 1000)')
 
+// --- `\uXXXX` escapes -----------------------------------------------------
+// JSON's one way to name a character by number, and the only escape whose
+// body is more than a single character. Not decorative: Go's encoding/json
+// escapes `<`, `>` and `&` this way by default, so a reply from any Go
+// service arrives carrying them.
+let bs = "\\"
+assert_eq(JSON.parse('{"a": "' + bs + 'u0041"}').a, 'A')
+assert_eq(JSON.parse('"' + bs + 'u003cb' + bs + 'u003e"'), '<b>')
+assert_eq(JSON.parse('"' + bs + 'u00e9"'), 'é')
+assert_eq(JSON.parse('"' + bs + 'u3042"'), 'あ')
+// A character outside the BMP is spelled as a UTF-16 surrogate pair, which
+// is the only place a JSON escape reads a second escape to finish.
+assert_eq(JSON.parse('"' + bs + 'uD83D' + bs + 'uDE00"'), '😀')
+let one_emoji = JSON.parse('"' + bs + 'uD83D' + bs + 'uDE00"')
+assert_eq(one_emoji.graphemes().collect().size(), 1)
+
+// Half a pair names no character, whichever half it is, and whatever follows.
+let lone_high = try {
+  JSON.parse('"' + bs + 'uD83D"')
+  nil
+} catch e {
+  e
+}
+assert_true(lone_high.kind == 'ValueError' &&
+  lone_high.message ==
+    'JSON.parse: unicode escape U+D83D is not a Unicode scalar value')
+assert_throws('ValueError', || JSON.parse('"' + bs + 'uDE00"'))
+assert_throws('ValueError', || JSON.parse('"' + bs + 'uD83D' + bs + 'u0041"'))
+
+// A body that is not four hex digits is a different complaint.
+let short_escape = try {
+  JSON.parse('"' + bs + 'u00"')
+  nil
+} catch e {
+  e
+}
+assert_true(short_escape.kind == 'ValueError' &&
+  short_escape.message == 'JSON.parse: bad unicode escape')
+assert_throws('ValueError', || JSON.parse('"' + bs + 'u00zz"'))
+// An escape letter that means nothing still says so.
+assert_throws('ValueError', || JSON.parse('"' + bs + 'x41"'))
+
+// stringify writes control bytes as `\u00xx`, so its own output has to read
+// back — the round trip a parser without `\u` could not make.
+let control = 'bell:' + String.from_code_point(7) + ':end'
+assert_eq(JSON.stringify(control), '"bell:' + bs + 'u0007:end"')
+assert_eq(JSON.parse(JSON.stringify(control)), control)
+
 IO.inspect("test_json OK")

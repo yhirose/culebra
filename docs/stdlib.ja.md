@@ -1688,6 +1688,18 @@ inspect(r.message)           # => 'JSON.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:7'
 ```
 
+`\uXXXX`エスケープはUTF-8に復号される。BMP外の文字はJSONの規定どおり
+UTF-16のサロゲートペアで書かれ、2つで1文字に合成される。片方だけでは
+どの文字も指さないので`ValueError`。`stringify`は制御バイトを`\u00xx`で
+出すので、自身の出力は常に読み戻せる。
+
+```culebra
+# Goのencoding/jsonは`<`・`>`・`&`をこの形でエスケープするため、Go製
+# サービスの応答にはこれが含まれる。
+inspect(JSON.parse('"\u003cb\u003e"'))        # => '<b>'
+inspect(JSON.parse('"\uD83D\uDE00"'))         # => '😀'
+```
+
 ネストの深さには上限がある: コンテナのネストが1000段を超えると、Cスタックを
 使い果たす代わりに`ValueError`（`nesting too deep (limit 1000)`）を投げる。
 `stringify`も走査する値の木に同じ上限を適用する。

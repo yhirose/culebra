@@ -1730,6 +1730,19 @@ inspect(r.message)           # => 'JSON.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:7'
 ```
 
+`\uXXXX` escapes decode to UTF-8. A character outside the BMP is written
+the way JSON requires it, as a UTF-16 surrogate pair, and the two halves
+combine into the one character; half a pair on its own names nothing and is
+a `ValueError`. `stringify` writes control bytes as `\u00xx`, so its output
+always reads back.
+
+```culebra
+# Go's encoding/json escapes `<`, `>` and `&` this way, so replies from a Go
+# service arrive carrying them.
+inspect(JSON.parse('"\u003cb\u003e"'))        # => '<b>'
+inspect(JSON.parse('"\uD83D\uDE00"'))         # => '😀'
+```
+
 Nesting is bounded: containers more than 1000 levels deep raise a
 `ValueError` (`nesting too deep (limit 1000)`) instead of exhausting the
 C stack. `stringify` applies the same bound to the value tree it walks.
