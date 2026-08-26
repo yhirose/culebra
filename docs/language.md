@@ -3190,8 +3190,8 @@ constructor patterns are the idiomatic accessor.
 
 A variant is `Eq` and `Hashable` by construction — its identity is the
 enum, the variant, and each payload field — so it is an `Object` /
-`Set` key and a `hash(v)` argument as-is, with no `@derive` (an `enum`
-rejects the decorator). A payload variant is a valid key exactly when
+`Set` key and a `hash(v)` argument as-is, with no `@derive`. A payload
+variant is a valid key exactly when
 its payload is: `Shape.Rect(2.0, 3.0)` is, `Result.Ok([1, 2])` raises
 the Array's own `unhashable type` TypeError. Same-named variants of two
 enums are two keys.

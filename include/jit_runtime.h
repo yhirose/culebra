@@ -418,22 +418,30 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_format_value(
       culebra_runtime_value_to_display(type, data), spec, line, col));
 }
 
-// The parent enum's name when `obj` is a variant instance (the `__enum` tag
-// culebra_runtime_build_variant sets); nullopt for any other object.
-inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
-  auto idx = obj->find_slot("__enum");
+// A String-valued own slot, or nullopt when absent / not a String.
+inline std::optional<std::string_view> _jit_string_slot(JitObject* obj,
+                                                        const char* name) {
+  auto idx = obj->find_slot(name);
   if (idx == static_cast<size_t>(-1)) return std::nullopt;
   const auto& v = obj->slots[idx].value;
   if (v.tag != TAG_STRING) return std::nullopt;
   return _culebra_str_view(v.tag, v.data);
 }
+// The two tags an instance carries: `class` on every class-sugar instance
+// (empty if absent, defensively) and `__enum` on a variant only — the
+// parent enum's name, nullopt for any other object.
+inline std::string_view _jit_derived_class_tag(JitObject* obj) {
+  return _jit_string_slot(obj, "class").value_or(std::string_view{});
+}
+inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
+  return _jit_string_slot(obj, "__enum");
+}
 
 // `hash(v)` builtin runtime entry. Routes Object to a user-defined
-// `hash()` method (Hashable + Eq structural conformance), an enum variant
-// to its structural hash; primitives go through JitValueHash — same path
-// JitObject's AnyKeyMap uses. Throws on unhashable inputs (Array / Set /
-// Function / Tensor, Object without `hash`). Returns a raw int64 (Long
-// payload).
+// `hash()` method (Hashable + Eq structural conformance) or a variant's
+// derived hash; primitives go through JitValueHash — same path JitObject's
+// AnyKeyMap uses. Throws on unhashable inputs (Array / Set / Function /
+// Tensor, Object without `hash`). Returns a raw int64 (Long payload).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
     int8_t type, int64_t data, int64_t line, int64_t col) {
   if (type == TAG_OBJECT) {
@@ -2867,20 +2875,13 @@ inline void _jit_packable_write_field(uint8_t* base,
     const auto* el = culebra::lookup_packable_enum(f.layout.elem_type);
     JitObject* obj =
         (tag == TAG_OBJECT) ? reinterpret_cast<JitObject*>(data) : nullptr;
-    size_t ei = obj ? obj->find_slot("__enum") : static_cast<size_t>(-1);
-    std::string_view en =
-        (ei != static_cast<size_t>(-1))
-            ? _culebra_str_view(obj->slots[ei].value.tag, obj->slots[ei].value.data)
-            : std::string_view{};
-    if (!obj || ei == static_cast<size_t>(-1) || en != f.layout.elem_type) {
+    auto en = obj ? _jit_enum_name(obj) : std::nullopt;
+    if (!en || *en != f.layout.elem_type) {
       throw culebra::CulebraError("TypeError", std::format(
           "field `{}` expects a `{}` enum value, got {}", f.name, f.layout.elem_type,
           _culebra_tag_name(tag)));
     }
-    size_t ci = obj->find_slot("class");
-    std::string_view variant =
-        _culebra_str_view(obj->slots[ci].value.tag, obj->slots[ci].value.data);
-    int idx = el ? el->index_of(variant) : -1;
+    int idx = el ? el->index_of(_jit_derived_class_tag(obj)) : -1;
     if (idx < 0) {
       throw culebra::CulebraError("TypeError", std::format(
           "field `{}`: unknown variant for enum `{}`", f.name, f.layout.elem_type));

@@ -5125,16 +5125,16 @@ class Compiler {
   void compile_enum_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     size_t dec_end = culebra::first_non_decorator_index(ast);
-    bool is_packable = false;
-    for (size_t i = 0; i < dec_end; i++)
-      if (culebra::is_packable_decorator(*ast.nodes[i])) is_packable = true;
     auto enum_name =
         std::string(culebra::parse_generic_head(ast.nodes[dec_end]->token).outer);
-    // Lint's, pre-eval; the throw is the class form's safety net.
-    for (size_t i = 0; i < dec_end; i++)
+    bool is_packable = false;
+    for (size_t i = 0; i < dec_end; i++) {
+      if (culebra::is_packable_decorator(*ast.nodes[i])) is_packable = true;
+      // Lint's, pre-eval; the throw is the class form's safety net.
       if (!culebra::view_derive(*ast.nodes[i]).empty())
         throw culebra::CulebraError("SyntaxError",
                                     culebra::derive_on_enum_message(enum_name));
+    }
     StampGuard pos(*this, ast);
     // A closure earlier in the list may already hold this name's cell
     // (predeclare_forward_refs); fill that one, as compile_class_decl does.

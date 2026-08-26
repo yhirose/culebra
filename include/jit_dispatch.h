@@ -165,16 +165,6 @@ culebra_runtime_make_variant_ctor(const char* variant_name,
 // emitted in the class-decl IR, and the thunks/helpers live in the rt
 // library.
 
-// Class-name tag stored on every instance ("class" -> String). Empty if
-// absent (defensive; class-sugar instances always carry it).
-inline std::string_view _jit_derived_class_tag(JitObject* obj) {
-  auto idx = obj->find_slot("class");
-  if (idx == static_cast<size_t>(-1)) return {};
-  const auto& v = obj->slots[idx].value;
-  if (v.tag != TAG_STRING) return {};
-  return _culebra_str_view(v.tag, v.data);
-}
-
 // Three-way compare for `cmp`, mirroring the interp's derived body: `==`
 // decides sameness, and anything else is ordered by `<`. Both operands here
 // are the twins of what the interp reaches — `_culebra_value_equal` for
@@ -192,7 +182,8 @@ inline int _jit_derived_cmp3(const JitValue& a, const JitValue& b) {
 
 // eq(other): same class tag + every data field equal (JitValueEq, so
 // nested user/derived eq composes). A non-Object or different class is
-// unequal.
+// unequal. A variant's `__enum` tag is walked like a field: it is part of
+// the identity, so same-named variants of two enums stay unequal.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
     JitObject* lhs, JitValue other) {
   if (other.tag != TAG_OBJECT) return {TAG_BOOL, 0};
@@ -201,8 +192,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
     return {TAG_BOOL, 0};
   bool eq = true;
   lhs->for_each([&](std::string_view name, const JitObjectEntry& e) {
-    if (!eq || name == "class" || name == "__enum" || e.value.tag == TAG_FUNC)
-      return;
+    if (!eq || name == "class" || e.value.tag == TAG_FUNC) return;
     auto idx = rhs->find_slot(name);
     if (idx == static_cast<size_t>(-1)) {
       eq = false;
@@ -214,36 +204,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
 }
 
 // hash(): combine the class-name hash with each data field's hash
-// (JitValueHash composes nested user/derived hashes).
+// (JitValueHash composes nested user/derived hashes). `__enum` is walked
+// as in derived_eq.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_hash(
     JitObject* obj) {
   size_t h = std::hash<std::string_view>{}(_jit_derived_class_tag(obj));
   obj->for_each([&](std::string_view name, const JitObjectEntry& e) {
-    if (name == "class" || name == "__enum" || e.value.tag == TAG_FUNC) return;
+    if (name == "class" || e.value.tag == TAG_FUNC) return;
     h = h * 31 + JitValueHash{}(e.value);
   });
   return static_cast<int64_t>(h);
 }
 
-// An enum variant hashes and compares as a class deriving Eq + Hash would:
-// it has no method table to supply them, and its identity IS the (enum,
-// variant, payload) tuple. The enum name goes on top of the derived walk,
-// which keys the class tag alone, so `A.Ok(1)` and `B.Ok(1)` stay distinct
-// keys. nullopt for an object that is not a variant.
+// An enum variant is the derived pair by construction (see
+// enum_variant_conforms_to_trait); nullopt for any other object.
 inline std::optional<int64_t> _jit_enum_variant_hash(JitObject* obj) {
-  auto en = _jit_enum_name(obj);
-  if (!en) return std::nullopt;
-  size_t h = std::hash<std::string_view>{}(*en);
-  return static_cast<int64_t>(
-      h * 31 + static_cast<size_t>(culebra_runtime_derived_hash(obj)));
+  if (!_jit_enum_name(obj)) return std::nullopt;
+  return culebra_runtime_derived_hash(obj);
 }
 inline std::optional<bool> _jit_enum_variant_eq(JitObject* a, JitObject* b) {
-  auto ea = _jit_enum_name(a);
-  auto eb = _jit_enum_name(b);
-  if (!ea || !eb) return std::nullopt;
-  return *ea == *eb &&
-         culebra_runtime_derived_eq(a, {TAG_OBJECT, reinterpret_cast<int64_t>(b)})
-                 .data != 0;
+  if (!_jit_enum_name(a)) return std::nullopt;
+  return culebra_runtime_derived_eq(a, {TAG_OBJECT, reinterpret_cast<int64_t>(b)})
+             .data != 0;
 }
 
 // to_s(): "ClassName(f1, f2, ...)" with each field's value repr (strings

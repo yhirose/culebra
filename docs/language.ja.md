@@ -2976,8 +2976,8 @@ constructor patternがidiomaticなアクセサ。
 
 variantは構造上`Eq`かつ`Hashable` — そのidentityはenum・variant・
 各payload fieldの組 — なので、`@derive`なしでそのまま`Object` /
-`Set`のkeyや`hash(v)`の引数になる (`enum`はこのデコレータを拒否
-する)。payload variantがkeyになれるのはpayloadがhashableなとき
+`Set`のkeyや`hash(v)`の引数になる。payload variantがkeyになれる
+のはpayloadがhashableなとき
 に限る: `Shape.Rect(2.0, 3.0)`はなれるが、`Result.Ok([1, 2])`は
 Array自身の`unhashable type` TypeErrorを投げる。別enumの同名
 variantは別のkey。

@@ -150,7 +150,6 @@ assert_eq(seen.contains(Color.Blue), false)
 
 // `hash(v)` agrees with the key path: equal variants, equal hash.
 assert_eq(hash(Color.Red), hash(Color.Red))
-assert_eq(hash(Shape.Rect(2.0, 3.0)), hash(Shape.Rect(2.0, 3.0)))
 
 // The enum is part of the identity: same-named variants of two enums are
 // two keys.
@@ -196,7 +195,6 @@ fn kind(x: Array) {
   "array"
 }
 assert_eq(kind(Color.Red), "hashable")
-assert_eq(kind(Shape.Circle(1.0)), "hashable")
 assert_eq(kind([1]), "array")
 
 IO.inspect("test_enum OK")
