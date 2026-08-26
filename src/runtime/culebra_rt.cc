@@ -10,9 +10,9 @@
 
 #include <culebra.h>
 #include <stdlib_jit.h>
-#include <foreign_binding.h>  // the __Foreign.Counter wrap fixture
-                              // (tests/test_foreign.cul); registers via
-                              // static init, reached only when named
+// The __Foreign wrap fixture is NOT here: its static initializer would keep
+// the wrap metadata behind it in every binary. It has its own archive
+// (culebra_rt_foreign.cc), force-loaded when the program names __Foreign.
 
 // The AOT entry itself, which only a build that can emit an object needs.
 #ifdef CULEBRA_JIT_ENABLED

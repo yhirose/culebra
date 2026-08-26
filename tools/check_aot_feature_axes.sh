@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # AOT feature-axis gate. Two different mechanisms keep an unused feature's
-# code out of a binary, and this script verifies both:
+# code out of a binary, and this script verifies both. What decides which
+# one applies is whether the feature has a compile-time side effect the link
+# cannot undo — a global constructor pins its whole translation unit, so
+# only a separate archive keeps it out; plain code does not, so the
+# namespace group is enough.
 #
 #   - Regex is a weak/strong archive axis (regex.h / kFeatureAxes): the base
 #     archive's choke is a throwing stub, force-loading the real body only
@@ -12,6 +16,10 @@
 #     included from a translation unit that is unconditionally linked (not
 #     this axis's own archive), an unrelated hello-world binary picks up the
 #     constructor even though nothing calls it.
+#   - __Foreign is an axis for the same reason one step removed: the fixture
+#     registers itself with a static `wrap<T>` initializer, which .init_array
+#     pins, dragging the wrap metadata and template instantiations behind it
+#     (~64 KB) into every binary if it lives in the core archive.
 #   - Proc and the Canvas PNG/TTF decoders are NOT an axis: they compile as
 #     plain `inline` code, reached only through their `_ns_*` adapters. Once
 #     a namespace's dispatch group (stdlib_jit.h ns_groups()) is unreferenced,
@@ -104,6 +112,10 @@ regex_choke='^culebra::regex::compile[(]'
 proc_choke=' culebra::proc::run_command[(]'
 png_choke=' culebra::image::decode_png[(]'
 ttf_choke=' culebra::_canvas_detail::ttf_load[(]'
+# The __Foreign fixture is its own archive: a static `wrap<T>` registrar,
+# which .init_array pins, so it can't ride namespace-group dead-stripping
+# either. The registrar's guard variable is the tell.
+foreign_choke='culebra::_foreign_counter_wrapped'
 
 # 1. Names none of them: Regex stubbed, Proc/Canvas engines entirely absent.
 build none 'IO.print("none")'
@@ -111,9 +123,11 @@ expect_stub_or_absent none "$regex_choke" "no Regex use"
 expect_absent none "$proc_choke" "no Proc use"
 expect_absent none "$png_choke" "no Canvas use"
 expect_absent none "$ttf_choke" "no Canvas use"
+expect_absent none "$foreign_choke" "no __Foreign use"
 expect_absent none ' reg::' "regexlib"
 expect_absent none 'culebra::proc::_detail::' "the fork/exec layer"
 expect_absent none 'culebra::_canvas_detail::ttf_rasterize' "stb_truetype"
+expect_absent none 'culebra::foreign_fixture::' "the fixture's own C++ class"
 expect_output none "none"
 # The namespace groups (stdlib_jit.h ns_groups()): a namespace's dispatch rows
 # and adapters link only when the program names it. No axis, no choke — the
@@ -152,6 +166,15 @@ expect_present canvas "$ttf_choke" "Canvas named"
 expect_stub_or_absent canvas "$regex_choke" "Canvas only"
 expect_output canvas "32"
 
+# The wrap fixture: naming __Foreign force-loads its archive, and the
+# registrar has to have run for the namespace to resolve at all.
+build foreign 'let c = __Foreign.Counter.new(10)
+c.add(5)
+IO.print(c.value())'
+expect_present foreign "$foreign_choke" "__Foreign named"
+expect_stub_or_absent foreign "$regex_choke" "__Foreign only"
+expect_output foreign "15"
+
 if (( fail )); then
   cat >&2 <<'EOF'
   Regex 'W' (or nothing) where 'T' was expected: the axis did not force-load —
@@ -169,4 +192,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex stubbed/strong by axis; Proc/Canvas absent/present by namespace group; groups linked only when named)"
+echo "aot-feature-axes OK (Regex / __Foreign by axis; Proc/Canvas by namespace group; groups linked only when named)"

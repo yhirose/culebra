@@ -513,6 +513,12 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // its own code and, via __builtin_cpu_supports, a start-up constructor
     // that would otherwise land in every binary (see regex.h).
     {{"Regex"}, "libculebra_rt_regex.a", "", true},
+    // The __Foreign test fixture, for the same reason one step removed: its
+    // `wrap<T>` registrar is a static initializer, which .init_array pins
+    // against the link (see src/runtime/culebra_rt_foreign.cc). The flags are
+    // empty off Windows; there they absorb the wrap.h leftover, as Webview's
+    // fragment does (CMakeLists' _foreign_link).
+    {{"__Foreign"}, "libculebra_rt_foreign.a", CULEBRA_FOREIGN_LINK, true},
 };
 // Cross-compiling with Tensor would need a target-specific BLAS link, which we
 // don't bundle — run_build rejects that pair up front by this row.

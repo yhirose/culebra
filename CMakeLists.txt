@@ -1009,6 +1009,16 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   list(APPEND _rt_embed_files
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_regex${CMAKE_STATIC_LIBRARY_SUFFIX}")
   list(APPEND _rt_embed_deps culebra_rt_regex)
+  # The __Foreign wrap fixture: a static registrar, so the link can never drop
+  # it from the core archive (see src/runtime/culebra_rt_foreign.cc). Its own
+  # archive, force-loaded only when the program names __Foreign.
+  add_library(culebra_rt_foreign STATIC ./src/runtime/culebra_rt_foreign.cc)
+  target_compile_features(culebra_rt_foreign PRIVATE cxx_std_23)
+  target_compile_options(culebra_rt_foreign PRIVATE
+    -ffunction-sections -fdata-sections)
+  list(APPEND _rt_embed_files
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_foreign${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  list(APPEND _rt_embed_deps culebra_rt_foreign)
   # SQLite feature archive (gated), appended like Scene/Webview below.
   if(CULEBRA_ENABLE_SQLITE)
     list(APPEND _rt_embed_files
@@ -1096,7 +1106,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # archives may define, tools/check_jit_host_symbols.sh for what the driver
   # must still define.
   foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_compress
-                      culebra_rt_regex
+                      culebra_rt_regex culebra_rt_foreign
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
                       culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})
@@ -1353,6 +1363,20 @@ endif()
 # CULEBRA_DEV_NO_RT inner-loop build still compiles the driver. "" when off.
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_WEBVIEW_LINK="${_webview_link}")
+endif()
+
+# The __Foreign fixture archive reaches wrap.h, so its TU can emit a
+# `culebra_runtime_*` helper the core archive defines strongly — the same
+# un-inlined leftover Webview's Windows fragment absorbs above, and for the
+# same reason (PE has no weak external). Scoped to this axis, which only the
+# foreign-object tests trigger, so ordinary links keep strict duplicate
+# detection; tools/check_rt_archive_tls.sh fails if the count grows.
+set(_foreign_link "")
+if(WIN32)
+  set(_foreign_link "-Wl,--allow-multiple-definition")
+endif()
+if(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_FOREIGN_LINK="${_foreign_link}")
 endif()
 
 # --- Scene / Canvas window: build SDL3 + raylib + link into the driver ------

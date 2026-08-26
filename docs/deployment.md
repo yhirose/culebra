@@ -637,6 +637,7 @@ emits it as a base archive plus one small archive per heavy feature
 | `libculebra_rt_compress.a` | strong compress choke (pulls zlib; `to_png` rides it too) |
 | `libculebra_rt_sqlite.a` | strong sqlite choke plus the sqlite3 amalgamation |
 | `libculebra_rt_regex.a` | strong regex choke (the cpp-regexlib engine, ~320 KB) |
+| `libculebra_rt_foreign.a` | the `__Foreign` wrap fixture the foreign-object tests are written against (a static `wrap<T>` registrar, so it needs its own archive) |
 | `libculebra_rt_canvas.a` | the raylib window backend (window builds only; the base carries headless stubs) |
 | `libculebra_rt_scene.a` | Scene's wrap registrar (pulls raylib; not in the base at all) |
 | `libculebra_rt_webview.a` | Webview's wrap registrar (the OS WebView framework; not in the base at all) |

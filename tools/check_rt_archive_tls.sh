@@ -158,13 +158,17 @@ echo "rt-archive-deps OK (core archive references no OpenSSL/zlib/httplib symbol
 if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "rt-archive-dup SKIP (symbol classes are read on ELF -- see strong_defs)"
 else
-  # The waiver is only as true as the flag, and it is Webview's fragment that
-  # must carry it -- not some other axis. This script is where a fragment that
-  # lost the flag goes unnoticed otherwise (it did, once: the flag was deleted
-  # and only the comment came back).
-  waved=""
+  # The waiver is only as true as the flag, and it is that axis's own fragment
+  # that must carry it -- not some other axis. This script is where a fragment
+  # that lost the flag goes unnoticed otherwise (it did, once: the flag was
+  # deleted and only the comment came back). Both waived axes reach wrap.h,
+  # which is what leaves the un-inlined `culebra_runtime_*` helper behind.
+  waved=()
   if grep -q -- '_webview_link.*--allow-multiple-definition' CMakeLists.txt; then
-    waved="libculebra_rt_webview.a"
+    waved+=("libculebra_rt_webview.a")
+  fi
+  if grep -q -- '_foreign_link.*--allow-multiple-definition' CMakeLists.txt; then
+    waved+=("libculebra_rt_foreign.a")
   fi
   waved_max=8   # a leftover or two; 348 was the archive before the attribute came off
   core_strong=$(strong_defs "$core")
@@ -174,7 +178,11 @@ else
     shared=$(comm -12 <(printf '%s\n' "$core_strong") <(all_defs "$ar"))
     [[ -n "$shared" ]] || continue
     n=$(printf '%s\n' "$shared" | grep -c .)
-    if [[ -n "$waved" && "$ar" == */"$waved" ]] && (( n <= waved_max )); then
+    is_waved=0
+    for w in ${waved+"${waved[@]}"}; do
+      [[ "$ar" == */"$w" ]] && is_waved=1 && break
+    done
+    if (( is_waved )) && (( n <= waved_max )); then
       echo "rt-archive-dup OK: $(basename "$ar") leaves $n un-inlined" \
            "helper(s) for its fragment's --allow-multiple-definition"
       continue
