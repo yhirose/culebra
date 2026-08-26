@@ -1,0 +1,177 @@
+import openai_wire from './providers/wire_openai.cul'
+import msg from './core/message.cul'
+
+# The same checks test_wire_anthropic.cul makes, against the other format —
+# and the three places the two disagree are what these are really about: the
+# system prompt stays a turn, a tool result gets its own role, and a call's
+# arguments travel as a JSON string.
+
+class OpenAIStubHttp {
+  new(response) {
+    self.response = response
+    self.sent = []
+  }
+
+  post(path, json) {
+    self.sent.push({path: path, body: json})
+    self.response
+  }
+
+  last_body() {
+    self.sent[self.sent.size() - 1].body
+  }
+}
+
+fn an_openai_response(status, payload) {
+  {
+    ok: status >= 200 && status < 300,
+    status: status,
+    body: JSON.stringify(payload),
+    json: fn () { payload },
+  }
+}
+
+fn an_openai_reply(message, finish_reason) {
+  {
+    choices: [{message: message, finish_reason: finish_reason}],
+    usage: {prompt_tokens: 11, completion_tokens: 7, total_tokens: 18},
+  }
+}
+
+# --- what goes out ----------------------------------------------------------
+
+@test
+fn the_system_prompt_stays_a_turn() {
+  let turns = openai_wire.turns_of([msg.system('be brief'), msg.user('hello')])
+  assert_eq(turns, [{role: 'system', content: 'be brief'},
+                    {role: 'user', content: 'hello'}])
+}
+
+@test
+fn a_calls_arguments_travel_as_a_string() {
+  let calls = [{tool_call_id: 'c1', name: 'readFile', args: {path: 'a.txt'}}]
+  let turn = openai_wire.turns_of([msg.assistant('reading it', calls)])[0]
+
+  assert_eq(turn.role, 'assistant')
+  assert_eq(turn.content, 'reading it')
+  assert_eq(turn.tool_calls[0].id, 'c1')
+  assert_eq(turn.tool_calls[0].type, 'function')
+  assert_eq(turn.tool_calls[0].function.name, 'readFile')
+  # A JSON document inside a JSON document.
+  assert_eq(JSON.parse(turn.tool_calls[0].function.arguments), {path: 'a.txt'})
+}
+
+@test
+fn a_tool_result_has_a_role_of_its_own() {
+  let turns = openai_wire.turns_of([msg.tool_result('c1', 'readFile', 'contents')])
+  assert_eq(turns[0], {role: 'tool', tool_call_id: 'c1', content: 'contents'})
+}
+
+@test
+fn a_tool_is_declared_under_a_function_of_its_own() {
+  let specs = [{name: 'readFile', description: 'read it',
+                parameters: {type: 'object', properties: {}, required: []}}]
+  assert_eq(openai_wire.tools_of(specs)[0], {
+    type: 'function',
+    function: {
+      name: 'readFile',
+      description: 'read it',
+      parameters: {type: 'object', properties: {}, required: []},
+    },
+  })
+}
+
+# --- what comes back --------------------------------------------------------
+
+@test
+fn reads_text_and_calls_out_of_one_choice() {
+  let out = openai_wire.read_reply(an_openai_reply({
+    content: 'I will read it.',
+    tool_calls: [{id: 'c1', type: 'function',
+                  function: {name: 'readFile',
+                             arguments: '{"path": "a.txt"}'}}],
+  }, 'tool_calls'))
+
+  assert_eq(out.text, 'I will read it.')
+  assert_eq(out.finish_reason, 'tool_calls')
+  assert_eq(out.tool_calls, [{tool_call_id: 'c1', name: 'readFile',
+                              args: {path: 'a.txt'}}])
+  assert_eq(out.usage.total_tokens, 18)
+}
+
+@test
+fn a_reply_of_words_alone_has_no_calls() {
+  let out = openai_wire.read_reply(an_openai_reply({content: 'done'}, 'stop'))
+  assert_eq(out.text, 'done')
+  assert_eq(out.finish_reason, 'stop')
+  assert_true(out.tool_calls.empty())
+}
+
+@test
+fn arguments_that_are_not_json_come_back_empty() {
+  # The model's mistake to see and correct: the tool will say what was
+  # missing, which is more use to it than a parse error raised here.
+  assert_eq(openai_wire.args_of({arguments: '{"path": '}), {})
+  assert_eq(openai_wire.args_of({arguments: ''}), {})
+  assert_eq(openai_wire.args_of({}), {})
+}
+
+@test
+fn keeps_this_formats_own_names_for_stopping() {
+  assert_eq(openai_wire.finish_reason_of('stop'), 'stop')
+  assert_eq(openai_wire.finish_reason_of('length'), 'length')
+  assert_eq(openai_wire.finish_reason_of('tool_calls'), 'tool_calls')
+  # This one the other format has no word for at all.
+  assert_eq(openai_wire.finish_reason_of('content_filter'), 'content_filter')
+  assert_eq(openai_wire.finish_reason_of(nil), 'stop')
+}
+
+# --- the round trip ---------------------------------------------------------
+
+@test
+fn posts_a_body_this_format_would_accept() {
+  let http = OpenAIStubHttp.new(an_openai_response(200, an_openai_reply({content: 'hi'}, 'stop')))
+  let out = openai_wire.OpenAIWire.new(http, 'a-model').do_generate({
+    messages: [msg.system('be brief'), msg.user('hello')],
+    tools: [{name: 'readFile', description: 'read it', parameters: {}}],
+  })
+
+  assert_eq(http.sent[0].path, '/chat/completions')
+  let body = http.last_body()
+  assert_eq(body.model, 'a-model')
+  # No `system` field: it is in the conversation.
+  assert_eq(body.system, nil)
+  assert_eq(body.messages.size(), 2)
+  assert_eq(body.tools[0].function.name, 'readFile')
+  assert_eq(out.text, 'hi')
+}
+
+@test
+fn a_refusal_names_the_status_and_what_the_body_said() {
+  let http = OpenAIStubHttp.new(an_openai_response(404,
+    {error: {message: 'model not found', type: 'invalid_request_error'}}))
+
+  let raised = try {
+    openai_wire.OpenAIWire.new(http, 'no-such-model')
+      .do_generate({messages: [msg.user('hello')]})
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(raised.kind, 'LLMApiError')
+  assert_eq(raised.status, 404)
+  assert_eq(raised.provider, 'openai')
+  assert_true(raised.message.contains('model not found'))
+}
+
+@test
+fn an_answer_with_no_choices_is_an_error_rather_than_an_empty_turn() {
+  let http = OpenAIStubHttp.new(an_openai_response(200, {choices: []}))
+  let raised = try {
+    openai_wire.OpenAIWire.new(http, 'a-model').do_generate({messages: []})
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(raised.kind, 'LLMApiError')
+}

@@ -1,4 +1,4 @@
-import wire from './providers/wire_anthropic.cul'
+import anthropic_wire from './providers/wire_anthropic.cul'
 import msg from './core/message.cul'
 
 # The conversions both ways, and one round trip through a stub client. What is
@@ -16,7 +16,7 @@ fn reason_of(f) {
 }
 
 # A client that answers with a canned payload and remembers what it was sent.
-class StubHttp {
+class AnthropicStubHttp {
   new(response) {
     self.response = response
     self.sent = []
@@ -32,7 +32,7 @@ class StubHttp {
   }
 }
 
-fn a_response(status, payload) {
+fn an_anthropic_response(status, payload) {
   {
     ok: status >= 200 && status < 300,
     status: status,
@@ -41,7 +41,7 @@ fn a_response(status, payload) {
   }
 }
 
-fn a_reply(blocks, stop_reason) {
+fn an_anthropic_reply(blocks, stop_reason) {
   {
     content: blocks,
     stop_reason: stop_reason,
@@ -55,13 +55,13 @@ fn a_reply(blocks, stop_reason) {
 fn lifts_the_system_prompt_out_of_the_conversation() {
   let history = [msg.system('be brief'), msg.user('hello'),
                  msg.system('and kind')]
-  assert_eq(wire.system_text(history), "be brief\n\nand kind")
-  assert_eq(wire.turns_of(history).size(), 1)
+  assert_eq(anthropic_wire.system_text(history), "be brief\n\nand kind")
+  assert_eq(anthropic_wire.turns_of(history).size(), 1)
 }
 
 @test
 fn a_plain_turn_carries_its_text() {
-  let turns = wire.turns_of([msg.user('hello'), msg.assistant('hi')])
+  let turns = anthropic_wire.turns_of([msg.user('hello'), msg.assistant('hi')])
   assert_eq(turns[0], {role: 'user', content: 'hello'})
   assert_eq(turns[1], {role: 'assistant', content: 'hi'})
 }
@@ -69,7 +69,7 @@ fn a_plain_turn_carries_its_text() {
 @test
 fn an_assistant_turn_with_calls_becomes_blocks() {
   let calls = [{tool_call_id: 'c1', name: 'readFile', args: {path: 'a.txt'}}]
-  let turns = wire.turns_of([msg.assistant('reading it', calls)])
+  let turns = anthropic_wire.turns_of([msg.assistant('reading it', calls)])
 
   assert_eq(turns[0].role, 'assistant')
   assert_eq(turns[0].content[0], {type: 'text', text: 'reading it'})
@@ -80,7 +80,7 @@ fn an_assistant_turn_with_calls_becomes_blocks() {
 @test
 fn a_call_without_text_carries_no_empty_block() {
   let calls = [{tool_call_id: 'c1', name: 'readFile', args: {}}]
-  let turns = wire.turns_of([msg.assistant('', calls)])
+  let turns = anthropic_wire.turns_of([msg.assistant('', calls)])
   # An empty text block is refused by the API, so there is only the call.
   assert_eq(turns[0].content.size(), 1)
   assert_eq(turns[0].content[0].type, 'tool_use')
@@ -88,7 +88,7 @@ fn a_call_without_text_carries_no_empty_block() {
 
 @test
 fn a_tool_result_goes_back_as_a_user_turn() {
-  let turns = wire.turns_of([msg.tool_result('c1', 'readFile', 'contents')])
+  let turns = anthropic_wire.turns_of([msg.tool_result('c1', 'readFile', 'contents')])
   assert_eq(turns[0], {
     role: 'user',
     content: [{type: 'tool_result', tool_use_id: 'c1', content: 'contents'}],
@@ -99,7 +99,7 @@ fn a_tool_result_goes_back_as_a_user_turn() {
 fn a_tool_declares_its_schema_under_the_name_this_format_uses() {
   let specs = [{name: 'readFile', description: 'read it',
                 parameters: {type: 'object', properties: {}, required: []}}]
-  assert_eq(wire.tools_of(specs)[0], {
+  assert_eq(anthropic_wire.tools_of(specs)[0], {
     name: 'readFile',
     description: 'read it',
     input_schema: {type: 'object', properties: {}, required: []},
@@ -110,11 +110,11 @@ fn a_tool_declares_its_schema_under_the_name_this_format_uses() {
 
 @test
 fn reads_text_and_calls_out_of_one_reply() {
-  let reply = a_reply([
+  let reply = an_anthropic_reply([
     {type: 'text', text: 'I will read it.'},
     {type: 'tool_use', id: 'c1', name: 'readFile', input: {path: 'a.txt'}},
   ], 'tool_use')
-  let out = wire.read_reply(reply)
+  let out = anthropic_wire.read_reply(reply)
 
   assert_eq(out.text, 'I will read it.')
   assert_eq(out.finish_reason, 'tool_calls')
@@ -125,7 +125,7 @@ fn reads_text_and_calls_out_of_one_reply() {
 
 @test
 fn a_reply_of_words_alone_has_no_calls() {
-  let out = wire.read_reply(a_reply([{type: 'text', text: 'done'}], 'end_turn'))
+  let out = anthropic_wire.read_reply(an_anthropic_reply([{type: 'text', text: 'done'}], 'end_turn'))
   assert_eq(out.text, 'done')
   assert_eq(out.finish_reason, 'stop')
   assert_true(out.tool_calls.empty())
@@ -133,21 +133,21 @@ fn a_reply_of_words_alone_has_no_calls() {
 
 @test
 fn names_every_reason_the_model_stopped() {
-  assert_eq(wire.finish_reason_of('end_turn'), 'stop')
-  assert_eq(wire.finish_reason_of('tool_use'), 'tool_calls')
-  assert_eq(wire.finish_reason_of('max_tokens'), 'length')
+  assert_eq(anthropic_wire.finish_reason_of('end_turn'), 'stop')
+  assert_eq(anthropic_wire.finish_reason_of('tool_use'), 'tool_calls')
+  assert_eq(anthropic_wire.finish_reason_of('max_tokens'), 'length')
   # An unknown reason is not a failure: the turn happened either way.
-  assert_eq(wire.finish_reason_of('something_new'), 'stop')
-  assert_eq(wire.finish_reason_of(nil), 'stop')
+  assert_eq(anthropic_wire.finish_reason_of('something_new'), 'stop')
+  assert_eq(anthropic_wire.finish_reason_of(nil), 'stop')
 }
 
 # --- the round trip ---------------------------------------------------------
 
 @test
 fn posts_a_body_this_format_would_accept() {
-  let http = StubHttp.new(a_response(200,
-    a_reply([{type: 'text', text: 'hi'}], 'end_turn')))
-  let model = wire.AnthropicWire.new(http, 'a-model')
+  let http = AnthropicStubHttp.new(an_anthropic_response(200,
+    an_anthropic_reply([{type: 'text', text: 'hi'}], 'end_turn')))
+  let model = anthropic_wire.AnthropicWire.new(http, 'a-model')
 
   let out = model.do_generate({
     messages: [msg.system('be brief'), msg.user('hello')],
@@ -165,9 +165,9 @@ fn posts_a_body_this_format_would_accept() {
 
 @test
 fn leaves_out_what_it_has_nothing_to_say_about() {
-  let http = StubHttp.new(a_response(200,
-    a_reply([{type: 'text', text: 'hi'}], 'end_turn')))
-  wire.AnthropicWire.new(http, 'a-model')
+  let http = AnthropicStubHttp.new(an_anthropic_response(200,
+    an_anthropic_reply([{type: 'text', text: 'hi'}], 'end_turn')))
+  anthropic_wire.AnthropicWire.new(http, 'a-model')
     .do_generate({messages: [msg.user('hello')], tools: []})
 
   # No system prompt and no tools: neither field is sent at all, rather than
@@ -179,9 +179,9 @@ fn leaves_out_what_it_has_nothing_to_say_about() {
 
 @test
 fn a_refusal_names_the_status_and_what_the_body_said() {
-  let http = StubHttp.new(a_response(400,
+  let http = AnthropicStubHttp.new(an_anthropic_response(400,
     {error: {type: 'invalid_request_error', message: 'model not found'}}))
-  let model = wire.AnthropicWire.new(http, 'no-such-model')
+  let model = anthropic_wire.AnthropicWire.new(http, 'no-such-model')
 
   let raised = try {
     model.do_generate({messages: [msg.user('hello')], tools: []})
@@ -197,11 +197,11 @@ fn a_refusal_names_the_status_and_what_the_body_said() {
 
 @test
 fn repairs_the_pairing_before_sending() {
-  # A tool result whose call was compressed away cannot go on the wire.
+  # A tool result whose call was compressed away cannot go on the anthropic_wire.
   let history = [msg.user('go'), msg.tool_result('gone', 'readFile', 'stale')]
-  let http = StubHttp.new(a_response(200,
-    a_reply([{type: 'text', text: 'ok'}], 'end_turn')))
-  wire.AnthropicWire.new(http, 'a-model').do_generate({messages: history})
+  let http = AnthropicStubHttp.new(an_anthropic_response(200,
+    an_anthropic_reply([{type: 'text', text: 'ok'}], 'end_turn')))
+  anthropic_wire.AnthropicWire.new(http, 'a-model').do_generate({messages: history})
 
   assert_eq(http.last_body().messages, [{role: 'user', content: 'go'}])
 }

@@ -2,11 +2,10 @@ import factory from './providers/model_factory.cul'
 import agent from './core/agent.cul'
 import approval from './core/approval.cul'
 
-# One turn of the loop over a real socket: `Http.client`, the Anthropic wire,
-# and the agent, against a local server standing in for the API. What a stub
-# cannot check is exactly what breaks in practice — the path joined onto the
-# base URL, the auth header actually reaching the other side, and a body the
-# far end can parse.
+# One conversation, twice, over a real socket: same endpoint, same model id,
+# same tools, once through each wire. What a stub cannot check is exactly what
+# breaks in practice — the path joined onto the base URL, the auth header
+# actually reaching the other side, and a body the far end can parse.
 #
 # The server's handlers run on a worker pool and must be Sendable, so they
 # cannot write into a variable out here. They report what they saw by putting
@@ -14,6 +13,7 @@ import approval from './core/approval.cul'
 
 fn fake_api() {
   let srv = Http.server()
+
   srv.post('/v1/messages', fn (req) {
     let body = JSON.parse(req.body)
     let seen = "auth={req.headers['Authorization']} model={body.model} " +
@@ -21,12 +21,11 @@ fn fake_api() {
                "system={body.system}"
 
     # A history carrying a tool result is the second turn; answer it in words
-    # so the loop ends.
+    # so the loop ends. Here a result arrives as a user turn of blocks.
     if body.messages.any(|m| type_of(m.content) == 'Array') {
       return JSON.stringify({
         content: [{type: 'text', text: seen}],
         stop_reason: 'end_turn',
-        usage: {input_tokens: 5, output_tokens: 2},
       })
     }
     JSON.stringify({
@@ -35,50 +34,100 @@ fn fake_api() {
         {type: 'tool_use', id: 'c1', name: 'echo', input: {say: 'hi'}},
       ],
       stop_reason: 'tool_use',
-      usage: {input_tokens: 5, output_tokens: 3},
     })
   })
+
+  srv.post('/v1/chat/completions', fn (req) {
+    let body = JSON.parse(req.body)
+    let seen = "auth={req.headers['Authorization']} model={body.model} " +
+               "tools={(body.tools ?? []).size()} turns={body.messages.size()} " +
+               "system={body.messages[0].content}"
+
+    # The same question in this format's terms: a result is a turn of its own
+    # role.
+    if body.messages.any(|m| m.role == 'tool') {
+      return JSON.stringify({
+        choices: [{message: {content: seen}, finish_reason: 'stop'}],
+      })
+    }
+    JSON.stringify({
+      choices: [{
+        message: {
+          content: seen,
+          tool_calls: [{id: 'c1', type: 'function',
+                        function: {name: 'echo', arguments: '{"say": "hi"}'}}],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    })
+  })
+
   srv
 }
 
-@test
-fn talks_to_a_server_over_a_real_socket() {
-  let srv = fake_api()
-  let port = srv.listen_async(0, '127.0.0.1')
-  defer { srv.stop() }
-
-  let conn = factory.connection({
-    LLM_ENDPOINT: 'openrouter',
-    LLM_API_KEY: 'test-key',
-    LLM_BASE_URL: "http://127.0.0.1:{port}/v1",
-    LLM_MODEL: 'a/model',
-  })
-  assert_eq(conn.base_url, "http://127.0.0.1:{port}/v1")
-
-  let echo = {
+fn an_echo_tool() {
+  {
     name: 'echo',
     description: 'say something back',
     needs_approval: false,
     params: {say: {type: 'string', doc: 'what to say'}},
     run: fn (args) { "echo: {args.say}" },
   }
-  let r = agent.Agent.new({
+}
+
+fn talk_over(wire, port) {
+  let conn = factory.connection({
+    LLM_ENDPOINT: 'openrouter',
+    LLM_WIRE: wire,
+    LLM_API_KEY: 'test-key',
+    LLM_BASE_URL: "http://127.0.0.1:{port}/v1",
+    LLM_MODEL: 'a/model',
+  })
+  agent.Agent.new({
     name: 'nano-code',
     instructions: 'be brief',
     model: factory.connect(conn),
-    tools: {echo: echo},
+    tools: {echo: an_echo_tool()},
     max_steps: 4,
     approve: approval.approve_all,
   }).generate('say hi')
+}
 
+@test
+fn the_anthropic_wire_talks_over_a_real_socket() {
+  let srv = fake_api()
+  let port = srv.listen_async(0, '127.0.0.1')
+  defer { srv.stop() }
+
+  let r = talk_over('anthropic', port)
   assert_eq(r.steps, 2)
   assert_eq(r.tool_runs, 1)
+
   # The last thing the server saw, reported back through the reply.
   assert_true(r.text.contains('auth=Bearer test-key'))
   assert_true(r.text.contains('model=a/model'))
   assert_true(r.text.contains('tools=1'))
+  # The system prompt is a field of its own here, so three turns.
   assert_true(r.text.contains('system=be brief'))
-  # system, user, the assistant's call, the tool result — the system prompt is
-  # a field of its own, so three turns.
   assert_true(r.text.contains('turns=3'))
+}
+
+@test
+fn the_openai_wire_says_the_same_thing_differently() {
+  let srv = fake_api()
+  let port = srv.listen_async(0, '127.0.0.1')
+  defer { srv.stop() }
+
+  let r = talk_over('openai', port)
+  # Same conversation, same number of steps and tool runs: only the spelling
+  # of it changed.
+  assert_eq(r.steps, 2)
+  assert_eq(r.tool_runs, 1)
+
+  assert_true(r.text.contains('auth=Bearer test-key'))
+  assert_true(r.text.contains('model=a/model'))
+  assert_true(r.text.contains('tools=1'))
+  # Here the system prompt is the first turn, so there are four of them.
+  assert_true(r.text.contains('system=be brief'))
+  assert_true(r.text.contains('turns=4'))
 }

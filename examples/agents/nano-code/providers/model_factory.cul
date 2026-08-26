@@ -1,4 +1,5 @@
 import wire_anthropic from './wire_anthropic.cul'
+import wire_openai from './wire_openai.cul'
 import err from '../core/errors.cul'
 
 # Which model to talk to, from the environment.
@@ -44,7 +45,13 @@ let ENDPOINTS = {
   },
 }
 
-let WIRES = ['anthropic']
+# A wire is a choice of its own: an endpoint suggests one, `LLM_WIRE` decides.
+# OpenRouter serves the same model over either, which is what makes the two
+# comparable.
+let WIRES = {
+  anthropic: |http, model_id| wire_anthropic.AnthropicWire.new(http, model_id),
+  openai: |http, model_id| wire_openai.OpenAIWire.new(http, model_id),
+}
 
 # Everything this reads, in one list — so `connection` below can be handed a
 # plain Object and tested without an environment to set up.
@@ -70,9 +77,9 @@ fn connection(settings) {
   }
 
   let wire = settings.get('LLM_WIRE', endpoint.wire)
-  if !WIRES.contains(wire) {
+  if WIRES.get(wire, nil) == nil {
     throw err.agent_error('unknown_wire',
-      "LLM_WIRE is {wire}; this agent speaks " + WIRES.join(' and '))
+      "LLM_WIRE is {wire}; this agent speaks " + WIRES.keys().join(' and '))
   }
 
   {
@@ -117,7 +124,7 @@ fn auth_headers(auth, key) {
 
 fn connect(conn) {
   let http = Http.client(conn.base_url, headers: conn.headers, timeout: TIMEOUT)
-  wire_anthropic.AnthropicWire.new(http, conn.model_id)
+  WIRES[conn.wire](http, conn.model_id)
 }
 
 # What the CLI wants: the model, and enough to say what it is talking to.

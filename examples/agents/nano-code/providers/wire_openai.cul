@@ -1,0 +1,174 @@
+import msg from '../core/message.cul'
+import clean from '../core/clean_messages.cul'
+import err from '../core/errors.cul'
+
+# The OpenAI chat-completions wire format: the same conversation, said
+# differently.
+#
+# Reading this beside wire_anthropic.cul is the point of having both. The
+# agent's message model does not change; what changes is how three things are
+# spelled:
+#
+#   the system prompt   a turn in the array here, a field of its own there
+#   a tool call         a JSON *string* of arguments here, a nested object there
+#   a tool result       its own `tool` role here, a user turn there
+#
+# Everything else — the loop, the tools, the approval gate — is untouched by
+# which of these is in use, which is what the interface in
+# core/language_model.cul buys.
+
+let PROVIDER = 'openai'
+
+class OpenAIWire {
+  new(http, model_id) {
+    self.http = http
+    self.model_id = model_id
+  }
+
+  do_generate(params) {
+    let history = clean.clean_messages(params.messages)
+
+    mut body = {
+      model: self.model_id,
+      messages: turns_of(history),
+    }
+    let specs = params.tools ?? []
+    if !specs.empty() {
+      body.tools = tools_of(specs)
+    }
+
+    let res = self.http.post('/chat/completions', json: body)
+    if !res.ok {
+      throw err.llm_api_error(res.status, PROVIDER, api_message(res))
+    }
+    read_reply(res.json())
+  }
+}
+
+# --- what goes out ----------------------------------------------------------
+
+fn turns_of(messages) {
+  messages.map(|m| turn_of(m))
+}
+
+fn turn_of(m) {
+  match m {
+    Tool(t)      => tool_turn(t),
+    Assistant(a) => assistant_turn(a),
+    _            => plain_turn(m),
+  }
+}
+
+fn tool_turn(t) {
+  {role: 'tool', tool_call_id: t.tool_call_id, content: t.content ?? ''}
+}
+
+fn assistant_turn(a) {
+  let calls = a.tool_calls ?? []
+  if calls.empty() {
+    return {role: 'assistant', content: a.content ?? ''}
+  }
+  {
+    role: 'assistant',
+    content: a.content ?? '',
+    # The arguments travel as a JSON string inside the JSON body — the one
+    # place this format asks for a document within a document.
+    tool_calls: calls.map(|c| {
+      id: c.tool_call_id,
+      type: 'function',
+      function: {name: c.name, arguments: JSON.stringify(c.args ?? {})},
+    }),
+  }
+}
+
+fn plain_turn(m) {
+  {role: msg.role_of(m), content: msg.content_of(m)}
+}
+
+fn tools_of(specs) {
+  specs.map(|t| {
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    },
+  })
+}
+
+# --- what comes back --------------------------------------------------------
+
+fn read_reply(payload) {
+  let choices = payload.choices ?? []
+  if choices.empty() {
+    throw err.llm_api_error(500, PROVIDER, 'the API answered with no choices')
+  }
+  let choice = choices[0]
+  let reply = choice.message ?? {}
+  {
+    text: reply.content ?? '',
+    finish_reason: finish_reason_of(choice.finish_reason),
+    tool_calls: (reply.tool_calls ?? []).map(|c| call_of(c)),
+    usage: usage_of(payload.usage),
+  }
+}
+
+fn call_of(c) {
+  {tool_call_id: c.id, name: c.function.name, args: args_of(c.function)}
+}
+
+# Malformed arguments are answered with an empty call rather than a raised
+# SyntaxError: what the model wrote is its mistake to see and correct, and the
+# tool will say what was missing.
+fn args_of(f) {
+  let text = f.arguments ?? ''
+  if text.empty() {
+    return {}
+  }
+  # `{}` as the last thing in a block is an empty *block*, worth nil — an
+  # object literal needs an expression position, which `??` gives it here.
+  let parsed = try {
+    JSON.parse(text)
+  } catch _e {
+    nil
+  }
+  parsed ?? {}
+}
+
+# This format's own names, kept as they are where they already agree.
+fn finish_reason_of(reason) {
+  match reason {
+    'stop'           => 'stop',
+    'length'         => 'length',
+    'content_filter' => 'content_filter',
+    'tool_calls'     => 'tool_calls',
+    _                => 'stop',
+  }
+}
+
+fn usage_of(u) {
+  if u == nil {
+    return {}
+  }
+  {
+    prompt_tokens: u.prompt_tokens ?? 0,
+    completion_tokens: u.completion_tokens ?? 0,
+    total_tokens: u.total_tokens ?? 0,
+  }
+}
+
+fn api_message(res) {
+  let detail = try {
+    res.json().error.message ?? res.body
+  } catch _e {
+    res.body
+  }
+  "{PROVIDER} wire: the API answered {res.status} — {clip(detail)}"
+}
+
+fn clip(s) {
+  s.size() <= 300 ? s : s.slice(0, 300) + '...'
+}
+
+export {OpenAIWire}
+export {turns_of, tools_of, read_reply, finish_reason_of, args_of}

@@ -62,12 +62,21 @@ fn a_base_url_and_a_key_can_be_given_directly() {
 
 @test
 fn the_wire_is_a_choice_of_its_own() {
-  # The point of the split: the same endpoint, spoken to either way. Until the
-  # second wire lands, naming it is what an unsupported wire looks like.
+  # The point of the split: one endpoint, one model id, either format.
+  assert_eq(factory.connection({OPENROUTER_API_KEY: 'k',
+                                LLM_MODEL: 'a/model'}).wire, 'anthropic')
+  assert_eq(factory.connection({OPENROUTER_API_KEY: 'k', LLM_MODEL: 'a/model',
+                                LLM_WIRE: 'openai'}).wire, 'openai')
   assert_eq(reason_of(fn () {
     factory.connection({OPENROUTER_API_KEY: 'k', LLM_MODEL: 'm',
                         LLM_WIRE: 'carrier-pigeon'})
   }), 'unknown_wire')
+}
+
+@test
+fn an_endpoint_suggests_the_wire_it_is_native_to() {
+  assert_eq(factory.connection({OPENAI_API_KEY: 'k',
+                                LLM_MODEL: 'a-model'}).wire, 'openai')
 }
 
 @test
