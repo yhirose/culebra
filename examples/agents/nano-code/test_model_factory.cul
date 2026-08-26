@@ -1,0 +1,93 @@
+import factory from './providers/model_factory.cul'
+
+# `connection` decides everything before a socket is opened — which endpoint,
+# which wire, which headers — from a plain Object, so every branch of that
+# decision is testable with no key and no network.
+
+fn reason_of(f) {
+  try {
+    f()
+    nil
+  } catch e {
+    e.reason
+  }
+}
+
+@test
+fn a_key_is_enough_to_say_where_to_connect() {
+  let conn = factory.connection({OPENROUTER_API_KEY: 'k',
+                                 LLM_MODEL: 'a/model'})
+  assert_eq(conn.endpoint, 'openrouter')
+  assert_eq(conn.base_url, 'https://openrouter.ai/api/v1')
+  assert_eq(conn.wire, 'anthropic')
+  assert_eq(conn.headers, {Authorization: 'Bearer k'})
+}
+
+@test
+fn the_anthropic_endpoint_authorises_its_own_way() {
+  let conn = factory.connection({ANTHROPIC_API_KEY: 'k', LLM_MODEL: 'a-model'})
+  assert_eq(conn.endpoint, 'anthropic')
+  assert_eq(conn.headers['x-api-key'], 'k')
+  # The version header is required by that endpoint and by nothing else.
+  assert_true(!conn.headers['anthropic-version'].empty())
+}
+
+@test
+fn the_first_key_that_is_set_wins() {
+  let conn = factory.connection({ANTHROPIC_API_KEY: 'a', OPENROUTER_API_KEY: 'o',
+                                 LLM_MODEL: 'm'})
+  assert_eq(conn.endpoint, 'openrouter')
+  assert_eq(conn.headers, {Authorization: 'Bearer o'})
+}
+
+@test
+fn an_endpoint_can_be_named_outright() {
+  let conn = factory.connection({OPENROUTER_API_KEY: 'o', ANTHROPIC_API_KEY: 'a',
+                                 LLM_ENDPOINT: 'anthropic', LLM_MODEL: 'm'})
+  assert_eq(conn.endpoint, 'anthropic')
+  assert_eq(conn.headers['x-api-key'], 'a')
+}
+
+@test
+fn a_base_url_and_a_key_can_be_given_directly() {
+  # What a proxy or a local server needs: the endpoint decides the header
+  # shape, the settings decide where it goes and what it carries.
+  let conn = factory.connection({LLM_ENDPOINT: 'openrouter',
+                                 LLM_API_KEY: 'direct',
+                                 LLM_BASE_URL: 'http://localhost:8080/v1',
+                                 LLM_MODEL: 'm'})
+  assert_eq(conn.base_url, 'http://localhost:8080/v1')
+  assert_eq(conn.headers, {Authorization: 'Bearer direct'})
+}
+
+@test
+fn the_wire_is_a_choice_of_its_own() {
+  # The point of the split: the same endpoint, spoken to either way. Until the
+  # second wire lands, naming it is what an unsupported wire looks like.
+  assert_eq(reason_of(fn () {
+    factory.connection({OPENROUTER_API_KEY: 'k', LLM_MODEL: 'm',
+                        LLM_WIRE: 'carrier-pigeon'})
+  }), 'unknown_wire')
+}
+
+@test
+fn says_what_is_missing_rather_than_guessing() {
+  assert_eq(reason_of(fn () { factory.connection({LLM_MODEL: 'm'}) }),
+            'no_api_key')
+  assert_eq(reason_of(fn () {
+    factory.connection({OPENROUTER_API_KEY: 'k'})
+  }), 'no_model')
+  assert_eq(reason_of(fn () {
+    factory.connection({OPENROUTER_API_KEY: 'k', LLM_MODEL: 'm',
+                        LLM_ENDPOINT: 'somewhere'})
+  }), 'unknown_endpoint')
+}
+
+@test
+fn reads_nothing_from_the_environment_that_is_not_declared() {
+  let settings = factory.settings_from_env()
+  # Whatever the machine happens to have set, only the declared names can
+  # reach the decision above.
+  assert_true(settings.keys().all(|k| k.starts_with('LLM_') ||
+                                      k.ends_with('_API_KEY')))
+}

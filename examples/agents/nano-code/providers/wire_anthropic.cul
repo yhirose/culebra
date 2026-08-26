@@ -1,0 +1,182 @@
+import msg from '../core/message.cul'
+import clean from '../core/clean_messages.cul'
+import err from '../core/errors.cul'
+
+# The Anthropic Messages wire format: how to say it.
+#
+# Where to say it is the other axis and lives in model_factory.cul — an
+# `Http.client` carrying a base URL and the auth headers. This class only ever
+# posts to `/messages` on whatever client it was handed, so the same wire
+# reaches api.anthropic.com and OpenRouter's /api/v1/messages without knowing
+# there is a difference.
+#
+# Upstream reaches for the vendor SDK. There is none here, and none is needed:
+# the format is a JSON body and a JSON reply, and writing it out is what makes
+# the shape of a tool-calling conversation visible.
+
+let MAX_TOKENS = 4096
+let PROVIDER = 'anthropic'
+
+class AnthropicWire {
+  new(http, model_id) {
+    self.http = http
+    self.model_id = model_id
+  }
+
+  do_generate(params) {
+    # Repair the call/result pairing first: compression can have cut a tool
+    # call away from its result, and this format rejects a history where the
+    # two do not match up.
+    let history = clean.clean_messages(params.messages)
+
+    mut body = {
+      model: self.model_id,
+      max_tokens: MAX_TOKENS,
+      messages: turns_of(history),
+    }
+    let system = system_text(history)
+    if !system.empty() {
+      body.system = system
+    }
+    let specs = params.tools ?? []
+    if !specs.empty() {
+      body.tools = tools_of(specs)
+    }
+
+    let res = self.http.post('/messages', json: body)
+    if !res.ok {
+      throw err.llm_api_error(res.status, PROVIDER, api_message(res))
+    }
+    read_reply(res.json())
+  }
+}
+
+# --- what goes out ----------------------------------------------------------
+
+# The system prompt is a field of its own here, not a turn in the
+# conversation, so it is lifted out and the rest of the history keeps its
+# order.
+fn system_text(messages) {
+  messages
+    .filter(|m| msg.role_of(m) == 'system')
+    .map(|m| msg.content_of(m))
+    .join("\n\n")
+}
+
+fn turns_of(messages) {
+  messages
+    .filter(|m| msg.role_of(m) != 'system')
+    .map(|m| turn_of(m))
+}
+
+fn turn_of(m) {
+  match m {
+    Tool(t)      => tool_turn(t),
+    Assistant(a) => assistant_turn(a),
+    _            => plain_turn(m),
+  }
+}
+
+# A tool result is a user turn in this format: the model's own calls are the
+# assistant side, and what came back is what the user hands it.
+fn tool_turn(t) {
+  {
+    role: 'user',
+    content: [{
+      type: 'tool_result',
+      tool_use_id: t.tool_call_id,
+      content: t.content ?? '',
+    }],
+  }
+}
+
+fn assistant_turn(a) {
+  let calls = a.tool_calls ?? []
+  if calls.empty() {
+    return {role: 'assistant', content: a.content ?? ''}
+  }
+
+  # Text and calls are blocks of one turn. An empty text block is rejected, so
+  # it is there only when the model said something alongside its calls.
+  mut blocks = []
+  if !(a.content ?? '').empty() {
+    blocks.push({type: 'text', text: a.content})
+  }
+  for c in calls {
+    blocks.push({
+      type: 'tool_use',
+      id: c.tool_call_id,
+      name: c.name,
+      input: c.args ?? {},
+    })
+  }
+  {role: 'assistant', content: blocks}
+}
+
+fn plain_turn(m) {
+  {role: msg.role_of(m), content: msg.content_of(m)}
+}
+
+fn tools_of(specs) {
+  specs.map(|t| {
+    name: t.name,
+    description: t.description,
+    input_schema: t.parameters,
+  })
+}
+
+# --- what comes back --------------------------------------------------------
+
+# One reply carries both halves of a turn: the text blocks are what the model
+# said, the tool_use blocks are what it wants run. The loop in agent.cul reads
+# the second and stops when there is none.
+fn read_reply(payload) {
+  let blocks = payload.content ?? []
+  {
+    text: blocks.filter(|b| b.type == 'text').map(|b| b.text ?? '').join(''),
+    finish_reason: finish_reason_of(payload.stop_reason),
+    tool_calls: blocks.filter(|b| b.type == 'tool_use').map(|b| call_of(b)),
+    usage: usage_of(payload.usage),
+  }
+}
+
+fn call_of(b) {
+  {tool_call_id: b.id, name: b.name, args: b.input ?? {}}
+}
+
+fn finish_reason_of(stop_reason) {
+  match stop_reason {
+    'end_turn'   => 'stop',
+    'tool_use'   => 'tool_calls',
+    'max_tokens' => 'length',
+    _            => 'stop',
+  }
+}
+
+fn usage_of(u) {
+  if u == nil {
+    return {}
+  }
+  let sent = u.input_tokens ?? 0
+  let received = u.output_tokens ?? 0
+  {prompt_tokens: sent, completion_tokens: received,
+   total_tokens: sent + received}
+}
+
+# A refused request says why in the body. Reading it beats reporting the
+# status alone, which for a 400 is never the interesting half.
+fn api_message(res) {
+  let detail = try {
+    res.json().error.message ?? res.body
+  } catch _e {
+    res.body
+  }
+  "{PROVIDER} wire: the API answered {res.status} — {clip(detail)}"
+}
+
+fn clip(s) {
+  s.size() <= 300 ? s : s.slice(0, 300) + '...'
+}
+
+export {AnthropicWire}
+export {system_text, turns_of, tools_of, read_reply, finish_reason_of}

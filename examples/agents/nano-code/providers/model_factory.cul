@@ -1,0 +1,135 @@
+import wire_anthropic from './wire_anthropic.cul'
+import err from '../core/errors.cul'
+
+# Which model to talk to, from the environment.
+#
+# Two decisions, and they are independent — that is the whole design here:
+#
+#   where to connect   an endpoint: a base URL and the headers that authorise
+#                      it, carried by one `Http.client`
+#   how to speak       a wire format: the class that turns messages into a
+#                      body and a reply back into messages
+#
+# Upstream ties them together, one provider per SDK. Keeping them apart is
+# what makes OpenRouter useful beyond convenience: one key reaches the same
+# model through either wire, so the two can be compared with nothing else
+# changed.
+#
+# `LLM_MODEL` has no default on purpose. A default model id is the one part of
+# a file like this that goes stale silently, and being told to set it beats
+# being connected to something no longer served.
+
+let ANTHROPIC_VERSION = '2023-06-01'
+let TIMEOUT = 120
+
+# In preference order: the first whose key is set wins when nothing is named.
+let ENDPOINTS = {
+  openrouter: {
+    key: 'OPENROUTER_API_KEY',
+    base_url: 'https://openrouter.ai/api/v1',
+    auth: 'bearer',
+    wire: 'anthropic',
+  },
+  anthropic: {
+    key: 'ANTHROPIC_API_KEY',
+    base_url: 'https://api.anthropic.com/v1',
+    auth: 'anthropic',
+    wire: 'anthropic',
+  },
+  openai: {
+    key: 'OPENAI_API_KEY',
+    base_url: 'https://api.openai.com/v1',
+    auth: 'bearer',
+    wire: 'openai',
+  },
+}
+
+let WIRES = ['anthropic']
+
+# Everything this reads, in one list — so `connection` below can be handed a
+# plain Object and tested without an environment to set up.
+let SETTINGS = ['LLM_ENDPOINT', 'LLM_WIRE', 'LLM_MODEL', 'LLM_BASE_URL',
+                'LLM_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY',
+                'OPENAI_API_KEY']
+
+fn settings_from_env() {
+  SETTINGS
+    .filter(|name| !Sys.env(name).empty())
+    .map(|name| (name, Sys.env(name)))
+    .to_object()
+}
+
+# The plan: what would be connected to, and how, without connecting.
+fn connection(settings) {
+  let name = endpoint_name(settings)
+  let endpoint = ENDPOINTS[name]
+  let model_id = settings.get('LLM_MODEL', '')
+  if model_id.empty() {
+    throw err.agent_error('no_model',
+      "set LLM_MODEL to the model id {name} serves")
+  }
+
+  let wire = settings.get('LLM_WIRE', endpoint.wire)
+  if !WIRES.contains(wire) {
+    throw err.agent_error('unknown_wire',
+      "LLM_WIRE is {wire}; this agent speaks " + WIRES.join(' and '))
+  }
+
+  {
+    endpoint: name,
+    wire: wire,
+    model_id: model_id,
+    base_url: settings.get('LLM_BASE_URL', endpoint.base_url),
+    headers: auth_headers(endpoint.auth,
+                          settings.get('LLM_API_KEY',
+                                       settings.get(endpoint.key, ''))),
+  }
+}
+
+fn endpoint_name(settings) {
+  let named = settings.get('LLM_ENDPOINT', '')
+  if !named.empty() {
+    if ENDPOINTS.get(named, nil) == nil {
+      throw err.agent_error('unknown_endpoint',
+        "LLM_ENDPOINT is {named}; known endpoints are " +
+        ENDPOINTS.keys().join(', '))
+    }
+    return named
+  }
+
+  let with_a_key = ENDPOINTS.keys()
+    .filter(|name| !settings.get(ENDPOINTS[name].key, '').empty())
+  if with_a_key.empty() {
+    throw err.agent_error('no_api_key',
+      'set one of ' + ENDPOINTS.keys().map(|n| ENDPOINTS[n].key).join(', '))
+  }
+  with_a_key[0]
+}
+
+# The Anthropic endpoint has its own header for the key and wants a dated
+# version; everything else takes a bearer token.
+fn auth_headers(auth, key) {
+  if auth == 'anthropic' {
+    return {'x-api-key': key, 'anthropic-version': ANTHROPIC_VERSION}
+  }
+  {Authorization: "Bearer {key}"}
+}
+
+fn connect(conn) {
+  let http = Http.client(conn.base_url, headers: conn.headers, timeout: TIMEOUT)
+  wire_anthropic.AnthropicWire.new(http, conn.model_id)
+}
+
+# What the CLI wants: the model, and enough to say what it is talking to.
+fn model_from_env() {
+  let conn = connection(settings_from_env())
+  {
+    model: connect(conn),
+    endpoint: conn.endpoint,
+    wire: conn.wire,
+    model_id: conn.model_id,
+    base_url: conn.base_url,
+  }
+}
+
+export {model_from_env, connection, connect, settings_from_env, ENDPOINTS}
