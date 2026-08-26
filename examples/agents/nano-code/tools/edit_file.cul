@@ -1,0 +1,58 @@
+import err from '../core/errors.cul'
+import guard from './guard.cul'
+
+# Ported from upstream's `src/tools/editFile.ts`.
+
+fn make_edit_file(ws) {
+  {
+    name: 'editFile',
+    description: 'Replace one passage in a file. `old_text` must appear ' +
+                 'exactly once, so give enough context to be unambiguous. ' +
+                 'Cheaper than rewriting the whole file.',
+    needs_approval: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {type: 'string', description: 'path to edit'},
+        old_text: {type: 'string',
+                   description: 'the passage to replace, appearing once'},
+        new_text: {type: 'string',
+                   description: 'what to put in its place'},
+      },
+      required: ['path', 'old_text', 'new_text'],
+    },
+    execute: fn (args) {
+      let rel = args.path ?? ''
+      guard.refuse_sensitive('editFile', rel)
+      let abs = ws.resolve_real(rel)
+      if !FS.exists(abs) {
+        throw err.tool_error('editFile', 'not_found', "no such file: {rel}")
+      }
+      let old_text = args.old_text ?? ''
+      if old_text.empty() {
+        throw err.tool_error('editFile', 'no_match', 'old_text is empty')
+      }
+      let content = FS.read(abs)
+      let hits = content.count(old_text)
+      if hits == 0 {
+        throw err.tool_error('editFile', 'no_match',
+                             "{preview(old_text)} does not appear in {rel}")
+      }
+      if hits > 1 {
+        throw err.tool_error('editFile', 'ambiguous_match',
+          "{preview(old_text)} appears {hits} times in {rel}; give more context")
+      }
+      # `replace` substitutes every occurrence, unlike JS's string overload —
+      # harmless only because the count above is known to be 1. Dropping that
+      # check would silently change what this does.
+      FS.write(abs, content.replace(old_text, args.new_text ?? ''))
+      "edited {rel}"
+    },
+  }
+}
+
+fn preview(s) {
+  s.size() <= 40 ? "'{s}'" : "'{s.slice(0, 40)}…'"
+}
+
+export {make_edit_file}

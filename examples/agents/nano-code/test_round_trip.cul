@@ -20,7 +20,7 @@ fn fake_api() {
     let body = JSON.parse(req.body)
     let seen = "auth={req.headers['Authorization']} model={body.model} " +
                "tools={(body.tools ?? []).size()} turns={body.messages.size()} " +
-               "system={body.system}"
+               "system={(body.system ?? []).map(|b| b.text).join('|')}"
 
     # A history carrying a tool result is the second turn; answer it in words
     # so the loop ends. Here a result arrives as a user turn of blocks.
@@ -72,26 +72,30 @@ fn an_echo_tool() {
     name: 'echo',
     description: 'say something back',
     needs_approval: false,
-    params: {say: {type: 'string', doc: 'what to say'}},
-    run: fn (args) { "echo: {args.say}" },
+    parameters: {
+      type: 'object',
+      properties: {say: {type: 'string', description: 'what to say'}},
+      required: ['say'],
+    },
+    execute: fn (args) { "echo: {args.say}" },
   }
 }
 
-fn talk_over(wire, port) {
-  let conn = factory.connection({
-    LLM_ENDPOINT: 'openrouter',
-    LLM_WIRE: wire,
-    LLM_API_KEY: 'test-key',
-    LLM_BASE_URL: "http://127.0.0.1:{port}/v1",
-    LLM_MODEL: 'a/model',
-  })
+fn talk_over(provider, port) {
+  # A provider takes where to connect and what to carry, and answers with a
+  # function from a model id to a model — upstream's `Provider`, and the one
+  # place a base URL is named outright rather than read from the environment.
+  let model = factory.PROVIDERS[provider].create({
+    api_key: 'test-key',
+    base_url: "http://127.0.0.1:{port}/v1",
+  })('a/model')
   agent.Agent.new({
     name: 'nano-code',
     instructions: 'be brief',
-    model: factory.connect(conn),
+    model: model,
     tools: {echo: an_echo_tool()},
     max_steps: 4,
-    approve: approval.approve_all,
+    approval_func: approval.approve_all,
   }).generate('say hi')
 }
 
@@ -106,9 +110,9 @@ fn both_wires_reach_the_same_endpoint_over_a_real_socket() {
 
   # Same conversation either way: the loop asks, runs the one tool, and ends.
   # Only the spelling of the request changed.
+  # `generate` answers with the model's last words, so what the server saw
+  # comes back through them: the second turn's reply is the report.
   for r in [over_anthropic, over_openai] {
-    assert_eq(r.steps, 2)
-    assert_eq(r.tool_runs, 1)
     assert_true(r.text.contains('auth=Bearer test-key'))
     assert_true(r.text.contains('model=a/model'))
     assert_true(r.text.contains('tools=1'))

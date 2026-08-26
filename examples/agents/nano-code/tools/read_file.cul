@@ -1,0 +1,50 @@
+import err from '../core/errors.cul'
+import guard from './guard.cul'
+
+# Ported from upstream's `src/tools/readFile.ts`.
+#
+# A tool is an Object: a name, a description, the JSON Schema the model is
+# shown, and one function. The schema is written out as upstream writes it —
+# it is what goes on the wire, and a reader comparing the two files should see
+# the same thing in both.
+
+# Big enough for source files, small enough that one read cannot spend the
+# model's whole context.
+let MAX_FILE_BYTES = 100 * 1024
+
+fn make_read_file(ws) {
+  {
+    name: 'readFile',
+    description: 'Read a file inside the workspace and return its contents. ' +
+                 'Files over 100KB are refused.',
+    needs_approval: false,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {type: 'string',
+               description: "path to read, e.g. 'README.md'"},
+      },
+      required: ['path'],
+    },
+    execute: fn (args) {
+      let rel = args.path ?? ''
+      guard.refuse_sensitive('readFile', rel)
+      let abs = ws.resolve_real(rel)
+      if !FS.exists(abs) {
+        throw err.tool_error('readFile', 'not_found', "no such file: {rel}")
+      }
+      if !FS.is_file(abs) {
+        throw err.tool_error('readFile', 'not_a_file',
+                             "{rel} is not a regular file")
+      }
+      let size = FS.size(abs)
+      if size > MAX_FILE_BYTES {
+        throw err.tool_error('readFile', 'too_large',
+          "{rel} is {size / 1024}KB; only files up to 100KB can be read")
+      }
+      FS.read(abs)
+    },
+  }
+}
+
+export {make_read_file}

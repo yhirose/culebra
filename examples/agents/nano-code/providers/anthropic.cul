@@ -3,22 +3,42 @@ import clean from '../core/clean_messages.cul'
 import err from '../core/errors.cul'
 import api_error from './api_error.cul'
 
-# The Anthropic Messages wire format: how to say it.
+# Ported from upstream's `src/providers/anthropic.ts`.
 #
-# Where to say it is the other axis and lives in model_factory.cul — an
-# `Http.client` carrying a base URL and the auth headers. This class only ever
-# posts to `/messages` on whatever client it was handed, so the same wire
-# reaches api.anthropic.com and OpenRouter's /api/v1/messages without knowing
-# there is a difference.
+# Upstream calls `new Anthropic(...)` and lets the vendor SDK carry the base
+# URL, the key and the retries. There is no such SDK here, so `create_anthropic`
+# does what the SDK does: it reads the same environment the SDK reads
+# (`ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`) and hands back a provider — a
+# function from a model id to a `LanguageModel`, exactly upstream's `Provider`.
 #
-# Upstream reaches for the vendor SDK. There is none here, and none is needed:
-# the format is a JSON body and a JSON reply, and writing it out is what makes
-# the shape of a tool-calling conversation visible.
+# Writing the format out by hand is the one thing this port gains from having
+# no SDK: what a tool-calling conversation looks like on the wire is visible in
+# `turns_of` and `read_reply` rather than hidden behind a client library.
 
+let DEFAULT_BASE_URL = 'https://api.anthropic.com/v1'
+let ANTHROPIC_VERSION = '2023-06-01'
 let MAX_TOKENS = 4096
+let TIMEOUT = 120
 let PROVIDER = 'anthropic'
 
-class AnthropicWire {
+fn create_anthropic(config = {}) {
+  let key = config.api_key ?? Sys.env('ANTHROPIC_API_KEY', '')
+  let http = Http.client(
+    config.base_url ?? Sys.env('ANTHROPIC_BASE_URL', DEFAULT_BASE_URL),
+    # `x-api-key` is what this API takes and what upstream's SDK sends. The
+    # bearer header goes too, because a gateway serving this format in front
+    # of other models authorises the way the rest of the web does, and one of
+    # the two is ignored either way.
+    headers: {
+      'x-api-key': key,
+      Authorization: "Bearer {key}",
+      'anthropic-version': ANTHROPIC_VERSION,
+    },
+    timeout: config.timeout ?? TIMEOUT)
+  |model_id| AnthropicModel.new(http, model_id)
+}
+
+class AnthropicModel {
   new(http, model_id) {
     self.http = http
     self.model_id = model_id
@@ -32,12 +52,12 @@ class AnthropicWire {
 
     mut body = {
       model: self.model_id,
-      max_tokens: MAX_TOKENS,
+      system: system_blocks(params.messages),
+      # This format requires a ceiling, so upstream supplies one when the
+      # caller does not. The other format does not require it, and upstream
+      # sends none there — the asymmetry belongs to the formats.
+      max_tokens: params.max_tokens ?? MAX_TOKENS,
       messages: turns_of(history),
-    }
-    let system = system_text(history)
-    if !system.empty() {
-      body.system = system
     }
     let specs = params.tools ?? []
     if !specs.empty() {
@@ -55,14 +75,12 @@ class AnthropicWire {
 
 # --- what goes out ----------------------------------------------------------
 
-# The system prompt is a field of its own here, not a turn in the
-# conversation, so it is lifted out and the rest of the history keeps its
-# order.
-fn system_text(messages) {
+# The system prompt is a field of its own here, not a turn in the conversation,
+# so it is lifted out and the rest of the history keeps its order.
+fn system_blocks(messages) {
   messages
     .filter(|m| msg.role_of(m) == 'system')
-    .map(|m| msg.content_of(m))
-    .join("\n\n")
+    .map(|m| {type: 'text', text: msg.content_of(m)})
 }
 
 fn turns_of(messages) {
@@ -94,13 +112,18 @@ fn tool_turn(t) {
 
 fn assistant_turn(a) {
   let calls = a.tool_calls ?? []
-  if calls.empty() {
+  # The model's own thinking, verbatim and first. This format asks for it back
+  # with the turn it belongs to, and it is checked rather than read: a block
+  # rebuilt from its text alone is rejected, which is why what was received is
+  # what is sent.
+  let thinking = a.reasoning_blocks ?? []
+  if calls.empty() && thinking.empty() {
     return {role: 'assistant', content: a.content ?? ''}
   }
 
   # Text and calls are blocks of one turn. An empty text block is rejected, so
   # it is there only when the model said something alongside its calls.
-  mut blocks = []
+  mut blocks = [] + thinking
   if !(a.content ?? '').empty() {
     blocks.push({type: 'text', text: a.content})
   }
@@ -133,9 +156,23 @@ fn tools_of(specs) {
 # said, the tool_use blocks are what it wants run. The loop in agent.cul reads
 # the second and stops when there is none.
 fn read_reply(payload) {
+  # Not upstream's: a failure can arrive in place of the turn, inside a 200.
+  # See README, "Where this differs from upstream".
+  if payload.type == 'error' {
+    throw api_error.carried_error(PROVIDER, payload.error ?? payload)
+  }
+
   let blocks = payload.content ?? []
+  # Nor is this: a model that thinks before it answers sends the thinking as a
+  # block of its own, and a whole turn can be nothing else. One set, read two
+  # ways — the text is for a reader, the blocks go back on the next turn
+  # untouched. A redacted block has no text to contribute.
+  let thinking = blocks.filter(|b| b.type == 'thinking' ||
+                                   b.type == 'redacted_thinking')
   {
     text: blocks.filter(|b| b.type == 'text').map(|b| b.text ?? '').join(''),
+    reasoning: thinking.map(|b| b.thinking ?? '').join(''),
+    reasoning_blocks: thinking,
     finish_reason: finish_reason_of(payload.stop_reason),
     tool_calls: blocks.filter(|b| b.type == 'tool_use').map(|b| call_of(b)),
     usage: usage_of(payload.usage),
@@ -146,6 +183,7 @@ fn call_of(b) {
   {tool_call_id: b.id, name: b.name, args: b.input ?? {}}
 }
 
+# This format's three names, onto the set both providers answer with.
 fn finish_reason_of(stop_reason) {
   match stop_reason {
     'end_turn'   => 'stop',
@@ -165,5 +203,5 @@ fn usage_of(u) {
    total_tokens: sent + received}
 }
 
-export {AnthropicWire}
-export {system_text, turns_of, tools_of, read_reply, finish_reason_of}
+export {create_anthropic, AnthropicModel}
+export {system_blocks, turns_of, tools_of, read_reply, finish_reason_of}

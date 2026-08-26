@@ -9,6 +9,8 @@ import msg from './message.cul'
 # function three times over, and it depends on nothing a wire format knows, so
 # here it lives once and both wires call it.
 
+let CONTINUE = 'Please continue.'
+
 fn clean_messages(messages) {
   let answered = messages
     .filter(|m| msg.role_of(m) == 'tool')
@@ -27,13 +29,18 @@ fn clean_messages(messages) {
       # its text is what the model said.
       Assistant(a) => {
         let kept = (a.tool_calls ?? []).filter(|c| answered.contains(c.tool_call_id))
-        out.push(msg.assistant(a.content, kept))
+        out.push(msg.assistant(a.content, kept, a.reasoning_blocks ?? []))
       },
 
       _ => out.push(m),
     }
   }
-  out
+
+  # Dropping an orphan can leave nothing but the system prompt, and neither
+  # format will answer a conversation with no turns in it.
+  out.any(|m| msg.role_of(m) != 'system')
+    ? out
+    : out + [msg.user(CONTINUE)]
 }
 
 # Whether an assistant turn already in `out` claims `id`. Searching what has
@@ -46,4 +53,4 @@ fn called_earlier(out, id) {
   })
 }
 
-export {clean_messages}
+export {clean_messages, CONTINUE}

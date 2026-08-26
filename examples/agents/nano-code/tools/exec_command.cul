@@ -9,6 +9,11 @@ import sec from '../core/security.cul'
 # a command line carrying them is one the model expects to be interpreted,
 # and running it as plain argv would do something other than what it asked.
 
+# Upstream's list, with `bun` replaced by `culebra` — the workspace is a
+# culebra project. Its own note on where each one arrives:
+#   ch4          bun, ls              a first run, and looking around
+#   ch5-6        cat, grep, find, pwd, mkdir
+#   ch7          git, gh              kept, though those chapters' tools are not
 let ALLOWED_COMMANDS = ['culebra', 'ls', 'cat', 'grep', 'find', 'pwd', 'mkdir',
                         'git', 'gh']
 
@@ -102,16 +107,26 @@ fn looks_like_path(arg) {
 fn make_exec_command(ws) {
   {
     name: 'execCommand',
-    description: 'Run an allowed command inside the workspace. Available: ' +
+    # The no-shell rule is in the description because the model cannot infer
+    # it: asked to look around it reaches for `pwd && ls`, and the refusal
+    # that comes back does not read as "send them one at a time".
+    description: 'Run one allowed command inside the workspace. There is no ' +
+                 'shell: `&&`, `|`, `>` and `$(...)` are refused, so send ' +
+                 'one command per call. Available: ' +
                  ALLOWED_COMMANDS.join(', ') + '.',
     needs_approval: true,
-    params: {
-      command: {
-        type: 'string',
-        doc: 'the command to run, e.g. "culebra test" or "ls -la src/"',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description:
+            'the command to run, e.g. "culebra test" or "ls -la src/"',
+        },
       },
+      required: ['command'],
     },
-    run: fn (args) {
+    execute: fn (args) {
       let command = args.command ?? ''
       if command.trim().empty() {
         throw err.tool_error('execCommand', 'not_allowed', 'no command given')
@@ -158,9 +173,16 @@ fn make_exec_command(ws) {
         throw err.tool_error('execCommand', 'nonzero_exit',
                              "the command ran longer than {TIMEOUT_MS}ms")
       }
+      # `grep` and `find` report "no match" by exiting 1 with nothing to
+      # show. Calling that an error is a lie the model believes: it reads a
+      # search that found nothing as a search that failed, and stops looking.
+      if !r.ok && r.stdout.empty() && r.stderr.trim().empty() {
+        return "the command exited with {r.code} and printed nothing" +
+               ' (for grep and find, that is how they report no match)'
+      }
       if !r.ok {
-        # Failure goes back as an error so the agent notices and can recover,
-        # rather than reading an empty result as success.
+        # A failure that said something goes back as an error, so the agent
+        # notices rather than reading an empty result as success.
         throw err.tool_error('execCommand', 'nonzero_exit',
           "the command exited with {r.code}\n" + clip(r.stderr))
       }

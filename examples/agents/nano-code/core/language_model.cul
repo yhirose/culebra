@@ -1,22 +1,32 @@
-# What the agent needs from a provider, and the single call it makes.
+# Ported from upstream's `src/types.ts` (`LanguageModel`, `Provider`) and
+# `src/core/generate-text.ts`.
 #
 # `do_generate(params)` receives `{messages, tools}` and answers
 #
-#     {text, finish_reason, tool_calls, usage}
+#     {text, reasoning, finish_reason, tool_calls, usage}
 #
-# where `tool_calls` is a list of `{tool_call_id, name, args}`. Both wire
-# formats normalise into that shape, so the loop in agent.cul never learns
-# which one it is talking to — the whole point of the interface.
+# where `tool_calls` is a list of `{tool_call_id, name, args}`. Both providers
+# normalise into that shape, so the loop in agent.cul never learns which one it
+# is talking to — the whole point of the interface.
 #
-# `messages` are core/message.cul values, not a provider's JSON: turning them
-# into whatever the endpoint wants is the wire's job, and the only job that
-# distinguishes one wire from another.
+# `reasoning` is not upstream's. It is the model's own thinking, which both
+# formats carry apart from the answer: a `thinking` block in one, a `reasoning`
+# field in the other. It is never folded into `text`, because it is not what
+# the model said to the user — but a turn that produced only this is not a turn
+# that produced nothing, and the loop cannot tell those apart unless the
+# providers hand it over.
+#
+# `messages` are core/message.cul values, not a provider's JSON, and `tools`
+# are the tools themselves: a provider reads `name`, `description` and
+# `parameters` off them and ignores the rest. Turning either into whatever the
+# endpoint wants is the provider's job, and the only job that distinguishes one
+# provider from another.
 #
 # A trait cannot be exported (an importer gets a NameError), and a type
 # annotation cannot be namespace-qualified anyway. That is why `generate_text`
 # lives here beside it: it is where the annotation can be written, so a model
-# missing `do_generate` fails with a DispatchError at the call rather than
-# with a `nil` several frames deeper.
+# missing `do_generate` fails with a DispatchError at the call rather than with
+# a `nil` several frames deeper.
 
 trait LanguageModel {
   do_generate(params) -> Object

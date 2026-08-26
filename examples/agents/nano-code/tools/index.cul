@@ -1,31 +1,24 @@
-import files from './files.cul'
-import exec from './exec_command.cul'
-import schema from './schema.cul'
+import read_file from './read_file.cul'
+import write_file from './write_file.cul'
+import edit_file from './edit_file.cul'
+import exec_command from './exec_command.cul'
 
-# The tools an agent is given, keyed by the name the model calls them by.
+# Ported from upstream's `src/tools/index.ts`: the four tools of chapter 4,
+# in one place.
 #
-# A tool is an Object, not a class: it is a description plus one function, and
-# the agent looks it up by name rather than dispatching over a family of types.
-# The schema each one advertises is derived from its `params` (tools/schema.cul)
-# instead of written out, which is what keeps these declarations to the part
-# that differs.
+# Upstream exports each tool as a value, because each one resolves the
+# workspace root from the process's working directory when it is imported.
+# Here they are made against a workspace instead — one difference, and the
+# reason for it is that a test can then be handed a directory of its own
+# rather than writing into the one the agent works in.
 
 fn make_tools(ws) {
   [
-    files.make_read_file(ws),
-    files.make_write_file(ws),
-    files.make_edit_file(ws),
-    exec.make_exec_command(ws),
+    read_file.make_read_file(ws),
+    write_file.make_write_file(ws),
+    edit_file.make_edit_file(ws),
+    exec_command.make_exec_command(ws),
   ].map(|t| (t.name, t)).to_object()
 }
 
-# What goes on the wire: the model needs the schema, not the implementation.
-fn tool_specs(tools) {
-  tools.values().collect().map(|t| {
-    name: t.name,
-    description: t.description,
-    parameters: schema.to_json_schema(t.params),
-  })
-}
-
-export {make_tools, tool_specs}
+export {make_tools}

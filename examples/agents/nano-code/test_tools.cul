@@ -65,8 +65,8 @@ fn an_unclosed_quote_is_an_error() {
 @test
 fn refuses_a_command_outside_the_whitelist() {
   let t = tools.make_tools(temp_ws()).execCommand
-  assert_eq(reason_of(fn () { t.run({command: 'whoami'}) }), 'not_allowed')
-  assert_eq(reason_of(fn () { t.run({command: ''}) }), 'not_allowed')
+  assert_eq(reason_of(fn () { t.execute({command: 'whoami'}) }), 'not_allowed')
+  assert_eq(reason_of(fn () { t.execute({command: ''}) }), 'not_allowed')
 }
 
 @test
@@ -74,12 +74,12 @@ fn refuses_shell_metacharacters() {
   let t = tools.make_tools(temp_ws()).execCommand
   # `;` and `|` are only metacharacters; the rest security.cul also names, and
   # it answers first — either way the command does not run.
-  assert_eq(reason_of(fn () { t.run({command: 'ls; whoami'}) }),
+  assert_eq(reason_of(fn () { t.execute({command: 'ls; whoami'}) }),
             'shell_metachar')
-  assert_eq(reason_of(fn () { t.run({command: 'ls | whoami'}) }),
+  assert_eq(reason_of(fn () { t.execute({command: 'ls | whoami'}) }),
             'shell_metachar')
   for c in ['ls `whoami`', 'ls $(whoami)', 'sudo ls'] {
-    assert_true(reason_of(fn () { t.run({command: c}) }) != nil)
+    assert_true(reason_of(fn () { t.execute({command: c}) }) != nil)
   }
 }
 
@@ -93,16 +93,16 @@ fn refuses_dangerous_options() {
     'git --work-tree=/tmp status',
   ]
   for c in bad {
-    assert_eq(reason_of(fn () { t.run({command: c}) }), 'dangerous_pattern')
+    assert_eq(reason_of(fn () { t.execute({command: c}) }), 'dangerous_pattern')
   }
 }
 
 @test
 fn refuses_a_path_argument_that_leaves() {
   let t = tools.make_tools(temp_ws()).execCommand
-  assert_eq(reason_of(fn () { t.run({command: 'ls ../'}) }),
+  assert_eq(reason_of(fn () { t.execute({command: 'ls ../'}) }),
             'outside_workspace')
-  assert_eq(reason_of(fn () { t.run({command: 'ls /etc'}) }),
+  assert_eq(reason_of(fn () { t.execute({command: 'ls /etc'}) }),
             'outside_workspace')
 }
 
@@ -112,7 +112,7 @@ fn runs_an_allowed_command() {
   defer { FS.remove(w.root, recursive: true) }
   FS.write(FS.join(w.root, 'hello.txt'), 'hi')
   let t = tools.make_tools(w).execCommand
-  assert_true(t.run({command: 'ls'}).contains('hello.txt'))
+  assert_true(t.execute({command: 'ls'}).contains('hello.txt'))
 }
 
 @test
@@ -120,8 +120,20 @@ fn reports_a_failing_command_as_an_error() {
   let w = temp_ws()
   defer { FS.remove(w.root, recursive: true) }
   let t = tools.make_tools(w).execCommand
-  assert_eq(reason_of(fn () { t.run({command: 'ls no-such-file-xyz'}) }),
+  assert_eq(reason_of(fn () { t.execute({command: 'ls no-such-file-xyz'}) }),
             'nonzero_exit')
+}
+
+@test
+fn a_search_that_matched_nothing_is_not_a_failure() {
+  let w = temp_ws()
+  defer { FS.remove(w.root, recursive: true) }
+  let t = tools.make_tools(w).execCommand
+  # grep reports "no match" by exiting 1 with nothing to show. A model told
+  # that its search failed stops searching — which is what one did.
+  let out = t.execute({command: 'grep -r needle .'})
+  assert_true(out.contains('exited with 1'))
+  assert_true(out.contains('no match'))
 }
 
 # --- the file tools ---------------------------------------------------------
@@ -132,8 +144,8 @@ fn reads_and_writes_inside_the_workspace() {
   defer { FS.remove(w.root, recursive: true) }
   let t = tools.make_tools(w)
   # writeFile creates the missing directories on the way.
-  t.writeFile.run({path: 'a/b/c.txt', content: 'hello'})
-  assert_eq(t.readFile.run({path: 'a/b/c.txt'}), 'hello')
+  t.writeFile.execute({path: 'a/b/c.txt', content: 'hello'})
+  assert_eq(t.readFile.execute({path: 'a/b/c.txt'}), 'hello')
 }
 
 @test
@@ -142,8 +154,8 @@ fn refuses_to_read_a_directory_or_a_missing_file() {
   defer { FS.remove(w.root, recursive: true) }
   let t = tools.make_tools(w)
   FS.mkdir(FS.join(w.root, 'sub'))
-  assert_eq(reason_of(fn () { t.readFile.run({path: 'sub'}) }), 'not_a_file')
-  assert_eq(reason_of(fn () { t.readFile.run({path: 'nope.txt'}) }), 'not_found')
+  assert_eq(reason_of(fn () { t.readFile.execute({path: 'sub'}) }), 'not_a_file')
+  assert_eq(reason_of(fn () { t.readFile.execute({path: 'nope.txt'}) }), 'not_found')
 }
 
 @test
@@ -152,7 +164,7 @@ fn refuses_a_file_over_the_size_limit() {
   defer { FS.remove(w.root, recursive: true) }
   let t = tools.make_tools(w)
   FS.write(FS.join(w.root, 'big.txt'), 'x'.repeat(100 * 1024 + 1))
-  assert_eq(reason_of(fn () { t.readFile.run({path: 'big.txt'}) }), 'too_large')
+  assert_eq(reason_of(fn () { t.readFile.execute({path: 'big.txt'}) }), 'too_large')
 }
 
 @test
@@ -160,19 +172,19 @@ fn edits_only_an_unambiguous_passage() {
   let w = temp_ws()
   defer { FS.remove(w.root, recursive: true) }
   let t = tools.make_tools(w)
-  t.writeFile.run({path: 'f.txt', content: "alpha\nbeta\nalpha\n"})
+  t.writeFile.execute({path: 'f.txt', content: "alpha\nbeta\nalpha\n"})
 
   # Two hits: refuse rather than pick one.
   assert_eq(reason_of(fn () {
-    t.editFile.run({path: 'f.txt', old_text: 'alpha', new_text: 'x'})
+    t.editFile.execute({path: 'f.txt', old_text: 'alpha', new_text: 'x'})
   }), 'ambiguous_match')
   # No hits.
   assert_eq(reason_of(fn () {
-    t.editFile.run({path: 'f.txt', old_text: 'gamma', new_text: 'x'})
+    t.editFile.execute({path: 'f.txt', old_text: 'gamma', new_text: 'x'})
   }), 'no_match')
   # One hit: the edit lands, and nothing else moves.
-  t.editFile.run({path: 'f.txt', old_text: 'beta', new_text: 'BETA'})
-  assert_eq(t.readFile.run({path: 'f.txt'}), "alpha\nBETA\nalpha\n")
+  t.editFile.execute({path: 'f.txt', old_text: 'beta', new_text: 'BETA'})
+  assert_eq(t.readFile.execute({path: 'f.txt'}), "alpha\nBETA\nalpha\n")
 }
 
 @test
@@ -181,13 +193,13 @@ fn every_tool_is_confined_through_symlinks() {
   defer { FS.remove(w.root, recursive: true) }
   FS.symlink('/etc', FS.join(w.root, 'escape'))
   let t = tools.make_tools(w)
-  assert_eq(reason_of(fn () { t.readFile.run({path: 'escape/hosts'}) }),
+  assert_eq(reason_of(fn () { t.readFile.execute({path: 'escape/hosts'}) }),
             'symlink_escape')
   assert_eq(reason_of(fn () {
-    t.writeFile.run({path: 'escape/x', content: 'no'})
+    t.writeFile.execute({path: 'escape/x', content: 'no'})
   }), 'symlink_escape')
   assert_eq(reason_of(fn () {
-    t.editFile.run({path: 'escape/hosts', old_text: 'a', new_text: 'b'})
+    t.editFile.execute({path: 'escape/hosts', old_text: 'a', new_text: 'b'})
   }), 'symlink_escape')
   assert_eq(reason_of(fn () { t.run_missing }), nil)  # no such member: nil
 }
@@ -197,20 +209,27 @@ fn refuses_a_credential_file_by_name() {
   let w = temp_ws()
   defer { FS.remove(w.root, recursive: true) }
   let t = tools.make_tools(w)
-  assert_eq(reason_of(fn () { t.readFile.run({path: '.env'}) }), 'not_allowed')
+  assert_eq(reason_of(fn () { t.readFile.execute({path: '.env'}) }), 'not_allowed')
   assert_eq(reason_of(fn () {
-    t.writeFile.run({path: '.aws/credentials', content: 'x'})
+    t.writeFile.execute({path: '.aws/credentials', content: 'x'})
   }), 'not_allowed')
 }
 
 @test
 fn advertises_a_schema_for_every_tool() {
-  let specs = tools.tool_specs(tools.make_tools(temp_ws()))
-  assert_eq(specs.map(|s| s.name).sorted(),
+  # What the providers put on the wire is `name`, `description` and
+  # `parameters`, so every tool has to carry all three and nothing may be
+  # empty: a tool the model cannot read the shape of is one it will call wrong.
+  let all = tools.make_tools(temp_ws())
+  assert_eq(all.keys().sorted(),
             ['editFile', 'execCommand', 'readFile', 'writeFile'])
-  for s in specs {
-    assert_eq(s.parameters.type, 'object')
-    assert_true(!s.description.empty())
-    assert_true(!s.parameters.required.empty())
+  for t in all.values() {
+    assert_eq(t.parameters.type, 'object')
+    assert_true(!t.description.empty())
+    assert_true(!t.parameters.required.empty())
+    # Every required name is one the schema also describes.
+    for name in t.parameters.required {
+      assert_true(!t.parameters.properties[name].description.empty())
+    }
   }
 }

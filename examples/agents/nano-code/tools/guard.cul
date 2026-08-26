@@ -1,0 +1,18 @@
+import err from '../core/errors.cul'
+import sec from '../core/security.cul'
+
+# The one check the three file tools share.
+#
+# Upstream's guardrail (`src/core/security.ts`) defines `isSensitiveFile` and
+# never calls it. Wiring it in is a deliberate difference — see README — and it
+# lives here rather than in each tool because there is nothing per-tool about
+# it but the name that goes in the error.
+
+fn refuse_sensitive(tool, path) {
+  if sec.is_sensitive_file(path) {
+    throw err.tool_error(tool, 'not_allowed',
+                         "{path} looks like a credential file")
+  }
+}
+
+export {refuse_sensitive}

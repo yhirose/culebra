@@ -9,8 +9,10 @@ A scratch project inside nano-code's workspace. Source files are culebra
 (`.cul`); there is no manifest and no package manager, and the whole standard
 library is in scope without an import.
 
-## Tests
+## Running and testing
 
+- Run one file: `culebra hello.cul`. There is no `run` subcommand — the file
+  path is the argument.
 - Run every test below the current directory: `culebra test`
 - Test files are named `test_*.cul`, and a test is a function marked `@test`
 - Format in place with `culebra fmt -i .`, check with `culebra lint .`

@@ -1,0 +1,33 @@
+import guard from './guard.cul'
+
+# Ported from upstream's `src/tools/writeFile.ts`.
+
+fn make_write_file(ws) {
+  {
+    name: 'writeFile',
+    description: 'Create or overwrite a file inside the workspace. ' +
+                 'Missing directories are created.',
+    needs_approval: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {type: 'string', description: 'path to write'},
+        content: {type: 'string',
+                  description: 'the full contents to write'},
+      },
+      required: ['path', 'content'],
+    },
+    execute: fn (args) {
+      let rel = args.path ?? ''
+      guard.refuse_sensitive('writeFile', rel)
+      # resolve_real answers for a path that does not exist yet, so creating a
+      # file is the same call as reading one.
+      let abs = ws.resolve_real(rel)
+      FS.mkdir(FS.dirname(abs))
+      FS.write(abs, args.content ?? '')
+      "wrote {rel}"
+    },
+  }
+}
+
+export {make_write_file}

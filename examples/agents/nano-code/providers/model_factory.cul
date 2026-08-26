@@ -1,142 +1,65 @@
-import wire_anthropic from './wire_anthropic.cul'
-import wire_openai from './wire_openai.cul'
+import anthropic from './anthropic.cul'
+import openai from './openai.cul'
 import err from '../core/errors.cul'
 
-# Which model to talk to, from the environment.
+# Ported from upstream's `src/providers/modelFactory.ts`.
 #
-# Two decisions, and they are independent — that is the whole design here:
+# Three variables name the model: `LLM_PROVIDER` picks the format to speak,
+# `LLM_MODEL` the model id, and `LLM_API_KEY` the key when the provider's own
+# variable is not already set. The first two have no default — a stale default
+# model id fails in a way that reads as the endpoint's fault rather than the
+# setting's.
 #
-#   where to connect   an endpoint: a base URL and the headers that authorise
-#                      it, carried by one `Http.client`
-#   how to speak       a wire format: the class that turns messages into a
-#                      body and a reply back into messages
+# Where to connect is the provider's business, not this file's, exactly as
+# upstream leaves it to the SDK: `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL`
+# move a format to another address. That is all OpenRouter needs —
 #
-# Upstream ties them together, one provider per SDK. Keeping them apart is
-# what makes OpenRouter useful beyond convenience: one key reaches the same
-# model through either wire, so the two can be compared with nothing else
-# changed.
+#     LLM_PROVIDER=openai
+#     LLM_MODEL=openai/gpt-oss-20b
+#     LLM_API_KEY=$OPENROUTER_API_KEY
+#     OPENAI_BASE_URL=https://openrouter.ai/api/v1
 #
-# `LLM_MODEL` has no default on purpose. A default model id is the one part of
-# a file like this that goes stale silently, and being told to set it beats
-# being connected to something no longer served.
+# and it serves the other format at /api/v1/messages, so `LLM_PROVIDER=anthropic`
+# with `ANTHROPIC_BASE_URL` set there reaches the same model through the other
+# wire. One key, two formats, nothing else changed.
 
-let ANTHROPIC_VERSION = '2023-06-01'
-let TIMEOUT = 120
-
-# In preference order: the first whose key is set wins when nothing is named.
-let ENDPOINTS = {
-  openrouter: {
-    key: 'OPENROUTER_API_KEY',
-    base_url: 'https://openrouter.ai/api/v1',
-    auth: 'bearer',
-    wire: 'anthropic',
-  },
-  anthropic: {
-    key: 'ANTHROPIC_API_KEY',
-    base_url: 'https://api.anthropic.com/v1',
-    auth: 'anthropic',
-    wire: 'anthropic',
-  },
-  openai: {
-    key: 'OPENAI_API_KEY',
-    base_url: 'https://api.openai.com/v1',
-    auth: 'bearer',
-    wire: 'openai',
-  },
+# Upstream's third provider, Google, is not ported: it is a third wire format
+# and neither of the two here is written in terms of it.
+let PROVIDERS = {
+  openai: {key: 'OPENAI_API_KEY', create: openai.create_openai},
+  anthropic: {key: 'ANTHROPIC_API_KEY', create: anthropic.create_anthropic},
 }
 
-# A wire is a choice of its own: an endpoint suggests one, `LLM_WIRE` decides.
-# OpenRouter serves the same model over either, which is what makes the two
-# comparable.
-let WIRES = {
-  anthropic: |http, model_id| wire_anthropic.AnthropicWire.new(http, model_id),
-  openai: |http, model_id| wire_openai.OpenAIWire.new(http, model_id),
-}
-
-# Everything this reads, in one list — so `connection` below can be handed a
-# plain Object and tested without an environment to set up.
-let SETTINGS = ['LLM_ENDPOINT', 'LLM_WIRE', 'LLM_MODEL', 'LLM_BASE_URL',
-                'LLM_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY',
-                'OPENAI_API_KEY']
-
-fn settings_from_env() {
-  SETTINGS
-    .filter(|name| !Sys.env(name).empty())
-    .map(|name| (name, Sys.env(name)))
-    .to_object()
-}
-
-# The plan: what would be connected to, and how, without connecting.
-fn connection(settings) {
-  let name = endpoint_name(settings)
-  let endpoint = ENDPOINTS[name]
-  let model_id = settings.get('LLM_MODEL', '')
+fn create_model_from_env() {
+  let provider = Sys.env('LLM_PROVIDER', '')
+  if provider.empty() {
+    throw err.agent_error('no_provider', 'LLM_PROVIDER is not set')
+  }
+  let model_id = Sys.env('LLM_MODEL', '')
   if model_id.empty() {
-    throw err.agent_error('no_model',
-      "set LLM_MODEL to the model id {name} serves")
+    throw err.agent_error('no_model', 'LLM_MODEL is not set')
   }
-
-  let wire = settings.get('LLM_WIRE', endpoint.wire)
-  if WIRES.get(wire, nil) == nil {
-    throw err.agent_error('unknown_wire',
-      "LLM_WIRE is {wire}; this agent speaks " + WIRES.keys().join(' and '))
-  }
-
-  {
-    endpoint: name,
-    wire: wire,
-    model_id: model_id,
-    base_url: settings.get('LLM_BASE_URL', endpoint.base_url),
-    headers: auth_headers(endpoint.auth,
-                          settings.get('LLM_API_KEY',
-                                       settings.get(endpoint.key, ''))),
-  }
+  create_model(provider, model_id, Sys.env('LLM_API_KEY', ''))
 }
 
-fn endpoint_name(settings) {
-  let named = settings.get('LLM_ENDPOINT', '')
-  if !named.empty() {
-    if ENDPOINTS.get(named, nil) == nil {
-      throw err.agent_error('unknown_endpoint',
-        "LLM_ENDPOINT is {named}; known endpoints are " +
-        ENDPOINTS.keys().join(', '))
-    }
-    return named
+# Split from the environment so a test can name a provider without one.
+fn create_model(provider, model_id, api_key) {
+  let chosen = PROVIDERS.get(provider.lower(), nil)
+  if chosen == nil {
+    throw err.agent_error('unknown_provider',
+      "unsupported provider: {provider}. supported providers: " +
+      PROVIDERS.keys().join(', '))
   }
-
-  let with_a_key = ENDPOINTS.keys()
-    .filter(|name| !settings.get(ENDPOINTS[name].key, '').empty())
-  if with_a_key.empty() {
-    throw err.agent_error('no_api_key',
-      'set one of ' + ENDPOINTS.keys().map(|n| ENDPOINTS[n].key).join(', '))
-  }
-  with_a_key[0]
+  chosen.create(config_for(chosen.key, api_key))(model_id)
 }
 
-# The Anthropic endpoint has its own header for the key and wants a dated
-# version; everything else takes a bearer token.
-fn auth_headers(auth, key) {
-  if auth == 'anthropic' {
-    return {'x-api-key': key, 'anthropic-version': ANTHROPIC_VERSION}
-  }
-  {Authorization: "Bearer {key}"}
+# Upstream copies `LLM_API_KEY` into the provider's own variable only when that
+# one is unset, so a provider-specific key wins. An empty config is not the
+# same as an empty key: it leaves the provider to read its own variable.
+fn config_for(own_var, api_key) {
+  let own = Sys.env(own_var, '')
+  let key = own.empty() ? api_key : own
+  key.empty() ? {} : {api_key: key}
 }
 
-fn connect(conn) {
-  let http = Http.client(conn.base_url, headers: conn.headers, timeout: TIMEOUT)
-  WIRES[conn.wire](http, conn.model_id)
-}
-
-# What the CLI wants: the model, and enough to say what it is talking to.
-fn model_from_env() {
-  let conn = connection(settings_from_env())
-  {
-    model: connect(conn),
-    endpoint: conn.endpoint,
-    wire: conn.wire,
-    model_id: conn.model_id,
-    base_url: conn.base_url,
-  }
-}
-
-export {model_from_env, connection, connect, settings_from_env, ENDPOINTS}
+export {create_model_from_env, create_model, config_for, PROVIDERS}

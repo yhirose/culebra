@@ -2,10 +2,14 @@ import agent from './core/agent.cul'
 import msg from './core/message.cul'
 import err from './core/errors.cul'
 
-# Ported from upstream's agent.test.ts. The loop is driven by a scripted model,
-# so the whole of chapter 5 — tool dispatch, the approval gate, a tool that
-# throws, the step budget — and chapter 6's compression run with no API key
-# and no network.
+# Ported from upstream's `src/core/agent.test.ts`. The loop is driven by a
+# scripted model, so the whole of chapter 5 — tool dispatch, the approval gate,
+# a tool that throws, the step budget — and chapter 6's compression run with no
+# API key and no network.
+#
+# `generate` answers with the model's last words and nothing else, as upstream
+# does, so what the loop did is read off the model: `seen` is one entry per
+# turn, holding the history it was asked with.
 #
 # The streaming case upstream tests is not ported: this port has no streaming.
 
@@ -35,8 +39,8 @@ fn a_tool(name, needs_approval, run) {
     name: name,
     description: 'a tool, for testing',
     needs_approval: needs_approval,
-    params: {},
-    run: run,
+    parameters: {type: 'object', properties: {}, required: []},
+    execute: run,
   }
 }
 
@@ -54,7 +58,7 @@ fn an_agent(model, tools, extra) {
     model: model,
     tools: tools,
     max_steps: extra.max_steps ?? 5,
-    approve: extra.approve,
+    approval_func: extra.approval_func,
   })
 }
 
@@ -80,32 +84,58 @@ fn runs_a_tool_then_finishes() {
   let r = an_agent(model, tools, {}).generate('please search')
 
   assert_eq(r.text, 'Found it. Done.')
-  assert_eq(r.steps, 2)
-  assert_eq(r.tool_runs, 1)
-  assert_eq(r.hit_max_steps, false)
+  assert_eq(model.seen.size(), 2)
 
   # The second call saw the result of the first, which is the whole point of
   # the loop: the model reads its own tool output as history.
-  let seen = last_of(model.seen)
+  let seen = model.last_messages()
   assert_eq(msg.role_of(last_of(seen)), 'tool')
   assert_eq(msg.tool_name_of(last_of(seen)), 'search')
   assert_eq(msg.content_of(last_of(seen)), 'results for test')
 }
 
 @test
-fn a_second_question_is_asked_in_the_context_of_the_first() {
+fn every_call_starts_a_conversation_of_its_own() {
   let model = ScriptedModel.new([{text: 'It is four.'}, {text: 'Still four.'}])
   let a = an_agent(model, {}, {})
   a.generate('what is two and two')
   a.generate('are you sure')
 
-  # The second call carries the whole exchange: instructions, the first
-  # question, its answer, then the follow-up.
-  let seen = model.last_messages()
-  assert_eq(seen.map(|m| msg.role_of(m)),
-            ['system', 'user', 'assistant', 'user'])
-  assert_eq(msg.content_of(seen[2]), 'It is four.')
-  assert_eq(msg.content_of(last_of(seen)), 'are you sure')
+  # Instructions and the question, and nothing carried over: a run is one task,
+  # and the agent is not a session.
+  assert_eq(model.last_messages().map(|m| msg.role_of(m)), ['system', 'user'])
+  assert_eq(msg.content_of(last_of(model.last_messages())), 'are you sure')
+}
+
+@test
+fn the_last_words_are_what_comes_back() {
+  # Text arrives on the turn that also calls a tool, and again at the end. What
+  # the caller gets is the last of them.
+  let model = ScriptedModel.new([
+    {text: 'working on it',
+     tool_calls: [{tool_call_id: 'c1', name: 'noop', args: {}}]},
+    {text: 'all done'},
+  ])
+  let tools = {noop: a_tool('noop', false, fn (_args) { 'ok' })}
+  assert_eq(an_agent(model, tools, {}).generate('go').text, 'all done')
+}
+
+@test
+fn what_a_provider_asks_to_have_back_stays_on_the_turn() {
+  # The loop does not read them; it keeps them attached to the turn they came
+  # from, so the next request carries them.
+  let block = {type: 'thinking', thinking: 'first, look around'}
+  let model = ScriptedModel.new([
+    {text: '', reasoning_blocks: [block],
+     tool_calls: [{tool_call_id: 'c1', name: 'noop', args: {}}]},
+    {text: 'done'},
+  ])
+  let tools = {noop: a_tool('noop', false, fn (_args) { 'ok' })}
+  an_agent(model, tools, {}).generate('go')
+
+  let sent = model.last_messages()
+  let assistant = sent.find(|m| msg.role_of(m) == 'assistant')
+  assert_eq(msg.reasoning_blocks_of(assistant), [block])
 }
 
 @test
@@ -113,11 +143,9 @@ fn stops_at_the_step_budget() {
   # Always another tool call: only the budget can end this.
   let model = ScriptedModel.new([1, 2, 3].map(|n| calls_a_tool(n, 'dummy')))
   let tools = {dummy: a_tool('dummy', false, fn (_args) { 'ok' })}
-  let r = an_agent(model, tools, {max_steps: 3}).generate('never end')
+  an_agent(model, tools, {max_steps: 3}).generate('never end')
 
-  assert_eq(r.steps, 3)
-  assert_eq(r.tool_runs, 3)
-  assert_eq(r.hit_max_steps, true)
+  assert_eq(model.seen.size(), 3)
 }
 
 # --- the approval gate ------------------------------------------------------
@@ -129,12 +157,12 @@ fn an_approved_call_runs() {
   let tools = {
     write: a_tool('write', true, fn (args) { ran.push(args); 'written' }),
   }
-  let r = an_agent(model, tools, {max_steps: 2,
-                                  approve: |_name, _args| true})
+  an_agent(model, tools, {max_steps: 2,
+                          approval_func: |_name, _args| true})
     .generate('write it')
 
   assert_eq(ran.size(), 1)
-  assert_eq(r.tool_runs, 1)
+  assert_eq(msg.content_of(last_of(model.last_messages())), 'written')
 }
 
 @test
@@ -144,12 +172,11 @@ fn a_refused_call_does_not_run() {
   let tools = {
     write: a_tool('write', true, fn (args) { ran.push(args); 'written' }),
   }
-  let r = an_agent(model, tools, {max_steps: 2,
-                                  approve: |_name, _args| false})
+  an_agent(model, tools, {max_steps: 2,
+                          approval_func: |_name, _args| false})
     .generate('write it')
 
   assert_eq(ran.size(), 0)
-  assert_eq(r.tool_runs, 0)
   # The refusal is in the history, so the model can try something else rather
   # than wait for a result that is never coming.
   assert_eq(msg.content_of(last_of(model.last_messages())), agent.CANCELLED)
@@ -160,12 +187,12 @@ fn a_tool_without_needs_approval_is_never_asked_about() {
   let asked = []
   let model = ScriptedModel.new([calls_a_tool(1, 'read')])
   let tools = {read: a_tool('read', false, fn (_args) { 'contents' })}
-  let r = an_agent(model, tools, {max_steps: 2,
-                                  approve: |name, _args| asked.push(name)})
+  an_agent(model, tools, {max_steps: 2,
+                          approval_func: |name, _args| asked.push(name)})
     .generate('read it')
 
   assert_eq(asked.size(), 0)
-  assert_eq(r.tool_runs, 1)
+  assert_eq(msg.content_of(last_of(model.last_messages())), 'contents')
 }
 
 # --- what the model is told when a call goes wrong --------------------------
@@ -173,11 +200,10 @@ fn a_tool_without_needs_approval_is_never_asked_about() {
 @test
 fn an_unknown_tool_comes_back_as_a_result() {
   let model = ScriptedModel.new([calls_a_tool(1, 'nope')])
-  let r = an_agent(model, {}, {max_steps: 2}).generate('use a missing tool')
+  an_agent(model, {}, {max_steps: 2}).generate('use a missing tool')
 
-  assert_eq(r.tool_runs, 0)
   let told = msg.content_of(last_of(model.last_messages()))
-  assert_true(told.contains('no tool named nope'))
+  assert_true(told.contains('tool nope not found'))
 }
 
 @test
@@ -190,20 +216,30 @@ fn a_tool_that_throws_comes_back_as_a_result() {
   }
   # The step after it still happens: a failing tool is a fact to report, not
   # the end of the run.
-  let r = an_agent(model, tools, {max_steps: 2}).generate('break something')
+  an_agent(model, tools, {max_steps: 2}).generate('break something')
 
-  assert_eq(r.steps, 2)
-  assert_true(msg.content_of(last_of(model.seen[0].slice(0, 1))) != '')
+  assert_eq(model.seen.size(), 2)
   let told = msg.content_of(last_of(model.last_messages()))
   assert_true(told.contains('no such file: x.txt'))
+}
+
+@test
+fn a_tool_is_run_by_name_not_by_the_key_it_was_filed_under() {
+  # The model calls what the schema advertised, and the schema carries `name`.
+  let model = ScriptedModel.new([calls_a_tool(1, 'search')])
+  let tools = {anything: a_tool('search', false, fn (_args) { 'found' })}
+  an_agent(model, tools, {max_steps: 2}).generate('go')
+
+  assert_eq(msg.content_of(last_of(model.last_messages())), 'found')
 }
 
 # --- context compression ----------------------------------------------------
 
 @test
 fn a_short_history_is_left_alone() {
+  let a = an_agent(ScriptedModel.new([]), {}, {})
   let history = [msg.system('instructions'), msg.user('hello')]
-  assert_eq(agent.manage_context(history).size(), 2)
+  assert_eq(a.manage_context(history).size(), 2)
 }
 
 @test
@@ -214,16 +250,28 @@ fn a_long_history_is_compressed_before_it_is_sent() {
   let tools = {
     big: a_tool('big', false, fn (_args) { 'result'.repeat(2000) }),
   }
-  let r = an_agent(model, tools, {max_steps: 6}).generate('start')
+  an_agent(model, tools, {max_steps: 6}).generate('start')
 
-  assert_eq(r.steps, 5)
+  assert_eq(model.seen.size(), 5)
   let sent = model.last_messages()
   let total = sent.map(|m| msg.content_of(m).size()).sum()
   assert_true(total <= agent.CHAR_LIMIT)
   assert_true(sent.any(|m| msg.content_of(m).contains('was omitted')))
 
   # What survives is the shape the model needs: its instructions, and the
-  # turns it is in the middle of.
+  # thread it is in the middle of.
   assert_eq(msg.role_of(sent[0]), 'system')
   assert_eq(msg.role_of(last_of(sent)), 'tool')
+}
+
+# --- a tool that fails is not an exception ----------------------------------
+
+@test
+fn execute_tool_answers_with_the_failure_rather_than_raising() {
+  let boom = a_tool('boom', false, fn (_args) {
+    throw err.tool_error('boom', 'not_found', 'no such file')
+  })
+  assert_true(agent.execute_tool(boom, {}).contains('no such file'))
+  let fine = a_tool('fine', false, fn (_args) { 'ok' })
+  assert_eq(agent.execute_tool(fine, {}), 'ok')
 }

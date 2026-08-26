@@ -3,24 +3,35 @@ import clean from '../core/clean_messages.cul'
 import err from '../core/errors.cul'
 import api_error from './api_error.cul'
 
-# The OpenAI chat-completions wire format: the same conversation, said
-# differently.
+# Ported from upstream's `src/providers/openai.ts`.
 #
-# Reading this beside wire_anthropic.cul is the point of having both. The
-# agent's message model does not change; what changes is how three things are
-# spelled:
+# The same conversation as providers/anthropic.cul, said differently. Reading
+# the two side by side is the point of having both; three things are spelled
+# differently and nothing else is:
 #
 #   the system prompt   a turn in the array here, a field of its own there
 #   a tool call         a JSON *string* of arguments here, a nested object there
 #   a tool result       its own `tool` role here, a user turn there
 #
-# Everything else — the loop, the tools, the approval gate — is untouched by
-# which of these is in use, which is what the interface in
-# core/language_model.cul buys.
+# `create_openai` stands in for `new OpenAI(...)`, and reads what that SDK
+# reads: `OPENAI_API_KEY`, and `OPENAI_BASE_URL` for anything speaking this
+# format at another address. That last one is all it takes to reach OpenRouter,
+# which is how upstream would reach it too.
 
+let DEFAULT_BASE_URL = 'https://api.openai.com/v1'
+let TIMEOUT = 120
 let PROVIDER = 'openai'
 
-class OpenAIWire {
+fn create_openai(config = {}) {
+  let key = config.api_key ?? Sys.env('OPENAI_API_KEY', '')
+  let http = Http.client(
+    config.base_url ?? Sys.env('OPENAI_BASE_URL', DEFAULT_BASE_URL),
+    headers: {Authorization: "Bearer {key}"},
+    timeout: config.timeout ?? TIMEOUT)
+  |model_id| OpenAIModel.new(http, model_id)
+}
+
+class OpenAIModel {
   new(http, model_id) {
     self.http = http
     self.model_id = model_id
@@ -29,9 +40,11 @@ class OpenAIWire {
   do_generate(params) {
     let history = clean.clean_messages(params.messages)
 
-    mut body = {
-      model: self.model_id,
-      messages: turns_of(history),
+    mut body = {model: self.model_id, messages: turns_of(history)}
+    # This format does not require a ceiling, so upstream sends one only when
+    # asked to. The other format requires one and defaults it.
+    if params.max_tokens != nil {
+      body.max_completion_tokens = params.max_tokens
     }
     let specs = params.tools ?? []
     if !specs.empty() {
@@ -106,9 +119,20 @@ fn read_reply(payload) {
     throw err.llm_api_error(500, PROVIDER, 'the API answered with no choices')
   }
   let choice = choices[0]
+  # Not upstream's: a failure can arrive beside the turn it could not produce,
+  # inside a 200. See README, "Where this differs from upstream".
+  if choice.error != nil {
+    throw api_error.carried_error(PROVIDER, choice.error)
+  }
+
   let reply = choice.message ?? {}
   {
     text: reply.content ?? '',
+    # Nor is this: what the other format sends as a `thinking` block arrives
+    # here as a field beside the answer. Nothing goes back — this format has no
+    # place for it, and the endpoints that speak it reconstruct what they need.
+    reasoning: reply.reasoning ?? '',
+    reasoning_blocks: [],
     finish_reason: finish_reason_of(choice.finish_reason),
     tool_calls: (reply.tool_calls ?? []).map(|c| call_of(c)),
     usage: usage_of(payload.usage),
@@ -159,5 +183,5 @@ fn usage_of(u) {
   }
 }
 
-export {OpenAIWire}
+export {create_openai, OpenAIModel}
 export {turns_of, tools_of, read_reply, finish_reason_of, args_of}

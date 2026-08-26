@@ -48,8 +48,18 @@ fn parsed(provider, res) {
   }
 }
 
+# A failure carried inside a 200. The request was accepted and a provider was
+# picked, and then the generation broke on the far side of the gateway, which
+# reports that in the body rather than in the status. Both formats have a place
+# for it, and read as an ordinary turn it looks like a model with nothing left
+# to say — so it is raised, not returned.
+fn carried_error(provider, failure) {
+  err.llm_api_error(failure.code ?? 502, provider,
+    "{provider} wire: the generation failed — {clip(said_by(failure))}")
+}
+
 fn clip(s) {
   s.size() <= MAX_DETAIL ? s : s.slice(0, MAX_DETAIL) + '...'
 }
 
-export {explain, detail_of, parsed}
+export {explain, detail_of, parsed, carried_error}

@@ -5,141 +5,125 @@ import workspace from './core/workspace.cul'
 import tools from './tools/index.cul'
 import factory from './providers/model_factory.cul'
 
-# The command line: one task, or a prompt that keeps asking.
+# Ported from upstream's `bin/cli.ts`, without the parts this port leaves out:
+# no --sandbox, no --stream, no --responses, no Issue-driven mode.
 #
-# Everything lives inside `main`. A top-level binding in the file that is also
-# the entry point is a global for the whole program, and there is no reason
-# for the workspace or the agent to be one.
+# The workspace is `./workspace` under the working directory, as upstream
+# resolves it, so this is run from the directory holding it:
 #
-# The parsing is done by hand rather than with `Args`, for one reason: an
-# optional positional is not expressible in a spec (stdlib §10), and the task
-# reads better as trailing words than as `--task "..."`.
+#     cd examples/agents/nano-code
+#     LLM_PROVIDER=openai LLM_MODEL=... LLM_API_KEY=... \
+#     OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
+#     culebra nano-code.cul --yolo "fix the bug in hello.cul"
+#
+# Everything lives inside `main`: a top-level binding in the file that is also
+# the entry point is a global for the whole program, and neither the workspace
+# nor the agent has any reason to be one.
+
+let MAX_STEPS = 30
 
 let USAGE = """
-nano-code — a coding agent, ported from laiso/nano-code
+usage: culebra nano-code.cul [--yolo] <task...>
 
-  culebra nano-code.cul [options] [task...]
+  --yolo    run tools that change things without asking
 
-  --yes, -y            run tools that change things without asking
-  --workspace <dir>    the directory the agent may touch
-                       (default: ./workspace beside this file)
-  --help, -h           this text
-
-With no task, it reads them one at a time; an empty line ends the session.
-
-Where to connect and how to speak come from the environment:
-
-  LLM_MODEL            required — the model id the endpoint serves
-  OPENROUTER_API_KEY   or ANTHROPIC_API_KEY, or OPENAI_API_KEY
-  LLM_WIRE             anthropic (default) or openai
-  LLM_ENDPOINT         openrouter / anthropic / openai
-  LLM_BASE_URL         override the endpoint's URL
-  LLM_API_KEY          override the endpoint's key
+  LLM_PROVIDER         openai or anthropic
+  LLM_MODEL            the model id that provider serves
+  LLM_API_KEY          the key, unless the provider's own variable is set
+  OPENAI_BASE_URL      where the openai format is spoken, if not OpenAI itself
+  ANTHROPIC_BASE_URL   the same, for the other format
 """
 
 fn main() {
   let opts = parse(Sys.argv)
-  if opts.help {
-    println(USAGE)
-    return
+  let provider = Sys.env('LLM_PROVIDER', '')
+  let model_id = Sys.env('LLM_MODEL', '')
+  let root = FS.join(Sys.getcwd(), 'workspace')
+
+  if !opts.unknown.empty() {
+    IO.eprintln("error: unknown option {opts.unknown[0]}")
+    IO.eprintln(USAGE)
+    Sys.exit(1)
+  }
+  if opts.task.empty() {
+    IO.eprintln('error: say what to do')
+    IO.eprintln(USAGE)
+    Sys.exit(1)
+  }
+  if !FS.exists(root) {
+    FS.mkdir(root)
   }
 
-  let ws = open_workspace(opts.workspace)
-  let connected = factory.model_from_env()
-  println("nano-code — {connected.endpoint}, {connected.wire} wire, " +
-          "{connected.model_id}")
-  println("workspace: {ws.root}")
+  println('=== Nano Code Agent ===')
+  println("Provider: {provider.empty() ? '(unset)' : provider}")
+  println("Model: {model_id.empty() ? '(unset)' : model_id}")
+  println("Workspace: {root}")
+  if opts.yolo {
+    println('[mode] approving every tool call (--yolo)')
+  }
+  println("Task: {clip(opts.task)}")
+  println('')
+
+  # The key can also come from the provider's own variable, so it is not
+  # required here — but naming what is missing beats a 401.
+  if provider.empty() || model_id.empty() {
+    IO.eprintln('error: LLM_PROVIDER and LLM_MODEL must be set')
+    Sys.exit(1)
+  }
 
   let a = agent.Agent.new({
     name: 'nano-code',
-    instructions: prompt.load_instructions(ws.root),
-    model: connected.model,
-    tools: tools.make_tools(ws),
+    instructions: prompt.load_instructions(root),
+    model: factory.create_model_from_env(),
+    tools: tools.make_tools(workspace.Workspace.new(root)),
+    max_steps: MAX_STEPS,
     verbose: true,
-    approve: opts.yes ? approval.approve_all : approval.request_approval,
+    approval_func: opts.yolo ? approval.approve_all : nil,
   })
 
-  if opts.task.empty() {
-    session(a)
-  } else {
-    ask(a, opts.task)
-  }
+  a.generate(opts.task)
 }
 
+# `Args` is not used for one reason: an optional positional is not expressible
+# in a spec (stdlib §10), and the task reads better as trailing words than as
+# `--task "..."`.
 fn parse(argv) {
-  mut help = false
-  mut yes = false
-  mut dir = ''
-  mut words = []
-  mut i = 0
-  while i < argv.size() {
-    let arg = argv[i]
-    cond {
-      arg == '--help' || arg == '-h' => help = true,
-      arg == '--yes' || arg == '-y' => yes = true,
-      arg == '--workspace' => {
-        dir = i + 1 < argv.size() ? argv[i + 1] : ''
-        i += 1
-      },
-      _ => words.push(arg),
-    }
-    i += 1
+  {
+    yolo: argv.contains('--yolo'),
+    # An option this does not know is not task text. Upstream's `parseArgs`
+    # rejects it; folding it into the prompt asks the model to do `--yes fix
+    # it`.
+    unknown: argv.filter(|a| a.starts_with('--') && a != '--yolo'),
+    task: argv.filter(|a| !a.starts_with('--')).join(' '),
   }
-  {help: help, yes: yes, workspace: dir, task: words.join(' ')}
 }
 
-# The default sits beside this file rather than beside the shell's current
-# directory, so the agent touches the same place wherever it is run from.
-fn open_workspace(given) {
-  let dir = given.empty()
-    ? FS.join(FS.dirname(Sys.script), 'workspace')
-    : given
-  if !FS.exists(dir) {
-    FS.mkdir(dir)
-  }
-  workspace.Workspace.new(dir)
+fn clip(s) {
+  s.size() <= 100 ? s : s.slice(0, 100) + '...'
 }
 
-fn ask(a, task) {
-  let r = a.generate(task)
-  report(r)
-}
-
-fn session(a) {
-  println("")
-  println("Ask for something. An empty line ends the session.")
-  mut asking = true
-  while asking {
-    print('> ')
-    let task = IO.input().trim()
-    if task.empty() || task == 'exit' || task == 'quit' {
-      asking = false
-    } else {
-      # One bad turn does not end the session: the model can be told about a
-      # refusal or a broken key and asked again.
-      try {
-        report(a.generate(task))
-      } catch e {
-        println("error: {e.message ?? e}")
-      }
+# The key is masked out of whatever is reported, as upstream masks it: an error
+# from an endpoint can quote the request it refused. Upstream reads one variable
+# because it requires one; here a provider's own key wins over the shared one,
+# so all three have to be covered or the usual configuration is the unmasked
+# one.
+fn mask(text) {
+  mut out = text
+  for name in ['LLM_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'] {
+    let key = Sys.env(name, '')
+    if !key.empty() {
+      out = out.replace(key, '***')
     }
   }
+  out
 }
 
-fn report(r) {
-  println("")
-  println("({count(r.steps, 'step')}, {count(r.tool_runs, 'tool run')}" +
-          (r.hit_max_steps ? ', stopped at the step budget)' : ')'))
-}
-
-fn count(n, noun) {
-  n == 1 ? "1 {noun}" : "{n} {noun}s"
-}
-
-# A missing key or model is the usual first run, and it is not a crash.
+# A missing key or an endpoint that will not answer is the usual first run, and
+# it is not a crash.
 try {
   main()
 } catch e {
-  IO.eprintln("nano-code: {e.message ?? e}")
+  IO.eprintln('')
+  IO.eprintln("nano-code: {mask(e.message ?? e)}")
   Sys.exit(1)
 }

@@ -1,23 +1,20 @@
 import msg from './message.cul'
 import lm from './language_model.cul'
 import approval from './approval.cul'
-import tool_index from '../tools/index.cul'
 
+# Ported from upstream's `src/core/agent.ts`.
+#
 # The loop: ask the model, run what it asked for, hand the results back, ask
-# again — until it answers in words instead of in tool calls, or until the
-# step budget runs out.
+# again — until it answers in words instead of in tool calls, or until the step
+# budget runs out.
 #
-# The class prints nothing unless `verbose` is set. Upstream logs the model's
-# text from inside the loop unconditionally, which makes every test print a
-# transcript; here `generate` reports what happened in its return value and
-# the caller decides what to show.
-#
-# The conversation belongs to the agent, not to one call of `generate`.
-# Upstream starts a fresh history every time because its CLI only ever asks
-# once; keeping it on the instance is what lets the REPL ask a follow-up that
-# means something, and costs a one-shot run nothing.
+# Every outcome of a tool call — no such tool, a refusal, a throw from inside
+# the tool — goes back into the conversation as a tool result rather than being
+# raised, because the model is the one who has to react to it and it can only
+# read what is in the history.
 
-let CHAR_LIMIT = 30000       # ~10k-15k tokens; size it to the model's window
+# ~10k-15k tokens; size it to the model's context window.
+let CHAR_LIMIT = 30000
 let KEEP_RECENT = 4          # newest turns, never compressed
 let TOOL_RESULT_LIMIT = 200  # an older tool result longer than this is elided
 let LOG_CLIP = 200
@@ -30,133 +27,144 @@ class Agent {
     self.name = config.name
     self.instructions = config.instructions
     self.model = config.model
-    self.tools = config.tools
-    # The model is handed the schemas, never the implementations: a tool's
-    # `run` has no business on the wire.
-    self.specs = tool_index.tool_specs(config.tools)
+    # An Object of tools becomes a list: the model calls them by name, not by
+    # the key they were filed under.
+    self.tools = config.tools.values().collect()
     self.max_steps = config.max_steps ?? 10
     self.verbose = config.verbose ?? false
-    self.approve = config.approve ?? approval.request_approval
-    self.history = [msg.system(self.instructions)]
+    self.approval_func = config.approval_func ?? approval.request_approval
   }
 
   generate(user_prompt) {
-    self.history.push(msg.user(user_prompt))
-    mut messages = self.history
+    mut messages = [msg.system(self.instructions), msg.user(user_prompt)]
     mut step = 0
-    mut runs = 0
-    mut text = ''
-    mut hit_max_steps = false
+    mut final_text = ''
+    mut tool_call_count = 0
 
     while step < self.max_steps {
       step += 1
-      messages = manage_context(messages)
-      self.log("\n=== step {step}/{self.max_steps} " +
-               "({total_chars(messages)} chars) ===")
-
-      let res = lm.generate_text(self.model, messages, self.specs)
-      let said = res.text ?? ''
-      if !said.empty() {
-        text = said
-        self.log(said)
+      if self.verbose {
+        println("\n=== step {step}/{self.max_steps} ===")
       }
 
-      let calls = res.tool_calls ?? []
+      messages = self.manage_context(messages)
+      let response = lm.generate_text(self.model, messages, self.tools)
+
+      let said = response.text ?? ''
+      if !said.empty() {
+        final_text = said
+        println(said)
+      } else if self.verbose && !(response.reasoning ?? '').empty() {
+        # Not upstream's. A model that thinks before it answers can spend a
+        # whole turn on it, and a step that prints nothing at all reads as a
+        # hang rather than as a turn that produced no answer.
+        println("[thought, said nothing] {clip(response.reasoning)}")
+      }
+
+      # Whatever the provider wants handed back with this turn. The loop does
+      # not read them; it only keeps them attached to the turn they came from.
+      let blocks = response.reasoning_blocks ?? []
+
+      let calls = response.tool_calls ?? []
       if calls.empty() {
         # The model answered in words: that is the end of the task.
-        messages.push(msg.assistant(said))
+        messages.push(msg.assistant(said, [], blocks))
         break
       }
 
-      messages.push(msg.assistant(said, calls))
+      messages.push(msg.assistant(said, calls, blocks))
       for call in calls {
-        let (result, ran) = self.run_call(call)
-        messages.push(result)
-        if ran {
-          runs += 1
+        if self.run_call(call, messages) {
+          tool_call_count += 1
         }
       }
-    } nobreak {
-      # Fell out of the loop rather than breaking: the budget, not the model,
-      # ended this.
-      hit_max_steps = true
     }
 
-    # Compression rebinds `messages`, so the agent takes back what the run
-    # ended with rather than what it started from.
-    self.history = messages
-    {text: text, steps: step, tool_runs: runs, hit_max_steps: hit_max_steps}
+    if step >= self.max_steps {
+      println('warning: reached the maximum number of steps')
+    }
+    if tool_call_count == 0 && step == 1 {
+      println('warning: finished without using a tool')
+    }
+
+    {text: final_text}
   }
 
-  # One tool call, and whether it ran. Every outcome — no such tool, a
-  # refusal, a throw from inside the tool — comes back as a tool result rather
-  # than as an exception, because the model is the one who has to react to it,
-  # and it can only read what is in the history.
-  run_call(call) {
-    # `.get` rather than an index: a name the model made up is a KeyError, and
-    # a made-up name is exactly the case this handles.
-    let tool = self.tools.get(call.name, nil)
+  # One call: its result is appended to `messages`, and the answer says whether
+  # the tool ran.
+  run_call(call, messages) {
+    let tool = self.tools.find(|t| t.name == call.name)
     if tool == nil {
-      return (self.result(call, "error: there is no tool named {call.name}"),
-              false)
+      messages.push(self.result(call, "error: tool {call.name} not found"))
+      return false
     }
 
-    self.log("[tool] {call.name}({JSON.stringify(call.args ?? {})})")
-
-    if (tool.needs_approval ?? false) && !self.approve(call.name, call.args) {
-      return (self.result(call, CANCELLED), false)
+    if self.verbose {
+      println("[tool] {call.name}({JSON.stringify(call.args ?? {})})")
     }
 
-    let out = try {
-      tool.run(call.args ?? {})
-    } catch e {
-      "error: {e.message ?? e}"
+    if (tool.needs_approval ?? false) &&
+       !self.approval_func(call.name, call.args) {
+      messages.push(self.result(call, CANCELLED))
+      return false
     }
-    self.log("[result] {clip(out)}")
-    (self.result(call, out), true)
+
+    let out = execute_tool(tool, call.args ?? {})
+    if self.verbose {
+      println("[result] {clip(out)}")
+    }
+    messages.push(self.result(call, out))
+    true
   }
 
   result(call, content) {
     msg.tool_result(call.tool_call_id, call.name, content)
   }
 
-  log(line) {
-    if self.verbose {
-      println(line)
+  # Compression, in two strategies applied in order: elide old tool results —
+  # one readFile is usually why a history got big — and then, if it is still
+  # over, drop what is left oldest-first. The system prompt and the newest
+  # KEEP_RECENT messages are never touched, so the model keeps both its
+  # instructions and the thread it is in the middle of.
+  manage_context(messages) {
+    let total = total_chars(messages)
+    if total < CHAR_LIMIT || messages.size() <= KEEP_RECENT + 1 {
+      return messages
     }
+    println("\n[Context] compressing the conversation " +
+            "(currently {total} characters)")
+
+    let system = messages[0]
+    let recent = messages.slice(messages.size() - KEEP_RECENT, messages.size())
+    let middle = messages.slice(1, messages.size() - KEEP_RECENT)
+      .map(|m| elide(m))
+
+    # `from` is where the surviving middle starts. An index rather than
+    # repeated removal from the head of an array.
+    mut chars = msg.content_of(system).size() +
+                total_chars(middle) + total_chars(recent)
+    mut from = 0
+    while chars > CHAR_LIMIT && from < middle.size() {
+      chars -= msg.content_of(middle[from]).size()
+      from += 1
+    }
+
+    [system] + middle.slice(from, middle.size()) + recent
+  }
+}
+
+# A tool that throws answers with the text of the failure: the model is the one
+# who has to read it and try something else.
+fn execute_tool(tool, args) {
+  try {
+    tool.execute(args)
+  } catch e {
+    "error: {e.message ?? e}"
   }
 }
 
 fn total_chars(messages) {
   messages.map(|m| msg.content_of(m).size()).sum()
-}
-
-# Compression, in two strategies applied in order: elide old tool results —
-# one readFile is usually why a history got big — and then, if it is still
-# over, drop what is left oldest-first. The system prompt and the newest
-# KEEP_RECENT messages are never touched, so the model keeps both its
-# instructions and the thread it is in the middle of.
-fn manage_context(messages) {
-  if total_chars(messages) < CHAR_LIMIT || messages.size() <= KEEP_RECENT + 1 {
-    return messages
-  }
-
-  let system = messages[0]
-  let recent = messages.slice(messages.size() - KEEP_RECENT, messages.size())
-  let middle = messages.slice(1, messages.size() - KEEP_RECENT)
-    .map(|m| elide(m))
-
-  # `from` is where the surviving middle starts. An index rather than repeated
-  # removal from the head of an array.
-  mut chars = msg.content_of(system).size() +
-              total_chars(middle) + total_chars(recent)
-  mut from = 0
-  while chars > CHAR_LIMIT && from < middle.size() {
-    chars -= msg.content_of(middle[from]).size()
-    from += 1
-  }
-
-  [system] + middle.slice(from, middle.size()) + recent
 }
 
 fn elide(m) {
@@ -178,4 +186,4 @@ fn clip(s) {
   s.size() <= LOG_CLIP ? s : s.slice(0, LOG_CLIP) + '...'
 }
 
-export {Agent, manage_context, CHAR_LIMIT, KEEP_RECENT, CANCELLED}
+export {Agent, execute_tool, CHAR_LIMIT, KEEP_RECENT, CANCELLED}

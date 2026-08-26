@@ -18,15 +18,22 @@
 enum Message {
   User(Object),        # {content}
   System(Object),      # {content}
-  Assistant(Object),   # {content, tool_calls}
+  Assistant(Object),   # {content, tool_calls, reasoning_blocks}
   Tool(Object),        # {tool_call_id, name, content}
 }
 
 fn user(content) { Message.User({content: content}) }
 fn system(content) { Message.System({content: content}) }
 
-fn assistant(content, tool_calls = []) {
-  Message.Assistant({content: content, tool_calls: tool_calls})
+# `reasoning_blocks` are whatever the provider asked to have handed back
+# verbatim when this turn goes out again. They are opaque here: only the
+# provider that produced them knows what is inside, and any other one ignores
+# them. The Messages format needs this — a model that thinks before it answers
+# loses the thread when its own thinking is dropped from the history — and
+# nothing in the loop has to know that.
+fn assistant(content, tool_calls = [], reasoning_blocks = []) {
+  Message.Assistant({content: content, tool_calls: tool_calls,
+                     reasoning_blocks: reasoning_blocks})
 }
 
 fn tool_result(tool_call_id, name, content) {
@@ -62,6 +69,13 @@ fn tool_calls_of(m) {
   }
 }
 
+fn reasoning_blocks_of(m) {
+  match m {
+    Assistant(o) => o.reasoning_blocks ?? [],
+    _            => [],
+  }
+}
+
 fn tool_call_id_of(m) {
   match m {
     Tool(o)    => o.tool_call_id,
@@ -78,3 +92,4 @@ fn tool_name_of(m) {
 
 export {Message, user, system, assistant, tool_result}
 export {role_of, content_of, tool_calls_of, tool_call_id_of, tool_name_of}
+export {reasoning_blocks_of}

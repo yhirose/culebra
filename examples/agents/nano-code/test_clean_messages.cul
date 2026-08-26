@@ -113,3 +113,31 @@ fn every_variant_carries_a_payload() {
   }
   assert_eq(ms.map(|m| m.class), ['User', 'System', 'Assistant', 'Tool'])
 }
+
+@test
+fn the_repair_keeps_what_a_provider_asked_to_have_back() {
+  # Rebuilding an assistant turn must not drop them: a provider that needs its
+  # own thinking returned would lose it exactly when compression ran.
+  let block = {type: 'thinking', thinking: 'thinking', signature: 's'}
+  let repaired = clean.clean_messages([
+    msg.user('go'),
+    msg.assistant('', [{tool_call_id: 'gone', name: 'ls', args: {}}], [block]),
+  ])
+
+  # The call has no result, so it is dropped and the turn survives — with the
+  # blocks still on it.
+  assert_eq(msg.tool_calls_of(repaired[1]), [])
+  assert_eq(msg.reasoning_blocks_of(repaired[1]), [block])
+}
+
+@test
+fn a_history_with_nothing_left_to_answer_gets_something_to_answer() {
+  # An orphan tool result and nothing else: dropping it would leave a request
+  # with no turns, which neither format accepts.
+  let only_system = clean.clean_messages([
+    msg.system('instructions'),
+    msg.tool_result('gone', 'readFile', 'contents'),
+  ])
+  assert_eq(only_system.map(|m| msg.role_of(m)), ['system', 'user'])
+  assert_eq(msg.content_of(only_system[1]), clean.CONTINUE)
+}

@@ -1,10 +1,12 @@
 import factory from './providers/model_factory.cul'
 
-# `connection` decides everything before a socket is opened — which endpoint,
-# which wire, which headers — from a plain Object, so every branch of that
-# decision is testable with no key and no network.
+# Ported from upstream's `src/providers/modelFactory.test.ts`.
+#
+# `create_model` takes the three settings as arguments rather than reading them
+# itself, so every branch — which format, which key wins, what an unknown name
+# does — is testable with no environment to set up and no key.
 
-fn reason_of(f) {
+fn factory_reason_of(f) {
   try {
     f()
     nil
@@ -14,89 +16,52 @@ fn reason_of(f) {
 }
 
 @test
-fn a_key_is_enough_to_say_where_to_connect() {
-  let conn = factory.connection({OPENROUTER_API_KEY: 'k',
-                                 LLM_MODEL: 'a/model'})
-  assert_eq(conn.endpoint, 'openrouter')
-  assert_eq(conn.base_url, 'https://openrouter.ai/api/v1')
-  assert_eq(conn.wire, 'anthropic')
-  assert_eq(conn.headers, {Authorization: 'Bearer k'})
+fn builds_a_model_for_each_supported_provider() {
+  # A provider is a function from a model id to a model, so what comes back
+  # answers `do_generate` without anything having been sent.
+  for name in ['openai', 'anthropic'] {
+    let model = factory.create_model(name, 'a-model', 'k')
+    assert_eq(model.model_id, 'a-model')
+  }
 }
 
 @test
-fn the_anthropic_endpoint_authorises_its_own_way() {
-  let conn = factory.connection({ANTHROPIC_API_KEY: 'k', LLM_MODEL: 'a-model'})
-  assert_eq(conn.endpoint, 'anthropic')
-  assert_eq(conn.headers['x-api-key'], 'k')
-  # The version header is required by that endpoint and by nothing else.
-  assert_true(!conn.headers['anthropic-version'].empty())
+fn the_provider_name_is_read_without_regard_to_case() {
+  assert_eq(factory.create_model('OpenAI', 'a-model', 'k').model_id, 'a-model')
 }
 
 @test
-fn the_first_key_that_is_set_wins() {
-  let conn = factory.connection({ANTHROPIC_API_KEY: 'a', OPENROUTER_API_KEY: 'o',
-                                 LLM_MODEL: 'm'})
-  assert_eq(conn.endpoint, 'openrouter')
-  assert_eq(conn.headers, {Authorization: 'Bearer o'})
+fn an_unsupported_provider_says_which_ones_are() {
+  let raised = try {
+    factory.create_model('carrier-pigeon', 'a-model', 'k')
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(raised.reason, 'unknown_provider')
+  assert_true(raised.message.contains('openai'))
+  assert_true(raised.message.contains('anthropic'))
 }
 
 @test
-fn an_endpoint_can_be_named_outright() {
-  let conn = factory.connection({OPENROUTER_API_KEY: 'o', ANTHROPIC_API_KEY: 'a',
-                                 LLM_ENDPOINT: 'anthropic', LLM_MODEL: 'm'})
-  assert_eq(conn.endpoint, 'anthropic')
-  assert_eq(conn.headers['x-api-key'], 'a')
+fn a_providers_own_key_wins_over_the_shared_one() {
+  # Upstream copies LLM_API_KEY into the provider's variable only when that one
+  # is unset. Nothing here sets OPENAI_API_KEY, so the shared key is what a
+  # config would carry.
+  assert_eq(factory.config_for('OPENAI_API_KEY', 'shared'),
+            {api_key: 'shared'})
+  # And with neither, an empty config: the provider then reads its own
+  # variable, which is not the same as being handed an empty key.
+  assert_eq(factory.config_for('OPENAI_API_KEY', ''), {})
+  # A name no environment defines stands in for "the provider's own is unset".
+  assert_eq(factory.config_for('NANO_CODE_NO_SUCH_KEY', 'shared'),
+            {api_key: 'shared'})
 }
 
 @test
-fn a_base_url_and_a_key_can_be_given_directly() {
-  # What a proxy or a local server needs: the endpoint decides the header
-  # shape, the settings decide where it goes and what it carries.
-  let conn = factory.connection({LLM_ENDPOINT: 'openrouter',
-                                 LLM_API_KEY: 'direct',
-                                 LLM_BASE_URL: 'http://localhost:8080/v1',
-                                 LLM_MODEL: 'm'})
-  assert_eq(conn.base_url, 'http://localhost:8080/v1')
-  assert_eq(conn.headers, {Authorization: 'Bearer direct'})
-}
-
-@test
-fn the_wire_is_a_choice_of_its_own() {
-  # The point of the split: one endpoint, one model id, either format.
-  assert_eq(factory.connection({OPENROUTER_API_KEY: 'k',
-                                LLM_MODEL: 'a/model'}).wire, 'anthropic')
-  assert_eq(factory.connection({OPENROUTER_API_KEY: 'k', LLM_MODEL: 'a/model',
-                                LLM_WIRE: 'openai'}).wire, 'openai')
-  assert_eq(reason_of(fn () {
-    factory.connection({OPENROUTER_API_KEY: 'k', LLM_MODEL: 'm',
-                        LLM_WIRE: 'carrier-pigeon'})
-  }), 'unknown_wire')
-}
-
-@test
-fn an_endpoint_suggests_the_wire_it_is_native_to() {
-  assert_eq(factory.connection({OPENAI_API_KEY: 'k',
-                                LLM_MODEL: 'a-model'}).wire, 'openai')
-}
-
-@test
-fn says_what_is_missing_rather_than_guessing() {
-  assert_eq(reason_of(fn () { factory.connection({LLM_MODEL: 'm'}) }),
-            'no_api_key')
-  assert_eq(reason_of(fn () {
-    factory.connection({OPENROUTER_API_KEY: 'k'})
-  }), 'no_model')
-  assert_eq(reason_of(fn () {
-    factory.connection({OPENROUTER_API_KEY: 'k', LLM_MODEL: 'm',
-                        LLM_ENDPOINT: 'somewhere'})
-  }), 'unknown_endpoint')
-}
-
-@test
-fn reads_nothing_from_the_environment_that_is_not_declared() {
-  let settings = factory.settings_from_env()
-  # Whatever the machine happens to have set, only the declared names can
-  # reach the decision above.
-  assert_true(settings.keys().all(|k| k.starts_with('LLM_') ||
-                                      k.ends_with('_API_KEY')))
+fn an_unset_provider_is_an_unknown_one() {
+  # `LLM_PROVIDER` unset reaches here as the empty string, and there is no
+  # provider by that name.
+  assert_eq(factory_reason_of(fn () { factory.create_model('', 'm', '') }),
+            'unknown_provider')
 }
