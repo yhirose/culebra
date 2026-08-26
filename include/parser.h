@@ -1093,6 +1093,16 @@ inline ArgScan scan_arg_list(const peg::Ast& args_ast) {
 // `_` is the non-binding sink in patterns and parameters.
 inline bool is_sink_name(std::string_view s) { return s == "_"; }
 
+// Names the runtime binds implicitly, never via a user declaration: `self`
+// (the method receiver) / `fn` (the current function, for recursion), and the
+// reserved dunder names injected per scope — `__ARGS__` / `__KWARGS__`,
+// `__LINE__` / `__COLUMN__`, `__cls__`, and any future `__x__`. The whole
+// `__x__` space counts, so the rule can't drift as new ones are added.
+inline bool is_always_bound_name(std::string_view n) {
+  if (n == "self" || n == "fn") return true;
+  return n.size() > 4 && n.starts_with("__") && n.ends_with("__");
+}
+
 // The first name a pattern subtree binds, or nullptr. Bindings are non-sink
 // IDENTIFIER / TYPED_IDENT / `...rest` leaves, wherever they sit; an object
 // pattern's key names a field rather than a binding, so only its value

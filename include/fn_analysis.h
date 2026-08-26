@@ -25,17 +25,6 @@ namespace culebra {
 // Analysis result for a function (including the top-level main program).
 struct FuncInfo {
   std::vector<std::string> free_vars;   // captured from outer
-  // Parallel to free_vars: mut flag of the outer slot at the moment the
-  // closure was instantiated. Populated by emit_closure_build, consumed
-  // by the inner function's free-var binding so ImmutableError fires on
-  // writes to captured non-mut bindings.
-  std::vector<bool> free_var_mut;
-  // Parallel to free_vars: the outer slot was a lazy forward-ref cell (or
-  // itself a guarded capture of one) when the closure was instantiated.
-  // The inner binding then guards reads for the unbound sentinel — a call
-  // before the declaring statement ran raises the interp's NameError
-  // instead of letting the materialized cell's placeholder flow as nil.
-  std::vector<bool> free_var_lazy;
   // Free vars noted only as UFCS method-name candidates, never read as a
   // variable. The enclosing locals set is flat per function, so a name
   // declared in a block that has already closed still lands here — for a
@@ -121,8 +110,7 @@ struct FnAnalysis {
       : is_builtin_var_(is_builtin_var) {}
 
   // Analysis results for each FUNCTION AST node (plus the main program).
-  // Backends read these while compiling; emit_closure_build also writes
-  // free_var_mut into the entries as closures are instantiated.
+  // Backends read these while compiling.
   std::map<const peg::Ast*, FuncInfo> func_info;
 
   // LEXICAL_SCOPE nodes that contain a DEFER within their own scope level
@@ -497,6 +485,18 @@ struct FnAnalysis {
         if (!optional) info.optional_free_vars.erase(name);
         return;
       }
+    }
+    // In a session unit a name nothing in scope binds is the session's, and
+    // the enclosing frame can hand its cell over — so capture it rather than
+    // leave the body to look the name up, which it would do on whatever
+    // thread runs it (an isolate's has neither the session nor the Runtime
+    // the cell was minted in). Not a name the runtime binds itself, and not a
+    // UFCS candidate, which is not a read.
+    if (session_top_ && !outer.empty() && !optional &&
+        !is_always_bound_name(name)) {
+      add_free_var(info, name);
+      info.optional_free_vars.erase(name);
+      return;
     }
     // else: builtin/global (resolved at the use site) or unresolved (runtime
     // NameError) — not a free variable either way.
@@ -894,17 +894,25 @@ struct FnAnalysis {
       return;
     }
 
-    if (node.tag == "DESTRUCTURE_ASSIGN"_ && node.nodes.size() >= 4 &&
-        (node.nodes[0]->token == "let" || node.nodes[1]->token == "mut")) {
-      // A declaring destructure binds the pattern's leaves; they are not
-      // reads, so walk the right-hand side alone and then mark them bound
-      // (the `let`-less form assigns to existing bindings and falls to the
-      // generic walk below, which reads the leaves as it should).
+    if (node.tag == "DESTRUCTURE_ASSIGN"_ && node.nodes.size() >= 4) {
+      // A destructure binds the leaves this frame declares; those are not
+      // reads. The declaring form binds every leaf, the `let`-less form the
+      // ones collect_fn_locals made locals (bare `[a, b] = v` declares where
+      // bare `a = v` would) and reads the rest, which reassign further out.
+      // The right-hand side is walked first either way, so `[a, b] = [a, 1]`
+      // still reads the `a` that was in scope before the statement.
+      bool declares =
+          node.nodes[0]->token == "let" || node.nodes[1]->token == "mut";
       visit_for_frees(*node.nodes[3], my_locals, outer, info);
-      for_each_pattern_binding(*node.nodes[2],
-                               [&](std::string_view nm, size_t, size_t) {
-                                 declared_.insert(std::string(nm));
-                               });
+      for_each_pattern_binding(
+          *node.nodes[2], [&](std::string_view nm, size_t, size_t) {
+            std::string name(nm);
+            if (declares || my_locals.contains(name)) {
+              declared_.insert(std::move(name));
+              return;
+            }
+            note_free_var(name, my_locals, outer, info);
+          });
       return;
     }
 

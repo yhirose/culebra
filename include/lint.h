@@ -1202,17 +1202,10 @@ namespace undefined {
 using NameSet = std::set<std::string, std::less<>>;
 using Chain = std::vector<const NameSet*>;
 
-// Names the runtime binds implicitly, never via a user declaration:
-// `self` (method receiver) / `fn` (current function, for recursion), and
-// the reserved dunder names it injects per scope — `__ARGS__` / `__KWARGS__`
-// (the positional / keyword argument collections), `__LINE__` / `__COLUMN__`
-// (the current source position), `__cls__` (a static method's class), and
-// any future `__x__`. Treating the whole `__x__` space as bound is sound:
-// these are reserved internals, never plain variables, and a blanket rule
-// can't drift as new injected dunders are added.
+// Names the runtime binds implicitly (parser.h holds the rule; the capture
+// analysis asks the same question).
 inline bool always_bound(std::string_view n) {
-  if (n == "self" || n == "fn") return true;
-  return n.size() > 4 && n.starts_with("__") && n.ends_with("__");
+  return culebra::is_always_bound_name(n);
 }
 
 inline bool resolves(std::string_view name, const Chain& chain,

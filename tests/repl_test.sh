@@ -46,6 +46,17 @@ out=$(session "let h = fn () { later }" "h()" "let later = 5" "h()")
 [[ "$out" == *"NameError"*$'\n'"5"$'\n'"5" ]] ||
   { echo "FAIL forward ref: $out"; fail=1; }
 
+# A closure carries the cells for the session names it reads, so it means the
+# same thing on a thread that has neither the session nor the Runtime those
+# cells were minted in — an earlier line's binding, and a stdlib name whose
+# session cell is still unbound (the worker resolves that one for itself).
+out=$(session "let helper = fn (x) { x * 2 }" \
+              "Parallel.map([1, 2], |x| helper(x))" \
+              "Isolate.spawn(|| helper(5)).join()" \
+              "Parallel.map([0 - 1, 0 - 2], |x| Math.abs(x))")
+[[ "$out" == *$'\n'"[2, 4]"$'\n'"10"$'\n'"[1, 2]" ]] ||
+  { echo "FAIL cross-thread session names: $out"; fail=1; }
+
 # Mutability is the session's: a `let` over a `mut` takes it back, and a bare
 # assignment to a name nothing holds declares it without one.
 out=$(session "mut v = 1" "v = 2" "let v = 3" "v = 4" "w = 7" "w = 8")

@@ -54,6 +54,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
   };
   switch (v.tag) {
     case TAG_NIL:   n.kind = K::Nil; return n;
+    case TAG_NO_SELF: n.kind = K::Unbound; n.i = v.data; return n;
     case TAG_BOOL:  n.kind = K::Bool; n.b = v.data != 0; return n;
     case TAG_LONG:  n.kind = K::Long; n.i = v.data; return n;
     case TAG_FLOAT: n.kind = K::Float; n.d = _culebra_float_to_double(v.data); return n;
@@ -269,6 +270,7 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   using K = sendable::SendNode::K;
   switch (n.kind) {
     case K::Nil:   return {TAG_NIL, 0};
+    case K::Unbound: return {TAG_NO_SELF, n.i};
     case K::Bool:  return {TAG_BOOL, n.b ? 1 : 0};
     case K::Long:  return {TAG_LONG, n.i};
     case K::Float: return jit_float(n.d);
@@ -1041,6 +1043,7 @@ inline JitValue _jit_shared_val_read(int64_t id,
   using K = sendable::SendNode::K;
   switch (n.kind) {
     case K::Nil:   return {TAG_NIL, 0};
+    case K::Unbound: return {TAG_NO_SELF, n.i};
     case K::Bool:  return {TAG_BOOL, n.b ? 1 : 0};
     case K::Long:  return {TAG_LONG, n.i};
     case K::Float: return {TAG_FLOAT, _culebra_double_to_bits(n.d)};

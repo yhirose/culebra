@@ -5251,13 +5251,22 @@ class Compiler {
     return idx;
   }
 
-  // Resolve a nested chunk's capture list in the creating frame. The mut
-  // flag rides along (the JIT's free_var_mut snapshot): a capture of a
-  // capture keeps the original binding's flag by construction.
+  // Resolve a nested chunk's capture list in the creating frame. The callee
+  // re-derives nothing about a capture, so every flag its binding needs rides
+  // along; a capture of a capture keeps the original's by construction.
   struct CaptureList {
     std::vector<int32_t> slots;
     std::vector<bool> muts;
-    std::vector<bool> lazys;  // the JIT's free_var_lazy snapshot
+    std::vector<bool> lazys;
+    std::vector<bool> shadowed_builtins;  // unbound cell => the stdlib global
+
+    void push(int32_t slot, bool is_mut = false, bool lazy = false,
+              bool shadowed_builtin = false) {
+      slots.push_back(slot);
+      muts.push_back(is_mut);
+      lazys.push_back(lazy);
+      shadowed_builtins.push_back(shadowed_builtin);
+    }
   };
   // A capture with nothing to capture: a cell holding `v`, in a slot shared
   // by every such site in this chunk. The contents never change — nothing can
@@ -5293,10 +5302,8 @@ class Compiler {
       // than a compile-time matter. Feed the closure a sentinel cell — what
       // emit_closure_build hands the same capture.
       if (!b && fv == "self") {
-        caps.slots.push_back(
-            none_cell(ast, {TAG_NO_SELF, 0}, self_none_slot_, "(self.none)"));
-        caps.muts.push_back(false);
-        caps.lazys.push_back(false);
+        caps.push(none_cell(ast, {TAG_NO_SELF, 0}, self_none_slot_,
+                            "(self.none)"));
         continue;
       }
       // A REPL line's free variable that nothing here binds is the session's.
@@ -5307,10 +5314,8 @@ class Compiler {
       // as a nil one does.
       if (!b && repl_) b = &bind_session(ast, fv);
       if (!b && info.optional_free_vars.contains(fv)) {
-        caps.slots.push_back(
-            none_cell(ast, {TAG_NIL, 0}, ufcs_none_slot_, "(ufcs.none)"));
-        caps.muts.push_back(false);
-        caps.lazys.push_back(false);
+        caps.push(none_cell(ast, {TAG_NIL, 0}, ufcs_none_slot_,
+                            "(ufcs.none)"));
         continue;
       }
       // predeclare_forward_refs put a lazy cell in place for every name
@@ -5321,9 +5326,7 @@ class Compiler {
       // Same reason a read refills it: MakeClosure may sit in a branch the
       // slot's own ReplCell does not dominate.
       ensure_session_slot(*b);
-      caps.slots.push_back(b->slot);
-      caps.muts.push_back(b->is_mut);
-      caps.lazys.push_back(b->lazy);
+      caps.push(b->slot, b->is_mut, b->lazy, b->shadowed_builtin);
     }
     return caps;
   }
@@ -5646,8 +5649,9 @@ class Compiler {
         self_cap = s;
         continue;
       }
-      fc.push_binding(
-          {info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]});
+      Binding cap{info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]};
+      cap.shadowed_builtin = caps.shadowed_builtins[i];
+      fc.push_binding(std::move(cap));
     }
     if (self_cap >= 0) {
       int32_t s = fc.alloc_slot(ast, "self");
@@ -8474,8 +8478,14 @@ class Compiler {
         // on one line makes `to_string` read 7 on the next. Which of the two
         // it is stays a run-time question (the cell is still unbound when the
         // stdlib wins), and read_shadowing already asks it that way.
-        if (repl_)
+        if (repl_) {
+          // Inside a function the name is normally a free variable whose cell
+          // the enclosing frame captured, which is what lets the body run on
+          // another thread. A name declared only in a block or arm that did
+          // not run reaches here too: nothing captured it, and its unbound
+          // cell raises the NameError the script lane raises.
           return read_binding(ast, bind_session(ast, std::string(ast.token)));
+        }
         if (is_stdlib_global(ast.token) || is_stdlib_namespace(ast.token)) {
           int32_t t = alloc_temp(ast);
           emit(Op::NsGet, t, kconst_str(ast.token));

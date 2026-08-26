@@ -1,0 +1,43 @@
+# A session unit's closure carries the cells for the names it does not bind,
+# so it still means the same thing on a thread that has neither the session
+# nor the Runtime those cells were minted in. Only the runner reaches this:
+# `tests/*.cul` run as scripts, where none of these names are session cells.
+# The REPL side of the same rule is in tests/repl_test.sh.
+
+BASE = "n="  # a bound session cell
+
+test("a bound session name reaches an isolate", fn () {
+  assert_eq(Isolate.spawn(fn () {
+    BASE + "iso"
+  }).join(), "n=iso")
+})
+
+test("a bound session name reaches every parallel worker", fn () {
+  assert_eq(Parallel.map([1, 2, 3, 4], fn (i) {
+    BASE + i.to_string()
+  }), ["n=1", "n=2", "n=3", "n=4"])
+})
+
+# A stdlib name mentioned at the top level is a session binding too — an
+# unbound one, which the worker has to resolve against its own Runtime.
+assert_eq(Math.abs(0 - 3), 3)
+
+test("an unbound stdlib name resolves on the worker's own runtime", fn () {
+  assert_eq(Isolate.spawn(fn () {
+    Math.abs(0 - 7)
+  }).join(), 7)
+  assert_eq(Parallel.map([0 - 1, 0 - 2], fn (x) {
+    Math.abs(x)
+  }), [1, 2])
+})
+
+# The regression: an isolate that resolved a name used to leave a cell of its
+# own behind, and the next worker read it after that Runtime was gone.
+test("an isolate does not poison the workers after it", fn () {
+  assert_eq(Isolate.spawn(fn () {
+    Math.abs(0 - 7)
+  }).join(), 7)
+  assert_eq(Parallel.map([0 - 1, 0 - 2], fn (x) {
+    Math.abs(x)
+  }), [1, 2])
+})

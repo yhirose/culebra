@@ -24,8 +24,14 @@ namespace culebra::sendable {
 // control block).
 // ---------------------------------------------------------------------------
 struct SendNode {
+  // Unbound is the "nothing has bound this yet" sentinel, in `i` with the
+  // payload that says which kind. It travels because a session unit's closure
+  // captures a cell for every name the unit does not bind (a stdlib name's
+  // stays unbound) — and so does a closure over a `self` no frame supplied.
+  // Either way the receiver re-asks against its own Runtime.
   enum class K { Nil, Bool, Long, Float, Str, Array, Object, Set, Tuple,
-                 Closure, Channel, SharedBuffer, SharedVal, EmbedDir };
+                 Closure, Channel, SharedBuffer, SharedVal, EmbedDir,
+                 Unbound };
   K kind = K::Nil;
 
   bool b = false;  // Bool; also Channel role (false = tx, true = rx)
