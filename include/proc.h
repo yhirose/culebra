@@ -237,14 +237,14 @@ inline RetryScheduler<ChildT, SpawnFn> make_retry_scheduler(size_t n,
 }
 CULEBRA_RT_PROC_LINKAGE RunOutcome run_command(
     const std::vector<std::string>&, const std::string*,
-    const std::vector<std::pair<std::string, std::string>>*,
+    const EnvSpec*,
     const std::string&, int64_t = 0, const std::vector<int>* = nullptr) {
   _not_linked();
 }
 CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
     const std::vector<std::vector<std::string>>&, size_t = 0,
     const std::string* = nullptr,
-    const std::vector<std::pair<std::string, std::string>>* = nullptr,
+    const EnvSpec* = nullptr,
     const std::vector<std::string>* = nullptr, int64_t = 0, bool = false,
     size_t* = nullptr, int64_t = 0, const std::vector<int>* = nullptr) {
   _not_linked();
@@ -252,14 +252,14 @@ CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
 CULEBRA_RT_PROC_LINKAGE std::pair<size_t, RunOutcome> run_race(
     const std::vector<std::vector<std::string>>&, size_t = 0,
     const std::string* = nullptr,
-    const std::vector<std::pair<std::string, std::string>>* = nullptr,
+    const EnvSpec* = nullptr,
     const std::vector<std::string>* = nullptr,
     const std::vector<int>* = nullptr) {
   _not_linked();
 }
 CULEBRA_RT_PROC_LINKAGE SpawnResult spawn_detached(
     const std::vector<std::string>&, const std::string*,
-    const std::vector<std::pair<std::string, std::string>>*,
+    const EnvSpec*,
     const std::string&, const std::vector<int>* = nullptr) {
   _not_linked();
 }
