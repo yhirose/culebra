@@ -2154,6 +2154,16 @@ enum RuntimeSlot : size_t {
   kSlotJitModuleTable,
   kSlotJitNamespaceTable,
   kSlotFileTable,
+  // The session name table vm.h's repl_session() falls back to when no
+  // session is current on the thread. A slot rather than one object for the
+  // process because a session's cells are heap objects, and a heap belongs to
+  // one Runtime: a thread that never opened a session (an HTTP worker running
+  // a route handler, an isolate) must mint its own rather than read cells
+  // another Runtime allocated and has since freed. Holds pinned cells but
+  // frees nothing itself, so its position relative to the GC slots does not
+  // matter: a pin is an unconditional root, so nothing sweeps them, and
+  // their storage goes when this Runtime's heap and slab do.
+  kSlotReplSession,
   // Per-scope owned-resource stacks for deterministic drop (one per
   // backend; see jit_owned.h "owned stack"). Entries are
   // non-owning, so destruction order relative to the GC slots is moot —

@@ -1,0 +1,30 @@
+# A stdlib name inside a closure that runs on another thread.
+#
+#   ./build/culebra test tests/culebra_test_self/
+#
+# It belongs to this suite because the bug it guards needs `culebra test`'s
+# own compilation: a test file is compiled the way a REPL line is, so a bare
+# `JSON` reads the session's name table first and only falls through to the
+# stdlib when that name is undeclared. Which session a thread reads is
+# vm.h's repl_session().
+#
+# Eight in a row because the miss depended on what a freed slab slot still
+# held: one isolate reproduced it about half the time, eight nearly always.
+
+@test
+fn stdlib_namespace_resolves_inside_every_isolate() {
+  for _ in 0..8 {
+    let out = Isolate.spawn(|| JSON.stringify({saw: 7})).join()
+    assert_eq(out, '{"saw":7}')
+  }
+}
+
+@test
+fn stdlib_function_resolves_inside_every_isolate() {
+  # The other half of the same lookup: a bare stdlib global rather than a
+  # namespace object.
+  for _ in 0..8 {
+    let out = Isolate.spawn(|| type_of([1, 2])).join()
+    assert_eq(out, 'Array')
+  }
+}

@@ -2750,9 +2750,9 @@ class ReplSession {
     entries_.find(name)->second.is_mut = is_mut;
   }
 
-  // Hands every cell back. The REPL's own session lives as long as the
-  // process and never calls this; a debugger's does, since it builds one
-  // session per expression it evaluates (see ReplSessionSwap).
+  // Hands every cell back. The session a thread falls back to lives as long
+  // as its Runtime and never calls this; a debugger's does, since it builds
+  // one session per expression it evaluates (see ReplSessionSwap).
   void release_all() {
     for (auto& [name, e] : entries_) {
       _gc_heap().unpin(e.cell);
@@ -2769,8 +2769,8 @@ class ReplSession {
   std::map<std::string, Entry, std::less<>> entries_;
 };
 
-// One session per process: only the REPL opens one, and the compiler and the
-// executor have to agree on which it is. A debugger evaluating an expression
+// One session per Runtime: the REPL, `culebra test` and a debugger each open
+// one, and the compiler and the executor have to agree on which it is. A debugger evaluating an expression
 // in a paused frame borrows the same machinery for the length of that one
 // expression — the frame's names are its session — so which session is
 // current is a swappable pointer rather than a fixed object.
@@ -2783,9 +2783,11 @@ inline ReplSession*& current_repl_session() {
 }
 
 inline ReplSession& repl_session() {
-  static ReplSession process_wide;  // the REPL's, for the whole session
   auto* cur = current_repl_session();
-  return cur ? *cur : process_wide;
+  if (cur) return *cur;
+  // Per Runtime, not per process: a session's cells live on a Runtime's heap
+  // (kSlotReplSession).
+  return culebra::runtime_substate<ReplSession>(culebra::kSlotReplSession);
 }
 
 // Makes `session` the one the compiler and the executor see, and hands its

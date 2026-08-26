@@ -181,8 +181,8 @@ class VmTestHost : public TestHost {
   }
   JitValue at(ValueRef v) { return store_[static_cast<size_t>(v)]; }
 
-  // Owns the session rather than borrowing the process-wide one: a second
-  // run in one process must not see the first's registry.
+  // Owns the session rather than borrowing the Runtime's fallback one: a
+  // second run in one process must not see the first's registry.
   vm::ReplSessionSwap swap_;
   vm::Session session_;
   std::vector<JitValue> store_;
