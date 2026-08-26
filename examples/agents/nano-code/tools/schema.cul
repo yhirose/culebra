@@ -1,0 +1,25 @@
+# A tool's parameters, as the JSON Schema every provider wants.
+#
+# Upstream writes that schema out by hand in each tool file — about fifteen
+# lines of `{type: 'object', properties: {...}, required: [...]}` per tool,
+# which is most of what those files contain. A tool here declares its
+# parameters once and the schema is derived, so what a reader sees is the part
+# that differs between tools.
+#
+# The declaration follows nano-code-mini: a parameter's `type` ending in `?`
+# marks it optional, which is what decides `required`.
+
+fn to_json_schema(params) {
+  {
+    type: 'object',
+    properties: params.iter()
+      .map(|(name, p)| (name, {
+        type: p.type.trim_end('?'),
+        description: p.doc ?? '',
+      }))
+      .to_object(),
+    required: params.keys().filter(|name| !params[name].type.ends_with('?')),
+  }
+}
+
+export {to_json_schema}

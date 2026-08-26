@@ -1,0 +1,59 @@
+import err from './errors.cul'
+
+# The directory the agent is allowed to touch, and the two checks that keep it
+# there. Upstream copies both into readFile, writeFile and editFile, and gives
+# execCommand only the weaker one; here they live once, so all four tools are
+# confined the same way.
+#
+# The trap this class exists to hold: FS.join has path.resolve's absolute-wins
+# behaviour but does NOT collapse `..`, so `FS.join(root, '../x')` is
+# `<root>/../x` — a prefix test on that string passes while the path is
+# outside. FS.abspath normalises, which is why resolve() reads through it.
+
+class Workspace {
+  # Canonicalise once, so every later comparison is against a symlink-free
+  # root. A workspace reached through a symlink (macOS /tmp -> /private/tmp is
+  # the everyday case) would otherwise fail every containment test it makes.
+  new(root) {
+    self.root = FS.realpath(FS.abspath(root))
+  }
+
+  contains(abs) { abs == self.root || abs.starts_with(self.root + '/') }
+
+  # Lexical containment: where `rel` lands, spelled out, with `..` collapsed.
+  # An absolute `rel` wins over the root, so this catches '/etc/passwd' too.
+  resolve(rel) {
+    # A `rel` naming a directory ('.', 'a/') comes back with a trailing slash,
+    # and everything downstream — containment included — compares these as
+    # strings, so shed it here rather than at each comparison.
+    let abs = trim_trailing_slash(FS.abspath(FS.join(self.root, rel)))
+    if !self.contains(abs) {
+      throw err.tool_error(nil, 'outside_workspace',
+                           "access denied: {rel} is outside the workspace")
+    }
+    abs
+  }
+
+  # Containment again, this time through the filesystem: a symlink inside the
+  # workspace can point anywhere, and the lexical check cannot see it.
+  #
+  # FS.realpath is weakly canonical — it resolves the part of the path that
+  # exists and keeps the rest — so one call covers both reading a file that is
+  # there and creating one that is not. Upstream needs a loop walking up to the
+  # nearest existing parent to answer the second case.
+  resolve_real(rel) {
+    let real = FS.realpath(self.resolve(rel))
+    if !self.contains(real) {
+      throw err.tool_error(nil, 'symlink_escape',
+                           "access denied: {rel} leaves the workspace through a symlink")
+    }
+    real
+  }
+}
+
+# Guarded so that "/" — the one path that is all separator — survives.
+fn trim_trailing_slash(p) {
+  p.size() > 1 && p.ends_with('/') ? p.trim_end('/') : p
+}
+
+export {Workspace}

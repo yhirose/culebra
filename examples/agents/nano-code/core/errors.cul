@@ -1,0 +1,34 @@
+# Errors the agent raises. culebra has no nominal inheritance, so an error is
+# an Object with a `kind` — the same shape the standard library throws (see
+# `Args.try_parse`), which `assert_throws` and `catch e { e.kind }` both read.
+#
+# Each factory *returns* the value; the caller writes `throw ...`, so the
+# control flow stays visible where it happens.
+#
+# `reason` is a machine-readable tag beside the human `message`. Tests match on
+# it, so a reworded message never breaks a test and a translated one never
+# has to.
+
+fn llm_api_error(status, provider, message) {
+  {
+    kind: 'LLMApiError',
+    message: message,
+    status: status,
+    provider: provider,
+  }
+}
+
+fn tool_error(tool, reason, message) {
+  {
+    kind: 'ToolError',
+    message: message,
+    tool: tool,
+    reason: reason,
+  }
+}
+
+fn agent_error(reason, message) {
+  {kind: 'AgentError', message: message, reason: reason}
+}
+
+export {llm_api_error, tool_error, agent_error}

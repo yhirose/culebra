@@ -1,0 +1,115 @@
+import msg from './core/message.cul'
+import clean from './core/clean_messages.cul'
+
+# Ported from upstream's src/core/clean-messages.test.ts. That file exercises
+# the richer copy in bin/review.ts, which *recovers* an orphaned tool result by
+# inventing the call it answers; the providers — the copy this port carries —
+# drop it instead. The cases below are the ones both agree on, plus the drop.
+
+fn call(id, name) { {tool_call_id: id, name: name, args: {}} }
+
+# A readable projection, so a failing assert prints the shape rather than an
+# opaque instance.
+fn shape(m) {
+  {
+    role: msg.role_of(m),
+    content: msg.content_of(m),
+    calls: msg.tool_calls_of(m).map(|c| c.tool_call_id),
+    id: msg.tool_call_id_of(m),
+  }
+}
+
+fn shapes(ms) { ms.map(|m| shape(m)) }
+
+@test
+fn passes_consistent_history_through() {
+  let ms = [
+    msg.user('hello'),
+    msg.assistant('let me run a tool', [call('1', 'dummy')]),
+    msg.tool_result('1', 'dummy', 'result'),
+    msg.assistant('done'),
+  ]
+  assert_eq(shapes(clean.clean_messages(ms)), shapes(ms))
+}
+
+@test
+fn drops_a_tool_result_whose_call_is_gone() {
+  let ms = [
+    msg.user('hello'),
+    msg.tool_result('1', 'dummy', 'result'),
+    msg.assistant('done'),
+  ]
+  assert_eq(shapes(clean.clean_messages(ms)),
+            shapes([msg.user('hello'), msg.assistant('done')]))
+}
+
+@test
+fn strips_a_tool_call_whose_result_is_gone() {
+  let ms = [
+    msg.user('hello'),
+    msg.assistant('let me run a tool', [call('1', 'dummy')]),
+    msg.assistant('done'),
+  ]
+  let got = clean.clean_messages(ms)
+  # The turn survives with its text; only the dangling call goes.
+  assert_eq(shapes(got),
+            shapes([msg.user('hello'), msg.assistant('let me run a tool'),
+                    msg.assistant('done')]))
+}
+
+@test
+fn keeps_only_the_answered_call_of_several() {
+  let ms = [
+    msg.assistant('running tools', [call('1', 'dummy1'), call('2', 'dummy2')]),
+    msg.tool_result('1', 'dummy1', 'res1'),
+  ]
+  let got = clean.clean_messages(ms)
+  assert_eq(msg.tool_calls_of(got[0]).map(|c| c.tool_call_id), ['1'])
+  assert_eq(msg.role_of(got[1]), 'tool')
+  assert_eq(got.size(), 2)
+}
+
+@test
+fn drops_a_result_that_arrives_before_its_call() {
+  # Order is part of the pairing: a result the model has not asked for yet is
+  # as unsendable as one whose call is gone. This is what the search over what
+  # has already been kept buys — checking the whole input would accept it.
+  let ms = [
+    msg.tool_result('1', 'dummy', 'res'),
+    msg.assistant('running tools', [call('1', 'dummy')]),
+  ]
+  let got = clean.clean_messages(ms)
+  assert_eq(shapes(got),
+            shapes([msg.assistant('running tools', [call('1', 'dummy')])]))
+}
+
+# --- the sum type itself ---
+
+@test
+fn accessors_cover_every_variant() {
+  let ms = [
+    msg.user('u'),
+    msg.system('s'),
+    msg.assistant('a', [call('9', 'n')]),
+    msg.tool_result('9', 'n', 't'),
+  ]
+  assert_eq(ms.map(|m| msg.role_of(m)), ['user', 'system', 'assistant', 'tool'])
+  assert_eq(ms.map(|m| msg.content_of(m)), ['u', 's', 'a', 't'])
+  assert_eq(ms.map(|m| msg.tool_calls_of(m).size()), [0, 0, 1, 0])
+  assert_eq(ms.map(|m| msg.tool_call_id_of(m)), [nil, nil, nil, '9'])
+  assert_eq(msg.tool_name_of(ms[3]), 'n')
+}
+
+@test
+fn every_variant_carries_a_payload() {
+  # A nullary variant matched without parentheses is an identifier pattern,
+  # which binds anything — so it would swallow the arms after it. Keeping a
+  # payload on every variant is what makes the bare arms in message.cul real
+  # tests; this pins that none of them went nullary.
+  let ms = [msg.user('u'), msg.system('s'), msg.assistant('a'),
+            msg.tool_result('i', 'n', 'c')]
+  for m in ms {
+    assert_true(msg.content_of(m) != '')
+  }
+  assert_eq(ms.map(|m| m.class), ['User', 'System', 'Assistant', 'Tool'])
+}

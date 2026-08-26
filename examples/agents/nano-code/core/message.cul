@@ -1,0 +1,80 @@
+# The conversation, as a sum type. Upstream models this as a TypeScript union
+# discriminated by a `role` string; here the variant tag carries that job and
+# `match` reads it.
+#
+# Every variant's payload is one Object. An enum cannot name its payload fields
+# (docs/language.md), and these roles want names, not positions — so the Object
+# buys them back. Giving *every* variant a payload also keeps the bare arms
+# below honest: a nullary variant matched without parentheses is a plain
+# identifier pattern, which binds anything, so `System => ...` would silently
+# swallow every message. With no nullary variants there is no such arm to write.
+#
+# Importers get the variants by name: `Message.User({...})` to build, and a
+# bare `User(u)` to match, since a constructor pattern tests the variant name
+# rather than resolving a binding. A *type* pattern is the same — `x: Message`
+# works in a file that never bound `Message`, because type names cannot be
+# namespace-qualified (the grammar's TYPE_NAME is one capitalised word).
+
+enum Message {
+  User(Object),        # {content}
+  System(Object),      # {content}
+  Assistant(Object),   # {content, tool_calls}
+  Tool(Object),        # {tool_call_id, name, content}
+}
+
+fn user(content) { Message.User({content: content}) }
+fn system(content) { Message.System({content: content}) }
+
+fn assistant(content, tool_calls = []) {
+  Message.Assistant({content: content, tool_calls: tool_calls})
+}
+
+fn tool_result(tool_call_id, name, content) {
+  Message.Tool({tool_call_id: tool_call_id, name: name, content: content})
+}
+
+fn role_of(m) {
+  match m {
+    User(_)      => 'user',
+    System(_)    => 'system',
+    Assistant(_) => 'assistant',
+    Tool(_)      => 'tool',
+  }
+}
+
+# One arm per variant rather than an or-pattern: alternatives of a `|` pattern
+# cannot bind a name, and the payload is the whole point here.
+fn content_of(m) {
+  match m {
+    User(o)      => o.content ?? '',
+    System(o)    => o.content ?? '',
+    Assistant(o) => o.content ?? '',
+    Tool(o)      => o.content ?? '',
+  }
+}
+
+# Only an assistant turn carries them; every other role answers with none, so
+# callers can ask without first asking what they are holding.
+fn tool_calls_of(m) {
+  match m {
+    Assistant(o) => o.tool_calls ?? [],
+    _            => [],
+  }
+}
+
+fn tool_call_id_of(m) {
+  match m {
+    Tool(o)    => o.tool_call_id,
+    _          => nil,
+  }
+}
+
+fn tool_name_of(m) {
+  match m {
+    Tool(o)    => o.name,
+    _          => nil,
+  }
+}
+
+export {Message, user, system, assistant, tool_result}
+export {role_of, content_of, tool_calls_of, tool_call_id_of, tool_name_of}

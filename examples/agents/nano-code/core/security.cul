@@ -1,0 +1,66 @@
+# Guardrails the tools consult before touching a file or running a command.
+# Ported from upstream's src/core/security.ts, whose three functions no caller
+# ever reached — the book defines them in one chapter and wires them in a later
+# one this port leaves out. Here they are wired: the file tools ask about the
+# path, exec_command asks about the command line and hands `safe_env()` to the
+# child.
+
+# Files that hold credentials. Upstream normalises the path first so that
+# `a/../.env` cannot slip past a `$`-anchored pattern; FS.normpath is the same
+# lexical collapse, and it never touches the filesystem — the caller may be
+# asking about a path that does not exist yet.
+let SENSITIVE_FILE_PATTERNS = [
+  re'\.env$',
+  re'\.env\.',
+  re'credentials\.json$',
+  re'\.ssh/id_rsa$',
+  re'\.pgpass$',
+  re'\.kube/config$',
+  re'\.aws/credentials$',
+]
+
+fn is_sensitive_file(path) {
+  let norm = FS.normpath(path)
+  SENSITIVE_FILE_PATTERNS.any(|p| p.test(norm))
+}
+
+# Shell constructs that would reach past the argv a tool means to run.
+# exec_command never uses a shell, so these are defence in depth: a command
+# line carrying them is one the model expects to be interpreted, and running it
+# verbatim would do something other than what it asked for.
+let DANGEROUS_COMMAND_PATTERNS = [
+  re'[^\\]>',        # redirection, > and >>
+  re'\$\(',          # command substitution
+  re'`',             # backtick substitution
+  re'\beval\b',
+  re'\$\{[^}]*##',   # variable-expansion obfuscation
+]
+
+# The reason it is dangerous, or nil when it is not — so a caller writes
+# `if let why = is_dangerous_command(c)` instead of unpacking a pair whose
+# second half is meaningless half the time.
+fn is_dangerous_command(command) {
+  cond {
+    re'\bsudo\b'.test(command) => 'privilege escalation via sudo is not allowed',
+    DANGEROUS_COMMAND_PATTERNS.any(|p| p.test(command)) =>
+      'the command contains shell metacharacters that would be interpreted',
+    _ => nil,
+  }
+}
+
+# What a child process is allowed to see. Upstream filters `process.env` down to
+# this list; culebra cannot enumerate the environment and does not need to —
+# the list is right here, so the whitelist is built by reading it. Paired with
+# `Proc.run(inherit_env: false)` this is what keeps the API key in this process
+# instead of in every command the model chooses to run.
+let ALLOWED_ENV_VARS = ['PATH', 'HOME', 'USER', 'LANG', 'NODE_ENV', 'BUN_ENV']
+
+fn safe_env() {
+  ALLOWED_ENV_VARS
+    .filter(|name| !Sys.env(name).empty())
+    .map(|name| (name, Sys.env(name)))
+    .to_object()
+}
+
+export {is_sensitive_file, is_dangerous_command, safe_env}
+export {SENSITIVE_FILE_PATTERNS, DANGEROUS_COMMAND_PATTERNS, ALLOWED_ENV_VARS}

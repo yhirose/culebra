@@ -1,0 +1,104 @@
+import sec from './core/security.cul'
+import schema from './tools/schema.cul'
+
+# Upstream ships no test for security.ts — the file is unreachable there, so
+# nothing pinned it. These are written against its patterns directly, with a
+# near-miss beside each hit: a rule that matches everything would pass a
+# positives-only suite.
+
+@test
+fn flags_the_credential_files() {
+  let hits = [
+    '.env',
+    'config/.env',
+    '.env.production',
+    'credentials.json',
+    'home/.ssh/id_rsa',
+    '.pgpass',
+    '.kube/config',
+    '.aws/credentials',
+  ]
+  for path in hits {
+    assert_true(sec.is_sensitive_file(path))
+  }
+}
+
+@test
+fn leaves_their_near_misses_alone() {
+  let misses = [
+    '.environment',       # `\.env$` must anchor
+    'env.js',             # no leading dot
+    'src/environment.ts',
+    'credentials.json.bak',
+    'id_rsa.pub',         # the public half is not the secret
+    'kube/config',        # the rule wants the dotted directory
+    'README.md',
+  ]
+  for path in misses {
+    assert_false(sec.is_sensitive_file(path))
+  }
+}
+
+@test
+fn normalises_before_matching() {
+  # Without the normalise a `$`-anchored pattern never sees the real tail.
+  assert_true(sec.is_sensitive_file('a/b/../.env'))
+  assert_true(sec.is_sensitive_file('./.aws/credentials'))
+}
+
+@test
+fn names_the_reason_a_command_is_dangerous() {
+  assert_eq(sec.is_dangerous_command('sudo rm -rf /'),
+            'privilege escalation via sudo is not allowed')
+  let shelly = [
+    'cat a > b',
+    'echo $(whoami)',
+    'echo `id`',
+    'eval something',
+    'echo ${PATH##*:}',
+  ]
+  for c in shelly {
+    assert_true(sec.is_dangerous_command(c) != nil)
+  }
+}
+
+@test
+fn passes_a_plain_command() {
+  let fine = ['ls -la src/', 'git status', 'grep -rn TODO .', 'bun test']
+  for c in fine {
+    assert_eq(sec.is_dangerous_command(c), nil)
+  }
+}
+
+@test
+fn safe_env_holds_only_whitelisted_names() {
+  let env = sec.safe_env()
+  for name in env.keys() {
+    assert_true(sec.ALLOWED_ENV_VARS.contains(name))
+  }
+  # PATH is the one a child actually needs; without it exec resolves nothing.
+  assert_true(env.keys().contains('PATH'))
+}
+
+# --- tools/schema.cul ---
+
+@test
+fn derives_a_json_schema_from_the_declaration() {
+  let params = {
+    path: {type: 'string', doc: 'the file to read'},
+    offset: {type: 'integer?', doc: 'first line'},
+  }
+  let s = schema.to_json_schema(params)
+  assert_eq(s.type, 'object')
+  assert_eq(s.properties.path, {type: 'string', description: 'the file to read'})
+  # The `?` marks it optional and is not part of the type it reports.
+  assert_eq(s.properties.offset.type, 'integer')
+  assert_eq(s.required, ['path'])
+}
+
+@test
+fn a_parameter_may_omit_its_doc() {
+  let s = schema.to_json_schema({name: {type: 'string'}})
+  assert_eq(s.properties.name.description, '')
+  assert_eq(s.required, ['name'])
+}

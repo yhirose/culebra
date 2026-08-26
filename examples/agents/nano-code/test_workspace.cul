@@ -1,0 +1,94 @@
+import ws from './core/workspace.cul'
+
+# The confinement is the one part of this port where a mistake is silent: a
+# check that is merely wrong still returns a path, and the tool goes on to use
+# it. So each escape route gets its own case, including the one that only shows
+# up through the filesystem.
+
+fn temp_root() {
+  let dir = FS.join(Sys.env('TMPDIR', '/tmp'), 'nano-code-ws-' + UUID.v4())
+  FS.mkdir(dir)
+  dir
+}
+
+fn reason_of(f) {
+  try {
+    f()
+    nil
+  } catch e {
+    e.reason
+  }
+}
+
+@test
+fn resolves_a_path_inside() {
+  let dir = temp_root()
+  defer { FS.remove(dir, recursive: true) }
+  let w = ws.Workspace.new(dir)
+  assert_eq(w.resolve('a/b.txt'), FS.join(w.root, 'a/b.txt'))
+  assert_eq(w.resolve('.'), w.root)
+}
+
+@test
+fn refuses_to_climb_out() {
+  let dir = temp_root()
+  defer { FS.remove(dir, recursive: true) }
+  let w = ws.Workspace.new(dir)
+  # FS.join alone would answer '<root>/../x' and a prefix test would accept it.
+  assert_eq(reason_of(fn () { w.resolve('../x') }), 'outside_workspace')
+  assert_eq(reason_of(fn () { w.resolve('a/../../x') }), 'outside_workspace')
+}
+
+@test
+fn refuses_an_absolute_path() {
+  let dir = temp_root()
+  defer { FS.remove(dir, recursive: true) }
+  let w = ws.Workspace.new(dir)
+  assert_eq(reason_of(fn () { w.resolve('/etc/passwd') }), 'outside_workspace')
+}
+
+@test
+fn refuses_a_symlink_that_leaves() {
+  let dir = temp_root()
+  defer { FS.remove(dir, recursive: true) }
+  let w = ws.Workspace.new(dir)
+  # Lexically this is inside; only the filesystem knows where it goes.
+  FS.symlink('/etc', FS.join(w.root, 'escape'))
+  assert_eq(reason_of(fn () { w.resolve('escape/passwd') }), nil)
+  assert_eq(reason_of(fn () { w.resolve_real('escape/passwd') }), 'symlink_escape')
+}
+
+@test
+fn allows_a_symlink_that_stays() {
+  let dir = temp_root()
+  defer { FS.remove(dir, recursive: true) }
+  let w = ws.Workspace.new(dir)
+  FS.mkdir(FS.join(w.root, 'real'))
+  FS.write(FS.join(w.root, 'real/f.txt'), 'hi')
+  FS.symlink(FS.join(w.root, 'real'), FS.join(w.root, 'link'))
+  assert_eq(FS.read(w.resolve_real('link/f.txt')), 'hi')
+}
+
+@test
+fn resolves_a_path_that_does_not_exist_yet() {
+  let dir = temp_root()
+  defer { FS.remove(dir, recursive: true) }
+  let w = ws.Workspace.new(dir)
+  # The write case: realpath is weakly canonical, so the missing tail survives
+  # and no walk up to an existing parent is needed.
+  let target = w.resolve_real('new/deep/file.txt')
+  assert_true(target.starts_with(w.root + '/'))
+  assert_true(target.ends_with('new/deep/file.txt'))
+}
+
+@test
+fn a_root_behind_a_symlink_still_contains_itself() {
+  # On macOS TMPDIR is itself reached through /var -> /private/var, so a root
+  # kept verbatim would fail every check made against it.
+  let dir = temp_root()
+  defer { FS.remove(dir, recursive: true) }
+  let w = ws.Workspace.new(dir)
+  assert_eq(w.root, FS.realpath(dir))
+  assert_true(w.contains(w.root))
+  assert_eq(reason_of(fn () { w.resolve_real('inside.txt') }), nil)
+}

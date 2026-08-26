@@ -1,0 +1,49 @@
+import msg from './message.cul'
+
+# Repair the pairing between tool calls and tool results before a history goes
+# back to a provider. Compressing the context (agent.cul) drops messages by age,
+# which can cut a tool call away from its result or the other way round; every
+# provider rejects a history where the two do not match up.
+#
+# Upstream carries a copy of this in each provider file. It is the same
+# function three times over, and it depends on nothing a wire format knows, so
+# here it lives once and both wires call it.
+
+fn clean_messages(messages) {
+  let answered = messages
+    .filter(|m| msg.role_of(m) == 'tool')
+    .map(|m| msg.tool_call_id_of(m))
+    .to_set()
+
+  mut out = []
+  for m in messages {
+    match m {
+      # A result whose call is gone: drop it. The alternative — inventing the
+      # call it answers — would put words in the model's mouth.
+      Tool(t) => if called_earlier(out, t.tool_call_id) { out.push(m) },
+
+      # A call whose result is gone: keep the turn, drop that call. An
+      # assistant turn left with no calls at all is still a turn worth sending;
+      # its text is what the model said.
+      Assistant(a) => {
+        let kept = (a.tool_calls ?? []).filter(|c| answered.contains(c.tool_call_id))
+        out.push(msg.assistant(a.content, kept))
+      },
+
+      _ => out.push(m),
+    }
+  }
+  out
+}
+
+# Whether an assistant turn already in `out` claims `id`. Searching what has
+# been kept — rather than the whole input — is what makes the pairing ordered:
+# a result that arrives before the call it answers is as unsendable as one
+# whose call is gone.
+fn called_earlier(out, id) {
+  out.any(fn (m) {
+    msg.tool_calls_of(m).any(|c| c.tool_call_id == id)
+  })
+}
+
+export {clean_messages}
