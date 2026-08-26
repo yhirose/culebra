@@ -1650,6 +1650,10 @@ inspect(Point.new(1, 2).eq(Point.new(1, 2)))  # => true
 inspect(Point.new(1, 2).to_s())               # => 'Point(1, 2)'
 ```
 
+An `enum`'s variants are `Eq` and `Hashable` without deriving anything:
+a variant is an Object / Set key as-is ([language.md §14](language.md),
+Sum types).
+
 ### 13.4 Generics
 
 `Array<Long>` and similar annotations document the element type and

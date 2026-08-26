@@ -1239,7 +1239,7 @@ their actual write order.
 ### Subscript assignment
 
 `obj[k] = v` writes any hashable key — `Long`, `Float`, `Bool`, `Nil`,
-`Tuple`, or a runtime `String`:
+`Tuple`, an enum variant, or a runtime `String`:
 
     mut bag = {}
     let k = 'alpha'
@@ -3211,7 +3211,7 @@ enums are two keys.
 * No methods-in-enum block (use free functions + UFCS), no named
   payload fields, no explicit discriminant values, and no static
   exhaustiveness check (a non-matching `match` yields `nil`).
-* Nullary variants are matched with a type pattern (`_: Origin`), not a
+* Nullary variants are matched with a type pattern (`o: Origin`), not a
   parens-free constructor pattern.
 
 ### Traits and protocols
@@ -5634,8 +5634,9 @@ built-ins from §19.
   annotated assignments; they do not make the language static.
 * Pattern matching has no exhaustiveness check.
 * Dot-form property names are identifiers only (`obj.foo`). Non-String
-  hashable keys (`Long`, `Float`, `Bool`, `Nil`, `Tuple`) reach the
-  Object via the subscript path (`obj[k]`) and live in a sidecar map.
+  hashable keys (`Long`, `Float`, `Bool`, `Nil`, `Tuple`, enum variants)
+  reach the Object via the subscript path (`obj[k]`) and live in a
+  sidecar map.
   Runtime `String` keys via `obj[k]` unify with the shape — `obj['x']`
   and `obj.x` reach the same slot. See §10 "Subscript assignment".
 * Only `fn name(...)` declarations can be generators; `yield` anywhere

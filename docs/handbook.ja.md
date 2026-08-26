@@ -1624,6 +1624,9 @@ inspect(Point.new(1, 2).eq(Point.new(1, 2)))  # => true
 inspect(Point.new(1, 2).to_s())               # => 'Point(1, 2)'
 ```
 
+`enum`のvariantは何も導出せずに`Eq`かつ`Hashable`: variantはそのまま
+Object / Setのkeyになる（[language.md §14](language.md)「Sum type」）。
+
 ### 13.4 Generic
 
 `Array<Long>` のような注釈は要素型をドキュメント化し、マルチメソッ

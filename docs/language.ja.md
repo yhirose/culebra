@@ -1160,7 +1160,7 @@ Stringキーと非Stringキーは単一の挿入順を共有するので、`to_s
 ### 添字代入
 
 `obj[k] = v`でハッシュ可能な任意のキー — `Long`, `Float`, `Bool`,
-`Nil`, `Tuple`, ランタイム`String` — を書き込めます:
+`Nil`, `Tuple`, enum variant, ランタイム`String` — を書き込めます:
 
     mut bag = {}
     let k = 'alpha'
@@ -2997,7 +2997,7 @@ variantは別のkey。
 * enum内メソッド (free fn + UFCSで代替) / named payload field /
   明示discriminant値 / 静的exhaustiveness検査は無し (非マッチ
   `match`は`nil`)。
-* nullary variantは型パターン (`_: Origin`) でマッチ (parensなし
+* nullary variantは型パターン (`o: Origin`) でマッチ (parensなし
   constructor patternは無い)。
 
 ### trait と protocol
@@ -5379,8 +5379,9 @@ CLIバイナリはユーザコード実行前に、以下3つのグローバル�
   ものではない。
 * パターンマッチに網羅性検査はない。
 * ドット形式のプロパティ名は識別子のみ（`obj.foo`）。非Stringの
-  ハッシュ可能キー（`Long`, `Float`, `Bool`, `Nil`, `Tuple`）は
-  添字パス（`obj[k]`）でアクセスし、サイドカーマップに格納されます。
+  ハッシュ可能キー（`Long`, `Float`, `Bool`, `Nil`, `Tuple`, enum
+  variant）は添字パス（`obj[k]`）でアクセスし、サイドカーマップに
+  格納されます。
   ランタイム`String`キーは`obj[k]`経由でもshapeに統合され、
   `obj['x']`と`obj.x`は同じスロットに到達します。詳細は §10
   「添字代入」を参照。

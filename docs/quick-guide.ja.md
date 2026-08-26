@@ -492,6 +492,30 @@ greet = fn (g: Greeter) -> String {
 inspect(greet(Bob('Ann')))  # => 'hi, Ann'
 ```
 
+`enum`はsum typeです。nullary variantはsingleton値、payload variantは
+コンストラクタで、`match`で分解します。variantはそのまま`Eq`かつ
+`Hashable`なので、Object / Setのkeyになります。
+
+```culebra
+enum Shape {
+  Circle(Float),
+  Rect(Float, Float),
+  Origin,
+}
+area = fn (s) {
+  match s {
+    Circle(r) => 3 * r * r,
+    Rect(w, h) => w * h,
+    o: Origin => 0,
+  }
+}
+inspect(area(Shape.Rect(2.0, 3.0)))          # => 6.0
+mut seen = {}
+seen[Shape.Origin] = 'origin'
+inspect(seen[Shape.Origin])                  # => 'origin'
+inspect({Shape.Origin, Shape.Origin}.size())  # => 1
+```
+
 ### 2.10 エフェクト
 
 `perform` は、意味を外側の `handle` が決める操作を発行します。継続は

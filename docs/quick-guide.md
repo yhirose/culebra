@@ -500,6 +500,30 @@ greet = fn (g: Greeter) -> String {
 inspect(greet(Bob('Ann')))  # => 'hi, Ann'
 ```
 
+An `enum` is a sum type: nullary variants are singleton values, payload
+variants are constructors, and `match` takes them apart. A variant is
+`Eq` and `Hashable` as-is, so it is an Object / Set key.
+
+```culebra
+enum Shape {
+  Circle(Float),
+  Rect(Float, Float),
+  Origin,
+}
+area = fn (s) {
+  match s {
+    Circle(r) => 3 * r * r,
+    Rect(w, h) => w * h,
+    o: Origin => 0,
+  }
+}
+inspect(area(Shape.Rect(2.0, 3.0)))          # => 6.0
+mut seen = {}
+seen[Shape.Origin] = 'origin'
+inspect(seen[Shape.Origin])                  # => 'origin'
+inspect({Shape.Origin, Shape.Origin}.size())  # => 1
+```
+
 ### 2.10 Effects
 
 `perform` invokes an operation whose meaning the enclosing `handle`
