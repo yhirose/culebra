@@ -7,10 +7,8 @@
 // CULEBRA_CANVAS_WINDOW or __EMSCRIPTEN__.
 //
 // stb_truetype is the whole rasterizer — header-only, no external link
-// dependency. It still sits behind a weak/strong AOT choke, the same one as
-// stb_image (image.h): the two decoders are the Canvas-assets axis, so a
-// binary that never loads a font or a PNG carries neither (see
-// CULEBRA_RT_CANVAS_ASSETS_* below). Unlike the 8x8 bitmap font (which
+// dependency, so like stb_image (image.h) it is simply compiled into every
+// binary. Unlike the 8x8 bitmap font (which
 // is data, not code: a fixed glyph table walked by canvas.h's own glyph()),
 // an outline font needs real rasterization, which stb_truetype does with pure
 // integer/float arithmetic and no hinting — the same "one answer per input"
@@ -29,7 +27,6 @@
 // even looked at, exactly like sprite_of()).
 
 #include <canvas.h>
-#include <image.h>  // CULEBRA_RT_CANVAS_ASSETS_LINKAGE: one axis, two headers
 
 #include <climits>
 #include <cmath>
@@ -42,14 +39,9 @@
 // Mirrors image.h's STB_IMAGE_STATIC: internal linkage keeps this copy from
 // colliding with raylib's own vendored stb_truetype.h, which is linked into
 // the same binary whenever the Canvas window backend is on.
-#if !defined(CULEBRA_RT_CANVAS_ASSETS_WEAK)
 #define STBTT_STATIC
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <stb_truetype.h>
-#endif
-
-// The six entry points the binding layer reaches (ttf_load / free / glyph /
-// glyph_screen / advance / ascent) carry the axis linkage (image.h).
 
 namespace culebra {
 namespace _canvas_detail {
@@ -58,33 +50,6 @@ struct TtfLoadResult {
   int64_t id;
   std::string error;
 };
-
-#if defined(CULEBRA_RT_CANVAS_ASSETS_WEAK)
-
-// A no-Canvas binary: no font can be loaded, so every handle op sees an
-// unknown handle and answers as ttf_of()'s nullptr path would.
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE TtfLoadResult ttf_load(std::string_view) {
-  return {0, "Canvas font runtime not linked (no Canvas use at build)"};
-}
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE void ttf_free(int64_t) {}
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_glyph(int64_t, int64_t, int, int,
-                                                   uint32_t, int64_t) {
-  return 0;
-}
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_glyph_screen(int64_t, int64_t,
-                                                          int, int, uint32_t,
-                                                          int64_t) {
-  return 0;
-}
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_advance(int64_t, int64_t,
-                                                     int64_t) {
-  return 0;
-}
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_ascent(int64_t, int64_t) {
-  return 0;
-}
-
-#else  // the real bodies
 
 // One rasterized glyph at one (codepoint, size): an antialiased coverage
 // bitmap (stb_truetype's box-filter AA, 0..255 per pixel), its bitmap origin
@@ -135,7 +100,7 @@ inline TtfFont* ttf_of(int64_t id) {
 // itself has decided the input isn't a font.
 inline constexpr size_t kTtfMinBytes = 12;
 
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE TtfLoadResult ttf_load(std::string_view data) {
+inline TtfLoadResult ttf_load(std::string_view data) {
   if (!own_canvas()) return {0, ""};
   if (data.size() < kTtfMinBytes || data.size() > static_cast<size_t>(INT_MAX))
     return {0, "not a valid TTF/OTF font"};
@@ -152,7 +117,7 @@ CULEBRA_RT_CANVAS_ASSETS_LINKAGE TtfLoadResult ttf_load(std::string_view data) {
   return {id, ""};
 }
 
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE void ttf_free(int64_t id) {
+inline void ttf_free(int64_t id) {
   TtfFont* f = ttf_of(id);
   if (f == nullptr) return;
   delete f;
@@ -228,10 +193,8 @@ inline void ttf_blit_glyph(const RasterizedGlyph& g, const Target& t, int x,
 // a non-positive size) — ttf_rasterize already has it, so the preamble's
 // draw() loop can step its cursor from this instead of a second lookup
 // through ttf_advance for the same (font, codepoint, size).
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_glyph(int64_t font_id,
-                                                   int64_t codepoint, int x,
-                                                   int y, uint32_t rgba,
-                                                   int64_t size) {
+inline int64_t ttf_glyph(int64_t font_id, int64_t codepoint, int x, int y,
+                         uint32_t rgba, int64_t size) {
   TtfFont* f = ttf_of(font_id);
   if (f == nullptr) return 0;
   const RasterizedGlyph* g = ttf_rasterize(*f, codepoint, size);
@@ -251,11 +214,8 @@ CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_glyph(int64_t font_id,
 // text_width() predicts for the same string, therefore stay in the one
 // coordinate system draw() and draw_screen() share — the glyphs land at
 // different resolutions, the layout does not diverge.
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_glyph_screen(int64_t font_id,
-                                                          int64_t codepoint,
-                                                          int x, int y,
-                                                          uint32_t rgba,
-                                                          int64_t size) {
+inline int64_t ttf_glyph_screen(int64_t font_id, int64_t codepoint, int x,
+                                int y, uint32_t rgba, int64_t size) {
   TtfFont* f = ttf_of(font_id);
   if (f == nullptr) return 0;
   double scale = screen_scale();
@@ -273,9 +233,7 @@ CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_glyph_screen(int64_t font_id,
   return logical == nullptr ? 0 : logical->advance;
 }
 
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_advance(int64_t font_id,
-                                                     int64_t codepoint,
-                                                     int64_t size) {
+inline int64_t ttf_advance(int64_t font_id, int64_t codepoint, int64_t size) {
   TtfFont* f = ttf_of(font_id);
   if (f == nullptr) return 0;
   const RasterizedGlyph* g = ttf_rasterize(*f, codepoint, size);
@@ -285,8 +243,7 @@ CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_advance(int64_t font_id,
 // Pixel ascent at `size`: how far the tallest glyph reaches above the
 // baseline. The Font preamble class uses this to convert a visual top-left
 // (x, y) into the baseline position ttf_glyph expects.
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_ascent(int64_t font_id,
-                                                    int64_t size) {
+inline int64_t ttf_ascent(int64_t font_id, int64_t size) {
   TtfFont* f = ttf_of(font_id);
   if (f == nullptr) return 0;
   size = ttf_clamp_size(size);
@@ -295,8 +252,6 @@ CULEBRA_RT_CANVAS_ASSETS_LINKAGE int64_t ttf_ascent(int64_t font_id,
   return static_cast<int64_t>(
       std::lround(static_cast<double>(f->ascent) * static_cast<double>(scale)));
 }
-
-#endif  // CULEBRA_RT_CANVAS_ASSETS_WEAK
 
 }  // namespace _canvas_detail
 }  // namespace culebra

@@ -9,13 +9,9 @@
 // header needs no culebra error type.
 //
 // stb_image is the whole decoder — it carries its own inflate, so unlike the
-// Compress namespace there is no external library to link. It is still behind
-// a weak/strong archive split: decode_png is reached from the `_Canvas` rows
-// of the dispatch table, so without a choke every AOT binary carried its ~65 KB
-// whether or not the program names Canvas. Together with the TTF rasterizer
-// (font_ttf.h) it forms the Canvas-assets axis (CULEBRA_RT_CANVAS_ASSETS_*):
-// the core archive's stub decodes nothing, the strong body is force-loaded
-// on Canvas use.
+// Compress namespace there is no external library to link; this sits with the
+// other self-hosted subsystems (regex, JSON, hash) that every binary simply
+// carries.
 //
 // ENCODING is the other way round: stb_image_write's bundled deflate is far
 // weaker than zlib's (measured on the retro-run backdrop: 78 KB against 12.6 KB
@@ -41,22 +37,11 @@
 
 #include <compress.h>
 
-#if !defined(CULEBRA_RT_CANVAS_ASSETS_WEAK)
 #define STB_IMAGE_STATIC
 #define STBI_NO_STDIO
 #define STBI_ONLY_PNG
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
-#endif
-
-// The axis linkage, shared with font_ttf.h (which includes this header).
-#if defined(CULEBRA_RT_CANVAS_ASSETS_STRONG)
-#define CULEBRA_RT_CANVAS_ASSETS_LINKAGE
-#elif defined(CULEBRA_RT_CANVAS_ASSETS_WEAK)
-#define CULEBRA_RT_CANVAS_ASSETS_LINKAGE __attribute__((weak))
-#else
-#define CULEBRA_RT_CANVAS_ASSETS_LINKAGE inline
-#endif
 
 namespace culebra::image {
 
@@ -72,11 +57,7 @@ struct Decoded {
 // Decode a PNG image. stb writes RGBA8 in memory order [r, g, b, a], which is
 // exactly the framebuffer's packed-RGBA layout, so the pixels are copied
 // wholesale rather than repacked per pixel.
-CULEBRA_RT_CANVAS_ASSETS_LINKAGE Decoded decode_png(std::string_view data) {
-#if defined(CULEBRA_RT_CANVAS_ASSETS_WEAK)
-  (void)data;
-  return {0, 0, {}, "Canvas image runtime not linked (no Canvas use at build)"};
-#else
+inline Decoded decode_png(std::string_view data) {
   if (data.size() > static_cast<size_t>(INT_MAX))
     return {0, 0, {}, "not a valid PNG image"};
   int w = 0, h = 0, channels = 0;
@@ -92,7 +73,6 @@ CULEBRA_RT_CANVAS_ASSETS_LINKAGE Decoded decode_png(std::string_view data) {
     std::memcpy(d.px.data(), out, d.px.size() * sizeof(uint32_t));
   stbi_image_free(out);
   return d;
-#endif
 }
 
 // On success `error` is empty and `data` holds the PNG bytes.

@@ -58,11 +58,19 @@ culebra build path/to/program.cul -o ./program
 `Http`も使わないプログラムはbaseのみをlinkする。OpenSSLを
 落とすだけで約4.7 MB効く（非Httpバイナリ ~7.6 MBに対しHttp版は
 ~12.2 MB、OpenSSLは静的リンクのため）。同じゲーティングは、外部
-ライブラリを引かないが自前のコードを抱える3つのサブシステムにも
-効く: 正規表現エンジン（`Regex`、`re'...'`リテラルを含む）、
-サブプロセス層（`Proc`）、`Canvas.Sprite.from_png` / `Canvas.Font`の
-背後のPNGデコーダ / TTFラスタライザ。どれも名指ししないプログラムは
-約0.5 MB小さくなる。
+ライブラリを引かないが自前のコードを抱える1つのサブシステムにも
+効く: 正規表現エンジン（`Regex`、`re'...'`リテラルを含む、
+cpp-regexlibの約320 KB）。外部依存が無くても弱/強分岐が要るのは、
+エンジン内部の`__builtin_cpu_supports`によるランタイム分岐チェックが
+コンパイラに、それをコンパイルする翻訳単位ごとの起動時CPUID
+コンストラクタを生成させるためで、これを無条件にすると自前のコード
+以外にもこのコンストラクタが全バイナリに入ってしまう。`Proc`の
+fork/exec層と`Canvas.Sprite.from_png` / `Canvas.Font`の背後の
+PNG/TTFデコーダも外部ライブラリを引かないが、それぞれ専用の
+chokeは不要——自身のnamespaceのdispatch tableを通じてのみ到達する
+プレーンなコードとしてコンパイルされるので、名指ししないプログラムは
+リンクされない（仕組みは
+[§4](#4-共有-runtime-archive-レイアウト) 参照）。
 
 `otool -L`（macOS）や`ldd`（Linux）で確認できます:
 
@@ -438,7 +446,7 @@ strip prog
 ```
 
 機能のnamespace（`Tensor` / `Http` / `Compress` / `SQLite` / `Regex` /
-`Proc` / `Canvas` / …、[§4](#4-共有-runtime-archive-レイアウト) の表）を
+`Canvas` / …、[§4](#4-共有-runtime-archive-レイアウト) の表）を
 参照するプログラムは、その機能のarchiveを **force-load** する必要がある — Mach-Oなら
 `-Wl,-force_load,<archive>`、ELFなら`-Wl,--whole-archive <archive>
 -Wl,--no-whole-archive` — さらにその機能の外部ライブラリも要る。
@@ -623,14 +631,12 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 
 | Archive | 内容 |
 |---|---|
-| `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・raylib・正規表現エンジン・サブプロセス層・画像デコーダに到達しない） |
+| `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層と画像デコーダ（stb_image / stb_truetype）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeでなく下のnamespace-group単位のdead-strippingに委ねる |
 | `libculebra_rt_tensor.a` | 強いtensor choke（BLAS / Accelerateを引く） |
 | `libculebra_rt_http.a` | 強いhttp choke（OpenSSL + zlibを引く） |
 | `libculebra_rt_compress.a` | 強いcompress choke（zlibを引く。`to_png`もこれに乗る） |
 | `libculebra_rt_sqlite.a` | 強いsqlite choke＋sqlite3 amalgamation |
 | `libculebra_rt_regex.a` | 強いregex choke（cpp-regexlibエンジン、約320 KB） |
-| `libculebra_rt_proc.a` | 強いproc choke（fork/exec/poll、またはCreateProcess） |
-| `libculebra_rt_canvas_assets.a` | 強いPNGデコーダ＋TTFラスタライザのchoke（stb_image / stb_truetype） |
 | `libculebra_rt_canvas.a` | raylibのwindowバックエンド（windowビルドのみ。baseはheadlessスタブを持つ） |
 | `libculebra_rt_scene.a` | Sceneのwrap registrar（raylibを引く。baseには一切入っていない） |
 | `libculebra_rt_webview.a` | Webviewのwrap registrar（OSのWebViewフレームワーク。baseには一切入っていない） |
@@ -638,7 +644,7 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 
 `culebra build`（および拡張された`ext-culebra build`バイナリ）は
 常にbaseをlinkし、ソースASTがそのnamespace（`Tensor` / `Http` /
-`Compress` / `SQLite` / `Regex` / `Proc` / `Canvas` / `Scene` /
+`Compress` / `SQLite` / `Regex` / `Canvas` / `Scene` /
 `Webview`、あるいはラップされたnamespace）を参照する時だけ機能
 archiveを **force-load** し、同じ条件でその外部ライブラリ（BLAS /
 OpenSSL / zlib / …）を付けます。強いchokeがbaseの弱スタブを上書きする

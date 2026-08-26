@@ -23,11 +23,6 @@
 // across interp/JIT/AOT rather than relying on a post-call safepoint (which the
 // JIT lacks between statements). Same wiring as the interruptible stdin / Http
 // paths; pulling shared.h keeps proc.h value-neutral (no Value / JitValue).
-//
-// AOT linkage: run_command / run_all / run_race and the live handle primitives
-// are the whole surface the binding layer reaches, so they are the weak/strong
-// choke of the Proc axis (CULEBRA_RT_PROC_WEAK / _STRONG — the http.h
-// partition); the weak build compiles nothing below them.
 
 #include <cerrno>
 #include <chrono>
@@ -58,14 +53,6 @@
 
 #if !defined(_WIN32)
 extern char** environ;
-#endif
-
-#if defined(CULEBRA_RT_PROC_STRONG)
-#define CULEBRA_RT_PROC_LINKAGE
-#elif defined(CULEBRA_RT_PROC_WEAK)
-#define CULEBRA_RT_PROC_LINKAGE __attribute__((weak))
-#else
-#define CULEBRA_RT_PROC_LINKAGE inline
 #endif
 
 namespace culebra::proc {
@@ -228,51 +215,6 @@ inline RetryScheduler<ChildT, SpawnFn> make_retry_scheduler(size_t n,
 }
 
 }  // namespace _detail
-
-#if defined(CULEBRA_RT_PROC_WEAK)
-
-[[noreturn]] inline void _not_linked() {
-  throw CulebraError("InternalError",
-                     "Proc runtime entered in a no-Proc binary", 0, 0);
-}
-CULEBRA_RT_PROC_LINKAGE RunOutcome run_command(
-    const std::vector<std::string>&, const std::string*,
-    const EnvSpec*,
-    const std::string&, int64_t = 0, const std::vector<int>* = nullptr) {
-  _not_linked();
-}
-CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
-    const std::vector<std::vector<std::string>>&, size_t = 0,
-    const std::string* = nullptr,
-    const EnvSpec* = nullptr,
-    const std::vector<std::string>* = nullptr, int64_t = 0, bool = false,
-    size_t* = nullptr, int64_t = 0, const std::vector<int>* = nullptr) {
-  _not_linked();
-}
-CULEBRA_RT_PROC_LINKAGE std::pair<size_t, RunOutcome> run_race(
-    const std::vector<std::vector<std::string>>&, size_t = 0,
-    const std::string* = nullptr,
-    const EnvSpec* = nullptr,
-    const std::vector<std::string>* = nullptr,
-    const std::vector<int>* = nullptr) {
-  _not_linked();
-}
-CULEBRA_RT_PROC_LINKAGE SpawnResult spawn_detached(
-    const std::vector<std::string>&, const std::string*,
-    const EnvSpec*,
-    const std::string&, const std::vector<int>* = nullptr) {
-  _not_linked();
-}
-CULEBRA_RT_PROC_LINKAGE void kill_pid(int64_t, int) { _not_linked(); }
-CULEBRA_RT_PROC_LINKAGE bool try_reap(int64_t, int&) { _not_linked(); }
-CULEBRA_RT_PROC_LINKAGE ProcResult wait_handle(int64_t, int&, int&) {
-  _not_linked();
-}
-CULEBRA_RT_PROC_LINKAGE ProcResult drain_reaped(int, int&, int&) {
-  _not_linked();
-}
-
-#else  // the real bodies
 
 #if !defined(_WIN32)
 
@@ -734,7 +676,7 @@ struct ScopeKiller {
 //   timeout_ms     : kill (SIGTERM then SIGKILL) the child if it runs longer
 //                    than this many ms; 0 == no timeout. A timed-out result has
 //                    ok:false and timed_out:true.
-CULEBRA_RT_PROC_LINKAGE RunOutcome run_command(
+inline RunOutcome run_command(
     const std::vector<std::string>& argv,
     const std::string* cwd,
     const EnvSpec* env,
@@ -774,7 +716,7 @@ CULEBRA_RT_PROC_LINKAGE RunOutcome run_command(
 // via `*out_failed`. With fail_fast off (default) it is plain allSettled.
 // `retries`: re-run a failed command up to this many extra times; the result is
 // the last attempt's. fail_fast only triggers once retries are exhausted.
-CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
+inline std::vector<RunOutcome> run_all(
     const std::vector<std::vector<std::string>>& commands,
     size_t limit = 0,
     const std::string* cwd = nullptr,
@@ -839,7 +781,7 @@ CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
 // (winner index + its RunOutcome); every other started child is SIGKILLed and
 // reaped before returning. A command that fails to spawn finishes instantly
 // and can win. Empty input => {SIZE_MAX, RunOutcome{}}.
-CULEBRA_RT_PROC_LINKAGE std::pair<size_t, RunOutcome> run_race(
+inline std::pair<size_t, RunOutcome> run_race(
     const std::vector<std::vector<std::string>>& commands,
     size_t limit = 0,
     const std::string* cwd = nullptr,
@@ -1224,7 +1166,7 @@ struct ScopeKiller {
 
 }  // namespace _detail
 
-CULEBRA_RT_PROC_LINKAGE RunOutcome run_command(
+inline RunOutcome run_command(
     const std::vector<std::string>& argv, const std::string* cwd,
     const EnvSpec* env,
     const std::string& stdin_data, int64_t timeout_ms = 0,
@@ -1249,7 +1191,7 @@ CULEBRA_RT_PROC_LINKAGE RunOutcome run_command(
   return oc;
 }
 
-CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
+inline std::vector<RunOutcome> run_all(
     const std::vector<std::vector<std::string>>& commands, size_t limit = 0,
     const std::string* cwd = nullptr,
     const EnvSpec* env = nullptr,
@@ -1300,7 +1242,7 @@ CULEBRA_RT_PROC_LINKAGE std::vector<RunOutcome> run_all(
   return std::move(sched.results);
 }
 
-CULEBRA_RT_PROC_LINKAGE std::pair<size_t, RunOutcome> run_race(
+inline std::pair<size_t, RunOutcome> run_race(
     const std::vector<std::vector<std::string>>& commands, size_t limit = 0,
     const std::string* cwd = nullptr,
     const EnvSpec* env = nullptr,
@@ -1355,7 +1297,7 @@ CULEBRA_RT_PROC_LINKAGE std::pair<size_t, RunOutcome> run_race(
 // Spawns a child without waiting: writes stdin_data then closes the child's
 // stdin, and returns the live pid + out/err fds (parent keeps them open). On a
 // spawn failure returns spawned=false with errno/step.
-CULEBRA_RT_PROC_LINKAGE SpawnResult spawn_detached(
+inline SpawnResult spawn_detached(
     const std::vector<std::string>& argv, const std::string* cwd,
     const EnvSpec* env,
     const std::string& stdin_data,
@@ -1399,13 +1341,13 @@ CULEBRA_RT_PROC_LINKAGE SpawnResult spawn_detached(
   return sr;
 }
 
-CULEBRA_RT_PROC_LINKAGE void kill_pid(int64_t pid, int sig) {
+inline void kill_pid(int64_t pid, int sig) {
   if (pid > 0) kill(static_cast<pid_t>(pid), sig);
 }
 
 // Non-blocking: returns true and fills `status` if the child has exited (and
 // reaps it); false if it is still running.
-CULEBRA_RT_PROC_LINKAGE bool try_reap(int64_t pid, int& status) {
+inline bool try_reap(int64_t pid, int& status) {
   pid_t r;
   do {
     r = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
@@ -1427,7 +1369,7 @@ inline _detail::Child _adopt(int64_t pid, int& out_fd, int& err_fd) {
 
 // Blocking: drains out/err to EOF and waitpid()s -> full ProcResult. Consumes
 // the fds (sets them to -1).
-CULEBRA_RT_PROC_LINKAGE ProcResult wait_handle(int64_t pid, int& out_fd, int& err_fd) {
+inline ProcResult wait_handle(int64_t pid, int& out_fd, int& err_fd) {
   std::vector<_detail::Child> running;
   running.push_back(_adopt(pid, out_fd, err_fd));
   char buf[65536];
@@ -1439,7 +1381,7 @@ CULEBRA_RT_PROC_LINKAGE ProcResult wait_handle(int64_t pid, int& out_fd, int& er
 
 // After try_reap() has reaped the child: drain remaining buffered out/err and
 // decode `status` into a ProcResult. Consumes the fds.
-CULEBRA_RT_PROC_LINKAGE ProcResult drain_reaped(int status, int& out_fd, int& err_fd) {
+inline ProcResult drain_reaped(int status, int& out_fd, int& err_fd) {
   std::vector<_detail::Child> running;
   running.push_back(_adopt(0, out_fd, err_fd));  // pid 0: no waitpid here.
   char buf[65536];
@@ -1489,7 +1431,7 @@ inline void live_join_close(WinLive& lv) {
 // Spawn without waiting: feed+close stdin, keep the process + reader threads
 // alive in the registry, and return an opaque id. It rides in pid, and out_fd
 // mirrors it so drain_reaped (which is handed only the fds) finds the entry too.
-CULEBRA_RT_PROC_LINKAGE SpawnResult spawn_detached(
+inline SpawnResult spawn_detached(
     const std::vector<std::string>& argv, const std::string* cwd,
     const EnvSpec* env,
     const std::string& stdin_data, const std::vector<int>* = nullptr) {
@@ -1515,7 +1457,7 @@ CULEBRA_RT_PROC_LINKAGE SpawnResult spawn_detached(
   return sr;
 }
 
-CULEBRA_RT_PROC_LINKAGE void kill_pid(int64_t id, int /*sig*/) {
+inline void kill_pid(int64_t id, int /*sig*/) {
   std::lock_guard<std::mutex> g(_detail::live_mutex());
   auto& reg = _detail::live_registry();
   auto it = reg.find(id);
@@ -1525,7 +1467,7 @@ CULEBRA_RT_PROC_LINKAGE void kill_pid(int64_t id, int /*sig*/) {
 
 // Non-blocking: true (and fills `status` with the exit code) once the child has
 // exited; false while it runs. Leaves the entry in place — drain_reaped drops it.
-CULEBRA_RT_PROC_LINKAGE bool try_reap(int64_t id, int& status) {
+inline bool try_reap(int64_t id, int& status) {
   std::lock_guard<std::mutex> g(_detail::live_mutex());
   auto& reg = _detail::live_registry();
   auto it = reg.find(id);
@@ -1540,7 +1482,7 @@ CULEBRA_RT_PROC_LINKAGE bool try_reap(int64_t id, int& status) {
 // Blocking: wait for exit, drain out/err to EOF, decode, and drop the entry.
 // `id` arrives as pid. The lock is dropped across the INFINITE wait so other
 // handle ops make progress; the map node stays valid (single-owner id).
-CULEBRA_RT_PROC_LINKAGE ProcResult wait_handle(int64_t id, int&, int&) {
+inline ProcResult wait_handle(int64_t id, int&, int&) {
   ProcResult r;
   _detail::WinLive* lv = nullptr;
   {
@@ -1569,7 +1511,7 @@ CULEBRA_RT_PROC_LINKAGE ProcResult wait_handle(int64_t id, int&, int&) {
 
 // After try_reap() reported exit: drain the remaining buffered out/err and
 // decode `status` into a ProcResult. `id` arrives as out_fd.
-CULEBRA_RT_PROC_LINKAGE ProcResult drain_reaped(int status, int& out_fd, int&) {
+inline ProcResult drain_reaped(int status, int& out_fd, int&) {
   ProcResult r;
   _detail::WinLive* lv = nullptr;
   {
@@ -1591,7 +1533,5 @@ CULEBRA_RT_PROC_LINKAGE ProcResult drain_reaped(int status, int& out_fd, int&) {
 }
 
 #endif  // !_WIN32
-
-#endif  // CULEBRA_RT_PROC_WEAK
 
 }  // namespace culebra::proc

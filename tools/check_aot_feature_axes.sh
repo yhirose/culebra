@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
-# AOT feature-axis gate for the self-contained axes (Regex / Proc / Canvas
-# assets). The library axes fail loudly when lost (a link error, OpenSSL in
-# `ldd`); these link nothing external, so both ways of losing one are silent:
-# the core's weak stub satisfying every reference (the program links, then
-# throws at the first match), or the engine creeping back into every binary
-# (the program links and runs, 320 KB heavier). Read off the linked outputs:
+# AOT feature-axis gate. Two different mechanisms keep an unused feature's
+# code out of a binary, and this script verifies both:
 #
-#   1. a program that names none of the axes links the WEAK stub (`W`) for
-#      each choke and no engine symbol behind it;
-#   2. a program that names an axis links the STRONG body (`T`) and runs it.
+#   - Regex is a weak/strong archive axis (regex.h / kFeatureAxes): the base
+#     archive's choke is a throwing stub, force-loading the real body only
+#     when the AST names Regex. Losing this axis is silent either way (no
+#     link error, no ldd hit) — regexlib.h's __builtin_cpu_supports() call
+#     makes GCC emit a start-up CPUID constructor for whatever translation
+#     unit compiles it, and that constructor is NOT function-level dead code
+#     (see the comment in include/regex.h), so if regexlib.h ever gets
+#     included from a translation unit that is unconditionally linked (not
+#     this axis's own archive), an unrelated hello-world binary picks up the
+#     constructor even though nothing calls it.
+#   - Proc and the Canvas PNG/TTF decoders are NOT an axis: they compile as
+#     plain `inline` code, reached only through their `_ns_*` adapters. Once
+#     a namespace's dispatch group (stdlib_jit.h ns_groups()) is unreferenced,
+#     `--gc-sections` drops the group, its adapters, and everything only they
+#     reached — the same mechanism §4 of docs/deployment.md describes for
+#     Math/IO. This script checks that these choke functions are present when
+#     the namespace is used and gone (not merely stubbed) when it is not.
 #
-# The choke names below are this script's own copy of what the headers stub
-# and src/main.cc's kFeatureAxes force-loads; renaming one means updating it.
+# The choke names below are this script's own copy of what the source
+# actually reaches; renaming one means updating it.
 #
 # Usage: tools/check_aot_feature_axes.sh <build dir>
 set -euo pipefail
@@ -85,18 +95,22 @@ expect_output() {  # expect_output <binary> <expected stdout>
   fi
 }
 
-# One choke per axis: every entry point of an axis shares its TU and linkage.
+# Regex: the weak/strong choke (kFeatureAxes still force-loads this one).
 regex_choke='^culebra::regex::compile[(]'
-proc_choke='^culebra::proc::kill_pid[(]'
-png_choke='^culebra::image::decode_png[(]'
-ttf_choke='^culebra::_canvas_detail::ttf_free[(]'
+# Proc / Canvas assets: no weak stub — plain inline code reached only through
+# the namespace's dispatch group, so `culebra::proc::run_command` and
+# `culebra::image::decode_png` / `culebra::_canvas_detail::ttf_load` are either
+# linked (as ordinary — usually weak/COMDAT — symbols) or gone entirely.
+proc_choke=' culebra::proc::run_command[(]'
+png_choke=' culebra::image::decode_png[(]'
+ttf_choke=' culebra::_canvas_detail::ttf_load[(]'
 
-# 1. Names none of them: no strong body, engines absent.
+# 1. Names none of them: Regex stubbed, Proc/Canvas engines entirely absent.
 build none 'IO.print("none")'
 expect_stub_or_absent none "$regex_choke" "no Regex use"
-expect_stub_or_absent none "$proc_choke" "no Proc use"
-expect_stub_or_absent none "$png_choke" "no Canvas use"
-expect_stub_or_absent none "$ttf_choke" "no Canvas use"
+expect_absent none "$proc_choke" "no Proc use"
+expect_absent none "$png_choke" "no Canvas use"
+expect_absent none "$ttf_choke" "no Canvas use"
 expect_absent none ' reg::' "regexlib"
 expect_absent none 'culebra::proc::_detail::' "the fork/exec layer"
 expect_absent none 'culebra::_canvas_detail::ttf_rasterize' "stb_truetype"
@@ -110,11 +124,11 @@ expect_absent none ' culebra_ns_group_Math$' "the Math group"
 expect_absent none ' [A-Za-z] culebra::_ns_isolate_spawn[(]' "the Isolate adapter"
 expect_absent none ' [A-Za-z] culebra::_ns_http_[a-z_]*[(]' "the Http adapters"
 
-# 2. Each axis on its own: the strong body is what runs, and no other axis's
-#    archive came along with it.
+# 2. Each on its own: the engine is what runs, and no other feature's code
+#    came along with it.
 build regex 'IO.print(re"(\d+)-(\d+)".find("a 12-34 b").groups[2].value)'
 expect_strong regex "$regex_choke" "Regex named, the strong body must override"
-expect_stub_or_absent regex "$proc_choke" "Regex only"
+expect_absent regex "$proc_choke" "Regex only"
 expect_output regex "34"
 
 build math 'let m = Math
@@ -125,7 +139,7 @@ expect_absent math ' culebra_ns_group_FS$' "the FS group"
 expect_output math "4"
 
 build proc 'IO.print(Proc.run(["echo", "spawned"]).stdout)'
-expect_strong proc "$proc_choke" "Proc named"
+expect_present proc "$proc_choke" "Proc named"
 expect_stub_or_absent proc "$regex_choke" "Proc only"
 expect_output proc "spawned"
 
@@ -133,23 +147,26 @@ expect_output proc "spawned"
 build canvas 'let s = Canvas.Sprite.blank(3, 2, 0xFF336699)
 let back = Canvas.Sprite.from_png(s.to_png())
 IO.print(back.width() * 10 + back.height())'
-expect_strong canvas "$png_choke" "Canvas named"
-expect_strong canvas "$ttf_choke" "Canvas named"
+expect_present canvas "$png_choke" "Canvas named"
+expect_present canvas "$ttf_choke" "Canvas named"
 expect_stub_or_absent canvas "$regex_choke" "Canvas only"
 expect_output canvas "32"
 
 if (( fail )); then
   cat >&2 <<'EOF'
-  A 'W' (or nothing) where 'T' was expected: the axis did not force-load —
-  check the kFeatureAxes row (src/main.cc) and that the archive is in
-  _rt_embed_files (CMakeLists). A strong body where none was expected, or an
-  engine symbol in `none`:
-  something outside the choke reaches the engine (a new call site that
-  bypasses the CULEBRA_RT_*_WEAK gate, or the gate lost its #if).
+  Regex 'W' (or nothing) where 'T' was expected: the axis did not force-load —
+  check the kFeatureAxes row (src/main.cc) and that libculebra_rt_regex.a is
+  in _rt_embed_files (CMakeLists). A Regex strong body where none was
+  expected, or a `reg::` symbol in `none`: something bypasses the
+  CULEBRA_RT_REGEX_WEAK gate, or regexlib.h leaked into an always-linked
+  translation unit (see the comment in include/regex.h).
+  Proc / Canvas: a choke present in `none`, or absent where it was named:
+  something outside the choke reaches the engine unconditionally, or the
+  adapter isn't reachable only through its kNsRows_* table.
   A namespace group or adapter in a binary that never names it: something in
   the core archive refers to the group (only the program object may), or an
   adapter is reachable outside its kNsRows_* table.
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / Proc / Canvas-assets absent or stubbed when unused, strong when named; namespace groups linked only when named)"
+echo "aot-feature-axes OK (Regex stubbed/strong by axis; Proc/Canvas absent/present by namespace group; groups linked only when named)"

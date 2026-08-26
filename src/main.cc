@@ -509,13 +509,10 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // the axis even when the program never says `Webview`.
     {{"Webview", "Desktop"}, "libculebra_rt_webview.a", CULEBRA_WEBVIEW_LINK,
      kEmbedsWebview},
-    // Self-hosted subsystems (regex.h / proc.h / image.h): no library behind
-    // them, so no link flags — the axis buys back their own code.
+    // regex.h: no library behind it, so no link flags — the axis buys back
+    // its own code and, via __builtin_cpu_supports, a start-up constructor
+    // that would otherwise land in every binary (see regex.h).
     {{"Regex"}, "libculebra_rt_regex.a", "", true},
-    {{"Proc"}, "libculebra_rt_proc.a", "", true},
-    // The PNG decoder and TTF rasterizer: a second row on the Canvas name,
-    // present in every build where the raylib archive above is not.
-    {{"Canvas"}, "libculebra_rt_canvas_assets.a", "", true},
 };
 // Cross-compiling with Tensor would need a target-specific BLAS link, which we
 // don't bundle — run_build rejects that pair up front by this row.
