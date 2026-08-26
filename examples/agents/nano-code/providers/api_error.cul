@@ -1,3 +1,5 @@
+import err from '../core/errors.cul'
+
 # Why a request was refused, in as many words as the other end gave.
 #
 # Both wires ask the same question of a failed response, so they ask it here.
@@ -32,8 +34,22 @@ fn said_by(payload) {
   (said.empty() ? JSON.stringify(payload) : said) + more
 }
 
+# A 200 whose body will not parse is a failure too, and naming it as one is
+# what keeps a bad reply from ending the session: an endpoint that answers for
+# a model can hand back the model's own broken JSON verbatim, so a run against
+# a small local model meets this more often than a hosted one.
+fn parsed(provider, res) {
+  try {
+    res.json()
+  } catch _e {
+    throw err.llm_api_error(res.status, provider,
+      "{provider} wire: the API answered {res.status} with a body that is " +
+      "not JSON — {clip(res.body)}")
+  }
+}
+
 fn clip(s) {
   s.size() <= MAX_DETAIL ? s : s.slice(0, MAX_DETAIL) + '...'
 }
 
-export {explain, detail_of}
+export {explain, detail_of, parsed}

@@ -69,6 +69,35 @@ fn a_body_that_is_not_json_is_still_the_body() {
 }
 
 @test
+fn a_reply_that_will_not_parse_is_named_as_a_failure() {
+  # A 200 with a body the parser refuses: an endpoint answering for a model
+  # can pass the model's own broken JSON straight through, and a small local
+  # model produces it often enough to matter. The run should say so, not die
+  # with a parse error from three frames down.
+  let ok_but_broken = {
+    ok: true,
+    status: 200,
+    body: '{"choices": [{"message": {"content": "c:\\x"}}]}',
+    json: fn () { throw {kind: 'ValueError', message: 'JSON.parse: bad escape'} },
+  }
+  let raised = try {
+    api_error.parsed('openai', ok_but_broken)
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(raised.kind, 'LLMApiError')
+  assert_eq(raised.status, 200)
+  assert_true(raised.message.contains('not JSON'))
+}
+
+@test
+fn a_reply_that_parses_comes_back_as_it_is() {
+  let good = {ok: true, status: 200, body: '{}', json: fn () { {a: 1} }}
+  assert_eq(api_error.parsed('openai', good), {a: 1})
+}
+
+@test
 fn a_long_body_is_clipped() {
   let told = api_error.explain('anthropic', a_page(500, 'x'.repeat(5000)))
   assert_true(told.size() < 500)

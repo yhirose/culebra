@@ -43,7 +43,7 @@ class OpenAIWire {
       throw err.llm_api_error(res.status, PROVIDER,
                               api_error.explain(PROVIDER, res))
     }
-    read_reply(res.json())
+    read_reply(api_error.parsed(PROVIDER, res))
   }
 }
 
