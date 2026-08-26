@@ -11,12 +11,13 @@ What differs from the original: `bash` captures the whole process via
 stdout/stderr are captured on separate pipes rather than interleaved in
 real time (see `nano-code-mini.cul`'s header comment).
 
-This is the first of two planned nano-code ports. It exercises the same
-core primitives (blocking HTTP + JSON, subprocess, regex, file I/O) that a
-larger port of [laiso/nano-code](https://github.com/laiso/nano-code) — the
+This is the first of two nano-code ports. It exercises the same core
+primitives (blocking HTTP + JSON, subprocess, regex, file I/O) as the larger
+port of [laiso/nano-code](https://github.com/laiso/nano-code) — the
 ~1500-line, multi-provider, multi-file TypeScript/Bun agent from the book
-*作って学ぶAIエージェント* — will need, without requiring streaming,
-approval flows, or a provider abstraction layer.
+*作って学ぶAIエージェント* — without the approval flow, the workspace
+confinement or the provider abstraction that one needs. That port is
+`../nano-code`.
 
 ## Run
 

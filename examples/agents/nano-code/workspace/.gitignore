@@ -1,0 +1,5 @@
+# Whatever the agent writes here is scratch. The directory itself, its
+# instructions, and this file are the only things worth keeping.
+*
+!.gitignore
+!AGENTS.md

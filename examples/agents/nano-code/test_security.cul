@@ -64,7 +64,7 @@ fn names_the_reason_a_command_is_dangerous() {
 
 @test
 fn passes_a_plain_command() {
-  let fine = ['ls -la src/', 'git status', 'grep -rn TODO .', 'bun test']
+  let fine = ['ls -la src/', 'git status', 'grep -rn TODO .', 'culebra test']
   for c in fine {
     assert_eq(sec.is_dangerous_command(c), nil)
   }

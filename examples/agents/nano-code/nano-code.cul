@@ -1,0 +1,145 @@
+import agent from './core/agent.cul'
+import approval from './core/approval.cul'
+import prompt from './core/prompt.cul'
+import workspace from './core/workspace.cul'
+import tools from './tools/index.cul'
+import factory from './providers/model_factory.cul'
+
+# The command line: one task, or a prompt that keeps asking.
+#
+# Everything lives inside `main`. A top-level binding in the file that is also
+# the entry point is a global for the whole program, and there is no reason
+# for the workspace or the agent to be one.
+#
+# The parsing is done by hand rather than with `Args`, for one reason: an
+# optional positional is not expressible in a spec (stdlib §10), and the task
+# reads better as trailing words than as `--task "..."`.
+
+let USAGE = """
+nano-code — a coding agent, ported from laiso/nano-code
+
+  culebra nano-code.cul [options] [task...]
+
+  --yes, -y            run tools that change things without asking
+  --workspace <dir>    the directory the agent may touch
+                       (default: ./workspace beside this file)
+  --help, -h           this text
+
+With no task, it reads them one at a time; an empty line ends the session.
+
+Where to connect and how to speak come from the environment:
+
+  LLM_MODEL            required — the model id the endpoint serves
+  OPENROUTER_API_KEY   or ANTHROPIC_API_KEY, or OPENAI_API_KEY
+  LLM_WIRE             anthropic (default) or openai
+  LLM_ENDPOINT         openrouter / anthropic / openai
+  LLM_BASE_URL         override the endpoint's URL
+  LLM_API_KEY          override the endpoint's key
+"""
+
+fn main() {
+  let opts = parse(Sys.argv)
+  if opts.help {
+    println(USAGE)
+    return
+  }
+
+  let ws = open_workspace(opts.workspace)
+  let connected = factory.model_from_env()
+  println("nano-code — {connected.endpoint}, {connected.wire} wire, " +
+          "{connected.model_id}")
+  println("workspace: {ws.root}")
+
+  let a = agent.Agent.new({
+    name: 'nano-code',
+    instructions: prompt.load_instructions(ws.root),
+    model: connected.model,
+    tools: tools.make_tools(ws),
+    verbose: true,
+    approve: opts.yes ? approval.approve_all : approval.request_approval,
+  })
+
+  if opts.task.empty() {
+    session(a)
+  } else {
+    ask(a, opts.task)
+  }
+}
+
+fn parse(argv) {
+  mut help = false
+  mut yes = false
+  mut dir = ''
+  mut words = []
+  mut i = 0
+  while i < argv.size() {
+    let arg = argv[i]
+    cond {
+      arg == '--help' || arg == '-h' => help = true,
+      arg == '--yes' || arg == '-y' => yes = true,
+      arg == '--workspace' => {
+        dir = i + 1 < argv.size() ? argv[i + 1] : ''
+        i += 1
+      },
+      _ => words.push(arg),
+    }
+    i += 1
+  }
+  {help: help, yes: yes, workspace: dir, task: words.join(' ')}
+}
+
+# The default sits beside this file rather than beside the shell's current
+# directory, so the agent touches the same place wherever it is run from.
+fn open_workspace(given) {
+  let dir = given.empty()
+    ? FS.join(FS.dirname(Sys.script), 'workspace')
+    : given
+  if !FS.exists(dir) {
+    FS.mkdir(dir)
+  }
+  workspace.Workspace.new(dir)
+}
+
+fn ask(a, task) {
+  let r = a.generate(task)
+  report(r)
+}
+
+fn session(a) {
+  println("")
+  println("Ask for something. An empty line ends the session.")
+  mut asking = true
+  while asking {
+    print('> ')
+    let task = IO.input().trim()
+    if task.empty() || task == 'exit' || task == 'quit' {
+      asking = false
+    } else {
+      # One bad turn does not end the session: the model can be told about a
+      # refusal or a broken key and asked again.
+      try {
+        report(a.generate(task))
+      } catch e {
+        println("error: {e.message ?? e}")
+      }
+    }
+  }
+}
+
+fn report(r) {
+  println("")
+  println("({count(r.steps, 'step')}, {count(r.tool_runs, 'tool run')}" +
+          (r.hit_max_steps ? ', stopped at the step budget)' : ')'))
+}
+
+fn count(n, noun) {
+  n == 1 ? "1 {noun}" : "{n} {noun}s"
+}
+
+# A missing key or model is the usual first run, and it is not a crash.
+try {
+  main()
+} catch e {
+  IO.eprintln("nano-code: {e.message ?? e}")
+  Sys.exit(1)
+}

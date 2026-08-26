@@ -11,6 +11,11 @@ import tool_index from '../tools/index.cul'
 # text from inside the loop unconditionally, which makes every test print a
 # transcript; here `generate` reports what happened in its return value and
 # the caller decides what to show.
+#
+# The conversation belongs to the agent, not to one call of `generate`.
+# Upstream starts a fresh history every time because its CLI only ever asks
+# once; keeping it on the instance is what lets the REPL ask a follow-up that
+# means something, and costs a one-shot run nothing.
 
 let CHAR_LIMIT = 30000       # ~10k-15k tokens; size it to the model's window
 let KEEP_RECENT = 4          # newest turns, never compressed
@@ -32,10 +37,12 @@ class Agent {
     self.max_steps = config.max_steps ?? 10
     self.verbose = config.verbose ?? false
     self.approve = config.approve ?? approval.request_approval
+    self.history = [msg.system(self.instructions)]
   }
 
   generate(user_prompt) {
-    mut messages = [msg.system(self.instructions), msg.user(user_prompt)]
+    self.history.push(msg.user(user_prompt))
+    mut messages = self.history
     mut step = 0
     mut runs = 0
     mut text = ''
@@ -75,6 +82,9 @@ class Agent {
       hit_max_steps = true
     }
 
+    # Compression rebinds `messages`, so the agent takes back what the run
+    # ended with rather than what it started from.
+    self.history = messages
     {text: text, steps: step, tool_runs: runs, hit_max_steps: hit_max_steps}
   }
 

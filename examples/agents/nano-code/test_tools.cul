@@ -87,7 +87,7 @@ fn refuses_shell_metacharacters() {
 fn refuses_dangerous_options() {
   let t = tools.make_tools(temp_ws()).execCommand
   let bad = [
-    'bun run --help rm -rf',
+    'culebra run --help rm -rf',
     'find . -delete',
     'git --git-dir=../.git status',
     'git --work-tree=/tmp status',

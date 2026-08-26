@@ -93,6 +93,22 @@ fn runs_a_tool_then_finishes() {
 }
 
 @test
+fn a_second_question_is_asked_in_the_context_of_the_first() {
+  let model = ScriptedModel.new([{text: 'It is four.'}, {text: 'Still four.'}])
+  let a = an_agent(model, {}, {})
+  a.generate('what is two and two')
+  a.generate('are you sure')
+
+  # The second call carries the whole exchange: instructions, the first
+  # question, its answer, then the follow-up.
+  let seen = model.last_messages()
+  assert_eq(seen.map(|m| msg.role_of(m)),
+            ['system', 'user', 'assistant', 'user'])
+  assert_eq(msg.content_of(seen[2]), 'It is four.')
+  assert_eq(msg.content_of(last_of(seen)), 'are you sure')
+}
+
+@test
 fn stops_at_the_step_budget() {
   # Always another tool call: only the budget can end this.
   let model = ScriptedModel.new([1, 2, 3].map(|n| calls_a_tool(n, 'dummy')))

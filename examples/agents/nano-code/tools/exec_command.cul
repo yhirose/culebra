@@ -9,7 +9,7 @@ import sec from '../core/security.cul'
 # a command line carrying them is one the model expects to be interpreted,
 # and running it as plain argv would do something other than what it asked.
 
-let ALLOWED_COMMANDS = ['bun', 'ls', 'cat', 'grep', 'find', 'pwd', 'mkdir',
+let ALLOWED_COMMANDS = ['culebra', 'ls', 'cat', 'grep', 'find', 'pwd', 'mkdir',
                         'git', 'gh']
 
 # Characters that only mean anything to a shell. Their presence says the model
@@ -108,7 +108,7 @@ fn make_exec_command(ws) {
     params: {
       command: {
         type: 'string',
-        doc: 'the command to run, e.g. "bun test" or "ls -la src/"',
+        doc: 'the command to run, e.g. "culebra test" or "ls -la src/"',
       },
     },
     run: fn (args) {
