@@ -1,0 +1,35 @@
+# The system prompt: a base that ships with the agent, plus whatever the
+# workspace says about itself.
+#
+# Upstream finds the base beside its own source through `__dirname`, which its
+# own comment warns is undefined under ESM. `Embed.dir` needs no path guess and
+# resolves per backend: run from source it reads the live file, and `culebra
+# build` bakes it into the executable — so a built agent still has its prompt
+# with no files to ship beside it.
+#
+# It does need an entry script to resolve against, and under `culebra test`
+# there is none (`Sys.script` is nil there). That is why reading the base and
+# composing the instructions are two functions: the composition — the part
+# with a decision in it — is reachable from a test, and `load_instructions` is
+# the one line that joins them.
+#
+# AGENTS.md is the other way round. It belongs to the workspace, changes while
+# the agent runs, and is optional, so it stays an ordinary read.
+
+fn base_instructions() {
+  Embed.dir('core').read('prompt.md')
+}
+
+fn with_project_instructions(base, workspace_root) {
+  let agents_md = FS.join(workspace_root, 'AGENTS.md')
+  if !FS.exists(agents_md) {
+    return base
+  }
+  base + "\n\n# Project-specific instructions\n\n" + FS.read(agents_md)
+}
+
+fn load_instructions(workspace_root) {
+  with_project_instructions(base_instructions(), workspace_root)
+}
+
+export {load_instructions, base_instructions, with_project_instructions}

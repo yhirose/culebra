@@ -1,0 +1,29 @@
+# What the agent needs from a provider, and the single call it makes.
+#
+# `do_generate(params)` receives `{messages, tools}` and answers
+#
+#     {text, finish_reason, tool_calls, usage}
+#
+# where `tool_calls` is a list of `{tool_call_id, name, args}`. Both wire
+# formats normalise into that shape, so the loop in agent.cul never learns
+# which one it is talking to — the whole point of the interface.
+#
+# `messages` are core/message.cul values, not a provider's JSON: turning them
+# into whatever the endpoint wants is the wire's job, and the only job that
+# distinguishes one wire from another.
+#
+# A trait cannot be exported (an importer gets a NameError), and a type
+# annotation cannot be namespace-qualified anyway. That is why `generate_text`
+# lives here beside it: it is where the annotation can be written, so a model
+# missing `do_generate` fails with a DispatchError at the call rather than
+# with a `nil` several frames deeper.
+
+trait LanguageModel {
+  do_generate(params) -> Object
+}
+
+fn generate_text(model: LanguageModel, messages, tools = []) {
+  model.do_generate({messages: messages, tools: tools})
+}
+
+export {generate_text}

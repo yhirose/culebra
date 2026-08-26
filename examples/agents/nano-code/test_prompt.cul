@@ -1,0 +1,33 @@
+import prompt from './core/prompt.cul'
+
+# The base prompt itself is read through Embed.dir, which resolves against the
+# entry script — and under `culebra test` there is no entry script, so what is
+# tested here is the composition, with a base standing in for the file.
+
+fn temp_dir() {
+  let dir = FS.join(Sys.env('TMPDIR', '/tmp'), 'nano-code-p-' + UUID.v4())
+  FS.mkdir(dir)
+  dir
+}
+
+@test
+fn a_workspace_with_nothing_to_say_gets_the_base_unchanged() {
+  let dir = temp_dir()
+  defer { FS.remove(dir, recursive: true) }
+  assert_eq(prompt.with_project_instructions('be helpful.', dir),
+            'be helpful.')
+}
+
+@test
+fn appends_what_the_workspace_says_about_itself() {
+  let dir = temp_dir()
+  defer { FS.remove(dir, recursive: true) }
+  FS.write(FS.join(dir, 'AGENTS.md'), 'Indent with two spaces.')
+
+  let text = prompt.with_project_instructions('be helpful.', dir)
+  assert_true(text.contains('# Project-specific instructions'))
+  assert_true(text.contains('Indent with two spaces.'))
+  # The base is still there: AGENTS.md adds to the instructions rather than
+  # replacing them.
+  assert_true(text.starts_with('be helpful.'))
+}

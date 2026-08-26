@@ -1,0 +1,28 @@
+# The gate in front of a tool that changes something.
+#
+# The agent takes the approval function as a value rather than calling this
+# one directly, so a test injects a stub and a non-interactive run injects
+# `approve_all`. Nothing here reads a global switch, and nothing else in the
+# agent touches stdin.
+
+fn request_approval(tool_name, args) {
+  println('')
+  println('--- approval needed ---')
+  println("tool:      {tool_name}")
+  println("arguments: {JSON.stringify(args ?? {}, indent: 2)}")
+  print('run it? (y/N): ')
+
+  # IO.input answers '' at end of file, which lands on "no" — the safe side
+  # for a prompt nobody is there to read.
+  let answer = IO.input().trim().lower()
+  let ok = answer == 'y' || answer == 'yes'
+  println(ok ? 'approved.' : 'cancelled.')
+  ok
+}
+
+# For `--yes`, and for tests that are exercising something other than the gate.
+fn approve_all(_tool_name, _args) {
+  true
+}
+
+export {request_approval, approve_all}

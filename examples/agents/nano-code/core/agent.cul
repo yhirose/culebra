@@ -1,0 +1,171 @@
+import msg from './message.cul'
+import lm from './language_model.cul'
+import approval from './approval.cul'
+import tool_index from '../tools/index.cul'
+
+# The loop: ask the model, run what it asked for, hand the results back, ask
+# again — until it answers in words instead of in tool calls, or until the
+# step budget runs out.
+#
+# The class prints nothing unless `verbose` is set. Upstream logs the model's
+# text from inside the loop unconditionally, which makes every test print a
+# transcript; here `generate` reports what happened in its return value and
+# the caller decides what to show.
+
+let CHAR_LIMIT = 30000       # ~10k-15k tokens; size it to the model's window
+let KEEP_RECENT = 4          # newest turns, never compressed
+let TOOL_RESULT_LIMIT = 200  # an older tool result longer than this is elided
+let LOG_CLIP = 200
+
+# The model is told this, so make it a direction rather than a dead end.
+let CANCELLED = 'Cancelled by the user. Consider another approach.'
+
+class Agent {
+  new(config) {
+    self.name = config.name
+    self.instructions = config.instructions
+    self.model = config.model
+    self.tools = config.tools
+    # The model is handed the schemas, never the implementations: a tool's
+    # `run` has no business on the wire.
+    self.specs = tool_index.tool_specs(config.tools)
+    self.max_steps = config.max_steps ?? 10
+    self.verbose = config.verbose ?? false
+    self.approve = config.approve ?? approval.request_approval
+  }
+
+  generate(user_prompt) {
+    mut messages = [msg.system(self.instructions), msg.user(user_prompt)]
+    mut step = 0
+    mut runs = 0
+    mut text = ''
+    mut hit_max_steps = false
+
+    while step < self.max_steps {
+      step += 1
+      messages = manage_context(messages)
+      self.log("\n=== step {step}/{self.max_steps} " +
+               "({total_chars(messages)} chars) ===")
+
+      let res = lm.generate_text(self.model, messages, self.specs)
+      let said = res.text ?? ''
+      if !said.empty() {
+        text = said
+        self.log(said)
+      }
+
+      let calls = res.tool_calls ?? []
+      if calls.empty() {
+        # The model answered in words: that is the end of the task.
+        messages.push(msg.assistant(said))
+        break
+      }
+
+      messages.push(msg.assistant(said, calls))
+      for call in calls {
+        let (result, ran) = self.run_call(call)
+        messages.push(result)
+        if ran {
+          runs += 1
+        }
+      }
+    } nobreak {
+      # Fell out of the loop rather than breaking: the budget, not the model,
+      # ended this.
+      hit_max_steps = true
+    }
+
+    {text: text, steps: step, tool_runs: runs, hit_max_steps: hit_max_steps}
+  }
+
+  # One tool call, and whether it ran. Every outcome — no such tool, a
+  # refusal, a throw from inside the tool — comes back as a tool result rather
+  # than as an exception, because the model is the one who has to react to it,
+  # and it can only read what is in the history.
+  run_call(call) {
+    # `.get` rather than an index: a name the model made up is a KeyError, and
+    # a made-up name is exactly the case this handles.
+    let tool = self.tools.get(call.name, nil)
+    if tool == nil {
+      return (self.result(call, "error: there is no tool named {call.name}"),
+              false)
+    }
+
+    self.log("[tool] {call.name}({JSON.stringify(call.args ?? {})})")
+
+    if (tool.needs_approval ?? false) && !self.approve(call.name, call.args) {
+      return (self.result(call, CANCELLED), false)
+    }
+
+    let out = try {
+      tool.run(call.args ?? {})
+    } catch e {
+      "error: {e.message ?? e}"
+    }
+    self.log("[result] {clip(out)}")
+    (self.result(call, out), true)
+  }
+
+  result(call, content) {
+    msg.tool_result(call.tool_call_id, call.name, content)
+  }
+
+  log(line) {
+    if self.verbose {
+      println(line)
+    }
+  }
+}
+
+fn total_chars(messages) {
+  messages.map(|m| msg.content_of(m).size()).sum()
+}
+
+# Compression, in two strategies applied in order: elide old tool results —
+# one readFile is usually why a history got big — and then, if it is still
+# over, drop what is left oldest-first. The system prompt and the newest
+# KEEP_RECENT messages are never touched, so the model keeps both its
+# instructions and the thread it is in the middle of.
+fn manage_context(messages) {
+  if total_chars(messages) < CHAR_LIMIT || messages.size() <= KEEP_RECENT + 1 {
+    return messages
+  }
+
+  let system = messages[0]
+  let recent = messages.slice(messages.size() - KEEP_RECENT, messages.size())
+  let middle = messages.slice(1, messages.size() - KEEP_RECENT)
+    .map(|m| elide(m))
+
+  # `from` is where the surviving middle starts. An index rather than repeated
+  # removal from the head of an array.
+  mut chars = msg.content_of(system).size() +
+              total_chars(middle) + total_chars(recent)
+  mut from = 0
+  while chars > CHAR_LIMIT && from < middle.size() {
+    chars -= msg.content_of(middle[from]).size()
+    from += 1
+  }
+
+  [system] + middle.slice(from, middle.size()) + recent
+}
+
+fn elide(m) {
+  match m {
+    Tool(t) => elide_tool_result(m, t),
+    _       => m,
+  }
+}
+
+fn elide_tool_result(m, t) {
+  let content = t.content ?? ''
+  content.size() <= TOOL_RESULT_LIMIT
+    ? m
+    : msg.tool_result(t.tool_call_id, t.name,
+        "(an earlier tool result of {content.size()} characters was omitted)")
+}
+
+fn clip(s) {
+  s.size() <= LOG_CLIP ? s : s.slice(0, LOG_CLIP) + '...'
+}
+
+export {Agent, manage_context, CHAR_LIMIT, KEEP_RECENT, CANCELLED}
