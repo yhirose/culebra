@@ -42,11 +42,11 @@ build() {  # build <name> <source>: the binary plus one nm listing of it
 sym_class() {
   awk -v n="$2" '$3 ~ n { print toupper($2); exit }' "$work/$1.nm"
 }
-expect_class() {  # expect_class <binary> <symbol ERE> <W|T> <why>
+expect_strong() {  # expect_strong <binary> <symbol ERE> <why>
   local got
   got=$(sym_class "$1" "$2")
-  if [[ "$got" != "$3" ]]; then
-    echo "check_aot_feature_axes FAIL: $1: $2 is '$got', expected '$3' ($4)" >&2
+  if [[ "$got" != "T" ]]; then
+    echo "check_aot_feature_axes FAIL: $1: $2 is '$got', expected 'T' ($3)" >&2
     fail=1
   fi
 }
@@ -56,6 +56,23 @@ expect_absent() {  # expect_absent <binary> <ERE> <why>
   if [[ -n "$hits" ]]; then
     echo "check_aot_feature_axes FAIL: $1 carries the engine it never names ($3):" >&2
     printf '%s\n' "$hits" | sed 's/^/  /' >&2
+    fail=1
+  fi
+}
+# The strong body must not be linked: its weak stub is (the choke a linked
+# adapter still calls), or nothing is — once no adapter names the choke, the
+# stub is dead-stripped with it, and that is the better of the two outcomes.
+expect_stub_or_absent() {  # expect_stub_or_absent <binary> <symbol ERE> <why>
+  local got
+  got=$(sym_class "$1" "$2")
+  if [[ "$got" != "W" && "$got" != "" ]]; then
+    echo "check_aot_feature_axes FAIL: $1: $2 is '$got', expected 'W' or absent ($3)" >&2
+    fail=1
+  fi
+}
+expect_present() {  # expect_present <binary> <ERE> <why>
+  if ! grep -qE "$2" "$work/$1.nm"; then
+    echo "check_aot_feature_axes FAIL: $1 lacks $2 ($3)" >&2
     fail=1
   fi
 }
@@ -74,46 +91,65 @@ proc_choke='^culebra::proc::kill_pid[(]'
 png_choke='^culebra::image::decode_png[(]'
 ttf_choke='^culebra::_canvas_detail::ttf_free[(]'
 
-# 1. Names none of them: stubs only, engines absent.
+# 1. Names none of them: no strong body, engines absent.
 build none 'IO.print("none")'
-expect_class none "$regex_choke" W "no Regex use, the core stub must be linked"
-expect_class none "$proc_choke" W "no Proc use"
-expect_class none "$png_choke" W "no Canvas use"
-expect_class none "$ttf_choke" W "no Canvas use"
+expect_stub_or_absent none "$regex_choke" "no Regex use"
+expect_stub_or_absent none "$proc_choke" "no Proc use"
+expect_stub_or_absent none "$png_choke" "no Canvas use"
+expect_stub_or_absent none "$ttf_choke" "no Canvas use"
 expect_absent none ' reg::' "regexlib"
 expect_absent none 'culebra::proc::_detail::' "the fork/exec layer"
 expect_absent none 'culebra::_canvas_detail::ttf_rasterize' "stb_truetype"
 expect_output none "none"
+# The namespace groups (stdlib_jit.h ns_groups()): a namespace's dispatch rows
+# and adapters link only when the program names it. No axis, no choke — the
+# program object's culebra_aot_ns_groups[] is the one reference that keeps a
+# group, so an unnamed one is dead-stripped with everything only it reached.
+expect_present none ' culebra_ns_group_IO$' "IO named, its group must be linked"
+expect_absent none ' culebra_ns_group_Math$' "the Math group"
+expect_absent none ' [A-Za-z] culebra::_ns_isolate_spawn[(]' "the Isolate adapter"
+expect_absent none ' [A-Za-z] culebra::_ns_http_[a-z_]*[(]' "the Http adapters"
 
 # 2. Each axis on its own: the strong body is what runs, and no other axis's
 #    archive came along with it.
 build regex 'IO.print(re"(\d+)-(\d+)".find("a 12-34 b").groups[2].value)'
-expect_class regex "$regex_choke" T "Regex named, the strong body must override"
-expect_class regex "$proc_choke" W "Regex only"
+expect_strong regex "$regex_choke" "Regex named, the strong body must override"
+expect_stub_or_absent regex "$proc_choke" "Regex only"
 expect_output regex "34"
 
+build math 'let m = Math
+IO.print(m.abs(-3) + Math.floor(1.5))'
+expect_present math ' culebra_ns_group_Math$' "Math named, its group must be linked"
+expect_present math 'culebra::_ns_math_floor[(]' "a Math adapter, reached only through the group"
+expect_absent math ' culebra_ns_group_FS$' "the FS group"
+expect_output math "4"
+
 build proc 'IO.print(Proc.run(["echo", "spawned"]).stdout)'
-expect_class proc "$proc_choke" T "Proc named"
-expect_class proc "$regex_choke" W "Proc only"
+expect_strong proc "$proc_choke" "Proc named"
+expect_stub_or_absent proc "$regex_choke" "Proc only"
 expect_output proc "spawned"
 
 # from_png decodes what to_png encoded (the latter rides the Compress axis).
 build canvas 'let s = Canvas.Sprite.blank(3, 2, 0xFF336699)
 let back = Canvas.Sprite.from_png(s.to_png())
 IO.print(back.width() * 10 + back.height())'
-expect_class canvas "$png_choke" T "Canvas named"
-expect_class canvas "$ttf_choke" T "Canvas named"
-expect_class canvas "$regex_choke" W "Canvas only"
+expect_strong canvas "$png_choke" "Canvas named"
+expect_strong canvas "$ttf_choke" "Canvas named"
+expect_stub_or_absent canvas "$regex_choke" "Canvas only"
 expect_output canvas "32"
 
 if (( fail )); then
   cat >&2 <<'EOF'
-  A 'W' where 'T' was expected: the axis did not force-load — check the
-  kFeatureAxes row (src/main.cc) and that the archive is in _rt_embed_files
-  (CMakeLists). A 'T' where 'W' was expected, or an engine symbol in `none`:
+  A 'W' (or nothing) where 'T' was expected: the axis did not force-load —
+  check the kFeatureAxes row (src/main.cc) and that the archive is in
+  _rt_embed_files (CMakeLists). A strong body where none was expected, or an
+  engine symbol in `none`:
   something outside the choke reaches the engine (a new call site that
   bypasses the CULEBRA_RT_*_WEAK gate, or the gate lost its #if).
+  A namespace group or adapter in a binary that never names it: something in
+  the core archive refers to the group (only the program object may), or an
+  adapter is reachable outside its kNsRows_* table.
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / Proc / Canvas-assets stubbed when unused, strong when named)"
+echo "aot-feature-axes OK (Regex / Proc / Canvas-assets absent or stubbed when unused, strong when named; namespace groups linked only when named)"

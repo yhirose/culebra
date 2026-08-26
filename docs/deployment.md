@@ -645,6 +645,21 @@ libraries (BLAS / OpenSSL / zlib / …) on the same condition. The strong
 choke overrides the base's weak stub, so a program that uses none of
 these features links none of them.
 
+The stdlib's own dispatch tables are linked the same way, one
+namespace at a time. Each namespace's rows — the adapters `Math.abs`
+or `Isolate.spawn` resolve to at runtime — and their canonical
+signatures form a *group* the base archive defines but never refers
+to; the program object carries the list of groups (every stdlib
+namespace, with a null entry for each one the source never names),
+and only a named group's rows survive dead-stripping, along with
+whatever only they reached. The scan is textual over the program and
+its spliced preamble, so `let m = Math; m.abs(x)` counts as naming
+`Math`, and a lazy module's `_Canvas` counts once `Canvas` pulled the
+module in. Together with the feature axes this is what keeps a
+`print("hello")` binary under 1 MB. A namespace the scan missed does
+not silently read as `nil`: reaching it raises an `InternalError`
+naming the namespace.
+
 These archives are **embedded directly into the `culebra` driver**
 via cpp-embedlib — the driver is a single self-contained binary, no
 sibling `.a` files need to be installed. They are stored deflated,

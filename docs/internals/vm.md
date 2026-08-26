@@ -205,8 +205,10 @@ tabulates them. Two RAII forms recur in the helpers' own C++:
 ### 3.3 The standard library
 
 `stdlib_jit.h` binds the standard library: native namespaces (`Math`,
-`IO`, `Random`, `FS`, `Net`, `Canvas`, …) as `kNsMethods` tables the
-runtime resolves by name, the built-in globals (`to_string`, `type_of`,
+`IO`, `Random`, `FS`, `Net`, `Canvas`, …) as one `kNsRows_*` table each
+that the runtime resolves by name — grouped per namespace so an AOT
+binary links only the namespaces its source names (`ns_groups()`,
+`deployment.md` §4) — the built-in globals (`to_string`, `type_of`,
 `range`, …) as `kBuiltinFns`, and the value-type methods. A program
 installs it once with `install_jit_stdlib()`, which fills the
 `ExtensionHooks` that `install_extension` (`rt.h`) registers — the same

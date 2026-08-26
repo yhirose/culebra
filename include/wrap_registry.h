@@ -1,7 +1,7 @@
 #pragma once
 
 // The compiled-lane registry rows a wrap.h class declaration produces:
-// WrappedNsRow (a kNsMethods-shaped row per ctor/static, with the full
+// WrappedNsRow (an NsMethod-shaped row per ctor/static, with the full
 // declared signature) and the class-name list. Split out of wrap.h so
 // stdlib_jit.h can read the registries without wrap.h's interp half
 // (Phase 4 B7-b); wrap.h includes this and pushes into both.
@@ -13,7 +13,7 @@
 
 namespace culebra {
 
-// One kNsMethods-shaped row per ctor/static of a wrapped class.
+// One NsMethod-shaped row per ctor/static of a wrapped class.
 // stdlib_jit.h materializes NsMethod rows from these (lazily, after
 // static-init froze the registry, so the c_str pointers are stable) and
 // merges them into every table consumer. The class name rides in `sub`:

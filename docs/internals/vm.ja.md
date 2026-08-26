@@ -206,7 +206,9 @@ consume-on-every-exit、transfer）に従う。`memory.md` §4.3が一覧に
 
 `stdlib_jit.h`が標準ライブラリを束縛する: ネイティブ名前空間
 （`Math`、`IO`、`Random`、`FS`、`Net`、`Canvas`、…）を実行時が名前
-で解決する`kNsMethods`テーブルとして、組み込みグローバル
+で解決する名前空間ごとの`kNsRows_*`テーブルとして — 名前空間単位に
+まとめてあるのは、AOTバイナリがソースの名指しした名前空間だけをlink
+するため（`ns_groups()`、`deployment.md` §4）— 組み込みグローバル
 （`to_string`、`type_of`、`range`、…）を`kBuiltinFns`として、値型
 メソッドとして。プログラムは`install_jit_stdlib()`を1回呼んでこれを
 インストールし、これが`install_extension`（`rt.h`）が登録する

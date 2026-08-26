@@ -5575,7 +5575,7 @@ run_with(IO, "via parameter")
 ```
 
 Both backends honor self. The JIT/AOT slow path goes through a
-runtime dispatcher (`stdlib_jit.h::kNsMethods`) while the syntactic
+runtime dispatcher (`stdlib_jit.h::kNsRows_*`) while the syntactic
 fast path (`IO.inspect(x)` directly) keeps its inlined IR emission.
 
 ### Free function vs method

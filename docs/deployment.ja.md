@@ -644,6 +644,19 @@ archiveを **force-load** し、同じ条件でその外部ライブラリ（BLA
 OpenSSL / zlib / …）を付けます。強いchokeがbaseの弱スタブを上書きする
 ので、これらの機能をどれも使わないプログラムはどれもlinkしません。
 
+標準ライブラリ自身のdispatch表も、namespace単位で同じようにlinkされ
+ます。各namespaceの行（`Math.abs`や`Isolate.spawn`が実行時に解決する
+adapter）とその正準シグネチャは、baseアーカイブが定義はするが自分では
+参照しない*group*を成し、プログラムのオブジェクトがgroupの一覧（全stdlib
+namespace分。ソースが名指ししないものはnullエントリ）を運びます。名指し
+されたgroupの行だけがdead-strippingを生き残り、それらだけが到達していた
+ものも一緒に落ちます。走査はプログラムとspliceされたpreambleに対する字句
+単位なので、`let m = Math; m.abs(x)`は`Math`を名指ししたと数え、lazy
+モジュール内の`_Canvas`は`Canvas`がそのモジュールを引き込んだ時点で数え
+ます。機能軸と合わせて、これが`print("hello")`のバイナリを1 MB未満に
+保っています。走査が見落としたnamespaceは黙って`nil`に読めたりはせず、
+到達した時点でそのnamespace名を含む`InternalError`になります。
+
 これらのアーカイブはcpp-embedlibによって **`culebra`ドライバに
 直接埋め込まれています** — ドライバは単体で完結する1バイナリで、
 サイドカーの`.a`ファイルを別途インストールする必要はありません。

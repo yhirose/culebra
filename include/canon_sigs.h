@@ -98,9 +98,9 @@ inline std::string canon_sig_key(std::string_view ns, std::string_view sub,
 // The value-type built-in method tables, keyed by method name — the exact
 // receiver split interp's eval_property dispatched on (String and StringView
 // share one table by construction; the generator emits it once). The
-// stdlib-native rows (kCanonNsSigs) have no accessor here: their one reader
-// is stdlib_jit.h's _canon_sig, which merges them with the wrap-declared
-// rows into a single registry.
+// stdlib-native rows (kCanonSigs_<Ns>, kCanonSigs_Bare) have no accessor
+// here: their one reader is stdlib_jit.h's _canon_sig, which merges them
+// with the wrap-declared rows into a single registry.
 inline const CanonSigTable& canon_object_sigs() {
   static const CanonSigTable t = _canon_detail::build(kCanonObjectSigs);
   return t;

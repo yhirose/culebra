@@ -5419,7 +5419,7 @@ run_with(IO, "via parameter")
 ```
 
 両backendがこれを保証します。JIT/AOTのスローパスはruntime
-ディスパッチャ（`stdlib_jit.h::kNsMethods`）を経由し、構文的
+ディスパッチャ（`stdlib_jit.h::kNsRows_*`）を経由し、構文的
 ファストパス（`IO.inspect(x)`直接呼出）は従来のinline IR生成を
 保ちます。
 

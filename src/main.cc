@@ -813,18 +813,13 @@ int run_build(const BuildOptions& opts) {
     cross = false;  // a no-op cross is just a host build
   }
 
-  // Walk the whole dependency graph once per axis.
+  // Every name the program reaches, walked once; each axis is a lookup.
+  culebra::AotNames names;
+  for (const auto& m : modules) culebra::aot_collect_names(*m.ast, names);
   bool used[std::size(kFeatureAxes)] = {};
   for (size_t i = 0; i < std::size(kFeatureAxes); i++) {
-    std::vector<std::string_view> names;
     for (const char* n : kFeatureAxes[i].names)
-      if (n) names.push_back(n);
-    for (const auto& m : modules) {
-      if (culebra::aot_uses_any_name(*m.ast, names)) {
-        used[i] = true;
-        break;
-      }
-    }
+      if (n && culebra::aot_named(names, n)) used[i] = true;
   }
 
   // Reject early: cross-compile + Tensor would need a target-specific BLAS
@@ -852,13 +847,9 @@ int run_build(const BuildOptions& opts) {
       wrap_namespaces.push_back(wc.ns);
   }
   bool uses_wrap = false;
-  if (!cross && !wrap_namespaces.empty()) {
-    for (const auto& m : modules) {
-      if (culebra::aot_uses_any_name(*m.ast, wrap_namespaces)) {
-        uses_wrap = true;
-        break;
-      }
-    }
+  if (!cross) {
+    for (auto ns : wrap_namespaces)
+      if (culebra::aot_named(names, ns)) uses_wrap = true;
   }
 
   int rc = culebra::vm::build_object_from_modules(

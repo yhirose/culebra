@@ -9,9 +9,9 @@
 #include <parser.h>
 
 #include <algorithm>
-#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace culebra {
@@ -84,32 +84,35 @@ inline void aot_collect_embed_dirs(const peg::Ast& node,
   for (const auto& child : node.nodes) aot_collect_embed_dirs(*child, out);
 }
 
-// Does the program reference any of `names` as a bare identifier? This is the
-// one scan behind every AOT feature axis, and behind `culebra wrap`'s namespace
-// set — which is why it takes the names rather than hardcoding them: the wrap
-// axis learns its namespaces from the driver's own registry at runtime.
+// Every identifier the program names — the one scan behind every AOT usage
+// question: a feature axis, `culebra wrap`'s namespaces (learned from the
+// driver's own registry at runtime, hence a set and not a hardcoded list) and
+// the stdlib namespace groups. Collected once over every module, the spliced
+// preamble included, and each question is then a lookup (aot_named).
 //
 // The match is deliberately conservative and purely textual, so
 // `Tensor.zeros(...)` style references and any bare `Tensor` identifier alike
-// flip the flag. A false positive only inflates the binary; a false negative
-// leaves runtime calls unresolved (or a wrapped namespace unregistered), so
-// over-matching is the safe direction. `names` holds one or two entries per
-// axis, so the linear scan per identifier is fine. `_X` is the native
-// namespace behind stdlib `X` (`_Canvas`, `_Regex`, …), which the preamble
-// and the tests call directly, so it counts as a use of `X`.
-inline bool aot_uses_any_name(const peg::Ast& node,
-                              std::span<const std::string_view> names) {
+// count. A false positive only inflates the binary; a false negative leaves
+// runtime calls unresolved (or a wrapped namespace unregistered), so
+// over-matching is the safe direction. `_X` is the native namespace behind
+// stdlib `X` (`_Canvas`, `_Regex`, …), which the preamble and the tests call
+// directly, so it counts as a use of `X`: the set holds the stripped spelling.
+using AotNames = std::unordered_set<std::string_view>;
+
+inline std::string_view _aot_name_key(std::string_view id) {
+  if (id.starts_with('_')) id.remove_prefix(1);
+  return id;
+}
+
+inline void aot_collect_names(const peg::Ast& node, AotNames& out) {
   using namespace peg::udl;
-  if (node.tag == "IDENTIFIER"_) {
-    std::string_view id = node.token;
-    if (id.starts_with('_')) id.remove_prefix(1);
-    for (auto n : names)
-      if (id == n) return true;
-  }
-  for (const auto& child : node.nodes) {
-    if (aot_uses_any_name(*child, names)) return true;
-  }
-  return false;
+  if (node.tag == "IDENTIFIER"_) out.insert(_aot_name_key(node.token));
+  for (const auto& child : node.nodes) aot_collect_names(*child, out);
+}
+
+// Does the program name `name` (either spelling, `X` or `_X`)?
+inline bool aot_named(const AotNames& names, std::string_view name) {
+  return names.contains(_aot_name_key(name));
 }
 
 }  // namespace culebra

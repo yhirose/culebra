@@ -8,6 +8,7 @@
 #ifdef CULEBRA_JIT_ENABLED
 
 #include <jit.h>
+#include <runtime/aot_scan.h>  // aot_collect_names — which namespaces to link
 #include <vm.h>
 
 #include <memory>
@@ -23,6 +24,7 @@ namespace culebra::vm {
 // helper, the lowering calls the JIT's own emitter for the same construct
 // (emit_arith_step, emit_comparison_i1, value_to_bool) — one dispatch
 // definition, two consumers.
+
 struct Lowering {
   // One chunk's parameter metadata, as globals of the module being built —
   // JIT::emit_param_meta_global, fed from the chunk instead of from
@@ -87,11 +89,14 @@ struct Lowering {
 
   // AOT: the same lowering, to a TargetMachine object file instead of ORC,
   // plus the C `int main(int, char**)` that hands `__culebra_main` to
-  // `culebra_aot_bootstrap` (libculebra_rt.a). An empty `target_triple` means
-  // the host. Returns 0 on success. JIT::build_object's tail, over bytecode.
+  // `culebra_aot_bootstrap` (libculebra_rt.a), and the stdlib namespace list
+  // the archive's ns_groups() reads, from `names` (aot_collect_names). An
+  // empty `target_triple` means the host. Returns 0 on success.
+  // JIT::build_object's tail, over bytecode.
   static int build_object(const VmProgram& p, const std::string& out_path,
                           int opt_level, bool emit_llvm,
-                          const std::string& target_triple) {
+                          const std::string& target_triple,
+                          const AotNames& names) {
     using namespace llvm;
     if (target_triple.empty()) {
       JIT::ensure_native_target_init();
@@ -130,6 +135,34 @@ struct Lowering {
     builder.CreateRet(
         builder.CreateCall(bootstrapFn, {argcArg, argvArg, mainFn}));
     verifyFunction(*cMain);
+
+    // culebra_aot_ns_groups[] / _count: one NsGroupRef {ns, group} per stdlib
+    // namespace. A named namespace's group is an external reference — the one
+    // thing that keeps its rows, signatures and adapters through the link's
+    // dead-stripping — and an unnamed one's is null, which the archive reports
+    // as a scan miss if the program reaches it anyway.
+    {
+      static_assert(sizeof(NsGroupRef) == 2 * sizeof(void*));
+      auto i64 = builder.getInt64Ty();
+      auto refTy = StructType::get(*ctx, {ptrTy, ptrTy});
+      std::vector<Constant*> refs;
+      for (const auto& g : kNsGroups) {
+        Constant* group = ConstantPointerNull::get(ptrTy);
+        if (aot_named(names, g.ns)) {
+          group = mod->getOrInsertGlobal(ns_group_symbol(g.ns),
+                                         builder.getInt8Ty());
+        }
+        refs.push_back(ConstantStruct::get(
+            refTy, {builder.CreateGlobalString(g.ns, ".ns"), group}));
+      }
+      auto arrTy = ArrayType::get(refTy, refs.size());
+      new GlobalVariable(*mod, arrTy, true, GlobalValue::ExternalLinkage,
+                         ConstantArray::get(arrTy, refs),
+                         "culebra_aot_ns_groups");
+      new GlobalVariable(*mod, i64, true, GlobalValue::ExternalLinkage,
+                         ConstantInt::get(i64, refs.size()),
+                         "culebra_aot_ns_group_count");
+    }
 
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
     if (emit_llvm) mod->print(outs(), nullptr);
@@ -4482,7 +4515,11 @@ inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
 // `culebra build`: the same program the JIT lane runs, emitted as an object
 // file. Nothing host-side is registered here — the metadata a keyword call
 // resolves against is a global of the module (Lowering::param_meta_globals),
-// so the built binary carries its own.
+// and the stdlib namespaces it can reach are a list in the module too — so
+// the built binary carries its own. The namespace scan runs over every
+// module, the spliced preamble included, so a lazy module's `_Canvas` counts
+// once `Canvas` pulled it in; over-linking costs bytes, a miss is a namespace
+// that throws at first use, which is why it is textual and not a resolution.
 inline int build_object_from_modules(
     const std::vector<LoadedModule>& modules, const std::string& out_path,
     int opt_level = 2, bool emit_llvm = false,
@@ -4492,8 +4529,11 @@ inline int build_object_from_modules(
     return 1;
   }
   auto prog = Compiler::compile_modules(modules);
+  AotNames names;
+  for (const auto& m : modules)
+    if (m.ast) aot_collect_names(*m.ast, names);
   return Lowering::build_object(prog, out_path, opt_level, emit_llvm,
-                                target_triple);
+                                target_triple, names);
 }
 
 }  // namespace culebra::vm

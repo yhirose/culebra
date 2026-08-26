@@ -6609,7 +6609,7 @@ class Compiler {
   }
 
   // The namespace VALUES the slice reaches: the natively built ones, taken
-  // straight from the resolver's own predicate (kNsMethods / wrap.h classes /
+  // straight from the resolver's own predicate (the ns groups / wrap.h classes /
   // constant groups) so the two cannot drift, plus the lazy source modules —
   // built on demand by the builder the compiled preamble registered.
   // Which bare names compile to a resolver lookup instead of a binding: the

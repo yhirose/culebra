@@ -3727,10 +3727,8 @@ inline void install_jit_stdlib() { JitExtension::install(); }
 // IDENTIFIER.DOT.ARGUMENTS) still goes through compile_ns_call
 // in JitExtension and bypasses this entirely.
 //
-// To add a method: append one row to `kNsMethods` below. The drift
-// check in debug builds verifies that every namespace bound by
-// `culebra::setup_built_in_functions` is covered here. _Time is
-// an internal Time-class ABI, intentionally excluded.
+// To add a method: append one row to its namespace's `kNsRows_*` table
+// below (a new namespace is a table, a group and an index entry).
 //
 // Each adapter is a thin wrapper that unmarshals positional args
 // and calls the matching `culebra_runtime_*` helper. line/col are
@@ -3892,7 +3890,7 @@ inline JitValue _ns_io_eprintln(JitValue* a, int64_t) {
 }
 // Per-stream terminal detection (POSIX isatty). Slow-path only (no fast-path
 // branch / runtime helper / declare_runtime — like GC.stat): reached through
-// the kNsMethods trampoline on both JIT and AOT. Matches the interp's
+// the ns-method trampoline on both JIT and AOT. Matches the interp's
 // IO.*_is_terminal returning a plain Bool.
 inline JitValue _ns_io_stdin_is_terminal(JitValue*, int64_t) {
   return _ns_adapt::v_bool(isatty(STDIN_FILENO));
@@ -6338,7 +6336,7 @@ inline JitValue _ns_json_parse(JitValue* a, int64_t n) {
 
 // Encoding.html.{escape,unescape}: the codec logic is shared with interp via
 // shared.h. Slow-path only (nested namespaces bypass compile_ns_call), so
-// these are reached through the kNsMethods closure trampoline.
+// these are reached through the ns-method closure trampoline.
 inline JitValue _ns_encoding_html_escape(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
       _culebra_heap_str(culebra::html_escape(_ns_adapt::require_sv(a[0], "s"))));
@@ -7062,6 +7060,21 @@ struct NsMethod {
   const char* arg0_name = nullptr;
 };
 
+// One namespace's rows and the canonical signatures behind them — the unit
+// of AOT linkage (see CULEBRA_NS_GROUP_LINKAGE below).
+struct NsGroup {
+  std::span<const NsMethod> rows;
+  std::span<const CanonSig> sigs;
+};
+// An index entry. `group` is null in an AOT binary for a namespace the program
+// never named: still known, so reaching one reports which namespace is
+// missing rather than an undefined variable.
+struct NsGroupRef {
+  const char* ns;
+  const NsGroup* group;
+};
+inline std::span<const NsGroupRef> ns_groups();
+
 // --- Single source of truth for the calling convention -----------------------
 // The JIT binder's per-parameter view (NsParamMeta) is read, once per
 // process, from the canonical signature table (canon_sigs.h) — generated
@@ -7091,9 +7104,10 @@ inline JitValue _jit_default_from_canon(const CanonParam& p) {
 }
 
 // Resolve an NsMethod to its canonical signature, or null. One registry,
-// built once (lock-free reads after init): the generated rows
-// (kCanonNsSigs) seeded first, then the wrap.h-declared rows — which
-// register at static-init time so they cannot be in a generated file —
+// built once (lock-free reads after init): the generated rows (the linked
+// groups' and the bare globals') seeded first, then the wrap.h-declared
+// rows — which register at static-init time so they cannot be in a
+// generated file —
 // synthesized from the wrap registry (always all-required positionals, see
 // WrappedNsRow). Seeding order is the collision policy: a wrap row can
 // never shadow a generated one.
@@ -7105,10 +7119,13 @@ inline const CanonSig* _canon_sig(const NsMethod* m) {
   };
   static const Registry reg = [] {
     Registry r;
-    r.table.reserve(std::size(culebra::kCanonNsSigs) +
-                    culebra::wrapped_ns_rows().size());
-    for (const auto& s : culebra::kCanonNsSigs)
-      r.table.emplace(culebra::canon_sig_key(s.ns, s.sub, s.name), &s);
+    auto seed = [&](std::span<const CanonSig> sigs) {
+      for (const auto& s : sigs)
+        r.table.emplace(culebra::canon_sig_key(s.ns, s.sub, s.name), &s);
+    };
+    seed(culebra::kCanonSigs_Bare);
+    for (const auto& g : ns_groups())
+      if (g.group) seed(g.group->sigs);
     for (const auto& row : culebra::wrapped_ns_rows()) {
       auto& ps = r.wrap_params.emplace_back();
       ps.reserve(row.param_names.size());
@@ -7191,7 +7208,7 @@ inline bool _ns_positional_count_ok(const NsMethod* m, int64_t n) {
 // NsMethod rows for wrap.h-declared classes (wrapped_ns_rows), built
 // lazily once — after static-init froze the registry, so the c_str
 // pointers into its strings are stable — and merged into every table
-// consumer below alongside the static kNsMethods rows. The class name
+// consumer below alongside the static kNsRows_* rows. The class name
 // rides in `sub` (a nested `Ns.Class.method`, slow-path only, the
 // Encoding.html shape), and the param spec is synthesized from the same
 // registry rows by _canon_sig (a wrap method is always all-required
@@ -7272,9 +7289,13 @@ inline JitValue _ns_embed_dir(JitValue* args, int64_t n) {
       std::string(_culebra_str_view(args[0].tag, args[0].data)));
 }
 
-inline const NsMethod kNsMethods[] = {
+// The stdlib namespaces, one row table each (one group each, below). Rows
+// never move between tables — a namespace's slot order is its `keys()` order
+// — and a new method is one row in its namespace's table.
+inline const NsMethod kNsRows_Embed[] = {
   {"Embed",  "dir",       1, &_ns_embed_dir, nullptr, "String", "name"},
-
+};
+inline const NsMethod kNsRows_IO[] = {
   {"IO",     "inspect",   1, &_ns_io_inspect},
   {"IO",     "print",     1, &_ns_io_print},
   {"IO",     "println",   1, &_ns_io_println},
@@ -7286,7 +7307,8 @@ inline const NsMethod kNsMethods[] = {
   {"IO",     "stdin_is_terminal",  0, &_ns_io_stdin_is_terminal},
   {"IO",     "stdout_is_terminal", 0, &_ns_io_stdout_is_terminal},
   {"IO",     "stderr_is_terminal", 0, &_ns_io_stderr_is_terminal},
-
+};
+inline const NsMethod kNsRows_Math[] = {
   {"Math",   "abs",       1, &_ns_math_abs},
   {"Math",   "min",      -1, &_ns_math_min},
   {"Math",   "max",      -1, &_ns_math_max},
@@ -7307,7 +7329,8 @@ inline const NsMethod kNsMethods[] = {
   {"Math",   "floor",     1, &_ns_math_floor},
   {"Math",   "ceil",      1, &_ns_math_ceil},
   {"Math",   "round",     1, &_ns_math_round},
-
+};
+inline const NsMethod kNsRows_FS[] = {
   {"FS",     "join",     -1, &_ns_fs_join},
   {"FS",     "basename",  1, &_ns_fs_basename, nullptr, "String|Path", "path"},
   {"FS",     "dirname",   1, &_ns_fs_dirname, nullptr, "String|Path", "path"},
@@ -7337,10 +7360,12 @@ inline const NsMethod kNsMethods[] = {
   {"FS",     "walk",      1, &_ns_fs_walk},
   {"FS",     "glob",      1, &_ns_fs_glob},
   {"FS",     "watch",     1, &_ns_fs_watch},
-
+};
+inline const NsMethod kNsRows_File[] = {
   {"File",   "open",      1, &_ns_file_open},
   {"File",   "with",      2, &_ns_file_with},
-
+};
+inline const NsMethod kNsRows_Random[] = {
   {"Random", "seed",            1, &_ns_random_seed},
   {"Random", "int",             2, &_ns_random_int},
   {"Random", "uniform",         2, &_ns_random_uniform},
@@ -7348,7 +7373,8 @@ inline const NsMethod kNsMethods[] = {
   {"Random", "shuffle",         1, &_ns_random_shuffle, nullptr, "Array", "a"},
   {"Random", "weighted_choice", 2, &_ns_random_weighted_choice},
   {"Random", "choice",          1, &_ns_random_choice},
-
+};
+inline const NsMethod kNsRows_Sys[] = {
   {"Sys",    "exit",    1, &_ns_sys_exit},
   {"Sys",    "env",     1, &_ns_sys_env, nullptr, "String", "name"},
   {"Sys",    "getcwd",  0, &_ns_sys_getcwd},
@@ -7356,9 +7382,11 @@ inline const NsMethod kNsMethods[] = {
   {"Sys",    "set_env", 2, &_ns_sys_set_env, nullptr, "String", "name"},
   {"Sys",    "data_dir", 1, &_ns_sys_data_dir, nullptr, "String", "app"},
   {"Sys",    "time",    0, &_ns_sys_time},
-
+};
+inline const NsMethod kNsRows_GC[] = {
   {"GC",     "stat", 0, &_ns_gc_stat},
-
+};
+inline const NsMethod kNsRows_Regex_native[] = {
   {"_Regex", "check",       1, &_ns_regex_check},
   {"_Regex", "test",        2, &_ns_regex_test},
   {"_Regex", "find",        2, &_ns_regex_find},
@@ -7371,17 +7399,21 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
   {"_Regex", "replace_first",3, &_ns_regex_replace_first},
   {"_Regex", "split",       2, &_ns_regex_split},
-
+};
+inline const NsMethod kNsRows_Net[] = {
   {"Net",    "connect", 2, &_ns_net_connect},
   {"Net",    "listen",  1, &_ns_net_listen},
   {"Net",    "udp",     0, &_ns_net_udp},
   {"Net",    "resolve", 1, &_ns_net_resolve},
+};
+inline const NsMethod kNsRows_Proc[] = {
   {"Proc",   "run",   1, &_ns_proc_run},
   {"Proc",   "all",   1, &_ns_proc_all},
   {"Proc",   "race",  1, &_ns_proc_race},
   {"Proc",   "spawn", 1, &_ns_proc_spawn},
-
+};
 #if defined(CULEBRA_HTTP_ENABLED)
+inline const NsMethod kNsRows_Http[] = {
   {"Http",   "get",     1, &_ns_http_get},
   {"Http",   "delete",  1, &_ns_http_delete},
   {"Http",   "head",    1, &_ns_http_head},
@@ -7392,26 +7424,39 @@ inline const NsMethod kNsMethods[] = {
   {"Http",   "client",  1, &_ns_http_client},
   {"Http",   "server",  0, &_ns_http_server},
   {"Http",   "ws",      1, &_ns_http_ws},
+};
 #endif
-
+inline const NsMethod kNsRows_Isolate[] = {
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
+};
+inline const NsMethod kNsRows_Channel[] = {
   {"Channel", "new",    -1, &_ns_channel_new},
   {"Channel", "fan_in", -1, &_ns_channel_fan_in},
+};
+inline const NsMethod kNsRows_Signal[] = {
   {"Signal",  "notify", 1, &_ns_signal_notify},
   {"Signal",  "reset",  0, &_ns_signal_reset},
+};
+inline const NsMethod kNsRows_SharedBuffer[] = {
   {"SharedBuffer", "new", 2, &_ns_sharedbuffer_new},
-  {"Shared", "new", 1, &_ns_shared_new},
   {"SharedBuffer", "file", 3, &_ns_sharedbuffer_file},
   {"SharedBuffer", "shared", 2, &_ns_sharedbuffer_shared},
   {"SharedBuffer", "receive", 2, &_ns_sharedbuffer_receive},
+};
+inline const NsMethod kNsRows_Shared[] = {
+  {"Shared", "new", 1, &_ns_shared_new},
+};
+inline const NsMethod kNsRows_Parallel[] = {
   {"Parallel", "map",         2, &_ns_parallel_map},
   {"Parallel", "each",        2, &_ns_parallel_each},
   {"Parallel", "map_settled", 2, &_ns_parallel_map_settled},
   {"Parallel", "race",        2, &_ns_parallel_race},
-
+};
+inline const NsMethod kNsRows_JSON[] = {
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse, nullptr, "String", "s"},
-
+};
+inline const NsMethod kNsRows_Encoding[] = {
   // Nested sub-namespace (sub="html"): reached only via bare-resolve +
   // member access, e.g. `Encoding.html.unescape(s)`.
   {"Encoding", "escape",   1, &_ns_encoding_html_escape, "html",   "String", "s"},
@@ -7422,11 +7467,13 @@ inline const NsMethod kNsMethods[] = {
   {"Encoding", "decode",   1, &_ns_encoding_hex_decode, "hex",    "String", "s"},
   {"Encoding", "encode",   1, &_ns_encoding_url_encode, "url",    "String", "s"},
   {"Encoding", "decode",   1, &_ns_encoding_url_decode, "url",    "String", "s"},
-
+};
+inline const NsMethod kNsRows_Compress[] = {
   {"Compress", "gzip",     1, &_ns_compress_gzip,   nullptr, "String", "data"},
   {"Compress", "gunzip",   1, &_ns_compress_gunzip, nullptr, "String", "data"},
   {"Compress", "deflate",  1, &_ns_compress_deflate, nullptr, "String", "data"},
-
+};
+inline const NsMethod kNsRows_Hash[] = {
   {"Hash", "sha256",      1, &_ns_hash_sha256, nullptr, "String", "data"},
   {"Hash", "sha1",        1, &_ns_hash_sha1,   nullptr, "String", "data"},
   {"Hash", "sha512",      1, &_ns_hash_sha512, nullptr, "String", "data"},
@@ -7434,26 +7481,35 @@ inline const NsMethod kNsMethods[] = {
   {"Hash", "hmac_sha256", 2, &_ns_hash_hmac_sha256, nullptr, "String", "key"},
   {"Hash", "hmac_sha1",   2, &_ns_hash_hmac_sha1,   nullptr, "String", "key"},
   {"Hash", "hmac_sha512", 2, &_ns_hash_hmac_sha512, nullptr, "String", "key"},
-
+};
+inline const NsMethod kNsRows_CSV[] = {
   {"CSV", "parse",     1, &_ns_csv_parse,     nullptr, "String", "text"},
   {"CSV", "stringify", 1, &_ns_csv_stringify, nullptr, "Array",  "rows"},
+};
 #if defined(CULEBRA_SQLITE_ENABLED)
+inline const NsMethod kNsRows_SQLite[] = {
   {"SQLite", "open",    1, &_ns_sqlite_open,    nullptr, "String", "path"},
   {"SQLite", "version", 0, &_ns_sqlite_version},
+};
 #endif
+inline const NsMethod kNsRows_TOML[] = {
   {"TOML", "parse",     1, &_ns_toml_parse,     nullptr, "String", "text"},
   {"TOML", "stringify", 1, &_ns_toml_stringify, nullptr, "Object", "v"},
-
+};
+inline const NsMethod kNsRows_Env[] = {
   {"Env", "parse", 1, &_ns_env_parse, nullptr, "String", "text"},
   {"Env", "load",  0, &_ns_env_load,  nullptr, "String", "path"},
-
+};
+inline const NsMethod kNsRows_UUID[] = {
   {"UUID", "v4", 0, &_ns_uuid_v4},
   {"UUID", "v7", 0, &_ns_uuid_v7},
-
+};
+inline const NsMethod kNsRows_String[] = {
   {"String", "from_code_point", 1, &_ns_string_from_code_point, nullptr, "Long", "cp"},
   {"String", "from_bytes", 1, &_ns_string_from_bytes, nullptr, "Array", "bytes"},
   {"String", "from_code_points", 1, &_ns_string_from_code_points, nullptr, "Array", "cps"},
-
+};
+inline const NsMethod kNsRows_Tensor[] = {
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
   {"Tensor", "randn",    -1, &_ns_tensor_randn},
@@ -7467,7 +7523,8 @@ inline const NsMethod kNsMethods[] = {
   {"Tensor", "use_auto",      0, &_ns_tensor_use_auto},
   {"Tensor", "gpu_available", 0, &_ns_tensor_gpu_available},
   {"Tensor", "device",        0, &_ns_tensor_device},
-
+};
+inline const NsMethod kNsRows_Time_native[] = {
   {"_Time",  "now_nanos",        0, &_ns_time_now_nanos},
   {"_Time",  "monotonic",        0, &_ns_time_monotonic},
   {"_Time",  "sleep",            1, &_ns_time_sleep},
@@ -7480,7 +7537,8 @@ inline const NsMethod kNsMethods[] = {
   {"_Time",  "weekday_nanos",    2, &_ns_time_weekday_nanos},
   {"_Time",  "add_nanos",        8, &_ns_time_add_nanos},
   {"_Time",  "start_of_nanos",   3, &_ns_time_start_of_nanos},
-
+};
+inline const NsMethod kNsRows_Term_native[] = {
   {"_Term",  "cols",        0, &_ns_term_cols},
   {"_Term",  "rows",        0, &_ns_term_rows},
   {"_Term",  "raw_on",      0, &_ns_term_raw_on},
@@ -7491,7 +7549,8 @@ inline const NsMethod kNsMethods[] = {
   {"_Term",  "resized",     0, &_ns_term_resized},
   {"_Term",  "read_key",    1, &_ns_term_read_key},
   {"_Term",  "attach_tty",  0, &_ns_term_attach_tty},
-
+};
+inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},
   {"_Canvas", "ttf_load",        1,  &_ns_canvas_ttf_load},
   {"_Canvas", "ttf_free",        1,  &_ns_canvas_ttf_free},
@@ -7550,6 +7609,174 @@ inline const NsMethod kNsMethods[] = {
   {"_Canvas", "width",           0,  &_ns_canvas_width},
   {"_Canvas", "height",          0,  &_ns_canvas_height},
 };
+
+// One group per table, under the C symbol ns_group_symbol names. A group is
+// the unit of AOT linkage: `culebra build` emits a reference to each group the
+// program names and nothing else does, so the link keeps exactly those, each
+// with the rows, signatures and adapters only it reaches. In the core archive
+// the groups are therefore plain definitions — nothing in the archive refers
+// to them, and an `inline` one, emitted only where referenced, would vanish.
+// Everywhere else `inline` folds the per-TU copies.
+//
+// The symbol rule: `culebra_ns_group_<Ns>`, a native `_X` spelled `X_native`
+// (no identifier may hold `__`). The definitions below follow it by hand; one
+// that doesn't is an undefined symbol at the AOT link, never a silent miss.
+inline std::string ns_group_symbol(std::string_view ns) {
+  std::string s = "culebra_ns_group_";
+  if (ns.starts_with('_')) {
+    s += ns.substr(1);
+    s += "_native";
+  } else {
+    s += ns;
+  }
+  return s;
+}
+#if defined(CULEBRA_RT_DEFINE_RUNTIME)
+#define CULEBRA_NS_GROUP_LINKAGE extern "C"
+#else
+#define CULEBRA_NS_GROUP_LINKAGE extern "C" inline
+#endif
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Embed{
+    kNsRows_Embed, kCanonSigs_Embed};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_IO{
+    kNsRows_IO, kCanonSigs_IO};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Math{
+    kNsRows_Math, kCanonSigs_Math};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_FS{
+    kNsRows_FS, kCanonSigs_FS};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_File{
+    kNsRows_File, kCanonSigs_File};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Random{
+    kNsRows_Random, kCanonSigs_Random};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Sys{
+    kNsRows_Sys, kCanonSigs_Sys};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_GC{
+    kNsRows_GC, kCanonSigs_GC};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Regex_native{
+    kNsRows_Regex_native, kCanonSigs_Regex_native};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Net{
+    kNsRows_Net, kCanonSigs_Net};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Proc{
+    kNsRows_Proc, kCanonSigs_Proc};
+#if defined(CULEBRA_HTTP_ENABLED)
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Http{
+    kNsRows_Http, kCanonSigs_Http};
+#endif
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Isolate{
+    kNsRows_Isolate, kCanonSigs_Isolate};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Channel{
+    kNsRows_Channel, kCanonSigs_Channel};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Signal{
+    kNsRows_Signal, kCanonSigs_Signal};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_SharedBuffer{
+    kNsRows_SharedBuffer, kCanonSigs_SharedBuffer};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Shared{
+    kNsRows_Shared, kCanonSigs_Shared};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Parallel{
+    kNsRows_Parallel, kCanonSigs_Parallel};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_JSON{
+    kNsRows_JSON, kCanonSigs_JSON};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Encoding{
+    kNsRows_Encoding, kCanonSigs_Encoding};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Compress{
+    kNsRows_Compress, kCanonSigs_Compress};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Hash{
+    kNsRows_Hash, kCanonSigs_Hash};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_CSV{
+    kNsRows_CSV, kCanonSigs_CSV};
+#if defined(CULEBRA_SQLITE_ENABLED)
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_SQLite{
+    kNsRows_SQLite, kCanonSigs_SQLite};
+#endif
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_TOML{
+    kNsRows_TOML, kCanonSigs_TOML};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Env{
+    kNsRows_Env, kCanonSigs_Env};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_UUID{
+    kNsRows_UUID, kCanonSigs_UUID};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_String{
+    kNsRows_String, kCanonSigs_String};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Tensor{
+    kNsRows_Tensor, kCanonSigs_Tensor};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Time_native{
+    kNsRows_Time_native, kCanonSigs_Time_native};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Term_native{
+    kNsRows_Term_native, kCanonSigs_Term_native};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Canvas_native{
+    kNsRows_Canvas_native, kCanonSigs_Canvas_native};
+
+// Every group, for the lanes that run in this process (the JIT, the VM) and
+// for `culebra build`'s emitter. An AOT binary reads the list its program
+// object emitted instead (ns_groups()): the archive must not name the groups,
+// or none could ever be dropped — and it doesn't, because this index is
+// inline and nothing the archive emits reads it (check_aot_feature_axes.sh
+// keeps that so).
+inline const NsGroupRef kNsGroups[] = {
+  {"Embed", &culebra_ns_group_Embed},
+  {"IO", &culebra_ns_group_IO},
+  {"Math", &culebra_ns_group_Math},
+  {"FS", &culebra_ns_group_FS},
+  {"File", &culebra_ns_group_File},
+  {"Random", &culebra_ns_group_Random},
+  {"Sys", &culebra_ns_group_Sys},
+  {"GC", &culebra_ns_group_GC},
+  {"_Regex", &culebra_ns_group_Regex_native},
+  {"Net", &culebra_ns_group_Net},
+  {"Proc", &culebra_ns_group_Proc},
+#if defined(CULEBRA_HTTP_ENABLED)
+  {"Http", &culebra_ns_group_Http},
+#endif
+  {"Isolate", &culebra_ns_group_Isolate},
+  {"Channel", &culebra_ns_group_Channel},
+  {"Signal", &culebra_ns_group_Signal},
+  {"SharedBuffer", &culebra_ns_group_SharedBuffer},
+  {"Shared", &culebra_ns_group_Shared},
+  {"Parallel", &culebra_ns_group_Parallel},
+  {"JSON", &culebra_ns_group_JSON},
+  {"Encoding", &culebra_ns_group_Encoding},
+  {"Compress", &culebra_ns_group_Compress},
+  {"Hash", &culebra_ns_group_Hash},
+  {"CSV", &culebra_ns_group_CSV},
+#if defined(CULEBRA_SQLITE_ENABLED)
+  {"SQLite", &culebra_ns_group_SQLite},
+#endif
+  {"TOML", &culebra_ns_group_TOML},
+  {"Env", &culebra_ns_group_Env},
+  {"UUID", &culebra_ns_group_UUID},
+  {"String", &culebra_ns_group_String},
+  {"Tensor", &culebra_ns_group_Tensor},
+  {"_Time", &culebra_ns_group_Time_native},
+  {"_Term", &culebra_ns_group_Term_native},
+  {"_Canvas", &culebra_ns_group_Canvas_native},
+};
+
+#if defined(CULEBRA_RT_DEFINE_RUNTIME) || defined(CULEBRA_RT_FEATURE_ARCHIVE)
+// The AOT binary's list, emitted into the program object by `culebra build`
+// (Lowering::build_object, vm_lowering.h): one entry per stdlib namespace,
+// with a null group for every namespace the program never named.
+extern "C" const NsGroupRef culebra_aot_ns_groups[];
+extern "C" const int64_t culebra_aot_ns_group_count;
+inline std::span<const NsGroupRef> ns_groups() {
+  return {culebra_aot_ns_groups,
+          static_cast<size_t>(culebra_aot_ns_group_count)};
+}
+#else
+inline std::span<const NsGroupRef> ns_groups() { return kNsGroups; }
+#endif
+
+// The index entry for `ns`, or null for a name that is no stdlib namespace.
+inline const NsGroupRef* _ns_group_ref(std::string_view ns) {
+  for (const auto& g : ns_groups())
+    if (ns == g.ns) return &g;
+  return nullptr;
+}
+// Every row this binary links, across the groups it has.
+template <class F>
+inline void _each_linked_ns_row(F f) {
+  for (const auto& g : ns_groups())
+    if (g.group)
+      for (const auto& m : g.group->rows) f(m);
+}
 
 // Namespace-level constants (Math.pi, etc). Slot values are immutable
 // at the language level; we register them once when building the
@@ -8077,7 +8304,9 @@ inline const bool _jit_ns_kwarg_hook_installed = [] {
   return true;
 }();
 
-inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
+// `rows` are the namespace's native rows (empty for a wrap-only namespace).
+inline JitObject* _jit_build_namespace_object(std::string_view ns_name,
+                                              std::span<const NsMethod> rows) {
   // Build with collection paused: the method closures and sub-namespace
   // objects are registered but not reachable from any root until they are
   // slotted, so a GC_STRESS collect mid-build would sweep them.
@@ -8131,7 +8360,7 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
       obj->append_slot(m.name, fv, /*mut=*/false);
     }
   };
-  for (auto& m : kNsMethods) add_method(m);
+  for (const auto& m : rows) add_method(m);
   for (auto& m : _wrapped_ns_methods()) add_method(m);
   // Wrapped classes with no ctor/static rows still get their (empty)
   // class sub-object, mirroring the interp's registry walk.
@@ -8216,7 +8445,7 @@ inline std::unordered_map<const NsMethod*, const NsParamMeta*> sig_table(
     if (const CanonSig* s = _canon_sig(&nm)) t.emplace(&nm, s);
     // else: canonical lookup failed — skip, callers fall back
   };
-  for (const auto& nm : kNsMethods) add(nm);
+  _each_linked_ns_row(add);
   for (const auto& nm : kBuiltinFns) add(nm);
   for (const auto& nm : _wrapped_ns_methods()) add(nm);
   return t;
@@ -8330,7 +8559,7 @@ inline const JitParamMeta* _jit_ns_introspect_meta(JitClosure* cls) {
           t.emplace(&nm, &built->meta);
           storage.push_back(std::move(built));
         };
-        for (const auto& nm : kNsMethods) add(nm);
+        _each_linked_ns_row(add);
         for (const auto& nm : kBuiltinFns) add(nm);
         for (const auto& nm : _wrapped_ns_methods()) add(nm);
         return t;
@@ -8359,12 +8588,10 @@ inline JitClosure* _jit_builtin_fn_closure(_JitNamespaceTable& t,
   return nullptr;
 }
 
-// Namespace names this dispatcher knows how to build. Kept in sync
-// with interp's `setup_built_in_functions` by the drift check below.
-// `_Time` is the Time-class ABI primitive — internal, not user-facing
-// — and intentionally excluded.
+// Namespace names this dispatcher knows how to build. Every group in the
+// index counts, linked or not (see _jit_namespace_get_or_build).
 inline bool _is_known_ns(std::string_view name) {
-  for (auto& m : kNsMethods) if (name == m.ns) return true;
+  if (_ns_group_ref(name)) return true;
   for (auto& m : _wrapped_ns_methods()) if (name == m.ns) return true;
   // A wrapped class with no ctor/static still binds its (empty) class
   // object on the interp side — keep the ns known here so the drift
@@ -8378,7 +8605,7 @@ inline bool _is_known_ns(std::string_view name) {
 // Resolve `Ns[.sub].method` to its NsMethod, or null. `sub` is nullptr for a
 // top-level method (e.g. Http.get) and the sub-namespace name for a nested one
 // (e.g. Encoding.base64.encode → sub="base64"). Resolution is by name (not a
-// baked pointer) so the same call works under AOT, where the kNsMethods table
+// baked pointer) so the same call works under AOT, where the row table
 // address differs from JIT-compile time.
 inline const NsMethod* _lookup_ns_method(std::string_view ns,
                                          std::string_view method,
@@ -8389,7 +8616,8 @@ inline const NsMethod* _lookup_ns_method(std::string_view ns,
                          : (m.sub != nullptr && std::string_view(sub) == m.sub);
     return sub_match && ns == m.ns && method == m.name;
   };
-  for (auto& m : kNsMethods) if (match(m)) return &m;
+  if (const NsGroupRef* g = _ns_group_ref(ns); g && g->group)
+    for (const auto& m : g->group->rows) if (match(m)) return &m;
   for (auto& m : _wrapped_ns_methods()) if (match(m)) return &m;
   return nullptr;
 }
@@ -8472,7 +8700,20 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
     return obj;
   }
   if (!_is_known_ns(name)) return nullptr;
-  auto* obj = _jit_build_namespace_object(name);
+  // An AOT binary links only the groups `culebra build` saw the program name,
+  // so an index entry with no group is a scan miss — say so, rather than hand
+  // back an empty object whose members all read as nil.
+  const NsGroupRef* ref = _ns_group_ref(name);
+  if (ref && !ref->group) {
+    culebra::throw_runtime_error_at(
+        "InternalError",
+        std::format("namespace '{}' is not linked into this binary "
+                    "(culebra build's namespace scan did not see it named)",
+                    name),
+        0, 0);
+  }
+  auto* obj = _jit_build_namespace_object(
+      name, ref ? ref->group->rows : std::span<const NsMethod>{});
   table.emplace(name, obj);
   // Cached for the program's lifetime and reached only through this table
   // (off any scanned stack between uses), so pin it as a permanent root; the

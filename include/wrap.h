@@ -137,14 +137,14 @@ inline std::vector<std::string> pin_param_names(std::vector<std::string> names,
 // The declaration instantiates per-method handle thunks (plain functions —
 // the member-fn pointer is a NON-TYPE template argument, so each method gets
 // its own static thunk, exactly the hand-written Phase 3 shape), ns adapters
-// for the kNsMethods-style dispatch, and a row registry stdlib_jit.h merges
+// for the NsMethod-style dispatch, and a row registry stdlib_jit.h merges
 // with its static table. Type checks and error positions follow the Phase 3
 // thunk conventions: param type-check BEFORE the closed check, TypeError at
 // the argument's threaded position (argpos / call_arg0 fallback),
 // ClosedError at the call site.
 
 // Annotation check through the canonical matcher — the SAME predicate the
-// kNsMethods trampoline applies to ctor/static params, so a String param
+// ns-method trampoline applies to ctor/static params, so a String param
 // rejects a StringView slice identically on every path.
 template <class A>
 inline bool jit_arg_matches(const JitValue& v) {
@@ -490,7 +490,7 @@ void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
       [&] { return invoke(std::index_sequence_for<Args...>{}); });
 }
 
-// ns adapters: reached through the kNsMethods trampoline, which has
+// ns adapters: reached through the ns-method trampoline, which has
 // already arity- and type-checked every positional against the
 // CANONICAL interp params (the calling-convention single source), so
 // these convert and call.
