@@ -1104,7 +1104,9 @@ inline JitValue _jit_shared_val_child(JitObject* view, int64_t id,
 }
 
 // `view.name` data read on an own-slot miss — Object-node field, nil on
-// miss (mirroring a plain Object). Declared in jit.h for the get_ic hook.
+// miss (mirroring a plain Object). Declared in jit_runtime.h for the get_ic
+// hook; CULEBRA_RT_INLINE, not `inline`, because feature TUs see only that
+// declaration (tools/check_rt_keep_scope.sh's exception).
 CULEBRA_RT_INLINE JitValue _jit_shared_val_prop(JitObject* view,
                                                 const char* name,
                                                 int64_t line, int64_t col) {

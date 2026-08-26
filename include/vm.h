@@ -3870,11 +3870,28 @@ class Compiler {
     return push_binding(std::move(b));
   }
 
-  // The binding `name` reads as, materializing the session's when nothing in
-  // scope holds it. Null only outside REPL mode.
+  // An earlier input of the session declared `name` (the interp's environment
+  // chain answering it).
+  bool session_declared(std::string_view name) const {
+    return repl_ && repl_session().declared(name);
+  }
+
+  // Whether a bare write to `name`, bound by nothing in scope, is the
+  // session's: always at a line's top level (Op::ReplBind decides
+  // declare-or-reassign when the write runs); in a block or function only
+  // when an earlier input declared it — otherwise it declares a local, as
+  // in a script.
+  bool session_owns(std::string_view name) const {
+    return repl_top() || session_declared(name);
+  }
+
+  // The binding a bare write to `name` lands in: what is in scope, else the
+  // session's cell when it owns the name. Null for `self` and the stdlib
+  // globals (bound already, nothing here to write) — and, off the REPL, for
+  // any name nothing binds.
   const Binding* lookup_or_session(const peg::Ast& at, const std::string& name) {
     if (const Binding* b = lookup(name)) return b;
-    return repl_ ? &bind_session(at, name) : nullptr;
+    return session_owns(name) ? &bind_session(at, name) : nullptr;
   }
 
   // Record what a declaration just bound. Only session bindings need it:
@@ -3888,21 +3905,6 @@ class Compiler {
          kconst_str(b.name));
   }
 
-  // Whether a bare write to `name`, which nothing in scope binds, lands in
-  // the session's cell rather than declaring here. At a line's top level it
-  // always does (Op::ReplBind decides declare-or-reassign when the write
-  // runs); inside a block or a function only when an earlier input declared
-  // the name — the interp's environment chain answering it. Otherwise the
-  // write declares a local of that scope, exactly as in a script: two test
-  // functions each writing `z = …` must not share one session `z` (probed:
-  // the second call was an ImmutableError).
-  bool session_owns(const std::string& name) const {
-    return repl_ && (repl_top() || repl_session().declared(name));
-  }
-
-  // The mutability check and the store behind `x = v` on a binding already
-  // in scope. Returns false when the check is a compile-time one and already
-  // lost, so the caller knows its own trailing code is unreachable.
   // Whether a bare `x = v` on this name declares rather than reassigns —
   // interp's assign_name, where a name the environment chain cannot answer is
   // bound by the write. `self` is bound in every frame there, and a stdlib
@@ -3923,6 +3925,9 @@ class Compiler {
            !is_stdlib_global(name);
   }
 
+  // The mutability check and the store behind `x = v` on a binding already
+  // in scope. Returns false when the check is a compile-time one and already
+  // lost, so the caller knows its own trailing code is unreachable.
   bool emit_rebind(const peg::Ast& at, const Binding& b, ExprResult r) {
     ensure_session_slot(b);
     if (b.session) {
@@ -5952,13 +5957,12 @@ class Compiler {
     // interp's assign_name: `let` / `mut` declares, and so does a bare write
     // to a name nothing here binds — immutably, in this scope, so a second
     // write refuses. `self` and the stdlib globals are bound already (below).
-    bool declares = av.is_let || av.is_mut ||
-                    declares_implicitly(std::string(tgt->token));
+    const auto name = std::string(tgt->token);
+    bool declares = av.is_let || av.is_mut || declares_implicitly(name);
     bool decl_mut = av.is_mut;
     if (declares) {
       // Slot reserved before the RHS so temps stack above it; the name only
       // becomes visible after the RHS (let x = x reads the outer x).
-      auto name = std::string(tgt->token);
       // A forward reference already gave this name its cell — closures
       // built above hold it, so the declaration fills that cell instead
       // of minting a second one, and the binding stops being lazy.
@@ -6014,22 +6018,17 @@ class Compiler {
       push_binding({name, slot, decl_mut, cell});
       return read_binding(*tgt, scopes_.back().bindings.back());
     }
-    const Binding* b = lookup(tgt->token);
+    const Binding* b = lookup_or_session(*tgt, name);
     // `self` is a binding of every frame, and a stdlib global an immutable
     // root-env one, so a write to either is a reassignment even where nothing
     // bound it here — the same ImmutableError, after the RHS has run.
-    if (!b && !session_owns(std::string(tgt->token))) {
+    if (!b) {
       compile_assign_rhs(ast, av);
       StampGuard pos(*this, ast);
-      emit(Op::ImmutErr, kconst_str(tgt->token));
+      emit(Op::ImmutErr, kconst_str(name));
       int32_t t = alloc_temp(*tgt);
       return {t, true};  // unreachable
     }
-    // At the REPL a name nothing here binds is the session's, and a bare
-    // write to one it has never declared declares it — immutably, so a
-    // second write refuses (probed: `w = 3` then `w = 4`). Op::ReplBind
-    // decides all of that when the write runs.
-    if (!b) b = &bind_session(*tgt, std::string(tgt->token));
     auto r = compile_assign_rhs(ast, av);
     // Before its declaration runs the name still means the binding the
     // pre-declaration shadows, so the write lands there and is checked
@@ -6067,7 +6066,7 @@ class Compiler {
     // Only a name that already holds a value has one to step from: a stdlib
     // global does, and at the REPL so does anything the session declared.
     bool global = is_stdlib_global(tgt.token) || is_stdlib_namespace(tgt.token);
-    if (!b && repl_ && (global || repl_session().declared(tgt.token)))
+    if (!b && ((repl_ && global) || session_declared(tgt.token)))
       b = &bind_session(tgt, std::string(tgt.token));
     if (!b && !global) {
       // Unlike a bare `x = v`, a compound one never declares — it is a
@@ -7910,17 +7909,15 @@ class Compiler {
       push_binding({name, slot, is_mut, cell});
       return;
     }
+    const Binding* b = lookup_or_session(ident, name);
     // A leaf naming nothing visible declares it, exactly as bare `x = v`
     // does — immutably. (`self` is not special here: the interp's pattern
     // walk binds it like any other leaf, probed on both backends.)
-    if (!lookup(name) && !session_owns(name) && !is_stdlib_namespace(name) &&
-        !is_stdlib_global(name)) {
+    if (!b && !is_stdlib_namespace(name) && !is_stdlib_global(name)) {
       bind_pattern_name(at, ident, src, src_owned, /*is_mut=*/false,
                         /*declares=*/true);
       return;
     }
-    const Binding* b = lookup(name);
-    if (!b && session_owns(name)) b = &bind_session(ident, name);
     if (!b) {  // a stdlib global: an existing immutable binding, so it refuses
       emit(Op::ImmutErr, kconst_str(name));
       return;
@@ -8475,8 +8472,7 @@ class Compiler {
         // The exception is a session that already holds a `self`: only a
         // debugger builds one, and it does so from a paused method frame,
         // where `self` is exactly the receiver that frame is running on.
-        if (ast.token == "self" &&
-            !(repl_ && repl_session().declared("self"))) {
+        if (ast.token == "self" && !session_declared("self")) {
           int32_t t = alloc_temp(ast);
           emit(Op::LoadConst, t, kconst({TAG_NO_SELF, 0}));
           emit(Op::UnboundErr, t, kconst_str("self"));

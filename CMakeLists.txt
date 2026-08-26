@@ -711,14 +711,11 @@ if(CULEBRA_ENABLE_WEBVIEW)
       # helper the core archive defines strongly, and PE has no weak external
       # to fold the two with. CULEBRA_RT_FEATURE_ARCHIVE (rt_macros.h) stops
       # the wholesale emission but not the last un-inlined one — that is the
-      # compiler's business (GCC 14 -O3 leaves `culebra_runtime_restore_thrown`
-      # out of line today). It takes the first definition and drops the
-      # diagnostic; COMDAT folding is what handles the ordinary inline bodies,
-      # the internal `_jit_*` helpers included since they are plain `inline`
-      # in the core TU as well. Scoped to this axis, so a link that does not
-      # use Webview keeps strict duplicate detection, and
-      # tools/check_rt_archive_tls.sh fails if the count grows past a leftover
-      # or two.
+      # compiler's business. It takes the first definition and drops the
+      # diagnostic; COMDAT folding is what handles the ordinary inline bodies.
+      # Scoped to this axis, so a link that does not use Webview keeps strict
+      # duplicate detection, and tools/check_rt_archive_tls.sh fails if the
+      # count grows past a leftover or two.
       string(APPEND _webview_link " -Wl,--allow-multiple-definition")
     else()
       message(STATUS "Webview: disabled (WebView2.h not found — install webview2-loader)")

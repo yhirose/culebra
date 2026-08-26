@@ -153,9 +153,8 @@ echo "rt-archive-deps OK (core archive references no OpenSSL/zlib/httplib symbol
 # survivable; nothing absorbs anyone else's. The bound is what separates "a
 # call stopped inlining" from "the force-emit attribute came back" — and the
 # archives that would show the latter are exactly the ones that reach wrap.h,
-# so no other check catches it. The internal helpers (`_jit_*` / `_culebra_*`)
-# are out of this hazard by construction: plain `inline` in the core TU too,
-# so both copies are COMDAT and PE folds them (tools/check_rt_keep_scope.sh).
+# so no other check catches it. (Internal helpers are plain `inline` on both
+# sides and fold — rt_macros.h.)
 if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "rt-archive-dup SKIP (symbol classes are read on ELF -- see strong_defs)"
 else
@@ -196,10 +195,9 @@ else
   --allow-multiple-definition can absorb.
 
   If this names libculebra_rt_scene.a, it is not your change: Scene reaches
-  wrap.h the same way and leaves two (culebra_runtime_object_new and
-  _restore_thrown, GCC 14 -O3), and its fragment is raylib's, shared with
-  Canvas, so it has no flag to absorb them. Scene has never linked on Windows
-  for this reason; the gate builds it OFF.
+  wrap.h the same way and leaves a leftover or two, and its fragment is
+  raylib's, shared with Canvas, so it has no flag to absorb them. Scene has
+  never linked on Windows for this reason; the gate builds it OFF.
 
   (An axis you just switched OFF still has its archive in the build dir --
   delete that .a and re-run.)

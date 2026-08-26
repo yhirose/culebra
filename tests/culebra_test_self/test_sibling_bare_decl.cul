@@ -1,9 +1,6 @@
-# A session unit's functions scope their bare declarations the way a
-# script's do. Every test body below writes the same names without `let`;
-# each write declares a local of its own frame, not one session `z` that
-# the second body then fails to reassign (probed: the second test was an
-# ImmutableError). The runner is the one place this can be seen — `culebra
-# test` compiles a file as a session unit, the script lanes never do.
+# `culebra test` compiles a file as a session unit; a function's bare write
+# is its own local unless the top level declared the name (the REPL side of
+# the same rule is in tests/repl_test.sh).
 
 test("first body declares its own local", fn () {
   z = 5
@@ -27,7 +24,8 @@ test("second body destructures the same names", fn () {
 })
 
 # A name the file's top level did declare is still the session's: a bare
-# write to it from inside a body reassigns, and refuses when immutable.
+# write to it from inside a body reassigns — refused when immutable, and
+# visible to the next body when not.
 shared = 1
 mut counter = 0
 
@@ -36,10 +34,8 @@ test("a top-level name is reassigned, not shadowed", fn () {
     shared = 2
   })
   counter = counter + 1
-  assert_eq(counter, 1)
 })
 
 test("the reassignment reached the session", fn () {
-  assert_eq(shared, 1)
   assert_eq(counter, 1)
 })

@@ -92,10 +92,8 @@ out=$(session "let helper = fn () { 7 }" \
 [[ "$out" == *$'\n'"8"$'\n'"7" ]] ||
   { echo "FAIL session branches: $out"; fail=1; }
 
-# A bare write inside a function declares a local of that function unless an
-# earlier line declared the name: two closures each writing `z` get a `z`
-# apiece (the second call used to be an ImmutableError on the session's), and
-# a name the session does hold is reassigned through it.
+# A bare write in a function is its own local unless the session declared the
+# name (the second `z` used to be an ImmutableError on the session's).
 out=$(session "let t1 = fn () { z = 5; z + 1 }" "let t2 = fn () { z = 6; z + 2 }" \
               "t1()" "t2()" "mut k = 1" "let bump = fn () { k = k + 1 }" "bump()" "k")
 [[ "$out" == *$'\n'"6"$'\n'"8"$'\n'"1"$'\n'*$'\n'"2"$'\n'"2" ]] ||
