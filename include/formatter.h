@@ -1206,13 +1206,22 @@ class Printer {
   // 1-element Set requires.
   //
   // `node.position` is the literal's `{` unless the optimizer folded a lone-
-  // statement block onto it; that shape (a literal alone in a block, holding a
-  // comment) is refused by the safety net, as it always was.
+  // statement block onto it — a literal alone in a block wears that block's
+  // braces. Scanning from there would hand the literal the BLOCK's interior,
+  // so its elements and the block's statements would both print the comments
+  // that interior owns. Shed the swallowed layer; the next `{` is the
+  // literal's own — the same fold print_defer / print_try / print_cond dodge.
+  // The collapse check is needed here and not in print_cond: uncollapsed, a
+  // brace literal's position is already its own `{`, while a cond's is `cond`.
   template <typename Render>
   DocP print_brace_literal(const peg::Ast& node, Render render) {
     std::vector<const peg::Ast*> elems;
     for (auto& e : node.nodes) elems.push_back(e.get());
-    return print_braced(elems, node.position, ",", /*empty_ok=*/true, render);
+    size_t from = node.position;
+    if (is_wrapper_collapsed(node) && from < src_.size() && is_code_[from] &&
+        src_[from] == '{')
+      from++;
+    return print_braced(elems, from, ",", /*empty_ok=*/true, render);
   }
 
   DocP print_set(const peg::Ast& node) {

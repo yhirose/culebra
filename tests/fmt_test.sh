@@ -636,6 +636,51 @@ if ! diff -u "$TMP/cnd_want.cul" "$TMP/cnd_got.cul" > "$TMP/cnd_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1o. Golden fixture: a comment in a literal that is a block's only value
+# The fourth shape of the same fold: an object / set literal alone in a block
+# wears that block's braces, so scanning from its position found the BLOCK's
+# interior and the literal's elements printed the comments the block was
+# already printing. A literal bound to a name never folds, so it stayed fine
+# either way — both belong here. See include/formatter.h print_brace_literal.
+cat > "$TMP/lit_in.cul" <<'EOF'
+fn tool() {
+  {
+    # about the name
+    name: 'exec',
+    doc: 'run it',
+  }
+}
+fn nested() {
+  let t = {
+    # about the name
+    name: 'exec',
+  }
+  t
+}
+EOF
+cat > "$TMP/lit_want.cul" <<'EOF'
+fn tool() {
+  {
+    # about the name
+    name: 'exec',
+    doc: 'run it',
+  }
+}
+fn nested() {
+  let t = {
+    # about the name
+    name: 'exec',
+  }
+  t
+}
+EOF
+"$CULEBRA" fmt "$TMP/lit_in.cul" > "$TMP/lit_got.cul" 2>"$TMP/lit_err"
+if ! diff -u "$TMP/lit_want.cul" "$TMP/lit_got.cul" > "$TMP/lit_diff" 2>&1; then
+  echo "FAIL golden (comment in a block's only literal): output differs"
+  cat "$TMP/lit_diff"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are
