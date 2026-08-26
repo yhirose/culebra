@@ -655,6 +655,8 @@ inline std::string_view _culebra_str_view(int8_t tag, int64_t data);
 extern "C" {
 inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj);
 inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b);
+inline std::optional<int64_t> _jit_enum_variant_hash(JitObject* obj);
+inline std::optional<bool> _jit_enum_variant_eq(JitObject* a, JitObject* b);
 inline bool _extract_bool_and_release(JitValue v);
 }
 extern "C" inline const char* _culebra_tag_name(int8_t tag);  // defined below
@@ -665,7 +667,8 @@ extern "C" inline const char* _culebra_tag_name(int8_t tag);  // defined below
 // distinct keys even though `1 == 1.0` is true. Hash collisions across types
 // are harmless (eq separates them), so the hash keeps its simple form.
 // Object keys route through user-defined `hash()` / `eq()` when present
-// (Hashable + Eq structural conformance); otherwise reference identity.
+// (Hashable + Eq structural conformance), an enum variant through its
+// derived-style structural hash / eq; otherwise reference identity.
 struct JitValueHash {
   size_t operator()(const JitValue& v) const {
     switch (v.tag) {
@@ -692,6 +695,9 @@ struct JitValueHash {
       case TAG_OBJECT: {
         auto* obj = reinterpret_cast<JitObject*>(v.data);
         if (auto h = _jit_object_user_hash(obj)) {
+          return std::hash<int64_t>{}(*h);
+        }
+        if (auto h = _jit_enum_variant_hash(obj)) {
           return std::hash<int64_t>{}(*h);
         }
         throw culebra::CulebraError(
@@ -741,6 +747,7 @@ struct JitValueEq {
         auto* oa = reinterpret_cast<JitObject*>(a.data);
         auto* ob = reinterpret_cast<JitObject*>(b.data);
         if (auto e = _jit_object_user_eq(oa, ob)) return *e;
+        if (auto e = _jit_enum_variant_eq(oa, ob)) return *e;
         return false;
       }
     }

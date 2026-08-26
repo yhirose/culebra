@@ -121,4 +121,82 @@ assert_eq(area(Shape.Origin), 0)
 // the interpreter; the arity that counts is the one the variant declares.
 assert_eq(Result.Ok(1, 2)._0, 1)
 
+// --- Variants as keys ---
+// A variant is Eq and Hashable by construction — its identity is the enum,
+// the variant, and each payload field — so it is an Object / Set key and a
+// `hash(v)` argument as-is (no `@derive`; an enum rejects the decorator).
+mut by_color = {}
+by_color[Color.Red] = "warm"
+by_color[Color.Blue] = "cool"
+assert_eq(by_color[Color.Red], "warm")
+by_color[Color.Red] = "hot"
+assert_eq(by_color.size(), 2)
+assert_eq(by_color[Color.Red], "hot")
+
+// The payload is part of the key: equal payload, same slot.
+mut areas = {}
+areas[Shape.Circle(1.0)] = 3
+areas[Shape.Rect(2.0, 3.0)] = 6
+areas[Shape.Circle(2.0)] = 12
+assert_eq(areas[Shape.Circle(1.0)], 3)
+assert_eq(areas[Shape.Rect(2.0, 3.0)], 6)
+assert_eq(areas.size(), 3)
+
+// Set membership dedups the same way.
+let seen = {Color.Red, Color.Green, Color.Red}
+assert_eq(seen.size(), 2)
+assert_eq(seen.contains(Color.Red), true)
+assert_eq(seen.contains(Color.Blue), false)
+
+// `hash(v)` agrees with the key path: equal variants, equal hash.
+assert_eq(hash(Color.Red), hash(Color.Red))
+assert_eq(hash(Shape.Rect(2.0, 3.0)), hash(Shape.Rect(2.0, 3.0)))
+
+// The enum is part of the identity: same-named variants of two enums are
+// two keys.
+enum Left {
+  Same,
+}
+enum Right {
+  Same,
+}
+mut homonyms = {}
+homonyms[Left.Same] = 1
+homonyms[Right.Same] = 2
+assert_eq(homonyms.size(), 2)
+assert_eq(homonyms[Left.Same], 1)
+
+// An unhashable payload makes the variant unhashable, with the payload's
+// own TypeError.
+let e_payload = try {
+  mut m = {}
+  m[Result.Ok([1, 2])] = 1
+  nil
+} catch e {
+  e
+}
+assert_eq(e_payload.kind, "TypeError")
+assert_eq(e_payload.message, "unhashable type: 'Array'")
+
+// Trait conformance follows: `Hashable` / `Eq` at a typed boundary, as a
+// bound, and as a multimethod key.
+fn key_of(x: Hashable) {
+  hash(x)
+}
+assert_eq(key_of(Color.Red), hash(Color.Red))
+fn same<T: Eq>(a: T, b: T) {
+  a == b
+}
+assert_eq(same(Color.Red, Color.Red), true)
+assert_eq(same(Color.Red, Color.Green), false)
+fn kind(x: Hashable) {
+  "hashable"
+}
+fn kind(x: Array) {
+  "array"
+}
+assert_eq(kind(Color.Red), "hashable")
+assert_eq(kind(Shape.Circle(1.0)), "hashable")
+assert_eq(kind([1]), "array")
+
 IO.inspect("test_enum OK")

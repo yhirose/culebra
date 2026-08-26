@@ -627,14 +627,22 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // non-scalar payload is the @packable constraint surfacing at the
       // variant position.
       size_t i = culebra::first_non_decorator_index(node);
+      auto enum_name =
+          std::string(culebra::parse_generic_head(node.nodes[i]->token).outer);
       bool is_packable = false;
       for (size_t d = 0; d < i; d++) {
         walk(*node.nodes[d]);
         if (culebra::is_packable_decorator(*node.nodes[d])) is_packable = true;
+        // `@derive` has nothing to generate for an enum; reported pre-eval
+        // at the decorator, like the class form's unknown-trait check.
+        if (!culebra::view_derive(*node.nodes[d]).empty()) {
+          diags_.push_back(Diagnostic{
+              "SyntaxError", culebra::derive_on_enum_message(enum_name),
+              static_cast<long>(node.nodes[d]->line),
+              static_cast<long>(node.nodes[d]->column), Severity::Error});
+        }
       }
       if (is_packable) {
-        auto enum_name =
-            std::string(culebra::parse_generic_head(node.nodes[i]->token).outer);
         std::vector<std::pair<std::string, std::vector<std::string>>> variants;
         bool ok = !(i + 1 >= node.nodes.size());
         for (size_t j = i + 1; j < node.nodes.size(); j++) {

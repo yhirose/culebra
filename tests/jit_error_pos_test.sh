@@ -469,6 +469,14 @@ check_same "derive unknown trait"      'println("before")
 class P {
   new(x) { self.x = x }
 }'
+# An enum's variants are Eq and Hashable by construction; `@derive` on one is
+# rejected by the same static pass, at the decorator.
+check_same "derive on enum"            'println("before")
+@derive(Eq, Hash)
+enum Flag {
+  On,
+  Off,
+}'
 check_same "derive unknown in fn"      'println("before")
 fn mk() {
   @derive(Nope)

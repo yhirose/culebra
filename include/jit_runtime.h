@@ -418,16 +418,29 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_format_value(
       culebra_runtime_value_to_display(type, data), spec, line, col));
 }
 
+// The parent enum's name when `obj` is a variant instance (the `__enum` tag
+// culebra_runtime_build_variant sets); nullopt for any other object.
+inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
+  auto idx = obj->find_slot("__enum");
+  if (idx == static_cast<size_t>(-1)) return std::nullopt;
+  const auto& v = obj->slots[idx].value;
+  if (v.tag != TAG_STRING) return std::nullopt;
+  return _culebra_str_view(v.tag, v.data);
+}
+
 // `hash(v)` builtin runtime entry. Routes Object to a user-defined
-// `hash()` method (Hashable + Eq structural conformance); primitives
-// go through JitValueHash — same path JitObject's AnyKeyMap uses.
-// Throws on unhashable inputs (Array / Set / Function / Tensor, Object
-// without `hash`). Returns a raw int64 (Long payload).
+// `hash()` method (Hashable + Eq structural conformance), an enum variant
+// to its structural hash; primitives go through JitValueHash — same path
+// JitObject's AnyKeyMap uses. Throws on unhashable inputs (Array / Set /
+// Function / Tensor, Object without `hash`). Returns a raw int64 (Long
+// payload).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
     int8_t type, int64_t data, int64_t line, int64_t col) {
   if (type == TAG_OBJECT) {
     auto r = _try_special_unary(type, data, "hash");
     if (!r) {
+      if (auto h = _jit_enum_variant_hash(reinterpret_cast<JitObject*>(data)))
+        return *h;
       throw culebra::CulebraError(
           "TypeError",
           "unhashable type: 'Object' (no hash() method)",
@@ -1034,14 +1047,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     }
     // Enum variant: also matches the parent enum name (`__enum` field),
     // so `r: Result` accepts any `Result.*` variant. Mirrors interp.
-    if (auto ei = obj->find_slot("__enum"); ei != static_cast<size_t>(-1)) {
-      const auto& en = obj->slots[ei].value;
-      if (en.tag == TAG_STRING &&
-          std::string_view(reinterpret_cast<const char*>(en.data)) ==
-              expected) {
-        return true;
-      }
-    }
+    if (auto en = _jit_enum_name(obj); en && *en == expected) return true;
   }
   // Structural trait conformance: when `expected` is a registered
   // trait, check (and cache) whether this instance's class supplies
@@ -1061,6 +1067,11 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     auto it = by_trait.find(trait_name);
     if (it != by_trait.end()) return it->second;
     auto* obj = reinterpret_cast<JitObject*>(data);
+    // A variant has no method table; what it conforms to is fixed.
+    if (_jit_enum_name(obj)) {
+      return by_trait[trait_name] =
+                 culebra::enum_variant_conforms_to_trait(expected);
+    }
     std::unordered_map<std::string, size_t> class_methods;
     auto walk_slots = [&](JitObject* o) {
       if (!o || !o->shape) return;

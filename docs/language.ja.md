@@ -2974,6 +2974,19 @@ variant instanceはvariant名と親enum名の両方でタグ付けされ、
 payloadはpositionalで`_0`, `_1`, … (`r._0`) で参照可能だが、
 constructor patternがidiomaticなアクセサ。
 
+variantは構造上`Eq`かつ`Hashable` — そのidentityはenum・variant・
+各payload fieldの組 — なので、`@derive`なしでそのまま`Object` /
+`Set`のkeyや`hash(v)`の引数になる (`enum`はこのデコレータを拒否
+する)。payload variantがkeyになれるのはpayloadがhashableなとき
+に限る: `Shape.Rect(2.0, 3.0)`はなれるが、`Result.Ok([1, 2])`は
+Array自身の`unhashable type` TypeErrorを投げる。別enumの同名
+variantは別のkey。
+
+    mut hits = {}
+    hits[Color.Red] = 1
+    hits[Shape.Rect(2.0, 3.0)] = 6
+    {Color.Red, Color.Green, Color.Red}.size()   # → 2
+
 #### 注意・制限
 
 * canonicalなsum-typeスタイルは無型param + `match`:
@@ -3070,7 +3083,8 @@ runtimeはpreambleとして7つの基本traitをship — `import`不要
 契約 — `String`と`StringView`の両方がconformする。
 `Hashable`は`Object` / `Set`のkey挿入時にチェックされる契約 —
 user classは`hash()` (戻り値`Long`) と`eq(other)`を定義すれば
-keyとして使える。
+keyとして使える。enum variantはどちらも無しで`Eq`と`Hashable`に
+conformする — 「Sum type」参照。
 
 `Iterator` + `Iterable`はfor-in protocolをformal化。
 `iter() -> Iterator` / `has_next() -> Bool` /
@@ -3220,6 +3234,8 @@ fieldを走査する (methodと内部class tagは除外) ので、field変更に
 * **`@derive`はcompiler認識**で関数ではない — `Eq` / `Hash` /
   `Show` / `Comparable`のみ受理 (それ以外はSyntaxError)。同じclass
   上の通常デコレータとも併用できる。
+* **class専用。** enumのvariantは構造上`Eq`かつ`Hashable`なので、
+  `enum`への`@derive`はSyntaxError。
 * **Nominal**: 派生`eq`は同じclass tagを要求するので、同一field
   を持つ別class同士は等しくならない。
 * **`cmp`の順序**は各field対を`<`とまったく同じ規則で比較する。

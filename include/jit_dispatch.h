@@ -225,6 +225,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_hash(
   return static_cast<int64_t>(h);
 }
 
+// An enum variant hashes and compares as a class deriving Eq + Hash would:
+// it has no method table to supply them, and its identity IS the (enum,
+// variant, payload) tuple. The enum name goes on top of the derived walk,
+// which keys the class tag alone, so `A.Ok(1)` and `B.Ok(1)` stay distinct
+// keys. nullopt for an object that is not a variant.
+inline std::optional<int64_t> _jit_enum_variant_hash(JitObject* obj) {
+  auto en = _jit_enum_name(obj);
+  if (!en) return std::nullopt;
+  size_t h = std::hash<std::string_view>{}(*en);
+  return static_cast<int64_t>(
+      h * 31 + static_cast<size_t>(culebra_runtime_derived_hash(obj)));
+}
+inline std::optional<bool> _jit_enum_variant_eq(JitObject* a, JitObject* b) {
+  auto ea = _jit_enum_name(a);
+  auto eb = _jit_enum_name(b);
+  if (!ea || !eb) return std::nullopt;
+  return *ea == *eb &&
+         culebra_runtime_derived_eq(a, {TAG_OBJECT, reinterpret_cast<int64_t>(b)})
+                 .data != 0;
+}
+
 // to_s(): "ClassName(f1, f2, ...)" with each field's value repr (strings
 // quoted, matching the interpreter's `Value::str()`).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_derived_show(

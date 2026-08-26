@@ -974,6 +974,14 @@ inline DerivedMethod derive_method_for(std::string_view trait) {
   if (auto dm = find_derive_method(trait)) return *dm;
   throw CulebraError("SyntaxError", derive_unknown_trait_message(trait));
 }
+// `@derive` on an enum has nothing to generate: its variants are Eq and
+// Hashable by construction (enum_variant_conforms_to_trait), so the
+// decorator is rejected rather than silently accepted.
+inline std::string derive_on_enum_message(std::string_view enum_name) {
+  return std::format("@derive: not applicable to enum `{}` (its variants "
+                     "are Eq and Hashable by construction)",
+                     enum_name);
+}
 
 // Reserved words that may not name a variable. Single source for the
 // assignment LHS check, shared by the interpreter and the static lint pass

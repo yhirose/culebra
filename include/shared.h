@@ -2902,6 +2902,13 @@ inline bool builtin_conforms_to_trait(std::string_view type_label,
   return false;
 }
 
+// An enum variant is `Eq` and `Hashable` by construction: it has no method
+// table to supply them, and its identity is the (enum, variant, payload)
+// tuple — hashed and compared as a class deriving both would be.
+inline bool enum_variant_conforms_to_trait(std::string_view trait_name) {
+  return trait_name == "Eq" || trait_name == "Hashable";
+}
+
 // Structural conformance check: `class_methods` maps method name to
 // arity for the class under test. The class conforms when every
 // non-default method on `trait` is matched by name and the class

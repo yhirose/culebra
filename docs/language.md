@@ -3188,6 +3188,19 @@ enum name, so type annotations / patterns match at either level:
 Payload is positional and reachable as `_0`, `_1`, … (`r._0`), though
 constructor patterns are the idiomatic accessor.
 
+A variant is `Eq` and `Hashable` by construction — its identity is the
+enum, the variant, and each payload field — so it is an `Object` /
+`Set` key and a `hash(v)` argument as-is, with no `@derive` (an `enum`
+rejects the decorator). A payload variant is a valid key exactly when
+its payload is: `Shape.Rect(2.0, 3.0)` is, `Result.Ok([1, 2])` raises
+the Array's own `unhashable type` TypeError. Same-named variants of two
+enums are two keys.
+
+    mut hits = {}
+    hits[Color.Red] = 1
+    hits[Shape.Rect(2.0, 3.0)] = 6
+    {Color.Red, Color.Green, Color.Red}.size()   # → 2
+
 #### Notes and limitations
 
 * The canonical sum-type style is an untyped parameter plus a `match`:
@@ -3287,7 +3300,8 @@ any byte-readable string value at API boundaries — `String` and
 `StringView` both conform out of the box. `Hashable` is the
 contract `Object` / `Set` keys check at insertion: a user class
 becomes a valid key by defining `hash()` (returning `Long`) and
-`eq(other)`.
+`eq(other)`. An enum variant conforms to `Eq` and `Hashable` without
+either — see "Sum types".
 
 `Iterator` + `Iterable` formalize the for-in protocol. A class that
 exposes `iter() -> Iterator`,
@@ -3412,6 +3426,8 @@ tag), so they stay correct as fields change. Details:
 * **`@derive` is compiler-recognized**, not a function — `Eq` / `Hash`
   / `Show` / `Comparable` are the only accepted names (anything else is
   a SyntaxError). It composes with regular decorators on the same class.
+* **Classes only.** An enum's variants are `Eq` and `Hashable` by
+  construction, so `@derive` on an `enum` is a SyntaxError.
 * **Nominal:** derived `eq` requires the same class tag, so two classes
   with identical fields never compare equal.
 * **`cmp` ordering** compares each field pair exactly as `<` does: equal
