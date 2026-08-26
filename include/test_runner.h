@@ -8,7 +8,6 @@
 #include <set>
 #include <sstream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "shared.h"
@@ -45,13 +44,17 @@ class TestHost {
  public:
   virtual ~TestHost() = default;
 
-  // Bind `test` / `parametrize` and the registry. Once, before any file.
+  // Process-wide setup, once, before any file.
   virtual bool begin_run(std::vector<std::string>& msgs) = 0;
-  // Run one test file, in the scope every other file shares — a fixture
-  // declared in one is visible to the next, which is what the single
-  // environment gave the interpreter lane.
+  // Open a scope of its own for this file and run it there, with `test` /
+  // `parametrize` and a registry of its own bound first. A test file is a
+  // program: what it writes at the top level is the file's, so a `mut range
+  // = 5` in one file leaves `range` a function in every other.
   virtual bool run_file(const std::string& path, const std::string& source,
                         TestFileError& err) = 0;
+  // Drop that scope. Called once per run_file, after the file's own tests
+  // have run — they are what the scope was being kept alive for.
+  virtual void end_file() = 0;
 
   // A top-level binding of the run: the registry, or a fixture by name.
   virtual ValueRef global(std::string_view name) = 0;
@@ -240,6 +243,13 @@ struct TestRunSummary {
   std::vector<std::string> failure_messages;
 };
 
+// `--bail [n]`: whether the run has seen the failures it was told to stop at.
+// One predicate, because three sites ask — the test loop, the file loop around
+// it, and the `bailed` the report closes with.
+inline bool bailed_out(const TestRunSummary& summary, int bail_after) {
+  return bail_after > 0 && summary.failed >= bail_after;
+}
+
 // One entry of the registry the ambient built, resolved to the pieces the
 // runner walks: the function to call, the parameters to inject fixtures for
 // (empty when `args` supplies them), and the fixed arguments a `@parametrize`
@@ -321,107 +331,16 @@ inline void collect_new_cases(TestHost& host, size_t from,
   }
 }
 
-// Load each test file (so its `test(...)` calls register entries), then walk
-// the registry calling each fn. Sequential execution; failures don't stop the
-// run unless `bail_after > 0`. When `list_only` is true, emit a list of
-// discovered tests without executing them.
-inline TestRunSummary run_tests(
-    TestHost& host,
-    const std::vector<std::filesystem::path>& files,
-    const std::string& filter,
-    Reporter reporter = Reporter::Default,
-    int bail_after = 0,
-    bool list_only = false) {
-  TestRunSummary summary;
-
-  // Original (unprepended) user source per file path — used to render
-  // a failure-site snippet in JSON events.
-  std::unordered_map<std::string, std::string> user_sources;
-  std::vector<TestCase> cases;
-
-  auto emit_file_error = [&](const std::string& path_str,
-                              const TestFileError& e) {
-    const std::string& kind = e.kind;
-    const std::string& message = e.message;
-    int64_t line = to_user_line(e.line), col = e.col;
-    if (reporter == Reporter::Json) {
-      std::cout << R"({"event":"file_error","source":)"
-                << json_escape(path_str)
-                << R"(,"kind":)" << json_escape(kind)
-                << R"(,"message":)" << json_escape(message)
-                << R"(,"line":)" << line
-                << R"(,"col":)" << col
-                << "}\n";
-    } else {
-      std::cerr << "culebra test: " << kind << " for " << path_str
-                << ": " << message << "\n";
-    }
-  };
-
-  {
-    // Turned on before any file is loaded: a bare `test` is resolved before
-    // anything runs, so both the load-stage lint and the compiler need it.
-    set_test_ambients(true);
-    std::vector<std::string> msgs;
-    if (!host.begin_run(msgs)) {
-      emit_file_error("<test ambient>",
-                      {"internal_error", join_messages(msgs), 0, 0});
-      summary.errored_files++;
-      return summary;
-    }
-  }
-
-  for (const auto& path : files) {
-    auto path_str = path.string();
-    std::ifstream ifs(path_str, std::ios::binary);
-    if (!ifs) {
-      emit_file_error(path_str, {"open_failed", "can't open file", 0, 0});
-      summary.errored_files++;
-      continue;
-    }
-    std::string buff((std::istreambuf_iterator<char>(ifs)),
-                      std::istreambuf_iterator<char>());
-
-    size_t pre = cases.size();
-    TestFileError err;
-    if (!host.run_file(path_str, buff, err)) {
-      emit_file_error(path_str, err);
-      summary.errored_files++;
-      continue;
-    }
-    collect_new_cases(host, pre, path_str, cases);
-    user_sources.emplace(path_str, std::move(buff));
-  }
-
-  if (list_only) {
-    size_t listed = 0;
-    for (const auto& e : cases) {
-      if (!filter.empty() && e.name.find(filter) == std::string::npos) continue;
-      listed++;
-      if (reporter == Reporter::Json) {
-        std::cout << R"({"event":"test_list","name":)"
-                  << json_escape(e.name)
-                  << R"(,"source":)" << json_escape(e.source_path)
-                  << "}\n";
-      } else {
-        std::cout << e.source_path << ": " << e.name << "\n";
-      }
-    }
-    if (reporter == Reporter::Json) {
-      std::cout << R"({"event":"list_end","count":)" << listed << "}\n";
-      // Emit run_end too so consumers waiting on it as the stream
-      // terminator don't hang on --list runs.
-      std::cout << R"({"event":"run_end","passed":0,"failed":0,)"
-                << R"("errored_files":)" << summary.errored_files
-                << R"(,"bailed":false})" << "\n";
-    }
-    return summary;
-  }
-
-  // A test body may itself call `test(...)` (the table-driven pattern), so the
-  // registry can grow while the loop runs; re-reading it after each test picks
-  // those up. Every case is a copy, so growth never invalidates what is in
-  // hand.
+// Walk one file's registry calling each fn, while that file's scope is still
+// open. Sequential; a failure doesn't stop the run unless `bail_after > 0`.
+//
+// A test body may itself call `test(...)` (the table-driven pattern), so the
+// registry can grow while the loop runs; re-reading it after each test picks
+// those up. Every case is a copy, so growth never invalidates what is in hand.
+inline void run_cases(TestHost& host, std::vector<TestCase>& cases,
+                      const std::string& filter, Reporter reporter,
+                      int bail_after, const std::string& user_source,
+                      TestRunSummary& summary) {
   for (size_t i = 0; i < cases.size(); i++) {
     TestCase c = cases[i];
     if (!filter.empty() && c.name.find(filter) == std::string::npos) continue;
@@ -436,12 +355,11 @@ inline TestRunSummary run_tests(
     std::string err_kind, err_what;
     int64_t err_line = 0, err_col = 0;
     size_t scratch = host.mark();
-    size_t registry_before = 0;
+    // The registry is this file's and only grows, and every entry in it has
+    // been copied into `cases` — so the length of one is the length of the
+    // other, and what a test body appends starts here.
+    size_t registry_before = cases.size();
     try {
-      auto reg = host.global(kTestRegistryName);
-      registry_before = reg == kNoValue
-                            ? 0
-                            : static_cast<size_t>(host.array_size(reg));
       std::vector<ValueRef> args;
       if (c.args != kNoValue) {
         for (int64_t a = 0; a < host.array_size(c.args); a++)
@@ -499,17 +417,11 @@ inline TestRunSummary run_tests(
       summary.failed++;
       int user_line = to_user_line(err_line);
       if (reporter == Reporter::Json) {
-        // Snippet only when the line plausibly maps to the entry
-        // file. For imported modules we don't have the source mapped
-        // here, so leave snippet empty rather than render the wrong
-        // file's lines.
+        // A line number only maps to the file's own source; for a position
+        // raised inside an imported module, leave the snippet empty rather
+        // than render the wrong file's lines.
         std::string snippet;
-        if (err_line > 0) {
-          if (auto it = user_sources.find(c.source_path);
-              it != user_sources.end()) {
-            snippet = source_snippet(it->second, user_line);
-          }
-        }
+        if (err_line > 0) snippet = source_snippet(user_source, user_line);
         std::cout << R"({"event":"test_fail","name":)"
                   << json_escape(c.name)
                   << R"(,"kind":)" << json_escape(err_kind)
@@ -532,15 +444,119 @@ inline TestRunSummary run_tests(
         std::cout << msg << "\n";
       }
     }
-    if (bail_after > 0 && summary.failed >= bail_after) break;
+    if (bailed_out(summary, bail_after)) break;
+  }
+}
+
+// `--list`: the discovered names, run none. Returns how many it printed.
+inline size_t list_cases(const std::vector<TestCase>& cases,
+                         const std::string& filter, Reporter reporter) {
+  size_t listed = 0;
+  for (const auto& e : cases) {
+    if (!filter.empty() && e.name.find(filter) == std::string::npos) continue;
+    listed++;
+    if (reporter == Reporter::Json) {
+      std::cout << R"({"event":"test_list","name":)" << json_escape(e.name)
+                << R"(,"source":)" << json_escape(e.source_path) << "}\n";
+    } else {
+      std::cout << e.source_path << ": " << e.name << "\n";
+    }
+  }
+  return listed;
+}
+
+// Run each test file: load it (so its `test(...)` calls register entries), run
+// what it registered, then drop its scope and move on. Interleaved rather than
+// load-everything-then-run because a file's scope is a file's — it is open
+// exactly while that file's own tests need it. When `list_only` is true, emit a
+// list of discovered tests without executing them.
+inline TestRunSummary run_tests(
+    TestHost& host,
+    const std::vector<std::filesystem::path>& files,
+    const std::string& filter,
+    Reporter reporter = Reporter::Default,
+    int bail_after = 0,
+    bool list_only = false) {
+  TestRunSummary summary;
+  size_t listed = 0;
+
+  auto emit_file_error = [&](const std::string& path_str,
+                              const TestFileError& e) {
+    const std::string& kind = e.kind;
+    const std::string& message = e.message;
+    int64_t line = to_user_line(e.line), col = e.col;
+    if (reporter == Reporter::Json) {
+      std::cout << R"({"event":"file_error","source":)"
+                << json_escape(path_str)
+                << R"(,"kind":)" << json_escape(kind)
+                << R"(,"message":)" << json_escape(message)
+                << R"(,"line":)" << line
+                << R"(,"col":)" << col
+                << "}\n";
+    } else {
+      std::cerr << "culebra test: " << kind << " for " << path_str
+                << ": " << message << "\n";
+    }
+  };
+
+  {
+    // Turned on before any file is loaded: a bare `test` is resolved before
+    // anything runs, so both the load-stage lint and the compiler need it.
+    set_test_ambients(true);
+    std::vector<std::string> msgs;
+    if (!host.begin_run(msgs)) {
+      emit_file_error("<test ambient>",
+                      {"internal_error", join_messages(msgs), 0, 0});
+      summary.errored_files++;
+      return summary;
+    }
   }
 
-  bool bailed = bail_after > 0 && summary.failed >= bail_after;
+  for (const auto& path : files) {
+    auto path_str = path.string();
+    std::ifstream ifs(path_str, std::ios::binary);
+    if (!ifs) {
+      emit_file_error(path_str, {"open_failed", "can't open file", 0, 0});
+      summary.errored_files++;
+      continue;
+    }
+    std::string buff((std::istreambuf_iterator<char>(ifs)),
+                      std::istreambuf_iterator<char>());
+
+    // The file's scope closes on every way out of this iteration.
+    struct FileScope {
+      TestHost& host;
+      ~FileScope() { host.end_file(); }
+    } file_scope{host};
+
+    TestFileError err;
+    if (!host.run_file(path_str, buff, err)) {
+      emit_file_error(path_str, err);
+      summary.errored_files++;
+      continue;
+    }
+    // The registry is the file's own, so every entry in it is new.
+    std::vector<TestCase> cases;
+    collect_new_cases(host, 0, path_str, cases);
+
+    if (list_only) {
+      listed += list_cases(cases, filter, reporter);
+    } else {
+      run_cases(host, cases, filter, reporter, bail_after, buff, summary);
+      if (bailed_out(summary, bail_after)) break;
+    }
+  }
+
   if (reporter == Reporter::Json) {
+    // list_end first, then run_end either way, so a consumer waiting on it as
+    // the stream terminator doesn't hang on a --list run.
+    if (list_only)
+      std::cout << R"({"event":"list_end","count":)" << listed << "}\n";
     std::cout << R"({"event":"run_end","passed":)" << summary.passed
               << R"(,"failed":)" << summary.failed
               << R"(,"errored_files":)" << summary.errored_files
-              << R"(,"bailed":)" << (bailed ? "true" : "false")
+              << R"(,"bailed":)"
+              << (bailed_out(summary, bail_after) ? "true" : "false")
               << "}\n";
   }
   return summary;

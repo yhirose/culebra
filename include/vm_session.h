@@ -20,6 +20,7 @@
 #include <vm.h>
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -47,15 +48,14 @@ class Session {
       if (!registered_.contains(t)) fresh.insert(t);
     auto triggers = stdlib_preamble_triggers(fresh);
     if (triggers.empty()) return true;
-    auto src = std::make_shared<std::string>(stdlib_preamble_for(fresh));
     for (auto t : triggers) registered_.emplace(t);
     std::vector<std::string> parse_msgs;
-    auto pre = parse_with_transforms(kStdlibPreamblePath, *src, parse_msgs);
-    if (!pre) {  // the stdlib is trusted; a parse failure is a build bug
+    auto pre = parse_preamble(stdlib_preamble_for(fresh), parse_msgs);
+    if (!pre.ast) {  // the stdlib is trusted; a parse failure is a build bug
       msgs.insert(msgs.end(), parse_msgs.begin(), parse_msgs.end());
       return false;
     }
-    return run_unit(pre, src, /*session=*/false, msgs);
+    return run_unit(pre.ast, pre.source, /*session=*/false, msgs);
   }
 
   // Compile and run one program, retaining it for the session. Errors are
@@ -131,6 +131,30 @@ class Session {
   }
 
  private:
+  // A preamble text and the AST whose tokens point into it.
+  struct ParsedPreamble {
+    std::shared_ptr<std::string> source;
+    std::shared_ptr<peg::Ast> ast;
+  };
+
+  // Parsing is the expensive half and depends on nothing but the text, so it
+  // is cached by that text and the AST run into each session that asks —
+  // parse_builtin_traits_preamble's bargain, for a set that isn't fixed. The
+  // sessions `culebra test` opens per file mostly name the same few modules,
+  // and without this each re-parses the whole preamble it splices.
+  //
+  // Per thread, because an embedding may run sessions on several and the cache
+  // grows as it is read.
+  static ParsedPreamble parse_preamble(std::string text,
+                                       std::vector<std::string>& parse_msgs) {
+    static thread_local std::map<std::string, ParsedPreamble, std::less<>> cache;
+    if (auto it = cache.find(text); it != cache.end()) return it->second;
+    auto src = std::make_shared<std::string>(std::move(text));
+    auto ast = parse_with_transforms(kStdlibPreamblePath, *src, parse_msgs);
+    if (!ast) return {};
+    return cache.emplace(*src, ParsedPreamble{src, ast}).first->second;
+  }
+
   RetainedRuns retained_;
   // Module lists run_modules kept alive (shared_ptr'd sources + ASTs): a
   // retained program's chunks hold string_views into them.

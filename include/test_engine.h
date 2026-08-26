@@ -12,11 +12,13 @@
 // back was built by the same program.
 
 #include <module_loader.h>
+#include <script_teardown.h>
 #include <stdlib_jit.h>
 #include <test_runner.h>
 #include <vm_session.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,45 +52,56 @@ inline bool load_test_file(const std::string& path, const std::string& source,
 // the runner call back into a file after it has returned: a registered
 // closure is still callable, and a fixture is still a name to look up. The
 // programs are retained for the same reason the REPL retains its lines.
+//
+// One such session per file, opened by run_file and dropped by end_file: a
+// test file is a program, and what it writes at the top level is its own. A
+// shared session made a `mut range = 5` in one file the `range` every later
+// file saw.
 class VmTestHost : public TestHost {
  public:
   bool begin_run(std::vector<std::string>& msgs) override {
     install_jit_stdlib();
-    if (!session_.run_builtin_traits(msgs)) return false;
+    // Parsed once and run into each file's session: the AST and the buffer its
+    // tokens point into are shared, the bindings it makes are not.
+    ambient_source_ = std::make_shared<std::string>(TEST_AMBIENT_MODULE_SOURCE);
     std::vector<std::string> parse_msgs;
-    auto src = std::make_shared<std::string>(TEST_AMBIENT_MODULE_SOURCE);
-    auto ast = parse_with_transforms(kTestAmbientPath, *src, parse_msgs);
-    if (!ast) {  // the ambient is ours; a parse failure is a build bug
+    ambient_ = parse_with_transforms(kTestAmbientPath, *ambient_source_,
+                                     parse_msgs);
+    if (!ambient_) {  // the ambient is ours; a parse failure is a build bug
       msgs.insert(msgs.end(), parse_msgs.begin(), parse_msgs.end());
       return false;
     }
-    return run_session_unit(ast, src, msgs);
+    return true;
   }
 
   bool run_file(const std::string& path, const std::string& source,
                 TestFileError& err) override {
     std::vector<LoadedModule> modules;
     if (!load_test_file(path, source, modules, err)) return false;
-    std::vector<std::string> msgs;
-    // Every module gets a delta, not just the entry: a dependency that names
-    // a lazy namespace needs it registered before the unit runs, and the
-    // session dedupes what it has already registered.
-    for (const auto& m : modules) {
-      if (!session_.run_stdlib_delta(*m.ast, msgs)) {
-        err = {"interpret_failed", join_messages(msgs), 0, 0};
-        return false;
-      }
+    if (modules.size() > 1) {
+      err = {"VmError", "--vm: unsupported: a test file with imports", 0, 0};
+      return false;
     }
-    // One session unit for the whole list: the dependencies compile each in a
-    // scope of its own, and the entry's top-level bindings land in the
-    // session's cells — which is what lets the runner call a registered test
-    // back after the file has returned.
-    if (!session_.run_modules(modules, msgs)) {
+    unit_.emplace();
+    std::vector<std::string> msgs;
+    if (!unit_->session.run_builtin_traits(msgs) ||
+        !run_session_unit(ambient_, ambient_source_, msgs)) {
+      err = {"internal_error", join_messages(msgs), 0, 0};
+      return false;
+    }
+    auto& m = modules.front();
+    if (!unit_->session.run_stdlib_delta(*m.ast, msgs) ||
+        !run_session_unit(m.ast, m.source, msgs)) {
       err = {"interpret_failed", join_messages(msgs), 0, 0};
       return false;
     }
-    session_.drop_result();
     return true;
+  }
+
+  // The file's values first, then the session holding the cells they lived in.
+  void end_file() override {
+    release_to(0);
+    unit_.reset();
   }
 
   ValueRef global(std::string_view name) override {
@@ -156,18 +169,39 @@ class VmTestHost : public TestHost {
     }
   }
 
-  ~VmTestHost() override { release_to(0); }
+  // The runner closes every file it opens, so this is only for a host
+  // destroyed unrun; `store_` is a plain vector whose destructor releases
+  // nothing, so it has to be drained before the Runtime that owns its values.
+  ~VmTestHost() override { end_file(); }
 
  private:
+  // One file's scope: its own Runtime — where the namespace caches and the
+  // class / overload registries live, which is why a doc block gets one too —
+  // and its own session cells on top of it.
+  //
+  // Declared so that teardown runs backwards through that. The file's threads
+  // are joined FIRST, since an isolate still running would otherwise outlive
+  // the Runtime it allocates in. Then the names are handed back, because a
+  // cell's last reference can run culebra code (a `drop` body) and a closure
+  // reaches its bytecode through a descriptor pointing into a retained program
+  // — so both the programs and the Runtime must outlive the cells holding them.
+  struct Unit {
+    Runtime rt;
+    RuntimeScope scope{rt};
+    vm::Session session;
+    vm::ReplSessionSwap names;  // makes its ReplSession the current one
+    ScriptTeardownGuard threads;
+  };
 
   // A session unit, plus the housekeeping a prompt would do: the value the
   // unit's last statement left in the result cell has no one to echo it here,
-  // and leaving it there pins it for the rest of the run.
+  // and leaving it there pins it for the rest of the file.
   bool run_session_unit(const std::shared_ptr<peg::Ast>& ast,
                         std::shared_ptr<std::string> source,
                         std::vector<std::string>& msgs) {
-    bool ok = session_.run_unit(ast, std::move(source), /*session=*/true, msgs);
-    session_.drop_result();
+    bool ok =
+        unit_->session.run_unit(ast, std::move(source), /*session=*/true, msgs);
+    unit_->session.drop_result();
     return ok;
   }
 
@@ -181,10 +215,9 @@ class VmTestHost : public TestHost {
   }
   JitValue at(ValueRef v) { return store_[static_cast<size_t>(v)]; }
 
-  // Owns the session rather than borrowing the Runtime's fallback one: a
-  // second run in one process must not see the first's registry.
-  vm::ReplSessionSwap swap_;
-  vm::Session session_;
+  std::shared_ptr<std::string> ambient_source_;
+  std::shared_ptr<peg::Ast> ambient_;
+  std::optional<Unit> unit_;
   std::vector<JitValue> store_;
 };
 

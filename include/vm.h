@@ -32,6 +32,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace culebra::vm {
@@ -2754,11 +2755,17 @@ class ReplSession {
   // as its Runtime and never calls this; a debugger's does, since it builds
   // one session per expression it evaluates (see ReplSessionSwap).
   void release_all() {
-    for (auto& [name, e] : entries_) {
-      _gc_heap().unpin(e.cell);
-      culebra_runtime_cell_release(e.cell);
+    // Drained rather than walked: releasing a cell can run culebra code (a
+    // `drop` body), and that code can mint a cell of its own — an entry
+    // inserted behind the cursor of a plain loop would be cleared without ever
+    // being unpinned.
+    while (!entries_.empty()) {
+      auto batch = std::exchange(entries_, {});
+      for (auto& [name, e] : batch) {
+        _gc_heap().unpin(e.cell);
+        culebra_runtime_cell_release(e.cell);
+      }
     }
-    entries_.clear();
   }
 
  private:
@@ -2799,8 +2806,12 @@ struct ReplSessionSwap {
     current_repl_session() = &session;
   }
   ~ReplSessionSwap() {
-    current_repl_session() = saved;
+    // Released while still current: a cell's last reference can run culebra
+    // code — a `drop` body, a closure's captures — and that code is this
+    // session's, so it must resolve its session cells here and not in
+    // whichever session happened to be current before.
     session.release_all();
+    current_repl_session() = saved;
   }
   ReplSessionSwap(const ReplSessionSwap&) = delete;
   ReplSessionSwap& operator=(const ReplSessionSwap&) = delete;
