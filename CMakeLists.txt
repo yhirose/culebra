@@ -1063,7 +1063,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   if(CULEBRA_ENABLE_WEBVIEW)
     add_library(culebra_rt_webview STATIC ${_webview_sources})
     target_compile_features(culebra_rt_webview PRIVATE cxx_std_23)
-    target_include_directories(culebra_rt_webview PRIVATE ./vendor/webview
+    target_include_directories(culebra_rt_webview SYSTEM PRIVATE ./vendor/webview
                                                           ${_webview_includes})
     target_compile_definitions(culebra_rt_webview PRIVATE CULEBRA_ENABLE_WEBVIEW=1)
     target_compile_options(culebra_rt_webview PRIVATE -ffunction-sections -fdata-sections)
@@ -1466,7 +1466,7 @@ endif()
 # (it drives the ObjC runtime via objc_msgSend on macOS, so no .mm needed).
 if(CULEBRA_ENABLE_WEBVIEW)
   target_sources(culebra PRIVATE ${_webview_sources})
-  target_include_directories(culebra PRIVATE ./vendor/webview ${_webview_includes})
+  target_include_directories(culebra SYSTEM PRIVATE ./vendor/webview ${_webview_includes})
   target_compile_definitions(culebra PRIVATE CULEBRA_ENABLE_WEBVIEW=1)
   target_link_libraries(culebra ${_webview_libs})
 endif()

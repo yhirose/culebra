@@ -1850,7 +1850,7 @@ struct JIT {
   // LLVM value of the actual operand's runtime tag (e.g. extract_tag(v)).
   void emit_type_error_typed(const char* expected, llvm::Value* got_tag) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto exp_str = builder_.CreateGlobalStringPtr(expected);
+    auto exp_str = builder_.CreateGlobalString(expected);
     emit_call(
         module_->getOrInsertFunction(rt::type_error_typed,
                                      builder_.getVoidTy(),

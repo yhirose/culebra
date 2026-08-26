@@ -19,7 +19,6 @@
 #include <string>
 #include <thread>
 
-#define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "http.h"
 
 namespace {

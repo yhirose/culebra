@@ -2681,18 +2681,20 @@ inline bool _jit_is_shared_buffer(JitObject* obj) {
 }
 
 inline bool _jit_is_shared_val(JitObject* obj) { return obj->is_shared_val; }
-// Shared.new view readers — defined in sendable_jit.h (same TU via the
-// stdlib include; that header sits in namespace culebra with C++
-// linkage), declared here for the object get/index interceptions.
+// Shared.new view readers — defined in sendable_jit.h (that header sits
+// in namespace culebra with C++ linkage), declared here for the object
+// get/index interceptions. Plain (non-CULEBRA_RT_INLINE) on purpose: a
+// feature-archive TU like culebra_rt_webview.cc reaches this declaration
+// through rt.h without ever pulling in sendable_jit.h, so it can't see a
+// body here — the call resolves at final link against whichever TU does
+// compile sendable_jit.h (stdlib_jit.h consumers). ODR only requires
+// `inline` on the definition, not on every declaration.
 extern "C++" {
 namespace culebra {
-CULEBRA_RT_INLINE JitValue _jit_shared_val_prop(JitObject* view,
-                                                const char* name,
-                                                int64_t line, int64_t col);
-CULEBRA_RT_INLINE JitValue _jit_shared_val_index(JitObject* view,
-                                                 int8_t key_tag,
-                                                 int64_t key_data,
-                                                 int64_t line, int64_t col);
+JitValue _jit_shared_val_prop(JitObject* view, const char* name,
+                              int64_t line, int64_t col);
+JitValue _jit_shared_val_index(JitObject* view, int8_t key_tag,
+                               int64_t key_data, int64_t line, int64_t col);
 }  // namespace culebra
 }
 

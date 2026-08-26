@@ -6,8 +6,8 @@
 // in CMake), so a force-loaded culebra_rt_sqlite is fully self-contained and a
 // program that never opens a database links neither this object nor sqlite3.
 //
-// CULEBRA_RT_SQLITE_STRONG makes the wrappers strong, non-inline definitions;
-// sqlite.h is value-neutral (no interpreter/JIT types), so this TU stays small.
+// CULEBRA_RT_SQLITE_STRONG (set by CMake on this target) makes the wrappers
+// strong, non-inline definitions; sqlite.h is value-neutral (no
+// interpreter/JIT types), so this TU stays small.
 
-#define CULEBRA_RT_SQLITE_STRONG
 #include <sqlite.h>
