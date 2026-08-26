@@ -139,8 +139,9 @@ expect_output none "none"
 # and adapters link only when the program names it. No axis, no choke — the
 # program object's culebra_aot_ns_groups[] is the one reference that keeps a
 # group, so an unnamed one is dead-stripped with everything only it reached.
-expect_present none ' culebra_ns_group_IO$' "IO named, its group must be linked"
-expect_absent none ' culebra_ns_group_Math$' "the Math group"
+# `_?`: these are C symbols, and Mach-O spells them with a leading underscore.
+expect_present none ' _?culebra_ns_group_IO$' "IO named, its group must be linked"
+expect_absent none ' _?culebra_ns_group_Math$' "the Math group"
 expect_absent none ' [A-Za-z] culebra::_ns_isolate_spawn[(]' "the Isolate adapter"
 expect_absent none ' [A-Za-z] culebra::_ns_http_[a-z_]*[(]' "the Http adapters"
 
@@ -153,9 +154,9 @@ expect_output regex "34"
 
 build math 'let m = Math
 IO.print(m.abs(-3) + Math.floor(1.5))'
-expect_present math ' culebra_ns_group_Math$' "Math named, its group must be linked"
+expect_present math ' _?culebra_ns_group_Math$' "Math named, its group must be linked"
 expect_present math 'culebra::_ns_math_floor[(]' "a Math adapter, reached only through the group"
-expect_absent math ' culebra_ns_group_FS$' "the FS group"
+expect_absent math ' _?culebra_ns_group_FS$' "the FS group"
 expect_output math "4"
 
 build proc 'IO.print(Proc.run(["echo", "spawned"]).stdout)'
