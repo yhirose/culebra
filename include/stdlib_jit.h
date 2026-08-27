@@ -579,6 +579,40 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_realpath(
   return _culebra_heap_str(out.string());
 }
 
+// The directory this machine names for scratch files: `$TMPDIR` and its
+// fallbacks on POSIX, `GetTempPath` on Windows. Returned without a trailing
+// separator, which Windows supplies and FS.join would double.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_temp_dir(
+    int64_t line, int64_t col) {
+  std::error_code ec;
+  auto dir = std::filesystem::temp_directory_path(ec);
+  if (ec) _fs_throw_io("FS.temp_dir()", line, col, ec);
+  if (!dir.empty() && dir.filename().empty()) dir = dir.parent_path();
+  return _culebra_heap_str(dir.string());
+}
+
+// A directory no one else holds, created rather than named: the gap between
+// picking a free name and creating it is what lets two programs land on the
+// same one. The suffix is drawn from std::random_device, not the shared
+// engine, so `Random.seed(n)` cannot make two runs agree on a directory.
+// Nothing removes it but the caller.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_mkdtemp(
+    const char* prefix, int64_t line, int64_t col) {
+  auto name = std::string(prefix ? prefix : "");
+  std::error_code ec;
+  auto base = std::filesystem::temp_directory_path(ec);
+  if (ec) _fs_throw_io(std::format("FS.mkdtemp('{}')", name), line, col, ec);
+  std::random_device rd;
+  for (int attempt = 0; attempt < 64; ++attempt) {
+    auto dir = base / std::format("{}{:08x}{:08x}", name, rd(), rd());
+    if (std::filesystem::create_directory(dir, ec))
+      return _culebra_heap_str(dir.string());
+    if (ec) break;  // an unusable base; a name already taken sets no code
+  }
+  if (!ec) ec = std::make_error_code(std::errc::file_exists);
+  _fs_throw_io(std::format("FS.mkdtemp('{}')", name), line, col, ec);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_is_symlink(
     const char* path) {
   std::error_code ec;
@@ -4665,6 +4699,13 @@ inline JitValue _ns_fs_realpath(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
       culebra_runtime_fs_realpath(_ns_adapt::take_path(a[0]), 0, 0));
 }
+inline JitValue _ns_fs_temp_dir(JitValue*, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_fs_temp_dir(0, 0));
+}
+inline JitValue _ns_fs_mkdtemp(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_fs_mkdtemp(_ns_adapt::take_str(a[0]), 0, 0));
+}
 inline JitValue _ns_fs_is_symlink(JitValue* a, int64_t) {
   return _ns_adapt::v_bool(
       culebra_runtime_fs_is_symlink(_ns_adapt::take_path(a[0])));
@@ -7376,6 +7417,8 @@ inline const NsMethod kNsRows_FS[] = {
   {"FS",     "is_abs",    1, &_ns_fs_is_abs},
   {"FS",     "abspath",   1, &_ns_fs_abspath},
   {"FS",     "realpath",  1, &_ns_fs_realpath},
+  {"FS",     "temp_dir",  0, &_ns_fs_temp_dir},
+  {"FS",     "mkdtemp",   1, &_ns_fs_mkdtemp, nullptr, "String", "prefix"},
   {"FS",     "is_symlink",1, &_ns_fs_is_symlink},
   {"FS",     "symlink",   2, &_ns_fs_symlink},
   {"FS",     "readlink",  1, &_ns_fs_readlink},

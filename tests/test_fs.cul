@@ -38,24 +38,38 @@ assert_eq(FS.exists("/tmp"), true)
 assert_eq(FS.is_dir("/tmp"), true)
 assert_eq(FS.is_file("/tmp"), false)
 
+// --- temp_dir / mkdtemp ---
+// Where this machine puts scratch files. Reported without a trailing
+// separator (Windows' GetTempPath supplies one), so FS.join off it does not
+// double one — a path that ends in a separator has an empty basename.
+assert_true(FS.is_dir(FS.temp_dir()))
+assert_true(FS.basename(FS.temp_dir()) != "")
+
+// Every path below hangs off one mkdtemp: a fixed name under the shared temp
+// dir is what makes two checkouts running the suite at once walk into each
+// other's tree. The directory is created rather than named, so no two runs
+// can pick the same one — not even two seeded the same way.
+let tmp_root = FS.mkdtemp("culebra_fs_test_")
+assert_true(FS.is_dir(tmp_root))
+assert_eq(FS.dirname(tmp_root), FS.temp_dir())
+assert_true(FS.basename(tmp_root).starts_with("culebra_fs_test_"))
+let second = FS.mkdtemp("culebra_fs_test_")
+assert_true(second != tmp_root)
+FS.remove(second)
+
+// The prefix names a directory, not a path: a parent that doesn't exist is
+// an error rather than a silent mkdir -p.
+assert_throws("IOError", fn () {
+  FS.mkdtemp("culebra_fs_no_such_dir/x")
+})
+assert_throws("TypeError", fn () {
+  FS.mkdtemp(42)
+})
+
 // --- Round-trip: mkdir / write / size / list / remove ---
-// Prefer $TMPDIR so the test plays nicely in sandboxes where /tmp
-// isn't writable; fall back to /tmp for environments that don't set
-// TMPDIR.
-let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = if tmpdir_env != "" {
-  tmpdir_env
-} else {
-  "/tmp"
-}
-let dir = FS.join(tmp_root, "culebra_fs_test")
+let dir = FS.join(tmp_root, "round")
 let f1 = FS.join(dir, "hello.txt")
 let f2 = FS.join(dir, "world.txt")
-
-// Clean any leftover from a prior failed run.
-FS.remove(f1) if FS.exists(f1)
-FS.remove(f2) if FS.exists(f2)
-FS.remove(dir) if FS.exists(dir)
 
 FS.mkdir(dir)
 assert_true(FS.is_dir(dir))
@@ -140,8 +154,7 @@ assert_true(FS.is_abs(FS.abspath(".")))
 // The empty path is left to the platform (libstdc++ reports an error where
 // another library may answer the cwd), so nothing is pinned for it here.
 
-let xdir = FS.join(tmp_root, "culebra_fs_ext")
-FS.remove(xdir, recursive: true) if FS.exists(xdir)
+let xdir = FS.join(tmp_root, "ext")
 FS.mkdir(FS.join(xdir, "sub"))
 FS.write(FS.join(xdir, "f.txt"), "hello")
 FS.write(FS.join(xdir, "sub/g.txt"), "yy")
@@ -236,5 +249,7 @@ assert_eq(FS.readlink(FS.join(xdir, "link")), FS.join(xdir, "r.txt"))
 // recursive remove (kwarg) cleans the whole tree.
 FS.remove(xdir, recursive: true)
 assert_eq(FS.exists(xdir), false)
+
+FS.remove(tmp_root, recursive: true)
 
 IO.inspect("test_fs OK")

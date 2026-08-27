@@ -187,6 +187,8 @@ inline constexpr CanonParam kCanonParams_FS[] = {
   {"path", false, false, false, false, false, "String|Path", CanonDefault::None, 0, {}},
   {"recursive", true, false, false, false, false, "", CanonDefault::Bool, 1, {}},
   {"match", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 40: FS.mkdtemp
+  {"prefix", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_FS[] = {
@@ -219,6 +221,8 @@ inline constexpr CanonSig kCanonSigs_FS[] = {
   {"FS", "", "walk", kCanonParams_FS + 35, 1, "Array", 1, 1, false, -1, -1, -1},
   {"FS", "", "glob", kCanonParams_FS + 36, 1, "Array", 1, 1, false, -1, -1, -1},
   {"FS", "", "watch", kCanonParams_FS + 37, 3, "Object", 1, 3, false, -1, -1, -1},
+  {"FS", "", "temp_dir", nullptr, 0, "String", 0, 0, false, -1, -1, -1},
+  {"FS", "", "mkdtemp", kCanonParams_FS + 40, 1, "String", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_File[] = {

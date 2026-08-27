@@ -559,6 +559,35 @@ assert_true(names.contains('out.o'))
 （`mkdir -p`セマンティクス）。既存ならno-op。パスがファイル
 として存在する／作成に失敗した場合は`IOError`をthrow。
 
+#### `FS.temp_dir() -> String`
+
+このマシンが一時ファイルを置くディレクトリ。POSIXでは`$TMPDIR`と
+そのフォールバック、Windowsでは`GetTempPath`。末尾に区切り文字を
+付けないので`FS.join`で二重にならない。プラットフォームが返した
+パスがディレクトリでない場合は`IOError`をthrow。
+
+```culebra
+assert_true(FS.is_dir(FS.temp_dir()))
+```
+
+#### `FS.mkdtemp(prefix: String) -> String`
+
+`FS.temp_dir()`の下に`prefix`で始まる名前の新しいディレクトリを
+作成し、そのパスを返す。名前を決めるだけでなく実際に**作成**するので、
+同時に走る2つのプログラムが同じディレクトリを受け取ることはない
+（サフィックスは共有エンジンではなくOSから引くので、`Random.seed`で
+同じ種を与えた2つの実行でも一致しない）。削除は呼び出し側の責任。
+
+`prefix`はパスではなく名前。存在しない親ディレクトリを含む場合は
+暗黙の`mkdir -p`ではなく`IOError`。
+
+```culebra
+let dir = FS.mkdtemp('build-')
+assert_true(FS.is_dir(dir))
+assert_eq(FS.dirname(dir), FS.temp_dir())
+FS.remove(dir, recursive: true)
+```
+
 #### `FS.remove(path: String, recursive: Bool = false) -> Nil`
 
 ファイルまたは空ディレクトリを削除（既定）。非空ディレクトリは

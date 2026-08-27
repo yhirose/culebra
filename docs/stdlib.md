@@ -569,6 +569,36 @@ Create a directory at `path`, including any missing parents
 (`mkdir -p` semantics). No-op if the directory already exists.
 Throws `IOError` if the path exists as a file or creation fails.
 
+#### `FS.temp_dir() -> String`
+
+The directory this machine keeps scratch files in: `$TMPDIR` and its
+fallbacks on POSIX, `GetTempPath` on Windows. No trailing separator, so
+`FS.join` off it never doubles one. Throws `IOError` if the platform
+names a directory that isn't one.
+
+```culebra
+assert_true(FS.is_dir(FS.temp_dir()))
+```
+
+#### `FS.mkdtemp(prefix: String) -> String`
+
+Create a new directory under `FS.temp_dir()` whose name begins with
+`prefix`, and return its path. The directory is *created*, not just
+named, so two programs running at once cannot be handed the same one —
+including two seeded identically with `Random.seed`, since the suffix
+comes from the OS rather than the shared engine. Removing it is the
+caller's job.
+
+`prefix` is a name, not a path: a parent that doesn't already exist is
+an `IOError` rather than a silent `mkdir -p`.
+
+```culebra
+let dir = FS.mkdtemp('build-')
+assert_true(FS.is_dir(dir))
+assert_eq(FS.dirname(dir), FS.temp_dir())
+FS.remove(dir, recursive: true)
+```
+
 #### `FS.remove(path: String, recursive: Bool = false) -> Nil`
 
 Remove a file or directory. By default removes a file or *empty*
