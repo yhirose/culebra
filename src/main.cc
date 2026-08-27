@@ -1114,6 +1114,34 @@ int run_build(const BuildOptions& opts) {
         : std::format("-Wl,--whole-archive {} -Wl,--no-whole-archive", q);
   };
 
+  // An axis whose link needs a whole third-party static (OpenSSL for Http,
+  // SDL3 + raylib for Scene/Canvas) names it `@libssl.a@` rather than by the
+  // path it sat at on the machine that built this driver — that directory is a
+  // distro dir, a Homebrew prefix or a CI runner's deps cache, and none of them
+  // is on the machine running this link. The name resolves to the same embedded
+  // copy the runtime archives come from (CMakeLists, _rt_embed_extern).
+  auto expand_archive_names = [&](std::string_view flags) -> std::string {
+    std::string out;
+    for (size_t i = 0; i < flags.size();) {
+      auto at = flags.find('@', i);
+      if (at == std::string_view::npos) { out += flags.substr(i); break; }
+      auto end = flags.find('@', at + 1);
+      if (end == std::string_view::npos) { out += flags.substr(i); break; }
+      out += flags.substr(i, at - i);
+      std::string err;
+      auto path = materialize_archive(
+          std::string(flags.substr(at + 1, end - at - 1)), err);
+      if (path.empty()) {
+        std::println(stderr, "culebra build: {}", err);
+        feature_failed = true;
+        return {};
+      }
+      out += shq(path.string());
+      i = end + 1;
+    }
+    return out;
+  };
+
   // Every force-load fragment precedes every plain link flag on the command
   // line, so collect the two runs separately and splice them in below.
   // (host_build is computed above, before the object is emitted: the baked
@@ -1124,7 +1152,7 @@ int run_build(const BuildOptions& opts) {
     const auto& ax = kFeatureAxes[i];
     if (host_build && ax.embedded)
       feature_objs.push_back(force_load_feature(ax.archive));
-    feature_links.push_back(ax.link_flags);
+    feature_links.push_back(expand_archive_names(ax.link_flags));
   }
   // The wrap archive holds static registrars nothing references by name, so it
   // needs the same force-load for the binding to register at all; its flags are

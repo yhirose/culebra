@@ -247,10 +247,13 @@ if(CULEBRA_ENABLE_HTTP)
     list(APPEND _ssl_libs crypt32 bcrypt ws2_32)
   endif()
 
-  # AOT link string: resolve the OpenSSL static archives to absolute paths so
-  # `culebra build` can append them when a program references Http. Mirrors
-  # CULEBRA_BLAS_LINK for Tensor. zlib is linked dynamically (-lz).
-  set(_ssl_link "${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY} -lz")
+  # AOT link string: the OpenSSL statics by embedded name, not by the path they
+  # sit at here — `culebra build` appends this on the *user's* machine, which
+  # has no such path (see _rt_embed_extern). Mirrors CULEBRA_BLAS_LINK for
+  # Tensor. zlib is linked dynamically (-lz).
+  cmake_path(GET OPENSSL_SSL_LIBRARY FILENAME _ssl_a_name)
+  cmake_path(GET OPENSSL_CRYPTO_LIBRARY FILENAME _crypto_a_name)
+  set(_ssl_link "@${_ssl_a_name}@ @${_crypto_a_name}@ -lz")
   if(APPLE)
     set(_ssl_link "${_ssl_link} -framework CoreFoundation -framework Security")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -591,16 +594,13 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   # appends on usage. Built once here — Scene and Canvas share it, so they can't
   # drift apart — then assigned to the two per-feature vars (kept separate
   # because they ride different usage axes: uses_scene vs uses_canvas).
-  # The paths carry the quoting that platform's shell wants, since `culebra
-  # build` splices this straight into a std::system() command — the same split
-  # src/main.cc's shq() makes. Escaped on Windows: this lands inside a C string
-  # literal, and a bare double quote would end it.
-  if(WIN32)
-    set(_shq "\\\"")
-  else()
-    set(_shq "'")
-  endif()
-  set(_raylib_aot_link "${_shq}${_raylib_a}${_shq} ${_shq}${_sdl_a}${_shq}")
+  # The two statics are named, not pathed: the deps cache they live in belongs
+  # to the machine that built this driver, and `culebra build` runs on the
+  # user's. src/main.cc resolves the name to its embedded copy and quotes it
+  # for the platform's shell (see _rt_embed_extern).
+  cmake_path(GET _raylib_a FILENAME _raylib_a_name)
+  cmake_path(GET _sdl_a FILENAME _sdl_a_name)
+  set(_raylib_aot_link "@${_raylib_a_name}@ @${_sdl_a_name}@")
   if(APPLE)
     foreach(_fw IN LISTS _scene_frameworks)
       string(APPEND _raylib_aot_link " -framework ${_fw}")
@@ -1092,6 +1092,25 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_webview${CMAKE_STATIC_LIBRARY_SUFFIX}")
     list(APPEND _rt_embed_deps culebra_rt_webview)
   endif()
+  # The external statics an AOT link needs whole: OpenSSL for Http, the vendored
+  # SDL3 + raylib for Scene / the Canvas window. Unlike the archives above these
+  # are not ours, but they ride here for the same reason — the link runs on the
+  # user's machine, and the paths they sit at (a distro dir, a Homebrew prefix,
+  # an MSYS2 tree, this build's deps cache) exist only on the machine that built
+  # this driver. The link fragments name them (@libssl.a@); src/main.cc
+  # materializes the name. They keep their own filenames, so nothing here has to
+  # agree with the fragment beyond that name. Kept out of _rt_embed_files: those
+  # pair a file with the target that builds it, and these are plain inputs (SDL3
+  # + raylib are ordered against their ExternalProjects further below, where
+  # those targets exist).
+  set(_rt_embed_extern "")
+  if(CULEBRA_ENABLE_HTTP)
+    list(APPEND _rt_embed_extern
+      "${OPENSSL_SSL_LIBRARY}" "${OPENSSL_CRYPTO_LIBRARY}")
+  endif()
+  if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
+    list(APPEND _rt_embed_extern "${_raylib_a}" "${_sdl_a}")
+  endif()
   # Every feature archive is force-loaded next to the core archive, so the two
   # must not both define the same symbol: mingw's ld rejects the duplicate and
   # the Windows AOT link fails. Two flags say so, because the two halves do not
@@ -1143,6 +1162,30 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
       COMMENT "Compressing ${_rt_a_name}"
       VERBATIM)
     list(APPEND _rt_embed_packed "${_rt_packed_dir}/${_rt_a_name}")
+  endforeach()
+  foreach(_extern IN LISTS _rt_embed_extern)
+    cmake_path(GET _extern FILENAME _extern_name)
+    # Depend on the file only once something has produced it. On a cold build
+    # SDL3 and raylib are still an ExternalProject away, and a BUILD_BYPRODUCT
+    # is a rule to Ninja but not to Make — naming one there fails the build with
+    # "no rule to make target". Ordering against those builds is a target-level
+    # dependency instead (add_dependencies further below, where they exist).
+    # The stamp carries the source path so a vendor bump — which moves the
+    # archive to a new deps-cache key without touching this output — reruns the
+    # compression instead of leaving the previous version embedded.
+    set(_extern_dep "")
+    if(EXISTS "${_extern}")
+      set(_extern_dep "${_extern}")
+    endif()
+    file(GENERATE OUTPUT "${_rt_packed_dir}/${_extern_name}.src"
+         CONTENT "${_extern}\n")
+    add_custom_command(
+      OUTPUT "${_rt_packed_dir}/${_extern_name}"
+      COMMAND compress_asset "${_extern}" "${_rt_packed_dir}/${_extern_name}"
+      DEPENDS ${_extern_dep} "${_rt_packed_dir}/${_extern_name}.src" compress_asset
+      COMMENT "Compressing ${_extern_name}"
+      VERBATIM)
+    list(APPEND _rt_embed_packed "${_rt_packed_dir}/${_extern_name}")
   endforeach()
   add_custom_target(culebra_rt_packed DEPENDS ${_rt_embed_packed})
 
@@ -1379,6 +1422,27 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_FOREIGN_LINK="${_foreign_link}")
 endif()
 
+# Every fragment above is spliced into a link command that runs on the *user's*
+# machine, so none of them may name a path from this one: a downloaded binary
+# would splice a directory only the release runner ever had, and the link would
+# fail on a missing file. What an AOT link needs whole is embedded instead and
+# named @<filename>@ (_rt_embed_extern, expanded in src/main.cc). Checked here,
+# once, for all of them — the release is where this goes wrong, and a tagged
+# build is the one place nobody can re-run before it ships. CULEBRA_WRAP_LINK is
+# not on the list: those flags come from whoever ran `culebra wrap`, who is also
+# the one running the build.
+foreach(_frag _blas_link _ssl_link _zlib_link _sqlite_link _scene_link
+              _canvas_link _webview_link _foreign_link)
+  string(REPLACE " " ";" _frag_tokens "${${_frag}}")
+  foreach(_tok IN LISTS _frag_tokens)
+    if(_tok MATCHES "^[/\\]" OR _tok MATCHES "^[A-Za-z]:[/\\]")
+      message(FATAL_ERROR
+        "${_frag} names a build-machine path (${_tok}). Embed the file "
+        "(_rt_embed_extern) and name it @<filename>@ in the fragment instead.")
+    endif()
+  endforeach()
+endforeach()
+
 # --- Scene / Canvas window: build SDL3 + raylib + link into the driver ------
 # Config (options / static lib paths / link flags) was resolved before the
 # driver target above. Here we build SDL3 (static) and raylib (SDL backend,
@@ -1470,6 +1534,12 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   foreach(_dep sdl_ext raylib_ext)
     if(TARGET ${_dep})
       add_dependencies(culebra ${_dep})
+      # The two statics are embedded as well as linked (_rt_embed_extern), and
+      # the compress step reads them off the cache path an ExternalProject
+      # publishes late. Order the packing behind the build that produces them.
+      if(TARGET culebra_rt_packed)
+        add_dependencies(culebra_rt_packed ${_dep})
+      endif()
     endif()
   endforeach()
   target_link_libraries(culebra "${_raylib_a}" "${_sdl_a}")

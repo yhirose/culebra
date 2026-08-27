@@ -659,6 +659,10 @@ _run-tests BACKEND:
         # The self-contained axes are silent when lost (no link error, no
         # ldd); tools/check_aot_feature_axes.sh reads the linked outputs.
         {{nice_cmd}} bash tools/check_aot_feature_axes.sh "$(dirname "$BIN")" || exit 1
+        # Every AOT test above links inside a build tree, where the paths a
+        # fragment could bake in happen to exist. This one asserts none is
+        # there to begin with — the failure only a downloaded binary sees.
+        {{nice_cmd}} bash tools/check_aot_link_portability.sh "$(dirname "$BIN")" || exit 1
         # Losing the baked stdlib preamble is silent too (the lanes splice
         # the source again, two seconds slower per module); read it off the
         # emitted IR and the linked outputs.

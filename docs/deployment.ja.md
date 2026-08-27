@@ -47,6 +47,15 @@ culebra build path/to/program.cul -o ./program
 | Linux | `cc`・libstdc++・Cランタイムのスタートアップファイル | `sudo apt install g++`（Debian / Ubuntu）、`sudo dnf install gcc-c++`（Fedora） |
 | Windows | **UCRT64**のmingw-w64 `g++` — MSVCでもMINGW64でもない | MSYS2（下記） |
 
+他には何も要りません。AOTのリンクが必要とするアーカイブは、
+サードパーティの静的ライブラリも含めて`culebra`バイナリ自身から
+出てきます（[§4](#4-共有-runtime-archive-レイアウト)）。
+システムからリンクされるライブラリとして残るのはzlibだけで、
+`Http`・`Compress`・`to_png`を使うプログラムが`-lz`で引きます —
+macOSとMSYS2のgccには既にありますが、Linuxではリンカが見る
+`libz.so`のシンボリックリンクがdevパッケージ側にあります
+（`sudo apt install zlib1g-dev`、`sudo dnf install zlib-devel`）。
+
 Windowsはツールチェーンを一切同梱しておらず、しかも必要なものが
 限定されます。ダウンロードした実行ファイルとその中のランタイム
 アーカイブはMSYS2のUCRT64 gccでビルドされているので、リンクも同じ
@@ -715,6 +724,24 @@ deflate圧縮して格納しており、ドライバ内で33.8 MBのところ6.9
 キャッシュを再利用します。fingerprintは埋め込みアーカイブのコンテ
 ンツハッシュなので、`culebra`を再ビルドすると自動的に旧版のキャッ
 シュと分離されます。
+
+機能軸が**丸ごと**リンクするサードパーティ製の静的ライブラリも、
+同じ置き場に自分の名前で同居します: `Http`のOpenSSL（`libssl.a` /
+`libcrypto.a`）、`Canvas`のウィンドウバックエンドと`Scene`が使う
+vendored SDL3 / raylib（`libSDL3.a` / `libraylib.a`）。これらは
+ランタイムアーカイブの一部ではありません — `-l`で渡すと参照された
+分しか引かれず、それでは目的を果たさないからです。かといってパスで
+名指すこともできません: それぞれが置かれていたディレクトリは
+ドライバをビルドしたマシンのもの（ディストリのディレクトリ、
+Homebrewのprefix、MSYS2のツリー、CIランナーの依存キャッシュ）で、
+リンクが走るのはユーザーのマシンだからです。そこで各機能軸のリンク
+断片はこれらを名前で書き（`@libssl.a@`）、`culebra build`が`cc`へ
+コマンドを渡す前に同じキャッシュへ解決します。素の`-l`のまま残すのは
+どのマシンにもあるもの — `-lz`・`-lstdc++`・`-lpthread`・OSの
+フレームワーク — だけです。断片にパスを焼き込むことはCMakeがconfigure
+時に拒否し、`tools/check_aot_link_portability.sh`が実際のリンク行を
+読み返して1本も無いことを証明します。他のAOTテストはすべてビルド
+ツリーの中で走るので、焼き込まれたパスがたまたま存在してしまうためです。
 
 `culebra build --target=<triple>`は現状ホストアーカイブのみです —
 埋め込み/キャッシュされたアーカイブはホスト向けにビルドされています。

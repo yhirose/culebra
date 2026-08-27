@@ -48,6 +48,14 @@ checks for it before compiling anything and names what to install.
 | Linux | `cc`, libstdc++ and the C runtime startup files | `sudo apt install g++` (Debian/Ubuntu), `sudo dnf install gcc-c++` (Fedora) |
 | Windows | mingw-w64 `g++` from **UCRT64** — not MSVC, not MINGW64 | MSYS2, below |
 
+Nothing else: the archives an AOT link needs, third-party statics
+included, come out of the `culebra` binary itself ([§4](#4-shared-runtime-archive-layout)).
+The one library still linked from the system is zlib, which a program
+using `Http`, `Compress` or `to_png` reaches through `-lz` — already
+present on macOS and in MSYS2's gcc, but on Linux the linker's
+`libz.so` symlink lives in the dev package (`sudo apt install
+zlib1g-dev`, `sudo dnf install zlib-devel`).
+
 Windows ships no toolchain at all, and the one it needs is specific.
 The download and the runtime archive inside it are built by MSYS2's
 UCRT64 gcc, so the link has to come from the same environment: the same
@@ -717,6 +725,24 @@ which is 33.8 MB of the driver against 6.9 MB. On first invocation of
 reuse the cache. The fingerprint is a content-hash of the embedded
 archives, so a freshly-built `culebra` automatically isolates its cache
 from older copies.
+
+The third-party statics a feature links **whole** ride along in the
+same store, under their own names: OpenSSL's `libssl.a` /
+`libcrypto.a` for `Http`, the vendored `libSDL3.a` / `libraylib.a` for
+`Canvas`'s window backend and `Scene`. They are not part of a runtime
+archive — an `-l` on the link line would pull only what is referenced,
+which is the point — but they cannot be named by path either: the
+directory each sat in belongs to the machine that built the driver (a
+distro dir, a Homebrew prefix, an MSYS2 tree, a CI runner's dependency
+cache), and the link runs on the user's. So each feature's link
+fragment names them (`@libssl.a@`), and `culebra build` resolves the
+name against the same cache before it hands the command to `cc`. What
+stays as a plain `-l` is what every machine has: `-lz`, `-lstdc++`,
+`-lpthread`, the OS frameworks. CMake refuses at configure time to bake
+a path into a fragment, and `tools/check_aot_link_portability.sh`
+reads a real link line back to prove none is there — every other AOT
+test runs inside a build tree, where a baked path would happen to
+exist.
 
 `culebra build --target=<triple>` is currently host-archive only — the
 embedded/cached archive is built for the host. For cross-targets,

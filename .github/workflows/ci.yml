@@ -1501,6 +1501,13 @@ jobs:
             echo "AOT_SPACED_CACHE_BUILD_FAIL rc=$?"
             exit 1
           fi
+      # The Ubuntu aot lane runs this too, but Windows is where it matters most:
+      # the OpenSSL statics an Http link needs come from an MSYS2 tree that is
+      # the runner's, not the downloader's, and this build IS the download's
+      # configuration. Fails if any absolute path outside the driver's own cache
+      # reaches the link line.
+      - name: Smoke — AOT link carries no build-machine path
+        run: tools/check_aot_link_portability.sh build-win-aot
       # Long is 64-bit here too. This is the platform where it was not — `long`
       # is 32 bits under LLP64, and the interpreter carried the payload in one —
       # so the shared test runs on the one runner that can tell, across all
