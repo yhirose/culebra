@@ -14,6 +14,7 @@
 #include "canvas.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -358,8 +359,6 @@ constexpr int kTriangle = 2, kNoise = 3, kSawtooth = 4;
 
 struct Note {
   bool active = false;
-  uint64_t id = 0;         // bumped on every tone() so a stale write can't
-                            // clobber a note that started mid-buffer (below)
   double start_freq = 0, end_freq = 0;
   int64_t attack = 0, decay = 0, sustain = 0, release = 0;  // samples
   int64_t total = 0;                                        // samples
@@ -370,8 +369,39 @@ struct Note {
   double lp_state = 0;        // noise channel's one-pole lowpass
 };
 
+// A note carries where it starts, on the stream's own sample clock. tone()
+// runs on the main thread while the mixer renders whole buffers at once, so
+// writing straight to the sounding voice keeps only the last note a buffer
+// spans and pins every onset to a buffer edge — invisible at the 10 ms device
+// default, a third of the tune gone once a period outlasts the gap between
+// notes. This is what WebAudio's own src.start(now) gives the browser side.
+struct Queued {
+  int64_t start = 0;   // absolute position in the stream, in samples
+  int channel = 0;
+  Note note;
+};
+
+// Bounded on both sides of the handover: a device that stalls must not grow
+// these without limit, and the oldest note is the one to lose, being the one a
+// monophonic channel would have cut anyway.
+constexpr int kQueueCap = 64;
+
 std::mutex g_audio_mutex;
-Note g_notes[5];
+Queued g_inbox[kQueueCap];   // handed over by tone(), drained once per buffer
+int g_inbox_count = 0;
+// Where the stream stands once the buffer being rendered is done, and the
+// instant that was. tone() dates itself against this pair, so notes keep their
+// spacing however long a buffer is.
+int64_t g_stream_next = 0;
+std::chrono::steady_clock::time_point g_stream_at{};
+int64_t g_last_start = 0;    // notes are queued in order, never behind
+
+// The mixer's own state: the voice sounding on each channel, and the notes
+// still waiting for their sample. Read and written only on the audio thread.
+Note g_voice[5];
+Queued g_pending[kQueueCap];
+int g_pending_count = 0;
+int64_t g_pos = 0;           // samples rendered so far
 
 AudioStream g_stream;
 bool g_audio_ready = false;
@@ -445,22 +475,43 @@ double noise_sample(Note& n, double cutoff) {
   return n.lp_state;
 }
 
-// raylib's audio thread callback: fill `frames` mono float samples. Runs
-// off the main thread, so every shared Note is read through the mutex — the
-// snapshot/writeback split (rather than holding the lock the whole buffer)
-// keeps a slow buffer from delaying tone() on the main thread.
+// raylib's audio thread callback: fill `frames` mono float samples. The lock
+// is held only to take the handover, never across the render, so a long buffer
+// cannot delay tone() on the main thread. Everything the render touches after
+// that belongs to this thread alone.
 void audio_callback(void* buffer_data, unsigned int frames) {
   float* out = static_cast<float*>(buffer_data);
-  Note local[5];
   {
     std::lock_guard<std::mutex> lock(g_audio_mutex);
-    for (int c = 0; c < 5; c++) local[c] = g_notes[c];
+    // Losing the oldest keeps the newest, which is what a channel would be
+    // sounding by the time the queue drained anyway.
+    int drop = g_pending_count + g_inbox_count - kQueueCap;
+    if (drop > 0) {
+      drop = std::min(drop, g_pending_count);
+      std::move(g_pending + drop, g_pending + g_pending_count, g_pending);
+      g_pending_count -= drop;
+    }
+    for (int i = 0; i < g_inbox_count && g_pending_count < kQueueCap; i++) {
+      g_pending[g_pending_count++] = g_inbox[i];
+    }
+    g_inbox_count = 0;
+    g_stream_next = g_pos + frames;
+    g_stream_at = std::chrono::steady_clock::now();
   }
 
+  int head = 0;   // g_pending is ordered by start, so only the head can be due
   for (unsigned int i = 0; i < frames; i++) {
+    int64_t p = g_pos + static_cast<int64_t>(i);
+    // A note whose sample has come round takes its channel, cutting whatever
+    // was sounding there. One already behind (the device fell back) starts
+    // here rather than being dropped.
+    while (head < g_pending_count && g_pending[head].start <= p) {
+      g_voice[g_pending[head].channel] = g_pending[head].note;
+      head++;
+    }
     double mixed = 0.0;
     for (int c = 0; c < 5; c++) {
-      Note& n = local[c];
+      Note& n = g_voice[c];
       if (!n.active || n.elapsed >= n.total) {
         n.active = false;
         continue;
@@ -476,14 +527,9 @@ void audio_callback(void* buffer_data, unsigned int frames) {
     out[i] = static_cast<float>(std::clamp(mixed, -1.0, 1.0));
   }
 
-  std::lock_guard<std::mutex> lock(g_audio_mutex);
-  for (int c = 0; c < 5; c++) {
-    // Only write back a channel whose note is still the one we started the
-    // buffer with — tone() may have started a fresher note on the main
-    // thread mid-buffer, and that note's own elapsed=0 must not be clobbered
-    // by this buffer's (now-stale) count.
-    if (local[c].id == g_notes[c].id) g_notes[c] = local[c];
-  }
+  std::move(g_pending + head, g_pending + g_pending_count, g_pending);
+  g_pending_count -= head;
+  g_pos += frames;
 }
 
 void ensure_audio() {
@@ -500,6 +546,13 @@ void ensure_audio() {
   }
   g_stream = LoadAudioStream(kSampleRate, 32, 1);  // 32-bit float, mono
   SetAudioStreamCallback(g_stream, audio_callback);
+  // Date the stream clock before the device can call back: a tone() issued
+  // ahead of the first buffer would otherwise be measured from the epoch and
+  // scheduled past any sample this process will ever render.
+  {
+    std::lock_guard<std::mutex> lock(g_audio_mutex);
+    g_stream_at = std::chrono::steady_clock::now();
+  }
   PlayAudioStream(g_stream);
   g_audio_ready = true;
   arm_exit_teardown();
@@ -808,8 +861,19 @@ void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
   n.lp_state = 0.0;
 
   std::lock_guard<std::mutex> lock(g_audio_mutex);
-  n.id = g_notes[channel].id + 1;
-  g_notes[channel] = n;
+  if (g_inbox_count == kQueueCap) {   // see kQueueCap: the oldest is the loss
+    std::move(g_inbox + 1, g_inbox + kQueueCap, g_inbox);
+    g_inbox_count--;
+  }
+  double ahead = std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                               g_stream_at).count();
+  int64_t start = g_stream_next + static_cast<int64_t>(ahead * kSampleRate);
+  // The queue is walked head-first, and a sequencer never means to place a
+  // note behind one it has already asked for, so clock jitter across a buffer
+  // edge settles in favour of the order the calls came in.
+  start = std::max(start, g_last_start);
+  g_last_start = start;
+  g_inbox[g_inbox_count++] = Queued{start, static_cast<int>(channel), n};
 }
 
 // The format sniff (and its ValueError) has already run in the caller's

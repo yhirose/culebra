@@ -4950,11 +4950,13 @@ In the browser, `tone` plays through WebAudio (an oscillator per channel, a
 plays through a small software synth mixed on raylib's audio thread (naive —
 not band-limited — oscillators; noise is a filtered PRNG), started lazily on
 first use so a program that never calls `tone` never opens an audio device.
-Audio is silent on the headless native backend, and stays silent (no device
-opened, no crash) on a machine with no audio hardware. Native audio and
-WebAudio are independent implementations tuned to sound similar, not
-sample-identical — unlike the pixel ops, `tone` isn't required to produce
-bit-identical output across backends.
+Either way a note is placed on the audio stream's own sample clock rather than
+at the edge of whatever buffer the device was filling, so a sequencer keeps its
+spacing whatever buffer length the device chose. Audio is silent on the
+headless native backend, and stays silent (no device opened, no crash) on a
+machine with no audio hardware. Native audio and WebAudio are independent
+implementations tuned to sound similar, not sample-identical — unlike the pixel
+ops, `tone` isn't required to produce bit-identical output across backends.
 
 ### Sound effects
 
