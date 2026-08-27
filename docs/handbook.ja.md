@@ -88,7 +88,10 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
 ### 1.1 リリースバイナリのインストール
 
 以下のリンクは常に最新リリースを指す。アーカイブの中身は実行ファイル1本と
-ライセンスだけで、インストーラも追加で置くものもない。
+ライセンスだけで、インストーラも追加で置くものもない。例外は
+サブコマンド1つ: `culebra build`はホストのC++コンパイラでリンクするので、
+一度も何もビルドしたことのないマシンにはそれが無い
+（[`deployment.ja.md` §1](deployment.ja.md#ホスト側に必要なもの)）。
 
 | プラットフォーム | ダウンロード |
 |---|---|
@@ -1802,6 +1805,11 @@ tensorエンジンが必要とするAccelerate / Metalフレームワーク依�
 ./out                                     # standalone、~6 MB on macOS
 otool -L ./out                            # Accelerate も Metal も LLVM も無し
 ```
+
+codegenはプロセス内で完結するが、リンク段だけはホストのC++コンパイラを
+起動する — macOSはXcode Command Line Tools、Linuxは`cc`、Windowsは
+mingw-w64のUCRT64。無ければ`build`が開始前にそう言う。プラットフォーム別の
+一覧は[`deployment.ja.md` §1](deployment.ja.md#ホスト側に必要なもの)。
 
 ### 16.1 クロスコンパイル
 

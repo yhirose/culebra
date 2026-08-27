@@ -32,6 +32,43 @@ culebra build path/to/program.cul -o ./program
 
 デフォルトはホストプラットフォーム向け。
 
+### ホスト側に必要なもの
+
+スクリプトの実行に`culebra`バイナリ以外は要りません。`--jit`も同じで、
+コンパイルに使うLLVMはバイナリの中にあります。外へ出るのは
+`culebra build`だけです — codegenはプロセス内で完結しますが、
+**リンク段だけはプラットフォームのC++コンパイラを起動する**ので、
+一度も何もビルドしたことのないマシンにはそれがありません。`build`は
+コンパイルを始める前にこれを確認し、何を入れればよいかを表示します。
+
+| ホスト | リンク段が必要とするもの | インストール |
+|---|---|---|
+| macOS | Xcode Command Line Tools（`/usr/bin`の`cc`はその実体ではなくシムで、Mach-Oが`libSystem`をリンクする先のSDKスタブもこれが持ち込む） | `xcode-select --install` |
+| Linux | `cc`・libstdc++・Cランタイムのスタートアップファイル | `sudo apt install g++`（Debian / Ubuntu）、`sudo dnf install gcc-c++`（Fedora） |
+| Windows | **UCRT64**のmingw-w64 `g++` — MSVCでもMINGW64でもない | MSYS2（下記） |
+
+Windowsはツールチェーンを一切同梱しておらず、しかも必要なものが
+限定されます。ダウンロードした実行ファイルとその中のランタイム
+アーカイブはMSYS2のUCRT64 gccでビルドされているので、リンクも同じ
+環境から来る必要があります（同じlibstdc++ ABI、同じCランタイム）。
+リンク行は`-lstdc++exp`も要求します — C++23の`std::print`がリンク時に
+解決するコンソールヘルパーが新しめのlibstdc++でここに入っており、
+古いMinGWディストリビューションはこのライブラリを持ちません。
+管理者権限のPowerShellから:
+
+```powershell
+winget install -e --id MSYS2.MSYS2
+C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"
+C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"   # 1回目が途中で終わったらもう一度
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm mingw-w64-ucrt-x86_64-gcc"
+$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+```
+
+最後の行はそのシェルの間だけ有効なので、恒久化するにはユーザーの
+`PATH`にこのディレクトリを追加します。MSYS2から他に要るものは
+ありません — `culebra build`のためにLLVMを入れる必要はなく、それが
+要るのはCulebra自体をソースからビルドするときだけです。
+
 ### オプション
 
 | フラグ | 説明 |

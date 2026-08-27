@@ -94,7 +94,10 @@ Part I — The Language Core
 
 Each download below always points at the newest release. The archive
 holds a single executable and the license — there is no installer and
-nothing else to put on the machine.
+nothing else to put on the machine. One subcommand is the exception:
+`culebra build` links with the host's C++ compiler, which a machine
+that has never built anything does not have
+([`deployment.md` §1](deployment.md#host-requirements)).
 
 | Platform | Download |
 |---|---|
@@ -1830,6 +1833,12 @@ also drop the Accelerate / Metal frameworks the tensor engine needs.
 ./out                                     # standalone, ~6 MB on macOS
 otool -L ./out                            # no Accelerate, no Metal, no LLVM
 ```
+
+The codegen is in-process, but the link step runs the host's C++
+compiler — Xcode's Command Line Tools on macOS, `cc` on Linux,
+mingw-w64 UCRT64 on Windows. `build` says so before it starts if the
+host has none; the per-platform list is
+[`deployment.md` §1](deployment.md#host-requirements).
 
 ### 16.1 Cross-compile
 

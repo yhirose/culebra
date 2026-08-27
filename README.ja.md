@@ -262,7 +262,10 @@ culebra build path/to/script.cul -o ./out
 ./out
 ```
 
-クロスコンパイルにも対応しています。機能軸ごとのバイナリサイズは
+リンク段だけはホストのC++コンパイラを起動します（macOSはXcode Command
+Line Tools、Linuxは`cc`、Windowsはmingw-w64のUCRT64）。それ以外は
+バイナリの中にあります。クロスコンパイルにも対応しています。ホスト側に
+必要なものと機能軸ごとのバイナリサイズは
 [`docs/deployment.ja.md`](docs/deployment.ja.md#1-standalone-バイナリビルドculebra-build)に
 あります。
 

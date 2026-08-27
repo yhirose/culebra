@@ -240,6 +240,68 @@ static std::string shq(std::string_view s) {
 #endif
 }
 
+// Link driver for `build`: `cc` on POSIX; on Windows the runtime archive is C++
+// (libstdc++/exceptions), so drive the link with mingw `g++` to pull the right
+// default libs. The produced .exe is statically linked (see win_static) so it
+// runs on a bare Windows like the driver itself.
+#ifdef _WIN32
+constexpr const char* kLinkDriver = "g++";
+#else
+constexpr const char* kLinkDriver = "cc";
+#endif
+
+// What to install when that driver isn't there. A machine that has never
+// compiled anything has none of it, and the shell's own message ("'g++' is not
+// recognized") names no fix — so `build` checks up front and says this instead.
+// Kept in step with the host-requirements table in docs/deployment.md §1.
+#ifdef _WIN32
+constexpr std::string_view kToolchainHint =
+    "the link step needs mingw-w64's g++ (UCRT64), which Windows does not "
+    "ship. In an elevated PowerShell:\n"
+    "    winget install -e --id MSYS2.MSYS2\n"
+    "    C:\\msys64\\usr\\bin\\bash.exe -lc \"pacman -Syu --noconfirm\"\n"
+    "    C:\\msys64\\usr\\bin\\bash.exe -lc \"pacman -S --noconfirm "
+    "mingw-w64-ucrt-x86_64-gcc\"\n"
+    "  then put C:\\msys64\\ucrt64\\bin on PATH.";
+#elif defined(__APPLE__)
+constexpr std::string_view kToolchainHint =
+    "the link step needs Xcode's Command Line Tools:\n"
+    "    xcode-select --install";
+#else
+constexpr std::string_view kToolchainHint =
+    "the link step drives the system `cc` (Debian/Ubuntu: sudo apt install "
+    "g++; Fedora: sudo dnf install gcc-c++).";
+#endif
+
+// Whether that driver is there to be run. macOS is the odd one out: /usr/bin/cc
+// exists without the Command Line Tools — it is a shim that offers to install
+// them — so its presence proves nothing and xcode-select answers instead.
+static bool have_link_driver() {
+#ifdef __APPLE__
+  return std::system("xcode-select -p > /dev/null 2>&1") == 0;
+#else
+#ifdef _WIN32
+  constexpr char kPathSep = ';';
+  const std::string exe = std::string(kLinkDriver) + ".exe";
+#else
+  constexpr char kPathSep = ':';
+  const std::string exe = kLinkDriver;
+#endif
+  const char* path = std::getenv("PATH");
+  if (!path) return false;
+  for (std::string_view rest(path);;) {
+    auto pos = rest.find(kPathSep);
+    auto dir = rest.substr(0, pos);
+    std::error_code ec;
+    if (!dir.empty() &&
+        std::filesystem::is_regular_file(std::filesystem::path(dir) / exe, ec))
+      return true;
+    if (pos == std::string_view::npos) return false;
+    rest.remove_prefix(pos + 1);
+  }
+#endif
+}
+
 // Where a std::system() command's chatter goes when it isn't wanted. Same split
 // as shq: cmd.exe has no /dev/null, and redirecting there makes the command
 // fail on a missing directory instead of going quiet.
@@ -791,6 +853,14 @@ int run_build(const BuildOptions& opts) {
     std::println(stderr, "culebra build: can't open '{}'", opts.input);
     return 1;
   }
+
+  // Ask before the parse and the codegen a missing linker would throw away.
+  if (!have_link_driver()) {
+    std::println(stderr, "culebra build: no C++ toolchain — {}",
+                 kToolchainHint);
+    return 1;
+  }
+
   // AOT always needs the preamble spliced in — it runs the JIT's lowering.
   std::vector<culebra::LoadedModule> modules;
   if (!load_entry_program(opts.input, *user_src, true, modules)) return 1;
@@ -1006,16 +1076,6 @@ int run_build(const BuildOptions& opts) {
     return 1;
   }
 
-  // Link driver: `cc` on POSIX; on Windows the runtime archive is C++
-  // (libstdc++/exceptions), so drive the link with mingw `g++` to pull the
-  // right default libs. The produced .exe is statically linked (below) so it
-  // runs on a bare Windows like the interpreter build.
-#ifdef _WIN32
-  const char* cc = "g++";
-#else
-  const char* cc = "cc";
-#endif
-
   // Link-DCE flag follows the *target* object format. LLVM's Triple
   // knows that "*-apple-*" is Mach-O and everything else is ELF;
   // beats a fragile substring match on the triple string.
@@ -1120,7 +1180,7 @@ int run_build(const BuildOptions& opts) {
   // feature objects, link-wide flags, then the libraries those objects need.
   // Empty parts (a flag that doesn't apply, a feature built out) drop out at
   // the join rather than leaving runs of blanks in the command.
-  std::vector<std::string> parts{cc};
+  std::vector<std::string> parts{kLinkDriver};
   if (cross) parts.push_back(std::format("--target={}", shq(opts.target)));
   if (!opts.sysroot.empty())
     parts.push_back(std::format("--sysroot={}", shq(opts.sysroot)));

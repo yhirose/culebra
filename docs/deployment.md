@@ -33,6 +33,42 @@ culebra build path/to/program.cul -o ./program
 
 The default invocation targets the host platform.
 
+### Host requirements
+
+Running a script needs nothing beside the `culebra` binary, and neither
+does `--jit` — the LLVM that compiles the code is inside it. `culebra
+build` is the one subcommand that reaches outside: the codegen is
+in-process, but the **link step drives the platform's C++ compiler**,
+which a machine that has never built anything does not have. `build`
+checks for it before compiling anything and names what to install.
+
+| Host | What the link step needs | Install |
+|---|---|---|
+| macOS | Xcode Command Line Tools — the `cc` shim in `/usr/bin` is not it, and the SDK stubs it brings are what a Mach-O links `libSystem` against | `xcode-select --install` |
+| Linux | `cc`, libstdc++ and the C runtime startup files | `sudo apt install g++` (Debian/Ubuntu), `sudo dnf install gcc-c++` (Fedora) |
+| Windows | mingw-w64 `g++` from **UCRT64** — not MSVC, not MINGW64 | MSYS2, below |
+
+Windows ships no toolchain at all, and the one it needs is specific.
+The download and the runtime archive inside it are built by MSYS2's
+UCRT64 gcc, so the link has to come from the same environment: the same
+libstdc++ ABI and the same C runtime. (The link line also asks for
+`-lstdc++exp`, where recent libstdc++ keeps the console helpers C++23
+`std::print` resolves at link time; older MinGW distributions have no
+such library.) From an elevated PowerShell:
+
+```powershell
+winget install -e --id MSYS2.MSYS2
+C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"
+C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"   # again if the first pass exits early
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm mingw-w64-ucrt-x86_64-gcc"
+$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+```
+
+The last line lasts as long as the shell; put the directory on the user
+`PATH` to keep it. Nothing else from MSYS2 is needed — LLVM does not
+have to be installed for `culebra build`, only for building Culebra
+itself from source.
+
 ### Options
 
 | Flag | Description |
