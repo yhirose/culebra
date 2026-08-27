@@ -350,6 +350,7 @@ A `Chunk` carries, besides `code`:
 | `slot_rank`, `slot_cell_rank` | declaration order (release ladders walk newest-first) and, per slot, when it became a cell — an index can be a temporary early on and a captured binding's cell later |
 | `cleanups`, `temp_points`/`temp_slots`, `defer_mark_slot`, `owned_depths` | the unwind tables (§5.5) |
 | `call_argpos`, `kwcalls`, `arity_checks`, `name_tables` | per-call argument positions, keyword-call layouts, built-in arity arms, class method-name tables |
+| `call_targets` | per call instruction, the one function chunk its callee was resolved to (§5.3) |
 
 ### 5.2 Ownership in the instruction stream
 
@@ -392,6 +393,28 @@ new closure's captures from the callee chunk's `capture_src_slots`.
 | exceptions and defer | `Throw` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` | §5.5; `OwnedMark`/`OwnedExit` bracket a scope on the owned-resource stack for deterministic `drop` |
 | strings and output | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | interpolation, and the `println(<one arg>)` peephole |
 | sessions and debug | `ReplCell` `ReplBind` `DbgStmt` | §8.1, §8.3 |
+
+**A callee the compiler can name.** A `let name = fn …` its statement
+list declares once is bound to that literal for good: it takes no `mut`,
+nothing can rebind it, and the one thing that could change it is a
+second declaration of the same name in the same scope. The compiler
+tracks that as `Binding::known_chunk` — a capture inherits it, since the
+cell it borrows is the one that binding owns, and a later declaration
+writing that cell strikes what was resolved through it — and records the
+answer per call instruction in `call_targets`. Only the code is static:
+the closure still rides the register, because its captures are the
+caller's. Both consumers then skip the same three things — the
+`TAG_FUNC` gate with its two cold probes, the parameter-meta lookup
+behind `check_pos_count_cls` (the cap is the callee chunk's and the
+positional count is the site's, so the answer is a compile-time one),
+and the `fn_ptr` indirection. The executor enters `run_frame` on the
+named chunk; the lowering emits a direct call to that chunk's function.
+
+The analysis has no run-time fallback: a resolved site does not test
+what it was handed. What checks it is an `assert` in the executor's
+resolved arm, against the closure that actually turns up — so the assert
+lane (§10, `just test-assert` and CI's linux-assert job) runs the whole
+sweep with the prediction armed, and a release build pays nothing.
 
 ### 5.4 Built-in methods are a table
 
@@ -821,6 +844,17 @@ the assert lane) are described with the collector in `memory.md` §5–6.
 - **Built-in methods are data.** A table row per `(name, argc)` keeps the
   reject decision, the executor and the lowering on one definition
   (§5.4).
+- **A named callee buys the dispatch, not the body.** Resolving a call
+  to one chunk (§5.3) takes about a fifth off a monomorphic call on
+  `--jit`, and a few percent on the executor. It does not get the callee
+  inlined: at `-O2` the cost model declines a body that carries its own
+  landing pads, and forcing the inline measures the same, because what
+  remains per call is opaque runtime helpers — the call-position
+  publish, the recursion counter's enter/leave, the owned-scope bracket,
+  and the argument's retain/release pair — which SROA cannot cancel
+  across a call to an external symbol. The `fn name` declaration form is
+  not resolved at all: its cell holds the multimethod dispatcher, and
+  the body closure lives only in the registry.
 - **Sessions are cells, not a second name resolver.** The REPL, the test
   host, the embedding API and the debugger's `evaluate` all reuse the
   same mechanism (§8.1).

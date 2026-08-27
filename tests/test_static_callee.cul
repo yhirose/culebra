@@ -1,0 +1,87 @@
+# A `let name = fn …` the statement list declares once is bound to that
+# literal for good, so the compiler names the code every call to it reaches
+# (Chunk::call_targets). Nothing about the call becomes static except the
+# code: the closure, its captures, and every check and error the callee
+# raises stay exactly where they were.
+
+let plus = fn (a, b) {
+  a + b
+}
+assert_eq(plus(1, 2), 3)
+
+# Immediately invoked: the literal is its own callee.
+assert_eq((fn (x) { x * 2 })(21), 42)
+
+# The recursion handle, and the literal's own name, are the running frame.
+let count_down = fn (n) {
+  n > 0 ? fn(n - 1) : 'floor'
+}
+assert_eq(count_down(3), 'floor')
+
+let by_name = fn (n) {
+  n > 0 ? by_name(n - 1) : 'floor'
+}
+assert_eq(by_name(3), 'floor')
+
+# --- A captured name a later declaration replaces ---
+# The second `let` writes the cell the first one owns, so the closure built
+# between them reads the new function — what it calls is not settled by
+# where it was written.
+let which = fn () { 'first' }
+let ask = fn () { which() }
+assert_eq(ask(), 'first')
+let which = fn () { 'second' }
+assert_eq(ask(), 'second')
+
+# The same through a `fn` declaration, which binds a dispatcher rather than
+# the literal's own closure.
+let kind = fn (v) { 'literal' }
+let ask_kind = fn (v) { kind(v) }
+assert_eq(ask_kind(1), 'literal')
+fn kind(v: Long) {
+  'declared'
+}
+assert_eq(ask_kind(1), 'declared')
+
+# A shadow in a nested scope is a binding of its own, not a rewrite.
+let outer = fn () { 'outer' }
+let shadowing = fn () {
+  let outer = fn () { 'inner' }
+  outer()
+}
+assert_eq(shadowing(), 'inner')
+assert_eq(outer(), 'outer')
+
+# --- The callee's own errors ---
+# Arity, reported against the callee's parameter names at the call.
+let short_call = try {
+  plus(1)
+  nil
+} catch e {
+  e
+}
+assert_eq(short_call.kind, 'ArityError')
+assert_true(short_call.message.contains('b'))
+
+# A keyword-only parameter cannot be filled positionally. The guard runs
+# ahead of the callee's frame, so its parameters never bind.
+let kw_only = fn (x, *, y) {
+  x + y
+}
+assert_eq(kw_only(1, y: 2), 3)
+let too_many = try {
+  kw_only(1, 2)
+  nil
+} catch e {
+  e
+}
+assert_eq(too_many.kind, 'TypeError')
+assert_true(too_many.message.contains('positional'))
+
+# A `mut` binding is a run-time question, so nothing is resolved through it.
+mut swap = fn () { 'a' }
+assert_eq(swap(), 'a')
+swap = fn () { 'b' }
+assert_eq(swap(), 'b')
+
+IO.inspect('test_static_callee OK')

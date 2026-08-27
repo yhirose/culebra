@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -2453,6 +2454,18 @@ struct Chunk {
   // expression rather than at the call. Entries only exist for calls that
   // pass arguments.
   std::vector<std::pair<uint32_t, std::vector<int64_t>>> call_argpos;
+  // The function chunk each Call / CallM was resolved to, indexed by the
+  // instruction, -1 where the callee stays a run-time question. A resolved
+  // callee is a name bound once, by a `fn` literal, and never rebound. Only
+  // the CODE is static — the closure still rides the register, since its
+  // captures are the caller's business — so a resolved site skips the
+  // Function gate, answers check_pos_count_cls from the chunk's own
+  // signature, and reaches the body without the fn_ptr indirection: the
+  // executor enters the frame directly and the lowering emits a direct
+  // call. Indexed rather than a sorted side table like call_argpos: the
+  // executor's dispatch loop asks once per call, and the answer has to
+  // cost less than what it saves. Empty when nothing resolved.
+  std::vector<int32_t> call_targets;
   // One per CallKw: how its register run splits into positionals, keyword
   // values and `**` operands, plus the keyword names the resolver binds them
   // by — interned into this chunk's str_arena, so the executor hands the
@@ -2502,6 +2515,12 @@ inline const std::vector<int64_t>* chunk_argpos_at(const Chunk& c, size_t ix) {
   if (it == c.call_argpos.end() || it->first != static_cast<uint32_t>(ix))
     return nullptr;
   return &it->second;
+}
+
+// The function chunk the call at `ix` was resolved to, or -1 when its callee
+// stays a run-time question (Chunk::call_targets).
+inline int32_t chunk_call_target_at(const Chunk& c, size_t ix) {
+  return ix < c.call_targets.size() ? c.call_targets[ix] : -1;
 }
 
 // Did slot `s` already own a cell where a cleanup step with this many cells
@@ -2614,6 +2633,17 @@ struct VmProgram {
   // statements compiled from it (the stdlib prologues get none), so one path
   // per program answers "where is this frame stopped".
   std::string source_path;
+  // Compiler scratch, cleared before the program is handed back: where each
+  // resolved call site landed, keyed by the cell its callee traces back to
+  // (Binding::known_cell). A capture chain ends at the cell the declaring
+  // frame owns, so every site a name's value reaches — however deep — is
+  // under one key, and a re-declaration writing that cell strikes them all.
+  struct CallSiteRef {
+    int32_t chunk;
+    uint32_t pc;
+  };
+  std::map<int64_t, std::vector<CallSiteRef>> resolved_by_cell;
+  int64_t next_known_cell = 0;
 };
 
 // Build the keyword-resolver's view of every chunk. Called once, before the
@@ -3113,15 +3143,19 @@ class Compiler {
     main.chunk_.suppress_frame_drop = true;
     main.finalize_chunk();
     prog.chunks[0] = std::move(main.chunk_);
+    // The revocation bookkeeping dies with the compile: the chunks now carry
+    // every answer either consumer reads.
+    prog.resolved_by_cell.clear();
     return prog;
   }
 
   Compiler(VmProgram& prog, FnAnalysis& analysis, bool in_function,
-           const FuncInfo* info)
+           const FuncInfo* info, int32_t chunk_idx = 0)
       : prog_(prog),
         analysis_(analysis),
         in_function_(in_function),
-        info_(info) {}
+        info_(info),
+        chunk_idx_(chunk_idx) {}
 
   struct Binding {
     std::string name;
@@ -3167,6 +3201,18 @@ class Compiler {
     // Where the name became visible, for Chunk::SlotDebug. Set by
     // push_binding, the one door into a scope.
     uint32_t debug_start = 0;
+    // The function chunk every read of this name yields a closure over, or
+    // -1 where the value is a run-time question. Granted only to a binding
+    // written exactly once, by the `fn` literal its declaration compiled
+    // (grant_known_chunk); a capture inherits it, since the cell it borrows
+    // is the very one that binding owns.
+    int32_t known_chunk = -1;
+    // Which cell that value lives in, program-wide (-1 for a plain slot).
+    // A re-declaration of the same name in the same scope writes THAT cell
+    // rather than minting a second one, so the closures built between the
+    // two declarations would call the first function's code — the id is how
+    // the second one finds the sites it invalidates (revoke_known_chunk).
+    int64_t known_cell = -1;
   };
   struct Scope {
     // A deque, not a vector: a `Binding*` from lookup / predeclared_here is
@@ -3217,6 +3263,19 @@ class Compiler {
   struct ExprResult {
     int32_t slot;
     bool owned;  // true: statement temp holding a +1; false: named slot
+    // The function chunk this expression IS, when it is a `fn` literal
+    // (-1 otherwise). What a declaration passes on to its binding, and what
+    // an immediately-invoked literal calls — see grant_known_chunk.
+    int32_t chunk = -1;
+  };
+
+  // What the call at the head of a postfix chain reaches, when the compiler
+  // can name it: the `fn` literal the head expression IS, or a binding bound
+  // once to one (Binding::known_chunk). `cell` is where that value lives, so
+  // a later declaration overwriting it can strike the site (head_callee).
+  struct StaticCallee {
+    int32_t chunk;
+    int64_t cell;
   };
 
   VmProgram& prog_;
@@ -3233,6 +3292,10 @@ class Compiler {
   Debug debug_ = Debug::Off;
   const FuncInfo* info_;  // this chunk's analysis (captured_locals gate)
   Chunk chunk_;
+  // Where `chunk_` will land in prog_.chunks — reserved before the body
+  // compiles, so a resolved call site can name the chunk it sits in while
+  // that chunk is still being built.
+  int32_t chunk_idx_ = 0;
   // A deque for the same reason Scope::bindings is one, one level up: a
   // vector reallocating on push_scope relocates every Scope (their deques'
   // move constructors are not noexcept, so it copies them), and a `Binding*`
@@ -3475,6 +3538,60 @@ class Compiler {
     }
     chunk_.call_argpos.emplace_back(static_cast<uint32_t>(ix),
                                     std::move(packed));
+  }
+
+  // `b` reads as a closure over `chunk` for as long as it is in scope: its
+  // declaration is the only write, and it is the `fn` literal just
+  // compiled. A binding whose value is a run-time question declines —
+  // reassignment (`mut`, or a conditional arm's), a REPL session cell the
+  // next line can refill, and a lazy forward reference whose sentinel a
+  // read still has to test.
+  void grant_known_chunk(Binding& b, int32_t chunk) {
+    if (chunk < 0 || b.is_mut || b.session || b.lazy || b.conditional ||
+        b.shadowed_builtin || b.awaits_implicit || b.mut_slot >= 0)
+      return;
+    b.known_chunk = chunk;
+    if (b.is_cell) b.known_cell = prog_.next_known_cell++;
+  }
+
+  // A second declaration of the same name in this scope writes the cell the
+  // first one owns, so a site resolved through it may now call the wrong
+  // code. Strike every one of them — including the sites that ran before
+  // the re-declaration and were right to resolve, since telling those apart
+  // means knowing whether a loop wraps both.
+  void revoke_known_chunk(Binding& b) {
+    if (b.known_cell >= 0) {
+      auto it = prog_.resolved_by_cell.find(b.known_cell);
+      if (it != prog_.resolved_by_cell.end()) {
+        for (const auto& s : it->second) call_targets_of(s.chunk)[s.pc] = -1;
+        prog_.resolved_by_cell.erase(it);
+      }
+    }
+    b.known_chunk = -1;
+    b.known_cell = -1;
+  }
+
+  // Where a resolved site's entry lives. A cell only ever reaches sites in
+  // the chunk that declared it — still being built, so its table is
+  // `chunk_` — and in the nested chunks that captured it, which finished
+  // and moved into the program before the re-declaration could run.
+  std::vector<int32_t>& call_targets_of(int32_t chunk) {
+    return chunk == chunk_idx_
+               ? chunk_.call_targets
+               : prog_.chunks[static_cast<size_t>(chunk)].call_targets;
+  }
+
+  // Record that the call at `ix` reaches a named chunk, under the cell its
+  // callee traces back to (-1 for a plain slot, which no re-declaration can
+  // reach).
+  void record_call_target(size_t ix, StaticCallee target) {
+    if (target.chunk < 0) return;
+    if (chunk_.call_targets.size() <= ix)
+      chunk_.call_targets.resize(ix + 1, -1);
+    chunk_.call_targets[ix] = target.chunk;
+    if (target.cell >= 0)
+      prog_.resolved_by_cell[target.cell].push_back(
+          {chunk_idx_, static_cast<uint32_t>(ix)});
   }
 
   // Runtime string layout via _str_init (jit_string.h — the same header +
@@ -3758,9 +3875,22 @@ class Compiler {
     emit(Op::CellNew, dst, owned_src(at, r));
   }
 
-  // Reassignment through a cell binding (own or captured).
+  // Every write into an existing cell — a reassignment, and every
+  // declaration form that fills the cell a forward reference already
+  // minted (`fn`, a decorated `fn`, a class, an enum).
   void store_cell(const peg::Ast& at, int32_t dst, ExprResult r) {
+    invalidate_cell(dst);
     emit(Op::CellSet, dst, owned_src(at, r));
+  }
+
+  // A write to a cell a binding was resolved through invalidates what was
+  // resolved: the closures already holding that cell now reach other code.
+  // `CellNew` needs no such step — its slot is freshly allocated for a
+  // binding that does not exist yet.
+  void invalidate_cell(int32_t slot) {
+    for (auto& sc : scopes_)
+      for (auto& b : sc.bindings)
+        if (b.slot == slot && b.known_chunk >= 0) revoke_known_chunk(b);
   }
 
   // A read of a cell binding: the value comes out retained, so the result
@@ -4637,7 +4767,7 @@ class Compiler {
     int32_t t = alloc_temp(ast);
     emit(Op::MultifnReg, t, cls, into, idx);
     forget_temp(cls);  // the registry absorbed the body's +1 (reg is nil)
-    emit(Op::CellSet, b->slot, owned_src(ast, {t, true}));
+    store_cell(ast, b->slot, {t, true});
     emit_session_decl_bind(*b, /*is_mut=*/false);
   }
 
@@ -4678,7 +4808,7 @@ class Compiler {
     const Binding* b = lookup(name);
     if (!b || !b->is_cell)
       reject(ast, std::format("fn '{}' declared here", name));
-    emit(Op::CellSet, b->slot, owned_src(ast, {val, true}));
+    store_cell(ast, b->slot, {val, true});
     emit_session_decl_bind(*b, /*is_mut=*/false);
   }
 
@@ -5097,7 +5227,7 @@ class Compiler {
     // The name binds what the decorators return — the class object itself when
     // they hand it back, as `@mark` does, and anything else when they do not.
     cls = apply_decorators(ast, dec_end, cls);
-    emit(Op::CellSet, class_slot, owned_src(ast, {cls, true}));
+    store_cell(ast, class_slot, {cls, true});
     emit_session_decl_bind(*decl_binding, /*is_mut=*/false);
   }
 
@@ -5156,7 +5286,7 @@ class Compiler {
     if (is_packable)
       emit(Op::RegPack, kconst_str(enum_name), kconst_str(spec), 0, 1);
     obj = apply_decorators(ast, dec_end, obj);
-    emit(Op::CellSet, enum_slot, owned_src(ast, {obj, true}));
+    store_cell(ast, enum_slot, {obj, true});
     emit_session_decl_bind(*decl_binding, /*is_mut=*/false);
   }
 
@@ -5207,7 +5337,7 @@ class Compiler {
                              int32_t body_chunk) {
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();
-    Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
+    Compiler fc(prog_, analysis_, /*in_function=*/true, info_, idx);
     fc.repl_ = repl_;
     fc.debug_ = debug_;
     fc.stamp(ast);
@@ -5259,13 +5389,28 @@ class Compiler {
     std::vector<bool> muts;
     std::vector<bool> lazys;
     std::vector<bool> shadowed_builtins;  // unbound cell => the stdlib global
+    // The chunk the captured cell's value is known to hold, and that cell's
+    // identity — a capture of a capture keeps the original's, so every site
+    // stays reachable from the one cell a re-declaration would overwrite.
+    std::vector<int32_t> known_chunks;
+    std::vector<int64_t> known_cells;
 
-    void push(int32_t slot, bool is_mut = false, bool lazy = false,
-              bool shadowed_builtin = false) {
+    // A capture with nothing behind it (a sentinel cell): every flag off.
+    void push(int32_t slot) {
       slots.push_back(slot);
-      muts.push_back(is_mut);
-      lazys.push_back(lazy);
-      shadowed_builtins.push_back(shadowed_builtin);
+      muts.push_back(false);
+      lazys.push_back(false);
+      shadowed_builtins.push_back(false);
+      known_chunks.push_back(-1);
+      known_cells.push_back(-1);
+    }
+    void push(const Binding& b) {
+      slots.push_back(b.slot);
+      muts.push_back(b.is_mut);
+      lazys.push_back(b.lazy);
+      shadowed_builtins.push_back(b.shadowed_builtin);
+      known_chunks.push_back(b.known_chunk);
+      known_cells.push_back(b.known_cell);
     }
   };
   // A capture with nothing to capture: a cell holding `v`, in a slot shared
@@ -5326,7 +5471,7 @@ class Compiler {
       // Same reason a read refills it: MakeClosure may sit in a branch the
       // slot's own ReplCell does not dominate.
       ensure_session_slot(*b);
-      caps.push(b->slot, b->is_mut, b->lazy, b->shadowed_builtin);
+      caps.push(*b);
     }
     return caps;
   }
@@ -5353,6 +5498,13 @@ class Compiler {
     try {
       return compile_fn_chunk_impl(ast, params, body, mo);
     } catch (const Unsupported& u) {
+      // The chunks the abandoned attempt appended go away, and with them
+      // any call site it resolved: the refs kept for revocation must not
+      // outlive the chunks they index.
+      for (auto& [cell, sites] : prog_.resolved_by_cell)
+        std::erase_if(sites, [&](const auto& s) {
+          return static_cast<size_t>(s.chunk) >= mark;
+        });
       prog_.chunks.resize(mark);
       return emit_poison_chunk(ast, u);
     }
@@ -5366,7 +5518,7 @@ class Compiler {
   int32_t emit_poison_chunk(const peg::Ast& ast, const Unsupported& u) {
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();
-    Compiler fc(prog_, analysis_, /*in_function=*/true, info_);
+    Compiler fc(prog_, analysis_, /*in_function=*/true, info_, idx);
     fc.repl_ = repl_;
     fc.debug_ = debug_;
     fc.chunk_.variadic = true;
@@ -5390,7 +5542,7 @@ class Compiler {
 
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
-    Compiler fc(prog_, analysis_, /*in_function=*/true, &info);
+    Compiler fc(prog_, analysis_, /*in_function=*/true, &info, idx);
     fc.repl_ = repl_;
     fc.debug_ = debug_;
     fc.stamp(ast);
@@ -5571,13 +5723,17 @@ class Compiler {
          info.own_name_source == FuncInfo::OwnNameSource::Closure))
       fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
     if (info.uses_fn) {
-      fc.push_binding({"fn", fc.chunk_.fn_slot, false});
+      Binding& fnb = fc.push_binding({"fn", fc.chunk_.fn_slot, false});
       // A method's `fn` IS the bound wrapper (interp: the handle a method
       // call binds), so recursion and any escapee keep the original
       // receiver. The cache makes repeated reads compare equal and leaves
       // exactly one +1 for the frame to release.
       if (fc.chunk_.self_slot >= 0)
         fc.chunk_.fn_bound_slot = fc.alloc_slot(ast, "(fn.bound)");
+      // The recursion handle is this frame's own closure, so its code is
+      // this chunk. Where the wrapper stands in, a read yields that
+      // instead — compile_call resolves the direct `fn(...)` call itself.
+      if (fc.chunk_.fn_bound_slot < 0) fc.grant_known_chunk(fnb, idx);
     }
     fc.establish_frame_defer_mark(ast, info);
     fc.establish_frame_owned_mark(ast);
@@ -5608,7 +5764,8 @@ class Compiler {
       using Src = FuncInfo::OwnNameSource;
       bool captured = info.captured_locals.contains(info.own_name);
       if (info.own_name_source == Src::Closure && !captured) {
-        fc.push_binding({info.own_name, fc.chunk_.fn_slot, false});
+        fc.grant_known_chunk(
+            fc.push_binding({info.own_name, fc.chunk_.fn_slot, false}), idx);
       } else {
         int32_t cslot = fc.alloc_cell_slot(ast, info.own_name);
         {
@@ -5625,9 +5782,13 @@ class Compiler {
             fc.emit(Op::CellNew, cslot, t);  // nils t; the sweep is a no-op
           }
         }
-        fc.push_binding({info.own_name, cslot, /*is_mut=*/false,
-                         /*is_cell=*/true,
-                         /*lazy=*/info.own_name_source != Src::Closure});
+        Binding& ob = fc.push_binding(
+            {info.own_name, cslot, /*is_mut=*/false, /*is_cell=*/true,
+             /*lazy=*/info.own_name_source != Src::Closure});
+        // A literal's own `let` name reads as the very closure running the
+        // frame; a dispatch's or a class member's is the dispatcher/class,
+        // which the lazy flag already keeps out of grant_known_chunk.
+        if (info.own_name_source == Src::Closure) fc.grant_known_chunk(ob, idx);
       }
     }
     for (const auto& pr : promos) {
@@ -5651,6 +5812,8 @@ class Compiler {
       }
       Binding cap{info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]};
       cap.shadowed_builtin = caps.shadowed_builtins[i];
+      cap.known_chunk = caps.known_chunks[i];
+      cap.known_cell = caps.known_cells[i];
       fc.push_binding(std::move(cap));
     }
     if (self_cap >= 0) {
@@ -5962,7 +6125,8 @@ class Compiler {
       // built above hold it, so the declaration fills that cell instead
       // of minting a second one, and the binding stops being lazy.
       if (Binding* pre = predeclared_here(name)) {
-        store_cell(*tgt, pre->slot, compile_assign_rhs(ast, av));
+        auto rhs = compile_assign_rhs(ast, av);
+        store_cell(*tgt, pre->slot, rhs);
         slot_rank_[pre->slot] = next_rank_++;  // released as declared here
         emit_session_decl_bind(*pre, decl_mut);
         // A conditional binding is shared by every arm that declares the
@@ -5974,6 +6138,7 @@ class Compiler {
         else
           pre->is_mut = decl_mut;
         settle_predeclared(*pre);
+        grant_known_chunk(*pre, rhs.chunk);
         return read_binding(*tgt, *pre);
       }
       // Re-declaring a captured name in the same scope writes the cell the
@@ -5981,10 +6146,12 @@ class Compiler {
       // overwrites the environment's entry, so a closure built before the
       // second declaration reads its value (probed on both backends).
       if (Binding* held = captured_here(name)) {
-        store_cell(*tgt, held->slot, compile_assign_rhs(ast, av));
+        auto rhs = compile_assign_rhs(ast, av);
+        store_cell(*tgt, held->slot, rhs);
         slot_rank_[held->slot] = next_rank_++;  // redeclared here
         emit_session_decl_bind(*held, decl_mut);
         held->is_mut = decl_mut;
+        grant_known_chunk(*held, rhs.chunk);
         return read_binding(*tgt, *held);
       }
       // A REPL line's top-level declaration binds in the session, so the
@@ -6005,12 +6172,14 @@ class Compiler {
       }
       bool cell = info_->captured_locals.contains(name);
       int32_t slot = cell ? alloc_cell_slot(*tgt, name) : alloc_slot(*tgt, name);
+      auto rhs = compile_assign_rhs(ast, av);
       if (cell) {
-        store_new_cell(*tgt, slot, compile_assign_rhs(ast, av));
+        store_new_cell(*tgt, slot, rhs);
       } else {
-        store_into(slot, compile_assign_rhs(ast, av), /*dst_is_fresh=*/true);
+        store_into(slot, rhs, /*dst_is_fresh=*/true);
       }
       push_binding({name, slot, decl_mut, cell});
+      grant_known_chunk(scopes_.back().bindings.back(), rhs.chunk);
       return read_binding(*tgt, scopes_.back().bindings.back());
     }
     const Binding* b = lookup_or_session(*tgt, name);
@@ -6659,6 +6828,15 @@ class Compiler {
     return !is_kwarg(a0) && !is_kwarg_splat(a0);
   }
 
+  StaticCallee head_callee(const peg::Ast& head, const ExprResult& res) {
+    using namespace peg::udl;
+    if (res.chunk >= 0) return {res.chunk, -1};
+    if (head.tag != "IDENTIFIER"_) return {-1, -1};
+    const Binding* b = lookup(head.token);
+    if (!b) return {-1, -1};
+    return {b->known_chunk, b->known_cell};
+  }
+
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
   // `x!!`, and their compositions (`n[i][j]`, `f()[k]`, `Math.abs(-3).nope`),
   // folded left to right over one rolling result — the same walk
@@ -6690,11 +6868,17 @@ class Compiler {
                          : compile_expr(*ast.nodes[0]);
     for (size_t i = 1; i < ast.nodes.size(); ++i) {
       const auto& post = *ast.nodes[i];
-      if (post.original_tag == "ARGUMENTS"_)
-        res = i == 1 && fn_direct
-                  ? compile_self_call_step(ast, post, res)
-                  : compile_call_step(ast, post, res);
-      else if (post.original_tag == "INDEX"_)
+      if (post.original_tag == "ARGUMENTS"_) {
+        // Only the head's own call reaches a callee the compiler can name —
+        // `f()()` calls whatever the first call returned. A direct `fn(...)`
+        // re-enters the very chunk it runs in.
+        StaticCallee tgt{-1, -1};
+        if (i == 1)
+          tgt = fn_direct ? StaticCallee{chunk_idx_, -1}
+                          : head_callee(*ast.nodes[0], res);
+        res = i == 1 && fn_direct ? compile_self_call_step(ast, post, res, tgt)
+                                  : compile_call_step(ast, post, res, tgt);
+      } else if (post.original_tag == "INDEX"_)
         res = compile_index_read(ast, post, res);
       else if (post.original_tag == "SAFE_INDEX"_) {
         nil_jumps.push_back(emit(Op::JumpIfNil, res.slot));
@@ -7365,7 +7549,8 @@ class Compiler {
   // owned temps (the JitFn ABI's arg slab), one Call op. Evaluation order
   // is callee first, then args left to right — both backends' order.
   ExprResult compile_call_step(const peg::Ast& ast, const peg::Ast& args,
-                               ExprResult callee) {
+                               ExprResult callee,
+                               StaticCallee target = {-1, -1}) {
     if (has_kwargs(args))
       return compile_kwargs_call(ast, args, callee.slot, nullptr);
     int32_t argc = static_cast<int32_t>(args.nodes.size());
@@ -7376,6 +7561,7 @@ class Compiler {
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(ast);
     size_t ix = emit(Op::Call, t, callee.slot, base, argc);
+    record_call_target(ix, target);
     std::vector<const peg::Ast*> asts;
     for (const auto& a : args.nodes) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
@@ -7411,7 +7597,8 @@ class Compiler {
   // receiver at its head — so this is compile_property_call's tail with the
   // callee taken from the `fn` slot instead of a property read.
   ExprResult compile_self_call_step(const peg::Ast& at, const peg::Ast& args,
-                                    ExprResult callee) {
+                                    ExprResult callee,
+                                    StaticCallee target = {-1, -1}) {
     ExprResult recv{chunk_.self_slot, false};
     if (has_kwargs(args))
       return compile_kwargs_call(at, args, callee.slot, &recv);
@@ -7425,6 +7612,7 @@ class Compiler {
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(at);
     size_t ix = emit(Op::CallM, t, callee.slot, base, argc);
+    record_call_target(ix, target);
     std::vector<const peg::Ast*> asts;
     for (const auto& a : args.nodes) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
@@ -8617,7 +8805,7 @@ class Compiler {
             compile_fn_chunk(ast, ast.nodes[0].get(), *ast.nodes.back());
         int32_t t = alloc_temp(ast);
         emit(Op::MakeClosure, t, idx);
-        return {t, true};
+        return {t, true, idx};
       }
       case "CALL"_: {
         if (is_direct_println(ast)) {
@@ -8700,9 +8888,12 @@ inline std::string dump(const Chunk& c) {
   for (size_t i = 0; i < c.code.size(); ++i) {
     const auto& in = c.code[i];
     auto [line, col] = chunk_pos_at(c, i);
-    out += std::format("{:4}: {:<12} {:4} {:4} {:4} {:4}   ; {}:{}\n", i,
+    out += std::format("{:4}: {:<12} {:4} {:4} {:4} {:4}   ; {}:{}", i,
                        kNames[static_cast<size_t>(in.op)], in.a, in.b, in.c,
                        in.d, line, col);
+    if (int32_t t = chunk_call_target_at(c, i); t >= 0)
+      out += std::format("  -> chunk {}", t);
+    out += "\n";
   }
   return out;
 }
@@ -9268,6 +9459,41 @@ struct Exec {
           line, col, static_cast<int64_t>(ap->size()), ap->data());
     else
       culebra_runtime_set_call_site(line, col);
+  }
+
+  // The frame a resolved call site enters (Chunk::call_targets): the
+  // Function gate and the keyword-only guard both have static answers and
+  // the chunk to run is known, so neither the cold probes nor the closure's
+  // own fn_ptr is consulted. `run` is the receiver-and-arguments run the
+  // callee consumes, nil'd on every exit as the dynamic arms do.
+  static JitValue run_resolved(const VmProgram& p, int32_t tgt,
+                               const JitValue& callee, JitValue self,
+                               JitValue* run, int32_t n_run, int32_t argc,
+                               int64_t line, int64_t col) {
+    assert(call_target_holds(p, callee, tgt));
+    culebra::throw_if_too_many_positionals(
+        p.chunks[static_cast<size_t>(tgt)].first_kw_only_idx, argc, line, col);
+    struct Drain {
+      JitValue* run;
+      int32_t n;
+      ~Drain() {
+        for (int32_t i = 0; i < n; ++i) run[i] = JitValue{TAG_NIL, 0};
+      }
+    } drain{run, n_run};
+    return run_frame(p, tgt, reinterpret_cast<JitClosure*>(callee.data), argc,
+                     argc ? run + (n_run - argc) : nullptr,
+                     static_cast<int8_t>(self.tag), self.data);
+  }
+
+  // Is the closure a resolved site was handed the chunk the compiler named?
+  // A resolved site does not ask at run time — the analysis has no fallback
+  // — so this is what the assert lane checks, over the same sweep every
+  // other build runs (`just test-assert`, and CI's linux-assert job).
+  static bool call_target_holds(const VmProgram& p, const JitValue& callee,
+                                int32_t tgt) {
+    if (callee.tag != TAG_FUNC) return false;
+    const auto* d = closure_desc(reinterpret_cast<JitClosure*>(callee.data));
+    return d && d->prog == &p && d->chunk == tgt;
   }
 
   // The dispatch loop proper: runs until Ret/Halt, or unwinds with `pc`
@@ -10367,6 +10593,12 @@ struct Exec {
           publish_call_site(c, pc, line, col);
           JitValue target = callee;
           JitValue self{TAG_NO_SELF, 0};
+          if (int32_t tgt = chunk_call_target_at(c, pc); tgt >= 0) {
+            regs[in.a] = run_resolved(p, tgt, callee, self, &regs[in.c], in.d,
+                                      in.d, line, col);
+            ++pc;
+            break;
+          }
           if (target.tag != TAG_FUNC) {
             // The two cold-path probes, in the JIT's order: a callable
             // instance (`obj(args)` with a `__call__` method, own or a
@@ -10429,6 +10661,12 @@ struct Exec {
           publish_call_site(c, pc, line, col);
           JitValue target = callee;
           JitValue self = regs[in.c];
+          if (int32_t tgt = chunk_call_target_at(c, pc); tgt >= 0) {
+            regs[in.a] = run_resolved(p, tgt, callee, self, &regs[in.c],
+                                      in.d + 1, in.d, line, col);
+            ++pc;
+            break;
+          }
           if (target.tag != TAG_FUNC) {
             // A method value that is itself a callable instance
             // (`{m: Adder.new(1)}.m(41)`): it becomes both the callee and

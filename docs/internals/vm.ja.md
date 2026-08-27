@@ -340,6 +340,7 @@ int32_t a, b, c, d; }`）。レジスタはフレームのslotであり、それ
 | `slot_rank`、`slot_cell_rank` | 宣言順（release ladderは新しい方から歩く）と、各slotがいつcellになったか — インデックスは初めは一時値で、後にcaptureされた束縛のcellになることがある |
 | `cleanups`、`temp_points`/`temp_slots`、`defer_mark_slot`、`owned_depths` | unwindテーブル（§5.5） |
 | `call_argpos`、`kwcalls`、`arity_checks`、`name_tables` | 呼び出しごとの引数位置、キーワード呼び出しのレイアウト、組み込みのarity腕、クラスのメソッド名テーブル |
+| `call_targets` | 呼び出し命令ごとに、その呼び先が解決された唯一の関数chunk（§5.3） |
 
 ### 5.2 命令列の中の所有権
 
@@ -382,6 +383,28 @@ captureされた変数は6つのop — `CellNew`、`CellGet`、`CellSet`、
 | 例外とdefer | `Throw` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` | §5.5。`OwnedMark`/`OwnedExit`は決定的`drop`のためowned-resourceスタック上でスコープを括る |
 | 文字列と出力 | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | 補間、および`println(<引数1個>)`のpeephole |
 | セッションとデバッグ | `ReplCell` `ReplBind` `DbgStmt` | §8.1、§8.3 |
+
+**コンパイラが名指しできる呼び先。** その文リストが1度だけ宣言する
+`let name = fn …`は、その関数リテラルに束縛されたままである:
+`mut`を取らず、再代入もできず、変えうるものは同じスコープでの同名の
+2度目の宣言だけである。コンパイラはこれを`Binding::known_chunk`として
+追跡し — captureはこれを引き継ぐ。borrowするcellはその束縛が所有する
+当のcellだからであり、後の宣言がそのcellを書き換えたときは、それを
+通して解決済みの呼び出しサイトを取り消す — 呼び出し命令ごとの答えを
+`call_targets`に記録する。静的なのはコードだけである: closure自体は
+レジスタに乗ったままで、そのcaptureは呼び手のものだからだ。両consumer
+は同じ3つを飛ばす — 2つのcold probeを伴う`TAG_FUNC`ゲート、
+`check_pos_count_cls`の背後にあるパラメータmetaの引き当て（上限は
+呼び先chunkのもの、位置引数の個数はサイトのものなので、答えは
+コンパイル時に出る）、そして`fn_ptr`の間接である。executorは名指し
+されたchunkで`run_frame`に入り、loweringはそのchunkの関数への直接
+callを出す。
+
+この解析に実行時のフォールバックは無い: 解決済みサイトは渡された値を
+検査しない。それを検査するのはexecutorの解決済み腕にある`assert`で、
+実際に現れたclosureと突き合わせる。つまりassertレーン（§10、
+`just test-assert`とCIのlinux-assertジョブ）が予測を armed にしたまま
+スイープ全体を回し、releaseビルドは何も払わない。
 
 ### 5.4 組み込みメソッドはテーブルである
 
@@ -821,6 +844,17 @@ assertレーン）はコレクタと一緒に`memory.md` §5〜6で説明され�
 - **組み込みメソッドはデータである。** `(name, argc)`ごとの
   テーブル行が、拒否の判断、executor、loweringを1つの定義の上に
   保つ（§5.4）。
+- **呼び先を名指ししても買えるのはdispatchであって本体ではない。**
+  呼び出しを1つのchunkに解決すると（§5.3）、単相呼び出しは`--jit`で
+  約1/5、executorで数%速くなる。呼び先がinlineされるようには
+  ならない: `-O2`のコストモデルは自前のlandingpadを持つ本体を断り、
+  強制的にinlineさせても数字は同じである。呼び出しごとに残るのが
+  不透明なランタイムヘルパー — 呼び出し位置のpublish、再帰カウンタの
+  enter/leave、owned scopeの括り、引数のretain/release対 — であり、
+  外部シンボルへのcallをまたいでSROAがこれらを打ち消せないからだ。
+  `fn name`の宣言形は解決対象にすらならない: そのcellが持つのは
+  マルチメソッドdispatcherで、本体closureはレジストリの中にしか
+  居ない。
 - **セッションはcellであって第二の名前解決器ではない。** REPL、
   テストホスト、embedding API、デバッガの`evaluate`はすべて同じ
   機構を再利用する（§8.1）。

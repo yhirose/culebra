@@ -644,19 +644,67 @@ struct Lowering {
             {b.getInt64(line), b.getInt64(col)});
       }
     };
+    // The tail every hand-off shares: the arg slab, the pre-call nil of the
+    // slots the callee consumes, and the ABI call. Those slots go nil BEFORE
+    // the call — the slab alloca keeps the values alive for the callee and a
+    // region's release ladder cannot double-release them on the unwind edge.
+    // The receiver pair is already loaded, since it is read from a slot this
+    // nils. Returns the call's result value.
+    auto emit_abi_call = [&](llvm::FunctionCallee callee, llvm::Value* clsPtr,
+                             llvm::Value* selfTagV, llvm::Value* selfDataV,
+                             int32_t selfSlot, int32_t argBase,
+                             int32_t argc) -> llvm::Value* {
+      IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+      llvm::Value* slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
+      if (argc > 0) {
+        auto* arrTy = ArrayType::get(j.valueType_, argc);
+        slab = eb.CreateAlloca(arrTy, nullptr, "call.args");
+        for (int32_t k = 0; k < argc; ++k)
+          b.CreateStore(load_slot(argBase + k),
+                        b.CreateConstGEP2_64(arrTy, slab, 0,
+                                             static_cast<uint64_t>(k)));
+      }
+      auto* retTmp = eb.CreateAlloca(j.valueType_, nullptr, "call.ret");
+      for (int32_t k = 0; k < argc; ++k)
+        b.CreateStore(j.make_nil(), slots[argBase + k]);
+      if (selfSlot >= 0) b.CreateStore(j.make_nil(), slots[selfSlot]);
+      j.emit_call(callee, {retTmp, clsPtr, selfTagV, selfDataV,
+                           b.getInt64(argc), slab});
+      return b.CreateLoad(j.valueType_, retTmp);
+    };
     // The JitFn hand-off, shared by Call / CallM and BMeth's user-method arm:
-    // the TAG_FUNC gate, the arg slab, and the ABI call. `selfSlot < 0` is a
-    // plain call (TAG_NO_SELF rides the receiver pair). The callee consumes
-    // the receiver and every argument on every exit, so those slots go nil
-    // BEFORE the call — the slab alloca keeps the values alive for the callee
-    // and a region's release ladder cannot double-release them on the unwind
-    // edge. Returns the call's result value.
+    // the TAG_FUNC gate and the tail above. `selfSlot < 0` is a plain call
+    // (TAG_NO_SELF rides the receiver pair). Returns the call's result value.
     auto emit_invoke = [&](llvm::Value* calleeV, int32_t selfSlot,
                            int32_t argBase, int32_t argc, int64_t line,
                            int64_t col,
-                           const std::vector<int64_t>* argpos =
-                               nullptr) -> llvm::Value* {
+                           const std::vector<int64_t>* argpos = nullptr,
+                           int32_t target = -1) -> llvm::Value* {
       publish_site(line, col, argpos);
+      // A callee the compiler named (Chunk::call_targets): its code is this
+      // module's own function, so the Function gate and the two probes have
+      // no work to do and the ABI call is direct — which is what lets the
+      // inliner see through it. The closure still rides the register: only
+      // the code is static, its captures are the caller's.
+      if (target >= 0) {
+        auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
+        // Statically resolvable too: the cap is the callee chunk's, the
+        // count is this site's. Only the throwing case emits anything, and
+        // it emits the very call the dynamic arm would have made.
+        int32_t cap = p.chunks[static_cast<size_t>(target)].first_kw_only_idx;
+        if (cap >= 0 && argc > cap)
+          j.emit_call(j.module_->getOrInsertFunction(rt::check_pos_count_cls,
+                                                     b.getVoidTy(), ptrTy,
+                                                     i64Ty, i64Ty, i64Ty),
+                      {clsPtr, b.getInt64(argc), b.getInt64(line),
+                       b.getInt64(col)});
+        auto selfV = selfSlot >= 0 ? load_slot(selfSlot) : nullptr;
+        return emit_abi_call(
+            fns[static_cast<size_t>(target)], clsPtr,
+            selfV ? j.extract_tag(selfV) : b.getInt8(TAG_NO_SELF),
+            selfV ? j.extract_data(selfV) : b.getInt64(0), selfSlot, argBase,
+            argc);
+      }
       auto tag = j.extract_tag(calleeV);
       auto* fromBB = b.GetInsertBlock();
       auto probeBB = BasicBlock::Create(j.ctx_, "call.probe", fn);
@@ -737,34 +785,15 @@ struct Lowering {
                                                  i64Ty, i64Ty),
                   {clsPtr, b.getInt64(argc), b.getInt64(line),
                    b.getInt64(col)});
-      IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-      llvm::Value* slab;
-      if (argc > 0) {
-        slab = eb.CreateAlloca(ArrayType::get(j.valueType_, argc), nullptr,
-                               "call.args");
-        for (int32_t k = 0; k < argc; ++k) {
-          auto* dstp = b.CreateConstGEP2_64(ArrayType::get(j.valueType_, argc),
-                                            slab, 0, static_cast<uint64_t>(k));
-          b.CreateStore(load_slot(argBase + k), dstp);
-        }
-      } else {
-        slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
-      }
-      auto* retTmp = eb.CreateAlloca(j.valueType_, nullptr, "call.ret");
       auto selfV = selfSlot >= 0 ? load_slot(selfSlot) : nullptr;
-      for (int32_t k = 0; k < argc; ++k)
-        b.CreateStore(j.make_nil(), slots[argBase + k]);
-      if (selfSlot >= 0) b.CreateStore(j.make_nil(), slots[selfSlot]);
-      j.emit_call(jit_fn_type(b, ptrTy), fnPtr,
-                  {retTmp, clsPtr,
-                   b.CreateSelect(ovPhi, j.extract_tag(callee0),
-                                  selfV ? j.extract_tag(selfV)
-                                        : b.getInt8(TAG_NO_SELF)),
-                   b.CreateSelect(ovPhi, j.extract_data(callee0),
-                                  selfV ? j.extract_data(selfV)
-                                        : b.getInt64(0)),
-                   b.getInt64(argc), slab});
-      return b.CreateLoad(j.valueType_, retTmp);
+      return emit_abi_call(
+          llvm::FunctionCallee(jit_fn_type(b, ptrTy), fnPtr), clsPtr,
+          b.CreateSelect(ovPhi, j.extract_tag(callee0),
+                         selfV ? j.extract_tag(selfV)
+                               : b.getInt8(TAG_NO_SELF)),
+          b.CreateSelect(ovPhi, j.extract_data(callee0),
+                         selfV ? j.extract_data(selfV) : b.getInt64(0)),
+          selfSlot, argBase, argc);
     };
 
     // The temporaries in flight at a pc die before any scope's defers run, so
@@ -3583,7 +3612,8 @@ struct Lowering {
           auto [line, col] = chunk_pos_at(c, i);
           b.CreateStore(emit_invoke(load_slot(in.b), meth ? in.c : -1,
                                     in.c + (meth ? 1 : 0), in.d, line, col,
-                                    chunk_argpos_at(c, i)),
+                                    chunk_argpos_at(c, i),
+                                    chunk_call_target_at(c, i)),
                         slots[in.a]);
           break;
         }
