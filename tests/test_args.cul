@@ -56,6 +56,62 @@ assert_eq(r_rep.files.size(), 3)
 assert_eq(r_rep.files[0], "a.txt")
 assert_eq(r_rep.files[2], "c.txt")
 
+# --- Optional positional (`positional: true` overrides the inference) ---
+let spec_opt = {
+  name: "cat",
+  args: [
+    {name: "file", positional: true, default: "-"},
+    {name: "number", short: "n", type: "Bool", default: false},
+  ],
+}
+assert_eq(Args.try_parse([], spec_opt).file, "-")
+assert_eq(Args.try_parse(["a.txt"], spec_opt).file, "a.txt")
+assert_eq(Args.try_parse(["-n"], spec_opt).file, "-")
+assert_eq(Args.try_parse(["-n"], spec_opt).number, true)
+
+# `default: nil` — optional with nothing to fall back on
+let spec_nil = {
+  name: "maybe",
+  args: [{name: "file", positional: true, default: nil}],
+}
+assert_eq(Args.try_parse([], spec_nil).file, nil)
+assert_eq(Args.try_parse(["x"], spec_nil).file, "x")
+
+# An optional positional yields to the required ones after it.
+let spec_from_to = {
+  name: "mv",
+  args: [{name: "from", positional: true, default: nil}, {name: "to"}],
+}
+let r_one = Args.try_parse(["b"], spec_from_to)
+assert_eq(r_one.from, nil)
+assert_eq(r_one.to, "b")
+let r_two = Args.try_parse(["a", "b"], spec_from_to)
+assert_eq(r_two.from, "a")
+assert_eq(r_two.to, "b")
+
+# So does a repeated one: `<files>... <dest>` leaves `dest` its token.
+let spec_cp = {
+  name: "cp",
+  args: [{name: "files", repeated: true}, {name: "dest"}],
+}
+let r_cp = Args.try_parse(["a", "b", "d"], spec_cp)
+assert_eq(r_cp.files, ["a", "b"])
+assert_eq(r_cp.dest, "d")
+let r_cp1 = Args.try_parse(["d"], spec_cp)
+assert_eq(r_cp1.files, [])
+assert_eq(r_cp1.dest, "d")
+
+# `positional: false` the other way: an option with neither short nor default
+# is a required `--out`, not a positional.
+let spec_out = {name: "need", args: [{name: "out", positional: false}]}
+assert_eq(Args.try_parse(["--out", "x"], spec_out).out, "x")
+let e_out = try {
+  Args.try_parse([], spec_out)
+} catch e {
+  e
+}
+assert_eq(e_out.message, "missing required argument 'out'")
+
 # --- Repeated option ---
 let spec_tag = {
   name: "tagged",
@@ -157,6 +213,10 @@ let help = Args.help(spec)
 assert_true(help.contains("Usage: demo"))
 assert_true(help.contains("--verbose"))
 assert_true(help.contains("--help"))
+
+# Usage brackets what may be left out.
+assert_true(Args.help(spec_opt).contains("Usage: cat [options] [<file>]"))
+assert_true(Args.help(spec_cp).contains("Usage: cp [<files>...] <dest>"))
 
 # --- Help raised by try_parse on --help ---
 let h = try {

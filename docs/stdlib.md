@@ -1871,18 +1871,29 @@ Each argument is an `Object` with these fields:
 | `default` | `Any` | (none) | default value. Marks it as optional. |
 | `doc` | `String` | `""` | help-text description |
 | `repeated` | `Bool` | `false` | collect multiple values into an `Array` |
+| `positional` | `Bool` | (inferred) | force positional (`true`) or option (`false`) |
 
 Argument **type** of `Bool` means the option is a **flag** that
 consumes no value (`--verbose` / `-v`). All other types consume the
 next token (`--count 5` / `--count=5`).
 
-An argument is **positional** unless it has `short` or `default`.
-Positionals are matched in spec order and every one of them is
-required. A `default` makes the argument an **option** instead, given
-by its long form (`--encoding utf-8`); `short` adds the one-letter form
-(`-l`). An optional *positional* is therefore not expressible — an
-argument that may be omitted carries a `default` and is spelled
-`--name value`.
+An argument is **positional** unless it has `short` or `default`, and
+**required** unless it has a `default`, is `repeated`, or is a `Bool`
+flag. `positional` states which one it is where those two rules would
+disagree: an optional positional needs a `default` to say what it is
+worth when absent, which on its own would have made it an option.
+
+```culebra
+# doctest: skip
+{name: "file", positional: true, default: "-"}   # cat [<file>]
+{name: "file", positional: true, default: nil}   # the same, nil when absent
+{name: "out", positional: false}                 # a required --out
+```
+
+Positionals are matched in spec order, but one that may be omitted
+only takes a token when more are left than the required positionals
+after it still need: `[{name: "files", repeated: true}, {name: "dest"}]`
+parses `a b d` as `files == ["a", "b"]` and `dest == "d"`.
 
 ### Example
 

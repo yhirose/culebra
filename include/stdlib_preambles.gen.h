@@ -1627,7 +1627,14 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     }
     nil
   }
+  let _is_repeated = fn (a) {
+    a.has("repeated") && a.repeated
+  }
+  # `positional` says which one it is when the inference would say the other:
+  # a positional that may be omitted carries a `default`, which on its own
+  # reads as an option.
   let _is_option = fn (a) {
+    return !a.positional if a.has("positional")
     a.has("short") || a.has("default")
   }
   let _is_positional = fn (a) {
@@ -1639,6 +1646,17 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     } else {
       "String"
     }
+  }
+  # What an argument left out of argv is worth, and whether it may be left out
+  # at all: a `default` is the value, a repeated one collects nothing, and a
+  # flag that was not passed is false.
+  let _is_optional = fn (a) {
+    a.has("default") || _is_repeated(a) || _arg_type(a) == "Bool"
+  }
+  let _missing_value = fn (a) {
+    return a.default if a.has("default")
+    return [] if _is_repeated(a)
+    false
   }
   let _format_help = fn (spec) {
     let name = if spec.has("name") {
@@ -1655,34 +1673,24 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     if doc != "" {
       parts.push("{name} - {doc}\n\n")
     }
-    let mut pos_args = []
-    let mut opt_args = []
-    let mut i = 0
-    while i < spec.args.size() {
-      let a = spec.args[i]
-      if _is_positional(a) {
-        pos_args.push(a)
-      } else {
-        opt_args.push(a)
-      }
-      i += 1
-    }
+    let pos_args = spec.args.filter(_is_positional)
+    let opt_args = spec.args.filter(_is_option)
     parts.push("Usage: {name}")
-    parts.push(" [options]") if opt_args.size() > 0
+    parts.push(" [options]") if !opt_args.empty()
     let mut j = 0
     while j < pos_args.size() {
       let a = pos_args[j]
-      if a.has("default") {
+      if _is_repeated(a) {
+        parts.push(" [<{a.name}>...]")
+      } else if _is_optional(a) {
         parts.push(" [<{a.name}>]")
-      } else if a.has("repeated") && a.repeated {
-        parts.push(" <{a.name}>...")
       } else {
         parts.push(" <{a.name}>")
       }
       j += 1
     }
     parts.push("\n")
-    if pos_args.size() > 0 {
+    if !pos_args.empty() {
       parts.push("\nArguments:\n")
       let mut k = 0
       while k < pos_args.size() {
@@ -1696,7 +1704,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
         k += 1
       }
     }
-    if opt_args.size() > 0 {
+    if !opt_args.empty() {
       parts.push("\nOptions:\n")
       let mut m = 0
       while m < opt_args.size() {
@@ -1748,6 +1756,43 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     }
     throw {kind: "ArgParseError", message: "expected subcommand"}
   }
+  # `--name[=v]` and `-n[=v]` differ only in how many dashes they carry. Puts
+  # what it read into `result`, and answers the index of the last token it took
+  # — one past `i` when the value was the next token rather than after the `=`.
+  let _take_option = fn (result, argv, i, spec, dash) {
+    let parts = argv[i].slice(dash.size(), argv[i].size()).split("=")
+    let name = parts[0]
+    let has_value = parts.size() > 1
+    let spec_a = _find_by_name(spec.args, name)
+    if spec_a == nil {
+      throw {kind: "ArgParseError", message: "unknown option '{dash}{name}'"}
+    }
+    if _arg_type(spec_a) == "Bool" && !has_value {
+      result[spec_a.name] = true
+      return i
+    }
+    let mut last = i
+    let raw = if has_value {
+      parts.slice(1, parts.size()).join("=")  # only the first `=` separates
+    } else {
+      last += 1
+      if last >= argv.size() {
+        throw {
+          kind: "ArgParseError",
+          message: "option '{dash}{name}' expects a value",
+        }
+      }
+      argv[last]
+    }
+    let v = _coerce(raw, _arg_type(spec_a), spec_a.name)
+    if _is_repeated(spec_a) {
+      result[spec_a.name] ??= []
+      result[spec_a.name].push(v)
+    } else {
+      result[spec_a.name] = v
+    }
+    last
+  }
   let _parse_impl_flat = fn (argv, spec) {
     let mut result = {}
     let mut positionals = []
@@ -1765,139 +1810,51 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
       } else if tok == "-h" || tok == "--help" {
         throw {kind: "ArgParseHelp", help: _format_help(spec)}
       } else if tok.starts_with("--") {
-        let body = tok.slice(2, tok.size())
-        let mut name = body
-        let mut explicit_value = nil
-        let mut has_value = false
-        if body.contains("=") {
-          let parts = body.split("=")
-          name = parts[0]
-          let mut v = parts[1]
-          let mut pi = 2
-          while pi < parts.size() {
-            v = "{v}={parts[pi]}"
-            pi += 1
-          }
-          explicit_value = v
-          has_value = true
-        }
-        let spec_a = _find_by_name(spec.args, name)
-        if spec_a == nil {
-          throw {kind: "ArgParseError", message: "unknown option '--{name}'"}
-        }
-        if _arg_type(spec_a) == "Bool" && !has_value {
-          result[spec_a.name] = true
-        } else {
-          let raw = if has_value {
-            explicit_value
-          } else {
-            i = i + 1
-            if i >= n {
-              throw {
-                kind: "ArgParseError",
-                message: "option '--{name}' expects a value",
-              }
-            }
-            argv[i]
-          }
-          let v = _coerce(raw, _arg_type(spec_a), spec_a.name)
-          if spec_a.has("repeated") && spec_a.repeated {
-            result[spec_a.name] ??= []
-            result[spec_a.name].push(v)
-          } else {
-            result[spec_a.name] = v
-          }
-        }
+        i = _take_option(result, argv, i, spec, "--")
       } else if tok.starts_with("-") && tok.size() > 1 {
-        let body = tok.slice(1, tok.size())
-        let mut name = body
-        let mut explicit_value = nil
-        let mut has_value = false
-        if body.contains("=") {
-          let parts = body.split("=")
-          name = parts[0]
-          let mut v = parts[1]
-          let mut pi = 2
-          while pi < parts.size() {
-            v = "{v}={parts[pi]}"
-            pi += 1
-          }
-          explicit_value = v
-          has_value = true
-        }
-        let spec_a = _find_by_name(spec.args, name)
-        if spec_a == nil {
-          throw {kind: "ArgParseError", message: "unknown option '-{name}'"}
-        }
-        if _arg_type(spec_a) == "Bool" && !has_value {
-          result[spec_a.name] = true
-        } else {
-          let raw = if has_value {
-            explicit_value
-          } else {
-            i = i + 1
-            if i >= n {
-              throw {
-                kind: "ArgParseError",
-                message: "option '-{name}' expects a value",
-              }
-            }
-            argv[i]
-          }
-          let v = _coerce(raw, _arg_type(spec_a), spec_a.name)
-          if spec_a.has("repeated") && spec_a.repeated {
-            result[spec_a.name] ??= []
-            result[spec_a.name].push(v)
-          } else {
-            result[spec_a.name] = v
-          }
-        }
+        i = _take_option(result, argv, i, spec, "-")
       } else {
         positionals.push(tok)
       }
       i += 1
     }
-    let mut pos_idx = 0
-    let mut spec_idx = 0
-    while spec_idx < spec.args.size() {
-      let a = spec.args[spec_idx]
-      if _is_positional(a) {
-        if a.has("repeated") && a.repeated {
-          result[a.name] = []
-          while pos_idx < positionals.size() {
-            let v = _coerce(positionals[pos_idx], _arg_type(a), a.name)
-            result[a.name].push(v)
-            pos_idx += 1
-          }
-        } else if pos_idx < positionals.size() {
-          result[a.name] = _coerce(positionals[pos_idx], _arg_type(a), a.name)
-          pos_idx += 1
-        }
+    # Positionals are filled in spec order, but one that may be omitted only
+    # takes a token when more are left than the required ones after it still
+    # need. That is what makes `<files>... <dest>` hand `dest` the last token
+    # instead of swallowing it, and `[from] <to>` fill `to` from a lone token.
+    let pos_specs = spec.args.filter(_is_positional)
+    let mut required_after = pos_specs.filter(|s| !_is_optional(s)).size()
+    let mut taken = 0
+    for a in pos_specs {
+      required_after -= 1 if !_is_optional(a)
+      let left = positionals.size() - taken
+      let spare = left - required_after
+      if _is_repeated(a) {
+        let mine = positionals.slice(taken, taken + Math.max(spare, 0))
+        result[a.name] = mine.map(|t| _coerce(t, _arg_type(a), a.name))
+        taken += mine.size()
+      } else if left > 0 && (spare > 0 || !_is_optional(a)) {
+        result[a.name] = _coerce(positionals[taken], _arg_type(a), a.name)
+        taken += 1
       }
-      spec_idx += 1
     }
-    if pos_idx < positionals.size() {
+    if taken < positionals.size() {
       throw {
         kind: "ArgParseError",
-        message: "unexpected positional argument '{positionals[pos_idx]}'",
+        message: "unexpected positional argument '{positionals[taken]}'",
       }
     }
     let mut k = 0
     while k < spec.args.size() {
       let a = spec.args[k]
       if !result.has(a.name) {
-        if a.has("default") {
-          result[a.name] = a.default
-        } else if a.has("repeated") && a.repeated {
-          result[a.name] = []
-        } else if _arg_type(a) == "Bool" {
-          result[a.name] = false
-        } else {
+        if !_is_optional(a) {
           throw {
             kind: "ArgParseError",
             message: "missing required argument '{a.name}'",
           }
         }
+        result[a.name] = _missing_value(a)
       }
       k += 1
     }

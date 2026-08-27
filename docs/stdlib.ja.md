@@ -1825,15 +1825,28 @@ parse / exitせずにhelp文字列だけ取得。広めのメッセージに埋�
 | `default` | `Any` | (なし) | 省略時の値。指定するとoptional。 |
 | `doc` | `String` | `""` | help用説明文 |
 | `repeated` | `Bool` | `false` | 複数指定可、`Array`で集約 |
+| `positional` | `Bool` | (推論) | `true`でpositional、`false`でoptionに固定 |
 
 `type: "Bool"`の場合は値を取らない **flag** (`--verbose` / `-v`)。それ以外
 の型は次のトークンを値として消費する (`--count 5` / `--count=5`)。
 
-`short`も`default`も無い引数は **positional** 扱い。spec順にマッチし、
-positionalは全て必須。`default`を付けた引数はpositionalではなく
-**option** になり、long形 (`--encoding utf-8`) で渡す。`short`はそれに
-1文字形 (`-l`) を足す。つまり省略可能な *positional* は表現できない —
-省略可能にしたい引数は`default`を持たせて`--name value`の形で渡す。
+`short`も`default`も無い引数は **positional** 扱い。また`default`を持つか
+`repeated`か`Bool` flagのいずれかであれば **省略可能**、そうでなければ必須。
+`positional`はこの2つの規則が食い違う場合にどちらかを明示する — 省略可能な
+positionalは「省略時の値」を言うために`default`が要るが、それだけだと
+optionと見なされてしまうため。
+
+```culebra
+# doctest: skip
+{name: "file", positional: true, default: "-"}   # cat [<file>]
+{name: "file", positional: true, default: nil}   # 同じ。省略時はnil
+{name: "out", positional: false}                 # 必須の--out
+```
+
+positionalはspec順にマッチするが、省略可能なものは「後続の必須positionalが
+必要とする数」より多くトークンが残っている時だけ受け取る。つまり
+`[{name: "files", repeated: true}, {name: "dest"}]`は`a b d`を
+`files == ["a", "b"]` / `dest == "d"`とparseする。
 
 ### 例
 

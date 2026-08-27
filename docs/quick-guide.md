@@ -763,8 +763,10 @@ entry with no receiver at all (`contains(x)` under **Set methods**,
 # doctest: skip
 spec = {
   name: 'greet',
-  options: [{name: 'times', type: 'Long', default: 1, help: 'repeat count'}],
-  positionals: [{name: 'who', help: 'who to greet'}],
+  args: [
+    {name: 'who', doc: 'who to greet'},
+    {name: 'times', type: 'Long', default: 1, doc: 'repeat count'},
+  ],
 }
 args = Args.parse(Sys.argv, spec)
 for _ in range(args.times) {
