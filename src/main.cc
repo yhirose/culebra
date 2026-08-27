@@ -140,14 +140,15 @@ void print_culebra_error(const culebra::CulebraError& e) {
 // splice_stdlib_preamble). Returns false having already reported the failure —
 // `build` and a script run differ only in what they return, so sharing this
 // keeps their diagnostics identical.
-bool load_entry_program(const string& path, std::string_view src,
-                        bool splice_preamble,
-                        std::vector<culebra::LoadedModule>& modules) {
+bool load_entry_program(
+    const string& path, std::string_view src, bool splice_preamble,
+    std::vector<culebra::LoadedModule>& modules,
+    std::vector<const culebra::BakedPreamble*>* baked = nullptr) {
   vector<string> msgs;
   culebra::ModuleLoader loader;
   try {
     modules = loader.load_program(path, src, msgs);
-    if (splice_preamble) culebra::splice_stdlib_preamble(modules);
+    if (splice_preamble) culebra::splice_stdlib_preamble(modules, baked);
   } catch (const culebra::CulebraError& e) {
     print_culebra_error(e);
     return false;
@@ -1392,7 +1393,13 @@ bool run_scripts(const Options& options) {
   // splice would make the dump name programs the user never wrote.
   bool splice = !options.print_ast;
   std::vector<culebra::LoadedModule> modules;
-  if (!load_entry_program(path, *user_src, splice, modules)) return false;
+  // The --jit lane calls the entries of the stdlib modules this binary baked,
+  // so it takes them out at the splice and never parses their source. Every
+  // other reader of this list — the executor, --ast — compiles what it gets.
+  std::vector<const culebra::BakedPreamble*> baked;
+  if (!load_entry_program(path, *user_src, splice, modules,
+                          options.jit ? &baked : nullptr))
+    return false;
   startup_profile::mark("ModuleLoader::load_program (parse)");
 
   // "Print the parsed AST instead of running it" — dump and stop.
@@ -1409,8 +1416,8 @@ bool run_scripts(const Options& options) {
 #ifdef CULEBRA_JIT_ENABLED
   // `--jit` is the bytecode compiler's LLVM lane: one program, lowered.
   if (options.jit) {
-    culebra::vm::run_modules_via_llvm(modules, options.emit_llvm, options.debug,
-                                      options.opt_level,
+    culebra::vm::run_modules_via_llvm(modules, baked, options.emit_llvm,
+                                      options.debug, options.opt_level,
                                       options.jit_faststart);
     startup_profile::mark("vm::run_modules_via_llvm");
     return true;

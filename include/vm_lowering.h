@@ -71,7 +71,7 @@ struct Lowering {
   static void run_program(const VmProgram& p, bool emit_llvm, int opt_level,
                           bool fast_codegen = false,
                           const std::string& module_name = "vm",
-                          const std::vector<const BakedPreamble*>& baked = {}) {
+                          std::span<const BakedPreamble* const> baked = {}) {
     using namespace llvm;
     JIT::ensure_native_target_init();
     auto ctx = std::make_unique<LLVMContext>();
@@ -152,7 +152,7 @@ struct Lowering {
                           int opt_level, bool emit_llvm,
                           const std::string& target_triple,
                           const AotNames& names,
-                          const std::vector<const BakedPreamble*>& baked = {}) {
+                          std::span<const BakedPreamble* const> baked = {}) {
     using namespace llvm;
     if (target_triple.empty()) {
       JIT::ensure_native_target_init();
@@ -238,7 +238,7 @@ struct Lowering {
   // built binary from libculebra_rt.a.
   static llvm::Function* lower_program(
       JIT& j, const VmProgram& p, const char* entry = "__culebra_main",
-      const std::vector<const BakedPreamble*>& baked = {}) {
+      std::span<const BakedPreamble* const> baked = {}) {
     using namespace llvm;
     j.declare_runtime_functions();
 
@@ -4545,25 +4545,38 @@ struct Lowering {
 
 // The compiled lane for a loader's module list: what `--jit` runs. One
 // bytecode program, lowered to one LLVM module, keyed for the object cache
-// by the module set and the compile options.
+// by the module set and the compile options. `baked` is what the splice took
+// out of the preamble for this lane (stdlib_preamble.h): entries the lowered
+// program calls instead of compiling their source.
+inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
+                                 std::span<const BakedPreamble* const> baked,
+                                 bool emit_llvm = false, bool debug = false,
+                                 int opt_level = 2,
+                                 bool fast_codegen = false) {
+  if (modules.empty()) return;
+  auto prog = Compiler::compile_modules(modules,
+                                        debug ? Debug::Break : Debug::Off);
+  // Nothing host-side to prepare: keyword-call metadata is a global of the
+  // lowered module, registered by each MakeClosure site (see Lowering's
+  // param_meta_global). Exec::prepare's host-side tables are the executor
+  // lane's alone.
+  Lowering::run_program(prog, emit_llvm, opt_level, fast_codegen,
+                        JIT::jit_module_name(modules, fast_codegen, opt_level),
+                        baked);
+}
+
+// For a caller that spliced the whole preamble — the doctest runner, whose
+// one module list feeds both lanes, and an embedder — the same run with the
+// baked modules taken back out here (stdlib_preamble.h). The CLI's --jit
+// path passes them in instead, having never parsed their source.
 inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
                                  bool emit_llvm = false, bool debug = false,
                                  int opt_level = 2,
                                  bool fast_codegen = false) {
   if (modules.empty()) return;
-  // The stdlib modules baked into this binary are not lowered again: the
-  // program calls their entries instead (stdlib_preamble.h,
-  // resolve_baked_preamble; Lowering::lower_program).
   auto res = resolve_baked_preamble(modules, /*force_source=*/false);
-  auto prog = Compiler::compile_modules(
-      res.modules, debug ? Debug::Break : Debug::Off);
-  // Nothing host-side to prepare: keyword-call metadata is a global of the
-  // lowered module, registered by each MakeClosure site (see Lowering's
-  // param_meta_global). Exec::prepare's host-side tables are the executor
-  // lane's alone.
-  Lowering::run_program(
-      prog, emit_llvm, opt_level, fast_codegen,
-      JIT::jit_module_name(res.modules, fast_codegen, opt_level), res.baked);
+  run_modules_via_llvm(res.modules, res.baked, emit_llvm, debug, opt_level,
+                       fast_codegen);
 }
 
 // `culebra build`: the same program the JIT lane runs, emitted as an object

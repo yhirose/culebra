@@ -265,39 +265,6 @@ inline std::unordered_set<std::string_view> stdlib_preamble_triggers(
   return out;
 }
 
-// JIT/AOT only: prepend the synthesized `<stdlib>` preamble module.
-//
-// The preamble registers the builders behind the helpers user code calls
-// (assert_*, Time, …). The registrations are pure side effects with no scope
-// bindings, so they run as their own module *ahead of every dependency* — a
-// dependency's top-level `Canvas.rgba(...)` must find the builder already
-// registered, and appending them to the entry module (which the loader
-// schedules last) would run them too late for that. Every reference then
-// resolves through the registry, so no module needs a copy of its own — the
-// same reach the interpreter gets from its global environment.
-inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules) {
-  if (modules.empty()) return;
-  // Scan every module, not just the entry: an imported module's `Canvas`
-  // (or `Time`, ...) must pull that namespace's preamble in too, even when
-  // the entry module never names it.
-  std::unordered_set<std::string_view> names;
-  for (const auto& m : modules) {
-    if (m.ast) collect_ast_tokens(*m.ast, names);
-  }
-  std::string preamble = stdlib_preamble_for(names);
-  if (preamble.empty()) return;
-
-  auto buf = std::make_shared<std::string>(std::move(preamble));
-  std::vector<std::string> msgs;
-  auto ast = parse_with_transforms(kStdlibPreamblePath, *buf, msgs);
-  if (!ast) return;  // stdlib is trusted; a parse failure is a build bug
-  LoadedModule pre;
-  pre.abs_path = kStdlibPreamblePath;
-  pre.source = std::move(buf);
-  pre.ast = std::move(ast);
-  modules.insert(modules.begin(), std::move(pre));
-}
-
 // --- Baked preamble (the JIT/AOT lanes) -------------------------------------
 //
 // A stdlib module compiled into this binary at build time (CMake's
@@ -338,6 +305,89 @@ inline const BakedPreamble* baked_preamble(std::string_view name) {
   return nullptr;
 }
 
+// The split a lane that can call the baked entries makes: the stdlib modules
+// `names` pulls in, as the entries this binary baked plus the source of the
+// rest — in the order stdlib_preamble_for emits, so the registrations still
+// run in that order. The one place the split lives: the splice prunes with
+// it (a lane that calls an entry must not also compile its source) and
+// resolve_baked_preamble takes it back out of an already-spliced list, and
+// they cannot disagree about what a program pulled in. Everything stays
+// source where there is nothing to call — a header-only embedder, a
+// CULEBRA_DEV_NO_RT driver — or where an A/B run asked for the splice.
+struct StdlibPlan {
+  std::vector<const BakedPreamble*> baked;
+  std::string rest;
+};
+inline StdlibPlan plan_stdlib_preamble(
+    const std::unordered_set<std::string_view>& names) {
+  StdlibPlan p;
+  if (baked_preambles().empty() || std::getenv("CULEBRA_PREAMBLE_SOURCE")) {
+    p.rest = stdlib_preamble_for(names);
+    return p;
+  }
+  auto sel = select_stdlib_modules(names);
+  auto take = [&](std::string_view name, auto&& src) {
+    if (auto* b = baked_preamble(name))
+      p.baked.push_back(b);
+    else
+      p.rest.append(src());
+  };
+  for (const auto* m : sel.modules)
+    take(m->name, [&] { return stdlib_module_source(*m); });
+  for (const auto* g : sel.groups)
+    take(g->name, [&] { return stdlib_module_source(*g); });
+  return p;
+}
+
+// JIT/AOT only: prepend the synthesized `<stdlib>` preamble module.
+//
+// The preamble registers the builders behind the helpers user code calls
+// (assert_*, Time, …). The registrations are pure side effects with no scope
+// bindings, so they run as their own module *ahead of every dependency* — a
+// dependency's top-level `Canvas.rgba(...)` must find the builder already
+// registered, and appending them to the entry module (which the loader
+// schedules last) would run them too late for that. Every reference then
+// resolves through the registry, so no module needs a copy of its own — the
+// same reach the interpreter gets from its global environment.
+// `baked`, when given, makes this a lane that calls the baked entries: they
+// are collected there and their source is left out of the spliced module,
+// so it is never parsed. That is the whole point of passing it — parsing the
+// Args preamble alone costs ~19 ms, a fifth of a `--jit` start-up, for
+// source the lane then drops (resolve_baked_preamble). A lane whose modules
+// something else still reads — `culebra build`, whose namespace scan wants
+// their AST — leaves it null and resolves later instead.
+inline void splice_stdlib_preamble(
+    std::vector<LoadedModule>& modules,
+    std::vector<const BakedPreamble*>* baked = nullptr) {
+  if (modules.empty()) return;
+  // Scan every module, not just the entry: an imported module's `Canvas`
+  // (or `Time`, ...) must pull that namespace's preamble in too, even when
+  // the entry module never names it.
+  std::unordered_set<std::string_view> names;
+  for (const auto& m : modules) {
+    if (m.ast) collect_ast_tokens(*m.ast, names);
+  }
+  std::string preamble;
+  if (baked) {
+    auto plan = plan_stdlib_preamble(names);
+    *baked = std::move(plan.baked);
+    preamble = std::move(plan.rest);
+  } else {
+    preamble = stdlib_preamble_for(names);
+  }
+  if (preamble.empty()) return;
+
+  auto buf = std::make_shared<std::string>(std::move(preamble));
+  std::vector<std::string> msgs;
+  auto ast = parse_with_transforms(kStdlibPreamblePath, *buf, msgs);
+  if (!ast) return;  // stdlib is trusted; a parse failure is a build bug
+  LoadedModule pre;
+  pre.abs_path = kStdlibPreamblePath;
+  pre.source = std::move(buf);
+  pre.ast = std::move(ast);
+  modules.insert(modules.begin(), std::move(pre));
+}
+
 // The lowering's view of a spliced module list: the `<stdlib>` module is
 // replaced by one registering only the modules this binary has not baked
 // (and dropped when that is none), and `baked` lists the entries the
@@ -352,6 +402,9 @@ inline BakedResolution resolve_baked_preamble(
     const std::vector<LoadedModule>& modules, bool force_source) {
   BakedResolution r;
   r.modules = modules;
+  // `force_source` is this lane's own reason to compile everything; the rest
+  // only skips the scan below in the cases plan_stdlib_preamble would answer
+  // "nothing baked" for anyway, so the two cannot disagree.
   if (force_source || baked_preambles().empty() ||
       std::getenv("CULEBRA_PREAMBLE_SOURCE") || modules.empty() ||
       modules.front().abs_path != kStdlibPreamblePath)
@@ -361,22 +414,10 @@ inline BakedResolution resolve_baked_preamble(
   std::unordered_set<std::string_view> names;
   for (size_t i = 1; i < modules.size(); ++i)
     if (modules[i].ast) collect_ast_tokens(*modules[i].ast, names);
-  auto sel = select_stdlib_modules(names);
-  // One pass: a baked module becomes an entry to call, an unbaked one stays
-  // source for this lane to lower — in the order stdlib_preamble_for emits.
-  std::string rest;
-  auto take = [&](std::string_view name, auto&& src) {
-    if (auto* b = baked_preamble(name)) {
-      r.baked.push_back(b);
-    } else {
-      rest.append(src());
-    }
-  };
-  for (const auto* m : sel.modules)
-    take(m->name, [&] { return stdlib_module_source(*m); });
-  for (const auto* g : sel.groups)
-    take(g->name, [&] { return stdlib_module_source(*g); });
-  if (r.baked.empty()) return r;
+  auto plan = plan_stdlib_preamble(names);
+  if (plan.baked.empty()) return r;
+  r.baked = std::move(plan.baked);
+  std::string rest = std::move(plan.rest);
   if (rest.empty()) {
     r.modules.erase(r.modules.begin());
     return r;
