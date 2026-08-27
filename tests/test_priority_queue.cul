@@ -1,0 +1,91 @@
+# Conformance: stdlib (PriorityQueue). See docs/stdlib.md and
+# docs/language.md.
+#
+# PriorityQueue — a binary min-heap (src/preambles/priority_queue.cul).
+# Tested on interp, JIT, and AOT via `just test`; identical stdout (asserts
+# are silent on success).
+
+# --- empty ---
+let pq0 = PriorityQueue.new()
+assert_eq(pq0.size(), 0)
+assert_eq(pq0.empty(), true)
+assert_eq(pq0.pop(), nil)
+assert_eq(pq0.peek(), nil)
+
+# --- natural order (Long, via `<`) ---
+let mut pq = PriorityQueue.new()
+for x in [5, 1, 4, 2, 3] {
+  pq.push(x)
+}
+assert_eq(pq.size(), 5)
+assert_eq(pq.peek(), 1)  # peek does not remove
+assert_eq(pq.size(), 5)
+let mut out = []
+while !pq.empty() {
+  out.push(pq.pop())
+}
+assert_eq(out, [1, 2, 3, 4, 5])
+assert_eq(pq.pop(), nil)
+
+# --- duplicates ---
+let mut dup = PriorityQueue.new()
+for x in [3, 1, 3, 1, 2] {
+  dup.push(x)
+}
+let mut dup_out = []
+while !dup.empty() {
+  dup_out.push(dup.pop())
+}
+assert_eq(dup_out, [1, 1, 2, 3, 3])
+
+# --- larger sequence, checked against Array.sorted() as the oracle ---
+Random.seed(42)
+let mut src = []
+for i in 0..200 {
+  src.push(Random.int(0, 1000))
+}
+let mut heap = PriorityQueue.new()
+for x in src {
+  heap.push(x)
+}
+let mut heap_out = []
+while !heap.empty() {
+  heap_out.push(heap.pop())
+}
+assert_eq(heap_out, src.sorted())
+
+# --- reverse: true (max-heap) ---
+let mut maxpq = PriorityQueue.new(reverse: true)
+for x in [5, 1, 4, 2, 3] {
+  maxpq.push(x)
+}
+let mut max_out = []
+while !maxpq.empty() {
+  max_out.push(maxpq.pop())
+}
+assert_eq(max_out, [5, 4, 3, 2, 1])
+
+# --- key: function (order by a derived value, ties keep insertion order
+# among items whose key happens to sort together only incidentally — a
+# heap is not a stable sort, so this only checks the key is honored, not
+# tie order) ---
+let mut jobs = PriorityQueue.new(key: |j| j[0])
+jobs.push((3, 'cleanup'))
+jobs.push((1, 'ping'))
+jobs.push((2, 'retry'))
+assert_eq(jobs.pop(), (1, 'ping'))
+assert_eq(jobs.pop(), (2, 'retry'))
+assert_eq(jobs.pop(), (3, 'cleanup'))
+
+# --- key: + reverse: together ---
+let mut top_scores = PriorityQueue.new(key: |e| e[1], reverse: true)
+top_scores.push(('a', 10))
+top_scores.push(('b', 30))
+top_scores.push(('c', 20))
+assert_eq(top_scores.pop(), ('b', 30))
+assert_eq(top_scores.pop(), ('c', 20))
+assert_eq(top_scores.pop(), ('a', 10))
+
+# missing property reads as nil, like any other class instance (not an
+# AttributeError)
+assert_eq(PriorityQueue.new().typo, nil)

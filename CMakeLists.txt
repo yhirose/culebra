@@ -1848,8 +1848,8 @@ if(CULEBRA_ENABLE_JIT AND NOT CULEBRA_DEV_NO_RT)
     add_dependencies(culebra_preamble_cc ${_v})
   endif()
 
-  set(_baked_names Time Term Canvas Args Regex Log Path Vector2 Vector3 __Eff
-                   __Matchers __StringFns)
+  set(_baked_names Time Term Canvas Args Regex Log Path Vector2 Vector3
+                   Deque PriorityQueue __Eff __Matchers __StringFns)
   if(CULEBRA_ENABLE_WEBVIEW)
     list(APPEND _baked_names Desktop)
   endif()

@@ -1,0 +1,92 @@
+# Conformance: stdlib (Deque). See docs/stdlib.md and docs/language.md.
+#
+# Deque — a double-ended queue (src/preambles/deque.cul). Tested on interp,
+# JIT, and AOT via `just test`; identical stdout (asserts are silent on
+# success).
+
+# --- empty ---
+let d0 = Deque.new()
+assert_eq(d0.size(), 0)
+assert_eq(d0.empty(), true)
+assert_eq(d0.pop_front(), nil)
+assert_eq(d0.pop_back(), nil)
+assert_eq(d0.peek_front(), nil)
+assert_eq(d0.peek_back(), nil)
+assert_eq(d0.to_array(), [])
+assert_eq("{d0}", "Deque([])")
+
+# --- FIFO queue: push_back + pop_front ---
+let mut q = Deque.new()
+q.push_back(1)
+q.push_back(2)
+q.push_back(3)
+assert_eq(q.size(), 3)
+assert_eq(q.pop_front(), 1)
+assert_eq(q.pop_front(), 2)
+assert_eq(q.pop_front(), 3)
+assert_eq(q.pop_front(), nil)
+
+# --- stack: push_back + pop_back (same end as Array push/pop) ---
+let mut s = Deque.new()
+s.push_back('a')
+s.push_back('b')
+s.push_back('c')
+assert_eq(s.pop_back(), 'c')
+assert_eq(s.pop_back(), 'b')
+assert_eq(s.pop_back(), 'a')
+
+# --- both ends, interleaved ---
+let mut m = Deque.new()
+m.push_back(2)
+m.push_front(1)
+m.push_back(3)
+m.push_front(0)
+assert_eq(m.to_array(), [0, 1, 2, 3])
+assert_eq(m.peek_front(), 0)
+assert_eq(m.peek_back(), 3)
+assert_eq(m.pop_front(), 0)
+assert_eq(m.pop_back(), 3)
+assert_eq(m.to_array(), [1, 2])
+
+# peek does not remove
+let mut p = Deque.new()
+p.push_back(1)
+assert_eq(p.peek_front(), 1)
+assert_eq(p.peek_back(), 1)
+assert_eq(p.size(), 1)
+
+# --- growth across the ring buffer's internal capacity boundary, then
+# drain from the front so `_head` wraps past the end of the backing
+# array — this exercises the modulo arithmetic that a fixed-size or
+# non-wrapping implementation would get wrong ---
+let mut g = Deque.new()
+for i in 0..20 {
+  g.push_back(i)
+}
+assert_eq(g.size(), 20)
+for i in 0..15 {
+  assert_eq(g.pop_front(), i)
+}
+for i in 20..30 {
+  g.push_back(i)
+}
+assert_eq(
+  g.to_array(),
+  [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
+)
+
+# --- iteration protocol (Iterable: iter() -> Iterator) ---
+let mut it = Deque.new()
+it.push_back(10)
+it.push_back(20)
+it.push_back(30)
+let mut seen = []
+for v in it {
+  seen.push(v)
+}
+assert_eq(seen, [10, 20, 30])
+assert_eq(it.iter().map(|x| x * 2).collect(), [20, 40, 60])
+
+# missing property reads as nil, like any other class instance (not an
+# AttributeError)
+assert_eq(Deque.new().typo, nil)

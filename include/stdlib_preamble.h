@@ -141,6 +141,9 @@ inline std::span<const LazyNsModule> lazy_ns_modules() {
       {"Path", PATH_MODULE_SOURCE, "_path_module"},
       {"Vector2", VECTOR2_MODULE_SOURCE, "_vector2_module"},
       {"Vector3", VECTOR3_MODULE_SOURCE, "_vector3_module"},
+      {"Deque", DEQUE_MODULE_SOURCE, "_deque_module"},
+      {"PriorityQueue", PRIORITY_QUEUE_MODULE_SOURCE,
+       "_priority_queue_module"},
       // Algebraic-effects runtime. The transform has already lowered every
       // effect construct into `__Eff.*` calls by the time we see the AST, so
       // that one token is the exact marker (see effects_transform.h).

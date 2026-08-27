@@ -2587,6 +2587,212 @@ let _vector3_module = fn () {
 let Vector3 = _vector3_module()
 )=culpre=";
 
+inline constexpr const char* DEQUE_MODULE_SOURCE = R"=culpre=(# Deque — double-ended queue backed by a growable ring buffer (array +
+# head index + count), so push/pop at either end are O(1) amortized.
+# `Array` only ever grows/shrinks at the end (`push`/`pop`), so a FIFO
+# queue built on it needs `remove_at(0)`, which shifts every remaining
+# element — O(n) per dequeue. Reach for `Deque` whenever the front
+# matters: a FIFO queue (`push_back` + `pop_front`), a sliding window,
+# or a stack where "which end" should be explicit (`push_back` +
+# `pop_back`, same as `Array.push`/`pop`).
+#
+# Mirrors `Array.pop()`: `pop_front`/`pop_back`/`peek_front`/`peek_back`
+# return `nil` on an empty Deque rather than throwing (same ambiguity
+# `Array.pop()` already accepts — a `nil` element and an empty Deque
+# are indistinguishable — so callers that push `nil` should track size
+# separately).
+let _deque_module = fn () {
+  fn _deque_iter(buf, head, count) {
+    for i in 0..count {
+      yield buf[(head + i) % buf.size()]
+    }
+  }
+
+  class Deque {
+    new() {
+      self._buf = []
+      self._head = 0
+      self._count = 0
+    }
+
+    size() {
+      self._count
+    }
+    empty() {
+      self._count == 0
+    }
+
+    _grow() {
+      let old_cap = self._buf.size()
+      let new_cap = if old_cap == 0 {
+        8
+      } else {
+        old_cap * 2
+      }
+      let mut new_buf = []
+      for i in 0..self._count {
+        new_buf.push(self._buf[(self._head + i) % old_cap])
+      }
+      for i in self._count..new_cap {
+        new_buf.push(nil)
+      }
+      self._buf = new_buf
+      self._head = 0
+    }
+
+    push_back(x) {
+      if self._count == self._buf.size() {
+        self._grow()
+      }
+      self._buf[(self._head + self._count) % self._buf.size()] = x
+      self._count += 1
+    }
+
+    push_front(x) {
+      if self._count == self._buf.size() {
+        self._grow()
+      }
+      self._head = (self._head - 1 + self._buf.size()) % self._buf.size()
+      self._buf[self._head] = x
+      self._count += 1
+    }
+
+    pop_front() {
+      return nil if self.empty()
+      let x = self._buf[self._head]
+      self._buf[self._head] = nil
+      self._head = (self._head + 1) % self._buf.size()
+      self._count -= 1
+      x
+    }
+
+    pop_back() {
+      return nil if self.empty()
+      let i = (self._head + self._count - 1) % self._buf.size()
+      let x = self._buf[i]
+      self._buf[i] = nil
+      self._count -= 1
+      x
+    }
+
+    peek_front() {
+      return nil if self.empty()
+      self._buf[self._head]
+    }
+
+    peek_back() {
+      return nil if self.empty()
+      self._buf[(self._head + self._count - 1) % self._buf.size()]
+    }
+
+    to_array() {
+      _deque_iter(self._buf, self._head, self._count).collect()
+    }
+
+    iter() {
+      _deque_iter(self._buf, self._head, self._count)
+    }
+
+    __str__() {
+      "Deque({self.to_array()})"
+    }
+  }
+  Deque
+}
+let Deque = _deque_module()
+)=culpre=";
+
+inline constexpr const char* PRIORITY_QUEUE_MODULE_SOURCE = R"=culpre=(# PriorityQueue — binary min-heap over an Array. `push`/`pop` are
+# O(log n); the naive alternative (an Array kept sorted, or scanned for
+# the minimum on every pop) is O(n) or O(n log n) per operation.
+#
+# Ordering follows the same convention as `Array.sort`/`sort_by`:
+# elements compare by `<` (so a class's `__lt__` is honored) unless
+# `key:` is given, and `reverse: true` flips to a max-heap. `pop`/`peek`
+# return `nil` on an empty queue, matching `Array.pop()`.
+let _priority_queue_module = fn () {
+  class PriorityQueue {
+    new(*, key: Function | Nil = nil, reverse: Bool = false) {
+      self._heap = []
+      self._key = key
+      self._reverse = reverse
+    }
+
+    size() {
+      self._heap.size()
+    }
+    empty() {
+      self._heap.empty()
+    }
+
+    _less(a, b) {
+      let ka = self._key == nil ? a : self._key(a)
+      let kb = self._key == nil ? b : self._key(b)
+      self._reverse ? kb < ka : ka < kb
+    }
+
+    _swap(i, j) {
+      let tmp = self._heap[i]
+      self._heap[i] = self._heap[j]
+      self._heap[j] = tmp
+    }
+
+    push(x) {
+      self._heap.push(x)
+      let mut i = self._heap.size() - 1
+      while i > 0 {
+        let parent = (i - 1) / 2
+        if self._less(self._heap[i], self._heap[parent]) {
+          self._swap(i, parent)
+          i = parent
+        } else {
+          break
+        }
+      }
+    }
+
+    peek() {
+      return nil if self.empty()
+      self._heap[0]
+    }
+
+    pop() {
+      return nil if self.empty()
+      let top = self._heap[0]
+      let last = self._heap.pop()
+      if !self._heap.empty() {
+        self._heap[0] = last
+        self._sift_down(0)
+      }
+      top
+    }
+
+    _sift_down(start) {
+      let mut i = start
+      let n = self._heap.size()
+      while true {
+        let l = i * 2 + 1
+        let r = i * 2 + 2
+        let mut smallest = i
+        if l < n && self._less(self._heap[l], self._heap[smallest]) {
+          smallest = l
+        }
+        if r < n && self._less(self._heap[r], self._heap[smallest]) {
+          smallest = r
+        }
+        if smallest == i {
+          break
+        }
+        self._swap(i, smallest)
+        i = smallest
+      }
+    }
+  }
+  PriorityQueue
+}
+let PriorityQueue = _priority_queue_module()
+)=culpre=";
+
 inline constexpr const char* EFFECTS_MODULE_SOURCE = R"=culpre=(# Algebraic-effects runtime (thin slice). The parse-time transform
 # (effects_transform.h) lowers `effect fn` / `perform` / `handle … with`
 # into synthesized computation classes plus calls to `__Eff.handle`; this

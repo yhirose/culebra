@@ -1,0 +1,89 @@
+# PriorityQueue — binary min-heap over an Array. `push`/`pop` are
+# O(log n); the naive alternative (an Array kept sorted, or scanned for
+# the minimum on every pop) is O(n) or O(n log n) per operation.
+#
+# Ordering follows the same convention as `Array.sort`/`sort_by`:
+# elements compare by `<` (so a class's `__lt__` is honored) unless
+# `key:` is given, and `reverse: true` flips to a max-heap. `pop`/`peek`
+# return `nil` on an empty queue, matching `Array.pop()`.
+let _priority_queue_module = fn () {
+  class PriorityQueue {
+    new(*, key: Function | Nil = nil, reverse: Bool = false) {
+      self._heap = []
+      self._key = key
+      self._reverse = reverse
+    }
+
+    size() {
+      self._heap.size()
+    }
+    empty() {
+      self._heap.empty()
+    }
+
+    _less(a, b) {
+      let ka = self._key == nil ? a : self._key(a)
+      let kb = self._key == nil ? b : self._key(b)
+      self._reverse ? kb < ka : ka < kb
+    }
+
+    _swap(i, j) {
+      let tmp = self._heap[i]
+      self._heap[i] = self._heap[j]
+      self._heap[j] = tmp
+    }
+
+    push(x) {
+      self._heap.push(x)
+      let mut i = self._heap.size() - 1
+      while i > 0 {
+        let parent = (i - 1) / 2
+        if self._less(self._heap[i], self._heap[parent]) {
+          self._swap(i, parent)
+          i = parent
+        } else {
+          break
+        }
+      }
+    }
+
+    peek() {
+      return nil if self.empty()
+      self._heap[0]
+    }
+
+    pop() {
+      return nil if self.empty()
+      let top = self._heap[0]
+      let last = self._heap.pop()
+      if !self._heap.empty() {
+        self._heap[0] = last
+        self._sift_down(0)
+      }
+      top
+    }
+
+    _sift_down(start) {
+      let mut i = start
+      let n = self._heap.size()
+      while true {
+        let l = i * 2 + 1
+        let r = i * 2 + 2
+        let mut smallest = i
+        if l < n && self._less(self._heap[l], self._heap[smallest]) {
+          smallest = l
+        }
+        if r < n && self._less(self._heap[r], self._heap[smallest]) {
+          smallest = r
+        }
+        if smallest == i {
+          break
+        }
+        self._swap(i, smallest)
+        i = smallest
+      }
+    }
+  }
+  PriorityQueue
+}
+let PriorityQueue = _priority_queue_module()

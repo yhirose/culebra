@@ -72,8 +72,10 @@ Conventions used below:
 29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
 30. [`Vector2`](#30-vector2) — minimal 2D float vector for graphics/game code (also stands in for a "Point")
 31. [`Vector3`](#31-vector3) — the 3D counterpart of `Vector2`
-32. [Design notes](#32-design-notes)
-33. [Not included (yet)](#33-not-included-yet)
+32. [`Deque`](#32-deque) — double-ended queue, O(1) amortized push/pop at either end
+33. [`PriorityQueue`](#33-priorityqueue) — binary min-heap, O(log n) push/pop
+34. [Design notes](#34-design-notes)
+35. [Not included (yet)](#35-not-included-yet)
 
 **Where to find what**
 
@@ -117,6 +119,8 @@ Conventions used below:
 | Desktop GUI (native WebView + local server) | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3D vector math (dot, length, normalize, distance) | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
+| FIFO queue, sliding window, front+back stack | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
+| Priority scheduling, event simulation, shortest-path search | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
 | Fill an `Array` with `n` copies of a value | [language spec §19](language.md) — `repeat(n, value)` |
@@ -5573,7 +5577,86 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `a.distance_to(b)` | `Float` |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
 
-## 32. Design notes
+## 32. `Deque`
+
+A double-ended queue — an ordinary culebra class
+(`src/preambles/deque.cul`), not a language builtin. Backed by a
+growable ring buffer (array + head index + count), so `push`/`pop` at
+either end are O(1) amortized. `Array` (language spec §18) only ever
+grows or shrinks at its end (`push`/`pop`); a FIFO queue built on
+`Array` needs `remove_at(0)`, which shifts every remaining element —
+O(n) per dequeue. Reach for `Deque` whenever the front matters: a FIFO
+queue (`push_back` + `pop_front`), a sliding window, or a stack where
+"which end" should stay explicit (`push_back` + `pop_back`, mirroring
+`Array.push`/`pop`).
+
+```culebra
+let q = Deque.new()
+q.push_back(1)
+q.push_back(2)
+q.push_front(0)
+inspect(q.pop_front())  # => 0
+inspect(q.pop_front())  # => 1
+inspect(q.size())       # => 1
+```
+
+| Member | Returns |
+|---|---|
+| `Deque.new()` | `Deque` |
+| `d.push_back(x)` / `d.push_front(x)` | `Nil` |
+| `d.pop_back()` / `d.pop_front()` | `Any` — removed element, `nil` if empty |
+| `d.peek_back()` / `d.peek_front()` | `Any` — `nil` if empty, does not remove |
+| `d.size()` | `Long` |
+| `d.empty()` | `Bool` |
+| `d.to_array()` | `Array` — snapshot, front to back |
+| `d.iter()` | `Iterator` — so `for x in d { ... }` works, front to back |
+| `"{d}"` / `to_string(d)` | `String` |
+
+Like `Array.pop()`, `pop_front`/`pop_back`/`peek_front`/`peek_back`
+return `nil` on an empty `Deque` rather than throwing — the same
+ambiguity `Array.pop()` already accepts (a pushed `nil` and an empty
+`Deque` are indistinguishable from the return value alone).
+
+## 33. `PriorityQueue`
+
+A binary min-heap over an `Array` — an ordinary culebra class
+(`src/preambles/priority_queue.cul`), not a language builtin.
+`push`/`pop` are O(log n); the naive alternative — an `Array` kept
+sorted, or scanned for the minimum on every pop — is O(n log n) or
+O(n) per operation.
+
+Ordering follows the same convention as `Array.sort`/`sort_by`
+(language spec §18): elements compare with `<` (so a class's
+`__lt__` is honored) unless `key:` is given, and `reverse: true` flips
+it into a max-heap.
+
+```culebra
+let pq = PriorityQueue.new()
+pq.push(5)
+pq.push(1)
+pq.push(3)
+inspect(pq.pop())   # => 1
+inspect(pq.peek())  # => 3
+
+let jobs = PriorityQueue.new(key: |j| j[0])
+jobs.push((2, 'retry'))
+jobs.push((1, 'ping'))
+inspect(jobs.pop())  # => (1, 'ping')
+```
+
+| Member | Returns |
+|---|---|
+| `PriorityQueue.new(*, key: Function \| Nil = nil, reverse: Bool = false)` | `PriorityQueue` |
+| `pq.push(x)` | `Nil` |
+| `pq.pop()` | `Any` — removes and returns the minimum (maximum if `reverse: true`), `nil` if empty |
+| `pq.peek()` | `Any` — like `pop()` but does not remove, `nil` if empty |
+| `pq.size()` | `Long` |
+| `pq.empty()` | `Bool` |
+
+Like `Array.pop()` and `Deque`, `pop`/`peek` return `nil` on an empty
+queue rather than throwing.
+
+## 34. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -5629,13 +5712,15 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 33. Not included (yet)
+## 35. Not included (yet)
 
 ### Heavier data structures
 
-No `Queue`, `Deque`, or priority-heap type. `Set` and `Tuple` are
-language built-ins (see [`docs/language.md`](language.md)); reach for
-`Array` and `Object` for everything else.
+`Set` and `Tuple` are language built-ins (see
+[`docs/language.md`](language.md)); `Deque` (§32) and `PriorityQueue`
+(§33) cover the queue/heap shapes. No sorted map/tree; reach for
+`Object` plus `.sort()`/`.sorted()` (language spec §18) when order
+matters.
 
 ### OS extras
 

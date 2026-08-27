@@ -70,8 +70,10 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで
 30. [`Vector2`](#30-vector2) — グラフィックス/ゲーム向けの最小限の2D floatベクトル（「Point」の代わりも兼ねる）
 31. [`Vector3`](#31-vector3) — `Vector2`の3D版
-32. [設計上の注記](#32-設計上の注記)
-33. [未収録（将来検討）](#33-未収録将来検討)
+32. [`Deque`](#32-deque) — 両端キュー、両端のpush/popが償却O(1)
+33. [`PriorityQueue`](#33-priorityqueue) — 二分ヒープ、push/popがO(log n)
+34. [設計上の注記](#34-設計上の注記)
+35. [未収録（将来検討）](#35-未収録将来検討)
 
 **目的別索引**
 
@@ -114,6 +116,8 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 | デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
 | ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
+| FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
+| 優先度スケジューリング、イベントシミュレーション、最短経路探索 | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §19](language.ja.md) |
@@ -5415,7 +5419,84 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `a.distance_to(b)` | `Float` |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
 
-## 32. 設計上の注記
+## 32. `Deque`
+
+両端キュー——言語組み込みではなく普通のculebraクラス
+(`src/preambles/deque.cul`)です。成長するリングバッファ(配列 +
+先頭インデックス + 要素数)で実装しているため、どちらの端での
+`push`/`pop`も償却O(1)です。`Array`(言語仕様§18)は末尾でしか
+伸縮しません(`push`/`pop`)。`Array`でFIFOキューを組もうとすると
+`remove_at(0)`が必要になり、残り全要素をシフトするのでdequeue
+1回がO(n)になります。前方が関わる場面——FIFOキュー(`push_back` +
+`pop_front`)、スライディングウィンドウ、「どちら側か」を明示した
+いスタック(`push_back` + `pop_back`、`Array.push`/`pop`と対応)
+——では`Deque`を使ってください。
+
+```culebra
+let q = Deque.new()
+q.push_back(1)
+q.push_back(2)
+q.push_front(0)
+inspect(q.pop_front())  # => 0
+inspect(q.pop_front())  # => 1
+inspect(q.size())       # => 1
+```
+
+| メンバー | 返り値 |
+|---|---|
+| `Deque.new()` | `Deque` |
+| `d.push_back(x)` / `d.push_front(x)` | `Nil` |
+| `d.pop_back()` / `d.pop_front()` | `Any` — 取り除いた要素、空なら`nil` |
+| `d.peek_back()` / `d.peek_front()` | `Any` — 空なら`nil`、取り除かない |
+| `d.size()` | `Long` |
+| `d.empty()` | `Bool` |
+| `d.to_array()` | `Array` — スナップショット、前から後ろの順 |
+| `d.iter()` | `Iterator` — `for x in d { ... }`が使える、前から後ろの順 |
+| `"{d}"` / `to_string(d)` | `String` |
+
+`Array.pop()`と同様、`pop_front`/`pop_back`/`peek_front`/
+`peek_back`は空の`Deque`に対して例外を投げず`nil`を返します——
+`Array.pop()`が既に受け入れているのと同じ曖昧さです(pushした
+`nil`と空であることは戻り値だけからは区別できません)。
+
+## 33. `PriorityQueue`
+
+`Array`上の二分ヒープ——言語組み込みではなく普通のculebraクラス
+(`src/preambles/priority_queue.cul`)です。`push`/`pop`はO(log n)で、
+素朴な代替（`Array`をソート済みに保つ、あるいはpopのたびに最小値を
+線形探索する）は1回あたりO(n log n)またはO(n)になります。
+
+順序付けは`Array.sort`/`sort_by`(言語仕様§18)と同じ規約に従い
+ます: `key:`が無ければ要素は`<`で比較され(クラスの`__lt__`が
+尊重されます)、`reverse: true`でmax-heapに反転します。
+
+```culebra
+let pq = PriorityQueue.new()
+pq.push(5)
+pq.push(1)
+pq.push(3)
+inspect(pq.pop())   # => 1
+inspect(pq.peek())  # => 3
+
+let jobs = PriorityQueue.new(key: |j| j[0])
+jobs.push((2, 'retry'))
+jobs.push((1, 'ping'))
+inspect(jobs.pop())  # => (1, 'ping')
+```
+
+| メンバー | 返り値 |
+|---|---|
+| `PriorityQueue.new(*, key: Function \| Nil = nil, reverse: Bool = false)` | `PriorityQueue` |
+| `pq.push(x)` | `Nil` |
+| `pq.pop()` | `Any` — 最小値(`reverse: true`なら最大値)を取り除いて返す、空なら`nil` |
+| `pq.peek()` | `Any` — `pop()`と同じだが取り除かない、空なら`nil` |
+| `pq.size()` | `Long` |
+| `pq.empty()` | `Bool` |
+
+`Array.pop()`や`Deque`と同様、`pop`/`peek`は空のキューに対して
+例外を投げず`nil`を返します。
+
+## 34. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -5471,13 +5552,14 @@ run_with(IO, "via parameter")
 
 ---
 
-## 33. 未収録（将来検討）
+## 35. 未収録（将来検討）
 
 ### 重量級データ構造
 
-`Queue` / `Deque` / 優先度ヒープはありません。`Set`と`Tuple`は
-言語組込みです（[`docs/language.ja.md`](language.ja.md) 参照）。それ以外は
-`Array`と`Object`で代用してください。
+`Set`と`Tuple`は言語組込みです（[`docs/language.ja.md`](language.ja.md)
+参照）。`Deque`（§32）と`PriorityQueue`（§33）でキュー・ヒープの形は
+カバーしています。ソート済みmap/treeはありません。順序が必要なら
+`Object`に`.sort()`/`.sorted()`（言語仕様§18）を組み合わせてください。
 
 ### OS 拡張
 

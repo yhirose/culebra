@@ -737,6 +737,10 @@ inspect([1, 2].size())  # => 2
 
 **Vector3** — Vector3.new(x, y, z); a.dot(b); a.normalized(); a.distance_to(b)
 
+**Deque** — Deque.new(); d.size(); d.empty(); d.to_array() -> Array; d.iter() -> Iterator
+
+**PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty()
+
 <!-- END GENERATED -->
 
 ## 5. テンプレート
