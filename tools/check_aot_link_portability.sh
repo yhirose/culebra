@@ -51,8 +51,14 @@ CUL
 
 checked=0
 for name in http canvas; do
-  if ! (cd "$work" && "$bin" "$name.cul" >/dev/null 2>&1); then
+  # --vm, not a bare run: every `just` recipe exports
+  # CULEBRA_REQUIRE_EXPLICIT_ENGINE=1, under which an unnamed engine aborts by
+  # design (src/main.cc). A bare probe therefore reads every axis as absent.
+  # Print what a failing probe said rather than swallowing it — "absent" and
+  # "broken" look the same from an exit code.
+  if ! probe=$(cd "$work" && "$bin" --vm "$name.cul" 2>&1); then
     echo "  skip $name (this build has no such namespace)"
+    printf '%s\n' "$probe" | head -3 | sed 's/^/      /'
     continue
   fi
 
