@@ -350,7 +350,7 @@ A `Chunk` carries, besides `code`:
 | `slot_rank`, `slot_cell_rank` | declaration order (release ladders walk newest-first) and, per slot, when it became a cell — an index can be a temporary early on and a captured binding's cell later |
 | `cleanups`, `temp_points`/`temp_slots`, `defer_mark_slot`, `owned_depths` | the unwind tables (§5.5) |
 | `call_argpos`, `kwcalls`, `arity_checks`, `name_tables` | per-call argument positions, keyword-call layouts, built-in arity arms, class method-name tables |
-| `call_targets` | per call instruction, the one function chunk its callee was resolved to, and whether the callee is the dispatcher that leads to it (§5.3) |
+| `call_targets` | per call instruction, the one function chunk its callee was resolved to, whether the callee is the dispatcher that leads to it, and whether the callee is read straight out of a cell (§5.3) |
 
 ### 5.2 Ownership in the instruction stream
 
@@ -439,6 +439,33 @@ that capture still holds a body. A null payload falls through to the
 dynamic arm the site would have taken anyway — and the assert above
 covers this arm too, since what it is handed is the body the dispatcher
 led to.
+
+**Borrowing the callee.** A call borrows what it calls: the caller's
+`+1` is never handed to the callee, on any arm and on any lane. So the
+callee does not need a register at all when the name behind it is one
+the compiler already knows cannot change under the call. That is the
+third fact `call_targets` carries: the `b` operand names a **cell**, and
+the value inside it is the callee. Both the read's `Retain` and the
+`Release` that matched it at the end of the statement disappear, and the
+executor loses a whole instruction — the site is a `Call` and nothing
+else. The same table row carries this whether or not the site's chunk
+was resolved: where the callee is read is a fact about the instruction,
+not about the code it reaches, so a re-declaration that strikes the
+chunk leaves the bit alone.
+
+Two properties make the borrow sound, and both are about the cell rather
+than the value. Nothing writes it under the call: the binding takes no
+`mut` and is neither conditional nor a session cell, which leaves the
+declaration as its only writer, and a declaration is a statement of this
+frame — the frame blocked inside the call. And nothing frees it under
+the call: the cell is released by the ladder of the frame that owns the
+slot, which is that same frame. A **capture** has the first property but
+not the second — its cell belongs to the running closure, and nothing at
+the site says the closure outlives the call — so a captured name is
+copied as before, and the test is `slot_cell_` rather than `is_cell`.
+`Exec::BorrowWitness` checks the claim in the assert lane (§10.2): the
+cell still holds the same value when the call is over, the throw path
+included.
 
 ### 5.4 Built-in methods are a table
 
@@ -828,11 +855,12 @@ check, used by the Windows CI jobs.
   (scratch slots stay in the entry block — a non-entry `alloca` in a loop
   grows the stack every pass), `tools/check_rc_discipline.sh` (the count
   of hand-placed retain/release sites in `jit.h` may only shrink).
-- **Asserts.** Two invariants no output can betray ride the assert lane
-  (`just test-assert`, CI's `linux-assert`), which runs the whole sweep
-  with `NDEBUG` off: the resolved call's predicted chunk is the closure
-  that turns up (§5.4), and no settled refcount call survives the
-  pipeline (§7).
+- **Asserts.** Three invariants no output can betray ride the assert
+  lane (`just test-assert`, CI's `linux-assert`), which runs the whole
+  sweep with `NDEBUG` off: the resolved call's predicted chunk is the
+  closure that turns up (§5.4), a borrowed callee's cell still holds the
+  same value when its call is over (§5.4), and no settled refcount call
+  survives the pipeline (§7).
 
 ### 10.3 The previous release as oracle
 

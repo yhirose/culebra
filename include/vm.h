@@ -424,6 +424,8 @@ enum class Op : uint8_t {
                // NameError for name consts[b] — the read guard on a `fn
                // name` dispatcher cell read before its decl statement ran
                // (the JIT's emit_unbound_value_guard). Usually falls through.
+               // c: regs[a] is the CELL, so the sentinel to test is the
+               // value inside it (a borrowed callee, which never copies).
   MultifnReg,  // regs[a] = dispatcher (+1) after registering closure regs[b]
                // as one of its overloads. regs[c] (c >= 0) is the dispatcher
                // an earlier arm of this same declaration installed, borrowed —
@@ -2471,9 +2473,17 @@ struct Chunk {
   // the dispatcher's monomorphic body rather than the register's value. It
   // rides the low bit of the stored word rather than widening the row: this
   // is the one side table the dispatch loop reads on every call.
+  //
+  // `callee_in_cell` is the third fact, and the one that is not about the
+  // code: the `b` operand names a slot holding a CELL, and the callee is the
+  // value inside it. The compiler emits that for a name bound once into a
+  // cell this frame owns, where the read needs neither a register of its own
+  // nor the `+1` a register would have to pay for — the cell's own reference
+  // outlives the call (see borrowed_call_head).
   struct CallTarget {
     int32_t chunk = -1;
     bool via_mono = false;
+    bool callee_in_cell = false;
   };
   std::vector<int32_t> call_targets;
   // One per CallKw: how its register run splits into positionals, keyword
@@ -2529,15 +2539,22 @@ inline const std::vector<int64_t>* chunk_argpos_at(const Chunk& c, size_t ix) {
 
 // The function chunk the call at `ix` was resolved to, with chunk -1 when its
 // callee stays a run-time question (Chunk::call_targets).
+// A row also exists for an unresolved site whose callee is read through a
+// cell, so the chunk is biased by one: -1 rides inside the word rather than
+// standing for the empty row.
 inline constexpr int32_t kNoCallTarget = -1;
 inline int32_t encode_call_target(Chunk::CallTarget t) {
-  assert(t.chunk >= 0 && t.chunk < (1 << 30));  // the tag bit's room
-  return (t.chunk << 1) | (t.via_mono ? 1 : 0);
+  assert(t.chunk >= -1 && t.chunk < (1 << 29));  // the tag bits' room
+  return ((t.chunk + 1) << 2) | (t.via_mono ? 2 : 0) |
+         (t.callee_in_cell ? 1 : 0);
+}
+inline Chunk::CallTarget decode_call_target(int32_t w) {
+  if (w < 0) return {};
+  return {(w >> 2) - 1, (w & 2) != 0, (w & 1) != 0};
 }
 inline Chunk::CallTarget chunk_call_target_at(const Chunk& c, size_t ix) {
-  int32_t w = ix < c.call_targets.size() ? c.call_targets[ix] : kNoCallTarget;
-  if (w < 0) return {};
-  return {w >> 1, (w & 1) != 0};
+  return decode_call_target(ix < c.call_targets.size() ? c.call_targets[ix]
+                                                      : kNoCallTarget);
 }
 
 // Did slot `s` already own a cell where a cleanup step with this many cells
@@ -3625,8 +3642,15 @@ class Compiler {
     if (b.known_cell >= 0) {
       auto it = prog_.resolved_by_cell.find(b.known_cell);
       if (it != prog_.resolved_by_cell.end()) {
-        for (const auto& s : it->second)
-          call_targets_of(s.chunk)[s.pc] = kNoCallTarget;
+        for (const auto& s : it->second) {
+          // Only the chunk is struck. Where the callee is read matters to
+          // the instruction's own operand — the `b` of a borrowed site names
+          // a cell either way — so that bit survives the revocation.
+          auto& w = call_targets_of(s.chunk)[s.pc];
+          w = decode_call_target(w).callee_in_cell
+                  ? encode_call_target({-1, false, true})
+                  : kNoCallTarget;
+        }
         prog_.resolved_by_cell.erase(it);
       }
     }
@@ -3675,18 +3699,22 @@ class Compiler {
 
   // Record that the call at `ix` reaches a named chunk, under the cell its
   // callee traces back to (-1 for a plain slot, which no re-declaration can
-  // reach).
-  void record_call_target(size_t ix, StaticCallee target, int32_t argc) {
-    if (target.chunk < 0) return;
+  // reach) — and, independently of that, whether the site reads its callee
+  // through a cell.
+  void record_call_target(size_t ix, StaticCallee target, int32_t argc,
+                          bool callee_in_cell = false) {
+    int32_t chunk = target.chunk;
     // A dispatcher's body is reached only for the arities its one overload
     // accepts; every other count is the DispatchError the dynamic arm
     // raises, so those sites stay unresolved.
-    if (target.via_mono && !mono_window_admits(target.chunk, argc)) return;
+    if (chunk >= 0 && target.via_mono && !mono_window_admits(chunk, argc))
+      chunk = -1;
+    if (chunk < 0 && !callee_in_cell) return;
     if (chunk_.call_targets.size() <= ix)
       chunk_.call_targets.resize(ix + 1, kNoCallTarget);
-    chunk_.call_targets[ix] =
-        encode_call_target({target.chunk, target.via_mono});
-    if (target.cell >= 0)
+    chunk_.call_targets[ix] = encode_call_target(
+        {chunk, chunk >= 0 && target.via_mono, callee_in_cell});
+    if (chunk >= 0 && target.cell >= 0)
       prog_.resolved_by_cell[target.cell].push_back(
           {chunk_idx_, static_cast<uint32_t>(ix)});
   }
@@ -4259,6 +4287,48 @@ class Compiler {
     emit(Op::CellGet, t, b.slot);
     if (b.lazy && unbound_guard) emit(Op::UnboundErr, t, kconst_str(b.name));
     return {t, true};
+  }
+
+  // The same read for a callee, without the copy. A call borrows what it
+  // calls (the register's `+1` is never handed over), so a name whose value
+  // cannot change while the call runs needs no register of its own: the Call
+  // reads the cell itself, and the retain — plus the release that pays for
+  // it at the end of the statement — are both gone. The guard the lazy read
+  // owes still runs, and at the name's own position; it just asks the cell.
+  //
+  // What makes it safe is the cell, not the value. Two halves:
+  //   - nothing writes it under the call. `binding_writes_once` leaves only
+  //     the declaration as a writer (store_cell, whose invalidate_cell is
+  //     the same revocation the resolved-callee grants rely on), and a
+  //     declaration is a statement of this frame — which is blocked inside
+  //     the call it would have to interleave with.
+  //   - nothing frees it under the call: the cell is released by the ladder
+  //     of the frame that owns the slot, and that is this same frame.
+  // A CAPTURE has the first half but not the second — its cell belongs to
+  // the running closure, and nothing here says the closure outlives the call
+  // — so the test is `slot_cell_`, not `is_cell` alone. Exec::BorrowWitness
+  // checks the claim in the assert lanes.
+  const Binding* borrowed_call_head(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.size() < 2 || ast.nodes[0]->tag != "IDENTIFIER"_)
+      return nullptr;
+    const auto& post = *ast.nodes[1];
+    if (post.original_tag != "ARGUMENTS"_ || has_kwargs(post)) return nullptr;
+    const Binding* b = lookup(ast.nodes[0]->token);
+    if (!b || !b->is_cell || b->shadowed || !binding_writes_once(*b))
+      return nullptr;
+    if (b->slot >= static_cast<int32_t>(slot_cell_.size()) ||
+        !slot_cell_[b->slot])
+      return nullptr;
+    return b;
+  }
+
+  ExprResult read_borrowed_head(const peg::Ast& at, const Binding& b) {
+    if (b.lazy) {
+      StampGuard pos(*this, at);
+      emit(Op::UnboundErr, b.slot, kconst_str(b.name), /*in_cell=*/1);
+    }
+    return {b.slot, false};
   }
 
   // Scope-level defer mark, established around a block whose scope declares
@@ -6999,8 +7069,14 @@ class Compiler {
                      chunk_.fn_bound_slot >= 0 && ast.nodes.size() > 1 &&
                      ast.nodes[1]->original_tag == "ARGUMENTS"_;
     if (auto r = compile_lazy_ns_register(ast)) return *r;
-    auto res = fn_direct ? ExprResult{chunk_.fn_slot, false}
-                         : compile_expr(*ast.nodes[0]);
+    // A head the call can read out of its cell when it runs, rather than
+    // copying into a register first (borrowed_call_head). `res.slot` is then
+    // the CELL's slot, which only the Call the next loop turn emits knows how
+    // to read — so this is the one shape where the head result is not a value.
+    const Binding* borrowed = fn_direct ? nullptr : borrowed_call_head(ast);
+    auto res = fn_direct  ? ExprResult{chunk_.fn_slot, false}
+               : borrowed ? read_borrowed_head(*ast.nodes[0], *borrowed)
+                          : compile_expr(*ast.nodes[0]);
     for (size_t i = 1; i < ast.nodes.size(); ++i) {
       const auto& post = *ast.nodes[i];
       if (post.original_tag == "ARGUMENTS"_) {
@@ -7011,8 +7087,10 @@ class Compiler {
         if (i == 1)
           tgt = fn_direct ? StaticCallee{chunk_idx_, -1}
                           : head_callee(*ast.nodes[0], res);
-        res = i == 1 && fn_direct ? compile_self_call_step(ast, post, res, tgt)
-                                  : compile_call_step(ast, post, res, tgt);
+        res = i == 1 && fn_direct
+                  ? compile_self_call_step(ast, post, res, tgt)
+                  : compile_call_step(ast, post, res, tgt,
+                                      /*callee_in_cell=*/i == 1 && borrowed);
       } else if (post.original_tag == "INDEX"_)
         res = compile_index_read(ast, post, res);
       else if (post.original_tag == "SAFE_INDEX"_) {
@@ -7684,8 +7762,8 @@ class Compiler {
   // owned temps (the JitFn ABI's arg slab), one Call op. Evaluation order
   // is callee first, then args left to right — both backends' order.
   ExprResult compile_call_step(const peg::Ast& ast, const peg::Ast& args,
-                               ExprResult callee,
-                               StaticCallee target = {}) {
+                               ExprResult callee, StaticCallee target = {},
+                               bool callee_in_cell = false) {
     if (has_kwargs(args))
       return compile_kwargs_call(ast, args, callee.slot, nullptr);
     int32_t argc = static_cast<int32_t>(args.nodes.size());
@@ -7696,7 +7774,7 @@ class Compiler {
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(ast);
     size_t ix = emit(Op::Call, t, callee.slot, base, argc);
-    record_call_target(ix, target, argc);
+    record_call_target(ix, target, argc, callee_in_cell);
     std::vector<const peg::Ast*> asts;
     for (const auto& a : args.nodes) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
@@ -9026,8 +9104,12 @@ inline std::string dump(const Chunk& c) {
     out += std::format("{:4}: {:<12} {:4} {:4} {:4} {:4}   ; {}:{}", i,
                        kNames[static_cast<size_t>(in.op)], in.a, in.b, in.c,
                        in.d, line, col);
-    if (auto t = chunk_call_target_at(c, i); t.chunk >= 0)
-      out += std::format("  -> chunk {}{}", t.chunk, t.via_mono ? " (mono)" : "");
+    if (auto t = chunk_call_target_at(c, i); t.chunk >= 0 || t.callee_in_cell) {
+      if (t.chunk >= 0)
+        out += std::format("  -> chunk {}{}", t.chunk,
+                           t.via_mono ? " (mono)" : "");
+      if (t.callee_in_cell) out += "  [callee in cell]";
+    }
     out += "\n";
   }
   return out;
@@ -9595,6 +9677,23 @@ struct Exec {
     else
       culebra_runtime_set_call_site(line, col);
   }
+
+  // What a borrowed callee stands on, checked where the assert lanes run it
+  // (`just test-assert`, CI's linux-assert): the cell the call read through
+  // still holds the same value once the call is over — the throw path
+  // included. That is the whole claim borrowed_call_head makes; a cell that
+  // could be written under its own call would leave the frame running on a
+  // closure nothing holds, so it is worth a lane rather than a comment.
+  // Release builds keep an empty destructor and the members fall away.
+  struct BorrowWitness {
+    const JitValue* at;
+    JitValue entry;
+    explicit BorrowWitness(const JitValue* at)
+        : at(at), entry(at ? *at : JitValue{TAG_NIL, 0}) {}
+    ~BorrowWitness() {
+      assert(!at || (at->tag == entry.tag && at->data == entry.data));
+    }
+  };
 
   // The frame a resolved call site enters (Chunk::call_targets): the
   // Function gate and the keyword-only guard both have static answers and
@@ -10736,12 +10835,21 @@ struct Exec {
           break;
         }
         case Op::Call: {
-          const JitValue& callee = regs[in.b];
+          auto tgt = chunk_call_target_at(c, pc);
+          // A borrowed callee: the register holds the CELL and the value
+          // inside it is what runs, with nothing minted for the call — the
+          // cell's own reference is what keeps it alive
+          // (Chunk::CallTarget::callee_in_cell).
+          const JitValue& callee =
+              tgt.callee_in_cell
+                  ? reinterpret_cast<JitCell*>(regs[in.b].data)->value
+                  : regs[in.b];
+          BorrowWitness witness{tgt.callee_in_cell ? &callee : nullptr};
           auto [line, col] = chunk_pos_at(c, pc);
           publish_call_site(c, pc, line, col);
           JitValue target = callee;
           JitValue self{TAG_NO_SELF, 0};
-          if (auto tgt = chunk_call_target_at(c, pc); tgt.chunk >= 0) {
+          if (tgt.chunk >= 0) {
             JitValue entered = tgt.via_mono ? mono_callee(callee) : callee;
             if (!tgt.via_mono || entered.tag == TAG_FUNC) {
               regs[in.a] = run_resolved(p, tgt.chunk, entered, self,
@@ -11010,7 +11118,9 @@ struct Exec {
           break;  // unreachable — the helper always throws
         }
         case Op::UnboundErr:
-          if (regs[in.a].tag == TAG_NO_SELF) {
+          if ((in.c ? reinterpret_cast<JitCell*>(regs[in.a].data)->value
+                    : regs[in.a])
+                  .tag == TAG_NO_SELF) {
             auto [line, col] = chunk_pos_at(c, pc);
             auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
             culebra_runtime_throw_error(

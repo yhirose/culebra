@@ -347,6 +347,14 @@ struct Lowering {
     auto load_slot = [&](int32_t s) {
       return b.CreateLoad(j.valueType_, slots[s]);
     };
+    // The value inside a cell whose pointer is already loaded — CellGet's
+    // read, without its retain (a borrowed callee's, see Op::Call).
+    auto load_cell_value = [&](llvm::Value* cellSlotVal) {
+      auto cellPtr = b.CreateIntToPtr(j.extract_data(cellSlotVal), ptrTy);
+      return b.CreateLoad(
+          j.valueType_, b.CreateStructGEP(j.cellType_, cellPtr, 1, "cell.vp"),
+          "cell.val");
+    };
     // One for-in cursor per statement, keyed by its slot run's base. The
     // Values live in the run (so the ladders free them); the bookkeeping the
     // walk needs in native types lives in entry-block scratch, invisible to
@@ -3657,10 +3665,17 @@ struct Lowering {
           // the executor's CallM.
           bool meth = in.op == Op::CallM;
           auto [line, col] = chunk_pos_at(c, i);
-          b.CreateStore(emit_invoke(load_slot(in.b), meth ? in.c : -1,
-                                    in.c + (meth ? 1 : 0), in.d, line, col,
-                                    chunk_argpos_at(c, i),
-                                    chunk_call_target_at(c, i)),
+          auto tgt = chunk_call_target_at(c, i);
+          // A borrowed callee reads the cell here and takes no `+1`: the
+          // cell's own reference outlives the call, so the retain the copy
+          // would have paid — and the release that matched it — are both
+          // gone (Chunk::CallTarget::callee_in_cell).
+          b.CreateStore(emit_invoke(tgt.callee_in_cell
+                                        ? load_cell_value(load_slot(in.b))
+                                        : load_slot(in.b),
+                                    meth ? in.c : -1, in.c + (meth ? 1 : 0),
+                                    in.d, line, col, chunk_argpos_at(c, i),
+                                    tgt),
                         slots[in.a]);
           break;
         }
@@ -3831,10 +3846,7 @@ struct Lowering {
           break;
         }
         case Op::CellGet: {
-          auto cellPtr =
-              b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
-          auto valPtr = b.CreateStructGEP(j.cellType_, cellPtr, 1, "cell.vp");
-          auto v = b.CreateLoad(j.valueType_, valPtr, "cell.val");
+          auto v = load_cell_value(load_slot(in.b));
           j.emit_value_retain(v);
           b.CreateStore(v, slots[in.a]);
           break;
@@ -3876,7 +3888,7 @@ struct Lowering {
           break;
         }
         case Op::UnboundErr: {
-          auto v = load_slot(in.a);
+          auto v = in.c ? load_cell_value(load_slot(in.a)) : load_slot(in.a);
           auto unbound = b.CreateICmpEQ(j.extract_tag(v),
                                         b.getInt8(TAG_NO_SELF), "vm.unbound");
           auto errBB = BasicBlock::Create(j.ctx_, "vm.unbound.err", fn);

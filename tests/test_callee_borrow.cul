@@ -1,0 +1,197 @@
+# A call borrows what it calls: the caller's register is never handed to the
+# callee. So a name bound once into a cell this frame owns needs no register
+# at all — the Call reads the cell itself, and the cell's own reference is
+# what keeps the callee alive for the whole call
+# (Chunk::CallTarget::callee_in_cell). Nothing observable may change: the
+# same values, the same errors, at the same positions.
+
+# --- The cell as the only holder ---
+# `pick` is a cell because a closure captures it. The call reads it there,
+# and the value lives exactly as long as the cell does.
+let pick = fn (a, b) {
+  a + b
+}
+let captures_pick = fn () {
+  pick
+}
+assert_eq(pick(1, 2), 3)
+assert_eq(captures_pick()(3, 4), 7)
+
+# The callee drops every OTHER reference to itself while it runs, and
+# collects. Only the cell is left holding it, which is the whole claim.
+mut also_held = nil
+let selfish = fn (n) {
+  also_held = nil
+  GC.stat()
+  n + 1
+}
+let captures_selfish = fn () {
+  selfish
+}
+also_held = selfish
+assert_eq(selfish(41), 42)
+assert_eq(also_held, nil)
+assert_eq(captures_selfish()(0), 1)
+
+# --- A borrowed callee that is not a function ---
+# The read is where a copy used to be, so the TypeError still reports the
+# value's own type at the call.
+let not_a_fn = 5
+let captures_value = fn () {
+  not_a_fn
+}
+assert_eq(captures_value(), 5)
+let called_a_long = try {
+  not_a_fn(1)
+  nil
+} catch e {
+  e
+}
+assert_eq(called_a_long.kind, 'TypeError')
+
+# --- The two cold probes reached through a cell ---
+# A callable instance becomes its own receiver, and the `+1` that receiver
+# needs is minted at the call rather than inherited from a register.
+class Doubler {
+  new(by) {
+    self.by = by
+  }
+  __call__(x) {
+    x * self.by
+  }
+}
+let twice = Doubler(2)
+let captures_twice = fn () {
+  twice
+}
+assert_eq(twice(21), 42)
+assert_eq(captures_twice()(3), 6)
+
+# A class object hands over its `new`, and the instance keeps a `+1` on it.
+let captures_doubler = fn () {
+  Doubler
+}
+assert_eq(Doubler(3)(4), 12)
+assert_eq(captures_doubler()(5)(6), 30)
+
+# --- Errors from a borrowed callee ---
+# The throw unwinds past the site that borrowed, which is the path with no
+# release of its own to run.
+let raises = fn () {
+  throw 'boom'
+}
+let captures_raises = fn () {
+  raises
+}
+assert_eq(try {
+  raises()
+  nil
+} catch e {
+  e
+}, 'boom')
+assert_eq(captures_raises() == raises, true)
+
+# Arity is checked before the callee's frame binds anything, and reports
+# against its parameter names.
+let needs_two = fn (a, b) {
+  a + b
+}
+let captures_needs_two = fn () {
+  needs_two
+}
+let short_call = try {
+  needs_two(1)
+  nil
+} catch e {
+  e
+}
+assert_eq(short_call.kind, 'ArityError')
+assert_true(short_call.message.contains('b'))
+assert_eq(captures_needs_two()(1, 2), 3)
+
+# --- `fn name`: the dispatcher cell is borrowed too ---
+# Hoisted, so a call ahead of the declaration still asks the cell whether
+# the declaration ran — the guard reads the cell in place now.
+assert_eq(try {
+  ahead(1)
+} catch e {
+  e.kind
+}, 'NameError')
+fn ahead(x) {
+  x * 3
+}
+assert_eq(ahead(4), 12)
+
+# Recursion reads the same handle: the body's own name is a cell the frame
+# owns (the MfSelf store), so plain recursion borrows it every level down.
+fn down(n) {
+  n == 0 ? 'floor' : down(n - 1)
+}
+assert_eq(down(200), 'floor')
+
+# A count the lone overload does not accept stays a run-time question and
+# keeps its DispatchError, even though the callee is still read from the
+# cell.
+fn pair(a, b) {
+  "{a}/{b}"
+}
+assert_eq(pair(1, 2), '1/2')
+assert_eq(try {
+  pair(1)
+} catch e {
+  e.kind
+}, 'DispatchError')
+
+# --- A second declaration over the same cell ---
+# The site keeps reading the cell — that is what it was always doing — and
+# only what the compiler had NAMED is struck.
+let which = fn () {
+  'first'
+}
+let captures_which = fn () {
+  which
+}
+assert_eq(which(), 'first')
+let which = fn () {
+  'second'
+}
+assert_eq(which(), 'second')
+assert_eq(captures_which()(), 'second')
+
+# --- Shapes that are NOT borrowed, and must not change ---
+# A `mut` binding can be rewritten under its own call, so it is copied.
+mut swappable = fn () {
+  'a'
+}
+let captures_swappable = fn () {
+  swappable
+}
+assert_eq(swappable(), 'a')
+swappable = fn () {
+  'b'
+}
+assert_eq(swappable(), 'b')
+assert_eq(captures_swappable()(), 'b')
+
+# A capture is a cell the RUNNING CLOSURE owns, not this frame, so a call
+# inside a closure copies the callee as before.
+fn helper(x) {
+  x + 100
+}
+let through_capture = fn (n) {
+  helper(n)
+}
+assert_eq(through_capture(1), 101)
+
+# Keyword arguments go through the resolver, which takes the callee from a
+# register run of its own.
+fn keyed(a, b = 2) {
+  a * b
+}
+let captures_keyed = fn () {
+  keyed
+}
+assert_eq(keyed(3, b: 4), 12)
+assert_eq(captures_keyed()(5), 10)
+
+IO.inspect('test_callee_borrow OK')
