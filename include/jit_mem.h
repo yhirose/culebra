@@ -494,7 +494,11 @@ extern "C" {
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_retain(int8_t tag,
                                                                int64_t data) {
-  if (data == 0) return;
+  // Same guard as the release side, and for the same reason twice over: it is
+  // the fast exit for a value type, and it is the one predicate the lowering's
+  // peephole drops settled retains on the authority of (see
+  // JIT::is_settled_refcount). The switch below must never widen past it.
+  if (data == 0 || !_is_refcounted_value_tag(tag)) return;
   switch (tag) {
     case TAG_FUNC:
       reinterpret_cast<JitClosure*>(data)->refcount++;

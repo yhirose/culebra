@@ -558,6 +558,24 @@ loweringされたプログラムに対してホスト側に登録されるもの
 `CULEBRA_JIT_CACHE`は`JIT::jit_module_name`（ソースとオプション）
 でキーづけられたobject cacheを有効にする。
 
+このパイプラインのうち1つのパスはlowering自身のものである。
+4つのrefcountヘルパーはそれぞれガードで始まる — 値の2つは
+`_is_refcounted_value_tag`とnullペイロードに対して、cellの2つは
+nullのcellに対して。したがってそれを満たす定数で到達する呼び出しは
+何もしない。emitされたモジュールの中でランタイムは不透明な宣言なので、
+LLVMはそれを見ることができない。しかもそうした定数の多くはemitter側
+ではなくオプティマイザ自身の産物である。`-O0`ではテストファイル1本が
+1つも出さない — その時点でタグはまだレジスタslotからのloadだからで、
+パイプラインが確定させるのはSROAがそのslotから昇格した`Long`、素の
+呼び出しが渡す`TAG_NO_SELF`のレシーバ、直接参照だと判明した捕獲の
+nullのcellである。そこで`JIT::DropSettledRefcounts`はパイプラインの
+中でそれらを落とす（LLVMのARC optimizerの縮小版）。各`InstCombine`の
+後と、末尾でもう1度 — ループのpeelingとvectorizerはどのpeephole回も
+見ないタグを確定させるからである。消えるのはコードだけで、その
+呼び出しがしたはずのことは全レーンで何もない。peepholeが黙って
+止まっても他の誰も気づかないので、`optimize_module`は生き残りが
+ないことをassertする（§10.2）。
+
 ### 7.1 loweringの中の所有権
 
 loweringのC++は、すべての一時的な`+1`を`JIT::Owned`に保持する。
@@ -782,6 +800,11 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
   に留まっているか — ループ中の非エントリ`alloca`は毎パス
   スタックを伸ばす）、`tools/check_rc_discipline.sh`（`jit.h`内の
   手書きretain/releaseサイトの数は減る一方であるべき）。
+- **assert。** 出力からは決して分からない2つの不変条件がassert
+  レーン（`just test-assert`、CIの`linux-assert`。`NDEBUG`なしで
+  同じスイープを回す）に乗っている: 解決済み呼び出しの予測chunkが
+  実際に現れるクロージャと一致すること（§5.4）と、確定した
+  refcount呼び出しがパイプラインを生き延びないこと（§7）。
 
 ### 10.3 前のリリースをオラクルとして使う
 

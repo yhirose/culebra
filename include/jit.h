@@ -939,6 +939,69 @@ struct JIT {
     return tm;
   }
 
+  // Does this call reach a refcount helper with arguments that make it do
+  // nothing? Each helper opens with the guard asked about here — the value
+  // pair against `_is_refcounted_value_tag` and a null payload, the cell pair
+  // against a null cell — so the answer is theirs rather than a second copy
+  // of it.
+  static bool is_settled_refcount(const llvm::CallInst& call) {
+    const auto* callee = call.getCalledFunction();
+    if (!callee) return false;
+    const auto name = callee->getName();
+    if (name == rt::value_retain || name == rt::value_release) {
+      const auto* tag =
+          llvm::dyn_cast<llvm::ConstantInt>(call.getArgOperand(0));
+      const auto* data =
+          llvm::dyn_cast<llvm::ConstantInt>(call.getArgOperand(1));
+      return (tag && !_is_refcounted_value_tag(
+                         static_cast<int8_t>(tag->getZExtValue()))) ||
+             (data && data->isZero());
+    }
+    if (name == rt::cell_retain || name == rt::cell_release)
+      return llvm::isa<llvm::ConstantPointerNull>(call.getArgOperand(0));
+    return false;
+  }
+
+  // Drop the refcount calls whose answer is already settled. LLVM cannot do
+  // it on its own: the runtime is an opaque declaration in this module. And
+  // the constants are mostly its own doing, not the emitter's — the Long that
+  // SROA promoted out of a register slot, the absent receiver a call passes as
+  // TAG_NO_SELF, the null cell of a capture that turned out to be direct — so
+  // this is a peephole inside the pipeline rather than a check at emission,
+  // the way LLVM's ARC optimizer treats objc_retain/objc_release. The calls
+  // are `nounwind`, so a settled one is never an `invoke`.
+  struct DropSettledRefcounts : llvm::PassInfoMixin<DropSettledRefcounts> {
+    llvm::PreservedAnalyses run(llvm::Function& f,
+                                llvm::FunctionAnalysisManager&) {
+      bool dropped = false;
+      for (auto& bb : f) {
+        for (auto& in : llvm::make_early_inc_range(bb)) {
+          auto* call = llvm::dyn_cast<llvm::CallInst>(&in);
+          if (!call || !is_settled_refcount(*call)) continue;
+          call->eraseFromParent();
+          dropped = true;
+        }
+      }
+      if (!dropped) return llvm::PreservedAnalyses::all();
+      llvm::PreservedAnalyses pa;
+      pa.preserveSet<llvm::CFGAnalyses>();
+      return pa;
+    }
+  };
+
+  // None survived. Nothing else would notice if the peephole stopped firing —
+  // what it drops are no-ops, so every result stays identical — which is why
+  // this rides the assert lane (`just test-assert` and CI's `linux-assert`
+  // run the whole sweep with it armed, and a release build pays nothing).
+  static bool no_settled_refcounts(const llvm::Module& mod) {
+    for (const auto& f : mod)
+      for (const auto& bb : f)
+        for (const auto& in : bb)
+          if (const auto* call = llvm::dyn_cast<llvm::CallInst>(&in))
+            if (is_settled_refcount(*call)) return false;
+    return true;
+  }
+
   static void optimize_module(llvm::Module& mod, int opt_level) {
     using namespace llvm;
     PassBuilder PB;
@@ -947,6 +1010,21 @@ struct JIT {
     FunctionAnalysisManager FAM;
     CGSCCAnalysisManager CGAM;
     ModuleAnalysisManager MAM;
+
+    // After each InstCombine, so a tag the previous round settled is gone
+    // before the next one reasons about what the call keeps alive — and once
+    // more at the very end, because the module-optimization tail settles tags
+    // no peephole round ever sees (loop peeling and the vectorizers run after
+    // the last one; six calls across tests/*.cul survived without this).
+    PB.registerPeepholeEPCallback(
+        [](FunctionPassManager& FPM, OptimizationLevel) {
+          FPM.addPass(DropSettledRefcounts());
+        });
+    PB.registerOptimizerLastEPCallback([](ModulePassManager& MPM,
+                                          OptimizationLevel,
+                                          ThinOrFullLTOPhase) {
+      MPM.addPass(createModuleToFunctionPassAdaptor(DropSettledRefcounts()));
+    });
 
     PB.registerModuleAnalyses(MAM);
     PB.registerCGSCCAnalyses(CGAM);
@@ -972,6 +1050,7 @@ struct JIT {
 
     ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(level);
     MPM.run(mod, MAM);
+    assert(no_settled_refcounts(mod));
   }
 
 

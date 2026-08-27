@@ -571,6 +571,24 @@ the program names, and the lane's link supplies the symbol — the JIT
 defines it from the driver's table (`JIT::define_baked_preambles`), the
 built binary pulls the archive member.
 
+One pass of that pipeline is the lowering's own. The four refcount
+helpers each open with a guard — the value pair against
+`_is_refcounted_value_tag` and a null payload, the cell pair against a
+null cell — so a call that reaches one with constants satisfying it does
+nothing. LLVM cannot see that, because in the emitted module the runtime
+is an opaque declaration. And the constants are mostly the optimizer's
+own doing rather than the emitter's: at `-O0` a whole test file emits
+none, because the tag is still a load out of a register slot; what the
+pipeline settles is the `Long` SROA promoted out of that slot, the
+`TAG_NO_SELF` receiver a plain call passes, the null cell of a capture
+that turned out to be direct. So `JIT::DropSettledRefcounts` drops them
+inside the pipeline — LLVM's ARC optimizer in miniature — after each
+`InstCombine`, and once more at the end, because loop peeling and the
+vectorizers settle tags no peephole round sees. Only the code goes away:
+what the calls would have done is nothing, on every lane. Nothing else
+would notice if the peephole stopped firing, so `optimize_module`
+asserts that none survive (§10.2).
+
 ### 7.1 Ownership in the lowering
 
 The lowering's C++ holds every transient `+1` in `JIT::Owned`, a
@@ -782,6 +800,11 @@ check, used by the Windows CI jobs.
   (scratch slots stay in the entry block — a non-entry `alloca` in a loop
   grows the stack every pass), `tools/check_rc_discipline.sh` (the count
   of hand-placed retain/release sites in `jit.h` may only shrink).
+- **Asserts.** Two invariants no output can betray ride the assert lane
+  (`just test-assert`, CI's `linux-assert`), which runs the whole sweep
+  with `NDEBUG` off: the resolved call's predicted chunk is the closure
+  that turns up (§5.4), and no settled refcount call survives the
+  pipeline (§7).
 
 ### 10.3 The previous release as oracle
 
