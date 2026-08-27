@@ -13,6 +13,7 @@
 // oracle. Thread-local: isolates each get their own count, and the
 // difftest harness can compare it across backends byte-for-byte.
 
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
