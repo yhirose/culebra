@@ -84,14 +84,9 @@ assert_eq(Path.new("/tmp").is_file(), false)
 assert_eq(Path.new("/definitely/not/real/xyzzy").exists(), false)
 
 // --- filesystem round-trip: mkdir / write / read / list / glob / remove ---
-let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = if tmpdir_env != "" {
-  tmpdir_env
-} else {
-  "/tmp"
-}
-let base = Path.new(tmp_root) / "culebra_path_test"
-base.remove(recursive: true)  // clean any stale run (idempotent enough)
+// This run's own directory: a fixed name collides with a concurrent suite.
+let tmp_root = FS.mkdtemp("culebra_path_test_")
+let base = Path.new(tmp_root) / "work"
 base.mkdir()
 assert_eq(base.is_dir(), true)
 
@@ -152,3 +147,4 @@ assert_eq(te2, "TypeError")
 
 base.remove(recursive: true)
 assert_eq(base.exists(), false)
+FS.remove(tmp_root, recursive: true)

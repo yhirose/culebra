@@ -80,15 +80,8 @@ assert_eq(Proc.run(share_count, share: {slot: probe_buf},
 assert_eq(Proc.run(share_count, inherit_env: false).stdout.trim(), "0")
 
 // --- cwd changes the child's working directory ---
-let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = if tmpdir_env != "" {
-  tmpdir_env
-} else {
-  "/tmp"
-}
-let workdir = FS.join(tmp_root, "culebra_proc_test")
-FS.remove(workdir) if FS.exists(workdir)
-FS.mkdir(workdir)
+// This run's own directory: a fixed name collides with a concurrent suite.
+let workdir = FS.mkdtemp("culebra_proc_test_")
 let pw = Proc.run(["pwd"], cwd: workdir)
 // pwd may resolve symlinks (/var -> /private/var), so match the basename.
 assert_true(pw.stdout.trim().contains("culebra_proc_test"))

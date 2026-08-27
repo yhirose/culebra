@@ -297,11 +297,13 @@ assert_eq(Canvas.get_pixel(0, 0), RED)
 assert_eq(Canvas.get_pixel(1, 1), GREEN)  // transparency survived
 // PNG bytes hold NULs, so the round trip also pins that FS.write writes the
 // whole byte string rather than stopping at the first one.
-let png_path = FS.join(Sys.env('TMPDIR'), 'culebra_to_png_test.png')
+let png_dir = FS.mkdtemp('culebra_to_png_test_')
+let png_path = FS.join(png_dir, 'sprite.png')
 FS.write(png_path, png_sprite.to_png())
 assert_eq(FS.size(png_path), png_sprite.to_png().size())
 assert_eq(Canvas.Sprite.from_png(FS.read(png_path)).width(), 2)
 FS.remove(png_path)
+FS.remove(png_dir, recursive: true)
 
 // One canvas, one isolate: this one claimed it above, so a second is refused
 // rather than raced (see own_canvas in canvas.h).

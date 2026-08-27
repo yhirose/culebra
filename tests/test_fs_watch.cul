@@ -7,14 +7,12 @@
 // moment the watch opens, so a write before the first pull still lands: no
 // concurrency is needed here.
 
-let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = tmpdir_env != "" ? tmpdir_env : "/tmp"
 // FSEvents reports realpath'd paths (a /tmp root comes back as /private/tmp on
 // macOS), and FS.watch canonicalizes its root to match, so expectations have
-// to be built from the canonical form too.
-let root = FS.join(FS.realpath(tmp_root), "culebra_fs_watch_test")
-FS.remove(root, recursive: true) if FS.exists(root)
-FS.mkdir(root)
+// to be built from the canonical form too. The root is this run's own: a
+// fixed name is a tree two concurrent suites would delete out from under each
+// other.
+let root = FS.realpath(FS.mkdtemp("culebra_fs_watch_test_"))
 
 // Pull events until `name` shows up directly under `dir`, and report its kind.
 // A closed watch ends the loop, which turns a missing event into a failed

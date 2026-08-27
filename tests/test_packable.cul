@@ -132,9 +132,9 @@ assert_throws('IndexError', fn () {
 class FCell {
   v: Int64 = 0
 }
-mut tmpdir = Sys.env("TMPDIR")
-tmpdir = "/tmp" if tmpdir == ""
-let fpath = tmpdir + "/culebra_test_packable_file.bin"
+// This run's own directory: a fixed name collides with a concurrent suite.
+let tmpdir = FS.mkdtemp("culebra_test_packable_")
+let fpath = FS.join(tmpdir, "file.bin")
 let fb = SharedBuffer.file(fpath, 3, FCell)
 fb[0].v = 7
 fb[1].v = 8
@@ -145,6 +145,7 @@ assert_eq(fb2[0].v, 7)
 assert_eq(fb2[1].v, 8)
 assert_eq(SharedBuffer.new(1, FCell).count, 1)  # heap path still works
 FS.remove(fpath)                                # cleanup
+FS.remove(tmpdir, recursive: true)
 
 # --- with_lock: the synchronization escape hatch ---------------------------
 @packable

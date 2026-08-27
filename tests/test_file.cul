@@ -2,14 +2,10 @@
 // docs/stdlib.md §File and the I/O design. Runs on interp / JIT / AOT
 // via `just test`; identical stdout across all three.
 
-let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = if tmpdir_env != "" {
-  tmpdir_env
-} else {
-  "/tmp"
-}
+// A scratch directory of this run's own — a fixed name under the shared temp
+// dir collides when two checkouts run the suite at once.
+let tmp_root = FS.mkdtemp("culebra_file_test_")
 let p = FS.join(tmp_root, "culebra_file_test.txt")
-FS.remove(p) if FS.exists(p)
 
 // --- write / flush / close round-trip ---
 let w = File.open(p, "w")
@@ -276,4 +272,5 @@ File.with(vf, "w", fn (f) {
 FS.remove(vf)
 
 FS.remove(p)
+FS.remove(tmp_root, recursive: true)
 IO.inspect("test_file OK")

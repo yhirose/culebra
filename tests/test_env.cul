@@ -24,13 +24,9 @@ assert_eq(Env.parse("").keys().size(), 0)
 assert_eq(Env.parse("# just a comment\n\n").keys().size(), 0)
 
 // --- Env.load: read a file, set the process env, return the parsed Object ---
-let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = if tmpdir_env != "" {
-  tmpdir_env
-} else {
-  "/tmp"
-}
-let envfile = FS.join(tmp_root, "culebra_env_test.env")
+// This run's own directory: a fixed name collides with a concurrent suite.
+let tmp_root = FS.mkdtemp("culebra_env_test_")
+let envfile = FS.join(tmp_root, "test.env")
 
 FS.write(envfile, "FOO=bar\nBAZ=qux\n")
 let loaded = Env.load(envfile)
@@ -50,6 +46,7 @@ Env.load(envfile, override: true)
 assert_eq(Sys.env("FOO"), "fromfile")
 
 FS.remove(envfile)
+FS.remove(tmp_root, recursive: true)
 
 // --- Error path: missing file throws IOError ---
 let err = try {

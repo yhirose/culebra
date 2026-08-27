@@ -57,15 +57,8 @@ assert_true(FS.is_abs(orig))
 // chdir into a fresh tmp dir, confirm getcwd reflects it, then restore.
 // current_path resolves symlinks (e.g. macOS /tmp -> /private/tmp), so
 // compare against FS.realpath of the same dir.
-let tmpdir_env = Sys.env("TMPDIR")
-let tmp_root = if tmpdir_env != "" {
-  tmpdir_env
-} else {
-  "/tmp"
-}
-let dir = FS.join(tmp_root, "culebra_sys_test")
-FS.remove(dir, recursive: true) if FS.exists(dir)
-FS.mkdir(dir)
+// This run's own directory: a fixed name collides with a concurrent suite.
+let dir = FS.mkdtemp("culebra_sys_test_")
 
 Sys.chdir(dir)
 assert_eq(Sys.getcwd(), FS.realpath(dir))
