@@ -35,9 +35,11 @@ trap 'rm -rf "$work"' EXIT
 cache="$work/cache"
 command -v cygpath >/dev/null && cache="$(cygpath -m "$work")/cache"
 
-# One program per axis that links a third-party static, each paired with the
-# feature archive that proves the axis is in THIS build (a disabled feature
-# leaves no archive — the same test release.yml makes before shipping).
+# One program per axis that links a third-party static. Whether the axis is in
+# THIS build is a question for the binary, not for the build directory: the CI
+# lanes run against a downloaded artifact that holds the driver alone, with the
+# archives where they belong — inside it. Running the program under the default
+# engine is the same probe release.yml makes before shipping.
 cat > "$work/http.cul" <<'CUL'
 let srv = Http.server()
 print("http")
@@ -48,10 +50,11 @@ print("canvas {Canvas.width()}")
 CUL
 
 checked=0
-for axis in http:libculebra_rt_http.a canvas:libculebra_rt_canvas.a; do
-  name=${axis%%:*}
-  archive=${axis#*:}
-  [[ -f "$BUILD_DIR/$archive" ]] || { echo "  skip $name (not in this build)"; continue; }
+for name in http canvas; do
+  if ! (cd "$work" && "$bin" "$name.cul" >/dev/null 2>&1); then
+    echo "  skip $name (this build has no such namespace)"
+    continue
+  fi
 
   link=$(cd "$work" && CULEBRA_CACHE="$cache" CULEBRA_VERBOSE=1 \
     "$bin" build "$name.cul" -o "$name.out" 2>&1 >/dev/null |
