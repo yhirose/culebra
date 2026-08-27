@@ -2624,18 +2624,11 @@ let _deque_module = fn () {
 
     _grow() {
       let old_cap = self._buf.size()
-      let new_cap = if old_cap == 0 {
-        8
-      } else {
-        old_cap * 2
-      }
-      let mut new_buf = []
-      for i in 0..self._count {
-        new_buf.push(self._buf[(self._head + i) % old_cap])
-      }
-      for i in self._count..new_cap {
-        new_buf.push(nil)
-      }
+      let new_cap = old_cap == 0 ? 8 : old_cap * 2
+      let mut new_buf = range(self._count)
+        .map(|i| self._buf[(self._head + i) % old_cap])
+        .collect()
+      new_buf.extend(repeat(new_cap - self._count, nil))
       self._buf = new_buf
       self._head = 0
     }
@@ -2725,6 +2718,12 @@ let _priority_queue_module = fn () {
       self._heap.empty()
     }
 
+    # Heap-array order is not priority order, so echoing `_heap` here
+    # (the default formatter's fallback) would mislead more than help.
+    __str__() {
+      "PriorityQueue(size={self.size()})"
+    }
+
     _less(a, b) {
       let ka = self._key == nil ? a : self._key(a)
       let kb = self._key == nil ? b : self._key(b)
@@ -2732,9 +2731,7 @@ let _priority_queue_module = fn () {
     }
 
     _swap(i, j) {
-      let tmp = self._heap[i]
-      self._heap[i] = self._heap[j]
-      self._heap[j] = tmp
+      (self._heap[i], self._heap[j]) = (self._heap[j], self._heap[i])
     }
 
     push(x) {

@@ -749,7 +749,7 @@ entry with no receiver at all (`contains(x)` under **Set methods**,
 
 **Vector3** — Vector3.new(x, y, z); a.dot(b); a.normalized(); a.distance_to(b)
 
-**Deque** — Deque.new(); d.size(); d.empty(); d.to_array() -> Array; d.iter() -> Iterator
+**Deque** — Deque.new(); d.push_back(x); d.push_front(x); d.pop_back() -> Any; d.pop_front() -> Any; d.peek_back() -> Any; d.peek_front() -> Any; d.size(); d.empty(); d.to_array() -> Array; d.iter() -> Iterator
 
 **PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty()
 

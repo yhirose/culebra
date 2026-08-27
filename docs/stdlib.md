@@ -5603,9 +5603,12 @@ inspect(q.size())       # => 1
 | Member | Returns |
 |---|---|
 | `Deque.new()` | `Deque` |
-| `d.push_back(x)` / `d.push_front(x)` | `Nil` |
-| `d.pop_back()` / `d.pop_front()` | `Any` — removed element, `nil` if empty |
-| `d.peek_back()` / `d.peek_front()` | `Any` — `nil` if empty, does not remove |
+| `d.push_back(x)` | `Nil` |
+| `d.push_front(x)` | `Nil` |
+| `d.pop_back()` | `Any` — removed element, `nil` if empty |
+| `d.pop_front()` | `Any` — removed element, `nil` if empty |
+| `d.peek_back()` | `Any` — `nil` if empty, does not remove |
+| `d.peek_front()` | `Any` — `nil` if empty, does not remove |
 | `d.size()` | `Long` |
 | `d.empty()` | `Bool` |
 | `d.to_array()` | `Array` — snapshot, front to back |
@@ -5652,6 +5655,7 @@ inspect(jobs.pop())  # => (1, 'ping')
 | `pq.peek()` | `Any` — like `pop()` but does not remove, `nil` if empty |
 | `pq.size()` | `Long` |
 | `pq.empty()` | `Bool` |
+| `"{pq}"` / `to_string(pq)` | `String` — `"PriorityQueue(size=n)"`, not the heap array (its element order is not priority order) |
 
 Like `Array.pop()` and `Deque`, `pop`/`peek` return `nil` on an empty
 queue rather than throwing.

@@ -5445,9 +5445,12 @@ inspect(q.size())       # => 1
 | メンバー | 返り値 |
 |---|---|
 | `Deque.new()` | `Deque` |
-| `d.push_back(x)` / `d.push_front(x)` | `Nil` |
-| `d.pop_back()` / `d.pop_front()` | `Any` — 取り除いた要素、空なら`nil` |
-| `d.peek_back()` / `d.peek_front()` | `Any` — 空なら`nil`、取り除かない |
+| `d.push_back(x)` | `Nil` |
+| `d.push_front(x)` | `Nil` |
+| `d.pop_back()` | `Any` — 取り除いた要素、空なら`nil` |
+| `d.pop_front()` | `Any` — 取り除いた要素、空なら`nil` |
+| `d.peek_back()` | `Any` — 空なら`nil`、取り除かない |
+| `d.peek_front()` | `Any` — 空なら`nil`、取り除かない |
 | `d.size()` | `Long` |
 | `d.empty()` | `Bool` |
 | `d.to_array()` | `Array` — スナップショット、前から後ろの順 |
@@ -5492,6 +5495,7 @@ inspect(jobs.pop())  # => (1, 'ping')
 | `pq.peek()` | `Any` — `pop()`と同じだが取り除かない、空なら`nil` |
 | `pq.size()` | `Long` |
 | `pq.empty()` | `Bool` |
+| `"{pq}"` / `to_string(pq)` | `String` — `"PriorityQueue(size=n)"`(ヒープ配列そのものではない——要素の並びは優先度順ではないため) |
 
 `Array.pop()`や`Deque`と同様、`pop`/`peek`は空のキューに対して
 例外を投げず`nil`を返します。

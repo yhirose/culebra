@@ -21,6 +21,12 @@ let _priority_queue_module = fn () {
       self._heap.empty()
     }
 
+    # Heap-array order is not priority order, so echoing `_heap` here
+    # (the default formatter's fallback) would mislead more than help.
+    __str__() {
+      "PriorityQueue(size={self.size()})"
+    }
+
     _less(a, b) {
       let ka = self._key == nil ? a : self._key(a)
       let kb = self._key == nil ? b : self._key(b)
@@ -28,9 +34,7 @@ let _priority_queue_module = fn () {
     }
 
     _swap(i, j) {
-      let tmp = self._heap[i]
-      self._heap[i] = self._heap[j]
-      self._heap[j] = tmp
+      (self._heap[i], self._heap[j]) = (self._heap[j], self._heap[i])
     }
 
     push(x) {

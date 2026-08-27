@@ -5,12 +5,21 @@
 # Tested on interp, JIT, and AOT via `just test`; identical stdout (asserts
 # are silent on success).
 
+fn drain(q) {
+  let mut out = []
+  while !q.empty() {
+    out.push(q.pop())
+  }
+  out
+}
+
 # --- empty ---
 let pq0 = PriorityQueue.new()
 assert_eq(pq0.size(), 0)
 assert_eq(pq0.empty(), true)
 assert_eq(pq0.pop(), nil)
 assert_eq(pq0.peek(), nil)
+assert_eq("{pq0}", "PriorityQueue(size=0)")
 
 # --- natural order (Long, via `<`) ---
 let mut pq = PriorityQueue.new()
@@ -20,11 +29,8 @@ for x in [5, 1, 4, 2, 3] {
 assert_eq(pq.size(), 5)
 assert_eq(pq.peek(), 1)  # peek does not remove
 assert_eq(pq.size(), 5)
-let mut out = []
-while !pq.empty() {
-  out.push(pq.pop())
-}
-assert_eq(out, [1, 2, 3, 4, 5])
+assert_eq("{pq}", "PriorityQueue(size=5)")
+assert_eq(drain(pq), [1, 2, 3, 4, 5])
 assert_eq(pq.pop(), nil)
 
 # --- duplicates ---
@@ -32,11 +38,7 @@ let mut dup = PriorityQueue.new()
 for x in [3, 1, 3, 1, 2] {
   dup.push(x)
 }
-let mut dup_out = []
-while !dup.empty() {
-  dup_out.push(dup.pop())
-}
-assert_eq(dup_out, [1, 1, 2, 3, 3])
+assert_eq(drain(dup), [1, 1, 2, 3, 3])
 
 # --- larger sequence, checked against Array.sorted() as the oracle ---
 Random.seed(42)
@@ -48,22 +50,14 @@ let mut heap = PriorityQueue.new()
 for x in src {
   heap.push(x)
 }
-let mut heap_out = []
-while !heap.empty() {
-  heap_out.push(heap.pop())
-}
-assert_eq(heap_out, src.sorted())
+assert_eq(drain(heap), src.sorted())
 
 # --- reverse: true (max-heap) ---
 let mut maxpq = PriorityQueue.new(reverse: true)
 for x in [5, 1, 4, 2, 3] {
   maxpq.push(x)
 }
-let mut max_out = []
-while !maxpq.empty() {
-  max_out.push(maxpq.pop())
-}
-assert_eq(max_out, [5, 4, 3, 2, 1])
+assert_eq(drain(maxpq), [5, 4, 3, 2, 1])
 
 # --- key: function (order by a derived value, ties keep insertion order
 # among items whose key happens to sort together only incidentally — a
