@@ -439,6 +439,36 @@ let over = try {
 }
 assert_eq(over, "DispatchError: no matching method for `narrow`")
 
+# A dispatcher is minted and forgotten once per activation of its
+# declaration, and its teardown runs the captured object's `drop` — so the
+# record every consumer reads through the dispatcher has to be gone at
+# exactly the moment the registry entry is.
+mut released = 0
+
+class Held {
+  new(tag) {
+    self.tag = tag
+  }
+  drop() {
+    released += 1
+  }
+}
+
+fn activation(n) {
+  let keep = Held.new(n)
+  fn doubled(x) {
+    x + keep.tag
+  }
+  doubled(n)
+}
+
+mut summed = 0
+for i in 0..50 {
+  summed += activation(i)
+}
+assert_eq(summed, 2450)
+assert_eq(released, 50)
+
 # Shipped to an isolate, the rebuilt dispatcher answers the same way.
 fn twice(x) {
   x * 2

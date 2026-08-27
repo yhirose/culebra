@@ -214,9 +214,8 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       n.i = static_cast<int64_t>(c->arity);
       // `fn name` is a dispatcher thunk: its overloads live in a thread_local
       // table, so ship each method body + its dispatch types explicitly.
-      if (auto dit = _jit_multifn_dispatchers().find(c);
-          dit != _jit_multifn_dispatchers().end()) {
-        n.mf_name = dit->second.name;
+      if (const auto* rec = _jit_dispatcher_record(c)) {
+        n.mf_name = rec->name;
         const auto& methods = _jit_multimethods()[n.mf_name];
         for (const auto& mth : methods) {
           n.mf_param_types.push_back(mth.param_types);
@@ -360,11 +359,10 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       // + overload methods in this thread's tables (recursion resolves because
       // the dispatcher is memoized before its method bodies are rebuilt).
       if (!n.mf_name.empty()) {
-        auto* c = culebra_runtime_closure_new(n.jit_fn, 0,
+        auto* c = _jit_multifn_new_dispatcher(n.mf_name,
                                               static_cast<size_t>(n.i));
         JitValue cv{TAG_FUNC, reinterpret_cast<int64_t>(c)};
-        auto& rec = _jit_multifn_dispatchers()[c];
-        rec.name = n.mf_name;
+        auto& rec = *_jit_dispatcher_record(c);
         ctx.closures.emplace(n.ref_id, cv);
         auto& methods = _jit_multimethods()[n.mf_name];
         for (size_t i = 0; i < n.elems.size(); i++) {
