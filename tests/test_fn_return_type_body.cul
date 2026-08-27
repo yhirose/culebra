@@ -1,0 +1,79 @@
+# Regression: a FUNCTION node is [PARAMETERS, BLOCK] or, with a declared
+# return type, [PARAMETERS, RETURN_TYPE, BLOCK]. analyze_function took the
+# body at nodes[1] unconditionally, so `fn (...) -> T { ... }` had its body
+# analyzed as the RETURN_TYPE node instead: nested functions got no FuncInfo
+# (compile_fn_chunk_impl aborted on func_info.at) and free variables were
+# never captured (bogus NameError). The statement form `fn name() -> T`
+# takes the body as its last child and was unaffected.
+
+# --- a nested function inside an annotated function expression ---
+test_nested_fn_in_annotated_expr = fn () {
+  let o = {f: fn () -> Object {
+    {g: fn () {
+      'inner'
+    }}
+  }}
+  assert_eq(o.f().g(), 'inner')
+}
+
+# --- the body's free variables still reach the enclosing scope ---
+test_annotated_expr_captures = fn () {
+  let x = 5
+  let f = fn () -> Long {
+    x + 1
+  }
+  assert_eq(f(), 6)
+}
+
+# --- annotated expression nested inside annotated expression ---
+test_annotated_nested_in_annotated = fn () {
+  let x = 5
+  let outer = fn () -> Long {
+    let inner = fn () -> Long {
+      x + 2
+    }
+    inner()
+  }
+  assert_eq(outer(), 7)
+}
+
+# --- a returned closure keeps the captured parameter ---
+test_annotated_expr_returns_closure = fn () {
+  let mk = fn (n) -> Object {
+    {get: fn () {
+      n
+    }}
+  }
+  assert_eq(mk(42).get(), 42)
+}
+
+# --- the return type is still checked ---
+test_return_type_still_enforced = fn () {
+  let f = fn () -> Long {
+    'not a Long'
+  }
+  let kind = try {
+    f()
+    'no error'
+  } catch e {
+    e.kind
+  }
+  assert_eq(kind, 'TypeError')
+}
+
+# --- the statement form keeps working ---
+fn named() -> Long {
+  1
+}
+
+test_statement_form = fn () {
+  assert_eq(named(), 1)
+}
+
+test_nested_fn_in_annotated_expr()
+test_annotated_expr_captures()
+test_annotated_nested_in_annotated()
+test_annotated_expr_returns_closure()
+test_return_type_still_enforced()
+test_statement_form()
+inspect('fn-return-type-body OK')

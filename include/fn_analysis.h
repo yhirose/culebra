@@ -1162,14 +1162,14 @@ struct FnAnalysis {
   }
 
   // Shared by FUNCTION ([PARAMETERS, (RETURN_TYPE)?, BLOCK]) and LAMBDA
-  // ([LAMBDA_PARAMS, BODY]) — both have params at index 0, so we only
-  // distinguish them when extracting the return type at compile time.
+  // ([LAMBDA_PARAMS, BODY]) — both have params at index 0, but a declared
+  // return type shifts the body, so find it through view_function.
   FuncInfo analyze_function(
       const peg::Ast& fnAst,
       std::vector<const std::set<std::string>*>& outer,
       std::string_view own_name = {}) {
-    return analyze_fn_common(&fnAst, *fnAst.nodes[0], *fnAst.nodes[1], outer,
-                             own_name);
+    auto fv = culebra::view_function(fnAst);
+    return analyze_fn_common(&fnAst, *fv.params, *fv.body, outer, own_name);
   }
 
   // METHOD ast: [IDENTIFIER, PARAMETERS, BLOCK]. Analyzed just like a
