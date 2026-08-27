@@ -362,7 +362,6 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         auto* c = _jit_multifn_new_dispatcher(n.mf_name,
                                               static_cast<size_t>(n.i));
         JitValue cv{TAG_FUNC, reinterpret_cast<int64_t>(c)};
-        auto& rec = *_jit_dispatcher_record(c);
         ctx.closures.emplace(n.ref_id, cv);
         auto& methods = _jit_multimethods()[n.mf_name];
         for (size_t i = 0; i < n.elems.size(); i++) {
@@ -377,7 +376,7 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
           // registration would have installed it.
           _jit_multifn_body_uplinks()[body_cls] = c;
         }
-        _jit_multifn_refresh_mono(rec);
+        _jit_multifn_refresh_mono(c);
         return cv;
       }
       auto* c = culebra_runtime_closure_new(n.jit_fn, n.elems.size(),

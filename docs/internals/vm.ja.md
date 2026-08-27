@@ -340,7 +340,7 @@ int32_t a, b, c, d; }`）。レジスタはフレームのslotであり、それ
 | `slot_rank`、`slot_cell_rank` | 宣言順（release ladderは新しい方から歩く）と、各slotがいつcellになったか — インデックスは初めは一時値で、後にcaptureされた束縛のcellになることがある |
 | `cleanups`、`temp_points`/`temp_slots`、`defer_mark_slot`、`owned_depths` | unwindテーブル（§5.5） |
 | `call_argpos`、`kwcalls`、`arity_checks`、`name_tables` | 呼び出しごとの引数位置、キーワード呼び出しのレイアウト、組み込みのarity腕、クラスのメソッド名テーブル |
-| `call_targets` | 呼び出し命令ごとに、その呼び先が解決された唯一の関数chunk（§5.3） |
+| `call_targets` | 呼び出し命令ごとに、その呼び先が解決された唯一の関数chunkと、呼び先がそこへ導くdispatcherかどうか（§5.3） |
 
 ### 5.2 命令列の中の所有権
 
@@ -405,6 +405,28 @@ callを出す。
 実際に現れたclosureと突き合わせる。つまりassertレーン（§10、
 `just test-assert`とCIのlinux-assertジョブ）が予測を armed にしたまま
 スイープ全体を回し、releaseビルドは何も払わない。
+
+**`fn name`の場合。** `fn name`が束縛するのはclosureではなくdispatcher
+であり、overloadはランタイムのregistryの中にあるので、body自体は呼び出し
+サイトから辿れない。それでも辿れる形が1つある — その文リストがちょうど
+1度だけ宣言し、どのパラメータにも注釈が無い名前である。dispatcherの
+テーブルに追記するのは同じスコープでの2度目の宣言だけ（`MultifnReg`の
+`into`オペランド）なので、この形のテーブルはdispatcherが生きている限り
+無注釈のエントリを1つ持ち続け、そのエントリはdispatchが選びうる唯一の
+メソッドである。コンパイラはこれを`Binding::known_chunk`＋`via_mono`として
+記録し、サイトにも同じ印を付ける。dispatcherはそのbodyを2つ目のcapture
+cellに持ち、テーブルが書き換わるたびにこのcellも書き換わる。解決済み
+サイトはそれを読み — ロード3段、registryは引かない — bodyをフレームの
+closureとして、名指しされたchunkに入る。記録するのは唯一のoverloadが
+受け付ける引数個数だけなので、それ以外の個数は今までどおりdispatcherに
+届き、その`DispatchError`になる。body自身の名前も同じ扱いである:
+`MfSelf`はこのbodyが登録されたdispatcherを返すので、素朴な再帰が直接
+callになるのはこれによる。
+
+解決済みの形のうち、実行時に何かを問うのはこれだけである — そのcellが
+まだbodyを持っているか。payloadがnullなら、そのサイトが元々取っていた
+動的な腕に落ちる。上のassertはこの腕も見ている: 渡されるのはdispatcher
+が導いたbodyそのものだからである。
 
 ### 5.4 組み込みメソッドはテーブルである
 

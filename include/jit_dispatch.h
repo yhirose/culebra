@@ -609,10 +609,8 @@ inline bool _jit_is_multifn_dispatcher(JitClosure* c);
 // executor's closures all share one), asked by closure instead.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count_cls(
     JitClosure* cls, int64_t n_pos, int64_t line, int64_t col) {
-  // A dispatcher has no meta of its own to find under either key (its thunk
-  // is not a compiled fn_ptr, and the executor's hook answers only for its
-  // own trampolines), and the overload it picks enforces its own keyword-only
-  // params. Saying so skips two table lookups on every `fn name` call.
+  // A dispatcher has no meta under either key, and the overload it picks
+  // enforces its own keyword-only params: two table lookups per call.
   if (_jit_is_multifn_dispatcher(cls)) return;
   const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
   if (!meta && _jit_closure_meta_hook) meta = _jit_closure_meta_hook(cls);
@@ -794,21 +792,38 @@ inline std::map<JitClosure*, JitMultifnDispatcher>& _jit_multifn_dispatchers() {
       culebra::kSlotJitMultifnNames);
 }
 
+// A dispatcher's two capture cells, both raw TAG_LONG the collector does not
+// follow: its record, and — for the call sites the compiler resolved — the
+// monomorphic body alone, so reaching it is three loads and no table. The
+// lowering emits these indices too (vm_lowering.h), so they are named here.
+inline constexpr size_t kMultifnRecordCapture = 0;
+inline constexpr size_t kMultifnMonoCapture = 1;
+
 // Defined below, next to the dispatcher-thunk address it tests against
 // (extern "C++" to match that island's linkage).
 extern "C++" {
 inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c);
 }
 
-inline void _jit_multifn_refresh_mono(JitMultifnDispatcher& d) {
-  d.mono = nullptr;
+// Recompute the shortcut and publish it. Both halves are non-owning: the
+// table entry holds the body's +1, and both are rewritten whenever it is.
+inline void _jit_multifn_refresh_mono(JitClosure* c) {
+  auto* d = _jit_dispatcher_record(c);
+  if (!d) return;
+  d->mono = nullptr;
   auto& tbl = _jit_multimethods();
-  auto it = tbl.find(d.name);
-  if (it == tbl.end() || it->second.size() != 1) return;
-  const auto& m = it->second.front();
-  for (const auto& t : m.param_types)
-    if (!t.empty()) return;
-  d.mono = &m;
+  if (auto it = tbl.find(d->name); it != tbl.end() && it->second.size() == 1) {
+    const auto& m = it->second.front();
+    d->mono = &m;
+    for (const auto& t : m.param_types)
+      if (!t.empty()) {
+        d->mono = nullptr;
+        break;
+      }
+  }
+  c->captures[kMultifnMonoCapture]->value =
+      d->mono ? JitValue{TAG_LONG, reinterpret_cast<int64_t>(d->mono->body)}
+              : JitValue{TAG_NIL, 0};
 }
 
 // Non-owning body→dispatcher uplinks: the multifn self-recursion handle.
@@ -986,43 +1001,47 @@ inline bool _jit_is_multifn_dispatcher(JitClosure* c) {
 }
 
 // A dispatcher's record, reached from the closure rather than through
-// _jit_multifn_dispatchers. Every dispatcher is built with one capture whose
-// cell carries the record's address as a raw TAG_LONG — the executor's own
-// idiom for closure-borne metadata (Exec::desc_for_closure puts a VmFnDesc*
-// in captures[0] the same way). Non-owning, like the `mono` it leads to: the
-// map owns the record, and _jit_multifn_forget nils this cell before the
-// record dies, so a dispatcher mid-teardown answers null rather than a
-// dangling pointer. The fn_ptr test is what keeps an executor closure's
-// descriptor capture from being read as a record.
+// _jit_multifn_dispatchers — the executor's own idiom for closure-borne
+// metadata (Exec::desc_for_closure puts a VmFnDesc* in captures[0] the same
+// way, and discriminates by fn_ptr the same way). The map owns the record,
+// and _jit_multifn_forget nils this cell before the record dies, so a
+// dispatcher mid-teardown answers null rather than a dangling pointer.
 inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c) {
   if (!_jit_is_multifn_dispatcher(c)) return nullptr;
-  // Every dispatcher is minted by _jit_multifn_new_dispatcher, so the record
-  // capture is part of what "is a dispatcher" means; the assert lane is where
-  // a future second mint site that forgot it would surface.
-  assert(c->n_captures == 1 && c->captures);
-  // A null cell is the half-built dispatcher a collect can see between
-  // closure_new and the cell, the window every closure with captures has.
-  if (!c->captures[0]) return nullptr;
-  return reinterpret_cast<JitMultifnDispatcher*>(c->captures[0]->value.data);
+  assert(c->n_captures == 2 && c->captures);
+  // The null cell is the half-built dispatcher a collect can see between
+  // closure_new and the cells, the window every closure with captures has.
+  auto* cell = c->captures[kMultifnRecordCapture];
+  if (!cell) return nullptr;
+  return reinterpret_cast<JitMultifnDispatcher*>(cell->value.data);
+}
+
+// The single untyped overload's body, or null — the whole question a call
+// site the compiler resolved to a `fn name` asks at run time. The compiler
+// settled which chunk that body runs and which arities reach it
+// (Binding::known_chunk with via_mono), and that a resolved head holds this
+// very dispatcher; what is left is whether the shortcut is still there.
+inline JitClosure* _jit_dispatcher_mono_body(JitClosure* c) {
+  assert(_jit_is_multifn_dispatcher(c) && c->captures[kMultifnMonoCapture]);
+  return reinterpret_cast<JitClosure*>(
+      c->captures[kMultifnMonoCapture]->value.data);
 }
 
 // Mint a dispatcher over `name`'s table: the closure, its record, and the
-// capture that ties them. Both places a dispatcher comes into existence use
-// it — a `fn name` declaration executing, and one rebuilt from an isolate
-// message — so the record and its uplink are never installed by halves.
-// Returns +1 (the caller's binding owns it); the record is reached back
-// through _jit_dispatcher_record.
+// cells that tie them. Both places a dispatcher comes into existence use it
+// — a `fn name` declaration executing, and one rebuilt from an isolate
+// message — so a dispatcher without its cells is not a state that exists.
+// Returns +1 (the caller's binding owns it).
 inline JitClosure* _jit_multifn_new_dispatcher(const std::string& name,
                                                size_t arity) {
   auto* c = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk),
-      /*n_captures=*/1, arity);
+      /*n_captures=*/2, arity);
   auto& rec = _jit_multifn_dispatchers()[c];
   rec.name = name;
-  // The record's address, not a value the collector should follow — the
-  // same raw TAG_LONG the executor's descriptor capture carries.
-  c->captures[0] = culebra_runtime_cell_new(
+  c->captures[kMultifnRecordCapture] = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(&rec));
+  c->captures[kMultifnMonoCapture] = culebra_runtime_cell_new(TAG_NIL, 0);
   return c;
 }
 
@@ -1068,7 +1087,10 @@ inline void _jit_multifn_forget(JitClosure* c, bool release_bodies) {
   // gone" the same instant. The sweep path must NOT touch the cell: it is
   // condemned in the same pass and may already have been freed — and
   // nothing can reach a swept dispatcher again anyway.
-  if (release_bodies) c->captures[0]->value = JitValue{TAG_NIL, 0};
+  if (release_bodies) {
+    c->captures[kMultifnRecordCapture]->value = JitValue{TAG_NIL, 0};
+    c->captures[kMultifnMonoCapture]->value = JitValue{TAG_NIL, 0};
+  }
   auto& tbl = _jit_multimethods();
   // Detach the table + name entries FIRST, then release: the natural
   // refcount-0 cascade fires pending `drop`s (user code) that may
@@ -1598,7 +1620,7 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
   // the cascade fires pending `drop`s (user code) that may dispatch this
   // very name, so neither may still hold the freed body. Cycle-held remains
   // park for the GC backstop.
-  _jit_multifn_refresh_mono(*rec);
+  _jit_multifn_refresh_mono(dispatcher);
   if (displaced) {
     _jit_multifn_body_uplinks().erase(displaced);
     _culebra_value_release_impl(TAG_FUNC,

@@ -679,31 +679,69 @@ struct Lowering {
                            int32_t argBase, int32_t argc, int64_t line,
                            int64_t col,
                            const std::vector<int64_t>* argpos = nullptr,
-                           int32_t target = -1) -> llvm::Value* {
+                           Chunk::CallTarget tgt = {}) -> llvm::Value* {
       publish_site(line, col, argpos);
+      // Both resolved shapes end here: a direct call to the named chunk's
+      // own function, with the receiver pair the ABI wants.
+      auto emit_direct = [&](int32_t chunk, llvm::Value* clsPtr) {
+        auto selfV = selfSlot >= 0 ? load_slot(selfSlot) : nullptr;
+        return emit_abi_call(
+            fns[static_cast<size_t>(chunk)], clsPtr,
+            selfV ? j.extract_tag(selfV) : b.getInt8(TAG_NO_SELF),
+            selfV ? j.extract_data(selfV) : b.getInt64(0), selfSlot, argBase,
+            argc);
+      };
+      // A `fn name` the compiler resolved: the code is static, but the
+      // closure the frame reads is the dispatcher's monomorphic body, three
+      // loads away in its second capture cell. A null payload means the
+      // shortcut is gone, and the call falls through to the arm it would
+      // have taken all along.
+      llvm::Value* monoResult = nullptr;
+      llvm::BasicBlock* monoEndBB = nullptr;
+      llvm::BasicBlock* mergeBB = nullptr;
+      if (tgt.via_mono && tgt.chunk >= 0) {
+        auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
+        auto caps = b.CreateLoad(
+            ptrTy, b.CreateStructGEP(j.closureType_, clsPtr, 3), "mono.caps");
+        auto cellPtr = b.CreateLoad(
+            ptrTy,
+            b.CreateInBoundsGEP(ptrTy, caps,
+                                {b.getInt64(kMultifnMonoCapture)}),
+            "mono.cell");
+        auto valPtr = b.CreateStructGEP(j.cellType_, cellPtr, 1, "mono.vp");
+        auto body = b.CreateLoad(
+            i64Ty, b.CreateStructGEP(j.valueType_, valPtr, 1), "mono.body");
+        auto monoBB = BasicBlock::Create(j.ctx_, "call.mono", fn);
+        auto dynBB = BasicBlock::Create(j.ctx_, "call.dyn", fn);
+        mergeBB = BasicBlock::Create(j.ctx_, "call.join", fn);
+        b.CreateCondBr(b.CreateICmpNE(body, b.getInt64(0)), monoBB, dynBB);
+        b.SetInsertPoint(monoBB);
+        monoResult = emit_direct(tgt.chunk, b.CreateIntToPtr(body, ptrTy));
+        monoEndBB = b.GetInsertBlock();
+        b.CreateBr(mergeBB);
+        b.SetInsertPoint(dynBB);
+      }
       // A callee the compiler named (Chunk::call_targets): its code is this
       // module's own function, so the Function gate and the two probes have
       // no work to do and the ABI call is direct — which is what lets the
       // inliner see through it. The closure still rides the register: only
       // the code is static, its captures are the caller's.
-      if (target >= 0) {
+      if (!tgt.via_mono && tgt.chunk >= 0) {
         auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
         // Statically resolvable too: the cap is the callee chunk's, the
         // count is this site's. Only the throwing case emits anything, and
-        // it emits the very call the dynamic arm would have made.
-        int32_t cap = p.chunks[static_cast<size_t>(target)].first_kw_only_idx;
+        // it emits the very call the dynamic arm would have made. (The mono
+        // arm needs none: its site is recorded only for counts the overload
+        // accepts, which stop at the keyword-only run.)
+        int32_t cap =
+            p.chunks[static_cast<size_t>(tgt.chunk)].first_kw_only_idx;
         if (cap >= 0 && argc > cap)
           j.emit_call(j.module_->getOrInsertFunction(rt::check_pos_count_cls,
                                                      b.getVoidTy(), ptrTy,
                                                      i64Ty, i64Ty, i64Ty),
                       {clsPtr, b.getInt64(argc), b.getInt64(line),
                        b.getInt64(col)});
-        auto selfV = selfSlot >= 0 ? load_slot(selfSlot) : nullptr;
-        return emit_abi_call(
-            fns[static_cast<size_t>(target)], clsPtr,
-            selfV ? j.extract_tag(selfV) : b.getInt8(TAG_NO_SELF),
-            selfV ? j.extract_data(selfV) : b.getInt64(0), selfSlot, argBase,
-            argc);
+        return emit_direct(tgt.chunk, clsPtr);
       }
       auto tag = j.extract_tag(calleeV);
       auto* fromBB = b.GetInsertBlock();
@@ -786,7 +824,7 @@ struct Lowering {
                   {clsPtr, b.getInt64(argc), b.getInt64(line),
                    b.getInt64(col)});
       auto selfV = selfSlot >= 0 ? load_slot(selfSlot) : nullptr;
-      return emit_abi_call(
+      auto dynResult = emit_abi_call(
           llvm::FunctionCallee(jit_fn_type(b, ptrTy), fnPtr), clsPtr,
           b.CreateSelect(ovPhi, j.extract_tag(callee0),
                          selfV ? j.extract_tag(selfV)
@@ -794,6 +832,15 @@ struct Lowering {
           b.CreateSelect(ovPhi, j.extract_data(callee0),
                          selfV ? j.extract_data(selfV) : b.getInt64(0)),
           selfSlot, argBase, argc);
+      if (!mergeBB) return dynResult;
+      auto* dynEndBB = b.GetInsertBlock();
+      b.CreateBr(mergeBB);
+      mergeBB->moveAfter(dynEndBB);
+      b.SetInsertPoint(mergeBB);
+      auto* joinPhi = b.CreatePHI(j.valueType_, 2, "call.mono.join");
+      joinPhi->addIncoming(monoResult, monoEndBB);
+      joinPhi->addIncoming(dynResult, dynEndBB);
+      return joinPhi;
     };
 
     // The temporaries in flight at a pc die before any scope's defers run, so

@@ -84,4 +84,142 @@ assert_eq(swap(), 'a')
 swap = fn () { 'b' }
 assert_eq(swap(), 'b')
 
+# --- `fn name`: the code is static, the closure comes from the dispatcher ---
+# A `fn name` the statement list declares once holds a dispatcher over one
+# untyped overload, and nothing can ever append to its table. So a call whose
+# argument count that overload accepts reaches the named chunk through the
+# dispatcher's monomorphic body (Binding::mono_chunk); every other shape stays
+# a run-time question and keeps its DispatchError.
+
+fn joined(a, b) {
+  "{a}/{b}"
+}
+assert_eq(joined(1, 2), '1/2')
+
+let short = try {
+  joined(1)
+  nil
+} catch e {
+  e
+}
+assert_eq(short.kind, 'DispatchError')
+assert_eq(short.message, 'no matching method for `joined`')
+
+let long = try {
+  joined(1, 2, 3)
+  nil
+} catch e {
+  e
+}
+assert_eq(long.kind, 'DispatchError')
+
+# Two declarations of a name: the table holds both, so neither call is named
+# and both arities dispatch.
+fn arity(a) {
+  'one'
+}
+fn arity(a, b) {
+  'two'
+}
+assert_eq(arity(1), 'one')
+assert_eq(arity(1, 2), 'two')
+
+# An annotation makes dispatch a real question even with one overload.
+fn only_long(n: Long) {
+  n * 2
+}
+assert_eq(only_long(21), 42)
+assert_eq(try {
+  only_long('x')
+} catch e {
+  e.kind
+}, 'DispatchError')
+
+# The window a lone overload accepts: a defaulted tail widens it, a variadic
+# opens it, and a keyword-only slot is never filled positionally.
+fn tail(a, b = 10) {
+  a + b
+}
+assert_eq(tail(1), 11)
+assert_eq(tail(1, 2), 3)
+
+fn rest(*args) {
+  args.size()
+}
+assert_eq(rest(), 0)
+assert_eq(rest(1, 2, 3), 3)
+
+fn keyword(a, *, k = 5) {
+  a * k
+}
+assert_eq(keyword(2), 10)
+assert_eq(keyword(2, k: 3), 6)
+assert_eq(try {
+  keyword(2, 3)
+} catch e {
+  e.kind
+}, 'DispatchError')
+
+# Recursion goes through the same handle: the name inside the body reads the
+# dispatcher this body was registered into.
+fn fib(n) {
+  n < 2 ? n : fib(n - 1) + fib(n - 2)
+}
+assert_eq(fib(12), 144)
+
+fn ping(n) {
+  n == 0 ? 'ping' : pong(n - 1)
+}
+fn pong(n) {
+  n == 0 ? 'pong' : ping(n - 1)
+}
+assert_eq(ping(5), 'pong')
+
+# A nested declaration is its own dispatcher, not an overload of the outer one.
+fn wraps(n) {
+  fn inner_only(x) {
+    x * 100
+  }
+  inner_only(n)
+}
+fn inner_only(x) {
+  x * 2
+}
+assert_eq(wraps(3), 300)
+assert_eq(inner_only(3), 6)
+
+# Read as a value, captured by a closure, and handed to a higher-order call.
+fn bump(x) {
+  x + 1
+}
+let through = fn (n) {
+  bump(n)
+}
+assert_eq(through(41), 42)
+let held = bump
+assert_eq(held(9), 10)
+assert_eq([1, 2, 3].map(bump), [2, 3, 4])
+
+# A `let name = fn` and a `fn name` over the same cell: the dispatcher
+# replaces the literal, and the calls before it are not the calls after.
+let either = fn (v) {
+  "let:{v}"
+}
+assert_eq(either(1), 'let:1')
+fn either(v) {
+  "fn:{v}"
+}
+assert_eq(either(2), 'fn:2')
+
+# Hoisted, so a call ahead of the declaration is the NameError it always was.
+assert_eq(try {
+  not_yet(1)
+} catch e {
+  e.kind
+}, 'NameError')
+fn not_yet(x) {
+  x
+}
+assert_eq(not_yet(1), 1)
+
 IO.inspect('test_static_callee OK')

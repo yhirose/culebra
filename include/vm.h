@@ -2465,6 +2465,16 @@ struct Chunk {
   // call. Indexed rather than a sorted side table like call_argpos: the
   // executor's dispatch loop asks once per call, and the answer has to
   // cost less than what it saves. Empty when nothing resolved.
+  //
+  // `via_mono` marks the other shape a resolved site takes: the callee is a
+  // `fn name` dispatcher, so the code is static but the closure to enter is
+  // the dispatcher's monomorphic body rather than the register's value. It
+  // rides the low bit of the stored word rather than widening the row: this
+  // is the one side table the dispatch loop reads on every call.
+  struct CallTarget {
+    int32_t chunk = -1;
+    bool via_mono = false;
+  };
   std::vector<int32_t> call_targets;
   // One per CallKw: how its register run splits into positionals, keyword
   // values and `**` operands, plus the keyword names the resolver binds them
@@ -2517,10 +2527,17 @@ inline const std::vector<int64_t>* chunk_argpos_at(const Chunk& c, size_t ix) {
   return &it->second;
 }
 
-// The function chunk the call at `ix` was resolved to, or -1 when its callee
-// stays a run-time question (Chunk::call_targets).
-inline int32_t chunk_call_target_at(const Chunk& c, size_t ix) {
-  return ix < c.call_targets.size() ? c.call_targets[ix] : -1;
+// The function chunk the call at `ix` was resolved to, with chunk -1 when its
+// callee stays a run-time question (Chunk::call_targets).
+inline constexpr int32_t kNoCallTarget = -1;
+inline int32_t encode_call_target(Chunk::CallTarget t) {
+  assert(t.chunk >= 0 && t.chunk < (1 << 30));  // the tag bit's room
+  return (t.chunk << 1) | (t.via_mono ? 1 : 0);
+}
+inline Chunk::CallTarget chunk_call_target_at(const Chunk& c, size_t ix) {
+  int32_t w = ix < c.call_targets.size() ? c.call_targets[ix] : kNoCallTarget;
+  if (w < 0) return {};
+  return {w >> 1, (w & 1) != 0};
 }
 
 // Did slot `s` already own a cell where a cleanup step with this many cells
@@ -2894,11 +2911,12 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
 // which bindings live in cells; free_vars becomes each chunk's capture
 // list; uses_fn places the recursion handle). Slot assignment itself is
 // the scope stack below.
-// A class member's body: what compile_fn_chunk has to add on top of a plain
-// function frame. `receiver` binds the ABI's `self`; `fields` replaces the
-// AST body with the declared-field stores of the synthetic field-init thunk;
-// `field_init_owner` makes a `new` body run that thunk (reached through the
-// hidden capture fn_analysis gave it) right after parameter binding.
+// What compile_fn_chunk needs beyond parameters and a body: a class member's
+// wiring, and the answers only the declaring scope has. `receiver` binds the
+// ABI's `self`; `fields` replaces the AST body with the declared-field stores
+// of the synthetic field-init thunk; `field_init_owner` makes a `new` body
+// run that thunk (reached through the hidden capture fn_analysis gave it)
+// right after parameter binding.
 struct MemberOpts {
   bool receiver = false;
   const std::vector<const peg::Ast*>* fields = nullptr;
@@ -2907,6 +2925,24 @@ struct MemberOpts {
   // annotations lower against them, exactly as the JIT's class_type_params_
   // does — an unbounded `T` is documentation and checks as Any.
   const std::vector<std::string_view>* type_params = nullptr;
+  // This is the ONLY `fn name` declaration of its name in the scope around
+  // it (Scope::sole_multifn, and not a REPL line appending to an earlier
+  // one), so its dispatcher's table has one entry for as long as the
+  // dispatcher lives. The body's own recursive calls stand on that: `name`
+  // inside reads the dispatcher, and this says which chunk it reaches.
+  bool sole_multifn = false;
+};
+
+// What the call at the head of a postfix chain reaches, when the compiler
+// can name it: the `fn` literal the head expression IS, or a binding bound
+// once to one (Binding::known_chunk). `cell` is where that value lives, so
+// a later declaration overwriting it can strike the site (head_callee), and
+// `via_mono` is the binding's — the callee is a `fn name` dispatcher and the
+// frame's closure is its monomorphic body.
+struct StaticCallee {
+  int32_t chunk = -1;
+  int64_t cell = -1;
+  bool via_mono = false;
 };
 
 // What a construct outside the slice raises while the module compiles. A
@@ -3207,6 +3243,11 @@ class Compiler {
     // (grant_known_chunk); a capture inherits it, since the cell it borrows
     // is the very one that binding owns.
     int32_t known_chunk = -1;
+    // How that chunk is reached: a `fn name` binds a dispatcher, so its code
+    // is one indirection further — the chunk of the single untyped overload
+    // the table holds (grant_mono_chunk). At most one grant ever lands on a
+    // binding, so the pair is the answer and its shape, not two answers.
+    bool via_mono = false;
     // Which cell that value lives in, program-wide (-1 for a plain slot).
     // A re-declaration of the same name in the same scope writes THAT cell
     // rather than minting a second one, so the closures built between the
@@ -3238,6 +3279,12 @@ class Compiler {
     // unrelated scope's overloads nor the previous activation's bleed in
     // (the JIT's Scope::multifn_decls).
     std::set<std::string> multifn_decls;
+    // Of those, the names this statement list declares exactly ONCE — the
+    // only shape whose dispatcher table can never grow a second entry, since
+    // `into` (the append) is emitted only by a same-scope second declaration.
+    // Filled by predeclare_forward_refs, which walks the whole list before
+    // any of it compiles; what grant_mono_chunk stands on.
+    std::set<std::string> sole_multifn;
     // This scope's entry in the frame's owned-mark array — its own static
     // depth, or -1 where the scope resolves nothing (chunk 0's frame scope,
     // since program exit does not drop).
@@ -3267,15 +3314,6 @@ class Compiler {
     // (-1 otherwise). What a declaration passes on to its binding, and what
     // an immediately-invoked literal calls — see grant_known_chunk.
     int32_t chunk = -1;
-  };
-
-  // What the call at the head of a postfix chain reaches, when the compiler
-  // can name it: the `fn` literal the head expression IS, or a binding bound
-  // once to one (Binding::known_chunk). `cell` is where that value lives, so
-  // a later declaration overwriting it can strike the site (head_callee).
-  struct StaticCallee {
-    int32_t chunk;
-    int64_t cell;
   };
 
   VmProgram& prog_;
@@ -3540,17 +3578,41 @@ class Compiler {
                                     std::move(packed));
   }
 
+  // What both grants refuse: a binding whose value is a run-time question —
+  // reassignment (`mut`, or a conditional arm's), and a REPL session cell the
+  // next line can refill.
+  static bool binding_writes_once(const Binding& b) {
+    return !b.is_mut && !b.session && !b.conditional && !b.shadowed_builtin &&
+           !b.awaits_implicit && b.mut_slot < 0;
+  }
+
   // `b` reads as a closure over `chunk` for as long as it is in scope: its
   // declaration is the only write, and it is the `fn` literal just
-  // compiled. A binding whose value is a run-time question declines —
-  // reassignment (`mut`, or a conditional arm's), a REPL session cell the
-  // next line can refill, and a lazy forward reference whose sentinel a
-  // read still has to test.
+  // compiled. A lazy forward reference declines too — its sentinel is a
+  // value a read still has to test.
   void grant_known_chunk(Binding& b, int32_t chunk) {
-    if (chunk < 0 || b.is_mut || b.session || b.lazy || b.conditional ||
-        b.shadowed_builtin || b.awaits_implicit || b.mut_slot >= 0)
+    if (chunk < 0 || b.lazy || !binding_writes_once(b)) return;
+    settle_callee(b, chunk, /*via_mono=*/false);
+  }
+
+  // `b` is a `fn name` whose dispatcher can only ever hold `chunk`'s body.
+  // `lazy` is allowed here and nowhere else: a `fn` binding never sheds it,
+  // because its declaration is hoisted and a read before it ran has to keep
+  // testing for the sentinel — and having passed that test, the value IS
+  // this declaration's dispatcher (which is also why a `shadowed` fallback,
+  // where it need not be, declines). What rules the table out from growing
+  // is the caller's (Scope::sole_multifn); what rules out a second write to
+  // the cell is the same revocation grant_known_chunk relies on.
+  void grant_mono_chunk(Binding& b, int32_t chunk) {
+    if (chunk < 0 || b.shadowed || !binding_writes_once(b) ||
+        !mono_eligible_chunk(chunk))
       return;
+    settle_callee(b, chunk, /*via_mono=*/true);
+  }
+
+  void settle_callee(Binding& b, int32_t chunk, bool via_mono) {
     b.known_chunk = chunk;
+    b.via_mono = via_mono;
     if (b.is_cell) b.known_cell = prog_.next_known_cell++;
   }
 
@@ -3563,11 +3625,13 @@ class Compiler {
     if (b.known_cell >= 0) {
       auto it = prog_.resolved_by_cell.find(b.known_cell);
       if (it != prog_.resolved_by_cell.end()) {
-        for (const auto& s : it->second) call_targets_of(s.chunk)[s.pc] = -1;
+        for (const auto& s : it->second)
+          call_targets_of(s.chunk)[s.pc] = kNoCallTarget;
         prog_.resolved_by_cell.erase(it);
       }
     }
     b.known_chunk = -1;
+    b.via_mono = false;
     b.known_cell = -1;
   }
 
@@ -3581,14 +3645,47 @@ class Compiler {
                : prog_.chunks[static_cast<size_t>(chunk)].call_targets;
   }
 
+  // A chunk's signature, whether or not its compile has finished: the one
+  // being built lives in `chunk_` and is not in the program yet, which is
+  // exactly the chunk a `fn name`'s own recursive call names.
+  const Chunk& chunk_ref(int32_t chunk) const {
+    return chunk == chunk_idx_ ? chunk_
+                               : prog_.chunks[static_cast<size_t>(chunk)];
+  }
+
+  // Would a positional call of `argc` arguments reach `chunk`'s body through
+  // its dispatcher? The window the lone overload accepts is the chunk's own
+  // positional bounds — `cb_min`/`cb_max` are that same "regular parameters
+  // only, floor opened by a defaulted tail" derivation, computed once when
+  // the chunk was compiled (`cb_max < 0` is the `*args` catch-all).
+  bool mono_window_admits(int32_t chunk, int32_t argc) const {
+    const Chunk& f = chunk_ref(chunk);
+    return argc >= f.cb_min && (f.cb_max < 0 || argc <= f.cb_max);
+  }
+
+  // Every regular parameter annotation-free — the shape `multifn_pick` can
+  // never be asked about, and so the shape a lone table entry is a
+  // monomorphic shortcut for (_jit_multifn_refresh_mono).
+  bool mono_eligible_chunk(int32_t chunk) const {
+    const Chunk& f = chunk_ref(chunk);
+    for (const auto& t : f.param_types)
+      if (!t.empty()) return false;
+    return true;
+  }
+
   // Record that the call at `ix` reaches a named chunk, under the cell its
   // callee traces back to (-1 for a plain slot, which no re-declaration can
   // reach).
-  void record_call_target(size_t ix, StaticCallee target) {
+  void record_call_target(size_t ix, StaticCallee target, int32_t argc) {
     if (target.chunk < 0) return;
+    // A dispatcher's body is reached only for the arities its one overload
+    // accepts; every other count is the DispatchError the dynamic arm
+    // raises, so those sites stay unresolved.
+    if (target.via_mono && !mono_window_admits(target.chunk, argc)) return;
     if (chunk_.call_targets.size() <= ix)
-      chunk_.call_targets.resize(ix + 1, -1);
-    chunk_.call_targets[ix] = target.chunk;
+      chunk_.call_targets.resize(ix + 1, kNoCallTarget);
+    chunk_.call_targets[ix] =
+        encode_call_target({target.chunk, target.via_mono});
     if (target.cell >= 0)
       prog_.resolved_by_cell[target.cell].push_back(
           {chunk_idx_, static_cast<uint32_t>(ix)});
@@ -3775,6 +3872,12 @@ class Compiler {
   }
 
   const Binding* lookup(std::string_view name) const {
+    return const_cast<Compiler*>(this)->lookup_mut(name);
+  }
+
+  // The same walk for the one caller that settles a binding it found by name
+  // rather than by pre-declaration (compile_multifn_decl's grant).
+  Binding* lookup_mut(std::string_view name) {
     for (auto sc = scopes_.rbegin(); sc != scopes_.rend(); ++sc)
       for (auto b = sc->bindings.rbegin(); b != sc->bindings.rend(); ++b)
         if (b->name == name) return &*b;
@@ -4650,6 +4753,11 @@ class Compiler {
     // local would move the cell's slot — and with it the release ladder's
     // position — ahead of locals declared earlier, reordering their drops.
     std::set<std::string> referenced;
+    // How many `fn name` declarations this list has per name — the count,
+    // not the set, since one is the interesting number (Scope::sole_multifn).
+    // A decorated declaration counts too: it binds what its decorators
+    // returned, so a name that has one is not a plain dispatcher.
+    std::map<std::string, int> multifn_count;
     auto handle = [&](const peg::Ast& node) {
       std::set<std::string> here;
       collect_literal_frees(node, here);
@@ -4664,6 +4772,7 @@ class Compiler {
             culebra::parse_generic_head(node.nodes[i]->token).outer);
         // `fn name` always pre-declares: its dispatcher cell is how self-
         // and mutual recursion resolve, and a dispatcher has no drop.
+        if (node.tag == "MULTIFN_DECL"_) multifn_count[name]++;
         if (node.tag == "MULTIFN_DECL"_ ||
             (info_->captured_locals.contains(name) && forward_ref(name))) {
           add(node.nodes[i].get(), std::move(name), /*is_mut=*/false);
@@ -4705,6 +4814,8 @@ class Compiler {
     } else {
       handle(ast);
     }
+    for (const auto& [name, n] : multifn_count)
+      if (n == 1) scopes_.back().sole_multifn.insert(name);
     predeclare_cells(ast, decls);
   }
 
@@ -4733,6 +4844,16 @@ class Compiler {
     if (!head.args.empty()) type_params = culebra::split_generic_args(head.args);
     MemberOpts mo;
     if (!type_params.empty()) mo.type_params = &type_params;
+    // At the REPL the session IS the enclosing scope: a `fn f(a)` line
+    // appends to the dispatcher an earlier `fn f()` installed, so the name
+    // is not the sole declaration of its dispatcher however this line reads.
+    // Settled before the body compiles, because the body's own recursive
+    // calls stand on the same answer (compile_fn_chunk's own-name block).
+    Binding* b = lookup_mut(name);
+    bool session_overload =
+        b && b->session && repl_session().value(name).tag == TAG_FUNC;
+    mo.sole_multifn =
+        scopes_.back().sole_multifn.contains(name) && !session_overload;
     if (dec_end > 0) {
       // A decorated declaration binds what the decorators return, so it
       // never reaches the multimethod registry: the name holds the
@@ -4745,19 +4866,14 @@ class Compiler {
     prog_.chunks[idx].multifn_name = name;
     int32_t cls = alloc_temp(ast);
     emit(Op::MakeClosure, cls, idx);
-    const Binding* b = lookup(name);
     if (!b || !b->is_cell)
       reject(ast, std::format("fn '{}' declared here", name));
     // A same-scope overload appends to the dispatcher the binding already
     // holds (the binding's scope is the current one — predeclare ran at its
-    // entry); the first decl passes none and mints a fresh one.
-    // At the REPL the session IS that scope: a `fn f(a)` line appends to the
-    // dispatcher `fn f()` installed earlier, keeping both arities, exactly
-    // as two declarations in one script's statement list do (probed). The
+    // entry); the first decl passes none and mints a fresh one. The session
+    // overload above is that same append one REPL line later (probed); the
     // registry sorts out a value that is not one of its dispatchers, so the
     // test is only that the name holds a function at all.
-    bool session_overload =
-        b->session && repl_session().value(name).tag == TAG_FUNC;
     int32_t into = -1;
     if (scopes_.back().multifn_decls.contains(name) || session_overload) {
       into = alloc_temp(ast);
@@ -4769,6 +4885,11 @@ class Compiler {
     forget_temp(cls);  // the registry absorbed the body's +1 (reg is nil)
     store_cell(ast, b->slot, {t, true});
     emit_session_decl_bind(*b, /*is_mut=*/false);
+    // The name now reads as a dispatcher over exactly one untyped overload,
+    // and will for as long as the binding lives — nothing else can append
+    // to its table, and store_cell above already struck whatever an earlier
+    // declaration of the same name had resolved.
+    if (mo.sole_multifn) grant_mono_chunk(*b, idx);
   }
 
   // Feed `val` through the declaration's decorators, innermost first: the one
@@ -5393,6 +5514,7 @@ class Compiler {
     // identity — a capture of a capture keeps the original's, so every site
     // stays reachable from the one cell a re-declaration would overwrite.
     std::vector<int32_t> known_chunks;
+    std::vector<bool> via_monos;
     std::vector<int64_t> known_cells;
 
     // A capture with nothing behind it (a sentinel cell): every flag off.
@@ -5402,6 +5524,7 @@ class Compiler {
       lazys.push_back(false);
       shadowed_builtins.push_back(false);
       known_chunks.push_back(-1);
+      via_monos.push_back(false);
       known_cells.push_back(-1);
     }
     void push(const Binding& b) {
@@ -5410,6 +5533,7 @@ class Compiler {
       lazys.push_back(b.lazy);
       shadowed_builtins.push_back(b.shadowed_builtin);
       known_chunks.push_back(b.known_chunk);
+      via_monos.push_back(b.via_mono);
       known_cells.push_back(b.known_cell);
     }
   };
@@ -5788,7 +5912,17 @@ class Compiler {
         // A literal's own `let` name reads as the very closure running the
         // frame; a dispatch's or a class member's is the dispatcher/class,
         // which the lazy flag already keeps out of grant_known_chunk.
-        if (info.own_name_source == Src::Closure) fc.grant_known_chunk(ob, idx);
+        if (info.own_name_source == Src::Closure) {
+          fc.grant_known_chunk(ob, idx);
+        } else if (info.own_name_source == Src::Dispatch && mo.sole_multifn) {
+          // The dispatcher this body was registered into, and — this being
+          // the only declaration of its name — the one whose table holds
+          // this body alone. So `name(...)` inside the body reaches this
+          // very chunk, which is what makes plain recursion a direct call.
+          // Nothing can rewrite the cell MfSelf was just stored in, so the
+          // grant needs no revocation site of its own.
+          fc.grant_mono_chunk(ob, idx);
+        }
       }
     }
     for (const auto& pr : promos) {
@@ -5813,6 +5947,7 @@ class Compiler {
       Binding cap{info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]};
       cap.shadowed_builtin = caps.shadowed_builtins[i];
       cap.known_chunk = caps.known_chunks[i];
+      cap.via_mono = caps.via_monos[i];
       cap.known_cell = caps.known_cells[i];
       fc.push_binding(std::move(cap));
     }
@@ -6830,11 +6965,11 @@ class Compiler {
 
   StaticCallee head_callee(const peg::Ast& head, const ExprResult& res) {
     using namespace peg::udl;
-    if (res.chunk >= 0) return {res.chunk, -1};
-    if (head.tag != "IDENTIFIER"_) return {-1, -1};
+    if (res.chunk >= 0) return {res.chunk, -1, false};
+    if (head.tag != "IDENTIFIER"_) return {};
     const Binding* b = lookup(head.token);
-    if (!b) return {-1, -1};
-    return {b->known_chunk, b->known_cell};
+    if (!b) return {};
+    return {b->known_chunk, b->known_cell, b->via_mono};
   }
 
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
@@ -7550,7 +7685,7 @@ class Compiler {
   // is callee first, then args left to right — both backends' order.
   ExprResult compile_call_step(const peg::Ast& ast, const peg::Ast& args,
                                ExprResult callee,
-                               StaticCallee target = {-1, -1}) {
+                               StaticCallee target = {}) {
     if (has_kwargs(args))
       return compile_kwargs_call(ast, args, callee.slot, nullptr);
     int32_t argc = static_cast<int32_t>(args.nodes.size());
@@ -7561,7 +7696,7 @@ class Compiler {
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(ast);
     size_t ix = emit(Op::Call, t, callee.slot, base, argc);
-    record_call_target(ix, target);
+    record_call_target(ix, target, argc);
     std::vector<const peg::Ast*> asts;
     for (const auto& a : args.nodes) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
@@ -7598,7 +7733,7 @@ class Compiler {
   // callee taken from the `fn` slot instead of a property read.
   ExprResult compile_self_call_step(const peg::Ast& at, const peg::Ast& args,
                                     ExprResult callee,
-                                    StaticCallee target = {-1, -1}) {
+                                    StaticCallee target = {}) {
     ExprResult recv{chunk_.self_slot, false};
     if (has_kwargs(args))
       return compile_kwargs_call(at, args, callee.slot, &recv);
@@ -7612,7 +7747,7 @@ class Compiler {
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(at);
     size_t ix = emit(Op::CallM, t, callee.slot, base, argc);
-    record_call_target(ix, target);
+    record_call_target(ix, target, argc);
     std::vector<const peg::Ast*> asts;
     for (const auto& a : args.nodes) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
@@ -8891,8 +9026,8 @@ inline std::string dump(const Chunk& c) {
     out += std::format("{:4}: {:<12} {:4} {:4} {:4} {:4}   ; {}:{}", i,
                        kNames[static_cast<size_t>(in.op)], in.a, in.b, in.c,
                        in.d, line, col);
-    if (int32_t t = chunk_call_target_at(c, i); t >= 0)
-      out += std::format("  -> chunk {}", t);
+    if (auto t = chunk_call_target_at(c, i); t.chunk >= 0)
+      out += std::format("  -> chunk {}{}", t.chunk, t.via_mono ? " (mono)" : "");
     out += "\n";
   }
   return out;
@@ -9483,6 +9618,19 @@ struct Exec {
     return run_frame(p, tgt, reinterpret_cast<JitClosure*>(callee.data), argc,
                      argc ? run + (n_run - argc) : nullptr,
                      static_cast<int8_t>(self.tag), self.data);
+  }
+
+  // Which closure a `via_mono` site enters: the dispatcher's monomorphic
+  // body, since a dispatcher's own captures are not the ones the body's
+  // frame reads. Nil where that shortcut is gone — the one run-time question
+  // any resolved site asks — and the site then takes the dynamic arm and its
+  // DispatchError. A plain resolved site does not come here: its callee IS
+  // the closure, which is what run_resolved's assert checks.
+  static JitValue mono_callee(const JitValue& callee) {
+    auto* body =
+        _jit_dispatcher_mono_body(reinterpret_cast<JitClosure*>(callee.data));
+    return body ? JitValue{TAG_FUNC, reinterpret_cast<int64_t>(body)}
+                : JitValue{TAG_NIL, 0};
   }
 
   // Is the closure a resolved site was handed the chunk the compiler named?
@@ -10593,11 +10741,14 @@ struct Exec {
           publish_call_site(c, pc, line, col);
           JitValue target = callee;
           JitValue self{TAG_NO_SELF, 0};
-          if (int32_t tgt = chunk_call_target_at(c, pc); tgt >= 0) {
-            regs[in.a] = run_resolved(p, tgt, callee, self, &regs[in.c], in.d,
-                                      in.d, line, col);
-            ++pc;
-            break;
+          if (auto tgt = chunk_call_target_at(c, pc); tgt.chunk >= 0) {
+            JitValue entered = tgt.via_mono ? mono_callee(callee) : callee;
+            if (!tgt.via_mono || entered.tag == TAG_FUNC) {
+              regs[in.a] = run_resolved(p, tgt.chunk, entered, self,
+                                        &regs[in.c], in.d, in.d, line, col);
+              ++pc;
+              break;
+            }
           }
           if (target.tag != TAG_FUNC) {
             // The two cold-path probes, in the JIT's order: a callable
@@ -10661,11 +10812,15 @@ struct Exec {
           publish_call_site(c, pc, line, col);
           JitValue target = callee;
           JitValue self = regs[in.c];
-          if (int32_t tgt = chunk_call_target_at(c, pc); tgt >= 0) {
-            regs[in.a] = run_resolved(p, tgt, callee, self, &regs[in.c],
-                                      in.d + 1, in.d, line, col);
-            ++pc;
-            break;
+          if (auto tgt = chunk_call_target_at(c, pc); tgt.chunk >= 0) {
+            JitValue entered = tgt.via_mono ? mono_callee(callee) : callee;
+            if (!tgt.via_mono || entered.tag == TAG_FUNC) {
+              regs[in.a] = run_resolved(p, tgt.chunk, entered, self,
+                                        &regs[in.c], in.d + 1, in.d, line,
+                                        col);
+              ++pc;
+              break;
+            }
           }
           if (target.tag != TAG_FUNC) {
             // A method value that is itself a callable instance

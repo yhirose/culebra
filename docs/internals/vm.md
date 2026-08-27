@@ -350,7 +350,7 @@ A `Chunk` carries, besides `code`:
 | `slot_rank`, `slot_cell_rank` | declaration order (release ladders walk newest-first) and, per slot, when it became a cell — an index can be a temporary early on and a captured binding's cell later |
 | `cleanups`, `temp_points`/`temp_slots`, `defer_mark_slot`, `owned_depths` | the unwind tables (§5.5) |
 | `call_argpos`, `kwcalls`, `arity_checks`, `name_tables` | per-call argument positions, keyword-call layouts, built-in arity arms, class method-name tables |
-| `call_targets` | per call instruction, the one function chunk its callee was resolved to (§5.3) |
+| `call_targets` | per call instruction, the one function chunk its callee was resolved to, and whether the callee is the dispatcher that leads to it (§5.3) |
 
 ### 5.2 Ownership in the instruction stream
 
@@ -415,6 +415,30 @@ what it was handed. What checks it is an `assert` in the executor's
 resolved arm, against the closure that actually turns up — so the assert
 lane (§10, `just test-assert` and CI's linux-assert job) runs the whole
 sweep with the prediction armed, and a release build pays nothing.
+
+**And a `fn name`.** A `fn name` binds a dispatcher, not a closure: its
+overloads live in the runtime's registry, so the body is not reachable
+from the call site at all. One shape makes it reachable anyway — a name
+the statement list declares exactly once, with no annotated parameter.
+Only a same-scope second declaration appends to a dispatcher's table
+(the `into` operand of `MultifnReg`), so such a table holds its one
+untyped entry for as long as the dispatcher lives, and that entry is
+the only method dispatch could ever pick. The compiler records it as
+`Binding::known_chunk` with `via_mono` set, and marks the site the same
+way; the dispatcher carries that body in its second capture cell,
+rewritten whenever the table is. A resolved site reads it — three loads,
+no registry — and enters the named chunk with the body as the frame's
+closure. Only the argument counts the lone overload accepts are
+recorded, so every other count still reaches the dispatcher and its
+`DispatchError`. The body's
+own name is the same grant: `MfSelf` yields the dispatcher this body was
+registered into, which is what makes plain recursion a direct call.
+
+This is the one resolved shape that asks something at run time: whether
+that capture still holds a body. A null payload falls through to the
+dynamic arm the site would have taken anyway — and the assert above
+covers this arm too, since what it is handed is the body the dispatcher
+led to.
 
 ### 5.4 Built-in methods are a table
 
