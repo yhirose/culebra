@@ -55,15 +55,19 @@ Per-step (steady-state train loop, n_samples=0):
 | implementation              | ms/step |
 |-----------------------------|--------:|
 | Culebra Tensor `--jit`      | **~1.15 ms** |
-| Culebra Tensor interp       | ~5.3 ms |
 | Python (scalar reference)   | ~83 ms |
 
 The Tensor port is **~50–100× faster per step than the scalar port** (one
 layer-level op per Tensor node + BLAS, instead of thousands of per-scalar
-`Value` objects). interp and JIT produce **bit-identical loss**. The total
+`Value` objects). The VM and JIT produce **bit-identical loss**. The total
 wall (~2.5 s for 100 steps) is mostly the up-front JIT compile, not the
-loop (~0.1 s) — `--jit-faststart` or the on-disk object cache
-(`CULEBRA_JIT_CACHE=auto`) cut that warmup without per-step cost.
+loop (~0.1 s) — `--jit-faststart` cuts that compile by ~5x at no
+per-step cost here, since the hot work is in BLAS rather than in
+JIT-emitted code. The on-disk object cache (`CULEBRA_JIT_CACHE=auto`)
+helps less than it looks: it caches what the *backend* emits, so a warm
+`-O2` run still pays the IR pipeline in full — on a Linux box, this
+program's compile went 1.58 s cold, 0.70 s warm, against 0.31 s for a
+cold `--jit-faststart`.
 
 ### Scalar microgpt — alloc-bound, ~parity with Python
 

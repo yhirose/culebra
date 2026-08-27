@@ -556,7 +556,20 @@ loweringされたプログラムに対してホスト側に登録されるもの
 `--jit-faststart`はIRパイプラインを飛ばしバックエンドの高速パス
 を使い（`JIT::apply_fast_codegen`。2つのレベルは一緒に動く）、
 `CULEBRA_JIT_CACHE`は`JIT::jit_module_name`（ソースとオプション）
-でキーづけられたobject cacheを有効にする。
+でキーづけられたobject cacheを有効にする。この2つは代替関係に
+ない: cacheはIR→objectのcompile layerに載るので、ヒットすれば
+バックエンドは飛ぶが`JIT::optimize_module`は飛ばない — それは
+`run_program`がその手前で既に走らせている。つまり`-O2`は温まった
+cacheでもIRパイプラインを毎回まるごと払う。そしてどちらも`--jit`の
+起動が安い理由ではない: プログラムが名前で呼ぶstdlibモジュールは
+そもそもモジュールの中に無い（§2、焼き込みpreamble）ので、lowering
+されるのはユーザーのコードである。`Lowering::build_preamble_object`
+は同じloweringをモジュールごとのエントリ名で走らせたもので、ビルド時
+に`culebra_preamble_cc`が実行する。`lower_program`は`__culebra_main`を
+プログラムが名前で呼ぶ焼き込みエントリそれぞれへの呼び出しで開き、
+シンボルはレーンのリンクが供給する — JITはドライバの表から定義し
+（`JIT::define_baked_preambles`）、ビルドされたバイナリはアーカイブ
+メンバーを引く。
 
 このパイプラインのうち1つのパスはlowering自身のものである。
 4つのrefcountヘルパーはそれぞれガードで始まる — 値の2つは

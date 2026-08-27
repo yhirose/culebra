@@ -5560,7 +5560,7 @@ file actually named `-` is still reachable by spelling the path, e.g. `./-`.
 | `--ast`        | Print the parsed AST instead of running it.               |
 | `--debug`      | Print debug diagnostics while running.                    |
 | `--jit`        | Use the LLVM ORC JIT instead of the bytecode VM. |
-| `--jit-faststart` | Like `--jit`, but skips both the IR and the machine-code optimizers, cutting JIT warmup time ~40x at a small steady-state throughput cost (~12% on pure-script hot loops, ~0% when hot work is in the C++/BLAS runtime). Implies `-O0`. Output matches `--jit`. |
+| `--jit-faststart` | Like `--jit`, but skips both the IR and the machine-code optimizers, cutting JIT warmup time 3–5x. The steady-state cost tracks how much of the hot work the optimizer can reach: ~0% when it is in the C++/BLAS runtime, ~30% on call-heavy script code, several-fold on tight scalar arithmetic. Implies `-O0`. Output matches `--jit`. |
 | `--emit-llvm`  | With `--jit`, print the generated IR and exit.            |
 | `-O0`..`-O3`   | With `--jit`, select the LLVM optimization level. Default `-O2`. |
 | `-h`, `--help` | Print the option / command summary and exit.              |

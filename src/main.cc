@@ -180,10 +180,11 @@ struct Options {
   // default is applied, since after that every Options carries one.
   bool engine_named = false;
 #ifdef CULEBRA_JIT_ENABLED
-  // Unoptimized IR pipeline + unoptimized backend: collapses JIT warmup
-  // (startup/compile time) by ~40x at a small steady-state cost (~12% on
-  // pure-script hot loops; ~0% when the hot work lives in the C++/BLAS
-  // runtime, e.g. Tensor). Output is interp-symmetric. Opt-in: the default
+  // Unoptimized IR pipeline + unoptimized backend: cuts JIT warmup
+  // (startup/compile time) by 3-5x, at a steady-state cost that tracks how
+  // much of the hot work the optimizer can reach (~0% when it lives in the
+  // C++/BLAS runtime, e.g. Tensor; several-fold on tight scalar
+  // arithmetic). Output is VM-symmetric. Opt-in: the default
   // --jit (O2) keeps the best steady-state throughput. The two levels move
   // together — see JIT::apply_fast_codegen for why an optimized IR
   // pipeline over an unoptimized backend is not a configuration we allow.
@@ -619,10 +620,11 @@ void print_usage(ostream& os) {
         "                     always uses the VM.\n"
         "  --jit-faststart    Like --jit but tuned for fast startup, not peak\n"
         "                     throughput: skipping both the IR and the backend\n"
-        "                     optimizers cuts JIT warmup (compile time) by ~40x\n"
-        "                     for a small steady-state cost (~12% on pure-script\n"
-        "                     hot loops, ~0% when hot work is in the C++/BLAS\n"
-        "                     runtime). Implies -O0. Output matches --jit.\n"
+        "                     optimizers cuts JIT warmup (compile time) by 3-5x.\n"
+        "                     The steady-state cost tracks how much of the hot\n"
+        "                     work the optimizer can reach: ~0% when it is in\n"
+        "                     the C++/BLAS runtime, several-fold on tight scalar\n"
+        "                     arithmetic. Implies -O0. Output matches --jit.\n"
         "  --emit-llvm        Print the generated LLVM IR (with --jit)\n"
         "  -O<level>          JIT optimization level 0-3 (default 2)\n"
 #endif

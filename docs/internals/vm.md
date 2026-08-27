@@ -561,10 +561,14 @@ what makes the same lowering valid for an object file.
 `--jit-faststart` skips the IR pipeline and takes the backend's fast
 paths (`JIT::apply_fast_codegen`; the two levels move together), and
 `CULEBRA_JIT_CACHE` enables an object cache keyed by
-`JIT::jit_module_name` (sources, options). Neither is what makes a
-`--jit` start-up cheap: the stdlib modules a program names are not in
-the module at all (§2, the baked preamble), so what gets lowered is the
-user's code. `Lowering::build_preamble_object` is the same lowering
+`JIT::jit_module_name` (sources, options). The two are not
+interchangeable: the cache is installed on the IR→object compile layer,
+so a hit skips the backend but never `JIT::optimize_module`, which
+`run_program` has already run by then — a warm `-O2` launch still pays
+the whole IR pipeline. Neither is what makes a `--jit` start-up cheap:
+the stdlib modules a program names are not in the module at all (§2,
+the baked preamble), so what gets lowered is the user's code.
+`Lowering::build_preamble_object` is the same lowering
 under a per-module entry name, run by `culebra_preamble_cc` at build;
 `lower_program` opens `__culebra_main` with a call to each baked entry
 the program names, and the lane's link supplies the symbol — the JIT

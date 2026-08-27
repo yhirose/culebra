@@ -165,11 +165,19 @@ culebra --help                       # all options and commands
 All three backends produce identical observable output (the whole
 VM↔JIT differential corpus is verified). `--jit-faststart` skips both
 the IR and the machine-code optimizers, which cuts **JIT warmup**
-(startup/codegen time) by roughly **40x** for a small steady-state cost —
-about 12% on pure-script hot loops, and ~0% when the heavy work lives in
-the C++/BLAS runtime (e.g. `Tensor`). It implies `-O0`; passing another
-`-O` alongside it is an error. Prefer it for short scripts or BLAS-bound
-runs; the default `--jit` (`-O2`) keeps the best steady-state throughput.
+(startup/codegen time) by **3–5x** — 1.6 s down to 0.3 s on a 330-line
+program — and the saving grows with the program, since what a `--jit`
+run compiles is the program's own code (the stdlib preamble is compiled
+into the binary at build time). It implies `-O0`; passing another `-O`
+alongside it is an error.
+
+The steady-state cost tracks how much of the hot work the optimizer can
+reach: ~0% when it lives in the C++/BLAS runtime (e.g. `Tensor`), around
+30% on call-heavy script code, and several-fold on a tight scalar
+arithmetic loop. So it pays on a *large* program whose hot work is in
+the runtime; for a short script the VM already starts faster than any
+JIT lane, and for script-level arithmetic the default `--jit` (`-O2`)
+wins outright.
 
 Comments start with `#` or `//` (line), or `/* ... */` (block). Statements may
 end with `;`; newlines also separate statements. The recommended style
