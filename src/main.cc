@@ -242,27 +242,33 @@ static std::string shq(std::string_view s) {
 }
 
 // Link driver for `build`: `cc` on POSIX; on Windows the runtime archive is C++
-// (libstdc++/exceptions), so drive the link with mingw `g++` to pull the right
-// default libs. The produced .exe is statically linked (see win_static) so it
-// runs on a bare Windows like the driver itself.
+// (libstdc++/exceptions), so drive the link with a mingw C++ driver to pull the
+// right default libs — UCRT64's `clang++`, which sits on the same libstdc++ and
+// libgcc as its g++, linking through lld (win_static). Not g++/GNU ld: GCC's PE
+// codegen gives every function a .pdata$fn COMDAT that GNU ld never
+// garbage-collects, so --gc-sections kept all 2,710 archive functions and a
+// hello was 6.1 MB. The archive is built by clang for the same reason
+// (misc/configure_windows_release.sh). The produced .exe is statically linked
+// (see win_static) so it runs on a bare Windows like the driver itself.
 #ifdef _WIN32
-constexpr const char* kLinkDriver = "g++";
+constexpr const char* kLinkDriver = "clang++";
 #else
 constexpr const char* kLinkDriver = "cc";
 #endif
 
 // What to install when that driver isn't there. A machine that has never
-// compiled anything has none of it, and the shell's own message ("'g++' is not
-// recognized") names no fix — so `build` checks up front and says this instead.
-// Kept in step with the host-requirements table in docs/deployment.md §1.
+// compiled anything has none of it, and the shell's own message ("'clang++' is
+// not recognized") names no fix — so `build` checks up front and says this
+// instead. Kept in step with the host-requirements table in docs/deployment.md
+// §1.
 #ifdef _WIN32
 constexpr std::string_view kToolchainHint =
-    "the link step needs mingw-w64's g++ (UCRT64), which Windows does not "
-    "ship. In an elevated PowerShell:\n"
+    "the link step needs mingw-w64's clang++ and lld (UCRT64), which Windows "
+    "does not ship. In an elevated PowerShell:\n"
     "    winget install -e --id MSYS2.MSYS2\n"
     "    C:\\msys64\\usr\\bin\\bash.exe -lc \"pacman -Syu --noconfirm\"\n"
     "    C:\\msys64\\usr\\bin\\bash.exe -lc \"pacman -S --noconfirm "
-    "mingw-w64-ucrt-x86_64-gcc\"\n"
+    "mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld\"\n"
     "  then put C:\\msys64\\ucrt64\\bin on PATH.";
 #elif defined(__APPLE__)
 constexpr std::string_view kToolchainHint =
@@ -277,16 +283,11 @@ constexpr std::string_view kToolchainHint =
 // Whether that driver is there to be run. macOS is the odd one out: /usr/bin/cc
 // exists without the Command Line Tools — it is a shim that offers to install
 // them — so its presence proves nothing and xcode-select answers instead.
-static bool have_link_driver() {
-#ifdef __APPLE__
-  return std::system("xcode-select -p > /dev/null 2>&1") == 0;
-#else
+static bool on_path(const std::string& exe) {
 #ifdef _WIN32
   constexpr char kPathSep = ';';
-  const std::string exe = std::string(kLinkDriver) + ".exe";
 #else
   constexpr char kPathSep = ':';
-  const std::string exe = kLinkDriver;
 #endif
   const char* path = std::getenv("PATH");
   if (!path) return false;
@@ -300,6 +301,17 @@ static bool have_link_driver() {
     if (pos == std::string_view::npos) return false;
     rest.remove_prefix(pos + 1);
   }
+}
+
+static bool have_link_driver() {
+#ifdef __APPLE__
+  return std::system("xcode-select -p > /dev/null 2>&1") == 0;
+#elif defined(_WIN32)
+  // lld is a separate MSYS2 package from clang, and -fuse-ld=lld fails without
+  // it in a way that names neither.
+  return on_path(std::string(kLinkDriver) + ".exe") && on_path("ld.lld.exe");
+#else
+  return on_path(kLinkDriver);
 #endif
 }
 
@@ -1091,9 +1103,16 @@ int run_build(const BuildOptions& opts) {
   // Discard local symbols at link time (the embedded runtime archive carries
   // thousands — GCC_except_table*, string/template instantiations — useless in
   // a distributed executable). `-Wl,-x` ("discard all local symbols") is
-  // understood by ld64, GNU ld and lld alike; the globals it leaves are the
-  // post-link strip's job below. --keep-symbols opts out of both for debugging.
+  // understood by ld64, GNU ld and ELF lld alike; the globals it leaves are the
+  // post-link strip's job below. lld's MinGW driver has no -x, so Windows asks
+  // for -s (strip all), which also does that strip's job — a machine with only
+  // clang and lld on it has no binutils `strip` to run afterwards anyway.
+  // --keep-symbols opts out of both for debugging.
+#ifdef _WIN32
+  const char* strip_syms = opts.keep_symbols ? "" : "-Wl,-s";
+#else
   const char* strip_syms = opts.keep_symbols ? "" : "-Wl,-x";
+#endif
 
   // Emit the force-load fragment for one feature archive (see kFeatureAxes for
   // why a plain `-l`/archive append won't pull it in). `optional` reports a
@@ -1198,9 +1217,11 @@ int run_build(const BuildOptions& opts) {
   // block): mingw's 2MB default holds ~400 interp eval frames, while the
   // recursion limit (kCulebraRecursionLimit) is calibrated for an 8MB stack.
   // Windows threads inherit the PE reserve, so this also covers isolates.
+  // lld, not the GNU ld clang++ defaults to on UCRT64: it is the linker that
+  // drops a dead function's unwind info with the function (see kLinkDriver).
   const char* win_static =
-      "-static -static-libgcc -static-libstdc++ -lstdc++exp -lws2_32 "
-      "-Wl,--stack,16777216";
+      "-fuse-ld=lld -static -static-libgcc -static-libstdc++ -lstdc++exp "
+      "-lws2_32 -Wl,--stack,16777216";
 #else
   const char* no_pie = target_is_macho ? "" : "-no-pie";
   const char* win_static = "";

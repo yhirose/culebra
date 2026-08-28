@@ -46,20 +46,25 @@ checks for it before compiling anything and names what to install.
 |---|---|---|
 | macOS | Xcode Command Line Tools — the `cc` shim in `/usr/bin` is not it, and the SDK stubs it brings are what a Mach-O links `libSystem` against | `xcode-select --install` |
 | Linux | `cc`, libstdc++ and the C runtime startup files | `sudo apt install g++` (Debian/Ubuntu), `sudo dnf install gcc-c++` (Fedora) |
-| Windows | mingw-w64 `g++` from **UCRT64** — not MSVC, not MINGW64 | MSYS2, below |
+| Windows | mingw-w64 `clang++` and `lld` from **UCRT64** — not MSVC, not MINGW64, not CLANG64 | MSYS2, below |
 
 Nothing else: the archives an AOT link needs, third-party statics
 included, come out of the `culebra` binary itself ([§4](#4-shared-runtime-archive-layout)).
 The one library still linked from the system is zlib, which a program
 using `Http`, `Compress` or `to_png` reaches through `-lz` — already
-present on macOS and in MSYS2's gcc, but on Linux the linker's
+present on macOS and in MSYS2's clang, but on Linux the linker's
 `libz.so` symlink lives in the dev package (`sudo apt install
 zlib1g-dev`, `sudo dnf install zlib-devel`).
 
 Windows ships no toolchain at all, and the one it needs is specific.
 The download and the runtime archive inside it are built by MSYS2's
-UCRT64 gcc, so the link has to come from the same environment: the same
-libstdc++ ABI and the same C runtime. (The link line also asks for
+UCRT64 clang, so the link has to come from the same environment: the
+same libstdc++ ABI (UCRT64's clang sits on GCC's libstdc++; CLANG64's
+is libc++, a different ABI) and the same C runtime. The linker is lld
+rather than GNU ld because only lld dead-strips a PE the way the ELF
+and Mach-O linkers do: GNU ld keeps every function's unwind record, and
+each record keeps its function, so `--gc-sections` would leave the
+whole runtime archive in every program. (The link line also asks for
 `-lstdc++exp`, where recent libstdc++ keeps the console helpers C++23
 `std::print` resolves at link time; older MinGW distributions have no
 such library.) From an elevated PowerShell:
@@ -68,7 +73,7 @@ such library.) From an elevated PowerShell:
 winget install -e --id MSYS2.MSYS2
 C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"
 C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"   # again if the first pass exits early
-C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm mingw-w64-ucrt-x86_64-gcc"
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld"
 $env:Path = "C:\msys64\ucrt64\bin;$env:Path"
 ```
 

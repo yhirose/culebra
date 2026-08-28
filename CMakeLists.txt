@@ -1147,7 +1147,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # block). GCC 14/15 objects happened to link without it; GCC 16's emit the
   # references outright — which CI's mingw lane only showed once its ccache
   # stopped serving objects compiled by the older compiler.
-  if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_link_libraries(compress_asset stdc++exp)
   endif()
   set(_rt_packed_dir "${CMAKE_CURRENT_BINARY_DIR}/rt-packed")
@@ -1376,7 +1376,7 @@ if(WIN32)
   # __open_terminal / __write_to_terminal, which libstdc++ ships in the separate
   # experimental library — not pulled in by -static-libstdc++. Link it explicitly
   # (before libstdc++, which the g++ driver appends last) so std::print links.
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_link_libraries(culebra stdc++exp)
   endif()
 endif()

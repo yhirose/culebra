@@ -268,7 +268,7 @@ culebra build path/to/script.cul -o ./out
 ```
 
 The link step runs the host's C++ compiler (Xcode's Command Line Tools
-on macOS, `cc` on Linux, mingw-w64 UCRT64 on Windows) — everything else
+on macOS, `cc` on Linux, mingw-w64 UCRT64's clang and lld on Windows) — everything else
 is inside the binary. Cross-compile is also supported. Host
 requirements and binary sizes per feature axis are in
 [`docs/deployment.md`](docs/deployment.md#1-standalone-binary-build-culebra-build).

@@ -1844,7 +1844,7 @@ otool -L ./out                            # no Accelerate, no Metal, no LLVM
 
 The codegen is in-process, but the link step runs the host's C++
 compiler — Xcode's Command Line Tools on macOS, `cc` on Linux,
-mingw-w64 UCRT64 on Windows. `build` says so before it starts if the
+mingw-w64 UCRT64's clang and lld on Windows. `build` says so before it starts if the
 host has none; the per-platform list is
 [`deployment.md` §1](deployment.md#host-requirements).
 

@@ -1814,7 +1814,7 @@ otool -L ./out                            # Accelerate も Metal も LLVM も無
 
 codegenはプロセス内で完結するが、リンク段だけはホストのC++コンパイラを
 起動する — macOSはXcode Command Line Tools、Linuxは`cc`、Windowsは
-mingw-w64のUCRT64。無ければ`build`が開始前にそう言う。プラットフォーム別の
+mingw-w64 UCRT64のclangとlld。無ければ`build`が開始前にそう言う。プラットフォーム別の
 一覧は[`deployment.ja.md` §1](deployment.ja.md#ホスト側に必要なもの)。
 
 ### 16.1 クロスコンパイル

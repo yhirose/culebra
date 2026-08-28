@@ -18,6 +18,15 @@
 # mingw-w64/UCRT64, not MSVC: the Value type is used through std::vector<Value>
 # while incomplete, which libstdc++ accepts and the MSVC STL rejects. Static
 # libgcc/libstdc++ so the download needs no runtime DLLs beside it.
+#
+# UCRT64's clang, not its gcc: same libstdc++, libgcc and C runtime (so the
+# gcc-built LLVM statics link unchanged), but PE codegen that `culebra build`
+# can dead-strip. GCC emits each function's .pdata$fn/.xdata$fn as a plain
+# COMDAT that GNU ld never garbage-collects, and puts switch jump tables in one
+# shared .rdata; with the runtime archive built that way an AOT hello kept all
+# 2,710 archive functions and weighed 6.1 MB. clang ties both to the function
+# (associative COMDATs) and lld — which src/main.cc links with — drops them
+# with it.
 set -eu
 
 build=${1:?usage: configure_windows_release.sh <build dir> [extra cmake args…]}
@@ -25,8 +34,8 @@ shift
 
 cmake -S . -B "$build" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_CXX_COMPILER=g++ \
-  -DCMAKE_C_COMPILER=gcc \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_C_COMPILER=clang \
   -DCMAKE_C_COMPILER_LAUNCHER=ccache \
   -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
   -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
