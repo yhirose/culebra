@@ -145,11 +145,20 @@ check-api-coverage:
 check-registrar-used:
     tools/check_registrar_used.sh
 
+# The PE export-table generator, against a fixed nm listing. It runs on no
+# other platform, so this is the only place a change to it is exercised before
+# Windows CI — where a wrong one is a short .def and a JIT that resolves
+# nothing.
+[group("test")]
+[doc("Verify cmake/gen_pe_exports.cmake emits the expected .def")]
+check-pe-exports-gen:
+    tools/check_pe_exports_gen.sh
+
 # Every committed file a generator produces, checked against its source, plus
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-used
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-used check-pe-exports-gen
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

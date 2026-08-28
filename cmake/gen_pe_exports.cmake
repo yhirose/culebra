@@ -41,16 +41,22 @@ endif()
 # object; only the symbol lines match. x86-64 COFF names carry no `_` prefix.
 # T is a function; anything else defined (D/B/R/...) is data, and a .def that
 # does not say DATA exports the address of a thunk instead of the variable.
+#
+# The two matches are nested, not `AND`ed: every MATCHES in one if() overwrites
+# CMAKE_MATCH_*, so the second would leave nothing of the first's captures.
 set(funcs "")
 set(datas "")
 string(REGEX MATCHALL "[^\n]+" lines "${syms}")
 foreach(line IN LISTS lines)
-  if(line MATCHES "^[0-9a-fA-F]+ ([A-Za-z]) ([A-Za-z0-9_]+)[ \r]*$"
-     AND CMAKE_MATCH_2 MATCHES "${want_re}")
-    if(CMAKE_MATCH_1 STREQUAL "T")
-      list(APPEND funcs "${CMAKE_MATCH_2}")
-    else()
-      list(APPEND datas "${CMAKE_MATCH_2}")
+  if(line MATCHES "^[0-9a-fA-F]+ ([A-Za-z]) ([A-Za-z0-9_]+)[ \r]*$")
+    set(cls "${CMAKE_MATCH_1}")
+    set(sym "${CMAKE_MATCH_2}")
+    if(sym MATCHES "${want_re}")
+      if(cls STREQUAL "T")
+        list(APPEND funcs "${sym}")
+      else()
+        list(APPEND datas "${sym}")
+      endif()
     endif()
   endif()
 endforeach()
