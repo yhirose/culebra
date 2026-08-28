@@ -13,6 +13,10 @@
 #      out of libculebra_rt.a, and only that module's;
 #   3. both lanes agree with the executor, which always compiles the source.
 #
+# The `_?` in the nm patterns is Mach-O's leading underscore: without it all
+# three symbol assertions matched nothing on macOS and the gate was inert
+# there, which is where a link that drops a baked entry shows up first.
+#
 # Usage: tools/check_baked_preamble.sh <build dir>
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -63,15 +67,15 @@ fi
 if ! "$bin" build --keep-symbols "$work/t.cul" -o "$work/t" > "$work/t.buildlog" 2>&1; then
   echo "check_baked_preamble FAIL: culebra build failed:" >&2; cat "$work/t.buildlog" >&2; exit 1; fi
 nm "$work/t" > "$work/t.nm"
-if ! grep -qE ' T culebra_preamble_Time$' "$work/t.nm"; then
+if ! grep -qE ' T _?culebra_preamble_Time$' "$work/t.nm"; then
   echo "check_baked_preamble FAIL: the built binary lacks culebra_preamble_Time" >&2; fail=1; fi
-if grep -qE ' T culebra_preamble_Args$' "$work/t.nm"; then
+if grep -qE ' T _?culebra_preamble_Args$' "$work/t.nm"; then
   echo "check_baked_preamble FAIL: the built binary carries culebra_preamble_Args it never names" >&2; fail=1; fi
 aot=$("$work/t")
 if [[ "$aot" != "$vm" ]]; then
   echo "check_baked_preamble FAIL: AOT printed [$aot], executor [$vm]" >&2; fail=1; fi
 "$bin" build --keep-symbols "$work/plain.cul" -o "$work/plain" > /dev/null 2>&1
-if nm "$work/plain" | grep -qE ' T culebra_preamble_'; then
+if nm "$work/plain" | grep -qE ' T _?culebra_preamble_'; then
   echo "check_baked_preamble FAIL: a program naming no stdlib module links a baked preamble" >&2; fail=1; fi
 
 if (( fail )); then
