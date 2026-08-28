@@ -1,6 +1,6 @@
 name: Install just
 description: >-
-  Install `just` from the official script. Ubuntu 24.04's apt-shipped `just`
+  Install `just` from its GitHub release. Ubuntu 24.04's apt-shipped `just`
   predates the [group(...)] attribute (just 1.27.0+). Shared by
   setup-linux-toolchain and the binary-only test lanes, so the install method
   cannot drift between them.
@@ -11,15 +11,18 @@ runs:
     - name: Install just
       shell: bash
       run: |
-        # just.systems intermittently 403s CI's shared runner IPs; retry
-        # before failing the job outright.
-        for attempt in 1 2 3; do
-          if curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | sudo bash -s -- --to /usr/local/bin; then
-            exit 0
-          fi
-          echo "install-just: attempt ${attempt} failed, retrying in 10s" >&2
-          sleep 10
-        done
-        echo "install-just: all attempts failed" >&2
-        exit 1
+        # The release asset rather than just.systems/install.sh, which is all
+        # that script fetches anyway: that host 403s the shared runner IPs
+        # often enough to exhaust a three-attempt retry loop and take a whole
+        # run down with it. Pinned to its published checksum, so every lane
+        # installs the same binary. Every caller runs on x86_64 ubuntu-latest.
+        ver=1.58.0
+        sha=4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d
+        base=https://github.com/casey/just/releases/download
+        curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-delay 5 \
+          -o /tmp/just.tar.gz \
+          "$base/$ver/just-$ver-x86_64-unknown-linux-musl.tar.gz"
+        echo "$sha  /tmp/just.tar.gz" | sha256sum -c -
+        sudo tar -xzf /tmp/just.tar.gz -C /usr/local/bin just
+        rm /tmp/just.tar.gz
+        just --version
