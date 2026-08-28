@@ -1351,6 +1351,9 @@ mut last = Time.monotonic()
 mut gdt = 0.0
 
 let frame = fn () {
+  # Esc is an ordinary key, not a built-in quit -- ask for one explicitly.
+  Canvas.quit() if Canvas.key('escape')
+
   let now = Time.monotonic()
   # Bound the catch-up, not just the clock: a second of arrears is 60 physics
   # steps in one frame, which on a host that was already behind makes the next

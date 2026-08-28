@@ -91,6 +91,9 @@ fn palette_color(v) {
 start = Time.monotonic()
 
 Canvas.run(w, h, fn () {
+  # Esc is an ordinary key, not a built-in quit -- ask for one explicitly.
+  Canvas.quit() if Canvas.key('escape')
+
   t = (Time.monotonic() - start) * 5
 
   for py in 0..rows {

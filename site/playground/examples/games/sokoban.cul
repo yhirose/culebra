@@ -316,10 +316,6 @@ enum Mode {
   AskLevel,
 }
 
-fn in_rect(px, py, x, y, w, h) {
-  px >= x && px < x + w && py >= y && py < y + h
-}
-
 # The same art read through a different palette is what makes the crate on a
 # goal. `.` is index 0 wherever it appears and stays transparent, so the goal
 # marker shows through under the player.
@@ -674,9 +670,16 @@ class Game {
 
     for i, b in BUTTONS.enumerate() {
       let (bx, by, bw, bh) = button_rect(i)
-      return self.on_key(b.key) if in_rect(m.x, m.y, bx, by, bw, bh)
+      return self.on_key(b.key) if Canvas.point_in_rect(
+        m.x,
+        m.y,
+        bx,
+        by,
+        bw,
+        bh,
+      )
     }
-    if in_rect(m.x, m.y, self.ox, self.oy, self.w * TILE, self.h * TILE) {
+    if Canvas.point_in_rect(m.x, m.y, self.ox, self.oy, self.w * TILE, self.h * TILE) {
       self.target = ((m.x - self.ox) / TILE, (m.y - self.oy) / TILE)
     }
   }

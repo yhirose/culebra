@@ -166,17 +166,16 @@ let clear_pad = fn () {
   dirty = false
 }
 
-let in_rect = fn (px, py, x, y, w, h) {
-  px >= x && px < x + w && py >= y && py < y + h
-}
-
 let tick = fn () {
+  # Esc is an ordinary key, not a built-in quit -- ask for one explicitly.
+  Canvas.quit() if Canvas.key('escape')
+
   let m = Canvas.mouse()
   let down = m.buttons & 1 != 0
   let lx = m.x - PAD_X
   let ly = m.y - PAD_Y
 
-  if down && in_rect(m.x, m.y, PAD_X, PAD_Y, PAD_W, PAD_W) {
+  if down && Canvas.point_in_rect(m.x, m.y, PAD_X, PAD_Y, PAD_W, PAD_W) {
     Canvas.draw_to(pad, fn () {
       if prev_down {
         # Stamp along the segment from the previous point so fast
@@ -199,7 +198,7 @@ let tick = fn () {
     dirty = true
   }
   let has_ink = ink_max_x >= 0
-  if down && !prev_down && has_ink && in_rect(m.x, m.y, BTN_X, BTN_Y, BTN_W, BTN_H) {
+  if down && !prev_down && has_ink && Canvas.point_in_rect(m.x, m.y, BTN_X, BTN_Y, BTN_W, BTN_H) {
     clear_pad()
   }
 

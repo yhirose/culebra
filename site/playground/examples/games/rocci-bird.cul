@@ -377,6 +377,9 @@ class App {
   }
 
   tick() {
+    # Esc is an ordinary key, not a built-in quit -- ask for one explicitly.
+    Canvas.quit() if Canvas.key('escape')
+
     Canvas.clear(C1)
     self.input.update()
     self.fc += 1
