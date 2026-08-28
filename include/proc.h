@@ -1090,7 +1090,15 @@ inline ProcResult decode_child(WinChild& c) {
   ProcResult r;
   r.out = std::move(*c.out);
   r.err = std::move(*c.err);
-  if (c.timed_out) { r.code = -1; r.ok = false; r.timed_out = true; return r; }
+  // TerminateProcess is the only kill Windows has: immediate and uncatchable,
+  // no cooperative phase — the POSIX side's own escalation (SIGTERM, then
+  // SIGKILL on a grace-period timeout) reports whichever signal actually
+  // ended the child, and the closer analogue here is the one the target
+  // cannot ignore.
+  if (c.timed_out) {
+    r.code = -1; r.ok = false; r.timed_out = true; r.signal = "SIGKILL";
+    return r;
+  }
   DWORD code = 0;
   GetExitCodeProcess(c.hProcess, &code);
   r.code = (long)code;

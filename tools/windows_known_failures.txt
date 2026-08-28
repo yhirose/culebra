@@ -42,11 +42,21 @@ tests/test_packable.cul
 # Net.recv_from: Windows' recvfrom fails a datagram larger than the buffer
 # (WSAEMSGSIZE) where POSIX truncates it.
 tests/test_net.cul
-# Proc: the exit reason of a killed child is nil where POSIX reports SIGTERM.
+# Proc: `Proc.run(["sh", "-c", "kill -TERM $$"])` (self-signal via a POSIX
+# shell) has no Windows equivalent — MSYS's bash emulates the signal itself
+# and TerminateProcess-based decode_child never inspects the exit code for
+# it, so `code`/`ok`/`signal` all read differently than POSIX's waitpid
+# decode. The *runtime's own* timeout-kill (`Proc.run(cmd, timeout:)`) is
+# fixed (`decode_child` now sets `signal: "SIGKILL"` when it terminates a
+# child itself) — what's still open is this one shell-self-kill probe, which
+# would need a Windows-native way to signal-and-detect, not a decode fix.
 tests/test_proc.cul
-# Sys / Env: one value each reads back nil / a stale value.
+# Sys: `Sys.set_env(name, "")` doesn't create an empty-valued variable on
+# Windows — `_putenv_s`/`SetEnvironmentVariable` both DELETE the variable
+# when given an empty value (documented Win32/CRT behavior; no workaround
+# through the standard API), so the "empty vs unset" distinction
+# `Sys.env(name, nil)` relies on cannot exist on this platform. Not a bug.
 tests/test_sys.cul
-tests/test_env.cul
 
 # --- hangs --------------------------------------------------------------
 # FS.watch never delivers an event and the file runs to the step's timeout.

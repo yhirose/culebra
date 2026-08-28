@@ -76,12 +76,15 @@ inline bool os_isatty(int fd) {
 #endif
 }
 
-// `setenv(3)` — set an environment variable in the current process. On Windows
-// `_putenv_s` always overwrites, so the POSIX `overwrite` flag is honoured only
-// on the POSIX path (Windows callers pass 1). Returns 0 on success.
+// `setenv(3)` — set an environment variable in the current process. `_putenv_s`
+// has no no-overwrite mode, so honoring `overwrite == 0` on Windows means
+// checking first — a benign race against another thread's own setenv, no
+// worse than POSIX setenv's own documented thread-unsafety. Returns 0 on
+// success (a skipped set, because the variable was already there, counts as
+// success — that is what "don't overwrite" asked for).
 inline int os_setenv(const char* name, const char* value, int overwrite) {
 #if defined(_WIN32)
-  (void)overwrite;
+  if (!overwrite && std::getenv(name) != nullptr) return 0;
   return _putenv_s(name, value);
 #else
   return ::setenv(name, value, overwrite);
