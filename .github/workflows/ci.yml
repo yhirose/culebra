@@ -1726,6 +1726,8 @@ jobs:
             fail=1
           fi
           exit $fail
+      - name: Verify the JIT's helpers are all in the export table
+        run: tools/check_jit_host_symbols.sh build-win-aot/culebra.exe
       # Last, so a link-level complaint doesn't hide the functional results
       # above. The window backend adds Win32 libraries to the link, so an
       # import it newly pulls in fails here, in a CI run, not during a release.

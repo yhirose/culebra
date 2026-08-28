@@ -2,9 +2,10 @@
 # JIT host symbol gate: the driver defines every helper codegen names.
 #
 # The in-process JIT emits references to `culebra_runtime_*` by name and
-# resolves them with ORC's DynamicLibrarySearchGenerator, which is dlsym over
-# the running process. There is no archive in that path — the definitions have
-# to be in the driver image itself, which is why they carry
+# resolves them with ORC's DynamicLibrarySearchGenerator, which reads the
+# running process (dlsym; GetProcAddress over this image on Windows, where the
+# export table is what answers — see below). There is no archive in that path
+# — the definitions have to be in the driver image itself, which is why they carry
 # __attribute__((used)) there (rt_macros.h): the driver is dead-stripped
 # (-Wl,-dead_strip / --gc-sections) and nothing in the driver's own code calls
 # most of them.
@@ -30,18 +31,42 @@ BIN="${1:-build/culebra}"
 
 names=$(grep -rho '"culebra_runtime_[a-z0-9_]*"' include/ | tr -d '"' | sort -u)
 
-# `nm -g` (external symbols only) is the one spelling GNU, LLVM and Apple nm
-# agree on; undefined entries are class U. Mach-O prefixes a leading underscore
-# that ELF does not, so normalize it off — safe here because every name matched
-# above is C-linkage, never a `_Z` mangling. NM overrides the tool, which is how
-# a Mach-O driver gets read from a Linux box (GNU nm cannot; llvm-nm can).
-NM="${NM:-nm}"
-if ! raw=$("$NM" -g "$BIN" 2>/dev/null); then
-  echo "jit-host-symbols: $NM cannot read $BIN" >&2
-  exit 1
+# What "defined in the driver" means is the resolver's question, and the two
+# resolvers ask different ones.
+#
+# PE: ORC resolves through GetProcAddress over this image, which reads the
+# EXPORT TABLE — so a helper compiled in but not exported is exactly as missing
+# as one that was stripped, and the symbol table would say it is fine. The
+# table is generated (cmake/gen_pe_exports.cmake reads the driver's objects
+# with nm and writes a .def) precisely because neither PE linker takes the
+# `culebra_*` pattern the ELF list states, and this is what holds that
+# generator to the same set the ELF and Mach-O lanes are held to.
+#
+# ELF / Mach-O: dlsym over the process, so the defined symbols are the answer.
+# `nm -g` (external only) is the one spelling GNU, LLVM and Apple nm agree on;
+# undefined entries are class U. Mach-O prefixes a leading underscore that ELF
+# does not, so normalize it off — safe here because every name matched above is
+# C-linkage, never a `_Z` mangling. NM overrides the tool, which is how a
+# Mach-O driver gets read from a Linux box (GNU nm cannot; llvm-nm can).
+if [[ "$BIN" == *.exe ]]; then
+  READOBJ="${READOBJ:-llvm-readobj}"
+  if ! raw=$("$READOBJ" --coff-exports "$BIN" 2>/dev/null); then
+    echo "jit-host-symbols: $READOBJ cannot read $BIN" >&2
+    exit 1
+  fi
+  defs=$(printf '%s\n' "$raw" \
+    | sed -n 's/^ *Name: \([A-Za-z_][A-Za-z0-9_]*\)$/\1/p' | sort -u)
+  what="exports"
+else
+  NM="${NM:-nm}"
+  if ! raw=$("$NM" -g "$BIN" 2>/dev/null); then
+    echo "jit-host-symbols: $NM cannot read $BIN" >&2
+    exit 1
+  fi
+  defs=$(printf '%s\n' "$raw" \
+    | awk '$2 != "U" && $2 != "u" {print $NF}' | sed 's/^_//' | sort -u)
+  what="defines"
 fi
-defs=$(printf '%s\n' "$raw" \
-  | awk '$2 != "U" && $2 != "u" {print $NF}' | sed 's/^_//' | sort -u)
 
 # An interpreter-only build (`just build-no-jit`) has no codegen and defines
 # none of them; that is not this check's business. Fed by here-string, not by a
@@ -49,7 +74,7 @@ defs=$(printf '%s\n' "$raw" \
 # hands the writer becomes the pipeline's status — which read as "no helpers"
 # and skipped this check on a perfectly good JIT build.
 if ! grep -q '^culebra_runtime_' <<<"$defs"; then
-  echo "jit-host-symbols SKIP ($BIN defines no runtime helper — no-JIT build)"
+  echo "jit-host-symbols SKIP ($BIN $what no runtime helper — no-JIT build)"
   exit 0
 fi
 
@@ -69,8 +94,15 @@ if [[ -n "$missing" ]]; then
   CULEBRA_RT_DEFINE_RUNTIME both drop it (rt_macros.h), and neither belongs on
   anything compiled into the driver.
 EOF
+  if [[ "$what" == exports ]]; then
+    cat >&2 <<'EOF'
+  Read off the PE export table, so the definition may well be in the binary
+  and simply not exported: check cmake/gen_pe_exports.cmake and the .def it
+  wrote beside the executable.
+EOF
+  fi
   exit 1
 fi
 
 echo "jit-host-symbols OK ($(printf '%s\n' "$names" | grep -c .) helpers" \
-     "codegen names, all defined in $(basename "$BIN"))"
+     "codegen names, all in $(basename "$BIN")'s $what)"
