@@ -1598,7 +1598,7 @@ inline std::shared_ptr<peg::Ast> transform_generators_in(
 // `parse_with_transforms` (effects_transform.h) chains the effects pass
 // after this one; callers route through the public entry.
 inline std::shared_ptr<peg::Ast> parse_with_generator_transforms(
-    const std::string& path, const std::string& expr,
+    const std::string& path, std::string& expr,
     std::vector<std::string>& msgs) {
   auto ast = parse(path, expr, msgs);
   if (!ast) return ast;

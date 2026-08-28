@@ -1864,14 +1864,19 @@ inline FormatResult format_source(const std::string& path,
                                   const std::string& src,
                                   int width = 80) {
   std::vector<std::string> msgs;
-  auto ast = parse_for_format(path, src, msgs);
+  // The parse normalizes newlines in place and the AST's tokens point into the
+  // buffer it edited, so format a copy and leave `src` as the file was
+  // written: the verdict at the end compares against that, and a CRLF file is
+  // not already formatted — `fmt -i` rewrites it with LF endings.
+  std::string text = src;
+  auto ast = parse_for_format(path, text, msgs);
   if (!ast) {
     std::string m;
     for (auto& s : msgs) m += s;
     return {FormatStatus::ParseError, "", m};
   }
 
-  Printer printer(src);
+  Printer printer(text);
   std::string out = doc_render(printer.print_program(*ast), width);
   if (out.empty() || out.back() != '\n') out += '\n';
   out = align_trailing_comments(out);
@@ -1888,7 +1893,7 @@ inline FormatResult format_source(const std::string& path,
 
   // Safety net 2: comments are absent from the AST, so AST equality can't catch
   // a dropped or duplicated comment. Require the comment multiset to match.
-  if (comment_multiset(src) != comment_multiset(out)) {
+  if (comment_multiset(text) != comment_multiset(out)) {
     return {FormatStatus::Refused, "",
             "culebra fmt: internal check failed (a comment would be dropped or "
             "moved incorrectly); left unchanged"};

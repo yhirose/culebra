@@ -1736,6 +1736,15 @@ target_compile_features(format_test PRIVATE cxx_std_23)
 target_include_directories(format_test PRIVATE include)
 add_test(NAME format_test COMMAND format_test)
 
+# The parse funnel's newline normalization (include/parser.h): a CRLF file
+# parses to the same tree as the LF one, and a bare \r is rejected. The
+# end-to-end half runs on Windows CI, whose checkout has CRLF endings.
+add_executable(source_newlines_test test/source_newlines_test.cc)
+target_compile_features(source_newlines_test PRIVATE cxx_std_23)
+target_include_directories(source_newlines_test PRIVATE include
+                           vendor/cpp-peglib)
+add_test(NAME source_newlines_test COMMAND source_newlines_test)
+
 # GC unit tests — the standalone collector (include/jit_gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no
 # JIT/LLVM link, independent of the in-tree jit.h wiring.

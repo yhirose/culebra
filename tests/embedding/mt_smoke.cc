@@ -85,7 +85,11 @@ void run_jit(int tid) {
   culebra::RuntimeScope scope(rt);
   for (int rep = 0; rep < 10; ++rep) {
     std::vector<std::string> msgs;
-    auto ast = culebra::parse("<mt-jit>", kCheckedScript, msgs);
+    // Each thread parses its own copy: the parse normalizes newlines in the
+    // buffer it is given, and the AST's tokens point into it, so a buffer
+    // shared across threads would be written by all of them.
+    std::string src = kCheckedScript;
+    auto ast = culebra::parse("<mt-jit>", src, msgs);
     if (!ast) {
       std::cerr << "jit-parse tid=" << tid << " rep=" << rep << " failed\n";
       ++failures;

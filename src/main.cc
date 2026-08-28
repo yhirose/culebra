@@ -2041,7 +2041,7 @@ int run_lint(int argc, const char** argv) {
     // `collect_module` wants both views of the program: the lowered AST the
     // backends run (sound error checks) and the source as written (advisory
     // warnings). See its comment for why neither alone is enough.
-    auto lint_source = [&](const std::string& s, vector<string>& parse_msgs,
+    auto lint_source = [&](std::string& s, vector<string>& parse_msgs,
                            std::shared_ptr<peg::Ast>* authored_out = nullptr)
         -> std::optional<vector<culebra::lint::Diagnostic>> {
       auto authored = culebra::parse(path, s, parse_msgs);

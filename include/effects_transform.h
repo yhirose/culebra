@@ -1919,7 +1919,7 @@ inline std::shared_ptr<peg::Ast> transform_effects_in(
 // (interp module load, JIT/AOT, REPL, lazy module loader) routes through
 // here.
 inline std::shared_ptr<peg::Ast> parse_with_transforms(
-    const std::string& path, const std::string& expr,
+    const std::string& path, std::string& expr,
     std::vector<std::string>& msgs) {
   auto ast = parse_with_generator_transforms(path, expr, msgs);
   if (!ast) return ast;

@@ -239,7 +239,7 @@ inline int repl_loop(bool print_ast, const ReplEval& eval) {
       // previous line. Bounded by session length (one entry per
       // accepted input).
       retained_sources_.push_back(full_line);
-      const auto& src = retained_sources_.back();
+      auto& src = retained_sources_.back();  // parse normalizes it in place
       auto ast = parse_with_transforms("(repl)", src, msgs);
       if (ast) {
         if (print_ast) {

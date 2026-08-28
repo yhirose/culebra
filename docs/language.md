@@ -76,8 +76,16 @@ Source text is UTF-8. Identifiers use ASCII only.
 
 ### Line terminators and whitespace
 
-Line terminators: `\n`, `\r`, `\r\n`. Whitespace: space, tab, and line
-terminators.
+Line terminator: `\n`. Whitespace: space, tab, and the line terminator.
+
+A file with CRLF (`\r\n`) endings is accepted: the source is normalized to LF
+before it is parsed, so a checkout with CRLF endings behaves exactly like one
+with LF — including inside triple-quoted and raw string literals, where a
+stray `\r` would otherwise be part of the value. `culebra fmt` writes LF.
+
+A lone `\r` — one not followed by `\n` — is a syntax error rather than a third
+kind of line ending. It is either an old-Mac line ending or a stray byte, and
+which one changes what the program means.
 
 ### Comments
 

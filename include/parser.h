@@ -92,6 +92,44 @@ inline peg::parser& get_parser() {
   return parser;
 }
 
+// Source newlines are LF; a CRLF file is accepted and normalized here, in
+// place, before the grammar sees a byte of it. Left alone, the `\r` lands
+// inside triple-quoted and raw string literals — a value difference, not a
+// formatting one, which is why a CRLF checkout failed four tests on Windows
+// and nowhere else. The buffer is edited rather than copied because the AST's
+// tokens are string_views into it.
+//
+// A lone `\r` is rejected instead of guessed at: it is either an old-Mac line
+// ending or a stray byte, and silently choosing one is the kind of run-time
+// rescue culebra refuses elsewhere (Rust rejects it too; Go and Python drop
+// it). Normalizing is idempotent, so a caller that parses the same buffer
+// twice — `culebra lint` does — gets the same bytes both times.
+inline void normalize_source_newlines(std::string& src) {
+  auto first = src.find('\r');
+  if (first == std::string::npos) return;
+
+  int64_t line = 1, col = 1;
+  for (size_t i = 0; i < first; i++) {
+    if (src[i] == '\n') { line++; col = 1; } else { col++; }
+  }
+  size_t w = first;
+  for (size_t r = first; r < src.size(); r++) {
+    char c = src[r];
+    if (c == '\r') {
+      if (r + 1 >= src.size() || src[r + 1] != '\n') {
+        throw CulebraError("SyntaxError",
+            "a bare carriage return is not a line ending: source newlines are "
+            "LF or CRLF.", line, col);
+      }
+      col++;
+      continue;  // drop it — the \n right after is the line ending
+    }
+    src[w++] = c;
+    if (c == '\n') { line++; col = 1; } else { col++; }
+  }
+  src.resize(w);
+}
+
 // `\xHH` — exactly two hex digits → one raw byte (0x00–0xFF). `i` points
 // at the backslash; returns the index of the last consumed char.
 inline size_t decode_hex_byte(std::string_view raw, size_t i, std::string& out) {
@@ -1777,8 +1815,13 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
   return rules;
 }
 
+// `expr` is taken by mutable reference because the newline normalization edits
+// it: the AST's tokens are string_views into this buffer, so it is the one that
+// has to hold the normalized bytes. Callers already had to keep it alive for as
+// long as the AST — they now also have to own it rather than share it, which is
+// only visible to a caller parsing one buffer from several threads.
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
-                                       const std::string& expr,
+                                       std::string& expr,
                                        std::vector<std::string>& msgs) {
   auto& parser = get_parser();
   _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
@@ -1791,8 +1834,10 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   // The depth guard throws from peglib's enter hook, so it bypasses the
   // logger. Convert it here so every caller sees one failure shape
   // (msgs + nullptr) — before this, each caller needed its own catch, and
-  // fmt/lint/doctest/repl/dap each missed it in turn.
+  // fmt/lint/doctest/repl/dap each missed it in turn. The newline
+  // normalization below reports a bare `\r` the same way.
   try {
+    normalize_source_newlines(expr);
     if (!parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
       return nullptr;
     }
@@ -1811,7 +1856,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
 // verbatim. Used only by `culebra fmt`; never feed this AST to a backend,
 // which expects the desugared form.
 inline std::shared_ptr<peg::Ast> parse_for_format(
-    const std::string& path, const std::string& expr,
+    const std::string& path, std::string& expr,
     std::vector<std::string>& msgs) {
   auto& parser = get_parser();
   _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
@@ -1821,7 +1866,8 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
   });
 
   std::shared_ptr<peg::Ast> ast;
-  try {  // depth guard → msgs, as in parse()
+  try {  // depth guard + bare `\r` → msgs, as in parse()
+    normalize_source_newlines(expr);
     if (!parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
       return nullptr;
     }
