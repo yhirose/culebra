@@ -138,7 +138,11 @@ assert_eq(werr, "IOError: FS.write: cannot open '/no/such/dir/x.txt'")
 // --- Extensions: stat / rename / copy / walk / glob / paths / symlinks ---
 // Pure path helpers (no I/O).
 assert_eq(FS.normpath("a/./b/../c"), "a{FS.sep()}c")
-assert_eq(FS.is_abs("/tmp"), true)
+// A rooted path with no drive letter/host is not absolute on Windows
+// (std::filesystem::path::is_absolute() requires a root-name there; POSIX
+// draws no such line) — Sys.getcwd() is a genuinely absolute path on every
+// platform, unlike a hand-written "/tmp".
+assert_true(FS.is_abs(Sys.getcwd()))
 assert_eq(FS.is_abs("rel/path"), false)
 
 // abspath: normalize lexically, resolve a relative path against the cwd, and
