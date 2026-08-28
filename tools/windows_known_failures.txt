@@ -9,6 +9,27 @@
 #
 # Grouped by cause, so the list reads as a work list rather than a tally.
 
+# --- is_absolute() needs a drive letter, not just a rooted path --------------
+# `FS.is_abs("/tmp")` answers false here: std::filesystem::path::is_absolute()
+# on Windows requires a root-name (a drive letter or a UNC host), and a path
+# that starts with '/' or '\' but names neither has a root-directory without
+# one — POSIX has no such distinction, so is_abs's contract cannot mean the
+# same thing on both without deciding whether culebra's "absolute" should
+# match std::filesystem's Windows definition or POSIX's looser one. A design
+# question, not a separator bug — the FS.join family sharing this file
+# (normpath/join) is already fixed; only this line and FS.abspath (masked
+# behind it — unverified) are open.
+tests/test_fs.cul
+
+# --- FS.list_dir sees an empty directory that has a file in it ---------------
+# `base.list()` — Path's wrapper over FS.list_dir — answers `[]` right after
+# `f.write(...)` / `f.exists()` / `f.is_file()` / `f.read()` all confirm the
+# file is there, at the path list_dir is asked to enumerate. Not a separator
+# issue (mkdir/write/read all pass), not yet understood — found once
+# (2026-08-28), needs its own investigation with real diagnostics from a
+# Windows run, not a guess.
+tests/test_path.cul
+
 # --- a file still open cannot be removed -------------------------------------
 # `FS.remove` answers "The process cannot access the file because it is being
 # used by another process". POSIX unlinks a file with a live handle and the

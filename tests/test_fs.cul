@@ -137,7 +137,7 @@ assert_eq(werr, "IOError: FS.write: cannot open '/no/such/dir/x.txt'")
 
 // --- Extensions: stat / rename / copy / walk / glob / paths / symlinks ---
 // Pure path helpers (no I/O).
-assert_eq(FS.normpath("a/./b/../c"), "a/c")
+assert_eq(FS.normpath("a/./b/../c"), "a{FS.sep()}c")
 assert_eq(FS.is_abs("/tmp"), true)
 assert_eq(FS.is_abs("rel/path"), false)
 
