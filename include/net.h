@@ -153,6 +153,20 @@ inline bool is_wouldblock(int e) {
 #endif
 }
 
+// Windows-only: recvfrom on a datagram larger than the buffer still fills the
+// buffer with the first part and reports this instead of a byte count — the
+// buffer holds real, usable data, not garbage from a failed call (Microsoft
+// Learn's recvfrom reference documents the fill). POSIX recvfrom does the
+// same truncation silently, via the return value alone.
+inline bool is_msgsize(int e) {
+#if defined(_WIN32)
+  return e == WSAEMSGSIZE;
+#else
+  (void)e;
+  return false;
+#endif
+}
+
 // A non-blocking connect() that has not completed yet.
 inline bool is_in_progress(int e) {
 #if defined(_WIN32)
@@ -1062,8 +1076,15 @@ inline IoStatus udp_recv_from(int64_t id, size_t max, std::string& out,
     if (n < 0) {
       int e = detail::last_error();
       if (detail::is_eintr(e) || detail::is_wouldblock(e)) continue;
-      if (err) *err = detail::error_string(e);
-      return IoStatus::Error;
+      // The buffer already holds `max` real bytes (see is_msgsize) and `ss`
+      // the real sender — only the payload was truncated, so this is the
+      // same successful, truncated read POSIX's recvfrom reports via its
+      // return value alone.
+      if (detail::is_msgsize(e)) { n = static_cast<decltype(n)>(max); }
+      else {
+        if (err) *err = detail::error_string(e);
+        return IoStatus::Error;
+      }
     }
     out.assign(buf.data(), static_cast<size_t>(n));
     detail::addr_to_host_port(reinterpret_cast<sockaddr*>(&ss), len, host, port);

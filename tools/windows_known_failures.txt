@@ -41,9 +41,6 @@ tests/test_path.cul
 tests/test_file.cul
 
 # --- native behaviour that differs, one test each ----------------------------
-# Net.recv_from: Windows' recvfrom fails a datagram larger than the buffer
-# (WSAEMSGSIZE) where POSIX truncates it.
-tests/test_net.cul
 # Proc: `Proc.run(["sh", "-c", "kill -TERM $$"])` (self-signal via a POSIX
 # shell) has no Windows equivalent — MSYS's bash emulates the signal itself
 # and TerminateProcess-based decode_child never inspects the exit code for
