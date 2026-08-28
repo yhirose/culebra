@@ -8,8 +8,11 @@
 //
 //   // The registrar needs a name UNIQUE across all binding headers —
 //   // two `inline const bool _` definitions would be an ODR violation
-//   // that silently drops one registration.
-//   inline const bool _mylib_counter_wrapped = [] {
+//   // that silently drops one registration. [[gnu::used]] because nothing
+//   // reads it: an inline variable nothing odr-uses need never be
+//   // initialized ([basic.start.dynamic]), and lld — the Windows linker —
+//   // drops such an unreferenced COMDAT with the registration in it.
+//   [[gnu::used]] inline const bool _mylib_counter_wrapped = [] {
 //     culebra::wrap<mylib::Counter>("__Foreign", "Counter")
 //         .ctor<long>({"start"})
 //         .method<&mylib::Counter::value>("value")

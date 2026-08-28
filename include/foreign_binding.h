@@ -12,7 +12,10 @@
 
 namespace culebra {
 
-inline const bool _foreign_counter_wrapped = [] {
+// [[gnu::used]] on both registrars, as wrap.h's idiom says: nothing reads
+// them, and an inline variable nothing odr-uses need never be initialized —
+// lld's COFF --gc-sections drops it together with the registration.
+[[gnu::used]] inline const bool _foreign_counter_wrapped = [] {
   using foreign_fixture::Counter;
   wrap<Counter>("__Foreign", "Counter")
       .ctor<long>({"start"})
@@ -31,7 +34,7 @@ inline const bool _foreign_counter_wrapped = [] {
 // INTO the Box — borrowing handles checked against the parent's closed
 // flag and generation. `reset` is non-const (generation bump: existing
 // borrows go stale); `touch` is non-const but declared harmless.
-inline const bool _foreign_box_wrapped = [] {
+[[gnu::used]] inline const bool _foreign_box_wrapped = [] {
   using foreign_fixture::Box;
   wrap<Box>("__Foreign", "Box")
       .ctor<long>({"start"})
