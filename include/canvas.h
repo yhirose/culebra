@@ -1133,6 +1133,35 @@ inline void sound_free(int64_t id) {
   _wasm_canvas_sound_free(static_cast<int>(id));
 }
 
+// Fullscreen/cursor/clipboard/resize/dt/fps/wheel/gamepad have no browser
+// wiring yet: the docs/index.html-style host page already owns fullscreen,
+// hjkl and gamepad for the embedded Playground itself, relaying DOM/Gamepad
+// API events onto its canvas pane, so a wasm program reading these gets safe
+// no-ops rather than a build that fails to link.
+inline void toggle_fullscreen() {}
+inline bool is_fullscreen() { return false; }
+inline void show_cursor() {}
+inline void hide_cursor() {}
+inline bool cursor_hidden() { return false; }
+inline std::string clipboard_get() { return ""; }
+inline void clipboard_set(const char*) {}
+inline void set_resizable(bool) {}
+inline bool window_resized() { return false; }
+inline double dt() { return 0.0; }
+inline void set_target_fps(int64_t) {}
+inline int64_t fps() { return 0; }
+inline double mouse_wheel() { return 0.0; }
+inline bool pad_available(int64_t) { return false; }
+inline double pad_axis(int64_t, int64_t) { return 0.0; }
+inline bool pad_button(int64_t, int64_t) { return false; }
+inline bool pad_pressed(int64_t, int64_t) { return false; }
+inline std::string pad_name(int64_t) { return ""; }
+inline void pad_rumble(int64_t, double, double, double) {}
+inline int64_t pad_mappings(const char*) { return 0; }
+// Quitting is the tab's call, not the program's -- see closing() above.
+inline void quit() {}
+inline bool can_quit() { return false; }
+
 #elif defined(CULEBRA_CANVAS_WINDOW)  // native raylib desktop window
 
 #if defined(CULEBRA_RT_CANVAS_WEAK)
@@ -1175,6 +1204,28 @@ __attribute__((weak)) void sound_play(int64_t, int64_t) {}
 __attribute__((weak)) void sound_stop(int64_t) {}
 __attribute__((weak)) bool sound_playing(int64_t) { return false; }
 __attribute__((weak)) void sound_free(int64_t) {}
+__attribute__((weak)) void toggle_fullscreen() {}
+__attribute__((weak)) bool is_fullscreen() { return false; }
+__attribute__((weak)) void show_cursor() {}
+__attribute__((weak)) void hide_cursor() {}
+__attribute__((weak)) bool cursor_hidden() { return false; }
+__attribute__((weak)) std::string clipboard_get() { return ""; }
+__attribute__((weak)) void clipboard_set(const char*) {}
+__attribute__((weak)) void set_resizable(bool) {}
+__attribute__((weak)) bool window_resized() { return false; }
+__attribute__((weak)) double dt() { return 0.0; }
+__attribute__((weak)) void set_target_fps(int64_t) {}
+__attribute__((weak)) int64_t fps() { return 0; }
+__attribute__((weak)) double mouse_wheel() { return 0.0; }
+__attribute__((weak)) bool pad_available(int64_t) { return false; }
+__attribute__((weak)) double pad_axis(int64_t, int64_t) { return 0.0; }
+__attribute__((weak)) bool pad_button(int64_t, int64_t) { return false; }
+__attribute__((weak)) bool pad_pressed(int64_t, int64_t) { return false; }
+__attribute__((weak)) std::string pad_name(int64_t) { return ""; }
+__attribute__((weak)) void pad_rumble(int64_t, double, double, double) {}
+__attribute__((weak)) int64_t pad_mappings(const char*) { return 0; }
+__attribute__((weak)) void quit() {}
+__attribute__((weak)) bool can_quit() { return false; }
 
 #else
 
@@ -1212,6 +1263,28 @@ void sound_play(int64_t id, int64_t vol);
 void sound_stop(int64_t id);
 bool sound_playing(int64_t id);
 void sound_free(int64_t id);
+void toggle_fullscreen();
+bool is_fullscreen();
+void show_cursor();
+void hide_cursor();
+bool cursor_hidden();
+std::string clipboard_get();
+void clipboard_set(const char* text);
+void set_resizable(bool enabled);
+bool window_resized();
+double dt();
+void set_target_fps(int64_t fps);
+int64_t fps();
+double mouse_wheel();
+bool pad_available(int64_t index);
+double pad_axis(int64_t index, int64_t axis);
+bool pad_button(int64_t index, int64_t button);
+bool pad_pressed(int64_t index, int64_t button);
+std::string pad_name(int64_t index);
+void pad_rumble(int64_t index, double left, double right, double sec);
+int64_t pad_mappings(const char* db);
+void quit();
+bool can_quit();
 
 #endif  // CULEBRA_RT_CANVAS_WEAK
 
@@ -1248,6 +1321,28 @@ inline void sound_play(int64_t, int64_t) {}
 inline void sound_stop(int64_t) {}
 inline bool sound_playing(int64_t) { return false; }
 inline void sound_free(int64_t) {}
+inline void toggle_fullscreen() {}
+inline bool is_fullscreen() { return false; }
+inline void show_cursor() {}
+inline void hide_cursor() {}
+inline bool cursor_hidden() { return false; }
+inline std::string clipboard_get() { return ""; }
+inline void clipboard_set(const char*) {}
+inline void set_resizable(bool) {}
+inline bool window_resized() { return false; }
+inline double dt() { return 0.0; }
+inline void set_target_fps(int64_t) {}
+inline int64_t fps() { return 0; }
+inline double mouse_wheel() { return 0.0; }
+inline bool pad_available(int64_t) { return false; }
+inline double pad_axis(int64_t, int64_t) { return 0.0; }
+inline bool pad_button(int64_t, int64_t) { return false; }
+inline bool pad_pressed(int64_t, int64_t) { return false; }
+inline std::string pad_name(int64_t) { return ""; }
+inline void pad_rumble(int64_t, double, double, double) {}
+inline int64_t pad_mappings(const char*) { return 0; }
+inline void quit() {}
+inline bool can_quit() { return false; }
 
 #endif  // __EMSCRIPTEN__
 

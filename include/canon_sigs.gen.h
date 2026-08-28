@@ -1037,6 +1037,32 @@ inline constexpr CanonParam kCanonParams_Canvas_native[] = {
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   // 118: _Canvas.sound_free
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 119: _Canvas.clipboard_set
+  {"text", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  // 120: _Canvas.set_resizable
+  {"enabled", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 121: _Canvas.set_target_fps
+  {"fps", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 122: _Canvas.pad_available
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 123: _Canvas.pad_axis
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"axis", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 125: _Canvas.pad_button
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"button", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 127: _Canvas.pad_pressed
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"button", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 129: _Canvas.pad_name
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 130: _Canvas.pad_rumble
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"left", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  {"right", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  {"sec", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 134: _Canvas.pad_mappings
+  {"db", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Canvas_native[] = {
@@ -1097,6 +1123,28 @@ inline constexpr CanonSig kCanonSigs_Canvas_native[] = {
   {"_Canvas", "", "sound_free", kCanonParams_Canvas_native + 118, 1, "", 1, 1, false, -1, -1, -1},
   {"_Canvas", "", "width", nullptr, 0, "Long", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "height", nullptr, 0, "Long", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "toggle_fullscreen", nullptr, 0, "", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "is_fullscreen", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "show_cursor", nullptr, 0, "", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "hide_cursor", nullptr, 0, "", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "cursor_hidden", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "clipboard_get", nullptr, 0, "String", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "clipboard_set", kCanonParams_Canvas_native + 119, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "set_resizable", kCanonParams_Canvas_native + 120, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "window_resized", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "dt", nullptr, 0, "Float", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "set_target_fps", kCanonParams_Canvas_native + 121, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "fps", nullptr, 0, "Long", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "mouse_wheel", nullptr, 0, "Float", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "pad_available", kCanonParams_Canvas_native + 122, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "pad_axis", kCanonParams_Canvas_native + 123, 2, "Float", 2, 2, false, -1, -1, -1},
+  {"_Canvas", "", "pad_button", kCanonParams_Canvas_native + 125, 2, "Bool", 2, 2, false, -1, -1, -1},
+  {"_Canvas", "", "pad_pressed", kCanonParams_Canvas_native + 127, 2, "Bool", 2, 2, false, -1, -1, -1},
+  {"_Canvas", "", "pad_name", kCanonParams_Canvas_native + 129, 1, "String", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "pad_rumble", kCanonParams_Canvas_native + 130, 4, "", 4, 4, false, -1, -1, -1},
+  {"_Canvas", "", "pad_mappings", kCanonParams_Canvas_native + 134, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "quit", nullptr, 0, "", 0, 0, false, -1, -1, -1},
+  {"_Canvas", "", "can_quit", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Bare[] = {

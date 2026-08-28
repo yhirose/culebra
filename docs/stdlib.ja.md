@@ -64,7 +64,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 23. [`Log`](#23-log) — stderrへのレベル付き構造化ログ（text / JSON、child logger）
 24. [`TOML`](#24-toml) — TOML設定をparse / stringify
 25. [`SQLite`](#25-sqlite) — 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション）
-26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス / tone / 効果音 / music）
+26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御 / tone / 効果音 / music）
 27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ（opt-in、macOS限定）
 28. [`Net`](#28-net) — 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ）
 29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで
@@ -4518,8 +4518,10 @@ raylib + SDL3を使い）**実際のデスクトップウィンドウを開く**
 ディスプレイの無いサーバでも問題なく起動する。
 各`present`はフレームをアップロードし、最近傍で見やすい
 サイズに整数倍拡大し、60fpsでvsyncまでブロックする。キーボードとマウスが
-`Canvas.buttons` / `Canvas.mouse`になり、ウィンドウを閉じる（またはEsc）と`run`
-ループが終わる。**ヘッドレスは宣言するもので、推測されるものではない**:
+`Canvas.buttons` / `Canvas.mouse`になり、ウィンドウを閉じる（クローズボタン、
+またはスクリプト自身の`Canvas.quit()`）と`run`ループが終わる — Escはここでは
+ただのキー（`Canvas.key`参照）であり、組み込みの終了操作ではない。
+**ヘッドレスは宣言するもので、推測されるものではない**:
 ウィンドウバックエンド無しのビルド、および`CULEBRA_CANVAS_HEADLESS`が
 `0` / `off`以外に設定された実行では**ヘッドレス**: ピクセル / スプライト操作は同一に
 動く（振る舞いはVM / JIT / AOTで一致し`Canvas.get_pixel`で検証可能）が、
@@ -4642,9 +4644,30 @@ isolate（描画でも`width`/`get_pixel`のような読み取りでも）が持
 | 関数 | 効果 |
 | --- | --- |
 | `Canvas.title(name)` | ウィンドウ名を設定。ループが始まる前に呼ぶ |
+| `Canvas.toggle_fullscreen()` | フルスクリーンを切り替える |
+| `Canvas.fullscreen() -> Bool` | 今フルスクリーンかどうか |
+| `Canvas.resizable(enabled)` | OSウィンドウをドラッグで拡大縮小できるようにする |
+| `Canvas.resized() -> Bool` | このフレームでウィンドウのピクセルサイズが変わったか |
+| `Canvas.show_cursor()` / `Canvas.hide_cursor()` | OSマウスカーソルを表示 / 非表示にする |
+| `Canvas.cursor_hidden() -> Bool` | 今カーソルが隠れているか |
+| `Canvas.clipboard() -> String` | OSクリップボードを読む |
+| `Canvas.set_clipboard(text)` | OSクリップボードに書く |
+| `Canvas.quit()` | ウィンドウを閉じ、クローズボタンと同じ形で`run`のループを終える |
+| `Canvas.can_quit() -> Bool` | 閉じられる実ウィンドウがあるか |
 
 ブラウザで何もしないのは未実装ではなく方針です。タブのタイトルはキャンバスを
-載せているページのものであって、その上で動くプログラムのものではありません。
+載せているページのものであって、その上で動くプログラムのものではありません
+— 上の他の項目もすべて同じ理由でブラウザとヘッドレスではno-opです。そこには
+影響を与えるべきOSウィンドウがそもそも無いからです。
+
+`Canvas`のウィンドウは通常固定サイズです。`resizable`はOSウィンドウ自体を
+ドラッグできるようにするだけで、フレームバッファ自身の論理解像度は追従しま
+せん — `resized()`は、スクリプトが自分でそれに反応する（新しいサイズで
+`init()`し直す、自前のUIをreflowする、あるいは無視する）ための、その1フレーム
+だけ立つエッジです。`quit()`は、ウィンドウ自身のクローズボタンが`run`のループ
+を止めるのと同じ合図を1フレーム遅れで送ります。`can_quit()`は閉じられる
+ウィンドウがそもそもあるかを返すので、ゲームは「終了しますか？」という
+プロンプトを出す意味があるかどうかを、実際に出す前に判断できます。
 
 ### スプライト
 
@@ -4826,6 +4849,7 @@ Canvas.run(320, 240, fn () {
 | `Canvas.key(name) -> Bool` | 名前で指したキーが今押されているか |
 | `Canvas.key_queue() -> Array` | このフレームのキー押下（名前）を引き取る |
 | `Canvas.typed() -> String` | ユーザーが打った文字を引き取る |
+| `Canvas.wheel() -> Float` | 前フレームからのマウスホイール垂直方向の変化量 |
 
 ボタンビットは定数`Canvas.LEFT` / `RIGHT` / `UP` / `DOWN`（矢印キー、および
 第2のセットとしてWASD）と
@@ -4855,6 +4879,55 @@ Canvas.run(320, 240, fn () {
 プラットフォームのテキスト入力を有効化する — キーだけをポーリングする
 プログラムがIMEポップアップを見ることはない。ヘッドレスでは何も押されず
 キューは空。
+
+`wheel()`が正の値はユーザーから遠ざかる向き（上スクロール / ズームイン）
+で、ブラウザの`-deltaY`の符号規則に合わせています。
+
+### ゲームパッド
+
+| 関数 | 結果 |
+| --- | --- |
+| `Canvas.pad_available(index = 0) -> Bool` | `index`にゲームパッドが接続されているか |
+| `Canvas.pad_axis(axis, index = 0) -> Float` | 軸の値（スティック、トリガー） |
+| `Canvas.pad_button(button, index = 0) -> Bool` | ボタンが今押されているか |
+| `Canvas.pad_pressed(button, index = 0) -> Bool` | **このフレーム**に押されたか |
+| `Canvas.pad_name(index = 0) -> String` | パッドが報告する名前 |
+| `Canvas.pad_rumble(left, right, sec, index = 0)` | 両モーターを強さ0–1で`sec`秒振動させる |
+| `Canvas.pad_mappings(db) -> Bool` | バンドル済みDBに無いパッド用の`SDL_GameControllerDB`追加行を読み込む |
+
+`index`（0–3）はどのパッドかを選ぶ — 単一コントローラの一般的なケースなら0、
+ローカルマルチプレイならそれ以外を使う。`pad_pressed`は`buttons()`に対する
+`input.pressed`と同じ「このフレームだけのエッジ」だが、raylibがネイティブに
+追跡しているため`update()`や前フレーム状態の管理は不要。ボタン・軸の番号は
+raylib自身の`GamepadButton` / `GamepadAxis`の値で、スクリプトがその番号を
+知らずに済むよう名前が付けられている:
+
+| ボタン | 軸 |
+| --- | --- |
+| `Canvas.PAD_UP` / `RIGHT` / `DOWN` / `LEFT`（十字キー） | `Canvas.AXIS_LX` / `LY`（左スティック） |
+| `Canvas.PAD_Y` / `B` / `A` / `X`（フェイスボタン、Xbox命名） | `Canvas.AXIS_RX` / `RY`（右スティック） |
+| `Canvas.PAD_LB` / `LT` / `RB` / `RT`（肩ボタン / トリガー） | `Canvas.AXIS_LT` / `RT`（アナログトリガー） |
+| `Canvas.PAD_SELECT` / `GUIDE` / `START` | |
+| `Canvas.PAD_L3` / `R3`（スティック押し込み） | |
+
+`pad_rumble`は触覚フィードバックの無いbackend/パッド（macOSのXboxパッドは
+それを駆動するAPIが無い）では黙って何もしない。ゲームパッドの状態は
+ブラウザとヘッドレスでは利用できず、`pad_available`は常に`false`。
+
+### 衝突判定
+
+軸並行の重なり・内包判定。ネイティブ側の実装を持たない純粋なculebraコード:
+
+| 関数 | 結果 |
+| --- | --- |
+| `Canvas.rect_overlap(x1, y1, w1, h1, x2, y2, w2, h2) -> Bool` | 2つの矩形が重なるか |
+| `Canvas.circle_overlap(x1, y1, r1, x2, y2, r2) -> Bool` | 2つの円が重なるか |
+| `Canvas.point_in_rect(px, py, x, y, w, h) -> Bool` | 点が矩形の内側にあるか |
+| `Canvas.point_in_circle(px, py, cx, cy, r) -> Bool` | 点が円の内側にあるか |
+
+`rect`側の`(x, y, w, h)`引数は`Canvas.rect`自身の規約（左上座標とサイズ）
+に合わせてあるので、スプライトの当たり判定ボックスと描画する矩形とで
+同じ数値をそのまま使い回せます。
 
 ### 音声
 
@@ -4959,6 +5032,23 @@ Canvas.run(160, 160, fn () {
   true
 })
 ```
+
+`tick`のペースは目標フレームレート（既定60、ブラウザのループに合わせて
+ある）にvsyncされているので、大半のゲームは以下の関数に触れる必要が
+ありません:
+
+| 関数 | 効果 |
+| --- | --- |
+| `Canvas.dt() -> Float` | 前回の`present()`からの経過秒数 |
+| `Canvas.target_fps(n)` | フレームレートの上限を設定（0で無制限） |
+| `Canvas.fps() -> Long` | 実測フレームレート |
+
+`dt()`が意味を持つのは、vsyncされたtickが前提とする固定`1/60`の代わりに、
+実際に経過した秒数でステップしたい`tick`だけです（このリポジトリ自身の
+`lunar_lander.cul`の例がそうしています）。3つともネイティブ限定です —
+ブラウザビルドはディスプレイ自身のアニメーションフレームに自らペーシングし、
+ヘッドレスにはそもそもフレームレートが無いので、そこでは`dt()` / `fps()`は
+`0`を返し、`target_fps`はno-opになります。
 
 ---
 

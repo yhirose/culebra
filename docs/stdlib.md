@@ -66,7 +66,7 @@ Conventions used below:
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
-26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse, tone, sound, music)
+26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls, tone, sound, music)
 27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (opt-in, macOS-only)
 28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
 29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
@@ -4657,7 +4657,9 @@ build adds no load-time library dependency and starts fine on a headless
 server. Each `present` uploads the frame, upscales it with
 nearest-neighbour to a comfortable window size, and blocks to vsync at 60 fps;
 the keyboard and mouse feed `Canvas.buttons`/`Canvas.mouse`, and closing the
-window (or Esc) ends the `run` loop. **Headless is declared, never inferred**:
+window (its close box, or a script's own `Canvas.quit()`) ends the `run`
+loop — Esc is an ordinary key here (see `Canvas.key`), not a built-in quit.
+**Headless is declared, never inferred**:
 in a build without the window backend — or in any run with
 `CULEBRA_CANVAS_HEADLESS` set to anything but `0`/`off` — the backend is
 **headless**: the pixel and sprite ops run identically (so behaviour is the same
@@ -4788,9 +4790,30 @@ is a framebuffer first; this is the one part of it the OS owns.
 | Function | Effect |
 | --- | --- |
 | `Canvas.title(name)` | name the window; call it before the loop starts |
+| `Canvas.toggle_fullscreen()` | switch fullscreen on/off |
+| `Canvas.fullscreen() -> Bool` | is the window fullscreen now |
+| `Canvas.resizable(enabled)` | let the OS window be dragged larger/smaller |
+| `Canvas.resized() -> Bool` | the window's pixel size changed this frame |
+| `Canvas.show_cursor()` / `Canvas.hide_cursor()` | show / hide the OS mouse cursor |
+| `Canvas.cursor_hidden() -> Bool` | is the cursor hidden now |
+| `Canvas.clipboard() -> String` | read the OS clipboard |
+| `Canvas.set_clipboard(text)` | write the OS clipboard |
+| `Canvas.quit()` | close the window, ending `run`'s loop the way the close box does |
+| `Canvas.can_quit() -> Bool` | is there a real window to close |
 
 The browser is a deliberate no-op rather than a missing feature: the tab's
-title belongs to the page hosting the canvas, not to the program drawing on it.
+title belongs to the page hosting the canvas, not to the program drawing on it
+— and the same holds for every other entry above, all of them no-ops in the
+browser and headless where there is no OS window to affect.
+
+`Canvas` windows are otherwise a fixed size; `resizable` only lets the OS
+window itself be dragged, and the framebuffer's own logical resolution does
+not follow along — `resized()` is the one-frame edge a script polls to react
+itself (re-`init()` at a new size, reflow its own UI, or ignore the resize).
+`quit()` raises the same signal `run`'s loop stops on as the window's own
+close box, one frame later; `can_quit()` says whether there is a window to
+close at all, so a game can decide whether an in-game "quit?" prompt makes
+sense before ever offering one.
 
 ### Sprites
 
@@ -4980,6 +5003,7 @@ Input is polled each frame (it reflects the current state, not an event queue).
 | `Canvas.key(name) -> Bool` | one named key is held now |
 | `Canvas.key_queue() -> Array` | drain this frame's key presses (names) |
 | `Canvas.typed() -> String` | drain the characters the user typed |
+| `Canvas.wheel() -> Float` | vertical mouse wheel delta since the last frame |
 
 Button bits are the constants `Canvas.LEFT`, `RIGHT`, `UP`, `DOWN` (arrow keys,
 and WASD as a second set) and `Canvas.A`, `B` (action keys — `A` is Space/Z,
@@ -5009,6 +5033,56 @@ and are capped at 256 entries (oldest first out), so call each from one place
 per frame and hand the result around. Natively, the first `typed()` call
 turns the platform's text input on — a program that only polls keys never
 sees an IME popup. Headless, nothing is held and the queues are empty.
+
+Positive `wheel()` is away from the user (scroll up / zoom in), matching the
+browser's `-deltaY` convention.
+
+### Gamepad
+
+| Function | Result |
+| --- | --- |
+| `Canvas.pad_available(index = 0) -> Bool` | a gamepad is connected at `index` |
+| `Canvas.pad_axis(axis, index = 0) -> Float` | axis value (sticks, triggers) |
+| `Canvas.pad_button(button, index = 0) -> Bool` | button is held now |
+| `Canvas.pad_pressed(button, index = 0) -> Bool` | button went down **this** frame |
+| `Canvas.pad_name(index = 0) -> String` | the pad's reported name |
+| `Canvas.pad_rumble(left, right, sec, index = 0)` | vibrate both motors 0–1 strength for `sec` seconds |
+| `Canvas.pad_mappings(db) -> Bool` | load extra `SDL_GameControllerDB` lines for a pad the bundled DB lacks |
+
+`index` (0–3) picks which pad — 0 for the common single-controller case,
+others for local multiplayer. `pad_pressed` is a same-frame edge the way
+`input.pressed` is for `buttons()`, except raylib tracks it natively, so
+there is no `update()`/previous-state bookkeeping to do. Button and axis
+numbers are raylib's own `GamepadButton`/`GamepadAxis` values, named so a
+script never has to know them:
+
+| Buttons | Axes |
+| --- | --- |
+| `Canvas.PAD_UP` / `RIGHT` / `DOWN` / `LEFT` (d-pad) | `Canvas.AXIS_LX` / `LY` (left stick) |
+| `Canvas.PAD_Y` / `B` / `A` / `X` (face buttons, Xbox naming) | `Canvas.AXIS_RX` / `RY` (right stick) |
+| `Canvas.PAD_LB` / `LT` / `RB` / `RT` (shoulders/triggers) | `Canvas.AXIS_LT` / `RT` (analog triggers) |
+| `Canvas.PAD_SELECT` / `GUIDE` / `START` | |
+| `Canvas.PAD_L3` / `R3` (stick pressed in) | |
+
+`pad_rumble` silently does nothing on a backend/pad without haptics (Xbox
+pads on macOS have no API driving them). Gamepad state is unavailable — and
+`pad_available` is always `false` — in the browser and headless.
+
+### Collision
+
+Axis-aligned overlap and containment tests, plain culebra with no native
+backend of their own:
+
+| Function | Result |
+| --- | --- |
+| `Canvas.rect_overlap(x1, y1, w1, h1, x2, y2, w2, h2) -> Bool` | two rectangles overlap |
+| `Canvas.circle_overlap(x1, y1, r1, x2, y2, r2) -> Bool` | two circles overlap |
+| `Canvas.point_in_rect(px, py, x, y, w, h) -> Bool` | a point is inside a rectangle |
+| `Canvas.point_in_circle(px, py, cx, cy, r) -> Bool` | a point is inside a circle |
+
+`rect`/`(x, y, w, h)` arguments match `Canvas.rect`'s own convention
+(top-left corner and size), so a sprite's hitbox and its drawn rectangle
+share the same numbers.
 
 ### Audio
 
@@ -5116,6 +5190,22 @@ Canvas.run(160, 160, fn () {
   true
 })
 ```
+
+`tick`'s cadence is vsynced to a target frame rate — 60 by default, matching
+the browser loop — so most games never touch the functions below:
+
+| Function | Effect |
+| --- | --- |
+| `Canvas.dt() -> Float` | seconds since the previous `present()` |
+| `Canvas.target_fps(n)` | cap the frame rate (0 uncaps it) |
+| `Canvas.fps() -> Long` | the measured frame rate |
+
+`dt()` only matters to a `tick` that wants to step by real elapsed seconds
+instead of the fixed `1/60` a vsynced tick otherwise assumes (this repo's own
+`lunar_lander.cul` example does). All three are native-only: the browser
+build paces itself to the display's own animation frame and headless has no
+frame rate at all, so there `dt()`/`fps()` read `0` and `target_fps` is a
+no-op.
 
 ---
 

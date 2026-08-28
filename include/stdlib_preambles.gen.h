@@ -1278,6 +1278,155 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     }  # just went down
   }
 
+  # --- window / system ------------------------------------------------------
+  # No-ops in the browser and headless backends: the embedding host page owns
+  # fullscreen and gamepad for the browser build already (relaying the F key
+  # and Gamepad API onto the Playground's canvas pane; see docs/index.html in
+  # yhirose/Lunar-Lander-Culebra for the pattern), and there is no window at
+  # all headless.
+  let toggle_fullscreen = fn () {
+    _Canvas.toggle_fullscreen()
+  }
+  let fullscreen = fn () {
+    _Canvas.is_fullscreen()
+  }
+  let show_cursor = fn () {
+    _Canvas.show_cursor()
+  }
+  let hide_cursor = fn () {
+    _Canvas.hide_cursor()
+  }
+  let cursor_hidden = fn () {
+    _Canvas.cursor_hidden()
+  }
+  let clipboard = fn () {
+    _Canvas.clipboard_get()
+  }
+  let set_clipboard = fn (s) {
+    _Canvas.clipboard_set(s)
+  }
+  # Lets the OS window be dragged larger/smaller; every Canvas window is a
+  # fixed size otherwise. The framebuffer's own logical resolution does not
+  # follow a resize on its own -- resized() is how a script notices one to
+  # react itself (re-`init()` at a new size, reflow its own UI, or ignore it).
+  let resizable = fn (enabled) {
+    _Canvas.set_resizable(enabled)
+  }
+  let resized = fn () {
+    _Canvas.window_resized()
+  }
+  # Closes the window, ending run()'s loop on its next frame the same way the
+  # window's own close box does -- see closing() below, which the two share.
+  # A no-op on the wasm and headless backends, where there is no window;
+  # can_quit() says which is which, so a game can decide whether an in-game
+  # "quit?" prompt makes sense before ever offering one.
+  let quit = fn () {
+    _Canvas.quit()
+  }
+  let can_quit = fn () {
+    _Canvas.can_quit()
+  }
+
+  # --- timing ----------------------------------------------------------------
+  # `run`'s tick is vsynced to target_fps (60 by default, matching the browser
+  # loop), so most games never need these: dt() only matters to one that wants
+  # to step by real elapsed seconds instead of the fixed 1/60 DT a vsynced
+  # tick otherwise assumes (as this repo's own lunar_lander.cul does).
+  let dt = fn () {
+    _Canvas.dt()
+  }
+  let target_fps = fn (n) {
+    _Canvas.set_target_fps(n)
+  }
+  let fps = fn () {
+    _Canvas.fps()
+  }
+
+  # --- mouse wheel ------------------------------------------------------------
+  # Vertical delta since the last frame; positive is away from the user
+  # (scroll up / zoom in).
+  let wheel = fn () {
+    _Canvas.mouse_wheel()
+  }
+
+  # --- gamepad ---------------------------------------------------------------
+  # Button/axis numbers are raylib's own GamepadButton/GamepadAxis values,
+  # named here so a script never has to know them. `index` (0-3, raylib's
+  # MAX_GAMEPADS) picks which pad -- 0 for the common single-controller case,
+  # others for local multiplayer. pressed() is a same-frame edge the way
+  # Input.pressed() is for buttons(), except raylib tracks it natively so
+  # there is no update()/prev-state bookkeeping to do.
+  let PAD_UP = 1
+  let PAD_RIGHT = 2
+  let PAD_DOWN = 3
+  let PAD_LEFT = 4
+  let PAD_Y = 5      # north face button (Xbox Y / PlayStation Triangle)
+  let PAD_B = 6      # east face button (Xbox B / PlayStation Circle)
+  let PAD_A = 7      # south face button (Xbox A / PlayStation Cross)
+  let PAD_X = 8      # west face button (Xbox X / PlayStation Square)
+  let PAD_LB = 9
+  let PAD_LT = 10
+  let PAD_RB = 11
+  let PAD_RT = 12
+  let PAD_SELECT = 13
+  let PAD_GUIDE = 14
+  let PAD_START = 15
+  let PAD_L3 = 16    # left stick pressed in
+  let PAD_R3 = 17    # right stick pressed in
+  let AXIS_LX = 0
+  let AXIS_LY = 1
+  let AXIS_RX = 2
+  let AXIS_RY = 3
+  let AXIS_LT = 4
+  let AXIS_RT = 5
+
+  let pad_available = fn (index = 0) {
+    _Canvas.pad_available(index)
+  }
+  let pad_axis = fn (axis, index = 0) {
+    _Canvas.pad_axis(index, axis)
+  }
+  let pad_button = fn (button, index = 0) {
+    _Canvas.pad_button(index, button)
+  }
+  let pad_pressed = fn (button, index = 0) {
+    _Canvas.pad_pressed(index, button)
+  }
+  let pad_name = fn (index = 0) {
+    _Canvas.pad_name(index)
+  }
+  # left/right motor strength 0..1, `sec` seconds. Silently does nothing on a
+  # backend/pad without haptics (Xbox pads on macOS: no API drives them).
+  let pad_rumble = fn (left, right, sec, index = 0) {
+    _Canvas.pad_rumble(index, left, right, sec)
+  }
+  # Extra SDL_GameControllerDB mapping lines for a pad the bundled DB lacks
+  # (a newer controller). Returns true on success.
+  let pad_mappings = fn (db) {
+    _Canvas.pad_mappings(db) == 1
+  }
+
+  # --- collision --------------------------------------------------------------
+  # Axis-aligned rectangle / circle overlap -- the two shapes almost every
+  # casual game ends up hand-rolling for hit detection. `rect` args are a
+  # box's top-left and size, matching Canvas.rect's own (x, y, w, h).
+  let rect_overlap = fn (x1, y1, w1, h1, x2, y2, w2, h2) {
+    x1 < x2 + w2 && x2 < x1 + w1 && y1 < y2 + h2 && y2 < y1 + h1
+  }
+  let circle_overlap = fn (x1, y1, r1, x2, y2, r2) {
+    let dx = x1 - x2
+    let dy = y1 - y2
+    dx * dx + dy * dy < (r1 + r2) * (r1 + r2)
+  }
+  let point_in_rect = fn (px, py, x, y, w, h) {
+    px >= x && px < x + w && py >= y && py < y + h
+  }
+  let point_in_circle = fn (px, py, cx, cy, r) {
+    let dx = px - cx
+    let dy = py - cy
+    dx * dx + dy * dy < r * r
+  }
+
   # --- audio --------------------------------------------------------------
   # Channels, matching WASM-4's APU. The two pulse channels take a duty cycle;
   # SAWTOOTH is a culebra extension (not a WASM-4 channel). These values are the
@@ -1594,6 +1743,55 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     DUTY_QUARTER: DUTY_QUARTER,
     DUTY_HALF: DUTY_HALF,
     DUTY_THREE_QUARTER: DUTY_THREE_QUARTER,
+    toggle_fullscreen: toggle_fullscreen,
+    fullscreen: fullscreen,
+    show_cursor: show_cursor,
+    hide_cursor: hide_cursor,
+    cursor_hidden: cursor_hidden,
+    clipboard: clipboard,
+    set_clipboard: set_clipboard,
+    resizable: resizable,
+    resized: resized,
+    quit: quit,
+    can_quit: can_quit,
+    dt: dt,
+    target_fps: target_fps,
+    fps: fps,
+    wheel: wheel,
+    PAD_UP: PAD_UP,
+    PAD_RIGHT: PAD_RIGHT,
+    PAD_DOWN: PAD_DOWN,
+    PAD_LEFT: PAD_LEFT,
+    PAD_Y: PAD_Y,
+    PAD_B: PAD_B,
+    PAD_A: PAD_A,
+    PAD_X: PAD_X,
+    PAD_LB: PAD_LB,
+    PAD_LT: PAD_LT,
+    PAD_RB: PAD_RB,
+    PAD_RT: PAD_RT,
+    PAD_SELECT: PAD_SELECT,
+    PAD_GUIDE: PAD_GUIDE,
+    PAD_START: PAD_START,
+    PAD_L3: PAD_L3,
+    PAD_R3: PAD_R3,
+    AXIS_LX: AXIS_LX,
+    AXIS_LY: AXIS_LY,
+    AXIS_RX: AXIS_RX,
+    AXIS_RY: AXIS_RY,
+    AXIS_LT: AXIS_LT,
+    AXIS_RT: AXIS_RT,
+    pad_available: pad_available,
+    pad_axis: pad_axis,
+    pad_button: pad_button,
+    pad_pressed: pad_pressed,
+    pad_name: pad_name,
+    pad_rumble: pad_rumble,
+    pad_mappings: pad_mappings,
+    rect_overlap: rect_overlap,
+    circle_overlap: circle_overlap,
+    point_in_rect: point_in_rect,
+    point_in_circle: point_in_circle,
   }
 }
 let Canvas = _canvas_module()

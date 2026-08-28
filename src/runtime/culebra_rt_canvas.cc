@@ -60,6 +60,10 @@ int g_render_w = 0;
 int g_render_h = 0;
 bool g_window_ready = false;
 bool g_window_failed = false;  // creation tried and failed; don't try again
+// Set by quit() (below); closing() ORs it into WindowShouldClose() so a
+// script-requested quit stops Canvas.run's loop the same way the window's
+// own close box does, with no separate signal for `run` to know about.
+bool g_quit_requested = false;
 // Why the window could not open — the message present() raises. Headless is
 // declared (CULEBRA_CANVAS_HEADLESS=1), never inferred from a failed window.
 std::string g_window_error;
@@ -246,6 +250,13 @@ void ensure_window() {
     }
     stop_text_input();
     SetTargetFPS(60);  // pin the game clock to 60 fps like the browser loop
+    // raylib's own default: Esc alone force-closes the window with no
+    // chance for a script to intercept it (closing() would report it exactly
+    // like the window's close box, one frame too late to ask "are you
+    // sure?"). A game that wants Esc back for something else — or wants it
+    // to quit outright — reads Canvas.key("escape") and/or calls quit()
+    // itself instead.
+    SetExitKey(KEY_NULL);
     g_window_ready = true;
     arm_exit_teardown();
   } else {
@@ -677,6 +688,16 @@ void present() {
     screen_buffer_reset();
     return;
   }
+  // ensure_window() only resyncs the render size against a framebuffer
+  // resize (a script's own Canvas.init() at a new w/h); the window's actual
+  // drawable can also change on its own -- toggle_fullscreen() swaps it to
+  // the display's full size, and a resizable() window can be dragged by the
+  // user -- neither of which touches the framebuffer at all. Left stale,
+  // present() below draws into a viewport sized for the OLD drawable, which
+  // reads as the frame pinned in a corner of the new one. Every frame is the
+  // simplest fix that is still correct every time, and the two SDL/GL calls
+  // it costs are cheap next to a whole present().
+  sync_render_size();
   const std::vector<uint32_t>& fb = _fb();
   if (!fb.empty()) UpdateTexture(g_tex, fb.data());
   // The screen layer is uploaded only on frames that drew into it, plus the one
@@ -749,6 +770,56 @@ int64_t buttons() {
   return m;
 }
 
+// Gamepads, by slot (0-3, raylib's MAX_GAMEPADS): axis/button numbers are
+// raylib's own GamepadAxis/GamepadButton enum values, which canvas.cul
+// mirrors as named constants so a script never has to know the numbers.
+// Scene.View exposes the same thing (pad_available/pad_axis/pad_button/
+// pad_pressed/pad_name/gamepad_mappings/rumble, gamepad 0 only) — this is
+// that, generalized to a slot argument, so Canvas games get it too.
+bool pad_available(int64_t index) {
+  ensure_window();
+  if (!g_window_ready) return false;
+  return IsGamepadAvailable(static_cast<int>(index));
+}
+double pad_axis(int64_t index, int64_t axis) {
+  ensure_window();
+  if (!g_window_ready) return 0.0;
+  return static_cast<double>(
+      GetGamepadAxisMovement(static_cast<int>(index), static_cast<int>(axis)));
+}
+bool pad_button(int64_t index, int64_t button) {
+  ensure_window();
+  if (!g_window_ready) return false;
+  return IsGamepadButtonDown(static_cast<int>(index), static_cast<int>(button));
+}
+bool pad_pressed(int64_t index, int64_t button) {
+  ensure_window();
+  if (!g_window_ready) return false;
+  return IsGamepadButtonPressed(static_cast<int>(index),
+                                static_cast<int>(button));
+}
+std::string pad_name(int64_t index) {
+  ensure_window();
+  if (!g_window_ready) return "";
+  const char* n = GetGamepadName(static_cast<int>(index));
+  return n ? n : "";
+}
+// Rumble strength 0..1 each motor, `sec` seconds. Silently does nothing on a
+// backend/pad without haptics (Xbox pads on macOS: no API drives them).
+void pad_rumble(int64_t index, double left, double right, double sec) {
+  ensure_window();
+  if (!g_window_ready) return;
+  SetGamepadVibration(static_cast<int>(index), static_cast<float>(left),
+                      static_cast<float>(right), static_cast<float>(sec));
+}
+// Load extra SDL_GameControllerDB mapping lines for pads the bundled DB
+// lacks. Returns 1 on success, matching Scene.View.gamepad_mappings.
+int64_t pad_mappings(const char* db) {
+  ensure_window();
+  if (!g_window_ready) return 0;
+  return SetGamepadMappings(db);
+}
+
 // Mouse position in framebuffer pixels (window pixels / the upscale), clamped
 // to the buffer.
 int64_t mouse_x() {
@@ -776,6 +847,36 @@ int64_t mouse_buttons() {
   return m;
 }
 
+// Vertical wheel delta this frame (positive = away from the user, matching
+// the browser's -deltaY convention for scroll-to-zoom-in).
+double mouse_wheel() {
+  ensure_window();
+  if (!g_window_ready) return 0.0;
+  return static_cast<double>(GetMouseWheelMove());
+}
+
+// Seconds since the previous present() — Scene.View has the same dt(); a
+// Canvas game that wants to step by real elapsed time (rather than the fixed
+// 1/60 a vsynced tick() otherwise assumes) reads this instead.
+double dt() {
+  ensure_window();
+  if (!g_window_ready) return 0.0;
+  return static_cast<double>(GetFrameTime());
+}
+
+// SetTargetFPS(0) uncaps it; the default from ensure_window() is 60, matching
+// the browser loop, so this only matters to a game that wants something else.
+void set_target_fps(int64_t fps) {
+  ensure_window();
+  if (!g_window_ready) return;
+  SetTargetFPS(static_cast<int>(fps));
+}
+int64_t fps() {
+  ensure_window();
+  if (!g_window_ready) return 0;
+  return GetFPS();
+}
+
 // Held state of one named key; unknown names are simply not held.
 bool key(const char* name) {
   ensure_window();
@@ -800,12 +901,30 @@ std::string char_pop() {
   return s;
 }
 
-// True once the window's close box (or Esc) has been used, so the run loop
-// stops. Before the window exists there is nothing to close.
+// True once the window's close box has been used or a script called quit(),
+// so the run loop stops. Before the window exists there is nothing to close.
+// Esc no longer contributes on its own -- see the SetExitKey(KEY_NULL) note
+// in ensure_window().
 bool closing() {
   ensure_window();
   if (!g_window_ready) return false;
-  return WindowShouldClose();
+  return WindowShouldClose() || g_quit_requested;
+}
+
+// A script's own "close the window" -- the same event WindowShouldClose()
+// reports for the close box, so closing() can't tell them apart and nothing
+// downstream (the run loop, a program polling closing() itself) needs to.
+void quit() {
+  ensure_window();
+  if (g_window_ready) g_quit_requested = true;
+}
+// Whether quit() (and the fullscreen/cursor/clipboard primitives beside it)
+// does anything here: true only with a real window to close, so a script can
+// decide whether an in-game "quit?" prompt makes sense before offering one
+// (there is nothing to close on the wasm or headless backends).
+bool can_quit() {
+  ensure_window();
+  return g_window_ready;
 }
 
 // True when frames actually reach a display. False under CULEBRA_CANVAS_HEADLESS
@@ -818,6 +937,61 @@ bool windowed() {
 
 const char* window_error() {
   return g_window_error.empty() ? nullptr : g_window_error.c_str();
+}
+
+// SDL (the platform backend here) applies fullscreen and the resizable flag
+// live, unlike FLAG_WINDOW_HIGHDPI above, so none of these need to happen
+// before ensure_window() the way that one does.
+void toggle_fullscreen() {
+  ensure_window();
+  if (!g_window_ready) return;
+  ToggleFullscreen();
+}
+bool is_fullscreen() {
+  ensure_window();
+  if (!g_window_ready) return false;
+  return IsWindowFullscreen();
+}
+void show_cursor() {
+  ensure_window();
+  if (g_window_ready) ShowCursor();
+}
+void hide_cursor() {
+  ensure_window();
+  if (g_window_ready) HideCursor();
+}
+bool cursor_hidden() {
+  ensure_window();
+  if (!g_window_ready) return false;
+  return IsCursorHidden();
+}
+std::string clipboard_get() {
+  ensure_window();
+  if (!g_window_ready) return "";
+  const char* s = GetClipboardText();
+  return s ? s : "";
+}
+void clipboard_set(const char* text) {
+  ensure_window();
+  if (g_window_ready) SetClipboardText(text);
+}
+void set_resizable(bool enabled) {
+  ensure_window();
+  if (!g_window_ready) return;
+  if (enabled) {
+    SetWindowState(FLAG_WINDOW_RESIZABLE);
+  } else {
+    ClearWindowState(FLAG_WINDOW_RESIZABLE);
+  }
+}
+// One-frame edge, like WindowShouldClose: true only on the frame the OS
+// window's pixel size last changed (the user dragging an edge, maximizing,
+// entering fullscreen). The framebuffer itself does not follow — present()
+// still scales the same logical w x h to fit whatever the window now is.
+bool window_resized() {
+  ensure_window();
+  if (!g_window_ready) return false;
+  return IsWindowResized();
 }
 
 // Deliberately does not ensure_window(): naming a window must not open one.

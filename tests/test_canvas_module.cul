@@ -541,6 +541,66 @@ assert_throws("TypeError", fn () {
   Canvas.title(42)
 })
 
+// Window controls: no window exists headless, so every one of these is a
+// no-op / reads its "nothing to report" default -- but they're safe to call
+// unconditionally, and the argument contracts are checked identically on
+// both backends.
+Canvas.toggle_fullscreen()
+assert_eq(Canvas.fullscreen(), false)
+Canvas.show_cursor()
+Canvas.hide_cursor()
+assert_eq(Canvas.cursor_hidden(), false)
+assert_eq(Canvas.clipboard(), "")
+Canvas.set_clipboard("hello")
+assert_throws("TypeError", fn () {
+  Canvas.set_clipboard(42)
+})
+Canvas.resizable(true)
+assert_eq(Canvas.resized(), false)
+assert_eq(Canvas.can_quit(), false)  // no real window to close, headless
+Canvas.quit()                        // no-op: nothing to close
+
+// Timing: native-only. Headless has no frame clock, so dt()/fps() read 0 and
+// target_fps() is a no-op -- matching the browser build exactly.
+assert_eq(Canvas.dt(), 0.0)
+Canvas.target_fps(30)
+assert_eq(Canvas.fps(), 0)
+
+// Mouse wheel: nothing scrolled headless.
+assert_eq(Canvas.wheel(), 0.0)
+
+// Gamepad: headless has none connected, but the argument contracts and the
+// "no pad" defaults are pinned identically on both backends.
+assert_eq(Canvas.pad_available(), false)
+assert_eq(Canvas.pad_available(1), false)
+assert_eq(Canvas.pad_axis(Canvas.AXIS_LX), 0.0)
+assert_eq(Canvas.pad_button(Canvas.PAD_A), false)
+assert_eq(Canvas.pad_pressed(Canvas.PAD_A), false)
+assert_eq(Canvas.pad_name(), "")
+Canvas.pad_rumble(1.0, 1.0, 0.1)
+assert_eq(Canvas.pad_mappings("some,mapping,line"), false)
+assert_throws("TypeError", fn () {
+  Canvas.pad_axis("nope")
+})
+
+// Gamepad button/axis constants are distinct.
+assert_eq(Canvas.PAD_UP, 1)
+assert_eq(Canvas.PAD_R3, 17)
+assert_eq(Canvas.AXIS_LX, 0)
+assert_eq(Canvas.AXIS_RT, 5)
+
+// Collision helpers: plain culebra arithmetic with no native backend of
+// their own, so exercised for real rather than smoke-called.
+assert_eq(Canvas.rect_overlap(0, 0, 10, 10, 5, 5, 10, 10), true)
+assert_eq(Canvas.rect_overlap(0, 0, 10, 10, 20, 20, 10, 10), false)
+assert_eq(Canvas.rect_overlap(0, 0, 10, 10, 10, 0, 10, 10), false)  // touching edges: half-open, no overlap
+assert_eq(Canvas.circle_overlap(0, 0, 5, 8, 0, 5), true)
+assert_eq(Canvas.circle_overlap(0, 0, 5, 11, 0, 5), false)
+assert_eq(Canvas.point_in_rect(5, 5, 0, 0, 10, 10), true)
+assert_eq(Canvas.point_in_rect(10, 5, 0, 0, 10, 10), false)  // half-open on the far edge
+assert_eq(Canvas.point_in_circle(2, 2, 0, 0, 5), true)
+assert_eq(Canvas.point_in_circle(10, 0, 0, 0, 5), false)
+
 // Button/wave constants are distinct bits/codes.
 assert_eq(Canvas.LEFT + Canvas.RIGHT + Canvas.UP + Canvas.DOWN, 15)
 assert_eq(Canvas.NOISE, 3)

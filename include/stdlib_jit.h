@@ -1020,6 +1020,84 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_closing() {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_windowed() {
   return culebra::_canvas_detail::windowed();
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_toggle_fullscreen() {
+  culebra::_canvas_detail::toggle_fullscreen();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_is_fullscreen() {
+  return culebra::_canvas_detail::is_fullscreen();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_show_cursor() {
+  culebra::_canvas_detail::show_cursor();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_hide_cursor() {
+  culebra::_canvas_detail::hide_cursor();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_cursor_hidden() {
+  return culebra::_canvas_detail::cursor_hidden();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_canvas_clipboard_get() {
+  return _culebra_heap_str(culebra::_canvas_detail::clipboard_get());
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_clipboard_set(
+    uint8_t tag, int64_t data) {
+  auto sv = _culebra_str_view(tag, data);
+  culebra::_canvas_detail::clipboard_set(std::string(sv).c_str());
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_set_resizable(
+    bool enabled) {
+  culebra::_canvas_detail::set_resizable(enabled);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_window_resized() {
+  return culebra::_canvas_detail::window_resized();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_canvas_dt() {
+  return culebra::_canvas_detail::dt();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_set_target_fps(
+    int64_t fps) {
+  culebra::_canvas_detail::set_target_fps(fps);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_fps() {
+  return culebra::_canvas_detail::fps();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_canvas_mouse_wheel() {
+  return culebra::_canvas_detail::mouse_wheel();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_pad_available(
+    int64_t index) {
+  return culebra::_canvas_detail::pad_available(index);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_canvas_pad_axis(
+    int64_t index, int64_t axis) {
+  return culebra::_canvas_detail::pad_axis(index, axis);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_pad_button(
+    int64_t index, int64_t button) {
+  return culebra::_canvas_detail::pad_button(index, button);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_pad_pressed(
+    int64_t index, int64_t button) {
+  return culebra::_canvas_detail::pad_pressed(index, button);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_canvas_pad_name(
+    int64_t index) {
+  return _culebra_heap_str(culebra::_canvas_detail::pad_name(index));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_pad_rumble(
+    int64_t index, double left, double right, double sec) {
+  culebra::_canvas_detail::pad_rumble(index, left, right, sec);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_pad_mappings(
+    uint8_t tag, int64_t data) {
+  auto sv = _culebra_str_view(tag, data);
+  return culebra::_canvas_detail::pad_mappings(std::string(sv).c_str());
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_quit() {
+  culebra::_canvas_detail::quit();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_can_quit() {
+  return culebra::_canvas_detail::can_quit();
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_tone(
     int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
     int64_t sustain, int64_t release, int64_t vol, int64_t peak,
@@ -4520,6 +4598,88 @@ inline JitValue _ns_canvas_closing(JitValue*, int64_t) {
 inline JitValue _ns_canvas_windowed(JitValue*, int64_t) {
   return _ns_adapt::v_bool(culebra_runtime_canvas_windowed());
 }
+inline JitValue _ns_canvas_toggle_fullscreen(JitValue*, int64_t) {
+  culebra_runtime_canvas_toggle_fullscreen();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_is_fullscreen(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_is_fullscreen());
+}
+inline JitValue _ns_canvas_show_cursor(JitValue*, int64_t) {
+  culebra_runtime_canvas_show_cursor();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_hide_cursor(JitValue*, int64_t) {
+  culebra_runtime_canvas_hide_cursor();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_cursor_hidden(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_cursor_hidden());
+}
+inline JitValue _ns_canvas_clipboard_get(JitValue*, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_canvas_clipboard_get());
+}
+inline JitValue _ns_canvas_clipboard_set(JitValue* a, int64_t) {
+  culebra_runtime_canvas_clipboard_set(static_cast<uint8_t>(a[0].tag), a[0].data);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_set_resizable(JitValue* a, int64_t) {
+  culebra_runtime_canvas_set_resizable(_ns_adapt::take_bool(a[0]) != 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_window_resized(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_window_resized());
+}
+inline JitValue _ns_canvas_dt(JitValue*, int64_t) {
+  return _ns_adapt::v_float(culebra_runtime_canvas_dt());
+}
+inline JitValue _ns_canvas_set_target_fps(JitValue* a, int64_t) {
+  culebra_runtime_canvas_set_target_fps(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_fps(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_fps());
+}
+inline JitValue _ns_canvas_mouse_wheel(JitValue*, int64_t) {
+  return _ns_adapt::v_float(culebra_runtime_canvas_mouse_wheel());
+}
+inline JitValue _ns_canvas_pad_available(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(
+      culebra_runtime_canvas_pad_available(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_pad_axis(JitValue* a, int64_t) {
+  return _ns_adapt::v_float(culebra_runtime_canvas_pad_axis(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1])));
+}
+inline JitValue _ns_canvas_pad_button(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_pad_button(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1])));
+}
+inline JitValue _ns_canvas_pad_pressed(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_pad_pressed(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1])));
+}
+inline JitValue _ns_canvas_pad_name(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_canvas_pad_name(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_pad_rumble(JitValue* a, int64_t) {
+  culebra_runtime_canvas_pad_rumble(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_double(a[1]),
+      _ns_adapt::take_double(a[2]), _ns_adapt::take_double(a[3]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_pad_mappings(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_pad_mappings(
+      static_cast<uint8_t>(a[0].tag), a[0].data));
+}
+inline JitValue _ns_canvas_quit(JitValue*, int64_t) {
+  culebra_runtime_canvas_quit();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_canvas_can_quit(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_can_quit());
+}
 inline JitValue _ns_canvas_title(JitValue* a, int64_t) {
   culebra_runtime_canvas_title(static_cast<uint8_t>(a[0].tag), a[0].data);
   return _ns_adapt::v_nil();
@@ -7707,6 +7867,28 @@ inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "sound_free",      1,  &_ns_canvas_sound_free},
   {"_Canvas", "width",           0,  &_ns_canvas_width},
   {"_Canvas", "height",          0,  &_ns_canvas_height},
+  {"_Canvas", "toggle_fullscreen", 0, &_ns_canvas_toggle_fullscreen},
+  {"_Canvas", "is_fullscreen",   0,  &_ns_canvas_is_fullscreen},
+  {"_Canvas", "show_cursor",     0,  &_ns_canvas_show_cursor},
+  {"_Canvas", "hide_cursor",     0,  &_ns_canvas_hide_cursor},
+  {"_Canvas", "cursor_hidden",   0,  &_ns_canvas_cursor_hidden},
+  {"_Canvas", "clipboard_get",   0,  &_ns_canvas_clipboard_get},
+  {"_Canvas", "clipboard_set",   1,  &_ns_canvas_clipboard_set},
+  {"_Canvas", "set_resizable",   1,  &_ns_canvas_set_resizable},
+  {"_Canvas", "window_resized",  0,  &_ns_canvas_window_resized},
+  {"_Canvas", "dt",              0,  &_ns_canvas_dt},
+  {"_Canvas", "set_target_fps",  1,  &_ns_canvas_set_target_fps},
+  {"_Canvas", "fps",             0,  &_ns_canvas_fps},
+  {"_Canvas", "mouse_wheel",     0,  &_ns_canvas_mouse_wheel},
+  {"_Canvas", "pad_available",   1,  &_ns_canvas_pad_available},
+  {"_Canvas", "pad_axis",        2,  &_ns_canvas_pad_axis},
+  {"_Canvas", "pad_button",      2,  &_ns_canvas_pad_button},
+  {"_Canvas", "pad_pressed",     2,  &_ns_canvas_pad_pressed},
+  {"_Canvas", "pad_name",        1,  &_ns_canvas_pad_name},
+  {"_Canvas", "pad_rumble",      4,  &_ns_canvas_pad_rumble},
+  {"_Canvas", "pad_mappings",    1,  &_ns_canvas_pad_mappings},
+  {"_Canvas", "quit",            0,  &_ns_canvas_quit},
+  {"_Canvas", "can_quit",        0,  &_ns_canvas_can_quit},
 };
 
 // One group per table, under the C symbol ns_group_symbol names. A group is
