@@ -1386,7 +1386,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   let pad_axis = fn (axis, index = 0) {
     _Canvas.pad_axis(index, axis)
   }
-  let pad_button = fn (button, index = 0) {
+  let pad_held = fn (button, index = 0) {
     _Canvas.pad_button(index, button)
   }
   let pad_pressed = fn (button, index = 0) {
@@ -1783,7 +1783,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     AXIS_RT: AXIS_RT,
     pad_available: pad_available,
     pad_axis: pad_axis,
-    pad_button: pad_button,
+    pad_held: pad_held,
     pad_pressed: pad_pressed,
     pad_name: pad_name,
     pad_rumble: pad_rumble,

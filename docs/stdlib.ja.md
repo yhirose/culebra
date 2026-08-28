@@ -4889,7 +4889,7 @@ Canvas.run(320, 240, fn () {
 | --- | --- |
 | `Canvas.pad_available(index = 0) -> Bool` | `index`にゲームパッドが接続されているか |
 | `Canvas.pad_axis(axis, index = 0) -> Float` | 軸の値（スティック、トリガー） |
-| `Canvas.pad_button(button, index = 0) -> Bool` | ボタンが今押されているか |
+| `Canvas.pad_held(button, index = 0) -> Bool` | ボタンが今押されているか |
 | `Canvas.pad_pressed(button, index = 0) -> Bool` | **このフレーム**に押されたか |
 | `Canvas.pad_name(index = 0) -> String` | パッドが報告する名前 |
 | `Canvas.pad_rumble(left, right, sec, index = 0)` | 両モーターを強さ0–1で`sec`秒振動させる |

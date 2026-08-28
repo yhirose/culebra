@@ -5043,7 +5043,7 @@ browser's `-deltaY` convention.
 | --- | --- |
 | `Canvas.pad_available(index = 0) -> Bool` | a gamepad is connected at `index` |
 | `Canvas.pad_axis(axis, index = 0) -> Float` | axis value (sticks, triggers) |
-| `Canvas.pad_button(button, index = 0) -> Bool` | button is held now |
+| `Canvas.pad_held(button, index = 0) -> Bool` | button is held now |
 | `Canvas.pad_pressed(button, index = 0) -> Bool` | button went down **this** frame |
 | `Canvas.pad_name(index = 0) -> String` | the pad's reported name |
 | `Canvas.pad_rumble(left, right, sec, index = 0)` | vibrate both motors 0–1 strength for `sec` seconds |
