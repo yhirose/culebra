@@ -1532,6 +1532,11 @@ jobs:
       # registrar survived and the AOT one proves the `__Foreign` archive's,
       # force-loaded by naming the namespace. tests/test_foreign.cul is the
       # same file `just test` runs everywhere else.
+      # The whole suite, held to a list of known failures that only shrinks.
+      # Until this, six of the 215 tests/*.cul ran on Windows — the reason a
+      # registration the clang/lld switch dropped reached master. ~80 s.
+      - name: Test — the suite, against the known-failure list
+        run: tools/check_suite_on_windows.sh ./build-win-aot/culebra.exe
       - name: Test — wrap fixture (vm / JIT / AOT)
         run: |
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \

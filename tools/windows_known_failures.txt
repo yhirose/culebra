@@ -1,0 +1,56 @@
+# tests/*.cul that do not pass on Windows yet, one per line.
+#
+# tools/check_suite_on_windows.sh runs the suite under the VM executor and
+# holds the failing set to exactly this list: a new failure fails the job, and
+# so does an entry that starts passing (delete it in the same commit that fixes
+# it). Everything not listed here must pass — which is the point, because until
+# 2026-08-28 the Windows lanes ran 6 of the 215 files and a registration that
+# died in the clang/lld switch went unnoticed (see include/wrap.h).
+#
+# Grouped by cause, so the list reads as a work list rather than a tally.
+
+# --- CRLF in the source file changes string literal values -------------------
+# A `\r` before the newline lands inside the literal: a triple-quoted string
+# gains a character per line, and the effects transform's re-parse of rewritten
+# source stops matching. Reproducible anywhere, not a Windows behaviour at all
+# — Windows is just where a checkout has CRLF endings by default. Fixing it
+# means normalizing source at the parse funnel (parse_with_transforms), which
+# touches error positions, the formatter's round trip and doctest, so it is its
+# own change rather than a rider on this list.
+tests/test_raw_string.cul
+tests/test_triple_string.cul
+tests/test_effects.cul
+tests/test_effects_defer.cul
+
+# --- FS.join / Path build a native separator, the tests expect '/' -----------
+# `FS.join("a", "b")` answers `a\b` here. Whether that is right is a language
+# question (Python joins natively, Go's path/filepath does too, and both leave
+# the caller to compare with the same function) — the tests compare against a
+# literal `a/b/c.txt`, which is the part that cannot be right on both.
+tests/test_bare_namespace.cul
+tests/test_fs.cul
+tests/test_path.cul
+
+# --- a file still open cannot be removed -------------------------------------
+# `FS.remove` answers "The process cannot access the file because it is being
+# used by another process". POSIX unlinks a file with a live handle and the
+# tests lean on that; Windows refuses until the last handle closes, so the
+# question is whether the handle should already be gone at that point.
+tests/test_file.cul
+tests/test_packable.cul
+
+# --- native behaviour that differs, one test each ----------------------------
+# Net.recv_from: Windows' recvfrom fails a datagram larger than the buffer
+# (WSAEMSGSIZE) where POSIX truncates it.
+tests/test_net.cul
+# Proc: the exit reason of a killed child is nil where POSIX reports SIGTERM.
+tests/test_proc.cul
+# Sys / Env: one value each reads back nil / a stale value.
+tests/test_sys.cul
+tests/test_env.cul
+
+# --- hangs --------------------------------------------------------------
+# FS.watch never delivers an event and the file runs to the step's timeout.
+# The smoke in windows-aot-build saw this once before (2026-08-26, green on
+# rerun); this is the second sighting, so it is a bug, not a flake.
+tests/test_fs_watch.cul
