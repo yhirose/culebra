@@ -22,17 +22,33 @@ import factory from './providers/model_factory.cul'
 
 let MAX_STEPS = 30
 
-let USAGE = """
-usage: culebra nano-code.cul [--yolo] <task...>
+let SPEC = {
+  name: 'culebra nano-code.cul',
+  args: [
+    {name: 'task', repeated: true, doc: 'what to do, in words'},
+    {
+      name: 'yolo',
+      type: 'Bool',
+      default: false,
+      doc: 'run tools that change things without asking',
+    },
+  ],
+}
 
-  --yolo    run tools that change things without asking
+# The environment is the other half of the interface, and a spec has no
+# section for it.
+let ENVIRONMENT = """
 
+Environment:
   LLM_PROVIDER         openai or anthropic
   LLM_MODEL            the model id that provider serves
   LLM_API_KEY          the key, unless the provider's own variable is set
   OPENAI_BASE_URL      where the openai format is spoken, if not OpenAI itself
   ANTHROPIC_BASE_URL   the same, for the other format
+
 """
+
+let USAGE = Args.help(SPEC) + ENVIRONMENT
 
 fn main() {
   let opts = parse(Sys.argv)
@@ -40,16 +56,6 @@ fn main() {
   let model_id = Sys.env('LLM_MODEL', '')
   let root = FS.join(Sys.getcwd(), 'workspace')
 
-  if !opts.unknown.empty() {
-    IO.eprintln("error: unknown option {opts.unknown[0]}")
-    IO.eprintln(USAGE)
-    Sys.exit(1)
-  }
-  if opts.task.empty() {
-    IO.eprintln('error: say what to do')
-    IO.eprintln(USAGE)
-    Sys.exit(1)
-  }
   if !FS.exists(root) {
     FS.mkdir(root)
   }
@@ -84,18 +90,30 @@ fn main() {
   a.generate(opts.task)
 }
 
-# `Args` is not used for one reason: an optional positional is not expressible
-# in a spec (stdlib §10), and the task reads better as trailing words than as
-# `--task "..."`.
+# `try_parse` rather than `parse`, only so that `--help` can carry the
+# environment section too. An option the spec does not know is rejected by
+# name, as upstream's `parseArgs` rejects it: folding it into the prompt would
+# ask the model to do `--yes fix it`.
 fn parse(argv) {
-  {
-    yolo: argv.contains('--yolo'),
-    # An option this does not know is not task text. Upstream's `parseArgs`
-    # rejects it; folding it into the prompt asks the model to do `--yes fix
-    # it`.
-    unknown: argv.filter(|a| a.starts_with('--') && a != '--yolo'),
-    task: argv.filter(|a| !a.starts_with('--')).join(' '),
+  let opts = try {
+    Args.try_parse(argv, SPEC)
+  } catch e {
+    if e.kind == 'ArgParseHelp' {
+      IO.print(USAGE)
+      Sys.exit(0)
+    }
+    fail(e.message)
   }
+  # A spec cannot say `repeated, at least one`, so this is the one usage rule
+  # left to state here — and it is a usage error like any other.
+  fail('say what to do') if opts.task.empty()
+  {yolo: opts.yolo, task: opts.task.join(' ')}
+}
+
+fn fail(message) {
+  IO.eprintln("error: {message}")
+  IO.eprint(USAGE)
+  Sys.exit(2)
 }
 
 fn clip(s) {

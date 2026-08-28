@@ -58,6 +58,7 @@ fn an_agent(model, tools, extra) {
     model: model,
     tools: tools,
     max_steps: extra.max_steps ?? 5,
+    verbose: extra.verbose,
     approval_func: extra.approval_func,
   })
 }
@@ -262,6 +263,67 @@ fn a_long_history_is_compressed_before_it_is_sent() {
   # thread it is in the middle of.
   assert_eq(msg.role_of(sent[0]), 'system')
   assert_eq(msg.role_of(last_of(sent)), 'tool')
+}
+
+# --- what a run prints ------------------------------------------------------
+#
+# Not upstream's: the log is this port's, and it is the only account of a run
+# there is. `IO.capture` reads back what a call printed rather than what it
+# returned (stdlib §2).
+
+fn verbose_output(model, tools, max_steps) {
+  IO.capture(fn () {
+    an_agent(model, tools, {max_steps: max_steps, verbose: true}).generate('go')
+  })
+}
+
+@test
+fn a_call_and_its_result_are_logged() {
+  let model = ScriptedModel.new([calls_a_tool(1, 'search'), {text: 'done'}])
+  let tools = {search: a_tool('search', false, fn (_args) { 'found it' })}
+  let out = verbose_output(model, tools, 5)
+
+  assert_true(out.contains('=== step 1/5 ==='))
+  assert_true(out.contains('[tool] search({})'))
+  assert_true(out.contains('[result] found it'))
+}
+
+@test
+fn a_call_naming_a_tool_that_is_not_there_is_logged_too() {
+  # The step ends before the `[tool]` line, so this one used to print nothing
+  # at all: a verbose run went quiet with no reason given.
+  let model = ScriptedModel.new([calls_a_tool(1, 'nope'), {text: 'done'}])
+  let out = verbose_output(model, {}, 5)
+
+  assert_true(out.contains('[tool] nope: no such tool'))
+}
+
+@test
+fn reaching_the_step_budget_warns() {
+  let model = ScriptedModel.new([1, 2].map(|n| calls_a_tool(n, 'dummy')))
+  let tools = {dummy: a_tool('dummy', false, fn (_args) { 'ok' })}
+
+  assert_true(verbose_output(model, tools, 2)
+    .contains('warning: reached the maximum number of steps'))
+}
+
+@test
+fn answering_without_using_a_tool_warns() {
+  let model = ScriptedModel.new([{text: 'nothing to do'}])
+
+  assert_true(verbose_output(model, {}, 5)
+    .contains('warning: finished without using a tool'))
+}
+
+@test
+fn a_quiet_run_prints_what_the_model_said_and_nothing_else() {
+  let model = ScriptedModel.new([calls_a_tool(1, 'search'), {text: 'done'}])
+  let tools = {search: a_tool('search', false, fn (_args) { 'found it' })}
+  let out = IO.capture(fn () {
+    an_agent(model, tools, {}).generate('go')
+  })
+
+  assert_eq(out, "step 1\ndone\n")
 }
 
 # --- a tool that fails is not an exception ----------------------------------

@@ -95,6 +95,12 @@ class Agent {
   run_call(call, messages) {
     let tool = self.tools.find(|t| t.name == call.name)
     if tool == nil {
+      # Not upstream's. The step is over before the `[tool]` line below, so
+      # without one of its own a verbose run says nothing at all about a turn
+      # that did nothing.
+      if self.verbose {
+        println("[tool] {call.name}: no such tool")
+      }
       messages.push(self.result(call, "error: tool {call.name} not found"))
       return false
     }
