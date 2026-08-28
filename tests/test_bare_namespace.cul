@@ -34,16 +34,10 @@ assert_eq(fs.basename("/tmp/foo.txt"), "foo.txt")
 assert_eq(fs.dirname("/tmp/foo.txt"), "/tmp")
 assert_eq(fs.extension("/tmp/foo.txt"), ".txt")
 assert_eq(fs.stem("/tmp/foo.txt"), "foo")
-assert_eq(fs.join("a", "b", "c.txt"), "a/b/c.txt")
+assert_eq(fs.join("a", "b", "c.txt"), "a{FS.sep()}b{FS.sep()}c.txt")
 assert_eq(fs.exists("tests/test_bare_namespace.cul"), true)
 // Whole-file read/write moved from IO to FS; exercise via bare value too.
-let tdir = Sys.env("TMPDIR")
-let troot = if tdir != "" {
-  tdir
-} else {
-  "/tmp"
-}
-let bare_tmp = FS.join(troot, "cul_bare_fs.txt")
+let bare_tmp = FS.join(FS.temp_dir(), "cul_bare_fs.txt")
 fs.write(bare_tmp, "bare")
 assert_eq(fs.read(bare_tmp), "bare")
 fs.remove(bare_tmp)

@@ -9,15 +9,6 @@
 #
 # Grouped by cause, so the list reads as a work list rather than a tally.
 
-# --- FS.join / Path build a native separator, the tests expect '/' -----------
-# `FS.join("a", "b")` answers `a\b` here. Whether that is right is a language
-# question (Python joins natively, Go's path/filepath does too, and both leave
-# the caller to compare with the same function) — the tests compare against a
-# literal `a/b/c.txt`, which is the part that cannot be right on both.
-tests/test_bare_namespace.cul
-tests/test_fs.cul
-tests/test_path.cul
-
 # --- a file still open cannot be removed -------------------------------------
 # `FS.remove` answers "The process cannot access the file because it is being
 # used by another process". POSIX unlinks a file with a live handle and the

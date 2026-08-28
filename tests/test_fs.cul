@@ -4,8 +4,8 @@
 // Tests run on interp, JIT, and AOT via `just test`; identical stdout.
 
 // --- Path manipulation ---
-assert_eq(FS.join("a", "b", "c.txt"), "a/b/c.txt")
-assert_eq(FS.join("/usr", "local", "bin"), "/usr/local/bin")
+assert_eq(FS.join("a", "b", "c.txt"), "a{FS.sep()}b{FS.sep()}c.txt")
+assert_eq(FS.join("/usr", "local", "bin"), "/usr{FS.sep()}local{FS.sep()}bin")
 assert_eq(FS.join(), "")
 assert_eq(FS.join("only"), "only")
 
@@ -33,10 +33,11 @@ assert_eq(FS.exists(bogus), false)
 assert_eq(FS.is_file(bogus), false)
 assert_eq(FS.is_dir(bogus), false)
 
-// `/tmp` exists on every CI host we run on.
-assert_eq(FS.exists("/tmp"), true)
-assert_eq(FS.is_dir("/tmp"), true)
-assert_eq(FS.is_file("/tmp"), false)
+// A directory guaranteed to exist, cross-platform (`/tmp` is a POSIX
+// assumption that Windows does not meet).
+assert_eq(FS.exists(FS.temp_dir()), true)
+assert_eq(FS.is_dir(FS.temp_dir()), true)
+assert_eq(FS.is_file(FS.temp_dir()), false)
 
 // --- temp_dir / mkdtemp ---
 // Where this machine puts scratch files. Reported without a trailing
