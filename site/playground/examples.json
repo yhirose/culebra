@@ -41,6 +41,7 @@
       "examples": [
         { "title": "TUI: Same Game", "path": "examples/games/samegame.cul" },
         { "title": "Canvas: Rocci Bird", "path": "examples/games/rocci-bird.cul" },
+        { "title": "Canvas: Sokoban", "path": "examples/games/sokoban.cul" },
         {
           "title": "Canvas: Retro Run",
           "path": "examples/games/retro-run/retro-run.cul",
