@@ -6,13 +6,17 @@
 // registration) at compile time, and a static initializer records the
 // class in the process-wide registry the stdlib setup walks:
 //
-//   // The registrar needs a name UNIQUE across all binding headers —
-//   // two `inline const bool _` definitions would be an ODR violation
-//   // that silently drops one registration. [[gnu::used]] because nothing
-//   // reads it: an inline variable nothing odr-uses need never be
-//   // initialized ([basic.start.dynamic]), and lld — the Windows linker —
-//   // drops such an unreferenced COMDAT with the registration in it.
-//   [[gnu::used]] inline const bool _mylib_counter_wrapped = [] {
+//   // In a .cpp, at file scope. NEVER in a header: an inline variable is a
+//   // COMDAT nothing odr-uses, need never be initialized at all
+//   // ([basic.start.dynamic]), and lld — the Windows linker — drops it with
+//   // the registration inside. [[gnu::used]] does not rescue it (measured):
+//   // what runs the initializer is a separate static-init entry, associative
+//   // to that COMDAT and collected with it. A .cpp's file-scope variable is
+//   // not a COMDAT, so its entry stays. A header that wants to carry the
+//   // declaration puts it in a function and lets each .cpp call it — as
+//   // include/foreign_binding.h does.
+//   namespace {
+//   const bool registered = [] {
 //     culebra::wrap<mylib::Counter>("__Foreign", "Counter")
 //         .ctor<long>({"start"})
 //         .method<&mylib::Counter::value>("value")
@@ -20,6 +24,7 @@
 //         .static_method<&mylib::Counter::live>("live");
 //     return true;
 //   }();
+//   }
 //
 // Instances ride the Foreign id table (foreign.h): `drop` erases the
 // entry (~T() runs NOW), a dropped instance's method raises ClosedError,

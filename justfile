@@ -137,13 +137,13 @@ check-spec-examples:
 check-api-coverage:
     tools/check_api_coverage.sh
 
-# A header variable that exists only for its initializer's side effect carries
-# [[gnu::used]]. Without it lld drops the COMDAT, and the registration goes
-# missing at run time on Windows alone — no link error to notice.
+# No header carries a variable that exists only for its initializer's side
+# effect: lld drops the COMDAT and the registration goes missing at run time on
+# Windows alone, with no link error to notice.
 [group("test")]
-[doc("Verify every header registrar is pinned with [[gnu::used]] (ratchet)")]
-check-registrar-used:
-    tools/check_registrar_used.sh
+[doc("Verify no header roots a registration in an inline variable (ratchet)")]
+check-registrar-rooted:
+    tools/check_registrar_rooting.sh
 
 # The PE export-table generator, against a fixed nm listing. It runs on no
 # other platform, so this is the only place a change to it is exercised before
@@ -158,7 +158,7 @@ check-pe-exports-gen:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-used check-pe-exports-gen
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

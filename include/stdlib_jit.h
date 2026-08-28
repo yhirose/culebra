@@ -8105,7 +8105,11 @@ inline void _jit_ns_method_trampoline(
                                  _jit_call_boundary_col, pm); return; }
 }
 
+inline void _jit_ns_install_hooks();
 inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
+  // Every closure those hooks answer for is made here, so this is where they
+  // are installed (see _jit_ns_install_hooks for why not at static-init time).
+  _jit_ns_install_hooks();
   _jit_register_native_fn(
       reinterpret_cast<const void*>(&_jit_ns_method_trampoline));
   // Atomic w.r.t. collection: the capture cell is registered before `cls`
@@ -8381,17 +8385,20 @@ inline bool _jit_ns_callback_arity(JitClosure* cls, int64_t* cb_min,
   return true;
 }
 
-// Install the kwarg + callback-arity hooks once, before any JIT call runs.
-// [[gnu::used]] for the reason wrap.h's registrars carry it: nothing odr-uses
-// this variable, and lld's COFF --gc-sections drops such a COMDAT with its
-// initializer inside. Without it `Http.get(url, headers: h)` reported
-// "function does not accept keyword arguments" on Windows.
-[[gnu::used]] inline const bool _jit_ns_kwarg_hook_installed = [] {
+// The dispatch layer's hooks into this one: what a kwarg call, an
+// introspection and a HOF's arity check do with an ns-method closure.
+// Installed from _jit_make_ns_method_closure, the one place such a closure
+// comes from, because a header cannot root a registration any other way: an
+// `inline const bool = []{...}()` is a COMDAT nothing odr-uses, and lld drops
+// it — measured, `Http.get(url, headers: h)` answering "function does not
+// accept keyword arguments". [[gnu::used]] does NOT rescue it: what runs the
+// initializer is a separate static-init entry, associative to that COMDAT and
+// collected with it. wrap.h states the rule.
+inline void _jit_ns_install_hooks() {
   _jit_ns_kwarg_hook = &_jit_ns_kwarg_resolve;
   _jit_native_meta_hook = &_jit_ns_introspect_meta;  // defined below
   _jit_ns_callback_arity_hook = &_jit_ns_callback_arity;
-  return true;
-}();
+}
 
 // `rows` are the namespace's native rows (empty for a wrap-only namespace).
 inline JitObject* _jit_build_namespace_object(std::string_view ns_name,

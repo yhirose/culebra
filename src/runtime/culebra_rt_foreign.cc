@@ -6,8 +6,13 @@
 // for their own class, so the AOT lane exercises the same wrap machinery a
 // `culebra wrap` build ships. It cannot ride namespace-group dead-stripping
 // like Proc or the Canvas decoders do: `wrap<T>(...)` registers through a
-// static initializer, so `.init_array` holds a reference the link can never
-// drop, and every binary carried the fixture's class/method metadata and the
-// wrap template instantiations behind it (~64 KB) whether or not the program
-// names `__Foreign`.
+// static initializer, so this TU's static-init entry holds a reference the
+// link can never drop, and every binary carried the fixture's class/method
+// metadata and the wrap template instantiations behind it (~64 KB) whether or
+// not the program names `__Foreign`.
 #include <foreign_binding.h>
+
+// The registrar variable belongs to the TU, not the header — see wrap.h.
+namespace {
+const bool registered = culebra::register_foreign_fixture();
+}

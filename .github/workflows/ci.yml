@@ -1525,6 +1525,17 @@ jobs:
         run: |
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \
             tests/test_long_width.cul "long width ok" LONG
+      # The wrap machinery, through all three backends — and the only lane that
+      # runs it on Windows. `wrap<T>` registers from a variable whose sole
+      # purpose is its initializer, which is the shape lld's --gc-sections
+      # silently drops (see include/wrap.h); the JIT lanes prove the driver's
+      # registrar survived and the AOT one proves the `__Foreign` archive's,
+      # force-loaded by naming the namespace. tests/test_foreign.cul is the
+      # same file `just test` runs everywhere else.
+      - name: Test — wrap fixture (vm / JIT / AOT)
+        run: |
+          misc/run_all_backends.sh ./build-win-aot/culebra.exe \
+            tests/test_foreign.cul "'test_foreign OK'" FOREIGN
       # What the window backend adds, through all three backends: a window build
       # forced headless must behave exactly like a headless one. It names
       # `_Canvas`, which the AOT scan does not match against the `Canvas` axis,

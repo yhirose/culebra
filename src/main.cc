@@ -4,8 +4,8 @@
 #include <dap.h>
 #include <docs_cmd.h>
 #include <foreign_binding.h>  // the __Foreign.Counter wrap fixture
-                              // (tests/test_foreign.cul); registers via
-                              // static init, reached only when named
+                              // (tests/test_foreign.cul); registered by the
+                              // TU-level variable below
 #include <doctest_runner.h>
 #include <exe_path.h>  // current_executable_path — `--doc --jobs` re-runs this
 #include <formatter.h>
@@ -55,6 +55,11 @@ void install_undefined_var_lint() {
   lint::builtin_names_hook = [] { return &builtin_global_names(); };
 }
 }  // namespace culebra
+
+// The registrar variable belongs to the TU, not the header — see wrap.h.
+namespace {
+const bool foreign_fixture_registered = culebra::register_foreign_fixture();
+}
 
 // Startup profiler — gated by CULEBRA_PROFILE_STARTUP=1. Prints each
 // phase mark to stderr immediately.

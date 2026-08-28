@@ -112,10 +112,11 @@ regex_choke='^culebra::regex::compile[(]'
 proc_choke=' culebra::proc::run_command[(]'
 png_choke=' culebra::image::decode_png[(]'
 ttf_choke=' culebra::_canvas_detail::ttf_load[(]'
-# The __Foreign fixture is its own archive: a static `wrap<T>` registrar,
-# which .init_array pins, so it can't ride namespace-group dead-stripping
-# either. The registrar's guard variable is the tell.
-foreign_choke='culebra::_foreign_counter_wrapped'
+# The __Foreign fixture is its own archive: a `wrap<T>` registrar its TU pins
+# through static init, so it can't ride namespace-group dead-stripping either.
+# The class metadata wrap<T> instantiates is the tell — the registrar variable
+# itself is the archive TU's, with a name this has no business knowing.
+foreign_choke='jit_class_info<culebra::foreign_fixture::Counter>::methods'
 
 # 1. Names none of them: Regex stubbed, Proc/Canvas engines entirely absent.
 build none 'IO.print("none")'
