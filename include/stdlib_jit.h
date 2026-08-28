@@ -520,10 +520,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_fs_stat(
   int64_t mode = static_cast<int64_t>(
       fst.permissions() & std::filesystem::perms::mask);
   culebra_runtime_object_set(o, "mode", false, TAG_LONG, mode, line, col);
+  // Omitted rather than reported as a sentinel where there is no POSIX owner
+  // model (Windows): -1 is chown's "leave unchanged", so it would read as a
+  // real id. `st.uid` is nil there, and `st.has("uid")` answers the question.
   int64_t uid = -1, gid = -1;
-  culebra::_fs_owner(path ? path : "", uid, gid);
-  culebra_runtime_object_set(o, "uid", false, TAG_LONG, uid, line, col);
-  culebra_runtime_object_set(o, "gid", false, TAG_LONG, gid, line, col);
+  if (culebra::_fs_owner(path ? path : "", uid, gid)) {
+    culebra_runtime_object_set(o, "uid", false, TAG_LONG, uid, line, col);
+    culebra_runtime_object_set(o, "gid", false, TAG_LONG, gid, line, col);
+  }
   return o;
 }
 

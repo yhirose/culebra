@@ -1,0 +1,75 @@
+// Conformance: the POSIX filesystem model under FS — the part of stdlib §3
+// Windows does not provide. See docs/stdlib.md §FS.
+// Tests run on vm, JIT, and AOT via `just test`; identical stdout.
+//
+// Split out of test_fs.cul, which Windows now passes in full. Three things
+// live here: permission bits (Windows keeps one read-only attribute, so a
+// mode does not round-trip), numeric uid/gid ownership (Windows has none —
+// FS.stat omits both fields there and FS.chown raises), and creating a
+// symlink (unprivileged and unconditional on POSIX only).
+// tools/windows_known_failures.txt lists this file for those reasons; what
+// both platforms *do* agree on stayed in test_fs.cul.
+
+let tmp_root = FS.mkdtemp("culebra_fs_posix_test_")
+let bogus = "/definitely/not/a/real/path/xyzzy"
+let cf = FS.join(tmp_root, "f.txt")
+FS.write(cf, "hello")
+
+// chmod sets permission bits; stat.mode reads them back (round-trip).
+FS.chmod(cf, 0o644)
+assert_eq(FS.stat(cf).mode, 0o644)
+FS.chmod(cf, 0o600)
+assert_eq(FS.stat(cf).mode, 0o600)
+FS.chmod(cf, 0o755)
+assert_eq(FS.stat(cf).mode, 0o755)
+
+// stat exposes uid/gid; chown to the file's own owner/group is allowed for a
+// non-root process (so this is root-independent) and leaves them unchanged.
+let own = FS.stat(cf)
+assert_true(own.uid >= 0)
+assert_true(own.gid >= 0)
+FS.chown(cf, own.uid, own.gid)  // numeric owner + group
+assert_eq(FS.stat(cf).uid, own.uid)
+FS.chown(cf, group: own.gid)  // group only; owner left unchanged
+assert_eq(FS.stat(cf).uid, own.uid)
+// chown errors: missing path -> IOError; unknown name -> IOError; a non
+// String/Long/Nil owner -> TypeError. (All identical across backends.)
+assert_eq(try {
+  FS.chown(bogus, 0)
+  "ok"
+} catch e {
+  e.kind
+}, "IOError")
+assert_eq(try {
+  FS.chown(cf, owner: "no_such_user_zzz")
+  "ok"
+} catch e {
+  e.kind
+}, "IOError")
+assert_eq(try {
+  FS.chown(cf, owner: true)
+  "ok"
+} catch e {
+  e.kind
+}, "TypeError")
+// A StringView (e.g. a slice) is a name, not a type error: it reaches name
+// resolution -> unknown-user IOError, identically on both backends.
+assert_eq(try {
+  FS.chown(cf, owner: "no_such_user_zzz"[0..5])
+  "ok"
+} catch e {
+  e.kind
+}, "IOError")
+
+// symlink / readlink / is_symlink. Creating a symlink needs no privilege on
+// POSIX; on Windows it needs one (Developer Mode or an elevated process), and
+// libstdc++'s MinGW filesystem does not implement create_symlink at all —
+// FS.symlink answers "Function not implemented" there.
+let lf = FS.join(tmp_root, "link")
+FS.symlink(cf, lf)
+assert_true(FS.is_symlink(lf))
+assert_eq(FS.readlink(lf), cf)
+
+FS.remove(tmp_root, recursive: true)
+
+IO.inspect("test_fs_posix OK")

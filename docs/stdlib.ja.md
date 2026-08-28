@@ -652,6 +652,12 @@ setuid/setgid/sticky）にマスクされ、既存ビットを置き換える。
 `FS.stat(path).mode`で読める。存在しない、または権限変更に失敗すると
 `IOError`。
 
+プラットフォームをまたいで通用するのは所有者のwriteビットだけです。Windows
+は権限ビットではなく読み取り専用属性を1つ持つので、どのファイルも`0o666`か
+`0o444`として読め、modeは往復しません（`FS.chmod(p, 0o755)`の後の
+`FS.stat(p).mode`は`0o666`）。所有者writeを落とす（`0o444`）・再び立てる、
+という操作だけがどこでも同じように振る舞います。
+
 ```culebra
 # doctest: skip
 FS.chmod('deploy.sh', 0o755)        # 実行可能にする
@@ -682,6 +688,12 @@ FS.chown('data', 'deploy', 'deploy')  # 両方を名前で（root）
 `is_symlink`は
 リンク自体を、他フィールドはリンク先を見ます。存在しなければ
 `IOError`。
+
+WindowsにはPOSIXの所有者モデルが無いので、`uid`と`gid`は代替値を持つのでは
+なく**フィールドごと存在しません**。`st.uid`は`nil`になり、そのプラット
+フォームが所有者idを持つかは`st.has('uid')`で問います。`mode`はどこにでも
+ありますが、Windowsは権限ビットではなく読み取り専用属性を1つ持つだけなので
+意味が薄くなります（下の`FS.chmod`を参照）。
 
 ```culebra
 # doctest: skip

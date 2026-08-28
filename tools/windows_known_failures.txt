@@ -19,6 +19,24 @@
 # and wrapping it, not a one-line flag; that is its own change.
 tests/test_file.cul
 
+# --- the POSIX filesystem model, which Windows does not provide --------------
+# Split out of test_fs.cul so the rest of that file runs here, which it now
+# does in full. Three causes, all in this one file:
+#   * permission bits — Windows keeps one read-only attribute instead, so
+#     every file reads back 0o666 or 0o444 and `FS.chmod(p, 0o755)` does not
+#     round-trip through `FS.stat(p).mode`. Not a bug.
+#   * numeric uid/gid ownership — Windows has none. `FS.stat` omits both
+#     fields there and `FS.chown` raises RuntimeError, both by design.
+#   * creating a symlink — needs no privilege on POSIX; on Windows it needs
+#     Developer Mode or elevation, AND libstdc++'s MinGW filesystem does not
+#     implement create_symlink at all (`FS.symlink` answers "Function not
+#     implemented"). This one is reachable: CreateSymbolicLinkW called
+#     directly would create the link where the process is allowed to. That is
+#     its own change, and it cannot make the privilege requirement go away.
+# What the two platforms do agree on — the owner-write bit, chmod's error
+# kinds — stayed in test_fs.cul and passes.
+tests/test_fs_posix.cul
+
 # --- native behaviour that differs, one test each ----------------------------
 # Proc: `Proc.run(["sh", "-c", "kill -TERM $$"])` (self-signal via a POSIX
 # shell) has no Windows equivalent — MSYS's bash emulates the signal itself

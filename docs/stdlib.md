@@ -667,6 +667,13 @@ as an octal literal (`0o755`, `0o644`). `mode` is masked to the low 12 bits
 existing bits. Read the current bits back with `FS.stat(path).mode`. Throws
 `IOError` if the path is missing or the permissions can't be changed.
 
+Only the owner-write bit crosses platforms. Windows stores a single
+read-only attribute rather than permission bits, so every file there reads
+back as `0o666` or `0o444` and a mode does not round-trip: `FS.chmod(p,
+0o755)` followed by `FS.stat(p).mode` answers `0o666`. Clearing owner-write
+(`0o444`) and setting it again is the part that behaves the same
+everywhere.
+
 ```culebra
 # doctest: skip
 FS.chmod('deploy.sh', 0o755)        # make executable
@@ -698,6 +705,12 @@ the Unix epoch; `mode` is the permission bits as an integer (compare with
 octal, e.g. `st.mode == 0o644`); `uid` / `gid` are the owner and group ids;
 `is_symlink` reflects the link itself while the other fields follow it. Throws
 `IOError` if the path doesn't exist.
+
+Windows has no POSIX owner model, so `uid` and `gid` are **absent** there
+rather than carrying a stand-in value — `st.uid` reads as `nil`, and
+`st.has('uid')` is what asks whether this platform has them. `mode` exists
+everywhere but means less on Windows, which keeps one read-only attribute
+instead of permission bits: see `FS.chmod` below.
 
 ```culebra
 # doctest: skip

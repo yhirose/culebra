@@ -181,14 +181,15 @@ assert_eq(stf.is_symlink, false)
 let std = FS.stat(xdir)
 assert_true(std.is_dir)
 
-// chmod sets permission bits; stat.mode reads them back (round-trip).
+// chmod's cross-platform half: the owner-write bit reaches stat.mode and
+// comes back off it. The full round-trip of every bit is POSIX-only —
+// Windows keeps a single read-only attribute rather than permission bits —
+// so it lives in test_fs_posix.cul along with uid/gid and chown.
 let cf = FS.join(xdir, "f.txt")
-FS.chmod(cf, 0o644)
-assert_eq(FS.stat(cf).mode, 0o644)
-FS.chmod(cf, 0o600)
-assert_eq(FS.stat(cf).mode, 0o600)
-FS.chmod(cf, 0o755)
-assert_eq(FS.stat(cf).mode, 0o755)
+FS.chmod(cf, 0o444)
+assert_eq(FS.stat(cf).mode & 0o200, 0)
+FS.chmod(cf, 0o644)  // writable again, so the cleanup below can remove it
+assert_true(FS.stat(cf).mode & 0o200 != 0)
 // chmod on a missing path throws IOError; a non-Long mode is a TypeError.
 assert_eq(try {
   FS.chmod(bogus, 0o644)
@@ -202,44 +203,6 @@ assert_eq(try {
 } catch e {
   e.kind
 }, "TypeError")
-
-// stat exposes uid/gid; chown to the file's own owner/group is allowed for a
-// non-root process (so this is root-independent) and leaves them unchanged.
-let own = FS.stat(cf)
-assert_true(own.uid >= 0)
-assert_true(own.gid >= 0)
-FS.chown(cf, own.uid, own.gid)  // numeric owner + group
-assert_eq(FS.stat(cf).uid, own.uid)
-FS.chown(cf, group: own.gid)  // group only; owner left unchanged
-assert_eq(FS.stat(cf).uid, own.uid)
-// chown errors: missing path -> IOError; unknown name -> IOError; a non
-// String/Long/Nil owner -> TypeError. (All identical across backends.)
-assert_eq(try {
-  FS.chown(bogus, 0)
-  "ok"
-} catch e {
-  e.kind
-}, "IOError")
-assert_eq(try {
-  FS.chown(cf, owner: "no_such_user_zzz")
-  "ok"
-} catch e {
-  e.kind
-}, "IOError")
-assert_eq(try {
-  FS.chown(cf, owner: true)
-  "ok"
-} catch e {
-  e.kind
-}, "TypeError")
-// A StringView (e.g. a slice) is a name, not a type error: it reaches name
-// resolution -> unknown-user IOError, identically on both backends.
-assert_eq(try {
-  FS.chown(cf, owner: "no_such_user_zzz"[0..5])
-  "ok"
-} catch e {
-  e.kind
-}, "IOError")
 
 // walk: every path under xdir (sub/, f.txt, sub/g.txt) = 3 entries.
 assert_eq(FS.walk(xdir).size(), 3)
@@ -261,10 +224,8 @@ assert_eq(FS.exists(FS.join(xdir, "f.txt")), false)
 FS.copy(FS.join(xdir, "r.txt"), FS.join(xdir, "c.txt"))
 assert_true(FS.exists(FS.join(xdir, "c.txt")))
 
-// symlink / readlink / is_symlink.
-FS.symlink(FS.join(xdir, "r.txt"), FS.join(xdir, "link"))
-assert_true(FS.is_symlink(FS.join(xdir, "link")))
-assert_eq(FS.readlink(FS.join(xdir, "link")), FS.join(xdir, "r.txt"))
+// symlink / readlink / is_symlink live in test_fs_posix.cul: creating one is
+// unprivileged and unconditional on POSIX, and neither on Windows.
 
 // recursive remove (kwarg) cleans the whole tree.
 FS.remove(xdir, recursive: true)
