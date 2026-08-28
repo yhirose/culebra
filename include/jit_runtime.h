@@ -337,7 +337,7 @@ inline void _culebra_inspect_to(std::ostream& os, int8_t type, int64_t data) {
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_inspect(int8_t type,
                                                        int64_t data) {
-  _culebra_inspect_to(std::cout, type, data);
+  _culebra_inspect_to(culebra::program_out(), type, data);
 }
 
 // `IO.einspect` — inspect to stderr.

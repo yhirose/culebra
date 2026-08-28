@@ -1,0 +1,56 @@
+# Conformance: stdlib §2 (IO.capture). Same text on every lane.
+
+assert_eq(IO.capture(fn () {
+  println('one')
+  IO.print('two')
+}), "one\ntwo")
+
+# A block that prints nothing captures nothing, and the value the function
+# answers with is discarded.
+assert_eq(IO.capture(fn () {
+  42
+}), '')
+
+# A throw propagates, and stdout is the terminal's again afterwards.
+assert_throws('Boom', fn () {
+  IO.capture(fn () {
+    println('swallowed')
+    throw {kind: 'Boom', message: 'x'}
+  })
+})
+assert_eq(IO.capture(fn () {
+  IO.print('after')
+}), 'after')
+
+# Nested: the inner capture restores the outer one, not the terminal.
+assert_eq(IO.capture(fn () {
+  println('outer')
+  println("inner={IO.capture(fn () { IO.print('in') })}")
+}), "outer\ninner=in\n")
+
+# As a first-class value.
+let f = IO.capture
+assert_eq(f(fn () {
+  IO.print('v')
+}), 'v')
+
+let e = try {
+  IO.capture(42)
+} catch e {
+  e
+}
+assert_eq(e.kind, 'TypeError')
+assert_eq(e.message, "type error: parameter 'f' expects Function")
+
+# The redirect is the calling thread's, so two at once take only their own
+# output. A process-wide std::cout swap crashed here instead: whichever
+# capture ended second restored a buffer the first had already destroyed.
+let other = Isolate.spawn(|| IO.capture(fn () {
+  Time.sleep(0.05)
+  IO.print('theirs')
+}))
+assert_eq(IO.capture(fn () {
+  Time.sleep(0.1)
+  IO.print('mine')
+}), 'mine')
+assert_eq(other.join(), 'theirs')

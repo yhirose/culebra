@@ -30,6 +30,8 @@ inline constexpr CanonParam kCanonParams_IO[] = {
   {"arg", false, false, false, false, true, "", CanonDefault::None, 0, {}},
   // 5: IO.eprintln
   {"arg", false, false, false, false, true, "", CanonDefault::None, 0, {}},
+  // 6: IO.capture
+  {"f", false, false, false, false, false, "Function", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_IO[] = {
@@ -44,6 +46,7 @@ inline constexpr CanonSig kCanonSigs_IO[] = {
   {"IO", "", "stdin_is_terminal", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
   {"IO", "", "stdout_is_terminal", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
   {"IO", "", "stderr_is_terminal", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
+  {"IO", "", "capture", kCanonParams_IO + 6, 1, "String", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Math[] = {

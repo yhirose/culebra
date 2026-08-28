@@ -26,6 +26,7 @@
 #include <rt_shared_tls.h>  // CULEBRA_RT_CORE_OWNED (one owner per thread_local)
 #include <runtime/rt_macros.h>
 #include <shared.h>
+#include <stdout_capture.h>  // program_out() — where a program's output goes
 #include <tensor.h>
 #include <unicode_str.h>
 #include <unicodelib.h>

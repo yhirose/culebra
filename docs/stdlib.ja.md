@@ -83,6 +83,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 | スカラー演算（abs / min / max / log / exp / sqrt / floor / ceil / round） | [§1 Math](#1-math) |
 | 三角関数（sin / cos / tan / asin / acos / atan / atan2、ラジアン） | [§1 Math](#1-math) |
 | 標準出力 | `IO.inspect`（改行 + クォート付き） / `IO.println`（改行、生） / `IO.print`（生、改行なし） |
+| 呼び出しが印字した内容を読み戻す | [§2 IO](#2-io) — `IO.capture(fn)` |
 | ファイル全体を読む | `FS.read`（失敗時throw） |
 | ファイルをストリーム（行 / チャンク / seek） | [§4 File](#4-file) — `File.open` / `File.with` |
 | パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs)；流暢な`Path`ラッパ: [§3 `Path`](#path--流暢なラッパ) |
@@ -435,6 +436,25 @@ if IO.stdout_is_terminal() {
   println(msg)
 }
 ```
+
+### `IO.capture(f: Function) -> String`
+
+`f`をstdoutをバッファに向けた状態で実行し、書き出された内容を返します。
+`f`の戻り値は捨てられます（返す値ではなく印字する値が目的なので）。
+「返さずに出力する」関数をテストで検証する手段です:
+
+```culebra
+let out = IO.capture(fn () {
+  println('hello')
+})
+assert_eq(out, "hello\n")
+```
+
+リダイレクトは**呼び出したスレッドのもの**です。`f`の実行中に別スレッドが
+印字したものはstdoutへ出ますし、2つのスレッドが同時にcaptureしても互いの
+出力を奪いません。`f`がthrowしてもリダイレクトは元に戻り、throwはそのまま
+伝播します。入れ子にもでき、内側のcaptureは端末ではなく外側のバッファに
+戻します。`IO.eprint`系はstderrに書くので捕捉されません。
 
 `IO`は標準ストリームとコンソールの名前空間です。ファイルの読み書きは
 `FS`（`FS.read` / `FS.write` / `FS.exists`）にあります。

@@ -37,6 +37,7 @@
 #include <wrap_registry.h>  // the wrap.h compiled-lane rows
 #include <stdlib_kernels.h>  // File/FS/Time/Net/Regex kernels shared with interp
 #include <shared.h>
+#include <stdout_capture.h>  // program_out() / ProgramOutCapture (IO.capture)
 #include <regex.h>  // the value-neutral Regex choke (the Regex AOT axis)
 #include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
 #include <stdlib_math.h>   // Math kernels shared with the interp
@@ -116,25 +117,26 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_type_of(int8_t tag
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_print(int8_t type,
                                                         int64_t data) {
+  auto& out = culebra::program_out();  // std::cout, or this thread's capture
   if (auto s = _try_str_special(type, data)) {
-    std::cout << *s;
+    out << *s;
     return;
   }
   if (type == TAG_STRING) {
     auto* p = reinterpret_cast<const char*>(data);
-    std::cout.write(p, static_cast<std::streamsize>(_str_len(p)));
+    out.write(p, static_cast<std::streamsize>(_str_len(p)));
   } else if (type == TAG_STRINGVIEW) {
     auto* v = reinterpret_cast<const JitStringView*>(data);
-    std::cout.write(v->ptr, static_cast<std::streamsize>(v->len));
+    out.write(v->ptr, static_cast<std::streamsize>(v->len));
   } else {
-    std::cout << _culebra_value_to_str_impl(type, data);
+    out << _culebra_value_to_str_impl(type, data);
   }
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_println(int8_t type,
                                                         int64_t data) {
   culebra_runtime_print(type, data);
-  std::cout << std::endl;
+  culebra::program_out() << std::endl;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_input() {
@@ -3863,6 +3865,14 @@ inline bool require_bool(JitValue v, const char* param) {
   }
   return v.data != 0;
 }
+inline JitClosure* require_func(JitValue v, const char* param) {
+  if (v.tag != TAG_FUNC) {
+    culebra::throw_runtime_error_at(
+        "TypeError",
+        std::format("type error: parameter '{}' expects Function", param), 0, 0);
+  }
+  return reinterpret_cast<JitClosure*>(v.data);
+}
 inline JitArray* take_array(JitValue v) {
   return v.tag == TAG_ARRAY ? reinterpret_cast<JitArray*>(v.data) : nullptr;
 }
@@ -3949,6 +3959,18 @@ inline JitValue _ns_io_stdout_is_terminal(JitValue*, int64_t) {
 }
 inline JitValue _ns_io_stderr_is_terminal(JitValue*, int64_t) {
   return _ns_adapt::v_bool(isatty(STDERR_FILENO));
+}
+
+// capture(f): run `f` with stdout redirected into a buffer and answer what it
+// wrote. The redirect is RAII, so a throw from inside `f` restores the stream
+// on its way out, and it nests — the test runner's own capture of a case is
+// the outer one this restores to.
+inline JitValue _ns_io_capture(JitValue* a, int64_t) {
+  auto* f = _ns_adapt::require_func(a[0], "f");
+  culebra::ProgramOutCapture cap;
+  JitValue r = _culebra_invoke0(f);  // the value `f` answers with is not ours
+  _culebra_value_release_impl(r.tag, r.data);
+  return _ns_adapt::v_string(_culebra_heap_str(cap.take()));
 }
 
 // Bare global builtins (`inspect`/`print`/`println` reuse the IO adapters above)
@@ -5141,11 +5163,8 @@ inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
   culebra::http::HttpRequest req;
   req.method = "GET";
   req.url = _ns_adapt::require_sv(a[0], "url");
-  if (a[1].tag != TAG_FUNC) {  // interp's on_event is a typed Function param
-    culebra::throw_runtime_error_at(
-        "TypeError", "type error: parameter 'on_event' expects Function", 0, 0);
-  }
-  auto* cb = reinterpret_cast<JitClosure*>(a[1].data);  // on_event Function
+  // interp's on_event is a typed Function param
+  auto* cb = _ns_adapt::require_func(a[1], "on_event");
   _http_adapt::common(a, n, 2, req, ctx);
   bool has_accept = false;
   for (auto& [k, v] : req.headers) {
@@ -7370,6 +7389,7 @@ inline const NsMethod kNsRows_IO[] = {
   {"IO",     "stdin_is_terminal",  0, &_ns_io_stdin_is_terminal},
   {"IO",     "stdout_is_terminal", 0, &_ns_io_stdout_is_terminal},
   {"IO",     "stderr_is_terminal", 0, &_ns_io_stderr_is_terminal},
+  {"IO",     "capture",   1, &_ns_io_capture},
 };
 inline const NsMethod kNsRows_Math[] = {
   {"Math",   "abs",       1, &_ns_math_abs},

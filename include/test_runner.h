@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "shared.h"
+#include "stdout_capture.h"  // StdoutCapture — shared with IO.capture
 
 namespace culebra {
 
@@ -86,32 +87,6 @@ class TestHost {
 // disagreeing about what a `**kwargs` rest or a keyword-only parameter means.
 inline constexpr std::string_view kTestRegistryName = "__TestRegistry";
 inline constexpr std::string_view kTestParamsName = "__test_params";
-
-// RAII redirect of `std::cout` into an internal stringstream. The dtor
-// restores the original rdbuf even if the consumer never calls `take()`
-// (e.g. an unexpected exception type escaped the catch). `take()` is
-// idempotent — repeated calls return "" after the first.
-class StdoutCapture {
-  std::stringstream buf_;
-  std::streambuf* old_ = nullptr;
-
- public:
-  explicit StdoutCapture(bool active) {
-    if (active) old_ = std::cout.rdbuf(buf_.rdbuf());
-  }
-  ~StdoutCapture() {
-    if (old_) std::cout.rdbuf(old_);
-  }
-  StdoutCapture(const StdoutCapture&) = delete;
-  StdoutCapture& operator=(const StdoutCapture&) = delete;
-
-  std::string take() {
-    if (!old_) return {};
-    std::cout.rdbuf(old_);
-    old_ = nullptr;
-    return buf_.str();
-  }
-};
 
 // Convert a runtime error line (1-based) to a user-file line, returning
 // 0 for unknown locations. Preamble offset removed in Phase 2, when the

@@ -85,6 +85,7 @@ Conventions used below:
 | Scalar arithmetic (abs, min, max, log, exp, sqrt, floor, ceil, round) | [§1 Math](#1-math) |
 | Trigonometry (sin, cos, tan, asin, acos, atan, atan2; radians) | [§1 Math](#1-math) |
 | Print to stdout | `IO.inspect` (newline + quoting) / `IO.println` (newline, raw) / `IO.print` (raw, no newline) |
+| Read back what a call printed | [§2 IO](#2-io) — `IO.capture(fn)` |
 | Read a whole file | `FS.read` (throws on failure) |
 | Stream a file (lines / chunks / seek) | [§4 File](#4-file) — `File.open` / `File.with` |
 | Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs); fluent `Path` wrapper: [§3 `Path`](#path--the-fluent-wrapper) |
@@ -444,6 +445,27 @@ if IO.stdout_is_terminal() {
   println(msg)
 }
 ```
+
+### `IO.capture(f: Function) -> String`
+
+Run `f` with stdout redirected into a buffer and answer what it wrote.
+Whatever `f` returns is discarded; a value it prints is the point. This
+is how a test asserts on output that a function produces rather than
+returns:
+
+```culebra
+let out = IO.capture(fn () {
+  println('hello')
+})
+assert_eq(out, "hello\n")
+```
+
+The redirect is the calling thread's: another thread printing while
+`f` runs still writes to stdout, and two threads capturing at once
+each take only their own output. It is undone even if `f` throws —
+the throw propagates. Captures nest: an inner one restores the outer
+one's buffer, not the terminal. `IO.eprint` and friends write to
+stderr and are not captured.
 
 `IO` is the standard-stream and console namespace. File reading and
 writing live under `FS` (`FS.read` / `FS.write` / `FS.exists`).
