@@ -1089,9 +1089,15 @@ inline int64_t make_shared_buffer_file(const PackableLayout& layout,
                                     std::string class_name, size_t count,
                                     const std::string& path) {
   size_t bytes = kLockHeader + layout.stride * count;
+  // FILE_SHARE_DELETE: without it, FS.remove on this path refuses while any
+  // mapping of it is still open — Windows' default is stricter than POSIX
+  // unlink-while-open, which every other opener assumes (fswatcher.h needs
+  // the same share for the directory it watches).
   HANDLE hFile = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
-                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                             FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                 FILE_SHARE_DELETE,
+                             nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                             nullptr);
   if (hFile == INVALID_HANDLE_VALUE) {
     throw CulebraError("IOError",
         culebra::format("SharedBuffer.file: cannot open `{}`", path));

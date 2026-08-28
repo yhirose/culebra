@@ -32,11 +32,13 @@ tests/test_path.cul
 
 # --- a file still open cannot be removed -------------------------------------
 # `FS.remove` answers "The process cannot access the file because it is being
-# used by another process". POSIX unlinks a file with a live handle and the
-# tests lean on that; Windows refuses until the last handle closes, so the
-# question is whether the handle should already be gone at that point.
+# used by another process" — Windows refuses while a handle (or, for
+# SharedBuffer.file, a mapping) is open, where POSIX unlinks regardless.
+# SharedBuffer.file's own CreateFileA is fixed (FILE_SHARE_DELETE, matching
+# fswatcher.h's). File.open goes through std::fstream, which has no portable
+# way to ask for share-delete — fixing it means opening via a native HANDLE
+# and wrapping it, not a one-line flag; that is its own change.
 tests/test_file.cul
-tests/test_packable.cul
 
 # --- native behaviour that differs, one test each ----------------------------
 # Net.recv_from: Windows' recvfrom fails a datagram larger than the buffer
