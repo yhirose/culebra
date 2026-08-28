@@ -572,7 +572,9 @@ const auto grammar_ = R"(
   Comment                  <-  BlockComment / LineComment
 
   SpaceChar                <-  ' ' / '\t'
-  EndOfLine                <-  '\r\n' / '\n' / '\r'
+  # LF only: parse() normalizes a CRLF source and rejects a bare carriage
+  # return before the grammar sees a byte of it (parser.h).
+  EndOfLine                <-  '\n'
   IdentInitChar            <-  [a-zA-Z_]
   IdentChar                <-  [a-zA-Z0-9_]
   BlockComment             <-  '/*' (!'*/' .)* '*/'
