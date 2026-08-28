@@ -721,6 +721,12 @@ let sources = FS.glob('src/**/*.cul')
 ディレクトリでなければ`IOError`、`match`が文字列配列でなければ
 `TypeError`。
 
+`recursive: false`は監視をそのディレクトリ直下の項目に絞ります。サブ
+ディレクトリの*下*で起きた変更は報告されませんが、サブディレクトリ項目
+そのものの変更は報告されることがあります — 中のファイルが書かれたとき
+にタイムスタンプが動いたことをWindowsは報告し、inotifyとFSEventsは報告
+しません。
+
 バックエンドはmacOSがFSEvents、Linuxがinotify、Windowsが
 `ReadDirectoryChangesW`。
 

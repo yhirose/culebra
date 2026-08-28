@@ -737,6 +737,11 @@ the same filter); the check happens before an event is queued, so a
 rejected change never reaches the queue. Throws `IOError` if `path`
 isn't a directory, `TypeError` if `match` isn't an array of strings.
 
+`recursive: false` narrows the watch to the directory's own entries: a
+change *below* a subdirectory is not reported, though the subdirectory
+entry itself may be — Windows reports its timestamp moving when a file
+inside it is written, where inotify and FSEvents do not.
+
 Backed by FSEvents on macOS, inotify on Linux and `ReadDirectoryChangesW`
 on Windows.
 

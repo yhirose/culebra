@@ -149,11 +149,19 @@ assert_eq(FS.is_abs("rel/path"), false)
 // touch the disk for neither — a path that does not exist comes back
 // unchanged, and a symlink is left as it is (that is realpath's job).
 // Compared against Sys.getcwd() rather than a literal, since the absolute
-// answer is whatever directory the runner started in.
-assert_eq(FS.abspath("/tmp/./a/../b"), "/tmp/b")
-assert_eq(FS.abspath("/a//b/./c/"), "/a/b/c/")
-assert_eq(FS.abspath("/no/such/path/at/all"), "/no/such/path/at/all")
-assert_eq(FS.abspath("rel/x"), FS.join(Sys.getcwd(), "rel/x"))
+// answer is whatever directory the runner started in. A rooted path carrying
+// no drive ("/tmp/x") is not absolute on Windows either, so absolute() has to
+// promote it to the cwd's drive before normalizing — FS.abspath("/") is that
+// root on both platforms, and the components go through FS.join for the same
+// reason ("rel/x" would keep its own separator).
+let abs_root = FS.abspath("/")
+assert_eq(FS.abspath("/tmp/./a/../b"), FS.join(abs_root, "tmp", "b"))
+assert_eq(FS.abspath("/a//b/./c/"), FS.join(abs_root, "a", "b", "c") + FS.sep())
+assert_eq(
+  FS.abspath("/no/such/path/at/all"),
+  FS.join(abs_root, "no", "such", "path", "at", "all"),
+)
+assert_eq(FS.abspath("rel/x"), FS.join(Sys.getcwd(), "rel", "x"))
 assert_eq(FS.abspath("a/../b"), FS.join(Sys.getcwd(), "b"))
 assert_true(FS.is_abs(FS.abspath(".")))
 // The empty path is left to the platform (libstdc++ reports an error where

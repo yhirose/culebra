@@ -98,9 +98,13 @@ FS.write(FS.join(nested, "hidden.txt"), "h")
 FS.write(FS.join(root, "top.txt"), "t")
 // Drained rather than awaited: await_path discards what it isn't looking for,
 // so it could not tell a filtered nested write from a delivered one.
+// The subdirectory *entry* is part of the watched directory, and Windows
+// reports its timestamp moving when a file inside it is written, so what a
+// non-recursive watch drops is what lies below `nested`, not `nested` itself
+// — hence the separator on the prefix.
 let mut saw_nested = false
 for e in wf {
-  saw_nested = true if e.path.starts_with(nested)
+  saw_nested = true if e.path.starts_with(nested + FS.sep())
   break if e.path == FS.join(root, "top.txt")
 }
 assert_true(!saw_nested)
