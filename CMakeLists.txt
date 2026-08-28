@@ -432,11 +432,14 @@ endfunction()
 # this image (how ORC's process-symbol resolver works there) finds nothing.
 # --export-all-symbols is the analog of -rdynamic, but exporting *everything*
 # overflows the 65535-entry PE export table once LLVM's ~80k static symbols are
-# counted ("export ordinal too large"). --exclude-libs ALL keeps static-lib
-# symbols (LLVM, libstdc++, libgcc) out, leaving just culebra's own runtime
-# symbols — comfortably under the limit. The few EH entry points that live in
-# the excluded static libs are supplied to the JIT separately as absolute
-# symbols (JIT::define_windows_eh_symbols).
+# counted ("export ordinal too large"). GNU ld could be narrowed with
+# --exclude-libs ALL; lld, which the release build links with (see
+# misc/configure_windows_release.sh), has no such option. So the target's own
+# objects are read with nm just before the link and their culebra_* symbols
+# written to a .def (cmake/gen_pe_exports.cmake) — the same whitelist as the
+# ELF list below, and an input both linkers take. The C++ EH entry points the
+# JIT'd landingpads reference live in libstdc++/libgcc, outside that list; they
+# are supplied to the JIT as absolute symbols (JIT::define_windows_eh_symbols).
 #
 # ELF: -rdynamic would work and is actively harmful. A symbol in the
 # executable's dynamic table takes precedence over the same name in every shared
@@ -449,8 +452,15 @@ endfunction()
 # Publish a whitelist instead — see cmake/exported_symbols.txt.
 function(culebra_export_jit_symbols tgt)
   if(WIN32)
-    target_link_options(${tgt} PRIVATE
-      -Wl,--export-all-symbols -Wl,--exclude-libs,ALL)
+    find_program(CULEBRA_NM NAMES nm llvm-nm REQUIRED)
+    set(_def "${CMAKE_CURRENT_BINARY_DIR}/${tgt}_exports.def")
+    add_custom_command(TARGET ${tgt} PRE_LINK
+      COMMAND ${CMAKE_COMMAND} -DNM=${CULEBRA_NM} -DOUT=${_def}
+              "-DOBJECTS=$<TARGET_OBJECTS:${tgt}>"
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_pe_exports.cmake
+      COMMENT "Listing ${tgt}'s culebra_* symbols for its PE export table"
+      VERBATIM)
+    target_link_options(${tgt} PRIVATE "${_def}")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(${tgt} PRIVATE
       "-Wl,--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/cmake/exported_symbols.txt")
@@ -818,8 +828,7 @@ if(NOT _culebra_diagnostic_build)
   # sqlite object above. GCC drops -ffunction-sections at compile in an LTO
   # build (nothing but bitcode to place); it earns its keep in the LTO=OFF
   # configs, where it is worth 13.7 MB for ~6% larger objects. The JIT's helpers
-  # stay alive as GC roots via the export lists below — which is also why the
-  # whole thing is inert on Windows, whose list is --export-all-symbols.
+  # stay alive as GC roots via the export lists below.
   target_compile_options(culebra PRIVATE -ffunction-sections -fdata-sections)
   if(APPLE)
     target_link_options(culebra PRIVATE -Wl,-dead_strip)

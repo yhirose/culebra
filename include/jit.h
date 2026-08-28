@@ -878,10 +878,12 @@ struct JIT {
 #ifdef _WIN32
   // The process-symbol resolver (GetForCurrentProcess) reads the PE export
   // table, which carries culebra's own runtime symbols but NOT the
-  // libstdc++/libgcc C++ EH entry points the JIT'd landingpads reference: those
-  // live in static libs excluded from export (--exclude-libs ALL, needed to stay
-  // under the 65535-export limit once LLVM is linked in). They are still present
-  // in this image (culebra's own C++ uses exceptions), so define them for the
+  // libstdc++/libgcc C++ EH entry points the JIT'd landingpads reference: the
+  // export list is the culebra_* names read off the driver's objects
+  // (culebra_export_jit_symbols, CMakeLists.txt — exporting the static libs
+  // too would overflow the 65535-export limit once LLVM is linked in). They
+  // are still present in this image (culebra's own C++ uses exceptions), so
+  // define them for the
   // JIT as absolute symbols pointing at their in-process addresses. The POSIX
   // path needs none of this — -rdynamic exports the static EH symbols too.
   static void define_windows_eh_symbols(llvm::orc::LLJIT& jit,
