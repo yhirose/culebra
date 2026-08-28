@@ -57,8 +57,3 @@ tests/test_proc.cul
 # `Sys.env(name, nil)` relies on cannot exist on this platform. Not a bug.
 tests/test_sys.cul
 
-# --- hangs --------------------------------------------------------------
-# FS.watch never delivers an event and the file runs to the step's timeout.
-# The smoke in windows-aot-build saw this once before (2026-08-26, green on
-# rerun); this is the second sighting, so it is a bug, not a flake.
-tests/test_fs_watch.cul

@@ -115,6 +115,12 @@ struct Watcher {
   std::thread os_thread;
   HANDLE dir_handle = INVALID_HANDLE_VALUE;
   HANDLE stop_event = nullptr;  // manual-reset; set by platform_stop to break the wait
+  // Set once the reader thread has posted its first ReadDirectoryChangesW (or
+  // given up trying to). platform_start waits on it before returning, so a
+  // caller's write right after FS.watch() cannot land in the gap between
+  // "thread spawned" and "kernel is actually watching" — ReadDirectoryChangesW
+  // only reports changes from the moment it is posted.
+  HANDLE armed_event = nullptr;
 #endif
 };
 
@@ -399,14 +405,20 @@ inline void reader_loop(Watcher* w) {
   std::vector<BYTE> buf(64 * 1024);  // the documented sync/overlapped ceiling
   OVERLAPPED ov{};
   ov.hEvent = CreateEventW(nullptr, /*manualReset=*/TRUE, FALSE, nullptr);
-  if (!ov.hEvent) { mark_closed(w); return; }
+  if (!ov.hEvent) { SetEvent(w->armed_event); mark_closed(w); return; }
 
+  bool first = true;
   for (;;) {
     ResetEvent(ov.hEvent);
     DWORD unused = 0;  // must be NULL-ish (unread) for an overlapped call; MSDN
     BOOL ok = ReadDirectoryChangesW(
         w->dir_handle, buf.data(), static_cast<DWORD>(buf.size()),
         w->recursive ? TRUE : FALSE, kNotifyFilter, &unused, &ov, nullptr);
+    // Signal platform_start the moment the first post is resolved, however it
+    // resolved: once ReadDirectoryChangesW has been issued, changes from here
+    // on are captured, which is the guarantee a caller's write-right-after-
+    // FS.watch() needs — the read completing is a separate, later event.
+    if (first) { SetEvent(w->armed_event); first = false; }
     if (!ok && GetLastError() != ERROR_IO_PENDING) break;
 
     HANDLE waits[2] = {ov.hEvent, w->stop_event};
@@ -451,6 +463,7 @@ inline void platform_stop(Watcher* w) {
     w->os_thread.join();
   }
   if (w->stop_event) { CloseHandle(w->stop_event); w->stop_event = nullptr; }
+  if (w->armed_event) { CloseHandle(w->armed_event); w->armed_event = nullptr; }
   if (w->dir_handle != INVALID_HANDLE_VALUE) {
     CloseHandle(w->dir_handle);
     w->dir_handle = INVALID_HANDLE_VALUE;
@@ -478,7 +491,21 @@ inline bool platform_start(Watcher* w, std::string& reason) {
     w->dir_handle = INVALID_HANDLE_VALUE;
     return false;
   }
+  w->armed_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!w->armed_event) {
+    reason = "CreateEventW: " + std::system_category().message(GetLastError());
+    CloseHandle(w->stop_event);
+    w->stop_event = nullptr;
+    CloseHandle(w->dir_handle);
+    w->dir_handle = INVALID_HANDLE_VALUE;
+    return false;
+  }
   w->os_thread = std::thread(reader_loop, w);
+  // Block until the reader thread's first ReadDirectoryChangesW is posted (or
+  // has given up trying): only then is a write into `w->root` guaranteed to
+  // be observed, closing the gap a caller's write-right-after-FS.watch()
+  // could otherwise land in silently.
+  WaitForSingleObject(w->armed_event, INFINITE);
   return true;
 }
 
