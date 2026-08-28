@@ -390,6 +390,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_join(
   return _culebra_heap_str(out.string());
 }
 
+// What FS.join and Path's `/` put between components — `/` everywhere but
+// Windows, where it is `\`. Lets a program that must compare against a joined
+// path do so without hard-coding one platform's separator.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_sep() {
+  char sep = static_cast<char>(std::filesystem::path::preferred_separator);
+  return _culebra_heap_str(std::string_view(&sep, 1));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_basename(
     const char* path) {
   std::filesystem::path p(path ? path : "");
@@ -4586,6 +4594,9 @@ inline JitValue _ns_canvas_height(JitValue*, int64_t) {
 inline JitValue _ns_fs_join(JitValue* a, int64_t n) {
   return _ns_adapt::v_string(culebra_runtime_fs_join(a, n, 0, 0));
 }
+inline JitValue _ns_fs_sep(JitValue*, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_fs_sep());
+}
 inline JitValue _ns_fs_basename(JitValue* a, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_fs_basename(_ns_adapt::take_path(a[0])));
 }
@@ -7417,6 +7428,7 @@ inline const NsMethod kNsRows_Math[] = {
 };
 inline const NsMethod kNsRows_FS[] = {
   {"FS",     "join",     -1, &_ns_fs_join},
+  {"FS",     "sep",      0, &_ns_fs_sep},
   {"FS",     "basename",  1, &_ns_fs_basename, nullptr, "String|Path", "path"},
   {"FS",     "dirname",   1, &_ns_fs_dirname, nullptr, "String|Path", "path"},
   {"FS",     "extension", 1, &_ns_fs_extension, nullptr, "String|Path", "path"},

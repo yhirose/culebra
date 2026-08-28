@@ -472,14 +472,28 @@ assert_eq(out, "hello\n")
 
 #### `FS.join(parts...: String) -> String`
 
-プラットフォームの区切り文字でパス要素を結合します。引数0個は
-`""`を返します。`std::filesystem::path::operator/=`と同じく、
-途中要素の末尾区切り文字は尊重されます。
+プラットフォームの区切り文字（POSIXでは`/`、Windowsでは`\` — 下の
+`FS.sep()`参照）でパス要素を結合します。引数0個は`""`を返します。
+`std::filesystem::path::operator/=`と同じく、途中要素の末尾区切り文字は
+尊重されます。
 
 ```culebra
 inspect(FS.join('a', 'b', 'c.txt'))       # => 'a/b/c.txt'
 inspect(FS.join('/usr', 'local', 'bin'))  # => '/usr/local/bin'
 inspect(FS.join())                        # => ''
+```
+
+上の例はPOSIXの区切り文字での表示。結合したパスをリテラルと比較する
+プログラムは、`/`を決め打ちせず`FS.sep()`で組み立てるか、パスの
+構成要素同士を比較すること。
+
+#### `FS.sep() -> String`
+
+プラットフォームのパス区切り文字 — `FS.join`と`Path`の`/`が要素間に
+挿むもの。POSIXでは`/`、Windowsでは`\`。
+
+```culebra
+inspect(FS.join('a', 'b') == "a{FS.sep()}b")  # => true
 ```
 
 #### `FS.basename(path: String) -> String`

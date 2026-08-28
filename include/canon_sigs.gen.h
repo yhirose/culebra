@@ -226,6 +226,7 @@ inline constexpr CanonSig kCanonSigs_FS[] = {
   {"FS", "", "watch", kCanonParams_FS + 37, 3, "Object", 1, 3, false, -1, -1, -1},
   {"FS", "", "temp_dir", nullptr, 0, "String", 0, 0, false, -1, -1, -1},
   {"FS", "", "mkdtemp", kCanonParams_FS + 40, 1, "String", 1, 1, false, -1, -1, -1},
+  {"FS", "", "sep", nullptr, 0, "String", 0, 0, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_File[] = {

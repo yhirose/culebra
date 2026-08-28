@@ -483,14 +483,29 @@ can attribute the error to its source location.
 
 #### `FS.join(parts...: String) -> String`
 
-Concatenate path components with the platform separator. Zero
-arguments returns `""`. Trailing separators in components are
-respected — the operator behaves like `std::filesystem::path::operator/=`.
+Concatenate path components with the platform separator (`/` on POSIX, `\`
+on Windows — see `FS.sep()` below). Zero arguments returns `""`. Trailing
+separators in components are respected — the operator behaves like
+`std::filesystem::path::operator/=`.
 
 ```culebra
 inspect(FS.join('a', 'b', 'c.txt'))       # => 'a/b/c.txt'
 inspect(FS.join('/usr', 'local', 'bin'))  # => '/usr/local/bin'
 inspect(FS.join())                        # => ''
+```
+
+The examples above show the POSIX separator; a program that compares a
+joined path against a literal should build that literal with `FS.sep()`
+rather than a hard-coded `/`, or compare path components instead of the
+whole string.
+
+#### `FS.sep() -> String`
+
+The platform's path separator — the character `FS.join` and `Path`'s `/`
+put between components: `/` on POSIX, `\` on Windows.
+
+```culebra
+inspect(FS.join('a', 'b') == "a{FS.sep()}b")  # => true
 ```
 
 #### `FS.basename(path: String) -> String`
