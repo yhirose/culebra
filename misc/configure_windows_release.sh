@@ -27,6 +27,12 @@
 # 2,710 archive functions and weighed 6.1 MB. clang ties both to the function
 # (associative COMDATs) and lld — which src/main.cc links with — drops them
 # with it.
+#
+# The driver links with lld as well, and not by choice: GNU ld refuses clang's
+# objects against the gcc-built libstdc++.a ("duplicate section
+# `.rdata$_ZTSSt9exception' has different size" — the typeinfo COMDATs are
+# padded differently), the same refusal that met v0.1.0's LTO link. lld takes
+# the first definition of an Any-selection COMDAT and moves on.
 set -eu
 
 build=${1:?usage: configure_windows_release.sh <build dir> [extra cmake args…]}
@@ -38,7 +44,7 @@ cmake -S . -B "$build" -G Ninja \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_C_COMPILER_LAUNCHER=ccache \
   -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-  -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -static -static-libgcc -static-libstdc++" \
   -DCULEBRA_ENABLE_JIT=ON \
   -DCULEBRA_ENABLE_HTTP=ON \
   -DCULEBRA_ENABLE_WEBVIEW=ON \
