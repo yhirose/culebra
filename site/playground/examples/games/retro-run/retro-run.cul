@@ -32,35 +32,21 @@ let STEP = 1.0 / FPS
 # the catch-up below by how much one car step costs. The Playground (no JIT
 # in a browser) has run both at these same defaults since the VM became the
 # executor everywhere (Phase 4 B6c) — see playground/examples.json.
-let args = fn () {
-  mut dir = nil
-  mut distance = 300
-  mut cars = 200
-  mut i = 0
-  while i < Sys.argv.size() {
-    let a = Sys.argv[i]
-    if a == "--assets" || a == "--cars" {
-      if i + 1 >= Sys.argv.size() {
-        println("retro-run: {a} needs a value")
-        Sys.exit(2)
-      }
-      if a == "--assets" {
-        dir = Sys.argv[i + 1]
-      } else {
-        cars = to_long(Sys.argv[i + 1])
-      }
-      i += 2
-    } else if a.starts_with("-") {
-      println("retro-run: unknown option {a}")
-      println("usage: retro-run.cul [--assets <dir>] [--cars <n>] [draw-distance]")
-      Sys.exit(2)
-    } else {
-      distance = to_long(a)
-      i += 1
-    }
-  }
-  {dir: dir, distance: distance, cars: cars}
-}()
+let ARGS_SPEC = {
+  name: 'retro-run.cul',
+  args: [
+    {name: 'assets', type: 'String', default: nil, doc: 'asset directory'},
+    {name: 'cars', type: 'Long', default: 200, doc: 'number of cars'},
+    {
+      name: 'distance',
+      type: 'Long',
+      positional: true,
+      default: 300,
+      doc: 'segments drawn ahead of the camera',
+    },
+  ],
+}
+let args = Args.parse(Sys.argv, ARGS_SPEC)
 let DRAW_DISTANCE = args.distance
 let LANES = 3
 let SEGMENT_LENGTH = 200
@@ -188,7 +174,7 @@ let BG_TREES = Art.new(5, 985, 1280, 480)
 # them wherever this is running: the directory next to the source natively and
 # in the Playground, and the copy `culebra build` bakes into the binary — which
 # is why the executable needs no files beside it.
-let ART_DIR = args.dir
+let ART_DIR = args.assets
 let ART = ART_DIR != nil
   ? {
     exists: |n| FS.exists(ART_DIR + "/" + n),
