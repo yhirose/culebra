@@ -40,6 +40,17 @@ tests/test_path.cul
 # and wrapping it, not a one-line flag; that is its own change.
 tests/test_file.cul
 
+# --- FS.watch delivers something, but a later expectation reads false --------
+# The startup race is fixed (platform_start now waits for the first
+# ReadDirectoryChangesW post — see fswatcher.h) and the file no longer hangs:
+# it fails fast with `assert_true failed: value: false` instead of running to
+# the step's 60s timeout. Which of the file's ~15 assert_true calls that is
+# does not show in the message (unlike assert_eq, assert_true reports no
+# left/right, no position) — narrowing it needs either a diagnostic run with
+# prints between sections, or position info on assert_true's own failure,
+# which is a change of its own. Real progress; not yet root-caused.
+tests/test_fs_watch.cul
+
 # --- native behaviour that differs, one test each ----------------------------
 # Proc: `Proc.run(["sh", "-c", "kill -TERM $$"])` (self-signal via a POSIX
 # shell) has no Windows equivalent — MSYS's bash emulates the signal itself
