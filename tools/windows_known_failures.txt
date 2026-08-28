@@ -22,18 +22,6 @@
 # to check it against.
 tests/test_fs.cul
 
-# --- a chained call on a temporary array drops its element -------------------
-# Not FS.list_dir / Path.list() — both are correct (diagnosed with a throwaway
-# CI branch, never landed: `let bl = base.list()` then `bl.map(...)`,
-# `bl.map(...).sorted_by(...)`, the getter as `.name`/`.name()`/`fn (e) {...}`
-# — every one of those is right). Only `base.list().map(...).sorted_by(...)`,
-# chained directly on the call that produced the array rather than through a
-# bound `let`, comes back `[]`. Doesn't reproduce on Linux under --vm, --jit,
-# or either with CULEBRA_GC_STRESS=1 — looks like a Windows-only heisenbug
-# (use-after-free class), not yet root-caused. See
-# windows-chained-call-array-drop memory for the full diagnostic trail.
-tests/test_path.cul
-
 # --- a file still open cannot be removed -------------------------------------
 # `FS.remove` answers "The process cannot access the file because it is being
 # used by another process" — Windows refuses while a handle (or, for

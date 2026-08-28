@@ -116,19 +116,18 @@ inline void expand(const std::filesystem::path& base,
 }  // namespace _glob_detail
 
 inline std::vector<std::string> _fs_glob(std::string_view pattern) {
+  // Segment on whatever this platform calls a separator, and take the root
+  // from the same source. Splitting on '/' alone left a Windows pattern —
+  // which is what FS.join and Path hand over — as a single segment that
+  // matched nothing, and read a drive letter as relative. `path` splits on
+  // '\' only where it IS a separator, so POSIX keeps treating it as an
+  // ordinary filename character.
+  std::filesystem::path pat(pattern);
   std::vector<std::string> segs;
-  bool absolute = !pattern.empty() && pattern[0] == '/';
-  size_t i = 0;
-  while (i < pattern.size()) {
-    size_t j = pattern.find('/', i);
-    if (j == std::string_view::npos) j = pattern.size();
-    if (j > i) segs.emplace_back(pattern.substr(i, j - i));
-    i = j + 1;
-  }
+  for (const auto& part : pat.relative_path())
+    if (!part.empty()) segs.emplace_back(part.string());  // a trailing sep
   std::vector<std::string> out;
-  _glob_detail::expand(absolute ? std::filesystem::path("/")
-                                : std::filesystem::path(),
-                       segs, 0, out);
+  _glob_detail::expand(pat.root_path(), segs, 0, out);
   std::sort(out.begin(), out.end());
   return out;
 }

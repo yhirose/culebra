@@ -238,6 +238,13 @@ assert_eq(FS.walk(xdir).size(), 3)
 
 // glob: **/*.txt matches both files.
 assert_eq(FS.glob(FS.join(xdir, "**/*.txt")).size(), 2)
+// The pattern arrives with the platform's OWN separator, because FS.join (and
+// Path) put it there. Segmenting on '/' alone left every Windows pattern as a
+// single segment that matched nothing, silently: Path.glob returned [].
+assert_eq(FS.glob(FS.join(xdir, "*.txt")).size(), 1)
+assert_eq(FS.glob(FS.join(FS.join(xdir, "sub"), "*.txt")).size(), 1)
+// A forward slash keeps working on both platforms (Windows accepts either).
+assert_eq(FS.glob("{xdir}/*.txt").size(), 1)
 
 // rename then copy.
 FS.rename(FS.join(xdir, "f.txt"), FS.join(xdir, "r.txt"))
