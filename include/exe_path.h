@@ -1,18 +1,21 @@
 #pragma once
 
-// The path of the running executable, in a header that depends on nothing
-// else of culebra's. shared.h re-exports it for `Sys.executable` and the
-// interpreter; the docs / init command TUs include it directly, which is the
-// point — those TUs stay clear of culebra.h and the interpreter stack, so a
-// docs-or-init edit never drags the interpreter into their link.
+// Where a program is: the running executable, and any name on PATH. A header
+// that depends on nothing else of culebra's. shared.h re-exports it for
+// `Sys.executable` and the interpreter; the docs / init command TUs include it
+// directly, which is the point — those TUs stay clear of culebra.h and the
+// interpreter stack, so a docs-or-init edit never drags the interpreter into
+// their link.
 
+#include <cstdlib>  // getenv
 #include <cstring>  // strlen
+#include <filesystem>
 #include <string>
+#include <string_view>
 
 #if defined(__APPLE__)
 #include <climits>        // PATH_MAX
 #include <mach-o/dyld.h>  // _NSGetExecutablePath
-#include <cstdlib>        // realpath
 #elif defined(__linux__)
 #include <climits>   // PATH_MAX
 #include <unistd.h>  // readlink
@@ -62,6 +65,45 @@ inline std::string current_executable_path() {
 #else
   return "";
 #endif
+}
+
+// Absolute path to `name` as PATH would resolve it, or "" if it isn't there.
+// A plain string scan rather than a shell-out to `command -v`/`where`: the
+// callers ask about a handful of fixed names (an editor CLI, the link
+// driver), which isn't worth proc.h's subprocess machinery. On Windows the
+// name carries no extension — the launchable spellings are tried here, so a
+// toolchain installed as a `.cmd` shim is found too.
+inline std::string find_on_path(std::string_view name) {
+  namespace fs = std::filesystem;
+#if defined(_WIN32)
+  constexpr char kPathSep = ';';
+#else
+  constexpr char kPathSep = ':';
+#endif
+  const char* path_env = std::getenv("PATH");
+  if (!path_env) return "";
+  std::string_view path(path_env);
+  for (size_t pos = 0; pos <= path.size();) {
+    size_t sep = path.find(kPathSep, pos);
+    std::string_view dir = path.substr(
+        pos, sep == std::string_view::npos ? sep : sep - pos);
+    if (!dir.empty()) {
+      fs::path base = fs::path(dir) / name;
+      std::error_code ec;
+#if defined(_WIN32)
+      for (const char* ext : {".exe", ".cmd", ".bat", ""}) {
+        fs::path candidate = base;
+        candidate += ext;
+        if (fs::exists(candidate, ec)) return candidate.string();
+      }
+#else
+      if (fs::exists(base, ec)) return base.string();
+#endif
+    }
+    if (sep == std::string_view::npos) break;
+    pos = sep + 1;
+  }
+  return "";
 }
 
 }  // namespace culebra

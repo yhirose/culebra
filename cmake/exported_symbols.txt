@@ -1,4 +1,7 @@
-# The symbols culebra publishes in the executable's ELF dynamic symbol table.
+# The symbols culebra publishes in the executable's symbol table. An ld version
+# script, so ELF takes it as-is; the Windows build reads the globs out of it to
+# generate a PE .def (cmake/gen_pe_exports.cmake), which is why every entry has
+# to stay a plain prefix glob.
 #
 # ORC JIT resolves what it emits references to through
 # DynamicLibrarySearchGenerator, which is dlsym over the process, so every name

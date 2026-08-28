@@ -435,9 +435,9 @@ endfunction()
 # counted ("export ordinal too large"). GNU ld could be narrowed with
 # --exclude-libs ALL; lld, which the release build links with (see
 # misc/configure_windows_release.sh), has no such option. So the target's own
-# objects are read with nm just before the link and their culebra_* symbols
-# written to a .def (cmake/gen_pe_exports.cmake) — the same whitelist as the
-# ELF list below, and an input both linkers take. The C++ EH entry points the
+# objects are read with nm just before the link and the names the whitelist
+# below matches written to a .def (cmake/gen_pe_exports.cmake) — the same list,
+# read from the same file, in a form both linkers take. The C++ EH entry points the
 # JIT'd landingpads reference live in libstdc++/libgcc, outside that list; they
 # are supplied to the JIT as absolute symbols (JIT::define_windows_eh_symbols).
 #
@@ -456,9 +456,10 @@ function(culebra_export_jit_symbols tgt)
     set(_def "${CMAKE_CURRENT_BINARY_DIR}/${tgt}_exports.def")
     add_custom_command(TARGET ${tgt} PRE_LINK
       COMMAND ${CMAKE_COMMAND} -DNM=${CULEBRA_NM} -DOUT=${_def}
+              -DLIST=${CMAKE_CURRENT_SOURCE_DIR}/cmake/exported_symbols.txt
               "-DOBJECTS=$<TARGET_OBJECTS:${tgt}>"
               -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_pe_exports.cmake
-      COMMENT "Listing ${tgt}'s culebra_* symbols for its PE export table"
+      COMMENT "Listing ${tgt}'s exported symbols for its PE export table"
       VERBATIM)
     target_link_options(${tgt} PRIVATE "${_def}")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")

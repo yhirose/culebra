@@ -137,11 +137,19 @@ check-spec-examples:
 check-api-coverage:
     tools/check_api_coverage.sh
 
+# A header variable that exists only for its initializer's side effect carries
+# [[gnu::used]]. Without it lld drops the COMDAT, and the registration goes
+# missing at run time on Windows alone — no link error to notice.
+[group("test")]
+[doc("Verify every header registrar is pinned with [[gnu::used]] (ratchet)")]
+check-registrar-used:
+    tools/check_registrar_used.sh
+
 # Every committed file a generator produces, checked against its source, plus
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-used
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

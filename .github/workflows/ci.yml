@@ -1407,16 +1407,14 @@ jobs:
             mingw-w64-ucrt-x86_64-lld
             git
       # clang++ and lld are what misc/configure_windows_release.sh and the AOT
-      # link use (see the script for why not g++/GNU ld); g++ stays installed
-      # because clang's libstdc++ and libgcc are its.
+      # link use (see the script for why not g++/GNU ld); the gcc package stays
+      # installed because clang's libstdc++ and libgcc are its.
       - name: Toolchain versions
         run: |
           clang++ --version | head -1
           ld.lld --version | head -1
           g++ --version | head -1
           echo "llvm-config $(llvm-config --version)"
-          echo "libstdc++.a: $(clang++ -print-file-name=libstdc++.a)"
-          pacman -Qi mingw-w64-ucrt-x86_64-clang | grep -E '^Depends On'
       - name: Restore ccache
         uses: actions/cache@v4
         with:

@@ -12,9 +12,6 @@
 
 namespace culebra {
 
-// [[gnu::used]] on both registrars, as wrap.h's idiom says: nothing reads
-// them, and an inline variable nothing odr-uses need never be initialized —
-// lld's COFF --gc-sections drops it together with the registration.
 [[gnu::used]] inline const bool _foreign_counter_wrapped = [] {
   using foreign_fixture::Counter;
   wrap<Counter>("__Foreign", "Counter")

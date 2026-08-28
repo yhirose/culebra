@@ -15,7 +15,7 @@
 
 #include <os_compat.h>  // os_isatty (stdin_is_interactive)
 
-#include <exe_path.h>  // current_executable_path
+#include <exe_path.h>  // current_executable_path, find_on_path
 
 #include "docs_embedded.h"
 #include "editor_assets_embedded.h"
@@ -23,12 +23,6 @@
 namespace culebra {
 namespace fs = std::filesystem;
 namespace {
-
-#if defined(_WIN32)
-constexpr char kPathSep = ';';
-#else
-constexpr char kPathSep = ':';
-#endif
 
 std::string home_dir() {
   const char* h = std::getenv("HOME");
@@ -42,39 +36,6 @@ std::string home_dir() {
 // answers it; a pipe/redirect/CI runner (no tty on stdin) skips straight to
 // applying, so scripts calling `culebra init` don't need to know it prompts.
 bool stdin_is_interactive() { return os_isatty(0); }
-
-// PATH search without shelling out to `command -v`/`where` — the candidate
-// list (code/code-insiders/cursor/codium, zed) is small and fixed, so this
-// stays a plain string scan instead of pulling in proc.h's subprocess
-// machinery for something this cheap.
-std::string find_on_path(std::string_view name) {
-  const char* path_env = std::getenv("PATH");
-  if (!path_env) return "";
-  std::string_view path(path_env);
-  size_t pos = 0;
-  while (pos <= path.size()) {
-    size_t sep = path.find(kPathSep, pos);
-    std::string_view dir = path.substr(
-        pos, sep == std::string_view::npos ? std::string_view::npos - pos
-                                           : sep - pos);
-    if (!dir.empty()) {
-      fs::path base = fs::path(dir) / name;
-      std::error_code ec;
-#if defined(_WIN32)
-      for (const char* ext : {".exe", ".cmd", ".bat", ""}) {
-        fs::path candidate = base;
-        candidate += ext;
-        if (fs::exists(candidate, ec)) return candidate.string();
-      }
-#else
-      if (fs::exists(base, ec)) return base.string();
-#endif
-    }
-    if (sep == std::string_view::npos) break;
-    pos = sep + 1;
-  }
-  return "";
-}
 
 const editor_assets::Asset* find_asset(std::string_view editor,
                                        std::string_view rel_path) {
@@ -271,7 +232,7 @@ constexpr const char* kVSCodeClis[] = {"code", "code-insiders", "cursor",
 bool setup_vscode(std::vector<std::string>* plan) {
   std::string cli;
   for (const char* c : kVSCodeClis) {
-    cli = find_on_path(c);
+    cli = culebra::find_on_path(c);
     if (!cli.empty()) break;
   }
   if (cli.empty()) return true;  // no VSCode-family editor found — not an error
@@ -407,7 +368,7 @@ bool setup_vim(std::vector<std::string>* plan) {
 }
 
 bool zed_detected() {
-  if (!find_on_path("zed").empty()) return true;
+  if (!culebra::find_on_path("zed").empty()) return true;
   std::string home = home_dir();
   if (home.empty()) return false;
   std::error_code ec;

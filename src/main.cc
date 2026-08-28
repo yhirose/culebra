@@ -243,17 +243,26 @@ static std::string shq(std::string_view s) {
 
 // Link driver for `build`: `cc` on POSIX; on Windows the runtime archive is C++
 // (libstdc++/exceptions), so drive the link with a mingw C++ driver to pull the
-// right default libs — UCRT64's `clang++`, which sits on the same libstdc++ and
-// libgcc as its g++, linking through lld (win_static). Not g++/GNU ld: GCC's PE
-// codegen gives every function a .pdata$fn COMDAT that GNU ld never
-// garbage-collects, so --gc-sections kept all 2,710 archive functions and a
-// hello was 6.1 MB. The archive is built by clang for the same reason
-// (misc/configure_windows_release.sh). The produced .exe is statically linked
-// (see win_static) so it runs on a bare Windows like the driver itself.
+// right default libs — UCRT64's `clang++`, linking through lld (win_static).
+// The clang/lld pair, not g++/GNU ld, because that is the only combination a PE
+// dead-strip works under; misc/configure_windows_release.sh, which builds the
+// archive with the same pair, is where that is written down. The produced .exe
+// is statically linked (see win_static) so it runs on a bare Windows like the
+// driver itself.
+//
+// How that link discards the symbol table goes with the driver: `-Wl,-x`
+// ("discard all local symbols") is understood by ld64, GNU ld and ELF lld, and
+// the globals it leaves are a post-link `strip`'s job. lld's MinGW driver has
+// no -x, so Windows asks for -s (strip all) and needs no strip afterwards —
+// which suits the machine this expects, carrying clang and lld but no binutils.
 #ifdef _WIN32
 constexpr const char* kLinkDriver = "clang++";
+constexpr const char* kStripLocals = "-Wl,-s";
+constexpr bool kLinkStripsGlobals = true;
 #else
 constexpr const char* kLinkDriver = "cc";
+constexpr const char* kStripLocals = "-Wl,-x";
+constexpr bool kLinkStripsGlobals = false;
 #endif
 
 // What to install when that driver isn't there. A machine that has never
@@ -283,35 +292,16 @@ constexpr std::string_view kToolchainHint =
 // Whether that driver is there to be run. macOS is the odd one out: /usr/bin/cc
 // exists without the Command Line Tools — it is a shim that offers to install
 // them — so its presence proves nothing and xcode-select answers instead.
-static bool on_path(const std::string& exe) {
-#ifdef _WIN32
-  constexpr char kPathSep = ';';
-#else
-  constexpr char kPathSep = ':';
-#endif
-  const char* path = std::getenv("PATH");
-  if (!path) return false;
-  for (std::string_view rest(path);;) {
-    auto pos = rest.find(kPathSep);
-    auto dir = rest.substr(0, pos);
-    std::error_code ec;
-    if (!dir.empty() &&
-        std::filesystem::is_regular_file(std::filesystem::path(dir) / exe, ec))
-      return true;
-    if (pos == std::string_view::npos) return false;
-    rest.remove_prefix(pos + 1);
-  }
-}
-
 static bool have_link_driver() {
 #ifdef __APPLE__
   return std::system("xcode-select -p > /dev/null 2>&1") == 0;
 #elif defined(_WIN32)
   // lld is a separate MSYS2 package from clang, and -fuse-ld=lld fails without
   // it in a way that names neither.
-  return on_path(std::string(kLinkDriver) + ".exe") && on_path("ld.lld.exe");
+  return !culebra::find_on_path(kLinkDriver).empty() &&
+         !culebra::find_on_path("ld.lld").empty();
 #else
-  return on_path(kLinkDriver);
+  return !culebra::find_on_path(kLinkDriver).empty();
 #endif
 }
 
@@ -1104,15 +1094,9 @@ int run_build(const BuildOptions& opts) {
   // thousands — GCC_except_table*, string/template instantiations — useless in
   // a distributed executable). `-Wl,-x` ("discard all local symbols") is
   // understood by ld64, GNU ld and ELF lld alike; the globals it leaves are the
-  // post-link strip's job below. lld's MinGW driver has no -x, so Windows asks
-  // for -s (strip all), which also does that strip's job — a machine with only
-  // clang and lld on it has no binutils `strip` to run afterwards anyway.
-  // --keep-symbols opts out of both for debugging.
-#ifdef _WIN32
-  const char* strip_syms = opts.keep_symbols ? "" : "-Wl,-s";
-#else
-  const char* strip_syms = opts.keep_symbols ? "" : "-Wl,-x";
-#endif
+  // post-link strip's job below. Windows says it differently — see kStripLocals
+  // beside the rest of its link flags. --keep-symbols opts out of both.
+  const char* strip_syms = opts.keep_symbols ? "" : kStripLocals;
 
   // Emit the force-load fragment for one feature archive (see kFeatureAxes for
   // why a plain `-l`/archive append won't pull it in). `optional` reports a
@@ -1217,8 +1201,7 @@ int run_build(const BuildOptions& opts) {
   // block): mingw's 2MB default holds ~400 interp eval frames, while the
   // recursion limit (kCulebraRecursionLimit) is calibrated for an 8MB stack.
   // Windows threads inherit the PE reserve, so this also covers isolates.
-  // lld, not the GNU ld clang++ defaults to on UCRT64: it is the linker that
-  // drops a dead function's unwind info with the function (see kLinkDriver).
+  // lld, not the GNU ld clang++ defaults to on UCRT64 (see kLinkDriver).
   const char* win_static =
       "-fuse-ld=lld -static -static-libgcc -static-libstdc++ -lstdc++exp "
       "-lws2_32 -Wl,--stack,16777216";
@@ -1267,10 +1250,11 @@ int run_build(const BuildOptions& opts) {
   // program, and nothing in the binary reads it: the runtime resolves no
   // symbol by name. No linker drops it as a flag on every platform (ld64
   // treats -s as obsolete), so this is the strip tool's job, the same one
-  // the release packaging runs on the driver. Host builds only — a cross
-  // target's object format is not one the host's strip reads. A missing
-  // strip is not an error: the binary is already at the link-time floor.
-  if (!opts.keep_symbols && !cross) {
+  // the release packaging runs on the driver — except where the link already
+  // did it (kLinkStripsGlobals). Host builds only — a cross target's object
+  // format is not one the host's strip reads. A missing strip is not an
+  // error: the binary is already at the link-time floor.
+  if (!opts.keep_symbols && !cross && !kLinkStripsGlobals) {
     auto scmd = std::format("strip {} 2>{}", shq(opts.output), kNullDevice);
     if (verbose) std::println(stderr, "culebra build: strip: {}", scmd);
     if (std::system(scmd.c_str()) != 0 && verbose)
