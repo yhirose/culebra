@@ -48,6 +48,19 @@ struct Node {
   double f = 0.0;
   bool b = false;
 
+  // Declared here, defaulted below the class. Implicit ones trip clang over
+  // the self-referential vector<pair<string, Node>>: libstdc++'s pair asks
+  // whether Node is default-constructible while pair<string, Node> is still
+  // being instantiated, which asks after ~vector<pair<...>>, which needs the
+  // pair complete. A user-declared member has an answer without the members.
+  // GCC and libc++ never asked.
+  Node();
+  ~Node();
+  Node(const Node&);
+  Node(Node&&) noexcept;
+  Node& operator=(const Node&);
+  Node& operator=(Node&&) noexcept;
+
   static Node table() { return Node{}; }
   static Node array() { Node n; n.kind = Kind::Array; return n; }
   static Node string(std::string v) { Node n; n.kind = Kind::String; n.s = std::move(v); return n; }
@@ -65,6 +78,12 @@ struct Node {
     return items.back().second;
   }
 };
+inline Node::Node() = default;
+inline Node::~Node() = default;
+inline Node::Node(const Node&) = default;
+inline Node::Node(Node&&) noexcept = default;
+inline Node& Node::operator=(const Node&) = default;
+inline Node& Node::operator=(Node&&) noexcept = default;
 
 struct ParseError {
   std::string message;

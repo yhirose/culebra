@@ -69,7 +69,23 @@ struct SendNode {
   std::vector<size_t> mf_min_params;
   int ref_id = -1;          // closure identity (for back-references)
   bool is_backref = false;  // true ⇒ this node is just a ref to ref_id
+
+  // Declared here, defaulted below the class, for the reason toml::Node's are
+  // (toml.h): the self-referential vector<pair<SendNode, SendNode>> makes
+  // clang's evaluation of the implicit ones circular.
+  SendNode();
+  ~SendNode();
+  SendNode(const SendNode&);
+  SendNode(SendNode&&) noexcept;
+  SendNode& operator=(const SendNode&);
+  SendNode& operator=(SendNode&&) noexcept;
 };
+inline SendNode::SendNode() = default;
+inline SendNode::~SendNode() = default;
+inline SendNode::SendNode(const SendNode&) = default;
+inline SendNode::SendNode(SendNode&&) noexcept = default;
+inline SendNode& SendNode::operator=(const SendNode&) = default;
+inline SendNode& SendNode::operator=(SendNode&&) noexcept = default;
 
 [[noreturn]] inline void send_error(const std::string& what) {
   throw culebra::CulebraError("SendError", what);

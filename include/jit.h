@@ -896,9 +896,11 @@ struct JIT {
     };
     add("__gxx_personality_seh0",
         reinterpret_cast<void*>(&__gxx_personality_seh0));
-    add("__cxa_begin_catch", reinterpret_cast<void*>(&__cxa_begin_catch));
-    add("__cxa_end_catch", reinterpret_cast<void*>(&__cxa_end_catch));
-    add("__cxa_rethrow", reinterpret_cast<void*>(&__cxa_rethrow));
+    // Namespace-qualified: GCC predeclares these globally for its own EH
+    // lowering, clang only knows <cxxabi.h>'s declarations.
+    add("__cxa_begin_catch", reinterpret_cast<void*>(&abi::__cxa_begin_catch));
+    add("__cxa_end_catch", reinterpret_cast<void*>(&abi::__cxa_end_catch));
+    add("__cxa_rethrow", reinterpret_cast<void*>(&abi::__cxa_rethrow));
     // Where a pad continues the unwind (CleanupPad, emit_handler_rethrow):
     // libgcc is static here too, so the PE export table cannot supply it.
     add(rt_unwind_resume, reinterpret_cast<void*>(&_Unwind_Resume_or_Rethrow));

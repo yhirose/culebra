@@ -1457,7 +1457,9 @@ jobs:
         # Only the `culebra` target (+ its embedded runtime-archive deps), not
         # the POSIX-only test targets (dap_test needs poll.h; smoke_suite needs
         # C++23 std::print's -lstdc++exp) which the default `all` would build.
-        run: cmake --build build-win-aot --target culebra -j
+        # `-k 0` as in the `windows` job: this is the one clang lane, so a run
+        # should list every TU it rejects, not the first.
+        run: cmake --build build-win-aot --target culebra -j -- -k 0
       - name: Report ccache stats
         run: ccache -s || true
       # The widest build there is — Canvas window, Webview and Http all on — so
