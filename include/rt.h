@@ -23,6 +23,7 @@
 #include <jit_slab.h>
 #include <packable.h>
 #include <parser.h>
+#include <rt_format.h>
 #include <rt_shared_tls.h>  // CULEBRA_RT_CORE_OWNED (one owner per thread_local)
 #include <runtime/rt_macros.h>
 #include <shared.h>
@@ -40,7 +41,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <format>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -49,7 +49,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <print>
 #include <string>
 #include <string_view>
 #include <type_traits>

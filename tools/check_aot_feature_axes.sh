@@ -20,6 +20,15 @@
 #     registers itself with a static `wrap<T>` initializer, which .init_array
 #     pins, dragging the wrap metadata and template instantiations behind it
 #     (~64 KB) into every binary if it lives in the core archive.
+#   - libstdc++'s formatter is neither: it is kept out by nothing being able
+#     to name it. Its argument visitor names the integer, float and string
+#     formatters from one function, so one reachable std::format call links
+#     all of it — 15% of a hello — and a header the runtime archive compiles
+#     therefore formats messages with culebra::format (include/rt_format.h).
+#     Losing that is silent too: the build links, the binary grows. Every
+#     probe below is checked for it, since the leak follows whatever the
+#     program touches (a @packable class, Proc, a wrapped class), and the
+#     `spec` probe is the control that proves the check still bites.
 #   - Proc and the Canvas PNG/TTF decoders are NOT an axis: they compile as
 #     plain `inline` code, reached only through their `_ns_*` adapters. Once
 #     a namespace's dispatch group (stdlib_jit.h ns_groups()) is unreferenced,
@@ -103,6 +112,11 @@ expect_output() {  # expect_output <binary> <expected stdout>
   fi
 }
 
+# libstdc++'s formatter, by its entry points: the visitor and vformat rather
+# than `__format` alone, since <charconv> — which culebra::format uses too —
+# shares that namespace on some libraries.
+fmt_machinery='std::__format::__do_vformat_to|std::vformat|__format::__formatter_(fp|int)'
+
 # Regex: the weak/strong choke (kFeatureAxes still force-loads this one).
 regex_choke='^culebra::regex::compile[(]'
 # Proc / Canvas assets: no weak stub — plain inline code reached only through
@@ -135,6 +149,7 @@ expect_absent none 'culebra::foreign_fixture::' "the fixture's own C++ class"
 expect_absent none 'culebra::jit_serialize[(]' "the isolate transfer graph"
 expect_absent none 'culebra::_jit_shared_val_prop_impl[(]' "the SharedVal reader"
 expect_absent none '_jit_isolate_teardown_join_all' "the isolate teardown join"
+expect_absent none "$fmt_machinery" "libstdc++'s formatter, a program that formats nothing"
 expect_output none "none"
 # The namespace groups (stdlib_jit.h ns_groups()): a namespace's dispatch rows
 # and adapters link only when the program names it. No axis, no choke — the
@@ -151,6 +166,7 @@ expect_absent none ' [A-Za-z] culebra::_ns_http_[a-z_]*[(]' "the Http adapters"
 build regex 'IO.print(re"(\d+)-(\d+)".find("a 12-34 b").groups[2].value)'
 expect_strong regex "$regex_choke" "Regex named, the strong body must override"
 expect_absent regex "$proc_choke" "Regex only"
+expect_absent regex "$fmt_machinery" "libstdc++'s formatter, Regex"
 expect_output regex "34"
 
 build math 'let m = Math
@@ -158,11 +174,13 @@ IO.print(m.abs(-3) + Math.floor(1.5))'
 expect_present math ' _?culebra_ns_group_Math$' "Math named, its group must be linked"
 expect_present math 'culebra::_ns_math_floor[(]' "a Math adapter, reached only through the group"
 expect_absent math ' _?culebra_ns_group_FS$' "the FS group"
+expect_absent math "$fmt_machinery" "libstdc++'s formatter, Math"
 expect_output math "4"
 
 build proc 'IO.print(Proc.run(["echo", "spawned"]).stdout)'
 expect_present proc "$proc_choke" "Proc named"
 expect_stub_or_absent proc "$regex_choke" "Proc only"
+expect_absent proc "$fmt_machinery" "libstdc++'s formatter, Proc"
 expect_output proc "spawned"
 
 # from_png decodes what to_png encoded (the latter rides the Compress axis).
@@ -172,6 +190,7 @@ IO.print(back.width() * 10 + back.height())'
 expect_present canvas "$png_choke" "Canvas named"
 expect_present canvas "$ttf_choke" "Canvas named"
 expect_stub_or_absent canvas "$regex_choke" "Canvas only"
+expect_absent canvas "$fmt_machinery" "libstdc++'s formatter, Canvas"
 expect_output canvas "32"
 
 # The wrap fixture: naming __Foreign force-loads its archive, and the
@@ -181,6 +200,7 @@ c.add(5)
 IO.print(c.value())'
 expect_present foreign "$foreign_choke" "__Foreign named"
 expect_stub_or_absent foreign "$regex_choke" "__Foreign only"
+expect_absent foreign "$fmt_machinery" "libstdc++'s formatter, __Foreign"
 expect_output foreign "15"
 
 # A Shared.new view: its reader arrives through the hook, and the view's
@@ -190,7 +210,17 @@ IO.print(s.a + s.xs[1])'
 expect_present shared 'culebra::_jit_shared_val_prop_impl[(]' "Shared named"
 expect_present shared 'culebra::jit_serialize[(]' "Shared named"
 expect_stub_or_absent shared "$regex_choke" "Shared only"
+expect_absent shared "$fmt_machinery" "libstdc++'s formatter, Shared"
 expect_output shared "21"
+
+# The spec after a colon in an interpolation IS std::format's mini-language
+# (shared.h's format_value_as vformats it), so this one program is expected to
+# carry the formatter. Without it, the seven checks above could pass because
+# the probe stopped working rather than because the boundary holds.
+build spec 'let x = 1.5
+IO.print("{x:.2f}")'
+expect_present spec "$fmt_machinery" "an interpolation spec asks for std::format"
+expect_output spec "1.50"
 
 if (( fail )); then
   cat >&2 <<'EOF'
@@ -203,10 +233,15 @@ if (( fail )); then
   Proc / Canvas: a choke present in `none`, or absent where it was named:
   something outside the choke reaches the engine unconditionally, or the
   adapter isn't reachable only through its kNsRows_* table.
+  libstdc++'s formatter in a probe: a header the runtime archive compiles
+  called std::format (or std::print/println) — put the message on
+  culebra::format instead, see include/rt_format.h. Missing from `spec`:
+  the control stopped working, so fix the probe (or fmt_machinery) before
+  trusting the rest.
   A namespace group or adapter in a binary that never names it: something in
   the core archive refers to the group (only the program object may), or an
   adapter is reachable outside its kNsRows_* table.
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / __Foreign by axis; Proc/Canvas/Shared by namespace group; groups linked only when named)"
+echo "aot-feature-axes OK (Regex / __Foreign by axis; Proc/Canvas/Shared by namespace group; groups linked only when named; no libstdc++ formatter)"

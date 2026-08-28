@@ -151,7 +151,7 @@ lld alike: the embedded runtime archive carries thousands of
 platform's `strip` tool removes the global symbol table the linker
 leaves behind, the same step the release packaging applies to
 `culebra` itself. Together they take a `print("hello")` binary from
-2.8 MB to 2.5 MB; the dynamic symbols the loader needs survive
+0.47 MB to 0.38 MB; the dynamic symbols the loader needs survive
 both. Pass `--keep-symbols` to skip both for debugging. Cross-compiled
 outputs (`--target`) stop after the link step, since the host's
 `strip` does not read a foreign object format; a `strip` missing from
@@ -716,10 +716,16 @@ endpoints, `Shared` views) rides the same mechanism: the generic
 property and index paths reach a `Shared` view's reader through a hook
 the view's constructor installs, never by symbol, so only the
 `Shared` / `Isolate` / `Parallel` / `Net` adapters refer to that code
-and it goes with their groups. Together with the feature axes this is
-what keeps a `print("hello")` binary under 0.5 MB. A namespace the scan missed does
-not silently read as `nil`: reaching it raises an `InternalError`
-naming the namespace.
+and it goes with their groups. The runtime's own messages are built by
+a small formatter of culebra's (`include/format.h`) rather than
+`std::format`, whose implementation links as one block — a single
+argument visitor names the integer, float and string formatters
+together, so one reachable call would add 15% to a hello. A program
+that writes an interpolation format spec (`"{x:.2f}"`) still links it,
+because that spec *is* `std::format`'s mini-language. Together with the
+feature axes this is what keeps a `print("hello")` binary under
+0.4 MB. A namespace the scan missed does not silently read as `nil`:
+reaching it raises an `InternalError` naming the namespace.
 
 These archives are **embedded directly into the `culebra` driver**
 via cpp-embedlib — the driver is a single self-contained binary, no

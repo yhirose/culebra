@@ -37,6 +37,8 @@
 #include <os_compat.h>  // <windows.h> (guarded)
 #endif
 
+#include <rt_format.h>
+
 #include <unicodelib_encodings.h>  // unicode::utf8::encode_codepoint
 
 #include "exe_path.h"  // current_executable_path (Sys.executable)
@@ -238,8 +240,8 @@ inline void culebra_note_pending_error(const CulebraError& e) {
 // lane would split doc-block results between engines.
 inline std::string format_error_message(const CulebraError& e) {
   if (e.line > 0 || e.col > 0)
-    return std::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col);
-  return std::format("{}: {}", e.kind, e.what());
+    return culebra::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col);
+  return culebra::format("{}: {}", e.kind, e.what());
 }
 
 // Diagnostics joined into one "; "-separated line — the text the doctest
@@ -265,18 +267,18 @@ inline std::string join_messages(const std::vector<std::string>& msgs) {
 // "takes N positional argument(s) but M given" — a call overflowed the
 // positional cap of a kw-only section.
 inline std::string too_many_positionals_message(int64_t cap, int64_t got) {
-  return std::format("takes {} positional argument{} but {} given", cap,
-                     cap == 1 ? "" : "s", got);
+  return culebra::format("takes {} positional argument{} but {} given", cap,
+                         cap == 1 ? "" : "s", got);
 }
 
 // "missing required argument 'name'" — no positional, no kwarg, no default.
 inline std::string missing_required_arg_message(std::string_view name) {
-  return std::format("missing required argument '{}'", name);
+  return culebra::format("missing required argument '{}'", name);
 }
 
 // "unknown keyword argument 'name'" — a kwarg the callee doesn't accept.
 inline std::string unknown_kwarg_message(std::string_view name) {
-  return std::format("unknown keyword argument '{}'", name);
+  return culebra::format("unknown keyword argument '{}'", name);
 }
 
 // The keyword bindings a call resolved, in the order they arrived: `**`
@@ -333,14 +335,14 @@ std::string_view canonical_unknown_kwarg(const Map& merged) {
 
 // "got argument 'name' both positionally and as a keyword".
 inline std::string positional_kw_conflict_message(std::string_view name) {
-  return std::format("got argument '{}' both positionally and as a keyword",
-                     name);
+  return culebra::format("got argument '{}' both positionally and as a keyword",
+                         name);
 }
 
 // "type error: expected X, got Y" — an argument/receiver type mismatch.
 inline std::string type_mismatch_message(std::string_view expected,
                                          std::string_view got) {
-  return std::format("type error: expected {}, got {}", expected, got);
+  return culebra::format("type error: expected {}, got {}", expected, got);
 }
 
 // Throw TypeError "takes N positional argument(s) but M given" when M
@@ -377,8 +379,8 @@ inline void check_recursion_depth(int64_t line, int64_t col) {
   if (_culebra_call_depth >= kCulebraRecursionLimit) {
     throw CulebraError(
         "RecursionError",
-        std::format("maximum recursion depth exceeded ({})",
-                    kCulebraRecursionLimit),
+        culebra::format("maximum recursion depth exceeded ({})",
+                        kCulebraRecursionLimit),
         line, col);
   }
 }
@@ -386,7 +388,7 @@ inline void check_recursion_depth(int64_t line, int64_t col) {
 // Wording shared by every nesting bound (PEG rule depth, JSON data depth);
 // toml.h keeps a value-neutral copy its backends reuse.
 inline std::string nesting_too_deep_message(int64_t limit) {
-  return std::format("nesting too deep (limit {})", limit);
+  return culebra::format("nesting too deep (limit {})", limit);
 }
 
 // RAII frame for the interp's C++-recursive eval: the dtor runs while an
@@ -615,19 +617,19 @@ class SizedThread {
 inline std::string builtin_arity_error_message(std::string_view method,
                                                long min, long max, int64_t got) {
   if (min == max) {
-    return std::format("'{}' takes {} argument{} but {} given", method, min,
-                       min == 1 ? "" : "s", got);
+    return culebra::format("'{}' takes {} argument{} but {} given", method, min,
+                           min == 1 ? "" : "s", got);
   }
-  return std::format("'{}' takes {} to {} arguments but {} given", method, min,
-                     max, got);
+  return culebra::format("'{}' takes {} to {} arguments but {} given", method, min,
+                         max, got);
 }
 
 // A built-in method called with keyword arguments. Built-ins bind their args
 // positionally, so any keyword is a TypeError; shared so interp and both
 // backends emit byte-identical text.
 inline std::string builtin_method_kwargs_error_message(std::string_view method) {
-  return std::format("built-in method '{}' does not accept keyword arguments",
-                     method);
+  return culebra::format("built-in method '{}' does not accept keyword arguments",
+                         method);
 }
 
 // Count-based arity error for a built-in *function* (namespace method or
@@ -638,8 +640,8 @@ inline std::string builtin_method_kwargs_error_message(std::string_view method) 
 // `Math.abs(1, 2)` and `let f = Math.abs; f(1, 2)` alike. Distinct from
 // builtin_arity_error_message, which names value-type *methods*.
 inline std::string ns_fn_arity_error_message(int64_t expected, int64_t got) {
-  return std::format("expected {} positional argument{}, got {}", expected,
-                     expected == 1 ? "" : "s", got);
+  return culebra::format("expected {} positional argument{}, got {}", expected,
+                         expected == 1 ? "" : "s", got);
 }
 
 // --- Numeric formatting / parsing ---
@@ -714,7 +716,7 @@ inline void append_utf8(std::string& out, uint32_t cp) {
 // boundary the escape rejects at parse time.
 inline std::string string_from_code_point(int64_t cp) {
   if (!is_unicode_scalar_value(cp)) {
-    throw CulebraError("ValueError", std::format(
+    throw CulebraError("ValueError", culebra::format(
         "String.from_code_point: {} is not a Unicode scalar value.", cp));
   }
   std::string out;
@@ -729,7 +731,7 @@ inline std::string string_from_code_point(int64_t cp) {
 // single-sourced here for interp + JIT.
 inline void append_checked_byte(std::string& out, int64_t b) {
   if (b < 0 || b > 255) {
-    throw CulebraError("ValueError", std::format(
+    throw CulebraError("ValueError", culebra::format(
         "String.from_bytes: {} is not a byte (0-255).", b));
   }
   out += static_cast<char>(b);
@@ -741,7 +743,7 @@ inline void append_checked_byte(std::string& out, int64_t b) {
 // `String.from_code_points([cp]) == String.from_code_point(cp)`.
 inline void append_checked_code_point(std::string& out, int64_t cp) {
   if (!is_unicode_scalar_value(cp)) {
-    throw CulebraError("ValueError", std::format(
+    throw CulebraError("ValueError", culebra::format(
         "String.from_code_points: {} is not a Unicode scalar value.", cp));
   }
   append_utf8(out, static_cast<uint32_t>(cp));
@@ -1078,8 +1080,8 @@ inline std::string url_decode(std::string_view in) {
     const char* ns_name, std::string_view member, int64_t line, int64_t col) {
   throw CulebraError(
       "AttributeError",
-      std::format("namespace '{}' has no member '{}'",
-                  ns_name ? ns_name : "?", member),
+      culebra::format("namespace '{}' has no member '{}'",
+                      ns_name ? ns_name : "?", member),
       line, col);
 }
 
@@ -1089,8 +1091,8 @@ inline std::string url_decode(std::string_view in) {
 [[noreturn]] inline void throw_immutable_assign_at(
     const std::string& name, int64_t line, int64_t col) {
   throw CulebraError("ImmutableError",
-                     std::format("cannot reassign '{}' (declared without 'mut')",
-                                 name),
+                     culebra::format("cannot reassign '{}' (declared without 'mut')",
+                                     name),
                      line, col);
 }
 
@@ -1101,9 +1103,9 @@ inline std::string url_decode(std::string_view in) {
                                             size_t line, size_t column) {
   throw CulebraError(
       "ShadowError",
-      std::format("cannot shadow outer variable '{}' (declared in an enclosing "
-                  "function)",
-                  name),
+      culebra::format("cannot shadow outer variable '{}' (declared in an enclosing "
+                      "function)",
+                      name),
       static_cast<long>(line), static_cast<long>(column));
 }
 
@@ -1420,8 +1422,8 @@ inline std::string str_truncate(std::string_view s, int64_t max,
   if (s.size() <= umax) return std::string(s);
   if (umax < ellipsis.size()) {
     throw CulebraError("ValueError",
-                       std::format("truncate() max must be at least {}",
-                                   ellipsis.size()),
+                       culebra::format("truncate() max must be at least {}",
+                                       ellipsis.size()),
                        line, col);
   }
   std::string out(s.substr(0, umax - ellipsis.size()));
@@ -1966,7 +1968,7 @@ inline int64_t parse_long_strict(std::string_view s, int64_t line, int64_t col,
   if (base < 2 || base > 36) {
     throw CulebraError(
         "ValueError",
-        std::format("to_long() base must be between 2 and 36, got {}", base),
+        culebra::format("to_long() base must be between 2 and 36, got {}", base),
         line, col);
   }
   auto t = trim_ascii(s);
@@ -2021,7 +2023,7 @@ inline int64_t parse_integer_literal(std::string_view tok) {
   int64_t v = std::strtoll(owned.c_str() + off, nullptr, base);
   if (errno == ERANGE) {
     throw CulebraError("ValueError",
-                       std::format("integer literal out of range: {}", tok));
+                       culebra::format("integer literal out of range: {}", tok));
   }
   return v;
 }
@@ -2070,7 +2072,7 @@ inline std::string format_value_as(T& v, std::string_view type_name,
     return std::vformat(fmt, std::make_format_args(v));
   } catch (const std::format_error&) {
     throw CulebraError("ValueError",
-        std::format("invalid format spec '{}' for {}", spec, type_name), line,
+        culebra::format("invalid format spec '{}' for {}", spec, type_name), line,
         col);
   }
 }
@@ -2725,8 +2727,8 @@ inline ZeroKind zero_kind_for_type(std::string_view type) {
     std::string_view name) {
   throw CulebraError(
       "DropContractError",
-      std::format("type error: '{}' must be a Function taking no arguments.",
-                  name));
+      culebra::format("type error: '{}' must be a Function taking no arguments.",
+                      name));
 }
 
 // --- Iterator protocol diagnostics (docs/language.md §18.5) ---

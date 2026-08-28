@@ -27,7 +27,6 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
-#include <format>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -1436,8 +1435,8 @@ inline bool bmeth_param_applies(const BMethSpec& s, int32_t i, int8_t tag) {
 
 // The message a rejected argument carries, in the interp binder's wording.
 inline std::string bmeth_param_message(const BMethSpec& s, int32_t i) {
-  return std::format("type error: parameter '{}' expects {}", s.pnames[i],
-                     bmeth_param_type(s.params[i]));
+  return culebra::format("type error: parameter '{}' expects {}", s.pnames[i],
+                         bmeth_param_type(s.params[i]));
 }
 
 // emit_receiver_resolution_error's two halves, executor-side. A scalar
@@ -3533,7 +3532,7 @@ class Compiler {
     // Every binding this frame declares passes through here — the one gate
     // on the frame's slot budget.
     if (next_slot_ >= kMaxSlots)
-      reject(at, std::format("frame larger than {} slots", kMaxSlots));
+      reject(at, culebra::format("frame larger than {} slots", kMaxSlots));
     int32_t s = next_slot_++;
     if (s >= static_cast<int32_t>(chunk_.slot_names.size()))
       chunk_.slot_names.resize(s + 1);
@@ -3846,7 +3845,7 @@ class Compiler {
   void take_owned_mark(const peg::Ast& at) {
     auto d = static_cast<int32_t>(scopes_.size()) - 1;
     if (d >= kMaxOwnedDepth)
-      reject(at, std::format("scopes nested deeper than {}", kMaxOwnedDepth));
+      reject(at, culebra::format("scopes nested deeper than {}", kMaxOwnedDepth));
     scopes_.back().owned_mark = d;
     chunk_.owned_depths = std::max(chunk_.owned_depths, d + 1);
     emit(Op::OwnedMark, d);
@@ -4937,7 +4936,7 @@ class Compiler {
     int32_t cls = alloc_temp(ast);
     emit(Op::MakeClosure, cls, idx);
     if (!b || !b->is_cell)
-      reject(ast, std::format("fn '{}' declared here", name));
+      reject(ast, culebra::format("fn '{}' declared here", name));
     // A same-scope overload appends to the dispatcher the binding already
     // holds (the binding's scope is the current one — predeclare ran at its
     // entry); the first decl passes none and mints a fresh one. The session
@@ -4998,7 +4997,7 @@ class Compiler {
     val = apply_decorators(ast, dec_end, val);
     const Binding* b = lookup(name);
     if (!b || !b->is_cell)
-      reject(ast, std::format("fn '{}' declared here", name));
+      reject(ast, culebra::format("fn '{}' declared here", name));
     store_cell(ast, b->slot, {val, true});
     emit_session_decl_bind(*b, /*is_mut=*/false);
   }
@@ -5661,7 +5660,7 @@ class Compiler {
       // this statement list declares and a closure here captures, so a
       // forward reference resolves above. Anything still missing is a
       // name no statement list on the way in declares.
-      if (!b) reject(ast, std::format("forward-reference capture of '{}'", fv));
+      if (!b) reject(ast, culebra::format("forward-reference capture of '{}'", fv));
       // Same reason a read refills it: MakeClosure may sit in a branch the
       // slot's own ReplCell does not dominate.
       ensure_session_slot(*b);
@@ -6081,7 +6080,7 @@ class Compiler {
       }
       if (!pl.type.empty()) {
         int32_t ty = fc.kconst_str(pl.type);
-        int32_t ctx = fc.kconst_str(std::format("parameter '{}'", pl.name));
+        int32_t ctx = fc.kconst_str(culebra::format("parameter '{}'", pl.name));
         if (pl.pos_slot >= 0)
           fc.emit(Op::ChkTypeAt, pl.slot, ty, ctx, pl.pos_slot);
         else
@@ -6443,7 +6442,7 @@ class Compiler {
       // reads the target before the RHS, so nothing of it runs.
       if (base != "??") compile_assign_rhs(ast, av);
       emit(Op::RaiseErr, 0, kconst_str("NameError"),
-           kconst_str(std::format(
+           kconst_str(culebra::format(
                "compound assignment on undefined name '{}'", tgt.token)));
       return {alloc_temp(tgt), true};  // unreachable
     }
@@ -6505,7 +6504,7 @@ class Compiler {
     if (base == "%") return Op::Mod;
     if (base == "**") return Op::Pow;
     if (base == "@") return Op::MatMul;
-    reject(ast, std::format("operator '{}='", base));
+    reject(ast, culebra::format("operator '{}='", base));
   }
 
   // Complex index lvalue: `a[i] = v`, `a[i] op= v`, `a[i] ??= v`, and
@@ -7213,7 +7212,7 @@ class Compiler {
     auto take = [&](const auto& tbl, int8_t tag) {
       auto v = builtin_call_verdict(tbl, method, scan, argc);
       if (v.kind == BuiltinVerdict::Kind::Valid)
-        reject(post, std::format("built-in method '{}'", method));
+        reject(post, culebra::format("built-in method '{}'", method));
       if (v.kind != BuiltinVerdict::Kind::Error) return false;
       // Rich errors anchor at the call's callee (a parenthesized receiver
       // puts the CALL node on the `(`, which is not where the interp
@@ -7974,7 +7973,7 @@ class Compiler {
       if (t == "<=") return Op::Le;
       if (t == ">") return Op::Gt;
       if (t == ">=") return Op::Ge;
-      reject(op_node, std::format("operator '{}'", t));
+      reject(op_node, culebra::format("operator '{}'", t));
     };
     auto lhs = compile_expr(*ast.nodes[0]);
     if (ast.nodes.size() == 3) {
@@ -8435,7 +8434,7 @@ class Compiler {
         compile_ctor_pattern_test(pat, subj, fail);
         return;
       default:
-        reject(pat, std::format("pattern '{}'", pat.name));
+        reject(pat, culebra::format("pattern '{}'", pat.name));
     }
   }
 
@@ -8902,7 +8901,7 @@ class Compiler {
         {
           int32_t t = alloc_temp(ast);
           emit(Op::RaiseErr, 0, kconst_str("NameError"),
-               kconst_str(std::format("undefined variable '{}'", ast.token)));
+               kconst_str(culebra::format("undefined variable '{}'", ast.token)));
           return {t, true};  // unreachable
         }
       }
@@ -8959,7 +8958,7 @@ class Compiler {
           else if (op_tok == "/") op = Op::Div;
           else if (op_tok == "%") op = Op::Mod;
           else if (op_tok == "@") op = Op::MatMul;
-          else reject(*ast.nodes[i], std::format("operator '{}'", op_tok));
+          else reject(*ast.nodes[i], culebra::format("operator '{}'", op_tok));
           auto rhs = compile_expr(*ast.nodes[i + 1]);
           int32_t t = alloc_temp(ast);
           emit(op, t, acc.slot, rhs.slot);
@@ -9042,7 +9041,7 @@ class Compiler {
       default:
         if (!ast.is_token && ast.nodes.size() == 1)
           return compile_expr(*ast.nodes[0]);
-        reject(ast, std::format("expression '{}'", ast.name));
+        reject(ast, culebra::format("expression '{}'", ast.name));
     }
   }
 };
@@ -9090,24 +9089,24 @@ inline std::string dump(const Chunk& c) {
       "Halt"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
   std::string out;
-  out += std::format("; slots: {}\n", c.num_slots);
+  out += culebra::format("; slots: {}\n", c.num_slots);
   if (!c.capture_src_slots.empty()) {
     out += "; captures from creator slots:";
-    for (auto s : c.capture_src_slots) out += std::format(" r{}", s);
+    for (auto s : c.capture_src_slots) out += culebra::format(" r{}", s);
     out += "\n";
   }
   for (size_t s = 0; s < c.slot_names.size(); ++s)
-    out += std::format(";   r{} = {}\n", s, c.slot_names[s]);
+    out += culebra::format(";   r{} = {}\n", s, c.slot_names[s]);
   for (size_t i = 0; i < c.code.size(); ++i) {
     const auto& in = c.code[i];
     auto [line, col] = chunk_pos_at(c, i);
-    out += std::format("{:4}: {:<12} {:4} {:4} {:4} {:4}   ; {}:{}", i,
-                       kNames[static_cast<size_t>(in.op)], in.a, in.b, in.c,
-                       in.d, line, col);
+    out += culebra::format("{:4}: {:<12} {:4} {:4} {:4} {:4}   ; {}:{}", i,
+                           kNames[static_cast<size_t>(in.op)], in.a, in.b, in.c,
+                           in.d, line, col);
     if (auto t = chunk_call_target_at(c, i); t.chunk >= 0 || t.callee_in_cell) {
       if (t.chunk >= 0)
-        out += std::format("  -> chunk {}{}", t.chunk,
-                           t.via_mono ? " (mono)" : "");
+        out += culebra::format("  -> chunk {}{}", t.chunk,
+                               t.via_mono ? " (mono)" : "");
       if (t.callee_in_cell) out += "  [callee in cell]";
     }
     out += "\n";
@@ -9122,7 +9121,7 @@ inline std::string dump(const VmProgram& p) {
     if (i == 0) {
       out += "; == main ==\n";
     } else {
-      out += std::format("; == fn {} (arity {}) ==\n", i, c.arity);
+      out += culebra::format("; == fn {} (arity {}) ==\n", i, c.arity);
     }
     out += dump(c);
   }
@@ -9219,7 +9218,7 @@ struct Exec {
       // "uncaught: ..." on every lane.
       auto s = _culebra_uncaught_display(e.tag, e.data);
       _culebra_value_release_impl(e.tag, e.data);
-      throw std::runtime_error(std::format("uncaught: {}", s));
+      throw std::runtime_error(culebra::format("uncaught: {}", s));
     } catch (CulebraError& e) {
       // Backfill a positionless error from the published op position at
       // the engine boundary — JIT::exec's rule (the interp stamps at its
@@ -11125,7 +11124,7 @@ struct Exec {
             auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
             culebra_runtime_throw_error(
                 "NameError",
-                std::format("undefined variable '{}'", nm).c_str(),
+                culebra::format("undefined variable '{}'", nm).c_str(),
                 line, col);
           }
           ++pc;

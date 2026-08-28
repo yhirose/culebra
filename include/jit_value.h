@@ -709,7 +709,7 @@ struct JitValueHash {
     // ValueHash, which throws rather than falling back to pointer identity.
     throw culebra::CulebraError(
         "TypeError",
-        std::format("unhashable type: '{}'", _culebra_tag_name(v.tag)));
+        culebra::format("unhashable type: '{}'", _culebra_tag_name(v.tag)));
   }
 };
 struct JitValueEq {

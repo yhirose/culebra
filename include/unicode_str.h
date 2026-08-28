@@ -131,9 +131,9 @@ inline std::string str_normalize(std::string_view s, std::string_view form,
   }
   throw CulebraError(
       "ValueError",
-      std::format("normalize() form must be 'NFC', 'NFD', 'NFKC', or "
-                  "'NFKD', got '{}'",
-                  form),
+      culebra::format("normalize() form must be 'NFC', 'NFD', 'NFKC', or "
+                      "'NFKD', got '{}'",
+                      form),
       line, col);
 }
 

@@ -151,7 +151,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_file(
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs) {
     throw culebra::CulebraError("IOError",
-        std::format("FS.read: cannot open '{}'", path), line, col);
+        culebra::format("FS.read: cannot open '{}'", path), line, col);
   }
   std::string s((std::istreambuf_iterator<char>(ifs)),
                 std::istreambuf_iterator<char>());
@@ -168,7 +168,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_write_file(
   std::ofstream ofs(path, std::ios::binary);
   if (!ofs) {
     throw culebra::CulebraError("IOError",
-        std::format("FS.write: cannot open '{}'", path), line, col);
+        culebra::format("FS.write: cannot open '{}'", path), line, col);
   }
   auto sv = _culebra_str_view(tag, data);
   ofs.write(sv.data(), static_cast<std::streamsize>(sv.size()));
@@ -365,7 +365,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_io_exists(
                                       const std::error_code& ec) {
   throw culebra::CulebraError(
       "IOError",
-      std::format("{}: {}.", msg, ec.message()), line, col);
+      culebra::format("{}: {}.", msg, ec.message()), line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_join(
@@ -432,7 +432,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_size(
     const char* path, int64_t line, int64_t col) {
   std::error_code ec;
   auto sz = std::filesystem::file_size(path ? path : "", ec);
-  if (ec) _fs_throw_io(std::format("FS.size('{}')", path ? path : ""),
+  if (ec) _fs_throw_io(culebra::format("FS.size('{}')", path ? path : ""),
                                 line, col, ec);
   return static_cast<int64_t>(sz);
 }
@@ -442,7 +442,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_fs_list_dir(
   std::error_code ec;
   auto it = std::filesystem::directory_iterator(path ? path : "", ec);
   if (ec) _fs_throw_io(
-      std::format("FS.list_dir('{}')", path ? path : ""), line, col, ec);
+      culebra::format("FS.list_dir('{}')", path ? path : ""), line, col, ec);
   auto* arr = culebra_runtime_array_new();
   for (const auto& entry : it) {
     auto* s = _culebra_heap_str(entry.path().filename().string());
@@ -457,7 +457,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_mkdir(
   std::error_code ec;
   std::filesystem::create_directories(path ? path : "", ec);
   if (ec) _fs_throw_io(
-      std::format("FS.mkdir('{}')", path ? path : ""), line, col, ec);
+      culebra::format("FS.mkdir('{}')", path ? path : ""), line, col, ec);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove(
@@ -465,7 +465,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove(
   std::error_code ec;
   if (!std::filesystem::remove(path ? path : "", ec) || ec) {
     _fs_throw_io(
-        std::format("FS.remove('{}')", path ? path : ""), line, col, ec);
+        culebra::format("FS.remove('{}')", path ? path : ""), line, col, ec);
   }
 }
 
@@ -475,8 +475,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove_all(
   std::error_code ec;
   if (std::filesystem::remove_all(path ? path : "", ec) ==
           static_cast<std::uintmax_t>(-1) || ec) {
-    _fs_throw_io(std::format("FS.remove('{}', recursive: true)",
-                             path ? path : ""), line, col, ec);
+    _fs_throw_io(culebra::format("FS.remove('{}', recursive: true)",
+                                 path ? path : ""), line, col, ec);
   }
 }
 
@@ -487,7 +487,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_fs_stat(
   std::error_code ec;
   auto st = std::filesystem::symlink_status(path ? path : "", ec);
   if (ec || st.type() == std::filesystem::file_type::not_found) {
-    _fs_throw_io(std::format("FS.stat('{}')", path ? path : ""), line, col, ec);
+    _fs_throw_io(culebra::format("FS.stat('{}')", path ? path : ""), line, col, ec);
   }
   bool is_link = st.type() == std::filesystem::file_type::symlink;
   auto fst = std::filesystem::status(path ? path : "", ec);
@@ -530,15 +530,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_chmod(
           mode & static_cast<int64_t>(std::filesystem::perms::mask)),
       std::filesystem::perm_options::replace, ec);
   if (ec) _fs_throw_io(
-      std::format("FS.chmod('{}')", path ? path : ""), line, col, ec);
+      culebra::format("FS.chmod('{}')", path ? path : ""), line, col, ec);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_rename(
     const char* src, const char* dst, int64_t line, int64_t col) {
   std::error_code ec;
   std::filesystem::rename(src ? src : "", dst ? dst : "", ec);
-  if (ec) _fs_throw_io(std::format("FS.rename('{}', '{}')", src ? src : "",
-                                   dst ? dst : ""), line, col, ec);
+  if (ec) _fs_throw_io(culebra::format("FS.rename('{}', '{}')", src ? src : "",
+                                       dst ? dst : ""), line, col, ec);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_copy(
@@ -548,8 +548,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_copy(
   auto opts = std::filesystem::copy_options::overwrite_existing;
   if (recursive) opts |= std::filesystem::copy_options::recursive;
   std::filesystem::copy(src ? src : "", dst ? dst : "", opts, ec);
-  if (ec) _fs_throw_io(std::format("FS.copy('{}', '{}')", src ? src : "",
-                                   dst ? dst : ""), line, col, ec);
+  if (ec) _fs_throw_io(culebra::format("FS.copy('{}', '{}')", src ? src : "",
+                                       dst ? dst : ""), line, col, ec);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_normpath(
@@ -567,7 +567,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_abspath(
     const char* path, int64_t line, int64_t col) {
   std::error_code ec;
   auto out = std::filesystem::absolute(path ? path : "", ec);
-  if (ec) _fs_throw_io(std::format("FS.abspath('{}')", path ? path : ""),
+  if (ec) _fs_throw_io(culebra::format("FS.abspath('{}')", path ? path : ""),
                        line, col, ec);
   return _culebra_heap_str(out.lexically_normal().string());
 }
@@ -576,7 +576,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_realpath(
     const char* path, int64_t line, int64_t col) {
   std::error_code ec;
   auto out = std::filesystem::weakly_canonical(path ? path : "", ec);
-  if (ec) _fs_throw_io(std::format("FS.realpath('{}')", path ? path : ""),
+  if (ec) _fs_throw_io(culebra::format("FS.realpath('{}')", path ? path : ""),
                        line, col, ec);
   return _culebra_heap_str(out.string());
 }
@@ -603,16 +603,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_mkdtemp(
   auto name = std::string(prefix ? prefix : "");
   std::error_code ec;
   auto base = std::filesystem::temp_directory_path(ec);
-  if (ec) _fs_throw_io(std::format("FS.mkdtemp('{}')", name), line, col, ec);
+  if (ec) _fs_throw_io(culebra::format("FS.mkdtemp('{}')", name), line, col, ec);
   std::random_device rd;
   for (int attempt = 0; attempt < 64; ++attempt) {
-    auto dir = base / std::format("{}{:08x}{:08x}", name, rd(), rd());
+    auto dir = base / culebra::format("{}{:08x}{:08x}", name, rd(), rd());
     if (std::filesystem::create_directory(dir, ec))
       return _culebra_heap_str(dir.string());
     if (ec) break;  // an unusable base; a name already taken sets no code
   }
   if (!ec) ec = std::make_error_code(std::errc::file_exists);
-  _fs_throw_io(std::format("FS.mkdtemp('{}')", name), line, col, ec);
+  _fs_throw_io(culebra::format("FS.mkdtemp('{}')", name), line, col, ec);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_is_symlink(
@@ -626,8 +626,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_symlink(
     const char* target, const char* link, int64_t line, int64_t col) {
   std::error_code ec;
   std::filesystem::create_symlink(target ? target : "", link ? link : "", ec);
-  if (ec) _fs_throw_io(std::format("FS.symlink('{}', '{}')",
-                                   target ? target : "", link ? link : ""),
+  if (ec) _fs_throw_io(culebra::format("FS.symlink('{}', '{}')",
+                                       target ? target : "", link ? link : ""),
                        line, col, ec);
 }
 
@@ -635,7 +635,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_readlink(
     const char* path, int64_t line, int64_t col) {
   std::error_code ec;
   auto out = std::filesystem::read_symlink(path ? path : "", ec);
-  if (ec) _fs_throw_io(std::format("FS.readlink('{}')", path ? path : ""),
+  if (ec) _fs_throw_io(culebra::format("FS.readlink('{}')", path ? path : ""),
                        line, col, ec);
   return _culebra_heap_str(out.string());
 }
@@ -645,7 +645,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_fs_walk(
     const char* path, int64_t line, int64_t col) {
   std::error_code ec;
   std::filesystem::recursive_directory_iterator it(path ? path : "", ec);
-  if (ec) _fs_throw_io(std::format("FS.walk('{}')", path ? path : ""),
+  if (ec) _fs_throw_io(culebra::format("FS.walk('{}')", path ? path : ""),
                        line, col, ec);
   auto* arr = culebra_runtime_array_new();
   std::error_code iter_ec;
@@ -1094,8 +1094,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_iso_nanos(
   auto r = culebra::_time_detail::parse_iso_nanos(s ? s : "");
   if (!r) {
     throw culebra::CulebraError("ValueError",
-        std::format("_Time.from_iso_nanos: invalid ISO 8601 '{}'",
-                    s ? s : ""),
+        culebra::format("_Time.from_iso_nanos: invalid ISO 8601 '{}'",
+                        s ? s : ""),
         line, col);
   }
   return *r;
@@ -1106,8 +1106,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_parse_nanos(
   std::tm tm{};
   if (!culebra::os_strptime(s ? s : "", fmt ? fmt : "", &tm)) {
     throw culebra::CulebraError("ValueError",
-        std::format("_Time.parse_nanos: '{}' does not match '{}'",
-                    s ? s : "", fmt ? fmt : ""),
+        culebra::format("_Time.parse_nanos: '{}' does not match '{}'",
+                        s ? s : "", fmt ? fmt : ""),
         line, col);
   }
   tm.tm_isdst = -1;
@@ -1207,9 +1207,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_start_of_nanos(
   else {
     throw culebra::CulebraError(
         "ValueError",
-        std::format("_Time.start_of_nanos: unknown unit '{}' "
-                    "(year/month/day/hour/minute)",
-                    std::string(u)),
+        culebra::format("_Time.start_of_nanos: unknown unit '{}' "
+                        "(year/month/day/hour/minute)",
+                        std::string(u)),
         line, col);
   }
   return culebra::_time_detail::from_tm_nanos(tm, 0, utc != 0);
@@ -1245,7 +1245,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_chdir(
   std::error_code ec;
   std::filesystem::current_path(std::filesystem::path(path ? path : ""), ec);
   if (ec) _fs_throw_io(
-      std::format("Sys.chdir('{}')", path ? path : ""), line, col, ec);
+      culebra::format("Sys.chdir('{}')", path ? path : ""), line, col, ec);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_sys_data_dir(
@@ -1258,7 +1258,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_set_env(
     const char* name, const char* value, int64_t line, int64_t col) {
   if (culebra::os_setenv(name ? name : "", value ? value : "", 1) != 0) {
     std::error_code ec(errno, std::generic_category());
-    _fs_throw_io(std::format("Sys.set_env('{}')", name ? name : ""),
+    _fs_throw_io(culebra::format("Sys.set_env('{}')", name ? name : ""),
                  line, col, ec);
   }
 }
@@ -1446,7 +1446,7 @@ inline std::string _ns_proc_share_ids(
                           ->find_slot("__sharedbuffer_id__")
                     : static_cast<size_t>(-1);
     if (si == static_cast<size_t>(-1))
-      return std::format("{}: share `{}` must be a SharedBuffer", ctx, name);
+      return culebra::format("{}: share `{}` must be a SharedBuffer", ctx, name);
     out.emplace_back(
         name, reinterpret_cast<JitObject*>(bv.data)->slots[si].value.data);
   }
@@ -1514,8 +1514,8 @@ class _JitKwargResolver {
       // Canonical typed-param message, matching the interp binder
       // (`parameter '<name>' expects <Type>`). `ctx_` is kept for the
       // ad-hoc Proc messages that still build their own strings.
-      fail(std::format("type error: parameter '{}' expects {}", name,
-                       want_name));
+      fail(culebra::format("type error: parameter '{}' expects {}", name,
+                           want_name));
     }
     return v;
   }
@@ -1530,7 +1530,7 @@ class _JitKwargResolver {
     merged_.erase(it);
     if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
       _culebra_value_release_impl(v.tag, v.data);
-      fail(std::format("type error: parameter '{}' expects String", name));
+      fail(culebra::format("type error: parameter '{}' expects String", name));
     }
     std::string s(_culebra_str_view(v.tag, v.data));
     _culebra_value_release_impl(v.tag, v.data);
@@ -1548,7 +1548,7 @@ class _JitKwargResolver {
     if (v.tag == TAG_NIL) return std::nullopt;
     if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
       _culebra_value_release_impl(v.tag, v.data);
-      fail(std::format("type error: parameter '{}' expects String?", name));
+      fail(culebra::format("type error: parameter '{}' expects String?", name));
     }
     std::string s(_culebra_str_view(v.tag, v.data));
     _culebra_value_release_impl(v.tag, v.data);
@@ -1609,7 +1609,7 @@ class _JitKwargResolver {
   [[noreturn]] void fail(const std::string& msg,
                           std::string_view kind = "TypeError") {
     release_merged();
-    throw culebra::CulebraError(std::string(kind), std::format("{}", msg),
+    throw culebra::CulebraError(std::string(kind), culebra::format("{}", msg),
         line_, col_);
   }
 
@@ -1621,8 +1621,8 @@ class _JitKwargResolver {
       auto sv = splat_objs[i];
       if (sv.tag != TAG_OBJECT) {
         throw culebra::CulebraError("TypeError",
-            std::format("**: splat operand must be Object, got {}",
-                        _culebra_tag_name(sv.tag)),
+            culebra::format("**: splat operand must be Object, got {}",
+                            _culebra_tag_name(sv.tag)),
             line_, col_);
       }
       auto* obj = reinterpret_cast<JitObject*>(sv.data);
@@ -1724,8 +1724,8 @@ inline JitObject* _culebra_proc_outcome_to_object(
         reinterpret_cast<int64_t>(_culebra_heap_str(std::string(""))), line, col);
     culebra_runtime_object_set(o, "ok", false, TAG_BOOL, 0, line, col);
     culebra_runtime_object_set(o, "signal", false, TAG_NIL, 0, line, col);
-    std::string msg = std::format("{} failed: {}", oc.err_what,
-                                  std::system_category().message(oc.err_no));
+    std::string msg = culebra::format("{} failed: {}", oc.err_what,
+                                      std::system_category().message(oc.err_no));
     culebra_runtime_object_set(o, "error", false, TAG_STRING,
         reinterpret_cast<int64_t>(_culebra_heap_str(msg)), line, col);
     culebra_runtime_object_set(o, "timed_out", false, TAG_BOOL, 0, line, col);
@@ -1740,7 +1740,7 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
     int64_t line, int64_t col) {
   if (commands_tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
-        std::format("{}: commands must be Array", ctx), line, col);
+        culebra::format("{}: commands must be Array", ctx), line, col);
   }
   auto* outer = reinterpret_cast<JitArray*>(commands_data);
   std::vector<std::vector<std::string>> commands;
@@ -1749,13 +1749,13 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
     const JitValue& cv = outer->items[i];
     if (cv.tag != TAG_ARRAY) {
       throw culebra::CulebraError("TypeError",
-          std::format("{}: each command must be an Array of String", ctx),
+          culebra::format("{}: each command must be an Array of String", ctx),
           line, col);
     }
     auto* inner = reinterpret_cast<JitArray*>(cv.data);
     if (inner->size == 0) {
       throw culebra::CulebraError("ValueError",
-          std::format("{}: empty command", ctx), line, col);
+          culebra::format("{}: empty command", ctx), line, col);
     }
     std::vector<std::string> argv;
     argv.reserve(inner->size);
@@ -1763,7 +1763,7 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
       const JitValue& e = inner->items[j];
       if (e.tag != TAG_STRING && e.tag != TAG_STRINGVIEW) {
         throw culebra::CulebraError("TypeError",
-            std::format("{}: command elements must be String", ctx),
+            culebra::format("{}: command elements must be String", ctx),
             line, col);
       }
       argv.emplace_back(_culebra_str_view(e.tag, e.data));
@@ -1808,14 +1808,14 @@ inline JitValue _culebra_proc_run_impl(
                                        timeout > 0 ? timeout : 0, inherit_fds);
   if (!oc.spawned) {
     throw culebra::CulebraError("ProcessError",
-        std::format("Proc.run: {} failed: {}.", oc.err_what,
-                    std::system_category().message(oc.err_no)),
+        culebra::format("Proc.run: {} failed: {}.", oc.err_what,
+                        std::system_category().message(oc.err_no)),
         line, col);
   }
   if (check && !oc.result.ok) {
     throw culebra::CulebraError("ProcessError",
-        std::format("Proc.run: command {}",
-                    culebra::proc::failure_detail(oc.result)), line, col);
+        culebra::format("Proc.run: command {}",
+                        culebra::proc::failure_detail(oc.result)), line, col);
   }
 
   return {TAG_OBJECT,
@@ -1891,8 +1891,8 @@ inline JitValue _culebra_proc_all_impl(
       inherit_fds);
   if (fail_fast && failed != SIZE_MAX) {
     throw culebra::CulebraError("ProcessError",
-        std::format("Proc.all: command {} {}", failed,
-                    culebra::proc::outcome_detail(outcomes[failed])),
+        culebra::format("Proc.all: command {} {}", failed,
+                        culebra::proc::outcome_detail(outcomes[failed])),
         line, col);
   }
   auto* arr = culebra_runtime_array_new();
@@ -2052,7 +2052,7 @@ inline void _http_setup_into(JitValue into, culebra::http::HttpRequest& req,
     if (!st.ofs) {
       throw culebra::CulebraError(
           "IOError",
-          std::format("{}: cannot open '{}' for writing", ctx, path), 0, 0);
+          culebra::format("{}: cannot open '{}' for writing", ctx, path), 0, 0);
     }
     req.body_sink = [&st](const char* d, size_t n) {
       st.ofs.write(d, static_cast<std::streamsize>(n));
@@ -2075,7 +2075,7 @@ inline void _http_setup_into(JitValue into, culebra::http::HttpRequest& req,
   } else {
     throw culebra::CulebraError(
         "TypeError",
-        std::format("{}: into must be a String path or a Function", ctx), 0, 0);
+        culebra::format("{}: into must be a String path or a Function", ctx), 0, 0);
   }
 }
 
@@ -2087,7 +2087,7 @@ inline JitValue _http_run_into(culebra::http::HttpRequest& req,
   auto r = culebra::http::http_request(req);
   if (st.eptr) std::rethrow_exception(st.eptr);
   if (!r.ok) {
-    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, r.error),
+    throw culebra::CulebraError("HttpError", culebra::format("{}: {}", ctx, r.error),
                                 0, 0);
   }
   return {TAG_OBJECT,
@@ -2101,7 +2101,7 @@ inline JitValue _http_run_client_into(int64_t id, culebra::http::HttpRequest& re
   auto r = culebra::http::http_client_request(id, req);
   if (st.eptr) std::rethrow_exception(st.eptr);
   if (!r.ok) {
-    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, r.error),
+    throw culebra::CulebraError("HttpError", culebra::format("{}: {}", ctx, r.error),
                                 0, 0);
   }
   return {TAG_OBJECT,
@@ -2119,7 +2119,7 @@ inline void _http_setup_multipart(JitValue filesv,
                                   JitHttpInto& st, const char* ctx) {
   if (filesv.tag != TAG_OBJECT) {
     throw culebra::CulebraError("TypeError",
-        std::format("{}: files must be an Object", ctx), 0, 0);
+        culebra::format("{}: files must be an Object", ctx), 0, 0);
   }
   auto str_at = [&](JitObject* o, const char* key, bool& present) -> std::string {
     size_t i = o->find_slot(key);
@@ -2128,7 +2128,7 @@ inline void _http_setup_multipart(JitValue filesv,
     JitValue v = o->slots[i].value;
     if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
       throw culebra::CulebraError("TypeError",
-          std::format("{}: files {} must be a String", ctx, key), 0, 0);
+          culebra::format("{}: files {} must be a String", ctx, key), 0, 0);
     }
     return std::string(_culebra_str_view(v.tag, v.data));
   };
@@ -2142,8 +2142,8 @@ inline void _http_setup_multipart(JitValue filesv,
     }
     if (v.tag != TAG_OBJECT) {
       throw culebra::CulebraError("TypeError",
-          std::format("{}: files['{}'] must be a String, Object, or Array",
-                      ctx, name), 0, 0);
+          culebra::format("{}: files['{}'] must be a String, Object, or Array",
+                          ctx, name), 0, 0);
     }
     auto* o = reinterpret_cast<JitObject*>(v.data);
     bool dummy;
@@ -2160,7 +2160,7 @@ inline void _http_setup_multipart(JitValue filesv,
     bool has_stream = stream_slot != static_cast<size_t>(-1);
     if (has_content + has_path + has_stream != 1) {
       throw culebra::CulebraError("TypeError",
-          std::format(
+          culebra::format(
               "{}: files['{}'] needs exactly one of content, path, stream",
               ctx, name), 0, 0);
     }
@@ -2168,7 +2168,7 @@ inline void _http_setup_multipart(JitValue filesv,
       JitValue cv = o->slots[content_slot].value;
       if (cv.tag != TAG_STRING && cv.tag != TAG_STRINGVIEW) {
         throw culebra::CulebraError("TypeError",
-            std::format("{}: files['{}'].content must be a String", ctx, name),
+            culebra::format("{}: files['{}'].content must be a String", ctx, name),
             0, 0);
       }
       part.content = std::string(_culebra_str_view(cv.tag, cv.data));
@@ -2176,14 +2176,14 @@ inline void _http_setup_multipart(JitValue filesv,
       JitValue pv = o->slots[path_slot].value;
       if (pv.tag != TAG_STRING && pv.tag != TAG_STRINGVIEW) {
         throw culebra::CulebraError("TypeError",
-            std::format("{}: files['{}'].path must be a String", ctx, name), 0,
+            culebra::format("{}: files['{}'].path must be a String", ctx, name), 0,
             0);
       }
       std::string path(_culebra_str_view(pv.tag, pv.data));
       part.source = culebra::http::make_file_source(path);
       if (!part.source) {
         throw culebra::CulebraError("IOError",
-            std::format("{}: cannot open '{}' for reading", ctx, path), 0, 0);
+            culebra::format("{}: cannot open '{}' for reading", ctx, path), 0, 0);
       }
       if (part.filename.empty()) {
         part.filename = std::filesystem::path(path).filename().string();
@@ -2192,8 +2192,8 @@ inline void _http_setup_multipart(JitValue filesv,
       JitValue sv = o->slots[stream_slot].value;
       if (sv.tag != TAG_FUNC) {
         throw culebra::CulebraError("TypeError",
-            std::format("{}: files['{}'].stream must be a Function (producer)",
-                        ctx, name), 0, 0);
+            culebra::format("{}: files['{}'].stream must be a Function (producer)",
+                            ctx, name), 0, 0);
       }
       auto* producer = reinterpret_cast<JitClosure*>(sv.data);
       part.source = [producer, &st, ctx](std::string& out) -> bool {
@@ -2204,7 +2204,7 @@ inline void _http_setup_multipart(JitValue filesv,
           if (r.tag != TAG_STRING && r.tag != TAG_STRINGVIEW) {
             _culebra_value_release_impl(r.tag, r.data);
             throw culebra::CulebraError("TypeError",
-                std::format(
+                culebra::format(
                     "{}: file stream producer must return a String or nil", ctx),
                 0, 0);
           }
@@ -2254,7 +2254,7 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
   if (has_json + has_form + has_files + has_body > 1) {
     throw culebra::CulebraError(
         "TypeError",
-        std::format("{}: pass at most one of body, json, form, files", ctx), 0,
+        culebra::format("{}: pass at most one of body, json, form, files", ctx), 0,
         0);
   }
   if (has_json) {
@@ -2265,12 +2265,12 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
   if (has_form) {
     if (formv.tag != TAG_OBJECT) {
       throw culebra::CulebraError("TypeError",
-          std::format("{}: form must be an Object of String", ctx), 0, 0);
+          culebra::format("{}: form must be an Object of String", ctx), 0, 0);
     }
     culebra::http::HeaderList pairs;
     if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(formv.data), pairs)) {
       throw culebra::CulebraError("TypeError",
-          std::format("{}: form values must be String", ctx), 0, 0);
+          culebra::format("{}: form values must be String", ctx), 0, 0);
     }
     req.body = culebra::http::encode_query(pairs);
     req.content_type = "application/x-www-form-urlencoded";
@@ -2304,7 +2304,7 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
           _culebra_value_release_impl(r.tag, r.data);
           throw culebra::CulebraError(
               "TypeError",
-              std::format("{}: body producer must return a String or nil", ctx),
+              culebra::format("{}: body producer must return a String or nil", ctx),
               0, 0);
         }
         out = _culebra_str_view(r.tag, r.data);
@@ -2320,7 +2320,7 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
   } else {
     throw culebra::CulebraError(
         "TypeError",
-        std::format("{}: body must be a String or a Function (producer)", ctx),
+        culebra::format("{}: body must be a String or a Function (producer)", ctx),
         0, 0);
   }
 }
@@ -2484,7 +2484,7 @@ inline bool _jit_file_arg_present(int64_t n, JitValue* args,
   const bool ap = static_cast<int>(i) < _jit_argpos_n;
   throw culebra::CulebraError(
       "TypeError",
-      std::format("type error: parameter '{}' expects {}", pname, expected),
+      culebra::format("type error: parameter '{}' expects {}", pname, expected),
       ap ? _jit_argpos_line[i]
          : (i == 0 ? _jit_call_arg0_line : _jit_call_site_line),
       ap ? _jit_argpos_col[i]
@@ -2845,7 +2845,7 @@ inline JitValue _culebra_stdin_build_handle() {
 
 [[noreturn]] inline void _jit_sqlite_throw(const std::string& msg,
                                                       int64_t line, int64_t col) {
-  throw culebra::CulebraError("SQLiteError", std::format("SQLite: {}", msg),
+  throw culebra::CulebraError("SQLiteError", culebra::format("SQLite: {}", msg),
                               line, col);
 }
 
@@ -2878,7 +2878,8 @@ inline culebra::sqlite::BindVal _jit_sqlite_to_bind(JitValue v, int64_t line,
     default:
       throw culebra::CulebraError(
           "TypeError",
-          std::format("SQLite: cannot bind a {} value", _culebra_tag_name(v.tag)),
+          culebra::format("SQLite: cannot bind a {} value",
+                          _culebra_tag_name(v.tag)),
           line, col);
   }
   return b;
@@ -2931,7 +2932,7 @@ inline void _jit_sqlite_bind_params(int64_t stmt_id, JitValue params,
         if (pi == 0) pi = culebra::sqlite::bind_index(stmt_id, "@" + name);
         if (pi == 0) pi = culebra::sqlite::bind_index(stmt_id, "$" + name);
         if (pi == 0)
-          _jit_sqlite_throw(std::format("no such named parameter ':{}'", name),
+          _jit_sqlite_throw(culebra::format("no such named parameter ':{}'", name),
                             line, col);
         auto b = _jit_sqlite_to_bind(obj->slots[k].value, line, col);
         if (!culebra::sqlite::bind(stmt_id, pi, b, &err))
@@ -2942,8 +2943,8 @@ inline void _jit_sqlite_bind_params(int64_t stmt_id, JitValue params,
   }
   throw culebra::CulebraError(
       "TypeError",
-      std::format("SQLite: params must be an Array or Object, got {}",
-                  _culebra_tag_name(params.tag)),
+      culebra::format("SQLite: params must be an Array or Object, got {}",
+                      _culebra_tag_name(params.tag)),
       line, col);
 }
 
@@ -3204,7 +3205,7 @@ inline JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
 [[noreturn]] inline void _jit_net_throw(const char* ctx,
                                                    const std::string& msg,
                                                    int64_t line, int64_t col) {
-  throw culebra::CulebraError("NetError", std::format("{}: {}", ctx, msg), line,
+  throw culebra::CulebraError("NetError", culebra::format("{}: {}", ctx, msg), line,
                               col);
 }
 
@@ -3336,8 +3337,8 @@ inline void _jit_net_sock_read_exact(JitValue* __ret, JitClosure*, int8_t self_t
                                      static_cast<size_t>(want), out, &err);
   if (st == culebra::net::IoStatus::Eof) {
     _jit_net_throw("Net.read_exact",
-                   std::format("unexpected EOF ({} of {} bytes)", out.size(),
-                               want),
+                   culebra::format("unexpected EOF ({} of {} bytes)", out.size(),
+                                   want),
                    _jit_call_site_line, _jit_call_site_col);
   }
   _jit_net_check(st, "Net.read_exact", err, _jit_call_site_line,
@@ -3531,7 +3532,7 @@ inline void _jit_net_listener_serve(JitValue* __ret, JitClosure*, int8_t self_ta
   } catch (culebra::CulebraError& e) {
     throw culebra::CulebraError(
         "SendError",
-        std::format("Net.serve: handler is not Sendable: {}", e.what()),
+        culebra::format("Net.serve: handler is not Sendable: {}", e.what()),
         _jit_call_site_line, _jit_call_site_col);
   }
   culebra::net::ServeHooks hooks;
@@ -3683,8 +3684,8 @@ inline JitValue _culebra_proc_spawn_build(
                                           inherit_fds);
   if (!sr.spawned) {
     throw culebra::CulebraError("ProcessError",
-        std::format("Proc.spawn: {} failed: {}.", sr.err_what,
-                    std::system_category().message(sr.err_no)),
+        culebra::format("Proc.spawn: {} failed: {}.", sr.err_what,
+                        std::system_category().message(sr.err_no)),
         line, col);
   }
   return _culebra_proc_build_handle(sr.pid, sr.out_fd, sr.err_fd);
@@ -3839,7 +3840,7 @@ inline std::string_view require_sv(JitValue v, const char* param,
   if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
     culebra::throw_runtime_error_at(
         "TypeError",
-        std::format("type error: parameter '{}' expects {}", param, type_name),
+        culebra::format("type error: parameter '{}' expects {}", param, type_name),
         0, 0);
   }
   return _culebra_str_view(v.tag, v.data);
@@ -3853,7 +3854,7 @@ inline int64_t require_long(JitValue v, const char* param) {
   if (v.tag != TAG_LONG) {
     culebra::throw_runtime_error_at(
         "TypeError",
-        std::format("type error: parameter '{}' expects Long", param), 0, 0);
+        culebra::format("type error: parameter '{}' expects Long", param), 0, 0);
   }
   return v.data;
 }
@@ -3861,7 +3862,7 @@ inline bool require_bool(JitValue v, const char* param) {
   if (v.tag != TAG_BOOL) {
     culebra::throw_runtime_error_at(
         "TypeError",
-        std::format("type error: parameter '{}' expects Bool", param), 0, 0);
+        culebra::format("type error: parameter '{}' expects Bool", param), 0, 0);
   }
   return v.data != 0;
 }
@@ -3869,7 +3870,7 @@ inline JitClosure* require_func(JitValue v, const char* param) {
   if (v.tag != TAG_FUNC) {
     culebra::throw_runtime_error_at(
         "TypeError",
-        std::format("type error: parameter '{}' expects Function", param), 0, 0);
+        culebra::format("type error: parameter '{}' expects Function", param), 0, 0);
   }
   return reinterpret_cast<JitClosure*>(v.data);
 }
@@ -4655,16 +4656,16 @@ inline int64_t _fs_chown_id(JitValue v, const char* param, bool is_user) {
     if (id < 0) {
       culebra::throw_runtime_error_at(
           "IOError",
-          std::format("FS.chown: unknown {} '{}'",
-                      is_user ? "user" : "group", name),
+          culebra::format("FS.chown: unknown {} '{}'",
+                          is_user ? "user" : "group", name),
           0, 0);
     }
     return id;
   }
   culebra::throw_runtime_error_at(
       "TypeError",
-      std::format("type error: parameter '{}' expects String, Long, or Nil",
-                  param),
+      culebra::format("type error: parameter '{}' expects String, Long, or Nil",
+                      param),
       0, 0);
   return -1;  // unreachable
 }
@@ -4792,7 +4793,7 @@ inline JitValue _ns_sys_exit(JitValue* a, int64_t) {
   int64_t code = _ns_adapt::take_long(a[0]);
   if (doctest_exit_guard()) {
     throw culebra::CulebraError("ExitError",
-                                std::format("Sys.exit({}) called", code));
+                                culebra::format("Sys.exit({}) called", code));
   }
   culebra_runtime_sys_exit(code);
   return _ns_adapt::v_nil();
@@ -5050,11 +5051,11 @@ inline void common(JitValue* a, int64_t n, int base,
     if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(h.data),
                               req.headers)) {
       throw culebra::CulebraError("TypeError",
-          std::format("{}: header values must be String", ctx), 0, 0);
+          culebra::format("{}: header values must be String", ctx), 0, 0);
     }
   } else if (h.tag != TAG_NIL) {
     throw culebra::CulebraError("TypeError",
-        std::format("{}: headers must be an Object of String", ctx), 0, 0);
+        culebra::format("{}: headers must be an Object of String", ctx), 0, 0);
   }
   JitValue to = _proc_adapt::at(a, n, base + 1);
   // interp reads timeout via the strict Value::to_long(): a present non-Long
@@ -5087,11 +5088,11 @@ inline void common(JitValue* a, int64_t n, int base,
     if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(p.data),
                               req.params)) {
       throw culebra::CulebraError("TypeError",
-          std::format("{}: param values must be String", ctx), 0, 0);
+          culebra::format("{}: param values must be String", ctx), 0, 0);
     }
   } else if (p.tag != TAG_NIL) {
     throw culebra::CulebraError("TypeError",
-        std::format("{}: params must be an Object of String", ctx), 0, 0);
+        culebra::format("{}: params must be an Object of String", ctx), 0, 0);
   }
 }
 }  // namespace _http_adapt
@@ -5195,7 +5196,7 @@ inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
   auto r = culebra::http::http_request(req);
   if (eptr) std::rethrow_exception(eptr);
   if (!r.ok) {
-    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, r.error),
+    throw culebra::CulebraError("HttpError", culebra::format("{}: {}", ctx, r.error),
                                 0, 0);
   }
   return {TAG_OBJECT,
@@ -5221,11 +5222,11 @@ inline void _jit_http_client_strobj(JitValue v, culebra::http::HeaderList& out,
   if (v.tag == TAG_NIL) return;
   if (v.tag != TAG_OBJECT) {
     throw culebra::CulebraError("TypeError",
-        std::format("{}: {} must be an Object of String", ctx, container), 0, 0);
+        culebra::format("{}: {} must be an Object of String", ctx, container), 0, 0);
   }
   if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(v.data), out)) {
     throw culebra::CulebraError("TypeError",
-        std::format("{}: {} values must be String", ctx, valueword), 0, 0);
+        culebra::format("{}: {} values must be String", ctx, valueword), 0, 0);
   }
 }
 
@@ -5387,11 +5388,11 @@ inline JitValue _ns_http_client(JitValue* a, int64_t n) {
   if (h.tag == TAG_OBJECT) {
     if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(h.data), headers)) {
       throw culebra::CulebraError("TypeError",
-          std::format("{}: header values must be String", ctx), 0, 0);
+          culebra::format("{}: header values must be String", ctx), 0, 0);
     }
   } else if (h.tag != TAG_NIL) {
     throw culebra::CulebraError("TypeError",
-        std::format("{}: headers must be an Object of String", ctx), 0, 0);
+        culebra::format("{}: headers must be an Object of String", ctx), 0, 0);
   }
   JitValue to = _proc_adapt::at(a, n, 2);
   if (to.tag != TAG_LONG && to.tag != TAG_NIL) {
@@ -5415,7 +5416,7 @@ inline JitValue _ns_http_client(JitValue* a, int64_t n) {
                                                timeout, follow, err);
   if (id < 0) {
     throw culebra::CulebraError("HttpError",
-        std::format("{}: {}", ctx, err), 0, 0);
+        culebra::format("{}: {}", ctx, err), 0, 0);
   }
   return _culebra_http_build_client_handle(id);
 }
@@ -5822,7 +5823,7 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
     }
     if (!err.empty())
       throw culebra::CulebraError("HttpError",
-                                  std::format("server.static: {}", err), 0, 0);
+                                  culebra::format("server.static: {}", err), 0, 0);
     culebra_runtime_value_retain(self.tag, self.data);  // chainable return (+1)
     return self;
   });
@@ -5837,7 +5838,7 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
   // Reject an unservable handle before installing any route trampoline, so a
   // rejected serve() leaves the handle exactly as it was.
   if (!culebra::http::http_server_serve_ready(id, err))
-    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, err), 0,
+    throw culebra::CulebraError("HttpError", culebra::format("{}: {}", ctx, err), 0,
                                 0);
   auto& recs = g_jit_srv_routes[id];
   {
@@ -5849,8 +5850,8 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
       } catch (culebra::CulebraError& e) {
         throw culebra::CulebraError(
             "SendError",
-            std::format("{}: handler for {} {} is not Sendable: {}", ctx,
-                        rec.method, rec.pattern, e.what()),
+            culebra::format("{}: handler for {} {} is not Sendable: {}", ctx,
+                            rec.method, rec.pattern, e.what()),
             0, 0);
       }
     }
@@ -5907,7 +5908,7 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
       }
       if (!rerr.empty())
         throw culebra::CulebraError("HttpError",
-                                    std::format("{}: {}", ctx, rerr), 0, 0);
+                                    culebra::format("{}: {}", ctx, rerr), 0, 0);
     }
     auto setup = [snodes]() {
       g_jit_srv_w_handlers.clear();
@@ -5930,7 +5931,7 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
                     : culebra::http::http_server_serve(
                           id, static_cast<int>(workers), setup, teardown, err);
     if (!ok)
-      throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, err),
+      throw culebra::CulebraError("HttpError", culebra::format("{}: {}", ctx, err),
                                   0, 0);
     return {TAG_NIL, 0};
   }
@@ -5954,7 +5955,7 @@ inline int64_t _jit_http_server_bind_args(int64_t id, int64_t n, JitValue* args,
   int bound = culebra::http::http_server_bind(
       id, host, static_cast<int>(args[0].data), err);
   if (bound < 0)
-    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, err), 0,
+    throw culebra::CulebraError("HttpError", culebra::format("{}: {}", ctx, err), 0,
                                 0);
   return bound;
 }
@@ -6176,11 +6177,11 @@ inline JitValue _ns_shared_new(JitValue* a, int64_t n) {
     root = jit_serialize(a[0], ctx);
   } catch (const culebra::CulebraError& e) {
     throw culebra::CulebraError(e.kind,
-        std::format("Shared.new: {}", e.what()), e.line, e.col);
+        culebra::format("Shared.new: {}", e.what()), e.line, e.col);
   }
   if (auto* why = culebra::_shared_val_reject_reason(root)) {
     throw culebra::CulebraError("SendError",
-        std::format("Shared.new: {}", why));
+        culebra::format("Shared.new: {}", why));
   }
   int64_t id = culebra::freeze_shared_val(std::move(root));
   return _jit_make_shared_val_view(id, 0);
@@ -6216,7 +6217,7 @@ inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
   const auto* layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
-        std::format("SharedBuffer.new: no @packable layout for `{}`", cname));
+        culebra::format("SharedBuffer.new: no @packable layout for `{}`", cname));
   }
   int64_t id = culebra::make_shared_buffer(*layout, std::string(cname),
                                         static_cast<size_t>(count));
@@ -6258,7 +6259,7 @@ inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
   const auto* layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
-        std::format("SharedBuffer.file: no @packable layout for `{}`", cname));
+        culebra::format("SharedBuffer.file: no @packable layout for `{}`", cname));
   }
   int64_t id = culebra::make_shared_buffer_file(*layout, std::string(cname),
                                              static_cast<size_t>(count), path);
@@ -6295,7 +6296,7 @@ inline JitValue _ns_sharedbuffer_shared(JitValue* a, int64_t n) {
   const auto* layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
-        std::format("SharedBuffer.shared: no @packable layout for `{}`", cname));
+        culebra::format("SharedBuffer.shared: no @packable layout for `{}`", cname));
   }
   int64_t id = culebra::make_shared_buffer_shared(*layout, std::string(cname),
                                                static_cast<size_t>(count));
@@ -6329,7 +6330,8 @@ inline JitValue _ns_sharedbuffer_receive(JitValue* a, int64_t n) {
   const auto* layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
-        std::format("SharedBuffer.receive: no @packable layout for `{}`", cname));
+        culebra::format("SharedBuffer.receive: no @packable layout for `{}`",
+                        cname));
   }
   int64_t id = culebra::make_shared_buffer_from_share_env(*layout,
                                                        std::string(cname), name);
@@ -6346,8 +6348,8 @@ inline JitValue _ns_parallel_dispatch(JitValue* a, int64_t n,
                                       culebra::PMode mode) {
   if (n < 2) {
     throw culebra::CulebraError("TypeError",
-        std::format("Parallel.{}: expected (items, fn)",
-                    culebra::parallel_mode_name(mode)));
+        culebra::format("Parallel.{}: expected (items, fn)",
+                        culebra::parallel_mode_name(mode)));
   }
   int64_t limit = (n >= 3 && a[2].tag == TAG_LONG) ? a[2].data : 0;
   JitValue on_progress = (n >= 4) ? a[3] : JitValue{TAG_NIL, 0};
@@ -6615,16 +6617,16 @@ inline JitValue _ns_csv_parse(JitValue* a, int64_t n) {
     const auto& row = rows[r];
     if (row.size() != head.size()) {
       throw culebra::CulebraError("ValueError",
-          std::format("CSV.parse: row {} has {} fields, but the header has {}",
-                      r + 1, row.size(), head.size()), 0, 0);
+          culebra::format("CSV.parse: row {} has {} fields, but the header has {}",
+                          r + 1, row.size(), head.size()), 0, 0);
     }
     auto* obj = culebra_runtime_object_new();
     for (size_t c = 0; c < head.size(); c++) {
       ccsv::CoercedCell cc;
       if (!ccsv::coerce_cell(row[c], cts[c], cc)) {
         throw culebra::CulebraError("ValueError",
-            std::format("CSV.parse: row {}, column '{}': expected {}, got '{}'",
-                        r + 1, head[c], ccsv::col_type_name(cts[c]), row[c]),
+            culebra::format("CSV.parse: row {}, column '{}': expected {}, got '{}'",
+                            r + 1, head[c], ccsv::col_type_name(cts[c]), row[c]),
             0, 0);
       }
       JitValue v = _csv_coerced_to_jit(cc);
@@ -6759,7 +6761,7 @@ inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
       return t;
     }
   }
-  throw culebra::CulebraError("TypeError", std::format(
+  throw culebra::CulebraError("TypeError", culebra::format(
       "TOML.stringify: cannot serialize {}", _culebra_tag_name(tag)), line, col);
 }
 
@@ -6769,7 +6771,7 @@ inline JitValue _ns_toml_parse(JitValue* a, int64_t /*n*/) {
     return _toml_node_to_jit(root);
   } catch (const culebra::toml::ParseError& e) {
     throw culebra::CulebraError("ValueError",
-        std::format("TOML.parse: {}", e.message), e.line, e.col);
+        culebra::format("TOML.parse: {}", e.message), e.line, e.col);
   }
 }
 
@@ -6807,7 +6809,7 @@ inline JitValue _ns_env_load(JitValue* a, int64_t n) {
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs)
     throw culebra::CulebraError(
-        "IOError", std::format("Env.load: cannot open '{}'", path), 0, 0);
+        "IOError", culebra::format("Env.load: cannot open '{}'", path), 0, 0);
   std::string content((std::istreambuf_iterator<char>(ifs)),
                       std::istreambuf_iterator<char>());
   auto pairs = culebra::env::parse(content);
@@ -7334,7 +7336,7 @@ inline void _jit_embed_dir_read(JitValue* __ret, JitClosure*, int8_t self_tag, i
   std::string bytes;
   if (!culebra::embed_dir_read(name, path, bytes))
     throw culebra::CulebraError(
-        "IOError", std::format("Embed.dir.read: '{}' has no '{}'", name, path),
+        "IOError", culebra::format("Embed.dir.read: '{}' has no '{}'", name, path),
         _jit_call_site_line, _jit_call_site_col);
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(bytes))}; return; }
 }
@@ -8091,7 +8093,7 @@ inline void _jit_ns_method_trampoline(
           _culebra_value_release_impl(args[k].tag, args[k].data);
         culebra::throw_runtime_error_at(
             "TypeError",
-            std::format("type error: parameter '{}' expects {}", pname, ty),
+            culebra::format("type error: parameter '{}' expects {}", pname, ty),
             _jit_argpos_line[i], _jit_argpos_col[i]);
       }
     }
@@ -8172,7 +8174,7 @@ inline bool _jit_ns_kwarg_resolve_core(
   for (int64_t i = 0; i < n_splat; i++) {
     if (splat_objs[i].tag != TAG_OBJECT) {
       release_all();
-      throw culebra::CulebraError("TypeError", std::format(
+      throw culebra::CulebraError("TypeError", culebra::format(
           "**: splat operand must be Object, got {}",
           _culebra_tag_name(splat_objs[i].tag)), line, col);
     }
@@ -8274,8 +8276,8 @@ inline bool _jit_ns_kwarg_resolve_core(
       }
       throw culebra::CulebraError(
           "TypeError",
-          std::format("type error: parameter '{}' expects {}",
-                      pm->params[i].name, pm->params[i].type),
+          culebra::format("type error: parameter '{}' expects {}",
+                          pm->params[i].name, pm->params[i].type),
           l, cl);
     }
     slab[i] = positional[i];
@@ -8304,7 +8306,7 @@ inline bool _jit_ns_kwarg_resolve_core(
           if (filled[k]) _culebra_value_release_impl(slab[k].tag, slab[k].data);
         for (auto& [_, v] : merged)
           _culebra_value_release_impl(v.tag, v.data);
-        throw culebra::CulebraError("TypeError", std::format(
+        throw culebra::CulebraError("TypeError", culebra::format(
             "type error: parameter '{}' expects {}", pm->params[i].name,
             pm->params[i].type), line, col);
       }
@@ -8803,9 +8805,9 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
   if (ref && !ref->group) {
     culebra::throw_runtime_error_at(
         "InternalError",
-        std::format("namespace '{}' is not linked into this binary "
-                    "(culebra build's namespace scan did not see it named)",
-                    name),
+        culebra::format("namespace '{}' is not linked into this binary "
+                        "(culebra build's namespace scan did not see it named)",
+                        name),
         0, 0);
   }
   auto* obj = _jit_build_namespace_object(
@@ -8869,7 +8871,7 @@ culebra_runtime_namespace_get(const char* name,
   if (!obj) {
     culebra::throw_runtime_error_at(
         "NameError",
-        std::format("undefined variable '{}'", name ? name : ""),
+        culebra::format("undefined variable '{}'", name ? name : ""),
         0, 0);
   }
   culebra_runtime_value_retain(TAG_OBJECT,
@@ -8904,10 +8906,10 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
   if (n_own != 0) {
     throw culebra::CulebraError(
         "InternalError",
-        std::format("lazy-ns builder '{}' must be captureless (has {} "
-                    "capture(s)) — a call-form method name in its body "
-                    "likely collides with a user global fn",
-                    name ? name : "?", n_own),
+        culebra::format("lazy-ns builder '{}' must be captureless (has {} "
+                        "capture(s)) — a call-form method name in its body "
+                        "likely collides with a user global fn",
+                        name ? name : "?", n_own),
         0, 0);
   }
   _lazy_ns_register_builder(name ? name : "", c->fn_ptr,
@@ -8972,9 +8974,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_bare_builtin_reject(
   if (would_dispatch) {
     throw culebra::CulebraError(
         "TypeError",
-        std::format("built-in method '{}' cannot be used as a value "
-                    "(call it, or wrap it in a lambda)",
-                    name),
+        culebra::format("built-in method '{}' cannot be used as a value "
+                        "(call it, or wrap it in a lambda)",
+                        name),
         line, col);
   }
 }

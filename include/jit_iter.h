@@ -459,7 +459,7 @@ inline void _culebra_callback_type_precheck(int8_t fn_tag, int64_t fn_data,
   }
   _culebra_value_release_impl(fn_tag, fn_data);  // the callee-consumes +1
   throw culebra::CulebraError("TypeError",
-      std::format("type error: parameter '{}' expects Function", param_name),
+      culebra::format("type error: parameter '{}' expects Function", param_name),
       _jit_callback_arg_line, _jit_callback_arg_col);
 }
 
@@ -2522,7 +2522,7 @@ inline culebra::RangeBounds _grid_bounds_from_range(int8_t t, int64_t d,
   if (t != TAG_OBJECT ||
       !_jit_is_range_shaped(reinterpret_cast<JitObject*>(d))) {
     throw culebra::CulebraError(
-        "TypeError", std::format("type error: {} expects Range", ctx), line,
+        "TypeError", culebra::format("type error: {} expects Range", ctx), line,
         col);
   }
   auto b = _range_bounds_from_object(reinterpret_cast<JitObject*>(d),
@@ -2698,7 +2698,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_callback_type(
   if (fn_tag == TAG_FUNC || _culebra_call_operator(fn_tag, fn_data)) return;
   throw culebra::CulebraError(
       "TypeError",
-      std::format("type error: parameter '{}' expects Function", param_name),
+      culebra::format("type error: parameter '{}' expects Function", param_name),
       _jit_callback_arg_line, _jit_callback_arg_col);
 }
 
@@ -2730,7 +2730,7 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
     if (const JitValue* e = _culebra_call_operator(fn_tag, fn_data)) {
       auto* call_cls = reinterpret_cast<JitClosure*>(e->data);
       if (!accepts(call_cls)) {
-        throw culebra::CulebraError("TypeError", std::format(
+        throw culebra::CulebraError("TypeError", culebra::format(
             "type error: {} expects a {}-parameter function",
             method_name, expected_arity), line, col);
       }
@@ -2756,12 +2756,12 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
     // both the param name (f/p, per method) and the position (the JIT stores
     // the argument site in _jit_callback_arg_* just before the HOF call).
     throw culebra::CulebraError("TypeError",
-        std::format("type error: parameter '{}' expects Function", param_name),
+        culebra::format("type error: parameter '{}' expects Function", param_name),
         _jit_callback_arg_line, _jit_callback_arg_col);
   }
   auto* fn = reinterpret_cast<JitClosure*>(fn_data);
   if (!accepts(fn)) {
-    throw culebra::CulebraError("TypeError", std::format(
+    throw culebra::CulebraError("TypeError", culebra::format(
         "type error: {} expects a {}-parameter function",
         method_name, expected_arity), line, col);
   }

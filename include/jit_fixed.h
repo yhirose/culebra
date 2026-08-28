@@ -266,7 +266,7 @@ inline void _jit_fa_push(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   int64_t cap = _jit_fa_self_long(self, "__fa_cap__");
   if (len >= cap)
     throw culebra::CulebraError(
-        "IndexError", std::format("FixedArray is full (capacity {})", cap));
+        "IndexError", culebra::format("FixedArray is full (capacity {})", cap));
   if (n >= 1)
     _jit_packable_write_field(_jit_fa_elem_ptr(v, len), _jit_fa_elem_field(v),
                               args[0].tag, args[0].data);
@@ -428,7 +428,7 @@ inline void _jit_fs_add(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
   if (slot >= 0) { *__ret = {TAG_NIL, 0}; return; }
   if (insert < 0)
     throw culebra::CulebraError(
-        "CapacityError", std::format("FixedSet is full (capacity {})", cap));
+        "CapacityError", culebra::format("FixedSet is full (capacity {})", cap));
   std::memcpy(_jit_fs_vals(v) + insert * esize, key, esize);
   _jit_fs_states(v)[insert] = culebra::kFixedFull;
   _jit_fs_set_count(v, _jit_fs_count(v) + 1);
@@ -605,7 +605,7 @@ inline void _jit_fm_set(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
   if (slot < 0) {
     if (insert < 0)
       throw culebra::CulebraError(
-          "CapacityError", std::format("FixedMap is full (capacity {})", cap));
+          "CapacityError", culebra::format("FixedMap is full (capacity {})", cap));
     std::memcpy(_jit_fm_keys(v) + insert * ksize, key, ksize);
     _jit_fm_states(v)[insert] = culebra::kFixedFull;
     _jit_fm_set_count(v, _jit_fm_count(v) + 1);
@@ -804,8 +804,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_extend(
   } else {
     throw culebra::CulebraError(
         "TypeError",
-        std::format("cannot spread {} into an array (Array/Tuple/Set only)",
-                    _culebra_tag_name(tag)),
+        culebra::format("cannot spread {} into an array (Array/Tuple/Set only)",
+                        _culebra_tag_name(tag)),
         line, col);
   }
 }
@@ -819,8 +819,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
   if (tag != TAG_OBJECT) {
     throw culebra::CulebraError(
         "TypeError",
-        std::format("cannot spread {} into an object (Object only)",
-                    _culebra_tag_name(tag)),
+        culebra::format("cannot spread {} into an object (Object only)",
+                        _culebra_tag_name(tag)),
         line, col);
   }
   auto* src = reinterpret_cast<JitObject*>(data);

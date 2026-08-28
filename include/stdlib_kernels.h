@@ -18,7 +18,6 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -153,7 +152,7 @@ inline int64_t _fs_mtime_secs(const std::filesystem::path& p) {
 // and Sys namespaces so a failed syscall reports identically on both backends.
 [[noreturn]] inline void _io_throw(const std::string& what, int64_t line, int64_t col,
                                    const std::error_code& ec = {}) {
-  auto msg = ec ? std::format("{}: {}.", what, ec.message())
+  auto msg = ec ? culebra::format("{}: {}.", what, ec.message())
                 : std::string(what);
   throw CulebraError("IOError", std::move(msg), line, col);
 }
@@ -202,7 +201,7 @@ inline void _fs_do_chown(const std::filesystem::path& p, int64_t uid, int64_t gi
                          int64_t line, int64_t col) {
   if (::chown(p.c_str(), static_cast<uid_t>(uid),
               static_cast<gid_t>(gid)) != 0) {
-    _io_throw(std::format("FS.chown('{}')", p.string()), line, col,
+    _io_throw(culebra::format("FS.chown('{}')", p.string()), line, col,
               std::error_code(errno, std::generic_category()));
   }
 }
@@ -244,9 +243,9 @@ inline std::string _sys_data_dir(std::string_view app, int64_t line,
   if (app.find_first_of("/\\:") != std::string_view::npos) {
     throw CulebraError(
         "ValueError",
-        std::format("Sys.data_dir: app must be a single path segment "
-                    "(got '{}')",
-                    app),
+        culebra::format("Sys.data_dir: app must be a single path segment "
+                        "(got '{}')",
+                        app),
         line, col);
   }
   if (app == "." || app == "..") {
@@ -321,8 +320,8 @@ inline int64_t _file_open(const std::string& path, const std::string& mode,
   else if (mode == "w") { flags |= std::ios::out | std::ios::trunc; writable = true; }
   else if (mode == "a") { flags |= std::ios::out | std::ios::app;   writable = true; }
   else {
-    _file_throw(std::format("File.open: invalid mode '{}' (expected r/w/a)",
-                            mode), line, col, "ValueError");
+    _file_throw(culebra::format("File.open: invalid mode '{}' (expected r/w/a)",
+                                mode), line, col, "ValueError");
   }
   auto& tbl = _file_table();
   int64_t id = tbl.next_id++;
@@ -333,7 +332,7 @@ inline int64_t _file_open(const std::string& path, const std::string& mode,
   slot.writable = writable;
   if (!slot.fs.is_open()) {
     tbl.entries.erase(id);
-    _file_throw(std::format("File.open('{}', '{}')", path, mode), line, col);
+    _file_throw(culebra::format("File.open('{}', '{}')", path, mode), line, col);
   }
   return id;
 }
@@ -343,7 +342,7 @@ inline _FileStream& _file_get(int64_t id, const char* op, int64_t line, int64_t 
   auto& tbl = _file_table();
   auto it = tbl.entries.find(id);
   if (it == tbl.entries.end()) {
-    _file_throw(std::format("File.{}: operation on closed file", op), line, col);
+    _file_throw(culebra::format("File.{}: operation on closed file", op), line, col);
   }
   return it->second;
 }
@@ -384,8 +383,8 @@ inline void _file_seek(int64_t id, int64_t off, std::string_view whence,
   if (whence == "set")      dir = std::ios::beg;
   else if (whence == "cur") dir = std::ios::cur;
   else if (whence == "end") dir = std::ios::end;
-  else _file_throw(std::format("File.seek: invalid whence '{}' "
-                               "(expected set/cur/end)", whence),
+  else _file_throw(culebra::format("File.seek: invalid whence '{}' "
+                                   "(expected set/cur/end)", whence),
                    line, col, "ValueError");
   s.fs.clear();  // clear EOF so seeking past a prior read works
   if (s.readable) s.fs.seekg(off, dir); else s.fs.seekp(off, dir);
@@ -568,20 +567,20 @@ inline std::string format_iso_nanos(int64_t nanos, bool utc) {
     auto offset = os_gmtoff(tm, t);
     int sign = offset < 0 ? -1 : 1;
     int64_t abs_off = std::abs(static_cast<long>(offset));
-    tz_str = std::format("{}{:02d}:{:02d}",
-                         sign < 0 ? '-' : '+',
-                         static_cast<int>(abs_off / 3600),
-                         static_cast<int>((abs_off % 3600) / 60));
+    tz_str = culebra::format("{}{:02d}:{:02d}",
+                             sign < 0 ? '-' : '+',
+                             static_cast<int>(abs_off / 3600),
+                             static_cast<int>((abs_off % 3600) / 60));
   }
   if (sub == 0) {
-    return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}{}",
-                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                       tm.tm_hour, tm.tm_min, tm.tm_sec, tz_str);
+    return culebra::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}{}",
+                           tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                           tm.tm_hour, tm.tm_min, tm.tm_sec, tz_str);
   }
-  return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:09d}{}",
-                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                     tm.tm_hour, tm.tm_min, tm.tm_sec,
-                     static_cast<int>(sub), tz_str);
+  return culebra::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:09d}{}",
+                         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                         tm.tm_hour, tm.tm_min, tm.tm_sec,
+                         static_cast<int>(sub), tz_str);
 }
 
 inline std::string format_strftime_nanos(int64_t nanos,
@@ -598,7 +597,7 @@ inline std::string format_strftime_nanos(int64_t nanos,
 
 [[noreturn]] inline void _net_throw(const char* ctx, const std::string& msg,
                                     int64_t line, int64_t col) {
-  throw CulebraError("NetError", std::format("{}: {}", ctx, msg), line, col);
+  throw CulebraError("NetError", culebra::format("{}: {}", ctx, msg), line, col);
 }
 
 // Map a failed IoStatus to NetError. Eof is never an error here — each reader

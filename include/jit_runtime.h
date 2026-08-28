@@ -583,9 +583,9 @@ culebra_runtime_module_get(const char* path, int8_t* out_tag,
   if (it == t.end()) {
     culebra::throw_runtime_error_at(
         "ImportError",
-        std::format("module '{}' was not loaded — `import` statements "
-                    "must be reachable from the entry point's "
-                    "dependency graph", path ? path : ""),
+        culebra::format("module '{}' was not loaded — `import` statements "
+                        "must be reachable from the entry point's "
+                        "dependency graph", path ? path : ""),
         line, col);
   }
   // Hand the caller a fresh +1 so the importing scope owns its own
@@ -625,7 +625,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
     int64_t got, int64_t declared, int64_t line, int64_t col) {
   // Legacy entry point (kept for ABI continuity in JIT runtimes that
   // were compiled before culebra_runtime_arity_missing existed).
-  throw culebra::CulebraError("ArityError", std::format(
+  throw culebra::CulebraError("ArityError", culebra::format(
       "arguments error: called with {} argument(s), expected at least {}",
       got, declared), line, col);
 }
@@ -1134,7 +1134,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
     int64_t line, int64_t col) {
   if (expected == nullptr || expected[0] == '\0') return;
   if (_culebra_value_matches_type(tag, data, std::string_view(expected))) return;
-  throw culebra::CulebraError("TypeError", std::format(
+  throw culebra::CulebraError("TypeError", culebra::format(
       "type error: {} expects {}", context, expected), line, col);
 }
 
@@ -1158,7 +1158,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check_param(
   if (expected == nullptr || expected[0] == '\0') return;
   if (_culebra_value_matches_type(tag, data, std::string_view(expected))) return;
   auto pos = _jit_unpack_pos(culebra_runtime_param_pos(idx, def_line, def_col));
-  throw culebra::CulebraError("TypeError", std::format(
+  throw culebra::CulebraError("TypeError", culebra::format(
       "type error: {} expects {}", context, expected),
       pos.line, pos.col);
 }
@@ -1690,7 +1690,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg_borrow(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_debugger_break(
     const char* path, int64_t line, int64_t col) {
-  std::println(stderr, "\nBreak in {}:{}:{}", path, line, col);
+  std::cerr << culebra::format("\nBreak in {}:{}:{}\n", path, line, col);
   // Show a few lines of source around the break point, if we can open it
   std::ifstream ifs(path);
   if (ifs) {
@@ -1709,10 +1709,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_debugger_break(
                         static_cast<size_t>(line) + 2);
     for (auto i = start; i < end; i++) {
       auto marker = (i + 1 == static_cast<size_t>(line)) ? ">" : " ";
-      std::println(stderr, "{} {:>4} {}", marker, i + 1, lines[i]);
+      std::cerr << culebra::format("{} {:>4} {}\n", marker, i + 1, lines[i]);
     }
   }
-  std::print(stderr, "\ndebug> ");
+  std::cerr << "\ndebug> ";
   std::string s;
   std::getline(std::cin, s);
   // Any input continues execution (minimal: no commands yet)
@@ -2634,7 +2634,7 @@ inline void _jit_overwrite_slot(JitObjectEntry& entry,
                                            bool check_wk = false) {
   if (!is_init && !entry.mut) {
     _culebra_value_release_impl(tag, data);
-    throw culebra::CulebraError("ImmutableError", std::format(
+    throw culebra::CulebraError("ImmutableError", culebra::format(
         "immutable property '{}'", key), line, col);
   }
   if (check_wk) _culebra_check_well_known_prop(key, tag, data);
@@ -2862,13 +2862,13 @@ inline void _jit_packable_write_field(uint8_t* base,
   uint8_t* p = base + f.offset;
   if (f.layout.is_fixed_string) {
     if (tag != TAG_STRING && tag != TAG_STRINGVIEW) {
-      throw culebra::CulebraError("TypeError", std::format(
+      throw culebra::CulebraError("TypeError", culebra::format(
           "FixedString field `{}` expects a String, got {}", f.name,
           _culebra_tag_name(tag)));
     }
     auto sv = _culebra_str_view(tag, data);
     if (sv.size() > f.layout.capacity) {
-      throw culebra::CulebraError("CapacityError", std::format(
+      throw culebra::CulebraError("CapacityError", culebra::format(
           "FixedString<{}> overflow: `{}` needs {} bytes", f.layout.capacity, f.name,
           sv.size()));
     }
@@ -2879,13 +2879,13 @@ inline void _jit_packable_write_field(uint8_t* base,
   }
   if (f.layout.is_bytes) {
     if (tag != TAG_STRING && tag != TAG_STRINGVIEW) {
-      throw culebra::CulebraError("TypeError", std::format(
+      throw culebra::CulebraError("TypeError", culebra::format(
           "Bytes field `{}` expects a String, got {}", f.name,
           _culebra_tag_name(tag)));
     }
     auto sv = _culebra_str_view(tag, data);
     if (sv.size() != f.layout.capacity) {
-      throw culebra::CulebraError("ValueError", std::format(
+      throw culebra::CulebraError("ValueError", culebra::format(
           "Bytes<{}> field `{}` expects exactly {} bytes, got {}", f.layout.capacity,
           f.name, f.layout.capacity, sv.size()));
     }
@@ -2906,13 +2906,13 @@ inline void _jit_packable_write_field(uint8_t* base,
         (tag == TAG_OBJECT) ? reinterpret_cast<JitObject*>(data) : nullptr;
     auto en = obj ? _jit_enum_name(obj) : std::nullopt;
     if (!en || *en != f.layout.elem_type) {
-      throw culebra::CulebraError("TypeError", std::format(
+      throw culebra::CulebraError("TypeError", culebra::format(
           "field `{}` expects a `{}` enum value, got {}", f.name, f.layout.elem_type,
           _culebra_tag_name(tag)));
     }
     int idx = el ? el->index_of(_jit_derived_class_tag(obj)) : -1;
     if (idx < 0) {
-      throw culebra::CulebraError("TypeError", std::format(
+      throw culebra::CulebraError("TypeError", culebra::format(
           "field `{}`: unknown variant for enum `{}`", f.name, f.layout.elem_type));
     }
     int32_t vtag = static_cast<int32_t>(idx);
@@ -3032,8 +3032,8 @@ inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
   const auto* f = layout.find(key);
   if (!f) {
     throw culebra::CulebraError("AttributeError",
-        std::format("@packable {} has no field `{}`",
-                    _jit_packed_view_class(view, *core), key), line, col);
+        culebra::format("@packable {} has no field `{}`",
+                        _jit_packed_view_class(view, *core), key), line, col);
   }
   int64_t abs_off = off + static_cast<int64_t>(f->offset);
   if (f->layout.is_fixed_array) return _jit_make_fixed_array_view(id, abs_off, *f);
@@ -3062,19 +3062,20 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
   const auto* f = layout.find(key);
   if (!f) {
     throw culebra::CulebraError("AttributeError",
-        std::format("@packable {} has no field `{}`",
-                    _jit_packed_view_class(view, *core), key), line, col);
+        culebra::format("@packable {} has no field `{}`",
+                        _jit_packed_view_class(view, *core), key), line, col);
   }
   if (f->layout.is_fixed_array) {
     throw culebra::CulebraError("TypeError",
-        std::format("cannot assign to FixedArray field `{}`; mutate it via "
-                    ".push(...) / [i] = ...", key),
+        culebra::format("cannot assign to FixedArray field `{}`; mutate it via "
+                        ".push(...) / [i] = ...", key),
         line, col);
   }
   if (f->layout.is_fixed_set || f->layout.is_fixed_map) {
     throw culebra::CulebraError("TypeError",
-        std::format("cannot assign to {} field `{}`; mutate it through its "
-                    "methods", f->layout.is_fixed_set ? "FixedSet" : "FixedMap", key),
+        culebra::format("cannot assign to {} field `{}`; mutate it through its "
+                        "methods",
+                        f->layout.is_fixed_set ? "FixedSet" : "FixedMap", key),
         line, col);
   }
   if (f->layout.is_struct) {
@@ -3095,11 +3096,11 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
       }
     }
     if (!ok) {
-      throw culebra::CulebraError("TypeError", std::format(
+      throw culebra::CulebraError("TypeError", culebra::format(
           "field `{}` expects a `{}` record value", key, f->layout.elem_type), line, col);
     }
     if (src_cls != f->layout.elem_type) {
-      throw culebra::CulebraError("TypeError", std::format(
+      throw culebra::CulebraError("TypeError", culebra::format(
           "field `{}` expects a `{}` record, got `{}`", key, f->layout.elem_type,
           src_cls), line, col);
     }

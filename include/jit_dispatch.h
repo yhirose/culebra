@@ -1337,7 +1337,7 @@ inline MultifnPick _jit_multifn_resolve(
   auto m_it = tbl.find(name);
   auto fail = [&](const char* what) -> std::string {
     if (release) release();
-    return std::format("{} for `{}`", what, _jit_multifn_display(name));
+    return culebra::format("{} for `{}`", what, _jit_multifn_display(name));
   };
   if (m_it == tbl.end()) {
     throw culebra::CulebraError("DispatchError",
@@ -1988,7 +1988,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     auto sv = splat_objs[i];
     if (sv.tag != TAG_OBJECT) {
       release_owned();
-      throw culebra::CulebraError("TypeError", std::format(
+      throw culebra::CulebraError("TypeError", culebra::format(
           "**: splat operand must be Object, got {}",
           _culebra_tag_name(sv.tag)), line, col);
     }

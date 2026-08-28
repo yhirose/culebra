@@ -28,7 +28,6 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
-#include <format>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -545,7 +544,7 @@ inline int64_t fs_watch_open(const std::string& path, bool recursive,
                              const std::vector<std::string>& exts,
                              std::string& err) {
   auto fail = [&](std::string_view reason) {
-    err = std::format("FS.watch('{}'): {}", path, reason);
+    err = culebra::format("FS.watch('{}'): {}", path, reason);
     return int64_t{-1};
   };
 

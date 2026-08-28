@@ -134,7 +134,7 @@ CULEBRA_RT_REGEX_LINKAGE Handle compile(std::string_view pattern) {
   try {
     h = std::make_shared<const Compiled>(p);
   } catch (const reg::RegexError& e) {
-    throw CulebraError("RegexError", std::format("Regex: {}", e.what()), 0, 0);
+    throw CulebraError("RegexError", culebra::format("Regex: {}", e.what()), 0, 0);
   }
   if (cache.size() > 256) cache.clear();  // bound growth
   cache.emplace(std::move(p), h);

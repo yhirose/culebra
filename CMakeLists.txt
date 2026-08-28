@@ -1728,6 +1728,14 @@ endif()
 target_link_libraries(fswatcher_test ${_core_frameworks})
 add_test(NAME fswatcher_test COMMAND fswatcher_test)
 
+# Message formatter (include/rt_format.h) against std::format, which is what it
+# has to render: the messages it builds are compared across the three lanes
+# and against the previous release. Header-only, no interpreter/JIT linkage.
+add_executable(format_test test/format_test.cc)
+target_compile_features(format_test PRIVATE cxx_std_23)
+target_include_directories(format_test PRIVATE include)
+add_test(NAME format_test COMMAND format_test)
+
 # GC unit tests — the standalone collector (include/jit_gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no
 # JIT/LLVM link, independent of the in-tree jit.h wiring.

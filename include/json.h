@@ -41,10 +41,11 @@
 // the leaf formatters json_escape / format_float_shortest), so no rethrow
 // seam exists between the core and either backend.
 
+#include <rt_format.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <format>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -110,7 +111,7 @@ struct Parser {
     // Structured line/col fields (not appended text) so eval()'s catch
     // doesn't replace our JSON-internal location with the caller AST's.
     throw CulebraError("ValueError",
-                       std::format("JSON.parse: {}", msg), line, col);
+                       culebra::format("JSON.parse: {}", msg), line, col);
   }
   // `depth` is the container nesting level of the value being parsed; the
   // container parsers reject level kJsonDepthLimit so the C stack stays
@@ -203,8 +204,8 @@ struct Parser {
     return cp;
   }
   [[noreturn]] void fail_not_scalar(uint32_t cp) {
-    fail(std::format("unicode escape U+{:04X} is not a Unicode scalar value",
-                     cp).c_str());
+    fail(culebra::format("unicode escape U+{:04X} is not a Unicode scalar value",
+                         cp).c_str());
   }
   // One `\uXXXX`, entered on the `u`. JSON has no escape for a character
   // outside the BMP: it spells one as the UTF-16 surrogate pair (`\uD83D`
@@ -424,7 +425,7 @@ std::string stringify(const typename R::Value& v, int indent = 0,
     }
     case Kind::Other: break;
   }
-  throw CulebraError("TypeError", std::format(
+  throw CulebraError("TypeError", culebra::format(
       "JSON.stringify: cannot serialize {}", R::type_name(v)));
 }
 
@@ -435,7 +436,7 @@ template <class R>
 std::string stringify_lines(const typename R::Value& v,
                             bool sort_keys = false) {
   if (R::kind(v) != Kind::Seq) {
-    throw CulebraError("TypeError", std::format(
+    throw CulebraError("TypeError", culebra::format(
         "JSON.stringify(lines: true): expects Array/Tuple/Set, got {}",
         R::type_name(v)));
   }

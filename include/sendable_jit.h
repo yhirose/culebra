@@ -1814,12 +1814,12 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
   const char* who = culebra::parallel_mode_name(mode);
   if (items_v.tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
-        std::format("Parallel.{}: first argument must be an Array", who),
+        culebra::format("Parallel.{}: first argument must be an Array", who),
         line, col);
   }
   if (fn_v.tag != TAG_FUNC) {
     throw culebra::CulebraError("TypeError",
-        std::format("Parallel.{}: second argument must be a function", who),
+        culebra::format("Parallel.{}: second argument must be a function", who),
         line, col);
   }
   auto* arr = reinterpret_cast<JitArray*>(items_v.data);
@@ -1887,16 +1887,16 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
       return v;
     }
     throw culebra::CulebraError("ParallelError",
-        std::format("Parallel.race: all {} elements failed: {}",
-                    static_cast<size_t>(arr->size),
-                    st->err ? st->err->what() : "unknown"),
+        culebra::format("Parallel.race: all {} elements failed: {}",
+                        static_cast<size_t>(arr->size),
+                        st->err ? st->err->what() : "unknown"),
         line, col);
   }
   if (st->failed) {
     for (const auto& rn : st->results) release_inflight_channels(rn);
     throw culebra::CulebraError("ParallelError",
-        std::format("Parallel.{}: element[{}] failed: {}", who, st->err_index,
-                    st->err->what()),
+        culebra::format("Parallel.{}: element[{}] failed: {}", who, st->err_index,
+                        st->err->what()),
         line, col);
   }
   if (!st->collects()) return {TAG_NIL, 0};

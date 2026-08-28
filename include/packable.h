@@ -1,11 +1,12 @@
 #pragma once
 
+#include <rt_format.h>
+
 #include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <cstdint>
 #include <cstring>
-#include <format>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -158,8 +159,8 @@ inline void validate_and_register_packable_enum(
   if (layout.size == 0 || (variants.empty())) {
     throw CulebraError(
         "SyntaxError",
-        std::format("@packable enum `{}`: every variant payload must be a "
-                    "fixed scalar (Float32/.../Bool)", enum_name));
+        culebra::format("@packable enum `{}`: every variant payload must be a "
+                        "fixed scalar (Float32/.../Bool)", enum_name));
   }
   register_packable_enum(enum_name, std::move(layout));
 }
@@ -518,14 +519,14 @@ inline PackableLayout compute_packable_layout(
     if (info.size == 0) {
       throw CulebraError(
           "SyntaxError",
-          std::format("@packable class `{}`: field `{}` has non-packable "
-                      "type `{}` (expected a fixed scalar — Float32/Float64/"
-                      "Int8/Int16/Int32/Int64/Byte/Bool — or "
-                      "FixedArray<scalar, N> / FixedString<N> / "
-                      "FixedSet<scalar, N> / FixedMap<scalar, scalar, N> / "
-                      "Bytes<N> / an optional scalar `T?` / a @packable enum "
-                      "or nested @packable class)",
-                      class_name, name, type));
+          culebra::format("@packable class `{}`: field `{}` has non-packable "
+                          "type `{}` (expected a fixed scalar — Float32/Float64/"
+                          "Int8/Int16/Int32/Int64/Byte/Bool — or "
+                          "FixedArray<scalar, N> / FixedString<N> / "
+                          "FixedSet<scalar, N> / FixedMap<scalar, scalar, N> / "
+                          "Bytes<N> / an optional scalar `T?` / a @packable enum "
+                          "or nested @packable class)",
+                          class_name, name, type));
     }
     off = packable_align_up(off, info.align);
     layout.fields.push_back({name, type, off, info});
@@ -758,15 +759,15 @@ inline std::shared_ptr<SharedBufferCore> require_shareable_buffer(
   if (!core) {
     throw CulebraError(
         "ValueError",
-        std::format("Proc share `{}`: SharedBuffer has been dropped", name));
+        culebra::format("Proc share `{}`: SharedBuffer has been dropped", name));
   }
   if (core->storage != SharedBufferCore::Storage::Shared) {
     throw CulebraError(
         "ValueError",
-        std::format("Proc share `{}`: only a SharedBuffer.shared(...) buffer "
-                    "can be shared with a child process (heap is isolate-local; "
-                    "share a file buffer by re-opening its path)",
-                    name));
+        culebra::format("Proc share `{}`: only a SharedBuffer.shared(...) buffer "
+                        "can be shared with a child process (heap is isolate-local; "
+                        "share a file buffer by re-opening its path)",
+                        name));
   }
   return core;
 }
@@ -818,14 +819,14 @@ inline int64_t make_shared_buffer_file(const PackableLayout& layout,
     fd = ::open(path.c_str(), O_RDWR, 0644);
     if (fd < 0) {
       throw CulebraError("IOError",
-          std::format("SharedBuffer.file: cannot open `{}`", path));
+          culebra::format("SharedBuffer.file: cannot open `{}`", path));
     }
   }
   if (creator) {
     if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
       ::close(fd);
       throw CulebraError("IOError",
-          std::format("SharedBuffer.file: cannot size `{}`", path));
+          culebra::format("SharedBuffer.file: cannot size `{}`", path));
     }
   } else {
     // The creator may still be sizing the file; wait until it's big enough.
@@ -836,7 +837,7 @@ inline int64_t make_shared_buffer_file(const PackableLayout& layout,
       if (i > kInitSpinLimit) {
         ::close(fd);
         throw CulebraError("IOError",
-            std::format("SharedBuffer.file: `{}` not ready", path));
+            culebra::format("SharedBuffer.file: `{}` not ready", path));
       }
       sched_yield();
     }
@@ -845,7 +846,7 @@ inline int64_t make_shared_buffer_file(const PackableLayout& layout,
   if (p == MAP_FAILED) {
     ::close(fd);
     throw CulebraError("IOError",
-        std::format("SharedBuffer.file: cannot map `{}`", path));
+        culebra::format("SharedBuffer.file: cannot map `{}`", path));
   }
   auto core = std::make_shared<SharedBufferCore>();
   core->map_base = static_cast<uint8_t*>(p);
@@ -957,7 +958,7 @@ inline int64_t make_shared_buffer_receive(const PackableLayout& layout,
 // split.
 inline std::string share_env_value(int fd, size_t bytes, size_t stride,
                                    size_t count) {
-  return std::format("{}:{}:{}:{}", fd, bytes, stride, count);
+  return culebra::format("{}:{}:{}:{}", fd, bytes, stride, count);
 }
 
 // Parent side of `Proc.run(..., share: {name: buf})`: validate that `buf` is an
@@ -986,24 +987,24 @@ inline int64_t make_shared_buffer_from_share_env(const PackableLayout& layout,
   if (!v) {
     throw CulebraError(
         "ValueError",
-        std::format("SharedBuffer.receive: no shared buffer named `{}` "
-                    "(pass it from the parent via Proc.run share:)",
-                    name));
+        culebra::format("SharedBuffer.receive: no shared buffer named `{}` "
+                        "(pass it from the parent via Proc.run share:)",
+                        name));
   }
   long fd = -1, bytes = -1, stride = -1, count = -1;
   if (std::sscanf(v, "%ld:%ld:%ld:%ld", &fd, &bytes, &stride, &count) != 4 ||
       fd < 0 || bytes < 0 || stride < 0 || count < 0) {
     throw CulebraError(
         "ValueError",
-        std::format("SharedBuffer.receive: malformed share entry for `{}`",
-                    name));
+        culebra::format("SharedBuffer.receive: malformed share entry for `{}`",
+                        name));
   }
   if (static_cast<size_t>(stride) != layout.stride) {
     throw CulebraError(
         "ValueError",
-        std::format("SharedBuffer.receive: layout mismatch for `{}` (parent "
-                    "record is {} bytes, this @packable `{}` is {})",
-                    name, stride, class_name, layout.stride));
+        culebra::format("SharedBuffer.receive: layout mismatch for `{}` (parent "
+                        "record is {} bytes, this @packable `{}` is {})",
+                        name, stride, class_name, layout.stride));
   }
   return make_shared_buffer_receive(layout, std::move(class_name),
                                     static_cast<size_t>(count),
@@ -1093,16 +1094,16 @@ inline int64_t make_shared_buffer_file(const PackableLayout& layout,
                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (hFile == INVALID_HANDLE_VALUE) {
     throw CulebraError("IOError",
-        std::format("SharedBuffer.file: cannot open `{}`", path));
+        culebra::format("SharedBuffer.file: cannot open `{}`", path));
   }
   // Name the mutex from the file's identity so different paths to the same file
   // still lock together.
   std::string mutex_name;
   BY_HANDLE_FILE_INFORMATION info;
   if (GetFileInformationByHandle(hFile, &info)) {
-    mutex_name = std::format("Local\\culebra_sbf_{:x}_{:x}_{:x}",
-                             info.dwVolumeSerialNumber, info.nFileIndexHigh,
-                             info.nFileIndexLow);
+    mutex_name = culebra::format("Local\\culebra_sbf_{:x}_{:x}_{:x}",
+                                 info.dwVolumeSerialNumber, info.nFileIndexHigh,
+                                 info.nFileIndexLow);
   } else {
     // Fallback: derive the name from the path. Object names may not contain a
     // backslash (it separates namespaces), so scrub the path separators/colon
@@ -1111,7 +1112,7 @@ inline int64_t make_shared_buffer_file(const PackableLayout& layout,
     std::string safe = path;
     for (char& c : safe)
       if (c == '\\' || c == '/' || c == ':') c = '_';
-    mutex_name = std::format("Local\\culebra_sbf_{}", safe);
+    mutex_name = culebra::format("Local\\culebra_sbf_{}", safe);
   }
   auto [hi, lo] = _win_size_hilo(bytes);
   HANDLE hMap = CreateFileMappingA(hFile, nullptr, PAGE_READWRITE, hi, lo,
@@ -1119,7 +1120,7 @@ inline int64_t make_shared_buffer_file(const PackableLayout& layout,
   if (!hMap) {
     CloseHandle(hFile);
     throw CulebraError("IOError",
-        std::format("SharedBuffer.file: cannot map `{}`", path));
+        culebra::format("SharedBuffer.file: cannot map `{}`", path));
   }
   HANDLE hMutex = CreateMutexA(nullptr, FALSE, mutex_name.c_str());
   return _win_adopt_mapping(layout, std::move(class_name), count, bytes, hMap,
@@ -1136,8 +1137,8 @@ inline int64_t make_shared_buffer_shared(const PackableLayout& layout,
   size_t bytes = kLockHeader + layout.stride * count;
   unsigned seq = _win_shm_seq();
   DWORD pid = GetCurrentProcessId();
-  std::string map_name = std::format("Local\\culebra_sbm_{}_{}", pid, seq);
-  std::string mutex_name = std::format("Local\\culebra_sbx_{}_{}", pid, seq);
+  std::string map_name = culebra::format("Local\\culebra_sbm_{}_{}", pid, seq);
+  std::string mutex_name = culebra::format("Local\\culebra_sbx_{}_{}", pid, seq);
   auto [hi, lo] = _win_size_hilo(bytes);
   HANDLE hMap = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
                                    hi, lo, map_name.c_str());
@@ -1161,9 +1162,9 @@ inline int64_t make_shared_buffer_shared(const PackableLayout& layout,
 inline std::pair<int, std::string> prepare_share_buffer(int64_t id,
                                                         std::string_view name) {
   auto core = require_shareable_buffer(id, name);
-  std::string env_val = std::format("{}|{}|{}|{}|{}", core->name,
-                                    core->mutex_name, core->byte_size,
-                                    core->layout.stride, core->count);
+  std::string env_val = culebra::format("{}|{}|{}|{}|{}", core->name,
+                                        core->mutex_name, core->byte_size,
+                                        core->layout.stride, core->count);
   return {-1, std::move(env_val)};
 }
 
@@ -1181,9 +1182,9 @@ inline int64_t make_shared_buffer_from_share_env(const PackableLayout& layout,
   if (!v) {
     throw CulebraError(
         "ValueError",
-        std::format("SharedBuffer.receive: no shared buffer named `{}` "
-                    "(pass it from the parent via Proc.run share:)",
-                    name));
+        culebra::format("SharedBuffer.receive: no shared buffer named `{}` "
+                        "(pass it from the parent via Proc.run share:)",
+                        name));
   }
   // Parse `mapname|mutexname|bytes|stride|count`. The names may hold backslashes
   // but never a `|`, so split on the pipes.
@@ -1194,8 +1195,8 @@ inline int64_t make_shared_buffer_from_share_env(const PackableLayout& layout,
     size_t bar = s.find('|', start);
     if (bar == std::string::npos) {
       throw CulebraError("ValueError",
-          std::format("SharedBuffer.receive: malformed share entry for `{}`",
-                      name));
+          culebra::format("SharedBuffer.receive: malformed share entry for `{}`",
+                          name));
     }
     parts[i] = s.substr(start, bar - start);
     start = bar + 1;
@@ -1209,21 +1210,21 @@ inline int64_t make_shared_buffer_from_share_env(const PackableLayout& layout,
   if (!to_long(parts[2], bytes) || !to_long(parts[3], stride) ||
       !to_long(parts[4], count) || bytes < 0 || stride < 0 || count < 0) {
     throw CulebraError("ValueError",
-        std::format("SharedBuffer.receive: malformed share entry for `{}`",
-                    name));
+        culebra::format("SharedBuffer.receive: malformed share entry for `{}`",
+                        name));
   }
   if (static_cast<size_t>(stride) != layout.stride) {
     throw CulebraError(
         "ValueError",
-        std::format("SharedBuffer.receive: layout mismatch for `{}` (parent "
-                    "record is {} bytes, this @packable `{}` is {})",
-                    name, stride, class_name, layout.stride));
+        culebra::format("SharedBuffer.receive: layout mismatch for `{}` (parent "
+                        "record is {} bytes, this @packable `{}` is {})",
+                        name, stride, class_name, layout.stride));
   }
   HANDLE hMap = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, parts[0].c_str());
   if (!hMap) {
     throw CulebraError("IOError",
-        std::format("SharedBuffer.receive: cannot open shared mapping for `{}`",
-                    name));
+        culebra::format("SharedBuffer.receive: cannot open shared mapping for `{}`",
+                        name));
   }
   HANDLE hMutex = OpenMutexA(SYNCHRONIZE, FALSE, parts[1].c_str());
   return _win_adopt_mapping(layout, std::move(class_name),

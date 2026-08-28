@@ -44,7 +44,6 @@
 
 #include <cassert>
 #include <cstring>
-#include <format>
 #include <functional>
 #include <memory>
 #include <string>
@@ -414,8 +413,8 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
     const bool ap = static_cast<int>(bad) < _jit_argpos_n;
     throw culebra::CulebraError(
         "TypeError",
-        std::format("type error: parameter '{}' expects {}", names[bad],
-                    kAnnos[bad]),
+        culebra::format("type error: parameter '{}' expects {}", names[bad],
+                        kAnnos[bad]),
         ap ? _jit_argpos_line[bad]
            : (bad == 0 ? _jit_call_arg0_line : _jit_call_site_line),
         ap ? _jit_argpos_col[bad]
