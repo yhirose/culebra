@@ -1,0 +1,343 @@
+# Primitive-cost table: absolute ns/op for the operations that dominate
+# ordinary culebra code (call forms, property access, allocation, type
+# annotations). A before/after instrument for runtime optimization work —
+# run it, change the runtime, run it again, diff the two tables.
+#
+# Deliberately NOT a regression gate. Absolute times are machine-dependent,
+# so there are no thresholds and nothing here fails. `tests/perf/` is the
+# gate, and it measures the VM/JIT speedup *ratio* — note that a change
+# which speeds up both engines unevenly moves that ratio, so an improvement
+# can show up there as a red `min_speedup`. This table is what tells the two
+# cases apart.
+#
+# Run on the -O3 + LTO binary (`just build`); build-dev is -O1 and the
+# numbers mean nothing there. `just bench-ops` runs both engines.
+#
+#   culebra tools/bench/ops.cul [iterations]
+
+let N = if !Sys.argv.empty() {
+  to_long(Sys.argv[0])
+} else {
+  1000000
+}
+
+let mut checksum = 0.0
+
+let bench = fn (name, f) {
+  let t0 = Time.monotonic()
+  let acc = f()
+  let dt = Time.monotonic() - t0
+  checksum += acc
+  println("  {name:<42}{dt / N * 1e9:>7.0f}")
+}
+let section = fn (title) {
+  println("")
+  println("{title}")
+}
+
+let x = 1.0
+let y = 2.0
+
+# --- subjects -------------------------------------------------------------
+
+let c0 = fn () {
+  1.0
+}
+let c1 = fn (a) {
+  a
+}
+let c2 = fn (a, b) {
+  a + b
+}
+let c1_typed = fn (a: Float) {
+  a
+}
+let c1_union = fn (a: Long | Float) {
+  a
+}
+fn decl1(a) {
+  a
+}
+
+let lit = {f: fn (a) {
+  a
+}, v: 1.0}
+
+class Inst {
+  new() {
+    self.v = 1.0
+  }
+  nullary() {
+    1.0
+  }
+  one(a) {
+    a
+  }
+  get g() {
+    1.0
+  }
+}
+let inst = Inst.new()
+let bound = inst.one
+
+class Stat {
+  static one(a) {
+    a
+  }
+}
+
+class Ctor {
+  new(a, b) {
+    self.x = a
+    self.y = b
+  }
+}
+class CtorTyped {
+  new(a: Float, b: Float) {
+    self.x = a
+    self.y = b
+  }
+}
+class CtorUnion {
+  new(a: Long | Float, b: Long | Float) {
+    self.x = a
+    self.y = b
+  }
+}
+class CtorFields {
+  x: Float
+  y: Float
+  new(a, b) {
+    self.x = a
+    self.y = b
+  }
+}
+
+let v1 = Vector2.new(1.0, 2.0)
+let v2 = Vector2.new(4.0, 6.0)
+
+# --- table ----------------------------------------------------------------
+
+println("ops.cul — ns/op over {N} iterations")
+
+section("baseline")
+bench("empty loop body", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += x
+  }
+  acc
+})
+
+section("call forms")
+bench("closure, 0 args", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += c0()
+  }
+  acc
+})
+bench("closure, 1 arg", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += c1(x)
+  }
+  acc
+})
+bench("closure, 2 args", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += c2(x, y)
+  }
+  acc
+})
+bench("fn decl, 1 arg", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += decl1(x)
+  }
+  acc
+})
+bench("own-slot fn on Object", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += lit.f(x)
+  }
+  acc
+})
+bench("static method", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += Stat.one(x)
+  }
+  acc
+})
+bench("bound method value", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += bound(x)
+  }
+  acc
+})
+bench("class method, 0 args (proto hop)", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += inst.nullary()
+  }
+  acc
+})
+bench("class method, 1 arg (proto hop)", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += inst.one(x)
+  }
+  acc
+})
+bench("getter", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += inst.g
+  }
+  acc
+})
+
+section("property access")
+bench("field read, class instance", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += inst.v
+  }
+  acc
+})
+bench("field read, Object literal", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += lit.v
+  }
+  acc
+})
+bench("field write, class instance", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    inst.v = x
+  }
+  acc + inst.v
+})
+
+section("allocation")
+bench("Object literal, 2 keys", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    let o = {x: x, y: y}
+    acc += o.x
+  }
+  acc
+})
+bench("class instance, plain ctor", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    let o = Ctor.new(x, y)
+    acc += o.x
+  }
+  acc
+})
+bench("class instance, declared fields", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    let o = CtorFields.new(x, y)
+    acc += o.x
+  }
+  acc
+})
+
+section("type annotations")
+bench("closure param, none", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += c1(x)
+  }
+  acc
+})
+bench("closure param, Float", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += c1_typed(x)
+  }
+  acc
+})
+bench("closure param, Long | Float", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += c1_union(x)
+  }
+  acc
+})
+bench("ctor params, none", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    let o = Ctor.new(x, y)
+    acc += o.x
+  }
+  acc
+})
+bench("ctor params, Float", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    let o = CtorTyped.new(x, y)
+    acc += o.x
+  }
+  acc
+})
+bench("ctor params, Long | Float", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    let o = CtorUnion.new(x, y)
+    acc += o.x
+  }
+  acc
+})
+
+section("conversion")
+bench("to_float on a Float", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += to_float(x)
+  }
+  acc
+})
+
+section("Vector2 (composite)")
+bench("hand-written scalars", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    let dx = x - y
+    let dy = y - x
+    acc += Math.sqrt(dx * dx + dy * dy)
+  }
+  acc
+})
+bench("Vector2.new", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    let v = Vector2.new(x, y)
+    acc += v.x
+  }
+  acc
+})
+bench("a.distance_to(b)", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += v1.distance_to(v2)
+  }
+  acc
+})
+bench("(a - b).length()", fn () {
+  let mut acc = 0.0
+  for _ in 0..N {
+    acc += (v1 - v2).length()
+  }
+  acc
+})
+
+println("")
+println("checksum {checksum}")

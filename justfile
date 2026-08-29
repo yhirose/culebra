@@ -1266,6 +1266,20 @@ leak-abort-suite-update: build-gate
 perf: build
     ./tests/perf/run.sh
 
+# Primitive-cost table in absolute ns/op (call forms, property access,
+# allocation, type annotations) on both engines. No thresholds and nothing
+# fails: it is a before/after instrument for runtime optimization work, where
+# `just perf`'s VM/JIT *ratio* cannot see a change that speeds up both lanes
+# (and goes red when it speeds up one more than the other).
+[doc("Primitive-cost table in ns/op on both engines (report, not a gate)")]
+[group("bench")]
+bench-ops iterations="1000000": build
+    @echo "=== VM executor ==="
+    ./build/culebra --vm tools/bench/ops.cul {{iterations}}
+    @echo ""
+    @echo "=== JIT ==="
+    ./build/culebra --jit tools/bench/ops.cul {{iterations}}
+
 # Smoke: run microgpt 5 training steps (no inference) on both compiled
 # lanes to catch regressions in the value-ownership / special-method
 # dispatch paths that the unit tests don't exercise at scale.
