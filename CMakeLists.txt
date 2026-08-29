@@ -488,9 +488,14 @@ libs (auto-detected when the static libs are missing)" OFF)
   #
   # A static libxml2 stops hiding its own dependencies behind a DLL, so iconv
   # and lzma have to be named here; they are what libxml2's .pc lists as
-  # private. The dllimport declarations already compiled into
-  # LLVMWindowsManifest.a resolve against the static bodies through lld's
-  # auto-import, which the MinGW driver has on by default.
+  # private.
+  #
+  # --whole-archive, and not as a precaution: LLVMWindowsManifest.a was built
+  # against the shared libxml2, so it references __imp_xmlFoo. lld's MinGW mode
+  # will alias that to xmlFoo — but only once xmlFoo is defined, and pulling an
+  # archive member happens by matching the undefined name, which __imp_xmlFoo
+  # never does. So the members have to come in unconditionally for the aliasing
+  # to have anything to alias.
   set(CULEBRA_LIBXML2_DEPS "")
   if(CULEBRA_LLD_LIBS AND TARGET LibXml2::LibXml2)
     find_library(CULEBRA_LIBXML2_STATIC NAMES libxml2.a)
@@ -505,6 +510,9 @@ libs (auto-detected when the static libs are missing)" OFF)
                                IMPORTED_LOCATION_${_c} "${CULEBRA_LIBXML2_STATIC}")
       endforeach()
       set_target_properties(LibXml2::LibXml2 PROPERTIES ${_xml_props})
+      list(APPEND CULEBRA_LIBXML2_DEPS
+           "-Wl,--whole-archive" "${CULEBRA_LIBXML2_STATIC}"
+           "-Wl,--no-whole-archive")
       foreach(_d CULEBRA_ICONV_STATIC CULEBRA_LZMA_STATIC)
         if(${_d})
           list(APPEND CULEBRA_LIBXML2_DEPS "${${_d}}")
