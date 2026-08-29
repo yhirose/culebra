@@ -2930,6 +2930,48 @@ struct JIT {
   // goes to num_neg (the `_borrow` twin under the VM contract). One dispatch
   // definition, two consumers — compile_unary_minus and the VM lowering's
   // Neg (the emit_arith_step precedent).
+  // `to_float(x)`: the two numeric tags inline (a Float passes through, a
+  // Long widens), everything else — a String to parse, anything else to
+  // reject — through to_float_any, so the parse and the TypeError stay the
+  // helper's own. Mirrors the executor's Op::ToFloat arm.
+  llvm::Value* emit_to_float_step(llvm::Value* v) {
+    auto tag = extract_tag(v);
+    auto data = extract_data(v);
+    auto isLong = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
+    auto isNum = builder_.CreateOr(
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FLOAT)), isLong);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto numBB = llvm::BasicBlock::Create(ctx_, "tofloat.num", fn);
+    auto slowBB = llvm::BasicBlock::Create(ctx_, "tofloat.slow", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "tofloat.merge", fn);
+    builder_.CreateCondBr(isNum, numBB, slowBB);
+
+    OwnedPhi merge(this, "tofloat.r");
+    builder_.SetInsertPoint(numBB);
+    auto widened = builder_.CreateBitCast(
+        builder_.CreateSIToFP(data, builder_.getDoubleTy(), "tofloat.w"),
+        builder_.getInt64Ty());
+    merge.add_incoming(make_value(
+        TAG_FLOAT,
+        builder_.CreateSelect(isLong, widened, data, "tofloat.d")));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(slowBB);
+    // The operand stays frame-owned on the throw, as emit_neg_step's does.
+    UnwindCovered cover(this, {v});
+    merge.add_incoming(emit_value_call(
+        module_->getOrInsertFunction(
+            rt::to_float_any, valueType_, builder_.getInt8Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty()),
+        {tag, data, current_line_val(), current_column_val()},
+        "tofloat.any"));
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    return merge.finish(mergeBB).consume();
+  }
+
   llvm::Value* emit_neg_step(llvm::Value* v) {
     auto isLong = builder_.CreateICmpEQ(extract_tag(v),
                                         builder_.getInt8(TAG_LONG));

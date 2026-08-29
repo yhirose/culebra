@@ -633,6 +633,12 @@ enum class Op : uint8_t {
                // cur/exhausted, release + rebind the loop var slot c, jump
                // to the body at b; else fall through.
   Println,     // culebra_runtime_println(regs[a])
+  ToFloat,     // regs[a] = to_float(regs[b]), borrowing b: the two numeric
+               // tags inline (a Float passes through, a Long widens), and
+               // every other input — a String to parse, anything else to
+               // reject — goes to to_float_any with the instruction's
+               // line/col, so the parse and the TypeError stay identical
+
   Safepoint,   // interrupt poll — every loop back edge carries one
   DropSuppress,  // culebra_runtime_set_drop_suppressed(a): brackets the top
                  // level's own release ladder, whose bindings leak
@@ -7043,6 +7049,23 @@ class Compiler {
     return !is_kwarg(a0) && !is_kwarg_splat(a0);
   }
 
+  // Direct 1-positional-arg `to_float(<expr>)` — the same peephole shape as
+  // is_direct_println, for the same reason: the conversion is two tag tests,
+  // and routing it through the resolver and a closure invoke cost more than
+  // the work (109 ns/call measured on ops.cul, against 73 ns for a bare
+  // call). A shadowing binding, the wrong arity, kwargs, or `to_float` as a
+  // value all take the generic route and the runtime's own diagnostics.
+  bool is_direct_to_float(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.size() != 2 || ast.nodes[0]->tag != "IDENTIFIER"_ ||
+        ast.nodes[0]->token != "to_float" || lookup("to_float") ||
+        ast.nodes[1]->original_tag != "ARGUMENTS"_ ||
+        ast.nodes[1]->nodes.size() != 1)
+      return false;
+    const auto& a0 = *ast.nodes[1]->nodes[0];
+    return !is_kwarg(a0) && !is_kwarg_splat(a0);
+  }
+
   StaticCallee head_callee(const peg::Ast& head, const ExprResult& res) {
     using namespace peg::udl;
     if (res.chunk >= 0) return {res.chunk, -1, false};
@@ -9079,6 +9102,16 @@ class Compiler {
           emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
           return {t, true};
         }
+        if (is_direct_to_float(ast)) {
+          int32_t v = compile_expr(*ast.nodes[1]->nodes[0]).slot;
+          int32_t t = alloc_temp(ast);
+          // The adapter reported its parse / type error at the call site
+          // (_jit_call_site_col), not at the argument — stamp the op after
+          // the argument has compiled with positions of its own.
+          StampGuard pos(*this, ast);
+          emit(Op::ToFloat, t, v);
+          return {t, true};
+        }
         return compile_call(ast);
       }
       case "WHILE"_:
@@ -9136,7 +9169,8 @@ inline std::string dump(const Chunk& c) {
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForOpen",   "ForNext",   "ForDispose",
-      "ForPrep",   "ForLoop",   "Println",    "Safepoint",    "DropSuppress",
+      "ForPrep",   "ForLoop",   "Println",    "ToFloat",      "Safepoint",
+      "DropSuppress",
       "BArity",    "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
       "ReplCell",  "ReplBind",  "DbgStmt",
       "Halt"};
@@ -11589,6 +11623,21 @@ struct Exec {
           culebra_runtime_set_op_pos(line, col);
           culebra_runtime_println(static_cast<int8_t>(regs[in.a].tag),
                                   regs[in.a].data);
+          ++pc;
+          break;
+        }
+        case Op::ToFloat: {
+          const JitValue& v = regs[in.b];
+          if (v.tag == TAG_FLOAT) {
+            regs[in.a] = v;
+          } else if (v.tag == TAG_LONG) {
+            regs[in.a] = {TAG_FLOAT, _culebra_double_to_bits(
+                                         static_cast<double>(v.data))};
+          } else {
+            auto [line, col] = chunk_pos_at(c, pc);
+            regs[in.a] = culebra_runtime_to_float_any(
+                static_cast<int8_t>(v.tag), v.data, line, col);
+          }
           ++pc;
           break;
         }

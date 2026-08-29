@@ -4389,6 +4389,9 @@ struct Lowering {
                       {j.extract_tag(v), j.extract_data(v)});
           break;
         }
+        case Op::ToFloat:
+          b.CreateStore(j.emit_to_float_step(load_slot(in.b)), slots[in.a]);
+          break;
         case Op::Safepoint:
           j.emit_safepoint();
           break;
