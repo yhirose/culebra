@@ -1415,19 +1415,6 @@ jobs:
           ld.lld --version | head -1
           g++ --version | head -1
           echo "llvm-config $(llvm-config --version)"
-          # Which archive defines what lld reaches for. Linking lldCOFF against
-          # per-component LLVM statics is the arrangement this job is the only
-          # one to exercise, and a symbol it wants that no archive holds means
-          # MSYS2 built lld against the shared libLLVM instead — a different
-          # problem from a missing -l, and not one more components can fix.
-          # Printed unconditionally so a link failure below arrives with the
-          # evidence rather than needing another run to collect it.
-          libdir=$(llvm-config --libdir)
-          for sym in _ZTVN4llvm3lto5DTLTOE libDriverMain; do
-            echo "== $sym"
-            grep -l "$sym" "$libdir"/*.a 2>/dev/null | sed 's|.*/|   |' ||
-              echo "   (in no static archive)"
-          done
       - name: Restore ccache
         uses: actions/cache@v4
         with:

@@ -414,26 +414,22 @@ if(CULEBRA_ENABLE_JIT)
   # here lets llvm_map_components_to_libnames expand their dependencies the
   # same way it does the JIT's.
   # What lld's COFF driver reaches that the JIT never does. libdriver is the
-  # `/lib` archive mode it links in whether or not anyone asks for it.
+  # `/lib` archive mode it links in whether or not anyone asks for it, and
+  # dtlto is distributed ThinLTO, which LLVM 22 keeps in its own library rather
+  # than in LLVMLTO. Getting this list wrong is loud — the driver fails to link
+  # with the symbols named — so there is no silent-fallback case to guard, and
+  # `grep <mangled name> $(llvm-config --libdir)/*.a` is how to answer the next
+  # one.
   set(_lld_components "")
   if(CULEBRA_LLD_LIBS)
     set(_lld_components
-      lto option object binaryformat targetparser libdriver
+      lto dtlto option object binaryformat targetparser libdriver
       windowsdriver windowsmanifest debuginfopdb debuginfocodeview)
   endif()
   llvm_map_components_to_libnames(llvm_libs
     core support orcjit native passes ${_extra_target_libs} ${_lld_components})
   if(CULEBRA_LLD_LIBS)
-    # An unknown component name maps to nothing without complaint, so a
-    # missing library here looks exactly like a library that simply is not
-    # needed — until the link says otherwise. Printed so the two are
-    # distinguishable from the configure log alone.
     message(STATUS "lld's extra LLVM components: ${_lld_components}")
-    if(NOT "LLVMLTO" IN_LIST llvm_libs)
-      message(WARNING
-        "the `lto` component mapped to no library — lld's COFF driver needs "
-        "LLVMLTO and the link is about to say so")
-    endif()
   endif()
 
   # Some distros (e.g. Arch Linux) package only the combined libLLVM.so
