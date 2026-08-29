@@ -22,7 +22,12 @@ if command -v ccache > /dev/null 2>&1; then
 fi
 
 EXT="$OUT/ext-culebra"
-if ! "$CULEBRA" wrap "$ROOT/examples/wrap/vec2_binding.cpp" -o "$EXT"; then
+# Two binding TUs in one extended binary: the Vec2 example, and the probe that
+# pins how the wrap layer treats each kind of exception a wrapped body raises
+# (tests/wrap/interrupt_binding.cpp). One build covers both — this phase is the
+# slow, toolchain-sensitive one, so a second ext-culebra would not be free.
+if ! "$CULEBRA" wrap "$ROOT/examples/wrap/vec2_binding.cpp" \
+                     "$ROOT/tests/wrap/interrupt_binding.cpp" -o "$EXT"; then
   echo "wrap_test FAIL: culebra wrap did not produce a binary" >&2
   exit 1
 fi
@@ -65,6 +70,62 @@ if ! diff "$OUT/jit.txt" "$OUT/aot.txt"; then
   echo "wrap_test FAIL: jit vs AOT output diverged" >&2
   exit 1
 fi
+
+# What the wrap layer does with each kind of exception a wrapped body raises.
+# rethrow_as_culebra turns a std::exception into a catchable RuntimeError; an
+# interrupt is not one (culebra::Interrupted derives from nothing), so it must
+# unwind straight through instead of being reported as a program error. Both
+# arms are asserted on every backend, and the AOT one is the only lane where
+# the conversion lives in the linked archive rather than this binary.
+CAUGHT="$ROOT/tests/wrap/interrupt_caught.cul"
+UNCAUGHT="$ROOT/tests/wrap/interrupt_uncaught.cul"
+CAUGHT_WANT='Interrupted|RuntimeError: native failure|alive|'
+
+if ! "$EXT" build "$CAUGHT" -o "$OUT/caught-bin"; then
+  echo "wrap_test FAIL: ext-culebra build of the interrupt probe failed" >&2
+  exit 1
+fi
+if ! "$EXT" build "$UNCAUGHT" -o "$OUT/uncaught-bin"; then
+  echo "wrap_test FAIL: ext-culebra build of the uncaught probe failed" >&2
+  exit 1
+fi
+
+# Output through a file, never a pipe: the exit code matters in both checks,
+# and a pipeline reports the tail's.
+check_caught() {
+  local desc="$1"; shift
+  local outf="$OUT/caught.$desc"
+  "$@" > "$outf" 2>&1
+  local code=$?
+  local got; got="$(tr '\n' '|' < "$outf")"
+  if [ "$code" != 0 ] || [ "$got" != "$CAUGHT_WANT" ]; then
+    echo "wrap_test FAIL: interrupt through wrap [$desc]: exit=$code out='$got'" >&2
+    echo "                                    want: exit=0 out='$CAUGHT_WANT'" >&2
+    exit 1
+  fi
+}
+check_caught "vm"  "$EXT" --vm  "$CAUGHT"
+check_caught "jit" "$EXT" --jit "$CAUGHT"
+check_caught "aot" "$OUT/caught-bin"
+
+# Uncaught: the top-level defer still runs and the process ends at 130. A wrap
+# layer that swallowed the interrupt would exit 0 after printing AFTER, and one
+# that converted it would exit 1 with an error line.
+check_uncaught() {
+  local desc="$1"; shift
+  local outf="$OUT/uncaught.$desc"
+  "$@" > "$outf" 2>&1
+  local code=$?
+  local out; out="$(tr '\n' '|' < "$outf")"
+  if [ "$code" != 130 ] || [ "$out" != 'DEFER|interrupted|' ]; then
+    echo "wrap_test FAIL: uncaught interrupt through wrap [$desc]:" >&2
+    echo "                exit=$code out='$out' (want exit=130 'DEFER|interrupted|')" >&2
+    exit 1
+  fi
+}
+check_uncaught "vm"  "$EXT" --vm  "$UNCAUGHT"
+check_uncaught "jit" "$EXT" --jit "$UNCAUGHT"
+check_uncaught "aot" "$OUT/uncaught-bin"
 
 # Usage-gated link: a program that names NO wrapped namespace must not pull
 # the wrap archive (or the wrapped library's link flags) into its AOT binary

@@ -1,0 +1,10 @@
+# A cooperative stop raised inside a wrapped C++ body reaches the script's own
+# `catch` as an Interrupted, and an ordinary native failure still arrives as a
+# RuntimeError. Same output on every backend.
+let p = Probe.Blocking.new()
+
+IO.print("{try { p.wait() } catch e { e.kind }}\n")
+IO.print("{try { p.boom() } catch e { e.kind + ': ' + e.message }}\n")
+
+# The press was one-shot: consuming it left the program runnable.
+IO.print("alive\n")

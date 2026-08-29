@@ -1,0 +1,6 @@
+# Nobody catches it: the interrupt must leave the wrap layer, run the
+# top-level defer, and end the process at 130 — not be reported as an error.
+defer { IO.eprint("DEFER\n") }
+let p = Probe.Blocking.new()
+p.wait()
+IO.eprint("AFTER\n")
