@@ -1576,7 +1576,9 @@ bool run_scripts(const Options& options) {
   // Cooperative Ctrl+C: install the SIGINT handler and point this thread's
   // Runtime at the global flag. The engines' loop safepoints observe it and
   // throw a catchable `Interrupted`.
-  if (options.script_path) culebra::install_sigint_handler();
+  // The handler itself is installed for every mode at the top of run_main; what
+  // is script-only is pointing this thread's Runtime at the global flag, which
+  // install_sigint_handler already did. Nothing left to do here.
 
   if (!options.script_path) return true;
   const string& path = *options.script_path;
@@ -2440,12 +2442,23 @@ int run_serve(int argc, const char** argv) {
 }
 #endif  // CULEBRA_HTTP_ENABLED
 
-int main(int argc, const char** argv) {
+// main()'s body. Wrapped by main() below, which is the one place a pending
+// interrupt becomes an exit code — so every entry point, script or subcommand,
+// answers Ctrl+C the same way.
+int run_main(int argc, const char** argv) {
   startup_profile::start();
   startup_profile::mark("main entered");
 
   // Before anything can print.
   culebra::install_console_utf8();
+
+  // Once, for every mode, the way CPython installs its SIGINT handler in
+  // Py_Initialize and Go's cmd/go installs its own under a sync.OnceFunc. The
+  // handler only sets a flag that safepoints poll — it has no cleanup to
+  // bound, which is the reason git scopes its handlers with sigchain and the
+  // reason culebra does not need to. Installing it only for scripts left
+  // `culebra build`'s kit download and `culebra test`'s run uninterruptible.
+  culebra::install_sigint_handler();
 
   // Make the builtin-name set visible to the load-stage undefined-variable
   // lint before any subcommand loads a module (run / build / test all load
@@ -2573,7 +2586,7 @@ int main(int argc, const char** argv) {
   // process-wide holder (the AOT bootstrap fills it in the same way).
   culebra::sys_argv() = options.script_argv;
 
-  try {
+  {
     if (!run_scripts(options)) {
       return -1;
     }
@@ -2594,6 +2607,19 @@ int main(int argc, const char** argv) {
       return culebra::vm_repl(options.print_ast,
                               options.vm == Options::Vm::Dump);
     }
+  }
+
+  return 0;
+}
+
+int main(int argc, const char** argv) {
+  // The one boundary that turns a thrown error into an exit code. It wraps the
+  // subcommands as well as the script lane: a Ctrl+C during `culebra build`'s
+  // kit download used to escape main() uncaught, because the dispatch sat
+  // ahead of the try this replaces. Same shape as CPython's Py_RunMain — one
+  // handler at the entry, one place that answers for it.
+  try {
+    return run_main(argc, argv);
   } catch (const culebra::CulebraError& e) {
     // Uncaught Ctrl+C / cancel: exit with the conventional 128+SIGINT.
     if (e.kind == "Interrupted") {
@@ -2606,6 +2632,4 @@ int main(int argc, const char** argv) {
     cerr << e.what() << endl;
     return -1;
   }
-
-  return 0;
 }

@@ -71,10 +71,18 @@ class Session {
   // the same text on either engine and the session carries on. `session` picks
   // whether the input's top-level bindings are the session's (an input) or the
   // program's own (a prologue, which binds nothing that has to outlive it).
+  // Whether the last unit ended in a Ctrl+C or a cancel rather than in an
+  // error of the program's own. Reported rather than re-thrown because the
+  // callers want opposite things from it: the REPL prints and returns to the
+  // prompt (a one-shot interrupt, the Python model tests/signal_test.sh pins),
+  // while a runner that is executing somebody else's files has to stop the run.
+  bool last_unit_interrupted() const { return last_interrupted_; }
+
   bool run_unit(const std::shared_ptr<peg::Ast>& ast,
                 std::shared_ptr<std::string> source, bool session,
                 std::vector<std::string>& msgs,
                 const std::function<void(const VmProgram&)>& before_run = {}) {
+    last_interrupted_ = false;
     try {
       auto prog = std::make_unique<VmProgram>(
           session ? Compiler::compile_repl_line(*ast)
@@ -84,6 +92,7 @@ class Session {
       Exec::run(*kept.prog);
       return true;
     } catch (const CulebraError& e) {
+      last_interrupted_ = is_interrupt(e);
       // interpret()'s formatter, which is main.cc's.
       msgs.push_back(format_error_message(e));
     } catch (const std::exception& e) {
@@ -103,6 +112,7 @@ class Session {
   // registration mints a second namespace instance).
   bool run_modules(const std::vector<LoadedModule>& modules,
                    std::vector<std::string>& msgs) {
+    last_interrupted_ = false;
     // The stdlib the list names, unless the list already carries it: the CLI
     // splices a `<stdlib>` module in front, and registering a builder twice
     // mints a second instance of the namespace. A caller that hands over a
@@ -130,6 +140,7 @@ class Session {
       Exec::run(*kept.prog);
       return true;
     } catch (const CulebraError& e) {
+      last_interrupted_ = is_interrupt(e);
       msgs.push_back(format_error_message(e));
     } catch (const std::exception& e) {
       msgs.push_back(e.what());
@@ -182,6 +193,7 @@ class Session {
   // retained program's chunks hold string_views into them.
   std::vector<std::vector<LoadedModule>> retained_modules_;
   std::set<std::string, std::less<>> registered_;
+  bool last_interrupted_ = false;  // see last_unit_interrupted()
 };
 
 }  // namespace culebra::vm

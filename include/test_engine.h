@@ -35,6 +35,8 @@ inline bool load_test_file(const std::string& path, const std::string& source,
     ModuleLoader loader;
     modules = loader.load_program(path, source, msgs);
   } catch (const CulebraError& e) {
+    // Ctrl+C stops the run, it does not mark this file as broken.
+    if (is_interrupt(e)) throw;
     err = {e.kind, e.what(), e.line, e.col};
     return false;
   }
@@ -99,6 +101,11 @@ class VmTestHost : public TestHost {
                   : unit_->session.run_stdlib_delta(*m.ast, msgs) &&
                         run_session_unit(m.ast, m.source, msgs);
     if (!ok) {
+      // Ctrl+C stops the run rather than marking this file broken and moving
+      // on to the next: the interrupt is one-shot, so without this the rest of
+      // the suite would run as if nothing had been pressed.
+      if (unit_->session.last_unit_interrupted())
+        throw CulebraError("Interrupted", "interrupted");
       err = {"interpret_failed", join_messages(msgs), 0, 0};
       return false;
     }

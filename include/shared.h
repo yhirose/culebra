@@ -2514,6 +2514,15 @@ inline void throw_if_interrupted() {
   }
 }
 
+// Ctrl+C or a cancel, as opposed to a program's own error. A runner that turns
+// every CulebraError into a reported failure has to let this one through:
+// otherwise a Ctrl+C marks one file or one case as failed and the run carries
+// on, which is what the user pressed the key to stop. Spelled once so the
+// runners cannot disagree about it.
+inline bool is_interrupt(const CulebraError& e) {
+  return e.kind == "Interrupted";
+}
+
 // --- Interruptible stdin --------------------------------------------------
 //
 // A plain `std::cin` read is not a cooperative safepoint: a program blocked
