@@ -1839,7 +1839,11 @@ jobs:
           if ($out -notmatch 'culebra toolchain install') {
             throw "the failure does not name the fix:`n$out"
           }
-          "OK: refused without a kit, and named `culebra toolchain install`"
+          # No backticks around the command name: PowerShell reads a backtick as
+          # its escape character, and a pair of them inside a double-quoted
+          # string swallows the closing quote and breaks the parse fifteen lines
+          # further down.
+          "OK: refused without a kit, and it named the install command"
 
           # Positive control for the digest check, which is the same code the
           # network install runs: flip a byte and the install must refuse. A
