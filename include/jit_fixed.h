@@ -1784,23 +1784,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   // without the per-instance malloc + memcpy that `_culebra_heap_str`
   // would do.
   //
-  // Spelled out rather than routed through culebra_runtime_object_set: the
-  // key is the literal "class" on a freshly allocated instance, so the
-  // lookup always misses and append_slot re-derives the same one-key shape
-  // through the registry's lock on every instantiation. The transition is
-  // identical for every class in the process (the shape is keyed by name,
-  // not by value), so it resolves once here instead. The two things
-  // object_set adds are provably inert for this key — "class" is not in
-  // is_well_known_prop's set (drop/iter/has_next/next) and is not "drop",
-  // so neither the contract check nor the owned-stack drop bind applies.
+  // Appended directly rather than through culebra_runtime_object_set: on a
+  // fresh instance the key always misses, so append_slot re-interns the same
+  // one-key shape under the registry's lock per instantiation. That shape is
+  // the same for every class in the process (it is keyed by name, not value),
+  // so it resolves once here. Nothing else object_set does applies — "class"
+  // is not in is_well_known_prop's set and is not "drop".
   static culebra::Shape* const kClassShape = culebra::shape_registry()
       .transition_add(culebra::shape_registry().root(), "class");
-  inst->shape = kClassShape;
-  inst->slots.reserve(8);  // append_slot's reserve: fields land here next
-  inst->slots.push_back(
-      {JitValue{TAG_STRING, reinterpret_cast<int64_t>(class_name)},
-       /*mut=*/false});
-  ++inst->mut_count;
+  inst->append_slot_shaped(
+      kClassShape, {TAG_STRING, reinterpret_cast<int64_t>(class_name)},
+      /*mut=*/false);
 
   JitValue self_val = {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
   // Each _jit_invoke consumes one retained `self` ref (the callee's slot

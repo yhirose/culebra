@@ -313,7 +313,15 @@ struct JitObject {
   // turning 4 small heap allocations into one.
   size_t append_slot(std::string_view key, JitValue value, bool mut) {
     if (!shape) shape = culebra::shape_registry().root();
-    shape = culebra::shape_registry().transition_add(shape, key);
+    return append_slot_shaped(
+        culebra::shape_registry().transition_add(shape, key), value, mut);
+  }
+
+  // append_slot with the transition already resolved, for a caller that
+  // stamps one fixed key on every object it builds and so can cache the
+  // target Shape. `next` must be this object's shape plus that one name.
+  size_t append_slot_shaped(culebra::Shape* next, JitValue value, bool mut) {
+    shape = next;
     if (slots.capacity() == 0) slots.reserve(8);
     slots.push_back({value, mut});
     ++mut_count;

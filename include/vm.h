@@ -7041,9 +7041,7 @@ class Compiler {
   // what registers the builder closure the resolver invokes. The effects
   // primitives stay out (their lowered declarations are declined outright).
   static bool is_stdlib_global(std::string_view name) {
-    for (const auto& m : kBuiltinFns)
-      if (name == m.name) return true;
-    return !culebra::lazy_fn_group_of(name).empty();
+    return _is_bare_stdlib_fn(name);
   }
 
   // The namespace VALUES the slice reaches: the natively built ones, taken

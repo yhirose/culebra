@@ -11,8 +11,6 @@
 // functions on the module being built — so the body of this header sits on
 // rt.h and a build without the JIT gets the whole stdlib anyway.
 
-#include <cassert>
-
 #include <compress.h>
 #include <csv.h>
 #include <env.h>
@@ -49,6 +47,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -8944,27 +8943,24 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name,
   return obj;
 }
 
+// Keyed heterogeneously so a resolve can look up the `const char*` the codegen
+// passes without building a std::string per read.
+template <class V>
+using _NameMap =
+    std::unordered_map<std::string, V, culebra::sv_hash, culebra::sv_equal>;
+
 struct _JitNamespaceTable {
-  // All three are keyed heterogeneously (culebra::sv_hash / sv_equal) so a
-  // resolve can look up the `const char*` the codegen passes without building
-  // a std::string per read.
-  std::unordered_map<std::string, JitObject*, culebra::sv_hash,
-                     culebra::sv_equal>
-      entries;
+  _NameMap<JitObject*> entries;
   // Bare builtin function globals (`inspect`, `type_of`, `range`, ...) used
   // as first-class values, materialized lazily as ns-method closures. Same
   // lifetime/teardown order as `entries` — both hold heap values that must
   // be released before the GC heap substate (a lower slot) is destroyed.
-  std::unordered_map<std::string, JitClosure*, culebra::sv_hash,
-                     culebra::sv_equal>
-      builtin_fns;
+  _NameMap<JitClosure*> builtin_fns;
   // Memo for the bare function globals written in culebra (the matcher
   // family, the String helpers). Each is a member slot of its group Object in
   // `entries`, which holds the reference and is pinned for the Runtime's
   // lifetime — so this map borrows and needs no teardown of its own.
-  std::unordered_map<std::string, JitClosure*, culebra::sv_hash,
-                     culebra::sv_equal>
-      lazy_fns;
+  _NameMap<JitClosure*> lazy_fns;
   ~_JitNamespaceTable() {
     for (auto& [_, obj] : entries) {
       _culebra_value_release_impl(TAG_OBJECT,
@@ -9231,11 +9227,8 @@ struct _LazyNsBuilder {
   void* fn_ptr = nullptr;
   int64_t desc = 0;
 };
-using _LazyNsBuilderMap =
-    std::unordered_map<std::string, _LazyNsBuilder, culebra::sv_hash,
-                       culebra::sv_equal>;
-inline _LazyNsBuilderMap& _lazy_ns_builders() {
-  static _LazyNsBuilderMap r;
+inline _NameMap<_LazyNsBuilder>& _lazy_ns_builders() {
+  static _NameMap<_LazyNsBuilder> r;
   return r;
 }
 inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr,
@@ -9249,15 +9242,15 @@ inline _LazyNsBuilder _lazy_ns_builder(std::string_view name) {
   return it == _lazy_ns_builders().end() ? _LazyNsBuilder{} : it->second;
 }
 
-// A namespace name must never also be a bare stdlib function name.
-// culebra_runtime_namespace_get consults the namespace memo first, which is
-// only sound while the two name sets are disjoint — a collision would silently
-// change which of them a bare read resolves to.
-inline bool _ns_name_free_of_fn_collision(std::string_view name) {
-  if (!culebra::lazy_fn_group_of(name).empty()) return false;
+// Every bare name the stdlib answers without a binding: a kBuiltinFns row, or
+// a bare function one of the culebra-source groups exports. Single source for
+// the compilers' is_stdlib_global and for the disjointness the namespace memo
+// below relies on — culebra_runtime_namespace_get consults that memo first, so
+// a name in both sets would silently change which one a bare read resolves to.
+inline bool _is_bare_stdlib_fn(std::string_view name) {
   for (const auto& m : kBuiltinFns)
-    if (name == m.name) return false;
-  return true;
+    if (name == m.name) return true;
+  return !culebra::lazy_fn_group_of(name).empty();
 }
 
 inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
@@ -9268,7 +9261,7 @@ inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
   // Past the memo: this Runtime is about to build `name`, so every namespace
   // that exists anywhere passes here exactly once. Release drops the check;
   // `just test-assert` is the lane that runs it.
-  assert(_ns_name_free_of_fn_collision(name) &&
+  assert(!_is_bare_stdlib_fn(name) &&
          "namespace name collides with a bare stdlib function name");
   // A lazy source module: build it on the current Runtime by invoking the
   // registered captureless builder closure (arity 0, no captures). The result
