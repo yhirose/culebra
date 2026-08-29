@@ -105,14 +105,34 @@ bool kit_usable(const fs::path& kit) {
 
 }  // namespace
 
-bool link_available() {
-#if defined(_WIN32) && defined(CULEBRA_INPROCESS_LLD)
-  // The linker is in this binary, so a kit is the only question.
-  return kit_usable(kit_dir());
-#elif defined(_WIN32)
-  // A build without lld linked in still drives an external clang++.
+namespace {
+#ifdef _WIN32
+// The MSYS2 arrangement a contributor has. lld is a separate package from
+// clang there, and -fuse-ld=lld fails without it in a way that names neither.
+bool external_driver_present() {
   return !culebra::find_on_path("clang++").empty() &&
          !culebra::find_on_path("ld.lld").empty();
+}
+#endif
+}  // namespace
+
+bool use_inprocess_link() {
+#if defined(_WIN32) && defined(CULEBRA_INPROCESS_LLD)
+  return kit_usable(kit_dir());
+#else
+  return false;
+#endif
+}
+
+bool link_available() {
+#if defined(_WIN32) && defined(CULEBRA_INPROCESS_LLD)
+  // Either arrangement links: the kit with the linker inside this binary, or
+  // a toolchain the machine already has. A downloader has the first and a
+  // contributor the second, and neither should have to acquire the other.
+  return kit_usable(kit_dir()) || external_driver_present();
+#elif defined(_WIN32)
+  // A build without lld linked in can only drive an external clang++.
+  return external_driver_present();
 #elif defined(__APPLE__)
   // /usr/bin/cc exists without the Command Line Tools — it is a shim that
   // offers to install them — so its presence proves nothing.
@@ -129,7 +149,9 @@ std::string missing_toolchain_hint() {
       "ship. culebra can fetch them for version {} (about 6 MB, into\n"
       "  {}\n"
       "which `culebra toolchain uninstall` removes again):\n"
-      "    culebra toolchain install",
+      "    culebra toolchain install\n"
+      "  An MSYS2 UCRT64 with clang++ and lld on PATH works too, and is what "
+      "building culebra itself already needs.",
       kVersion, kit_dir().string());
 #elif defined(_WIN32)
   return
@@ -465,7 +487,15 @@ int status() {
     std::println("  installed    no");
   }
 #ifdef CULEBRA_INPROCESS_LLD
-  std::println("  linker       lld, carried in this binary");
+  // Which of the two would actually run, not merely which exist: on a machine
+  // with MSYS2 and no kit those differ, and that is the machine every
+  // contributor is on.
+  std::println("  linker       lld, carried in this binary{}",
+               use_inprocess_link()
+                   ? ""
+                   : external_driver_present()
+                         ? " (idle — no kit, so the clang++ on PATH links)"
+                         : "");
 #else
   std::println("  linker       external clang++ + ld.lld on PATH");
 #endif

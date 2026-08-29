@@ -1780,6 +1780,17 @@ jobs:
   # It takes windows-aot-build's binary rather than building one: the question
   # here is the kit, and that job already produces the widest Windows
   # configuration there is.
+  #
+  # This is also the only job where the in-process linker actually links.
+  # windows-aot-build has MSYS2 on PATH and no kit, so its AOT smokes go
+  # through the external driver — deliberately, since that is a contributor's
+  # arrangement and it has to keep working. The two paths differ in exactly one
+  # thing, which library set reaches the linker, so the coverage that matters
+  # here is link surface rather than program variety: the six axes below are
+  # every distinct set of libraries `culebra build` can ask for on Windows
+  # (bare, zlib, OpenSSL + crypt32/bcrypt, raylib/SDL3 + 13 import libs,
+  # WebView2 + --allow-multiple-definition, SQLite). What the codegen produces
+  # is the same object either way, and windows-aot-build's smokes cover that.
   windows-toolchain-kit:
     needs: windows-aot-build
     runs-on: windows-latest

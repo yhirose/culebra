@@ -45,6 +45,18 @@ std::filesystem::path kit_dir();
 bool link_available();
 std::string missing_toolchain_hint();
 
+// Whether this link should go through the lld inside the binary rather than an
+// external compiler driver. True exactly when a kit for this version is
+// installed: that is the arrangement a downloader has, and its libraries are
+// the ones this binary's runtime archives were compiled against.
+//
+// It is not simply "Windows". A machine with MSYS2 on PATH — every contributor
+// building culebra, and every CI job that compiles it — has a perfectly good
+// toolchain and no reason to have fetched a kit, so it keeps the external
+// path. Preferring the kit when there IS one keeps the two from disagreeing
+// about which libstdc++ a link uses.
+bool use_inprocess_link();
+
 // The linker argv a kit records: what a C++ driver puts around a user object
 // on this toolchain. culebra never spells this itself — it splices its own
 // tokens between the two halves — so a toolchain change cannot drift away from

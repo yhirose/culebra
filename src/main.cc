@@ -1194,14 +1194,12 @@ int run_build(const BuildOptions& opts) {
   const char* win_static = "";
 #endif
 
-  // Windows host links go through the lld this binary carries, so the machine
-  // needs no compiler at all — only the mingw libraries a kit supplies. A
-  // cross target keeps the external driver: its toolchain is the user's, and
-  // the kit describes this host.
-  bool inprocess = false;
-#if defined(CULEBRA_INPROCESS_LLD)
-  inprocess = !cross;
-#endif
+  // A Windows host with an installed kit links through the lld this binary
+  // carries, so the machine needs no compiler at all. Without a kit — a
+  // contributor's MSYS2, every CI job that compiles culebra — the external
+  // driver still runs, and a cross target always does: its toolchain is the
+  // user's, where the kit describes this host.
+  bool inprocess = !cross && culebra::toolchain::use_inprocess_link();
 
   // Split a literal flag string into argv tokens. Only ever called on the
   // string literals above, never on anything holding a path, so a space here
