@@ -538,36 +538,127 @@ inline void _http_build_request(const HttpRequest& req, const std::string& path,
 // the process SIGINT flag and this thread's isolate-cancel flag (captured now —
 // the watcher runs on a different thread, so its own current_runtime() would be
 // the wrong one).
+// One watcher for the process, not one per request. The work is identical for
+// every in-flight request — poll two flags, call stop() on the client — so it
+// is done once for all of them. A thread per request measured ~55 us on this
+// machine, which is more than half of a loopback keep-alive request (99 -> 45
+// us/req with the watcher removed entirely), and every Http call paid it.
+//
+// The thread starts on the first request and sleeps on a condition variable
+// whenever nothing is in flight, so a program that never speaks HTTP has no
+// extra thread and an idle one does not wake.
+class _InterruptWatcher {
+ public:
+  static _InterruptWatcher& instance() {
+    static _InterruptWatcher w;
+    return w;
+  }
+
+  // Registers `cli` for the duration of one send. `flag` is the calling
+  // thread's isolate-cancel flag, captured by the caller: the watcher runs on
+  // its own thread, where current_runtime() would be the wrong one.
+  struct Guard {
+    httplib::Client* cli;
+    explicit Guard(httplib::Client& c, std::atomic<bool>* flag) : cli(&c) {
+      instance().add(&c, flag);
+    }
+    ~Guard() { instance().remove(cli); }
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
+  };
+
+ private:
+  struct Entry {
+    httplib::Client* cli;
+    std::atomic<bool>* flag;
+  };
+
+  _InterruptWatcher() = default;
+  ~_InterruptWatcher() {
+    {
+      std::lock_guard<std::mutex> lk(m_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    if (th_.joinable()) th_.join();
+  }
+
+  void add(httplib::Client* cli, std::atomic<bool>* flag) {
+    std::unique_lock<std::mutex> lk(m_);
+    live_.push_back({cli, flag});
+    if (!th_.joinable()) th_ = std::thread([this] { run(); });
+    // Only when it is parked on the untimed wait. Waking it costs the caller a
+    // futex wake and a context switch — measured at ~10 us, a fifth of a
+    // loopback request — and while it is already polling there is nothing to
+    // wake it for: its whole reaction budget is one poll interval.
+    bool wake = sleeping_;
+    lk.unlock();
+    if (wake) cv_.notify_all();
+  }
+
+  void remove(httplib::Client* cli) {
+    std::lock_guard<std::mutex> lk(m_);
+    for (auto it = live_.begin(); it != live_.end(); ++it) {
+      if (it->cli == cli) { live_.erase(it); break; }
+    }
+  }
+
+  static bool fired(std::atomic<bool>* flag) {
+    if (culebra_g_sigint.load(std::memory_order_relaxed)) return true;
+    return flag && flag != &culebra_g_sigint &&
+           flag->load(std::memory_order_relaxed);
+  }
+
+  static constexpr auto kPoll = std::chrono::milliseconds(50);
+  // How long to keep polling after the last request finishes. A script's
+  // requests come in bursts, and staying awake across the gaps is what lets
+  // add() skip the wake; 2 s of 50 ms ticks costs nothing measurable and a
+  // process that has stopped using Http still goes quiet.
+  static constexpr int kLingerTicks = 40;
+
+  void run() {
+    std::unique_lock<std::mutex> lk(m_);
+    int idle_ticks = 0;
+    while (!stop_) {
+      if (!live_.empty()) {
+        idle_ticks = 0;
+        cv_.wait_for(lk, kPoll);
+        if (stop_) break;
+        // Keep calling stop() (not just once) so we still catch the socket if
+        // the interrupt fires before it opens — e.g. mid DNS/connect. stop() is
+        // cpp-httplib's documented thread-safe shutdown and does not call back
+        // in here, so holding the registry lock across it cannot deadlock.
+        for (const auto& e : live_) {
+          if (fired(e.flag)) e.cli->stop();
+        }
+        continue;
+      }
+      if (idle_ticks < kLingerTicks) {
+        ++idle_ticks;
+        cv_.wait_for(lk, kPoll);
+        continue;
+      }
+      sleeping_ = true;
+      cv_.wait(lk);
+      sleeping_ = false;
+      idle_ticks = 0;
+    }
+  }
+
+  std::mutex m_;
+  std::condition_variable cv_;
+  std::vector<Entry> live_;
+  std::thread th_;
+  bool stop_ = false;
+  bool sleeping_ = false;  // parked on the untimed wait; only then is a wake needed
+};
+
 inline HttpResult _http_send(httplib::Client& cli, httplib::Request& hreq) {
   HttpResult out;
-  auto* isolate_flag = current_runtime().interrupt_flag;
-  std::mutex watch_m;
-  std::condition_variable watch_cv;
-  bool watch_done = false;
-  std::thread watcher([&] {
-    auto fired = [&] {
-      if (culebra_g_sigint.load(std::memory_order_relaxed)) return true;
-      return isolate_flag && isolate_flag != &culebra_g_sigint &&
-             isolate_flag->load(std::memory_order_relaxed);
-    };
-    std::unique_lock<std::mutex> lk(watch_m);
-    while (!watch_done) {
-      watch_cv.wait_for(lk, std::chrono::milliseconds(50));
-      if (watch_done) break;
-      // Keep calling stop() (not just once) so we still catch the socket if the
-      // interrupt fires before it opens — e.g. mid DNS/connect.
-      if (fired()) cli.stop();
-    }
-  });
-
-  auto res = cli.send(hreq);
-
-  {
-    std::lock_guard<std::mutex> lk(watch_m);
-    watch_done = true;
-  }
-  watch_cv.notify_all();
-  watcher.join();
+  httplib::Result res = [&] {
+    _InterruptWatcher::Guard watch(cli, current_runtime().interrupt_flag);
+    return cli.send(hreq);
+  }();
   throw_if_interrupted();  // pending Ctrl+C / cancel → cooperative Interrupted
 
   if (!res) {
