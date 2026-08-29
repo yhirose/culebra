@@ -2596,27 +2596,34 @@ let _vector2_module = fn () {
       v != nil && self.x == v.x && self.y == v.y
     }
 
+    # Each of these spells its arithmetic out rather than delegating
+    # (length -> length_squared -> dot). A method call is ~120ns, which is
+    # the whole cost of the shorter ones, and these are what a per-frame
+    # loop calls.
     dot(o) {
       self.x * o.x + self.y * o.y
     }
     length_squared() {
-      self.dot(self)
+      self.x * self.x + self.y * self.y
     }
     length() {
-      Math.sqrt(self.length_squared())
+      Math.sqrt(self.x * self.x + self.y * self.y)
     }
     # A zero vector's normalized() divides by 0.0 like any other Float
     # division in culebra — raises ZeroDivisionError. No silent fallback.
     normalized() {
-      let len = self.length()
+      let len = Math.sqrt(self.x * self.x + self.y * self.y)
       Vector2.new(self.x / len, self.y / len)
-    }
-    distance_to(o) {
-      Math.sqrt(self.distance_squared_to(o))
     }
     # Component-wise, not `(self - o).length_squared()` — avoids allocating a
     # throwaway Vector2 just to measure it. Ranking or thresholding distances
-    # never needs the square root, so this is the form a hot path wants.
+    # never needs the square root, so distance_squared_to is the form a hot
+    # path wants.
+    distance_to(o) {
+      let dx = self.x - o.x
+      let dy = self.y - o.y
+      Math.sqrt(dx * dx + dy * dy)
+    }
     distance_squared_to(o) {
       let dx = self.x - o.x
       let dy = self.y - o.y
@@ -2664,25 +2671,33 @@ let _vector3_module = fn () {
       v != nil && self.x == v.x && self.y == v.y && self.z == v.z
     }
 
+    # Each of these spells its arithmetic out rather than delegating
+    # (length -> length_squared -> dot). A method call is ~120ns, which is
+    # the whole cost of the shorter ones, and these are what a per-frame
+    # loop calls.
     dot(o) {
       self.x * o.x + self.y * o.y + self.z * o.z
     }
     length_squared() {
-      self.dot(self)
+      self.x * self.x + self.y * self.y + self.z * self.z
     }
     length() {
-      Math.sqrt(self.length_squared())
+      Math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
     }
     normalized() {
-      let len = self.length()
+      let len = Math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
       Vector3.new(self.x / len, self.y / len, self.z / len)
-    }
-    distance_to(o) {
-      Math.sqrt(self.distance_squared_to(o))
     }
     # Component-wise, not `(self - o).length_squared()` — avoids allocating a
     # throwaway Vector3 just to measure it. Ranking or thresholding distances
-    # never needs the square root, so this is the form a hot path wants.
+    # never needs the square root, so distance_squared_to is the form a hot
+    # path wants.
+    distance_to(o) {
+      let dx = self.x - o.x
+      let dy = self.y - o.y
+      let dz = self.z - o.z
+      Math.sqrt(dx * dx + dy * dy + dz * dz)
+    }
     distance_squared_to(o) {
       let dx = self.x - o.x
       let dy = self.y - o.y
