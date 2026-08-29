@@ -745,9 +745,9 @@ entry with no receiver at all (`contains(x)` under **Set methods**,
 
 **Desktop / Webview** — Desktop.run(config: Object) -> Nil; Webview.Window.new(); w.set_title(title); w.set_size(width, height); w.set_html(html); w.navigate(url); w.run(); w.terminate(); Webview.Window.quit(); Webview.Window.is_running()
 
-**Vector2** — Vector2.new(x, y); a.dot(b); a.normalized(); a.distance_to(b)
+**Vector2** — Vector2.new(x, y); a.dot(b); a.normalized(); a.distance_to(b); a.distance_squared_to(b) -> Float
 
-**Vector3** — Vector3.new(x, y, z); a.dot(b); a.normalized(); a.distance_to(b)
+**Vector3** — Vector3.new(x, y, z); a.dot(b); a.normalized(); a.distance_to(b); a.distance_squared_to(b) -> Float
 
 **Deque** — Deque.new(); d.push_back(x); d.push_front(x); d.pop_back() -> Any; d.pop_front() -> Any; d.peek_back() -> Any; d.peek_front() -> Any; d.size(); d.empty(); d.to_array() -> Array; d.iter() -> Iterator
 

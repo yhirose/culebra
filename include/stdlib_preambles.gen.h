@@ -2611,12 +2611,16 @@ let _vector2_module = fn () {
       let len = self.length()
       Vector2.new(self.x / len, self.y / len)
     }
-    # Component-wise, not `(self - o).length()` — avoids allocating a
-    # throwaway Vector2 just to measure it.
     distance_to(o) {
+      Math.sqrt(self.distance_squared_to(o))
+    }
+    # Component-wise, not `(self - o).length_squared()` — avoids allocating a
+    # throwaway Vector2 just to measure it. Ranking or thresholding distances
+    # never needs the square root, so this is the form a hot path wants.
+    distance_squared_to(o) {
       let dx = self.x - o.x
       let dy = self.y - o.y
-      Math.sqrt(dx * dx + dy * dy)
+      dx * dx + dy * dy
     }
   }
   Vector2
@@ -2673,13 +2677,17 @@ let _vector3_module = fn () {
       let len = self.length()
       Vector3.new(self.x / len, self.y / len, self.z / len)
     }
-    # Component-wise, not `(self - o).length()` — avoids allocating a
-    # throwaway Vector3 just to measure it.
     distance_to(o) {
+      Math.sqrt(self.distance_squared_to(o))
+    }
+    # Component-wise, not `(self - o).length_squared()` — avoids allocating a
+    # throwaway Vector3 just to measure it. Ranking or thresholding distances
+    # never needs the square root, so this is the form a hot path wants.
+    distance_squared_to(o) {
       let dx = self.x - o.x
       let dy = self.y - o.y
       let dz = self.z - o.z
-      Math.sqrt(dx * dx + dy * dy + dz * dz)
+      dx * dx + dy * dy + dz * dz
     }
   }
   Vector3

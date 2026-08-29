@@ -5585,6 +5585,7 @@ inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector2`（単位長；ゼロベクトルは`ZeroDivisionError`、他の`Float / 0.0`と同じ） |
 | `a.distance_to(b)` | `Float` |
+| `a.distance_squared_to(b)` | `Float` — 平方根を省く。距離の比較や閾値判定用 |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y)"` |
 
 `cross()`は(`Vector2`・`Vector3`(§31)いずれにも)意図的に持たせて
@@ -5622,6 +5623,7 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector3`（単位長；ゼロベクトルは`ZeroDivisionError`） |
 | `a.distance_to(b)` | `Float` |
+| `a.distance_squared_to(b)` | `Float` — 平方根を省く。距離の比較や閾値判定用 |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
 
 ## 32. `Deque`

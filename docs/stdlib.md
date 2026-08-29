@@ -5745,6 +5745,7 @@ inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector2` (unit length; a zero vector raises `ZeroDivisionError`, same as any `Float / 0.0`) |
 | `a.distance_to(b)` | `Float` |
+| `a.distance_squared_to(b)` | `Float` — skips the square root, for ranking or thresholding distances |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y)"` |
 
 `cross()` is intentionally not provided (on either `Vector2` or `Vector3`
@@ -5782,6 +5783,7 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector3` (unit length; a zero vector raises `ZeroDivisionError`) |
 | `a.distance_to(b)` | `Float` |
+| `a.distance_squared_to(b)` | `Float` — skips the square root, for ranking or thresholding distances |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
 
 ## 32. `Deque`
