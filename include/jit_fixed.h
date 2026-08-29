@@ -1215,13 +1215,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_object_has_any(
 //     reserved capacity from append_slot's first-call reserve(8)
 //     usually means no realloc), bump shape to result_shape.
 // `key` is borrowed only for the immutable-error message; never freed.
+// Mirrors culebra_runtime_object_set's two contract obligations exactly —
+// check_wk on the update path, the well-known check before a new own slot
+// is created, and the drop-registration hook after — since a repeat call
+// at this site (a warm loop constructing many instances, say) takes THIS
+// path, not object_set / object_set_ic, so those checks have to live here
+// too or a reassigned `drop`/`iter`/... contract violation, or a `drop`
+// slot's owned-stack registration, would silently go unenforced once the
+// cache warms up.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     JitObject* obj, const char* key, JitPropSetIC* ic, int8_t tag,
     int64_t data, int64_t line, int64_t col, bool mut, bool is_init) {
   if (ic->expected_shape == ic->result_shape) {
     _jit_overwrite_slot(obj->slots[ic->offset], key, tag, data, mut, is_init,
-                        line, col);
+                        line, col, /*check_wk=*/true);
   } else {
+    _culebra_check_well_known_prop(key, tag, data);
     if (obj->slots.capacity() == 0) obj->slots.reserve(8);
     obj->slots.push_back({JitValue{tag, data}, ic->prop_mut != 0});
     obj->shape = static_cast<culebra::Shape*>(ic->result_shape);
@@ -1231,6 +1240,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
            reinterpret_cast<int64_t>(_intern_str(obj->shape->names.back()))});
     }
   }
+  if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
 }
 
 // The two receivers a property write never stores a slot on. `view.field = v`
@@ -1289,6 +1299,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
   auto* before = obj->shape;
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
+    _culebra_check_well_known_prop(key, tag, data);
     auto* base = before ? before : culebra::shape_registry().root();
     auto* result = culebra::shape_registry().transition_add(base, key);
     ic->expected_shape = before;
@@ -1305,7 +1316,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     }
   } else {
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
-                        col);
+                        col, /*check_wk=*/true);
     ic->expected_shape = before;
     ic->result_shape = before;
     ic->offset = idx;

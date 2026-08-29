@@ -3474,17 +3474,67 @@ struct Lowering {
           // its +1 (IndexSet's rule) so the expression still reads it.
           j.emit_value_retain(val);
           auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+          auto keyPtr = j.get_or_create_global_str(nm, ".vm.propname");
+          auto i8Ty = b.getInt8Ty();
+
+          // Per-callsite transitioning-write IC (JitPropSetIC): the same
+          // "a plain `self.x = value` at this exact site always sees the
+          // same starting shape" observation fix 4 already exploited for
+          // property reads, applied to writes. Sentinel (void*)1 for both
+          // shape fields — never null, never a real heap Shape* — so a
+          // cold cache can't spuriously match a freshly-allocated
+          // instance's shape == nullptr (JitPropIC's own convention).
+          auto icTy =
+              llvm::StructType::get(j.ctx_, {ptrTy, ptrTy, i64Ty, i8Ty});
+          auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
+              llvm::ConstantInt::get(i64Ty, 1), ptrTy);
+          auto* icInit = llvm::ConstantStruct::get(
+              icTy, {sentinelPtr, sentinelPtr,
+                     llvm::ConstantInt::get(i64Ty, 0), b.getInt8(0)});
+          auto* icGlobal = new llvm::GlobalVariable(
+              *j.module_, icTy, /*isConstant=*/false,
+              llvm::GlobalValue::PrivateLinkage, icInit,
+              ".prop.set.ic." + std::to_string(j.prop_set_ic_counter_++));
+
+          auto shapeFieldPtr = b.CreateConstInBoundsGEP1_64(
+              i8Ty, objPtr, offsetof(JitObject, shape), "pset.shape.fieldp");
+          auto objShape = b.CreateLoad(ptrTy, shapeFieldPtr, "pset.obj.shape");
+          auto icExpectedPtr =
+              b.CreateStructGEP(icTy, icGlobal, 0, "pset.ic.exp.p");
+          auto icExpected = b.CreateLoad(ptrTy, icExpectedPtr, "pset.ic.exp");
+          auto shapeMatch =
+              b.CreateICmpEQ(objShape, icExpected, "pset.shape.match");
+
+          auto fastBB = BasicBlock::Create(j.ctx_, "pset.fast", fn);
+          auto slowBB = BasicBlock::Create(j.ctx_, "pset.slow", fn);
+          auto mergeBB = BasicBlock::Create(j.ctx_, "pset.merge", fn);
+          b.CreateCondBr(shapeMatch, fastBB, slowBB);
+
+          b.SetInsertPoint(fastBB);
           j.emit_call(
               j.module_->getOrInsertFunction(
-                  rt::object_set_uncached, b.getVoidTy(), ptrTy, ptrTy,
-                  b.getInt1Ty(), b.getInt8Ty(), i64Ty, i64Ty, i64Ty,
-                  b.getInt1Ty(), i64Ty, i64Ty),
-              {b.CreateIntToPtr(j.extract_data(recv), ptrTy),
-               j.get_or_create_global_str(nm, ".vm.propname"),
-               b.getInt1(true), j.extract_tag(val), j.extract_data(val),
-               j.current_line_val(), j.current_column_val(),
-               b.getInt1(false), b.getInt64(c.consts[in.d].data >> 32),
+                  rt::object_set_fast, b.getVoidTy(), ptrTy, ptrTy, ptrTy,
+                  i8Ty, i64Ty, i64Ty, i64Ty, b.getInt1Ty(), b.getInt1Ty()),
+              {objPtr, keyPtr, icGlobal, j.extract_tag(val),
+               j.extract_data(val), j.current_line_val(),
+               j.current_column_val(), b.getInt1(true), b.getInt1(false)});
+          b.CreateBr(mergeBB);
+
+          b.SetInsertPoint(slowBB);
+          j.emit_call(
+              j.module_->getOrInsertFunction(
+                  rt::object_set_ic, b.getVoidTy(), ptrTy, ptrTy, ptrTy,
+                  b.getInt1Ty(), i8Ty, i64Ty, i64Ty, i64Ty, b.getInt1Ty(),
+                  i64Ty, i64Ty),
+              {objPtr, keyPtr, icGlobal, b.getInt1(true), j.extract_tag(val),
+               j.extract_data(val), j.current_line_val(),
+               j.current_column_val(), b.getInt1(false),
+               b.getInt64(c.consts[in.d].data >> 32),
                b.getInt64(c.consts[in.d].data & 0xffffffff)});
+          b.CreateBr(mergeBB);
+
+          b.SetInsertPoint(mergeBB);
           break;
         }
         case Op::PropWr: {
