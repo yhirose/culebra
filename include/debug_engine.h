@@ -91,6 +91,7 @@ class VmDebugEngine : public DebugEngine {
       modules = loader.load_program(program, src, msgs);
       splice_stdlib_preamble(modules);
     } catch (const CulebraError& e) {
+      // interrupt: loading polls nothing, so none arrives here.
       diag(format_error_message(e) + "\n");
       return 1;
     }
@@ -118,6 +119,10 @@ class VmDebugEngine : public DebugEngine {
           vm::Compiler::compile_modules(modules, vm::Debug::Step));
       vm::Exec::run(*prog_);
     } catch (const CulebraError& e) {
+      // interrupt: the DAP lane installs no SIGINT handler, so no press reaches
+      // the engine here — and this runs on the debuggee thread, where letting
+      // anything escape is std::terminate. If the lane ever polls, report the
+      // interrupt to the client; do not re-throw it off this thread.
       diag(format_error_message(e) + "\n");
       code = 1;
     } catch (const std::exception& e) {

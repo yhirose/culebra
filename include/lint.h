@@ -2335,6 +2335,7 @@ inline void collect_shadow(const peg::Ast& ast, std::vector<Diagnostic>& diags) 
   try {
     check_shadow(ast);
   } catch (const culebra::CulebraError& e) {
+    // interrupt: a static walk over an AST, running no culebra code.
     diags.push_back(Diagnostic{e.kind, e.what(), e.line, e.col, Severity::Error});
   }
 }

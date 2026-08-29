@@ -182,6 +182,9 @@ bool load_entry_program(
     modules = loader.load_program(path, src, msgs);
     if (splice_preamble) culebra::splice_stdlib_preamble(modules, baked);
   } catch (const culebra::CulebraError& e) {
+    // interrupt: loading only reads and parses, and no parse path polls the
+    // flag, so an Interrupted cannot originate under this try. A press here
+    // stays pending and is answered by the first safepoint of the run.
     print_culebra_error(e);
     return false;
   }
@@ -1667,6 +1670,7 @@ bool doc_block_modules(const std::string& name, const std::string& code,
   } catch (const culebra::CulebraError& e) {
     // A transform's reject (`yield` outside a generator, ...) throws rather
     // than reporting through msgs.
+    // interrupt: a parse polls nothing, so only that reject arrives here.
     fail = {false, "SyntaxError", std::string(e.what())};
     return false;
   }
@@ -1848,7 +1852,7 @@ int run_test(int argc, const char** argv) {
     if (all_digits(v)) {
       try {
         n = std::stoi(std::string(v));   // digits checked; this catches overflow
-      } catch (...) {
+      } catch (...) {                    // interrupt: one std::stoi, no culebra code
         n = 0;
       }
     }
@@ -1875,7 +1879,7 @@ int run_test(int argc, const char** argv) {
     auto to_int = [](std::string_view s) {
       try {
         return std::stoi(std::string(s));  // digits checked; this catches overflow
-      } catch (...) {
+      } catch (...) {                      // interrupt: one std::stoi, no culebra code
         return -1;                         // rejected by the range check below
       }
     };
@@ -2155,6 +2159,7 @@ int run_lint(int argc, const char** argv) {
       try {
         lowered = culebra::parse_with_transforms(path, s, parse_msgs);
       } catch (const culebra::CulebraError& e) {
+        // interrupt: a parse polls nothing, and `lint` installs no handler.
         return vector<culebra::lint::Diagnostic>{
             {e.kind, e.what(), e.line, e.col, culebra::lint::Severity::Error}};
       }
@@ -2404,7 +2409,7 @@ int run_serve(int argc, const char** argv) {
       }
       try {
         port = std::stoi(std::string(v));   // digits checked; this catches overflow
-      } catch (...) {
+      } catch (...) {                       // interrupt: one std::stoi, no culebra code
         std::println(stderr, "culebra serve: --port value '{}' out of range", v);
         return 2;
       }

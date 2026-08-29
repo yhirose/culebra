@@ -83,6 +83,8 @@ class DapServer {
         handle(dapjson::parse(body));
       } catch (const std::exception&) {
         // A malformed message shouldn't kill the session.
+        // interrupt: dispatch only; the debuggee runs on its own thread, and
+        // this lane installs no SIGINT handler.
       }
     }
     // Make sure a paused debuggee is released so its thread can exit.

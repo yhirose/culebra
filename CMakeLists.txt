@@ -1934,6 +1934,8 @@ add_test(NAME jit_error_pos_test
 # Cooperative Ctrl+C (SIGINT): a tight loop is interruptible, the throw is a
 # catchable `Interrupted` (defer runs, catch resumes), uncaught exits 130 —
 # identical across interp / JIT / AOT. Drives the binary and sends a signal.
+# Also the runner lanes (`culebra test`, `test --doc`), where one press has to
+# end the run rather than fail the item and carry on to the next.
 add_test(NAME signal_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/signal_test.sh
                  $<TARGET_FILE:culebra>)

@@ -277,6 +277,73 @@ check_repl() {
   fi
 }
 
+# --- The runner lanes (`culebra test`, `culebra test --doc`) ---------------
+#
+# The engine groups above drive a script, where an uncaught interrupt is the
+# whole run. A runner is different: it executes somebody else's files in a loop
+# and catches what they throw, so an interrupt it reports as a failure is a
+# press the user has to send again for every remaining item — and the flag is
+# one-shot, so the rest of the suite runs as if nothing had been pressed. Both
+# runners have shipped exactly that bug (`culebra test` at the file level, then
+# `--doc` at the block level), and neither was covered here.
+#
+# The assertion is therefore not just the exit code: the work queued behind the
+# interrupted item must not have run.
+mkdir -p "$TMP/runner"
+cat > "$TMP/runner/test_spin.cul" <<'EOF'
+test('spins until interrupted', fn () {
+  mut i = 0
+  while true { i = i + 1 }
+})
+
+test('must not run', fn () { IO.eprint("AFTER\n") })
+EOF
+
+cat > "$TMP/runner/spin.md" <<'EOF'
+# spin
+
+```culebra
+mut i = 0
+while true { i = i + 1 }
+```
+
+```culebra
+IO.eprint("AFTER\n")
+```
+EOF
+
+# check_stops <desc> <warmup> <forbidden> -- <command...>
+# One press must end the run: exit 130, and `forbidden` (a marker printed by the
+# item queued behind the interrupted one) must not appear.
+check_stops() {
+  local desc="$1" warm="$2" forbidden="$3"; shift 3
+  [ "$1" = "--" ] && shift
+  local outf="$TMP/out.${desc// /_}"
+  "$@" > "$outf" 2>&1 &
+  local pid=$!
+  ( sleep 20; kill -9 "$pid" 2>/dev/null ) & local wd=$!
+  sleep "$warm"
+  kill -INT "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null; local code=$?
+  kill "$wd" 2>/dev/null
+  local out; out="$(tr '\n' '|' < "$outf")"
+  if [ "$code" = 130 ] && ! printf '%s' "$out" | grep -q "$forbidden"; then
+    echo "ok [$desc]"
+  else
+    echo "FAIL [$desc]: exit=$code out='$out'"
+    echo "            want exit=130 without '$forbidden'"
+    fail=1
+  fi
+}
+
+run_cli_group() {
+  fail=0
+  check_stops "test file" 1.5 AFTER -- "$CULEBRA" test "$TMP/runner/test_spin.cul"
+  check_stops "test doc vm" 1.5 AFTER -- "$CULEBRA" test --doc "$TMP/runner/spin.md"
+  check_stops "test doc jit" 1.5 AFTER -- "$CULEBRA" test --doc --jit "$TMP/runner/spin.md"
+  exit $fail
+}
+
 # The three backend groups are independent, so they run concurrently. Within a
 # group the checks stay serial: each sends its SIGINT after a fixed beat, so at
 # most one timing-sensitive process is live per group — three across the whole
@@ -351,11 +418,13 @@ run_aot_group() {
 run_vm_group  > "$TMP/log.vm"  2>&1 & ip=$!
 run_jit_group > "$TMP/log.jit" 2>&1 & jp=$!
 run_aot_group > "$TMP/log.aot" 2>&1 & ap=$!
+run_cli_group > "$TMP/log.cli" 2>&1 & cp=$!
 wait "$ip"; ic=$?
 wait "$jp"; jc=$?
 wait "$ap"; ac=$?
-cat "$TMP/log.vm" "$TMP/log.jit" "$TMP/log.aot"
-[ "$ic" = 0 ] && [ "$jc" = 0 ] && [ "$ac" = 0 ] || fail=1
+wait "$cp"; cc=$?
+cat "$TMP/log.vm" "$TMP/log.jit" "$TMP/log.aot" "$TMP/log.cli"
+[ "$ic" = 0 ] && [ "$jc" = 0 ] && [ "$ac" = 0 ] && [ "$cc" = 0 ] || fail=1
 
 if [ "$fail" = 0 ]; then echo "signal_test OK"; fi
 exit $fail

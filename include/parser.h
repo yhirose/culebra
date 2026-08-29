@@ -1842,6 +1842,8 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
       return nullptr;
     }
   } catch (const CulebraError& e) {
+    // interrupt: the depth guard's throw, or a bare `\r`. The parser polls no
+    // interrupt flag, so nothing else can arrive.
     msgs.push_back(std::format("{}:{}:{}: {}\n", path, e.line, e.col, e.what()));
     return nullptr;
   }
@@ -1872,6 +1874,7 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
       return nullptr;
     }
   } catch (const CulebraError& e) {
+    // interrupt: as in parse() above — the parser polls nothing.
     msgs.push_back(std::format("{}:{}:{}: {}\n", path, e.line, e.col, e.what()));
     return nullptr;
   }

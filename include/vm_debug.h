@@ -134,6 +134,8 @@ class VmDebugSession {
       vm::Exec::run(*kept.prog);
       return true;
     } catch (const CulebraError& e) {
+      // interrupt: a DAP evaluate/setVariable, on the debuggee thread and in a
+      // lane that installs no handler — see debug_engine.h's run().
       err = std::string(e.kind) + ": " + e.what();
     } catch (const std::exception& e) {
       err = e.what();
