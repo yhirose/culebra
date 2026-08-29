@@ -637,7 +637,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_is_symlink(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_symlink(
     const char* target, const char* link, int64_t line, int64_t col) {
   std::error_code ec;
+#ifdef _WIN32
+  // libstdc++'s MinGW filesystem does not implement create_symlink — it
+  // answers "Function not implemented" — but Windows itself has symlinks.
+  // Two things POSIX's single call does not need: a link whose target is a
+  // directory must say so, and an unprivileged process needs
+  // ALLOW_UNPRIVILEGED_CREATE plus Developer Mode (a Windows that predates
+  // the flag rejects the whole call, which is the pre-existing failure).
+  std::filesystem::path tp(target ? target : ""), lp(link ? link : "");
+  DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+  std::error_code dir_ec;
+  if (std::filesystem::is_directory(tp, dir_ec))
+    flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+  if (!CreateSymbolicLinkW(lp.wstring().c_str(), tp.wstring().c_str(), flags)) {
+    ec = std::error_code(static_cast<int>(GetLastError()),
+                         std::system_category());
+  }
+#else
   std::filesystem::create_symlink(target ? target : "", link ? link : "", ec);
+#endif
   if (ec) _fs_throw_io(culebra::format("FS.symlink('{}', '{}')",
                                        target ? target : "", link ? link : ""),
                        line, col, ec);

@@ -37,6 +37,13 @@
 #define _WIN32_WINNT 0x0A00
 #endif
 #include <windows.h>
+
+// Windows 10 1703 added the flag that lets an unprivileged process create a
+// symlink under Developer Mode. A MinGW headers set older than that compiles
+// without it, so name it here rather than at the one call site.
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
+#endif
 #include <io.h>       // _isatty
 #include <stdlib.h>   // _putenv_s
 // SIGKILL has no Windows equivalent; it is passed only to proc::kill_pid on the

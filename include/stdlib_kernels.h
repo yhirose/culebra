@@ -20,6 +20,10 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#ifdef _WIN32
+#include <ext/stdio_filebuf.h>  // libstdc++: FILE* -> streambuf (see _FileStream)
+#include <fcntl.h>              // _O_BINARY / _O_APPEND for _open_osfhandle
+#endif
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -289,10 +293,28 @@ inline std::string _sys_data_dir(std::string_view app, int64_t line,
 // a missing id is a no-op or "closed file" error depending on the op).
 
 struct _FileStream {
-  std::fstream fs;
+  // Windows cannot use a plain std::fstream here. That class has no way to
+  // ask for FILE_SHARE_DELETE, and without it Windows refuses to remove a
+  // file while a handle is open, where POSIX unlinks regardless — so a
+  // program that opened a file could not delete it until it closed. Windows
+  // opens the HANDLE itself with the share mode it needs and wraps it;
+  // everywhere else `stream` is a std::fstream. Every operation below sees
+  // only std::iostream, so there is one code path past this point.
+  //
+  // The wrapper is libstdc++'s stdio_filebuf, which is what makes a FILE*
+  // into a streambuf. Windows builds with clang++ but against MinGW's
+  // libstdc++, so it is available; moving that lane to libc++ would need a
+  // streambuf of our own over the same HANDLE, and nothing outside this
+  // struct and _file_open would change.
+#ifdef _WIN32
+  std::unique_ptr<__gnu_cxx::stdio_filebuf<char>> buf;  // outlives `stream`
+#endif
+  std::unique_ptr<std::iostream> stream;
   char mode;        // 'r' / 'w' / 'a'
   bool readable;
   bool writable;
+
+  std::iostream& fs() { return *stream; }
 };
 
 struct _FileTable {
@@ -325,11 +347,50 @@ inline int64_t _file_open(const std::string& path, const std::string& mode,
   auto& tbl = _file_table();
   int64_t id = tbl.next_id++;
   auto& slot = tbl.entries[id];
-  slot.fs.open(path, flags);
   slot.mode = mode[0];
   slot.readable = readable;
   slot.writable = writable;
-  if (!slot.fs.is_open()) {
+  bool opened = false;
+#ifdef _WIN32
+  // FILE_SHARE_DELETE is the point of opening by hand — see _FileStream.
+  // Append asks for FILE_APPEND_DATA rather than GENERIC_WRITE so every
+  // write lands at the end even if something else is extending the file,
+  // which is what the CRT's "ab" means.
+  DWORD access = readable      ? GENERIC_READ
+               : slot.mode == 'a' ? FILE_APPEND_DATA
+                                  : GENERIC_WRITE;
+  DWORD disposition = readable      ? OPEN_EXISTING
+                    : slot.mode == 'w' ? CREATE_ALWAYS
+                                       : OPEN_ALWAYS;
+  HANDLE h = CreateFileW(
+      std::filesystem::path(path).wstring().c_str(), access,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h != INVALID_HANDLE_VALUE) {
+    int oflags = _O_BINARY | (readable ? _O_RDONLY : _O_WRONLY) |
+                 (slot.mode == 'a' ? _O_APPEND : 0);
+    int fd = _open_osfhandle(reinterpret_cast<intptr_t>(h), oflags);
+    if (fd == -1) {
+      CloseHandle(h);
+    } else {
+      // The FILE* owns the fd, which owns the HANDLE: closing the filebuf
+      // (when this entry is erased) closes all three.
+      const char* fmode = readable ? "rb" : (slot.mode == 'a' ? "ab" : "wb");
+      if (FILE* f = _fdopen(fd, fmode)) {
+        slot.buf = std::make_unique<__gnu_cxx::stdio_filebuf<char>>(f, flags);
+        slot.stream = std::make_unique<std::iostream>(slot.buf.get());
+        opened = true;
+      } else {
+        _close(fd);
+      }
+    }
+  }
+#else
+  auto f = std::make_unique<std::fstream>(path, flags);
+  opened = f->is_open();
+  if (opened) slot.stream = std::move(f);
+#endif
+  if (!opened) {
     tbl.entries.erase(id);
     _file_throw(culebra::format("File.open('{}', '{}')", path, mode), line, col);
   }
@@ -349,7 +410,7 @@ inline _FileStream& _file_get(int64_t id, const char* op, int64_t line, int64_t 
 inline std::string _file_read_all(int64_t id, int64_t line, int64_t col) {
   auto& s = _file_get(id, "read", line, col);
   if (!s.readable) _file_throw("File.read: file not opened for reading", line, col);
-  std::string out((std::istreambuf_iterator<char>(s.fs)),
+  std::string out((std::istreambuf_iterator<char>(s.fs())),
                   std::istreambuf_iterator<char>());
   return out;
 }
@@ -359,20 +420,20 @@ inline std::string _file_read_n(int64_t id, int64_t n, int64_t line, int64_t col
   if (!s.readable) _file_throw("File.read: file not opened for reading", line, col);
   if (n < 0) n = 0;
   std::string buf(static_cast<size_t>(n), '\0');
-  s.fs.read(buf.data(), n);
-  buf.resize(static_cast<size_t>(s.fs.gcount()));
+  s.fs().read(buf.data(), n);
+  buf.resize(static_cast<size_t>(s.fs().gcount()));
   return buf;
 }
 
 inline void _file_write(int64_t id, std::string_view data, int64_t line, int64_t col) {
   auto& s = _file_get(id, "write", line, col);
   if (!s.writable) _file_throw("File.write: file not opened for writing", line, col);
-  s.fs.write(data.data(), static_cast<std::streamsize>(data.size()));
-  if (s.fs.bad()) _file_throw("File.write: write failed", line, col);
+  s.fs().write(data.data(), static_cast<std::streamsize>(data.size()));
+  if (s.fs().bad()) _file_throw("File.write: write failed", line, col);
 }
 
 inline void _file_flush(int64_t id, int64_t line, int64_t col) {
-  _file_get(id, "flush", line, col).fs.flush();
+  _file_get(id, "flush", line, col).fs().flush();
 }
 
 inline void _file_seek(int64_t id, int64_t off, std::string_view whence,
@@ -385,13 +446,13 @@ inline void _file_seek(int64_t id, int64_t off, std::string_view whence,
   else _file_throw(culebra::format("File.seek: invalid whence '{}' "
                                    "(expected set/cur/end)", whence),
                    line, col, "ValueError");
-  s.fs.clear();  // clear EOF so seeking past a prior read works
-  if (s.readable) s.fs.seekg(off, dir); else s.fs.seekp(off, dir);
+  s.fs().clear();  // clear EOF so seeking past a prior read works
+  if (s.readable) s.fs().seekg(off, dir); else s.fs().seekp(off, dir);
 }
 
 inline int64_t _file_tell(int64_t id, int64_t line, int64_t col) {
   auto& s = _file_get(id, "tell", line, col);
-  return static_cast<int64_t>(s.readable ? s.fs.tellg() : s.fs.tellp());
+  return static_cast<int64_t>(s.readable ? s.fs().tellg() : s.fs().tellp());
 }
 
 // Read one line (newline stripped, handles \n / \r\n / \r). Returns false
@@ -401,11 +462,11 @@ inline bool _file_getline(int64_t id, std::string& out, int64_t line, int64_t co
   out.clear();
   int ch;
   bool any = false;
-  while ((ch = s.fs.get()) != EOF) {
+  while ((ch = s.fs().get()) != EOF) {
     any = true;
     if (ch == '\n') return true;
     if (ch == '\r') {
-      if (s.fs.peek() == '\n') s.fs.get();
+      if (s.fs().peek() == '\n') s.fs().get();
       return true;
     }
     out.push_back(static_cast<char>(ch));

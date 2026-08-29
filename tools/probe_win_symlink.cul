@@ -1,0 +1,44 @@
+// TEMPORARY probe (ci/win-probe only): does FS.symlink reach the OS on
+// Windows now, and do readlink / is_symlink work against what it made?
+// test_fs_posix.cul cannot answer this — its chmod section fails first.
+let root = FS.mkdtemp("culebra_symlink_probe_")
+let f = FS.join(root, "f.txt")
+FS.write(f, "x")
+
+let l = FS.join(root, "link")
+let made = try {
+  FS.symlink(f, l)
+  "ok"
+} catch e {
+  "{e.kind}: {e.message}"
+}
+println("symlink   = [{made}]")
+
+let is_link = try {
+  "{FS.is_symlink(l)}"
+} catch e {
+  "{e.kind}: {e.message}"
+}
+println("is_symlink= [{is_link}]")
+
+let target = try {
+  FS.readlink(l)
+} catch e {
+  "{e.kind}: {e.message}"
+}
+println("readlink  = [{target}]")
+println("expected  = [{f}]")
+
+// A directory link takes a different flag on Windows; check that arm too.
+let d = FS.join(root, "sub")
+FS.mkdir(d)
+let dl = FS.join(root, "dlink")
+let dmade = try {
+  FS.symlink(d, dl)
+  "ok"
+} catch e {
+  "{e.kind}: {e.message}"
+}
+println("dir link  = [{dmade}]")
+
+FS.remove(root, recursive: true)

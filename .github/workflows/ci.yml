@@ -1532,6 +1532,14 @@ jobs:
       # registrar survived and the AOT one proves the `__Foreign` archive's,
       # force-loaded by naming the namespace. tests/test_foreign.cul is the
       # same file `just test` runs everywhere else.
+      # TEMPORARY (ci/win-probe): does FS.symlink reach the OS now? The suite
+      # cannot say — test_fs_posix.cul stops at chmod first. Removed with the
+      # answer.
+      - name: PROBE — FS.symlink
+        run: |
+          set +e
+          timeout 60 ./build-win-aot/culebra.exe --vm tools/probe_win_symlink.cul
+          echo "rc=$?"
       # The whole suite, held to a list of known failures that only shrinks.
       # Until this, six of the 215 tests/*.cul ran on Windows — the reason a
       # registration the clang/lld switch dropped reached master. ~80 s.

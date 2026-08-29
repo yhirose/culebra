@@ -9,16 +9,6 @@
 #
 # Grouped by cause, so the list reads as a work list rather than a tally.
 
-# --- a file still open cannot be removed -------------------------------------
-# `FS.remove` answers "The process cannot access the file because it is being
-# used by another process" — Windows refuses while a handle (or, for
-# SharedBuffer.file, a mapping) is open, where POSIX unlinks regardless.
-# SharedBuffer.file's own CreateFileA is fixed (FILE_SHARE_DELETE, matching
-# fswatcher.h's). File.open goes through std::fstream, which has no portable
-# way to ask for share-delete — fixing it means opening via a native HANDLE
-# and wrapping it, not a one-line flag; that is its own change.
-tests/test_file.cul
-
 # --- the POSIX filesystem model, which Windows does not provide --------------
 # Split out of test_fs.cul so the rest of that file runs here, which it now
 # does in full. Three causes, all in this one file:
@@ -28,11 +18,10 @@ tests/test_file.cul
 #   * numeric uid/gid ownership — Windows has none. `FS.stat` omits both
 #     fields there and `FS.chown` raises RuntimeError, both by design.
 #   * creating a symlink — needs no privilege on POSIX; on Windows it needs
-#     Developer Mode or elevation, AND libstdc++'s MinGW filesystem does not
-#     implement create_symlink at all (`FS.symlink` answers "Function not
-#     implemented"). This one is reachable: CreateSymbolicLinkW called
-#     directly would create the link where the process is allowed to. That is
-#     its own change, and it cannot make the privilege requirement go away.
+#     Developer Mode or elevation. FS.symlink now calls CreateSymbolicLinkW
+#     itself (libstdc++'s MinGW create_symlink answers "Function not
+#     implemented"), so the call reaches the OS — but the privilege
+#     requirement is the platform's and does not go away.
 # What the two platforms do agree on — the owner-write bit, chmod's error
 # kinds — stayed in test_fs.cul and passes.
 tests/test_fs_posix.cul
