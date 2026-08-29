@@ -37,12 +37,23 @@
 #define _WIN32_WINNT 0x0A00
 #endif
 #include <windows.h>
+// WIN32_LEAN_AND_MEAN above keeps <windows.h> from pulling this in, and the
+// FSCTL_* codes live here — FS.readlink asks FSCTL_GET_REPARSE_POINT for a
+// symlink's target.
+#include <winioctl.h>
 
 // Windows 10 1703 added the flag that lets an unprivileged process create a
 // symlink under Developer Mode. A MinGW headers set older than that compiles
 // without it, so name it here rather than at the one call site.
 #ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
 #define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
+#endif
+
+// The ceiling the filesystem fixes for a reparse buffer, which FS.readlink
+// sizes its read by. ntifs.h names it and a MinGW toolchain does not ship
+// that header.
+#ifndef MAXIMUM_REPARSE_DATA_BUFFER_SIZE
+#define MAXIMUM_REPARSE_DATA_BUFFER_SIZE 16384
 #endif
 #include <io.h>       // _isatty
 #include <stdlib.h>   // _putenv_s

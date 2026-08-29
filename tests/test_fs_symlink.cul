@@ -1,0 +1,43 @@
+// Conformance: FS.symlink / FS.readlink / FS.is_symlink. See docs/stdlib.md §FS.
+// Tests run on vm, JIT, and AOT via `just test`; identical stdout.
+//
+// Its own file rather than a section of test_fs_posix.cul, because the two
+// fail for unrelated reasons on Windows and an assert stops at the first:
+// permission bits and uid/gid are absent there by design, while symlinks
+// exist and only need the privilege the platform asks for. Keeping them
+// apart is what lets the Windows lane report on this one at all.
+let root = FS.mkdtemp("culebra_fs_symlink_test_")
+let target = FS.join(root, "target.txt")
+FS.write(target, "hello")
+
+// A link to a file: is_symlink sees the link itself, readlink names what it
+// points at, and reading through it reaches the target's contents.
+let link = FS.join(root, "link.txt")
+FS.symlink(target, link)
+assert_true(FS.is_symlink(link))
+assert_eq(FS.readlink(link), target)
+assert_eq(FS.read(link), "hello")
+// The target is not a link, and neither is a plain missing path.
+assert_eq(FS.is_symlink(target), false)
+assert_eq(FS.is_symlink(FS.join(root, "nothing")), false)
+
+// A link to a directory. Windows needs to be told which of the two it is
+// making; POSIX does not distinguish, so this arm is what catches a wrong
+// flag there.
+let dir = FS.join(root, "sub")
+FS.mkdir(dir)
+FS.write(FS.join(dir, "inside.txt"), "x")
+let dlink = FS.join(root, "dlink")
+FS.symlink(dir, dlink)
+assert_true(FS.is_symlink(dlink))
+assert_eq(FS.readlink(dlink), dir)
+assert_eq(FS.read(FS.join(dlink, "inside.txt")), "x")
+
+// readlink on something that is not a link is an error, not an empty answer.
+assert_throws("IOError", fn () {
+  FS.readlink(target)
+})
+
+FS.remove(root, recursive: true)
+
+IO.inspect("test_fs_symlink OK")

@@ -627,11 +627,102 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_mkdtemp(
   _fs_throw_io(culebra::format("FS.mkdtemp('{}')", name), line, col, ec);
 }
 
+#ifdef _WIN32
+// A Windows symlink is a reparse point carrying IO_REPARSE_TAG_SYMLINK, and
+// its target lives in the reparse data rather than in the directory entry.
+// libstdc++'s MinGW filesystem reads neither — symlink_status does not report
+// one as a link, and read_symlink answers "Function not implemented" — so
+// FS.symlink could create a link that FS.is_symlink then denied was one.
+// These two read what CreateSymbolicLinkW writes.
+namespace _win_symlink {
+
+// The reparse buffer's layout is fixed by the filesystem, but the struct for
+// it lives in the DDK's ntifs.h, which a MinGW toolchain does not ship. This
+// is that layout, narrowed to the symlink case.
+struct ReparseHeader {
+  DWORD tag;
+  WORD data_len;
+  WORD reserved;
+  WORD subst_offset;  // bytes into PathBuffer, and its length, for the
+  WORD subst_len;     // substitute name (what the link resolves through)
+  WORD print_offset;  // and for the print name (what a user typed)
+  WORD print_len;
+  ULONG flags;        // SYMLINK_FLAG_RELATIVE when the target is relative
+  WCHAR path[1];
+};
+
+// Open the link itself rather than what it points at.
+inline HANDLE open_reparse(const char* path) {
+  return CreateFileW(std::filesystem::path(path ? path : "").wstring().c_str(),
+                     0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                     nullptr, OPEN_EXISTING,
+                     FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                     nullptr);
+}
+
+inline bool is_symlink(const char* path) {
+  DWORD attrs = GetFileAttributesW(
+      std::filesystem::path(path ? path : "").wstring().c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES ||
+      !(attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+    return false;
+  }
+  // A reparse point is not necessarily a symlink (a mount point is one too),
+  // so the tag decides.
+  WIN32_FIND_DATAW fd{};
+  HANDLE find = FindFirstFileW(
+      std::filesystem::path(path ? path : "").wstring().c_str(), &fd);
+  if (find == INVALID_HANDLE_VALUE) return false;
+  FindClose(find);
+  return fd.dwReserved0 == IO_REPARSE_TAG_SYMLINK;
+}
+
+// The link's target, or an empty string when `path` is not a symlink or the
+// reparse data cannot be read. `ec` distinguishes the two for the caller.
+inline std::string read_link(const char* path, std::error_code& ec) {
+  HANDLE h = open_reparse(path);
+  if (h == INVALID_HANDLE_VALUE) {
+    ec = std::error_code(static_cast<int>(GetLastError()),
+                         std::system_category());
+    return {};
+  }
+  std::vector<BYTE> buf(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+  DWORD got = 0;
+  BOOL ok = DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, nullptr, 0, buf.data(),
+                            static_cast<DWORD>(buf.size()), &got, nullptr);
+  DWORD err = ok ? 0 : GetLastError();
+  CloseHandle(h);
+  if (!ok) {
+    ec = std::error_code(static_cast<int>(err), std::system_category());
+    return {};
+  }
+  auto* rp = reinterpret_cast<ReparseHeader*>(buf.data());
+  if (rp->tag != IO_REPARSE_TAG_SYMLINK) {
+    ec = std::make_error_code(std::errc::invalid_argument);
+    return {};
+  }
+  // Prefer the print name: it is the target as it was written, where the
+  // substitute name carries the \??\ prefix the object manager wants.
+  WORD off = rp->print_len ? rp->print_offset : rp->subst_offset;
+  WORD len = rp->print_len ? rp->print_len : rp->subst_len;
+  std::wstring w(reinterpret_cast<const WCHAR*>(
+                     reinterpret_cast<const BYTE*>(rp->path) + off),
+                 len / sizeof(WCHAR));
+  return std::filesystem::path(w).string();
+}
+
+}  // namespace _win_symlink
+#endif  // _WIN32
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_is_symlink(
     const char* path) {
+#ifdef _WIN32
+  return _win_symlink::is_symlink(path) ? 1 : 0;
+#else
   std::error_code ec;
   return std::filesystem::is_symlink(
       std::filesystem::symlink_status(path ? path : "", ec)) ? 1 : 0;
+#endif
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_symlink(
@@ -664,10 +755,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_symlink(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_readlink(
     const char* path, int64_t line, int64_t col) {
   std::error_code ec;
-  auto out = std::filesystem::read_symlink(path ? path : "", ec);
+#ifdef _WIN32
+  auto out = _win_symlink::read_link(path, ec);  // see the namespace above
+#else
+  auto out = std::filesystem::read_symlink(path ? path : "", ec).string();
+#endif
   if (ec) _fs_throw_io(culebra::format("FS.readlink('{}')", path ? path : ""),
                        line, col, ec);
-  return _culebra_heap_str(out.string());
+  return _culebra_heap_str(out);
 }
 
 // `FS.walk(path)` -> Array<String>, recursive depth-first.

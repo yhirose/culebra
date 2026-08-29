@@ -2,11 +2,10 @@
 // Windows does not provide. See docs/stdlib.md §FS.
 // Tests run on vm, JIT, and AOT via `just test`; identical stdout.
 //
-// Split out of test_fs.cul, which Windows now passes in full. Three things
+// Split out of test_fs.cul, which Windows now passes in full. Two things
 // live here: permission bits (Windows keeps one read-only attribute, so a
-// mode does not round-trip), numeric uid/gid ownership (Windows has none —
-// FS.stat omits both fields there and FS.chown raises), and creating a
-// symlink (unprivileged and unconditional on POSIX only).
+// mode does not round-trip) and numeric uid/gid ownership (Windows has none —
+// FS.stat omits both fields there and FS.chown raises).
 // tools/windows_known_failures.txt lists this file for those reasons; what
 // both platforms *do* agree on stayed in test_fs.cul.
 
@@ -61,14 +60,8 @@ assert_eq(try {
   e.kind
 }, "IOError")
 
-// symlink / readlink / is_symlink. Creating a symlink needs no privilege on
-// POSIX; on Windows it needs one (Developer Mode or an elevated process), and
-// libstdc++'s MinGW filesystem does not implement create_symlink at all —
-// FS.symlink answers "Function not implemented" there.
-let lf = FS.join(tmp_root, "link")
-FS.symlink(cf, lf)
-assert_true(FS.is_symlink(lf))
-assert_eq(FS.readlink(lf), cf)
+// symlink / readlink / is_symlink live in test_fs_symlink.cul — they work on
+// Windows (given the privilege it asks for), unlike everything above.
 
 FS.remove(tmp_root, recursive: true)
 

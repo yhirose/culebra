@@ -11,19 +11,17 @@
 
 # --- the POSIX filesystem model, which Windows does not provide --------------
 # Split out of test_fs.cul so the rest of that file runs here, which it now
-# does in full. Three causes, all in this one file:
+# does in full. Two causes, both in this one file:
 #   * permission bits — Windows keeps one read-only attribute instead, so
 #     every file reads back 0o666 or 0o444 and `FS.chmod(p, 0o755)` does not
 #     round-trip through `FS.stat(p).mode`. Not a bug.
 #   * numeric uid/gid ownership — Windows has none. `FS.stat` omits both
 #     fields there and `FS.chown` raises RuntimeError, both by design.
-#   * creating a symlink — needs no privilege on POSIX; on Windows it needs
-#     Developer Mode or elevation. FS.symlink now calls CreateSymbolicLinkW
-#     itself (libstdc++'s MinGW create_symlink answers "Function not
-#     implemented"), so the call reaches the OS — but the privilege
-#     requirement is the platform's and does not go away.
 # What the two platforms do agree on — the owner-write bit, chmod's error
-# kinds — stayed in test_fs.cul and passes.
+# kinds — stayed in test_fs.cul and passes. Symlinks moved to
+# tests/test_fs_symlink.cul, which Windows runs: FS.symlink / FS.readlink /
+# FS.is_symlink go through Windows' own calls now (libstdc++'s MinGW
+# filesystem implements none of the three).
 tests/test_fs_posix.cul
 
 # --- native behaviour that differs, one test each ----------------------------
