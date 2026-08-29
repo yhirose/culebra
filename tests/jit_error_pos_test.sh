@@ -692,5 +692,29 @@ check_same "assign builtin destructure" "[println] = [5]"
 check_same "assign builtin before let" "println = 5
 let println = 1"
 
+# The `@value` contract's declaration half. Each is a compile-time SyntaxError
+# reported at the offending member (lint reports the same text pre-eval), so
+# both lanes must name the same position as well as the same message.
+check_same "value untyped field"       "@value class A {
+  x = 1
+}"
+check_same "value non-scalar field"    "@value class A {
+  s: String
+}"
+check_same "value self-referential"    "@value class A {
+  inner: A
+}"
+check_same "value drop method"         "@value class A {
+  x: Long
+  drop() { 1 }
+}"
+check_same "value drop field"          "@value class A {
+  drop: Long
+}"
+check_same "value and packable"        "@value @packable class A {
+  x: Int32
+}"
+check_same "value on enum"             "@value enum E { A }"
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

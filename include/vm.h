@@ -5000,13 +5000,14 @@ class Compiler {
 
   // Feed `val` through the declaration's decorators, innermost first: the one
   // nearest the declaration sees the raw value, and each above wraps what the
-  // one below returned. `@packable` and `@derive(...)` are compiler
+  // one below returned. `@packable`, `@value` and `@derive(...)` are compiler
   // directives, not callable, and are the reason the loop can skip an entry.
   // Returns the slot holding the outermost result (+1).
   int32_t apply_decorators(const peg::Ast& ast, size_t dec_end, int32_t val) {
     for (size_t i = dec_end; i > 0; --i) {
       const auto& dec = *ast.nodes[i - 1];
       if (culebra::is_packable_decorator(dec)) continue;
+      if (culebra::is_value_decorator(dec)) continue;
       if (!culebra::view_derive(dec).empty()) continue;
       const auto& dec_expr = *dec.nodes[0];
       auto callee = compile_expr(dec_expr);
@@ -5148,15 +5149,24 @@ class Compiler {
     while (dec_end < ast.nodes.size() &&
            ast.nodes[dec_end]->tag == "DECORATOR"_)
       dec_end++;
-    // `@derive(...)` and `@packable` are compiler-recognized directives, not
-    // callable decorators — apply_decorators skips them; every other one is
-    // called on the finished class value below.
+    // `@derive(...)`, `@packable` and `@value` are compiler-recognized
+    // directives, not callable decorators — apply_decorators skips them; every
+    // other one is called on the finished class value below.
     bool is_packable = false;
-    for (size_t i = 0; i < dec_end; i++)
+    bool is_value = false;
+    for (size_t i = 0; i < dec_end; i++) {
       if (culebra::is_packable_decorator(*ast.nodes[i])) is_packable = true;
+      if (culebra::is_value_decorator(*ast.nodes[i])) is_value = true;
+    }
     auto class_head =
         culebra::parse_generic_head(ast.nodes[dec_end]->token);
     auto class_name = std::string(class_head.outer);
+    // The one clause of the `@value` contract that is about the decorators
+    // rather than a member; the per-member half is require_value_member,
+    // called from the collection loop below. lint reports both pre-eval.
+    if (is_value && is_packable)
+      throw culebra::CulebraError("SyntaxError",
+                                  culebra::value_packable_message(class_name));
     // A member's annotations lower against the class's Generic params, as
     // the JIT's class_type_params_ does.
     auto type_params = culebra::split_generic_args(class_head.args);
@@ -5184,6 +5194,7 @@ class Compiler {
       if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
       if (is_packable && mv.is_field && !mv.is_static)
         culebra::require_typed_packable_field(mv, class_name);
+      if (is_value) culebra::require_value_member(mv, class_name);
       if (is_packable && mv.is_typed_field)
         packable_fields.emplace_back(mv.name, mv.type_annotation);
       // Member classification, mirroring collect_class_members on both
@@ -5212,6 +5223,10 @@ class Compiler {
       method_names.emplace_back(mv.name);
       method_asts.push_back(&m);
     }
+    // The class joins the registry only once its own members have passed, and
+    // after the scan above rather than before it, so a field naming the class
+    // being declared is still refused — a value cannot contain itself.
+    if (is_value) culebra::register_value_class(class_name);
     const peg::Ast* new_ast = new_asts.empty() ? nullptr : new_asts.front();
     // Resolve `@derive(...)` into the (method name, runtime kind) pairs to
     // append to the meta, after the members so a name the class declares
@@ -5219,14 +5234,30 @@ class Compiler {
     // trait name is lint's, reported before anything runs; the throw here is
     // the same safety net the other backends keep.
     std::vector<std::pair<std::string, int>> derive_methods;
+    auto declares = [&](std::string_view n) {
+      return std::find(method_names.begin(), method_names.end(), n) !=
+             method_names.end();
+    };
+    auto derives = [&](std::string_view n) {
+      return std::any_of(derive_methods.begin(), derive_methods.end(),
+                         [&](const auto& d) { return d.first == n; });
+    };
     for (size_t i = 0; i < dec_end; i++) {
       for (auto trait : culebra::view_derive(*ast.nodes[i])) {
         auto dm = culebra::derive_method_for(trait);
-        std::string mname(dm.name);
-        if (std::find(method_names.begin(), method_names.end(), mname) ==
-            method_names.end())
-          derive_methods.emplace_back(std::move(mname), dm.kind);
+        if (!declares(dm.name))
+          derive_methods.emplace_back(std::string(dm.name), dm.kind);
       }
+    }
+    // A value compares by its fields, not by identity, so `@value` implies
+    // the Eq the user would otherwise write out. Synthesized as @derive(Eq,
+    // Hash)'s methods so `==` (which falls back to `eq`) and key equality see
+    // the same one — and the two stay a consistent pair, which is why writing
+    // an equality of your own opts out of both.
+    if (is_value && !declares("eq") && !declares("__eq__")) {
+      if (!derives("eq")) derive_methods.emplace_back("eq", 0);
+      if (!declares("hash") && !derives("hash"))
+        derive_methods.emplace_back("hash", 1);
     }
     // A well-known name with an overload set can't satisfy the 0-arg
     // contract: the grouped dispatcher replaces the arms, so
@@ -5349,7 +5380,8 @@ class Compiler {
           (culebra::is_lowered_state_class(class_name, ast.path)
                ? kClassMetaLoweredState
                : 0) |
-          (names_class ? kClassMetaNamesClass : 0)));
+          (names_class ? kClassMetaNamesClass : 0) |
+          (is_value ? kClassMetaValue : 0)));
       // Both contract throws below are positionless and the interp stamps
       // them at the declaration.
       emit(Op::SetOpPos);
@@ -5473,10 +5505,13 @@ class Compiler {
     bool is_packable = false;
     for (size_t i = 0; i < dec_end; i++) {
       if (culebra::is_packable_decorator(*ast.nodes[i])) is_packable = true;
-      // Lint's, pre-eval; the throw is the class form's safety net.
+      // Lint's, pre-eval; the throws are the class form's safety net.
       if (!culebra::view_derive(*ast.nodes[i]).empty())
         throw culebra::CulebraError("SyntaxError",
                                     culebra::derive_on_enum_message(enum_name));
+      if (culebra::is_value_decorator(*ast.nodes[i]))
+        throw culebra::CulebraError("SyntaxError",
+                                    culebra::value_on_enum_message(enum_name));
     }
     StampGuard pos(*this, ast);
     // A closure earlier in the list may already hold this name's cell

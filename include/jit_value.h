@@ -280,6 +280,16 @@ struct JitObject {
   // such an instance — and so refuses it, exactly as the cell capture it
   // replaced did — and leaves it behind otherwise. Never GEP'd.
   bool names_class = false;
+  // Set on a CLASS META whose class is `@value`. build_class_instance reads
+  // it through the meta it is handed and freezes the instance it built.
+  // Passed to build_class_meta with the two above, never GEP'd by codegen.
+  bool is_value = false;
+  // A closed object: no property added, none removed, every slot immutable.
+  // Set on a `@value` INSTANCE once its constructor returns — the half of
+  // that contract no syntactic check could enforce, since a write through an
+  // alias is how sharing becomes visible. The read-side analogue of
+  // `is_namespace`'s closed member set. Never GEP'd.
+  bool frozen = false;
   // One trailing pointer, two exclusive roles: a builtin namespace's name,
   // or the class object a class-sugar instance (the only kind with a
   // `proto`) was built by. The instance holds a +1 on its class, released
@@ -386,6 +396,7 @@ static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
 // culebra_runtime_build_class_meta's flag bits (Chunk::name_table_flags).
 inline constexpr int64_t kClassMetaLoweredState = 1;
 inline constexpr int64_t kClassMetaNamesClass = 2;
+inline constexpr int64_t kClassMetaValue = 4;
 
 // Per-callsite inline cache for `obj.prop` reads. Allocated as a JIT module
 // global per property-get site; the IR fast path reads only the first two

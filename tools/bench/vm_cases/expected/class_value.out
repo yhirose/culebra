@@ -1,0 +1,18 @@
+Vec2 {x: 1.0, y: 2.0}
+Vec2
+['class', 'x', 'y']
+Vec2 {x: 4.0, y: 6.0}
+Vec2
+true
+false
+false
+1
+ImmutableError: immutable property 'x'
+ImmutableError: cannot add property 'z' to a @value instance
+ImmutableError: cannot add property 'z' to a @value instance
+ImmutableError: cannot add an entry to a @value instance
+ImmutableError: cannot remove property 'x' from a @value instance
+['class', 'x', 'y']
+true
+ImmutableError: immutable property 'x'
+Plain {mut x: 2, mut y: 3}

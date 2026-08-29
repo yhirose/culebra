@@ -956,6 +956,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
       return;
     }
   }
+  // The sidecar's half of the frozen field set — checked before the lazy
+  // activation below so a refused write leaves the instance untouched. A
+  // `@value` instance can never hold a non-String key (this is the only
+  // branch that mints one), so any write reaching here is an add. The guard
+  // above owns the key and the value on this edge; throw without releasing.
+  if (obj->frozen) _jit_throw_value_add(nullptr, line, col);
   if (!obj->non_string_props) {
     obj->non_string_props = new JitObject::AnyKeyMap();
     // First non-String key: activate key_order and back-fill with the
@@ -1230,6 +1236,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     _jit_overwrite_slot(obj->slots[ic->offset], key, tag, data, mut, is_init,
                         line, col, /*check_wk=*/true);
   } else {
+    _jit_reject_value_add(obj, key, tag, data, line, col);
     _culebra_check_well_known_prop(key, tag, data);
     if (obj->slots.capacity() == 0) obj->slots.reserve(8);
     obj->slots.push_back({JitValue{tag, data}, ic->prop_mut != 0});
@@ -1299,6 +1306,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
   auto* before = obj->shape;
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
+    _jit_reject_value_add(obj, key, tag, data, line, col);
     _culebra_check_well_known_prop(key, tag, data);
     auto* base = before ? before : culebra::shape_registry().root();
     auto* result = culebra::shape_registry().transition_add(base, key);
@@ -1695,6 +1703,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
   auto* meta = culebra_runtime_object_new();
   meta->is_lowered_state = (flags & kClassMetaLoweredState) != 0;
   meta->names_class = (flags & kClassMetaNamesClass) != 0;
+  meta->is_value = (flags & kClassMetaValue) != 0;
   int64_t i = 0;
   try {
     for (; i < n_methods; i++) {
@@ -1837,9 +1846,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
     }
   }
 
+  // A `@value` instance freezes here instead of promoting: its fields are
+  // fixed once `new` returns, so every slot stays immutable and a later
+  // `v.x = 5` lands on the ordinary ImmutableError, while the flag closes
+  // the field set against adds and removes.
+  const bool freeze = class_meta && class_meta->is_value;
   for (auto& entry : inst->slots) {
-    entry.mut = true;
+    entry.mut = !freeze;
   }
+  inst->frozen = freeze;
 
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }

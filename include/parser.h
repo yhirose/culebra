@@ -8,6 +8,7 @@
 #include <format>
 #include <optional>
 #include <print>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -971,16 +972,113 @@ inline std::vector<std::string_view> view_derive(const peg::Ast& decorator) {
   return traits;
 }
 
-// Detect the bare `@packable` decorator. Like `@derive`, it is not a
-// callable applied to the class — it flips the class into a fixed-layout
-// struct (declared fields only, fixed scalar types, no dynamic fields).
-// The CALL collapses to the identifier when there are no args, so the
-// decorator's child is the bare `packable` identifier.
-inline bool is_packable_decorator(const peg::Ast& decorator) {
+// Detect a bare compiler-directive decorator by name. Like `@derive`, these
+// are not callables applied to the class — each flips the declaration into a
+// different kind. The CALL collapses to the identifier when there are no
+// args, so the decorator's child is either the bare identifier or the CALL's
+// callee.
+inline bool is_directive_decorator(const peg::Ast& decorator,
+                                   std::string_view name) {
   if (decorator.nodes.empty()) return false;
   const auto& c = *decorator.nodes[0];
-  if (c.nodes.empty()) return c.token == "packable";       // bare identifier
-  return c.nodes[0]->token == "packable";                  // CALL form
+  return (c.nodes.empty() ? c.token : c.nodes[0]->token) == name;
+}
+// `@packable`: a fixed-layout struct (declared fields only, fixed scalar
+// types, no dynamic fields) whose bytes SharedBuffer shares across isolates.
+inline bool is_packable_decorator(const peg::Ast& decorator) {
+  return is_directive_decorator(decorator, "packable");
+}
+// `@value`: a class whose instances have no identity — declared scalar
+// fields, no `drop`, frozen once `new` returns, compared by field.
+inline bool is_value_decorator(const peg::Ast& decorator) {
+  return is_directive_decorator(decorator, "value");
+}
+
+// Registry of `@value` class names, so a later `@value` class can declare a
+// field of one (`a: Vector2`). Written where a declaration is first seen —
+// lint pre-eval, and compile_class_decl as its safety net — the same
+// two-writer arrangement @packable's layout registry has, and with the same
+// limitation: a name stays registered for the life of the process.
+inline std::mutex& value_class_mutex() {
+  static std::mutex m;
+  return m;
+}
+inline std::set<std::string, std::less<>>& value_class_registry() {
+  static std::set<std::string, std::less<>> reg;
+  return reg;
+}
+inline void register_value_class(std::string name) {
+  std::lock_guard<std::mutex> lk(value_class_mutex());
+  value_class_registry().insert(std::move(name));
+}
+inline bool is_value_class(std::string_view name) {
+  std::lock_guard<std::mutex> lk(value_class_mutex());
+  return value_class_registry().contains(name);
+}
+
+// A `@value` field holds a machine scalar or another `@value`. Everything
+// else — String, Array, Object, a closure, `T?`, an ordinary class — carries
+// a heap body or an identity of its own, so admitting it would give the
+// contract nothing to stand on. Deliberately narrow: widening this set later
+// is additive, narrowing it is not.
+inline bool is_value_field_type(std::string_view t) {
+  return t == "Long" || t == "Float" || t == "Bool" || is_value_class(t);
+}
+
+// The `@value` contract's declaration-time messages. Shared with the lint
+// pass (which reports them pre-eval as Diagnostics rather than throws) so the
+// two can't drift, exactly as the @packable pair above.
+inline std::string value_untyped_field_message(std::string_view name,
+                                               std::string_view class_name) {
+  return std::format("field `{}` in @value class `{}` needs a type annotation "
+                     "(a value's field set is fixed at the declaration)",
+                     name, class_name);
+}
+inline std::string value_field_type_message(std::string_view class_name,
+                                            std::string_view name,
+                                            std::string_view type) {
+  return std::format("@value class `{}`: field `{}` has non-value type `{}` "
+                     "(expected Long, Float, Bool, or another @value class)",
+                     class_name, name, type);
+}
+inline std::string value_drop_message(std::string_view class_name) {
+  return std::format("@value class `{}` cannot define `drop` (a destructor "
+                     "observes which instance died, and a value has no "
+                     "identity to tell one from a copy)",
+                     class_name);
+}
+// Rejected rather than silently skipped, for the same reason @derive is: a
+// variant's positional payload has no declaration for the contract to read.
+inline std::string value_on_enum_message(std::string_view enum_name) {
+  return std::format("@value: not applicable to enum `{}` (its variants carry "
+                     "no declared fields to hold to the contract)",
+                     enum_name);
+}
+inline std::string value_packable_message(std::string_view class_name) {
+  return std::format("class `{}` cannot be both @value and @packable "
+                     "(@packable instances alias shared bytes, which is the "
+                     "identity @value removes)",
+                     class_name);
+}
+
+// Evaluator-side safety net for the per-member half of the contract: no
+// `drop`, and every instance field declared with a value type. A `static`
+// member other than a typed field lives on the class object, outside the
+// instance protocol and its field set, so it is exempt. Throws the canonical
+// SyntaxError at the member's name, matching what lint reports pre-eval.
+inline void require_value_member(const MethodView& mv,
+                                 std::string_view class_name) {
+  if (mv.is_static && !mv.is_typed_field) return;
+  auto at = [&](std::string msg) {
+    return CulebraError("SyntaxError", std::move(msg),
+                        static_cast<long>(mv.name_line),
+                        static_cast<long>(mv.name_col));
+  };
+  if (mv.name == "drop") throw at(value_drop_message(class_name));
+  if (mv.is_typed_field && !is_value_field_type(mv.type_annotation))
+    throw at(value_field_type_message(class_name, mv.name,
+                                      mv.type_annotation));
+  if (mv.is_field) throw at(value_untyped_field_message(mv.name, class_name));
 }
 
 // Resolve a `@derive` trait name to the method it generates and the

@@ -1,0 +1,94 @@
+# `@value` — a class whose instances have no identity. Declared scalar
+# fields, no `drop`, frozen once `new` returns, compared by field. The
+# representation is unchanged, so everything else about a class instance
+# (proto dispatch, operators, `match`, display) reads the same.
+
+@value
+class Vec2 {
+  x: Float
+  y: Float
+
+  new(x: Long | Float, y: Long | Float) {
+    self.x = to_float(x)
+    self.y = to_float(y)
+  }
+
+  __add__(o) {
+    Vec2.new(self.x + o.x, self.y + o.y)
+  }
+}
+
+let v = Vec2.new(1, 2)
+println(v)
+println(v.class)
+println(v.keys())
+println(v + Vec2.new(3, 4))
+println(match v {
+  w: Vec2 => 'Vec2',
+  _ => 'other',
+})
+
+# Equality is structural and nominal, and hash agrees with it.
+println(v == Vec2.new(1, 2))
+println(v == Vec2.new(1, 3))
+println(v == 5)
+println({Vec2.new(1, 2), Vec2.new(1, 2)}.size())
+
+# Frozen: an existing field is immutable, and the field set is closed on
+# every write surface.
+println(try {
+  v.x = 5.0
+} catch e {
+  "{e.kind}: {e.message}"
+})
+println(try {
+  v.z = 9
+} catch e {
+  "{e.kind}: {e.message}"
+})
+println(try {
+  v['z'] = 9
+} catch e {
+  "{e.kind}: {e.message}"
+})
+println(try {
+  v[1] = 9
+} catch e {
+  "{e.kind}: {e.message}"
+})
+println(try {
+  v.remove('x')
+} catch e {
+  "{e.kind}: {e.message}"
+})
+println(v.keys())
+
+# A nested value is frozen in its own right.
+@value
+class Seg {
+  a: Vec2
+  b: Vec2
+
+  new(a, b) {
+    self.a = a
+    self.b = b
+  }
+}
+let s = Seg.new(Vec2.new(0, 0), Vec2.new(3, 4))
+println(s == Seg.new(Vec2.new(0, 0), Vec2.new(3, 4)))
+println(try {
+  s.a.x = 1.0
+} catch e {
+  "{e.kind}: {e.message}"
+})
+
+# An ordinary class still promotes its fields to mutable.
+class Plain {
+  new(x) {
+    self.x = x
+  }
+}
+let p = Plain.new(1)
+p.x = 2
+p.y = 3
+println(p)

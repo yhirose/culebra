@@ -1,0 +1,230 @@
+# Conformance: `@value` classes (docs/language.md §21). A value has no
+# identity: its fields are declared and scalar, it defines no `drop`, it is
+# frozen once `new` returns, and it compares by field rather than by object.
+#
+# Run: ./build/culebra tests/test_value_class.cul
+#      ./build/culebra --jit tests/test_value_class.cul
+
+@value
+class Vec2 {
+  x: Float
+  y: Float
+
+  new(x: Long | Float, y: Long | Float) {
+    self.x = to_float(x)
+    self.y = to_float(y)
+  }
+
+  __add__(o) {
+    Vec2.new(self.x + o.x, self.y + o.y)
+  }
+  get magnitude_squared() {
+    self.x * self.x + self.y * self.y
+  }
+  static origin() {
+    Vec2.new(0, 0)
+  }
+}
+
+test_value_builds_like_a_class = fn () {
+  let v = Vec2.new(1, 2)
+  assert_eq(v.class, 'Vec2')
+  assert_eq(v.x, 1.0)
+  assert_eq(v.y, 2.0)
+  assert_eq(v.keys(), ['class', 'x', 'y'])
+  assert_eq(type_of(v), 'Object')
+  assert_eq((v + Vec2.new(3, 4)).x, 4.0)
+  assert_eq(v.magnitude_squared, 5.0)
+  assert_eq(Vec2.origin().x, 0.0)
+  assert_eq(match v {
+    w: Vec2 => 'yes',
+    _ => 'no',
+  }, 'yes')
+}
+test_value_builds_like_a_class()
+
+test_value_fields_are_frozen = fn () {
+  let v = Vec2.new(1, 2)
+  # A declared field is immutable once `new` returns — the ordinary
+  # ImmutableError a bare `o.x = y` already raises.
+  assert_throws('ImmutableError', fn () {
+    v.x = 5.0
+  })
+  # ...and the field set is closed, however the write is spelled.
+  assert_throws('ImmutableError', fn () {
+    v.z = 9
+  })
+  assert_throws('ImmutableError', fn () {
+    v['z'] = 9
+  })
+  assert_throws('ImmutableError', fn () {
+    v[1] = 9
+  })
+  assert_throws('ImmutableError', fn () {
+    v.remove('x')
+  })
+  assert_eq(v.keys(), ['class', 'x', 'y'])
+  assert_eq(v.x, 1.0)
+}
+test_value_fields_are_frozen()
+
+test_value_freeze_does_not_leak_to_plain_classes = fn () {
+  class Plain {
+    x: Long = 0
+    new(x) {
+      self.x = x
+    }
+  }
+  let p = Plain.new(1)
+  p.x = 2
+  p.y = 3
+  assert_eq(p.x, 2)
+  assert_eq(p.y, 3)
+  p.remove('y')
+  assert_eq(p.keys(), ['class', 'x'])
+}
+test_value_freeze_does_not_leak_to_plain_classes()
+
+test_value_equality_is_structural_and_nominal = fn () {
+  assert_eq(Vec2.new(1, 2) == Vec2.new(1, 2), true)
+  assert_eq(Vec2.new(1, 2) == Vec2.new(1, 3), false)
+  assert_eq(Vec2.new(1, 2) != Vec2.new(1, 3), true)
+  # A different class with the same fields is a different value.
+  @value
+  class Other {
+    x: Float
+    y: Float
+    new(x, y) {
+      self.x = x
+      self.y = y
+    }
+  }
+  assert_eq(Vec2.new(1, 2) == Other.new(1.0, 2.0), false)
+  # A non-Object operand is simply unequal, never a TypeError.
+  assert_eq(Vec2.new(1, 2) == 5, false)
+  assert_eq(Vec2.new(1, 2) == nil, false)
+  # eq and hash come as a pair, so equal values collapse in a Set / as keys.
+  assert_eq({Vec2.new(1, 2), Vec2.new(1, 2)}.size(), 1)
+  let m = {}
+  m[Vec2.new(1, 2)] = 'a'
+  m[Vec2.new(1, 2)] = 'b'
+  assert_eq(m[Vec2.new(1, 2)], 'b')
+  assert_eq(m.size(), 1)
+}
+test_value_equality_is_structural_and_nominal()
+
+test_value_own_equality_wins = fn () {
+  # A class that writes its own equality keeps it — and opts out of the
+  # derived pair, so the two never disagree.
+  @value
+  class Loose {
+    x: Long
+    new(x) {
+      self.x = x
+    }
+    __eq__(o) {
+      true
+    }
+  }
+  assert_eq(Loose.new(1) == Loose.new(2), true)
+  assert_throws('TypeError', fn () {
+    {Loose.new(1),}
+  })
+}
+test_value_own_equality_wins()
+
+test_value_with_derive = fn () {
+  # `@derive` and `@value` ask for the same methods; neither doubles up.
+  @derive(Eq, Show)
+  @value
+  class Both {
+    a: Long
+    new(a) {
+      self.a = a
+    }
+  }
+  assert_eq(Both.new(1) == Both.new(1), true)
+  assert_eq(Both.new(2).to_s(), 'Both(2)')
+}
+test_value_with_derive()
+
+test_value_nested = fn () {
+  @value
+  class Seg {
+    a: Vec2
+    b: Vec2
+    new(a, b) {
+      self.a = a
+      self.b = b
+    }
+    length_squared() {
+      let dx = self.b.x - self.a.x
+      let dy = self.b.y - self.a.y
+      dx * dx + dy * dy
+    }
+  }
+  let s = Seg.new(Vec2.new(0, 0), Vec2.new(3, 4))
+  assert_eq(s.length_squared(), 25.0)
+  assert_eq(s == Seg.new(Vec2.new(0, 0), Vec2.new(3, 4)), true)
+  assert_eq(s == Seg.new(Vec2.new(0, 0), Vec2.new(3, 5)), false)
+  assert_throws('ImmutableError', fn () {
+    s.a = Vec2.new(1, 1)
+  })
+  # The nested value is frozen in its own right, reached through the outer.
+  assert_throws('ImmutableError', fn () {
+    s.a.x = 1.0
+  })
+}
+test_value_nested()
+
+test_value_without_new = fn () {
+  # No `new`: the declared fields zero-initialize and the instance freezes
+  # with exactly those fields.
+  @value
+  class Zeros {
+    n: Long
+    f: Float
+    b: Bool
+    d: Long = 7
+  }
+  let z = Zeros.new()
+  assert_eq(z.n, 0)
+  assert_eq(z.f, 0.0)
+  assert_eq(z.b, false)
+  assert_eq(z.d, 7)
+  assert_throws('ImmutableError', fn () {
+    z.n = 1
+  })
+}
+test_value_without_new()
+
+test_value_str_and_inspect = fn () {
+  # No representation change: a value prints as any class instance does.
+  @value
+  class Pt {
+    x: Long
+    new(x) {
+      self.x = x
+    }
+  }
+  assert_eq("{Pt.new(3)}", 'Pt {x: 3}')
+}
+test_value_str_and_inspect()
+
+test_value_statics_are_not_frozen_fields = fn () {
+  # A `static` field lives on the class object, outside the instance's
+  # field set, so it neither needs a value type nor freezes.
+  @value
+  class WithStatic {
+    x: Long
+    static LABEL = 'wide'
+    new(x) {
+      self.x = x
+    }
+  }
+  assert_eq(WithStatic.LABEL, 'wide')
+  assert_eq(WithStatic.new(1).keys(), ['class', 'x'])
+}
+test_value_statics_are_not_frozen_fields()
+
+inspect('value-class OK')

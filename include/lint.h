@@ -447,9 +447,11 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
     case "CLASS_DECL"_: {
       size_t i = culebra::first_non_decorator_index(node);
       bool is_packable = false;
+      bool is_value = false;
       for (size_t d = 0; d < i; d++) {
         walk(*node.nodes[d]);
         if (culebra::is_packable_decorator(*node.nodes[d])) is_packable = true;
+        if (culebra::is_value_decorator(*node.nodes[d])) is_value = true;
         // Four names are derivable. Reported here for the same reason the
         // @packable field types are: pre-eval on every backend, so the
         // diagnostic does not depend on whether the declaration ran. The
@@ -472,6 +474,17 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       LoopDepthGuard g(loop_depth_, 0);
       std::vector<std::pair<std::string, std::string>> pk_fields;
       bool pk_ok = true;
+      // `@value` fixes the semantics rather than a byte layout, but its
+      // declaration rules read the same members, so they are checked in the
+      // same pass — pre-eval on every backend, at the offending position.
+      bool val_ok = true;
+      if (is_value && is_packable) {
+        diags_.push_back(Diagnostic{
+            "SyntaxError", culebra::value_packable_message(class_name),
+            static_cast<long>(node.nodes[i]->line),
+            static_cast<long>(node.nodes[i]->column), Severity::Error});
+        val_ok = false;
+      }
       // Member-name rules in a class body. Both instance AND static methods
       // MAY overload — same name, distinct positional-param-type signatures
       // merge into one multidispatch dispatcher at eval/compile time.
@@ -569,7 +582,42 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         } else {
           check_named(inst_fields, inst_methods, mv, is_field_member);
         }
+        // The three per-member clauses of the `@value` contract, in the order
+        // require_value_member (the compile-side safety net) applies them and
+        // over the same members: a `static` member other than a typed field
+        // is the class object's, outside the instance protocol and its field
+        // set. No `drop` — a destructor tells one instance from another,
+        // which is the identity the contract removes.
+        const bool value_member =
+            is_value && !(mv.is_static && !mv.is_typed_field);
+        if (value_member && mv.name == "drop") {
+          diags_.push_back(Diagnostic{
+              "SyntaxError", culebra::value_drop_message(class_name),
+              static_cast<long>(mv.name_line),
+              static_cast<long>(mv.name_col), Severity::Error});
+          val_ok = false;
+        }
         if (mv.is_field || mv.is_typed_field) {
+          // A value's field set is fixed at the declaration, and each field
+          // holds a scalar or another value.
+          if (value_member && mv.is_typed_field &&
+              !culebra::is_value_field_type(mv.type_annotation)) {
+            diags_.push_back(Diagnostic{
+                "SyntaxError",
+                culebra::value_field_type_message(class_name, mv.name,
+                                                  mv.type_annotation),
+                static_cast<long>(mv.name_line),
+                static_cast<long>(mv.name_col), Severity::Error});
+            val_ok = false;
+          }
+          if (value_member && mv.is_field) {
+            diags_.push_back(Diagnostic{
+                "SyntaxError",
+                culebra::value_untyped_field_message(mv.name, class_name),
+                static_cast<long>(mv.name_line),
+                static_cast<long>(mv.name_col), Severity::Error});
+            val_ok = false;
+          }
           // An untyped instance field carries no type for the byte layout —
           // shared message with the evaluator-side safety net
           // (require_typed_packable_field).
@@ -610,6 +658,11 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         FnDepthGuard fg(fn_depth_);
         scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
       }
+      // Register the class as a value pre-eval, for the same reason the
+      // @packable layout registers below: a later `@value` class declaring a
+      // field of this one validates its type against the registry.
+      if (is_value && val_ok)
+        culebra::register_value_class(std::string(class_name));
       // Register the @packable class layout pre-eval so a later class that
       // nests this one (`inner: This`) validates its field type here.
       if (is_packable && pk_ok) {
@@ -638,6 +691,14 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         if (!culebra::view_derive(*node.nodes[d]).empty()) {
           diags_.push_back(Diagnostic{
               "SyntaxError", culebra::derive_on_enum_message(enum_name),
+              static_cast<long>(node.nodes[d]->line),
+              static_cast<long>(node.nodes[d]->column), Severity::Error});
+        }
+        // `@value` has no declared fields to hold an enum to; reported at the
+        // decorator, like the unknown-trait check above.
+        if (culebra::is_value_decorator(*node.nodes[d])) {
+          diags_.push_back(Diagnostic{
+              "SyntaxError", culebra::value_on_enum_message(enum_name),
               static_cast<long>(node.nodes[d]->line),
               static_cast<long>(node.nodes[d]->column), Severity::Error});
         }

@@ -2704,6 +2704,31 @@ inline void _jit_overwrite_slot(JitObjectEntry& entry,
   if (is_init) entry.mut = mut;
 }
 
+// A `@value` instance is frozen once its constructor returns: the fields it
+// has are the fields it will ever have. Raised from every branch that would
+// mint a new own slot — the plain set, both write-IC paths, and the
+// non-String sidecar — so the closed field set holds however the write is
+// spelled. `key` is null for a non-String key, which is an entry rather than
+// a property.
+[[noreturn]] inline void _jit_throw_value_add(const char* key, int64_t line,
+                                              int64_t col) {
+  throw culebra::CulebraError(
+      "ImmutableError",
+      key ? culebra::format("cannot add property '{}' to a @value instance",
+                            key)
+          : std::string("cannot add an entry to a @value instance"),
+      line, col);
+}
+
+// The releasing form, for the append branches that own the caller's +1 on
+// the value — the same contract the immutable-slot throw beside them keeps.
+inline void _jit_reject_value_add(JitObject* obj, const char* key, int8_t tag,
+                                  int64_t data, int64_t line, int64_t col) {
+  if (!obj->frozen) return;
+  _culebra_value_release_impl(tag, data);
+  _jit_throw_value_add(key, line, col);
+}
+
 // Raise the well-known contract error at declaration execution time.
 // Emitted by compile_class_decl when a well-known name has an overload
 // set — the grouped dispatcher can't satisfy the 0-arg contract (the
@@ -2738,6 +2763,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
   // check can't be bypassed the way a codegen-only check could.
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
+    _jit_reject_value_add(obj, key, tag, data, line, col);
     _culebra_check_well_known_prop(key, tag, data);
     obj->append_slot(key, JitValue{tag, data}, mut);
   } else {

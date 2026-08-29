@@ -3599,6 +3599,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_namespace(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
     JitObject* obj, const char* key) {
   if (obj->is_shared_val) _jit_shared_val_builtin_reject(obj, "remove", 0, 0);
+  // The other direction of a `@value` instance's frozen field set: dropping a
+  // field would break the fixed shape the contract exists to guarantee, so it
+  // is refused for the same reason an add is (positionless, like the reject
+  // above — the call site backfills).
+  if (obj->frozen)
+    throw culebra::CulebraError(
+        "ImmutableError",
+        culebra::format("cannot remove property '{}' from a @value instance",
+                        key));
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) return;
   _culebra_value_release_impl(obj->slots[idx].value.tag,

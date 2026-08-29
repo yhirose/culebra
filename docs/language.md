@@ -1582,12 +1582,14 @@ Semantics:
     always carries an initializer (there is no type to infer a zero
     value from).
   - Declared fields are mutable instance state, exactly like fields
-    created via `self.x = y` in the constructor.
+    created via `self.x = y` in the constructor. A `@value` class (§21)
+    is the exception: its instances freeze when `new` returns.
 
   The declared type is documentation (like parameter annotations on the
   runtime-check model, §14); `@packable` classes (§21) additionally read
-  it to compute their fixed byte layout, so their fields must be typed
-  (`x = 7` in a `@packable` class is a SyntaxError).
+  it to compute their fixed byte layout, and `@value` classes to check
+  that every field is a scalar, so both require typed fields (`x = 7` in
+  either is a SyntaxError).
 * `get NAME () { ... }` declares a **getter** — a no-parameter method
   that is invoked on a bare property read, with no call parentheses:
 
@@ -5531,10 +5533,68 @@ dispatch — the decorator's return value binds directly to `name`.
 Combine the patterns by writing the multimethod first and then a
 separate decorated wrapper if you need both.
 
+### Built-in decorator: `@value`
+
+`@value` is not a callable — it marks a class whose instances have **no
+identity**: two instances holding the same fields are the same value, and
+nothing a program can do tells them apart.
+
+```culebra
+@value
+class Vec2 {
+  x: Float
+  y: Float
+
+  new(x: Long | Float, y: Long | Float) {
+    self.x = to_float(x)
+    self.y = to_float(y)
+  }
+
+  __add__(o) {
+    Vec2.new(self.x + o.x, self.y + o.y)
+  }
+}
+
+let v = Vec2.new(1, 2)
+v == Vec2.new(1, 2)   # true — compared by field, not by object
+```
+
+The contract has four clauses, each closing one way a program could
+observe an instance's identity:
+
+| Clause | Checked |
+|---|---|
+| Every instance field is declared, and its type is `Long`, `Float`, `Bool`, or another `@value` class | At the declaration (`SyntaxError`) |
+| No `drop` method or field — a destructor observes *which* instance died | At the declaration (`SyntaxError`) |
+| Not also `@packable` — a packed instance aliases shared bytes | At the declaration (`SyntaxError`) |
+| Frozen once `new` returns: no field written, added, or removed | At the write (`ImmutableError`) |
+
+Inside `new` the instance is an ordinary object, so a constructor assigns
+its fields the usual way. The freeze happens when `new` returns:
+
+```culebra
+# doctest: skip
+v.x = 5.0        # ImmutableError: immutable property 'x'
+v.z = 9          # ImmutableError: cannot add property 'z' to a @value instance
+v.remove('x')    # ImmutableError: cannot remove property 'x' from a @value instance
+```
+
+A `@value` class gets `eq` and `hash` derived from its fields — the same
+pair `@derive(Eq, Hash)` generates — so `==`, `Set` membership and Object
+keys all agree. A class that writes its own `__eq__` or `eq` keeps it and
+opts out of both, which is what keeps the pair consistent.
+
+Nothing else about the class changes: methods, operators, getters,
+statics, `match` type patterns, `keys()` and display all behave as they do
+for any class (§10). The field types are deliberately narrow — `String`,
+`Array`, `Object` and closures carry a body or an identity of their own —
+and a field type naming another `@value` class must name one declared
+earlier.
+
 ### Built-in decorator: `@packable`
 
 `@packable` is not a callable — it marks a class as a **fixed-layout
-value type**. Its fields carry a scalar type annotation with an optional
+struct**. Its fields carry a scalar type annotation with an optional
 default (`x: Float32 = 0.0`), and the decorator fixes their byte layout
 (C-ABI alignment). Packable classes back `SharedBuffer`, the zero-copy
 buffer shared across isolates — see

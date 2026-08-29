@@ -1488,12 +1488,14 @@ variable 'self'`になります。送出されるのは本体に入った時点�
     等）は`nil`です。untyped形は常に初期化子を伴います（ゼロ値を
     推論する型がないため）。
   - 宣言fieldは、コンストラクタ内の`self.x = y`で作ったfieldと
-    全く同じ可変インスタンス状態です。
+    全く同じ可変インスタンス状態です。例外は`@value`クラス（§21）で、
+    そのインスタンスは`new`が返った時点で凍結します。
 
   宣言型はdocumentationです（§14のruntime-checkモデルのパラメータ
   注釈と同じ）。`@packable`クラス（§21）はこれに加えて固定バイト
-  レイアウトの計算に型を読むため、fieldはtyped必須です
-  （`@packable`クラス内の`x = 7`はSyntaxError）。
+  レイアウトの計算に型を読み、`@value`クラスは全fieldがスカラかの
+  検査に型を読むため、どちらもfieldはtyped必須です
+  （どちらのクラス内でも`x = 7`はSyntaxError）。
 * `get NAME () { ... }`は **getter**（引数なしメソッド）を宣言します。
   括弧なしのプロパティ読み取りで呼び出されます:
 
@@ -5279,9 +5281,66 @@ Point.marked  # true
 multimethod側を先に定義してから別名でラップしたdecorated fnを作
 る形にする。
 
+### 組み込みデコレータ: `@value`
+
+`@value`は呼び出し可能値ではなく、インスタンスが**identityを持たない**
+クラスを印付ける。同じフィールドを持つ2つのインスタンスは同じ値であり、
+プログラムからそれらを区別する手段は存在しない。
+
+```culebra
+@value
+class Vec2 {
+  x: Float
+  y: Float
+
+  new(x: Long | Float, y: Long | Float) {
+    self.x = to_float(x)
+    self.y = to_float(y)
+  }
+
+  __add__(o) {
+    Vec2.new(self.x + o.x, self.y + o.y)
+  }
+}
+
+let v = Vec2.new(1, 2)
+v == Vec2.new(1, 2)   # true — オブジェクトではなくフィールドで比較
+```
+
+contractは4条項からなり、それぞれがインスタンスのidentityを観測しうる
+経路を1つずつ塞ぐ:
+
+| 条項 | 検査 |
+|---|---|
+| 全インスタンスフィールドが宣言済みで、型は`Long`/`Float`/`Bool`または別の`@value`クラス | 宣言時（`SyntaxError`） |
+| `drop`メソッド・フィールドを持たない — デストラクタは*どの*インスタンスが死んだかを観測する | 宣言時（`SyntaxError`） |
+| `@packable`と併用しない — packedインスタンスは共有バイト列をaliasする | 宣言時（`SyntaxError`） |
+| `new`が返った時点で凍結: フィールドの書き換え・追加・削除は不可 | 書き込み時（`ImmutableError`） |
+
+`new`の中ではインスタンスは通常のオブジェクトなので、コンストラクタは
+いつも通りフィールドを代入する。凍結は`new`が返るときに起きる:
+
+```culebra
+# doctest: skip
+v.x = 5.0        # ImmutableError: immutable property 'x'
+v.z = 9          # ImmutableError: cannot add property 'z' to a @value instance
+v.remove('x')    # ImmutableError: cannot remove property 'x' from a @value instance
+```
+
+`@value`クラスにはフィールドから導出された`eq`と`hash`が付く
+（`@derive(Eq, Hash)`が生成するのと同じ対）ので、`==`・`Set`の要素
+判定・Objectのキーがすべて一致する。自前の`__eq__`または`eq`を書いた
+クラスはそれを保持し、対の両方を辞退する — これが対の整合を保つ。
+
+それ以外は何も変わらない: メソッド・演算子・getter・static・`match`の
+型パターン・`keys()`・表示は、どのクラスとも同じに振る舞う（§10）。
+フィールド型を意図的に狭く取っているのは、`String`・`Array`・`Object`・
+クロージャが自前の本体やidentityを持つため。別の`@value`クラスを
+フィールド型に書く場合、そのクラスは先に宣言されている必要がある。
+
 ### 組み込みデコレータ: `@packable`
 
-`@packable`は呼び出し可能値ではなく、クラスを**固定レイアウトの値型**
+`@packable`は呼び出し可能値ではなく、クラスを**固定レイアウトの構造体**
 として印付ける。フィールドはスカラ型注釈と任意のデフォルトを持ち
 (`x: Float32 = 0.0`)、デコレータがそのバイトレイアウト (C ABIアライン
 メント) を確定する。`@packable`クラスは、isolate間でzero-copy共有
