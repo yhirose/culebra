@@ -1764,24 +1764,6 @@ jobs:
               exit 1 ;;
           esac
 
-      # TEMPORARY (sizing): the same linker as a separate program, which is
-      # where its cost lands if the kit carries it rather than every download.
-      # Both halves of that trade have to be measured before either is chosen,
-      # and this is the only machine that can link it. Delete this step, and
-      # the culebra_ld target, once the choice is made.
-      - name: Measure a standalone linker
-        run: |
-          cmake --build build-win-aot --target culebra_ld -j
-          cp build-win-aot/culebra-ld.exe ld-measure.exe
-          printf 'culebra-ld raw       %s\n' "$(stat -c %s ld-measure.exe)"
-          strip ld-measure.exe
-          printf 'culebra-ld stripped  %s\n' "$(stat -c %s ld-measure.exe)"
-          # gzip rather than zip: this job's MSYS2 has no zip (the kit job
-          # installs it), and deflate is deflate — near enough for a number
-          # that decides where the linker lives.
-          printf 'culebra-ld deflated  %s\n' "$(gzip -9 -c ld-measure.exe | wc -c)"
-          # It only belongs in a kit if it needs nothing the kit cannot carry.
-          misc/verify_standalone_exe.sh ld-measure.exe
 
   # The AOT toolchain kit, end to end, on a Windows with no toolchain on PATH.
   #

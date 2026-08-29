@@ -47,7 +47,7 @@ missing rather than only naming it.
 |---|---|---|
 | macOS | Xcode Command Line Tools — the `cc` shim in `/usr/bin` is not it, and the SDK stubs it brings are what a Mach-O links `libSystem` against | `culebra toolchain install` (starts Apple's installer), or `xcode-select --install` |
 | Linux | `cc`, libstdc++ and the C runtime startup files | `sudo apt install g++` (Debian/Ubuntu), `sudo dnf install gcc-c++` (Fedora) |
-| Windows | the mingw CRT objects and static libraries — **no compiler and no linker** | `culebra toolchain install` (~6 MB) |
+| Windows | the mingw CRT objects and static libraries — **no compiler and no linker** | `culebra toolchain install` (~8 MB) |
 
 Nothing else: the archives an AOT link needs, third-party statics
 included, come out of the `culebra` binary itself ([§4](#4-shared-runtime-archive-layout)).
@@ -102,10 +102,17 @@ itself, on top of the LLVM it already carries for the JIT — and what the
 kit supplies is only the mingw half of a link: the CRT objects,
 libstdc++/libgcc, and the Win32 import libraries.
 
-That choice is what keeps the download small. MSYS2's `ld.lld.exe` is
-5.7 MB of program linked against a 147 MB `libLLVM` DLL, so a kit that
-shipped the linker as a program measured 55 MB zipped against 6 MB for
-one that ships libraries alone.
+Sharing that LLVM is what makes it cheap, and the alternatives were
+measured rather than assumed. MSYS2's `ld.lld.exe` is 5.7 MB of program
+linked against a 147 MB `libLLVM` DLL, so a kit shipping it measured
+55 MB compressed. A standalone lld built against the same static
+archives needs no DLL, but shares nothing with the binary beside it and
+came out at 41 MB compressed. Linking lld into `culebra` costs the
+download 23 MB — more than the 4 MB of lld archives, because lld's COFF
+driver references every LLVM backend and so drags them all in — and
+leaves the kit at 8 MB. Whoever runs `culebra build` therefore fetches
+about 60 MB in total rather than 84 MB, at the price of 23 MB to
+everyone who never runs it.
 
 The kit is packed at release time out of the same MSYS2 UCRT64 tree that
 compiled the runtime archives inside the binary

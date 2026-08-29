@@ -4,11 +4,12 @@
 #
 # The kit holds NO executables. culebra links lld into itself (CMakeLists, the
 # CULEBRA_INPROCESS_LLD block) — it already carries LLVM for the JIT, and lld
-# is 4 MB of library on top of that — so what a downloader is missing is only
+# is 4 MB of archives on top of that — so what a downloader is missing is only
 # the mingw side of a link: the CRT objects, libstdc++/libgcc, and the Win32
-# import libraries. Shipping ld.lld.exe instead would mean shipping the 147 MB
-# libLLVM DLL it links against; measured, that is the difference between a
-# 6 MB download and a 55 MB one.
+# import libraries. That is what keeps this archive at ~8 MB: shipping MSYS2's
+# ld.lld.exe instead means shipping the 147 MB libLLVM DLL it links against
+# (55 MB compressed), and a standalone lld built against the same statics
+# shares nothing with the binary and measured 41 MB compressed.
 #
 # Packed from the SAME MSYS2 tree that compiled the embedded runtime archives,
 # which is what makes the kit's libstdc++ match theirs by construction. A

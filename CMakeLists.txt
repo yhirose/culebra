@@ -337,9 +337,15 @@ if(CULEBRA_ENABLE_JIT)
   # Carrying lld answers that without carrying a toolchain. What remains on the
   # user's side is the mingw half of a link (CRT objects, libstdc++, import
   # libraries), which misc/pack_windows_toolchain.sh packs and `culebra
-  # toolchain install` fetches — 6 MB, where shipping MSYS2's ld.lld.exe to
-  # users would mean shipping the 147 MB libLLVM DLL it is linked against
-  # (measured: 55 MB zipped against 6 MB).
+  # toolchain install` fetches — 8 MB compressed.
+  #
+  # Sharing this binary's LLVM is what makes that cheap, and the alternatives
+  # were measured rather than assumed. Shipping MSYS2's ld.lld.exe in the kit
+  # means shipping the 147 MB libLLVM DLL it links against (55 MB compressed);
+  # building a standalone lld against the same statics avoids the DLL but
+  # cannot share anything, and came out at 41 MB compressed. Linking lld here
+  # costs +23 MB on the download instead — more than the 4 MB of lld archives,
+  # because lld's COFF driver references every LLVM backend.
   #
   # Found by library and header rather than through LLDConfig.cmake: MSYS2
   # ships the archives and lld/Common/Driver.h without always shipping the
@@ -518,9 +524,10 @@ libs (auto-detected when the static libs are missing)" OFF)
           list(APPEND CULEBRA_LIBXML2_DEPS "${${_d}}")
         endif()
       endforeach()
-      # xmlInitRandom seeds itself from BCryptGenRandom. culebra.exe reaches
-      # bcrypt by another route and never noticed; a program that links libxml2
-      # and nothing else does.
+      # xmlInitRandom seeds itself from BCryptGenRandom. culebra.exe happens to
+      # reach bcrypt by another route, so its own link never says so — named
+      # here because this list is libxml2's requirements, not the ones this
+      # binary would otherwise notice.
       list(APPEND CULEBRA_LIBXML2_DEPS "-lbcrypt")
       message(STATUS "libxml2: linking ${CULEBRA_LIBXML2_STATIC} statically (lld dep)")
     else()
@@ -1001,18 +1008,6 @@ if(CULEBRA_ENABLE_JIT)
                                 ${CULEBRA_LIBXML2_DEPS})
   culebra_export_jit_symbols(culebra)
 
-  # The same linker as a separate program, for the sizing question the
-  # in-process one raises: carrying lld inside culebra.exe costs every Windows
-  # download the LLVM backends lld's COFF driver references, and this is where
-  # that cost lands instead if the kit carries the linker. EXCLUDE_FROM_ALL —
-  # only the job measuring it, or a release packing it, ever builds it.
-  # See src/ld_lld_main.cc.
-  if(CULEBRA_LLD_LIBS)
-    add_executable(culebra_ld EXCLUDE_FROM_ALL ./src/ld_lld_main.cc)
-    set_target_properties(culebra_ld PROPERTIES OUTPUT_NAME culebra-ld)
-    target_link_libraries(culebra_ld ${CULEBRA_LLD_LIBS} ${llvm_libs}
-                                     ${CULEBRA_LIBXML2_DEPS})
-  endif()
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
   # baked source path is the default when CULEBRA_HOME is unset. Scoped to

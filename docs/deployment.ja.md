@@ -46,7 +46,7 @@ culebra build path/to/program.cul -o ./program
 |---|---|---|
 | macOS | Xcode Command Line Tools（`/usr/bin`の`cc`はその実体ではなくシムで、Mach-Oが`libSystem`をリンクする先のSDKスタブもこれが持ち込む） | `culebra toolchain install`（Appleのインストーラを起動）または`xcode-select --install` |
 | Linux | `cc`・libstdc++・Cランタイムのスタートアップファイル | `sudo apt install g++`（Debian / Ubuntu）、`sudo dnf install gcc-c++`（Fedora） |
-| Windows | mingwのCRTオブジェクトと静的ライブラリ — **コンパイラもリンカも不要** | `culebra toolchain install`（約6MB） |
+| Windows | mingwのCRTオブジェクトと静的ライブラリ — **コンパイラもリンカも不要** | `culebra toolchain install`（約8MB） |
 
 他には何も要りません。AOTのリンクが必要とするアーカイブは、
 サードパーティの静的ライブラリも含めて`culebra`バイナリ自身から
@@ -102,10 +102,15 @@ Windowsはツールチェーンを一切同梱していませんが、そこでA
 リンクしています。kitが供給するのはリンクのmingw側の半分だけ —
 CRTオブジェクト、libstdc++ / libgcc、そしてWin32のインポートライブラリです。
 
-この選択がダウンロードサイズを決めています。MSYS2の`ld.lld.exe`は
-5.7MBのプログラムですが147MBの`libLLVM` DLLにリンクされており、
-リンカをプログラムとして同梱するkitはzipで55MB、ライブラリだけを
-同梱するkitは6MBという実測でした。
+そのLLVMを共有できることが安く済む理由で、代替案は推測でなく実測して
+比べました。MSYS2の`ld.lld.exe`は5.7MBのプログラムですが147MBの
+`libLLVM` DLLにリンクされているため、それを同梱するkitは圧縮後55MB。
+同じ静的アーカイブから自前でビルドしたlldはDLLを必要としませんが、
+隣のバイナリと何も共有できず圧縮後41MBでした。lldを`culebra`に
+リンクする形はダウンロードを23MB増やし（lldのアーカイブ自体は4MBですが、
+lldのCOFFドライバが全LLVMバックエンドを参照するため芋づる式に入る）、
+kitは8MBに収まります。結果として`culebra build`を使う人の合計は
+84MBでなく約60MB、その代わり一度も使わない人が23MBを負担します。
 
 kitはリリース時に、バイナリの中のランタイムアーカイブをコンパイルしたのと
 同じMSYS2 UCRT64ツリーから梱包されます（`misc/pack_windows_toolchain.sh`）。

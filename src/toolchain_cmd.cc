@@ -146,7 +146,7 @@ std::string missing_toolchain_hint() {
 #if defined(_WIN32) && defined(CULEBRA_INPROCESS_LLD)
   return std::format(
       "the link needs the mingw runtime libraries, which Windows does not "
-      "ship. culebra can fetch them for version {} (about 6 MB, into\n"
+      "ship. culebra can fetch them for version {} (about 8 MB, into\n"
       "  {}\n"
       "which `culebra toolchain uninstall` removes again):\n"
       "    culebra toolchain install\n"
