@@ -22,7 +22,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <optional>
 #include <set>
 #include <string>
 #include <unordered_set>
@@ -67,16 +66,6 @@ class Session {
 
  public:
 
-  // The Ctrl+C or cancel the last unit ended in, if it did. Reported rather
-  // than re-thrown because the callers want opposite things from it: the REPL
-  // prints and returns to the prompt (the one-shot Python model that
-  // tests/signal_test.sh pins), while a runner executing somebody else's files
-  // has to stop the run. Held as the error itself so a re-throw carries the
-  // isolate's "cancelled" rather than relabelling it a Ctrl+C.
-  const std::optional<CulebraError>& last_interrupt() const {
-    return interrupt_;
-  }
-
   // Compile and run one program, retaining it for the session. Errors are
   // reported the way interpret() reports them, so an input that throws prints
   // the same text on either engine and the session carries on. `session` picks
@@ -86,25 +75,14 @@ class Session {
                 std::shared_ptr<std::string> source, bool session,
                 std::vector<std::string>& msgs,
                 const std::function<void(const VmProgram&)>& before_run = {}) {
-    interrupt_.reset();
-    try {
+    return run_reported(msgs, [&] {
       auto prog = std::make_unique<VmProgram>(
           session ? Compiler::compile_repl_line(*ast)
                   : Compiler::compile_stdlib_prologue(*ast));
       if (before_run) before_run(*prog);
       auto& kept = retained_.keep(std::move(source), ast, std::move(prog));
       Exec::run(*kept.prog);
-      return true;
-    } catch (const CulebraError& e) {
-      if (is_interrupt(e)) interrupt_ = e;
-      // interpret()'s formatter, which is main.cc's.
-      msgs.push_back(format_error_message(e));
-    } catch (const std::exception& e) {
-      // Exec::run has already turned an uncaught user throw into the
-      // "uncaught: ..." line both other backends print for one.
-      msgs.push_back(e.what());
-    }
-    return false;
+    });
   }
 
   // A loader's whole module list as one session unit (the embedding lane;
@@ -116,7 +94,6 @@ class Session {
   // registration mints a second namespace instance).
   bool run_modules(const std::vector<LoadedModule>& modules,
                    std::vector<std::string>& msgs) {
-    interrupt_.reset();
     // The stdlib the list names, unless the list already carries it: the CLI
     // splices a `<stdlib>` module in front, and registering a builder twice
     // mints a second instance of the namespace. A caller that hands over a
@@ -131,7 +108,7 @@ class Session {
         if (m.ast) collect_ast_tokens(*m.ast, tokens);
       if (!run_stdlib_delta(tokens, msgs)) return false;
     }
-    try {
+    return run_reported(msgs, [&] {
       auto prog =
           std::make_unique<VmProgram>(Compiler::compile_session_modules(modules));
       for (const auto& m : modules) {
@@ -142,14 +119,7 @@ class Session {
       retained_modules_.push_back(modules);  // shared_ptrs: sources + ASTs
       auto& kept = retained_.keep(nullptr, modules.back().ast, std::move(prog));
       Exec::run(*kept.prog);
-      return true;
-    } catch (const CulebraError& e) {
-      if (is_interrupt(e)) interrupt_ = e;
-      msgs.push_back(format_error_message(e));
-    } catch (const std::exception& e) {
-      msgs.push_back(e.what());
-    }
-    return false;
+    });
   }
 
   // Take the value a session unit left in the result cell, clearing it. The
@@ -192,12 +162,31 @@ class Session {
     return cache.emplace(*src, ParsedPreamble{src, ast}).first->second;
   }
 
+  // Run `body`, reporting what it throws the way interpret() reports it. An
+  // interrupt passes through: the session hosts no loop, so whoever does (the
+  // REPL, an embedder) answers for it, and a runner stops on it.
+  template <class Body>
+  static bool run_reported(std::vector<std::string>& msgs, Body&& body) {
+    try {
+      body();
+      return true;
+    } catch (const CulebraError& e) {
+      if (is_interrupt(e)) throw;
+      // interpret()'s formatter, which is main.cc's.
+      msgs.push_back(format_error_message(e));
+    } catch (const std::exception& e) {
+      // Exec::run has already turned an uncaught user throw into the
+      // "uncaught: ..." line both other backends print for one.
+      msgs.push_back(e.what());
+    }
+    return false;
+  }
+
   RetainedRuns retained_;
   // Module lists run_modules kept alive (shared_ptr'd sources + ASTs): a
   // retained program's chunks hold string_views into them.
   std::vector<std::vector<LoadedModule>> retained_modules_;
   std::set<std::string, std::less<>> registered_;
-  std::optional<CulebraError> interrupt_;  // see last_interrupt()
 };
 
 }  // namespace culebra::vm

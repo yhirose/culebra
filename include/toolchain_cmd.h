@@ -30,8 +30,7 @@ bool use_inprocess_link();
 bool link_in_process(const std::vector<std::string>& driver_args,
                      const std::string& output, bool verbose, std::string& err);
 
-// What a download asks of the transport. A struct rather than more parameters,
-// which this would otherwise grow one of per knob.
+// What a download asks of the transport.
 struct FetchOptions {
   int64_t timeout_sec = 0;          // read/write; 0 => the library's default
   int64_t connect_timeout_sec = 0;  // connect only; 0 => timeout_sec
@@ -40,14 +39,13 @@ struct FetchOptions {
 };
 
 // GET `url` into `body`, following redirects, with `false` and `err` on any
-// transport failure or a status that is not 200.
+// transport failure or a status that is not 200. Only in a build with HTTP.
 //
 // Defined in src/main.cc rather than beside its caller: http.h carries `inline
 // thread_local` handle registries that exactly one driver TU may instantiate
 // (mingw's ld fails the link on a second — tools/check_rt_archive_tls.sh), and
 // main.cc is that TU. Declaring it across this seam is what lets the toolchain
 // installer share the Http namespace's client instead of building a second one.
-// The options stay with the caller, which is where the policy is.
 bool fetch_url(const std::string& url, const FetchOptions& opts,
                std::string& body, std::string& err);
 

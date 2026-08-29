@@ -250,9 +250,16 @@ inline int repl_loop(bool print_ast, const ReplEval& eval) {
         // wedged eval.
         culebra_g_sigint.store(false, std::memory_order_relaxed);
 
-        if (eval(ast, msgs)) {
-          add_history(full_line);
-          continue;
+        try {
+          if (eval(ast, msgs)) {
+            add_history(full_line);
+            continue;
+          }
+        } catch (const CulebraError& e) {
+          // The prompt is what an interrupt returns to; the session reports
+          // every other error itself.
+          if (!is_interrupt(e)) throw;
+          msgs.push_back(format_error_message(e));
         }
       }
 

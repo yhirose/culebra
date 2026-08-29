@@ -183,15 +183,10 @@ struct HttpRequest {
   std::string content_type;        // applied iff body/body_source set and no
                                    // explicit Content-Type header.
   int64_t timeout_sec = 0;            // per-phase timeout; 0 => library default.
-  int64_t connect_timeout_sec = 0;    // connect only; 0 => timeout_sec. A big
-                                   // download wants a long read timeout and a
-                                   // short connect; one value cannot say both.
-  std::string proxy_host;          // empty => connect directly. Per-request
-  int proxy_port = 0;              // rather than read from the environment:
-                                   // $HTTPS_PROXY without NO_PROXY and a
-                                   // loopback exemption would route a script's
-                                   // 127.0.0.1 call through a proxy. Not
-                                   // reachable from the Http namespace today.
+  int64_t connect_timeout_sec = 0;    // connect only; 0 => timeout_sec.
+  std::string proxy_host;          // empty => direct. Per request, never from
+  int proxy_port = 0;              // $HTTPS_PROXY: a script's 127.0.0.1 call
+                                   // must not go through a proxy.
   bool follow_redirects = true;    // 3xx Location chasing.
   BodySink body_sink = nullptr;    // set → stream the response body (no buffer).
   BodySource body_source = nullptr;// set → stream the request body (chunked).
@@ -338,12 +333,8 @@ inline HttpClient* _http_client_get(int64_t id) { return g_http_clients.get(id);
 inline void _http_client_unregister(int64_t id) { g_http_clients.invalidate(id); }
 
 // Append encoded query params to a path, preserving any query already in it.
-// Shared because a one-off and a client request differ in where the path comes
-// from, never in how params are attached to it.
 inline void _http_append_params(std::string& path, const HeaderList& params) {
   if (params.empty()) return;
-  // Two appends, not `sep + encode_query(...)`: that builds the result by
-  // inserting at the front of the query's buffer.
   path += path.find('?') == std::string::npos ? '?' : '&';
   path += encode_query(params);
 }
@@ -563,20 +554,18 @@ class _InterruptWatcher {
     std::unique_lock<std::mutex> lk(m_);
     live_.push_back({cli, flag});
     if (!th_.joinable()) th_ = std::thread([this] { run(); });
-    // Only when it is parked. Waking it costs the caller a futex wake and a
-    // context switch, and while it is already polling there is nothing to wake
-    // it for: its whole reaction budget is one poll interval.
-    bool wake = awake_ticks_ == 0;
-    awake_ticks_ = kLingerTicks;
-    lk.unlock();
-    if (wake) cv_.notify_all();
+    // Woken only from parked: a wake costs the caller a futex wake and a
+    // context switch, and a polling watcher already reacts within one tick.
+    if (awake_ticks_ == 0) {
+      awake_ticks_ = kLingerTicks;
+      lk.unlock();
+      cv_.notify_all();
+    }
   }
 
   void remove(httplib::Client* cli) {
     std::lock_guard<std::mutex> lk(m_);
-    for (auto it = live_.begin(); it != live_.end(); ++it) {
-      if (it->cli == cli) { live_.erase(it); break; }
-    }
+    std::erase_if(live_, [cli](const Entry& e) { return e.cli == cli; });
   }
 
   static constexpr auto kPoll = std::chrono::milliseconds(50);
@@ -615,17 +604,12 @@ class _InterruptWatcher {
 // Send `hreq` over `cli` and map the result into an HttpResult, with cooperative
 // Ctrl+C / isolate-cancel. send() blocks deep in the socket layer (connect,
 // response-header wait, body) — not a runtime safepoint, and the internal
-// poll/select swallow EINTR, so a single SIGINT couldn't break a hung request
-// (only the second, force-killing press). The watcher polls the interrupt flags
-// and, when one fires, calls cli.stop() — cpp-httplib's documented thread-safe
-// way to shut down an in-flight socket so the blocked send() errors out. send()
-// itself stays on THIS thread so the streaming callbacks (body_sink/body_source,
-// which call back into culebra) keep running on the thread that owns the
-// interpreter/JIT state. The flag is read, never consumed; after send() returns,
-// throw_if_interrupted() honors a pending interrupt with the same cooperative
-// Interrupted the loop safepoint raises. The isolate-cancel flag is captured
-// here rather than read by the watcher, whose own current_runtime() would be
-// the wrong one.
+// poll/select swallow EINTR, so without the watcher a single SIGINT could not
+// break a hung request. send() itself stays on THIS thread so the streaming
+// callbacks (body_sink/body_source, which call back into culebra) run on the
+// thread that owns the interpreter/JIT state. The watcher only reads the flag;
+// throw_if_interrupted() afterwards raises the same cooperative Interrupted
+// the loop safepoint does.
 inline HttpResult _http_send(httplib::Client& cli, httplib::Request& hreq) {
   HttpResult out;
   _InterruptWatcher::Guard watch(cli, current_runtime().interrupt_flag);

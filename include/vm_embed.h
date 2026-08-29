@@ -301,9 +301,11 @@ class Embed {
   bool run(const std::vector<LoadedModule>& modules, Value& result,
            std::vector<std::string>& msgs) {
     Swap in(*this);
-    if (!units_.run_modules(modules, msgs)) return false;
-    result = Value::adopt(units_.take_result());
-    return true;
+    return reporting(msgs, [&] {
+      if (!units_.run_modules(modules, msgs)) return false;
+      result = Value::adopt(units_.take_result());
+      return true;
+    });
   }
 
   // Run one parsed input against the session (interpret's seat): the input
@@ -316,11 +318,13 @@ class Embed {
            std::shared_ptr<std::string> source, Value& result,
            std::vector<std::string>& msgs) {
     Swap in(*this);
-    if (!units_.run_stdlib_delta(*ast, msgs)) return false;
-    if (!units_.run_unit(ast, std::move(source), /*session=*/true, msgs))
-      return false;
-    result = Value::adopt(units_.take_result());
-    return true;
+    return reporting(msgs, [&] {
+      if (!units_.run_stdlib_delta(*ast, msgs)) return false;
+      if (!units_.run_unit(ast, std::move(source), /*session=*/true, msgs))
+        return false;
+      result = Value::adopt(units_.take_result());
+      return true;
+    });
   }
 
   // Parse-and-run convenience: copies `source`, parses it under `name`, and
@@ -410,6 +414,19 @@ class Embed {
   }
 
  private:
+  // An interrupt keeps the bool+msgs contract: the host that requested it
+  // reads it back as the error text, not as an exception (signal_smoke).
+  template <class Body>
+  static bool reporting(std::vector<std::string>& msgs, Body&& body) {
+    try {
+      return body();
+    } catch (const CulebraError& e) {
+      if (!is_interrupt(e)) throw;
+      msgs.push_back(format_error_message(e));
+      return false;
+    }
+  }
+
   // Points the compiler/executor at THIS Embed's cells for one operation.
   // Distinct from vm.h's ReplSessionSwap, which owns a fresh throwaway
   // session and releases it on exit (the debugger's shape) — here the cells

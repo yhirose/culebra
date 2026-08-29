@@ -46,10 +46,12 @@ constexpr std::string_view kKitName = "culebra-toolchain-windows-x64";
 constexpr std::string_view kReleaseBase =
     "https://github.com/yhirose/culebra/releases/download";
 
-// The kit's published URL for this version. One spelling: the fetch and the
-// no-HTTP hint that asks the user to download it by hand must name one file.
+// The kit's asset name and published URL for this version. One spelling: the
+// fetch, the file it is saved as, and the no-HTTP hint that asks the user to
+// download it by hand must all name one file.
+std::string kit_zip_name() { return std::format("{}.zip", kKitName); }
 std::string kit_url() {
-  return std::format("{}/v{}/{}.zip", kReleaseBase, kVersion, kKitName);
+  return std::format("{}/v{}/{}", kReleaseBase, kVersion, kit_zip_name());
 }
 
 std::string read_file(const fs::path& p) {
@@ -304,16 +306,14 @@ bool link_in_process(const std::vector<std::string>& driver_args,
 
 namespace {
 
-// Only the Windows install fetches anything, but this is plain string work with
-// no Windows API in it, so it lives outside that guard: code compiled on one
-// platform alone is code the other two builds never type-check, and this file
-// has already shipped one such error to a CI run.
-//
-// $HTTPS_PROXY into `opts`. httplib does not read the environment itself, and a
-// corporate network is exactly where a download is most likely to be the
-// blocked step. Split here rather than passed on as "host:port": one parse, so
-// the validation and the split cannot disagree about where the colon is.
-[[maybe_unused]] void proxy_from_env(FetchOptions& opts) {
+// Only the Windows install fetches anything, but none of this needs a Windows
+// API, so it stays outside that guard where every platform's build type-checks
+// it (this file has shipped one Windows-only compile error to CI already).
+#if defined(CULEBRA_HTTP_ENABLED)
+
+// $HTTPS_PROXY into `opts`: httplib does not read the environment, and a
+// corporate network is where a download is most likely the blocked step.
+void proxy_from_env(FetchOptions& opts) {
   const char* p = std::getenv("HTTPS_PROXY");
   if (!p || !*p) return;
   std::string s(p);
@@ -327,14 +327,15 @@ namespace {
 
 // The kit download's shape: a long read timeout for an 8 MB body, and a short
 // connect timeout so a dead proxy does not cost that same two minutes.
-[[maybe_unused]] bool fetch(const std::string& url, std::string& body,
-                            std::string& err) {
+bool fetch(const std::string& url, std::string& body, std::string& err) {
   FetchOptions opts;
   opts.timeout_sec = 120;
   opts.connect_timeout_sec = 30;
   proxy_from_env(opts);
   return fetch_url(url, opts, body, err);
 }
+
+#endif  // CULEBRA_HTTP_ENABLED
 
 #ifdef _WIN32
 
@@ -443,7 +444,7 @@ bool verify_digest(std::string_view bytes, std::string_view sums_line,
     err = std::format("the digest published for {} is empty", name);
     return false;
   }
-  auto got = culebra::hashing::sha256(std::string(bytes));
+  auto got = culebra::hashing::sha256(bytes);
   if (got != expect) {
     err = std::format("{} does not match its digest\n"
                       "  expected {}\n  got      {}",
@@ -480,7 +481,7 @@ bool install_windows(const std::string& from, std::string& err) {
       return false;
   } else {
 #if defined(CULEBRA_HTTP_ENABLED)
-    auto name = std::format("{}.zip", kKitName);
+    auto name = kit_zip_name();
     auto url = kit_url();
     std::println("culebra toolchain: fetching the Windows kit for culebra {}…",
                  kVersion);
@@ -630,8 +631,7 @@ bool offer_install_interactively(bool host_link) {
 }
 
 int run_toolchain(int argc, const char** argv) {
-  // Declares itself cooperative (see run_main in src/main.cc): the kit
-  // download blocks in a socket that the HTTP watcher polls.
+  // This lane polls: the kit download's HTTP watcher.
   culebra::install_sigint_handler();
   // The full command line, as every other subcommand takes it: argv[1] is
   // "toolchain" and the verb follows it.

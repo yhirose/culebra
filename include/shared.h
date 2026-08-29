@@ -2461,6 +2461,11 @@ inline void request_interrupt() {
 // Install the SIGINT handler and point the current (main) thread's Runtime at
 // the global flag, so blocking channel waits and the statement poll observe
 // Ctrl+C. CLI-only: embedders opt in by calling this.
+//
+// Per lane, not once in main(): the handler only sets a flag, so a lane with
+// nothing polling it (`serve`, `lint`, `fmt`) would turn one Ctrl+C into two
+// presses. A lane that polls calls this itself; one that does not leaves
+// SIG_DFL, where a single press still stops it.
 inline void install_sigint_handler() {
   current_runtime().interrupt_flag = &culebra_g_sigint;
   std::signal(SIGINT, _culebra_sigint_handler);
@@ -2501,40 +2506,38 @@ inline void throw_if_interrupted() {
   auto* f = current_runtime().interrupt_flag;
   // Per-thread isolate cancel: sticky, its own message. Checked first so an
   // isolate thread reports its own cancel instead of consuming a Ctrl+C wake.
-  if (f && f != &culebra_g_sigint && f->load(std::memory_order_relaxed)) {
+  if (f && !is_sigint_flag(f) && f->load(std::memory_order_relaxed)) {
     throw CulebraError("Interrupted", "isolate cancelled");
   }
   // Ctrl+C: one-shot. Only the main/CLI context — whose interrupt_flag IS the
   // sigint flag, or is null under a borrowed JIT RuntimeScope — consumes it. An
   // isolate thread that merely saw the wake leaves the flag for the main thread.
   if (culebra_g_sigint.load(std::memory_order_relaxed) &&
-      (!f || f == &culebra_g_sigint)) {
+      (!f || is_sigint_flag(f))) {
     _consume_sigint();
     throw CulebraError("Interrupted", "interrupted");
   }
 }
 
-// Ctrl+C or a cancel, as opposed to a program's own error.
-//
-// The rule the whole tree follows: an interrupt is never a program error, and
-// only the entry point of a run decides the exit. So re-throwing is the
-// default; a component that hosts its own loop reports it instead and lets its
-// caller decide (the REPL resumes, a test runner stops the run); and a site
-// already unwinding from a cancel it caused itself swallows it. Spelled once so
-// those three answers cannot drift into a fourth.
+// Ctrl+C or a cancel, as opposed to a program's own error. A catch that
+// reports errors lets this one through; only a component hosting a loop (the
+// REPL, an embedder) reports it, and only main() turns it into an exit code.
 inline bool is_interrupt(const CulebraError& e) {
   return e.kind == "Interrupted";
 }
 
-// Whether a Ctrl+C or `flag`'s cancel is pending, where `flag` was captured by
-// the thread being watched. A watcher on another thread cannot read
-// current_runtime() — it would get its own. The `!= &culebra_g_sigint` term is
-// the isolate-vs-Ctrl+C distinction: a thread whose flag IS the global one has
-// already been answered by the first term.
+// Whether a Ctrl+C or `flag`'s cancel is pending. `flag` is the watched
+// thread's, captured by it: a watcher on another thread cannot read
+// current_runtime() — it would get its own.
 inline bool interrupt_fired(std::atomic<bool>* flag) {
   return culebra_g_sigint.load(std::memory_order_relaxed) ||
-         (flag && flag != &culebra_g_sigint &&
-          flag->load(std::memory_order_relaxed));
+         (flag && flag->load(std::memory_order_relaxed));
+}
+
+// The same, for the current thread. Read-only: the one-shot consume + throw is
+// throw_if_interrupted(), once a blocking loop has cleaned up.
+inline bool interrupt_pending() {
+  return interrupt_fired(current_runtime().interrupt_flag);
 }
 
 // --- Interruptible stdin --------------------------------------------------

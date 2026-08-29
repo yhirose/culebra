@@ -57,12 +57,11 @@ void install_undefined_var_lint() {
 }
 }  // namespace culebra
 
+#if defined(CULEBRA_HTTP_ENABLED)
 namespace culebra::toolchain {
 // Defined here, not beside its caller — see the declaration in toolchain_cmd.h.
-bool fetch_url([[maybe_unused]] const std::string& url,
-               [[maybe_unused]] const FetchOptions& opts,
-               [[maybe_unused]] std::string& body, std::string& err) {
-#if defined(CULEBRA_HTTP_ENABLED)
+bool fetch_url(const std::string& url, const FetchOptions& opts,
+               std::string& body, std::string& err) {
   http::HttpRequest req;
   req.url = url;
   req.follow_redirects = true;  // GitHub answers an asset with a CDN redirect.
@@ -82,12 +81,9 @@ bool fetch_url([[maybe_unused]] const std::string& url,
   }
   body = std::move(res.body);
   return true;
-#else
-  err = "this build has no HTTP support";
-  return false;
-#endif
 }
 }  // namespace culebra::toolchain
+#endif  // CULEBRA_HTTP_ENABLED
 
 // The registrar variable belongs to the TU, not the header — see wrap.h.
 namespace {
@@ -944,8 +940,7 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
 }
 
 int run_build(const BuildOptions& opts) {
-  // Declares itself cooperative (see run_main): the kit download polls, and so
-  // does the codegen this drives.
+  // This lane polls: the kit download's watcher, and the codegen it drives.
   culebra::install_sigint_handler();
   auto user_src = read_file(opts.input.c_str());
   if (!user_src) {
@@ -1574,7 +1569,6 @@ bool run_scripts(const Options& options) {
   // Cooperative Ctrl+C: install the SIGINT handler and point this thread's
   // Runtime at the global flag. The engines' loop safepoints observe it and
   // throw a catchable `Interrupted`.
-  // This lane polls (the statement safepoint), so it declares itself.
   if (options.script_path) culebra::install_sigint_handler();
 
   if (!options.script_path) return true;
@@ -1724,6 +1718,8 @@ culebra::BlockRunner doc_block_runner(RunnerEngine engine) {
     try {
       run(modules);
     } catch (const culebra::CulebraError& e) {
+      // Ctrl+C stops the run, it does not fail this one block.
+      if (culebra::is_interrupt(e)) throw;
       return doc_error_outcome(e);
     } catch (const std::exception& e) {
       // An uncaught user `throw` arrives here as "uncaught: <value>"
@@ -1820,8 +1816,6 @@ bool run_doc_shards(int jobs, RunnerEngine engine, culebra::Reporter reporter,
 }
 
 int run_test(int argc, const char** argv) {
-  // Declares itself cooperative (see run_main): the test bodies are culebra
-  // code, so they poll, and the runners stop the run on an interrupt.
   culebra::install_sigint_handler();
   std::vector<std::string> roots;
   std::string filter;
@@ -2442,9 +2436,7 @@ int run_serve(int argc, const char** argv) {
 }
 #endif  // CULEBRA_HTTP_ENABLED
 
-// main()'s body. Wrapped by main() below, which is the one place a pending
-// interrupt becomes an exit code — so every entry point, script or subcommand,
-// answers Ctrl+C the same way.
+// main()'s body; main() below is the catch.
 int run_main(int argc, const char** argv) {
   startup_profile::start();
   startup_profile::mark("main entered");
@@ -2452,15 +2444,9 @@ int run_main(int argc, const char** argv) {
   // Before anything can print.
   culebra::install_console_utf8();
 
-  // NOT installed here. CPython and Go's cmd/go can install one handler for
-  // every mode because every blocking primitive under them answers the flag;
-  // culebra's `serve`, `lint` and `fmt` have no such poll, and a handler with
-  // no reader turns one Ctrl+C into two presses — worse than the default
-  // disposition it replaced. So cooperativeness is declared, not assumed: a
-  // lane that polls calls install_sigint_handler() itself (run_scripts,
-  // run_test, run_build, run_toolchain), and one that does not leaves SIG_DFL,
-  // where a single press still stops it. main() below is the boundary either
-  // way — it answers for whatever the declaring lanes throw.
+  // No SIGINT handler here: the lanes that poll the flag install it themselves
+  // (see install_sigint_handler); `serve`, `lint` and `fmt` do not, and a
+  // handler nobody reads would turn one Ctrl+C into two presses.
 
   // Make the builtin-name set visible to the load-stage undefined-variable
   // lint before any subcommand loads a module (run / build / test all load
@@ -2613,11 +2599,8 @@ int run_main(int argc, const char** argv) {
 }
 
 int main(int argc, const char** argv) {
-  // The one boundary that turns a thrown error into an exit code. It wraps the
-  // subcommands as well as the script lane: a Ctrl+C during `culebra build`'s
-  // kit download used to escape main() uncaught, because the dispatch sat
-  // ahead of the try this replaces. Same shape as CPython's Py_RunMain — one
-  // handler at the entry, one place that answers for it.
+  // The one catch that turns a thrown error into an exit code, for the
+  // subcommands as well as the script lane.
   try {
     return run_main(argc, argv);
   } catch (const culebra::CulebraError& e) {

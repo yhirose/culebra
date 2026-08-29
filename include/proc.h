@@ -256,13 +256,6 @@ inline constexpr long kKillGraceMs = 100;
 // the child does not exit on the signal itself.
 inline constexpr int kInterruptPollMs = 100;
 
-// True when a cooperative interrupt (process Ctrl+C or this isolate's cancel) is
-// pending. Read-only — the one-shot consume + throw happens via
-// throw_if_interrupted() once the blocking loop has killed/reaped its children.
-inline bool interrupt_pending() {
-  return culebra_g_sigint.load(std::memory_order_relaxed) || interrupt_requested();
-}
-
 // Clamp a poll() timeout (ms; -1 == block) so the loop wakes at least every
 // kInterruptPollMs to re-check the interrupt flag and re-enforce deadlines.
 inline int clamp_interrupt_timeout(int pto) {
@@ -695,7 +688,7 @@ inline RunOutcome run_command(
   _detail::ScopeKiller killer(running);  // SIGKILL + reap the child if we throw.
   char buf[65536];
   while (running[0].out_open || running[0].err_open || running[0].in_open) {
-    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
+    if (interrupt_pending()) throw_if_interrupted();  // killer reaps
     int pto = _detail::clamp_interrupt_timeout(_detail::deadline_poll_timeout(running));
     if (!_detail::poll_step(running, buf, sizeof(buf), pto)) break;
   }
@@ -748,7 +741,7 @@ inline std::vector<RunOutcome> run_all(
 
   char buf[65536];
   while (sched.finished < n && sched.failed_index < 0) {
-    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps survivors
+    if (interrupt_pending()) throw_if_interrupted();  // killer reaps survivors
     int pto = _detail::clamp_interrupt_timeout(
         _detail::deadline_poll_timeout(sched.running));
     if (!_detail::poll_step(sched.running, buf, sizeof(buf), pto)) break;
@@ -814,7 +807,7 @@ inline std::pair<size_t, RunOutcome> run_race(
 
   char buf[65536];
   while (winner == SIZE_MAX && !running.empty()) {
-    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps survivors
+    if (interrupt_pending()) throw_if_interrupted();  // killer reaps survivors
     if (!_detail::poll_step(running, buf, sizeof(buf),
                             _detail::clamp_interrupt_timeout(-1)))
       break;
@@ -851,9 +844,6 @@ inline long long now_ms() {
 }
 inline constexpr int kInterruptPollMs = 100;
 
-inline bool interrupt_pending() {
-  return culebra_g_sigint.load(std::memory_order_relaxed) || interrupt_requested();
-}
 inline int clamp_interrupt_timeout(long long pto) {
   return (pto < 0 || pto > kInterruptPollMs) ? kInterruptPollMs
                                              : static_cast<int>(pto);
@@ -1188,7 +1178,7 @@ inline RunOutcome run_command(
   running.push_back(std::move(c));
   _detail::ScopeKiller killer(running);
   while (!_detail::child_exited(running[0])) {
-    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
+    if (interrupt_pending()) throw_if_interrupted();  // killer reaps
     long long nearest = _detail::enforce_deadlines(running, _detail::now_ms());
     if (running[0].timed_out) break;
     _detail::wait_any(running, (DWORD)_detail::clamp_interrupt_timeout(nearest));
@@ -1224,7 +1214,7 @@ inline std::vector<RunOutcome> run_all(
   sched.fill();
 
   while (sched.finished < n && sched.failed_index < 0) {
-    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
+    if (interrupt_pending()) throw_if_interrupted();  // killer reaps
     long long nearest =
         _detail::enforce_deadlines(sched.running, _detail::now_ms());
     _detail::wait_any(sched.running,
@@ -1277,7 +1267,7 @@ inline std::pair<size_t, RunOutcome> run_race(
     }
   }
   while (winner == SIZE_MAX && !running.empty()) {
-    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
+    if (interrupt_pending()) throw_if_interrupted();  // killer reaps
     _detail::wait_any(running, (DWORD)_detail::kInterruptPollMs);
     for (size_t k = 0; k < running.size(); k++) {
       if (_detail::child_exited(running[k])) {

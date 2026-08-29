@@ -88,12 +88,7 @@ class VmTestHost : public TestHost {
     auto abs = std::filesystem::absolute(path, ec);
     unit_.emplace(ec ? path : abs.string());
     std::vector<std::string> msgs;
-    // Ctrl+C stops the run rather than marking this file broken and moving on
-    // to the next: the interrupt is one-shot, so without this the rest of the
-    // suite would run as if nothing had been pressed. Both failure exits go
-    // through it — the ambient prologue can be interrupted too.
     auto fail = [&](const char* kind) {
-      if (const auto& i = unit_->session.last_interrupt()) throw *i;
       err = {kind, join_messages(msgs), 0, 0};
       return false;
     };
