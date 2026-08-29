@@ -2307,25 +2307,18 @@ struct Runtime {
     // *different* Runtime's slab. Repeat until a pass frees nothing — a slot
     // revived below the cursor leaks (the interp owned stack revives that way,
     // from ~InterpGC's collect).
-    {
-      RuntimeScope self(*this);
-      bool destroyed;
-      do {
-        destroyed = false;
-        for (size_t i = substate.size(); i-- > 0;) {
-          if (substate[i] && substate_deleter[i]) {
-            substate_deleter[i](substate[i]);
-            substate[i] = nullptr;
-            destroyed = true;
-          }
+    RuntimeScope self(*this);
+    bool destroyed;
+    do {
+      destroyed = false;
+      for (size_t i = substate.size(); i-- > 0;) {
+        if (substate[i] && substate_deleter[i]) {
+          substate_deleter[i](substate[i]);
+          substate[i] = nullptr;
+          destroyed = true;
         }
-      } while (destroyed);
-    }
-    // current_runtime() publishes the thread's default Runtime into the
-    // pointer, so the scope above restores `this` rather than null when that
-    // is what we are. Clear it so a later resolve does not read destroyed
-    // storage.
-    if (_culebra_current_runtime == this) _culebra_current_runtime = nullptr;
+      }
+    } while (destroyed);
   }
   Runtime(const Runtime&) = delete;
   Runtime& operator=(const Runtime&) = delete;
@@ -2366,18 +2359,9 @@ inline Runtime& default_runtime() {
   return rt;
 }
 
-// Publishes the thread's default Runtime into the pointer on first use, so
-// only that first call pays for `default_runtime()`. A function-local
-// `thread_local` with a non-trivial ctor/dtor re-checks its guard and resolves
-// two TLV descriptors on EVERY call; `_culebra_current_runtime` is a
-// trivially-initialized pointer, so a resolved one is a single TLV the
-// optimizer can CSE across a runtime helper. A plain script run never enters a
-// RuntimeScope, so before this every `_slab()` / `_gc_heap()` took the
-// expensive path — 21-30% of an object's construction time on macOS.
-// Ownership is unchanged: the same object either way.
 inline Runtime& current_runtime() {
-  if (!_culebra_current_runtime) _culebra_current_runtime = &default_runtime();
-  return *_culebra_current_runtime;
+  return _culebra_current_runtime ? *_culebra_current_runtime
+                                  : default_runtime();
 }
 
 // Definition of the forward-declared hook (see CulebraError's ctor). Records the
