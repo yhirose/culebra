@@ -9216,9 +9216,9 @@ struct Exec {
       // Uncaught user throw: format first, then consume the carrier's
       // reference — JIT::exec's boundary, so main.cc prints the same
       // "uncaught: ..." on every lane.
-      auto s = _culebra_uncaught_display(e.tag, e.data);
+      auto s = format_uncaught_throw(e);
       _culebra_value_release_impl(e.tag, e.data);
-      throw std::runtime_error(culebra::format("uncaught: {}", s));
+      throw std::runtime_error(std::move(s));
     } catch (CulebraError& e) {
       // Backfill a positionless error from the published op position at
       // the engine boundary — JIT::exec's rule (the interp stamps at its
@@ -11461,7 +11461,8 @@ struct Exec {
         case Op::Throw: {
           JitValue v = regs[in.a];
           regs[in.a] = JitValue{TAG_NIL, 0};  // the +1 rides the carrier now
-          culebra_runtime_throw(static_cast<int8_t>(v.tag), v.data);
+          auto [line, col] = chunk_pos_at(c, pc);
+          culebra_runtime_throw(static_cast<int8_t>(v.tag), v.data, line, col);
           break;  // unreachable — throw never returns
         }
         case Op::DeferMark:

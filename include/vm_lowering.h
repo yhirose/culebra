@@ -4278,9 +4278,12 @@ struct Lowering {
         case Op::Throw: {
           auto v = load_slot(in.a);
           b.CreateStore(j.make_nil(), slots[in.a]);
+          auto [line, col] = chunk_pos_at(c, i);
           j.emit_call(j.module_->getOrInsertFunction(
-                          rt::throw_, b.getVoidTy(), b.getInt8Ty(), i64Ty),
-                      {j.extract_tag(v), j.extract_data(v)});
+                          rt::throw_, b.getVoidTy(), b.getInt8Ty(), i64Ty,
+                          i64Ty, i64Ty),
+                      {j.extract_tag(v), j.extract_data(v),
+                       b.getInt64(line), b.getInt64(col)});
           if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
           break;
         }

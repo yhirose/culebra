@@ -524,7 +524,9 @@ inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
     JitDeCtx tdc;
     JitValue tv = jit_deserialize(*core->thrown, tdc);
     release_inflight_channels(*core->thrown);
-    culebra_runtime_throw(tv.tag, tv.data);  // [[noreturn]]
+    // 0:0 — the throw that produced this value ran on the isolate's thread,
+    // so no position in this program's source applies to the re-raise.
+    culebra_runtime_throw(tv.tag, tv.data, 0, 0);  // [[noreturn]]
   }
   JitDeCtx dc;
   return jit_deserialize(core->result, dc);  // on the parent heap
@@ -1522,7 +1524,7 @@ inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int6
       }
     }
   }
-  if (have_thrown) culebra_runtime_throw(tt, td);
+  if (have_thrown) culebra_runtime_throw(tt, td, 0, 0);  // see above: no position
   if (first_err) throw *first_err;
   { *__ret = {TAG_NIL, 0}; return; }
 }

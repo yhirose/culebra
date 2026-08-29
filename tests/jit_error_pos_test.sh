@@ -134,13 +134,15 @@ check_same "pow zero neg exponent"    'let x = 0 ** -1'
 check_same "compound on builtin"      'to_string += 1'
 check_eq   "coalesce on builtin"      '(println ??= 1)("kept")'
 
-# An uncaught top-level `throw` prints `uncaught: <value>`. A thrown string
-# prints raw (it's the message), matching the interp's str_display — the JIT
-# once quoted it (`uncaught: 'boom'`). Non-strings already agreed.
-check_eq "uncaught throw string"      'throw "boom"'
-check_eq "uncaught throw int"         'throw 42'
-check_eq "uncaught throw object"      'throw {code: 1, msg: "x"}'
-check_eq "uncaught throw array"       'throw [1, "a"]'
+# An uncaught top-level `throw` prints `uncaught: <value> at L:C.` — the
+# position of the `throw` itself, which the carrier now holds (it used to
+# print no position at all, the one error class that didn't). A thrown string
+# prints raw (it's the message), matching str_display — the JIT once quoted it
+# (`uncaught: 'boom'`). Non-strings already agreed.
+check_same "uncaught throw string"      'throw "boom"'
+check_same "uncaught throw int"         'throw 42'
+check_same "uncaught throw object"      'throw {code: 1, msg: "x"}'
+check_same "uncaught throw array"       'throw [1, "a"]'
 
 # get_or_put's unhashable-key TypeError is raised from inside the runtime
 # store, positionless — the JIT once left it at whatever an unrelated call

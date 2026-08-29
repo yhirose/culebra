@@ -4,4 +4,4 @@ defer iter 1
 drop 10
 defer iter 1
 drop 11
-uncaught: x
+uncaught: x at 26:15.

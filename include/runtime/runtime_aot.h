@@ -52,14 +52,15 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     main_fn();
   } catch (const CulebraException& e) {
     // Format first, then consume the carrier's reference (the payload's
-    // final +1). Format matches `JIT::exec` for identical stderr.
-    auto s = _culebra_uncaught_display(e.tag, e.data);
+    // final +1). The shared formatter is what keeps this identical to
+    // `JIT::exec` and the VM's boundary.
+    auto s = format_uncaught_throw(e);
     _culebra_value_release_impl(e.tag, e.data);
     try {
       culebra_runtime_defer_run_to(0);
     } catch (...) {
     }
-    std::fprintf(stderr, "uncaught: %s\n", s.c_str());
+    std::fprintf(stderr, "%s\n", s.c_str());
     return 1;
   } catch (culebra::CulebraError& e) {
     // Drain top-level defers the uncaught error skipped (mirrors JIT::exec).

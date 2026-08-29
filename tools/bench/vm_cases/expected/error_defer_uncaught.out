@@ -1,4 +1,4 @@
 scope-d
 fn-d
 top-d
-uncaught: boom
+uncaught: boom at 9:5.

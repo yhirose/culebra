@@ -776,9 +776,30 @@ class CulebraException : public std::exception {
  public:
   int8_t tag;
   int64_t data;
-  CulebraException(int8_t t, int64_t d) : tag(t), data(d) {}
+  // Where the `throw` was written, so an uncaught one reports like every
+  // other error. 0:0 where no source position applies — a value re-thrown
+  // across an isolate boundary carries none, since the throw that produced
+  // it ran on another thread.
+  int64_t line = 0, col = 0;
+  CulebraException(int8_t t, int64_t d, int64_t ln = 0, int64_t cl = 0)
+      : tag(t), data(d), line(ln), col(cl) {}
   const char* what() const noexcept override { return "CulebraException"; }
 };
+
+// The one spelling of an uncaught user throw. The three engine boundaries
+// (JIT::exec, the VM's run_prepared, the AOT bootstrap) each print this, and
+// used to compose it by hand with a comment asking the next editor to keep
+// them identical. The caller consumes the carrier's reference AFTER calling
+// this — formatting reads the payload.
+inline std::string format_uncaught_throw(const CulebraException& e) {
+  std::string s = _culebra_uncaught_display(e.tag, e.data);
+  if (e.line <= 0 && e.col <= 0) return culebra::format("uncaught: {}", s);
+  // Same rule as format_error_message: a value that runs to several lines
+  // would bury the position at the end of its last one.
+  if (s.find('\n') != std::string::npos)
+    return culebra::format("uncaught at {}:{}: {}", e.line, e.col, s);
+  return culebra::format("uncaught: {} at {}:{}.", s, e.line, e.col);
+}
 
 // Unpack a script-thrown value for a host-facing report: an Object's
 // `kind`/`message` slots when present, the display form otherwise. The one
@@ -890,7 +911,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
-                                                        int64_t data) {
+                                                        int64_t data,
+                                                        int64_t line,
+                                                        int64_t col) {
   // The caller hands the payload +1-owned (compile() result / a fresh
   // deserialize) and the carrier takes that reference over; it keeps the
   // payload alive through unwinding and is consumed exactly once by the
@@ -902,7 +925,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
   rt.thrown_tag = tag;
   rt.thrown_data = data;
   rt.is_throw = 1;
-  throw CulebraException(tag, data);
+  throw CulebraException(tag, data, line, col);
 }
 
 // Re-throw the currently-in-flight exception. Used by cleanup
