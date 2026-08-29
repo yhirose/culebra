@@ -1,0 +1,225 @@
+# SPIKE — delete once it has answered. Three questions, in the order the
+# `culebra toolchain install` design needs them:
+#
+#   1. How big is a Windows link kit now that the link goes through clang++
+#      and lld? The earlier spike measured g++ + GNU ld (15.1 MB zipped), a
+#      pair src/main.cc no longer uses — clang is a whole compiler where the
+#      g++ driver was a small program, so that number cannot carry over.
+#   2. Does it cover every feature axis, not just hello? Http, Compress,
+#      Canvas/Scene and Webview each append their own import libraries
+#      (CMakeLists' _ssl_link / _zlib_link / _raylib_aot_link / _webview_link),
+#      and a kit packed from a hello link would be missing them — the failure
+#      would surface only for a user who compiles one of those.
+#   3. Can the compiler driver be dropped, leaving lld and a recorded link
+#      recipe? That is the difference between shipping clang (~a compiler) and
+#      shipping a linker.
+#
+# Uses the culebra.exe that ci.yml's windows-aot-build already produced for
+# master, rather than building one here: the question is about the toolchain,
+# not this checkout, and the artifact is the same clang+lld configuration the
+# download will be. (The published v0.4.0 binary is NOT usable for this — it
+# predates 2ec2227d and still drives the link with g++.)
+name: linkkit-spike
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'ci.yml run to take culebra-windows-x64 from (blank = latest master)'
+        required: false
+  push:
+    branches: [worktree-linkkit-clang]
+
+permissions:
+  contents: read
+  actions: read      # to read another workflow run's artifacts
+
+jobs:
+  linkkit:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      # The same environment misc/configure_windows_release.sh builds the
+      # download in: UCRT64, gcc for the libstdc++/libgcc statics the link
+      # consumes, clang+lld for the driver and linker themselves, zlib because
+      # -lz is the one library an AOT link still takes from the system.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-zlib
+
+      - name: Toolchain versions
+        shell: msys2 {0}
+        run: |
+          clang++ --version | head -2
+          ld.lld --version
+          echo "clang++ is $(command -v clang++)"
+
+      # Question 1 and 2: this is the step whose output decides the design.
+      - name: Pack the link kits
+        shell: msys2 {0}
+        run: misc/pack_linkkit.sh "$(pwd)/kits"
+
+      # A kit is a download, so the zipped size is the number that matters.
+      # Reported before anything can fail below it.
+      - name: Kit sizes (zipped)
+        shell: pwsh
+        run: |
+          foreach ($k in 'kit-clang','kit-lld') {
+            $dir = "kits\$k"
+            if (!(Test-Path $dir)) { "$k : not packed"; continue }
+            Compress-Archive -Path "$dir\*" -DestinationPath "$k.zip" -Force
+            $raw = (Get-ChildItem -Recurse -File $dir | Measure-Object Length -Sum).Sum
+            $zip = (Get-Item "$k.zip").Length
+            "{0,-10} raw {1,13:N0}  zip {2,13:N0}  files {3,5}" -f `
+              $k, $raw, $zip, (Get-ChildItem -Recurse -File $dir).Count
+          }
+
+      # windows-aot-build's artifact from the newest successful master run:
+      # clang-built archives, lld link, every axis enabled. Its retention is
+      # short (1 day), so a stale spike run needs a fresh master CI first —
+      # the step says so rather than failing obscurely.
+      - name: Fetch culebra.exe from master's CI
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $run = '${{ github.event.inputs.run_id }}'
+          if (-not $run) {
+            $run = gh api 'repos/${{ github.repository }}/actions/runs?branch=master&status=success&per_page=10' `
+                     --jq '.workflow_runs[] | select(.name=="CI") | .id' | Select-Object -First 1
+          }
+          if (-not $run) { throw "no successful master CI run to take the binary from" }
+          "using ci.yml run $run"
+          gh run download $run --repo ${{ github.repository }} -n culebra-windows-x64 --dir rel
+          $exe = (Get-ChildItem -Recurse -Filter culebra.exe rel)[0].FullName
+          "CULEBRA_EXE=$exe" | Out-File -Append $env:GITHUB_ENV
+          & $exe --version
+
+      # One program per Windows link fragment. Sources are the ones the repo
+      # already validates (tools/check_aot_feature_axes.sh and ci.yml's
+      # windows-aot-build), so a failure here is the kit's, not the program's.
+      # `if false { … }` links an axis without running it — the AOT scan is
+      # static, which is exactly the property being leaned on.
+      - name: Write the axis programs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path progs | Out-Null
+          $progs = @{
+            hello    = @('print("hello from AOT")', 'hello from AOT')
+            compress = @('if false { let z = Compress.gzip("x") }' + "`n" + 'print("compress ok")', 'compress ok')
+            canvas   = @('let s = Canvas.Sprite.blank(3, 2, 0xFF336699)' + "`n" +
+                         'let back = Canvas.Sprite.from_png(s.to_png())' + "`n" +
+                         'print(back.width() * 10 + back.height())', '32')
+            http     = @('let srv = Http.server()' + "`n" + 'print("http ok")', 'http ok')
+            webview  = @('let srv = Http.server()' + "`n" +
+                         'if false { let w = Webview.Window.new(); w.run() }' + "`n" +
+                         'print("webview+http ok")', 'webview+http ok')
+            sqlite   = @('let db = SQLite.open(":memory:")' + "`n" + 'print("sqlite ok")', 'sqlite ok')
+          }
+          $progs.GetEnumerator() | ForEach-Object {
+            $_.Value[0] | Out-File -Encoding ascii "progs\$($_.Key).cul"
+            "$($_.Key)`t$($_.Value[1])" | Out-File -Append -Encoding ascii progs\expected.tsv
+          }
+          Get-Content progs\expected.tsv
+
+      # A GitHub runner is NOT a bare Windows box: the image ships a mingw64 at
+      # C:\mingw64, and this job installed an MSYS2. Neither is on a
+      # downloader's machine, so every link step below runs with a PATH built
+      # from scratch — system directories plus the kit under test.
+      - name: Control — a bare PATH cannot link at all
+        shell: pwsh
+        run: |
+          $env:Path = "C:\Windows\System32;C:\Windows"
+          foreach ($t in 'clang++','ld.lld','g++') {
+            $c = Get-Command $t -ErrorAction SilentlyContinue
+            if ($c) { throw "$t is on PATH at $($c.Source) — the spike would prove nothing" }
+          }
+          & $env:CULEBRA_EXE build progs\hello.cul -o hello-nokit.exe
+          if ($LASTEXITCODE -eq 0) { throw "build succeeded with no toolchain present" }
+          "OK: build refuses without a toolchain (rc=$LASTEXITCODE)"
+          exit 0
+
+      # Question 2. `culebra build` needs no change for this kit: it looks for
+      # clang++ and ld.lld on PATH exactly as it does today.
+      - name: kit-clang — every axis
+        id: clang
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CULEBRA_VERBOSE: "1"
+        run: |
+          $env:Path = "$pwd\kits\kit-clang\bin;C:\Windows\System32;C:\Windows"
+          $env:CULEBRA_CACHE = "$pwd\cache"
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          $fail = @()
+          foreach ($line in Get-Content progs\expected.tsv) {
+            $name, $want = $line -split "`t"
+            "=== $name"
+            & $env:CULEBRA_EXE build "progs\$name.cul" -o "$name.exe" 2> "logs\$name.log"
+            if ($LASTEXITCODE -ne 0) {
+              $fail += "$name (link rc=$LASTEXITCODE)"
+              Get-Content "logs\$name.log" | Select-Object -Last 25
+              continue
+            }
+            $got = (& ".\$name.exe" 2>&1 | Out-String).Trim()
+            if ($got -ne $want) { $fail += "$name (ran: '$got' wanted '$want')" }
+            else { "    ok: $got" }
+          }
+          if ($fail.Count) { "FAILED: " + ($fail -join '; '); exit 1 }
+          "KIT_CLANG_PASS"
+          exit 0
+
+      # Question 3, and independent of the above: the two answer different
+      # things (does the idea work at all vs. how small can it get). Best
+      # effort — if the recipe is not yet faithful, the size numbers above are
+      # still the ones the design decision needs.
+      - name: kit-lld — replay the recipe without a compiler driver
+        id: lld
+        continue-on-error: true
+        shell: msys2 {0}
+        run: |
+          fail=""
+          while IFS=$'\t' read -r name want; do
+            [ -f "logs/$name.log" ] || continue
+            echo "=== $name"
+            if ! misc/replay_linkkit.sh kits/kit-lld "logs/$name.log" "$name-lld.exe"; then
+              fail="$fail $name(link)"; continue
+            fi
+            got=$(./"$name-lld.exe" 2>&1 | tr -d '\r' | tail -1)
+            if [ "$got" != "$want" ]; then fail="$fail $name(ran:'$got')"; else echo "    ok: $got"; fi
+          done < <(tr -d '\r' < progs/expected.tsv)
+          [ -z "$fail" ] || { echo "FAILED:$fail"; exit 1; }
+          echo "KIT_LLD_PASS"
+
+      # The produced binaries must need nothing from the kit — it is a
+      # build-time artifact, not a runtime one. Anything here outside the
+      # system DLLs means the kit leaked into what the user ships.
+      - name: What the produced .exe files import
+        if: always()
+        shell: msys2 {0}
+        run: |
+          for f in *.exe; do
+            case "$f" in hello-nokit.exe) continue ;; esac
+            [ -f "$f" ] || continue
+            echo "== $f  ($(stat -c %s "$f") bytes)"
+            objdump -p "$f" 2>/dev/null | grep -i "DLL Name" | sort -u | sed 's/^/   /'
+          done
+
+      - name: Verdict
+        if: always()
+        shell: pwsh
+        run: |
+          "kit-clang (drop-in, no driver change): ${{ steps.clang.outcome }}"
+          "kit-lld   (no compiler, recipe only):  ${{ steps.lld.outcome }}"
+          if ('${{ steps.clang.outcome }}' -ne 'success') {
+            "kit-clang is the fallback design; its failure blocks the feature."
+            exit 1
+          }
