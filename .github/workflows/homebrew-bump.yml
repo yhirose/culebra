@@ -1,0 +1,85 @@
+name: Bump Homebrew formula
+
+# Fires when a release moves out of draft — release.yml's asset-build jobs
+# have already run by then (see release.yml's header comment: assets are
+# built by push-tag, publishing is a separate later step done by /release),
+# so every asset this job reads is guaranteed to exist.
+#
+# Pushes straight to yhirose/homebrew-culebra's master, no PR: we own both
+# repos, so a review step buys nothing a broken `brew install` wouldn't
+# already surface immediately.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version and per-asset sha256
+        id: vars
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          assets=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[] | "\(.name) \(.digest)"')
+          macos_sha=$(echo "$assets" | awk '$1 == "culebra-macos-arm64.tar.gz" { sub(/^sha256:/, "", $2); print $2 }')
+          linux_sha=$(echo "$assets" | awk '$1 == "culebra-linux-x64.tar.gz" { sub(/^sha256:/, "", $2); print $2 }')
+          [ -n "$macos_sha" ] || { echo "no digest for culebra-macos-arm64.tar.gz in $TAG" >&2; exit 1; }
+          [ -n "$linux_sha" ] || { echo "no digest for culebra-linux-x64.tar.gz in $TAG" >&2; exit 1; }
+          {
+            echo "version=${TAG#v}"
+            echo "tag=$TAG"
+            echo "macos_sha=$macos_sha"
+            echo "linux_sha=$linux_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the tap
+        uses: actions/checkout@v5
+        with:
+          repository: yhirose/homebrew-culebra
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      # sed can't tell the two `sha256 "..."` lines apart, so this walks the
+      # file with a small state machine keyed on which `on_*` block it's in.
+      - name: Update Formula/culebra.rb
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+          TAG: ${{ steps.vars.outputs.tag }}
+          MACOS_SHA: ${{ steps.vars.outputs.macos_sha }}
+          LINUX_SHA: ${{ steps.vars.outputs.linux_sha }}
+        run: |
+          python3 - <<'EOF'
+          import os, re
+
+          path = "tap/Formula/culebra.rb"
+          version, tag = os.environ["VERSION"], os.environ["TAG"]
+          shas = {"on_macos": os.environ["MACOS_SHA"], "on_linux": os.environ["LINUX_SHA"]}
+
+          text = open(path).read()
+          text = re.sub(r'version ".*?"', f'version "{version}"', text, count=1)
+          text = re.sub(r'/download/v[0-9][0-9.]*/', f'/download/{tag}/', text)
+          for block, sha in shas.items():
+              pattern = re.compile(rf'({block}\b.*?sha256 ")[a-f0-9]{{64}}(")', re.S)
+              text, n = pattern.subn(rf'\g<1>{sha}\g<2>', text, count=1)
+              assert n == 1, f"no sha256 line found in {block} block"
+          open(path, "w").write(text)
+          EOF
+
+      - name: Commit and push
+        run: |
+          cd tap
+          git config user.name "yhirose"
+          git config user.email "yuji.hirose.bug@gmail.com"
+          if git diff --quiet; then
+            echo "formula already up to date"
+            exit 0
+          fi
+          git add Formula/culebra.rb
+          git commit -m "culebra ${{ steps.vars.outputs.version }}"
+          git push
