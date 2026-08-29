@@ -134,6 +134,14 @@ enum class Op : uint8_t {
                // frees it) and the SetOpPos published just before (the
                // literal's position, compile_set's emit order) anchors it.
   ObjectNew,   // regs[a] = fresh empty Object (+1)
+  ObjectNewShaped, // regs[a] = fresh Object (+1) whose Shape and (nil,
+               // immutable) slots are pre-built from
+               // chunk.object_shape_specs[b]'s static key list — emitted
+               // instead of ObjectNew only when every property of a literal
+               // is a plain IDENTIFIER key (compile_object's eligibility
+               // check), so the ObjectSet run that follows always finds its
+               // slot already present and never calls transition_add. See
+               // culebra_runtime_object_new_shaped.
   ObjectSet,   // an IDENTIFIER/shorthand property: regs[a].consts[c] =
                // regs[b] (absorbed), consts[c] mutable iff d — object_set
                // with is_init=true, so a duplicate key (or a later spread)
@@ -2264,6 +2272,26 @@ struct Chunk {
   // (the conservative GC owns heap strings); these live as long as the
   // chunk, like the JIT module's globals.
   std::vector<std::unique_ptr<char[]>> str_arena;
+  // One entry per Op::ObjectNewShaped site (compile_object's eligibility
+  // check — every key a plain IDENTIFIER, dedup'd in first-occurrence
+  // order). `keys` is baked once at compile time (raw pointers into
+  // `str_arena`, stable for the chunk's lifetime); `shape` starts null and
+  // is resolved on the site's first execution, then reused forever — every
+  // execution of the same literal walks the identical name sequence, so the
+  // Shape it resolves to is always the same canonical pointer
+  // (ShapeRegistry::transition_add's own lock+cache already makes that
+  // resolution idempotent), the same "benign race, no atomics needed"
+  // argument the property IC (JitPropIC) already relies on. A Shape* is a
+  // per-PROCESS pointer, not a per-program one — the JIT lowering must
+  // resolve it the same lazy way, never bake it at AOT-compile time.
+  // `mutable`: the executor reaches this through a `const Chunk&` (the
+  // bytecode is logically immutable during a run), but the cache is a
+  // physical detail of execution, not part of the compiled program.
+  struct ObjectShapeSpec {
+    mutable void* shape = nullptr;
+    std::vector<const char*> keys;
+  };
+  std::vector<ObjectShapeSpec> object_shape_specs;
   int32_t num_slots = 0;
   // Cell slots in creation order: a slot's rank, against a cleanup step's
   // `cells_before`, says whether it already owned a cell at that point in the
@@ -8861,7 +8889,42 @@ class Compiler {
       }
       case "OBJECT"_: {
         int32_t t = alloc_temp(ast);
-        emit(Op::ObjectNew, t);
+        // A literal whose properties are all plain IDENTIFIER keys — the
+        // same subset the loop below always routes through Op::ObjectSet,
+        // never ObjectSetAny (non-IDENTIFIER key) or ObjectMerge (spread) —
+        // has an entirely static final key set. Pre-build its Shape and
+        // slots once instead of transitioning through one Shape per key on
+        // every execution (see ObjectNewShaped).
+        bool all_static_keys = true;
+        for (const auto& prop : ast.nodes) {
+          if (prop->tag == "SPREAD_ELEM"_ ||
+              culebra::view_object_property(*prop).key->tag !=
+                  "IDENTIFIER"_) {
+            all_static_keys = false;
+            break;
+          }
+        }
+        if (all_static_keys) {
+          Chunk::ObjectShapeSpec spec;
+          for (const auto& prop : ast.nodes) {
+            auto key = culebra::view_object_property(*prop).key->token;
+            auto* data = reinterpret_cast<const char*>(
+                chunk_.consts[kconst_str(key)].data);
+            // Dedup in first-occurrence order — matches the shape a
+            // duplicate key would transition to via sequential appends
+            // (find_slot hits the first one, later ObjectSets overwrite it).
+            if (std::find_if(spec.keys.begin(), spec.keys.end(),
+                             [&](const char* k) { return key == k; }) ==
+                spec.keys.end())
+              spec.keys.push_back(data);
+          }
+          int32_t spec_idx =
+              static_cast<int32_t>(chunk_.object_shape_specs.size());
+          chunk_.object_shape_specs.push_back(std::move(spec));
+          emit(Op::ObjectNewShaped, t, spec_idx);
+        } else {
+          emit(Op::ObjectNew, t);
+        }
         for (const auto& prop : ast.nodes) {
           if (prop->tag == "SPREAD_ELEM"_) {
             // object_merge borrows the source; no owned_src — a temp's +1
@@ -9127,7 +9190,7 @@ inline std::string dump(const Chunk& c) {
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "ArrayPush", "ArrayExtend", "ArrayResize",
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
-      "ObjectNew", "ObjectSet", "ObjectSetAny", "ObjectMerge",
+      "ObjectNew", "ObjectNewShaped", "ObjectSet", "ObjectSetAny", "ObjectMerge",
       "ModReg",    "ModGet",
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
@@ -10209,6 +10272,16 @@ struct Exec {
               reinterpret_cast<int64_t>(culebra_runtime_object_new())};
           ++pc;
           break;
+        case Op::ObjectNewShaped: {
+          auto& spec = c.object_shape_specs[in.b];
+          regs[in.a] = JitValue{
+              TAG_OBJECT,
+              reinterpret_cast<int64_t>(culebra_runtime_object_new_shaped(
+                  &spec.shape, spec.keys.data(),
+                  static_cast<int64_t>(spec.keys.size())))};
+          ++pc;
+          break;
+        }
         case Op::ObjectSet: {
           // Unlike set_add, object_set consumes the value on EVERY exit,
           // including the positionless well-known-contract throw — nil the

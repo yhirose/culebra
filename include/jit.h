@@ -1201,6 +1201,9 @@ struct JIT {
   // Counter for per-callsite property-get inline-cache globals.
   int prop_ic_counter_ = 0;
 
+  // Counter for per-callsite ObjectNewShaped shape-cache globals.
+  int obj_shape_counter_ = 0;
+
 
   JIT(llvm::LLVMContext* ctx, llvm::Module* mod, llvm::IRBuilder<>& builder)
       : ctx_(*ctx), module_(mod), builder_(builder) {

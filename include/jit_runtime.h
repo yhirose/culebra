@@ -2513,6 +2513,44 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
   return o;
 }
 
+// Object::ObjectNewShaped's runtime half: build the object with its final
+// Shape and (nil, immutable) slots already in place, instead of transitioning
+// through one Shape per key as the ObjectSet run that follows would
+// otherwise do (see Chunk::ObjectShapeSpec). `*shape_cache` starts null and
+// is resolved on the callsite's first execution, then reused forever — the
+// Shape a given (static) key list resolves to never changes, so a benign
+// race refills it with the identical canonical pointer on every path (same
+// argument as JitPropIC's cache; `transition_add`'s own lock is what makes
+// concurrent resolution idempotent). A Shape* is a per-process pointer, so
+// this laziness is load-bearing for AOT: the value baked at `culebra build`
+// time would be garbage in the binary's own run.
+//
+// Each slot starts `mut=false` — irrelevant, since ObjectSet's is_init=true
+// overwrite (the only way a shaped slot's value ever changes before the
+// literal finishes) always replaces it with the property's real mut flag
+// before anything reads it. `mut_count` is left at 0 rather than bumped once
+// per key: it exists purely for object_iter's fail-fast on structural
+// mutation DURING an active iteration, which is impossible before this
+// object is even returned, so its starting value carries no meaning (see
+// JitObject::mut_count).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new_shaped(
+    void** shape_cache, const char* const* keys, int64_t n_keys) {
+  auto* shape = reinterpret_cast<culebra::Shape*>(*shape_cache);
+  if (!shape) {
+    shape = culebra::shape_registry().root();
+    for (int64_t i = 0; i < n_keys; i++)
+      shape = culebra::shape_registry().transition_add(shape, keys[i]);
+    *shape_cache = shape;
+  }
+  auto* o = new JitObject();
+  o->refcount = 1;
+  o->shape = shape;
+  o->slots.assign(shape->names.size(),
+                  JitObjectEntry{JitValue{TAG_NIL, 0}, /*mut=*/false});
+  _gc_register(o, GC_TAG_OBJECT);
+  return o;
+}
+
 // Shallow-copy a class instance / object: a fresh object with the same shape,
 // its own copy of the data slots (each field ref retained), and the shared
 // per-class meta (`proto`, method table — not refcounted per instance). Scalars

@@ -874,6 +874,7 @@ inline constexpr auto object_has_value    = "culebra_runtime_object_has_value";
 inline constexpr auto object_keys         = "culebra_runtime_object_keys";
 inline constexpr auto object_values       = "culebra_runtime_object_values";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
+inline constexpr auto object_new_shaped   = "culebra_runtime_object_new_shaped";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
 inline constexpr auto is_shared_val       = "culebra_runtime_is_shared_val";
 inline constexpr auto nc_receiver_kind    = "culebra_runtime_nc_receiver_kind";

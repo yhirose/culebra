@@ -1133,6 +1133,31 @@ struct Lowering {
           b.CreateStore(j.make_object(obj), slots[in.a]);
           break;
         }
+        case Op::ObjectNewShaped: {
+          const auto& spec = c.object_shape_specs[in.b];
+          // Own cache cell per callsite, resolved lazily the same way the
+          // executor's chunk.object_shape_specs[i].shape is — a Shape* baked
+          // at AOT-compile time would be a dangling address in the compiled
+          // binary's own, later, process.
+          auto* cacheGlobal = new llvm::GlobalVariable(
+              *j.module_, ptrTy, /*isConstant=*/false,
+              llvm::GlobalValue::PrivateLinkage,
+              llvm::ConstantPointerNull::get(ptrTy),
+              ".obj.shape.cache." + std::to_string(j.obj_shape_counter_++));
+          std::vector<llvm::Constant*> keyPtrs;
+          keyPtrs.reserve(spec.keys.size());
+          for (const char* k : spec.keys)
+            keyPtrs.push_back(j.get_or_create_global_str(k, ".shape.key"));
+          auto keysArray = j.build_str_ptr_array(keyPtrs, ".shape.keys");
+          auto obj = j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_new_shaped, ptrTy,
+                                             ptrTy, ptrTy, i64Ty),
+              {cacheGlobal, keysArray,
+               b.getInt64(static_cast<int64_t>(spec.keys.size()))},
+              "vm.obj.shaped");
+          b.CreateStore(j.make_object(obj), slots[in.a]);
+          break;
+        }
         case Op::ObjectSet: {
           // Unlike set_add, object_set consumes the value on EVERY exit
           // (including the positionless well-known-contract throw) — pull
