@@ -423,6 +423,18 @@ if(CULEBRA_ENABLE_JIT)
   endif()
   llvm_map_components_to_libnames(llvm_libs
     core support orcjit native passes ${_extra_target_libs} ${_lld_components})
+  if(CULEBRA_LLD_LIBS)
+    # An unknown component name maps to nothing without complaint, so a
+    # missing library here looks exactly like a library that simply is not
+    # needed — until the link says otherwise. Printed so the two are
+    # distinguishable from the configure log alone.
+    message(STATUS "lld's extra LLVM components: ${_lld_components}")
+    if(NOT "LLVMLTO" IN_LIST llvm_libs)
+      message(WARNING
+        "the `lto` component mapped to no library — lld's COFF driver needs "
+        "LLVMLTO and the link is about to say so")
+    endif()
+  endif()
 
   # Some distros (e.g. Arch Linux) package only the combined libLLVM.so
   # and omit per-component static archives — or ship a handful of stale
