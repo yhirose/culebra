@@ -1431,14 +1431,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
     // The proto's own slot — _find_property's own first step, so the
     // resolution order is unchanged; only this hit is cacheable, and a name
     // it answers from a second level falls through to the walk below.
-    if (obj->proto->shape) {
-      auto idx = obj->proto->shape->offset(key);
-      if (idx != static_cast<size_t>(-1)) {
-        ic->owner_shape = obj->shape;
-        ic->proto_shape = obj->proto->shape;
-        ic->proto_offset = idx;
-        return obj->proto->slots[idx].value;
-      }
+    auto idx = obj->proto->find_slot(key);
+    if (idx != static_cast<size_t>(-1)) {
+      ic->owner_shape = obj->shape;
+      ic->proto_shape = obj->proto->shape;
+      ic->proto_offset = idx;
+      return obj->proto->slots[idx].value;
     }
     if (auto* proto_entry = _find_property(obj->proto, key))
       return proto_entry->value;

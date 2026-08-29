@@ -638,7 +638,6 @@ enum class Op : uint8_t {
                // every other input — a String to parse, anything else to
                // reject — goes to to_float_any with the instruction's
                // line/col, so the parse and the TypeError stay identical
-
   Safepoint,   // interrupt poll — every loop back edge carries one
   DropSuppress,  // culebra_runtime_set_drop_suppressed(a): brackets the top
                  // level's own release ladder, whose bindings leak
@@ -7032,33 +7031,18 @@ class Compiler {
     return is_builtin_var(std::string(name));
   }
 
-  // Direct 1-positional-arg `println(<expr>)` — the dedicated-op peephole,
-  // mirroring the JIT's own direct-println emit (stdlib_jit.h), so both
-  // compiled lanes skip the resolver + closure invoke for the common shape.
-  // Every other shape (bare `println()`, wrong arity, kwargs, println as a
-  // value) takes the generic NsGet + Call route and the runtime's own
-  // diagnostics.
-  bool is_direct_println(const peg::Ast& ast) {
+  // Direct 1-positional-arg call to the unshadowed global `name` — the
+  // dedicated-op peephole, mirroring the JIT's own direct emits
+  // (stdlib_jit.h), so both compiled lanes skip the resolver + closure
+  // invoke for the common shape. `println` takes it because the call is the
+  // whole statement; `to_float` because the conversion is two tag tests and
+  // the invoke costs more than the work. Every other shape (bare `f()`,
+  // wrong arity, kwargs, the name as a value, a shadowing binding) takes the
+  // generic NsGet + Call route and the runtime's own diagnostics.
+  bool is_direct_global_call(const peg::Ast& ast, std::string_view name) {
     using namespace peg::udl;
     if (ast.nodes.size() != 2 || ast.nodes[0]->tag != "IDENTIFIER"_ ||
-        ast.nodes[0]->token != "println" || lookup("println") ||
-        ast.nodes[1]->original_tag != "ARGUMENTS"_ ||
-        ast.nodes[1]->nodes.size() != 1)
-      return false;
-    const auto& a0 = *ast.nodes[1]->nodes[0];
-    return !is_kwarg(a0) && !is_kwarg_splat(a0);
-  }
-
-  // Direct 1-positional-arg `to_float(<expr>)` — the same peephole shape as
-  // is_direct_println, for the same reason: the conversion is two tag tests,
-  // and routing it through the resolver and a closure invoke cost more than
-  // the work (109 ns/call measured on ops.cul, against 73 ns for a bare
-  // call). A shadowing binding, the wrong arity, kwargs, or `to_float` as a
-  // value all take the generic route and the runtime's own diagnostics.
-  bool is_direct_to_float(const peg::Ast& ast) {
-    using namespace peg::udl;
-    if (ast.nodes.size() != 2 || ast.nodes[0]->tag != "IDENTIFIER"_ ||
-        ast.nodes[0]->token != "to_float" || lookup("to_float") ||
+        ast.nodes[0]->token != name || lookup(name) ||
         ast.nodes[1]->original_tag != "ARGUMENTS"_ ||
         ast.nodes[1]->nodes.size() != 1)
       return false;
@@ -8574,12 +8558,12 @@ class Compiler {
   // which is why a hit here can never disagree with it. Anything else (a
   // user class, an enum, a trait) emits nothing and leaves the decision to
   // the check itself.
-  void emit_type_gate_alt(std::string_view tn, int32_t subj,
+  void emit_type_check_gate_alt(std::string_view tn, int32_t subj,
                           std::vector<size_t>& skip) {
     if (culebra::is_fn_type(tn) || culebra::has_toplevel_plus(tn)) return;
     if (!tn.empty() && tn.back() == '?') {
       skip.push_back(emit(Op::JumpIfTag, subj, 0, TAG_NIL));
-      emit_type_gate_alt(tn.substr(0, tn.size() - 1), subj, skip);
+      emit_type_check_gate_alt(tn.substr(0, tn.size() - 1), subj, skip);
       return;
     }
     if (tn.find('<') != std::string_view::npos)
@@ -8600,9 +8584,9 @@ class Compiler {
                             std::vector<size_t>& skip) {
     if (culebra::has_toplevel_pipe(full)) {
       for (auto cand : culebra::split_union_types(full))
-        emit_type_gate_alt(cand, subj, skip);
+        emit_type_check_gate_alt(cand, subj, skip);
     } else {
-      emit_type_gate_alt(full, subj, skip);
+      emit_type_check_gate_alt(full, subj, skip);
     }
   }
 
@@ -9096,13 +9080,13 @@ class Compiler {
         return {t, true, idx};
       }
       case "CALL"_: {
-        if (is_direct_println(ast)) {
+        if (is_direct_global_call(ast, "println")) {
           emit(Op::Println, compile_expr(*ast.nodes[1]->nodes[0]).slot);
           int32_t t = alloc_temp(ast);
           emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
           return {t, true};
         }
-        if (is_direct_to_float(ast)) {
+        if (is_direct_global_call(ast, "to_float")) {
           int32_t v = compile_expr(*ast.nodes[1]->nodes[0]).slot;
           int32_t t = alloc_temp(ast);
           // The adapter reported its parse / type error at the call site

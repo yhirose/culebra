@@ -43,23 +43,28 @@ let _vector2_module = fn () {
     }
 
     # Each of these spells its arithmetic out rather than delegating
-    # (length -> length_squared -> dot). A method call is ~120ns, which is
-    # the whole cost of the shorter ones, and these are what a per-frame
-    # loop calls.
+    # (length -> length_squared -> dot): a dynamic call costs more than the
+    # two products it would wrap, and these are what a per-frame loop calls.
     dot(o) {
       self.x * o.x + self.y * o.y
     }
     length_squared() {
-      self.x * self.x + self.y * self.y
+      let x = self.x
+      let y = self.y
+      x * x + y * y
     }
     length() {
-      Math.sqrt(self.x * self.x + self.y * self.y)
+      let x = self.x
+      let y = self.y
+      Math.sqrt(x * x + y * y)
     }
     # A zero vector's normalized() divides by 0.0 like any other Float
     # division in culebra — raises ZeroDivisionError. No silent fallback.
     normalized() {
-      let len = Math.sqrt(self.x * self.x + self.y * self.y)
-      Vector2.new(self.x / len, self.y / len)
+      let x = self.x
+      let y = self.y
+      let len = Math.sqrt(x * x + y * y)
+      Vector2.new(x / len, y / len)
     }
     # Component-wise, not `(self - o).length_squared()` — avoids allocating a
     # throwaway Vector2 just to measure it. Ranking or thresholding distances

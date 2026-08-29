@@ -2926,10 +2926,6 @@ struct JIT {
         });
   }
 
-  // Value-level unary-minus dispatch: Long negates inline, everything else
-  // goes to num_neg (the `_borrow` twin under the VM contract). One dispatch
-  // definition, two consumers — compile_unary_minus and the VM lowering's
-  // Neg (the emit_arith_step precedent).
   // `to_float(x)`: the two numeric tags inline (a Float passes through, a
   // Long widens), everything else — a String to parse, anything else to
   // reject — through to_float_any, so the parse and the TypeError stay the
@@ -2972,6 +2968,10 @@ struct JIT {
     return merge.finish(mergeBB).consume();
   }
 
+  // Value-level unary-minus dispatch: Long negates inline, everything else
+  // goes to num_neg (the `_borrow` twin under the VM contract). One dispatch
+  // definition, two consumers — compile_unary_minus and the VM lowering's
+  // Neg (the emit_arith_step precedent).
   llvm::Value* emit_neg_step(llvm::Value* v) {
     auto isLong = builder_.CreateICmpEQ(extract_tag(v),
                                         builder_.getInt8(TAG_LONG));
@@ -3990,14 +3990,13 @@ struct JIT {
     auto recvData = extract_data(receiver);
     auto keyPtr = builder_.CreateGlobalString(name, ".key");
 
-    // Per-site monomorphic inline cache `{Shape*, slot_offset}`. The shape
-    // is seeded to the non-null sentinel `(void*)1` so the first read always
-    // misses to the slow path: real Shape* are heap-allocated (8-byte
-    // aligned, never == 1) and a freshly-allocated Object has shape == null,
-    // so the sentinel can never spuriously fast-path into an OOB slots[0].
-    // Layout mirrors JitPropIC field for field — the IR reads only the first
-    // two, the runtime helper owns the proto trio, and both shape sentinels
-    // are seeded the same way.
+    // Per-site inline cache; layout mirrors JitPropIC field for field — the
+    // IR reads only {shape, offset}, the runtime helper owns the proto trio.
+    // All three shape fields are seeded to the non-null sentinel `(void*)1`
+    // so the first read always misses to the slow path: real Shape* are
+    // heap-allocated (8-byte aligned, never == 1) and a freshly-allocated
+    // Object has shape == null, so the sentinel can never spuriously
+    // fast-path into an OOB slots[0].
     auto icTy =
         llvm::StructType::get(ctx_, {ptrTy, i64Ty, ptrTy, ptrTy, i64Ty});
     auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
