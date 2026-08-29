@@ -40,9 +40,11 @@ syn keyword culCommentTodo  TODO FIXME XXX TBD contained
 syn match   culLineComment  "\%(\/\/\|#\).*"      contains=culCommentTodo,@Spell
 syn region  culComment      start="/\*" end="\*/" contains=culCommentTodo,@Spell
 
-" Keywords (PEG-derived keywords are auto-generated from misc/keyword-map.txt
-" by `just sync-grammar`; non-PEG identifiers are below).
-" === BEGIN AUTO-KEYWORDS (from misc/culebra.peg via `just sync-grammar`) ===
+" Keywords and built-in names, auto-generated from misc/keyword-map.txt by
+" `just sync-grammar` (non-PEG identifiers are below). culBuiltin holds the
+" stdlib namespaces and type-annotation names; a `syn keyword` outranks the
+" culUserType match below, so those keep the built-in colour.
+" === BEGIN AUTO-KEYWORDS (from misc/keyword-map.txt via `just sync-grammar`) ===
 syn keyword culFunction    fn
 syn keyword culClass       class trait enum
 syn keyword culConditional if unless else match cond
@@ -54,14 +56,21 @@ syn keyword culDebugger    debugger
 syn keyword culBoolean     true false
 syn keyword culConstant    nil
 syn keyword culStorage     let mut static get
+syn keyword culBuiltin     Nil Bool Long Float String Array Object Function Any
+syn keyword culBuiltin     Math IO FS File Embed Time Random Sys Tensor JSON Args Proc Path
+syn keyword culBuiltin     Isolate Channel Parallel Signal SharedBuffer Shared GC Regex Http
+syn keyword culBuiltin     Encoding Compress Hash CSV Env UUID Term Log TOML SQLite
+syn keyword culBuiltin     Canvas Scene Net Desktop Webview Vector2 Vector3 Deque PriorityQueue
 " === END AUTO-KEYWORDS ===
 
 " Conventional identifiers that aren't grammar keywords.
 syn keyword culSelf         self __ARGS__
 
-" Capitalized identifiers — built-in types (Long/Float/String/Bool/...),
-" stdlib namespaces (Math/IO/Random), user class names.
-syn match   culType         "\<[A-Z][A-Za-z0-9_]*\>"
+" Capitalized identifiers the culBuiltin list did not claim: names declared in
+" the program itself (classes, traits, enums and their variants). Coloured as
+" Identifier rather than Type so `Anim` does not read as a name the language
+" already knows, the way `Canvas` and `Long` do.
+syn match   culUserType     "\<[A-Z][A-Za-z0-9_]*\>"
 
 " Function-call sites
 syn match   culFuncCall     "\<\h\w*\ze("
@@ -90,7 +99,8 @@ hi def link culBoolean       Boolean
 hi def link culConstant      Constant
 hi def link culSelf          Constant
 hi def link culStorage       StorageClass
-hi def link culType          Type
+hi def link culBuiltin       Type
+hi def link culUserType      Identifier
 hi def link culFuncCall      Function
 
 let b:current_syntax = "culebra"

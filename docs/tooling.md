@@ -527,6 +527,14 @@ asks you to confirm before touching anything; a non-interactive run
 It's safe to re-run any time; every run overwrites with whatever this
 binary carries, so re-running after an upgrade is the update path.
 
+Every integration highlights `.cul` the same way, from one generated
+word list: a capitalized name the language already provides — a stdlib
+namespace such as `Canvas`, or a type-annotation name such as `Long` —
+is colored as a built-in type, and any other capitalized name as one
+the program declares. A class, trait, or enum you write therefore
+reads as yours rather than as something the language knows. The
+Playground's editor makes the same split.
+
 The per-editor steps below build the same integration from a source
 checkout instead — for contributing to it, or if `init` can't reach
 your setup.

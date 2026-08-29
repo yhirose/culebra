@@ -36,7 +36,24 @@
 
 (number) @number
 
+; A capitalized name is its own `type` token in the grammar, so the split below
+; is only builtin vs user-declared: the queries between the markers re-capture
+; the stdlib namespaces and type-annotation names as @type.builtin, leaving a
+; class/enum declared in the program itself on the plain @type colour.
 (type) @type
+; === BEGIN AUTO-BUILTINS (from misc/keyword-map.txt via `just sync-grammar`) ===
+((type) @type.builtin
+ (#match? @type.builtin "^(Nil|Bool|Long|Float|String|Array|Object|Function|Any)$"))
+((type) @type.builtin
+ (#match? @type.builtin "^(Math|IO|FS|File|Embed|Time|Random|Sys|Tensor|JSON|Args|Proc|Path)$"))
+((type) @type.builtin
+ (#match? @type.builtin "^(Isolate|Channel|Parallel|Signal|SharedBuffer|Shared|GC|Regex|Http)$"))
+((type) @type.builtin
+ (#match? @type.builtin "^(Encoding|Compress|Hash|CSV|Env|UUID|Term|Log|TOML|SQLite)$"))
+((type) @type.builtin
+ (#match? @type.builtin "^(Canvas|Scene|Net|Desktop|Webview|Vector2|Vector3|Deque|PriorityQueue)$"))
+; === END AUTO-BUILTINS ===
+
 (identifier) @variable
 (call name: (identifier) @function)
 
