@@ -3,6 +3,10 @@
 #
 # Usage: pwsh misc/linkkit/build_axes.ps1 <culebra.exe>
 #
+# Each axis is built as <name>.exe in the current directory and left there: the
+# caller in ci.yml runs hello.exe again after `toolchain uninstall`, to prove a
+# produced binary needs nothing from the kit.
+#
 # Every axis, not just hello: each appends its own import libraries, and a kit
 # packed from a hello link would be missing them — the failure would otherwise
 # surface only for whoever first compiles a Canvas program.

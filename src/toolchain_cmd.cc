@@ -491,8 +491,15 @@ bool install_windows(const std::string& from, std::string& err) {
     // exists as a file anyone could reach for.
     if (!verify_digest(body, want, name, err)) return false;
     archive = tmp / name;
-    { std::ofstream(archive, std::ios::binary)
-          .write(body.data(), std::streamsize(body.size())); }
+    {
+      std::ofstream out(archive, std::ios::binary);
+      out.write(body.data(), std::streamsize(body.size()));
+      out.close();
+      if (!out) {
+        err = std::format("could not write {}", archive.string());
+        return false;
+      }
+    }
 #else
     err = std::format(
         "this build has no HTTP support, so it cannot fetch the kit. Download\n"

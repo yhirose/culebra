@@ -1844,6 +1844,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "a failed reinstall removed the kit" }
           "OK: a failed reinstall leaves the installed kit alone"
 
+          # Leaves each axis's <name>.exe in the cwd; hello.exe is the one the
+          # uninstall check below runs.
           & (Join-Path $pwd 'misc\linkkit\build_axes.ps1') $exe
 
           # A produced binary must need nothing from the kit: it is build-time
