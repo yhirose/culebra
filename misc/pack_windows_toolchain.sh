@@ -19,20 +19,25 @@
 # and guessing it is what failed the first spike. The kit mirrors the tree's
 # own relative directory names so the recipe's -L paths stay meaningful.
 #
-# The library list is not maintained by hand. Every feature axis `culebra
-# build` can append (CMakeLists' _ssl_link / _zlib_link / _raylib_aot_link /
-# _webview_link) is put through the driver here, and the union of what those
-# link lines resolve to is what gets packed — a hand-written list is how an
-# axis that only a released binary reaches ends up missing its import library.
+# The library list is not maintained by hand, and not transcribed from
+# CMakeLists either: `culebra build --print-link-axes` prints the base flags
+# and every feature axis's libraries straight out of the compile definitions
+# the link itself splices, and each of those lines is put through the driver
+# here. The union of what they resolve to is what gets packed. A list kept
+# beside the build is how an axis that only a released binary reaches ends up
+# missing its import library.
 #
-# Usage: misc/pack_windows_toolchain.sh <out dir> <version>
+# Usage: misc/pack_windows_toolchain.sh <out dir> <version> <culebra.exe>
 #   <out dir>  where to write the kit tree and the .zip
 #   <version>  the culebra version this kit accompanies, e.g. 0.5.0
 # Prints the files it wrote, one per line, for the caller to upload.
 set -euo pipefail
 
-out=${1:?usage: pack_windows_toolchain.sh <out dir> <version>}
-version=${2:?usage: pack_windows_toolchain.sh <out dir> <version>}
+usage='usage: pack_windows_toolchain.sh <out dir> <version> <culebra.exe>'
+out=${1:?$usage}
+version=${2:?$usage}
+culebra=${3:?$usage}
+[ -x "$culebra" ] || { echo "pack_windows_toolchain: no such binary: $culebra" >&2; exit 2; }
 
 # The version is what `culebra toolchain install` matches a kit against, so a
 # malformed one produces a kit nothing will ever accept. Caught here rather
@@ -90,23 +95,32 @@ trap 'rm -rf "$probe"' EXIT
 printf 'int main(){return 0;}\n' > "$probe/probe.cc"
 clang++ -c "$probe/probe.cc" -o "$probe/probe.o"
 
-# The flags src/main.cc's Windows link is built on. The recipe below records
-# what clang++ expands these into, so the two cannot drift: culebra never
-# spells the expansion itself, it splices this file.
-BASE_FLAGS=(-fuse-ld=lld -static -static-libgcc -static-libstdc++
-            -lstdc++exp -lws2_32 -Wl,--stack,16777216 -lstdc++ -lm)
+# What this binary's own link is built on, asked of the binary rather than
+# copied here: `base` is the flags every Windows AOT link carries, and each
+# further row is one feature axis's toolchain-side libraries (the @libssl.a@
+# archives culebra materializes from its embedded copies are already dropped —
+# those are the driver's, not the toolchain's). The recipe below records what
+# clang++ expands `base` into, so the two cannot drift: culebra never spells
+# the expansion itself, it splices this file.
+step "asking the binary what a link here needs"
+axes="$probe/link-axes.tsv"
+"$culebra" build --print-link-axes > "$axes" ||
+  { echo "pack_windows_toolchain: $culebra could not report its link axes" >&2
+    exit 1; }
+# shellcheck disable=SC2207
+BASE_FLAGS=($(sed -n $'s/^base\t//p' "$axes"))
+[ ${#BASE_FLAGS[@]} -gt 0 ] ||
+  { echo "pack_windows_toolchain: no base row in --print-link-axes" >&2
+    sed -n '1,20p' "$axes" >&2; exit 1; }
 
-# Every axis that can append to that line, minus the archives `culebra build`
-# materializes out of its own embedded copies (@libssl.a@ and friends): those
-# are the driver's, not the toolchain's. What is left is the toolchain-side
-# surface a kit has to cover.
-declare -A AXIS=(
-  [base]=""
-  [http]="-lz -lcrypt32 -lbcrypt -lws2_32"
-  [compress]="-lz"
-  [canvas]="-lkernel32 -luser32 -lgdi32 -lwinmm -limm32 -lole32 -loleaut32 -lversion -luuid -ladvapi32 -lsetupapi -lshell32 -ldinput8"
-  [webview]="-lole32 -lshell32 -lshlwapi -luser32 -lversion -ladvapi32 -Wl,--allow-multiple-definition"
-)
+# The base row's flags are already in BASE_FLAGS, so its axis entry adds
+# nothing — but the entry itself is load-bearing: `line-base` is the link the
+# recipe below is split from.
+declare -A AXIS=()
+while IFS=$'\t' read -r name flags; do
+  [ -n "$name" ] || continue
+  if [ "$name" = base ]; then AXIS[base]=""; else AXIS[$name]="$flags"; fi
+done < "$axes"
 
 # Tokenize a -### line: every argument comes back "..."-quoted, which is what
 # makes this exact where a word split would not be.

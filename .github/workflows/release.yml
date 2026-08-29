@@ -348,7 +348,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           MSYS2_PATH_TYPE: inherit
         run: |
-          assets=$(misc/pack_windows_toolchain.sh kit "${TAG#v}")
+          assets=$(misc/pack_windows_toolchain.sh kit "${TAG#v}" ./build/culebra.exe)
           gh release upload "$TAG" --clobber $assets
 
   # One file the user can `sha256sum -c` against every asset at once. Reads the

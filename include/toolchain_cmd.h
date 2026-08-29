@@ -32,7 +32,13 @@ bool link_in_process(const std::vector<std::string>& driver_args,
 // Offer to install, then install, when `culebra build` finds nothing to link
 // with. Only asks on a terminal — a script gets the hint and a failure instead
 // of a prompt it cannot answer. Returns true when a link can now proceed.
-bool offer_install_interactively();
+//
+// `host_link` is false for a --target build. A kit describes THIS host's
+// toolchain, so it cannot serve a cross link and must not be offered for one:
+// otherwise a Windows box with a kit passes this check and then dies in the
+// external driver it fell through to, with the very "clang++ is not
+// recognized" the kit exists to prevent.
+bool offer_install_interactively(bool host_link);
 
 // `culebra toolchain [status | install [--from <archive>] | uninstall]`, taking
 // the whole command line the way the other subcommands do (argv[1] is

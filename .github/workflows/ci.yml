@@ -1377,7 +1377,9 @@ jobs:
   # actually appears — the same limit the macOS and Linux jobs have.
   windows-aot-build:
     runs-on: windows-latest
-    timeout-minutes: 60
+    # 60 for the build, plus the kit pack and round trip that used to be a
+    # second 30-minute job. Still well under the two budgets it replaces.
+    timeout-minutes: 75
     defaults:
       run:
         shell: msys2 {0}
@@ -1406,6 +1408,7 @@ jobs:
             mingw-w64-ucrt-x86_64-clang
             mingw-w64-ucrt-x86_64-lld
             git
+            zip
       # clang++ and lld are what misc/configure_windows_release.sh and the AOT
       # link use (see the script for why not g++/GNU ld); the gcc package stays
       # installed because clang's libstdc++ and libgcc are its.
@@ -1746,69 +1749,45 @@ jobs:
       - name: Verify lld is linked into this build
         run: misc/verify_inprocess_lld.sh build-win-aot/culebra.exe --size
 
-
-  # The AOT toolchain kit, end to end, on a Windows with no toolchain on PATH.
-  #
-  # `culebra build` on Windows links through the lld inside culebra.exe, but the
-  # mingw CRT objects and static libraries still have to come from somewhere,
-  # and a downloader has none. misc/pack_windows_toolchain.sh packs them and
-  # `culebra toolchain install` puts them where a link looks — the flow a user
-  # actually walks, which nothing else in CI touches.
-  #
-  # This job is also what keeps the packing script out of release-only
-  # territory (tools/check_release_covered_by_ci.sh): release.yml runs the same
-  # script, and both releases this project has broken were broken by a command
-  # a tag was the first to execute.
-  #
-  # It takes windows-aot-build's binary rather than building one: the question
-  # here is the kit, and that job already produces the widest Windows
-  # configuration there is.
-  #
-  # This is also the only job where the in-process linker actually links.
-  # windows-aot-build has MSYS2 on PATH and no kit, so its AOT smokes go
-  # through the external driver — deliberately, since that is a contributor's
-  # arrangement and it has to keep working. The two paths differ in exactly one
-  # thing, which library set reaches the linker, so the coverage that matters
-  # here is link surface rather than program variety: the six axes below are
-  # every distinct set of libraries `culebra build` can ask for on Windows
-  # (bare, zlib, OpenSSL + crypt32/bcrypt, raylib/SDL3 + 13 import libs,
-  # WebView2 + --allow-multiple-definition, SQLite). What the codegen produces
-  # is the same object either way, and windows-aot-build's smokes cover that.
-  windows-toolchain-kit:
-    needs: windows-aot-build
-    runs-on: windows-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - uses: actions/checkout@v5
-      # The same tree windows-aot-build compiled the runtime archives with,
-      # which is the kit's whole compatibility claim. zlib because -lz is the
-      # one library an AOT link still takes from the system.
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-clang
-            mingw-w64-ucrt-x86_64-lld
-            mingw-w64-ucrt-x86_64-zlib
-            zip
-      # Anchored at ^#define, the way the justfile and playground/build.sh read
-      # it: the comment above that line spells the macro too, as `X.Y.Z`, and an
-      # unanchored match takes both — which is the version this kit's manifest
-      # claimed the first time round.
+      # --- the AOT toolchain kit, end to end -------------------------------
+      #
+      # `culebra build` on Windows links through the lld inside culebra.exe, but
+      # the mingw CRT objects and static libraries still have to come from
+      # somewhere, and a downloader has none. misc/pack_windows_toolchain.sh
+      # packs them and `culebra toolchain install` puts them where a link looks
+      # — the flow a user actually walks, which nothing else in CI touches.
+      #
+      # These steps also keep the packing script out of release-only territory
+      # (tools/check_release_covered_by_ci.sh): release.yml runs the same
+      # script, and both releases this project has broken were broken by a
+      # command a tag was the first to execute.
+      #
+      # In this job rather than one of its own: the kit's whole compatibility
+      # claim is that it comes from the same MSYS2 tree that compiled the
+      # embedded runtime archives, which here is true by construction rather
+      # than by a second `setup-msys2` that has to be kept in step. It also
+      # drops a runner boot, a checkout, a full pacman update and a round trip
+      # through the artifact this job itself uploads.
+      #
+      # The round trip below is where the in-process linker actually links: the
+      # steps above have MSYS2 on PATH and no kit, so their AOT smokes go
+      # through the external driver — deliberately, since that is a
+      # contributor's arrangement and it has to keep working. The two paths
+      # differ in exactly one thing, which library set reaches the linker, so
+      # the coverage that matters is link surface rather than program variety:
+      # the axes swept are every distinct set of libraries `culebra build` can
+      # ask for on Windows. What the codegen produces is the same object either
+      # way, and the smokes above cover that.
+      #
+      # Version anchored at ^#define, the way the justfile and
+      # playground/build.sh read it: the comment above that line spells the
+      # macro too, as `X.Y.Z`, and an unanchored match takes both — which is
+      # the version this kit's manifest claimed the first time round.
       - name: Pack the kit
         run: |
           version=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
           [ -n "$version" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
-          misc/pack_windows_toolchain.sh kit "$version"
-      - uses: actions/download-artifact@v4
-        with:
-          name: culebra-windows-x64
-          path: rel
+          misc/pack_windows_toolchain.sh kit "$version" build-win-aot/culebra.exe
       # Everything below runs with a PATH built from scratch. A GitHub runner
       # is not a bare Windows box — the image ships a mingw64 at C:\mingw64 and
       # this job installed an MSYS2 — so inheriting PATH would prove nothing.
@@ -1817,7 +1796,7 @@ jobs:
         shell: pwsh
         run: |
           $env:Path = "C:\Windows\System32;C:\Windows"
-          $exe = (Resolve-Path rel\culebra.exe).Path
+          $exe = (Resolve-Path build-win-aot\culebra.exe).Path
           $kit = (Get-ChildItem -Recurse -Filter '*.zip' kit)[0].FullName
           foreach ($t in 'clang++','ld.lld','g++','cc') {
             if (Get-Command $t -ErrorAction SilentlyContinue) { throw "$t is on PATH" }

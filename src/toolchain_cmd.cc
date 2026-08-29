@@ -18,6 +18,7 @@
 #include <exe_path.h>  // find_on_path
 #include <hash.h>      // culebra::hashing::sha256
 #include <os_compat.h>  // os_isatty
+#include <proc.h>       // run_command (spawn tar by argv, not through a shell)
 
 #ifdef CULEBRA_INPROCESS_LLD
 #include <lld/Common/Driver.h>
@@ -117,8 +118,12 @@ bool kit_usable(const fs::path& kit) {
 // Whether a link can happen right now, and what to say when it cannot. The two
 // go together: a caller that finds no toolchain has to name the fix, and the
 // phrasing differs per platform and per reason (no kit vs. no compiler).
-bool link_available();
-std::string missing_toolchain_hint();
+//
+// `host_link` is false for a --target build: a kit records THIS host's
+// toolchain, so it answers for a host link only, and a cross link goes through
+// an external driver whatever is installed.
+bool link_available(bool host_link);
+std::string missing_toolchain_hint(bool host_link);
 
 // The linker argv a kit records: what a C++ driver puts around a user object on
 // this toolchain. culebra never spells this itself — it splices its own tokens
@@ -142,26 +147,37 @@ bool use_inprocess_link() {
 
 namespace {
 
-bool link_available() {
+bool link_available(bool host_link) {
 #if defined(_WIN32) && defined(CULEBRA_INPROCESS_LLD)
   // Either arrangement links: the kit with the linker inside this binary, or
   // a toolchain the machine already has. A downloader has the first and a
   // contributor the second, and neither should have to acquire the other.
-  return kit_usable(kit_dir()) || external_driver_present();
+  // A cross link can only be the second — the kit is this host's libraries.
+  return (host_link && kit_usable(kit_dir())) || external_driver_present();
 #elif defined(_WIN32)
+  (void)host_link;
   // A build without lld linked in can only drive an external clang++.
   return external_driver_present();
 #elif defined(__APPLE__)
+  (void)host_link;
   // /usr/bin/cc exists without the Command Line Tools — it is a shim that
   // offers to install them — so its presence proves nothing.
   return std::system("xcode-select -p > /dev/null 2>&1") == 0;
 #else
+  (void)host_link;
   return !culebra::find_on_path("cc").empty();
 #endif
 }
 
-std::string missing_toolchain_hint() {
+std::string missing_toolchain_hint(bool host_link) {
 #if defined(_WIN32) && defined(CULEBRA_INPROCESS_LLD)
+  // A kit cannot help a --target build, so do not name it as the fix there.
+  if (!host_link)
+    return
+        "a cross link drives an external compiler: install mingw-w64's "
+        "clang++ and lld (UCRT64) and put C:\\msys64\\ucrt64\\bin on PATH. "
+        "The kit `culebra toolchain install` fetches holds this host's "
+        "libraries, so it cannot link for another target.";
   return std::format(
       "the link needs the mingw runtime libraries, which Windows does not "
       "ship. culebra can fetch them for version {} (about 8 MB, into\n"
@@ -172,15 +188,18 @@ std::string missing_toolchain_hint() {
       "building culebra itself already needs.",
       kVersion, kit_dir().string());
 #elif defined(_WIN32)
+  (void)host_link;
   return
       "this build links through an external driver: install mingw-w64's "
       "clang++ and lld (UCRT64) and put C:\\msys64\\ucrt64\\bin on PATH.";
 #elif defined(__APPLE__)
+  (void)host_link;
   return
       "the link step needs Xcode's Command Line Tools:\n"
       "    culebra toolchain install     (starts Apple's installer)\n"
       "    xcode-select --install        (the same thing, directly)";
 #else
+  (void)host_link;
   return
       "the link step drives the system `cc` (Debian/Ubuntu: sudo apt install "
       "g++; Fedora: sudo dnf install gcc-c++).";
@@ -289,16 +308,31 @@ namespace {
 // every supported Windows already satisfies.
 bool extract_zip(const fs::path& archive, const fs::path& into,
                  std::string& err) {
-  if (culebra::find_on_path("tar").empty()) {
+  auto tar = culebra::find_on_path("tar");
+  if (tar.empty()) {
     err = "tar.exe was not found on PATH (Windows 10 1803+ ships it)";
     return false;
   }
   std::error_code ec;
   fs::create_directories(into, ec);
-  auto cmd = std::format("tar -xf \"{}\" -C \"{}\"", archive.string(),
-                         into.string());
-  if (std::system(cmd.c_str()) != 0) {
-    err = std::format("could not extract {}", archive.string());
+  // argv, not a command line: `--from` hands this an arbitrary user path, and
+  // cmd.exe's quoting rules are not a thing to hand-roll. run_command also
+  // captures tar's own diagnostics, which a std::system call left on the
+  // console for the user to correlate with a bare "could not extract".
+  std::vector<std::string> argv{tar.string(), "-xf", archive.string(), "-C",
+                                into.string()};
+  auto oc = culebra::proc::run_command(argv, nullptr, nullptr, "");
+  if (!oc.spawned) {
+    err = std::format("could not run tar ({}): {}", oc.err_what,
+                      std::generic_category().message(oc.err_no));
+    return false;
+  }
+  if (!oc.result.ok) {
+    auto why = oc.result.err.empty() ? oc.result.out : oc.result.err;
+    while (!why.empty() && (why.back() == '\n' || why.back() == '\r'))
+      why.pop_back();
+    err = std::format("could not extract {}{}{}", archive.string(),
+                      why.empty() ? "" : ": ", why);
     return false;
   }
   return true;
@@ -538,17 +572,17 @@ int status() {
   bool ready = have_kit || have_external;
 #else
   std::println("  linker       external clang++ + ld.lld on PATH");
-  bool ready = link_available();
+  bool ready = link_available(/*host_link=*/true);
 #endif
 #elif defined(__APPLE__)
   std::println("  toolchain    Xcode Command Line Tools");
-  bool ready = link_available();
+  bool ready = link_available(/*host_link=*/true);
 #else
   std::println("  toolchain    the system C++ compiler (`cc`)");
-  bool ready = link_available();
+  bool ready = link_available(/*host_link=*/true);
 #endif
   std::println("  AOT link     {}", ready ? "ready" : "not available");
-  if (!ready) std::println("\n{}", missing_toolchain_hint());
+  if (!ready) std::println("\n{}", missing_toolchain_hint(/*host_link=*/true));
   return ready ? 0 : 1;
 }
 
@@ -558,29 +592,34 @@ constexpr std::string_view kUsage =
 
 }  // namespace
 
-bool offer_install_interactively() {
-  if (link_available()) return true;
+bool offer_install_interactively(bool host_link) {
+  if (link_available(host_link)) return true;
+  // Nothing culebra can install serves a cross link: the kit is this host's
+  // libraries and Apple's installer is this host's toolchain. Name the fix and
+  // stop rather than offering a download that would not have helped.
 #if defined(_WIN32) || defined(__APPLE__)
-  if (!confirm("culebra build: no AOT build environment found. Install it?")) {
-    std::println(stderr, "culebra build: {}", missing_toolchain_hint());
-    return false;
-  }
-  std::string err;
+  if (host_link) {
+    if (!confirm("culebra build: no AOT build environment found. Install it?")) {
+      std::println(stderr, "culebra build: {}",
+                   missing_toolchain_hint(host_link));
+      return false;
+    }
+    std::string err;
 #ifdef _WIN32
-  if (!install_windows("", err)) {
-    std::println(stderr, "culebra toolchain: {}", err);
+    if (!install_windows("", err)) {
+      std::println(stderr, "culebra toolchain: {}", err);
+      return false;
+    }
+    return link_available(host_link);
+#else
+    (void)err;
+    start_xcode_install();
     return false;
+#endif
   }
-  return link_available();
-#else
-  (void)err;
-  start_xcode_install();
-  return false;
 #endif
-#else
-  std::println(stderr, "culebra build: {}", missing_toolchain_hint());
+  std::println(stderr, "culebra build: {}", missing_toolchain_hint(host_link));
   return false;
-#endif
 }
 
 int run_toolchain(int argc, const char** argv) {
@@ -625,7 +664,7 @@ int run_toolchain(int argc, const char** argv) {
                    "Apple's Command Line Tools");
       return 2;
     }
-    if (link_available()) {
+    if (link_available(/*host_link=*/true)) {
       std::println("culebra toolchain: the Command Line Tools are installed");
       return 0;
     }
@@ -635,7 +674,7 @@ int run_toolchain(int argc, const char** argv) {
     std::println(stderr,
                  "culebra toolchain: installing a C++ toolchain on Linux is "
                  "the package manager's job, and needs root.\n{}",
-                 missing_toolchain_hint());
+                 missing_toolchain_hint(/*host_link=*/true));
     return 1;
 #endif
   }

@@ -263,11 +263,38 @@ static std::string shq(std::string_view s) {
 constexpr const char* kLinkDriver = "clang++";
 constexpr const char* kStripLocals = "-Wl,-s";
 constexpr bool kLinkStripsGlobals = true;
+// Standalone .exe on a bare Windows (no mingw DLLs), matching the driver
+// build's own link flags. `-lstdc++exp` resolves C++23 std::print's
+// __open_terminal / __write_to_terminal, which live in libstdc++exp (NOT in
+// -static-libstdc++); the runtime archive's `culebra_runtime_print` uses
+// std::print, so the AOT'd binary needs it too. Placed before the driver's
+// implicit -lstdc++ so the experimental lib resolves against the base.
+// ws2_32 mirrors the driver link (see CMakeLists WIN32 block): net.h reaches
+// the base runtime archive via stdlib_jit.h, so even a socket-free program
+// pulls Winsock out of libculebra_rt.a. OpenSSL/zlib do NOT need the same
+// treatment: the core archive declares no httplib type (http.h gates the
+// include), so only the Http axis supplies CULEBRA_SSL_LINK.
+// 16MB PE stack reserve, mirroring the driver build (CMakeLists WIN32 block):
+// mingw's 2MB default holds ~400 eval frames, while the recursion limit
+// (kCulebraRecursionLimit) is calibrated for an 8MB stack. Windows threads
+// inherit the PE reserve, so this also covers isolates.
+//
+// A link kit's recipe is packed with exactly these — the packer asks the
+// binary for them (`culebra build --print-link-axes`) rather than keeping its
+// own copy — so on the in-process path they are already inside the recipe and
+// must not be emitted again.
+constexpr const char* kWinStaticLink =
+    "-fuse-ld=lld -static -static-libgcc -static-libstdc++ -lstdc++exp "
+    "-lws2_32 -Wl,--stack,16777216";
 #else
 constexpr const char* kLinkDriver = "cc";
 constexpr const char* kStripLocals = "-Wl,-x";
 constexpr bool kLinkStripsGlobals = false;
 #endif
+
+// The C++ runtime a link needs, by object format.
+constexpr const char* kMachoCxxLink = "-lc++";
+constexpr const char* kElfCxxLink = "-lstdc++ -lm";
 
 // What a missing toolchain means, and whether one is there, now live with the
 // subcommand that installs it (include/toolchain_cmd.h): the answer differs
@@ -558,6 +585,63 @@ static constexpr FeatureAxis kFeatureAxes[] = {
 // don't bundle — run_build rejects that pair up front by this row.
 static constexpr size_t kTensorAxis = 0;
 
+// An axis whose link needs a whole third-party static (OpenSSL for Http, SDL3 +
+// raylib for Scene/Canvas) names it `@libssl.a@` rather than by the path it sat
+// at on the machine that built this driver — that directory is a distro dir, a
+// Homebrew prefix or a CI runner's deps cache, and none of them is on the
+// machine running this link. The name resolves to the same embedded copy the
+// runtime archives come from (CMakeLists, _rt_embed_extern).
+//
+// Split on whitespace first, then resolve: an axis flag string never has a
+// space inside one flag, while the path a name resolves to often does — so
+// tokenizing before substitution is what keeps the two apart. One tokenizer,
+// because both consumers (the link line, and --print-link-axes below) have to
+// agree on where a flag ends.
+std::vector<string> split_link_flags(std::string_view flags) {
+  std::vector<string> out;
+  for (size_t i = 0; i < flags.size();) {
+    auto b = flags.find_first_not_of(" \t", i);
+    if (b == std::string_view::npos) break;
+    auto e = flags.find_first_of(" \t", b);
+    if (e == std::string_view::npos) e = flags.size();
+    out.emplace_back(flags.substr(b, e - b));
+    i = e;
+  }
+  return out;
+}
+
+bool is_archive_name(std::string_view tok) {
+  return tok.size() >= 2 && tok.front() == '@' && tok.back() == '@';
+}
+
+// The toolchain-side link surface, one `<axis>\t<flags>` row per line, for
+// misc/pack_windows_toolchain.sh. The packer has to resolve every library a
+// `culebra build` on this host could ask a toolchain for; asking the binary
+// means the answer comes from the same CMake fragments the link itself splices,
+// so an axis that gains an import library cannot leave the kit behind. @name@
+// tokens are dropped: those archives are materialized out of the driver's own
+// embedded copies and are never the toolchain's to supply.
+void print_link_axes(ostream& os) {
+  string base;
+#ifdef _WIN32
+  base = string(kWinStaticLink) + ' ' + kElfCxxLink;
+#else
+  base = kElfCxxLink;
+#endif
+  os << "base\t" << base << "\n";
+  for (const auto& ax : kFeatureAxes) {
+    string flags;
+    for (const auto& tok : split_link_flags(ax.link_flags)) {
+      if (is_archive_name(tok)) continue;
+      if (!flags.empty()) flags += ' ';
+      flags += tok;
+    }
+    // An axis with no toolchain-side libraries adds nothing to the union the
+    // packer takes, so it is not worth a probe link.
+    if (!flags.empty()) os << ax.names[0] << '\t' << flags << "\n";
+  }
+}
+
 struct BuildOptions {
   string input;
   string output;
@@ -763,6 +847,11 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
     } else if (arg == "-h" || arg == "--help") {
       print_build_usage(cout);
       std::exit(0);
+    } else if (arg == "--print-link-axes") {
+      // Undocumented on purpose: this is the kit packer's way of asking what a
+      // link needs here, not a user-facing knob (misc/pack_windows_toolchain.sh).
+      print_link_axes(cout);
+      std::exit(0);
     } else if (arg.starts_with("-")) {
       err = "unknown option: " + arg;
       return false;
@@ -829,11 +918,20 @@ int run_build(const BuildOptions& opts) {
     return 1;
   }
 
+  // Depends on the command line alone, so it is settled before anything is
+  // parsed — the availability check below needs it, and a kit can only answer
+  // for a host link.
+  bool cross = !opts.target.empty();
+  if (cross && opts.target == llvm::sys::getDefaultTargetTriple()) {
+    cross = false;  // a no-op cross is just a host build
+  }
+
   // Ask before the parse and the codegen a missing linker would throw away.
   // On a terminal this offers to install what is missing rather than only
-  // naming it: on Windows that is a 6 MB download culebra can do itself, and
-  // on macOS it is Apple's installer. A script gets the hint and a failure.
-  if (!culebra::toolchain::offer_install_interactively()) return 1;
+  // naming it: on Windows that is a download culebra can do itself, and on
+  // macOS it is Apple's installer. A script gets the hint and a failure.
+  if (!culebra::toolchain::offer_install_interactively(/*host_link=*/!cross))
+    return 1;
 
   // AOT always needs the preamble spliced in — it runs the JIT's lowering.
   std::vector<culebra::LoadedModule> modules;
@@ -855,11 +953,6 @@ int run_build(const BuildOptions& opts) {
   if (verbose) std::println(stderr, "culebra build: object -> {}", obj);
   ScratchFiles scratch(verbose);
   scratch.add(obj);
-
-  bool cross = !opts.target.empty();
-  if (cross && opts.target == llvm::sys::getDefaultTargetTriple()) {
-    cross = false;  // a no-op cross is just a host build
-  }
 
   // Every name the program reaches, walked once; each axis is a lookup.
   culebra::AotNames names;
@@ -1104,22 +1197,12 @@ int run_build(const BuildOptions& opts) {
   // distro dir, a Homebrew prefix or a CI runner's deps cache, and none of them
   // is on the machine running this link. The name resolves to the same embedded
   // copy the runtime archives come from (CMakeLists, _rt_embed_extern).
-  // Split on whitespace first, then resolve: an axis flag string never has a
-  // space inside one flag, while the path a name resolves to often does — so
-  // tokenizing before substitution is what keeps the two apart.
   auto expand_archive_names = [&](std::vector<std::string>& out,
                                   std::string_view flags) {
-    for (size_t i = 0; i < flags.size();) {
-      auto b = flags.find_first_not_of(" \t", i);
-      if (b == std::string_view::npos) break;
-      auto e = flags.find_first_of(" \t", b);
-      if (e == std::string_view::npos) e = flags.size();
-      auto tok = flags.substr(b, e - b);
-      i = e;
-      if (tok.size() >= 2 && tok.front() == '@' && tok.back() == '@') {
+    for (auto& tok : split_link_flags(flags)) {
+      if (is_archive_name(tok)) {
         std::string err;
-        auto path =
-            materialize_archive(std::string(tok.substr(1, tok.size() - 2)), err);
+        auto path = materialize_archive(tok.substr(1, tok.size() - 2), err);
         if (path.empty()) {
           std::println(stderr, "culebra build: {}", err);
           feature_failed = true;
@@ -1127,7 +1210,7 @@ int run_build(const BuildOptions& opts) {
         }
         out.push_back(path.string());
       } else {
-        out.emplace_back(tok);
+        out.push_back(std::move(tok));
       }
     }
   };
@@ -1158,7 +1241,7 @@ int run_build(const BuildOptions& opts) {
   // every program, so a Mach-O link needs the framework whether or not the
   // program watches anything. The driver links it for the same reason
   // (CMakeLists, the APPLE block beside the Linux Threads one).
-  const char* libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
+  const char* libcxx = target_is_macho ? kMachoCxxLink : kElfCxxLink;
   const char* core_frameworks = target_is_macho ? "-framework CoreServices" : "";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
@@ -1170,28 +1253,7 @@ int run_build(const BuildOptions& opts) {
   // relocatable and mingw doesn't want `-no-pie` here.
 #ifdef _WIN32
   const char* no_pie = "";
-  // Standalone .exe on a bare Windows (no mingw DLLs), matching the
-  // interpreter build's link flags. `-lstdc++exp` resolves C++23 std::print's
-  // __open_terminal / __write_to_terminal, which live in libstdc++exp (NOT in
-  // -static-libstdc++); the runtime archive's `culebra_runtime_print` uses
-  // std::print, so the AOT'd binary needs it too. Placed before the driver's
-  // implicit -lstdc++ so the experimental lib resolves against the base.
-  // ws2_32 mirrors the driver link (see CMakeLists WIN32 block): net.h reaches
-  // the base runtime archive via stdlib_jit.h, so even a socket-free program
-  // pulls Winsock out of libculebra_rt.a. OpenSSL/zlib do NOT need the same
-  // treatment: the core archive declares no httplib type (http.h gates the
-  // include), so only the Http axis below supplies CULEBRA_SSL_LINK.
-  // 16MB PE stack reserve, mirroring the interpreter build (CMakeLists WIN32
-  // block): mingw's 2MB default holds ~400 interp eval frames, while the
-  // recursion limit (kCulebraRecursionLimit) is calibrated for an 8MB stack.
-  // Windows threads inherit the PE reserve, so this also covers isolates.
-  //
-  // These are the flags a link kit's recipe is packed with
-  // (misc/pack_windows_toolchain.sh, BASE_FLAGS) — so on the in-process path
-  // below they are already inside the recipe and must not be repeated here.
-  const char* win_static =
-      "-fuse-ld=lld -static -static-libgcc -static-libstdc++ -lstdc++exp "
-      "-lws2_32 -Wl,--stack,16777216";
+  const char* win_static = kWinStaticLink;
 #else
   const char* no_pie = target_is_macho ? "" : "-no-pie";
   const char* win_static = "";
