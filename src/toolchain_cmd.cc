@@ -6,7 +6,6 @@
 #include <fstream>
 #include <iostream>
 #include <print>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -49,10 +48,14 @@ constexpr std::string_view kReleaseHost = "https://github.com";
 constexpr std::string_view kReleasePath = "/yhirose/culebra/releases/download";
 
 std::string read_file(const fs::path& p) {
+  std::error_code ec;
+  auto n = fs::file_size(p, ec);
+  if (ec) return {};
   std::ifstream in(p, std::ios::binary);
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  return ss.str();
+  std::string s(size_t(n), '\0');
+  in.read(s.data(), std::streamsize(s.size()));
+  s.resize(size_t(in.gcount()));
+  return s;
 }
 
 // The value of `KEY <value>` in a kit manifest, or empty.
@@ -70,43 +73,16 @@ std::string manifest_field(const fs::path& kit, std::string_view key) {
 #ifdef _WIN32
 // %LOCALAPPDATA% is the per-user, non-roaming place Windows keeps things a
 // program installed for itself: no elevation, no registry, and deleting it
-// undoes the install completely. Falls back to %USERPROFILE% only so a
-// stripped environment gets a diagnosable path rather than a silent cwd write.
+// undoes the install completely. An environment with neither variable gets an
+// empty path, which reads as "no kit" — a cwd fallback would scatter a kit
+// into whatever directory the user happened to be in.
 fs::path local_app_data() {
   if (const char* p = std::getenv("LOCALAPPDATA"); p && *p) return fs::path(p);
   if (const char* p = std::getenv("USERPROFILE"); p && *p)
     return fs::path(p) / "AppData" / "Local";
-  return fs::current_path();
-}
-#endif
-
-}  // namespace
-
-fs::path kit_dir() {
-#ifdef _WIN32
-  return local_app_data() / "culebra" / "toolchain" / std::string(kVersion);
-#else
   return {};
-#endif
 }
 
-namespace {
-
-// A kit is usable when it holds the recipe a link splices and says it was
-// packed for this version. The version check is the compatibility check: the
-// kit's libstdc++ has to be the one the embedded runtime archives were
-// compiled against, and only the release that shipped both says so.
-bool kit_usable(const fs::path& kit) {
-  std::error_code ec;
-  if (!fs::exists(kit / "link-recipe.txt", ec)) return false;
-  auto v = manifest_field(kit, "VERSION");
-  return v == kVersion;
-}
-
-}  // namespace
-
-namespace {
-#ifdef _WIN32
 // The MSYS2 arrangement a contributor has. lld is a separate package from
 // clang there, and -fuse-ld=lld fails without it in a way that names neither.
 bool external_driver_present() {
@@ -114,6 +90,46 @@ bool external_driver_present() {
          !culebra::find_on_path("ld.lld").empty();
 }
 #endif
+
+// The directory a kit for THIS build's version lives in, or empty on a platform
+// that has no kit (everything but Windows).
+fs::path kit_dir() {
+#ifdef _WIN32
+  auto base = local_app_data();
+  if (base.empty()) return {};
+  return base / "culebra" / "toolchain" / std::string(kVersion);
+#else
+  return {};
+#endif
+}
+
+// A kit is usable when it holds the recipe a link splices and says it was
+// packed for this version. The version check is the compatibility check: the
+// kit's libstdc++ has to be the one the embedded runtime archives were
+// compiled against, and only the release that shipped both says so.
+bool kit_usable(const fs::path& kit) {
+  std::error_code ec;
+  if (kit.empty() || !fs::exists(kit / "link-recipe.txt", ec)) return false;
+  auto v = manifest_field(kit, "VERSION");
+  return v == kVersion;
+}
+
+// Whether a link can happen right now, and what to say when it cannot. The two
+// go together: a caller that finds no toolchain has to name the fix, and the
+// phrasing differs per platform and per reason (no kit vs. no compiler).
+bool link_available();
+std::string missing_toolchain_hint();
+
+// The linker argv a kit records: what a C++ driver puts around a user object on
+// this toolchain. culebra never spells this itself — it splices its own tokens
+// between the two halves — so a toolchain change cannot drift away from what
+// the driver would have done.
+struct Recipe {
+  std::string target;
+  std::vector<std::string> prefix, suffix;
+};
+bool load_recipe(const fs::path& kit, Recipe& out, std::string& err);
+
 }  // namespace
 
 bool use_inprocess_link() {
@@ -123,6 +139,8 @@ bool use_inprocess_link() {
   return false;
 #endif
 }
+
+namespace {
 
 bool link_available() {
 #if defined(_WIN32) && defined(CULEBRA_INPROCESS_LLD)
@@ -200,7 +218,6 @@ bool load_recipe(const fs::path& kit, Recipe& out, std::string& err) {
 }
 
 #ifdef CULEBRA_INPROCESS_LLD
-namespace {
 
 // A compiler driver takes linker options as -Wl,a,b and passes a, b on; the
 // linker takes them as plain arguments. That is the whole translation — every
@@ -217,10 +234,17 @@ void append_driver_arg(std::vector<std::string>& out, std::string_view a) {
   }
 }
 
+#endif  // CULEBRA_INPROCESS_LLD
+
 }  // namespace
 
 bool link_in_process(const std::vector<std::string>& driver_args,
                      const std::string& output, bool verbose, std::string& err) {
+#ifndef CULEBRA_INPROCESS_LLD
+  (void)driver_args; (void)output; (void)verbose;
+  err = "this build carries no linker";
+  return false;
+#else
   auto kit = kit_dir();
   Recipe recipe;
   if (!load_recipe(kit, recipe, err)) return false;
@@ -252,8 +276,8 @@ bool link_in_process(const std::vector<std::string>& driver_args,
                              /*exitEarly=*/false, /*disableOutput=*/false);
   if (!ok) err = "the linker rejected this program (diagnostics above)";
   return ok;
+#endif
 }
-#endif  // CULEBRA_INPROCESS_LLD
 
 namespace {
 
@@ -310,7 +334,7 @@ bool http_get(const std::string& host, const std::string& path,
     err = std::format("{}{} answered {}", host, path, res->status);
     return false;
   }
-  body = res->body;
+  body = std::move(res->body);
   return true;
 }
 #endif  // CULEBRA_HTTP_ENABLED
@@ -371,31 +395,24 @@ bool place_kit(const fs::path& staged_root, std::string& err) {
   return true;
 }
 
-// Check an archive against the `<digest>  <name>` line published beside it.
-// One implementation for both sources, so the download's verification is the
+// Check archive bytes against the `<digest>  <name>` line published beside
+// them. Takes bytes rather than paths so the download verifies what it holds:
+// one implementation for both sources, so the download's verification is the
 // code a `--from` install exercises too — otherwise it would first run on a
 // user's machine, at the moment it matters most.
-//
-// A local archive with no .sha256 beside it is installed unverified: the file
-// came from the user, not from the network, and demanding a digest they would
-// have to write themselves protects nothing. A .sha256 that IS there is
-// always honoured.
-bool verify_digest(const fs::path& archive, const fs::path& sums,
-                   std::string& err) {
-  std::error_code ec;
-  if (!fs::exists(sums, ec)) return true;
-  auto want = read_file(sums);
-  auto sp = want.find_first_of(" \t\r\n");
-  auto expect = want.substr(0, sp == std::string::npos ? want.size() : sp);
+bool verify_digest(std::string_view bytes, std::string_view sums_line,
+                   std::string_view name, std::string& err) {
+  auto sp = sums_line.find_first_of(" \t\r\n");
+  auto expect = sums_line.substr(0, sp);
   if (expect.empty()) {
-    err = std::format("{} holds no digest", sums.string());
+    err = std::format("the digest published for {} is empty", name);
     return false;
   }
-  auto got = culebra::hashing::sha256(read_file(archive));
+  auto got = culebra::hashing::sha256(std::string(bytes));
   if (got != expect) {
     err = std::format("{} does not match its digest\n"
                       "  expected {}\n  got      {}",
-                      archive.filename().string(), expect, got);
+                      name, expect, got);
     return false;
   }
   return true;
@@ -407,31 +424,41 @@ bool install_windows(const std::string& from, std::string& err) {
   fs::remove_all(tmp, ec);
   fs::create_directories(tmp, ec);
 
-  fs::path archive, sums;
+  // The digest says the bytes are intact; the manifest check in place_kit says
+  // the kit belongs with this binary. Neither substitutes for the other.
+  fs::path archive;
   if (!from.empty()) {
     archive = fs::absolute(from);
     if (!fs::exists(archive, ec)) {
       err = std::format("no such file: {}", archive.string());
       return false;
     }
-    sums = archive.string() + ".sha256";
     std::println("culebra toolchain: installing from {}", archive.string());
+    // A local archive with no .sha256 beside it is installed unverified: the
+    // file came from the user, not from the network, and demanding a digest
+    // they would have to write themselves protects nothing. One that IS there
+    // is always honoured.
+    fs::path sums = archive.string() + ".sha256";
+    if (fs::exists(sums, ec) &&
+        !verify_digest(read_file(archive), read_file(sums),
+                       archive.filename().string(), err))
+      return false;
   } else {
 #if defined(CULEBRA_HTTP_ENABLED)
-    auto asset = std::format("{}/v{}/{}.zip", kReleasePath, kVersion, kKitName);
-    auto sumpath = std::format("{}/v{}/{}.zip.sha256", kReleasePath, kVersion,
-                               kKitName);
+    auto name = std::format("{}.zip", kKitName);
+    auto asset = std::format("{}/v{}/{}", kReleasePath, kVersion, name);
     std::println("culebra toolchain: fetching the Windows kit for culebra {}…",
                  kVersion);
     std::string body, want;
     if (!http_get(std::string(kReleaseHost), asset, body, err)) return false;
-    if (!http_get(std::string(kReleaseHost), sumpath, want, err)) return false;
-    archive = tmp / std::format("{}.zip", kKitName);
-    sums = archive.string() + ".sha256";
+    if (!http_get(std::string(kReleaseHost), asset + ".sha256", want, err))
+      return false;
+    // Verified before it is written, so a kit that failed its digest never
+    // exists as a file anyone could reach for.
+    if (!verify_digest(body, want, name, err)) return false;
+    archive = tmp / name;
     { std::ofstream(archive, std::ios::binary)
           .write(body.data(), std::streamsize(body.size())); }
-    { std::ofstream(sums, std::ios::binary)
-          .write(want.data(), std::streamsize(want.size())); }
 #else
     err = std::format(
         "this build has no HTTP support, so it cannot fetch the kit. Download\n"
@@ -442,10 +469,6 @@ bool install_windows(const std::string& from, std::string& err) {
 #endif
   }
 
-  // The digest says the bytes are intact; the manifest check in place_kit says
-  // the kit belongs with this binary. Neither substitutes for the other.
-  if (!verify_digest(archive, sums, err)) return false;
-
   auto staged = tmp / "x";
   if (!extract_zip(archive, staged, err)) return false;
   if (!place_kit(staged, err)) return false;
@@ -455,6 +478,18 @@ bool install_windows(const std::string& from, std::string& err) {
 }
 
 #endif  // _WIN32
+
+#ifdef __APPLE__
+// Apple's installer is a GUI flow this process cannot wait on, and it reports
+// the same failure for "already installed" as for "cancelled" — so its exit
+// status is not read, and nothing retries. One spelling for both callers, so
+// the two cannot drift into saying different things about the same action.
+void start_xcode_install() {
+  std::system("xcode-select --install");
+  std::println(stderr, "culebra toolchain: Apple's installer is running; "
+                       "re-run `culebra build` once it finishes.");
+}
+#endif
 
 // Ask, on a terminal, before doing something the user did not type. Both
 // streams have to be a terminal: stdin so an answer can arrive, stderr so the
@@ -470,17 +505,21 @@ bool confirm(std::string_view question) {
 
 int status() {
   std::println("culebra {}", kVersion);
+  // Each probe walks PATH or reads the manifest, so ask once and derive every
+  // line from the answers — a status line should not run the same probe three
+  // times, and on macOS `link_available` shells out to xcode-select.
 #ifdef _WIN32
   auto kit = kit_dir();
+  bool have_kit = kit_usable(kit);
   std::println("  kit          {}", kit.string());
-  if (kit_usable(kit)) {
+  if (have_kit) {
     Recipe r;
     std::string err;
     load_recipe(kit, r, err);
     std::println("  installed    yes (target {}, packed {})",
                  r.target.empty() ? "?" : r.target,
                  manifest_field(kit, "PACKED"));
-  } else if (std::filesystem::exists(kit)) {
+  } else if (!kit.empty() && std::filesystem::exists(kit)) {
     std::println("  installed    no — the directory exists but is not a kit "
                  "for this version");
   } else {
@@ -490,27 +529,32 @@ int status() {
   // Which of the two would actually run, not merely which exist: on a machine
   // with MSYS2 and no kit those differ, and that is the machine every
   // contributor is on.
+  bool have_external = external_driver_present();
   std::println("  linker       lld, carried in this binary{}",
-               use_inprocess_link()
-                   ? ""
-                   : external_driver_present()
-                         ? " (idle — no kit, so the clang++ on PATH links)"
-                         : "");
+               have_kit ? ""
+               : have_external
+                   ? " (idle — no kit, so the clang++ on PATH links)"
+                   : "");
+  bool ready = have_kit || have_external;
 #else
   std::println("  linker       external clang++ + ld.lld on PATH");
+  bool ready = link_available();
 #endif
 #elif defined(__APPLE__)
   std::println("  toolchain    Xcode Command Line Tools");
+  bool ready = link_available();
 #else
   std::println("  toolchain    the system C++ compiler (`cc`)");
-#endif
-  // Asked once: on macOS this shells out to xcode-select, and a status line
-  // should not run the same probe three times to print one answer.
   bool ready = link_available();
+#endif
   std::println("  AOT link     {}", ready ? "ready" : "not available");
   if (!ready) std::println("\n{}", missing_toolchain_hint());
   return ready ? 0 : 1;
 }
+
+constexpr std::string_view kUsage =
+    "usage: culebra toolchain [status | install [--from <archive>] | "
+    "uninstall]";
 
 }  // namespace
 
@@ -529,14 +573,8 @@ bool offer_install_interactively() {
   }
   return link_available();
 #else
-  // Apple's installer is a GUI flow this process cannot wait on, and it
-  // reports the same failure for "already installed" as for "cancelled" — so
-  // its exit status is not read, and the build does not retry.
   (void)err;
-  std::system("xcode-select --install");
-  std::println(stderr,
-               "culebra build: the Command Line Tools installer is running. "
-               "Re-run this build once it finishes.");
+  start_xcode_install();
   return false;
 #endif
 #else
@@ -545,10 +583,14 @@ bool offer_install_interactively() {
 #endif
 }
 
-int main(int argc, char** argv) {
+int run_toolchain(int argc, const char** argv) {
   // The full command line, as every other subcommand takes it: argv[1] is
   // "toolchain" and the verb follows it.
   std::string verb = argc >= 3 ? argv[2] : "status";
+  if (verb == "-h" || verb == "--help") {
+    std::println("{}", kUsage);
+    return 0;
+  }
   std::string from;
   for (int i = 3; i < argc; i++) {
     std::string a = argv[i];
@@ -562,7 +604,10 @@ int main(int argc, char** argv) {
 
   if (verb == "install") {
 #ifdef _WIN32
-    if (link_available() && from.empty()) {
+    // Whether a kit is there, not whether anything could link: a contributor
+    // with MSYS2 and no kit must not be told one is "already installed" at a
+    // directory that does not exist.
+    if (kit_usable(kit_dir()) && from.empty()) {
       std::println("culebra toolchain: already installed at {}",
                    kit_dir().string());
       return 0;
@@ -584,9 +629,7 @@ int main(int argc, char** argv) {
       std::println("culebra toolchain: the Command Line Tools are installed");
       return 0;
     }
-    std::system("xcode-select --install");
-    std::println("culebra toolchain: Apple's installer is running; re-run "
-                 "`culebra build` once it finishes");
+    start_xcode_install();
     return 0;
 #else
     std::println(stderr,
@@ -628,9 +671,7 @@ int main(int argc, char** argv) {
 #endif
   }
 
-  std::println(stderr,
-               "usage: culebra toolchain [status | install [--from <archive>] "
-               "| uninstall]");
+  std::println(stderr, "{}", kUsage);
   return 2;
 }
 

@@ -315,20 +315,7 @@ jobs:
       # unable to say why. ci.yml checks its own build the same way; this
       # checks the one that actually gets uploaded.
       - name: Verify the asset carries its own linker
-        run: |
-          # `status` exits non-zero when no kit is installed, which is the
-          # normal state on a build machine — read its text, not its code.
-          out=$(./build/culebra.exe toolchain status || true)
-          printf '%s\n' "$out"
-          case "$out" in
-            *"lld, carried in this binary"*)
-              echo "OK: this download can link without a toolchain" ;;
-            *)
-              echo "ERROR: this build would need an external clang++ — the" >&2
-              echo "  toolchain kit cannot help it (were the lld libraries" >&2
-              echo "  missing at configure time?)" >&2
-              exit 1 ;;
-          esac
+        run: misc/verify_inprocess_lld.sh ./build/culebra.exe
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -348,8 +335,8 @@ jobs:
       # the one the runtime archives uploaded above were compiled against, so
       # there is no version matching to get wrong. It carries no executables:
       # lld is inside culebra.exe (CMakeLists, CULEBRA_INPROCESS_LLD), which is
-      # what keeps this asset at ~6 MB instead of the ~55 MB that shipping
-      # MSYS2's ld.lld.exe and its libLLVM DLL would cost.
+      # what keeps this asset small — docs/deployment.md §"Why Windows needs no
+      # compiler" has the sizes that decided it.
       #
       # `culebra toolchain install` fetches it by this exact name from the tag
       # matching the running binary's version; ci.yml's windows-toolchain-kit

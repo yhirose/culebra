@@ -339,13 +339,10 @@ if(CULEBRA_ENABLE_JIT)
   # libraries), which misc/pack_windows_toolchain.sh packs and `culebra
   # toolchain install` fetches — 8 MB compressed.
   #
-  # Sharing this binary's LLVM is what makes that cheap, and the alternatives
-  # were measured rather than assumed. Shipping MSYS2's ld.lld.exe in the kit
-  # means shipping the 147 MB libLLVM DLL it links against (55 MB compressed);
-  # building a standalone lld against the same statics avoids the DLL but
-  # cannot share anything, and came out at 41 MB compressed. Linking lld here
-  # costs +23 MB on the download instead — more than the 4 MB of lld archives,
-  # because lld's COFF driver references every LLVM backend.
+  # Sharing this binary's LLVM is what makes that cheap: linking lld here costs
+  # +23 MB on the download, more than the 4 MB of lld archives, because lld's
+  # COFF driver references every LLVM backend. The alternatives were measured
+  # rather than assumed — docs/deployment.md §"Why Windows needs no compiler".
   #
   # Found by library and header rather than through LLDConfig.cmake: MSYS2
   # ships the archives and lld/Common/Driver.h without always shipping the
@@ -414,11 +411,6 @@ if(CULEBRA_ENABLE_JIT)
         "-DCULEBRA_LLVM_ALL_TARGETS=ON to link every backend instead.")
     endif()
   endif()
-  # On Windows the driver also carries lld, so `culebra build` can link without
-  # a compiler on the machine (see the CULEBRA_INPROCESS_LLD block below).
-  # lld's COFF driver reaches parts of LLVM the JIT never does; naming them
-  # here lets llvm_map_components_to_libnames expand their dependencies the
-  # same way it does the JIT's.
   # What lld's COFF driver reaches that the JIT never does. libdriver is the
   # `/lib` archive mode it links in whether or not anyone asks for it, and
   # dtlto is distributed ThinLTO, which LLVM 22 keeps in its own library rather
@@ -1007,7 +999,6 @@ if(CULEBRA_ENABLE_JIT)
   target_link_libraries(culebra ${CULEBRA_LLD_LIBS} ${llvm_libs}
                                 ${CULEBRA_LIBXML2_DEPS})
   culebra_export_jit_symbols(culebra)
-
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
   # baked source path is the default when CULEBRA_HOME is unset. Scoped to

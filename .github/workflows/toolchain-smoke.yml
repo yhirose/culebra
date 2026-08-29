@@ -9,12 +9,15 @@
 # It has to be a PUBLISHED release, which is why this is not a release.yml
 # step: release.yml leaves the release a draft for `/release` to publish, and a
 # draft's assets are not anonymously downloadable — the very thing being
-# tested. So `/release` runs this after `gh release edit --draft=false`, and a
-# weekly run repeats it, since this path can also break without culebra
-# changing at all (a redirect, a TLS policy, a CDN host).
+# tested. `release: published` is therefore the trigger, the same edge
+# homebrew-bump.yml fires on, so no one has to remember to start it. The weekly
+# run repeats it because this path can break without culebra changing at all (a
+# redirect, a TLS policy, a CDN host).
 name: toolchain-smoke
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -42,7 +45,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = '${{ github.event.inputs.tag }}'
+          # The release that fired this, the one a dispatch named, or the
+          # newest published — in that order, so a publish tests itself rather
+          # than whatever happens to be newest by the time this job starts.
+          $tag = '${{ github.event.release.tag_name }}'
+          if (-not $tag) { $tag = '${{ github.event.inputs.tag }}' }
           if (-not $tag) {
             $tag = gh release list --repo ${{ github.repository }} `
                      --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName'
@@ -83,14 +90,7 @@ jobs:
           & $exe toolchain status
           if ($LASTEXITCODE -ne 0) { throw "status says the link is not ready" }
 
-          foreach ($line in Get-Content misc\linkkit\expected.tsv) {
-            $name, $want = $line -split "`t"
-            & $exe build "misc\linkkit\$name.cul" -o "$name.exe"
-            if ($LASTEXITCODE -ne 0) { throw "$name did not link" }
-            $got = (& ".\$name.exe" 2>&1 | Out-String).Trim()
-            if ($got -ne $want) { throw "$name ran as '$got', wanted '$want'" }
-            "  ok: $name -> $got"
-          }
+          & (Join-Path $pwd 'misc\linkkit\build_axes.ps1') $exe
 
           & $exe toolchain uninstall
           if ($LASTEXITCODE -ne 0) { throw "uninstall failed" }

@@ -1204,20 +1204,6 @@ int run_build(const BuildOptions& opts) {
   // user's, where the kit describes this host.
   bool inprocess = !cross && culebra::toolchain::use_inprocess_link();
 
-  // Split a literal flag string into argv tokens. Only ever called on the
-  // string literals above, never on anything holding a path, so a space here
-  // is always a separator.
-  auto add_flags = [](std::vector<std::string>& out, std::string_view s) {
-    for (size_t i = 0; i < s.size();) {
-      auto b = s.find_first_not_of(' ', i);
-      if (b == std::string_view::npos) break;
-      auto e = s.find(' ', b);
-      if (e == std::string_view::npos) e = s.size();
-      out.emplace_back(s.substr(b, e - b));
-      i = e;
-    }
-  };
-
   // Assembled in link order: inputs, force-loaded feature objects, link-wide
   // flags, then the libraries those objects need. Raw argv tokens — the
   // external path quotes them once at the join below, and the in-process one
@@ -1227,27 +1213,25 @@ int run_build(const BuildOptions& opts) {
   if (!assets_obj.empty()) args.push_back(assets_obj);
   args.push_back(lib);
   args.insert(args.end(), feature_objs.begin(), feature_objs.end());
-  add_flags(args, dead_strip);
-  add_flags(args, strip_syms);
-  add_flags(args, no_pie);
+  expand_archive_names(args, dead_strip);
+  expand_archive_names(args, strip_syms);
+  expand_archive_names(args, no_pie);
   if (!inprocess) {
     // The recipe carries the toolchain's expansion of these; emitting them
     // again would put a driver-only flag (-fuse-ld, -static) in front of a
     // linker that has no such option.
-    add_flags(args, win_static);
-    add_flags(args, libcxx);
+    expand_archive_names(args, win_static);
+    expand_archive_names(args, libcxx);
   }
-  add_flags(args, core_frameworks);
+  expand_archive_names(args, core_frameworks);
   args.insert(args.end(), feature_links.begin(), feature_links.end());
 
   if (inprocess) {
-#if defined(CULEBRA_INPROCESS_LLD)
     std::string err;
     if (!culebra::toolchain::link_in_process(args, opts.output, verbose, err)) {
       std::println(stderr, "culebra build: {}", err);
       return 1;
     }
-#endif
   } else {
     std::vector<std::string> parts{kLinkDriver};
     if (cross) parts.push_back(std::format("--target={}", shq(opts.target)));
@@ -2384,9 +2368,13 @@ int main(int argc, const char** argv) {
   if (argc >= 2 && string(argv[1]) == "init") {
     return culebra::run_init(argc, argv);
   }
+#ifdef CULEBRA_JIT_ENABLED
+  // Beside `build`, the only thing a toolchain is for: a build without the JIT
+  // cannot link, so it does not offer to install what nothing would use.
   if (argc >= 2 && string(argv[1]) == "toolchain") {
-    return culebra::toolchain::main(argc, const_cast<char**>(argv));
+    return culebra::toolchain::run_toolchain(argc, argv);
   }
+#endif
 #ifdef CULEBRA_HTTP_ENABLED
   if (argc >= 2 && string(argv[1]) == "serve") {
     return run_serve(argc, argv);

@@ -1744,25 +1744,7 @@ jobs:
       # links perfectly well, and silently falls back to needing clang++ on
       # PATH — so the property is checked, not assumed.
       - name: Verify lld is linked into this build
-        run: |
-          # `status` exits non-zero when no kit is installed, which is the
-          # normal state here — so its text is read, not its exit code, and
-          # neither `set -e` nor pipefail gets to decide the outcome.
-          out=$(./build-win-aot/culebra.exe toolchain status || true)
-          printf '%s\n' "$out"
-          case "$out" in
-            *"lld, carried in this binary"*)
-              echo "OK: the driver carries its own linker"
-              # Carrying lld forces every LLVM backend in (its COFF driver
-              # references each one), which every Windows download pays for
-              # whether or not it ever runs `culebra build`. That trade is only
-              # defensible against a number, so the number is printed here.
-              printf 'driver: %s bytes\n' "$(stat -c %s build-win-aot/culebra.exe)"
-              ;;
-            *)
-              echo "ERROR: this culebra.exe would need an external clang++" >&2
-              exit 1 ;;
-          esac
+        run: misc/verify_inprocess_lld.sh build-win-aot/culebra.exe --size
 
 
   # The AOT toolchain kit, end to end, on a Windows with no toolchain on PATH.
@@ -1883,17 +1865,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "a failed reinstall removed the kit" }
           "OK: a failed reinstall leaves the installed kit alone"
 
-          # Every axis, because each appends its own import libraries and a kit
-          # packed from a hello link would be missing them — the failure would
-          # otherwise surface only for whoever first compiles a Canvas program.
-          foreach ($line in Get-Content misc\linkkit\expected.tsv) {
-            $name, $want = $line -split "`t"
-            & $exe build "misc\linkkit\$name.cul" -o "$name.exe"
-            if ($LASTEXITCODE -ne 0) { throw "$name did not link" }
-            $got = (& ".\$name.exe" 2>&1 | Out-String).Trim()
-            if ($got -ne $want) { throw "$name ran as '$got', wanted '$want'" }
-            "  ok: $name -> $got"
-          }
+          & (Join-Path $pwd 'misc\linkkit\build_axes.ps1') $exe
 
           # A produced binary must need nothing from the kit: it is build-time
           # only, and this is where that stops being an assumption.
