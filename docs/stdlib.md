@@ -3092,6 +3092,27 @@ required). Failure throws a Culebra Object with the conventional
 `{kind: "AssertionError", message: ...}` shape; user code can
 `try/catch` it.
 
+An uncaught failure reports the position of the `assert_*` call:
+
+```
+AssertionError at 12:1: assert_eq failed:
+  left:  foo
+  right: bar
+```
+
+Every matcher but `assert_throws` also takes an optional trailing
+`label`, which the failure message repeats. It earns its keep where the
+position cannot tell two failures apart — a helper that asserts on
+behalf of its callers reports every one of them at its own single line:
+
+```culebra
+let check = fn (got, want, label) {
+  assert_eq(got, want, label)
+}
+check(1, 1, "first")   # passes
+# A failure here would say: assert_eq failed: second
+```
+
 There is no `assert` keyword or builtin — instead, use a specific
 matcher for each kind of check. For production invariants, write the
 `if`/`throw` directly:
@@ -3105,12 +3126,12 @@ if !cond {
 
 ### Truthiness matchers
 
-* **`assert_true(x: Bool) -> Nil`** — pass if `x` is truthy. Throws
+* **`assert_true(x: Bool, label: String? = nil) -> Nil`** — pass if `x` is truthy. Throws
   `AssertionError` with message `assert_true failed:\n  value: {x}`
   on failure. `x` must be `Bool`, `Long`, or `Float`; other types
   raise `TypeError`: there is no implicit truthiness, so empty strings
   and arrays are not falsy.
-* **`assert_false(x: Bool) -> Nil`** — mirror of `assert_true`.
+* **`assert_false(x: Bool, label: String? = nil) -> Nil`** — mirror of `assert_true`.
 
 ### Comparison matchers
 
@@ -3120,12 +3141,12 @@ plain expression — `assert_eq(a, b)` is equivalent to `a == b`, so
 Failure message names both operands via `to_string` (respecting any
 user `__str__`).
 
-* **`assert_eq(a, b) -> Nil`** — `a == b`.
-* **`assert_ne(a, b) -> Nil`** — `a != b`.
-* **`assert_lt(a, b) -> Nil`** — `a < b`.
-* **`assert_le(a, b) -> Nil`** — `a <= b`.
-* **`assert_gt(a, b) -> Nil`** — `a > b`.
-* **`assert_ge(a, b) -> Nil`** — `a >= b`.
+* **`assert_eq(a, b, label: String? = nil) -> Nil`** — `a == b`.
+* **`assert_ne(a, b, label: String? = nil) -> Nil`** — `a != b`.
+* **`assert_lt(a, b, label: String? = nil) -> Nil`** — `a < b`.
+* **`assert_le(a, b, label: String? = nil) -> Nil`** — `a <= b`.
+* **`assert_gt(a, b, label: String? = nil) -> Nil`** — `a > b`.
+* **`assert_ge(a, b, label: String? = nil) -> Nil`** — `a >= b`.
 
 ```culebra
 assert_eq(1 + 1, 2)  # passes silently
@@ -3160,7 +3181,7 @@ assert_throws("MyError", fn () {
 })
 ```
 
-### `assert_close(a: Float, b: Float, tol: Float) -> Nil`
+### `assert_close(a: Float, b: Float, tol: Float, label: String? = nil) -> Nil`
 
 Pass if `|a - b| <= tol`. NaN in `a`, `b`, or `tol` deliberately
 fails (a naive `diff > tol` check would silently pass NaN). Use this

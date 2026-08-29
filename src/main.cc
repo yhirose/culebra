@@ -133,9 +133,7 @@ optional<string> read_stdin() {
 // `Kind: message at LINE:COL.`, position omitted when unknown. Shared so the
 // `build`, script-run and top-level handlers can't drift apart.
 void print_culebra_error(const culebra::CulebraError& e) {
-  cerr << e.kind << ": " << e.what();
-  if (e.line > 0 || e.col > 0) cerr << " at " << e.line << ":" << e.col << ".";
-  cerr << endl;
+  cerr << culebra::format_error_message(e) << endl;
 }
 
 // Load the entry script plus its import graph. `splice_preamble` inlines the

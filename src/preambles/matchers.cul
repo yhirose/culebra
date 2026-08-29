@@ -1,53 +1,8 @@
-let assert_true = fn (x) {
-  return nil if x
-  throw {kind: "AssertionError", message: "assert_true failed:\n  value: {x}"}
-}
-let assert_false = fn (x) {
-  return nil if !x
-  throw {kind: "AssertionError", message: "assert_false failed:\n  value: {x}"}
-}
-let assert_eq = fn (a, b) {
-  return nil if a == b
-  throw {
-    kind: "AssertionError",
-    message: "assert_eq failed:\n  left:  {a}\n  right: {b}",
-  }
-}
-let assert_ne = fn (a, b) {
-  return nil if a != b
-  throw {
-    kind: "AssertionError",
-    message: "assert_ne failed:\n  left:  {a}\n  right: {b}",
-  }
-}
-let assert_lt = fn (a, b) {
-  return nil if a < b
-  throw {
-    kind: "AssertionError",
-    message: "assert_lt failed:\n  left:  {a}\n  right: {b}",
-  }
-}
-let assert_le = fn (a, b) {
-  return nil if a <= b
-  throw {
-    kind: "AssertionError",
-    message: "assert_le failed:\n  left:  {a}\n  right: {b}",
-  }
-}
-let assert_gt = fn (a, b) {
-  return nil if a > b
-  throw {
-    kind: "AssertionError",
-    message: "assert_gt failed:\n  left:  {a}\n  right: {b}",
-  }
-}
-let assert_ge = fn (a, b) {
-  return nil if a >= b
-  throw {
-    kind: "AssertionError",
-    message: "assert_ge failed:\n  left:  {a}\n  right: {b}",
-  }
-}
+// assert_throws is the one matcher that stays here: it calls the function it
+// is handed and reads `f.params`, and its failure message already names the
+// expected and the actual kind. The comparison matchers are native (see
+// kBuiltinFns in stdlib_jit.h) so that a failure carries the position of the
+// assert_* call, which a throw from inside this file cannot.
 let assert_throws = fn (kind, f) {
   if f.params.size() != 0 {
     throw {
@@ -77,16 +32,6 @@ let assert_throws = fn (kind, f) {
     throw {
       kind: "AssertionError",
       message: "assert_throws: expected kind '{kind}' but got '{actual_kind}'",
-    }
-  }
-}
-let assert_close = fn (a, b, tol) {
-  let mut diff = a - b
-  diff = -diff if diff < 0
-  if diff != diff || tol != tol || diff > tol {
-    throw {
-      kind: "AssertionError",
-      message: "assert_close failed:\n  a:    {a}\n  b:    {b}\n  diff: {diff} (> tol {tol})",
     }
   }
 }

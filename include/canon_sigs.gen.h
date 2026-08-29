@@ -1181,6 +1181,41 @@ inline constexpr CanonParam kCanonParams_Bare[] = {
   {"value", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   // 17: grid
   {"args", false, false, false, true, false, "", CanonDefault::None, 0, {}},
+  // 18: assert_true
+  {"x", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 20: assert_false
+  {"x", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 22: assert_eq
+  {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 25: assert_ne
+  {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 28: assert_lt
+  {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 31: assert_le
+  {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 34: assert_gt
+  {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 37: assert_ge
+  {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 40: assert_close
+  {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"tol", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Bare[] = {
@@ -1199,6 +1234,15 @@ inline constexpr CanonSig kCanonSigs_Bare[] = {
   {"", "", "iota", kCanonParams_Bare + 14, 1, "", 0, 0, true, -1, -1, 0},
   {"", "", "repeat", kCanonParams_Bare + 15, 2, "Array", 2, 2, false, -1, -1, -1},
   {"", "", "grid", kCanonParams_Bare + 17, 1, "", 0, 0, true, -1, -1, 0},
+  {"", "", "assert_true", kCanonParams_Bare + 18, 2, "Nil", 1, 2, false, -1, -1, -1},
+  {"", "", "assert_false", kCanonParams_Bare + 20, 2, "Nil", 1, 2, false, -1, -1, -1},
+  {"", "", "assert_eq", kCanonParams_Bare + 22, 3, "Nil", 2, 3, false, -1, -1, -1},
+  {"", "", "assert_ne", kCanonParams_Bare + 25, 3, "Nil", 2, 3, false, -1, -1, -1},
+  {"", "", "assert_lt", kCanonParams_Bare + 28, 3, "Nil", 2, 3, false, -1, -1, -1},
+  {"", "", "assert_le", kCanonParams_Bare + 31, 3, "Nil", 2, 3, false, -1, -1, -1},
+  {"", "", "assert_gt", kCanonParams_Bare + 34, 3, "Nil", 2, 3, false, -1, -1, -1},
+  {"", "", "assert_ge", kCanonParams_Bare + 37, 3, "Nil", 2, 3, false, -1, -1, -1},
+  {"", "", "assert_close", kCanonParams_Bare + 40, 4, "Nil", 3, 4, false, -1, -1, -1},
 };
 
 // The value-type built-in methods' parameters (the namespace tables carry

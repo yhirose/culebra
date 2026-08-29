@@ -3003,6 +3003,27 @@ viewは要素を返す）。スカラフィールドは読み手のheapに材料
 bindされています。失敗時は`{kind: "AssertionError", message: ...}`
 形のculebra Objectをthrow — `try/catch`で捕捉可能。
 
+捕捉されなかった失敗は`assert_*`呼び出しの位置を報告します:
+
+```
+AssertionError at 12:1: assert_eq failed:
+  left:  foo
+  right: bar
+```
+
+`assert_throws`以外のmatcherは末尾に省略可能な`label`を取り、失敗
+メッセージがそれを繰り返します。効いてくるのは位置では2つの失敗を
+区別できない場面 — 呼び出し元に代わってassertするヘルパーは、どの
+失敗も自分自身の同じ1行として報告するからです:
+
+```culebra
+let check = fn (got, want, label) {
+  assert_eq(got, want, label)
+}
+check(1, 1, "first")   # pass
+# ここで失敗すれば: assert_eq failed: second
+```
+
 `assert`キーワード / builtinは存在しません — 用途ごとに専用matcher
 を使います。productionの不変条件には`if`/`throw`を直接書きます:
 
@@ -3015,11 +3036,11 @@ if !cond {
 
 ### 真偽 matcher
 
-* **`assert_true(x: Bool) -> Nil`** — `x`がtruthyならpass。失敗
+* **`assert_true(x: Bool, label: String? = nil) -> Nil`** — `x`がtruthyならpass。失敗
   時は`assert_true failed:\n  value: {x}`。`x`は`Bool` / `Long` /
   `Float`のみ — それ以外は`TypeError`。暗黙のtruthinessは無く、
   空文字列・空配列はfalsyではありません。
-* **`assert_false(x: Bool) -> Nil`** — `assert_true`の逆。
+* **`assert_false(x: Bool, label: String? = nil) -> Nil`** — `assert_true`の逆。
 
 ### 比較 matcher
 
@@ -3028,12 +3049,12 @@ if !cond {
 `__eq__` / `__lt__` / `__le__`が尊重されます。失敗messageは
 `to_string`で両辺を表示 (ユーザ`__str__`を尊重)。
 
-* **`assert_eq(a, b) -> Nil`** — `a == b`。
-* **`assert_ne(a, b) -> Nil`** — `a != b`。
-* **`assert_lt(a, b) -> Nil`** — `a < b`。
-* **`assert_le(a, b) -> Nil`** — `a <= b`。
-* **`assert_gt(a, b) -> Nil`** — `a > b`。
-* **`assert_ge(a, b) -> Nil`** — `a >= b`。
+* **`assert_eq(a, b, label: String? = nil) -> Nil`** — `a == b`。
+* **`assert_ne(a, b, label: String? = nil) -> Nil`** — `a != b`。
+* **`assert_lt(a, b, label: String? = nil) -> Nil`** — `a < b`。
+* **`assert_le(a, b, label: String? = nil) -> Nil`** — `a <= b`。
+* **`assert_gt(a, b, label: String? = nil) -> Nil`** — `a > b`。
+* **`assert_ge(a, b, label: String? = nil) -> Nil`** — `a >= b`。
 
 ```culebra
 assert_eq(1 + 1, 2)  # 成功時は無音
@@ -3068,7 +3089,7 @@ assert_throws("MyError", fn () {
 })
 ```
 
-### `assert_close(a: Float, b: Float, tol: Float) -> Nil`
+### `assert_close(a: Float, b: Float, tol: Float, label: String? = nil) -> Nil`
 
 `|a - b| <= tol`ならpass。`a` / `b` / `tol`のいずれかがNaNなら
 **故意に失敗** (素朴な`diff > tol`だとNaNがsilently passする

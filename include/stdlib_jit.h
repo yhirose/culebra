@@ -4179,6 +4179,152 @@ inline JitValue _ns_global_grid(JitValue* a, int64_t) {
   return _ns_adapt::v_object(
       culebra_runtime_grid_new(x.tag, x.data, y.tag, y.data, 0, 0));
 }
+// --- Matchers ---------------------------------------------------------------
+//
+// The comparison matchers are native so a failure carries the position of the
+// `assert_*` call. They read it from the call-site channel every bare builtin
+// has (`_jit_call_site_line/col`); a Culebra implementation cannot — a throw
+// inside the preamble names the preamble's own line, and reaching one frame
+// out would need a call stack neither backend keeps. Narrowing which
+// `assert_true` in a file failed used to mean instrumenting the file and
+// running it (see tools/windows_known_failures.txt's history).
+//
+// Each one dispatches through the same operator helper the plain expression
+// lowers to, so a user `__eq__` / `__lt__` / `cmp` is honored exactly as
+// `a == b` honors it, and names operands through `to_string` so a user
+// `__str__` shows through. `assert_throws` stays in the preamble: it calls
+// the function it is given and reads `f.params`, and its message already
+// names the expected and actual kind.
+namespace _assert_adapt {
+
+// How a failure message names an operand: to_string's display, which is what
+// the preamble's `{a}` interpolation produced.
+inline std::string disp(JitValue v) {
+  return culebra_runtime_value_to_display(v.tag, v.data);
+}
+
+// The preamble's `if x` truthiness, which is strict: Bool / Long / Float only,
+// so an empty String or Array is a TypeError rather than false.
+inline bool truthy(JitValue v) {
+  if (v.tag == TAG_BOOL || v.tag == TAG_LONG) return v.data != 0;
+  if (v.tag == TAG_FLOAT) return _culebra_float_to_double(v.data) != 0.0;
+  culebra::throw_type_mismatch("Bool, Long, or Float",
+                               _culebra_tag_name(v.tag), _jit_call_site_line,
+                               _jit_call_site_col);
+}
+
+// The optional trailing label, rendered as the rest of the "... failed:"
+// line. A helper that asserts on behalf of its callers reports every failure
+// at its own single line, so the label is the only thing telling those
+// callers apart. Absent (nil) leaves the message exactly as it reads without
+// one. A missing optional slot arrives as nil from the trampoline.
+inline std::string label_of(JitValue* a, int64_t n, int64_t idx) {
+  if (n <= idx || a[idx].tag == TAG_NIL) return {};
+  return " " + disp(a[idx]);
+}
+
+[[noreturn]] inline void fail(std::string msg) {
+  throw culebra::CulebraError("AssertionError", std::move(msg),
+                              _jit_call_site_line, _jit_call_site_col);
+}
+
+// The shape both operands of a comparison matcher are reported in.
+[[noreturn]] inline void fail_pair(const char* which, JitValue a, JitValue b,
+                                   const std::string& label) {
+  fail(culebra::format("{} failed:{}\n  left:  {}\n  right: {}", which, label,
+                       disp(a), disp(b)));
+}
+
+inline bool equal(JitValue a, JitValue b) {
+  return culebra_runtime_value_equal_borrow(a.tag, a.data, b.tag, b.data);
+}
+
+}  // namespace _assert_adapt
+
+inline JitValue _ns_assert_true(JitValue* a, int64_t n) {
+  if (!_assert_adapt::truthy(a[0]))
+    _assert_adapt::fail(culebra::format("assert_true failed:{}\n  value: {}",
+                                        _assert_adapt::label_of(a, n, 1),
+                                        _assert_adapt::disp(a[0])));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_assert_false(JitValue* a, int64_t n) {
+  if (_assert_adapt::truthy(a[0]))
+    _assert_adapt::fail(culebra::format("assert_false failed:{}\n  value: {}",
+                                        _assert_adapt::label_of(a, n, 1),
+                                        _assert_adapt::disp(a[0])));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_assert_eq(JitValue* a, int64_t n) {
+  if (!_assert_adapt::equal(a[0], a[1]))
+    _assert_adapt::fail_pair("assert_eq", a[0], a[1],
+                             _assert_adapt::label_of(a, n, 2));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_assert_ne(JitValue* a, int64_t n) {
+  if (_assert_adapt::equal(a[0], a[1]))
+    _assert_adapt::fail_pair("assert_ne", a[0], a[1],
+                             _assert_adapt::label_of(a, n, 2));
+  return _ns_adapt::v_nil();
+}
+
+// `<` / `<=` / `>` / `>=` through the operator helpers, which carry the call
+// site so an incomparable pair throws where the matcher was written.
+#define CUL_DEF_ORD_MATCHER(suffix, helper)                                  \
+  inline JitValue _ns_assert_##suffix(JitValue* a, int64_t n) {              \
+    if (!culebra_runtime_value_##helper##_borrow(                            \
+            a[0].tag, a[0].data, a[1].tag, a[1].data, _jit_call_site_line,   \
+            _jit_call_site_col))                                             \
+      _assert_adapt::fail_pair("assert_" #suffix, a[0], a[1],                \
+                               _assert_adapt::label_of(a, n, 2));            \
+    return _ns_adapt::v_nil();                                               \
+  }
+CUL_DEF_ORD_MATCHER(lt, less)
+CUL_DEF_ORD_MATCHER(le, leq)
+CUL_DEF_ORD_MATCHER(gt, greater)
+CUL_DEF_ORD_MATCHER(ge, geq)
+#undef CUL_DEF_ORD_MATCHER
+
+// |a - b| <= tol, with the preamble's NaN handling: a NaN anywhere fails,
+// since the comparison it wrote (`diff != diff || tol != tol || diff > tol`)
+// is true for one.
+inline JitValue _ns_assert_close(JitValue* a, int64_t n) {
+  // `a - b` through the same subtraction the preamble wrote, so a Long pair
+  // stays Long (the runtime's generic helper coerces to double, which would
+  // both print `3.0` for an integer difference and lose exactness past 2^53)
+  // and a non-numeric operand raises the arithmetic type error, not a
+  // matcher-specific one.
+  JitValue diff;
+  if (a[0].tag == TAG_LONG && a[1].tag == TAG_LONG) {
+    diff = {TAG_LONG, a[0].data - a[1].data};
+    if (diff.data < 0) diff.data = -diff.data;
+  } else {
+    diff = culebra_runtime_num_sub_borrow(a[0].tag, a[0].data, a[1].tag,
+                                          a[1].data, _jit_call_site_line,
+                                          _jit_call_site_col);
+    double d = _culebra_float_to_double(diff.data);
+    if (d < 0) diff.data = _culebra_double_to_bits(-d);
+  }
+  // The preamble's `diff != diff || tol != tol || diff > tol`: a NaN on
+  // either side fails, since every comparison against one is false.
+  auto is_nan = [](JitValue v) {
+    return v.tag == TAG_FLOAT &&
+           _culebra_float_to_double(v.data) != _culebra_float_to_double(v.data);
+  };
+  bool bad = is_nan(diff) || is_nan(a[2]) ||
+             culebra_runtime_value_greater_borrow(
+                 diff.tag, diff.data, a[2].tag, a[2].data, _jit_call_site_line,
+                 _jit_call_site_col);
+  if (bad) {
+    _assert_adapt::fail(culebra::format(
+        "assert_close failed:{}\n  a:    {}\n  b:    {}\n  diff: {} (> tol {})",
+        _assert_adapt::label_of(a, n, 3), _assert_adapt::disp(a[0]),
+        _assert_adapt::disp(a[1]), _assert_adapt::disp(diff),
+        _assert_adapt::disp(a[2])));
+  }
+  return _ns_adapt::v_nil();
+}
+
 // Whole-file read/write convenience on FS (open+read/write+close). Reuses
 // the runtime file helpers; streaming lives on the File handle.
 inline JitValue _ns_fs_read(JitValue* a, int64_t) {
@@ -7435,7 +7581,11 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "IO")       return nm == "println";  // arg defaults to ""
   if (ns.empty())       return nm == "range" || nm == "iota" ||
                                nm == "grid" || nm == "println" ||
-                               nm == "to_long";  // bare globals
+                               nm == "to_long" ||
+                               // the matchers' trailing `label` is optional,
+                               // and an optional positional is resolved from
+                               // the canonical params, not a fixed arity
+                               nm.starts_with("assert_");  // bare globals
   return false;
 }
 
@@ -8726,6 +8876,17 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "iota",     -1, &_ns_global_iota},
   {"", "repeat",    2, &_ns_global_repeat},
   {"", "grid",     -1, &_ns_global_grid},
+  // Matchers, native so a failure carries the call site's position.
+  // `assert_throws` is not here — it stays in the __Matchers preamble.
+  {"", "assert_true",  2, &_ns_assert_true},
+  {"", "assert_false", 2, &_ns_assert_false},
+  {"", "assert_eq",    3, &_ns_assert_eq},
+  {"", "assert_ne",    3, &_ns_assert_ne},
+  {"", "assert_lt",    3, &_ns_assert_lt},
+  {"", "assert_le",    3, &_ns_assert_le},
+  {"", "assert_gt",    3, &_ns_assert_gt},
+  {"", "assert_ge",    3, &_ns_assert_ge},
+  {"", "assert_close", 4, &_ns_assert_close},
 };
 
 namespace _ns_spec_detail {

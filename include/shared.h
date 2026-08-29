@@ -138,10 +138,9 @@ struct LazyFnGroup {
 };
 
 inline std::span<const LazyFnGroup> lazy_fn_groups() {
-  static constexpr std::string_view kMatchers[] = {
-      "assert_true", "assert_false", "assert_eq",     "assert_ne",
-      "assert_lt",   "assert_le",    "assert_gt",     "assert_ge",
-      "assert_throws", "assert_close"};
+  // Only assert_throws is lazy source now; the comparison matchers are
+  // native globals in kBuiltinFns (they need the call site's position).
+  static constexpr std::string_view kMatchers[] = {"assert_throws"};
   static constexpr std::string_view kStringFns[] = {"replace", "replace_first",
                                                     "split_once",
                                                     "rsplit_once"};
@@ -239,9 +238,15 @@ inline void culebra_note_pending_error(const CulebraError& e) {
 // text — doctest `# !!` patterns match against it, so a reworded copy in one
 // lane would split doc-block results between engines.
 inline std::string format_error_message(const CulebraError& e) {
-  if (e.line > 0 || e.col > 0)
-    return culebra::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col);
-  return culebra::format("{}: {}", e.kind, e.what());
+  if (e.line <= 0 && e.col <= 0)
+    return culebra::format("{}: {}", e.kind, e.what());
+  // A message that runs to several lines — the matchers put each operand on
+  // its own — would otherwise end "...  right: bar at 3:1.", where the
+  // position reads as part of the last value. Lead with it instead.
+  std::string_view msg{e.what()};
+  if (msg.find('\n') != std::string_view::npos)
+    return culebra::format("{} at {}:{}: {}", e.kind, e.line, e.col, msg);
+  return culebra::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col);
 }
 
 // Diagnostics joined into one "; "-separated line — the text the doctest
