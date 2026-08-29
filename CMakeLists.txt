@@ -326,6 +326,52 @@ if(CULEBRA_ENABLE_JIT)
   separate_arguments(_llvm_defs NATIVE_COMMAND "${LLVM_DEFINITIONS}")
   add_definitions(${_llvm_defs})
 
+  # --- lld, linked into the driver (Windows) --------------------------------
+  # `culebra build` links through an external C++ driver everywhere else, and
+  # that is fine where one exists: macOS has the CLT shim, Linux ships gcc in
+  # every base image worth the name. Windows ships no toolchain at all, so the
+  # link step is the one thing a downloaded culebra.exe cannot do — and what it
+  # is missing is a linker, not a compiler, because the object is emitted
+  # in-process already.
+  #
+  # Carrying lld answers that without carrying a toolchain. What remains on the
+  # user's side is the mingw half of a link (CRT objects, libstdc++, import
+  # libraries), which misc/pack_windows_toolchain.sh packs and `culebra
+  # toolchain install` fetches — 6 MB, where shipping MSYS2's ld.lld.exe to
+  # users would mean shipping the 147 MB libLLVM DLL it is linked against
+  # (measured: 55 MB zipped against 6 MB).
+  #
+  # Found by library and header rather than through LLDConfig.cmake: MSYS2
+  # ships the archives and lld/Common/Driver.h without always shipping the
+  # CMake package, and the archives are what this needs. Absence is not fatal —
+  # a build without them keeps the external-driver path, which is what a local
+  # MSYS2 developer has anyway.
+  #
+  # Resolved here, before the target list below, because linking lld decides
+  # that list: its COFF driver calls InitializeAllTargets*() for LTO inputs, so
+  # every backend has to be present or the driver does not link.
+  set(CULEBRA_LLD_LIBS "")
+  if(WIN32)
+    find_library(CULEBRA_LLD_MINGW  NAMES lldMinGW  HINTS ${LLVM_LIBRARY_DIRS})
+    find_library(CULEBRA_LLD_COFF   NAMES lldCOFF   HINTS ${LLVM_LIBRARY_DIRS})
+    find_library(CULEBRA_LLD_COMMON NAMES lldCommon HINTS ${LLVM_LIBRARY_DIRS})
+    find_path(CULEBRA_LLD_INCLUDE NAMES lld/Common/Driver.h
+              HINTS ${LLVM_INCLUDE_DIRS})
+    if(CULEBRA_LLD_MINGW AND CULEBRA_LLD_COFF AND CULEBRA_LLD_COMMON
+       AND CULEBRA_LLD_INCLUDE)
+      # MinGW before COFF before Common: the mingw driver translates GNU-style
+      # arguments and calls the COFF one, and both reach Common.
+      set(CULEBRA_LLD_LIBS "${CULEBRA_LLD_MINGW}" "${CULEBRA_LLD_COFF}"
+                           "${CULEBRA_LLD_COMMON}")
+      add_compile_definitions(CULEBRA_INPROCESS_LLD)
+      include_directories(${CULEBRA_LLD_INCLUDE})
+      message(STATUS "lld: linked into the driver (AOT needs no external linker)")
+    else()
+      message(STATUS "lld: not found as a library — `culebra build` will need "
+                     "an external clang++ on PATH")
+    endif()
+  endif()
+
   # Native target keeps the JIT lean. WebAssembly is bundled so the
   # docs-site WASM playground (see project-docs-site memory) can be
   # produced via `culebra build --target=wasm32-…` from the same binary.
@@ -334,6 +380,16 @@ if(CULEBRA_ENABLE_JIT)
   # executables never carry LLVM regardless.
   option(CULEBRA_LLVM_ALL_TARGETS
     "Link all LLVM backends for cross-compile (adds ~31 MB)" OFF)
+  # Not a choice where lld is linked in: lld's COFF driver initializes every
+  # backend so it can accept LTO bitcode, and those calls are unconditional, so
+  # the backends have to be there for the driver to link at all. Forced rather
+  # than made a requirement of the caller, because a configure that quietly
+  # dropped in-process lld would produce a Windows binary that cannot link
+  # without MSYS2 — the exact failure this feature exists to remove.
+  if(CULEBRA_LLD_LIBS AND NOT CULEBRA_LLVM_ALL_TARGETS)
+    set(CULEBRA_LLVM_ALL_TARGETS ON)
+    message(STATUS "LLVM backends: all (lld's COFF driver references each one)")
+  endif()
   if(CULEBRA_LLVM_ALL_TARGETS)
     set(_extra_target_libs
       AllTargetsAsmParsers AllTargetsCodeGens AllTargetsDescs
@@ -357,10 +413,12 @@ if(CULEBRA_ENABLE_JIT)
   # lld's COFF driver reaches parts of LLVM the JIT never does; naming them
   # here lets llvm_map_components_to_libnames expand their dependencies the
   # same way it does the JIT's.
+  # What lld's COFF driver reaches that the JIT never does. libdriver is the
+  # `/lib` archive mode it links in whether or not anyone asks for it.
   set(_lld_components "")
-  if(WIN32)
+  if(CULEBRA_LLD_LIBS)
     set(_lld_components
-      lto option object binaryformat targetparser
+      lto option object binaryformat targetparser libdriver
       windowsdriver windowsmanifest debuginfopdb debuginfocodeview)
   endif()
   llvm_map_components_to_libnames(llvm_libs
@@ -411,52 +469,6 @@ libs (auto-detected when the static libs are missing)" OFF)
       set_target_properties(zstd::libzstd_shared PROPERTIES ${_zstd_props})
       message(STATUS "zstd: linking ${CULEBRA_ZSTD_STATIC} statically (LLVM dep)")
     endif()
-  endif()
-
-  # --- lld, linked into the driver (Windows) --------------------------------
-  # `culebra build` links through an external C++ driver everywhere else, and
-  # that is fine where one exists: macOS has the CLT shim, Linux ships gcc in
-  # every base image worth the name. Windows ships no toolchain at all, so the
-  # link step is the one thing a downloaded culebra.exe cannot do — and what it
-  # is missing is a linker, not a compiler, because the object is emitted
-  # in-process already.
-  #
-  # Carrying lld answers that without carrying a toolchain. It is ~4 MB of
-  # library on top of the LLVM this binary already links for the JIT, where
-  # shipping MSYS2's ld.lld.exe to users would mean shipping the 147 MB
-  # libLLVM DLL it is linked against — measured at 6 MB versus 55 MB zipped for
-  # the download that has to reach them. What remains on the user's side is the
-  # mingw half of a link (CRT objects, libstdc++, import libraries), which
-  # misc/pack_windows_toolchain.sh packs and `culebra toolchain install`
-  # fetches.
-  #
-  # Found by library and header rather than through LLDConfig.cmake: MSYS2
-  # ships the archives and lld/Common/Driver.h without always shipping the
-  # CMake package, and the archives are what this needs. Absence is not fatal —
-  # a build without them keeps the external-driver path, which is what a local
-  # MSYS2 developer has anyway.
-  if(WIN32)
-    find_library(CULEBRA_LLD_MINGW  NAMES lldMinGW  HINTS ${LLVM_LIBRARY_DIRS})
-    find_library(CULEBRA_LLD_COFF   NAMES lldCOFF   HINTS ${LLVM_LIBRARY_DIRS})
-    find_library(CULEBRA_LLD_COMMON NAMES lldCommon HINTS ${LLVM_LIBRARY_DIRS})
-    find_path(CULEBRA_LLD_INCLUDE NAMES lld/Common/Driver.h
-              HINTS ${LLVM_INCLUDE_DIRS})
-    if(CULEBRA_LLD_MINGW AND CULEBRA_LLD_COFF AND CULEBRA_LLD_COMMON
-       AND CULEBRA_LLD_INCLUDE)
-      # MinGW before COFF before Common: the mingw driver translates GNU-style
-      # arguments and calls the COFF one, and both reach Common.
-      set(CULEBRA_LLD_LIBS "${CULEBRA_LLD_MINGW}" "${CULEBRA_LLD_COFF}"
-                           "${CULEBRA_LLD_COMMON}")
-      add_compile_definitions(CULEBRA_INPROCESS_LLD)
-      include_directories(${CULEBRA_LLD_INCLUDE})
-      message(STATUS "lld: linked into the driver (AOT needs no external linker)")
-    else()
-      set(CULEBRA_LLD_LIBS "")
-      message(STATUS "lld: not found as a library — `culebra build` will need "
-                     "an external clang++ on PATH")
-    endif()
-  else()
-    set(CULEBRA_LLD_LIBS "")
   endif()
 
   add_compile_definitions(CULEBRA_JIT_ENABLED)

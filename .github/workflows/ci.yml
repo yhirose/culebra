@@ -1752,7 +1752,13 @@ jobs:
           printf '%s\n' "$out"
           case "$out" in
             *"lld, carried in this binary"*)
-              echo "OK: the driver carries its own linker" ;;
+              echo "OK: the driver carries its own linker"
+              # Carrying lld forces every LLVM backend in (its COFF driver
+              # references each one), which every Windows download pays for
+              # whether or not it ever runs `culebra build`. That trade is only
+              # defensible against a number, so the number is printed here.
+              printf 'driver: %s bytes\n' "$(stat -c %s build-win-aot/culebra.exe)"
+              ;;
             *)
               echo "ERROR: this culebra.exe would need an external clang++" >&2
               exit 1 ;;
