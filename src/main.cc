@@ -57,6 +57,43 @@ void install_undefined_var_lint() {
 }
 }  // namespace culebra
 
+namespace culebra::toolchain {
+// Declared in toolchain_cmd.h and defined here, because http.h's inline
+// thread_local handle registries may be instantiated in exactly one driver TU
+// and this is it (tools/check_rt_archive_tls.sh enforces that; mingw's ld is
+// what fails otherwise). `culebra toolchain install` therefore reaches the same
+// client the Http namespace uses instead of building a second one.
+bool fetch_url(const std::string& url, int64_t timeout_sec,
+               int64_t connect_timeout_sec, const std::string& proxy,
+               std::string& body, std::string& err) {
+#if defined(CULEBRA_HTTP_ENABLED)
+  http::HttpRequest req;
+  req.url = url;
+  req.follow_redirects = true;  // GitHub answers an asset with a CDN redirect.
+  req.timeout_sec = timeout_sec;
+  req.connect_timeout_sec = connect_timeout_sec;
+  req.proxy = proxy;
+  auto res = http::http_request(req);
+  if (!res.ok) {
+    err = std::format("could not reach {} ({})", url,
+                      res.error.empty() ? "no response" : res.error);
+    return false;
+  }
+  if (res.status != 200) {
+    err = std::format("{} answered {}", url, res.status);
+    return false;
+  }
+  body = std::move(res.body);
+  return true;
+#else
+  (void)url; (void)timeout_sec; (void)connect_timeout_sec; (void)proxy;
+  (void)body;
+  err = "this build has no HTTP support";
+  return false;
+#endif
+}
+}  // namespace culebra::toolchain
+
 // The registrar variable belongs to the TU, not the header — see wrap.h.
 namespace {
 const bool foreign_fixture_registered = culebra::register_foreign_fixture();

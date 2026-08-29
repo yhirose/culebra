@@ -27,9 +27,9 @@
 LLD_HAS_DRIVER(mingw)
 #endif
 
-#if defined(CULEBRA_HTTP_ENABLED)
-#include <http.h>  // http_request — the same client the Http namespace uses
-#endif
+// Deliberately not <http.h>: its inline thread_local handle registries may only
+// be instantiated in one driver TU, and that is main.cc — which is where
+// fetch_url (toolchain_cmd.h) is defined for this file to call.
 
 namespace fs = std::filesystem;
 
@@ -300,11 +300,11 @@ bool link_in_process(const std::vector<std::string>& driver_args,
 
 namespace {
 
-// Only the Windows install fetches anything, but these two are plain HTTP with
-// no Windows API in them, so they live outside that guard: code compiled on one
+// Only the Windows install fetches anything, but this is plain string work with
+// no Windows API in it, so it lives outside that guard: code compiled on one
 // platform alone is code the other two builds never type-check, and this file
 // has already shipped one such error to a CI run.
-#if defined(CULEBRA_HTTP_ENABLED)
+//
 // $HTTPS_PROXY as "host:port", or empty. httplib does not read the environment
 // itself, and a corporate network is exactly where a download is most likely to
 // be the blocked step. Read here rather than inside http_request: a proxy the
@@ -319,32 +319,13 @@ namespace {
   return s.find(':') == std::string::npos ? std::string{} : s;
 }
 
-// One GET through the same client the Http namespace uses. GitHub answers a
-// release asset with a redirect to its CDN, so following locations is not
-// optional; the long read timeout is for an 8 MB body, and the short connect
-// timeout keeps a dead proxy from costing that same two minutes.
+// The kit download's shape: a long read timeout for an 8 MB body, and a short
+// connect timeout so a dead proxy does not cost that same two minutes.
 [[maybe_unused]] bool fetch(const std::string& url, std::string& body,
                             std::string& err) {
-  culebra::http::HttpRequest req;
-  req.url = url;
-  req.follow_redirects = true;
-  req.timeout_sec = 120;
-  req.connect_timeout_sec = 30;
-  req.proxy = proxy_from_env();
-  auto res = culebra::http::http_request(req);
-  if (!res.ok) {
-    err = std::format("could not reach {} ({})", url,
-                      res.error.empty() ? "no response" : res.error);
-    return false;
-  }
-  if (res.status != 200) {
-    err = std::format("{} answered {}", url, res.status);
-    return false;
-  }
-  body = std::move(res.body);
-  return true;
+  return fetch_url(url, /*timeout_sec=*/120, /*connect_timeout_sec=*/30,
+                   proxy_from_env(), body, err);
 }
-#endif  // CULEBRA_HTTP_ENABLED
 
 #ifdef _WIN32
 

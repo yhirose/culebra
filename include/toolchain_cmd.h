@@ -29,6 +29,19 @@ bool use_inprocess_link();
 bool link_in_process(const std::vector<std::string>& driver_args,
                      const std::string& output, bool verbose, std::string& err);
 
+// GET `url` into `body`, following redirects, with `false` and `err` on any
+// transport failure or a status that is not 200.
+//
+// Defined in src/main.cc rather than beside its caller: http.h carries `inline
+// thread_local` handle registries that exactly one driver TU may instantiate
+// (mingw's ld fails the link on a second — tools/check_rt_archive_tls.sh), and
+// main.cc is that TU. Declaring it across this seam is what lets the toolchain
+// installer share the Http namespace's client instead of building a second one.
+// The knobs stay with the caller, which is where the policy is.
+bool fetch_url(const std::string& url, int64_t timeout_sec,
+               int64_t connect_timeout_sec, const std::string& proxy,
+               std::string& body, std::string& err);
+
 // Offer to install, then install, when `culebra build` finds nothing to link
 // with. Only asks on a terminal — a script gets the hint and a failure instead
 // of a prompt it cannot answer. Returns true when a link can now proceed.
