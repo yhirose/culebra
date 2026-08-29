@@ -183,16 +183,15 @@ struct HttpRequest {
   std::string content_type;        // applied iff body/body_source set and no
                                    // explicit Content-Type header.
   int64_t timeout_sec = 0;            // per-phase timeout; 0 => library default.
-  int64_t connect_timeout_sec = 0;    // connect phase only; 0 => timeout_sec.
-                                   // A big download wants a long read timeout
-                                   // and a short one on the connect that
-                                   // precedes it; one value cannot say both.
-  std::string proxy;               // "host:port"; empty => connect directly.
-                                   // Per-request rather than read from the
-                                   // environment: HTTPS_PROXY without NO_PROXY
-                                   // and a loopback exemption would route a
-                                   // script's 127.0.0.1 call through a proxy.
-                                   // Only the toolchain installer sets it.
+  int64_t connect_timeout_sec = 0;    // connect only; 0 => timeout_sec. A big
+                                   // download wants a long read timeout and a
+                                   // short connect; one value cannot say both.
+  std::string proxy_host;          // empty => connect directly. Per-request
+  int proxy_port = 0;              // rather than read from the environment:
+                                   // $HTTPS_PROXY without NO_PROXY and a
+                                   // loopback exemption would route a script's
+                                   // 127.0.0.1 call through a proxy. Not
+                                   // reachable from the Http namespace today.
   bool follow_redirects = true;    // 3xx Location chasing.
   BodySink body_sink = nullptr;    // set → stream the response body (no buffer).
   BodySource body_source = nullptr;// set → stream the request body (chunked).
@@ -343,32 +342,29 @@ inline void _http_client_unregister(int64_t id) { g_http_clients.invalidate(id);
 // from, never in how params are attached to it.
 inline void _http_append_params(std::string& path, const HeaderList& params) {
   if (params.empty()) return;
-  path += (path.find('?') == std::string::npos ? "?" : "&") +
-          encode_query(params);
+  // Two appends, not `sep + encode_query(...)`: that builds the result by
+  // inserting at the front of the query's buffer.
+  path += path.find('?') == std::string::npos ? '?' : '&';
+  path += encode_query(params);
 }
 
 // The one place request knobs become client settings. A one-off and a
 // persistent client differ only in keep-alive: the one-off tolerates servers
 // that don't speak keep-alive cleanly, the client reuses its connection.
 inline void _http_configure(httplib::Client& cli, int64_t timeout_sec,
-                            int64_t connect_timeout_sec, bool follow_redirects,
-                            bool keep_alive, const std::string& proxy = {}) {
+                            bool follow_redirects, bool keep_alive,
+                            int64_t connect_timeout_sec = 0,
+                            const std::string& proxy_host = {},
+                            int proxy_port = 0) {
   cli.set_follow_location(follow_redirects);
   cli.set_keep_alive(keep_alive);
   if (timeout_sec > 0) {
-    cli.set_connection_timeout(timeout_sec, 0);
     cli.set_read_timeout(timeout_sec, 0);
     cli.set_write_timeout(timeout_sec, 0);
   }
-  // After the block above, so a shorter connect timeout wins over the shared one.
-  if (connect_timeout_sec > 0) cli.set_connection_timeout(connect_timeout_sec, 0);
-  if (!proxy.empty()) {
-    auto colon = proxy.rfind(':');
-    if (colon != std::string::npos) {
-      cli.set_proxy(proxy.substr(0, colon).c_str(),
-                    std::atoi(proxy.c_str() + colon + 1));
-    }
-  }
+  auto connect = connect_timeout_sec > 0 ? connect_timeout_sec : timeout_sec;
+  if (connect > 0) cli.set_connection_timeout(connect, 0);
+  if (!proxy_host.empty()) cli.set_proxy(proxy_host.c_str(), proxy_port);
 }
 
 // Merge `over` onto `base` with per-key (case-insensitive) override: a header
@@ -523,30 +519,10 @@ inline void _http_build_request(const HttpRequest& req, const std::string& path,
   }
 }
 
-// Send `hreq` over `cli` and map the result into an HttpResult, with cooperative
-// Ctrl+C / isolate-cancel. send() blocks deep in the socket layer (connect,
-// response-header wait, body) — not a runtime safepoint, and the internal
-// poll/select swallow EINTR, so a single SIGINT couldn't break a hung request
-// (only the second, force-killing press). A watcher thread polls the interrupt
-// flag and, when it fires, calls cli.stop() — cpp-httplib's documented
-// thread-safe way to shut down an in-flight socket so the blocked send() errors
-// out. send() itself stays on THIS thread so the streaming callbacks
-// (body_sink/body_source, which call back into culebra) keep running on the
-// thread that owns the interpreter/JIT state. The flag is read, never consumed;
-// after send() returns, throw_if_interrupted() honors a pending interrupt with
-// the same cooperative Interrupted the loop safepoint raises. The watcher checks
-// the process SIGINT flag and this thread's isolate-cancel flag (captured now —
-// the watcher runs on a different thread, so its own current_runtime() would be
-// the wrong one).
-// One watcher for the process, not one per request. The work is identical for
-// every in-flight request — poll two flags, call stop() on the client — so it
-// is done once for all of them. A thread per request measured ~55 us on this
-// machine, which is more than half of a loopback keep-alive request (99 -> 45
-// us/req with the watcher removed entirely), and every Http call paid it.
-//
-// The thread starts on the first request and sleeps on a condition variable
-// whenever nothing is in flight, so a program that never speaks HTTP has no
-// extra thread and an idle one does not wake.
+// One watcher for the process, not one per request: the work is identical for
+// every in-flight request, and a thread per request cost more than half of a
+// loopback keep-alive request. It starts on the first request and parks on a
+// condition variable when nothing is in flight.
 class _InterruptWatcher {
  public:
   static _InterruptWatcher& instance() {
@@ -587,11 +563,11 @@ class _InterruptWatcher {
     std::unique_lock<std::mutex> lk(m_);
     live_.push_back({cli, flag});
     if (!th_.joinable()) th_ = std::thread([this] { run(); });
-    // Only when it is parked on the untimed wait. Waking it costs the caller a
-    // futex wake and a context switch — measured at ~10 us, a fifth of a
-    // loopback request — and while it is already polling there is nothing to
-    // wake it for: its whole reaction budget is one poll interval.
-    bool wake = sleeping_;
+    // Only when it is parked. Waking it costs the caller a futex wake and a
+    // context switch, and while it is already polling there is nothing to wake
+    // it for: its whole reaction budget is one poll interval.
+    bool wake = awake_ticks_ == 0;
+    awake_ticks_ = kLingerTicks;
     lk.unlock();
     if (wake) cv_.notify_all();
   }
@@ -603,45 +579,25 @@ class _InterruptWatcher {
     }
   }
 
-  static bool fired(std::atomic<bool>* flag) {
-    if (culebra_g_sigint.load(std::memory_order_relaxed)) return true;
-    return flag && flag != &culebra_g_sigint &&
-           flag->load(std::memory_order_relaxed);
-  }
-
   static constexpr auto kPoll = std::chrono::milliseconds(50);
-  // How long to keep polling after the last request finishes. A script's
-  // requests come in bursts, and staying awake across the gaps is what lets
-  // add() skip the wake; 2 s of 50 ms ticks costs nothing measurable and a
-  // process that has stopped using Http still goes quiet.
+  // Polls to keep going after the last request finishes. Requests come in
+  // bursts, and staying awake across the gaps is what lets add() skip the wake;
+  // a process that has stopped using Http goes quiet after 2 s.
   static constexpr int kLingerTicks = 40;
 
   void run() {
     std::unique_lock<std::mutex> lk(m_);
-    int idle_ticks = 0;
     while (!stop_) {
-      if (!live_.empty()) {
-        idle_ticks = 0;
-        cv_.wait_for(lk, kPoll);
-        if (stop_) break;
-        // Keep calling stop() (not just once) so we still catch the socket if
-        // the interrupt fires before it opens — e.g. mid DNS/connect. stop() is
-        // cpp-httplib's documented thread-safe shutdown and does not call back
-        // in here, so holding the registry lock across it cannot deadlock.
-        for (const auto& e : live_) {
-          if (fired(e.flag)) e.cli->stop();
-        }
-        continue;
+      if (awake_ticks_ == 0) { cv_.wait(lk); continue; }  // parked
+      cv_.wait_for(lk, kPoll);
+      // Keep calling stop() (not just once) so we still catch the socket if the
+      // interrupt fires before it opens — e.g. mid DNS/connect. stop() is
+      // cpp-httplib's documented thread-safe shutdown and does not call back in
+      // here, so holding the registry lock across it cannot deadlock.
+      for (const auto& e : live_) {
+        if (interrupt_fired(e.flag)) e.cli->stop();
       }
-      if (idle_ticks < kLingerTicks) {
-        ++idle_ticks;
-        cv_.wait_for(lk, kPoll);
-        continue;
-      }
-      sleeping_ = true;
-      cv_.wait(lk);
-      sleeping_ = false;
-      idle_ticks = 0;
+      if (live_.empty()) --awake_ticks_; else awake_ticks_ = kLingerTicks;
     }
   }
 
@@ -650,15 +606,30 @@ class _InterruptWatcher {
   std::vector<Entry> live_;
   std::thread th_;
   bool stop_ = false;
-  bool sleeping_ = false;  // parked on the untimed wait; only then is a wake needed
+  // >0 while the watcher polls; 0 means parked, the only state add() has to
+  // wake it out of. One field, so "parked" and "still lingering" cannot
+  // disagree.
+  int awake_ticks_ = 0;
 };
 
+// Send `hreq` over `cli` and map the result into an HttpResult, with cooperative
+// Ctrl+C / isolate-cancel. send() blocks deep in the socket layer (connect,
+// response-header wait, body) — not a runtime safepoint, and the internal
+// poll/select swallow EINTR, so a single SIGINT couldn't break a hung request
+// (only the second, force-killing press). The watcher polls the interrupt flags
+// and, when one fires, calls cli.stop() — cpp-httplib's documented thread-safe
+// way to shut down an in-flight socket so the blocked send() errors out. send()
+// itself stays on THIS thread so the streaming callbacks (body_sink/body_source,
+// which call back into culebra) keep running on the thread that owns the
+// interpreter/JIT state. The flag is read, never consumed; after send() returns,
+// throw_if_interrupted() honors a pending interrupt with the same cooperative
+// Interrupted the loop safepoint raises. The isolate-cancel flag is captured
+// here rather than read by the watcher, whose own current_runtime() would be
+// the wrong one.
 inline HttpResult _http_send(httplib::Client& cli, httplib::Request& hreq) {
   HttpResult out;
-  httplib::Result res = [&] {
-    _InterruptWatcher::Guard watch(cli, current_runtime().interrupt_flag);
-    return cli.send(hreq);
-  }();
+  _InterruptWatcher::Guard watch(cli, current_runtime().interrupt_flag);
+  auto res = cli.send(hreq);
   throw_if_interrupted();  // pending Ctrl+C / cancel → cooperative Interrupted
 
   if (!res) {
@@ -713,8 +684,9 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
     out.error = "Http: invalid URL or unsupported scheme: " + req.url;
     return out;
   }
-  _http_configure(cli, req.timeout_sec, req.connect_timeout_sec,
-                  req.follow_redirects, /*keep_alive=*/false, req.proxy);
+  _http_configure(cli, req.timeout_sec, req.follow_redirects,
+                  /*keep_alive=*/false, req.connect_timeout_sec, req.proxy_host,
+                  req.proxy_port);
 
   httplib::Request hreq;
   _http_build_request(req, path, req.headers, hreq);
@@ -757,10 +729,7 @@ CULEBRA_RT_HTTP_LINKAGE int64_t http_client_open(const std::string& base_url,
   c->default_headers = std::move(default_headers);
   c->timeout_sec = timeout_sec;
   c->follow_redirects = follow_redirects;
-  // A persistent client has no proxy or split connect timeout: both exist for
-  // the one-off the toolchain installer makes, and Http.client exposes neither.
-  _http_configure(c->cli, timeout_sec, /*connect_timeout_sec=*/0,
-                  follow_redirects, /*keep_alive=*/true);
+  _http_configure(c->cli, timeout_sec, follow_redirects, /*keep_alive=*/true);
   return _http_client_register(c);
 #endif
 }
@@ -1096,10 +1065,7 @@ class CulebraWorkerPool : public httplib::TaskQueue {
     return true;
   }
   void on_idle() override {
-    bool fired = culebra_g_sigint.load(std::memory_order_relaxed) ||
-                 (isolate_flag_ && isolate_flag_ != &culebra_g_sigint &&
-                  isolate_flag_->load(std::memory_order_relaxed));
-    if (fired) svr_->stop();
+    if (interrupt_fired(isolate_flag_)) svr_->stop();
   }
   void shutdown() override {
     {

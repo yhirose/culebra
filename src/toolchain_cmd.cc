@@ -27,9 +27,7 @@
 LLD_HAS_DRIVER(mingw)
 #endif
 
-// Deliberately not <http.h>: its inline thread_local handle registries may only
-// be instantiated in one driver TU, and that is main.cc — which is where
-// fetch_url (toolchain_cmd.h) is defined for this file to call.
+// Deliberately not <http.h> — see fetch_url in toolchain_cmd.h.
 
 namespace fs = std::filesystem;
 
@@ -45,8 +43,14 @@ constexpr std::string_view kKitName = "culebra-toolchain-windows-x64";
 // Where releases live. Not configurable: a kit from anywhere else has no
 // reason to match this binary's runtime archives, and `install --from` is the
 // supported way to use a locally built one.
-constexpr std::string_view kReleaseHost = "https://github.com";
-constexpr std::string_view kReleasePath = "/yhirose/culebra/releases/download";
+constexpr std::string_view kReleaseBase =
+    "https://github.com/yhirose/culebra/releases/download";
+
+// The kit's published URL for this version. One spelling: the fetch and the
+// no-HTTP hint that asks the user to download it by hand must name one file.
+std::string kit_url() {
+  return std::format("{}/v{}/{}.zip", kReleaseBase, kVersion, kKitName);
+}
 
 std::string read_file(const fs::path& p) {
   std::error_code ec;
@@ -305,26 +309,31 @@ namespace {
 // platform alone is code the other two builds never type-check, and this file
 // has already shipped one such error to a CI run.
 //
-// $HTTPS_PROXY as "host:port", or empty. httplib does not read the environment
-// itself, and a corporate network is exactly where a download is most likely to
-// be the blocked step. Read here rather than inside http_request: a proxy the
-// whole Http namespace honoured would need NO_PROXY and a loopback exemption to
-// stop routing a script's 127.0.0.1 call through it.
-[[maybe_unused]] std::string proxy_from_env() {
+// $HTTPS_PROXY into `opts`. httplib does not read the environment itself, and a
+// corporate network is exactly where a download is most likely to be the
+// blocked step. Split here rather than passed on as "host:port": one parse, so
+// the validation and the split cannot disagree about where the colon is.
+[[maybe_unused]] void proxy_from_env(FetchOptions& opts) {
   const char* p = std::getenv("HTTPS_PROXY");
-  if (!p || !*p) return {};
+  if (!p || !*p) return;
   std::string s(p);
   if (auto at = s.rfind("://"); at != std::string::npos) s = s.substr(at + 3);
   if (!s.empty() && s.back() == '/') s.pop_back();
-  return s.find(':') == std::string::npos ? std::string{} : s;
+  auto colon = s.rfind(':');
+  if (colon == std::string::npos) return;  // no port: not a proxy we can use
+  opts.proxy_host = s.substr(0, colon);
+  opts.proxy_port = std::atoi(s.c_str() + colon + 1);
 }
 
 // The kit download's shape: a long read timeout for an 8 MB body, and a short
 // connect timeout so a dead proxy does not cost that same two minutes.
 [[maybe_unused]] bool fetch(const std::string& url, std::string& body,
                             std::string& err) {
-  return fetch_url(url, /*timeout_sec=*/120, /*connect_timeout_sec=*/30,
-                   proxy_from_env(), body, err);
+  FetchOptions opts;
+  opts.timeout_sec = 120;
+  opts.connect_timeout_sec = 30;
+  proxy_from_env(opts);
+  return fetch_url(url, opts, body, err);
 }
 
 #ifdef _WIN32
@@ -364,7 +373,6 @@ bool extract_zip(const fs::path& archive, const fs::path& into,
   }
   return true;
 }
-
 
 // Put an extracted kit where a link will look for it. Extraction goes to a
 // sibling temporary and a rename claims the name, so an interrupted install
@@ -473,8 +481,7 @@ bool install_windows(const std::string& from, std::string& err) {
   } else {
 #if defined(CULEBRA_HTTP_ENABLED)
     auto name = std::format("{}.zip", kKitName);
-    auto url = std::format("{}{}/v{}/{}", kReleaseHost, kReleasePath, kVersion,
-                           name);
+    auto url = kit_url();
     std::println("culebra toolchain: fetching the Windows kit for culebra {}…",
                  kVersion);
     std::string body, want;
@@ -496,9 +503,9 @@ bool install_windows(const std::string& from, std::string& err) {
 #else
     err = std::format(
         "this build has no HTTP support, so it cannot fetch the kit. Download\n"
-        "  {}{}/v{}/{}.zip\n"
+        "  {}\n"
         "and pass it to `culebra toolchain install --from <file>`.",
-        kReleaseHost, kReleasePath, kVersion, kKitName);
+        kit_url());
     return false;
 #endif
   }
@@ -623,6 +630,9 @@ bool offer_install_interactively(bool host_link) {
 }
 
 int run_toolchain(int argc, const char** argv) {
+  // Declares itself cooperative (see run_main in src/main.cc): the kit
+  // download blocks in a socket that the HTTP watcher polls.
+  culebra::install_sigint_handler();
   // The full command line, as every other subcommand takes it: argv[1] is
   // "toolchain" and the verb follows it.
   std::string verb = argc >= 3 ? argv[2] : "status";

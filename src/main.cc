@@ -58,21 +58,18 @@ void install_undefined_var_lint() {
 }  // namespace culebra
 
 namespace culebra::toolchain {
-// Declared in toolchain_cmd.h and defined here, because http.h's inline
-// thread_local handle registries may be instantiated in exactly one driver TU
-// and this is it (tools/check_rt_archive_tls.sh enforces that; mingw's ld is
-// what fails otherwise). `culebra toolchain install` therefore reaches the same
-// client the Http namespace uses instead of building a second one.
-bool fetch_url(const std::string& url, int64_t timeout_sec,
-               int64_t connect_timeout_sec, const std::string& proxy,
-               std::string& body, std::string& err) {
+// Defined here, not beside its caller — see the declaration in toolchain_cmd.h.
+bool fetch_url([[maybe_unused]] const std::string& url,
+               [[maybe_unused]] const FetchOptions& opts,
+               [[maybe_unused]] std::string& body, std::string& err) {
 #if defined(CULEBRA_HTTP_ENABLED)
   http::HttpRequest req;
   req.url = url;
   req.follow_redirects = true;  // GitHub answers an asset with a CDN redirect.
-  req.timeout_sec = timeout_sec;
-  req.connect_timeout_sec = connect_timeout_sec;
-  req.proxy = proxy;
+  req.timeout_sec = opts.timeout_sec;
+  req.connect_timeout_sec = opts.connect_timeout_sec;
+  req.proxy_host = opts.proxy_host;
+  req.proxy_port = opts.proxy_port;
   auto res = http::http_request(req);
   if (!res.ok) {
     err = std::format("could not reach {} ({})", url,
@@ -86,8 +83,6 @@ bool fetch_url(const std::string& url, int64_t timeout_sec,
   body = std::move(res.body);
   return true;
 #else
-  (void)url; (void)timeout_sec; (void)connect_timeout_sec; (void)proxy;
-  (void)body;
   err = "this build has no HTTP support";
   return false;
 #endif
@@ -949,6 +944,9 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
 }
 
 int run_build(const BuildOptions& opts) {
+  // Declares itself cooperative (see run_main): the kit download polls, and so
+  // does the codegen this drives.
+  culebra::install_sigint_handler();
   auto user_src = read_file(opts.input.c_str());
   if (!user_src) {
     std::println(stderr, "culebra build: can't open '{}'", opts.input);
@@ -1576,9 +1574,8 @@ bool run_scripts(const Options& options) {
   // Cooperative Ctrl+C: install the SIGINT handler and point this thread's
   // Runtime at the global flag. The engines' loop safepoints observe it and
   // throw a catchable `Interrupted`.
-  // The handler itself is installed for every mode at the top of run_main; what
-  // is script-only is pointing this thread's Runtime at the global flag, which
-  // install_sigint_handler already did. Nothing left to do here.
+  // This lane polls (the statement safepoint), so it declares itself.
+  if (options.script_path) culebra::install_sigint_handler();
 
   if (!options.script_path) return true;
   const string& path = *options.script_path;
@@ -1823,6 +1820,9 @@ bool run_doc_shards(int jobs, RunnerEngine engine, culebra::Reporter reporter,
 }
 
 int run_test(int argc, const char** argv) {
+  // Declares itself cooperative (see run_main): the test bodies are culebra
+  // code, so they poll, and the runners stop the run on an interrupt.
+  culebra::install_sigint_handler();
   std::vector<std::string> roots;
   std::string filter;
   auto reporter = culebra::Reporter::Default;
@@ -2452,13 +2452,15 @@ int run_main(int argc, const char** argv) {
   // Before anything can print.
   culebra::install_console_utf8();
 
-  // Once, for every mode, the way CPython installs its SIGINT handler in
-  // Py_Initialize and Go's cmd/go installs its own under a sync.OnceFunc. The
-  // handler only sets a flag that safepoints poll — it has no cleanup to
-  // bound, which is the reason git scopes its handlers with sigchain and the
-  // reason culebra does not need to. Installing it only for scripts left
-  // `culebra build`'s kit download and `culebra test`'s run uninterruptible.
-  culebra::install_sigint_handler();
+  // NOT installed here. CPython and Go's cmd/go can install one handler for
+  // every mode because every blocking primitive under them answers the flag;
+  // culebra's `serve`, `lint` and `fmt` have no such poll, and a handler with
+  // no reader turns one Ctrl+C into two presses — worse than the default
+  // disposition it replaced. So cooperativeness is declared, not assumed: a
+  // lane that polls calls install_sigint_handler() itself (run_scripts,
+  // run_test, run_build, run_toolchain), and one that does not leaves SIG_DFL,
+  // where a single press still stops it. main() below is the boundary either
+  // way — it answers for whatever the declaring lanes throw.
 
   // Make the builtin-name set visible to the load-stage undefined-variable
   // lint before any subcommand loads a module (run / build / test all load
@@ -2586,27 +2588,25 @@ int run_main(int argc, const char** argv) {
   // process-wide holder (the AOT bootstrap fills it in the same way).
   culebra::sys_argv() = options.script_argv;
 
-  {
-    if (!run_scripts(options)) {
-      return -1;
-    }
+  if (!run_scripts(options)) {
+    return -1;
+  }
 
-    if (options.shell) {
-      // The REPL always runs on the tier-0 engine: the VM's executor. A REPL
-      // line is never a hot loop, so compiling each input only adds latency
-      // for no gain — the same reason V8 / the JVM / LuaJIT start interpreted
-      // and only JIT hot code. `--jit` is for scripts, where a hot loop can
-      // pay off; here it means the executor, like naming no engine at all,
-      // so note it.
-      if (options.jit) {
-        std::fprintf(stderr,
-            "note: the REPL runs on a tier-0 engine; --jit applies to scripts "
-            "(culebra --jit FILE)\n");
-      }
-      require_explicit_engine(options.engine_named, "the REPL");
-      return culebra::vm_repl(options.print_ast,
-                              options.vm == Options::Vm::Dump);
+  if (options.shell) {
+    // The REPL always runs on the tier-0 engine: the VM's executor. A REPL
+    // line is never a hot loop, so compiling each input only adds latency
+    // for no gain — the same reason V8 / the JVM / LuaJIT start interpreted
+    // and only JIT hot code. `--jit` is for scripts, where a hot loop can
+    // pay off; here it means the executor, like naming no engine at all,
+    // so note it.
+    if (options.jit) {
+      std::fprintf(stderr,
+          "note: the REPL runs on a tier-0 engine; --jit applies to scripts "
+          "(culebra --jit FILE)\n");
     }
+    require_explicit_engine(options.engine_named, "the REPL");
+    return culebra::vm_repl(options.print_ast,
+                            options.vm == Options::Vm::Dump);
   }
 
   return 0;
@@ -2622,7 +2622,7 @@ int main(int argc, const char** argv) {
     return run_main(argc, argv);
   } catch (const culebra::CulebraError& e) {
     // Uncaught Ctrl+C / cancel: exit with the conventional 128+SIGINT.
-    if (e.kind == "Interrupted") {
+    if (culebra::is_interrupt(e)) {
       cerr << "interrupted" << endl;
       return 130;
     }

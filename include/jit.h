@@ -4656,7 +4656,7 @@ struct JIT {
       // mirroring the interp eval boundary; aot_bootstrap does the same. An
       // Interrupted (async Ctrl+C) has no real source position — leave it 0:0
       // to match interp (which skips stamping it).
-      if (e.kind != "Interrupted") _jit_backfill_op_pos(e);
+      if (!is_interrupt(e)) _jit_backfill_op_pos(e);
       throw;
     }
   }

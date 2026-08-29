@@ -9,6 +9,7 @@
 // shipping a linker beside it, is docs/deployment.md §"Why Windows needs no
 // compiler". The rest of this command is private to src/toolchain_cmd.cc.
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,15 @@ bool use_inprocess_link();
 bool link_in_process(const std::vector<std::string>& driver_args,
                      const std::string& output, bool verbose, std::string& err);
 
+// What a download asks of the transport. A struct rather than more parameters,
+// which this would otherwise grow one of per knob.
+struct FetchOptions {
+  int64_t timeout_sec = 0;          // read/write; 0 => the library's default
+  int64_t connect_timeout_sec = 0;  // connect only; 0 => timeout_sec
+  std::string proxy_host;           // empty => connect directly
+  int proxy_port = 0;
+};
+
 // GET `url` into `body`, following redirects, with `false` and `err` on any
 // transport failure or a status that is not 200.
 //
@@ -37,9 +47,8 @@ bool link_in_process(const std::vector<std::string>& driver_args,
 // (mingw's ld fails the link on a second — tools/check_rt_archive_tls.sh), and
 // main.cc is that TU. Declaring it across this seam is what lets the toolchain
 // installer share the Http namespace's client instead of building a second one.
-// The knobs stay with the caller, which is where the policy is.
-bool fetch_url(const std::string& url, int64_t timeout_sec,
-               int64_t connect_timeout_sec, const std::string& proxy,
+// The options stay with the caller, which is where the policy is.
+bool fetch_url(const std::string& url, const FetchOptions& opts,
                std::string& body, std::string& err);
 
 // Offer to install, then install, when `culebra build` finds nothing to link

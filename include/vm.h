@@ -9223,7 +9223,7 @@ struct Exec {
       // Backfill a positionless error from the published op position at
       // the engine boundary — JIT::exec's rule (the interp stamps at its
       // eval() boundary; an Interrupted stays 0:0 on every lane).
-      if (e.kind != "Interrupted") _jit_backfill_op_pos(e);
+      if (!is_interrupt(e)) _jit_backfill_op_pos(e);
       throw;
     }
   }

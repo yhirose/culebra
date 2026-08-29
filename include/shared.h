@@ -2514,13 +2514,27 @@ inline void throw_if_interrupted() {
   }
 }
 
-// Ctrl+C or a cancel, as opposed to a program's own error. A runner that turns
-// every CulebraError into a reported failure has to let this one through:
-// otherwise a Ctrl+C marks one file or one case as failed and the run carries
-// on, which is what the user pressed the key to stop. Spelled once so the
-// runners cannot disagree about it.
+// Ctrl+C or a cancel, as opposed to a program's own error.
+//
+// The rule the whole tree follows: an interrupt is never a program error, and
+// only the entry point of a run decides the exit. So re-throwing is the
+// default; a component that hosts its own loop reports it instead and lets its
+// caller decide (the REPL resumes, a test runner stops the run); and a site
+// already unwinding from a cancel it caused itself swallows it. Spelled once so
+// those three answers cannot drift into a fourth.
 inline bool is_interrupt(const CulebraError& e) {
   return e.kind == "Interrupted";
+}
+
+// Whether a Ctrl+C or `flag`'s cancel is pending, where `flag` was captured by
+// the thread being watched. A watcher on another thread cannot read
+// current_runtime() — it would get its own. The `!= &culebra_g_sigint` term is
+// the isolate-vs-Ctrl+C distinction: a thread whose flag IS the global one has
+// already been answered by the first term.
+inline bool interrupt_fired(std::atomic<bool>* flag) {
+  return culebra_g_sigint.load(std::memory_order_relaxed) ||
+         (flag && flag != &culebra_g_sigint &&
+          flag->load(std::memory_order_relaxed));
 }
 
 // --- Interruptible stdin --------------------------------------------------

@@ -69,7 +69,7 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     } catch (...) {
     }
     // Uncaught Ctrl+C / cancel: clean message + conventional 128+SIGINT.
-    if (e.kind == "Interrupted") {
+    if (is_interrupt(e)) {
       std::fprintf(stderr, "interrupted\n");
       return 130;
     }

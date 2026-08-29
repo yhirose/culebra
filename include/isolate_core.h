@@ -674,7 +674,7 @@ struct ParallelState {
 inline void parallel_record_error(ParallelState& st, size_t i,
                                   culebra::CulebraError e) {
   st.interrupt.store(true, std::memory_order_relaxed);  // stop the others
-  if (e.kind == "Interrupted") return;  // a fail-fast consequence, not the cause
+  if (is_interrupt(e)) return;  // a fail-fast consequence, not the cause
   std::lock_guard<std::mutex> lk(st.err_m);
   if (!st.failed) {
     st.failed = true;

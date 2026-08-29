@@ -208,7 +208,7 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
 // position, minus the re-note — its consumers are the exception boundaries.)
 inline void _jit_backfill_error_pos(culebra::CulebraError& e, int64_t line,
                                     int64_t col) {
-  if (e.line != 0 || e.col != 0 || e.kind == "Interrupted") return;
+  if (e.line != 0 || e.col != 0 || is_interrupt(e)) return;
   e.line = line;
   e.col = col;
   culebra::culebra_note_pending_error(e);
