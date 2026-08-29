@@ -3395,6 +3395,7 @@ class Compiler {
   // Declared return type of this frame (const index) and the slot holding
   // the position its violation reports; -1 when the function declares none.
   int32_t ret_type_ = -1;
+  std::string ret_type_str_;  // same annotation, for emit_type_check_gate
   int32_t ret_ctx_ = -1;
   int32_t ret_pos_slot_ = -1;
   // Mark slots of the open scopes that declared their own defers, outermost
@@ -4616,7 +4617,10 @@ class Compiler {
   void emit_return_type_check(int32_t rv) {
     if (ret_type_ < 0) return;
     if (ret_ctx_ < 0) ret_ctx_ = kconst_str("return value");
+    std::vector<size_t> skip;
+    emit_type_check_gate(ret_type_str_, rv, skip);
     emit(Op::ChkTypeAt, rv, ret_type_, ret_ctx_, ret_pos_slot_);
+    for (size_t ix : skip) patch_to_here(ix);
   }
 
   // Frame-level defer mark (the JIT's fn.mark, gated on has_any_defer):
@@ -5937,10 +5941,11 @@ class Compiler {
       // written, which is what `f.return_type` reports, while the check runs
       // against the lowered one — a Generic's unbounded `T` checks as Any.
       fc.chunk_.return_type = std::string(return_type);
-      fc.ret_type_ = fc.kconst_str(
+      fc.ret_type_str_ =
           mo.type_params && !mo.type_params->empty()
               ? culebra::lower_type_params(return_type, *mo.type_params)
-              : std::string(return_type));
+              : std::string(return_type);
+      fc.ret_type_ = fc.kconst_str(fc.ret_type_str_);
       fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
       fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
     }
@@ -6081,10 +6086,13 @@ class Compiler {
       if (!pl.type.empty()) {
         int32_t ty = fc.kconst_str(pl.type);
         int32_t ctx = fc.kconst_str(culebra::format("parameter '{}'", pl.name));
+        std::vector<size_t> skip;
+        fc.emit_type_check_gate(pl.type, pl.slot, skip);
         if (pl.pos_slot >= 0)
           fc.emit(Op::ChkTypeAt, pl.slot, ty, ctx, pl.pos_slot);
         else
           fc.emit(Op::ChkArg, pl.slot, ty, ctx, pl.abi_index);
+        for (size_t ix : skip) fc.patch_to_here(ix);
       }
       if (pl.sink) {
         // `fn (_, x)`: the argument's +1 is dropped rather than bound, so a
@@ -6293,8 +6301,11 @@ class Compiler {
     auto r = compile_expr(*av.rhs);
     if (!av.type_annotation.empty()) {
       StampGuard pos(*this, ast);
+      std::vector<size_t> skip;
+      emit_type_check_gate(av.type_annotation, r.slot, skip);
       emit(Op::ChkTypeAt, r.slot, kconst_str(av.type_annotation),
            kconst_str("assignment"), -1);  // d<0: report at this instruction
+      for (size_t ix : skip) patch_to_here(ix);
     }
     return r;
   }
@@ -8532,6 +8543,46 @@ class Compiler {
     }
   }
 
+  // One alternative of an annotation, as a tag compare that jumps (via
+  // `skip`) when it matches. Mirrors _culebra_type_matches_single's own
+  // structure in order: a callable or an all-of bound is not a single tag, a
+  // trailing `?` also admits Nil, generic args are documentation, and the
+  // base case is that function's `_culebra_tag_name(tag) == expected` test —
+  // which is why a hit here can never disagree with it. Anything else (a
+  // user class, an enum, a trait) emits nothing and leaves the decision to
+  // the check itself.
+  void emit_type_gate_alt(std::string_view tn, int32_t subj,
+                          std::vector<size_t>& skip) {
+    if (culebra::is_fn_type(tn) || culebra::has_toplevel_plus(tn)) return;
+    if (!tn.empty() && tn.back() == '?') {
+      skip.push_back(emit(Op::JumpIfTag, subj, 0, TAG_NIL));
+      emit_type_gate_alt(tn.substr(0, tn.size() - 1), subj, skip);
+      return;
+    }
+    if (tn.find('<') != std::string_view::npos)
+      tn = culebra::parse_generic_head(tn).outer;
+    if (auto tag = _culebra_primitive_type_tag(tn))
+      skip.push_back(emit(Op::JumpIfTag, subj, 0, *tag));
+  }
+
+  // Tag fast path in front of a ChkArg / ChkTypeAt: a matching alternative
+  // jumps past the check, a miss falls into it. The check is emitted
+  // unchanged, so every error keeps its kind, message and position, and the
+  // gate can only ever skip a check that would have passed — the annotation
+  // is a compile-time constant that the runtime otherwise re-scans on every
+  // call. Splitting with the runtime's own depth-aware `has_toplevel_pipe`
+  // keeps `Array<Long | Float>` one alternative, as _culebra_value_matches_type
+  // reads it. Emitted as bytecode, so the executor, `--jit` and AOT all get it.
+  void emit_type_check_gate(std::string_view full, int32_t subj,
+                            std::vector<size_t>& skip) {
+    if (culebra::has_toplevel_pipe(full)) {
+      for (auto cand : culebra::split_union_types(full))
+        emit_type_gate_alt(cand, subj, skip);
+    } else {
+      emit_type_gate_alt(full, subj, skip);
+    }
+  }
+
   // A pattern's type annotation: fall through when the subject satisfies it,
   // jump (via `fail`) when it doesn't. Mirrors the JIT's TYPED_IDENT emitter
   // alternative for alternative — a primitive name is a tag compare over the
@@ -8675,8 +8726,10 @@ class Compiler {
       auto v = compile_expr(field);
       {
         StampGuard fpos(*this, field);
+        size_t skip = emit(Op::JumpIfTag, v.slot, 0, TAG_LONG);
         emit(Op::ChkTypeAt, v.slot, kconst_str("Long"),
              kconst_str(culebra::kSpecFieldContext), -1);
+        patch_to_here(skip);
       }
       int32_t t = alloc_temp(field);
       emit(Op::Disp, t, v.slot);
