@@ -112,10 +112,19 @@ expect_output() {  # expect_output <binary> <expected stdout>
   fi
 }
 
-# libstdc++'s formatter, by its entry points: the visitor and vformat rather
-# than `__format` alone, since <charconv> — which culebra::format uses too —
-# shares that namespace on some libraries.
-fmt_machinery='std::__format::__do_vformat_to|std::vformat|__format::__formatter_(fp|int)'
+# The standard library's formatter, by its entry points: the visitor and
+# vformat rather than `__format` alone, since <charconv> — which
+# culebra::format uses too — shares that namespace on some libraries.
+#
+# Both libraries are named, because the alternation has to match wherever the
+# gate runs and neither library's names appear under the other. The libstdc++
+# half alone made every expect_absent below vacuously true on macOS, and the
+# `spec` control is what reported it: libc++ puts its formatters in a
+# `__formatter` namespace under the `__1` inline namespace, so not one of the
+# three libstdc++ alternatives can match there. libc++'s own `vformat` is not
+# a third alternative — it inlines away under -O3 + LTO, so only the two
+# per-type formatters are reliable.
+fmt_machinery='std::__format::__do_vformat_to|std::vformat|__format::__formatter_(fp|int)|__formatter::__format_(integer|floating_point)'
 
 # Regex: the weak/strong choke (kFeatureAxes still force-loads this one).
 regex_choke='^culebra::regex::compile[(]'
