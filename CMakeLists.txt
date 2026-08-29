@@ -997,6 +997,19 @@ if(CULEBRA_ENABLE_JIT)
                                 ${CULEBRA_LIBXML2_DEPS})
   culebra_export_jit_symbols(culebra)
 
+  # The same linker as a separate program, for the sizing question the
+  # in-process one raises: carrying lld inside culebra.exe costs every Windows
+  # download the LLVM backends lld's COFF driver references, and this is where
+  # that cost lands instead if the kit carries the linker. EXCLUDE_FROM_ALL —
+  # only the job measuring it, or a release packing it, ever builds it.
+  # See src/ld_lld_main.cc.
+  if(CULEBRA_LLD_LIBS)
+    add_executable(culebra_ld EXCLUDE_FROM_ALL ./src/ld_lld_main.cc)
+    set_target_properties(culebra_ld PROPERTIES OUTPUT_NAME culebra-ld)
+    target_link_libraries(culebra_ld ${CULEBRA_LLD_LIBS} ${llvm_libs}
+                                     ${CULEBRA_LIBXML2_DEPS})
+  endif()
+
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
   # baked source path is the default when CULEBRA_HOME is unset. Scoped to
   # source_dir.cc, not the target — see include/source_dir.h.
