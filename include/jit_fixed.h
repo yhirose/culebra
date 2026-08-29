@@ -1410,6 +1410,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
               obj->slots[obj->find_slot("__sharedbuffer_count__")].value.data};
     }
   }
+  // Cached proto hit: this receiver shape's own scan missed last time and the
+  // proto resolved `key` at proto_offset, and neither shape has changed since
+  // — so both linear scans are already answered. This is the shape a class
+  // instance's every method read has (data in own slots, methods on the
+  // shared meta behind `proto`).
+  if (obj->shape == ic->owner_shape && obj->proto &&
+      obj->proto->shape == ic->proto_shape) {
+    return obj->proto->slots[ic->proto_offset].value;
+  }
   if (obj->shape) {
     auto idx = obj->shape->offset(key);
     if (idx != static_cast<size_t>(-1)) {
@@ -1418,8 +1427,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
       return obj->slots[idx].value;
     }
   }
-  if (auto* proto_entry = obj->proto ? _find_property(obj->proto, key) : nullptr) {
-    return proto_entry->value;
+  if (obj->proto) {
+    // The proto's own slot — _find_property's own first step, so the
+    // resolution order is unchanged; only this hit is cacheable, and a name
+    // it answers from a second level falls through to the walk below.
+    if (obj->proto->shape) {
+      auto idx = obj->proto->shape->offset(key);
+      if (idx != static_cast<size_t>(-1)) {
+        ic->owner_shape = obj->shape;
+        ic->proto_shape = obj->proto->shape;
+        ic->proto_offset = idx;
+        return obj->proto->slots[idx].value;
+      }
+    }
+    if (auto* proto_entry = _find_property(obj->proto, key))
+      return proto_entry->value;
   }
   // Shared.new view: own slots (markers + reader methods) resolved
   // above; anything else reads the frozen tree (nil on miss, like a

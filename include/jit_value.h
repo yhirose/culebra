@@ -384,9 +384,34 @@ inline constexpr int64_t kClassMetaNamesClass = 2;
 // fills it on first miss and on any shape transition. Fast path IR
 // inlines: load obj->shape, compare with cached_shape; on hit, load
 // slots[cached_offset] directly without a runtime call.
+// Per-callsite monomorphic cache for `obj.prop` reads. The first two fields
+// are the own-slot cache the JIT's IR fast path reads directly, so
+// emit_property_get's `icTy` must mirror this layout field for field; the
+// proto trio below is filled and read only by culebra_runtime_object_get_ic.
+//
+// The proto entry exists because a class instance carries data in its own
+// slots and methods on the shared per-class meta it reaches through `proto`
+// — so `inst.method` misses the own-slot cache on every call and re-ran two
+// linear Shape::offset scans, one over the instance's names to establish the
+// miss and one over the meta's to find the method.
+//
+// `owner_shape` certifies both halves at once: a Shape fixes the own-name set
+// exactly, so recording the shape whose scan missed is what makes skipping
+// that scan sound, and shadowing still works because a shape that gained the
+// name is a different shape. `proto_shape` guards the offset the same way.
+// The lookup indexes `obj->proto`, never a cached object pointer, so two
+// metas sharing a shape stay correct.
+//
+// Every shape starts at the non-null sentinel `(void*)1` — a real Shape* is
+// heap-allocated and never 1, and a fresh Object has shape == null, so a
+// zero-initialized cache can never spuriously hit.
 struct JitPropIC {
-  void* shape;     // last-seen Shape* (opaque to JIT IR)
-  uint64_t offset; // slot index into `slots` for that shape
+  void* shape = reinterpret_cast<void*>(1);  // own-slot hit (read by the IR)
+  uint64_t offset = 0;                       // slot index for that shape
+  void* owner_shape = reinterpret_cast<void*>(1);  // receiver shape whose own
+                                                   // scan missed
+  void* proto_shape = reinterpret_cast<void*>(1);  // its proto's shape then
+  uint64_t proto_offset = 0;                       // slot index in the proto
 };
 
 // Per-callsite inline cache for `obj.prop = ...` writes. Two modes:

@@ -3995,11 +3995,16 @@ struct JIT {
     // misses to the slow path: real Shape* are heap-allocated (8-byte
     // aligned, never == 1) and a freshly-allocated Object has shape == null,
     // so the sentinel can never spuriously fast-path into an OOB slots[0].
-    auto icTy = llvm::StructType::get(ctx_, {ptrTy, i64Ty});
+    // Layout mirrors JitPropIC field for field — the IR reads only the first
+    // two, the runtime helper owns the proto trio, and both shape sentinels
+    // are seeded the same way.
+    auto icTy =
+        llvm::StructType::get(ctx_, {ptrTy, i64Ty, ptrTy, ptrTy, i64Ty});
     auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
         llvm::ConstantInt::get(i64Ty, 1), ptrTy);
     auto* icInit = llvm::ConstantStruct::get(
-        icTy, {sentinelPtr, llvm::ConstantInt::get(i64Ty, 0)});
+        icTy, {sentinelPtr, llvm::ConstantInt::get(i64Ty, 0), sentinelPtr,
+               sentinelPtr, llvm::ConstantInt::get(i64Ty, 0)});
     auto* icGlobal = new llvm::GlobalVariable(
         *module_, icTy, /*isConstant=*/false,
         llvm::GlobalValue::PrivateLinkage, icInit,
