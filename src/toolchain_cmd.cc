@@ -311,20 +311,41 @@ bool place_kit(const fs::path& staged_root, std::string& err) {
         v.empty() ? "an unnamed version" : v, kVersion);
     return false;
   }
+  // Reinstalling must not be able to leave the user with less than they had.
+  // The kit already there is moved aside, not deleted, so a rename or copy
+  // that fails can put it back — otherwise a reinstall that goes wrong takes
+  // away a working toolchain, which is worse than not reinstalling at all.
   auto dest = kit_dir();
+  auto aside = dest.parent_path() / std::format("{}.previous", kVersion);
   fs::create_directories(dest.parent_path(), ec);
-  fs::remove_all(dest, ec);
-  fs::rename(inner, dest, ec);
-  if (ec) {
-    // Across volumes rename fails; copying is the fallback, not the default,
-    // because it is the non-atomic one.
-    fs::copy(inner, dest, fs::copy_options::recursive, ec);
+  fs::remove_all(aside, ec);
+  bool had_one = fs::exists(dest, ec);
+  if (had_one) {
+    fs::rename(dest, aside, ec);
     if (ec) {
-      err = std::format("could not put the kit at {}: {}", dest.string(),
+      err = std::format("could not move the installed kit aside: {}",
                         ec.message());
       return false;
     }
   }
+
+  fs::rename(inner, dest, ec);
+  if (ec) {
+    // Across volumes rename fails; copying is the fallback, not the default,
+    // because it is the non-atomic one.
+    ec.clear();
+    fs::copy(inner, dest, fs::copy_options::recursive, ec);
+  }
+  if (ec) {
+    std::error_code rec;
+    fs::remove_all(dest, rec);
+    if (had_one) fs::rename(aside, dest, rec);
+    err = std::format("could not put the kit at {}: {}{}", dest.string(),
+                      ec.message(),
+                      had_one ? " (the previous one is still installed)" : "");
+    return false;
+  }
+  fs::remove_all(aside, ec);
   return true;
 }
 
@@ -453,9 +474,12 @@ int status() {
 #else
   std::println("  toolchain    the system C++ compiler (`cc`)");
 #endif
-  std::println("  AOT link     {}", link_available() ? "ready" : "not available");
-  if (!link_available()) std::println("\n{}", missing_toolchain_hint());
-  return link_available() ? 0 : 1;
+  // Asked once: on macOS this shells out to xcode-select, and a status line
+  // should not run the same probe three times to print one answer.
+  bool ready = link_available();
+  std::println("  AOT link     {}", ready ? "ready" : "not available");
+  if (!ready) std::println("\n{}", missing_toolchain_hint());
+  return ready ? 0 : 1;
 }
 
 }  // namespace

@@ -1850,6 +1850,16 @@ jobs:
           & $exe toolchain status
           if ($LASTEXITCODE -ne 0) { throw "status says the link is not ready" }
 
+          # A reinstall that goes wrong must not take away the kit that was
+          # working. Feeding install an archive that is not a kit is the
+          # cheapest way to reach that path.
+          "not a zip" | Out-File -Encoding ascii junk.zip
+          & $exe toolchain install --from "$pwd\junk.zip" 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "a non-kit archive installed" }
+          & $exe toolchain status
+          if ($LASTEXITCODE -ne 0) { throw "a failed reinstall removed the kit" }
+          "OK: a failed reinstall leaves the installed kit alone"
+
           # Every axis, because each appends its own import libraries and a kit
           # packed from a hello link would be missing them — the failure would
           # otherwise surface only for whoever first compiles a Canvas program.
