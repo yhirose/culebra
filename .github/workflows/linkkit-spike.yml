@@ -14,6 +14,16 @@
 #      recipe? That is the difference between shipping clang (~a compiler) and
 #      shipping a linker.
 #
+# The first run answered 1 and 3 and reshaped the question. Sizes came out at
+# 75.4 MB zipped with clang and 55.3 MB without it, because MSYS2's ld.lld.exe
+# is 5.7 MB of program behind a 147 MB libLLVM DLL — dropping the compiler
+# barely helps, since the DLL is what costs. The recipe replay did work:
+# hello-lld.exe came out the same size as clang++'s own output and ran, with
+# culebra contributing six tokens (its object, libculebra_rt.a, --gc-sections
+# -s --stack). So the linker is separable, which raises the option this run
+# measures as kit-libs: culebra already carries LLVM for the JIT, so it could
+# link lld in and ship no executable at all.
+#
 # Uses the culebra.exe that ci.yml's windows-aot-build already produced for
 # master, rather than building one here: the question is about the toolchain,
 # not this checkout, and the artifact is the same clang+lld configuration the
@@ -72,7 +82,7 @@ jobs:
       - name: Kit sizes (zipped)
         shell: pwsh
         run: |
-          foreach ($k in 'kit-clang','kit-lld') {
+          foreach ($k in 'kit-clang','kit-lld','kit-libs') {
             $dir = "kits\$k"
             if (!(Test-Path $dir)) { "$k : not packed"; continue }
             Compress-Archive -Path "$dir\*" -DestinationPath "$k.zip" -Force
@@ -103,32 +113,19 @@ jobs:
           "CULEBRA_EXE=$exe" | Out-File -Append $env:GITHUB_ENV
           & $exe --version
 
-      # One program per Windows link fragment. Sources are the ones the repo
-      # already validates (tools/check_aot_feature_axes.sh and ci.yml's
-      # windows-aot-build), so a failure here is the kit's, not the program's.
-      # `if false { … }` links an axis without running it — the AOT scan is
-      # static, which is exactly the property being leaned on.
-      - name: Write the axis programs
-        shell: pwsh
+      # One program per Windows link fragment, checked in under misc/linkkit/
+      # rather than generated here: the first run of this spike wrote them from
+      # a PowerShell literal and every multi-line one came out corrupted (`,`
+      # binds tighter than `+` there, so each program absorbed its own expected
+      # output). Sources are the ones the repo already validates
+      # (tools/check_aot_feature_axes.sh and ci.yml's windows-aot-build), so a
+      # failure here is the kit's, not the program's. `if false { … }` links an
+      # axis without running it — the AOT scan is static, which is the property
+      # being leaned on, and `-lz` appearing for compress.cul is what proves it.
+      - name: Show the axis programs
+        shell: msys2 {0}
         run: |
-          New-Item -ItemType Directory -Force -Path progs | Out-Null
-          $progs = @{
-            hello    = @('print("hello from AOT")', 'hello from AOT')
-            compress = @('if false { let z = Compress.gzip("x") }' + "`n" + 'print("compress ok")', 'compress ok')
-            canvas   = @('let s = Canvas.Sprite.blank(3, 2, 0xFF336699)' + "`n" +
-                         'let back = Canvas.Sprite.from_png(s.to_png())' + "`n" +
-                         'print(back.width() * 10 + back.height())', '32')
-            http     = @('let srv = Http.server()' + "`n" + 'print("http ok")', 'http ok')
-            webview  = @('let srv = Http.server()' + "`n" +
-                         'if false { let w = Webview.Window.new(); w.run() }' + "`n" +
-                         'print("webview+http ok")', 'webview+http ok')
-            sqlite   = @('let db = SQLite.open(":memory:")' + "`n" + 'print("sqlite ok")', 'sqlite ok')
-          }
-          $progs.GetEnumerator() | ForEach-Object {
-            $_.Value[0] | Out-File -Encoding ascii "progs\$($_.Key).cul"
-            "$($_.Key)`t$($_.Value[1])" | Out-File -Append -Encoding ascii progs\expected.tsv
-          }
-          Get-Content progs\expected.tsv
+          for f in misc/linkkit/*.cul; do echo "== $f"; sed 's/^/   /' "$f"; done
 
       # A GitHub runner is NOT a bare Windows box: the image ships a mingw64 at
       # C:\mingw64, and this job installed an MSYS2. Neither is on a
@@ -142,7 +139,7 @@ jobs:
             $c = Get-Command $t -ErrorAction SilentlyContinue
             if ($c) { throw "$t is on PATH at $($c.Source) — the spike would prove nothing" }
           }
-          & $env:CULEBRA_EXE build progs\hello.cul -o hello-nokit.exe
+          & $env:CULEBRA_EXE build misc\linkkit\hello.cul -o hello-nokit.exe
           if ($LASTEXITCODE -eq 0) { throw "build succeeded with no toolchain present" }
           "OK: build refuses without a toolchain (rc=$LASTEXITCODE)"
           exit 0
@@ -160,10 +157,10 @@ jobs:
           $env:CULEBRA_CACHE = "$pwd\cache"
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           $fail = @()
-          foreach ($line in Get-Content progs\expected.tsv) {
+          foreach ($line in Get-Content misc\linkkit\expected.tsv) {
             $name, $want = $line -split "`t"
             "=== $name"
-            & $env:CULEBRA_EXE build "progs\$name.cul" -o "$name.exe" 2> "logs\$name.log"
+            & $env:CULEBRA_EXE build "misc\linkkit\$name.cul" -o "$name.exe" 2> "logs\$name.log"
             if ($LASTEXITCODE -ne 0) {
               $fail += "$name (link rc=$LASTEXITCODE)"
               Get-Content "logs\$name.log" | Select-Object -Last 25
@@ -195,7 +192,7 @@ jobs:
             fi
             got=$(./"$name-lld.exe" 2>&1 | tr -d '\r' | tail -1)
             if [ "$got" != "$want" ]; then fail="$fail $name(ran:'$got')"; else echo "    ok: $got"; fi
-          done < <(tr -d '\r' < progs/expected.tsv)
+          done < <(tr -d '\r' < misc/linkkit/expected.tsv)
           [ -z "$fail" ] || { echo "FAILED:$fail"; exit 1; }
           echo "KIT_LLD_PASS"
 
@@ -219,6 +216,7 @@ jobs:
         run: |
           "kit-clang (drop-in, no driver change): ${{ steps.clang.outcome }}"
           "kit-lld   (no compiler, recipe only):  ${{ steps.lld.outcome }}"
+          "kit-libs  (culebra links lld itself):  size only — see the pack step"
           if ('${{ steps.clang.outcome }}' -ne 'success') {
             "kit-clang is the fallback design; its failure blocks the feature."
             exit 1

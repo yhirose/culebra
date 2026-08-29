@@ -1,0 +1,2 @@
+if false { let z = Compress.gzip("x") }
+print("compress ok")

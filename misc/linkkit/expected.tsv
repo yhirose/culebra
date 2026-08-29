@@ -1,0 +1,6 @@
+hello	hello from AOT
+compress	compress ok
+canvas	32
+http	http ok
+webview	webview+http ok
+sqlite	sqlite ok

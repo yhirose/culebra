@@ -21,12 +21,18 @@
 # relative layout, because that is how a driver finds its siblings — from its
 # own location, not from PATH.
 #
-# Two kits, because they answer different questions:
+# Three kits, because they answer different questions:
 #   clang — clang++ + lld + libs. `culebra build` needs no change: it finds
 #           clang++ on PATH exactly as it does today. The size ceiling.
 #   lld   — lld + libs only, plus link-recipe.txt: the linker command line
 #           clang++ WOULD have produced, split at the user object so a caller
-#           can rebuild it. Needs driver work; the size floor.
+#           can rebuild it. Drops the compiler, keeps the linker.
+#   libs  — no executables at all: the CRT objects and static libraries alone.
+#           This is what a kit weighs if culebra links lld into itself rather
+#           than shipping one. It carries LLVM already (the JIT), and MSYS2's
+#           ld.lld.exe is 5.7 MB of program behind a 147 MB libLLVM DLL — so
+#           the DLL, not the linker, is what makes the other two kits big.
+#           The size floor.
 #
 # The libraries are not a hardcoded list. Every feature axis `culebra build`
 # can append (CMakeLists' _ssl_link / _zlib_link / _raylib_aot_link /
@@ -247,15 +253,41 @@ awk -v obj="$(cygpath -m "$probe/probe.o" 2>/dev/null || printf '%s' "$probe/pro
   esac
 done >> "$recipe"
 
+# --- kit-libs --------------------------------------------------------------
+# The same libraries with every executable and DLL removed. Nothing here is a
+# program, so there is no DLL closure to carry — which is the entire difference
+# between this and kit-lld.
+libskit="$out/kit-libs"
+rm -rf "$libskit"; mkdir -p "$libskit"
+echo "== kit-libs"
+(cd "$lldkit" && find . -type f ! -path './bin/*' -print0) |
+  while IFS= read -r -d '' f; do
+    mkdir -p "$libskit/$(dirname "$f")"
+    cp "$lldkit/$f" "$libskit/$f"
+  done
+
+# Whether culebra could link lld in-process at all: MSYS2 has to ship the
+# driver as a library (liblldCOFF.a + lld/Common/Driver.h), not just as an
+# executable. If these are absent, kit-libs is a number without a design.
+printf '\n== is lld available as a library?\n'
+for f in liblldCOFF.a liblldCommon.a liblldMinGW.a; do
+  p=$(find_file "$f" || true)
+  if [ -n "$p" ]; then printf '   + %-16s %12d\n' "$f" "$(stat -c %s "$p")"
+  else printf '   ! %-16s missing\n' "$f"; fi
+done
+for h in "$root/include/lld/Common/Driver.h" "$root/include/lld/Common/CommonLinkerContext.h"; do
+  [ -f "$h" ] && printf '   + %s\n' "${h#"$root"/}" || printf '   ! %s missing\n' "${h#"$root"/}"
+done
+
 # --- report ----------------------------------------------------------------
 printf '\n== kit sizes\n'
-for k in "$clangkit" "$lldkit"; do
+for k in "$clangkit" "$lldkit" "$libskit"; do
   printf '%-10s %8s  (%d files)\n' "$(basename "$k")" \
     "$(du -sh "$k" | cut -f1)" "$(find "$k" -type f | wc -l)"
 done
 
 printf '\n== the ten largest files in each kit\n'
-for k in "$clangkit" "$lldkit"; do
+for k in "$clangkit" "$lldkit" "$libskit"; do
   echo "-- $(basename "$k")"
   find "$k" -type f -printf '%s\t%P\n' | sort -rn | head -10 |
     awk -F'\t' '{printf "   %12d  %s\n", $1, $2}'

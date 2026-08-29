@@ -1,0 +1,3 @@
+let srv = Http.server()
+if false { let w = Webview.Window.new(); w.run() }
+print("webview+http ok")
