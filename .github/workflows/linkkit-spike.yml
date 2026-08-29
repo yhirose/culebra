@@ -14,6 +14,16 @@
 #      recipe? That is the difference between shipping clang (~a compiler) and
 #      shipping a linker.
 #
+# ANSWERED (run 33230693574). kit-clang 75.4 MB zipped, kit-lld 55.3 MB,
+# kit-libs 6.0 MB — and MSYS2 ships lld as static libraries (liblldCOFF.a
+# 3.5 MB, liblldCommon.a 530 KB, liblldMinGW.a 110 KB) with lld/Common/Driver.h
+# beside them. So the kit to ship is the one with no executables in it, and
+# culebra links lld in: it already carries LLVM for the JIT, which is the whole
+# 147 MB the other two kits were paying for. All six axes link and run under
+# both kits, and every one of them comes out the same size through the recipe
+# as through clang++ — the linker is separable, proved per axis rather than
+# for hello alone.
+#
 # The first run answered 1 and 3 and reshaped the question. Sizes came out at
 # 75.4 MB zipped with clang and 55.3 MB without it, because MSYS2's ld.lld.exe
 # is 5.7 MB of program behind a 147 MB libLLVM DLL — dropping the compiler
