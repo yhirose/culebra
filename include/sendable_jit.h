@@ -1820,6 +1820,9 @@ inline void jit_parallel_progress_coordinator(
           JitValue{TAG_LONG, static_cast<int64_t>(total)});
       culebra_runtime_value_release(rv.tag, rv.data);
     } catch (...) {
+      // interrupt: kept, not swallowed — jit_parallel_run re-raises this with
+      // rethrow_exception once the workers are joined, an Interrupted from the
+      // progress callback included.
       cb_err = std::current_exception();
       st->interrupt.store(true, std::memory_order_relaxed);
       return;

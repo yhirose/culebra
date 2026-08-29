@@ -958,6 +958,10 @@ class ServePool {
         // One handler raising closes that connection only — it must not take
         // down the worker or the server (there is no response to turn into a
         // 500, unlike Http.server).
+        // interrupt: an Interrupted from the handler is dropped here too, and
+        // that is only safe because serve()'s accept loop polls the same flag:
+        // its own throw leaves serve(), and ~ServePool then shuts these workers
+        // down. If accept ever stops raising, the press would die here.
       }
       close_handle(id);
     }

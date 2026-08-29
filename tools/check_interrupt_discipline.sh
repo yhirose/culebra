@@ -31,15 +31,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# The run-host surface: everything that runs a culebra program, loads its
-# modules, or analyses a file for the CLI. A new one belongs on this list.
+# The run-host surface: everything that enters a culebra program, loads its
+# modules, analyses a file for the CLI, or runs one on a thread it owns. The
+# last of those is on the list for the same reason as the rest — a handler
+# there answers for a press nobody else can — even where the file has no
+# catch-all today, so that adding one asks the question. A new host belongs
+# here.
 kFiles=(
   src/main.cc
   include/dap.h
   include/debug_engine.h
+  include/http.h
   include/lint.h
+  include/net.h
   include/parser.h
   include/repl_core.h
+  include/runtime/runtime_aot.h
+  include/sendable_jit.h
   include/test_engine.h
   include/test_runner.h
   include/vm_debug.h
