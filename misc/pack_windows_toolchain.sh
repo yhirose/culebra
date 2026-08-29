@@ -36,6 +36,15 @@ set -euo pipefail
 out=${1:?usage: pack_windows_toolchain.sh <out dir> <version>}
 version=${2:?usage: pack_windows_toolchain.sh <out dir> <version>}
 
+# The version is what `culebra toolchain install` matches a kit against, so a
+# malformed one produces a kit nothing will ever accept. Caught here rather
+# than at install time, which is where the first CI run found `X.Y.Z` — the
+# caller's version regex had matched the comment above the #define as well.
+case "$version" in
+  [0-9]*.[0-9]*.[0-9]*) ;;
+  *) echo "pack_windows_toolchain: '$version' is not a version" >&2; exit 2 ;;
+esac
+
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 kit="$out/culebra-toolchain-windows-x64"

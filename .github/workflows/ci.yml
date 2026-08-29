@@ -1813,8 +1813,15 @@ jobs:
             mingw-w64-ucrt-x86_64-lld
             mingw-w64-ucrt-x86_64-zlib
             zip
+      # Anchored at ^#define, the way the justfile and playground/build.sh read
+      # it: the comment above that line spells the macro too, as `X.Y.Z`, and an
+      # unanchored match takes both — which is the version this kit's manifest
+      # claimed the first time round.
       - name: Pack the kit
-        run: misc/pack_windows_toolchain.sh kit "$(sed -n 's/.*CULEBRA_VERSION "\([^"]*\)".*/\1/p' include/culebra.h)"
+        run: |
+          version=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
+          [ -n "$version" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
+          misc/pack_windows_toolchain.sh kit "$version"
       - uses: actions/download-artifact@v4
         with:
           name: culebra-windows-x64
