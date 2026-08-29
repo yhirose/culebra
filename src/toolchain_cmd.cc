@@ -328,44 +328,67 @@ bool place_kit(const fs::path& staged_root, std::string& err) {
   return true;
 }
 
+// Check an archive against the `<digest>  <name>` line published beside it.
+// One implementation for both sources, so the download's verification is the
+// code a `--from` install exercises too — otherwise it would first run on a
+// user's machine, at the moment it matters most.
+//
+// A local archive with no .sha256 beside it is installed unverified: the file
+// came from the user, not from the network, and demanding a digest they would
+// have to write themselves protects nothing. A .sha256 that IS there is
+// always honoured.
+bool verify_digest(const fs::path& archive, const fs::path& sums,
+                   std::string& err) {
+  std::error_code ec;
+  if (!fs::exists(sums, ec)) return true;
+  auto want = read_file(sums);
+  auto sp = want.find_first_of(" \t\r\n");
+  auto expect = want.substr(0, sp == std::string::npos ? want.size() : sp);
+  if (expect.empty()) {
+    err = std::format("{} holds no digest", sums.string());
+    return false;
+  }
+  auto got = culebra::hashing::sha256(read_file(archive));
+  if (got != expect) {
+    err = std::format("{} does not match its digest\n"
+                      "  expected {}\n  got      {}",
+                      archive.filename().string(), expect, got);
+    return false;
+  }
+  return true;
+}
+
 bool install_windows(const std::string& from, std::string& err) {
   std::error_code ec;
   auto tmp = kit_dir().parent_path() / std::format("staging-{}", kVersion);
   fs::remove_all(tmp, ec);
   fs::create_directories(tmp, ec);
 
-  fs::path archive;
+  fs::path archive, sums;
   if (!from.empty()) {
     archive = fs::absolute(from);
     if (!fs::exists(archive, ec)) {
       err = std::format("no such file: {}", archive.string());
       return false;
     }
+    sums = archive.string() + ".sha256";
     std::println("culebra toolchain: installing from {}", archive.string());
   } else {
 #if defined(CULEBRA_HTTP_ENABLED)
     auto asset = std::format("{}/v{}/{}.zip", kReleasePath, kVersion, kKitName);
-    auto sums = std::format("{}/v{}/{}.zip.sha256", kReleasePath, kVersion,
-                            kKitName);
-    std::println("culebra toolchain: fetching the {} kit for culebra {}…",
-                 "Windows", kVersion);
+    auto sumpath = std::format("{}/v{}/{}.zip.sha256", kReleasePath, kVersion,
+                               kKitName);
+    std::println("culebra toolchain: fetching the Windows kit for culebra {}…",
+                 kVersion);
     std::string body, want;
     if (!http_get(std::string(kReleaseHost), asset, body, err)) return false;
-    if (!http_get(std::string(kReleaseHost), sums, want, err)) return false;
-
-    // The digest says the transfer is intact; the manifest check in place_kit
-    // says the kit belongs with this binary. Neither substitutes for the other.
-    auto got = culebra::hashing::sha256(body);
-    auto sp = want.find(' ');
-    auto expect = want.substr(0, sp == std::string::npos ? want.size() : sp);
-    if (got != expect) {
-      err = std::format("the download does not match its published digest\n"
-                        "  expected {}\n  got      {}", expect, got);
-      return false;
-    }
-    archive = tmp / "kit.zip";
-    { std::ofstream(archive, std::ios::binary).write(body.data(),
-                                                     std::streamsize(body.size())); }
+    if (!http_get(std::string(kReleaseHost), sumpath, want, err)) return false;
+    archive = tmp / std::format("{}.zip", kKitName);
+    sums = archive.string() + ".sha256";
+    { std::ofstream(archive, std::ios::binary)
+          .write(body.data(), std::streamsize(body.size())); }
+    { std::ofstream(sums, std::ios::binary)
+          .write(want.data(), std::streamsize(want.size())); }
 #else
     err = std::format(
         "this build has no HTTP support, so it cannot fetch the kit. Download\n"
@@ -375,6 +398,10 @@ bool install_windows(const std::string& from, std::string& err) {
     return false;
 #endif
   }
+
+  // The digest says the bytes are intact; the manifest check in place_kit says
+  // the kit belongs with this binary. Neither substitutes for the other.
+  if (!verify_digest(archive, sums, err)) return false;
 
   auto staged = tmp / "x";
   if (!extract_zip(archive, staged, err)) return false;

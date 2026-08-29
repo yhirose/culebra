@@ -1824,6 +1824,21 @@ jobs:
           }
           "OK: refused without a kit, and named `culebra toolchain install`"
 
+          # Positive control for the digest check, which is the same code the
+          # network install runs: flip a byte and the install must refuse. A
+          # verification that never says no is not a verification.
+          Copy-Item $kit tampered.zip
+          Copy-Item "$kit.sha256" tampered.zip.sha256
+          $b = [IO.File]::ReadAllBytes("tampered.zip")
+          $b[$b.Length - 1] = $b[$b.Length - 1] -bxor 0xFF
+          [IO.File]::WriteAllBytes("$pwd\tampered.zip", $b)
+          $out = & $exe toolchain install --from "$pwd\tampered.zip" 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0) { throw "a tampered kit installed:`n$out" }
+          if ($out -notmatch 'does not match its digest') {
+            throw "refused, but not for the digest:`n$out"
+          }
+          "OK: a tampered kit is refused by its digest"
+
           & $exe toolchain install --from $kit
           if ($LASTEXITCODE -ne 0) { throw "install failed" }
           & $exe toolchain status

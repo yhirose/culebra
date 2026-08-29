@@ -173,6 +173,16 @@ macOS / Linux x64 / Windows x64 の 3 本を並列でビルドし、それぞれ
     gh release edit vX.Y.Z --draft=false
     gh release view vX.Y.Z --web
 
+公開したら**そのタグで `toolchain-smoke` を回す**:
+
+    gh workflow run toolchain-smoke.yml -f tag=vX.Y.Z
+
+`culebra toolchain install` がリリースの kit を実際に取ってきてリンクできるかを、
+ダウンロード版バイナリ自身に確かめさせる唯一の場所。draft の asset は匿名で
+取得できないので `release.yml` の中では検証できず、公開後にしか走らせられない
+（ci.yml が見ているのは `--from` 以降＝ダイジェスト・展開・配置・全 axis・uninstall で、
+fetch だけがここに残る）。落ちたら kit を差し替えて `gh release upload --clobber`。
+
 最後にユーザーへ確認する（**勝手にやらない**）:
 
 - README の "Pre-1.0. No version tags, CHANGELOG, or package registry yet" の文言、および

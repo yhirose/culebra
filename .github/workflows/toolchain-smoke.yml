@@ -1,0 +1,98 @@
+# Does `culebra toolchain install` work against a real published release?
+#
+# ci.yml's windows-toolchain-kit covers everything from the archive onward —
+# digest, extraction, the manifest check, placement, every axis, uninstall —
+# by installing a kit it packed itself with `--from`. What it cannot cover is
+# the fetch: the URL is built from the running binary's version, and a kit for
+# that version only exists once a release has published one.
+#
+# It has to be a PUBLISHED release, which is why this is not a release.yml
+# step: release.yml leaves the release a draft for `/release` to publish, and a
+# draft's assets are not anonymously downloadable — the very thing being
+# tested. So `/release` runs this after `gh release edit --draft=false`, and a
+# weekly run repeats it, since this path can also break without culebra
+# changing at all (a redirect, a TLS policy, a CDN host).
+name: toolchain-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published release to test (blank = latest)'
+        required: false
+  schedule:
+    # Mondays, an hour after ci.yml's cache-warming run.
+    - cron: '0 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-install-from-release:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      # Nothing is built here: the question is whether a downloaded binary can
+      # fetch its own toolchain, so the downloaded binary is what asks.
+      - name: Fetch the published release
+        id: rel
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.event.inputs.tag }}'
+          if (-not $tag) {
+            $tag = gh release list --repo ${{ github.repository }} `
+                     --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName'
+          }
+          if (-not $tag) { throw "no published release to test" }
+          "tag=$tag" | Out-File -Append $env:GITHUB_OUTPUT
+          "testing $tag"
+
+          # A release from before the kit existed is not a failure — it is the
+          # expected state until the first release that ships one. Say so and
+          # stop, rather than going red every Monday until then.
+          $assets = gh release view $tag --repo ${{ github.repository }} `
+                      --json assets --jq '.assets[].name'
+          if ($assets -notcontains 'culebra-toolchain-windows-x64.zip') {
+            "::notice::$tag ships no toolchain kit yet — nothing to test"
+            "skip=1" | Out-File -Append $env:GITHUB_OUTPUT
+            exit 0
+          }
+          gh release download $tag --repo ${{ github.repository }} `
+            --pattern culebra-windows-x64.zip --output culebra.zip
+          Expand-Archive culebra.zip -DestinationPath rel
+
+      # The PATH is built from scratch for the same reason ci.yml does it: this
+      # runner image ships a mingw64 at C:\mingw64, and a downloader's machine
+      # does not.
+      - name: Install over the network, build, uninstall
+        if: steps.rel.outputs.skip != '1'
+        shell: pwsh
+        run: |
+          $env:Path = "C:\Windows\System32;C:\Windows"
+          $exe = (Get-ChildItem -Recurse -Filter culebra.exe rel)[0].FullName
+          & $exe --version
+
+          # No --from: this is the GitHub URL, its redirect to the CDN, and the
+          # digest published beside the asset.
+          & $exe toolchain install
+          if ($LASTEXITCODE -ne 0) { throw "install over the network failed" }
+          & $exe toolchain status
+          if ($LASTEXITCODE -ne 0) { throw "status says the link is not ready" }
+
+          foreach ($line in Get-Content misc\linkkit\expected.tsv) {
+            $name, $want = $line -split "`t"
+            & $exe build "misc\linkkit\$name.cul" -o "$name.exe"
+            if ($LASTEXITCODE -ne 0) { throw "$name did not link" }
+            $got = (& ".\$name.exe" 2>&1 | Out-String).Trim()
+            if ($got -ne $want) { throw "$name ran as '$got', wanted '$want'" }
+            "  ok: $name -> $got"
+          }
+
+          & $exe toolchain uninstall
+          if ($LASTEXITCODE -ne 0) { throw "uninstall failed" }
+          "OK: a downloaded culebra fetched its own toolchain and built with it"
+          exit 0
