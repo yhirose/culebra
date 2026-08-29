@@ -518,6 +518,10 @@ libs (auto-detected when the static libs are missing)" OFF)
           list(APPEND CULEBRA_LIBXML2_DEPS "${${_d}}")
         endif()
       endforeach()
+      # xmlInitRandom seeds itself from BCryptGenRandom. culebra.exe reaches
+      # bcrypt by another route and never noticed; a program that links libxml2
+      # and nothing else does.
+      list(APPEND CULEBRA_LIBXML2_DEPS "-lbcrypt")
       message(STATUS "libxml2: linking ${CULEBRA_LIBXML2_STATIC} statically (lld dep)")
     else()
       message(WARNING
