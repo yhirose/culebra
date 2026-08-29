@@ -267,11 +267,12 @@ culebra build path/to/script.cul -o ./out
 ./out
 ```
 
-The link step runs the host's C++ compiler (Xcode's Command Line Tools
-on macOS, `cc` on Linux, mingw-w64 UCRT64's clang and lld on Windows) — everything else
-is inside the binary. Cross-compile is also supported. Host
-requirements and binary sizes per feature axis are in
-[`docs/deployment.md`](docs/deployment.md#1-standalone-binary-build-culebra-build).
+The link step runs the host's C++ compiler on macOS (Xcode's Command
+Line Tools) and Linux (`cc`); on Windows the binary carries its own
+linker, and `culebra toolchain install` fetches the mingw libraries it
+links against. Everything else is inside the binary. Cross-compile is
+also supported. Host requirements and binary sizes per feature axis are
+in [`docs/deployment.md`](docs/deployment.md#1-standalone-binary-build-culebra-build).
 
 Embedding in a C++ host
 -----------------------

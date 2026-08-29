@@ -1812,9 +1812,11 @@ tensorエンジンが必要とするAccelerate / Metalフレームワーク依�
 otool -L ./out                            # Accelerate も Metal も LLVM も無し
 ```
 
-codegenはプロセス内で完結するが、リンク段だけはホストのC++コンパイラを
-起動する — macOSはXcode Command Line Tools、Linuxは`cc`、Windowsは
-mingw-w64 UCRT64のclangとlld。無ければ`build`が開始前にそう言う。プラットフォーム別の
+codegenはプロセス内で完結する。Windowsではリンクもそうで、バイナリが
+lldを内蔵し、必要なmingwライブラリは`culebra toolchain install`が取得する。
+それ以外のプラットフォームではリンク段がホストのC++コンパイラを起動する —
+macOSはXcode Command Line Tools、Linuxは`cc`。`build`は開始前に確認し、
+端末上なら足りないものをインストールするか尋ねる。プラットフォーム別の
 一覧は[`deployment.ja.md` §1](deployment.ja.md#ホスト側に必要なもの)。
 
 ### 16.1 クロスコンパイル

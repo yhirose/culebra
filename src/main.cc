@@ -607,6 +607,9 @@ void print_usage(ostream& os) {
 #ifdef CULEBRA_JIT_ENABLED
         "  build <in.cul> -o <out>   Compile ahead-of-time into a standalone\n"
         "                            executable (`culebra build --help`)\n"
+        "  toolchain [status]        Report, install or remove what `build`\n"
+        "                            needs to link on this host (install,\n"
+        "                            uninstall)\n"
 #endif
         "  test [paths...]           Run tests / doctests (--filter, --doc,\n"
         "                            --reporter, --bail, --list)\n"
