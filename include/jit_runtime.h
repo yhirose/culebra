@@ -201,14 +201,13 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
   }
 }
 
-// Stamp a position onto a still-positionless error, as Interpreter::eval does;
-// an Interrupted has no position on either backend. Re-notes the pending
+// Stamp a position onto a still-positionless error. Re-notes the pending
 // carrier, which is what a catch pad reads for the error Object's line/col.
 // (_jit_backfill_op_pos below is the same rule against the published op
 // position, minus the re-note — its consumers are the exception boundaries.)
 inline void _jit_backfill_error_pos(culebra::CulebraError& e, int64_t line,
                                     int64_t col) {
-  if (e.line != 0 || e.col != 0 || is_interrupt(e)) return;
+  if (e.line != 0 || e.col != 0) return;
   e.line = line;
   e.col = col;
   culebra::culebra_note_pending_error(e);

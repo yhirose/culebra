@@ -349,9 +349,11 @@ inline void run_cases(TestHost& host, std::vector<TestCase>& cases,
           args.push_back(resolve_fixture(host, pname, visited, fixtures));
       }
       host.call(c.fn, args);
+    } catch (const Interrupted&) {
+      // Ctrl+C stops the run, it does not fail this one case. Explicit
+      // because the `catch (...)` below would otherwise take it.
+      throw;
     } catch (const CulebraError& e) {
-      // Ctrl+C stops the run, it does not fail this one case.
-      if (is_interrupt(e)) throw;
       failed = true;
       err_kind = e.kind;
       err_what = e.what();

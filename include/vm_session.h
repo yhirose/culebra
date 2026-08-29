@@ -171,7 +171,6 @@ class Session {
       body();
       return true;
     } catch (const CulebraError& e) {
-      if (is_interrupt(e)) throw;
       // interpret()'s formatter, which is main.cc's.
       msgs.push_back(format_error_message(e));
     } catch (const std::exception& e) {

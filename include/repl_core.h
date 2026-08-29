@@ -255,10 +255,9 @@ inline int repl_loop(bool print_ast, const ReplEval& eval) {
             add_history(full_line);
             continue;
           }
-        } catch (const CulebraError& e) {
+        } catch (const Interrupted& e) {
           // The prompt is what an interrupt returns to; the session reports
           // every other error itself.
-          if (!is_interrupt(e)) throw;
           msgs.push_back(format_error_message(e));
         }
       }

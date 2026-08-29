@@ -9221,9 +9221,8 @@ struct Exec {
       throw std::runtime_error(std::move(s));
     } catch (CulebraError& e) {
       // Backfill a positionless error from the published op position at
-      // the engine boundary — JIT::exec's rule (the interp stamps at its
-      // eval() boundary; an Interrupted stays 0:0 on every lane).
-      if (!is_interrupt(e)) _jit_backfill_op_pos(e);
+      // the engine boundary — JIT::exec's rule.
+      _jit_backfill_op_pos(e);
       throw;
     }
   }

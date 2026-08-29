@@ -35,8 +35,6 @@ inline bool load_test_file(const std::string& path, const std::string& source,
     ModuleLoader loader;
     modules = loader.load_program(path, source, msgs);
   } catch (const CulebraError& e) {
-    // Ctrl+C stops the run, it does not mark this file as broken.
-    if (is_interrupt(e)) throw;
     err = {e.kind, e.what(), e.line, e.col};
     return false;
   }
@@ -165,6 +163,8 @@ class VmTestHost : public TestHost {
       describe_thrown_value({e.tag, e.data}, kind, message);
       return true;
     } catch (...) {
+      // interrupt: re-inspection from inside test_runner's own `catch (...)`,
+      // which an explicit Interrupted handler above it never lets one reach.
       return false;
     }
   }

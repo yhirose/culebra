@@ -455,6 +455,40 @@ the thrown object's `kind`/`message` become the `CulebraError`'s fields
 (anything else renders through its display form), so the
 "catch CulebraError" contract covers user throws too.
 
+### Interrupts are not errors
+
+A Ctrl+C, or an isolate's cancel, is not a failure of the script — it is a
+request to stop — so it is **not** a `CulebraError`:
+
+```cpp
+class Interrupted {          // derives from nothing, not even std::exception
+public:
+  const char* what() const noexcept;   // "interrupted" / "isolate cancelled"
+};
+```
+
+Neither handler above can catch one. That is deliberate: a handler written
+to report script errors would otherwise turn a press into a diagnostic and
+carry on running, and the flag is one-shot, so nothing would stop. Only the
+component that hosts the loop answers for an interrupt, by naming the type:
+
+```cpp
+try {
+  embed.call("update", std::move(args));
+} catch (const culebra::Interrupted&) {
+  // stop this run — do not report it as a failure
+  return;
+} catch (const culebra::CulebraError& e) {
+  ...
+}
+```
+
+An embedder that never wants Ctrl+C to stop anything simply installs no
+handler for it (`culebra::install_sigint_handler()` is opt-in, CLI-only).
+Script code is unaffected: `catch e` still binds an error object with
+`e.kind == "Interrupted"` and may resume, and the press is consumed when
+that throw happens, so a caught interrupt does not fire twice.
+
 ### Defining host functions
 
 `Embed::define` registers a C++ callable as a script-visible function.

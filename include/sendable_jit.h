@@ -481,6 +481,12 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
       core->result = std::move(out);
       core->finished = true;
     }
+  } catch (const culebra::Interrupted& e) {
+    // A cancelled child: join() re-raises this as an Interrupted, not as a
+    // program error. Explicit — the type no longer rides in `error`.
+    std::lock_guard<std::mutex> lk(core->m);
+    core->interrupted = e.what();
+    core->finished = true;
   } catch (culebra::CulebraError& e) {
     std::lock_guard<std::mutex> lk(core->m);
     core->error = e;
@@ -516,6 +522,7 @@ inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
     core->thread.join();
     core->joined = true;
   }
+  if (core->interrupted) throw culebra::Interrupted(*core->interrupted);
   if (core->error) throw *core->error;
   if (core->thrown) {
     // A raw user `throw <value>` from the child. Rebuild it on the parent heap
@@ -1503,19 +1510,24 @@ inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   // compiled `catch`. (chan_merge_join is the interp twin, using Value throws.)
   std::optional<culebra::CulebraError> first_err;
   bool have_thrown = false;
+  bool interrupted = false;
   int8_t tt = 0;
   int64_t td = 0;
   for (auto& core : chan_merge_producers(mid)) {
     try {
       _jit_isolate_extract(core);  // joins; re-raises the producer's failure
+    } catch (const culebra::Interrupted&) {
+      // A cancelled producer. Recorded like a failure, first-wins with the
+      // two below, so the remaining producers are still joined here.
+      if (!first_err && !have_thrown) interrupted = true;
     } catch (culebra::CulebraError& e) {
-      if (!first_err && !have_thrown) first_err = e;
+      if (!first_err && !have_thrown && !interrupted) first_err = e;
     } catch (CulebraException& e) {
       // We are the matching catch, so we owe the throw's balancing release
       // (a compiled `catch` would do it). Keep the first value's origin ref for
       // the re-raise below; drop any later ones fully.
       culebra_runtime_value_release(e.tag, e.data);
-      if (!first_err && !have_thrown) {
+      if (!first_err && !have_thrown && !interrupted) {
         have_thrown = true;
         tt = e.tag;
         td = e.data;
@@ -1524,6 +1536,7 @@ inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int6
       }
     }
   }
+  if (interrupted) throw culebra::Interrupted("isolate cancelled");
   if (have_thrown) culebra_runtime_throw(tt, td, 0, 0);  // see above: no position
   if (first_err) throw *first_err;
   { *__ret = {TAG_NIL, 0}; return; }
@@ -1776,6 +1789,10 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
       }
       st->done.fetch_add(1, std::memory_order_relaxed);  // for on_progress
     }
+  } catch (const culebra::Interrupted&) {
+    // A fail-fast consequence, not the cause: stop the others, record nothing.
+    // Explicit — an escape here would end on this worker thread.
+    st->interrupt.store(true, std::memory_order_relaxed);
   } catch (culebra::CulebraError& e) {
     parallel_record_error(*st, 0, e);
   } catch (std::exception& e) {

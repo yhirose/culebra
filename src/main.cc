@@ -182,9 +182,6 @@ bool load_entry_program(
     modules = loader.load_program(path, src, msgs);
     if (splice_preamble) culebra::splice_stdlib_preamble(modules, baked);
   } catch (const culebra::CulebraError& e) {
-    // interrupt: loading only reads and parses, and no parse path polls the
-    // flag, so an Interrupted cannot originate under this try. A press here
-    // stays pending and is answered by the first safepoint of the run.
     print_culebra_error(e);
     return false;
   }
@@ -1670,7 +1667,6 @@ bool doc_block_modules(const std::string& name, const std::string& code,
   } catch (const culebra::CulebraError& e) {
     // A transform's reject (`yield` outside a generator, ...) throws rather
     // than reporting through msgs.
-    // interrupt: a parse polls nothing, so only that reject arrives here.
     fail = {false, "SyntaxError", std::string(e.what())};
     return false;
   }
@@ -1722,8 +1718,6 @@ culebra::BlockRunner doc_block_runner(RunnerEngine engine) {
     try {
       run(modules);
     } catch (const culebra::CulebraError& e) {
-      // Ctrl+C stops the run, it does not fail this one block.
-      if (culebra::is_interrupt(e)) throw;
       return doc_error_outcome(e);
     } catch (const std::exception& e) {
       // An uncaught user `throw` arrives here as "uncaught: <value>"
@@ -2159,7 +2153,6 @@ int run_lint(int argc, const char** argv) {
       try {
         lowered = culebra::parse_with_transforms(path, s, parse_msgs);
       } catch (const culebra::CulebraError& e) {
-        // interrupt: a parse polls nothing, and `lint` installs no handler.
         return vector<culebra::lint::Diagnostic>{
             {e.kind, e.what(), e.line, e.col, culebra::lint::Severity::Error}};
       }
@@ -2608,12 +2601,11 @@ int main(int argc, const char** argv) {
   // subcommands as well as the script lane.
   try {
     return run_main(argc, argv);
-  } catch (const culebra::CulebraError& e) {
+  } catch (const culebra::Interrupted&) {
     // Uncaught Ctrl+C / cancel: exit with the conventional 128+SIGINT.
-    if (culebra::is_interrupt(e)) {
-      cerr << "interrupted" << endl;
-      return 130;
-    }
+    cerr << "interrupted" << endl;
+    return 130;
+  } catch (const culebra::CulebraError& e) {
     print_culebra_error(e);
     return -1;
   } catch (const exception& e) {

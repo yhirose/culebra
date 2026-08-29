@@ -4652,11 +4652,9 @@ struct JIT {
       // still fires on an uncaught Ctrl+C / runtime error).
       try { culebra_runtime_defer_run_to(0); } catch (...) {}
       // Uncaught runtime error (kind/message). Backfill a positionless one
-      // from the published op position before it reaches main.cc's formatter,
-      // mirroring the interp eval boundary; aot_bootstrap does the same. An
-      // Interrupted (async Ctrl+C) has no real source position — leave it 0:0
-      // to match interp (which skips stamping it).
-      if (!is_interrupt(e)) _jit_backfill_op_pos(e);
+      // from the published op position before it reaches main.cc's formatter;
+      // aot_bootstrap does the same.
+      _jit_backfill_op_pos(e);
       throw;
     }
   }

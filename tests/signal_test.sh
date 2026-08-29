@@ -338,8 +338,11 @@ check_stops() {
 
 run_cli_group() {
   fail=0
-  check_stops "test file" 1.5 AFTER -- "$CULEBRA" test "$TMP/runner/test_spin.cul"
-  check_stops "test doc vm" 1.5 AFTER -- "$CULEBRA" test --doc "$TMP/runner/spin.md"
+  # Each lane names its engine: `just test` exports
+  # CULEBRA_REQUIRE_EXPLICIT_ENGINE, under which a runner that picks one by
+  # default aborts before it can be interrupted at all.
+  check_stops "test file" 1.5 AFTER -- "$CULEBRA" test --vm "$TMP/runner/test_spin.cul"
+  check_stops "test doc vm" 1.5 AFTER -- "$CULEBRA" test --doc --vm "$TMP/runner/spin.md"
   check_stops "test doc jit" 1.5 AFTER -- "$CULEBRA" test --doc --jit "$TMP/runner/spin.md"
   exit $fail
 }

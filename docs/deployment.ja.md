@@ -461,6 +461,42 @@ try {
 （`Embed::run*`は例外でなく`msgs`で報告します — CLIが印字する
 のと同じテキストです。）
 
+### interruptはエラーではない
+
+Ctrl+Cやisolateのcancelはスクリプトの失敗ではなく停止の要求なので、
+**`CulebraError`ではありません**:
+
+```cpp
+class Interrupted {          // 基底なし。std::exception ですらない
+public:
+  const char* what() const noexcept;   // "interrupted" / "isolate cancelled"
+};
+```
+
+上のどちらのハンドラもこれを捕まえません。意図的です — スクリプト
+エラーを報告するために書かれたハンドラがこれを捕まえると、押された
+Ctrl+Cが診断メッセージになって実行が続いてしまい、フラグはone-shot
+なので何も止まらなくなります。interruptに答えるのはループをhostする
+コンポーネントだけで、その表明が型を名指すことです:
+
+```cpp
+try {
+  embed.call("update", std::move(args));
+} catch (const culebra::Interrupted&) {
+  // この実行を止める。失敗として報告しない
+  return;
+} catch (const culebra::CulebraError& e) {
+  ...
+}
+```
+
+Ctrl+Cで何も止めたくない埋め込み側は、単にハンドラを設置しなければ
+よい（`culebra::install_sigint_handler()`はopt-inでCLI専用）。
+スクリプト側の見え方は変わりません: `catch e`は今までどおり
+`e.kind == "Interrupted"`のエラーオブジェクトをバインドして再開でき、
+押下はそのthrow時に消費されるので、catchしたinterruptが二度発火する
+ことはありません。
+
 ### ホスト関数の定義
 
 `Embed::define`でC++ のcallableをスクリプトから見える関数として

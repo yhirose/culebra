@@ -62,16 +62,20 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     }
     std::fprintf(stderr, "%s\n", s.c_str());
     return 1;
+  } catch (const culebra::Interrupted&) {
+    // Uncaught Ctrl+C / cancel: drain top-level defers, then the clean
+    // message + conventional 128+SIGINT.
+    try {
+      culebra_runtime_defer_run_to(0);
+    } catch (...) {
+    }
+    std::fprintf(stderr, "interrupted\n");
+    return 130;
   } catch (culebra::CulebraError& e) {
     // Drain top-level defers the uncaught error skipped (mirrors JIT::exec).
     try {
       culebra_runtime_defer_run_to(0);
     } catch (...) {
-    }
-    // Uncaught Ctrl+C / cancel: clean message + conventional 128+SIGINT.
-    if (is_interrupt(e)) {
-      std::fprintf(stderr, "interrupted\n");
-      return 130;
     }
     // Backfill a positionless runtime error from the published op position
     // (JIT::exec does the same before main.cc formats it), then print

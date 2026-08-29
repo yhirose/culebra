@@ -378,9 +378,8 @@ static void test_interrupt() {
   bool threw = false;
   try {
     nt::read(p.server, 16, out, &err);  // silent peer: would block forever
-  } catch (const culebra::CulebraError& e) {
+  } catch (const culebra::Interrupted&) {
     threw = true;
-    CHECK(e.kind == "Interrupted");
   }
   CHECK(threw);
 
@@ -450,8 +449,8 @@ static void test_serve() {
     };
     try {
       nt::serve(lid, 2, hooks, &err);
-    } catch (const culebra::CulebraError&) {
-      // Cooperative Interrupted — the expected way out.
+    } catch (const culebra::Interrupted&) {
+      // The expected way out.
     }
     nt::close_handle(lid);
   });

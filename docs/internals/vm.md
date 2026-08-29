@@ -563,7 +563,11 @@ walks the tables of §5.5 and either resumes at a handler or re-raises
 with the frame uncounted. Uncaught errors are formatted at the engine
 boundary (`run_prepared`): a user `throw` becomes the same `uncaught: …`
 line every lane prints, and a positionless `CulebraError` is backfilled
-from the last published op position.
+from the last published op position. An interrupt reaches neither: it is
+a `culebra::Interrupted`, a type of its own deriving from nothing, so a
+handler written to report errors cannot name a type that catches one. It
+still reaches script code the same way — the pads classify through the
+pending carrier (§5.5), never through the C++ type.
 
 ### 6.3 Safepoints
 

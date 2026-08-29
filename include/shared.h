@@ -225,6 +225,30 @@ class CulebraError : public std::runtime_error {
   CulebraError& operator=(CulebraError&&) = default;
 };
 
+// A cooperative stop — Ctrl+C, or an isolate's cancel — which is never a
+// program's own error. Deliberately NOT a CulebraError, and not a std::exception
+// either: a handler that reports errors cannot name a type that catches one, so
+// the rule is carried by the type system instead of by review. Only a component
+// hosting a loop (the REPL, an embedder) reports it, and only main() turns it
+// into an exit code. Script-level semantics are unchanged: what the engines'
+// catch pads read is the pending carrier, not the C++ type, so a culebra
+// `catch e` still binds an error Object with kind "Interrupted" and can resume.
+class Interrupted {
+ public:
+  explicit Interrupted(std::string msg) : msg_(std::move(msg)) { publish(); }
+  // Copies publish too, for the same reason CulebraError's do: a stored
+  // interrupt re-raised on another thread is what unwinds.
+  Interrupted(const Interrupted& o) : msg_(o.msg_) { publish(); }
+  Interrupted(Interrupted&& o) : msg_(std::move(o.msg_)) { publish(); }
+  Interrupted& operator=(const Interrupted&) = default;
+  Interrupted& operator=(Interrupted&&) = default;
+  const char* what() const noexcept { return msg_.c_str(); }
+
+ private:
+  void publish() { culebra_note_pending_error("Interrupted", msg_, 0, 0); }
+  std::string msg_;
+};
+
 // Re-publish an in-flight error into the pending carrier after a backfill catch
 // has adjusted its position (a runtime site that stamps its own line/col onto a
 // positionless error and rethrows). Keeps the carrier the JIT pad reads in sync
@@ -247,6 +271,11 @@ inline std::string format_error_message(const CulebraError& e) {
   if (msg.find('\n') != std::string_view::npos)
     return culebra::format("{} at {}:{}: {}", e.kind, e.line, e.col, msg);
   return culebra::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col);
+}
+
+// The same, for an interrupt a loop host reports rather than propagates.
+inline std::string format_error_message(const Interrupted& e) {
+  return culebra::format("Interrupted: {}", e.what());
 }
 
 // Diagnostics joined into one "; "-separated line — the text the doctest
@@ -2507,7 +2536,7 @@ inline void throw_if_interrupted() {
   // Per-thread isolate cancel: sticky, its own message. Checked first so an
   // isolate thread reports its own cancel instead of consuming a Ctrl+C wake.
   if (f && !is_sigint_flag(f) && f->load(std::memory_order_relaxed)) {
-    throw CulebraError("Interrupted", "isolate cancelled");
+    throw Interrupted("isolate cancelled");
   }
   // Ctrl+C: one-shot. Only the main/CLI context — whose interrupt_flag IS the
   // sigint flag, or is null under a borrowed JIT RuntimeScope — consumes it. An
@@ -2515,15 +2544,8 @@ inline void throw_if_interrupted() {
   if (culebra_g_sigint.load(std::memory_order_relaxed) &&
       (!f || is_sigint_flag(f))) {
     _consume_sigint();
-    throw CulebraError("Interrupted", "interrupted");
+    throw Interrupted("interrupted");
   }
-}
-
-// Ctrl+C or a cancel, as opposed to a program's own error. A catch that
-// reports errors lets this one through; only a component hosting a loop (the
-// REPL, an embedder) reports it, and only main() turns it into an exit code.
-inline bool is_interrupt(const CulebraError& e) {
-  return e.kind == "Interrupted";
 }
 
 // Whether a Ctrl+C or `flag`'s cancel is pending. `flag` is the watched

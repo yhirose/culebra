@@ -9,6 +9,11 @@
 // one-shot (consumed on the throw, so a `catch` can resume), and that an
 // isolate-style sticky cancel keeps its own message and is not consumed. Runs
 // on any platform that builds culebra.
+//
+// It also pins the embedding contract the type split introduced: an interrupt
+// is a `culebra::Interrupted`, which derives from nothing, so an embedder's
+// `catch (const CulebraError&)` / `catch (const std::exception&)` — the shape
+// docs/deployment.md shows for reporting script errors — cannot take one.
 
 #include <atomic>
 #include <deque>
@@ -74,13 +79,20 @@ int run() {
   {
     bool threw = false;
     try {
-      culebra::throw_if_interrupted();
-    } catch (const culebra::CulebraError& e) {
+      // The inner handlers are the ones an embedder writes to report script
+      // errors. Neither may take an interrupt — if one does, it never reaches
+      // the outer handler and `threw` stays false as well.
+      try {
+        culebra::throw_if_interrupted();
+      } catch (const culebra::CulebraError&) {
+        expect(false, "a CulebraError handler must not catch an interrupt");
+      } catch (const std::exception&) {
+        expect(false, "a std::exception handler must not catch an interrupt");
+      }
+    } catch (const culebra::Interrupted& e) {
       threw = true;
-      expect(e.kind == "Interrupted", "throw_if_interrupted kind");
       expect(std::string(e.what()) == "interrupted",
              "throw_if_interrupted message");
-      expect(e.line == 0 && e.col == 0, "Interrupted has no source position");
     }
     expect(threw, "throw_if_interrupted threw when flag set");
   }
@@ -94,9 +106,8 @@ int run() {
     bool threw = false;
     try {
       culebra::throw_if_interrupted();
-    } catch (const culebra::CulebraError& e) {
+    } catch (const culebra::Interrupted& e) {
       threw = true;
-      expect(e.kind == "Interrupted", "isolate cancel kind");
       expect(std::string(e.what()) == "isolate cancelled",
              "isolate cancel message");
     }
@@ -140,11 +151,10 @@ int run() {
     bool threw = false;
     try {
       culebra::JIT::run(ast);
-    } catch (const culebra::CulebraError& e) {
-      threw = (e.kind == "Interrupted");
-      expect(e.kind == "Interrupted", "jit interrupted kind");
-    } catch (const std::exception& e) {
-      expect(false, "jit threw a non-CulebraError");
+    } catch (const culebra::Interrupted&) {
+      threw = true;
+    } catch (const std::exception&) {
+      expect(false, "jit threw a non-Interrupted");
     }
     expect(threw, "jit loop safepoint interrupted");
     expect(!culebra::culebra_g_sigint.load(), "jit consumed flag");

@@ -420,8 +420,7 @@ class Embed {
   static bool reporting(std::vector<std::string>& msgs, Body&& body) {
     try {
       return body();
-    } catch (const CulebraError& e) {
-      if (!is_interrupt(e)) throw;
+    } catch (const Interrupted& e) {
       msgs.push_back(format_error_message(e));
       return false;
     }

@@ -1,24 +1,24 @@
 # One line per catch-handler chain: FILE:LINE<TAB>TYPE<TAB>VERDICT.
 #
 # A chain is the run of handlers attached to one `try`. Handlers are contiguous
-# in the source — `} catch (...) {` closes the previous one — so a catch that
-# opens on the line where the previous handler's body closed is in the same
-# chain.
+# in the source — `} catch (...) {` closes the previous one and opens the next,
+# so that line ends a handler and starts another in the same chain.
 #
-# CulebraError derives from std::runtime_error, so the handler that answers for
-# an interrupt is the FIRST in the chain whose type can catch one. That is the
-# only handler this reports on.
+# An interrupt is a `culebra::Interrupted`, which derives from nothing: only a
+# handler naming it, or a catch-all, can take one. The handler that answers for
+# an interrupt is the FIRST in the chain of either shape, and that is the only
+# one this reports on.
 #
 # Verdicts:
-#   CHECKED     asks is_interrupt() and re-throws it
+#   EXPLICIT    names Interrupted, so it answers for one deliberately
 #   RETHROWS    re-throws everything (`throw;`)
 #   TERMINATES  ends the process, so nothing is swallowed
 #   DOCUMENTED  carries an `// interrupt: <why an interrupt cannot arrive>` note
 #   SWALLOWS    none of the above
 
-function classify(body, raw,   b) {
+function classify(body, raw, type,   b) {
   b = body
-  if (b ~ /is_interrupt/) return "CHECKED"
+  if (type ~ /Interrupted/) return "EXPLICIT"
   if (b ~ /(^|[^_[:alnum:]])throw[[:space:]]*;/) return "RETHROWS"
   if (b ~ /std::(terminate|abort|_Exit)|(^|[^_[:alnum:]])abort[[:space:]]*\(/)
     return "TERMINATES"
@@ -28,9 +28,9 @@ function classify(body, raw,   b) {
 
 function flush_chain(   i) {
   for (i = 1; i <= chain_n; i++) {
-    if (chain_type[i] ~ /CulebraError|std::runtime_error|std::exception|^\.\.\.$/) {
+    if (chain_type[i] ~ /Interrupted|^\.\.\.$/) {
       printf "%s:%d\t%s\t%s\n", FILENAME, chain_line[i], chain_type[i],
-             classify(chain_body[i], chain_raw[i])
+             classify(chain_body[i], chain_raw[i], chain_type[i])
       break
     }
   }
@@ -46,6 +46,17 @@ FNR == 1 { flush_chain(); prev_end = -1; in_body = 0 }
   line = $0
   sub(/\/\/.*$/, "", line)   # a comment must not supply `throw;`
 
+  # `} catch (...) {` is balanced, so brace counting alone would run the whole
+  # chain together as one handler — and then a chain whose first handler is a
+  # type this does not report on would be skipped whole. Close the handler here
+  # instead, at the `}` that ends its body, and let the branch below open the
+  # next one in the same chain.
+  if (in_body && depth == 1 &&
+      line ~ /^[[:space:]]*\}[[:space:]]*catch[[:space:]]*\(/) {
+    in_body = 0
+    prev_end = FNR
+  }
+
   if (!in_body && line ~ /catch[[:space:]]*\(/) {
     if (FNR != prev_end) flush_chain()
     rest = substr(line, index(line, "catch"))  # drop the `}` closing the last handler
@@ -59,7 +70,7 @@ FNR == 1 { flush_chain(); prev_end = -1; in_body = 0 }
     chain_line[chain_n] = FNR
     chain_type[chain_n] = type
     chain_body[chain_n] = ""
-    # The note may sit just above the `try`, so the raw window starts there.
+    # The note may sit just above the handler, so the raw window starts there.
     chain_raw[chain_n] = pending_raw
     depth = 0
     in_body = 1

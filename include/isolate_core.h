@@ -78,6 +78,9 @@ struct IsolateCore {
   sendable::SendNode result;                    // neutral result
   std::optional<culebra::CulebraError> error;   // structured error crossed back
   std::optional<sendable::SendNode> thrown;     // threaded user `throw` value
+  // A cancel that reached the child, kept apart from `error`: an Interrupted
+  // is not a CulebraError, and join() must not re-raise it as one.
+  std::optional<std::string> interrupted;
 
   // Safety net: a joinable std::thread destroyed without join() calls
   // std::terminate. `join`/`drop` normally join first; this covers the rest.
@@ -443,7 +446,7 @@ inline void channel_send_node(int64_t id, sendable::SendNode node) {
   size_t room = core->cap == 0 ? 1 : core->cap;
   while (!core->closed && core->q.size() >= room) {
     if (culebra::interrupt_requested())
-      throw culebra::CulebraError("Interrupted", "isolate cancelled");
+      throw culebra::Interrupted("isolate cancelled");
     core->cv.wait_for(lk, std::chrono::milliseconds(50));
   }
   if (core->closed)
@@ -454,7 +457,7 @@ inline void channel_send_node(int64_t id, sendable::SendNode node) {
   if (core->cap == 0) {
     while (!core->closed && !core->q.empty()) {
       if (culebra::interrupt_requested())
-        throw culebra::CulebraError("Interrupted", "isolate cancelled");
+        throw culebra::Interrupted("isolate cancelled");
       core->cv.wait_for(lk, std::chrono::milliseconds(50));
     }
   }
@@ -468,7 +471,7 @@ inline std::optional<sendable::SendNode> chan_pop_blocking(int64_t id) {
   std::unique_lock<std::mutex> lk(core->m);
   while (core->q.empty() && !core->closed) {
     if (culebra::interrupt_requested())
-      throw culebra::CulebraError("Interrupted", "isolate cancelled");
+      throw culebra::Interrupted("isolate cancelled");
     core->cv.wait_for(lk, std::chrono::milliseconds(50));
   }
   if (core->q.empty()) return std::nullopt;  // closed + empty
@@ -625,7 +628,7 @@ inline std::optional<sendable::SendNode> chan_select_recv(int64_t mid) {
     }
     if (all_done) return std::nullopt;
     if (culebra::interrupt_requested())
-      throw culebra::CulebraError("Interrupted", "isolate cancelled");
+      throw culebra::Interrupted("isolate cancelled");
     std::unique_lock<std::mutex> lk(w.m);
     w.cv.wait_for(lk, std::chrono::milliseconds(50), [&] { return w.ready; });
     w.ready = false;
@@ -674,7 +677,6 @@ struct ParallelState {
 inline void parallel_record_error(ParallelState& st, size_t i,
                                   culebra::CulebraError e) {
   st.interrupt.store(true, std::memory_order_relaxed);  // stop the others
-  if (is_interrupt(e)) return;  // a fail-fast consequence, not the cause
   std::lock_guard<std::mutex> lk(st.err_m);
   if (!st.failed) {
     st.failed = true;
