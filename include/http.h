@@ -183,6 +183,16 @@ struct HttpRequest {
   std::string content_type;        // applied iff body/body_source set and no
                                    // explicit Content-Type header.
   int64_t timeout_sec = 0;            // per-phase timeout; 0 => library default.
+  int64_t connect_timeout_sec = 0;    // connect phase only; 0 => timeout_sec.
+                                   // A big download wants a long read timeout
+                                   // and a short one on the connect that
+                                   // precedes it; one value cannot say both.
+  std::string proxy;               // "host:port"; empty => connect directly.
+                                   // Per-request rather than read from the
+                                   // environment: HTTPS_PROXY without NO_PROXY
+                                   // and a loopback exemption would route a
+                                   // script's 127.0.0.1 call through a proxy.
+                                   // Only the toolchain installer sets it.
   bool follow_redirects = true;    // 3xx Location chasing.
   BodySink body_sink = nullptr;    // set → stream the response body (no buffer).
   BodySource body_source = nullptr;// set → stream the request body (chunked).
@@ -327,6 +337,39 @@ inline thread_local IdRegistry<HttpClient> g_http_clients;
 inline int64_t _http_client_register(HttpClient* c) { return g_http_clients.add(c); }
 inline HttpClient* _http_client_get(int64_t id) { return g_http_clients.get(id); }
 inline void _http_client_unregister(int64_t id) { g_http_clients.invalidate(id); }
+
+// Append encoded query params to a path, preserving any query already in it.
+// Shared because a one-off and a client request differ in where the path comes
+// from, never in how params are attached to it.
+inline void _http_append_params(std::string& path, const HeaderList& params) {
+  if (params.empty()) return;
+  path += (path.find('?') == std::string::npos ? "?" : "&") +
+          encode_query(params);
+}
+
+// The one place request knobs become client settings. A one-off and a
+// persistent client differ only in keep-alive: the one-off tolerates servers
+// that don't speak keep-alive cleanly, the client reuses its connection.
+inline void _http_configure(httplib::Client& cli, int64_t timeout_sec,
+                            int64_t connect_timeout_sec, bool follow_redirects,
+                            bool keep_alive, const std::string& proxy = {}) {
+  cli.set_follow_location(follow_redirects);
+  cli.set_keep_alive(keep_alive);
+  if (timeout_sec > 0) {
+    cli.set_connection_timeout(timeout_sec, 0);
+    cli.set_read_timeout(timeout_sec, 0);
+    cli.set_write_timeout(timeout_sec, 0);
+  }
+  // After the block above, so a shorter connect timeout wins over the shared one.
+  if (connect_timeout_sec > 0) cli.set_connection_timeout(connect_timeout_sec, 0);
+  if (!proxy.empty()) {
+    auto colon = proxy.rfind(':');
+    if (colon != std::string::npos) {
+      cli.set_proxy(proxy.substr(0, colon).c_str(),
+                    std::atoi(proxy.c_str() + colon + 1));
+    }
+  }
+}
 
 // Merge `over` onto `base` with per-key (case-insensitive) override: a header
 // present in both takes `over`'s value; others are appended. Used to layer a
@@ -572,25 +615,15 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
     out.error = std::move(err);
     return out;
   }
-  // Append query params (percent-encoded), preserving any query already in url.
-  if (!req.params.empty()) {
-    path += (path.find('?') == std::string::npos ? "?" : "&") +
-            encode_query(req.params);
-  }
+  _http_append_params(path, req.params);
 
   httplib::Client cli(origin);
   if (!cli.is_valid()) {
     out.error = "Http: invalid URL or unsupported scheme: " + req.url;
     return out;
   }
-  cli.set_follow_location(req.follow_redirects);
-  // Tolerate servers that don't speak keep-alive cleanly on a one-shot call.
-  cli.set_keep_alive(false);
-  if (req.timeout_sec > 0) {
-    cli.set_connection_timeout(req.timeout_sec, 0);
-    cli.set_read_timeout(req.timeout_sec, 0);
-    cli.set_write_timeout(req.timeout_sec, 0);
-  }
+  _http_configure(cli, req.timeout_sec, req.connect_timeout_sec,
+                  req.follow_redirects, /*keep_alive=*/false, req.proxy);
 
   httplib::Request hreq;
   _http_build_request(req, path, req.headers, hreq);
@@ -633,13 +666,10 @@ CULEBRA_RT_HTTP_LINKAGE int64_t http_client_open(const std::string& base_url,
   c->default_headers = std::move(default_headers);
   c->timeout_sec = timeout_sec;
   c->follow_redirects = follow_redirects;
-  c->cli.set_follow_location(follow_redirects);
-  c->cli.set_keep_alive(true);  // reuse the connection across requests.
-  if (timeout_sec > 0) {
-    c->cli.set_connection_timeout(timeout_sec, 0);
-    c->cli.set_read_timeout(timeout_sec, 0);
-    c->cli.set_write_timeout(timeout_sec, 0);
-  }
+  // A persistent client has no proxy or split connect timeout: both exist for
+  // the one-off the toolchain installer makes, and Http.client exposes neither.
+  _http_configure(c->cli, timeout_sec, /*connect_timeout_sec=*/0,
+                  follow_redirects, /*keep_alive=*/true);
   return _http_client_register(c);
 #endif
 }
@@ -673,10 +703,7 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_client_request(int64_t id,
     return http_request(fresh);
   }
   std::string path = _http_join_path(c->base_path, req.url);
-  if (!req.params.empty()) {
-    path += (path.find('?') == std::string::npos ? "?" : "&") +
-            encode_query(req.params);
-  }
+  _http_append_params(path, req.params);
   HeaderList headers = merge_headers(c->default_headers, req.headers);
   httplib::Request hreq;
   _http_build_request(req, path, headers, hreq);

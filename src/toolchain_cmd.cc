@@ -28,7 +28,7 @@ LLD_HAS_DRIVER(mingw)
 #endif
 
 #if defined(CULEBRA_HTTP_ENABLED)
-#include <httplib.h>
+#include <http.h>  // http_request — the same client the Http namespace uses
 #endif
 
 namespace fs = std::filesystem;
@@ -300,6 +300,52 @@ bool link_in_process(const std::vector<std::string>& driver_args,
 
 namespace {
 
+// Only the Windows install fetches anything, but these two are plain HTTP with
+// no Windows API in them, so they live outside that guard: code compiled on one
+// platform alone is code the other two builds never type-check, and this file
+// has already shipped one such error to a CI run.
+#if defined(CULEBRA_HTTP_ENABLED)
+// $HTTPS_PROXY as "host:port", or empty. httplib does not read the environment
+// itself, and a corporate network is exactly where a download is most likely to
+// be the blocked step. Read here rather than inside http_request: a proxy the
+// whole Http namespace honoured would need NO_PROXY and a loopback exemption to
+// stop routing a script's 127.0.0.1 call through it.
+[[maybe_unused]] std::string proxy_from_env() {
+  const char* p = std::getenv("HTTPS_PROXY");
+  if (!p || !*p) return {};
+  std::string s(p);
+  if (auto at = s.rfind("://"); at != std::string::npos) s = s.substr(at + 3);
+  if (!s.empty() && s.back() == '/') s.pop_back();
+  return s.find(':') == std::string::npos ? std::string{} : s;
+}
+
+// One GET through the same client the Http namespace uses. GitHub answers a
+// release asset with a redirect to its CDN, so following locations is not
+// optional; the long read timeout is for an 8 MB body, and the short connect
+// timeout keeps a dead proxy from costing that same two minutes.
+[[maybe_unused]] bool fetch(const std::string& url, std::string& body,
+                            std::string& err) {
+  culebra::http::HttpRequest req;
+  req.url = url;
+  req.follow_redirects = true;
+  req.timeout_sec = 120;
+  req.connect_timeout_sec = 30;
+  req.proxy = proxy_from_env();
+  auto res = culebra::http::http_request(req);
+  if (!res.ok) {
+    err = std::format("could not reach {} ({})", url,
+                      res.error.empty() ? "no response" : res.error);
+    return false;
+  }
+  if (res.status != 200) {
+    err = std::format("{} answered {}", url, res.status);
+    return false;
+  }
+  body = std::move(res.body);
+  return true;
+}
+#endif  // CULEBRA_HTTP_ENABLED
+
 #ifdef _WIN32
 
 // Extract with the bsdtar Windows has shipped as tar.exe since 10 1803; it
@@ -338,40 +384,6 @@ bool extract_zip(const fs::path& archive, const fs::path& into,
   return true;
 }
 
-#if defined(CULEBRA_HTTP_ENABLED)
-// GitHub answers a release asset with a redirect to its CDN, so following
-// locations is not optional here.
-bool http_get(const std::string& host, const std::string& path,
-              std::string& body, std::string& err) {
-  httplib::Client cli(host);
-  cli.set_follow_location(true);
-  cli.set_read_timeout(120);
-  cli.set_connection_timeout(30);
-  if (const char* proxy = std::getenv("HTTPS_PROXY");
-      proxy && *proxy) {
-    // httplib does not read the environment itself; a corporate network is
-    // exactly where a download is most likely to be the blocked step.
-    std::string p(proxy);
-    auto at = p.rfind("://");
-    if (at != std::string::npos) p = p.substr(at + 3);
-    auto colon = p.rfind(':');
-    if (colon != std::string::npos)
-      cli.set_proxy(p.substr(0, colon).c_str(), std::atoi(p.c_str() + colon + 1));
-  }
-  auto res = cli.Get(path);
-  if (!res) {
-    err = std::format("could not reach {}{} ({})", host, path,
-                      httplib::to_string(res.error()));
-    return false;
-  }
-  if (res->status != 200) {
-    err = std::format("{}{} answered {}", host, path, res->status);
-    return false;
-  }
-  body = std::move(res->body);
-  return true;
-}
-#endif  // CULEBRA_HTTP_ENABLED
 
 // Put an extracted kit where a link will look for it. Extraction goes to a
 // sibling temporary and a rename claims the name, so an interrupted install
@@ -480,13 +492,13 @@ bool install_windows(const std::string& from, std::string& err) {
   } else {
 #if defined(CULEBRA_HTTP_ENABLED)
     auto name = std::format("{}.zip", kKitName);
-    auto asset = std::format("{}/v{}/{}", kReleasePath, kVersion, name);
+    auto url = std::format("{}{}/v{}/{}", kReleaseHost, kReleasePath, kVersion,
+                           name);
     std::println("culebra toolchain: fetching the Windows kit for culebra {}…",
                  kVersion);
     std::string body, want;
-    if (!http_get(std::string(kReleaseHost), asset, body, err)) return false;
-    if (!http_get(std::string(kReleaseHost), asset + ".sha256", want, err))
-      return false;
+    if (!fetch(url, body, err)) return false;
+    if (!fetch(url + ".sha256", want, err)) return false;
     // Verified before it is written, so a kit that failed its digest never
     // exists as a file anyone could reach for.
     if (!verify_digest(body, want, name, err)) return false;
