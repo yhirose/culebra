@@ -38,49 +38,96 @@ The default invocation targets the host platform.
 Running a script needs nothing beside the `culebra` binary, and neither
 does `--jit` — the LLVM that compiles the code is inside it. `culebra
 build` is the one subcommand that reaches outside: the codegen is
-in-process, but the **link step drives the platform's C++ compiler**,
-which a machine that has never built anything does not have. `build`
-checks for it before compiling anything and names what to install.
+in-process, but a link needs the platform's object-file plumbing, which
+a machine that has never built anything does not have. `build` checks
+before compiling anything, and on a terminal offers to install what is
+missing rather than only naming it.
 
-| Host | What the link step needs | Install |
+| Host | What the link step needs | How to get it |
 |---|---|---|
-| macOS | Xcode Command Line Tools — the `cc` shim in `/usr/bin` is not it, and the SDK stubs it brings are what a Mach-O links `libSystem` against | `xcode-select --install` |
+| macOS | Xcode Command Line Tools — the `cc` shim in `/usr/bin` is not it, and the SDK stubs it brings are what a Mach-O links `libSystem` against | `culebra toolchain install` (starts Apple's installer), or `xcode-select --install` |
 | Linux | `cc`, libstdc++ and the C runtime startup files | `sudo apt install g++` (Debian/Ubuntu), `sudo dnf install gcc-c++` (Fedora) |
-| Windows | mingw-w64 `clang++` and `lld` from **UCRT64** — not MSVC, not MINGW64, not CLANG64 | MSYS2, below |
+| Windows | the mingw CRT objects and static libraries — **no compiler and no linker** | `culebra toolchain install` (~6 MB) |
 
 Nothing else: the archives an AOT link needs, third-party statics
 included, come out of the `culebra` binary itself ([§4](#4-shared-runtime-archive-layout)).
 The one library still linked from the system is zlib, which a program
 using `Http`, `Compress` or `to_png` reaches through `-lz` — already
-present on macOS and in MSYS2's clang, but on Linux the linker's
+present on macOS and in the Windows kit, but on Linux the linker's
 `libz.so` symlink lives in the dev package (`sudo apt install
 zlib1g-dev`, `sudo dnf install zlib-devel`).
 
-Windows ships no toolchain at all, and the one it needs is specific.
-The download and the runtime archive inside it are built by MSYS2's
-UCRT64 clang, so the link has to come from the same environment: the
-same libstdc++ ABI (UCRT64's clang sits on GCC's libstdc++; CLANG64's
-is libc++, a different ABI) and the same C runtime. The linker is lld
-rather than GNU ld because only lld dead-strips a PE the way the ELF
-and Mach-O linkers do: GNU ld keeps every function's unwind record, and
-each record keeps its function, so `--gc-sections` would leave the
-whole runtime archive in every program. (The link line also asks for
-`-lstdc++exp`, where recent libstdc++ keeps the console helpers C++23
-`std::print` resolves at link time; older MinGW distributions have no
-such library.) From an elevated PowerShell:
+Linux is the one host culebra will not install for: a C++ toolchain
+there belongs to the distribution's package manager and needs root, and
+running `sudo` on a user's behalf is not something a compiler should do.
+`culebra toolchain install` prints the one command for the distro and
+stops.
 
-```powershell
-winget install -e --id MSYS2.MSYS2
-C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"
-C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"   # again if the first pass exits early
-C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld"
-$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+### `culebra toolchain`
+
+```sh
+culebra toolchain status                  # what is here, and whether a link can happen
+culebra toolchain install                 # get what is missing
+culebra toolchain install --from <zip>    # a kit built locally, instead of the release's
+culebra toolchain uninstall               # remove what culebra installed
 ```
 
-The last line lasts as long as the shell; put the directory on the user
-`PATH` to keep it. Nothing else from MSYS2 is needed — LLVM does not
-have to be installed for `culebra build`, only for building Culebra
-itself from source.
+On Windows, `install` fetches the kit published with the release whose
+version this binary reports, checks it against the digest published
+beside it, and unpacks it into
+
+```
+%LOCALAPPDATA%\culebra\toolchain\<version>\
+```
+
+Nothing is elevated, no `PATH` is edited and no registry key is written;
+`uninstall` is a removal of that directory, and deleting it by hand does
+the same thing. Kits are per-version because the kit's libstdc++ has to
+be the one this binary's embedded runtime archives were compiled against
+— `install` refuses a kit whose manifest names a different version, and
+upgrading culebra means installing the kit that came with it.
+
+Elsewhere `install` is a thin thing: on macOS it starts Apple's Command
+Line Tools installer (a GUI flow this process cannot wait on, so it
+hands over and asks you to re-run the build), and on Linux it prints the
+package command. `uninstall` there reports that culebra installed
+nothing to remove.
+
+### Why Windows needs no compiler
+
+Windows ships no toolchain at all, and what an AOT link is missing there
+is a linker, not a compiler: `culebra build` emits its own object
+in-process. So the linker is inside the binary — culebra links lld into
+itself, on top of the LLVM it already carries for the JIT — and what the
+kit supplies is only the mingw half of a link: the CRT objects,
+libstdc++/libgcc, and the Win32 import libraries.
+
+That choice is what keeps the download small. MSYS2's `ld.lld.exe` is
+5.7 MB of program linked against a 147 MB `libLLVM` DLL, so a kit that
+shipped the linker as a program measured 55 MB zipped against 6 MB for
+one that ships libraries alone.
+
+The kit is packed at release time out of the same MSYS2 UCRT64 tree that
+compiled the runtime archives inside the binary
+(`misc/pack_windows_toolchain.sh`), which is what makes their libstdc++
+match by construction rather than by a version comparison someone has to
+get right. It records the linker command line that toolchain's C++
+driver would build (`link-recipe.txt`), and culebra splices its own
+objects and feature libraries into the middle of it — so the link
+culebra performs is the one the driver would have performed, without
+the driver.
+
+UCRT64 rather than another MSYS2 environment: the same libstdc++ ABI
+(UCRT64's clang sits on GCC's libstdc++; CLANG64's is libc++, a
+different ABI) and the same C runtime. lld rather than GNU ld because
+only lld dead-strips a PE the way the ELF and Mach-O linkers do — GNU ld
+keeps every function's unwind record, and each record keeps its
+function, so `--gc-sections` would leave the whole runtime archive in
+every program.
+
+Building Culebra itself from source on Windows is a different matter and
+does want the full MSYS2 toolchain; [`CONTRIBUTING.md`](../CONTRIBUTING.md)
+covers that.
 
 ### Options
 

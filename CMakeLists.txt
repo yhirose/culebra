@@ -352,8 +352,19 @@ if(CULEBRA_ENABLE_JIT)
         "-DCULEBRA_LLVM_ALL_TARGETS=ON to link every backend instead.")
     endif()
   endif()
+  # On Windows the driver also carries lld, so `culebra build` can link without
+  # a compiler on the machine (see the CULEBRA_INPROCESS_LLD block below).
+  # lld's COFF driver reaches parts of LLVM the JIT never does; naming them
+  # here lets llvm_map_components_to_libnames expand their dependencies the
+  # same way it does the JIT's.
+  set(_lld_components "")
+  if(WIN32)
+    set(_lld_components
+      lto option object binaryformat targetparser
+      windowsdriver windowsmanifest debuginfopdb debuginfocodeview)
+  endif()
   llvm_map_components_to_libnames(llvm_libs
-    core support orcjit native passes ${_extra_target_libs})
+    core support orcjit native passes ${_extra_target_libs} ${_lld_components})
 
   # Some distros (e.g. Arch Linux) package only the combined libLLVM.so
   # and omit per-component static archives — or ship a handful of stale
@@ -400,6 +411,52 @@ libs (auto-detected when the static libs are missing)" OFF)
       set_target_properties(zstd::libzstd_shared PROPERTIES ${_zstd_props})
       message(STATUS "zstd: linking ${CULEBRA_ZSTD_STATIC} statically (LLVM dep)")
     endif()
+  endif()
+
+  # --- lld, linked into the driver (Windows) --------------------------------
+  # `culebra build` links through an external C++ driver everywhere else, and
+  # that is fine where one exists: macOS has the CLT shim, Linux ships gcc in
+  # every base image worth the name. Windows ships no toolchain at all, so the
+  # link step is the one thing a downloaded culebra.exe cannot do — and what it
+  # is missing is a linker, not a compiler, because the object is emitted
+  # in-process already.
+  #
+  # Carrying lld answers that without carrying a toolchain. It is ~4 MB of
+  # library on top of the LLVM this binary already links for the JIT, where
+  # shipping MSYS2's ld.lld.exe to users would mean shipping the 147 MB
+  # libLLVM DLL it is linked against — measured at 6 MB versus 55 MB zipped for
+  # the download that has to reach them. What remains on the user's side is the
+  # mingw half of a link (CRT objects, libstdc++, import libraries), which
+  # misc/pack_windows_toolchain.sh packs and `culebra toolchain install`
+  # fetches.
+  #
+  # Found by library and header rather than through LLDConfig.cmake: MSYS2
+  # ships the archives and lld/Common/Driver.h without always shipping the
+  # CMake package, and the archives are what this needs. Absence is not fatal —
+  # a build without them keeps the external-driver path, which is what a local
+  # MSYS2 developer has anyway.
+  if(WIN32)
+    find_library(CULEBRA_LLD_MINGW  NAMES lldMinGW  HINTS ${LLVM_LIBRARY_DIRS})
+    find_library(CULEBRA_LLD_COFF   NAMES lldCOFF   HINTS ${LLVM_LIBRARY_DIRS})
+    find_library(CULEBRA_LLD_COMMON NAMES lldCommon HINTS ${LLVM_LIBRARY_DIRS})
+    find_path(CULEBRA_LLD_INCLUDE NAMES lld/Common/Driver.h
+              HINTS ${LLVM_INCLUDE_DIRS})
+    if(CULEBRA_LLD_MINGW AND CULEBRA_LLD_COFF AND CULEBRA_LLD_COMMON
+       AND CULEBRA_LLD_INCLUDE)
+      # MinGW before COFF before Common: the mingw driver translates GNU-style
+      # arguments and calls the COFF one, and both reach Common.
+      set(CULEBRA_LLD_LIBS "${CULEBRA_LLD_MINGW}" "${CULEBRA_LLD_COFF}"
+                           "${CULEBRA_LLD_COMMON}")
+      add_compile_definitions(CULEBRA_INPROCESS_LLD)
+      include_directories(${CULEBRA_LLD_INCLUDE})
+      message(STATUS "lld: linked into the driver (AOT needs no external linker)")
+    else()
+      set(CULEBRA_LLD_LIBS "")
+      message(STATUS "lld: not found as a library — `culebra build` will need "
+                     "an external clang++ on PATH")
+    endif()
+  else()
+    set(CULEBRA_LLD_LIBS "")
   endif()
 
   add_compile_definitions(CULEBRA_JIT_ENABLED)
@@ -789,7 +846,8 @@ add_custom_command(
   VERBATIM)
 
 add_executable(culebra ./src/main.cc ./src/source_dir.cc ./src/docs_cmd.cc
-                       ./src/init_cmd.cc ${_docs_gen} ${_editor_gen})
+                       ./src/init_cmd.cc ./src/toolchain_cmd.cc
+                       ${_docs_gen} ${_editor_gen})
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
   # Before 3.24, CMake hands GCC a bare `-flto`, which runs all 128 LTRANS jobs
@@ -866,7 +924,9 @@ if(CULEBRA_WRAP_SOURCES)
 endif()
 
 if(CULEBRA_ENABLE_JIT)
-  target_link_libraries(culebra ${llvm_libs})
+  # lld ahead of ${llvm_libs}: its archives reach into LLVM, not the other way
+  # round, and a static link resolves left to right.
+  target_link_libraries(culebra ${CULEBRA_LLD_LIBS} ${llvm_libs})
   culebra_export_jit_symbols(culebra)
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the

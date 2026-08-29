@@ -10,6 +10,7 @@
 #include <exe_path.h>  // current_executable_path — `--doc --jobs` re-runs this
 #include <formatter.h>
 #include <init_cmd.h>
+#include <toolchain_cmd.h>
 #include <proc.h>  // run_all — the doc shards are child processes
 #include <source_dir.h>
 #include <test_engine.h>
@@ -268,45 +269,9 @@ constexpr const char* kStripLocals = "-Wl,-x";
 constexpr bool kLinkStripsGlobals = false;
 #endif
 
-// What to install when that driver isn't there. A machine that has never
-// compiled anything has none of it, and the shell's own message ("'clang++' is
-// not recognized") names no fix — so `build` checks up front and says this
-// instead. Kept in step with the host-requirements table in docs/deployment.md
-// §1.
-#ifdef _WIN32
-constexpr std::string_view kToolchainHint =
-    "the link step needs mingw-w64's clang++ and lld (UCRT64), which Windows "
-    "does not ship. In an elevated PowerShell:\n"
-    "    winget install -e --id MSYS2.MSYS2\n"
-    "    C:\\msys64\\usr\\bin\\bash.exe -lc \"pacman -Syu --noconfirm\"\n"
-    "    C:\\msys64\\usr\\bin\\bash.exe -lc \"pacman -S --noconfirm "
-    "mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld\"\n"
-    "  then put C:\\msys64\\ucrt64\\bin on PATH.";
-#elif defined(__APPLE__)
-constexpr std::string_view kToolchainHint =
-    "the link step needs Xcode's Command Line Tools:\n"
-    "    xcode-select --install";
-#else
-constexpr std::string_view kToolchainHint =
-    "the link step drives the system `cc` (Debian/Ubuntu: sudo apt install "
-    "g++; Fedora: sudo dnf install gcc-c++).";
-#endif
-
-// Whether that driver is there to be run. macOS is the odd one out: /usr/bin/cc
-// exists without the Command Line Tools — it is a shim that offers to install
-// them — so its presence proves nothing and xcode-select answers instead.
-static bool have_link_driver() {
-#ifdef __APPLE__
-  return std::system("xcode-select -p > /dev/null 2>&1") == 0;
-#elif defined(_WIN32)
-  // lld is a separate MSYS2 package from clang, and -fuse-ld=lld fails without
-  // it in a way that names neither.
-  return !culebra::find_on_path(kLinkDriver).empty() &&
-         !culebra::find_on_path("ld.lld").empty();
-#else
-  return !culebra::find_on_path(kLinkDriver).empty();
-#endif
-}
+// What a missing toolchain means, and whether one is there, now live with the
+// subcommand that installs it (include/toolchain_cmd.h): the answer differs
+// per platform and `culebra build` is no longer the only caller.
 
 // Where a std::system() command's chatter goes when it isn't wanted. Same split
 // as shq: cmd.exe has no /dev/null, and redirecting there makes the command
@@ -862,11 +827,10 @@ int run_build(const BuildOptions& opts) {
   }
 
   // Ask before the parse and the codegen a missing linker would throw away.
-  if (!have_link_driver()) {
-    std::println(stderr, "culebra build: no C++ toolchain — {}",
-                 kToolchainHint);
-    return 1;
-  }
+  // On a terminal this offers to install what is missing rather than only
+  // naming it: on Windows that is a 6 MB download culebra can do itself, and
+  // on macOS it is Apple's installer. A script gets the hint and a failure.
+  if (!culebra::toolchain::offer_install_interactively()) return 1;
 
   // AOT always needs the preamble spliced in — it runs the JIT's lowering.
   std::vector<culebra::LoadedModule> modules;
@@ -1055,7 +1019,7 @@ int run_build(const BuildOptions& opts) {
         std::println(stderr, "culebra build: failed to compile embedded assets");
         return 1;
       }
-      assets_obj = shq(aobj);  // pre-quoted for the link line
+      assets_obj = aobj;  // a raw token; the link quotes when it needs to
     }
   }
 
@@ -1105,21 +1069,30 @@ int run_build(const BuildOptions& opts) {
   // why a plain `-l`/archive append won't pull it in). `optional` reports a
   // missing archive as "no fragment" rather than an error — the wrap axis, whose
   // archive only a `culebra wrap`-extended driver embeds.
+  //
+  // Appends raw (unquoted) argv tokens. Everything below builds the link as
+  // tokens rather than as shell text: the POSIX path quotes them once at the
+  // join, and the Windows path hands them to the linker it carries, where a
+  // quote would be part of the filename. A cache path can hold spaces on any
+  // OS, so a token is the only form that survives both.
   bool feature_failed = false;
-  auto force_load_feature = [&](const char* archive,
-                                bool optional = false) -> std::string {
+  auto force_load_feature = [&](std::vector<std::string>& out,
+                                const char* archive, bool optional = false) {
     std::string err;
     auto path = materialize_archive(archive, err);
     if (path.empty()) {
-      if (optional) return "";
+      if (optional) return;
       std::println(stderr, "culebra build: {}", err);
       feature_failed = true;
-      return "";
+      return;
     }
-    auto q = shq(path.string());   // the cache path can hold spaces on any OS
-    return target_is_macho
-        ? std::format("-Wl,-force_load,{}", q)
-        : std::format("-Wl,--whole-archive {} -Wl,--no-whole-archive", q);
+    if (target_is_macho) {
+      out.push_back(std::format("-Wl,-force_load,{}", path.string()));
+    } else {
+      out.push_back("-Wl,--whole-archive");
+      out.push_back(path.string());
+      out.push_back("-Wl,--no-whole-archive");
+    }
   };
 
   // An axis whose link needs a whole third-party static (OpenSSL for Http,
@@ -1128,26 +1101,32 @@ int run_build(const BuildOptions& opts) {
   // distro dir, a Homebrew prefix or a CI runner's deps cache, and none of them
   // is on the machine running this link. The name resolves to the same embedded
   // copy the runtime archives come from (CMakeLists, _rt_embed_extern).
-  auto expand_archive_names = [&](std::string_view flags) -> std::string {
-    std::string out;
+  // Split on whitespace first, then resolve: an axis flag string never has a
+  // space inside one flag, while the path a name resolves to often does — so
+  // tokenizing before substitution is what keeps the two apart.
+  auto expand_archive_names = [&](std::vector<std::string>& out,
+                                  std::string_view flags) {
     for (size_t i = 0; i < flags.size();) {
-      auto at = flags.find('@', i);
-      if (at == std::string_view::npos) { out += flags.substr(i); break; }
-      auto end = flags.find('@', at + 1);
-      if (end == std::string_view::npos) { out += flags.substr(i); break; }
-      out += flags.substr(i, at - i);
-      std::string err;
-      auto path = materialize_archive(
-          std::string(flags.substr(at + 1, end - at - 1)), err);
-      if (path.empty()) {
-        std::println(stderr, "culebra build: {}", err);
-        feature_failed = true;
-        return {};
+      auto b = flags.find_first_not_of(" \t", i);
+      if (b == std::string_view::npos) break;
+      auto e = flags.find_first_of(" \t", b);
+      if (e == std::string_view::npos) e = flags.size();
+      auto tok = flags.substr(b, e - b);
+      i = e;
+      if (tok.size() >= 2 && tok.front() == '@' && tok.back() == '@') {
+        std::string err;
+        auto path =
+            materialize_archive(std::string(tok.substr(1, tok.size() - 2)), err);
+        if (path.empty()) {
+          std::println(stderr, "culebra build: {}", err);
+          feature_failed = true;
+          return;
+        }
+        out.push_back(path.string());
+      } else {
+        out.emplace_back(tok);
       }
-      out += shq(path.string());
-      i = end + 1;
     }
-    return out;
   };
 
   // Every force-load fragment precedes every plain link flag on the command
@@ -1159,8 +1138,8 @@ int run_build(const BuildOptions& opts) {
     if (!used[i]) continue;
     const auto& ax = kFeatureAxes[i];
     if (host_build && ax.embedded)
-      feature_objs.push_back(force_load_feature(ax.archive));
-    feature_links.push_back(expand_archive_names(ax.link_flags));
+      force_load_feature(feature_objs, ax.archive);
+    expand_archive_names(feature_links, ax.link_flags);
   }
   // The wrap archive holds static registrars nothing references by name, so it
   // needs the same force-load for the binding to register at all; its flags are
@@ -1168,16 +1147,15 @@ int run_build(const BuildOptions& opts) {
   // objects need libz has to name -lz among them, for the reason the Webview
   // axis does (CMakeLists, _webview_link).
   if (host_build && uses_wrap)
-    feature_objs.push_back(force_load_feature("libculebra_rt_wrap.a", true));
-  if (uses_wrap) feature_links.push_back(CULEBRA_WRAP_LINK_FLAGS);
+    force_load_feature(feature_objs, "libculebra_rt_wrap.a", true);
+  if (uses_wrap) expand_archive_names(feature_links, CULEBRA_WRAP_LINK_FLAGS);
   if (feature_failed) return 1;
-
-  std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
   // FS.watch's macOS backend is FSEvents (CoreServices). Unlike a feature
   // axis, FS is core: the runtime archive carries fswatcher.h's bodies for
   // every program, so a Mach-O link needs the framework whether or not the
   // program watches anything. The driver links it for the same reason
   // (CMakeLists, the APPLE block beside the Linux Threads one).
+  const char* libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
   const char* core_frameworks = target_is_macho ? "-framework CoreServices" : "";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
@@ -1204,7 +1182,10 @@ int run_build(const BuildOptions& opts) {
   // block): mingw's 2MB default holds ~400 interp eval frames, while the
   // recursion limit (kCulebraRecursionLimit) is calibrated for an 8MB stack.
   // Windows threads inherit the PE reserve, so this also covers isolates.
-  // lld, not the GNU ld clang++ defaults to on UCRT64 (see kLinkDriver).
+  //
+  // These are the flags a link kit's recipe is packed with
+  // (misc/pack_windows_toolchain.sh, BASE_FLAGS) — so on the in-process path
+  // below they are already inside the recipe and must not be repeated here.
   const char* win_static =
       "-fuse-ld=lld -static -static-libgcc -static-libstdc++ -lstdc++exp "
       "-lws2_32 -Wl,--stack,16777216";
@@ -1213,40 +1194,81 @@ int run_build(const BuildOptions& opts) {
   const char* win_static = "";
 #endif
 
-  // Assembled in link order: driver, target selection, inputs, force-loaded
-  // feature objects, link-wide flags, then the libraries those objects need.
-  // Empty parts (a flag that doesn't apply, a feature built out) drop out at
-  // the join rather than leaving runs of blanks in the command.
-  std::vector<std::string> parts{kLinkDriver};
-  if (cross) parts.push_back(std::format("--target={}", shq(opts.target)));
-  if (!opts.sysroot.empty())
-    parts.push_back(std::format("--sysroot={}", shq(opts.sysroot)));
-  parts.push_back(shq(obj));
-  parts.push_back(assets_obj);
-  parts.push_back(shq(lib));
-  parts.insert(parts.end(), feature_objs.begin(), feature_objs.end());
-  parts.push_back(dead_strip);
-  parts.push_back(strip_syms);
-  parts.push_back(no_pie);
-  parts.push_back(win_static);
-  parts.push_back(libcxx);
-  parts.push_back(core_frameworks);
-  parts.insert(parts.end(), feature_links.begin(), feature_links.end());
-  parts.push_back("-o");
-  parts.push_back(shq(opts.output));
+  // Windows host links go through the lld this binary carries, so the machine
+  // needs no compiler at all — only the mingw libraries a kit supplies. A
+  // cross target keeps the external driver: its toolchain is the user's, and
+  // the kit describes this host.
+  bool inprocess = false;
+#if defined(CULEBRA_INPROCESS_LLD)
+  inprocess = !cross;
+#endif
 
-  std::string cmd;
-  for (const auto& p : parts) {
-    if (p.empty()) continue;
-    if (!cmd.empty()) cmd += ' ';
-    cmd += p;
+  // Split a literal flag string into argv tokens. Only ever called on the
+  // string literals above, never on anything holding a path, so a space here
+  // is always a separator.
+  auto add_flags = [](std::vector<std::string>& out, std::string_view s) {
+    for (size_t i = 0; i < s.size();) {
+      auto b = s.find_first_not_of(' ', i);
+      if (b == std::string_view::npos) break;
+      auto e = s.find(' ', b);
+      if (e == std::string_view::npos) e = s.size();
+      out.emplace_back(s.substr(b, e - b));
+      i = e;
+    }
+  };
+
+  // Assembled in link order: inputs, force-loaded feature objects, link-wide
+  // flags, then the libraries those objects need. Raw argv tokens — the
+  // external path quotes them once at the join below, and the in-process one
+  // hands them over as they are, where a quote would be part of a filename.
+  std::vector<std::string> args;
+  args.push_back(obj);
+  if (!assets_obj.empty()) args.push_back(assets_obj);
+  args.push_back(lib);
+  args.insert(args.end(), feature_objs.begin(), feature_objs.end());
+  add_flags(args, dead_strip);
+  add_flags(args, strip_syms);
+  add_flags(args, no_pie);
+  if (!inprocess) {
+    // The recipe carries the toolchain's expansion of these; emitting them
+    // again would put a driver-only flag (-fuse-ld, -static) in front of a
+    // linker that has no such option.
+    add_flags(args, win_static);
+    add_flags(args, libcxx);
   }
+  add_flags(args, core_frameworks);
+  args.insert(args.end(), feature_links.begin(), feature_links.end());
 
-  if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
-  int link_rc = std::system(cmd.c_str());
-  if (link_rc != 0) {
-    std::println(stderr, "culebra build: link failed (rc={})", link_rc);
-    return 1;
+  if (inprocess) {
+#if defined(CULEBRA_INPROCESS_LLD)
+    std::string err;
+    if (!culebra::toolchain::link_in_process(args, opts.output, verbose, err)) {
+      std::println(stderr, "culebra build: {}", err);
+      return 1;
+    }
+#endif
+  } else {
+    std::vector<std::string> parts{kLinkDriver};
+    if (cross) parts.push_back(std::format("--target={}", shq(opts.target)));
+    if (!opts.sysroot.empty())
+      parts.push_back(std::format("--sysroot={}", shq(opts.sysroot)));
+    for (const auto& a : args) parts.push_back(shq(a));
+    parts.push_back("-o");
+    parts.push_back(shq(opts.output));
+
+    std::string cmd;
+    for (const auto& p : parts) {
+      if (p.empty()) continue;
+      if (!cmd.empty()) cmd += ' ';
+      cmd += p;
+    }
+
+    if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
+    int link_rc = std::system(cmd.c_str());
+    if (link_rc != 0) {
+      std::println(stderr, "culebra build: link failed (rc={})", link_rc);
+      return 1;
+    }
   }
 
   // The global symbol table -Wl,-x leaves behind is another ~8% of a small
@@ -2360,6 +2382,9 @@ int main(int argc, const char** argv) {
   }
   if (argc >= 2 && string(argv[1]) == "init") {
     return culebra::run_init(argc, argv);
+  }
+  if (argc >= 2 && string(argv[1]) == "toolchain") {
+    return culebra::toolchain::main(argc, const_cast<char**>(argv));
   }
 #ifdef CULEBRA_HTTP_ENABLED
   if (argc >= 2 && string(argv[1]) == "serve") {

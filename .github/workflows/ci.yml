@@ -1738,6 +1738,119 @@ jobs:
       # import it newly pulls in fails here, in a CI run, not during a release.
       - name: Verify standalone binary (only system DLLs)
         run: misc/verify_standalone_exe.sh build-win-aot/culebra.exe
+      # The binary a downloader gets must carry its own linker, or every
+      # `culebra toolchain install` below is pointless: the kit holds libraries
+      # only. A build whose LLVM install lacked the lld archives configures and
+      # links perfectly well, and silently falls back to needing clang++ on
+      # PATH — so the property is checked, not assumed.
+      - name: Verify lld is linked into this build
+        run: |
+          # `status` exits non-zero when no kit is installed, which is the
+          # normal state here — so its text is read, not its exit code, and
+          # neither `set -e` nor pipefail gets to decide the outcome.
+          out=$(./build-win-aot/culebra.exe toolchain status || true)
+          printf '%s\n' "$out"
+          case "$out" in
+            *"lld, carried in this binary"*)
+              echo "OK: the driver carries its own linker" ;;
+            *)
+              echo "ERROR: this culebra.exe would need an external clang++" >&2
+              exit 1 ;;
+          esac
+
+  # The AOT toolchain kit, end to end, on a Windows with no toolchain on PATH.
+  #
+  # `culebra build` on Windows links through the lld inside culebra.exe, but the
+  # mingw CRT objects and static libraries still have to come from somewhere,
+  # and a downloader has none. misc/pack_windows_toolchain.sh packs them and
+  # `culebra toolchain install` puts them where a link looks — the flow a user
+  # actually walks, which nothing else in CI touches.
+  #
+  # This job is also what keeps the packing script out of release-only
+  # territory (tools/check_release_covered_by_ci.sh): release.yml runs the same
+  # script, and both releases this project has broken were broken by a command
+  # a tag was the first to execute.
+  #
+  # It takes windows-aot-build's binary rather than building one: the question
+  # here is the kit, and that job already produces the widest Windows
+  # configuration there is.
+  windows-toolchain-kit:
+    needs: windows-aot-build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      # The same tree windows-aot-build compiled the runtime archives with,
+      # which is the kit's whole compatibility claim. zlib because -lz is the
+      # one library an AOT link still takes from the system.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-zlib
+            zip
+      - name: Pack the kit
+        run: misc/pack_windows_toolchain.sh kit "$(sed -n 's/.*CULEBRA_VERSION "\([^"]*\)".*/\1/p' include/culebra.h)"
+      - uses: actions/download-artifact@v4
+        with:
+          name: culebra-windows-x64
+          path: rel
+      # Everything below runs with a PATH built from scratch. A GitHub runner
+      # is not a bare Windows box — the image ships a mingw64 at C:\mingw64 and
+      # this job installed an MSYS2 — so inheriting PATH would prove nothing.
+      # System32 for tar.exe (the extractor) and the CRT; nothing else.
+      - name: Round trip — install, build every axis, uninstall
+        shell: pwsh
+        run: |
+          $env:Path = "C:\Windows\System32;C:\Windows"
+          $exe = (Resolve-Path rel\culebra.exe).Path
+          $kit = (Get-ChildItem -Recurse -Filter '*.zip' kit)[0].FullName
+          foreach ($t in 'clang++','ld.lld','g++','cc') {
+            if (Get-Command $t -ErrorAction SilentlyContinue) { throw "$t is on PATH" }
+          }
+
+          # Nothing installed yet: the build must refuse, and say what to do.
+          $out = & $exe build misc\linkkit\hello.cul -o hello.exe 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0) { throw "build succeeded with no kit installed" }
+          if ($out -notmatch 'culebra toolchain install') {
+            throw "the failure does not name the fix:`n$out"
+          }
+          "OK: refused without a kit, and named `culebra toolchain install`"
+
+          & $exe toolchain install --from $kit
+          if ($LASTEXITCODE -ne 0) { throw "install failed" }
+          & $exe toolchain status
+          if ($LASTEXITCODE -ne 0) { throw "status says the link is not ready" }
+
+          # Every axis, because each appends its own import libraries and a kit
+          # packed from a hello link would be missing them — the failure would
+          # otherwise surface only for whoever first compiles a Canvas program.
+          foreach ($line in Get-Content misc\linkkit\expected.tsv) {
+            $name, $want = $line -split "`t"
+            & $exe build "misc\linkkit\$name.cul" -o "$name.exe"
+            if ($LASTEXITCODE -ne 0) { throw "$name did not link" }
+            $got = (& ".\$name.exe" 2>&1 | Out-String).Trim()
+            if ($got -ne $want) { throw "$name ran as '$got', wanted '$want'" }
+            "  ok: $name -> $got"
+          }
+
+          # A produced binary must need nothing from the kit: it is build-time
+          # only, and this is where that stops being an assumption.
+          & $exe toolchain uninstall
+          if ($LASTEXITCODE -ne 0) { throw "uninstall failed" }
+          $out = (& .\hello.exe | Out-String).Trim()
+          if ($out -ne 'hello from AOT') { throw "the binary needed the kit: '$out'" }
+          & $exe build misc\linkkit\hello.cul -o again.exe 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "build still works after uninstall" }
+          "OK: uninstall is complete, and what was built keeps running"
+          exit 0
 
   # Regression for issue #13: Arch's `llvm` package ships only the combined
   # libLLVM.so (no per-component .a archives), which the plain

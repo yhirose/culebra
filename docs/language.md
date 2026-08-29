@@ -5583,9 +5583,9 @@ file actually named `-` is still reachable by spelling the path, e.g. `./-`.
 
 ### Subcommands
 
-The binary carries the toolchain as well. Six subcommands exist; the
-development four are documented in [`tooling.md`](tooling.md) and the two
-packaging ones in [`deployment.md`](deployment.md).
+The binary carries the toolchain as well. The development subcommands
+are documented in [`tooling.md`](tooling.md) and the packaging ones in
+[`deployment.md`](deployment.md).
 
 | Command | Effect | Reference |
 |---|---|---|
@@ -5595,6 +5595,7 @@ packaging ones in [`deployment.md`](deployment.md).
 | `dap` | Speak the Debug Adapter Protocol over stdin/stdout; an editor launches it. | [`tooling.md` §4](tooling.md#4-debugging-culebra-dap) |
 | `build <in.cul> -o <out>` | Compile ahead-of-time into a standalone executable (§24 covers the module graph it bundles; `culebra build --help` lists the cross-compile flags). | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
 | `wrap` | Build an extended `culebra` binary that exposes your own C++ classes as builtins. | [`deployment.md` §3](deployment.md#3-wrapping-c-libraries-culebra-wrap) |
+| `toolchain [status\|install\|uninstall]` | Report, install or remove what `build` needs to link on this host. | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
 
 
 If no script is provided, the REPL is launched automatically. It

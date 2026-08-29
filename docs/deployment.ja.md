@@ -37,51 +37,94 @@ culebra build path/to/program.cul -o ./program
 スクリプトの実行に`culebra`バイナリ以外は要りません。`--jit`も同じで、
 コンパイルに使うLLVMはバイナリの中にあります。外へ出るのは
 `culebra build`だけです — codegenはプロセス内で完結しますが、
-**リンク段だけはプラットフォームのC++コンパイラを起動する**ので、
+リンクにはプラットフォーム側のオブジェクトファイル周りが要り、
 一度も何もビルドしたことのないマシンにはそれがありません。`build`は
-コンパイルを始める前にこれを確認し、何を入れればよいかを表示します。
+コンパイルを始める前にこれを確認し、端末上ならば足りないものを
+「名前を挙げるだけ」でなくインストールするか尋ねます。
 
-| ホスト | リンク段が必要とするもの | インストール |
+| ホスト | リンク段が必要とするもの | 入手方法 |
 |---|---|---|
-| macOS | Xcode Command Line Tools（`/usr/bin`の`cc`はその実体ではなくシムで、Mach-Oが`libSystem`をリンクする先のSDKスタブもこれが持ち込む） | `xcode-select --install` |
+| macOS | Xcode Command Line Tools（`/usr/bin`の`cc`はその実体ではなくシムで、Mach-Oが`libSystem`をリンクする先のSDKスタブもこれが持ち込む） | `culebra toolchain install`（Appleのインストーラを起動）または`xcode-select --install` |
 | Linux | `cc`・libstdc++・Cランタイムのスタートアップファイル | `sudo apt install g++`（Debian / Ubuntu）、`sudo dnf install gcc-c++`（Fedora） |
-| Windows | **UCRT64**のmingw-w64 `clang++`と`lld` — MSVCでもMINGW64でもCLANG64でもない | MSYS2（下記） |
+| Windows | mingwのCRTオブジェクトと静的ライブラリ — **コンパイラもリンカも不要** | `culebra toolchain install`（約6MB） |
 
 他には何も要りません。AOTのリンクが必要とするアーカイブは、
 サードパーティの静的ライブラリも含めて`culebra`バイナリ自身から
 出てきます（[§4](#4-共有-runtime-archive-レイアウト)）。
 システムからリンクされるライブラリとして残るのはzlibだけで、
 `Http`・`Compress`・`to_png`を使うプログラムが`-lz`で引きます —
-macOSとMSYS2のclangには既にありますが、Linuxではリンカが見る
+macOSとWindowsのkitには既にありますが、Linuxではリンカが見る
 `libz.so`のシンボリックリンクがdevパッケージ側にあります
 （`sudo apt install zlib1g-dev`、`sudo dnf install zlib-devel`）。
 
-Windowsはツールチェーンを一切同梱しておらず、しかも必要なものが
-限定されます。ダウンロードした実行ファイルとその中のランタイム
-アーカイブはMSYS2のUCRT64 clangでビルドされているので、リンクも同じ
-環境から来る必要があります（同じlibstdc++ ABI — UCRT64のclangはGCCの
-libstdc++の上にあり、CLANG64のlibc++は別ABI — と、同じCランタイム）。
-リンカがGNU ldでなくlldなのは、PEをELFやMach-Oのリンカと同じように
-dead-stripできるのがlldだけだからです。GNU ldは全関数のunwind情報を
-残し、その情報が関数を残すので、`--gc-sections`を付けてもランタイム
-アーカイブ全体が全プログラムに残ります。
-リンク行は`-lstdc++exp`も要求します — C++23の`std::print`がリンク時に
-解決するコンソールヘルパーが新しめのlibstdc++でここに入っており、
-古いMinGWディストリビューションはこのライブラリを持ちません。
-管理者権限のPowerShellから:
+culebraが自分でインストールしない唯一のホストがLinuxです。そこでの
+C++ツールチェーンはディストリビューションのパッケージマネージャの
+持ち物でrootが要り、ユーザーの代わりに`sudo`を叩くのはコンパイラの
+仕事ではありません。`culebra toolchain install`はそのディストリビュー
+ション向けのコマンドを1つ表示して終わります。
 
-```powershell
-winget install -e --id MSYS2.MSYS2
-C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"
-C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"   # 1回目が途中で終わったらもう一度
-C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld"
-$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+### `culebra toolchain`
+
+```sh
+culebra toolchain status                  # 今あるものと、リンクできるかどうか
+culebra toolchain install                 # 足りないものを入れる
+culebra toolchain install --from <zip>    # リリース版でなく手元でビルドしたkitから
+culebra toolchain uninstall               # culebraが入れたものを削除する
 ```
 
-最後の行はそのシェルの間だけ有効なので、恒久化するにはユーザーの
-`PATH`にこのディレクトリを追加します。MSYS2から他に要るものは
-ありません — `culebra build`のためにLLVMを入れる必要はなく、それが
-要るのはCulebra自体をソースからビルドするときだけです。
+Windowsでは`install`が、このバイナリが名乗るバージョンのリリースに
+添付されたkitを取得し、隣に公開されたダイジェストと突き合わせてから
+展開します。展開先は
+
+```
+%LOCALAPPDATA%\culebra\toolchain\<version>\
+```
+
+権限昇格も`PATH`の書き換えもレジストリへの書き込みもありません。
+`uninstall`はこのディレクトリの削除で、手で消しても同じことです。
+kitがバージョンごとに分かれているのは、kitのlibstdc++がこのバイナリに
+埋め込まれたランタイムアーカイブをコンパイルしたものと同一でなければ
+ならないからです — `install`はマニフェストが別バージョンを名乗るkitを
+拒否しますし、culebraを上げたら付属のkitを入れ直すことになります。
+
+他のプラットフォームでの`install`は薄いものです。macOSではAppleの
+Command Line Toolsインストーラを起動し（このプロセスが待てないGUIの
+流れなので、起動したことを伝えてbuildの再実行を促します）、Linuxでは
+パッケージコマンドを表示します。`uninstall`はどちらでも「culebraが
+入れたものは無い」と報告します。
+
+### Windowsにコンパイラが要らない理由
+
+Windowsはツールチェーンを一切同梱していませんが、そこでAOTのリンクに
+足りないのはリンカであってコンパイラではありません — `culebra build`は
+オブジェクトをプロセス内で自分で吐きます。そこでリンカをバイナリの中に
+置きました。JITのために既に載せているLLVMの上に、culebraがlldを
+リンクしています。kitが供給するのはリンクのmingw側の半分だけ —
+CRTオブジェクト、libstdc++ / libgcc、そしてWin32のインポートライブラリです。
+
+この選択がダウンロードサイズを決めています。MSYS2の`ld.lld.exe`は
+5.7MBのプログラムですが147MBの`libLLVM` DLLにリンクされており、
+リンカをプログラムとして同梱するkitはzipで55MB、ライブラリだけを
+同梱するkitは6MBという実測でした。
+
+kitはリリース時に、バイナリの中のランタイムアーカイブをコンパイルしたのと
+同じMSYS2 UCRT64ツリーから梱包されます（`misc/pack_windows_toolchain.sh`）。
+両者のlibstdc++が一致することが、誰かが正しく突き合わせた結果ではなく
+構成上の帰結になるのはこのためです。kitはそのツールチェーンのC++ドライバが
+組み立てるリンカコマンドライン（`link-recipe.txt`）を記録しており、
+culebraは自分のオブジェクトとfeature側のライブラリをその中間に差し込みます —
+つまりculebraが行うリンクは、ドライバ抜きで、ドライバが行ったはずの
+リンクそのものです。
+
+他のMSYS2環境でなくUCRT64なのは、同じlibstdc++ ABI（UCRT64のclangはGCCの
+libstdc++の上にあり、CLANG64のlibc++は別ABI）と同じCランタイムだからです。
+GNU ldでなくlldなのは、PEをELFやMach-Oのリンカと同じようにdead-stripできるのが
+lldだけだからです。GNU ldは全関数のunwind情報を残し、その情報が関数を残すので、
+`--gc-sections`を付けてもランタイムアーカイブ全体が全プログラムに残ります。
+
+WindowsでCulebra自体をソースからビルドするのは別の話で、そちらは完全な
+MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIBUTING.md)が
+扱います。
 
 ### オプション
 

@@ -320,6 +320,27 @@ jobs:
         run: |
           assets=$(misc/package_release.sh ./build/culebra.exe "$TAG" windows x64)
           gh release upload "$TAG" --clobber $assets
+      # The AOT link kit: the mingw CRT objects and static libraries a
+      # downloaded culebra.exe needs to link, packed out of THIS job's MSYS2
+      # tree. That is the whole compatibility argument — the kit's libstdc++ is
+      # the one the runtime archives uploaded above were compiled against, so
+      # there is no version matching to get wrong. It carries no executables:
+      # lld is inside culebra.exe (CMakeLists, CULEBRA_INPROCESS_LLD), which is
+      # what keeps this asset at ~6 MB instead of the ~55 MB that shipping
+      # MSYS2's ld.lld.exe and its libLLVM DLL would cost.
+      #
+      # `culebra toolchain install` fetches it by this exact name from the tag
+      # matching the running binary's version; ci.yml's windows-toolchain-kit
+      # job packs and installs the same script's output on every push, so a tag
+      # is not the first time it runs.
+      - name: Pack and upload the AOT toolchain kit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          assets=$(misc/pack_windows_toolchain.sh kit "${TAG#v}")
+          gh release upload "$TAG" --clobber $assets
 
   # One file the user can `sha256sum -c` against every asset at once. Reads the
   # per-asset digests back off the release rather than passing artifacts around,

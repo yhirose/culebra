@@ -5328,8 +5328,8 @@ fn ...`は前の式のmatmul継続ではなく、独立した2 statementとし�
 
 ### サブコマンド
 
-バイナリはツールチェーンも兼ねています。サブコマンドは6つあり、開発用の
-4つは [`tooling.ja.md`](tooling.ja.md)、配布用の2つは
+バイナリはツールチェーンも兼ねています。開発用のサブコマンドは
+[`tooling.ja.md`](tooling.ja.md)、配布用のものは
 [`deployment.ja.md`](deployment.ja.md) が扱います。
 
 | コマンド | 効果 | 参照 |
@@ -5340,6 +5340,7 @@ fn ...`は前の式のmatmul継続ではなく、独立した2 statementとし�
 | `dap` | Debug Adapter Protocolをstdin/stdoutで話す（起動するのはエディタ） | [`tooling.ja.md` §4](tooling.ja.md#4-デバッグ-culebra-dap) |
 | `build <in.cul> -o <out>` | AOTコンパイルして単体実行ファイルを生成（バンドルされるモジュールグラフは §24、クロスコンパイル用フラグは`culebra build --help`） | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
 | `wrap` | 自前のC++ クラスを組み込みとして公開する拡張`culebra`バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
+| `toolchain [status\|install\|uninstall]` | `build` がこのホストでリンクするために必要なものを報告・導入・削除する | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
 
 
 スクリプトを指定しない場合、自動的にREPLが起動します。REPLは常に
