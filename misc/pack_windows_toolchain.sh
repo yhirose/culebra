@@ -50,7 +50,11 @@ root=$(cd "$(dirname "$drv")/.." && pwd)          # .../ucrt64
 target=$(clang++ -dumpmachine)
 drvver=$(clang++ -dumpversion)
 
-echo "== packing from $root ($target, clang $drvver)" >&2
+# Where it got to, on stderr: this runs inside a release job, and an exit
+# status with no context is what the first CI run of it produced.
+step() { echo "== $*" >&2; }
+
+step "packing from $root ($target, clang $drvver)"
 
 find_file() {   # <libname> -> absolute path, or empty
   local p
@@ -73,6 +77,7 @@ copy_into() {   # <abs src>
 }
 
 # --- what the driver would run ---------------------------------------------
+step "probing the driver"
 probe=$(mktemp -d)
 trap 'rm -rf "$probe"' EXIT
 printf 'int main(){return 0;}\n' > "$probe/probe.cc"
@@ -108,10 +113,15 @@ link_line_for() {   # <extra args...> -> the linker argv, one token per line
   printf '%s\n' "$line" | grep -o '"[^"]*"' | sed 's/^"//; s/"$//'
 }
 
+step "resolving the link line for each feature axis"
 : > "$probe/all-tokens"
 for axis in "${!AXIS[@]}"; do
   # shellcheck disable=SC2086
-  link_line_for ${AXIS[$axis]} > "$probe/line-$axis"
+  if ! link_line_for ${AXIS[$axis]} > "$probe/line-$axis"; then
+    echo "pack_windows_toolchain: could not resolve the $axis link line" >&2
+    exit 1
+  fi
+  printf '   %-9s %d tokens\n' "$axis" "$(wc -l < "$probe/line-$axis")" >&2
   cat "$probe/line-$axis" >> "$probe/all-tokens"
 done
 
@@ -129,8 +139,9 @@ resolve_lib() {   # <name> -> absolute path, or empty
   find_file "lib$n.a"
 }
 
+step "copying the libraries those lines name"
 missing=0
-for p in $direct; do [ -f "$p" ] && copy_into "$p"; done
+for p in $direct; do if [ -f "$p" ]; then copy_into "$p"; fi; done
 for n in $libnames; do
   p=$(resolve_lib "$n" || true)
   if [ -n "$p" ]; then copy_into "$p"
@@ -139,13 +150,14 @@ done
 # clang picks its unwinder/builtins runtime by name rather than by -l on mingw;
 # ask it directly rather than hope the line spelled it.
 p=$(u "$(clang++ -print-libgcc-file-name 2>/dev/null || true)")
-[ -f "$p" ] && copy_into "$p"
+if [ -f "$p" ]; then copy_into "$p"; fi
 [ "$missing" = 0 ] || { echo "pack_windows_toolchain: incomplete kit" >&2; exit 1; }
 
 # --- the link recipe -------------------------------------------------------
 # The linker argv clang++ builds, split at the user object. culebra emits
 #     <PREFIX> <its own objects and flags> -o <out> <SUFFIX>
 # and never spells the toolchain's half itself.
+step "writing the link recipe"
 recipe="$kit/link-recipe.txt"
 {
   echo "# The linker argv a C++ driver builds for a culebra AOT link on this"
@@ -206,6 +218,7 @@ fi
 # is redistributed here, so the sources have to be named. MSYS2 builds every
 # package from a recipe in its own repository; recording the exact package
 # versions is what makes those recipes findable.
+step "recording the manifest and licences"
 mkdir -p "$kit/LICENSES"
 {
   echo "This kit redistributes files from the MSYS2 UCRT64 packages listed"
@@ -213,8 +226,9 @@ mkdir -p "$kit/LICENSES"
   echo "(recipe per package) and the upstream projects they build."
   echo
   if command -v pacman >/dev/null; then
-    pacman -Qo $(find "$kit" -name '*.a' -o -name '*.o' | head -200) 2>/dev/null |
-      sed 's/.* is owned by //' | sort -u
+    find "$kit" \( -name '*.a' -o -name '*.o' \) -print0 |
+      xargs -0 -r pacman -Qo 2>/dev/null |
+      sed 's/.* is owned by //' | sort -u || true
   else
     echo "(pacman unavailable at pack time — package list not recorded)"
   fi
@@ -222,7 +236,9 @@ mkdir -p "$kit/LICENSES"
 for l in "$root/share/licenses/gcc-libs/RUNTIME.LIBRARY.EXCEPTION" \
          "$root/share/licenses/gcc-libs/COPYING3" \
          "$root/share/licenses/mingw-w64-headers/COPYING" ; do
-  [ -f "$l" ] && cp "$l" "$kit/LICENSES/$(basename "$(dirname "$l")")-$(basename "$l")"
+  if [ -f "$l" ]; then
+    cp "$l" "$kit/LICENSES/$(basename "$(dirname "$l")")-$(basename "$l")"
+  fi
 done
 
 # --- report and archive ----------------------------------------------------
@@ -231,6 +247,7 @@ echo "== kit: $(find "$kit" -type f | wc -l) files, $raw bytes raw" >&2
 find "$kit" -type f -printf '%s\t%P\n' | sort -rn | head -8 |
   awk -F'\t' '{printf "   %12d  %s\n", $1, $2}' >&2
 
+step "archiving"
 archive="culebra-toolchain-windows-x64.zip"
 (cd "$out" && rm -f "$archive" && zip -qr "$archive" "$(basename "$kit")")
 printf '%s  %s\n' "$(sha256sum "$out/$archive" | cut -d' ' -f1)" "$archive" \
