@@ -11,6 +11,8 @@
 // functions on the module being built — so the body of this header sits on
 // rt.h and a build without the JIT gets the whole stdlib anyway.
 
+#include <cassert>
+
 #include <compress.h>
 #include <csv.h>
 #include <env.h>
@@ -8943,17 +8945,26 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name,
 }
 
 struct _JitNamespaceTable {
-  std::unordered_map<std::string, JitObject*> entries;
+  // All three are keyed heterogeneously (culebra::sv_hash / sv_equal) so a
+  // resolve can look up the `const char*` the codegen passes without building
+  // a std::string per read.
+  std::unordered_map<std::string, JitObject*, culebra::sv_hash,
+                     culebra::sv_equal>
+      entries;
   // Bare builtin function globals (`inspect`, `type_of`, `range`, ...) used
   // as first-class values, materialized lazily as ns-method closures. Same
   // lifetime/teardown order as `entries` — both hold heap values that must
   // be released before the GC heap substate (a lower slot) is destroyed.
-  std::unordered_map<std::string, JitClosure*> builtin_fns;
+  std::unordered_map<std::string, JitClosure*, culebra::sv_hash,
+                     culebra::sv_equal>
+      builtin_fns;
   // Memo for the bare function globals written in culebra (the matcher
   // family, the String helpers). Each is a member slot of its group Object in
   // `entries`, which holds the reference and is pinned for the Runtime's
   // lifetime — so this map borrows and needs no teardown of its own.
-  std::unordered_map<std::string, JitClosure*> lazy_fns;
+  std::unordered_map<std::string, JitClosure*, culebra::sv_hash,
+                     culebra::sv_equal>
+      lazy_fns;
   ~_JitNamespaceTable() {
     for (auto& [_, obj] : entries) {
       _culebra_value_release_impl(TAG_OBJECT,
@@ -9144,7 +9155,7 @@ inline const JitParamMeta* _jit_ns_introspect_meta(JitClosure* cls) {
 // `_jit_namespace_get_or_build`'s caching/pinning so the value can be passed
 // around like any user closure without the GC reclaiming it between uses.
 inline JitClosure* _jit_builtin_fn_closure(_JitNamespaceTable& t,
-                                           const std::string& name) {
+                                           std::string_view name) {
   auto& cache = t.builtin_fns;
   auto it = cache.find(name);
   if (it != cache.end()) return it->second;
@@ -9220,8 +9231,11 @@ struct _LazyNsBuilder {
   void* fn_ptr = nullptr;
   int64_t desc = 0;
 };
-inline std::unordered_map<std::string, _LazyNsBuilder>& _lazy_ns_builders() {
-  static std::unordered_map<std::string, _LazyNsBuilder> r;
+using _LazyNsBuilderMap =
+    std::unordered_map<std::string, _LazyNsBuilder, culebra::sv_hash,
+                       culebra::sv_equal>;
+inline _LazyNsBuilderMap& _lazy_ns_builders() {
+  static _LazyNsBuilderMap r;
   return r;
 }
 inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr,
@@ -9229,17 +9243,33 @@ inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr,
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
   _lazy_ns_builders().insert_or_assign(name, _LazyNsBuilder{fn_ptr, desc});
 }
-inline _LazyNsBuilder _lazy_ns_builder(const std::string& name) {
+inline _LazyNsBuilder _lazy_ns_builder(std::string_view name) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
   auto it = _lazy_ns_builders().find(name);
   return it == _lazy_ns_builders().end() ? _LazyNsBuilder{} : it->second;
 }
 
-inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
+// A namespace name must never also be a bare stdlib function name.
+// culebra_runtime_namespace_get consults the namespace memo first, which is
+// only sound while the two name sets are disjoint — a collision would silently
+// change which of them a bare read resolves to.
+inline bool _ns_name_free_of_fn_collision(std::string_view name) {
+  if (!culebra::lazy_fn_group_of(name).empty()) return false;
+  for (const auto& m : kBuiltinFns)
+    if (name == m.name) return false;
+  return true;
+}
+
+inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
   auto& table = culebra::runtime_substate<_JitNamespaceTable>(
                     culebra::kSlotJitNamespaceTable).entries;
   auto it = table.find(name);
   if (it != table.end()) return it->second;
+  // Past the memo: this Runtime is about to build `name`, so every namespace
+  // that exists anywhere passes here exactly once. Release drops the check;
+  // `just test-assert` is the lane that runs it.
+  assert(_ns_name_free_of_fn_collision(name) &&
+         "namespace name collides with a bare stdlib function name");
   // A lazy source module: build it on the current Runtime by invoking the
   // registered captureless builder closure (arity 0, no captures). The result
   // is the module Object (refcount 1); the table + pin hold that single ref for
@@ -9302,14 +9332,14 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
 // `assert_eq` read in another. The result is borrowed: the group Object owns
 // it and outlives every caller (see _JitNamespaceTable::lazy_fns).
 inline JitClosure* _jit_lazy_fn_closure(_JitNamespaceTable& t,
-                                        const std::string& name) {
+                                        std::string_view name) {
   // Memo first: a name outside every group is never in it, so the group scan
   // only runs before the first resolve of a name that is.
   auto it = t.lazy_fns.find(name);
   if (it != t.lazy_fns.end()) return it->second;
   auto group = culebra::lazy_fn_group_of(name);
   if (group.empty()) return nullptr;
-  auto* obj = _jit_namespace_get_or_build(std::string(group));
+  auto* obj = _jit_namespace_get_or_build(group);
   if (!obj) return nullptr;
   auto slot = obj->find_slot(name);
   if (slot == static_cast<size_t>(-1)) return nullptr;
@@ -9324,13 +9354,26 @@ extern "C" {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_namespace_get(const char* name,
                                int8_t* out_tag, int64_t* out_data) {
-  std::string nm(name ? name : "");
-  // Bare builtin function used as a value (`let f = inspect`, `map(type_of)`,
-  // `assert_eq`). Checked before the namespace lookup since these names are
-  // not namespaces; the culebra-source ones (matcher family, String helpers)
-  // resolve the same way, through their group module.
+  std::string_view nm(name ? name : "");
   auto& table = culebra::runtime_substate<_JitNamespaceTable>(
       culebra::kSlotJitNamespaceTable);
+  // A namespace already built on this Runtime, which is what a hot loop's
+  // every read of `Math` / `Vector2` / ... is. The three tables are disjoint
+  // by construction — `entries` is keyed by namespace names, kBuiltinFns and
+  // lazy_fn_groups by bare function names — so which one is consulted first
+  // is a cost question, not a semantic one. Behind the two function lookups
+  // this read also paid a certain-miss 15-entry scan of kBuiltinFns and the
+  // nested lazy_fn_groups scan, every time.
+  if (auto it = table.entries.find(nm); it != table.entries.end()) {
+    culebra_runtime_value_retain(TAG_OBJECT,
+                                 reinterpret_cast<int64_t>(it->second));
+    *out_tag = TAG_OBJECT;
+    *out_data = reinterpret_cast<int64_t>(it->second);
+    return;
+  }
+  // Bare builtin function used as a value (`let f = inspect`, `map(type_of)`,
+  // `assert_eq`); the culebra-source ones (matcher family, String helpers)
+  // resolve the same way, through their group module.
   JitClosure* cls = _jit_builtin_fn_closure(table, nm);
   if (!cls) cls = _jit_lazy_fn_closure(table, nm);
   if (cls) {
