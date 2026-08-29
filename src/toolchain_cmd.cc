@@ -319,7 +319,7 @@ bool extract_zip(const fs::path& archive, const fs::path& into,
   // cmd.exe's quoting rules are not a thing to hand-roll. run_command also
   // captures tar's own diagnostics, which a std::system call left on the
   // console for the user to correlate with a bare "could not extract".
-  std::vector<std::string> argv{tar.string(), "-xf", archive.string(), "-C",
+  std::vector<std::string> argv{tar, "-xf", archive.string(), "-C",
                                 into.string()};
   auto oc = culebra::proc::run_command(argv, nullptr, nullptr, "");
   if (!oc.spawned) {
