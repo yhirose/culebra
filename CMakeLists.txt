@@ -479,6 +479,45 @@ libs (auto-detected when the static libs are missing)" OFF)
     endif()
   endif()
 
+  # The same shape one library further out, and only where lld is linked in:
+  # lld's COFF driver embeds manifests through LLVMWindowsManifest, which is
+  # built against libxml2, and LLVM's config finds the import library — so a
+  # -static culebra.exe ends up importing libxml2-16.dll, which is exactly the
+  # DLL a downloaded binary does not have. misc/verify_standalone_exe.sh is
+  # what caught it.
+  #
+  # A static libxml2 stops hiding its own dependencies behind a DLL, so iconv
+  # and lzma have to be named here; they are what libxml2's .pc lists as
+  # private. The dllimport declarations already compiled into
+  # LLVMWindowsManifest.a resolve against the static bodies through lld's
+  # auto-import, which the MinGW driver has on by default.
+  set(CULEBRA_LIBXML2_DEPS "")
+  if(CULEBRA_LLD_LIBS AND TARGET LibXml2::LibXml2)
+    find_library(CULEBRA_LIBXML2_STATIC NAMES libxml2.a)
+    find_library(CULEBRA_ICONV_STATIC NAMES libiconv.a)
+    find_library(CULEBRA_LZMA_STATIC NAMES liblzma.a)
+    if(CULEBRA_LIBXML2_STATIC)
+      set(_xml_props IMPORTED_IMPLIB "${CULEBRA_LIBXML2_STATIC}"
+                     IMPORTED_LOCATION "${CULEBRA_LIBXML2_STATIC}")
+      get_target_property(_xml_cfgs LibXml2::LibXml2 IMPORTED_CONFIGURATIONS)
+      foreach(_c IN LISTS _xml_cfgs)
+        list(APPEND _xml_props IMPORTED_IMPLIB_${_c} "${CULEBRA_LIBXML2_STATIC}"
+                               IMPORTED_LOCATION_${_c} "${CULEBRA_LIBXML2_STATIC}")
+      endforeach()
+      set_target_properties(LibXml2::LibXml2 PROPERTIES ${_xml_props})
+      foreach(_d CULEBRA_ICONV_STATIC CULEBRA_LZMA_STATIC)
+        if(${_d})
+          list(APPEND CULEBRA_LIBXML2_DEPS "${${_d}}")
+        endif()
+      endforeach()
+      message(STATUS "libxml2: linking ${CULEBRA_LIBXML2_STATIC} statically (lld dep)")
+    else()
+      message(WARNING
+        "no static libxml2 beside the shared one — culebra.exe will import "
+        "libxml2's DLL, which a downloaded binary will not find")
+    endif()
+  endif()
+
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
 
@@ -946,7 +985,8 @@ endif()
 if(CULEBRA_ENABLE_JIT)
   # lld ahead of ${llvm_libs}: its archives reach into LLVM, not the other way
   # round, and a static link resolves left to right.
-  target_link_libraries(culebra ${CULEBRA_LLD_LIBS} ${llvm_libs})
+  target_link_libraries(culebra ${CULEBRA_LLD_LIBS} ${llvm_libs}
+                                ${CULEBRA_LIBXML2_DEPS})
   culebra_export_jit_symbols(culebra)
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
