@@ -74,8 +74,9 @@ Conventions used below:
 31. [`Vector3`](#31-vector3) — the 3D counterpart of `Vector2`
 32. [`Deque`](#32-deque) — double-ended queue, O(1) amortized push/pop at either end
 33. [`PriorityQueue`](#33-priorityqueue) — binary min-heap, O(log n) push/pop
-34. [Design notes](#34-design-notes)
-35. [Not included (yet)](#35-not-included-yet)
+34. [`Peg`](#34-peg) — PEG parser generator: write a grammar, get a syntax tree
+35. [Design notes](#35-design-notes)
+36. [Not included (yet)](#36-not-included-yet)
 
 **Where to find what**
 
@@ -122,6 +123,7 @@ Conventions used below:
 | 2D/3D vector math (dot, length, normalize, distance) | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | FIFO queue, sliding window, front+back stack | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
 | Priority scheduling, event simulation, shortest-path search | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
+| Parse a language / config format of your own | [§34 Peg](#34-peg) — write a PEG grammar, `Peg.parse(grammar, text)` → a tree `match` takes apart |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
 | Fill an `Array` with `n` copies of a value | [language spec §19](language.md) — `repeat(n, value)` |
@@ -5878,7 +5880,210 @@ inspect(jobs.pop())  # => (1, 'ping')
 Like `Array.pop()` and `Deque`, `pop`/`peek` return `nil` on an empty
 queue rather than throwing.
 
-## 34. Design notes
+## 34. `Peg`
+
+A parser generator: you write a **PEG** (parsing expression grammar) and get a
+syntax tree back. The engine is the vendored
+[cpp-peglib](https://github.com/yhirose/cpp-peglib) — the same one culebra's own
+front end runs on, so a grammar that `peglint` accepts behaves identically here.
+
+A grammar is **compiled once and reused** (`Peg.compile` — loading a grammar is
+the expensive part), then applied to as many subjects as you like:
+
+```culebra
+let calc = `
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+  %whitespace    <- [ \t\r\n]*
+`
+let p = Peg.compile(calc)
+inspect(p.parse("1 + 2").name)  # => 'Additive'
+inspect(p.test("1 +"))          # => false
+```
+
+**Write grammars as backtick raw strings** (`` `...` ``): they do no escape
+processing and no `{...}` interpolation, so `\t`, `[0-9]{2}` and `'` all reach
+the grammar verbatim. A single-quoted raw string works too, but a PEG is full of
+`'literal'` quoting, so the backtick form is usually the one that fits.
+
+### Grammar notation
+
+The full notation is [cpp-peglib's](https://github.com/yhirose/cpp-peglib#syntax);
+the parts you need most:
+
+| Form | Meaning |
+| --- | --- |
+| `Name <- e` | define a rule |
+| `'text'` / `"text"` | literal |
+| `[a-z]` | character class; `.` is any character |
+| `e1 e2` | sequence — `e1` then `e2` |
+| `e1 / e2` | prioritized choice — try `e1`, and only if it fails try `e2` |
+| `e*` `e+` `e?` | repetition (greedy, no backtracking into it) |
+| `&e` `!e` | lookahead: succeed / fail without consuming |
+| `< e >` | token boundary — the node keeps the matched text |
+| `%whitespace <- e` | what to skip between tokens |
+| `~e` | drop this element from the tree |
+| `{ no_ast_opt }` | keep this rule's node even when it has one child |
+| `{ ast_name: Tag }` | emit the node under `Tag` instead of the rule name |
+
+A PEG is unambiguous by construction: `/` is ordered, so the first alternative
+that matches wins and there is no ambiguity to resolve. That also means the
+order matters — `'a' / 'ab'` never matches `ab`.
+
+### The tree
+
+A node is a plain `Object`, so `match` takes it apart with no helper API:
+
+```culebra
+let calc = `
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+  %whitespace    <- [ \t\r\n]*
+`
+fn eval(n) {
+  match n {
+    {name: "Number", token} => to_long(token),
+    {name: "Additive", nodes: [a, b]} => eval(a) + eval(b),
+    {name: "Multiplicative", nodes: [a, b]} => eval(a) * eval(b),
+    {nodes: [only]} => eval(only),
+    _ => throw "unexpected {n.name}",
+  }
+}
+inspect(eval(Peg.parse(calc, "(1 + 2) * 3")))  # => 9
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | the rule that produced the node, or its `ast_name` override |
+| `token` | a token node's matched text; `""` on a branch node |
+| `nodes` | child nodes, in source order |
+| `line` / `column` | 1-based position of the node's start in the subject |
+| `position` / `length` | byte offset and byte length, so `s.slice(position, position + length)` is the node's whole text |
+| `is_token` | whether the node came from a `< ... >` token boundary |
+| `choice` | which alternative of a prioritized choice matched (0-based) |
+
+There is no `parent` link: a tree of plain Objects with parent pointers would be
+a reference cycle. Walk downward and carry what you need.
+
+### Building and walking
+
+| Constructor / static | Result |
+| --- | --- |
+| `Peg.compile(grammar)` | `Peg` — load (reused); a malformed grammar raises `PegError` |
+| `Peg.compile(grammar, start)` | start from rule `start` instead of the grammar's first |
+| `Peg.compile(grammar, start, optimize)` | `optimize` `false` keeps single-child nodes |
+| `Peg.compile(grammar, start, optimize, packrat)` | `packrat` `false` turns memoization off |
+| `Peg.check(grammar)` | `Nil` — load and discard; raises on a malformed grammar |
+| `Peg.check(grammar, start)` | same, with a start rule |
+
+| Method | Result |
+| --- | --- |
+| `p.parse(text)` | the root node; a syntax error raises `PegError` |
+| `p.test(text)` | `Bool` — whether `text` parses; no tree is handed back |
+
+| One-shot | Equivalent |
+| --- | --- |
+| `Peg.parse(grammar, text)` | `Peg.compile(grammar).parse(text)` |
+| `Peg.parse(grammar, text, start, optimize, packrat)` | the same, with the `compile` options |
+| `Peg.test(grammar, text)` | `Bool` |
+| `Peg.test(grammar, text, start, packrat)` | the same, with the `compile` options |
+
+The one-shot forms hide the `compile` step, and the engine caches loaded
+grammars per thread, so they pay no reload. Reusing one grammar across many
+subjects still reads better as `Peg.compile(...)`.
+
+| Tree helper | Result |
+| --- | --- |
+| `Peg.walk(node)` | `Iterator` — the node and its descendants, depth-first, in source order |
+| `Peg.find(node, name)` | the first node named `name`, or `nil` |
+| `Peg.find_all(node, name)` | `[Node]` — every node named `name` |
+| `Peg.str(node)` | `String` — an indented dump, the shape `peglint --ast` prints |
+
+```culebra
+let g = `
+  Doc  <- Item+
+  Item <- < [a-z]+ > _
+  _    <- [ ]*
+`
+let doc = Peg.parse(g, "ab cd")
+inspect(Peg.find_all(doc, "Item").map(|n| n.token))  # => ['ab', 'cd']
+inspect(Peg.find(doc, "Nothing"))                    # => nil
+inspect(Peg.str(doc))
+# => |
+# '+ Doc
+#   - Item (ab)
+#   - Item (cd)
+# '
+```
+
+### AST optimization
+
+By default a node with exactly one child is replaced by that child, so the tree
+carries structure rather than the grammar's bookkeeping. This is on because it
+is what almost every walker wants; it is controlled two ways:
+
+* per rule, in the grammar — `{ no_ast_opt }` keeps that rule's node, and
+  `{ ast_name: Tag }` renames it so two productions can converge on one tag;
+* per grammar, from culebra — `Peg.compile(grammar, "", false)` keeps every node.
+
+```culebra
+let g = `
+  Wrap  <- Inner
+  Inner <- < [0-9]+ >
+`
+inspect(Peg.walk(Peg.parse(g, "1")).map(|n| n.name).collect())
+# => ['Inner']
+inspect(Peg.walk(Peg.parse(g, "1", "", false)).map(|n| n.name).collect())
+# => ['Wrap', 'Inner']
+```
+
+### Memoization (`packrat`)
+
+On by default, and the default is load-bearing. A PEG backtracks, so
+alternatives that share a prefix — `A <- B '+' A / B`, the shape a first
+grammar usually has — re-parse the same prefix once per alternative and cost
+exponential time without memoization. Measured on the calculator above: ten
+levels of nesting take 0.04 ms memoized and 2.0 s not.
+
+The cost is a table proportional to subject length × rule count (roughly 1 KB
+per input byte). `Peg.compile(grammar, "", true, false)` turns it off, which is
+worth doing only for a grammar written without shared prefixes (left-factored,
+or using `*`/`+` where a naive one recurses) on inputs large enough for the
+table to matter.
+
+### Errors and bounds
+
+A malformed grammar and a subject that does not parse both raise `PegError`.
+Positions inside the grammar or the subject are **in the message**, not in the
+error's `line`/`col` — those hold the culebra call site, as everywhere else:
+
+```culebra
+inspect(try {
+  Peg.parse(`N <- < [0-9]+ >`, "x")
+} catch e {
+  e.kind
+})  # => 'PegError'
+```
+
+Two bounds keep adversarial input catchable rather than fatal:
+
+* **Rule entries** — a parse that descends through more than 4000 rule entries
+  raises `PegError` (`nesting too deep`). Machine-written nesting would
+  otherwise overflow the C stack inside the parser. This is the same guard, at
+  the same limit, that culebra applies to its own grammar.
+* **Tree depth** — a tree deeper than 1000 levels raises `ValueError`
+  (`nesting too deep (limit 1000)`), the
+  [value-nesting bound](language.md#the-value-nesting-bound) `JSON` and `TOML`
+  apply to their own trees.
+
+A grammar is per-thread state, so a `Peg` value crossing an isolate boundary
+carries the grammar text and reloads on the other side; nothing is shared.
+
+## 35. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -5934,7 +6139,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 35. Not included (yet)
+## 36. Not included (yet)
 
 ### Heavier data structures
 

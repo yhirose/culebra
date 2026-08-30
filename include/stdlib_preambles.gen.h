@@ -2254,6 +2254,79 @@ let _regex_module = fn () {
 let Regex = _regex_module()
 )=culpre=";
 
+inline constexpr const char* PEG_MODULE_SOURCE = R"=culpre=(fn _peg_walk(node) {
+  yield node
+  for c in node.nodes {
+    yield from _peg_walk(c)
+  }
+}
+fn _peg_find(node, name) {
+  for n in _peg_walk(node) {
+    return n if n.name == name
+  }
+  nil
+}
+fn _peg_find_all(node, name) {
+  let mut out = []
+  for n in _peg_walk(node) {
+    out.push(n) if n.name == name
+  }
+  out
+}
+fn _peg_str_at(node, level) {
+  let pad = "  ".repeat(level)
+  let mut out = if node.is_token {
+    pad + "- " + node.name + " (" + node.token + ")\n"
+  } else {
+    pad + "+ " + node.name + "\n"
+  }
+  for c in node.nodes {
+    out = out + _peg_str_at(c, level + 1)
+  }
+  out
+}
+fn _peg_str(node) {
+  _peg_str_at(node, 0)
+}
+let _peg_module = fn () {
+  class Peg {
+    new(grammar, start = "", optimize = true, packrat = true) {
+      self._src = grammar
+      self._start = start
+      self._optimize = optimize
+      self._packrat = packrat
+      _Peg.check(grammar, start, packrat)
+    }
+    parse(text) {
+      _Peg.parse(self._src, text, self._start, self._optimize, self._packrat)
+    }
+    test(text) {
+      _Peg.test(self._src, text, self._start, self._packrat)
+    }
+  }
+  {
+    compile: fn (grammar, start = "", optimize = true, packrat = true) {
+      Peg.new(grammar, start, optimize, packrat)
+    },
+    check: fn (grammar, start = "") {
+      _Peg.check(grammar, start, true)
+    },
+    parse: fn (grammar, text, start = "", optimize = true, packrat = true) {
+      _Peg.parse(grammar, text, start, optimize, packrat)
+    },
+    test: fn (grammar, text, start = "", packrat = true) {
+      _Peg.test(grammar, text, start, packrat)
+    },
+    walk: _peg_walk,
+    find: _peg_find,
+    find_all: _peg_find_all,
+    str: _peg_str,
+    Peg: Peg,
+  }
+}
+let Peg = _peg_module()
+)=culpre=";
+
 inline constexpr const char* STRING_FNS_MODULE_SOURCE = R"=culpre=(let replace = fn (s, pat, repl) {
   if type_of(pat) == "String" || type_of(pat) == "StringView" {
     s.split(pat).join(repl)

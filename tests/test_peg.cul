@@ -1,0 +1,131 @@
+// Conformance: stdlib Peg (PEG parser). See docs/stdlib.md.
+// Engine: include/peg.h over the vendored cpp-peglib — the same parser
+// generator culebra's own front end runs on.
+//
+// Write grammars as backtick RAW strings: no escape processing and no
+// `{...}` interpolation, so `\t` and `{2}` pass through to the grammar.
+
+// cpp-peglib's own README calculator. Its alternatives share a prefix, which
+// is exactly why memoization is on by default (see test_peg_errors.cul).
+let calc = `
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+  %whitespace    <- [ \t\r\n]*
+`
+
+// --- compile + parse ---
+let p = Peg.compile(calc)
+let ast = p.parse("1 + 2 * 3")
+assert_eq(ast.name, "Additive")
+assert_eq(ast.nodes.size(), 2)
+assert_true(ast.is_token == false)
+
+// --- a node is a plain Object, so `match` takes it apart ---
+fn eval(n) {
+  match n {
+    {name: "Number", token} => to_long(token),
+    {name: "Additive", nodes: [a, b]} => eval(a) + eval(b),
+    {name: "Multiplicative", nodes: [a, b]} => eval(a) * eval(b),
+    {nodes: [only]} => eval(only),
+    _ => throw "unexpected {n.name}",
+  }
+}
+assert_eq(eval(ast), 7)
+assert_eq(eval(p.parse("(1 + 2) * 3")), 9)
+
+// --- token nodes carry their text; branch nodes do not ---
+let num = Peg.find(ast, "Number")
+assert_eq(num.token, "1")
+assert_true(num.is_token)
+assert_eq(num.nodes.size(), 0)
+assert_eq(ast.token, "")
+
+// --- positions are byte offsets into the subject, like Regex ---
+let src = "12 + 345"
+let sum = Peg.compile(calc).parse(src)
+let rhs = Peg.find_all(sum, "Number")[1]
+assert_eq(rhs.line, 1)
+assert_eq(rhs.column, 6)
+assert_eq(src.slice(rhs.position, rhs.position + rhs.length), "345")
+
+// --- choice: which alternative of a prioritized choice matched ---
+let raw = Peg.compile(calc, "", false).parse("1")
+assert_eq(raw.name, "Additive")
+assert_eq(raw.choice, 1)  // fell through to the second alternative
+
+// --- optimize (default) folds single-child nodes ---
+assert_eq(Peg.walk(raw).map(|n| n.name).collect(),
+          ["Additive", "Multiplicative", "Primary", "Number"])
+assert_eq(Peg.walk(p.parse("1")).map(|n| n.name).collect(), ["Number"])
+
+// --- walk / find / find_all ---
+assert_eq(Peg.walk(ast).map(|n| n.name).collect(),
+          ["Additive", "Number", "Multiplicative", "Number", "Number"])
+assert_eq(Peg.find_all(ast, "Number").map(|n| n.token), ["1", "2", "3"])
+assert_eq(Peg.find(ast, "Nothing"), nil)
+assert_eq(Peg.find_all(ast, "Nothing"), [])
+
+// --- str: the peglint-style dump ---
+assert_eq(Peg.str(p.parse("1 + 2")),
+          "+ Additive\n  - Number (1)\n  - Number (2)\n")
+
+// --- test: does it parse at all ---
+assert_true(p.test("1 + 2"))
+assert_false(p.test("1 +"))
+
+// --- one-shot forms take the grammar directly ---
+assert_eq(Peg.parse(calc, "7").name, "Number")
+assert_true(Peg.test(calc, "7"))
+assert_false(Peg.test(calc, "+"))
+assert_eq(Peg.check(calc), nil)
+
+// --- start rule ---
+let g = `
+  Doc  <- Item+
+  Item <- < [a-z]+ > _
+  _    <- [ ]*
+`
+assert_eq(Peg.compile(g).parse("ab cd").name, "Doc")
+assert_eq(Peg.compile(g, "Item").parse("ab").name, "Item")
+assert_eq(Peg.parse(g, "ab", "Item").name, "Item")
+assert_true(Peg.test(g, "ab", "Item"))
+
+// --- the grammar's own AST instructions control the tree shape ---
+let named = `
+  Atom   <- Number / String
+  Number <- < [0-9]+ >        { ast_name: Literal }
+  String <- '"' < [^"]* > '"' { ast_name: Literal }
+`
+assert_eq(Peg.parse(named, "123").name, "Literal")
+assert_eq(Peg.parse(named, '"hi"').name, "Literal")
+
+let folded = `
+  Wrap  <- Inner
+  Inner <- < [0-9]+ >
+`
+assert_eq(Peg.walk(Peg.parse(folded, "1")).map(|n| n.name).collect(),
+          ["Inner"])
+let kept = `
+  Wrap  <- Inner  { no_ast_opt }
+  Inner <- < [0-9]+ >
+`
+assert_eq(Peg.walk(Peg.parse(kept, "1")).map(|n| n.name).collect(),
+          ["Wrap", "Inner"])
+
+// --- a compiled grammar is reusable and independent of the subject ---
+let re = Peg.compile(g)
+assert_eq(re.parse("ab").name, "Item")  // a lone Item folds up to the root
+assert_eq(re.parse("ab cd").nodes.size(), 2)
+
+// --- Peg.Peg is the class the module hands out ---
+let direct = Peg.Peg.new(calc)
+assert_eq(direct.parse("1").name, "Number")
+
+// --- across an isolate boundary: a grammar is per-thread state, so what
+// crosses is the grammar text (a compiled Peg carries it and reloads on the
+// other side), and a parsed tree comes back as plain Objects ---
+assert_eq(Isolate.spawn(|| p.parse("1").name).join(), "Number")
+assert_eq(Isolate.spawn(|| Peg.parse(calc, "1 + 2").name).join(), "Additive")
+assert_eq(Isolate.spawn(|| Peg.parse(calc, "1 + 2")).join().nodes.size(), 2)

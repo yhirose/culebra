@@ -72,8 +72,9 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 31. [`Vector3`](#31-vector3) — `Vector2`の3D版
 32. [`Deque`](#32-deque) — 両端キュー、両端のpush/popが償却O(1)
 33. [`PriorityQueue`](#33-priorityqueue) — 二分ヒープ、push/popがO(log n)
-34. [設計上の注記](#34-設計上の注記)
-35. [未収録（将来検討）](#35-未収録将来検討)
+34. [`Peg`](#34-peg) — PEGパーサジェネレータ。文法を書くと構文木が返る
+35. [設計上の注記](#35-設計上の注記)
+36. [未収録（将来検討）](#36-未収録将来検討)
 
 **目的別索引**
 
@@ -119,6 +120,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
 | 優先度スケジューリング、イベントシミュレーション、最短経路探索 | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
+| 自前の言語・設定フォーマットをパースする | [§34 Peg](#34-peg) — PEG文法を書いて`Peg.parse(grammar, text)`。返る木は`match`で分解できる |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §19](language.ja.md) |
@@ -5713,7 +5715,203 @@ inspect(jobs.pop())  # => (1, 'ping')
 `Array.pop()`や`Deque`と同様、`pop`/`peek`は空のキューに対して
 例外を投げず`nil`を返します。
 
-## 34. 設計上の注記
+## 34. `Peg`
+
+パーサジェネレータ。**PEG**（parsing expression grammar）を書くと構文木が返る。
+エンジンは同梱の[cpp-peglib](https://github.com/yhirose/cpp-peglib)で、culebra自身の
+フロントエンドが載っているものと同じ。`peglint`が受理する文法はここでも同じ振る舞いをする。
+
+文法は**一度コンパイルして使い回す**（`Peg.compile` — 文法のロードが重い部分）。
+コンパイル済みの文法はいくつの入力にも適用できる:
+
+```culebra
+let calc = `
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+  %whitespace    <- [ \t\r\n]*
+`
+let p = Peg.compile(calc)
+inspect(p.parse("1 + 2").name)  # => 'Additive'
+inspect(p.test("1 +"))          # => false
+```
+
+**文法はバッククォートのraw string（`` `...` ``）で書く。** エスケープ処理も
+`{...}`補間も行わないので、`\t`・`[0-9]{2}`・`'`がそのまま文法に届く。シングル
+クォートのraw stringでも書けるが、PEGは`'literal'`という引用で埋まるので通常は
+バッククォートのほうが収まりがよい。
+
+### 文法の記法
+
+記法の全体は[cpp-peglib側](https://github.com/yhirose/cpp-peglib#syntax)にある。
+よく使うのは次の部分:
+
+| 形 | 意味 |
+| --- | --- |
+| `Name <- e` | 規則の定義 |
+| `'text'` / `"text"` | リテラル |
+| `[a-z]` | 文字クラス。`.`は任意の1文字 |
+| `e1 e2` | 連接 — `e1`の次に`e2` |
+| `e1 / e2` | 順序付き選択 — `e1`を試し、失敗したときだけ`e2` |
+| `e*` `e+` `e?` | 繰り返し（貪欲、内部への後戻りなし） |
+| `&e` `!e` | 先読み。消費せずに成功/失敗する |
+| `< e >` | トークン境界。ノードがマッチしたテキストを保持する |
+| `%whitespace <- e` | トークン間で読み飛ばすもの |
+| `~e` | この要素を木から落とす |
+| `{ no_ast_opt }` | 子が1つでもこの規則のノードを残す |
+| `{ ast_name: Tag }` | 規則名の代わりに`Tag`としてノードを出す |
+
+PEGは構成上曖昧にならない。`/`は順序付きなので最初にマッチした選択肢が勝ち、解決すべき
+曖昧性が生じない。裏を返せば順序が意味を持つ — `'a' / 'ab'`は`ab`にマッチしない。
+
+### 木
+
+ノードはただの`Object`なので、専用APIなしで`match`が分解できる:
+
+```culebra
+let calc = `
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+  %whitespace    <- [ \t\r\n]*
+`
+fn eval(n) {
+  match n {
+    {name: "Number", token} => to_long(token),
+    {name: "Additive", nodes: [a, b]} => eval(a) + eval(b),
+    {name: "Multiplicative", nodes: [a, b]} => eval(a) * eval(b),
+    {nodes: [only]} => eval(only),
+    _ => throw "unexpected {n.name}",
+  }
+}
+inspect(eval(Peg.parse(calc, "(1 + 2) * 3")))  # => 9
+```
+
+| フィールド | 意味 |
+| --- | --- |
+| `name` | そのノードを作った規則名、または`ast_name`で上書きした名前 |
+| `token` | トークンノードのマッチしたテキスト。枝ノードでは`""` |
+| `nodes` | 子ノード。ソース順 |
+| `line` / `column` | 入力中でのノード開始位置（1始まり） |
+| `position` / `length` | バイトオフセットとバイト長。`s.slice(position, position + length)`がそのノードのテキスト全体 |
+| `is_token` | `< ... >`のトークン境界から来たノードかどうか |
+| `choice` | 順序付き選択のどの選択肢がマッチしたか（0始まり） |
+
+`parent`リンクは持たせていない。ただのObjectの木に親ポインタを張ると参照サイクルになる。
+下向きに辿り、必要なものは引数で持ち回る。
+
+### 構築と走査
+
+| コンストラクタ / static | 結果 |
+| --- | --- |
+| `Peg.compile(grammar)` | `Peg` — ロード（使い回される）。不正な文法は`PegError` |
+| `Peg.compile(grammar, start)` | 文法の最初の規則ではなく`start`から始める |
+| `Peg.compile(grammar, start, optimize)` | `optimize`が`false`なら子1つのノードも残す |
+| `Peg.compile(grammar, start, optimize, packrat)` | `packrat`が`false`ならメモ化を切る |
+| `Peg.check(grammar)` | `Nil` — ロードして捨てる。不正な文法なら送出 |
+| `Peg.check(grammar, start)` | 同じ。start規則つき |
+
+| メソッド | 結果 |
+| --- | --- |
+| `p.parse(text)` | ルートノード。構文エラーは`PegError` |
+| `p.test(text)` | `Bool` — `text`がパースできるか。木は返らない |
+
+| ワンショット | 等価な式 |
+| --- | --- |
+| `Peg.parse(grammar, text)` | `Peg.compile(grammar).parse(text)` |
+| `Peg.parse(grammar, text, start, optimize, packrat)` | 同じ。`compile`のオプションつき |
+| `Peg.test(grammar, text)` | `Bool` |
+| `Peg.test(grammar, text, start, packrat)` | 同じ。`compile`のオプションつき |
+
+ワンショット形は`compile`の手順を隠す。エンジンがロード済み文法をスレッドごとに
+キャッシュするので再ロードのコストは払わない。1つの文法を多くの入力に使うなら
+`Peg.compile(...)`と書いたほうが意図が読める。
+
+| 木のヘルパー | 結果 |
+| --- | --- |
+| `Peg.walk(node)` | `Iterator` — そのノードと子孫を深さ優先・ソース順で |
+| `Peg.find(node, name)` | 名前が`name`の最初のノード、なければ`nil` |
+| `Peg.find_all(node, name)` | `[Node]` — 名前が`name`のノード全部 |
+| `Peg.str(node)` | `String` — インデント付きのダンプ。`peglint --ast`と同じ形 |
+
+```culebra
+let g = `
+  Doc  <- Item+
+  Item <- < [a-z]+ > _
+  _    <- [ ]*
+`
+let doc = Peg.parse(g, "ab cd")
+inspect(Peg.find_all(doc, "Item").map(|n| n.token))  # => ['ab', 'cd']
+inspect(Peg.find(doc, "Nothing"))                    # => nil
+inspect(Peg.str(doc))
+# => |
+# '+ Doc
+#   - Item (ab)
+#   - Item (cd)
+# '
+```
+
+### AST最適化
+
+既定では子がちょうど1つのノードをその子で置き換える。木が文法の内部事情ではなく構造を
+運ぶようになるからで、ほぼどの走査コードもこれを望む。制御は2通り:
+
+* 規則ごとに文法側で — `{ no_ast_opt }`でその規則のノードを残し、`{ ast_name: Tag }`で
+  改名して2つの生成規則を1つのタグに合流させる
+* 文法全体をculebra側で — `Peg.compile(grammar, "", false)`で全ノードを残す
+
+```culebra
+let g = `
+  Wrap  <- Inner
+  Inner <- < [0-9]+ >
+`
+inspect(Peg.walk(Peg.parse(g, "1")).map(|n| n.name).collect())
+# => ['Inner']
+inspect(Peg.walk(Peg.parse(g, "1", "", false)).map(|n| n.name).collect())
+# => ['Wrap', 'Inner']
+```
+
+### メモ化（`packrat`）
+
+既定でon。そしてこの既定は効いている。PEGは後戻りするので、接頭辞を共有する選択肢
+（`A <- B '+' A / B`という、最初に書く文法がたいてい持つ形）は同じ接頭辞を選択肢の数だけ
+パースし直し、メモ化なしでは指数時間になる。上の電卓文法での実測では、10段のネストが
+メモ化ありで0.04ms、なしで2.0s。
+
+代償は入力長×規則数に比例するテーブル（入力1バイトあたり概ね1KB）。
+`Peg.compile(grammar, "", true, false)`で切れるが、切る価値があるのは接頭辞を共有しない
+書き方をした文法（左因子化済み、あるいは素朴な文法が再帰するところを`*`/`+`で書いたもの）を
+テーブルが効いてくるほど大きな入力に適用する場合だけ。
+
+### エラーと境界
+
+不正な文法も、パースできない入力も`PegError`を送出する。文法内・入力内の位置は
+**メッセージの中**にあり、エラーの`line`/`col`には入らない。そちらは他と同じく
+culebra側の呼び出し位置を指す:
+
+```culebra
+inspect(try {
+  Peg.parse(`N <- < [0-9]+ >`, "x")
+} catch e {
+  e.kind
+})  # => 'PegError'
+```
+
+敵対的な入力を致命的な失敗でなく捕捉可能なエラーに留めるため、境界が2つある:
+
+* **規則の入場回数** — 4000回を超えて降りるパースは`PegError`（`nesting too deep`）。
+  そうしないと機械生成のネストがパーサ内部でCスタックを溢れさせる。culebraが自分の文法に
+  かけているのと同じ限界値の同じガード。
+* **木の深さ** — 1000段を超える木は`ValueError`（`nesting too deep (limit 1000)`）。
+  `JSON`や`TOML`が自分の木に適用しているのと同じ
+  [値ネストの上限](language.ja.md#値ネストの上限)。
+
+文法はスレッドごとの状態なので、`Peg`の値がisolate境界を越えるときは文法テキストが渡って
+向こう側でロードし直される。共有されるものは何もない。
+
+## 35. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -5769,7 +5967,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 35. 未収録（将来検討）
+## 36. 未収録（将来検討）
 
 ### 重量級データ構造
 

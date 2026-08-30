@@ -38,6 +38,7 @@
 #include <stdlib_kernels.h>  // File/FS/Time/Net/Regex kernels shared with interp
 #include <shared.h>
 #include <stdout_capture.h>  // program_out() / ProgramOutCapture (IO.capture)
+#include <peg.h>    // the value-neutral Peg choke
 #include <regex.h>  // the value-neutral Regex choke (the Regex AOT axis)
 #include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
 #include <stdlib_math.h>   // Math kernels shared with the interp
@@ -7544,6 +7545,86 @@ inline JitValue _ns_regex_split(JitValue* a, int64_t) {
   return _ns_adapt::v_array(arr);
 }
 
+//===-- Peg: the `Peg` namespace functions. Like Regex, slow-path adapters
+// with no fast-path branch: they do the work and build the result objects
+// directly. The engine sits behind peg.h's value-neutral choke. A node is a
+// data object { name, token, nodes, line, column, position, length, is_token,
+// choice }; `start` is a String whose emptiness means "the grammar's first
+// rule", so every parameter here is plainly typed.
+//===------------------------------------------------------------------------//
+inline culebra::pegparser::Handle _jit_peg_compile(JitValue grammar,
+                                                   JitValue start,
+                                                   JitValue packrat) {
+  culebra::pegparser::Options opt;
+  opt.start = std::string(_ns_adapt::require_sv(start, "start"));
+  opt.packrat = _ns_adapt::require_bool(packrat, "packrat");
+  return culebra::pegparser::compile(
+      _ns_adapt::require_sv(grammar, "grammar", "StringLike"), opt);
+}
+
+// The flat node table, back to front. Prefix order puts every child after its
+// parent, so one backward pass has each node's children already built when it
+// reaches the node — the tree is materialized without recursing to a depth the
+// program chose (peg.h bounds that depth anyway, this just doesn't rely on it).
+inline JitValue _jit_peg_tree(const culebra::pegparser::Tree& t) {
+  // `built` is a C++ vector, which the conservative collector does not scan,
+  // so every node is registered-but-unrooted until its parent takes it — a
+  // whole tree's worth of window. A GC_STRESS collect in there swept them
+  // (caught by that lane, not by the ordinary ones). Same pause the ns-object
+  // and dispatch-slab builders take, for the same reason.
+  culebra::gc::Heap::CollectPause _pause(_gc_heap());
+  std::vector<JitValue> built(t.nodes.size());
+  for (size_t i = t.nodes.size(); i-- > 0;) {
+    const auto& n = t.nodes[i];
+    auto* kids = culebra_runtime_array_new();
+    for (size_t k = 0; k < n.child_count; k++) {
+      // Each node has exactly one parent, so the push hands over the only
+      // reference — nothing left in `built` needs releasing but the root.
+      auto v = built[t.children[n.child_begin + k]];
+      culebra_runtime_array_push(kids, v.tag, v.data);
+    }
+    auto* o = culebra_runtime_object_new();
+    auto set_str = [&](const char* key, std::string_view s) {
+      culebra_runtime_object_set(
+          o, key, false, TAG_STRING,
+          reinterpret_cast<int64_t>(_culebra_heap_str(s)), 0, 0);
+    };
+    auto set_long = [&](const char* key, size_t x) {
+      culebra_runtime_object_set(o, key, false, TAG_LONG,
+                                 static_cast<int64_t>(x), 0, 0);
+    };
+    set_str("name", n.name);
+    set_str("token", n.token);
+    culebra_runtime_object_set(o, "nodes", false, TAG_ARRAY,
+                               reinterpret_cast<int64_t>(kids), 0, 0);
+    set_long("line", n.line);
+    set_long("column", n.column);
+    set_long("position", n.position);
+    set_long("length", n.length);
+    culebra_runtime_object_set(o, "is_token", false, TAG_BOOL,
+                               n.is_token ? 1 : 0, 0, 0);
+    set_long("choice", n.choice);
+    built[i] = _ns_adapt::v_object(o);
+  }
+  return built[0];
+}
+
+inline JitValue _ns_peg_check(JitValue* a, int64_t) {
+  _jit_peg_compile(a[0], a[1], a[2]);  // validate; throws on a bad grammar
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_peg_parse(JitValue* a, int64_t) {
+  auto h = _jit_peg_compile(a[0], a[2], a[4]);
+  auto text = _ns_adapt::require_sv(a[1], "text", "StringLike");
+  auto optimize = _ns_adapt::require_bool(a[3], "optimize");
+  return _jit_peg_tree(culebra::pegparser::parse(*h, text, optimize));
+}
+inline JitValue _ns_peg_test(JitValue* a, int64_t) {
+  auto h = _jit_peg_compile(a[0], a[2], a[3]);
+  return _ns_adapt::v_bool(culebra::pegparser::test(
+      *h, _ns_adapt::require_sv(a[1], "text", "StringLike")));
+}
+
 // NsParamMeta — the per-parameter view for stdlib methods that accept
 // kwargs / have defaults — is exactly the canonical signature row
 // (canon_sigs.h, generated from the interp's own parameter lists while both
@@ -7924,6 +8005,11 @@ inline const NsMethod kNsRows_Regex_native[] = {
   {"_Regex", "replace_first",3, &_ns_regex_replace_first},
   {"_Regex", "split",       2, &_ns_regex_split},
 };
+inline const NsMethod kNsRows_Peg_native[] = {
+  {"_Peg",   "check", 3, &_ns_peg_check},
+  {"_Peg",   "parse", 5, &_ns_peg_parse},
+  {"_Peg",   "test",  4, &_ns_peg_test},
+};
 inline const NsMethod kNsRows_Net[] = {
   {"Net",    "connect", 2, &_ns_net_connect},
   {"Net",    "listen",  1, &_ns_net_listen},
@@ -8200,6 +8286,8 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_GC{
     kNsRows_GC, kCanonSigs_GC};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Regex_native{
     kNsRows_Regex_native, kCanonSigs_Regex_native};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Peg_native{
+    kNsRows_Peg_native, kCanonSigs_Peg_native};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Net{
     kNsRows_Net, kCanonSigs_Net};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Proc{
@@ -8267,6 +8355,7 @@ inline const NsGroupRef kNsGroups[] = {
   {"Sys", &culebra_ns_group_Sys},
   {"GC", &culebra_ns_group_GC},
   {"_Regex", &culebra_ns_group_Regex_native},
+  {"_Peg", &culebra_ns_group_Peg_native},
   {"Net", &culebra_ns_group_Net},
   {"Proc", &culebra_ns_group_Proc},
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -9970,7 +10059,8 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
-      "_Regex",  "Proc",      "Net",       "Isolate",   "Channel",  "Parallel",
+      "_Regex",  "_Peg",      "Proc",      "Net",       "Isolate",  "Channel",
+      "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "Env",       "UUID",       "String",
       "_Term",   "_Canvas",
@@ -9981,8 +10071,8 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // the lazy-ns builder registry). Listed here so closures capture-skip
       // them and bare references compile to namespace_get — mirroring the
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
-      "Time",    "Args",      "Regex",     "Term",      "Log",      "Path",
-      "Canvas",  "__Eff",     "Vector2",   "Vector3",   "Deque",
+      "Time",    "Args",      "Regex",     "Peg",       "Term",     "Log",
+      "Path",    "Canvas",    "__Eff",     "Vector2",   "Vector3",  "Deque",
       "PriorityQueue",
       // The bare function globals from those same source modules (assert_*,
       // `replace`) are listed by lazy_fn_group_of below, not here.

@@ -76,7 +76,7 @@ Read this once; the rest of the guide assumes these choices.
   connections.
 - **Batteries-included, tiered.** The core (Math/IO/FS/File/Sys/
   Random/String/Time/Args) and Tier 1 (Regex/Http/Hash/Encoding/
-  Compress/JSON/CSV/TOML/SQLite/UUID/Log/Term/Canvas) both ship
+  Compress/JSON/CSV/TOML/SQLite/UUID/Peg/Log/Term/Canvas) both ship
   today; Tier 2/3 (Crypto, Sockets) follows demand — see Ch.14.
 - **Pre-1.0.** Source and APIs may change. Tagged releases carry
   prebuilt binaries for the three platforms (§1.1); there is no
@@ -1710,7 +1710,7 @@ inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 |---|---|
 | Numbers and text | `Math`, `Regex` |
 | Files, processes, environment | `FS`, `File`, `Path`, `Proc`, `Sys`, `Env` |
-| Data formats | `JSON`, `CSV`, `TOML`, `Encoding`, `Compress`, `Hash`, `UUID` |
+| Data formats | `JSON`, `CSV`, `TOML`, `Encoding`, `Compress`, `Hash`, `UUID`, `Peg` (a grammar of your own) |
 | Network | `Http`, `Net` |
 | Concurrency | `Isolate`, `Channel`, `Parallel`, `Shared`, `SharedBuffer` |
 | Storage | `SQLite` |

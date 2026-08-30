@@ -360,6 +360,30 @@ inline constexpr CanonSig kCanonSigs_Regex_native[] = {
   {"_Regex", "", "split", kCanonParams_Regex_native + 24, 2, "", 2, 2, false, -1, -1, -1},
 };
 
+inline constexpr CanonParam kCanonParams_Peg_native[] = {
+  // 0: _Peg.check
+  {"grammar", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"start", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"packrat", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 3: _Peg.parse
+  {"grammar", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"start", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"optimize", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  {"packrat", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 8: _Peg.test
+  {"grammar", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"start", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"packrat", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonSig kCanonSigs_Peg_native[] = {
+  {"_Peg", "", "check", kCanonParams_Peg_native + 0, 3, "", 3, 3, false, -1, -1, -1},
+  {"_Peg", "", "parse", kCanonParams_Peg_native + 3, 5, "", 5, 5, false, -1, -1, -1},
+  {"_Peg", "", "test", kCanonParams_Peg_native + 8, 4, "Bool", 4, 4, false, -1, -1, -1},
+};
+
 inline constexpr CanonParam kCanonParams_Net[] = {
   // 0: Net.connect
   {"host", false, false, false, false, false, "String", CanonDefault::None, 0, {}},

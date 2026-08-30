@@ -128,6 +128,9 @@ fmt_machinery='std::__format::__do_vformat_to|std::vformat|__format::__formatter
 
 # Regex: the weak/strong choke (kFeatureAxes still force-loads this one).
 regex_choke='^culebra::regex::compile[(]'
+# Peg: the same shape over cpp-peglib. The group alone does not carry it —
+# peglib's Ope hierarchy leaves vtables and typeinfo that --gc-sections keeps.
+peg_choke='^culebra::pegparser::compile[(]'
 # Proc / Canvas assets: no weak stub — plain inline code reached only through
 # the namespace's dispatch group, so `culebra::proc::run_command` and
 # `culebra::image::decode_png` / `culebra::_canvas_detail::ttf_load` are either
@@ -144,11 +147,13 @@ foreign_choke='jit_class_info<culebra::foreign_fixture::Counter>::methods'
 # 1. Names none of them: Regex stubbed, Proc/Canvas engines entirely absent.
 build none 'IO.print("none")'
 expect_stub_or_absent none "$regex_choke" "no Regex use"
+expect_stub_or_absent none "$peg_choke" "no Peg use"
 expect_absent none "$proc_choke" "no Proc use"
 expect_absent none "$png_choke" "no Canvas use"
 expect_absent none "$ttf_choke" "no Canvas use"
 expect_absent none "$foreign_choke" "no __Foreign use"
 expect_absent none ' reg::' "regexlib"
+expect_absent none ' peg::' "peglib"
 expect_absent none 'culebra::proc::_detail::' "the fork/exec layer"
 expect_absent none 'culebra::_canvas_detail::ttf_rasterize' "stb_truetype"
 expect_absent none 'culebra::foreign_fixture::' "the fixture's own C++ class"
@@ -175,8 +180,15 @@ expect_absent none ' [A-Za-z] culebra::_ns_http_[a-z_]*[(]' "the Http adapters"
 build regex 'IO.print(re"(\d+)-(\d+)".find("a 12-34 b").groups[2].value)'
 expect_strong regex "$regex_choke" "Regex named, the strong body must override"
 expect_absent regex "$proc_choke" "Regex only"
+expect_stub_or_absent regex "$peg_choke" "Regex only"
 expect_absent regex "$fmt_machinery" "libstdc++'s formatter, Regex"
 expect_output regex "34"
+
+build peg 'IO.print(Peg.parse(`N <- < [0-9]+ >`, "42").token)'
+expect_strong peg "$peg_choke" "Peg named, the strong body must override"
+expect_stub_or_absent peg "$regex_choke" "Peg only"
+expect_absent peg "$fmt_machinery" "libstdc++'s formatter, Peg"
+expect_output peg "42"
 
 build math 'let m = Math
 IO.print(m.abs(-3) + Math.floor(1.5))'
@@ -189,6 +201,7 @@ expect_output math "4"
 build proc 'IO.print(Proc.run(["echo", "spawned"]).stdout)'
 expect_present proc "$proc_choke" "Proc named"
 expect_stub_or_absent proc "$regex_choke" "Proc only"
+expect_stub_or_absent proc "$peg_choke" "Proc only"
 expect_absent proc "$fmt_machinery" "libstdc++'s formatter, Proc"
 expect_output proc "spawned"
 
@@ -253,4 +266,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / __Foreign by axis; Proc/Canvas/Shared by namespace group; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK (Regex / Peg / __Foreign by axis; Proc/Canvas/Shared by namespace group; groups linked only when named; no libstdc++ formatter)"

@@ -116,7 +116,8 @@ inline bool is_object_builtin_method_name(std::string_view name) {
 // ObjectValue::ns_name / JitObject::ns_name for the error message.
 inline const char* lazy_namespace_static_name(std::string_view name) {
   static constexpr const char* kNames[] = {"Time",  "Term", "Canvas",  "Args",
-                                           "Regex", "Log",  "Desktop", "__Eff"};
+                                           "Regex", "Peg",  "Log",     "Desktop",
+                                           "__Eff"};
   for (const char* n : kNames)
     if (name == n) return n;
   return nullptr;

@@ -168,7 +168,11 @@ still needs the weak/strong split even though nothing external is at
 stake, because a `__builtin_cpu_supports` runtime-dispatch check inside
 it makes the compiler emit a start-up CPUID constructor for whatever
 translation unit compiles the engine — leaving that unconditional would
-put the constructor in every binary, not just its own code. `Proc`'s
+put the constructor in every binary, not just its own code. `Peg`
+(~700 KB of cpp-peglib) rides the same split for a different reason:
+its `Ope` class hierarchy leaves vtables and typeinfo behind that
+`--gc-sections` keeps, so the namespace-group dead-stripping below does
+not reach them. `Proc`'s
 fork/exec layer and the PNG/TTF decoders behind
 `Canvas.Sprite.from_png` / `Canvas.Font` link nothing external either
 but need no choke of their own: they compile as plain code reached
@@ -576,7 +580,7 @@ strip prog
 ```
 
 A program that references a feature namespace (`Tensor`, `Http`,
-`Compress`, `SQLite`, `Regex`, `Canvas`, …; the [§4](#4-shared-runtime-archive-layout)
+`Compress`, `SQLite`, `Regex`, `Peg`, `Canvas`, …; the [§4](#4-shared-runtime-archive-layout)
 table) additionally needs that feature's archive **force-loaded** —
 `-Wl,-force_load,<archive>` on Mach-O, `-Wl,--whole-archive <archive>
 -Wl,--no-whole-archive` on ELF — plus the feature's own external
@@ -774,6 +778,7 @@ emits it as a base archive plus one small archive per heavy feature
 | `libculebra_rt_compress.a` | strong compress choke (pulls zlib; `to_png` rides it too) |
 | `libculebra_rt_sqlite.a` | strong sqlite choke plus the sqlite3 amalgamation |
 | `libculebra_rt_regex.a` | strong regex choke (the cpp-regexlib engine, ~320 KB) |
+| `libculebra_rt_peg.a` | strong Peg choke (the cpp-peglib parser generator, ~700 KB) |
 | `libculebra_rt_foreign.a` | the `__Foreign` wrap fixture the foreign-object tests are written against (a static `wrap<T>` registrar, so it needs its own archive) |
 | `libculebra_rt_canvas.a` | the raylib window backend (window builds only; the base carries headless stubs) |
 | `libculebra_rt_scene.a` | Scene's wrap registrar (pulls raylib; not in the base at all) |
@@ -783,7 +788,7 @@ emits it as a base archive plus one small archive per heavy feature
 `culebra build` (and extended `ext-culebra build` binaries) always
 link the base archive, then **force-load** a feature archive only when
 the source AST references its namespace (`Tensor` / `Http` /
-`Compress` / `SQLite` / `Regex` / `Canvas` / `Scene` / `Webview`, or a
+`Compress` / `SQLite` / `Regex` / `Peg` / `Canvas` / `Scene` / `Webview`, or a
 wrapped namespace), appending that feature's external
 libraries (BLAS / OpenSSL / zlib / …) on the same condition. The strong
 choke overrides the base's weak stub, so a program that uses none of

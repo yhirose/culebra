@@ -137,6 +137,7 @@ inline std::span<const LazyNsModule> lazy_ns_modules() {
       {"Canvas", CANVAS_MODULE_SOURCE, "_canvas_module"},
       {"Args", ARGS_MODULE_SOURCE, "_args_module"},
       {"Regex", REGEX_MODULE_SOURCE, "_regex_module"},
+      {"Peg", PEG_MODULE_SOURCE, "_peg_module"},
       {"Log", LOG_MODULE_SOURCE, "_log_module"},
       {"Path", PATH_MODULE_SOURCE, "_path_module"},
       {"Vector2", VECTOR2_MODULE_SOURCE, "_vector2_module"},

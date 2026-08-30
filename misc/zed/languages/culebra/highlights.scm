@@ -52,6 +52,8 @@
  (#match? @type.builtin "^(Encoding|Compress|Hash|CSV|Env|UUID|Term|Log|TOML|SQLite)$"))
 ((type) @type.builtin
  (#match? @type.builtin "^(Canvas|Scene|Net|Desktop|Webview|Vector2|Vector3|Deque|PriorityQueue)$"))
+((type) @type.builtin
+ (#match? @type.builtin "^(Peg)$"))
 ; === END AUTO-BUILTINS ===
 
 (identifier) @variable
