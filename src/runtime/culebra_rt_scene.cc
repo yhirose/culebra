@@ -15,6 +15,19 @@
 // Scene) with -DCULEBRA_ENABLE_SCENE=ON; raylib + SDL3 come from the vendored
 // submodules and CULEBRA_SCENE_LINK. No `culebra wrap` step.
 
+// Windows puts three of raylib's names in <windows.h> too: GDI's Rectangle()
+// hides `struct Rectangle` (a class name loses to a function name in the same
+// scope), and USER32's CloseWindow(HWND) / ShowCursor(BOOL) are a different
+// signature for the same extern "C" symbol. raylib's own raudio.c cuts them the
+// same way. This has to be here rather than in os_compat.h, which is what
+// wrap.h reaches <windows.h> through: every other TU keeps the full API, and
+// nothing in culebra calls into GDI or USER32 anyway (SDL and raylib do their
+// own windowing).
+#if defined(_WIN32)
+#define NOGDI   // Rectangle() and the rest of the drawing API
+#define NOUSER  // CloseWindow(), ShowCursor() and the rest of the window API
+#endif
+
 #include <wrap.h>
 
 #include <cstdarg>
