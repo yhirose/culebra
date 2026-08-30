@@ -788,39 +788,34 @@ jobs:
           restore-keys: |
             linux-scene-ccache-
 
-      # The gate build rather than `just build`: Scene is not a shipped
-      # configuration, so LTO would buy nothing and cost the link. What matters
-      # is that this keeps the AOT runtime archives (DEV_NO_RT would skip them),
-      # which the archive ratchet and the AOT probe below both need.
+      # `just build-scene` is where this lane's configuration lives, so a
+      # contributor gets the same build with one word. LTO off (Scene is not a
+      # shipped configuration, so it would only cost the link) and the AOT
+      # runtime archives kept, which the ratchet and the AOT probe both need.
       - name: Build (Scene ON)
-        run: just build-gate -DCULEBRA_ENABLE_SCENE=ON -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+        run: just build-scene -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
 
       - name: Report ccache stats
         run: ccache -s || true
 
       # Without this the job could go green on a build where CMake quietly left
-      # the namespace off, having proved nothing it exists for.
+      # the namespace off, having proved nothing it exists for. Same script the
+      # Windows lane runs, for the reason its Canvas and Webview siblings exist.
       - name: Verify Scene is actually in this build
-        run: |
-          test -f build-gate/libculebra_rt_scene.a \
-            || { echo "::error::SCENE_SILENTLY_DISABLED (no libculebra_rt_scene.a)" >&2; exit 1; }
-          echo "OK: Scene archive built"
+        run: misc/verify_scene_axis.sh build-scene
 
-      # The only steps that enter raylib's window, GL and shader path.
+      # The only step that enters raylib's window, GL and shader path. One X
+      # server for both engines; the probe is what knows there are two.
       - name: Render a frame (Xvfb, vm / JIT)
         run: |
-          fail=0
-          for engine in --vm --jit; do
-            LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a \
-              misc/probe_scene_window.sh ./build-gate/culebra "$engine" || fail=1
-          done
-          exit $fail
+          LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a \
+            misc/probe_scene_window.sh ./build-scene/culebra
 
       # Display-free by construction (the Scene call sits under `if false`), so
       # what it reports is the link: the force-load of libculebra_rt_scene.a
       # beside the core archive. Its Windows twin is the same script.
       - name: AOT link + run (Scene force-load axis)
-        run: misc/probe_scene_aot_link.sh ./build-gate/culebra
+        run: misc/probe_scene_aot_link.sh ./build-scene/culebra
 
       # The archive Scene adds is one of the three that reach wrap.h, so it can
       # leave a `culebra_runtime_*` helper the compiler declined to inline
@@ -828,7 +823,7 @@ jobs:
       # it is a failed link, which is why the count is ratcheted here rather
       # than discovered on Windows.
       - name: Runtime archive discipline (with the Scene archive present)
-        run: tools/check_rt_archive_tls.sh build-gate
+        run: tools/check_rt_archive_tls.sh build-scene
 
   # Linux is the only platform where culebra has to find the WebView engine
   # itself (macOS links a system framework; Windows lets webview.h's own loader
@@ -2037,10 +2032,7 @@ jobs:
         run: ccache -s || true
 
       - name: Verify Scene is actually in this build
-        run: |
-          test -f build-win-scene/libculebra_rt_scene.a \
-            || { echo "::error::SCENE_SILENTLY_DISABLED (no libculebra_rt_scene.a)" >&2; exit 1; }
-          echo "OK: Scene archive built"
+        run: misc/verify_scene_axis.sh build-win-scene
 
       # The whole point of the lane.
       - name: Smoke — AOT link with Scene force-loaded

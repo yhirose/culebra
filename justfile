@@ -232,6 +232,20 @@ build-assert *extra:
     cd build-assert && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCMAKE_CXX_FLAGS_RELEASE="-O1" {{extra}} .. > /dev/null
     cd build-assert && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} culebra
 
+# The Scene axis, which no other lane builds: CMake defaults it OFF and no
+# release turns it on, so its binding, its feature archive and its AOT link
+# fragment compile nowhere else. Its own build dir for build-assert's reason —
+# CULEBRA_ENABLE_SCENE is a target-wide define, so every TU's command line
+# differs and sharing a dir would evict the other lanes' ccache. Keeps the AOT
+# archives (no DEV_NO_RT): misc/probe_scene_aot_link.sh needs the force-load.
+# The `culebra` target alone — this lane runs the probes, never ctest.
+[doc("Build with the opt-in Scene namespace ON (the only lane that does)")]
+[group("build")]
+build-scene *extra:
+    mkdir -p build-scene
+    cd build-scene && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_ENABLE_SCENE=ON {{extra}} .. > /dev/null
+    cd build-scene && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} culebra
+
 # Install the Release binary (`just build`) into PREFIX/bin, with sudo only when
 # that directory isn't already writable. PREFIX defaults to /usr/local: on macOS
 # /usr/bin is read-only even for root (SIP), so a system-wide install goes here.
