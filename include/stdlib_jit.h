@@ -7406,7 +7406,7 @@ inline JitValue _jit_regex_group(std::string_view subject,
 // the Regex's name->index map.
 inline JitValue _jit_regex_match(
     std::string_view subject, std::span<const culebra::regex::Span> row,
-    const std::unordered_map<std::string, int>& named) {
+    const culebra::regex::NameMap& named) {
   auto mv = _jit_regex_group(subject, row[0]);  // the whole match, always set
   auto* o = reinterpret_cast<JitObject*>(mv.data);
   o->is_match = true;  // route `m[i]` / `m["name"]` to capture groups

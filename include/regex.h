@@ -17,6 +17,8 @@
 //   - header-only / in-process JIT (neither): the normal inline body.
 
 #include <cstddef>
+#include <functional>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -77,6 +79,9 @@ struct FindAt {
 using Compiled = reg::Regex;
 using Handle = std::shared_ptr<const Compiled>;
 
+// reg::NameMap, spelled out: the weak archive never includes regexlib.h.
+using NameMap = std::map<std::string, int, std::less<>>;
+
 #if defined(CULEBRA_RT_REGEX_WEAK)
 
 [[noreturn]] inline void _not_linked() {
@@ -84,8 +89,9 @@ using Handle = std::shared_ptr<const Compiled>;
                      "Regex runtime entered in a no-Regex binary", 0, 0);
 }
 CULEBRA_RT_REGEX_LINKAGE Handle compile(std::string_view) { _not_linked(); }
-CULEBRA_RT_REGEX_LINKAGE const std::unordered_map<std::string, int>&
-named_groups(const Compiled&) { _not_linked(); }
+CULEBRA_RT_REGEX_LINKAGE const NameMap& named_groups(const Compiled&) {
+  _not_linked();
+}
 CULEBRA_RT_REGEX_LINKAGE bool test(const Compiled&, std::string_view) {
   _not_linked();
 }
@@ -141,8 +147,7 @@ CULEBRA_RT_REGEX_LINKAGE Handle compile(std::string_view pattern) {
   return h;
 }
 
-CULEBRA_RT_REGEX_LINKAGE const std::unordered_map<std::string, int>&
-named_groups(const Compiled& re) {
+CULEBRA_RT_REGEX_LINKAGE const NameMap& named_groups(const Compiled& re) {
   return re.named_groups();
 }
 
