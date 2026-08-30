@@ -993,6 +993,14 @@ inline bool is_packable_decorator(const peg::Ast& decorator) {
 inline bool is_value_decorator(const peg::Ast& decorator) {
   return is_directive_decorator(decorator, "value");
 }
+// The three the compiler reads itself rather than calls. apply_decorators
+// skips them, so a declaration carrying only these is one whose value no
+// decorator can replace — which is what lets a construction site name the
+// constructor it reaches.
+inline bool is_compile_time_decorator(const peg::Ast& decorator) {
+  return is_packable_decorator(decorator) || is_value_decorator(decorator) ||
+         !view_derive(decorator).empty();
+}
 
 // Registry of `@value` class names, so a later `@value` class can declare a
 // field of one (`a: Vector2`). Written where a declaration is first seen —

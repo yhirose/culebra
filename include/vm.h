@@ -3317,6 +3317,16 @@ class Compiler {
       // the id is how the second one finds the sites it invalidates
       // (revoke_known).
       int64_t cell = -1;
+      // The constructor chunk `Name.new(...)` reaches, for a name a class
+      // declaration wrote (grant_known_ctor). A different question from
+      // `chunk`: it is about calling `.new` ON the value rather than calling
+      // the value. Same "written exactly once" rule, and the same
+      // revocation — a class name is bound through a cell, so a
+      // re-declaration strikes its sites through `cell` too. Granted only
+      // where the answer cannot move at run time: one `new` (an overload set
+      // is a dispatcher, not a chunk) and no decorator, which is free to
+      // hand back something that is not the class.
+      int32_t ctor = -1;
     };
     Known known;
   };
@@ -3678,6 +3688,17 @@ class Compiler {
 
   void settle_callee(Binding& b, int32_t chunk, bool via_mono) {
     b.known = {chunk, via_mono, b.is_cell ? prog_.next_known_cell++ : -1};
+  }
+
+  // `b` is a class declaration's name, and `Name.new(...)` reaches `chunk`
+  // for as long as it is in scope. Same "the declaration is the only write"
+  // rule as grant_known_chunk, and it takes a cell id for the same reason: a
+  // re-declaration has to strike the sites that resolved through it. The
+  // caller decides eligibility — see Binding::Known::ctor.
+  void grant_known_ctor(Binding& b, int32_t chunk) {
+    if (chunk < 0 || !binding_writes_once(b)) return;
+    b.known.ctor = chunk;
+    if (b.is_cell && b.known.cell < 0) b.known.cell = prog_.next_known_cell++;
   }
 
   // A second declaration of the same name in this scope writes the cell the
@@ -4084,7 +4105,8 @@ class Compiler {
   void invalidate_cell(int32_t slot) {
     for (auto& sc : scopes_)
       for (auto& b : sc.bindings)
-        if (b.slot == slot && b.known.chunk >= 0) revoke_known(b);
+        if (b.slot == slot && (b.known.chunk >= 0 || b.known.ctor >= 0))
+          revoke_known(b);
   }
 
   // A read of a cell binding: the value comes out retained, so the result
@@ -5036,9 +5058,7 @@ class Compiler {
   int32_t apply_decorators(const peg::Ast& ast, size_t dec_end, int32_t val) {
     for (size_t i = dec_end; i > 0; --i) {
       const auto& dec = *ast.nodes[i - 1];
-      if (culebra::is_packable_decorator(dec)) continue;
-      if (culebra::is_value_decorator(dec)) continue;
-      if (!culebra::view_derive(dec).empty()) continue;
+      if (culebra::is_compile_time_decorator(dec)) continue;
       const auto& dec_expr = *dec.nodes[0];
       auto callee = compile_expr(dec_expr);
       int32_t arg = alloc_temp(ast);  // the one-argument run
@@ -5148,7 +5168,7 @@ class Compiler {
   // emit_session_decl_bind.
   struct DeclCell {
     int32_t slot;
-    const Binding* binding;
+    Binding* binding;
   };
   DeclCell bind_decl_cell(const peg::Ast& ast, const std::string& name) {
     if (Binding* pre = predeclared_here(name)) {
@@ -5310,6 +5330,24 @@ class Compiler {
     // predeclare_forward_refs minted that cell — fill it rather than mint
     // a second one, so both readers see the same class.
     auto [class_slot, decl_binding] = bind_decl_cell(ast, class_name);
+    // `Name.new(...)` reaches one chunk, and the compiler can say which —
+    // unless an overload set makes the constructor a dispatcher, or a
+    // decorator that is not a compile-time one is free to hand back
+    // something that is not this class (is_compile_time_decorator, the same
+    // predicate apply_decorators skips on). Reserved before the methods
+    // compile so a method constructing
+    // its own class resolves too, which is where the constructions in a
+    // `@value` operator live.
+    int32_t ctor_chunk_idx = -1;
+    if (new_asts.size() < 2 &&
+        std::all_of(ast.nodes.begin(), ast.nodes.begin() + dec_end,
+                    [](const auto& d) {
+                      return culebra::is_compile_time_decorator(*d);
+                    })) {
+      ctor_chunk_idx = static_cast<int32_t>(prog_.chunks.size());
+      prog_.chunks.emplace_back();
+      grant_known_ctor(*decl_binding, ctor_chunk_idx);
+    }
 
     TempScope ts(*this);
     // Static field values evaluate here, at the declaration, in the
@@ -5473,7 +5511,7 @@ class Compiler {
           meta_cell, na ? cell_or_nil(-1) : cell_or_nil(finit_slot),
           na ? body_cell : cell_or_nil(-1)};
       int32_t ctor_chunk = compile_ctor_chunk(
-          ast, class_name, ctor_caps, na ? body_chunks[k] : -1);
+          ast, class_name, ctor_caps, na ? body_chunks[k] : -1, ctor_chunk_idx);
       if (new_asts.size() < 2) {
         emit(Op::MakeClosure, ctor, ctor_chunk);
         break;
@@ -5637,11 +5675,18 @@ class Compiler {
   // prologue binds the arguments, so an arity or typed-param error reports
   // that body's parameter names, fires before any field initializer, and
   // leaves a half-built instance behind for its `drop`.
+  // `reserved` is an index compile_class_decl took before the methods
+  // compiled, so a method that constructs its own class resolves against a
+  // chunk that does not exist yet — the same reserve-then-fill order
+  // compile_fn_chunk already uses for nested chunks. -1 appends as usual.
   int32_t compile_ctor_chunk(const peg::Ast& ast, const std::string& class_name,
                              const std::vector<int32_t>& caps,
-                             int32_t body_chunk) {
-    int32_t idx = static_cast<int32_t>(prog_.chunks.size());
-    prog_.chunks.emplace_back();
+                             int32_t body_chunk, int32_t reserved = -1) {
+    int32_t idx = reserved;
+    if (idx < 0) {
+      idx = static_cast<int32_t>(prog_.chunks.size());
+      prog_.chunks.emplace_back();
+    }
     Compiler fc(prog_, analysis_, /*in_function=*/true, info_, idx);
     fc.repl_ = repl_;
     fc.debug_ = debug_;
@@ -7150,6 +7195,24 @@ class Compiler {
     return {b->known.chunk, b->known.cell, b->known.via_mono};
   }
 
+  // What `Name.new(...)` reaches. A constructor arrives through the class
+  // object rather than by being the head, so it is the one step down a
+  // postfix chain that resolves — and only that step: `f().new(...)` is
+  // whatever the call returned, and `a.b.new(...)` is whatever `a.b` is.
+  // Asked at the property call itself, which is where the shape is still
+  // visible and where the CallM it answers for is emitted.
+  StaticCallee postfix_ctor_callee(const peg::Ast& at, const peg::Ast& post) {
+    using namespace peg::udl;
+    if (at.nodes.size() < 2 || at.nodes[1].get() != &post ||
+        post.original_tag != "DOT"_ || post.token != "new")
+      return {};
+    const auto& head = *at.nodes[0];
+    if (head.tag != "IDENTIFIER"_) return {};
+    const Binding* b = lookup(head.token);
+    if (!b) return {};
+    return {b->known.ctor, b->known.cell, /*via_mono=*/false};
+  }
+
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
   // `x!!`, and their compositions (`n[i][j]`, `f()[k]`, `Math.abs(-3).nope`),
   // folded left to right over one rolling result — the same walk
@@ -7628,6 +7691,7 @@ class Compiler {
                  /*dst_is_fresh=*/true);
     int32_t t = alloc_temp(at);
     size_t ix = emit(Op::CallM, t, callee, base, argc);
+    record_call_target(ix, postfix_ctor_callee(at, post), argc);
     std::vector<const peg::Ast*> asts;
     for (const auto& a : args.nodes) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
