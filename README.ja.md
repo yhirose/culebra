@@ -129,8 +129,9 @@ sudo mv culebra-*/culebra /usr/local/bin/
   入力。端末が対応する範囲へ落とし込まれます（`NO_COLOR`下では何も
   出しません）。
 - **3D。** `Scene` — 手続き的に構築したジオメトリを物理ベースライティングで
-  描く保持モードの3Dレンダラ。オプトイン（`-DCULEBRA_ENABLE_SCENE=ON`）で、
-  現状はmacOSのみです。
+  描く保持モードの3Dレンダラ。experimentalで、オプトイン
+  （`-DCULEBRA_ENABLE_SCENE=ON`）。リリースバイナリには入っておらず、
+  動くのはmacOSとLinuxだけです。
 
 ### 組み込みのTensor
 

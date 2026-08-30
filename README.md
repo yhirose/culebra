@@ -134,8 +134,9 @@ package manager, no lockfile:
   and key/mouse input for TUIs, downsampled to whatever the terminal
   supports (and silent under `NO_COLOR`).
 - **3D.** `Scene` — a retained-mode 3D renderer for procedural geometry
-  with physically based lighting. Opt-in
-  (`-DCULEBRA_ENABLE_SCENE=ON`) and macOS-only today.
+  with physically based lighting. Experimental: opt-in
+  (`-DCULEBRA_ENABLE_SCENE=ON`), not in the released binaries, and
+  macOS / Linux only.
 
 ### Built-in Tensor
 

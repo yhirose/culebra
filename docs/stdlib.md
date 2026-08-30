@@ -67,7 +67,7 @@ Conventions used below:
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
 26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls, tone, sound, music)
-27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (opt-in, macOS-only)
+27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (experimental, opt-in build)
 28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
 29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
 30. [`Vector2`](#30-vector2) — minimal 2D float vector for graphics/game code (also stands in for a "Point")
@@ -5266,11 +5266,14 @@ flight demos with a chase camera — rather than asset-driven games. A
 racing demo — circuit mesh, chase camera, gamepad steering — is the
 shape it is designed around.
 
-`Scene` is **opt-in and currently macOS-only**. It is not in the default build;
-enable it with `-DCULEBRA_ENABLE_SCENE=ON`, which builds the vendored static
-SDL3 + raylib backend. A windowed backend for Linux/Windows and the browser is
-not available yet, so — unlike `Canvas` — `Scene` programs neither run headless
-nor in the Playground.
+`Scene` is **experimental**: its API can change without notice, and it is the
+one namespace the released binaries do not carry. It is not in the default
+build; enable it with `-DCULEBRA_ENABLE_SCENE=ON`, which builds the vendored
+static SDL3 + raylib backend. That is the same backend `Canvas` opens a window
+with on macOS, Linux and Windows, but `Scene` itself runs on macOS and Linux
+only — it has not been linked on Windows yet. It has no headless mode either,
+so — unlike `Canvas` — `Scene` programs run neither headless nor in the
+Playground.
 
 ### The view and the frame loop
 

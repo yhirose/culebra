@@ -152,6 +152,20 @@ fn read_lines(path) {
   out
 }
 
+# A namespace whose own section calls itself **experimental** carries the mark
+# into the index, so the one file written to be read whole says which entries
+# a released binary may not have. stdlib.md stays the single source.
+fn ns_group(title, buf) {
+  mut mark = ''
+  for line in buf {
+    if line.contains('**experimental**') {
+      mark = ' (experimental)'
+      break
+    }
+  }
+  {title: title + mark, sigs: harvest(buf)}
+}
+
 # One group per `## N. Name` section of stdlib.md.
 fn namespace_groups(lines) {
   mut out = []
@@ -160,7 +174,7 @@ fn namespace_groups(lines) {
   for line in lines {
     if line.starts_with('## ') {
       if title != nil {
-        out.push({title: title, sigs: harvest(buf)})
+        out.push(ns_group(title, buf))
       }
       m = NS_HEADING.find(line)
       title = m == nil ? nil : m[1].replace('`', '').trim().to_string()
@@ -170,7 +184,7 @@ fn namespace_groups(lines) {
     }
   }
   if title != nil {
-    out.push({title: title, sigs: harvest(buf)})
+    out.push(ns_group(title, buf))
   }
   out
 }

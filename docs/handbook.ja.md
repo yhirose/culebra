@@ -1686,7 +1686,7 @@ inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 | 並行 | `Isolate`、`Channel`、`Parallel`、`Shared`、`SharedBuffer` |
 | ストレージ | `SQLite` |
 | 時刻・CLI・ログ | `Time`、`Args`、`Log` |
-| 端末・グラフィクス | `Term`、`Canvas`、`Scene`、`Desktop` |
+| 端末・グラフィクス | `Term`、`Canvas`、`Scene`（experimental）、`Desktop` |
 
 いずれも [`stdlib.ja.md`](stdlib.ja.md) が記述します。目次が名前空間を
 順に並べ、その直下の「用途から探す」表が、やりたいこと — ハッシュを

@@ -65,7 +65,7 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 24. [`TOML`](#24-toml) — TOML設定をparse / stringify
 25. [`SQLite`](#25-sqlite) — 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション）
 26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御 / tone / 効果音 / music）
-27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ（opt-in、macOS限定）
+27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ（experimental、opt-inビルド）
 28. [`Net`](#28-net) — 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ）
 29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで
 30. [`Vector2`](#30-vector2) — グラフィックス/ゲーム向けの最小限の2D floatベクトル（「Point」の代わりも兼ねる）
@@ -5107,11 +5107,13 @@ post stack）なので、出力はフラットシェーディングのプリミ�
 アセット駆動のゲームではない。サーキットのメッシュ、チェイスカメラ、
 ゲームパッド操作といったレーシングデモの形が、設計の基準になっている。
 
-`Scene`は **opt-inで現状macOS限定**。デフォルトビルドには入らない。
+`Scene`は **experimental**でAPIは予告なく変わりうる。リリースバイナリが
+持たない唯一のnamespaceでもある。デフォルトビルドには入らない。
 `-DCULEBRA_ENABLE_SCENE=ON`で有効化すると、vendoredな静的SDL3 + raylib
-バックエンドをビルドする。Linux / Windowsとブラウザ向けのウィンドウ
-バックエンドはまだ無いので、`Canvas`と違い`Scene`プログラムはヘッドレスでも
-Playgroundでも動かない。
+バックエンドをビルドする。これは`Canvas`がmacOS・Linux・Windowsでウィンドウを
+開くのに使うものと同じバックエンドだが、`Scene`自体が動くのはmacOSとLinuxだけ
+で、Windowsではまだリンクできていない。ヘッドレスモードも無いので、`Canvas`と
+違い`Scene`プログラムはヘッドレスでもPlaygroundでも動かない。
 
 ### View とフレームループ
 
