@@ -1081,8 +1081,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     CULEBRA_RT_HTTP_REQUEST_WEAK=1
     CULEBRA_RT_COMPRESS_WEAK=1
     CULEBRA_RT_SQLITE_WEAK=1
-    CULEBRA_RT_REGEX_WEAK=1
-    CULEBRA_RT_PEG_WEAK=1)
+    CULEBRA_RT_REGEX_WEAK=1)
   # In a window build the Canvas backend is the raylib one: the base archive
   # carries weak headless present/input stubs (no raylib), overridden by the
   # strong bodies force-loaded from culebra_rt_canvas on Canvas use. In a
@@ -1181,16 +1180,6 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   list(APPEND _rt_embed_files
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_regex${CMAKE_STATIC_LIBRARY_SUFFIX}")
   list(APPEND _rt_embed_deps culebra_rt_regex)
-  # Peg feature object: the same weak choke over cpp-peglib. The namespace
-  # group does not carry this one on its own — peglib's Ope hierarchy leaves
-  # vtables and typeinfo that --gc-sections keeps (see peg.h). No link flags.
-  add_library(culebra_rt_peg STATIC ./src/runtime/culebra_rt_peg.cc)
-  target_compile_features(culebra_rt_peg PRIVATE cxx_std_23)
-  target_compile_options(culebra_rt_peg PRIVATE
-    -ffunction-sections -fdata-sections)
-  list(APPEND _rt_embed_files
-    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_peg${CMAKE_STATIC_LIBRARY_SUFFIX}")
-  list(APPEND _rt_embed_deps culebra_rt_peg)
   # The __Foreign wrap fixture: a static registrar, so the link can never drop
   # it from the core archive (see src/runtime/culebra_rt_foreign.cc). Its own
   # archive, force-loaded only when the program names __Foreign.
@@ -1307,7 +1296,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # archives may define, tools/check_jit_host_symbols.sh for what the driver
   # must still define.
   foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_compress
-                      culebra_rt_regex culebra_rt_peg culebra_rt_foreign
+                      culebra_rt_regex culebra_rt_foreign
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
                       culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})

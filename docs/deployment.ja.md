@@ -163,16 +163,23 @@ cpp-regexlibの約320 KB）。外部依存が無くても弱/強分岐が要る�
 エンジン内部の`__builtin_cpu_supports`によるランタイム分岐チェックが
 コンパイラに、それをコンパイルする翻訳単位ごとの起動時CPUID
 コンストラクタを生成させるためで、これを無条件にすると自前のコード
-以外にもこのコンストラクタが全バイナリに入ってしまう。`Peg`
-（cpp-peglibの約700 KB）も同じ分岐に乗るが理由は別で、`Ope`の
-クラス階層がvtableとtypeinfoを残し、それを`--gc-sections`が保持する
-ため、下のnamespace-group単位のdead-strippingでは届かない。`Proc`の
-fork/exec層と`Canvas.Sprite.from_png` / `Canvas.Font`の背後の
-PNG/TTFデコーダも外部ライブラリを引かないが、それぞれ専用の
-chokeは不要——自身のnamespaceのdispatch tableを通じてのみ到達する
-プレーンなコードとしてコンパイルされるので、名指ししないプログラムは
-リンクされない（仕組みは
-[§4](#4-共有-runtime-archive-レイアウト) 参照）。
+以外にもこのコンストラクタが全バイナリに入ってしまう。`Proc`の
+fork/exec層、`Canvas.Sprite.from_png` / `Canvas.Font`の背後の
+PNG/TTFデコーダ、そして`Peg`（cpp-peglib）も外部ライブラリを引かない
+が、それぞれ専用のchokeは不要——自身のnamespaceのdispatch tableを
+通じてのみ到達するプレーンなコードとしてコンパイルされるので、
+名指ししないプログラムはリンクされない（仕組みは
+[§4](#4-共有-runtime-archive-レイアウト) 参照）。ただし`Peg`は
+このdead-strippingが全バイトには届かない唯一のnamespaceで、`culebra::
+pegparser::compile()`自体はPegを名指ししないバイナリから消えている
+ことを`--keep-symbols`ビルドの`nm -C --defined-only`で確認済みだが、
+peglibの`Ope`クラス階層はvtableとtypeinfoを残し、それを
+`--gc-sections`が使用の有無に関わらず保持する。加えて、`std::function`
+に包んだローカルラムダのcomdatテンプレート実体化が、それを呼ぶはずの
+関数が消えたあとも孤立して生き残る（リンカの既知の制限で、到達可能な
+呼び出し経路ではない）。どちらも不活性で、Peg未使用バイナリで実行され
+ることは無く、実測で固定約53 KB——2本目のarchiveをforce-loadして
+避けるのではなく、これは受け入れる。
 
 `otool -L`（macOS）や`ldd`（Linux）で確認できます:
 
@@ -584,7 +591,7 @@ strip prog
 ```
 
 機能のnamespace（`Tensor` / `Http` / `Compress` / `SQLite` / `Regex` /
-`Peg` / `Canvas` / …、[§4](#4-共有-runtime-archive-レイアウト) の表）を
+`Canvas` / …、[§4](#4-共有-runtime-archive-レイアウト) の表）を
 参照するプログラムは、その機能のarchiveを **force-load** する必要がある — Mach-Oなら
 `-Wl,-force_load,<archive>`、ELFなら`-Wl,--whole-archive <archive>
 -Wl,--no-whole-archive` — さらにその機能の外部ライブラリも要る。
@@ -769,13 +776,12 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 
 | Archive | 内容 |
 |---|---|
-| `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層と画像デコーダ（stb_image / stb_truetype）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeでなく下のnamespace-group単位のdead-strippingに委ねる |
+| `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`Peg`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeでなく下のnamespace-group単位のdead-strippingに委ねる——3つのうち`Peg`だけは未使用でも固定約53 KBのpeglib RTTI/vtableメタデータを残す（§1参照） |
 | `libculebra_rt_tensor.a` | 強いtensor choke（BLAS / Accelerateを引く） |
 | `libculebra_rt_http.a` | 強いhttp choke（OpenSSL + zlibを引く） |
 | `libculebra_rt_compress.a` | 強いcompress choke（zlibを引く。`to_png`もこれに乗る） |
 | `libculebra_rt_sqlite.a` | 強いsqlite choke＋sqlite3 amalgamation |
 | `libculebra_rt_regex.a` | 強いregex choke（cpp-regexlibエンジン、約320 KB） |
-| `libculebra_rt_peg.a` | 強いPeg choke（cpp-peglibパーサジェネレータ、約700 KB） |
 | `libculebra_rt_foreign.a` | foreign objectのテストが書かれている`__Foreign` wrapフィクスチャ（静的な`wrap<T>`レジストラなので専用archiveが要る） |
 | `libculebra_rt_canvas.a` | raylibのwindowバックエンド（windowビルドのみ。baseはheadlessスタブを持つ） |
 | `libculebra_rt_scene.a` | Sceneのwrap registrar（raylibを引く。baseには一切入っていない） |
@@ -784,7 +790,7 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 
 `culebra build`（および拡張された`ext-culebra build`バイナリ）は
 常にbaseをlinkし、ソースASTがそのnamespace（`Tensor` / `Http` /
-`Compress` / `SQLite` / `Regex` / `Peg` / `Canvas` / `Scene` /
+`Compress` / `SQLite` / `Regex` / `Canvas` / `Scene` /
 `Webview`、あるいはラップされたnamespace）を参照する時だけ機能
 archiveを **force-load** し、同じ条件でその外部ライブラリ（BLAS /
 OpenSSL / zlib / …）を付けます。強いchokeがbaseの弱スタブを上書きする

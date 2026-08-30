@@ -602,12 +602,6 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // its own code and, via __builtin_cpu_supports, a start-up constructor
     // that would otherwise land in every binary (see regex.h).
     {{"Regex"}, "libculebra_rt_regex.a", "", true},
-    // peg.h: same shape as Regex, no library behind it. The namespace group
-    // alone does not carry this one — an unused namespace's functions do get
-    // collected, but peglib's Ope class hierarchy leaves vtables and typeinfo
-    // that survive --gc-sections (measured: 71 peglib symbols in a hello
-    // binary without the axis, 0 with).
-    {{"Peg"}, "libculebra_rt_peg.a", "", true},
     // The __Foreign test fixture, for the same reason one step removed: its
     // `wrap<T>` registrar is a static initializer, which .init_array pins
     // against the link (see src/runtime/culebra_rt_foreign.cc). The flags are

@@ -29,13 +29,24 @@
 #     probe below is checked for it, since the leak follows whatever the
 #     program touches (a @packable class, Proc, a wrapped class), and the
 #     `spec` probe is the control that proves the check still bites.
-#   - Proc and the Canvas PNG/TTF decoders are NOT an axis: they compile as
-#     plain `inline` code, reached only through their `_ns_*` adapters. Once
+#   - Proc, the Canvas PNG/TTF decoders, and Peg are NOT an axis: they compile
+#     as plain `inline` code, reached only through their `_ns_*` adapters. Once
 #     a namespace's dispatch group (stdlib_jit.h ns_groups()) is unreferenced,
 #     `--gc-sections` drops the group, its adapters, and everything only they
 #     reached — the same mechanism §4 of docs/deployment.md describes for
 #     Math/IO. This script checks that these choke functions are present when
 #     the namespace is used and gone (not merely stubbed) when it is not.
+#     Peg is the one exception `--gc-sections` only partly reaches: peglib's
+#     Ope class hierarchy leaves typeinfo/vtables behind (see peg.h), and a
+#     couple of `std::function`-wrapped local lambdas leave an inert
+#     `_Function_handler<...>::_M_manager` comdat behind even after their only
+#     caller is pruned (a linker limitation, not a reachable call path). Both
+#     are accepted rather than chased with a second archive: they're fixed at
+#     a measured ~53 KB total and never executed in a binary that never names
+#     Peg (see peg.h). What this script's `none` probe checks instead is the
+#     thing that DOES matter -- that `culebra::pegparser::compile` itself
+#     (the actual entry point, not a nested lambda's enclosing-scope name) is
+#     gone, not merely stubbed, when the program never names Peg.
 #
 # The choke names below are this script's own copy of what the source
 # actually reaches; renaming one means updating it.
@@ -69,31 +80,35 @@ build() {  # build <name> <source>: the binary plus one nm listing of it
 sym_class() {
   awk -v n="$2" '$3 ~ n { print toupper($2); exit }' "$work/$1.nm"
 }
-expect_strong() {  # expect_strong <binary> <symbol ERE> <why>
+# Checks the nm class of the ONE symbol whose demangled name starts with
+# <symbol-start ERE> (sym_class's field-3 anchor) against <allowed-class ERE>
+# -- "T" for strong-linked, "W|" for weak-or-absent, ".+" for defined
+# (any class), "" for absent. This is the anchored idiom for "does this one
+# fully-qualified symbol exist, and in what form" -- use it for any new choke
+# shaped that way. It is NOT a substitute for expect_absent/expect_present
+# below, which stay in whole-line grep -E form on purpose for the checks
+# further down that are deliberately broad (an alternation of several
+# patterns, or "no symbol anywhere under this namespace prefix" rather than
+# one exact function) -- anchoring those would narrow what they catch.
+expect_class() {  # expect_class <binary> <symbol-start ERE> <allowed-class ERE> <expected-desc> <why>
   local got
   got=$(sym_class "$1" "$2")
-  if [[ "$got" != "T" ]]; then
-    echo "check_aot_feature_axes FAIL: $1: $2 is '$got', expected 'T' ($3)" >&2
+  if ! [[ "$got" =~ ^($3)$ ]]; then
+    echo "check_aot_feature_axes FAIL: $1: $2 is '$got', $4 ($5)" >&2
     fail=1
   fi
 }
+# Whole-line grep -E, unanchored: matches a choke's demangled name wherever it
+# appears as a substring, including nested inside an unrelated symbol (a
+# lambda's mangled enclosing-scope name, say) -- fine for the deliberately
+# broad checks below (fmt_machinery's alternation, a bare namespace prefix
+# like ' reg::'), wrong for "does this one function exist" (use expect_class).
 expect_absent() {  # expect_absent <binary> <ERE> <why>
   local hits
   hits=$(grep -E "$2" "$work/$1.nm" | head -3 || true)
   if [[ -n "$hits" ]]; then
     echo "check_aot_feature_axes FAIL: $1 carries the engine it never names ($3):" >&2
     printf '%s\n' "$hits" | sed 's/^/  /' >&2
-    fail=1
-  fi
-}
-# The strong body must not be linked: its weak stub is (the choke a linked
-# adapter still calls), or nothing is — once no adapter names the choke, the
-# stub is dead-stripped with it, and that is the better of the two outcomes.
-expect_stub_or_absent() {  # expect_stub_or_absent <binary> <symbol ERE> <why>
-  local got
-  got=$(sym_class "$1" "$2")
-  if [[ "$got" != "W" && "$got" != "" ]]; then
-    echo "check_aot_feature_axes FAIL: $1: $2 is '$got', expected 'W' or absent ($3)" >&2
     fail=1
   fi
 }
@@ -128,32 +143,42 @@ fmt_machinery='std::__format::__do_vformat_to|std::vformat|__format::__formatter
 
 # Regex: the weak/strong choke (kFeatureAxes still force-loads this one).
 regex_choke='^culebra::regex::compile[(]'
-# Peg: the same shape over cpp-peglib. The group alone does not carry it —
-# peglib's Ope hierarchy leaves vtables and typeinfo that --gc-sections keeps.
+# Peg / Proc / Canvas assets: no weak stub — plain inline code reached only
+# through the namespace's dispatch group, so these are either linked (as
+# ordinary — usually weak/COMDAT — symbols) or gone entirely. The first three
+# are each one fully-qualified function, checked with expect_class (sym_class's
+# field-3-start anchor): a whole-line grep -E would also match a nested
+# lambda's mangled enclosing-scope name containing the same text as a
+# substring (see the Peg note above, which is where this was first caught) --
+# any future choke of this exact shape (one function, `name[(]`) should use
+# expect_class too, not expect_absent/expect_present.
 peg_choke='^culebra::pegparser::compile[(]'
-# Proc / Canvas assets: no weak stub — plain inline code reached only through
-# the namespace's dispatch group, so `culebra::proc::run_command` and
-# `culebra::image::decode_png` / `culebra::_canvas_detail::ttf_load` are either
-# linked (as ordinary — usually weak/COMDAT — symbols) or gone entirely.
-proc_choke=' culebra::proc::run_command[(]'
-png_choke=' culebra::image::decode_png[(]'
-ttf_choke=' culebra::_canvas_detail::ttf_load[(]'
+proc_choke='^culebra::proc::run_command[(]'
+png_choke='^culebra::image::decode_png[(]'
+ttf_choke='^culebra::_canvas_detail::ttf_load[(]'
 # The __Foreign fixture is its own archive: a `wrap<T>` registrar its TU pins
 # through static init, so it can't ride namespace-group dead-stripping either.
 # The class metadata wrap<T> instantiates is the tell — the registrar variable
-# itself is the archive TU's, with a name this has no business knowing.
+# itself is the archive TU's, with a name this has no business knowing. Unlike
+# the three above, this isn't one top-level function under a stable qualified
+# name: it's a template instantiation reached under `culebra::wrap_detail::`
+# through several related symbols (a static member, its guard variable,
+# emplace_back thunks, …), so it stays on the broader expect_absent/present.
 foreign_choke='jit_class_info<culebra::foreign_fixture::Counter>::methods'
 
-# 1. Names none of them: Regex stubbed, Proc/Canvas engines entirely absent.
+# 1. Names none of them: Regex stubbed, Proc/Canvas/Peg engines entirely absent.
 build none 'IO.print("none")'
-expect_stub_or_absent none "$regex_choke" "no Regex use"
-expect_stub_or_absent none "$peg_choke" "no Peg use"
-expect_absent none "$proc_choke" "no Proc use"
-expect_absent none "$png_choke" "no Canvas use"
-expect_absent none "$ttf_choke" "no Canvas use"
+expect_class none "$regex_choke" "W|" "expected 'W' or absent" "no Regex use"
+expect_class none "$peg_choke" "" "expected absent" "no Peg use"
+expect_class none "$proc_choke" "" "expected absent" "no Proc use"
+expect_class none "$png_choke" "" "expected absent" "no Canvas use"
+expect_class none "$ttf_choke" "" "expected absent" "no Canvas use"
 expect_absent none "$foreign_choke" "no __Foreign use"
 expect_absent none ' reg::' "regexlib"
-expect_absent none ' peg::' "peglib"
+# peglib's typeinfo/vtables, and a couple of unreachable std::function comdat
+# thunks, survive here by design (see the Peg note above) -- culebra's own
+# front-end parser (parser.h) already needs a working peg::parser regardless
+# of this program, so raw `peg::` symbols are not checked for absence here.
 expect_absent none 'culebra::proc::_detail::' "the fork/exec layer"
 expect_absent none 'culebra::_canvas_detail::ttf_rasterize' "stb_truetype"
 expect_absent none 'culebra::foreign_fixture::' "the fixture's own C++ class"
@@ -178,15 +203,15 @@ expect_absent none ' [A-Za-z] culebra::_ns_http_[a-z_]*[(]' "the Http adapters"
 # 2. Each on its own: the engine is what runs, and no other feature's code
 #    came along with it.
 build regex 'IO.print(re"(\d+)-(\d+)".find("a 12-34 b").groups[2].value)'
-expect_strong regex "$regex_choke" "Regex named, the strong body must override"
-expect_absent regex "$proc_choke" "Regex only"
-expect_stub_or_absent regex "$peg_choke" "Regex only"
+expect_class regex "$regex_choke" "T" "expected 'T'" "Regex named, the strong body must override"
+expect_class regex "$proc_choke" "" "expected absent" "Regex only"
+expect_class regex "$peg_choke" "" "expected absent" "Regex only"
 expect_absent regex "$fmt_machinery" "libstdc++'s formatter, Regex"
 expect_output regex "34"
 
 build peg 'IO.print(Peg.parse(`N <- < [0-9]+ >`, "42").token)'
-expect_strong peg "$peg_choke" "Peg named, the strong body must override"
-expect_stub_or_absent peg "$regex_choke" "Peg only"
+expect_class peg "$peg_choke" ".+" "expected defined" "Peg named"
+expect_class peg "$regex_choke" "W|" "expected 'W' or absent" "Peg only"
 expect_absent peg "$fmt_machinery" "libstdc++'s formatter, Peg"
 expect_output peg "42"
 
@@ -199,9 +224,9 @@ expect_absent math "$fmt_machinery" "libstdc++'s formatter, Math"
 expect_output math "4"
 
 build proc 'IO.print(Proc.run(["echo", "spawned"]).stdout)'
-expect_present proc "$proc_choke" "Proc named"
-expect_stub_or_absent proc "$regex_choke" "Proc only"
-expect_stub_or_absent proc "$peg_choke" "Proc only"
+expect_class proc "$proc_choke" ".+" "expected defined" "Proc named"
+expect_class proc "$regex_choke" "W|" "expected 'W' or absent" "Proc only"
+expect_class proc "$peg_choke" "" "expected absent" "Proc only"
 expect_absent proc "$fmt_machinery" "libstdc++'s formatter, Proc"
 expect_output proc "spawned"
 
@@ -209,9 +234,9 @@ expect_output proc "spawned"
 build canvas 'let s = Canvas.Sprite.blank(3, 2, 0xFF336699)
 let back = Canvas.Sprite.from_png(s.to_png())
 IO.print(back.width() * 10 + back.height())'
-expect_present canvas "$png_choke" "Canvas named"
-expect_present canvas "$ttf_choke" "Canvas named"
-expect_stub_or_absent canvas "$regex_choke" "Canvas only"
+expect_class canvas "$png_choke" ".+" "expected defined" "Canvas named"
+expect_class canvas "$ttf_choke" ".+" "expected defined" "Canvas named"
+expect_class canvas "$regex_choke" "W|" "expected 'W' or absent" "Canvas only"
 expect_absent canvas "$fmt_machinery" "libstdc++'s formatter, Canvas"
 expect_output canvas "32"
 
@@ -221,7 +246,7 @@ build foreign 'let c = __Foreign.Counter.new(10)
 c.add(5)
 IO.print(c.value())'
 expect_present foreign "$foreign_choke" "__Foreign named"
-expect_stub_or_absent foreign "$regex_choke" "__Foreign only"
+expect_class foreign "$regex_choke" "W|" "expected 'W' or absent" "__Foreign only"
 expect_absent foreign "$fmt_machinery" "libstdc++'s formatter, __Foreign"
 expect_output foreign "15"
 
@@ -231,7 +256,7 @@ build shared 'let s = Shared.new({a: 1, xs: [10, 20]})
 IO.print(s.a + s.xs[1])'
 expect_present shared 'culebra::_jit_shared_val_prop_impl[(]' "Shared named"
 expect_present shared 'culebra::jit_serialize[(]' "Shared named"
-expect_stub_or_absent shared "$regex_choke" "Shared only"
+expect_class shared "$regex_choke" "W|" "expected 'W' or absent" "Shared only"
 expect_absent shared "$fmt_machinery" "libstdc++'s formatter, Shared"
 expect_output shared "21"
 
@@ -252,9 +277,9 @@ if (( fail )); then
   expected, or a `reg::` symbol in `none`: something bypasses the
   CULEBRA_RT_REGEX_WEAK gate, or regexlib.h leaked into an always-linked
   translation unit (see the comment in include/regex.h).
-  Proc / Canvas: a choke present in `none`, or absent where it was named:
-  something outside the choke reaches the engine unconditionally, or the
-  adapter isn't reachable only through its kNsRows_* table.
+  Proc / Canvas / Peg: a choke present in `none`, or absent where it was
+  named: something outside the choke reaches the engine unconditionally, or
+  the adapter isn't reachable only through its kNsRows_* table.
   libstdc++'s formatter in a probe: a header the runtime archive compiles
   called std::format (or std::print/println) — put the message on
   culebra::format instead, see include/rt_format.h. Missing from `spec`:
@@ -266,4 +291,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / Peg / __Foreign by axis; Proc/Canvas/Shared by namespace group; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK (Regex / __Foreign by axis; Proc/Canvas/Peg/Shared by namespace group; Peg's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"

@@ -12,17 +12,24 @@
 // error) and the value-nesting bound the rest of the stdlib applies to trees
 // it hands back (json.h).
 //
-// Linkage partitioning, the same choke regex.h applies: the AOT core archive
-// must not name a peglib symbol. The namespace-group mechanism alone does not
-// suffice here — an unused namespace's *functions* are collected, but peglib's
-// Ope class hierarchy leaves vtables and typeinfo behind, which `--gc-sections`
-// keeps (measured: 71 peglib symbols in a `print('hello')` binary before this
-// was split out, 0 after).
-//   - core archive  (CULEBRA_RT_PEG_WEAK):   weak throwing stubs; peglib.h is
-//     never even included, so the archive references no peg:: symbol.
-//   - peg archive   (CULEBRA_RT_PEG_STRONG): strong real bodies, force-loaded
-//     only when the AST scan reports Peg use.
-//   - header-only / in-process JIT (neither): the normal inline body.
+// Unlike regex.h, this header carries no linkage split: it is always compiled
+// into the core archive, whether or not a program ever names `Peg` (see
+// docs/deployment.md §1 for the size trade-off and why Regex/Tensor can't
+// make the same call). The namespace-group mechanism (stdlib_jit.h's dispatch
+// rows) does dead-strip the actual parsing entry points --
+// culebra::pegparser::compile() itself is absent from a binary that never
+// names Peg, verified with `nm -C --defined-only` on a `--keep-symbols` build
+// (plain `nm` on a stripped binary proves nothing either way). What survives
+// regardless is inert, not reachable code: peglib's own `Ope` class hierarchy
+// leaves vtables and typeinfo behind that `--gc-sections` keeps no matter
+// what (shared with culebra's own front end, parser.h, which needs a working
+// peg::parser regardless of this header), plus a handful of
+// `std::function`-wrapped local lambdas in this file and stdlib_jit.h (the
+// grammar's error logger, the JIT's action-map builder) whose
+// `_Function_handler<...>::_M_manager` template instantiation outlives its
+// only caller -- a known comdat/--gc-sections gap where a template
+// instantiation can survive after everything that would have called it is
+// pruned.
 //
 // The namespace is `pegparser`, not `peg`: a `culebra::peg` would shadow
 // peglib's own `peg::` at every `peg::Ast` spelled inside namespace culebra
@@ -40,17 +47,7 @@
 
 #include <shared.h>  // CulebraError, nesting_too_deep_message
 
-#if !defined(CULEBRA_RT_PEG_WEAK)
 #include <peglib.h>
-#endif
-
-#if defined(CULEBRA_RT_PEG_STRONG)
-#define CULEBRA_RT_PEG_LINKAGE
-#elif defined(CULEBRA_RT_PEG_WEAK)
-#define CULEBRA_RT_PEG_LINKAGE __attribute__((weak))
-#else
-#define CULEBRA_RT_PEG_LINKAGE inline
-#endif
 
 namespace culebra::pegparser {
 
@@ -118,9 +115,9 @@ struct Sv {
 
 // The binding layer's action for one rule, and the map `parse_with_actions`
 // dispatches through. `std::any` in and out: this header stays value-neutral
-// (no JitValue here, so the AOT weak archive references no peg:: symbol and
-// no JIT type either) — the binding layer's own `std::any` payload is a
-// small copyable wrapper around a retained JitValue, opaque here. `Sv&`
+// (no JitValue here, so it names no JIT type) — the binding layer's own
+// `std::any` payload is a small copyable wrapper around a retained JitValue,
+// opaque here. `Sv&`
 // rather than `const Sv&`: `sv` is a fresh, single-use local `_peg_reduce`
 // builds and hands to exactly one action call, so the binding layer moves
 // each value out of `sv.values` instead of duplicating it — nothing else
@@ -128,35 +125,6 @@ struct Sv {
 // `SemanticValues&` the same way, for the same reason.
 using RuleAction = std::function<std::any(Sv&)>;
 using ActionMap = std::unordered_map<std::string, RuleAction>;
-
-#if defined(CULEBRA_RT_PEG_WEAK)
-
-// Named, never defined, by the stubs below — the weak archive holds no peglib
-// type at all.
-struct Compiled;
-using Handle = std::shared_ptr<Compiled>;
-
-[[noreturn]] inline void _not_linked() {
-  throw CulebraError("InternalError",
-                     "Peg runtime entered in a no-Peg binary", 0, 0);
-}
-CULEBRA_RT_PEG_LINKAGE Handle compile(std::string_view, const Options&) {
-  _not_linked();
-}
-CULEBRA_RT_PEG_LINKAGE Tree parse(Compiled&, std::string_view, bool,
-                                  std::string_view) {
-  _not_linked();
-}
-CULEBRA_RT_PEG_LINKAGE bool test(Compiled&, std::string_view) {
-  _not_linked();
-}
-CULEBRA_RT_PEG_LINKAGE std::any parse_with_actions(Compiled&, std::string_view,
-                                                   std::string_view,
-                                                   const ActionMap&) {
-  _not_linked();
-}
-
-#else  // the real bodies
 
 // A loaded grammar, owned by the per-thread compile cache and handed out
 // shared so a caller's handle outlives a cache eviction. `err` is where the
@@ -211,8 +179,8 @@ inline std::string _fmt_err(std::string_view path, size_t ln, size_t col,
 
 // Load (or cache-hit) `grammar`. Throws CulebraError("PegError") for a
 // malformed grammar, with the position inside the grammar text in the message.
-CULEBRA_RT_PEG_LINKAGE Handle compile(std::string_view grammar,
-                                      const Options& opt) {
+inline Handle compile(std::string_view grammar,
+                      const Options& opt) {
   static thread_local std::unordered_map<std::string, Handle> cache;
   std::string key;
   key.reserve(grammar.size() + opt.start.size() + 2);
@@ -289,8 +257,8 @@ inline void _flatten(const ::peg::Ast& a, Tree& t, int64_t depth) {
 // position inside `text` in the message -- prefixed by `path` when the caller
 // named the subject (Peg.parse(..., path: "prog.pas")), the way cpp-peglib's
 // own parse_n() takes a path per call: one parser, many files.
-CULEBRA_RT_PEG_LINKAGE Tree parse(Compiled& c, std::string_view text,
-                                  bool optimize, std::string_view path) {
+inline Tree parse(Compiled& c, std::string_view text,
+                  bool optimize, std::string_view path) {
   c.err.clear();
   c.err_line = c.err_col = 0;
   c.path.assign(path);
@@ -308,7 +276,7 @@ CULEBRA_RT_PEG_LINKAGE Tree parse(Compiled& c, std::string_view text,
   return t;
 }
 
-CULEBRA_RT_PEG_LINKAGE bool test(Compiled& c, std::string_view text) {
+inline bool test(Compiled& c, std::string_view text) {
   c.err.clear();
   c.err_line = c.err_col = 0;
   c.path.clear();
@@ -425,10 +393,10 @@ struct ActionScope {
 // registered action itself throws (a culebra throw, a native TypeError, …)
 // propagates unchanged -- cpp-peglib installs no catch around a rule
 // reduction, so nothing here needs to either.
-CULEBRA_RT_PEG_LINKAGE std::any parse_with_actions(Compiled& c,
-                                                   std::string_view text,
-                                                   std::string_view path,
-                                                   const ActionMap& actions) {
+inline std::any parse_with_actions(Compiled& c,
+                                   std::string_view text,
+                                   std::string_view path,
+                                   const ActionMap& actions) {
   for (const auto& [name, fn] : actions) {
     if (!c.parser.get_grammar().count(name)) {
       _fail(culebra::format("Peg: no such rule '{}'", name));
@@ -470,7 +438,5 @@ CULEBRA_RT_PEG_LINKAGE std::any parse_with_actions(Compiled& c,
   }
   return result.v;
 }
-
-#endif  // CULEBRA_RT_PEG_WEAK
 
 }  // namespace culebra::pegparser
