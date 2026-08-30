@@ -39,26 +39,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(
 // position here just before an indirect closure call; the thunk reads it on
 // the (cold) DispatchError path. Only read after a store on the same call,
 // so the single i64-pair store per call is the only cost on the hot path.
-// (_jit_call_site_line/col are defined earlier, next to arity_missing.)
-
-// Source position of a higher-order call's callback ARGUMENT, stored by the
-// JIT right before a HOF runtime call (after the argument is evaluated). A
-// non-Function callback is reported here, matching the interp's typed-param
-// check, which attributes "parameter '<name>' expects Function" to the
-// argument's location — distinct from `_jit_call_site`, which carries the HOF
-// *call* site for a callback's own per-element throw.
-inline thread_local int64_t _jit_callback_arg_line = 0;
-inline thread_local int64_t _jit_callback_arg_col = 0;
-
-// Source position of the FIRST argument of an indirect closure call, stored
-// just before the call (alongside _jit_call_site). A stdlib method used as a
-// value (`let f = FS.read; f(5)`) reaches its arg0 type check through the
-// closure ABI, which carries no per-arg position; the ns-method dispatch reads
-// this so the error points at the argument like the interp binder, not at the
-// call site. Set on every indirect call (defaults to the call site when there
-// is no argument), so it is never stale.
-inline thread_local int64_t _jit_call_arg0_line = 0;
-inline thread_local int64_t _jit_call_arg0_col = 0;
+// (Every position this file publishes lives in `_jit_thread`, jit_runtime.h.)
 
 // Build a variant instance: tagged with `class` = variant name and
 // `__enum` = parent enum name, with the `arity` declared payload fields
@@ -68,7 +49,7 @@ inline thread_local int64_t _jit_call_arg0_col = 0;
 // and too many drops (and releases) the extras — matching the interpreter's
 // ctor binding, which binds `_0.._{arity-1}` positionally. `line`/`col`
 // locate the arity error (the direct-call emit passes the call site; the
-// ctor-as-value thunk passes the recorded `_jit_call_site`).
+// ctor-as-value thunk passes the recorded call site).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
     const char* variant_name, const char* enum_name, int64_t n_args,
     JitValue* args, int64_t arity, int64_t line, int64_t col) {
@@ -136,8 +117,8 @@ inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t sel
   if (it == info.end()) { *__ret = {TAG_NIL, 0}; return; }
   { *__ret = culebra_runtime_build_variant(
       _intern_str(it->second.first), _intern_str(it->second.second), n_args,
-      args, static_cast<int64_t>(cls->arity), _jit_call_site_line,
-      _jit_call_site_col); return; }
+      args, static_cast<int64_t>(cls->arity), _jit_thread.call_line,
+      _jit_thread.call_col); return; }
 }
 
 // Create a payload-variant constructor closure (`Result.Ok`): a closure
@@ -1397,7 +1378,7 @@ inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
   // strand — release them on the failure path (callee-cleans-on-dispatch-
   // error). A free-function dispatcher passes nil `self` (a no-op release).
   auto picked = _jit_multifn_resolve(
-      cls, args, n_args, _jit_call_site_line, _jit_call_site_col, [&]() {
+      cls, args, n_args, _jit_thread.call_line, _jit_thread.call_col, [&]() {
         _culebra_value_release_impl(self_val.tag, self_val.data);
         for (int64_t i = 0; i < n_args; i++)
           _culebra_value_release_impl(args[i].tag, args[i].data);
@@ -1413,53 +1394,53 @@ inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
 // an indirect closure call. Kept trivial so it inlines to two stores.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
     int64_t line, int64_t col) {
-  _jit_call_site_line = line;
-  _jit_call_site_col = col;
+  _jit_thread.call_line = line;
+  _jit_thread.call_col = col;
   // The boundary position defaults to the call site (they coincide for
   // every non-UFCS call shape); a pending override published just before
   // this call (set_call_boundary — the UFCS chain head) wins and is
   // consumed, so it can never leak into a later call.
-  if (_jit_pending_boundary_line || _jit_pending_boundary_col) {
-    _jit_call_boundary_line = _jit_pending_boundary_line;
-    _jit_call_boundary_col = _jit_pending_boundary_col;
-    _jit_pending_boundary_line = 0;
-    _jit_pending_boundary_col = 0;
+  if (_jit_thread.pending_boundary_line || _jit_thread.pending_boundary_col) {
+    _jit_thread.boundary_line = _jit_thread.pending_boundary_line;
+    _jit_thread.boundary_col = _jit_thread.pending_boundary_col;
+    _jit_thread.pending_boundary_line = 0;
+    _jit_thread.pending_boundary_col = 0;
   } else {
-    _jit_call_boundary_line = line;
-    _jit_call_boundary_col = col;
+    _jit_thread.boundary_line = line;
+    _jit_thread.boundary_col = col;
   }
   // Default the arg0 position to the call site: it is read only on the
   // (callback) body-coercion arg0 type-error path, where the call site is the
   // right position. The as-value path instead threads per-arg positions below.
-  _jit_call_arg0_line = line;
-  _jit_call_arg0_col = col;
+  _jit_thread.arg0_line = line;
+  _jit_thread.arg0_col = col;
   // Reset the per-arg position count: only the indirect (as-value) call path
   // repopulates it (via set_arg_pos) right after this. A HOF callback reaches
   // its per-element call with the count still 0, marking it as the callback
   // path so the dispatch uses body-coercion wording.
-  _jit_argpos_n = 0;
+  _jit_thread.argpos_n = 0;
 }
 
-// Publish the boundary position of the NEXT call (see _jit_call_boundary_*):
+// Publish the boundary position of the NEXT call (see _jit_thread.boundary_*):
 // a UFCS site's chain head, emitted after the arguments and immediately
 // before the call, so the set_call_site inside the call consumes it before
 // any other call can.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_boundary(
     int64_t line, int64_t col) {
-  _jit_pending_boundary_line = line;
-  _jit_pending_boundary_col = col;
+  _jit_thread.pending_boundary_line = line;
+  _jit_thread.pending_boundary_col = col;
 }
 
-// Record the position of the indirect call's i-th argument (see _jit_argpos_*),
+// Record the position of the indirect call's i-th argument (see _jit_thread.argpos_*),
 // emitted per argument just before the call. Bounds-checked; the count tracks
 // the highest index seen so the trampoline knows how many are valid.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_arg_pos(
     int64_t i, int64_t line, int64_t col) {
   if (i < 0 || i >= _JIT_ARGPOS_MAX) return;
-  _jit_argpos_line[i] = line;
-  _jit_argpos_col[i] = col;
-  if (static_cast<int>(i) + 1 > _jit_argpos_n)
-    _jit_argpos_n = static_cast<int>(i) + 1;
+  _jit_thread.argpos_line[i] = line;
+  _jit_thread.argpos_col[i] = col;
+  if (static_cast<int>(i) + 1 > _jit_thread.argpos_n)
+    _jit_thread.argpos_n = static_cast<int>(i) + 1;
 }
 
 // Per-element invoke for the EAGER higher-order helpers: publish the HOF
@@ -1480,12 +1461,12 @@ inline JitValue _culebra_invoke2_at(JitClosure* fn, JitValue a, JitValue b,
 }
 
 // Publish the current op's source position for the positionless-error backfill
-// (see `_jit_op_line`). Emitted just before a fallible runtime call; trivial so
+// (see `_jit_thread.op_line`). Emitted just before a fallible runtime call; trivial so
 // it inlines to two stores on the cold-relative-to-the-call path.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_op_pos(
     int64_t line, int64_t col) {
-  _jit_op_line = line;
-  _jit_op_col = col;
+  _jit_thread.op_line = line;
+  _jit_thread.op_col = col;
 }
 
 // Resolve the position a typed-parameter error should report for param `idx`,
@@ -1498,12 +1479,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_op_pos(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_param_pos(
     int64_t idx, int64_t def_line, int64_t def_col) {
   int64_t l = def_line, c = def_col;
-  if (idx >= 0 && idx < _jit_argpos_n) {
-    l = _jit_argpos_line[idx];
-    c = _jit_argpos_col[idx];
-  } else if (_jit_call_site_line) {
-    l = _jit_call_site_line;
-    c = _jit_call_site_col;
+  if (idx >= 0 && idx < _jit_thread.argpos_n) {
+    l = _jit_thread.argpos_line[idx];
+    c = _jit_thread.argpos_col[idx];
+  } else if (_jit_thread.call_line) {
+    l = _jit_thread.call_line;
+    c = _jit_thread.call_col;
   }
   return _jit_pack_pos(l, c);
 }
@@ -1512,7 +1493,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_param_pos(
 // call site instead of N+1. `packed` is a compile-time constant array of
 // (line << 32 | col) — every position the codegen publishes is static —
 // so the emitter puts it in rodata. The resulting thread-local state is
-// identical to the per-arg calls, including `_jit_argpos_n`, whose
+// identical to the per-arg calls, including `_jit_thread.argpos_n`, whose
 // "0 = HOF body-coercion path" meaning downstream readers rely on.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_positions(
     int64_t line, int64_t col, int64_t n, const int64_t* packed) {
@@ -1520,19 +1501,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_positions(
   int64_t k = n < _JIT_ARGPOS_MAX ? n : _JIT_ARGPOS_MAX;
   for (int64_t i = 0; i < k; i++) {
     auto pos = _jit_unpack_pos(packed[i]);
-    _jit_argpos_line[i] = pos.line;
-    _jit_argpos_col[i] = pos.col;
+    _jit_thread.argpos_line[i] = pos.line;
+    _jit_thread.argpos_col[i] = pos.col;
   }
-  _jit_argpos_n = static_cast<int>(k);
+  _jit_thread.argpos_n = static_cast<int>(k);
 }
 
-// Record the position of a HOF's callback argument (see _jit_callback_arg_*),
+// Record the position of a HOF's callback argument (see _jit_thread.callback_*),
 // emitted by the JIT just before a HOF runtime call so a non-Function
 // callback's type error points at the argument like the interp.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_callback_arg_site(
     int64_t line, int64_t col) {
-  _jit_callback_arg_line = line;
-  _jit_callback_arg_col = col;
+  _jit_thread.callback_line = line;
+  _jit_thread.callback_col = col;
 }
 
 // Append a method to a multimethod table (replacing an entry with an

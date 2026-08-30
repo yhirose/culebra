@@ -227,12 +227,12 @@ inline T* jit_handle_self(JitValue self) {
     int64_t bid = _jit_handle_long(h, "_bid");
     if (!foreign::borrow_valid(bid))
       foreign::throw_borrow_invalid(jit_class_info<T>::name,
-                                    _jit_call_site_line, _jit_call_site_col);
+                                    _jit_thread.call_line, _jit_thread.call_col);
     return reinterpret_cast<T*>(foreign::borrow_ptr(bid));
   }
   return foreign::get_or_throw<T>(_jit_handle_long(h, "_id"),
-                                  jit_class_info<T>::name, _jit_call_site_line,
-                                  _jit_call_site_col);
+                                  jit_class_info<T>::name, _jit_thread.call_line,
+                                  _jit_thread.call_col);
 }
 
 // Non-const method dispatch bumps the instance's generation, staling its
@@ -406,19 +406,16 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
     if (missing) {
       throw culebra::CulebraError(
           "ArityError", culebra::missing_required_arg_message(names[bad]),
-          _jit_call_site_line, _jit_call_site_col);
+          _jit_thread.call_line, _jit_thread.call_col);
     }
     static constexpr std::string_view kAnnos[] = {
         _detail::type_annotation_for<Args>()...};
-    const bool ap = static_cast<int>(bad) < _jit_argpos_n;
+    auto pos = _jit_arg_pos(static_cast<int>(bad));
     throw culebra::CulebraError(
         "TypeError",
         culebra::format("type error: parameter '{}' expects {}", names[bad],
                         kAnnos[bad]),
-        ap ? _jit_argpos_line[bad]
-           : (bad == 0 ? _jit_call_arg0_line : _jit_call_site_line),
-        ap ? _jit_argpos_col[bad]
-           : (bad == 0 ? _jit_call_arg0_col : _jit_call_site_col));
+        pos.line, pos.col);
   }
 }
 
@@ -432,7 +429,7 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
   try {
     rethrow_as_culebra();
   } catch (culebra::CulebraError& e) {
-    _jit_backfill_error_pos(e, _jit_call_site_line, _jit_call_site_col);
+    _jit_backfill_error_pos(e, _jit_thread.call_line, _jit_thread.call_col);
     throw;
   }
 }

@@ -1350,8 +1350,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_try_translate() {
   // position, matching the old _jit_backfill_op_pos path.
   int64_t line = rt.pending_line, col = rt.pending_col;
   if (line == 0 && col == 0) {
-    line = _jit_op_line;
-    col = _jit_op_col;
+    line = _jit_thread.op_line;
+    col = _jit_thread.op_col;
   }
   auto* obj = culebra_runtime_object_new();
   culebra_runtime_object_set(

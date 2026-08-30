@@ -228,28 +228,97 @@ inline auto _jit_at_pos(int64_t line, int64_t col, F&& op) -> decltype(op()) {
   }
 }
 
-// Source position of the operation currently executing, published by the JIT
-// right before a fallible runtime call whose helper raises a *positionless*
-// CulebraError (the value-neutral lib helpers in tensor.h / regex.h / ...
-// throw with no line/col). This is the JIT/AOT mirror of the interpreter's
-// eval() boundary, which stamps the location of the node it evaluates: the
-// interp walks nodes so position is implicit, whereas compiled code must
-// publish it. The three points where a runtime error leaves compiled control —
-// `culebra_runtime_try_translate` (caught), `JIT::exec` (--jit uncaught), and
-// `culebra_aot_bootstrap` (AOT uncaught) — backfill a positionless error from
-// here, so a helper that forgets to carry a location still comes out symmetric
-// instead of position-less. New fallible call classes opt in by publishing
-// here (see `emit_set_op_pos`); the consume side is universal. (Globals here,
-// not the extern "C" block below, since the helper takes a C++ reference.)
-inline thread_local int64_t _jit_op_line = 0;
-inline thread_local int64_t _jit_op_col = 0;
+// Per-argument source positions for an indirect (as-value) ns-method call.
+// 64 covers any realistic positional arity; args past the cap fall back to
+// the call-site position (a known, deterministic divergence from interp,
+// which has no cap — see the typed-param position notes).
+inline constexpr int _JIT_ARGPOS_MAX = 64;
+
+// What a call frame publishes and counts, in ONE thread-local object rather
+// than one variable each.
+//
+// Mach-O has no initial-exec TLS model, so every `thread_local` an entry
+// touches is its own _tlv_get_addr call into dyld — and set_call_positions,
+// which runs on every call that has arguments, used to reach twelve of them.
+// Measured on a one-line function called in a loop, that was 42% of the whole
+// 64 ns call; the recursion counter and the other publishers added more. One
+// object is one lookup, and it took the call to 40 ns without changing a
+// single value any of these fields holds.
+//
+// constinit is load-bearing, not decoration: a thread_local with dynamic
+// initialization emits a "TLS init function" in every TU that declares it,
+// which is the duplicate-symbol hazard rt_shared_tls.h exists to manage.
+struct JitThreadState {
+  // Culebra frames open on this thread — the recursion guard's counter
+  // (shared.h's kCulebraRecursionLimit is the bound). Here rather than beside
+  // the limit because the prologue that increments it has just published the
+  // call site above, and one object is one lookup.
+  int64_t depth = 0;
+
+  // The operation currently executing, published by the JIT right before a
+  // fallible runtime call whose helper raises a *positionless* CulebraError
+  // (the value-neutral lib helpers in tensor.h / regex.h / ... throw with no
+  // line/col). This is the JIT/AOT mirror of the interpreter's eval()
+  // boundary, which stamps the location of the node it evaluates: the interp
+  // walks nodes so position is implicit, whereas compiled code must publish
+  // it. The three points where a runtime error leaves compiled control —
+  // `culebra_runtime_try_translate` (caught), `JIT::exec` (--jit uncaught),
+  // and `culebra_aot_bootstrap` (AOT uncaught) — backfill a positionless
+  // error from here, so a helper that forgets to carry a location still comes
+  // out symmetric instead of position-less. New fallible call classes opt in
+  // by publishing here (see `emit_set_op_pos`); the consume side is universal.
+  int64_t op_line = 0, op_col = 0;
+
+  // The call site (set_call_site below).
+  int64_t call_line = 0, call_col = 0;
+
+  // The call's BOUNDARY position — where the interp's eval() would stamp a
+  // positionless error escaping this call: the call's own chain node. For a
+  // direct or through-value call that IS the call site, so set_call_site
+  // defaults it there; a UFCS site publishes the chain head as a pending
+  // override first (set_call_boundary), which the next set_call_site
+  // consumes. The ns dispatch's final positionless backfill reads this pair
+  // instead of the call site — its explicit errors (arity, param types) keep
+  // reporting at the call site, interp's two-channel split.
+  int64_t boundary_line = 0, boundary_col = 0;
+  int64_t pending_boundary_line = 0, pending_boundary_col = 0;
+
+  // The FIRST argument of an indirect closure call, stored just before the
+  // call (alongside the call site). A stdlib method used as a value
+  // (`let f = FS.read; f(5)`) reaches its arg0 type check through the closure
+  // ABI, which carries no per-arg position; the ns-method dispatch reads this
+  // so the error points at the argument like the interp binder, not at the
+  // call site. Set on every indirect call (defaults to the call site when
+  // there is no argument), so it is never stale.
+  int64_t arg0_line = 0, arg0_col = 0;
+
+  // A higher-order call's callback ARGUMENT, stored by the JIT right before a
+  // HOF runtime call (after the argument is evaluated). A non-Function
+  // callback is reported here, matching the interp's typed-param check, which
+  // attributes "parameter '<name>' expects Function" to the argument's
+  // location — distinct from the call site, which carries the HOF *call* site
+  // for a callback's own per-element throw.
+  int64_t callback_line = 0, callback_col = 0;
+
+  // Per-argument positions, threaded by the indirect-call codegen so a
+  // wrong-typed argument is rejected at that argument's position with the
+  // interp binder's wording ("parameter '<name>' expects <T>"), exactly like
+  // a direct call. `argpos_n` is the count; 0 means "no per-arg positions" —
+  // a HOF callback path, where set_call_site reset it and the dispatch's
+  // body-coercion arg0 check runs instead (matching interp's callback
+  // wording).
+  int argpos_n = 0;
+  int64_t argpos_line[_JIT_ARGPOS_MAX] = {};
+  int64_t argpos_col[_JIT_ARGPOS_MAX] = {};
+};
+inline constinit thread_local JitThreadState _jit_thread;
 
 // Stamp the published op position onto a positionless runtime error. Shared by
 // the three exception boundaries above.
 inline void _jit_backfill_op_pos(culebra::CulebraError& e) {
   if (e.line == 0 && e.col == 0) {
-    e.line = _jit_op_line;
-    e.col = _jit_op_col;
+    e.line = _jit_thread.op_line;
+    e.col = _jit_thread.op_col;
   }
 }
 
@@ -266,6 +335,17 @@ inline int64_t _jit_pack_pos(int64_t line, int64_t col) {
 }
 inline _JitPos _jit_unpack_pos(int64_t packed) {
   return {packed >> 32, packed & 0xffffffff};
+}
+
+// Where a positional parameter's type error points: the argument's own
+// position when the call site published one, the first argument's when it is
+// argument zero of an indirect call, and the call site otherwise. The native
+// thunks and the wrap.h binder both answer it this way.
+inline _JitPos _jit_arg_pos(int i) {
+  if (i >= 0 && i < _jit_thread.argpos_n)
+    return {_jit_thread.argpos_line[i], _jit_thread.argpos_col[i]};
+  if (i == 0) return {_jit_thread.arg0_line, _jit_thread.arg0_col};
+  return {_jit_thread.call_line, _jit_thread.call_col};
 }
 
 // Trait-conformance arity for a method slot: the widest overload if `cls`
@@ -629,54 +709,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
       got, declared), line, col);
 }
 
-// Call-site position thread-locals (the rest of the family lives with
-// set_call_site below). Defined here — not forward-declared extern —
-// because a non-inline declaration of an inline variable is an ODR trap:
-// with a second jit.h TU in the binary (a wrap.h declaration), each TU
-// emitted its own non-odr TLS wrapper and the link failed duplicate.
-inline thread_local int64_t _jit_call_site_line = 0;
-inline thread_local int64_t _jit_call_site_col = 0;
-
-// The call's BOUNDARY position — where the interp's eval() would stamp a
-// positionless error escaping this call: the call's own chain node. For a
-// direct or through-value call that IS the call site, so set_call_site
-// defaults it there; a UFCS site publishes the chain head as a pending
-// override first (set_call_boundary), which the next set_call_site
-// consumes. The ns dispatch's final positionless backfill reads this pair
-// instead of the call site — its explicit errors (arity, param types) keep
-// reporting at the call site, interp's two-channel split.
-inline thread_local int64_t _jit_call_boundary_line = 0;
-inline thread_local int64_t _jit_call_boundary_col = 0;
-inline thread_local int64_t _jit_pending_boundary_line = 0;
-inline thread_local int64_t _jit_pending_boundary_col = 0;
-
-// Per-argument source positions for an indirect (as-value) ns-method call,
-// threaded by the indirect-call codegen so a wrong-typed argument is rejected
-// at that argument's position with the interp binder's wording ("parameter
-// '<name>' expects <T>"), exactly like a direct call. `_jit_argpos_n` is the
-// count; 0 means "no per-arg positions" — a HOF callback path, where
-// set_call_site reset it and the dispatch's body-coercion arg0 check runs
-// instead (matching interp's callback wording). Capped at K; a longer arg list
-// leaves the overflow positions at the call site.
-// 64 covers any realistic positional arity; args past the cap fall back to
-// the call-site position (a known, deterministic divergence from interp,
-// which has no cap — see the typed-param position notes). Here rather than
-// with set_call_site for the same ODR reason as the pair above.
-inline constexpr int _JIT_ARGPOS_MAX = 64;
-inline thread_local int64_t _jit_argpos_line[_JIT_ARGPOS_MAX] = {};
-inline thread_local int64_t _jit_argpos_col[_JIT_ARGPOS_MAX] = {};
-inline thread_local int _jit_argpos_n = 0;
-
 // Run `op`, backfilling a positionless error from the published call site.
 // The entry-catch idiom for native thunks, whose ABI carries no line/col
 // (handle methods, derived-method thunks, ns adapters). A template needs
-// C++ linkage, and it must follow the thread-locals above, so the extern
-// "C" block pauses around it. JitBorrowedCallSite below needs C++ linkage
-// for the same reason and rides the same pause.
+// C++ linkage, so the extern "C" block pauses around it. JitBorrowedCallSite
+// below needs C++ linkage for the same reason and rides the same pause.
 }  // extern "C" (resumed below)
 template <class F>
 inline auto _jit_at_call_site(F&& op) -> decltype(op()) {
-  return _jit_at_pos(_jit_call_site_line, _jit_call_site_col,
+  return _jit_at_pos(_jit_thread.call_line, _jit_thread.call_col,
                      std::forward<F>(op));
 }
 
@@ -697,45 +738,45 @@ struct JitBorrowedCallSite {
   int64_t line, col, bline, bcol;
   int argn;
   JitBorrowedCallSite(int64_t l, int64_t c)
-      : line(_jit_call_site_line), col(_jit_call_site_col),
-        bline(_jit_call_boundary_line), bcol(_jit_call_boundary_col),
-        argn(_jit_argpos_n) {
-    _jit_call_site_line = l;
-    _jit_call_site_col = c;
-    _jit_call_boundary_line = l;
-    _jit_call_boundary_col = c;
-    _jit_argpos_n = 0;
+      : line(_jit_thread.call_line), col(_jit_thread.call_col),
+        bline(_jit_thread.boundary_line), bcol(_jit_thread.boundary_col),
+        argn(_jit_thread.argpos_n) {
+    _jit_thread.call_line = l;
+    _jit_thread.call_col = c;
+    _jit_thread.boundary_line = l;
+    _jit_thread.boundary_col = c;
+    _jit_thread.argpos_n = 0;
   }
   ~JitBorrowedCallSite() {
-    _jit_call_site_line = line;
-    _jit_call_site_col = col;
-    _jit_call_boundary_line = bline;
-    _jit_call_boundary_col = bcol;
-    _jit_argpos_n = argn;
+    _jit_thread.call_line = line;
+    _jit_thread.call_col = col;
+    _jit_thread.boundary_line = bline;
+    _jit_thread.boundary_col = bcol;
+    _jit_thread.argpos_n = argn;
   }
 };
 extern "C" {
 
-// Recursion guard, compiled-code side. The counter itself lives in shared.h
-// (`_culebra_call_depth`) so the interp's RecursionFrame and these helpers
-// move the same per-thread count. `enter` sits in every user-body prologue
-// (after the param type checks — a TypeError there outranks RecursionError,
-// interp order); `leave` on the normal return paths. Unwinding skips the
-// leaves, so cleanup pads and catch entries `restore` to an absolute depth
-// snapshot instead — by the time a catch body (or an unwinding frame's
-// defers) runs, the count agrees with what the interp's RAII dtors left.
+// Recursion guard, compiled-code side. The counter is `_jit_thread.depth`;
+// shared.h owns the bound and the message. `enter` sits in every user-body
+// prologue (after the param type checks — a TypeError there outranks
+// RecursionError, interp order); `leave` on the normal return paths.
+// Unwinding skips the leaves, so cleanup pads and catch entries `restore` to
+// an absolute depth snapshot instead — by the time a catch body (or an
+// unwinding frame's defers) runs, the count agrees with the frame's own.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_recursion_enter() {
   // Reports at the call site the caller published (set_call_site), which is
   // what the interp reads back out of `__LINE__`/`__COLUMN__`. Returns the
   // new depth so the prologue can stash it for its cleanup pads.
-  culebra::check_recursion_depth(_jit_call_site_line, _jit_call_site_col);
-  return ++culebra::_culebra_call_depth;
+  culebra::check_recursion_depth(_jit_thread.depth, _jit_thread.call_line,
+                                 _jit_thread.call_col);
+  return ++_jit_thread.depth;
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_recursion_leave() {
-  --culebra::_culebra_call_depth;
+  --_jit_thread.depth;
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_recursion_depth() {
-  return culebra::_culebra_call_depth;
+  return _jit_thread.depth;
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_recursion_restore(
     int64_t depth) {
@@ -743,7 +784,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_recursion_restore(
   // slot is pre-set to -1 and only overwritten once `enter` succeeded, so a
   // RecursionError thrown by the enter itself unwinds through the frame's
   // own cleanup pad without touching the count.
-  if (depth >= 0) culebra::_culebra_call_depth = depth;
+  if (depth >= 0) _jit_thread.depth = depth;
 }
 
 // Name-aware arity error: callee passes its declared parameter name
@@ -758,8 +799,8 @@ culebra_runtime_arity_missing(const char* const* names, int64_t got,
   // The prologue bakes its own def position; interp reports a missing required
   // argument at the CALL site, which set_call_site published before the
   // invocation. Use it when set, falling back to the passed def position.
-  int64_t l = _jit_call_site_line ? _jit_call_site_line : line;
-  int64_t c = _jit_call_site_line ? _jit_call_site_col : col;
+  int64_t l = _jit_thread.call_line ? _jit_thread.call_line : line;
+  int64_t c = _jit_thread.call_line ? _jit_thread.call_col : col;
   culebra::throw_missing_required_arg_at(missing, l, c);
 }
 
@@ -1514,7 +1555,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
   // The dispatches below are calls with no codegen call site; both backends
   // publish the operator's position here before entering (the same hook the
   // positionless backfill reads), so lend it to them.
-  JitBorrowedCallSite site{_jit_op_line, _jit_op_col};
+  JitBorrowedCallSite site{_jit_thread.op_line, _jit_thread.op_col};
   // `==` is commutative, so try either side's `__eq__`.
   if (auto r = _try_special_binop(t1, d1, t2, d2, "__eq__"))
     return _extract_bool_and_release(*r);

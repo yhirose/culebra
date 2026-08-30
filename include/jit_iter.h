@@ -460,7 +460,7 @@ inline void _culebra_callback_type_precheck(int8_t fn_tag, int64_t fn_data,
   _culebra_value_release_impl(fn_tag, fn_data);  // the callee-consumes +1
   throw culebra::CulebraError("TypeError",
       culebra::format("type error: parameter '{}' expects Function", param_name),
-      _jit_callback_arg_line, _jit_callback_arg_col);
+      _jit_thread.callback_line, _jit_thread.callback_col);
 }
 
 // Owns one terminal drain over an iterator (docs §18.5): resolves the
@@ -959,7 +959,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_max_by(
 // eager HOFs, which record it via `_culebra_expect_callback`. Each factory
 // appends a packed `(line<<32|col)` cell as its LAST user capture (just
 // before `_iter_wrap_new`'s two trailing lookahead cells), and the fast_fn
-// publishes it via `_jit_call_site` right before invoking the callback.
+// publishes it into `_jit_thread` right before invoking the callback.
 inline JitCell* _iter_pos_cell(int64_t line, int64_t col) {
   return culebra_runtime_cell_new(TAG_LONG, _jit_pack_pos(line, col));
 }
@@ -2699,7 +2699,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_callback_type(
   throw culebra::CulebraError(
       "TypeError",
       culebra::format("type error: parameter '{}' expects Function", param_name),
-      _jit_callback_arg_line, _jit_callback_arg_col);
+      _jit_thread.callback_line, _jit_thread.callback_col);
 }
 
 inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
@@ -2754,10 +2754,10 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
     // the method's typed-param check (`<param>: Function`), which reports
     // "parameter '<name>' expects Function" at the ARGUMENT's position. Match
     // both the param name (f/p, per method) and the position (the JIT stores
-    // the argument site in _jit_callback_arg_* just before the HOF call).
+    // the argument site in _jit_thread.callback_* just before the HOF call).
     throw culebra::CulebraError("TypeError",
         culebra::format("type error: parameter '{}' expects Function", param_name),
-        _jit_callback_arg_line, _jit_callback_arg_col);
+        _jit_thread.callback_line, _jit_thread.callback_col);
   }
   auto* fn = reinterpret_cast<JitClosure*>(fn_data);
   if (!accepts(fn)) {

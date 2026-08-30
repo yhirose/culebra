@@ -1063,7 +1063,7 @@ struct JIT {
   // PosGuard keeps pointing at the innermost compiling node — the method-call
   // node here, since arg compiles restore it) just before a fallible runtime
   // call. A positionless CulebraError the call raises is then backfilled at the
-  // exception boundaries (see _jit_op_line). Two i64 stores; emit only before
+  // exception boundaries (see _jit_thread.op_line). Two i64 stores; emit only before
   // calls whose helper can throw without a position (e.g. Tensor ops).
   void emit_set_op_pos() {
     emit_call(module_->getFunction(rt::set_op_pos),

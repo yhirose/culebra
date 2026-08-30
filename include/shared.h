@@ -394,23 +394,20 @@ inline void throw_if_too_many_positionals(int64_t cap, int64_t n_pos,
 }
 
 // --- recursion guard --------------------------------------------------
-// One logical culebra call = one unit, counted identically by the interp
-// (the user-body eval closures — make_function_value and the two ctor
-// shapes) and by the JIT/AOT (the compiled-function prologue), so
-// `RecursionError` fires at the same depth on every backend. Without it the
-// two backends overflow the C stack at wildly different depths (interp
-// ~4.7KB of eval frames per call, JIT ~350B) and die as an uncatchable
-// SIGSEGV. 1000 matches CPython's default; the deepest recursion in the
-// test corpus is ~614. 1000 interp frames measure 6.6MB (gcc-14 -O3+LTO,
-// x86-64) and more under clang, so every thread that runs user code is
-// given 16MB: SizedThread below sizes the ones it spawns, and CMakeLists
-// reserves it at link time for the main thread, which neither can size
-// (macOS -stack_size, Windows PE reserve).
+// One logical culebra call = one unit, counted by the compiled-function
+// prologue (the counter itself is `_jit_thread.depth`, jit_runtime.h — it
+// rides in the same thread-local object as the positions a call publishes,
+// so the prologue pays one dyld lookup for both). Without the guard a deep
+// recursion overflows the C stack and dies as an uncatchable SIGSEGV. 1000
+// matches CPython's default; the deepest recursion in the test corpus is
+// ~614. Every thread that runs user code is given 16MB: SizedThread below
+// sizes the ones it spawns, and CMakeLists reserves it at link time for the
+// main thread, which neither can size (macOS -stack_size, Windows PE
+// reserve).
 inline constexpr int64_t kCulebraRecursionLimit = 1000;
-inline thread_local int64_t _culebra_call_depth = 0;
 
-inline void check_recursion_depth(int64_t line, int64_t col) {
-  if (_culebra_call_depth >= kCulebraRecursionLimit) {
+inline void check_recursion_depth(int64_t depth, int64_t line, int64_t col) {
+  if (depth >= kCulebraRecursionLimit) {
     throw CulebraError(
         "RecursionError",
         culebra::format("maximum recursion depth exceeded ({})",
@@ -424,20 +421,6 @@ inline void check_recursion_depth(int64_t line, int64_t col) {
 inline std::string nesting_too_deep_message(int64_t limit) {
   return culebra::format("nesting too deep (limit {})", limit);
 }
-
-// RAII frame for the interp's C++-recursive eval: the dtor runs while an
-// exception unwinds, so every abandoned frame decrements as it is passed —
-// the depth a `catch` observes matches the JIT, whose compiled frames
-// restore the count at cleanup pads / catch entry instead.
-struct RecursionFrame {
-  RecursionFrame(int64_t line, int64_t col) {
-    check_recursion_depth(line, col);
-    ++_culebra_call_depth;
-  }
-  ~RecursionFrame() { --_culebra_call_depth; }
-  RecursionFrame(const RecursionFrame&) = delete;
-  RecursionFrame& operator=(const RecursionFrame&) = delete;
-};
 
 // Depth of the current *value* walk — the C++-recursive traversals that
 // follow a value's own nesting (str/inspect, ==, hash, sendable serialize)

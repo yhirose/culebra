@@ -1017,8 +1017,8 @@ _jit_shared_val_node_of(JitObject* view, int64_t line = 0, int64_t col = 0) {
   // handle methods leave 0 and fall back to the published call site
   // (the handle-method ClosedError convention).
   if (line == 0) {
-    line = _jit_call_site_line;
-    col = _jit_call_site_col;
+    line = _jit_thread.call_line;
+    col = _jit_thread.call_col;
   }
   size_t di = view->find_slot("_dropped");
   if (di != static_cast<size_t>(-1) && view->slots[di].value.data) {

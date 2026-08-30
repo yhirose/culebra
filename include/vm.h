@@ -9186,7 +9186,7 @@ class Compiler {
           int32_t v = compile_expr(*ast.nodes[1]->nodes[0]).slot;
           int32_t t = alloc_temp(ast);
           // The adapter reported its parse / type error at the call site
-          // (_jit_call_site_col), not at the argument — stamp the op after
+          // (_jit_thread.call_col), not at the argument — stamp the op after
           // the argument has compiled with positions of its own.
           StampGuard pos(*this, ast);
           emit(Op::ToFloat, t, v);
