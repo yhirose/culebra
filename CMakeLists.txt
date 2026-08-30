@@ -1614,7 +1614,8 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   set(_deps_stage "${CMAKE_CURRENT_BINARY_DIR}/deps_stage")
   # A sub-build picks its own compiler off PATH unless told; pass this build's
   # down so the statics are made by the toolchain that will link them.
-  set(_deps_toolchain -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER})
+  set(_deps_toolchain -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+                      -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
   if(NOT EXISTS "${_sdl_a}")
     ExternalProject_Add(sdl_ext
       SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL"
@@ -1629,6 +1630,7 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
         -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
         -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
         -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+        -DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}
       BUILD_BYPRODUCTS "${_sdl_a}")
     ExternalProject_Add_Step(sdl_ext publish
       COMMAND ${CMAKE_COMMAND} -DSTAGE=${_deps_stage}/sdl -DDEST=${_sdl_install}
@@ -1668,6 +1670,7 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
         -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
         -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
         -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+        -DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}
       BUILD_BYPRODUCTS "${_raylib_a}")
     ExternalProject_Add_Step(raylib_ext publish
       COMMAND ${CMAKE_COMMAND} -DSTAGE=${_deps_stage}/raylib -DDEST=${_raylib_install}
