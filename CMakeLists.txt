@@ -764,6 +764,16 @@ endif()
 
 if(CULEBRA_ENABLE_SCENE)
   set(_scene_link "${_raylib_aot_link}")
+  # Scene's binding reaches wrap.h, so its archive can carry a `culebra_runtime_*`
+  # helper the compiler declined to inline, against the core archive's strong
+  # one — the leftover Webview's Windows fragment absorbs above, for the same
+  # reason (PE has no weak external). Appended after the split from
+  # _raylib_aot_link, not into it: a Canvas link that never force-loads the
+  # Scene archive keeps strict duplicate detection.
+  # tools/check_rt_archive_tls.sh fails if the count grows past a leftover or two.
+  if(WIN32)
+    string(APPEND _scene_link " -Wl,--allow-multiple-definition")
+  endif()
   message(STATUS "Scene: enabled (vendored static SDL3 + raylib)")
 endif()
 

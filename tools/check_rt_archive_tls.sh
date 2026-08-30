@@ -161,7 +161,7 @@ else
   # The waiver is only as true as the flag, and it is that axis's own fragment
   # that must carry it -- not some other axis. This script is where a fragment
   # that lost the flag goes unnoticed otherwise (it did, once: the flag was
-  # deleted and only the comment came back). Both waived axes reach wrap.h,
+  # deleted and only the comment came back). Every waived axis reaches wrap.h,
   # which is what leaves the un-inlined `culebra_runtime_*` helper behind.
   waved=()
   if grep -q -- '_webview_link.*--allow-multiple-definition' CMakeLists.txt; then
@@ -169,6 +169,9 @@ else
   fi
   if grep -q -- '_foreign_link.*--allow-multiple-definition' CMakeLists.txt; then
     waved+=("libculebra_rt_foreign.a")
+  fi
+  if grep -q -- '_scene_link.*--allow-multiple-definition' CMakeLists.txt; then
+    waved+=("libculebra_rt_scene.a")
   fi
   waved_max=8   # a leftover or two; 348 was the archive before the attribute came off
   core_strong=$(strong_defs "$core")
@@ -202,10 +205,10 @@ else
   inlining, which only an axis whose link fragment carries
   --allow-multiple-definition can absorb.
 
-  If this names libculebra_rt_scene.a, it is not your change: Scene reaches
-  wrap.h the same way and leaves a leftover or two, and its fragment is
-  raylib's, shared with Canvas, so it has no flag to absorb them. Scene has
-  never linked on Windows for this reason; the gate builds it OFF.
+  If this names libculebra_rt_scene.a with more than a leftover or two, the
+  waiver above has stopped covering it: Scene reaches wrap.h the same way
+  Webview does, and its own fragment (not the raylib one it is built from,
+  which Canvas shares) carries the flag.
 
   (An axis you just switched OFF still has its archive in the build dir --
   delete that .a and re-run.)

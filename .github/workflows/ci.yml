@@ -731,6 +731,105 @@ jobs:
           [ -n "$v" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
           misc/package_release.sh ./build/culebra "v$v" macos arm64
 
+  # Scene is the one namespace no released binary carries: CMake defaults it
+  # OFF, so until this job nothing built it anywhere — the wrap binding, the
+  # culebra_rt_scene archive and the CULEBRA_SCENE_LINK fragment compiled in no
+  # lane, and the axis was as verified as the last time someone ran it by hand.
+  # It is also the only place tools/check_rt_archive_tls.sh ever sees that
+  # archive, which is the ratchet standing behind the Windows twin below.
+  #
+  # Rendering is checked here and nowhere else. Scene has no headless mode —
+  # View.new opens a window or raises — so a frame is drawn under Xvfb and read
+  # back through Canvas's headless framebuffer. Everything else about the axis
+  # (the build, the archive, the AOT link) passes on a binary whose raylib
+  # bodies are never entered.
+  linux-scene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps-cache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # Scene rides the same vendored SDL3 + raylib as the Canvas window, so it
+      # wants the same build dependencies; xvfb is for the render smoke.
+      - name: Install toolchain
+        uses: ./.github/actions/setup-linux-toolchain
+        with:
+          sdl3-deps: 'true'
+          extra-packages: xvfb
+
+      # Deliberately the Canvas lane's key, not one of this job's own: same
+      # platform and same two submodules means the same tree, so whichever lane
+      # runs first pays the ~4 min and the other restores it.
+      - name: Vendored SDL3 + raylib revisions
+        id: vendor
+        run: echo "key=$(misc/deps_cache_key.sh linux-canvas-deps)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore SDL3 + raylib statics
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps-cache
+          key: ${{ steps.vendor.outputs.key }}
+
+      # No cross-job fallback key: CULEBRA_ENABLE_SCENE is a target-wide define,
+      # so every culebra TU's command line differs from the Scene-OFF jobs' and
+      # a restore from theirs would hit ~0% and merge back as bloat.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: linux-scene-ccache-${{ github.sha }}
+          restore-keys: |
+            linux-scene-ccache-
+
+      # The gate build rather than `just build`: Scene is not a shipped
+      # configuration, so LTO would buy nothing and cost the link. What matters
+      # is that this keeps the AOT runtime archives (DEV_NO_RT would skip them),
+      # which the archive ratchet and the AOT probe below both need.
+      - name: Build (Scene ON)
+        run: just build-gate -DCULEBRA_ENABLE_SCENE=ON -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+
+      - name: Report ccache stats
+        run: ccache -s || true
+
+      # Without this the job could go green on a build where CMake quietly left
+      # the namespace off, having proved nothing it exists for.
+      - name: Verify Scene is actually in this build
+        run: |
+          test -f build-gate/libculebra_rt_scene.a \
+            || { echo "::error::SCENE_SILENTLY_DISABLED (no libculebra_rt_scene.a)" >&2; exit 1; }
+          echo "OK: Scene archive built"
+
+      # The only steps that enter raylib's window, GL and shader path.
+      - name: Render a frame (Xvfb, vm / JIT)
+        run: |
+          fail=0
+          for engine in --vm --jit; do
+            LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a \
+              misc/probe_scene_window.sh ./build-gate/culebra "$engine" || fail=1
+          done
+          exit $fail
+
+      # Display-free by construction (the Scene call sits under `if false`), so
+      # what it reports is the link: the force-load of libculebra_rt_scene.a
+      # beside the core archive. Its Windows twin is the same script.
+      - name: AOT link + run (Scene force-load axis)
+        run: misc/probe_scene_aot_link.sh ./build-gate/culebra
+
+      # The archive Scene adds is one of the three that reach wrap.h, so it can
+      # leave a `culebra_runtime_*` helper the compiler declined to inline
+      # against the core archive's strong one. On ELF that folds silently; on PE
+      # it is a failed link, which is why the count is ratcheted here rather
+      # than discovered on Windows.
+      - name: Runtime archive discipline (with the Scene archive present)
+        run: tools/check_rt_archive_tls.sh build-gate
+
   # Linux is the only platform where culebra has to find the WebView engine
   # itself (macOS links a system framework; Windows lets webview.h's own loader
   # locate the Edge runtime), and the Ubuntu test jobs above install no gtk4 or
@@ -1858,6 +1957,96 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw "build still works after uninstall" }
           "OK: uninstall is complete, and what was built keeps running"
           exit 0
+
+  # The Windows half of linux-scene, and the reason Scene's link fragment
+  # carries --allow-multiple-definition: PE has no weak external, so the
+  # `culebra_runtime_*` helpers the Scene archive leaves un-inlined meet the
+  # core archive's strong ones and the AOT link fails without it. That failure
+  # is invisible on ELF and Mach-O, so this lane is the only thing that can
+  # report it — Scene had never been linked on Windows at all before it.
+  #
+  # No render step: a runner has no desktop, and unlike Canvas there is no
+  # headless mode to fall back to, so View.new would legitimately raise. The
+  # probe names Scene under `if false` — the AOT scan still force-loads the
+  # archive, which is the axis under test.
+  windows-scene:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      # The windows-aot-build set: the release configuration's clang + lld, the
+      # gcc whose libstdc++ they use, and git for the deps cache key.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            git
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: windows-scene-ccache-${{ github.sha }}
+          restore-keys: |
+            windows-scene-ccache-
+
+      # windows-aot-build's key, for linux-scene's reason: same platform, same
+      # submodules, same tree — whichever lane runs first pays for it.
+      - name: Resolve deps cache key
+        id: deps
+        run: echo "key=$(misc/deps_cache_key.sh windows-deps)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore SDL3 + raylib deps cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps
+          key: ${{ steps.deps.outputs.key }}
+
+      # The download's own configure script plus the one option that is this
+      # job's subject, so the toolchain and link flags cannot drift from the
+      # configuration the duplicate-symbol problem actually appears in.
+      - name: Configure (the Windows download's configuration, Scene ON)
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
+        run: misc/configure_windows_release.sh build-win-scene -DCULEBRA_ENABLE_SCENE=ON
+
+      - name: Build (culebra driver + runtime archives)
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        # `--target culebra` and `-k 0` as in windows-aot-build: the POSIX-only
+        # test targets do not build here, and a clang lane should list every TU
+        # it rejects rather than the first.
+        run: cmake --build build-win-scene --target culebra -j -- -k 0
+      - name: Report ccache stats
+        run: ccache -s || true
+
+      - name: Verify Scene is actually in this build
+        run: |
+          test -f build-win-scene/libculebra_rt_scene.a \
+            || { echo "::error::SCENE_SILENTLY_DISABLED (no libculebra_rt_scene.a)" >&2; exit 1; }
+          echo "OK: Scene archive built"
+
+      # The whole point of the lane.
+      - name: Smoke — AOT link with Scene force-loaded
+        env:
+          CULEBRA_VERBOSE: "1"
+        run: misc/probe_scene_aot_link.sh ./build-win-scene/culebra.exe
 
   # Regression for issue #13: Arch's `llvm` package ships only the combined
   # libLLVM.so (no per-component .a archives), which the plain
