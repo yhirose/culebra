@@ -651,8 +651,10 @@ static constexpr int8_t GC_TAG_STRING = TAG_STRING;
 static constexpr int8_t GC_TAG_STRINGVIEW = TAG_STRINGVIEW;
 
 // Is this tag a refcounted heap value (the container/handle tags, excluding
-// Cell)? Pure predicate over GC_TAG_*.
-inline bool _is_refcounted_value_tag(int8_t tag) {
+// Cell)? Pure predicate over GC_TAG_*. `constexpr` so the lowering can fold
+// it into the bitmask its IR-level copy tests against (emit_tag_is_refcounted)
+// rather than restating the set — one place to edit when a tag joins.
+constexpr bool _is_refcounted_value_tag(int8_t tag) {
   return tag == GC_TAG_FUNC || tag == GC_TAG_ARRAY ||
          tag == GC_TAG_OBJECT || tag == GC_TAG_TENSOR ||
          tag == GC_TAG_TUPLE || tag == GC_TAG_SET;

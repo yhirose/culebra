@@ -1787,15 +1787,24 @@ struct JIT {
     }
   };
 
+  // One refcount helper call. Both helpers open with the same
+  // `_is_refcounted_value_tag` guard (jit_mem.h), so a tag the emitter already
+  // knows answers it here: the call is simply not emitted, rather than emitted
+  // for DropSettledRefcounts to sweep back out.
+  void emit_refcount_call(const char* sym, llvm::Value* tag,
+                          llvm::Value* data) {
+    if (auto* k = llvm::dyn_cast<llvm::ConstantInt>(tag))
+      if (!_is_refcounted_value_tag(static_cast<int8_t>(k->getZExtValue())))
+        return;
+    emit_call(module_->getOrInsertFunction(sym, builder_.getVoidTy(),
+                                           builder_.getInt8Ty(),
+                                           builder_.getInt64Ty()),
+              {tag, data});
+  }
+
   // Emit IR to retain a Value (no-op for non-refcounted tags; done in runtime).
   void emit_value_retain(llvm::Value* val) {
-    auto tag = extract_tag(val);
-    auto data = extract_data(val);
-    emit_call(
-        module_->getOrInsertFunction(
-            rt::value_retain, builder_.getVoidTy(),
-            builder_.getInt8Ty(), builder_.getInt64Ty()),
-        {tag, data});
+    emit_refcount_call(rt::value_retain, extract_tag(val), extract_data(val));
   }
 
   // Borrow → +1. The caller passes a value it does not own (an element read
@@ -1808,6 +1817,30 @@ struct JIT {
     return val;
   }
 
+  // `_is_refcounted_value_tag` as IR: does this tag name a value release and
+  // retain do any work for? The mask is folded out of the predicate itself, so
+  // a tag that joins the set joins here too. Every refcounted tag is small; the
+  // range test is what keeps the sentinels out (TAG_KWREST 125, TAG_NO_SELF
+  // 126, TAG_UNFILLED 127) without a poison shift.
+  llvm::Value* emit_tag_is_refcounted(llvm::Value* tag) {
+    constexpr uint32_t kMask = [] {
+      uint32_t m = 0;
+      for (int t = 0; t < 32; ++t)
+        if (_is_refcounted_value_tag(static_cast<int8_t>(t))) m |= 1u << t;
+      return m;
+    }();
+    static_assert(kMask != 0, "no refcounted tag fits the mask any more");
+    auto i32 = builder_.getInt32Ty();
+    auto t = builder_.CreateZExt(tag, i32, "rc.tag");
+    auto in_range = builder_.CreateICmpULT(t, builder_.getInt32(32));
+    auto bit = builder_.CreateAnd(
+        builder_.CreateLShr(builder_.getInt32(kMask),
+                            builder_.CreateAnd(t, builder_.getInt32(31))),
+        builder_.getInt32(1));
+    return builder_.CreateAnd(
+        in_range, builder_.CreateICmpNE(bit, builder_.getInt32(0)), "rc.owned");
+  }
+
   void emit_value_release(llvm::Value* val) {
     // An undef %Value carries no ownership, so there is nothing to release.
     // Emitting release(undef,undef) is actively unsafe: at -O0 the call reads
@@ -1818,11 +1851,25 @@ struct JIT {
     if (llvm::isa<llvm::UndefValue>(val)) return;
     auto tag = extract_tag(val);
     auto data = extract_data(val);
-    emit_call(
-        module_->getOrInsertFunction(
-            rt::value_release, builder_.getVoidTy(),
-            builder_.getInt8Ty(), builder_.getInt64Ty()),
-        {tag, data});
+    // A tag the emitter already knows needs no branch at all.
+    if (llvm::isa<llvm::ConstantInt>(tag)) {
+      emit_refcount_call(rt::value_release, tag, data);
+      return;
+    }
+    // The helper's own first act is this test, but reaching it costs a call
+    // into an opaque symbol — and on the frame path most of what a release
+    // sees is a Long, a Float or an absent receiver. Hoisting the test into
+    // the caller made a one-line function call 17% cheaper. The helper keeps
+    // its copy: this is a fast path, not the contract.
+    auto* fn = builder_.GetInsertBlock()->getParent();
+    auto ownedBB = llvm::BasicBlock::Create(ctx_, "rc.release", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "rc.cont", fn);
+    builder_.CreateCondBr(emit_tag_is_refcounted(tag), ownedBB, contBB);
+    builder_.SetInsertPoint(ownedBB);
+    emit_refcount_call(rt::value_release, tag, data);
+    if (!builder_.GetInsertBlock()->getTerminator())
+      builder_.CreateBr(contBB);
+    builder_.SetInsertPoint(contBB);
   }
 
 

@@ -648,6 +648,23 @@ what the calls would have done is nothing, on every lane. Nothing else
 would notice if the peephole stopped firing, so `optimize_module`
 asserts that none survive (§10.2).
 
+That covers the tags a constant settles. The tags that stay a run-time
+question are the common case on the frame path — a released parameter, a
+receiver, a slot a scope tears down — and each of those used to be a call
+into the opaque helper to be told the value owns nothing. So the release
+emitter (`emit_value_release`) now opens with the helper's own test in
+IR: the refcounted tags all fit a 32-bit mask, so membership is one shift
+out of it, and the call sits behind it. The helper keeps its copy of the
+test — this is a fast path, not the contract — and a tag the emitter
+already knows is answered where it stands, so a settled release emits no
+branch at all rather than one for the peephole above to fold.
+
+That branch is IR at every release site, which is the cost side: on
+`tests/test_core.cul` the optimized module grows by about a third and
+`--jit` takes half again as long to reach the first instruction. The
+executor lowers nothing, so what pays it is `--jit` and `culebra build` —
+the two lanes chosen for throughput.
+
 ### 7.1 Ownership in the lowering
 
 The lowering's C++ holds every transient `+1` in `JIT::Owned`, a
