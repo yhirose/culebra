@@ -1000,7 +1000,7 @@ inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c) {
 // The single untyped overload's body, or null — the whole question a call
 // site the compiler resolved to a `fn name` asks at run time. The compiler
 // settled which chunk that body runs and which arities reach it
-// (Binding::known_chunk with via_mono), and that a resolved head holds this
+// (Binding::Known with via_mono), and that a resolved head holds this
 // very dispatcher; what is left is whether the shortcut is still there.
 inline JitClosure* _jit_dispatcher_mono_body(JitClosure* c) {
   assert(_jit_is_multifn_dispatcher(c) && c->captures[kMultifnMonoCapture]);

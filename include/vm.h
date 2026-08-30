@@ -2701,7 +2701,7 @@ struct VmProgram {
   std::string source_path;
   // Compiler scratch, cleared before the program is handed back: where each
   // resolved call site landed, keyed by the cell its callee traces back to
-  // (Binding::known_cell). A capture chain ends at the cell the declaring
+  // (Binding::Known::cell). A capture chain ends at the cell the declaring
   // frame owns, so every site a name's value reaches — however deep — is
   // under one key, and a re-declaration writing that cell strikes them all.
   struct CallSiteRef {
@@ -2984,7 +2984,7 @@ struct MemberOpts {
 
 // What the call at the head of a postfix chain reaches, when the compiler
 // can name it: the `fn` literal the head expression IS, or a binding bound
-// once to one (Binding::known_chunk). `cell` is where that value lives, so
+// once to one (Binding::Known). `cell` is where that value lives, so
 // a later declaration overwriting it can strike the site (head_callee), and
 // `via_mono` is the binding's — the callee is a `fn name` dispatcher and the
 // frame's closure is its monomorphic body.
@@ -3286,23 +3286,33 @@ class Compiler {
     // Where the name became visible, for Chunk::SlotDebug. Set by
     // push_binding, the one door into a scope.
     uint32_t debug_start = 0;
-    // The function chunk every read of this name yields a closure over, or
-    // -1 where the value is a run-time question. Granted only to a binding
-    // written exactly once, by the `fn` literal its declaration compiled
-    // (grant_known_chunk); a capture inherits it, since the cell it borrows
-    // is the very one that binding owns.
-    int32_t known_chunk = -1;
-    // How that chunk is reached: a `fn name` binds a dispatcher, so its code
-    // is one indirection further — the chunk of the single untyped overload
-    // the table holds (grant_mono_chunk). At most one grant ever lands on a
-    // binding, so the pair is the answer and its shape, not two answers.
-    bool via_mono = false;
-    // Which cell that value lives in, program-wide (-1 for a plain slot).
-    // A re-declaration of the same name in the same scope writes THAT cell
-    // rather than minting a second one, so the closures built between the
-    // two declarations would call the first function's code — the id is how
-    // the second one finds the sites it invalidates (revoke_known_chunk).
-    int64_t known_cell = -1;
+    // What reading this name tells the compiler, and the cell that answer
+    // is anchored to. One record because the parts are granted together
+    // (settle_callee), carried together through a capture list, and struck
+    // together (revoke_known) — a fact that arrived on its own would be a
+    // fourth thing to remember to clear.
+    struct Known {
+      // The function chunk every read of this name yields a closure over,
+      // or -1 where the value is a run-time question. Granted only to a
+      // binding written exactly once, by the `fn` literal its declaration
+      // compiled (grant_known_chunk); a capture inherits it, since the cell
+      // it borrows is the very one that binding owns.
+      int32_t chunk = -1;
+      // How that chunk is reached: a `fn name` binds a dispatcher, so its
+      // code is one indirection further — the chunk of the single untyped
+      // overload the table holds (grant_mono_chunk). At most one grant ever
+      // lands on a binding, so the pair is the answer and its shape, not
+      // two answers.
+      bool via_mono = false;
+      // Which cell that value lives in, program-wide (-1 for a plain slot).
+      // A re-declaration of the same name in the same scope writes THAT
+      // cell rather than minting a second one, so the closures built
+      // between the two declarations would call the first function's code —
+      // the id is how the second one finds the sites it invalidates
+      // (revoke_known).
+      int64_t cell = -1;
+    };
+    Known known;
   };
   struct Scope {
     // A deque, not a vector: a `Binding*` from lookup / predeclared_here is
@@ -3661,9 +3671,7 @@ class Compiler {
   }
 
   void settle_callee(Binding& b, int32_t chunk, bool via_mono) {
-    b.known_chunk = chunk;
-    b.via_mono = via_mono;
-    if (b.is_cell) b.known_cell = prog_.next_known_cell++;
+    b.known = {chunk, via_mono, b.is_cell ? prog_.next_known_cell++ : -1};
   }
 
   // A second declaration of the same name in this scope writes the cell the
@@ -3671,9 +3679,9 @@ class Compiler {
   // code. Strike every one of them — including the sites that ran before
   // the re-declaration and were right to resolve, since telling those apart
   // means knowing whether a loop wraps both.
-  void revoke_known_chunk(Binding& b) {
-    if (b.known_cell >= 0) {
-      auto it = prog_.resolved_by_cell.find(b.known_cell);
+  void revoke_known(Binding& b) {
+    if (b.known.cell >= 0) {
+      auto it = prog_.resolved_by_cell.find(b.known.cell);
       if (it != prog_.resolved_by_cell.end()) {
         for (const auto& s : it->second) {
           // Only the chunk is struck. Where the callee is read matters to
@@ -3687,9 +3695,7 @@ class Compiler {
         prog_.resolved_by_cell.erase(it);
       }
     }
-    b.known_chunk = -1;
-    b.via_mono = false;
-    b.known_cell = -1;
+    b.known = {};
   }
 
   // Where a resolved site's entry lives. A cell only ever reaches sites in
@@ -4054,7 +4060,7 @@ class Compiler {
   void invalidate_cell(int32_t slot) {
     for (auto& sc : scopes_)
       for (auto& b : sc.bindings)
-        if (b.slot == slot && b.known_chunk >= 0) revoke_known_chunk(b);
+        if (b.slot == slot && b.known.chunk >= 0) revoke_known(b);
   }
 
   // A read of a cell binding: the value comes out retained, so the result
@@ -5654,9 +5660,7 @@ class Compiler {
     // The chunk the captured cell's value is known to hold, and that cell's
     // identity — a capture of a capture keeps the original's, so every site
     // stays reachable from the one cell a re-declaration would overwrite.
-    std::vector<int32_t> known_chunks;
-    std::vector<bool> via_monos;
-    std::vector<int64_t> known_cells;
+    std::vector<Binding::Known> knowns;
 
     // A capture with nothing behind it (a sentinel cell): every flag off.
     void push(int32_t slot) {
@@ -5664,18 +5668,14 @@ class Compiler {
       muts.push_back(false);
       lazys.push_back(false);
       shadowed_builtins.push_back(false);
-      known_chunks.push_back(-1);
-      via_monos.push_back(false);
-      known_cells.push_back(-1);
+      knowns.emplace_back();
     }
     void push(const Binding& b) {
       slots.push_back(b.slot);
       muts.push_back(b.is_mut);
       lazys.push_back(b.lazy);
       shadowed_builtins.push_back(b.shadowed_builtin);
-      known_chunks.push_back(b.known_chunk);
-      via_monos.push_back(b.via_mono);
-      known_cells.push_back(b.known_cell);
+      knowns.push_back(b.known);
     }
   };
   // A capture with nothing to capture: a cell holding `v`, in a slot shared
@@ -6088,9 +6088,7 @@ class Compiler {
       }
       Binding cap{info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]};
       cap.shadowed_builtin = caps.shadowed_builtins[i];
-      cap.known_chunk = caps.known_chunks[i];
-      cap.via_mono = caps.via_monos[i];
-      cap.known_cell = caps.known_cells[i];
+      cap.known = caps.knowns[i];
       fc.push_binding(std::move(cap));
     }
     if (self_cap >= 0) {
@@ -7117,7 +7115,7 @@ class Compiler {
     if (head.tag != "IDENTIFIER"_) return {};
     const Binding* b = lookup(head.token);
     if (!b) return {};
-    return {b->known_chunk, b->known_cell, b->via_mono};
+    return {b->known.chunk, b->known.cell, b->known.via_mono};
   }
 
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
