@@ -2221,18 +2221,30 @@ static_assert(kSlotJitSlab < kSlotJitGc &&
 
 struct Runtime;
 
-// The active Runtime on this thread, or none (see current_runtime()).
-inline thread_local Runtime* _culebra_current_runtime = nullptr;
+// Where this thread finds its Runtime. `current` is what RuntimeScope
+// installs, and null means "no Runtime is current" — a fact repl_session()
+// and its neighbours read, so nothing may quietly write it on their behalf
+// (a change that did was reverted for exactly that reason). `fallback` only
+// caches this thread's default Runtime, so the no-scope path — every plain
+// `culebra script.cul` — resolves in one _tlv_get_addr instead of the pair a
+// function-local `static thread_local` charges: its guard, then itself. Two
+// pointers in one object for the same reason (jit_runtime.h's `_jit_thread`):
+// on Mach-O each `thread_local` an entry touches is its own call into dyld.
+struct RuntimeTls {
+  Runtime* current = nullptr;
+  Runtime* fallback = nullptr;
+};
+inline constinit thread_local RuntimeTls _culebra_rt;
 
 // RAII to switch the active Runtime for the current thread. Above Runtime
 // rather than beside current_runtime() because ~Runtime uses it on itself; a
 // Runtime* and a Runtime& are all it needs, so the forward declaration does.
 struct RuntimeScope {
   Runtime* prev_;
-  explicit RuntimeScope(Runtime& rt) : prev_(_culebra_current_runtime) {
-    _culebra_current_runtime = &rt;
+  explicit RuntimeScope(Runtime& rt) : prev_(_culebra_rt.current) {
+    _culebra_rt.current = &rt;
   }
-  ~RuntimeScope() { _culebra_current_runtime = prev_; }
+  ~RuntimeScope() { _culebra_rt.current = prev_; }
   RuntimeScope(const RuntimeScope&) = delete;
   RuntimeScope& operator=(const RuntimeScope&) = delete;
 };
@@ -2343,8 +2355,9 @@ inline Runtime& default_runtime() {
 }
 
 inline Runtime& current_runtime() {
-  return _culebra_current_runtime ? *_culebra_current_runtime
-                                  : default_runtime();
+  if (_culebra_rt.current) return *_culebra_rt.current;
+  if (!_culebra_rt.fallback) _culebra_rt.fallback = &default_runtime();
+  return *_culebra_rt.fallback;
 }
 
 // Definition of the forward-declared hook (see CulebraError's ctor). Records the

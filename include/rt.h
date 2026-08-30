@@ -100,7 +100,7 @@ inline ExtensionHooks& default_extension_hooks() {
 // default, for sandboxing). Outside any scope: install into the
 // process-wide default that all Runtimes fall back to.
 inline void install_extension(const ExtensionHooks& hooks) {
-  if (culebra::_culebra_current_runtime) {
+  if (culebra::_culebra_rt.current) {
     culebra::runtime_substate<ExtensionHooks>(culebra::kSlotJitHooks) = hooks;
   } else {
     default_extension_hooks() = hooks;
