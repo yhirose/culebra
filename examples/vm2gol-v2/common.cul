@@ -1,9 +1,0 @@
-# Shared helpers used by vgparser.cul / vgcg.cul / vgvm.cul.
-# Ported from vm2gol-v2's common.rb.
-
-fn not_yet_impl(*args) {
-  (["Not yet implemented"] +
-    args.map(|arg| "({JSON.stringify(arg)})")).join(" ")
-}
-
-export {not_yet_impl}
