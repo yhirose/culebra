@@ -16,6 +16,26 @@ if(MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8")
 endif()
 
+# Two clang diagnostics fire ~50 times across the JIT runtime headers without
+# ever pointing at a defect, which buries the warnings that do mean something.
+# Both spellings are clang-only (and -Wvla-cxx-extension is clang 18+), so ask
+# the compiler rather than assuming. playground/build.sh passes the same pair.
+#
+#   return-type-c-linkage  Helpers sit inside the big `extern "C"` block for
+#       its name mangling while returning std::optional / std::string. The
+#       warning is about calling them from C, which nothing does — JIT'd code
+#       only ever calls the C-ABI subset.
+#   vla-cxx-extension  vm.h sizes the register window from the chunk on
+#       purpose (see run_frame); kMaxSlots bounds it.
+include(CheckCXXCompilerFlag)
+foreach(_w -Wno-return-type-c-linkage -Wno-vla-cxx-extension)
+  string(MAKE_C_IDENTIFIER "HAS${_w}" _have)
+  check_cxx_compiler_flag("${_w}" ${_have})
+  if(${_have})
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_w}>")
+  endif()
+endforeach()
+
 # Use ccache as the compiler launcher when available. Keeps a content-
 # addressed cache of .o files in ~/.cache/ccache so that header touches
 # that don't change content (e.g. branch switching) hit the cache and

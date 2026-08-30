@@ -57,6 +57,9 @@ mkdir -p "$OUT" "$CACHE"
 
 COMMON=(
   -std=c++23 -O2 -fwasm-exceptions
+  # The same two diagnostics CMakeLists.txt turns off, and for the same
+  # reasons — this build has no CMake to inherit them from.
+  -Wno-return-type-c-linkage -Wno-vla-cxx-extension
   -sUSE_ZLIB=1 -sSTACK_SIZE=16MB -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB
   -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createCulebra
   -sENVIRONMENT=web,worker

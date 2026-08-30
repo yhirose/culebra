@@ -27,7 +27,7 @@
 #include <pthread.h>  // pthread_get_stackaddr_np / getattr_np (stack_base, POSIX)
 #endif
 #ifdef __EMSCRIPTEN__
-#include <emscripten/stack.h>  // emscripten_stack_get_base (stack_base)
+#include <emscripten/stack.h>  // emscripten_stack_get_{current,base}
 #endif
 // backtrace() for GAP5 birth-site capture. mingw and emscripten have no
 // <execinfo.h>; capture degrades to "(no birth site)", which the report site
@@ -951,9 +951,13 @@ class Heap {
     void* sp;
     __asm__ volatile("mov %%rsp, %0" : "=r"(sp));
     return sp;
+#elif defined(__EMSCRIPTEN__)
+    // wasm keeps its stack pointer in a global, not a register: ask the
+    // runtime for it. Taking a local's address instead returns a pointer
+    // into this frame, which is dead by the time the caller reads it.
+    return reinterpret_cast<void*>(emscripten_stack_get_current());
 #else
-    void* marker;
-    return &marker;  // address of a local ≈ SP (portable fallback)
+#error "conservative GC current_sp: unsupported platform"
 #endif
   }
 

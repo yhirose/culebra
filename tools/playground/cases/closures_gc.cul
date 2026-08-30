@@ -1,5 +1,5 @@
 # Enough allocation to make the collector run, which is the only thing that
-# reads Heap::stack_base — the wasm arm of it has no other exercise.
+# reads Heap::current_sp / stack_base — their wasm arms have no other exercise.
 let mut acc = 0
 for i in range(0, 20000) {
   let g = |x| x + i
