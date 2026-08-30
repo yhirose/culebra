@@ -5110,10 +5110,12 @@ post stack）なので、出力はフラットシェーディングのプリミ�
 `Scene`は **experimental**でAPIは予告なく変わりうる。リリースバイナリが
 持たない唯一のnamespaceでもある。デフォルトビルドには入らない。
 `-DCULEBRA_ENABLE_SCENE=ON`で有効化すると、vendoredな静的SDL3 + raylib
-バックエンドをビルドする。これは`Canvas`がmacOS・Linux・Windowsでウィンドウを
-開くのに使うものと同じバックエンドだが、`Scene`自体が動くのはmacOSとLinuxだけ
-で、Windowsではまだリンクできていない。ヘッドレスモードも無いので、`Canvas`と
-違い`Scene`プログラムはヘッドレスでもPlaygroundでも動かない。
+バックエンドをビルドする。これは`Canvas`がウィンドウを開くのに使うものと同じ
+バックエンドで、`Scene`はmacOS・Linux・Windowsでビルドできる。フレームを実際に
+描いて確認しているのはLinux（毎pushのCIがXvfb下で描く）とmacOS（手動）で、
+Windowsビルドはリンクまでは通るがまだウィンドウを開いたことがない。ヘッドレス
+モードも無いので、`Canvas`と違い`Scene`プログラムはヘッドレスでもPlaygroundでも
+動かない。
 
 ### View とフレームループ
 

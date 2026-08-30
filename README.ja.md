@@ -130,8 +130,8 @@ sudo mv culebra-*/culebra /usr/local/bin/
   出しません）。
 - **3D。** `Scene` — 手続き的に構築したジオメトリを物理ベースライティングで
   描く保持モードの3Dレンダラ。experimentalで、オプトイン
-  （`-DCULEBRA_ENABLE_SCENE=ON`）。リリースバイナリには入っておらず、
-  動くのはmacOSとLinuxだけです。
+  （`-DCULEBRA_ENABLE_SCENE=ON`）。リリースバイナリには入っていません。
+  3 OSともビルドでき、ウィンドウまで確認しているのはmacOSとLinuxです。
 
 ### 組み込みのTensor
 

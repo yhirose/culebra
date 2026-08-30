@@ -5269,9 +5269,10 @@ shape it is designed around.
 `Scene` is **experimental**: its API can change without notice, and it is the
 one namespace the released binaries do not carry. It is not in the default
 build; enable it with `-DCULEBRA_ENABLE_SCENE=ON`, which builds the vendored
-static SDL3 + raylib backend. That is the same backend `Canvas` opens a window
-with on macOS, Linux and Windows, but `Scene` itself runs on macOS and Linux
-only — it has not been linked on Windows yet. It has no headless mode either,
+static SDL3 + raylib backend — the same one `Canvas` opens a window with.
+`Scene` builds on macOS, Linux and Windows; Linux is where a frame is drawn on
+every push (under Xvfb) and macOS is where it is run by hand, while the Windows
+build is linked but has yet to open a window. It has no headless mode either,
 so — unlike `Canvas` — `Scene` programs run neither headless nor in the
 Playground.
 
