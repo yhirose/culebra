@@ -699,57 +699,102 @@ struct Lowering {
             selfV ? j.extract_data(selfV) : b.getInt64(0), selfSlot, argBase,
             argc);
       };
-      // A `fn name` the compiler resolved: the code is static, but the
-      // closure the frame reads is the dispatcher's monomorphic body, three
-      // loads away in its second capture cell. A null payload means the
-      // shortcut is gone, and the call falls through to the arm it would
-      // have taken all along.
-      llvm::Value* monoResult = nullptr;
-      llvm::BasicBlock* monoEndBB = nullptr;
-      llvm::BasicBlock* mergeBB = nullptr;
-      if (tgt.via_mono && tgt.chunk >= 0) {
-        auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
-        auto caps = b.CreateLoad(
-            ptrTy, b.CreateStructGEP(j.closureType_, clsPtr, 3), "mono.caps");
-        auto cellPtr = b.CreateLoad(
-            ptrTy,
-            b.CreateInBoundsGEP(ptrTy, caps,
-                                {b.getInt64(kMultifnMonoCapture)}),
-            "mono.cell");
-        auto valPtr = b.CreateStructGEP(j.cellType_, cellPtr, 1, "mono.vp");
-        auto body = b.CreateLoad(
-            i64Ty, b.CreateStructGEP(j.valueType_, valPtr, 1), "mono.body");
-        auto monoBB = BasicBlock::Create(j.ctx_, "call.mono", fn);
-        auto dynBB = BasicBlock::Create(j.ctx_, "call.dyn", fn);
-        mergeBB = BasicBlock::Create(j.ctx_, "call.join", fn);
-        b.CreateCondBr(b.CreateICmpNE(body, b.getInt64(0)), monoBB, dynBB);
-        b.SetInsertPoint(monoBB);
-        monoResult = emit_direct(tgt.chunk, b.CreateIntToPtr(body, ptrTy));
-        monoEndBB = b.GetInsertBlock();
-        b.CreateBr(mergeBB);
-        b.SetInsertPoint(dynBB);
-      }
       // A callee the compiler named (Chunk::call_targets): its code is this
       // module's own function, so the Function gate and the two probes have
       // no work to do and the ABI call is direct — which is what lets the
       // inliner see through it. The closure still rides the register: only
       // the code is static, its captures are the caller's.
-      if (!tgt.via_mono && tgt.chunk >= 0) {
+      llvm::Value* fastResult = nullptr;
+      llvm::BasicBlock* fastEndBB = nullptr;
+      llvm::BasicBlock* mergeBB = nullptr;
+      if (tgt.chunk >= 0) {
         auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
         // Statically resolvable too: the cap is the callee chunk's, the
         // count is this site's. Only the throwing case emits anything, and
-        // it emits the very call the dynamic arm would have made. (The mono
-        // arm needs none: its site is recorded only for counts the overload
+        // it emits the very call the dynamic arm would have made. (A Mono
+        // site needs none: it is recorded only for counts the overload
         // accepts, which stop at the keyword-only run.)
-        int32_t cap =
-            p.chunks[static_cast<size_t>(tgt.chunk)].first_kw_only_idx;
-        if (cap >= 0 && argc > cap)
-          j.emit_call(j.module_->getOrInsertFunction(rt::check_pos_count_cls,
-                                                     b.getVoidTy(), ptrTy,
-                                                     i64Ty, i64Ty, i64Ty),
-                      {clsPtr, b.getInt64(argc), b.getInt64(line),
-                       b.getInt64(col)});
-        return emit_direct(tgt.chunk, clsPtr);
+        auto emit_cap_check = [&] {
+          int32_t cap =
+              p.chunks[static_cast<size_t>(tgt.chunk)].first_kw_only_idx;
+          if (cap >= 0 && argc > cap)
+            j.emit_call(j.module_->getOrInsertFunction(
+                            rt::check_pos_count_cls, b.getVoidTy(), ptrTy,
+                            i64Ty, i64Ty, i64Ty),
+                        {clsPtr, b.getInt64(argc), b.getInt64(line),
+                         b.getInt64(col)});
+        };
+        // The one run-time question the site's shape owes, or null where it
+        // owes none. Both shapes that have one emit the same diamond: the
+        // direct call on the taken side, and on the other the arm the site
+        // would have taken all along.
+        llvm::Value* holds = nullptr;
+        llvm::BasicBlock* dynBB = nullptr;
+        auto open_diamond = [&] {
+          dynBB = BasicBlock::Create(j.ctx_, "call.dyn", fn);
+          mergeBB = BasicBlock::Create(j.ctx_, "call.join", fn);
+        };
+        switch (tgt.reach) {
+          case Chunk::Reach::Direct:
+            break;
+          case Chunk::Reach::Mono: {
+            // The code is static, but the closure the frame reads is the
+            // dispatcher's monomorphic body, three loads away in its second
+            // capture cell. A null payload means the shortcut is gone.
+            auto caps = b.CreateLoad(
+                ptrTy, b.CreateStructGEP(j.closureType_, clsPtr, 3),
+                "mono.caps");
+            auto cellPtr = b.CreateLoad(
+                ptrTy,
+                b.CreateInBoundsGEP(ptrTy, caps,
+                                    {b.getInt64(kMultifnMonoCapture)}),
+                "mono.cell");
+            auto valPtr =
+                b.CreateStructGEP(j.cellType_, cellPtr, 1, "mono.vp");
+            auto body = b.CreateLoad(
+                i64Ty, b.CreateStructGEP(j.valueType_, valPtr, 1),
+                "mono.body");
+            holds = b.CreateICmpNE(body, b.getInt64(0));
+            clsPtr = b.CreateIntToPtr(body, ptrTy);
+            open_diamond();
+            break;
+          }
+          case Chunk::Reach::Guarded: {
+            // The resolution rests on the callee being that chunk's closure,
+            // which a member reading its own class name off a foreign
+            // receiver would not be. One pointer compare against the
+            // function the target names — but only once the callee is known
+            // to BE a closure: a non-Function has no `fn_ptr` to read, and
+            // dereferencing its payload would fault where the executor's
+            // call_target_holds simply answers no. Same question, same
+            // order, on both lanes; the miss lands in the dynamic arm, whose
+            // TAG_FUNC test raises the TypeError it always did.
+            open_diamond();
+            auto guardBB = BasicBlock::Create(j.ctx_, "call.guard", fn);
+            b.CreateCondBr(
+                b.CreateICmpEQ(j.extract_tag(calleeV), b.getInt8(TAG_FUNC)),
+                guardBB, dynBB);
+            b.SetInsertPoint(guardBB);
+            holds = b.CreateICmpEQ(
+                b.CreateLoad(ptrTy,
+                             b.CreateStructGEP(j.closureType_, clsPtr, 1),
+                             "cls.fn"),
+                fns[static_cast<size_t>(tgt.chunk)]);
+            break;
+          }
+        }
+        if (!holds) {
+          emit_cap_check();
+          return emit_direct(tgt.chunk, clsPtr);
+        }
+        auto fastBB = BasicBlock::Create(j.ctx_, "call.resolved", fn);
+        b.CreateCondBr(holds, fastBB, dynBB);
+        b.SetInsertPoint(fastBB);
+        if (tgt.reach != Chunk::Reach::Mono) emit_cap_check();
+        fastResult = emit_direct(tgt.chunk, clsPtr);
+        fastEndBB = b.GetInsertBlock();
+        b.CreateBr(mergeBB);
+        b.SetInsertPoint(dynBB);
       }
       auto tag = j.extract_tag(calleeV);
       auto* fromBB = b.GetInsertBlock();
@@ -845,8 +890,8 @@ struct Lowering {
       b.CreateBr(mergeBB);
       mergeBB->moveAfter(dynEndBB);
       b.SetInsertPoint(mergeBB);
-      auto* joinPhi = b.CreatePHI(j.valueType_, 2, "call.mono.join");
-      joinPhi->addIncoming(monoResult, monoEndBB);
+      auto* joinPhi = b.CreatePHI(j.valueType_, 2, "call.resolved.join");
+      joinPhi->addIncoming(fastResult, fastEndBB);
       joinPhi->addIncoming(dynResult, dynEndBB);
       return joinPhi;
     };

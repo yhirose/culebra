@@ -2500,21 +2500,37 @@ struct Chunk {
   // executor's dispatch loop asks once per call, and the answer has to
   // cost less than what it saves. Empty when nothing resolved.
   //
-  // `via_mono` marks the other shape a resolved site takes: the callee is a
-  // `fn name` dispatcher, so the code is static but the closure to enter is
-  // the dispatcher's monomorphic body rather than the register's value. It
-  // rides the low bit of the stored word rather than widening the row: this
-  // is the one side table the dispatch loop reads on every call.
+  // `reach` says how the chunk relates to the value in the register, which
+  // is what decides whether the site owes a run-time question before it may
+  // enter. The three are alternatives, not flags — a site has exactly one
+  // shape — and they ride two tag bits of the stored word rather than
+  // widening the row: this is the one side table the dispatch loop reads on
+  // every call.
   //
-  // `callee_in_cell` is the third fact, and the one that is not about the
-  // code: the `b` operand names a slot holding a CELL, and the callee is the
-  // value inside it. The compiler emits that for a name bound once into a
-  // cell this frame owns, where the read needs neither a register of its own
-  // nor the `+1` a register would have to pay for — the cell's own reference
-  // outlives the call (see borrowed_call_head).
+  // `callee_in_cell` is the one fact that is not about the code: the `b`
+  // operand names a slot holding a CELL, and the callee is the value inside
+  // it. The compiler emits that for a name bound once into a cell this frame
+  // owns, where the read needs neither a register of its own nor the `+1` a
+  // register would have to pay for — the cell's own reference outlives the
+  // call (see borrowed_call_head). It survives a revocation, since it
+  // describes the instruction's operand rather than the analysis.
+  enum class Reach : uint8_t {
+    // The callee IS that chunk's closure, and the compiler owes no check —
+    // run_resolved's assert is the whole verification.
+    Direct = 0,
+    // The callee is a `fn name` dispatcher, so the code is static but the
+    // closure to enter is the dispatcher's monomorphic body rather than the
+    // register's value. Nil there means the shortcut is gone.
+    Mono = 1,
+    // The chunk is the answer only if the callee really is that chunk's
+    // closure: a class member reads its own class name off the RECEIVER
+    // (Op::ClsSelf), which is this class only when the receiver is one of
+    // its instances — a method value moved onto a foreign object is not.
+    Guarded = 2,
+  };
   struct CallTarget {
     int32_t chunk = -1;
-    bool via_mono = false;
+    Reach reach = Reach::Direct;
     bool callee_in_cell = false;
   };
   std::vector<int32_t> call_targets;
@@ -2576,13 +2592,14 @@ inline const std::vector<int64_t>* chunk_argpos_at(const Chunk& c, size_t ix) {
 // standing for the empty row.
 inline constexpr int32_t kNoCallTarget = -1;
 inline int32_t encode_call_target(Chunk::CallTarget t) {
-  assert(t.chunk >= -1 && t.chunk < (1 << 29));  // the tag bits' room
-  return ((t.chunk + 1) << 2) | (t.via_mono ? 2 : 0) |
+  assert(t.chunk >= -1 && t.chunk < (1 << 28));  // the tag bits' room
+  return ((t.chunk + 1) << 3) | (static_cast<int32_t>(t.reach) << 1) |
          (t.callee_in_cell ? 1 : 0);
 }
 inline Chunk::CallTarget decode_call_target(int32_t w) {
   if (w < 0) return {};
-  return {(w >> 2) - 1, (w & 2) != 0, (w & 1) != 0};
+  return {(w >> 3) - 1, static_cast<Chunk::Reach>((w >> 1) & 3),
+          (w & 1) != 0};
 }
 inline Chunk::CallTarget chunk_call_target_at(const Chunk& c, size_t ix) {
   return decode_call_target(ix < c.call_targets.size() ? c.call_targets[ix]
@@ -2976,6 +2993,10 @@ struct MemberOpts {
   // declared fields sets neither.
   const peg::Ast* field_init_owner = nullptr;
   const std::vector<const peg::Ast*>* prologue_fields = nullptr;
+  // The enclosing class's constructor chunk, reserved before the members
+  // compiled, so `Name.new(...)` inside a member resolves — behind the guard
+  // its receiver-read name owes (Chunk::Reach::Guarded).
+  int32_t owner_ctor_chunk = -1;
   // The enclosing class's Generic parameters (`class Box<T>`): a member's
   // annotations lower against them, exactly as the JIT's class_type_params_
   // does — an unbounded `T` is documentation and checks as Any.
@@ -2988,16 +3009,16 @@ struct MemberOpts {
   bool sole_multifn = false;
 };
 
-// What the call at the head of a postfix chain reaches, when the compiler
-// can name it: the `fn` literal the head expression IS, or a binding bound
-// once to one (Binding::Known). `cell` is where that value lives, so
-// a later declaration overwriting it can strike the site (head_callee), and
-// `via_mono` is the binding's — the callee is a `fn name` dispatcher and the
-// frame's closure is its monomorphic body.
+// What a call in a postfix chain reaches, when the compiler can name it: the
+// `fn` literal the head expression IS, a binding bound once to one
+// (Binding::Known), or the constructor of a class the head names. `cell` is
+// where that value lives, so a later declaration overwriting it can strike
+// the site; `reach` is how the chunk relates to the value the site will hold
+// — the same three shapes Chunk::CallTarget records.
 struct StaticCallee {
   int32_t chunk = -1;
   int64_t cell = -1;
-  bool via_mono = false;
+  Chunk::Reach reach = Chunk::Reach::Direct;
 };
 
 // What a construct outside the slice raises while the module compiles. A
@@ -3716,7 +3737,7 @@ class Compiler {
           // a cell either way — so that bit survives the revocation.
           auto& w = call_targets_of(s.chunk)[s.pc];
           w = decode_call_target(w).callee_in_cell
-                  ? encode_call_target({-1, false, true})
+                  ? encode_call_target({-1, Chunk::Reach::Direct, true})
                   : kNoCallTarget;
         }
         prog_.resolved_by_cell.erase(it);
@@ -3773,13 +3794,15 @@ class Compiler {
     // A dispatcher's body is reached only for the arities its one overload
     // accepts; every other count is the DispatchError the dynamic arm
     // raises, so those sites stay unresolved.
-    if (chunk >= 0 && target.via_mono && !mono_window_admits(chunk, argc))
+    if (chunk >= 0 && target.reach == Chunk::Reach::Mono &&
+        !mono_window_admits(chunk, argc))
       chunk = -1;
     if (chunk < 0 && !callee_in_cell) return;
     if (chunk_.call_targets.size() <= ix)
       chunk_.call_targets.resize(ix + 1, kNoCallTarget);
     chunk_.call_targets[ix] = encode_call_target(
-        {chunk, chunk >= 0 && target.via_mono, callee_in_cell});
+        {chunk, chunk >= 0 ? target.reach : Chunk::Reach::Direct,
+         callee_in_cell});
     if (chunk >= 0 && target.cell >= 0)
       prog_.resolved_by_cell[target.cell].push_back(
           {chunk_idx_, static_cast<uint32_t>(ix)});
@@ -5368,7 +5391,9 @@ class Compiler {
       auto mv = culebra::view_method(*m);
       method_chunks.push_back(
           compile_fn_chunk(*m, mv.params, **mv.body,
-                           {.receiver = true, .type_params = &type_params}));
+                           {.receiver = true,
+                            .owner_ctor_chunk = ctor_chunk_idx,
+                            .type_params = &type_params}));
       auto& ch = prog_.chunks[method_chunks.back()];
       ch.multifn_name = std::string(mv.name);
       if (mv.is_getter) ch.is_getter = true;
@@ -5422,6 +5447,7 @@ class Compiler {
            .field_init_owner = fields_need_a_thunk ? &ast : nullptr,
            .prologue_fields =
                (!fields.empty() && !fields_need_a_thunk) ? &fields : nullptr,
+           .owner_ctor_chunk = ctor_chunk_idx,
            .type_params = &type_params}));
     }
 
@@ -6133,6 +6159,12 @@ class Compiler {
         Binding& ob = fc.push_binding(
             {info.own_name, cslot, /*is_mut=*/false, /*is_cell=*/true,
              /*lazy=*/info.own_name_source != Src::Closure});
+        // `Name.new(...)` in a member. The name is read from the receiver,
+        // so the value is a run-time question and the site takes the guard —
+        // but the chunk it would reach is known, which is what an unboxed
+        // representation needs at the constructions inside an operator.
+        if (info.own_name_source == Src::Receiver && mo.owner_ctor_chunk >= 0)
+          ob.known.ctor = mo.owner_ctor_chunk;
         // A literal's own `let` name reads as the very closure running the
         // frame; a dispatch's or a class member's is the dispatcher/class,
         // which the lazy flag already keeps out of grant_known_chunk.
@@ -7188,11 +7220,12 @@ class Compiler {
 
   StaticCallee head_callee(const peg::Ast& head, const ExprResult& res) {
     using namespace peg::udl;
-    if (res.chunk >= 0) return {res.chunk, -1, false};
+    if (res.chunk >= 0) return {res.chunk};
     if (head.tag != "IDENTIFIER"_) return {};
     const Binding* b = lookup(head.token);
     if (!b) return {};
-    return {b->known.chunk, b->known.cell, b->known.via_mono};
+    return {b->known.chunk, b->known.cell,
+            b->known.via_mono ? Chunk::Reach::Mono : Chunk::Reach::Direct};
   }
 
   // What `Name.new(...)` reaches. A constructor arrives through the class
@@ -7210,7 +7243,12 @@ class Compiler {
     if (head.tag != "IDENTIFIER"_) return {};
     const Binding* b = lookup(head.token);
     if (!b) return {};
-    return {b->known.ctor, b->known.cell, /*via_mono=*/false};
+    // `lazy` is exactly "the value of this name is still a run-time
+    // question": a member's own class name is read off the receiver, and a
+    // forward reference holds a sentinel until its declaration runs. Both
+    // keep the chunk and check it at the site.
+    return {b->known.ctor, b->known.cell,
+            b->lazy ? Chunk::Reach::Guarded : Chunk::Reach::Direct};
   }
 
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
@@ -7254,9 +7292,9 @@ class Compiler {
         // Only the head's own call reaches a callee the compiler can name —
         // `f()()` calls whatever the first call returned. A direct `fn(...)`
         // re-enters the very chunk it runs in.
-        StaticCallee tgt{-1, -1};
+        StaticCallee tgt{};
         if (i == 1)
-          tgt = fn_direct ? StaticCallee{chunk_idx_, -1}
+          tgt = fn_direct ? StaticCallee{chunk_idx_}
                           : head_callee(*ast.nodes[0], res);
         res = i == 1 && fn_direct
                   ? compile_self_call_step(ast, post, res, tgt)
@@ -9366,8 +9404,11 @@ inline std::string dump(const Chunk& c) {
                            in.d, line, col);
     if (auto t = chunk_call_target_at(c, i); t.chunk >= 0 || t.callee_in_cell) {
       if (t.chunk >= 0)
-        out += culebra::format("  -> chunk {}{}", t.chunk,
-                               t.via_mono ? " (mono)" : "");
+        out += culebra::format(
+            "  -> chunk {}{}", t.chunk,
+            t.reach == Chunk::Reach::Mono      ? " (mono)"
+            : t.reach == Chunk::Reach::Guarded ? " (guarded)"
+                                               : "");
       if (t.callee_in_cell) out += "  [callee in cell]";
     }
     out += "\n";
@@ -9978,17 +10019,34 @@ struct Exec {
                      static_cast<int8_t>(self.tag), self.data);
   }
 
-  // Which closure a `via_mono` site enters: the dispatcher's monomorphic
+  // Which closure a Reach::Mono site enters: the dispatcher's monomorphic
   // body, since a dispatcher's own captures are not the ones the body's
-  // frame reads. Nil where that shortcut is gone — the one run-time question
-  // any resolved site asks — and the site then takes the dynamic arm and its
-  // DispatchError. A plain resolved site does not come here: its callee IS
-  // the closure, which is what run_resolved's assert checks.
+  // frame reads. Nil where that shortcut is gone, and the site then takes
+  // the dynamic arm and its DispatchError.
   static JitValue mono_callee(const JitValue& callee) {
     auto* body =
         _jit_dispatcher_mono_body(reinterpret_cast<JitClosure*>(callee.data));
     return body ? JitValue{TAG_FUNC, reinterpret_cast<int64_t>(body)}
                 : JitValue{TAG_NIL, 0};
+  }
+
+  // The closure a resolved site enters, and whether its shape's one run-time
+  // question — if it has one — came out yes. A `no` sends the site down the
+  // dynamic arm it would have taken all along. Both Call and CallM ask here,
+  // so a shape is never handled by one and ignored by the other.
+  static bool resolved_entry(const VmProgram& p, Chunk::CallTarget tgt,
+                             const JitValue& callee, JitValue& entered) {
+    entered = callee;
+    switch (tgt.reach) {
+      case Chunk::Reach::Direct:
+        return true;
+      case Chunk::Reach::Mono:
+        entered = mono_callee(callee);
+        return entered.tag == TAG_FUNC;
+      case Chunk::Reach::Guarded:
+        return call_target_holds(p, callee, tgt.chunk);
+    }
+    return false;
   }
 
   // Is the closure a resolved site was handed the chunk the compiler named?
@@ -11118,14 +11176,12 @@ struct Exec {
           publish_call_site(c, pc, line, col);
           JitValue target = callee;
           JitValue self{TAG_NO_SELF, 0};
-          if (tgt.chunk >= 0) {
-            JitValue entered = tgt.via_mono ? mono_callee(callee) : callee;
-            if (!tgt.via_mono || entered.tag == TAG_FUNC) {
-              regs[in.a] = run_resolved(p, tgt.chunk, entered, self,
-                                        &regs[in.c], in.d, in.d, line, col);
-              ++pc;
-              break;
-            }
+          if (JitValue entered;
+              tgt.chunk >= 0 && resolved_entry(p, tgt, callee, entered)) {
+            regs[in.a] = run_resolved(p, tgt.chunk, entered, self, &regs[in.c],
+                                      in.d, in.d, line, col);
+            ++pc;
+            break;
           }
           if (target.tag != TAG_FUNC) {
             // The two cold-path probes, in the JIT's order: a callable
@@ -11189,15 +11245,13 @@ struct Exec {
           publish_call_site(c, pc, line, col);
           JitValue target = callee;
           JitValue self = regs[in.c];
-          if (auto tgt = chunk_call_target_at(c, pc); tgt.chunk >= 0) {
-            JitValue entered = tgt.via_mono ? mono_callee(callee) : callee;
-            if (!tgt.via_mono || entered.tag == TAG_FUNC) {
-              regs[in.a] = run_resolved(p, tgt.chunk, entered, self,
-                                        &regs[in.c], in.d + 1, in.d, line,
-                                        col);
-              ++pc;
-              break;
-            }
+          auto tgt = chunk_call_target_at(c, pc);
+          if (JitValue entered;
+              tgt.chunk >= 0 && resolved_entry(p, tgt, callee, entered)) {
+            regs[in.a] = run_resolved(p, tgt.chunk, entered, self, &regs[in.c],
+                                      in.d + 1, in.d, line, col);
+            ++pc;
+            break;
           }
           if (target.tag != TAG_FUNC) {
             // A method value that is itself a callable instance
