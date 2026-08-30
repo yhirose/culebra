@@ -2560,7 +2560,15 @@ inline constexpr const char* VECTOR2_MODULE_SOURCE = R"=culpre=(# Vector2 — a 
 # with no operators; this is the general-purpose math type. Also stands in
 # for a "Point" (position vs. direction is not distinguished, matching Unity
 # / Godot / three.js rather than CGAL / nalgebra's stricter split).
+# Equality is derived, not hand-written. @derive(Eq, Hash) compares the class
+# tag and then the fields, which is the same nominal-not-structural rule the
+# `match`-based `__eq__` here used to spell out (a same-shaped Vector3 is not
+# equal, and a non-Vector2 operand is simply unequal, never a thrown error) —
+# and it is what makes a Vector2 hashable, so it can key an Object or join a
+# Set. The derived pair is also several times cheaper than the dispatch the
+# hand-written form paid per `==`.
 let _vector2_module = fn () {
+  @derive(Eq, Hash)
   class Vector2 {
     new(x: Long | Float, y: Long | Float) {
       self.x = to_float(x)
@@ -2582,18 +2590,6 @@ let _vector2_module = fn () {
     }
     __neg__() {
       Vector2.new(-self.x, -self.y)
-    }
-    # Nominal, not structural: a `match` type-pattern checks the class tag
-    # (docs/language.md §match), so this correctly rejects a same-shaped
-    # Vector3 (also has x/y) — a plain `o.has("x") && o.has("y")` probe
-    # would not. Mirrors Duration.__eq__ / Instant.__eq__ in time.cul: a
-    # non-matching match yields nil, so a non-Vector2 RHS is simply
-    # not-equal, never a thrown TypeError.
-    __eq__(o) {
-      let v = match o {
-        v: Vector2 => v,
-      }
-      v != nil && self.x == v.x && self.y == v.y
     }
 
     # Each of these spells its arithmetic out rather than delegating
@@ -2641,11 +2637,12 @@ let Vector2 = _vector2_module()
 )=culpre=";
 
 inline constexpr const char* VECTOR3_MODULE_SOURCE = R"=culpre=(# Vector3 — the 3D counterpart of Vector2 (see vector2.cul for the shared
-# design rationale: Float-only, no Point split, nominal __eq__). cross() is
-# intentionally omitted from both: Vector2's cross is a scalar (perp dot),
-# Vector3's is a vector — the asymmetry invites naming/shape drift, and no
-# example in this repo needs it yet.
+# design rationale: Float-only, no Point split, derived nominal equality).
+# cross() is intentionally omitted from both: Vector2's cross is a scalar
+# (perp dot), Vector3's is a vector — the asymmetry invites naming/shape
+# drift, and no example in this repo needs it yet.
 let _vector3_module = fn () {
+  @derive(Eq, Hash)
   class Vector3 {
     new(x: Long | Float, y: Long | Float, z: Long | Float) {
       self.x = to_float(x)
@@ -2668,12 +2665,6 @@ let _vector3_module = fn () {
     }
     __neg__() {
       Vector3.new(-self.x, -self.y, -self.z)
-    }
-    __eq__(o) {
-      let v = match o {
-        v: Vector3 => v,
-      }
-      v != nil && self.x == v.x && self.y == v.y && self.z == v.z
     }
 
     # Each of these spells its arithmetic out rather than delegating

@@ -1,9 +1,10 @@
 # Vector3 — the 3D counterpart of Vector2 (see vector2.cul for the shared
-# design rationale: Float-only, no Point split, nominal __eq__). cross() is
-# intentionally omitted from both: Vector2's cross is a scalar (perp dot),
-# Vector3's is a vector — the asymmetry invites naming/shape drift, and no
-# example in this repo needs it yet.
+# design rationale: Float-only, no Point split, derived nominal equality).
+# cross() is intentionally omitted from both: Vector2's cross is a scalar
+# (perp dot), Vector3's is a vector — the asymmetry invites naming/shape
+# drift, and no example in this repo needs it yet.
 let _vector3_module = fn () {
+  @derive(Eq, Hash)
   class Vector3 {
     new(x: Long | Float, y: Long | Float, z: Long | Float) {
       self.x = to_float(x)
@@ -26,12 +27,6 @@ let _vector3_module = fn () {
     }
     __neg__() {
       Vector3.new(-self.x, -self.y, -self.z)
-    }
-    __eq__(o) {
-      let v = match o {
-        v: Vector3 => v,
-      }
-      v != nil && self.x == v.x && self.y == v.y && self.z == v.z
     }
 
     # Each of these spells its arithmetic out rather than delegating

@@ -5583,6 +5583,7 @@ inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 | `a * k` / `k * a` | `Vector2`（スカラー；`k: Long \| Float`） |
 | `-a` | `Vector2` |
 | `a == b` | `Bool` — nominal判定: `Vector2`以外(同形の`Vector3`も含む)は常に`false`、例外は投げない |
+| `a.hash()` | `Long` — 等しいvectorは同じhash値になるので、`Set`の要素やObjectのキーにできる |
 | `a.dot(b)` | `Float` |
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector2`（単位長；ゼロベクトルは`ZeroDivisionError`、他の`Float / 0.0`と同じ） |
@@ -5621,6 +5622,7 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `a * k` / `k * a` | `Vector3`（スカラー；`k: Long \| Float`） |
 | `-a` | `Vector3` |
 | `a == b` | `Bool` — nominal判定、`Vector2`と同様 |
+| `a.hash()` | `Long` — `Vector2`と同様 |
 | `a.dot(b)` | `Float` |
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector3`（単位長；ゼロベクトルは`ZeroDivisionError`） |

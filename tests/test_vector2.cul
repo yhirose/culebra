@@ -33,7 +33,18 @@ assert_eq(Vector2.new(1, 2) == Vector2.new(1, 3), false)
 assert_eq(Vector2.new(1, 2) == 5, false)
 assert_eq(Vector2.new(1, 2) == nil, false)
 assert_eq(Vector2.new(1, 2) == "1, 2", false)
-assert_eq(Vector2.new(1, 2) == {x: 1, y: 2}, false)  # structural lookalike
+assert_eq(Vector2.new(1, 2) == {x: 1, y: 2}, false)          # structural lookalike
+assert_eq(Vector2.new(1, 2) == Vector3.new(1, 2, 0), false)  # same-shaped class
+
+# --- hashable: the derived `hash` that comes with the derived `eq`, so two
+# equal vectors are one Set member and one Object key ---
+assert_eq({Vector2.new(1, 2), Vector2.new(1, 2)}.size(), 1)
+assert_eq({Vector2.new(1, 2), Vector2.new(1, 3)}.size(), 2)
+let keyed = {}
+keyed[Vector2.new(1, 2)] = 'a'
+keyed[Vector2.new(1, 2)] = 'b'
+assert_eq(keyed.size(), 1)
+assert_eq(keyed[Vector2.new(1, 2)], 'b')
 
 # --- methods ---
 assert_eq(a.dot(Vector2.new(1, 0)), 3.0)

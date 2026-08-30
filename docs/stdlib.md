@@ -5735,6 +5735,9 @@ let a = Vector2.new(3, 4)
 inspect(a.length())             # => 5.0
 inspect(a.normalized())         # => (0.6, 0.8)
 inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
+
+# Equal vectors are one Set member and one Object key.
+inspect({Vector2.new(1, 2), Vector2.new(1, 2)}.size())  # => 1
 ```
 
 | Member | Returns |
@@ -5744,6 +5747,7 @@ inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 | `a * k` / `k * a` | `Vector2` (scalar; `k: Long \| Float`) |
 | `-a` | `Vector2` |
 | `a == b` | `Bool` — nominal: a non-`Vector2` (including a same-shaped `Vector3`) is always `false`, never a thrown error |
+| `a.hash()` | `Long` — equal vectors hash equally, so a `Vector2` can be a `Set` member or an Object key |
 | `a.dot(b)` | `Float` |
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector2` (unit length; a zero vector raises `ZeroDivisionError`, same as any `Float / 0.0`) |
@@ -5782,6 +5786,7 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `a * k` / `k * a` | `Vector3` (scalar; `k: Long \| Float`) |
 | `-a` | `Vector3` |
 | `a == b` | `Bool` — nominal, same as `Vector2` |
+| `a.hash()` | `Long` — same as `Vector2` |
 | `a.dot(b)` | `Float` |
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector3` (unit length; a zero vector raises `ZeroDivisionError`) |
