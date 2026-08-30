@@ -66,6 +66,41 @@ let tall = try {
 assert_eq(tall.kind, "ValueError")
 assert_true(tall.message.contains("nesting too deep (limit 1000)"))
 
+// --- naming the subject (Peg.parse's / p.parse's `path`) replaces the
+// generic "Peg: " prefix with the name, the way any other compiler
+// diagnostic reads -- one parser, many files, so it is a per-parse
+// argument rather than something set once at compile time ---
+let named = try {
+  Peg.parse(calc, "1 +", path: "prog.pas")
+} catch err {
+  err
+}
+assert_true(named.message.starts_with("prog.pas:1:4:"))
+assert_true(named.message.contains("syntax error"))
+
+// A grammar-compile error is about the grammar text, not a subject document,
+// so it keeps the "Peg: grammar:" form regardless of `path` -- there is no
+// `path` parameter on `check`/`compile` to name one.
+assert_true(g.message.starts_with("Peg: grammar:"))
+
+// The rule-entry guard's message honors `path` too -- it is a subject
+// position like any other.
+let deep_named = try {
+  Peg.parse(calc, "(".repeat(20000) + "1" + ")".repeat(20000), path: "deep.pas")
+} catch err {
+  err
+}
+assert_true(deep_named.message.starts_with("deep.pas:"))
+assert_true(deep_named.message.contains("nesting too deep"))
+
+// `path` does not leak from one parse() call to the next, or into test():
+// each call reflects only its own argument.
+let p = Peg.compile(calc)
+let first = try { p.parse("1 +", "first.pas") } catch err { err }
+assert_true(first.message.starts_with("first.pas:1:4:"))
+let unnamed = try { p.parse("1 +") } catch err { err }
+assert_true(unnamed.message.starts_with("Peg: 1:4:"))
+
 // --- packrat: on by default, and the default is what keeps a grammar whose
 // alternatives share a prefix from backtracking exponentially. Off is
 // available for inputs where the memo table costs more than the search.

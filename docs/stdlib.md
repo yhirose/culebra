@@ -5983,12 +5983,13 @@ a reference cycle. Walk downward and carry what you need.
 | Method | Result |
 | --- | --- |
 | `p.parse(text)` | the root node; a syntax error raises `PegError` |
+| `p.parse(text, path)` | same, naming the subject for the error message |
 | `p.test(text)` | `Bool` — whether `text` parses; no tree is handed back |
 
 | One-shot | Equivalent |
 | --- | --- |
 | `Peg.parse(grammar, text)` | `Peg.compile(grammar).parse(text)` |
-| `Peg.parse(grammar, text, start, optimize, packrat)` | the same, with the `compile` options |
+| `Peg.parse(grammar, text, start, optimize, packrat, path)` | the same, with the `compile` options and a subject name |
 | `Peg.test(grammar, text)` | `Bool` |
 | `Peg.test(grammar, text, start, packrat)` | the same, with the `compile` options |
 
@@ -6068,6 +6069,28 @@ inspect(try {
   e.kind
 })  # => 'PegError'
 ```
+
+`path` names the subject, so the message reads like any other compiler
+diagnostic instead of a bare position. It is an argument to `parse`, not to
+`compile` — one grammar parses many files, the way cpp-peglib's own
+`parse_n()` takes a path per call:
+
+```culebra
+let n = Peg.compile(`N <- < [0-9]+ >`)
+inspect(try {
+  n.parse("x", "input.txt")
+} catch e {
+  e.message
+})  # => 'input.txt:1:1: syntax error, unexpected 'x', expecting <N>.'
+inspect(try {
+  n.parse("x")
+} catch e {
+  e.message
+})  # => 'Peg: 1:1: syntax error, unexpected 'x', expecting <N>.'
+```
+
+A malformed *grammar* keeps the `Peg: grammar:` form regardless — `path` names
+a subject document, and the grammar text is not one.
 
 Two bounds keep adversarial input catchable rather than fatal:
 

@@ -5816,12 +5816,13 @@ inspect(eval(Peg.parse(calc, "(1 + 2) * 3")))  # => 9
 | メソッド | 結果 |
 | --- | --- |
 | `p.parse(text)` | ルートノード。構文エラーは`PegError` |
+| `p.parse(text, path)` | 同じ。エラーメッセージに載る対象名を指定 |
 | `p.test(text)` | `Bool` — `text`がパースできるか。木は返らない |
 
 | ワンショット | 等価な式 |
 | --- | --- |
 | `Peg.parse(grammar, text)` | `Peg.compile(grammar).parse(text)` |
-| `Peg.parse(grammar, text, start, optimize, packrat)` | 同じ。`compile`のオプションつき |
+| `Peg.parse(grammar, text, start, optimize, packrat, path)` | 同じ。`compile`のオプションと対象名つき |
 | `Peg.test(grammar, text)` | `Bool` |
 | `Peg.test(grammar, text, start, packrat)` | 同じ。`compile`のオプションつき |
 
@@ -5898,6 +5899,28 @@ inspect(try {
   e.kind
 })  # => 'PegError'
 ```
+
+`path`は対象を名指す引数で、メッセージの汎用的な「Peg: 」プレフィクスの代わりに
+その名前が入り、他のコンパイラの診断メッセージと同じ読み方になる。`compile`ではなく
+`parse`側の引数なのは、1つの文法を多くのファイルに使うからで、cpp-peglib自身の
+`parse_n()`が呼び出しごとにpathを取るのと同じ理由:
+
+```culebra
+let n = Peg.compile(`N <- < [0-9]+ >`)
+inspect(try {
+  n.parse("x", "input.txt")
+} catch e {
+  e.message
+})  # => 'input.txt:1:1: syntax error, unexpected 'x', expecting <N>.'
+inspect(try {
+  n.parse("x")
+} catch e {
+  e.message
+})  # => 'Peg: 1:1: syntax error, unexpected 'x', expecting <N>.'
+```
+
+不正な*文法*のエラーはpathに関わらず「Peg: grammar:」の形のまま
+— pathが名指すのは対象のドキュメントで、文法テキストはそれではない。
 
 敵対的な入力を致命的な失敗でなく捕捉可能なエラーに留めるため、境界が2つある:
 

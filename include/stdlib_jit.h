@@ -7617,7 +7617,8 @@ inline JitValue _ns_peg_parse(JitValue* a, int64_t) {
   auto h = _jit_peg_compile(a[0], a[2], a[4]);
   auto text = _ns_adapt::require_sv(a[1], "text", "StringLike");
   auto optimize = _ns_adapt::require_bool(a[3], "optimize");
-  return _jit_peg_tree(culebra::pegparser::parse(*h, text, optimize));
+  auto path = _ns_adapt::require_sv(a[5], "path", "StringLike");
+  return _jit_peg_tree(culebra::pegparser::parse(*h, text, optimize, path));
 }
 inline JitValue _ns_peg_test(JitValue* a, int64_t) {
   auto h = _jit_peg_compile(a[0], a[2], a[3]);
@@ -8007,7 +8008,7 @@ inline const NsMethod kNsRows_Regex_native[] = {
 };
 inline const NsMethod kNsRows_Peg_native[] = {
   {"_Peg",   "check", 3, &_ns_peg_check},
-  {"_Peg",   "parse", 5, &_ns_peg_parse},
+  {"_Peg",   "parse", 6, &_ns_peg_parse},
   {"_Peg",   "test",  4, &_ns_peg_test},
 };
 inline const NsMethod kNsRows_Net[] = {

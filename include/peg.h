@@ -113,7 +113,8 @@ using Handle = std::shared_ptr<Compiled>;
 CULEBRA_RT_PEG_LINKAGE Handle compile(std::string_view, const Options&) {
   _not_linked();
 }
-CULEBRA_RT_PEG_LINKAGE Tree parse(Compiled&, std::string_view, bool) {
+CULEBRA_RT_PEG_LINKAGE Tree parse(Compiled&, std::string_view, bool,
+                                  std::string_view) {
   _not_linked();
 }
 CULEBRA_RT_PEG_LINKAGE bool test(Compiled&, std::string_view) {
@@ -130,6 +131,12 @@ struct Compiled {
   ::peg::parser parser;
   std::string err;
   size_t err_line = 0, err_col = 0;
+  // The subject's name, for the duration of one parse() call only (set at its
+  // top, read by the enter lambda below through the `c` it captures). Not a
+  // property of the grammar, so it isn't threaded through compile()'s
+  // Options -- cpp-peglib's own parse_n() takes a path per call for the same
+  // reason: one parser, many files.
+  std::string path;
 };
 using Handle = std::shared_ptr<Compiled>;
 
@@ -140,6 +147,15 @@ inline thread_local int64_t _peg_parse_depth = 0;
   // the culebra source, so they go in the text and the binding layer stamps
   // the call site (regex.h does the same).
   throw CulebraError("PegError", msg, 0, 0);
+}
+
+// A caller who named the subject (Peg.parse's `path`) gets a message that
+// reads like any other compiler diagnostic; one who didn't gets the
+// engine-prefixed form regex.h's own errors use.
+inline std::string _fmt_err(std::string_view path, size_t ln, size_t col,
+                            std::string_view msg) {
+  return path.empty() ? culebra::format("Peg: {}:{}: {}", ln, col, msg)
+                      : culebra::format("{}:{}:{}: {}", path, ln, col, msg);
 }
 
 // Load (or cache-hit) `grammar`. Throws CulebraError("PegError") for a
@@ -176,11 +192,11 @@ CULEBRA_RT_PEG_LINKAGE Handle compile(std::string_view grammar,
   // descends through whichever recursive rule family matches first, so
   // hooking a hand-picked subset is a losing game. peglib runs `leave` from a
   // scope_exit, so backtracking keeps the count balanced.
-  auto enter = [](const ::peg::Context& ctx, const char* s, size_t, std::any&) {
+  auto enter = [c](const ::peg::Context& ctx, const char* s, size_t, std::any&) {
     if (++_peg_parse_depth > kPegParseDepthLimit) {
       auto [ln, col] = ctx.line_info(s);
-      _fail(culebra::format("Peg: {}:{}: {}", ln, col,
-                            nesting_too_deep_message(kPegParseDepthLimit)));
+      _fail(_fmt_err(c->path, ln, col,
+                     nesting_too_deep_message(kPegParseDepthLimit)));
     }
   };
   auto leave = [](const ::peg::Context&, const char*, size_t, size_t, std::any&,
@@ -219,16 +235,19 @@ inline void _flatten(const ::peg::Ast& a, Tree& t, int64_t depth) {
 }
 
 // Parse `text`. Throws CulebraError("PegError") on a syntax error, with the
-// position inside `text` in the message.
+// position inside `text` in the message -- prefixed by `path` when the caller
+// named the subject (Peg.parse(..., path: "prog.pas")), the way cpp-peglib's
+// own parse_n() takes a path per call: one parser, many files.
 CULEBRA_RT_PEG_LINKAGE Tree parse(Compiled& c, std::string_view text,
-                                  bool optimize) {
+                                  bool optimize, std::string_view path) {
   c.err.clear();
   c.err_line = c.err_col = 0;
+  c.path.assign(path);
   _peg_parse_depth = 0;
   std::shared_ptr<::peg::Ast> ast;
   if (!c.parser.parse(text, ast)) {
-    _fail(culebra::format("Peg: {}:{}: {}", c.err_line, c.err_col,
-                          c.err.empty() ? "syntax error" : c.err));
+    _fail(_fmt_err(c.path, c.err_line, c.err_col,
+                  c.err.empty() ? "syntax error" : c.err));
   }
   if (optimize) ast = c.parser.optimize_ast(ast);
   Tree t;
@@ -241,6 +260,7 @@ CULEBRA_RT_PEG_LINKAGE Tree parse(Compiled& c, std::string_view text,
 CULEBRA_RT_PEG_LINKAGE bool test(Compiled& c, std::string_view text) {
   c.err.clear();
   c.err_line = c.err_col = 0;
+  c.path.clear();
   _peg_parse_depth = 0;
   return c.parser.parse(text);
 }
