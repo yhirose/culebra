@@ -655,6 +655,11 @@ struct FnAnalysis {
         }
       };
       bool has_instance_fields = false;
+      // An initializer expression is the only reason a `new` body reaches
+      // the field-init closure at all; a plain `x: Float` is stored by the
+      // body's own prologue. vm.h's compile_class_decl asks this same
+      // question under this same name — keep the two answers together.
+      bool fields_need_a_thunk = false;
       // Every `new` overload's body invokes the field-init closure, so each
       // needs the synthetic capture — not just the last one seen.
       std::vector<const peg::Ast*> new_method_asts;
@@ -664,6 +669,7 @@ struct FnAnalysis {
         if (mv.is_typed_field || (mv.is_field && !mv.is_static)) {
           has_instance_fields = true;
           if (mv.value) {
+            fields_need_a_thunk = true;
             outer.push_back(&my_locals);
             visit_for_frees(*mv.value, field_locals, outer, field_info);
             scan_eh_defer(*mv.value, /*at_fn_top=*/true, field_info);
@@ -696,7 +702,7 @@ struct FnAnalysis {
       // synthetic capture compile_class_decl binds in the class's scope;
       // added AFTER propagate so the hidden name never leaks into the
       // enclosing function's free list (nothing outside resolves it).
-      if (has_instance_fields) {
+      if (has_instance_fields && fields_need_a_thunk) {
         auto slot_name = field_init_slot_name(node);
         for (auto* new_method_ast : new_method_asts)
           add_free_var(func_info[new_method_ast], slot_name);

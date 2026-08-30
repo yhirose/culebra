@@ -1,0 +1,122 @@
+# Conformance: declared instance fields, across the four shapes the compiler
+# treats differently. Only one of them still compiles the synthetic field-init
+# thunk (an initializer has an expression to evaluate, and a class with no
+# `new` has no body to do the stores) — the other two put the stores in the
+# `new` body's own prologue. Every shape has to reach the same instance.
+#
+# Run: ./build/culebra tests/test_class_field_init.cul
+#      ./build/culebra --jit tests/test_class_field_init.cul
+
+# No initializer, with a `new`: the stores go in the `new` prologue.
+class Plain {
+  x: Float
+  y: Long
+  s: String
+  b: Bool
+  a: Any
+
+  new(v: Float) {
+    self.x = v
+  }
+}
+
+# An initializer, with a `new`: the thunk stays, and runs before the body.
+let witness = fn () {
+  7
+}
+class Seeded {
+  x: Long = witness()
+  y: Long = 3
+
+  new(v) {
+    self.y = self.y + v
+  }
+}
+
+# No `new` at all: build_class_instance runs the thunk itself.
+class NoCtor {
+  x: Long
+  y: Long = 9
+}
+
+# The order the two halves run in: the body sees what the declaration left.
+class Order {
+  x: Long = 1
+
+  new() {
+    self.x = self.x + 41
+  }
+}
+
+test_declared_fields_take_their_type_zero = fn () {
+  let p = Plain.new(2.5)
+  assert_eq(p.x, 2.5)
+  assert_eq(p.y, 0)
+  assert_eq(p.s, '')
+  assert_eq(p.b, false)
+  assert_eq(p.a, nil)
+}
+test_declared_fields_take_their_type_zero()
+
+test_declared_fields_keep_declaration_order = fn () {
+  let p = Plain.new(1.0)
+  assert_eq(p.keys(), ['class', 'x', 'y', 's', 'b', 'a'])
+}
+test_declared_fields_keep_declaration_order()
+
+test_initializer_runs_before_the_body = fn () {
+  let s = Seeded.new(4)
+  assert_eq(s.x, 7)
+  assert_eq(s.y, 7)
+}
+test_initializer_runs_before_the_body()
+
+test_body_sees_what_the_declaration_left = fn () {
+  assert_eq(Order.new().x, 42)
+}
+test_body_sees_what_the_declaration_left()
+
+test_class_without_a_constructor_still_initializes = fn () {
+  let n = NoCtor.new()
+  assert_eq(n.x, 0)
+  assert_eq(n.y, 9)
+  assert_eq(n.keys(), ['class', 'x', 'y'])
+}
+test_class_without_a_constructor_still_initializes()
+
+# A declared field is mutable (the declaration stores it is_init), unlike a
+# bare `o.x = y` — the prologue form must not change that.
+test_declared_fields_stay_mutable = fn () {
+  mut p = Plain.new(1.0)
+  p.y = 5
+  assert_eq(p.y, 5)
+}
+test_declared_fields_stay_mutable()
+
+# Two `new` overloads: each body carries the stores of its own.
+class Two {
+  x: Long
+
+  new() {
+    self.x = 1
+  }
+  new(v: Long) {
+    self.x = v
+  }
+}
+
+test_every_new_overload_initializes = fn () {
+  assert_eq(Two.new().x, 1)
+  assert_eq(Two.new(8).x, 8)
+}
+test_every_new_overload_initializes()
+
+# An arity error leaves no instance behind at all, thunk or no thunk.
+test_a_failed_construction_yields_nothing = fn () {
+  assert_throws('ArityError', fn () {
+    Plain.new()
+  })
+}
+test_a_failed_construction_yields_nothing()
+
+inspect('class-field-init OK')

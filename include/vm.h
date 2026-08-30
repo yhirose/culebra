@@ -2962,14 +2962,20 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
 // the scope stack below.
 // What compile_fn_chunk needs beyond parameters and a body: a class member's
 // wiring, and the answers only the declaring scope has. `receiver` binds the
-// ABI's `self`; `fields` replaces the AST body with the declared-field stores
-// of the synthetic field-init thunk; `field_init_owner` makes a `new` body
-// run that thunk (reached through the hidden capture fn_analysis gave it)
-// right after parameter binding.
+// ABI's `self`.
 struct MemberOpts {
   bool receiver = false;
-  const std::vector<const peg::Ast*>* fields = nullptr;
+  // This chunk IS the synthetic field-init thunk: its body is the declared
+  // field stores rather than the AST's.
+  const std::vector<const peg::Ast*>* thunk_fields = nullptr;
+  // This chunk is a `new` body with declared fields to put in place before
+  // its own statements run. At most one of the two is set, on the question
+  // compile_class_decl's fields_need_a_thunk asks: run the thunk
+  // `field_init_owner` names (reached through the hidden capture fn_analysis
+  // gave this body), or emit the same stores right here. A class with no
+  // declared fields sets neither.
   const peg::Ast* field_init_owner = nullptr;
+  const std::vector<const peg::Ast*>* prologue_fields = nullptr;
   // The enclosing class's Generic parameters (`class Box<T>`): a member's
   // annotations lower against them, exactly as the JIT's class_type_params_
   // does — an unbounded `T` is documentation and checks as Any.
@@ -4020,6 +4026,24 @@ class Compiler {
     }
     forget_temp(r.slot);
     return r.slot;
+  }
+
+  // One `self.name = value` per declared field, declaration order, is_init
+  // like the JIT's emit_object_set — an initializer that reached the property
+  // through a method call is overwritten regardless of its mut flag. Emitted
+  // either as the synthetic thunk's body or straight into a `new` body's
+  // prologue (see fields_need_a_thunk); one function so the two cannot drift.
+  void emit_declared_field_stores(const std::vector<const peg::Ast*>& fields) {
+    for (const auto* f : fields) {
+      TempScope fts(*this);
+      auto mv = culebra::view_method(*f);
+      ExprResult v = mv.value
+                         ? compile_expr(*mv.value)
+                         : ExprResult{emit_zero_value(*f, mv.type_annotation),
+                                      true};
+      emit(Op::ObjectSet, chunk_.self_slot, owned_src(*f, v),
+           kconst_str(std::string(mv.name)), /*mut=*/1);
+    }
   }
 
   // A typed field with no initializer takes its type's zero (the JIT's
@@ -5324,12 +5348,23 @@ class Compiler {
     }
     // The field-init thunk is compiled — and bound under its hidden name —
     // before the `new` body, whose capture list fn_analysis already points
-    // at it.
+    // at it. A `new` body that reaches it pays a culebra frame per
+    // construction, so it has to earn that: an initializer expression has to
+    // be evaluated somewhere, and a plain `x: Float` does not. (A class with
+    // no `new` body needs the thunk regardless — build_class_instance
+    // invokes it, there being nothing else to do the stores.) fn_analysis
+    // decides the hidden capture on this same question; keep the two
+    // answers together.
+    const bool fields_need_a_thunk =
+        std::any_of(fields.begin(), fields.end(), [](const peg::Ast* f) {
+          return culebra::view_method(*f).value != nullptr;
+        });
     int32_t finit_slot = -1;
-    if (!fields.empty()) {
-      int32_t idx = compile_fn_chunk(
-          ast, /*params=*/nullptr, ast,
-          {.receiver = true, .fields = &fields, .type_params = &type_params});
+    if (!fields.empty() && (fields_need_a_thunk || !new_ast)) {
+      int32_t idx = compile_fn_chunk(ast, /*params=*/nullptr, ast,
+                                     {.receiver = true,
+                                      .thunk_fields = &fields,
+                                      .type_params = &type_params});
       int32_t t = alloc_temp(ast);
       emit(Op::MakeClosure, t, idx);
       finit_slot = alloc_cell_slot(ast, "(field.init)");
@@ -5346,7 +5381,9 @@ class Compiler {
       body_chunks.push_back(compile_fn_chunk(
           *m, mv.params, **mv.body,
           {.receiver = true,
-           .field_init_owner = fields.empty() ? nullptr : &ast,
+           .field_init_owner = fields_need_a_thunk ? &ast : nullptr,
+           .prologue_fields =
+               (!fields.empty() && !fields_need_a_thunk) ? &fields : nullptr,
            .type_params = &type_params}));
     }
 
@@ -6249,23 +6286,18 @@ class Compiler {
       int32_t t = fc.alloc_temp(ast);
       fc.emit(Op::CellGet, t, fb->slot);
       fc.emit(Op::FieldInit, t, fc.chunk_.self_slot);
+    } else if (mo.prologue_fields) {
+      // The same stores, in this frame instead of a thunk's. A declaration
+      // with no initializer only has to put the field there, and a whole
+      // culebra frame to do it was the reason declared fields cost MORE than
+      // assigning in the constructor — the opposite of what a value type
+      // wants (docs/language.md §21).
+      fc.emit_declared_field_stores(*mo.prologue_fields);
     }
     int32_t rv = fc.alloc_temp(ast);
-    if (mo.fields) {
-      // The synthetic field-init thunk: one `self.name = value` per
-      // declared field, declaration order, is_init like the JIT's
-      // emit_object_set — an initializer that reached the property
-      // through a method call is overwritten regardless of its mut flag.
-      for (const auto* f : *mo.fields) {
-        TempScope fts(fc);
-        auto mv = culebra::view_method(*f);
-        ExprResult v =
-            mv.value ? fc.compile_expr(*mv.value)
-                     : ExprResult{fc.emit_zero_value(*f, mv.type_annotation),
-                                  true};
-        fc.emit(Op::ObjectSet, fc.chunk_.self_slot, fc.owned_src(*f, v),
-                fc.kconst_str(std::string(mv.name)), /*mut=*/1);
-      }
+    if (mo.thunk_fields) {
+      // The synthetic field-init thunk's whole body.
+      fc.emit_declared_field_stores(*mo.thunk_fields);
     } else {
       // The body compiles INTO the frame scope rather than a nested one (the
       // JIT's "the body BLOCK is this frame's scope"): its locals belong to
