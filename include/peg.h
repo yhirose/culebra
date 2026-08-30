@@ -28,18 +28,20 @@
 // peglib's own `peg::` at every `peg::Ast` spelled inside namespace culebra
 // (lint.h, vm.h, test_engine.h, …).
 
+#include <any>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <shared.h>  // CulebraError, nesting_too_deep_message
 
 #if !defined(CULEBRA_RT_PEG_WEAK)
 #include <peglib.h>
-#include <unordered_map>
 #endif
 
 #if defined(CULEBRA_RT_PEG_STRONG)
@@ -99,6 +101,34 @@ struct Tree {
   std::shared_ptr<void> owner;
 };
 
+// A rule's reduction, handed to the caller's action when one is registered
+// for `name` (semantic actions: the binding layer interprets a subject
+// directly, without ever materializing a Tree). `values[i]` is whatever
+// child i's own action produced (default: `values.empty() ? {} :
+// values.front()`, matching cpp-peglib's own reduce default). `token` is
+// this rule's own matched text, unlike a Node's — cpp-peglib gives every
+// rule its full span (`SemanticValues::sv()`), branch or leaf, so it needs
+// no `is_token` flag the way a Tree Node does.
+struct Sv {
+  std::string_view name;
+  std::string_view token;
+  size_t line = 1, column = 1, position = 0, length = 0, choice = 0;
+  std::vector<std::any> values;
+};
+
+// The binding layer's action for one rule, and the map `parse_with_actions`
+// dispatches through. `std::any` in and out: this header stays value-neutral
+// (no JitValue here, so the AOT weak archive references no peg:: symbol and
+// no JIT type either) — the binding layer's own `std::any` payload is a
+// small copyable wrapper around a retained JitValue, opaque here. `Sv&`
+// rather than `const Sv&`: `sv` is a fresh, single-use local `_peg_reduce`
+// builds and hands to exactly one action call, so the binding layer moves
+// each value out of `sv.values` instead of duplicating it — nothing else
+// ever reads `sv` again. peglib's own reduce hook already threads a mutable
+// `SemanticValues&` the same way, for the same reason.
+using RuleAction = std::function<std::any(Sv&)>;
+using ActionMap = std::unordered_map<std::string, RuleAction>;
+
 #if defined(CULEBRA_RT_PEG_WEAK)
 
 // Named, never defined, by the stubs below — the weak archive holds no peglib
@@ -120,6 +150,11 @@ CULEBRA_RT_PEG_LINKAGE Tree parse(Compiled&, std::string_view, bool,
 CULEBRA_RT_PEG_LINKAGE bool test(Compiled&, std::string_view) {
   _not_linked();
 }
+CULEBRA_RT_PEG_LINKAGE std::any parse_with_actions(Compiled&, std::string_view,
+                                                   std::string_view,
+                                                   const ActionMap&) {
+  _not_linked();
+}
 
 #else  // the real bodies
 
@@ -137,6 +172,22 @@ struct Compiled {
   // Options -- cpp-peglib's own parse_n() takes a path per call for the same
   // reason: one parser, many files.
   std::string path;
+  // One reentrant parse_with_actions() call's frame: which actions map is
+  // active and where its subject text starts (SemanticValues::sv() is a view
+  // into it, but carries no offset of its own -- only line/column -- so this
+  // is how Sv::position gets computed).
+  struct ActionFrame {
+    const ActionMap* actions;
+    const char* text_base;
+  };
+  // The stack, rather than a single frame, is what makes an action reachable
+  // from *within* another action on the same Compiled (this grammar parsing
+  // itself recursively, on a possibly different subject) resolve against its
+  // own actions and its own text -- pushed/popped by every nested call, read
+  // from the back by the universal reduce below. Only the 0<->1 transition
+  // touches the grammar's rules (see ActionScope); the stack itself always
+  // reflects exactly whichever call is innermost right now.
+  std::vector<ActionFrame> action_stack;
 };
 using Handle = std::shared_ptr<Compiled>;
 
@@ -263,6 +314,141 @@ CULEBRA_RT_PEG_LINKAGE bool test(Compiled& c, std::string_view text) {
   c.path.clear();
   _peg_parse_depth = 0;
   return c.parser.parse(text);
+}
+
+// The rule this reduction belongs to, whatever action fires: default when
+// `actions` has no entry for it, matching cpp-peglib's own reduce default
+// (`vs.empty() ? any() : vs.front()`) with `{}` standing in for `any()` --
+// this header's `std::any` payload has no "empty" the binding layer can read
+// back, so nil (the binding layer's own empty payload) is what an unset leaf
+// rule with no children resolves to.
+// peglib's own `parser::parse_n<T>` extracts the start rule's reduction via
+// `std::any_cast<T>`, which needs T to be the literal type every reduction
+// actually holds -- and that can't be the binding layer's own payload type,
+// since a leaf rule with no children and no action reduces to a bare,
+// contentless `std::any()`, which no `any_cast<T>` (for any real T) can ever
+// read back. Boxing every reduction in this uniform, always-the-same-type
+// wrapper is what lets `parse_n<_AnyBox>` read the root's value regardless of
+// what it holds (see parse_with_actions's own retrieval): `_AnyBox` is always
+// the outer type, and its own `v` may itself be empty.
+struct _AnyBox {
+  std::any v;
+};
+
+// Moves the wrapped value out of `boxed` (a child's own `_AnyBox`-in-any
+// reduction) rather than copying it -- `vs` is a fresh SemanticValues no one
+// reads again after this reduce call, so every one of its slots is read at
+// most once. That, not just style, is what keeps the binding layer's own
+// payload wrapper (JitAny, stdlib_jit.h) off the hook for a retain it would
+// otherwise need on every level a value passes through on its way up.
+inline std::any _peg_unbox(std::any& boxed) {
+  if (!boxed.has_value()) return std::any();
+  return std::move(std::any_cast<_AnyBox&>(boxed).v);
+}
+
+inline std::any _peg_reduce(Compiled& c, ::peg::SemanticValues& vs) {
+  const auto& frame = c.action_stack.back();
+  if (auto it = frame.actions->find(vs.name()); it != frame.actions->end()) {
+    Sv sv;
+    sv.name = vs.name();
+    sv.token = vs.sv();
+    std::tie(sv.line, sv.column) = vs.line_info();
+    sv.position = static_cast<size_t>(sv.token.data() - frame.text_base);
+    sv.length = sv.token.size();
+    sv.choice = vs.choice();
+    sv.values.reserve(vs.size());
+    for (size_t i = 0; i < vs.size(); i++) sv.values.push_back(_peg_unbox(vs[i]));
+    return std::any(_AnyBox{it->second(sv)});
+  }
+  return std::any(_AnyBox{vs.empty() ? std::any() : _peg_unbox(vs.front())});
+}
+
+// Swaps every rule's action for `actions`'s duration (installing the reduce
+// above once, on the 0->1 transition of the stack this Compiled already
+// tracks -- see its member comment for why a stack and not a flag), and
+// restores compile()'s tree-mode actions on the way back out, on every exit
+// path including a thrown one.
+struct ActionScope {
+  Compiled& c;
+  ActionScope(Compiled& compiled, const ActionMap& actions, const char* text_base)
+      : c(compiled) {
+    c.action_stack.push_back({&actions, text_base});
+    if (c.action_stack.size() == 1) {
+      for (const auto& [name, def] : c.parser.get_grammar())
+        c.parser[name.c_str()].action =
+            [&compiled](::peg::SemanticValues& vs) {
+              return _peg_reduce(compiled, vs);
+            };
+    }
+  }
+  ~ActionScope() {
+    c.action_stack.pop_back();
+    if (c.action_stack.empty()) {
+      // Action has no copy constructor (only copy assignment), so there is
+      // no saved value to reinstate here -- clearing every rule back to "no
+      // action" and re-running enable_ast() reaches the identical state
+      // compile() left them in, since enable_ast() only touches actionless
+      // rules.
+      for (const auto& [name, def] : c.parser.get_grammar())
+        c.parser[name.c_str()].action = ::peg::Action();
+      c.parser.enable_ast();
+    }
+  }
+};
+
+// Parse `text` against `actions` (rule name -> a culebra closure wrapped as
+// `std::any(const Sv&)`), interpreting it directly rather than building a
+// Tree: the root rule's own reduction (its registered action, or the
+// default) is the whole result. Throws CulebraError("PegError") on a syntax
+// error or an `actions` key naming no rule in the grammar, with `path`
+// honored the same way plain parse() honors it. Whatever exception a
+// registered action itself throws (a culebra throw, a native TypeError, …)
+// propagates unchanged -- cpp-peglib installs no catch around a rule
+// reduction, so nothing here needs to either.
+CULEBRA_RT_PEG_LINKAGE std::any parse_with_actions(Compiled& c,
+                                                   std::string_view text,
+                                                   std::string_view path,
+                                                   const ActionMap& actions) {
+  for (const auto& [name, fn] : actions) {
+    if (!c.parser.get_grammar().count(name)) {
+      _fail(culebra::format("Peg: no such rule '{}'", name));
+    }
+  }
+  // A registered action recursively parsing the same Compiled (this grammar
+  // applied to itself, or just to a substring it extracted) reuses this same
+  // err/err_line/err_col/path state, and the depth guard's counter is a
+  // single thread_local shared by every parse. Restoring all of it to what
+  // THIS call found on entry, on every exit including a thrown one, is what
+  // keeps a reentrant call's own bookkeeping from leaking into -- or, for the
+  // depth counter, silently discounting -- the resuming outer call's.
+  struct Restore {
+    Compiled& c;
+    std::string err;
+    size_t line, col;
+    std::string path;
+    int64_t depth;
+    ~Restore() {
+      c.err = std::move(err);
+      c.err_line = line;
+      c.err_col = col;
+      c.path = std::move(path);
+      _peg_parse_depth = depth;
+    }
+  } restore{c, c.err, c.err_line, c.err_col, c.path, _peg_parse_depth};
+
+  c.err.clear();
+  c.err_line = c.err_col = 0;
+  c.path.assign(path);
+  _peg_parse_depth = 0;
+  _AnyBox result;
+  {
+    ActionScope scope(c, actions, text.data());
+    if (!c.parser.parse_n(text.data(), text.size(), result)) {
+      _fail(_fmt_err(c.path, c.err_line, c.err_col,
+                    c.err.empty() ? "syntax error" : c.err));
+    }
+  }
+  return result.v;
 }
 
 #endif  // CULEBRA_RT_PEG_WEAK

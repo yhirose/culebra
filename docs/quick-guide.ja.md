@@ -744,7 +744,7 @@ inspect([1, 2].size())  # => 2
 
 **PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty()
 
-**Peg** — Peg.compile(grammar) -> Peg; Peg.compile(grammar, start); Peg.compile(grammar, start, optimize); Peg.compile(grammar, start, optimize, packrat); Peg.check(grammar) -> Nil; Peg.check(grammar, start); p.parse(text); p.parse(text, path); p.test(text) -> Bool; Peg.parse(grammar, text); Peg.parse(grammar, text, start, optimize, packrat, path); Peg.test(grammar, text); Peg.test(grammar, text, start, packrat); Peg.walk(node) -> Iterator; Peg.find(node, name); Peg.find_all(node, name) -> [Node]; Peg.str(node) -> String
+**Peg** — Peg.compile(grammar) -> Peg; Peg.compile(grammar, start); Peg.compile(grammar, start, optimize); Peg.compile(grammar, start, optimize, packrat); Peg.check(grammar) -> Nil; Peg.check(grammar, start); p.parse(text); p.parse(text, path); p.parse(text, path, actions); p.test(text) -> Bool; Peg.parse(grammar, text); Peg.parse(grammar, text, start, optimize, packrat, path, actions); Peg.test(grammar, text); Peg.test(grammar, text, start, packrat); Peg.walk(node) -> Iterator; Peg.find(node, name); Peg.find_all(node, name) -> [Node]; Peg.str(node) -> String
 
 <!-- END GENERATED -->
 

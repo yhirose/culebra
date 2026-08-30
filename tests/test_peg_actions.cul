@@ -1,0 +1,128 @@
+// Conformance: stdlib Peg — semantic actions. `actions` interprets a subject
+// directly, without materializing a tree: a rule's own reduction (its
+// registered action, or the default passthrough) is the whole result.
+
+let calc = `
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+  %whitespace    <- [ \t\r\n]*
+`
+
+fn sum2(sv) {
+  sv.values.size() < 2 ? sv.values[0] : sv.values[0] + sv.values[1]
+}
+fn prod2(sv) {
+  sv.values.size() < 2 ? sv.values[0] : sv.values[0] * sv.values[1]
+}
+let eval_actions = {
+  Number: |sv| to_long(sv.token),
+  Additive: sum2,
+  Multiplicative: prod2,
+}
+
+// --- a rule's own action interprets its own reduction ---
+assert_eq(Peg.parse(calc, "1 + 2 * 3", actions: eval_actions), 7)
+assert_eq(Peg.parse(calc, "(1 + 2) * 3", actions: eval_actions), 9)
+
+// --- `p.parse` takes `actions` too, and the same compiled grammar still
+// parses to a tree afterward -- installing actions is scoped to one call ---
+let p = Peg.compile(calc)
+assert_eq(p.parse("2 * 3", actions: eval_actions), 6)
+assert_eq(p.parse("2 * 3").name, "Multiplicative")
+
+// --- default: a rule with no registered action passes its first child's
+// value through unchanged, the same default cpp-peglib's own reduce uses ---
+let partial = {Number: |sv| to_long(sv.token)}
+assert_eq(Peg.parse(calc, "5", actions: partial), 5)
+assert_eq(Peg.parse(calc, "(5)", actions: partial), 5)
+
+// --- the sv Object: name, token, values, and position fields, exactly like
+// a tree Node except `values` (already-reduced results) instead of `nodes` ---
+let mut seen = []
+let tracing = {Number: fn (sv) {
+  seen.push([
+    sv.name,
+    sv.token,
+    sv.line,
+    sv.column,
+    sv.position,
+    sv.length,
+    sv.choice,
+  ])
+  to_long(sv.token)
+}}
+Peg.parse(calc, "  42", actions: tracing)
+assert_eq(seen, [["Number", "42", 1, 3, 2, 2, 0]])
+
+// --- values built by an action are ordinary culebra values, so an action
+// can build a tree of its own instead of returning a scalar ---
+fn node2(sv) {
+  sv.values.size() < 2
+    ? sv.values[0]
+    : {op: sv.name, kids: [sv.values[0], sv.values[1]]}
+}
+let ast_actions = {
+  Number: |sv| to_long(sv.token),
+  Additive: node2,
+  Multiplicative: node2,
+}
+let tree = Peg.parse(calc, "1 + 2", actions: ast_actions)
+assert_eq(tree, {op: "Additive", kids: [1, 2]})
+
+// --- an actions key naming no rule in the grammar is a compile-time-visible
+// mistake, not a silent no-op ---
+assert_eq(try {
+  Peg.parse(calc, "1", actions: {Nope: |sv| sv})
+} catch e {
+  e.kind
+}, "PegError")
+
+// --- an exception thrown inside an action propagates unchanged ---
+assert_throws("ZeroDivisionError", fn () {
+  Peg.parse(calc, "9", actions: {Number: |sv| 1 / 0})
+})
+assert_eq(try {
+  Peg.parse(
+    calc,
+    "9",
+    actions: {Number: |sv| throw {kind: "Custom", message: "boom"}},
+  )
+} catch e {
+  e.kind
+}, "Custom")
+
+// --- a syntax error inside an actions parse is a PegError like any other,
+// `path` honored the same way ---
+let e = try {
+  Peg.parse(calc, "1 +", path: "prog.txt", actions: eval_actions)
+} catch err {
+  err
+}
+assert_eq(e.kind, "PegError")
+assert_true(e.message.starts_with("prog.txt:1:4:"))
+
+// --- reentrancy: an action recursively parsing the same compiled grammar
+// (on a different subject) resolves against its own actions, not a stale
+// or shared installation from the outer call ---
+let reentrant = {
+  Number: |sv| sv.token == "9"
+    ? Peg.parse(calc, "4 + 5", actions: eval_actions)
+    : to_long(sv.token),
+  Additive: sum2,
+  Multiplicative: prod2,
+}
+assert_eq(Peg.parse(calc, "9 + 1", actions: reentrant), 10)
+
+// --- `actions: nil` (the default) is the existing tree-building behavior,
+// unaffected ---
+assert_eq(Peg.parse(calc, "7", actions: nil).name, "Number")
+assert_eq(Peg.parse(calc, "7").name, "Number")
+
+// --- a non-Function entry falls back to the default, the same as an
+// unregistered rule name -- and the default for a childless rule (no named
+// sub-rule references, so nothing to pass through) is nil, exactly the way
+// cpp-peglib's own unset-action reduce (`vs.empty() ? any() : vs.front()`)
+// has nothing to give back either ---
+assert_eq(Peg.parse(calc, "5", actions: {Number: nil}), nil)

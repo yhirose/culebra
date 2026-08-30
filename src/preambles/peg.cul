@@ -41,8 +41,8 @@ let _peg_module = fn () {
       self._packrat = packrat
       _Peg.check(grammar, start, packrat)
     }
-    parse(text, path = "") {
-      _Peg.parse(self._src, text, self._start, self._optimize, self._packrat, path)
+    parse(text, path = "", actions = nil) {
+      _Peg.parse(self._src, text, self._start, self._optimize, self._packrat, path, actions)
     }
     test(text) {
       _Peg.test(self._src, text, self._start, self._packrat)
@@ -55,8 +55,8 @@ let _peg_module = fn () {
     check: fn (grammar, start = "") {
       _Peg.check(grammar, start, true)
     },
-    parse: fn (grammar, text, start = "", optimize = true, packrat = true, path = "") {
-      _Peg.parse(grammar, text, start, optimize, packrat, path)
+    parse: fn (grammar, text, start = "", optimize = true, packrat = true, path = "", actions = nil) {
+      _Peg.parse(grammar, text, start, optimize, packrat, path, actions)
     },
     test: fn (grammar, text, start = "", packrat = true) {
       _Peg.test(grammar, text, start, packrat)

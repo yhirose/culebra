@@ -5984,12 +5984,13 @@ a reference cycle. Walk downward and carry what you need.
 | --- | --- |
 | `p.parse(text)` | the root node; a syntax error raises `PegError` |
 | `p.parse(text, path)` | same, naming the subject for the error message |
+| `p.parse(text, path, actions)` | interpret `text` directly via `actions` instead — see below |
 | `p.test(text)` | `Bool` — whether `text` parses; no tree is handed back |
 
 | One-shot | Equivalent |
 | --- | --- |
 | `Peg.parse(grammar, text)` | `Peg.compile(grammar).parse(text)` |
-| `Peg.parse(grammar, text, start, optimize, packrat, path)` | the same, with the `compile` options and a subject name |
+| `Peg.parse(grammar, text, start, optimize, packrat, path, actions)` | the same, with the `compile` options, a subject name, and semantic actions |
 | `Peg.test(grammar, text)` | `Bool` |
 | `Peg.test(grammar, text, start, packrat)` | the same, with the `compile` options |
 
@@ -6105,6 +6106,64 @@ Two bounds keep adversarial input catchable rather than fatal:
 
 A grammar is per-thread state, so a `Peg` value crossing an isolate boundary
 carries the grammar text and reloads on the other side; nothing is shared.
+
+### Semantic actions
+
+`Peg.parse`/`p.parse` also accept `actions`: a rule name -> `Function` map
+that interprets the subject directly, without ever building a tree. Each
+registered `Function` receives one argument — the rule's own reduction, an
+`sv` Object — and returns whatever value that rule contributes to its
+parent's own `sv.values`. Naming what the C++ reference calls this: a
+[semantic action](https://github.com/yhirose/cpp-peglib#semantic-actions)
+(cpp-peglib's `parser["Rule"] = [](const SemanticValues &sv) { ... }`).
+`Peg`'s own version is a value passed to `parse`, not mutable state installed
+on the grammar, since one grammar can be reused with different actions:
+
+```culebra
+let calc = `
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+  %whitespace    <- [ \t\r\n]*
+`
+let actions = {
+  Number: |sv| to_long(sv.token),
+  Additive: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] + sv.values[1],
+  Multiplicative: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] * sv.values[1],
+}
+inspect(Peg.parse(calc, "1 + 2 * 3", actions: actions))  # => 7
+```
+
+`sv` shares its field names with a tree `Node`, with `nodes` renamed to
+`values`: `{name, token, values, line, column, position, length, choice}`.
+`values[i]` is whatever child *i*'s own action produced — or, for a rule with
+no registered action, cpp-peglib's own default: the first child's value, or
+`nil` for a rule with no children (a leaf token rule with no action gets no
+value at all, the same as vanilla cpp-peglib — write an action for any leaf
+whose text you need). A rule can build anything, not just a scalar — an
+action's return value is an ordinary culebra value, so one grammar can drive
+an evaluator, a pretty-printer, or its own custom tree shape, by choosing what
+each action returns.
+
+A key in `actions` that names no rule in the grammar is caught before parsing
+starts, the same `PegError` an undefined start rule raises — a typo'd rule
+name is not a silent no-op:
+
+```culebra
+inspect(try {
+  Peg.parse(`N <- < [0-9]+ >`, "1", actions: {Nope: |sv| sv})
+} catch e {
+  e.message
+})  # => 'Peg: no such rule 'Nope''
+```
+
+Whatever an action itself throws — a culebra `throw`, a `TypeError` from
+misusing `sv`, anything — propagates unchanged; there is no action-specific
+catch to work around. `optimize` has no effect when `actions` is given (there
+is no tree to optimize); the rule-entry depth guard above still applies, but
+the tree-depth `ValueError` does not — there is no separate
+tree-materialization pass for it to bound.
 
 ## 35. Design notes
 

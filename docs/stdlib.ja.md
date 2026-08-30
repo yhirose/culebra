@@ -5817,12 +5817,13 @@ inspect(eval(Peg.parse(calc, "(1 + 2) * 3")))  # => 9
 | --- | --- |
 | `p.parse(text)` | ルートノード。構文エラーは`PegError` |
 | `p.parse(text, path)` | 同じ。エラーメッセージに載る対象名を指定 |
+| `p.parse(text, path, actions)` | 代わりに`actions`で`text`を直接解釈する — 下記 |
 | `p.test(text)` | `Bool` — `text`がパースできるか。木は返らない |
 
 | ワンショット | 等価な式 |
 | --- | --- |
 | `Peg.parse(grammar, text)` | `Peg.compile(grammar).parse(text)` |
-| `Peg.parse(grammar, text, start, optimize, packrat, path)` | 同じ。`compile`のオプションと対象名つき |
+| `Peg.parse(grammar, text, start, optimize, packrat, path, actions)` | 同じ。`compile`のオプション・対象名・セマンティックアクションつき |
 | `Peg.test(grammar, text)` | `Bool` |
 | `Peg.test(grammar, text, start, packrat)` | 同じ。`compile`のオプションつき |
 
@@ -5933,6 +5934,59 @@ inspect(try {
 
 文法はスレッドごとの状態なので、`Peg`の値がisolate境界を越えるときは文法テキストが渡って
 向こう側でロードし直される。共有されるものは何もない。
+
+### セマンティックアクション
+
+`Peg.parse`/`p.parse`は`actions`も受け取る: 規則名から`Function`への写像で、木を
+一切作らずに対象を直接解釈する。登録した各`Function`は引数を1つ受け取る
+— その規則自身の還元結果である`sv` Object — そして親の`sv.values`に渡す値を返す。
+C++版が呼ぶ名前で言えば
+[semantic action](https://github.com/yhirose/cpp-peglib#semantic-actions)
+（cpp-peglibの`parser["Rule"] = [](const SemanticValues &sv) { ... }`）にあたる。
+`Peg`側は文法に据える可変状態ではなく`parse`に渡す値にした
+— 同じ文法を異なるactionsで使い回せるように:
+
+```culebra
+let calc = `
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+  %whitespace    <- [ \t\r\n]*
+`
+let actions = {
+  Number: |sv| to_long(sv.token),
+  Additive: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] + sv.values[1],
+  Multiplicative: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] * sv.values[1],
+}
+inspect(Peg.parse(calc, "1 + 2 * 3", actions: actions))  # => 7
+```
+
+`sv`は木の`Node`とフィールド名を共有し、`nodes`だけ`values`に変わる:
+`{name, token, values, line, column, position, length, choice}`。
+`values[i]`は子`i`自身のactionが生成した値
+— actionを登録していない規則にはcpp-peglib自身の既定が適用される: 最初の子の値、
+子を持たない規則なら`nil`（actionの無いleafトークン規則は値そのものを持たない。
+素のcpp-peglibと同じで、テキストが要るleafには自分でactionを書く）。
+規則が返せるのはスカラーだけではない — actionの戻り値はただのculebra値なので、
+1つの文法で評価器・整形器・独自の木構造のいずれも、各actionが何を返すか次第で駆動できる。
+
+`actions`のキーが文法内のどの規則の名前でもない場合、パース開始前に検出される
+— 未定義start規則と同じ`PegError`で、typoが黙って無視されることはない:
+
+```culebra
+inspect(try {
+  Peg.parse(`N <- < [0-9]+ >`, "1", actions: {Nope: |sv| sv})
+} catch e {
+  e.message
+})  # => 'Peg: no such rule 'Nope''
+```
+
+actionが投げたものは何であれ — culebraの`throw`、`sv`の誤用による`TypeError`、
+何でも — そのまま伝播する。action専用のcatchで回避する必要はない。
+`actions`を渡すと`optimize`は無効（最適化する木自体が存在しない）。
+機械生成のネストに対する規則入場の深度ガードは引き続き効くが、
+木の深さの`ValueError`は効かない — それを課す対象の木構築パス自体が無いので。
 
 ## 35. 設計上の注記
 
