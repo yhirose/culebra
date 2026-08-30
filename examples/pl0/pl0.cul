@@ -1,0 +1,318 @@
+# PL/0 — a whole language in one file.
+#
+# PL/0 is Wirth's teaching language (https://en.wikipedia.org/wiki/PL/0):
+# integers only, nested procedures that take no arguments, seven statements.
+# Small enough to read in a sitting, complete enough that the pieces of a real
+# implementation are all here — a grammar, a scope chain, and an evaluator.
+#
+# The grammar below is a PEG handed to `Peg`, and what comes back from `parse`
+# is a tree of plain Objects. That is the point of the example: the interpreter
+# never calls a tree API. Every node arrives at a `match` arm that names the
+# rule and takes its children apart in the same pattern —
+#
+#     {name: 'while', nodes: [cond, body]} => exec_while(cond, body, scope),
+#
+# so the code reads like the grammar it implements. See docs/stdlib.md §34.
+#
+# Run it:  culebra examples/pl0/pl0.cul examples/pl0/samples/square.pas
+#          culebra examples/pl0/pl0.cul examples/pl0/samples/gcd.pas
+#          culebra examples/pl0/pl0.cul examples/pl0/samples/fib.pas
+#          culebra examples/pl0/pl0.cul --ast examples/pl0/samples/square.pas
+#
+# square and gcd finish immediately. fib.pas computes fib(0..24) by naive
+# recursion — several hundred thousand PL/0 procedure calls through this
+# interpreter — so it runs for tens of seconds.
+
+# AST optimization (on by default) replaces a node that has exactly one child
+# with that child. Writing the grammar so that the folding lands where you want
+# it is most of the work of using it:
+#
+#   * `{ no_ast_opt }` keeps a node whose *own* name carries the meaning. CALL x
+#     would otherwise fold to a bare ident, indistinguishable from reading x.
+#   * `sign?` rather than a `[-+]?` token that always matches: an unsigned
+#     expression then has one child and folds away to the term itself, so a
+#     plain `x` reaches the evaluator as an ident instead of three wrappers.
+#   * a rule whose parent reads children by position must not fold. `block` is
+#     `const var procedure statement`, and `VAR w;` — one variable, so one
+#     child — would fold the var node away and shift everything after it.
+#     `const` and `procedure` are safe only by construction (both match in
+#     pairs, so neither ever has exactly one child); `var` needs the annotation.
+let grammar = `
+  program    <- _ block '.' _
+
+  block      <- const var procedure statement
+  const      <- ('CONST' __ ident '=' _ number (',' _ ident '=' _ number)* ';' _)?
+  var        <- ('VAR' __ ident (',' _ ident)* ';' _)?      { no_ast_opt }
+  procedure  <- ('PROCEDURE' __ ident ';' _ block ';' _)*
+
+  statement  <- (assignment / call / statements / if / while / out / in)?
+  assignment <- ident ':=' _ expression
+  call       <- 'CALL' __ ident                             { no_ast_opt }
+  statements <- 'BEGIN' __ statement (';' _ statement )* 'END' __
+  if         <- 'IF' __ condition 'THEN' __ statement
+  while      <- 'WHILE' __ condition 'DO' __ statement
+  out        <- ('out' __ / 'write' __ / '!' _) expression  { no_ast_opt }
+  in         <- ('in' __ / 'read' __ / '?' _) ident         { no_ast_opt }
+
+  condition  <- odd / compare
+  odd        <- 'ODD' __ expression                         { no_ast_opt }
+  compare    <- expression compare_op expression
+  compare_op <- < '=' / '#' / '<=' / '<' / '>=' / '>' > _
+
+  expression <- sign? term (term_op term)*
+  sign       <- < [-+] > _
+  term_op    <- < [-+] > _
+
+  term       <- factor (factor_op factor)*
+  factor_op  <- < [*/] > _
+
+  factor     <- ident / number / '(' _ expression ')' _
+
+  ident      <- < [a-z] [a-z0-9]* > _
+  number     <- < [0-9]+ > _
+
+  ~_         <- [ \t\r\n]*
+  ~__        <- ![a-z0-9_] _
+`
+
+# --- Scopes ------------------------------------------------------------------
+#
+# A PL/0 block introduces a scope holding constants, variables and nested
+# procedures. One scope per *activation*, so a recursive procedure gets fresh
+# locals on each call; lookup walks outward along `outer`, which is the block a
+# procedure was *declared* in — never the one that called it. That static link
+# is the whole of PL/0's scoping.
+
+class Scope {
+  new(outer) {
+    self.outer = outer
+    self.consts = {}
+    self.vars = {}
+    self.procs = {}
+  }
+
+  has(name) {
+    cond {
+      self.consts.has(name) || self.vars.has(name) => true,
+      self.procs.has(name) => true,
+      self.outer != nil => self.outer.has(name),
+      _ => false,
+    }
+  }
+
+  declare(kind, name, value, at) {
+    if self.has(name) {
+      fail(at, "'{name}' is already defined")
+    }
+    match kind {
+      'const' => self.consts[name] = value,
+      'var' => self.vars[name] = nil,
+      'proc' => self.procs[name] = value,
+    }
+  }
+
+  read(name, at) {
+    cond {
+      self.consts.has(name) => self.consts[name],
+      self.vars.has(name) => self.read_var(name, at),
+      self.outer != nil => self.outer.read(name, at),
+      _ => fail(at, "undefined variable '{name}'"),
+    }
+  }
+
+  # A variable declared but never assigned is an error, not a silent zero.
+  read_var(name, at) {
+    self.vars[name] ?? fail(at, "uninitialized variable '{name}'")
+  }
+
+  # Assignment finds the nearest scope that declares the name. Assigning to a
+  # constant is an error in PL/0, not a rebinding.
+  write(name, value, at) {
+    cond {
+      self.consts.has(name) => fail(at, "cannot assign to constant '{name}'"),
+      self.vars.has(name) => self.vars[name] = value,
+      self.outer != nil => self.outer.write(name, value, at),
+      _ => fail(at, "undefined variable '{name}'"),
+    }
+  }
+
+  # Returns the block *and the scope that declares it* — the static link a call
+  # has to enter through.
+  procedure(name, at) {
+    cond {
+      self.procs.has(name) => (self, self.procs[name]),
+      self.outer != nil => self.outer.procedure(name, at),
+      _ => fail(at, "undefined procedure '{name}'"),
+    }
+  }
+}
+
+# Errors carry a kind, so the driver can tell a PL/0 error from anything else
+# that goes wrong, and a position — which is why the tree carries `line` and
+# `column` on every node.
+fn fail(node, msg) {
+  throw {kind: 'Pl0Error', message: msg, line: node.line, col: node.column}
+}
+
+# --- Declarations ------------------------------------------------------------
+#
+# `block <- const var procedure statement`. The three declaration nodes are
+# flat lists: const holds ident/number pairs, var holds idents, procedure holds
+# ident/block pairs. Returns the new scope and the block's statement.
+
+fn enter(block, outer) {
+  let scope = Scope.new(outer)
+  let [consts, vars, procs, body] = block.nodes
+  for [name, value] in consts.nodes.iter().chunks(2) {
+    scope.declare('const', name.token, to_long(value.token), name)
+  }
+  for name in vars.nodes {
+    scope.declare('var', name.token, nil, name)
+  }
+  for [name, sub] in procs.nodes.iter().chunks(2) {
+    scope.declare('proc', name.token, sub, name)
+  }
+  (scope, body)
+}
+
+# --- Statements --------------------------------------------------------------
+
+fn exec(node, scope) {
+  match node {
+    {name: 'statements', nodes} => nodes.for_each(|s| exec(s, scope)),
+    {name: 'assignment', nodes: [name, value]} => assign(name, value, scope),
+    {name: 'call', nodes: [name]} => call(name, scope),
+    {name: 'if', nodes: [cond, body]} => exec_if(cond, body, scope),
+    {name: 'while', nodes: [cond, body]} => exec_while(cond, body, scope),
+    {name: 'out', nodes: [value]} => println(eval(value, scope)),
+    {name: 'in', nodes: [name]} => scope.write(name.token, read_int(), name),
+    # `statement <- (...)?` matched nothing — the empty statement a trailing
+    # `;` leaves behind.
+    {name: 'statement'} => nil,
+    _ => fail(node, "cannot execute {node.name}"),
+  }
+}
+
+fn assign(name, value, scope) {
+  scope.write(name.token, eval(value, scope), name)
+}
+
+fn call(name, scope) {
+  let (declared_in, block) = scope.procedure(name.token, name)
+  let (inner, body) = enter(block, declared_in)
+  exec(body, inner)
+}
+
+fn exec_if(cond, body, scope) {
+  if truth(cond, scope) {
+    exec(body, scope)
+  }
+}
+
+fn exec_while(cond, body, scope) {
+  while truth(cond, scope) {
+    exec(body, scope)
+  }
+}
+
+fn read_int() {
+  to_long(IO.input())
+}
+
+# --- Conditions --------------------------------------------------------------
+
+fn truth(node, scope) {
+  match node {
+    {name: 'odd', nodes: [value]} => eval(value, scope) % 2 != 0,
+    {name: 'compare', nodes: [l, op, r]} => compare(l, op, r, scope),
+    _ => fail(node, "cannot evaluate {node.name} as a condition"),
+  }
+}
+
+fn compare(l, op, r, scope) {
+  let left = eval(l, scope)
+  let right = eval(r, scope)
+  match op.token {
+    '=' => left == right,
+    '#' => left != right,
+    '<' => left < right,
+    '<=' => left <= right,
+    '>' => left > right,
+    '>=' => left >= right,
+  }
+}
+
+# --- Expressions -------------------------------------------------------------
+
+fn eval(node, scope) {
+  match node {
+    {name: 'number', token} => to_long(token),
+    {name: 'ident', token} => scope.read(token, node),
+    {name: 'expression', nodes} => chain(nodes, scope),
+    {name: 'term', nodes} => chain(nodes, scope),
+    _ => fail(node, "cannot evaluate {node.name}"),
+  }
+}
+
+# `expression <- sign? term (term_op term)*` and `term <- factor (factor_op
+# factor)*` are the same shape: an optional leading sign, a first operand, then
+# operator/operand pairs, left-associated. One walk serves both — and neither
+# is reached at all when it has a single child, since that folds away.
+fn chain(nodes, scope) {
+  let [head, ...rest] = nodes
+  if head.name == 'sign' {
+    let [first, ...pairs] = rest
+    let value = eval(first, scope)
+    return fold(pairs, head.token == '-' ? -value : value, scope)
+  }
+  fold(rest, eval(head, scope), scope)
+}
+
+fn fold(pairs, acc, scope) {
+  mut value = acc
+  for [op, operand] in pairs.iter().chunks(2) {
+    value = apply(op, value, eval(operand, scope), operand)
+  }
+  value
+}
+
+fn apply(op, l, r, at) {
+  match op.token {
+    '+' => l + r,
+    '-' => l - r,
+    '*' => l * r,
+    '/' => r == 0 ? fail(at, "divide by zero") : l / r,
+  }
+}
+
+# --- Driver ------------------------------------------------------------------
+
+let want_ast = Sys.argv.contains('--ast')
+let args = Sys.argv.filter(|a| a != '--ast')
+if args.empty() {
+  println("usage: culebra pl0.cul [--ast] PROGRAM.pas")
+  Sys.exit(1)
+}
+
+try {
+  # `program <- _ block '.' _` has a single child, so optimization folds it
+  # away and the root that arrives is the block itself.
+  let tree = Peg.parse(grammar, FS.read(args[0]))
+  if want_ast {
+    print(Peg.str(tree))
+  } else {
+    let (scope, body) = enter(tree, nil)
+    exec(body, scope)
+  }
+} catch e {
+  # A PL/0 error carries its own position in the .pas file; a parse failure
+  # arrives as a PegError whose message starts with one. Anything else is a bug
+  # in this interpreter, and rethrowing says so rather than dressing it up as
+  # an error in the program being run.
+  match e {
+    {kind: 'Pl0Error'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
+    {kind: 'PegError'} => println("{args[0]}:{e.message.strip_prefix('Peg: ')}"),
+    _ => throw e,
+  }
+  Sys.exit(1)
+}
