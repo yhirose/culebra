@@ -346,12 +346,30 @@ inline std::any _peg_unbox(std::any& boxed) {
   return std::move(std::any_cast<_AnyBox&>(boxed).v);
 }
 
-inline std::any _peg_reduce(Compiled& c, ::peg::SemanticValues& vs) {
+// `rule_name` identifies which rule this reduction is for -- NOT
+// `vs.name()`. For an ordinary rule those agree, but a `{ precedence }`
+// rule's own PrecedenceClimbing operator steals the installed action and
+// re-invokes it once per binary step with a synthesized SemanticValues whose
+// `name()` is stale (the last Reference it matched, e.g. "ATOM") or empty,
+// never the rule that owns it (measured: for `EXPRESSION <- ATOM (OPERATOR
+// ATOM)* { precedence ... }`, vs.name() during those calls is "ATOM" then
+// ""). Passing the name down from the closure that installed this action
+// -- captured once per rule at install time, below -- is what still routes
+// correctly for a precedence rule's registered action.
+inline std::any _peg_reduce(Compiled& c, const std::string& rule_name,
+                            ::peg::SemanticValues& vs) {
   const auto& frame = c.action_stack.back();
-  if (auto it = frame.actions->find(vs.name()); it != frame.actions->end()) {
+  if (auto it = frame.actions->find(rule_name); it != frame.actions->end()) {
     Sv sv;
-    sv.name = vs.name();
-    sv.token = vs.sv();
+    sv.name = rule_name;
+    // token(), not sv() -- for a `< ... >` token rule referenced inside a
+    // sequence (e.g. `(OPERATOR ATOM)*`), sv() reaches past the boundary
+    // into the whitespace %whitespace skips before the next element
+    // (measured: OPERATOR's sv() for "+ 2" is "+ ", two bytes). token()
+    // is the accessor peglib's own token_to_string()/token_to_number() use
+    // for exactly this reason; sv() and token() agree for a branch rule
+    // (no `< ... >` of its own), so this is a no-op there.
+    sv.token = vs.token();
     std::tie(sv.line, sv.column) = vs.line_info();
     sv.position = static_cast<size_t>(sv.token.data() - frame.text_base);
     sv.length = sv.token.size();
@@ -374,11 +392,13 @@ struct ActionScope {
       : c(compiled) {
     c.action_stack.push_back({&actions, text_base});
     if (c.action_stack.size() == 1) {
-      for (const auto& [name, def] : c.parser.get_grammar())
+      for (const auto& [name, def] : c.parser.get_grammar()) {
+        std::string rule_name = name;  // one copy per rule, captured below
         c.parser[name.c_str()].action =
-            [&compiled](::peg::SemanticValues& vs) {
-              return _peg_reduce(compiled, vs);
+            [&compiled, rule_name](::peg::SemanticValues& vs) {
+              return _peg_reduce(compiled, rule_name, vs);
             };
+      }
     }
   }
   ~ActionScope() {

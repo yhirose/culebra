@@ -1,0 +1,42 @@
+# The same precedence-climbing grammar as calc_precedence.cul, consumed the
+# calc_tree.cul way instead: parse to a tree, then walk it. `Peg.str` shows
+# that the climbing already left the tree correctly nested by precedence and
+# associativity — `eval` only ever has to unwrap one binary application per
+# node, the same shape calc_precedence.cul's actions read directly.
+# Ported from cpp-peglib's calc5.cc
+# (https://github.com/yhirose/cpp-peglib/blob/master/example/calc5.cc).
+#
+# Run it:  culebra examples/peg/calc_precedence_tree.cul "-1 + (1 + 2) * 3 - -1"
+
+let grammar = `
+  EXPRESSION  <- ATOM (OPERATOR ATOM)* {
+                   precedence
+                     L - +
+                     L / *
+                 }
+  ATOM        <- NUMBER / '(' EXPRESSION ')'
+  OPERATOR    <- < [-+/*] >
+  NUMBER      <- < '-'? [0-9]+ >
+  %whitespace <- [ \t\r\n]*
+`
+
+fn apply(op, l, r) {
+  match op {
+    "+" => l + r,
+    "-" => l - r,
+    "*" => l * r,
+    "/" => l / r,
+  }
+}
+fn eval(node) {
+  match node {
+    {name: "NUMBER", token} => to_long(token),
+    {nodes: [only]} => eval(only),
+    {nodes: [left, op, right]} => apply(op.token, eval(left), eval(right)),
+  }
+}
+
+let formula = Sys.argv.empty() ? "-1 + (1 + 2) * 3 - -1" : Sys.argv[0]
+let tree = Peg.parse(grammar, formula)
+print(Peg.str(tree))
+println("{formula} = {eval(tree)}")

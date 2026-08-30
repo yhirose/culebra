@@ -1,0 +1,45 @@
+# A four-function calculator whose actions read `sv.choice` to tell which
+# alternative of a rule matched — the general tool for that question, for
+# when the arm count alone doesn't decide it (a rule with several
+# alternatives of the *same* arity, or one whose count varies for reasons
+# unrelated to which branch fired). Ported from cpp-peglib's calc.cc example
+# (https://github.com/yhirose/cpp-peglib/blob/master/example/calc.cc);
+# that file's own recursive grammar is kept, its `^cond` error-recovery demo
+# is not — recovering from a syntax error is a different feature from
+# `choice`, and the source's own comment marks that half of the demo as
+# producing the wrong answer on purpose.
+#
+# Run it:  culebra examples/peg/calc_choice.cul "(1 + 2) * 3"
+
+let grammar = `
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+  %whitespace    <- [ \t]*
+`
+
+# Both rules have exactly the same shape: two alternatives, the first binary
+# (2 values) and the second a single passthrough. `sv.choice` names which one
+# matched directly, rather than inferring it from `sv.values.size()`.
+fn additive(sv) {
+  match sv.choice {
+    0 => sv.values[0] + sv.values[1],
+    _ => sv.values[0],
+  }
+}
+fn multiplicative(sv) {
+  match sv.choice {
+    0 => sv.values[0] * sv.values[1],
+    _ => sv.values[0],
+  }
+}
+
+let actions = {
+  Additive: additive,
+  Multiplicative: multiplicative,
+  Number: |sv| to_long(sv.token),
+}
+
+let formula = Sys.argv.empty() ? "(1 + 2) * 3" : Sys.argv[0]
+inspect(Peg.parse(grammar, formula, actions: actions))

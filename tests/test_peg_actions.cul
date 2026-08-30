@@ -126,3 +126,60 @@ assert_eq(Peg.parse(calc, "7").name, "Number")
 // cpp-peglib's own unset-action reduce (`vs.empty() ? any() : vs.front()`)
 // has nothing to give back either ---
 assert_eq(Peg.parse(calc, "5", actions: {Number: nil}), nil)
+
+// --- `{ precedence }` rules: cpp-peglib's own PrecedenceClimbing operator
+// steals the installed action and re-invokes it once per binary step with a
+// synthesized SemanticValues whose reported rule name is stale (the last
+// sub-rule it happened to match) rather than the precedence rule's own --
+// this once meant the registered action for the precedence rule was never
+// actually found, silently falling back to the passthrough default instead
+// of raising anything ---
+let prec = `
+  EXPRESSION  <- ATOM (OPERATOR ATOM)* {
+                   precedence
+                     L - +
+                     L / *
+                 }
+  ATOM        <- NUMBER / '(' EXPRESSION ')'
+  OPERATOR    <- < [-+/*] >
+  NUMBER      <- < '-'? [0-9]+ >
+  %whitespace <- [ \t\r\n]*
+`
+
+fn apply2(op, l, r) {
+  match op {
+    "+" => l + r,
+    "-" => l - r,
+    "*" => l * r,
+    "/" => l / r,
+  }
+}
+let prec_actions = {
+  EXPRESSION: fn (sv) {
+    sv.values.size() > 1
+      ? apply2(sv.values[1], sv.values[0], sv.values[2])
+      : sv.values[0]
+  },
+  OPERATOR: |sv| sv.token,
+  NUMBER: |sv| to_long(sv.token),
+}
+assert_eq(Peg.parse(prec, "-1 + (1 + 2) * 3 - -1", actions: prec_actions), 9)
+
+// --- a `< ... >` token rule's own `sv.token` is exactly what it matched,
+// even when %whitespace would otherwise skip trailing space right after it
+// as part of continuing the sequence that references it -- `sv.sv()` (the
+// whole rule's own matched span) reaches past that boundary and once leaked
+// the skipped whitespace into `token` (measured: "+" came back as "+ ",
+// silently failing every string comparison against it) ---
+assert_eq(
+  Peg.parse(
+    prec,
+    "1 + 2",
+    actions: {
+  EXPRESSION: prec_actions.EXPRESSION,
+  OPERATOR: fn (sv) { assert_eq(sv.token, "+"); sv.token },
+  NUMBER: prec_actions.NUMBER,
+},
+  ),
+  3,
+)

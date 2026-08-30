@@ -1,0 +1,45 @@
+# A four-function calculator whose grammar states precedence and
+# associativity declaratively (the `{ precedence ... }` instruction) instead
+# of encoding it as separate rules per level (calc_choice.cul, calc_tree.cul).
+# One flat `ATOM (OPERATOR ATOM)*` repetition covers every level; the parser
+# does the climbing. Ported from cpp-peglib's calc4.cc
+# (https://github.com/yhirose/cpp-peglib/blob/master/example/calc4.cc).
+#
+# Run it:  culebra examples/peg/calc_precedence.cul "-1 + (1 + 2) * 3 - -1"
+
+let grammar = `
+  EXPRESSION  <- ATOM (OPERATOR ATOM)* {
+                   precedence
+                     L - +
+                     L / *
+                 }
+  ATOM        <- NUMBER / '(' EXPRESSION ')'
+  OPERATOR    <- < [-+/*] >
+  NUMBER      <- < '-'? [0-9]+ >
+  %whitespace <- [ \t\r\n]*
+`
+
+fn apply(op, l, r) {
+  match op {
+    "+" => l + r,
+    "-" => l - r,
+    "*" => l * r,
+    "/" => l / r,
+  }
+}
+
+# The climbing already resolves precedence and associativity, so a match of
+# EXPRESSION is always at most one binary application: `sv.values` is
+# `[left]` (no operator at this level) or `[left, operator, right]`.
+let actions = {
+  EXPRESSION: fn (sv) {
+    sv.values.size() > 1
+      ? apply(sv.values[1], sv.values[0], sv.values[2])
+      : sv.values[0]
+  },
+  OPERATOR: |sv| sv.token,
+  NUMBER: |sv| to_long(sv.token),
+}
+
+let formula = Sys.argv.empty() ? "-1 + (1 + 2) * 3 - -1" : Sys.argv[0]
+println("{formula} = {Peg.parse(grammar, formula, actions: actions)}")
