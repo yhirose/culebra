@@ -209,6 +209,17 @@ consume-on-every-exit、transfer）に従う。`memory.md` §4.3が一覧に
 `JitOwnedVal`（すべての出口で解放される所有ずみ引数）と
 `JitUnwindRelease`（ヘルパーがthrowしたときだけ解放する）。
 
+呼び出しフレームが触るスレッドローカルな状態は、2つのオブジェクトに
+まとめてある: `_jit_thread`（`jit_runtime.h`）が呼び出しの発行する
+ソース位置すべてと再帰深さを持ち、`_culebra_rt`（`shared.h`）が
+このスレッドの現在の`Runtime`と既定`Runtime`のキャッシュを持つ。
+これは整頓ではない。Mach-Oにはinitial-exec TLSモデルが無く、
+ヘルパーが触る`thread_local`変数は1つごとにdyldの`_tlv_get_addr`
+呼び出しを払う — 呼び出し位置の発行だけで12個に触っていた。
+1行の関数をループで呼ぶと時間の4分の3がそこへ行っていた。
+2つのオブジェクトにまとめる（どちらの持つ値も変えない）ことで、
+culebraの呼び出しコストは半分になった。
+
 ### 3.3 標準ライブラリ
 
 `stdlib_jit.h`が標準ライブラリを束縛する: ネイティブ名前空間

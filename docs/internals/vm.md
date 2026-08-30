@@ -220,6 +220,17 @@ tabulates them. Two RAII forms recur in the helpers' own C++:
 `JitOwnedVal` (an owned argument released on every exit) and
 `JitUnwindRelease` (release only if the helper throws).
 
+The per-thread state a call frame touches sits in two objects:
+`_jit_thread` (`jit_runtime.h`) holds every source position a call
+publishes and the recursion depth, and `_culebra_rt` (`shared.h`) holds
+this thread's current `Runtime` alongside a cache of its default. The
+grouping is not tidiness. Mach-O has no initial-exec TLS model, so every
+`thread_local` variable a helper touches costs its own call into dyld's
+`_tlv_get_addr` — and publishing a call site used to touch twelve. On a
+one-line function called in a loop, three quarters of the time went
+there; collecting the variables into these two objects, changing no
+value either holds, halved what a culebra call costs.
+
 ### 3.3 The standard library
 
 `stdlib_jit.h` binds the standard library: native namespaces (`Math`,
