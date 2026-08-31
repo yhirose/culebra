@@ -609,6 +609,35 @@ let sc_values = Tensor.from([5.0, 7.0, 9.0])
 assert_eq(Tensor.scatter_to_axis(sc_idx, sc_values, 4).to_array(),
          [[0.0, 0.0, 5.0, 0.0], [7.0, 0.0, 0.0, 0.0], [0.0, 9.0, 0.0, 0.0]])
 
+# --- Tensor.concat(parts, axis): axis defaults to 0 (rows), any axis works -
+
+let cc_a = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+let cc_b = Tensor.from([[5.0, 6.0], [7.0, 8.0]])
+
+assert_eq(Tensor.concat([cc_a, cc_b]).to_array(),
+         [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+assert_eq(Tensor.concat([cc_a, cc_b], 0).to_array(),
+         Tensor.concat([cc_a, cc_b]).to_array())
+assert_eq(Tensor.concat([cc_a, cc_b], 1).to_array(),
+         [[1.0, 2.0, 5.0, 6.0], [3.0, 4.0, 7.0, 8.0]])
+assert_eq(Tensor.concat([cc_a, cc_b], -1).to_array(),
+         Tensor.concat([cc_a, cc_b], 1).to_array())
+
+# rank-3 (KV-cache shape: concat along the sequence axis)
+let cc_k1 = Tensor.zeros(2, 1, 3)
+let cc_k2 = Tensor.ones(2, 1, 3)
+assert_eq(Tensor.concat([cc_k1, cc_k2], 1).shape(), [2, 2, 3])
+
+# backward routes each part's own axis-window of the upstream grad back to it
+let cc_ga = cc_a.requires_grad()
+let cc_gb = cc_b.requires_grad()
+Tensor.concat([cc_ga, cc_gb], 1).sum(1).sum(0).backward()
+assert_eq(cc_ga.grad().to_array(), [[1.0, 1.0], [1.0, 1.0]])
+assert_eq(cc_gb.grad().to_array(), [[1.0, 1.0], [1.0, 1.0]])
+
+assert_throws('ValueError', fn () { Tensor.concat([]) })
+assert_throws('ValueError', fn () { Tensor.concat([cc_a, Tensor.zeros(2, 3)]) })
+
 # --- .narrow([axis, start, end]): .slice() generalized to any axis --------
 
 let narrow_x = Tensor.from(
@@ -651,8 +680,9 @@ assert_throws('ValueError', fn () {
 })
 
 # --- tanh/sin/cos/clamp ------------------------------------------------------
-# Not differentiable yet (no native caller needs .backward() through them --
-# examples/dezero's own Tanh/Sin/Cos/Clip classes write their own backward).
+# Differentiable (native VJP) as well as forward-only: examples/dezero's own
+# Tanh/Sin/Cos/Clip classes still write their own backward on top of these,
+# but .backward() through the raw Tensor node works too — both are supported.
 
 let tx = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0])
 assert_close(tx.tanh().to_array()[0], -0.9640275800758169, 1.0e-6)
@@ -663,11 +693,25 @@ assert_eq(tx.clamp(-1.0, 1.0).to_array(), [-1.0, -0.5, 0.0, 0.5, 1.0])
 # fused epilogue composes (same as exp_/sqrt_ do).
 assert_close((tx.tanh() * 2.0).to_array()[0], -1.9280551601516338, 1.0e-6)
 
-assert_throws('ValueError', fn () { tx.requires_grad().tanh().backward() })
-assert_throws('ValueError', fn () { tx.requires_grad().sin().backward() })
-assert_throws('ValueError', fn () { tx.requires_grad().cos().backward() })
-assert_throws('ValueError', fn () {
-  tx.requires_grad().clamp(-1.0, 1.0).backward()
-})
+# d/dx tanh(x) = 1 - tanh(x)^2
+let ty = tx.requires_grad().tanh()
+ty.sum(0).backward()
+let tanh0 = -0.9640275800758169
+assert_close(tx.grad().to_array()[0], 1.0 - tanh0 * tanh0, 1.0e-6)
+
+# d/dx sin(x) = cos(x)
+let sx = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0]).requires_grad()
+sx.sin().sum(0).backward()
+assert_close(sx.grad().to_array()[0], Math.cos(-2.0), 1.0e-6)
+
+# d/dx cos(x) = -sin(x)
+let cx = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0]).requires_grad()
+cx.cos().sum(0).backward()
+assert_close(cx.grad().to_array()[0], -Math.sin(-2.0), 1.0e-6)
+
+# d/dx clamp(x, lo, hi) = 1 inside [lo, hi], 0 outside
+let px = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0]).requires_grad()
+px.clamp(-1.0, 1.0).sum(0).backward()
+assert_eq(px.grad().to_array(), [0.0, 1.0, 1.0, 1.0, 0.0])
 
 inspect("test_tensor: OK")

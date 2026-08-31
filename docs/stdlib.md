@@ -1510,17 +1510,21 @@ let v = Tensor.from([1.0, 2.0, 3.0, 4.0])      # [4]
 let m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
 ```
 
-#### `Tensor.concat(parts: Array) -> Tensor`
+#### `Tensor.concat(parts: Array, axis: Long = 0) -> Tensor`
 
-Stacks tensors along axis 0 (rows) into one materialized Tensor. Every
-part must share the same dtype and the same dims past axis 0; the
-result's row count is the sum of the parts'. Differentiable — the
-gradient slices back into each part's row range.
+Stacks tensors along `axis` (rows, by default) into one Tensor. Every
+part must share the same dtype, rank, and every dim but `axis`; the
+result's `axis` length is the sum of the parts'. Differentiable — the
+gradient's own `axis` window routes back to each part.
 
 ```culebra
 let a = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
 let b = Tensor.from([[5.0, 6.0]])              # [1, 2]
 let c = Tensor.concat([a, b])                  # [3, 2]
+
+let k1 = Tensor.randn(2, 4, 8)   # [B, T, D]
+let k2 = Tensor.randn(2, 1, 8)   # one new position
+let kv = Tensor.concat([k1, k2], 1)  # [2, 5, 8] — a KV-cache append
 ```
 
 #### `Tensor.where(cond: Tensor, a, b) -> Tensor`
@@ -1673,22 +1677,22 @@ the underlying tensor library.
 `requires_grad` propagates forward: any op with a grad-tracking input
 produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
-`.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.transpose()`,
-`.reshape()`, `.slice()`, `Tensor.concat()`, `Tensor.where()`, and
-`.index_select()` / `Tensor.index_add()` (each other's own VJP). Gradients
-un-broadcast automatically, so a bias added across a batch sums back to its
-shape. `.unfold()`, `.pad()`, `.fold()`, `.permute()`, `.narrow()`, and
+`.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.tanh()`, `.sin()`,
+`.cos()`, `.clamp()`, `.transpose()`, `.reshape()`, `.slice()`,
+`Tensor.concat()`, `Tensor.where()`, and `.index_select()` /
+`Tensor.index_add()` (each other's own VJP). Gradients un-broadcast
+automatically, so a bias added across a batch sums back to its shape.
+`.unfold()`, `.pad()`, `.fold()`, `.permute()`, `.narrow()`, and
 `Tensor.scatter_to_axis()` are forward-only so far — `.backward()` through
 them raises; a training loop that uses them (e.g. an im2col-style conv or
 a pooling layer) writes its own backward pass around them for now.
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()` (and `.max()` /
 `.argmax()`) are never differentiable — `.backward()` through a comparison
 always raises, the same as PyTorch/numpy: compose the 0/1 mask with `*`
-instead (a ReLU-style backward gate is the concrete pattern). `.tanh()`,
-`.sin()`, `.cos()`, and `.clamp()` are forward-only so far too, for the
-same reason as `.unfold()` etc. above — `examples/dezero`'s own
-Tanh/Sin/Cos/Clip classes write their own backward composed from other
-now-native ops rather than calling `.backward()` through these directly.
+instead (a ReLU-style backward gate is the concrete pattern). `examples/
+dezero`'s own Tanh/Sin/Cos/Clip classes still write their own backward
+composed from other native ops rather than relying on this — both paths
+work, whichever a caller's own autograd style needs.
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()
@@ -1766,11 +1770,13 @@ in-place is unsafe).
 
 - dtype is F32 only (float64 has no fast path on GPU backends; scalar
   entry/exit points like `.item()` / `.to_array()` surface `Float`).
-- `.dot()` is rank-2 only. Batched 3D+ matmul is future work.
-- `.reshape()` requires contiguous input (a post-`transpose` reshape
-  must materialize first — currently go through
-  `Tensor.from((...).to_array())` explicitly).
-- `.softmax()` also requires contiguous input.
+- `.dot()` supports batched matmul (rank >= 3): leading dims must match
+  between the two operands, and the matmul itself runs over each pair's
+  trailing two axes (GPU-dispatched per batch slice).
+- `.reshape()` and `.softmax()` both accept non-contiguous input (a
+  `.transpose()` or `.permute()` result, say) — no manual materialize
+  step needed. `.reshape()` clones to a contiguous buffer first when the
+  source isn't already one; `.softmax()` reads strided input directly.
 
 ### Backends and device selection
 

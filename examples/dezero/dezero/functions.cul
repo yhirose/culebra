@@ -330,18 +330,14 @@ fn mean_squared_error(x0, x1) {
   dz.apply2(MeanSquaredError(), x0, x1)
 }
 
-fn one_hot_rows(labels, num_classes) {
-  labels.map(|label| range(num_classes).map(|j| if j == label {
-    1.0
-  } else {
-    0.0
-  }).collect())
-}
-
 # `t` is one Long class id per row (sparse labels), not one-hot — same
 # calling convention as upstream. Fused forward+backward: the softmax and
 # the cross-entropy are one Function, so backward is the closed-form
-# `(softmax(x) - one_hot(t)) / N` rather than composed sub-gradients.
+# `(softmax(x) - one_hot(t)) / N` rather than composed sub-gradients. The
+# one-hot and the per-row gather are both native Tensor ops (scatter_to_axis
+# + a masked sum), not a Culebra loop over rows/classes — that loop used to
+# force a host round-trip (`.to_array()`) every call, which is the whole
+# tensor for a batch-sized cross entropy in a training loop.
 class SoftmaxCrossEntropy {
   generation = 0
   inputs = nil
@@ -356,21 +352,20 @@ class SoftmaxCrossEntropy {
     probs = x.softmax()
     self.probs = probs
     n = x.shape()[0]
-    rows = probs.to_array()  # forces eval, so no separate Tensor.eval needed
-    mut total = 0.0
-    for i in range(n) {
-      p = Math.max(rows[i][self.t[i]], 1.0e-15)
-      total -= Math.log(p)
-    }
-    Tensor.from([total / to_float(n)])
+    c = x.shape()[1]
+    self.n = n
+    onehot = Tensor.scatter_to_axis(Tensor.from(self.t), Tensor.ones(n), c)
+    self.onehot = onehot
+    # Clamping the whole row (not just the selected class) matters here:
+    # unlike the old per-selected-element clamp, every class's log feeds the
+    # masked sum below, so an unclamped near-zero probability elsewhere in
+    # the row would turn a 0-mask entry into 0 * -inf = NaN.
+    picked = (onehot * probs.clamp(1.0e-15, 1.0).log()).sum(1)
+    picked.sum(0).reshape([1]) * (-1.0 / to_float(n))
   }
 
   backward(gy) {
-    x = self.inputs[0]
-    n = x.shape[0]
-    c = x.shape[1]
-    onehot = Tensor.from(one_hot_rows(self.t, c))
-    diff = (self.probs - onehot) * (1.0 / to_float(n))
+    diff = (self.probs - self.onehot) * (1.0 / to_float(self.n))
     dz.as_variable(diff) * gy
   }
 }

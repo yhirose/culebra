@@ -1473,17 +1473,22 @@ let v = Tensor.from([1.0, 2.0, 3.0, 4.0])      # [4]
 let m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
 ```
 
-#### `Tensor.concat(parts: Array) -> Tensor`
+#### `Tensor.concat(parts: Array, axis: Long = 0) -> Tensor`
 
-Tensorを軸0（行）方向に積み重ね、1つのmaterialized Tensorに
-します。すべてのpartはdtypeが一致し、軸0より後ろの次元も一致
-している必要があります。結果の行数は各partの行数の合計です。
-微分可能 — 勾配は各partの行範囲に切り分けて戻されます。
+Tensorを`axis`方向（既定は軸0＝行）に積み重ね、1つのTensorに
+します。すべてのpartはdtype・rank、`axis`以外の次元が一致して
+いる必要があります。結果の`axis`方向の長さは各partの合計です。
+微分可能 — 勾配は各partに対応する`axis`方向のwindowに切り分けて
+戻されます。
 
 ```culebra
 let a = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
 let b = Tensor.from([[5.0, 6.0]])              # [1, 2]
 let c = Tensor.concat([a, b])                  # [3, 2]
+
+let k1 = Tensor.randn(2, 4, 8)   # [B, T, D]
+let k2 = Tensor.randn(2, 1, 8)   # 新しい1ポジション分
+let kv = Tensor.concat([k1, k2], 1)  # [2, 5, 8] — KVキャッシュへの追記
 ```
 
 #### `Tensor.where(cond: Tensor, a, b) -> Tensor`
@@ -1635,22 +1640,22 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 `requires_grad`はforwardに伝播します — 勾配追跡する入力を持つop
 の出力も勾配を追跡します。微分可能なopは`+ - * /`、`.pow()`（底に
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
-`.softmax()`、`.log()`、`.transpose()`、`.reshape()`、`.slice()`、
-`Tensor.concat()`、`Tensor.where()`、`.index_select()` /
-`Tensor.index_add()`（互いが相手のVJP）。勾配は自動でun-broadcastされる
-ので、バッチ越しに加えたbiasは元の形状に和を取って戻ります。
-`.unfold()`、`.pad()`、`.fold()`、`.permute()`、`.narrow()`、
-`Tensor.scatter_to_axis()`は今のところforward-onlyです——これらを通した
-`.backward()`は例外を投げます。im2col方式のconvやpoolingレイヤーなど
-これらを使う学習ループは、今のところ自前でbackwardを書きます。
+`.softmax()`、`.log()`、`.tanh()`、`.sin()`、`.cos()`、`.clamp()`、
+`.transpose()`、`.reshape()`、`.slice()`、`Tensor.concat()`、
+`Tensor.where()`、`.index_select()` / `Tensor.index_add()`（互いが
+相手のVJP）。勾配は自動でun-broadcastされるので、バッチ越しに加えた
+biasは元の形状に和を取って戻ります。`.unfold()`、`.pad()`、
+`.fold()`、`.permute()`、`.narrow()`、`Tensor.scatter_to_axis()`は
+今のところforward-onlyです——これらを通した`.backward()`は例外を
+投げます。im2col方式のconvやpoolingレイヤーなどこれらを使う学習
+ループは、今のところ自前でbackwardを書きます。
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()`（および`.max()` /
 `.argmax()`）は恒久的に微分不可能です——比較を通した`.backward()`は常に
 例外を投げます（PyTorch/numpyと同じ）。0/1マスクは`*`で合成してください
-（ReLU系のbackward gateが具体例）。`.tanh()`・`.sin()`・`.cos()`・
-`.clamp()`も上記`.unfold()`等と同じ理由で今のところforward-onlyです——
-`examples/dezero`自身のTanh/Sin/Cos/Clipクラスが、他のnative化済みop
-から自前でbackwardを組み立てており、これらを直接`.backward()`で
-通す呼び手が無いためです。
+（ReLU系のbackward gateが具体例）。`examples/dezero`自身の
+Tanh/Sin/Cos/Clipクラスは、今もこれらのopから自前でbackwardを
+組み立てていますが、これはネイティブVJPと共存する選択の一つで
+あって必須ではありません——どちらの経路でも動きます。
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()
@@ -1726,10 +1731,13 @@ Tensorで意味づけしておらず、`@`は出力形状が変わるためin-pl
 
 - dtypeはF32のみ（float64はGPUバックエンドに高速パスがない。
   `.item()` / `.to_array()`などスカラー出口は`Float`を返す）
-- `.dot()`はrank-2のみ。3D+ batched matmulは将来検討
-- `.reshape()`は連続入力のみ（transpose後reshapeはmaterializeが必要 —
-  今は明示的に`Tensor.from((...).to_array())`を経由）
-- `.softmax()`も連続入力のみ
+- `.dot()`はbatched matmul対応（rank 3以上）——両オペランドの先頭
+  次元が一致していれば、それぞれの末尾2軸同士でmatmulが走る
+  （GPU上でもbatchのsliceごとにdispatchされる）
+- `.reshape()`・`.softmax()`とも非連続入力（`.transpose()`や
+  `.permute()`の結果など）をそのまま受け付ける——明示的な
+  materialize手順は不要。`.reshape()`は元が非連続なら内部で
+  連続バッファへclone、`.softmax()`はstrided入力を直接読む
 
 ### バックエンドとデバイス選択
 

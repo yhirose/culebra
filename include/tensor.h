@@ -256,6 +256,12 @@ struct TensorImpl {
   // start row for Slice.
   int64_t op_param = 0;
 
+  // Clip's lo/hi, needed again by its VJP mask. tensor_make_op's op_param
+  // is a single int64_t already spoken for above; the forward graph itself
+  // only keeps these inside the tl::array node. Unused by every other op.
+  float clip_lo = 0.0f;
+  float clip_hi = 0.0f;
+
   // --- Autograd ---
   // `grad` accumulates dL/dthis during backward(). It is always a
   // materialized Const tensor (own buffer, no graph) so it can never
@@ -940,8 +946,11 @@ inline TensorPtr tensor_log(TensorPtr a) {
 inline TensorPtr tensor_clamp(TensorPtr a, float lo, float hi) {
   auto v = _tl_guard([&] { return a->value.clamp(lo, hi); });
   auto dtype = a->dtype;
-  return tensor_make_op(Op::Clip, std::move(v), dtype,
-                        std::vector<TensorPtr>{std::move(a)});
+  auto out = tensor_make_op(Op::Clip, std::move(v), dtype,
+                            std::vector<TensorPtr>{std::move(a)});
+  out->clip_lo = lo;
+  out->clip_hi = hi;
+  return out;
 }
 
 // Fused MLP forward: sigmoid(W @ x + b). Bias is broadcast against
@@ -993,37 +1002,30 @@ inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
                         /*op_param=*/0, is_view);
 }
 
-// Stack tensors along axis 0 (rows). All parts must share dtype and all
-// dims past axis 0; the output's row count is the sum of the parts'.
-inline TensorPtr tensor_concat(std::vector<TensorPtr> parts) {
+// Stack tensors along `axis` (default 0, rows). All parts must share dtype,
+// rank, and every dim but `axis`; the output's `axis` length is the sum of
+// the parts'. `axis` rides in op_param (VJP re-derives each part's slice
+// from it and each part's own shape) — tl::concat itself validates rank/
+// shape/axis range, culebra only checks the one thing it doesn't know
+// about: Dtype.
+inline TensorPtr tensor_concat(std::vector<TensorPtr> parts,
+                               int64_t axis = 0) {
   if (parts.empty()) {
     throw CulebraError("ValueError", "Tensor.concat: empty list.");
   }
-  const auto& d0 = parts[0]->shape.dims;
   Dtype dt = parts[0]->dtype;
   for (const auto& p : parts) {
     if (p->dtype != dt) {
       throw CulebraError("ValueError", "Tensor.concat: dtype mismatch.");
-    }
-    const auto& pd = p->shape.dims;
-    if (pd.empty() || pd.size() != d0.size()) {
-      throw CulebraError("ValueError",
-                         "Tensor.concat: rank mismatch.");
-    }
-    for (size_t i = 1; i < pd.size(); i++) {
-      if (pd[i] != d0[i]) {
-        throw CulebraError("ValueError",
-                           "Tensor.concat: non-axis dims must match.");
-      }
     }
   }
   auto v = _tl_guard([&] {
     std::vector<tl::array> vs;
     vs.reserve(parts.size());
     for (const auto& p : parts) vs.push_back(p->value);
-    return tl::concat(vs);
+    return tl::concat(vs, static_cast<int>(axis));
   });
-  return tensor_make_op(Op::Concat, std::move(v), dt, std::move(parts));
+  return tensor_make_op(Op::Concat, std::move(v), dt, std::move(parts), axis);
 }
 
 // ===================== Autograd (reverse mode) =====================
@@ -1274,13 +1276,17 @@ inline void _tensor_vjp(const TensorPtr& n) {
           _tensor_slice_backward(g, n->inputs[0]->shape, dt, n->op_param));
       break;
     case Op::Concat: {
-      // Each part owns a contiguous row range of the output; route that
-      // slice of the upstream grad straight back to it.
+      // Each part owns a contiguous window of the output along op_param
+      // (the concat axis); route that window of the upstream grad straight
+      // back to it. tensor_narrow's own VJP is forward-only, but that
+      // guards *its* callers going through .backward() — used here as a
+      // plain extraction tool inside Concat's own VJP, it's fine.
+      int64_t axis = n->op_param;
       int64_t off = 0;
       for (const auto& part : n->inputs) {
-        int64_t rows = part->shape.dims[0];
-        _tensor_grad_add(part, tensor_slice(g, off, off + rows));
-        off += rows;
+        int64_t len = part->shape.dims[axis];
+        _tensor_grad_add(part, tensor_narrow(g, axis, off, off + len));
+        off += len;
       }
       break;
     }
@@ -1296,20 +1302,39 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Ne:
       throw CulebraError("ValueError",
           "Tensor.backward: comparisons are not differentiable.");
-    case Op::Tanh:
-    case Op::Sin:
-    case Op::Cos:
-    case Op::Clip:
-      // All four have well-defined VJPs (1-y*y, cos, -sin, the in-range
-      // mask), but nothing native needs them: dezero's Tanh/Sin/Cos/Clip
-      // classes (examples/dezero) write their own backward composed from
-      // other now-native ops (Mul, Sub, the comparisons above) rather than
-      // calling .backward() through these directly. Thrown rather than
-      // silently wrong once something does reach it, same as Unfold/Pad/
-      // Fold below.
-      throw CulebraError("ValueError",
-          "Tensor.backward: tanh / sin / cos / clip are not differentiable "
-          "yet.");
+    case Op::Tanh: {
+      // y = tanh(x); dx = g * (1 - y*y). y is this node's value. dezero's
+      // own Tanh class (examples/dezero) still writes this same rule by
+      // hand — both paths are supported, this one just lets a caller who
+      // isn't building a dezero-style graph call .backward() directly.
+      auto y2 = tensor_binop(Op::Mul, n, n);
+      auto dydx = tensor_binop(Op::Sub, tensor_scalar(1.0, dt), y2);
+      _tensor_grad_add(n->inputs[0], tensor_binop(Op::Mul, g, dydx));
+      break;
+    }
+    case Op::Sin: {
+      // y = sin(x); dx = g * cos(x).
+      auto cosx = tensor_unary(Op::Cos, n->inputs[0]);
+      _tensor_grad_add(n->inputs[0], tensor_binop(Op::Mul, g, cosx));
+      break;
+    }
+    case Op::Cos: {
+      // y = cos(x); dx = -g * sin(x).
+      auto sinx = tensor_unary(Op::Sin, n->inputs[0]);
+      _tensor_grad_add(n->inputs[0], neg(tensor_binop(Op::Mul, g, sinx)));
+      break;
+    }
+    case Op::Clip: {
+      // y = clamp(x, lo, hi); dx = g * (lo <= x <= hi ? 1 : 0). The two
+      // comparisons compose via multiply (0/1 masks), the same trick
+      // dezero's own Clip.backward uses via masked_gate.
+      const auto& x = n->inputs[0];
+      auto mask = _tl_guard(
+          [&] { return (x->value >= n->clip_lo) * (x->value <= n->clip_hi); });
+      _tensor_grad_add(x, tensor_binop(Op::Mul, g,
+                                       _tensor_wrap_const(std::move(mask), dt)));
+      break;
+    }
     case Op::Unfold:
     case Op::Pad:
     case Op::Fold:

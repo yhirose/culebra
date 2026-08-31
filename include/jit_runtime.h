@@ -2329,16 +2329,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_from(
   return _culebra_jit_tensor_register(std::move(impl));
 }
 
-// Tensor.concat([a, b, ...]) — stacks tensors along axis 0 (rows).
+// Tensor.concat([a, b, ...], axis) — stacks tensors along `axis` (default 0).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_concat(
-    JitArray* a, int64_t line, int64_t col) {
+    JitArray* a, int64_t axis, int64_t line, int64_t col) {
   std::vector<culebra::TensorPtr> parts;
   parts.reserve(a->size);
   for (size_t i = 0; i < a->size; i++) {
     if (a->items[i].tag != TAG_TENSOR) culebra::throw_type_error_at(line, col);
     parts.push_back(reinterpret_cast<JitTensor*>(a->items[i].data)->impl);
   }
-  return _culebra_jit_tensor_register(culebra::tensor_concat(std::move(parts)));
+  return _culebra_jit_tensor_register(
+      culebra::tensor_concat(std::move(parts), axis));
 }
 
 // .shape() — returns a fresh JitArray of Long.

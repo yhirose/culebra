@@ -7311,9 +7311,10 @@ inline JitValue _ns_tensor_from(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(
       culebra_runtime_tensor_from(_ns_adapt::take_array(a[0]), 0, 0));
 }
-inline JitValue _ns_tensor_concat(JitValue* a, int64_t) {
-  return _ns_adapt::v_tensor(
-      culebra_runtime_tensor_concat(_ns_adapt::take_array(a[0]), 0, 0));
+inline JitValue _ns_tensor_concat(JitValue* a, int64_t n) {
+  int64_t axis = n >= 2 ? _ns_adapt::take_long(a[1]) : 0;
+  return _ns_adapt::v_tensor(culebra_runtime_tensor_concat(
+      _ns_adapt::take_array(a[0]), axis, 0, 0));
 }
 inline JitValue _ns_tensor_where(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(culebra_runtime_tensor_where(
@@ -8269,7 +8270,7 @@ inline const NsMethod kNsRows_Tensor[] = {
   {"Tensor", "eval",     -1, &_ns_tensor_eval},
   {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, "String", "path"},
   {"Tensor", "from",      1, &_ns_tensor_from, nullptr, "Array",  "a"},
-  {"Tensor", "concat",    1, &_ns_tensor_concat, nullptr, "Array", "parts"},
+  {"Tensor", "concat",   -1, &_ns_tensor_concat, nullptr, "Array", "parts"},
   {"Tensor", "where",     3, &_ns_tensor_where},
   {"Tensor", "index_add", 3, &_ns_tensor_index_add},
   {"Tensor", "scatter_to_axis", 3, &_ns_tensor_scatter_to_axis},
@@ -10032,7 +10033,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   }
 
   // Tensor: zeros/ones/randn use the variadic (args_ptr, n, line, col)
-  // -> ptr signature; from takes a single Array (ptr, line, col);
+  // -> ptr signature; from takes a single Array (ptr, line, col); concat
+  // takes an Array plus the (already-defaulted) axis (ptr, axis, line, col);
   // shape is just (Tensor*) -> Array*.
   for (auto name : {rt::tensor_zeros, rt::tensor_ones, rt::tensor_randn}) {
     jit.module_->getOrInsertFunction(name, ptrTy, ptrTy,
@@ -10044,6 +10046,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_concat, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_shape, ptrTy, ptrTy);
