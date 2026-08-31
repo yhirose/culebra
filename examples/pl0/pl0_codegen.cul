@@ -1,0 +1,506 @@
+# PL/0, compiled instead of interpreted.
+#
+# `pl0.cul` (next to this file) evaluates the AST `Peg.parse` returns
+# directly: a `match` arm reads a node's shape and computes its value on the
+# spot. This file does the same parse, but instead of computing anything it
+# builds a `CodeGen.Module` -- Core-IR, from vendor/cpp-vmlib -- and hands the
+# finished program to `Module.run()`. The two are independent implementations
+# of the same language, and this file's samples/*.pas output is checked
+# against pl0.cul's own, which makes each the other's oracle: see
+# tests/test_pl0_codegen.cul (or run both by hand and diff).
+#
+# The interesting difference is a binder, not an evaluator: a variable
+# reference has to resolve to a (block, slot) or "which enclosing block's
+# variable is this" at bind time, because `CodeGen` cannot go back and ask the
+# AST again once a program is running. See "Name resolution" below, and
+# cpp-vmlib's own examples/pl0/binder.cc for the C++ twin of this file --
+# same four phases (collect declarations, scan free variables, solve captures
+# by fixpoint, emit), same PL/0, different host language.
+#
+# Run it:  culebra examples/pl0/pl0_codegen.cul examples/pl0/samples/square.pas
+#          culebra examples/pl0/pl0_codegen.cul --ir examples/pl0/samples/square.pas
+#          culebra examples/pl0/pl0_codegen.cul --bc examples/pl0/samples/square.pas
+
+let grammar = `
+  program    <- _ block '.' _
+
+  block      <- const var procedure statement
+  const      <- ('CONST' __ ident '=' _ number (',' _ ident '=' _ number)* ';' _)?
+  var        <- ('VAR' __ ident (',' _ ident)* ';' _)?      { no_ast_opt }
+  procedure  <- ('PROCEDURE' __ ident ';' _ block ';' _)*
+
+  statement  <- (assignment / call / statements / if / while / out / in)?
+  assignment <- ident ':=' _ expression
+  call       <- 'CALL' __ ident                             { no_ast_opt }
+  statements <- 'BEGIN' __ statement (';' _ statement )* 'END' __
+  if         <- 'IF' __ condition 'THEN' __ statement
+  while      <- 'WHILE' __ condition 'DO' __ statement
+  out        <- ('out' __ / 'write' __ / '!' _) expression  { no_ast_opt }
+  in         <- ('in' __ / 'read' __ / '?' _) ident         { no_ast_opt }
+
+  condition  <- odd / compare
+  odd        <- 'ODD' __ expression                         { no_ast_opt }
+  compare    <- expression compare_op expression
+  compare_op <- < '=' / '#' / '<=' / '<' / '>=' / '>' > _
+
+  expression <- sign? term (term_op term)*
+  sign       <- < [-+] > _
+  term_op    <- < [-+] > _
+
+  term       <- factor (factor_op factor)*
+  factor_op  <- < [*/] > _
+
+  factor     <- ident / number / '(' _ expression ')' _
+
+  ident      <- < [a-z] [a-z0-9]* > _
+  number     <- < [0-9]+ > _
+
+  ~_         <- [ \t\r\n]*
+  ~__        <- ![a-z0-9_] _
+`
+
+fn fail(node, msg) {
+  throw {kind: 'Pl0Error', message: msg, line: node.line, col: node.column}
+}
+
+# --- Phase 1: collect declarations -------------------------------------------
+#
+# One entry per PL/0 block (the outermost program counts as block 0), holding
+# only the *static* structure: which names this block declares and where its
+# nested procedures live. No values -- `CodeGen`'s variables are (block, slot)
+# pairs resolved once here, not names looked up while running.
+#
+# Every sibling procedure is registered before the first of them is walked
+# (two passes over `procedure`'s nodes below), so a call to a later sibling
+# resolves. Doing it in one pass -- register-then-immediately-descend -- is
+# the reason cpp-peglib's own pl0.cc fails on exactly this case.
+
+mut blocks = []          # {parent, name, consts, var_slot, var_names, procs, children, body}
+mut free = []            # per block: {"declaring_block:slot": (block, slot)}
+mut calls = []           # per block: [callee_block...]
+mut capture_index = []   # per block: {"declaring_block:slot": capture_index}
+
+fn declared_anywhere(block, name) {
+  mut b = block
+  while b != nil {
+    let bi = blocks[b]
+    if bi.consts.has(name) || bi.var_slot.has(name) || bi.procs.has(name) {
+      return true
+    }
+    b = bi.parent
+  }
+  false
+}
+
+fn check_fresh(block, name, at) {
+  if declared_anywhere(block, name) {
+    fail(at, "'{name}' is already defined")
+  }
+}
+
+fn collect(node, parent, name) {
+  let index = blocks.size()
+  blocks.push({parent: parent, name: name, consts: {}, var_slot: {},
+              var_names: [], procs: {}, children: [], body: node.nodes[3]})
+
+  let [cst, vr, prc, _] = node.nodes
+  for [cname, cvalue] in cst.nodes.iter().chunks(2) {
+    check_fresh(index, cname.token, cname)
+    blocks[index].consts[cname.token] = to_long(cvalue.token)
+  }
+  for vname in vr.nodes {
+    check_fresh(index, vname.token, vname)
+    let slot = blocks[index].var_names.size()
+    blocks[index].var_slot[vname.token] = slot
+    blocks[index].var_names.push(vname.token)
+  }
+  for [pname, _] in prc.nodes.iter().chunks(2) {
+    check_fresh(index, pname.token, pname)
+    blocks[index].procs[pname.token] = -1  # reserved; filled in below
+  }
+  for [pname, sub] in prc.nodes.iter().chunks(2) {
+    let child = collect(sub, index, pname.token)
+    blocks[index].procs[pname.token] = child
+    blocks[index].children.push(child)
+  }
+  index
+}
+
+# --- Name resolution ----------------------------------------------------------
+#
+# Three lookups, matching pl0.cul's three: reading a name sees constants and
+# variables; assigning sees the same but rejects a constant; CALL sees only
+# procedures. A procedure name read as a value is "undefined variable", which
+# is what pl0.cul itself reports.
+
+fn lookup_value(block, name) {
+  mut b = block
+  while b != nil {
+    let bi = blocks[b]
+    if bi.consts.has(name) { return {found: true, is_const: true, cval: bi.consts[name]} }
+    if bi.var_slot.has(name) { return {found: true, is_const: false, var: (b, bi.var_slot[name])} }
+    b = bi.parent
+  }
+  {found: false}
+}
+
+fn lookup_assign(block, name, at) {
+  mut b = block
+  while b != nil {
+    let bi = blocks[b]
+    if bi.consts.has(name) { fail(at, "cannot assign to constant '{name}'") }
+    if bi.var_slot.has(name) { return (b, bi.var_slot[name]) }
+    b = bi.parent
+  }
+  fail(at, "undefined variable '{name}'")
+}
+
+fn lookup_proc(block, name) {
+  mut b = block
+  while b != nil {
+    let bi = blocks[b]
+    if bi.procs.has(name) { return bi.procs[name] }
+    b = bi.parent
+  }
+  -1
+}
+
+# --- Phase 2: free variables ---------------------------------------------------
+#
+# A reference block doesn't declare is free, and has to be captured from
+# whichever ancestor does declare it. `solve_captures` below closes this over
+# the call graph: if f calls g, everything g captures that f doesn't own
+# itself must be captured by f too (recursion makes this a fixpoint, not a
+# single pass -- self-recursion is the case a single pass misses).
+
+fn note_ref(block, var) {
+  let (vb, vs) = var
+  if vb != block { free[block]["{vb}:{vs}"] = var }
+}
+
+fn scan_chain(nodes, block) {
+  for n in nodes {
+    if n.name != 'sign' && n.name != 'term_op' && n.name != 'factor_op' {
+      scan_expr(n, block)
+    }
+  }
+}
+
+fn scan_expr(node, block) {
+  match node {
+    {name: 'number'} => to_long(node.token),  # range-checked now, at bind time
+    {name: 'ident', token} => {
+      let r = lookup_value(block, token)
+      if !r.found { fail(node, "undefined variable '{token}'") }
+      if !r.is_const { note_ref(block, r.var) }
+    },
+    {name: 'expression', nodes} => scan_chain(nodes, block),
+    {name: 'term', nodes} => scan_chain(nodes, block),
+    _ => fail(node, "cannot evaluate {node.name}"),
+  }
+}
+
+fn scan_cond(node, block) {
+  match node {
+    {name: 'odd', nodes: [value]} => scan_expr(value, block),
+    {name: 'compare', nodes: [l, _op, r]} => {
+      scan_expr(l, block)
+      scan_expr(r, block)
+    },
+    _ => fail(node, "cannot evaluate {node.name} as a condition"),
+  }
+}
+
+fn scan_stmt(node, block) {
+  match node {
+    {name: 'statements', nodes} => nodes.for_each(|s| scan_stmt(s, block)),
+    {name: 'assignment', nodes: [name, value]} => {
+      note_ref(block, lookup_assign(block, name.token, name))
+      scan_expr(value, block)
+    },
+    {name: 'call', nodes: [name]} => {
+      let g = lookup_proc(block, name.token)
+      if g < 0 { fail(name, "undefined procedure '{name.token}'") }
+      calls[block].push(g)
+    },
+    {name: 'if', nodes: [cond, body]} => {
+      scan_cond(cond, block)
+      scan_stmt(body, block)
+    },
+    {name: 'while', nodes: [cond, body]} => {
+      scan_cond(cond, block)
+      scan_stmt(body, block)
+    },
+    {name: 'out', nodes: [value]} => scan_expr(value, block),
+    {name: 'in', nodes: [name]} => note_ref(block, lookup_assign(block, name.token, name)),
+    {name: 'statement'} => nil,  # the empty statement a trailing `;` leaves
+    _ => fail(node, "cannot execute {node.name}"),
+  }
+}
+
+# Nested procedures scan before the block's own body, so a diagnostic comes
+# out in source order (PL/0 writes PROCEDURE declarations ahead of the
+# statement they precede).
+fn scan_block(block) {
+  for child in blocks[block].children { scan_block(child) }
+  scan_stmt(blocks[block].body, block)
+}
+
+fn solve_captures() {
+  mut changed = true
+  while changed {
+    changed = false
+    for f in range(blocks.size()) {
+      for g in calls[f] {
+        for var in free[g].values() {
+          let (vb, vs) = var
+          if vb != f {
+            let key = "{vb}:{vs}"
+            if !free[f].has(key) {
+              free[f][key] = var
+              changed = true
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for f in range(blocks.size()) {
+    mut i = 0
+    for var in free[f].values() {
+      let (vb, vs) = var
+      capture_index[f]["{vb}:{vs}"] = i
+      i = i + 1
+    }
+  }
+}
+
+# `f`'s own view of a variable: its own slot, or the index `f` captures it at.
+fn access(f, var) {
+  let (vb, vs) = var
+  cond {
+    vb == f => {kind: 'local', index: vs},
+    _ => {kind: 'capture', index: capture_index[f]["{vb}:{vs}"]},
+  }
+}
+
+# The forwarding table for a call from `f` to `g`: for each variable `g`
+# captures, resolve it in `f`'s own frame. A self-recursive call (g == f)
+# forwards `f`'s own captures straight through, which is why this is per call
+# site and not per function -- see cpp-vmlib's README for fib.pas's version
+# of this exact table.
+fn make_capture_map(m, f, g) {
+  let cmap = m.capture_map_new()
+  for var in free[g].values() {
+    let a = access(f, var)
+    m.capture_map_push(cmap, kind: a.kind, index: a.index)
+  }
+  m.add_capture_map(cmap)
+}
+
+# --- Phase 3: emit -------------------------------------------------------------
+
+fn make_list(m, items) {
+  let list = m.list_new()
+  for item in items { m.list_push(list, item) }
+  list
+}
+
+fn binop_name(tok) {
+  match tok {
+    '+' => 'add',
+    '-' => 'sub',
+    '*' => 'mul',
+    '/' => 'div',
+  }
+}
+
+fn cmp_name(tok) {
+  match tok {
+    '=' => 'eq',
+    '#' => 'ne',
+    '<' => 'lt',
+    '<=' => 'le',
+    '>' => 'gt',
+    '>=' => 'ge',
+  }
+}
+
+# `expression <- sign? term (term_op term)*` and `term <- factor (factor_op
+# factor)*` are the same shape: an optional leading sign, a first operand,
+# then operator/operand pairs, left-associated. The sign binds to the first
+# term only, so -a*b+c is ((-(a*b)) + c) -- same fact pl0.cul's own `chain`
+# leans on, restated here as IR construction instead of arithmetic.
+fn emit_chain(m, nodes, f) {
+  let [head, ...rest] = nodes
+  if head.name == 'sign' {
+    let [first, ...pairs] = rest
+    mut acc = emit_expr(m, first, f)
+    if head.token == '-' {
+      acc = m.unary(op: 'neg', operand: acc, line: head.line, col: head.column)
+    }
+    emit_fold(m, pairs, acc, f)
+  } else {
+    emit_fold(m, rest, emit_expr(m, head, f), f)
+  }
+}
+
+fn emit_fold(m, pairs, acc, f) {
+  mut value = acc
+  for [op, operand] in pairs.iter().chunks(2) {
+    let rhs = emit_expr(m, operand, f)
+    value = m.binary(op: binop_name(op.token), lhs: value, rhs: rhs,
+                     line: op.line, col: op.column)
+  }
+  value
+}
+
+fn emit_expr(m, node, f) {
+  match node {
+    {name: 'number'} =>
+      m.literal(v: to_long(node.token), line: node.line, col: node.column),
+    {name: 'ident', token} => {
+      let r = lookup_value(f, token)
+      if r.is_const {
+        m.literal(v: r.cval, line: node.line, col: node.column)
+      } else {
+        let a = access(f, r.var)
+        m.var_ref(kind: a.kind, index: a.index, line: node.line, col: node.column)
+      }
+    },
+    {name: 'expression', nodes} => emit_chain(m, nodes, f),
+    {name: 'term', nodes} => emit_chain(m, nodes, f),
+    _ => fail(node, "cannot evaluate {node.name}"),
+  }
+}
+
+# ODD e is e mod 2 != 0. cpp-peglib's own pl0.cc reads it as e != 0 in both of
+# its lanes, agreeing with itself while disagreeing with the language -- see
+# cpp-vmlib's examples/pl0/README.md for the sample that catches it.
+fn emit_cond(m, node, f) {
+  match node {
+    {name: 'odd', nodes: [value]} => {
+      let e = emit_expr(m, value, f)
+      let ln = node.line
+      let cl = node.column
+      let rem = m.binary(op: 'mod', lhs: e, rhs: m.literal(v: 2, line: ln, col: cl),
+                         line: ln, col: cl)
+      m.binary(op: 'ne', lhs: rem, rhs: m.literal(v: 0, line: ln, col: cl),
+              line: ln, col: cl)
+    },
+    {name: 'compare', nodes: [l, op, r]} => {
+      let lhs = emit_expr(m, l, f)
+      let rhs = emit_expr(m, r, f)
+      m.binary(op: cmp_name(op.token), lhs: lhs, rhs: rhs, line: op.line, col: op.column)
+    },
+    _ => fail(node, "cannot evaluate {node.name} as a condition"),
+  }
+}
+
+fn emit_stmt(m, node, f) {
+  match node {
+    {name: 'statements', nodes} =>
+      m.block(stmts_list: make_list(m, nodes.map(|n| emit_stmt(m, n, f))),
+             line: node.line, col: node.column),
+    {name: 'assignment', nodes: [name, value]} => {
+      let var = lookup_assign(f, name.token, name)
+      let v = emit_expr(m, value, f)
+      let a = access(f, var)
+      m.assign(kind: a.kind, index: a.index, value: v, line: node.line, col: node.column)
+    },
+    {name: 'call', nodes: [name]} => {
+      let g = lookup_proc(f, name.token)
+      let cmap = make_capture_map(m, f, g)
+      m.call(func: g, cmap: cmap, line: node.line, col: node.column)
+    },
+    {name: 'if', nodes: [cond, body]} => {
+      let c = emit_cond(m, cond, f)
+      let t = emit_stmt(m, body, f)
+      m.make_if(cond: c, then_branch: t, line: node.line, col: node.column)
+    },
+    {name: 'while', nodes: [cond, body]} => {
+      let c = emit_cond(m, cond, f)
+      let b = emit_stmt(m, body, f)
+      m.make_while(cond: c, body: b, line: node.line, col: node.column)
+    },
+    {name: 'out', nodes: [value]} => {
+      let v = emit_expr(m, value, f)
+      m.intrinsic(name: 'print', args_list: make_list(m, [v]),
+                 line: node.line, col: node.column)
+    },
+    {name: 'in', nodes: [name]} => {
+      let var = lookup_assign(f, name.token, name)
+      let read = m.intrinsic(name: 'readint', args_list: make_list(m, []),
+                             line: node.line, col: node.column)
+      let a = access(f, var)
+      m.assign(kind: a.kind, index: a.index, value: read, line: node.line, col: node.column)
+    },
+    {name: 'statement'} =>
+      m.block(stmts_list: make_list(m, []), line: node.line, col: node.column),
+    _ => fail(node, "cannot execute {node.name}"),
+  }
+}
+
+# --- Driver --------------------------------------------------------------------
+
+fn build(m, root) {
+  collect(root, nil, 'main')
+  for _ in range(blocks.size()) {
+    free.push({})
+    calls.push([])
+    capture_index.push({})
+  }
+  scan_block(0)
+  solve_captures()
+
+  # Blocks and funcs share indices by construction: block 0 (the program's
+  # own outermost scope) is emitted first, so it becomes func #0, the entry
+  # point CodeGen requires.
+  for f in range(blocks.size()) {
+    let body = emit_stmt(m, blocks[f].body, f)
+    let func = m.add_func(name: blocks[f].name, num_locals: blocks[f].var_names.size(),
+                          num_captures: free[f].size(), body: body)
+    for i in range(blocks[f].var_names.size()) {
+      m.set_local_name(func: func, index: i, name: blocks[f].var_names[i])
+    }
+    mut i = 0
+    for var in free[f].values() {
+      let (vb, vs) = var
+      m.set_capture_name(func: func, index: i, name: blocks[vb].var_names[vs])
+      i = i + 1
+    }
+  }
+}
+
+let want_ir = Sys.argv.contains('--ir')
+let want_bc = Sys.argv.contains('--bc')
+let args = Sys.argv.filter(|a| a != '--ir' && a != '--bc')
+if args.empty() {
+  println("usage: culebra pl0_codegen.cul [--ir | --bc] PROGRAM.pas")
+  Sys.exit(1)
+}
+
+try {
+  # `program <- _ block '.' _` folds to a single child, so the root that
+  # arrives is the block itself -- same fact pl0.cul's own driver leans on.
+  let tree = Peg.parse(grammar, FS.read(args[0]), path: args[0])
+  let m = CodeGen.Module.new()
+  build(m, tree)
+  m.verify()
+  if want_ir {
+    print(m.dump_ir())
+  } else if want_bc {
+    print(m.dump_bc())
+  } else {
+    m.run()
+  }
+} catch e {
+  match e {
+    {kind: 'Pl0Error'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
+    {kind: 'PegError'} => println(e.message),
+    {kind: 'IrError'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
+    _ => throw e,
+  }
+  Sys.exit(1)
+}

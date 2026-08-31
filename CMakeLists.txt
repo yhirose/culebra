@@ -2033,6 +2033,14 @@ add_test(NAME io_stdin_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/io_stdin_test.sh
                  $<TARGET_FILE:culebra>)
 
+# examples/pl0/pl0_codegen.cul against examples/pl0/pl0.cul — two independent
+# implementations of PL/0, each the other's oracle — across interp / JIT / AOT
+# (needs `culebra build` for the AOT leg, and a stdin pipe for read.pas, so a
+# plain .cul sweep test can't drive this).
+add_test(NAME pl0_codegen_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/pl0_codegen_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # Log records on stderr — content (levels, fields, filtering, child binding)
 # across interp / JIT / AOT (logs never reach stdout, so the .cul sweep can't
 # verify them).

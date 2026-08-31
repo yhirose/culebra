@@ -73,8 +73,9 @@ CLI（`src/main.cc`）はこれに加え、`inspect`・`print`・`println`を
 32. [`Deque`](#32-deque) — 両端キュー、両端のpush/popが償却O(1)
 33. [`PriorityQueue`](#33-priorityqueue) — 二分ヒープ、push/popがO(log n)
 34. [`Peg`](#34-peg) — PEGパーサジェネレータ。文法を書くと構文木が返る
-35. [設計上の注記](#35-設計上の注記)
-36. [未収録（将来検討）](#36-未収録将来検討)
+35. [`CodeGen`](#35-codegen) — 小さな言語のIRを手で組み立てて実行する
+36. [設計上の注記](#36-設計上の注記)
+37. [未収録（将来検討）](#37-未収録将来検討)
 
 **目的別索引**
 
@@ -6045,7 +6046,134 @@ actionが投げたものは何であれ — culebraの`throw`、`sv`の誤用に
 機械生成のネストに対する規則入場の深度ガードは引き続き効くが、
 木の深さの`ValueError`は効かない — それを課す対象の木構築パス自体が無いので。
 
-## 35. 設計上の注記
+## 35. `CodeGen`
+
+閉じた中間表現(IR)と、それを実行するレジスタ方式のbytecodeコンパイラ・実行器 ——
+[cpp-vmlib](https://github.com/yhirose/cpp-vmlib)。`Peg`がcpp-peglibを取り込むのと
+同じ形でvendorしている。`Peg`が構文木を返すのに対して、`CodeGen`はその構文木で
+何をするかを置く場所を提供する: `Peg.parse`が返した木を`match`で辿りながら、
+小さな言語のIRを手で組み立てて実行する。
+
+```culebra
+let m = CodeGen.Module.new()
+let forty_two = m.binary(op: 'add', lhs: m.literal(v: 40, line: 1, col: 1),
+                         rhs: m.literal(v: 2, line: 1, col: 1), line: 1, col: 1)
+
+let args = m.list_new()
+m.list_push(args, forty_two)
+let print_stmt = m.intrinsic(name: 'print', args_list: args, line: 1, col: 1)
+
+let stmts = m.list_new()
+m.list_push(stmts, print_stmt)
+let body = m.block(stmts_list: stmts, line: 1, col: 1)
+
+m.add_func(name: 'main', num_locals: 0, num_captures: 0, body: body)
+m.verify()
+m.run()  # => 42
+```
+
+`examples/pl0/pl0_codegen.cul`が実例。`examples/pl0/pl0.cul`が直接評価している
+同じPL/0の文法を、`CodeGen`のIRにコンパイルしてから実行する形に書き直したもの。
+
+### IRノードはオブジェクトでなく`Long`
+
+`Module`のbuilderメソッドはどれも、モジュール自身のノード表に対する素の`Long`
+(index)を返す ——handleではない。小さな式木を組み立てて、その数値を繋いでいく:
+
+```culebra
+let m = CodeGen.Module.new()
+let a = m.literal(v: 3, line: 1, col: 1)
+let b = m.literal(v: 4, line: 1, col: 1)
+let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
+```
+
+`Block`の文並び・`Call`のcapture転送・一部の`Object`メソッドは、culebraの普通の
+呼び出しのような可変長引数を取れない —— そこで小さなステージング用listを介する:
+`list_new()`がlist idを返し、`list_push(list, value)`がノードidを追加し、
+そのlistは`block()`か`intrinsic()`に渡した瞬間に消費されて消える。渡した後に
+同じlist idを使い回すのは未定義。
+
+### プログラムを組み立てる
+
+| 呼び出し | 組み立てるもの |
+| --- | --- |
+| `CodeGen.Module.new()` | 空のmodule |
+| `m.literal(v:, line:, col:)` | 整数定数 |
+| `m.var_ref(kind:, index:, line:, col:)` | local/captureスロット`index`の読み |
+| `m.unary(op:, operand:, line:, col:)` | `op`は`'neg'` |
+| `m.binary(op:, lhs:, rhs:, line:, col:)` | `op`は`add sub mul div mod eq ne lt le gt ge`のいずれか |
+| `m.assign(kind:, index:, value:, line:, col:)` | local/captureスロット`index`への書き |
+| `m.make_if(cond:, then_branch:, line:, col:)` | `else`の無い`if` |
+| `m.make_if_else(cond:, then_branch:, else_branch:, line:, col:)` | `if`/`else` |
+| `m.make_while(cond:, body:, line:, col:)` | ループ |
+| `m.block(stmts_list:, line:, col:)` | 文の並び。ステージング用listを消費する |
+| `m.call(func:, cmap:, line:, col:)` | 関数index `func`の呼び出し。captureはcapture-map `cmap`経由で転送 |
+| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`(引数1個)か`'readint'`(引数0個) |
+| `m.list_new()` | ステージング用list。`stmts_list:`/`args_list:`に渡す |
+| `m.list_push(list:, value:)` | ステージング用listにノードidを追加する |
+| `m.add_func(name:, num_locals:, num_captures:, body:)` | 関数。index を返す(`funcs[0]`が`run()`の開始点) |
+| `m.set_local_name(func:, index:, name:)` | localに名前を付ける(診断用のみ) |
+| `m.set_capture_name(func:, index:, name:)` | captureに名前を付ける(診断用のみ) |
+| `m.capture_map_new()` | ステージング用capture map |
+| `m.capture_map_push(cmap:, kind:, index:)` | 転送する変数を1つ追加する |
+| `m.add_capture_map(cmap:)` | 完成させる。結果を`call()`の`cmap:`に渡す |
+| `m.verify()` | モジュールの構造を検査する。壊れていれば`IrError` |
+| `m.run()` | verifyしてから実行する |
+| `m.dump_ir()` | 木の可読なダンプ(デバッグ用) |
+| `m.dump_bc()` | コンパイル済みbytecodeの可読なダンプ(デバッグ用) |
+
+`kind:`は`'local'`(その関数自身のスロット)か`'capture'`(外側から借りたスロット)。
+変数参照は実行時の名前解決ではない —— 後述の「変数はcaptureであり静的リンクでは
+ない」を参照。
+
+ステージング用listやcapture mapは、`block()`/`intrinsic()`/`call()`に渡した
+瞬間に消費されて消える。渡した後に同じidを使い回すのは未定義。
+
+### 変数はcaptureであり静的リンクではない
+
+変数参照は、実行中の関数自身のフレームのスロット(`kind: 'local'`)か、外側の
+フレームから借りたスロット(`kind: 'capture'`)のどちらかを指す。教科書的な
+静的スコープVMにある「レベル」という概念は無い: 静的リンクは変数を宣言した
+フレームがまだスタック上に生きていることを前提にするが、これはクロージャで
+破綻する。だからcapture転送という形にしておけば、クロージャが後から来ても
+`var_ref`の意味を変えずに済む。
+
+呼び出しごとの転送表は**呼び出し側**が持つものであって、呼ばれる関数側では
+ない。`examples/pl0/pl0_codegen.cul`自身のfib型のプロシージャは、自己再帰の
+呼び出しでは自分のcaptureをそのまま転送し、最初の呼び出しでは呼び出し元の
+localを転送する —— 同じ呼び出し先に対して2種類の転送表があるのは、自己再帰の
+呼び出しが要求するものを関数単位の表では表現できないからだ(この点の詳しい
+説明はcpp-vmlibのREADMEを参照)。
+
+### エラー・割り込み・再帰
+
+0除算・未初期化の読み・壊れたモジュール・暴走する再帰 —— 実行時のあらゆる
+失敗は`kind: 'IrError'`の`CulebraError`として送出され、他のエラーと同じように
+捕捉できる:
+
+```culebra
+let m = CodeGen.Module.new()  # funcsが1つも無い -- verify()が検知する
+inspect(try {
+  m.run()
+} catch e {
+  e.kind
+})  # => 'IrError'
+```
+
+`CodeGen`で組み立てたプログラムは、他の実行中のculebraコードと同じように
+割り込み可能(Ctrl+C、isolate自身のcancel)であり、暴走する再帰呼び出しは
+プロセス自身のスタックを溢れさせるのではなく`IrError`(`"recursion limit
+exceeded"`)を送出する。
+
+### 対象範囲
+
+値は整数のみ —— 文字列・浮動小数点・`nil`・オブジェクト参照は無い —— であり、
+クロージャ・第一級関数・generatorも無い。変数のcaptureはフロントエンドがIRを
+組み立てる時点で一度だけ解決され、実行時には解決されない。`CodeGen.Module`は
+isolateの境界を越えられない(`Isolate.spawn`/`Parallel.map`のworkerはそれぞれ
+自分自身のModuleを組み立てる)。
+
+## 36. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -6101,7 +6229,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 36. 未収録（将来検討）
+## 37. 未収録（将来検討）
 
 ### 重量級データ構造
 

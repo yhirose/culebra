@@ -75,8 +75,9 @@ Conventions used below:
 32. [`Deque`](#32-deque) — double-ended queue, O(1) amortized push/pop at either end
 33. [`PriorityQueue`](#33-priorityqueue) — binary min-heap, O(log n) push/pop
 34. [`Peg`](#34-peg) — PEG parser generator: write a grammar, get a syntax tree
-35. [Design notes](#35-design-notes)
-36. [Not included (yet)](#36-not-included-yet)
+35. [`CodeGen`](#35-codegen) — build a small language's IR by hand and run it
+36. [Design notes](#36-design-notes)
+37. [Not included (yet)](#37-not-included-yet)
 
 **Where to find what**
 
@@ -6221,7 +6222,137 @@ is no tree to optimize); the rule-entry depth guard above still applies, but
 the tree-depth `ValueError` does not — there is no separate
 tree-materialization pass for it to bound.
 
-## 35. Design notes
+## 35. `CodeGen`
+
+A closed intermediate representation and the register-bytecode compiler and
+executor that run it — [cpp-vmlib](https://github.com/yhirose/cpp-vmlib),
+vendored the same way `Peg` vendors cpp-peglib. Where `Peg` gets you a syntax
+tree, `CodeGen` gets you a place to put what you do with one: build a small
+language's IR by hand, from a `match` over the tree `Peg.parse` returned, and
+run it.
+
+```culebra
+let m = CodeGen.Module.new()
+let forty_two = m.binary(op: 'add', lhs: m.literal(v: 40, line: 1, col: 1),
+                         rhs: m.literal(v: 2, line: 1, col: 1), line: 1, col: 1)
+
+let args = m.list_new()
+m.list_push(args, forty_two)
+let print_stmt = m.intrinsic(name: 'print', args_list: args, line: 1, col: 1)
+
+let stmts = m.list_new()
+m.list_push(stmts, print_stmt)
+let body = m.block(stmts_list: stmts, line: 1, col: 1)
+
+m.add_func(name: 'main', num_locals: 0, num_captures: 0, body: body)
+m.verify()
+m.run()  # => 42
+```
+
+`examples/pl0/pl0_codegen.cul` is the worked example: the same PL/0 grammar
+`examples/pl0/pl0.cul` interprets directly, compiled to `CodeGen` IR instead.
+
+### IR nodes are `Long`s, not objects
+
+Every builder call on a `Module` returns a plain `Long` — an index into the
+module's own node table, not a handle. Build a small expression tree and
+thread the numbers through:
+
+```culebra
+let m = CodeGen.Module.new()
+let a = m.literal(v: 3, line: 1, col: 1)
+let b = m.literal(v: 4, line: 1, col: 1)
+let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sum is a Long
+```
+
+A `Block`'s statements, a `Call`'s capture forwarding, and a set of `Object`
+methods can't be variadic arguments the way a normal culebra call's are — so
+they go through a small staging list instead: `list_new()` returns a list id,
+`list_push(list, value)` appends a node id to it, and the list is consumed
+(and gone) the moment it's handed to `block()` or `intrinsic()`. Reusing a
+list id afterward is undefined.
+
+### Building a program
+
+| Call | Builds |
+| --- | --- |
+| `CodeGen.Module.new()` | an empty module |
+| `m.literal(v:, line:, col:)` | an integer constant |
+| `m.var_ref(kind:, index:, line:, col:)` | a read of local/capture slot `index` |
+| `m.unary(op:, operand:, line:, col:)` | `op` is `'neg'` |
+| `m.binary(op:, lhs:, rhs:, line:, col:)` | `op` is one of `add sub mul div mod eq ne lt le gt ge` |
+| `m.assign(kind:, index:, value:, line:, col:)` | a write to local/capture slot `index` |
+| `m.make_if(cond:, then_branch:, line:, col:)` | `if` with no `else` |
+| `m.make_if_else(cond:, then_branch:, else_branch:, line:, col:)` | `if`/`else` |
+| `m.make_while(cond:, body:, line:, col:)` | a loop |
+| `m.block(stmts_list:, line:, col:)` | a sequence, consuming a staging list |
+| `m.call(func:, cmap:, line:, col:)` | a call to function index `func`, forwarding captures via capture-map `cmap` |
+| `m.intrinsic(name:, args_list:, line:, col:)` | `name` is `'print'` (1 arg) or `'readint'` (0 args) |
+| `m.list_new()` | a staging list, for `stmts_list:`/`args_list:` above |
+| `m.list_push(list:, value:)` | appends a node id to a staging list |
+| `m.add_func(name:, num_locals:, num_captures:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |
+| `m.set_local_name(func:, index:, name:)` | names a local, for diagnostics only |
+| `m.set_capture_name(func:, index:, name:)` | names a capture, for diagnostics only |
+| `m.capture_map_new()` | a staging capture map |
+| `m.capture_map_push(cmap:, kind:, index:)` | appends one forwarded variable to it |
+| `m.add_capture_map(cmap:)` | finishes it; the result is what `call()`'s `cmap:` takes |
+| `m.verify()` | checks the module structurally; raises `IrError` if malformed |
+| `m.run()` | verifies, then executes |
+| `m.dump_ir()` | a readable dump of the tree, for debugging |
+| `m.dump_bc()` | a readable dump of the compiled bytecode, for debugging |
+
+`kind:` is `'local'` (this function's own slot) or `'capture'` (borrowed from
+an enclosing one). A variable reference is never a name lookup at run
+time — see "Variables are captures" below.
+
+A staging list or capture map is consumed — and gone — the moment it's handed
+to `block()`/`intrinsic()`/`call()`; reusing its id afterward is undefined.
+
+### Variables are captures, not static links
+
+A variable reference names either a slot in the running function's own frame
+(`kind: 'local'`) or a slot borrowed from an enclosing one (`kind: 'capture'`).
+There is no "level" the way a textbook static-scoping VM might have one: a
+static link assumes the frame that declared a variable is still on the stack,
+which a closure breaks, so capture forwarding is what survives one arriving
+later without `var_ref`'s meaning having to change.
+
+The forwarding table for a call belongs to the **call site**, not the
+function being called: `examples/pl0/pl0_codegen.cul`'s own `fib`-shaped
+procedure forwards its own captures unchanged on its recursive call, and
+forwards its caller's locals on the first call — two different tables for the
+same callee, because a per-function table can't express what a self-recursive
+call needs (see cpp-vmlib's README for the fuller version of this point).
+
+### Errors, interruption, and recursion
+
+Every runtime failure — divide by zero, an uninitialized read, a malformed
+module, a runaway recursion — raises `CulebraError` with `kind: 'IrError'`,
+catchable like any other:
+
+```culebra
+let m = CodeGen.Module.new()  # no funcs at all -- verify() catches it
+inspect(try {
+  m.run()
+} catch e {
+  e.kind
+})  # => 'IrError'
+```
+
+A `CodeGen`-built program is interruptible (Ctrl+C, an isolate's own cancel)
+the same way any other running culebra code is, and a runaway recursive call
+raises `IrError` (`"recursion limit exceeded"`) rather than overflowing the
+process's own stack.
+
+### Scope
+
+Values are integers only — no strings, floats, `nil`, or object references —
+and there are no closures, first-class functions or generators; a variable's
+capture is resolved once, when a front end builds the IR, not at run time. A
+`CodeGen.Module` cannot cross an isolate boundary (`Isolate.spawn`/
+`Parallel.map`'s workers each build their own).
+
+## 36. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -6277,7 +6408,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 36. Not included (yet)
+## 37. Not included (yet)
 
 ### Heavier data structures
 

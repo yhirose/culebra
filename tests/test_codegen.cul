@@ -1,0 +1,187 @@
+# CodeGen.Module -- a script-visible builder over cpp-vmlib's Core-IR and its
+# register-bytecode compiler/executor (vendor/cpp-vmlib). IR nodes are plain
+# Long values (coreir::NodeId), not handles: wrap.h can only marshal scalars
+# and other wrapped handles, never an array, so a Block's statements, a
+# Call's arguments and a capture map's entries all go through the small
+# generic list-staging helpers (list_new/list_push,
+# capture_map_new/capture_map_push) rather than being passed directly.
+#
+# This exercises the builder API directly, by hand, without a front end --
+# examples/pl0/pl0_codegen.cul is the front end that actually uses this to
+# build something worth running.
+
+fn stmt_block(m, stmts) {
+  let list = m.list_new()
+  for s in stmts { m.list_push(list, s) }
+  m.block(stmts_list: list, line: 1, col: 1)
+}
+
+fn print_stmt(m, value) {
+  let args = m.list_new()
+  m.list_push(args, value)
+  m.intrinsic(name: 'print', args_list: args, line: 1, col: 1)
+}
+
+# --- Arithmetic, via print's captured stdout. ---
+{
+  let m = CodeGen.Module.new()
+  let forty = m.literal(v: 40, line: 1, col: 1)
+  let two = m.literal(v: 2, line: 1, col: 1)
+  let sum = m.binary(op: 'add', lhs: forty, rhs: two, line: 1, col: 1)
+  let body = stmt_block(m, [print_stmt(m, sum)])
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, body: body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "42\n")
+}
+
+# --- A local variable: assign then read. ---
+{
+  let m = CodeGen.Module.new()
+  let ten = m.literal(v: 10, line: 1, col: 1)
+  let assign = m.assign(kind: 'local', index: 0, value: ten, line: 1, col: 1)
+  let x = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  let doubled = m.binary(op: 'mul', lhs: x, rhs: m.literal(v: 2, line: 1, col: 1),
+                         line: 1, col: 1)
+  let body = stmt_block(m, [assign, print_stmt(m, doubled)])
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, body: body)
+  m.set_local_name(func: 0, index: 0, name: 'x')
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "20\n")
+}
+
+# --- Control flow: a while loop counting down. ---
+{
+  let m = CodeGen.Module.new()
+  let zero = m.literal(v: 0, line: 1, col: 1)
+  let one = m.literal(v: 1, line: 1, col: 1)
+  let init = m.assign(kind: 'local', index: 0, value: m.literal(v: 3, line: 1, col: 1),
+                      line: 1, col: 1)
+  let x = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  let cond = m.binary(op: 'gt', lhs: x, rhs: zero, line: 1, col: 1)
+  let dec = m.assign(kind: 'local', index: 0,
+                     value: m.binary(op: 'sub', lhs: x, rhs: one, line: 1, col: 1),
+                     line: 1, col: 1)
+  let body_stmts = stmt_block(m, [print_stmt(m, x), dec])
+  let loop = m.make_while(cond: cond, body: body_stmts, line: 1, col: 1)
+  let body = stmt_block(m, [init, loop])
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, body: body)
+  m.set_local_name(func: 0, index: 0, name: 'x')
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "3\n2\n1\n")
+}
+
+# --- A capture forwarded through a self-recursive call unchanged -- the
+# exact shape examples/pl0/README.md documents for fib.pas. `countdown`
+# doesn't own `n`; it captures main's, and each recursive call forwards
+# `countdown`'s own capture[0] straight through (a per-call-site forwarding
+# table, not a per-function one -- see cpp-vmlib's README for why that
+# distinction is what makes self-recursion work at all).
+{
+  let m = CodeGen.Module.new()
+
+  # main: n = 3; CALL countdown  (forwards local[0] as countdown's capture[0])
+  let main_cmap = m.capture_map_new()
+  m.capture_map_push(main_cmap, kind: 'local', index: 0)
+  let main_call = m.call(func: 1, cmap: m.add_capture_map(main_cmap), line: 1, col: 1)
+  let init = m.assign(kind: 'local', index: 0, value: m.literal(v: 3, line: 1, col: 1),
+                      line: 1, col: 1)
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, body:
+             stmt_block(m, [init, main_call]))
+  m.set_local_name(func: 0, index: 0, name: 'n')
+
+  # countdown: capture[0] is n. if n <= 0 {} else { print(n); n -= 1; CALL countdown }
+  let n = m.var_ref(kind: 'capture', index: 0, line: 1, col: 1)
+  let base_cond = m.binary(op: 'le', lhs: n, rhs: m.literal(v: 0, line: 1, col: 1),
+                           line: 1, col: 1)
+  let dec = m.assign(kind: 'capture', index: 0,
+                     value: m.binary(op: 'sub', lhs: n, rhs: m.literal(v: 1, line: 1, col: 1),
+                                     line: 1, col: 1),
+                     line: 1, col: 1)
+  let self_cmap = m.capture_map_new()
+  m.capture_map_push(self_cmap, kind: 'capture', index: 0)
+  let rec_call = m.call(func: 1, cmap: m.add_capture_map(self_cmap), line: 1, col: 1)
+  let else_body = stmt_block(m, [print_stmt(m, n), dec, rec_call])
+  let countdown_body = m.make_if_else(cond: base_cond, then_branch: m.block(stmts_list: m.list_new(), line: 1, col: 1),
+                                      else_branch: else_body, line: 1, col: 1)
+  m.add_func(name: 'countdown', num_locals: 0, num_captures: 1, body:
+             stmt_block(m, [countdown_body]))
+  m.set_capture_name(func: 1, index: 0, name: 'n')
+
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "3\n2\n1\n")
+}
+
+# --- Errors: verify() rejects a malformed module before run() ever starts.
+# A dangling body node id (nothing was ever built at index 9999) is the
+# simplest way to construct a module that fails structurally.
+{
+  let m = CodeGen.Module.new()
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, body: 9999)
+  mut kind = nil
+  try {
+    m.verify()
+  } catch e {
+    kind = e.kind
+  }
+  assert_eq(kind, 'IrError')
+}
+
+# --- Runtime errors: divide by zero and an uninitialized read both surface
+# as IrError with the failing operation's own position, not the caller's. ---
+{
+  let m = CodeGen.Module.new()
+  let one = m.literal(v: 1, line: 5, col: 1)
+  let zero = m.literal(v: 0, line: 5, col: 7)
+  let div = m.binary(op: 'div', lhs: one, rhs: zero, line: 5, col: 3)
+  let body = stmt_block(m, [print_stmt(m, div)])
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, body: body)
+  m.verify()
+  mut caught = nil
+  try {
+    m.run()
+  } catch e {
+    caught = e
+  }
+  assert_eq(caught.kind, 'IrError')
+  assert_eq(caught.message, 'divide by zero')
+  assert_eq(caught.line, 5)
+  assert_eq(caught.col, 7)
+}
+
+{
+  let m = CodeGen.Module.new()
+  let x = m.var_ref(kind: 'local', index: 0, line: 8, col: 4)
+  let body = stmt_block(m, [print_stmt(m, x)])
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, body: body)
+  m.set_local_name(func: 0, index: 0, name: 'x')
+  m.verify()
+  mut caught = nil
+  try {
+    m.run()
+  } catch e {
+    caught = e
+  }
+  assert_eq(caught.kind, 'IrError')
+  assert_eq(caught.message, "uninitialized variable 'x'")
+}
+
+# --- A runaway self-call fails cleanly instead of overflowing the stack. ---
+{
+  let m = CodeGen.Module.new()
+  let cmap = m.add_capture_map(m.capture_map_new())
+  let loop_call = m.call(func: 1, cmap: cmap, line: 2, col: 3)
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, body:
+             m.call(func: 1, cmap: cmap, line: 1, col: 1))
+  m.add_func(name: 'loop', num_locals: 0, num_captures: 0, body: loop_call)
+  m.verify()
+  mut caught = nil
+  try {
+    m.run()
+  } catch e {
+    caught = e
+  }
+  assert_eq(caught.kind, 'IrError')
+  assert_eq(caught.message, 'recursion limit exceeded')
+}
+
+println('test_codegen OK')

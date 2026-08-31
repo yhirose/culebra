@@ -166,6 +166,11 @@ ttf_choke='^culebra::_canvas_detail::ttf_load[(]'
 # emplace_back thunks, …), so it stays on the broader expect_absent/present.
 foreign_choke='jit_class_info<culebra::foreign_fixture::Counter>::methods'
 
+# CodeGen.Module is wrap<T>'d the same way, for the same reason: its
+# registrar is a static initializer (src/runtime/culebra_rt_codegen.cc), not
+# namespace-group-strippable, so it gets its own force-load axis.
+codegen_choke='jit_class_info<culebra::codegen::Module>::methods'
+
 # 1. Names none of them: Regex stubbed, Proc/Canvas/Peg engines entirely absent.
 build none 'IO.print("none")'
 expect_class none "$regex_choke" "W?" "expected 'W' or absent" "no Regex use"
@@ -174,6 +179,7 @@ expect_class none "$proc_choke" "" "expected absent" "no Proc use"
 expect_class none "$png_choke" "" "expected absent" "no Canvas use"
 expect_class none "$ttf_choke" "" "expected absent" "no Canvas use"
 expect_absent none "$foreign_choke" "no __Foreign use"
+expect_absent none "$codegen_choke" "no CodeGen use"
 expect_absent none ' reg::' "regexlib"
 # peglib's typeinfo/vtables, and a couple of unreachable std::function comdat
 # thunks, survive here by design (see the Peg note above) -- culebra's own
@@ -250,6 +256,25 @@ expect_class foreign "$regex_choke" "W?" "expected 'W' or absent" "__Foreign onl
 expect_absent foreign "$fmt_machinery" "libstdc++'s formatter, __Foreign"
 expect_output foreign "15"
 
+# CodeGen.Module: naming it force-loads its archive the same way.
+build codegen 'let m = CodeGen.Module.new()
+let a = m.literal(v: 40, line: 1, col: 1)
+let b = m.literal(v: 2, line: 1, col: 1)
+let sum = m.binary(op: "add", lhs: a, rhs: b, line: 1, col: 1)
+let args = m.list_new()
+m.list_push(args, sum)
+let stmts = m.list_new()
+m.list_push(stmts, m.intrinsic(name: "print", args_list: args, line: 1, col: 1))
+m.add_func(name: "main", num_locals: 0, num_captures: 0,
+          body: m.block(stmts_list: stmts, line: 1, col: 1))
+m.verify()
+m.run()'
+expect_present codegen "$codegen_choke" "CodeGen named"
+expect_class codegen "$regex_choke" "W|" "expected 'W' or absent" "CodeGen only"
+expect_class codegen "$peg_choke" "" "expected absent" "CodeGen only"
+expect_absent codegen "$fmt_machinery" "libstdc++'s formatter, CodeGen"
+expect_output codegen "42"
+
 # A Shared.new view: its reader arrives through the hook, and the view's
 # `copy` reaches the deserializer, which reaches everything else.
 build shared 'let s = Shared.new({a: 1, xs: [10, 20]})
@@ -291,4 +316,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / __Foreign by axis; Proc/Canvas/Peg/Shared by namespace group; Peg's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK (Regex / __Foreign / CodeGen by axis; Proc/Canvas/Peg/Shared by namespace group; Peg's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"

@@ -143,21 +143,37 @@ class Module {
 
   // Throws CulebraError("IrError") on failure -- structural, so it carries
   // no useful source position (unlike a run() failure, which does).
-  void verify() {
+  void verify() { verify_or_throw(); }
+
+  // Throws CulebraError("IrError") with the failing operation's own position
+  // -- see src/runtime/codegen_rt.cc, which implements cpp-vmlib's
+  // coreir_rt_fail this way for every Module in this process.
+  //
+  // Verifies first, every time: vm::compile trusts verify()'s invariants
+  // (funcs is non-empty, every index is in range) and does not re-check
+  // them, so a script that calls run() on a Module it never verified would
+  // otherwise reach undefined behavior in native code -- not a catchable
+  // script-level error -- on something as simple as an empty Module. A
+  // script that already called verify() itself just pays a second, cheap
+  // structural walk.
+  void run() {
+    verify_or_throw();
+    vm::run(vm::compile(m_));
+  }
+
+  std::string dump_ir() { return coreir::to_string(m_); }
+  std::string dump_bc() {
+    verify_or_throw();
+    return vm::to_string(vm::compile(m_));
+  }
+
+ private:
+  void verify_or_throw() {
     if (auto err = coreir::verify(m_)) {
       throw culebra::CulebraError("IrError", *err, 0, 0);
     }
   }
 
-  // Throws CulebraError("IrError") with the failing operation's own position
-  // -- see src/runtime/codegen_rt.cc, which implements cpp-vmlib's
-  // coreir_rt_fail this way for every Module in this process.
-  void run() { vm::run(vm::compile(m_)); }
-
-  std::string dump_ir() { return coreir::to_string(m_); }
-  std::string dump_bc() { return vm::to_string(vm::compile(m_)); }
-
- private:
   static coreir::NodeId node(int64_t v) {
     return coreir::NodeId{static_cast<uint32_t>(v)};
   }
