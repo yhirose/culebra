@@ -70,6 +70,11 @@ inline std::optional<Dtype> parse_dtype(std::string_view s) {
 enum class Op {
   Const,
   Add, Sub, Mul, Div, Pow,
+  // Elementwise comparisons: y = (a OP b) ? 1 : 0. Not differentiable (the
+  // VJP switch throws, matching Max/Argmax) -- ReLU/LeakyReLU/Clip's
+  // backward gate is the concrete caller, and it composes the result with
+  // Mul, never .backward()'s through a comparison itself.
+  Gt, Lt, Ge, Le, Eq, Ne,
   // Axis reductions: op_param holds the reduction axis. The axis-less
   // form (`.sum()` / `.mean()` / `.max()`) skips the graph and runs
   // eagerly because it returns a scalar Float, not a Tensor.
@@ -528,6 +533,12 @@ inline tl::array _tl_binop(Op op, const tl::array& a, const tl::array& b) {
     case Op::Mul: return a * b;
     case Op::Div: return a / b;
     case Op::Pow: return tl::pow(a, b);
+    case Op::Gt: return a > b;
+    case Op::Lt: return a < b;
+    case Op::Ge: return a >= b;
+    case Op::Le: return a <= b;
+    case Op::Eq: return a == b;
+    case Op::Ne: return a != b;
     default:
       throw std::logic_error("tensor: non-binop op in binop dispatch");
   }
@@ -563,6 +574,27 @@ inline tl::array _tl_binop_vs_scalar(Op op, const tl::array& a, float s,
   throw std::logic_error("tensor: bad op in scalar binop dispatch");
 }
 
+// Ops _tl_binop_vs_scalar has no case for: Pow needs tl::pow(a,b), not an
+// operator, and the comparisons need correct operand-order flipping for
+// the scalar_on_left direction (`s > b` is `b < s`, not `b > s`) that
+// isn't worth the risk for a path that is a fusion micro-optimization,
+// not a correctness requirement -- these just take the general _tl_binop
+// path below instead.
+inline bool _tl_binop_has_scalar_fast_path(Op op) {
+  switch (op) {
+    case Op::Pow:
+    case Op::Gt:
+    case Op::Lt:
+    case Op::Ge:
+    case Op::Le:
+    case Op::Eq:
+    case Op::Ne:
+      return false;
+    default:
+      return true;
+  }
+}
+
 // Build a lazy elementwise binop node. Shapes are broadcast per numpy
 // rules; dtype must match (no implicit promotion in Phase 1).
 inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
@@ -570,9 +602,10 @@ inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
     throw CulebraError("ValueError", "Tensor: dtype mismatch in binop.");
   }
   tensor_broadcast_check(a->shape, b->shape);  // culebra-worded error
-  bool b_scalar = op != Op::Pow && b->shape.rank() == 0 &&
+  bool fast_path_ok = _tl_binop_has_scalar_fast_path(op);
+  bool b_scalar = fast_path_ok && b->shape.rank() == 0 &&
                   b->value.materialized();
-  bool a_scalar = op != Op::Pow && a->shape.rank() == 0 &&
+  bool a_scalar = fast_path_ok && a->shape.rank() == 0 &&
                   a->value.materialized() && b->shape.rank() != 0;
   auto v = _tl_guard([&] {
     if (b_scalar) return _tl_binop_vs_scalar(op, a->value, b->value.raw()[0],
@@ -1237,6 +1270,14 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Argmax:
       throw CulebraError("ValueError",
           "Tensor.backward: Max / Argmax are not differentiable.");
+    case Op::Gt:
+    case Op::Lt:
+    case Op::Ge:
+    case Op::Le:
+    case Op::Eq:
+    case Op::Ne:
+      throw CulebraError("ValueError",
+          "Tensor.backward: comparisons are not differentiable.");
     case Op::Unfold:
     case Op::Pad:
     case Op::Fold:

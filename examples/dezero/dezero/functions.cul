@@ -195,9 +195,10 @@ fn gelu(x) {
 
 # Shared by ReLU/LeakyReLU/Clip below: each backward is "scale `gy` by a
 # per-element 0/1-or-slope factor decided by the forward input" — only
-# `pred` (what that factor is) differs between the three.
-fn masked_gate(gy, x_data, pred) {
-  gy * dz.as_variable(dz.raw_elementwise(x_data, pred))
+# `gate` (a native Tensor, built from Tensor.gt/ge/le/where — no host loop)
+# differs between the three.
+fn masked_gate(gy, gate) {
+  gy * dz.as_variable(gate)
 }
 
 class ReLU {
@@ -211,11 +212,7 @@ class ReLU {
   }
 
   backward(gy) {
-    masked_gate(gy, self.inputs[0].data, |v| if v > 0.0 {
-      1.0
-    } else {
-      0.0
-    })
+    masked_gate(gy, self.inputs[0].data.gt(0.0))
   }
 }
 
@@ -242,11 +239,10 @@ class LeakyReLU {
   }
 
   backward(gy) {
-    masked_gate(gy, self.inputs[0].data, |v| if v > 0.0 {
-      1.0
-    } else {
-      self.slope
-    })
+    masked_gate(
+      gy,
+      Tensor.where(self.inputs[0].data.gt(0.0), 1.0, self.slope),
+    )
   }
 }
 
@@ -308,11 +304,8 @@ class Clip {
   }
 
   backward(gy) {
-    masked_gate(gy, self.inputs[0].data, |v| if v >= self.x_min && v <= self.x_max {
-      1.0
-    } else {
-      0.0
-    })
+    x_data = self.inputs[0].data
+    masked_gate(gy, x_data.ge(self.x_min) * x_data.le(self.x_max))
   }
 }
 

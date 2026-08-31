@@ -3189,6 +3189,30 @@ struct Lowering {
                    b.getInt64(static_cast<int64_t>(culebra::Op::Pow))},
                   "vbm.tpow"));
               break;
+            case BMeth::TGt:
+            case BMeth::TLt:
+            case BMeth::TGe:
+            case BMeth::TLe:
+            case BMeth::TEq:
+            case BMeth::TNe: {
+              culebra::Op cmp_op;
+              switch (static_cast<BMeth>(in.c)) {
+                case BMeth::TGt: cmp_op = culebra::Op::Gt; break;
+                case BMeth::TLt: cmp_op = culebra::Op::Lt; break;
+                case BMeth::TGe: cmp_op = culebra::Op::Ge; break;
+                case BMeth::TLe: cmp_op = culebra::Op::Le; break;
+                case BMeth::TEq: cmp_op = culebra::Op::Eq; break;
+                default: cmp_op = culebra::Op::Ne; break;
+              }
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_binop),
+                  {j.extract_tag(recv), j.extract_data(recv),
+                   j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   b.getInt64(static_cast<int64_t>(cmp_op))},
+                  "vbm.tcmp"));
+              break;
+            }
             case BMeth::Transpose:
             case BMeth::Clone:
             case BMeth::RequiresGrad:

@@ -63,6 +63,26 @@ fn relu_zeroes_the_gradient_of_negative_inputs() {
 }
 
 @test
+fn leaky_relu_scales_the_gradient_of_negative_inputs_by_the_slope() {
+  x = dz.Variable(Tensor.from([-1.0, 2.0, -3.0]))
+  y = F.leaky_relu(x, 0.5)
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), [-0.5, 2.0, -1.5])
+  y.sum().backward()
+  assert_eq(x.grad.data.to_array(), [0.5, 1.0, 0.5])
+}
+
+@test
+fn clip_zeroes_the_gradient_outside_the_clamp_range() {
+  x = dz.Variable(Tensor.from([-2.0, 0.5, 2.0]))
+  y = F.clip(x, -1.0, 1.0)
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), [-1.0, 0.5, 1.0])
+  y.sum().backward()
+  assert_eq(x.grad.data.to_array(), [0.0, 1.0, 0.0])
+}
+
+@test
 fn gelu_matches_the_sigmoid_approximation_closed_form() {
   # gelu(x) = x * sigmoid(1.702x); dgelu/dx = s + x * 1.702 * s * (1 - s)
   # where s = sigmoid(1.702x). Checked at a negative point (where the

@@ -1586,6 +1586,7 @@ let l = p.log()           # 自然対数、elementwise
 | `.dot(other: Tensor) -> Tensor` | lazy | 行列積。rank-1/2、またはbatched（rank>=3、先頭次元が完全一致） |
 | `.linear_sigmoid(x, b) -> Tensor` | lazy | 融合`sigmoid(self @ x + b)` |
 | `.pow(exp) -> Tensor` | lazy | elementwise冪、expはTensorまたはscalar |
+| `.gt(other) / .lt(other) / .ge(other) / .le(other) / .eq(other) / .ne(other) -> Tensor` | lazy | elementwise比較、`1.0`/`0.0`のマスクを返す。otherはTensorまたはscalar |
 | `.transpose() -> Tensor` | view | 全軸逆順（rank-2で行列転置） |
 | `.permute(axes: Array) -> Tensor` | view | 任意軸並べ替え。`axes[i]`が結果の軸`i`に対応する自分自身の軸を指定 |
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
@@ -1636,6 +1637,10 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 `Tensor.scatter_to_axis()`は今のところforward-onlyです——これらを通した
 `.backward()`は例外を投げます。im2col方式のconvやpoolingレイヤーなど
 これらを使う学習ループは、今のところ自前でbackwardを書きます。
+`.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()`（および`.max()` /
+`.argmax()`）は恒久的に微分不可能です——比較を通した`.backward()`は常に
+例外を投げます（PyTorch/numpyと同じ）。0/1マスクは`*`で合成してください
+（ReLU系のbackward gateが具体例）。
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

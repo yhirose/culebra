@@ -1624,6 +1624,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.dot(other: Tensor) -> Tensor` | lazy | matrix product; rank-1/2, or batched (rank >= 3, leading dims matching exactly) |
 | `.linear_sigmoid(x, b) -> Tensor` | lazy | fused `sigmoid(self @ x + b)` |
 | `.pow(exp) -> Tensor` | lazy | elementwise power; `exp` is Tensor or scalar |
+| `.gt(other) / .lt(other) / .ge(other) / .le(other) / .eq(other) / .ne(other) -> Tensor` | lazy | elementwise comparison, `1.0` / `0.0` mask; `other` is Tensor or scalar |
 | `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |
 | `.permute(axes: Array) -> Tensor` | view | general axis reorder; `axes[i]` names which of self's axes becomes result axis `i` |
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
@@ -1674,6 +1675,10 @@ shape. `.unfold()`, `.pad()`, `.fold()`, `.permute()`, `.narrow()`, and
 `Tensor.scatter_to_axis()` are forward-only so far — `.backward()` through
 them raises; a training loop that uses them (e.g. an im2col-style conv or
 a pooling layer) writes its own backward pass around them for now.
+`.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()` (and `.max()` /
+`.argmax()`) are never differentiable — `.backward()` through a comparison
+always raises, the same as PyTorch/numpy: compose the 0/1 mask with `*`
+instead (a ReLU-style backward gate is the concrete pattern).
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

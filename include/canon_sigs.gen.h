@@ -1509,6 +1509,18 @@ inline constexpr CanonParam kCanonParamPool[] = {
   {"indices", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
   // 118: narrow
   {"params", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  // 119: gt
+  {"other", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 120: lt
+  {"other", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 121: ge
+  {"other", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 122: le
+  {"other", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 123: eq
+  {"other", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 124: ne
+  {"other", false, false, false, false, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonObjectSigs[] = {
@@ -1642,15 +1654,21 @@ inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "clone", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "detach", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "dot", kCanonParamPool + 73, 1, "Tensor", 1, 1, false, -1, -1, -1},
+  {"", "", "eq", kCanonParamPool + 123, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "fold", kCanonParamPool + 115, 1, "Tensor", 1, 1, false, -1, -1, -1},
+  {"", "", "ge", kCanonParamPool + 121, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "grad", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
+  {"", "", "gt", kCanonParamPool + 119, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "index_select", kCanonParamPool + 117, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "item", nullptr, 0, "Float", 0, 0, false, -1, -1, -1},
+  {"", "", "le", kCanonParamPool + 122, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "linear_sigmoid", kCanonParamPool + 74, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "log", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
+  {"", "", "lt", kCanonParamPool + 120, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "max", kCanonParamPool + 76, 1, "", 0, 1, false, -1, -1, -1},
   {"", "", "mean", kCanonParamPool + 77, 1, "", 0, 1, false, -1, -1, -1},
   {"", "", "narrow", kCanonParamPool + 118, 1, "Tensor", 1, 1, false, -1, -1, -1},
+  {"", "", "ne", kCanonParamPool + 124, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "pad", kCanonParamPool + 114, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "permute", kCanonParamPool + 116, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "pow", kCanonParamPool + 78, 1, "Tensor", 1, 1, false, -1, -1, -1},

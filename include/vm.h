@@ -795,6 +795,9 @@ enum class BMeth : uint8_t {
   Detach, Relu, Sigmoid, Softmax, TensorLog, Reshape, Mean,
   SumAxis, MeanAxis, MaxAxis, Argmax, Dot, LinearSigmoid, Item, IndexSelect,
   Narrow,
+  // Comparisons: y = (self OP other) ? 1 : 0, same {Any} scalar-or-Tensor
+  // arg shape as Pow. Not differentiable (tensor.h's VJP throws).
+  TGt, TLt, TGe, TLe, TEq, TNe,
   // im2col's own building blocks. Each takes one params Array ([axis, win,
   // step] / [axis, before, after] / [axis, orig_size, step]) rather than 3
   // positional Longs, same reason Reshape takes a dims Array: BMethSpec's
@@ -1230,6 +1233,14 @@ inline std::span<const BMethSpec> bmeth_specs() {
       // `exp` is undeclared in the interp table — a Tensor or any number
       // lifts, anything else is the generic type error from inside the binop.
       {"pow", 1, Pow, kRecvTensor, 1, nullptr, {Any}, {"exp"}},
+      // Comparisons: same {Any} scalar-or-Tensor arg shape as `pow` above,
+      // same reason `exp` is undeclared there.
+      {"gt", 1, TGt, kRecvTensor, 1, nullptr, {Any}, {"other"}},
+      {"lt", 1, TLt, kRecvTensor, 1, nullptr, {Any}, {"other"}},
+      {"ge", 1, TGe, kRecvTensor, 1, nullptr, {Any}, {"other"}},
+      {"le", 1, TLe, kRecvTensor, 1, nullptr, {Any}, {"other"}},
+      {"eq", 1, TEq, kRecvTensor, 1, nullptr, {Any}, {"other"}},
+      {"ne", 1, TNe, kRecvTensor, 1, nullptr, {Any}, {"other"}},
       {"transpose", 0, Transpose, kRecvTensor, 0, nullptr, {}, {}},
       {"clone", 0, Clone, kRecvTensor, 0, nullptr, {}, {}},
       {"requires_grad", 0, RequiresGrad, kRecvTensor, 0, nullptr, {}, {}},
@@ -2194,6 +2205,29 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
               static_cast<int8_t>(recv.tag), recv.data,
               static_cast<int8_t>(args[0].tag), args[0].data,
               static_cast<int64_t>(culebra::Op::Pow)))};
+    case BMeth::TGt:
+    case BMeth::TLt:
+    case BMeth::TGe:
+    case BMeth::TLe:
+    case BMeth::TEq:
+    case BMeth::TNe: {
+      culebra::Op op;
+      switch (id) {
+        case BMeth::TGt: op = culebra::Op::Gt; break;
+        case BMeth::TLt: op = culebra::Op::Lt; break;
+        case BMeth::TGe: op = culebra::Op::Ge; break;
+        case BMeth::TLe: op = culebra::Op::Le; break;
+        case BMeth::TEq: op = culebra::Op::Eq; break;
+        default: op = culebra::Op::Ne; break;
+      }
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{
+          TAG_TENSOR,
+          reinterpret_cast<int64_t>(culebra_runtime_tensor_binop(
+              static_cast<int8_t>(recv.tag), recv.data,
+              static_cast<int8_t>(args[0].tag), args[0].data,
+              static_cast<int64_t>(op)))};
+    }
     case BMeth::Transpose:
       return JitValue{TAG_TENSOR,
                       reinterpret_cast<int64_t>(
