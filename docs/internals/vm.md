@@ -555,6 +555,58 @@ the same compile-time machinery, recursively, which is also what collapses
 a method whose own tail constructs the same class (`V2.__add__` returning
 `V2.new(...)`) without a separate pass.
 
+### 5.3.2 An operator on that value also splices
+
+`v + g * DT` reaches `__add__`/`__mul__` on the boxed path, through the same
+runtime dispatch as any other arithmetic. When both are flat `@value`
+classes, `Op::Add`/`Sub`/`Mul`/`Neg` splice the dunder the same way a
+`.method()` step in §5.3.1's chain does — one class, one instance, one
+splice, still no object built.
+
+An operator fold (`ADDITIVE`/`MULTIPLICATIVE`, and `UNARY_MINUS` sized down
+to one operand) decides before compiling anything, not operand by operand:
+`chain_resolves_to_class` — §5.3.1's eligibility check, exposed on its own
+as a pure, non-emitting lookahead — is asked of the *whole* operator
+sequence first. Every operator in the chain must resolve to a splice-able
+dunder on the class operand[0] would produce, checked with the exact same
+three tests the splice itself runs (the method exists, is eligible, and
+takes one argument) — not just that the token maps to a dunder name at all.
+Only if every operator qualifies does operand[0] compile through the
+relaxed form of §5.3.1's chain (`allow_trailing_class`, letting it end
+still holding the instance rather than a scalar); every other operand in
+the program always reifies through the ordinary boxed path. This whole-fold
+scan is what makes the fold loop unconditional: once the accumulator is
+unboxed, every operator ahead of it is already proven to splice, so there
+is never a partway decline that would need re-materialising an
+already-unboxed accumulator — the same "decide once, emit or don't"
+discipline as §5.3.1 itself, just asked over a sequence of operators
+instead of a sequence of chain steps.
+
+A member whose tail *is* the operator — `__add__`'s body ending in
+`C.new(...)` for its own class — needs one more piece §5.3.1 did not: its
+own tail must be spliced the same relaxed way, not compiled through the
+ordinary `compile_expr` descent, which never lets a chain end holding the
+class itself. `member_own_tail` is what a caller asks before allocating the
+result as a run of scalar slots rather than one slot: it is not enough for
+the tail to have the `C.new(...)` *shape* (`member_returns_own`'s syntactic
+check) — it must also pass the same eligibility `chain_resolves_to_class`
+proves for any other chain. Getting this backwards — allocating a run on
+the shape check alone, then finding the tail did not actually splice —
+leaves every slot past the first holding whatever the run's zero-init left
+there, with only the first slot ever written.
+
+One correctness precondition this exposed, unrelated to the mechanism
+itself: a class's own name inside its methods (`FuncInfo::own_name`, read
+off the receiver rather than a captured cell) was gated off for *any*
+decorated class, when the real distinction is between a compile-time marker
+(`@value`/`@packable`/`@derive`, which the compiler reads itself) and an
+actual decorator (whose binding is that decorator's return value, possibly
+not the class at all). A `@value` method could not hygienically reference
+its own class's name until this was fixed — which means the same-class
+tail recursion §5.3.1 already documents (`V2.__add__` returning
+`V2.new(...)`) could not have been inlining either, before this fix,
+despite compiling and running correctly through the boxed fallback.
+
 ### 5.4 Built-in methods are a table
 
 The value-type methods (`'ab'.upper()`, `xs.map(f)`, `it.count()`, …)
