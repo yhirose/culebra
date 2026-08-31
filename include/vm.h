@@ -3504,6 +3504,13 @@ class Compiler {
     const std::vector<std::string>* layout;   // field names, declaration order
   };
   std::vector<InlineFrame> inlines_;
+  // `inline_body_ok` membership currently being decided, so a self- or
+  // mutually-recursive operator (`__add__(o) { self + o }`, checking its own
+  // eligibility through the fold-operand rule below) declines instead of
+  // recursing the COMPILER without bound — the program itself may still
+  // recurse without bound at run time, which is the user's bug, not this
+  // analysis's to loop forever diagnosing.
+  std::set<const peg::Ast*> checking_inline_body_;
 
   // The field's index in the innermost inlined instance's layout, or -1.
   int32_t inline_field_index(const ExprResult& r, std::string_view name) const {
@@ -7446,7 +7453,14 @@ class Compiler {
   // rather than a heuristic: the body resolves its names through THIS
   // compiler's scopes and declares its locals against THIS chunk's analysis,
   // so every name it reads must mean here what it meant there.
-  bool inline_body_ok(const peg::Ast& member, bool is_ctor) {
+  //
+  // `class_ast`/`class_name`/`layout` are the class this member belongs to —
+  // needed for the receiver-shape check below, not for the name check above
+  // it (which only asks whether a free name is safe to leave unbound-checked,
+  // not how it is used).
+  bool inline_body_ok(const peg::Ast& member, bool is_ctor,
+                      const peg::Ast& class_ast, std::string_view class_name,
+                      const std::vector<std::string>* layout) {
     auto mv = culebra::view_method(member);
     if (!mv.body) return false;
     const auto& body = **mv.body;
@@ -7487,7 +7501,196 @@ class Compiler {
       ok = false;
     };
     walk_identifiers(**mv.body, check_name);
-    return ok;
+    if (!ok) return false;
+    // The name check above only asks WHICH free names are safe to leave
+    // unbound-checked — it says nothing about HOW they are used, and `self`
+    // (plus the class's own name) is not an ordinary value inside a spliced
+    // body: it is the unboxed run's marker. Handed to a consumer this
+    // splice machinery never taught to look for `.unboxed` — a bare
+    // argument, a print, a comparison, a return, a container element — that
+    // marker's slot is read as if it held a tagged Value, when it actually
+    // holds a raw field scalar. Found by spiking Stage 3 (project memory,
+    // `project_value_type_spec`): `show() { println(self) }` passed
+    // hygiene and inlined, and printed just `self.x`. So every occurrence
+    // of `self` or the class's own name must be checked structurally too,
+    // not just by name.
+    if (!checking_inline_body_.insert(&member).second) return false;
+    struct Guard {
+      std::set<const peg::Ast*>& s;
+      const peg::Ast* m;
+      ~Guard() { s.erase(m); }
+    } guard{checking_inline_body_, &member};
+    return receiver_refs_stay_unboxed(**mv.body, fi.own_name, class_ast,
+                                      class_name, layout);
+  }
+
+  // Whether every occurrence of `self`, or of the class's own name
+  // (`own_name` — empty when the body has none, e.g. a ctor never needs it),
+  // is consumed only by a shape this splice mechanism already knows how to
+  // keep unboxed. The two names are NOT interchangeable here even though
+  // `inline_body_ok`'s hygiene check treats them alike: `self.field` /
+  // `self.method(...)` is a chain over the RECEIVER's own run (scanned from
+  // index 1, chain_stays_unboxed's rule), while `OwnName.new(args)` is a
+  // fresh CONSTRUCTION using the class's name as a callee — the exact shape
+  // `chain_resolves_to_class` already validates end to end, so it is asked
+  // directly rather than re-walked here (an earlier version of this
+  // function conflated the two: scanning `OwnName.new(...)` from index 1
+  // reads its DOT step as "call method literally named `new`" and asks
+  // `inline_body_ok` about the constructor with `is_ctor=false`, which
+  // declines on sight — every construction inside every operator body was
+  // silently un-inlining before this split). Beyond those two chain heads,
+  // the only other eligible shape is the first operand of a fold whose
+  // operators all resolve to a splice-able dunder. Anywhere else — a bare
+  // argument, a return value, a print, a comparison, a container element —
+  // this returns false, and the whole member declines to inline.
+  // `checking_inline_body_` (set by the caller, `inline_body_ok`) is what
+  // keeps a self-referential operator (`__add__(o) { self + o }`, whose
+  // fold-operand check below asks `inline_body_ok` about `__add__` again)
+  // from recursing this analysis without bound.
+  bool receiver_refs_stay_unboxed(const peg::Ast& node,
+                                  std::string_view own_name,
+                                  const peg::Ast& class_ast,
+                                  std::string_view class_name,
+                                  const std::vector<std::string>* layout) {
+    using namespace peg::udl;
+    auto is_self_or_own = [&](std::string_view n) {
+      return n == "self" || (!own_name.empty() && n == own_name);
+    };
+    if (node.tag == "FUNCTION"_ || node.tag == "MULTIFN_DECL"_ ||
+        node.tag == "CLASS_DECL"_ || node.tag == "ENUM_DECL"_)
+      return true;  // inline_body_ok already declines a body with one of
+                     // these at all (value_body_has_nested_fn); kept only
+                     // for parity with walk_identifiers' own stop condition
+    if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_)
+      return true;  // a member name, not a value reference
+    if (node.tag == "CALL"_ && !node.nodes.empty() &&
+        node.nodes[0]->tag == "IDENTIFIER"_) {
+      bool is_ctor_call =
+          !own_name.empty() && node.nodes[0]->token == own_name &&
+          node.nodes.size() >= 3 && node.nodes[1]->original_tag == "DOT"_ &&
+          node.nodes[1]->token == "new" &&
+          node.nodes[2]->original_tag == "ARGUMENTS"_;
+      if (is_ctor_call) {
+        if (!chain_resolves_to_class(node, /*allow_trailing_class=*/true))
+          return false;
+        // chain_resolves_to_class only proves the CHAIN's own shape (the
+        // ctor and any trailing field/method steps) — the constructor's own
+        // arguments are a separate subtree it never looks inside, so a
+        // receiver reference nested in them (`Self.new(self.x + o.x, ...)`,
+        // the exact shape every landed operator body uses) still needs
+        // checking here.
+        for (size_t i = 2; i < node.nodes.size(); i++)
+          if (node.nodes[i]->original_tag == "ARGUMENTS"_)
+            for (const auto& a : node.nodes[i]->nodes)
+              if (!receiver_refs_stay_unboxed(*a, own_name, class_ast,
+                                              class_name, layout))
+                return false;
+        return true;
+      }
+      if (node.nodes[0]->token == "self") {
+        if (!chain_stays_unboxed(node, 1, class_ast, class_name, layout,
+                                 /*allow_trailing_class=*/false))
+          return false;
+        for (size_t i = 1; i < node.nodes.size(); i++)
+          if (node.nodes[i]->original_tag == "ARGUMENTS"_)
+            for (const auto& a : node.nodes[i]->nodes)
+              if (!receiver_refs_stay_unboxed(*a, own_name, class_ast,
+                                              class_name, layout))
+                return false;
+        return true;
+      }
+    }
+    if ((node.tag == "ADDITIVE"_ || node.tag == "MULTIPLICATIVE"_) &&
+        node.nodes.size() >= 3 && node.nodes[0]->tag == "IDENTIFIER"_ &&
+        is_self_or_own(node.nodes[0]->token)) {
+      for (size_t i = 1; i + 1 < node.nodes.size(); i += 2) {
+        auto t = node.nodes[i]->token;
+        Op op = t == "+"  ? Op::Add
+               : t == "-" ? Op::Sub
+               : t == "*" ? Op::Mul
+                          : Op::BitOr;
+        auto dunder = dunder_for_op(op);
+        const peg::Ast* opm =
+            dunder.empty() ? nullptr : value_member_ast(class_ast, dunder);
+        if (!opm ||
+            !inline_body_ok(*opm, /*is_ctor=*/false, class_ast, class_name,
+                            layout))
+          return false;
+        auto ops = inline_params(culebra::view_method(*opm).params);
+        if (!ops || ops->size() != 1) return false;
+      }
+      for (size_t i = 2; i < node.nodes.size(); i += 2)
+        if (!receiver_refs_stay_unboxed(*node.nodes[i], own_name, class_ast,
+                                        class_name, layout))
+          return false;
+      return true;
+    }
+    if (node.tag == "UNARY_MINUS"_ && node.nodes.size() >= 2 &&
+        node.nodes[1]->tag == "IDENTIFIER"_ &&
+        is_self_or_own(node.nodes[1]->token)) {
+      const peg::Ast* m = value_member_ast(class_ast, "__neg__");
+      if (!m ||
+          !inline_body_ok(*m, /*is_ctor=*/false, class_ast, class_name, layout))
+        return false;
+      auto ps = inline_params(culebra::view_method(*m).params);
+      return ps.has_value() && ps->empty();
+    }
+    // `self.<declared field> = rhs`: the point of a constructor (a non-ctor
+    // body writing self already declined earlier, in inline_body_ok's
+    // value_body_writes_self check, so reaching this shape here always
+    // means a ctor). The lvalue chain is NOT a CALL node — the grammar
+    // flattens it straight into the ASSIGNMENT's own children (see
+    // find_value_self_writes, which this mirrors) — so without this case
+    // the generic fallback below would walk into the bare `self` here and
+    // wrongly flag it as an unclassified occurrence, declining every
+    // constructor's own field-store lines.
+    if (node.tag == "ASSIGNMENT"_) {
+      auto av = culebra::view_assignment(node);
+      if (av.lvalcnt == 2) {
+        const auto& head = *node.nodes[av.lvaloff];
+        const auto& post = *node.nodes[av.lvaloff + 1];
+        if (head.tag == "IDENTIFIER"_ && head.token == "self" &&
+            post.original_tag == "DOT"_ &&
+            std::find(layout->begin(), layout->end(), post.token) !=
+                layout->end())
+          return !av.rhs || receiver_refs_stay_unboxed(*av.rhs, own_name,
+                                                        class_ast, class_name,
+                                                        layout);
+      }
+    } else if (node.tag == "PLACE_ASSIGN"_) {
+      bool ok = true;
+      culebra::for_each_place_target(
+          node,
+          [&](const peg::Ast& t) {
+            if (!ok) return;
+            auto pav = culebra::view_place_as_assignment(t);
+            if (pav.lvalcnt == 2) {
+              const auto& head = *t.nodes[0];
+              const auto& post = *t.nodes[1];
+              if (head.tag == "IDENTIFIER"_ && head.token == "self" &&
+                  post.original_tag == "DOT"_ &&
+                  std::find(layout->begin(), layout->end(), post.token) !=
+                      layout->end())
+                return;  // a declared-field write target: the point
+            }
+            if (!receiver_refs_stay_unboxed(t, own_name, class_ast,
+                                            class_name, layout))
+              ok = false;
+          },
+          [](const peg::Ast&) {});
+      if (!ok) return false;
+      return node.nodes.empty() ||
+             receiver_refs_stay_unboxed(*node.nodes.back(), own_name,
+                                        class_ast, class_name, layout);
+    }
+    // A bare, unclassified occurrence: not a shape this mechanism can keep
+    // unboxed, so it cannot be handed to whatever this is.
+    if (node.tag == "IDENTIFIER"_ && is_self_or_own(node.token)) return false;
+    for (const auto& n : node.nodes)
+      if (!receiver_refs_stay_unboxed(*n, own_name, class_ast, class_name,
+                                      layout))
+        return false;
+    return true;
   }
 
   // Every IDENTIFIER the body reads, stopping at a nested declaration (whose
@@ -7748,7 +7951,9 @@ class Compiler {
                    layout->end();
       }
       const peg::Ast* m = value_member_ast(class_ast, post.token);
-      if (!m || !inline_body_ok(*m, /*is_ctor=*/false)) return false;
+      if (!m ||
+          !inline_body_ok(*m, /*is_ctor=*/false, class_ast, class_name, layout))
+        return false;
       auto mv = culebra::view_method(*m);
       auto ps = inline_params(mv.params);
       if (!ps || ps->size() != at.nodes[i + 1]->nodes.size()) return false;
@@ -7783,7 +7988,9 @@ class Compiler {
     const auto* layout = culebra::value_flat_layout(class_name);
     if (!layout) return nullptr;
     const peg::Ast* ctor = value_member_ast(*cls, "new");
-    if (!ctor || !inline_body_ok(*ctor, /*is_ctor=*/true)) return nullptr;
+    if (!ctor ||
+        !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, class_name, layout))
+      return nullptr;
     auto cps = inline_params(culebra::view_method(*ctor).params);
     if (!cps || cps->size() != ast.nodes[2]->nodes.size()) return nullptr;
     if (!chain_stays_unboxed(ast, 3, *cls, class_name, layout,
@@ -7815,7 +8022,9 @@ class Compiler {
     const auto* layout = culebra::value_flat_layout(class_name);
     if (!layout) return std::nullopt;
     const peg::Ast* ctor = value_member_ast(*cls, "new");
-    if (!ctor || !inline_body_ok(*ctor, /*is_ctor=*/true)) return std::nullopt;
+    if (!ctor ||
+        !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, class_name, layout))
+      return std::nullopt;
     auto cps = inline_params(culebra::view_method(*ctor).params);
     if (!cps || cps->size() != ast.nodes[2]->nodes.size())
       return std::nullopt;
@@ -7904,13 +8113,15 @@ class Compiler {
       std::vector<ExprResult> args, std::vector<const peg::Ast*> arg_asts) {
     if (!lhs.unboxed_class) return std::nullopt;
     const peg::Ast& cls = *lhs.unboxed_class;
-    const peg::Ast* m = value_member_ast(cls, dunder);
-    if (!m || !inline_body_ok(*m, /*is_ctor=*/false)) return std::nullopt;
-    auto ps = inline_params(culebra::view_method(*m).params);
-    if (!ps || ps->size() != args.size()) return std::nullopt;
     size_t dec_end = culebra::first_non_decorator_index(cls);
     auto class_name =
         culebra::parse_generic_head(cls.nodes[dec_end]->token).outer;
+    const peg::Ast* m = value_member_ast(cls, dunder);
+    if (!m ||
+        !inline_body_ok(*m, /*is_ctor=*/false, cls, class_name, lhs.unboxed))
+      return std::nullopt;
+    auto ps = inline_params(culebra::view_method(*m).params);
+    if (!ps || ps->size() != args.size()) return std::nullopt;
     bool run = member_own_tail(*m, class_name) != nullptr;
     int32_t out_base = run ? alloc_zeroed_run(at, class_name, *lhs.unboxed)
                            : alloc_slot(at, "(value.ret)");
@@ -9891,8 +10102,13 @@ class Compiler {
         const peg::Ast* cls = chain_resolves_to_class(
             *ast.nodes[1], /*allow_trailing_class=*/true);
         if (cls) {
+          size_t dec_end = culebra::first_non_decorator_index(*cls);
+          auto class_name =
+              culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
+          const auto* layout = culebra::value_flat_layout(class_name);
           if (const peg::Ast* m = value_member_ast(*cls, "__neg__");
-              m && inline_body_ok(*m, /*is_ctor=*/false) &&
+              m && layout &&
+              inline_body_ok(*m, /*is_ctor=*/false, *cls, class_name, layout) &&
               inline_params(culebra::view_method(*m).params) &&
               inline_params(culebra::view_method(*m).params)->empty()) {
             auto r = *try_inline_value_operand(*ast.nodes[1]);
@@ -9957,6 +10173,16 @@ class Compiler {
         if (ast.nodes.size() >= 3) {
           fold_class = chain_resolves_to_class(*ast.nodes[0],
                                                /*allow_trailing_class=*/true);
+          std::string_view fold_class_name;
+          const std::vector<std::string>* fold_layout = nullptr;
+          if (fold_class) {
+            size_t dec_end = culebra::first_non_decorator_index(*fold_class);
+            fold_class_name = culebra::parse_generic_head(
+                                  fold_class->nodes[dec_end]->token)
+                                  .outer;
+            fold_layout = culebra::value_flat_layout(fold_class_name);
+            if (!fold_layout) fold_class = nullptr;
+          }
           for (size_t i = 1; fold_class && i + 1 < ast.nodes.size(); i += 2) {
             auto dunder = dunder_for_op(
                 ast.nodes[i]->token == "+"  ? Op::Add
@@ -9965,7 +10191,8 @@ class Compiler {
                                              : Op::BitOr);
             const peg::Ast* opm =
                 dunder.empty() ? nullptr : value_member_ast(*fold_class, dunder);
-            if (!opm || !inline_body_ok(*opm, /*is_ctor=*/false)) {
+            if (!opm || !inline_body_ok(*opm, /*is_ctor=*/false, *fold_class,
+                                        fold_class_name, fold_layout)) {
               fold_class = nullptr;
               break;
             }
