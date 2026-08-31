@@ -1,0 +1,91 @@
+# CPU vs GPU (Metal) for the three primitives added to cpp-tensorlib for
+# Transformer support: LayerNorm's rank-3 broadcast (binary_bcast_nd),
+# pooling's backward (scatter_to_axis), and Tensor.where masking
+# (where_nd). All three previously fell back to the CPU reference kernel on
+# every backend; this measures what the real Metal dispatch buys now that
+# cpp-tensorlib commits 22d5f43 (Metal) and 7babad7 (WebGPU) implement them.
+#
+#   culebra --jit examples/dezero/examples/gpu_kernels_bench.cul
+
+import dz from '../dezero/core.cul'
+import L from '../dezero/layers.cul'
+import conv from '../dezero/functions_conv.cul'
+
+fn bench_layernorm(label, n, s, d, iters = 10) {
+  ln = L.LayerNorm()
+  x = Tensor.randn(n, s, d)
+
+  fn step() {
+    out = ln(x)
+    Tensor.eval(out.data)
+  }
+
+  step()  # warm up: lazy gamma/beta init + first-dispatch cost, not timed
+  t0 = Time.monotonic()
+  for _ in range(iters) {
+    step()
+  }
+  ms = (Time.monotonic() - t0) * 1000.0 / to_float(iters)
+  println("{label} LayerNorm [{n},{s},{d}]: {ms} ms/iter")
+}
+
+fn bench_pooling(label, n, c, h, w, iters = 10) {
+  x = dz.Variable(Tensor.randn(n, c, h, w))
+
+  fn step() {
+    out = conv.pooling(x, 2, 2, 0)
+    out.sum().backward()
+    Tensor.eval(x.grad.data)
+    x.cleargrad()
+  }
+
+  step()  # warm up
+  t0 = Time.monotonic()
+  for _ in range(iters) {
+    step()
+  }
+  ms = (Time.monotonic() - t0) * 1000.0 / to_float(iters)
+  println("{label} pooling  [{n},{c},{h},{w}] 2x2: {ms} ms/iter")
+}
+
+fn bench_where(label, batch, heads, seq, iters = 10) {
+  scores = Tensor.randn(batch, heads, seq, seq)
+  mask = Tensor.ones(1, seq)  # broadcasts over batch/heads/query-position
+
+  fn step() {
+    out = Tensor.where(mask, scores, -1.0e9)
+    Tensor.eval(out)
+  }
+
+  step()  # warm up
+  t0 = Time.monotonic()
+  for _ in range(iters) {
+    step()
+  }
+  ms = (Time.monotonic() - t0) * 1000.0 / to_float(iters)
+  println("{label} where    scores=[{batch},{heads},{seq},{seq}]: {ms} ms/iter")
+}
+
+println("GPU available: {Tensor.gpu_available()}\n")
+
+println("-- LayerNorm: rank-3 broadcast (binary_bcast_nd) --")
+Tensor.use_cpu()
+bench_layernorm("cpu ", 16, 128, 512)
+Tensor.use_gpu()
+bench_layernorm("gpu ", 16, 128, 512)
+println("")
+
+println("-- pooling: backward's one-hot scatter (scatter_to_axis) --")
+Tensor.use_cpu()
+bench_pooling("cpu ", 32, 8, 28, 28)
+Tensor.use_gpu()
+bench_pooling("gpu ", 32, 8, 28, 28)
+println("")
+
+println("-- Tensor.where: attention masking (where_nd) --")
+Tensor.use_cpu()
+bench_where("cpu ", 64, 1, 128, 128)
+Tensor.use_gpu()
+bench_where("gpu ", 64, 1, 128, 128)
+
+Tensor.use_auto()
