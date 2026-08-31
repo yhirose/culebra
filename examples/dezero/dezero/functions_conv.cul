@@ -1,0 +1,701 @@
+# dezero/functions_conv.cul — 2-D convolution and pooling, im2col-based.
+# Ported from the "DeZero" framework taught in
+# oreilly-japan/deep-learning-from-scratch-3 (MIT license, Koki Saitoh).
+#
+# Tensor has no strided-window view and no multi-axis gather, so the window
+# extraction that upstream gets from numpy's `as_strided` trick is done here
+# as plain nested-Array loops (`.to_array()` round trips) — data movement
+# only. The one FLOP-heavy step, the actual matrix product once patches are
+# laid out as rows, goes through `Tensor.dot()`. `col2im` is `im2col`'s exact
+# inverse (a scatter-add into a zeroed, padded buffer, then the padding is
+# stripped), used both as `im2col`'s backward and directly by `deconv2d`.
+#
+# Row/axis convention settled on here: `im2col`'s output rows are ordered
+# `(n, oh, ow)` outermost-to-innermost, each row the flattened `[C,KH,KW]`
+# patch — so `conv2d`'s post-matmul reshape target is `[N,OH,OW,OutC]`,
+# which then needs an explicit channel move to `[N,OutC,OH,OW]` (`Tensor`'s
+# own `.transpose()` only reverses all axes or swaps a 2-D matrix, so that
+# move is its own small differentiable op below, `nhwc_to_nchw` /
+# `nchw_to_nhwc`, hardcoded to the one 4-D permutation this file needs
+# rather than a general axis-permutation engine).
+
+import dz from './core.cul'
+
+# --- small numeric helpers --------------------------------------------------
+
+fn pair(x) {
+  match x {
+    t: Tuple => (t[0], t[1]),
+    a: Array => (a[0], a[1]),
+    n: Long => (n, n),
+    _ => (x, x),
+  }
+}
+
+fn get_conv_outsize(input_size, kernel_size, stride, pad) {
+  (input_size + pad * 2 - kernel_size) / stride + 1
+}
+
+fn get_deconv_outsize(size, k, s, p) {
+  s * (size - 1) + k - 2 * p
+}
+
+fn zeros_nested(dims) {
+  if dims.empty() {
+    0.0
+  } else {
+    range(dims[0]).map(|_| zeros_nested(dims.slice(1, dims.size()))).collect()
+  }
+}
+
+# `Tensor.from` only accepts 1-D/2-D nested Arrays, but this file builds
+# 4-D `[N,C,H,W]` results throughout — flatten to 1-D first, then reshape a
+# freshly-built (therefore contiguous) Tensor into the real shape.
+fn flatten_nested(v) {
+  match v {
+    xs: Array => xs.flat_map(|x| flatten_nested(x)),
+    _ => [v],
+  }
+}
+
+fn tensor_from_nested(arr, shape) {
+  Tensor.from(flatten_nested(arr)).reshape(shape)
+}
+
+# `Tensor.to_array()` itself refuses rank > 2 — same trick in reverse:
+# reshape to 1-D (still contiguous, so allowed) before reading it back, then
+# rebuild the nesting `to_array` would otherwise have given directly.
+fn unflatten(flat, dims) {
+  if dims.size() <= 1 {
+    flat
+  } else {
+    chunk = dims.slice(1, dims.size()).product()
+    range(dims[0])
+      .map(|i| unflatten(
+        flat.slice(i * chunk, (i + 1) * chunk),
+        dims.slice(1, dims.size()),
+      ))
+      .collect()
+  }
+}
+
+fn tensor_to_nested(t) {
+  Tensor.eval(t)
+  shape = t.shape()
+  flat = t.reshape([shape.product()]).to_array()
+  unflatten(flat, shape)
+}
+
+# --- padding --------------------------------------------------------------
+
+fn pad_array(arr, n, c, h, w, ph, pw) {
+  ph2 = h + 2 * ph
+  pw2 = w + 2 * pw
+  mut out = []
+  for ni in range(n) {
+    mut c_layer = []
+    for ci in range(c) {
+      mut h_rows = []
+      for hi in range(ph2) {
+        mut w_row = []
+        for wi in range(pw2) {
+          src_h = hi - ph
+          src_w = wi - pw
+          v = if src_h >= 0 && src_h < h && src_w >= 0 && src_w < w {
+            arr[ni][ci][src_h][src_w]
+          } else {
+            0.0
+          }
+          w_row.push(v)
+        }
+        h_rows.push(w_row)
+      }
+      c_layer.push(h_rows)
+    }
+    out.push(c_layer)
+  }
+  out
+}
+
+fn strip_padding(padded, n, c, h, w, ph, pw) {
+  mut out = []
+  for ni in range(n) {
+    mut c_layer = []
+    for ci in range(c) {
+      mut h_rows = []
+      for hi in range(h) {
+        mut w_row = []
+        for wi in range(w) {
+          w_row.push(padded[ni][ci][hi + ph][wi + pw])
+        }
+        h_rows.push(w_row)
+      }
+      c_layer.push(h_rows)
+    }
+    out.push(c_layer)
+  }
+  out
+}
+
+# --- im2col / col2im --------------------------------------------------------
+#
+# Padding and window extraction now go through native Tensor.pad()/.unfold()
+# (GPU-dispatched on CUDA/Metal/WebGPU) instead of host-side nested-Array
+# loops — only the NCHW<->NHWC axis move stays a host pass, the one general
+# permutation `.transpose()` still can't do (see the header comment).
+#
+# Unfolding H then W from an NHWC layout lands im2col's row-major order
+# directly: unfold replaces the axis it's given with the window count and
+# appends the window size as a new trailing axis, so `[N,Hp,Wp,C]` unfolded
+# on axis 1 then axis 2 becomes `[N,OH,OW,C,KH,KW]` — already ordered
+# `(n,oh,ow)` outermost, `(c,kh,kw)` innermost, so a straight reshape (after
+# `.clone()` makes the unfold view contiguous) gives `[N*OH*OW, C*KH*KW]`
+# with no further permutation. `col2im` folds the same two axes back in
+# reverse order, then reuses the existing NHWC->NCHW flip and pad-strip for
+# the final crop (that axis-1/2 slice has no native binding yet either).
+
+class Im2col {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(kernel_size, stride = 1, pad = 0) {
+    self.kernel_size = kernel_size
+    self.stride = stride
+    self.pad = pad
+  }
+
+  forward(x) {
+    s = x.shape()
+    (n, c, h, w) = (s[0], s[1], s[2], s[3])
+    (kh, kw) = pair(self.kernel_size)
+    (sh, sw) = pair(self.stride)
+    (ph, pw) = pair(self.pad)
+    oh = get_conv_outsize(h, kh, sh, ph)
+    ow = get_conv_outsize(w, kw, sw, pw)
+    self.x_shape = s
+
+    x_nhwc = tensor_from_nested(
+      arr_nchw_to_nhwc(tensor_to_nested(x), n, c, h, w),
+      [n, h, w, c],
+    )
+    windows = x_nhwc
+      .pad([1, ph, ph])
+      .pad([2, pw, pw])
+      .unfold([1, kh, sh])
+      .unfold([2, kw, sw])
+    windows.clone().reshape([n * oh * ow, c * kh * kw])
+  }
+
+  backward(gy) {
+    col2im(gy, self.x_shape, self.kernel_size, self.stride, self.pad)
+  }
+}
+
+fn im2col(x, kernel_size, stride = 1, pad = 0) {
+  dz.apply1(Im2col(kernel_size, stride, pad), x)
+}
+
+class Col2im {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(input_shape, kernel_size, stride = 1, pad = 0) {
+    self.input_shape = input_shape
+    self.kernel_size = kernel_size
+    self.stride = stride
+    self.pad = pad
+  }
+
+  forward(x) {
+    (
+      n,
+      c,
+      h,
+      w,
+    ) = (
+      self.input_shape[0],
+      self.input_shape[1],
+      self.input_shape[2],
+      self.input_shape[3],
+    )
+    (kh, kw) = pair(self.kernel_size)
+    (sh, sw) = pair(self.stride)
+    (ph, pw) = pair(self.pad)
+    oh = get_conv_outsize(h, kh, sh, ph)
+    ow = get_conv_outsize(w, kw, sw, pw)
+    hp = h + 2 * ph
+    wp = w + 2 * pw
+
+    padded_nhwc = x
+      .reshape([n, oh, ow, c, kh, kw])
+      .fold([2, wp, sw])
+      .fold([1, hp, sh])
+    tensor_from_nested(
+      strip_padding(
+        arr_nhwc_to_nchw(tensor_to_nested(padded_nhwc), n, hp, wp, c),
+        n,
+        c,
+        h,
+        w,
+        ph,
+        pw,
+      ),
+      [n, c, h, w],
+    )
+  }
+
+  backward(gy) {
+    im2col(gy, self.kernel_size, self.stride, self.pad)
+  }
+}
+
+fn col2im(x, input_shape, kernel_size, stride = 1, pad = 0) {
+  dz.apply1(Col2im(input_shape, kernel_size, stride, pad), x)
+}
+
+# --- the one 4-D axis move conv2d/deconv2d need -----------------------------
+
+fn arr_nhwc_to_nchw(arr, n, h, w, c) {
+  mut out = []
+  for ni in range(n) {
+    mut c_layer = []
+    for ci in range(c) {
+      mut h_rows = []
+      for hi in range(h) {
+        mut w_row = []
+        for wi in range(w) {
+          w_row.push(arr[ni][hi][wi][ci])
+        }
+        h_rows.push(w_row)
+      }
+      c_layer.push(h_rows)
+    }
+    out.push(c_layer)
+  }
+  out
+}
+
+fn arr_nchw_to_nhwc(arr, n, c, h, w) {
+  mut out = []
+  for ni in range(n) {
+    mut h_rows = []
+    for hi in range(h) {
+      mut w_rows = []
+      for wi in range(w) {
+        mut c_row = []
+        for ci in range(c) {
+          c_row.push(arr[ni][ci][hi][wi])
+        }
+        w_rows.push(c_row)
+      }
+      h_rows.push(w_rows)
+    }
+    out.push(h_rows)
+  }
+  out
+}
+
+class NhwcToNchw {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    s = x.shape()
+    tensor_from_nested(
+      arr_nhwc_to_nchw(tensor_to_nested(x), s[0], s[1], s[2], s[3]),
+      [s[0], s[3], s[1], s[2]],
+    )
+  }
+
+  backward(gy) {
+    dz.apply1(NchwToNhwc(), gy)
+  }
+}
+
+fn nhwc_to_nchw(x) {
+  dz.apply1(NhwcToNchw(), x)
+}
+
+class NchwToNhwc {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    s = x.shape()
+    tensor_from_nested(
+      arr_nchw_to_nhwc(tensor_to_nested(x), s[0], s[1], s[2], s[3]),
+      [s[0], s[2], s[3], s[1]],
+    )
+  }
+
+  backward(gy) {
+    dz.apply1(NhwcToNchw(), gy)
+  }
+}
+
+fn nchw_to_nhwc(x) {
+  dz.apply1(NchwToNhwc(), x)
+}
+
+# --- conv2d / deconv2d -------------------------------------------------------
+#
+# `WeightAsMatrix` folds "reshape [OutC,InC,KH,KW] -> [OutC,K] then
+# transpose to [K,OutC]" into one Function instead of composing `dz.reshape`
+# + `dz.transpose`. Composing them hits a real engine limitation: a
+# `.transpose()` result can't be `.reshape()`'d or `.to_array()`'d directly
+# once it has flowed through a `.dot()` (as this weight matrix does, in the
+# conv2d forward matmul). Rather than patch that up with an extra
+# materialize-before-and-after dance, this reuses the same fix
+# `nhwc_to_nchw`/`nchw_to_nhwc` above already needed for a harder axis
+# permutation: never call `Tensor.transpose()` at all, and swap the two
+# axes with a plain nested-array index flip via `tensor_to_nested`/
+# `tensor_from_nested` instead — those always produce a fresh, contiguous
+# buffer, so nothing downstream can trip over a view.
+fn arr_transpose2d(arr, rows, cols) {
+  range(cols).map(|j| range(rows).map(|i| arr[i][j]).collect()).collect()
+}
+
+class WeightAsMatrix {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(out_c, in_c, kh, kw) {
+    self.out_c = out_c
+    self.in_c = in_c
+    self.kh = kh
+    self.kw = kw
+  }
+
+  forward(w) {
+    k = self.in_c * self.kh * self.kw
+    mat = tensor_to_nested(w.reshape([self.out_c, k]))
+    tensor_from_nested(arr_transpose2d(mat, self.out_c, k), [k, self.out_c])
+  }
+
+  backward(gy) {
+    k = self.in_c * self.kh * self.kw
+    mat = tensor_to_nested(gy.data)
+    dz.as_variable(tensor_from_nested(
+      arr_transpose2d(mat, k, self.out_c),
+      [self.out_c, self.in_c, self.kh, self.kw],
+    ))
+  }
+}
+
+fn weight_as_matrix(w, out_c, in_c, kh, kw) {
+  dz.apply1(WeightAsMatrix(out_c, in_c, kh, kw), w)
+}
+
+fn conv2d(x, w, b = nil, stride = 1, pad = 0) {
+  xv = dz.as_variable(x)
+  wv = dz.as_variable(w)
+  xs = xv.shape
+  ws = wv.shape
+  (n, xc, h, wd) = (xs[0], xs[1], xs[2], xs[3])
+  (out_c, in_c, kh, kw) = (ws[0], ws[1], ws[2], ws[3])
+  (sh, sw) = pair(stride)
+  (ph, pw) = pair(pad)
+  oh = get_conv_outsize(h, kh, sh, ph)
+  ow = get_conv_outsize(wd, kw, sw, pw)
+
+  col = im2col(xv, (kh, kw), stride, pad)
+  w_mat = weight_as_matrix(wv, out_c, in_c, kh, kw)
+  raw = dz.matmul(col, w_mat)
+  biased = if b == nil {
+    raw
+  } else {
+    dz.add(raw, dz.reshape(dz.as_variable(b), [1, out_c]))
+  }
+  nhwc_to_nchw(dz.reshape(biased, [n, oh, ow, out_c]))
+}
+
+fn deconv2d(x, w, b = nil, stride = 1, pad = 0, outsize = nil) {
+  xv = dz.as_variable(x)
+  wv = dz.as_variable(w)
+  xs = xv.shape
+  ws = wv.shape
+  (n, in_c, h, wd) = (xs[0], xs[1], xs[2], xs[3])
+  (win_c, out_c, kh, kw) = (ws[0], ws[1], ws[2], ws[3])
+  (sh, sw) = pair(stride)
+  (ph, pw) = pair(pad)
+  (oh, ow) = if outsize == nil {
+    (get_deconv_outsize(h, kh, sh, ph), get_deconv_outsize(wd, kw, sw, pw))
+  } else {
+    (outsize[0], outsize[1])
+  }
+
+  x_flat = dz.reshape(nchw_to_nhwc(xv), [n * h * wd, in_c])
+  w_flat = dz.reshape(wv, [in_c, out_c * kh * kw])
+  col = dz.matmul(x_flat, w_flat)
+  y = col2im(col, [n, out_c, oh, ow], (kh, kw), stride, pad)
+  if b == nil {
+    y
+  } else {
+    dz.add(y, dz.reshape(dz.as_variable(b), [1, out_c, 1, 1]))
+  }
+}
+
+# --- pooling -----------------------------------------------------------------
+#
+# Windows are gathered per-channel (unlike im2col, channels are never
+# flattened into the row) since forward here is a per-window reduction, not
+# a matmul.
+
+fn gather_windows(arr, n, c, h, w, kh, kw, sh, sw, ph, pw, oh, ow) {
+  padded = pad_array(arr, n, c, h, w, ph, pw)
+  mut out = []
+  for ni in range(n) {
+    mut c_list = []
+    for ci in range(c) {
+      mut oh_list = []
+      for ohi in range(oh) {
+        mut ow_list = []
+        for owi in range(ow) {
+          mut win = []
+          for khi in range(kh) {
+            for kwi in range(kw) {
+              win.push(padded[ni][ci][ohi * sh + khi][owi * sw + kwi])
+            }
+          }
+          ow_list.push(win)
+        }
+        oh_list.push(ow_list)
+      }
+      c_list.push(oh_list)
+    }
+    out.push(c_list)
+  }
+  out
+}
+
+class Pooling {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(kernel_size, stride = 1, pad = 0) {
+    self.kernel_size = kernel_size
+    self.stride = stride
+    self.pad = pad
+  }
+
+  forward(x) {
+    s = x.shape()
+    (n, c, h, w) = (s[0], s[1], s[2], s[3])
+    (kh, kw) = pair(self.kernel_size)
+    (sh, sw) = pair(self.stride)
+    (ph, pw) = pair(self.pad)
+    oh = get_conv_outsize(h, kh, sh, ph)
+    ow = get_conv_outsize(w, kw, sw, pw)
+    self.x_shape = s
+    self.kh = kh
+    self.kw = kw
+    self.sh = sh
+    self.sw = sw
+    self.ph = ph
+    self.pw = pw
+    self.oh = oh
+    self.ow = ow
+
+    windows = gather_windows(
+      tensor_to_nested(x),
+      n,
+      c,
+      h,
+      w,
+      kh,
+      kw,
+      sh,
+      sw,
+      ph,
+      pw,
+      oh,
+      ow,
+    )
+    mut out_vals = []
+    mut argmax = []
+    for ni in range(n) {
+      mut c_vals = []
+      mut c_arg = []
+      for ci in range(c) {
+        mut oh_vals = []
+        mut oh_arg = []
+        for ohi in range(oh) {
+          mut ow_vals = []
+          mut ow_arg = []
+          for owi in range(ow) {
+            win = windows[ni][ci][ohi][owi]
+            mut best = win[0]
+            mut best_k = 0
+            for k in range(win.size()) {
+              if win[k] > best {
+                best = win[k]
+                best_k = k
+              }
+            }
+            ow_vals.push(best)
+            ow_arg.push(best_k)
+          }
+          oh_vals.push(ow_vals)
+          oh_arg.push(ow_arg)
+        }
+        c_vals.push(oh_vals)
+        c_arg.push(oh_arg)
+      }
+      out_vals.push(c_vals)
+      argmax.push(c_arg)
+    }
+    self.argmax = argmax
+    tensor_from_nested(out_vals, [n, c, self.oh, self.ow])
+  }
+
+  backward(gy) {
+    gy_arr = tensor_to_nested(gy.data)
+    (
+      n,
+      c,
+      h,
+      w,
+    ) = (self.x_shape[0], self.x_shape[1], self.x_shape[2], self.x_shape[3])
+    mut padded = zeros_nested([n, c, h + 2 * self.ph, w + 2 * self.pw])
+    for ni in range(n) {
+      for ci in range(c) {
+        for ohi in range(self.oh) {
+          for owi in range(self.ow) {
+            k = self.argmax[ni][ci][ohi][owi]
+            khi = k / self.kw
+            kwi = k % self.kw
+            padded[ni][ci][ohi * self.sh +
+              khi][owi * self.sw + kwi] += gy_arr[ni][ci][ohi][owi]
+          }
+        }
+      }
+    }
+    dz.as_variable(tensor_from_nested(
+      strip_padding(padded, n, c, h, w, self.ph, self.pw),
+      [n, c, h, w],
+    ))
+  }
+}
+
+fn pooling(x, kernel_size, stride = 1, pad = 0) {
+  dz.apply1(Pooling(kernel_size, stride, pad), x)
+}
+
+class AveragePooling {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(kernel_size, stride = 1, pad = 0) {
+    self.kernel_size = kernel_size
+    self.stride = stride
+    self.pad = pad
+  }
+
+  forward(x) {
+    s = x.shape()
+    (n, c, h, w) = (s[0], s[1], s[2], s[3])
+    (kh, kw) = pair(self.kernel_size)
+    (sh, sw) = pair(self.stride)
+    (ph, pw) = pair(self.pad)
+    oh = get_conv_outsize(h, kh, sh, ph)
+    ow = get_conv_outsize(w, kw, sw, pw)
+    self.x_shape = s
+    self.kh = kh
+    self.kw = kw
+    self.sh = sh
+    self.sw = sw
+    self.ph = ph
+    self.pw = pw
+    self.oh = oh
+    self.ow = ow
+
+    windows = gather_windows(
+      tensor_to_nested(x),
+      n,
+      c,
+      h,
+      w,
+      kh,
+      kw,
+      sh,
+      sw,
+      ph,
+      pw,
+      oh,
+      ow,
+    )
+    cnt = to_float(kh * kw)
+    mut out_vals = []
+    for ni in range(n) {
+      mut c_vals = []
+      for ci in range(c) {
+        mut oh_vals = []
+        for ohi in range(oh) {
+          mut ow_vals = []
+          for owi in range(ow) {
+            win = windows[ni][ci][ohi][owi]
+            mut total = 0.0
+            for v in win {
+              total += v
+            }
+            ow_vals.push(total / cnt)
+          }
+          oh_vals.push(ow_vals)
+        }
+        c_vals.push(oh_vals)
+      }
+      out_vals.push(c_vals)
+    }
+    tensor_from_nested(out_vals, [n, c, self.oh, self.ow])
+  }
+
+  backward(gy) {
+    gy_arr = tensor_to_nested(gy.data)
+    (
+      n,
+      c,
+      h,
+      w,
+    ) = (self.x_shape[0], self.x_shape[1], self.x_shape[2], self.x_shape[3])
+    cnt = to_float(self.kh * self.kw)
+    mut padded = zeros_nested([n, c, h + 2 * self.ph, w + 2 * self.pw])
+    for ni in range(n) {
+      for ci in range(c) {
+        for ohi in range(self.oh) {
+          for owi in range(self.ow) {
+            g = gy_arr[ni][ci][ohi][owi] / cnt
+            for khi in range(self.kh) {
+              for kwi in range(self.kw) {
+                padded[ni][ci][ohi * self.sh + khi][owi * self.sw + kwi] += g
+              }
+            }
+          }
+        }
+      }
+    }
+    dz.as_variable(tensor_from_nested(
+      strip_padding(padded, n, c, h, w, self.ph, self.pw),
+      [n, c, h, w],
+    ))
+  }
+}
+
+fn average_pooling(x, kernel_size, stride = 1, pad = 0) {
+  dz.apply1(AveragePooling(kernel_size, stride, pad), x)
+}
+
+export {pair, get_conv_outsize, get_deconv_outsize, im2col, col2im, conv2d, deconv2d, pooling, average_pooling, nhwc_to_nchw, nchw_to_nhwc}

@@ -1,0 +1,529 @@
+# dezero/functions.cul — elementwise math, activations, and losses built on
+# top of core.cul's autodiff engine. Ported from the "DeZero" framework
+# taught in oreilly-japan/deep-learning-from-scratch-3 (MIT license).
+#
+# Tensor has no elementwise sin/cos/tanh/exp and no comparison operator, so
+# those forward passes round-trip through `dz.raw_elementwise`/`dz.zip_nested`
+# (nested-Array walks) instead of a vectorized Tensor kernel — everything
+# else here (sigmoid/relu/softmax/log/pow/matmul/sum) rides Tensor's native
+# ops directly. Label arguments (`t` below) are plain Culebra Arrays of
+# Long/Float, never Variables — nothing in this port back-propagates into a
+# dataset's labels, matching upstream.
+#
+# softmax_cross_entropy and sigmoid_cross_entropy are fused single ops here
+# (closed-form gradient) rather than composed from smaller pieces, same as
+# upstream's own choice — the composed form is what `log_softmax` below is,
+# kept only because a handful of call sites want it directly.
+
+import dz from './core.cul'
+
+# --- elementwise trig / exp / log ------------------------------------------
+
+class Sin {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    dz.raw_elementwise(x, Math.sin)
+  }
+
+  backward(gy) {
+    gy * cos(self.inputs[0])
+  }
+}
+
+fn sin(x) {
+  dz.apply1(Sin(), x)
+}
+
+class Cos {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    dz.raw_elementwise(x, Math.cos)
+  }
+
+  backward(gy) {
+    gy * -sin(self.inputs[0])
+  }
+}
+
+fn cos(x) {
+  dz.apply1(Cos(), x)
+}
+
+# Math has no `tanh`; derive it from `exp` directly.
+fn tanh_scalar(v) {
+  e2 = Math.exp(2.0 * v)
+  (e2 - 1.0) / (e2 + 1.0)
+}
+
+class Tanh {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    dz.raw_elementwise(x, tanh_scalar)
+  }
+
+  backward(gy) {
+    y = self.output
+    gy * dz.sub(1.0, y * y)
+  }
+}
+
+fn tanh(x) {
+  dz.apply1(Tanh(), x)
+}
+
+class Exp {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    dz.raw_elementwise(x, Math.exp)
+  }
+
+  backward(gy) {
+    gy * self.output
+  }
+}
+
+fn exp(x) {
+  dz.apply1(Exp(), x)
+}
+
+class Log {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    x.log()
+  }
+
+  backward(gy) {
+    gy / self.inputs[0]
+  }
+}
+
+fn log(x) {
+  dz.apply1(Log(), x)
+}
+
+# --- shape helpers built on dz.reshape --------------------------------------
+
+fn expand_dims(x, axis) {
+  v = dz.as_variable(x)
+  shape = v.shape.slice(0, axis) + [1] + v.shape.slice(axis, v.shape.size())
+  dz.reshape(v, shape)
+}
+
+fn flatten(x) {
+  v = dz.as_variable(x)
+  dz.reshape(v, [v.size])
+}
+
+fn average(x, axis = nil, keepdims = false) {
+  v = dz.as_variable(x)
+  n = if axis == nil {
+    v.size
+  } else {
+    v.shape[axis]
+  }
+  dz.sum(v, axis, keepdims) * (1.0 / to_float(n))
+}
+
+# --- linear / activations ----------------------------------------------------
+#
+# `linear` composes matmul + add rather than fusing them into one Function
+# (upstream's `linear_simple`, kept over the fused `Linear` — the fusion
+# there only exists to free an intermediate ndarray sooner, which Culebra's
+# GC already does for a dead local).
+
+fn linear(x, w, b = nil) {
+  y = dz.matmul(x, w)
+  if b == nil {
+    y
+  } else {
+    dz.add(y, b)
+  }
+}
+
+class Sigmoid {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    x.sigmoid()
+  }
+
+  backward(gy) {
+    y = self.output
+    gy * y * dz.sub(1.0, y)
+  }
+}
+
+fn sigmoid(x) {
+  dz.apply1(Sigmoid(), x)
+}
+
+# Shared by ReLU/LeakyReLU/Clip below: each backward is "scale `gy` by a
+# per-element 0/1-or-slope factor decided by the forward input" — only
+# `pred` (what that factor is) differs between the three.
+fn masked_gate(gy, x_data, pred) {
+  gy * dz.as_variable(dz.raw_elementwise(x_data, pred))
+}
+
+class ReLU {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    x.relu()
+  }
+
+  backward(gy) {
+    masked_gate(gy, self.inputs[0].data, |v| if v > 0.0 {
+      1.0
+    } else {
+      0.0
+    })
+  }
+}
+
+fn relu(x) {
+  dz.apply1(ReLU(), x)
+}
+
+class LeakyReLU {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(slope = 0.2) {
+    self.slope = slope
+  }
+
+  forward(x) {
+    dz.raw_elementwise(x, |v| if v > 0.0 {
+      v
+    } else {
+      v * self.slope
+    })
+  }
+
+  backward(gy) {
+    masked_gate(gy, self.inputs[0].data, |v| if v > 0.0 {
+      1.0
+    } else {
+      self.slope
+    })
+  }
+}
+
+fn leaky_relu(x, slope = 0.2) {
+  dz.apply1(LeakyReLU(slope), x)
+}
+
+class Softmax {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(axis = 1) {
+    self.axis = axis
+  }
+
+  forward(x) {
+    x.softmax()
+  }
+
+  backward(gy) {
+    y = self.output
+    gx = y * gy
+    s = dz.sum(gx, self.axis, true)
+    gx - y * s
+  }
+}
+
+fn softmax(x, axis = 1) {
+  dz.apply1(Softmax(axis), x)
+}
+
+# Composed rather than a fused stable kernel — `log(softmax(x))` is exactly
+# how this codebase's own native-Tensor MNIST trainer computes the same
+# quantity (examples/tensor/mnist/train.cul), so it carries the same
+# numerical behavior as an already-proven idiom.
+fn log_softmax(x, axis = 1) {
+  log(softmax(x, axis))
+}
+
+fn clip(x, x_min, x_max) {
+  dz.apply1(Clip(x_min, x_max), x)
+}
+
+class Clip {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(x_min, x_max) {
+    self.x_min = x_min
+    self.x_max = x_max
+  }
+
+  forward(x) {
+    dz.raw_elementwise(x, |v| Math.clamp(v, self.x_min, self.x_max))
+  }
+
+  backward(gy) {
+    masked_gate(gy, self.inputs[0].data, |v| if v >= self.x_min && v <= self.x_max {
+      1.0
+    } else {
+      0.0
+    })
+  }
+}
+
+# --- losses -------------------------------------------------------------
+
+class MeanSquaredError {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x0, x1) {
+    diff = x0 - x1
+    n = to_float(x0.shape()[0])
+    Tensor.from([(diff * diff).sum() / n])
+  }
+
+  backward(gy) {
+    (x0, x1) = (self.inputs[0], self.inputs[1])
+    diff = x0 - x1
+    n = to_float(x0.shape[0])
+    gy_bc = dz.broadcast_to(gy, diff.shape)
+    gx0 = gy_bc * diff * (2.0 / n)
+    (gx0, -gx0)
+  }
+}
+
+fn mean_squared_error(x0, x1) {
+  dz.apply2(MeanSquaredError(), x0, x1)
+}
+
+fn one_hot_rows(labels, num_classes) {
+  labels.map(|label| range(num_classes).map(|j| if j == label {
+    1.0
+  } else {
+    0.0
+  }).collect())
+}
+
+# `t` is one Long class id per row (sparse labels), not one-hot — same
+# calling convention as upstream. Fused forward+backward: the softmax and
+# the cross-entropy are one Function, so backward is the closed-form
+# `(softmax(x) - one_hot(t)) / N` rather than composed sub-gradients.
+class SoftmaxCrossEntropy {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(t) {
+    self.t = t
+  }
+
+  forward(x) {
+    probs = x.softmax()
+    self.probs = probs
+    n = x.shape()[0]
+    rows = probs.to_array()  # forces eval, so no separate Tensor.eval needed
+    mut total = 0.0
+    for i in range(n) {
+      p = Math.max(rows[i][self.t[i]], 1.0e-15)
+      total -= Math.log(p)
+    }
+    Tensor.from([total / to_float(n)])
+  }
+
+  backward(gy) {
+    x = self.inputs[0]
+    n = x.shape[0]
+    c = x.shape[1]
+    onehot = Tensor.from(one_hot_rows(self.t, c))
+    diff = (self.probs - onehot) * (1.0 / to_float(n))
+    dz.as_variable(diff) * gy
+  }
+}
+
+fn softmax_cross_entropy(x, t) {
+  dz.apply1(SoftmaxCrossEntropy(t), x)
+}
+
+# `t` is one 0.0/1.0 label per row and `x` must be shape [N, 1] (a single
+# logit per example) — this port's binary counterpart to
+# softmax_cross_entropy above, scoped to that one shape rather than
+# upstream's broadcasting-friendly version.
+class SigmoidCrossEntropy {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(t) {
+    self.t = t
+  }
+
+  forward(x) {
+    p = x.sigmoid()
+    self.p = p
+    n = self.t.size()
+    rows = p.to_array()  # forces eval, so no separate Tensor.eval needed
+    mut total = 0.0
+    for i in range(n) {
+      pi = Math.clamp(rows[i][0], 1.0e-7, 1.0 - 1.0e-7)
+      ti = self.t[i]
+      total -= ti * Math.log(pi) + (1.0 - ti) * Math.log(1.0 - pi)
+    }
+    Tensor.from([total / to_float(n)])
+  }
+
+  backward(gy) {
+    n = self.t.size()
+    tcol = Tensor.from(self.t.map(|v| [v]))
+    diff = (self.p - tcol) * (1.0 / to_float(n))
+    dz.as_variable(diff) * gy
+  }
+}
+
+fn sigmoid_cross_entropy(x, t) {
+  dz.apply1(SigmoidCrossEntropy(t), x)
+}
+
+# No gradient path — `y` is model output, `t` is the raw label Array. Meant
+# for reporting inside `dz.no_grad`, same as upstream.
+fn accuracy(y, t) {
+  v = dz.as_variable(y)
+  preds = v.data.argmax(1)
+  parr = preds.to_array()  # forces eval, so no separate Tensor.eval needed
+  n = t.size()
+  mut correct = 0
+  for i in range(n) {
+    correct += 1 if to_long(parr[i]) == t[i]
+  }
+  dz.Variable(Tensor.from([to_float(correct) / to_float(n)]))
+}
+
+fn random_mask_like(shape, keep_prob, scale) {
+  if shape.empty() {
+    if Random.uniform(0.0, 1.0) < keep_prob {
+      scale
+    } else {
+      0.0
+    }
+  } else {
+    range(shape[0])
+      .map(|_| random_mask_like(shape.slice(1, shape.size()), keep_prob, scale))
+      .collect()
+  }
+}
+
+class Dropout {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(dropout_ratio = 0.5) {
+    self.dropout_ratio = dropout_ratio
+  }
+
+  forward(x) {
+    if dz.is_training() {
+      self.mask = Tensor.from(random_mask_like(
+        x.shape(),
+        1.0 - self.dropout_ratio,
+        1.0 / (1.0 - self.dropout_ratio),
+      ))
+      x * self.mask
+    } else {
+      self.mask = nil
+      x
+    }
+  }
+
+  backward(gy) {
+    if self.mask == nil {
+      gy
+    } else {
+      gy * dz.as_variable(self.mask)
+    }
+  }
+}
+
+fn dropout(x, dropout_ratio = 0.5) {
+  dz.apply1(Dropout(dropout_ratio), x)
+}
+
+# --- embedding lookup ---------------------------------------------------
+#
+# `idx` is a plain Array of Long row indices (not a Variable). Backward is a
+# scatter-add into a zero table the size of `w`, accumulating repeated
+# indices exactly like upstream's `np.add.at`.
+
+class EmbedID {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(idx) {
+    self.idx = idx
+  }
+
+  forward(w) {
+    Tensor.concat(self.idx.map(|i| w.slice(i, i + 1)))
+  }
+
+  backward(gy) {
+    w = self.inputs[0]
+    cols = w.shape[1]
+    gy_rows = gy.data.to_array()
+    mut grad_rows = range(w.shape[0])
+      .map(|_| range(cols).map(|_| 0.0).collect())
+      .collect()
+    for k in range(self.idx.size()) {
+      row = self.idx[k]
+      for j in range(cols) {
+        grad_rows[row][j] += gy_rows[k][j]
+      }
+    }
+    dz.as_variable(Tensor.from(grad_rows))
+  }
+}
+
+fn embed_id(idx, w) {
+  dz.apply1(EmbedID(idx), w)
+}
+
+export {sin, cos, tanh, exp, log, expand_dims, flatten, average, linear, sigmoid, relu, leaky_relu, softmax, log_softmax, clip, mean_squared_error, softmax_cross_entropy, sigmoid_cross_entropy, accuracy, dropout, embed_id}

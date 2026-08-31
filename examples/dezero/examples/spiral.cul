@@ -1,0 +1,56 @@
+# Classic 3-class spiral classification: a 2-layer MLP trained with plain
+# SGD on dezero's own from-scratch autodiff (not culebra's native Tensor
+# autograd — see the package README for why).
+#
+#   culebra examples/dezero/examples/spiral.cul
+#   culebra --jit examples/dezero/examples/spiral.cul
+
+import dz from '../dezero/core.cul'
+import F from '../dezero/functions.cul'
+import M from '../dezero/models.cul'
+import O from '../dezero/optimizers.cul'
+import D from '../dezero/datasets.cul'
+import DL from '../dezero/dataloaders.cul'
+
+Random.seed(0)
+
+BATCH_SIZE = 30
+EPOCHS = 300
+
+train_set = D.Spiral(true)
+test_set = D.Spiral(false)
+train_loader = DL.DataLoader(train_set, BATCH_SIZE)
+
+model = M.MLP([10, 3])
+optimizer = O.SGD(1.0).setup(model)
+
+for epoch in range(EPOCHS) {
+  train_loader.reset()
+  mut sum_loss = 0.0
+  mut batches = 0
+
+  mut batch = train_loader.next_batch()
+  while batch != nil {
+    x = dz.Variable(batch.x)
+    y = model(x)
+    loss = F.softmax_cross_entropy(y, batch.t)
+
+    model.cleargrads()
+    loss.backward()
+    optimizer.update()
+
+    sum_loss += loss.data.item()
+    batches += 1
+    batch = train_loader.next_batch()
+  }
+
+  if (epoch + 1) % 20 == 0 {
+    inspect("epoch {epoch + 1} | train loss {sum_loss / to_float(batches)}")
+  }
+}
+
+dz.no_grad(fn () {
+  out = model(dz.Variable(test_set.x))
+  acc = F.accuracy(out, test_set.y)
+  inspect("test accuracy: {acc.data.item()}")
+})

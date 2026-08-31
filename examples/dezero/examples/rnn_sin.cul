@@ -1,0 +1,112 @@
+# Sequence prediction with an LSTM trained through truncated BPTT: given
+# the current point of a noisy sine wave, predict the next one. Each
+# `SeqDataLoader` batch advances every chunk of the sequence by one step,
+# so the loss for a whole batch is accumulated across `bptt_length` steps
+# before a single `backward()` call — the standard truncated-BPTT pattern.
+#
+#   culebra --jit examples/dezero/examples/rnn_sin.cul
+
+import dz from '../dezero/core.cul'
+import F from '../dezero/functions.cul'
+import L from '../dezero/layers.cul'
+import O from '../dezero/optimizers.cul'
+import D from '../dezero/datasets.cul'
+import DL from '../dezero/dataloaders.cul'
+
+Random.seed(0)
+
+HIDDEN = 20
+BATCH_SIZE = 8
+BPTT_LENGTH = 30
+EPOCHS = 200
+
+train_set = D.SinCurve(true)
+loader = DL.SeqDataLoader(train_set, BATCH_SIZE)
+
+class LSTMRegressor {
+  new(hidden_size) {
+    self.rnn = L.LSTM(hidden_size)
+    self.fc = L.Linear(1)
+  }
+
+  __call__(x) {
+    self.fc(self.rnn(x))
+  }
+
+  reset_state() {
+    self.rnn.reset_state()
+  }
+
+  cleargrads() {
+    L.cleargrads(self)
+  }
+
+  params() {
+    self.rnn.params() + self.fc.params()
+  }
+}
+
+model = LSTMRegressor(HIDDEN)
+optimizer = O.Adam().setup(model)
+
+for epoch in range(EPOCHS) {
+  model.reset_state()
+  loader.reset()
+  mut loss = nil
+  mut count = 0
+  mut sum_loss = 0.0
+  mut steps = 0
+
+  mut batch = loader.next_batch()
+  while batch != nil {
+    x = dz.Variable(batch.x)
+    t = dz.Variable(batch.t)
+    y = model(x)
+    step_loss = F.mean_squared_error(y, t)
+    loss = if loss == nil {
+      step_loss
+    } else {
+      loss + step_loss
+    }
+    count += 1
+
+    if count % BPTT_LENGTH == 0 || batch == nil {
+      model.cleargrads()
+      loss.backward()
+      optimizer.update()
+      sum_loss += loss.data.item()
+      steps += 1
+      loss = nil
+      model.rnn.h = dz.as_variable(model.rnn.h.data)
+      model.rnn.c = dz.as_variable(model.rnn.c.data)
+    }
+
+    batch = loader.next_batch()
+  }
+
+  if loss != nil {
+    model.cleargrads()
+    loss.backward()
+    optimizer.update()
+    sum_loss += loss.data.item()
+    steps += 1
+  }
+
+  if (epoch + 1) % 10 == 0 {
+    inspect("epoch {epoch + 1} | loss {sum_loss / to_float(steps)}")
+  }
+}
+
+# Qualitative check: predict a few steps of the held-out (noiseless cosine)
+# curve and compare against the true next value.
+test_set = D.SinCurve(false)
+model.reset_state()
+dz.no_grad(fn () {
+  for i in range(5) {
+    xi = dz.Variable(test_set.x.slice(i, i + 1))
+    yi = model(xi)
+    predicted = yi.data.item()
+    actual = test_set.y.slice(i, i + 1).item()
+    inspect("t={i} predicted={predicted} actual={actual}")
+  }
+})

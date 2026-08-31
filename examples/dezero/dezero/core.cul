@@ -1,0 +1,770 @@
+# dezero/core.cul — the autodiff engine: Variable, Function application,
+# and the arithmetic operators. Ported from the "DeZero" framework taught in
+# oreilly-japan/deep-learning-from-scratch-3 (MIT license, Koki Saitoh).
+#
+# Variable.data holds a Tensor. A scalar is a 1-element [1] Tensor rather
+# than numpy's 0-d array — Tensor has no 0-d form, and Tensor.item()/
+# Tensor.from([x]) give the same round trip a 0-d ndarray would.
+#
+# There is no class inheritance in Culebra, so this port departs from the
+# original's class hierarchy in three deliberate ways:
+#   - `Function` is not a base class; every op is its own class with
+#     `forward`/`backward` methods, and the shared bookkeeping (generation
+#     tracking, creator wiring) lives in the free functions `apply1`/`apply2`
+#     below instead of in `__call__`.
+#   - `Parameter` is not a Variable subclass, just `Variable` itself under a
+#     second name — its only job upstream was an `isinstance` marker for
+#     auto-registering fields in `Layer.__setattr__`, which this port's
+#     `layers.cul` does explicitly instead of by type-sniffing.
+#   - Every function here produces exactly one output Variable (nothing in
+#     this port needs the general multi-output case), so weakref-guarded
+#     output *lists* collapse to a single plain `output` field.
+
+# --- global backprop switch ---------------------------------------------
+
+mut enable_backprop = true
+mut training = true
+
+# Bumped once per top-level `Variable.backward()` call and stamped onto
+# each visited Function's `seen` field, so "already queued" is scoped to
+# *this* sweep rather than remembered forever — a persistent flag would
+# stay latched from an op's first backward() and silently skip it on
+# every later one, which double-backprop relies on revisiting (the
+# backward pass's own ops form a new graph that can lead back into nodes
+# a *previous* backward() call already walked).
+mut backward_epoch = 0
+
+fn no_grad(body) {
+  saved = enable_backprop
+  enable_backprop = false
+  defer {
+    enable_backprop = saved
+  }
+  body()
+}
+
+fn test_mode(body) {
+  saved = training
+  training = false
+  defer {
+    training = saved
+  }
+  body()
+}
+
+fn is_training() {
+  training
+}
+
+# --- Variable -------------------------------------------------------------
+
+fn as_array(x) {
+  match x {
+    t: Tensor => t,
+    n: Long => Tensor.from([to_float(n)]),
+    f: Float => Tensor.from([f]),
+    _ => x,
+  }
+}
+
+fn as_variable(x) {
+  match x {
+    v: Variable => v,
+    _ => Variable(as_array(x)),
+  }
+}
+
+# Tensor has no elementwise sin/cos/tanh/exp and no comparison operator, so
+# functions.cul's trig/exp ops and this file's max/min masks round-trip
+# through nested Culebra Arrays instead. `map_nested`/`zip_nested` walk a
+# `to_array()` result to whatever depth it has (1-D vector or 2-D matrix,
+# the only ranks this port's Tensor usage produces).
+fn map_nested(v, f) {
+  match v {
+    xs: Array => xs.map(|x| map_nested(x, f)),
+    _ => f(v),
+  }
+}
+
+fn zip_nested(a, b, f) {
+  match a {
+    # `.zip()` yields `{first, second}` Objects, not Tuples — a `|(x, y)|`
+    # destructure on it throws `ValueError`, so read the fields by name.
+    xs: Array => xs
+      .iter()
+      .zip(b.iter())
+      .map(|pair| zip_nested(pair.first, pair.second, f))
+      .collect(),
+    _ => f(a, b),
+  }
+}
+
+# Reinserts a size-1 dim at `axis` — the shape an axis-reducing op's output
+# would have under `keepdims=true`, needed wherever a reduced gradient must
+# be reshaped before it can broadcast back against the pre-reduction shape.
+fn insert_axis(shape, axis) {
+  shape.slice(0, axis) + [1] + shape.slice(axis + 1, shape.size())
+}
+
+fn raw_elementwise(t, f) {
+  # `Tensor.to_array()` refuses rank > 2 (needed by e.g. a conv/pooling
+  # activation on a [N,C,H,W] tensor), so flatten to 1-D first — a plain
+  # `map` over that is also simpler than `map_nested`'s recursive walk,
+  # since every element is now at the same depth.
+  shape = t.shape()
+  flat = t.reshape([shape.product()]).to_array()
+  Tensor.from(flat.map(f)).reshape(shape)
+}
+
+class Variable {
+  data = nil
+  name = nil
+  grad = nil
+  creator = nil
+  generation = 0
+
+  new(data, name = nil) {
+    self.data = data
+    self.name = name
+  }
+
+  get shape() {
+    self.data.shape()
+  }
+
+  get ndim() {
+    self.shape.size()
+  }
+
+  get size() {
+    self.shape.product()
+  }
+
+  __str__() {
+    if self.data == nil {
+      "variable(None)"
+    } else {
+      "variable({self.data.to_array()})"
+    }
+  }
+
+  set_creator(f) {
+    self.creator = f
+    self.generation = f.generation + 1
+  }
+
+  unchain() {
+    self.creator = nil
+  }
+
+  cleargrad() {
+    self.grad = nil
+  }
+
+  # Reverse-mode sweep in generation order, so a diamond in the graph is
+  # never processed before every path into it has contributed its share.
+  backward(retain_grad = false, create_graph = false) {
+    if self.grad == nil {
+      self.grad = Variable(Tensor.ones(self.shape))
+    }
+
+    backward_epoch += 1
+    my_epoch = backward_epoch
+
+    mut funcs = []
+    fn add_func(node) {
+      if node.seen != my_epoch {
+        node.seen = my_epoch
+        funcs.push(node)
+        funcs.sort_by(|n| n.generation)
+      }
+    }
+    add_func(self.creator) if self.creator != nil
+
+    while !funcs.empty() {
+      f = funcs.pop()
+      gy = f.output.grad
+
+      saved = enable_backprop
+      enable_backprop = create_graph
+      gxs = f.backward(gy)
+      enable_backprop = saved
+
+      gxs_list = if f.inputs.size() == 1 {
+        [gxs]
+      } else {
+        gxs.to_array()
+      }
+
+      for i in range(f.inputs.size()) {
+        x = f.inputs[i]
+        gx = gxs_list[i]
+        x.grad = if x.grad == nil {
+          gx
+        } else {
+          x.grad + gx
+        }
+        add_func(x.creator) if x.creator != nil
+      }
+
+      f.output.grad = nil if !retain_grad
+    }
+  }
+
+  unchain_backward() {
+    if self.creator != nil {
+      mut funcs = [self.creator]
+      while !funcs.empty() {
+        f = funcs.pop()
+        for x in f.inputs {
+          if x.creator != nil {
+            funcs.push(x.creator)
+            x.unchain()
+          }
+        }
+      }
+    }
+  }
+
+  __add__(other) {
+    add(self, other)
+  }
+  __mul__(other) {
+    mul(self, other)
+  }
+  __neg__() {
+    neg(self)
+  }
+  __sub__(other) {
+    sub(self, other)
+  }
+  __div__(other) {
+    div(self, other)
+  }
+  __pow__(c) {
+    pow_(self, c)
+  }
+
+  reshape(shape) {
+    reshape(self, shape)
+  }
+  transpose(axes = nil) {
+    transpose(self, axes)
+  }
+  get T() {
+    transpose(self, nil)
+  }
+  sum(axis = nil, keepdims = false) {
+    sum(self, axis, keepdims)
+  }
+  matmul(other) {
+    matmul(self, other)
+  }
+  dot(other) {
+    matmul(self, other)
+  }
+  max(axis = nil, keepdims = false) {
+    max_(self, axis, keepdims)
+  }
+  min(axis = nil, keepdims = false) {
+    min_(self, axis, keepdims)
+  }
+}
+
+let Parameter = Variable
+
+# --- applying a Function to Variables --------------------------------------
+#
+# Every op class below carries its own `forward`/`backward` plus three
+# bookkeeping fields (`generation`, `inputs`, `output`, `seen`) that these
+# two helpers attach after calling `forward`. Mirrors `Function.__call__`
+# in the original, minus the weakref plumbing Culebra's cycle collector
+# makes unnecessary.
+
+fn apply1(f, x0) {
+  v0 = as_variable(x0)
+  y = f.forward(v0.data)
+  out = Variable(as_array(y))
+  if enable_backprop {
+    f.generation = v0.generation
+    f.inputs = [v0]
+    f.output = out
+    f.seen = -1
+    out.set_creator(f)
+  }
+  out
+}
+
+fn apply2(f, x0, x1) {
+  v0 = as_variable(x0)
+  v1 = as_variable(x1)
+  y = f.forward(v0.data, v1.data)
+  out = Variable(as_array(y))
+  if enable_backprop {
+    f.generation = Math.max(v0.generation, v1.generation)
+    f.inputs = [v0, v1]
+    f.output = out
+    f.seen = -1
+    out.set_creator(f)
+  }
+  out
+}
+
+# --- shape reduction / broadcasting -----------------------------------------
+#
+# `sum_to`/`broadcast_to` invert each other and are needed by the four
+# arithmetic ops' backward passes to un-broadcast a gradient, so they live
+# here rather than in functions.cul (which would make the two files import
+# each other — not allowed).
+
+fn raw_sum_to(x, shape) {
+  mut t = x
+  while t.shape().size() > shape.size() {
+    t = t.sum(0)
+  }
+  for i in range(shape.size()) {
+    if shape[i] == 1 && t.shape()[i] != 1 {
+      reduced = t.shape().slice(0, i) +
+        [1] +
+        t.shape().slice(i + 1, t.shape().size())
+      t = t.sum(i).reshape(reduced)
+    }
+  }
+  t
+}
+
+fn raw_broadcast_to(x, shape) {
+  x * Tensor.ones(shape)
+}
+
+class SumTo {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(shape) {
+    self.shape = shape
+  }
+
+  forward(x) {
+    self.x_shape = x.shape()
+    raw_sum_to(x, self.shape)
+  }
+
+  backward(gy) {
+    broadcast_to(gy, self.x_shape)
+  }
+}
+
+fn sum_to(x, shape) {
+  if x.shape == shape {
+    as_variable(x)
+  } else {
+    apply1(SumTo(shape), x)
+  }
+}
+
+class BroadcastTo {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(shape) {
+    self.shape = shape
+  }
+
+  forward(x) {
+    self.x_shape = x.shape()
+    raw_broadcast_to(x, self.shape)
+  }
+
+  backward(gy) {
+    sum_to(gy, self.x_shape)
+  }
+}
+
+fn broadcast_to(x, shape) {
+  if x.shape == shape {
+    as_variable(x)
+  } else {
+    apply1(BroadcastTo(shape), x)
+  }
+}
+
+class Sum {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(axis = nil, keepdims = false) {
+    self.axis = axis
+    self.keepdims = keepdims
+  }
+
+  forward(x) {
+    self.x_shape = x.shape()
+    y = if self.axis == nil {
+      Tensor.from([x.sum()])
+    } else {
+      x.sum(self.axis)
+    }
+    if self.keepdims && self.axis != nil {
+      y = y.reshape(insert_axis(self.x_shape, self.axis))
+    }
+    y
+  }
+
+  backward(gy) {
+    # `gy`'s shape lost the reduced axis (unless keepdims already kept a 1
+    # there); reinsert it as a size-1 dim so broadcast_to can align the
+    # remaining axes against x_shape instead of the numpy trailing-axis
+    # broadcast rule picking the wrong one.
+    gy_r = if self.axis == nil || self.keepdims {
+      gy
+    } else {
+      reshape(gy, insert_axis(self.x_shape, self.axis))
+    }
+    broadcast_to(gy_r, self.x_shape)
+  }
+}
+
+fn sum(x, axis = nil, keepdims = false) {
+  apply1(Sum(axis, keepdims), x)
+}
+
+# --- four arithmetic operators + power --------------------------------------
+
+class Add {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x0, x1) {
+    self.x0_shape = x0.shape()
+    self.x1_shape = x1.shape()
+    x0 + x1
+  }
+
+  backward(gy) {
+    if self.x0_shape == self.x1_shape {
+      (gy, gy)
+    } else {
+      (sum_to(gy, self.x0_shape), sum_to(gy, self.x1_shape))
+    }
+  }
+}
+
+fn add(x0, x1) {
+  apply2(Add(), x0, x1)
+}
+
+class Mul {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x0, x1) {
+    x0 * x1
+  }
+
+  backward(gy) {
+    (x0, x1) = (self.inputs[0], self.inputs[1])
+    gx0 = gy * x1
+    gx1 = gy * x0
+    if x0.shape == x1.shape {
+      (gx0, gx1)
+    } else {
+      (sum_to(gx0, x0.shape), sum_to(gx1, x1.shape))
+    }
+  }
+}
+
+fn mul(x0, x1) {
+  apply2(Mul(), x0, x1)
+}
+
+class Neg {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    raw_neg(x)
+  }
+
+  backward(gy) {
+    neg(gy)
+  }
+}
+
+fn raw_neg(x) {
+  x * -1.0
+}
+
+fn neg(x) {
+  apply1(Neg(), x)
+}
+
+class Sub {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x0, x1) {
+    self.x0_shape = x0.shape()
+    self.x1_shape = x1.shape()
+    x0 - x1
+  }
+
+  backward(gy) {
+    gx0 = gy
+    gx1 = neg(gy)
+    if self.x0_shape == self.x1_shape {
+      (gx0, gx1)
+    } else {
+      (sum_to(gx0, self.x0_shape), sum_to(gx1, self.x1_shape))
+    }
+  }
+}
+
+fn sub(x0, x1) {
+  apply2(Sub(), x0, x1)
+}
+
+class Div {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x0, x1) {
+    x0 / x1
+  }
+
+  backward(gy) {
+    (x0, x1) = (self.inputs[0], self.inputs[1])
+    gx0 = gy / x1
+    gx1 = gy * raw_neg(x0 / (x1 * x1))
+    if x0.shape == x1.shape {
+      (gx0, gx1)
+    } else {
+      (sum_to(gx0, x0.shape), sum_to(gx1, x1.shape))
+    }
+  }
+}
+
+fn div(x0, x1) {
+  apply2(Div(), x0, x1)
+}
+
+class Pow {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(c) {
+    self.c = c
+  }
+
+  forward(x) {
+    x.pow(self.c)
+  }
+
+  backward(gy) {
+    x = self.inputs[0]
+    c = self.c
+    mul(mul(c, pow_(x, c - 1)), gy)
+  }
+}
+
+fn pow_(x, c) {
+  apply1(Pow(c), x)
+}
+
+# --- reshape / transpose ----------------------------------------------------
+
+class Reshape {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(shape) {
+    self.shape = shape
+  }
+
+  forward(x) {
+    self.x_shape = x.shape()
+    x.reshape(self.shape)
+  }
+
+  backward(gy) {
+    reshape(gy, self.x_shape)
+  }
+}
+
+fn reshape(x, shape) {
+  v = as_variable(x)
+  if v.shape == shape {
+    v
+  } else {
+    apply1(Reshape(shape), v)
+  }
+}
+
+fn raw_transpose(x, axes) {
+  if axes == nil || axes == [1, 0] {
+    x.transpose()
+  } else {
+    x
+  }
+}
+
+class Transpose {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(axes = nil) {
+    self.axes = axes
+  }
+
+  forward(x) {
+    raw_transpose(x, self.axes)
+  }
+
+  backward(gy) {
+    transpose(gy, self.axes)
+  }
+}
+
+fn transpose(x, axes = nil) {
+  apply1(Transpose(axes), x)
+}
+
+# --- matrix multiply ---------------------------------------------------------
+
+class MatMul {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x, w) {
+    x.dot(w)
+  }
+
+  backward(gy) {
+    (x, w) = (self.inputs[0], self.inputs[1])
+    (matmul(gy, transpose(w)), matmul(transpose(x), gy))
+  }
+}
+
+fn matmul(x, w) {
+  apply2(MatMul(), x, w)
+}
+
+# --- max / min --------------------------------------------------------------
+#
+# Tensor has no elementwise comparison operator, so the backward mask is
+# built by walking `to_array()` on both sides instead of a vectorized
+# comparison. Ties (more than one element equal to the max) split the
+# incoming gradient across every tied position, same as upstream.
+
+fn mask_equal(a, b) {
+  bc = raw_broadcast_to(b, a.shape())
+  Tensor.from(zip_nested(a.to_array(), bc.to_array(), |p, q| if p == q {
+    1.0
+  } else {
+    0.0
+  }))
+}
+
+# `Max`/`Min` share everything but which Tensor reduction `forward` calls —
+# both route their (identical) backward math through this one function,
+# keyed off `f`'s own stored `axis`/`x_shape`/`y_data`.
+fn arg_reduce_backward(f, gy) {
+  x = f.inputs[0]
+  shape = if f.axis == nil {
+    f.x_shape.map(|_| 1)
+  } else {
+    insert_axis(f.x_shape, f.axis)
+  }
+  gy_r = reshape(gy, shape)
+  y_r = Variable(f.y_data.reshape(shape))
+  cond = mask_equal(x.data, y_r.data)
+  broadcast_to(gy_r, f.x_shape) * as_variable(cond)
+}
+
+class Max {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(axis = nil, keepdims = false) {
+    self.axis = axis
+    self.keepdims = keepdims
+  }
+
+  forward(x) {
+    self.x_shape = x.shape()
+    y = if self.axis == nil {
+      Tensor.from([x.max()])
+    } else {
+      x.max(self.axis)
+    }
+    self.y_data = y
+    y
+  }
+
+  backward(gy) {
+    arg_reduce_backward(self, gy)
+  }
+}
+
+fn max_(x, axis = nil, keepdims = false) {
+  apply1(Max(axis, keepdims), x)
+}
+
+class Min {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(axis = nil, keepdims = false) {
+    self.axis = axis
+    self.keepdims = keepdims
+  }
+
+  forward(x) {
+    self.x_shape = x.shape()
+    y = if self.axis == nil {
+      Tensor.from([x.min()])
+    } else {
+      x.min(self.axis)
+    }
+    self.y_data = y
+    y
+  }
+
+  backward(gy) {
+    arg_reduce_backward(self, gy)
+  }
+}
+
+fn min_(x, axis = nil, keepdims = false) {
+  apply1(Min(axis, keepdims), x)
+}
+
+export {Variable, Parameter, as_array, as_variable, no_grad, test_mode, is_training, apply1, apply2, add, sub, mul, neg, div, pow_, reshape, transpose, sum, sum_to, broadcast_to, matmul, max_, min_, raw_sum_to, raw_broadcast_to, map_nested, zip_nested, raw_elementwise, insert_axis}

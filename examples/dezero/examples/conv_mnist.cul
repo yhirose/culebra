@@ -1,0 +1,92 @@
+# A small CNN (one conv-relu-pool stage, then a linear head) classifying
+# MNIST digits, trained through dezero's own from-scratch autodiff. The
+# im2col-based convolution's padding and window extraction now go through
+# native Tensor.pad()/.unfold() (GPU-dispatched); pooling's own window
+# gather is still plain Culebra loops (see functions_conv.cul), so this
+# stays on a small subset and a shallow model — see
+# examples/dezero/examples/mnist.cul for the full-dataset MLP version,
+# which trains on all 60k images in seconds.
+#
+#   culebra --jit examples/dezero/examples/conv_mnist.cul [n_train]
+
+import dz from '../dezero/core.cul'
+import F from '../dezero/functions.cul'
+import conv from '../dezero/functions_conv.cul'
+import L from '../dezero/layers.cul'
+import LC from '../dezero/layers_conv.cul'
+import O from '../dezero/optimizers.cul'
+import D from '../dezero/datasets.cul'
+import DL from '../dezero/dataloaders.cul'
+
+Random.seed(0)
+
+DATA_DIR = 'benchmarks/mnist/data'
+BATCH_SIZE = 32
+EPOCHS = 5
+
+n_train = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 1000
+
+class SmallCNN {
+  new() {
+    self.conv1 = LC.Conv2d(8, 3, 1, 1)
+    self.fc = L.Linear(10)
+  }
+
+  __call__(x) {
+    images = dz.reshape(x, [x.shape[0], 1, 28, 28])
+    h = conv.pooling(F.relu(self.conv1(images)), 2, 2, 0)
+    s = h.shape
+    flat = dz.reshape(h, [s[0], s[1] * s[2] * s[3]])
+    self.fc(flat)
+  }
+
+  cleargrads() {
+    L.cleargrads(self)
+  }
+
+  params() {
+    self.conv1.params() + self.fc.params()
+  }
+}
+
+t0 = Sys.time()
+mnist = D.load_mnist_arrays(DATA_DIR, n_train, 500)
+inspect("loaded train={mnist.y_train.size()} test={mnist.y_test.size()} in {Sys.time() - t0}s")
+
+train_set = D.ArrayDataset(mnist.x_train, mnist.y_train)
+train_loader = DL.DataLoader(train_set, BATCH_SIZE)
+
+model = SmallCNN()
+optimizer = O.Adam(0.0005).setup(model)
+
+fn test_accuracy() {
+  dz.no_grad(fn () {
+    out = model(dz.Variable(mnist.x_test))
+    F.accuracy(out, mnist.y_test).data.item()
+  })
+}
+
+train_t0 = Sys.time()
+for epoch in range(EPOCHS) {
+  train_loader.reset()
+  mut sum_loss = 0.0
+  mut batches = 0
+
+  mut batch = train_loader.next_batch()
+  while batch != nil {
+    x = dz.Variable(batch.x)
+    y = model(x)
+    loss = F.softmax_cross_entropy(y, batch.t)
+
+    model.cleargrads()
+    loss.backward()
+    optimizer.update()
+
+    sum_loss += loss.data.item()
+    batches += 1
+    batch = train_loader.next_batch()
+  }
+
+  inspect("epoch {epoch + 1}/{EPOCHS} | loss {sum_loss / to_float(batches)} | test acc {test_accuracy()}")
+}
+inspect("trained in {Sys.time() - train_t0}s")

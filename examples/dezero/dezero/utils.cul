@@ -1,0 +1,178 @@
+# dezero/utils.cul — graph introspection and testing helpers. Ported from
+# the "DeZero" framework taught in oreilly-japan/deep-learning-from-scratch-3
+# (MIT license, Koki Saitoh).
+#
+# `sum_to`/`reshape_sum_backward` already live in core.cul (as `raw_sum_to`
+# and the `Sum` class's own backward) since the four arithmetic ops need
+# them too, and `pair`/`get_conv_outsize`/`get_deconv_outsize` already live
+# in functions_conv.cul (re-exported here under the same names) since conv
+# needs them regardless of whether this file is ever imported — nothing to
+# duplicate in either case.
+#
+# There's no subprocess-exec facility to shell out to a `dot` binary, so
+# `plot_dot_graph` just writes the `.dot` source; render it yourself with
+# `dot -Tpng graph.dot -o graph.png` if you have Graphviz installed.
+
+import dz from './core.cul'
+import conv from './functions_conv.cul'
+
+let pair = conv.pair
+let get_conv_outsize = conv.get_conv_outsize
+let get_deconv_outsize = conv.get_deconv_outsize
+
+fn logsumexp(x, axis = 1) {
+  m = x.max(axis)
+  Tensor.eval(m)
+  shape = x.shape()
+  m_shape = dz.insert_axis(shape, axis)
+  m_bc = dz.raw_broadcast_to(m.reshape(m_shape), shape)
+  shifted = x - m_bc
+  s = dz.raw_elementwise(shifted, Math.exp).sum(axis)
+  Tensor.eval(s)
+  m.reshape(m_shape) + dz.raw_elementwise(s, Math.log).reshape(m_shape)
+}
+
+# Central-difference estimate of d(f(x))/dx at every element of `x.data`,
+# for cross-checking a hand-written `backward()` against a `Variable ->
+# Variable` function `f` that reduces to a scalar (shape [1]) output.
+# `Tensor.to_array()` refuses rank > 2 (a conv input is rank 4), so the
+# perturb-and-diff walk goes through a flat 1-D reshape instead of `x`'s
+# own (possibly higher-rank) shape, and reshapes the result back at the end.
+fn numerical_grad_flat(f, x, eps = 1.0e-4) {
+  x_shape = x.data.shape()
+  n = x_shape.product()
+  flat = x.data.reshape([n]).to_array()
+  grads = range(n).map(fn (i) {
+    plus = flat.slice(0, i) + [flat[i] + eps] + flat.slice(i + 1, n)
+    minus = flat.slice(0, i) + [flat[i] - eps] + flat.slice(i + 1, n)
+    y_plus = f(dz.Variable(Tensor.from(plus).reshape(x_shape))).data.item()
+    y_minus = f(dz.Variable(Tensor.from(minus).reshape(x_shape))).data.item()
+    (y_plus - y_minus) / (2.0 * eps)
+  }).collect()
+  Tensor.from(grads).reshape(x_shape)
+}
+
+# Tensor storage is F32 (~7 decimal digits), so a central-difference check
+# with too small an `eps` loses precision to roundoff, not model error —
+# `eps=1e-3` and `atol=1e-2` are chosen for that, not `1e-4`/`1e-3` a
+# float64 ndarray could get away with.
+fn gradient_check(f, x, rtol = 1.0e-3, atol = 1.0e-2) {
+  y = f(x)
+  y.backward()
+  num = numerical_grad_flat(f, x, 1.0e-3)
+  array_allclose(x.grad.data, num, rtol, atol)
+}
+
+# Same rank > 2 concern as `numerical_grad_flat` above — flatten both
+# sides to 1-D before comparing element-by-element rather than walking
+# `to_array()`'s nesting directly.
+fn array_equal(a, b) {
+  n = a.shape().product()
+  fa = a.reshape([n]).to_array()
+  fb = b.reshape([n]).to_array()
+  range(n).all(|i| fa[i] == fb[i])
+}
+
+fn array_allclose(a, b, rtol = 1.0e-4, atol = 1.0e-5) {
+  n = a.shape().product()
+  fa = a.reshape([n]).to_array()
+  fb = b.reshape([n]).to_array()
+  range(n).all(|i| Math.abs(fa[i] - fb[i]) <= atol + rtol * Math.abs(fb[i]))
+}
+
+# --- dot-graph text -------------------------------------------------------
+#
+# Culebra has no `id()` builtin, so each Variable/Function node's DOT id is
+# assigned the first time `var_id`/`fn_id` sees that object, found again on
+# a later visit via `==` against the objects seen so far.
+
+class DotBuilder {
+  new() {
+    self.var_ids = []
+    self.var_objs = []
+    self.fn_ids = []
+    self.fn_objs = []
+  }
+
+  var_id(v) {
+    mut found = nil
+    for i in range(self.var_objs.size()) {
+      found = self.var_ids[i] if self.var_objs[i] == v
+    }
+    if found != nil {
+      found
+    } else {
+      idx = self.var_objs.size()
+      self.var_objs.push(v)
+      self.var_ids.push("v{idx}")
+      "v{idx}"
+    }
+  }
+
+  fn_id(f) {
+    idx = self.fn_objs.size()
+    self.fn_objs.push(f)
+    self.fn_ids.push("f{idx}")
+    "f{idx}"
+  }
+}
+
+fn get_dot_graph(output, verbose = true) {
+  b = DotBuilder()
+  mut lines = []
+  mut funcs = []
+  mut seen_fns = []
+
+  vid = b.var_id(output)
+  vname = if output.name == nil {
+    ""
+  } else {
+    output.name
+  }
+  vlabel = if verbose {
+    "{vname} {output.shape}"
+  } else {
+    vname
+  }
+  lines.push("{vid} [label=\"{vlabel}\", color=orange, style=filled]")
+
+  fn push_func(node) {
+    already = seen_fns.contains(node)
+    if !already {
+      seen_fns.push(node)
+      funcs.push(node)
+    }
+  }
+  push_func(output.creator) if output.creator != nil
+
+  while !funcs.empty() {
+    f = funcs.pop()
+    fid = b.fn_id(f)
+    lines.push("{fid} [label=\"{f.class}\", color=lightblue, style=filled, shape=box]")
+    for x in f.inputs {
+      xid = b.var_id(x)
+      xname = if x.name == nil {
+        ""
+      } else {
+        x.name
+      }
+      xlabel = if verbose {
+        "{xname} {x.shape}"
+      } else {
+        xname
+      }
+      lines.push("{xid} [label=\"{xlabel}\", color=orange, style=filled]")
+      lines.push("{xid} -> {fid}")
+      push_func(x.creator) if x.creator != nil
+    }
+    lines.push("{fid} -> {b.var_id(f.output)}")
+  }
+
+  'digraph g {' + "\n" + lines.join("\n") + "\n" + '}'
+}
+
+fn plot_dot_graph(output, verbose = true, to_file = 'graph.dot') {
+  FS.write(to_file, get_dot_graph(output, verbose))
+}
+
+export {logsumexp, numerical_grad_flat, gradient_check, array_equal, array_allclose, pair, get_conv_outsize, get_deconv_outsize, get_dot_graph, plot_dot_graph}

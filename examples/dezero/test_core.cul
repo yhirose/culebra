@@ -1,0 +1,178 @@
+# Regression tests for dezero/core.cul's autodiff engine.
+
+import dz from './dezero/core.cul'
+
+fn scalar(v) {
+  dz.Variable(Tensor.from([v]))
+}
+
+fn item(v) {
+  Tensor.eval(v.data)
+  v.data.to_array()[0]
+}
+
+@test
+fn pow_chain_matches_the_analytic_derivative() {
+  # y = (x^2)^2 = x^4, dy/dx = 4x^3
+  x = scalar(0.5)
+  y = x.__pow__(2).__pow__(2)
+  y.backward()
+  assert_close(item(x.grad), 4.0 * 0.5 ** 3, 1.0e-5)
+}
+
+@test
+fn a_diamond_shaped_graph_sums_both_paths() {
+  # z = x^2 + y^2
+  x = scalar(2.0)
+  y = scalar(3.0)
+  z = dz.add(x.__pow__(2), y.__pow__(2))
+  z.backward()
+  assert_close(item(z), 13.0, 1.0e-5)
+  assert_close(item(x.grad), 4.0, 1.0e-5)
+  assert_close(item(y.grad), 6.0, 1.0e-5)
+}
+
+@test
+fn using_the_same_variable_twice_accumulates_gradient() {
+  x = scalar(3.0)
+  y = dz.add(dz.add(x, x), x)
+  y.backward()
+  assert_close(item(x.grad), 3.0, 1.0e-5)
+}
+
+@test
+fn cleargrad_resets_accumulation_between_passes() {
+  x = scalar(3.0)
+  y1 = dz.add(x, x)
+  y1.backward()
+  x.cleargrad()
+  y2 = dz.add(dz.add(x, x), x)
+  y2.backward()
+  assert_close(item(x.grad), 3.0, 1.0e-5)
+}
+
+@test
+fn broadcasting_add_un_broadcasts_the_bias_gradient() {
+  bias = dz.Variable(Tensor.from([[10.0, 20.0, 30.0]]))                 # [1, 3]
+  batch = dz.Variable(Tensor.from([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]))  # [2, 3]
+  out = dz.add(batch, bias)
+  Tensor.eval(out.data)
+  assert_eq(out.data.to_array(), [[11.0, 21.0, 31.0], [12.0, 22.0, 32.0]])
+  out.backward()
+  Tensor.eval(bias.grad.data)
+  assert_eq(bias.grad.data.shape(), [1, 3])
+  assert_eq(bias.grad.data.to_array(), [[2.0, 2.0, 2.0]])
+}
+
+@test
+fn double_backprop_gives_the_second_derivative() {
+  # y = x^3, dy/dx = 3x^2, d2y/dx2 = 6x — at x=2, that's 12.
+  x = scalar(2.0)
+  y = x.__pow__(3)
+  y.backward(false, true)
+  gx = x.grad
+  x.cleargrad()
+  gx.backward()
+  assert_close(item(x.grad), 12.0, 1.0e-4)
+}
+
+@test
+fn repeated_double_backprop_stays_correct_across_calls() {
+  # Regression test for a bug where a Function's "already queued" marker
+  # was a persistent field instead of scoped to one backward() call, so a
+  # node revisited by a *later*, separate backward() (as every step past
+  # the first does, in a chain of repeated double-backprop) was silently
+  # skipped. tanh derivatives at x=1, hand-checked against the closed
+  # forms y'=1-y^2, y''=-2*y*y', y'''=-2*(y'^2+y*y'').
+  x = scalar(1.0)
+  y = tanh_via_exp(x)
+
+  expected0 = tanh_ref(1.0)
+  t1 = 1.0 - expected0 * expected0
+  t2 = -2.0 * expected0 * t1
+  t3 = -2.0 * (t1 * t1 + expected0 * t2)
+
+  assert_close(item(y), expected0, 1.0e-5)
+
+  x.cleargrad()
+  y.backward(false, true)
+  assert_close(item(x.grad), t1, 1.0e-4)
+
+  g1 = x.grad
+  x.cleargrad()
+  g1.backward(false, true)
+  assert_close(item(x.grad), t2, 1.0e-3)
+
+  g2 = x.grad
+  x.cleargrad()
+  g2.backward(false, true)
+  assert_close(item(x.grad), t3, 1.0e-2)
+}
+
+fn tanh_ref(v) {
+  e2 = Math.exp(2.0 * v)
+  (e2 - 1.0) / (e2 + 1.0)
+}
+
+# A tiny hand-built tanh(x) graph (independent of functions.cul) so this
+# file only depends on core.cul, matching its own test scope.
+fn tanh_via_exp(x) {
+  # tanh(x) = 1 - 2/(exp(2x)+1)
+  two_x = dz.mul(x, 2.0)
+  exp_two_x = exp_var(two_x)
+  denom = dz.add(exp_two_x, 1.0)
+  dz.sub(1.0, dz.div(2.0, denom))
+}
+
+class ExpOp {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  forward(x) {
+    dz.raw_elementwise(x, Math.exp)
+  }
+
+  backward(gy) {
+    dz.mul(gy, self.output)
+  }
+}
+
+fn exp_var(x) {
+  dz.apply1(ExpOp(), x)
+}
+
+@test
+fn matmul_and_transpose_backward_shapes_line_up() {
+  a = dz.Variable(Tensor.from([[1.0, 2.0], [3.0, 4.0]]))
+  b = dz.Variable(Tensor.from([[1.0, 0.0], [0.0, 1.0]]))
+  c = dz.matmul(a, b)
+  Tensor.eval(c.data)
+  assert_eq(c.data.to_array(), [[1.0, 2.0], [3.0, 4.0]])
+  c.sum().backward()
+  Tensor.eval(a.grad.data)
+  assert_eq(a.grad.data.to_array(), [[1.0, 1.0], [1.0, 1.0]])
+}
+
+@test
+fn max_routes_gradient_to_the_argmax_position_only() {
+  x = dz.Variable(Tensor.from([[1.0, 5.0, 2.0], [7.0, 3.0, 4.0]]))
+  m = x.max(1)
+  Tensor.eval(m.data)
+  assert_eq(m.data.to_array(), [5.0, 7.0])
+  m.sum().backward()
+  Tensor.eval(x.grad.data)
+  assert_eq(x.grad.data.to_array(), [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]])
+}
+
+@test
+fn sum_over_an_axis_broadcasts_the_gradient_back_correctly() {
+  x = dz.Variable(Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+  s = x.sum(1)
+  Tensor.eval(s.data)
+  assert_eq(s.data.to_array(), [6.0, 15.0])
+  s.backward()
+  Tensor.eval(x.grad.data)
+  assert_eq(x.grad.data.to_array(), [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
+}

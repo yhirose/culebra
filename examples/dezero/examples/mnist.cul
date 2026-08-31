@@ -1,0 +1,63 @@
+# MNIST digit classification: a 784-100-10 MLP trained on dezero's own
+# from-scratch autodiff (Adam, cross-entropy). Needs the raw IDX files from
+# `just fetch-mnist` (run once from the repo root); pass a sample count to
+# train on a subset while experimenting.
+#
+#   culebra --jit examples/dezero/examples/mnist.cul [n_train]
+
+import dz from '../dezero/core.cul'
+import F from '../dezero/functions.cul'
+import M from '../dezero/models.cul'
+import O from '../dezero/optimizers.cul'
+import D from '../dezero/datasets.cul'
+import DL from '../dezero/dataloaders.cul'
+
+Random.seed(0)
+
+DATA_DIR = 'benchmarks/mnist/data'
+BATCH_SIZE = 100
+EPOCHS = 5
+
+n_train = !Sys.argv.empty() ? to_long(Sys.argv[0]) : nil
+
+t0 = Sys.time()
+mnist = D.load_mnist_arrays(DATA_DIR, n_train, 2000)
+inspect("loaded train={mnist.y_train.size()} test={mnist.y_test.size()} in {Sys.time() - t0}s")
+
+train_set = D.ArrayDataset(mnist.x_train, mnist.y_train)
+train_loader = DL.DataLoader(train_set, BATCH_SIZE)
+
+model = M.MLP([100, 10], F.relu)
+optimizer = O.Adam().setup(model)
+
+fn test_accuracy() {
+  dz.no_grad(fn () {
+    out = model(dz.Variable(mnist.x_test))
+    F.accuracy(out, mnist.y_test).data.item()
+  })
+}
+
+train_t0 = Sys.time()
+for epoch in range(EPOCHS) {
+  train_loader.reset()
+  mut sum_loss = 0.0
+  mut batches = 0
+
+  mut batch = train_loader.next_batch()
+  while batch != nil {
+    x = dz.Variable(batch.x)
+    y = model(x)
+    loss = F.softmax_cross_entropy(y, batch.t)
+
+    model.cleargrads()
+    loss.backward()
+    optimizer.update()
+
+    sum_loss += loss.data.item()
+    batches += 1
+    batch = train_loader.next_batch()
+  }
+
+  inspect("epoch {epoch + 1}/{EPOCHS} | loss {sum_loss / to_float(batches)} | test acc {test_accuracy()}")
+}
+inspect("trained in {Sys.time() - train_t0}s")

@@ -1,0 +1,159 @@
+# dezero/datasets.cul — small in-memory toy datasets, plus a loader for the
+# local MNIST IDX files this repo's own `just fetch-mnist` populates.
+# Ported from the "DeZero" framework taught in
+# oreilly-japan/deep-learning-from-scratch-3 (MIT license, Koki Saitoh).
+#
+# No `Dataset` base class here — `Spiral`/`SinCurve` just expose the two
+# fields `dataloaders.cul`'s `DataLoader`/`SeqDataLoader` actually need
+# (`.x`, `.y`, `.size()`), rather than replicating upstream's heavier
+# `__getitem__`/`transform` protocol nothing in this port needs.
+# CIFAR10/CIFAR100/ImageNet/Shakespeare are out of scope — large external
+# downloads and, for the last one, a tokenization pipeline with no use
+# elsewhere in this port.
+
+# --- Spiral: classic 3-arm 2-D spiral, 300 points, 3 classes ---------------
+#
+# `.x` is a Tensor [300, 2]; `.y` is an Array<Long> of 300 class ids in
+# 0..2 — the row-per-sample / sparse-label shape `F.softmax_cross_entropy`
+# and `DataLoader` both expect.
+
+class Spiral {
+  new(train = true) {
+    Random.seed(if train {
+      1984
+    } else {
+      2020
+    })
+    num_per_class = 100
+    num_classes = 3
+    mut rows = []
+    mut labels = []
+    for j in range(num_classes) {
+      for i in range(num_per_class) {
+        rate = to_float(i) / to_float(num_per_class)
+        radius = rate
+        theta = to_float(j) * 4.0 + 4.0 * rate + Random.gauss(0.0, 1.0) * 0.2
+        rows.push([radius * Math.sin(theta), radius * Math.cos(theta)])
+        labels.push(j)
+      }
+    }
+    order = range(rows.size()).collect()
+    Random.shuffle(order)
+    self.x = Tensor.from(order.map(|i| rows[i]))
+    self.y = order.map(|i| labels[i])
+  }
+
+  size() {
+    self.y.size()
+  }
+}
+
+# --- SinCurve: noisy sine wave, next-value-prediction framing --------------
+#
+# `.x`/`.y` are both Tensor [num_data-1, 1]: `.y[i]` is the value one step
+# after `.x[i]`, matching the RNN/LSTM sequence-prediction demos this
+# dataset is for. `train=true` adds uniform jitter to `sin`; `train=false`
+# gives a clean `cos` curve as a held-out variant (same amplitude/period,
+# a different phase, no noise), same as upstream.
+
+class SinCurve {
+  new(train = true, num_data = 1000) {
+    xs = range(num_data)
+      .map(|i| 2.0 * Math.pi * to_float(i) / to_float(num_data - 1))
+      .collect()
+    ys = if train {
+      xs.map(|v| Math.sin(v) + Random.uniform(-0.05, 0.05))
+    } else {
+      xs.map(Math.cos)
+    }
+    n = ys.size() - 1
+    self.x = Tensor.from(ys.slice(0, n).map(|v| [v]))
+    self.y = Tensor.from(ys.slice(1, ys.size()).map(|v| [v]))
+  }
+
+  size() {
+    self.x.shape()[0]
+  }
+}
+
+# --- ArrayDataset: wrap plain arrays for DataLoader -------------------------
+#
+# `DataLoader` duck-types its dataset as `{x, y, size()}`, but a plain
+# `{x: ..., y: ...}` Object's *built-in* `.size()` counts keys (2), not
+# samples, and silently satisfies that duck type with the wrong value. Wrap
+# any `x`/`y` pair (e.g. `load_mnist_arrays`'s fields) in this instead.
+
+class ArrayDataset {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+  size() {
+    self.y.size()
+  }
+}
+
+# --- MNIST: parse the local IDX-gzip files, no downloading -----------------
+#
+# Mirrors examples/tensor/mnist/train.cul's own IDX-gzip parsing (16-byte
+# image header, 8-byte label header, row-major bytes/image) rather than
+# its chunked-Tensor-concat optimization, since this port's datasets are
+# for small subsets/demos rather than full-speed 60k-image training.
+
+fn mnist_data_ready(data_dir) {
+  [
+    'train-images-idx3-ubyte.gz',
+    'train-labels-idx1-ubyte.gz',
+    't10k-images-idx3-ubyte.gz',
+    't10k-labels-idx1-ubyte.gz',
+  ].all(|f| FS.exists(FS.join(data_dir, f)))
+}
+
+fn load_mnist_labels(path, limit) {
+  raw = Compress.gunzip(FS.read(path))
+  all = raw.slice(8, raw.size()).bytes().collect()
+  if limit == nil {
+    all
+  } else {
+    all.slice(0, Math.min(limit, all.size()))
+  }
+}
+
+fn load_mnist_images(path, n) {
+  raw = Compress.gunzip(FS.read(path))
+  rows = range(n).map(fn (i) {
+    off = 16 + i * 784
+    raw.slice(off, off + 784).bytes().map(|b| to_float(b) / 255.0).collect()
+  }).collect()
+  Tensor.from(rows)
+}
+
+# Returns `{x_train, y_train, x_test, y_test}` — `x_*` are Tensors
+# `[n, 784]`, `y_*` are Array<Long> of digit labels. `n_train`/`n_test`
+# cap how many samples get parsed (nil = all). Throws with a
+# `just fetch-mnist` pointer if the data files aren't there yet, same UX
+# as this repo's own `examples/tensor/mnist/train.cul`.
+fn load_mnist_arrays(data_dir, n_train = nil, n_test = nil) {
+  if !mnist_data_ready(data_dir) {
+    throw "MNIST data not found under {data_dir}; run `just fetch-mnist` from the repo root first"
+  }
+  y_train = load_mnist_labels(
+    FS.join(data_dir, 'train-labels-idx1-ubyte.gz'),
+    n_train,
+  )
+  y_test = load_mnist_labels(
+    FS.join(data_dir, 't10k-labels-idx1-ubyte.gz'),
+    n_test,
+  )
+  x_train = load_mnist_images(
+    FS.join(data_dir, 'train-images-idx3-ubyte.gz'),
+    y_train.size(),
+  )
+  x_test = load_mnist_images(
+    FS.join(data_dir, 't10k-images-idx3-ubyte.gz'),
+    y_test.size(),
+  )
+  {x_train: x_train, y_train: y_train, x_test: x_test, y_test: y_test}
+}
+
+export {Spiral, SinCurve, ArrayDataset, load_mnist_arrays}

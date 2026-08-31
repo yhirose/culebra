@@ -1,0 +1,96 @@
+# dezero/layers_conv.cul — Conv2d / Deconv2d layers on top of
+# functions_conv.cul. Ported from the "DeZero" framework taught in
+# oreilly-japan/deep-learning-from-scratch-3 (MIT license, Koki Saitoh).
+#
+# No class inheritance in Culebra: these are standalone classes (no shared
+# `Layer` base), each writing out its own `__call__`/`params()` — the same
+# adaptation used throughout this port's `layers.cul`.
+
+import dz from './core.cul'
+import conv from './functions_conv.cul'
+
+class Conv2d {
+  w = nil
+  b = nil
+
+  new(out_channels, kernel_size, stride = 1, pad = 0, nobias = false, in_channels = nil) {
+    self.out_channels = out_channels
+    self.kernel_size = kernel_size
+    self.stride = stride
+    self.pad = pad
+    self.in_channels = in_channels
+    if in_channels != nil {
+      self.init_w(in_channels)
+    }
+    self.b = if nobias {
+      nil
+    } else {
+      dz.Parameter(Tensor.zeros(out_channels))
+    }
+  }
+
+  init_w(in_channels) {
+    (kh, kw) = conv.pair(self.kernel_size)
+    scale = Math.sqrt(1.0 / to_float(in_channels * kh * kw))
+    self.w = dz.Parameter(Tensor.randn(self.out_channels, in_channels, kh, kw) * scale)
+  }
+
+  __call__(x) {
+    if self.w == nil {
+      self.init_w(dz.as_variable(x).shape[1])
+    }
+    conv.conv2d(x, self.w, self.b, self.stride, self.pad)
+  }
+
+  params() {
+    if self.b == nil {
+      [self.w]
+    } else {
+      [self.w, self.b]
+    }
+  }
+}
+
+class Deconv2d {
+  w = nil
+  b = nil
+
+  new(out_channels, kernel_size, stride = 1, pad = 0, nobias = false, in_channels = nil) {
+    self.out_channels = out_channels
+    self.kernel_size = kernel_size
+    self.stride = stride
+    self.pad = pad
+    self.in_channels = in_channels
+    if in_channels != nil {
+      self.init_w(in_channels)
+    }
+    self.b = if nobias {
+      nil
+    } else {
+      dz.Parameter(Tensor.zeros(out_channels))
+    }
+  }
+
+  init_w(in_channels) {
+    (kh, kw) = conv.pair(self.kernel_size)
+    scale = Math.sqrt(1.0 / to_float(in_channels * kh * kw))
+    self.w = dz.Parameter(Tensor.randn(in_channels, self.out_channels, kh, kw) * scale)
+  }
+
+  __call__(x) {
+    if self.w == nil {
+      self.init_w(dz.as_variable(x).shape[1])
+    }
+    conv.deconv2d(x, self.w, self.b, self.stride, self.pad)
+  }
+
+  params() {
+    if self.b == nil {
+      [self.w]
+    } else {
+      [self.w, self.b]
+    }
+  }
+}
+
+export { Conv2d, Deconv2d }

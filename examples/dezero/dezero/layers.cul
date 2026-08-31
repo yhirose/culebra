@@ -1,0 +1,239 @@
+# dezero/layers.cul — parameterized building blocks (Linear, RNN, LSTM,
+# EmbedID, BatchNorm) on top of core.cul/functions.cul. Ported from the
+# "DeZero" framework taught in oreilly-japan/deep-learning-from-scratch-3
+# (MIT license, Koki Saitoh).
+#
+# Upstream's `Layer` base class exists only to give every layer a shared
+# `params()`/`cleargrads()`/`__call__` for free via inheritance, plus a
+# `__setattr__` hook that auto-registers any field holding a `Parameter` or
+# a nested `Layer`. Culebra has neither inheritance nor attribute hooks, so
+# each class here just writes its own three-line `params()` explicitly, and
+# `__call__` is Culebra's own operator-overload mechanism (a class with
+# `__call__` is invocable — `layer(x)` — no base class involved).
+
+import dz from './core.cul'
+import F from './functions.cul'
+
+fn cleargrads(target) {
+  for p in target.params() {
+    p.cleargrad()
+  }
+}
+
+# --- Linear ------------------------------------------------------------
+
+class Linear {
+  w = nil
+  b = nil
+  out_size = 0
+  nobias = false
+
+  new(out_size, nobias = false, in_size = nil) {
+    self.out_size = out_size
+    self.nobias = nobias
+    self.b = nobias ? nil : dz.Parameter(Tensor.zeros(1, out_size))
+    if in_size != nil {
+      self.init_w(in_size)
+    }
+  }
+
+  init_w(in_size) {
+    scale = Math.sqrt(1.0 / to_float(in_size))
+    self.w = dz.Parameter(Tensor.randn(in_size, self.out_size) * scale)
+  }
+
+  forward(x) {
+    if self.w == nil {
+      self.init_w(dz.as_variable(x).shape[1])
+    }
+    F.linear(x, self.w, self.b)
+  }
+
+  __call__(x) {
+    self.forward(x)
+  }
+
+  params() {
+    self.b == nil ? [self.w] : [self.w, self.b]
+  }
+}
+
+# --- RNN (Elman, tanh) ---------------------------------------------------
+
+class RNN {
+  h = nil
+
+  new(hidden_size, in_size = nil) {
+    self.x2h = Linear(hidden_size, false, in_size)
+    self.h2h = Linear(hidden_size, true, hidden_size)
+  }
+
+  reset_state() {
+    self.h = nil
+  }
+
+  forward(x) {
+    pre = self.h == nil ? self.x2h(x) : self.x2h(x) + self.h2h(self.h)
+    h_new = F.tanh(pre)
+    self.h = h_new
+    h_new
+  }
+
+  __call__(x) {
+    self.forward(x)
+  }
+
+  params() {
+    self.x2h.params() + self.h2h.params()
+  }
+}
+
+# --- LSTM ----------------------------------------------------------------
+
+class LSTM {
+  h = nil
+  c = nil
+
+  new(hidden_size, in_size = nil) {
+    self.x2f = Linear(hidden_size, false, in_size)
+    self.x2i = Linear(hidden_size, false, in_size)
+    self.x2o = Linear(hidden_size, false, in_size)
+    self.x2u = Linear(hidden_size, false, in_size)
+    self.h2f = Linear(hidden_size, true, hidden_size)
+    self.h2i = Linear(hidden_size, true, hidden_size)
+    self.h2o = Linear(hidden_size, true, hidden_size)
+    self.h2u = Linear(hidden_size, true, hidden_size)
+  }
+
+  reset_state() {
+    self.h = nil
+    self.c = nil
+  }
+
+  forward(x) {
+    (f, i, o, u) = if self.h == nil {
+      (
+        F.sigmoid(self.x2f(x)),
+        F.sigmoid(self.x2i(x)),
+        F.sigmoid(self.x2o(x)),
+        F.tanh(self.x2u(x)),
+      )
+    } else {
+      (
+        F.sigmoid(self.x2f(x) + self.h2f(self.h)),
+        F.sigmoid(self.x2i(x) + self.h2i(self.h)),
+        F.sigmoid(self.x2o(x) + self.h2o(self.h)),
+        F.tanh(self.x2u(x) + self.h2u(self.h)),
+      )
+    }
+
+    c_new = self.c == nil ? i * u : f * self.c + i * u
+    h_new = o * F.tanh(c_new)
+    self.h = h_new
+    self.c = c_new
+    h_new
+  }
+
+  __call__(x) {
+    self.forward(x)
+  }
+
+  params() {
+    self.x2f.params() +
+      self.x2i.params() +
+      self.x2o.params() +
+      self.x2u.params() +
+      self.h2f.params() +
+      self.h2i.params() +
+      self.h2o.params() +
+      self.h2u.params()
+  }
+}
+
+# --- embedding lookup ------------------------------------------------------
+
+class EmbedID {
+  new(in_size, out_size) {
+    self.w = dz.Parameter(Tensor.randn(in_size, out_size))
+  }
+
+  forward(idx) {
+    F.embed_id(idx, self.w)
+  }
+
+  __call__(idx) {
+    self.forward(idx)
+  }
+
+  params() {
+    [self.w]
+  }
+}
+
+# --- batch normalization ---------------------------------------------------
+#
+# Weight shape follows this port's `[1, D]` row-vector convention (matches
+# `Linear`'s bias), so the running stats broadcast against a `[N, D]` batch
+# the same way a bias does.
+
+class BatchNorm {
+  gamma = nil
+  beta = nil
+  avg_mean = nil
+  avg_var = nil
+  decay = 0.9
+  eps = 2.0e-5
+
+  init_params(d) {
+    self.gamma = dz.Parameter(Tensor.ones(1, d))
+    self.beta = dz.Parameter(Tensor.zeros(1, d))
+    self.avg_mean = dz.Variable(Tensor.zeros(1, d))
+    self.avg_var = dz.Variable(Tensor.ones(1, d))
+  }
+
+  forward(x) {
+    v = dz.as_variable(x)
+    if self.gamma == nil {
+      self.init_params(v.shape[1])
+    }
+
+    (mean, var) = if dz.is_training() {
+      n = to_float(v.shape[0])
+      batch_mean = dz.reshape(v.sum(0) * (1.0 / n), [1, v.shape[1]])
+      centered = v - batch_mean
+      batch_var = dz.reshape(
+        (centered * centered).sum(0) * (1.0 / n),
+        [1, v.shape[1]],
+      )
+      # `Tensor.eval` here is load-bearing, not a style choice: combining a
+      # tensor straight out of `.reshape()` with further arithmetic before
+      # it has been forced once produces a wrong result (silently drops the
+      # `* decay` term) — reproduced with plain Tensor code with no
+      # Variable/autograd involved. Evaluating right after reshape, before
+      # folding it into the running average, sidesteps it.
+      Tensor.eval(batch_mean.data, batch_var.data)
+      self.avg_mean.data = self.avg_mean.data * self.decay +
+        batch_mean.data * (1.0 - self.decay)
+      self.avg_var.data = self.avg_var.data * self.decay +
+        batch_var.data * (1.0 - self.decay)
+      Tensor.eval(self.avg_mean.data, self.avg_var.data)
+      (batch_mean, batch_var)
+    } else {
+      (self.avg_mean, self.avg_var)
+    }
+
+    std = dz.pow_(var + self.eps, 0.5)
+    xhat = (v - mean) / std
+    self.gamma * xhat + self.beta
+  }
+
+  __call__(x) {
+    self.forward(x)
+  }
+
+  params() {
+    self.gamma == nil ? [] : [self.gamma, self.beta]
+  }
+}
+
+export {cleargrads, Linear, RNN, LSTM, EmbedID, BatchNorm}

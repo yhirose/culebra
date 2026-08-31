@@ -1,0 +1,127 @@
+# Regression tests for dezero/functions.cul.
+
+import dz from './dezero/core.cul'
+import F from './dezero/functions.cul'
+
+fn scalar(v) {
+  dz.Variable(Tensor.from([v]))
+}
+
+fn item(v) {
+  Tensor.eval(v.data)
+  v.data.to_array()[0]
+}
+
+@test
+fn sin_backward_is_cos() {
+  x = scalar(Math.pi / 4.0)
+  y = F.sin(x)
+  y.backward()
+  assert_close(item(x.grad), Math.cos(Math.pi / 4.0), 1.0e-5)
+}
+
+@test
+fn tanh_matches_its_closed_form_derivative() {
+  x = scalar(0.5)
+  y = F.tanh(x)
+  y.backward()
+  t = item(y)
+  assert_close(t, (Math.exp(1.0) - 1.0) / (Math.exp(1.0) + 1.0), 1.0e-5)
+  assert_close(item(x.grad), 1.0 - t * t, 1.0e-5)
+}
+
+@test
+fn exp_and_log_invert_each_other() {
+  x = scalar(1.5)
+  y = F.log(F.exp(x))
+  y.backward()
+  assert_close(item(y), 1.5, 1.0e-5)
+  assert_close(item(x.grad), 1.0, 1.0e-5)
+}
+
+@test
+fn linear_matches_a_hand_worked_forward_and_weight_gradient() {
+  x = dz.Variable(Tensor.from([[1.0, 2.0]]))
+  w = dz.Variable(Tensor.from([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0]]))
+  b = dz.Variable(Tensor.from([[1.0, 1.0, 1.0]]))
+  out = F.linear(x, w, b)
+  Tensor.eval(out.data)
+  assert_eq(out.data.to_array(), [[2.0, 3.0, 4.0]])
+  out.sum().backward()
+  Tensor.eval(w.grad.data)
+  assert_eq(w.grad.data.to_array(), [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])
+}
+
+@test
+fn relu_zeroes_the_gradient_of_negative_inputs() {
+  x = dz.Variable(Tensor.from([-1.0, 2.0, -3.0]))
+  y = F.relu(x)
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), [0.0, 2.0, 0.0])
+  y.sum().backward()
+  assert_eq(x.grad.data.to_array(), [0.0, 1.0, 0.0])
+}
+
+@test
+fn softmax_cross_entropy_matches_the_closed_form_gradient() {
+  logits = dz.Variable(Tensor.from([[2.0, 1.0, 0.1], [0.1, 2.0, 1.0]]))
+  loss = F.softmax_cross_entropy(logits, [0, 1])
+  # -log(softmax(row0)[0]), hand-computed from the softmax weights.
+  p0 = Math.exp(2.0) / (Math.exp(2.0) + Math.exp(1.0) + Math.exp(0.1))
+  p1 = Math.exp(2.0) / (Math.exp(0.1) + Math.exp(2.0) + Math.exp(1.0))
+  expected = -(Math.log(p0) + Math.log(p1)) / 2.0
+  assert_close(item(loss), expected, 1.0e-4)
+
+  loss.backward()
+  Tensor.eval(logits.grad.data)
+  g = logits.grad.data.to_array()
+  # d/dx_row0 = (softmax(row0) - one_hot(0)) / N — check just the true-class
+  # column, which should be negative (pushing that logit up).
+  assert_true(g[0][0] < 0.0)
+  assert_true(g[1][1] < 0.0)
+}
+
+@test
+fn mean_squared_error_matches_the_closed_form() {
+  x0 = dz.Variable(Tensor.from([1.0, 2.0, 3.0]))
+  x1 = dz.Variable(Tensor.from([1.0, 1.0, 1.0]))
+  loss = F.mean_squared_error(x0, x1)
+  assert_close(item(loss), 5.0 / 3.0, 1.0e-5)
+  loss.backward()
+  Tensor.eval(x0.grad.data)
+  g = x0.grad.data.to_array()
+  expected = [0.0, 2.0 / 3.0, 4.0 / 3.0]
+  for i in range(g.size()) {
+    assert_close(g[i], expected[i], 1.0e-5)
+  }
+}
+
+@test
+fn embed_id_gathers_rows_and_scatter_adds_the_gradient() {
+  w = dz.Variable(Tensor.from([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
+  # Row 0 looked up twice — the gradient at row 0 should be the sum of
+  # both lookups' contributions.
+  y = F.embed_id([0, 1, 0], w)
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), [[1.0, 2.0], [3.0, 4.0], [1.0, 2.0]])
+  y.sum().backward()
+  Tensor.eval(w.grad.data)
+  assert_eq(w.grad.data.to_array(), [[2.0, 2.0], [1.0, 1.0], [0.0, 0.0]])
+}
+
+@test
+fn dropout_in_eval_mode_is_the_identity() {
+  x = dz.Variable(Tensor.from([1.0, 2.0, 3.0, 4.0]))
+  y = dz.test_mode(fn () {
+    F.dropout(x, 0.5)
+  })
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), [1.0, 2.0, 3.0, 4.0])
+}
+
+@test
+fn accuracy_counts_matching_argmax_rows() {
+  y = dz.Variable(Tensor.from([[0.1, 0.9], [0.8, 0.2], [0.4, 0.6]]))
+  acc = F.accuracy(y, [1, 0, 0])
+  assert_close(item(acc), 2.0 / 3.0, 1.0e-6)
+}

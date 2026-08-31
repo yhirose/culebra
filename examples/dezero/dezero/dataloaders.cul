@@ -1,0 +1,89 @@
+# dezero/dataloaders.cul — mini-batch iteration over the datasets in
+# datasets.cul. Ported from the "DeZero" framework taught in
+# oreilly-japan/deep-learning-from-scratch-3 (MIT license, Koki Saitoh).
+#
+# Both loaders expose the same small shape: `next_batch()` returns
+# `{x: Tensor, t}` or `nil` at epoch end, and `reset()` starts a fresh
+# epoch (reshuffling for `DataLoader`). A plain `while` loop reading
+# `next_batch()` until `nil` is the idiom, rather than trying to make
+# these implement Culebra's `iter()`/`has_next()`/`next()` protocol —
+# that protocol is for a single flat sequence of *values*, and yielding
+# `nil` as a legitimate value (a batch could coincidentally be empty)
+# would collide with "no more items" using it as the sentinel.
+#
+# Only `dataset.x`/`dataset.y`/`dataset.size()` are required of a
+# "dataset" here — `Spiral`/`SinCurve` both already expose exactly that.
+
+fn gather_rows(t, indices) {
+  Tensor.concat(indices.map(|i| t.slice(i, i + 1)))
+}
+
+class DataLoader {
+  new(dataset, batch_size, shuffle = true) {
+    self.dataset = dataset
+    self.batch_size = batch_size
+    self.shuffle = shuffle
+    self.n = dataset.size()
+    self.max_iter = (self.n + batch_size - 1) / batch_size
+    self.reset()
+  }
+
+  reset() {
+    self.iteration = 0
+    self.index_order = if self.shuffle {
+      order = range(self.n).collect()
+      Random.shuffle(order)
+      order
+    } else {
+      range(self.n).collect()
+    }
+  }
+
+  next_batch() {
+    if self.iteration >= self.max_iter {
+      nil
+    } else {
+      start = self.iteration * self.batch_size
+      end = Math.min(start + self.batch_size, self.n)
+      picked = self.index_order.slice(start, end)
+      self.iteration += 1
+      x = gather_rows(self.dataset.x, picked)
+      t = picked.map(|i| self.dataset.y[i])
+      {x: x, t: t}
+    }
+  }
+}
+
+# Splits the sequence into `batch_size` equal-length chunks and yields one
+# time step across all of them per call — the standard truncated-BPTT
+# minibatch layout, so consecutive `next_batch()` calls continue each
+# chunk's own sequence rather than reshuffling.
+class SeqDataLoader {
+  new(dataset, batch_size) {
+    self.dataset = dataset
+    self.batch_size = batch_size
+    self.n = dataset.size()
+    self.jump = self.n / batch_size
+    self.starts = range(batch_size).map(|i| i * self.jump).collect()
+    self.max_iter = self.jump
+    self.iteration = 0
+  }
+
+  reset() {
+    self.iteration = 0
+  }
+
+  next_batch() {
+    if self.iteration >= self.max_iter {
+      nil
+    } else {
+      picked = self.starts.map(|s| (s + self.iteration) % self.n)
+      self.iteration += 1
+      x = gather_rows(self.dataset.x, picked)
+      t = gather_rows(self.dataset.y, picked)
+      {x: x, t: t}
+    }
+  }
+}
+
+export {DataLoader, SeqDataLoader}

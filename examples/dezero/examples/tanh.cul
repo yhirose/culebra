@@ -1,0 +1,21 @@
+# Higher-order derivatives of tanh via repeated double backprop.
+#
+# Each call to `.backward(false, true)` builds the backward pass itself out
+# of differentiable Variable ops, so the resulting `.grad` is a Variable we
+# can differentiate again — repeating this N times gives the Nth derivative
+# without ever writing a second formula by hand.
+
+import dz from '../dezero/core.cul'
+import F from '../dezero/functions.cul'
+
+x = dz.Variable(Tensor.from([1.0]))
+mut y = F.tanh(x)
+
+ORDER = 6
+
+for i in range(ORDER) {
+  inspect("d^{i}/dx^{i} tanh(1.0) = {y.data.to_array()[0]}")
+  x.cleargrad()
+  y.backward(false, true)
+  y = x.grad
+}

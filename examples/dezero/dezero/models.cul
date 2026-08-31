@@ -1,0 +1,74 @@
+# dezero/models.cul — composite models built out of layers.cul. Ported from
+# the "DeZero" framework taught in oreilly-japan/deep-learning-from-scratch-3
+# (MIT license, Koki Saitoh). Upstream's `Model`/`Sequential`/`MLP` chain
+# through `Layer`; here they're independent classes with their own
+# `params()`, for the same reason layers.cul's classes are (no inheritance).
+#
+# `VGG16`/`ResNet`/`SqueezeNet` are out of scope for this port — they exist
+# upstream purely to load pretrained ImageNet weights from a URL, which this
+# port has no way to fetch or verify against, so shipping their (untested,
+# unweighted) architecture shells would add bulk without adding anything
+# that runs.
+
+import F from './functions.cul'
+import L from './layers.cul'
+
+class MLP {
+  new(fc_output_sizes, activation = F.sigmoid) {
+    self.activation = activation
+    self.layers = fc_output_sizes.map(|size| L.Linear(size))
+  }
+
+  forward(x) {
+    n = self.layers.size()
+    mut v = x
+    for i in range(n - 1) {
+      v = self.activation(self.layers[i](v))
+    }
+    self.layers[n - 1](v)
+  }
+
+  __call__(x) {
+    self.forward(x)
+  }
+
+  params() {
+    self.layers.flat_map(|layer| layer.params())
+  }
+
+  cleargrads() {
+    L.cleargrads(self)
+  }
+}
+
+# Upstream's `Sequential(*layers)` takes its members as variadic
+# constructor args; this port takes them as one Array instead (kept simple
+# rather than relying on a variadic `new`, which core.cul/functions.cul
+# never needed to exercise) — call it as `Sequential([a, b, c])`.
+class Sequential {
+  new(layers) {
+    self.layers = layers
+  }
+
+  forward(x) {
+    mut v = x
+    for layer in self.layers {
+      v = layer(v)
+    }
+    v
+  }
+
+  __call__(x) {
+    self.forward(x)
+  }
+
+  params() {
+    self.layers.flat_map(|layer| layer.params())
+  }
+
+  cleargrads() {
+    L.cleargrads(self)
+  }
+}
+
+export {MLP, Sequential}

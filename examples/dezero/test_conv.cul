@@ -1,0 +1,161 @@
+# Regression tests for dezero/functions_conv.cul and dezero/layers_conv.cul.
+
+import dz from './dezero/core.cul'
+import conv from './dezero/functions_conv.cul'
+import L from './dezero/layers_conv.cul'
+
+fn unflatten(flat, dims) {
+  if dims.size() <= 1 {
+    flat
+  } else {
+    chunk = dims.slice(1, dims.size()).product()
+    range(dims[0])
+      .map(|i| unflatten(
+        flat.slice(i * chunk, (i + 1) * chunk),
+        dims.slice(1, dims.size()),
+      ))
+      .collect()
+  }
+}
+
+# Round-trips through a flat 1-D reshape since `Tensor.to_array()` only
+# supports rank <= 2 — see functions_conv.cul's own header note.
+fn nested(t) {
+  Tensor.eval(t)
+  shape = t.shape()
+  unflatten(t.reshape([shape.product()]).to_array(), shape)
+}
+
+fn tensor4(flat, shape) {
+  Tensor.from(flat).reshape(shape)
+}
+
+fn sum_all(nested_arr) {
+  match nested_arr {
+    xs: Array => xs.map(sum_all).sum(),
+    v => v,
+  }
+}
+
+@test
+fn conv2d_matches_hand_summed_blocks_with_a_ones_kernel() {
+  # A 4x4 image of 0..15, a 2x2 all-ones kernel, stride 2 (no overlap) — each
+  # output cell is exactly the sum of its 2x2 input block.
+  x = dz.Variable(tensor4(range(16).map(to_float).collect(), [1, 1, 4, 4]))
+  w = dz.Variable(tensor4([1.0, 1.0, 1.0, 1.0], [1, 1, 2, 2]))
+  y = conv.conv2d(x, w, nil, 2, 0)
+  Tensor.eval(y.data)
+  assert_eq(y.shape, [1, 1, 2, 2])
+  assert_eq(nested(y.data), [[[[10.0, 18.0], [42.0, 50.0]]]])
+
+  y.sum().backward()
+  Tensor.eval(w.grad.data)
+  Tensor.eval(x.grad.data)
+  assert_eq(nested(w.grad.data), [[[[20.0, 24.0], [36.0, 40.0]]]])
+  # No overlap at stride==kernel, so every input gradient is just the (all-1)
+  # weight value it multiplied.
+  for row in nested(x.grad.data)[0][0] {
+    for v in row {
+      assert_close(v, 1.0, 1.0e-5)
+    }
+  }
+}
+
+@test
+fn max_pooling_routes_all_the_gradient_to_the_argmax_positions() {
+  x = dz.Variable(tensor4(
+    [
+      1.0,
+      5.0,
+      2.0,
+      0.0,
+      3.0,
+      4.0,
+      9.0,
+      1.0,
+      0.0,
+      2.0,
+      1.0,
+      8.0,
+      6.0,
+      1.0,
+      0.0,
+      3.0,
+    ],
+    [1, 1, 4, 4],
+  ))
+  p = conv.pooling(x, 2, 2, 0)
+  Tensor.eval(p.data)
+  assert_eq(nested(p.data), [[[[5.0, 9.0], [6.0, 8.0]]]])
+
+  p.sum().backward()
+  Tensor.eval(x.grad.data)
+  g = nested(x.grad.data)
+  # One 1.0 landed per 2x2 window (4 windows), everything else is 0.
+  assert_close(sum_all(g), 4.0, 1.0e-5)
+}
+
+@test
+fn average_pooling_spreads_the_gradient_evenly_across_each_window() {
+  x = dz.Variable(tensor4(
+    [
+      1.0,
+      5.0,
+      2.0,
+      0.0,
+      3.0,
+      4.0,
+      9.0,
+      1.0,
+      0.0,
+      2.0,
+      1.0,
+      8.0,
+      6.0,
+      1.0,
+      0.0,
+      3.0,
+    ],
+    [1, 1, 4, 4],
+  ))
+  ap = conv.average_pooling(x, 2, 2, 0)
+  Tensor.eval(ap.data)
+  assert_eq(nested(ap.data), [[[[3.25, 3.0], [2.25, 3.0]]]])
+
+  ap.sum().backward()
+  Tensor.eval(x.grad.data)
+  for row in nested(x.grad.data)[0][0] {
+    for v in row {
+      assert_close(v, 0.25, 1.0e-5)
+    }
+  }
+}
+
+@test
+fn conv2d_layer_forward_and_backward_produce_the_right_shapes() {
+  layer = L.Conv2d(2, 3, 1, 1)
+  x = dz.Variable(Tensor.randn(1, 1, 5, 5))
+  out = layer(x)
+  Tensor.eval(out.data)
+  assert_eq(out.shape, [1, 2, 5, 5])  # pad=1, stride=1 keeps the spatial size
+  out.sum().backward()
+  Tensor.eval(layer.w.grad.data)
+  assert_eq(layer.w.grad.shape, [2, 1, 3, 3])
+  assert_eq(layer.b.grad.shape, [2])
+}
+
+@test
+fn deconv2d_layer_forward_and_backward_produce_the_right_shapes() {
+  layer = L.Conv2d(2, 3, 1, 1)
+  x = dz.Variable(Tensor.randn(1, 1, 5, 5))
+  out = layer(x)
+
+  dlayer = L.Deconv2d(1, 3, 1, 1, false, 2)
+  dout = dlayer(out)
+  Tensor.eval(dout.data)
+  assert_eq(dout.shape, [1, 1, 5, 5])
+  dout.sum().backward()
+  Tensor.eval(dlayer.w.grad.data)
+  assert_eq(dlayer.w.grad.shape, [2, 1, 3, 3])  # [in_channels, out_channels, kh, kw]
+  assert_eq(dlayer.b.grad.shape, [1])
+}

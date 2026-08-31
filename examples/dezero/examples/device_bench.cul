@@ -1,0 +1,90 @@
+# CPU vs GPU for dezero's own from-scratch autodiff, across the two shapes
+# of work this port does. `Variable.data` is always a Tensor, so whichever
+# device `Tensor.use_cpu()`/`use_gpu()` selects is what every dezero op
+# below runs on — no dezero-side code change needed to switch.
+#
+#   Linear/MLP (and by extension RNN/LSTM, which are built out of Linear)
+#   ride `Tensor.dot()` directly, so a big enough matmul should favor the
+#   GPU the same way examples/tensor/tensors_gpu.cul's own benchmark shows.
+#
+#   Conv2d's im2col window-gather is plain Culebra-Array loops (`.to_array()`
+#   round trips — see functions_conv.cul's header comment for why Tensor has
+#   no primitive for this), so most of its per-call cost is host-side data
+#   movement no device switch can speed up; only the GEMM inside it runs on
+#   whichever device is selected.
+#
+#   culebra --jit examples/dezero/examples/device_bench.cul
+
+import dz from '../dezero/core.cul'
+import L from '../dezero/layers.cul'
+import LC from '../dezero/layers_conv.cul'
+import M from '../dezero/models.cul'
+
+# Evaluating the *deepest* parameter's gradient forces the whole lazy
+# graph in one dispatch — it depends transitively on every layer's
+# forward activations and every later layer's backward, so this is
+# equivalent to (and much cheaper than) evaluating every parameter
+# individually. Matches the one sync-point-per-step a cupy benchmark
+# would use, rather than one dispatch per parameter.
+
+fn bench_mlp(label, batch, width, iters = 5) {
+  model = M.MLP([width, width, 10])
+  x = dz.Variable(Tensor.randn(batch, width))
+
+  fn step() {
+    out = model(x)
+    out.sum().backward()
+    Tensor.eval(model.layers[0].w.grad.data)
+    model.cleargrads()
+  }
+
+  step()  # warm up: lazy weight init + first-dispatch cost, not timed
+  t0 = Time.monotonic()
+  for _ in range(iters) {
+    step()
+  }
+  ms = (Time.monotonic() - t0) * 1000.0 / to_float(iters)
+  println("{label} MLP    batch={batch} width={width}: {ms} ms/iter")
+}
+
+fn bench_conv(label, batch, size, iters = 5) {
+  layer = LC.Conv2d(8, 3, 1, 1)
+  x = dz.Variable(Tensor.randn(batch, 1, size, size))
+
+  fn step() {
+    out = layer(x)
+    out.sum().backward()
+    Tensor.eval(layer.w.grad.data)
+    L.cleargrads(layer)
+  }
+
+  step()  # warm up
+  t0 = Time.monotonic()
+  for _ in range(iters) {
+    step()
+  }
+  ms = (Time.monotonic() - t0) * 1000.0 / to_float(iters)
+  println("{label} Conv2d batch={batch} size={size}x{size}: {ms} ms/iter")
+}
+
+println("GPU available: {Tensor.gpu_available()}\n")
+
+println("-- matmul-heavy: Linear/MLP (RNN/LSTM ride the same path) --")
+for cfg in [{batch: 64, width: 128}, {batch: 256, width: 1024}] {
+  Tensor.use_cpu()
+  bench_mlp("cpu ", cfg.batch, cfg.width)
+  Tensor.use_gpu()
+  bench_mlp("gpu ", cfg.batch, cfg.width)
+  println("")
+}
+
+println("-- data-movement-heavy: Conv2d's im2col window-gather --")
+for cfg in [{batch: 8, size: 28}, {batch: 32, size: 28}] {
+  Tensor.use_cpu()
+  bench_conv("cpu ", cfg.batch, cfg.size)
+  Tensor.use_gpu()
+  bench_conv("gpu ", cfg.batch, cfg.size)
+  println("")
+}
+
+Tensor.use_auto()

@@ -1,0 +1,259 @@
+# dezero/optimizers.cul — gradient-descent optimizers for dz.Variable
+# parameters. Ported from the "DeZero" framework taught in
+# oreilly-japan/deep-learning-from-scratch-3 (MIT license, Koki Saitoh).
+#
+# There is no class inheritance in Culebra, so there is no base `Optimizer`
+# class here: every optimizer independently implements `setup`/`update`/
+# `update_one`/`add_hook`, delegating the first, third, and fourth to the
+# `optimizer_setup`/`optimizer_update`/`optimizer_add_hook` free functions
+# below (identical bodies across all five in the original too, just
+# inherited there instead of shared) — only `update_one`, each optimizer's
+# actual math, is genuinely per-class.
+#
+# Per-parameter running state (velocity, moment estimates, ...) is stored
+# as extra fields written directly onto each `dz.Variable`/`dz.Parameter`
+# object the first time an optimizer sees it (`p.velocity`, `p.m`, `p.v`,
+# ...) rather than in a side table keyed by identity — Culebra has no
+# `id()`/object-identity hash to key such a table with, but external field
+# writes on arbitrary objects are mutable, so attaching the state directly
+# is both simpler and immune to `params()` returning a different order or
+# a different Array instance on every call.
+
+fn optimizer_setup(opt, target) {
+  opt.target = target
+  opt
+}
+
+fn optimizer_add_hook(opt, f) {
+  opt.hooks.push(f)
+}
+
+fn optimizer_update(opt) {
+  params = opt.target.params().filter(|p| p.grad != nil)
+  for hook in opt.hooks {
+    hook(params)
+  }
+  # A hook (`FreezeParam`) may null out a survivor's grad after the filter
+  # above already admitted it, so check again rather than assume every
+  # entry still has one.
+  for p in params {
+    opt.update_one(p) if p.grad != nil
+  }
+}
+
+class SGD {
+  target = nil
+  hooks = []
+
+  new(lr = 0.01) {
+    self.lr = lr
+  }
+
+  setup(target) {
+    optimizer_setup(self, target)
+  }
+
+  add_hook(f) {
+    optimizer_add_hook(self, f)
+  }
+
+  update() {
+    optimizer_update(self)
+  }
+
+  update_one(p) {
+    p.data = p.data - self.lr * p.grad.data
+  }
+}
+
+class MomentumSGD {
+  target = nil
+  hooks = []
+
+  new(lr = 0.01, momentum = 0.9) {
+    self.lr = lr
+    self.momentum = momentum
+  }
+
+  setup(target) {
+    optimizer_setup(self, target)
+  }
+
+  add_hook(f) {
+    optimizer_add_hook(self, f)
+  }
+
+  update() {
+    optimizer_update(self)
+  }
+
+  update_one(p) {
+    p.velocity = Tensor.zeros(p.data.shape()) if p.velocity == nil
+    p.velocity = p.velocity * self.momentum - self.lr * p.grad.data
+    p.data = p.data + p.velocity
+  }
+}
+
+class AdaGrad {
+  target = nil
+  hooks = []
+
+  new(lr = 0.001, eps = 1.0e-8) {
+    self.lr = lr
+    self.eps = eps
+  }
+
+  setup(target) {
+    optimizer_setup(self, target)
+  }
+
+  add_hook(f) {
+    optimizer_add_hook(self, f)
+  }
+
+  update() {
+    optimizer_update(self)
+  }
+
+  update_one(p) {
+    g = p.grad.data
+    p.h = Tensor.zeros(p.data.shape()) if p.h == nil
+    p.h = p.h + g * g
+    p.data = p.data - self.lr * g / (p.h.pow(0.5) + self.eps)
+  }
+}
+
+class AdaDelta {
+  target = nil
+  hooks = []
+
+  new(rho = 0.95, eps = 1.0e-6) {
+    self.rho = rho
+    self.eps = eps
+  }
+
+  setup(target) {
+    optimizer_setup(self, target)
+  }
+
+  add_hook(f) {
+    optimizer_add_hook(self, f)
+  }
+
+  update() {
+    optimizer_update(self)
+  }
+
+  update_one(p) {
+    g = p.grad.data
+    if p.msg == nil {
+      p.msg = Tensor.zeros(p.data.shape())
+      p.msdx = Tensor.zeros(p.data.shape())
+    }
+    p.msg = p.msg * self.rho + g * g * (1.0 - self.rho)
+    dx = (p.msdx + self.eps).pow(0.5) / (p.msg + self.eps).pow(0.5) * g
+    p.msdx = p.msdx * self.rho + dx * dx * (1.0 - self.rho)
+    p.data = p.data - dx
+  }
+}
+
+class Adam {
+  target = nil
+  hooks = []
+
+  new(alpha = 0.001, beta1 = 0.9, beta2 = 0.999, eps = 1.0e-8) {
+    self.alpha = alpha
+    self.beta1 = beta1
+    self.beta2 = beta2
+    self.eps = eps
+    self.t = 0
+  }
+
+  setup(target) {
+    optimizer_setup(self, target)
+  }
+
+  add_hook(f) {
+    optimizer_add_hook(self, f)
+  }
+
+  update() {
+    self.t += 1
+    optimizer_update(self)
+  }
+
+  get lr() {
+    fix1 = 1.0 - self.beta1 ** to_float(self.t)
+    fix2 = 1.0 - self.beta2 ** to_float(self.t)
+    self.alpha * Math.sqrt(fix2) / fix1
+  }
+
+  update_one(p) {
+    g = p.grad.data
+    if p.m == nil {
+      p.m = Tensor.zeros(p.data.shape())
+      p.v = Tensor.zeros(p.data.shape())
+    }
+    p.m = p.m + (g - p.m) * (1.0 - self.beta1)
+    p.v = p.v + (g * g - p.v) * (1.0 - self.beta2)
+    p.data = p.data - self.lr * p.m / (p.v.pow(0.5) + self.eps)
+  }
+}
+
+# --- update hooks --------------------------------------------------------
+
+class WeightDecay {
+  new(rate) {
+    self.rate = rate
+  }
+
+  __call__(params) {
+    for p in params {
+      p.grad.data = p.grad.data + self.rate * p.data
+    }
+  }
+}
+
+class ClipGrad {
+  new(max_norm) {
+    self.max_norm = max_norm
+  }
+
+  __call__(params) {
+    mut total_norm = 0.0
+    for p in params {
+      g = p.grad.data
+      total_norm += (g * g).sum()
+    }
+    total_norm = Math.sqrt(total_norm)
+    rate = self.max_norm / (total_norm + 1.0e-6)
+    if rate < 1.0 {
+      for p in params {
+        p.grad.data = p.grad.data * rate
+      }
+    }
+  }
+}
+
+class FreezeParam {
+  new(layers_or_params) {
+    # `layers_or_params` is a plain Array mixing bare params (objects with
+    # a `.grad` field) and layer-like objects (objects with a `.params()`
+    # method) — Culebra has no runtime trait-membership test to branch on
+    # here, so this just tries `.params()` and falls back to treating the
+    # item as a param itself.
+    self.freeze_params = layers_or_params.flat_map(|item| try {
+      item.params()
+    } catch _ {
+      [item]
+    })
+  }
+
+  __call__(params) {
+    for p in self.freeze_params {
+      p.grad = nil
+    }
+  }
+}
+
+export {SGD, MomentumSGD, AdaGrad, AdaDelta, Adam, WeightDecay, ClipGrad, FreezeParam}

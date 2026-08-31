@@ -1,0 +1,113 @@
+# Regression tests for dezero/layers.cul and dezero/models.cul.
+
+import dz from './dezero/core.cul'
+import L from './dezero/layers.cul'
+import M from './dezero/models.cul'
+
+fn all_have_grad(params) {
+  params.all(|p| p.grad != nil)
+}
+
+@test
+fn linear_infers_its_input_width_lazily() {
+  lin = L.Linear(4)
+  y = lin(dz.Variable(Tensor.from([[1.0, 2.0, 3.0]])))
+  Tensor.eval(y.data)
+  assert_eq(y.data.shape(), [1, 4])
+  assert_eq(lin.params().size(), 2)
+}
+
+@test
+fn linear_forward_and_backward_populate_both_params() {
+  lin = L.Linear(3, false, 2)
+  assert_eq(lin.params().size(), 2)
+  y = lin(dz.Variable(Tensor.from([[1.0, 2.0]])))
+  Tensor.eval(y.data)
+  assert_eq(y.data.shape(), [1, 3])
+  y.sum().backward()
+  assert_true(lin.w.grad != nil)
+  assert_true(lin.b.grad != nil)
+}
+
+@test
+fn mlp_backprops_through_every_layer() {
+  Random.seed(1)
+  mlp = M.MLP([5, 5, 2])
+  xb = dz.Variable(Tensor.from([[1.0, 2.0, 3.0], [0.5, -1.0, 2.0]]))
+  out = mlp(xb)
+  Tensor.eval(out.data)
+  assert_eq(out.data.shape(), [2, 2])
+  assert_eq(mlp.params().size(), 6)
+  mlp.cleargrads()
+  out.sum().backward()
+  assert_true(all_have_grad(mlp.params()))
+}
+
+@test
+fn rnn_keeps_a_constant_hidden_shape_across_steps_and_backprops() {
+  rnn = L.RNN(4, 3)
+  h1 = rnn(dz.Variable(Tensor.from([[1.0, 0.0, 0.0]])))
+  Tensor.eval(h1.data)
+  assert_eq(h1.data.shape(), [1, 4])
+  h2 = rnn(dz.Variable(Tensor.from([[0.0, 1.0, 0.0]])))
+  Tensor.eval(h2.data)
+  assert_eq(h2.data.shape(), [1, 4])
+  h3 = rnn(dz.Variable(Tensor.from([[0.0, 0.0, 1.0]])))
+  h3.sum().backward()
+  assert_true(all_have_grad(rnn.params()))
+}
+
+@test
+fn lstm_keeps_state_across_steps_and_backprops_through_all_eight_gates() {
+  lstm = L.LSTM(4, 3)
+  lh1 = lstm(dz.Variable(Tensor.from([[1.0, 0.0, 0.0]])))
+  Tensor.eval(lh1.data)
+  assert_eq(lh1.data.shape(), [1, 4])
+  lh2 = lstm(dz.Variable(Tensor.from([[0.0, 1.0, 0.0]])))
+  Tensor.eval(lh2.data)
+  assert_eq(lh2.data.shape(), [1, 4])
+  lh2.sum().backward()
+  assert_true(all_have_grad(lstm.params()))
+  assert_eq(lstm.params().size(), 12)
+}
+
+@test
+fn embed_id_layer_gathers_and_scatter_adds_through_a_repeated_index() {
+  emb = L.EmbedID(5, 3)
+  looked = emb([0, 2, 0])
+  Tensor.eval(looked.data)
+  assert_eq(looked.data.shape(), [3, 3])
+  looked.sum().backward()
+  Tensor.eval(emb.w.grad.data)
+  gw = emb.w.grad.data.to_array()
+  assert_eq(gw[0], [2.0, 2.0, 2.0])  # row 0 looked up twice
+  assert_eq(gw[1], [0.0, 0.0, 0.0])  # row 1 never looked up
+  assert_eq(gw[2], [1.0, 1.0, 1.0])  # row 2 looked up once
+}
+
+@test
+fn batch_norm_moves_its_running_mean_toward_the_batch_mean() {
+  bn = L.BatchNorm()
+  bn.init_params(2)
+  mean_before = bn.avg_mean.data.to_array()
+  assert_eq(mean_before, [[0.0, 0.0]])
+
+  xbn = dz.Variable(Tensor.from([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
+  ybn = bn(xbn)
+  Tensor.eval(ybn.data)
+  assert_eq(ybn.data.shape(), [3, 2])
+
+  # decay=0.9, batch mean is [3,4]: running mean should move by 10%.
+  mean_after = bn.avg_mean.data.to_array()
+  assert_close(mean_after[0][0], 0.3, 1.0e-4)
+  assert_close(mean_after[0][1], 0.4, 1.0e-4)
+
+  ybn.sum().backward()
+  assert_true(bn.gamma.grad != nil)
+
+  dz.test_mode(fn () {
+    y_eval = bn(xbn)
+    Tensor.eval(y_eval.data)
+    assert_eq(y_eval.data.shape(), [3, 2])
+  })
+}
