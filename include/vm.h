@@ -3353,7 +3353,7 @@ class Compiler {
         main.store_cell(ast, cell, {rv, true});
       } else if (ast.tag == "STATEMENTS"_) {
         for (size_t i = 0; i < ast.nodes.size(); i++) {
-          main.precheck_mut_local_at(ast.nodes, i);
+          main.precheck_value_bindings_at(ast.nodes, i);
           main.compile_statement(*ast.nodes[i]);
         }
       } else {
@@ -3476,7 +3476,7 @@ class Compiler {
     };
     Known known;
     // A `let mut` local proven, by a whole-scope walk run before any of its
-    // scope compiles (precheck_mut_local_at), to be an unboxed `@value`
+    // scope compiles (precheck_value_bindings_at), to be an unboxed `@value`
     // instance for its ENTIRE lexical extent: `slot` is the run's base, one
     // slot per declared field, exactly like ExprResult::unboxed. Set once at
     // the declaration and never revoked — unlike `known` above, nothing
@@ -4665,7 +4665,7 @@ class Compiler {
     predeclare_forward_refs(ast);
     if (ast.tag == "STATEMENTS"_) {
       for (size_t i = 0; i < ast.nodes.size(); i++) {
-        precheck_mut_local_at(ast.nodes, i);
+        precheck_value_bindings_at(ast.nodes, i);
         compile_statement(*ast.nodes[i]);
       }
     } else {
@@ -4710,7 +4710,7 @@ class Compiler {
     using namespace peg::udl;
     if (ast.tag == "STATEMENTS"_) {
       for (size_t i = 0; i + 1 < ast.nodes.size(); i++) {
-        precheck_mut_local_at(ast.nodes, i);
+        precheck_value_bindings_at(ast.nodes, i);
         compile_statement(*ast.nodes[i]);
       }
       if (!ast.nodes.empty()) compile_value_into(*ast.nodes.back(), dst);
@@ -6802,17 +6802,17 @@ class Compiler {
         return read_binding(*tgt, sb);
       }
       // Stage 3 (spec §15.3): `let [mut] v = <unboxed rhs>`, proven by
-      // precheck_mut_local_at — before this statement, or any other, ever
+      // precheck_value_bindings_at — before this statement, or any other, ever
       // compiled — to stay unboxed for its whole lexical scope. `rhs` is
       // the freshly built run itself (a construction, fold or negation),
       // in its own home slots (alloc_slot, named — released at scope pop
       // like any other local, not swept as a statement temp), so this
       // binding simply adopts them as its slot; nothing to copy.
-      if (auto it = mut_local_unboxed_.find(&ast); it != mut_local_unboxed_.end()) {
+      if (auto it = value_unboxed_.find(&ast); it != value_unboxed_.end()) {
         const auto& cand = it->second;
         auto rhs = compile_unboxed_value_expr(*av.rhs);
         assert(rhs.unboxed == cand.layout && rhs.unboxed_class == cand.cls &&
-              "precheck_mut_local_at promised this RHS resolves to v's class");
+              "precheck_value_bindings_at promised this RHS resolves to v's class");
         Binding b{name, rhs.slot, decl_mut, /*is_cell=*/false};
         b.unboxed_layout = cand.layout;
         b.unboxed_class = cand.cls;
@@ -6839,10 +6839,10 @@ class Compiler {
     // pays, since every READ of `v` in between (its own reassignment RHS
     // included) reaches those home slots directly, no copy at all. Every
     // reference that reaches this point was independently proven eligible
-    // by the whole-scope walk before `v` was ever marked (mut_local_ref_ok,
+    // by the whole-scope walk before `v` was ever marked (value_ref_ok,
     // re-derived here by compile_unboxed_value_expr), so there is nothing
     // left to decide — mutability, laziness, shadowing and sessions never
-    // apply to a binding this mechanism marks (precheck_mut_local_at only
+    // apply to a binding this mechanism marks (precheck_value_bindings_at only
     // marks a plain, non-predeclared, non-captured, non-REPL declaration).
     if (b && b->unboxed_layout) {
       return store_unboxed_home(*b, compile_unboxed_value_expr(*av.rhs));
@@ -6919,7 +6919,7 @@ class Compiler {
       Op cop = compound_op(ast, base);
       auto rhs =
           av.type_annotation.empty()
-              ? compile_fold_operand(base, *b->unboxed_class, cop, *av.rhs)
+              ? compile_spliced_operand(base, *b->unboxed_class, *av.rhs)
               : compile_assign_rhs(ast, av);
       assert((av.type_annotation.empty() || !rhs.unboxed_class) &&
              "an annotated compound step's RHS must arrive boxed");
@@ -7338,7 +7338,7 @@ class Compiler {
       predeclare_forward_refs(*fv.body);
       if (fv.body->tag == "STATEMENTS"_) {
         for (size_t i = 0; i < fv.body->nodes.size(); i++) {
-          precheck_mut_local_at(fv.body->nodes, i);
+          precheck_value_bindings_at(fv.body->nodes, i);
           compile_statement(*fv.body->nodes[i]);
         }
       } else {
@@ -7660,6 +7660,23 @@ class Compiler {
                                       class_name, layout);
   }
 
+  // A flat `@value` class's identity: the outer name off its declaration
+  // head, and the layout registered for it. nullopt when the class is not
+  // a flat one — the common answer, and the decline every caller makes.
+  // `name` points into the class AST's own token, so it outlives any
+  // caller here.
+  struct ValueClass {
+    std::string_view name;
+    const std::vector<std::string>* layout;
+  };
+  static std::optional<ValueClass> value_class_of(const peg::Ast& cls) {
+    size_t dec_end = culebra::first_non_decorator_index(cls);
+    auto name = culebra::parse_generic_head(cls.nodes[dec_end]->token).outer;
+    const auto* layout = culebra::value_flat_layout(name);
+    if (!layout) return std::nullopt;
+    return ValueClass{name, layout};
+  }
+
   // Whether `dunder` on `cls` can be spliced as an operator: the member
   // exists, is eligible to inline, takes `arity` arguments, AND ends in
   // its own class's construction (`member_own_tail`). That last clause is
@@ -7683,15 +7700,25 @@ class Compiler {
 
   // One operator token's worth of the question, shared between a fold's
   // per-operator scan and the compound-assignment classification (`v += e`
-  // splices the same dunder `v = v + e` would). The token set is spelled
-  // out here rather than left to dunder_for_op's default: `/=`, `%=` and
-  // kin must stay declined even if some future opcode grows a dunder.
+  // splices the same dunder `v = v + e` would).
   bool operator_token_splice_ok(std::string_view t, const peg::Ast& cls,
                                 std::string_view class_name,
                                 const std::vector<std::string>* layout) {
-    if (t != "+" && t != "-" && t != "*") return false;
-    Op op = t == "+" ? Op::Add : t == "-" ? Op::Sub : Op::Mul;
-    return dunder_splice_ok(dunder_for_op(op), 1, cls, class_name, layout);
+    return dunder_splice_ok(splice_dunder_for_token(t), 1, cls, class_name,
+                            layout);
+  }
+
+  // The splice-able operator tokens, and the dunder each one reaches; empty
+  // for every other token, which `dunder_splice_ok` then declines. The one
+  // place this whitelist is written — an operand's own eligibility
+  // (`compile_spliced_operand`) and a walk's (`consumer_operand_ok`) ask
+  // the same question, and the three answering it from their own copy of
+  // the token set is how they would come to disagree.
+  static std::string_view splice_dunder_for_token(std::string_view t) {
+    if (t == "+") return dunder_for_op(Op::Add);
+    if (t == "-") return dunder_for_op(Op::Sub);
+    if (t == "*") return dunder_for_op(Op::Mul);
+    return {};
   }
 
   // Whether every operator in an ADDITIVE/MULTIPLICATIVE fold's
@@ -7702,7 +7729,7 @@ class Compiler {
   // ends up asking this same question about a fold shaped this way: the
   // pure lookahead (`fold_resolves_to_class`), the receiver-marker safety
   // net (`receiver_refs_stay_unboxed`), and the whole-scope walk for a
-  // local (`mut_local_ref_ok`).
+  // local (`value_ref_ok`).
   bool fold_operators_splice_ok(const peg::Ast& node, size_t from,
                                 const peg::Ast& cls, std::string_view class_name,
                                 const std::vector<std::string>* layout) {
@@ -7868,10 +7895,67 @@ class Compiler {
     return true;
   }
 
+  // What one whole-scope walk is about: the binding's name, the flat
+  // `@value` class it would hold, and whether writes to it may classify
+  // (a plain `let`'s cannot — see `precheck_value_bindings_at`).
+  //
+  // `live` is the other bindings of the same statement list this walk may
+  // ASSUME will also end up unboxed. It is what lets `p = p + v * DT`
+  // classify `v`'s occurrence: whether that operand may be a run depends on
+  // whether `p` is a run, and `p`'s own eligibility can depend on `v`'s the
+  // same way. The two are settled together, by iterating every candidate to
+  // a fixed point with all of them assumed eligible and dropping any whose
+  // walk then fails (`precheck_value_bindings_at`) — so an assumption that does
+  // not hold takes its dependents down with it before anything compiles.
+  // nullptr when there is no such set to consult (a spliced dunder's
+  // parameter, whose body is not a statement list).
+  //
+  // `splices` memoises "does this token splice on this class", which a
+  // round asks over and over: once per operator of every statement, for
+  // every candidate, on every pass. The answer cannot change while a round
+  // runs — nothing compiles in between, so the scope `inline_body_ok`
+  // resolves free names against is fixed — but it is NOT a property of
+  // `(class, token)` in general: a re-entrant ask returns false from
+  // `inline_body_ok`'s recursion guard. The cache is therefore owned by
+  // the round and reached only from the round's own walks; a nested walk
+  // (a spliced dunder's parameter) leaves it null and asks for real,
+  // holding whatever guards it holds.
+  using SpliceCache = std::map<std::pair<const peg::Ast*, std::string_view>,
+                               bool>;
+  struct ValueWalk {
+    std::string_view name;
+    const peg::Ast* cls;
+    std::string_view class_name;
+    const std::vector<std::string>* layout;
+    bool writes_ok;
+    const std::map<std::string, const peg::Ast*, std::less<>>* live = nullptr;
+    SpliceCache* splices = nullptr;
+  };
+
+  // `operator_token_splice_ok` for one walk, through that round's cache.
+  bool operator_splices(std::string_view t, const ValueWalk& w) {
+    if (!w.splices)
+      return operator_token_splice_ok(t, *w.cls, w.class_name, w.layout);
+    auto key = std::pair{w.cls, t};
+    if (auto it = w.splices->find(key); it != w.splices->end())
+      return it->second;
+    bool ok = operator_token_splice_ok(t, *w.cls, w.class_name, w.layout);
+    w.splices->emplace(key, ok);
+    return ok;
+  }
+
+  // `fold_operators_splice_ok` for one walk, likewise.
+  bool fold_operators_splice_ok(const peg::Ast& node, size_t from,
+                                const ValueWalk& w) {
+    for (size_t i = from; i + 1 < node.nodes.size(); i += 2)
+      if (!operator_splices(node.nodes[i]->token, w)) return false;
+    return true;
+  }
+
   // Whether `node` is an ADDITIVE/MULTIPLICATIVE fold with `name` as the
   // bare identifier in its own operand[0], or a UNARY_MINUS with `name` as
-  // its bare operand — the shape both `mut_local_write_ok` (deciding how to
-  // classify a write's RHS) and `mut_local_ref_ok` (deciding how to
+  // its bare operand — the shape both `value_write_ok` (deciding how to
+  // classify a write's RHS) and `value_ref_ok` (deciding how to
   // classify an ordinary occurrence) need to recognise before treating
   // `name` as splicing into that operator rather than declining on sight.
   static bool fold_operand0_is(const peg::Ast& node, std::string_view name) {
@@ -7890,32 +7974,28 @@ class Compiler {
   // run of `cls`: every operator splices, and every OTHER operand
   // classifies as an ordinary reference. This answers only "is the run
   // itself sound"; whether the run's CONSUMER understands it is the
-  // caller's question, and only two callers have one that does — a write
-  // back into the same binding (`mut_local_write_ok`: the copy-back
-  // consumes it) and a postfix chain ending in a scalar
-  // (`mut_local_ref_ok`'s fold-headed-CALL case: try_inline_fold_chain
-  // consumes it). Classifying a fold anywhere ELSE it appears is the
+  // caller's question, and only three callers have one that does — a write
+  // back into the same binding (`value_write_ok`: the copy-back
+  // consumes it), a postfix chain ending in a scalar (`value_ref_ok`'s
+  // fold-headed-CALL case: try_inline_fold_chain consumes it), and an
+  // operator's own operand inside another binding's step
+  // (`consumer_operand_ok`: the spliced dunder's parameter consumes it).
+  // Classifying a fold anywhere ELSE it appears is the
   // §15.4 escape bug one level up — found live: `println(v + g)` printed
   // a raw field, `-v` reached `Op::Neg` on one, and a fold nested as
   // another splice's operand bound a raw scalar where the dunder body
   // expected an instance — so no generic-walk case calls this.
-  bool mut_local_run_ok(const peg::Ast& node, std::string_view name,
-                        const peg::Ast& cls, std::string_view class_name,
-                        const std::vector<std::string>* layout,
-                        bool writes_ok) {
+  bool value_run_ok(const peg::Ast& node, const ValueWalk& w) {
     using namespace peg::udl;
     if ((node.tag == "ADDITIVE"_ || node.tag == "MULTIPLICATIVE"_) &&
-        fold_operand0_is(node, name)) {
-      if (!fold_operators_splice_ok(node, 1, cls, class_name, layout))
-        return false;
+        fold_operand0_is(node, w.name)) {
+      if (!fold_operators_splice_ok(node, 1, w)) return false;
       for (size_t i = 2; i < node.nodes.size(); i += 2)
-        if (!mut_local_ref_ok(*node.nodes[i], name, cls, class_name, layout,
-                              writes_ok))
-          return false;
+        if (!value_ref_ok(*node.nodes[i], w)) return false;
       return true;
     }
-    if (node.tag == "UNARY_MINUS"_ && neg_operand_is(node, name))
-      return neg_operator_splice_ok(cls, class_name, layout);
+    if (node.tag == "UNARY_MINUS"_ && neg_operand_is(node, w.name))
+      return neg_operator_splice_ok(*w.cls, w.class_name, w.layout);
     return false;
   }
 
@@ -7927,7 +8007,7 @@ class Compiler {
   // actually compiles. No emission.
   //
   // `v` itself as the fold/negation's own first operand — `v = v + g*DT` —
-  // is asked through `mut_local_run_ok` directly, NAME-based (`name`, not a
+  // is asked through `value_run_ok` directly, NAME-based (`name`, not a
   // live Binding), rather than through `chain_resolves_to_class`'s own
   // IDENTIFIER case: this whole check is what DECIDES whether `v`'s
   // binding is ever marked unboxed at all, so at the point it runs there is
@@ -7939,26 +8019,23 @@ class Compiler {
   // rooted somewhere `v` is not — never reaches that IDENTIFIER case in the
   // first place (a CALL node is not one, and any OTHER identifier already
   // has a real binding by the time this runs), so asking there is safe.
-  bool mut_local_write_ok(const peg::Ast& rhs, std::string_view name,
-                         const peg::Ast& cls, std::string_view class_name,
-                         const std::vector<std::string>* layout,
-                         bool writes_ok) {
+  bool value_write_ok(const peg::Ast& rhs, const ValueWalk& w) {
     using namespace peg::udl;
     if (((rhs.tag == "ADDITIVE"_ || rhs.tag == "MULTIPLICATIVE"_) &&
-         fold_operand0_is(rhs, name)) ||
-        (rhs.tag == "UNARY_MINUS"_ && neg_operand_is(rhs, name)))
-      return mut_local_run_ok(rhs, name, cls, class_name, layout, writes_ok);
-    return unboxed_value_expr_class(rhs) == &cls;
+         fold_operand0_is(rhs, w.name)) ||
+        (rhs.tag == "UNARY_MINUS"_ && neg_operand_is(rhs, w.name)))
+      return value_run_ok(rhs, w);
+    return unboxed_value_expr_class(rhs) == w.cls;
   }
 
   // The generalised `receiver_refs_stay_unboxed`, for a `let [mut]` local
   // instead of `self`/a class's own name: whether every occurrence of
   // `name` in `node` is a shape this splice mechanism already knows how to
   // keep unboxed — a `name.<field>` / `name.<method>(...)` read chain
-  // (try_inline_mut_local_chain compiles it), a fold/negation-headed
+  // (try_inline_value_binding_chain compiles it), a fold/negation-headed
   // postfix chain ending in a scalar (`(name + g).len()`,
   // try_inline_fold_chain compiles it), a write `name = <eligible rhs>`
-  // (mut_local_write_ok, above), or a compound step `name op= e` (the
+  // (value_write_ok, above), or a compound step `name op= e` (the
   // same dunder the desugared write splices). Anywhere else — an
   // argument, a print, a comparison, a container element, and in
   // particular a BARE fold/negation whose result would escape to a
@@ -7973,16 +8050,13 @@ class Compiler {
   //
   // Unlike `self`, `name` is an ordinary Binding, so a nested closure could
   // in principle read or capture it — but info_->captured_locals already
-  // rules that out before this walk starts (precheck_mut_local_at), so a
+  // rules that out before this walk starts (precheck_value_bindings_at), so a
   // nested FUNCTION/CLASS_DECL/ENUM_DECL/MULTIFN_DECL literal is skipped
   // here exactly as `receiver_refs_stay_unboxed` skips one for `self`: any
   // occurrence of `name` inside one is provably not a live reference to
   // THIS binding (either the literal shadows it, or it does not free-
   // reference it at all — captured_locals would have said otherwise).
-  bool mut_local_ref_ok(const peg::Ast& node, std::string_view name,
-                       const peg::Ast& cls, std::string_view class_name,
-                       const std::vector<std::string>* layout,
-                       bool writes_ok) {
+  bool value_ref_ok(const peg::Ast& node, const ValueWalk& w) {
     using namespace peg::udl;
     if (node.tag == "FUNCTION"_ || node.tag == "MULTIFN_DECL"_ ||
         node.tag == "CLASS_DECL"_ || node.tag == "ENUM_DECL"_)
@@ -7990,7 +8064,7 @@ class Compiler {
     if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_)
       return true;  // a member name, not a value reference
     // A postfix chain whose head is already an unboxed run — `name` itself
-    // (`name.x`, `name.len()`, try_inline_mut_local_chain's consumer), or
+    // (`name.x`, `name.len()`, try_inline_value_binding_chain's consumer), or
     // a fold/negation over it (`(name + g).len()`, `(-name).x`,
     // try_inline_fold_chain's). Either way chain_stays_unboxed with
     // allow_trailing_class=false is the same condition the lookahead
@@ -8001,25 +8075,21 @@ class Compiler {
     // `name` inside it declines as usual).
     if (node.tag == "CALL"_ && !node.nodes.empty() &&
         ((node.nodes[0]->tag == "IDENTIFIER"_ &&
-          node.nodes[0]->token == name) ||
-         (node.nodes.size() >= 2 &&
-          mut_local_run_ok(*node.nodes[0], name, cls, class_name, layout,
-                           writes_ok)))) {
-      if (!chain_stays_unboxed(node, 1, cls, class_name, layout,
+          node.nodes[0]->token == w.name) ||
+         (node.nodes.size() >= 2 && value_run_ok(*node.nodes[0], w)))) {
+      if (!chain_stays_unboxed(node, 1, *w.cls, w.class_name, w.layout,
                                /*allow_trailing_class=*/false))
         return false;
       for (size_t i = 1; i < node.nodes.size(); i++)
         if (node.nodes[i]->original_tag == "ARGUMENTS"_)
           for (const auto& a : node.nodes[i]->nodes)
-            if (!mut_local_ref_ok(*a, name, cls, class_name, layout,
-                                  writes_ok))
-              return false;
+            if (!value_ref_ok(*a, w)) return false;
       return true;
     }
     if (node.tag == "ASSIGNMENT"_) {
       auto av = culebra::view_assignment(node);
-      if (const auto* target = culebra::assign_name_target(node, av);
-          target && target->token == name) {
+      const auto* target = culebra::assign_name_target(node, av);
+      if (target && target->token == w.name) {
         // A redeclaration shadows rather than writes — spec §15.5's rule
         // is that a shadow of the name anywhere in the walked region
         // declines the whole binding, so the walk never has to tell the
@@ -8027,33 +8097,102 @@ class Compiler {
         if (av.is_let || av.is_mut) return false;
         // A write to a non-`mut` binding is an ImmutableError today;
         // declining compiles the ordinary path with the identical error.
-        if (!writes_ok) return false;
-        if (!av.compound)
-          return av.rhs && mut_local_write_ok(*av.rhs, name, cls, class_name,
-                                              layout, writes_ok);
+        if (!w.writes_ok) return false;
+        if (!av.compound) return av.rhs && value_write_ok(*av.rhs, w);
         // `name op= e` splices the same dunder `name = name op e` would;
         // the RHS is walked like any other expression (a bare `name`
-        // inside it declines — the splice would bind it raw as `o`).
-        return operator_token_splice_ok(av.op_base, cls, class_name,
-                                        layout) &&
-               av.rhs && mut_local_ref_ok(*av.rhs, name, cls, class_name,
-                                          layout, writes_ok);
+        // inside it declines: this arm never asks `dunder_takes_run_param`,
+        // so the parameter is bound boxed and a run has nowhere to go).
+        return operator_splices(av.op_base, w) && av.rhs &&
+               value_ref_ok(*av.rhs, w);
       }
+      // A step on ANOTHER binding that is itself kept as a run: its
+      // operands are consumed by the spliced dunder's parameter, so `name`
+      // rooted at one of them is consumed by a run too.
+      if (target && av.rhs && consumer_step_ok(av, *target, w))
+        return true;
     }
     // A bare, unclassified occurrence of `name` — not a shape this
     // mechanism can keep unboxed, so `name` is boxed for its whole scope.
-    if (node.tag == "IDENTIFIER"_ && node.token == name) return false;
+    if (node.tag == "IDENTIFIER"_ && node.token == w.name) return false;
     for (const auto& n : node.nodes)
-      if (!mut_local_ref_ok(*n, name, cls, class_name, layout, writes_ok))
+      if (!value_ref_ok(*n, w)) return false;
+    return true;
+  }
+
+  // Which flat `@value` class a bare name would hold as a run: the binding
+  // under decision itself, one the current fixed-point round is assuming
+  // eligible, or one already marked in an enclosing round. nullptr for
+  // every ordinary binding, which is the common answer.
+  const peg::Ast* name_run_class(std::string_view n, const ValueWalk& w) {
+    if (n == w.name) return w.cls;
+    if (w.live) {
+      auto it = w.live->find(n);
+      if (it != w.live->end()) return it->second;
+    }
+    const Binding* b = lookup(n);
+    return b ? b->unboxed_class : nullptr;
+  }
+
+  // The third context that may create a run, after a write's copy-back and
+  // a scalar-tailed postfix chain (`value_run_ok`'s comment): an
+  // operator's own OPERAND, inside a step that keeps another binding of the
+  // same class unboxed. `let d = v + g`, `p = p + v * DT`, `p += v * DT` —
+  // all three hand the operand to the spliced dunder's parameter, which
+  // `dunder_takes_run_param` is what proves can take one.
+  //
+  // Restricted to a receiver of the SAME class as `name`: the operand rule
+  // is about one class's own arithmetic, and letting the two differ would
+  // mean carrying a second class through this walk for no shape anyone
+  // writes.
+  bool consumer_step_ok(const culebra::AssignmentView& av,
+                        const peg::Ast& target, const ValueWalk& w) {
+    using namespace peg::udl;
+    if (name_run_class(target.token, w) != w.cls) return false;
+    // A declaration also binds the name, so a shadow of `name` here is the
+    // decline the walk's own ASSIGNMENT case makes; `target != name` is
+    // already established by the caller.
+    if (av.compound)
+      return operator_splices(av.op_base, w) &&
+             consumer_operand_ok(av.op_base, *av.rhs, w);
+    const peg::Ast& rhs = *av.rhs;
+    if (rhs.tag != "ADDITIVE"_ && rhs.tag != "MULTIPLICATIVE"_) return false;
+    if (rhs.nodes.size() < 3) return false;
+    // The fold's own operand[0] is its accumulator's seed, and the target's
+    // copy-back is what consumes the result — so `name` may be that seed
+    // (`let d = v + g`) as well as any later operand.
+    const peg::Ast& head = *rhs.nodes[0];
+    bool head_ok = head.tag == "IDENTIFIER"_
+                       ? name_run_class(head.token, w) == w.cls
+                       : chain_resolves_to_class(
+                             head, /*allow_trailing_class=*/true) == w.cls;
+    if (!head_ok || !fold_operators_splice_ok(rhs, 1, w)) return false;
+    for (size_t i = 1; i + 1 < rhs.nodes.size(); i += 2)
+      if (!consumer_operand_ok(rhs.nodes[i]->token, *rhs.nodes[i + 1], w))
         return false;
     return true;
+  }
+
+  // One operand of such a step. An operand `name` does not appear in is the
+  // ordinary walk's business; one it is rooted at needs the dunder's
+  // parameter to be able to hold a run.
+  bool consumer_operand_ok(std::string_view op_token, const peg::Ast& operand,
+                           const ValueWalk& w) {
+    using namespace peg::udl;
+    if (value_ref_ok(operand, w)) return true;
+    auto dunder = splice_dunder_for_token(op_token);
+    if (dunder.empty() ||
+        !dunder_takes_run_param(*w.cls, dunder, *w.cls, w.class_name, w.layout))
+      return false;
+    return (operand.tag == "IDENTIFIER"_ && operand.token == w.name) ||
+           value_run_ok(operand, w);
   }
 
   // The general counterpart to `try_inline_value_operand`, widened from
   // that one shape (a fold's LHS) to whichever of the three top-level
   // shapes an expression proven unboxed actually is. Two callers, asking
   // the same question about different expressions: a write's RHS (whose
-  // eligibility `mut_local_ref_ok` or the declaration's own check already
+  // eligibility `value_ref_ok` or the declaration's own check already
   // settled) and an operator's own operand (`operand_stays_unboxed`). Both
   // decided before calling, so this only dispatches — the `assert` pins
   // that promise the way every other stage of this feature does at its own
@@ -8065,7 +8204,7 @@ class Compiler {
     if (rhs.tag == "UNARY_MINUS"_)
       return compile_unary_minus(rhs, /*allow_trailing_class=*/true);
     auto r = try_inline_value_operand(rhs);
-    assert(r && "mut_local_ref_ok's scan promised this RHS inlines");
+    assert(r && "value_ref_ok's scan promised this RHS inlines");
     return *r;
   }
 
@@ -8093,47 +8232,50 @@ class Compiler {
   //
   // (2) is not a new rule: a parameter bound to a run is an ordinary
   // unboxed binding for the length of the splice, so the question is the
-  // one `mut_local_ref_ok` already answers for a `let` local, asked about
+  // one `value_ref_ok` already answers for a `let` local, asked about
   // the dunder's body instead of a statement list. `writes_ok=false`
   // because a parameter is never `mut`.
   //
-  // This is a REFINEMENT, never a veto: the caller has already proven the
-  // dunder splices with a boxed parameter (`operator_token_splice_ok`), so
-  // a nullptr here only means "compile this operand the way it always
-  // was". That is what keeps the fold's up-front scan and its emitting
-  // half from being able to disagree — the scan's promise holds either
-  // way, and nothing about it needs to know which binding form the operand
-  // ends up taking.
-  const peg::Ast* operand_stays_unboxed(std::string_view op_token,
-                                        const peg::Ast& operand) {
-    if (op_token != "+" && op_token != "-" && op_token != "*") return nullptr;
-    const peg::Ast* ocls = unboxed_value_expr_class(operand);
-    if (!ocls) return nullptr;
-    size_t dec_end = culebra::first_non_decorator_index(*ocls);
-    auto oname = culebra::parse_generic_head(ocls->nodes[dec_end]->token).outer;
-    const auto* olayout = culebra::value_flat_layout(oname);
-    return olayout ? ocls : nullptr;
+  // Declining is a REFINEMENT, never a veto: the caller has already proven
+  // the dunder splices with a boxed parameter (`operator_token_splice_ok`),
+  // so falling through here means only "compile this operand the way it
+  // always was". That is what keeps the fold's up-front scan and its
+  // emitting half from being able to disagree — the scan's promise holds
+  // either way, and nothing about it needs to know which binding form the
+  // operand ends up taking. Shared by the fold and by a compound
+  // assignment, which splices the same dunder.
+  ExprResult compile_spliced_operand(std::string_view op_token,
+                                     const peg::Ast& recv_cls,
+                                     const peg::Ast& operand) {
+    auto dunder = splice_dunder_for_token(op_token);
+    if (!dunder.empty()) {
+      if (const peg::Ast* ocls = unboxed_value_expr_class(operand))
+        if (auto oc = value_class_of(*ocls);
+            oc && dunder_takes_run_param(recv_cls, dunder, *ocls, oc->name,
+                                         oc->layout))
+          return compile_unboxed_value_expr(operand);
+    }
+    auto rhs = compile_expr(operand);
+    assert(!rhs.unboxed_class &&
+           "a spliced operator's operand must arrive boxed unless the run "
+           "rule above let it stay one");
+    return rhs;
   }
 
-  // The half of `operand_stays_unboxed` that depends on the RECEIVER's
-  // class: given the dunder about to be spliced, is its one parameter safe
-  // to bind to a run of `ocls`? Split from the operand's own half so the
-  // fold asks the cheap, receiver-independent question first.
+  // The receiver-dependent half of that question: given the dunder about to
+  // be spliced, is its one parameter safe to bind to a run of `ocls`?
   bool dunder_takes_run_param(const peg::Ast& cls, std::string_view dunder,
-                              const peg::Ast& ocls) {
+                              const peg::Ast& ocls, std::string_view oname,
+                              const std::vector<std::string>* olayout) {
     const peg::Ast* m = value_member_ast(cls, dunder);
     if (!m) return false;
-    auto ps = inline_params(culebra::view_method(*m).params);
+    auto mv = culebra::view_method(*m);
+    if (!mv.body) return false;
+    auto ps = inline_params(mv.params);
     if (!ps || ps->size() != 1) return false;
     // A run has no instance to check an annotation against, and the check
     // itself (`ChkTypeAt`) needs a tagged Value in one slot.
     if (!(*ps)[0].type.empty()) return false;
-    auto mv = culebra::view_method(*m);
-    if (!mv.body) return false;
-    size_t dec_end = culebra::first_non_decorator_index(ocls);
-    auto oname = culebra::parse_generic_head(ocls.nodes[dec_end]->token).outer;
-    const auto* olayout = culebra::value_flat_layout(oname);
-    if (!olayout) return false;
     // The same guard `inline_body_ok` uses for its own recursion: this walk
     // can ask about other members, which can ask back.
     if (!checking_run_param_.insert(m).second) return false;
@@ -8142,33 +8284,74 @@ class Compiler {
       const peg::Ast* m;
       ~Guard() { s.erase(m); }
     } guard{checking_run_param_, m};
-    return mut_local_ref_ok(**mv.body, (*ps)[0].name, ocls, oname, olayout,
-                            /*writes_ok=*/false);
+    return value_ref_ok(**mv.body, ValueWalk{(*ps)[0].name, &ocls, oname,
+                                             olayout, /*writes_ok=*/false});
   }
   std::set<const peg::Ast*> checking_run_param_;
+
+  // An N-slot run copied slot for slot — the one shape `store_into` cannot
+  // serve in a single call, since it would collapse the run into slot 0.
+  void copy_run(int32_t dst, int32_t src, size_t n, bool dst_is_fresh) {
+    for (size_t i = 0; i < n; i++)
+      store_into(dst + static_cast<int32_t>(i),
+                 ExprResult{src + static_cast<int32_t>(i), false},
+                 dst_is_fresh);
+  }
 
   // The one copy this mechanism pays: a freshly built run into `b`'s
   // permanent home slots. Shared by compile_assignment's reassignment arm
   // and compile_compound_assign's compound-step arm.
   ExprResult store_unboxed_home(const Binding& b, const ExprResult& src) {
-    for (size_t i = 0; i < b.unboxed_layout->size(); i++)
-      store_into(b.slot + static_cast<int32_t>(i),
-                 ExprResult{src.slot + static_cast<int32_t>(i), false},
-                 /*dst_is_fresh=*/false);
+    copy_run(b.slot, src.slot, b.unboxed_layout->size(),
+             /*dst_is_fresh=*/false);
     return {b.slot, /*owned=*/false, -1, b.unboxed_layout, b.unboxed_class};
   }
 
   // What a `let [mut] v = <unboxed rhs>` declaration site precomputed:
   // eligible to stay unboxed for its whole scope, and the class/layout
   // that decided.
-  struct MutLocalCandidate {
+  struct UnboxedBinding {
     const std::vector<std::string>* layout;
     const peg::Ast* cls;
   };
   // Keyed by the declaration's own ASSIGNMENT node — compile_assignment
   // consults this when it actually reaches the statement. Never queried for
   // a node absent here, which always means "compile the ordinary way".
-  std::map<const peg::Ast*, MutLocalCandidate> mut_local_unboxed_;
+  std::map<const peg::Ast*, UnboxedBinding> value_unboxed_;
+
+  // Everything about one declaration a round needs, or nullopt when
+  // `stmts[i]` is not a candidate at all.
+  struct ValueCandidate {
+    const peg::Ast* decl;
+    size_t index;
+    std::string name;
+    const peg::Ast* cls;
+    std::string class_name;
+    const std::vector<std::string>* layout;
+    bool writes_ok;
+  };
+
+  std::optional<ValueCandidate> value_candidate_at(
+      const std::vector<std::shared_ptr<peg::Ast>>& stmts, size_t i) {
+    using namespace peg::udl;
+    const auto& stmt = *stmts[i];
+    if (stmt.tag != "ASSIGNMENT"_) return std::nullopt;
+    auto av = culebra::view_assignment(stmt);
+    if (av.compound || !(av.is_let || av.is_mut) || !av.rhs)
+      return std::nullopt;
+    const auto* target = culebra::assign_name_target(stmt, av);
+    if (!target) return std::nullopt;
+    auto name = std::string(target->token);
+    if (info_->captured_locals.contains(name)) return std::nullopt;
+    const peg::Ast* cls = unboxed_value_expr_class(*av.rhs);
+    if (!cls) return std::nullopt;
+    auto vc = value_class_of(*cls);
+    if (!vc) return std::nullopt;
+    auto class_name = vc->name;
+    const auto* layout = vc->layout;
+    return ValueCandidate{&stmt,   i,      name, cls,
+                          std::string(class_name), layout, av.is_mut};
+  }
 
   // The whole-scope pre-pass itself (spec §15.3), for ONE statement —
   // called right before `stmts[i]` compiles, not as one upfront pass over
@@ -8187,7 +8370,7 @@ class Compiler {
   // same ordering guarantee 2a/2b/2c already rely on.
   //
   // For a `let [mut] v = <unboxed rhs>` at `stmts[i]`, walk every LATER
-  // statement in `stmts` (mut_local_ref_ok recurses through nested
+  // statement in `stmts` (value_ref_ok recurses through nested
   // if/while/for bodies on its own, since they are just child nodes — a
   // loop body is compiled once and iterates at run time, so covering it
   // here covers every iteration) and decide once, before compiling a
@@ -8204,30 +8387,110 @@ class Compiler {
   // does (fold / negation / construction chain, all lookup-based — any
   // binding an RHS here could name already exists and is already marked
   // or not): `let d = v + g` chains one unboxed local into the next.
-  void precheck_mut_local_at(
+  //
+  // Bindings of one list are decided TOGETHER, not one at a time, because
+  // their eligibility is mutually recursive: whether `v` may be an operand
+  // of `p = p + v * DT` depends on `p` being a run, and `p`'s own walk can
+  // depend on `v` the same way. The answer is the greatest fixed point —
+  // start with every candidate assumed eligible, drop any whose walk then
+  // fails, and repeat until nothing changes. That terminates (the live set
+  // only shrinks, over a finite candidate list) and it is sound in the
+  // direction that matters: an assumption that does not survive takes
+  // every occurrence that leaned on it down in the next round, before a
+  // single one of these statements has compiled. Deciding them in
+  // declaration order instead would answer "no" to every pair that points
+  // forwards, which is the ordinary way to write a physics step.
+  //
+  // Cost: one pass is O(candidates x statements), and a pass that drops
+  // nothing ends the round, which is the ordinary case. A scope with many
+  // `@value` bindings therefore pays quadratically in their number — fine
+  // for the handful a real scope declares, and the reason the round shares
+  // one `SpliceCache` rather than re-deriving each operator's answer at
+  // every visit.
+  void precheck_value_bindings_at(
       const std::vector<std::shared_ptr<peg::Ast>>& stmts, size_t i) {
-    using namespace peg::udl;
-    const auto& stmt = *stmts[i];
-    if (stmt.tag != "ASSIGNMENT"_) return;
-    auto av = culebra::view_assignment(stmt);
-    if (av.compound || !(av.is_let || av.is_mut) || !av.rhs) return;
-    const auto* target = culebra::assign_name_target(stmt, av);
-    if (!target) return;
-    auto name = std::string(target->token);
-    if (info_->captured_locals.contains(name)) return;
-    const peg::Ast* cls = unboxed_value_expr_class(*av.rhs);
-    if (!cls) return;
-    size_t dec_end = culebra::first_non_decorator_index(*cls);
-    auto class_name =
-        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
-    const auto* layout = culebra::value_flat_layout(class_name);
-    if (!layout) return;
-    for (size_t j = i + 1; j < stmts.size(); j++)
-      if (!mut_local_ref_ok(*stmts[j], name, *cls, class_name, layout,
-                            /*writes_ok=*/av.is_mut))
-        return;
-    mut_local_unboxed_[&stmt] = {layout, cls};
+    // A round answers for every candidate at or after its own start, so the
+    // rest of this list's loop has nothing left to ask about them.
+    // Re-asking would be worse than redundant: a round starting later sees
+    // fewer candidates, could answer one of them differently, and by then
+    // the bindings that leaned on the first answer have compiled.
+    const void* list = stmts.data();
+    if (auto prev = rounds_.find(list); prev != rounds_.end()) {
+      if (prev->second.start < i) {
+        if (prev->second.decided.contains(stmts[i].get())) return;
+        // Not answered: its class was not registered when that round ran,
+        // so it opens one of its own below.
+      } else {
+        // A round starting at or before this index again means the list is
+        // being compiled afresh, in a scope whose outer bindings may
+        // differ. The old answers are dropped rather than reused:
+        // everything here is decided from scratch, as it was the first
+        // time.
+        for (const auto* d : prev->second.decided) value_unboxed_.erase(d);
+        rounds_.erase(prev);
+      }
+    }
+    if (!value_candidate_at(stmts, i)) return;
+    // Every LATER candidate joins the round — but only those whose class is
+    // registered by now, which is exactly what the per-statement schedule
+    // above guarantees for a class declared before `stmts[i]`. One declared
+    // in between is simply not a candidate here; it gets its own round when
+    // its declaration is reached, and until then no occurrence may assume
+    // it.
+    PrecheckRound& round = rounds_[list];
+    std::vector<ValueCandidate> cands;
+    std::map<std::string, const peg::Ast*, std::less<>> live;
+    std::set<std::string> seen, repeated;
+    for (size_t k = i; k < stmts.size(); k++) {
+      auto c = value_candidate_at(stmts, k);
+      if (!c) continue;
+      // Two candidates sharing a name are two bindings this walk cannot
+      // tell apart — the same reason a shadow declines. Neither is
+      // assumed, and neither is decided here.
+      if (!seen.insert(c->name).second) {
+        repeated.insert(c->name);
+        continue;
+      }
+      // One an earlier round of this same pass already answered keeps that
+      // answer: it is what the bindings compiled since were classified
+      // against.
+      if (round.decided.contains(c->decl)) {
+        if (value_unboxed_.contains(c->decl)) live[c->name] = c->cls;
+        continue;
+      }
+      live[c->name] = c->cls;
+      cands.push_back(*c);
+    }
+    for (const auto& n : repeated) live.erase(n);
+    SpliceCache splices;
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (const auto& c : cands) {
+        if (!live.contains(c.name)) continue;
+        ValueWalk w{c.name,      c.cls, c.class_name, c.layout,
+                    c.writes_ok, &live, &splices};
+        bool ok = true;
+        for (size_t j = c.index + 1; j < stmts.size() && ok; j++)
+          if (!value_ref_ok(*stmts[j], w)) ok = false;
+        if (!ok) {
+          live.erase(c.name);
+          changed = true;
+        }
+      }
+    }
+    for (const auto& c : cands) {
+      round.decided.insert(c.decl);
+      if (live.contains(c.name)) value_unboxed_[c.decl] = {c.layout, c.cls};
+    }
+    round.start = i;
   }
+  // Per statement list: where its current round started, and which
+  // declarations that round (and any earlier one of the same pass) answered.
+  struct PrecheckRound {
+    size_t start = 0;
+    std::set<const peg::Ast*> decided;
+  };
+  std::map<const void*, PrecheckRound> rounds_;
 
   // Every IDENTIFIER the body reads, stopping at a nested declaration (whose
   // names are its own). A property name rides its DOT node rather than an
@@ -8268,13 +8531,9 @@ class Compiler {
       // machinery a marked local's own chain does, with no instance to
       // read a property from.
       if (args[i].unboxed) {
-        int32_t base = next_slot_;
-        for (const auto& field : *args[i].unboxed)
-          alloc_slot(*ps[i].at, culebra::format("({}.{})", ps[i].name, field));
-        for (size_t k = 0; k < args[i].unboxed->size(); k++)
-          store_into(base + static_cast<int32_t>(k),
-                     ExprResult{args[i].slot + static_cast<int32_t>(k), false},
-                     /*dst_is_fresh=*/true);
+        int32_t base = alloc_run_slots(*ps[i].at, ps[i].name, *args[i].unboxed);
+        copy_run(base, args[i].slot, args[i].unboxed->size(),
+                 /*dst_is_fresh=*/true);
         Binding b{ps[i].name, base, /*is_mut=*/false};
         b.unboxed_layout = args[i].unboxed;
         b.unboxed_class = args[i].unboxed_class;
@@ -8295,6 +8554,16 @@ class Compiler {
     }
   }
 
+  // N contiguous slots named after a run's fields. `prefix` is only the
+  // debug name: the class for a fresh run, the parameter for a bound one.
+  int32_t alloc_run_slots(const peg::Ast& at, std::string_view prefix,
+                          const std::vector<std::string>& layout) {
+    int32_t base = next_slot_;
+    for (const auto& field : layout)
+      alloc_slot(at, culebra::format("({}.{})", prefix, field));
+    return base;
+  }
+
   // A fresh run of N slots for an unboxed instance's fields: allocated AND
   // nil-initialized, matching the zero-init every other frame-entry slot
   // gets from the chunk's own prologue — a slot `alloc_slot` reserves
@@ -8303,9 +8572,7 @@ class Compiler {
   // there first) needs it to hold something safe to release.
   int32_t alloc_zeroed_run(const peg::Ast& at, std::string_view class_name,
                            const std::vector<std::string>& layout) {
-    int32_t base = next_slot_;
-    for (const auto& field : layout)
-      alloc_slot(at, culebra::format("({}.{})", class_name, field));
+    int32_t base = alloc_run_slots(at, class_name, layout);
     for (size_t k = 0; k < layout.size(); k++) {
       int32_t z = alloc_temp(at);
       emit(Op::LoadConst, z, kconst({TAG_NIL, 0}));
@@ -8371,10 +8638,8 @@ class Compiler {
     // slot and would collapse the run.
     if (!is_ctor && tail.slot >= 0) {
       if (tail.unboxed && out_layout) {
-        for (size_t i = 0; i < out_layout->size(); i++)
-          store_into(out_base + static_cast<int32_t>(i),
-                     ExprResult{tail.slot + static_cast<int32_t>(i), false},
-                     /*dst_is_fresh=*/false);
+        copy_run(out_base, tail.slot, out_layout->size(),
+                 /*dst_is_fresh=*/false);
       } else {
         store_into(out_base, tail, /*dst_is_fresh=*/false);
       }
@@ -8549,11 +8814,10 @@ class Compiler {
       return nullptr;
     const peg::Ast* cls = postfix_value_class(ast, *ast.nodes[1]);
     if (!cls) return nullptr;
-    size_t dec_end = culebra::first_non_decorator_index(*cls);
-    auto class_name =
-        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
-    const auto* layout = culebra::value_flat_layout(class_name);
-    if (!layout) return nullptr;
+    auto vc = value_class_of(*cls);
+    if (!vc) return nullptr;
+    auto class_name = vc->name;
+    const auto* layout = vc->layout;
     const peg::Ast* ctor = value_member_ast(*cls, "new");
     if (!ctor ||
         !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, class_name, layout))
@@ -8594,11 +8858,10 @@ class Compiler {
       return std::nullopt;
     const peg::Ast* cls = postfix_value_class(ast, *ast.nodes[1]);
     if (!cls) return std::nullopt;
-    size_t dec_end = culebra::first_non_decorator_index(*cls);
-    auto class_name =
-        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
-    const auto* layout = culebra::value_flat_layout(class_name);
-    if (!layout) return std::nullopt;
+    auto vc = value_class_of(*cls);
+    if (!vc) return std::nullopt;
+    auto class_name = vc->name;
+    const auto* layout = vc->layout;
     const peg::Ast* ctor = value_member_ast(*cls, "new");
     if (!ctor ||
         !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, class_name, layout))
@@ -8746,11 +9009,10 @@ class Compiler {
     const peg::Ast* cls =
         chain_resolves_to_class(*ast.nodes[0], /*allow_trailing_class=*/true);
     if (!cls) return nullptr;
-    size_t dec_end = culebra::first_non_decorator_index(*cls);
-    auto class_name =
-        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
-    const auto* layout = culebra::value_flat_layout(class_name);
-    if (!layout) return nullptr;
+    auto vc = value_class_of(*cls);
+    if (!vc) return nullptr;
+    auto class_name = vc->name;
+    const auto* layout = vc->layout;
     if (!fold_operators_splice_ok(ast, 1, *cls, class_name, layout))
       return nullptr;
     return cls;
@@ -8765,11 +9027,10 @@ class Compiler {
     const peg::Ast* cls =
         chain_resolves_to_class(*ast.nodes[1], /*allow_trailing_class=*/true);
     if (!cls) return nullptr;
-    size_t dec_end = culebra::first_non_decorator_index(*cls);
-    auto class_name =
-        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
-    const auto* layout = culebra::value_flat_layout(class_name);
-    if (!layout) return nullptr;
+    auto vc = value_class_of(*cls);
+    if (!vc) return nullptr;
+    auto class_name = vc->name;
+    const auto* layout = vc->layout;
     return neg_operator_splice_ok(*cls, class_name, layout) ? cls : nullptr;
   }
 
@@ -8797,22 +9058,6 @@ class Compiler {
   // the first place. Only try_inline_fold_chain (compile_call's own
   // upfront lookahead, which has separately proven a trailing chain this
   // result feeds into) passes true.
-  // One operand of an already-spliceable operator step, compiled as a run
-  // when both halves of `operand_stays_unboxed`'s question say yes and the
-  // ordinary boxed way otherwise. Shared by the fold and by a compound
-  // assignment, which splices the same dunder.
-  ExprResult compile_fold_operand(std::string_view op_token,
-                                  const peg::Ast& recv_cls, Op op,
-                                  const peg::Ast& operand) {
-    const peg::Ast* ocls = operand_stays_unboxed(op_token, operand);
-    if (ocls && dunder_takes_run_param(recv_cls, dunder_for_op(op), *ocls))
-      return compile_unboxed_value_expr(operand);
-    auto rhs = compile_expr(operand);
-    assert(!rhs.unboxed_class &&
-           "a fold operand other than [0] must arrive boxed");
-    return rhs;
-  }
-
   ExprResult compile_fold(const peg::Ast& ast, bool allow_trailing_class) {
     using namespace peg::udl;
     const peg::Ast* fold_class =
@@ -8844,15 +9089,15 @@ class Compiler {
       // unboxed accumulator with NO scan behind it means an unboxed value
       // (`self` inside a splice, or a marked local) leaked through the
       // ordinary dispatch — a context one of the two walks
-      // (receiver_refs_stay_unboxed / mut_local_ref_ok) was supposed to
+      // (receiver_refs_stay_unboxed / value_ref_ok) was supposed to
       // have declined.
       if (acc.unboxed_class) {
         assert(fold_class &&
                "an unboxed operand[0] reached a fold whose up-front scan "
                "never ran or declined -- a walk let an unboxed value into "
                "an unclassified context");
-        auto rhs = compile_fold_operand(op_tok, *acc.unboxed_class, op,
-                                        *ast.nodes[i + 1]);
+        auto rhs = compile_spliced_operand(op_tok, *acc.unboxed_class,
+                                           *ast.nodes[i + 1]);
         auto r = try_inline_operator(ast, acc, dunder_for_op(op), {rhs},
                                      {ast.nodes[i + 1].get()});
         assert(r && "fold_resolves_to_class's scan promised this inlines");
@@ -8918,11 +9163,10 @@ class Compiler {
     // by this function committing to an unboxed result NOTHING here would
     // then consume.
     if (ast.nodes.size() <= 1) return std::nullopt;
-    size_t dec_end = culebra::first_non_decorator_index(*cls);
-    auto class_name =
-        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
-    const auto* layout = culebra::value_flat_layout(class_name);
-    if (!layout) return std::nullopt;
+    auto vc = value_class_of(*cls);
+    if (!vc) return std::nullopt;
+    auto class_name = vc->name;
+    const auto* layout = vc->layout;
     if (!chain_stays_unboxed(ast, 1, *cls, class_name, layout,
                              /*allow_trailing_class=*/false))
       return std::nullopt;
@@ -8940,7 +9184,7 @@ class Compiler {
   // (chain_stays_unboxed from index 1): the local IS the run already, in
   // its own home slots, so there is nothing to construct, only steps to
   // splice onto it.
-  std::optional<ExprResult> try_inline_mut_local_chain(const peg::Ast& ast) {
+  std::optional<ExprResult> try_inline_value_binding_chain(const peg::Ast& ast) {
     using namespace peg::udl;
     if (ast.nodes.size() < 2 || ast.nodes[0]->tag != "IDENTIFIER"_)
       return std::nullopt;
@@ -9002,7 +9246,7 @@ class Compiler {
     // same reasoning again, this time for a head that is neither a fresh
     // construction nor a fold but a binding already sitting in its own
     // home slots.
-    if (auto r = try_inline_mut_local_chain(ast)) return *r;
+    if (auto r = try_inline_value_binding_chain(ast)) return *r;
     // A head the call can read out of its cell when it runs, rather than
     // copying into a register first (borrowed_call_head). `res.slot` is then
     // the CELL's slot, which only the Call the next loop turn emits knows how
@@ -10889,7 +11133,7 @@ class Compiler {
         const Binding* b = lookup(ast.token);
         if (b) {
           // A `let mut` local the whole-scope walk proved unboxed for its
-          // entire lexical extent (precheck_mut_local_at): every textual
+          // entire lexical extent (precheck_value_bindings_at): every textual
           // reference to it was independently classified as a shape this
           // splice mechanism understands before this binding was ever
           // marked, so this read, wherever it is reached from, is one of

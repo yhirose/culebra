@@ -1,0 +1,120 @@
+# The shape the `@value` work was aimed at: a physics step that carries two
+# vectors across iterations and reads a third (a constant) as an operand.
+#
+#   v = v + g * DT
+#   p = p + v * DT
+#
+# `value_inline.cul` measures the pieces in isolation. This one measures the
+# whole loop the pieces were for. Every binding here is an operand of some
+# other binding's step, so nothing unboxes until the three are decided
+# together — this bench is what the binding graph is for.
+#
+#   scalars              the floor — four locals, no objects at all
+#   @value               the same arithmetic through two `let mut` V2 locals
+#                        and a V2 constant, all three kept in slots
+#   @value, boxed        the identical loop with every vector coming back
+#                        from `make(x, y)` instead of a literal `V2.new(...)`
+#                        — not a construction the compiler can name, so no
+#                        binding here is ever a candidate and the whole loop
+#                        stays on the ordinary path. The gap between this
+#                        row and the one above is what the mechanism buys
+#   scalars (control)    a repeat of the first row; if the two disagree by
+#                        more than a few percent the run is noise
+#
+# Both vector rows print the same checksum as `scalars`, which is the
+# oracle: the unboxed loop has to answer what the hand-written floats do.
+#
+# Every step is written `x = x + …` rather than `x += …` on purpose: the
+# write arm is what a binding's whole-scope eligibility is decided against,
+# and it compiles separately from the compound one. lint flags the shape;
+# do not fold it.
+#
+# Run on the -O3 + LTO binary (`just build`); build-dev is -O1.
+#
+#   culebra tools/bench/value_physics.cul [iterations]
+#   culebra --jit tools/bench/value_physics.cul [iterations]
+
+let N = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 1000000
+
+@value
+class V2 {
+  x: Float
+  y: Float
+
+  new(x: Float, y: Float) {
+    self.x = x
+    self.y = y
+  }
+
+  __add__(o) {
+    V2.new(self.x + o.x, self.y + o.y)
+  }
+
+  __mul__(s) {
+    V2.new(self.x * s, self.y * s)
+  }
+}
+
+# Same value, arrived at through a call the compiler cannot see a
+# construction behind — the boxed control's whole reason to exist.
+let make = fn (x, y) {
+  V2.new(x, y)
+}
+
+let DT = 1.0 / 60.0
+let GX = 0.0
+let GY = -9.8
+
+let report = fn (name, dt, acc) {
+  println("  {name:<28}{dt / N * 1e9:>8.1f}  ns/op   {acc:>18.6f}")
+}
+
+let scalars = fn () {
+  let mut vx = 0.0
+  let mut vy = 0.0
+  let mut px = 0.0
+  let mut py = 0.0
+  for i in 0..N {
+    vx = vx + GX * DT
+    vy = vy + GY * DT
+    px = px + vx * DT
+    py = py + vy * DT
+  }
+  px + py
+}
+
+let vectors = fn () {
+  let g = V2.new(GX, GY)
+  let mut v = V2.new(0.0, 0.0)
+  let mut p = V2.new(0.0, 0.0)
+  for i in 0..N {
+    v = v + g * DT
+    p = p + v * DT
+  }
+  p.x + p.y
+}
+
+let vectors_boxed = fn () {
+  let g = make(GX, GY)
+  let mut v = make(0.0, 0.0)
+  let mut p = make(0.0, 0.0)
+  for i in 0..N {
+    v = v + g * DT
+    p = p + v * DT
+  }
+  p.x + p.y
+}
+
+println("value physics, {N} iterations")
+println("")
+
+let run = fn (name, f) {
+  let t0 = Time.monotonic()
+  let acc = f()
+  report(name, Time.monotonic() - t0, acc)
+}
+
+run('scalars', scalars)
+run('@value', vectors)
+run('@value, boxed', vectors_boxed)
+run('scalars (control)', scalars)

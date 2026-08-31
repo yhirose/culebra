@@ -419,4 +419,91 @@ test_run_hostile_parameter_declines_the_operand = fn () {
 }
 test_run_hostile_parameter_declines_the_operand()
 
+# ---- the binding graph: whether one binding may be another's operand
+# ---- depends on that other binding being a run, and it can depend back the
+# ---- same way. All of a scope's candidates are settled together, so the
+# ---- answers below must not change with the order they are declared in.
+
+test_binding_graph_physics_step = fn () {
+  let g = E2.new(0.0, -9.8)
+  let mut v = E2.new(0.0, 0.0)
+  let mut p = E2.new(0.0, 0.0)
+  let bg = BoxedE2.new(0.0, -9.8)
+  let mut bv = BoxedE2.new(0.0, 0.0)
+  let mut bp = BoxedE2.new(0.0, 0.0)
+  for i in 0..8 {
+    v = v + g * 0.25
+    p = p + v * 0.25
+    bv = bv + bg * 0.25
+    bp = bp + bv * 0.25
+  }
+  assert_eq(p.x, bp.x)
+  assert_eq(p.y, bp.y)
+  assert_eq(v.y, bv.y)
+}
+test_binding_graph_physics_step()
+
+test_binding_graph_is_order_independent = fn () {
+  # the same loop with the constant declared last
+  let mut v = E2.new(0.0, 0.0)
+  let mut p = E2.new(0.0, 0.0)
+  let g = E2.new(0.0, -9.8)
+  let bg = BoxedE2.new(0.0, -9.8)
+  let mut bv = BoxedE2.new(0.0, 0.0)
+  let mut bp = BoxedE2.new(0.0, 0.0)
+  for i in 0..8 {
+    v = v + g * 0.25
+    p = p + v * 0.25
+    bv = bv + bg * 0.25
+    bp = bp + bv * 0.25
+  }
+  assert_eq(p.y, bp.y)
+  assert_eq(v.y, bv.y)
+}
+test_binding_graph_is_order_independent()
+
+test_mutually_dependent_bindings = fn () {
+  # each is the other's operand: neither can be settled before the other,
+  # and assuming both eligible is the answer that survives.
+  let mut v = E2.new(1.0, 0.0)
+  let mut w = E2.new(0.0, 1.0)
+  let mut bv = BoxedE2.new(1.0, 0.0)
+  let mut bw = BoxedE2.new(0.0, 1.0)
+  for i in 0..5 {
+    v = v + w * 0.5
+    w = w + v * 0.5
+    bv = bv + bw * 0.5
+    bw = bw + bv * 0.5
+  }
+  assert_eq(v.x, bv.x)
+  assert_eq(v.y, bv.y)
+  assert_eq(w.x, bw.x)
+  assert_eq(w.y, bw.y)
+}
+test_mutually_dependent_bindings()
+
+test_one_escape_takes_its_operands_down = fn () {
+  # `p` escapes into an array, so `p` declines — and with it the only
+  # context that made `v`'s occurrence in `p`'s fold a run, so `v`
+  # declines too. Both answer the ordinary way.
+  let mut v = E2.new(1.0, 2.0)
+  let mut p = E2.new(0.0, 0.0)
+  p = p + v * 2.0
+  let held = [p]
+  assert_eq(held[0].x, 2.0)
+  assert_eq(held[0].y, 4.0)
+  assert_eq(v.x, 1.0)
+  assert_eq((v + E2.new(1.0, 1.0)).len(), Math.sqrt(4.0 + 9.0))
+}
+test_one_escape_takes_its_operands_down()
+
+test_declaration_reads_another_binding = fn () {
+  let g = E2.new(0.5, 0.5)
+  let d = E2.new(3.0, 4.0) + g
+  assert_eq(d.x, 3.5)
+  assert_eq(d.y, 4.5)
+  assert_eq(d.len(), Math.sqrt(3.5 * 3.5 + 4.5 * 4.5))
+}
+test_declaration_reads_another_binding()
+
 inspect('value-inline OK')

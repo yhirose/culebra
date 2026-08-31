@@ -671,12 +671,12 @@ iteration.
 
 `let [mut] v = <unboxed rhs>` closes that gap with **whole-scope
 eligibility, no reification**: before compiling a single statement of
-`v`'s scope, `precheck_mut_local_at` walks every later reference to `v` in
-the same statement list (`mut_local_ref_ok`) and proves each one is a
+`v`'s scope, `precheck_value_bindings_at` walks every later reference to `v` in
+the same statement list (`value_ref_ok`) and proves each one is a
 shape this splice machinery already understands — a `v.<field>` /
 `v.<method>(...)` chain, a fold/negation-headed postfix chain ending in a
 scalar (`(v + g).len()`), a write `v = <rhs>` whose RHS is itself
-fold/negation/construction-shaped (`mut_local_write_ok`), or a compound
+fold/negation/construction-shaped (`value_write_ok`), or a compound
 step `v += e` / `v -= e` / `v *= e`, which splices the same dunder the
 desugared reassignment would. The declaration's own RHS accepts the same
 three shapes a write's does — a construction chain, a fold, or a negation
@@ -693,18 +693,37 @@ partial state and no runtime decision: either every reference already
 qualifies, or none of them get the treatment. In particular a bare
 fold/negation over `v` classifies **only** where its consumer provably
 takes a run — a write back into `v` itself, or a postfix chain ending in a
-scalar. Anywhere else (`println(v + g)`, an array element, another
-splice's operand) the run would reach code expecting a tagged Value, so
-the occurrence declines the binding — found live as §5.3.2's own escape
-list, one level up. One consequence worth naming: a fold RHS that names
-*another* unboxed local (`let d = v + g` with `v` unboxed) declines both
-bindings — `v`'s eligibility would depend on `d`'s and `d`'s on `v`'s,
-the bounded inter-binding fixpoint the spec anticipated and this stage
-deliberately does not build. Declining is always safe; the pattern is a
-candidate for a later cycle.
+scalar, or — since §5.3.2's operand rule — an operator's own operand
+inside a step that keeps *another* binding of the same class unboxed.
+Anywhere else (`println(v + g)`, an array element) the run would reach
+code expecting a tagged Value, so the occurrence declines the binding —
+found live as §5.3.2's own escape list, one level up.
+
+That third context is what makes the bindings of one scope a *graph*
+rather than a list. Whether `v` may be the operand in `p = p + v * DT`
+depends on `p` being a run, and `p`'s own eligibility can depend on `v`
+the same way, so no order settles them: deciding in declaration order
+answers "no" to every pair that points forwards, which is the ordinary way
+to write a physics step. They are settled together instead, as the
+greatest fixed point — every candidate in the statement list starts
+assumed eligible, any whose walk then fails is dropped, and the round
+repeats until nothing changes. It terminates because the live set only
+ever shrinks over a finite candidate list, and an assumption that does not
+survive takes every occurrence that leaned on it down with it in the next
+round, before a single one of those statements has compiled. A genuine
+cycle (`v = v + w * DT` beside `w = w + v * DT`) is not a problem for the
+greatest fixed point but the answer that survives it: both are runs, and
+each one's consumer is the other's splice.
+
+Two candidates sharing a name are not assumed — the walk cannot tell the
+two bindings' occurrences apart, the same reason a shadow declines. And a
+round answers for every candidate from its own start on, so the rest of
+that list's compile loop must not ask again: a round starting later sees
+fewer candidates, could answer one of them differently, and by then the
+bindings that leaned on the first answer have compiled.
 
 This is the same discipline §5.3.1/§5.3.2 use, widened from one expression
-to a binding's lexical extent — `mut_local_ref_ok` is a close structural
+to a binding's lexical extent — `value_ref_ok` is a close structural
 cousin of `receiver_refs_stay_unboxed` (§5.3.2's `self` safety net),
 generalized from one fixed name per splice to any binding a scope has
 proven unboxed. Two things follow from that:
@@ -721,8 +740,8 @@ proven unboxed. Two things follow from that:
   cannot go through `chain_resolves_to_class`'s ordinary,
   `lookup()`-based IDENTIFIER case** — that case answers by reading
   `Binding::unboxed_class`, and the whole point of this walk is to decide
-  whether that field ever gets set. `mut_local_write_ok` asks the identical
-  question name-based instead (`mut_local_run_ok`), and only falls through
+  whether that field ever gets set. `value_write_ok` asks the identical
+  question name-based instead (`value_run_ok`), and only falls through
   to `chain_resolves_to_class`/`fold_resolves_to_class` for a shape that is
   provably *not* `v` reading itself (a fresh construction, or a chain
   rooted at some other, already-real binding) — found live: routing every
@@ -735,17 +754,22 @@ registration (`value_flat_layout`) is a side effect of compiling the class
 declaration itself, so this walk cannot run as one pass over a whole block
 before any of it compiles the way `predeclare_forward_refs` does — a `let
 mut v = C.new(...)` textually after its own class's declaration would ask
-before that declaration ever ran. `precheck_mut_local_at` instead runs
-once per statement, interleaved with the same loop that compiles it
+before that declaration ever ran. `precheck_value_bindings_at` is instead
+called once per statement, interleaved with the same loop that compiles it
 (`compile_block`, `compile_body_into`, the top-level script, a `for`
 body), preserving the ordering guarantee §5.3.1/§5.3.2 get for free by
-asking their own question lazily, inside `compile_expr`.
+asking their own question lazily, inside `compile_expr`. A *round* opens
+at the first statement that is a candidate and answers for every candidate
+from there on whose class is registered by then; one whose class is
+declared in between is not a candidate yet, nothing may assume it, and it
+opens its own round when its declaration is reached (a round keeps the
+answers of earlier rounds in the same pass rather than revisiting them).
 
 Once a declaration passes, `Binding` itself carries the answer
 (`unboxed_layout`/`unboxed_class`, set once and never revoked): a plain
 identifier read (`compile_expr`'s `IDENTIFIER` case) returns the run
 directly, the same unconditional way `self` does inside an inline frame;
-`v.<field>`/`v.<method>(...)` splices through `try_inline_mut_local_chain`,
+`v.<field>`/`v.<method>(...)` splices through `try_inline_value_binding_chain`,
 structurally identical to `self`'s own chain (`chain_stays_unboxed` from
 index 1); and a reassignment (`compile_assignment`) or compound step
 (`compile_compound_assign`) compiles its RHS through the same
@@ -764,6 +788,14 @@ operand rule holding for the other half of the step, both of the two
 allocations an iteration used to pay are gone, and what is left in the loop
 body is the arithmetic. The `mut, compound` row is the same loop written
 `v += …`, and matching `mut, reused` is its point.
+
+`tools/bench/value_physics.cul` measures the loop all of this was for —
+`v = v + g * DT; p = p + v * DT`, where every binding is some other
+binding's operand, so nothing unboxes until the three are settled
+together. Its `@value, boxed` row runs the identical loop with each vector
+arriving through a call the compiler cannot see a construction behind, and
+every row prints the checksum the hand-written floats do, which is the
+oracle for the file.
 
 ### 5.4 Built-in methods are a table
 
