@@ -614,14 +614,12 @@ assert_eq(Tensor.scatter_to_axis(sc_idx, sc_values, 4).to_array(),
 let cc_a = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 let cc_b = Tensor.from([[5.0, 6.0], [7.0, 8.0]])
 
-assert_eq(Tensor.concat([cc_a, cc_b]).to_array(),
-         [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
-assert_eq(Tensor.concat([cc_a, cc_b], 0).to_array(),
-         Tensor.concat([cc_a, cc_b]).to_array())
-assert_eq(Tensor.concat([cc_a, cc_b], 1).to_array(),
-         [[1.0, 2.0, 5.0, 6.0], [3.0, 4.0, 7.0, 8.0]])
-assert_eq(Tensor.concat([cc_a, cc_b], -1).to_array(),
-         Tensor.concat([cc_a, cc_b], 1).to_array())
+let cc_c0 = Tensor.concat([cc_a, cc_b])
+let cc_c1 = Tensor.concat([cc_a, cc_b], 1)
+assert_eq(cc_c0.to_array(), [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+assert_eq(Tensor.concat([cc_a, cc_b], 0).to_array(), cc_c0.to_array())
+assert_eq(cc_c1.to_array(), [[1.0, 2.0, 5.0, 6.0], [3.0, 4.0, 7.0, 8.0]])
+assert_eq(Tensor.concat([cc_a, cc_b], -1).to_array(), cc_c1.to_array())
 
 # rank-3 (KV-cache shape: concat along the sequence axis)
 let cc_k1 = Tensor.zeros(2, 1, 3)

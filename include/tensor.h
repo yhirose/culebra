@@ -256,11 +256,13 @@ struct TensorImpl {
   // start row for Slice.
   int64_t op_param = 0;
 
-  // Clip's lo/hi, needed again by its VJP mask. tensor_make_op's op_param
-  // is a single int64_t already spoken for above; the forward graph itself
-  // only keeps these inside the tl::array node. Unused by every other op.
-  float clip_lo = 0.0f;
-  float clip_hi = 0.0f;
+  // Op-specific scalar parameters, generic float slots for whichever op
+  // needs one back post-forward (mirrors cpp-tensorlib's own node::arg0/
+  // arg1). Clip is the only user today: its lo/hi, needed again by its VJP
+  // mask — op_param above is a single int64_t already spoken for, and the
+  // forward graph itself only keeps these inside the tl::array node.
+  float extra0 = 0.0f;
+  float extra1 = 0.0f;
 
   // --- Autograd ---
   // `grad` accumulates dL/dthis during backward(). It is always a
@@ -948,8 +950,8 @@ inline TensorPtr tensor_clamp(TensorPtr a, float lo, float hi) {
   auto dtype = a->dtype;
   auto out = tensor_make_op(Op::Clip, std::move(v), dtype,
                             std::vector<TensorPtr>{std::move(a)});
-  out->clip_lo = lo;
-  out->clip_hi = hi;
+  out->extra0 = lo;
+  out->extra1 = hi;
   return out;
 }
 
@@ -1330,7 +1332,7 @@ inline void _tensor_vjp(const TensorPtr& n) {
       // dezero's own Clip.backward uses via masked_gate.
       const auto& x = n->inputs[0];
       auto mask = _tl_guard(
-          [&] { return (x->value >= n->clip_lo) * (x->value <= n->clip_hi); });
+          [&] { return (x->value >= n->extra0) * (x->value <= n->extra1); });
       _tensor_grad_add(x, tensor_binop(Op::Mul, g,
                                        _tensor_wrap_const(std::move(mask), dt)));
       break;
