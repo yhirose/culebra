@@ -1485,6 +1485,21 @@ let b = Tensor.from([[5.0, 6.0]])              # [1, 2]
 let c = Tensor.concat([a, b])                  # [3, 2]
 ```
 
+#### `Tensor.where(cond: Tensor, a, b) -> Tensor`
+
+要素ごとの選択で、3つのオペランド全てを（他のbinopと同じ規則で）
+broadcastします: `cond != 0 ? a : b`。`a`/`b`はスカラーでもよく、
+`cond`のdtypeに合わせてliftされます。masking（attention mask、
+padding mask）の基礎部品です。微分可能 — `da = g*cond`、
+`db = g*(1-cond)`。`cond`自体には勾配が流れません
+（numpy/PyTorch自身の`where()`と同じ規約）。
+
+```culebra
+let mask = Tensor.from([[1.0, 0.0, 1.0]])   # [1, 3]、行方向にbroadcast
+let scores = Tensor.randn(4, 3)
+let masked = Tensor.where(mask, scores, -1.0e9)  # padding maskのパターン
+```
+
 #### `Tensor.from_csv(path: String) -> Tensor`
 
 CSVファイルを直接contiguousなTensorに読み込みます。常に
@@ -1580,8 +1595,8 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 の出力も勾配を追跡します。微分可能なopは`+ - * /`、`.pow()`（底に
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
 `.softmax()`、`.log()`、`.transpose()`、`.reshape()`、`.slice()`、
-`Tensor.concat()`。勾配は自動でun-broadcastされるので、バッチ越しに
-加えたbiasは元の形状に和を取って戻ります。
+`Tensor.concat()`、`Tensor.where()`。勾配は自動でun-broadcastされるので、
+バッチ越しに加えたbiasは元の形状に和を取って戻ります。
 `.unfold()`、`.pad()`、`.fold()`、`.permute()`は今のところforward-onlyです
 ——これらを通した`.backward()`は例外を投げます。im2col方式のconvなど
 これらを使う学習ループは、今のところ自前でbackwardを書きます。

@@ -92,6 +92,11 @@ enum class Op {
   // yet either — dezero's own conv layer (examples/dezero) runs its own
   // autograd around these rather than native .backward().
   Pad, Fold,
+  // Elementwise select: y = cond != 0 ? a : b. Has a real VJP (da = g*cond,
+  // db = g*(1-cond); cond itself gets no gradient, matching numpy/PyTorch's
+  // own where()) — unlike the views/im2col ops above, this one differs
+  // through cleanly since it's just two masked binops.
+  Where,
 };
 
 struct TensorShape {
@@ -751,6 +756,23 @@ inline TensorPtr tensor_fold(TensorPtr t, int64_t axis, int64_t orig_size,
                         std::vector<TensorPtr>{std::move(t)});
 }
 
+// Elementwise select, broadcasting `cond`/`a`/`b` against each other the
+// same way a binop does: y[i] = cond[i] != 0 ? a[i] : b[i]. The building
+// block for masking (attention masks, padding masks) — differentiable, see
+// the VJP switch. tl::where has no GPU dispatch yet (always a host loop
+// over the CPU buffer, even in GPU mode) — see docs/internals/vm.md's
+// cpp-tensorlib gaps note.
+inline TensorPtr tensor_where(TensorPtr cond, TensorPtr a, TensorPtr b) {
+  if (a->dtype != b->dtype || cond->dtype != a->dtype) {
+    throw CulebraError("ValueError", "Tensor: where: mismatched dtypes.");
+  }
+  auto dtype = a->dtype;
+  auto v = _tl_guard(
+      [&] { return tl::where(cond->value, a->value, b->value); });
+  return tensor_make_op(Op::Where, std::move(v), dtype,
+                        std::vector<TensorPtr>{cond, a, b});
+}
+
 // Build a lazy matrix multiply A @ B. A is [M, K], B is [K, N], the result
 // is [M, N] — or, batched, [..., M, K] @ [..., K, N] -> [..., M, N] with
 // every leading dim matching exactly (no broadcasting yet).
@@ -1154,6 +1176,18 @@ inline void _tensor_vjp(const TensorPtr& n) {
       // for the same reason as Unfold/Pad/Fold above.
       throw CulebraError("ValueError",
           "Tensor.backward: permute is not differentiable yet.");
+    case Op::Where: {
+      // y = cond != 0 ? a : b; da = g*cond, db = g*(1-cond). cond gets no
+      // gradient (matches numpy/PyTorch's own where()).
+      const auto& cond = n->inputs[0];
+      auto da = tensor_binop(Op::Mul, g, cond);
+      auto one_minus_cond =
+          tensor_binop(Op::Sub, tensor_scalar(1.0, dt), cond);
+      auto db = tensor_binop(Op::Mul, g, one_minus_cond);
+      _tensor_grad_add(n->inputs[1], da);
+      _tensor_grad_add(n->inputs[2], db);
+      break;
+    }
   }
 }
 

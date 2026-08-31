@@ -111,3 +111,31 @@ fn batch_norm_moves_its_running_mean_toward_the_batch_mean() {
     assert_eq(y_eval.data.shape(), [3, 2])
   })
 }
+
+@test
+fn layer_norm_normalizes_each_row_over_its_own_last_axis() {
+  ln = L.LayerNorm()
+  x = dz.Variable(Tensor.from([[1.0, 2.0, 3.0, 4.0], [10.0, 0.0, 0.0, 0.0]]))
+  y = ln(x)
+  Tensor.eval(y.data)
+  assert_eq(y.data.shape(), [2, 4])
+
+  # row 0: mean=2.5, var=1.25 -> (x-mean)/sqrt(var+eps)
+  row0 = y.data.to_array()[0]
+  std0 = Math.sqrt(1.25 + ln.eps)
+  assert_close(row0[0], (1.0 - 2.5) / std0, 1.0e-3)
+  assert_close(row0[3], (4.0 - 2.5) / std0, 1.0e-3)
+
+  y.sum().backward()
+  assert_true(ln.gamma.grad != nil)
+  assert_true(ln.beta.grad != nil)
+}
+
+@test
+fn layer_norm_handles_a_transformer_shaped_rank_3_input() {
+  ln = L.LayerNorm()
+  x = dz.Variable(Tensor.randn(2, 5, 8))  # [batch, seq, dim]
+  y = ln(x)
+  Tensor.eval(y.data)
+  assert_eq(y.data.shape(), [2, 5, 8])
+}

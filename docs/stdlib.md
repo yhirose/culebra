@@ -1522,6 +1522,20 @@ let b = Tensor.from([[5.0, 6.0]])              # [1, 2]
 let c = Tensor.concat([a, b])                  # [3, 2]
 ```
 
+#### `Tensor.where(cond: Tensor, a, b) -> Tensor`
+
+Elementwise select, broadcasting all three operands against each other the
+same way a binop does: `cond != 0 ? a : b`. `a`/`b` may be scalars, lifted
+against `cond`'s dtype. The building block for masking (attention masks,
+padding masks). Differentiable — `da = g*cond`, `db = g*(1-cond)`; `cond`
+itself gets no gradient, matching numpy/PyTorch's own `where()`.
+
+```culebra
+let mask = Tensor.from([[1.0, 0.0, 1.0]])   # [1, 3], broadcasts over rows
+let scores = Tensor.randn(4, 3)
+let masked = Tensor.where(mask, scores, -1.0e9)  # padding-mask pattern
+```
+
 #### `Tensor.from_csv(path: String) -> Tensor`
 
 Reads a CSV file directly into a contiguous Tensor. Always returns
@@ -1619,9 +1633,9 @@ the underlying tensor library.
 produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.transpose()`,
-`.reshape()`, `.slice()`, and `Tensor.concat()`. Gradients un-broadcast
-automatically, so a bias added across a batch sums back to its shape.
-`.unfold()`, `.pad()`, `.fold()`, and `.permute()` are forward-only so far —
+`.reshape()`, `.slice()`, `Tensor.concat()`, and `Tensor.where()`. Gradients
+un-broadcast automatically, so a bias added across a batch sums back to its
+shape. `.unfold()`, `.pad()`, `.fold()`, and `.permute()` are forward-only so far —
 `.backward()` through them raises; a training loop that uses them (e.g. an
 im2col-style conv) writes its own backward pass around them for now.
 

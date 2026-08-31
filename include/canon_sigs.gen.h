@@ -812,6 +812,10 @@ inline constexpr CanonParam kCanonParams_Tensor[] = {
   {"parts", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   // 7: Tensor.no_grad
   {"fn", false, false, false, false, false, "Function", CanonDefault::None, 0, {}},
+  // 8: Tensor.where
+  {"cond", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
+  {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Tensor[] = {
@@ -823,6 +827,7 @@ inline constexpr CanonSig kCanonSigs_Tensor[] = {
   {"Tensor", "", "from", kCanonParams_Tensor + 5, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"Tensor", "", "concat", kCanonParams_Tensor + 6, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"Tensor", "", "no_grad", kCanonParams_Tensor + 7, 1, "Any", 1, 1, false, -1, -1, -1},
+  {"Tensor", "", "where", kCanonParams_Tensor + 8, 3, "Tensor", 3, 3, false, -1, -1, -1},
   {"Tensor", "", "use_cpu", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"Tensor", "", "use_gpu", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"Tensor", "", "use_auto", nullptr, 0, "", 0, 0, false, -1, -1, -1},

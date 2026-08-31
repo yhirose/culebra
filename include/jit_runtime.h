@@ -2393,6 +2393,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_permute(
       culebra::tensor_permute(t->impl, std::move(ax)));
 }
 
+// Tensor.where(cond, a, b) — elementwise select, broadcasting all three
+// operands. `a`/`b` may be scalars (Long/Float), lifted against cond's
+// dtype the same way tensor_binop lifts a scalar operand.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_where(
+    JitTensor* cond, int8_t at, int64_t ad, int8_t bt, int64_t bd) {
+  culebra::Dtype dt = cond->impl->dtype;
+  auto lift = [&](int8_t tag, int64_t data) -> culebra::TensorPtr {
+    if (tag == TAG_TENSOR) return reinterpret_cast<JitTensor*>(data)->impl;
+    return culebra::tensor_scalar(_culebra_coerce_num(tag, data), dt);
+  };
+  return _culebra_jit_tensor_register(
+      culebra::tensor_where(cond->impl, lift(at, ad), lift(bt, bd)));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));

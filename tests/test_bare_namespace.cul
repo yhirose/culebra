@@ -153,6 +153,7 @@ assert_eq(
     "from_csv",
     "from",
     "concat",
+    "where",
     "no_grad",
     "use_cpu",
     "use_gpu",

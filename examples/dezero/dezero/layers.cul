@@ -236,4 +236,54 @@ class BatchNorm {
   }
 }
 
-export {cleargrads, Linear, RNN, LSTM, EmbedID, BatchNorm}
+# --- layer normalization -----------------------------------------------
+#
+# Normalizes each sample independently over its own last (feature) axis,
+# unlike BatchNorm which normalizes each feature over the batch axis --
+# so there are no running stats to track, and train/eval do the same
+# computation. This is the normalization Transformer blocks use. gamma/
+# beta keep BatchNorm's `[1, D]` row-vector convention: broadcasting
+# right-aligns trailing dims, so `[1, D]` matches a `[..., D]` input of
+# any rank (verified against `[N, S, D]`, the shape a Transformer block
+# feeds it).
+
+class LayerNorm {
+  gamma = nil
+  beta = nil
+  eps = 2.0e-5
+
+  init_params(d) {
+    self.gamma = dz.Parameter(Tensor.ones(1, d))
+    self.beta = dz.Parameter(Tensor.zeros(1, d))
+  }
+
+  forward(x) {
+    v = dz.as_variable(x)
+    last = v.ndim - 1
+    d = v.shape[last]
+    if self.gamma == nil {
+      self.init_params(d)
+    }
+
+    n = to_float(d)
+    kd = v.shape.slice(0, last) + [1]
+    mean = dz.reshape(v.sum(last) * (1.0 / n), kd)
+    centered = v - mean
+    var = dz.reshape((centered * centered).sum(last) * (1.0 / n), kd)
+    # See BatchNorm.forward for why this Tensor.eval is load-bearing.
+    Tensor.eval(mean.data, var.data)
+    std = dz.pow_(var + self.eps, 0.5)
+    xhat = centered / std
+    self.gamma * xhat + self.beta
+  }
+
+  __call__(x) {
+    self.forward(x)
+  }
+
+  params() {
+    self.gamma == nil ? [] : [self.gamma, self.beta]
+  }
+}
+
+export {cleargrads, Linear, RNN, LSTM, EmbedID, BatchNorm, LayerNorm}

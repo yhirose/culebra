@@ -57,12 +57,14 @@ bias is `[1, out]`, not upstream's 1-D `[out]`), so a batch broadcasts
 against it the same way this repo's own native-`Tensor` MNIST trainer
 (`examples/tensor/mnist/train.cul`) already does. `functions_conv.cul`'s
 im2col-based `conv2d`'s padding, window extraction and the NCHW/NHWC axis
-move all go through native `Tensor.pad()`/`.unfold()`/`.permute()` now
+move, and `pooling`'s own window gather, all go through native
+`Tensor.pad()`/`.unfold()`/`.permute()`/`.max(axis)`/`.argmax(axis)` now
 (GPU-dispatched, or a free view for `.permute()`); only the pad-strip crop
-after `col2im`'s fold is still a plain Culebra loop, since `Tensor.slice()`
-only takes axis 0. `pooling`'s own window gather hasn't been moved over yet
-and still does its bookkeeping the old way. `conv_mnist.cul`
-still trains on a small subset rather than the full 60k images.
+after `col2im`'s fold, and `Pooling`/`AveragePooling`'s own backward scatter,
+are still plain Culebra loops — the former since `Tensor.slice()` only takes
+axis 0, the latter since there's no native gather/scatter-by-index op yet.
+`conv_mnist.cul` still trains on a small subset rather than the full 60k
+images.
 
 ## Examples
 

@@ -558,4 +558,29 @@ assert_eq(ng.to_array(), [4.0, 6.0])
 # .item() is for exactly one element; two is an error, not the first of them.
 assert_throws('ValueError', fn () { Tensor.from([1.0, 2.0]).item() })
 
+# --- Tensor.where(cond, a, b): elementwise select ---------------------------
+
+let where_cond = Tensor.from([[1.0, 0.0], [0.0, 1.0]])
+let where_a = Tensor.from([[10.0, 20.0], [30.0, 40.0]])
+let where_b = Tensor.from([[-1.0, -2.0], [-3.0, -4.0]])
+assert_eq(Tensor.where(where_cond, where_a, where_b).to_array(),
+         [[10.0, -2.0], [-3.0, 40.0]])
+
+# `a`/`b` may be scalars, lifted the same way a binop lifts one.
+assert_eq(Tensor.where(where_cond, where_a, -100.0).to_array(),
+         [[10.0, -100.0], [-100.0, 40.0]])
+
+# cond broadcasts against a batch, same rule as any other binop.
+let where_mask = Tensor.from([[1.0, 0.0, 1.0]])
+let where_x = Tensor.zeros(4, 3) + 1.0
+assert_eq(to_string(Tensor.where(where_mask, where_x, 0.0).shape()), "[4, 3]")
+
+# VJP: da = g*cond, db = g*(1-cond); cond itself gets no gradient.
+let where_ga = Tensor.from([[2.0, 3.0, 5.0]]).requires_grad()
+let where_gb = Tensor.from([[7.0, 11.0, 13.0]]).requires_grad()
+let where_gy = Tensor.where(Tensor.from([[1.0, 0.0, 1.0]]), where_ga, where_gb)
+(where_gy * Tensor.from([[1.0, 2.0, 3.0]])).sum(1).sum(0).backward()
+assert_eq(where_ga.grad().to_array(), [[1.0, 0.0, 3.0]])
+assert_eq(where_gb.grad().to_array(), [[0.0, 2.0, 0.0]])
+
 inspect("test_tensor: OK")
