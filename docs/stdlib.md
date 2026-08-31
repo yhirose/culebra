@@ -1575,7 +1575,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | Method | Returns | Description |
 |---|---|---|
 | `.shape() -> Array` | Array of Long | shape as an Array |
-| `.dot(other: Tensor) -> Tensor` | lazy | matrix product; both operands rank-2 |
+| `.dot(other: Tensor) -> Tensor` | lazy | matrix product; rank-1/2, or batched (rank >= 3, leading dims matching exactly) |
 | `.linear_sigmoid(x, b) -> Tensor` | lazy | fused `sigmoid(self @ x + b)` |
 | `.pow(exp) -> Tensor` | lazy | elementwise power; `exp` is Tensor or scalar |
 | `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |

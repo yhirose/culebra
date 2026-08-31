@@ -1536,7 +1536,7 @@ let l = p.log()           # 自然対数、elementwise
 | メソッド | 戻り値 | 説明 |
 |---|---|---|
 | `.shape() -> Array` | Array of Long | 形状をArrayで返す |
-| `.dot(other: Tensor) -> Tensor` | lazy | 行列積。両辺rank-2 |
+| `.dot(other: Tensor) -> Tensor` | lazy | 行列積。rank-1/2、またはbatched（rank>=3、先頭次元が完全一致） |
 | `.linear_sigmoid(x, b) -> Tensor` | lazy | 融合`sigmoid(self @ x + b)` |
 | `.pow(exp) -> Tensor` | lazy | elementwise冪、expはTensorまたはscalar |
 | `.transpose() -> Tensor` | view | 全軸逆順（rank-2で行列転置） |

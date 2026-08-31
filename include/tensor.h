@@ -751,19 +751,20 @@ inline TensorPtr tensor_fold(TensorPtr t, int64_t axis, int64_t orig_size,
                         std::vector<TensorPtr>{std::move(t)});
 }
 
-// Build a lazy matrix multiply A @ B. A is [M, K], B is [K, N], the
-// result is [M, N]. Phase 1 supports rank-2 only.
+// Build a lazy matrix multiply A @ B. A is [M, K], B is [K, N], the result
+// is [M, N] — or, batched, [..., M, K] @ [..., K, N] -> [..., M, N] with
+// every leading dim matching exactly (no broadcasting yet).
+// Rank 1 (vector) and 2 (matrix) inputs promote/combine the same way
+// tensorlib's own array::dot always has; rank >= 3 is a batched matmul
+// (every leading dim must match exactly between `a` and `b` — no
+// broadcasting yet). All of that validation — including the batched case's
+// batch-dims-must-match and inner-dims-must-match checks — lives in
+// tensorlib's own array::dot now (graph::dot, array.h), so this wrapper
+// only checks the one thing tensorlib doesn't know about: culebra's own
+// Dtype tag.
 inline TensorPtr tensor_dot(TensorPtr a, TensorPtr b) {
   if (a->dtype != b->dtype) {
     throw CulebraError("ValueError", "Tensor: dtype mismatch in dot.");
-  }
-  if (a->shape.dims.size() != 2 || b->shape.dims.size() != 2) {
-    throw CulebraError("ValueError",
-                       "Tensor: dot requires rank-2 inputs.");
-  }
-  if (a->shape.dims[1] != b->shape.dims[0]) {
-    throw CulebraError("ValueError",
-        "Tensor: dot inner dims do not match (A.cols != B.rows).");
   }
   auto v = _tl_guard([&] { return a->value.dot(b->value); });
   auto dtype = a->dtype;
@@ -980,6 +981,23 @@ inline TensorPtr _tensor_sigmoid_grad(const TensorPtr& y, Dtype dt) {
                       tensor_binop(Op::Sub, tensor_scalar(1.0, dt), y));
 }
 
+// Dot's own VJP needs "transpose the matmul's own two axes, leave any batch
+// axes alone" — tensor_transpose() reverses *every* axis instead, which only
+// coincides with this at rank 2 (where there's nothing but the two matmul
+// axes to reverse). Rank >= 3 (batched) needs the real thing: permute() with
+// only the last two axes swapped.
+inline TensorPtr _tensor_swap_last_two(TensorPtr t) {
+  size_t r = t->shape.rank();
+  if (r < 2) return t;  // a vector has nothing to swap — its own "transpose"
+                        // is itself, matching tensor_transpose()'s rank-1
+                        // no-op (dot's vec_m/vec_n promotion can hand this a
+                        // rank-1 operand).
+  std::vector<int64_t> axes(r);
+  for (size_t i = 0; i < r; i++) axes[i] = static_cast<int64_t>(i);
+  std::swap(axes[r - 2], axes[r - 1]);
+  return tensor_permute(std::move(t), std::move(axes));
+}
+
 inline void _tensor_vjp(const TensorPtr& n) {
   const TensorPtr& g = n->grad;
   Dtype dt = n->dtype;
@@ -1026,11 +1044,15 @@ inline void _tensor_vjp(const TensorPtr& n) {
       break;
     }
     case Op::Dot:
-      // z = a @ b : da = g @ b^T, db = a^T @ g
-      _tensor_grad_add(n->inputs[0],
-                       tensor_dot(g, tensor_transpose(n->inputs[1])));
-      _tensor_grad_add(n->inputs[1],
-                       tensor_dot(tensor_transpose(n->inputs[0]), g));
+      // z = a @ b : da = g @ b^T, db = a^T @ g — "^T" here means swap the
+      // matmul's own last two axes only (see _tensor_swap_last_two), not
+      // tensor_transpose()'s full reversal; the two coincide at rank 2.
+      _tensor_grad_add(
+          n->inputs[0],
+          tensor_dot(g, _tensor_swap_last_two(n->inputs[1])));
+      _tensor_grad_add(
+          n->inputs[1],
+          tensor_dot(_tensor_swap_last_two(n->inputs[0]), g));
       break;
     case Op::Sum:
     case Op::Mean: {

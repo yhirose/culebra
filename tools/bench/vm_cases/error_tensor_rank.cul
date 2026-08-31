@@ -1,6 +1,12 @@
 # The engine's own rank complaint arrives positionless, so the anchor comes
 # from the stamp this call publishes — the head of the chain, not whatever
 # statement ran last.
-let t = Tensor.from([1.0, 2.0])
-let warm = t.reshape([2, 1])
-t.dot(t)
+#
+# Rank-1 dot(rank-1) used to be this file's error case, but that's a real
+# (rank-2-only was culebra's own binding being narrower than the engine
+# needed, not a genuine rank limit) — a plain vector inner product is valid
+# now, same as tensorlib's own dot() always allowed. A rank mismatch in the
+# batched path (rank >= 3 vs rank < 3) is still a real error.
+let t = Tensor.from([1.0, 2.0, 3.0, 4.0]).reshape([1, 2, 2])
+let warm = t.reshape([2, 2])
+t.dot(warm)
