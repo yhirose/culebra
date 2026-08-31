@@ -4184,11 +4184,19 @@ class Compiler {
   // resolved: the closures already holding that cell now reach other code.
   // `CellNew` needs no such step — its slot is freshly allocated for a
   // binding that does not exist yet.
+  // Only `chunk` triggers this, deliberately, and `ctor` must not: the two
+  // grants stand on opposite sides of the write. A `let f = fn …` is granted
+  // AFTER its store, so any store it must survive is someone else's; a class
+  // name is granted BEFORE the class object exists — the chunk index is
+  // reserved early so a method constructing its own class can resolve — and
+  // the declaration's own `store_cell` would then revoke the grant it just
+  // made. Testing `ctor` here turns every `C.new(...)` after a class
+  // declaration back into a dynamic call, and does it silently: nothing
+  // fails, the resolution simply stops happening.
   void invalidate_cell(int32_t slot) {
     for (auto& sc : scopes_)
       for (auto& b : sc.bindings)
-        if (b.slot == slot && (b.known.chunk >= 0 || b.known.ctor >= 0))
-          revoke_known(b);
+        if (b.slot == slot && b.known.chunk >= 0) revoke_known(b);
   }
 
   // A read of a cell binding: the value comes out retained, so the result

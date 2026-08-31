@@ -1964,6 +1964,14 @@ add_test(NAME jit_error_pos_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/jit_error_pos_test.sh
                  $<TARGET_FILE:culebra>)
 
+# What the compiler RESOLVED, read off the emitted bytecode. A resolution
+# that stops happening still computes the right answer through the dynamic
+# arm it falls back to, so no behavioural test can see it go — this one reads
+# `--vm-dump` instead of the program's output.
+add_test(NAME resolve_shape_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/resolve_shape_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # Cooperative Ctrl+C (SIGINT): a tight loop is interruptible, the throw is a
 # catchable `Interrupted` (defer runs, catch resumes), uncaught exits 130 —
 # identical across interp / JIT / AOT. Drives the binary and sends a signal.
