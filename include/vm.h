@@ -8050,29 +8050,47 @@ class Compiler {
     ExprResult cur = emit_inline_body(*ctor, *cls, class_name, base, layout,
                                       *cps, args, arg_asts, /*is_ctor=*/true,
                                       /*out_base=*/-1, layout);
-    for (size_t i = 3; i < ast.nodes.size();) {
-      const auto& post = *ast.nodes[i];
-      if (i + 1 >= ast.nodes.size() ||
-          ast.nodes[i + 1]->original_tag != "ARGUMENTS"_) {
+    return splice_trailing_chain(cur, ast, 3, *cls, class_name, layout);
+  }
+  std::optional<ExprResult> try_inline_value_chain(const peg::Ast& ast) {
+    return try_inline_value_chain_impl(ast, /*allow_trailing_class=*/false);
+  }
+
+  // `at.nodes[from..]`: a field read or an eligible same-class method call,
+  // spliced onto an already-unboxed `cur` (the run a constructor produced,
+  // or a fold's own accumulator) the same way regardless of which one
+  // handed it here. Eligibility for all of it was already proven by
+  // chain_stays_unboxed at the SAME `from` index before the caller
+  // committed to anything — this is the emitting half, trusting that.
+  ExprResult splice_trailing_chain(ExprResult cur, const peg::Ast& at,
+                                   size_t from, const peg::Ast& cls,
+                                   std::string_view class_name,
+                                   const std::vector<std::string>* layout) {
+    using namespace peg::udl;
+    auto fresh_run = [&] { return alloc_zeroed_run(at, class_name, *layout); };
+    for (size_t i = from; i < at.nodes.size();) {
+      const auto& post = *at.nodes[i];
+      if (i + 1 >= at.nodes.size() ||
+          at.nodes[i + 1]->original_tag != "ARGUMENTS"_) {
         int32_t ix = inline_field_index(cur, post.token);
         return ExprResult{cur.slot + ix, /*owned=*/false};
       }
-      const peg::Ast* m = value_member_ast(*cls, post.token);
+      const peg::Ast* m = value_member_ast(cls, post.token);
       auto ps = inline_params(culebra::view_method(*m).params);
       std::vector<ExprResult> margs;
       std::vector<const peg::Ast*> masts;
-      compile_args(*ast.nodes[i + 1], margs, masts);
+      for (const auto& a : at.nodes[i + 1]->nodes) {
+        margs.push_back(compile_expr(*a));
+        masts.push_back(a.get());
+      }
       bool run = member_own_tail(*m, class_name) != nullptr;
-      int32_t out_base = run ? fresh_run() : alloc_slot(ast, "(value.ret)");
-      cur = emit_inline_body(*m, *cls, class_name, cur.slot, layout, *ps,
+      int32_t out_base = run ? fresh_run() : alloc_slot(at, "(value.ret)");
+      cur = emit_inline_body(*m, cls, class_name, cur.slot, layout, *ps,
                              margs, masts, /*is_ctor=*/false, out_base,
                              run ? layout : nullptr);
       i += 2;
     }
     return cur;
-  }
-  std::optional<ExprResult> try_inline_value_chain(const peg::Ast& ast) {
-    return try_inline_value_chain_impl(ast, /*allow_trailing_class=*/false);
   }
   // The LHS of an eligible operator fold: same machinery, permitted to end
   // holding the instance itself rather than a scalar, because the fold has
@@ -8130,6 +8148,196 @@ class Compiler {
                             run ? lhs.unboxed : nullptr);
   }
 
+  // Pure lookahead for an ADDITIVE/MULTIPLICATIVE fold, mirroring
+  // chain_resolves_to_class's role for a fold-shaped node instead of a
+  // CALL-shaped one: does operand[0] start unboxed, and does every
+  // operator in the chain resolve to a splice-able dunder on that class?
+  // The scan checks the SAME three things try_inline_operator checks when
+  // it actually splices — the member exists, is eligible, and its arity
+  // matches one argument — not just that the token maps to a dunder at
+  // all; a syntactic-only check would let compile_fold's accumulator
+  // become unboxed for an operator that then declines, with no way back
+  // short of reifying mid-fold. No emission — cheap to ask, cheap to throw
+  // away.
+  const peg::Ast* fold_resolves_to_class(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.size() < 3) return nullptr;
+    const peg::Ast* cls =
+        chain_resolves_to_class(*ast.nodes[0], /*allow_trailing_class=*/true);
+    if (!cls) return nullptr;
+    size_t dec_end = culebra::first_non_decorator_index(*cls);
+    auto class_name =
+        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
+    const auto* layout = culebra::value_flat_layout(class_name);
+    if (!layout) return nullptr;
+    for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
+      auto dunder = dunder_for_op(
+          ast.nodes[i]->token == "+"  ? Op::Add
+          : ast.nodes[i]->token == "-" ? Op::Sub
+          : ast.nodes[i]->token == "*" ? Op::Mul
+                                       : Op::BitOr);
+      const peg::Ast* opm =
+          dunder.empty() ? nullptr : value_member_ast(*cls, dunder);
+      if (!opm ||
+          !inline_body_ok(*opm, /*is_ctor=*/false, *cls, class_name, layout))
+        return nullptr;
+      auto ops = inline_params(culebra::view_method(*opm).params);
+      if (!ops || ops->size() != 1) return nullptr;
+    }
+    return cls;
+  }
+
+  // Pure lookahead for UNARY_MINUS, mirroring fold_resolves_to_class: does
+  // the operand resolve unboxed, and does its class have a splice-able,
+  // no-argument `__neg__`?
+  const peg::Ast* unary_minus_resolves_to_class(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.size() < 2) return nullptr;
+    const peg::Ast* cls =
+        chain_resolves_to_class(*ast.nodes[1], /*allow_trailing_class=*/true);
+    if (!cls) return nullptr;
+    size_t dec_end = culebra::first_non_decorator_index(*cls);
+    auto class_name =
+        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
+    const auto* layout = culebra::value_flat_layout(class_name);
+    if (!layout) return nullptr;
+    const peg::Ast* m = value_member_ast(*cls, "__neg__");
+    if (!m ||
+        !inline_body_ok(*m, /*is_ctor=*/false, *cls, class_name, layout))
+      return nullptr;
+    auto ps = inline_params(culebra::view_method(*m).params);
+    return (ps && ps->empty()) ? cls : nullptr;
+  }
+
+  // One left fold for every [operand, op-token]* chain the ADDITIVE/
+  // MULTIPLICATIVE(/BIT_*/SHIFT) grammar levels share; the eleven tokens
+  // are disjoint across the levels, so one function serves all of them.
+  //
+  // `allow_trailing_class` gates whether operand[0] may even ATTEMPT to
+  // start unboxed (fold_resolves_to_class is only asked when it is true) —
+  // not just whether the final accumulator may end that way. Reached
+  // through the ordinary, universal compile_expr dispatch (the ADDITIVE/
+  // MULTIPLICATIVE case below) this is always false: compile_expr's caller
+  // could be anything — an argument, a print, a return, a comparison —
+  // that was never taught to check `.unboxed`, and hands the marker's slot
+  // to code expecting a tagged Value if it ever escapes that way (found
+  // live: `(a + b).len()` at top level raised a TypeError instead of
+  // computing anything, because compile_method_call had no idea what an
+  // unboxed receiver was — self escaping a SPLICE was the bug the earlier
+  // commit on this branch fixed; this is the same failure one level up,
+  // for a fold's OWN result escaping an ordinary expression). With
+  // operand[0] never starting unboxed when `allow_trailing_class` is
+  // false, the loop's own `.unboxed_class` branch never fires either, so
+  // nothing this function returns through the ordinary path is ever
+  // unboxed — no reification needed, because the marker never escapes in
+  // the first place. Only try_inline_fold_chain (compile_call's own
+  // upfront lookahead, which has separately proven a trailing chain this
+  // result feeds into) passes true.
+  ExprResult compile_fold(const peg::Ast& ast, bool allow_trailing_class) {
+    using namespace peg::udl;
+    const peg::Ast* fold_class =
+        allow_trailing_class && ast.nodes.size() >= 3
+            ? fold_resolves_to_class(ast)
+            : nullptr;
+    auto acc = fold_class ? *try_inline_value_operand(*ast.nodes[0])
+                          : compile_expr(*ast.nodes[0]);
+    for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
+      auto op_tok = ast.nodes[i]->token;
+      Op op;
+      if (op_tok == "|") op = Op::BitOr;
+      else if (op_tok == "^") op = Op::BitXor;
+      else if (op_tok == "&") op = Op::BitAnd;
+      else if (op_tok == "<<") op = Op::Shl;
+      else if (op_tok == ">>") op = Op::Shr;
+      else if (op_tok == "+") op = Op::Add;
+      else if (op_tok == "-") op = Op::Sub;
+      else if (op_tok == "*") op = Op::Mul;
+      else if (op_tok == "/") op = Op::Div;
+      else if (op_tok == "%") op = Op::Mod;
+      else if (op_tok == "@") op = Op::MatMul;
+      else reject(*ast.nodes[i], culebra::format("operator '{}'", op_tok));
+      // An unboxed accumulator: splice the class's operator method instead
+      // of the runtime dispatch. fold_resolves_to_class's up-front scan is
+      // what guarantees a dunder exists here whenever `acc` is unboxed —
+      // the assert pins that invariant rather than silently trusting it,
+      // the same way run_resolved's does for a resolved call site.
+      if (acc.unboxed_class) {
+        auto rhs = compile_expr(*ast.nodes[i + 1]);
+        auto r = try_inline_operator(ast, acc, dunder_for_op(op), {rhs},
+                                     {ast.nodes[i + 1].get()});
+        assert(r && "fold_resolves_to_class's scan promised this inlines");
+        acc = *r;
+        continue;
+      }
+      auto rhs = compile_expr(*ast.nodes[i + 1]);
+      int32_t t = alloc_temp(ast);
+      emit(op, t, acc.slot, rhs.slot);
+      acc = {t, true};
+    }
+    return acc;
+  }
+
+  // UNARY_MINUS's own one-operand, no-operator-scan version of the same
+  // gate compile_fold uses — see its comment for why `allow_trailing_class`
+  // defaults to false everywhere except try_inline_fold_chain.
+  ExprResult compile_unary_minus(const peg::Ast& ast,
+                                 bool allow_trailing_class) {
+    if (allow_trailing_class && unary_minus_resolves_to_class(ast)) {
+      auto r = *try_inline_value_operand(*ast.nodes[1]);
+      auto out = try_inline_operator(ast, r, "__neg__", {}, {});
+      assert(out && "unary_minus_resolves_to_class's scan promised this");
+      return *out;
+    }
+    auto r = compile_expr(*ast.nodes[1]);
+    int32_t t = alloc_temp(ast);
+    emit(Op::Neg, t, r.slot);
+    return {t, true};
+  }
+
+  // compile_call's upfront lookahead for a fold- or negation-headed postfix
+  // chain — `(a + b).len()`, `(-v).x` — mirroring try_inline_value_chain's
+  // role for a `C.new(...)` head. A fold/negation is only ever allowed to
+  // end its own compile still holding the class (compile_fold/
+  // compile_unary_minus's `allow_trailing_class=true`) when this function
+  // has ALSO proven, before compiling anything, that whatever postfix
+  // steps follow it can actually consume that — the same "decide once,
+  // emit or don't" discipline every other stage of this feature uses, kept
+  // even though the marker is now crossing an expression boundary (a fold
+  // into its own postfix chain) rather than staying inside one splice's
+  // own walk.
+  std::optional<ExprResult> try_inline_fold_chain(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.empty()) return std::nullopt;
+    const peg::Ast& head = *ast.nodes[0];
+    const peg::Ast* cls = nullptr;
+    if (head.tag == "ADDITIVE"_ || head.tag == "MULTIPLICATIVE"_)
+      cls = fold_resolves_to_class(head);
+    else if (head.tag == "UNARY_MINUS"_)
+      cls = unary_minus_resolves_to_class(head);
+    if (!cls) return std::nullopt;
+    // No trailing postfix at all is not this function's case to handle —
+    // compile_expr's ordinary ADDITIVE/MULTIPLICATIVE/UNARY_MINUS dispatch
+    // already declines to end unboxed on its own (allow_trailing_class is
+    // hardcoded false there), so a bare fold with nothing after it is
+    // correctly boxed by the caller falling through to compile_expr, not
+    // by this function committing to an unboxed result NOTHING here would
+    // then consume.
+    if (ast.nodes.size() <= 1) return std::nullopt;
+    size_t dec_end = culebra::first_non_decorator_index(*cls);
+    auto class_name =
+        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
+    const auto* layout = culebra::value_flat_layout(class_name);
+    if (!layout) return std::nullopt;
+    if (!chain_stays_unboxed(ast, 1, *cls, class_name, layout,
+                             /*allow_trailing_class=*/false))
+      return std::nullopt;
+    ExprResult cur = head.tag == "UNARY_MINUS"_
+                         ? compile_unary_minus(head,
+                                               /*allow_trailing_class=*/true)
+                         : compile_fold(head, /*allow_trailing_class=*/true);
+    return splice_trailing_chain(cur, ast, 1, *cls, class_name, layout);
+  }
+
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
   // `x!!`, and their compositions (`n[i][j]`, `f()[k]`, `Math.abs(-3).nope`),
   // folded left to right over one rolling result — the same walk
@@ -8163,6 +8371,12 @@ class Compiler {
     // answers nullopt having emitted nothing, and the ordinary walk below
     // then compiles the boxed form it always did.
     if (auto r = try_inline_value_chain(ast)) return *r;
+    // An operator fold or negation whose result feeds a postfix chain this
+    // splice machinery can consume — `(a + b).len()`, `(-v).x` — same
+    // reasoning as the construction case above, and it is the ONLY place
+    // a fold/negation is allowed to end its own compile still unboxed; see
+    // try_inline_fold_chain's own comment.
+    if (auto r = try_inline_fold_chain(ast)) return *r;
     // A head the call can read out of its cell when it runs, rather than
     // copying into a register first (borrowed_call_head). `res.slot` is then
     // the CELL's slot, which only the Call the next loop turn emits knows how
@@ -10093,35 +10307,15 @@ class Compiler {
           return {t, true};  // unreachable
         }
       }
-      case "UNARY_MINUS"_: {
-        // nodes[0] is the operator. Same lookahead as the ADDITIVE/
-        // MULTIPLICATIVE fold, sized down to one operand and no operator
-        // scan (there is only ever one operator here): decide, before
-        // compiling the operand, whether its class has `__neg__` — a `no`
-        // costs nothing, since nothing has been emitted yet.
-        const peg::Ast* cls = chain_resolves_to_class(
-            *ast.nodes[1], /*allow_trailing_class=*/true);
-        if (cls) {
-          size_t dec_end = culebra::first_non_decorator_index(*cls);
-          auto class_name =
-              culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
-          const auto* layout = culebra::value_flat_layout(class_name);
-          if (const peg::Ast* m = value_member_ast(*cls, "__neg__");
-              m && layout &&
-              inline_body_ok(*m, /*is_ctor=*/false, *cls, class_name, layout) &&
-              inline_params(culebra::view_method(*m).params) &&
-              inline_params(culebra::view_method(*m).params)->empty()) {
-            auto r = *try_inline_value_operand(*ast.nodes[1]);
-            auto out = try_inline_operator(ast, r, "__neg__", {}, {});
-            assert(out && "the eligibility check above promised this");
-            return *out;
-          }
-        }
-        auto r = compile_expr(*ast.nodes[1]);
-        int32_t t = alloc_temp(ast);
-        emit(Op::Neg, t, r.slot);
-        return {t, true};
-      }
+      case "UNARY_MINUS"_:
+        // `allow_trailing_class=false`: reached through the ordinary,
+        // universal compile_expr dispatch, whose caller could be anything
+        // (an argument, a print, a comparison) that never learned to check
+        // `.unboxed`. Only try_inline_fold_chain (compile_call's own
+        // upfront lookahead, which has ALSO validated a trailing chain
+        // this result feeds into) is allowed to ask for the unboxed form —
+        // see compile_unary_minus's own comment for why.
+        return compile_unary_minus(ast, /*allow_trailing_class=*/false);
       case "UNARY_NOT"_: {
         auto r = compile_expr(*ast.nodes[1]);
         int32_t t = alloc_temp(ast);
@@ -10151,95 +10345,10 @@ class Compiler {
       case "BIT_AND"_:
       case "SHIFT"_:
       case "ADDITIVE"_:
-      case "MULTIPLICATIVE"_: {
-        // Whether operand[0] may start unboxed and ride the WHOLE fold that
-        // way: every operator in this chain must resolve to a splice-able
-        // dunder on the class it would resolve to (member_returns_own keeps
-        // the class fixed at every step an unboxed accumulator passes
-        // through, so one class and one scan of the operators covers the
-        // chain). The scan checks the SAME three things
-        // `try_inline_operator` checks when it actually splices — the
-        // member exists, is eligible, and its arity matches one argument —
-        // not just that the token maps to a dunder at all; a syntactic-only
-        // check here would let `acc` become unboxed for an operator that
-        // then declines, with no way back short of reifying mid-fold.
-        // Decided before a single operand compiles, and for the whole fold
-        // at once — a chain with one operator that does not qualify
-        // declines ENTIRELY rather than reifying partway, the same "decide
-        // once, emit or don't" discipline try_inline_value_chain itself
-        // uses. This is what makes the loop below never need to
-        // re-materialise an accumulator it already unboxed.
-        const peg::Ast* fold_class = nullptr;
-        if (ast.nodes.size() >= 3) {
-          fold_class = chain_resolves_to_class(*ast.nodes[0],
-                                               /*allow_trailing_class=*/true);
-          std::string_view fold_class_name;
-          const std::vector<std::string>* fold_layout = nullptr;
-          if (fold_class) {
-            size_t dec_end = culebra::first_non_decorator_index(*fold_class);
-            fold_class_name = culebra::parse_generic_head(
-                                  fold_class->nodes[dec_end]->token)
-                                  .outer;
-            fold_layout = culebra::value_flat_layout(fold_class_name);
-            if (!fold_layout) fold_class = nullptr;
-          }
-          for (size_t i = 1; fold_class && i + 1 < ast.nodes.size(); i += 2) {
-            auto dunder = dunder_for_op(
-                ast.nodes[i]->token == "+"  ? Op::Add
-                : ast.nodes[i]->token == "-" ? Op::Sub
-                : ast.nodes[i]->token == "*" ? Op::Mul
-                                             : Op::BitOr);
-            const peg::Ast* opm =
-                dunder.empty() ? nullptr : value_member_ast(*fold_class, dunder);
-            if (!opm || !inline_body_ok(*opm, /*is_ctor=*/false, *fold_class,
-                                        fold_class_name, fold_layout)) {
-              fold_class = nullptr;
-              break;
-            }
-            auto ops = inline_params(culebra::view_method(*opm).params);
-            if (!ops || ops->size() != 1) fold_class = nullptr;
-          }
-        }
-        // One left fold for every [operand, op-token]* chain; the eleven
-        // tokens are disjoint across the levels, so one lookup serves all.
-        auto acc = fold_class ? *try_inline_value_operand(*ast.nodes[0])
-                              : compile_expr(*ast.nodes[0]);
-        for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
-          auto op_tok = ast.nodes[i]->token;
-          Op op;
-          if (op_tok == "|") op = Op::BitOr;
-          else if (op_tok == "^") op = Op::BitXor;
-          else if (op_tok == "&") op = Op::BitAnd;
-          else if (op_tok == "<<") op = Op::Shl;
-          else if (op_tok == ">>") op = Op::Shr;
-          else if (op_tok == "+") op = Op::Add;
-          else if (op_tok == "-") op = Op::Sub;
-          else if (op_tok == "*") op = Op::Mul;
-          else if (op_tok == "/") op = Op::Div;
-          else if (op_tok == "%") op = Op::Mod;
-          else if (op_tok == "@") op = Op::MatMul;
-          else reject(*ast.nodes[i], culebra::format("operator '{}'", op_tok));
-          // An unboxed accumulator: splice the class's operator method
-          // instead of the runtime dispatch. `fold_class`'s up-front scan
-          // is what guarantees a dunder exists here whenever `acc` is
-          // unboxed — the assert pins that invariant rather than silently
-          // trusting it, the same way `run_resolved`'s does for a resolved
-          // call site.
-          if (acc.unboxed_class) {
-            auto rhs = compile_expr(*ast.nodes[i + 1]);
-            auto r = try_inline_operator(ast, acc, dunder_for_op(op), {rhs},
-                                         {ast.nodes[i + 1].get()});
-            assert(r && "fold_class's scan promised this operator inlines");
-            acc = *r;
-            continue;
-          }
-          auto rhs = compile_expr(*ast.nodes[i + 1]);
-          int32_t t = alloc_temp(ast);
-          emit(op, t, acc.slot, rhs.slot);
-          acc = {t, true};
-        }
-        return acc;
-      }
+      case "MULTIPLICATIVE"_:
+        // `allow_trailing_class=false` for the same reason UNARY_MINUS
+        // passes it above — see compile_fold's own comment.
+        return compile_fold(ast, /*allow_trailing_class=*/false);
       case "CONDITION"_:
         return compile_condition(ast);
       case "LOGICAL_AND"_:
