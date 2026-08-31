@@ -425,34 +425,30 @@ class Pooling {
       .unfold([3, kw, sw])
       .clone()
       .reshape([n, c, oh, ow, kh * kw])
-    self.argmax = tensor_to_nested(flat.argmax(4))
+    self.argmax = flat.argmax(4)
     flat.max(4)
   }
 
+  # Scatters gy back into the argmax position of each window (the native
+  # counterpart of the old element-by-element scan below) via
+  # scatter_to_axis, then folds the two window axes (kw then kh) back onto
+  # w and h the same way Col2im's own fold pair reconstructs its padded
+  # buffer. Only the final pad-strip crop stays a host loop, for the same
+  # reason Col2im's own crop does: Tensor.slice() only takes axis 0.
   backward(gy) {
-    gy_arr = tensor_to_nested(gy.data)
     (
       n,
       c,
       h,
       w,
     ) = (self.x_shape[0], self.x_shape[1], self.x_shape[2], self.x_shape[3])
-    mut padded = zeros_nested([n, c, h + 2 * self.ph, w + 2 * self.pw])
-    for ni in range(n) {
-      for ci in range(c) {
-        for ohi in range(self.oh) {
-          for owi in range(self.ow) {
-            k = to_long(self.argmax[ni][ci][ohi][owi])
-            khi = k / self.kw
-            kwi = k % self.kw
-            padded[ni][ci][ohi * self.sh +
-              khi][owi * self.sw + kwi] += gy_arr[ni][ci][ohi][owi]
-          }
-        }
-      }
-    }
+    padded = Tensor
+      .scatter_to_axis(self.argmax, gy.data, self.kh * self.kw)
+      .reshape([n, c, self.oh, self.ow, self.kh, self.kw])
+      .fold([3, w + 2 * self.pw, self.sw])
+      .fold([2, h + 2 * self.ph, self.sh])
     dz.as_variable(tensor_from_nested(
-      strip_padding(padded, n, c, h, w, self.ph, self.pw),
+      strip_padding(tensor_to_nested(padded), n, c, h, w, self.ph, self.pw),
       [n, c, h, w],
     ))
   }

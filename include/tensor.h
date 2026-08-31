@@ -97,6 +97,11 @@ enum class Op {
   // own where()) — unlike the views/im2col ops above, this one differs
   // through cleanly since it's just two masked binops.
   Where,
+  // Row gather/scatter along axis 0 (embedding-table lookup) and one-hot
+  // scatter into a new trailing axis (a pooling-style backward's native
+  // primitive). IndexSelect/IndexAdd are exact duals with real VJPs;
+  // ScatterAxis is forward-only (see the VJP switch).
+  IndexSelect, IndexAdd, ScatterAxis,
 };
 
 struct TensorShape {
@@ -773,6 +778,49 @@ inline TensorPtr tensor_where(TensorPtr cond, TensorPtr a, TensorPtr b) {
                         std::vector<TensorPtr>{cond, a, b});
 }
 
+// Row gather along axis 0: table[indices[i]] for each i (indices, a 1-D
+// Tensor, float-valued like argmax's own output — no bounds check here,
+// matching every other Tensor op's policy of validating shapes/dtypes, not
+// element values). The embedding-table lookup. Differentiable w.r.t.
+// `table` via tensor_index_add below, its exact dual.
+inline TensorPtr tensor_index_select(TensorPtr table, TensorPtr indices) {
+  auto dtype = table->dtype;
+  auto v = _tl_guard(
+      [&] { return table->value.index_select(indices->value); });
+  return tensor_make_op(Op::IndexSelect, std::move(v), dtype,
+                        std::vector<TensorPtr>{table, indices});
+}
+
+// index_select's dual: scatter-add `values` (shaped like some
+// t.index_select(indices)) into a fresh zero buffer of `target_shape` —
+// the embedding-table gradient. Repeated indices accumulate.
+inline TensorPtr tensor_index_add(TensorPtr indices, TensorPtr values,
+                                  TensorShape target_shape) {
+  auto dtype = values->dtype;
+  auto v = _tl_guard([&] {
+    return tl::index_add(indices->value, values->value,
+                         std::move(target_shape.dims));
+  });
+  return tensor_make_op(Op::IndexAdd, std::move(v), dtype,
+                        std::vector<TensorPtr>{indices, values});
+}
+
+// One-hot scatter into a new trailing axis of size `size`: out[..., k] =
+// values[...] where indices[...] == k, else 0 — the native primitive a
+// pooling layer's own hand-derived backward composes with .fold() to
+// reconstruct a padded input gradient (max/argmax pick one element out of
+// a window; this scatters a gradient back into that same window shape).
+// Forward-only for now: its own dual (gather one element back out of the
+// window axis) has no caller yet, so it isn't built speculatively.
+inline TensorPtr tensor_scatter_to_axis(TensorPtr indices, TensorPtr values,
+                                        int64_t size) {
+  auto dtype = values->dtype;
+  auto v = _tl_guard(
+      [&] { return tl::scatter_to_axis(indices->value, values->value, size); });
+  return tensor_make_op(Op::ScatterAxis, std::move(v), dtype,
+                        std::vector<TensorPtr>{indices, values});
+}
+
 // Build a lazy matrix multiply A @ B. A is [M, K], B is [K, N], the result
 // is [M, N] — or, batched, [..., M, K] @ [..., K, N] -> [..., M, N] with
 // every leading dim matching exactly (no broadcasting yet).
@@ -1188,6 +1236,30 @@ inline void _tensor_vjp(const TensorPtr& n) {
       _tensor_grad_add(n->inputs[2], db);
       break;
     }
+    case Op::IndexSelect: {
+      // y = table[indices]; d_table = index_add(indices, g, table.shape).
+      // indices get no gradient.
+      const auto& table = n->inputs[0];
+      const auto& indices = n->inputs[1];
+      _tensor_grad_add(table, tensor_index_add(indices, g, table->shape));
+      break;
+    }
+    case Op::IndexAdd: {
+      // y = index_add(indices, values, target_shape); d_values =
+      // index_select(indices, g), index_select's own dual. indices get no
+      // gradient.
+      const auto& indices = n->inputs[0];
+      const auto& values = n->inputs[1];
+      _tensor_grad_add(values, tensor_index_select(g, indices));
+      break;
+    }
+    case Op::ScatterAxis:
+      // The VJP is scatter_to_axis's own dual (gather one element back out
+      // of the window axis by the same indices), which nothing builds yet
+      // — no caller needs it (a pooling layer's own backward uses this op
+      // forward-only, writing its own gradient by hand around it).
+      throw CulebraError("ValueError",
+          "Tensor.backward: scatter_to_axis is not differentiable yet.");
   }
 }
 

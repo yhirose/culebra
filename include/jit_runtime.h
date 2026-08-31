@@ -2412,6 +2412,35 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
   return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_index_select(
+    JitTensor* table, JitTensor* indices) {
+  return _culebra_jit_tensor_register(
+      culebra::tensor_index_select(table->impl, indices->impl));
+}
+
+// Tensor.index_add(indices, values, target_shape) — target_shape is a plain
+// Array of Long, the same variable-length-dims convention reshape's own
+// `dims` Array set.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_index_add(
+    JitTensor* indices, JitTensor* values, JitArray* target_shape) {
+  std::vector<int64_t> dims;
+  dims.reserve(target_shape->size);
+  for (size_t i = 0; i < target_shape->size; i++) {
+    if (target_shape->items[i].tag != TAG_LONG) {
+      throw culebra::CulebraError("TypeError", "type error");
+    }
+    dims.push_back(target_shape->items[i].data);
+  }
+  return _culebra_jit_tensor_register(culebra::tensor_index_add(
+      indices->impl, values->impl, culebra::TensorShape(std::move(dims))));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_scatter_to_axis(
+    JitTensor* indices, JitTensor* values, int64_t size) {
+  return _culebra_jit_tensor_register(
+      culebra::tensor_scatter_to_axis(indices->impl, values->impl, size));
+}
+
 // --- Autograd. Methods that conceptually return the receiver (mark /
 // backward / clear) mutate the shared TensorImpl and hand back a fresh
 // +1 JitTensor over the *same* impl, so refcounting stays uniform with

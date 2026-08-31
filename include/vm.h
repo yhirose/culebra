@@ -793,7 +793,7 @@ enum class BMeth : uint8_t {
   // axis reductions share tensor_reduce_axis and differ only by their op.
   Shape, Pow, Transpose, Clone, RequiresGrad, Grad, Backward, ZeroGrad,
   Detach, Relu, Sigmoid, Softmax, TensorLog, Reshape, Mean,
-  SumAxis, MeanAxis, MaxAxis, Argmax, Dot, LinearSigmoid, Item,
+  SumAxis, MeanAxis, MaxAxis, Argmax, Dot, LinearSigmoid, Item, IndexSelect,
   // im2col's own building blocks. Each takes one params Array ([axis, win,
   // step] / [axis, before, after] / [axis, orig_size, step]) rather than 3
   // positional Longs, same reason Reshape takes a dims Array: BMethSpec's
@@ -1252,6 +1252,8 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"max", 1, MaxAxis, kRecvTensor, 1, nullptr, {LongOpt}, {"axis"}},
       {"argmax", 1, Argmax, kRecvTensor, 1, nullptr, {Long}, {"axis"}},
       {"dot", 1, Dot, kRecvTensor, 1, nullptr, {Tensor}, {"other"}},
+      {"index_select", 1, IndexSelect, kRecvTensor, 1, nullptr, {Tensor},
+       {"indices"}},
       {"linear_sigmoid", 2, LinearSigmoid, kRecvTensor, 2, nullptr,
        {Tensor, Tensor}, {"x", "b"}},
       {"item", 0, Item, kRecvTensor, 0, nullptr, {}, {}},
@@ -2252,6 +2254,12 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       return JitValue{TAG_TENSOR,
                       reinterpret_cast<int64_t>(culebra_runtime_tensor_dot(
                           ten(recv), ten(args[0])))};
+    case BMeth::IndexSelect:
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{
+          TAG_TENSOR,
+          reinterpret_cast<int64_t>(culebra_runtime_tensor_index_select(
+              ten(recv), ten(args[0])))};
     case BMeth::LinearSigmoid:
       culebra_runtime_set_op_pos(line, col);
       return JitValue{

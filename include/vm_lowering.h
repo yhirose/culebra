@@ -3277,6 +3277,13 @@ struct Lowering {
                    b.CreateIntToPtr(j.extract_data(arg(1)), ptrTy)},
                   "vbm.tls"));
               break;
+            case BMeth::IndexSelect:
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_index_select),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.tidxsel"));
+              break;
             case BMeth::Item:
               j.emit_set_op_pos();  // multi-element check
               res = val_fn(rt::tensor_item, {arr()});

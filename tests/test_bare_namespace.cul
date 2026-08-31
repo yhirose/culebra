@@ -154,6 +154,8 @@ assert_eq(
     "from",
     "concat",
     "where",
+    "index_add",
+    "scatter_to_axis",
     "no_grad",
     "use_cpu",
     "use_gpu",

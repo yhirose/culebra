@@ -7319,6 +7319,16 @@ inline JitValue _ns_tensor_where(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(culebra_runtime_tensor_where(
       _ns_adapt::take_tensor(a[0]), a[1].tag, a[1].data, a[2].tag, a[2].data));
 }
+inline JitValue _ns_tensor_index_add(JitValue* a, int64_t) {
+  return _ns_adapt::v_tensor(culebra_runtime_tensor_index_add(
+      _ns_adapt::take_tensor(a[0]), _ns_adapt::take_tensor(a[1]),
+      _ns_adapt::take_array(a[2])));
+}
+inline JitValue _ns_tensor_scatter_to_axis(JitValue* a, int64_t) {
+  return _ns_adapt::v_tensor(culebra_runtime_tensor_scatter_to_axis(
+      _ns_adapt::take_tensor(a[0]), _ns_adapt::take_tensor(a[1]),
+      _ns_adapt::take_long(a[2])));
+}
 inline JitValue _ns_tensor_from_csv(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(
       culebra_runtime_tensor_from_csv(_ns_adapt::take_str(a[0])));
@@ -8261,6 +8271,8 @@ inline const NsMethod kNsRows_Tensor[] = {
   {"Tensor", "from",      1, &_ns_tensor_from, nullptr, "Array",  "a"},
   {"Tensor", "concat",    1, &_ns_tensor_concat, nullptr, "Array", "parts"},
   {"Tensor", "where",     3, &_ns_tensor_where},
+  {"Tensor", "index_add", 3, &_ns_tensor_index_add},
+  {"Tensor", "scatter_to_axis", 3, &_ns_tensor_scatter_to_axis},
   {"Tensor", "no_grad",   1, &_ns_tensor_no_grad, nullptr, "Function", "fn"},
   {"Tensor", "use_cpu",       0, &_ns_tensor_use_cpu},
   {"Tensor", "use_gpu",       0, &_ns_tensor_use_gpu},
@@ -10060,6 +10072,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::tensor_item, jit.valueType_, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_no_grad, jit.valueType_, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_dot, ptrTy, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_index_select, ptrTy, ptrTy,
+                                   ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_from_csv, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_unary, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty());

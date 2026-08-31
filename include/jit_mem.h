@@ -611,6 +611,7 @@ inline constexpr auto tensor_to_array     = "culebra_runtime_tensor_to_array";
 inline constexpr auto tensor_item         = "culebra_runtime_tensor_item";
 inline constexpr auto tensor_no_grad      = "culebra_runtime_tensor_no_grad";
 inline constexpr auto tensor_dot          = "culebra_runtime_tensor_dot";
+inline constexpr auto tensor_index_select = "culebra_runtime_tensor_index_select";
 inline constexpr auto tensor_from_csv     = "culebra_runtime_tensor_from_csv";
 inline constexpr auto tensor_unary        = "culebra_runtime_tensor_unary";
 inline constexpr auto tensor_linear_sigmoid = "culebra_runtime_tensor_linear_sigmoid";

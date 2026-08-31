@@ -583,4 +583,30 @@ let where_gy = Tensor.where(Tensor.from([[1.0, 0.0, 1.0]]), where_ga, where_gb)
 assert_eq(where_ga.grad().to_array(), [[1.0, 0.0, 3.0]])
 assert_eq(where_gb.grad().to_array(), [[0.0, 2.0, 0.0]])
 
+# --- index_select / Tensor.index_add: the embedding-table lookup -----------
+
+let table = Tensor.from([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+let sel_idx = Tensor.from([2.0, 0.0, 2.0])
+assert_eq(table.index_select(sel_idx).to_array(),
+         [[5.0, 6.0], [1.0, 2.0], [5.0, 6.0]])
+
+# index_select's exact dual: repeated indices accumulate.
+let add_idx = Tensor.from([1.0, 1.0, 0.0])
+let add_values = Tensor.from([[10.0, 20.0], [30.0, 40.0], [1.0, 2.0]])
+assert_eq(Tensor.index_add(add_idx, add_values, [4, 2]).to_array(),
+         [[1.0, 2.0], [40.0, 60.0], [0.0, 0.0], [0.0, 0.0]])
+
+# VJP: index_select/index_add are each other's dual gradient.
+let table_g = Tensor.from([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]).requires_grad()
+let sel = table_g.index_select(Tensor.from([0.0, 2.0, 0.0]))
+(sel * Tensor.from([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])).sum(1).sum(0).backward()
+assert_eq(table_g.grad().to_array(), [[4.0, 4.0], [0.0, 0.0], [2.0, 2.0]])
+
+# --- Tensor.scatter_to_axis(indices, values, size): one-hot scatter --------
+
+let sc_idx = Tensor.from([2.0, 0.0, 1.0])
+let sc_values = Tensor.from([5.0, 7.0, 9.0])
+assert_eq(Tensor.scatter_to_axis(sc_idx, sc_values, 4).to_array(),
+         [[0.0, 0.0, 5.0, 0.0], [7.0, 0.0, 0.0, 0.0], [0.0, 9.0, 0.0, 0.0]])
+
 inspect("test_tensor: OK")

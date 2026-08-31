@@ -1500,6 +1500,37 @@ let scores = Tensor.randn(4, 3)
 let masked = Tensor.where(mask, scores, -1.0e9)  # padding maskのパターン
 ```
 
+#### `Tensor.index_add(indices: Tensor, values: Tensor, target_shape: Array) -> Tensor`
+
+`.index_select()`の正確な双対: `t.index_select(indices)`のような形の
+`values`を、`target_shape`の新規ゼロバッファへscatter-addします。
+同じインデックスが重複すれば累積されます——embeddingテーブルの勾配は
+これです。`values`について微分可能（入ってきた勾配に対する
+`.index_select(indices)`）。`indices`には勾配が流れません。
+
+```culebra
+let idx = Tensor.from([1.0, 1.0, 0.0])       # 行1が2回ヒット: 累積される
+let values = Tensor.from([[10.0, 20.0], [30.0, 40.0], [1.0, 2.0]])
+let grad = Tensor.index_add(idx, values, [4, 2])  # [[1,2],[40,60],[0,0],[0,0]]
+```
+
+#### `Tensor.scatter_to_axis(indices: Tensor, values: Tensor, size: Long) -> Tensor`
+
+新規の末尾軸（長さ`size`）へのone-hot scatter: `indices[...] == k`のとき
+`out[..., k] = values[...]`、それ以外は0。`indices`/`values`は同じ形状
+である必要があります。poolingレイヤー自身の手書きbackwardが`.fold()`と
+組み合わせてpadded input勾配を再構築するネイティブプリミティブです
+——`.max(axis)`/`.argmax(axis)`がwindowから1要素選ぶのに対し、これは
+勾配を同じwindow形状へscatterして戻します。今のところforward-only
+（ネイティブ`.backward()`は未対応）。
+
+```culebra
+let idx = Tensor.from([2.0, 0.0, 1.0])
+let values = Tensor.from([5.0, 7.0, 9.0])
+let out = Tensor.scatter_to_axis(idx, values, 4)
+# [[0,0,5,0], [7,0,0,0], [0,9,0,0]]
+```
+
 #### `Tensor.from_csv(path: String) -> Tensor`
 
 CSVファイルを直接contiguousなTensorに読み込みます。常に
@@ -1566,6 +1597,7 @@ let l = p.log()           # 自然対数、elementwise
 | `.mean() / .mean(axis)` | Float / Tensor | 同様 |
 | `.max() / .max(axis)` | Float / Tensor | 同様 |
 | `.argmax(axis: Long) -> Tensor` | lazy | 軸を畳んでインデックスをFloatで格納 |
+| `.index_select(indices: Tensor) -> Tensor` | lazy | 軸0方向の行gather: `out[i] = self[indices[i]]`——embeddingテーブルのlookup |
 | `.to_array() -> Array` | eager | Culebra Arrayへ変換（暗黙eval） |
 | `.item() -> Float` | eager | 唯一の要素をFloatとして取り出す。要素数が1でない（任意rank）場合は例外 |
 

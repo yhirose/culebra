@@ -816,6 +816,14 @@ inline constexpr CanonParam kCanonParams_Tensor[] = {
   {"cond", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
   {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 11: Tensor.index_add
+  {"indices", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
+  {"values", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
+  {"target_shape", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  // 14: Tensor.scatter_to_axis
+  {"indices", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
+  {"values", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
+  {"size", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Tensor[] = {
@@ -828,6 +836,8 @@ inline constexpr CanonSig kCanonSigs_Tensor[] = {
   {"Tensor", "", "concat", kCanonParams_Tensor + 6, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"Tensor", "", "no_grad", kCanonParams_Tensor + 7, 1, "Any", 1, 1, false, -1, -1, -1},
   {"Tensor", "", "where", kCanonParams_Tensor + 8, 3, "Tensor", 3, 3, false, -1, -1, -1},
+  {"Tensor", "", "index_add", kCanonParams_Tensor + 11, 3, "Tensor", 3, 3, false, -1, -1, -1},
+  {"Tensor", "", "scatter_to_axis", kCanonParams_Tensor + 14, 3, "Tensor", 3, 3, false, -1, -1, -1},
   {"Tensor", "", "use_cpu", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"Tensor", "", "use_gpu", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"Tensor", "", "use_auto", nullptr, 0, "", 0, 0, false, -1, -1, -1},
@@ -1495,6 +1505,8 @@ inline constexpr CanonParam kCanonParamPool[] = {
   {"params", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   // 116: permute
   {"axes", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  // 117: index_select
+  {"indices", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonObjectSigs[] = {
@@ -1630,6 +1642,7 @@ inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "dot", kCanonParamPool + 73, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "fold", kCanonParamPool + 115, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "grad", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
+  {"", "", "index_select", kCanonParamPool + 117, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "item", nullptr, 0, "Float", 0, 0, false, -1, -1, -1},
   {"", "", "linear_sigmoid", kCanonParamPool + 74, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "log", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},

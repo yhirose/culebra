@@ -512,26 +512,16 @@ class EmbedID {
 
   new(idx) {
     self.idx = idx
+    self.idx_tensor = Tensor.from(idx.map(to_float))
   }
 
   forward(w) {
-    Tensor.concat(self.idx.map(|i| w.slice(i, i + 1)))
+    w.index_select(self.idx_tensor)
   }
 
   backward(gy) {
     w = self.inputs[0]
-    cols = w.shape[1]
-    gy_rows = gy.data.to_array()
-    mut grad_rows = range(w.shape[0])
-      .map(|_| range(cols).map(|_| 0.0).collect())
-      .collect()
-    for k in range(self.idx.size()) {
-      row = self.idx[k]
-      for j in range(cols) {
-        grad_rows[row][j] += gy_rows[k][j]
-      }
-    }
-    dz.as_variable(Tensor.from(grad_rows))
+    dz.as_variable(Tensor.index_add(self.idx_tensor, gy.data, w.shape))
   }
 }
 

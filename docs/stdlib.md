@@ -1536,6 +1536,37 @@ let scores = Tensor.randn(4, 3)
 let masked = Tensor.where(mask, scores, -1.0e9)  # padding-mask pattern
 ```
 
+#### `Tensor.index_add(indices: Tensor, values: Tensor, target_shape: Array) -> Tensor`
+
+`.index_select()`'s exact dual: scatter-adds `values` (shaped like some
+`t.index_select(indices)`) into a fresh zero buffer of `target_shape`.
+Repeated indices accumulate — this is the embedding-table gradient.
+Differentiable w.r.t. `values` (`.index_select(indices)` on the incoming
+gradient); `indices` gets no gradient.
+
+```culebra
+let idx = Tensor.from([1.0, 1.0, 0.0])       # row 1 hit twice: accumulates
+let values = Tensor.from([[10.0, 20.0], [30.0, 40.0], [1.0, 2.0]])
+let grad = Tensor.index_add(idx, values, [4, 2])  # [[1,2],[40,60],[0,0],[0,0]]
+```
+
+#### `Tensor.scatter_to_axis(indices: Tensor, values: Tensor, size: Long) -> Tensor`
+
+One-hot scatter into a new trailing axis of length `size`: `out[..., k] =
+values[...]` where `indices[...] == k`, else 0. `indices`/`values` must
+share the same shape. The native primitive a pooling layer's own
+hand-derived backward composes with `.fold()` to reconstruct a padded
+input gradient — `.max(axis)`/`.argmax(axis)` pick one element out of a
+window; this scatters a gradient back into that same window shape.
+Forward-only for now (no native `.backward()` through it).
+
+```culebra
+let idx = Tensor.from([2.0, 0.0, 1.0])
+let values = Tensor.from([5.0, 7.0, 9.0])
+let out = Tensor.scatter_to_axis(idx, values, 4)
+# [[0,0,5,0], [7,0,0,0], [0,9,0,0]]
+```
+
 #### `Tensor.from_csv(path: String) -> Tensor`
 
 Reads a CSV file directly into a contiguous Tensor. Always returns
@@ -1604,6 +1635,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.mean() / .mean(axis)` | Float / Tensor | likewise |
 | `.max() / .max(axis)` | Float / Tensor | likewise |
 | `.argmax(axis: Long) -> Tensor` | lazy | reduce one axis to indices stored as Float |
+| `.index_select(indices: Tensor) -> Tensor` | lazy | row gather along axis 0: `out[i] = self[indices[i]]` — the embedding-table lookup |
 | `.to_array() -> Array` | eager | convert to a Culebra Array (forces eval) |
 | `.item() -> Float` | eager | extract the lone element as a Float; throws unless the tensor holds exactly one element (any rank) |
 
