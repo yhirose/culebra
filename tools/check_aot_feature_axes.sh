@@ -270,7 +270,7 @@ m.add_func(name: "main", num_locals: 0, num_captures: 0, num_cells: 0, num_param
 m.verify()
 m.run()'
 expect_present codegen "$codegen_choke" "CodeGen named"
-expect_class codegen "$regex_choke" "W|" "expected 'W' or absent" "CodeGen only"
+expect_class codegen "$regex_choke" "W?" "expected 'W' or absent" "CodeGen only"
 expect_class codegen "$peg_choke" "" "expected absent" "CodeGen only"
 expect_absent codegen "$fmt_machinery" "libstdc++'s formatter, CodeGen"
 expect_output codegen "42"
