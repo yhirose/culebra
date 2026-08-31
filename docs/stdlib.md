@@ -1579,6 +1579,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.linear_sigmoid(x, b) -> Tensor` | lazy | fused `sigmoid(self @ x + b)` |
 | `.pow(exp) -> Tensor` | lazy | elementwise power; `exp` is Tensor or scalar |
 | `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |
+| `.permute(axes: Array) -> Tensor` | view | general axis reorder; `axes[i]` names which of self's axes becomes result axis `i` |
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
 | `.reshape(dims: Array) -> Tensor` | view | contiguous input only; new shape |
 | `.unfold(params: Array) -> Tensor` | view | `[axis, win, step]`; sliding window along `axis`, adds a trailing size-`win` axis |
@@ -1620,9 +1621,9 @@ produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.transpose()`,
 `.reshape()`, `.slice()`, and `Tensor.concat()`. Gradients un-broadcast
 automatically, so a bias added across a batch sums back to its shape.
-`.unfold()`, `.pad()`, and `.fold()` are forward-only so far — `.backward()`
-through them raises; a training loop that uses them (e.g. an im2col-style
-conv) writes its own backward pass around them for now.
+`.unfold()`, `.pad()`, `.fold()`, and `.permute()` are forward-only so far —
+`.backward()` through them raises; a training loop that uses them (e.g. an
+im2col-style conv) writes its own backward pass around them for now.
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

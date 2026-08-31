@@ -799,6 +799,10 @@ enum class BMeth : uint8_t {
   // positional Longs, same reason Reshape takes a dims Array: BMethSpec's
   // own arg-passing caps at 2.
   Unfold, Pad, Fold,
+  // General axis reorder — a distinct name from Transpose (which only
+  // reverses every axis) rather than an overload of it, matching PyTorch's
+  // own transpose()/permute() split. One axes Array, same reason as above.
+  Permute,
   Sort,                                 // Array only, in place, returns nil
   Values,                               // Object (dict) only
 };
@@ -1257,6 +1261,9 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"unfold", 1, Unfold, kRecvTensor, 1, nullptr, {Array}, {"params"}},
       {"pad", 1, Pad, kRecvTensor, 1, nullptr, {Array}, {"params"}},
       {"fold", 1, Fold, kRecvTensor, 1, nullptr, {Array}, {"params"}},
+      // General axis reorder — a distinct name from transpose (0-arg,
+      // reverses every axis) rather than an overload of it.
+      {"permute", 1, Permute, kRecvTensor, 1, nullptr, {Array}, {"axes"}},
       // sort: Array's in-place, nil-returning twin of `sorted`, keyword-only
       // `reverse:` in the same way.
       {"sort", 0, Sort, kRecvArray, 1, nullptr, {Bool}, {"reverse"}, {},
@@ -2270,6 +2277,13 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       culebra_runtime_set_op_pos(line, col);
       return JitValue{TAG_TENSOR,
                       reinterpret_cast<int64_t>(culebra_runtime_tensor_fold(
+                          ten(recv), arr(args[0])))};
+    case BMeth::Permute:
+      // A bad axes count/type, or axes that aren't a genuine permutation,
+      // arrive positionless.
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(culebra_runtime_tensor_permute(
                           ten(recv), arr(args[0])))};
     case BMeth::Sort:
       // In place, answering nil.

@@ -1540,6 +1540,7 @@ let l = p.log()           # 自然対数、elementwise
 | `.linear_sigmoid(x, b) -> Tensor` | lazy | 融合`sigmoid(self @ x + b)` |
 | `.pow(exp) -> Tensor` | lazy | elementwise冪、expはTensorまたはscalar |
 | `.transpose() -> Tensor` | view | 全軸逆順（rank-2で行列転置） |
+| `.permute(axes: Array) -> Tensor` | view | 任意軸並べ替え。`axes[i]`が結果の軸`i`に対応する自分自身の軸を指定 |
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
 | `.reshape(dims: Array) -> Tensor` | view | 連続入力のみ。新形状 |
 | `.unfold(params: Array) -> Tensor` | view | `[axis, win, step]`。`axis`沿いのスライディングウィンドウ、末尾に長さ`win`の軸を追加 |
@@ -1581,9 +1582,9 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 `.softmax()`、`.log()`、`.transpose()`、`.reshape()`、`.slice()`、
 `Tensor.concat()`。勾配は自動でun-broadcastされるので、バッチ越しに
 加えたbiasは元の形状に和を取って戻ります。
-`.unfold()`、`.pad()`、`.fold()`は今のところforward-onlyです——これらを
-通した`.backward()`は例外を投げます。im2col方式のconvなどこれらを使う
-学習ループは、今のところ自前でbackwardを書きます。
+`.unfold()`、`.pad()`、`.fold()`、`.permute()`は今のところforward-onlyです
+——これらを通した`.backward()`は例外を投げます。im2col方式のconvなど
+これらを使う学習ループは、今のところ自前でbackwardを書きます。
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

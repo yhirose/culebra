@@ -84,6 +84,10 @@ enum class Op {
   Transpose, Reshape, Slice,
   Unfold,  // also zero-copy (shares storage), grouped with the views above
            // in spirit; backward not implemented yet (see the VJP switch).
+  Permute,  // general axis reorder — Transpose above is the "reverse every
+            // axis" special case; this is any permutation. Also zero-copy,
+            // also no backward yet (the inverse needs the axes back, which
+            // nothing stores today — see the VJP switch).
   // im2col's own ops: both materialize a new buffer (never a view). No VJP
   // yet either — dezero's own conv layer (examples/dezero) runs its own
   // autograd around these rather than native .backward().
@@ -662,6 +666,40 @@ inline TensorPtr tensor_transpose(TensorPtr t) {
                         /*op_param=*/0, /*is_view=*/true);
 }
 
+// General axis reorder: `axes[i]` names which of `t`'s own axes becomes the
+// result's axis `i`. Zero-copy, like transpose() above. tensorlib's own
+// array::transpose(axes) only checks the count matches rank — it does not
+// check the values are a genuine permutation, and indexes shape/strides
+// with them directly, so an out-of-range or repeated axis there is
+// undefined behavior rather than a clean throw. That validation belongs
+// here, at the boundary, before it ever reaches tensorlib.
+inline TensorPtr tensor_permute(TensorPtr t, std::vector<int64_t> axes) {
+  size_t r = t->shape.rank();
+  if (axes.size() != r) {
+    throw CulebraError("ValueError",
+                       "Tensor.permute: expected " + std::to_string(r) +
+                           " axes, got " + std::to_string(axes.size()) + ".");
+  }
+  std::vector<int> iaxes(r);
+  std::vector<bool> seen(r, false);
+  for (size_t i = 0; i < r; i++) {
+    int64_t a = axes[i];
+    if (a < 0) a += static_cast<int64_t>(r);
+    if (a < 0 || a >= static_cast<int64_t>(r) || seen[static_cast<size_t>(a)]) {
+      throw CulebraError("ValueError",
+                         "Tensor.permute: axes must be a permutation of "
+                         "0.." + std::to_string(r - 1) + ".");
+    }
+    seen[static_cast<size_t>(a)] = true;
+    iaxes[i] = static_cast<int>(a);
+  }
+  auto v = _tl_guard([&] { return t->value.transpose(std::move(iaxes)); });
+  auto dtype = t->dtype;
+  return tensor_make_op(Op::Permute, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(t)},
+                        /*op_param=*/0, /*is_view=*/true);
+}
+
 // Slice along axis 0 (rows): [start, end). Matches Array's .slice()
 // convention so behaviour is consistent across Culebra. Zero-copy.
 inline TensorPtr tensor_slice(TensorPtr t, int64_t start, int64_t end) {
@@ -779,10 +817,14 @@ inline TensorPtr tensor_linear_sigmoid(TensorPtr W, TensorPtr x, TensorPtr b) {
       std::vector<TensorPtr>{std::move(W), std::move(x), std::move(b)});
 }
 
-// View with a different shape. Phase 1 only allows contiguous inputs;
-// reshaping a transposed/sliced view requires materialization, which
-// stays on the todo list (tensorlib can already do it — loosen when a
-// workload needs it).
+// View with a different shape when `t` is contiguous; a materializing copy
+// otherwise. Used to reject the non-contiguous case outright ("Phase 1 only
+// allows contiguous inputs... tensorlib can already do it — loosen when a
+// workload needs it") — loosened now that one does (`.permute()` feeding a
+// `.reshape()`, e.g. examples/dezero's col2im): tensorlib's own
+// array::reshape already clones-then-reshapes internally when the source
+// isn't contiguous, so this wrapper no longer needs to forbid it, just
+// report it honestly via `is_view` below.
 inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
   if (new_shape.num_elements() != t->shape.num_elements()) {
     throw CulebraError("ValueError",
@@ -791,15 +833,12 @@ inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
   // No eval needed for the check: an unevaluated op result is always
   // contiguous (tl lays lazy results out contiguously); only materialized
   // views (transpose/slice) can be strided, and those report directly.
-  if (!t->is_contiguous()) {
-    throw CulebraError("ValueError",
-                       "Tensor: reshape requires a contiguous input.");
-  }
+  bool is_view = t->is_contiguous();
   auto v = _tl_guard([&] { return t->value.reshape(new_shape.dims); });
   auto dtype = t->dtype;
   return tensor_make_op(Op::Reshape, std::move(v), dtype,
                         std::vector<TensorPtr>{std::move(t)},
-                        /*op_param=*/0, /*is_view=*/true);
+                        /*op_param=*/0, is_view);
 }
 
 // Stack tensors along axis 0 (rows). All parts must share dtype and all
@@ -1086,6 +1125,13 @@ inline void _tensor_vjp(const TensorPtr& n) {
       // something does reach it.
       throw CulebraError("ValueError",
           "Tensor.backward: unfold / pad / fold are not differentiable yet.");
+    case Op::Permute:
+      // The VJP is the inverse permutation, which needs the forward axes
+      // back — TensorImpl has nowhere to keep an arbitrary-length list
+      // today (op_param is one int64_t, sized for Slice's start). Unreached
+      // for the same reason as Unfold/Pad/Fold above.
+      throw CulebraError("ValueError",
+          "Tensor.backward: permute is not differentiable yet.");
   }
 }
 

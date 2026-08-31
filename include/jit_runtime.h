@@ -2376,6 +2376,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_transpose(
   return _culebra_jit_tensor_register(culebra::tensor_transpose(t->impl));
 }
 
+// General axis reorder: one `axes` Array (arbitrary length, unlike unfold/
+// pad/fold's fixed-3 params) — the same variable-length unpacking reshape's
+// own `dims` Array already does below.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_permute(
+    JitTensor* t, JitArray* axes) {
+  std::vector<int64_t> ax;
+  ax.reserve(axes->size);
+  for (size_t i = 0; i < axes->size; i++) {
+    if (axes->items[i].tag != TAG_LONG) {
+      throw culebra::CulebraError("TypeError", "type error");
+    }
+    ax.push_back(axes->items[i].data);
+  }
+  return _culebra_jit_tensor_register(
+      culebra::tensor_permute(t->impl, std::move(ax)));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));
