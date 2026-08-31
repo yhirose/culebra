@@ -3213,6 +3213,13 @@ struct Lowering {
                   "vbm.tcmp"));
               break;
             }
+            case BMeth::Clip:
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_clamp),
+                  {arr(), j.extract_tag(arg(0)), j.extract_data(arg(0)),
+                   j.extract_tag(arg(1)), j.extract_data(arg(1))},
+                  "vbm.tclamp"));
+              break;
             case BMeth::Transpose:
             case BMeth::Clone:
             case BMeth::RequiresGrad:
@@ -3237,6 +3244,9 @@ struct Lowering {
             case BMeth::Sigmoid:
             case BMeth::Softmax:
             case BMeth::TensorLog:
+            case BMeth::Tanh:
+            case BMeth::Sin:
+            case BMeth::Cos:
               res = j.make_tensor(j.emit_call(
                   j.module_->getFunction(rt::tensor_unary),
                   {arr(),

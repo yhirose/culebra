@@ -1574,6 +1574,10 @@ let h = z.sigmoid()       # 1/(1+exp(-z)) elementwise
 let r = x.relu()          # max(0, x)
 let p = logits.softmax()  # 最終軸で online stable
 let l = p.log()           # 自然対数、elementwise
+let t = z.tanh()          # 双曲線正接
+let s = z.sin()           # elementwise sin/cos
+let c = z.cos()
+let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 ```
 
 ### Tensor のメソッド
@@ -1587,6 +1591,8 @@ let l = p.log()           # 自然対数、elementwise
 | `.linear_sigmoid(x, b) -> Tensor` | lazy | 融合`sigmoid(self @ x + b)` |
 | `.pow(exp) -> Tensor` | lazy | elementwise冪、expはTensorまたはscalar |
 | `.gt(other) / .lt(other) / .ge(other) / .le(other) / .eq(other) / .ne(other) -> Tensor` | lazy | elementwise比較、`1.0`/`0.0`のマスクを返す。otherはTensorまたはscalar |
+| `.tanh() / .sin() / .cos() -> Tensor` | lazy | elementwiseな三角関数・双曲線正接 |
+| `.clamp(lo, hi) -> Tensor` | lazy | `[lo, hi]`へのelementwise clip |
 | `.transpose() -> Tensor` | view | 全軸逆順（rank-2で行列転置） |
 | `.permute(axes: Array) -> Tensor` | view | 任意軸並べ替え。`axes[i]`が結果の軸`i`に対応する自分自身の軸を指定 |
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
@@ -1640,7 +1646,11 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()`（および`.max()` /
 `.argmax()`）は恒久的に微分不可能です——比較を通した`.backward()`は常に
 例外を投げます（PyTorch/numpyと同じ）。0/1マスクは`*`で合成してください
-（ReLU系のbackward gateが具体例）。
+（ReLU系のbackward gateが具体例）。`.tanh()`・`.sin()`・`.cos()`・
+`.clamp()`も上記`.unfold()`等と同じ理由で今のところforward-onlyです——
+`examples/dezero`自身のTanh/Sin/Cos/Clipクラスが、他のnative化済みop
+から自前でbackwardを組み立てており、これらを直接`.backward()`で
+通す呼び手が無いためです。
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

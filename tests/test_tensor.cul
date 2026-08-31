@@ -650,4 +650,24 @@ assert_throws('ValueError', fn () {
   Tensor.from([1.0, 2.0]).requires_grad().gt(0.0).backward()
 })
 
+# --- tanh/sin/cos/clamp ------------------------------------------------------
+# Not differentiable yet (no native caller needs .backward() through them --
+# examples/dezero's own Tanh/Sin/Cos/Clip classes write their own backward).
+
+let tx = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0])
+assert_close(tx.tanh().to_array()[0], -0.9640275800758169, 1.0e-6)
+assert_close(tx.sin().to_array()[0], -0.9092974268256817, 1.0e-6)
+assert_close(tx.cos().to_array()[0], -0.4161468365471424, 1.0e-6)
+assert_eq(tx.clamp(-1.0, 1.0).to_array(), [-1.0, -0.5, 0.0, 0.5, 1.0])
+
+# fused epilogue composes (same as exp_/sqrt_ do).
+assert_close((tx.tanh() * 2.0).to_array()[0], -1.9280551601516338, 1.0e-6)
+
+assert_throws('ValueError', fn () { tx.requires_grad().tanh().backward() })
+assert_throws('ValueError', fn () { tx.requires_grad().sin().backward() })
+assert_throws('ValueError', fn () { tx.requires_grad().cos().backward() })
+assert_throws('ValueError', fn () {
+  tx.requires_grad().clamp(-1.0, 1.0).backward()
+})
+
 inspect("test_tensor: OK")

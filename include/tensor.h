@@ -81,6 +81,11 @@ enum class Op {
   Sum, Mean, Max, Argmax,
   Dot,
   Sigmoid, Relu, Softmax, Log,
+  Tanh, Sin, Cos,
+  // clip(x, lo, hi). Forward-only (see the VJP switch) -- dezero's own
+  // Clip class writes its own backward from Tensor.ge/le/*, the same
+  // reason Unfold/Pad/Fold/Permute/Narrow/ScatterAxis are forward-only.
+  Clip,
   LinearSigmoid,
   Concat,
   // Zero-copy views: forward is a tl view; the tag routes the gradient
@@ -913,6 +918,9 @@ inline TensorPtr tensor_unary(Op op, TensorPtr a) {
       case Op::Relu: return a->value.relu();
       case Op::Log: return a->value.log();
       case Op::Softmax: return a->value.softmax();
+      case Op::Tanh: return a->value.tanh();
+      case Op::Sin: return a->value.sin();
+      case Op::Cos: return a->value.cos();
       default:
         throw std::logic_error("tensor: non-unary op in unary dispatch");
     }
@@ -924,6 +932,16 @@ inline TensorPtr tensor_unary(Op op, TensorPtr a) {
 
 inline TensorPtr tensor_log(TensorPtr a) {
   return tensor_unary(Op::Log, std::move(a));
+}
+
+// clip(x, lo, hi) needs two scalars tensor_unary's (op, a) signature has
+// nowhere to carry, so its own builder (same reason tensor_dot/
+// tensor_index_select aren't routed through a generic dispatcher either).
+inline TensorPtr tensor_clamp(TensorPtr a, float lo, float hi) {
+  auto v = _tl_guard([&] { return a->value.clamp(lo, hi); });
+  auto dtype = a->dtype;
+  return tensor_make_op(Op::Clip, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(a)});
 }
 
 // Fused MLP forward: sigmoid(W @ x + b). Bias is broadcast against
@@ -1278,6 +1296,20 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Ne:
       throw CulebraError("ValueError",
           "Tensor.backward: comparisons are not differentiable.");
+    case Op::Tanh:
+    case Op::Sin:
+    case Op::Cos:
+    case Op::Clip:
+      // All four have well-defined VJPs (1-y*y, cos, -sin, the in-range
+      // mask), but nothing native needs them: dezero's Tanh/Sin/Cos/Clip
+      // classes (examples/dezero) write their own backward composed from
+      // other now-native ops (Mul, Sub, the comparisons above) rather than
+      // calling .backward() through these directly. Thrown rather than
+      // silently wrong once something does reach it, same as Unfold/Pad/
+      // Fold below.
+      throw CulebraError("ValueError",
+          "Tensor.backward: tanh / sin / cos / clip are not differentiable "
+          "yet.");
     case Op::Unfold:
     case Op::Pad:
     case Op::Fold:

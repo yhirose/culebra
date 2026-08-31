@@ -798,6 +798,12 @@ enum class BMeth : uint8_t {
   // Comparisons: y = (self OP other) ? 1 : 0, same {Any} scalar-or-Tensor
   // arg shape as Pow. Not differentiable (tensor.h's VJP throws).
   TGt, TLt, TGe, TLe, TEq, TNe,
+  // No-arg unary, same tensor_unary dispatcher as Relu/Sigmoid/Softmax/
+  // TensorLog above (bmeth_unary_op adds the Op::Tanh/Sin/Cos cases).
+  Tanh, Sin, Cos,
+  // clip(lo, hi): the one Tensor unary needing two scalar params, hence
+  // its own runtime function rather than tensor_unary's op-id dispatch.
+  Clip,
   // im2col's own building blocks. Each takes one params Array ([axis, win,
   // step] / [axis, before, after] / [axis, orig_size, step]) rather than 3
   // positional Longs, same reason Reshape takes a dims Array: BMethSpec's
@@ -839,6 +845,9 @@ inline int64_t bmeth_unary_op(BMeth id) {
     case BMeth::Sigmoid: return static_cast<int64_t>(culebra::Op::Sigmoid);
     case BMeth::Softmax: return static_cast<int64_t>(culebra::Op::Softmax);
     case BMeth::TensorLog: return static_cast<int64_t>(culebra::Op::Log);
+    case BMeth::Tanh: return static_cast<int64_t>(culebra::Op::Tanh);
+    case BMeth::Sin: return static_cast<int64_t>(culebra::Op::Sin);
+    case BMeth::Cos: return static_cast<int64_t>(culebra::Op::Cos);
     default: return static_cast<int64_t>(culebra::Op::Relu);
   }
 }
@@ -1252,6 +1261,10 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"sigmoid", 0, Sigmoid, kRecvTensor, 0, nullptr, {}, {}},
       {"softmax", 0, Softmax, kRecvTensor, 0, nullptr, {}, {}},
       {"log", 0, TensorLog, kRecvTensor, 0, nullptr, {}, {}},
+      {"tanh", 0, Tanh, kRecvTensor, 0, nullptr, {}, {}},
+      {"sin", 0, Sin, kRecvTensor, 0, nullptr, {}, {}},
+      {"cos", 0, Cos, kRecvTensor, 0, nullptr, {}, {}},
+      {"clamp", 2, Clip, kRecvTensor, 2, nullptr, {Any, Any}, {"lo", "hi"}},
       {"reshape", 1, Reshape, kRecvTensor, 1, nullptr, {Array}, {"dims"}},
       // The reductions. `sum` and `max` already have an axis-less row above
       // (Array / Tensor / iterator); `mean` has no such spelling outside
@@ -2228,6 +2241,12 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
               static_cast<int8_t>(args[0].tag), args[0].data,
               static_cast<int64_t>(op)))};
     }
+    case BMeth::Clip:
+      return JitValue{
+          TAG_TENSOR,
+          reinterpret_cast<int64_t>(culebra_runtime_tensor_clamp(
+              ten(recv), static_cast<int8_t>(args[0].tag), args[0].data,
+              static_cast<int8_t>(args[1].tag), args[1].data))};
     case BMeth::Transpose:
       return JitValue{TAG_TENSOR,
                       reinterpret_cast<int64_t>(
@@ -2258,6 +2277,9 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
     case BMeth::Sigmoid:
     case BMeth::Softmax:
     case BMeth::TensorLog:
+    case BMeth::Tanh:
+    case BMeth::Sin:
+    case BMeth::Cos:
       return JitValue{TAG_TENSOR,
                       reinterpret_cast<int64_t>(culebra_runtime_tensor_unary(
                           ten(recv), bmeth_unary_op(id)))};

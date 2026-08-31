@@ -2,13 +2,12 @@
 # top of core.cul's autodiff engine. Ported from the "DeZero" framework
 # taught in oreilly-japan/deep-learning-from-scratch-3 (MIT license).
 #
-# Tensor has no elementwise sin/cos/tanh/exp and no comparison operator, so
-# those forward passes round-trip through `dz.raw_elementwise`/`dz.zip_nested`
-# (nested-Array walks) instead of a vectorized Tensor kernel — everything
-# else here (sigmoid/relu/softmax/log/pow/matmul/sum) rides Tensor's native
-# ops directly. Label arguments (`t` below) are plain Culebra Arrays of
-# Long/Float, never Variables — nothing in this port back-propagates into a
-# dataset's labels, matching upstream.
+# Everything elementwise here (sin/cos/tanh/exp/log/pow/sigmoid/relu/the
+# comparisons/clamp) rides a native Tensor op — no `dz.raw_elementwise`
+# host loop left in this file except LeakyReLU's own piecewise forward
+# (its "1x or slope*x" isn't a single native op). Label arguments (`t`
+# below) are plain Culebra Arrays of Long/Float, never Variables — nothing
+# in this port back-propagates into a dataset's labels, matching upstream.
 #
 # softmax_cross_entropy and sigmoid_cross_entropy are fused single ops here
 # (closed-form gradient) rather than composed from smaller pieces, same as
@@ -26,7 +25,7 @@ class Sin {
   seen = -1
 
   forward(x) {
-    dz.raw_elementwise(x, Math.sin)
+    x.sin()
   }
 
   backward(gy) {
@@ -45,7 +44,7 @@ class Cos {
   seen = -1
 
   forward(x) {
-    dz.raw_elementwise(x, Math.cos)
+    x.cos()
   }
 
   backward(gy) {
@@ -57,12 +56,6 @@ fn cos(x) {
   dz.apply1(Cos(), x)
 }
 
-# Math has no `tanh`; derive it from `exp` directly.
-fn tanh_scalar(v) {
-  e2 = Math.exp(2.0 * v)
-  (e2 - 1.0) / (e2 + 1.0)
-}
-
 class Tanh {
   generation = 0
   inputs = nil
@@ -70,7 +63,7 @@ class Tanh {
   seen = -1
 
   forward(x) {
-    dz.raw_elementwise(x, tanh_scalar)
+    x.tanh()
   }
 
   backward(gy) {
@@ -300,7 +293,7 @@ class Clip {
   }
 
   forward(x) {
-    dz.raw_elementwise(x, |v| Math.clamp(v, self.x_min, self.x_max))
+    x.clamp(self.x_min, self.x_max)
   }
 
   backward(gy) {

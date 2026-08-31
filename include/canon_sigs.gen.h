@@ -1521,6 +1521,9 @@ inline constexpr CanonParam kCanonParamPool[] = {
   {"other", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   // 124: ne
   {"other", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 125: clamp
+  {"lo", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"hi", false, false, false, false, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonObjectSigs[] = {
@@ -1651,7 +1654,9 @@ inline constexpr CanonSig kCanonTupleSigs[] = {
 inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "argmax", kCanonParamPool + 72, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "backward", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
+  {"", "", "clamp", kCanonParamPool + 125, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "clone", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
+  {"", "", "cos", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "detach", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "dot", kCanonParamPool + 73, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "eq", kCanonParamPool + 123, 1, "Tensor", 1, 1, false, -1, -1, -1},
@@ -1677,9 +1682,11 @@ inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "reshape", kCanonParamPool + 79, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "shape", nullptr, 0, "Array", 0, 0, false, -1, -1, -1},
   {"", "", "sigmoid", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
+  {"", "", "sin", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "slice", kCanonParamPool + 80, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "softmax", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "sum", kCanonParamPool + 82, 1, "", 0, 1, false, -1, -1, -1},
+  {"", "", "tanh", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "to_array", nullptr, 0, "Array", 0, 0, false, -1, -1, -1},
   {"", "", "transpose", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "unfold", kCanonParamPool + 113, 1, "Tensor", 1, 1, false, -1, -1, -1},

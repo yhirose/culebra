@@ -1612,6 +1612,10 @@ let h = z.sigmoid()       # 1/(1+exp(-z)) elementwise
 let r = x.relu()          # max(0, x)
 let p = logits.softmax()  # over the last axis, online-stable
 let l = p.log()           # natural log, elementwise
+let t = z.tanh()          # hyperbolic tangent
+let s = z.sin()           # elementwise sin/cos
+let c = z.cos()
+let m = z.clamp(-1.0, 1.0)  # elementwise clip to [lo, hi]
 ```
 
 ### Tensor methods
@@ -1625,6 +1629,8 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.linear_sigmoid(x, b) -> Tensor` | lazy | fused `sigmoid(self @ x + b)` |
 | `.pow(exp) -> Tensor` | lazy | elementwise power; `exp` is Tensor or scalar |
 | `.gt(other) / .lt(other) / .ge(other) / .le(other) / .eq(other) / .ne(other) -> Tensor` | lazy | elementwise comparison, `1.0` / `0.0` mask; `other` is Tensor or scalar |
+| `.tanh() / .sin() / .cos() -> Tensor` | lazy | elementwise trig / hyperbolic tangent |
+| `.clamp(lo, hi) -> Tensor` | lazy | elementwise clip to `[lo, hi]` |
 | `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |
 | `.permute(axes: Array) -> Tensor` | view | general axis reorder; `axes[i]` names which of self's axes becomes result axis `i` |
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
@@ -1678,7 +1684,11 @@ a pooling layer) writes its own backward pass around them for now.
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()` (and `.max()` /
 `.argmax()`) are never differentiable — `.backward()` through a comparison
 always raises, the same as PyTorch/numpy: compose the 0/1 mask with `*`
-instead (a ReLU-style backward gate is the concrete pattern).
+instead (a ReLU-style backward gate is the concrete pattern). `.tanh()`,
+`.sin()`, `.cos()`, and `.clamp()` are forward-only so far too, for the
+same reason as `.unfold()` etc. above — `examples/dezero`'s own
+Tanh/Sin/Cos/Clip classes write their own backward composed from other
+now-native ops rather than calling `.backward()` through these directly.
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

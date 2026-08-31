@@ -2407,6 +2407,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_where(
       culebra::tensor_where(cond->impl, lift(at, ad), lift(bt, bd)));
 }
 
+// .clamp(lo, hi) — Clip's forward. lo/hi are plain numbers (Long/Float),
+// never Tensors, so a straight coerce rather than tensor_where's lift.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clamp(
+    JitTensor* t, int8_t lot, int64_t lod, int8_t hit, int64_t hid) {
+  float lo = static_cast<float>(_culebra_coerce_num(lot, lod));
+  float hi = static_cast<float>(_culebra_coerce_num(hit, hid));
+  return _culebra_jit_tensor_register(culebra::tensor_clamp(t->impl, lo, hi));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));
