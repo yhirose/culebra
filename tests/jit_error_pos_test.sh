@@ -635,11 +635,18 @@ check_same "tensor reshape bad dim"    "$TENSOR_T
 t.reshape([1, 'x'])"
 check_same "tensor reshape paren"      "$TENSOR_T
 (t).reshape([1, 'x'])"
-check_same "tensor dot rank"           "$TENSOR_T
-t.dot(t)"
+# `t.dot(t)` used to be the failing case here, back when the binding refused
+# any rank but 2. It does not fail any more: 0194ae1b took that check out
+# because tensorlib validates the shapes itself, and a rank-1 inner product is
+# a legitimate thing to ask for -- that commit's own message calls the change
+# out. A dot that genuinely fails needs mismatched shapes.
+check_same "tensor dot shape"          "$TENSOR_T
+t.dot(Tensor.from([1.0, 2.0, 3.0]))"
+check_same "tensor dot paren"          "$TENSOR_T
+(t).dot(Tensor.from([1.0, 2.0, 3.0]))"
 check_same "tensor dot after step"     "$TENSOR_T
 let u = t.reshape([2, 1])
-t.dot(t)"
+t.dot(Tensor.from([1.0, 2.0, 3.0]))"
 check_same "tensor to_array rank"      "$TENSOR_T
 let s = t.sum(0)
 s.to_array()"
