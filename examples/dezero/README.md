@@ -56,12 +56,12 @@ Weight/bias shapes follow a row-vector convention throughout (a `Linear`
 bias is `[1, out]`, not upstream's 1-D `[out]`), so a batch broadcasts
 against it the same way this repo's own native-`Tensor` MNIST trainer
 (`examples/tensor/mnist/train.cul`) already does. `functions_conv.cul`'s
-im2col-based `conv2d`'s padding and window extraction go through native
-`Tensor.pad()`/`.unfold()` (GPU-dispatched); only the NCHW/NHWC axis move
-around them is still a plain Culebra loop (`Tensor.to_array()`/
-`Tensor.from()` round trips), since `Tensor.transpose()` only reverses all
-axes or swaps a 2-D matrix. `pooling`'s own window gather hasn't been moved
-over yet and still does its bookkeeping the same way. `conv_mnist.cul`
+im2col-based `conv2d`'s padding, window extraction and the NCHW/NHWC axis
+move all go through native `Tensor.pad()`/`.unfold()`/`.permute()` now
+(GPU-dispatched, or a free view for `.permute()`); only the pad-strip crop
+after `col2im`'s fold is still a plain Culebra loop, since `Tensor.slice()`
+only takes axis 0. `pooling`'s own window gather hasn't been moved over yet
+and still does its bookkeeping the old way. `conv_mnist.cul`
 still trains on a small subset rather than the full 60k images.
 
 ## Examples

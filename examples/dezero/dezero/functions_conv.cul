@@ -139,10 +139,11 @@ fn strip_padding(padded, n, c, h, w, ph, pw) {
 
 # --- im2col / col2im --------------------------------------------------------
 #
-# Padding and window extraction now go through native Tensor.pad()/.unfold()
-# (GPU-dispatched on CUDA/Metal/WebGPU) instead of host-side nested-Array
-# loops — only the NCHW<->NHWC axis move stays a host pass, the one general
-# permutation `.transpose()` still can't do (see the header comment).
+# Padding, window extraction and the NCHW<->NHWC axis move all go through
+# native Tensor ops now: `.pad()`/`.unfold()`/`.fold()` (GPU-dispatched on
+# CUDA/Metal/WebGPU) and `.permute()` (a view — free on any backend). Only
+# the final pad-strip after `col2im`'s fold is still a host pass, since
+# `Tensor.slice()` only takes axis 0 and this crop is on axes 1/2.
 #
 # Unfolding H then W from an NHWC layout lands im2col's row-major order
 # directly: unfold replaces the axis it's given with the window count and
@@ -151,15 +152,15 @@ fn strip_padding(padded, n, c, h, w, ph, pw) {
 # `(n,oh,ow)` outermost, `(c,kh,kw)` innermost, so a straight reshape (after
 # `.clone()` makes the unfold view contiguous) gives `[N*OH*OW, C*KH*KW]`
 # with no further permutation. `col2im` folds the same two axes back in
-# reverse order, then reuses the existing NHWC->NCHW flip and pad-strip for
-# the final crop (that axis-1/2 slice has no native binding yet either).
+# reverse order, `.permute()`s NHWC back to NCHW, then reuses the existing
+# pad-strip for the final crop.
 #
-# The permute is called inline here rather than through the `nhwc_to_nchw`/
+# `.permute()` is called inline here rather than through the `nhwc_to_nchw`/
 # `nchw_to_nhwc` dz.Function wrappers `conv2d`/`deconv2d` use for their own
 # axis move: `Im2col`/`Col2im` already hand-write their own `backward()`
-# (dezero's autograd doesn't reach through `.pad()`/`.unfold()`/`.fold()`
-# yet either), so there is no outer graph for a separate wrapper Function to
-# register itself into.
+# (dezero's autograd doesn't reach through `.pad()`/`.unfold()`/`.fold()`/
+# `.permute()` yet either), so there is no outer graph for a separate
+# wrapper Function to register itself into.
 
 class Im2col {
   generation = 0
@@ -183,11 +184,7 @@ class Im2col {
     ow = get_conv_outsize(w, kw, sw, pw)
     self.x_shape = s
 
-    x_nhwc = tensor_from_nested(
-      arr_nchw_to_nhwc(tensor_to_nested(x), n, c, h, w),
-      [n, h, w, c],
-    )
-    windows = x_nhwc
+    windows = x.permute([0, 2, 3, 1])
       .pad([1, ph, ph])
       .pad([2, pw, pw])
       .unfold([1, kh, sh])
@@ -237,20 +234,13 @@ class Col2im {
     hp = h + 2 * ph
     wp = w + 2 * pw
 
-    padded_nhwc = x
+    padded_nchw = x
       .reshape([n, oh, ow, c, kh, kw])
       .fold([2, wp, sw])
       .fold([1, hp, sh])
+      .permute([0, 3, 1, 2])
     tensor_from_nested(
-      strip_padding(
-        arr_nhwc_to_nchw(tensor_to_nested(padded_nhwc), n, hp, wp, c),
-        n,
-        c,
-        h,
-        w,
-        ph,
-        pw,
-      ),
+      strip_padding(tensor_to_nested(padded_nchw), n, c, h, w, ph, pw),
       [n, c, h, w],
     )
   }
@@ -265,46 +255,12 @@ fn col2im(x, input_shape, kernel_size, stride = 1, pad = 0) {
 }
 
 # --- the one 4-D axis move conv2d/deconv2d need -----------------------------
-
-fn arr_nhwc_to_nchw(arr, n, h, w, c) {
-  mut out = []
-  for ni in range(n) {
-    mut c_layer = []
-    for ci in range(c) {
-      mut h_rows = []
-      for hi in range(h) {
-        mut w_row = []
-        for wi in range(w) {
-          w_row.push(arr[ni][hi][wi][ci])
-        }
-        h_rows.push(w_row)
-      }
-      c_layer.push(h_rows)
-    }
-    out.push(c_layer)
-  }
-  out
-}
-
-fn arr_nchw_to_nhwc(arr, n, c, h, w) {
-  mut out = []
-  for ni in range(n) {
-    mut h_rows = []
-    for hi in range(h) {
-      mut w_rows = []
-      for wi in range(w) {
-        mut c_row = []
-        for ci in range(c) {
-          c_row.push(arr[ni][ci][hi][wi])
-        }
-        w_rows.push(c_row)
-      }
-      h_rows.push(w_rows)
-    }
-    out.push(h_rows)
-  }
-  out
-}
+#
+# Both directions are now a single native `.permute()` call (a view, free on
+# any backend) — each still wrapped in its own dz.Function, since native
+# `.permute()` has no `.backward()` yet (see tensor.h): the VJP of a
+# permutation is the inverse permutation, which for `[0,2,3,1]`/`[0,3,1,2]`
+# is simply the other one.
 
 class NhwcToNchw {
   generation = 0
@@ -313,11 +269,7 @@ class NhwcToNchw {
   seen = -1
 
   forward(x) {
-    s = x.shape()
-    tensor_from_nested(
-      arr_nhwc_to_nchw(tensor_to_nested(x), s[0], s[1], s[2], s[3]),
-      [s[0], s[3], s[1], s[2]],
-    )
+    x.permute([0, 3, 1, 2])
   }
 
   backward(gy) {
@@ -336,11 +288,7 @@ class NchwToNhwc {
   seen = -1
 
   forward(x) {
-    s = x.shape()
-    tensor_from_nested(
-      arr_nchw_to_nhwc(tensor_to_nested(x), s[0], s[1], s[2], s[3]),
-      [s[0], s[2], s[3], s[1]],
-    )
+    x.permute([0, 2, 3, 1])
   }
 
   backward(gy) {
