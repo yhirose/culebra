@@ -1069,6 +1069,71 @@ inline std::string value_packable_message(std::string_view class_name) {
                      class_name);
 }
 
+inline std::string value_undeclared_self_write_message(
+    std::string_view class_name, std::string_view field) {
+  return std::format("@value class `{}`: `self.{}` writes a field the class "
+                     "does not declare (a value's field set is fixed at the "
+                     "declaration, so two instances cannot differ in shape)",
+                     class_name, field);
+}
+
+// The write that would break the clause above: `self.<name> = ...` for a name
+// the class does not declare. In `new` it gives that instance a field its
+// siblings lack; in a method it is the ImmutableError the freeze raises, and
+// saying so at the declaration is both earlier and more specific. Only a
+// literal one-step `self.NAME` target is a shape the declaration can see —
+// `self[expr] = v` and a write through an alias are not, and are refused at
+// run time instead (JitObject::fields_closed, set from the allocation).
+//
+// A nested class declaration binds a `self` of its own, so the walk stops
+// there. A `static` member's `self` is the class object rather than an
+// instance, and is exempt for the same reason require_value_member exempts it.
+struct ValueSelfWrite {
+  std::string_view field;
+  size_t line = 0;
+  size_t col = 0;
+};
+inline void find_value_self_writes(
+    const peg::Ast& node, const std::set<std::string, std::less<>>& declared,
+    std::vector<ValueSelfWrite>& out) {
+  using namespace peg::udl;
+  if (node.tag == "CLASS_DECL"_) return;
+  auto check_chain = [&](const peg::Ast& owner, const AssignmentView& av) {
+    if (av.lvalcnt != 2) return;
+    const auto& head = *owner.nodes[av.lvaloff];
+    const auto& post = *owner.nodes[av.lvaloff + 1];
+    if (head.tag != "IDENTIFIER"_ || head.token != "self") return;
+    if (post.original_tag != "DOT"_) return;
+    if (declared.contains(post.token)) return;
+    out.push_back({post.token, post.line, post.column});
+  };
+  if (node.tag == "ASSIGNMENT"_) {
+    check_chain(node, view_assignment(node));
+  } else if (node.tag == "PLACE_ASSIGN"_) {
+    for_each_place_target(
+        node,
+        [&](const peg::Ast& t) { check_chain(t, view_place_as_assignment(t)); },
+        [](const peg::Ast&) {});
+  }
+  for (const auto& n : node.nodes) find_value_self_writes(*n, declared, out);
+}
+
+// The members the clause applies to, in source order. A `static` member's
+// `self` is the class object rather than an instance, exempt for the same
+// reason require_value_member exempts it — so lint and the compiler ask the
+// question over the same set rather than each writing the rule out.
+inline std::vector<ValueSelfWrite> find_value_self_writes_in_members(
+    const peg::Ast& class_ast, size_t first_member,
+    const std::set<std::string, std::less<>>& declared) {
+  std::vector<ValueSelfWrite> out;
+  for (size_t i = first_member; i < class_ast.nodes.size(); i++) {
+    auto mv = view_method(*class_ast.nodes[i]);
+    if (mv.is_static && !mv.is_typed_field) continue;
+    find_value_self_writes(*class_ast.nodes[i], declared, out);
+  }
+  return out;
+}
+
 // Evaluator-side safety net for the per-member half of the contract: no
 // `drop`, and every instance field declared with a value type. A `static`
 // member other than a typed field lives on the class object, outside the

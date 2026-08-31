@@ -961,7 +961,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   // `@value` instance can never hold a non-String key (this is the only
   // branch that mints one), so any write reaching here is an add. The guard
   // above owns the key and the value on this edge; throw without releasing.
-  if (obj->frozen) _jit_throw_value_add(nullptr, line, col);
+  if (_jit_value_add_refused(obj, /*is_init=*/false))
+    _jit_throw_value_add(nullptr, line, col);
   if (!obj->non_string_props) {
     obj->non_string_props = new JitObject::AnyKeyMap();
     // First non-String key: activate key_order and back-fill with the
@@ -1236,7 +1237,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     _jit_overwrite_slot(obj->slots[ic->offset], key, tag, data, mut, is_init,
                         line, col, /*check_wk=*/true);
   } else {
-    _jit_reject_value_add(obj, key, tag, data, line, col);
+    _jit_reject_value_add(obj, key, tag, data, line, col, is_init);
     _culebra_check_well_known_prop(key, tag, data);
     if (obj->slots.capacity() == 0) obj->slots.reserve(8);
     obj->slots.push_back({JitValue{tag, data}, ic->prop_mut != 0});
@@ -1306,7 +1307,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
   auto* before = obj->shape;
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
-    _jit_reject_value_add(obj, key, tag, data, line, col);
+    _jit_reject_value_add(obj, key, tag, data, line, col, is_init);
     _culebra_check_well_known_prop(key, tag, data);
     auto* base = before ? before : culebra::shape_registry().root();
     auto* result = culebra::shape_registry().transition_add(base, key);
@@ -1773,6 +1774,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
     int64_t body_data, int64_t n_args, JitValue* args) {
   auto* inst = culebra_runtime_object_new();
 
+  // A `@value` instance's field set is closed from here on, not from the
+  // freeze at the end: the declared stores below are `is_init` and no user
+  // write is, so a constructor cannot slip in a field its siblings lack —
+  // through a computed key or an alias any more than through `self.z = v`,
+  // which the declaration refuses outright.
+  inst->fields_closed = class_meta && class_meta->is_value;
   inst->proto = class_meta;
   // Retain the meta on the instance so it lives at least as long as
   // any of its instances. The matching release runs in the JitObject

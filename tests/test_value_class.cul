@@ -68,6 +68,44 @@ test_value_fields_are_frozen = fn () {
 }
 test_value_fields_are_frozen()
 
+# The other half of the closed field set: a constructor cannot give one
+# instance a field its siblings lack. The plain `self.z = v` form is refused
+# at the declaration (a SyntaxError, covered by jit_error_pos_test); these are
+# the two spellings a declaration cannot see, refused while `new` runs.
+@value
+class ValueComputedAdd {
+  x: Float
+
+  new(k: String) {
+    self.x = 1.0
+    self[k] = 2.0
+  }
+}
+
+@value
+class ValueAliasAdd {
+  x: Float
+
+  new() {
+    self.x = 1.0
+    let alias = self
+    alias.w = 2.0
+  }
+}
+
+test_value_constructor_cannot_add_a_field = fn () {
+  assert_throws('ImmutableError', fn () {
+    ValueComputedAdd.new('z')
+  })
+  assert_throws('ImmutableError', fn () {
+    ValueAliasAdd.new()
+  })
+  # The declared stores themselves are unaffected — they are how the fields
+  # get there.
+  assert_eq(Vec2.new(3, 4).keys(), ['class', 'x', 'y'])
+}
+test_value_constructor_cannot_add_a_field()
+
 test_value_freeze_does_not_leak_to_plain_classes = fn () {
   class Plain {
     x: Long = 0

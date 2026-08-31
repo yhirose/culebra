@@ -715,6 +715,19 @@ check_same "value and packable"        "@value @packable class A {
   x: Int32
 }"
 check_same "value on enum"             "@value enum E { A }"
+check_same "value undeclared self write" "@value class A {
+  x: Long
+  new() { self.x = 1; self.y = 2 }
+}"
+check_same "value undeclared in method"  "@value class A {
+  x: Long
+  new() { self.x = 1 }
+  bump() { self.n = 1 }
+}"
+check_same "value undeclared in closure" "@value class A {
+  x: Long
+  new() { self.x = 1; let f = fn () { self.q = 2 }; f() }
+}"
 
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

@@ -5296,6 +5296,25 @@ class Compiler {
       method_names.emplace_back(mv.name);
       method_asts.push_back(&m);
     }
+    // The clause the per-member scan cannot answer on its own: a member that
+    // writes `self.<undeclared>` gives one instance a field its siblings
+    // lack, which is the fixed shape the contract is for. Needs the whole
+    // field set, so it runs after the loop — lint reports it in the same
+    // place, from the same scan.
+    if (is_value) {
+      std::set<std::string, std::less<>> declared;
+      for (const auto* f : fields)
+        declared.emplace(culebra::view_method(*f).name);
+      auto writes = culebra::find_value_self_writes_in_members(
+          ast, dec_end + 1, declared);
+      if (!writes.empty())
+        throw culebra::CulebraError(
+            "SyntaxError",
+            culebra::value_undeclared_self_write_message(class_name,
+                                                         writes.front().field),
+            static_cast<long>(writes.front().line),
+            static_cast<long>(writes.front().col));
+    }
     // The class joins the registry only once its own members have passed, and
     // after the scan above rather than before it, so a field naming the class
     // being declared is still refused — a value cannot contain itself.

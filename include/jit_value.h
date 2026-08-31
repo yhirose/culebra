@@ -290,6 +290,13 @@ struct JitObject {
   // alias is how sharing becomes visible. The read-side analogue of
   // `is_namespace`'s closed member set. Never GEP'd.
   bool frozen = false;
+  // Set on a `@value` INSTANCE for its whole life, from the allocation on:
+  // its own properties are exactly the fields its class declares. The stores
+  // that put those fields there are the compiler's own (`is_init`, which no
+  // user write is spelled as), so this refuses every other way a property
+  // could be added — including the two the declaration cannot see, a
+  // computed key and a write through an alias. Never GEP'd.
+  bool fields_closed = false;
   // One trailing pointer, two exclusive roles: a builtin namespace's name,
   // or the class object a class-sugar instance (the only kind with a
   // `proto`) was built by. The instance holds a +1 on its class, released

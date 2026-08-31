@@ -2761,11 +2761,22 @@ inline void _jit_overwrite_slot(JitObjectEntry& entry,
       line, col);
 }
 
+// Whether this append is one the closed field set refuses. `is_init` is the
+// compiler's own declared-field store — the way the declared fields get onto
+// a `@value` instance in the first place, and a spelling no user write has
+// (`self.x = v` and `self[k] = v` both arrive with it false). So the bit can
+// be set from the allocation on, and every other route to a new property is
+// refused however it is spelled.
+inline bool _jit_value_add_refused(const JitObject* obj, bool is_init) {
+  return obj->frozen || (obj->fields_closed && !is_init);
+}
+
 // The releasing form, for the append branches that own the caller's +1 on
 // the value — the same contract the immutable-slot throw beside them keeps.
 inline void _jit_reject_value_add(JitObject* obj, const char* key, int8_t tag,
-                                  int64_t data, int64_t line, int64_t col) {
-  if (!obj->frozen) return;
+                                  int64_t data, int64_t line, int64_t col,
+                                  bool is_init) {
+  if (!_jit_value_add_refused(obj, is_init)) return;
   _culebra_value_release_impl(tag, data);
   _jit_throw_value_add(key, line, col);
 }
@@ -2804,7 +2815,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
   // check can't be bypassed the way a codegen-only check could.
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
-    _jit_reject_value_add(obj, key, tag, data, line, col);
+    _jit_reject_value_add(obj, key, tag, data, line, col, is_init);
     _culebra_check_well_known_prop(key, tag, data);
     obj->append_slot(key, JitValue{tag, data}, mut);
   } else {

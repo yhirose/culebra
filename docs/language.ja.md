@@ -5313,12 +5313,30 @@ contractは4条項からなり、それぞれがインスタンスのidentityを
 | 条項 | 検査 |
 |---|---|
 | 全インスタンスフィールドが宣言済みで、型は`Long`/`Float`/`Bool`または別の`@value`クラス | 宣言時（`SyntaxError`） |
+| どのメンバも宣言にないフィールドを書かない — 同じ値クラスの2つのインスタンスが違う形を持つことはない | 宣言時（`SyntaxError`）と`new`の実行中（`ImmutableError`） |
 | `drop`メソッド・フィールドを持たない — デストラクタは*どの*インスタンスが死んだかを観測する | 宣言時（`SyntaxError`） |
 | `@packable`と併用しない — packedインスタンスは共有バイト列をaliasする | 宣言時（`SyntaxError`） |
 | `new`が返った時点で凍結: フィールドの書き換え・追加・削除は不可 | 書き込み時（`ImmutableError`） |
 
 `new`の中ではインスタンスは通常のオブジェクトなので、コンストラクタは
-いつも通りフィールドを代入する。凍結は`new`が返るときに起きる:
+いつも通り**宣言済み**フィールドを代入する。できないのは追加すること:
+
+```culebra
+# doctest: skip
+@value
+class Bad {
+  x: Float
+  new(k: String) {
+    self.x = 1.0
+    self.z = 2.0    # 宣言時に SyntaxError: `self.z` はクラスが宣言していない
+                    # フィールドを書いている
+    self[k] = 2.0   # `new`の実行中に ImmutableError — 算出キーは宣言からは
+                    # 見えないので、インスタンス側が拒否する
+  }
+}
+```
+
+凍結は`new`が返るときに起きて、残りを閉じる:
 
 ```culebra
 # doctest: skip

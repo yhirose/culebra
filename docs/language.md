@@ -5565,12 +5565,30 @@ observe an instance's identity:
 | Clause | Checked |
 |---|---|
 | Every instance field is declared, and its type is `Long`, `Float`, `Bool`, or another `@value` class | At the declaration (`SyntaxError`) |
+| No member writes a field the class does not declare — two instances of one value class cannot differ in shape | At the declaration (`SyntaxError`), and while `new` runs (`ImmutableError`) |
 | No `drop` method or field — a destructor observes *which* instance died | At the declaration (`SyntaxError`) |
 | Not also `@packable` — a packed instance aliases shared bytes | At the declaration (`SyntaxError`) |
 | Frozen once `new` returns: no field written, added, or removed | At the write (`ImmutableError`) |
 
 Inside `new` the instance is an ordinary object, so a constructor assigns
-its fields the usual way. The freeze happens when `new` returns:
+its declared fields the usual way. What it cannot do is add one:
+
+```culebra
+# doctest: skip
+@value
+class Bad {
+  x: Float
+  new(k: String) {
+    self.x = 1.0
+    self.z = 2.0    # SyntaxError at the declaration: `self.z` writes a field
+                    # the class does not declare
+    self[k] = 2.0   # ImmutableError while `new` runs — the declaration cannot
+                    # see a computed key, so the instance refuses it instead
+  }
+}
+```
+
+The freeze happens when `new` returns, and closes the rest:
 
 ```culebra
 # doctest: skip

@@ -520,6 +520,10 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
             static_cast<long>(mv.name_col), Severity::Error});
       };
       std::set<std::string, std::less<>> inst_fields, static_fields, new_sigs;
+      // The @value contract's field set, collected by the same rule
+      // compile_class_decl uses (a typed field is an instance field even
+      // when written `static`), so the two scans agree on what is declared.
+      std::set<std::string, std::less<>> value_declared;
       std::map<std::string, std::set<std::string>, std::less<>> inst_methods,
           static_methods;
       auto dup_sig = [&](const culebra::MethodView& mv) {
@@ -557,6 +561,8 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
         bool is_field_member = mv.is_field || mv.is_typed_field;
+        if (is_value && (mv.is_typed_field || (mv.is_field && !mv.is_static)))
+          value_declared.emplace(mv.name);
         // A getter is read as a property, so it has no call site to take
         // arguments at — shared message with the evaluator-side safety net
         // (require_getter_no_params).
@@ -657,6 +663,22 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         check_param_wellformed(*mv.params);
         FnDepthGuard fg(fn_depth_);
         scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
+      }
+      // The clause that needs the whole field set: a member writing
+      // `self.<undeclared>` would give one instance a field its siblings
+      // lack. Same scan the compiler runs, after its own member loop.
+      if (is_value) {
+        auto writes = culebra::find_value_self_writes_in_members(
+            node, i + 1, value_declared);
+        for (const auto& w : writes) {
+          diags_.push_back(Diagnostic{
+              "SyntaxError",
+              culebra::value_undeclared_self_write_message(class_name,
+                                                           w.field),
+              static_cast<long>(w.line), static_cast<long>(w.col),
+              Severity::Error});
+          val_ok = false;
+        }
       }
       // Register the class as a value pre-eval, for the same reason the
       // @packable layout registers below: a later `@value` class declaring a
