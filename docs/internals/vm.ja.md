@@ -588,6 +588,93 @@ decorator(そのbindingはdecoratorの返り値であり、クラスそのもの
 前にはinlineされ得なかった — boxedフォールバック経由で正しく
 コンパイル・実行されてはいたにもかかわらず。
 
+### 5.3.3 `mut`ローカルはスコープ全体でunboxedのままでいられる
+
+§5.3.1/§5.3.2がunboxできるのは**1つの式の中で今まさに手にしている値**
+だけだ — リテラルの`C.new(...)`連鎖、あるいは演算子foldの
+operand[0]自身。`v = v + g * DT`をループの反復をまたいで再利用する
+形は、同じ値が1つの文から次の文へ生き延びる必要があり、どちらの
+機構もそこには届かない: `v`の裸読みは通常のboxedな`ExprResult`を
+生成するので、foldの先読みはoperand[0]として適格なものを何も
+見出せず、毎反復reifyする。
+
+`let mut v = C.new(...)`はこの隙間を**whole-scope eligibility、
+reification不要**という形で埋める: `v`のスコープの文を1つも
+コンパイルする前に、`precheck_mut_local_at`が同じ文リスト内の`v`への
+以降の全参照を歩き（`mut_local_ref_ok`）、それぞれがこのsplice機構が
+既に理解している形——`v.<field>`/`v.<method>(...)`という連鎖、fold・
+否定の第1オペランドとしての`v`、あるいはRHSがそれ自体上記いずれかの
+形である書き込み`v = <rhs>`（`mut_local_write_ok`）——であることを
+証明する。未分類の出現が1つでもあれば——引数・`println`・比較・
+capture されたクロージャ・`v += …`（複合代入はこの機構の最初の
+範囲には入っていない）——スコープ**全体**が却下される。`v`は宣言の
+時点からずっと通常のboxedローカルのまま、この段階が存在しなかった
+場合と全く同じになる。中間状態も実行時判断も存在しない: 全参照が
+既に適格であるか、1つも適格でないかのどちらかである。
+
+これは§5.3.1/§5.3.2と同じ規律を、1つの式からbindingの字句的な
+広がり全体へ拡張したものだ——`mut_local_ref_ok`は
+`receiver_refs_stay_unboxed`（§5.3.2の`self`安全策）の構造的な
+近縁種であり、1回のspliceにつき固定1個の名前という制約を、その
+スコープがunboxedだと証明済みの任意のbindingへ一般化したものである。
+ここから2点が導かれる:
+
+- **クロージャが生きた参照をこの歩みの外へ持ち出すことは決して
+  できない。** 入れ子の`FUNCTION`/`CLASS_DECL`/`ENUM_DECL`/
+  `MULTIFN_DECL`リテラルは、`receiver_refs_stay_unboxed`が`self`に
+  対してそうするのと同じ理由で丸ごとスキップされる——根拠は
+  `info_->captured_locals`で、歩みを始める前に一度だけ確認する:
+  この関数内のどのリテラルも`v`という名前をcaptureしていなければ、
+  その内側にある**この**bindingへの生きた参照はあり得ない（shadowする
+  か、そもそも一切言及しないかのどちらか）ので、内側へ踏み込むのは
+  shadowが持つ独自の出現をこちらの出現と誤読するリスクしかない。
+- **`v`自身がfoldのoperand[0]であるという適格性の問いは、
+  `chain_resolves_to_class`の通常の`lookup()`ベースのIDENTIFIER
+  caseを経由できない**——あのcaseは`Binding::unboxed_class`を読んで
+  答えるが、この歩み全体の目的はそのフィールドをそもそも立てるか
+  どうかを決めることにある。`mut_local_write_ok`は同じ問いを
+  `mut_local_ref_ok`自身のfold・否定caseとそっくり同じ形で、名前
+  ベースで直接尋ねる。`chain_resolves_to_class`/`fold_resolves_to_class`
+  に処理を委ねるのは、その形が明らかに「`v`が自分自身を読む」の
+  **ではない**場合（新規construction、あるいは既に実在する別の
+  bindingを起点とする連鎖）に限られる——実機で発見: 全てのfold RHS
+  を通常の先読み経由にすると`v = v + g * DT`が常に却下された。
+  `v`のbindingはこの問いに答えるべき時点でまだ存在し得ないからだ。
+
+**循環だけでなく順序も重要になる。** `@value class`の登録
+（`value_flat_layout`）はクラス宣言自身をコンパイルすることの副作用
+なので、この歩みは`predeclare_forward_refs`がやるようにブロック
+全体を1パスでどれもコンパイルする前に処理することはできない——
+自クラスの宣言より後ろに書かれた`let mut v = C.new(...)`は、その
+宣言が一度も走っていない時点で問うことになってしまう。
+`precheck_mut_local_at`は代わりに文ごとに1回、それをコンパイルする
+のと同じループの中で（`compile_block`、`compile_body_into`、
+トップレベルスクリプト、`for`の本体）実行される。これは§5.3.1/
+§5.3.2が自分の問いを`compile_expr`の中で遅延して尋ねることで
+タダで手に入れている順序保証を、そのまま保つ。
+
+宣言が一度通ると、`Binding`自身がその答えを運ぶ
+（`unboxed_layout`/`unboxed_class`。一度立てたら二度と取り消されない）:
+裸の識別子読み（`compile_expr`の`IDENTIFIER`case）はrunをそのまま
+返す——inlineフレーム内で`self`がそうするのと同じ無条件のやり方で。
+`v.<field>`/`v.<method>(...)`は`try_inline_mut_local_chain`を通じて
+spliceされ、これは`self`自身の連鎖（`chain_stays_unboxed`をindex 1
+から）と構造的に同一である。再代入（`compile_assignment`）はRHSを
+§5.3.2が既に持つのと同じfold・否定・連鎖の機構でコンパイルし
+（`compile_mut_local_write_rhs`）、その結果の各フィールドを`v`の
+永続slotへコピーする——これがこの機構が支払う唯一のコピーであり、
+その間の全ての読み（`v`自身の再代入RHSを含む）はそれらのslotへ
+直接届く。`v`の**宣言**はコピーを一切支払わない: 新規construction
+自身の名前付きrun（`alloc_zeroed_run`は文一時値ではなく`alloc_slot`
+を使うので、既に永続的である）がそのままbindingの本拠地になる。
+
+計測（`tools/bench/value_inline.cul`の`mut, reused`行を、名前を
+辿れないconstruction経由で同じ算術を行う`mut, boxed`行と比較）:
+ローカルに再利用されるオペランドは、§5.3.2自身のfoldが毎反復
+支払っている2つのconstructionのうち1つを取り除く（operand[1]——
+毎回新規のconstruction——は今も変わらずreifyする。この意図的な
+差の詳細は同行のヘッダコメントを参照）。
+
 ### 5.4 組み込みメソッドはテーブルである
 
 値型メソッド（`'ab'.upper()`、`xs.map(f)`、`it.count()`、…）は1つの

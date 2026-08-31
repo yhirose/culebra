@@ -29,7 +29,26 @@
 #   scalars (control)    two rows doing identical arithmetic; if these two
 #                        disagree by more than a few percent the run is noise
 #                        and should be thrown away
+#   mut, reused           `let mut v = V2.new(...)` reassigned every
+#                        iteration as `v = v + V2.new(...)` (Stage 3, spec
+#                        §15): `v` itself never allocates — the whole-scope
+#                        walk proved every reference to it eligible before
+#                        the loop ever compiled, so its two fields live in
+#                        the same two frame slots for the loop's entire run.
+#                        The OTHER operand (the fresh `V2.new(...)`) is
+#                        still a construction each iteration and still
+#                        reifies (2c's own operand[1] rule, unchanged) —
+#                        this row isolates what Stage 3 alone buys over 2c:
+#                        one allocation removed per iteration, not two
+#   mut, boxed             identical arithmetic, but `v`'s own declaration
+#                        goes through `make(x, y)` instead of a literal
+#                        `V2.new(...)` — not a construction chain the
+#                        whole-scope walk can name, so `v` never leaves the
+#                        boxed path. The gap between this row and the one
+#                        above is Stage 3's own contribution, the same way
+#                        `operator, boxed` isolates 2c's
 #
+
 # Run on the -O3 + LTO binary (`just build`); build-dev is -O1 and the numbers
 # mean nothing there. Read the ratios within one run, not across machines.
 #
@@ -61,7 +80,9 @@ class V2 {
 # own lookahead (fold_resolves_to_class) requires operand[0] to be that
 # literal shape, so a value coming back through this ordinary function
 # always reaches the boxed operator dispatch, on purpose.
-let make = fn (x, y) { V2.new(x, y) }
+let make = fn (x, y) {
+  V2.new(x, y)
+}
 
 let report = fn (name, dt, acc) {
   println("  {name:<28}{dt / N * 1e9:>8.1f}  ns/op   {acc:>18.6f}")
@@ -112,7 +133,7 @@ let op_inlined = fn () {
   let mut acc = 0.0
   for i in 0..N {
     acc += (V2.new(to_float(i % 7), to_float(i % 5)) +
-            V2.new(to_float(i % 3), to_float(i % 11))).len()
+      V2.new(to_float(i % 3), to_float(i % 11))).len()
   }
   acc
 }
@@ -121,9 +142,25 @@ let op_boxed = fn () {
   let mut acc = 0.0
   for i in 0..N {
     acc += (make(to_float(i % 7), to_float(i % 5)) +
-            make(to_float(i % 3), to_float(i % 11))).len()
+      make(to_float(i % 3), to_float(i % 11))).len()
   }
   acc
+}
+
+let mut_reused = fn () {
+  let mut v = V2.new(0.0, 0.0)
+  for i in 0..N {
+    v = v + V2.new(to_float(i % 7), to_float(i % 5))
+  }
+  v.x + v.y
+}
+
+let mut_boxed = fn () {
+  let mut v = make(0.0, 0.0)
+  for i in 0..N {
+    v = v + V2.new(to_float(i % 7), to_float(i % 5))
+  }
+  v.x + v.y
 }
 
 println("value inline, {N} iterations")
@@ -141,4 +178,6 @@ run('boxed chain', boxed)
 run('scalars, op form', scalars_op)
 run('operator, inlined', op_inlined)
 run('operator, boxed', op_boxed)
+run('mut, reused', mut_reused)
+run('mut, boxed', mut_boxed)
 run('scalars (control)', scalars)

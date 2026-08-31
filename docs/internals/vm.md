@@ -607,6 +607,91 @@ tail recursion §5.3.1 already documents (`V2.__add__` returning
 `V2.new(...)`) could not have been inlining either, before this fix,
 despite compiling and running correctly through the boxed fallback.
 
+### 5.3.3 A `mut` local can stay unboxed for its whole scope
+
+§5.3.1/§5.3.2 only ever unbox a *value already in hand within one
+expression* — a literal `C.new(...)` chain, or an operator fold's own
+operand[0]. `v = v + g * DT` reused across loop iterations needs the same
+value to survive from one statement to the next, which neither mechanism
+reaches: a bare read of `v` produces an ordinary boxed `ExprResult`, so the
+fold's up-front scan sees no eligible operand[0] and reifies every
+iteration.
+
+`let mut v = C.new(...)` closes that gap with **whole-scope eligibility, no
+reification**: before compiling a single statement of `v`'s scope,
+`precheck_mut_local_at` walks every later reference to `v` in the same
+statement list (`mut_local_ref_ok`) and proves each one is a shape this
+splice machinery already understands — a `v.<field>` / `v.<method>(...)`
+chain, `v` as a fold/negation's own first operand, or a write `v = <rhs>`
+whose RHS is one of those shapes itself (`mut_local_write_ok`). One
+unclassified occurrence — an argument, a `println`, a comparison, a
+captured closure, `v += …` (compound assignment is out of this mechanism's
+first cut) — declines the WHOLE scope; `v` is an ordinary boxed local from
+its declaration on, exactly as before this stage existed. There is no
+partial state and no runtime decision: either every reference already
+qualifies, or none of them get the treatment.
+
+This is the same discipline §5.3.1/§5.3.2 use, widened from one expression
+to a binding's lexical extent — `mut_local_ref_ok` is a close structural
+cousin of `receiver_refs_stay_unboxed` (§5.3.2's `self` safety net),
+generalized from one fixed name per splice to any binding a scope has
+proven unboxed. Two things follow from that:
+
+- **A closure can never smuggle a live reference past the walk.** A nested
+  `FUNCTION`/`CLASS_DECL`/`ENUM_DECL`/`MULTIFN_DECL` literal is skipped
+  outright, the same way `receiver_refs_stay_unboxed` skips one for `self`
+  — justified here by `info_->captured_locals`, checked once before the
+  walk starts: if no literal in this function captures `v`'s name, nothing
+  inside one can be a live reference to *this* binding (it either shadows
+  it or never mentions it at all), so stepping in only risks misreading a
+  shadow's own occurrences as ours.
+- **The eligibility question for `v` itself as a fold's operand[0]
+  cannot go through `chain_resolves_to_class`'s ordinary,
+  `lookup()`-based IDENTIFIER case** — that case answers by reading
+  `Binding::unboxed_class`, and the whole point of this walk is to decide
+  whether that field ever gets set. `mut_local_write_ok` asks the identical
+  question name-based instead, mirroring `mut_local_ref_ok`'s own
+  fold/negation case exactly, and only falls through to
+  `chain_resolves_to_class`/`fold_resolves_to_class` for a shape that is
+  provably *not* `v` reading itself (a fresh construction, or a chain
+  rooted at some other, already-real binding) — found live: routing every
+  fold RHS through the ordinary lookahead first made `v = v + g * DT`
+  decline unconditionally, since `v`'s binding cannot exist yet at the
+  point that would have to answer for it.
+
+**Ordering, not just circularity, matters too.** `@value class`
+registration (`value_flat_layout`) is a side effect of compiling the class
+declaration itself, so this walk cannot run as one pass over a whole block
+before any of it compiles the way `predeclare_forward_refs` does — a `let
+mut v = C.new(...)` textually after its own class's declaration would ask
+before that declaration ever ran. `precheck_mut_local_at` instead runs
+once per statement, interleaved with the same loop that compiles it
+(`compile_block`, `compile_body_into`, the top-level script, a `for`
+body), preserving the ordering guarantee §5.3.1/§5.3.2 get for free by
+asking their own question lazily, inside `compile_expr`.
+
+Once a declaration passes, `Binding` itself carries the answer
+(`unboxed_layout`/`unboxed_class`, set once and never revoked): a plain
+identifier read (`compile_expr`'s `IDENTIFIER` case) returns the run
+directly, the same unconditional way `self` does inside an inline frame;
+`v.<field>`/`v.<method>(...)` splices through `try_inline_mut_local_chain`,
+structurally identical to `self`'s own chain (`chain_stays_unboxed` from
+index 1); and a reassignment (`compile_assignment`) compiles its RHS
+through the same fold/negation/chain machinery §5.3.2 already has
+(`compile_mut_local_write_rhs`), then copies the result's fields into `v`'s
+permanent slots — the one copy this mechanism ever pays, since every read
+in between (including `v`'s own reassignment RHS) reaches those slots
+directly. `v`'s *declaration* pays no copy at all: its fresh construction's
+own named run (already permanent — `alloc_zeroed_run` uses `alloc_slot`,
+not a statement temp) simply becomes the binding's home.
+
+Measured (`tools/bench/value_inline.cul`'s `mut, reused` row against `mut,
+boxed`, same arithmetic through a non-nameable construction): a locally
+reused operand removes one of the two allocations §5.3.2's own fold still
+pays every iteration (operand[1] — a fresh construction each time — still
+reifies; that gap is unchanged and deliberate, see the row's own header
+comment).
+
 ### 5.4 Built-in methods are a table
 
 The value-type methods (`'ab'.upper()`, `xs.map(f)`, `it.count()`, …)
