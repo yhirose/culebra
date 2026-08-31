@@ -2360,6 +2360,21 @@ struct JIT {
     module_->getOrInsertFunction(rt::div_zero,
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
+    // Core, not Tensor-specific, despite the name: the built-in `Eq` trait's
+    // `neq` default (shared.h's builtin_traits_preamble, compiled for every
+    // program) reads `!self.eq(other)`, and the front end resolves a call
+    // named `eq` to whichever BMethSpec is registered under that name --
+    // which is Tensor's, the only one there is. So every program's compiled
+    // code contains this call, gated at runtime by the receiver's tag,
+    // whether or not that program ever mentions Tensor. Declaring it only
+    // from Tensor's own declare_runtime (stdlib_jit.h) left a host that
+    // skips install_jit_stdlib() with an undeclared function and a crash in
+    // JIT::emit_call, not a script-level error -- getFunction() found
+    // nothing to call.
+    module_->getOrInsertFunction(rt::tensor_binop, ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::debugger_break,
                                  builder_.getVoidTy(), ptrTy,
                                  builder_.getInt64Ty(),

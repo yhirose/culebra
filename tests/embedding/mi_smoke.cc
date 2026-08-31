@@ -187,6 +187,33 @@ int run() {
       }
     }
   }
+
+  // A stdlib-less Runtime compiling plain `!=` -- no namespace, nothing an
+  // extension would need to have installed. The built-in Eq trait's `neq`
+  // default (`!self.eq(other)`, evaluated for every program regardless of
+  // content) resolves its `.eq` call to whichever BMethSpec is registered
+  // under that name; once Tensor registered one, every program's compiled
+  // code carries a call into the Tensor runtime, gated at runtime by the
+  // receiver's tag. Declaring that function only from Tensor's own
+  // declare_runtime left a host that never installs stdlib with an
+  // undeclared function and a null-deref in JIT::emit_call -- a crash, not
+  // a script-level failure, in code that never mentions Tensor and has
+  // every reason to expect at least a clean result from a stdlib-less JIT.
+  // No namespace call here (Math/IO would need stdlib too and confuse what
+  // failed); a bare comparison is the whole point.
+  {
+    culebra::Runtime jit_rt_c;
+    culebra::RuntimeScope scope(jit_rt_c);
+    // No install_jit_stdlib(): this Runtime has empty hooks, same as rt_b.
+    auto ast = parse_or_die("1 != 2");
+    try {
+      culebra::JIT::run(ast);
+    } catch (const std::exception& e) {
+      std::cerr << "rt_c JIT (no stdlib, plain !=) unexpectedly threw: "
+                << e.what() << "\n";
+      ok = false;
+    }
+  }
 #endif
 
   std::cout << (ok ? "OK\n" : "FAIL\n");

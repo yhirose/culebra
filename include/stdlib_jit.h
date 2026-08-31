@@ -10052,10 +10052,10 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::tensor_shape, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_eval_one,
                                jit.builder_.getVoidTy(), ptrTy);
-  jit.module_->getOrInsertFunction(rt::tensor_binop, ptrTy,
-                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
-                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
-                               jit.builder_.getInt64Ty());
+  // tensor_binop is declared in jit.h's declare_runtime_functions() instead
+  // of here: the built-in Eq trait's `neq` default calls it too, and that
+  // trait is compiled for every program regardless of whether this
+  // extension installs.
   jit.module_->getOrInsertFunction(rt::tensor_transpose, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_permute, ptrTy, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_narrow, ptrTy, ptrTy, ptrTy);
