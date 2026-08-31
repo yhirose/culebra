@@ -7,11 +7,12 @@
 #   ride `Tensor.dot()` directly, so a big enough matmul should favor the
 #   GPU the same way examples/tensor/tensors_gpu.cul's own benchmark shows.
 #
-#   Conv2d's im2col window-gather is plain Culebra-Array loops (`.to_array()`
-#   round trips — see functions_conv.cul's header comment for why Tensor has
-#   no primitive for this), so most of its per-call cost is host-side data
-#   movement no device switch can speed up; only the GEMM inside it runs on
-#   whichever device is selected.
+#   Conv2d's im2col padding/window-gather now rides `Tensor.pad()`/
+#   `.unfold()` (GPU-dispatched on CUDA/Metal/WebGPU) instead of a host-side
+#   Culebra-Array loop; only the NCHW/NHWC axis move around it is still a
+#   host pass (see functions_conv.cul's header comment for why). So both the
+#   window-gather and the GEMM inside it can now ride whichever device is
+#   selected.
 #
 #   culebra --jit examples/dezero/examples/device_bench.cul
 

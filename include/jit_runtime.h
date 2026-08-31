@@ -2547,41 +2547,45 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reshape(
 // unfold/pad/fold each take exactly 3 ints — one `params` Array rather than
 // 3 positional args, since BMeth's own arg-passing caps at 2 (see vm.h's
 // BMethSpec/bmeth_apply); reshape's own variable-length dims Array set the
-// precedent for routing more-than-2-args through one Array param.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_unfold(
-    JitTensor* t, JitArray* params) {
+// precedent for routing more-than-2-args through one Array param. Shared
+// validation (each of the three had this same check, differing only in the
+// error message) — `msg` keeps every call site's own wording.
+inline void _culebra_unpack_3_longs(JitArray* params, const char* msg,
+                                    int64_t* out) {
   if (params->size != 3 || params->items[0].tag != TAG_LONG ||
       params->items[1].tag != TAG_LONG || params->items[2].tag != TAG_LONG) {
-    throw culebra::CulebraError("ValueError",
-        "Tensor.unfold: expected [axis, win, step] (3 Longs).");
+    throw culebra::CulebraError("ValueError", msg);
   }
-  return _culebra_jit_tensor_register(culebra::tensor_unfold(
-      t->impl, params->items[0].data, params->items[1].data,
-      params->items[2].data));
+  out[0] = params->items[0].data;
+  out[1] = params->items[1].data;
+  out[2] = params->items[2].data;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_unfold(
+    JitTensor* t, JitArray* params) {
+  int64_t p[3];
+  _culebra_unpack_3_longs(
+      params, "Tensor.unfold: expected [axis, win, step] (3 Longs).", p);
+  return _culebra_jit_tensor_register(
+      culebra::tensor_unfold(t->impl, p[0], p[1], p[2]));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_pad(
     JitTensor* t, JitArray* params) {
-  if (params->size != 3 || params->items[0].tag != TAG_LONG ||
-      params->items[1].tag != TAG_LONG || params->items[2].tag != TAG_LONG) {
-    throw culebra::CulebraError("ValueError",
-        "Tensor.pad: expected [axis, before, after] (3 Longs).");
-  }
-  return _culebra_jit_tensor_register(culebra::tensor_pad(
-      t->impl, params->items[0].data, params->items[1].data,
-      params->items[2].data));
+  int64_t p[3];
+  _culebra_unpack_3_longs(
+      params, "Tensor.pad: expected [axis, before, after] (3 Longs).", p);
+  return _culebra_jit_tensor_register(
+      culebra::tensor_pad(t->impl, p[0], p[1], p[2]));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_fold(
     JitTensor* t, JitArray* params) {
-  if (params->size != 3 || params->items[0].tag != TAG_LONG ||
-      params->items[1].tag != TAG_LONG || params->items[2].tag != TAG_LONG) {
-    throw culebra::CulebraError("ValueError",
-        "Tensor.fold: expected [axis, orig_size, step] (3 Longs).");
-  }
-  return _culebra_jit_tensor_register(culebra::tensor_fold(
-      t->impl, params->items[0].data, params->items[1].data,
-      params->items[2].data));
+  int64_t p[3];
+  _culebra_unpack_3_longs(
+      params, "Tensor.fold: expected [axis, orig_size, step] (3 Longs).", p);
+  return _culebra_jit_tensor_register(
+      culebra::tensor_fold(t->impl, p[0], p[1], p[2]));
 }
 
 

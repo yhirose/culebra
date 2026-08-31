@@ -153,6 +153,13 @@ fn strip_padding(padded, n, c, h, w, ph, pw) {
 # with no further permutation. `col2im` folds the same two axes back in
 # reverse order, then reuses the existing NHWC->NCHW flip and pad-strip for
 # the final crop (that axis-1/2 slice has no native binding yet either).
+#
+# The permute is called inline here rather than through the `nhwc_to_nchw`/
+# `nchw_to_nhwc` dz.Function wrappers `conv2d`/`deconv2d` use for their own
+# axis move: `Im2col`/`Col2im` already hand-write their own `backward()`
+# (dezero's autograd doesn't reach through `.pad()`/`.unfold()`/`.fold()`
+# yet either), so there is no outer graph for a separate wrapper Function to
+# register itself into.
 
 class Im2col {
   generation = 0
