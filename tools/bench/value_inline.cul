@@ -1,0 +1,82 @@
+# What an unboxed `@value` chain costs against the boxed form of the same
+# work, and against the hand-written scalars both are trying to reach.
+#
+# Each row does the same arithmetic and prints the same checksum. What differs
+# is only whether the intermediate 2D value is an object:
+#
+#   scalars              the floor — every component in its own local
+#   inlined chain        `V2.new(a, b).len()`: the whole chain qualifies, so
+#                        it compiles to slots, no object and no call
+#   boxed chain          the same work through a name, which is a run with
+#                        nowhere to go — it builds the instance the old way
+#   scalars (control)    two rows doing identical arithmetic; if these two
+#                        disagree by more than a few percent the run is noise
+#                        and should be thrown away
+#
+# Run on the -O3 + LTO binary (`just build`); build-dev is -O1 and the numbers
+# mean nothing there. Read the ratios within one run, not across machines.
+#
+#   culebra tools/bench/value_inline.cul [iterations]
+#   culebra --jit tools/bench/value_inline.cul [iterations]
+
+let N = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 1000000
+
+@value
+class V2 {
+  x: Float
+  y: Float
+
+  new(x: Float, y: Float) {
+    self.x = x
+    self.y = y
+  }
+
+  len() {
+    Math.sqrt(self.x * self.x + self.y * self.y)
+  }
+}
+
+let report = fn (name, dt, acc) {
+  println("  {name:<28}{dt / N * 1e9:>8.1f}  ns/op   {acc:>18.6f}")
+}
+
+let scalars = fn () {
+  let mut acc = 0.0
+  for i in 0..N {
+    let x = to_float(i % 7)
+    let y = to_float(i % 5)
+    acc += Math.sqrt(x * x + y * y)
+  }
+  acc
+}
+
+let inlined = fn () {
+  let mut acc = 0.0
+  for i in 0..N {
+    acc += V2.new(to_float(i % 7), to_float(i % 5)).len()
+  }
+  acc
+}
+
+let boxed = fn () {
+  let mut acc = 0.0
+  for i in 0..N {
+    let v = V2.new(to_float(i % 7), to_float(i % 5))
+    acc += v.len()
+  }
+  acc
+}
+
+println("value inline, {N} iterations")
+println("")
+
+let run = fn (name, f) {
+  let t0 = Time.monotonic()
+  let acc = f()
+  report(name, Time.monotonic() - t0, acc)
+}
+
+run('scalars', scalars)
+run('inlined chain', inlined)
+run('boxed chain', boxed)
+run('scalars (control)', scalars)

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <format>
 #include <optional>
@@ -1024,6 +1025,33 @@ inline bool is_value_class(std::string_view name) {
   return value_class_registry().contains(name);
 }
 
+// The declared field names, in order, of a `@value` class flat enough to
+// unbox into that many ordinary slots: at least one field, every one a
+// machine scalar (no nested `@value` — that layout is a later step), and no
+// initializer expression (an initializer routes construction through the
+// field-init thunk, which is a call, and a call is what unboxing is here to
+// remove). Registered from the same place and under the same rule as the
+// name above; absent means "not eligible", which is always a safe answer.
+inline std::map<std::string, std::vector<std::string>, std::less<>>&
+value_flat_layouts() {
+  static std::map<std::string, std::vector<std::string>, std::less<>> reg;
+  return reg;
+}
+inline void register_value_flat_layout(std::string name,
+                                       std::vector<std::string> fields) {
+  std::lock_guard<std::mutex> lk(value_class_mutex());
+  value_flat_layouts().insert_or_assign(std::move(name), std::move(fields));
+}
+// The layout by class name, or nullptr when the class is not flat-eligible.
+// Returns a pointer into the registry, which only ever grows, so the callee
+// (the compiler, single-threaded over one module list) may hold it.
+inline const std::vector<std::string>* value_flat_layout(
+    std::string_view name) {
+  std::lock_guard<std::mutex> lk(value_class_mutex());
+  auto it = value_flat_layouts().find(name);
+  return it == value_flat_layouts().end() ? nullptr : &it->second;
+}
+
 // A `@value` field holds a machine scalar or another `@value`. Everything
 // else — String, Array, Object, a closure, `T?`, an ordinary class — carries
 // a heap body or an identity of its own, so admitting it would give the
@@ -1031,6 +1059,14 @@ inline bool is_value_class(std::string_view name) {
 // is additive, narrowing it is not.
 inline bool is_value_field_type(std::string_view t) {
   return t == "Long" || t == "Float" || t == "Bool" || is_value_class(t);
+}
+
+// The machine-scalar half of the above: a field an unboxed layout can give
+// exactly one slot. A nested `@value` field is a legal value field but needs
+// its own fields flattened in, which is a later step — so it answers no here
+// while still answering yes to is_value_field_type.
+inline bool is_flat_value_field_type(std::string_view t) {
+  return t == "Long" || t == "Float" || t == "Bool";
 }
 
 // The `@value` contract's declaration-time messages. Shared with the lint
@@ -1132,6 +1168,68 @@ inline std::vector<ValueSelfWrite> find_value_self_writes_in_members(
     find_value_self_writes(*class_ast.nodes[i], declared, out);
   }
   return out;
+}
+
+// Whether a member body is straight-line enough to compile into a caller
+// instead of a frame of its own: no control flow that would need a chunk's
+// jump/unwind machinery re-established at the splice. `RETURN` is refused
+// rather than handled because an early return out of an inlined body would
+// have to become a jump past the rest of the CALLER's expression, which is
+// not something an expression position can express.
+//
+// The walk stops at a nested declaration for the same reason
+// find_value_self_writes does: an inner `fn` or `class` brings its own body,
+// compiled as its own chunk and not spliced here. Such a literal is refused
+// separately (value_body_has_nested_fn) — this predicate answers only about
+// the body's own control flow.
+inline bool is_straightline_body(const peg::Ast& node) {
+  using namespace peg::udl;
+  switch (node.tag) {
+    case "FOR"_:
+    case "WHILE"_:
+    case "RETURN"_:
+    case "TRY"_:
+    case "DEFER"_:
+      return false;
+    case "CLASS_DECL"_:
+    case "ENUM_DECL"_:
+    case "FUNCTION"_:
+    case "MULTIFN_DECL"_:
+      return true;  // its own chunk; not spliced, so its shape is not ours
+    default:
+      break;
+  }
+  for (const auto& n : node.nodes)
+    if (!is_straightline_body(*n)) return false;
+  return true;
+}
+
+// Whether the body builds a closure or a class of its own. Such a body is
+// refused for inlining: the nested literal's capture list was resolved
+// against the CALLEE's analysis (FuncInfo::captured_locals decides which of
+// the callee's locals live in cells), and compiling it in the caller would
+// consult the caller's analysis instead — a silently wrong cell decision
+// rather than a visible failure.
+inline bool value_body_has_nested_fn(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag == "FUNCTION"_ || node.tag == "MULTIFN_DECL"_ ||
+      node.tag == "CLASS_DECL"_ || node.tag == "ENUM_DECL"_)
+    return true;
+  for (const auto& n : node.nodes)
+    if (value_body_has_nested_fn(*n)) return true;
+  return false;
+}
+
+// Whether the body writes `self.<name>` anywhere. A constructor's writes are
+// the point (they are what lands in the unboxed slots); any OTHER member's
+// would be the freeze's ImmutableError on a boxed instance, and reproducing
+// that from an inlined body is machinery worth declining instead. Reuses the
+// contract scan, asking it for "any field at all" with an empty declared set.
+inline bool value_body_writes_self(const peg::Ast& body) {
+  std::set<std::string, std::less<>> none;
+  std::vector<ValueSelfWrite> out;
+  find_value_self_writes(body, none, out);
+  return !out.empty();
 }
 
 // Evaluator-side safety net for the per-member half of the contract: no

@@ -1,0 +1,182 @@
+# Conformance: an unboxed `@value` chain answers exactly what the boxed form
+# answers. Every case here is written so that BOTH compile paths are exercised
+# somewhere in the file — the inlined one when the whole chain qualifies, the
+# ordinary boxed one when any part of it does not — and the two must agree.
+#
+# The chain only stays unboxed while every step is a declared-field read or a
+# splice-able same-class method, ending on a scalar. Anything else compiles
+# the way it always did, which is why the negative cases below matter as much
+# as the positive ones: they are what pins the decision to "decline", rather
+# than to some half-inlined state.
+#
+# Run: ./build/culebra tests/test_value_inline.cul
+#      ./build/culebra --jit tests/test_value_inline.cul
+
+@value
+class V2 {
+  x: Float
+  y: Float
+
+  new(x: Float, y: Float) {
+    self.x = x
+    self.y = y
+  }
+
+  add(o) {
+    V2.new(self.x + o.x, self.y + o.y)
+  }
+
+  scale(k) {
+    V2.new(self.x * k, self.y * k)
+  }
+
+  len() {
+    Math.sqrt(self.x * self.x + self.y * self.y)
+  }
+}
+
+test_field_read_off_a_construction = fn () {
+  assert_eq(V2.new(3.0, 4.0).x, 3.0)
+  assert_eq(V2.new(3.0, 4.0).y, 4.0)
+}
+test_field_read_off_a_construction()
+
+test_scalar_tailed_method = fn () {
+  assert_eq(V2.new(3.0, 4.0).len(), 5.0)
+  assert_eq(V2.new(0.0, 0.0).len(), 0.0)
+}
+test_scalar_tailed_method()
+
+test_run_returning_method_then_field = fn () {
+  assert_eq(V2.new(1.0, 2.0).scale(3.0).x, 3.0)
+  assert_eq(V2.new(1.0, 2.0).scale(3.0).y, 6.0)
+  # chained: each step hands the next a run, the last hands back a scalar
+  assert_eq(V2.new(1.0, 2.0).scale(2.0).scale(3.0).y, 12.0)
+  assert_eq(V2.new(1.0, 2.0).scale(2.0).len(), V2.new(2.0, 4.0).len())
+}
+test_run_returning_method_then_field()
+
+test_boxed_argument_still_works = fn () {
+  # The argument is itself a construction whose chain ends holding a run, so
+  # it declines and arrives boxed. The inlined body reads it the ordinary way.
+  let other = V2.new(10.0, 20.0)
+  assert_eq(V2.new(1.0, 2.0).add(other).x, 11.0)
+  assert_eq(V2.new(1.0, 2.0).add(other).y, 22.0)
+}
+test_boxed_argument_still_works()
+
+test_boxed_form_is_untouched = fn () {
+  # A construction bound to a name is a run with nowhere to go, so it builds
+  # the ordinary instance — and everything about that instance still holds.
+  let v = V2.new(3.0, 4.0)
+  assert_eq(v.x, 3.0)
+  assert_eq(v.len(), 5.0)
+  assert_eq(v.scale(2.0).x, 6.0)
+  assert_eq(v, V2.new(3.0, 4.0))
+  assert_eq(v.keys(), ['class', 'x', 'y'])
+  assert_throws('ImmutableError', fn () {
+    v.x = 9.0
+  })
+}
+test_boxed_form_is_untouched()
+
+# A typed constructor parameter checks at the argument, inlined or not.
+test_typed_param_still_checks = fn () {
+  assert_throws('TypeError', fn () {
+    V2.new('nope', 1.0).x
+  })
+  assert_throws('TypeError', fn () {
+    V2.new(1.0, 'nope').len()
+  })
+}
+test_typed_param_still_checks()
+
+# --- the shapes that must NOT inline, and must still be right ---------------
+
+@value
+class Seeded {
+  n: Long = 7
+
+  new(n: Long) {
+    self.n = n
+  }
+}
+
+test_field_initializer_declines = fn () {
+  # An initializer routes construction through the field-init thunk, so the
+  # class is not laid out flat — the ordinary path answers.
+  assert_eq(Seeded.new(3).n, 3)
+  assert_eq(Seeded.new(3), Seeded.new(3))
+}
+test_field_initializer_declines()
+
+@value
+class Inner {
+  a: Long
+
+  new(a: Long) {
+    self.a = a
+  }
+}
+
+@value
+class Nested {
+  inner: Inner
+  k: Long
+
+  new(inner: Inner, k: Long) {
+    self.inner = inner
+    self.k = k
+  }
+}
+
+test_nested_value_field_declines = fn () {
+  # A nested `@value` field is a legal value field but not a flat one, so the
+  # class keeps the boxed layout.
+  let n = Nested.new(Inner.new(5), 6)
+  assert_eq(n.k, 6)
+  assert_eq(n.inner.a, 5)
+  assert_eq(Nested.new(Inner.new(5), 6).k, 6)
+}
+test_nested_value_field_declines()
+
+@value
+class Looping {
+  n: Long
+
+  new(n: Long) {
+    self.n = n
+  }
+
+  # A loop needs a chunk's jump machinery, so this member declines while its
+  # straight-line sibling below still inlines.
+  sum_to() {
+    let mut acc = 0
+    for i in 0..self.n {
+      acc += i
+    }
+    acc
+  }
+
+  twice() {
+    self.n * 2
+  }
+}
+
+test_loop_member_declines_sibling_still_inlines = fn () {
+  assert_eq(Looping.new(4).sum_to(), 6)
+  assert_eq(Looping.new(4).twice(), 8)
+}
+test_loop_member_declines_sibling_still_inlines()
+
+test_shadowed_global_declines = fn () {
+  # `len()` reaches the stdlib `Math`. A caller that binds its own `Math`
+  # must not have the body silently resolve to it — the splice is refused,
+  # and the boxed call reaches the real one.
+  let Math = 'not the namespace'
+  assert_eq(V2.new(3.0, 4.0).len(), 5.0)
+  assert_eq(Math, 'not the namespace')
+}
+test_shadowed_global_declines()
+
+inspect('value-inline OK')

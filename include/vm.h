@@ -3407,6 +3407,13 @@ class Compiler {
       // is a dispatcher, not a chunk) and no decorator, which is free to
       // hand back something that is not the class.
       int32_t ctor = -1;
+      // The class declaration behind that constructor, when the class is
+      // `@value` with a layout flat enough to unbox into one slot per field
+      // (value_flat_layout). Its members' bodies are what an inlined
+      // construction or method call compiles; nullptr means "compile the
+      // ordinary boxed way". Rides `Known` so a capture inherits it and a
+      // re-declaration strikes it, exactly as the two answers above do.
+      const peg::Ast* value_class = nullptr;
     };
     Known known;
   };
@@ -3469,7 +3476,35 @@ class Compiler {
     // (-1 otherwise). What a declaration passes on to its binding, and what
     // an immediately-invoked literal calls — see grant_known_chunk.
     int32_t chunk = -1;
+    // An UNBOXED `@value` instance: its declared fields live one per slot
+    // starting at `slot`, in declaration order, and no object was built.
+    // Non-null only inside one postfix chain that stays inlined end to end
+    // (try_inline_value_chain) — nothing outside that chain is ever handed
+    // one, which is why nothing here needs to re-materialise an instance.
+    // `slot` is the run's base; `owned` is false, since the run's slots are
+    // the enclosing scope's to release like any other local.
+    const std::vector<std::string>* unboxed = nullptr;
   };
+
+  // One entry per constructor or method body currently being spliced in.
+  // `self` and the class's own name resolve through this rather than through
+  // a Binding: the stack's lifetime IS the inline's, which is the invariant
+  // wanted, whereas a binding would have to survive scope push/pop and the
+  // capture plumbing for no gain.
+  struct InlineFrame {
+    std::string_view class_name;
+    int32_t base;                             // first field slot
+    const std::vector<std::string>* layout;   // field names, declaration order
+  };
+  std::vector<InlineFrame> inlines_;
+
+  // The field's index in the innermost inlined instance's layout, or -1.
+  int32_t inline_field_index(const ExprResult& r, std::string_view name) const {
+    if (!r.unboxed) return -1;
+    for (size_t i = 0; i < r.unboxed->size(); i++)
+      if ((*r.unboxed)[i] == name) return static_cast<int32_t>(i);
+    return -1;
+  }
 
   VmProgram& prog_;
   FnAnalysis& analysis_;
@@ -5386,6 +5421,28 @@ class Compiler {
     // after the scan above rather than before it, so a field naming the class
     // being declared is still refused — a value cannot contain itself.
     if (is_value) culebra::register_value_class(class_name);
+    // And, when its shape allows it, the layout an unboxed construction lays
+    // the instance out as: one slot per declared field, in declaration order.
+    // Refused for a class with no declared field (nothing to lay out), with a
+    // nested `@value` field (that layout is a later step), or with a field
+    // initializer — an initializer is evaluated by the field-init thunk,
+    // which is a culebra frame, and a frame is what unboxing is here to
+    // remove. Absent from the registry simply means "compile the ordinary
+    // way", so every refusal here is safe by construction.
+    if (is_value) {
+      std::vector<std::string> flat;
+      bool eligible = !fields.empty();
+      for (const auto* f : fields) {
+        auto mv = culebra::view_method(*f);
+        if (mv.value || !culebra::is_flat_value_field_type(mv.type_annotation)) {
+          eligible = false;
+          break;
+        }
+        flat.emplace_back(mv.name);
+      }
+      if (eligible)
+        culebra::register_value_flat_layout(class_name, std::move(flat));
+    }
     const peg::Ast* new_ast = new_asts.empty() ? nullptr : new_asts.front();
     // Resolve `@derive(...)` into the (method name, runtime kind) pairs to
     // append to the meta, after the members so a name the class declares
@@ -5456,6 +5513,14 @@ class Compiler {
       ctor_chunk_idx = static_cast<int32_t>(prog_.chunks.size());
       prog_.chunks.emplace_back();
       grant_known_ctor(*decl_binding, ctor_chunk_idx);
+      // The same grant carries the declaration itself when the class can be
+      // laid out as its fields, which is what an inlined construction reads
+      // the member bodies from. Only where the grant took: a refused
+      // constructor is a name whose value can move, and unboxing it would
+      // rest on the same answer the refusal just withheld.
+      if (decl_binding->known.ctor >= 0 &&
+          culebra::value_flat_layout(class_name))
+        decl_binding->known.value_class = &ast;
     }
 
     TempScope ts(*this);
@@ -6853,6 +6918,16 @@ class Compiler {
       }
       auto rhs = compile_assign_rhs(ast, av);
       auto recv = chain_prefix();
+      // `self.x = v` inside an inlined constructor: the field is a slot of
+      // the run being built, so the store is a move into it. No object
+      // exists to PropSet, and none needs to — this is the write that puts
+      // the value where an unboxed instance keeps it. Only a declared field
+      // can appear here: the contract check at the class declaration already
+      // refused any other name (value_undeclared_self_write_message).
+      if (int32_t ix = inline_field_index(recv, fin.token); ix >= 0) {
+        store_into(recv.slot + ix, rhs, /*dst_is_fresh=*/false);
+        return rhs;
+      }
       emit_prop_set(fin, recv.slot, rhs.slot, /*ns_check=*/true);
       return rhs;
     }
@@ -7304,6 +7379,210 @@ class Compiler {
     return !is_kwarg(a0) && !is_kwarg_splat(a0);
   }
 
+  // --- Unboxed `@value` inlining -------------------------------------------
+  //
+  // A construction whose class the compiler named (Binding::Known::ctor) and
+  // whose class is flat enough to lay out as N slots is compiled AS those N
+  // slots: the constructor's body runs here, in this chunk, writing its
+  // fields into them. No object, no frame. A method called on such a value
+  // is spliced the same way, and its own tail `C.new(...)` is this rule
+  // again, so a chain collapses without a separate pass.
+  //
+  // Whether this is legal is decided before a single instruction is emitted,
+  // and a `no` compiles the ordinary boxed way. That is what keeps the two
+  // arms honest: no half-inlined state to unwind, no run-time fallback.
+
+  // The member of a class named `name` (its AST), or nullptr. `new` is the
+  // constructor; anything else is an instance method. An overload set
+  // answers nullptr: two same-named members are a dispatcher, not one body.
+  static const peg::Ast* value_member_ast(const peg::Ast& class_ast,
+                                          std::string_view name) {
+    size_t dec_end = culebra::first_non_decorator_index(class_ast);
+    const peg::Ast* found = nullptr;
+    for (size_t i = dec_end + 1; i < class_ast.nodes.size(); i++) {
+      auto mv = culebra::view_method(*class_ast.nodes[i]);
+      if (mv.is_field || mv.is_typed_field || mv.is_static) continue;
+      if (mv.name != name) continue;
+      if (found) return nullptr;  // an overload set
+      found = class_ast.nodes[i].get();
+    }
+    return found;
+  }
+
+  // The plain positional parameters of a member, or nullopt when its
+  // signature has a shape an inlined site does not reproduce: a default, a
+  // destructuring pattern, `*args`, `**rest`, or a keyword-only run. Each is
+  // refused rather than handled because each is machinery whose whole point
+  // is the call boundary being removed here.
+  struct InlineParam {
+    const peg::Ast* at;
+    std::string name;
+    std::string type;
+  };
+  static std::optional<std::vector<InlineParam>> inline_params(
+      const peg::Ast* params) {
+    std::vector<InlineParam> out;
+    if (!params) return out;
+    for (const auto& pn : params->nodes) {
+      auto pv = culebra::view_parameter(*pn);
+      if (pv.is_kw_only_sep || pv.is_args_rest || pv.is_kwargs_rest ||
+          pv.pattern || pv.default_value)
+        return std::nullopt;
+      out.push_back({pn.get(), std::string(pv.name),
+                     std::string(pv.type_annotation)});
+    }
+    return out;
+  }
+
+  // Whether a member's body may be compiled into this chunk. The hygiene
+  // half of the question — the half that makes this a correctness rule
+  // rather than a heuristic: the body resolves its names through THIS
+  // compiler's scopes and declares its locals against THIS chunk's analysis,
+  // so every name it reads must mean here what it meant there.
+  bool inline_body_ok(const peg::Ast& member, bool is_ctor) {
+    auto mv = culebra::view_method(member);
+    if (!mv.body) return false;
+    const auto& body = **mv.body;
+    if (!culebra::is_straightline_body(body)) return false;
+    if (culebra::value_body_has_nested_fn(body)) return false;
+    // A method's `self.x = v` is the freeze's ImmutableError on a boxed
+    // instance; a constructor's is the point.
+    if (!is_ctor && culebra::value_body_writes_self(body)) return false;
+    auto it = analysis_.func_info.find(&member);
+    if (it == analysis_.func_info.end()) return false;
+    const FuncInfo& fi = it->second;
+    // No local of this body may live in a cell: that decision belongs to the
+    // callee's analysis, and the emitters consult `info_`, which stays this
+    // chunk's. With no nested closure there is nothing to capture, so the
+    // set being empty is the check rather than a swap.
+    if (!fi.captured_locals.empty()) return false;
+    // Every name the body reads must mean here what it meant in the callee's
+    // own frame. `free_vars` is NOT the set to ask: a stdlib NAMESPACE is not
+    // a variable, so `Math` never appears there — and a caller holding its
+    // own `Math` would silently rebind the body's. So the body's identifiers
+    // are walked directly, and only names that cannot be rebound are let
+    // through: the receiver, the class's own name, a parameter, or a stdlib
+    // global/namespace this scope does not shadow.
+    //
+    // A body-local `let` is refused too, conservatively — telling a local's
+    // own name from a read of an outer one needs declaration tracking this
+    // does not do, and declining costs coverage rather than correctness.
+    auto ps = inline_params(mv.params);
+    if (!ps) return false;
+    bool ok = true;
+    auto check_name = [&](std::string_view n) {
+      if (!ok || n == "self") return;
+      for (const auto& p : *ps)
+        if (p.name == n) return;
+      auto it2 = analysis_.func_info.find(&member);
+      if (it2 != analysis_.func_info.end() && n == it2->second.own_name) return;
+      if (!lookup(n) && (is_stdlib_global(n) || is_stdlib_namespace(n))) return;
+      ok = false;
+    };
+    walk_identifiers(**mv.body, check_name);
+    return ok;
+  }
+
+  // Every IDENTIFIER the body reads, stopping at a nested declaration (whose
+  // names are its own). A property name rides its DOT node rather than an
+  // IDENTIFIER, so `v.x` contributes `v` and not `x` — which is what makes
+  // this a question about bindings rather than about fields.
+  template <class F>
+  static void walk_identifiers(const peg::Ast& node, F&& f) {
+    using namespace peg::udl;
+    if (node.tag == "FUNCTION"_ || node.tag == "MULTIFN_DECL"_ ||
+        node.tag == "CLASS_DECL"_ || node.tag == "ENUM_DECL"_)
+      return;
+    // A postfix step carries its member name as a token on a node the
+    // optimizer may have collapsed to IDENTIFIER, so `original_tag` is what
+    // tells `v.x`'s `x` (a field name, not a binding) from `v` (a binding).
+    // The same distinction every other postfix reader in this file makes.
+    if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_)
+      return;
+    if (node.tag == "IDENTIFIER"_ && node.is_token) f(node.token);
+    for (const auto& n : node.nodes) walk_identifiers(*n, f);
+  }
+
+  // The parameter binding an inlined call owes: one slot per parameter
+  // holding the already-compiled argument, checked exactly as the real
+  // prologue checks it. The check is ChkTypeAt, not ChkArg: ChkArg resolves
+  // its report position from thread-locals the CALLER publishes at a real
+  // call (culebra_runtime_param_pos), and an inlined site publishes none, so
+  // it would report some earlier call's position. Here the position is
+  // static — the argument's own expression — and the two runtime helpers
+  // share one format string, so the message is identical.
+  void bind_inline_params(const std::vector<InlineParam>& ps,
+                          const std::vector<ExprResult>& args,
+                          const std::vector<const peg::Ast*>& arg_asts) {
+    for (size_t i = 0; i < ps.size(); i++) {
+      int32_t slot = alloc_slot(*ps[i].at, ps[i].name);
+      store_into(slot, args[i], /*dst_is_fresh=*/true);
+      if (!ps[i].type.empty()) {
+        StampGuard pos(*this, *arg_asts[i]);
+        std::vector<size_t> skip;
+        emit_type_check_gate(ps[i].type, slot, skip);
+        emit(Op::ChkTypeAt, slot, kconst_str(ps[i].type),
+             kconst_str(culebra::format("parameter '{}'", ps[i].name)), -1);
+        for (size_t ix : skip) patch_to_here(ix);
+      }
+      push_binding({ps[i].name, slot, /*is_mut=*/false});
+    }
+  }
+
+  // Compile one `@value` member body into this chunk, with `self` pointing at
+  // `self_base` and the parameters bound to `args`. Eligibility is the
+  // caller's; this is the splice itself.
+  //
+  // The body's own scope is pushed and popped here, so its locals go through
+  // the ordinary release ladder. Neither `self_base` nor `out_base` is in
+  // that scope — the caller allocated both — which is what lets the result
+  // outlive the splice instead of being released by the pop.
+  //
+  // A constructor's result IS the run it filled (`new`'s value is the
+  // instance, whatever its body's last expression was); a method's is its
+  // tail expression, copied out to `out_base` before the pop.
+  ExprResult emit_inline_body(const peg::Ast& member, std::string_view cls,
+                              int32_t self_base,
+                              const std::vector<std::string>* layout,
+                              const std::vector<InlineParam>& ps,
+                              const std::vector<ExprResult>& args,
+                              const std::vector<const peg::Ast*>& arg_asts,
+                              bool is_ctor, int32_t out_base,
+                              const std::vector<std::string>* out_layout) {
+    using namespace peg::udl;
+    auto mv = culebra::view_method(member);
+    const peg::Ast& body = **mv.body;
+    push_scope(member, /*owned_mark=*/false);
+    inlines_.push_back({cls, self_base, layout});
+    bind_inline_params(ps, args, arg_asts);
+    ExprResult tail{-1, false};
+    if (body.tag == "STATEMENTS"_) {
+      for (size_t i = 0; i + 1 < body.nodes.size(); i++)
+        compile_statement(*body.nodes[i]);
+      if (!body.nodes.empty()) tail = compile_expr(*body.nodes.back());
+    } else {
+      tail = compile_expr(body);
+    }
+    // Copy the method's result out of the scope about to pop. A tail that is
+    // itself an unboxed run copies slot for slot — this is the case
+    // compile_body_into could not serve, since it stores one value into one
+    // slot and would collapse the run.
+    if (!is_ctor && tail.slot >= 0) {
+      if (tail.unboxed && out_layout) {
+        for (size_t i = 0; i < out_layout->size(); i++)
+          store_into(out_base + static_cast<int32_t>(i),
+                     ExprResult{tail.slot + static_cast<int32_t>(i), false},
+                     /*dst_is_fresh=*/false);
+      } else {
+        store_into(out_base, tail, /*dst_is_fresh=*/false);
+      }
+    }
+    inlines_.pop_back();
+    pop_scope();
+    if (is_ctor) return {self_base, /*owned=*/false, -1, layout};
+    return {out_base, /*owned=*/false, -1, out_layout};
+  }
+
   StaticCallee head_callee(const peg::Ast& head, const ExprResult& res) {
     using namespace peg::udl;
     if (res.chunk >= 0) return {res.chunk};
@@ -7337,6 +7616,155 @@ class Compiler {
             b->lazy ? Chunk::Reach::Guarded : Chunk::Reach::Direct};
   }
 
+  // The `@value` class a `Name.new(...)` head names, when its layout is flat
+  // enough to unbox — the same binding-and-shape question postfix_ctor_callee
+  // asks, answered with the declaration instead of the chunk.
+  const peg::Ast* postfix_value_class(const peg::Ast& at,
+                                      const peg::Ast& post) {
+    using namespace peg::udl;
+    if (at.nodes.size() < 2 || at.nodes[1].get() != &post ||
+        post.original_tag != "DOT"_ || post.token != "new")
+      return nullptr;
+    const auto& head = *at.nodes[0];
+    if (head.tag != "IDENTIFIER"_) return nullptr;
+    const Binding* b = lookup(head.token);
+    // A lazy binding is a run-time question about WHICH class the name holds
+    // (a member's own name reads it off the receiver), and unboxing has no
+    // guarded arm to fall back to — it either lays the instance out or it
+    // does not. So only the settled answer inlines.
+    return (b && !b->lazy) ? b->known.value_class : nullptr;
+  }
+
+  // Whether a member's value is another instance of its own class — its body
+  // ends in `C.new(...)` for the very C it belongs to, which is the shape
+  // every `@value` operator has. Answered syntactically, which is enough:
+  // the tail either IS that construction or the member is treated as
+  // returning a scalar, and a wrong guess in that direction only declines.
+  static bool member_returns_own(const peg::Ast& member,
+                                 std::string_view class_name) {
+    using namespace peg::udl;
+    auto mv = culebra::view_method(member);
+    if (!mv.body) return false;
+    const peg::Ast* tail = (*mv.body).get();
+    if (tail->tag == "STATEMENTS"_) {
+      if (tail->nodes.empty()) return false;
+      tail = tail->nodes.back().get();
+    }
+    return tail->nodes.size() >= 3 && tail->nodes[0]->tag == "IDENTIFIER"_ &&
+           tail->nodes[0]->token == class_name &&
+           tail->nodes[1]->original_tag == "DOT"_ &&
+           tail->nodes[1]->token == "new" &&
+           tail->nodes[2]->original_tag == "ARGUMENTS"_;
+  }
+
+  // Whether the chain from `i` on only asks an unboxed value things it can
+  // answer without an object, AND ends holding a scalar rather than a run.
+  // Both halves matter: a run that reached any other consumer would have to
+  // be re-materialised, and not offering it is both cheaper and safer than
+  // materialising it. Decided before anything is emitted.
+  bool chain_stays_unboxed(const peg::Ast& at, size_t i,
+                           const peg::Ast& class_ast,
+                           std::string_view class_name,
+                           const std::vector<std::string>* layout) {
+    using namespace peg::udl;
+    while (i < at.nodes.size()) {
+      const auto& post = *at.nodes[i];
+      if (post.original_tag != "DOT"_) return false;
+      bool call = i + 1 < at.nodes.size() &&
+                  at.nodes[i + 1]->original_tag == "ARGUMENTS"_;
+      if (!call) {
+        // A declared field read is the scalar leaf a chain may end on.
+        return i + 1 == at.nodes.size() &&
+               std::find(layout->begin(), layout->end(), post.token) !=
+                   layout->end();
+      }
+      const peg::Ast* m = value_member_ast(class_ast, post.token);
+      if (!m || !inline_body_ok(*m, /*is_ctor=*/false)) return false;
+      auto mv = culebra::view_method(*m);
+      auto ps = inline_params(mv.params);
+      if (!ps || ps->size() != at.nodes[i + 1]->nodes.size()) return false;
+      i += 2;
+      if (!member_returns_own(*m, class_name))
+        return i == at.nodes.size();  // a scalar result must end the chain
+    }
+    return false;  // ran out still holding a run: it would escape
+  }
+
+  // `C.new(args)` and everything after it, compiled as slots. Returns
+  // nullopt — before emitting anything — whenever any part of the chain
+  // fails to qualify, and the caller then compiles the whole thing the
+  // ordinary boxed way.
+  std::optional<ExprResult> try_inline_value_chain(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.size() < 3 ||
+        ast.nodes[2]->original_tag != "ARGUMENTS"_)
+      return std::nullopt;
+    const peg::Ast* cls = postfix_value_class(ast, *ast.nodes[1]);
+    if (!cls) return std::nullopt;
+    size_t dec_end = culebra::first_non_decorator_index(*cls);
+    auto class_name =
+        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
+    const auto* layout = culebra::value_flat_layout(class_name);
+    if (!layout) return std::nullopt;
+    const peg::Ast* ctor = value_member_ast(*cls, "new");
+    if (!ctor || !inline_body_ok(*ctor, /*is_ctor=*/true)) return std::nullopt;
+    auto cps = inline_params(culebra::view_method(*ctor).params);
+    if (!cps || cps->size() != ast.nodes[2]->nodes.size())
+      return std::nullopt;
+    if (!chain_stays_unboxed(ast, 3, *cls, class_name, layout))
+      return std::nullopt;
+
+    // Committed. The run and every later step's run belong to the caller's
+    // scope, so they outlive each splice's own scope.
+    int32_t n = static_cast<int32_t>(layout->size());
+    auto fresh_run = [&] {
+      int32_t base = next_slot_;
+      for (int32_t k = 0; k < n; k++)
+        alloc_slot(ast, culebra::format("({}.{})", class_name, (*layout)[k]));
+      for (int32_t k = 0; k < n; k++) {
+        int32_t z = alloc_temp(ast);
+        emit(Op::LoadConst, z, kconst({TAG_NIL, 0}));
+        store_into(base + k, ExprResult{z, true}, /*dst_is_fresh=*/false);
+      }
+      return base;
+    };
+    auto compile_args = [&](const peg::Ast& args,
+                            std::vector<ExprResult>& out,
+                            std::vector<const peg::Ast*>& asts) {
+      for (const auto& a : args.nodes) {
+        out.push_back(compile_expr(*a));
+        asts.push_back(a.get());
+      }
+    };
+    int32_t base = fresh_run();
+    std::vector<ExprResult> args;
+    std::vector<const peg::Ast*> arg_asts;
+    compile_args(*ast.nodes[2], args, arg_asts);
+    ExprResult cur = emit_inline_body(*ctor, class_name, base, layout, *cps,
+                                      args, arg_asts, /*is_ctor=*/true,
+                                      /*out_base=*/-1, layout);
+    for (size_t i = 3; i < ast.nodes.size();) {
+      const auto& post = *ast.nodes[i];
+      if (i + 1 >= ast.nodes.size() ||
+          ast.nodes[i + 1]->original_tag != "ARGUMENTS"_) {
+        int32_t ix = inline_field_index(cur, post.token);
+        return ExprResult{cur.slot + ix, /*owned=*/false};
+      }
+      const peg::Ast* m = value_member_ast(*cls, post.token);
+      auto ps = inline_params(culebra::view_method(*m).params);
+      std::vector<ExprResult> margs;
+      std::vector<const peg::Ast*> masts;
+      compile_args(*ast.nodes[i + 1], margs, masts);
+      bool run = member_returns_own(*m, class_name);
+      int32_t out_base = run ? fresh_run() : alloc_slot(ast, "(value.ret)");
+      cur = emit_inline_body(*m, class_name, cur.slot, layout, *ps, margs,
+                             masts, /*is_ctor=*/false, out_base,
+                             run ? layout : nullptr);
+      i += 2;
+    }
+    return cur;
+  }
+
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
   // `x!!`, and their compositions (`n[i][j]`, `f()[k]`, `Math.abs(-3).nope`),
   // folded left to right over one rolling result — the same walk
@@ -7364,6 +7792,12 @@ class Compiler {
                      chunk_.fn_bound_slot >= 0 && ast.nodes.size() > 1 &&
                      ast.nodes[1]->original_tag == "ARGUMENTS"_;
     if (auto r = compile_lazy_ns_register(ast)) return *r;
+    // A `@value` construction whose whole chain stays unboxed compiles as
+    // slots instead of an object — head included, which is why the attempt
+    // comes before the head is compiled at all. Any part failing to qualify
+    // answers nullopt having emitted nothing, and the ordinary walk below
+    // then compiles the boxed form it always did.
+    if (auto r = try_inline_value_chain(ast)) return *r;
     // A head the call can read out of its cell when it runs, rather than
     // copying into a register first (borrowed_call_head). `res.slot` is then
     // the CELL's slot, which only the Call the next loop turn emits knows how
@@ -7419,6 +7853,12 @@ class Compiler {
   // (the JIT emits that cold check under the same compile-time filter).
   ExprResult compile_property_read(const peg::Ast& at, const peg::Ast& post,
                                    ExprResult recv) {
+    // An unboxed instance's field IS a slot of the run — no object to read
+    // it out of, so no instruction at all. A name that is not one of the
+    // declared fields cannot reach here: the chain only carries the marker
+    // when every step was checked against the layout first.
+    if (int32_t ix = inline_field_index(recv, post.token); ix >= 0)
+      return {recv.slot + ix, /*owned=*/false};
     int32_t t;
     {
       StampGuard pos(*this, at);
@@ -9231,6 +9671,15 @@ class Compiler {
           emit(Op::FnHandle, t, chunk_.self_slot, chunk_.fn_slot,
                chunk_.fn_bound_slot);
           return {t, true};
+        }
+        // Inside an inlined `@value` body, `self` IS the unboxed run and
+        // the class's own name IS that class — neither goes through a
+        // Binding, so neither can be shadowed by, or leak into, the
+        // surrounding frame. The stack's lifetime is the inline's.
+        if (!inlines_.empty()) {
+          const auto& f = inlines_.back();
+          if (ast.token == "self")
+            return {f.base, /*owned=*/false, -1, f.layout};
         }
         const Binding* b = lookup(ast.token);
         if (b) return read_binding(ast, *b);

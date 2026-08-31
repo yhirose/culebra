@@ -507,6 +507,54 @@ copied as before, and the test is `slot_cell_` rather than `is_cell`.
 cell still holds the same value when the call is over, the throw path
 included.
 
+### 5.3.1 A flat `@value` chain is compiled, not called
+
+Naming a callee is the ceiling of §5.3's resolution — the code is static,
+but the call itself still happens. A `@value` class whose declared fields
+are all machine scalars goes one step further: `C.new(args)` and a chain of
+field reads and same-class method calls on the result compile to slots
+instead, with no instance built and no call emitted at all, as long as the
+whole chain stays that way.
+
+Eligibility is decided by `try_inline_value_chain` before a single
+instruction is emitted, over three questions, and a `no` to any of them
+compiles the ordinary boxed form unchanged — there is no half-inlined state
+and no run-time fallback. The class must have a flat layout
+(`value_flat_layout`): at least one declared field, every one a scalar, none
+with an initializer expression (an initializer runs through the field-init
+thunk, which is a frame). Each member's body must be splice-able
+(`inline_body_ok`): straight-line control flow, no nested `fn`/class literal,
+and — outside the constructor — no `self.x =` write, which on a boxed
+instance is the freeze's `ImmutableError`. And every name the body reads must
+mean, in the caller, what it meant in the callee: `self` and the class's own
+name resolve through a small per-inline record (`Compiler::inlines_`) rather
+than a `Binding`, and every other identifier is walked and must be a
+parameter, or a stdlib global or namespace the caller has not shadowed —
+`FuncInfo::free_vars` is not the set to ask, since a namespace is not a
+variable and never appears there.
+
+The splice itself (`emit_inline_body`) reuses the ordinary statement
+compiler, `compile_statement`/`compile_expr`, inside a scope the caller pops
+when the splice is done — the same machinery an `if` or `for` body already
+uses to compile "into" the surrounding frame. What is bespoke is the
+parameter binding: each argument is already a compiled `ExprResult`, so
+binding it is a plain slot store, and a typed parameter is checked with
+`Op::ChkTypeAt` rather than `Op::ChkArg` — `ChkArg`'s failure path resolves
+its report position from thread-locals a real call publishes
+(`culebra_runtime_param_pos`), and an inlined site publishes none. At an
+inlined site the position is static (the argument's own expression), so
+`ChkTypeAt` is stamped there instead; the two runtime helpers share one
+format string, so the diagnostic text is identical either way.
+
+A chain is only ever offered the unboxed form when it stays that way to a
+scalar leaf — a run reaching any other consumer is not something this
+builds a re-boxing path for, so `let v = C.new(...)` used as a value simply
+compiles the ordinary way. That restriction is what keeps this landing with
+no reification: every unboxed value this produces is consumed by more of
+the same compile-time machinery, recursively, which is also what collapses
+a method whose own tail constructs the same class (`V2.__add__` returning
+`V2.new(...)`) without a separate pass.
+
 ### 5.4 Built-in methods are a table
 
 The value-type methods (`'ab'.upper()`, `xs.map(f)`, `it.count()`, …)

@@ -728,6 +728,21 @@ check_same "value undeclared in closure" "@value class A {
   x: Long
   new() { self.x = 1; let f = fn () { self.q = 2 }; f() }
 }"
+# An inlined `@value` construction binds its parameters without a call, so the
+# typed-parameter check cannot resolve its position the way ChkArg does (from
+# the thread-locals a real call publishes). It reports the argument's own
+# expression instead — the same place the boxed path lands on.
+check_same "value inline typed param" "@value class A {
+  x: Long
+  new(x: Long) { self.x = x }
+}
+A.new('"'"'nope'"'"').x"
+check_same "value inline typed param 2nd" "@value class A {
+  x: Long
+  y: Long
+  new(x: Long, y: Long) { self.x = x; self.y = y }
+}
+A.new(1, '"'"'nope'"'"').y"
 
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

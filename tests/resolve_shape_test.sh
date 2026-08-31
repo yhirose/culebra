@@ -65,5 +65,35 @@ check "overloaded ctor resolves nothing" \
 Over.new().a' \
 'CallM.*-> chunk' 0
 
+# A flat `@value` chain compiles to slots: no instance is built at all, and
+# the run shows up as named field slots.
+check "flat @value chain unboxes" \
+'@value
+class V2 {
+  x: Float
+  y: Float
+  new(x: Float, y: Float) { self.x = x; self.y = y }
+  len() { Math.sqrt(self.x * self.x + self.y * self.y) }
+}
+V2.new(3.0, 4.0).len()' \
+'\(V2\.x\)' 1
+
+# ...and a class the layout rules refuse keeps the boxed form. Without this
+# the check above would pass just as well if everything unboxed.
+check "nested-@value field stays boxed" \
+'@value
+class In {
+  a: Long
+  new(a: Long) { self.a = a }
+}
+@value
+class Out {
+  inner: In
+  k: Long
+  new(inner: In, k: Long) { self.inner = inner; self.k = k }
+}
+Out.new(In.new(1), 2).k' \
+'\(Out\.inner\)' 0
+
 if [[ $fail -eq 0 ]]; then echo "resolve_shape_test OK"; exit 0; fi
 exit 1
