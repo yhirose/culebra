@@ -9,6 +9,23 @@
 #                        it compiles to slots, no object and no call
 #   boxed chain          the same work through a name, which is a run with
 #                        nowhere to go — it builds the instance the old way
+#   scalars, op form      the floor for the operator rows below — elementwise
+#                        add then length, in locals
+#   operator, inlined     `(V2.new(a,b) + V2.new(c,d)).len()`: operand[0] is a
+#                        fresh construction, so the fold's own `+` splices
+#                        `__add__` instead of reaching the runtime dispatch —
+#                        this is what Stage 2c (operator dispatch) adds on
+#                        top of Stage 1's chain inlining above
+#   operator, boxed       the identical arithmetic through `__add__`, but each
+#                        operand comes back from an ordinary function
+#                        (`make(x, y)`) instead of a literal `C.new(...)` — not
+#                        a construction chain the compiler can name, so the
+#                        fold declines and reaches `__add__` through the
+#                        ordinary runtime dispatch (`_dispatch_arith_special`)
+#                        this row and the inlined one differ ONLY in whether
+#                        the compiler could see the constructions, so their gap
+#                        is 2c's own contribution — not construction cost,
+#                        which the (fresh-construction) inlined row still pays
 #   scalars (control)    two rows doing identical arithmetic; if these two
 #                        disagree by more than a few percent the run is noise
 #                        and should be thrown away
@@ -34,7 +51,17 @@ class V2 {
   len() {
     Math.sqrt(self.x * self.x + self.y * self.y)
   }
+
+  __add__(o) {
+    V2.new(self.x + o.x, self.y + o.y)
+  }
 }
+
+# Not a `C.new(...)` chain from the call site's point of view — the fold's
+# own lookahead (fold_resolves_to_class) requires operand[0] to be that
+# literal shape, so a value coming back through this ordinary function
+# always reaches the boxed operator dispatch, on purpose.
+let make = fn (x, y) { V2.new(x, y) }
 
 let report = fn (name, dt, acc) {
   println("  {name:<28}{dt / N * 1e9:>8.1f}  ns/op   {acc:>18.6f}")
@@ -67,6 +94,38 @@ let boxed = fn () {
   acc
 }
 
+let scalars_op = fn () {
+  let mut acc = 0.0
+  for i in 0..N {
+    let ax = to_float(i % 7)
+    let ay = to_float(i % 5)
+    let bx = to_float(i % 3)
+    let by = to_float(i % 11)
+    let sx = ax + bx
+    let sy = ay + by
+    acc += Math.sqrt(sx * sx + sy * sy)
+  }
+  acc
+}
+
+let op_inlined = fn () {
+  let mut acc = 0.0
+  for i in 0..N {
+    acc += (V2.new(to_float(i % 7), to_float(i % 5)) +
+            V2.new(to_float(i % 3), to_float(i % 11))).len()
+  }
+  acc
+}
+
+let op_boxed = fn () {
+  let mut acc = 0.0
+  for i in 0..N {
+    acc += (make(to_float(i % 7), to_float(i % 5)) +
+            make(to_float(i % 3), to_float(i % 11))).len()
+  }
+  acc
+}
+
 println("value inline, {N} iterations")
 println("")
 
@@ -79,4 +138,7 @@ let run = fn (name, f) {
 run('scalars', scalars)
 run('inlined chain', inlined)
 run('boxed chain', boxed)
+run('scalars, op form', scalars_op)
+run('operator, inlined', op_inlined)
+run('operator, boxed', op_boxed)
 run('scalars (control)', scalars)
