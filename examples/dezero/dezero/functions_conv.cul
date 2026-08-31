@@ -88,35 +88,6 @@ fn tensor_to_nested(t) {
 
 # --- padding --------------------------------------------------------------
 
-fn pad_array(arr, n, c, h, w, ph, pw) {
-  ph2 = h + 2 * ph
-  pw2 = w + 2 * pw
-  mut out = []
-  for ni in range(n) {
-    mut c_layer = []
-    for ci in range(c) {
-      mut h_rows = []
-      for hi in range(ph2) {
-        mut w_row = []
-        for wi in range(pw2) {
-          src_h = hi - ph
-          src_w = wi - pw
-          v = if src_h >= 0 && src_h < h && src_w >= 0 && src_w < w {
-            arr[ni][ci][src_h][src_w]
-          } else {
-            0.0
-          }
-          w_row.push(v)
-        }
-        h_rows.push(w_row)
-      }
-      c_layer.push(h_rows)
-    }
-    out.push(c_layer)
-  }
-  out
-}
-
 fn strip_padding(padded, n, c, h, w, ph, pw) {
   mut out = []
   for ni in range(n) {
@@ -402,36 +373,20 @@ fn deconv2d(x, w, b = nil, stride = 1, pad = 0, outsize = nil) {
 
 # --- pooling -----------------------------------------------------------------
 #
-# Windows are gathered per-channel (unlike im2col, channels are never
-# flattened into the row) since forward here is a per-window reduction, not
-# a matmul.
-
-fn gather_windows(arr, n, c, h, w, kh, kw, sh, sw, ph, pw, oh, ow) {
-  padded = pad_array(arr, n, c, h, w, ph, pw)
-  mut out = []
-  for ni in range(n) {
-    mut c_list = []
-    for ci in range(c) {
-      mut oh_list = []
-      for ohi in range(oh) {
-        mut ow_list = []
-        for owi in range(ow) {
-          mut win = []
-          for khi in range(kh) {
-            for kwi in range(kw) {
-              win.push(padded[ni][ci][ohi * sh + khi][owi * sw + kwi])
-            }
-          }
-          ow_list.push(win)
-        }
-        oh_list.push(ow_list)
-      }
-      c_list.push(oh_list)
-    }
-    out.push(c_list)
-  }
-  out
-}
+# Windows are gathered per-channel (unlike im2col, channels are never merged
+# with the window into one row) since forward here is a per-window
+# reduction, not a matmul: pad + unfold the two spatial axes (native,
+# GPU-dispatched, same as conv2d's own), `.clone()` the resulting view
+# contiguous, then merge the trailing [KH,KW] into one axis so `.max(4)`/
+# `.mean(4)`/`.argmax(4)` (all single-axis) can reduce it in one call. No
+# NCHW<->NHWC move needed here (unlike im2col) since pooling reduces each
+# channel independently rather than feeding a matmul.
+#
+# backward() stays a host loop either way: Pooling's own is already only
+# output-sized (one argmax index per window, not the window itself), so
+# there was never a large array to move natively; AveragePooling's does
+# scatter-add every window position (same shape .fold() has), a smaller,
+# separately-scoped follow-up.
 
 class Pooling {
   generation = 0
@@ -463,56 +418,15 @@ class Pooling {
     self.oh = oh
     self.ow = ow
 
-    windows = gather_windows(
-      tensor_to_nested(x),
-      n,
-      c,
-      h,
-      w,
-      kh,
-      kw,
-      sh,
-      sw,
-      ph,
-      pw,
-      oh,
-      ow,
-    )
-    mut out_vals = []
-    mut argmax = []
-    for ni in range(n) {
-      mut c_vals = []
-      mut c_arg = []
-      for ci in range(c) {
-        mut oh_vals = []
-        mut oh_arg = []
-        for ohi in range(oh) {
-          mut ow_vals = []
-          mut ow_arg = []
-          for owi in range(ow) {
-            win = windows[ni][ci][ohi][owi]
-            mut best = win[0]
-            mut best_k = 0
-            for k in range(win.size()) {
-              if win[k] > best {
-                best = win[k]
-                best_k = k
-              }
-            }
-            ow_vals.push(best)
-            ow_arg.push(best_k)
-          }
-          oh_vals.push(ow_vals)
-          oh_arg.push(ow_arg)
-        }
-        c_vals.push(oh_vals)
-        c_arg.push(oh_arg)
-      }
-      out_vals.push(c_vals)
-      argmax.push(c_arg)
-    }
-    self.argmax = argmax
-    tensor_from_nested(out_vals, [n, c, self.oh, self.ow])
+    flat = x
+      .pad([2, ph, ph])
+      .pad([3, pw, pw])
+      .unfold([2, kh, sh])
+      .unfold([3, kw, sw])
+      .clone()
+      .reshape([n, c, oh, ow, kh * kw])
+    self.argmax = tensor_to_nested(flat.argmax(4))
+    flat.max(4)
   }
 
   backward(gy) {
@@ -528,7 +442,7 @@ class Pooling {
       for ci in range(c) {
         for ohi in range(self.oh) {
           for owi in range(self.ow) {
-            k = self.argmax[ni][ci][ohi][owi]
+            k = to_long(self.argmax[ni][ci][ohi][owi])
             khi = k / self.kw
             kwi = k % self.kw
             padded[ni][ci][ohi * self.sh +
@@ -578,44 +492,14 @@ class AveragePooling {
     self.oh = oh
     self.ow = ow
 
-    windows = gather_windows(
-      tensor_to_nested(x),
-      n,
-      c,
-      h,
-      w,
-      kh,
-      kw,
-      sh,
-      sw,
-      ph,
-      pw,
-      oh,
-      ow,
-    )
-    cnt = to_float(kh * kw)
-    mut out_vals = []
-    for ni in range(n) {
-      mut c_vals = []
-      for ci in range(c) {
-        mut oh_vals = []
-        for ohi in range(oh) {
-          mut ow_vals = []
-          for owi in range(ow) {
-            win = windows[ni][ci][ohi][owi]
-            mut total = 0.0
-            for v in win {
-              total += v
-            }
-            ow_vals.push(total / cnt)
-          }
-          oh_vals.push(ow_vals)
-        }
-        c_vals.push(oh_vals)
-      }
-      out_vals.push(c_vals)
-    }
-    tensor_from_nested(out_vals, [n, c, self.oh, self.ow])
+    x
+      .pad([2, ph, ph])
+      .pad([3, pw, pw])
+      .unfold([2, kh, sh])
+      .unfold([3, kw, sw])
+      .clone()
+      .reshape([n, c, oh, ow, kh * kw])
+      .mean(4)
   }
 
   backward(gy) {
