@@ -351,7 +351,7 @@ int32_t a, b, c, d; }`）。レジスタはフレームのslotであり、それ
 | `slot_rank`、`slot_cell_rank` | 宣言順（release ladderは新しい方から歩く）と、各slotがいつcellになったか — インデックスは初めは一時値で、後にcaptureされた束縛のcellになることがある |
 | `cleanups`、`temp_points`/`temp_slots`、`defer_mark_slot`、`owned_depths` | unwindテーブル（§5.5） |
 | `call_argpos`、`kwcalls`、`arity_checks`、`name_tables` | 呼び出しごとの引数位置、キーワード呼び出しのレイアウト、組み込みのarity腕、クラスのメソッド名テーブル |
-| `call_targets` | 呼び出し命令ごとに、その呼び先が解決された唯一の関数chunk、呼び先がそこへ導くdispatcherかどうか、そして呼び先をcellから直接読むかどうか（§5.3） |
+| `call_targets` | 呼び出し命令ごとに、その呼び先が解決された唯一の関数chunk、そのchunkがレジスタの値とどう対応するか（`Chunk::Reach`）、そして呼び先をcellから直接読むかどうか（§5.3） |
 
 ### 5.2 命令列の中の所有権
 
@@ -398,11 +398,13 @@ captureされた変数は6つのop — `CellNew`、`CellGet`、`CellSet`、
 **コンパイラが名指しできる呼び先。** その文リストが1度だけ宣言する
 `let name = fn …`は、その関数リテラルに束縛されたままである:
 `mut`を取らず、再代入もできず、変えうるものは同じスコープでの同名の
-2度目の宣言だけである。コンパイラはこれを`Binding::known_chunk`として
-追跡し — captureはこれを引き継ぐ。borrowするcellはその束縛が所有する
-当のcellだからであり、後の宣言がそのcellを書き換えたときは、それを
-通して解決済みの呼び出しサイトを取り消す — 呼び出し命令ごとの答えを
-`call_targets`に記録する。静的なのはコードだけである: closure自体は
+2度目の宣言だけである。コンパイラはこれを`Binding::Known`として追跡する
+— chunk、そこへの到達のしかた、答えを繋ぎ止めるcell、そして（後述）その
+名前への`.new`が入るコンストラクタを、1つのレコードにまとめたものである。
+captureはこれを引き継ぐ。borrowするcellはその束縛が所有する当のcellだから
+であり、後の宣言がそのcellを書き換えたときは、それを通して解決済みの
+呼び出しサイトを取り消す。呼び出し命令ごとの答えは`call_targets`に記録する。
+静的なのはコードだけである: closure自体は
 レジスタに乗ったままで、そのcaptureは呼び手のものだからだ。両consumer
 は同じ3つを飛ばす — 2つのcold probeを伴う`TAG_FUNC`ゲート、
 `check_pos_count_cls`の背後にあるパラメータmetaの引き当て（上限は
@@ -411,11 +413,17 @@ captureされた変数は6つのop — `CellNew`、`CellGet`、`CellSet`、
 されたchunkで`run_frame`に入り、loweringはそのchunkの関数への直接
 callを出す。
 
-この解析に実行時のフォールバックは無い: 解決済みサイトは渡された値を
-検査しない。それを検査するのはexecutorの解決済み腕にある`assert`で、
-実際に現れたclosureと突き合わせる。つまりassertレーン（§10、
-`just test-assert`とCIのlinux-assertジョブ）が予測を armed にしたまま
-スイープ全体を回し、releaseビルドは何も払わない。
+この形に実行時のフォールバックは無い: サイトは渡された値を検査しない。
+それを検査するのはexecutorの解決済み腕にある`assert`で、実際に現れた
+closureと突き合わせる。つまりassertレーン（§10、`just test-assert`と
+CIのlinux-assertジョブ）が予測を armed にしたままスイープ全体を回し、
+releaseビルドは何も払わない。
+
+`Chunk::Reach`は解決済みサイトが3つの形のどれかを名指しする。3つはフラグ
+ではなく択一である: `Direct`が今述べた形、`Mono`と`Guarded`が以下の2つ。
+それぞれが実行時に問う質問は高々1つなので、executorはそれを1箇所で問い
+（`resolved_entry`、`Call`と`CallM`が共有する）、loweringは質問を持つ形に
+共通のダイヤモンドを1つ出す。
 
 **`fn name`の場合。** `fn name`が束縛するのはclosureではなくdispatcher
 であり、overloadはランタイムのregistryの中にあるので、body自体は呼び出し
@@ -424,8 +432,8 @@ callを出す。
 テーブルに追記するのは同じスコープでの2度目の宣言だけ（`MultifnReg`の
 `into`オペランド）なので、この形のテーブルはdispatcherが生きている限り
 無注釈のエントリを1つ持ち続け、そのエントリはdispatchが選びうる唯一の
-メソッドである。コンパイラはこれを`Binding::known_chunk`＋`via_mono`として
-記録し、サイトにも同じ印を付ける。dispatcherはそのbodyを2つ目のcapture
+メソッドである。コンパイラはこれを`Known::chunk`＋`via_mono`として記録し、
+サイトには`Reach::Mono`の印を付ける。dispatcherはそのbodyを2つ目のcapture
 cellに持ち、テーブルが書き換わるたびにこのcellも書き換わる。解決済み
 サイトはそれを読み — ロード3段、registryは引かない — bodyをフレームの
 closureとして、名指しされたchunkに入る。記録するのは唯一のoverloadが
@@ -434,10 +442,27 @@ closureとして、名指しされたchunkに入る。記録するのは唯一�
 `MfSelf`はこのbodyが登録されたdispatcherを返すので、素朴な再帰が直接
 callになるのはこれによる。
 
-解決済みの形のうち、実行時に何かを問うのはこれだけである — そのcellが
-まだbodyを持っているか。payloadがnullなら、そのサイトが元々取っていた
-動的な腕に落ちる。上のassertはこの腕も見ている: 渡されるのはdispatcher
-が導いたbodyそのものだからである。
+この形が問うのは、そのcellがまだbodyを持っているかである。payloadが
+nullなら、そのサイトが元々取っていた動的な腕に落ちる。上のassertはこの腕も
+見ている: 渡されるのはdispatcherが導いたbodyそのものだからである。
+
+**クラス名の後ろのコンストラクタ。** `C.new(args)`はpostfix連鎖の中で解決
+できる唯一の一歩である: コンストラクタは頭そのものではなくクラスオブジェクト
+を経由して届くので、`head_callee`はこれを一度も見ない。クラス宣言はその名前を
+同じ「ちょうど1度だけ書かれる」規則で束縛するので、`Known::ctor`は新しい根拠を
+要さずその論証を引き継ぎ、同じcellに繋ぎ止められ、同じ取り消しで消える。
+実行時に答えが動きうる場合は付与しない — overload集合はコンストラクタを
+chunkではなくdispatcherにするし、コンパイル時マーカー以外のデコレータは
+クラスでないものを返しうる。
+
+メンバの中では、クラス名は**レシーバ**から読まれる（`ClsSelf`）ので、chunkは
+分かっていても値は実行時の問いである: メソッド値が別のオブジェクトへ移されて
+いれば、同じ名前が別のクラスに解決されうる。そうしたサイトは`Reach::Guarded`
+になる — chunkは保ったまま、入る前に「この呼び先は本当にそのchunkのclosureか」
+を問う。executorは`call_target_holds`（上のassertが使う述語そのもの）で問い、
+loweringはclosureの`fn_ptr`をターゲットが名指しする関数と比較する。外れれば
+元々取っていた動的な腕へ落ちる。宣言スコープ由来やcapture由来のクラス名は
+ガード無しの答えのままである。
 
 **呼び先の借用。** 呼び出しは呼び先を借用する: 呼び手の`+1`が呼び先に
 渡ることは、どの腕でもどのレーンでも無い。だから、呼び出しの最中に

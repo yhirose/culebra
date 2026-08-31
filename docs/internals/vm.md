@@ -361,7 +361,7 @@ A `Chunk` carries, besides `code`:
 | `slot_rank`, `slot_cell_rank` | declaration order (release ladders walk newest-first) and, per slot, when it became a cell — an index can be a temporary early on and a captured binding's cell later |
 | `cleanups`, `temp_points`/`temp_slots`, `defer_mark_slot`, `owned_depths` | the unwind tables (§5.5) |
 | `call_argpos`, `kwcalls`, `arity_checks`, `name_tables` | per-call argument positions, keyword-call layouts, built-in arity arms, class method-name tables |
-| `call_targets` | per call instruction, the one function chunk its callee was resolved to, whether the callee is the dispatcher that leads to it, and whether the callee is read straight out of a cell (§5.3) |
+| `call_targets` | per call instruction, the one function chunk its callee was resolved to, how that chunk relates to the value in the register (`Chunk::Reach`), and whether the callee is read straight out of a cell (§5.3) |
 
 ### 5.2 Ownership in the instruction stream
 
@@ -409,10 +409,12 @@ new closure's captures from the callee chunk's `capture_src_slots`.
 list declares once is bound to that literal for good: it takes no `mut`,
 nothing can rebind it, and the one thing that could change it is a
 second declaration of the same name in the same scope. The compiler
-tracks that as `Binding::known_chunk` — a capture inherits it, since the
-cell it borrows is the one that binding owns, and a later declaration
-writing that cell strikes what was resolved through it — and records the
-answer per call instruction in `call_targets`. Only the code is static:
+tracks that as `Binding::Known` — one record holding the chunk, how it is
+reached, the cell the answer is anchored to, and (below) the constructor a
+`.new` on the name would enter. A capture inherits it, since the cell it
+borrows is the one that binding owns, and a later declaration writing that
+cell strikes what was resolved through it. The per-call answer goes in
+`call_targets`. Only the code is static:
 the closure still rides the register, because its captures are the
 caller's. Both consumers then skip the same three things — the
 `TAG_FUNC` gate with its two cold probes, the parameter-meta lookup
@@ -421,11 +423,18 @@ positional count is the site's, so the answer is a compile-time one),
 and the `fn_ptr` indirection. The executor enters `run_frame` on the
 named chunk; the lowering emits a direct call to that chunk's function.
 
-The analysis has no run-time fallback: a resolved site does not test
-what it was handed. What checks it is an `assert` in the executor's
-resolved arm, against the closure that actually turns up — so the assert
-lane (§10, `just test-assert` and CI's linux-assert job) runs the whole
-sweep with the prediction armed, and a release build pays nothing.
+This shape has no run-time fallback: the site does not test what it was
+handed. What checks it is an `assert` in the executor's resolved arm,
+against the closure that actually turns up — so the assert lane (§10,
+`just test-assert` and CI's linux-assert job) runs the whole sweep with the
+prediction armed, and a release build pays nothing.
+
+`Chunk::Reach` names which of three shapes a resolved site is, and they are
+alternatives rather than flags: `Direct` is the one just described, `Mono`
+and `Guarded` are the two below. Each owes at most one run-time question,
+which is why the executor asks it in one place (`resolved_entry`, shared by
+`Call` and `CallM`) and the lowering emits one diamond for whichever shape
+has one.
 
 **And a `fn name`.** A `fn name` binds a dispatcher, not a closure: its
 overloads live in the runtime's registry, so the body is not reachable
@@ -435,21 +444,41 @@ Only a same-scope second declaration appends to a dispatcher's table
 (the `into` operand of `MultifnReg`), so such a table holds its one
 untyped entry for as long as the dispatcher lives, and that entry is
 the only method dispatch could ever pick. The compiler records it as
-`Binding::known_chunk` with `via_mono` set, and marks the site the same
-way; the dispatcher carries that body in its second capture cell,
-rewritten whenever the table is. A resolved site reads it — three loads,
-no registry — and enters the named chunk with the body as the frame's
+`Known::chunk` with `via_mono` set, and marks the site `Reach::Mono`;
+the dispatcher carries that body in its second capture cell, rewritten
+whenever the table is. A resolved site reads it — three loads, no
+registry — and enters the named chunk with the body as the frame's
 closure. Only the argument counts the lone overload accepts are
 recorded, so every other count still reaches the dispatcher and its
-`DispatchError`. The body's
-own name is the same grant: `MfSelf` yields the dispatcher this body was
-registered into, which is what makes plain recursion a direct call.
+`DispatchError`. The body's own name is the same grant: `MfSelf` yields
+the dispatcher this body was registered into, which is what makes plain
+recursion a direct call.
 
-This is the one resolved shape that asks something at run time: whether
-that capture still holds a body. A null payload falls through to the
-dynamic arm the site would have taken anyway — and the assert above
-covers this arm too, since what it is handed is the body the dispatcher
-led to.
+The question this shape asks is whether that capture still holds a body. A
+null payload falls through to the dynamic arm the site would have taken
+anyway — and the assert above covers this arm too, since what it is handed
+is the body the dispatcher led to.
+
+**And the constructor behind a class name.** `C.new(args)` is the one step
+down a postfix chain that resolves: a constructor arrives through the class
+object rather than by being the head, so `head_callee` never sees it. A class
+declaration binds its name under the same "written exactly once" rule, so
+`Known::ctor` inherits that argument rather than needing a new one, is
+anchored to the same cell, and is struck by the same revocation. The grant is
+refused where the answer can move at run time — an overload set makes the
+constructor a dispatcher rather than a chunk, and a decorator that is not one
+of the compile-time markers may hand back something that is not the class.
+
+Inside a member the class name is read off the **receiver** (`ClsSelf`), so
+its value is a run-time question even though its chunk is not: a method value
+moved onto a foreign object would resolve the same name to a different class.
+Such a site is `Reach::Guarded` — it keeps the chunk and asks, before
+entering, whether this callee really is that chunk's closure. The executor
+asks with `call_target_holds` (the predicate the assert above uses); the
+lowering compares the closure's `fn_ptr` against the function the target
+names. A miss takes the dynamic arm it would have taken all along. A class
+name reached from the declaring scope or through a capture keeps the
+unguarded answer.
 
 **Borrowing the callee.** A call borrows what it calls: the caller's
 `+1` is never handed to the callee, on any arm and on any lane. So the
