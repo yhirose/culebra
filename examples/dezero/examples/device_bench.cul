@@ -14,6 +14,16 @@
 #   functions_conv.cul's header comment for why). Both the window-gather and
 #   the GEMM inside it can now ride whichever device is selected.
 #
+#   Multi-head attention's own shape ([batch,heads,seq,dim] Q/K/V) needs a
+#   batched `.dot()` (rank >= 3) and `.permute()` for the K^T transpose —
+#   neither existed before this session. `.dot()`'s GPU dispatch is a
+#   per-slice loop over the same single-matmul kernel MLP's `.dot()` uses
+#   (gpu_bdot_ in cpp-tensorlib), so this measures whether that per-slice
+#   dispatch still beats CPU once there are `batch*heads` of them rather
+#   than one. Forward-only (no dezero Function wraps `.permute()`/batched
+#   `.dot()` yet, and native `.backward()` doesn't reach through `.permute()`
+#   itself — see docs/stdlib.md's autograd section).
+#
 #   culebra --jit examples/dezero/examples/device_bench.cul
 
 import dz from '../dezero/core.cul'
@@ -68,6 +78,29 @@ fn bench_conv(label, batch, size, iters = 5) {
   println("{label} Conv2d batch={batch} size={size}x{size}: {ms} ms/iter")
 }
 
+fn bench_attn(label, batch, heads, seq, dim, iters = 5) {
+  q = Tensor.randn(batch, heads, seq, dim)
+  k = Tensor.randn(batch, heads, seq, dim)
+  v = Tensor.randn(batch, heads, seq, dim)
+
+  fn step() {
+    scores = q.dot(k.permute([0, 1, 3, 2]))
+    attn = scores.softmax()
+    out = attn.dot(v)
+    Tensor.eval(out)
+  }
+
+  step()  # warm up
+  t0 = Time.monotonic()
+  for _ in range(iters) {
+    step()
+  }
+  ms = (Time.monotonic() - t0) * 1000.0 / to_float(iters)
+  println(
+    "{label} Attn   batch={batch} heads={heads} seq={seq} dim={dim}: {ms} ms/iter",
+  )
+}
+
 println("GPU available: {Tensor.gpu_available()}\n")
 
 println("-- matmul-heavy: Linear/MLP (RNN/LSTM ride the same path) --")
@@ -85,6 +118,18 @@ for cfg in [{batch: 8, size: 28}, {batch: 32, size: 28}] {
   bench_conv("cpu ", cfg.batch, cfg.size)
   Tensor.use_gpu()
   bench_conv("gpu ", cfg.batch, cfg.size)
+  println("")
+}
+
+println("-- batch-heavy: multi-head attention's batched dot + permute --")
+for cfg in [
+  {batch: 2, heads: 4, seq: 64, dim: 32},
+  {batch: 8, heads: 8, seq: 128, dim: 64},
+] {
+  Tensor.use_cpu()
+  bench_attn("cpu ", cfg.batch, cfg.heads, cfg.seq, cfg.dim)
+  Tensor.use_gpu()
+  bench_attn("gpu ", cfg.batch, cfg.heads, cfg.seq, cfg.dim)
   println("")
 }
 
