@@ -79,7 +79,7 @@ mut blocks = []          # {parent, name, consts, var_slot, var_names, procs, ch
 mut free = []            # per block: {"declaring_block:slot": (block, slot)}
 mut calls = []           # per block: [callee_block...]
 mut capture_index = []   # per block: {"declaring_block:slot": capture_index}
-mut cell_index = []      # per block (the owner): {"owner:slot": cell_index}
+mut cell_index = []      # per block (the owner): {slot: cell_index}
 
 fn declared_anywhere(block, name) {
   mut b = block
@@ -267,26 +267,22 @@ fn solve_captures() {
     }
   }
 
+  # Every block's free set is walked once here for two independent purposes:
+  # capture_index says where *this* block's own capture list holds a free
+  # variable; cell_index says which of the *owning* block's own slots that
+  # variable forces into a cell rather than a local (a closure cannot capture
+  # a local -- it would die with the frame while the closure captured into it
+  # may not; see coreir/ir.h's verifier). cell_index is keyed on the owning
+  # block's own slot number alone (never a "block:slot" pair the way free/
+  # capture_index are): cell_index[b] only ever holds slots b itself owns.
   for f in range(blocks.size()) {
     mut i = 0
     for var in free[f].values() {
       let (vb, vs) = var
       capture_index[f]["{vb}:{vs}"] = i
       i = i + 1
-    }
-  }
-
-  # Whatever anyone captures, its owner keeps in a cell rather than a local
-  # slot -- a closure cannot capture a local (it would die with the frame
-  # while the closure captured into it may not; see coreir/ir.h's verifier).
-  # Walking every block's free set rather than each block's own variables,
-  # because "is this captured" is a fact about the readers, not the owner.
-  for g in range(blocks.size()) {
-    for var in free[g].values() {
-      let (vb, vs) = var
-      let key = "{vb}:{vs}"
-      if !cell_index[vb].has(key) {
-        cell_index[vb][key] = cell_index[vb].size()
+      if !cell_index[vb].has(vs) {
+        cell_index[vb][vs] = cell_index[vb].size()
       }
     }
   }
@@ -298,9 +294,8 @@ fn access(f, var) {
   let (vb, vs) = var
   cond {
     vb == f => {
-      let key = "{vb}:{vs}"
-      if cell_index[f].has(key) {
-        {kind: 'cell', index: cell_index[f][key]}
+      if cell_index[f].has(vs) {
+        {kind: 'cell', index: cell_index[f][vs]}
       } else {
         {kind: 'local', index: vs}
       }
