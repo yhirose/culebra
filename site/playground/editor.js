@@ -1,15 +1,17 @@
 // CodeMirror 6 wiring for the playground editor. Loaded from esm.sh (CDN, no
-// local vendoring/build step). esm.sh dedupes @codemirror/state|view across
-// packages ONLY when the versions agree with what `codemirror@6.0.1` resolves
-// transitively — that is @codemirror/state@6.7.1. Importing StateField from any
-// OTHER state version loads a second instance and breaks instanceof-based
-// extension resolution ("Unrecognized extension value"). So the direct
-// @codemirror/state import below must stay pinned to 6.7.1.
+// local vendoring/build step). esm.sh dedupes a package across imports ONLY
+// when the version strings agree byte-for-byte; `codemirror@6.0.1` (which
+// carries basicSetup) pulls @codemirror/state|view|commands|language via
+// floating `^6.0.0` ranges that esm.sh re-resolves on every request. A pinned
+// exact version here can drift from wherever that floating range currently
+// lands, loading a second module instance and breaking instanceof-based
+// extension resolution ("Unrecognized extension value"). So every direct
+// import below must mirror codemirror@6.0.1's own ranges, not a fixed number.
 import { EditorView, basicSetup } from "https://esm.sh/codemirror@6.0.1";
-import { keymap, Decoration } from "https://esm.sh/@codemirror/view@6.23.0";
-import { StateField, StateEffect } from "https://esm.sh/@codemirror/state@6.7.1";
-import { indentWithTab } from "https://esm.sh/@codemirror/commands@6.3.0";
-import { syntaxHighlighting } from "https://esm.sh/@codemirror/language@6.12.4";
+import { keymap, Decoration } from "https://esm.sh/@codemirror/view@^6.0.0";
+import { StateField, StateEffect } from "https://esm.sh/@codemirror/state@^6.0.0";
+import { indentWithTab } from "https://esm.sh/@codemirror/commands@^6.0.0";
+import { syntaxHighlighting } from "https://esm.sh/@codemirror/language@^6.0.0";
 import { culebraLanguage, culebraHighlightStyle } from "./culebra-lang.js";
 
 // Error-line highlight: a failed run carries `at LINE:COL` in its message (see

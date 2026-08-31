@@ -6,8 +6,12 @@
 // sync from) — do not hand-edit it; edit misc/keyword-map.txt instead. The
 // rest of this file's lexical rules (strings, regex, comments, operators)
 // mirror misc/vscode/syntaxes/culebra.tmLanguage.json by hand.
-import { StreamLanguage, HighlightStyle } from "https://esm.sh/@codemirror/language@6.12.4";
-import { tags as t } from "https://esm.sh/@lezer/highlight@1.2.1";
+// Version ranges here mirror editor.js's, for the same reason: pinning
+// against a floating dependency of codemirror@6.0.1 risks a second module
+// instance ("Unrecognized extension value") once esm.sh's floating
+// resolution and this file's pin drift apart.
+import { StreamLanguage, HighlightStyle } from "https://esm.sh/@codemirror/language@^6.0.0";
+import { tags as t } from "https://esm.sh/@lezer/highlight@^1.0.0";
 
 // === BEGIN AUTO-KEYWORDS
 const KEYWORDS = new Set([
@@ -28,6 +32,7 @@ const BUILTINS = new Set([
   "Isolate", "Channel", "Parallel", "Signal", "SharedBuffer", "Shared", "GC", "Regex", "Http",
   "Encoding", "Compress", "Hash", "CSV", "Env", "UUID", "Term", "Log", "TOML", "SQLite",
   "Canvas", "Scene", "Net", "Desktop", "Webview", "Vector2", "Vector3", "Deque", "PriorityQueue",
+  "Peg",
 ]);
 // === END AUTO-KEYWORDS
 const LANG_VARS = new Set(["self", "__ARGS__"]);
