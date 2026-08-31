@@ -1581,6 +1581,9 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
 | `.reshape(dims: Array) -> Tensor` | view | contiguous input only; new shape |
+| `.unfold(params: Array) -> Tensor` | view | `[axis, win, step]`; sliding window along `axis`, adds a trailing size-`win` axis |
+| `.pad(params: Array) -> Tensor` | new buffer | `[axis, before, after]`; zero-pad along `axis` |
+| `.fold(params: Array) -> Tensor` | new buffer | `[axis, orig_size, step]`; `.unfold()`'s inverse — scatter-add every window overlap back onto `axis` |
 | `.sum() -> Float` | scalar | sum of all elements (forces eval) |
 | `.sum(axis: Long?) -> Tensor` | lazy | reduce one axis; a nil axis reads as no axis, i.e. the scalar form |
 | `.mean() / .mean(axis)` | Float / Tensor | likewise |
@@ -1617,6 +1620,9 @@ produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.transpose()`,
 `.reshape()`, `.slice()`, and `Tensor.concat()`. Gradients un-broadcast
 automatically, so a bias added across a batch sums back to its shape.
+`.unfold()`, `.pad()`, and `.fold()` are forward-only so far — `.backward()`
+through them raises; a training loop that uses them (e.g. an im2col-style
+conv) writes its own backward pass around them for now.
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

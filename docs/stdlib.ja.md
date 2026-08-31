@@ -1542,6 +1542,9 @@ let l = p.log()           # 自然対数、elementwise
 | `.transpose() -> Tensor` | view | 全軸逆順（rank-2で行列転置） |
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
 | `.reshape(dims: Array) -> Tensor` | view | 連続入力のみ。新形状 |
+| `.unfold(params: Array) -> Tensor` | view | `[axis, win, step]`。`axis`沿いのスライディングウィンドウ、末尾に長さ`win`の軸を追加 |
+| `.pad(params: Array) -> Tensor` | new buffer | `[axis, before, after]`。`axis`沿いにゼロパディング |
+| `.fold(params: Array) -> Tensor` | new buffer | `[axis, orig_size, step]`。`.unfold()`の逆——重なる窓をscatter-addで`axis`へ戻す |
 | `.sum() -> Float` | scalar | 全要素和（暗黙eval） |
 | `.sum(axis: Long?) -> Tensor` | lazy | 軸を1つ畳む。axis が nil なら軸指定なし＝スカラー形と同じ |
 | `.mean() / .mean(axis)` | Float / Tensor | 同様 |
@@ -1578,6 +1581,9 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 `.softmax()`、`.log()`、`.transpose()`、`.reshape()`、`.slice()`、
 `Tensor.concat()`。勾配は自動でun-broadcastされるので、バッチ越しに
 加えたbiasは元の形状に和を取って戻ります。
+`.unfold()`、`.pad()`、`.fold()`は今のところforward-onlyです——これらを
+通した`.backward()`は例外を投げます。im2col方式のconvなどこれらを使う
+学習ループは、今のところ自前でbackwardを書きます。
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

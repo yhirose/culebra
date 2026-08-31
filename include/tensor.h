@@ -82,6 +82,12 @@ enum class Op {
   // through the right view VJP. `inputs` is set to {base} so the autograd
   // graph is walked uniformly through `inputs`.
   Transpose, Reshape, Slice,
+  Unfold,  // also zero-copy (shares storage), grouped with the views above
+           // in spirit; backward not implemented yet (see the VJP switch).
+  // im2col's own ops: both materialize a new buffer (never a view). No VJP
+  // yet either — dezero's own conv layer (examples/dezero) runs its own
+  // autograd around these rather than native .backward().
+  Pad, Fold,
 };
 
 struct TensorShape {
@@ -673,6 +679,40 @@ inline TensorPtr tensor_slice(TensorPtr t, int64_t start, int64_t end) {
                         /*op_param=*/start, /*is_view=*/true);
 }
 
+// Sliding-window view along `axis`: shape gains a trailing size-`win` axis,
+// the `axis` dim becomes the window count. Zero-copy (shares storage with
+// `t`) when `t` is contiguous, same as tensorlib's own array::unfold.
+// im2col's own building block — see examples/dezero/dezero/functions_conv.cul.
+inline TensorPtr tensor_unfold(TensorPtr t, int64_t axis, int64_t win,
+                               int64_t step) {
+  auto v = _tl_guard([&] { return t->value.unfold(axis, win, step); });
+  auto dtype = t->dtype;
+  return tensor_make_op(Op::Unfold, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(t)},
+                        /*op_param=*/0, /*is_view=*/true);
+}
+
+// Places `t` into a zero buffer, shifted by `before` along `axis` — im2col's
+// own padding step. Never a view: pad always materializes a new buffer.
+inline TensorPtr tensor_pad(TensorPtr t, int64_t axis, int64_t before,
+                            int64_t after) {
+  auto v = _tl_guard([&] { return t->value.pad(axis, before, after); });
+  auto dtype = t->dtype;
+  return tensor_make_op(Op::Pad, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(t)});
+}
+
+// unfold's inverse: scatter-add `t` (shaped like some x.unfold(axis, win,
+// step)) back into a buffer of size `orig_size` along `axis`, accumulating
+// every window overlap — col2im's own building block.
+inline TensorPtr tensor_fold(TensorPtr t, int64_t axis, int64_t orig_size,
+                             int64_t step) {
+  auto v = _tl_guard([&] { return t->value.fold(axis, orig_size, step); });
+  auto dtype = t->dtype;
+  return tensor_make_op(Op::Fold, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(t)});
+}
+
 // Build a lazy matrix multiply A @ B. A is [M, K], B is [K, N], the
 // result is [M, N]. Phase 1 supports rank-2 only.
 inline TensorPtr tensor_dot(TensorPtr a, TensorPtr b) {
@@ -1036,6 +1076,16 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Argmax:
       throw CulebraError("ValueError",
           "Tensor.backward: Max / Argmax are not differentiable.");
+    case Op::Unfold:
+    case Op::Pad:
+    case Op::Fold:
+      // unfold's VJP is fold with the same params (and vice versa); pad's is
+      // a crop. Not yet wired up: examples/dezero's own conv layer runs its
+      // own autograd around these rather than native .backward(), so this
+      // arm is unreached today — thrown rather than silently wrong once
+      // something does reach it.
+      throw CulebraError("ValueError",
+          "Tensor.backward: unfold / pad / fold are not differentiable yet.");
   }
 }
 

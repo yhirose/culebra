@@ -794,6 +794,11 @@ enum class BMeth : uint8_t {
   Shape, Pow, Transpose, Clone, RequiresGrad, Grad, Backward, ZeroGrad,
   Detach, Relu, Sigmoid, Softmax, TensorLog, Reshape, Mean,
   SumAxis, MeanAxis, MaxAxis, Argmax, Dot, LinearSigmoid, Item,
+  // im2col's own building blocks. Each takes one params Array ([axis, win,
+  // step] / [axis, before, after] / [axis, orig_size, step]) rather than 3
+  // positional Longs, same reason Reshape takes a dims Array: BMethSpec's
+  // own arg-passing caps at 2.
+  Unfold, Pad, Fold,
   Sort,                                 // Array only, in place, returns nil
   Values,                               // Object (dict) only
 };
@@ -1246,6 +1251,12 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"linear_sigmoid", 2, LinearSigmoid, kRecvTensor, 2, nullptr,
        {Tensor, Tensor}, {"x", "b"}},
       {"item", 0, Item, kRecvTensor, 0, nullptr, {}, {}},
+      // im2col's building blocks: one params Array each ([axis, win, step] /
+      // [axis, before, after] / [axis, orig_size, step]), same reason
+      // reshape takes a dims Array above — nargs caps at 2.
+      {"unfold", 1, Unfold, kRecvTensor, 1, nullptr, {Array}, {"params"}},
+      {"pad", 1, Pad, kRecvTensor, 1, nullptr, {Array}, {"params"}},
+      {"fold", 1, Fold, kRecvTensor, 1, nullptr, {Array}, {"params"}},
       // sort: Array's in-place, nil-returning twin of `sorted`, keyword-only
       // `reverse:` in the same way.
       {"sort", 0, Sort, kRecvArray, 1, nullptr, {Bool}, {"reverse"}, {},
@@ -2243,6 +2254,23 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
     case BMeth::Item:
       culebra_runtime_set_op_pos(line, col);  // multi-element check
       return culebra_runtime_tensor_item(ten(recv));
+    case BMeth::Unfold:
+      // A bad param count/type, a negative axis out of range, or a bad
+      // win/step all arrive positionless.
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(culebra_runtime_tensor_unfold(
+                          ten(recv), arr(args[0])))};
+    case BMeth::Pad:
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(culebra_runtime_tensor_pad(
+                          ten(recv), arr(args[0])))};
+    case BMeth::Fold:
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(culebra_runtime_tensor_fold(
+                          ten(recv), arr(args[0])))};
     case BMeth::Sort:
       // In place, answering nil.
       culebra_runtime_array_sort(arr(recv), kw_flag(args[0]), line, col);

@@ -3281,6 +3281,27 @@ struct Lowering {
               j.emit_set_op_pos();  // multi-element check
               res = val_fn(rt::tensor_item, {arr()});
               break;
+            case BMeth::Unfold:
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_unfold),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.tunf"));
+              break;
+            case BMeth::Pad:
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_pad),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.tpad"));
+              break;
+            case BMeth::Fold:
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_fold),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.tfold"));
+              break;
             case BMeth::Sort:
               // In place, answering nil.
               j.emit_call(j.module_->getFunction(rt::array_sort),

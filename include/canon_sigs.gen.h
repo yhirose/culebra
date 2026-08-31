@@ -1482,6 +1482,12 @@ inline constexpr CanonParam kCanonParamPool[] = {
   {"n", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   // 112: zip
   {"other", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 113: unfold
+  {"params", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  // 114: pad
+  {"params", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  // 115: fold
+  {"params", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonObjectSigs[] = {
@@ -1615,12 +1621,14 @@ inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "clone", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "detach", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "dot", kCanonParamPool + 73, 1, "Tensor", 1, 1, false, -1, -1, -1},
+  {"", "", "fold", kCanonParamPool + 115, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "grad", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "item", nullptr, 0, "Float", 0, 0, false, -1, -1, -1},
   {"", "", "linear_sigmoid", kCanonParamPool + 74, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "log", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "max", kCanonParamPool + 76, 1, "", 0, 1, false, -1, -1, -1},
   {"", "", "mean", kCanonParamPool + 77, 1, "", 0, 1, false, -1, -1, -1},
+  {"", "", "pad", kCanonParamPool + 114, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "pow", kCanonParamPool + 78, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "relu", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "requires_grad", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
@@ -1632,6 +1640,7 @@ inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "sum", kCanonParamPool + 82, 1, "", 0, 1, false, -1, -1, -1},
   {"", "", "to_array", nullptr, 0, "Array", 0, 0, false, -1, -1, -1},
   {"", "", "transpose", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
+  {"", "", "unfold", kCanonParamPool + 113, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "zero_grad", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
 };
 

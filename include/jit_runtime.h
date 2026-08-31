@@ -2544,6 +2544,46 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reshape(
       t->impl, culebra::TensorShape(std::move(new_dims))));
 }
 
+// unfold/pad/fold each take exactly 3 ints — one `params` Array rather than
+// 3 positional args, since BMeth's own arg-passing caps at 2 (see vm.h's
+// BMethSpec/bmeth_apply); reshape's own variable-length dims Array set the
+// precedent for routing more-than-2-args through one Array param.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_unfold(
+    JitTensor* t, JitArray* params) {
+  if (params->size != 3 || params->items[0].tag != TAG_LONG ||
+      params->items[1].tag != TAG_LONG || params->items[2].tag != TAG_LONG) {
+    throw culebra::CulebraError("ValueError",
+        "Tensor.unfold: expected [axis, win, step] (3 Longs).");
+  }
+  return _culebra_jit_tensor_register(culebra::tensor_unfold(
+      t->impl, params->items[0].data, params->items[1].data,
+      params->items[2].data));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_pad(
+    JitTensor* t, JitArray* params) {
+  if (params->size != 3 || params->items[0].tag != TAG_LONG ||
+      params->items[1].tag != TAG_LONG || params->items[2].tag != TAG_LONG) {
+    throw culebra::CulebraError("ValueError",
+        "Tensor.pad: expected [axis, before, after] (3 Longs).");
+  }
+  return _culebra_jit_tensor_register(culebra::tensor_pad(
+      t->impl, params->items[0].data, params->items[1].data,
+      params->items[2].data));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_fold(
+    JitTensor* t, JitArray* params) {
+  if (params->size != 3 || params->items[0].tag != TAG_LONG ||
+      params->items[1].tag != TAG_LONG || params->items[2].tag != TAG_LONG) {
+    throw culebra::CulebraError("ValueError",
+        "Tensor.fold: expected [axis, orig_size, step] (3 Longs).");
+  }
+  return _culebra_jit_tensor_register(culebra::tensor_fold(
+      t->impl, params->items[0].data, params->items[1].data,
+      params->items[2].data));
+}
+
 
 // --- Object runtime ---
 

@@ -10042,6 +10042,9 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_reshape, ptrTy, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_unfold, ptrTy, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_pad, ptrTy, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_fold, ptrTy, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_reduce_axis, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
