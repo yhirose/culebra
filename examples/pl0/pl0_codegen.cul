@@ -79,6 +79,7 @@ mut blocks = []          # {parent, name, consts, var_slot, var_names, procs, ch
 mut free = []            # per block: {"declaring_block:slot": (block, slot)}
 mut calls = []           # per block: [callee_block...]
 mut capture_index = []   # per block: {"declaring_block:slot": capture_index}
+mut cell_index = []      # per block (the owner): {"owner:slot": cell_index}
 
 fn declared_anywhere(block, name) {
   mut b = block
@@ -274,13 +275,36 @@ fn solve_captures() {
       i = i + 1
     }
   }
+
+  # Whatever anyone captures, its owner keeps in a cell rather than a local
+  # slot -- a closure cannot capture a local (it would die with the frame
+  # while the closure captured into it may not; see coreir/ir.h's verifier).
+  # Walking every block's free set rather than each block's own variables,
+  # because "is this captured" is a fact about the readers, not the owner.
+  for g in range(blocks.size()) {
+    for var in free[g].values() {
+      let (vb, vs) = var
+      let key = "{vb}:{vs}"
+      if !cell_index[vb].has(key) {
+        cell_index[vb][key] = cell_index[vb].size()
+      }
+    }
+  }
 }
 
-# `f`'s own view of a variable: its own slot, or the index `f` captures it at.
+# `f`'s own view of a variable: its own slot (a cell if some nested call
+# captures it, otherwise a plain local), or the index `f` captures it at.
 fn access(f, var) {
   let (vb, vs) = var
   cond {
-    vb == f => {kind: 'local', index: vs},
+    vb == f => {
+      let key = "{vb}:{vs}"
+      if cell_index[f].has(key) {
+        {kind: 'cell', index: cell_index[f][key]}
+      } else {
+        {kind: 'local', index: vs}
+      }
+    },
     _ => {kind: 'capture', index: capture_index[f]["{vb}:{vs}"]},
   }
 }
@@ -450,6 +474,7 @@ fn build(m, root) {
     free.push({})
     calls.push([])
     capture_index.push({})
+    cell_index.push({})
   }
   scan_block(0)
   solve_captures()
@@ -460,7 +485,8 @@ fn build(m, root) {
   for f in range(blocks.size()) {
     let body = emit_stmt(m, blocks[f].body, f)
     let func = m.add_func(name: blocks[f].name, num_locals: blocks[f].var_names.size(),
-                          num_captures: free[f].size(), body: body)
+                          num_captures: free[f].size(),
+                          num_cells: cell_index[f].size(), body: body)
     for i in range(blocks[f].var_names.size()) {
       m.set_local_name(func: func, index: i, name: blocks[f].var_names[i])
     }

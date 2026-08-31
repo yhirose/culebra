@@ -6265,7 +6265,7 @@ let stmts = m.list_new()
 m.list_push(stmts, print_stmt)
 let body = m.block(stmts_list: stmts, line: 1, col: 1)
 
-m.add_func(name: 'main', num_locals: 0, num_captures: 0, body: body)
+m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, body: body)
 m.verify()
 m.run()  # => 42
 ```
@@ -6311,7 +6311,7 @@ list id afterward is undefined.
 | `m.intrinsic(name:, args_list:, line:, col:)` | `name` is `'print'` (1 arg) or `'readint'` (0 args) |
 | `m.list_new()` | a staging list, for `stmts_list:`/`args_list:` above |
 | `m.list_push(list:, value:)` | appends a node id to a staging list |
-| `m.add_func(name:, num_locals:, num_captures:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |
+| `m.add_func(name:, num_locals:, num_captures:, num_cells:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |
 | `m.set_local_name(func:, index:, name:)` | names a local, for diagnostics only |
 | `m.set_capture_name(func:, index:, name:)` | names a capture, for diagnostics only |
 | `m.capture_map_new()` | a staging capture map |
@@ -6322,9 +6322,10 @@ list id afterward is undefined.
 | `m.dump_ir()` | a readable dump of the tree, for debugging |
 | `m.dump_bc()` | a readable dump of the compiled bytecode, for debugging |
 
-`kind:` is `'local'` (this function's own slot) or `'capture'` (borrowed from
-an enclosing one). A variable reference is never a name lookup at run
-time — see "Variables are captures" below.
+`kind:` is `'local'` (this function's own slot), `'cell'` (also this
+function's own slot, but boxed so a call this function makes can capture it),
+or `'capture'` (borrowed from an enclosing one). A variable reference is
+never a name lookup at run time — see "Variables are captures" below.
 
 A staging list or capture map is consumed — and gone — the moment it's handed
 to `block()`/`intrinsic()`/`call()`; reusing its id afterward is undefined.
@@ -6340,10 +6341,20 @@ later without `var_ref`'s meaning having to change.
 
 The forwarding table for a call belongs to the **call site**, not the
 function being called: `examples/pl0/pl0_codegen.cul`'s own `fib`-shaped
-procedure forwards its own captures unchanged on its recursive call, and
-forwards its caller's locals on the first call — two different tables for the
+procedure forwards its own cells unchanged on its recursive call, and
+forwards its caller's cells on the first call — two different tables for the
 same callee, because a per-function table can't express what a self-recursive
 call needs (see cpp-vmlib's README for the fuller version of this point).
+
+A plain `'local'` cannot be forwarded this way: it dies with the frame that
+owns it, and the call being built may outlive that frame. A local a call
+captures has to be promoted to `'cell'` first — a boxed slot the frame and
+every call over it share — before `capture_map_push` can name it; `verify()`
+rejects a capture map entry with `kind: 'local'` rather than letting it read
+freed memory later. Promoting a slot is the front end's own analysis to do
+(`examples/pl0/pl0_codegen.cul`'s `cell_index`, mirroring cpp-vmlib's own
+`examples/pl0/binder.cc`): every read and write of that slot switches to
+`kind: 'cell'`, not only the one at the capture site.
 
 ### Errors, interruption, and recursion
 

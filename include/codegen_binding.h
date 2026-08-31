@@ -36,7 +36,8 @@ inline bool register_codegen_binding() {
           "capture_map_push", {"cmap", "kind", "index"})
       .method<&codegen::Module::add_capture_map>("add_capture_map", {"cmap"})
       .method<&codegen::Module::add_func>(
-          "add_func", {"name", "num_locals", "num_captures", "body"})
+          "add_func",
+          {"name", "num_locals", "num_captures", "num_cells", "body"})
       .method<&codegen::Module::set_local_name>("set_local_name",
                                                 {"func", "index", "name"})
       .method<&codegen::Module::set_capture_name>("set_capture_name",

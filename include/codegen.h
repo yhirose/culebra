@@ -84,9 +84,18 @@ class Module {
     return id(b.block(take_list(stmts_list), pos(line, col)));
   }
 
+  // Builder-side sugar over MakeClosure+CallValue (the one calling mechanism
+  // Core-IR has -- see coreir/ir.h's Tag::MakeClosure comment for why a
+  // separate "call this function by index" tag was removed rather than kept
+  // alongside it). PL/0 procedures take no arguments, so the immediately-built
+  // closure is called with an empty argument list; a front end wanting real
+  // first-class functions would call make_closure/call_value directly instead
+  // of this method.
   int64_t call(int64_t func, int64_t cmap, int64_t line, int64_t col) {
     coreir::Builder b(m_);
-    return id(b.call(idx32(func), idx32(cmap), pos(line, col)));
+    const coreir::SrcPos p = pos(line, col);
+    const coreir::NodeId closure = b.make_closure(idx32(func), idx32(cmap), p);
+    return id(b.call_value(closure, {}, p));
   }
 
   int64_t intrinsic(std::string_view name, int64_t args_list, int64_t line,
@@ -121,11 +130,12 @@ class Module {
   }
 
   int64_t add_func(std::string_view name, int64_t num_locals,
-                   int64_t num_captures, int64_t body) {
+                   int64_t num_captures, int64_t num_cells, int64_t body) {
     coreir::Func f;
     f.name = std::string(name);
     f.num_locals = idx32(num_locals);
     f.num_captures = idx32(num_captures);
+    f.num_cells = idx32(num_cells);
     f.body = node(body);
     f.local_names.resize(static_cast<size_t>(f.num_locals));
     f.capture_names.resize(static_cast<size_t>(f.num_captures));
@@ -194,6 +204,7 @@ class Module {
   static coreir::VarKind to_kind(std::string_view s) {
     if (s == "local") return coreir::VarKind::Local;
     if (s == "capture") return coreir::VarKind::Capture;
+    if (s == "cell") return coreir::VarKind::Cell;
     throw std::invalid_argument("CodeGen: unknown var kind '" +
                                 std::string(s) + "'");
   }

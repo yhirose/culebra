@@ -1,5 +1,5 @@
 // culebra's implementation of cpp-vmlib's host-runtime contract
-// (vendor/cpp-vmlib/include/coreir/rt.h) -- the four functions any
+// (vendor/cpp-vmlib/include/coreir/rt.h) -- the five functions any
 // CodeGen.Module in this process shares. coreir_rt_default.cc (cpp-vmlib's
 // own stdio implementation, for its standalone CLI) is not linked here; these
 // definitions are the only ones in the binary.
@@ -30,6 +30,10 @@
 extern "C" {
 
 void coreir_rt_out(int64_t v) { culebra::program_out() << v << std::endl; }
+
+void coreir_rt_out_str(const char* bytes, int64_t len) {
+  culebra::program_out().write(bytes, len) << std::endl;
+}
 
 int64_t coreir_rt_in(int64_t line, int64_t col) {
   std::string s;

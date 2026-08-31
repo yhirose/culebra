@@ -29,7 +29,7 @@ fn print_stmt(m, value) {
   let two = m.literal(v: 2, line: 1, col: 1)
   let sum = m.binary(op: 'add', lhs: forty, rhs: two, line: 1, col: 1)
   let body = stmt_block(m, [print_stmt(m, sum)])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, body: body)
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, body: body)
   m.verify()
   assert_eq(IO.capture(fn () { m.run() }), "42\n")
 }
@@ -43,7 +43,7 @@ fn print_stmt(m, value) {
   let doubled = m.binary(op: 'mul', lhs: x, rhs: m.literal(v: 2, line: 1, col: 1),
                          line: 1, col: 1)
   let body = stmt_block(m, [assign, print_stmt(m, doubled)])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, body: body)
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, body: body)
   m.set_local_name(func: 0, index: 0, name: 'x')
   m.verify()
   assert_eq(IO.capture(fn () { m.run() }), "20\n")
@@ -64,7 +64,7 @@ fn print_stmt(m, value) {
   let body_stmts = stmt_block(m, [print_stmt(m, x), dec])
   let loop = m.make_while(cond: cond, body: body_stmts, line: 1, col: 1)
   let body = stmt_block(m, [init, loop])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, body: body)
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, body: body)
   m.set_local_name(func: 0, index: 0, name: 'x')
   m.verify()
   assert_eq(IO.capture(fn () { m.run() }), "3\n2\n1\n")
@@ -79,15 +79,17 @@ fn print_stmt(m, value) {
 {
   let m = CodeGen.Module.new()
 
-  # main: n = 3; CALL countdown  (forwards local[0] as countdown's capture[0])
+  # main: n = 3; CALL countdown  (forwards cell[0] as countdown's capture[0] --
+  # a variable a nested call captures has to live in a cell, not a local:
+  # verify() rejects a closure that captures a local, since the local would
+  # die with this frame while the closure it's captured into may not)
   let main_cmap = m.capture_map_new()
-  m.capture_map_push(main_cmap, kind: 'local', index: 0)
+  m.capture_map_push(main_cmap, kind: 'cell', index: 0)
   let main_call = m.call(func: 1, cmap: m.add_capture_map(main_cmap), line: 1, col: 1)
-  let init = m.assign(kind: 'local', index: 0, value: m.literal(v: 3, line: 1, col: 1),
+  let init = m.assign(kind: 'cell', index: 0, value: m.literal(v: 3, line: 1, col: 1),
                       line: 1, col: 1)
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, body:
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 1, body:
              stmt_block(m, [init, main_call]))
-  m.set_local_name(func: 0, index: 0, name: 'n')
 
   # countdown: capture[0] is n. if n <= 0 {} else { print(n); n -= 1; CALL countdown }
   let n = m.var_ref(kind: 'capture', index: 0, line: 1, col: 1)
@@ -103,8 +105,8 @@ fn print_stmt(m, value) {
   let else_body = stmt_block(m, [print_stmt(m, n), dec, rec_call])
   let countdown_body = m.make_if_else(cond: base_cond, then_branch: m.block(stmts_list: m.list_new(), line: 1, col: 1),
                                       else_branch: else_body, line: 1, col: 1)
-  m.add_func(name: 'countdown', num_locals: 0, num_captures: 1, body:
-             stmt_block(m, [countdown_body]))
+  m.add_func(name: 'countdown', num_locals: 0, num_captures: 1, num_cells: 0,
+             body: stmt_block(m, [countdown_body]))
   m.set_capture_name(func: 1, index: 0, name: 'n')
 
   m.verify()
@@ -116,7 +118,7 @@ fn print_stmt(m, value) {
 # simplest way to construct a module that fails structurally.
 {
   let m = CodeGen.Module.new()
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, body: 9999)
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, body: 9999)
   mut kind = nil
   try {
     m.verify()
@@ -134,7 +136,7 @@ fn print_stmt(m, value) {
   let zero = m.literal(v: 0, line: 5, col: 7)
   let div = m.binary(op: 'div', lhs: one, rhs: zero, line: 5, col: 3)
   let body = stmt_block(m, [print_stmt(m, div)])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, body: body)
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, body: body)
   m.verify()
   mut caught = nil
   try {
@@ -152,7 +154,7 @@ fn print_stmt(m, value) {
   let m = CodeGen.Module.new()
   let x = m.var_ref(kind: 'local', index: 0, line: 8, col: 4)
   let body = stmt_block(m, [print_stmt(m, x)])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, body: body)
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, body: body)
   m.set_local_name(func: 0, index: 0, name: 'x')
   m.verify()
   mut caught = nil
@@ -170,9 +172,9 @@ fn print_stmt(m, value) {
   let m = CodeGen.Module.new()
   let cmap = m.add_capture_map(m.capture_map_new())
   let loop_call = m.call(func: 1, cmap: cmap, line: 2, col: 3)
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, body:
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, body:
              m.call(func: 1, cmap: cmap, line: 1, col: 1))
-  m.add_func(name: 'loop', num_locals: 0, num_captures: 0, body: loop_call)
+  m.add_func(name: 'loop', num_locals: 0, num_captures: 0, num_cells: 0, body: loop_call)
   m.verify()
   mut caught = nil
   try {
