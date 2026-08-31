@@ -180,6 +180,19 @@ fn sigmoid(x) {
   dz.apply1(Sigmoid(), x)
 }
 
+# GELU, sigmoid approximation: `x * sigmoid(1.702x)` (within ~0.02 of the
+# exact erf-based GELU over the usual activation range) rather than the tanh
+# approximation BERT/GPT-2 use — Tensor has neither `erf` nor `tanh` as a
+# native op (`tanh` above is `raw_elementwise`, forward-only w.r.t. dezero's
+# own autograd), while `.sigmoid()` already is one. No new Function class:
+# `*` and `sigmoid()` are both already-differentiable dz ops, so this is a
+# plain composition and backward falls out of their existing chain rule —
+# unlike unfold/pad/fold/permute, which needed a genuinely new native op.
+fn gelu(x) {
+  xv = dz.as_variable(x)
+  xv * sigmoid(xv * 1.702)
+}
+
 # Shared by ReLU/LeakyReLU/Clip below: each backward is "scale `gy` by a
 # per-element 0/1-or-slope factor decided by the forward input" — only
 # `pred` (what that factor is) differs between the three.
@@ -526,4 +539,4 @@ fn embed_id(idx, w) {
   dz.apply1(EmbedID(idx), w)
 }
 
-export {sin, cos, tanh, exp, log, expand_dims, flatten, average, linear, sigmoid, relu, leaky_relu, softmax, log_softmax, clip, mean_squared_error, softmax_cross_entropy, sigmoid_cross_entropy, accuracy, dropout, embed_id}
+export {sin, cos, tanh, exp, log, expand_dims, flatten, average, linear, sigmoid, gelu, relu, leaky_relu, softmax, log_softmax, clip, mean_squared_error, softmax_cross_entropy, sigmoid_cross_entropy, accuracy, dropout, embed_id}

@@ -63,6 +63,23 @@ fn relu_zeroes_the_gradient_of_negative_inputs() {
 }
 
 @test
+fn gelu_matches_the_sigmoid_approximation_closed_form() {
+  # gelu(x) = x * sigmoid(1.702x); dgelu/dx = s + x * 1.702 * s * (1 - s)
+  # where s = sigmoid(1.702x). Checked at a negative point (where the
+  # sigmoid-approx GELU dips below 0, unlike ReLU) and a positive one.
+  for v in [-1.0, 2.0] {
+    x = scalar(v)
+    y = F.gelu(x)
+    s = 1.0 / (1.0 + Math.exp(-1.702 * v))
+    assert_close(item(y), v * s, 1.0e-5)
+    y.backward()
+    assert_close(item(x.grad), s + v * 1.702 * s * (1.0 - s), 1.0e-5)
+  }
+  # gelu(0) == 0 exactly.
+  assert_close(item(F.gelu(scalar(0.0))), 0.0, 1.0e-6)
+}
+
+@test
 fn softmax_cross_entropy_matches_the_closed_form_gradient() {
   logits = dz.Variable(Tensor.from([[2.0, 1.0, 0.1], [0.1, 2.0, 1.0]]))
   loss = F.softmax_cross_entropy(logits, [0, 1])
