@@ -3484,6 +3484,12 @@ class Compiler {
     // `slot` is the run's base; `owned` is false, since the run's slots are
     // the enclosing scope's to release like any other local.
     const std::vector<std::string>* unboxed = nullptr;
+    // The class declaration behind `unboxed`, when set — needed to look up
+    // an operator or method on the class without re-deriving it from the
+    // layout (multiple classes could share a field-name list). Kept as a
+    // separate field rather than folded into `unboxed` so a plain scalar
+    // result (unboxed == nullptr) never has to carry a dangling class ptr.
+    const peg::Ast* unboxed_class = nullptr;
   };
 
   // One entry per constructor or method body currently being spliced in.
@@ -3493,6 +3499,7 @@ class Compiler {
   // capture plumbing for no gain.
   struct InlineFrame {
     std::string_view class_name;
+    const peg::Ast* class_ast;                // the class declaration itself
     int32_t base;                             // first field slot
     const std::vector<std::string>* layout;   // field names, declaration order
   };
@@ -7529,6 +7536,26 @@ class Compiler {
     }
   }
 
+  // A fresh run of N slots for an unboxed instance's fields: allocated AND
+  // nil-initialized, matching the zero-init every other frame-entry slot
+  // gets from the chunk's own prologue — a slot `alloc_slot` reserves
+  // mid-compile does not otherwise get that for free, and `emit_inline_body`
+  // storing into it (`dst_is_fresh=false`, so it releases whatever was
+  // there first) needs it to hold something safe to release.
+  int32_t alloc_zeroed_run(const peg::Ast& at, std::string_view class_name,
+                           const std::vector<std::string>& layout) {
+    int32_t base = next_slot_;
+    for (const auto& field : layout)
+      alloc_slot(at, culebra::format("({}.{})", class_name, field));
+    for (size_t k = 0; k < layout.size(); k++) {
+      int32_t z = alloc_temp(at);
+      emit(Op::LoadConst, z, kconst({TAG_NIL, 0}));
+      store_into(base + static_cast<int32_t>(k), ExprResult{z, true},
+                /*dst_is_fresh=*/false);
+    }
+    return base;
+  }
+
   // Compile one `@value` member body into this chunk, with `self` pointing at
   // `self_base` and the parameters bound to `args`. Eligibility is the
   // caller's; this is the splice itself.
@@ -7541,7 +7568,8 @@ class Compiler {
   // A constructor's result IS the run it filled (`new`'s value is the
   // instance, whatever its body's last expression was); a method's is its
   // tail expression, copied out to `out_base` before the pop.
-  ExprResult emit_inline_body(const peg::Ast& member, std::string_view cls,
+  ExprResult emit_inline_body(const peg::Ast& member, const peg::Ast& cls_ast,
+                              std::string_view cls,
                               int32_t self_base,
                               const std::vector<std::string>* layout,
                               const std::vector<InlineParam>& ps,
@@ -7553,15 +7581,30 @@ class Compiler {
     auto mv = culebra::view_method(member);
     const peg::Ast& body = **mv.body;
     push_scope(member, /*owned_mark=*/false);
-    inlines_.push_back({cls, self_base, layout});
+    inlines_.push_back({cls, &cls_ast, self_base, layout});
     bind_inline_params(ps, args, arg_asts);
+    // A member the caller proved returns its own class (member_own_tail,
+    // asked before out_base was allocated as a run) has its tail compiled
+    // through the SAME splice machinery as any other chain, not the
+    // ordinary compile_expr descent — compile_expr's own postfix entry
+    // point (try_inline_value_chain) never allows a chain to end holding
+    // the class itself, so it would come back boxed and leave out_base's
+    // slots past the first one whatever alloc_zeroed_run nil-initialized
+    // them to (Bug 3, session postmortem). The caller having already
+    // proven eligibility is what makes the dereference below safe.
+    auto compile_tail = [&](const peg::Ast& t) {
+      if (is_ctor || !out_layout) return compile_expr(t);
+      auto r = try_inline_value_chain_impl(t, /*allow_trailing_class=*/true);
+      assert(r && "member_own_tail already proved this tail inlines");
+      return *r;
+    };
     ExprResult tail{-1, false};
     if (body.tag == "STATEMENTS"_) {
       for (size_t i = 0; i + 1 < body.nodes.size(); i++)
         compile_statement(*body.nodes[i]);
-      if (!body.nodes.empty()) tail = compile_expr(*body.nodes.back());
+      if (!body.nodes.empty()) tail = compile_tail(*body.nodes.back());
     } else {
-      tail = compile_expr(body);
+      tail = compile_tail(body);
     }
     // Copy the method's result out of the scope about to pop. A tail that is
     // itself an unboxed run copies slot for slot — this is the case
@@ -7579,8 +7622,9 @@ class Compiler {
     }
     inlines_.pop_back();
     pop_scope();
-    if (is_ctor) return {self_base, /*owned=*/false, -1, layout};
-    return {out_base, /*owned=*/false, -1, out_layout};
+    if (is_ctor) return {self_base, /*owned=*/false, -1, layout, &cls_ast};
+    return {out_base, /*owned=*/false, -1, out_layout,
+           out_layout ? &cls_ast : nullptr};
   }
 
   StaticCallee head_callee(const peg::Ast& head, const ExprResult& res) {
@@ -7657,15 +7701,40 @@ class Compiler {
            tail->nodes[2]->original_tag == "ARGUMENTS"_;
   }
 
+  // Whether a member's tail both has the `C.new(...)` shape
+  // `member_returns_own` looks for AND is itself eligible to stay unboxed
+  // there — the same eligibility `chain_resolves_to_class` proves for an
+  // arbitrary chain, now asked of a member's own tail. A caller deciding
+  // whether `out_base` is a run (`fresh_run`) or a single slot must ask
+  // THIS, not the syntactic check alone: `member_returns_own` only proves
+  // the shape, not that `emit_inline_body` can actually splice it, and
+  // allocating a run on a promise that turns out false leaves every slot
+  // past the first holding whatever `alloc_zeroed_run` nil-initialized it
+  // to, with only slot 0 ever written.
+  const peg::Ast* member_own_tail(const peg::Ast& member,
+                                  std::string_view class_name) {
+    using namespace peg::udl;
+    if (!member_returns_own(member, class_name)) return nullptr;
+    auto mv = culebra::view_method(member);
+    const peg::Ast* tail = (*mv.body).get();
+    if (tail->tag == "STATEMENTS"_) tail = tail->nodes.back().get();
+    return chain_resolves_to_class(*tail, /*allow_trailing_class=*/true);
+  }
+
   // Whether the chain from `i` on only asks an unboxed value things it can
-  // answer without an object, AND ends holding a scalar rather than a run.
-  // Both halves matter: a run that reached any other consumer would have to
-  // be re-materialised, and not offering it is both cheaper and safer than
-  // materialising it. Decided before anything is emitted.
+  // answer without an object. The ordinary rule is that it must end holding
+  // a scalar — a run reaching any other consumer would have to be
+  // re-materialised, and not offering it is cheaper and safer than
+  // materialising it. `allow_trailing_class` is the one place that rule
+  // relaxes: an operator fold (`Op::Add` and kin) is a second, EXPLICIT
+  // consumer for a run, so a chain ending still holding the instance itself
+  // — nothing more — is allowed there too. Decided before anything is
+  // emitted, either way.
   bool chain_stays_unboxed(const peg::Ast& at, size_t i,
                            const peg::Ast& class_ast,
                            std::string_view class_name,
-                           const std::vector<std::string>* layout) {
+                           const std::vector<std::string>* layout,
+                           bool allow_trailing_class) {
     using namespace peg::udl;
     while (i < at.nodes.size()) {
       const auto& post = *at.nodes[i];
@@ -7687,14 +7756,53 @@ class Compiler {
       if (!member_returns_own(*m, class_name))
         return i == at.nodes.size();  // a scalar result must end the chain
     }
-    return false;  // ran out still holding a run: it would escape
+    // Ran out still holding a run. Escaping to an arbitrary consumer would
+    // need re-materialising it — refused, UNLESS the caller is one of the
+    // two consumers that can take a run as-is (an operator, here) rather
+    // than an arbitrary one.
+    return allow_trailing_class;
+  }
+
+  // The pure half of `try_inline_value_chain_impl`'s eligibility check,
+  // exposed on its own for an operator fold's lookahead: does `ast`
+  // structurally resolve, staying unboxed, to an instance of a flat
+  // `@value` class? No emission — every answer here is cheap to ask and
+  // cheap to throw away, which is what lets the fold decide whether an
+  // operator applies BEFORE it commits to compiling either operand.
+  const peg::Ast* chain_resolves_to_class(const peg::Ast& ast,
+                                          bool allow_trailing_class) {
+    using namespace peg::udl;
+    if (ast.tag != "CALL"_ || ast.nodes.size() < 3 ||
+        ast.nodes[2]->original_tag != "ARGUMENTS"_)
+      return nullptr;
+    const peg::Ast* cls = postfix_value_class(ast, *ast.nodes[1]);
+    if (!cls) return nullptr;
+    size_t dec_end = culebra::first_non_decorator_index(*cls);
+    auto class_name =
+        culebra::parse_generic_head(cls->nodes[dec_end]->token).outer;
+    const auto* layout = culebra::value_flat_layout(class_name);
+    if (!layout) return nullptr;
+    const peg::Ast* ctor = value_member_ast(*cls, "new");
+    if (!ctor || !inline_body_ok(*ctor, /*is_ctor=*/true)) return nullptr;
+    auto cps = inline_params(culebra::view_method(*ctor).params);
+    if (!cps || cps->size() != ast.nodes[2]->nodes.size()) return nullptr;
+    if (!chain_stays_unboxed(ast, 3, *cls, class_name, layout,
+                             allow_trailing_class))
+      return nullptr;
+    return cls;
   }
 
   // `C.new(args)` and everything after it, compiled as slots. Returns
   // nullopt — before emitting anything — whenever any part of the chain
   // fails to qualify, and the caller then compiles the whole thing the
-  // ordinary boxed way.
-  std::optional<ExprResult> try_inline_value_chain(const peg::Ast& ast) {
+  // ordinary boxed way. `allow_trailing_class` widens what "qualify" means
+  // the same way `chain_stays_unboxed` does; `try_inline_value_chain` (the
+  // conservative, default caller — compile_call, any postfix chain in the
+  // program) always passes false, and `try_inline_value_operand` (an
+  // operator fold's LHS, once the fold has already confirmed the class has
+  // a matching operator) is the only caller that passes true.
+  std::optional<ExprResult> try_inline_value_chain_impl(
+      const peg::Ast& ast, bool allow_trailing_class) {
     using namespace peg::udl;
     if (ast.nodes.size() < 3 ||
         ast.nodes[2]->original_tag != "ARGUMENTS"_)
@@ -7711,23 +7819,13 @@ class Compiler {
     auto cps = inline_params(culebra::view_method(*ctor).params);
     if (!cps || cps->size() != ast.nodes[2]->nodes.size())
       return std::nullopt;
-    if (!chain_stays_unboxed(ast, 3, *cls, class_name, layout))
+    if (!chain_stays_unboxed(ast, 3, *cls, class_name, layout,
+                             allow_trailing_class))
       return std::nullopt;
 
     // Committed. The run and every later step's run belong to the caller's
     // scope, so they outlive each splice's own scope.
-    int32_t n = static_cast<int32_t>(layout->size());
-    auto fresh_run = [&] {
-      int32_t base = next_slot_;
-      for (int32_t k = 0; k < n; k++)
-        alloc_slot(ast, culebra::format("({}.{})", class_name, (*layout)[k]));
-      for (int32_t k = 0; k < n; k++) {
-        int32_t z = alloc_temp(ast);
-        emit(Op::LoadConst, z, kconst({TAG_NIL, 0}));
-        store_into(base + k, ExprResult{z, true}, /*dst_is_fresh=*/false);
-      }
-      return base;
-    };
+    auto fresh_run = [&] { return alloc_zeroed_run(ast, class_name, *layout); };
     auto compile_args = [&](const peg::Ast& args,
                             std::vector<ExprResult>& out,
                             std::vector<const peg::Ast*>& asts) {
@@ -7740,8 +7838,8 @@ class Compiler {
     std::vector<ExprResult> args;
     std::vector<const peg::Ast*> arg_asts;
     compile_args(*ast.nodes[2], args, arg_asts);
-    ExprResult cur = emit_inline_body(*ctor, class_name, base, layout, *cps,
-                                      args, arg_asts, /*is_ctor=*/true,
+    ExprResult cur = emit_inline_body(*ctor, *cls, class_name, base, layout,
+                                      *cps, args, arg_asts, /*is_ctor=*/true,
                                       /*out_base=*/-1, layout);
     for (size_t i = 3; i < ast.nodes.size();) {
       const auto& post = *ast.nodes[i];
@@ -7755,14 +7853,70 @@ class Compiler {
       std::vector<ExprResult> margs;
       std::vector<const peg::Ast*> masts;
       compile_args(*ast.nodes[i + 1], margs, masts);
-      bool run = member_returns_own(*m, class_name);
+      bool run = member_own_tail(*m, class_name) != nullptr;
       int32_t out_base = run ? fresh_run() : alloc_slot(ast, "(value.ret)");
-      cur = emit_inline_body(*m, class_name, cur.slot, layout, *ps, margs,
-                             masts, /*is_ctor=*/false, out_base,
+      cur = emit_inline_body(*m, *cls, class_name, cur.slot, layout, *ps,
+                             margs, masts, /*is_ctor=*/false, out_base,
                              run ? layout : nullptr);
       i += 2;
     }
     return cur;
+  }
+  std::optional<ExprResult> try_inline_value_chain(const peg::Ast& ast) {
+    return try_inline_value_chain_impl(ast, /*allow_trailing_class=*/false);
+  }
+  // The LHS of an eligible operator fold: same machinery, permitted to end
+  // holding the instance itself rather than a scalar, because the fold has
+  // already confirmed — before calling this — that the class it would
+  // resolve to has a matching, splice-able operator waiting for it.
+  std::optional<ExprResult> try_inline_value_operand(const peg::Ast& ast) {
+    return try_inline_value_chain_impl(ast, /*allow_trailing_class=*/true);
+  }
+
+  // `dunder_for_op`: the special method an arithmetic opcode reaches on the
+  // boxed path (`jit_runtime.h`'s `_dispatch_arith_special`/`CUL_NUM_BINOP`),
+  // for the subset this inlines. Reflection (`3 * v` where only `v` has
+  // `__mul__`) is not attempted — only an LHS the compiler has already
+  // proven unboxed is a candidate, so a name-only match on the RHS side
+  // would need a symmetric analysis this does not build.
+  static std::string_view dunder_for_op(Op op) {
+    switch (op) {
+      case Op::Add: return "__add__";
+      case Op::Sub: return "__sub__";
+      case Op::Mul: return "__mul__";
+      default: return {};
+    }
+  }
+
+  // `lhs OP rhs`, where `lhs` is already an unboxed run: splice the class's
+  // operator method the same way a `.method(...)` step in a chain does.
+  // `args`/`arg_asts` are already-compiled — an operator's RHS is compiled
+  // exactly once, by the caller, whether or not this succeeds, so a decline
+  // here never throws work away. Returns nullopt (having emitted nothing
+  // beyond what the caller already compiled for the arguments) when the
+  // class has no matching operator, or it is not splice-able — the caller's
+  // fallback is the ordinary `emit(op, ...)` on `lhs.slot`, which is why
+  // `lhs` must never be handed here unless the FOLD already confirmed the
+  // operator exists (see `chain_resolves_to_class`'s use at the call site):
+  // this function does not reify a declined `lhs` back to an object.
+  std::optional<ExprResult> try_inline_operator(
+      const peg::Ast& at, const ExprResult& lhs, std::string_view dunder,
+      std::vector<ExprResult> args, std::vector<const peg::Ast*> arg_asts) {
+    if (!lhs.unboxed_class) return std::nullopt;
+    const peg::Ast& cls = *lhs.unboxed_class;
+    const peg::Ast* m = value_member_ast(cls, dunder);
+    if (!m || !inline_body_ok(*m, /*is_ctor=*/false)) return std::nullopt;
+    auto ps = inline_params(culebra::view_method(*m).params);
+    if (!ps || ps->size() != args.size()) return std::nullopt;
+    size_t dec_end = culebra::first_non_decorator_index(cls);
+    auto class_name =
+        culebra::parse_generic_head(cls.nodes[dec_end]->token).outer;
+    bool run = member_own_tail(*m, class_name) != nullptr;
+    int32_t out_base = run ? alloc_zeroed_run(at, class_name, *lhs.unboxed)
+                           : alloc_slot(at, "(value.ret)");
+    return emit_inline_body(*m, cls, class_name, lhs.slot, lhs.unboxed, *ps,
+                            args, arg_asts, /*is_ctor=*/false, out_base,
+                            run ? lhs.unboxed : nullptr);
   }
 
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
@@ -9679,7 +9833,7 @@ class Compiler {
         if (!inlines_.empty()) {
           const auto& f = inlines_.back();
           if (ast.token == "self")
-            return {f.base, /*owned=*/false, -1, f.layout};
+            return {f.base, /*owned=*/false, -1, f.layout, f.class_ast};
         }
         const Binding* b = lookup(ast.token);
         if (b) return read_binding(ast, *b);
@@ -9729,7 +9883,25 @@ class Compiler {
         }
       }
       case "UNARY_MINUS"_: {
-        auto r = compile_expr(*ast.nodes[1]);  // nodes[0] is the operator
+        // nodes[0] is the operator. Same lookahead as the ADDITIVE/
+        // MULTIPLICATIVE fold, sized down to one operand and no operator
+        // scan (there is only ever one operator here): decide, before
+        // compiling the operand, whether its class has `__neg__` — a `no`
+        // costs nothing, since nothing has been emitted yet.
+        const peg::Ast* cls = chain_resolves_to_class(
+            *ast.nodes[1], /*allow_trailing_class=*/true);
+        if (cls) {
+          if (const peg::Ast* m = value_member_ast(*cls, "__neg__");
+              m && inline_body_ok(*m, /*is_ctor=*/false) &&
+              inline_params(culebra::view_method(*m).params) &&
+              inline_params(culebra::view_method(*m).params)->empty()) {
+            auto r = *try_inline_value_operand(*ast.nodes[1]);
+            auto out = try_inline_operator(ast, r, "__neg__", {}, {});
+            assert(out && "the eligibility check above promised this");
+            return *out;
+          }
+        }
+        auto r = compile_expr(*ast.nodes[1]);
         int32_t t = alloc_temp(ast);
         emit(Op::Neg, t, r.slot);
         return {t, true};
@@ -9764,9 +9936,47 @@ class Compiler {
       case "SHIFT"_:
       case "ADDITIVE"_:
       case "MULTIPLICATIVE"_: {
+        // Whether operand[0] may start unboxed and ride the WHOLE fold that
+        // way: every operator in this chain must resolve to a splice-able
+        // dunder on the class it would resolve to (member_returns_own keeps
+        // the class fixed at every step an unboxed accumulator passes
+        // through, so one class and one scan of the operators covers the
+        // chain). The scan checks the SAME three things
+        // `try_inline_operator` checks when it actually splices — the
+        // member exists, is eligible, and its arity matches one argument —
+        // not just that the token maps to a dunder at all; a syntactic-only
+        // check here would let `acc` become unboxed for an operator that
+        // then declines, with no way back short of reifying mid-fold.
+        // Decided before a single operand compiles, and for the whole fold
+        // at once — a chain with one operator that does not qualify
+        // declines ENTIRELY rather than reifying partway, the same "decide
+        // once, emit or don't" discipline try_inline_value_chain itself
+        // uses. This is what makes the loop below never need to
+        // re-materialise an accumulator it already unboxed.
+        const peg::Ast* fold_class = nullptr;
+        if (ast.nodes.size() >= 3) {
+          fold_class = chain_resolves_to_class(*ast.nodes[0],
+                                               /*allow_trailing_class=*/true);
+          for (size_t i = 1; fold_class && i + 1 < ast.nodes.size(); i += 2) {
+            auto dunder = dunder_for_op(
+                ast.nodes[i]->token == "+"  ? Op::Add
+                : ast.nodes[i]->token == "-" ? Op::Sub
+                : ast.nodes[i]->token == "*" ? Op::Mul
+                                             : Op::BitOr);
+            const peg::Ast* opm =
+                dunder.empty() ? nullptr : value_member_ast(*fold_class, dunder);
+            if (!opm || !inline_body_ok(*opm, /*is_ctor=*/false)) {
+              fold_class = nullptr;
+              break;
+            }
+            auto ops = inline_params(culebra::view_method(*opm).params);
+            if (!ops || ops->size() != 1) fold_class = nullptr;
+          }
+        }
         // One left fold for every [operand, op-token]* chain; the eleven
         // tokens are disjoint across the levels, so one lookup serves all.
-        auto acc = compile_expr(*ast.nodes[0]);
+        auto acc = fold_class ? *try_inline_value_operand(*ast.nodes[0])
+                              : compile_expr(*ast.nodes[0]);
         for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
           auto op_tok = ast.nodes[i]->token;
           Op op;
@@ -9782,6 +9992,20 @@ class Compiler {
           else if (op_tok == "%") op = Op::Mod;
           else if (op_tok == "@") op = Op::MatMul;
           else reject(*ast.nodes[i], culebra::format("operator '{}'", op_tok));
+          // An unboxed accumulator: splice the class's operator method
+          // instead of the runtime dispatch. `fold_class`'s up-front scan
+          // is what guarantees a dunder exists here whenever `acc` is
+          // unboxed — the assert pins that invariant rather than silently
+          // trusting it, the same way `run_resolved`'s does for a resolved
+          // call site.
+          if (acc.unboxed_class) {
+            auto rhs = compile_expr(*ast.nodes[i + 1]);
+            auto r = try_inline_operator(ast, acc, dunder_for_op(op), {rhs},
+                                         {ast.nodes[i + 1].get()});
+            assert(r && "fold_class's scan promised this operator inlines");
+            acc = *r;
+            continue;
+          }
           auto rhs = compile_expr(*ast.nodes[i + 1]);
           int32_t t = alloc_temp(ast);
           emit(op, t, acc.slot, rhs.slot);

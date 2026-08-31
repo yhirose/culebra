@@ -617,16 +617,26 @@ struct FnAnalysis {
         visit_for_frees(*node.nodes[i], my_locals, outer, info);
         i++;
       }
-      // An undecorated class's members name it through their receiver
-      // (FuncInfo::own_name) rather than capturing the declaring scope's
-      // cell — the ring cls → ctor → meta → method → cell → cls. A decorated
-      // one's keep the capture: the binding is the decorator's result. So
-      // does a REPL session's top-level class, which a later line may
-      // redeclare into the same session cell — and whose binding never
-      // drops, so the ring costs nothing there.
+      // A class whose value the declarator loop never touches names
+      // itself through its receiver (FuncInfo::own_name) rather than
+      // capturing the declaring scope's cell — the ring
+      // cls -> ctor -> meta -> method -> cell -> cls. That is every
+      // undecorated class, and it is ALSO `@value`/`@packable`/`@derive`,
+      // since those are markers the compiler reads itself
+      // (`is_compile_time_decorator`) rather than callables
+      // `apply_decorators` ever hands the class object to — the same
+      // eligibility `compile_class_decl`'s constructor-chunk grant already
+      // uses (vm.h). A REAL decorator's class keeps the capture: the
+      // binding is what THAT decorator returns, which may not be the class
+      // at all. So does a REPL session's top-level class, which a later
+      // line may redeclare into the same session cell — and whose binding
+      // never drops, so the ring costs nothing there.
+      bool all_compile_time = std::all_of(
+          node.nodes.begin(), node.nodes.begin() + i,
+          [](const auto& d) { return culebra::is_compile_time_decorator(*d); });
       std::string_view class_own;
-      if (i == 0 && !(session_top_ && outer.empty()))
-        class_own = culebra::parse_generic_head(node.nodes[0]->token).outer;
+      if (all_compile_time && !(session_top_ && outer.empty()))
+        class_own = culebra::parse_generic_head(node.nodes[i]->token).outer;
       // Typed-field initializers execute per instance inside a synthetic
       // field-init function (invoked after the `new` body's parameter
       // binding, or by build_class_instance for a class with no `new`),
