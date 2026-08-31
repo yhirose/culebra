@@ -1,3 +1,5 @@
+#include <codegen_binding.h>  // the CodeGen.Module wrap binding; registered
+                              // by the TU-level variable below
 #include <compress.h>  // gunzip() — the embedded runtime archives are stored
                        // compressed (transitive too, but this file names it)
 #include <culebra.h>
@@ -88,6 +90,7 @@ bool fetch_url(const std::string& url, const FetchOptions& opts,
 // The registrar variable belongs to the TU, not the header — see wrap.h.
 namespace {
 const bool foreign_fixture_registered = culebra::register_foreign_fixture();
+const bool codegen_registered = culebra::register_codegen_binding();
 }
 
 // Startup profiler — gated by CULEBRA_PROFILE_STARTUP=1. Prints each
@@ -608,6 +611,9 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // empty off Windows; there they absorb the wrap.h leftover, as Webview's
     // fragment does (CMakeLists' _foreign_link).
     {{"__Foreign"}, "libculebra_rt_foreign.a", CULEBRA_FOREIGN_LINK, true},
+    // CodeGen.Module, for the same reason: its wrap<T> registrar is a static
+    // initializer (see src/runtime/culebra_rt_codegen.cc).
+    {{"CodeGen"}, "libculebra_rt_codegen.a", CULEBRA_CODEGEN_LINK, true},
 };
 // Cross-compiling with Tensor would need a target-specific BLAS link, which we
 // don't bundle — run_build rejects that pair up front by this row.

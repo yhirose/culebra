@@ -124,6 +124,8 @@ set(CULEBRA_TENSORLIB_DIR
     CACHE PATH "cpp-tensorlib include directory")
 include_directories(${CULEBRA_TENSORLIB_DIR})
 include_directories(./vendor/cpp-peglib)
+include_directories(./vendor/cpp-vmlib/include)
+include_directories(./vendor/cpp-vmlib/vm/include)
 include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
 include_directories(./vendor/cpp-regexlib)
@@ -1036,6 +1038,21 @@ if(CULEBRA_ENABLE_JIT)
   set_source_files_properties(./src/source_dir.cc PROPERTIES
     COMPILE_DEFINITIONS "CULEBRA_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
+  # Unlike the __Foreign fixture (header-only), cpp-vmlib's coreir::verify/
+  # vm::compile/vm::run/etc. are declared in headers but *defined* in these
+  # four .cc files, so the driver (which runs CodeGen.Module directly, not
+  # only through a force-loaded archive) needs its own compiled copy of them.
+  # Unconditional -- outside the CULEBRA_DEV_NO_RT branch below -- because
+  # this is plain, fast-compiling C++ with no archive/embedding to skip; it
+  # has nothing in common with the heavy runtime archives that guard exists
+  # for.
+  target_sources(culebra PRIVATE
+    ./src/runtime/codegen_rt.cc
+    ./vendor/cpp-vmlib/include/coreir/ir.cc
+    ./vendor/cpp-vmlib/vm/compiler.cc
+    ./vendor/cpp-vmlib/vm/exec.cc
+    ./vendor/cpp-vmlib/vm/bytecode.cc)
+
   if(CULEBRA_DEV_NO_RT)
   # Fast inner-loop build: don't compile or embed the runtime archives.
   # Provide a stub culebra_rt_assets.h so main.cc still links; an empty
@@ -1190,6 +1207,24 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   list(APPEND _rt_embed_files
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_foreign${CMAKE_STATIC_LIBRARY_SUFFIX}")
   list(APPEND _rt_embed_deps culebra_rt_foreign)
+  # CodeGen.Module: cpp-vmlib's Core-IR + register-bytecode compiler/executor
+  # (vendor/cpp-vmlib), wrapped the same way __Foreign is above. Sources are
+  # listed directly (not add_subdirectory'd) so they pick up this archive's
+  # -ffunction-sections/-fdata-sections and join culebra's own LTO policy for
+  # archive objects, matching how the SQLite amalgamation is folded in below.
+  add_library(culebra_rt_codegen STATIC
+    ./src/runtime/culebra_rt_codegen.cc
+    ./src/runtime/codegen_rt.cc
+    ./vendor/cpp-vmlib/include/coreir/ir.cc
+    ./vendor/cpp-vmlib/vm/compiler.cc
+    ./vendor/cpp-vmlib/vm/exec.cc
+    ./vendor/cpp-vmlib/vm/bytecode.cc)
+  target_compile_features(culebra_rt_codegen PRIVATE cxx_std_23)
+  target_compile_options(culebra_rt_codegen PRIVATE
+    -ffunction-sections -fdata-sections)
+  list(APPEND _rt_embed_files
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_codegen${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  list(APPEND _rt_embed_deps culebra_rt_codegen)
   # SQLite feature archive (gated), appended like Scene/Webview below.
   if(CULEBRA_ENABLE_SQLITE)
     list(APPEND _rt_embed_files
@@ -1296,7 +1331,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # archives may define, tools/check_jit_host_symbols.sh for what the driver
   # must still define.
   foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_compress
-                      culebra_rt_regex culebra_rt_foreign
+                      culebra_rt_regex culebra_rt_foreign culebra_rt_codegen
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
                       culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})
@@ -1593,6 +1628,16 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_FOREIGN_LINK="${_foreign_link}")
 endif()
 
+# CodeGen.Module's archive reaches wrap.h too, so it needs the same Windows
+# absorption as __Foreign, for the same reason (PE has no weak external).
+set(_codegen_link "")
+if(WIN32)
+  set(_codegen_link "-Wl,--allow-multiple-definition")
+endif()
+if(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_CODEGEN_LINK="${_codegen_link}")
+endif()
+
 # Every fragment above is spliced into a link command that runs on the *user's*
 # machine, so none of them may name a path from this one: a downloaded binary
 # would splice a directory only the release runner ever had, and the link would
@@ -1603,7 +1648,7 @@ endif()
 # not on the list: those flags come from whoever ran `culebra wrap`, who is also
 # the one running the build.
 foreach(_frag _blas_link _ssl_link _zlib_link _sqlite_link _scene_link
-              _canvas_link _webview_link _foreign_link)
+              _canvas_link _webview_link _foreign_link _codegen_link)
   string(REPLACE " " ";" _frag_tokens "${${_frag}}")
   foreach(_tok IN LISTS _frag_tokens)
     if(_tok MATCHES "^[/\\]" OR _tok MATCHES "^[A-Za-z]:[/\\]")

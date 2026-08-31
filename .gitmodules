@@ -26,3 +26,6 @@
 [submodule "vendor/cpp-tensorlib"]
 	path = vendor/cpp-tensorlib
 	url = https://github.com/yhirose/cpp-tensorlib.git
+[submodule "vendor/cpp-vmlib"]
+	path = vendor/cpp-vmlib
+	url = https://github.com/yhirose/cpp-vmlib

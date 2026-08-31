@@ -170,6 +170,9 @@ else
   if grep -q -- '_foreign_link.*--allow-multiple-definition' CMakeLists.txt; then
     waved+=("libculebra_rt_foreign.a")
   fi
+  if grep -q -- '_codegen_link.*--allow-multiple-definition' CMakeLists.txt; then
+    waved+=("libculebra_rt_codegen.a")
+  fi
   if grep -q -- '_scene_link.*--allow-multiple-definition' CMakeLists.txt; then
     waved+=("libculebra_rt_scene.a")
   fi
