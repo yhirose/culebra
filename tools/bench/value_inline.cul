@@ -7,8 +7,11 @@
 #   scalars              the floor — every component in its own local
 #   inlined chain        `V2.new(a, b).len()`: the whole chain qualifies, so
 #                        it compiles to slots, no object and no call
-#   boxed chain          the same work through a name, which is a run with
-#                        nowhere to go — it builds the instance the old way
+#   boxed chain          the same work through a name the compiler cannot
+#                        see a construction behind (`make(x, y)`), so the
+#                        instance is built the old way. A literal
+#                        `let v = V2.new(...)` is NOT this row any more —
+#                        binding-level unboxing keeps that one in slots
 #   scalars, op form      the floor for the operator rows below — elementwise
 #                        add then length, in locals
 #   operator, inlined     `(V2.new(a,b) + V2.new(c,d)).len()`: operand[0] is a
@@ -35,11 +38,10 @@
 #                        walk proved every reference to it eligible before
 #                        the loop ever compiled, so its two fields live in
 #                        the same two frame slots for the loop's entire run.
-#                        The OTHER operand (the fresh `V2.new(...)`) is
-#                        still a construction each iteration and still
-#                        reifies (2c's own operand[1] rule, unchanged) —
-#                        this row isolates what Stage 3 alone buys over 2c:
-#                        one allocation removed per iteration, not two
+#                        The OTHER operand (the fresh `V2.new(...)`) stays a
+#                        run too, bound straight to the spliced dunder's
+#                        parameter, so the iteration allocates nothing at
+#                        all — what is left is the arithmetic
 #   mut, boxed             identical arithmetic, but `v`'s own declaration
 #                        goes through `make(x, y)` instead of a literal
 #                        `V2.new(...)` — not a construction chain the
@@ -113,7 +115,7 @@ let inlined = fn () {
 let boxed = fn () {
   let mut acc = 0.0
   for i in 0..N {
-    let v = V2.new(to_float(i % 7), to_float(i % 5))
+    let v = make(to_float(i % 7), to_float(i % 5))
     acc += v.len()
   }
   acc

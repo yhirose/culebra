@@ -340,4 +340,83 @@ test_captured_or_retyped_declines = fn () {
 }
 test_captured_or_retyped_declines()
 
+# ---- an operator's own operand as a run: the second allocation a
+# ---- `v = v + C.new(…)` step used to pay. The refinement only changes how
+# ---- the dunder's parameter is BOUND, so a decline here has to answer
+# ---- exactly what the boxed binding answers — which is what the `Boxed`
+# ---- twin below (identical arithmetic, no `@value`) is here to pin.
+
+class BoxedE2 {
+  x: Float
+  y: Float
+
+  new(x: Float, y: Float) {
+    self.x = x
+    self.y = y
+  }
+
+  __add__(o) {
+    BoxedE2.new(self.x + o.x, self.y + o.y)
+  }
+
+  __mul__(k) {
+    BoxedE2.new(self.x * k, self.y * k)
+  }
+}
+
+test_operand_stays_unboxed = fn () {
+  let mut v = E2.new(0.0, 0.0)
+  let mut b = BoxedE2.new(0.0, 0.0)
+  for i in 0..6 {
+    v = v + E2.new(to_float(i), 2.0) * 0.5
+    b = b + BoxedE2.new(to_float(i), 2.0) * 0.5
+  }
+  assert_eq(v.x, b.x)
+  assert_eq(v.y, b.y)
+  # the compound form splices the same dunder, so its operand unboxes too
+  let mut c = E2.new(0.0, 0.0)
+  for i in 0..6 {
+    c += E2.new(to_float(i), 2.0) * 0.5
+  }
+  assert_eq(c.x, v.x)
+  assert_eq(c.y, v.y)
+}
+test_operand_stays_unboxed()
+
+@value
+class BareParam {
+  x: Float
+  y: Float
+
+  new(x: Float, y: Float) {
+    self.x = x
+    self.y = y
+  }
+
+  # `o` read bare in the comparison: a run has no instance to compare, so
+  # the operand declines and arrives boxed. The dunder itself still
+  # splices — this is a refinement, not a veto.
+  __add__(o) {
+    BareParam.new(self.x + o.x, o == nil ? 0.0 : self.y + o.y)
+  }
+
+  # An annotated parameter needs a tagged Value in one slot to check, so
+  # this one declines its operand too.
+  __sub__(o: BareParam) {
+    BareParam.new(self.x - o.x, self.y - o.y)
+  }
+}
+
+test_run_hostile_parameter_declines_the_operand = fn () {
+  let mut v = BareParam.new(10.0, 20.0)
+  v = v + BareParam.new(1.0, 2.0)
+  v = v - BareParam.new(0.5, 0.5)
+  assert_eq(v.x, 10.5)
+  assert_eq(v.y, 21.5)
+  assert_throws('TypeError', fn () {
+    BareParam.new(1.0, 1.0) - 'not a point'
+  })
+}
+test_run_hostile_parameter_declines_the_operand()
+
 inspect('value-inline OK')

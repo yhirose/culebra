@@ -595,6 +595,33 @@ the shape check alone, then finding the tail did not actually splice —
 leaves every slot past the first holding whatever the run's zero-init left
 there, with only the first slot ever written.
 
+**The operand a splice consumes can be a run too.** Nothing above says how
+the *other* operand arrives: it went through the ordinary `compile_expr`
+descent, so `v = v + C.new(...)` still built one instance per step — the
+accumulator had stopped allocating, the operand had not. It can stay a run
+when two things hold, and both are cheap to ask before it is compiled:
+
+- the operand resolves unboxed on its own — the same three shapes a write's
+  RHS accepts (a `C.new(...)` chain, a fold like `g * DT`, a negation), and
+- the dunder's parameter is only ever *used* in ways a run can serve.
+
+The second is not a new rule. A parameter bound to a run is an ordinary
+unboxed binding for the length of the splice, so `o.x` inside the body
+compiles through the very machinery a marked local's own chain does — and
+the eligibility question is the one §5.3.3's whole-scope walk already
+answers, asked about the dunder's body instead of a statement list. A
+parameter read bare anywhere (`o == nil`), or carrying a type annotation
+(whose check needs a tagged Value in one slot), declines.
+
+That decline is a *refinement*, never a veto: the fold's up-front scan
+already proved the dunder splices with a boxed parameter, so declining
+here means only "compile this operand the way it always was". Which is
+what keeps the scan and the emitting half from being able to disagree —
+the scan's promise holds either way, and it never has to know which
+binding form the operand ends up taking. With both halves unboxed, a
+`v = v + C.new(...)` step allocates nothing at all, and the loop body it
+sits in reduces to its arithmetic.
+
 Two consumer rules were tightened after this landed, both by finding a
 live escape rather than by review:
 
@@ -723,7 +750,7 @@ structurally identical to `self`'s own chain (`chain_stays_unboxed` from
 index 1); and a reassignment (`compile_assignment`) or compound step
 (`compile_compound_assign`) compiles its RHS through the same
 fold/negation/chain machinery §5.3.2 already has
-(`compile_mut_local_write_rhs`, `try_inline_operator`), then copies the
+(`compile_unboxed_value_expr`, `try_inline_operator`), then copies the
 result's fields into `v`'s permanent slots — the one copy this mechanism
 ever pays, since every read in between (including `v`'s own reassignment
 RHS) reaches those slots directly. `v`'s *declaration* pays no copy at
@@ -732,12 +759,11 @@ all: its fresh construction's own named run (already permanent —
 the binding's home.
 
 Measured (`tools/bench/value_inline.cul`'s `mut, reused` row against `mut,
-boxed`, same arithmetic through a non-nameable construction): a locally
-reused operand removes one of the two allocations §5.3.2's own fold still
-pays every iteration (operand[1] — a fresh construction each time — still
-reifies; that gap is unchanged and deliberate, see the row's own header
-comment). The `mut, compound` row is the same loop written `v += …`, and
-matching `mut, reused` is its point.
+boxed`, same arithmetic through a non-nameable construction): with §5.3.2's
+operand rule holding for the other half of the step, both of the two
+allocations an iteration used to pay are gone, and what is left in the loop
+body is the arithmetic. The `mut, compound` row is the same loop written
+`v += …`, and matching `mut, reused` is its point.
 
 ### 5.4 Built-in methods are a table
 
