@@ -168,7 +168,7 @@ foreign_choke='jit_class_info<culebra::foreign_fixture::Counter>::methods'
 
 # 1. Names none of them: Regex stubbed, Proc/Canvas/Peg engines entirely absent.
 build none 'IO.print("none")'
-expect_class none "$regex_choke" "W|" "expected 'W' or absent" "no Regex use"
+expect_class none "$regex_choke" "W?" "expected 'W' or absent" "no Regex use"
 expect_class none "$peg_choke" "" "expected absent" "no Peg use"
 expect_class none "$proc_choke" "" "expected absent" "no Proc use"
 expect_class none "$png_choke" "" "expected absent" "no Canvas use"
@@ -211,7 +211,7 @@ expect_output regex "34"
 
 build peg 'IO.print(Peg.parse(`N <- < [0-9]+ >`, "42").token)'
 expect_class peg "$peg_choke" ".+" "expected defined" "Peg named"
-expect_class peg "$regex_choke" "W|" "expected 'W' or absent" "Peg only"
+expect_class peg "$regex_choke" "W?" "expected 'W' or absent" "Peg only"
 expect_absent peg "$fmt_machinery" "libstdc++'s formatter, Peg"
 expect_output peg "42"
 
@@ -225,7 +225,7 @@ expect_output math "4"
 
 build proc 'IO.print(Proc.run(["echo", "spawned"]).stdout)'
 expect_class proc "$proc_choke" ".+" "expected defined" "Proc named"
-expect_class proc "$regex_choke" "W|" "expected 'W' or absent" "Proc only"
+expect_class proc "$regex_choke" "W?" "expected 'W' or absent" "Proc only"
 expect_class proc "$peg_choke" "" "expected absent" "Proc only"
 expect_absent proc "$fmt_machinery" "libstdc++'s formatter, Proc"
 expect_output proc "spawned"
@@ -236,7 +236,7 @@ let back = Canvas.Sprite.from_png(s.to_png())
 IO.print(back.width() * 10 + back.height())'
 expect_class canvas "$png_choke" ".+" "expected defined" "Canvas named"
 expect_class canvas "$ttf_choke" ".+" "expected defined" "Canvas named"
-expect_class canvas "$regex_choke" "W|" "expected 'W' or absent" "Canvas only"
+expect_class canvas "$regex_choke" "W?" "expected 'W' or absent" "Canvas only"
 expect_absent canvas "$fmt_machinery" "libstdc++'s formatter, Canvas"
 expect_output canvas "32"
 
@@ -246,7 +246,7 @@ build foreign 'let c = __Foreign.Counter.new(10)
 c.add(5)
 IO.print(c.value())'
 expect_present foreign "$foreign_choke" "__Foreign named"
-expect_class foreign "$regex_choke" "W|" "expected 'W' or absent" "__Foreign only"
+expect_class foreign "$regex_choke" "W?" "expected 'W' or absent" "__Foreign only"
 expect_absent foreign "$fmt_machinery" "libstdc++'s formatter, __Foreign"
 expect_output foreign "15"
 
@@ -256,7 +256,7 @@ build shared 'let s = Shared.new({a: 1, xs: [10, 20]})
 IO.print(s.a + s.xs[1])'
 expect_present shared 'culebra::_jit_shared_val_prop_impl[(]' "Shared named"
 expect_present shared 'culebra::jit_serialize[(]' "Shared named"
-expect_class shared "$regex_choke" "W|" "expected 'W' or absent" "Shared only"
+expect_class shared "$regex_choke" "W?" "expected 'W' or absent" "Shared only"
 expect_absent shared "$fmt_machinery" "libstdc++'s formatter, Shared"
 expect_output shared "21"
 
