@@ -1294,6 +1294,21 @@ bench-ops iterations="1000000": build
     @echo "=== JIT ==="
     ./build/culebra --jit tools/bench/ops.cul {{iterations}}
 
+# One physics step written four ways that do the same arithmetic (the
+# checksums are printed, and must agree), to price what a 2D vector class
+# costs against hand-written scalars. The gap between the scalar floor and
+# the operator form is what an unboxed representation has to close; the
+# no-allocation row splits it into the half the representation takes and the
+# half an inliner takes. Report, not a gate.
+[doc("Vector-class vs scalar physics loop in ns/step on both engines (report, not a gate)")]
+[group("bench")]
+bench-vector-loop steps="1000000": build
+    @echo "=== VM executor ==="
+    ./build/culebra --vm tools/bench/vector_loop.cul {{steps}}
+    @echo ""
+    @echo "=== JIT ==="
+    ./build/culebra --jit tools/bench/vector_loop.cul {{steps}}
+
 # Smoke: run microgpt 5 training steps (no inference) on both compiled
 # lanes to catch regressions in the value-ownership / special-method
 # dispatch paths that the unit tests don't exercise at scale.

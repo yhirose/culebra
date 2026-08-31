@@ -1,0 +1,158 @@
+# One physics step, written four ways that do the same arithmetic and produce
+# the same checksum. What separates them is only how the intermediate 2D
+# values are represented and reached.
+#
+#   scalars              the floor — every component in its own local
+#   Vector2, operators   the form a reader wants: `v += g * DT`. This is the
+#                        stdlib Vector2 (`src/preambles/vector2.cul`), an
+#                        ordinary @derive(Eq, Hash) class — it is the SHAPE
+#                        an unboxed representation is aimed at, not a @value
+#                        class itself: it assigns its fields in `new` without
+#                        declaring them, which @value does not allow
+#   same calls, no alloc every operator writes into a preallocated scratch,
+#                        so the loop calls as often but allocates nothing
+#   scalars again        the control: two rows doing identical arithmetic
+#                        show the noise floor between them
+#
+# The gap between rows 1 and 2 is what an unboxed representation has to
+# close, and row 3 splits it: it is where the representation lands *without*
+# the methods inlined, and row 1 is where inlining ends up — the fully
+# inlined, scalar-replaced operator form IS the scalar form.
+#
+# Run on the -O3 + LTO binary (`just build`); build-dev is -O1 and the
+# numbers mean nothing there. Absolute ns/step is machine-dependent — read
+# the ratios within one run, and check that the two scalar rows agree.
+#
+#   culebra tools/bench/vector_loop.cul [steps]
+#   culebra --jit tools/bench/vector_loop.cul [steps]
+
+let N = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 1000000
+
+let DT = 0.016
+let GX = 0.5
+let GY = -9.8
+let MAXSPEED = 40.0
+let BOUNCE = 0.8
+
+let report = fn (name, dt, acc) {
+  println("  {name:<28}{dt / N * 1e9:>8.1f}  ns/step   {acc:>18.6f}")
+}
+
+# --- 1. scalars -----------------------------------------------------------
+
+let scalars = fn () {
+  let mut px = 0.0
+  let mut py = 100.0
+  let mut vx = 3.0
+  let mut vy = 0.0
+  for _ in 0..N {
+    vx += GX * DT
+    vy += GY * DT
+    let speed = Math.sqrt(vx * vx + vy * vy)
+    if speed > MAXSPEED {
+      let k = MAXSPEED / speed
+      vx *= k
+      vy *= k
+    }
+    px += vx * DT
+    py += vy * DT
+    if py < 0.0 {
+      py = 0.0
+      vy = -vy * BOUNCE
+    }
+  }
+  px + py + vx + vy
+}
+
+# --- 2. Vector2, operators ------------------------------------------------
+
+let vec_operators = fn () {
+  let g = Vector2.new(GX, GY)
+  let mut p = Vector2.new(0.0, 100.0)
+  let mut v = Vector2.new(3.0, 0.0)
+  for _ in 0..N {
+    v += g * DT
+    let speed = v.length()
+    if speed > MAXSPEED {
+      v *= MAXSPEED / speed
+    }
+    p += v * DT
+    if p.y < 0.0 {
+      p = Vector2.new(p.x, 0.0)
+      v = Vector2.new(v.x, -v.y * BOUNCE)
+    }
+  }
+  p.x + p.y + v.x + v.y
+}
+
+# --- 3. the same calls, with the allocation removed -----------------------
+#
+# One scratch pair per intermediate, written through free functions that
+# take and return components. Same number of calls per step as row 2, same
+# arithmetic, nothing allocated.
+
+let add_x = fn (ax, ay, bx, by) {
+  ax + bx
+}
+let add_y = fn (ax, ay, bx, by) {
+  ay + by
+}
+let mul_x = fn (ax, ay, k) {
+  ax * k
+}
+let mul_y = fn (ax, ay, k) {
+  ay * k
+}
+let len_of = fn (ax, ay) {
+  Math.sqrt(ax * ax + ay * ay)
+}
+
+let vec_no_alloc = fn () {
+  let mut px = 0.0
+  let mut py = 100.0
+  let mut vx = 3.0
+  let mut vy = 0.0
+  for _ in 0..N {
+    let gx = mul_x(GX, GY, DT)
+    let gy = mul_y(GX, GY, DT)
+    let nvx = add_x(vx, vy, gx, gy)
+    let nvy = add_y(vx, vy, gx, gy)
+    vx = nvx
+    vy = nvy
+    let speed = len_of(vx, vy)
+    if speed > MAXSPEED {
+      let k = MAXSPEED / speed
+      let sx = mul_x(vx, vy, k)
+      let sy = mul_y(vx, vy, k)
+      vx = sx
+      vy = sy
+    }
+    let dx = mul_x(vx, vy, DT)
+    let dy = mul_y(vx, vy, DT)
+    let npx = add_x(px, py, dx, dy)
+    let npy = add_y(px, py, dx, dy)
+    px = npx
+    py = npy
+    if py < 0.0 {
+      py = 0.0
+      vy = -vy * BOUNCE
+    }
+  }
+  px + py + vx + vy
+}
+
+# --- run ------------------------------------------------------------------
+
+println("driving loop, {N} steps")
+println("")
+
+let run = fn (name, f) {
+  let t0 = Time.monotonic()
+  let acc = f()
+  report(name, Time.monotonic() - t0, acc)
+}
+
+run("scalars", scalars)
+run("Vector2, operators", vec_operators)
+run("same calls, no alloc", vec_no_alloc)
+run("scalars (control)", scalars)
