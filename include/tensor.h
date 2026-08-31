@@ -102,6 +102,8 @@ enum class Op {
   // primitive). IndexSelect/IndexAdd are exact duals with real VJPs;
   // ScatterAxis is forward-only (see the VJP switch).
   IndexSelect, IndexAdd, ScatterAxis,
+  Narrow,  // `.slice()` generalized to any axis. Zero-copy view, no
+           // backward yet (see the VJP switch).
 };
 
 struct TensorShape {
@@ -727,6 +729,34 @@ inline TensorPtr tensor_slice(TensorPtr t, int64_t start, int64_t end) {
                         /*op_param=*/start, /*is_view=*/true);
 }
 
+// `.slice()`'s own axis-0 reach, generalized to any axis (PyTorch's
+// `Tensor.narrow`) — a distinct name rather than an overload of `.slice()`,
+// since that name is also shared with Array/String's own axis-0-only
+// `.slice()` through one polymorphic BMeth id. Zero-copy view: tensorlib's
+// own `array::slice(axis, start, count)` has always supported this: only
+// this binding was axis-0-only. Forward-only for now (no caller needs a
+// gradient through it yet — it's a host-loop replacement inside a hand-
+// derived dezero backward, the same role permute/unfold/pad/fold play in
+// im2col/col2im/pooling).
+inline TensorPtr tensor_narrow(TensorPtr t, int64_t axis, int64_t start,
+                               int64_t end) {
+  int64_t rank = static_cast<int64_t>(t->shape.dims.size());
+  if (axis < 0) axis += rank;
+  if (axis < 0 || axis >= rank) {
+    throw CulebraError("IndexError", "Tensor: narrow: axis out of range.");
+  }
+  if (start < 0 || end < start || end > t->shape.dims[axis]) {
+    throw CulebraError("IndexError", "Tensor: narrow: out of bounds.");
+  }
+  auto v = _tl_guard([&] {
+    return t->value.slice(static_cast<int>(axis), start, end - start);
+  });
+  auto dtype = t->dtype;
+  return tensor_make_op(Op::Narrow, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(t)},
+                        /*op_param=*/0, /*is_view=*/true);
+}
+
 // Sliding-window view along `axis`: shape gains a trailing size-`win` axis,
 // the `axis` dim becomes the window count. Zero-copy (shares storage with
 // `t`) when `t` is contiguous, same as tensorlib's own array::unfold.
@@ -1224,6 +1254,13 @@ inline void _tensor_vjp(const TensorPtr& n) {
       // for the same reason as Unfold/Pad/Fold above.
       throw CulebraError("ValueError",
           "Tensor.backward: permute is not differentiable yet.");
+    case Op::Narrow:
+      // The VJP is a zero-pad back out to the original axis length, which
+      // needs the axis/start this node doesn't keep (same reason as
+      // Permute above). Unreached for the same reason: a hand-derived
+      // dezero backward uses this forward-only.
+      throw CulebraError("ValueError",
+          "Tensor.backward: narrow is not differentiable yet.");
     case Op::Where: {
       // y = cond != 0 ? a : b; da = g*cond, db = g*(1-cond). cond gets no
       // gradient (matches numpy/PyTorch's own where()).

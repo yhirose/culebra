@@ -3316,6 +3316,13 @@ struct Lowering {
                   {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
                   "vbm.tperm"));
               break;
+            case BMeth::Narrow:
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_narrow),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.tnarrow"));
+              break;
             case BMeth::Sort:
               // In place, answering nil.
               j.emit_call(j.module_->getFunction(rt::array_sort),

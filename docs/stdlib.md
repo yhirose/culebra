@@ -1626,6 +1626,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |
 | `.permute(axes: Array) -> Tensor` | view | general axis reorder; `axes[i]` names which of self's axes becomes result axis `i` |
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
+| `.narrow(params: Array) -> Tensor` | view | `[axis, start, end]`; `.slice()` generalized to any axis |
 | `.reshape(dims: Array) -> Tensor` | view | contiguous input only; new shape |
 | `.unfold(params: Array) -> Tensor` | view | `[axis, win, step]`; sliding window along `axis`, adds a trailing size-`win` axis |
 | `.pad(params: Array) -> Tensor` | new buffer | `[axis, before, after]`; zero-pad along `axis` |
@@ -1665,11 +1666,13 @@ the underlying tensor library.
 produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.transpose()`,
-`.reshape()`, `.slice()`, `Tensor.concat()`, and `Tensor.where()`. Gradients
+`.reshape()`, `.slice()`, `Tensor.concat()`, `Tensor.where()`, and
+`.index_select()` / `Tensor.index_add()` (each other's own VJP). Gradients
 un-broadcast automatically, so a bias added across a batch sums back to its
-shape. `.unfold()`, `.pad()`, `.fold()`, and `.permute()` are forward-only so far —
-`.backward()` through them raises; a training loop that uses them (e.g. an
-im2col-style conv) writes its own backward pass around them for now.
+shape. `.unfold()`, `.pad()`, `.fold()`, `.permute()`, `.narrow()`, and
+`Tensor.scatter_to_axis()` are forward-only so far — `.backward()` through
+them raises; a training loop that uses them (e.g. an im2col-style conv or
+a pooling layer) writes its own backward pass around them for now.
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

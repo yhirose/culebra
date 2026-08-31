@@ -2648,6 +2648,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_fold(
       culebra::tensor_fold(t->impl, p[0], p[1], p[2]));
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_narrow(
+    JitTensor* t, JitArray* params) {
+  int64_t p[3];
+  _culebra_unpack_3_longs(
+      params, "Tensor.narrow: expected [axis, start, end] (3 Longs).", p);
+  return _culebra_jit_tensor_register(
+      culebra::tensor_narrow(t->impl, p[0], p[1], p[2]));
+}
+
 
 // --- Object runtime ---
 

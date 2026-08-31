@@ -10055,6 +10055,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_transpose, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_permute, ptrTy, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_narrow, ptrTy, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_clone, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_slice, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty(),

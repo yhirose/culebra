@@ -609,4 +609,20 @@ let sc_values = Tensor.from([5.0, 7.0, 9.0])
 assert_eq(Tensor.scatter_to_axis(sc_idx, sc_values, 4).to_array(),
          [[0.0, 0.0, 5.0, 0.0], [7.0, 0.0, 0.0, 0.0], [0.0, 9.0, 0.0, 0.0]])
 
+# --- .narrow([axis, start, end]): .slice() generalized to any axis --------
+
+let narrow_x = Tensor.from(
+  [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]],
+)
+assert_eq(narrow_x.narrow([0, 1, 2]).to_array(), [[5.0, 6.0, 7.0, 8.0]])
+assert_eq(narrow_x.narrow([1, 1, 3]).to_array(),
+         [[2.0, 3.0], [6.0, 7.0], [10.0, 11.0]])
+
+# Works through a non-contiguous view (post-permute), not just a fresh
+# contiguous tensor — array::slice's own strides math, not a memcpy.
+let narrow_y = Tensor.from([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]).permute([1, 0])
+assert_eq(narrow_y.narrow([1, 1, 3]).to_array(), [[3.0, 5.0], [4.0, 6.0]])
+
+assert_throws('IndexError', fn () { narrow_x.narrow([5, 0, 1]) })
+
 inspect("test_tensor: OK")

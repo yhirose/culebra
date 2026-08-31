@@ -794,6 +794,7 @@ enum class BMeth : uint8_t {
   Shape, Pow, Transpose, Clone, RequiresGrad, Grad, Backward, ZeroGrad,
   Detach, Relu, Sigmoid, Softmax, TensorLog, Reshape, Mean,
   SumAxis, MeanAxis, MaxAxis, Argmax, Dot, LinearSigmoid, Item, IndexSelect,
+  Narrow,
   // im2col's own building blocks. Each takes one params Array ([axis, win,
   // step] / [axis, before, after] / [axis, orig_size, step]) rather than 3
   // positional Longs, same reason Reshape takes a dims Array: BMethSpec's
@@ -1266,6 +1267,7 @@ inline std::span<const BMethSpec> bmeth_specs() {
       // General axis reorder — a distinct name from transpose (0-arg,
       // reverses every axis) rather than an overload of it.
       {"permute", 1, Permute, kRecvTensor, 1, nullptr, {Array}, {"axes"}},
+      {"narrow", 1, Narrow, kRecvTensor, 1, nullptr, {Array}, {"params"}},
       // sort: Array's in-place, nil-returning twin of `sorted`, keyword-only
       // `reverse:` in the same way.
       {"sort", 0, Sort, kRecvArray, 1, nullptr, {Bool}, {"reverse"}, {},
@@ -2292,6 +2294,13 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       culebra_runtime_set_op_pos(line, col);
       return JitValue{TAG_TENSOR,
                       reinterpret_cast<int64_t>(culebra_runtime_tensor_permute(
+                          ten(recv), arr(args[0])))};
+    case BMeth::Narrow:
+      // A bad param count/type, or an out-of-range axis/start/end, all
+      // arrive positionless.
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{TAG_TENSOR,
+                      reinterpret_cast<int64_t>(culebra_runtime_tensor_narrow(
                           ten(recv), arr(args[0])))};
     case BMeth::Sort:
       // In place, answering nil.

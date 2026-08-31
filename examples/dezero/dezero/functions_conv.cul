@@ -110,11 +110,12 @@ fn strip_padding(padded, n, c, h, w, ph, pw) {
 
 # --- im2col / col2im --------------------------------------------------------
 #
-# Padding, window extraction and the NCHW<->NHWC axis move all go through
-# native Tensor ops now: `.pad()`/`.unfold()`/`.fold()` (GPU-dispatched on
-# CUDA/Metal/WebGPU) and `.permute()` (a view — free on any backend). Only
-# the final pad-strip after `col2im`'s fold is still a host pass, since
-# `Tensor.slice()` only takes axis 0 and this crop is on axes 1/2.
+# Padding, window extraction, the NCHW<->NHWC axis move, and the final
+# pad-strip crop all go through native Tensor ops now: `.pad()`/`.unfold()`/
+# `.fold()` (GPU-dispatched on CUDA/Metal/WebGPU), `.permute()` (a view —
+# free on any backend), and `.narrow()` (also a view) for the crop —
+# `Tensor.slice()` itself stays axis-0-only (shared with Array/String), but
+# `.narrow()` generalizes the same zero-copy reach to any axis.
 #
 # Unfolding H then W from an NHWC layout lands im2col's row-major order
 # directly: unfold replaces the axis it's given with the window count and
@@ -205,15 +206,13 @@ class Col2im {
     hp = h + 2 * ph
     wp = w + 2 * pw
 
-    padded_nchw = x
+    x
       .reshape([n, oh, ow, c, kh, kw])
       .fold([2, wp, sw])
       .fold([1, hp, sh])
       .permute([0, 3, 1, 2])
-    tensor_from_nested(
-      strip_padding(tensor_to_nested(padded_nchw), n, c, h, w, ph, pw),
-      [n, c, h, w],
-    )
+      .narrow([2, ph, ph + h])
+      .narrow([3, pw, pw + w])
   }
 
   backward(gy) {
@@ -431,10 +430,10 @@ class Pooling {
 
   # Scatters gy back into the argmax position of each window (the native
   # counterpart of the old element-by-element scan below) via
-  # scatter_to_axis, then folds the two window axes (kw then kh) back onto
-  # w and h the same way Col2im's own fold pair reconstructs its padded
-  # buffer. Only the final pad-strip crop stays a host loop, for the same
-  # reason Col2im's own crop does: Tensor.slice() only takes axis 0.
+  # scatter_to_axis, folds the two window axes (kw then kh) back onto w and
+  # h the same way Col2im's own fold pair reconstructs its padded buffer,
+  # then crops the padding back off with .narrow() -- fully native now,
+  # no host loop anywhere in this backward.
   backward(gy) {
     (
       n,
@@ -442,15 +441,13 @@ class Pooling {
       h,
       w,
     ) = (self.x_shape[0], self.x_shape[1], self.x_shape[2], self.x_shape[3])
-    padded = Tensor
+    dz.as_variable(Tensor
       .scatter_to_axis(self.argmax, gy.data, self.kh * self.kw)
       .reshape([n, c, self.oh, self.ow, self.kh, self.kw])
       .fold([3, w + 2 * self.pw, self.sw])
       .fold([2, h + 2 * self.ph, self.sh])
-    dz.as_variable(tensor_from_nested(
-      strip_padding(tensor_to_nested(padded), n, c, h, w, self.ph, self.pw),
-      [n, c, h, w],
-    ))
+      .narrow([2, self.ph, self.ph + h])
+      .narrow([3, self.pw, self.pw + w]))
   }
 }
 
