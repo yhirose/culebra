@@ -576,6 +576,32 @@ re-materializeし直す必要が生じる「途中での却下」は決して起
 だけが書き込まれ、それ以降の全スロットはrunのzero-initが残した
 ものを保持したままになる。
 
+この着地後に、consumer側の規則が2つ、レビューではなく実際の
+escapeの発見によって厳格化された:
+
+- **foldがspliceしようとする全dunderは`member_own_tail`自体を
+  通らねばならない**。正しいarityで存在するだけでは足りない。
+  spliceされた演算子の結果のあらゆるconsumer——fold自身の
+  accumulator、再代入のcopy-back、後続連鎖のフィールド読み——は
+  結果をNスロットのrunとして扱うが、スカラーを返すdunderは
+  1スロットしか渡さない（実機で発見: スカラーを返す`__add__`の
+  `(a + b).x`は結果の**手前**のスロットを読んでいた）。そのような
+  dunderを持つクラスはその演算子を決してspliceせず、boxed経路が
+  答える——スカラー結果へのフィールド読みが投げるTypeErrorも含めて。
+- **メンバ本体内の裸の`self + o`や`-self`は決して分類されない。**
+  `receiver_refs_stay_unboxed`は以前、receiverをオペランドに持つ
+  foldや否定を出現場所を問わず受理していた。しかし本体の内側には
+  それが生むrunのconsumerが存在しない——メンバのoutスロットがrun
+  になるのは`C.new(...)`末尾の場合だけであり、本体内のfold起点連鎖
+  にはそれを消費する先読みがなく（`try_inline_fold_chain`は
+  operand[0]を`Binding`経由で解決するが、`self`はBindingを持たない）、
+  それ以外の場所はすべてtagged Valueを期待する。1つの原因から
+  4通りの誤動作として実機で発見: `addp(o) { self + o }`は自分の
+  第1**フィールド**を返し、`-self`は生フィールドに`Op::Neg`を
+  かけ、`println(self + o)`はそれを印字し、`(self + o).len()`は
+  TypeErrorを投げた。そのようなメンバは今は丸ごと却下され、その
+  全consumerはboxedでコンパイルされる。
+
 この過程で露呈した、機構そのものとは別の正当性前提が1つある:
 メソッド内でのクラス自身の名前(`FuncInfo::own_name`。captureした
 cellではなくreceiver経由で読む)は、decoratorが付いた**どのクラス
@@ -588,7 +614,7 @@ decorator(そのbindingはdecoratorの返り値であり、クラスそのもの
 前にはinlineされ得なかった — boxedフォールバック経由で正しく
 コンパイル・実行されてはいたにもかかわらず。
 
-### 5.3.3 `mut`ローカルはスコープ全体でunboxedのままでいられる
+### 5.3.3 ローカルはスコープ全体でunboxedのままでいられる
 
 §5.3.1/§5.3.2がunboxできるのは**1つの式の中で今まさに手にしている値**
 だけだ — リテラルの`C.new(...)`連鎖、あるいは演算子foldの
@@ -598,19 +624,39 @@ operand[0]自身。`v = v + g * DT`をループの反復をまたいで再利用
 生成するので、foldの先読みはoperand[0]として適格なものを何も
 見出せず、毎反復reifyする。
 
-`let mut v = C.new(...)`はこの隙間を**whole-scope eligibility、
+`let [mut] v = <unboxed rhs>`はこの隙間を**whole-scope eligibility、
 reification不要**という形で埋める: `v`のスコープの文を1つも
 コンパイルする前に、`precheck_mut_local_at`が同じ文リスト内の`v`への
 以降の全参照を歩き（`mut_local_ref_ok`）、それぞれがこのsplice機構が
-既に理解している形——`v.<field>`/`v.<method>(...)`という連鎖、fold・
-否定の第1オペランドとしての`v`、あるいはRHSがそれ自体上記いずれかの
-形である書き込み`v = <rhs>`（`mut_local_write_ok`）——であることを
-証明する。未分類の出現が1つでもあれば——引数・`println`・比較・
-capture されたクロージャ・`v += …`（複合代入はこの機構の最初の
-範囲には入っていない）——スコープ**全体**が却下される。`v`は宣言の
-時点からずっと通常のboxedローカルのまま、この段階が存在しなかった
-場合と全く同じになる。中間状態も実行時判断も存在しない: 全参照が
-既に適格であるか、1つも適格でないかのどちらかである。
+既に理解している形であることを証明する——`v.<field>`/
+`v.<method>(...)`という連鎖、スカラーで終わるfold・否定起点のpostfix
+連鎖（`(v + g).len()`）、RHSがfold・否定・construction形である
+書き込み`v = <rhs>`（`mut_local_write_ok`）、そして複合ステップ
+`v += e`/`v -= e`/`v *= e`（desugarした再代入と同じdunderを
+spliceする）。宣言自身のRHSも書き込みと同じ3つの形——construction
+連鎖・fold・否定——を受け付けるので、`let d = C.new(...) + C.new(...)`
+は§5.3.2が組み上げたrunをそのまま持続させる。素の`let`は単一代入の
+退化ケースである: 歩みはそれへのいかなる書き込みも分類しないので、
+後からの`v = …`——今日ImmutableErrorになるもの——はbindingを却下し、
+通常経路が同一のエラーをそのまま保つ。
+
+未分類の出現が1つでもあれば——引数・`println`・比較・captureされた
+クロージャ・shadowする再宣言・未対応の複合演算子——スコープ**全体**
+が却下される。`v`は宣言の時点からずっと通常のboxedローカルのまま、
+この段階が存在しなかった場合と全く同じになる。中間状態も実行時判断
+も存在しない: 全参照が既に適格であるか、1つも適格でないかの
+どちらかである。特に、`v`を含む裸のfold・否定が分類されるのは
+その結果のconsumerがrunを受け取れると証明できる場所——`v`自身への
+書き戻し、またはスカラーで終わるpostfix連鎖——**だけ**である。
+それ以外（`println(v + g)`・配列要素・別のspliceのオペランド）では
+runがtagged Valueを期待するコードへ届いてしまうため、その出現が
+bindingを却下する——§5.3.2のescape一覧と同じものが1段上で実機発見
+された。名前を挙げておくべき帰結が1つ: 別のunboxedローカルを名指す
+fold RHS（`v`がunboxedのときの`let d = v + g`）は**両方の**binding
+を却下する——`v`の適格性は`d`のそれに、`d`のそれは`v`のそれに依存
+するという、specが予期していた有界なbinding間fixpointであり、この
+段階は意図的にそれを構築しない。却下は常に安全であり、このパターン
+は後のサイクルの候補である。
 
 これは§5.3.1/§5.3.2と同じ規律を、1つの式からbindingの字句的な
 広がり全体へ拡張したものだ——`mut_local_ref_ok`は
@@ -633,8 +679,8 @@ capture されたクロージャ・`v += …`（複合代入はこの機構の�
   caseを経由できない**——あのcaseは`Binding::unboxed_class`を読んで
   答えるが、この歩み全体の目的はそのフィールドをそもそも立てるか
   どうかを決めることにある。`mut_local_write_ok`は同じ問いを
-  `mut_local_ref_ok`自身のfold・否定caseとそっくり同じ形で、名前
-  ベースで直接尋ねる。`chain_resolves_to_class`/`fold_resolves_to_class`
+  名前ベースで直接尋ねる（`mut_local_run_ok`）。
+  `chain_resolves_to_class`/`fold_resolves_to_class`
   に処理を委ねるのは、その形が明らかに「`v`が自分自身を読む」の
   **ではない**場合（新規construction、あるいは既に実在する別の
   bindingを起点とする連鎖）に限られる——実機で発見: 全てのfold RHS
@@ -659,21 +705,25 @@ capture されたクロージャ・`v += …`（複合代入はこの機構の�
 返す——inlineフレーム内で`self`がそうするのと同じ無条件のやり方で。
 `v.<field>`/`v.<method>(...)`は`try_inline_mut_local_chain`を通じて
 spliceされ、これは`self`自身の連鎖（`chain_stays_unboxed`をindex 1
-から）と構造的に同一である。再代入（`compile_assignment`）はRHSを
-§5.3.2が既に持つのと同じfold・否定・連鎖の機構でコンパイルし
-（`compile_mut_local_write_rhs`）、その結果の各フィールドを`v`の
-永続slotへコピーする——これがこの機構が支払う唯一のコピーであり、
-その間の全ての読み（`v`自身の再代入RHSを含む）はそれらのslotへ
-直接届く。`v`の**宣言**はコピーを一切支払わない: 新規construction
-自身の名前付きrun（`alloc_zeroed_run`は文一時値ではなく`alloc_slot`
-を使うので、既に永続的である）がそのままbindingの本拠地になる。
+から）と構造的に同一である。再代入（`compile_assignment`）と複合
+ステップ（`compile_compound_assign`）はRHSを§5.3.2が既に持つのと
+同じfold・否定・連鎖の機構でコンパイルし
+（`compile_mut_local_write_rhs`、`try_inline_operator`）、その結果の
+各フィールドを`v`の永続slotへコピーする——これがこの機構が支払う
+唯一のコピーであり、その間の全ての読み（`v`自身の再代入RHSを含む）
+はそれらのslotへ直接届く。`v`の**宣言**はコピーを一切支払わない:
+新規construction自身の名前付きrun（`alloc_zeroed_run`は文一時値では
+なく`alloc_slot`を使うので、既に永続的である）がそのままbindingの
+本拠地になる。
 
 計測（`tools/bench/value_inline.cul`の`mut, reused`行を、名前を
 辿れないconstruction経由で同じ算術を行う`mut, boxed`行と比較）:
 ローカルに再利用されるオペランドは、§5.3.2自身のfoldが毎反復
 支払っている2つのconstructionのうち1つを取り除く（operand[1]——
 毎回新規のconstruction——は今も変わらずreifyする。この意図的な
-差の詳細は同行のヘッダコメントを参照）。
+差の詳細は同行のヘッダコメントを参照）。`mut, compound`行は同じ
+ループを`v += …`で書いたもので、`mut, reused`と一致することが
+その行の眼目である。
 
 ### 5.4 組み込みメソッドはテーブルである
 

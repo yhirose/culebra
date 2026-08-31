@@ -595,6 +595,31 @@ the shape check alone, then finding the tail did not actually splice —
 leaves every slot past the first holding whatever the run's zero-init left
 there, with only the first slot ever written.
 
+Two consumer rules were tightened after this landed, both by finding a
+live escape rather than by review:
+
+- **Every dunder a fold would splice must itself pass `member_own_tail`**,
+  not just exist with the right arity. Every consumer of a spliced
+  operator's result — the fold's own accumulator, a reassignment's
+  copy-back, a trailing chain's field read — treats it as an N-slot run,
+  and a dunder returning a scalar hands them one slot with N assumed
+  (found live: a scalar-returning `__add__` under `(a + b).x` read the
+  slot *before* the result). A class with such a dunder never splices
+  through it, and the boxed path answers — including the TypeError a
+  field read on its scalar result raises.
+- **A bare `self + o` or `-self` inside a member body never classifies.**
+  `receiver_refs_stay_unboxed` used to accept a fold or negation with the
+  receiver as its operand wherever it appeared; but inside a body there is
+  no consumer for the run it produces — a member's out slot is a run only
+  for a `C.new(...)` tail, a body-internal fold-headed chain has no
+  lookahead to consume it (`try_inline_fold_chain` resolves operand[0]
+  through a `Binding`, which `self` never has), and anything else expects
+  a tagged Value. Found live as four different wrong behaviors from one
+  cause: `addp(o) { self + o }` returned its own first *field*, `-self`
+  reached `Op::Neg` on one, `println(self + o)` printed one, and
+  `(self + o).len()` raised a TypeError. Such a member now declines whole
+  and every consumer of it compiles boxed.
+
 One correctness precondition this exposed, unrelated to the mechanism
 itself: a class's own name inside its methods (`FuncInfo::own_name`, read
 off the receiver rather than a captured cell) was gated off for *any*
@@ -607,7 +632,7 @@ tail recursion §5.3.1 already documents (`V2.__add__` returning
 `V2.new(...)`) could not have been inlining either, before this fix,
 despite compiling and running correctly through the boxed fallback.
 
-### 5.3.3 A `mut` local can stay unboxed for its whole scope
+### 5.3.3 A local can stay unboxed for its whole scope
 
 §5.3.1/§5.3.2 only ever unbox a *value already in hand within one
 expression* — a literal `C.new(...)` chain, or an operator fold's own
@@ -617,19 +642,39 @@ reaches: a bare read of `v` produces an ordinary boxed `ExprResult`, so the
 fold's up-front scan sees no eligible operand[0] and reifies every
 iteration.
 
-`let mut v = C.new(...)` closes that gap with **whole-scope eligibility, no
-reification**: before compiling a single statement of `v`'s scope,
-`precheck_mut_local_at` walks every later reference to `v` in the same
-statement list (`mut_local_ref_ok`) and proves each one is a shape this
-splice machinery already understands — a `v.<field>` / `v.<method>(...)`
-chain, `v` as a fold/negation's own first operand, or a write `v = <rhs>`
-whose RHS is one of those shapes itself (`mut_local_write_ok`). One
-unclassified occurrence — an argument, a `println`, a comparison, a
-captured closure, `v += …` (compound assignment is out of this mechanism's
-first cut) — declines the WHOLE scope; `v` is an ordinary boxed local from
+`let [mut] v = <unboxed rhs>` closes that gap with **whole-scope
+eligibility, no reification**: before compiling a single statement of
+`v`'s scope, `precheck_mut_local_at` walks every later reference to `v` in
+the same statement list (`mut_local_ref_ok`) and proves each one is a
+shape this splice machinery already understands — a `v.<field>` /
+`v.<method>(...)` chain, a fold/negation-headed postfix chain ending in a
+scalar (`(v + g).len()`), a write `v = <rhs>` whose RHS is itself
+fold/negation/construction-shaped (`mut_local_write_ok`), or a compound
+step `v += e` / `v -= e` / `v *= e`, which splices the same dunder the
+desugared reassignment would. The declaration's own RHS accepts the same
+three shapes a write's does — a construction chain, a fold, or a negation
+— so `let d = C.new(...) + C.new(...)` persists the run §5.3.2 built. A
+plain `let` is the degenerate single-assignment case: the walk refuses to
+classify any write to it, so a later `v = …` — an ImmutableError today —
+declines the binding and the ordinary path keeps the identical error.
+
+One unclassified occurrence — an argument, a `println`, a comparison, a
+captured closure, a shadowing redeclaration, an unsupported compound
+operator — declines the WHOLE scope; `v` is an ordinary boxed local from
 its declaration on, exactly as before this stage existed. There is no
 partial state and no runtime decision: either every reference already
-qualifies, or none of them get the treatment.
+qualifies, or none of them get the treatment. In particular a bare
+fold/negation over `v` classifies **only** where its consumer provably
+takes a run — a write back into `v` itself, or a postfix chain ending in a
+scalar. Anywhere else (`println(v + g)`, an array element, another
+splice's operand) the run would reach code expecting a tagged Value, so
+the occurrence declines the binding — found live as §5.3.2's own escape
+list, one level up. One consequence worth naming: a fold RHS that names
+*another* unboxed local (`let d = v + g` with `v` unboxed) declines both
+bindings — `v`'s eligibility would depend on `d`'s and `d`'s on `v`'s,
+the bounded inter-binding fixpoint the spec anticipated and this stage
+deliberately does not build. Declining is always safe; the pattern is a
+candidate for a later cycle.
 
 This is the same discipline §5.3.1/§5.3.2 use, widened from one expression
 to a binding's lexical extent — `mut_local_ref_ok` is a close structural
@@ -650,9 +695,8 @@ proven unboxed. Two things follow from that:
   `lookup()`-based IDENTIFIER case** — that case answers by reading
   `Binding::unboxed_class`, and the whole point of this walk is to decide
   whether that field ever gets set. `mut_local_write_ok` asks the identical
-  question name-based instead, mirroring `mut_local_ref_ok`'s own
-  fold/negation case exactly, and only falls through to
-  `chain_resolves_to_class`/`fold_resolves_to_class` for a shape that is
+  question name-based instead (`mut_local_run_ok`), and only falls through
+  to `chain_resolves_to_class`/`fold_resolves_to_class` for a shape that is
   provably *not* `v` reading itself (a fresh construction, or a chain
   rooted at some other, already-real binding) — found live: routing every
   fold RHS through the ordinary lookahead first made `v = v + g * DT`
@@ -676,21 +720,24 @@ identifier read (`compile_expr`'s `IDENTIFIER` case) returns the run
 directly, the same unconditional way `self` does inside an inline frame;
 `v.<field>`/`v.<method>(...)` splices through `try_inline_mut_local_chain`,
 structurally identical to `self`'s own chain (`chain_stays_unboxed` from
-index 1); and a reassignment (`compile_assignment`) compiles its RHS
-through the same fold/negation/chain machinery §5.3.2 already has
-(`compile_mut_local_write_rhs`), then copies the result's fields into `v`'s
-permanent slots — the one copy this mechanism ever pays, since every read
-in between (including `v`'s own reassignment RHS) reaches those slots
-directly. `v`'s *declaration* pays no copy at all: its fresh construction's
-own named run (already permanent — `alloc_zeroed_run` uses `alloc_slot`,
-not a statement temp) simply becomes the binding's home.
+index 1); and a reassignment (`compile_assignment`) or compound step
+(`compile_compound_assign`) compiles its RHS through the same
+fold/negation/chain machinery §5.3.2 already has
+(`compile_mut_local_write_rhs`, `try_inline_operator`), then copies the
+result's fields into `v`'s permanent slots — the one copy this mechanism
+ever pays, since every read in between (including `v`'s own reassignment
+RHS) reaches those slots directly. `v`'s *declaration* pays no copy at
+all: its fresh construction's own named run (already permanent —
+`alloc_zeroed_run` uses `alloc_slot`, not a statement temp) simply becomes
+the binding's home.
 
 Measured (`tools/bench/value_inline.cul`'s `mut, reused` row against `mut,
 boxed`, same arithmetic through a non-nameable construction): a locally
 reused operand removes one of the two allocations §5.3.2's own fold still
 pays every iteration (operand[1] — a fresh construction each time — still
 reifies; that gap is unchanged and deliberate, see the row's own header
-comment).
+comment). The `mut, compound` row is the same loop written `v += …`, and
+matching `mut, reused` is its point.
 
 ### 5.4 Built-in methods are a table
 

@@ -179,4 +179,165 @@ test_shadowed_global_declines = fn () {
 }
 test_shadowed_global_declines()
 
+# ---- consumer-classified escapes: a run must never reach a consumer that
+# ---- expects a tagged Value, so these shapes decline and the boxed path
+# ---- answers (each was found live doing something else first).
+# ---- Every `v = v + …` below is written as a reassignment on purpose —
+# ---- it exercises the write arm, which compiles separately from the
+# ---- compound one (`+=` has its own test); lint flags the shape, do not
+# ---- fold it.
+
+@value
+class E2 {
+  x: Float
+  y: Float
+
+  new(x: Float, y: Float) {
+    self.x = x
+    self.y = y
+  }
+
+  len() {
+    Math.sqrt(self.x * self.x + self.y * self.y)
+  }
+
+  __add__(o) {
+    E2.new(self.x + o.x, self.y + o.y)
+  }
+
+  __sub__(o) {
+    E2.new(self.x - o.x, self.y - o.y)
+  }
+
+  __mul__(k) {
+    E2.new(self.x * k, self.y * k)
+  }
+
+  __neg__() {
+    E2.new(-self.x, -self.y)
+  }
+
+  addp(o) {
+    self + o
+  }
+
+  flip() {
+    -self
+  }
+
+  chained(o) {
+    (self + o).len()
+  }
+}
+
+test_body_fold_escapes_stay_boxed = fn () {
+  # `self + o` / `-self` inside a body has no consumer for the run it would
+  # produce (a member's out slot is a run only for a `C.new(...)` tail), so
+  # each of these members declines whole and the boxed path answers.
+  assert_eq(E2.new(1.0, 2.0).addp(E2.new(3.0, 4.0)), E2.new(4.0, 6.0))
+  assert_eq(E2.new(1.0, 2.0).flip(), E2.new(-1.0, -2.0))
+  assert_eq(E2.new(3.0, 4.0).chained(E2.new(0.0, 0.0)), 5.0)
+}
+test_body_fold_escapes_stay_boxed()
+
+test_local_fold_escapes_stay_boxed = fn () {
+  # The same rule at a whole-scope local: a fold whose result escapes to an
+  # argument, an array element, or a bare negation declines the binding
+  # entirely — no partial state, the ordinary instance everywhere.
+  let mut v = E2.new(1.0, 2.0)
+  v = v + E2.new(0.5, 0.5)
+  assert_eq(v + E2.new(1.0, 1.0), E2.new(2.5, 3.5))
+  let arr = [v + E2.new(0.0, 0.0)]
+  assert_eq(arr[0].x, 1.5)
+  assert_eq(-v, E2.new(-1.5, -2.5))
+}
+test_local_fold_escapes_stay_boxed()
+
+@value
+class ScalarAdd {
+  x: Float
+  y: Float
+
+  new(x: Float, y: Float) {
+    self.x = x
+    self.y = y
+  }
+
+  __add__(o) {
+    self.x + o.x
+  }
+}
+
+test_scalar_dunder_declines = fn () {
+  # A dunder that does not end in its own construction cannot promise a
+  # run, so nothing splices through it; the boxed answers hold everywhere,
+  # including the TypeError a field read on its Float result raises.
+  let mut v = ScalarAdd.new(1.0, 2.0)
+  v = v + ScalarAdd.new(3.0, 4.0)
+  assert_eq(v, 4.0)
+  assert_throws('TypeError', fn () {
+    (ScalarAdd.new(1.0, 2.0) + ScalarAdd.new(3.0, 4.0)).x
+  })
+}
+test_scalar_dunder_declines()
+
+# ---- binding-level unboxing: the shapes that stay unboxed for a whole
+# ---- scope, and the ones that decline it. (A later write to a plain `let`
+# ---- is rejected before anything runs, so it cannot appear in this file;
+# ---- the decline path keeps that rejection byte-identical by compiling
+# ---- nothing differently.)
+
+test_mut_local_reassign_stays_unboxed = fn () {
+  let mut v = E2.new(3.0, 0.0)
+  for i in 0..5 {
+    v = v + E2.new(0.25, -4.9)
+  }
+  assert_eq(v.x, 4.25)
+  assert_eq(v.y, -24.5)
+  assert_eq((v + E2.new(0.75, 0.5)).len(), Math.sqrt(25.0 + 576.0))
+}
+test_mut_local_reassign_stays_unboxed()
+
+test_plain_let_stays_unboxed = fn () {
+  let g = E2.new(0.5, -9.8)
+  assert_eq(g.x, 0.5)
+  assert_eq(g.len(), Math.sqrt(0.25 + 96.04))
+  let d = E2.new(3.0, 4.0) + E2.new(0.5, 0.5)
+  assert_eq(d.x, 3.5)
+  assert_eq(d.y, 4.5)
+  let n = -E2.new(1.0, -2.0)
+  assert_eq(n.x, -1.0)
+  assert_eq(n.y, 2.0)
+}
+test_plain_let_stays_unboxed()
+
+test_compound_assign_splices = fn () {
+  let mut a = E2.new(10.0, 20.0)
+  a += E2.new(1.0, 2.0)
+  a -= E2.new(0.5, 0.5)
+  a *= 2.0
+  assert_eq(a.x, 21.0)
+  assert_eq(a.y, 43.0)
+  # The binding on its own RHS would arrive as a raw run for `o`: declines.
+  let mut b = E2.new(1.0, 1.0)
+  b += b
+  assert_eq(b.x, 2.0)
+  assert_eq(b.y, 2.0)
+}
+test_compound_assign_splices()
+
+test_captured_or_retyped_declines = fn () {
+  let mut v = E2.new(1.0, 2.0)
+  v = v + E2.new(1.0, 1.0)
+  let f = fn () {
+    v.x
+  }
+  assert_eq(f(), 2.0)
+  let mut w = E2.new(1.0, 2.0)
+  w = w + E2.new(0.0, 0.0)
+  w = 'not a point'
+  assert_eq(w, 'not a point')
+}
+test_captured_or_retyped_declines()
+
 inspect('value-inline OK')

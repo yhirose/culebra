@@ -6801,13 +6801,13 @@ class Compiler {
         sb.shadowed_builtin = false;
         return read_binding(*tgt, sb);
       }
-      // Stage 3 (spec §15.3): `let mut v = C.new(...)`, proven by
+      // Stage 3 (spec §15.3): `let [mut] v = <unboxed rhs>`, proven by
       // precheck_mut_local_at — before this statement, or any other, ever
       // compiled — to stay unboxed for its whole lexical scope. `rhs` is
-      // the fresh construction itself, in its own home slots (alloc_slot,
-      // named — released at scope pop like any other local, not swept as
-      // a statement temp), so this binding simply adopts them as its slot;
-      // nothing to copy.
+      // the freshly built run itself (a construction, fold or negation),
+      // in its own home slots (alloc_slot, named — released at scope pop
+      // like any other local, not swept as a statement temp), so this
+      // binding simply adopts them as its slot; nothing to copy.
       if (auto it = mut_local_unboxed_.find(&ast); it != mut_local_unboxed_.end()) {
         const auto& cand = it->second;
         auto rhs = compile_mut_local_write_rhs(*av.rhs);
@@ -6845,13 +6845,7 @@ class Compiler {
     // apply to a binding this mechanism marks (precheck_mut_local_at only
     // marks a plain, non-predeclared, non-captured, non-REPL declaration).
     if (b && b->unboxed_layout) {
-      auto rhs = compile_mut_local_write_rhs(*av.rhs);
-      for (size_t i = 0; i < b->unboxed_layout->size(); i++)
-        store_into(b->slot + static_cast<int32_t>(i),
-                  ExprResult{rhs.slot + static_cast<int32_t>(i), false},
-                  /*dst_is_fresh=*/false);
-      return {b->slot, /*owned=*/false, -1, b->unboxed_layout,
-             b->unboxed_class};
+      return store_unboxed_home(*b, compile_mut_local_write_rhs(*av.rhs));
     }
     // `self` is a binding of every frame, and a stdlib global an immutable
     // root-env one, so a write to either is a reassignment even where nothing
@@ -6911,6 +6905,27 @@ class Compiler {
            kconst_str(culebra::format(
                "compound assignment on undefined name '{}'", tgt.token)));
       return {alloc_temp(tgt), true};  // unreachable
+    }
+
+    // `v op= e` on a whole-scope-unboxed local (spec §15.3 extension):
+    // splice the same dunder `v = v op e` would — the whole-scope walk
+    // classified this site or the binding would not be marked — then copy
+    // the fresh run back into `v`'s home slots, the same shape
+    // compile_assignment's reassignment arm uses. Evaluation order is the
+    // compound one (RHS first, then the read); for a non-captured local
+    // the difference from the desugared form is unobservable. `??=` never
+    // marks (its target can never read nil), so it keeps its own arm.
+    if (b && b->unboxed_layout && base != "??") {
+      auto rhs = compile_assign_rhs(ast, av);
+      assert(!rhs.unboxed_class &&
+             "a compound step's RHS must arrive boxed");
+      ExprResult cur{b->slot, /*owned=*/false, -1, b->unboxed_layout,
+                     b->unboxed_class};
+      auto r = try_inline_operator(ast, cur,
+                                   dunder_for_op(compound_op(ast, base)),
+                                   {rhs}, {av.rhs});
+      assert(r && "the whole-scope walk promised this compound step splices");
+      return store_unboxed_home(*b, *r);
     }
 
     if (base == "??") {
@@ -7642,34 +7657,56 @@ class Compiler {
                                       class_name, layout);
   }
 
+  // Whether `dunder` on `cls` can be spliced as an operator: the member
+  // exists, is eligible to inline, takes `arity` arguments, AND ends in
+  // its own class's construction (`member_own_tail`). That last clause is
+  // what makes every consumer's shape assumption true by construction —
+  // the fold's accumulator, a write's copy-back, and a trailing chain's
+  // field read all treat the result as an N-slot run, and a dunder
+  // returning a scalar would hand them one slot with N assumed (found
+  // live: a scalar `__add__` under `(a + b).x` read the slot BEFORE the
+  // result, and as a write RHS would have copied N slots out of one).
+  bool dunder_splice_ok(std::string_view dunder, size_t arity,
+                        const peg::Ast& cls, std::string_view class_name,
+                        const std::vector<std::string>* layout) {
+    const peg::Ast* m =
+        dunder.empty() ? nullptr : value_member_ast(cls, dunder);
+    if (!m || !inline_body_ok(*m, /*is_ctor=*/false, cls, class_name, layout))
+      return false;
+    auto ps = inline_params(culebra::view_method(*m).params);
+    return ps && ps->size() == arity &&
+           member_own_tail(*m, class_name) != nullptr;
+  }
+
+  // One operator token's worth of the question, shared between a fold's
+  // per-operator scan and the compound-assignment classification (`v += e`
+  // splices the same dunder `v = v + e` would). The token set is spelled
+  // out here rather than left to dunder_for_op's default: `/=`, `%=` and
+  // kin must stay declined even if some future opcode grows a dunder.
+  bool operator_token_splice_ok(std::string_view t, const peg::Ast& cls,
+                                std::string_view class_name,
+                                const std::vector<std::string>* layout) {
+    if (t != "+" && t != "-" && t != "*") return false;
+    Op op = t == "+" ? Op::Add : t == "-" ? Op::Sub : Op::Mul;
+    return dunder_splice_ok(dunder_for_op(op), 1, cls, class_name, layout);
+  }
+
   // Whether every operator in an ADDITIVE/MULTIPLICATIVE fold's
   // `node.nodes[from..]` (its own [op, operand]* tail) resolves to a
-  // splice-able dunder on `cls` — the method exists, is itself eligible to
-  // splice, and takes exactly one argument. `cls` is already settled by the
-  // caller (an operand[0] proven to BE `cls`, or a receiver already known
-  // to be one), so this only asks the operators. Shared by every caller
-  // that ends up asking this same question about a fold shaped this way:
-  // the pure lookahead (`fold_resolves_to_class`), the receiver-marker
-  // safety net (`receiver_refs_stay_unboxed`), and the whole-scope walk for
-  // a `mut` local (`mut_local_ref_ok`).
+  // splice-able dunder on `cls`. `cls` is already settled by the caller
+  // (an operand[0] proven to BE `cls`, or a receiver already known to be
+  // one), so this only asks the operators. Shared by every caller that
+  // ends up asking this same question about a fold shaped this way: the
+  // pure lookahead (`fold_resolves_to_class`), the receiver-marker safety
+  // net (`receiver_refs_stay_unboxed`), and the whole-scope walk for a
+  // local (`mut_local_ref_ok`).
   bool fold_operators_splice_ok(const peg::Ast& node, size_t from,
                                 const peg::Ast& cls, std::string_view class_name,
                                 const std::vector<std::string>* layout) {
-    for (size_t i = from; i + 1 < node.nodes.size(); i += 2) {
-      auto t = node.nodes[i]->token;
-      Op op = t == "+"  ? Op::Add
-             : t == "-" ? Op::Sub
-             : t == "*" ? Op::Mul
-                        : Op::BitOr;
-      auto dunder = dunder_for_op(op);
-      const peg::Ast* opm =
-          dunder.empty() ? nullptr : value_member_ast(cls, dunder);
-      if (!opm ||
-          !inline_body_ok(*opm, /*is_ctor=*/false, cls, class_name, layout))
+    for (size_t i = from; i + 1 < node.nodes.size(); i += 2)
+      if (!operator_token_splice_ok(node.nodes[i]->token, cls, class_name,
+                                    layout))
         return false;
-      auto ops = inline_params(culebra::view_method(*opm).params);
-      if (!ops || ops->size() != 1) return false;
-    }
     return true;
   }
 
@@ -7677,11 +7714,7 @@ class Compiler {
   // takes no argument. `fold_operators_splice_ok`'s one-operator cousin.
   bool neg_operator_splice_ok(const peg::Ast& cls, std::string_view class_name,
                               const std::vector<std::string>* layout) {
-    const peg::Ast* m = value_member_ast(cls, "__neg__");
-    if (!m || !inline_body_ok(*m, /*is_ctor=*/false, cls, class_name, layout))
-      return false;
-    auto ps = inline_params(culebra::view_method(*m).params);
-    return ps.has_value() && ps->empty();
+    return dunder_splice_ok("__neg__", 0, cls, class_name, layout);
   }
 
   // Whether every occurrence of `self`, or of the class's own name
@@ -7760,22 +7793,20 @@ class Compiler {
         return true;
       }
     }
-    if ((node.tag == "ADDITIVE"_ || node.tag == "MULTIPLICATIVE"_) &&
-        node.nodes.size() >= 3 && node.nodes[0]->tag == "IDENTIFIER"_ &&
-        is_self_or_own(node.nodes[0]->token)) {
-      if (!fold_operators_splice_ok(node, 1, class_ast, class_name, layout))
-        return false;
-      for (size_t i = 2; i < node.nodes.size(); i += 2)
-        if (!receiver_refs_stay_unboxed(*node.nodes[i], own_name, class_ast,
-                                        class_name, layout))
-          return false;
-      return true;
-    }
-    if (node.tag == "UNARY_MINUS"_ && node.nodes.size() >= 2 &&
-        node.nodes[1]->tag == "IDENTIFIER"_ &&
-        is_self_or_own(node.nodes[1]->token)) {
-      return neg_operator_splice_ok(class_ast, class_name, layout);
-    }
+    // A fold or negation with bare `self`/the class's own name as its
+    // operand is NOT classified here, deliberately: inside a body there is
+    // no consumer for the run it would produce. A member's out slot is a
+    // run only for a `C.new(...)` tail (member_own_tail), a body-internal
+    // fold-headed chain has no lookahead to consume it
+    // (try_inline_fold_chain resolves operand[0] through a Binding, which
+    // `self` never has), and anything else — an argument, a print, a field
+    // store — expects a tagged Value. So a bare `self + o` / `-self` falls
+    // through to the identifier check below and declines the member, which
+    // compiles every consumer of it on the ordinary boxed path (found
+    // live: `addp(o) { self + o }` returned its own first FIELD, `-self`
+    // reached `Op::Neg` on one, `println(self + o)` printed one, and
+    // `(self + o).len()` raised a TypeError — all four while these shapes
+    // still classified context-free).
     // `self.<declared field> = rhs`: the point of a constructor (a non-ctor
     // body writing self already declined earlier, in inline_body_ok's
     // value_body_writes_self check, so reaching this shape here always
@@ -7851,14 +7882,49 @@ class Compiler {
            node.nodes[1]->token == name;
   }
 
+  // Whether `node` — a fold/negation with `name` as its own bare
+  // operand[0] — would compile (`allow_trailing_class=true`) to an unboxed
+  // run of `cls`: every operator splices, and every OTHER operand
+  // classifies as an ordinary reference. This answers only "is the run
+  // itself sound"; whether the run's CONSUMER understands it is the
+  // caller's question, and only two callers have one that does — a write
+  // back into the same binding (`mut_local_write_ok`: the copy-back
+  // consumes it) and a postfix chain ending in a scalar
+  // (`mut_local_ref_ok`'s fold-headed-CALL case: try_inline_fold_chain
+  // consumes it). Classifying a fold anywhere ELSE it appears is the
+  // §15.4 escape bug one level up — found live: `println(v + g)` printed
+  // a raw field, `-v` reached `Op::Neg` on one, and a fold nested as
+  // another splice's operand bound a raw scalar where the dunder body
+  // expected an instance — so no generic-walk case calls this.
+  bool mut_local_run_ok(const peg::Ast& node, std::string_view name,
+                        const peg::Ast& cls, std::string_view class_name,
+                        const std::vector<std::string>* layout,
+                        bool writes_ok) {
+    using namespace peg::udl;
+    if ((node.tag == "ADDITIVE"_ || node.tag == "MULTIPLICATIVE"_) &&
+        fold_operand0_is(node, name)) {
+      if (!fold_operators_splice_ok(node, 1, cls, class_name, layout))
+        return false;
+      for (size_t i = 2; i < node.nodes.size(); i += 2)
+        if (!mut_local_ref_ok(*node.nodes[i], name, cls, class_name, layout,
+                              writes_ok))
+          return false;
+      return true;
+    }
+    if (node.tag == "UNARY_MINUS"_ && neg_operand_is(node, name))
+      return neg_operator_splice_ok(cls, class_name, layout);
+    return false;
+  }
+
   // Stage 3 (spec §15.3/§15.4, `project_value_type_spec` memory): whole-
-  // scope eligibility for a `let mut v = C.new(...)` local. Whether `rhs`
+  // scope eligibility for a `let [mut] v = <unboxed rhs>` local. Whether
+  // `rhs`
   // — a write's right-hand side — resolves unboxed to `cls`, asking the
   // identical question `compile_mut_local_write_rhs` re-derives when it
   // actually compiles. No emission.
   //
   // `v` itself as the fold/negation's own first operand — `v = v + g*DT` —
-  // is asked through `mut_local_ref_ok` directly, NAME-based (`name`, not a
+  // is asked through `mut_local_run_ok` directly, NAME-based (`name`, not a
   // live Binding), rather than through `chain_resolves_to_class`'s own
   // IDENTIFIER case: this whole check is what DECIDES whether `v`'s
   // binding is ever marked unboxed at all, so at the point it runs there is
@@ -7872,32 +7938,35 @@ class Compiler {
   // has a real binding by the time this runs), so asking there is safe.
   bool mut_local_write_ok(const peg::Ast& rhs, std::string_view name,
                          const peg::Ast& cls, std::string_view class_name,
-                         const std::vector<std::string>* layout) {
+                         const std::vector<std::string>* layout,
+                         bool writes_ok) {
     using namespace peg::udl;
     if (((rhs.tag == "ADDITIVE"_ || rhs.tag == "MULTIPLICATIVE"_) &&
          fold_operand0_is(rhs, name)) ||
         (rhs.tag == "UNARY_MINUS"_ && neg_operand_is(rhs, name)))
-      return mut_local_ref_ok(rhs, name, cls, class_name, layout);
-    const peg::Ast* got =
-        (rhs.tag == "ADDITIVE"_ || rhs.tag == "MULTIPLICATIVE"_)
-            ? fold_resolves_to_class(rhs)
-        : rhs.tag == "UNARY_MINUS"_
-            ? unary_minus_resolves_to_class(rhs)
-            : chain_resolves_to_class(rhs, /*allow_trailing_class=*/true);
-    return got == &cls;
+      return mut_local_run_ok(rhs, name, cls, class_name, layout, writes_ok);
+    return mut_local_rhs_resolves_to_class(rhs) == &cls;
   }
 
-  // The generalised `receiver_refs_stay_unboxed`, for a `let mut` local
+  // The generalised `receiver_refs_stay_unboxed`, for a `let [mut]` local
   // instead of `self`/a class's own name: whether every occurrence of
   // `name` in `node` is a shape this splice mechanism already knows how to
   // keep unboxed — a `name.<field>` / `name.<method>(...)` read chain
-  // (try_inline_mut_local_chain compiles it), `name` as a fold/negation's
-  // own operand[0] (chain_resolves_to_class's IDENTIFIER case), or a write
-  // `name = <eligible rhs>` (mut_local_write_ok, above). Anywhere else —
-  // an argument, a print, a comparison, a container element, `name += …`
-  // (never classified: compound assignment is out of scope for Stage 3's
-  // first cut) — declines, exactly as `receiver_refs_stay_unboxed` does on
-  // its own first unclassified occurrence.
+  // (try_inline_mut_local_chain compiles it), a fold/negation-headed
+  // postfix chain ending in a scalar (`(name + g).len()`,
+  // try_inline_fold_chain compiles it), a write `name = <eligible rhs>`
+  // (mut_local_write_ok, above), or a compound step `name op= e` (the
+  // same dunder the desugared write splices). Anywhere else — an
+  // argument, a print, a comparison, a container element, and in
+  // particular a BARE fold/negation whose result would escape to a
+  // consumer that expects a tagged Value — declines, exactly as
+  // `receiver_refs_stay_unboxed` does on its own first unclassified
+  // occurrence. The bare-fold decline is load-bearing, not conservatism:
+  // there is no reification anywhere in this feature, so a run that would
+  // escape an unaware consumer must never be created, which means the
+  // binding that would create it must never be marked (found live —
+  // `println(v + g)` printed a raw field while this case still classified
+  // context-free).
   //
   // Unlike `self`, `name` is an ordinary Binding, so a nested closure could
   // in principle read or capture it — but info_->captured_locals already
@@ -7909,51 +7978,71 @@ class Compiler {
   // reference it at all — captured_locals would have said otherwise).
   bool mut_local_ref_ok(const peg::Ast& node, std::string_view name,
                        const peg::Ast& cls, std::string_view class_name,
-                       const std::vector<std::string>* layout) {
+                       const std::vector<std::string>* layout,
+                       bool writes_ok) {
     using namespace peg::udl;
     if (node.tag == "FUNCTION"_ || node.tag == "MULTIFN_DECL"_ ||
         node.tag == "CLASS_DECL"_ || node.tag == "ENUM_DECL"_)
       return true;
     if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_)
       return true;  // a member name, not a value reference
+    // A postfix chain whose head is already an unboxed run — `name` itself
+    // (`name.x`, `name.len()`, try_inline_mut_local_chain's consumer), or
+    // a fold/negation over it (`(name + g).len()`, `(-name).x`,
+    // try_inline_fold_chain's). Either way chain_stays_unboxed with
+    // allow_trailing_class=false is the same condition the lookahead
+    // checks before committing, so the run ends consumed (a scalar),
+    // never escaping the splice. A head that is a fold over OTHER names,
+    // or one whose operators cannot splice, simply isn't this shape and
+    // falls through to the generic walk below (where a bare occurrence of
+    // `name` inside it declines as usual).
     if (node.tag == "CALL"_ && !node.nodes.empty() &&
-        node.nodes[0]->tag == "IDENTIFIER"_ && node.nodes[0]->token == name) {
+        ((node.nodes[0]->tag == "IDENTIFIER"_ &&
+          node.nodes[0]->token == name) ||
+         (node.nodes.size() >= 2 &&
+          mut_local_run_ok(*node.nodes[0], name, cls, class_name, layout,
+                           writes_ok)))) {
       if (!chain_stays_unboxed(node, 1, cls, class_name, layout,
                                /*allow_trailing_class=*/false))
         return false;
       for (size_t i = 1; i < node.nodes.size(); i++)
         if (node.nodes[i]->original_tag == "ARGUMENTS"_)
           for (const auto& a : node.nodes[i]->nodes)
-            if (!mut_local_ref_ok(*a, name, cls, class_name, layout))
+            if (!mut_local_ref_ok(*a, name, cls, class_name, layout,
+                                  writes_ok))
               return false;
       return true;
     }
-    if ((node.tag == "ADDITIVE"_ || node.tag == "MULTIPLICATIVE"_) &&
-        fold_operand0_is(node, name)) {
-      if (!fold_operators_splice_ok(node, 1, cls, class_name, layout))
-        return false;
-      for (size_t i = 2; i < node.nodes.size(); i += 2)
-        if (!mut_local_ref_ok(*node.nodes[i], name, cls, class_name, layout))
-          return false;
-      return true;
-    }
-    if (node.tag == "UNARY_MINUS"_ && neg_operand_is(node, name)) {
-      return neg_operator_splice_ok(cls, class_name, layout);
-    }
     if (node.tag == "ASSIGNMENT"_) {
       auto av = culebra::view_assignment(node);
-      if (!av.compound) {
-        if (const auto* target = culebra::assign_name_target(node, av);
-            target && target->token == name)
+      if (const auto* target = culebra::assign_name_target(node, av);
+          target && target->token == name) {
+        // A redeclaration shadows rather than writes — spec §15.5's rule
+        // is that a shadow of the name anywhere in the walked region
+        // declines the whole binding, so the walk never has to tell the
+        // two bindings' occurrences apart.
+        if (av.is_let || av.is_mut) return false;
+        // A write to a non-`mut` binding is an ImmutableError today;
+        // declining compiles the ordinary path with the identical error.
+        if (!writes_ok) return false;
+        if (!av.compound)
           return av.rhs && mut_local_write_ok(*av.rhs, name, cls, class_name,
-                                              layout);
+                                              layout, writes_ok);
+        // `name op= e` splices the same dunder `name = name op e` would;
+        // the RHS is walked like any other expression (a bare `name`
+        // inside it declines — the splice would bind it raw as `o`).
+        return operator_token_splice_ok(av.op_base, cls, class_name,
+                                        layout) &&
+               av.rhs && mut_local_ref_ok(*av.rhs, name, cls, class_name,
+                                          layout, writes_ok);
       }
     }
     // A bare, unclassified occurrence of `name` — not a shape this
     // mechanism can keep unboxed, so `name` is boxed for its whole scope.
     if (node.tag == "IDENTIFIER"_ && node.token == name) return false;
     for (const auto& n : node.nodes)
-      if (!mut_local_ref_ok(*n, name, cls, class_name, layout)) return false;
+      if (!mut_local_ref_ok(*n, name, cls, class_name, layout, writes_ok))
+        return false;
     return true;
   }
 
@@ -7975,8 +8064,32 @@ class Compiler {
     return *r;
   }
 
-  // What a `let mut v = C.new(...)` declaration site precomputed: eligible
-  // to stay unboxed for its whole scope, and the class/layout that decided.
+  // The lookahead half of `compile_mut_local_write_rhs`: which class this
+  // RHS resolves to unboxed, dispatched on the same three top-level shapes
+  // the emitter handles (fold / negation / construction chain). Asked by a
+  // write's classification and by a declaration's own up-front check.
+  const peg::Ast* mut_local_rhs_resolves_to_class(const peg::Ast& rhs) {
+    using namespace peg::udl;
+    if (rhs.tag == "ADDITIVE"_ || rhs.tag == "MULTIPLICATIVE"_)
+      return fold_resolves_to_class(rhs);
+    if (rhs.tag == "UNARY_MINUS"_) return unary_minus_resolves_to_class(rhs);
+    return chain_resolves_to_class(rhs, /*allow_trailing_class=*/true);
+  }
+
+  // The one copy this mechanism pays: a freshly built run into `b`'s
+  // permanent home slots. Shared by compile_assignment's reassignment arm
+  // and compile_compound_assign's compound-step arm.
+  ExprResult store_unboxed_home(const Binding& b, const ExprResult& src) {
+    for (size_t i = 0; i < b.unboxed_layout->size(); i++)
+      store_into(b.slot + static_cast<int32_t>(i),
+                 ExprResult{src.slot + static_cast<int32_t>(i), false},
+                 /*dst_is_fresh=*/false);
+    return {b.slot, /*owned=*/false, -1, b.unboxed_layout, b.unboxed_class};
+  }
+
+  // What a `let [mut] v = <unboxed rhs>` declaration site precomputed:
+  // eligible to stay unboxed for its whole scope, and the class/layout
+  // that decided.
   struct MutLocalCandidate {
     const std::vector<std::string>* layout;
     const peg::Ast* cls;
@@ -8002,26 +8115,36 @@ class Compiler {
   // the check with the compile loop, one statement at a time, keeps the
   // same ordering guarantee 2a/2b/2c already rely on.
   //
-  // For a `let mut v = C.new(...)` at `stmts[i]`, walk every LATER
+  // For a `let [mut] v = <unboxed rhs>` at `stmts[i]`, walk every LATER
   // statement in `stmts` (mut_local_ref_ok recurses through nested
   // if/while/for bodies on its own, since they are just child nodes — a
   // loop body is compiled once and iterates at run time, so covering it
   // here covers every iteration) and decide once, before compiling a
   // single one of them, whether `v` stays unboxed for good. Anything else
   // `stmts[i]` might be returns having asked nothing.
+  //
+  // A plain `let` is the degenerate single-assignment case of the same
+  // mechanism (spec §15.3's own framing): the walk simply refuses to
+  // classify any write to it (`writes_ok=false`), so a later `v = …` —
+  // an ImmutableError today — declines the binding and compiles the
+  // ordinary path with the identical error, and only read shapes remain.
+  //
+  // The declaration's RHS accepts the same three shapes a write's RHS
+  // does (fold / negation / construction chain, all lookup-based — any
+  // binding an RHS here could name already exists and is already marked
+  // or not): `let d = v + g` chains one unboxed local into the next.
   void precheck_mut_local_at(
       const std::vector<std::shared_ptr<peg::Ast>>& stmts, size_t i) {
     using namespace peg::udl;
     const auto& stmt = *stmts[i];
     if (stmt.tag != "ASSIGNMENT"_) return;
     auto av = culebra::view_assignment(stmt);
-    if (av.compound || !av.is_mut || !av.rhs) return;
+    if (av.compound || !(av.is_let || av.is_mut) || !av.rhs) return;
     const auto* target = culebra::assign_name_target(stmt, av);
     if (!target) return;
     auto name = std::string(target->token);
     if (info_->captured_locals.contains(name)) return;
-    const peg::Ast* cls =
-        chain_resolves_to_class(*av.rhs, /*allow_trailing_class=*/true);
+    const peg::Ast* cls = mut_local_rhs_resolves_to_class(*av.rhs);
     if (!cls) return;
     size_t dec_end = culebra::first_non_decorator_index(*cls);
     auto class_name =
@@ -8029,7 +8152,8 @@ class Compiler {
     const auto* layout = culebra::value_flat_layout(class_name);
     if (!layout) return;
     for (size_t j = i + 1; j < stmts.size(); j++)
-      if (!mut_local_ref_ok(*stmts[j], name, *cls, class_name, layout))
+      if (!mut_local_ref_ok(*stmts[j], name, *cls, class_name, layout,
+                            /*writes_ok=*/av.is_mut))
         return;
     mut_local_unboxed_[&stmt] = {layout, cls};
   }
@@ -8436,6 +8560,9 @@ class Compiler {
       if (i + 1 >= at.nodes.size() ||
           at.nodes[i + 1]->original_tag != "ARGUMENTS"_) {
         int32_t ix = inline_field_index(cur, post.token);
+        assert(ix >= 0 &&
+               "a field read on a non-run result -- chain_stays_unboxed "
+               "promised every step before this one leaves a run");
         return ExprResult{cur.slot + ix, /*owned=*/false};
       }
       const peg::Ast* m = value_member_ast(cls, post.token);
@@ -8606,9 +8733,20 @@ class Compiler {
       // of the runtime dispatch. fold_resolves_to_class's up-front scan is
       // what guarantees a dunder exists here whenever `acc` is unboxed —
       // the assert pins that invariant rather than silently trusting it,
-      // the same way run_resolved's does for a resolved call site.
+      // the same way run_resolved's does for a resolved call site. An
+      // unboxed accumulator with NO scan behind it means an unboxed value
+      // (`self` inside a splice, or a marked local) leaked through the
+      // ordinary dispatch — a context one of the two walks
+      // (receiver_refs_stay_unboxed / mut_local_ref_ok) was supposed to
+      // have declined.
       if (acc.unboxed_class) {
+        assert(fold_class &&
+               "an unboxed operand[0] reached a fold whose up-front scan "
+               "never ran or declined -- a walk let an unboxed value into "
+               "an unclassified context");
         auto rhs = compile_expr(*ast.nodes[i + 1]);
+        assert(!rhs.unboxed_class &&
+               "a fold operand other than [0] must arrive boxed");
         auto r = try_inline_operator(ast, acc, dunder_for_op(op), {rhs},
                                      {ast.nodes[i + 1].get()});
         assert(r && "fold_resolves_to_class's scan promised this inlines");
@@ -8616,6 +8754,8 @@ class Compiler {
         continue;
       }
       auto rhs = compile_expr(*ast.nodes[i + 1]);
+      assert(!rhs.unboxed_class &&
+             "a fold operand other than [0] must arrive boxed");
       int32_t t = alloc_temp(ast);
       emit(op, t, acc.slot, rhs.slot);
       acc = {t, true};
@@ -8635,6 +8775,9 @@ class Compiler {
       return *out;
     }
     auto r = compile_expr(*ast.nodes[1]);
+    assert(!r.unboxed_class &&
+           "Op::Neg on an unboxed run's first slot -- the whole-scope walk "
+           "let a marked local into an unclassified negation");
     int32_t t = alloc_temp(ast);
     emit(Op::Neg, t, r.slot);
     return {t, true};

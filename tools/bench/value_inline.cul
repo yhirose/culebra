@@ -47,6 +47,10 @@
 #                        boxed path. The gap between this row and the one
 #                        above is Stage 3's own contribution, the same way
 #                        `operator, boxed` isolates 2c's
+#   mut, compound          the same loop written `v += V2.new(...)` — the
+#                        compound step splices the same dunder the
+#                        desugared reassignment does, so this row matching
+#                        `mut, reused` is the point
 #
 
 # Run on the -O3 + LTO binary (`just build`); build-dev is -O1 and the numbers
@@ -163,6 +167,14 @@ let mut_boxed = fn () {
   v.x + v.y
 }
 
+let mut_compound = fn () {
+  let mut v = V2.new(0.0, 0.0)
+  for i in 0..N {
+    v += V2.new(to_float(i % 7), to_float(i % 5))
+  }
+  v.x + v.y
+}
+
 println("value inline, {N} iterations")
 println("")
 
@@ -180,4 +192,5 @@ run('operator, inlined', op_inlined)
 run('operator, boxed', op_boxed)
 run('mut, reused', mut_reused)
 run('mut, boxed', mut_boxed)
+run('mut, compound', mut_compound)
 run('scalars (control)', scalars)
