@@ -35,6 +35,26 @@ class Module {
     return id(b.literal(v, pos(line, col)));
   }
 
+  int64_t bool_literal(bool v, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.bool_literal(v, pos(line, col)));
+  }
+
+  int64_t double_literal(double v, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.double_literal(v, pos(line, col)));
+  }
+
+  int64_t nil_literal(int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.nil_literal(pos(line, col)));
+  }
+
+  int64_t str_literal(std::string_view s, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.str_literal(std::string(s), pos(line, col)));
+  }
+
   int64_t var_ref(std::string_view kind, int64_t index, int64_t line,
                   int64_t col) {
     coreir::Builder b(m_);
@@ -108,6 +128,80 @@ class Module {
                      int64_t col) {
     coreir::Builder b(m_);
     return id(b.call_value(node(callee), take_list(args_list), pos(line, col)));
+  }
+
+  int64_t array_lit(int64_t items_list, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.array_lit(take_list(items_list), pos(line, col)));
+  }
+
+  // kv_list holds key, value, key, value, ... -- the flat shape ObjectLit
+  // itself stores; the builder wants pairs, so this re-pairs them.
+  int64_t object_lit(int64_t kv_list, int64_t line, int64_t col) {
+    const std::vector<coreir::NodeId> flat = take_list(kv_list);
+    std::vector<std::pair<coreir::NodeId, coreir::NodeId>> kvs;
+    kvs.reserve(flat.size() / 2);
+    for (size_t i = 0; i + 1 < flat.size(); i += 2) {
+      kvs.push_back({flat[i], flat[i + 1]});
+    }
+    coreir::Builder b(m_);
+    return id(b.object_lit(kvs, pos(line, col)));
+  }
+
+  int64_t index(int64_t recv, int64_t key, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.index(node(recv), node(key), pos(line, col)));
+  }
+
+  int64_t set_index(int64_t recv, int64_t key, int64_t value, int64_t line,
+                    int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.set_index(node(recv), node(key), node(value),
+                          pos(line, col)));
+  }
+
+  // Scopes, non-local exits, exceptions, defers -- the Core-IR surface the
+  // exception phase added; each is a thin forward to the builder.
+  int64_t scope(int64_t first_local, int64_t end_local, int64_t body,
+                int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.scope(idx32(first_local), idx32(end_local), node(body),
+                      pos(line, col)));
+  }
+
+  // A bare `return` is spelled with an explicit nil_literal argument; the
+  // wrap layer has no optional parameters, and the front end lowering a
+  // return statement holds a position for the nil anyway.
+  int64_t make_return(int64_t value, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.make_return(node(value), pos(line, col)));
+  }
+
+  int64_t make_break(int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.make_break(pos(line, col)));
+  }
+
+  int64_t make_continue(int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.make_continue(pos(line, col)));
+  }
+
+  int64_t make_throw(int64_t value, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.make_throw(node(value), pos(line, col)));
+  }
+
+  int64_t make_try(int64_t caught_local, int64_t body, int64_t handler,
+                   int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.make_try(idx32(caught_local), node(body), node(handler),
+                         pos(line, col)));
+  }
+
+  int64_t make_defer(int64_t value, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.make_defer(node(value), pos(line, col)));
   }
 
   int64_t intrinsic(std::string_view name, int64_t args_list, int64_t line,
@@ -228,6 +322,7 @@ class Module {
   }
   static coreir::UnOp to_unop(std::string_view s) {
     if (s == "neg") return coreir::UnOp::Neg;
+    if (s == "bitnot") return coreir::UnOp::BitNot;
     throw std::invalid_argument("CodeGen: unknown unary op '" +
                                 std::string(s) + "'");
   }
@@ -238,7 +333,9 @@ class Module {
         {"mod", coreir::BinOp::Mod}, {"eq", coreir::BinOp::Eq},
         {"ne", coreir::BinOp::Ne},   {"lt", coreir::BinOp::Lt},
         {"le", coreir::BinOp::Le},   {"gt", coreir::BinOp::Gt},
-        {"ge", coreir::BinOp::Ge},
+        {"ge", coreir::BinOp::Ge},   {"bitand", coreir::BinOp::BitAnd},
+        {"bitor", coreir::BinOp::BitOr}, {"bitxor", coreir::BinOp::BitXor},
+        {"shl", coreir::BinOp::Shl}, {"shr", coreir::BinOp::Shr},
     };
     for (const auto& [name, op] : kOps) {
       if (s == name) return op;
@@ -249,6 +346,13 @@ class Module {
   static coreir::IntrinsicId to_intrinsic(std::string_view s) {
     if (s == "print") return coreir::IntrinsicId::Print;
     if (s == "readint") return coreir::IntrinsicId::ReadInt;
+    if (s == "len") return coreir::IntrinsicId::Len;
+    if (s == "tostr") return coreir::IntrinsicId::ToStr;
+    if (s == "typeof") return coreir::IntrinsicId::TypeOf;
+    if (s == "toint") return coreir::IntrinsicId::ToInt;
+    if (s == "todouble") return coreir::IntrinsicId::ToDouble;
+    if (s == "fmod") return coreir::IntrinsicId::FMod;
+    if (s == "pow") return coreir::IntrinsicId::Pow;
     throw std::invalid_argument("CodeGen: unknown intrinsic '" +
                                 std::string(s) + "'");
   }

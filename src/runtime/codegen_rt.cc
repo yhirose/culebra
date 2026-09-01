@@ -12,11 +12,12 @@
 // program_out()/read_stdin_line_interruptible directly instead -- the same
 // primitives those two functions are themselves built on.
 //
-// coreir_rt_fail throws culebra::CulebraError rather than exiting: every
-// frame cpp-vmlib's executor holds live across this call is a plain
-// std::vector with no other resource to leak (verified in cpp-vmlib's own
-// tests/throw_safety.cc), so unwinding through it via a C++ exception is
-// exactly the documented contract, not a workaround.
+// coreir_rt_fail throws culebra::CulebraError rather than exiting. Since the
+// exception phase it is fatal-only: a trap or Throw a Core-IR TryCatch
+// guards never reaches it, and an unguarded one arrives with the executor's
+// frames already popped and released by its own unwinder -- throwing a C++
+// exception from here is exactly the documented contract (cpp-vmlib's
+// tests/throw_safety.cc pins the leak-free unwind).
 
 #include <cerrno>
 #include <cstdlib>

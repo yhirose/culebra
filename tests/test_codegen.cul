@@ -186,4 +186,147 @@ fn print_stmt(m, value) {
   assert_eq(caught.message, 'recursion limit exceeded')
 }
 
+# --- The exception-phase surface: scalars, tostr, containers, scopes,
+# --- non-local exits, throw/try, defer. One case per mechanism.
+
+fn tostr_node(m, v) {
+  let args = m.list_new()
+  m.list_push(args, v)
+  m.intrinsic(name: 'tostr', args_list: args, line: 1, col: 1)
+}
+
+# Scalar literals and tostr (to_display's formatting: whole doubles print
+# bare -- "4", not culebra's "4.0"; a front end that wants culebra's rule
+# post-processes).
+{
+  let m = CodeGen.Module.new()
+  let hello = m.str_literal(s: 'hi ', line: 1, col: 1)
+  let cat = m.binary(op: 'add', lhs: hello, rhs: tostr_node(m, m.literal(v: 42, line: 1, col: 1)), line: 1, col: 1)
+  let ta = m.list_new()
+  m.list_push(ta, m.double_literal(v: 1.5, line: 1, col: 1))
+  let type_node = m.intrinsic(name: 'typeof', args_list: ta, line: 1, col: 1)
+  let tb = m.list_new()
+  m.list_push(tb, m.double_literal(v: -2.9, line: 1, col: 1))
+  let toint_node = m.intrinsic(name: 'toint', args_list: tb, line: 1, col: 1)
+  let tc = m.list_new()
+  m.list_push(tc, m.double_literal(v: 5.5, line: 1, col: 1))
+  m.list_push(tc, m.literal(v: 2, line: 1, col: 1))
+  let fmod_node = m.intrinsic(name: 'fmod', args_list: tc, line: 1, col: 1)
+  let body = stmt_block(m, [
+    print_stmt(m, cat),
+    print_stmt(m, tostr_node(m, m.double_literal(v: 4.0, line: 1, col: 1))),
+    print_stmt(m, m.bool_literal(v: true, line: 1, col: 1)),
+    print_stmt(m, m.nil_literal(line: 1, col: 1)),
+    print_stmt(m, type_node),
+    print_stmt(m, toint_node),
+    print_stmt(m, fmod_node),
+  ])
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "hi 42\n4\ntrue\nnil\ndouble\n-2\n1.5\n")
+}
+
+# Bitwise operators, masked shifts included.
+{
+  let m = CodeGen.Module.new()
+  fn lit(m, v) { m.literal(v: v, line: 1, col: 1) }
+  fn bop(m, op, l, r) { m.binary(op: op, lhs: l, rhs: r, line: 1, col: 1) }
+  let body = stmt_block(m, [
+    print_stmt(m, bop(m, 'bitand', lit(m, 6), lit(m, 3))),
+    print_stmt(m, bop(m, 'bitor', lit(m, 6), lit(m, 3))),
+    print_stmt(m, bop(m, 'bitxor', lit(m, 6), lit(m, 3))),
+    print_stmt(m, m.unary(op: 'bitnot', operand: lit(m, 7), line: 1, col: 1)),
+    print_stmt(m, bop(m, 'shl', lit(m, 1), lit(m, 64))),
+    print_stmt(m, bop(m, 'shr', lit(m, -5), lit(m, 1))),
+  ])
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "2\n7\n5\n-8\n1\n-3\n")
+}
+
+# Containers: array and object literals, index, set_index, len.
+{
+  let m = CodeGen.Module.new()
+  fn lit(m, v) { m.literal(v: v, line: 1, col: 1) }
+  fn strl(m, v) { m.str_literal(s: v, line: 1, col: 1) }
+  let items = m.list_new()
+  m.list_push(items, lit(m, 10))
+  m.list_push(items, lit(m, 20))
+  let arr = m.array_lit(items_list: items, line: 1, col: 1)
+  let store_arr = m.assign(kind: 'local', index: 0, value: arr, line: 1, col: 1)
+  let put = m.set_index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+                        key: lit(m, 1), value: lit(m, 99), line: 1, col: 1)
+  let len_args = m.list_new()
+  m.list_push(len_args, m.var_ref(kind: 'local', index: 0, line: 1, col: 1))
+  let kvs = m.list_new()
+  m.list_push(kvs, strl(m, 'k'))
+  m.list_push(kvs, lit(m, 7))
+  let obj = m.object_lit(kv_list: kvs, line: 1, col: 1)
+  let body = stmt_block(m, [
+    store_arr,
+    put,
+    print_stmt(m, m.index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1), key: lit(m, 1), line: 1, col: 1)),
+    print_stmt(m, m.intrinsic(name: 'len', args_list: len_args, line: 1, col: 1)),
+    print_stmt(m, m.index(recv: obj, key: strl(m, 'k'), line: 1, col: 1)),
+  ])
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "99\n2\n7\n")
+}
+
+# Scope + defer + break: the defer fires when the loop-body scope exits
+# sideways, then the loop is left.
+{
+  let m = CodeGen.Module.new()
+  let cmap = m.add_capture_map(m.capture_map_new())
+  let dbody = print_stmt(m, m.str_literal(s: 'deferred', line: 2, col: 1))
+  let inner = stmt_block(m, [
+    m.make_defer(value: m.make_closure(func: 1, cmap: cmap, line: 2, col: 1), line: 2, col: 1),
+    m.make_break(line: 3, col: 1),
+  ])
+  let loop = m.make_while(cond: m.bool_literal(v: true, line: 1, col: 1),
+                          body: m.scope(first_local: 0, end_local: 0, body: inner, line: 1, col: 1),
+                          line: 1, col: 1)
+  let body = stmt_block(m, [loop, print_stmt(m, m.str_literal(s: 'after', line: 4, col: 1))])
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.add_func(name: 'dfn', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: dbody)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "deferred\nafter\n")
+}
+
+# throw / try_catch: a handler resumes execution; a VM trap is catchable and
+# carries {message, line, col}.
+{
+  let m = CodeGen.Module.new()
+  fn strl(m, v) { m.str_literal(s: v, line: 1, col: 1) }
+  let thr = m.make_throw(value: strl(m, 'boom'), line: 1, col: 1)
+  let handler = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  let caught = m.make_try(caught_local: 0, body: thr, handler: handler, line: 1, col: 1)
+  let trap = m.binary(op: 'div', lhs: m.literal(v: 1, line: 5, col: 1), rhs: m.literal(v: 0, line: 5, col: 9), line: 5, col: 1)
+  let trap_handler = m.index(recv: m.var_ref(kind: 'local', index: 0, line: 6, col: 1), key: strl(m, 'message'), line: 6, col: 1)
+  let caught2 = m.make_try(caught_local: 0, body: trap, handler: trap_handler, line: 5, col: 1)
+  let body = stmt_block(m, [
+    print_stmt(m, caught),
+    print_stmt(m, caught2),
+    print_stmt(m, strl(m, 'alive')),
+  ])
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.set_local_name(func: 0, index: 0, name: 'e')
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "boom\ndivide by zero\nalive\n")
+}
+
+# return: the value comes back, the rest of the body does not run.
+{
+  let m = CodeGen.Module.new()
+  let cmap = m.add_capture_map(m.capture_map_new())
+  let ret = m.make_return(value: m.literal(v: 42, line: 2, col: 3), line: 2, col: 3)
+  let fbody = stmt_block(m, [ret, print_stmt(m, m.literal(v: 7, line: 3, col: 3))])
+  let call = m.call(func: 1, cmap: cmap, line: 1, col: 1)
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: print_stmt(m, call))
+  m.add_func(name: 'f', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: fbody)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "42\n")
+}
+
 println('test_codegen OK')

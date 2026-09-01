@@ -11,6 +11,13 @@ inline bool register_codegen_binding() {
   wrap<codegen::Module>("CodeGen", "Module")
       .ctor<>()
       .method<&codegen::Module::literal>("literal", {"v", "line", "col"})
+      .method<&codegen::Module::bool_literal>("bool_literal",
+                                              {"v", "line", "col"})
+      .method<&codegen::Module::double_literal>("double_literal",
+                                                {"v", "line", "col"})
+      .method<&codegen::Module::nil_literal>("nil_literal", {"line", "col"})
+      .method<&codegen::Module::str_literal>("str_literal",
+                                             {"s", "line", "col"})
       .method<&codegen::Module::var_ref>("var_ref",
                                          {"kind", "index", "line", "col"})
       .method<&codegen::Module::unary>("unary", {"op", "operand", "line", "col"})
@@ -33,6 +40,27 @@ inline bool register_codegen_binding() {
           "call_value", {"callee", "args_list", "line", "col"})
       .method<&codegen::Module::intrinsic>(
           "intrinsic", {"name", "args_list", "line", "col"})
+      .method<&codegen::Module::array_lit>("array_lit",
+                                           {"items_list", "line", "col"})
+      .method<&codegen::Module::object_lit>("object_lit",
+                                            {"kv_list", "line", "col"})
+      .method<&codegen::Module::index>("index",
+                                       {"recv", "key", "line", "col"})
+      .method<&codegen::Module::set_index>(
+          "set_index", {"recv", "key", "value", "line", "col"})
+      .method<&codegen::Module::scope>(
+          "scope", {"first_local", "end_local", "body", "line", "col"})
+      .method<&codegen::Module::make_return>("make_return",
+                                             {"value", "line", "col"})
+      .method<&codegen::Module::make_break>("make_break", {"line", "col"})
+      .method<&codegen::Module::make_continue>("make_continue",
+                                               {"line", "col"})
+      .method<&codegen::Module::make_throw>("make_throw",
+                                            {"value", "line", "col"})
+      .method<&codegen::Module::make_try>(
+          "make_try", {"caught_local", "body", "handler", "line", "col"})
+      .method<&codegen::Module::make_defer>("make_defer",
+                                            {"value", "line", "col"})
       .method<&codegen::Module::list_new>("list_new")
       .method<&codegen::Module::list_push>("list_push", {"list", "value"})
       .method<&codegen::Module::capture_map_new>("capture_map_new")

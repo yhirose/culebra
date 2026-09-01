@@ -6119,9 +6119,10 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | --- | --- |
 | `CodeGen.Module.new()` | 空のmodule |
 | `m.literal(v:, line:, col:)` | 整数定数 |
+| `m.bool_literal(v:, line:, col:)` / `m.double_literal(v:, line:, col:)` / `m.nil_literal(line:, col:)` / `m.str_literal(s:, line:, col:)` | 残りのスカラー定数 |
 | `m.var_ref(kind:, index:, line:, col:)` | local/captureスロット`index`の読み |
-| `m.unary(op:, operand:, line:, col:)` | `op`は`'neg'` |
-| `m.binary(op:, lhs:, rhs:, line:, col:)` | `op`は`add sub mul div mod eq ne lt le gt ge`のいずれか |
+| `m.unary(op:, operand:, line:, col:)` | `op`は`'neg'`か`'bitnot'` |
+| `m.binary(op:, lhs:, rhs:, line:, col:)` | `op`は`add sub mul div mod eq ne lt le gt ge bitand bitor bitxor shl shr`のいずれか(ビット演算はLong専用。シフト量は下位6ビットでマスクされ、`shr`は算術シフト) |
 | `m.assign(kind:, index:, value:, line:, col:)` | local/captureスロット`index`への書き |
 | `m.make_if(cond:, then_branch:, line:, col:)` | `else`の無い`if` |
 | `m.make_if_else(cond:, then_branch:, else_branch:, line:, col:)` | `if`/`else` |
@@ -6130,7 +6131,15 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.call(func:, cmap:, line:, col:)` | 関数index `func`の呼び出し。captureはcapture-map `cmap`経由で転送 |
 | `m.make_closure(func:, cmap:, line:, col:)` | 関数`func`のクロージャ**値** —— 保持・受け渡しでき、後から呼べる |
 | `m.call_value(callee:, args_list:, line:, col:)` | `callee`の評価結果が何であれ呼ぶ。引数はステージング用listを消費 |
-| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`(引数1個)か`'readint'`(引数0個) |
+| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上 |
+| `m.array_lit(items_list:, line:, col:)` / `m.object_lit(kv_list:, line:, col:)` | 要素のステージング用listから配列を、key, value, key, value, …を持つlistからオブジェクトを組み立てる |
+| `m.index(recv:, key:, line:, col:)` / `m.set_index(recv:, key:, value:, line:, col:)` | 読みと書き。`recv`の実体でディスパッチする: 配列はLongのindex(範囲外は失敗)、オブジェクトはStringのkey(無いkeyの読みは`nil`) |
+| `m.scope(first_local:, end_local:, body:, line:, col:)` | localスロット`[first_local, end_local)`を所有するレキシカル領域。どの経路で抜けても抜けた時点で解放され、中で登録されたdeferがLIFOで走る |
+| `m.make_return(value:, line:, col:)` | 実行中の関数から`value`を返す(裸の`return`は明示的な`nil_literal`で綴る) |
+| `m.make_break(line:, col:)` / `m.make_continue(line:, col:)` | 最内の`while`を抜ける / 条件の再評価に戻る。ループ本体の外では`verify()`が拒否する |
+| `m.make_throw(value:, line:, col:)` | 任意の値を送出する |
+| `m.make_try(caught_local:, body:, handler:, line:, col:)` | `body`を保護する。throw(またはexecutorのトラップ —— 0除算・型違いのオペランド)が運んだ値がlocalスロット`caught_local`に入り、`handler`で実行が再開する。トラップの値は`{message, line, col}`のオブジェクト。完了した側の子の値を返す |
+| `m.make_defer(value:, line:, col:)` | 引数0個のcallableを、囲む`scope()`の脱出時に走るよう登録する —— fall-through・`break`・`continue`・`return`・throwのunwindのいずれでも走る。scopeの外のdeferは`verify()`が拒否する |
 | `m.list_new()` | ステージング用list。`stmts_list:`/`args_list:`に渡す |
 | `m.list_push(list:, value:)` | ステージング用listにノードidを追加する |
 | `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | 関数。indexを返す(`funcs[0]`が`run()`の開始点) |
@@ -6179,9 +6188,11 @@ capture map要素を、後で解放済みメモリを読みに行かせる代わ
 
 ### エラー・割り込み・再帰
 
-0除算・未初期化の読み・壊れたモジュール・暴走する再帰 —— 実行時のあらゆる
-失敗は`kind: 'IrError'`の`CulebraError`として送出され、他のエラーと同じように
-捕捉できる:
+0除算・未初期化の読み・型違いのオペランド・暴走する再帰 —— 実行時の失敗は
+まず**組み立てたプログラムの内側で**捕捉できる: それを`body`に含む
+`make_try`領域は、`{message, line, col}`のオブジェクトを受け取って`handler`で
+再開する。どの`make_try`にも保護されない失敗(と`verify()`の構造エラー全て)
+だけがculebra側へ届き、`kind: 'IrError'`の`CulebraError`として送出される:
 
 ```culebra
 let m = CodeGen.Module.new()  # funcsが1つも無い -- verify()が検知する
@@ -6199,8 +6210,8 @@ exceeded"`)を送出する。
 
 ### 対象範囲
 
-値は整数とクロージャ —— 文字列・浮動小数点・`nil`・その他のオブジェクト参照は
-まだ無い —— であり、generatorも無い。変数のcaptureはフロントエンドがIRを
+値は`nil`・真偽値・整数・浮動小数点・文字列・配列・オブジェクト・クロージャ。
+generatorは無い。変数のcaptureはフロントエンドがIRを
 組み立てる時点で一度だけ解決され、実行時には解決されない。`make_closure`で
 組み立てたクロージャは第一級値で、変数に保持でき、`call_value`の引数として
 渡せ、関数の結果として返せる。`CodeGen.Module`はisolateの境界を越えられない

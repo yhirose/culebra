@@ -6296,9 +6296,10 @@ list id afterward is undefined.
 | --- | --- |
 | `CodeGen.Module.new()` | an empty module |
 | `m.literal(v:, line:, col:)` | an integer constant |
+| `m.bool_literal(v:, line:, col:)` / `m.double_literal(v:, line:, col:)` / `m.nil_literal(line:, col:)` / `m.str_literal(s:, line:, col:)` | the other scalar constants |
 | `m.var_ref(kind:, index:, line:, col:)` | a read of local/capture slot `index` |
-| `m.unary(op:, operand:, line:, col:)` | `op` is `'neg'` |
-| `m.binary(op:, lhs:, rhs:, line:, col:)` | `op` is one of `add sub mul div mod eq ne lt le gt ge` |
+| `m.unary(op:, operand:, line:, col:)` | `op` is `'neg'` or `'bitnot'` |
+| `m.binary(op:, lhs:, rhs:, line:, col:)` | `op` is one of `add sub mul div mod eq ne lt le gt ge bitand bitor bitxor shl shr` (bitwise ops are Long-only; shift counts are masked to the low six bits, and `shr` is arithmetic) |
 | `m.assign(kind:, index:, value:, line:, col:)` | a write to local/capture slot `index` |
 | `m.make_if(cond:, then_branch:, line:, col:)` | `if` with no `else` |
 | `m.make_if_else(cond:, then_branch:, else_branch:, line:, col:)` | `if`/`else` |
@@ -6307,7 +6308,15 @@ list id afterward is undefined.
 | `m.call(func:, cmap:, line:, col:)` | a call to function index `func`, forwarding captures via capture-map `cmap` |
 | `m.make_closure(func:, cmap:, line:, col:)` | a closure *value* over function `func` — storable, passable, callable later |
 | `m.call_value(callee:, args_list:, line:, col:)` | a call of whatever `callee` evaluates to, consuming a staging list of arguments |
-| `m.intrinsic(name:, args_list:, line:, col:)` | `name` is `'print'` (1 arg) or `'readint'` (0 args) |
+| `m.intrinsic(name:, args_list:, line:, col:)` | `name` is `'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'` (1 arg each), `'readint'` (0 args), or `'fmod'`/`'pow'` (2 args). `tostr` formats whole doubles bare — `4`, not `4.0` — so a front end with other display rules post-processes; `typeof` yields the tag as a string (`'int'`, `'double'`, `'string'`, …); `toint` truncates toward zero and fails on NaN/∞/out-of-range; `fmod` is IEEE fmod with the integer-mod zero-divisor failure; `pow` is over doubles |
+| `m.array_lit(items_list:, line:, col:)` / `m.object_lit(kv_list:, line:, col:)` | an array from a staging list of items; an object from a staging list holding key, value, key, value, … |
+| `m.index(recv:, key:, line:, col:)` / `m.set_index(recv:, key:, value:, line:, col:)` | reads and writes, dispatching on what `recv` turns out to be: an array takes a Long index (out of range fails), an object a String key (a missing key reads as `nil`) |
+| `m.scope(first_local:, end_local:, body:, line:, col:)` | a lexical region owning local slots `[first_local, end_local)` — released when the region exits, however it exits; defers registered inside run then, LIFO |
+| `m.make_return(value:, line:, col:)` | returns `value` from the running function (a bare `return` is spelled with an explicit `nil_literal`) |
+| `m.make_break(line:, col:)` / `m.make_continue(line:, col:)` | leave / re-test the innermost `while`; `verify()` rejects either outside a loop body |
+| `m.make_throw(value:, line:, col:)` | raises any value |
+| `m.make_try(caught_local:, body:, handler:, line:, col:)` | guards `body`; a throw (or an executor trap — divide by zero, a wrong-typed operand) lands what it carried in local slot `caught_local` and resumes in `handler`. A trap's value is an object `{message, line, col}`. Yields the value of whichever child finished |
+| `m.make_defer(value:, line:, col:)` | registers a 0-arity callable to run when the enclosing `scope()` exits — on fall-through, `break`, `continue`, `return`, and unwinding throws alike; `verify()` rejects a defer outside a scope |
 | `m.list_new()` | a staging list, for `stmts_list:`/`args_list:` above |
 | `m.list_push(list:, value:)` | appends a node id to a staging list |
 | `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |
@@ -6357,9 +6366,12 @@ name — and every read and write of a promoted slot switches to
 
 ### Errors, interruption, and recursion
 
-Every runtime failure — divide by zero, an uninitialized read, a malformed
-module, a runaway recursion — raises `CulebraError` with `kind: 'IrError'`,
-catchable like any other:
+A runtime failure — divide by zero, an uninitialized read, a wrong-typed
+operand, a runaway recursion — is catchable *inside* the built program
+first: a `make_try` region whose body raises it resumes in its handler with
+an object `{message, line, col}`. Only a failure no `make_try` guards (and
+every structural `verify()` failure) escapes to the culebra level, as
+`CulebraError` with `kind: 'IrError'`:
 
 ```culebra
 let m = CodeGen.Module.new()  # no funcs at all -- verify() catches it
@@ -6377,12 +6389,12 @@ process's own stack.
 
 ### Scope
 
-Values are integers and closures — no strings, floats, `nil`, or other
-object references yet — and there are no generators; a variable's capture
-is resolved once, when a front end builds the IR, not at run time. A
-closure built with `make_closure` is a first-class value: storable in a
-variable, passable as a `call_value` argument, returnable as a function's
-result. A `CodeGen.Module` cannot cross an isolate boundary
+Values are `nil`, booleans, integers, doubles, strings, arrays, objects,
+and closures; there are no generators, and a variable's capture is
+resolved once, when a front end builds the IR, not at run time. A closure
+built with `make_closure` is a first-class value: storable in a variable,
+passable as a `call_value` argument, returnable as a function's result.
+A `CodeGen.Module` cannot cross an isolate boundary
 (`Isolate.spawn`/`Parallel.map`'s workers each build their own).
 
 ## 36. Design notes
