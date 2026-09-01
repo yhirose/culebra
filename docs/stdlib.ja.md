@@ -6132,7 +6132,7 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.call(func:, cmap:, line:, col:)` | 関数index `func`の呼び出し。captureはcapture-map `cmap`経由で転送 |
 | `m.make_closure(func:, cmap:, line:, col:)` | 関数`func`のクロージャ**値** —— 保持・受け渡しでき、後から呼べる |
 | `m.call_value(callee:, args_list:, line:, col:)` | `callee`の評価結果が何であれ呼ぶ。引数はステージング用listを消費 |
-| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上 |
+| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。コンテナのprimitiveは`'arraypush'`/`'objecthas'`/`'objectremove'`(引数2個)と`'arraypop'`/`'objectkeys'`(引数1個)。空配列のpopは失敗、keysは挿入順。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上 |
 | `m.array_lit(items_list:, line:, col:)` / `m.object_lit(kv_list:, line:, col:)` | 要素のステージング用listから配列を、key, value, key, value, …を持つlistからオブジェクトを組み立てる |
 | `m.index(recv:, key:, line:, col:)` / `m.set_index(recv:, key:, value:, line:, col:)` | 読みと書き。`recv`の実体でディスパッチする: 配列はLongのindex(範囲外は失敗)、オブジェクトはStringのkey(無いkeyの読みは`nil`)、文字列は1バイトを文字列として読み出す(書きは拒否) |
 | `m.scope(first_local:, end_local:, body:, line:, col:)` | localスロット`[first_local, end_local)`を所有するレキシカル領域。どの経路で抜けても抜けた時点で解放され、中で登録されたdeferがLIFOで走る |
@@ -6141,6 +6141,7 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.make_throw(value:, line:, col:)` | 任意の値を送出する |
 | `m.make_try(caught_local:, body:, handler:, line:, col:)` | `body`を保護する。throw(またはexecutorのトラップ —— 0除算・型違いのオペランド)が運んだ値がlocalスロット`caught_local`に入り、`handler`で実行が再開する。トラップの値は`{message, line, col}`のオブジェクト。完了した側の子の値を返す |
 | `m.make_defer(value:, line:, col:)` | 引数0個のcallableを、囲む`scope()`の脱出時に走るよう登録する —— fall-through・`break`・`continue`・`return`・throwのunwindのいずれでも走る。scopeの外のdeferは`verify()`が拒否する |
+| `m.cell_fresh(cell:, line:, col:)` | フレームのcell 1個を新しいboxに置き換える —— 「ループの反復ごとの束縛」の正体。過去の反復で作られたクロージャは古いcellを保持し続ける |
 | `m.list_new()` | ステージング用list。`stmts_list:`/`args_list:`に渡す |
 | `m.list_push(list:, value:)` | ステージング用listにノードidを追加する |
 | `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | 関数。indexを返す(`funcs[0]`が`run()`の開始点) |

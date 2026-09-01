@@ -61,6 +61,8 @@ inline bool register_codegen_binding() {
           "make_try", {"caught_local", "body", "handler", "line", "col"})
       .method<&codegen::Module::make_defer>("make_defer",
                                             {"value", "line", "col"})
+      .method<&codegen::Module::cell_fresh>("cell_fresh",
+                                            {"cell", "line", "col"})
       .method<&codegen::Module::list_new>("list_new")
       .method<&codegen::Module::list_push>("list_push", {"list", "value"})
       .method<&codegen::Module::capture_map_new>("capture_map_new")

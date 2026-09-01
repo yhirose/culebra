@@ -324,6 +324,30 @@ fn tostr_node(m, v) {
   assert_eq(IO.capture(fn () { m.run() }), "boom\ndivide by zero\nalive\n")
 }
 
+# cell_fresh: each loop entry gets its own box; the closure built before
+# the refresh keeps the old one.
+{
+  let m = CodeGen.Module.new()
+  let c = m.capture_map_new()
+  m.capture_map_push(c, kind: 'cell', index: 0)
+  let cmap = m.add_capture_map(c)
+  # funcs[1]: () -> captured x
+  let stmts = m.list_new()
+  m.list_push(stmts, m.assign(kind: 'cell', index: 0, value: m.literal(v: 1, line: 1, col: 1), line: 1, col: 1))
+  m.list_push(stmts, m.assign(kind: 'local', index: 0, value: m.make_closure(func: 1, cmap: cmap, line: 2, col: 1), line: 2, col: 1))
+  m.list_push(stmts, m.cell_fresh(cell: 0, line: 3, col: 1))
+  m.list_push(stmts, m.assign(kind: 'cell', index: 0, value: m.literal(v: 2, line: 3, col: 2), line: 3, col: 2))
+  let call_args = m.list_new()
+  let read_old = m.call_value(callee: m.var_ref(kind: 'local', index: 0, line: 4, col: 1), args_list: call_args, line: 4, col: 1)
+  m.list_push(stmts, print_stmt(m, read_old))
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 1, num_params: 0,
+             body: m.block(stmts_list: stmts, line: 1, col: 1))
+  m.add_func(name: 'get', num_locals: 0, num_captures: 1, num_cells: 0, num_params: 0,
+             body: m.var_ref(kind: 'capture', index: 0, line: 1, col: 1))
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "1\n")
+}
+
 # return: the value comes back, the rest of the body does not run.
 {
   let m = CodeGen.Module.new()

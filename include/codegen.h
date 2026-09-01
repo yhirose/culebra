@@ -204,6 +204,11 @@ class Module {
     return id(b.make_defer(node(value), pos(line, col)));
   }
 
+  int64_t cell_fresh(int64_t cell, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.cell_fresh(idx32(cell), pos(line, col)));
+  }
+
   int64_t intrinsic(std::string_view name, int64_t args_list, int64_t line,
                     int64_t col) {
     coreir::Builder b(m_);
@@ -354,6 +359,11 @@ class Module {
     if (s == "fmod") return coreir::IntrinsicId::FMod;
     if (s == "pow") return coreir::IntrinsicId::Pow;
     if (s == "printraw") return coreir::IntrinsicId::PrintRaw;
+    if (s == "arraypush") return coreir::IntrinsicId::ArrayPush;
+    if (s == "arraypop") return coreir::IntrinsicId::ArrayPop;
+    if (s == "objecthas") return coreir::IntrinsicId::ObjectHas;
+    if (s == "objectkeys") return coreir::IntrinsicId::ObjectKeys;
+    if (s == "objectremove") return coreir::IntrinsicId::ObjectRemove;
     throw std::invalid_argument("CodeGen: unknown intrinsic '" +
                                 std::string(s) + "'");
   }

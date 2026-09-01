@@ -1,0 +1,34 @@
+# for loops
+mut total = 0
+for x in [1, 2, 3] { total += x }
+println(total)
+mut kv = ''
+for (k, w) in {i: 10, j: 20} { kv = kv + "{k}={w};" }
+println(kv)
+mut cps = ''
+for c in 'aあb' { cps = cps + c + '.' }
+println(cps)
+for i in range(3) { print(i) }
+println('')
+mut rsum = 0
+for i in range(2, 5) { rsum += i }
+println(rsum)
+mut tsum = 0
+for t in (7, 8) { tsum += t }
+println(tsum)
+
+# per-iteration capture
+mut fs = []
+for i in [1, 2] { fs.push(fn () { i }) }
+println(fs[0]())
+println(fs[1]())
+
+# break/continue/defer inside for
+mut log = ''
+for x in [1, 2, 3, 4] {
+  defer { log = log + "d{x}" }
+  if x == 2 { continue }
+  if x == 4 { break }
+  log = log + "b{x}"
+}
+println(log)

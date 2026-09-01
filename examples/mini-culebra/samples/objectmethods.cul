@@ -1,0 +1,18 @@
+# object methods
+let om = {x: 1, y: 2}
+println(om.size())
+println(om.keys())
+println(om.has('x'))
+println(om.get('zz', 'dflt'))
+mut om2 = {q: 1}
+om2['w'] = 2
+om2.remove('w')
+println(om2)
+mut vsum = 0
+for w in om.values() { vsum += w }
+println(vsum)
+
+# iota + nesting
+println(iota(4))
+println(iota(2, 5))
+println([(1, 'a'), {k: [2]}])

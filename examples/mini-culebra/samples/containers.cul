@@ -1,0 +1,26 @@
+# containers: literals, display, deep equality
+let a = [1, 'x', nil, [2, 3]]
+println(a)
+inspect(a)
+println([1, [2]] == [1, [2]])
+println((1, 'y'))
+println((1, 2) == (1, 2))
+println((1, 2) == [1, 2])
+let o = {b: 1, a: 'two'}
+println(o)
+println(o.a)
+println(o['b'])
+println(o == {b: 1, a: 'two'})
+println({} == {})
+println(to_string([1, 'x']))
+println(type_of((1, 2)))
+println(type_of([1]))
+println(type_of({a: 1}))
+
+# indexing rules
+println(a[1])
+println(a[-1])
+println((10, 20)[1])
+try { println(a[9]) } catch e { println(e.kind) }
+try { println(o['zz']) } catch e { println(e.kind) }
+println(o.zz)

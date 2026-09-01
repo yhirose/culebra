@@ -1,0 +1,11 @@
+# mutation
+mut arr = [1, 2, 3]
+arr[0] = 9
+arr[1] += 5
+println(arr)
+mut obj = {fixed: 1}
+obj['added'] = 2
+obj['added'] = 3
+println(obj)
+try { obj['fixed'] = 0 } catch e { println(e.kind) }
+try { obj.fixed = 0 } catch e { println(e.kind) }

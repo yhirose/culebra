@@ -14,7 +14,17 @@
 # scoping with shadowing, if/else (as statement and expression), while,
 # return/break/continue, try/catch/throw (and `e.kind`-style property
 # reads on caught error objects), defer, named `fn` declarations (mutually
-# recursive), first-class closures, println/print.
+# recursive), first-class closures, println/print -- and, since the
+# container batch: Array/Object/Tuple literals with culebra's index rules
+# (negative reads wrap, writes don't; a literal object key is immutable,
+# a bracket-added one is `mut`; a missing bracket key is KeyError where a
+# missing property is nil), destructuring `let`, compound assignment,
+# `|x|` lambdas, `for` over arrays / strings (by code point) / objects
+# (as (key, value) tuples) / tuples / anything with the iter() protocol
+# -- each iteration its own binding, the way closures observe it -- and
+# the first slice of the SS18 built-in methods plus inspect / type_of /
+# to_string / to_long / range / iota / assert_eq / assert_true /
+# assert_false, written in the prelude itself.
 #
 # Semantics are culebra's, not the VM's: a prelude of helper functions
 # (written in this same subset, compiled alongside the program) wraps every
@@ -28,9 +38,8 @@
 # is type-correct by construction; wrapping its own operators in itself
 # would recurse forever).
 #
-# What's out (deliberately, for now): containers and their literals,
-# methods/UFCS, match/cond, string subscripts, `??`/`?:`, generators,
-# classes, isolates. A closure may not refer to its own binding
+# What's out (deliberately, for now): match/cond, kwargs, UFCS,
+# generators, classes, string subscripts, `??`/`?:`, isolates. A closure may not refer to its own binding
 # (`let f = fn () { f() }` -- the cell->closure->cell cycle needs the
 # tracing backstop); named fns self-recurse safely because each call site
 # builds its closure fresh. Known asymmetries with the real culebra, all
@@ -47,14 +56,19 @@
 
 let grammar = `
   program    <- _ stmt*                                     { no_ast_opt }
-  stmt       <- fn_decl / decl / while / if / try / return_s / break_s /
+  stmt       <- fn_decl / decl / while / for / if / try / return_s / break_s /
                 continue_s / throw_s / defer_s / bare_block / assign / expr
 
   fn_decl    <- 'fn' __ ident '(' _ params ')' _ block
   params     <- (ident (',' _ ident)*)?                     { no_ast_opt }
-  decl       <- decl_kw ident '=' !'=' _ expr
+  decl       <- decl_kw decl_pat '=' !'=' _ expr
+  decl_pat   <- tup_pat / arr_pat / ident
+  tup_pat    <- '(' _ ident (',' _ ident)+ ')' _            { no_ast_opt }
+  arr_pat    <- '[' _ ident (',' _ ident)* ']' _            { no_ast_opt }
   decl_kw    <- < 'let' / 'mut' > __
   while      <- 'while' __ expr block
+  for        <- 'for' __ for_pat 'in' __ expr block
+  for_pat    <- tup_pat / ident
   if         <- 'if' __ expr block ('else' __ (if / block))?
   try        <- 'try' _ block 'catch' __ ident block
   return_s   <- 'return' kw_end (!stmt_kw expr)?            { no_ast_opt }
@@ -63,7 +77,8 @@ let grammar = `
   throw_s    <- 'throw' __ expr                             { no_ast_opt }
   defer_s    <- 'defer' _ block                             { no_ast_opt }
   bare_block <- block                                       { no_ast_opt }
-  assign     <- ident '=' !'=' _ expr
+  assign     <- postfix assign_op _ expr
+  assign_op  <- < '+=' / '-=' / '*=' / '/=' / '%=' / '=' !'=' >
   block      <- '{' _ stmt* '}' _                           { no_ast_opt }
   stmt_kw    <- ('let' / 'mut' / 'while' / 'return' / 'break' / 'continue' /
                  'throw' / 'defer') ![a-zA-Z0-9_]
@@ -93,11 +108,20 @@ let grammar = `
   bnot       <- '~' _ unary                                 { no_ast_opt }
   power      <- postfix (pow_op unary)?
   pow_op     <- < '**' > _
-  postfix    <- primary (prop / subscript)*
+  postfix    <- primary (mcall / pcall / prop / subscript)*
+  pcall      <- '(' _ args ')' _                            { no_ast_opt }
+  mcall      <- '.' ident '(' _ args ')' _                  { no_ast_opt }
   prop       <- '.' ident                                   { no_ast_opt }
   subscript  <- '[' _ expr ']' _                            { no_ast_opt }
   primary    <- float / number / str_dq / str_sq / true_l / false_l /
-                nil_l / closure / call / if / try / ident / paren
+                nil_l / closure / lambda / call / if / try / ident /
+                array_lit / object_lit / tuple / paren
+  array_lit  <- '[' _ (expr (',' _ expr)* (',' _)?)? ']' _  { no_ast_opt }
+  object_lit <- '{' _ (obj_pair (',' _ obj_pair)* (',' _)?)? '}' _ { no_ast_opt }
+  obj_pair   <- okey ':' _ expr                             { no_ast_opt }
+  okey       <- ident / str_sq
+  tuple      <- '(' _ expr (',' _ expr)+ (',' _)? ')' _     { no_ast_opt }
+  lambda     <- '|' _ params '|' _ expr                     { no_ast_opt }
   paren      <- '(' _ expr ')' _
   closure    <- 'fn' _ '(' _ params ')' _ block
   call       <- ident '(' _ args ')' _
@@ -112,9 +136,9 @@ let grammar = `
   interp     <- '{' _ expr '}'                              { no_ast_opt }
   dq_chars   <- < ('\\' . / [^"{\\])+ >
 
-  keyword    <- ('let' / 'mut' / 'fn' / 'if' / 'else' / 'while' / 'try' /
-                 'catch' / 'return' / 'break' / 'continue' / 'throw' /
-                 'defer' / 'true' / 'false' / 'nil') ![a-zA-Z0-9_]
+  keyword    <- ('let' / 'mut' / 'fn' / 'if' / 'else' / 'while' / 'for' /
+                 'in' / 'try' / 'catch' / 'return' / 'break' / 'continue' /
+                 'throw' / 'defer' / 'true' / 'false' / 'nil') ![a-zA-Z0-9_]
   ident      <- !keyword < [a-zA-Z_] [a-zA-Z0-9_]* > _
   float      <- < [0-9]+ ('.' [0-9]+ ([eE] [+-]? [0-9]+)? /
                           [eE] [+-]? [0-9]+) > _
@@ -200,19 +224,6 @@ fn __scalar_eq(a, b) {
   if t == 'array' { return false }
   if t == 'object' { return false }
   a == b
-}
-
-fn __eq(a, b) {
-  let ta = __typeof(a)
-  let tb = __typeof(b)
-  if ta == tb { return __scalar_eq(a, b) }
-  if ta == 'int' {
-    if tb == 'double' { return a == b }
-  }
-  if ta == 'double' {
-    if tb == 'int' { return a == b }
-  }
-  false
 }
 
 fn __cmp_ok(a, b, line, col) {
@@ -366,7 +377,177 @@ fn __bnot(v, line, col) {
 fn __display(v) {
   let t = __typeof(v)
   if t == 'string' { return v }
-  if t == 'double' {
+  if t == 'array' { return __repr(v) }
+  if t == 'object' { return __repr(v) }
+  if t == 'function' { return '[function]' }
+  __scalar_display(v)
+}
+
+fn __getprop(v, name, line, col) {
+  if __typeof(v) != 'object' {
+    __raise('TypeError', 'type error: expected Object, got ' +
+            __type_name(v), line, col)
+  }
+  v[name]
+}
+
+fn __callee_check(v, line, col) {
+  if __typeof(v) != 'function' {
+    __raise('TypeError', 'type error: expected Function, got ' +
+            __type_name(v), line, col)
+  }
+  v
+}
+
+fn __mk_tuple(items) {
+  mut o = {}
+  o["\zt"] = items
+  o
+}
+
+fn __is_tuple(v) {
+  if __typeof(v) != 'object' { return false }
+  __objecthas(v, "\zt")
+}
+
+fn __titems(t) { t["\zt"] }
+
+fn __hidden_key(k) { k[0] == "\z" }
+
+fn __destr(v, n, line, col) {
+  let t = __typeof(v)
+  mut items = []
+  mut found = false
+  if t == 'array' {
+    items = v
+    found = true
+  }
+  if __is_tuple(v) {
+    items = __titems(v)
+    found = true
+  }
+  if !found {
+    __raise('ValueError', 'destructure pattern did not match value', line, col)
+  }
+  if __len(items) != n {
+    __raise('ValueError', 'destructure pattern did not match value', line, col)
+  }
+  items
+}
+
+fn __type_of(v, line, col) {
+  if __is_tuple(v) { return 'Tuple' }
+  __type_name(v)
+}
+
+fn __eq_list(xs, ys) {
+  if __len(xs) != __len(ys) { return false }
+  mut i = 0
+  while i < __len(xs) {
+    if !__truthy(__eq(xs[i], ys[i]), 0, 0) { return false }
+    i = i + 1
+  }
+  true
+}
+
+fn __eq_obj(a, b) {
+  let ka = __objectkeys(a)
+  let kb = __objectkeys(b)
+  if __len(ka) != __len(kb) { return false }
+  mut i = 0
+  while i < __len(ka) {
+    let k = ka[i]
+    if !__objecthas(b, k) { return false }
+    if !__truthy(__eq(a[k], b[k]), 0, 0) { return false }
+    i = i + 1
+  }
+  true
+}
+
+fn __eq(a, b) {
+  let ta = __typeof(a)
+  let tb = __typeof(b)
+  if ta == tb {
+    if ta == 'function' { return false }
+    if ta == 'array' {
+      if tb == 'array' { return __eq_list(a, b) }
+    }
+    if ta == 'object' {
+      let at = __is_tuple(a)
+      let bt = __is_tuple(b)
+      if at {
+        if bt { return __eq_list(__titems(a), __titems(b)) }
+        return false
+      }
+      if bt { return false }
+      return __eq_obj(a, b)
+    }
+    return a == b
+  }
+  if ta == 'int' {
+    if tb == 'double' { return a == b }
+  }
+  if ta == 'double' {
+    if tb == 'int' { return a == b }
+  }
+  false
+}
+
+fn __repr(v) {
+  let t = __typeof(v)
+  if t == 'string' { return "'" + v + "'" }
+  if t == 'function' { return '[function]' }
+  if t == 'array' {
+    mut out = '['
+    mut i = 0
+    while i < __len(v) {
+      if i > 0 { out = out + ', ' }
+      out = out + __repr(v[i])
+      i = i + 1
+    }
+    return out + ']'
+  }
+  if t == 'object' {
+    if __is_tuple(v) {
+      let items = __titems(v)
+      mut out = '('
+      mut i = 0
+      while i < __len(items) {
+        if i > 0 { out = out + ', ' }
+        out = out + __repr(items[i])
+        i = i + 1
+      }
+      return out + ')'
+    }
+    mut muts = {}
+    mut has_muts = false
+    if __objecthas(v, "\zm") {
+      muts = v["\zm"]
+      has_muts = true
+    }
+    let ks = __objectkeys(v)
+    mut out = '{'
+    mut first = true
+    mut i = 0
+    while i < __len(ks) {
+      let k = ks[i]
+      if !__hidden_key(k) {
+        if !first { out = out + ', ' }
+        first = false
+        if has_muts {
+          if __objecthas(muts, k) { out = out + 'mut ' }
+        }
+        out = out + k + ': ' + __repr(v[k])
+      }
+      i = i + 1
+    }
+    return out + '}'
+  }
+  __scalar_display(v)
+}
+
+fn __scalar_display(v) {
+  if __typeof(v) == 'double' {
     let s = __tostr(v)
     mut i = 0
     mut plain = true
@@ -384,32 +565,637 @@ fn __display(v) {
   __tostr(v)
 }
 
-fn __getprop(v, name, line, col) {
-  if __typeof(v) != 'object' {
-    __raise('TypeError', 'type error: expected Object, got ' +
-            __type_name(v), line, col)
+fn __obj_visible_size(v) {
+  let ks = __objectkeys(v)
+  mut n = 0
+  mut i = 0
+  while i < __len(ks) {
+    if !__hidden_key(ks[i]) { n = n + 1 }
+    i = i + 1
   }
-  v[name]
+  n
+}
+
+fn __setindex(recv, key, val, is_prop, line, col) {
+  let t = __typeof(recv)
+  if t == 'array' {
+    if __typeof(key) != 'int' {
+      __raise('TypeError', 'type error: expected Long, got ' +
+              __type_name(key), line, col)
+    }
+    if key < 0 { __raise('IndexError', 'index out of range', line, col) }
+    if key >= __len(recv) {
+      __raise('IndexError', 'index out of range', line, col)
+    }
+    recv[key] = val
+    return nil
+  }
+  if t == 'object' {
+    if __is_tuple(recv) {
+      __raise('TypeError', 'type error: expected Object, Array, or Tensor, got Tuple',
+              line, col)
+    }
+    if __typeof(key) != 'string' {
+      __raise('TypeError', 'type error: expected String, got ' +
+              __type_name(key), line, col)
+    }
+    if __objecthas(recv, key) {
+      mut ok = false
+      if __objecthas(recv, "\zm") {
+        if __objecthas(recv["\zm"], key) { ok = true }
+      }
+      if !ok {
+        __raise('ImmutableError', "immutable property '" + key + "'",
+                line, col)
+      }
+      recv[key] = val
+      return nil
+    }
+    if is_prop == 1 {
+      __raise('ImmutableError', "immutable property '" + key + "'",
+              line, col)
+    }
+    if !__objecthas(recv, "\zm") {
+      mut fresh = {}
+      recv["\zm"] = fresh
+    }
+    let muts = recv["\zm"]
+    muts[key] = true
+    recv[key] = val
+    return nil
+  }
+  __raise('TypeError', 'type error: expected Object, Array, or Tensor, got ' +
+          __type_name(recv), line, col)
 }
 
 fn __getindex(v, k, line, col) {
-  if __typeof(v) != 'object' {
-    __raise('TypeError', 'type error: expected Object, got ' +
-            __type_name(v), line, col)
+  let t = __typeof(v)
+  if t == 'array' {
+    if __typeof(k) != 'int' {
+      __raise('TypeError', 'type error: expected Long, got ' +
+              __type_name(k), line, col)
+    }
+    mut i = k
+    if i < 0 { i = i + __len(v) }
+    if i < 0 { __raise('IndexError', 'index out of range', line, col) }
+    if i >= __len(v) { __raise('IndexError', 'index out of range', line, col) }
+    return v[i]
   }
-  if __typeof(k) != 'string' {
-    __raise('TypeError', 'type error: expected String, got ' +
-            __type_name(k), line, col)
+  if t == 'object' {
+    if __is_tuple(v) {
+      if __typeof(k) != 'int' {
+        __raise('TypeError', 'type error: expected Long, got ' +
+                __type_name(k), line, col)
+      }
+      let items = __titems(v)
+      mut i = k
+      if i < 0 { i = i + __len(items) }
+      if i < 0 { __raise('IndexError', 'index out of range', line, col) }
+      if i >= __len(items) {
+        __raise('IndexError', 'index out of range', line, col)
+      }
+      return items[i]
+    }
+    if __typeof(k) != 'string' {
+      __raise('TypeError', 'type error: expected String, got ' +
+              __type_name(k), line, col)
+    }
+    if !__objecthas(v, k) {
+      __raise('KeyError', 'key not present', line, col)
+    }
+    return v[k]
   }
-  v[k]
+  __raise('TypeError', 'type error: expected Object, Array, or Tensor, got ' +
+          __type_name(v), line, col)
 }
 
-fn __callee_check(v, line, col) {
+fn __getindex_or_prop(recv, key, is_prop, line, col) {
+  if is_prop == 1 { return __getprop(recv, key, line, col) }
+  __getindex(recv, key, line, col)
+}
+
+fn __cp_len(c) {
+  mut l = 1
+  if c >= "\y" { l = 2 }
+  if c >= "\x" { l = 3 }
+  if c >= "\w" { l = 4 }
+  l
+}
+
+fn __arr_iter(items) {
+  mut i = 0
+  {has_next: fn () { i < __len(items) },
+   next: fn () {
+     let v = items[i]
+     i = i + 1
+     v
+   }}
+}
+
+fn __str_iter(s) {
+  mut i = 0
+  {has_next: fn () { i < __len(s) },
+   next: fn () {
+     let l = __cp_len(s[i])
+     mut out = ''
+     mut j = 0
+     while j < l {
+       if i + j < __len(s) {
+         out = out + s[i + j]
+       }
+       j = j + 1
+     }
+     i = i + l
+     out
+   }}
+}
+
+fn __entries_iter(o) {
+  let ks = __objectkeys(o)
+  mut vis = []
+  mut i = 0
+  while i < __len(ks) {
+    if !__hidden_key(ks[i]) { __arraypush(vis, ks[i]) }
+    i = i + 1
+  }
+  mut j = 0
+  {has_next: fn () { j < __len(vis) },
+   next: fn () {
+     let k = vis[j]
+     j = j + 1
+     __mk_tuple([k, o[k]])
+   }}
+}
+
+fn __iter(v, line, col) {
+  let t = __typeof(v)
+  if t == 'array' { return __arr_iter(v) }
+  if t == 'string' { return __str_iter(v) }
+  if t == 'object' {
+    if __is_tuple(v) { return __arr_iter(__titems(v)) }
+    if __objecthas(v, 'iter') {
+      let it = v.iter()
+      if __typeof(it) != 'object' {
+        __raise('TypeError', 'type error: iter() must return an iterator',
+                line, col)
+      }
+      if !__objecthas(it, 'has_next') {
+        __raise('TypeError', 'type error: iter() must return an iterator',
+                line, col)
+      }
+      return it
+    }
+    if __objecthas(v, 'has_next') { return v }
+    return __entries_iter(v)
+  }
+  __raise('TypeError', 'type error: expected an iterable, got ' +
+          __type_name(v), line, col)
+}
+
+fn __range_iter(a, b) {
+  mut i = a
+  {has_next: fn () { i < b },
+   next: fn () {
+     let v = i
+     i = i + 1
+     v
+   }}
+}
+
+fn __range2(a, b, line, col) {
+  let base = __range_iter(a, b)
+  {iter: fn () { __range_iter(a, b) },
+   has_next: base['has_next'],
+   next: base['next']}
+}
+
+fn __range1(n, line, col) { __range2(0, n, line, col) }
+
+fn __iota2(a, b, line, col) {
+  mut out = []
+  mut i = a
+  while i < b {
+    __arraypush(out, i)
+    i = i + 1
+  }
+  out
+}
+
+fn __iota1(n, line, col) { __iota2(0, n, line, col) }
+
+fn __inspect(v, line, col) {
+  println(__repr(v))
+  nil
+}
+
+fn __to_string(v, line, col) { __display(v) }
+
+fn __to_long(v, line, col) {
+  let t = __typeof(v)
+  if t == 'int' { return v }
+  if t == 'double' { return __toint(v) }
+  if t == 'string' {
+    mut i = 0
+    mut sign = 1
+    if __len(v) > 0 {
+      if v[0] == '-' {
+        sign = 0 - 1
+        i = 1
+      }
+    }
+    if i >= __len(v) { __raise('TypeError', 'type error', line, col) }
+    mut out = 0
+    while i < __len(v) {
+      let c = v[i]
+      if c < '0' { __raise('TypeError', 'type error', line, col) }
+      if c > '9' { __raise('TypeError', 'type error', line, col) }
+      out = out * 10 + __digit(c)
+      i = i + 1
+    }
+    return sign * out
+  }
+  __raise('TypeError', 'type error', line, col)
+}
+
+fn __digit(c) {
+  if c == '0' { return 0 }
+  if c == '1' { return 1 }
+  if c == '2' { return 2 }
+  if c == '3' { return 3 }
+  if c == '4' { return 4 }
+  if c == '5' { return 5 }
+  if c == '6' { return 6 }
+  if c == '7' { return 7 }
+  if c == '8' { return 8 }
+  9
+}
+
+fn __to_float(v, line, col) {
+  let t = __typeof(v)
+  if t == 'int' { return __todouble(v) }
+  if t == 'double' { return v }
+  __raise('TypeError', 'type error', line, col)
+}
+
+fn __assert_eq(a, b, line, col) {
+  if __truthy(__eq(a, b), line, col) { return nil }
+  __raise('AssertionError',
+          "assert_eq failed:\n  left:  " + __display(a) +
+          "\n  right: " + __display(b),
+          line, col)
+}
+
+fn __assert_true(v, line, col) {
+  if __truthy(v, line, col) { return nil }
+  __raise('AssertionError', "assert_true failed:\n  value: " + __display(v),
+          line, col)
+}
+
+fn __assert_false(v, line, col) {
+  if __truthy(v, line, col) {
+    __raise('AssertionError', "assert_false failed:\n  value: " + __display(v),
+            line, col)
+  }
+  nil
+}
+
+# Apply f to an argument array. The IR's CallValue is fixed-arity, so the
+# spread is a size switch; five arguments covers every sample.
+fn __call_n(f, args, line, col) {
+  let n = __len(args)
+  if n == 0 { return f() }
+  if n == 1 { return f(args[0]) }
+  if n == 2 { return f(args[0], args[1]) }
+  if n == 3 { return f(args[0], args[1], args[2]) }
+  if n == 4 { return f(args[0], args[1], args[2], args[3]) }
+  __raise('TypeError', 'type error: too many arguments', line, col)
+}
+
+fn __check_fn(v, line, col) {
   if __typeof(v) != 'function' {
     __raise('TypeError', 'type error: expected Function, got ' +
             __type_name(v), line, col)
   }
   v
+}
+
+fn __str_index_of(s, sub, from) {
+  let n = __len(s)
+  let m = __len(sub)
+  mut i = from
+  while i + m <= n {
+    mut j = 0
+    mut hit = true
+    while j < m {
+      if s[i + j] != sub[j] { hit = false }
+      j = j + 1
+    }
+    if hit { return i }
+    i = i + 1
+  }
+  0 - 1
+}
+
+fn __str_slice(s, a, b) {
+  mut lo = a
+  mut hi = b
+  if lo < 0 { lo = 0 }
+  if hi > __len(s) { hi = __len(s) }
+  mut out = ''
+  mut i = lo
+  while i < hi {
+    out = out + s[i]
+    i = i + 1
+  }
+  out
+}
+
+fn __is_space(c) {
+  if c == ' ' { return true }
+  if c == "\t" { return true }
+  if c == "\n" { return true }
+  if c == "\r" { return true }
+  false
+}
+
+fn __method(recv, name, args, line, col) {
+  let t = __typeof(recv)
+  if t == 'array' { return __array_method(recv, name, args, line, col) }
+  if t == 'string' { return __string_method(recv, name, args, line, col) }
+  if t == 'object' {
+    if __is_tuple(recv) {
+      if name == 'size' { return __len(__titems(recv)) }
+      __raise('TypeError', 'type error: expected Function, got Nil',
+              line, col)
+    }
+    if __objecthas(recv, name) {
+      # a stored closure called as a method, applied at the caller's arity
+      let f = __check_fn(recv[name], line, col)
+      return __call_n(f, args, line, col)
+    }
+    return __object_method(recv, name, args, line, col)
+  }
+  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+}
+
+fn __array_method(a, name, args, line, col) {
+  if name == 'size' { return __len(a) }
+  if name == 'empty' { return __len(a) == 0 }
+  if name == 'push' {
+    __arraypush(a, args[0])
+    return nil
+  }
+  if name == 'pop' {
+    if __len(a) == 0 { return nil }
+    return __arraypop(a)
+  }
+  if name == 'get' {
+    mut i = args[0]
+    if i < 0 { i = i + __len(a) }
+    if i < 0 { return args[1] }
+    if i >= __len(a) { return args[1] }
+    return a[i]
+  }
+  if name == 'slice' {
+    mut lo = args[0]
+    mut hi = args[1]
+    if lo < 0 { lo = 0 }
+    if hi > __len(a) { hi = __len(a) }
+    mut out = []
+    mut i = lo
+    while i < hi {
+      __arraypush(out, a[i])
+      i = i + 1
+    }
+    return out
+  }
+  if name == 'join' {
+    mut out = ''
+    mut i = 0
+    while i < __len(a) {
+      if i > 0 { out = out + args[0] }
+      out = out + __display(a[i])
+      i = i + 1
+    }
+    return out
+  }
+  if name == 'contains' {
+    mut i = 0
+    while i < __len(a) {
+      if __truthy(__eq(a[i], args[0]), line, col) { return true }
+      i = i + 1
+    }
+    return false
+  }
+  if name == 'index_of' {
+    mut i = 0
+    while i < __len(a) {
+      if __truthy(__eq(a[i], args[0]), line, col) { return i }
+      i = i + 1
+    }
+    return 0 - 1
+  }
+  if name == 'map' {
+    let f = __check_fn(args[0], line, col)
+    mut out = []
+    mut i = 0
+    while i < __len(a) {
+      __arraypush(out, f(a[i]))
+      i = i + 1
+    }
+    return out
+  }
+  if name == 'filter' {
+    let f = __check_fn(args[0], line, col)
+    mut out = []
+    mut i = 0
+    while i < __len(a) {
+      if __truthy(f(a[i]), line, col) { __arraypush(out, a[i]) }
+      i = i + 1
+    }
+    return out
+  }
+  if name == 'for_each' {
+    let f = __check_fn(args[0], line, col)
+    mut i = 0
+    while i < __len(a) {
+      f(a[i])
+      i = i + 1
+    }
+    return nil
+  }
+  if name == 'reduce' {
+    let f = __check_fn(args[1], line, col)
+    mut acc = args[0]
+    mut i = 0
+    while i < __len(a) {
+      acc = f(acc, a[i])
+      i = i + 1
+    }
+    return acc
+  }
+  if name == 'find' {
+    let f = __check_fn(args[0], line, col)
+    mut i = 0
+    while i < __len(a) {
+      if __truthy(f(a[i]), line, col) { return a[i] }
+      i = i + 1
+    }
+    return nil
+  }
+  if name == 'any' {
+    let f = __check_fn(args[0], line, col)
+    mut i = 0
+    while i < __len(a) {
+      if __truthy(f(a[i]), line, col) { return true }
+      i = i + 1
+    }
+    return false
+  }
+  if name == 'all' {
+    let f = __check_fn(args[0], line, col)
+    mut i = 0
+    while i < __len(a) {
+      if !__truthy(f(a[i]), line, col) { return false }
+      i = i + 1
+    }
+    return true
+  }
+  if name == 'sum' {
+    mut acc = 0
+    mut i = 0
+    while i < __len(a) {
+      acc = __add(acc, a[i], line, col)
+      i = i + 1
+    }
+    return acc
+  }
+  if name == 'reverse' {
+    mut i = 0
+    mut j = __len(a) - 1
+    while i < j {
+      let tmp = a[i]
+      a[i] = a[j]
+      a[j] = tmp
+      i = i + 1
+      j = j - 1
+    }
+    return nil
+  }
+  if name == 'sorted' {
+    mut out = []
+    mut i = 0
+    while i < __len(a) {
+      __arraypush(out, a[i])
+      i = i + 1
+    }
+    mut k = 1
+    while k < __len(out) {
+      let v = out[k]
+      mut j = k - 1
+      mut go = true
+      while go {
+        if j < 0 { go = false }
+        if go {
+          if __lt(v, out[j], line, col) {
+            out[j + 1] = out[j]
+            j = j - 1
+          } else { go = false }
+        }
+      }
+      out[j + 1] = v
+      k = k + 1
+    }
+    return out
+  }
+  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+}
+
+fn __string_method(s, name, args, line, col) {
+  if name == 'size' { return __len(s) }
+  if name == 'empty' { return __len(s) == 0 }
+  if name == 'contains' { return __str_index_of(s, args[0], 0) >= 0 }
+  if name == 'starts_with' {
+    let m = __len(args[0])
+    if m > __len(s) { return false }
+    return __str_slice(s, 0, m) == args[0]
+  }
+  if name == 'ends_with' {
+    let m = __len(args[0])
+    if m > __len(s) { return false }
+    return __str_slice(s, __len(s) - m, __len(s)) == args[0]
+  }
+  if name == 'index_of' { return __str_index_of(s, args[0], 0) }
+  if name == 'slice' { return __str_slice(s, args[0], args[1]) }
+  if name == 'split' {
+    let sep = args[0]
+    mut out = []
+    mut from = 0
+    mut go = true
+    while go {
+      let hit = __str_index_of(s, sep, from)
+      if hit < 0 {
+        __arraypush(out, __str_slice(s, from, __len(s)))
+        go = false
+      } else {
+        __arraypush(out, __str_slice(s, from, hit))
+        from = hit + __len(sep)
+      }
+    }
+    return out
+  }
+  if name == 'trim' {
+    mut lo = 0
+    mut hi = __len(s)
+    while lo < hi && __is_space(s[lo]) { lo = lo + 1 }
+    while hi > lo && __is_space(s[hi - 1]) { hi = hi - 1 }
+    return __str_slice(s, lo, hi)
+  }
+  if name == 'repeat' {
+    mut out = ''
+    mut i = 0
+    while i < args[0] {
+      out = out + s
+      i = i + 1
+    }
+    return out
+  }
+  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+}
+
+fn __object_method(o, name, args, line, col) {
+  if name == 'size' { return __obj_visible_size(o) }
+  if name == 'empty' { return __obj_visible_size(o) == 0 }
+  if name == 'keys' {
+    let ks = __objectkeys(o)
+    mut out = []
+    mut i = 0
+    while i < __len(ks) {
+      if !__hidden_key(ks[i]) { __arraypush(out, ks[i]) }
+      i = i + 1
+    }
+    return out
+  }
+  if name == 'values' {
+    let ks = __objectkeys(o)
+    mut vis = []
+    mut i = 0
+    while i < __len(ks) {
+      if !__hidden_key(ks[i]) { __arraypush(vis, o[ks[i]]) }
+      i = i + 1
+    }
+    return __arr_iter(vis)
+  }
+  if name == 'has' { return __objecthas(o, args[0]) }
+  if name == 'get' {
+    if __objecthas(o, args[0]) { return o[args[0]] }
+    return args[1]
+  }
+  if name == 'remove' {
+    __objectremove(o, args[0])
+    return nil
+  }
+  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
 }
 `
 
@@ -445,7 +1231,19 @@ mut loop_depth = {}     # func -> depth (scan-time)
 let intrinsics = {
   __typeof: ('typeof', 1), __tostr: ('tostr', 1), __len: ('len', 1),
   __toint: ('toint', 1), __todouble: ('todouble', 1), __fmod: ('fmod', 2),
-  __fpow: ('pow', 2),
+  __fpow: ('pow', 2), __arraypush: ('arraypush', 2), __arraypop: ('arraypop', 1),
+  __objecthas: ('objecthas', 2), __objectkeys: ('objectkeys', 1),
+  __objectremove: ('objectremove', 2),
+}
+
+# Global builtins user code calls by name; each lowers to the prelude
+# function of the same table entry, with the call's position appended.
+let builtins = {
+  inspect: ('__inspect', 1), type_of: ('__type_of', 1),
+  to_string: ('__to_string', 1), to_long: ('__to_long', 1),
+  to_float: ('__to_float', 1), iota: nil, range: nil,
+  assert_eq: ('__assert_eq', 2), assert_true: ('__assert_true', 1),
+  assert_false: ('__assert_false', 1),
 }
 
 fn new_func(parent, name, stmts, body_key) {
@@ -561,7 +1359,7 @@ fn walk_fn(f, param_nodes) {
   let has_defer = scan_body_stmts(f, funcs[f].stmts, funcs[f].body_key)
   leave_scope(f)
   block_info[funcs[f].body_key] =
-      {base: base, wrap: nslots[f] > base || has_defer}
+      {base: base, high: nslots[f], wrap: nslots[f] > base || has_defer}
 }
 
 fn scan_block(blk, f) {
@@ -577,24 +1375,81 @@ fn scan_block(blk, f) {
   }
   leave_scope(f)
   block_info[pkey(blk)] =
-      {base: base, wrap: nslots[f] > base || has_defer}
+      {base: base, high: nslots[f], wrap: nslots[f] > base || has_defer}
 }
 
 fn scan_stmt(node, f) {
   match node {
     {name: 'fn_decl'} =>
       fail(node, "fn declarations are only allowed at a function's top level"),
-    {name: 'decl', nodes: [kw, id, value]} => {
-      scan_expr(value, f)   # the initializer cannot see the name it binds
-      declare_var(f, id.token, kw.token == 'mut', id)
+    {name: 'decl', nodes: [kw, pat, value]} => {
+      scan_expr(value, f)   # the initializer cannot see the names it binds
+      cond {
+        pat.name == 'tup_pat' || pat.name == 'arr_pat' => {
+          new_scratch(f, pat)
+          for id in pat.nodes { declare_var(f, id.token, kw.token == 'mut', id) }
+        },
+        _ => declare_var(f, pat.token, kw.token == 'mut', pat),
+      }
     },
-    {name: 'assign', nodes: [id, value]} => {
+    {name: 'assign', nodes: [lhs, op, value]} => {
       scan_expr(value, f)
-      let r = resolve(f, id.token)
-      if r.kind == 'none' { fail(id, "undefined variable '{id.token}'") }
-      if r.kind == 'fn' { fail(id, "cannot assign to fn '{id.token}'") }
-      if !r.is_mut { fail(id, "cannot assign to immutable '{id.token}'") }
-      note_use(id, f, r)
+      cond {
+        lhs.name == 'ident' => {
+          let r = resolve(f, lhs.token)
+          if r.kind == 'none' { fail(lhs, "undefined variable '{lhs.token}'") }
+          if r.kind == 'fn' { fail(lhs, "cannot assign to fn '{lhs.token}'") }
+          if !r.is_mut { fail(lhs, "cannot assign to immutable '{lhs.token}'") }
+          note_use(lhs, f, r)
+        },
+        # a[k] = v / o.k = v: the receiver chain is an expression; the last
+        # step is the write target
+        lhs.name == 'postfix' => {
+          let last = lhs.nodes[lhs.nodes.size() - 1]
+          if last.name == 'mcall' { fail(last, 'cannot assign to a call') }
+          if op.token != '=' {
+            new_scratch(f, op)    # holds the receiver
+            new_scratch(f, lhs)   # holds the key
+          }
+          scan_expr(lhs.nodes[0], f)
+          mut i = 1
+          while i < lhs.nodes.size() {
+            let step = lhs.nodes[i]
+            if step.name == 'subscript' { scan_expr(step.nodes[0], f) }
+            if step.name == 'mcall' {
+              if i < lhs.nodes.size() - 1 {
+                for a in step.nodes[1].nodes { scan_expr(a, f) }
+              }
+            }
+            i = i + 1
+          }
+        },
+        _ => fail(lhs, 'cannot assign to this expression'),
+      }
+    },
+    {name: 'for', nodes: [pat, iterable, body]} => {
+      scan_expr(iterable, f)
+      new_scratch(f, node)   # the iterator lives across the loop
+      enter_scope(f)
+      let base = nslots[f]
+      cond {
+        pat.name == 'tup_pat' =>
+          for id in pat.nodes { declare_var(f, id.token, false, id) },
+        _ => declare_var(f, pat.token, false, pat),
+      }
+      loop_depth[f] = loop_depth[f] + 1
+      mut has_defer = false
+      for s in body.nodes {
+        if s.name == 'fn_decl' {
+          fail(s, "fn declarations are only allowed at a function's top level")
+        }
+        if s.name == 'defer_s' { has_defer = true }
+        scan_stmt(s, f)
+      }
+      loop_depth[f] = loop_depth[f] - 1
+      leave_scope(f)
+      block_info[pkey(body)] =
+          {base: base, high: nslots[f], wrap: true}
     },
     {name: 'while', nodes: [cnd, body]} => {
       scan_expr(cnd, f)
@@ -649,7 +1504,7 @@ fn scan_try(node, f) {
   }
   leave_scope(f)
   block_info[pkey(handler)] =
-      {base: caught, wrap: true}   # always a scope: it owns the caught slot
+      {base: caught, high: nslots[f], wrap: true}   # owns the caught slot
 }
 
 fn scan_call(node, f) {
@@ -657,6 +1512,27 @@ fn scan_call(node, f) {
   for a in args.nodes { scan_expr(a, f) }
   if id.token == 'println' || id.token == 'print' {
     if args.nodes.size() != 1 { fail(id, "{id.token} takes 1 argument") }
+    return nil
+  }
+  if !in_prelude && builtins.has(id.token) {
+    cond {
+      id.token == 'range' => {
+        if args.nodes.size() < 1 || args.nodes.size() > 2 {
+          fail(id, 'range takes 1 or 2 arguments')
+        }
+      },
+      id.token == 'iota' => {
+        if args.nodes.size() < 1 || args.nodes.size() > 2 {
+          fail(id, 'iota takes 1 or 2 arguments')
+        }
+      },
+      _ => {
+        let (_, arity) = builtins[id.token]
+        if args.nodes.size() != arity {
+          fail(id, "{id.token} takes {arity} argument(s)")
+        }
+      },
+    }
     return nil
   }
   if in_prelude {
@@ -720,6 +1596,19 @@ fn scan_expr(node, f) {
       note_use(node, f, r)
     },
     {name: 'call'} => scan_call(node, f),
+    {name: 'array_lit'} => { for e in node.nodes { scan_expr(e, f) } },
+    {name: 'tuple'} => { for e in node.nodes { scan_expr(e, f) } },
+    {name: 'object_lit'} => {
+      for pair in node.nodes { scan_expr(pair.nodes[1], f) }
+    },
+    {name: 'lambda', nodes: [prms, bodye]} => {
+      let g = new_func(f, "fn@{node.line}:{node.column}", [bodye],
+                       pkey(node))
+      closure_of[pkey(node)] = g
+      let saved = loop_depth[f]
+      walk_fn(g, prms.nodes)
+      loop_depth[f] = saved
+    },
     {name: 'closure', nodes: [prms, blk]} => {
       let g = new_func(f, "fn@{node.line}:{node.column}", blk.nodes,
                        pkey(blk))
@@ -741,7 +1630,14 @@ fn scan_expr(node, f) {
       scan_expr(nodes[0], f)
       mut i = 1
       while i < nodes.size() {
-        if nodes[i].name == 'subscript' { scan_expr(nodes[i].nodes[0], f) }
+        let step = nodes[i]
+        if step.name == 'subscript' { scan_expr(step.nodes[0], f) }
+        if step.name == 'mcall' {
+          for a in step.nodes[1].nodes { scan_expr(a, f) }
+        }
+        if step.name == 'pcall' {
+          for a in step.nodes[0].nodes { scan_expr(a, f) }
+        }
         i = i + 1
       }
     },
@@ -859,6 +1755,10 @@ fn call_pre(m, f, name, arg_ids, ln, cl) {
 # needed -- this is bookkeeping only, kept for symmetry.
 fn calls_note(f, g) { nil }
 
+# The prelude-only marks give the prelude bytes the surface language cannot
+# spell: \z is 0x01 (the tuple/mut-metadata key prefix -- no user string can
+# collide with it) and \y/\x/\w are the UTF-8 lead-byte thresholds 0xC0 /
+# 0xE0 / 0xF0 its code-point iterator compares against.
 fn unescape(s) {
   mut out = ''
   mut i = 0
@@ -871,6 +1771,10 @@ fn unescape(s) {
           d == 'n' => "\n",
           d == 't' => "\t",
           d == 'r' => "\r",
+          in_prelude && d == 'z' => String.from_code_point(1),
+          in_prelude && d == 'y' => String.from_bytes([192]),
+          in_prelude && d == 'x' => String.from_bytes([224]),
+          in_prelude && d == 'w' => String.from_bytes([240]),
           _ => d,   # backslash, brace, quotes: the char itself
         }
         i = i + 2
@@ -1089,6 +1993,28 @@ fn emit_call(m, node, f) {
     return m.intrinsic(name: iname, args_list: make_list(m, [shown]),
                        line: ln, col: cl)
   }
+  if !in_prelude && builtins.has(id.token) {
+    mut arg_ids = []
+    for a in args.nodes { arg_ids.push(emit_expr(m, a, f)) }
+    let (pl, pc) = pos_args(m, id)
+    let target = cond {
+      id.token == 'range' => cond {
+        args.nodes.size() == 1 => '__range1',
+        _ => '__range2',
+      },
+      id.token == 'iota' => cond {
+        args.nodes.size() == 1 => '__iota1',
+        _ => '__iota2',
+      },
+      _ => {
+        let (t, _) = builtins[id.token]
+        t
+      },
+    }
+    arg_ids.push(pl)
+    arg_ids.push(pc)
+    return call_pre(m, f, target, arg_ids, ln, cl)
+  }
   if in_prelude {
     if intrinsics.has(id.token) {
       let (iname, _) = intrinsics[id.token]
@@ -1136,36 +2062,71 @@ fn emit_call(m, node, f) {
                line: ln, col: cl)
 }
 
+fn emit_postfix_step(m, f, value, step) {
+  let (pl, pc) = pos_args(m, step)
+  cond {
+    step.name == 'pcall' => {
+      mut arg_ids = []
+      for a in step.nodes[0].nodes { arg_ids.push(emit_expr(m, a, f)) }
+      let callee = cond {
+        in_prelude => value,
+        _ => call_pre(m, f, '__callee_check', [value, pl, pc],
+                      step.line, step.column),
+      }
+      m.call_value(callee: callee, args_list: make_list(m, arg_ids),
+                   line: step.line, col: step.column)
+    },
+    step.name == 'mcall' => {
+      let name = step.nodes[0]
+      mut arg_ids = []
+      for a in step.nodes[1].nodes { arg_ids.push(emit_expr(m, a, f)) }
+      let args = m.array_lit(items_list: make_list(m, arg_ids),
+                             line: step.line, col: step.column)
+      cond {
+        # inside the prelude a .name(...) is a protocol call: read the
+        # property, call what it holds (used for user iterators)
+        in_prelude => m.call_value(
+            callee: m.index(recv: value,
+                            key: m.str_literal(s: name.token, line: name.line, col: name.column),
+                            line: step.line, col: step.column),
+            args_list: make_list(m, arg_ids), line: step.line, col: step.column),
+        _ => call_pre(m, f, '__method',
+                      [value,
+                       m.str_literal(s: name.token, line: name.line, col: name.column),
+                       args, pl, pc],
+                      step.line, step.column),
+      }
+    },
+    step.name == 'prop' => cond {
+      in_prelude => m.index(recv: value,
+                            key: m.str_literal(s: step.nodes[0].token,
+                                               line: step.line,
+                                               col: step.column),
+                            line: step.line, col: step.column),
+      _ => call_pre(m, f, '__getprop',
+                    [value,
+                     m.str_literal(s: step.nodes[0].token, line: step.line,
+                                   col: step.column),
+                     pl, pc],
+                    step.line, step.column),
+    },
+    _ => cond {   # subscript
+      in_prelude => m.index(recv: value,
+                            key: emit_expr(m, step.nodes[0], f),
+                            line: step.line, col: step.column),
+      _ => call_pre(m, f, '__getindex',
+                    [value, emit_expr(m, step.nodes[0], f), pl, pc],
+                    step.line, step.column),
+    },
+  }
+}
+
 fn emit_postfix(m, node, f) {
   let nodes = node.nodes
   mut value = emit_expr(m, nodes[0], f)
   mut i = 1
   while i < nodes.size() {
-    let step = nodes[i]
-    let (pl, pc) = pos_args(m, step)
-    value = cond {
-      step.name == 'prop' => cond {
-        in_prelude => m.index(recv: value,
-                              key: m.str_literal(s: step.nodes[0].token,
-                                                 line: step.line,
-                                                 col: step.column),
-                              line: step.line, col: step.column),
-        _ => call_pre(m, f, '__getprop',
-                      [value,
-                       m.str_literal(s: step.nodes[0].token, line: step.line,
-                                     col: step.column),
-                       pl, pc],
-                      step.line, step.column),
-      },
-      _ => cond {   # subscript
-        in_prelude => m.index(recv: value,
-                              key: emit_expr(m, step.nodes[0], f),
-                              line: step.line, col: step.column),
-        _ => call_pre(m, f, '__getindex',
-                      [value, emit_expr(m, step.nodes[0], f), pl, pc],
-                      step.line, step.column),
-      },
-    }
+    value = emit_postfix_step(m, f, value, nodes[i])
     i = i + 1
   }
   value
@@ -1179,7 +2140,11 @@ fn emit_unary(m, node, f, which) {
     return cond {
       which == 'neg' => m.unary(op: 'neg', operand: e, line: ln, col: cl),
       which == 'bnot' => m.unary(op: 'bitnot', operand: e, line: ln, col: cl),
-      _ => fail(node, 'no ! in the prelude'),
+      # ! on a value the prelude already knows is a Bool
+      _ => m.make_if_else(cond: e,
+                          then_branch: m.bool_literal(v: false, line: ln, col: cl),
+                          else_branch: m.bool_literal(v: true, line: ln, col: cl),
+                          line: ln, col: cl),
     }
   }
   let (pl, pc) = pos_args(m, node)
@@ -1261,11 +2226,41 @@ fn emit_expr(m, node, f) {
     {name: 'false_l'} => m.bool_literal(v: false, line: node.line, col: node.column),
     {name: 'nil_l'} => m.nil_literal(line: node.line, col: node.column),
     {name: 'ident', token} => {
+      if !resolved.has(pkey(node)) {
+        fail(node, "DEBUG unresolved ident '{token}' key={pkey(node)} f={f}")
+      }
       let r = resolved[pkey(node)]
       let a = access_from(f, (r.owner, r.slot))
       m.var_ref(kind: a.kind, index: a.index, line: node.line, col: node.column)
     },
     {name: 'call'} => emit_call(m, node, f),
+    {name: 'array_lit'} => {
+      mut ids = []
+      for e in node.nodes { ids.push(emit_expr(m, e, f)) }
+      m.array_lit(items_list: make_list(m, ids), line: node.line,
+                  col: node.column)
+    },
+    {name: 'tuple'} => {
+      mut ids = []
+      for e in node.nodes { ids.push(emit_expr(m, e, f)) }
+      let items = m.array_lit(items_list: make_list(m, ids),
+                              line: node.line, col: node.column)
+      call_pre(m, f, '__mk_tuple', [items], node.line, node.column)
+    },
+    {name: 'object_lit'} => {
+      let kv = m.list_new()
+      for pair in node.nodes {
+        let k = pair.nodes[0]
+        m.list_push(kv, m.str_literal(s: k.token, line: k.line, col: k.column))
+        m.list_push(kv, emit_expr(m, pair.nodes[1], f))
+      }
+      m.object_lit(kv_list: kv, line: node.line, col: node.column)
+    },
+    {name: 'lambda'} => {
+      let g = closure_of[pkey(node)]
+      m.make_closure(func: g, cmap: cmap_for(m, f, g),
+                     line: node.line, col: node.column)
+    },
     {name: 'closure'} => {
       let g = closure_of[pkey(node)]
       m.make_closure(func: g, cmap: cmap_for(m, f, g),
@@ -1300,22 +2295,218 @@ fn emit_expr(m, node, f) {
   }
 }
 
+# a = v, a op= v, recv[k] = v, recv.k = v (and their op= forms). The
+# compound forms re-emit the read; the receiver chain is evaluated twice,
+# which for the sample programs (variables and fields) is indistinguishable
+# from once.
+fn emit_assign(m, node, f) {
+  let [lhs, op, value] = node.nodes
+  let ln = node.line
+  let cl = node.column
+  if in_prelude && lhs.name == 'postfix' {
+    # the prelude mutates arrays and objects directly; its stores are the
+    # raw node (it is type-correct by construction)
+    let steps = lhs.nodes
+    let last = steps[steps.size() - 1]
+    mut recv = emit_expr(m, steps[0], f)
+    mut i = 1
+    while i < steps.size() - 1 {
+      recv = emit_postfix_step(m, f, recv, steps[i])
+      i = i + 1
+    }
+    let key = cond {
+      last.name == 'prop' => m.str_literal(s: last.nodes[0].token,
+                                           line: last.line, col: last.column),
+      _ => emit_expr(m, last.nodes[0], f),
+    }
+    return m.set_index(recv: recv, key: key,
+                       value: emit_expr(m, value, f), line: ln, col: cl)
+  }
+  fn rhs_of(read_back) {
+    let v = emit_expr(m, value, f)
+    cond {
+      op.token == '=' => v,
+      read_back == nil => v,
+      _ => {
+        let (pl, pc) = pos_args(m, op)
+        let name = cond {
+          op.token == '+=' => '__add',
+          op.token == '-=' => '__sub',
+          op.token == '*=' => '__mul',
+          op.token == '/=' => '__div',
+          _ => '__mod',
+        }
+        call_pre(m, f, name, [read_back(), v, pl, pc], op.line, op.column)
+      },
+    }
+  }
+  cond {
+    lhs.name == 'ident' => {
+      let r = resolved[pkey(lhs)]
+      let a = access_from(f, (r.owner, r.slot))
+      let cur_var = fn () {
+        m.var_ref(kind: a.kind, index: a.index, line: lhs.line, col: lhs.column)
+      }
+      m.assign(kind: a.kind, index: a.index, value: rhs_of(cur_var),
+               line: ln, col: cl)
+    },
+    _ => {
+      # postfix: everything up to the last step is the receiver expression
+      let steps = lhs.nodes
+      let last = steps[steps.size() - 1]
+      mut recv = emit_expr(m, steps[0], f)
+      mut i = 1
+      while i < steps.size() - 1 {
+        recv = emit_postfix_step(m, f, recv, steps[i])
+        i = i + 1
+      }
+      let (pl, pc) = pos_args(m, last)
+      let key = cond {
+        last.name == 'prop' => m.str_literal(s: last.nodes[0].token,
+                                             line: last.line, col: last.column),
+        _ => emit_expr(m, last.nodes[0], f),
+      }
+      let is_prop = cond { last.name == 'prop' => 1, _ => 0 }
+      cond {
+        op.token == '=' => call_pre(m, f, '__setindex',
+                                    [recv, key, rhs_of(nil),
+                                     m.literal(v: is_prop, line: last.line, col: last.column),
+                                     pl, pc],
+                                    ln, cl),
+        _ => {
+          # receiver and key evaluate once, into scratch slots the read and
+          # the write both reference
+          let rslot = scratch_slot(f, scratch_of[pkey(op)])
+          let kslot = scratch_slot(f, scratch_of[pkey(lhs)])
+          let stores = [
+            m.assign(kind: 'local', index: rslot, value: recv, line: ln, col: cl),
+            m.assign(kind: 'local', index: kslot, value: key, line: ln, col: cl),
+          ]
+          fn rref() { m.var_ref(kind: 'local', index: rslot, line: ln, col: cl) }
+          fn kref() { m.var_ref(kind: 'local', index: kslot, line: ln, col: cl) }
+          let cur_read = fn () {
+            call_pre(m, f, '__getindex_or_prop',
+                     [rref(), kref(), m.literal(v: is_prop, line: last.line, col: last.column), pl, pc],
+                     last.line, last.column)
+          }
+          let setc = call_pre(m, f, '__setindex',
+                              [rref(), kref(), rhs_of(cur_read),
+                               m.literal(v: is_prop, line: last.line, col: last.column),
+                               pl, pc],
+                              ln, cl)
+          mut ids = stores
+          ids.push(setc)
+          m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+        },
+      }
+    },
+  }
+}
+
 fn emit_stmt(m, node, f) {
   match node {
     {name: 'fn_decl'} => nil,   # bodies are emitted per function, not inline
-    {name: 'decl', nodes: [kw, id, value]} => {
+    {name: 'decl', nodes: [kw, pat, value]} => {
       let v = emit_expr(m, value, f)
-      let r = resolved[pkey(id)]
-      let a = access_from(f, (f, r.slot))
-      m.assign(kind: a.kind, index: a.index, value: v,
-               line: node.line, col: node.column)
+      cond {
+        pat.name == 'tup_pat' || pat.name == 'arr_pat' => {
+          let tmp = scratch_slot(f, scratch_of[pkey(pat)])
+          let n = pat.nodes.size()
+          let (pl, pc) = pos_args(m, pat)
+          let checked = call_pre(m, f, '__destr',
+                                 [v, m.literal(v: n, line: pat.line, col: pat.column), pl, pc],
+                                 pat.line, pat.column)
+          mut ids = [m.assign(kind: 'local', index: tmp, value: checked,
+                              line: pat.line, col: pat.column)]
+          mut i = 0
+          while i < n {
+            let id = pat.nodes[i]
+            let r = resolved[pkey(id)]
+            let a = access_from(f, (f, r.slot))
+            let item = m.index(recv: m.var_ref(kind: 'local', index: tmp,
+                                               line: id.line, col: id.column),
+                               key: m.literal(v: i, line: id.line, col: id.column),
+                               line: id.line, col: id.column)
+            ids.push(m.assign(kind: a.kind, index: a.index, value: item,
+                              line: id.line, col: id.column))
+            i = i + 1
+          }
+          m.block(stmts_list: make_list(m, ids), line: node.line,
+                  col: node.column)
+        },
+        _ => {
+          let r = resolved[pkey(pat)]
+          let a = access_from(f, (f, r.slot))
+          m.assign(kind: a.kind, index: a.index, value: v,
+                   line: node.line, col: node.column)
+        },
+      }
     },
-    {name: 'assign', nodes: [id, value]} => {
-      let v = emit_expr(m, value, f)
-      let r = resolved[pkey(id)]
-      let a = access_from(f, (r.owner, r.slot))
-      m.assign(kind: a.kind, index: a.index, value: v,
-               line: node.line, col: node.column)
+    {name: 'assign', nodes: [lhs, op, value]} => emit_assign(m, node, f),
+    {name: 'for', nodes: [pat, iterable, body]} => {
+      let ln = node.line
+      let cl = node.column
+      let itv = emit_expr(m, iterable, f)
+      let (pl, pc) = pos_args(m, node)
+      let itslot = scratch_slot(f, scratch_of[pkey(node)])
+      let store_it = m.assign(kind: 'local', index: itslot,
+                              value: call_pre(m, f, '__iter', [itv, pl, pc], ln, cl),
+                              line: ln, col: cl)
+      fn itref() { m.var_ref(kind: 'local', index: itslot, line: ln, col: cl) }
+      let has = m.call_value(callee: m.index(recv: itref(),
+                                             key: m.str_literal(s: 'has_next', line: ln, col: cl),
+                                             line: ln, col: cl),
+                             args_list: make_list(m, []), line: ln, col: cl)
+      let nextv = m.call_value(callee: m.index(recv: itref(),
+                                               key: m.str_literal(s: 'next', line: ln, col: cl),
+                                               line: ln, col: cl),
+                               args_list: make_list(m, []), line: ln, col: cl)
+      let info = block_info[pkey(body)]
+      mut pre = fresh_cells(m, f, info.base, info.high, body.line, body.column)
+      cond {
+        pat.name == 'tup_pat' => {
+          # (k, v) in ...: next() yields a pair; unpack via its items. The
+          # first slot temporarily holds the items array and is overwritten
+          # last.
+          let n = pat.nodes.size()
+          let first = pat.nodes[0]
+          let r0 = resolved[pkey(first)]
+          let a0 = access_from(f, (f, r0.slot))
+          pre.push(m.assign(kind: a0.kind, index: a0.index,
+                            value: call_pre(m, f, '__destr',
+                                            [nextv, m.literal(v: n, line: ln, col: cl), pl, pc],
+                                            ln, cl),
+                            line: first.line, col: first.column))
+          mut i = n - 1
+          while i >= 1 {
+            let id = pat.nodes[i]
+            let r = resolved[pkey(id)]
+            let a = access_from(f, (f, r.slot))
+            pre.push(m.assign(kind: a.kind, index: a.index,
+                              value: m.index(recv: m.var_ref(kind: a0.kind, index: a0.index, line: id.line, col: id.column),
+                                             key: m.literal(v: i, line: id.line, col: id.column),
+                                             line: id.line, col: id.column),
+                              line: id.line, col: id.column))
+            i = i - 1
+          }
+          pre.push(m.assign(kind: a0.kind, index: a0.index,
+                            value: m.index(recv: m.var_ref(kind: a0.kind, index: a0.index, line: first.line, col: first.column),
+                                           key: m.literal(v: 0, line: first.line, col: first.column),
+                                           line: first.line, col: first.column),
+                            line: first.line, col: first.column))
+        },
+        _ => {
+          let r = resolved[pkey(pat)]
+          let a = access_from(f, (f, r.slot))
+          pre.push(m.assign(kind: a.kind, index: a.index, value: nextv,
+                            line: pat.line, col: pat.column))
+        },
+      }
+      let b = emit_block_stmts(m, body, f, pre)
+      let wrapped = m.scope(first_local: info.base, end_local: nslots[f],
+                            body: b, line: body.line, col: body.column)
+      let loop = m.make_while(cond: has, body: wrapped, line: ln, col: cl)
+      m.block(stmts_list: make_list(m, [store_it, loop]), line: ln, col: cl)
     },
     {name: 'while', nodes: [cnd, body]} => {
       let c0 = emit_expr(m, cnd, f)
@@ -1353,19 +2544,39 @@ fn emit_stmt(m, node, f) {
   }
 }
 
-fn emit_block(m, blk, f) {
+# Cell refreshes for a scope's own captured slots: entering the region is
+# declaring anew, so closures from earlier entries keep the old box.
+fn fresh_cells(m, f, base, high, ln, cl) {
   mut ids = []
+  mut s = base
+  while s < high {
+    if cell_index[f].has(s) {
+      ids.push(m.cell_fresh(cell: cell_index[f][s], line: ln, col: cl))
+    }
+    s = s + 1
+  }
+  ids
+}
+
+fn emit_block_stmts(m, blk, f, pre_ids) {
+  mut ids = pre_ids
   for s in blk.nodes {
     let e = emit_stmt(m, s, f)
     if e != nil { ids.push(e) }
   }
-  let b = m.block(stmts_list: make_list(m, ids), line: blk.line,
-                  col: blk.column)
+  m.block(stmts_list: make_list(m, ids), line: blk.line, col: blk.column)
+}
+
+fn emit_block(m, blk, f) {
   let info = block_info[pkey(blk)]
   cond {
-    info.wrap => m.scope(first_local: info.base, end_local: nslots[f],
-                         body: b, line: blk.line, col: blk.column),
-    _ => b,
+    info.wrap => {
+      let pre = fresh_cells(m, f, info.base, info.high, blk.line, blk.column)
+      let b = emit_block_stmts(m, blk, f, pre)
+      m.scope(first_local: info.base, end_local: nslots[f],
+              body: b, line: blk.line, col: blk.column)
+    },
+    _ => emit_block_stmts(m, blk, f, []),
   }
 }
 
@@ -1433,7 +2644,8 @@ fn build(m, prelude_tree, root) {
   enter_scope(main)
   let has_defer = scan_body_stmts(main, root.nodes, "0:0")
   leave_scope(main)
-  block_info["0:0"] = {base: 0, wrap: nslots[main] > 0 || has_defer}
+  block_info["0:0"] =
+      {base: 0, high: nslots[main], wrap: nslots[main] > 0 || has_defer}
 
   solve()
   emit_funcs(m)

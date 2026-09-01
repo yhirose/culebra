@@ -1,0 +1,12 @@
+# string methods
+let sx = ' Hello,World '
+println(sx.size())
+println(sx.trim())
+println(sx.contains('World'))
+println(sx.trim().split(','))
+println('ab'.repeat(3))
+println('hello'.starts_with('he'))
+println('hello'.ends_with('lo'))
+println('hello'.index_of('ll'))
+println('hello'.slice(1, 3))
+println(''.empty())
