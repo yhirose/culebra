@@ -11659,6 +11659,13 @@ struct Exec {
                   auto [line, col] = chunk_pos_at(c, pc);
                   culebra_runtime_div_zero(line, col);
                 }
+                // MIN / -1 wraps like the rest of Long arithmetic
+                // (language.md: "Overflow wraps") instead of trapping in
+                // hardware -- the one quotient sdiv cannot produce.
+                if (r.data == -1 && l.data == INT64_MIN) {
+                  out = {TAG_LONG, in.op == Op::Div ? INT64_MIN : 0};
+                  break;
+                }
                 out = {TAG_LONG, in.op == Op::Div ? l.data / r.data
                                                   : l.data % r.data};
                 break;

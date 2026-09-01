@@ -1,0 +1,29 @@
+# MIN / -1 and MIN % -1 wrap, like the rest of Long arithmetic
+# (language.md: "Overflow wraps (no bignum)"). sdiv on that pair is the one
+# quotient the hardware traps on -- the executor used to die with SIGFPE and
+# the JIT lane returned poison -- so both lanes special-case the edge to the
+# wrapped answer. Pinned on both backends, through variables so no constant
+# folding can hide the runtime path.
+
+let minv = 0 - 9223372036854775807 - 1
+
+assert_eq(minv / -1, minv)
+assert_eq(minv % -1, 0)
+
+mut d = -1
+assert_eq(minv / d, minv)
+assert_eq(minv % d, 0)
+
+mut x = minv
+x /= d
+assert_eq(x, minv)
+
+mut y = minv
+y %= d
+assert_eq(y, 0)
+
+# the neighbors stay exact
+assert_eq(minv / 1, minv)
+assert_eq((minv + 1) / -1, 9223372036854775807)
+assert_eq(minv % -2, 0)
+assert_eq((minv + 1) % -1, 0)

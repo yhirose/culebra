@@ -2029,6 +2029,30 @@ struct JIT {
         {current_line_val(), current_column_val()});
   }
 
+  // MIN / -1 wraps like the rest of Long arithmetic (language.md:
+  // "Overflow wraps") -- sdiv/srem on that pair is poison (and SIGFPE on
+  // x86), so the divisor is nudged to 1 on the edge and the wrapped
+  // answer (MIN for /, 0 for %) selected in. Branch-free: two icmps and
+  // two selects that the optimizer folds away for constant operands.
+  llvm::Value* emit_wrapping_sdiv(llvm::Value* ld, llvm::Value* rd,
+                                  bool rem) {
+    auto min = llvm::ConstantInt::get(builder_.getInt64Ty(),
+                                      std::numeric_limits<int64_t>::min());
+    auto neg1 = llvm::ConstantInt::get(builder_.getInt64Ty(), -1);
+    auto one = llvm::ConstantInt::get(builder_.getInt64Ty(), 1);
+    auto edge = builder_.CreateAnd(builder_.CreateICmpEQ(ld, min, "l.min"),
+                                   builder_.CreateICmpEQ(rd, neg1, "r.neg1"),
+                                   "div.edge");
+    auto safe = builder_.CreateSelect(edge, one, rd, "div.safe");
+    if (rem) {
+      auto r = builder_.CreateSRem(ld, safe, "mod");
+      return builder_.CreateSelect(
+          edge, llvm::ConstantInt::get(builder_.getInt64Ty(), 0), r, "mod.w");
+    }
+    auto q = builder_.CreateSDiv(ld, safe, "div");
+    return builder_.CreateSelect(edge, min, q, "div.w");
+  }
+
   // Emit a divide-by-zero check on `divisor`. On zero, throws via
   // emit_div_zero (terminates the basic block); otherwise leaves the
   // builder positioned at the ok-path BB, ready for SDiv/SRem/FDiv/FRem.
@@ -2971,10 +2995,10 @@ struct JIT {
             case '*': return make_long(builder_.CreateMul(ld, rd, "mul"));
             case '/':
               emit_div_zero_guard(rd, "div");
-              return make_long(builder_.CreateSDiv(ld, rd, "div"));
+              return make_long(emit_wrapping_sdiv(ld, rd, /*rem=*/false));
             case '%':
               emit_div_zero_guard(rd, "mod");
-              return make_long(builder_.CreateSRem(ld, rd, "mod"));
+              return make_long(emit_wrapping_sdiv(ld, rd, /*rem=*/true));
           }
           return nullptr;
         },
