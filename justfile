@@ -112,22 +112,22 @@ check-blob: _gen-blob-tool
 [group("build")]
 [doc("Verify the difftest corpus applies every built-in method name")]
 check-difftest-coverage:
-    tools/check_difftest_coverage.sh
+    tools/checks/check_difftest_coverage.sh
 
 # Every script release.yml runs, ci.yml runs too — a `v*` tag must not be the
 # first execution of anything. Both release failures were that shape.
 [group("test")]
 [doc("Verify CI exercises every script a release runs")]
 check-release-coverage:
-    tools/check_release_covered_by_ci.sh
+    tools/checks/check_release_covered_by_ci.sh
 
 # Every section of the spec that states a rule carries a runnable example, or
-# is filed in tools/spec_unpinned_sections.txt. A runnable block is the only
+# is filed in tools/checks/spec_unpinned_sections.txt. A runnable block is the only
 # check that lives in the same file as the rule it pins.
 [group("test")]
 [doc("Verify docs/language.md sections carry runnable examples (ratchet)")]
 check-spec-examples:
-    tools/check_spec_examples.sh
+    tools/checks/check_spec_examples.sh
 
 # Every namespace function docs/quick-guide.md documents, and every grammar
 # keyword, has a durable caller — a tests/*.cul, tests/*.sh or executed
@@ -135,7 +135,7 @@ check-spec-examples:
 [group("test")]
 [doc("Verify every documented Ns.fn and grammar keyword has a durable caller")]
 check-api-coverage:
-    tools/check_api_coverage.sh
+    tools/checks/check_api_coverage.sh
 
 # An interrupt is never a program error. A handler that catches CulebraError —
 # or std::exception, or `...`, which catch it too — and reports it turns Ctrl+C
@@ -144,7 +144,7 @@ check-api-coverage:
 [group("test")]
 [doc("Verify no run-host handler reports an interrupt as a program error (ratchet)")]
 check-interrupt-discipline:
-    tools/check_interrupt_discipline.sh
+    tools/checks/check_interrupt_discipline.sh
 
 # No header carries a variable that exists only for its initializer's side
 # effect: lld drops the COMDAT and the registration goes missing at run time on
@@ -152,7 +152,7 @@ check-interrupt-discipline:
 [group("test")]
 [doc("Verify no header roots a registration in an inline variable (ratchet)")]
 check-registrar-rooted:
-    tools/check_registrar_rooting.sh
+    tools/checks/check_registrar_rooting.sh
 
 # The PE export-table generator, against a fixed nm listing. It runs on no
 # other platform, so this is the only place a change to it is exercised before
@@ -161,7 +161,7 @@ check-registrar-rooted:
 [group("test")]
 [doc("Verify cmake/gen_pe_exports.cmake emits the expected .def")]
 check-pe-exports-gen:
-    tools/check_pe_exports_gen.sh
+    tools/checks/check_pe_exports_gen.sh
 
 # Every committed file a generator produces, checked against its source, plus
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
@@ -237,7 +237,7 @@ build-assert *extra:
 # fragment compile nowhere else. Its own build dir for build-assert's reason —
 # CULEBRA_ENABLE_SCENE is a target-wide define, so every TU's command line
 # differs and sharing a dir would evict the other lanes' ccache. Keeps the AOT
-# archives (no DEV_NO_RT): misc/probe_scene_aot_link.sh needs the force-load.
+# archives (no DEV_NO_RT): misc/aot_axes/probe_scene_aot_link.sh needs the force-load.
 # The `culebra` target alone — this lane runs the probes, never ctest.
 [doc("Build with the opt-in Scene namespace ON (the only lane that does)")]
 [group("build")]
@@ -657,7 +657,7 @@ _run-tests BACKEND:
             echo "test aot FAIL: failed build left scratch in TMPDIR: $left" >&2; exit 1; }
         # The one axis whose link no tests/*.cul can reach (it skips itself on a
         # driver built without Webview, which is what the sweep below cannot do).
-        {{nice_cmd}} bash misc/probe_webview_aot_link.sh "$BIN" "$out_dir/webview" \
+        {{nice_cmd}} bash misc/aot_axes/probe_webview_aot_link.sh "$BIN" "$out_dir/webview" \
             || exit 1
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"; out_dir="$3"; jit_out="$4"
@@ -697,16 +697,16 @@ _run-tests BACKEND:
         # one place an AOT build is asked what it does with some.
         {{nice_cmd}} bash tests/sys_argv_test.sh "$BIN" --aot || exit 1
         # The self-contained axes are silent when lost (no link error, no
-        # ldd); tools/check_aot_feature_axes.sh reads the linked outputs.
-        {{nice_cmd}} bash tools/check_aot_feature_axes.sh "$(dirname "$BIN")" || exit 1
+        # ldd); tools/checks/check_aot_feature_axes.sh reads the linked outputs.
+        {{nice_cmd}} bash tools/checks/check_aot_feature_axes.sh "$(dirname "$BIN")" || exit 1
         # Every AOT test above links inside a build tree, where the paths a
         # fragment could bake in happen to exist. This one asserts none is
         # there to begin with — the failure only a downloaded binary sees.
-        {{nice_cmd}} bash tools/check_aot_link_portability.sh "$(dirname "$BIN")" || exit 1
+        {{nice_cmd}} bash tools/checks/check_aot_link_portability.sh "$(dirname "$BIN")" || exit 1
         # Losing the baked stdlib preamble is silent too (the lanes splice
         # the source again, two seconds slower per module); read it off the
         # emitted IR and the linked outputs.
-        {{nice_cmd}} bash tools/check_baked_preamble.sh "$(dirname "$BIN")" || exit 1
+        {{nice_cmd}} bash tools/checks/check_baked_preamble.sh "$(dirname "$BIN")" || exit 1
         echo "test aot OK: AOT binaries match --jit"
     }
 
@@ -979,63 +979,63 @@ _run-tests BACKEND:
     # RC-discipline ratchet (GAP3/GAP4-lite): source-level ceilings on the
     # hand-placed retain/release forms, so migration debt can only shrink and
     # a new bare RC op fails the gate.
-    run_rc_discipline() { bash tools/check_rc_discipline.sh; }
+    run_rc_discipline() { bash tools/checks/check_rc_discipline.sh; }
     # Long-width ratchet: a language value that passes through a C++ `long`
     # is 32-bit on Windows, and Linux cannot see it (there long IS int64_t).
-    run_long_width() { bash tools/check_long_width.sh; }
+    run_long_width() { bash tools/checks/check_long_width.sh; }
 
     # Iterator wiring ratchet: terminals drive through JitIterDrive (which
     # owns dispose-on-every-exit) and lazy combinators forward their
-    # upstream(s) to the wrapper factory (tools/check_iter_wiring.sh).
-    run_iter_wiring() { bash tools/check_iter_wiring.sh; }
+    # upstream(s) to the wrapper factory (tools/checks/check_iter_wiring.sh).
+    run_iter_wiring() { bash tools/checks/check_iter_wiring.sh; }
 
     # CULEBRA_RT_KEEP scope ratchet: the macro exists only to keep
     # culebra_runtime_* ABI helpers alive for the JIT's by-name symbol
     # resolution: an internal helper that drifts onto it by copy-paste gets
     # nothing from it and rides an optimizer-dependent path on Windows
-    # (tools/check_rt_keep_scope.sh).
-    run_rt_keep_scope() { bash tools/check_rt_keep_scope.sh; }
+    # (tools/checks/check_rt_keep_scope.sh).
+    run_rt_keep_scope() { bash tools/checks/check_rt_keep_scope.sh; }
 
     # Runtime-archive ownership: a dynamically-initialized namespace-scope
     # thread_local — and any symbol the core archive defines strongly — must
     # come from one archive, never both. mingw's ld rejects the duplicate and
     # the Windows AOT link fails, while ELF and Mach-O fold it silently
-    # (tools/check_rt_archive_tls.sh). Needs the built archives, so this is a
+    # (tools/checks/check_rt_archive_tls.sh). Needs the built archives, so this is a
     # gate-only phase (`test-dev` has none).
     run_rt_archive_tls() {
-        bash tools/check_rt_archive_tls.sh "$(dirname "$BIN")"
+        bash tools/checks/check_rt_archive_tls.sh "$(dirname "$BIN")"
     }
 
     # The driver is what the in-process JIT resolves `culebra_runtime_*` from
     # (dlsym over the process), so every helper codegen names has to survive
-    # the driver's own dead-strip (tools/check_jit_host_symbols.sh). Reads the
+    # the driver's own dead-strip (tools/checks/check_jit_host_symbols.sh). Reads the
     # linked binary and nothing else, so it runs off `build-dev` too — which
     # matters because the platform this breaks on is macOS, and the miss reads
     # as every JIT test crashing at once.
-    run_jit_host_symbols() { bash tools/check_jit_host_symbols.sh "$BIN"; }
+    run_jit_host_symbols() { bash tools/checks/check_jit_host_symbols.sh "$BIN"; }
 
     # EH balance: every cleanup landingpad's __cxa_begin_catch is closed by an
     # __cxa_end_catch — the re-raising ones on the rethrow's own unwind edge.
     # An unclosed handler strands the exception object (~184 B per caught
     # throw), which no value-level leak gate can see. Reads emitted IR, so it
-    # runs off the binary alone (tools/check_eh_balance.sh).
-    run_eh_balance() { bash tools/check_eh_balance.sh "$BIN"; }
+    # runs off the binary alone (tools/checks/check_eh_balance.sh).
+    run_eh_balance() { bash tools/checks/check_eh_balance.sh "$BIN"; }
 
     # Entry-block alloca discipline: a scratch slot emitted into an ordinary
     # block is a dynamic stack bump the frame never gives back, so a loop
     # containing it eventually overflows the stack (two shipped crashes came
-    # from exactly that — tools/check_alloca_discipline.sh). Reads emitted IR
+    # from exactly that — tools/checks/check_alloca_discipline.sh). Reads emitted IR
     # for both lanes, so it runs off the binary alone.
     run_alloca_discipline() {
-        bash tools/check_alloca_discipline.sh "$BIN"
+        bash tools/checks/check_alloca_discipline.sh "$BIN"
     }
 
     # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
     # creation, so neither the driver nor an AOT binary may carry it in
-    # DT_NEEDED or export the forwarders (tools/check_webview_dynload.sh).
+    # DT_NEEDED or export the forwarders (tools/checks/check_webview_dynload.sh).
     # Reads the linked output and links an AOT binary, so gate-only too.
     run_webview_dynload() {
-        bash tools/check_webview_dynload.sh "$(dirname "$BIN")"
+        bash tools/checks/check_webview_dynload.sh "$(dirname "$BIN")"
     }
 
     # Announce each phase with the running elapsed time, so a slow/stalled CI
@@ -1325,7 +1325,7 @@ smoke-microgpt: build fetch-names
 [doc("Drive the Webview event loop on both backends (opens a window)")]
 [group("test")]
 smoke-webview: build
-    misc/probe_webview_window.sh ./build/culebra
+    misc/aot_axes/probe_webview_window.sh ./build/culebra
 
 # Download Karpathy's names dataset for benchmarks/microgpt.
 [group("bench")]

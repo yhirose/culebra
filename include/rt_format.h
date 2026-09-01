@@ -10,7 +10,7 @@
 // into every program `culebra build` produces — 15% of a `print("hello")`,
 // measured in docs/deployment.md §4. The runtime's uses are messages, `{}`
 // with a few width and hex specs, so they are served here and libstdc++'s
-// formatter stays out. tools/check_aot_feature_axes.sh holds the line by
+// formatter stays out. tools/checks/check_aot_feature_axes.sh holds the line by
 // reading built binaries, because nothing in the source shows it.
 //
 // A header the runtime archive compiles uses this. The driver, the parser and

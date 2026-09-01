@@ -23,7 +23,7 @@
 namespace culebra {
 
 // This thread's capture stack. Function-local so that no "TLS init function"
-// symbol lands in the runtime archives (tools/check_rt_archive_tls.sh).
+// symbol lands in the runtime archives (tools/checks/check_rt_archive_tls.sh).
 inline std::vector<std::ostream*>& capture_stack() {
   static thread_local std::vector<std::ostream*> stack;
   return stack;

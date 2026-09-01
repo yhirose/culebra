@@ -1,7 +1,7 @@
 // Unit test for the runtime's message formatter (include/rt_format.h).
 //
 // The formatter exists to keep libstdc++'s out of AOT binaries (see the
-// header, and tools/check_aot_feature_axes.sh), so the property that
+// header, and tools/checks/check_aot_feature_axes.sh), so the property that
 // matters is that it renders exactly what `std::format` renders: the
 // messages it builds are compared across the executor, `--jit` and AOT
 // lanes, and against the previous release's binary. Every check below is

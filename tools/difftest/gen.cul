@@ -75,7 +75,7 @@ for u in ['-', '!'] {
 # EVERY name in shared.h's builtin_method_names() belongs here — a method the
 # corpus never applies is a method whose error shapes nobody compares
 # (`trim_start` sat outside this list for two months with a live asymmetry).
-# tools/check_difftest_coverage.sh fails the build when the two drift apart.
+# tools/checks/check_difftest_coverage.sh fails the build when the two drift apart.
 let methods = [
   'add',
   'all',
@@ -263,7 +263,7 @@ for v in vals {
 # `bare_names` reuses Dimension 2's `methods` (every name in
 # builtin_method_names(), coverage-gated) rather than its own hand-picked
 # subset — a name added there is swept here for free, closing the same kind
-# of gap `trim_start` fell into (tools/check_difftest_coverage.sh).
+# of gap `trim_start` fell into (tools/checks/check_difftest_coverage.sh).
 let bare_recvs = [
   '1',
   '"abc"',

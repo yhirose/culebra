@@ -116,7 +116,7 @@ everyone who never runs it.
 
 The kit is packed at release time out of the same MSYS2 UCRT64 tree that
 compiled the runtime archives inside the binary
-(`misc/pack_windows_toolchain.sh`), which is what makes their libstdc++
+(`misc/windows_toolchain/pack_windows_toolchain.sh`), which is what makes their libstdc++
 match by construction rather than by a version comparison someone has to
 get right. It records the linker command line that toolchain's C++
 driver would build (`link-recipe.txt`), and culebra splices its own
@@ -851,7 +851,7 @@ fragment names them (`@libssl.a@`), and `culebra build` resolves the
 name against the same cache before it hands the command to `cc`. What
 stays as a plain `-l` is what every machine has: `-lz`, `-lstdc++`,
 `-lpthread`, the OS frameworks. CMake refuses at configure time to bake
-a path into a fragment, and `tools/check_aot_link_portability.sh`
+a path into a fragment, and `tools/checks/check_aot_link_portability.sh`
 reads a real link line back to prove none is there — every other AOT
 test runs inside a build tree, where a baked path would happen to
 exist.

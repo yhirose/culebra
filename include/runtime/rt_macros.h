@@ -25,20 +25,20 @@
 // is an optimizer-dependent outcome, not a contract: at -O0 four copies come
 // back, and each one is a multiple definition to PE's ld, which has no weak
 // external to fold it with (ELF and Mach-O fold silently, so only Windows would
-// report it). tools/check_rt_archive_tls.sh checks the result instead of
+// report it). tools/checks/check_rt_archive_tls.sh checks the result instead of
 // trusting it.
 //
 // Only the `culebra_runtime_*` ABI helpers — the ones codegen names — take
 // the pair. Internal `_jit_*` / `_culebra_*` helpers are plain `inline`
 // everywhere: a strong archive definition against a feature TU's COMDAT copy
 // is the one shape PE's ld refuses (`_jit_handle_bind_method`, mingw GCC 16),
-// and COMDAT against COMDAT folds. tools/check_rt_keep_scope.sh ratchets it.
+// and COMDAT against COMDAT folds. tools/checks/check_rt_keep_scope.sh ratchets it.
 //
 // Scoped to the archive targets, and never to a source file: the binding TUs
 // (culebra_rt_webview.cc and its siblings) compile into BOTH the archive and
 // the driver, and a source-file property reaches every target that names the
 // file. Suppressing `used` in the driver strips the JIT's own helpers out of
-// the image it resolves them from — tools/check_jit_host_symbols.sh is the
+// the image it resolves them from — tools/checks/check_jit_host_symbols.sh is the
 // ratchet, and its header records what that cost. That is why this is a
 // separate flag from CULEBRA_RT_FEATURE_BUILD (rt_shared_tls.h), which does
 // belong on the sources: borrowing a thread_local is right in both places,

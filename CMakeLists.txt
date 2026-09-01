@@ -358,7 +358,7 @@ if(CULEBRA_ENABLE_JIT)
   #
   # Carrying lld answers that without carrying a toolchain. What remains on the
   # user's side is the mingw half of a link (CRT objects, libstdc++, import
-  # libraries), which misc/pack_windows_toolchain.sh packs and `culebra
+  # libraries), which misc/windows_toolchain/pack_windows_toolchain.sh packs and `culebra
   # toolchain install` fetches — 8 MB compressed.
   #
   # Sharing this binary's LLVM is what makes that cheap: linking lld here costs
@@ -503,7 +503,7 @@ libs (auto-detected when the static libs are missing)" OFF)
   # lld's COFF driver embeds manifests through LLVMWindowsManifest, which is
   # built against libxml2, and LLVM's config finds the import library — so a
   # -static culebra.exe ends up importing libxml2-16.dll, which is exactly the
-  # DLL a downloaded binary does not have. misc/verify_standalone_exe.sh is
+  # DLL a downloaded binary does not have. misc/windows_toolchain/verify_standalone_exe.sh is
   # what caught it.
   #
   # A static libxml2 stops hiding its own dependencies behind a DLL, so iconv
@@ -583,7 +583,7 @@ endfunction()
 # overflows the 65535-entry PE export table once LLVM's ~80k static symbols are
 # counted ("export ordinal too large"). GNU ld could be narrowed with
 # --exclude-libs ALL; lld, which the release build links with (see
-# misc/configure_windows_release.sh), has no such option. So the target's own
+# misc/windows_toolchain/configure_windows_release.sh), has no such option. So the target's own
 # objects are read with nm just before the link and the names the whitelist
 # below matches written to a .def (cmake/gen_pe_exports.cmake) — the same list,
 # read from the same file, in a form both linkers take. The C++ EH entry points the
@@ -792,7 +792,7 @@ if(CULEBRA_ENABLE_SCENE)
   # reason (PE has no weak external). Appended after the split from
   # _raylib_aot_link, not into it: a Canvas link that never force-loads the
   # Scene archive keeps strict duplicate detection.
-  # tools/check_rt_archive_tls.sh fails if the count grows past a leftover or two.
+  # tools/checks/check_rt_archive_tls.sh fails if the count grows past a leftover or two.
   if(WIN32)
     string(APPEND _scene_link " -Wl,--allow-multiple-definition")
   endif()
@@ -847,7 +847,7 @@ if(CULEBRA_ENABLE_WEBVIEW)
       # and the -lz that answered ld diagnosing the core archive's dead gzip
       # references once libz became reachable as an indirect DSO of libwebkitgtk.
       # Neither DSO reaches the link now, so neither workaround has anything to
-      # act on. misc/probe_webview_aot_link.sh is what proves the second.
+      # act on. misc/aot_axes/probe_webview_aot_link.sh is what proves the second.
       set(_webview_includes ${WEBKITGTK_INCLUDE_DIRS})
       set(_webview_libs ${CMAKE_DL_LIBS})
       set(_webview_link "-ldl")
@@ -884,7 +884,7 @@ if(CULEBRA_ENABLE_WEBVIEW)
       # compiler's business. It takes the first definition and drops the
       # diagnostic; COMDAT folding is what handles the ordinary inline bodies.
       # Scoped to this axis, so a link that does not use Webview keeps strict
-      # duplicate detection, and tools/check_rt_archive_tls.sh fails if the
+      # duplicate detection, and tools/checks/check_rt_archive_tls.sh fails if the
       # count grows past a leftover or two.
       string(APPEND _webview_link " -Wl,--allow-multiple-definition")
     else()
@@ -1328,8 +1328,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # force-emitted (rt_macros.h) and belongs ONLY here, on the archive targets:
   # the driver is what the in-process JIT resolves those helpers from, so a
   # source-file property carrying this to the driver's copy would strip them out
-  # of the JIT's own image. Ratchets: tools/check_rt_archive_tls.sh for what the
-  # archives may define, tools/check_jit_host_symbols.sh for what the driver
+  # of the JIT's own image. Ratchets: tools/checks/check_rt_archive_tls.sh for what the
+  # archives may define, tools/checks/check_jit_host_symbols.sh for what the driver
   # must still define.
   foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_compress
                       culebra_rt_regex culebra_rt_foreign culebra_rt_codegen
@@ -1620,7 +1620,7 @@ endif()
 # un-inlined leftover Webview's Windows fragment absorbs above, and for the
 # same reason (PE has no weak external). Scoped to this axis, which only the
 # foreign-object tests trigger, so ordinary links keep strict duplicate
-# detection; tools/check_rt_archive_tls.sh fails if the count grows.
+# detection; tools/checks/check_rt_archive_tls.sh fails if the count grows.
 set(_foreign_link "")
 if(WIN32)
   set(_foreign_link "-Wl,--allow-multiple-definition")

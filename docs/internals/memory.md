@@ -149,7 +149,7 @@ New codegen that produces or consumes a heap value is required to go
 through the ownership layer described below. A bare, hand-emitted
 retain or release call in a *new* code path is treated as a defect to
 justify in review, not a valid implementation choice;
-`tools/check_rc_discipline.sh` ratchets the count of such sites in
+`tools/checks/check_rc_discipline.sh` ratchets the count of such sites in
 `jit.h` so it can only shrink.
 
 ### 4.2 Ownership and rooting are different jobs
@@ -251,7 +251,7 @@ closed on the handled arm or, when it re-raises, on the rethrow's own
 unwind edge (`emit_handler_rethrow`). A missing pairing would be
 invisible to every value-level leak check, because what is stranded is
 the C++ exception object rather than a Culebra value, so
-`tools/check_eh_balance.sh` reads the emitted IR instead: only a
+`tools/checks/check_eh_balance.sh` reads the emitted IR instead: only a
 handler prologue may open an exception, and every rethrow has an unwind
 edge that closes it.
 

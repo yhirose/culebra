@@ -1086,7 +1086,7 @@ spillする。`memory.md` §4が全体像である。cleanup padは
 `JIT::CleanupPad`で構築され、そのデストラクタがunwindを継続する
 edgeをemitするので、領域は継続されずに開かれることがない。
 handlerだけが例外を開き（`emit_handler_prologue`）、
-`tools/check_eh_balance.sh`がそれをemitされたIR上で検証する。
+`tools/checks/check_eh_balance.sh`がそれをemitされたIR上で検証する。
 
 ### 7.2 unwindの形
 
@@ -1243,8 +1243,8 @@ evaluate、set_variable。`VmDebugEngine`は`Debug::Step`でコンパイル
 AOTランタイムアーカイブ（`libculebra_rt*.a`、`src/runtime/`）は
 ドライバと同じヘッダを、ビルドされたプログラムがリンクするライブラリ
 にコンパイルする。loweringが名指す`culebra_runtime_*`シンボル集合
-は両方に存在しなければならない（`tools/check_jit_host_symbols.sh`、
-`tools/check_rt_archive_tls.sh`）。
+は両方に存在しなければならない（`tools/checks/check_jit_host_symbols.sh`、
+`tools/checks/check_rt_archive_tls.sh`）。
 
 Playground（`playground/wasm_main.cc`、`em++`でビルド）はwasm上の
 executorである。2つのプラットフォーム上の事実がこれを形作る。
@@ -1293,11 +1293,11 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
 - **IR diffing。** codegenを変えてはいけないリファクタは、
   `tests/*.cul`全体に対する`--jit -O0 --emit-llvm`を前後で比較し、
   stderrを含めてバイト単位で一致することで検証する。
-- `tools/check_eh_balance.sh`（すべての`__cxa_begin_catch`が
+- `tools/checks/check_eh_balance.sh`（すべての`__cxa_begin_catch`が
   閉じられているか。unwind edgeのないrethrowがないか）、
-  `tools/check_alloca_discipline.sh`（一時slotがエントリブロック
+  `tools/checks/check_alloca_discipline.sh`（一時slotがエントリブロック
   に留まっているか — ループ中の非エントリ`alloca`は毎パス
-  スタックを伸ばす）、`tools/check_rc_discipline.sh`（`jit.h`内の
+  スタックを伸ばす）、`tools/checks/check_rc_discipline.sh`（`jit.h`内の
   手書きretain/releaseサイトの数は減る一方であるべき）。
 - **assert。** 出力からは決して分からない3つの不変条件がassert
   レーン（`just test-assert`、CIの`linux-assert`。`NDEBUG`なしで

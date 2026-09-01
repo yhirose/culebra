@@ -25,7 +25,7 @@
 //
 // State the core has no business holding at all is the other, simpler answer:
 // gate the declaration out of the weak-stub build entirely (sqlite.h). Either
-// way `tools/check_rt_archive_tls.sh` fails the gate when two archives define
+// way `tools/checks/check_rt_archive_tls.sh` fails the gate when two archives define
 // the same variable.
 #pragma once
 

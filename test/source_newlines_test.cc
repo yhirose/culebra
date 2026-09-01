@@ -6,7 +6,7 @@
 // and nowhere else. A bare `\r` is rejected instead of guessed at.
 //
 // The end-to-end half of this lives on Windows CI, whose checkout has CRLF
-// endings: tools/check_suite_on_windows.sh runs the whole suite there, so the
+// endings: tools/checks/check_suite_on_windows.sh runs the whole suite there, so the
 // four files are covered by their own assertions on a real CRLF file. What is
 // left for here is the byte-level behaviour (positions, idempotence, the
 // rejections) and the proof that both parse entries route through it.

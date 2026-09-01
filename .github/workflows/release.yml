@@ -109,7 +109,7 @@ jobs:
       - run: just build
       - run: ccache -s || true
       - name: Verify the Canvas window backend is in this build
-        run: misc/verify_canvas_window.sh build
+        run: misc/aot_axes/verify_canvas_window.sh build
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -157,12 +157,12 @@ jobs:
       - run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
       - run: ccache -s || true
       - name: Verify the Canvas window backend is in this build
-        run: misc/verify_canvas_window.sh build
+        run: misc/aot_axes/verify_canvas_window.sh build
       # A download that ships Webview must actually have it, for the same reason
       # the Canvas window is checked above: a missing dev package turns the axis
       # off and the build succeeds anyway.
       - name: Verify the Webview axis is in this build
-        run: misc/verify_webview_axis.sh build
+        run: misc/aot_axes/verify_webview_axis.sh build
 
       # The asset's load-time contract, checked on the artifact itself: nothing
       # a desktop provides may appear in DT_NEEDED, or this download needs a
@@ -178,7 +178,7 @@ jobs:
       # legitimate deps.
       - name: Verify no desktop runtime crept into the link
         run: |
-          tools/check_webview_dynload.sh build
+          tools/checks/check_webview_dynload.sh build
           deps=$(ldd build/culebra)
           echo "Shared library dependencies:"
           echo "$deps"
@@ -269,19 +269,19 @@ jobs:
       # check below scans the import table, which the engine is deliberately
       # outside of — it proves no stray DLL, not that WebView2 is reachable.
       #
-      # The flag list lives in misc/configure_windows_release.sh, which ci.yml's
+      # The flag list lives in misc/windows_toolchain/configure_windows_release.sh, which ci.yml's
       # windows-aot-build runs too: this configuration disagreeing between the
       # two workflows is what killed v0.1.0, and it now has one definition.
       - name: Configure
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
           CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
-        run: misc/configure_windows_release.sh build
+        run: misc/windows_toolchain/configure_windows_release.sh build
       # Before the build, not after: unlike the macOS and Linux jobs (whose
       # `just build` is one step) this one can catch a lost window backend
       # without first paying the ~40 min LTO link.
       - name: Verify the Canvas window backend is in this build
-        run: misc/verify_canvas_window.sh build
+        run: misc/aot_axes/verify_canvas_window.sh build
       # Only `culebra` (+ its embedded runtime archives): the default `all`
       # pulls in POSIX-only test targets.
       - name: Build
@@ -293,7 +293,7 @@ jobs:
       # the user does not have. Same script — and so the same allowlist — as
       # ci.yml's two Windows link checks, so this gate cannot end up weaker.
       - name: Verify standalone binary (only system DLLs)
-        run: misc/verify_standalone_exe.sh build/culebra.exe
+        run: misc/windows_toolchain/verify_standalone_exe.sh build/culebra.exe
       # Both features self-disable in CMake when their headers are missing, and
       # a disabled Webview *shrinks* the import set, so the check above passes
       # and the asset ships without it. The archive exists only if the binding
@@ -315,7 +315,7 @@ jobs:
       # unable to say why. ci.yml checks its own build the same way; this
       # checks the one that actually gets uploaded.
       - name: Verify the asset carries its own linker
-        run: misc/verify_inprocess_lld.sh ./build/culebra.exe
+        run: misc/windows_toolchain/verify_inprocess_lld.sh ./build/culebra.exe
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -348,7 +348,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           MSYS2_PATH_TYPE: inherit
         run: |
-          assets=$(misc/pack_windows_toolchain.sh kit "${TAG#v}" ./build/culebra.exe)
+          assets=$(misc/windows_toolchain/pack_windows_toolchain.sh kit "${TAG#v}" ./build/culebra.exe)
           gh release upload "$TAG" --clobber $assets
 
   # One file the user can `sha256sum -c` against every asset at once. Reads the

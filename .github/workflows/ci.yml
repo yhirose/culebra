@@ -463,7 +463,7 @@ jobs:
       # only the run. (Ubuntu self-disables it for want of gtk4/webkitgtk,
       # where `Webview` is then an undefined name — skip rather than pretend.)
       - name: Smoke — Webview window + event loop (vm / JIT)
-        run: misc/probe_webview_window.sh ./build/culebra
+        run: misc/aot_axes/probe_webview_window.sh ./build/culebra
 
       # The driver is dead-stripped (CMakeLists, -Wl,-dead_strip) and the AOT
       # link is where ld64 has the most to get wrong about it: materialize the
@@ -575,7 +575,7 @@ jobs:
       # nothing it exists for. Same script release.yml runs on its assets, so
       # the two cannot end up asserting different cache entries.
       - name: Verify the window backend is actually in this build
-        run: misc/verify_canvas_window.sh build
+        run: misc/aot_axes/verify_canvas_window.sh build
 
       # The coexistence requirement: a window-enabled binary must still take the
       # headless path on demand, byte-identically, on every engine — the
@@ -599,7 +599,7 @@ jobs:
           exit $fail
 
       - name: AOT link + run (Canvas force-load axis)
-        run: misc/probe_canvas_aot_link.sh ./build/culebra .
+        run: misc/aot_axes/probe_canvas_aot_link.sh ./build/culebra .
 
       # The only step that exercises raylib itself: window creation, a present,
       # and teardown against Xvfb's software GL. Everything above passes on a
@@ -697,7 +697,7 @@ jobs:
         run: ccache -s || true
 
       - name: Verify the window backend is actually in this build
-        run: misc/verify_canvas_window.sh build
+        run: misc/aot_axes/verify_canvas_window.sh build
 
       # A window-enabled binary must still take the headless path on demand,
       # byte-identically, on every engine. Set explicitly — the binary is
@@ -720,7 +720,7 @@ jobs:
           exit $fail
 
       - name: AOT link + run (Canvas force-load axis)
-        run: misc/probe_canvas_aot_link.sh ./build/culebra .
+        run: misc/aot_axes/probe_canvas_aot_link.sh ./build/culebra .
 
       # The packaging release.yml runs on this binary — the macOS branch of the
       # script (shasum, the tarball) otherwise runs only under a `v*` tag, and
@@ -735,7 +735,7 @@ jobs:
   # OFF, so until this job nothing built it anywhere — the wrap binding, the
   # culebra_rt_scene archive and the CULEBRA_SCENE_LINK fragment compiled in no
   # lane, and the axis was as verified as the last time someone ran it by hand.
-  # It is also the only place tools/check_rt_archive_tls.sh ever sees that
+  # It is also the only place tools/checks/check_rt_archive_tls.sh ever sees that
   # archive, which is the ratchet standing behind the Windows twin below.
   #
   # Rendering is checked here and nowhere else. Scene has no headless mode —
@@ -802,20 +802,20 @@ jobs:
       # the namespace off, having proved nothing it exists for. Same script the
       # Windows lane runs, for the reason its Canvas and Webview siblings exist.
       - name: Verify Scene is actually in this build
-        run: misc/verify_scene_axis.sh build-scene
+        run: misc/aot_axes/verify_scene_axis.sh build-scene
 
       # The only step that enters raylib's window, GL and shader path. One X
       # server for both engines; the probe is what knows there are two.
       - name: Render a frame (Xvfb, vm / JIT)
         run: |
           LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a \
-            misc/probe_scene_window.sh ./build-scene/culebra
+            misc/aot_axes/probe_scene_window.sh ./build-scene/culebra
 
       # Display-free by construction (the Scene call sits under `if false`), so
       # what it reports is the link: the force-load of libculebra_rt_scene.a
       # beside the core archive. Its Windows twin is the same script.
       - name: AOT link + run (Scene force-load axis)
-        run: misc/probe_scene_aot_link.sh ./build-scene/culebra
+        run: misc/aot_axes/probe_scene_aot_link.sh ./build-scene/culebra
 
       # The archive Scene adds is one of the three that reach wrap.h, so it can
       # leave a `culebra_runtime_*` helper the compiler declined to inline
@@ -823,7 +823,7 @@ jobs:
       # it is a failed link, which is why the count is ratcheted here rather
       # than discovered on Windows.
       - name: Runtime archive discipline (with the Scene archive present)
-        run: tools/check_rt_archive_tls.sh build-scene
+        run: tools/checks/check_rt_archive_tls.sh build-scene
 
   # Linux is the only platform where culebra has to find the WebView engine
   # itself (macOS links a system framework; Windows lets webview.h's own loader
@@ -875,14 +875,14 @@ jobs:
       # Without this every step below still passes, against a build with no
       # Webview in it at all — this job would prove nothing and say so in green.
       - name: Verify the Webview axis is actually in this build
-        run: misc/verify_webview_axis.sh build
+        run: misc/aot_axes/verify_webview_axis.sh build
 
       # The load-time contract, for the driver and for a `culebra build` output:
       # no engine in DT_NEEDED, no forwarder in .dynsym. This is the property
       # that lets one Linux binary carry Webview and still start on a machine
       # with no desktop stack, so it is checked before anything opens a window.
       - name: Webview dynload ratchet
-        run: tools/check_webview_dynload.sh build
+        run: tools/checks/check_webview_dynload.sh build
 
       # The AOT axis: naming Webview has to force-load libculebra_rt_webview.a,
       # which is also where the dlopen table lives. The driver links that TU
@@ -890,7 +890,7 @@ jobs:
       # step because it needs no display: a runner whose Xvfb or WebKit sandbox
       # misbehaves should still report on everything that does not depend on one.
       - name: AOT link + run (Webview force-load axis)
-        run: misc/probe_webview_aot_link.sh ./build/culebra
+        run: misc/aot_axes/probe_webview_aot_link.sh ./build/culebra
 
       # Ubuntu 24.04's AppArmor lets an unconfined binary *create* an
       # unprivileged user namespace but denies capability use inside it. That is
@@ -940,7 +940,7 @@ jobs:
           # assignment and takes the probe's output — the only thing worth
           # having when this fails — with it.
           rc=0
-          out=$(xvfb-run -a misc/probe_webview_window.sh ./build/culebra 2>&1) || rc=$?
+          out=$(xvfb-run -a misc/aot_axes/probe_webview_window.sh ./build/culebra 2>&1) || rc=$?
           echo "$out"
           if [ "$rc" -ne 0 ]; then
             echo "--- environment, for a failure that is the runner's and not the probe's ---"
@@ -1107,7 +1107,7 @@ jobs:
       # Prove the "runs on a plain Windows box" claim. The allowlist lives in
       # the script, shared with windows-aot-build and the release build.
       - name: Verify standalone binary (only system DLLs)
-        run: misc/verify_standalone_exe.sh build-win/culebra.exe
+        run: misc/windows_toolchain/verify_standalone_exe.sh build-win/culebra.exe
 
       - name: Smoke test (interp runs a script + core stdlib)
         run: |
@@ -1264,7 +1264,7 @@ jobs:
   # truncates on a download. That gate is the compiler saying so, without
   # paying for a build: -fsyntax-only over the two TUs that pull in every
   # header, with -Wconversion narrowed to the one diagnostic that means
-  # "64-bit value into a 32-bit type". tools/check_long_width.sh is the local
+  # "64-bit value into a 32-bit type". tools/checks/check_long_width.sh is the local
   # half of the same guard.
   windows-jit-build:
     runs-on: windows-latest
@@ -1455,7 +1455,7 @@ jobs:
             -DCULEBRA_DEV_NO_RT=OFF \
             -DCULEBRA_LTO=OFF
       - name: Syntax-check for 64-bit values landing in 32-bit types
-        run: misc/check_llp64_width.sh build-width
+        run: misc/windows_toolchain/check_llp64_width.sh build-width
 
   # Windows AOT (`culebra build`): stand up native single-.exe generation on
   # Win64. Unlike the JIT job this builds WITH the runtime archives embedded
@@ -1503,7 +1503,7 @@ jobs:
             mingw-w64-ucrt-x86_64-lld
             git
             zip
-      # clang++ and lld are what misc/configure_windows_release.sh and the AOT
+      # clang++ and lld are what misc/windows_toolchain/configure_windows_release.sh and the AOT
       # link use (see the script for why not g++/GNU ld); the gcc package stays
       # installed because clang's libstdc++ and libgcc are its.
       - name: Toolchain versions
@@ -1542,10 +1542,10 @@ jobs:
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
           CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
-        run: misc/configure_windows_release.sh build-win-aot
+        run: misc/windows_toolchain/configure_windows_release.sh build-win-aot
 
       - name: Verify the Canvas window backend is in this build
-        run: misc/verify_canvas_window.sh build-win-aot
+        run: misc/aot_axes/verify_canvas_window.sh build-win-aot
       - name: Build (culebra driver + runtime archives)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -1613,7 +1613,7 @@ jobs:
       # configuration. Fails if any absolute path outside the driver's own cache
       # reaches the link line.
       - name: Smoke — AOT link carries no build-machine path
-        run: tools/check_aot_link_portability.sh build-win-aot
+        run: tools/checks/check_aot_link_portability.sh build-win-aot
       # Long is 64-bit here too. This is the platform where it was not — `long`
       # is 32 bits under LLP64, and the interpreter carried the payload in one —
       # so the shared test runs on the one runner that can tell, across all
@@ -1633,7 +1633,7 @@ jobs:
       # Until this, six of the 215 tests/*.cul ran on Windows — the reason a
       # registration the clang/lld switch dropped reached master. ~80 s.
       - name: Test — the suite, against the known-failure list
-        run: tools/check_suite_on_windows.sh ./build-win-aot/culebra.exe
+        run: tools/checks/check_suite_on_windows.sh ./build-win-aot/culebra.exe
       - name: Test — wrap fixture (vm / JIT / AOT)
         run: |
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \
@@ -1774,7 +1774,7 @@ jobs:
           exit $fail
       # The step above proves the link; this one proves the window.
       - name: Smoke — Webview window + event loop (vm / JIT)
-        run: misc/probe_webview_window.sh ./build-win-aot/culebra.exe
+        run: misc/aot_axes/probe_webview_window.sh ./build-win-aot/culebra.exe
       # AOT regression smoke: string concat + caught-value integrity (16-byte
       # runtime helpers, sret ABI), classes, getters and callable class objects.
       # set +e so every case still runs and gets listed, but any failure is
@@ -1829,30 +1829,30 @@ jobs:
           fi
           exit $fail
       - name: Verify the JIT's helpers are all in the export table
-        run: tools/check_jit_host_symbols.sh build-win-aot/culebra.exe
+        run: tools/checks/check_jit_host_symbols.sh build-win-aot/culebra.exe
       # Last, so a link-level complaint doesn't hide the functional results
       # above. The window backend adds Win32 libraries to the link, so an
       # import it newly pulls in fails here, in a CI run, not during a release.
       - name: Verify standalone binary (only system DLLs)
-        run: misc/verify_standalone_exe.sh build-win-aot/culebra.exe
+        run: misc/windows_toolchain/verify_standalone_exe.sh build-win-aot/culebra.exe
       # The binary a downloader gets must carry its own linker, or every
       # `culebra toolchain install` below is pointless: the kit holds libraries
       # only. A build whose LLVM install lacked the lld archives configures and
       # links perfectly well, and silently falls back to needing clang++ on
       # PATH — so the property is checked, not assumed.
       - name: Verify lld is linked into this build
-        run: misc/verify_inprocess_lld.sh build-win-aot/culebra.exe --size
+        run: misc/windows_toolchain/verify_inprocess_lld.sh build-win-aot/culebra.exe --size
 
       # --- the AOT toolchain kit, end to end -------------------------------
       #
       # `culebra build` on Windows links through the lld inside culebra.exe, but
       # the mingw CRT objects and static libraries still have to come from
-      # somewhere, and a downloader has none. misc/pack_windows_toolchain.sh
+      # somewhere, and a downloader has none. misc/windows_toolchain/pack_windows_toolchain.sh
       # packs them and `culebra toolchain install` puts them where a link looks
       # — the flow a user actually walks, which nothing else in CI touches.
       #
       # These steps also keep the packing script out of release-only territory
-      # (tools/check_release_covered_by_ci.sh): release.yml runs the same
+      # (tools/checks/check_release_covered_by_ci.sh): release.yml runs the same
       # script, and both releases this project has broken were broken by a
       # command a tag was the first to execute.
       #
@@ -1881,7 +1881,7 @@ jobs:
         run: |
           version=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
           [ -n "$version" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
-          misc/pack_windows_toolchain.sh kit "$version" build-win-aot/culebra.exe
+          misc/windows_toolchain/pack_windows_toolchain.sh kit "$version" build-win-aot/culebra.exe
       # Everything below runs with a PATH built from scratch. A GitHub runner
       # is not a bare Windows box — the image ships a mingw64 at C:\mingw64 and
       # this job installed an MSYS2 — so inheriting PATH would prove nothing.
@@ -2019,7 +2019,7 @@ jobs:
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
           CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
-        run: misc/configure_windows_release.sh build-win-scene -DCULEBRA_ENABLE_SCENE=ON
+        run: misc/windows_toolchain/configure_windows_release.sh build-win-scene -DCULEBRA_ENABLE_SCENE=ON
 
       - name: Build (culebra driver + runtime archives)
         env:
@@ -2032,13 +2032,13 @@ jobs:
         run: ccache -s || true
 
       - name: Verify Scene is actually in this build
-        run: misc/verify_scene_axis.sh build-win-scene
+        run: misc/aot_axes/verify_scene_axis.sh build-win-scene
 
       # The whole point of the lane.
       - name: Smoke — AOT link with Scene force-loaded
         env:
           CULEBRA_VERBOSE: "1"
-        run: misc/probe_scene_aot_link.sh ./build-win-scene/culebra.exe
+        run: misc/aot_axes/probe_scene_aot_link.sh ./build-win-scene/culebra.exe
 
   # Regression for issue #13: Arch's `llvm` package ships only the combined
   # libLLVM.so (no per-component .a archives), which the plain

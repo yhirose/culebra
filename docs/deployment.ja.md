@@ -113,7 +113,7 @@ kitは8MBに収まります。結果として`culebra build`を使う人の合�
 84MBでなく約60MB、その代わり一度も使わない人が23MBを負担します。
 
 kitはリリース時に、バイナリの中のランタイムアーカイブをコンパイルしたのと
-同じMSYS2 UCRT64ツリーから梱包されます（`misc/pack_windows_toolchain.sh`）。
+同じMSYS2 UCRT64ツリーから梱包されます（`misc/windows_toolchain/pack_windows_toolchain.sh`）。
 両者のlibstdc++が一致することが、誰かが正しく突き合わせた結果ではなく
 構成上の帰結になるのはこのためです。kitはそのツールチェーンのC++ドライバが
 組み立てるリンカコマンドライン（`link-recipe.txt`）を記録しており、
@@ -844,7 +844,7 @@ Homebrewのprefix、MSYS2のツリー、CIランナーの依存キャッシュ�
 コマンドを渡す前に同じキャッシュへ解決します。素の`-l`のまま残すのは
 どのマシンにもあるもの — `-lz`・`-lstdc++`・`-lpthread`・OSの
 フレームワーク — だけです。断片にパスを焼き込むことはCMakeがconfigure
-時に拒否し、`tools/check_aot_link_portability.sh`が実際のリンク行を
+時に拒否し、`tools/checks/check_aot_link_portability.sh`が実際のリンク行を
 読み返して1本も無いことを証明します。他のAOTテストはすべてビルド
 ツリーの中で走るので、焼き込まれたパスがたまたま存在してしまうためです。
 

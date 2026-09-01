@@ -7,7 +7,7 @@
 // Deliberately does NOT include stdlib_jit.h: that header carries every
 // stdlib namespace's native bindings (Http, Net, ...) and their thread_local
 // state, and compiling it into a feature archive re-defines symbols the core
-// archive already owns (tools/check_rt_archive_tls.sh catches exactly this).
+// archive already owns (tools/checks/check_rt_archive_tls.sh catches exactly this).
 // culebra_runtime_println/_input live only there, so this file reaches
 // program_out()/read_stdin_line_interruptible directly instead -- the same
 // primitives those two functions are themselves built on.

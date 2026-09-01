@@ -6,7 +6,7 @@
 // live here: permission bits (Windows keeps one read-only attribute, so a
 // mode does not round-trip) and numeric uid/gid ownership (Windows has none —
 // FS.stat omits both fields there and FS.chown raises).
-// tools/windows_known_failures.txt lists this file for those reasons; what
+// tools/checks/windows_known_failures.txt lists this file for those reasons; what
 // both platforms *do* agree on stayed in test_fs.cul.
 
 let tmp_root = FS.mkdtemp("culebra_fs_posix_test_")

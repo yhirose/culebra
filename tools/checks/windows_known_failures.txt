@@ -1,0 +1,43 @@
+# tests/*.cul that do not pass on Windows yet, one per line.
+#
+# tools/checks/check_suite_on_windows.sh runs the suite under the VM executor and
+# holds the failing set to exactly this list: a new failure fails the job, and
+# so does an entry that starts passing (delete it in the same commit that fixes
+# it). Everything not listed here must pass — which is the point, because until
+# 2026-08-28 the Windows lanes ran 6 of the 215 files and a registration that
+# died in the clang/lld switch went unnoticed (see include/wrap.h).
+#
+# Grouped by cause, so the list reads as a work list rather than a tally.
+
+# --- the POSIX filesystem model, which Windows does not provide --------------
+# Split out of test_fs.cul so the rest of that file runs here, which it now
+# does in full. Two causes, both in this one file:
+#   * permission bits — Windows keeps one read-only attribute instead, so
+#     every file reads back 0o666 or 0o444 and `FS.chmod(p, 0o755)` does not
+#     round-trip through `FS.stat(p).mode`. Not a bug.
+#   * numeric uid/gid ownership — Windows has none. `FS.stat` omits both
+#     fields there and `FS.chown` raises RuntimeError, both by design.
+# What the two platforms do agree on — the owner-write bit, chmod's error
+# kinds — stayed in test_fs.cul and passes. Symlinks moved to
+# tests/test_fs_symlink.cul, which Windows runs: FS.symlink / FS.readlink /
+# FS.is_symlink go through Windows' own calls now (libstdc++'s MinGW
+# filesystem implements none of the three).
+tests/test_fs_posix.cul
+
+# --- native behaviour that differs, one test each ----------------------------
+# Proc: `Proc.run(["sh", "-c", "kill -TERM $$"])` (self-signal via a POSIX
+# shell) has no Windows equivalent — MSYS's bash emulates the signal itself
+# and TerminateProcess-based decode_child never inspects the exit code for
+# it, so `code`/`ok`/`signal` all read differently than POSIX's waitpid
+# decode. The *runtime's own* timeout-kill (`Proc.run(cmd, timeout:)`) is
+# fixed (`decode_child` now sets `signal: "SIGKILL"` when it terminates a
+# child itself) — what's still open is this one shell-self-kill probe, which
+# would need a Windows-native way to signal-and-detect, not a decode fix.
+tests/test_proc.cul
+# Sys: `Sys.set_env(name, "")` doesn't create an empty-valued variable on
+# Windows — `_putenv_s`/`SetEnvironmentVariable` both DELETE the variable
+# when given an empty value (documented Win32/CRT behavior; no workaround
+# through the standard API), so the "empty vs unset" distinction
+# `Sys.env(name, nil)` relies on cannot exist on this platform. Not a bug.
+tests/test_sys.cul
+

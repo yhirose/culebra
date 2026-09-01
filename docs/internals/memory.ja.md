@@ -146,7 +146,7 @@ Rustでaffine ownershipがuse-after-moveを防ぐように — 1箇所ずつ
 ヒープ値を生成または消費する新しいcodegenは、以下で説明する所有権
 レイヤーを必ず通らなければならない。*新しい*コードパスにおける
 素の手書きretainまたはreleaseの呼び出しは、正当な実装選択ではなく
-レビューで正当化すべき欠陥として扱われる。`tools/check_rc_discipline.sh`
+レビューで正当化すべき欠陥として扱われる。`tools/checks/check_rc_discipline.sh`
 は`jit.h`内のそうしたサイトの数をratchetし、減る一方であることを
 強制する。
 
@@ -252,7 +252,7 @@ cleanup region — そのlanding pad、その解放群、throwを先へ運ぶ
 rethrow自身のunwind edge（`emit_handler_rethrow`）で閉じられる。
 組にし忘れは、あらゆる値レベルのリークチェックからは見えない —
 座礁するのはculebraの値でなくC++の例外オブジェクトだからである。
-そこで`tools/check_eh_balance.sh`がemitされたIRを読む: handler
+そこで`tools/checks/check_eh_balance.sh`がemitされたIRを読む: handler
 のprologueだけが例外を開いてよく、すべてのrethrowはそれを閉じる
 unwind edgeを持つ。
 

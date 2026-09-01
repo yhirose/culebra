@@ -466,7 +466,7 @@ inline void _culebra_callback_type_precheck(int8_t fn_tag, int64_t fn_data,
 // Owns one terminal drain over an iterator (docs §18.5): resolves the
 // protocol closures once, pulls via `pull()`, and guarantees the iterator's
 // dispose() runs exactly once on every exit — drain, early exit, or unwind.
-// Every terminal goes through this (the ratchet in tools/check_iter_wiring.sh
+// Every terminal goes through this (the ratchet in tools/checks/check_iter_wiring.sh
 // pins raw `_iter_pull` loops to the audited set), so the runtime helper is
 // the single choke point covering all call shapes for all three backends.
 //

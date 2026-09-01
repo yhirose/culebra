@@ -1085,7 +1085,7 @@ per-function cleanup slot for the call's duration. `memory.md` §4 is the
 full account. Cleanup pads are built by `JIT::CleanupPad`, whose
 destructor emits the edge that continues the unwind, so a region cannot
 be opened without being continued; only a handler prologue opens the
-exception (`emit_handler_prologue`), and `tools/check_eh_balance.sh`
+exception (`emit_handler_prologue`), and `tools/checks/check_eh_balance.sh`
 verifies that over the emitted IR.
 
 ### 7.2 Unwind shape
@@ -1235,7 +1235,7 @@ rather than merely linking it.
 The AOT runtime archives (`libculebra_rt*.a`, `src/runtime/`) compile the
 same headers as the driver into a library a built program links; the
 `culebra_runtime_*` symbol set the lowering names must exist in both
-(`tools/check_jit_host_symbols.sh`, `tools/check_rt_archive_tls.sh`).
+(`tools/checks/check_jit_host_symbols.sh`, `tools/checks/check_rt_archive_tls.sh`).
 
 The Playground (`playground/wasm_main.cc`, built with `em++`) is the
 executor on wasm. Two platform facts shape it. A `Runtime` is created per
@@ -1281,10 +1281,10 @@ check, used by the Windows CI jobs.
 - **IR diffing.** A refactor that must not change codegen is verified by
   `--jit -O0 --emit-llvm` over all of `tests/*.cul` before and after,
   byte-identical, stderr included.
-- `tools/check_eh_balance.sh` (every `__cxa_begin_catch` is closed; no
-  rethrow without an unwind edge), `tools/check_alloca_discipline.sh`
+- `tools/checks/check_eh_balance.sh` (every `__cxa_begin_catch` is closed; no
+  rethrow without an unwind edge), `tools/checks/check_alloca_discipline.sh`
   (scratch slots stay in the entry block — a non-entry `alloca` in a loop
-  grows the stack every pass), `tools/check_rc_discipline.sh` (the count
+  grows the stack every pass), `tools/checks/check_rc_discipline.sh` (the count
   of hand-placed retain/release sites in `jit.h` may only shrink).
 - **Asserts.** Three invariants no output can betray ride the assert
   lane (`just test-assert`, CI's `linux-assert`), which runs the whole

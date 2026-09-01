@@ -33,7 +33,7 @@
 // the GTK and GLib half, while WEBKIT_API/JSC_API pin their own declarations to
 // default visibility and ignore it — but the link publishes only `culebra_*`
 // (cmake/exported_symbols.txt, via --dynamic-list), and an AOT link has no
-// engine DSO left to export anything for. tools/check_webview_dynload.sh holds
+// engine DSO left to export anything for. tools/checks/check_webview_dynload.sh holds
 // both ends of that.
 
 #include <dlfcn.h>

@@ -6031,22 +6031,22 @@ The table above is maintained by hand and points at chapters. Two
 finer questions are held by ratchets instead.
 
 Whether an individual section states a rule that nothing executes:
-`tools/check_spec_examples.sh` counts the sections of this document
+`tools/checks/check_spec_examples.sh` counts the sections of this document
 with no runnable ` ```culebra ` block (one not marked
 `# doctest: skip`, since `just doctest` runs the rest on both
 engines) and compares them against
-`tools/spec_unpinned_sections.txt`. A section that loses its example,
+`tools/checks/spec_unpinned_sections.txt`. A section that loses its example,
 or a new one that never had one, fails the check; a listed section
 that gains one fails it too, so the file only shrinks.
 
 Whether an individual `Ns.fn` the stdlib reference documents, or a
 grammar keyword, has a durable caller at all:
-`tools/check_api_coverage.sh` reads the signature index generated
+`tools/checks/check_api_coverage.sh` reads the signature index generated
 into `docs/quick-guide.md` and the keyword set parsed out of the PEG
 grammar, and checks each name against `tests/*.cul`, `tests/*.sh` and
 the doctest blocks `just doctest` runs. A documented name with no
 caller anywhere fails the check unless it is filed in
-`tools/api_untested.txt`; a filed name that gains one fails too, so
+`tools/checks/api_untested.txt`; a filed name that gains one fails too, so
 the file only shrinks.
 
 Both run as part of `check-generated`, so `just test-dev` and CI both

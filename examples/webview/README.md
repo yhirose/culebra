@@ -64,7 +64,7 @@ So a machine with no engine gets the same failure everywhere, at the same
 point: `Webview.Window.new()` raises `webview: failed to create window`. A
 program that never opens a window is unaffected on all three.
 
-`tools/check_webview_dynload.sh` (in the `just test` gate) holds the Linux end
+`tools/checks/check_webview_dynload.sh` (in the `just test` gate) holds the Linux end
 of that: neither the driver nor a `culebra build` output may carry the engine in
 `DT_NEEDED`, and neither may export the forwarders — exported, they would
 interpose on GTK's and WebKit's own internal calls once dlopen loads them.

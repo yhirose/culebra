@@ -228,7 +228,7 @@ bool load_recipe(const fs::path& kit, Recipe& out, std::string& err) {
     if (line == "--- SUFFIX") { section = 2; continue; }
     if (line.starts_with("TARGET ")) { out.target = line.substr(7); continue; }
     // @KIT@ is how a kit names its own files without naming the machine that
-    // packed it (misc/pack_windows_toolchain.sh checks that nothing else does).
+    // packed it (misc/windows_toolchain/pack_windows_toolchain.sh checks that nothing else does).
     for (size_t at = line.find("@KIT@"); at != std::string::npos;
          at = line.find("@KIT@", at + kits.size()))
       line.replace(at, 5, kits);

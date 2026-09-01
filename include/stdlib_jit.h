@@ -4299,7 +4299,7 @@ inline JitValue _ns_global_grid(JitValue* a, int64_t) {
 // inside the preamble names the preamble's own line, and reaching one frame
 // out would need a call stack neither backend keeps. Narrowing which
 // `assert_true` in a file failed used to mean instrumenting the file and
-// running it (see tools/windows_known_failures.txt's history).
+// running it (see tools/checks/windows_known_failures.txt's history).
 //
 // Each one dispatches through the same operator helper the plain expression
 // lowers to, so a user `__eq__` / `__lt__` / `cmp` is honored exactly as
@@ -7646,7 +7646,7 @@ inline JitValue _ns_peg_test(JitValue* a, int64_t) {
 // Composed from JitOwnedVal rather than holding a bare JitValue: every
 // retain/release this needs already exists on that RAII type (jit_runtime.h),
 // so copying, assigning and destroying a JitAny adds no new hand-placed RC
-// call for the ratchet in tools/check_rc_discipline.sh to count.
+// call for the ratchet in tools/checks/check_rc_discipline.sh to count.
 //===------------------------------------------------------------------------//
 struct JitAny {
   JitOwnedVal v;
@@ -7658,7 +7658,7 @@ struct JitAny {
   // action-reduction chain is moved, never copied — see _peg_unbox/RuleAction
   // there, and _jit_peg_take_value below). Duplicating an owned reference has
   // no path that skips a retain, hand-placed or through the from_borrowed
-  // seam — both are counted by tools/check_rc_discipline.sh — so this is the
+  // seam — both are counted by tools/checks/check_rc_discipline.sh — so this is the
   // one the ratchet has to see; nothing else in this feature adds another.
   JitAny(const JitAny& o) : v(TAG_NIL, 0) {
     JitValue val = o.v.borrow();

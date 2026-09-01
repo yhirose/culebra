@@ -43,7 +43,7 @@ struct FetchOptions {
 //
 // Defined in src/main.cc rather than beside its caller: http.h carries `inline
 // thread_local` handle registries that exactly one driver TU may instantiate
-// (mingw's ld fails the link on a second — tools/check_rt_archive_tls.sh), and
+// (mingw's ld fails the link on a second — tools/checks/check_rt_archive_tls.sh), and
 // main.cc is that TU. Declaring it across this seam is what lets the toolchain
 // installer share the Http namespace's client instead of building a second one.
 bool fetch_url(const std::string& url, const FetchOptions& opts,

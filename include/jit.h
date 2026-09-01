@@ -1403,7 +1403,7 @@ struct JIT {
     // another releaser for every CFG edge the raw can cross (a batch handoff
     // into mutually-exclusive dispatch arms, a region-scope slot that owns
     // the value) — justify each call site in a comment; the count is
-    // ratcheted by tools/check_rc_discipline.sh.
+    // ratcheted by tools/checks/check_rc_discipline.sh.
     llvm::Value* consume_unchecked() {
       assert(!consumed_ && "Owned value consumed twice");
       consumed_ = true;

@@ -280,7 +280,7 @@ static std::string shq(std::string_view s) {
 // (libstdc++/exceptions), so drive the link with a mingw C++ driver to pull the
 // right default libs — UCRT64's `clang++`, linking through lld (win_static).
 // The clang/lld pair, not g++/GNU ld, because that is the only combination a PE
-// dead-strip works under; misc/configure_windows_release.sh, which builds the
+// dead-strip works under; misc/windows_toolchain/configure_windows_release.sh, which builds the
 // archive with the same pair, is where that is written down. The produced .exe
 // is statically linked (see win_static) so it runs on a bare Windows like the
 // driver itself.
@@ -649,7 +649,7 @@ bool is_archive_name(std::string_view tok) {
 }
 
 // The toolchain-side link surface, one `<axis>\t<flags>` row per line, for
-// misc/pack_windows_toolchain.sh. The packer has to resolve every library a
+// misc/windows_toolchain/pack_windows_toolchain.sh. The packer has to resolve every library a
 // `culebra build` on this host could ask a toolchain for; asking the binary
 // means the answer comes from the same CMake fragments the link itself splices,
 // so an axis that gains an import library cannot leave the kit behind. @name@
@@ -883,7 +883,7 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
       std::exit(0);
     } else if (arg == "--print-link-axes") {
       // Undocumented on purpose: this is the kit packer's way of asking what a
-      // link needs here, not a user-facing knob (misc/pack_windows_toolchain.sh).
+      // link needs here, not a user-facing knob (misc/windows_toolchain/pack_windows_toolchain.sh).
       print_link_axes(cout);
       std::exit(0);
     } else if (arg.starts_with("-")) {
