@@ -918,6 +918,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
   _pending_save_stack.push_back({rt.pending_error, rt.pending_kind,
                                  rt.pending_msg, rt.pending_line,
                                  rt.pending_col});
+  // The guarded call runs over an *empty* carrier. A stale is_throw makes
+  // try_translate hand a handler inside the callee the in-flight payload
+  // instead of the callee's own trap; a stale pending_error leaks the outer
+  // trap into it. The snapshot owns both until the restore.
+  rt.is_throw = 0;
+  rt.pending_error = 0;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
@@ -1003,6 +1009,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_push(int8_t tag,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark) {
   auto& s = _culebra_defer_stack();
+  if (static_cast<int64_t>(s.size()) <= mark) return;
+  // This may be the unwind path's defer run, with an exception in flight.
+  // The carrier is a plain global, so a defer body that throws and catches
+  // internally would consume the in-flight payload -- the outer handler then
+  // reads an empty carrier and a caught throw degrades to "foreign",
+  // surfacing as uncaught. Snapshot around the whole run, exactly like the
+  // for-in dispose save/restore above (and with its machinery).
+  int8_t sflag, stag;
+  int64_t sdata;
+  culebra_runtime_save_thrown(&sflag, &stag, &sdata);
   while (static_cast<int64_t>(s.size()) > mark) {
     auto v = s.back();
     s.pop_back();
@@ -1018,10 +1034,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
         s.pop_back();
         _culebra_value_release_impl(rem.tag, rem.data);
       }
+      // The defer's own throw replaces the in-flight payload: abandon the
+      // snapshot (drop its retain, pop its pending frame) rather than
+      // restoring it over the replacement.
+      if (sflag) _culebra_value_release_impl(stag, sdata);
+      _pending_save_stack.pop_back();
       throw;
     }
     _culebra_value_release_impl(v.tag, v.data);
   }
+  culebra_runtime_restore_thrown(sflag, stag, sdata);
 }
 
 inline const char* _culebra_tag_name(int8_t tag) {

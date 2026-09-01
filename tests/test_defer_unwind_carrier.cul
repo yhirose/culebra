@@ -1,0 +1,104 @@
+# The thrown-value carrier must survive a defer that runs during unwinding.
+# The carrier is runtime-global, so a defer body that throws and catches
+# internally used to consume the in-flight payload: the outer handler then
+# read an empty carrier, the caught throw degraded to "foreign", and the
+# original exception surfaced as uncaught (defer_run_to now snapshots around
+# the run, like for-in dispose always did). Pinned on both backends.
+
+# --- an inner-block defer that only observes: outer catch still gets it ---
+mut log = []
+try {
+  {
+    defer { log.push('d') }
+    throw 'orig'
+  }
+} catch e {
+  log.push("caught {e}")
+}
+assert_eq(log, ['d', 'caught orig'])
+
+# --- THE ONE THAT WAS LOST: the defer's own try/catch, closed inside the
+#     defer, must be invisible to the unwind in progress ---
+log = []
+try {
+  {
+    defer {
+      try { throw 'inner' } catch e { log.push("defer self-caught {e}") }
+      log.push('defer completed')
+    }
+    throw 'original'
+  }
+} catch e {
+  log.push("outer caught {e}")
+}
+assert_eq(log, ['defer self-caught inner', 'defer completed',
+                'outer caught original'])
+
+# --- same, with a runtime error (the pending carrier, not is_throw) in
+#     flight: the snapshot has to bridge both carriers ---
+log = []
+try {
+  {
+    defer {
+      try { throw 'inner' } catch e { log.push('defer self-caught') }
+    }
+    let x = 1 / 0
+  }
+} catch e {
+  log.push("outer caught {e.kind}")
+}
+assert_eq(log, ['defer self-caught', 'outer caught ZeroDivisionError'])
+
+# --- and with a trap raised (and caught) inside the defer, below a call ---
+log = []
+let trap_deep = fn () {
+  let boom = fn () { 1 / 0 }
+  try { boom() } catch e { log.push("defer caught {e.kind}") }
+}
+try {
+  {
+    defer { trap_deep() }
+    throw 'original2'
+  }
+} catch e {
+  log.push("outer caught {e}")
+}
+assert_eq(log, ['defer caught ZeroDivisionError', 'outer caught original2'])
+
+# --- ordering pin: a try-body defer runs before the handler on the throw
+#     path ---
+log = []
+try {
+  defer { log.push('defer ran') }
+  throw 'x'
+} catch e {
+  log.push("handler {e}")
+}
+assert_eq(log, ['defer ran', 'handler x'])
+
+# --- a during-unwind defer throw replaces the original and propagates to
+#     the caller's handler ---
+log = []
+let g = fn () {
+  {
+    defer { throw 'from-defer' }
+    throw 'original'
+  }
+}
+try { g() } catch e { log.push("caller caught {e}") }
+assert_eq(log, ['caller caught from-defer'])
+
+# --- normal-exit pin: a defer throwing at its block's fall-through exit
+#     escapes the block's own try and lands in the enclosing one ---
+log = []
+try {
+  try {
+    defer { throw 'defer-at-exit' }
+    log.push('try body done')
+  } catch e {
+    log.push('inner caught (must not happen)')
+  }
+} catch e {
+  log.push("outer caught {e}")
+}
+assert_eq(log, ['try body done', 'outer caught defer-at-exit'])
