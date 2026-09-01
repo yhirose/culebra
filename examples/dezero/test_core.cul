@@ -176,3 +176,60 @@ fn sum_over_an_axis_broadcasts_the_gradient_back_correctly() {
   Tensor.eval(x.grad.data)
   assert_eq(x.grad.data.to_array(), [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
 }
+
+@test
+fn sum_keepdims_keeps_the_reduced_axis_and_still_backprops() {
+  # Regression: `Sum.forward`'s `y = ...; if keepdims { y = y.reshape(...) }`
+  # reassigned `y` without `mut` -- silently unreachable until something
+  # (Softmax.backward, below) called dz.sum(..., true) for the first time.
+  x = dz.Variable(Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+  s = dz.sum(x, 1, true)
+  Tensor.eval(s.data)
+  assert_eq(s.data.to_array(), [[6.0], [15.0]])
+  s.sum().backward()
+  Tensor.eval(x.grad.data)
+  assert_eq(x.grad.data.to_array(), [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
+}
+
+@test
+fn narrow_slices_any_axis_and_backprop_zero_pads_outside_the_window() {
+  x = dz.Variable(Tensor.from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]))
+  y = dz.narrow(x, 1, 1, 3)
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), [[2.0, 3.0], [6.0, 7.0]])
+  y.sum().backward()
+  Tensor.eval(x.grad.data)
+  assert_eq(
+    x.grad.data.to_array(),
+    [[0.0, 1.0, 1.0, 0.0], [0.0, 1.0, 1.0, 0.0]],
+  )
+}
+
+@test
+fn concat2_is_narrows_own_inverse() {
+  a = dz.Variable(Tensor.from([[1.0, 2.0], [3.0, 4.0]]))
+  b = dz.Variable(Tensor.from([[5.0], [6.0]]))
+  y = dz.concat2(a, b, 1)
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), [[1.0, 2.0, 5.0], [3.0, 4.0, 6.0]])
+
+  y.sum().backward()
+  Tensor.eval(a.grad.data, b.grad.data)
+  assert_eq(a.grad.data.to_array(), [[1.0, 1.0], [1.0, 1.0]])
+  assert_eq(b.grad.data.to_array(), [[1.0], [1.0]])
+}
+
+@test
+fn where_routes_gradient_through_the_selected_side_only() {
+  cond = Tensor.from([1.0, 0.0, 1.0])
+  a = dz.Variable(Tensor.from([1.0, 2.0, 3.0]))
+  b = dz.Variable(Tensor.from([10.0, 20.0, 30.0]))
+  y = dz.where_(cond, a, b)
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), [1.0, 20.0, 3.0])
+
+  y.sum().backward()
+  Tensor.eval(a.grad.data, b.grad.data)
+  assert_eq(a.grad.data.to_array(), [1.0, 0.0, 1.0])
+  assert_eq(b.grad.data.to_array(), [0.0, 1.0, 0.0])
+}

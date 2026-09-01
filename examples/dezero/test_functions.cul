@@ -162,3 +162,42 @@ fn accuracy_counts_matching_argmax_rows() {
   acc = F.accuracy(y, [1, 0, 0])
   assert_close(item(acc), 2.0 / 3.0, 1.0e-6)
 }
+
+@test
+fn rope_matches_tensor_ropes_native_kernel_and_backprops() {
+  # Same [1,4] input/pos/base as tests/test_tensor.cul's own
+  # `.rope()` case, so both the composed (dezero) and fused (native)
+  # implementations of half-split RoPE are checked against one shared
+  # set of hand-computed values.
+  x_raw = Tensor.from([[1.0, 2.0, 3.0, 4.0]])
+  x = dz.Variable(x_raw)
+  y = F.rope(x, 1, 10000.0)
+  Tensor.eval(y.data)
+  expected = x_raw.rope(1, 10000.0).to_array()
+  assert_close(y.data.to_array()[0][0], expected[0][0], 1.0e-6)
+  assert_close(y.data.to_array()[0][1], expected[0][1], 1.0e-6)
+  assert_close(y.data.to_array()[0][2], expected[0][2], 1.0e-6)
+  assert_close(y.data.to_array()[0][3], expected[0][3], 1.0e-6)
+
+  # Backprop reaches every input element (rotation mixes every pair, so no
+  # element's gradient can be structurally zero here).
+  y.sum().backward()
+  Tensor.eval(x.grad.data)
+  g = x.grad.data.to_array()[0]
+  for v in g {
+    assert_true(v != 0.0)
+  }
+}
+
+@test
+fn rope_pos_zero_is_the_identity_for_a_single_row() {
+  # position=0 rotates every pair by angle 0 regardless of theta -- but
+  # only row 0 sits at position 0: unlike Tensor.rope's own [H, D]-at-T=1
+  # convention (every row a different head at the *same* time step, see
+  # F.rope's own doc comment), a rank-2 input here is one sequence, so a
+  # second row would sit at position 1, not 0. Single row sidesteps that.
+  x = dz.Variable(Tensor.from([[1.0, 2.0, 3.0, 4.0]]))
+  y = F.rope(x, 0, 10000.0)
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), x.data.to_array())
+}

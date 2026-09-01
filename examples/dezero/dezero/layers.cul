@@ -286,4 +286,106 @@ class LayerNorm {
   }
 }
 
-export {cleargrads, Linear, RNN, LSTM, EmbedID, BatchNorm, LayerNorm}
+# --- causal multi-head self-attention + GPT decoder block ------------------
+#
+# A from-scratch GPT block: no encoder cross-attention, single sequence at
+# a time (`x` is `[T, n_embd]`, no leading batch axis -- `LayerNorm` above
+# already generalizes to `[N, T, D]`, but batching the attention itself
+# needs a per-(batch,head) transpose of only the last two axes, which
+# `dz.transpose(x, axes)` doesn't actually implement yet: `raw_transpose`
+# ignores any `axes` other than `nil`/`[1, 0]` and silently no-ops instead
+# -- a latent gap in core.cul, not something this block works around).
+#
+# `causal_mask(t)`: 1.0 where key position j <= query position i, else 0.0
+# -- `Tensor.where(mask, scores, -1e9)` before softmax is the masking idiom
+# examples/dezero/examples/gpu_kernels_bench.cul already benchmarks
+# (`where_nd`'s own concrete caller).
+fn causal_mask(t) {
+  Tensor.from(range(t)
+    .map(|i| range(t).map(|j| j <= i ? 1.0 : 0.0).collect())
+    .collect())
+}
+
+class MultiHeadAttention {
+  new(n_embd, n_head, rope_base = 10000.0) {
+    self.n_head = n_head
+    self.head_dim = n_embd / n_head
+    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
+    self.rope_base = rope_base
+    self.wq = Linear(n_embd, true, n_embd)
+    self.wk = Linear(n_embd, true, n_embd)
+    self.wv = Linear(n_embd, true, n_embd)
+    self.wo = Linear(n_embd, true, n_embd)
+  }
+
+  forward(x) {
+    v = dz.as_variable(x)
+    t = v.shape[0]
+    q = self.wq(v)
+    k = self.wk(v)
+    val = self.wv(v)
+    mask = causal_mask(t)
+
+    mut head_outs = []
+    for h in 0..self.n_head {
+      hs = h * self.head_dim
+      he = hs + self.head_dim
+      q_h = F.rope(dz.narrow(q, 1, hs, he), 0, self.rope_base)
+      k_h = F.rope(dz.narrow(k, 1, hs, he), 0, self.rope_base)
+      v_h = dz.narrow(val, 1, hs, he)
+
+      scores = dz.matmul(q_h, dz.transpose(k_h)) * self.scale  # [T, T]
+      weights = F.softmax(dz.where_(mask, scores, -1.0e9), 1)
+      head_outs.push(dz.matmul(weights, v_h))  # [T, head_dim]
+    }
+
+    mut x_attn = head_outs[0]
+    for i in 1..self.n_head {
+      x_attn = dz.concat2(x_attn, head_outs[i], 1)
+    }
+    self.wo(x_attn)
+  }
+
+  __call__(x) {
+    self.forward(x)
+  }
+
+  params() {
+    self.wq.params() + self.wk.params() + self.wv.params() + self.wo.params()
+  }
+}
+
+class GPTBlock {
+  new(n_embd, n_head, mlp_ratio = 4, rope_base = 10000.0) {
+    self.ln1 = LayerNorm()
+    self.attn = MultiHeadAttention(n_embd, n_head, rope_base)
+    self.ln2 = LayerNorm()
+    self.fc1 = Linear(mlp_ratio * n_embd)
+    self.fc2 = Linear(n_embd)
+  }
+
+  forward(x) {
+    v = dz.as_variable(x)
+    x1 = v + self.attn(self.ln1(v))
+    h = F.gelu(self.fc1(self.ln2(x1)))
+    x1 + self.fc2(h)
+  }
+
+  __call__(x) {
+    self.forward(x)
+  }
+
+  params() {
+    self.ln1.params() +
+      self.attn.params() +
+      self.ln2.params() +
+      self.fc1.params() +
+      self.fc2.params()
+  }
+
+  cleargrads() {
+    cleargrads(self)
+  }
+}
+
+export {cleargrads, Linear, RNN, LSTM, EmbedID, BatchNorm, LayerNorm, MultiHeadAttention, GPTBlock}

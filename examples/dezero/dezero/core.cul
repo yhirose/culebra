@@ -406,7 +406,7 @@ class Sum {
 
   forward(x) {
     self.x_shape = x.shape()
-    y = if self.axis == nil {
+    mut y = if self.axis == nil {
       Tensor.from([x.sum()])
     } else {
       x.sum(self.axis)
@@ -767,4 +767,111 @@ fn min_(x, axis = nil, keepdims = false) {
   apply1(Min(axis, keepdims), x)
 }
 
-export {Variable, Parameter, as_array, as_variable, no_grad, test_mode, is_training, apply1, apply2, add, sub, mul, neg, div, pow_, reshape, transpose, sum, sum_to, broadcast_to, matmul, max_, min_, raw_sum_to, raw_broadcast_to, map_nested, zip_nested, raw_elementwise, insert_axis}
+# --- narrow (any-axis slice) -------------------------------------------------
+#
+# `.slice()` (axis 0 only) already has a native VJP; `.narrow()` (any axis)
+# doesn't (see stdlib.md's forward-only list), so this hand-derives one.
+# The gradient scatters gy back into a zero buffer of the input's own shape
+# at the same window -- exactly `.pad()`'s job. `.pad()` is itself
+# forward-only, but that's fine here: backward only needs to produce a raw
+# gradient *value*, not a further differentiable node, same reasoning as
+# Max/Min's backward above calling raw Tensor ops directly.
+
+class Narrow {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(axis, start, end) {
+    self.axis = axis
+    self.start = start
+    self.end = end
+  }
+
+  forward(x) {
+    self.x_len = x.shape()[self.axis]
+    x.narrow([self.axis, self.start, self.end])
+  }
+
+  backward(gy) {
+    after = self.x_len - self.end
+    as_variable(gy.data.pad([self.axis, self.start, after]))
+  }
+}
+
+fn narrow(x, axis, start, end) {
+  apply1(Narrow(axis, start, end), x)
+}
+
+# --- concat (narrow's inverse) -----------------------------------------------
+#
+# Two operands only (mirrors matmul/add's own apply2 arity) -- fold
+# pairwise for more than two parts. Backward slices gy back into each
+# part's own window along `axis`, raw (same reasoning as Narrow's own
+# backward above).
+
+class Concat {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(axis) {
+    self.axis = axis
+  }
+
+  forward(a, b) {
+    self.a_len = a.shape()[self.axis]
+    self.b_len = b.shape()[self.axis]
+    Tensor.concat([a, b], self.axis)
+  }
+
+  backward(gy) {
+    axis = self.axis
+    ga = as_variable(gy.data.narrow([axis, 0, self.a_len]))
+    gb = as_variable(gy.data.narrow([
+      axis,
+      self.a_len,
+      self.a_len + self.b_len,
+    ]))
+    (ga, gb)
+  }
+}
+
+fn concat2(a, b, axis = 0) {
+  apply2(Concat(axis), a, b)
+}
+
+# --- elementwise select (Tensor.where) ---------------------------------------
+#
+# `cond` gets no gradient (matches numpy/PyTorch's own where()), so it
+# rides as a plain field on the Function instance rather than a tracked
+# apply2 input -- only `a`/`b` go through the graph.
+
+class Where {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  new(cond) {
+    self.cond = cond
+  }
+
+  forward(a, b) {
+    Tensor.where(self.cond, a, b)
+  }
+
+  backward(gy) {
+    da = gy * as_variable(self.cond)
+    db = gy * as_variable(Tensor.ones(self.cond.shape()) - self.cond)
+    (da, db)
+  }
+}
+
+fn where_(cond, a, b) {
+  apply2(Where(cond), a, b)
+}
+
+export {Variable, Parameter, as_array, as_variable, no_grad, test_mode, is_training, apply1, apply2, add, sub, mul, neg, div, pow_, reshape, transpose, sum, sum_to, broadcast_to, matmul, max_, min_, narrow, concat2, where_, raw_sum_to, raw_broadcast_to, map_nested, zip_nested, raw_elementwise, insert_axis}

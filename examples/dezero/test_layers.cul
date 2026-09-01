@@ -139,3 +139,64 @@ fn layer_norm_handles_a_transformer_shaped_rank_3_input() {
   Tensor.eval(y.data)
   assert_eq(y.data.shape(), [2, 5, 8])
 }
+
+@test
+fn multi_head_attention_preserves_shape_and_backprops_to_every_projection() {
+  Random.seed(0)
+  attn = L.MultiHeadAttention(8, 2)
+  x = dz.Variable(Tensor.randn(5, 8))  # [T, n_embd], no batch axis
+  y = attn(x)
+  Tensor.eval(y.data)
+  assert_eq(y.data.shape(), [5, 8])
+
+  y.sum().backward()
+  for p in attn.params() {
+    assert_true(p.grad != nil)
+  }
+}
+
+@test
+fn multi_head_attention_is_causal() {
+  # Changing a later position's input must not change an earlier
+  # position's output -- the concrete, observable meaning of "causal".
+  Random.seed(1)
+  attn = L.MultiHeadAttention(4, 2)
+  x0 = Tensor.from([
+    [0.1, 0.2, 0.3, 0.4],
+    [0.5, 0.6, 0.7, 0.8],
+    [1.0, 1.1, 1.2, 1.3],
+  ])
+  x1 = Tensor.from([
+    [0.1, 0.2, 0.3, 0.4],
+    [0.5, 0.6, 0.7, 0.8],
+    [9.0, 9.1, 9.2, 9.3],
+  ])
+
+  y0 = attn(dz.Variable(x0))
+  Tensor.eval(y0.data)
+  y1 = attn(dz.Variable(x1))
+  Tensor.eval(y1.data)
+
+  assert_eq(y0.data.to_array()[0], y1.data.to_array()[0])
+  assert_eq(y0.data.to_array()[1], y1.data.to_array()[1])
+}
+
+@test
+fn gpt_block_preserves_shape_and_backprops_to_every_sublayer() {
+  Random.seed(0)
+  block = L.GPTBlock(8, 2)
+  x = dz.Variable(Tensor.randn(4, 8))
+  y = block(x)
+  Tensor.eval(y.data)
+  assert_eq(y.data.shape(), [4, 8])
+
+  y.sum().backward()
+  for p in block.params() {
+    assert_true(p.grad != nil)
+  }
+
+  block.cleargrads()
+  for p in block.params() {
+    assert_true(p.grad == nil)
+  }
+}

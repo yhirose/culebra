@@ -22,7 +22,8 @@ dezero/
   core.cul           Variable, Function application, operator overloads
   functions.cul       activations, losses, elementwise math
   functions_conv.cul   im2col/col2im, conv2d, deconv2d, pooling
-  layers.cul          Linear, RNN, LSTM, EmbedID, BatchNorm
+  layers.cul          Linear, RNN, LSTM, EmbedID, BatchNorm, LayerNorm,
+                      MultiHeadAttention, GPTBlock
   layers_conv.cul      Conv2d, Deconv2d
   models.cul          MLP, Sequential
   optimizers.cul       SGD, MomentumSGD, AdaGrad, AdaDelta, Adam
@@ -39,9 +40,10 @@ examples/
 rather than a numpy `ndarray`; a scalar is a 1-element `[1]` `Tensor`. This
 port's autodiff is entirely its own — it does not use `Tensor`'s native
 `requires_grad`/`.backward()`, which is a separate, unrelated feature of
-the host language. `Tensor` has no elementwise `sin`/`cos`/`tanh`/`exp` and
-no comparison operator, so those round-trip through nested Culebra Arrays;
-everything shape- and matmul-related rides `Tensor`'s native ops directly.
+the host language. Elementwise `sin`/`cos`/`tanh`/`exp`/comparisons all
+ride a native `Tensor` op directly now; `LeakyReLU`'s piecewise forward is
+the one holdout still round-tripping through a nested Culebra Array (see
+`functions.cul`'s own header comment).
 
 Culebra has no class inheritance, so `Function` and `Layer` are not base
 classes here: every op is its own class with `forward`/`backward` methods
@@ -77,6 +79,7 @@ images.
 | `mnist.cul` | MLP + Adam on the full MNIST training set (needs `just fetch-mnist`) |
 | `conv_mnist.cul` | A small CNN (conv-relu-pool ×2 + linear head) on an MNIST subset |
 | `rnn_sin.cul` | LSTM + truncated BPTT predicting the next point of a noisy sine wave |
+| `gpt_block.cul` | A from-scratch GPT decoder block (causal multi-head attention + RoPE + a gated MLP) + Adam on a tiny next-token toy task |
 
 ## Running
 
@@ -85,5 +88,6 @@ culebra examples/dezero/examples/spiral.cul
 culebra --jit examples/dezero/examples/mnist.cul        # needs `just fetch-mnist` first
 culebra --jit examples/dezero/examples/conv_mnist.cul
 culebra --jit examples/dezero/examples/rnn_sin.cul
+culebra --jit examples/dezero/examples/gpt_block.cul
 culebra test examples/dezero                             # runs every test_*.cul under here
 ```

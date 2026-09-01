@@ -1,0 +1,95 @@
+# A from-scratch GPT decoder block (causal multi-head self-attention with
+# RoPE + a gated MLP, pre-norm residuals) on dezero's own autodiff -- not
+# culebra's native Tensor autograd (see the package README for why).
+#
+# Trained here on a tiny periodic token sequence (predict "the next integer
+# mod vocab_size"), which a single correctly-wired attention layer should
+# learn in a couple dozen steps -- the point is exercising the block's
+# forward+backward end to end, not the task itself.
+#
+#   culebra examples/dezero/examples/gpt_block.cul
+#   culebra --jit examples/dezero/examples/gpt_block.cul
+
+import dz from '../dezero/core.cul'
+import F from '../dezero/functions.cul'
+import L from '../dezero/layers.cul'
+import O from '../dezero/optimizers.cul'
+
+Random.seed(0)
+
+let vocab_size = 6
+let n_embd = 16
+let n_head = 2
+let block_size = 6
+
+# seq = [0, 1, 2, 3, 4, 5, 0]; inputs predict the next token, wrapping mod
+# vocab_size -- a stand-in for "the next token" a real tokenizer would give.
+let seq = range(block_size + 1).map(|i| i % vocab_size).collect()
+let inputs = seq.slice(0, block_size)
+let targets = seq.slice(1, block_size + 1)
+
+class TinyGPT {
+  new(vocab_size, n_embd, n_head) {
+    self.embed = L.EmbedID(vocab_size, n_embd)
+    self.block = L.GPTBlock(n_embd, n_head)
+    self.head = L.Linear(vocab_size)
+  }
+
+  forward(ids) {
+    mut x = self.embed(ids)  # [T, n_embd]
+    x = self.block(x)        # [T, n_embd]
+    self.head(x)             # [T, vocab_size]
+  }
+
+  __call__(ids) {
+    self.forward(ids)
+  }
+
+  params() {
+    self.embed.params() + self.block.params() + self.head.params()
+  }
+
+  cleargrads() {
+    L.cleargrads(self)
+  }
+}
+
+let model = TinyGPT(vocab_size, n_embd, n_head)
+let optimizer = O.Adam(0.02).setup(model)
+
+let num_steps = 60
+mut first_loss = nil
+mut final_loss = 0.0
+
+for step in 0..num_steps {
+  let logits = model(inputs)
+  let loss = F.softmax_cross_entropy(logits, targets)
+  Tensor.eval(loss.data)
+
+  model.cleargrads()
+  loss.backward()
+  optimizer.update()
+
+  let l = loss.data.to_array()[0]
+  first_loss = l if first_loss == nil
+  final_loss = l
+  if step % 10 == 0 || step == num_steps - 1 {
+    inspect("step {step}: loss {l}")
+  }
+}
+
+inspect("loss went from {first_loss} to {final_loss}")
+
+# Greedy decode: feed the trained model its own predictions and see it
+# reproduce the periodic pattern it was trained on.
+inspect('--- greedy decode ---')
+mut ctx = [0]
+for _ in 0..block_size {
+  let logits = dz.no_grad(fn () {
+    model(ctx).data
+  })
+  let last_row = logits.narrow([0, ctx.size() - 1, ctx.size()])
+  let next_id = last_row.argmax(1).to_array()[0]
+  ctx.push(to_long(next_id))
+}
+inspect(ctx)

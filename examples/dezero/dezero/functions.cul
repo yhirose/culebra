@@ -510,4 +510,47 @@ fn embed_id(idx, w) {
   dz.apply1(EmbedID(idx), w)
 }
 
-export {sin, cos, tanh, exp, log, expand_dims, flatten, average, linear, sigmoid, gelu, relu, leaky_relu, softmax, log_softmax, clip, mean_squared_error, softmax_cross_entropy, sigmoid_cross_entropy, accuracy, dropout, embed_id}
+# --- rotary position embedding (RoPE) ---------------------------------------
+#
+# Half-split (GPT-NeoX / HF-llama) convention, matching Tensor.rope's own
+# native kernel exactly -- but composed from narrow/concat/mul/sub/add
+# instead of calling that fused op, since Tensor.rope has no VJP (see its
+# own doc comment in tensor.h): a training-time RoPE needs gradients to
+# flow back through Q/K's own projection weights, which falls out for free
+# here since every op this uses already has one (unlike narrow/concat
+# themselves, which core.cul had to hand-derive). `x` is [T, d] (d even),
+# one sequence -- row r sits at position `pos + r`, T = x.shape[0]. This
+# differs from Tensor.rope's own convention for a rank-2 input ([H, D],
+# T=1 -- every row a different *head* at the *same* time step, the
+# decode-time shape); a training-time forward here processes a whole
+# sequence per head instead, so row r genuinely is a different position.
+# `pos` is row 0's absolute position (a KV-cache decode step passes its
+# own cache length). Tensor.rope itself is still the right call for an
+# inference-only decode step with nothing to backprop through -- the same
+# native-fast-path-under-Tensor.no_grad pattern microgpt_tensor.cul's own
+# sampling loop already uses for softmax.
+fn rope_freqs(pos, seq_len, half, d, base) {
+  pos_vals = range(seq_len).map(|i| to_float(pos + i)).collect()
+  positions = Tensor.from(pos_vals).reshape([seq_len, 1])
+  freq_vals = range(half).map(|j| base ** (-2.0 * to_float(j) / to_float(d)))
+  freqs = Tensor.from(freq_vals.collect()).reshape([1, half])
+  angle = positions * freqs  # [seq_len, half], outer product via broadcast
+  (angle.cos(), angle.sin())
+}
+
+fn rope(x, pos, base = 10000.0) {
+  v = dz.as_variable(x)
+  seq_len = v.shape[0]
+  d = v.shape[1]
+  half = d / 2
+  (cos_t, sin_t) = rope_freqs(pos, seq_len, half, d, base)
+  cos_v = dz.as_variable(cos_t)
+  sin_v = dz.as_variable(sin_t)
+  x1 = dz.narrow(v, 1, 0, half)
+  x2 = dz.narrow(v, 1, half, d)
+  out1 = x1 * cos_v - x2 * sin_v
+  out2 = x1 * sin_v + x2 * cos_v
+  dz.concat2(out1, out2, 1)
+}
+
+export {sin, cos, tanh, exp, log, expand_dims, flatten, average, linear, sigmoid, gelu, relu, leaky_relu, softmax, log_softmax, clip, mean_squared_error, softmax_cross_entropy, sigmoid_cross_entropy, accuracy, dropout, embed_id, rope}
