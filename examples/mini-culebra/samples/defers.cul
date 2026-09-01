@@ -1,0 +1,26 @@
+# defer: LIFO, on every exit path
+fn worker(failing) {
+  {
+    defer { println('cleanup A') }
+    defer { println('cleanup B') }
+    if failing { throw 'boom' }
+    println('work done')
+  }
+}
+worker(false)
+try { worker(true) } catch e { println("after {e}") }
+
+mut j = 0
+while j < 2 {
+  j = j + 1
+  {
+    defer { println("iter {j}") }
+    if j == 2 { break }
+  }
+}
+
+fn early() {
+  defer { println('on return') }
+  return 42
+}
+println(early())

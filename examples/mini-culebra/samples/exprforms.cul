@@ -1,0 +1,5 @@
+# if / try as expressions
+fn triple(n) { n * 3 }
+let grade = if triple(2) == 6 { 'ok' } else { 'bad' }
+println(grade)
+println(try { 1 / 0 } catch e { e.kind })

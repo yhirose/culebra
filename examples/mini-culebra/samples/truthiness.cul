@@ -1,0 +1,13 @@
+# truthiness and short-circuit
+println(0 && 'x')
+println(1 && 'x')
+println(0 || 7)
+println(!0)
+println(!true)
+mut evals = 0
+fn side() {
+  evals = evals + 1
+  true
+}
+let sc = false && side()
+println("{sc} {evals}")

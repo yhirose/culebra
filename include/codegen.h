@@ -353,6 +353,7 @@ class Module {
     if (s == "todouble") return coreir::IntrinsicId::ToDouble;
     if (s == "fmod") return coreir::IntrinsicId::FMod;
     if (s == "pow") return coreir::IntrinsicId::Pow;
+    if (s == "printraw") return coreir::IntrinsicId::PrintRaw;
     throw std::invalid_argument("CodeGen: unknown intrinsic '" +
                                 std::string(s) + "'");
   }

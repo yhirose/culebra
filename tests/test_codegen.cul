@@ -212,6 +212,12 @@ fn tostr_node(m, v) {
   m.list_push(tc, m.double_literal(v: 5.5, line: 1, col: 1))
   m.list_push(tc, m.literal(v: 2, line: 1, col: 1))
   let fmod_node = m.intrinsic(name: 'fmod', args_list: tc, line: 1, col: 1)
+  let byte_node = m.index(recv: m.str_literal(s: 'abc', line: 1, col: 1),
+                          key: m.literal(v: 1, line: 1, col: 1),
+                          line: 1, col: 1)
+  let td = m.list_new()
+  m.list_push(td, m.str_literal(s: 'no newline->', line: 1, col: 1))
+  let raw_node = m.intrinsic(name: 'printraw', args_list: td, line: 1, col: 1)
   let body = stmt_block(m, [
     print_stmt(m, cat),
     print_stmt(m, tostr_node(m, m.double_literal(v: 4.0, line: 1, col: 1))),
@@ -220,10 +226,12 @@ fn tostr_node(m, v) {
     print_stmt(m, type_node),
     print_stmt(m, toint_node),
     print_stmt(m, fmod_node),
+    raw_node,
+    print_stmt(m, byte_node),
   ])
   m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "hi 42\n4\ntrue\nnil\ndouble\n-2\n1.5\n")
+  assert_eq(IO.capture(fn () { m.run() }), "hi 42\n4\ntrue\nnil\ndouble\n-2\n1.5\nno newline->b\n")
 }
 
 # Bitwise operators, masked shifts included.

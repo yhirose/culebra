@@ -1,0 +1,5 @@
+# wrap semantics
+println(9223372036854775807 + 1)
+let minv = 0 - 9223372036854775807 - 1
+println(minv / -1)
+println(minv % -1)

@@ -1,0 +1,5 @@
+# equality across types
+println(1 == 1.0)
+println(1 == 'a')
+println(nil == false)
+println('x' != 'y')

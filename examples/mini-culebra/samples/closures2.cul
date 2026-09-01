@@ -1,0 +1,22 @@
+# functions, closures, capture
+fn make_counter(start) {
+  mut n = start
+  fn bump(by) {
+    n = n + by
+    n
+  }
+  fn read() { n }
+  let pair = fn (which) {
+    if which == 0 { bump(10) } else { read() }
+  }
+  pair
+}
+let c = make_counter(5)
+println(c(0))
+println(c(1))
+
+fn fact(n) {
+  if n <= 1 { return 1 }
+  n * fact(n - 1)
+}
+println(fact(10))

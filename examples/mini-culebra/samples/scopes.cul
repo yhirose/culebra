@@ -1,0 +1,7 @@
+# blocks, shadowing, scope
+let x = 1
+{
+  let x = 2
+  println(x)
+}
+println(x)

@@ -38,8 +38,8 @@ run() {
   fi
 }
 
-for sample in arith.cul fact.cul fib.cul gcd.cul counter.cul hof.cul \
-              mutual.cul nested.cul adder.cul; do
+for path in "$SAMPLES"/*.cul; do
+  sample="$(basename "$path")"
   run "vm  $sample"  "--vm"  "$sample"
   run "jit $sample"  "--jit" "$sample"
 done

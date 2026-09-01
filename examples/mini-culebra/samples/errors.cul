@@ -1,0 +1,22 @@
+# errors: kind, message, position via catch
+try {
+  let z = 10 % 0
+  println(z)
+} catch e {
+  println("{e.kind}: {e.message} at {e.line}")
+}
+try {
+  println(1 < 'a')
+} catch e {
+  println(e.kind)
+}
+try {
+  println('ab' * 2)
+} catch e {
+  println(e.kind)
+}
+try {
+  throw 'custom'
+} catch e {
+  println("caught {e}")
+}
