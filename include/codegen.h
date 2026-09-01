@@ -204,6 +204,10 @@ class Module {
     return id(b.make_defer(node(value), pos(line, col)));
   }
 
+  int64_t make_yield(int64_t value, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.make_yield(node(value), pos(line, col)));
+  }
   int64_t cell_fresh(int64_t cell, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.cell_fresh(idx32(cell), pos(line, col)));
@@ -266,6 +270,13 @@ class Module {
   void set_capture_name(int64_t func, int64_t index, std::string_view name) {
     m_.funcs.at(static_cast<size_t>(func))
         .capture_names.at(static_cast<size_t>(index)) = name;
+  }
+  // Calling the function then packages a suspended activation instead of
+  // running the body; drive it with the genresume/genreturn intrinsics. A
+  // setter rather than an add_func parameter so every existing caller keeps
+  // its arity.
+  void set_generator(int64_t func) {
+    m_.funcs.at(static_cast<size_t>(func)).is_generator = true;
   }
 
   // Throws CulebraError("IrError") on failure -- structural, so it carries
@@ -364,6 +375,8 @@ class Module {
     if (s == "objecthas") return coreir::IntrinsicId::ObjectHas;
     if (s == "objectkeys") return coreir::IntrinsicId::ObjectKeys;
     if (s == "objectremove") return coreir::IntrinsicId::ObjectRemove;
+    if (s == "genresume") return coreir::IntrinsicId::GenResume;
+    if (s == "genreturn") return coreir::IntrinsicId::GenReturn;
     throw std::invalid_argument("CodeGen: unknown intrinsic '" +
                                 std::string(s) + "'");
   }

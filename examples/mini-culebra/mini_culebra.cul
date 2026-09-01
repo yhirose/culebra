@@ -75,7 +75,7 @@ let grammar = `
   program    <- _ stmt*                                     { no_ast_opt }
   stmt       <- class_d / trait_d / fn_decl / decl / while / for / if / try /
                 match / cond_e / return_s / break_s / continue_s / throw_s /
-                defer_s / bare_block / assign / expr
+                defer_s / yield_f / yield_v / bare_block / assign / expr
   class_d    <- deco* 'class' __ ident '{' _ method* '}' _
   method     <- ident '(' _ fparams ')' _ ret_ann? block    { no_ast_opt }
   trait_d    <- 'trait' __ ident '{' _ titem* '}' _
@@ -106,6 +106,8 @@ let grammar = `
   continue_s <- 'continue' kw_end                           { no_ast_opt }
   throw_s    <- 'throw' __ expr                             { no_ast_opt }
   defer_s    <- 'defer' _ block                             { no_ast_opt }
+  yield_f    <- 'yield' kw_end 'from' kw_end expr           { no_ast_opt }
+  yield_v    <- 'yield' kw_end expr                         { no_ast_opt }
   bare_block <- block                                       { no_ast_opt }
   assign     <- postfix assign_op _ expr
   assign_op  <- < '+=' / '-=' / '*=' / '/=' / '%=' / '=' !'=' >
@@ -910,6 +912,71 @@ fn __entries_iter(o) {
    }}
 }
 
+fn __gen_wrap(raw) {
+  mut la = nil
+  mut has_la = false
+  mut done = false
+  mut disposed = false
+  mut obj = {}
+  fn advance() {
+    let r = __genresume(raw, nil)
+    let v = r['value']
+    cond {
+      r['done'] => { done = true },
+      __typeof(v) == 'string' && v == "\zgend" => { done = true },
+      _ => {
+        la = v
+        has_la = true
+      },
+    }
+  }
+  obj['iter'] = fn () { obj }
+  obj['has_next'] = fn () {
+    if !has_la {
+      if !done { advance() }
+    }
+    has_la
+  }
+  obj['next'] = fn () {
+    if !has_la {
+      if !done { advance() }
+    }
+    cond {
+      has_la => {
+        has_la = false
+        let v = la
+        la = nil
+        v
+      },
+      _ => nil,
+    }
+  }
+  obj['dispose'] = fn () {
+    if !disposed {
+      disposed = true
+      __genreturn(raw, nil)
+      nil
+    }
+  }
+  obj
+}
+
+fn __iter_close(it) {
+  if __typeof(it) == 'object' {
+    if __objecthas(it, 'dispose') {
+      if __typeof(it['dispose']) == 'function' {
+        it.dispose()
+        nil
+      }
+    }
+  }
+  nil
+}
+
+fn __closer(it) {
+  fn () { __iter_close(it) }
+}
+
 fn __iter(v, line, col) {
   let t = __typeof(v)
   if t == 'array' { return __arr_iter(v) }
@@ -1441,6 +1508,11 @@ let builtin_methods = ['size', 'empty', 'push', 'pop', 'get', 'slice',
                        'remove']
 
 let missing_marker = String.from_code_point(1) + 'missing'
+# What a raw generator yields instead of ever completing: culebra runs a
+# generator body's defers only through dispose, never at the body's own
+# end, so the raw frame must stay suspended -- pending defers intact --
+# until a genreturn (or never). The wrapper treats this value as "done".
+let gen_end_marker = String.from_code_point(1) + 'gend'
 let class_marker = String.from_code_point(1) + 'k'
 
 let intrinsics = {
@@ -1449,6 +1521,7 @@ let intrinsics = {
   __fpow: ('pow', 2), __arraypush: ('arraypush', 2), __arraypop: ('arraypop', 1),
   __objecthas: ('objecthas', 2), __objectkeys: ('objectkeys', 1),
   __objectremove: ('objectremove', 2),
+  __genresume: ('genresume', 2), __genreturn: ('genreturn', 2),
 }
 
 # Global builtins user code calls by name; each lowers to the prelude
@@ -1612,6 +1685,27 @@ fn method_parts(n) {
   {id: n.nodes[0], prms: n.nodes[1], blk: blk}
 }
 
+# Whether a statement subtree contains a yield of its own -- not one hidden
+# inside a nested function body, which belongs to that function.
+fn has_yield_node(n) {
+  if n.name == 'yield_v' || n.name == 'yield_f' { return true }
+  if n.name == 'closure' || n.name == 'lambda' || n.name == 'defer_s' ||
+     n.name == 'fn_decl' || n.name == 'class_d' || n.name == 'trait_d' {
+    return false
+  }
+  for c in n.nodes {
+    if has_yield_node(c) { return true }
+  }
+  false
+}
+
+fn has_yield_stmts(blk) {
+  for st in blk.nodes {
+    if has_yield_node(st) { return true }
+  }
+  false
+}
+
 fn scan_body_stmts(f, stmts, blk_key) {
   mut has_defer = false
   for s in stmts {
@@ -1671,11 +1765,38 @@ fn scan_body_stmts(f, stmts, blk_key) {
         if scope_stack[f][scope_stack[f].size() - 1].map.has(d.id.token) {
           fail(d.id, "'{d.id.token}' is already defined")
         }
-        let g = new_func(f, d.id.token, d.blk.nodes, pkey(d.blk))
+        let is_gen = has_yield_stmts(d.blk)
+        if is_gen && funcs[f].named.has(d.id.token) {
+          fail(d.id, "generator fn '{d.id.token}' cannot have multiple definitions")
+        }
+        if funcs[f].named.has(d.id.token) {
+          let fam = funcs[f].named[d.id.token]
+          if funcs[fam[0]].gen_raw != nil {
+            fail(d.id, "generator fn '{d.id.token}' cannot have multiple definitions")
+          }
+        }
+        # A generator declaration becomes two functions: the visible one
+        # keeps the name, the params, and every dispatch behavior, and its
+        # (synthesized) body just calls the hidden raw generator -- a child
+        # function holding the real statements -- and wraps the activation
+        # in the iterator-protocol object. Every existing call and
+        # fn-as-value site then works untouched.
         cond {
-          funcs[f].named.has(d.id.token) =>
-            funcs[f].named[d.id.token].push(g),
-          _ => funcs[f].named[d.id.token] = [g],
+          is_gen => {
+            let g = new_func(f, d.id.token, [], 'w:' + pkey(d.blk))
+            let rw = new_func(g, d.id.token, d.blk.nodes, pkey(d.blk))
+            funcs[g]['gen_raw'] = rw
+            funcs[rw]['is_gen'] = true
+            funcs[f].named[d.id.token] = [g]
+          },
+          _ => {
+            let g = new_func(f, d.id.token, d.blk.nodes, pkey(d.blk))
+            cond {
+              funcs[f].named.has(d.id.token) =>
+                funcs[f].named[d.id.token].push(g),
+              _ => funcs[f].named[d.id.token] = [g],
+            }
+          },
         }
       }
     }
@@ -1709,6 +1830,11 @@ fn scan_body_stmts(f, stmts, blk_key) {
             let lst = funcs[f].named[d.id.token]
             let g = lst[deco_walked_index(f, d.id.token)]
             walk_fn(g, d.prms.nodes)
+            # the raw generator walks after its wrapper: the wrapper's own
+            # scopes are closed by then, so the raw's params -- the same
+            # names -- do not trip the cross-function shadow check
+            let rw = funcs[g].gen_raw
+            if rw != nil { walk_gen_raw(rw, d.prms.nodes) }
           },
         }
       },
@@ -1825,6 +1951,25 @@ fn walk_fn(f, param_nodes) {
       {base: base, high: nslots[f], wrap: nslots[f] > base || has_defer}
 }
 
+# The raw generator's walk: params redeclare by name only (the wrapper
+# already owns the default expressions and the dispatch surface; the raw
+# body receives every argument resolved), then the body as usual.
+fn walk_gen_raw(f2, param_nodes) {
+  enter_scope(f2)
+  for p in param_nodes {
+    let rec = param_record(p)
+    declare_var(f2, rec.pname, false, rec.id)
+    funcs[f2].params.push(rec.pname)
+    funcs[f2].pspecs.push({pname: rec.pname, ty: nil, dflt: nil, rest: false,
+                           id: rec.id})
+  }
+  let base = nslots[f2]
+  let has_defer = scan_body_stmts(f2, funcs[f2].stmts, funcs[f2].body_key)
+  leave_scope(f2)
+  block_info[funcs[f2].body_key] =
+      {base: base, high: nslots[f2], wrap: nslots[f2] > base || has_defer}
+}
+
 fn scan_block(blk, f) {
   enter_scope(f)
   let base = nslots[f]
@@ -1930,6 +2075,19 @@ fn scan_stmt(node, f) {
       loop_depth[f] = loop_depth[f] + 1
       scan_block(body, f)
       loop_depth[f] = loop_depth[f] - 1
+    },
+    {name: 'yield_v', nodes: [e]} => {
+      if funcs[f].is_gen != true {
+        fail(node, "yield can only appear inside a named fn declaration (a lambda, closure, method, or defer body cannot be a generator)")
+      }
+      scan_expr(e, f)
+    },
+    {name: 'yield_f', nodes: [e]} => {
+      if funcs[f].is_gen != true {
+        fail(node, "yield can only appear inside a named fn declaration (a lambda, closure, method, or defer body cannot be a generator)")
+      }
+      scan_expr(e, f)
+      new_scratch(f, node)   # the delegated-to iterator lives across the loop
     },
     {name: 'break_s'} => {
       if loop_depth[f] == 0 { fail(node, "'break' outside a loop") }
@@ -3717,7 +3875,16 @@ fn emit_stmt(m, node, f) {
       let wrapped = m.scope(first_local: info.base, end_local: nslots[f],
                             body: b, line: body.line, col: body.column)
       let loop = m.make_while(cond: has, body: wrapped, line: ln, col: cl)
-      m.block(stmts_list: make_list(m, [store_it, loop]), line: ln, col: cl)
+      # The iterator is disposed on every exit path -- drain, break, an
+      # early return, or a throw -- via a defer over the whole statement
+      # (culebra's optional-dispose contract; a no-op for iterators
+      # without one).
+      let closer = m.make_defer(value: call_pre(m, f, '__closer', [itref()], ln, cl),
+                                line: ln, col: cl)
+      m.scope(first_local: 0, end_local: 0,
+              body: m.block(stmts_list: make_list(m, [store_it, closer, loop]),
+                            line: ln, col: cl),
+              line: ln, col: cl)
     },
     {name: 'while', nodes: [cnd, body]} => {
       let c0 = emit_expr(m, cnd, f)
@@ -3732,17 +3899,73 @@ fn emit_stmt(m, node, f) {
       m.make_while(cond: c, body: b, line: node.line, col: node.column)
     },
     {name: 'return_s'} => {
-      let v = cond {
-        node.nodes.size() == 1 => emit_expr(m, node.nodes[0], f),
-        _ => m.nil_literal(line: node.line, col: node.column),
+      cond {
+        # In a raw generator body a return finishes the iteration without
+        # running the frame's defers (culebra's rule: only dispose runs
+        # them), so it suspends at the end sentinel instead of returning.
+        # The returned expression still evaluates; its value is discarded,
+        # as culebra discards it.
+        funcs[f].is_gen == true => {
+          mut ids = []
+          if node.nodes.size() == 1 {
+            ids.push(emit_expr(m, node.nodes[0], f))
+          }
+          ids.push(m.make_yield(value: m.str_literal(s: gen_end_marker,
+                                                     line: node.line,
+                                                     col: node.column),
+                                line: node.line, col: node.column))
+          m.block(stmts_list: make_list(m, ids), line: node.line,
+                  col: node.column)
+        },
+        _ => {
+          let v = cond {
+            node.nodes.size() == 1 => emit_expr(m, node.nodes[0], f),
+            _ => m.nil_literal(line: node.line, col: node.column),
+          }
+          m.make_return(value: v, line: node.line, col: node.column)
+        },
       }
-      m.make_return(value: v, line: node.line, col: node.column)
     },
     {name: 'break_s'} => m.make_break(line: node.line, col: node.column),
     {name: 'continue_s'} => m.make_continue(line: node.line, col: node.column),
     {name: 'throw_s', nodes: [value]} => {
       let v = emit_expr(m, value, f)
       m.make_throw(value: v, line: node.line, col: node.column)
+    },
+    {name: 'yield_v', nodes: [e]} => {
+      let v = emit_expr(m, e, f)
+      m.make_yield(value: v, line: node.line, col: node.column)
+    },
+    {name: 'yield_f', nodes: [e]} => {
+      # yield from: drive the delegated iterator inline (Yield must sit in
+      # the generator function itself), disposing it however this region
+      # exits -- an early close of the outer generator runs the defer.
+      let ln = node.line
+      let cl = node.column
+      let itv = emit_expr(m, e, f)
+      let (pl, pc) = pos_args(m, node)
+      let itslot = scratch_slot(f, scratch_of[pkey(node)])
+      let store = m.assign(kind: 'local', index: itslot,
+                           value: call_pre(m, f, '__iter', [itv, pl, pc], ln, cl),
+                           line: ln, col: cl)
+      fn itref() { m.var_ref(kind: 'local', index: itslot, line: ln, col: cl) }
+      let closer = m.make_defer(value: call_pre(m, f, '__closer', [itref()], ln, cl),
+                                line: ln, col: cl)
+      let has = m.call_value(callee: m.index(recv: itref(),
+                                             key: m.str_literal(s: 'has_next', line: ln, col: cl),
+                                             line: ln, col: cl),
+                             args_list: make_list(m, []), line: ln, col: cl)
+      let nextv = m.call_value(callee: m.index(recv: itref(),
+                                               key: m.str_literal(s: 'next', line: ln, col: cl),
+                                               line: ln, col: cl),
+                               args_list: make_list(m, []), line: ln, col: cl)
+      let body = m.block(stmts_list: make_list(m, [m.make_yield(value: nextv, line: ln, col: cl)]),
+                         line: ln, col: cl)
+      let loop = m.make_while(cond: has, body: body, line: ln, col: cl)
+      m.scope(first_local: 0, end_local: 0,
+              body: m.block(stmts_list: make_list(m, [store, closer, loop]),
+                            line: ln, col: cl),
+              line: ln, col: cl)
     },
     {name: 'defer_s'} => {
       let g = closure_of[pkey(node)]
@@ -3829,9 +4052,35 @@ fn emit_funcs(m) {
                           line: 1, col: 1))
       }
     }
+    let rw = fi.gen_raw
+    if rw != nil {
+      # The wrapper's whole body: call the raw generator (its closure built
+      # here, so the capture chain resolves in this frame) with every
+      # parameter slot as-is -- defaults are already filled by the prologue
+      # above -- and hand back the protocol object over the activation.
+      mut cargs = []
+      for pi2 in range(fi.params.size()) {
+        cargs.push(m.var_ref(kind: 'local', index: pi2, line: 1, col: 1))
+      }
+      let rc = m.call_value(callee: m.make_closure(func: rw,
+                                                   cmap: cmap_for(m, f, rw),
+                                                   line: 1, col: 1),
+                            args_list: make_list(m, cargs), line: 1, col: 1)
+      ids.push(m.make_return(value: call_pre(m, f, '__gen_wrap', [rc], 1, 1),
+                             line: 1, col: 1))
+    }
     for s in fi.stmts {
       let e = emit_stmt(m, s, f)
       if e != nil { ids.push(e) }
+    }
+    if fi.is_gen == true {
+      # The end sentinel: falling off the body suspends here forever
+      # instead of returning, keeping the frame's defers pending for a
+      # dispose. It sits inside the body's own Scope, so nothing has run
+      # its exit yet.
+      ids.push(m.make_yield(value: m.str_literal(s: gen_end_marker,
+                                                 line: 1, col: 1),
+                            line: 1, col: 1))
     }
     mut body = m.block(stmts_list: make_list(m, ids), line: 1, col: 1)
     let info = block_info[fi.body_key]
@@ -3844,6 +4093,7 @@ fn emit_funcs(m) {
                           num_captures: free[f].size(),
                           num_cells: cell_index[f].size(),
                           num_params: fi.params.size(), body: body)
+    if fi.is_gen == true { m.set_generator(func: func) }
     mut i = 0
     for v in free[f].values() {
       let (o, s) = v

@@ -1,0 +1,81 @@
+# for-drain with defer: cleanup position
+fn gd() {
+  defer { println('cleanup') }
+  yield 1
+  yield 2
+}
+for v in gd() { println(v) }
+println('after drain')
+
+# manual drain with defer
+let it = gd().iter()
+println(it.next())
+println(it.next())
+println(it.next())
+println('after manual')
+
+# explicit dispose
+let it2 = gd().iter()
+println(it2.next())
+it2.dispose()
+println('after dispose')
+println(it2.has_next())
+
+# early return inside generator with defer
+fn ge() {
+  defer { println('e-cleanup') }
+  yield 1
+  return nil
+  yield 2
+}
+for v in ge() { println(v) }
+println('after ge')
+
+# generator with default argument
+fn gdef(a, b = a + 1) {
+  yield a
+  yield b
+}
+for v in gdef(5) { println(v) }
+
+# generator as value
+fn gv() { yield 42 }
+let h = gv
+for v in h() { println(v) }
+
+# recursive generator (yield from self)
+fn walk(n) {
+  yield n
+  if n > 0 {
+    yield from walk(n - 1)
+  }
+}
+for v in walk(2) { println(v) }
+
+# throw out of loop body closes
+fn gt() {
+  defer { println('t-cleanup') }
+  yield 9
+  yield 10
+}
+try {
+  for v in gt() {
+    println(v)
+    throw 'boom'
+  }
+} catch e {
+  println('caught')
+}
+
+# throw from inside the generator body
+fn gth() {
+  defer { println('th-cleanup') }
+  yield 1
+  throw 'inner'
+}
+try {
+  for v in gth() { println(v) }
+} catch e {
+  println('caught inner')
+}
+println('done')

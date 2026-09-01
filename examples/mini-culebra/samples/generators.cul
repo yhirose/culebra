@@ -1,0 +1,41 @@
+fn countdown(start) {
+  mut i = start
+  while i > 0 {
+    yield i
+    i = i - 1
+  }
+}
+for v in countdown(3) {
+  println(v)
+}
+
+fn inner() { yield 'x' }
+fn mixed() {
+  yield from [1, 2]
+  yield from inner()
+  yield 'done'
+}
+for v in mixed() { println(v) }
+
+fn pair() {
+  yield 'a'
+  yield 'b'
+}
+let x = pair().iter()
+let y = pair().iter()
+println(x.next())
+println(y.next())
+println(x.next())
+println(x.next())
+println(x.has_next())
+
+fn gd() {
+  defer { println('cleanup') }
+  yield 1
+  yield 2
+}
+for v in gd() {
+  println(v)
+  if v == 1 { break }
+}
+println('after break')

@@ -63,6 +63,8 @@ inline bool register_codegen_binding() {
                                             {"value", "line", "col"})
       .method<&codegen::Module::cell_fresh>("cell_fresh",
                                             {"cell", "line", "col"})
+      .method<&codegen::Module::make_yield>("make_yield",
+                                            {"value", "line", "col"})
       .method<&codegen::Module::list_new>("list_new")
       .method<&codegen::Module::list_push>("list_push", {"list", "value"})
       .method<&codegen::Module::capture_map_new>("capture_map_new")
@@ -76,6 +78,7 @@ inline bool register_codegen_binding() {
                                                 {"func", "index", "name"})
       .method<&codegen::Module::set_capture_name>("set_capture_name",
                                                   {"func", "index", "name"})
+      .method<&codegen::Module::set_generator>("set_generator", {"func"})
       .method<&codegen::Module::verify>("verify")
       .method<&codegen::Module::run>("run")
       .method<&codegen::Module::dump_ir>("dump_ir")
