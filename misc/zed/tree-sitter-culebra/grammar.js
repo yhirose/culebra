@@ -98,6 +98,7 @@ module.exports = grammar({
       choice(
         seq('"', repeat(choice($.string_content, $.escape, $.interpolation)), '"'),
         seq("'", repeat(choice($.raw_content, $.escape)), "'"),
+        seq("`", repeat($.backtick_content), "`"),
         $.triple_string,
       ),
     triple_string: ($) =>
@@ -110,6 +111,8 @@ module.exports = grammar({
     // interpolation, `\` an escape, `"` ends the string).
     string_content: ($) => token.immediate(prec(1, /[^"\\{]+/)),
     raw_content: ($) => token.immediate(prec(1, /[^'\\]+/)),
+    // Backtick strings have no escapes at all -- every byte but a backtick is literal.
+    backtick_content: ($) => token.immediate(prec(1, /[^`]+/)),
     escape: ($) => token.immediate(/\\./),
     // `{ ... }` inside a string. The opening brace must be immediate (no
     // intervening whitespace) so it pairs with the string, not a block.

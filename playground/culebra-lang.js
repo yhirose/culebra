@@ -80,6 +80,10 @@ function tokenBase(stream, state) {
     pushMode(state, "string", "'");
     return "string";
   }
+  if (stream.match("`")) {
+    pushMode(state, "string", "`");
+    return "string";
+  }
 
   // Numbers: float patterns first so the integer rule doesn't steal them.
   if (stream.match(/^\d+\.\d+([eE][-+]?\d+)?\b/)) return "number";

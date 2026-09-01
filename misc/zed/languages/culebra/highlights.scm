@@ -28,6 +28,7 @@
 (string) @string
 (string_content) @string
 (raw_content) @string
+(backtick_content) @string
 (triple_content) @string
 (escape) @string.escape
 (regex) @string.regex

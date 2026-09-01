@@ -133,6 +133,14 @@
           "end": "'",
           "endCaptures": { "0": { "name": "punctuation.definition.string.end.culebra" } },
           "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "comment": "Backtick raw string (Go-style): no escapes, no interpolation, may hold ' \" and {.",
+          "name": "string.quoted.other.culebra",
+          "begin": "`",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.culebra" } },
+          "end": "`",
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.culebra" } }
         }
       ]
     },

@@ -13,6 +13,8 @@ syn match   culDecNumber    "\<\d\+\>"
 " Strings
 syn region  culStringS      start=+'+ skip=+\\\\\|\\'+ end=+'\|$+
 syn region  culStringD      start=+"+ skip=+\\\\\|\\"+ end=+"\|$+ contains=culInterp
+" Backtick raw string (Go-style): no escapes, no interpolation, spans lines.
+syn region  culStringB      start=+`+ end=+`+
 syn region  culInterp       matchgroup=culInterpDelim
                             \ start=+{+ end=+}+ contained contains=TOP
 
@@ -83,6 +85,7 @@ hi def link culFloat         Float
 hi def link culDecNumber     Number
 hi def link culStringS       String
 hi def link culStringD       String
+hi def link culStringB       String
 hi def link culInterpDelim   Special
 hi def link culRegex         String
 hi def link culRegexDelim    Special
