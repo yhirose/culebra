@@ -2041,6 +2041,10 @@ add_test(NAME io_stdin_test
 add_test(NAME pl0_codegen_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/pl0_codegen_test.sh
                  $<TARGET_FILE:culebra>)
+# Three engine legs, one of them a whole AOT build+link; it crept up to the
+# lane's blanket --timeout 300 as the Core-IR grew and went over with the
+# container batch.
+set_tests_properties(pl0_codegen_test PROPERTIES TIMEOUT 900)
 
 # examples/mini-culebra/mini_culebra.cul against the culebra binary itself —
 # the samples are written in the subset both implement, so the real
