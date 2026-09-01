@@ -7642,12 +7642,11 @@ class Compiler {
     // a variable, so `Math` never appears there — and a caller holding its
     // own `Math` would silently rebind the body's. So the body's identifiers
     // are walked directly, and only names that cannot be rebound are let
-    // through: the receiver, the class's own name, a parameter, or a stdlib
-    // global/namespace this scope does not shadow.
-    //
-    // A body-local `let` is refused too, conservatively — telling a local's
-    // own name from a read of an outer one needs declaration tracking this
-    // does not do, and declining costs coverage rather than correctness.
+    // through: the receiver, the class's own name, a parameter, a body-local
+    // `let`/`mut` declared earlier in the same statement list (walked
+    // scope-aware below — `Vector2.length()`'s `let x = self.x` is the
+    // shape this exists for), or a stdlib global/namespace this scope does
+    // not shadow.
     auto ps = inline_params(mv.params);
     if (!ps) return false;
     bool ok = true;
@@ -7660,7 +7659,7 @@ class Compiler {
       if (!lookup(n) && (is_stdlib_global(n) || is_stdlib_namespace(n))) return;
       ok = false;
     };
-    walk_identifiers(**mv.body, check_name);
+    walk_identifiers_scoped(**mv.body, {}, check_name);
     if (!ok) return false;
     // The name check above only asks WHICH free names are safe to leave
     // unbound-checked — it says nothing about HOW they are used, and `self`
@@ -8534,6 +8533,49 @@ class Compiler {
       return;
     if (node.tag == "IDENTIFIER"_ && node.is_token) f(node.token);
     for (const auto& n : node.nodes) walk_identifiers(*n, f);
+  }
+
+  // Same walk, but a straight-line body's own `let`/`mut` declaration
+  // shadows an outer name for every read lexically after it in the same
+  // statement list — this is what lets inline_body_ok stop declining a body
+  // just because it caches `self.x` in a local (`let x = self.x`). `locals`
+  // is threaded and grown by value on purpose: a nested block's (an `if`
+  // arm's, say) own declarations must not leak back out to its siblings,
+  // the same as real lexical scoping. Only an explicit `let`/`mut` counts —
+  // a bare `x = v` may be reassigning an OUTER name (culebra's implicit-
+  // declare rule), so it still falls through to an ordinary read/write
+  // check via `f`, same as before this existed.
+  template <class F>
+  static void walk_identifiers_scoped(
+      const peg::Ast& node, std::set<std::string, std::less<>> locals, F&& f) {
+    using namespace peg::udl;
+    if (node.tag == "FUNCTION"_ || node.tag == "MULTIFN_DECL"_ ||
+        node.tag == "CLASS_DECL"_ || node.tag == "ENUM_DECL"_)
+      return;
+    if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_)
+      return;
+    if (node.tag == "IDENTIFIER"_ && node.is_token) {
+      if (!locals.contains(node.token)) f(node.token);
+      return;
+    }
+    if (node.tag == "STATEMENTS"_) {
+      for (const auto& n : node.nodes) {
+        if (n->tag == "ASSIGNMENT"_) {
+          auto av = culebra::view_assignment(*n);
+          if (!av.compound && (av.is_let || av.is_mut)) {
+            if (const auto* target = culebra::assign_name_target(*n, av)) {
+              walk_identifiers_scoped(*av.rhs, locals, f);
+              if (!culebra::is_sink_name(target->token))
+                locals.insert(std::string(target->token));
+              continue;
+            }
+          }
+        }
+        walk_identifiers_scoped(*n, locals, f);
+      }
+      return;
+    }
+    for (const auto& n : node.nodes) walk_identifiers_scoped(*n, locals, f);
   }
 
   // The parameter binding an inlined call owes: one slot per parameter
