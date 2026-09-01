@@ -1,0 +1,547 @@
+# mini-culebra: a sequential subset of culebra itself, compiled to
+# CodeGen (cpp-vmlib's Core-IR) and run on its bytecode executor.
+#
+# The subset is real culebra syntax -- every samples/*.cul runs unchanged
+# under the real `culebra` binary, which is what makes the oracle work:
+# tests/mini_culebra_test.sh diffs this compiler's stdout against the real
+# implementation's for every sample. Where PL/0 (examples/pl0/) proved the
+# backend carries a static language, this proves it carries a dynamic one:
+# integers and first-class closures, lexical capture through cells,
+# recursion without growing the host stack.
+#
+# What's in: let/mut/assignment, + - * / % and comparisons, unary minus,
+# if/else and while, named `fn` declarations (callable before their textual
+# definition, mutually recursive), closure expressions `fn (x) { ... }` as
+# first-class values, `println`. Blocks yield their last expression, so a
+# function's result is its body's final expression.
+#
+# What's out, and why: `return`/`break`/`continue` (Core-IR has no
+# early-exit node yet -- Phase 5's cleanup-table work is where non-local
+# exits arrive); strings/floats/arrays/objects (integers prove the shape;
+# containers come with a later corpus); a closure referring to its own
+# binding (`let f = fn () { f() }` -- the cell->closure->cell cycle is
+# exactly the reference-counting leak cpp-vmlib's tracing backstop doesn't
+# exist to collect yet; named fns self-recurse safely because each call
+# site builds its closure fresh instead of storing it).
+#
+# Run it:  culebra examples/mini-culebra/mini_culebra.cul prog.cul
+#          culebra examples/mini-culebra/mini_culebra.cul --ir prog.cul
+#          culebra examples/mini-culebra/mini_culebra.cul --bc prog.cul
+
+let grammar = `
+  program    <- _ stmt*                                     { no_ast_opt }
+  stmt       <- fn_decl / decl / while / if / assign / expr
+
+  fn_decl    <- 'fn' __ ident '(' _ params ')' _ block
+  params     <- (ident (',' _ ident)*)?                     { no_ast_opt }
+  decl       <- decl_kw ident '=' !'=' _ expr
+  decl_kw    <- < 'let' / 'mut' > __
+  while      <- 'while' __ expr block
+  if         <- 'if' __ expr block ('else' __ block)?
+  assign     <- ident '=' !'=' _ expr
+  block      <- '{' _ stmt* '}' _                           { no_ast_opt }
+
+  expr       <- cmp
+  cmp        <- add (cmp_op add)?
+  cmp_op     <- < '==' / '!=' / '<=' / '<' / '>=' / '>' > _
+  add        <- mul (add_op mul)*
+  add_op     <- < [+-] > _
+  mul        <- unary (mul_op unary)*
+  mul_op     <- < [*/%] > _
+  unary      <- neg / primary
+  neg        <- '-' _ unary                                 { no_ast_opt }
+  primary    <- number / closure / call / ident / paren
+  paren      <- '(' _ expr ')' _
+  closure    <- 'fn' _ '(' _ params ')' _ block
+  call       <- ident '(' _ args ')' _
+  args       <- (expr (',' _ expr)*)?                       { no_ast_opt }
+
+  keyword    <- ('let' / 'mut' / 'fn' / 'if' / 'else' / 'while') ![a-zA-Z0-9_]
+  ident      <- !keyword < [a-zA-Z_] [a-zA-Z0-9_]* > _
+  number     <- < [0-9]+ > _
+
+  ~_         <- (comment / [ \t\r\n])*
+  ~__        <- ![a-zA-Z0-9_] _
+  comment    <- '#' [^\r\n]*
+`
+
+fn fail(node, msg) {
+  throw {kind: 'MiniError', message: msg, line: node.line, col: node.column}
+}
+
+# --- Function records ---------------------------------------------------------
+#
+# One record per function: func 0 is the top level ("main"), every named
+# `fn` and every closure literal gets its own. Variables are flat per
+# function (params first, then each let/mut in textual order), which is
+# also why the binder can re-resolve names at emit time from the same maps
+# the scan built: there is no block-level shadowing to disambiguate.
+
+mut funcs = []          # {parent, name, params, var_slot, var_names, named, stmts}
+mut free = []           # per func: {"owner:slot": (owner, slot)}
+mut calls = []          # per func: [callee func index...]  (named-fn call edges)
+mut capture_index = []  # per func: {"owner:slot": capture index}
+mut cell_index = []     # per func (the owner): {slot: cell index}
+mut closure_of = {}     # "line:col" of a closure literal -> its func index
+
+fn new_func(parent, name, stmts) {
+  let f = funcs.size()
+  funcs.push({parent: parent, name: name, params: [], var_slot: {},
+             var_names: [], named: {}, stmts: stmts})
+  free.push({})
+  calls.push([])
+  capture_index.push({})
+  cell_index.push({})
+  f
+}
+
+fn check_fresh(f, name, at) {
+  if name == 'println' { fail(at, "'println' is reserved") }
+  if funcs[f].var_slot.has(name) || funcs[f].named.has(name) {
+    fail(at, "'{name}' is already defined")
+  }
+}
+
+fn declare_var(f, name, is_mut, at) {
+  check_fresh(f, name, at)
+  let slot = funcs[f].var_names.size()
+  funcs[f].var_slot[name] = (slot, is_mut)
+  funcs[f].var_names.push(name)
+  slot
+}
+
+# A name, resolved through the lexical chain of enclosing functions:
+# a variable (with its owning function and slot), a named fn, or nothing.
+fn resolve(f, name) {
+  mut h = f
+  while h != nil {
+    let fi = funcs[h]
+    if fi.var_slot.has(name) {
+      let (slot, is_mut) = fi.var_slot[name]
+      return {kind: 'var', owner: h, slot: slot, is_mut: is_mut}
+    }
+    if fi.named.has(name) { return {kind: 'fn', func: fi.named[name]} }
+    h = fi.parent
+  }
+  {kind: 'none'}
+}
+
+# A use of another function's variable makes it free here. solve() below
+# propagates the entry to wherever else it has to appear.
+fn use_var(f, owner, slot) {
+  if owner != f { free[f]["{owner}:{slot}"] = (owner, slot) }
+}
+
+# --- Pass A: collect + scan ---------------------------------------------------
+#
+# One textual walk. Every sibling named fn is registered (with its own
+# fresh record) before any sibling's body is walked, so a body can call a
+# later sibling and mutual recursion resolves; everything else -- variable
+# declarations included -- binds strictly in textual order, so a body can
+# only see variables declared above it.
+
+fn collect_fn(parent, name, param_nodes, stmts) {
+  let f = new_func(parent, name, stmts)
+  for p in param_nodes {
+    declare_var(f, p.token, false, p)
+    funcs[f].params.push(p.token)
+  }
+  f
+}
+
+fn walk_body(f) {
+  let stmts = funcs[f].stmts
+  for s in stmts {
+    if s.name == 'fn_decl' {
+      let [id, prms, blk] = s.nodes
+      check_fresh(f, id.token, id)
+      funcs[f].named[id.token] = collect_fn(f, id.token, prms.nodes, blk.nodes)
+    }
+  }
+  for s in stmts {
+    if s.name == 'fn_decl' {
+      walk_body(funcs[f].named[s.nodes[0].token])
+    } else {
+      scan_stmt(s, f)
+    }
+  }
+}
+
+fn scan_block(blk, f) {
+  for s in blk.nodes { scan_stmt(s, f) }
+}
+
+fn scan_stmt(node, f) {
+  match node {
+    {name: 'fn_decl'} =>
+      fail(node, "fn declarations are only allowed at a function's top level"),
+    {name: 'decl', nodes: [kw, id, value]} => {
+      scan_expr(value, f)   # the initializer cannot see the name it binds
+      declare_var(f, id.token, kw.token == 'mut', id)
+    },
+    {name: 'assign', nodes: [id, value]} => {
+      scan_expr(value, f)
+      let r = resolve(f, id.token)
+      if r.kind == 'none' { fail(id, "undefined variable '{id.token}'") }
+      if r.kind == 'fn' { fail(id, "cannot assign to fn '{id.token}'") }
+      if !r.is_mut { fail(id, "cannot assign to immutable '{id.token}'") }
+      use_var(f, r.owner, r.slot)
+    },
+    {name: 'while', nodes: [cnd, body]} => {
+      scan_expr(cnd, f)
+      scan_block(body, f)
+    },
+    {name: 'if'} => {
+      scan_expr(node.nodes[0], f)
+      scan_block(node.nodes[1], f)
+      if node.nodes.size() == 3 { scan_block(node.nodes[2], f) }
+    },
+    _ => scan_expr(node, f),
+  }
+}
+
+fn scan_chain(nodes, f) {
+  for n in nodes {
+    if n.name != 'cmp_op' && n.name != 'add_op' && n.name != 'mul_op' {
+      scan_expr(n, f)
+    }
+  }
+}
+
+fn scan_call(node, f) {
+  let [id, args] = node.nodes
+  for a in args.nodes { scan_expr(a, f) }
+  if id.token == 'println' {
+    if args.nodes.size() != 1 { fail(id, "println takes 1 argument") }
+    return nil
+  }
+  let r = resolve(f, id.token)
+  cond {
+    r.kind == 'none' => fail(id, "undefined name '{id.token}'"),
+    r.kind == 'fn' => calls[f].push(r.func),
+    _ => use_var(f, r.owner, r.slot),   # a closure value being called
+  }
+}
+
+fn scan_expr(node, f) {
+  match node {
+    {name: 'number'} => to_long(node.token),  # range-checked now, at bind time
+    {name: 'ident', token} => {
+      let r = resolve(f, token)
+      if r.kind == 'none' { fail(node, "undefined variable '{token}'") }
+      if r.kind == 'fn' {
+        fail(node, "fn '{token}' can only be called, not used as a value")
+      }
+      use_var(f, r.owner, r.slot)
+    },
+    {name: 'call'} => scan_call(node, f),
+    {name: 'closure', nodes: [prms, blk]} => {
+      let g = collect_fn(f, "fn@{node.line}:{node.column}", prms.nodes, blk.nodes)
+      closure_of["{node.line}:{node.column}"] = g
+      walk_body(g)
+    },
+    {name: 'neg', nodes: [operand]} => scan_expr(operand, f),
+    {name: 'cmp', nodes} => scan_chain(nodes, f),
+    {name: 'add', nodes} => scan_chain(nodes, f),
+    {name: 'mul', nodes} => scan_chain(nodes, f),
+    _ => fail(node, "cannot evaluate {node.name}"),
+  }
+}
+
+# --- Pass B: solve ------------------------------------------------------------
+#
+# Two obligations, iterated together to a fixpoint:
+#  - a call from f to a named fn g builds g's capture map in f's frame, so
+#    everything g captures must be owned or captured by f (recursion makes
+#    the call graph cyclic -- same fixpoint PL/0's binder needs);
+#  - a function f nested in p resolves its own capture map in p's frame
+#    (a closure's at its definition site, a named fn's at each call site,
+#    which the first rule routes here), so everything f captures must be
+#    owned or captured by p.
+# Then: whatever anyone captures, its owner keeps in a cell rather than a
+# local slot, because a closure cannot capture a local (it would die with
+# the frame while the closure captured into it may not).
+
+fn solve() {
+  mut changed = true
+  while changed {
+    changed = false
+    for f in range(funcs.size()) {
+      for g in calls[f] {
+        for v in free[g].values() {
+          let (o, s) = v
+          if o != f {
+            let key = "{o}:{s}"
+            if !free[f].has(key) {
+              free[f][key] = v
+              changed = true
+            }
+          }
+        }
+      }
+      let p = funcs[f].parent
+      if p != nil {
+        for v in free[f].values() {
+          let (o, s) = v
+          if o != p {
+            let key = "{o}:{s}"
+            if !free[p].has(key) {
+              free[p][key] = v
+              changed = true
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for f in range(funcs.size()) {
+    mut i = 0
+    for v in free[f].values() {
+      let (o, s) = v
+      capture_index[f]["{o}:{s}"] = i
+      i = i + 1
+      if !cell_index[o].has(s) {
+        cell_index[o][s] = cell_index[o].size()
+      }
+    }
+  }
+}
+
+# `f`'s own view of a variable: its own slot (a cell if anything nested
+# captures it, otherwise a plain local), or the index `f` captures it at.
+fn access_from(f, v) {
+  let (o, s) = v
+  cond {
+    o == f => cond {
+      cell_index[f].has(s) => {kind: 'cell', index: cell_index[f][s]},
+      _ => {kind: 'local', index: s},
+    },
+    _ => {kind: 'capture', index: capture_index[f]["{o}:{s}"]},
+  }
+}
+
+# --- Pass C: emit -------------------------------------------------------------
+
+fn binop_name(tok) {
+  cond {
+    tok == '+' => 'add',
+    tok == '-' => 'sub',
+    tok == '*' => 'mul',
+    tok == '/' => 'div',
+    tok == '%' => 'mod',
+    tok == '==' => 'eq',
+    tok == '!=' => 'ne',
+    tok == '<' => 'lt',
+    tok == '<=' => 'le',
+    tok == '>' => 'gt',
+    _ => 'ge',
+  }
+}
+
+fn make_list(m, ids) {
+  let list = m.list_new()
+  for x in ids { m.list_push(list, x) }
+  list
+}
+
+# The capture map for building g's closure in f's frame, whether at a
+# closure literal (f is the lexical parent) or a named-fn call site (f is
+# the caller). solve() guarantees every entry is reachable from f.
+fn cmap_for(m, f, g) {
+  let cmap = m.capture_map_new()
+  for v in free[g].values() {
+    let a = access_from(f, v)
+    m.capture_map_push(cmap, kind: a.kind, index: a.index)
+  }
+  m.add_capture_map(cmap)
+}
+
+fn emit_chain(m, nodes, f) {
+  mut value = emit_expr(m, nodes[0], f)
+  mut i = 1
+  while i < nodes.size() {
+    let op = nodes[i]
+    let rhs = emit_expr(m, nodes[i + 1], f)
+    value = m.binary(op: binop_name(op.token), lhs: value, rhs: rhs,
+                     line: op.line, col: op.column)
+    i = i + 2
+  }
+  value
+}
+
+fn emit_call(m, node, f) {
+  let [id, args] = node.nodes
+  let ln = node.line
+  let cl = node.column
+  if id.token == 'println' {
+    let v = emit_expr(m, args.nodes[0], f)
+    return m.intrinsic(name: 'print', args_list: make_list(m, [v]),
+                       line: ln, col: cl)
+  }
+  mut arg_ids = []
+  for a in args.nodes { arg_ids.push(emit_expr(m, a, f)) }
+  let r = resolve(f, id.token)
+  let callee = cond {
+    # A named fn is not a stored value: each call site builds its closure
+    # fresh and consumes it, which is what keeps self-recursion free of the
+    # cell->closure->cell cycle a stored self-reference would make.
+    r.kind == 'fn' => m.make_closure(func: r.func,
+                                     cmap: cmap_for(m, f, r.func),
+                                     line: ln, col: cl),
+    _ => {
+      let a = access_from(f, (r.owner, r.slot))
+      m.var_ref(kind: a.kind, index: a.index, line: id.line, col: id.column)
+    },
+  }
+  m.call_value(callee: callee, args_list: make_list(m, arg_ids),
+               line: ln, col: cl)
+}
+
+fn emit_expr(m, node, f) {
+  match node {
+    {name: 'number'} =>
+      m.literal(v: to_long(node.token), line: node.line, col: node.column),
+    {name: 'ident', token} => {
+      let r = resolve(f, token)
+      let a = access_from(f, (r.owner, r.slot))
+      m.var_ref(kind: a.kind, index: a.index, line: node.line, col: node.column)
+    },
+    {name: 'call'} => emit_call(m, node, f),
+    {name: 'closure'} => {
+      let g = closure_of["{node.line}:{node.column}"]
+      m.make_closure(func: g, cmap: cmap_for(m, f, g),
+                     line: node.line, col: node.column)
+    },
+    {name: 'neg', nodes: [operand]} => {
+      let e = emit_expr(m, operand, f)
+      m.unary(op: 'neg', operand: e, line: node.line, col: node.column)
+    },
+    {name: 'cmp', nodes} => emit_chain(m, nodes, f),
+    {name: 'add', nodes} => emit_chain(m, nodes, f),
+    {name: 'mul', nodes} => emit_chain(m, nodes, f),
+    _ => fail(node, "cannot evaluate {node.name}"),
+  }
+}
+
+fn emit_stmt(m, node, f) {
+  match node {
+    {name: 'fn_decl'} => nil,   # bodies are emitted per function, not inline
+    {name: 'decl', nodes: [kw, id, value]} => {
+      let v = emit_expr(m, value, f)
+      let (slot, is_mut) = funcs[f].var_slot[id.token]
+      let a = access_from(f, (f, slot))
+      m.assign(kind: a.kind, index: a.index, value: v,
+               line: node.line, col: node.column)
+    },
+    {name: 'assign', nodes: [id, value]} => {
+      let v = emit_expr(m, value, f)
+      let r = resolve(f, id.token)
+      let a = access_from(f, (r.owner, r.slot))
+      m.assign(kind: a.kind, index: a.index, value: v,
+               line: node.line, col: node.column)
+    },
+    {name: 'while', nodes: [cnd, body]} => {
+      let c = emit_expr(m, cnd, f)
+      let b = emit_block(m, body, f)
+      m.make_while(cond: c, body: b, line: node.line, col: node.column)
+    },
+    {name: 'if'} => {
+      let c = emit_expr(m, node.nodes[0], f)
+      let t = emit_block(m, node.nodes[1], f)
+      cond {
+        node.nodes.size() == 3 => {
+          let e = emit_block(m, node.nodes[2], f)
+          m.make_if_else(cond: c, then_branch: t, else_branch: e,
+                         line: node.line, col: node.column)
+        },
+        _ => m.make_if(cond: c, then_branch: t,
+                       line: node.line, col: node.column),
+      }
+    },
+    _ => emit_expr(m, node, f),
+  }
+}
+
+fn emit_block(m, blk, f) {
+  mut ids = []
+  for s in blk.nodes {
+    let e = emit_stmt(m, s, f)
+    if e != nil { ids.push(e) }
+  }
+  m.block(stmts_list: make_list(m, ids), line: blk.line, col: blk.column)
+}
+
+# --- Driver -------------------------------------------------------------------
+
+fn build(m, root) {
+  let main = collect_fn(nil, 'main', [], root.nodes)
+  walk_body(main)
+  solve()
+
+  # Records and add_func calls share indices by construction: the loop adds
+  # in array order, so make_closure's func index means the same thing on
+  # both sides.
+  for f in range(funcs.size()) {
+    let fi = funcs[f]
+    mut ids = []
+    # Prologue: a captured parameter arrives in its local slot (the calling
+    # convention only knows locals) and is copied into the cell every other
+    # reference resolves to.
+    for p in range(fi.params.size()) {
+      if cell_index[f].has(p) {
+        let src = m.var_ref(kind: 'local', index: p, line: 1, col: 1)
+        ids.push(m.assign(kind: 'cell', index: cell_index[f][p], value: src,
+                          line: 1, col: 1))
+      }
+    }
+    for s in fi.stmts {
+      let e = emit_stmt(m, s, f)
+      if e != nil { ids.push(e) }
+    }
+    let body = m.block(stmts_list: make_list(m, ids), line: 1, col: 1)
+    let func = m.add_func(name: fi.name, num_locals: fi.var_names.size(),
+                          num_captures: free[f].size(),
+                          num_cells: cell_index[f].size(),
+                          num_params: fi.params.size(), body: body)
+    for i in range(fi.var_names.size()) {
+      m.set_local_name(func: func, index: i, name: fi.var_names[i])
+    }
+    mut i = 0
+    for v in free[f].values() {
+      let (o, s) = v
+      m.set_capture_name(func: func, index: i, name: funcs[o].var_names[s])
+      i = i + 1
+    }
+  }
+}
+
+let want_ir = Sys.argv.contains('--ir')
+let want_bc = Sys.argv.contains('--bc')
+let cli = Sys.argv.filter(|a| a != '--ir' && a != '--bc')
+if cli.empty() {
+  println("usage: culebra mini_culebra.cul [--ir | --bc] PROGRAM.cul")
+  Sys.exit(1)
+}
+
+try {
+  let tree = Peg.parse(grammar, FS.read(cli[0]), path: cli[0])
+  let m = CodeGen.Module.new()
+  build(m, tree)
+  m.verify()
+  if want_ir {
+    print(m.dump_ir())
+  } else if want_bc {
+    print(m.dump_bc())
+  } else {
+    m.run()
+  }
+} catch e {
+  match e {
+    {kind: 'MiniError'} => println("{cli[0]}:{e.line}:{e.col}: {e.message}"),
+    {kind: 'PegError'} => println(e.message),
+    {kind: 'IrError'} => println("{cli[0]}:{e.line}:{e.col}: {e.message}"),
+    _ => throw e,
+  }
+  Sys.exit(1)
+}

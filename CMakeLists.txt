@@ -2041,6 +2041,14 @@ add_test(NAME pl0_codegen_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/pl0_codegen_test.sh
                  $<TARGET_FILE:culebra>)
 
+# examples/mini-culebra/mini_culebra.cul against the culebra binary itself —
+# the samples are written in the subset both implement, so the real
+# implementation is the compiler's oracle — under interp and JIT (it has to
+# run two whole top-level scripts as subprocesses, like pl0_codegen_test).
+add_test(NAME mini_culebra_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/mini_culebra_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # Log records on stderr — content (levels, fields, filtering, child binding)
 # across interp / JIT / AOT (logs never reach stdout, so the .cul sweep can't
 # verify them).

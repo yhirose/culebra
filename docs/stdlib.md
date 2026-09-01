@@ -6265,13 +6265,10 @@ let stmts = m.list_new()
 m.list_push(stmts, print_stmt)
 let body = m.block(stmts_list: stmts, line: 1, col: 1)
 
-m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, body: body)
+m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
 m.verify()
 m.run()  # => 42
 ```
-
-`examples/pl0/pl0_codegen.cul` is the worked example: the same PL/0 grammar
-`examples/pl0/pl0.cul` interprets directly, compiled to `CodeGen` IR instead.
 
 ### IR nodes are `Long`s, not objects
 
@@ -6308,10 +6305,12 @@ list id afterward is undefined.
 | `m.make_while(cond:, body:, line:, col:)` | a loop |
 | `m.block(stmts_list:, line:, col:)` | a sequence, consuming a staging list |
 | `m.call(func:, cmap:, line:, col:)` | a call to function index `func`, forwarding captures via capture-map `cmap` |
+| `m.make_closure(func:, cmap:, line:, col:)` | a closure *value* over function `func` — storable, passable, callable later |
+| `m.call_value(callee:, args_list:, line:, col:)` | a call of whatever `callee` evaluates to, consuming a staging list of arguments |
 | `m.intrinsic(name:, args_list:, line:, col:)` | `name` is `'print'` (1 arg) or `'readint'` (0 args) |
 | `m.list_new()` | a staging list, for `stmts_list:`/`args_list:` above |
 | `m.list_push(list:, value:)` | appends a node id to a staging list |
-| `m.add_func(name:, num_locals:, num_captures:, num_cells:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |
+| `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |
 | `m.set_local_name(func:, index:, name:)` | names a local, for diagnostics only |
 | `m.set_capture_name(func:, index:, name:)` | names a capture, for diagnostics only |
 | `m.capture_map_new()` | a staging capture map |
@@ -6340,20 +6339,20 @@ which a closure breaks, so capture forwarding is what survives one arriving
 later without `var_ref`'s meaning having to change.
 
 The forwarding table for a call belongs to the **call site**, not the
-function being called: `examples/pl0/pl0_codegen.cul`'s own `fib`-shaped
-procedure forwards its own cells unchanged on its recursive call, and
-forwards its caller's cells on the first call — two different tables for the
-same callee, because a per-function table can't express what a self-recursive
-call needs (see cpp-vmlib's README for the fuller version of this point).
+function being called: a self-recursive procedure forwards its own captures
+unchanged on its recursive call, while its first caller forwards its own
+cells — two different tables for the same callee, because a per-function
+table can't express what a self-recursive call needs (see cpp-vmlib's
+README for the fuller version of this point).
 
 A plain `'local'` cannot be forwarded this way: it dies with the frame that
 owns it, and the call being built may outlive that frame. A local a call
 captures has to be promoted to `'cell'` first — a boxed slot the frame and
 every call over it share — before `capture_map_push` can name it; `verify()`
 rejects a capture map entry with `kind: 'local'` rather than letting it read
-freed memory later. Promoting a slot is the front end's own analysis to do
-(`examples/pl0/pl0_codegen.cul`'s `cell_index`, mirroring cpp-vmlib's own
-`examples/pl0/binder.cc`): every read and write of that slot switches to
+freed memory later. Deciding which slots need promoting is the front end's
+own analysis to do — walk the captured-variable sets and promote what they
+name — and every read and write of a promoted slot switches to
 `kind: 'cell'`, not only the one at the capture site.
 
 ### Errors, interruption, and recursion
@@ -6378,11 +6377,13 @@ process's own stack.
 
 ### Scope
 
-Values are integers only — no strings, floats, `nil`, or object references —
-and there are no closures, first-class functions or generators; a variable's
-capture is resolved once, when a front end builds the IR, not at run time. A
-`CodeGen.Module` cannot cross an isolate boundary (`Isolate.spawn`/
-`Parallel.map`'s workers each build their own).
+Values are integers and closures — no strings, floats, `nil`, or other
+object references yet — and there are no generators; a variable's capture
+is resolved once, when a front end builds the IR, not at run time. A
+closure built with `make_closure` is a first-class value: storable in a
+variable, passable as a `call_value` argument, returnable as a function's
+result. A `CodeGen.Module` cannot cross an isolate boundary
+(`Isolate.spawn`/`Parallel.map`'s workers each build their own).
 
 ## 36. Design notes
 

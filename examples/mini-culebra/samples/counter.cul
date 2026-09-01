@@ -1,0 +1,15 @@
+# A closure over a mut local: the two counters must not share state, and
+# each call must see the previous call's mutation (a per-instance cell).
+fn make_counter() {
+  mut n = 0
+  fn (step) {
+    n = n + step
+    n
+  }
+}
+let c = make_counter()
+let d = make_counter()
+println(c(2))
+println(c(3))
+println(d(10))
+println(c(1))

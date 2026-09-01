@@ -1,0 +1,14 @@
+# while + mut reassignment; % on the way down.
+fn gcd(a, b) {
+  mut x = a
+  mut y = b
+  while y != 0 {
+    let t = y
+    y = x % y
+    x = t
+  }
+  x
+}
+println(gcd(1071, 462))
+println(gcd(4, 6))
+println(gcd(13, 1))

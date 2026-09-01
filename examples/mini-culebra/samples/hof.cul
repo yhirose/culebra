@@ -1,0 +1,8 @@
+# Closures as arguments: a named fn calls whatever value it was handed.
+fn apply_twice(f, x) {
+  f(f(x))
+}
+println(apply_twice(fn (n) { n * 2 }, 5))
+println(apply_twice(fn (n) { n + 100 }, 5))
+let add3 = fn (n) { n + 3 }
+println(apply_twice(add3, 1))

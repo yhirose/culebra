@@ -1,0 +1,17 @@
+# Nested named fns sharing the enclosing frame's mut through cells, and a
+# sibling call that has to forward a capture it never reads itself.
+fn outer() {
+  mut total = 0
+  fn add(k) {
+    total = total + k
+  }
+  fn add_twice(k) {
+    add(k)
+    add(k)
+  }
+  add(5)
+  add_twice(10)
+  total
+}
+println(outer())
+println(outer())

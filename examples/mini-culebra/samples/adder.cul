@@ -1,0 +1,10 @@
+# A closure returned out of the frame that made it, capturing a parameter
+# (the one case where the argument has to be copied into a cell).
+fn make_adder(k) {
+  fn (n) { n + k }
+}
+let add5 = make_adder(5)
+let add7 = make_adder(7)
+println(add5(10))
+println(add7(10))
+println(add5(add7(1)))

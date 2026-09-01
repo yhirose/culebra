@@ -481,7 +481,8 @@ fn build(m, root) {
     let body = emit_stmt(m, blocks[f].body, f)
     let func = m.add_func(name: blocks[f].name, num_locals: blocks[f].var_names.size(),
                           num_captures: free[f].size(),
-                          num_cells: cell_index[f].size(), body: body)
+                          num_cells: cell_index[f].size(), num_params: 0,
+                          body: body)
     for i in range(blocks[f].var_names.size()) {
       m.set_local_name(func: func, index: i, name: blocks[f].var_names[i])
     }

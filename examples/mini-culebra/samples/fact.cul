@@ -1,0 +1,11 @@
+# Self-recursion through a named fn; if/else in value position is the
+# function's result.
+fn fact(n) {
+  if n <= 1 {
+    1
+  } else {
+    n * fact(n - 1)
+  }
+}
+println(fact(10))
+println(fact(1))

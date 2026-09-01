@@ -1,0 +1,9 @@
+# Precedence, parentheses, unary minus, and the Long division/modulo
+# semantics both implementations must share (truncation toward zero).
+println(1 + 2 * 3)
+println((1 + 2) * 3)
+println(7 / 2)
+println(-7 / 2)
+println(7 % 3)
+println(-(2 + 3))
+println(10 - 3 - 2)

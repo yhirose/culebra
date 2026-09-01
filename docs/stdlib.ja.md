@@ -6090,13 +6090,10 @@ let stmts = m.list_new()
 m.list_push(stmts, print_stmt)
 let body = m.block(stmts_list: stmts, line: 1, col: 1)
 
-m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, body: body)
+m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
 m.verify()
 m.run()  # => 42
 ```
-
-`examples/pl0/pl0_codegen.cul`が実例。`examples/pl0/pl0.cul`が直接評価している
-同じPL/0の文法を、`CodeGen`のIRにコンパイルしてから実行する形に書き直したもの。
 
 ### IRノードはオブジェクトでなく`Long`
 
@@ -6131,10 +6128,12 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.make_while(cond:, body:, line:, col:)` | ループ |
 | `m.block(stmts_list:, line:, col:)` | 文の並び。ステージング用listを消費する |
 | `m.call(func:, cmap:, line:, col:)` | 関数index `func`の呼び出し。captureはcapture-map `cmap`経由で転送 |
+| `m.make_closure(func:, cmap:, line:, col:)` | 関数`func`のクロージャ**値** —— 保持・受け渡しでき、後から呼べる |
+| `m.call_value(callee:, args_list:, line:, col:)` | `callee`の評価結果が何であれ呼ぶ。引数はステージング用listを消費 |
 | `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`(引数1個)か`'readint'`(引数0個) |
 | `m.list_new()` | ステージング用list。`stmts_list:`/`args_list:`に渡す |
 | `m.list_push(list:, value:)` | ステージング用listにノードidを追加する |
-| `m.add_func(name:, num_locals:, num_captures:, num_cells:, body:)` | 関数。indexを返す(`funcs[0]`が`run()`の開始点) |
+| `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | 関数。indexを返す(`funcs[0]`が`run()`の開始点) |
 | `m.set_local_name(func:, index:, name:)` | localに名前を付ける(診断用のみ) |
 | `m.set_capture_name(func:, index:, name:)` | captureに名前を付ける(診断用のみ) |
 | `m.capture_map_new()` | ステージング用capture map |
@@ -6163,11 +6162,10 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 `var_ref`の意味を変えずに済む。
 
 呼び出しごとの転送表は**呼び出し側**が持つものであって、呼ばれる関数側では
-ない。`examples/pl0/pl0_codegen.cul`自身のfib型のプロシージャは、自己再帰の
-呼び出しでは自分のcellをそのまま転送し、最初の呼び出しでは呼び出し元の
-cellを転送する —— 同じ呼び出し先に対して2種類の転送表があるのは、自己再帰の
-呼び出しが要求するものを関数単位の表では表現できないからだ(この点の詳しい
-説明はcpp-vmlibのREADMEを参照)。
+ない。自己再帰するプロシージャは、自己再帰の呼び出しでは自分のcaptureを
+そのまま転送し、それを最初に呼ぶ側は自分のcellを転送する —— 同じ呼び出し先に
+対して2種類の転送表があるのは、自己再帰の呼び出しが要求するものを関数単位の
+表では表現できないからだ(この点の詳しい説明はcpp-vmlibのREADMEを参照)。
 
 素の`'local'`はこの形で転送できない: それを持つフレームと運命を共にして
 消えるが、組み立てている呼び出しはそのフレームより長生きするかもしれない
@@ -6175,10 +6173,9 @@ cellを転送する —— 同じ呼び出し先に対して2種類の転送表�
 ——フレームとそれを捕まえたすべての呼び出しが共有するbox化スロットだ——
 `capture_map_push`がそれを名指す前に。`verify()`は`kind: 'local'`の
 capture map要素を、後で解放済みメモリを読みに行かせる代わりに拒否する。
-どのスロットを昇格させるかはフロントエンド自身が解析すること
-(`examples/pl0/pl0_codegen.cul`の`cell_index`は、cpp-vmlib自身の
-`examples/pl0/binder.cc`を写している): そのスロットの読み書きは
-capture地点だけでなく全て`kind: 'cell'`に切り替わる。
+どのスロットを昇格させるかはフロントエンド自身が解析すること——captureされる
+変数の集合を歩き、そこに名前が出るスロットを昇格させる。昇格したスロットの
+読み書きはcapture地点だけでなく全て`kind: 'cell'`に切り替わる。
 
 ### エラー・割り込み・再帰
 
@@ -6202,11 +6199,12 @@ exceeded"`)を送出する。
 
 ### 対象範囲
 
-値は整数のみ —— 文字列・浮動小数点・`nil`・オブジェクト参照は無い —— であり、
-クロージャ・第一級関数・generatorも無い。変数のcaptureはフロントエンドがIRを
-組み立てる時点で一度だけ解決され、実行時には解決されない。`CodeGen.Module`は
-isolateの境界を越えられない(`Isolate.spawn`/`Parallel.map`のworkerはそれぞれ
-自分自身のModuleを組み立てる)。
+値は整数とクロージャ —— 文字列・浮動小数点・`nil`・その他のオブジェクト参照は
+まだ無い —— であり、generatorも無い。変数のcaptureはフロントエンドがIRを
+組み立てる時点で一度だけ解決され、実行時には解決されない。`make_closure`で
+組み立てたクロージャは第一級値で、変数に保持でき、`call_value`の引数として
+渡せ、関数の結果として返せる。`CodeGen.Module`はisolateの境界を越えられない
+(`Isolate.spawn`/`Parallel.map`のworkerはそれぞれ自分自身のModuleを組み立てる)。
 
 ## 36. 設計上の注記
 
