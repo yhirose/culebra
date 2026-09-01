@@ -124,6 +124,24 @@ struct FnAnalysis {
   // the VM's region handler needs a mark exactly when the node is in here.
   std::unordered_set<const peg::Ast*> try_region_has_defer;
 
+  // A flat `@value` class's own declaration AST, by its declared name, for
+  // one this compile pass has already registered in the process-wide
+  // `culebra::value_flat_layouts()` (vm.h's compile_class_decl fills both
+  // together). Exists for exactly one shape: a class declared inside a
+  // stdlib lazy-namespace module (`fn(){ @value class Vector2 {...};
+  // Vector2 }()`, `include/stdlib_preamble.h`'s `_wrap_lazy_ns_module`) has
+  // no `let`-bound name any ordinary scope's `lookup()` ever finds — every
+  // reference resolves through the runtime namespace registry instead, so
+  // `Binding::Known::value_class` (set only on a class's own declaration
+  // binding, vm.h ~5613) never reaches it. This is the same fact under a
+  // different key: name-addressable rather than binding-addressable, valid
+  // for exactly this ONE compile pass (a fresh `FnAnalysis` per
+  // `compile_module_impl`) — never process-wide, since a pointer into one
+  // parse's AST is meaningless, or unsafe to read concurrently, against any
+  // other. `postfix_value_class` (vm.h) is the only reader, falling back to
+  // this only when `lookup()` finds no live local shadowing the name.
+  std::map<std::string, const peg::Ast*, std::less<>> stdlib_value_classes;
+
   FuncInfo analyze_program(const peg::Ast& programAst,
                            bool session_top = false) {
     session_top_ = session_top;

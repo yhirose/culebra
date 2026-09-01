@@ -5543,8 +5543,19 @@ class Compiler {
         }
         flat.emplace_back(mv.name);
       }
-      if (eligible)
+      if (eligible) {
         culebra::register_value_flat_layout(class_name, std::move(flat));
+        // The name-addressable twin of the binding `known.value_class`
+        // (below) sets, for a class no `lookup()` in the compiling
+        // frame's own scope can see — a stdlib lazy-namespace module's own
+        // class (see FnAnalysis::stdlib_value_classes' own comment).
+        // Harmless to record for every class, ordinary top-level ones
+        // included: `postfix_value_class` only ever consults this after
+        // `lookup()` has already failed, so a live local of the same name
+        // keeps shadowing it exactly as before.
+        analysis_.stdlib_value_classes.insert_or_assign(
+            std::string(class_name), &ast);
+      }
     }
     const peg::Ast* new_ast = new_asts.empty() ? nullptr : new_asts.front();
     // Resolve `@derive(...)` into the (method name, runtime kind) pairs to
@@ -8709,11 +8720,26 @@ class Compiler {
     const auto& head = *at.nodes[0];
     if (head.tag != "IDENTIFIER"_) return nullptr;
     const Binding* b = lookup(head.token);
-    // A lazy binding is a run-time question about WHICH class the name holds
-    // (a member's own name reads it off the receiver), and unboxing has no
-    // guarded arm to fall back to — it either lays the instance out or it
-    // does not. So only the settled answer inlines.
-    return (b && !b->lazy) ? b->known.value_class : nullptr;
+    if (b) {
+      // A lazy binding is a run-time question about WHICH class the name
+      // holds (a member's own name reads it off the receiver), and unboxing
+      // has no guarded arm to fall back to — it either lays the instance out
+      // or it does not. So only the settled answer inlines.
+      return b->lazy ? nullptr : b->known.value_class;
+    }
+    // No live local of this name: an UNSHADOWED stdlib namespace identifier
+    // is never a `lookup()`-able Binding at all — every stdlib lazy module
+    // resolves at runtime through the namespace registry
+    // (`_lazy_ns_register`, `stdlib_preamble.h`), not a compile-time `let`
+    // — so a flat `@value` class declared inside one (`Vector2`, ...) would
+    // otherwise never reach `known.value_class` no matter how it is
+    // written. `stdlib_value_classes` is that same fact under its declared
+    // NAME instead: registered at the identical site `known.value_class`
+    // is, so this returns exactly the same answer a local declaration
+    // would have.
+    if (!is_stdlib_namespace(head.token)) return nullptr;
+    auto it = analysis_.stdlib_value_classes.find(head.token);
+    return it == analysis_.stdlib_value_classes.end() ? nullptr : it->second;
   }
 
   // Whether a member's value is another instance of its own class — its body
