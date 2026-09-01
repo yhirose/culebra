@@ -63,266 +63,11 @@ fn fail(node, msg) {
   throw {kind: 'Pl0Error', message: msg, line: node.line, col: node.column}
 }
 
-# --- Phase 1: collect declarations -------------------------------------------
-#
-# One entry per PL/0 block (the outermost program counts as block 0), holding
-# only the *static* structure: which names this block declares and where its
-# nested procedures live. No values -- `CodeGen`'s variables are (block, slot)
-# pairs resolved once here, not names looked up while running.
-#
-# Every sibling procedure is registered before the first of them is walked
-# (two passes over `procedure`'s nodes below), so a call to a later sibling
-# resolves. Doing it in one pass -- register-then-immediately-descend -- is
-# the reason cpp-peglib's own pl0.cc fails on exactly this case.
-
-mut blocks = []          # {parent, name, consts, var_slot, var_names, procs, children, body}
-mut free = []            # per block: {"declaring_block:slot": (block, slot)}
-mut calls = []           # per block: [callee_block...]
-mut capture_index = []   # per block: {"declaring_block:slot": capture_index}
-mut cell_index = []      # per block (the owner): {slot: cell_index}
-
-fn declared_anywhere(block, name) {
-  mut b = block
-  while b != nil {
-    let bi = blocks[b]
-    if bi.consts.has(name) || bi.var_slot.has(name) || bi.procs.has(name) {
-      return true
-    }
-    b = bi.parent
-  }
-  false
-}
-
-fn check_fresh(block, name, at) {
-  if declared_anywhere(block, name) {
-    fail(at, "'{name}' is already defined")
-  }
-}
-
-fn collect(node, parent, name) {
-  let index = blocks.size()
-  blocks.push({parent: parent, name: name, consts: {}, var_slot: {},
-              var_names: [], procs: {}, children: [], body: node.nodes[3]})
-
-  let [cst, vr, prc, _] = node.nodes
-  for [cname, cvalue] in cst.nodes.iter().chunks(2) {
-    check_fresh(index, cname.token, cname)
-    blocks[index].consts[cname.token] = to_long(cvalue.token)
-  }
-  for vname in vr.nodes {
-    check_fresh(index, vname.token, vname)
-    let slot = blocks[index].var_names.size()
-    blocks[index].var_slot[vname.token] = slot
-    blocks[index].var_names.push(vname.token)
-  }
-  for [pname, _] in prc.nodes.iter().chunks(2) {
-    check_fresh(index, pname.token, pname)
-    blocks[index].procs[pname.token] = -1  # reserved; filled in below
-  }
-  for [pname, sub] in prc.nodes.iter().chunks(2) {
-    let child = collect(sub, index, pname.token)
-    blocks[index].procs[pname.token] = child
-    blocks[index].children.push(child)
-  }
-  index
-}
-
-# --- Name resolution ----------------------------------------------------------
-#
-# Three lookups, matching pl0.cul's three: reading a name sees constants and
-# variables; assigning sees the same but rejects a constant; CALL sees only
-# procedures. A procedure name read as a value is "undefined variable", which
-# is what pl0.cul itself reports.
-
-fn lookup_value(block, name) {
-  mut b = block
-  while b != nil {
-    let bi = blocks[b]
-    if bi.consts.has(name) { return {found: true, is_const: true, cval: bi.consts[name]} }
-    if bi.var_slot.has(name) { return {found: true, is_const: false, var: (b, bi.var_slot[name])} }
-    b = bi.parent
-  }
-  {found: false}
-}
-
-fn lookup_assign(block, name, at) {
-  mut b = block
-  while b != nil {
-    let bi = blocks[b]
-    if bi.consts.has(name) { fail(at, "cannot assign to constant '{name}'") }
-    if bi.var_slot.has(name) { return (b, bi.var_slot[name]) }
-    b = bi.parent
-  }
-  fail(at, "undefined variable '{name}'")
-}
-
-fn lookup_proc(block, name) {
-  mut b = block
-  while b != nil {
-    let bi = blocks[b]
-    if bi.procs.has(name) { return bi.procs[name] }
-    b = bi.parent
-  }
-  -1
-}
-
-# --- Phase 2: free variables ---------------------------------------------------
-#
-# A reference block doesn't declare is free, and has to be captured from
-# whichever ancestor does declare it. `solve_captures` below closes this over
-# the call graph: if f calls g, everything g captures that f doesn't own
-# itself must be captured by f too (recursion makes this a fixpoint, not a
-# single pass -- self-recursion is the case a single pass misses).
-
-fn note_ref(block, var) {
-  let (vb, vs) = var
-  if vb != block { free[block]["{vb}:{vs}"] = var }
-}
-
-fn scan_chain(nodes, block) {
-  for n in nodes {
-    if n.name != 'sign' && n.name != 'term_op' && n.name != 'factor_op' {
-      scan_expr(n, block)
-    }
-  }
-}
-
-fn scan_expr(node, block) {
-  match node {
-    {name: 'number'} => to_long(node.token),  # range-checked now, at bind time
-    {name: 'ident', token} => {
-      let r = lookup_value(block, token)
-      if !r.found { fail(node, "undefined variable '{token}'") }
-      if !r.is_const { note_ref(block, r.var) }
-    },
-    {name: 'expression', nodes} => scan_chain(nodes, block),
-    {name: 'term', nodes} => scan_chain(nodes, block),
-    _ => fail(node, "cannot evaluate {node.name}"),
-  }
-}
-
-fn scan_cond(node, block) {
-  match node {
-    {name: 'odd', nodes: [value]} => scan_expr(value, block),
-    {name: 'compare', nodes: [l, _op, r]} => {
-      scan_expr(l, block)
-      scan_expr(r, block)
-    },
-    _ => fail(node, "cannot evaluate {node.name} as a condition"),
-  }
-}
-
-fn scan_stmt(node, block) {
-  match node {
-    {name: 'statements', nodes} => nodes.for_each(|s| scan_stmt(s, block)),
-    {name: 'assignment', nodes: [name, value]} => {
-      note_ref(block, lookup_assign(block, name.token, name))
-      scan_expr(value, block)
-    },
-    {name: 'call', nodes: [name]} => {
-      let g = lookup_proc(block, name.token)
-      if g < 0 { fail(name, "undefined procedure '{name.token}'") }
-      calls[block].push(g)
-    },
-    {name: 'if', nodes: [cond, body]} => {
-      scan_cond(cond, block)
-      scan_stmt(body, block)
-    },
-    {name: 'while', nodes: [cond, body]} => {
-      scan_cond(cond, block)
-      scan_stmt(body, block)
-    },
-    {name: 'out', nodes: [value]} => scan_expr(value, block),
-    {name: 'in', nodes: [name]} => note_ref(block, lookup_assign(block, name.token, name)),
-    {name: 'statement'} => nil,  # the empty statement a trailing `;` leaves
-    _ => fail(node, "cannot execute {node.name}"),
-  }
-}
-
-# Nested procedures scan before the block's own body, so a diagnostic comes
-# out in source order (PL/0 writes PROCEDURE declarations ahead of the
-# statement they precede).
-fn scan_block(block) {
-  for child in blocks[block].children { scan_block(child) }
-  scan_stmt(blocks[block].body, block)
-}
-
-fn solve_captures() {
-  mut changed = true
-  while changed {
-    changed = false
-    for f in range(blocks.size()) {
-      for g in calls[f] {
-        for var in free[g].values() {
-          let (vb, vs) = var
-          if vb != f {
-            let key = "{vb}:{vs}"
-            if !free[f].has(key) {
-              free[f][key] = var
-              changed = true
-            }
-          }
-        }
-      }
-    }
-  }
-
-  # Every block's free set is walked once here for two independent purposes:
-  # capture_index says where *this* block's own capture list holds a free
-  # variable; cell_index says which of the *owning* block's own slots that
-  # variable forces into a cell rather than a local (a closure cannot capture
-  # a local -- it would die with the frame while the closure captured into it
-  # may not; see coreir/ir.h's verifier). cell_index is keyed on the owning
-  # block's own slot number alone (never a "block:slot" pair the way free/
-  # capture_index are): cell_index[b] only ever holds slots b itself owns.
-  for f in range(blocks.size()) {
-    mut i = 0
-    for var in free[f].values() {
-      let (vb, vs) = var
-      capture_index[f]["{vb}:{vs}"] = i
-      i = i + 1
-      if !cell_index[vb].has(vs) {
-        cell_index[vb][vs] = cell_index[vb].size()
-      }
-    }
-  }
-}
-
-# `f`'s own view of a variable: its own slot (a cell if some nested call
-# captures it, otherwise a plain local), or the index `f` captures it at.
-fn access(f, var) {
-  let (vb, vs) = var
-  cond {
-    vb == f => {
-      if cell_index[f].has(vs) {
-        {kind: 'cell', index: cell_index[f][vs]}
-      } else {
-        {kind: 'local', index: vs}
-      }
-    },
-    _ => {kind: 'capture', index: capture_index[f]["{vb}:{vs}"]},
-  }
-}
-
-# The forwarding table for a call from `f` to `g`: for each variable `g`
-# captures, resolve it in `f`'s own frame. A self-recursive call (g == f)
-# forwards `f`'s own captures straight through, which is why this is per call
-# site and not per function -- see cpp-vmlib's README for fib.pas's version
-# of this exact table.
-fn make_capture_map(m, f, g) {
-  let cmap = m.capture_map_new()
-  for var in free[g].values() {
-    let a = access(f, var)
-    m.capture_map_push(cmap, kind: a.kind, index: a.index)
-  }
-  m.add_capture_map(cmap)
-}
-
-# --- Phase 3: emit -------------------------------------------------------------
-
 fn make_list(m, items) {
   let list = m.list_new()
-  for item in items { m.list_push(list, item) }
+  for item in items {
+    m.list_push(list, item)
+  }
   list
 }
 
@@ -346,151 +91,516 @@ fn cmp_name(tok) {
   }
 }
 
-# `expression <- sign? term (term_op term)*` and `term <- factor (factor_op
-# factor)*` are the same shape: an optional leading sign, a first operand,
-# then operator/operand pairs, left-associated. The sign binds to the first
-# term only, so -a*b+c is ((-(a*b)) + c) -- same fact pl0.cul's own `chain`
-# leans on, restated here as IR construction instead of arithmetic.
-fn emit_chain(m, nodes, f) {
-  let [head, ...rest] = nodes
-  if head.name == 'sign' {
-    let [first, ...pairs] = rest
-    mut acc = emit_expr(m, first, f)
-    if head.token == '-' {
-      acc = m.unary(op: 'neg', operand: acc, line: head.line, col: head.column)
-    }
-    emit_fold(m, pairs, acc, f)
-  } else {
-    emit_fold(m, rest, emit_expr(m, head, f), f)
-  }
-}
+# The four phases below (collect declarations, scan free variables, solve
+# captures by fixpoint, emit) all read and mutate the same per-compile
+# state, so they live as methods on one `Binder` instance instead of on
+# module-level `mut` globals -- a second `Binder.new()` in the same process
+# starts from nothing rather than inheriting another compile's leftovers.
+class Binder {
+  blocks = []         # {parent, name, consts, var_slot, var_names, procs, children, body}
+  free = []           # per block: Set of (declaring_block, slot) tuples
+  calls = []          # per block: [callee_block...]
+  capture_index = []  # per block: {(declaring_block, slot): capture_index}
+  cell_index = []     # per block (the owner): {slot: cell_index}
 
-fn emit_fold(m, pairs, acc, f) {
-  mut value = acc
-  for [op, operand] in pairs.iter().chunks(2) {
-    let rhs = emit_expr(m, operand, f)
-    value = m.binary(op: binop_name(op.token), lhs: value, rhs: rhs,
-                     line: op.line, col: op.column)
-  }
-  value
-}
+  # --- Phase 1: collect declarations -----------------------------------------
+  #
+  # One entry per PL/0 block (the outermost program counts as block 0), holding
+  # only the *static* structure: which names this block declares and where its
+  # nested procedures live. No values -- `CodeGen`'s variables are (block, slot)
+  # pairs resolved once here, not names looked up while running.
+  #
+  # Every sibling procedure is registered before the first of them is walked
+  # (two passes over `procedure`'s nodes below), so a call to a later sibling
+  # resolves. Doing it in one pass -- register-then-immediately-descend -- is
+  # the reason cpp-peglib's own pl0.cc fails on exactly this case.
 
-fn emit_expr(m, node, f) {
-  match node {
-    {name: 'number'} =>
-      m.literal(v: to_long(node.token), line: node.line, col: node.column),
-    {name: 'ident', token} => {
-      let r = lookup_value(f, token)
-      if r.is_const {
-        m.literal(v: r.cval, line: node.line, col: node.column)
-      } else {
-        let a = access(f, r.var)
-        m.var_ref(kind: a.kind, index: a.index, line: node.line, col: node.column)
+  declared_anywhere(block, name) {
+    mut b = block
+    while b != nil {
+      let bi = self.blocks[b]
+      if bi.consts.has(name) || bi.var_slot.has(name) || bi.procs.has(name) {
+        return true
       }
-    },
-    {name: 'expression', nodes} => emit_chain(m, nodes, f),
-    {name: 'term', nodes} => emit_chain(m, nodes, f),
-    _ => fail(node, "cannot evaluate {node.name}"),
-  }
-}
-
-# ODD e is e mod 2 != 0. cpp-peglib's own pl0.cc reads it as e != 0 in both of
-# its lanes, agreeing with itself while disagreeing with the language -- see
-# cpp-vmlib's examples/pl0/README.md for the sample that catches it.
-fn emit_cond(m, node, f) {
-  match node {
-    {name: 'odd', nodes: [value]} => {
-      let e = emit_expr(m, value, f)
-      let ln = node.line
-      let cl = node.column
-      let rem = m.binary(op: 'mod', lhs: e, rhs: m.literal(v: 2, line: ln, col: cl),
-                         line: ln, col: cl)
-      m.binary(op: 'ne', lhs: rem, rhs: m.literal(v: 0, line: ln, col: cl),
-              line: ln, col: cl)
-    },
-    {name: 'compare', nodes: [l, op, r]} => {
-      let lhs = emit_expr(m, l, f)
-      let rhs = emit_expr(m, r, f)
-      m.binary(op: cmp_name(op.token), lhs: lhs, rhs: rhs, line: op.line, col: op.column)
-    },
-    _ => fail(node, "cannot evaluate {node.name} as a condition"),
-  }
-}
-
-fn emit_stmt(m, node, f) {
-  match node {
-    {name: 'statements', nodes} =>
-      m.block(stmts_list: make_list(m, nodes.map(|n| emit_stmt(m, n, f))),
-             line: node.line, col: node.column),
-    {name: 'assignment', nodes: [name, value]} => {
-      let var = lookup_assign(f, name.token, name)
-      let v = emit_expr(m, value, f)
-      let a = access(f, var)
-      m.assign(kind: a.kind, index: a.index, value: v, line: node.line, col: node.column)
-    },
-    {name: 'call', nodes: [name]} => {
-      let g = lookup_proc(f, name.token)
-      let cmap = make_capture_map(m, f, g)
-      m.call(func: g, cmap: cmap, line: node.line, col: node.column)
-    },
-    {name: 'if', nodes: [cond, body]} => {
-      let c = emit_cond(m, cond, f)
-      let t = emit_stmt(m, body, f)
-      m.make_if(cond: c, then_branch: t, line: node.line, col: node.column)
-    },
-    {name: 'while', nodes: [cond, body]} => {
-      let c = emit_cond(m, cond, f)
-      let b = emit_stmt(m, body, f)
-      m.make_while(cond: c, body: b, line: node.line, col: node.column)
-    },
-    {name: 'out', nodes: [value]} => {
-      let v = emit_expr(m, value, f)
-      m.intrinsic(name: 'print', args_list: make_list(m, [v]),
-                 line: node.line, col: node.column)
-    },
-    {name: 'in', nodes: [name]} => {
-      let var = lookup_assign(f, name.token, name)
-      let read = m.intrinsic(name: 'readint', args_list: make_list(m, []),
-                             line: node.line, col: node.column)
-      let a = access(f, var)
-      m.assign(kind: a.kind, index: a.index, value: read, line: node.line, col: node.column)
-    },
-    {name: 'statement'} =>
-      m.block(stmts_list: make_list(m, []), line: node.line, col: node.column),
-    _ => fail(node, "cannot execute {node.name}"),
-  }
-}
-
-# --- Driver --------------------------------------------------------------------
-
-fn build(m, root) {
-  collect(root, nil, 'main')
-  for _ in range(blocks.size()) {
-    free.push({})
-    calls.push([])
-    capture_index.push({})
-    cell_index.push({})
-  }
-  scan_block(0)
-  solve_captures()
-
-  # Blocks and funcs share indices by construction: block 0 (the program's
-  # own outermost scope) is emitted first, so it becomes func #0, the entry
-  # point CodeGen requires.
-  for f in range(blocks.size()) {
-    let body = emit_stmt(m, blocks[f].body, f)
-    let func = m.add_func(name: blocks[f].name, num_locals: blocks[f].var_names.size(),
-                          num_captures: free[f].size(),
-                          num_cells: cell_index[f].size(), num_params: 0,
-                          body: body)
-    for i in range(blocks[f].var_names.size()) {
-      m.set_local_name(func: func, index: i, name: blocks[f].var_names[i])
+      b = bi.parent
     }
-    mut i = 0
-    for var in free[f].values() {
-      let (vb, vs) = var
-      m.set_capture_name(func: func, index: i, name: blocks[vb].var_names[vs])
-      i = i + 1
+    false
+  }
+
+  check_fresh(block, name, at) {
+    if self.declared_anywhere(block, name) {
+      fail(at, "'{name}' is already defined")
+    }
+  }
+
+  collect(node, parent, name) {
+    let index = self.blocks.size()
+    self.blocks.push({
+      parent: parent,
+      name: name,
+      consts: {},
+      var_slot: {},
+      var_names: [],
+      procs: {},
+      children: [],
+      body: node.nodes[3],
+    })
+
+    let [cst, vr, prc, _] = node.nodes
+    for [cname, cvalue] in cst.nodes.iter().chunks(2) {
+      self.check_fresh(index, cname.token, cname)
+      self.blocks[index].consts[cname.token] = to_long(cvalue.token)
+    }
+    for vname in vr.nodes {
+      self.check_fresh(index, vname.token, vname)
+      let slot = self.blocks[index].var_names.size()
+      self.blocks[index].var_slot[vname.token] = slot
+      self.blocks[index].var_names.push(vname.token)
+    }
+    for [pname, _] in prc.nodes.iter().chunks(2) {
+      self.check_fresh(index, pname.token, pname)
+      self.blocks[index].procs[pname.token] = -1  # reserved; filled in below
+    }
+    for [pname, sub] in prc.nodes.iter().chunks(2) {
+      let child = self.collect(sub, index, pname.token)
+      self.blocks[index].procs[pname.token] = child
+      self.blocks[index].children.push(child)
+    }
+    index
+  }
+
+  # --- Name resolution --------------------------------------------------------
+  #
+  # Three lookups, matching pl0.cul's three: reading a name sees constants and
+  # variables; assigning sees the same but rejects a constant; CALL sees only
+  # procedures. A procedure name read as a value is "undefined variable", which
+  # is what pl0.cul itself reports.
+
+  lookup_value(block, name) {
+    mut b = block
+    while b != nil {
+      let bi = self.blocks[b]
+      if bi.consts.has(name) {
+        return {found: true, is_const: true, cval: bi.consts[name]}
+      }
+      if bi.var_slot.has(name) {
+        return {found: true, is_const: false, var: (b, bi.var_slot[name])}
+      }
+      b = bi.parent
+    }
+    {found: false}
+  }
+
+  lookup_assign(block, name, at) {
+    mut b = block
+    while b != nil {
+      let bi = self.blocks[b]
+      if bi.consts.has(name) {
+        fail(at, "cannot assign to constant '{name}'")
+      }
+      if bi.var_slot.has(name) {
+        return (b, bi.var_slot[name])
+      }
+      b = bi.parent
+    }
+    fail(at, "undefined variable '{name}'")
+  }
+
+  lookup_proc(block, name) {
+    mut b = block
+    while b != nil {
+      let bi = self.blocks[b]
+      if bi.procs.has(name) {
+        return bi.procs[name]
+      }
+      b = bi.parent
+    }
+    -1
+  }
+
+  # --- Phase 2: free variables -------------------------------------------------
+  #
+  # A reference block doesn't declare is free, and has to be captured from
+  # whichever ancestor does declare it. `solve_captures` below closes this over
+  # the call graph: if f calls g, everything g captures that f doesn't own
+  # itself must be captured by f too (recursion makes this a fixpoint, not a
+  # single pass -- self-recursion is the case a single pass misses).
+
+  note_ref(block, var) {
+    let (vb, _) = var
+    if vb != block {
+      self.free[block].add(var)
+    }
+  }
+
+  scan_chain(nodes, block) {
+    for n in nodes {
+      if n.name != 'sign' && n.name != 'term_op' && n.name != 'factor_op' {
+        self.scan_expr(n, block)
+      }
+    }
+  }
+
+  scan_expr(node, block) {
+    match node {
+      {name: 'number'} => to_long(node.token),  # range-checked now, at bind time
+      {name: 'ident', token} => {
+        let r = self.lookup_value(block, token)
+        if !r.found {
+          fail(node, "undefined variable '{token}'")
+        }
+        if !r.is_const {
+          self.note_ref(block, r.var)
+        }
+      },
+      {name: 'expression', nodes} => self.scan_chain(nodes, block),
+      {name: 'term', nodes} => self.scan_chain(nodes, block),
+      _ => fail(node, "cannot evaluate {node.name}"),
+    }
+  }
+
+  scan_cond(node, block) {
+    match node {
+      {name: 'odd', nodes: [value]} => self.scan_expr(value, block),
+      {name: 'compare', nodes: [l, _op, r]} => {
+        self.scan_expr(l, block)
+        self.scan_expr(r, block)
+      },
+      _ => fail(node, "cannot evaluate {node.name} as a condition"),
+    }
+  }
+
+  scan_stmt(node, block) {
+    match node {
+      {
+        name: 'statements',
+        nodes,
+      } => nodes.for_each(|s| self.scan_stmt(s, block)),
+      {name: 'assignment', nodes: [name, value]} => {
+        self.note_ref(block, self.lookup_assign(block, name.token, name))
+        self.scan_expr(value, block)
+      },
+      {name: 'call', nodes: [name]} => {
+        let g = self.lookup_proc(block, name.token)
+        if g < 0 {
+          fail(name, "undefined procedure '{name.token}'")
+        }
+        self.calls[block].push(g)
+      },
+      {name: 'if', nodes: [cond, body]} => {
+        self.scan_cond(cond, block)
+        self.scan_stmt(body, block)
+      },
+      {name: 'while', nodes: [cond, body]} => {
+        self.scan_cond(cond, block)
+        self.scan_stmt(body, block)
+      },
+      {name: 'out', nodes: [value]} => self.scan_expr(value, block),
+      {
+        name: 'in',
+        nodes: [name],
+      } => self.note_ref(block, self.lookup_assign(block, name.token, name)),
+      {name: 'statement'} => nil,  # the empty statement a trailing `;` leaves
+      _ => fail(node, "cannot execute {node.name}"),
+    }
+  }
+
+  # Nested procedures scan before the block's own body, so a diagnostic comes
+  # out in source order (PL/0 writes PROCEDURE declarations ahead of the
+  # statement they precede).
+  scan_block(block) {
+    for child in self.blocks[block].children {
+      self.scan_block(child)
+    }
+    self.scan_stmt(self.blocks[block].body, block)
+  }
+
+  solve_captures() {
+    mut changed = true
+    while changed {
+      changed = false
+      for f in range(self.blocks.size()) {
+        for g in self.calls[f] {
+          for var in self.free[g].iter() {
+            let (vb, _) = var
+            if vb != f && self.free[f].add(var) {
+              changed = true
+            }
+          }
+        }
+      }
+    }
+
+    # Every block's free set is walked once here for two independent purposes:
+    # capture_index says where *this* block's own capture list holds a free
+    # variable; cell_index says which of the *owning* block's own slots that
+    # variable forces into a cell rather than a local (a closure cannot
+    # capture a local -- it would die with the frame while the closure
+    # captured into it may not; see coreir/ir.h's verifier). cell_index is
+    # keyed on the owning block's own slot number alone (never a (block,
+    # slot) pair the way free/capture_index are): cell_index[b] only ever
+    # holds slots b itself owns.
+    for f in range(self.blocks.size()) {
+      for i, var in self.free[f].iter().enumerate() {
+        let (vb, vs) = var
+        self.capture_index[f][var] = i
+        if !self.cell_index[vb].has(vs) {
+          self.cell_index[vb][vs] = self.cell_index[vb].size()
+        }
+      }
+    }
+  }
+
+  # `f`'s own view of a variable: its own slot (a cell if some nested call
+  # captures it, otherwise a plain local), or the index `f` captures it at.
+  access(f, var) {
+    let (vb, vs) = var
+    cond {
+      vb == f => {
+        if self.cell_index[f].has(vs) {
+          {kind: 'cell', index: self.cell_index[f][vs]}
+        } else {
+          {kind: 'local', index: vs}
+        }
+      },
+      _ => {kind: 'capture', index: self.capture_index[f][var]},
+    }
+  }
+
+  # The forwarding table for a call from `f` to `g`: for each variable `g`
+  # captures, resolve it in `f`'s own frame. A self-recursive call (g == f)
+  # forwards `f`'s own captures straight through, which is why this is per call
+  # site and not per function -- see cpp-vmlib's README for fib.pas's version
+  # of this exact table.
+  make_capture_map(m, f, g) {
+    let cmap = m.capture_map_new()
+    for var in self.free[g].iter() {
+      let a = self.access(f, var)
+      m.capture_map_push(cmap, kind: a.kind, index: a.index)
+    }
+    m.add_capture_map(cmap)
+  }
+
+  # --- Phase 3: emit -----------------------------------------------------------
+
+  # `expression <- sign? term (term_op term)*` and `term <- factor (factor_op
+  # factor)*` are the same shape: an optional leading sign, a first operand,
+  # then operator/operand pairs, left-associated. The sign binds to the first
+  # term only, so -a*b+c is ((-(a*b)) + c) -- same fact pl0.cul's own `chain`
+  # leans on, restated here as IR construction instead of arithmetic.
+  emit_chain(m, nodes, f) {
+    let [head, ...rest] = nodes
+    if head.name == 'sign' {
+      let [first, ...pairs] = rest
+      mut acc = self.emit_expr(m, first, f)
+      if head.token == '-' {
+        acc = m.unary(
+          op: 'neg',
+          operand: acc,
+          line: head.line,
+          col: head.column,
+        )
+      }
+      self.emit_fold(m, pairs, acc, f)
+    } else {
+      self.emit_fold(m, rest, self.emit_expr(m, head, f), f)
+    }
+  }
+
+  emit_fold(m, pairs, acc, f) {
+    mut value = acc
+    for [op, operand] in pairs.iter().chunks(2) {
+      let rhs = self.emit_expr(m, operand, f)
+      value = m.binary(
+        op: binop_name(op.token),
+        lhs: value,
+        rhs: rhs,
+        line: op.line,
+        col: op.column,
+      )
+    }
+    value
+  }
+
+  emit_expr(m, node, f) {
+    match node {
+      {name: 'number'} => m.literal(
+        v: to_long(node.token),
+        line: node.line,
+        col: node.column,
+      ),
+      {name: 'ident', token} => {
+        let r = self.lookup_value(f, token)
+        if r.is_const {
+          m.literal(v: r.cval, line: node.line, col: node.column)
+        } else {
+          let a = self.access(f, r.var)
+          m.var_ref(
+            kind: a.kind,
+            index: a.index,
+            line: node.line,
+            col: node.column,
+          )
+        }
+      },
+      {name: 'expression', nodes} => self.emit_chain(m, nodes, f),
+      {name: 'term', nodes} => self.emit_chain(m, nodes, f),
+      _ => fail(node, "cannot evaluate {node.name}"),
+    }
+  }
+
+  # ODD e is e mod 2 != 0. cpp-peglib's own pl0.cc reads it as e != 0 in both of
+  # its lanes, agreeing with itself while disagreeing with the language -- see
+  # cpp-vmlib's examples/pl0/README.md for the sample that catches it.
+  emit_cond(m, node, f) {
+    match node {
+      {name: 'odd', nodes: [value]} => {
+        let e = self.emit_expr(m, value, f)
+        let ln = node.line
+        let cl = node.column
+        let rem = m.binary(
+          op: 'mod',
+          lhs: e,
+          rhs: m.literal(v: 2, line: ln, col: cl),
+          line: ln,
+          col: cl,
+        )
+        m.binary(
+          op: 'ne',
+          lhs: rem,
+          rhs: m.literal(v: 0, line: ln, col: cl),
+          line: ln,
+          col: cl,
+        )
+      },
+      {name: 'compare', nodes: [l, op, r]} => {
+        let lhs = self.emit_expr(m, l, f)
+        let rhs = self.emit_expr(m, r, f)
+        m.binary(
+          op: cmp_name(op.token),
+          lhs: lhs,
+          rhs: rhs,
+          line: op.line,
+          col: op.column,
+        )
+      },
+      _ => fail(node, "cannot evaluate {node.name} as a condition"),
+    }
+  }
+
+  emit_stmt(m, node, f) {
+    match node {
+      {
+        name: 'statements',
+        nodes,
+      } => m.block(
+        stmts_list: make_list(m, nodes.map(|n| self.emit_stmt(m, n, f))),
+        line: node.line,
+        col: node.column,
+      ),
+      {name: 'assignment', nodes: [name, value]} => {
+        let var = self.lookup_assign(f, name.token, name)
+        let v = self.emit_expr(m, value, f)
+        let a = self.access(f, var)
+        m.assign(
+          kind: a.kind,
+          index: a.index,
+          value: v,
+          line: node.line,
+          col: node.column,
+        )
+      },
+      {name: 'call', nodes: [name]} => {
+        let g = self.lookup_proc(f, name.token)
+        let cmap = self.make_capture_map(m, f, g)
+        m.call(func: g, cmap: cmap, line: node.line, col: node.column)
+      },
+      {name: 'if', nodes: [cond, body]} => {
+        let c = self.emit_cond(m, cond, f)
+        let t = self.emit_stmt(m, body, f)
+        m.make_if(cond: c, then_branch: t, line: node.line, col: node.column)
+      },
+      {name: 'while', nodes: [cond, body]} => {
+        let c = self.emit_cond(m, cond, f)
+        let b = self.emit_stmt(m, body, f)
+        m.make_while(cond: c, body: b, line: node.line, col: node.column)
+      },
+      {name: 'out', nodes: [value]} => {
+        let v = self.emit_expr(m, value, f)
+        m.intrinsic(
+          name: 'print',
+          args_list: make_list(m, [v]),
+          line: node.line,
+          col: node.column,
+        )
+      },
+      {name: 'in', nodes: [name]} => {
+        let var = self.lookup_assign(f, name.token, name)
+        let read = m.intrinsic(
+          name: 'readint',
+          args_list: make_list(m, []),
+          line: node.line,
+          col: node.column,
+        )
+        let a = self.access(f, var)
+        m.assign(
+          kind: a.kind,
+          index: a.index,
+          value: read,
+          line: node.line,
+          col: node.column,
+        )
+      },
+      {name: 'statement'} => m.block(
+        stmts_list: make_list(m, []),
+        line: node.line,
+        col: node.column,
+      ),
+      _ => fail(node, "cannot execute {node.name}"),
+    }
+  }
+
+  # --- Driver ------------------------------------------------------------------
+
+  build(m, root) {
+    self.collect(root, nil, 'main')
+    for _ in range(self.blocks.size()) {
+      self.free.push([].to_set())
+      self.calls.push([])
+      self.capture_index.push({})
+      self.cell_index.push({})
+    }
+    self.scan_block(0)
+    self.solve_captures()
+
+    # Blocks and funcs share indices by construction: block 0 (the program's
+    # own outermost scope) is emitted first, so it becomes func #0, the entry
+    # point CodeGen requires.
+    for f in range(self.blocks.size()) {
+      let body = self.emit_stmt(m, self.blocks[f].body, f)
+      let func = m.add_func(
+        name: self.blocks[f].name,
+        num_locals: self.blocks[f].var_names.size(),
+        num_captures: self.free[f].size(),
+        num_cells: self.cell_index[f].size(),
+        num_params: 0,
+        body: body,
+      )
+      for i in range(self.blocks[f].var_names.size()) {
+        m.set_local_name(
+          func: func,
+          index: i,
+          name: self.blocks[f].var_names[i],
+        )
+      }
+      for i, var in self.free[f].iter().enumerate() {
+        let (vb, vs) = var
+        m.set_capture_name(
+          func: func,
+          index: i,
+          name: self.blocks[vb].var_names[vs],
+        )
+      }
     }
   }
 }
@@ -508,7 +618,7 @@ try {
   # arrives is the block itself -- same fact pl0.cul's own driver leans on.
   let tree = Peg.parse(grammar, FS.read(args[0]), path: args[0])
   let m = CodeGen.Module.new()
-  build(m, tree)
+  Binder.new().build(m, tree)
   m.verify()
   if want_ir {
     print(m.dump_ir())
