@@ -3884,29 +3884,63 @@ let want_ir = Sys.argv.contains('--ir')
 let want_bc = Sys.argv.contains('--bc')
 let cli = Sys.argv.filter(|a| a != '--ir' && a != '--bc')
 if cli.empty() {
-  println("usage: culebra mini_culebra.cul [--ir | --bc] PROGRAM.cul")
+  println("usage: culebra mini_culebra.cul [--ir | --bc] PROGRAM.cul...")
   Sys.exit(1)
 }
 
-try {
-  let prelude_tree = Peg.parse(grammar, prelude_src, path: '<prelude>')
-  let tree = Peg.parse(grammar, FS.read(cli[0]), path: cli[0])
-  let m = CodeGen.Module.new()
-  build(m, prelude_tree, tree)
-  m.verify()
-  if want_ir {
-    print(m.dump_ir())
-  } else if want_bc {
-    print(m.dump_bc())
-  } else {
-    m.run()
+# The grammar and the prelude parse once; every program after the first
+# reuses both, which is what makes a many-program batch cheap.
+let prelude_tree = Peg.parse(grammar, prelude_src, path: '<prelude>')
+
+mut had_err = false
+for path in cli {
+  if cli.size() > 1 {
+    # Batch mode: a marker line before each program so a driver script can
+    # split the concatenated output back into per-program chunks.
+    println('-----8<----- ' + path.split('/')[-1])
   }
-} catch e {
-  match e {
-    {kind: 'MiniError'} => println("{cli[0]}:{e.line}:{e.col}: {e.message}"),
-    {kind: 'PegError'} => println(e.message),
-    {kind: 'IrError'} => println("{cli[0]}:{e.line}:{e.col}: {e.message}"),
-    _ => throw e,
+  # Positions repeat across programs, so nothing keyed by position -- and
+  # no per-function table -- may survive from one compile into the next.
+  funcs = []
+  free = []
+  calls = []
+  capture_index = []
+  cell_index = []
+  nslots = []
+  nscratch = []
+  closure_of = {}
+  resolved = {}
+  scratch_of = {}
+  block_info = {}
+  prelude_named = {}
+  in_prelude = false
+  scope_stack = []
+  loop_depth = {}
+  walk_cursor = {}
+  classes = {}
+  traits = {}
+  try {
+    let tree = Peg.parse(grammar, FS.read(path), path: path)
+    let m = CodeGen.Module.new()
+    build(m, prelude_tree, tree)
+    m.verify()
+    if want_ir {
+      print(m.dump_ir())
+    } else if want_bc {
+      print(m.dump_bc())
+    } else {
+      m.run()
+    }
+  } catch e {
+    match e {
+      {kind: 'MiniError'} => println("{path}:{e.line}:{e.col}: {e.message}"),
+      {kind: 'PegError'} => println(e.message),
+      {kind: 'IrError'} => println("{path}:{e.line}:{e.col}: {e.message}"),
+      _ => throw e,
+    }
+    had_err = true
   }
+}
+if had_err {
   Sys.exit(1)
 }

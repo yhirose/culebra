@@ -22,41 +22,34 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail=0
 
-# run <desc> <engine-flag> <sample>
-run() {
-  local desc="$1" flag="$2" sample="$3"
-  local want got
-  want="$("$CULEBRA" "$flag" "$SAMPLES/$sample" 2>&1)"
-  got="$("$CULEBRA" "$flag" "$MINI" "$SAMPLES/$sample" 2>&1)"
-  if [ "$got" != "$want" ]; then
-    echo "FAIL [$desc]: mini_culebra differs from culebra itself" >&2
-    echo "--- culebra ---" >&2; echo "$want" >&2
-    echo "--- mini_culebra ---" >&2; echo "$got" >&2
+# All samples go through one mini invocation per engine, so the compiler's
+# own parse (and, under --jit, its compile) is paid once per lane instead
+# of once per sample -- per-sample invocation blew CI's ctest budget. The
+# batch driver prints a marker line before each program; the oracle side
+# is the per-sample culebra runs joined by the same markers.
+lane() {
+  local flag="$1"
+  : >"$TMP/want$flag"
+  local path
+  for path in "$SAMPLES"/*.cul; do
+    {
+      echo "-----8<----- $(basename "$path")"
+      "$CULEBRA" "$flag" "$path" 2>&1
+    } >>"$TMP/want$flag"
+  done
+  "$CULEBRA" "$flag" "$MINI" "$SAMPLES"/*.cul >"$TMP/got$flag" 2>&1
+}
+lane --vm &
+lane --jit &
+wait
+for flag in --vm --jit; do
+  if ! diff -u "$TMP/want$flag" "$TMP/got$flag" >"$TMP/diff$flag"; then
+    echo "FAIL [$flag]: mini_culebra differs from culebra itself" >&2
+    cat "$TMP/diff$flag" >&2
     fail=1
   else
-    echo "ok   [$desc]"
+    echo "ok   [$flag $(ls "$SAMPLES"/*.cul | wc -l | tr -d ' ') samples]"
   fi
-}
-
-# Each sample pair runs in its own job (the mini compiler re-parses its
-# grammar and prelude per invocation, which is the whole cost), a few at a
-# time; results land in per-sample files and print in order afterwards.
-jobs_max=4
-pids=()
-for path in "$SAMPLES"/*.cul; do
-  sample="$(basename "$path")"
-  (
-    run "vm  $sample"  "--vm"  "$sample"
-    run "jit $sample"  "--jit" "$sample"
-  ) >"$TMP/out.$sample" 2>&1 &
-  pids+=($!)
-  while [ "$(jobs -rp | wc -l)" -ge "$jobs_max" ]; do wait -n; done
-done
-wait
-for path in "$SAMPLES"/*.cul; do
-  sample="$(basename "$path")"
-  cat "$TMP/out.$sample"
-  if grep -q '^FAIL' "$TMP/out.$sample"; then fail=1; fi
 done
 
 # --- Diagnostics: the binder's own rejections, checked directly (the
