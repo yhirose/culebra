@@ -6166,6 +6166,20 @@ class Compiler {
     // stays reachable from the one cell a re-declaration would overwrite.
     std::vector<Binding::Known> knowns;
 
+    // Extra captures riding along after the ordinary, free_vars-indexed
+    // ones above: a flat `@value` class's meta cell, for every class this
+    // compiler can already reach one for (value_meta_cell_) whose name is
+    // ALSO an ordinary free variable of the callee — which a nested body
+    // referencing `ClassName.new(...)` at all already requires, so this
+    // never needs its own free-variable analysis. Deliberately an
+    // over-approximation (threaded whenever the class is visible, whether
+    // or not the body has a materialize-at-a-boundary occurrence): a spare
+    // captured cell costs one retain per closure creation and never causes
+    // an under-capture. What closes spec §15.8's cross-chunk limitation —
+    // see materialize_run's own comment.
+    std::vector<const peg::Ast*> meta_classes;
+    std::vector<int32_t> meta_slots;
+
     // A capture with nothing behind it (a sentinel cell): every flag off.
     void push(int32_t slot) {
       slots.push_back(slot);
@@ -6241,6 +6255,18 @@ class Compiler {
       // slot's own ReplCell does not dominate.
       ensure_session_slot(*b);
       caps.push(*b);
+      // The class this free variable names, when it is one whose meta cell
+      // THIS compiler can already reach: thread it too, so materialize_run
+      // inside the callee can reach it the same way (value_meta_cell_ is
+      // populated the identical way one level down, from THIS entry —
+      // recursing to any depth of nesting).
+      if (b->known.value_class) {
+        if (auto it = value_meta_cell_.find(b->known.value_class);
+            it != value_meta_cell_.end()) {
+          caps.meta_classes.push_back(b->known.value_class);
+          caps.meta_slots.push_back(it->second);
+        }
+      }
     }
     return caps;
   }
@@ -6321,6 +6347,10 @@ class Compiler {
     fc.chunk_.arity =
         params ? static_cast<int32_t>(params->nodes.size()) : 0;
     fc.chunk_.capture_src_slots = std::move(caps.slots);
+    // The meta-cell captures ride after the ordinary ones, at indices
+    // [free_vars.size(), free_vars.size() + meta_classes.size()) — the
+    // callee-side loop below binds them at the same offset.
+    for (int32_t s : caps.meta_slots) fc.chunk_.capture_src_slots.push_back(s);
     for (size_t i = 0; i < caps.muts.size() && i < info.free_vars.size(); ++i)
       if (caps.muts[i]) fc.chunk_.mut_capture_names.push_back(info.free_vars[i]);
     // Params occupy the ABI slots [0, arity). A captured param moves into a
@@ -6600,6 +6630,17 @@ class Compiler {
       cap.shadowed_builtin = caps.shadowed_builtins[i];
       cap.known = caps.knowns[i];
       fc.push_binding(std::move(cap));
+    }
+    // The meta-cell captures riding after the ordinary ones (same offset
+    // resolve_captures/capture_src_slots used): give this chunk its own
+    // slot for each, and register it exactly where compile_class_decl
+    // would have if THIS compiler had compiled the class declaration
+    // itself — materialize_run cannot tell the difference either way.
+    for (size_t k = 0; k < caps.meta_classes.size(); ++k) {
+      int32_t s = fc.alloc_slot(ast, "(class.meta)");
+      fc.emit(Op::BindCapture, s,
+              static_cast<int32_t>(info.free_vars.size() + k));
+      fc.value_meta_cell_[caps.meta_classes[k]] = s;
     }
     if (self_cap >= 0) {
       int32_t s = fc.alloc_slot(ast, "self");

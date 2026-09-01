@@ -838,27 +838,38 @@ runそのもののslotはスナップショット**読み**であり消費では
 `allow_trailing_class=false`を渡す）ので、`value_boundary_ok`を裸の
 識別子より広げても、被覆を増やすのではなく仕事を重複させるだけになる。
 
-materializationにはクラスのmeta objectが要り、それは今日のところ
-**同一chunk**のサイトからしか届かない: `Compiler::value_meta_cell_`は
-クラスのASTを、`compile_class_decl`がそのコンストラクタクロージャの
-captureのために既に作っているcell（`meta_cell`）へ写像する。**この**
-`Compiler`インスタンスがその宣言をコンパイルした場合にのみ登録される
-——入れ子の`fn`/クロージャは新しい`Compiler`でコンパイルされるので、
-自然にchunk単位のスコープになる。クラスが別のchunkで宣言されていた
-裸の出現には対応するentryが無く、`value_boundary_ok`は単に印を付けない
-——既存の却下経路がこの機構が存在しなかった場合と全く同じに走るだけで、
-crashもしなければ誤った値になることもない。これが今も残る唯一の
-正直な限界である: 実際のコードの多くは`@value`クラスを1度だけ、
-それを使う関数の外側で宣言するので、そうした関数の中の境界の出現は
-今日は materialize しない（§5.3.3のとおりbinding全体がboxedになる、
-まるでこの節が存在しないかのように）——これを閉じるには、他のあらゆる
-自由変数が既に経由している同じcapture機構（`resolve_captures`）を通して
-meta cellを内側のchunkへ運ぶ必要があり、機械的ではあるがタダではなく、
-ここでは着手していない。`tests/test_value_materialize.cul`は両方の側を
-検証する: このファイル自身のトップレベルで、あるいはそれを使う関数の
-中でローカルに宣言されたクラスは、上記の境界の形すべてでmaterializeする。
-**外側**の関数で宣言され内側から読まれるクラスは安全に却下し、
-`--vm-dump`でそれらの行に`MakeInst`/`ValueBox`が一切出ないことで
+materializationには実行時のクラスのmeta objectが要り、
+`Compiler::value_meta_cell_`——クラスのASTを、`compile_class_decl`が
+そのコンストラクタクロージャのcaptureのために既に作っているcell
+（`meta_cell`）へ写像するもの——は自然にchunk単位のスコープになる:
+入れ子の`fn`/クロージャは新しい`Compiler`でコンパイルされ、それは
+最初は空の独自mapを持つ。これを同一chunk限定の機構のままにする代わりに、
+`resolve_captures`は、`ClassName.new(...)`を参照すること自体が既に
+要求している**通常の**自由変数captureに便乗させて、参照されたクラスの
+meta cellを内側のchunkへ運ぶ: `Binding::Known`が、このcompilerが既に
+meta cellを解決できる`value_class`を持つ自由変数それぞれについて、
+通常のcaptureの後ろに1つ追加のcaptureが続く
+（`CaptureList::meta_classes`/`meta_slots`、`Chunk::capture_src_slots`
+へ追加）。呼び出され側はそれを自分自身の`value_meta_cell_`へ同じ
+クラスASTの下で束縛する——`materialize_run`から見れば、そのchunkが
+自らそのクラスを宣言した場合と区別が付かない。（本体自身の
+`value_ref_ok`歩みが境界の出現を見つけた場合にのみ登録するのではなく）
+この形で登録するのは意図的な過大近似である: bodyが実際に必要とするか
+どうかに関わらずクロージャ生成のたびに1個のcell retainを払うが、
+under-captureは決して起こさない。呼び出され側自身の`value_meta_cell_`
+が、自分でそのクラスを宣言したかのようにentryを得るので、さらに
+入れ子のクロージャも同じやり方でもう一度captureする——再帰専用の
+コードなしに、任意の深さの入れ子に届く。裸の出現がこの経路でも
+届かないクラス(そもそも自由変数ですらない)は、run自体が
+`ClassName.new(...)`という名指し可能な形で構築されたことが一度も
+無い場合にしか起こり得ず(§5.3.1自身の適格性が既にそれを要求している)、
+単に印が付かないだけで、既存の却下経路がこの機構が存在しなかった場合と
+全く同じに走る: crashもしなければ誤った値になることもない。
+`tests/test_value_materialize.cul`は、このファイル自身のトップレベル・
+それを使う関数の中でローカルに宣言されたクラス・そして**外側**の
+関数で宣言され入れ子の`fn`1段・2段から読まれるクラスの全てを検証する
+——どれも上記の境界の形すべてでmaterializeし、`--vm-dump`で
+`ValueBox`が出ることを出力の一致だけでなくバイトコード上でも
 裏付けている。
 
 ### 5.4 組み込みメソッドはテーブルである

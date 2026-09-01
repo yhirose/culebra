@@ -6,17 +6,13 @@
 # occurrences, `Op::ValueBox` reboxes the run into an ordinary, frozen
 # instance instead of forcing the WHOLE binding boxed for declining once.
 #
-# Scope note (read before adding a case here): materialization needs the
-# class's meta cell, which is reachable only from the SAME chunk that
-# compiled the class declaration (`Compiler::value_meta_cell_` — a fresh
-# `Compiler` per function chunk, deliberately not threaded through capture
-# yet, spec §15.8's own "not attempted here"). So every POSITIVE case below
-# either runs at this file's own top level (one chunk) or declares its
-# `@value` class LOCALLY inside the function using it. A boundary
-# occurrence of a class declared in an OUTER function is exercised too
-# (`test_cross_chunk_declines_safely`), but only to pin that it silently
-# falls back to the ordinary boxed path — never a crash, never a wrong
-# value — not to claim it materializes.
+# Scope note: materializing needs the class's meta object at run time.
+# `Compiler::value_meta_cell_` is chunk-scoped (a fresh `Compiler` per
+# function chunk), but a class declared in an OUTER function is still
+# reachable from a nested one — `resolve_captures` threads its meta cell
+# alongside the ordinary free-variable capture that referencing
+# `ClassName.new(...)` at all already requires, to any depth of nesting
+# (`test_cross_chunk_materializes` below covers one and two levels down).
 #
 # Run: ./build/culebra tests/test_value_materialize.cul
 #      ./build/culebra --jit tests/test_value_materialize.cul
@@ -125,15 +121,27 @@ test_local_class_boundary = fn () {
 test_local_class_boundary()
 
 # --- cross-chunk: a boundary occurrence of a class declared in an OUTER
-# frame declines to the ordinary boxed path rather than materializing (or
-# crashing) — the honest limitation spec §15.8 documents ---
+# frame materializes too, one level down and two — pinned on the bytecode
+# (--vm-dump), not just the output, per this feature's own §14 lesson that
+# a decline and a correct splice can print the same thing ---
 
-test_cross_chunk_declines_safely = fn () {
+test_cross_chunk_materializes = fn () {
   mut w = V2.new(5.0, 6.0)
   assert_eq(takes_untyped(w).x, 5.0)
   let held = [w]
   assert_eq(held[0].y, 6.0)
 }
-test_cross_chunk_declines_safely()
+test_cross_chunk_materializes()
+
+test_cross_chunk_materializes_two_levels = fn () {
+  fn inner() {
+    mut z = V2.new(7.0, 8.0)
+    assert_eq(takes_untyped(z).x, 7.0)
+    let held = [z]
+    assert_eq(held[0].y, 8.0)
+  }
+  inner()
+}
+test_cross_chunk_materializes_two_levels()
 
 inspect('value-materialize OK')

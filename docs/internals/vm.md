@@ -843,28 +843,39 @@ to those tags passes `allow_trailing_class=false`), so widening
 `value_boundary_ok` past a bare identifier would duplicate work rather
 than add coverage.
 
-Materializing needs the class's meta object, which only a **same-chunk**
-site can reach today: `Compiler::value_meta_cell_` maps a class AST to the
-cell `compile_class_decl` already creates for its constructor closures'
-capture (`meta_cell`), populated only when THIS `Compiler` instance
-compiled that declaration — naturally chunk-scoped, since a nested
-`fn`/closure compiles with a fresh `Compiler`. A bare occurrence whose
-class was declared in a different chunk has no entry, and
-`value_boundary_ok` simply does not mark it — the ordinary decline path
-runs exactly as it did before this mechanism existed, never a crash and
-never a wrong value. This is the one honest limitation still open: most
-real code declares an `@value` class once, outside the functions that use
-it, so a boundary occurrence inside such a function does not materialize
-today (the whole binding boxes, per §5.3.3, exactly as if this section did
-not exist) — closing it needs the meta cell threaded into the inner
-chunk through the same capture machinery every other free variable
-already goes through (`resolve_captures`), which is mechanical but not
-free, and is not attempted here. `tests/test_value_materialize.cul`
-exercises both sides: a class declared at this file's own top level, or
-locally inside the function using it, materializes at every boundary
-shape above; a class declared in an *outer* function and read from a
-nested one declines safely, pinned by `--vm-dump` showing no `MakeInst`/
-`ValueBox` on those lines at all.
+Materializing needs the class's meta object at run time, and
+`Compiler::value_meta_cell_` — mapping a class AST to the cell
+`compile_class_decl` already creates for its constructor closures'
+capture (`meta_cell`) — is naturally chunk-scoped: a nested `fn`/closure
+compiles with a fresh `Compiler`, which has its own, initially empty map.
+Rather than leaving that a same-chunk-only mechanism, `resolve_captures`
+threads a referenced class's meta cell into the nested chunk alongside
+the *ordinary* free-variable capture that referencing `ClassName.new(...)`
+at all already requires: for every free variable whose `Binding::Known`
+carries a `value_class` this compiler can already resolve a meta cell
+for, an extra capture rides after the ordinary ones
+(`CaptureList::meta_classes`/`meta_slots`, appended to
+`Chunk::capture_src_slots`), and the callee binds it into its OWN
+`value_meta_cell_` under the same class AST — indistinguishable, from
+`materialize_run`'s point of view, from a class this chunk declared
+itself. Registering it this way (rather than only when a body's own
+`value_ref_ok` walk finds a boundary occurrence) is a deliberate
+over-approximation: it costs one retained cell per closure creation
+whether or not the body ends up needing it, and never causes an
+under-capture. Because the callee's own `value_meta_cell_` gains the
+entry exactly as if it had declared the class, a further nested closure
+captures it again the identical way — the mechanism reaches any depth of
+nesting without recursion-specific code. A bare occurrence whose class
+is not reachable even this way (not a free variable at all — the only
+way that happens is a run that was never constructed via a nameable
+`ClassName.new(...)` in the first place, which §5.3.1's own eligibility
+already requires) simply is not marked, and the ordinary decline path
+runs exactly as it did before this mechanism existed: never a crash and
+never a wrong value. `tests/test_value_materialize.cul` covers a class
+declared at this file's own top level, locally inside the function using
+it, and in an *outer* function read from one and two levels of nested
+`fn` — all materialize at every boundary shape above, confirmed on the
+bytecode (`--vm-dump` showing `ValueBox`, not just matching output).
 
 ### 5.4 Built-in methods are a table
 
