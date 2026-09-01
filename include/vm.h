@@ -4236,17 +4236,27 @@ class Compiler {
   // just-allocated slot, or an if-arm result written once per disjoint path).
   // A Take'n temp is dropped from the statement's sweep list — its +1 moved,
   // so the end-of-statement Release would be a provable no-op.
-  void store_into(int32_t dst, ExprResult r, bool dst_is_fresh = false) {
+  //
+  // `no_refcount` is the same provable-no-op fact for a whole slot's whole
+  // lifetime, not just this one write: a flat `@value` run's own field slot
+  // never holds anything but Long/Float/Bool/nil (the decorator's own
+  // declaration-time checks forbid a refcounted field, transitively through
+  // a nested `@value` field too), so retain/release on it are unconditional
+  // no-ops — Release before AND Retain after both drop out, regardless of
+  // `dst_is_fresh`. `copy_run` is the only caller today (an N-slot run
+  // copied slot for slot always takes the borrowed, not-owned arm below).
+  void store_into(int32_t dst, ExprResult r, bool dst_is_fresh = false,
+                  bool no_refcount = false) {
     if (!r.owned && r.slot == dst) return;  // self-assign (`x = x`): the
                                             // Release-then-copy would read
                                             // back the just-nil'd slot
-    if (!dst_is_fresh) emit(Op::Release, dst);
+    if (!dst_is_fresh && !no_refcount) emit(Op::Release, dst);
     if (r.owned) {
       emit(Op::Take, dst, r.slot);
       forget_temp(r.slot);
     } else {
       emit(Op::Move, dst, r.slot);
-      emit(Op::Retain, dst);
+      if (!no_refcount) emit(Op::Retain, dst);
     }
   }
 
@@ -8314,11 +8324,15 @@ class Compiler {
 
   // An N-slot run copied slot for slot — the one shape `store_into` cannot
   // serve in a single call, since it would collapse the run into slot 0.
+  // Every leaf slot of ANY flat `@value` run is provably Long/Float/Bool
+  // (the decorator's declaration-time checks forbid anything else, at
+  // every nesting level), so this never needs the retain/release
+  // ceremony `store_into` pays a generic slot for.
   void copy_run(int32_t dst, int32_t src, size_t n, bool dst_is_fresh) {
     for (size_t i = 0; i < n; i++)
       store_into(dst + static_cast<int32_t>(i),
                  ExprResult{src + static_cast<int32_t>(i), false},
-                 dst_is_fresh);
+                 dst_is_fresh, /*no_refcount=*/true);
   }
 
   // The one copy this mechanism pays: a freshly built run into `b`'s
