@@ -1,0 +1,16 @@
+# decorators
+fn deco(g) {
+  fn wrapped(x) { g(x) * 10 }
+  wrapped
+}
+@deco
+fn base(x) { x + 1 }
+println(base(2))
+fn d1(g) {
+  fn w1(x) { g(x) + 1 }
+  w1
+}
+@d1
+@deco
+fn h(x) { x }
+println(h(5))

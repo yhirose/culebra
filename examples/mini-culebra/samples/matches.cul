@@ -1,0 +1,24 @@
+# match: forms and semantics
+println(match 2 { 1 => 'one', 2 => 'two', _ => 'many' })
+println(match 5 { 0 => 'z', n => "got {n}" })
+println(match {kind: 'x', v: 9} { {kind: 'y'} => 'y', {kind: 'x', v} => "x{v}", _ => 'o' })
+println(match [1, 2] { [a] => 'one', [a, b] => "two {a}{b}", _ => 'o' })
+println(match (3, 4) { (a, b) => a + b, _ => 0 })
+println(match 'hi' { 'ho' => 1, 'hi' => 2, _ => 3 })
+println(match 5 { n if n > 3 => 'big', _ => 'small' })
+println(match nil { nil => 'isnil', _ => 'no' })
+println(match 9 { 1 => 'a' })
+println(match {a: 1} { {b} => 'hasb', _ => 'no' })
+println(match [1, [2, 3]] { [x, [y, z]] => x + y + z, _ => 0 })
+println(match {p: (1, 2)} { {p: (a, b)} => a * 10 + b, _ => 0 })
+let mstmt = match true { true => 'T', false => 'F' }
+println(mstmt)
+
+# match arms with block bodies + bindings scoped to the arm
+println(match 7 {
+  n if n % 2 == 1 => {
+    let d = n * 2
+    "odd {d}"
+  },
+  _ => 'even',
+})

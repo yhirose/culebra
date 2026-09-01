@@ -79,16 +79,13 @@ check_err() {
 check_err "undefvar" 'println(x)
 ' "undefined variable 'x'"
 
-# A closure cannot see its own binding -- the self-reference would be the
-# cell->closure->cell cycle reference counting cannot free.
-check_err "selfref" 'let f = fn () { f() }
-println(f())
-' "undefined name 'f'"
-
-check_err "fnvalue" 'fn g() { 1 }
+# Referencing a multimethod family as a single value has no one closure to
+# build (each overload is its own function).
+check_err "multi-as-value" 'fn g(n: Long) { 1 }
+fn g(s: String) { 2 }
 let h = g
 println(h)
-' "can only be called"
+' "has multiple definitions"
 
 check_err "letassign" 'let x = 1
 x = 2

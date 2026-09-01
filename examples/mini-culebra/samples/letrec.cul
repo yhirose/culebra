@@ -1,0 +1,16 @@
+# letrec closures (the backstop collects the self-cycle)
+let sr = fn (n) { n == 0 ? 0 : n + sr(n - 1) }
+println(sr(4))
+let even = fn (n) { n == 0 ? true : odd(n - 1) }
+fn odd(n) { n == 0 ? false : even(n - 1) }
+println(even(10))
+
+# match/cond inside functions and loops, captured bindings fresh per entry
+mut clos = []
+for v in [1, 2] {
+  let r = match v { n => fn () { n * 100 } }
+  clos.push(r)
+}
+println(clos[0]())
+println(clos[1]())
+println('done')

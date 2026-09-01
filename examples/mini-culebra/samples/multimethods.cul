@@ -1,0 +1,13 @@
+# multimethods on scalar types
+fn fx(n: Long) { "L{n}" }
+fn fx(s: String) { "S{s}" }
+fn fx(x) { "any" }
+println(fx(1))
+println(fx('a'))
+println(fx(1.5))
+fn ty(t: Tuple) { 'tup' }
+fn ty(a: Array) { 'arr' }
+println(ty((1, 2)))
+println(ty([1]))
+fn only(n: Long) { n }
+try { println(only('s')) } catch e { println(e.kind) }

@@ -1,0 +1,11 @@
+# cond
+println(cond { 1 > 2 => 'a', 2 > 1 => 'b', _ => 'c' })
+println(cond { false => 1, _ => { let t = 9
+                                  t + 1 } })
+
+# ternary / ??
+println(1 < 2 ? 'yes' : 'no')
+println(nil ?? 'fb')
+println(0 ?? 'fb')
+println(nil ?? nil ?? 'chain')
+println(false ? 'x' : true ? 'y' : 'z')

@@ -1,0 +1,15 @@
+# defaults / kwargs / rest
+fn withdef(a, b = 10) { a + b }
+println(withdef(1))
+println(withdef(1, 2))
+fn defref(a, b = a + 1) { "{a}/{b}" }
+println(defref(5))
+fn mixed(a, b = 2, c = 3) { "{a}/{b}/{c}" }
+println(mixed(1, c: 9))
+println(mixed(b: 7, a: 4))
+fn rest(a, *xs) { "{a} {xs}" }
+println(rest(1, 2, 3))
+println(rest(1))
+try { mixed() } catch e { println("{e.kind}: {e.message}") }
+fn kwonly(a) { a }
+try { kwonly(zz: 1) } catch e { println(e.kind) }

@@ -1,0 +1,7 @@
+# UFCS
+fn double_it(x) { x * 2 }
+println(5.double_it())
+fn addxy(x, y) { x + y }
+println(3.addxy(4))
+fn first_of(a) { a[0] }
+println([7, 8].first_of())
