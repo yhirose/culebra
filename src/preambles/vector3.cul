@@ -1,11 +1,16 @@
 # Vector3 — the 3D counterpart of Vector2 (see vector2.cul for the shared
-# design rationale: Float-only, no Point split, derived nominal equality).
+# design rationale: Float-only, no Point split, derived nominal equality,
+# and why `@value` — BREAKING CHANGE — applies here too).
 # cross() is intentionally omitted from both: Vector2's cross is a scalar
 # (perp dot), Vector3's is a vector — the asymmetry invites naming/shape
 # drift, and no example in this repo needs it yet.
 let _vector3_module = fn () {
-  @derive(Eq, Hash)
+  @value
   class Vector3 {
+    x: Float
+    y: Float
+    z: Float
+
     new(x: Long | Float, y: Long | Float, z: Long | Float) {
       self.x = to_float(x)
       self.y = to_float(y)

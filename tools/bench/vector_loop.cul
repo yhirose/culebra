@@ -4,11 +4,11 @@
 #
 #   scalars              the floor — every component in its own local
 #   Vector2, operators   the form a reader wants: `v += g * DT`. This is the
-#                        stdlib Vector2 (`src/preambles/vector2.cul`), an
-#                        ordinary @derive(Eq, Hash) class — it is the SHAPE
-#                        an unboxed representation is aimed at, not a @value
-#                        class itself: it assigns its fields in `new` without
-#                        declaring them, which @value does not allow
+#                        stdlib Vector2 (`src/preambles/vector2.cul`), a
+#                        `@value` class — its fields stay in frame slots
+#                        instead of a heap object wherever the compiler can
+#                        prove the whole chain eligible (project memory,
+#                        `project_value_type_spec`)
 #   same calls, no alloc every operator writes into a preallocated scratch,
 #                        so the loop calls as often but allocates nothing
 #   scalars again        the control: two rows doing identical arithmetic

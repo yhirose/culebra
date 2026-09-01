@@ -2633,16 +2633,30 @@ inline constexpr const char* VECTOR2_MODULE_SOURCE = R"=culpre=(# Vector2 — a 
 # with no operators; this is the general-purpose math type. Also stands in
 # for a "Point" (position vs. direction is not distinguished, matching Unity
 # / Godot / three.js rather than CGAL / nalgebra's stricter split).
-# Equality is derived, not hand-written. @derive(Eq, Hash) compares the class
-# tag and then the fields, which is the same nominal-not-structural rule the
-# `match`-based `__eq__` here used to spell out (a same-shaped Vector3 is not
-# equal, and a non-Vector2 operand is simply unequal, never a thrown error) —
-# and it is what makes a Vector2 hashable, so it can key an Object or join a
-# Set. The derived pair is also several times cheaper than the dispatch the
-# hand-written form paid per `==`.
+# `@value`: two declared Float fields, no identity, frozen once `new`
+# returns — a Vector2 has always been used as a pure value (every operator
+# returns a fresh one; nothing in this codebase ever wrote `v.x = ...` after
+# construction), so the decorator only closes a gap the type already
+# behaved as if it had. It also derives `eq`/`hash` from the fields itself
+# (the same pair `@derive(Eq, Hash)` used to generate here — nominal, not
+# structural: a same-shaped Vector3 stays unequal, and a non-Vector2
+# operand is simply unequal, never a thrown error), and the whole-scope
+# unboxing this decorator makes possible is why the flat layout matters at
+# all: a chain like `V2.new(a, b).len()`, or a `let mut` accumulator
+# reassigned every loop iteration, compiles to plain scalar slots — no
+# object, no call (docs/internals/vm.md §5.3).
+#
+# BREAKING CHANGE (project_vector_types_design.md, project_value_type_spec.md
+# §15 in memory): a Vector2 instance can no longer be mutated after
+# construction (`v.x = 5.0`, `v.z = 9`, `v.remove('x')` all now raise
+# ImmutableError, where they previously succeeded on the ordinary mutable
+# Object every class produced before this).
 let _vector2_module = fn () {
-  @derive(Eq, Hash)
+  @value
   class Vector2 {
+    x: Float
+    y: Float
+
     new(x: Long | Float, y: Long | Float) {
       self.x = to_float(x)
       self.y = to_float(y)
@@ -2710,13 +2724,18 @@ let Vector2 = _vector2_module()
 )=culpre=";
 
 inline constexpr const char* VECTOR3_MODULE_SOURCE = R"=culpre=(# Vector3 — the 3D counterpart of Vector2 (see vector2.cul for the shared
-# design rationale: Float-only, no Point split, derived nominal equality).
+# design rationale: Float-only, no Point split, derived nominal equality,
+# and why `@value` — BREAKING CHANGE — applies here too).
 # cross() is intentionally omitted from both: Vector2's cross is a scalar
 # (perp dot), Vector3's is a vector — the asymmetry invites naming/shape
 # drift, and no example in this repo needs it yet.
 let _vector3_module = fn () {
-  @derive(Eq, Hash)
+  @value
   class Vector3 {
+    x: Float
+    y: Float
+    z: Float
+
     new(x: Long | Float, y: Long | Float, z: Long | Float) {
       self.x = to_float(x)
       self.y = to_float(y)
