@@ -1,6 +1,6 @@
 # RAII Without Having to Think About Cycles
 
-*August 6, 2026*
+*August 6, 2026 (revised September 1, 2026)*
 
 For a long time, memory management design has split into two traditions.
 
@@ -160,55 +160,61 @@ that can give deterministic finalization: the count reaching zero *is* the
 signal, and it happens at the instant the last reference is released. A GC
 has no instrument that observes that instant.
 
-## Implementation: two engines, one contract
+## Implementation: one placement, two consumers
 
-culebra has two backends (the interpreter and the JIT; AOT uses the same
-code generation as the JIT), and the same program has to produce the same
-`drop` at the same point on both — the one documented exception being that
-closure-captured shapes are deferred to the interpreter's next collection,
-spelled out in §17. But the work each engine does to hold that agreement
-turned out to be completely different.
+culebra runs a program in one of two lanes: the bytecode VM's executor,
+which is the default, and the LLVM lowering behind `--jit` and
+`culebra build`. They are not two implementations of the language. One
+compiler turns the program into bytecode, and the retains and releases are
+instructions *in* that bytecode, so the two lanes execute one placement
+rather than each deciding its own. The same program produces the same `drop`
+at the same point on both, and the shapes that miss the deterministic window
+— closure-only cycles, oversized cascades, top-level bindings — are the same
+on both; §17 lists them.
 
-### The interpreter: the side where the problem doesn't exist
+It was not always arranged this way, and the part that changed is worth
+recording, because the discipline below is the answer to a problem the
+earlier design did not have. Until 2026 the default engine was a
+tree-walking interpreter that represented heap values as C++ `shared_ptr`.
+Its reference counts were therefore strict **by construction**: increments
+and decrements were written by the compiler rather than a human, and a
+`shared_ptr` destructor is not skipped by a `break`, an early `return`, or
+an exception unwind. Leaks and double frees caused by RC placement were not
+among the kinds of bug that side could have. Its only exposure was cycles,
+so its collector could be built for exactly that, and could be **precise** —
+it never had to look at the C++ stack, because collection was deferred to
+the next statement boundary, by which point a value still in flight between
+two C++ functions had certainly been stored into some environment.
 
-The interpreter represents heap values as C++ `shared_ptr`. Its reference
-counts are therefore strict **by construction**. Increments and decrements
-are written by the compiler rather than a human, and a `shared_ptr`
-destructor is not skipped by a `break`, an early `return`, or an exception
-unwind. Leaks and double frees caused by RC placement aren't among the kinds
-of bugs this side can have.
+That engine is gone. Carrying two implementations of one language cost more
+in drift between them than the second opinion was worth, and the lane that
+survived is the one that shares its front end with the compiled lane. What
+outlived the interpreter is its algorithm rather than its machinery: the
+same precise reference accounting still runs over the one remaining heap,
+no longer as a collector but as a detector — the subject of "Having a GC
+makes RC bugs go quiet" below.
 
-The only exposure left is cycles, so the collector can be built for exactly
-that. The interpreter's collector uses CPython's algorithm: for each tracked
-object, subtract from its refcount the number of references held by other
-tracked objects (the in-heap edges); if nothing remains, nobody outside the
-tracked set points at it — it's a garbage cycle. This is a **precise**
-collector, and it works precisely because the `shared_ptr` counts are
-exact; it never has to look at the C++ stack.
+### A world without `shared_ptr`
 
-The interesting part is that what upholds that precision is not analysis but
-**scheduling**. Collection never runs at an arbitrary moment; it's deferred
-to the next **statement boundary**. There genuinely is a precarious instant
-where a freshly built self-referential closure is in flight as a C++ return
-value between two functions, reachable from no environment yet — but by the
-time the next statement boundary arrives, that value has certainly been
-stored into some environment. What remains is pushing the environments of
-callers still live on the C++ stack onto an explicit root set, which an
-RAII guard does for the duration of each call. Deciding "it never runs
-inside the dangerous window" removes the need for a conservative stack scan
-entirely (internals §2 has the details).
-
-### The JIT: a world without `shared_ptr`
-
-The JIT emits retains and releases as explicit LLVM IR, per value. That
-avoids the cost of `shared_ptr`'s atomic refcount traffic on every touch,
-but the choice brings back, wholesale, a problem the interpreter side never
-had. Every code path the compiler generates has to place its retains and
+Retains and releases are explicit operations now, with no `shared_ptr`
+anywhere on the hot path. That avoids the cost of its atomic refcount
+traffic on every touch, and it brings back, wholesale, the problem the
+interpreter side never had. Every code path has to place its retains and
 releases correctly by hand, and there is no destructor to save you when you
 miss one. There are exactly two failure shapes: **missing release** (a leak)
 and **excess release** (use-after-free). And fall-through, `break`,
 `continue`, early `return`, and exception unwinds crossing several scopes
 all count as code paths.
+
+They are placed by three different authors, and the first one is the cheap
+one. The bytecode compiler emits its retains and releases once, in one
+place, and both lanes merely execute them — so that placement is verified
+once and inherited twice, rather than being written out and checked per
+lane. The other two are harder. Lowering a single bytecode instruction can
+put several values in flight at the same time — a helper's result held
+across another call, a receiver borrowed while its method runs — and those
+are decided by the C++ that builds the IR. The runtime helpers a lowered
+call lands in place theirs by hand as well.
 
 Finding and fixing these one at a time doesn't converge, as it turned out.
 Each fix leaves the next unaudited path just as defenseless against the same
@@ -273,12 +279,10 @@ handles — is also why it sidesteps the objection that sank the verifier.
 ### The backstop: conservative, and non-moving
 
 No amount of discipline unties a cycle — a limit by construction that Rust's
-`Rc` shares. So the JIT side has a tracing collector too. Its role is
-exactly the interpreter collector's — both backends reclaiming the same
-cycle shapes is part of keeping behavior symmetric — but the mechanism is
-the opposite. The JIT's hand-written RC has none of `shared_ptr`'s
-strictness, so a precise collector is off the table. Root finding is
-**conservative** instead.
+`Rc` shares. So the runtime has a tracing collector too, and here the
+mechanism is the opposite of the retired interpreter's. Hand-placed RC has
+none of `shared_ptr`'s strictness, so a precise collector is off the table.
+Root finding is **conservative** instead.
 
 At the moment of collection, every mutator thread's machine stack and its
 callee-saved registers are scanned uniformly, eight bytes at a time, and any
@@ -291,6 +295,18 @@ register. It's the same argument that underwrites Boehm's and Ruby's
 conservative collectors. (internals §6.2 has the scan's details and the set
 of explicitly registered global roots.)
 
+The argument is a claim about a machine, and it is false on one target
+culebra ships to. wasm keeps the values a function is working with in
+locals, which live outside linear memory and which nothing spills into it,
+so there the scan cannot see them at all. That is not patched at the scan;
+it is answered by moving *when* collection happens. On wasm no collection
+runs at an allocation — a threshold trip only raises a flag, and the
+executor polls it at instruction boundaries, where every live value of every
+frame is sitting in a register window the scan does see (internals §6.5).
+Which is the same move the retired interpreter made for the same reason:
+when you cannot make the roots visible, collect only at a moment when they
+already are.
+
 An integer that happens to match a valid heap address creates a **false
 root** and keeps a dead object alive. That's bounded over-retention, not a
 correctness problem — soundness only demands that live things are never
@@ -299,7 +315,7 @@ released.
 The collector **moves nothing**. This is a settled decision rather than a
 deferred one, for two reasons. A conservative root is by definition "a word
 that might be a pointer," so it can't be rewritten to an object's new
-location. And culebra hands raw pointers to C++ for Tensor and interpreter
+location. And culebra hands raw pointers to C++ for Tensor and host
 interop, which — together with a value representation of tagged 64-bit
 integers — rules out the standard way to make JIT roots precise (LLVM
 Statepoints). That second reason, raw pointers escaping to code that does
@@ -328,10 +344,10 @@ memory use is the only clue left, much later. The backstop is a safety net
 and an evidence-destroying device at the same time.
 
 So a separate mechanism exists to detect exactly that. There are two ways to
-decide whether an object on the JIT heap is dead — the interpreter's
-algorithm (precise reference accounting, subtracting in-heap edges from
-refcounts) run over that heap for diagnostics, and the JIT's own
-conservative stack scan. Looking at the objects those **two independent
+decide whether an object on the heap is dead — precise reference accounting
+(CPython's algorithm, subtracting in-heap edges from refcounts, run over
+that heap for diagnostics), and the collector's own conservative stack
+scan. Looking at the objects those **two independent
 opinions** disagree about yields an exact diagnosis:
 
 - Dead by the conservative scan, alive by reference accounting, and *not*
@@ -362,9 +378,14 @@ release) and **rooting** (what stays alive across a collection). A crash
 that **remains** with collection disabled can't be a rooting problem, since
 nothing is being reclaimed, so it's a pure ownership bug: something live got
 released. A crash that **disappears** was, conversely, a missed root. In
-practice every crash
-investigated this way has been the former, and neither collector's root
-finding has been the cause of a real bug since they shipped.
+practice almost every crash
+investigated this way has been the former. Root finding has been the cause
+exactly once, and it took a change of engine to expose it: the wasm
+Playground began losing live values after the executor became the default,
+because strings are traced-only rather than reference-counted, and the
+switch had carried that representation into the one build where the
+conservative scan cannot see a root. The fix is the safepoint protocol
+above.
 
 The collector also has a stress mode. Instead of the adaptive schedule it
 collects **on every allocation**, so bugs that otherwise appear at the whim
@@ -376,10 +397,13 @@ of timing surface deterministically (the same idea as SpiderMonkey's
 The position isn't free.
 
 **Top-level bindings are not dropped.** Bind an object with a `drop` at the
-top level and it survives to program exit on every backend, with `drop`
-never running. The interpreter's top-level environment is one large cycle —
-the functions bound there capture it themselves — so it is never destroyed,
-and the JIT and AOT deliberately suppress the drop to match. Program-wide
+top level and it survives to program exit on every lane, with `drop` never
+running. Program exit releases the top level's bindings with finalization
+deliberately suppressed. The behavior began as something that was merely
+true of the tree-walking interpreter — its top-level environment was one
+large cycle, since the functions bound there captured it themselves, so it
+was never destroyed — and the compiled lanes suppressed the drop to match.
+It outlived the engine it came from, and is now simply the rule. Program-wide
 resources want `defer` or explicit cleanup. This lands on the same side as
 Rust, whose `static` items are never dropped — Rust does not guarantee that
 destructors run at all (`mem::forget` isn't even `unsafe`), on the reasoning
@@ -410,11 +434,11 @@ a language with only one of them pays only one of those. And the tracing
 side is non-generational, so every collection walks the whole live heap
 where a generational minor collection would trace only the young generation
 — that layer is pure throughput optimization, so the policy is to add it
-only once the non-generational baseline is measured to be insufficient. The
-JIT abandoning `shared_ptr` and emitting retains and releases as explicit IR
-is an attempt to cut one half of that double cost — the atomic refcount
-operation on every touch — and the ownership discipline described above is
-what it pays in exchange. Part of the collector's own overhead was measured
+only once the non-generational baseline is measured to be insufficient.
+Abandoning `shared_ptr` for retains and releases placed explicitly is an
+attempt to cut one half of that double cost — the atomic refcount operation
+on every touch — and the ownership discipline described above is what it
+pays in exchange. Part of the collector's own overhead was measured
 and removed: the allocation churn of the registry holding per-object
 bookkeeping (12–21%) went away when it moved to an open-addressing flat hash
 map (internals §6.3).
@@ -422,9 +446,9 @@ map (internals §6.3).
 And finally, the biggest one: **the implementation costs a lot of code and
 complexity** — the cost is in building it, not in how fast it runs. A
 GC-only language needs one collector. An RC-only language just makes the
-user write `weak`. culebra has both, has to make two backends whose
-mechanisms are opposites agree on the behavior, and carries a detector on
-top to cover the "the GC hides RC bugs" problem. The one word `weak` that
+user write `weak`. culebra has both, has to hold two lanes to the same
+observable behavior, and carries a detector on top to cover the "the GC
+hides RC bugs" problem. The one word `weak` that
 users no longer write shows up as all of this structure on the
 implementation side. The reason it still seems worth it is that a forgotten
 `weak` fails quietly and irreproducibly in a user's program, whereas the
