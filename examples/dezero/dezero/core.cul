@@ -621,11 +621,19 @@ fn reshape(x, shape) {
 }
 
 fn raw_transpose(x, axes) {
-  if axes == nil || axes == [1, 0] {
-    x.transpose()
-  } else {
-    x
+  axes == nil ? x.transpose() : x.permute(axes)
+}
+
+# `axes[i]` names which input axis becomes output axis `i`; the inverse
+# permutation (needed to route `gy` back to input-axis order in
+# `Transpose.backward`) sends that same axis the other way: `inv[axes[i]] = i`.
+fn invert_permutation(axes) {
+  n = axes.size()
+  mut inv = range(n).map(|_| 0).collect()
+  for i in 0..n {
+    inv[axes[i]] = i
   }
+  inv
 }
 
 class Transpose {
@@ -643,7 +651,7 @@ class Transpose {
   }
 
   backward(gy) {
-    transpose(gy, self.axes)
+    transpose(gy, self.axes == nil ? nil : invert_permutation(self.axes))
   }
 }
 

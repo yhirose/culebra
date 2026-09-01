@@ -291,10 +291,9 @@ class LayerNorm {
 # A from-scratch GPT block: no encoder cross-attention, single sequence at
 # a time (`x` is `[T, n_embd]`, no leading batch axis -- `LayerNorm` above
 # already generalizes to `[N, T, D]`, but batching the attention itself
-# needs a per-(batch,head) transpose of only the last two axes, which
-# `dz.transpose(x, axes)` doesn't actually implement yet: `raw_transpose`
-# ignores any `axes` other than `nil`/`[1, 0]` and silently no-ops instead
-# -- a latent gap in core.cul, not something this block works around).
+# needs a per-(batch,head) transpose of only the last two axes -- not
+# something this block does yet, though `dz.transpose(x, axes)` now
+# supports arbitrary axes via `Tensor.permute`).
 #
 # `causal_mask(t)`: 1.0 where key position j <= query position i, else 0.0
 # -- `Tensor.where(mask, scores, -1e9)` before softmax is the masking idiom

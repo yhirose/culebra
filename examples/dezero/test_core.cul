@@ -155,6 +155,54 @@ fn matmul_and_transpose_backward_shapes_line_up() {
   assert_eq(a.grad.data.to_array(), [[1.0, 1.0], [1.0, 1.0]])
 }
 
+# `Tensor.to_array()` only supports rank <= 2, so a rank-3 tensor's values
+# are read back one element at a time via three chained `.narrow()`s (each
+# rank-preserving) down to a [1, 1, 1] tensor and `.item()`.
+fn tensor_elem3(t, a, b, c) {
+  t.narrow([0, a, a + 1]).narrow([1, b, b + 1]).narrow([2, c, c + 1]).item()
+}
+
+@test
+fn transpose_with_a_general_axes_permutation_matches_permute() {
+  # axes=[1, 2, 0] is neither `nil` nor `[1, 0]` -- the two cases
+  # `raw_transpose` used to special-case, silently no-op'ing on anything
+  # else. Check it actually reorders the axes the way `Tensor.permute`
+  # does: y[b, c, a] == x[a, b, c] for shape [2, 3, 4] -> [3, 4, 2].
+  x = Tensor.from(range(24).map(|i| to_float(i)).collect()).reshape([2, 3, 4])
+  y = dz.transpose(dz.Variable(x), [1, 2, 0]).data
+  Tensor.eval(y)
+  assert_eq(y.shape(), [3, 4, 2])
+  for a in range(2) {
+    for b in range(3) {
+      for c in range(4) {
+        assert_close(tensor_elem3(y, b, c, a), to_float(a * 12 + b * 4 + c), 1.0e-6)
+      }
+    }
+  }
+}
+
+@test
+fn transpose_backward_routes_gradient_through_the_inverse_permutation() {
+  # `axes=[1, 2, 0]` is not self-inverse (its inverse is `[2, 0, 1]`), so
+  # this catches a `Transpose.backward` that reapplies `self.axes` instead
+  # of inverting it. Loss is sum-of-squares, whose gradient is `2x`
+  # regardless of any bijective relabeling in between -- so a wrong
+  # inverse permutation shows up as values landing in the wrong slots of
+  # `x.grad` rather than as a wrong sum.
+  v = dz.Variable(Tensor.from(range(24).map(|i| to_float(i)).collect()).reshape([2, 3, 4]))
+  y = dz.transpose(v, [1, 2, 0])
+  loss = (y * y).sum()
+  loss.backward()
+  Tensor.eval(v.grad.data)
+  for a in range(2) {
+    for b in range(3) {
+      for c in range(4) {
+        assert_close(tensor_elem3(v.grad.data, a, b, c), 2.0 * to_float(a * 12 + b * 4 + c), 1.0e-6)
+      }
+    }
+  }
+}
+
 @test
 fn max_routes_gradient_to_the_argmax_position_only() {
   x = dz.Variable(Tensor.from([[1.0, 5.0, 2.0], [7.0, 3.0, 4.0]]))
