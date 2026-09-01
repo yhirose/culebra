@@ -1,0 +1,57 @@
+fn show(label, f) {
+  try { println("{label}: {f()}") } catch e { println("{label}: !{e.kind}:{e.message}") }
+}
+class Point {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+  norm2() { self.x * self.x + self.y * self.y }
+  scaled(k) { Point(self.x * k, self.y * k) }
+}
+let p = Point(3, 4)
+show('field', fn () { p.x })
+show('method', fn () { p.norm2() })
+show('chain', fn () { p.scaled(2).norm2() })
+show('typeof', fn () { type_of(p) })
+show('disp', fn () { "{p}" })
+show('field-set', fn () { mut q = Point(1, 2)
+                          q.x = 9
+                          q.x })
+show('eq-default', fn () { Point(1, 2) == Point(1, 2) })
+class WithEq {
+  new(v) { self.v = v }
+  __eq__(o) { self.v == o.v }
+}
+show('eq-dunder', fn () { WithEq(5) == WithEq(5) })
+class WithStr {
+  new() { nil }
+  __str__() { 'custom!' }
+}
+show('str-dunder', fn () { "{WithStr()}" })
+class Counter {
+  new() { self.n = 0 }
+  bump() {
+    self.n += 1
+    self.n
+  }
+}
+show('mut-field', fn () { let c = Counter()
+                          c.bump()
+                          c.bump() })
+show('missing-method', fn () { p.zzz() })
+trait Shape {
+  area() -> Long
+  describe() { "shape with area {self.area()}" }
+}
+class Sq {
+  new(s) { self.s = s }
+  area() { self.s * self.s }
+}
+show('trait-default', fn () { Sq.new(3).describe() })
+fn takes_shape(x: Shape) { x.area() }
+show('trait-dispatch', fn () { takes_shape(Sq.new(4)) })
+show('trait-nonconf', fn () { takes_shape(5) })
+show('ctor-call-form', fn () { Point(7, 1).x })
+show('ctor-new-form', fn () { Point.new(7, 1).x })
+show('instance-match', fn () { match p { {x, y} => x + y, _ => 0 } })

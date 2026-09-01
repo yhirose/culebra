@@ -6320,6 +6320,8 @@ list id afterward is undefined.
 | `m.make_try(caught_local:, body:, handler:, line:, col:)` | guards `body`; a throw (or an executor trap — divide by zero, a wrong-typed operand) lands what it carried in local slot `caught_local` and resumes in `handler`. A trap's value is an object `{message, line, col}`. Yields the value of whichever child finished |
 | `m.make_defer(value:, line:, col:)` | registers a 0-arity callable to run when the enclosing `scope()` exits — on fall-through, `break`, `continue`, `return`, and unwinding throws alike; `verify()` rejects a defer outside a scope |
 | `m.cell_fresh(cell:, line:, col:)` | replaces one frame cell with a fresh box — what a loop iteration's own binding means: closures from earlier iterations keep the old cell |
+
+The executor also honors a drop contract: an object whose `"\x01drop"` key holds a closure gets it called — with the object as its one argument — the moment the object's refcount reaches zero, before it is freed. A throwing destructor is reported to stderr and swallowed; a destructor that stores its argument resurrects the object and the free is skipped.
 | `m.list_new()` | a staging list, for `stmts_list:`/`args_list:` above |
 | `m.list_push(list:, value:)` | appends a node id to a staging list |
 | `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |

@@ -1,0 +1,37 @@
+fn show(label, f) {
+  try { println("{label}: {f()}") } catch e { println("{label}: !{e.kind}:{e.message}") }
+}
+@derive(Eq)
+class DE {
+  new(v) { self.v = v }
+}
+show('derive-eq', fn () { DE.new(1) == DE.new(1) })
+class Ops {
+  new(v) { self.v = v }
+  __add__(o) { Ops.new(self.v + o.v) }
+  __neg__() { Ops.new(0 - self.v) }
+  __lt__(o) { self.v < o.v }
+  __index__(k) { self.v * k }
+}
+show('dunder-add', fn () { (Ops.new(2) + Ops.new(3)).v })
+show('dunder-neg', fn () { let x = Ops.new(4)
+                           let y = -x
+                           y.v })
+show('dunder-lt', fn () { Ops.new(1) < Ops.new(2) })
+show('dunder-idx', fn () { Ops.new(5)[3] })
+class NoEq {
+  new(v) { self.v = v }
+}
+show('cross-class-eq', fn () { DE.new(1) == NoEq.new(1) })
+show('inst-truthy', fn () { NoEq.new(1) && 1 })
+show('class-as-value', fn () { let C = NoEq
+                               C.new(9).v })
+show('inst-keys', fn () { NoEq.new(3).keys() })
+show('inst-size', fn () { NoEq.new(3).size() })
+show('to-string-inst', fn () { to_string(NoEq.new(2)) })
+class WithDrop {
+  new() { nil }
+  drop() { println('dropped!') }
+}
+show('drop-fires', fn () { { let d = WithDrop.new() }
+                           'after-scope' })

@@ -6142,6 +6142,8 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.make_try(caught_local:, body:, handler:, line:, col:)` | `body`を保護する。throw(またはexecutorのトラップ —— 0除算・型違いのオペランド)が運んだ値がlocalスロット`caught_local`に入り、`handler`で実行が再開する。トラップの値は`{message, line, col}`のオブジェクト。完了した側の子の値を返す |
 | `m.make_defer(value:, line:, col:)` | 引数0個のcallableを、囲む`scope()`の脱出時に走るよう登録する —— fall-through・`break`・`continue`・`return`・throwのunwindのいずれでも走る。scopeの外のdeferは`verify()`が拒否する |
 | `m.cell_fresh(cell:, line:, col:)` | フレームのcell 1個を新しいboxに置き換える —— 「ループの反復ごとの束縛」の正体。過去の反復で作られたクロージャは古いcellを保持し続ける |
+
+executorはdrop契約も履行する: `"\x01drop"`キーにクロージャを持つオブジェクトは、refcountが0になった瞬間・解放の前に、そのオブジェクト自身を引数としてクロージャが呼ばれる。throwするデストラクタはstderrに報告して飲み込む。デストラクタが引数をどこかへ保存したら復活扱いで解放はスキップされる。
 | `m.list_new()` | ステージング用list。`stmts_list:`/`args_list:`に渡す |
 | `m.list_push(list:, value:)` | ステージング用listにノードidを追加する |
 | `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | 関数。indexを返す(`funcs[0]`が`run()`の開始点) |
