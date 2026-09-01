@@ -107,6 +107,13 @@ are now shared by both engines.
    The executor keeps compiling the spliced source, so the symmetry gate
    compares the baked code against it on every run;
    `CULEBRA_PREAMBLE_SOURCE=1` makes the lowering lanes splice again.
+   One compile-time fact survives the resolution: the `@value` class
+   declarations of the baked modules. `parse_baked_value_decls` parses
+   (never compiles) each baked module whose source mentions `@value`, and
+   the compiler registers just those declarations
+   (`register_stdlib_value_decls`) — without them the whole-scope
+   unboxing of §5.3 could never fire on a stdlib class in these lanes,
+   since the splice needs the declaration it inlines.
 3. **Compile.** `vm::Compiler::compile_modules` peels the preamble off
    the front, compiles each dependency in a scope of its own, then the
    entry module, into one `VmProgram`. The program's chunk 0 is the entry

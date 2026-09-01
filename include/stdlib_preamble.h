@@ -438,4 +438,36 @@ inline BakedResolution resolve_baked_preamble(
   return r;
 }
 
+// The compile-time face of the baked stdlib modules: the parsed registration
+// source of every baked module that mentions `@value`. A lane that calls a
+// baked entry never compiles that source, so without this the compiler never
+// sees the module's `@value` class declarations — and the unbox splice
+// (Compiler::postfix_value_class) can only fire on a declaration it holds.
+// Parsed, never compiled or run: the baked entry still carries the module's
+// code and registrations, this only restores what the splice would have seen
+// (Compiler::register_stdlib_value_decls consumes the ASTs). The raw-source
+// scan over-approximates — a mention in a comment costs one small parse.
+inline std::vector<LoadedModule> parse_baked_value_decls(
+    std::span<const BakedPreamble* const> baked) {
+  std::vector<LoadedModule> decls;
+  for (const auto* b : baked) {
+    std::string src;
+    for (const auto& m : lazy_ns_modules())
+      if (std::string_view(m.name) == b->name &&
+          std::string_view(m.source).find("@value") != std::string_view::npos)
+        src = stdlib_module_source(m);
+    if (src.empty()) continue;  // bare-function groups carry no classes
+    auto buf = std::make_shared<std::string>(std::move(src));
+    std::vector<std::string> msgs;
+    auto ast = parse_with_transforms(kStdlibPreamblePath, *buf, msgs);
+    if (!ast) continue;  // stdlib is trusted; a parse failure is a build bug
+    LoadedModule d;
+    d.abs_path = kStdlibPreamblePath;
+    d.source = std::move(buf);
+    d.ast = std::move(ast);
+    decls.push_back(std::move(d));
+  }
+  return decls;
+}
+
 }  // namespace culebra

@@ -4855,8 +4855,12 @@ inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
                                  int opt_level = 2,
                                  bool fast_codegen = false) {
   if (modules.empty()) return;
-  auto prog = Compiler::compile_modules(modules,
-                                        debug ? Debug::Break : Debug::Off);
+  // The baked modules' `@value` declarations, parsed for the compiler —
+  // without them the unbox splice cannot fire on a stdlib class this lane
+  // never compiles the source of (Vector2, ...).
+  auto value_decls = parse_baked_value_decls(baked);
+  auto prog = Compiler::compile_modules(
+      modules, debug ? Debug::Break : Debug::Off, &value_decls);
   // Nothing host-side to prepare: keyword-call metadata is a global of the
   // lowered module, registered by each MakeClosure site (see Lowering's
   // param_meta_global). Exec::prepare's host-side tables are the executor
@@ -4900,7 +4904,10 @@ inline int build_object_from_modules(
   // code in this object (stdlib_preamble.h); a cross build keeps the
   // source, since its archive is the user's.
   auto res = resolve_baked_preamble(modules, preamble_from_source);
-  auto prog = Compiler::compile_modules(res.modules);
+  // As the run lane above: the baked modules' `@value` declarations still
+  // reach the compiler, so both lanes emit the same spliced bytecode.
+  auto value_decls = parse_baked_value_decls(res.baked);
+  auto prog = Compiler::compile_modules(res.modules, Debug::Off, &value_decls);
   // Over `modules`, NOT `res.modules`: a baked module's source is what names
   // the namespaces it needs (the Canvas preamble's `_Canvas`, ...), and the
   // resolver just took that source out of the list. Scanning the resolved

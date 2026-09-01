@@ -95,6 +95,25 @@ loweringはそれらへの呼び出しを生成する。2つのレーンが同�
    付け加える（`stdlib_preamble.h`、ソースは`stdlib_preambles.gen.h`）。
    したがってstdlib名はコンパイル時に、コンパイラがその名前を見た
    時点で解決される。
+   2つのloweringレーンは、このバイナリが**bake**したモジュールを
+   preambleから再び取り出す（`resolve_baked_preamble`）: ビルドが
+   各stdlibモジュールを独立したネイティブオブジェクトにコンパイル
+   してあり（`culebra_preamble_cc`、モジュールごとに1つの
+   `culebra_preamble_<Name>`エントリ、driverと`libculebra_rt.a`が
+   持ち運ぶ）、loweringされたプログラムは各エントリの呼び出しで
+   始まる — 差し込まれたソースが行うのと同じ`_lazy_ns_register`を
+   実行する — ので、モジュールあたり約2万行のIRを抱え込まずに済む。
+   executorは差し込まれたソースをコンパイルし続けるので、対称性
+   ゲートは毎回bakeされたコードをそれと比較する。
+   `CULEBRA_PREAMBLE_SOURCE=1`でloweringレーンも再びソースを
+   差し込む。
+   1つのコンパイル時の事実だけはこの解決を生き延びる: bakeされた
+   モジュールの`@value`クラス宣言である。`parse_baked_value_decls`
+   がソースに`@value`を含む各bakedモジュールをparseし
+   （コンパイルはしない）、コンパイラがその宣言だけを登録する
+   （`register_stdlib_value_decls`）— これがないと§5.3の
+   スコープ一括unboxはこれらのレーンでstdlibクラスに対して決して
+   発火できない。spliceはinlineする宣言そのものを必要とするからだ。
 3. **コンパイル。** `vm::Compiler::compile_modules`が先頭のpreamble
    を剥がし、各依存モジュールをそれぞれのスコープでコンパイルした後、
    エントリモジュールをコンパイルして1つの`VmProgram`にする。

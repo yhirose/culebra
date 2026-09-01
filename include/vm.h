@@ -3181,9 +3181,14 @@ class Compiler {
   // rather than a module of its own (compile_module_impl runs it as one), so
   // it comes off the front here; everything between it and the entry is a
   // real dependency, already topologically ordered.
-  static VmProgram compile_modules(const std::vector<LoadedModule>& modules,
-                                   Debug debug = Debug::Off) {
-    return compile_module_list(modules, /*repl=*/false, debug);
+  // `value_decls`, when given, are the parsed-but-never-compiled stdlib
+  // modules of a baked lane (parse_baked_value_decls): their `@value` class
+  // declarations register before the unit compiles, so the unbox splice
+  // still sees them. Null (every source-spliced lane) reads as none.
+  static VmProgram compile_modules(
+      const std::vector<LoadedModule>& modules, Debug debug = Debug::Off,
+      const std::vector<LoadedModule>* value_decls = nullptr) {
+    return compile_module_list(modules, /*repl=*/false, debug, value_decls);
   }
 
   // One REPL input. The line's top-level bindings land in the session's
@@ -3231,7 +3236,8 @@ class Compiler {
   // A session unit compiles without the built-in traits prologue — they are
   // the session's one-time registration (Session::run_builtin_traits).
   static VmProgram compile_module_list(
-      const std::vector<LoadedModule>& modules, bool repl, Debug debug) {
+      const std::vector<LoadedModule>& modules, bool repl, Debug debug,
+      const std::vector<LoadedModule>* value_decls = nullptr) {
     if (modules.empty()) return {};
     const peg::Ast* stdlib = nullptr;
     size_t first_dep = 0;
@@ -3244,7 +3250,8 @@ class Compiler {
       deps.push_back(modules[i].ast.get());
     return compile_unit(*modules.back().ast,
                         {.stdlib = stdlib, .builtin_traits = !repl,
-                         .repl = repl, .debug = debug, .deps = &deps});
+                         .repl = repl, .debug = debug, .deps = &deps,
+                         .value_decls = value_decls});
   }
 
   struct UnitOpts {
@@ -3257,6 +3264,9 @@ class Compiler {
     // The entry module's dependencies, deps-first. Null (the REPL's and the
     // prologue's case) reads as none.
     const std::vector<const peg::Ast*>* deps = nullptr;
+    // A baked lane's parsed-but-never-compiled stdlib modules — see
+    // compile_modules. Null reads as none.
+    const std::vector<LoadedModule>* value_decls = nullptr;
   };
 
   static VmProgram compile_unit(const peg::Ast& ast, UnitOpts opts) {
@@ -3290,6 +3300,15 @@ class Compiler {
     // same shape the built-in traits take, and the JIT bundles it into the
     // one IR for the same reason.
     if (stdlib) (void)analysis.analyze_program(*stdlib);
+    // A baked lane's `@value`-bearing stdlib modules: analyzed exactly as
+    // the spliced module above would be, then walked for the declarations
+    // the unbox splice needs — never compiled, the baked entry already
+    // carries the module's code and registrations.
+    if (opts.value_decls)
+      for (const auto& d : *opts.value_decls) {
+        (void)analysis.analyze_program(*d.ast);
+        register_stdlib_value_decls(*d.ast, analysis);
+      }
     // Each dependency's top-level analysis is its own — free variables and
     // which locals need cells are per module, as the JIT's per-module
     // main_info_ is. A deque so the pointers handed to `main` stay put.
@@ -5431,6 +5450,77 @@ class Compiler {
     return {slot, &scopes_.back().bindings.back()};
   }
 
+  // A `@value` class's compile-time registration: the process-wide flat
+  // layout plus the declaration AST under its name (stdlib_value_classes).
+  // Refused for a class with no declared field (nothing to lay out) or with
+  // a field initializer — an initializer is evaluated by the field-init
+  // thunk, which is a culebra frame, and a frame is what unboxing is here
+  // to remove. Absent from the registry simply means "compile the ordinary
+  // way", so every refusal here is safe by construction.
+  static void register_value_class_layout(
+      const peg::Ast& ast, const std::string& class_name,
+      const std::vector<const peg::Ast*>& fields, FnAnalysis& analysis) {
+    std::vector<std::string> flat;
+    bool eligible = !fields.empty();
+    for (const auto* f : fields) {
+      auto mv = culebra::view_method(*f);
+      if (mv.value || !culebra::is_flat_value_field_type(mv.type_annotation)) {
+        eligible = false;
+        break;
+      }
+      flat.emplace_back(mv.name);
+    }
+    if (!eligible) return;
+    culebra::register_value_flat_layout(class_name, std::move(flat));
+    // The name-addressable twin of the binding `known.value_class`
+    // (compile_class_decl) sets, for a class no `lookup()` in the compiling
+    // frame's own scope can see — a stdlib lazy-namespace module's own
+    // class (see FnAnalysis::stdlib_value_classes' own comment).
+    // Harmless to record for every class, ordinary top-level ones
+    // included: `postfix_value_class` only ever consults this after
+    // `lookup()` has already failed, so a live local of the same name
+    // keeps shadowing it exactly as before.
+    analysis.stdlib_value_classes.insert_or_assign(std::string(class_name),
+                                                   &ast);
+  }
+
+  // Walk a parsed stdlib module for `@value` class declarations and register
+  // each exactly as compiling it would (register_value_class_layout above):
+  // the decl-only twin of compile_class_decl, for a lane that calls a baked
+  // entry and so never compiles the module's source
+  // (parse_baked_value_decls, stdlib_preamble.h). Validity checks are
+  // skipped — the same source already compiled when the entry was baked.
+  static void register_stdlib_value_decls(const peg::Ast& ast,
+                                          FnAnalysis& analysis) {
+    using namespace peg::udl;
+    if (ast.tag == "CLASS_DECL"_) {
+      size_t dec_end = 0;
+      bool is_value = false;
+      while (dec_end < ast.nodes.size() &&
+             ast.nodes[dec_end]->tag == "DECORATOR"_) {
+        if (culebra::is_value_decorator(*ast.nodes[dec_end])) is_value = true;
+        dec_end++;
+      }
+      if (is_value) {
+        auto head = culebra::parse_generic_head(ast.nodes[dec_end]->token);
+        auto class_name = std::string(head.outer);
+        culebra::register_value_class(class_name);
+        // The same member classification compile_class_decl makes: a typed
+        // field is an instance field even when written `static` (its wart),
+        // an untyped one only when not static.
+        std::vector<const peg::Ast*> fields;
+        for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
+          auto mv = culebra::view_method(*ast.nodes[i]);
+          if (mv.is_typed_field || (mv.is_field && !mv.is_static))
+            fields.push_back(ast.nodes[i].get());
+        }
+        register_value_class_layout(ast, class_name, fields, analysis);
+      }
+    }
+    for (const auto& n : ast.nodes)
+      register_stdlib_value_decls(*n, analysis);
+  }
+
   void compile_class_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     size_t dec_end = 0;
@@ -5536,37 +5626,8 @@ class Compiler {
     if (is_value) culebra::register_value_class(class_name);
     // And, when its shape allows it, the layout an unboxed construction lays
     // the instance out as: one slot per declared field, in declaration order.
-    // Refused for a class with no declared field (nothing to lay out), with a
-    // nested `@value` field (that layout is a later step), or with a field
-    // initializer — an initializer is evaluated by the field-init thunk,
-    // which is a culebra frame, and a frame is what unboxing is here to
-    // remove. Absent from the registry simply means "compile the ordinary
-    // way", so every refusal here is safe by construction.
-    if (is_value) {
-      std::vector<std::string> flat;
-      bool eligible = !fields.empty();
-      for (const auto* f : fields) {
-        auto mv = culebra::view_method(*f);
-        if (mv.value || !culebra::is_flat_value_field_type(mv.type_annotation)) {
-          eligible = false;
-          break;
-        }
-        flat.emplace_back(mv.name);
-      }
-      if (eligible) {
-        culebra::register_value_flat_layout(class_name, std::move(flat));
-        // The name-addressable twin of the binding `known.value_class`
-        // (below) sets, for a class no `lookup()` in the compiling
-        // frame's own scope can see — a stdlib lazy-namespace module's own
-        // class (see FnAnalysis::stdlib_value_classes' own comment).
-        // Harmless to record for every class, ordinary top-level ones
-        // included: `postfix_value_class` only ever consults this after
-        // `lookup()` has already failed, so a live local of the same name
-        // keeps shadowing it exactly as before.
-        analysis_.stdlib_value_classes.insert_or_assign(
-            std::string(class_name), &ast);
-      }
-    }
+    if (is_value)
+      register_value_class_layout(ast, class_name, fields, analysis_);
     const peg::Ast* new_ast = new_asts.empty() ? nullptr : new_asts.front();
     // Resolve `@derive(...)` into the (method name, runtime kind) pairs to
     // append to the meta, after the members so a name the class declares
