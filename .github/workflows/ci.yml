@@ -1897,7 +1897,7 @@ jobs:
           }
 
           # Nothing installed yet: the build must refuse, and say what to do.
-          $out = & $exe build misc\linkkit\hello.cul -o hello.exe 2>&1 | Out-String
+          $out = & $exe build misc\windows_toolchain\linkkit\hello.cul -o hello.exe 2>&1 | Out-String
           if ($LASTEXITCODE -eq 0) { throw "build succeeded with no kit installed" }
           if ($out -notmatch 'culebra toolchain install') {
             throw "the failure does not name the fix:`n$out"
@@ -1940,7 +1940,7 @@ jobs:
 
           # Leaves each axis's <name>.exe in the cwd; hello.exe is the one the
           # uninstall check below runs.
-          & (Join-Path $pwd 'misc\linkkit\build_axes.ps1') $exe
+          & (Join-Path $pwd 'misc\windows_toolchain\linkkit\build_axes.ps1') $exe
 
           # A produced binary must need nothing from the kit: it is build-time
           # only, and this is where that stops being an assumption.
@@ -1948,7 +1948,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "uninstall failed" }
           $out = (& .\hello.exe | Out-String).Trim()
           if ($out -ne 'hello from AOT') { throw "the binary needed the kit: '$out'" }
-          & $exe build misc\linkkit\hello.cul -o again.exe 2>&1 | Out-Null
+          & $exe build misc\windows_toolchain\linkkit\hello.cul -o again.exe 2>&1 | Out-Null
           if ($LASTEXITCODE -eq 0) { throw "build still works after uninstall" }
           "OK: uninstall is complete, and what was built keeps running"
           exit 0
