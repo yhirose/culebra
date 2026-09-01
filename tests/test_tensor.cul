@@ -712,4 +712,47 @@ let px = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0]).requires_grad()
 px.clamp(-1.0, 1.0).sum(0).backward()
 assert_eq(px.grad().to_array(), [0.0, 1.0, 1.0, 1.0, 0.0])
 
+# --- .rope(pos, base): rotary position embedding -----------------------------
+# Half-split (GPT-NeoX / HF-llama) convention: pairs (j, j+D/2) of the last
+# axis rotate by angle = position * base^(-2j/D), position = pos + (r % T).
+# Forward-only for now (see tensor.h's Op::Rope comment) -- a training-time
+# RoPE composes from slice/mul/concat instead of this fused decode fast path.
+
+# pos=0 rotates every row by angle 0 regardless of theta -> identity.
+let rx = Tensor.from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+assert_eq(rx.rope(0, 10000.0).to_array(), rx.to_array())
+
+# pos=1, base=10000.0, D=4: hand-computed against the half-split formula.
+let r1 = Tensor.from([[1.0, 2.0, 3.0, 4.0]]).rope(1, 10000.0).to_array()[0]
+assert_close(r1[0], -1.9841106485555497, 1.0e-6)
+assert_close(r1[1], 1.959900667496664, 1.0e-6)
+assert_close(r1[2], 2.462377902412316, 1.0e-6)
+assert_close(r1[3], 4.019799668334994, 1.0e-6)
+
+# base may be a Long too (coerced, same as clamp's lo/hi).
+assert_eq(
+  Tensor.from([[1.0, 2.0, 3.0, 4.0]]).rope(1, 10000).to_array(),
+  Tensor.from([[1.0, 2.0, 3.0, 4.0]]).rope(1, 10000.0).to_array(),
+)
+
+# [H,T,D] (prefill shape): row r's position is pos + (r % T). `.from` has no
+# 3D literal and `.to_array` caps at rank 2, so reshape a 2D [2,4] up to
+# [2,1,4] (T=1, same math as [H,D]) and back down after rope.
+let rt3 = Tensor
+  .from([[1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0]])
+  .reshape([2, 1, 4])
+let rt3out = rt3.rope(1, 10000.0).reshape([2, 4]).to_array()
+assert_eq(rt3out[0], r1)
+assert_eq(rt3out[1], r1)
+
+# forward-only: .backward() through rope raises rather than silently
+# skipping (same contract as the comparisons above).
+assert_throws('ValueError', fn () {
+  Tensor
+    .from([[1.0, 2.0, 3.0, 4.0]])
+    .requires_grad()
+    .rope(0, 10000.0)
+    .backward()
+})
+
 inspect("test_tensor: OK")

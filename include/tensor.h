@@ -114,6 +114,14 @@ enum class Op {
   IndexSelect, IndexAdd, ScatterAxis,
   Narrow,  // `.slice()` generalized to any axis. Zero-copy view, no
            // backward yet (see the VJP switch).
+  // Rotary position embedding: pairs (j, j+D/2) of the last axis rotate by
+  // a position/frequency-dependent angle. Forward-only for now (see the VJP
+  // switch) -- same reason Unfold/Pad/Fold/Permute/Narrow/ScatterAxis are:
+  // a training-time RoPE composes from existing differentiable primitives
+  // (slice the two halves, multiply by precomputed cos/sin constant
+  // tensors, concat back), so this fused native op is a decode/inference
+  // fast path, not something .backward() needs to see through.
+  Rope,
 };
 
 struct TensorShape {
@@ -955,6 +963,18 @@ inline TensorPtr tensor_clamp(TensorPtr a, float lo, float hi) {
   return out;
 }
 
+// rope(x, pos, base) needs an int64 and a float tensor_unary's (op, a)
+// signature has nowhere to carry, so its own builder (same reason
+// tensor_clamp above has one). `pos` rides in op_param (Slice's own
+// "one scalar" slot); `base` needs nothing stored back since Rope is
+// forward-only (see the Op enum's own comment and the VJP switch).
+inline TensorPtr tensor_rope(TensorPtr x, int64_t pos, float base = 10000.0f) {
+  auto v = _tl_guard([&] { return tl::array::rope(x->value, pos, base); });
+  auto dtype = x->dtype;
+  return tensor_make_op(Op::Rope, std::move(v), dtype,
+                        std::vector<TensorPtr>{std::move(x)}, pos);
+}
+
 // Fused MLP forward: sigmoid(W @ x + b). Bias is broadcast against
 // the output [M, N] (typical: b is [M, 1] or [M]). The tl graph is
 // dot + broadcast-add + sigmoid; backend fusion (bias/activation GEMM
@@ -1397,6 +1417,15 @@ inline void _tensor_vjp(const TensorPtr& n) {
       // forward-only, writing its own gradient by hand around it).
       throw CulebraError("ValueError",
           "Tensor.backward: scatter_to_axis is not differentiable yet.");
+    case Op::Rope:
+      // The VJP is the transpose rotation (angle negated), which needs the
+      // same cos/sin table the forward used and nothing here keeps it
+      // (op_param is pos, sized for Slice's one scalar; base isn't stored
+      // back at all — see the Op enum's own comment). Unreached today: a
+      // training-time RoPE composes from existing differentiable
+      // primitives instead of this fused decode/inference fast path.
+      throw CulebraError("ValueError",
+          "Tensor.backward: rope is not differentiable yet.");
   }
 }
 

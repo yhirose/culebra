@@ -804,6 +804,10 @@ enum class BMeth : uint8_t {
   // clip(lo, hi): the one Tensor unary needing two scalar params, hence
   // its own runtime function rather than tensor_unary's op-id dispatch.
   Clip,
+  // rope(pos, base): rotary position embedding, same two-scalar-param
+  // shape as Clip above (its own runtime function, not tensor_unary's
+  // op-id dispatch). Forward-only (tensor.h's VJP throws).
+  Rope,
   // im2col's own building blocks. Each takes one params Array ([axis, win,
   // step] / [axis, before, after] / [axis, orig_size, step]) rather than 3
   // positional Longs, same reason Reshape takes a dims Array: BMethSpec's
@@ -1265,6 +1269,7 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"sin", 0, Sin, kRecvTensor, 0, nullptr, {}, {}},
       {"cos", 0, Cos, kRecvTensor, 0, nullptr, {}, {}},
       {"clamp", 2, Clip, kRecvTensor, 2, nullptr, {Any, Any}, {"lo", "hi"}},
+      {"rope", 2, Rope, kRecvTensor, 2, nullptr, {Long, Any}, {"pos", "base"}},
       {"reshape", 1, Reshape, kRecvTensor, 1, nullptr, {Array}, {"dims"}},
       // The reductions. `sum` and `max` already have an axis-less row above
       // (Array / Tensor / iterator); `mean` has no such spelling outside
@@ -2247,6 +2252,14 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
           reinterpret_cast<int64_t>(culebra_runtime_tensor_clamp(
               ten(recv), static_cast<int8_t>(args[0].tag), args[0].data,
               static_cast<int8_t>(args[1].tag), args[1].data))};
+    case BMeth::Rope:
+      // pos is Long-typed (arg[0].data is already the raw int64), base is
+      // Any (coerced Long-or-Float) same as clamp's lo/hi above.
+      return JitValue{
+          TAG_TENSOR,
+          reinterpret_cast<int64_t>(culebra_runtime_tensor_rope(
+              ten(recv), args[0].data, static_cast<int8_t>(args[1].tag),
+              args[1].data))};
     case BMeth::Transpose:
       return JitValue{TAG_TENSOR,
                       reinterpret_cast<int64_t>(

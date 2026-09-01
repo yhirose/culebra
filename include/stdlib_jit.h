@@ -10062,6 +10062,9 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::tensor_clamp, ptrTy, ptrTy,
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::tensor_rope, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_clone, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_slice, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty(),

@@ -1635,6 +1635,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.gt(other) / .lt(other) / .ge(other) / .le(other) / .eq(other) / .ne(other) -> Tensor` | lazy | elementwise comparison, `1.0` / `0.0` mask; `other` is Tensor or scalar |
 | `.tanh() / .sin() / .cos() -> Tensor` | lazy | elementwise trig / hyperbolic tangent |
 | `.clamp(lo, hi) -> Tensor` | lazy | elementwise clip to `[lo, hi]` |
+| `.rope(pos: Long, base) -> Tensor` | lazy | rotary position embedding (half-split convention) over the last axis; `self` is `[H, D]` or `[H, T, D]`, row `r`'s position is `pos + (r % T)` |
 | `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |
 | `.permute(axes: Array) -> Tensor` | view | general axis reorder; `axes[i]` names which of self's axes becomes result axis `i` |
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
@@ -1682,10 +1683,11 @@ produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `Tensor.concat()`, `Tensor.where()`, and `.index_select()` /
 `Tensor.index_add()` (each other's own VJP). Gradients un-broadcast
 automatically, so a bias added across a batch sums back to its shape.
-`.unfold()`, `.pad()`, `.fold()`, `.permute()`, `.narrow()`, and
+`.unfold()`, `.pad()`, `.fold()`, `.permute()`, `.narrow()`, `.rope()`, and
 `Tensor.scatter_to_axis()` are forward-only so far — `.backward()` through
-them raises; a training loop that uses them (e.g. an im2col-style conv or
-a pooling layer) writes its own backward pass around them for now.
+them raises; a training loop that uses them (e.g. an im2col-style conv, a
+pooling layer, or RoPE applied to Q/K) writes its own backward pass around
+them for now.
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()` (and `.max()` /
 `.argmax()`) are never differentiable — `.backward()` through a comparison
 always raises, the same as PyTorch/numpy: compose the 0/1 mask with `*`

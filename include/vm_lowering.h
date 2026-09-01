@@ -3220,6 +3220,16 @@ struct Lowering {
                    j.extract_tag(arg(1)), j.extract_data(arg(1))},
                   "vbm.tclamp"));
               break;
+            case BMeth::Rope:
+              // pos (arg 0) is Long-typed -- raw data, no tag, same as
+              // SumAxis/MaxAxis/Argmax's axis above; base (arg 1) is Any,
+              // tag+data like clamp's lo/hi.
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_rope),
+                  {arr(), j.extract_data(arg(0)), j.extract_tag(arg(1)),
+                   j.extract_data(arg(1))},
+                  "vbm.trope"));
+              break;
             case BMeth::Transpose:
             case BMeth::Clone:
             case BMeth::RequiresGrad:

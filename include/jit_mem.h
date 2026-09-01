@@ -601,6 +601,7 @@ inline constexpr auto tensor_transpose    = "culebra_runtime_tensor_transpose";
 inline constexpr auto tensor_permute      = "culebra_runtime_tensor_permute";
 inline constexpr auto tensor_narrow       = "culebra_runtime_tensor_narrow";
 inline constexpr auto tensor_clamp        = "culebra_runtime_tensor_clamp";
+inline constexpr auto tensor_rope         = "culebra_runtime_tensor_rope";
 inline constexpr auto tensor_clone        = "culebra_runtime_tensor_clone";
 inline constexpr auto tensor_slice        = "culebra_runtime_tensor_slice";
 inline constexpr auto tensor_reshape      = "culebra_runtime_tensor_reshape";

@@ -1598,6 +1598,7 @@ let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 | `.gt(other) / .lt(other) / .ge(other) / .le(other) / .eq(other) / .ne(other) -> Tensor` | lazy | elementwise比較、`1.0`/`0.0`のマスクを返す。otherはTensorまたはscalar |
 | `.tanh() / .sin() / .cos() -> Tensor` | lazy | elementwiseな三角関数・双曲線正接 |
 | `.clamp(lo, hi) -> Tensor` | lazy | `[lo, hi]`へのelementwise clip |
+| `.rope(pos: Long, base) -> Tensor` | lazy | 回転位置埋め込み（half-split方式）、最後の軸に適用。selfは`[H, D]`または`[H, T, D]`、行rの位置は`pos + (r % T)` |
 | `.transpose() -> Tensor` | view | 全軸逆順（rank-2で行列転置） |
 | `.permute(axes: Array) -> Tensor` | view | 任意軸並べ替え。`axes[i]`が結果の軸`i`に対応する自分自身の軸を指定 |
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
@@ -1645,10 +1646,10 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 `Tensor.where()`、`.index_select()` / `Tensor.index_add()`（互いが
 相手のVJP）。勾配は自動でun-broadcastされるので、バッチ越しに加えた
 biasは元の形状に和を取って戻ります。`.unfold()`、`.pad()`、
-`.fold()`、`.permute()`、`.narrow()`、`Tensor.scatter_to_axis()`は
+`.fold()`、`.permute()`、`.narrow()`、`.rope()`、`Tensor.scatter_to_axis()`は
 今のところforward-onlyです——これらを通した`.backward()`は例外を
-投げます。im2col方式のconvやpoolingレイヤーなどこれらを使う学習
-ループは、今のところ自前でbackwardを書きます。
+投げます。im2col方式のconvやpoolingレイヤー、Q/Kに適用するRoPEなど
+これらを使う学習ループは、今のところ自前でbackwardを書きます。
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()`（および`.max()` /
 `.argmax()`）は恒久的に微分不可能です——比較を通した`.backward()`は常に
 例外を投げます（PyTorch/numpyと同じ）。0/1マスクは`*`で合成してください

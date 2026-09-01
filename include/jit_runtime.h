@@ -2439,6 +2439,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clamp(
   return _culebra_jit_tensor_register(culebra::tensor_clamp(t->impl, lo, hi));
 }
 
+// .rope(pos, base) — RoPE's forward. pos is Long-typed at the language
+// boundary (BMethSpec), so it arrives as a plain int64_t; base is a plain
+// number (Long/Float) like clamp's lo/hi above, so a straight coerce.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_rope(
+    JitTensor* t, int64_t pos, int8_t baset, int64_t based) {
+  float base = static_cast<float>(_culebra_coerce_num(baset, based));
+  return _culebra_jit_tensor_register(
+      culebra::tensor_rope(t->impl, pos, base));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));
