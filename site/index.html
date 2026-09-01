@@ -194,6 +194,31 @@
     </div>
 
     <section class="section">
+      <h2>One executable, every tool</h2>
+      <p>The same binary that runs your program also builds, tests, lints,
+        formats, and documents it.
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/deployment.md#1-standalone-binary-build-culebra-build"><code>build</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#1-testing-culebra-test"><code>test</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#2-linting-culebra-lint"><code>lint</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#3-formatting-culebra-fmt"><code>fmt</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#4-debugging-culebra-dap"><code>dap</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#5-reading-the-docs-culebra-docs"><code>docs</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#6-serving-static-files-culebra-serve"><code>serve</code></a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#quick-setup-culebra-init"><code>init</code></a>, and
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/deployment.md#3-wrapping-c-libraries-culebra-wrap"><code>wrap</code></a>
+        are all built in — nothing else to install.</p>
+      <p>The standard library is baked in too:
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#9-json">JSON</a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#15-http">HTTP</a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#14-regex">Regex</a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#34-peg">PEG</a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#8-tensor">Tensor</a>,
+        <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#26-canvas">Canvas</a>,
+        and more are bound before your program runs. No package manager. No
+        lockfile.</p>
+    </section>
+
+    <section class="section">
       <h2>Try culebra on your machine</h2>
       <p>Paste this into a terminal on macOS (Apple Silicon) — it downloads
         culebra and writes a one-line program to <code>hello.cul</code>, then
@@ -241,25 +266,6 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
         <code>AGENTS.md</code> (or <code>CLAUDE.md</code>/<code>.github/copilot-instructions.md</code>
         if one already exists) — reopen <code>hello.cul</code> afterward
         and the highlighting is already on.</p>
-    </section>
-
-    <section class="section">
-      <h2>One executable, every tool</h2>
-      <p>The same binary that just ran <code>hello.cul</code> also
-        builds, tests, lints, formats, and documents it —
-        <a href="https://github.com/yhirose/culebra/blob/master/docs/deployment.md#1-standalone-binary-build-culebra-build"><code>culebra build</code></a>,
-        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#1-testing-culebra-test"><code>test</code></a>,
-        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#2-linting-culebra-lint"><code>lint</code></a>,
-        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#3-formatting-culebra-fmt"><code>fmt</code></a>,
-        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#4-debugging-culebra-dap"><code>dap</code></a>,
-        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#5-reading-the-docs-culebra-docs"><code>docs</code></a>,
-        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#6-serving-static-files-culebra-serve"><code>serve</code></a>,
-        <a href="https://github.com/yhirose/culebra/blob/master/docs/tooling.md#quick-setup-culebra-init"><code>init</code></a>, and
-        <a href="https://github.com/yhirose/culebra/blob/master/docs/deployment.md#3-wrapping-c-libraries-culebra-wrap"><code>wrap</code></a>
-        are all built in. Nothing else to install.</p>
-      <p>The <a href="https://github.com/yhirose/culebra#batteries-included-in-one-binary">standard library</a> is
-        baked in too — JSON, HTTP, Tensor, Canvas, and the rest are bound
-        before the program runs. No package manager, no lockfile.</p>
     </section>
 
     <section class="section">
