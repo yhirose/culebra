@@ -1025,6 +1025,22 @@ if(CULEBRA_WRAP_SOURCES)
   endif()
 endif()
 
+# Unlike the __Foreign fixture (header-only), cpp-vmlib's coreir::verify/
+# vm::compile/vm::run/etc. are declared in headers but *defined* in these
+# four .cc files, so the driver (which runs CodeGen.Module directly, not
+# only through a force-loaded archive) needs its own compiled copy of them.
+# Unconditional -- outside both the CULEBRA_ENABLE_JIT branch below (main.cc
+# wraps CodeGen.Module in every configuration, so no-JIT builds link these
+# too) and its CULEBRA_DEV_NO_RT sub-branch -- because this is plain,
+# fast-compiling C++ with no archive/embedding to skip; it has nothing in
+# common with the heavy runtime archives those guards exist for.
+target_sources(culebra PRIVATE
+  ./src/runtime/codegen_rt.cc
+  ./vendor/cpp-vmlib/include/coreir/ir.cc
+  ./vendor/cpp-vmlib/vm/compiler.cc
+  ./vendor/cpp-vmlib/vm/exec.cc
+  ./vendor/cpp-vmlib/vm/bytecode.cc)
+
 if(CULEBRA_ENABLE_JIT)
   # lld ahead of ${llvm_libs}: its archives reach into LLVM, not the other way
   # round, and a static link resolves left to right.
@@ -1037,21 +1053,6 @@ if(CULEBRA_ENABLE_JIT)
   # source_dir.cc, not the target — see include/source_dir.h.
   set_source_files_properties(./src/source_dir.cc PROPERTIES
     COMPILE_DEFINITIONS "CULEBRA_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
-
-  # Unlike the __Foreign fixture (header-only), cpp-vmlib's coreir::verify/
-  # vm::compile/vm::run/etc. are declared in headers but *defined* in these
-  # four .cc files, so the driver (which runs CodeGen.Module directly, not
-  # only through a force-loaded archive) needs its own compiled copy of them.
-  # Unconditional -- outside the CULEBRA_DEV_NO_RT branch below -- because
-  # this is plain, fast-compiling C++ with no archive/embedding to skip; it
-  # has nothing in common with the heavy runtime archives that guard exists
-  # for.
-  target_sources(culebra PRIVATE
-    ./src/runtime/codegen_rt.cc
-    ./vendor/cpp-vmlib/include/coreir/ir.cc
-    ./vendor/cpp-vmlib/vm/compiler.cc
-    ./vendor/cpp-vmlib/vm/exec.cc
-    ./vendor/cpp-vmlib/vm/bytecode.cc)
 
   if(CULEBRA_DEV_NO_RT)
   # Fast inner-loop build: don't compile or embed the runtime archives.
