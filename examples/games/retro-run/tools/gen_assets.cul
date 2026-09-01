@@ -293,7 +293,7 @@ class Cells {
   shade_bottom(key_dark, frac = 0.35) {
     let ink = KEY_ID["INK"]
     for x in 0..self.w {
-      let col = iota(self.h).filter(fn (y) {
+      let col = iota(self.h).filter(|y| {
         let v = self.get(x, y)
         v != 0 && v != ink
       })

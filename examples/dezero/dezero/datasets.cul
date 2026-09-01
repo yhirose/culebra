@@ -121,7 +121,7 @@ fn load_mnist_labels(path, limit) {
 
 fn load_mnist_images(path, n) {
   raw = Compress.gunzip(FS.read(path))
-  rows = range(n).map(fn (i) {
+  rows = range(n).map(|i| {
     off = 16 + i * 784
     raw.slice(off, off + 784).bytes().map(|b| to_float(b) / 255.0).collect()
   }).collect()

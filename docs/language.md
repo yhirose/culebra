@@ -2021,23 +2021,26 @@ function to a higher-order call:
     add   = |x, y| x + y                 # expression body
     sq    = |x| x * x
     noop  = || 42                         # zero params
+    scale = |x, y| {                      # block body
+      let factor = 10
+      x * y * factor
+    }
     abs_v = |x| if x < 0 { -x } else { x } # if/while/for/match/try
                                           # are expressions, so they
                                           # work as the body
     xs.map(|x| x * 2)                     # passes cleanly as a functor
 
-The body must be a **single expression**. When multiple statements,
-intermediate `let`, or side effects are needed, use `fn (...) { ... }`
-instead:
+The body is normally a single expression. For multiple statements,
+intermediate `let`, or side effects, use a braced block:
 
-    clamp = fn (v, lo, hi) {
+    clamp = |v, lo, hi| {
       mut x = v
       if x < lo { x = lo }
       if x > hi { x = hi }
       x
     }
 
-Otherwise semantically identical to `fn (...) expr`:
+Both forms are semantically identical to `fn (...) { ... }`:
 
 * Captures variables from the enclosing scope.
 * Accepts the same `mut` / type-annotation / default-value parameter

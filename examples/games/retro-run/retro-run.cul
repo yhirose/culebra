@@ -201,7 +201,7 @@ let SHEET = sheet._id
 # get_or_put only calls the loader on a name it has not seen.
 let backgrounds = fn () {
   mut loaded = {}
-  SCENES.map(fn (scene) {
+  SCENES.map(|scene| {
     let scened = "background_" + scene + ".png"
     let name = ART.exists(scened) ? scened : "background.png"
     loaded.get_or_put(name, || Canvas.Sprite.from_png(art(name)))._id
@@ -683,7 +683,7 @@ let steer_car = fn (car, car_index, player_index, n, player_half) {
         }
       }
 
-      let other = segment.cars.find(fn (o) {
+      let other = segment.cars.find(|o| {
         let reach = (car_w + o.w) * 0.6
         let gap = offset - o.offset
         car_speed > o.speed && gap >= -reach && gap <= reach

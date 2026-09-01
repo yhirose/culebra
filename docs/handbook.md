@@ -410,9 +410,15 @@ add_typed = fn (a: Long, b: Long) -> Long {
 }
 inspect(add_typed(2, 3))  # => 5
 
-# |x| expr is shorthand for fn (x) { expr }
+# A lambda can have an expression body or a braced block body.
 square = |x| x * x
 inspect(square(7))  # => 49
+
+scale = |x, y| {
+  let factor = 10
+  x * y * factor
+}
+inspect(scale(2, 3))  # => 60
 
 # Use `fn` for recursion (the function refers to itself)
 fib = fn (x) {

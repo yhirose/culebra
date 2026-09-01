@@ -373,14 +373,17 @@ const auto grammar_ = R"(
                             /  '{' _ EXPRESSION _ ',' _ '}'
 
   FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
-  # Lambda sugar: `|x, y| expr` desugars to `fn (x, y) expr`. Body is
-  # restricted to a single EXPRESSION (not BLOCK) — for multiple
-  # statements / intermediate `let` / side effects, use `fn (...) { ... }`.
+  # Lambda sugar: `|x, y| expr` desugars to `fn (x, y) expr`. The body is
+  # a single EXPRESSION by default; `|x, y| { ... }` is also accepted for
+  # multiple statements / intermediate `let` / side effects. EXPRESSION is
+  # tried first so a brace body that IS a valid expression keeps its old
+  # meaning — `|x| {}` an empty OBJECT, `|x| {a: x}` an OBJECT — since
+  # PRIMARY's OBJECT alt fails to consume something like `z = 10; ...`
+  # (no `,`/`}` follows the first shorthand property), only then does the
+  # BLOCK alternative take over.
   # `if` / `while` / `for` / `match` / `try` are themselves expressions,
   # so they work as the body: `|x| if x < 0 { -x } else { x }`.
-  # Object literals as the body are EXPRESSION-position OBJECTs:
-  # `|x| {a: x}` returns `{a: x}` unambiguously.
-  LAMBDA                   <-  LAMBDA_PARAMS _ EXPRESSION
+  LAMBDA                   <-  LAMBDA_PARAMS _ (EXPRESSION / BLOCK)
   LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)* _ ','?)? _ '|'
   PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)* _ ','?)? _ ')'
   # A parameter may be a destructuring pattern — `fn ({a, b})`,

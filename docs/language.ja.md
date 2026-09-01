@@ -1912,21 +1912,25 @@ Tensor、`__add__`等でoverloadしたuser numeric class) 専用ですが、
     add   = |x, y| x + y                 # 式ボディ
     sq    = |x| x * x
     noop  = || 42                         # 引数なし
+    scale = |x, y| {                      # ブロックボディ
+      let factor = 10
+      x * y * factor
+    }
     abs_v = |x| if x < 0 { -x } else { x } # if/while/for/match/try
                                           # は式なのでボディに置ける
     xs.map(|x| x * 2)                     # functorとして渡せる
 
-ボディは**単一の式**でなければなりません。複数の文、途中の`let`、
-副作用が必要な場合は`fn (...) { ... }`を使ってください:
+ボディは通常は単一式です。複数の文、途中の`let`、副作用が必要な
+場合は、波括弧でブロックを書けます:
 
-    clamp = fn (v, lo, hi) {
+    clamp = |v, lo, hi| {
       mut x = v
       if x < lo { x = lo }
       if x > hi { x = hi }
       x
     }
 
-それ以外は`fn (...) expr`と完全に同じセマンティクス:
+どちらの形も`fn (...) { ... }`と完全に同じセマンティクス:
 
 * 囲みスコープから変数をキャプチャする。
 * パラメータの`mut` / 型注釈 / デフォルト値はすべて使える:

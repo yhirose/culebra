@@ -197,7 +197,7 @@ typed = fn (a: Long, b: Long) -> Long {
 }
 inspect(typed(2, 3))  # => 5
 
-square = |x| x * x  # a lambda body is a single expression
+square = |x| x * x  # a lambda body is a single expression by default
 inspect(square(7))  # => 49
 
 inspect([1, 2, 3].map(|x| x * 2))  # => [2, 4, 6]
@@ -208,8 +208,8 @@ inspect([[1, 2]].map(fn ((a, b)) {
 
 Bind a literal like any other value (`name = fn (...) { ... }`), or use
 the declaration form `fn name(...) { ... }`. Pass a callback inline as
-`|x|`; a lambda body is a single expression, so switch to
-`fn (x) { ... }` when the callback needs statements.
+`|x|`; braces also work — `|x| { ... }` accepts statements, just like
+`fn (x) { ... }`.
 
 For a named function — one you are going to call by name, especially a
 recursive one — prefer the declaration form. Only it can be a

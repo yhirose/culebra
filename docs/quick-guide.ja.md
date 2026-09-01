@@ -194,7 +194,7 @@ typed = fn (a: Long, b: Long) -> Long {
 }
 inspect(typed(2, 3))  # => 5
 
-square = |x| x * x  # lambdaのbodyは単一式のみ
+square = |x| x * x  # lambdaのbodyは既定で単一式
 inspect(square(7))  # => 49
 
 inspect([1, 2, 3].map(|x| x * 2))  # => [2, 4, 6]
@@ -205,8 +205,8 @@ inspect([[1, 2]].map(fn ((a, b)) {
 
 値としてリテラルを束縛する (`name = fn (...) { ... }`) か、宣言形式
 `fn name(...) { ... }` を使うかのどちらか。その場で渡す callback は
-`|x|`。lambda の body は単一式なので、callback に文が要るときだけ
-`fn (x) { ... }` に切り替える。
+`|x|`。波括弧も使え、`|x| { ... }` は `fn (x) { ... }` と同じく文を
+受け付ける。
 
 **名前を付けて呼ぶ関数**、特に再帰関数には宣言形式を使うこと。
 [ジェネレータ](#26-イテレータ)になれる、[多重ディスパッチ](#29-クラスufcs多重ディスパッチtrait)

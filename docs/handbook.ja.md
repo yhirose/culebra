@@ -396,9 +396,15 @@ add_typed = fn (a: Long, b: Long) -> Long {
 }
 inspect(add_typed(2, 3))  # => 5
 
-# |x| expr は fn (x) { expr } の糖衣
+# ラムダは式ボディまたは波括弧のブロックボディを取れる
 square = |x| x * x
 inspect(square(7))  # => 49
+
+scale = |x, y| {
+  let factor = 10
+  x * y * factor
+}
+inspect(scale(2, 3))  # => 60
 
 # 再帰には `fn` (関数自身への参照)
 fib = fn (x) {
