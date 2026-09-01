@@ -409,7 +409,9 @@ inspect('after')
 ### 2.9 クラス・UFCS・多重ディスパッチ・trait
 
 フィールドには `self` でアクセスします (`this` ではありません)。
-クラス自体の呼び出しは `.new` の短縮形です。
+クラス自体の呼び出しは `.new` の短縮形です。クラスも Object リテラルと
+同じ規則で `drop()` を定義でき (2.8)、インスタンスへの最後の参照が
+消えた時点でそれが呼ばれます。
 
 ```culebra
 class Car {
@@ -418,6 +420,7 @@ class Car {
     self.miles = 0
     self.mpr = mpr
   }
+  drop() {}  # 最後の参照が消えた時点でリソースを後始末
   run(n) {
     self.miles += self.mpr * n
   }

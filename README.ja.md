@@ -6,7 +6,7 @@ Culebraプログラミング言語
 > **ステータス:** 1.0前・活発に開発中 — APIと構文は変わることがあります。
 
 動的型付けのクロスプラットフォームなスクリプト言語です。backendは
-3つ — インタプリタ、LLVM JIT、単体バイナリを生成するAOTビルド。スクリプト、
+3つ — bytecode VM、LLVM JIT、単体バイナリを生成するAOTビルド。スクリプト、
 CLIツール、機械学習、デスクトップアプリ、ゲームが書けます。
 
 標準ライブラリ、テストランナー、linter、formatter、デバッガ、ドキュメント
@@ -37,7 +37,7 @@ for p in people.sorted_by(|p| p.name) {
 }
 EOF
 
-culebra hello.cul                            # インタプリタ
+culebra hello.cul                            # bytecode VM（既定）
 culebra --jit hello.cul                      # JIT
 culebra build hello.cul -o hello && ./hello  # AOT: 一度コンパイルしてバイナリを配る
 cat hello.cul | culebra -                    # stdin（curl ... | culebra - も同様）
@@ -87,7 +87,7 @@ sudo mv culebra-*/culebra /usr/local/bin/
 - **CLIスクリプト。** 起動は数十ミリ秒。
 - **単体バイナリ。** `culebra build`が実行ファイルを1つ出力します。並べて
   インストールするものはなく、実行時依存もありません。
-- **組み込みライブラリ。** インタプリタをC++ホストに埋め込めます。
+- **組み込みライブラリ。** bytecode VMをC++ホストに埋め込めます。
 - **クロスプラットフォーム。** macOS / Linux / Windows対応。どのホストからでも
   任意のLLVMターゲットへクロスコンパイルできます。
 
@@ -150,7 +150,7 @@ Tensor.eval(y)  # [[5.0, 11.0], [11.0, 25.0]]
 ### 埋め込みアセット
 
 `Embed.dir(name)`は、ディレクトリ1つをbackendを問わず同じコードで
-プログラムに渡します。インタプリタとJITはディスクから直接読み込むので
+プログラムに渡します。VMとJITはディスクから直接読み込むので
 （ファイルを直して再実行するだけ）、`culebra build`はすべてのバイトを
 実行ファイルへ焼き込むので、配布するバイナリはそれだけで完結します。
 
@@ -209,7 +209,7 @@ Canvas.run(160, 160, fn () {
 - **漸進的型付け。** 注釈は境界で実行時に検査されます。Union・Optional・
   Tuple・Trait・Genericはいずれも現時点で検査されます。
 - **UFCS。** 自由関数をメソッドとして呼べます（`x.f(y)` ≡ `f(x, y)`）。
-- **多重ディスパッチ。** 自由関数が引数の型で解決されます。interp / JIT /
+- **多重ディスパッチ。** 自由関数が引数の型で解決されます。VM / JIT /
   AOTのすべてで同じ挙動です。
 - **トレイト。** 組み込みの`Iterable` / `Iterator`に加え、デフォルト
   メソッドつきのユーザー定義トレイト。
@@ -274,24 +274,21 @@ Tools）とLinux（`cc`）で、Windowsではバイナリ自身がリンカを�
 C++ホストへの組み込み
 ---------------------
 
-インタプリタは（LLVMに依存せず）最小限の環境APIでC++23ホストに
+bytecode VM（LLVMに依存しない）は最小限のセッションAPIでC++23ホストに
 埋め込めます:
 
 ```cpp
 #include <culebra.h>
-#include <stdlib_interp.h>
+#include <vm_embed.h>
 
 int main() {
-  auto env = culebra::environment();  // 標準ライブラリを束縛済み
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;   // 標準ライブラリを束縛済み、traitも登録済み
 
-  // parse() が返す AST は string_view でこのバッファを参照するので、
-  // AST より先に破棄されてはいけない — 一時オブジェクトではなく変数に。
-  std::string src = "1 + 2";
+  culebra::vm::Value val;
   std::vector<std::string> msgs;
-  auto ast = culebra::parse("<inline>", src, msgs);
-
-  culebra::Value val;
-  culebra::interpret(ast, env, val, msgs, culebra::Debugger());
+  embed.run_source("<inline>", "1 + 2", val, msgs);
   // val.to_long() == 3
 }
 ```
@@ -303,7 +300,8 @@ JIT経路、スレッド、ホスト関数の登録については
 設計の選択
 ----------
 
-- **2つのバックエンド、1つのAST。** インタプリタとJITはどちらも維持します。
+- **2つのバックエンド、1つのコンパイラ。** bytecode VMとJITは1つの
+  パーサ・AST・bytecodeコンパイラを共有します。どちらも維持します。
   一本化する予定はありません。
 - **予測可能なスレッド並行処理。** `async`/`await`はありません。スタック
   トレースは読めるままで、デバッガはすべてのフレームを見られ、ライブラリ
@@ -347,8 +345,9 @@ BLAS級の数値計算です。
 - TensorはMNIST MLPでnumpy / Julia / PyTorch CPUと同じBLAS律速の集団に
   入ります。[`benchmarks/mnist/`](benchmarks/mnist/)と
   [`benchmarks/microgpt/`](benchmarks/microgpt/)を参照してください。
-- 計算律速のループでは、JITはインタプリタの数十倍速く走ります。
-- アロケータ負荷の高いコードではインタプリタが有利なことがあります。
+- 計算律速のループでは、JITが最速です。
+- bytecode VMがtier-0の既定です。JITのウォームアップもLLVM依存も
+  ありません。
 
 ドキュメント
 ------------

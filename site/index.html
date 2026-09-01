@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>culebra</title>
-  <meta name="description" content="culebra — a programming language with interpreter, JIT, and native AOT backends.">
+  <meta name="description" content="culebra — a programming language with bytecode VM, JIT, and native AOT backends.">
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
   <link rel="stylesheet" href="./assets/brand.css">
   <style>
@@ -171,7 +171,7 @@
   <main>
     <section class="hero">
       <h1>culebra</h1>
-      <p class="tag">A dynamically-typed scripting language that runs three ways from one source: VM interpreter, LLVM JIT, and AOT compiler. <i>culebra</i> is a beutiful island in <i>Puerto Rico</i>. 🏝️</p>
+      <p class="tag">A dynamically-typed scripting language that runs three ways from one source: bytecode VM, LLVM JIT, and AOT compiler. <i>culebra</i> is a beutiful island in <i>Puerto Rico</i>. 🏝️</p>
     </section>
 
     <div class="sample-wrap" id="sample-wrap">
@@ -212,7 +212,7 @@ cat &gt; hello.cul &lt;&lt;'EOF'
 println("Hello!")
 EOF
 
-culebra hello.cul                            # interpreter
+culebra hello.cul                            # the bytecode VM (default)
 culebra --jit hello.cul                      # JIT
 culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship the binary</pre>
       </div>
@@ -317,21 +317,20 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
         <div class="showcase-card">
           <h3>A C++ host</h3>
           <pre class="sample"><span class="k">#include</span> &lt;culebra.h&gt;
-<span class="k">#include</span> &lt;stdlib_interp.h&gt;
+<span class="k">#include</span> &lt;vm_embed.h&gt;
 
 <span class="k">int</span> main() {
-  <span class="k">auto</span> env = culebra::environment();  <span class="c">// stdlib bound</span>
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;   <span class="c">// stdlib installed, traits registered</span>
 
-  std::string src = <span class="s">"1 + 2"</span>;
+  culebra::vm::Value val;
   std::vector&lt;std::string&gt; msgs;
-  <span class="k">auto</span> ast = culebra::parse(<span class="s">"&lt;inline&gt;"</span>, src, msgs);
-
-  culebra::Value val;
-  culebra::interpret(ast, env, val, msgs, culebra::Debugger());
+  embed.run_source(<span class="s">"&lt;inline&gt;"</span>, <span class="s">"1 + 2"</span>, val, msgs);
   <span class="c">// val.to_long() == 3</span>
 }</pre>
-          <p class="fine-print">No LLVM dependency — the interpreter drops
-            straight into a C++23 host through a minimal environment API.
+          <p class="fine-print">No LLVM dependency — the bytecode VM drops
+            straight into a C++23 host through a minimal session API.
             See
             <a href="https://github.com/yhirose/culebra#embedding-in-a-c-host">Embedding in a C++ host</a>
             in the README for the JIT path, threading, and host-function

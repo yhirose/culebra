@@ -1263,6 +1263,35 @@ inspect(add5(10))  # => 15
 inspect(add5(99))  # => 104
 ```
 
+### 9.6 `drop` for RAII cleanup
+
+`drop` is a well-known method, written like any other: a class that
+defines a no-arg `drop()` gets it called automatically when the last
+reference to an instance goes away. It fires through the same auto-drop
+mechanism as object-literal `drop` (§7.4) — the `class` body is just
+where the closure that becomes the `drop` property lives.
+
+```culebra
+class Resource {
+  new(id) {
+    self.id = id
+  }
+  drop() {
+    inspect("R{self.id} released")
+  }
+}
+
+inspect('enter')
+{
+  r = Resource.new('X')
+}
+inspect('exit')
+# => |
+# 'enter'
+# 'RX released'
+# 'exit'
+```
+
 ### Why support both `class` and closure-based OO?
 
 Closures-as-objects came first and remain the right answer for

@@ -415,7 +415,9 @@ inspect('after')
 ### 2.9 Classes, UFCS, multimethods, traits
 
 Fields are reached through `self` (not `this`). Calling the class is
-shorthand for `.new`.
+shorthand for `.new`. A class can define `drop()` for RAII cleanup, the
+same way an object literal does (2.8) — it fires when the last
+reference to an instance goes away.
 
 ```culebra
 class Car {
@@ -424,6 +426,7 @@ class Car {
     self.miles = 0
     self.mpr = mpr
   }
+  drop() {}  # cleanup resources when the last reference goes away
   run(n) {
     self.miles += self.mpr * n
   }

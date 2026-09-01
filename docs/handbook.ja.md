@@ -1241,6 +1241,35 @@ inspect(add5(10))  # => 15
 inspect(add5(99))  # => 104
 ```
 
+### 9.6 `drop` によるRAIIクリーンアップ
+
+`drop`は普通のメソッドと同じ形で書けるwell-knownメソッド — 無引数
+`drop()`を定義したクラスは、インスタンスへの最後の参照が消えた時点で
+それが自動的に呼ばれる。 Objectリテラルの`drop` (§7.4) と同じ
+auto-drop機構を通る — `class`本体はその`drop`プロパティになる
+クロージャの置き場所に過ぎない。
+
+```culebra
+class Resource {
+  new(id) {
+    self.id = id
+  }
+  drop() {
+    inspect("R{self.id} released")
+  }
+}
+
+inspect('enter')
+{
+  r = Resource.new('X')
+}
+inspect('exit')
+# => |
+# 'enter'
+# 'RX released'
+# 'exit'
+```
+
 ### Why `class` とクロージャ両方サポートか
 
 クロージャ as オブジェクトが先に存在し、使い捨てカプセル化 (使い切り

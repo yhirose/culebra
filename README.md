@@ -306,9 +306,7 @@ Design choices
 
 - **Two backends, one compiler.** The bytecode VM and the JIT share
   one parser, AST, and bytecode compiler; both maintained, no plan to
-  consolidate. What retiring the earlier tree-walking interpreter
-  bought, and what it cost, is written out in
-  [`docs/essays/one-front-end.md`](docs/essays/one-front-end.md).
+  consolidate.
 - **Predictable threaded concurrency.** No `async`/`await`. Stack
   traces stay readable, the debugger sees every frame, and library
   authors don't write a colored version of every function. Targeted
