@@ -1866,6 +1866,57 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }
 
+// A run's fields — already-computed scalars, none of them refcounted (a
+// flat `@value` layout admits only Long/Float/Bool, `is_flat_value_field_type`
+// in parser.h) — materialized into a fresh, frozen instance. No `new`, no
+// field-init, nothing to run: the inverse of unboxing (spec §15.8,
+// "reboxing at boundaries"), for a consumer Compiler::materialize_run's
+// caller could not classify as run-native. The run itself is a snapshot
+// read here, not a consuming one — its own slots are untouched, so the
+// binding keeps running afterward.
+//
+// `keys[0]` is always "class" and `field_values[i]` supplies `keys[i+1]`'s
+// slot, in the SAME declaration order the flat layout unboxed it in — so
+// this instance's Shape, `.keys()` order and structural equality are
+// identical to one a boxed `new` of the same class would have built.
+// Building the slot list directly (rather than through the sequence of
+// `object_set`-style appends `build_class_instance` uses for its one
+// "class" slot) means there is no add-refused ordering to get backwards:
+// nothing here ever asks whether the field set is closed, because nothing
+// here is ever an append.
+//
+// `*shape_cache` starts null and is resolved on this callsite's first
+// execution, then reused forever — the same argument ObjectNewShaped's own
+// runtime half already makes (a Shape* is a per-process pointer, so this
+// laziness is load-bearing for AOT).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
+    void** shape_cache, const char* const* keys, int64_t n_keys,
+    JitObject* class_meta, const char* class_name,
+    const JitValue* field_values) {
+  auto* shape = reinterpret_cast<culebra::Shape*>(*shape_cache);
+  if (!shape) {
+    shape = culebra::shape_registry().root();
+    for (int64_t i = 0; i < n_keys; i++)
+      shape = culebra::shape_registry().transition_add(shape, keys[i]);
+    *shape_cache = shape;
+  }
+  auto* inst = culebra_runtime_object_new();
+  inst->shape = shape;
+  inst->slots.reserve(static_cast<size_t>(n_keys));
+  inst->slots.push_back(JitObjectEntry{
+      JitValue{TAG_STRING, reinterpret_cast<int64_t>(class_name)},
+      /*mut=*/false});
+  for (int64_t i = 1; i < n_keys; i++)
+    inst->slots.push_back(JitObjectEntry{field_values[i - 1], /*mut=*/false});
+  inst->proto = class_meta;
+  if (class_meta) class_meta->refcount++;
+  if (class_meta && _find_property(class_meta, "drop"))
+    _jit_owned_bind_drop(inst);
+  inst->fields_closed = true;
+  inst->frozen = true;
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
+}
+
 // Build a range value `{class:"Range", start, end, inclusive, step}`. An
 // absent endpoint (open-ended range) is stored Nil; `step` defaults to 1 and
 // is never Nil. Mirrors the interpreter's _make_range so both backends

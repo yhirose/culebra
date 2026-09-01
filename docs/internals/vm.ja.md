@@ -802,6 +802,65 @@ constructionを辿れない呼び出し経由で届く同一のループであ�
 全行が手書きfloatと同じchecksumを出す。それがこのファイルの
 オラクルである。
 
+### 5.3.4 境界での再ボックス化
+
+§5.3.3の規則はall-or-nothingである: `v`の出現が1つでもfield/method
+連鎖・run-nativeな書き込み・適格なオペランドのいずれでもなければ、
+他の全出現が適格だったとしても**binding全体**がスコープ全体で
+boxedになる。`takes_untyped(v)`・`[v, other]`・`arr[i] = v`——通常の
+呼び出し引数・コンテナリテラルの要素・コンテナへの格納——はまさに
+この形である。どれもrunを理解しないが、理解する必要もない。欲しいのは
+通常のfrozenなinstanceだからだ。
+
+`Op::ValueBox`（`regs[a] = regs[b..b+N)をmaterialize`。Nはそのサイトの
+`Chunk::ValueBoxSpec`から、metaは`regs[d]`）はこの隙間を、§5.3.1〜
+§5.3.3のdecide-once機構に一切手を触れず**加算的に**埋める:
+`value_ref_ok`は既存の形に加えて、呼び出し引数・コンテナリテラルの
+要素（array/tuple/set/object）・コンテナへの格納のRHS（`arr[i] = v`、
+`obj.prop = v`）として到達した`name`の**裸の出現**を、却下する代わりに
+materialization siteとして印を付ける（`value_boundary_ok`、
+`Compiler::materialize_at_`）。`compile_expr`の`IDENTIFIER`case——
+`Binding::unboxed_class`に対して既にrunをそのまま返している同じ
+チョークポイント——はこの印をまず確認し、代わりに`materialize_run`を
+呼ぶ: `culebra_runtime_materialize_value`はrunの既に計算済みの
+フィールド値からfrozenなinstanceを新しく組み立てる——`new`なし、
+field-initなし、何も実行しない——同じクラスのboxed constructionが
+解決するのと同一のShapeを使うので、結果は構造的に区別が付かない。
+runそのもののslotはスナップショット**読み**であり消費ではない: 呼び出し
+後もbindingは以前と全く同じように動き続ける。`v`自身の適格性
+（あるいはそのslot）は何も変わらないからだ。
+
+これは真のreificationより意図的に狭い: materialization siteになるのは
+`name`の**裸の**出現だけであり（`send(v)`）、同じクラスにunboxed解決
+する任意の式（`send(v + g)`）ではない——fold・否定・constructionが
+通常のconsumerへ届く場合は既にそれ自身でboxedな値へコンパイルされる
+（これら以外の`compile_expr`のディスパッチは全て
+`allow_trailing_class=false`を渡す）ので、`value_boundary_ok`を裸の
+識別子より広げても、被覆を増やすのではなく仕事を重複させるだけになる。
+
+materializationにはクラスのmeta objectが要り、それは今日のところ
+**同一chunk**のサイトからしか届かない: `Compiler::value_meta_cell_`は
+クラスのASTを、`compile_class_decl`がそのコンストラクタクロージャの
+captureのために既に作っているcell（`meta_cell`）へ写像する。**この**
+`Compiler`インスタンスがその宣言をコンパイルした場合にのみ登録される
+——入れ子の`fn`/クロージャは新しい`Compiler`でコンパイルされるので、
+自然にchunk単位のスコープになる。クラスが別のchunkで宣言されていた
+裸の出現には対応するentryが無く、`value_boundary_ok`は単に印を付けない
+——既存の却下経路がこの機構が存在しなかった場合と全く同じに走るだけで、
+crashもしなければ誤った値になることもない。これが今も残る唯一の
+正直な限界である: 実際のコードの多くは`@value`クラスを1度だけ、
+それを使う関数の外側で宣言するので、そうした関数の中の境界の出現は
+今日は materialize しない（§5.3.3のとおりbinding全体がboxedになる、
+まるでこの節が存在しないかのように）——これを閉じるには、他のあらゆる
+自由変数が既に経由している同じcapture機構（`resolve_captures`）を通して
+meta cellを内側のchunkへ運ぶ必要があり、機械的ではあるがタダではなく、
+ここでは着手していない。`tests/test_value_materialize.cul`は両方の側を
+検証する: このファイル自身のトップレベルで、あるいはそれを使う関数の
+中でローカルに宣言されたクラスは、上記の境界の形すべてでmaterializeする。
+**外側**の関数で宣言され内側から読まれるクラスは安全に却下し、
+`--vm-dump`でそれらの行に`MakeInst`/`ValueBox`が一切出ないことで
+裏付けている。
+
 ### 5.4 組み込みメソッドはテーブルである
 
 値型メソッド（`'ab'.upper()`、`xs.map(f)`、`it.count()`、…）は1つの

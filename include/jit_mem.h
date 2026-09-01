@@ -890,6 +890,8 @@ inline constexpr auto is_namespace        = "culebra_runtime_is_namespace";
 inline constexpr auto object_remove_any   = "culebra_runtime_object_remove_any";
 inline constexpr auto build_class_instance
     = "culebra_runtime_build_class_instance";
+inline constexpr auto materialize_value
+    = "culebra_runtime_materialize_value";
 inline constexpr auto run_field_init
     = "culebra_runtime_run_field_init";
 inline constexpr auto build_variant       = "culebra_runtime_build_variant";

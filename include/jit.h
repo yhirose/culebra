@@ -1204,6 +1204,9 @@ struct JIT {
   // Counter for per-callsite ObjectNewShaped shape-cache globals.
   int obj_shape_counter_ = 0;
 
+  // Counter for per-callsite Op::ValueBox shape-cache globals.
+  int value_box_counter_ = 0;
+
   // Counter for per-callsite property-write transitioning-IC globals.
   int prop_set_ic_counter_ = 0;
 

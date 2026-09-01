@@ -504,6 +504,19 @@ enum class Op : uint8_t {
                // every exit (the body absorbs them, a default ctor releases
                // them), so the argument run is nil'd. Emitted as the whole
                // body of a synthetic constructor chunk.
+  ValueBox,    // regs[a] = a fresh, frozen instance (+1) reboxing the run
+               // at regs[b .. b+N) — N from value_box_specs[c]'s key count
+               // (minus the leading "class" key) — as that site's
+               // Chunk::ValueBoxSpec, using meta regs[d] (borrowed).
+               // culebra_runtime_materialize_value; no `new`, no field-init,
+               // nothing to run — the fields are already-computed scalars.
+               // The run's own slots are a snapshot read: neither consumed
+               // nor invalidated, so the binding keeps running afterward.
+               // Emitted by Compiler::materialize_run at a boundary
+               // value_ref_ok could not classify as run-native (an
+               // ordinary call's argument, a container-literal element, a
+               // container store) but could still keep unboxed everywhere
+               // else — spec §15.8 "reboxing at boundaries".
   FieldInit,   // run the field-init closure regs[a] on receiver regs[b]
                // (run_field_init; both borrowed). Emitted at the top of a
                // `new` body, after parameter binding — interp's timing, so
@@ -2420,6 +2433,22 @@ struct Chunk {
     std::vector<const char*> keys;
   };
   std::vector<ObjectShapeSpec> object_shape_specs;
+  // One entry per Op::ValueBox site (Compiler::materialize_run). `keys`
+  // is the SAME kind of baked, dedup-free key array ObjectShapeSpec keeps
+  // (raw pointers into `str_arena`) — `keys[0]` is always "class", and
+  // `keys[1..]` is the flat layout's field names in declaration order, so
+  // resolving `shape` once (lazily, exactly like ObjectShapeSpec — a
+  // Shape* is a per-process pointer, not a per-program one) reproduces the
+  // identical Shape a boxed construction of the same class resolves to.
+  // `class_name` is the same interned bytes a `MakeInst` site's `consts[c]`
+  // would hold for this class — reused directly as the instance's "class"
+  // slot value (TAG_STRING, no header copy needed).
+  struct ValueBoxSpec {
+    mutable void* shape = nullptr;
+    std::vector<const char*> keys;
+    const char* class_name = nullptr;
+  };
+  std::vector<ValueBoxSpec> value_box_specs;
   int32_t num_slots = 0;
   // Cell slots in creation order: a slot's rank, against a cleanup step's
   // `cells_before`, says whether it already owned a cell at that point in the
@@ -3614,6 +3643,30 @@ class Compiler {
   // recurse without bound at run time, which is the user's bug, not this
   // analysis's to loop forever diagnosing.
   std::set<const peg::Ast*> checking_inline_body_;
+
+  // A flat `@value` class's constructor-cell capture (compile_class_decl's
+  // own `meta_cell`, alongside `finit`/`new`-body), keyed by the class AST —
+  // what materialize_run reads the meta from to build Op::ValueBox's `d`
+  // operand. Populated only for a class THIS Compiler instance itself
+  // compiled: a fresh `Compiler` per chunk (`Compiler fc(...)` at every
+  // nested `fn`/closure) makes this naturally chunk-scoped with no
+  // save/restore, the same way `inlines_` and `checking_inline_body_` are.
+  // A class declared in an outer chunk has no entry here, which is
+  // `materialize_run`'s compile-time VmError — spec §15.8's own honest
+  // limitation (cross-frame materialization), not attempted here: closing
+  // it needs the cell threaded into the inner chunk through the ordinary
+  // capture machinery, the way `meta_cell` already reaches a constructor
+  // closure.
+  std::map<const peg::Ast*, int32_t> value_meta_cell_;
+  // Occurrences `value_ref_ok`'s boundary check (`value_boundary_ok`) has
+  // already proven safe to rebox rather than decline — an ordinary call's
+  // argument, a container-literal element, a container store. Consulted by
+  // exactly one chokepoint, compile_expr's IDENTIFIER case, the same place
+  // `Binding::unboxed_class` already escapes a run to. A stale mark left by
+  // a losing candidate of the binding-graph fixed point (spec §15.7) is
+  // inert: it is only ever consulted where `unboxed_class` is ALSO set,
+  // which only holds for a binding that won its round.
+  std::set<const peg::Ast*> materialize_at_;
 
   // The field's index in the innermost inlined instance's layout, or -1.
   int32_t inline_field_index(const ExprResult& r, std::string_view name) const {
@@ -5838,6 +5891,13 @@ class Compiler {
     // capture is a cell in this frame, like every other closure's.
     int32_t meta_cell = alloc_cell_slot(ast, "(class.meta)");
     emit(Op::CellNew, meta_cell, owned_src(ast, {meta, true}));
+    // Only a flat class has anything for materialize_run to reach for —
+    // value_flat_layout is exactly is_value's own eligibility test above
+    // (register_value_class_layout), asked again here rather than plumbed
+    // through as a bool, since this is the one place that needs it as a
+    // registry lookup rather than a side effect.
+    if (is_value && culebra::value_flat_layout(class_name))
+      value_meta_cell_[&ast] = meta_cell;
     int32_t nil_cell = -1;
     auto cell_or_nil = [&](int32_t cell) {
       if (cell >= 0) return cell;
@@ -8167,17 +8227,77 @@ class Compiler {
     // or one whose operators cannot splice, simply isn't this shape and
     // falls through to the generic walk below (where a bare occurrence of
     // `name` inside it declines as usual).
-    if (node.tag == "CALL"_ && !node.nodes.empty() &&
-        ((node.nodes[0]->tag == "IDENTIFIER"_ &&
-          node.nodes[0]->token == w.name) ||
-         (node.nodes.size() >= 2 && value_run_ok(*node.nodes[0], w)))) {
-      if (!chain_stays_unboxed(node, 1, *w.cls, w.class_name, w.layout,
-                               /*allow_trailing_class=*/false))
+    if (node.tag == "CALL"_ && !node.nodes.empty()) {
+      bool head_is_run =
+          (node.nodes[0]->tag == "IDENTIFIER"_ &&
+           node.nodes[0]->token == w.name) ||
+          (node.nodes.size() >= 2 && value_run_ok(*node.nodes[0], w));
+      if (head_is_run) {
+        if (!chain_stays_unboxed(node, 1, *w.cls, w.class_name, w.layout,
+                                 /*allow_trailing_class=*/false))
+          return false;
+        for (size_t i = 1; i < node.nodes.size(); i++)
+          if (node.nodes[i]->original_tag == "ARGUMENTS"_)
+            for (const auto& a : node.nodes[i]->nodes)
+              if (!value_ref_ok(*a, w)) return false;
+        return true;
+      }
+      // An ordinary call/postfix chain not rooted at `name` (`println(v)`,
+      // `arr.push(v)`, an isolate `send(v)`, a plain user function): still
+      // walk the head normally (rare, but `name` could appear inside a
+      // computed receiver), then every step. An ARGUMENTS list gets one
+      // extra chance per entry, ahead of the ordinary walk — a whole
+      // argument that resolves unboxed to `name`'s own class is a
+      // materialization site (spec §15.8/item 5, "reboxing at
+      // boundaries"): reboxed right there, so the callee never has to
+      // understand a run at all, exactly like every existing consumer that
+      // was never taught to.
+      if (!value_ref_ok(*node.nodes[0], w)) return false;
+      for (size_t i = 1; i < node.nodes.size(); i++) {
+        const auto& step = *node.nodes[i];
+        if (step.original_tag != "ARGUMENTS"_) {
+          if (!value_ref_ok(step, w)) return false;
+          continue;
+        }
+        for (const auto& a : step.nodes)
+          if (!value_boundary_ok(*a, w) && !value_ref_ok(*a, w)) return false;
+      }
+      return true;
+    }
+    if (node.tag == "ARRAY"_) {
+      // The sized-array count/default (nodes[1..2]) are not element
+      // positions — walked ordinarily, same as compile_expr treats them.
+      if (node.nodes.size() > 1 && !value_ref_ok(*node.nodes[1], w))
         return false;
-      for (size_t i = 1; i < node.nodes.size(); i++)
-        if (node.nodes[i]->original_tag == "ARGUMENTS"_)
-          for (const auto& a : node.nodes[i]->nodes)
-            if (!value_ref_ok(*a, w)) return false;
+      if (node.nodes.size() > 2 && !value_ref_ok(*node.nodes[2], w))
+        return false;
+      for (const auto& e : node.nodes[0]->nodes) {
+        const peg::Ast& elem =
+            e->tag == "SPREAD_ELEM"_ ? *e->nodes[0] : *e;
+        if (!value_boundary_ok(elem, w) && !value_ref_ok(elem, w))
+          return false;
+      }
+      return true;
+    }
+    if (node.tag == "TUPLE"_ || node.tag == "SET"_) {
+      for (const auto& n : node.nodes)
+        if (!value_boundary_ok(*n, w) && !value_ref_ok(*n, w)) return false;
+      return true;
+    }
+    if (node.tag == "OBJECT"_) {
+      for (const auto& prop : node.nodes) {
+        if (prop->tag == "SPREAD_ELEM"_) {
+          if (!value_ref_ok(*prop->nodes[0], w)) return false;
+          continue;
+        }
+        auto pv = culebra::view_object_property(*prop);
+        // A computed key (a TUPLE literal, per the grammar) can reference
+        // `name`; shorthand's key IS `value`, so walking both would be
+        // redundant, not unsound — value_ref_ok is a pure query.
+        if (!pv.is_shorthand && !value_ref_ok(*pv.key, w)) return false;
+        if (!value_boundary_ok(*pv.value, w) && !value_ref_ok(*pv.value, w))
+          return false;
+      }
       return true;
     }
     if (node.tag == "ASSIGNMENT"_) {
@@ -8205,12 +8325,54 @@ class Compiler {
       // rooted at one of them is consumed by a run too.
       if (target && av.rhs && consumer_step_ok(av, *target, w))
         return true;
+      // A complex lvalue (`arr[i] = v`, `obj.prop = v`, `dict[k] = v`): not
+      // a copy-back into any binding this walk tracks, but its RHS reaching
+      // a container slot is exactly a boundary consumer too — the same
+      // materialize-or-decline question a call argument asks, asked of a
+      // store instead. The lvalue chain itself is walked ordinarily (a
+      // computed index referencing `name`, `arr[name.idx()] = v`, is rare
+      // and conservatively declines, unchanged).
+      if (!target) {
+        for (int i = 0; i < av.lvalcnt; i++)
+          if (!value_ref_ok(*node.nodes[av.lvaloff + static_cast<size_t>(i)],
+                            w))
+            return false;
+        if (!av.rhs) return true;
+        return value_boundary_ok(*av.rhs, w) || value_ref_ok(*av.rhs, w);
+      }
     }
     // A bare, unclassified occurrence of `name` — not a shape this
     // mechanism can keep unboxed, so `name` is boxed for its whole scope.
     if (node.tag == "IDENTIFIER"_ && node.token == w.name) return false;
     for (const auto& n : node.nodes)
       if (!value_ref_ok(*n, w)) return false;
+    return true;
+  }
+
+  // Whether `expr`, in a position that reboxes rather than natively
+  // consumes a run (a call argument, a container-literal element, a
+  // container store's RHS), may become a materialization site: a BARE
+  // occurrence of a binding already proven unboxed to a class this chunk
+  // can actually reach a meta cell for (value_meta_cell_ — spec §15.8's
+  // own honest limitation, cross-frame materialization, stays a decline).
+  // Deliberately narrower than `unboxed_value_expr_class`'s full three
+  // shapes: a fold, negation or fresh construction reaching this position
+  // already compiles to an ordinary boxed value on its own (every OTHER
+  // compile_expr dispatch to those tags passes allow_trailing_class=false,
+  // the same universal-caller guard UNARY_MINUS/ADDITIVE/MULTIPLICATIVE's
+  // own comments document) — only the plain-identifier chokepoint
+  // (compile_expr's IDENTIFIER case) can leak a run to a consumer that
+  // never learned to check for one, so only that shape needs marking here.
+  // Marks the specific AST node so that chokepoint reboxes exactly this
+  // occurrence instead of forcing the whole binding boxed; returning false
+  // leaves `expr` for the ordinary walk to classify (declining only if IT
+  // finds an unclassified `name` inside).
+  bool value_boundary_ok(const peg::Ast& expr, const ValueWalk& w) {
+    using namespace peg::udl;
+    if (expr.tag != "IDENTIFIER"_) return false;
+    if (name_run_class(expr.token, w) != w.cls) return false;
+    if (!value_meta_cell_.contains(w.cls)) return false;
+    materialize_at_.insert(&expr);
     return true;
   }
 
@@ -8280,6 +8442,48 @@ class Compiler {
       return false;
     return (operand.tag == "IDENTIFIER"_ && operand.token == w.name) ||
            value_run_ok(operand, w);
+  }
+
+  // Reboxes a run into an ordinary, owned instance — spec §15.8's
+  // "reboxing at boundaries", emitted at exactly the occurrences
+  // `value_boundary_ok` already proved safe (materialize_at_). The run's
+  // own slots are a snapshot READ (Op::ValueBox's own contract): copied
+  // out, not consumed, so the binding they belong to keeps running
+  // afterward exactly as before this call.
+  //
+  // Decided once, dispatched here — the same discipline every other stage
+  // of this feature keeps (compile_unboxed_value_expr's own comment):
+  // `value_boundary_ok` is the one place that decides, INCLUDING whether
+  // this chunk can reach the class's meta cell at all (spec §15.8's own
+  // honest limitation, cross-frame materialization), so a marked
+  // occurrence reaching here has that already settled — the asserts pin
+  // the promise rather than re-deciding it.
+  ExprResult materialize_run(const peg::Ast& at, const ExprResult& run) {
+    assert(run.unboxed && run.unboxed_class &&
+           "materialize_run needs a proven run, not an ordinary result");
+    auto it = value_meta_cell_.find(run.unboxed_class);
+    assert(it != value_meta_cell_.end() &&
+           "value_boundary_ok's scan promised this class's meta cell "
+           "is reachable in this chunk");
+    auto vc = value_class_of(*run.unboxed_class);
+    assert(vc && "a marked run's class must still be flat-eligible");
+    Chunk::ValueBoxSpec spec;
+    spec.keys.push_back(
+        reinterpret_cast<const char*>(chunk_.consts[kconst_str("class")].data));
+    for (const auto& f : *run.unboxed)
+      spec.keys.push_back(
+          reinterpret_cast<const char*>(chunk_.consts[kconst_str(f)].data));
+    spec.class_name =
+        reinterpret_cast<const char*>(chunk_.consts[kconst_str(vc->name)].data);
+    int32_t spec_idx = static_cast<int32_t>(chunk_.value_box_specs.size());
+    chunk_.value_box_specs.push_back(std::move(spec));
+    int32_t meta = alloc_temp(at);
+    emit(Op::CellGet, meta, it->second);
+    int32_t dst = alloc_temp(at);
+    emit(Op::ValueBox, dst, run.slot, spec_idx, meta);
+    emit(Op::Release, meta);
+    forget_temp(meta);
+    return {dst, /*owned=*/true};
   }
 
   // The general counterpart to `try_inline_value_operand`, widened from
@@ -11296,9 +11500,19 @@ class Compiler {
           // them — the same "self IS the unboxed run" guarantee above,
           // widened from one fixed name per splice to any binding this
           // scope has proven unboxed.
-          if (b->unboxed_class)
+          if (b->unboxed_class) {
+            // value_ref_ok already proved THIS occurrence is a boundary
+            // consumer (an ordinary call's argument, a container-literal
+            // element, a container store) rather than one of the
+            // run-native shapes above — rebox here instead of escaping the
+            // marker to code that never learned to check it (spec §15.8).
+            if (materialize_at_.contains(&ast))
+              return materialize_run(
+                  ast, {b->slot, /*owned=*/false, -1, b->unboxed_layout,
+                        b->unboxed_class});
             return {b->slot, /*owned=*/false, -1, b->unboxed_layout,
                    b->unboxed_class};
+          }
           return read_binding(ast, *b);
         }
         // `self` is not an unresolved name: every frame has one, and a frame
@@ -11507,7 +11721,7 @@ inline std::string dump(const Chunk& c) {
       "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "ClsSelf",      "WkErr",
       "ClassMeta", "DeriveFn",  "RegPack",    "EnumVariant",  "TypeMatch",
       "ClassObj",  "BindStatic",
-      "MakeInst",  "FieldInit", "RegGetter",  "SelfMerge",
+      "MakeInst",  "ValueBox",  "FieldInit", "RegGetter",  "SelfMerge",
       "TraitReset", "TraitDefault", "TraitReg", "PosSnap", "ChkTypeAt",
       "ChkArg",    "JumpIfFilled", "ArgsRest",   "KwRest",     "RecEnter",
       "RecLeave",
@@ -13749,6 +13963,16 @@ struct Exec {
               static_cast<int8_t>(regs[in.d].tag), regs[in.d].data,
               static_cast<int8_t>(finit.tag), finit.data,
               static_cast<int8_t>(body.tag), body.data, n_args, args);
+          ++pc;
+          break;
+        }
+        case Op::ValueBox: {
+          auto& spec = c.value_box_specs[in.c];
+          regs[in.a] = culebra_runtime_materialize_value(
+              &spec.shape, spec.keys.data(),
+              static_cast<int64_t>(spec.keys.size()),
+              reinterpret_cast<JitObject*>(regs[in.d].data), spec.class_name,
+              &regs[in.b]);
           ++pc;
           break;
         }

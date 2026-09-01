@@ -804,6 +804,68 @@ arriving through a call the compiler cannot see a construction behind, and
 every row prints the checksum the hand-written floats do, which is the
 oracle for the file.
 
+### 5.3.4 Reboxing at a boundary
+
+§5.3.3's rule is all-or-nothing: one occurrence of `v` that is not a
+field/method chain, a run-native write, or an eligible operand forces the
+*whole* binding boxed for its entire scope, even where every other
+occurrence would have qualified. `takes_untyped(v)`, `[v, other]`, `arr[i]
+= v` — an ordinary call argument, a container-literal element, a
+container store — are exactly this shape: none of them understand a run,
+but none of them need to, either, since the value they want is an
+ordinary, frozen instance.
+
+`Op::ValueBox` (`regs[a] = materialize regs[b..b+N)`, N from that site's
+`Chunk::ValueBoxSpec`, using meta `regs[d]`) closes that gap additively,
+without touching §5.3.1–§5.3.3's decide-once machinery: `value_ref_ok`,
+in addition to the shapes it already accepts, marks a **bare occurrence**
+of `name` reached as a call argument, a container-literal element
+(array/tuple/set/object), or the RHS of a container store (`arr[i] = v`,
+`obj.prop = v`) as a materialization site — `value_boundary_ok`,
+`Compiler::materialize_at_` — rather than declining. `compile_expr`'s
+`IDENTIFIER` case, the same chokepoint that already returns a run
+directly for `Binding::unboxed_class`, checks that mark first and calls
+`materialize_run` instead: `culebra_runtime_materialize_value` builds a
+fresh, frozen instance from the run's already-computed field values — no
+`new`, no field-init, nothing to run — with the identical Shape a boxed
+construction of the same class would resolve to, so the result is
+structurally indistinguishable from one. The run's own slots are a
+snapshot READ, not a consuming one: the binding keeps running afterward
+exactly as before the call, since nothing about `v`'s own eligibility (or
+its slots) changes.
+
+This is deliberately narrower than true reification: only a **bare**
+occurrence of `name` is a materialization site (`send(v)`), not an
+arbitrary expression that resolves unboxed to the same class (`send(v +
+g)`) — a fold/negation/construction reaching an ordinary consumer already
+compiles to a boxed value on its own (every other `compile_expr` dispatch
+to those tags passes `allow_trailing_class=false`), so widening
+`value_boundary_ok` past a bare identifier would duplicate work rather
+than add coverage.
+
+Materializing needs the class's meta object, which only a **same-chunk**
+site can reach today: `Compiler::value_meta_cell_` maps a class AST to the
+cell `compile_class_decl` already creates for its constructor closures'
+capture (`meta_cell`), populated only when THIS `Compiler` instance
+compiled that declaration — naturally chunk-scoped, since a nested
+`fn`/closure compiles with a fresh `Compiler`. A bare occurrence whose
+class was declared in a different chunk has no entry, and
+`value_boundary_ok` simply does not mark it — the ordinary decline path
+runs exactly as it did before this mechanism existed, never a crash and
+never a wrong value. This is the one honest limitation still open: most
+real code declares an `@value` class once, outside the functions that use
+it, so a boundary occurrence inside such a function does not materialize
+today (the whole binding boxes, per §5.3.3, exactly as if this section did
+not exist) — closing it needs the meta cell threaded into the inner
+chunk through the same capture machinery every other free variable
+already goes through (`resolve_captures`), which is mechanical but not
+free, and is not attempted here. `tests/test_value_materialize.cul`
+exercises both sides: a class declared at this file's own top level, or
+locally inside the function using it, materializes at every boundary
+shape above; a class declared in an *outer* function and read from a
+nested one declines safely, pinned by `--vm-dump` showing no `MakeInst`/
+`ValueBox` on those lines at all.
+
 ### 5.4 Built-in methods are a table
 
 The value-type methods (`'ab'.upper()`, `xs.map(f)`, `it.count()`, …)

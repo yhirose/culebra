@@ -4276,6 +4276,58 @@ struct Lowering {
           b.CreateStore(inst, slots[in.a]);
           break;
         }
+        case Op::ValueBox: {
+          const auto& spec = c.value_box_specs[in.c];
+          const int64_t n_fields = static_cast<int64_t>(spec.keys.size()) - 1;
+          // Own cache cell per callsite, resolved lazily exactly like
+          // ObjectNewShaped's own — a Shape* baked at AOT-compile time
+          // would be a dangling address in the compiled binary's own,
+          // later, process.
+          auto* cacheGlobal = new llvm::GlobalVariable(
+              *j.module_, ptrTy, /*isConstant=*/false,
+              llvm::GlobalValue::PrivateLinkage,
+              llvm::ConstantPointerNull::get(ptrTy),
+              ".value.box.cache." + std::to_string(j.value_box_counter_++));
+          std::vector<llvm::Constant*> keyPtrs;
+          keyPtrs.reserve(spec.keys.size());
+          for (const char* k : spec.keys)
+            keyPtrs.push_back(j.get_or_create_global_str(k, ".value.box.key"));
+          auto keysArray = j.build_str_ptr_array(keyPtrs, ".value.box.keys");
+          // The field values are scattered across N separate slot allocas
+          // (each Chunk slot is its own alloca, not a contiguous array), so
+          // pack them into one entry-block alloca first — MakeInst's own
+          // args array is a frame's ABI array already contiguous; this one
+          // has to be built, the same way a call site's own argument slab
+          // is (jit.h's own entry-block-alloca call-args pattern).
+          llvm::Value* fieldsPtr;
+          if (n_fields == 0) {
+            fieldsPtr = llvm::ConstantPointerNull::get(ptrTy);
+          } else {
+            IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+            fieldsPtr = eb.CreateAlloca(j.valueType_, b.getInt64(n_fields),
+                                        ".value.box.fields");
+            for (int64_t i = 0; i < n_fields; i++) {
+              auto v = load_slot(in.b + static_cast<int32_t>(i));
+              auto gep = b.CreateInBoundsGEP(j.valueType_, fieldsPtr,
+                                             {b.getInt64(i)});
+              b.CreateStore(v, gep);
+            }
+          }
+          auto metaV = load_slot(in.d);
+          auto inst = j.emit_value_call(
+              j.module_->getOrInsertFunction(
+                  rt::materialize_value, j.valueType_, ptrTy, ptrTy, i64Ty,
+                  ptrTy, ptrTy, ptrTy),
+              {cacheGlobal, keysArray,
+               b.getInt64(static_cast<int64_t>(spec.keys.size())),
+               b.CreateIntToPtr(j.extract_data(metaV), ptrTy),
+               // Same header-backed literal MakeInst builds for the
+               // instance's own "class" TAG_STRING value.
+               j.emit_str_literal(_str_sv(spec.class_name)), fieldsPtr},
+              "vm.value.box");
+          b.CreateStore(inst, slots[in.a]);
+          break;
+        }
         case Op::FieldInit: {
           auto self = load_slot(in.b);
           j.emit_call(

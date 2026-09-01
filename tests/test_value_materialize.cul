@@ -1,0 +1,139 @@
+# Conformance: item 5 of the `@value` V-1 plan, "reboxing at boundaries"
+# (spec §15.8, `project_value_type_spec` memory). A run this mechanism
+# proved can stay unboxed for its whole scope may still reach a consumer
+# nothing here taught to read a run — an ordinary call's argument, a
+# container-literal element, a container store. At exactly those
+# occurrences, `Op::ValueBox` reboxes the run into an ordinary, frozen
+# instance instead of forcing the WHOLE binding boxed for declining once.
+#
+# Scope note (read before adding a case here): materialization needs the
+# class's meta cell, which is reachable only from the SAME chunk that
+# compiled the class declaration (`Compiler::value_meta_cell_` — a fresh
+# `Compiler` per function chunk, deliberately not threaded through capture
+# yet, spec §15.8's own "not attempted here"). So every POSITIVE case below
+# either runs at this file's own top level (one chunk) or declares its
+# `@value` class LOCALLY inside the function using it. A boundary
+# occurrence of a class declared in an OUTER function is exercised too
+# (`test_cross_chunk_declines_safely`), but only to pin that it silently
+# falls back to the ordinary boxed path — never a crash, never a wrong
+# value — not to claim it materializes.
+#
+# Run: ./build/culebra tests/test_value_materialize.cul
+#      ./build/culebra --jit tests/test_value_materialize.cul
+
+@value
+class V2 {
+  x: Float
+  y: Float
+
+  new(x: Float, y: Float) {
+    self.x = x
+    self.y = y
+  }
+
+  __add__(o) {
+    V2.new(self.x + o.x, self.y + o.y)
+  }
+}
+
+fn takes_untyped(v) {
+  v
+}
+
+# --- ordinary call argument (any callee, not only println) ---
+
+mut v = V2.new(1.0, 2.0)
+assert_eq(takes_untyped(v).x, 1.0)
+assert_eq(takes_untyped(v).y, 2.0)
+# the binding keeps running after being materialized at that call site —
+# materialize_run is a snapshot read, not a consuming one.
+v = v + V2.new(1.0, 1.0)
+assert_eq(v.x, 2.0)
+assert_eq(v.y, 3.0)
+assert_eq(takes_untyped(v).x, 2.0)
+
+# --- container-literal elements: array / tuple / set / object ---
+
+let arr = [v, V2.new(9.0, 9.0)]
+assert_eq(arr[0].x, 2.0)
+assert_eq(arr[1].x, 9.0)
+
+let tup = (v, 1)
+assert_eq(tup[0].y, 3.0)
+
+let s = [v].to_set()
+assert_eq(s.size(), 1)
+
+let obj_long = {a: v}
+assert_eq(obj_long['a'].x, 2.0)
+let obj_short = {v}
+assert_eq(obj_short['v'].x, 2.0)
+
+# --- container store via index / property assignment ---
+
+mut store = []
+store.push(nil)
+store[0] = v
+assert_eq(store[0].y, 3.0)
+
+class Box {
+  val: Object
+}
+let b = Box.new()
+b.val = v
+assert_eq(b.val.x, 2.0)
+
+# --- structural identity: a materialized run equals a freshly boxed twin ---
+
+assert_eq(takes_untyped(v), V2.new(v.x, v.y))
+assert_eq(takes_untyped(v).keys(), ['class', 'x', 'y'])
+
+# --- no leak across many materialize-and-discard iterations ---
+
+# Measured mid-loop, not bracketing it from outside: `culebra test`'s own
+# session/REPL machinery allocates a one-time object right around a bare
+# top-level statement (reproduced with a plain, non-`@value` class too —
+# not this feature's leak), so the only sound comparison is two points
+# already inside the steady state.
+mut i = 0
+mut live_at_10 = -1
+while i < 500 {
+  takes_untyped(v)
+  i = i + 1
+  if i == 10 { live_at_10 = GC.stat().live_objects }
+}
+assert_eq(GC.stat().live_objects, live_at_10)
+
+# --- a locally-declared class materializes too: the meta cell only needs
+# to be reachable from THIS chunk, which a local declaration always is ---
+
+test_local_class_boundary = fn () {
+  @value
+  class Local {
+    a: Long
+
+    new(a: Long) {
+      self.a = a
+    }
+  }
+  mut lv = Local.new(1)
+  lv = Local.new(lv.a + 1)
+  assert_eq(takes_untyped(lv).a, 2)
+  let held = [lv]
+  assert_eq(held[0].a, 2)
+}
+test_local_class_boundary()
+
+# --- cross-chunk: a boundary occurrence of a class declared in an OUTER
+# frame declines to the ordinary boxed path rather than materializing (or
+# crashing) — the honest limitation spec §15.8 documents ---
+
+test_cross_chunk_declines_safely = fn () {
+  mut w = V2.new(5.0, 6.0)
+  assert_eq(takes_untyped(w).x, 5.0)
+  let held = [w]
+  assert_eq(held[0].y, 6.0)
+}
+test_cross_chunk_declines_safely()
+
+inspect('value-materialize OK')
