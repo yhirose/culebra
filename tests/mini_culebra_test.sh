@@ -38,10 +38,25 @@ run() {
   fi
 }
 
+# Each sample pair runs in its own job (the mini compiler re-parses its
+# grammar and prelude per invocation, which is the whole cost), a few at a
+# time; results land in per-sample files and print in order afterwards.
+jobs_max=4
+pids=()
 for path in "$SAMPLES"/*.cul; do
   sample="$(basename "$path")"
-  run "vm  $sample"  "--vm"  "$sample"
-  run "jit $sample"  "--jit" "$sample"
+  (
+    run "vm  $sample"  "--vm"  "$sample"
+    run "jit $sample"  "--jit" "$sample"
+  ) >"$TMP/out.$sample" 2>&1 &
+  pids+=($!)
+  while [ "$(jobs -rp | wc -l)" -ge "$jobs_max" ]; do wait -n; done
+done
+wait
+for path in "$SAMPLES"/*.cul; do
+  sample="$(basename "$path")"
+  cat "$TMP/out.$sample"
+  if grep -q '^FAIL' "$TMP/out.$sample"; then fail=1; fi
 done
 
 # --- Diagnostics: the binder's own rejections, checked directly (the

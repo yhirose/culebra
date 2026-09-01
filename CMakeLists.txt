@@ -2049,6 +2049,10 @@ add_test(NAME pl0_codegen_test
 add_test(NAME mini_culebra_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/mini_culebra_test.sh
                  $<TARGET_FILE:culebra>)
+# Every sample compiles through a whole top-level script (grammar parse +
+# prelude), four runs each (mini and oracle, both engines) -- well past the
+# lane's blanket --timeout 300 as the sample set grows.
+set_tests_properties(mini_culebra_test PROPERTIES TIMEOUT 900)
 
 # Log records on stderr — content (levels, fields, filtering, child binding)
 # across interp / JIT / AOT (logs never reach stdout, so the .cul sweep can't
