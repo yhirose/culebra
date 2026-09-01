@@ -1680,10 +1680,10 @@ produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.tanh()`, `.sin()`,
 `.cos()`, `.clamp()`, `.transpose()`, `.reshape()`, `.slice()`,
-`Tensor.concat()`, `Tensor.where()`, and `.index_select()` /
+`.narrow()`, `Tensor.concat()`, `Tensor.where()`, and `.index_select()` /
 `Tensor.index_add()` (each other's own VJP). Gradients un-broadcast
 automatically, so a bias added across a batch sums back to its shape.
-`.unfold()`, `.pad()`, `.fold()`, `.permute()`, `.narrow()`, `.rope()`, and
+`.unfold()`, `.pad()`, `.fold()`, `.permute()`, `.rope()`, and
 `Tensor.scatter_to_axis()` are forward-only so far — `.backward()` through
 them raises; a training loop that uses them (e.g. an im2col-style conv, a
 pooling layer, or RoPE applied to Q/K) writes its own backward pass around

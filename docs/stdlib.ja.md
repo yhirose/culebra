@@ -1642,11 +1642,11 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 の出力も勾配を追跡します。微分可能なopは`+ - * /`、`.pow()`（底に
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
 `.softmax()`、`.log()`、`.tanh()`、`.sin()`、`.cos()`、`.clamp()`、
-`.transpose()`、`.reshape()`、`.slice()`、`Tensor.concat()`、
+`.transpose()`、`.reshape()`、`.slice()`、`.narrow()`、`Tensor.concat()`、
 `Tensor.where()`、`.index_select()` / `Tensor.index_add()`（互いが
 相手のVJP）。勾配は自動でun-broadcastされるので、バッチ越しに加えた
 biasは元の形状に和を取って戻ります。`.unfold()`、`.pad()`、
-`.fold()`、`.permute()`、`.narrow()`、`.rope()`、`Tensor.scatter_to_axis()`は
+`.fold()`、`.permute()`、`.rope()`、`Tensor.scatter_to_axis()`は
 今のところforward-onlyです——これらを通した`.backward()`は例外を
 投げます。im2col方式のconvやpoolingレイヤー、Q/Kに適用するRoPEなど
 これらを使う学習ループは、今のところ自前でbackwardを書きます。

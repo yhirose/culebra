@@ -266,9 +266,11 @@ struct TensorImpl {
 
   // Op-specific scalar parameters, generic float slots for whichever op
   // needs one back post-forward (mirrors cpp-tensorlib's own node::arg0/
-  // arg1). Clip is the only user today: its lo/hi, needed again by its VJP
-  // mask — op_param above is a single int64_t already spoken for, and the
-  // forward graph itself only keeps these inside the tl::array node.
+  // arg1). Clip stores its lo/hi here for its VJP mask; Narrow stores
+  // start/end (op_param already holds axis) for its own VJP, a zero-pad
+  // back to the original axis length — op_param above is a single int64_t
+  // already spoken for, and the forward graph itself only keeps these
+  // inside the tl::array node.
   float extra0 = 0.0f;
   float extra1 = 0.0f;
 
@@ -806,9 +808,16 @@ inline TensorPtr tensor_narrow(TensorPtr t, int64_t axis, int64_t start,
     return t->value.slice(static_cast<int>(axis), start, end - start);
   });
   auto dtype = t->dtype;
-  return tensor_make_op(Op::Narrow, std::move(v), dtype,
-                        std::vector<TensorPtr>{std::move(t)},
-                        /*op_param=*/0, /*is_view=*/true);
+  // op_param/extra0/extra1 keep axis/start/end for the VJP (a zero-pad
+  // back out to the original axis length) -- see its own comment. start/
+  // end ride the same float slots Clip's lo/hi use; both are small
+  // integer shape indices, well inside float's exact-integer range.
+  auto out = tensor_make_op(Op::Narrow, std::move(v), dtype,
+                            std::vector<TensorPtr>{std::move(t)},
+                            /*op_param=*/axis, /*is_view=*/true);
+  out->extra0 = static_cast<float>(start);
+  out->extra1 = static_cast<float>(end);
+  return out;
 }
 
 // Sliding-window view along `axis`: shape gains a trailing size-`win` axis,
@@ -1374,13 +1383,23 @@ inline void _tensor_vjp(const TensorPtr& n) {
       // for the same reason as Unfold/Pad/Fold above.
       throw CulebraError("ValueError",
           "Tensor.backward: permute is not differentiable yet.");
-    case Op::Narrow:
-      // The VJP is a zero-pad back out to the original axis length, which
-      // needs the axis/start this node doesn't keep (same reason as
-      // Permute above). Unreached for the same reason: a hand-derived
-      // dezero backward uses this forward-only.
-      throw CulebraError("ValueError",
-          "Tensor.backward: narrow is not differentiable yet.");
+    case Op::Narrow: {
+      // The VJP is a zero-pad back out to the original axis length --
+      // op_param/extra0/extra1 (axis/start/end, stashed by tensor_narrow)
+      // are exactly what that needs. `.pad()` is forward-only itself
+      // (see Op::Pad's own case below) but that only guards *its* callers
+      // going through .backward() -- used here as a plain value-builder
+      // inside Narrow's own VJP, it's fine (same idea as Concat's VJP
+      // using tensor_narrow as a plain extraction tool above).
+      int64_t axis = n->op_param;
+      int64_t start = static_cast<int64_t>(n->extra0);
+      int64_t end = static_cast<int64_t>(n->extra1);
+      int64_t after = n->inputs[0]->shape.dims[axis] - end;
+      auto gv = _tl_guard(
+          [&] { return g->value.pad(static_cast<int>(axis), start, after); });
+      _tensor_grad_add(n->inputs[0], _tensor_wrap_const(std::move(gv), dt));
+      break;
+    }
     case Op::Where: {
       // y = cond != 0 ? a : b; da = g*cond, db = g*(1-cond). cond gets no
       // gradient (matches numpy/PyTorch's own where()).
