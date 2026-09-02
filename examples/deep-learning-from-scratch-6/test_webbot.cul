@@ -1,0 +1,149 @@
+# Grouped-query attention.
+#
+# The strongest check available is that GQA with `n_kv_head == n_head` is
+# not merely close to storybot's attention but bit-identical to it: same
+# parameter names, same logits. Everything a group could get wrong -- which
+# query head reads which KV head, expanding before the cache instead of
+# after -- shows up as a difference there.
+
+import dz from '../dezero/dezero/core.cul'
+import S from './storybot/model.cul'
+import W from './webbot/model.cul'
+import U from './webbot/utils.cul'
+import CK from './common/checkpoint.cul'
+
+fn tiny(n_kv_head) {
+  {
+    context_len: 8,
+    vocab_size: 32,
+    embed_dim: 16,
+    n_head: 4,
+    n_kv_head: n_kv_head,
+    n_layer: 2,
+    ff_dim: 32,
+    dropout: 0.1,
+    batch_size: 2,
+    lr: 0.001,
+    max_iters: 1,
+  }
+}
+
+fn logits_of(model, cfg, ids, b) {
+  mut rows = nil
+  dz.test_mode(fn () {
+    let out = model(ids, b, cfg.context_len)
+    Tensor.eval(out.data)
+    rows = out.data.to_array()
+  })
+  rows
+}
+
+@test
+fn one_kv_head_per_query_head_is_storybots_attention() {
+  Random.seed(3)
+  let cfg = tiny(4)
+  let story = S.GPT(cfg)
+  let web = W.GPT(cfg)
+
+  # The same names, so one checkpoint restores into both.
+  assert_eq(
+    web.named_params().map(|e| e.name),
+    story.named_params().map(|e| e.name),
+  )
+  let dir = "{FS.temp_dir()}/dl6_gqa_equiv"
+  CK.save(dir, cfg, 0, story.named_params())
+  CK.restore(web, CK.load(dir))
+
+  let ids = range(2 * cfg.context_len)
+    .map(|_| Random.int(0, cfg.vocab_size))
+    .collect()
+  let a = logits_of(story, cfg, ids, 2)
+  let b = logits_of(web, cfg, ids, 2)
+  for i in 0..a.size() {
+    for j in 0..a[i].size() {
+      assert_eq(b[i][j], a[i][j])
+    }
+  }
+}
+
+@test
+fn fewer_kv_heads_means_fewer_parameters() {
+  Random.seed(4)
+  let full = W.parameter_count(W.GPT(tiny(4)))
+  let half = W.parameter_count(W.GPT(tiny(2)))
+  let one = W.parameter_count(W.GPT(tiny(1)))
+  assert_true(half < full)
+  assert_true(one < half)
+
+  # Only K and V shrink, and only their weight matrices and biases: two
+  # projections per layer, from `n_head * head_dim` to `n_kv_head *
+  # head_dim` columns.
+  let cfg = tiny(4)
+  let d = cfg.embed_dim / cfg.n_head
+  let per_head = cfg.n_layer * 2 * (cfg.embed_dim * d + d)
+  assert_eq(full - half, per_head * (cfg.n_head - 2))
+  assert_eq(full - one, per_head * (cfg.n_head - 1))
+}
+
+@test
+fn a_head_count_that_does_not_group_evenly_is_rejected() {
+  assert_throws('ValueError', fn () {
+    W.GPT(tiny(3))
+  })
+}
+
+@test
+fn every_parameter_is_rank_two_or_less() {
+  assert_true(W
+    .GPT(tiny(2))
+    .named_params()
+    .all(|e| e.param.data.shape().size() <= 2))
+}
+
+@test
+fn backward_reaches_every_parameter() {
+  Random.seed(5)
+  let cfg = tiny(2)
+  let model = W.GPT(cfg)
+  let ids = range(2 * cfg.context_len)
+    .map(|_| Random.int(0, cfg.vocab_size))
+    .collect()
+  dz.sum(model(ids, 2, cfg.context_len), nil).backward()
+  for p in model.params() {
+    assert_true(p.grad != nil)
+    Tensor.eval(p.grad.data)
+    assert_eq(p.grad.data.shape(), p.data.shape())
+  }
+}
+
+@test
+fn the_cache_generates_exactly_what_the_full_recompute_does() {
+  Random.seed(6)
+  let cfg = tiny(2)
+  let model = W.GPT(cfg)
+  let prompt = [3, 1, 4]
+  # Greedy, and short enough that the window never has to slide -- past
+  # that point the two are different functions, for the reason
+  # storybot/utils.cul states.
+  let plain = U.generate(model, cfg, prompt, 5, 0.0, 0)
+  let cached = U.generate_cached(model, cfg, prompt, 5, 0.0, 0)
+  assert_eq(cached, plain)
+}
+
+@test
+fn the_cache_holds_only_the_kv_heads_the_model_has() {
+  Random.seed(7)
+  let cfg = tiny(1)
+  let model = W.GPT(cfg)
+  let cache = U.KVCache(cfg.n_layer, cfg.context_len)
+  dz.test_mode(fn () {
+    dz.no_grad(fn () {
+      model.forward_cached([3, 1, 4], cache)
+    })
+  })
+  # One KV head, three positions, head_dim 4: the cache is [1, 3, 4] and not
+  # the [4, 3, 4] a model without grouping would keep.
+  let d = cfg.embed_dim / cfg.n_head
+  Tensor.eval(cache.k[0].data)
+  assert_eq(cache.k[0].data.shape(), [cfg.n_kv_head, 3, d])
+}

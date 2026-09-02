@@ -32,15 +32,18 @@ fn generate(model, cfg, prompt_ids, max_new, temperature = 1.0, top_k = 0) {
   dz.test_mode(fn () {
     dz.no_grad(fn () {
       for _ in 0..max_new {
-        # The model is trained at exactly one context length, so feed it
-        # that: the last `context_len` tokens, left-padded while the
-        # sequence is still shorter than the window.
-        let window = ids.size() >= cfg.context_len
+        # A causal model reads any length up to its context, so feed the
+        # sequence itself and slide only once it outgrows the window.
+        # Left-padding with id 0 would prepend a run of NUL bytes -- 0 is a
+        # real byte in a byte-level BPE, not a pad token -- and would move
+        # the prompt off the positions it was written at.
+        let window = ids.size() > cfg.context_len
           ? ids.slice(ids.size() - cfg.context_len, ids.size())
-          : repeat(cfg.context_len - ids.size(), 0) + ids
-        let logits = model(window, 1, cfg.context_len)
+          : ids
+        let n = window.size()
+        let logits = model(window, 1, n)
         Tensor.eval(logits.data)
-        let last = logits.data.narrow([0, cfg.context_len - 1, cfg.context_len])
+        let last = logits.data.narrow([0, n - 1, n])
         Tensor.eval(last)
         ids.push(sample_from(last.to_array()[0], temperature, top_k))
       }

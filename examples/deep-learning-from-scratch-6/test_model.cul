@@ -110,6 +110,175 @@ fn the_forward_pass_produces_one_row_of_logits_per_position() {
   assert_eq(logits.data.shape(), [b * cfg.context_len, cfg.vocab_size])
 }
 
+# The tests below run against `codebot/model.cul` itself, not against a
+# copy. `test_attention.cul` builds its own attention to explain one, which
+# means it cannot catch a defect in this one: dropping the causal mask, the
+# head-split transpose, the 1/sqrt(d) scale or a residual all left that file
+# green.
+
+fn logits_in_test_mode(model, cfg, ids, b, c) {
+  mut rows = nil
+  dz.test_mode(fn () {
+    let out = model(ids, b, c)
+    Tensor.eval(out.data)
+    rows = out.data.to_array()
+  })
+  rows
+}
+
+@test
+fn a_position_only_sees_what_came_before_it() {
+  Random.seed(10)
+  let cfg = tiny()
+  let c = cfg.context_len
+  let model = M.GPT(cfg)
+  mut ids = range(c).map(|_| Random.int(0, cfg.vocab_size)).collect()
+  let before = logits_in_test_mode(model, cfg, ids, 1, c)
+
+  # Change one token in the middle. Nothing before it may move, and its own
+  # row must.
+  let cut = c / 2
+  ids[cut] = (ids[cut] + 7) % cfg.vocab_size
+  let after = logits_in_test_mode(model, cfg, ids, 1, c)
+
+  for t in 0..cut {
+    for j in 0..cfg.vocab_size {
+      assert_eq(after[t][j], before[t][j])
+    }
+  }
+  assert_true(range(cfg.vocab_size)
+    .map(|j| Math.abs(after[cut][j] - before[cut][j]))
+    .max() >
+    1.0e-4)
+}
+
+@test
+fn each_position_knows_where_it_is() {
+  Random.seed(11)
+  let cfg = tiny()
+  let c = cfg.context_len
+  # The same token everywhere: any difference between rows can only come
+  # from the position, so a model that ignores position fails here.
+  let rows = logits_in_test_mode(model_of(cfg), cfg, repeat(c, 5), 1, c)
+  assert_true(range(cfg.vocab_size)
+    .map(|j| Math.abs(rows[1][j] - rows[0][j]))
+    .max() >
+    1.0e-4)
+}
+
+fn model_of(cfg) {
+  M.GPT(cfg)
+}
+
+@test
+fn attention_matches_the_heads_computed_one_at_a_time() {
+  Random.seed(12)
+  let cfg = tiny()
+  let c = cfg.context_len
+  let e = cfg.embed_dim
+  let h = cfg.n_head
+  let d = e / h
+  let attn = M.MultiHeadAttention(e, h, 0.0)
+  let x = dz.Variable(Tensor.randn(c, e))
+
+  mut joint = nil
+  dz.test_mode(fn () {
+    let out = attn(x, 1, c)
+    Tensor.eval(out.data)
+    joint = out.data.to_array()
+  })
+
+  # The same arithmetic, written out per head, including the scale. A
+  # missing 1/sqrt(d) or a mis-ordered head split shows up here.
+  let scale = 1.0 / Math.sqrt(to_float(d))
+  mut merged = range(c).map(|_| repeat(h * d, 0.0)).collect()
+  dz.test_mode(fn () {
+    let q = attn.w_q(x)
+    let k = attn.w_k(x)
+    let v = attn.w_v(x)
+    Tensor.eval(q.data, k.data, v.data)
+    let qa = q.data.to_array()
+    let ka = k.data.to_array()
+    let va = v.data.to_array()
+    for head in 0..h {
+      for i in 0..c {
+        mut scores = []
+        for j in 0..i + 1 {
+          scores.push(range(d)
+            .map(|z| qa[i][head * d + z] * ka[j][head * d + z])
+            .sum() *
+            scale)
+        }
+        let top = scores.max()
+        let weights = scores.map(|z| Math.exp(z - top))
+        let total = weights.sum()
+        for z in 0..d {
+          merged[i][head * d +
+            z] = range(i + 1)
+            .map(|j| weights[j] / total * va[j][head * d + z])
+            .sum()
+        }
+      }
+    }
+  })
+
+  mut expected = nil
+  dz.test_mode(fn () {
+    let out = attn.w_o(dz.Variable(Tensor.from(merged)))
+    Tensor.eval(out.data)
+    expected = out.data.to_array()
+  })
+  for i in 0..c {
+    for j in 0..e {
+      assert_close(joint[i][j], expected[i][j], 1.0e-4)
+    }
+  }
+}
+
+@test
+fn a_block_adds_its_sublayers_back_to_its_input() {
+  Random.seed(13)
+  let cfg = tiny()
+  let c = cfg.context_len
+  let block = M.Block(cfg.embed_dim, cfg.n_head, cfg.ff_dim, 0.0)
+  let x = dz.Variable(Tensor.randn(c, cfg.embed_dim))
+
+  mut got = nil
+  mut want = nil
+  dz.test_mode(fn () {
+    let out = block(x, 1, c)
+    let h = dz.add(x, block.attn(block.norm1(x), 1, c))
+    let by_hand = dz.add(h, block.ffn(block.norm2(h)))
+    Tensor.eval(out.data, by_hand.data)
+    got = out.data.to_array()
+    want = by_hand.data.to_array()
+  })
+  # Written out, both residuals are explicit: dropping either one changes
+  # `got` and leaves `want` alone.
+  for i in 0..c {
+    for j in 0..cfg.embed_dim {
+      assert_close(got[i][j], want[i][j], 1.0e-5)
+    }
+  }
+}
+
+@test
+fn generation_reads_the_last_position_of_the_prompt() {
+  Random.seed(14)
+  let cfg = tiny()
+  let model = M.GPT(cfg)
+  let prompt = [3, 1, 4]
+  # One greedy step must be the argmax of the last row of a forward over the
+  # prompt exactly as written -- no padding, no other row, no other window.
+  let rows = logits_in_test_mode(model, cfg, prompt, 1, prompt.size())
+  let last = rows[rows.size() - 1]
+  mut best = 0
+  for j in 1..cfg.vocab_size {
+    best = j if last[j] > last[best]
+  }
+  assert_eq(U.generate(model, cfg, prompt, 1, 0.0, 0)[prompt.size()], best)
+}
+
 @test
 fn backward_reaches_every_parameter() {
   Random.seed(3)

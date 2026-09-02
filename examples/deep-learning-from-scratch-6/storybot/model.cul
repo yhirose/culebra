@@ -1,0 +1,345 @@
+# The improved GPT of chapter 5: `codebot/model.cul` with four parts
+# swapped out.
+#
+#   1. RoPE replaces the learned position embedding. Positions enter as a
+#      rotation of Q and K rather than as a vector added to the input, so
+#      `pos_embed` is gone and a forward pass takes the absolute position
+#      of its first token instead.
+#   2. RMSNorm replaces LayerNorm: no mean subtraction, no beta.
+#   3. SwiGLU replaces the GELU feed-forward: three projections, gated.
+#   4. Attention accepts a KV cache (`storybot/utils.cul` owns it), so
+#      generation costs one position per token instead of the whole window.
+#
+# Everything else -- the flattened `[B*C, E]` activation, `named_params()`
+# as the primary definition, tied unembedding -- is unchanged from
+# `codebot/model.cul`, and the checkpoint format is the same.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import L from '../../dezero/dezero/layers.cul'
+
+# GPT-2's initialisation scale for the embedding table.
+let INIT_STD = 0.02
+
+# 0 where a query may attend, a large negative where it may not. With a KV
+# cache the `t` keys end at the same position as the `c` queries, so query
+# `i` sits at key index `t - c + i`; the uncached case is `t == c`.
+fn causal_bias(c, t) {
+  let offset = t - c
+  mut rows = []
+  for i in 0..c {
+    rows.push(range(t).map(|j| j <= offset + i ? 0.0 : -1.0e9).collect())
+  }
+  Tensor.from(rows).reshape([1, c, t])
+}
+
+# `x / sqrt(mean(x^2) + eps) * gamma`. LayerNorm without the centering and
+# without beta: the book's point is that the mean subtraction was not
+# earning its cost.
+class RMSNorm {
+  new(d) {
+    # Sized here rather than on the first forward, so a checkpoint taken
+    # before training has it (the same reason `L.LayerNorm.init_params` is
+    # called eagerly in `codebot/model.cul`).
+    self.gamma = dz.Parameter(Tensor.ones(1, d))
+    self.eps = 1.0e-5
+  }
+
+  __call__(x) {
+    let v = dz.as_variable(x)
+    let last = v.ndim - 1
+    let n = to_float(v.shape[last])
+    let kd = v.shape.slice(0, last) + [1]
+    let ms = dz.reshape((v * v).sum(last) * (1.0 / n), kd)
+    # See `L.BatchNorm.forward` for why forcing a reshaped tensor once
+    # before folding it into more arithmetic is load-bearing.
+    Tensor.eval(ms.data)
+    self.gamma * (v / dz.pow_(ms + self.eps, 0.5))
+  }
+
+  params() {
+    [self.gamma]
+  }
+}
+
+# Rotary position embedding in the book's *interleaved* convention: within
+# one head's `head_dim`, the pairs are (0,1), (2,3), ... and pair `p` turns
+# by `pos * base^(-2p/head_dim)`.
+#
+# Culebra's native `Tensor.rope` (and dezero's `F.rope`) use the half-split
+# convention instead -- pair `p` is (p, p + d/2) -- so this is written out
+# rather than borrowed. The two differ only by a fixed permutation of the
+# head axis, but that permutation would have to be applied to every Q and K
+# and undone afterwards, which is more work than the rotation itself.
+class RoPE {
+  new(head_dim, base = 10000.0) {
+    self.head_dim = head_dim
+    self.base = base
+    self.cache = {}
+  }
+
+  # cos/sin for `c` consecutive positions starting at `pos`, shaped
+  # `[1, c, head_dim/2, 1]` so one table broadcasts over every
+  # (batch, head) row. Built once per (c, pos) and reused by every layer:
+  # training only ever asks for (context_len, 0). Decoding adds one
+  # `[1, 1, half, 1]` entry per step, which is why this is a cache and not
+  # a single table.
+  table(c, pos) {
+    let key = "{c}@{pos}"
+    if !self.cache.has(key) {
+      let d = self.head_dim
+      let half = d / 2
+      let freqs = range(half)
+        .map(|p| self.base ** (-2.0 * to_float(p) / to_float(d)))
+        .collect()
+      mut cos_rows = []
+      mut sin_rows = []
+      for r in 0..c {
+        let angle = to_float(pos + r)
+        cos_rows.push(freqs.map(|f| Math.cos(angle * f)))
+        sin_rows.push(freqs.map(|f| Math.sin(angle * f)))
+      }
+      self.cache[key] = {
+        cos: Tensor.from(cos_rows).reshape([1, c, half, 1]),
+        sin: Tensor.from(sin_rows).reshape([1, c, half, 1]),
+      }
+    }
+    self.cache[key]
+  }
+
+  # `x` is `[n, c, head_dim]`. Viewing it as `[n, c, head_dim/2, 2]` puts
+  # each interleaved pair on the last axis, where the rotation is two
+  # elementwise lines.
+  __call__(x, c, pos) {
+    let t = self.table(c, pos)
+    let d = self.head_dim
+    let z = dz.reshape(x, [x.shape[0], c, d / 2, 2])
+    let a = dz.narrow(z, 3, 0, 1)
+    let b = dz.narrow(z, 3, 1, 2)
+    let cos = dz.as_variable(t.cos)
+    let sin = dz.as_variable(t.sin)
+    dz.reshape(
+      dz.concat2(a * cos - b * sin, a * sin + b * cos, 3),
+      [x.shape[0], c, d],
+    )
+  }
+}
+
+class MultiHeadAttention {
+  new(embed_dim, n_head, dropout_rate, rope) {
+    self.n_head = n_head
+    self.head_dim = embed_dim / n_head
+    self.dropout_rate = dropout_rate
+    self.rope = rope
+    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
+    self.w_q = L.Linear(embed_dim, false, embed_dim)
+    self.w_k = L.Linear(embed_dim, false, embed_dim)
+    self.w_v = L.Linear(embed_dim, false, embed_dim)
+    self.w_o = L.Linear(embed_dim, false, embed_dim)
+  }
+
+  # `past` is nil or `{k, v}` holding `[b*h, t_past, d]` from earlier
+  # positions. Returns `{out, k, v}`; the caller decides whether to keep
+  # the keys and values.
+  attend(x, b, c, pos, past) {
+    let h = self.n_head
+    let d = self.head_dim
+    # (B*C, H*D) -> (B, C, H, D) -> (B, H, C, D) -> (B*H, C, D)
+    let heads = |p| dz.reshape(
+      dz.transpose(dz.reshape(p, [b, c, h, d]), [0, 2, 1, 3]),
+      [b * h, c, d],
+    )
+    let q = self.rope(heads(self.w_q(x)), c, pos)
+    let k_new = self.rope(heads(self.w_k(x)), c, pos)
+    let v_new = heads(self.w_v(x))
+    let k = past == nil ? k_new : dz.concat2(past.k, k_new, 1)
+    let v = past == nil ? v_new : dz.concat2(past.v, v_new, 1)
+    let t = k.shape[1]
+
+    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), self.scale)
+    let weights = F.dropout(
+      F.softmax(dz.add(scores, causal_bias(c, t)), 2),
+      self.dropout_rate,
+    )
+    let hidden = dz.matmul(weights, v)
+
+    let merged = dz.reshape(
+      dz.transpose(dz.reshape(hidden, [b, h, c, d]), [0, 2, 1, 3]),
+      [b * c, h * d],
+    )
+    {out: F.dropout(self.w_o(merged), self.dropout_rate), k: k, v: v}
+  }
+
+  __call__(x, b, c, pos = 0) {
+    self.attend(x, b, c, pos, nil).out
+  }
+
+  named_params(prefix) {
+    [
+      {name: "{prefix}wq.w", param: self.w_q.w},
+      {name: "{prefix}wq.b", param: self.w_q.b},
+      {name: "{prefix}wk.w", param: self.w_k.w},
+      {name: "{prefix}wk.b", param: self.w_k.b},
+      {name: "{prefix}wv.w", param: self.w_v.w},
+      {name: "{prefix}wv.b", param: self.w_v.b},
+      {name: "{prefix}wo.w", param: self.w_o.w},
+      {name: "{prefix}wo.b", param: self.w_o.b},
+    ]
+  }
+}
+
+# SwiGLU: `w2(silu(w1 x) * w3 x)`, with `silu(z) = z * sigmoid(z)`.
+#
+# `ff_dim` keeps meaning what it means everywhere else in this package --
+# the width a two-matrix GELU feed-forward would use. SwiGLU needs three
+# matrices, so the hidden width is 2/3 of it (rounded up to a multiple of
+# 8), which leaves the parameter count where it was: 3 * (2/3 F) == 2 * F.
+fn swiglu_hidden(ff_dim) {
+  (2 * ff_dim / 3 + 7) / 8 * 8
+}
+
+class FFN {
+  new(embed_dim, ff_dim, dropout_rate) {
+    let hidden = swiglu_hidden(ff_dim)
+    self.dropout_rate = dropout_rate
+    self.w1 = L.Linear(hidden, false, embed_dim)
+    self.w3 = L.Linear(hidden, false, embed_dim)
+    self.w2 = L.Linear(embed_dim, false, hidden)
+  }
+
+  __call__(x) {
+    let gate = self.w1(x)
+    let silu = dz.mul(gate, F.sigmoid(gate))
+    F.dropout(self.w2(dz.mul(silu, self.w3(x))), self.dropout_rate)
+  }
+
+  named_params(prefix) {
+    [
+      {name: "{prefix}w1.w", param: self.w1.w},
+      {name: "{prefix}w1.b", param: self.w1.b},
+      {name: "{prefix}w3.w", param: self.w3.w},
+      {name: "{prefix}w3.b", param: self.w3.b},
+      {name: "{prefix}w2.w", param: self.w2.w},
+      {name: "{prefix}w2.b", param: self.w2.b},
+    ]
+  }
+}
+
+class Block {
+  new(embed_dim, n_head, ff_dim, dropout_rate, rope) {
+    self.norm1 = RMSNorm(embed_dim)
+    self.attn = MultiHeadAttention(embed_dim, n_head, dropout_rate, rope)
+    self.norm2 = RMSNorm(embed_dim)
+    self.ffn = FFN(embed_dim, ff_dim, dropout_rate)
+  }
+
+  __call__(x, b, c, pos = 0) {
+    let h = dz.add(x, self.attn(self.norm1(x), b, c, pos))
+    dz.add(h, self.ffn(self.norm2(h)))
+  }
+
+  # The cached counterpart: same arithmetic, but the attention reads the
+  # keys and values this layer produced at earlier positions and writes
+  # back the extended pair.
+  forward_cached(x, c, cache, layer) {
+    let past = cache.past(layer, c)
+    let a = self.attn.attend(self.norm1(x), 1, c, cache.pos, past)
+    cache.put(layer, a.k, a.v)
+    let h = dz.add(x, a.out)
+    dz.add(h, self.ffn(self.norm2(h)))
+  }
+
+  named_params(prefix) {
+    [{name: "{prefix}norm1.gamma", param: self.norm1.gamma}] +
+      self.attn.named_params("{prefix}attn.") +
+      [{name: "{prefix}norm2.gamma", param: self.norm2.gamma}] +
+      self.ffn.named_params("{prefix}ffn.")
+  }
+}
+
+class GPT {
+  new(cfg) {
+    self.cfg = cfg
+    # `L.EmbedID` initialises at unit variance -- unlike `L.Linear`, it has
+    # no 1/sqrt(fan_in). The unembedding is this table read the other way,
+    # so that variance is the logit variance: at the book's width the
+    # softmax starts saturated and the loss sits on the 1e-15 clamp for the
+    # first dozens of steps. GPT-2's 0.02 is what puts step 1 on ln(V).
+    self.embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
+    self.embed.w.data = self.embed.w.data * INIT_STD
+    # One table shared by every layer: the rotation depends on the position
+    # and the head width, not on which block is asking.
+    self.rope = RoPE(cfg.embed_dim / cfg.n_head)
+    self.blocks = range(cfg.n_layer)
+      .map(|_| Block(
+        cfg.embed_dim,
+        cfg.n_head,
+        cfg.ff_dim,
+        cfg.dropout,
+        self.rope,
+      ))
+      .collect()
+    self.norm = RMSNorm(cfg.embed_dim)
+  }
+
+  # `ids` is a flat Array of `b * c` token ids, row-major. `pos` is the
+  # absolute position of each row's first token -- 0 while training, the
+  # start of the window while generating. Returns logits `[b * c, vocab]`.
+  __call__(ids, b, c, pos = 0) {
+    mut x = F.dropout(self.embed(ids), self.cfg.dropout)
+    for block in self.blocks {
+      x = block(x, b, c, pos)
+    }
+    self.unembed(x)
+  }
+
+  # One batch row, continuing whatever `cache` already holds. `ids` are the
+  # tokens not yet seen by the cache; the logits come back `[len(ids),
+  # vocab]`, and the cache has advanced by that many positions.
+  forward_cached(ids, cache) {
+    let c = ids.size()
+    # `F.dropout` for the same reason the uncached forward has it: decoding
+    # runs in test mode where it is the identity, and leaving it out would
+    # make the two paths differ the moment someone forgets `test_mode`.
+    mut x = F.dropout(self.embed(ids), self.cfg.dropout)
+    for i, block in self.blocks.enumerate() {
+      x = block.forward_cached(x, c, cache, i)
+    }
+    let logits = self.unembed(x)
+    cache.advance(c)
+    logits
+  }
+
+  # Weight tying: the unembedding is the token embedding read the other
+  # way, so it is not a parameter of its own.
+  unembed(x) {
+    dz.matmul(self.norm(x), dz.transpose(self.embed.w, [1, 0]))
+  }
+
+  # The primary definition. `embed.w` appears exactly once even though the
+  # forward pass uses it twice.
+  named_params() {
+    mut out = [{name: 'embed.w', param: self.embed.w}]
+    for i, block in self.blocks.enumerate() {
+      out += block.named_params("blocks.{i}.")
+    }
+    out.push({name: 'norm.gamma', param: self.norm.gamma})
+    out
+  }
+
+  params() {
+    self.named_params().map(|e| e.param)
+  }
+
+  cleargrads() {
+    for p in self.params() {
+      p.cleargrad()
+    }
+  }
+}
+
+fn parameter_count(model) {
+  model.params().map(|p| p.data.shape().product()).sum()
+}
+
+export {GPT, Block, FFN, MultiHeadAttention, RMSNorm, RoPE, causal_bias, swiglu_hidden, parameter_count}

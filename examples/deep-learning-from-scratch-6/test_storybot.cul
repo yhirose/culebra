@@ -1,0 +1,347 @@
+# Regression tests for the improved GPT: RoPE, RMSNorm, SwiGLU, KV cache.
+#
+# The one that pays for the whole file is
+# `the_cache_generates_exactly_what_the_full_recompute_does`: a KV cache is
+# only worth having if it changes the cost and nothing else.
+
+import dz from '../dezero/dezero/core.cul'
+import M from './storybot/model.cul'
+import U from './storybot/utils.cul'
+import C from './common/config.cul'
+import CK from './common/checkpoint.cul'
+
+fn tiny() {
+  C.from_args([
+    'context_len=8',
+    'vocab_size=32',
+    'embed_dim=16',
+    'n_head=4',
+    'n_layer=2',
+    'ff_dim=32',
+    'batch_size=2',
+  ])
+}
+
+fn rows_of(v) {
+  Tensor.eval(v.data)
+  let s = v.data.shape()
+  v
+    .data
+    .reshape([s.slice(0, s.size() - 1).product(), s[s.size() - 1]])
+    .to_array()
+}
+
+fn norm_of(row) {
+  Math.sqrt(row.map(|x| x * x).sum())
+}
+
+# --- RMSNorm ----------------------------------------------------------------
+
+@test
+fn rmsnorm_leaves_every_row_at_rms_one_before_the_gain() {
+  Random.seed(1)
+  let d = 8
+  let norm = M.RMSNorm(d)
+  norm.gamma.data = Tensor.randn(1, d)
+  let x = dz.Variable(Tensor.randn(5, d) * 3.0 + 2.0)
+  let y = norm(x)
+
+  Tensor.eval(y.data, norm.gamma.data)
+  let gain = norm.gamma.data.to_array()[0]
+  for row in y.data.to_array() {
+    let bare = range(d).map(|i| row[i] / gain[i]).collect()
+    assert_close(norm_of(bare) / Math.sqrt(to_float(d)), 1.0, 1.0e-5)
+  }
+}
+
+@test
+fn rmsnorm_does_not_subtract_the_mean() {
+  # A row of one repeated value has RMS |v|, so it normalizes to a row of
+  # ones -- LayerNorm would have made it a row of zeros.
+  let d = 4
+  let y = M.RMSNorm(d)(dz.Variable(Tensor.from([[7.0, 7.0, 7.0, 7.0]])))
+  Tensor.eval(y.data)
+  for x in y.data.to_array()[0] {
+    assert_close(x, 1.0, 1.0e-5)
+  }
+}
+
+# --- RoPE -------------------------------------------------------------------
+
+@test
+fn rope_preserves_every_vectors_norm() {
+  Random.seed(2)
+  let d = 8
+  let c = 5
+  let x = dz.Variable(Tensor.randn(3 * c, d).reshape([3, c, d]))
+  let y = M.RoPE(d)(x, c, 2)
+
+  let before = rows_of(x)
+  let after = rows_of(y)
+  assert_eq(after.size(), before.size())
+  for i in 0..before.size() {
+    assert_close(norm_of(after[i]), norm_of(before[i]), 1.0e-6)
+  }
+}
+
+@test
+fn rope_makes_a_dot_product_depend_only_on_the_offset() {
+  Random.seed(3)
+  let d = 8
+  let rope = M.RoPE(d)
+  let q = dz.Variable(Tensor.randn(1, d).reshape([1, 1, d]))
+  let k = dz.Variable(Tensor.randn(1, d).reshape([1, 1, d]))
+  let at = fn (pos, offset) {
+    let a = rows_of(rope(q, 1, pos))[0]
+    let b = rows_of(rope(k, 1, pos + offset))[0]
+    range(d).map(|i| a[i] * b[i]).sum()
+  }
+  # Same offset from three different absolute positions.
+  let want = at(0, 3)
+  assert_close(at(5, 3), want, 1.0e-6)
+  assert_close(at(17, 3), want, 1.0e-6)
+  # A different offset is a different number, or the test proves nothing.
+  assert_true(Math.abs(at(0, 4) - want) > 1.0e-3)
+}
+
+@test
+fn interleaved_rope_is_the_native_half_split_one_under_a_permutation() {
+  # Culebra's `Tensor.rope` pairs (p, p + d/2); the book pairs (2p, 2p+1).
+  # Gathering the even dimensions then the odd ones turns one into the
+  # other, which is why this file rotates by hand rather than calling it.
+  Random.seed(4)
+  let d = 8
+  let c = 4
+  let half = d / 2
+  let base = Tensor.randn(c, d)
+  Tensor.eval(base)
+  let rows = base.to_array()
+
+  let split = |row| range(half).map(|p| row[2 * p]).collect() +
+    range(half).map(|p| row[2 * p + 1]).collect()
+  let permuted = Tensor.from(rows.map(|row| split(row))).reshape([1, c, d])
+  let native = permuted.rope(0, 10000.0)
+  Tensor.eval(native)
+  let native_rows = native.reshape([c, d]).to_array()
+
+  let mine = rows_of(M.RoPE(d)(dz.Variable(base.reshape([1, c, d])), c, 0))
+  for r in 0..c {
+    let want = split(mine[r])
+    for i in 0..d {
+      assert_close(native_rows[r][i], want[i], 1.0e-6)
+    }
+  }
+}
+
+# --- SwiGLU -----------------------------------------------------------------
+
+@test
+fn swiglu_keeps_the_parameter_count_two_matrices_would_have_cost() {
+  # Three projections at 2/3 the width is the same weight budget as two.
+  for ff in [96, 256, 1536] {
+    let hidden = M.swiglu_hidden(ff)
+    assert_true(3 * hidden >= 2 * ff)
+    assert_true(3 * hidden <= 2 * ff + 24)
+  }
+}
+
+@test
+fn the_feed_forward_gates_one_projection_with_another() {
+  Random.seed(5)
+  let ffn = M.FFN(4, 12, 0.0)
+  # Zeroing the gate zeroes the output, whatever the up-projection says.
+  ffn.w1.w.data = Tensor.zeros(4, M.swiglu_hidden(12))
+  ffn.w1.b.data = Tensor.zeros(1, M.swiglu_hidden(12))
+  let y = ffn(dz.Variable(Tensor.randn(3, 4)))
+  Tensor.eval(y.data)
+  for row in y.data.to_array() {
+    for x in row {
+      # silu(0) == 0, so only w2's bias survives, and that starts at zero.
+      assert_close(x, 0.0, 1.0e-12)
+    }
+  }
+}
+
+# --- the model --------------------------------------------------------------
+
+@test
+fn there_is_no_learned_position_table_left() {
+  let names = M.GPT(tiny()).named_params().map(|e| e.name)
+  assert_true(!names.contains('pos_embed.w'))
+  assert_true(names.contains('embed.w'))
+  # RMSNorm has a gain and no bias.
+  assert_true(names.contains('blocks.0.norm1.gamma'))
+  assert_true(!names.contains('blocks.0.norm1.beta'))
+}
+
+@test
+fn weight_tying_lists_the_embedding_once() {
+  let named = M.GPT(tiny()).named_params()
+  let names = named.map(|e| e.name)
+  assert_eq(names.size(), names.to_set().size())
+  for i, e in named.enumerate() {
+    e.param.probe_index = i
+  }
+  assert_true(named.enumerate().all(|p| p[1].param.probe_index == p[0]))
+}
+
+@test
+fn every_parameter_is_rank_two_or_less() {
+  let model = M.GPT(tiny())
+  assert_true(model.named_params().all(|e| e.param.data.shape().size() <= 2))
+}
+
+@test
+fn the_forward_pass_produces_one_row_of_logits_per_position() {
+  Random.seed(6)
+  let cfg = tiny()
+  let b = 3
+  let ids = range(b * cfg.context_len)
+    .map(|_| Random.int(0, cfg.vocab_size))
+    .collect()
+  let logits = M.GPT(cfg)(ids, b, cfg.context_len)
+  Tensor.eval(logits.data)
+  assert_eq(logits.data.shape(), [b * cfg.context_len, cfg.vocab_size])
+}
+
+@test
+fn backward_reaches_every_parameter() {
+  Random.seed(7)
+  let cfg = tiny()
+  let model = M.GPT(cfg)
+  let ids = range(2 * cfg.context_len)
+    .map(|_| Random.int(0, cfg.vocab_size))
+    .collect()
+  dz.sum(model(ids, 2, cfg.context_len), nil).backward()
+  for p in model.params() {
+    assert_true(p.grad != nil)
+    Tensor.eval(p.grad.data)
+    assert_eq(p.grad.data.shape(), p.data.shape())
+  }
+}
+
+@test
+fn a_restored_model_computes_what_the_saved_one_did() {
+  Random.seed(8)
+  let cfg = tiny()
+  let trained = M.GPT(cfg)
+  let dir = "{FS.temp_dir()}/dl6_storybot_ckpt"
+  CK.save(dir, cfg, 11, trained.named_params())
+
+  let fresh = M.GPT(cfg)
+  assert_eq(CK.restore(fresh, CK.load(dir)), trained.named_params().size())
+
+  let ids = range(cfg.context_len)
+    .map(|_| Random.int(0, cfg.vocab_size))
+    .collect()
+  mut rows = nil
+  dz.test_mode(fn () {
+    let a = trained(ids, 1, cfg.context_len)
+    let b = fresh(ids, 1, cfg.context_len)
+    Tensor.eval(a.data, b.data)
+    rows = [a.data.to_array()[0], b.data.to_array()[0]]
+  })
+  for i in 0..rows[0].size() {
+    assert_eq(rows[1][i], rows[0][i])
+  }
+}
+
+@test
+fn a_checkpoint_that_half_matches_is_an_error() {
+  let cfg = tiny()
+  let dir = "{FS.temp_dir()}/dl6_storybot_partial"
+  CK.save(dir, cfg, 0, M.GPT(cfg).named_params().slice(0, 4))
+  assert_throws('KeyError', fn () {
+    CK.restore(M.GPT(cfg), CK.load(dir))
+  })
+}
+
+# --- the KV cache -----------------------------------------------------------
+
+@test
+fn the_cache_generates_exactly_what_the_full_recompute_does() {
+  Random.seed(9)
+  let cfg = tiny()
+  let model = M.GPT(cfg)
+  let prompt = [3, 1, 4]
+  # Greedy, so the two paths are comparable token for token. 3 + 5 fills
+  # the context exactly, which is as far as the claim reaches.
+  let plain = U.generate(model, cfg, prompt, 5, 0.0, 0)
+  let cached = U.generate_cached(model, cfg, prompt, 5, 0.0, 0)
+  assert_eq(cached, plain)
+  assert_eq(plain.size(), cfg.context_len)
+  assert_eq(plain.slice(0, 3), prompt)
+}
+
+@test
+fn the_cache_agrees_over_a_longer_context_too() {
+  # Twice the context and twelve cached steps, so the test above is not
+  # passing on the strength of one lucky argmax.
+  Random.seed(10)
+  let cfg = C.from_args([
+    'context_len=16',
+    'vocab_size=32',
+    'embed_dim=16',
+    'n_head=4',
+    'n_layer=2',
+    'ff_dim=32',
+  ])
+  let model = M.GPT(cfg)
+  let prompt = [7, 2, 5, 9]
+  assert_eq(
+    U.generate_cached(model, cfg, prompt, 12, 0.0, 0),
+    U.generate(model, cfg, prompt, 12, 0.0, 0),
+  )
+}
+
+@test
+fn past_the_context_the_cache_keeps_history_the_recompute_has_dropped() {
+  # Not a defect: a recompute rebuilds each position's hidden state from
+  # the truncated window, so position p's K and V change once the window
+  # moves past it, while the cache keeps what it computed at the time. Both
+  # still generate in-vocabulary tokens; they are just not the same
+  # function any more.
+  Random.seed(12)
+  let cfg = tiny()
+  let model = M.GPT(cfg)
+  let prompt = [7, 2, 5]
+  let cached = U.generate_cached(model, cfg, prompt, 9, 0.0, 0)
+  let plain = U.generate(model, cfg, prompt, 9, 0.0, 0)
+  assert_eq(cached.slice(0, cfg.context_len), plain.slice(0, cfg.context_len))
+  assert_eq(cached.size(), plain.size())
+  assert_true(cached.all(|id| id >= 0 && id < cfg.vocab_size))
+}
+
+@test
+fn the_cache_holds_at_most_one_context_of_positions() {
+  Random.seed(11)
+  let cfg = tiny()
+  let model = M.GPT(cfg)
+  let cache = U.KVCache(cfg.n_layer, cfg.context_len)
+  dz.test_mode(fn () {
+    dz.no_grad(fn () {
+      for i in 0..12 {
+        model.forward_cached([i % cfg.vocab_size], cache)
+      }
+    })
+  })
+  assert_eq(cache.pos, 12)
+  for layer in 0..cfg.n_layer {
+    assert_eq(cache.k[layer].shape[1], cfg.context_len)
+    assert_eq(cache.v[layer].shape[1], cfg.context_len)
+  }
+}
+
+@test
+fn a_prompt_longer_than_the_context_keeps_its_tail() {
+  let cfg = tiny()
+  let ids = range(11).collect()
+  let w = U.window_of(ids, cfg)
+  assert_eq(w.pos, 3)
+  assert_eq(w.ids, range(3, 11).collect())
+}
+
+@test
+fn temperature_zero_takes_the_most_likely_token() {
+  assert_eq(U.sample_from([0.1, 5.0, 2.0, -1.0, 3.5], 0.0, 0), 1)
+}

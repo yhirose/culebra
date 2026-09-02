@@ -1,0 +1,21 @@
+# Generation for the GQA model.
+#
+# Nothing here differs from storybot's. The cache stores whatever the
+# attention hands it, and grouped-query attention hands it `n_kv_head`
+# heads' worth instead of `n_head`'s -- which is the point of the change,
+# and needs no code here to happen: `webbot/model.cul` expands the groups
+# after reading the cache, never before writing to it.
+#
+# So this file re-exports rather than duplicating. Upstream copies the
+# whole file; a second copy of the same decode loop is a second thing to
+# keep in step, and the saving is what `test_webbot.cul` measures instead.
+
+import SU from '../storybot/utils.cul'
+
+let generate = SU.generate
+let generate_cached = SU.generate_cached
+let sample_from = SU.sample_from
+let window_of = SU.window_of
+let KVCache = SU.KVCache
+
+export {generate, generate_cached, sample_from, window_of, KVCache}

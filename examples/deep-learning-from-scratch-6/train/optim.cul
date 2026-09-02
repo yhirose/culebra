@@ -1,0 +1,122 @@
+# Chapter 6's training machinery: AdamW and the learning-rate schedule.
+#
+# dezero stops at Adam and an L2 `WeightDecay` hook, which is what the
+# original DeZero shipped. The book trains with AdamW and a scheduled
+# learning rate instead, so both live here rather than upstream in
+# `examples/dezero`, which is finished.
+#
+# Gradient clipping needs nothing new. dezero's `O.ClipGrad` sums the
+# squared gradients over *every* parameter it is handed before it computes
+# one shared scale, so it already is the global-norm clip that upstream's
+# `grad_clip = 1.0` asks for; write `opt.add_hook(O.ClipGrad(1.0))`.
+
+# Adam with *decoupled* weight decay (Loshchilov & Hutter, 2019).
+#
+# The only difference from `O.Adam` is `update_one`: the decay moves the
+# parameter directly instead of being folded into the gradient, so it never
+# reaches the moment estimates and its size stays proportional to the
+# weight. An L2 term added to the gradient is divided by that gradient's own
+# running scale a line later, which is what makes `Adam + WeightDecay(wd)`
+# a different update rather than a differently-spelled one.
+class AdamW {
+  target = nil
+  hooks = []
+
+  new(
+    alpha = 0.001,
+    beta1 = 0.9,
+    beta2 = 0.999,
+    eps = 1.0e-8,
+    weight_decay = 0.01,
+  ) {
+    self.alpha = alpha
+    self.beta1 = beta1
+    self.beta2 = beta2
+    self.eps = eps
+    self.weight_decay = weight_decay
+    self.t = 0
+  }
+
+  # dezero keeps `optimizer_setup`/`optimizer_update` to itself, so these
+  # three repeat those bodies rather than delegating to them.
+  setup(target) {
+    self.target = target
+    self
+  }
+
+  add_hook(f) {
+    self.hooks.push(f)
+  }
+
+  update() {
+    self.t += 1
+    let params = self.target.params().filter(|p| p.grad != nil)
+    for hook in self.hooks {
+      hook(params)
+    }
+    for p in params {
+      self.update_one(p) if p.grad != nil
+    }
+  }
+
+  get lr() {
+    let fix1 = 1.0 - self.beta1 ** to_float(self.t)
+    let fix2 = 1.0 - self.beta2 ** to_float(self.t)
+    self.alpha * Math.sqrt(fix2) / fix1
+  }
+
+  update_one(p) {
+    let g = p.grad.data
+    if p.m == nil {
+      p.m = Tensor.zeros(p.data.shape())
+      p.v = Tensor.zeros(p.data.shape())
+    }
+    p.m = p.m + (g - p.m) * (1.0 - self.beta1)
+    p.v = p.v + (g * g - p.v) * (1.0 - self.beta2)
+    # The decay is not a gradient, so it takes the raw step size rather than
+    # the bias-corrected `lr` -- the paper's Algorithm 2, and PyTorch.
+    p.data = p.data - self.alpha * self.weight_decay * p.data
+    p.data = p.data - self.lr * p.m / (p.v.pow(0.5) + self.eps)
+  }
+}
+
+# --- learning-rate schedule ----------------------------------------------
+
+# The schedule's own settings, defaulted from a training config that does
+# not carry them: warm up over the first tenth of the run and decay to a
+# tenth of the peak, which is what upstream's ch06 uses.
+fn schedule(cfg) {
+  {
+    lr: cfg.lr,
+    min_lr: cfg.min_lr ?? cfg.lr / 10.0,
+    warmup_steps: cfg.warmup_steps ?? Math.max(1, cfg.max_iters / 10),
+    max_iters: cfg.max_iters,
+  }
+}
+
+# Linear warmup to `lr` at `warmup_steps`, then a cosine down to `min_lr`
+# at `max_iters`, and `min_lr` from there on.
+fn lr_at(step, cfg) {
+  let s = schedule(cfg)
+  if step >= s.max_iters {
+    s.min_lr
+  } else if step < s.warmup_steps {
+    s.lr * to_float(step) / to_float(s.warmup_steps)
+  } else {
+    # The two branches meet at `warmup_steps`, where the cosine is still 1.
+    let span = Math.max(1, s.max_iters - s.warmup_steps)
+    let ratio = to_float(step - s.warmup_steps) / to_float(span)
+    let coeff = 0.5 * (1.0 + Math.cos(Math.pi * ratio))
+    s.min_lr + coeff * (s.lr - s.min_lr)
+  }
+}
+
+# Adam-family optimizers scale by `alpha`; their `lr` is a read-only view of
+# it with the bias correction folded in, so the schedule drives `alpha`.
+# Returns what it set, for the training loop to log.
+fn set_lr(opt, step, cfg) {
+  opt.alpha = lr_at(step, cfg)
+  opt.alpha
+}
+
+export {AdamW, schedule, lr_at, set_lr}

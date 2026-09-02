@@ -1,0 +1,156 @@
+# The two implementations of the same model, run against each other.
+#
+# `codebot/model.cul` trains through `examples/dezero`, a script-level
+# autograd; `train/pretrain_tensor.cul` is the same architecture written
+# directly on `Tensor`'s native (C++) autograd. They only mean anything
+# together if they are the same model, so this loads ONE set of weights
+# into both -- written and read with `common/checkpoint.cul`, which is
+# what makes the two interchangeable -- feeds them the same batches from
+# the same seed, and checks the loss sequences track.
+#
+# Not bit equality: f32, and the two orders of operations differ (the
+# native side splits heads with narrow + concat because `Op::Permute` has
+# no VJP). Relative 1e-5 on the first loss, relative 1e-3 after five Adam
+# steps.
+
+import F from '../dezero/dezero/functions.cul'
+import O from '../dezero/dezero/optimizers.cul'
+import M from './codebot/model.cul'
+import T from './train/pretrain_tensor.cul'
+import C from './common/config.cul'
+import CK from './common/checkpoint.cul'
+import D from './common/data.cul'
+
+let STEPS = 5
+let SEED = 7
+
+fn tiny() {
+  C.from_args([
+    'n_layer=1',
+    'embed_dim=16',
+    'n_head=4',
+    'ff_dim=32',
+    'context_len=8',
+    'batch_size=2',
+    'vocab_size=32',
+    'dropout=0',
+  ])
+}
+
+# A deterministic stand-in for the corpus: what is being compared is the
+# two autograds, not the data.
+fn corpus(cfg) {
+  range(2000).map(|i| (i * 7919 + 13) % cfg.vocab_size).collect()
+}
+
+fn scratch_dir(name) {
+  let dir = FS.join(FS.temp_dir(), "dl6-contrast-{name}")
+  FS.remove(dir, true) if FS.exists(dir)
+  dir
+}
+
+# The two training loops, each given a model that is already carrying the
+# weights it should start from. `Random.seed` right before the loop makes
+# both see the same batches.
+fn dezero_losses(model, cfg, tokens, steps) {
+  let opt = O.Adam(cfg.lr)
+  opt.setup(model)
+  Random.seed(SEED)
+  mut out = []
+  for _ in 0..steps {
+    let pair = D.get_batch(tokens, cfg.batch_size, cfg.context_len)
+    let logits = model(pair[0], cfg.batch_size, cfg.context_len)
+    let loss = F.softmax_cross_entropy(logits, pair[1])
+    model.cleargrads()
+    loss.backward()
+    Tensor.eval(loss.data)
+    out.push(loss.data.to_array()[0])
+    opt.update()
+  }
+  out
+}
+
+fn tensor_losses(model, cfg, tokens, steps) {
+  let opt = T.Adam(cfg.lr).setup(model)
+  Random.seed(SEED)
+  mut out = []
+  for _ in 0..steps {
+    let loss = T.batch_loss(model, tokens, cfg)
+    loss.backward()
+    out.push(loss.item())
+    opt.update()
+  }
+  out
+}
+
+@test
+fn the_two_models_declare_the_same_parameters() {
+  let cfg = tiny()
+  let dezero = M.GPT(cfg).named_params()
+  let native = T.GPT(cfg).named_params()
+  assert_eq(native.size(), dezero.size())
+  assert_eq(native.map(|e| e.name), dezero.map(|e| e.name))
+  for i in 0..dezero.size() {
+    Tensor.eval(dezero[i].param.data, native[i].param.data)
+    assert_eq(native[i].param.data.shape(), dezero[i].param.data.shape())
+  }
+}
+
+@test
+fn a_checkpoint_written_by_one_model_restores_into_the_other() {
+  let cfg = tiny()
+  let dir = scratch_dir('roundtrip')
+
+  # Native -> checkpoint -> dezero, then the same batch through both.
+  let native = T.GPT(cfg)
+  CK.save(dir, cfg, 0, native.named_params())
+  let dezero = M.GPT(cfg)
+  assert_eq(CK.restore(dezero, CK.load(dir)), native.named_params().size())
+
+  let tokens = corpus(cfg)
+  Random.seed(SEED)
+  let pair = D.get_batch(tokens, cfg.batch_size, cfg.context_len)
+  let a = F.softmax_cross_entropy(
+    dezero(pair[0], cfg.batch_size, cfg.context_len),
+    pair[1],
+  )
+  Tensor.eval(a.data)
+  let b = T.cross_entropy(
+    native(pair[0], cfg.batch_size, cfg.context_len),
+    pair[1],
+    cfg.batch_size * cfg.context_len,
+    cfg.vocab_size,
+  )
+  assert_close(b.item(), a.data.to_array()[0], 1.0e-5 * a.data.to_array()[0])
+  FS.remove(dir, true)
+}
+
+@test
+fn the_same_weights_give_the_same_loss_sequence() {
+  let cfg = tiny()
+  let tokens = corpus(cfg)
+  let dir = scratch_dir('weights')
+
+  # One set of initial weights, written from the dezero model and read
+  # back into both, so neither run depends on its own initialization.
+  CK.save(dir, cfg, 0, M.GPT(cfg).named_params())
+  let loaded = CK.load(dir)
+
+  let dezero = M.GPT(cfg)
+  CK.restore(dezero, loaded)
+  let native = T.GPT(cfg)
+  CK.restore(native, loaded)
+  native.mark_leaves()
+
+  let a = dezero_losses(dezero, cfg, tokens, STEPS)
+  let b = tensor_losses(native, cfg, tokens, STEPS)
+
+  assert_close(b[0], a[0], 1.0e-5 * a[0])
+  assert_close(b[STEPS - 1], a[STEPS - 1], 1.0e-3 * a[STEPS - 1])
+
+  # Not two implementations agreeing on nothing happening: the loss has to
+  # have moved, and moved the same way.
+  assert_true(a[STEPS - 1] != a[0])
+  assert_true((b[STEPS - 1] - b[0]) * (a[STEPS - 1] - a[0]) > 0.0)
+  FS.remove(dir, true)
+}

@@ -1,0 +1,126 @@
+# Sampling, with and without a KV cache.
+#
+# `generate` is `codebot/utils.cul`'s loop with one change forced by RoPE:
+# there is no learned position table any more, so a window shorter than
+# `context_len` needs no left padding, and the window carries the absolute
+# position of its first token instead of restarting at 0.
+#
+# `generate_cached` is the same function with chapter 5's cache. Every
+# layer keeps the K and V it computed for earlier positions, so one new
+# token costs one position of attention rather than a whole window. Both
+# take the same arguments and, at `temperature = 0.0`, return the same
+# tokens -- `test_storybot.cul` is what makes that claim checkable.
+#
+# "The same tokens" holds while the sequence still fits in one context, and
+# stops holding the moment the window has to slide, for a reason worth
+# stating: a recompute rebuilds every position's hidden state from the
+# truncated window, so position p's own K and V change when the window
+# moves past it, while the cache keeps what it computed when p was current.
+# Both are defensible; they are not the same function. Nothing here tries
+# to paper over that.
+
+import dz from '../../dezero/dezero/core.cul'
+import CU from '../codebot/utils.cul'
+
+# Unchanged from codebot: temperature and top-k are not what chapter 5 is
+# about, and a second copy would be a second thing to keep in step.
+let sample_from = CU.sample_from
+
+# The model is never fed more than `context_len` positions, so a sequence
+# longer than that keeps its tail. Positions stay absolute: RoPE only ever
+# sees differences, and re-basing the window to 0 would make the cached and
+# uncached paths disagree.
+fn window_of(ids, cfg) {
+  let n = ids.size()
+  let start = n > cfg.context_len ? n - cfg.context_len : 0
+  {ids: ids.slice(start, n), pos: start}
+}
+
+fn last_row(logits) {
+  Tensor.eval(logits.data)
+  let rows = logits.data.shape()[0]
+  let row = logits.data.narrow([0, rows - 1, rows])
+  Tensor.eval(row)
+  row.to_array()[0]
+}
+
+# Per-layer K and V for the positions already seen, plus the absolute
+# position of the next one. `limit` is `context_len`: attention never sees
+# more keys than that, which is exactly the window `generate` recomputes.
+class KVCache {
+  new(n_layer, limit) {
+    self.k = repeat(n_layer, nil)
+    self.v = repeat(n_layer, nil)
+    self.limit = limit
+    self.pos = 0
+  }
+
+  # `c` new positions are about to be appended, so hand back at most
+  # `limit - c` old ones.
+  past(layer, c) {
+    return nil if self.k[layer] == nil
+    let keep = self.limit > c ? self.limit - c : 0
+    return nil if keep == 0
+    {k: newest(self.k[layer], keep), v: newest(self.v[layer], keep)}
+  }
+
+  put(layer, k, v) {
+    self.k[layer] = newest(k, self.limit)
+    self.v[layer] = newest(v, self.limit)
+    Tensor.eval(self.k[layer].data, self.v[layer].data)
+  }
+
+  advance(c) {
+    self.pos += c
+  }
+}
+
+# The last `keep` positions of a `[b*h, t, d]` key or value block.
+fn newest(x, keep) {
+  let t = x.shape[1]
+  t <= keep ? x : dz.narrow(x, 1, t - keep, t)
+}
+
+# `prompt_ids` seeds the context; the result is prompt plus `max_new`
+# generated ids.
+fn generate(model, cfg, prompt_ids, max_new, temperature = 1.0, top_k = 0) {
+  mut ids = prompt_ids.slice(0, prompt_ids.size())
+  dz.test_mode(fn () {
+    dz.no_grad(fn () {
+      for _ in 0..max_new {
+        let w = window_of(ids, cfg)
+        let logits = model(w.ids, 1, w.ids.size(), w.pos)
+        ids.push(sample_from(last_row(logits), temperature, top_k))
+      }
+    })
+  })
+  ids
+}
+
+# Same arguments, same result, one position of attention per new token.
+fn generate_cached(
+  model,
+  cfg,
+  prompt_ids,
+  max_new,
+  temperature = 1.0,
+  top_k = 0,
+) {
+  mut ids = prompt_ids.slice(0, prompt_ids.size())
+  let cache = KVCache(cfg.n_layer, cfg.context_len)
+  dz.test_mode(fn () {
+    dz.no_grad(fn () {
+      let w = window_of(ids, cfg)
+      cache.pos = w.pos
+      mut logits = model.forward_cached(w.ids, cache)
+      for i in 0..max_new {
+        let next = sample_from(last_row(logits), temperature, top_k)
+        ids.push(next)
+        logits = model.forward_cached([next], cache) if i + 1 < max_new
+      }
+    })
+  })
+  ids
+}
+
+export {generate, generate_cached, sample_from, window_of, KVCache}

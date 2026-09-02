@@ -1,0 +1,221 @@
+# storybot's model with grouped-query attention.
+#
+# Every head keeps its own queries, but the keys and values are shared: with
+# `n_kv_head` groups, `n_head / n_kv_head` query heads read the same K and V.
+# That shrinks the projections, and -- the reason it exists -- it shrinks the
+# KV cache by the same factor, which is what bounds how long a context a
+# machine can decode.
+#
+# Upstream copies storybot's whole file and edits the attention. This one
+# imports the pieces that did not change (RoPE, RMSNorm, SwiGLU, the causal
+# mask) and writes only the part that did, so the delta is the file. With
+# `n_kv_head == n_head` the arithmetic here is storybot's exactly, and a test
+# fixes that.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import L from '../../dezero/dezero/layers.cul'
+import S from '../storybot/model.cul'
+
+class GroupedQueryAttention {
+  new(embed_dim, n_head, n_kv_head, dropout_rate, rope) {
+    throw {
+      kind: "ValueError",
+      message: "n_head {n_head} is not a multiple of n_kv_head {n_kv_head}",
+    } if n_head % n_kv_head != 0
+
+    self.n_head = n_head
+    self.n_kv_head = n_kv_head
+    self.group = n_head / n_kv_head
+    self.head_dim = embed_dim / n_head
+    self.dropout_rate = dropout_rate
+    self.rope = rope
+    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
+    let kv_dim = n_kv_head * self.head_dim
+    self.w_q = L.Linear(embed_dim, false, embed_dim)
+    self.w_k = L.Linear(kv_dim, false, embed_dim)
+    self.w_v = L.Linear(kv_dim, false, embed_dim)
+    self.w_o = L.Linear(embed_dim, false, embed_dim)
+  }
+
+  # `[B*C, N*D]` -> `[B*N, C, D]` for any head count N.
+  fold(p, b, c, n) {
+    dz.reshape(
+      dz.transpose(dz.reshape(p, [b, c, n, self.head_dim]), [0, 2, 1, 3]),
+      [b * n, c, self.head_dim],
+    )
+  }
+
+  # One KV head serves `group` consecutive query heads, so each is repeated
+  # in place: [kv0, kv0, kv1, kv1, ...] for group 2.
+  expand(t, b, c) {
+    let kv = self.n_kv_head
+    let d = self.head_dim
+    let grouped = dz.reshape(t, [b, kv, c, d])
+    mut out = nil
+    for j in 0..kv {
+      let one = dz.narrow(grouped, 1, j, j + 1)
+      for _ in 0..self.group {
+        out = out == nil ? one : dz.concat2(out, one, 1)
+      }
+    }
+    dz.reshape(out, [b * self.n_head, c, d])
+  }
+
+  # `past` is nil or `{k, v}` holding the *unexpanded* `[b*kv, t, d]` from
+  # earlier positions. Keeping the cache narrow is the whole point of GQA,
+  # so the expansion happens after the concatenation, never before it.
+  attend(x, b, c, pos, past) {
+    let q = self.rope(self.fold(self.w_q(x), b, c, self.n_head), c, pos)
+    let k_new = self.rope(self.fold(self.w_k(x), b, c, self.n_kv_head), c, pos)
+    let v_new = self.fold(self.w_v(x), b, c, self.n_kv_head)
+    let k = past == nil ? k_new : dz.concat2(past.k, k_new, 1)
+    let v = past == nil ? v_new : dz.concat2(past.v, v_new, 1)
+    let t = k.shape[1]
+
+    let scores = dz.mul(
+      dz.matmul(q, dz.transpose(self.expand(k, b, t), [0, 2, 1])),
+      self.scale,
+    )
+    let weights = F.dropout(
+      F.softmax(dz.add(scores, S.causal_bias(c, t)), 2),
+      self.dropout_rate,
+    )
+    let hidden = dz.matmul(weights, self.expand(v, b, t))
+
+    let merged = dz.reshape(
+      dz.transpose(
+        dz.reshape(hidden, [b, self.n_head, c, self.head_dim]),
+        [0, 2, 1, 3],
+      ),
+      [b * c, self.n_head * self.head_dim],
+    )
+    {out: F.dropout(self.w_o(merged), self.dropout_rate), k: k, v: v}
+  }
+
+  __call__(x, b, c, pos = 0) {
+    self.attend(x, b, c, pos, nil).out
+  }
+
+  named_params(prefix) {
+    [
+      {name: "{prefix}wq.w", param: self.w_q.w},
+      {name: "{prefix}wq.b", param: self.w_q.b},
+      {name: "{prefix}wk.w", param: self.w_k.w},
+      {name: "{prefix}wk.b", param: self.w_k.b},
+      {name: "{prefix}wv.w", param: self.w_v.w},
+      {name: "{prefix}wv.b", param: self.w_v.b},
+      {name: "{prefix}wo.w", param: self.w_o.w},
+      {name: "{prefix}wo.b", param: self.w_o.b},
+    ]
+  }
+}
+
+class Block {
+  new(embed_dim, n_head, n_kv_head, ff_dim, dropout_rate, rope) {
+    self.norm1 = S.RMSNorm(embed_dim)
+    self.attn = GroupedQueryAttention(
+      embed_dim,
+      n_head,
+      n_kv_head,
+      dropout_rate,
+      rope,
+    )
+    self.norm2 = S.RMSNorm(embed_dim)
+    self.ffn = S.FFN(embed_dim, ff_dim, dropout_rate)
+  }
+
+  __call__(x, b, c, pos = 0) {
+    let h = dz.add(x, self.attn(self.norm1(x), b, c, pos))
+    dz.add(h, self.ffn(self.norm2(h)))
+  }
+
+  forward_cached(x, c, cache, layer) {
+    let a = self.attn.attend(
+      self.norm1(x),
+      1,
+      c,
+      cache.pos,
+      cache.past(layer, c),
+    )
+    cache.put(layer, a.k, a.v)
+    let h = dz.add(x, a.out)
+    dz.add(h, self.ffn(self.norm2(h)))
+  }
+
+  named_params(prefix) {
+    [{name: "{prefix}norm1.gamma", param: self.norm1.gamma}] +
+      self.attn.named_params("{prefix}attn.") +
+      [{name: "{prefix}norm2.gamma", param: self.norm2.gamma}] +
+      self.ffn.named_params("{prefix}ffn.")
+  }
+}
+
+class GPT {
+  new(cfg) {
+    self.cfg = cfg
+    # Same reason as storybot: the unembedding is this table transposed.
+    self.embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
+    self.embed.w.data = self.embed.w.data * 0.02
+    self.rope = S.RoPE(cfg.embed_dim / cfg.n_head)
+    self.blocks = range(cfg.n_layer)
+      .map(|_| Block(
+        cfg.embed_dim,
+        cfg.n_head,
+        cfg.n_kv_head,
+        cfg.ff_dim,
+        cfg.dropout,
+        self.rope,
+      ))
+      .collect()
+    self.norm = S.RMSNorm(cfg.embed_dim)
+  }
+
+  unembed(x) {
+    dz.matmul(self.norm(x), dz.transpose(self.embed.w, [1, 0]))
+  }
+
+  __call__(ids, b, c, pos = 0) {
+    mut x = F.dropout(self.embed(ids), self.cfg.dropout)
+    for block in self.blocks {
+      x = block(x, b, c, pos)
+    }
+    self.unembed(x)
+  }
+
+  forward_cached(ids, cache) {
+    let c = ids.size()
+    mut x = F.dropout(self.embed(ids), self.cfg.dropout)
+    for i, block in self.blocks.enumerate() {
+      x = block.forward_cached(x, c, cache, i)
+    }
+    let logits = self.unembed(x)
+    cache.advance(c)
+    logits
+  }
+
+  named_params() {
+    mut out = [{name: 'embed.w', param: self.embed.w}]
+    for i, block in self.blocks.enumerate() {
+      out += block.named_params("blocks.{i}.")
+    }
+    out.push({name: 'norm.gamma', param: self.norm.gamma})
+    out
+  }
+
+  params() {
+    self.named_params().map(|e| e.param)
+  }
+
+  cleargrads() {
+    for p in self.params() {
+      p.cleargrad()
+    }
+  }
+}
+
+fn parameter_count(model) {
+  model.params().map(|p| p.data.shape().product()).sum()
+}
+
+export {GPT, Block, GroupedQueryAttention, parameter_count}

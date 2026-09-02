@@ -28,16 +28,17 @@ This port is being built chapter by chapter. What runs today:
 | `codebot/model.cul` | the GPT: causal multi-head attention, pre-norm blocks, tied weights |
 | `codebot/utils.cul` | sampling, with temperature and top-k |
 | `storybot/tokenizer.cul` | the same BPE, fast enough for a whole corpus |
+| `storybot/model.cul` | the improved GPT: RoPE, RMSNorm, SwiGLU |
+| `storybot/utils.cul` | the same sampling, with a KV cache |
 | `ch01/` | tokenizers, from code points to a trained BPE (9 scripts) |
 | `ch02/` | attention, from a soft dictionary to the assembled GPT (8 scripts) |
 | `ch04/` | making that BPE 681x faster, one idea at a time (6 scripts) |
 | `train/` | pretraining and generation |
 | `common/` | configuration, checkpoints, paths, the `uint16` corpus format, ASCII plots |
 
-Still to come: SFT and GRPO, the improved model (RoPE, SwiGLU, RMSNorm, KV
-cache) as `storybot`, AdamW and learning-rate schedules, DPO, `webbot`'s
-grouped-query attention, and the contrast implementation on culebra's own
-`Tensor` autograd.
+Still to come: SFT and GRPO, AdamW and learning-rate schedules, DPO,
+`webbot`'s grouped-query attention, and the contrast implementation on
+culebra's own `Tensor` autograd.
 
 ## Layout
 
@@ -46,6 +47,8 @@ codebot/tokenizer.cul   the shared BPE: pretokenize, train, encode, decode
 storybot/tokenizer.cul  the same BPE, deduplicated, incremental and parallel
 codebot/model.cul       the GPT the training scripts import
 codebot/utils.cul       sampling one token at a time
+storybot/model.cul      the improved GPT: RoPE, RMSNorm, SwiGLU
+storybot/utils.cul      the same sampling, with chapter 5's KV cache
 common/config.cul       the book's hyperparameters, and the scaled-down default
 common/checkpoint.cul   torch.save's job, as CSV plus a manifest
 common/paths.cul        data/ and checkpoints/ resolved from the running script
@@ -131,6 +134,7 @@ vocabularies diverge on the first ambiguous pair.
 | `ch04/01_bpe_optimize.py` … `07_encode_parallel.py` | `ch04/*.cul`, same numbering |
 | `codebot/tokenizer.py` | `codebot/tokenizer.cul` |
 | `storybot/tokenizer.py` | `storybot/tokenizer.cul` |
+| `storybot/model.py`, `storybot/utils.py` | `storybot/model.cul`, `storybot/utils.cul` |
 | `multiprocessing.Pool` | `Parallel.map` over isolates |
 | `os.chdir(...)` + `sys.path.append('.')` preamble | `common/paths.cul` |
 | `np.fromfile(dtype=np.uint16)` / `.tofile()` | `common/data.cul` |

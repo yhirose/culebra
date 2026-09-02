@@ -18,6 +18,9 @@ import dz from '../../dezero/dezero/core.cul'
 import F from '../../dezero/dezero/functions.cul'
 import L from '../../dezero/dezero/layers.cul'
 
+# GPT-2's initialisation scale for the embedding tables.
+let INIT_STD = 0.02
+
 # 0 where a position may attend, a large negative where it may not. Adding
 # this before the softmax is `masked_fill(mask == 0, -inf)`; a finite -1e9
 # keeps the exponentials from producing NaN.
@@ -148,8 +151,15 @@ class Block {
 class GPT {
   new(cfg) {
     self.cfg = cfg
+    # `L.EmbedID` initialises at unit variance -- unlike `L.Linear`, it has
+    # no 1/sqrt(fan_in). The unembedding is this table read the other way,
+    # so that variance is the logit variance: at the book's width the
+    # softmax starts saturated and the loss sits on the 1e-15 clamp for the
+    # first dozens of steps. GPT-2's 0.02 is what puts step 1 on ln(V).
     self.embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
+    self.embed.w.data = self.embed.w.data * INIT_STD
     self.pos_embed = L.EmbedID(cfg.context_len, cfg.embed_dim)
+    self.pos_embed.w.data = self.pos_embed.w.data * INIT_STD
     self.blocks = range(cfg.n_layer)
       .map(|_| Block(cfg.embed_dim, cfg.n_head, cfg.ff_dim, cfg.dropout))
       .collect()

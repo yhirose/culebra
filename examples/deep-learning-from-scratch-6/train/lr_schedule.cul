@@ -1,0 +1,38 @@
+# The learning-rate schedule, drawn.
+#
+# This is upstream's ch06/lr_graph.py: sample the schedule across a whole
+# run and plot it, so the warmup ramp and the cosine tail are visible
+# before any training pays for them.
+#
+#   culebra train/lr_schedule.cul
+#   culebra train/lr_schedule.cul --full
+#   culebra train/lr_schedule.cul max_iters=500 warmup_steps=50 min_lr=1e-5
+
+import C from '../common/config.cul'
+import Plot from '../common/plot.cul'
+import Optim from './optim.cul'
+
+# `min_lr` and `warmup_steps` belong to the schedule rather than to the
+# model, so common/config.cul rejects them; they are parsed here onto the
+# config it returns, which takes runtime keys.
+let SCHEDULE_KEYS = ['min_lr', 'warmup_steps']
+
+let args = Sys.argv
+let cfg = C.from_args(args.filter(|a| !SCHEDULE_KEYS.contains(a.split('=')[0])))
+for arg in args {
+  let parts = arg.split('=')
+  continue if parts.size() != 2
+  cfg['min_lr'] = to_float(parts[1]) if parts[0] == 'min_lr'
+  cfg['warmup_steps'] = to_long(parts[1]) if parts[0] == 'warmup_steps'
+}
+
+let s = Optim.schedule(cfg)
+inspect("lr {s.lr} down to {s.min_lr}, warmup {s.warmup_steps} of {s.max_iters} steps")
+
+let steps = range(s.max_iters + 1).map(|i| to_float(i)).collect()
+let lrs = range(s.max_iters + 1).map(|i| Optim.lr_at(i, cfg)).collect()
+Plot.plot_curves(steps, [['lr', lrs]])
+
+for step in [0, s.warmup_steps / 2, s.warmup_steps, s.max_iters / 2, s.max_iters] {
+  inspect("step {step:>6}  lr {Optim.lr_at(step, cfg)}")
+}

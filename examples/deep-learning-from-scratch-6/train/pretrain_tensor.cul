@@ -1,0 +1,479 @@
+# Pretraining again, on Tensor's own autograd instead of dezero's.
+#
+# `train/pretrain.cul` trains the model in `codebot/model.cul`, which is
+# built out of `examples/dezero`: a script-level autograd where every op
+# allocates a Variable, records itself on a tape, and is replayed by a
+# Culebra loop in `backward()`. Culebra's `Tensor` carries a reverse-mode
+# autograd of its own, written in C++: the forward op *is* the tape entry
+# and `.backward()` walks it natively. This file is the same architecture
+# and the same training loop written that way, so the two can be run side
+# by side.
+#
+# Same model, same `common/config.cul`, same corpus through
+# `common/data.cul`, same `common/checkpoint.cul` -- a checkpoint written
+# here restores into `codebot/model.cul` and back, which is what makes the
+# comparison meaningful. `test_contrast.cul` loads one set of weights into
+# both and checks the loss sequences track.
+#
+# What it costs, measured (Apple silicon, `build-gate/culebra`, -O3 + LTO,
+# 60 steps, the ms/step both scripts print -- the training step only, with
+# validation excluded on both sides):
+#
+#   culebra train/pretrain.cul        max_iters=60 <settings>
+#   culebra train/pretrain_tensor.cul max_iters=60 <settings>
+#
+#   settings                                     dezero  Tensor
+#   n_layer=1 embed_dim=16 n_head=4 ff_dim=32
+#     context_len=8 batch_size=2                   2.30    1.02  2.3x faster
+#   n_layer=2 embed_dim=32 n_head=4 ff_dim=128
+#     context_len=32 batch_size=4                  8.91    7.68  1.16x faster
+#   (none: the demo config, embed 64, context 64,
+#     batch 8, 2 layers)                          40.4    48.9   1.21x slower
+#
+# The native side wins while a step is many small ops and loses once the
+# tensors are large, which is not the shape one would guess. dezero's ops
+# call the same C++ Tensor kernels, so what it adds is a per-op cost, not
+# a per-element one, and that cost stops mattering as the tensors grow.
+# Two things it then does that the native autograd has no way to express:
+# `F.softmax_cross_entropy` carries a hand-written fused backward
+# ((p - onehot)/n, one pass) where differentiating the composed forward
+# costs ~7 ms a step at the demo config, and `Op::Permute` has no VJP, so
+# the rank-4 head transpose below is narrow + per-row transpose + concat,
+# whose backward allocates a full-size zero buffer per piece (~7 ms per
+# layer per step at the same config).
+#
+# Usage matches `pretrain.cul`, plus one extra flag:
+#
+#   culebra train/pretrain_tensor.cul                  # the demo config
+#   culebra train/pretrain_tensor.cul --full           # the book's
+#   culebra train/pretrain_tensor.cul max_iters=1000   # any override
+#   culebra train/pretrain_tensor.cul --from <dir>     # start from a
+#                                                      # saved checkpoint
+
+import C from '../common/config.cul'
+import CK from '../common/checkpoint.cul'
+import D from '../common/data.cul'
+import P from '../common/paths.cul'
+import Plot from '../common/plot.cul'
+
+# A weight. `data` is the live leaf Tensor: grad-tracking during a step,
+# replaced by a fresh detached leaf by `Adam.update`, so a gradient never
+# survives into the next step and nothing has to be zeroed. The field name
+# is `data` because that is what `common/checkpoint.cul` reads and writes,
+# which is what lets one checkpoint serve both models. `m` / `v` are Adam's
+# moment estimates, kept on the parameter the way dezero's optimizers keep
+# theirs.
+class Param {
+  m = nil
+  v = nil
+
+  new(t) {
+    Tensor.eval(t)
+    self.data = t.detach().requires_grad()
+  }
+}
+
+# Inverted dropout, the same construction as dezero's
+# `bernoulli_keep_mask`: for independent standard normals z1, z2 the value
+# exp(-(z1^2+z2^2)/2) is Uniform(0, 1), so keeping a unit is the plain
+# threshold z1^2+z2^2 <= -2*ln(ratio). `shape` is passed in rather than
+# read off `x`, which is a lazy graph node here.
+fn dropout(x, shape, ratio) {
+  if ratio <= 0.0 {
+    return x
+  }
+  let z1 = Tensor.randn(shape)
+  let z2 = Tensor.randn(shape)
+  let keep = (z1 * z1 + z2 * z2).le(-2.0 * Math.log(ratio)) *
+    (1.0 / (1.0 - ratio))
+  x * keep
+}
+
+# 0 where a position may attend, a large negative where it may not --
+# `codebot/model.cul`'s `causal_bias`, unchanged.
+fn causal_bias(c) {
+  mut rows = []
+  for i in 0..c {
+    rows.push(range(c).map(|j| j <= i ? 0.0 : -1.0e9).collect())
+  }
+  Tensor.from(rows).reshape([1, c, c])
+}
+
+class Linear {
+  new(in_size, out_size) {
+    let scale = Math.sqrt(1.0 / to_float(in_size))
+    self.w = Param(Tensor.randn(in_size, out_size) * scale)
+    self.b = Param(Tensor.zeros(1, out_size))
+  }
+
+  __call__(x) {
+    x.dot(self.w.data) + self.b.data
+  }
+}
+
+# dezero's `L.LayerNorm`, op for op: mean and variance over the last axis,
+# eps inside the square root, gamma/beta as `[1, D]` row vectors.
+class LayerNorm {
+  new(d) {
+    self.eps = 2.0e-5
+    self.gamma = Param(Tensor.ones(1, d))
+    self.beta = Param(Tensor.zeros(1, d))
+  }
+
+  __call__(x, rows, d) {
+    let n = to_float(d)
+    let mean = (x.sum(1) * (1.0 / n)).reshape([rows, 1])
+    let centered = x - mean
+    let var = ((centered * centered).sum(1) * (1.0 / n)).reshape([rows, 1])
+    self.gamma.data * (centered / (var + self.eps).pow(0.5)) + self.beta.data
+  }
+}
+
+class MultiHeadAttention {
+  bias = nil
+  bias_c = 0
+
+  new(embed_dim, n_head, dropout_rate) {
+    self.n_head = n_head
+    self.head_dim = embed_dim / n_head
+    self.dropout_rate = dropout_rate
+    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
+    self.w_q = Linear(embed_dim, embed_dim)
+    self.w_k = Linear(embed_dim, embed_dim)
+    self.w_v = Linear(embed_dim, embed_dim)
+    self.w_o = Linear(embed_dim, embed_dim)
+  }
+
+  # One head's slice of a (B*C, H*D) projection, as (B, C, D). The column
+  # narrow is a view; the reshape is what materializes it.
+  head_view(t, hi, b, c) {
+    let d = self.head_dim
+    t.narrow([1, hi * d, (hi + 1) * d]).reshape([b, c, d])
+  }
+
+  # The same slice as (B, D, C), for the K side of Q @ K^T. `Op::Permute`
+  # has no VJP ("Tensor.backward: permute is not differentiable yet"), so
+  # the last two axes are swapped one batch row at a time with the rank-2
+  # `.transpose()`, which does -- this is the one place the dezero model's
+  # rank-4 transpose has no direct equivalent.
+  head_view_t(t, hi, b, c) {
+    let d = self.head_dim
+    let flat = t.narrow([1, hi * d, (hi + 1) * d]).reshape([b * c, d])
+    mut rows = []
+    for bi in 0..b {
+      rows.push(flat.slice(bi * c, (bi + 1) * c).transpose())
+    }
+    Tensor.concat(rows, 0).reshape([b, d, c])
+  }
+
+  causal(c) {
+    if self.bias == nil || self.bias_c != c {
+      self.bias = causal_bias(c)
+      self.bias_c = c
+    }
+    self.bias
+  }
+
+  __call__(x, b, c) {
+    let d = self.head_dim
+    let q = self.w_q(x)
+    let k = self.w_k(x)
+    let v = self.w_v(x)
+
+    # Per head, batched over B: [B, C, D] @ [B, D, C] -> [B, C, C].
+    mut heads = []
+    for hi in 0..self.n_head {
+      let qh = self.head_view(q, hi, b, c)
+      let kh = self.head_view_t(k, hi, b, c)
+      let scores = qh.dot(kh) * self.scale
+      let weights = dropout(
+        (scores + self.causal(c)).softmax(),
+        [b, c, c],
+        self.dropout_rate,
+      )
+      heads.push(weights.dot(self.head_view(v, hi, b, c)).reshape([b * c, d]))
+    }
+
+    dropout(
+      self.w_o(Tensor.concat(heads, 1)),
+      [b * c, self.n_head * d],
+      self.dropout_rate,
+    )
+  }
+}
+
+class FFN {
+  new(embed_dim, ff_dim, dropout_rate) {
+    self.embed_dim = embed_dim
+    self.dropout_rate = dropout_rate
+    self.fc1 = Linear(embed_dim, ff_dim)
+    self.fc2 = Linear(ff_dim, embed_dim)
+  }
+
+  # GELU as dezero has it: the sigmoid approximation x * sigmoid(1.702x).
+  __call__(x, rows) {
+    let h = self.fc1(x)
+    let a = h * (h * 1.702).sigmoid()
+    dropout(self.fc2(a), [rows, self.embed_dim], self.dropout_rate)
+  }
+}
+
+class Block {
+  new(embed_dim, n_head, ff_dim, dropout_rate) {
+    self.embed_dim = embed_dim
+    self.norm1 = LayerNorm(embed_dim)
+    self.attn = MultiHeadAttention(embed_dim, n_head, dropout_rate)
+    self.norm2 = LayerNorm(embed_dim)
+    self.ffn = FFN(embed_dim, ff_dim, dropout_rate)
+  }
+
+  __call__(x, b, c) {
+    let rows = b * c
+    let h = x + self.attn(self.norm1(x, rows, self.embed_dim), b, c)
+    h + self.ffn(self.norm2(h, rows, self.embed_dim), rows)
+  }
+
+  named_params(prefix) {
+    [
+      {name: "{prefix}norm1.gamma", param: self.norm1.gamma},
+      {name: "{prefix}norm1.beta", param: self.norm1.beta},
+      {name: "{prefix}attn.wq.w", param: self.attn.w_q.w},
+      {name: "{prefix}attn.wq.b", param: self.attn.w_q.b},
+      {name: "{prefix}attn.wk.w", param: self.attn.w_k.w},
+      {name: "{prefix}attn.wk.b", param: self.attn.w_k.b},
+      {name: "{prefix}attn.wv.w", param: self.attn.w_v.w},
+      {name: "{prefix}attn.wv.b", param: self.attn.w_v.b},
+      {name: "{prefix}attn.wo.w", param: self.attn.w_o.w},
+      {name: "{prefix}attn.wo.b", param: self.attn.w_o.b},
+      {name: "{prefix}norm2.gamma", param: self.norm2.gamma},
+      {name: "{prefix}norm2.beta", param: self.norm2.beta},
+      {name: "{prefix}ffn.fc1.w", param: self.ffn.fc1.w},
+      {name: "{prefix}ffn.fc1.b", param: self.ffn.fc1.b},
+      {name: "{prefix}ffn.fc2.w", param: self.ffn.fc2.w},
+      {name: "{prefix}ffn.fc2.b", param: self.ffn.fc2.b},
+    ]
+  }
+}
+
+# The same architecture and the same parameter names as `codebot/model.cul`
+# -- layer count, widths, causal multi-head attention, pre-norm blocks, a
+# tied unembedding -- so `common/checkpoint.cul` moves weights either way.
+class GPT {
+  new(cfg) {
+    self.cfg = cfg
+    # The same 0.02 codebot/model.cul uses, and for the same reason: the
+    # unembedding is this table transposed, so its scale is the logit scale.
+    self.embed = Param(Tensor.randn(cfg.vocab_size, cfg.embed_dim) * 0.02)
+    self.pos_embed = Param(Tensor.randn(cfg.context_len, cfg.embed_dim) * 0.02)
+    self.blocks = range(cfg.n_layer)
+      .map(|_| Block(cfg.embed_dim, cfg.n_head, cfg.ff_dim, cfg.dropout))
+      .collect()
+    self.norm = LayerNorm(cfg.embed_dim)
+  }
+
+  # `ids` is a flat Array of `b * c` token ids, row-major. Returns logits
+  # shaped [b * c, vocab_size].
+  __call__(ids, b, c) {
+    let e = self.cfg.embed_dim
+    let rows = b * c
+    let positions = range(b).flat_map(|_| range(c).collect()).collect()
+    mut x = dropout(
+      self.embed.data.index_select(Tensor.from(ids)) +
+        self.pos_embed.data.index_select(Tensor.from(positions)),
+      [rows, e],
+      self.cfg.dropout,
+    )
+    for block in self.blocks {
+      x = block(x, b, c)
+    }
+    # Weight tying: the unembedding is the token embedding read the other
+    # way. The gradient of both uses lands on the same leaf.
+    self.norm(x, rows, e).dot(self.embed.data.transpose())
+  }
+
+  named_params() {
+    mut out = [
+      {name: 'embed.w', param: self.embed},
+      {name: 'pos_embed.w', param: self.pos_embed},
+    ]
+    for i, block in self.blocks.enumerate() {
+      out += block.named_params("blocks.{i}.")
+    }
+    out.push({name: 'norm.gamma', param: self.norm.gamma})
+    out.push({name: 'norm.beta', param: self.norm.beta})
+    out
+  }
+
+  params() {
+    self.named_params().map(|e| e.param)
+  }
+
+  # `common/checkpoint.cul` writes a plain Tensor into `param.data`, which
+  # is not a grad-tracking leaf. Call this after a restore.
+  mark_leaves() {
+    for p in self.params() {
+      p.data = p.data.detach().requires_grad()
+    }
+  }
+}
+
+# dezero's `F.softmax_cross_entropy`, op for op: softmax over the last
+# axis, a scatter_to_axis one-hot, and a masked sum of clamped logs.
+fn cross_entropy(logits, targets, n, vocab_size) {
+  let probs = logits.softmax()
+  let onehot = Tensor.scatter_to_axis(
+    Tensor.from(targets),
+    Tensor.ones(n),
+    vocab_size,
+  )
+  (onehot * probs.clamp(1.0e-15, 1.0).log()).sum(1).sum(0) *
+    (-1.0 / to_float(n))
+}
+
+# dezero's `O.Adam`, with the moment estimates on the Param. The new
+# weight is a fresh detached leaf, so the next step starts with no
+# gradient and nothing to clear.
+class Adam {
+  t = 0
+
+  new(alpha = 0.001, beta1 = 0.9, beta2 = 0.999, eps = 1.0e-8) {
+    self.alpha = alpha
+    self.beta1 = beta1
+    self.beta2 = beta2
+    self.eps = eps
+  }
+
+  setup(target) {
+    self.target = target
+    self
+  }
+
+  get lr() {
+    let fix1 = 1.0 - self.beta1 ** to_float(self.t)
+    let fix2 = 1.0 - self.beta2 ** to_float(self.t)
+    self.alpha * Math.sqrt(fix2) / fix1
+  }
+
+  update() {
+    self.t += 1
+    let lr = self.lr
+    for p in self.target.params() {
+      let g = p.data.grad()
+      if p.m == nil {
+        p.m = Tensor.zeros(p.data.shape())
+        p.v = Tensor.zeros(p.data.shape())
+      }
+      p.m = (p.m + (g - p.m) * (1.0 - self.beta1)).detach()
+      p.v = (p.v + (g * g - p.v) * (1.0 - self.beta2)).detach()
+      let step = lr * p.m / (p.v.pow(0.5) + self.eps)
+      p.data = (p.data - step).detach().requires_grad()
+    }
+  }
+}
+
+fn parameter_count(model) {
+  model.params().map(|p| p.data.shape().product()).sum()
+}
+
+# One batch, forward through the model, cross-entropy against the same
+# windows shifted one token along.
+fn batch_loss(model, tokens, cfg) {
+  let pair = D.get_batch(tokens, cfg.batch_size, cfg.context_len)
+  let logits = model(pair[0], cfg.batch_size, cfg.context_len)
+  cross_entropy(
+    logits,
+    pair[1],
+    cfg.batch_size * cfg.context_len,
+    cfg.vocab_size,
+  )
+}
+
+fn valid_loss(model, tokens, cfg) {
+  Tensor.no_grad(fn () {
+    mut total = 0.0
+    for _ in 0..5 {
+      total += batch_loss(model, tokens, cfg).item()
+    }
+    total / 5.0
+  })
+}
+
+fn main() {
+  let args = Sys.argv
+  let cfg = C.from_args(args)
+  let full = args.contains('--full')
+  let corpus = P.data(full ? 'tiny_codes.bin' : 'tiny_codes_sample.bin')
+
+  if !FS.exists(corpus) {
+    throw {
+      kind: "IOError",
+      message: "{corpus} is missing -- run ch01/09_bpe_encode.cul (or `just fetch-llm-data` for --full)",
+    }
+  }
+
+  let tokens = D.read_bin_u16(corpus)
+  inspect("corpus: {FS.basename(corpus)}, {tokens.size()} tokens")
+  inspect("config: {C.describe(cfg)}")
+
+  Random.seed(0)
+  let model = GPT(cfg)
+
+  # `--from <dir>` starts from an existing checkpoint -- including one
+  # `train/pretrain.cul` wrote, which is the point of sharing the format.
+  let from = args.index_of('--from')
+  if from >= 0 && from + 1 < args.size() {
+    let n = CK.restore(model, CK.load(args[from + 1]))
+    model.mark_leaves()
+    inspect("restored {n} parameters from {args[from + 1]}")
+  }
+  inspect("model: {parameter_count(model)} parameters")
+
+  let opt = Adam(cfg.lr).setup(model)
+
+  let split = tokens.size() * 9 / 10
+  let train_tokens = tokens.slice(0, split)
+  let valid_tokens = tokens.slice(split, tokens.size())
+
+  let report_every = Math.max(1, cfg.max_iters / 20)
+  mut history = []
+  # Only the training step is timed, the same way `pretrain.cul` does it,
+  # so the two ms/step figures mean the same thing.
+  mut train_time = 0.0
+  let t0 = Sys.time()
+
+  for step in 1..cfg.max_iters + 1 {
+    let started = Sys.time()
+    let loss = batch_loss(model, train_tokens, cfg)
+    loss.backward()
+    opt.update()
+    Tensor.eval(loss)
+    train_time += Sys.time() - started
+
+    if step % report_every == 0 || step == 1 {
+      let train = loss.item()
+      let valid = valid_loss(model, valid_tokens, cfg)
+      history.push([to_float(step), train, valid])
+      inspect("step {step}/{cfg.max_iters}  train {train}  valid {valid}  {train_time / to_float(step) * 1000.0} ms/step")
+    }
+  }
+
+  inspect("trained {cfg.max_iters} steps in {train_time}s ({train_time / to_float(cfg.max_iters) * 1000.0} ms/step), {Sys.time() - t0}s including validation")
+
+  let steps = history.map(|h| h[0])
+  Plot.plot_curves(
+    steps,
+    [['train', history.map(|h| h[1])], ['valid', history.map(|h| h[2])]],
+  )
+
+  let dir = P.checkpoint(full ? 'codebot-full-tensor' : 'codebot-demo-tensor')
+  let saved = CK.save(dir, cfg, cfg.max_iters, model.named_params())
+  inspect("saved {saved} parameters to {dir}")
+}
+
+# Importable as a module -- `test_contrast.cul` builds the model from it --
+# so the run only happens when this file is the script being run.
+if Sys.script.ends_with('pretrain_tensor.cul') {
+  main()
+}
+
+export {GPT, Adam, Param, batch_loss, cross_entropy, parameter_count}

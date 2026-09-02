@@ -1,0 +1,179 @@
+# Regression tests for chapter 6's optimizer, schedule and gradient clip.
+
+import dz from '../dezero/dezero/core.cul'
+import O from '../dezero/dezero/optimizers.cul'
+import Optim from './train/optim.cul'
+
+# An optimizer's target only has to answer `params()`.
+class Target {
+  new(params) {
+    self.list = params
+  }
+
+  params() {
+    self.list
+  }
+}
+
+fn param_with_grad(values, grads) {
+  let p = dz.Parameter(Tensor.from(values))
+  p.grad = dz.Variable(Tensor.from(grads))
+  p
+}
+
+fn values(p) {
+  Tensor.eval(p.data)
+  p.data.to_array()
+}
+
+# One parameter fed the same gradient every step, so two runs differ only
+# by the update rule.
+fn run_steps(opt, steps, w0, g) {
+  let p = dz.Parameter(Tensor.from(w0))
+  opt.setup(Target([p]))
+  for _ in 0..steps {
+    p.grad = dz.Variable(Tensor.from(g))
+    opt.update()
+  }
+  values(p)
+}
+
+fn max_abs_diff(a, b) {
+  range(a.size()).map(|i| Math.abs(a[i] - b[i])).collect().max()
+}
+
+let W0 = [1.0, -0.5, 2.0, 0.25]
+let G = [0.3, 0.7, -0.2, 0.05]
+
+@test
+fn decoupled_decay_is_not_l2_folded_into_the_gradient() {
+  let wd = 0.1
+  let adam = O.Adam(0.1)
+  adam.add_hook(O.WeightDecay(wd))
+  let l2 = run_steps(adam, 10, W0, G)
+  let decoupled = run_steps(Optim.AdamW(0.1, 0.9, 0.999, 1.0e-8, wd), 10, W0, G)
+  # Same alpha, same wd, same gradients: the paper's whole point is that
+  # these are two different updates, not two spellings of one.
+  assert_true(max_abs_diff(l2, decoupled) > 0.01)
+}
+
+@test
+fn adamw_without_decay_is_exactly_adam() {
+  let adam = run_steps(O.Adam(0.1), 10, W0, G)
+  let adamw = run_steps(Optim.AdamW(0.1, 0.9, 0.999, 1.0e-8, 0.0), 10, W0, G)
+  for i in 0..adam.size() {
+    assert_eq(adamw[i], adam[i])
+  }
+}
+
+@test
+fn the_decay_is_proportional_to_the_weight() {
+  # With no gradient the Adam term is zero, so what is left is the decay
+  # alone: each weight is multiplied by `1 - alpha * wd` every step.
+  let zero = [0.0, 0.0, 0.0, 0.0]
+  let got = run_steps(Optim.AdamW(0.1, 0.9, 0.999, 1.0e-8, 0.1), 5, W0, zero)
+  mut want = W0
+  for _ in 0..5 {
+    want = want.map(|w| w - 0.1 * 0.1 * w)
+  }
+  # Tensors are float32, so the reference is only good to about 1e-7.
+  for i in 0..want.size() {
+    assert_close(got[i], want[i], 1.0e-6)
+  }
+}
+
+# --- learning-rate schedule ----------------------------------------------
+
+fn sched_cfg() {
+  {lr: 3.0e-3, min_lr: 3.0e-4, warmup_steps: 20, max_iters: 200}
+}
+
+@test
+fn the_schedule_hits_its_three_corners() {
+  let cfg = sched_cfg()
+  assert_eq(Optim.lr_at(0, cfg), 0.0)
+  assert_close(Optim.lr_at(cfg.warmup_steps, cfg), cfg.lr, 1.0e-15)
+  assert_eq(Optim.lr_at(cfg.max_iters, cfg), cfg.min_lr)
+  assert_eq(Optim.lr_at(cfg.max_iters * 3, cfg), cfg.min_lr)
+}
+
+@test
+fn the_schedule_rises_through_warmup_and_falls_after() {
+  let cfg = sched_cfg()
+  let up = range(cfg.warmup_steps + 1).map(|s| Optim.lr_at(s, cfg)).collect()
+  assert_true(up.iter().windows(2).collect().all(|w| w[1] > w[0]))
+
+  let down = range(cfg.warmup_steps, cfg.max_iters + 1)
+    .map(|s| Optim.lr_at(s, cfg))
+    .collect()
+  assert_true(down.iter().windows(2).collect().all(|w| w[1] < w[0]))
+}
+
+@test
+fn a_config_without_schedule_settings_gets_the_defaults() {
+  let s = Optim.schedule({lr: 1.0e-3, max_iters: 1000})
+  assert_close(s.min_lr, 1.0e-4, 1.0e-18)
+  assert_eq(s.warmup_steps, 100)
+}
+
+@test
+fn the_schedule_drives_an_optimizers_alpha() {
+  let cfg = sched_cfg()
+  let opt = Optim.AdamW(0.0)
+  assert_close(Optim.set_lr(opt, cfg.warmup_steps, cfg), cfg.lr, 1.0e-15)
+  assert_close(opt.alpha, cfg.lr, 1.0e-15)
+}
+
+# --- gradient clipping ---------------------------------------------------
+#
+# dezero's `ClipGrad` already scales by one norm measured over every
+# parameter, so these tests cover it in place; the package adds no
+# global-norm clip of its own.
+
+fn global_norm(params) {
+  mut total = 0.0
+  for p in params {
+    let g = p.grad.data
+    total += (g * g).sum()
+  }
+  Math.sqrt(total)
+}
+
+fn grads(params) {
+  params.map(fn (p) {
+    Tensor.eval(p.grad.data)
+    p.grad.data.to_array()
+  })
+}
+
+@test
+fn clipping_leaves_a_small_global_norm_bit_identical() {
+  let params = [
+    param_with_grad([1.0, 2.0], [0.1, -0.2]),
+    param_with_grad([3.0], [0.3]),
+  ]
+  let before = grads(params)
+  assert_true(global_norm(params) < 1.0)
+  O.ClipGrad(1.0)(params)
+  let after = grads(params)
+  for i in 0..before.size() {
+    for j in 0..before[i].size() {
+      assert_eq(after[i][j], before[i][j])
+    }
+  }
+}
+
+@test
+fn clipping_scales_a_large_global_norm_down_to_the_threshold() {
+  let params = [
+    param_with_grad([1.0, 2.0], [3.0, -4.0]),
+    param_with_grad([3.0], [12.0]),
+  ]
+  # 5 and 12 as the two per-parameter norms: a per-parameter clip at 1.0
+  # would leave a global norm of sqrt(2), not 1.
+  assert_close(global_norm(params), 13.0, 1.0e-12)
+  O.ClipGrad(1.0)(params)
+  # `ClipGrad` divides by `norm + 1e-6`, so the result lands just under the
+  # threshold rather than exactly on it.
+  assert_close(global_norm(params), 1.0, 1.0e-6)
+}
