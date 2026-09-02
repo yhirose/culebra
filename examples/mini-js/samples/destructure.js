@@ -1,0 +1,33 @@
+// destructuring: declarations, defaults, rest, nesting, parameters, for-of, assignment
+const [a, b, , d = 4, ...rest] = [1, 2, 3, undefined, 5, 6];
+show('array', [a, b, d, rest]);
+const { x, y: why, z = 'dz', ...others } = { x: 1, y: 2, w: 3, v: 4 };
+show('object', [x, why, z, others]);
+const { p: { q, r: [s] }, t = q * 2 } = { p: { q: 5, r: [6] } };
+show('nested', [q, s, t]);
+let [m, n] = 'ab';
+show('string', [m, n]);
+const [first = 'f', second = 'g'] = [undefined, null];
+show('null keeps', [first, second]);
+let u = 1, v = 2;
+[u, v] = [v, u];
+show('swap', [u, v]);
+let obj = {};
+({ k1: obj.k, k2: v } = { k1: 'ok', k2: 'v2' });
+show('assign object', [obj.k, v]);
+function f({ name, age = 0 }, [head, ...tail] = [], last = 'L') { return [name, age, head, tail, last]; }
+show('params', [f({ name: 'N' }), f({ name: 'N', age: 3 }, [1, 2, 3], 'x')]);
+const g = ({ w = 'dw' } = {}) => w;
+show('arrow param default', [g(), g({ w: 'given' })]);
+let sum = 0;
+for (const [i, val] of [[1, 10], [2, 20]]) sum += i * val;
+show('for-of pattern', sum);
+const pairs = Object.entries({ one: 1, two: 2 }).map(([k, val]) => k + '=' + val);
+show('entries pattern', pairs);
+show('missing source', thrown(() => { const { z } = null; }));
+show('not iterable', thrown(() => { const [z] = 5; }));
+show('holes', (function () { const [, , third] = [1, 2, 3]; return third; })());
+show('rest object keys', (function () { const { a, ...others } = { a: 1, b: 2, c: 3 }; return Object.keys(others); })());
+show('deep default', (function () { const { a: { b = 'inner' } = {} } = {}; return b; })());
+show('string key', (function () { const { 'quoted key': qk } = { 'quoted key': 'Q' }; return qk; })());
+show('var pattern', (function () { var [va, vb] = [1, 2]; return va + vb; })());

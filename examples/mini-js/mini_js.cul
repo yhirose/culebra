@@ -20,10 +20,12 @@
 # any other. Every JS function's closure takes `this` as its first
 # parameter, arrows included (theirs is unused: `this` binds lexically).
 #
-# Batches: J1 (this one) -- scalars and their operators, var/let/const,
+# Batches: J1 -- scalars and their operators, var/let/const,
 # if/while/do/for/for-of/break/continue, functions and closures, arrows,
 # template literals, objects and arrays with the first methods, new,
-# try/catch/throw, the Error classes.
+# try/catch/throw, the Error classes. J2 -- destructuring (declarations,
+# parameters, for-of heads, assignment), switch, for-in, optional
+# chaining, accessors in object literals, the comma operator, JSON.
 #
 # Known differences: string length/indexing by byte; no TDZ for a captured
 # let (read before its declaration it is undefined); arrays have no holes
@@ -39,27 +41,28 @@ let q = String.from_code_point(39)
 
 let grammar = `
   program    <- stmt*                                          { no_ast_opt }
-  stmt       <- var_decl / fn_decl / if_s / while_s / do_s / for_of / for_s /
-                return_s / break_s / continue_s / throw_s / try_s / block /
-                empty_s / expr_s
+  stmt       <- var_decl / fn_decl / if_s / while_s / do_s / for_of / for_in /
+                for_s / switch_s / return_s / break_s / continue_s / throw_s /
+                try_s / block / empty_s / expr_s
   var_decl   <- decl_kw declr (',' declr)* ';'?                  { no_ast_opt }
   decl_kw    <- < 'var' / 'let' / 'const' >
-  declr      <- ident ('=' !'=' expr)?                           { no_ast_opt }
+  declr      <- binding ('=' !'=' expr)?                         { no_ast_opt }
   fn_decl    <- 'function' ident '(' params ')' block             { no_ast_opt }
   params     <- (param (',' param)*)? ','?                        { no_ast_opt }
-  param      <- rest_p / dflt_p / ident
+  param      <- rest_p / dflt_p / binding
   rest_p     <- '...' ident                                      { no_ast_opt }
-  dflt_p     <- ident '=' !'=' expr                              { no_ast_opt }
+  dflt_p     <- binding '=' !'=' expr                            { no_ast_opt }
   if_s       <- 'if' '(' expr ')' stmt else_c?                   { no_ast_opt }
   else_c     <- 'else' stmt                                      { no_ast_opt }
   while_s    <- 'while' '(' expr ')' stmt                        { no_ast_opt }
   do_s       <- 'do' stmt 'while' '(' expr ')' ';'?              { no_ast_opt }
-  for_of     <- 'for' '(' decl_kw ident 'of' expr ')' stmt       { no_ast_opt }
+  for_of     <- 'for' '(' decl_kw binding 'of' expr ')' stmt     { no_ast_opt }
+  for_in     <- 'for' '(' decl_kw binding 'in' expr ')' stmt     { no_ast_opt }
   for_s      <- 'for' '(' for_init ';' for_cond ';' for_step ')' stmt { no_ast_opt }
-  for_init   <- (var_decl_ns / expr)?                            { no_ast_opt }
+  for_init   <- (var_decl_ns / seq_e)?                           { no_ast_opt }
   var_decl_ns <- decl_kw declr (',' declr)*                      { no_ast_opt }
   for_cond   <- expr?                                            { no_ast_opt }
-  for_step   <- expr?                                            { no_ast_opt }
+  for_step   <- seq_e?                                           { no_ast_opt }
   return_s   <- 'return' ret_val ';'?                            { no_ast_opt }
   ret_val    <- expr?                                            { no_ast_opt }
   break_s    <- 'break' ';'?                                     { no_ast_opt }
@@ -72,13 +75,29 @@ let grammar = `
   block      <- '{' stmt* '}'                                    { no_ast_opt }
   empty_s    <- ';'                                              { no_ast_opt }
   expr_s     <- expr ';'?                                        { no_ast_opt }
+  switch_s   <- 'switch' '(' expr ')' '{' (case_c / default_c)* '}' { no_ast_opt }
+  case_c     <- 'case' expr ':' case_body                         { no_ast_opt }
+  default_c  <- 'default' ':' case_body                           { no_ast_opt }
+  case_body  <- (!('case' / 'default') stmt)*                     { no_ast_opt }
+
+  binding    <- arr_pat / obj_pat / ident
+  arr_pat    <- '[' (pat_el (',' pat_el)*)? ','? ']'             { no_ast_opt }
+  pat_el     <- rest_b / pat_dflt / pat_hole
+  pat_dflt   <- (arr_pat / obj_pat / postfix) ('=' !'=' expr)?  { no_ast_opt }
+  pat_hole   <- &','                                             { no_ast_opt }
+  rest_b     <- '...' binding                                    { no_ast_opt }
+  obj_pat    <- '{' (opat_el (',' opat_el)*)? ','? '}'           { no_ast_opt }
+  opat_el    <- rest_b / opat_kv / opat_short
+  opat_kv    <- pkey ':' pat_dflt                                { no_ast_opt }
+  opat_short <- ident ('=' !'=' expr)?                           { no_ast_opt }
+  seq_e      <- expr (',' expr)*
 
   expr       <- arrow / assign_e / ternary
   arrow      <- arrow_p '=>' arrow_body                          { no_ast_opt }
   arrow_p    <- '(' params ')' / arrow_one
   arrow_one  <- ident                                            { no_ast_opt }
   arrow_body <- block / expr
-  assign_e   <- postfix assign_op expr                           { no_ast_opt }
+  assign_e   <- (arr_pat / obj_pat / postfix) assign_op expr     { no_ast_opt }
   assign_op  <- < '=' !'=' / '+=' / '-=' / '*=' / '/=' / '%=' / '**=' / '??=' / '||=' / '&&=' >
   ternary    <- nullish ('?' expr ':' expr)?
   nullish    <- lor (nullish_op lor)*
@@ -110,7 +129,10 @@ let grammar = `
   pre_inc    <- inc_op postfix                                   { no_ast_opt }
   post_inc   <- postfix inc_op                                   { no_ast_opt }
   inc_op     <- < '++' / '--' >
-  postfix    <- new_e / primary (call_p / index_p / member_p)*
+  postfix    <- new_e / primary (call_p / index_p / member_p / opt_call / opt_index / opt_member)*
+  opt_member <- '?.' pname                                       { no_ast_opt }
+  opt_index  <- '?.' '[' expr ']'                                { no_ast_opt }
+  opt_call   <- '?.' '(' args ')'                                { no_ast_opt }
   new_e      <- 'new' primary (index_p / member_p)* new_args (call_p / index_p / member_p)* { no_ast_opt }
   new_args   <- ('(' args ')')?                                  { no_ast_opt }
   call_p     <- '(' args ')'                                     { no_ast_opt }
@@ -132,7 +154,9 @@ let grammar = `
   string     <- < ['] (!['\\] . / '\\' .)* ['] > / < ["] (!["\\] . / '\\' .)* ["] >
   array_lit  <- '[' (arg (',' arg)*)? ','? ']'                   { no_ast_opt }
   object_lit <- '{' (oprop (',' oprop)*)? ','? '}'               { no_ast_opt }
-  oprop      <- method_p / kv_p / computed_p / ospread / short_p
+  oprop      <- getter_p / setter_p / method_p / kv_p / computed_p / ospread / short_p
+  getter_p   <- 'get' pname '(' ')' block                        { no_ast_opt }
+  setter_p   <- 'set' pname '(' ident ')' block                  { no_ast_opt }
   kv_p       <- pkey ':' expr                                    { no_ast_opt }
   pkey       <- pname / string / number
   computed_p <- '[' expr ']' ':' expr                            { no_ast_opt }
@@ -141,13 +165,14 @@ let grammar = `
   ospread    <- '...' expr                                       { no_ast_opt }
   fn_expr    <- 'function' fn_name '(' params ')' block          { no_ast_opt }
   fn_name    <- ident?                                           { no_ast_opt }
-  paren      <- '(' expr ')'                                     { no_ast_opt }
+  paren      <- '(' seq_e ')'                                    { no_ast_opt }
   ident      <- !keyword < [a-zA-Z_$][a-zA-Z0-9_$]* >
   keyword    <- ('if' / 'else' / 'while' / 'for' / 'function' / 'return' /
                  'let' / 'const' / 'var' / 'true' / 'false' / 'null' / 'this' /
                  'new' / 'typeof' / 'instanceof' / 'in' / 'class' / 'extends' /
                  'super' / 'throw' / 'try' / 'catch' / 'finally' / 'break' /
-                 'continue' / 'do' / 'void' / 'delete' / 'yield' / 'await') ![a-zA-Z0-9_$]
+                 'continue' / 'do' / 'void' / 'delete' / 'yield' / 'await' /
+                 'switch' / 'case' / 'default') ![a-zA-Z0-9_$]
 
   %whitespace <- ([ \t\r\n]+ / '//' [^\n]* / '/*' (!'*/' .)* '*/')*
   %word       <- [a-zA-Z0-9_$]
@@ -668,30 +693,30 @@ function __get(o, k) {
     if (i >= 0) return i < __len(o) ? o[i] : undefined;
     var ks = __key(k);
     if (ks === 'length') return __todouble(__len(o));
-    return __proto_get(__G.Array_proto, ks);
+    return __proto_get(__G.Array_proto, ks, o);
   }
   if (t === 'string') {
     var si = __aindex(k);
     if (si >= 0) return si < __len(o) ? o[si] : undefined;
     var sk = __key(k);
     if (sk === 'length') return __todouble(__len(o));
-    return __proto_get(__G.String_proto, sk);
+    return __proto_get(__G.String_proto, sk, o);
   }
   if (t === 'object') {
     var key = __key(k);
     if (__objecthas(o, key)) return o[key];
     if (key === 'message' && __objecthas(o, '\x01msg')) return o['\x01msg'];
-    if (__objecthas(o, '\x01proto')) return __proto_get(o['\x01proto'], key);
-    if (__is_fnobj(o)) return __proto_get(__G.Function_proto, key);
-    return __proto_get(__G.Object_proto, key);
+    return __proto_get(o, key, o);
   }
-  if (t === 'double') return __proto_get(__G.Number_proto, __key(k));
-  if (t === 'bool') return __proto_get(__G.Boolean_proto, __key(k));
+  if (t === 'double') return __proto_get(__G.Number_proto, __key(k), o);
+  if (t === 'bool') return __proto_get(__G.Boolean_proto, __key(k), o);
   return undefined;
 }
-function __proto_get(p, key) {
+function __proto_get(p, key, recv) {
+  var gk = '\x01get:' + key;
   while (__typeof(p) === 'object') {
     if (__objecthas(p, key)) return p[key];
+    if (__objecthas(p, gk)) return __call(p[gk], recv, []);
     p = __proto_next(p);
   }
   return undefined;
@@ -732,6 +757,16 @@ function __set(o, k, v) {
   if (t === 'object') {
     var key = __key(k);
     if (key === 'message' && __objecthas(o, '\x01msg')) { o['\x01msg'] = __str(v); return v; }
+    if (!__objecthas(o, key)) {
+      // an accessor, own or inherited, takes the write
+      var sk = '\x01set:' + key;
+      var p = o;
+      while (__typeof(p) === 'object') {
+        if (__objecthas(p, sk)) { __call(p[sk], o, [v]); return v; }
+        if (__objecthas(p, '\x01get:' + key)) return v;
+        p = __proto_next(p);
+      }
+    }
     o[key] = v;
     return v;
   }
@@ -760,9 +795,10 @@ function __own_keys(o) {
     var m = 0;
     while (m < __len(ks)) {
       var key = ks[m];
-      if (key[0] !== '\x01') {
-        if (__aindex(key) >= 0) __arraypush(ints, key); else __arraypush(out, key);
-      }
+      if (key[0] === '\x01') {
+        // an accessor is a key too
+        if (__str_index_of(key, '\x01get:', 0) === 0) __arraypush(out, __substr(key, 5, __len(key)));
+      } else if (__aindex(key) >= 0) __arraypush(ints, key); else __arraypush(out, key);
       m = m + 1;
     }
     if (__len(ints) > 0) {
@@ -871,6 +907,66 @@ function __obj_spread(target, src) {
   while (i < __len(ks)) { __set(target, ks[i], __get(src, ks[i])); i = i + 1; }
   return target;
 }
+// --- destructuring ---------------------------------------------------------------
+function __destr_arr(v) {
+  var t = __typeof(v);
+  if (t === 'array') return v;
+  var out = [];
+  var it = __iter(v);
+  var r = __iter_step(it);
+  while (__typeof(r) !== 'nil') { __arraypush(out, r[0]); r = __iter_step(it); }
+  return out;
+}
+function __at(a, i) { return i < __len(a) ? a[i] : undefined; }
+function __slice_from(a, i) {
+  var out = [];
+  while (i < __len(a)) { __arraypush(out, a[i]); i = i + 1; }
+  return out;
+}
+function __destr_obj(v) {
+  if (__isnullish(v)) throw __err('TypeError', 'Cannot destructure ' + __str(v) + ' as it is ' + __str(v) + '.');
+  return v;
+}
+function __obj_rest(o, excluded) {
+  var out = {};
+  var ks = __own_keys(o);
+  var i = 0;
+  while (i < __len(ks)) {
+    var k = ks[i];
+    var skip = false;
+    var j = 0;
+    while (j < __len(excluded)) { if (excluded[j] === k) skip = true; j = j + 1; }
+    if (!skip) __set(out, k, __get(o, k));
+    i = i + 1;
+  }
+  return out;
+}
+// for-in: own keys, then the enumerable keys up the chain (the built-in
+// prototypes' members are not enumerable)
+function __forin_keys(o) {
+  var out = __own_keys(o);
+  var p = __typeof(o) === 'object' && !__is_null(o) ? __proto_next(o) : undefined;
+  while (__typeof(p) === 'object' && !__is_builtin_proto(p)) {
+    var ks = __own_keys(p);
+    var i = 0;
+    while (i < __len(ks)) {
+      var k = ks[i];
+      var seen = false;
+      var j = 0;
+      while (j < __len(out)) { if (out[j] === k) seen = true; j = j + 1; }
+      if (!seen) __arraypush(out, k);
+      i = i + 1;
+    }
+    p = __proto_next(p);
+  }
+  return out;
+}
+function __is_builtin_proto(p) {
+  return __same(p, __G.Object_proto) || __same(p, __G.Array_proto) || __same(p, __G.Function_proto) ||
+    __same(p, __G.String_proto) || __same(p, __G.Number_proto) || __same(p, __G.Boolean_proto) ||
+    __objecthas(p, '\x01noenum');
+}
+function __forin_iter(o) { return __iter(__forin_keys(o)); }
 function __gget(name) {
   if (__objecthas(__G, name)) return __G[name];
   throw __err('ReferenceError', name + ' is not defined');
@@ -969,6 +1065,7 @@ function __init_globals() {
   __init_number(G);
   __init_console(G);
   __init_math(G);
+  __init_json(G);
   return G;
 }
 
@@ -1514,6 +1611,197 @@ function __init_console(G) {
   G.console = c;
 }
 
+function __init_json(G) {
+  var J = {};
+  J.stringify = __mkfn(function (t, v, replacer, indent) {
+    var ind = '';
+    if (__typeof(indent) === 'double') { ind = __repeat(' ', __toint_safe(indent > 10.0 ? 10.0 : indent)); }
+    else if (__typeof(indent) === 'string') { ind = indent; }
+    return __json_str(v, ind, '');
+  }, 'stringify', false);
+  J.parse = __mkfn(function (t, s) {
+    var st = {};
+    st.s = __str(s);
+    st.i = 0;
+    var v = __json_value(st);
+    __json_ws(st);
+    if (st.i < __len(st.s)) __json_fail(st);
+    return v;
+  }, 'parse', false);
+  G.JSON = J;
+}
+function __json_quote(s) {
+  var out = '"';
+  var i = 0;
+  while (i < __len(s)) {
+    var c = s[i];
+    if (c === '"') out = out + '\\"';
+    else if (c === '\\') out = out + '\\\\';
+    else if (c === '\n') out = out + '\\n';
+    else if (c === '\r') out = out + '\\r';
+    else if (c === '\t') out = out + '\\t';
+    else if (__G.codes[c] < 32) out = out + '\\u00' + __hex2(__G.codes[c]);
+    else out = out + c;
+    i = i + 1;
+  }
+  return out + '"';
+}
+function __hex2(n) {
+  var digs = '0123456789abcdef';
+  return digs[__idiv(n, 16)] + digs[__imod(n, 16)];
+}
+function __json_str(v, ind, cur) {
+  var t = __typeof(v);
+  if (t === 'nil') return undefined;
+  if (t === 'bool') return v ? 'true' : 'false';
+  if (t === 'double') return v === v && v !== __inf() && v !== 0.0 - __inf() ? __numstr(v) : 'null';
+  if (t === 'string') return __json_quote(v);
+  if (t === 'array') {
+    if (__len(v) === 0) return '[]';
+    var inner = cur + ind;
+    var out = '[';
+    var i = 0;
+    while (i < __len(v)) {
+      var e = __json_str(v[i], ind, inner);
+      if (i > 0) out = out + ',';
+      if (ind !== '') out = out + '\n' + inner;
+      out = out + (__typeof(e) === 'nil' ? 'null' : e);
+      i = i + 1;
+    }
+    if (ind !== '') out = out + '\n' + cur;
+    return out + ']';
+  }
+  if (t === 'object') {
+    if (__is_null(v)) return 'null';
+    if (__is_fnobj(v)) return undefined;
+    var toj = __get(v, 'toJSON');
+    if (__is_fnobj(toj)) return __json_str(__call(toj, v, []), ind, cur);
+    var ks = __own_keys(v);
+    var inner2 = cur + ind;
+    var o = '{';
+    var any = false;
+    var j = 0;
+    while (j < __len(ks)) {
+      var val = __json_str(__get(v, ks[j]), ind, inner2);
+      if (__typeof(val) !== 'nil') {
+        if (any) o = o + ',';
+        if (ind !== '') o = o + '\n' + inner2;
+        o = o + __json_quote(ks[j]) + (ind !== '' ? ': ' : ':') + val;
+        any = true;
+      }
+      j = j + 1;
+    }
+    if (!any) return '{}';
+    if (ind !== '') o = o + '\n' + cur;
+    return o + '}';
+  }
+  return undefined;
+}
+function __json_fail(st) {
+  var at = st.i < __len(st.s) ? "Unexpected token '" + st.s[st.i] + "'" : 'Unexpected end of JSON input';
+  throw __err('SyntaxError', at + ' in JSON at position ' + __numstr(__todouble(st.i)));
+}
+function __json_ws(st) {
+  while (st.i < __len(st.s) && (st.s[st.i] === ' ' || st.s[st.i] === '\n' || st.s[st.i] === '\t' || st.s[st.i] === '\r')) st.i = st.i + 1;
+}
+function __json_lit(st, word, v) {
+  if (st.i + __len(word) <= __len(st.s) && __substr(st.s, st.i, st.i + __len(word)) === word) { st.i = st.i + __len(word); return v; }
+  __json_fail(st);
+}
+function __json_value(st) {
+  __json_ws(st);
+  if (st.i >= __len(st.s)) __json_fail(st);
+  var c = st.s[st.i];
+  if (c === '{') {
+    st.i = st.i + 1;
+    var o = {};
+    __json_ws(st);
+    if (st.i < __len(st.s) && st.s[st.i] === '}') { st.i = st.i + 1; return o; }
+    while (true) {
+      __json_ws(st);
+      if (st.i >= __len(st.s) || st.s[st.i] !== '"') __json_fail(st);
+      var k = __json_string(st);
+      __json_ws(st);
+      if (st.i >= __len(st.s) || st.s[st.i] !== ':') __json_fail(st);
+      st.i = st.i + 1;
+      __set(o, k, __json_value(st));
+      __json_ws(st);
+      if (st.i >= __len(st.s)) __json_fail(st);
+      if (st.s[st.i] === ',') { st.i = st.i + 1; }
+      else if (st.s[st.i] === '}') { st.i = st.i + 1; return o; }
+      else __json_fail(st);
+    }
+  }
+  if (c === '[') {
+    st.i = st.i + 1;
+    var a = [];
+    __json_ws(st);
+    if (st.i < __len(st.s) && st.s[st.i] === ']') { st.i = st.i + 1; return a; }
+    while (true) {
+      __arraypush(a, __json_value(st));
+      __json_ws(st);
+      if (st.i >= __len(st.s)) __json_fail(st);
+      if (st.s[st.i] === ',') { st.i = st.i + 1; }
+      else if (st.s[st.i] === ']') { st.i = st.i + 1; return a; }
+      else __json_fail(st);
+    }
+  }
+  if (c === '"') return __json_string(st);
+  if (c === 't') return __json_lit(st, 'true', true);
+  if (c === 'f') return __json_lit(st, 'false', false);
+  if (c === 'n') return __json_lit(st, 'null', __G.null);
+  if (c === '-' || __is_digit(c)) {
+    var start = st.i;
+    if (c === '-') st.i = st.i + 1;
+    if (st.i >= __len(st.s) || !__is_digit(st.s[st.i])) __json_fail(st);
+    while (st.i < __len(st.s) && __is_digit(st.s[st.i])) st.i = st.i + 1;
+    if (st.i < __len(st.s) && st.s[st.i] === '.') {
+      st.i = st.i + 1;
+      if (st.i >= __len(st.s) || !__is_digit(st.s[st.i])) __json_fail(st);
+      while (st.i < __len(st.s) && __is_digit(st.s[st.i])) st.i = st.i + 1;
+    }
+    if (st.i < __len(st.s) && (st.s[st.i] === 'e' || st.s[st.i] === 'E')) {
+      st.i = st.i + 1;
+      if (st.i < __len(st.s) && (st.s[st.i] === '+' || st.s[st.i] === '-')) st.i = st.i + 1;
+      if (st.i >= __len(st.s) || !__is_digit(st.s[st.i])) __json_fail(st);
+      while (st.i < __len(st.s) && __is_digit(st.s[st.i])) st.i = st.i + 1;
+    }
+    return __str_to_num(__substr(st.s, start, st.i));
+  }
+  __json_fail(st);
+}
+function __json_string(st) {
+  st.i = st.i + 1;
+  var out = '';
+  while (true) {
+    if (st.i >= __len(st.s)) __json_fail(st);
+    var c = st.s[st.i];
+    if (c === '"') { st.i = st.i + 1; return out; }
+    if (c === '\\') {
+      st.i = st.i + 1;
+      if (st.i >= __len(st.s)) __json_fail(st);
+      var e = st.s[st.i];
+      if (e === 'n') out = out + '\n';
+      else if (e === 't') out = out + '\t';
+      else if (e === 'r') out = out + '\r';
+      else if (e === 'b') out = out + __G.chars[8];
+      else if (e === 'f') out = out + __G.chars[12];
+      else if (e === 'u') {
+        if (st.i + 4 >= __len(st.s)) __json_fail(st);
+        var code = __toint(__parse_int(__substr(st.s, st.i + 1, st.i + 5), 16));
+        out = out + (code < 128 ? __G.chars[code] : '?');
+        st.i = st.i + 4;
+      }
+      else out = out + e;
+      st.i = st.i + 1;
+    } else {
+      if (__G.codes[c] < 32 && __typeof(__G.codes[c]) !== 'nil') __json_fail(st);
+      out = out + c;
+      st.i = st.i + 1;
+    }
+  }
+}
+
 function __init_math(G) {
   var M = {};
   M.PI = 3.141592653589793;
@@ -1780,23 +2068,19 @@ fn note_use(node, f) {
 # start): let/const/function. `var` names go to the function.
 fn hoist_block(stmts, f) {
   mut fn_nodes = []
-  for s in stmts {
+  for st in stmts {
     cond {
-      s.name == 'var_decl' || s.name == 'var_decl_ns' => {
-        let kw = s.nodes[0].token
+      st.name == 'var_decl' || st.name == 'var_decl_ns' => {
+        let kw = st.nodes[0].token
         mut i = 1
-        while i < s.nodes.size() {
-          let id = s.nodes[i].nodes[0]
-          cond {
-            kw == 'var' => declare_fn_var(f, id.token, id),
-            _ => declare_var(f, id.token, id),
-          }
+        while i < st.nodes.size() {
+          declare_pattern(f, st.nodes[i].nodes[0], kw)
           i = i + 1
         }
       },
-      s.name == 'fn_decl' => {
-        declare_var(f, s.nodes[0].token, s.nodes[0])
-        fn_nodes.push(s)
+      st.name == 'fn_decl' => {
+        declare_var(f, st.nodes[0].token, st.nodes[0])
+        fn_nodes.push(st)
       },
       _ => nil,
     }
@@ -1804,24 +2088,26 @@ fn hoist_block(stmts, f) {
   fn_nodes
 }
 
-# `var` declarations anywhere in a function body (nested blocks included,
-# nested functions excluded) belong to the function
 fn collect_vars(node, f) {
   if node.nodes == nil {
     return nil
   }
-  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' {
+  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' || node.name == 'getter_p' || node.name == 'setter_p' {
     return nil
   }
   if (node.name == 'var_decl' || node.name == 'var_decl_ns') && node.nodes[0].token == 'var' {
     mut i = 1
     while i < node.nodes.size() {
-      declare_fn_var(f, node.nodes[i].nodes[0].token, nil)
+      for id in pattern_idents(node.nodes[i].nodes[0], []) {
+        declare_fn_var(f, id.token, nil)
+      }
       i = i + 1
     }
   }
-  if node.name == 'for_of' && node.nodes[0].token == 'var' {
-    declare_fn_var(f, node.nodes[1].token, nil)
+  if (node.name == 'for_of' || node.name == 'for_in') && node.nodes[0].token == 'var' {
+    for id in pattern_idents(node.nodes[1], []) {
+      declare_fn_var(f, id.token, nil)
+    }
   }
   for c in node.nodes {
     collect_vars(c, f)
@@ -1837,9 +2123,79 @@ fn param_parts(p) {
   }
 }
 
-# A function's binding walk: `this` first (unless an arrow: it captures
-# the enclosing one), then the parameters, the function's vars, then the
-# body as a block.
+# The identifiers a binding pattern introduces, in source order.
+fn pattern_idents(pat, out) {
+  cond {
+    pat.name == 'ident' => out.push(pat),
+    pat.name == 'arr_pat' || pat.name == 'obj_pat' => {
+      for el in pat.nodes {
+        pattern_idents(el, out)
+      }
+    },
+    pat.name == 'pat_dflt' ||
+      pat.name == 'rest_b' => pattern_idents(pat.nodes[0], out),
+    pat.name == 'opat_kv' => pattern_idents(pat.nodes[1], out),
+    pat.name == 'opat_short' => out.push(pat.nodes[0]),
+    _ => nil,
+  }
+  out
+}
+
+# The member-expression targets a pattern assigns to (assignment only).
+fn pattern_targets(pat, out) {
+  cond {
+    pat.name == 'postfix' || pat.name == 'paren' => out.push(pat),
+    pat.name == 'arr_pat' || pat.name == 'obj_pat' => {
+      for el in pat.nodes {
+        pattern_targets(el, out)
+      }
+    },
+    pat.name == 'pat_dflt' ||
+      pat.name == 'rest_b' => pattern_targets(pat.nodes[0], out),
+    pat.name == 'opat_kv' => pattern_targets(pat.nodes[1], out),
+    _ => nil,
+  }
+  out
+}
+
+# The default expressions inside a pattern (scanned in the pattern's scope).
+fn pattern_dflts(pat, out) {
+  cond {
+    pat.name == 'arr_pat' || pat.name == 'obj_pat' => {
+      for el in pat.nodes {
+        pattern_dflts(el, out)
+      }
+    },
+    pat.name == 'pat_dflt' || pat.name == 'opat_short' => {
+      if pat.nodes.size() > 1 {
+        out.push(pat.nodes[1])
+      }
+      if pat.name == 'pat_dflt' {
+        pattern_dflts(pat.nodes[0], out)
+      }
+    },
+    pat.name == 'rest_b' => pattern_dflts(pat.nodes[0], out),
+    pat.name == 'opat_kv' => pattern_dflts(pat.nodes[1], out),
+    _ => nil,
+  }
+  out
+}
+
+fn declare_pattern(f, pat, kw) {
+  for id in pattern_idents(pat, []) {
+    cond {
+      kw == 'var' => declare_fn_var(f, id.token, id),
+      _ => declare_var(f, id.token, id),
+    }
+  }
+}
+
+fn scan_pattern_dflts(pat, f) {
+  for d in pattern_dflts(pat, []) {
+    scan_expr(d, f)
+  }
+}
+
 fn walk_fn(f, param_nodes, this_node) {
   enter_scope(f)
   let fi = funcs[f]
@@ -1855,6 +2211,9 @@ fn walk_fn(f, param_nodes, this_node) {
       fi.params.push('this')
     },
   }
+  # parameters take the first slots; a pattern parameter lands in a hidden
+  # one and is unpacked by the prologue
+  mut pat_params = []
   for p in param_nodes {
     let pp = param_parts(p)
     cond {
@@ -1868,33 +2227,42 @@ fn walk_fn(f, param_nodes, this_node) {
         }
         declare_var(f, pp.id.token, pp.id)
       },
-      _ => {
+      pp.id.name == 'ident' => {
         declare_var(f, pp.id.token, pp.id)
         fi.params.push(pp.id.token)
         fi.dflts.push(pp.dflt)
       },
+      _ => {
+        let hn = "\x01p{fi.params.size()}"
+        let slot = declare_var(f, hn, nil)
+        fi.params.push(hn)
+        fi.dflts.push(pp.dflt)
+        pat_params.push((slot, pp.id))
+      },
     }
+  }
+  fi['pat_params'] = pat_params
+  for pp in pat_params {
+    let (slot, pat) = pp
+    declare_pattern(f, pat, 'let')
   }
   if fi.self_name != nil {
     fi['self_slot'] = declare_var(f, fi.self_name, fi.self_node)
   }
+  for pp in fi.dflts {
+    if pp != nil {
+      scan_expr(pp, f)
+    }
+  }
+  for pp in pat_params {
+    let (slot, pat) = pp
+    scan_pattern_dflts(pat, f)
+  }
   cond {
-    fi.body_expr != nil => {
-      for pp in fi.dflts {
-        if pp != nil {
-          scan_expr(pp, f)
-        }
-      }
-      scan_expr(fi.body_expr, f)
-    },
+    fi.body_expr != nil => scan_expr(fi.body_expr, f),
     _ => {
-      for s in fi.stmts {
-        collect_vars(s, f)
-      }
-      for pp in fi.dflts {
-        if pp != nil {
-          scan_expr(pp, f)
-        }
+      for st in fi.stmts {
+        collect_vars(st, f)
       }
       scan_stmts(fi.stmts, f)
     },
@@ -1956,15 +2324,26 @@ fn scan_stmt(node, f) {
       scan_sub(node.nodes[0], f)
       scan_expr(node.nodes[1], f)
     },
-    {name: 'for_of'} => {
-      let [kw, id, src, body] = node.nodes
-      scan_expr(src, f)
+    {name: 'for_of'} => scan_for_each(node, f),
+    {name: 'for_in'} => scan_for_each(node, f),
+    {name: 'switch_s'} => {
+      scan_expr(node.nodes[0], f)
+      # the cases share one block scope
       enter_scope(f)
-      cond {
-        kw.token == 'var' => declare_fn_var(f, id.token, id),
-        _ => declare_var(f, id.token, id),
+      mut all = []
+      mut i = 1
+      while i < node.nodes.size() {
+        let c = node.nodes[i]
+        let body = c.nodes[c.nodes.size() - 1]
+        if c.name == 'case_c' {
+          scan_expr(c.nodes[0], f)
+        }
+        for st in body.nodes {
+          all.push(st)
+        }
+        i = i + 1
       }
-      scan_sub(body, f)
+      scan_stmts(all, f)
       let scopes = scope_stack[f]
       block_slots[pkey(node)] = scopes[scopes.size() - 1].slots
       leave_scope(f)
@@ -2034,19 +2413,35 @@ fn scan_stmt(node, f) {
   }
 }
 
+# for-of / for-in: the head's binding lives in the loop's own scope
+fn scan_for_each(node, f) {
+  let [kw, pat, src, body] = node.nodes
+  scan_expr(src, f)
+  enter_scope(f)
+  declare_pattern(f, pat, kw.token)
+  scan_pattern_dflts(pat, f)
+  scan_sub(body, f)
+  let scopes = scope_stack[f]
+  block_slots[pkey(node)] = scopes[scopes.size() - 1].slots
+  leave_scope(f)
+}
+
 fn scan_decl(node, f) {
   let kw = node.nodes[0].token
   mut i = 1
   while i < node.nodes.size() {
     let d = node.nodes[i]
-    let id = d.nodes[0]
-    # hoist_block declared it when the block was entered; a for-init or
-    # a var is declared here
-    cond {
-      kw == 'var' => declare_fn_var(f, id.token, id),
-      resolved.has(pkey(id)) => nil,
-      _ => declare_var(f, id.token, id),
+    let pat = d.nodes[0]
+    # hoist_block declared the names when the block was entered; a for-init
+    # or a var is declared here
+    for id in pattern_idents(pat, []) {
+      cond {
+        kw == 'var' => declare_fn_var(f, id.token, id),
+        resolved.has(pkey(id)) => nil,
+        _ => declare_var(f, id.token, id),
+      }
     }
+    scan_pattern_dflts(pat, f)
     if d.nodes.size() > 1 {
       scan_expr(d.nodes[1], f)
     }
@@ -2123,6 +2518,11 @@ fn scan_expr(node, f) {
       scan_target(node.nodes[0], f)
       scan_expr(node.nodes[2], f)
     },
+    {name: 'seq_e'} => {
+      for c in node.nodes {
+        scan_expr(c, f)
+      }
+    },
     {name: 'pre_inc'} => scan_target(node.nodes[1], f),
     {name: 'post_inc'} => scan_target(node.nodes[0], f),
     {name: 'unary'} => {
@@ -2138,8 +2538,10 @@ fn scan_expr(node, f) {
       while i < node.nodes.size() {
         let step = node.nodes[i]
         cond {
-          step.name == 'call_p' => scan_args(step.nodes[0], f),
-          step.name == 'index_p' => scan_expr(step.nodes[0], f),
+          step.name == 'call_p' ||
+            step.name == 'opt_call' => scan_args(step.nodes[0], f),
+          step.name == 'index_p' ||
+            step.name == 'opt_index' => scan_expr(step.nodes[0], f),
           _ => nil,
         }
         i = i + 1
@@ -2183,6 +2585,22 @@ fn scan_expr(node, f) {
           ),
           {name: 'short_p'} => note_use(p.nodes[0], f),
           {name: 'ospread'} => scan_expr(p.nodes[0], f),
+          {name: 'getter_p'} => scan_fn_value(
+            p,
+            f,
+            [],
+            p.nodes[1],
+            false,
+            p.nodes[0].token,
+          ),
+          {name: 'setter_p'} => scan_fn_value(
+            p,
+            f,
+            [p.nodes[1]],
+            p.nodes[2],
+            false,
+            p.nodes[0].token,
+          ),
           _ => nil,
         }
       }
@@ -2231,6 +2649,15 @@ fn scan_target(t, f) {
     t.name == 'ident' => note_use(t, f),
     t.name == 'postfix' => scan_expr(t, f),
     t.name == 'paren' => scan_target(t.nodes[0], f),
+    t.name == 'arr_pat' || t.name == 'obj_pat' => {
+      for id in pattern_idents(t, []) {
+        note_use(id, f)
+      }
+      for tt in pattern_targets(t, []) {
+        scan_target(tt, f)
+      }
+      scan_pattern_dflts(t, f)
+    },
     _ => fail(t, 'Invalid left-hand side in assignment'),
   }
 }
@@ -2850,12 +3277,50 @@ fn emit_postfix(m, node, f) {
       }
     }
   }
-  mut value = emit_expr(m, head, f)
-  mut i = 0
+  emit_steps(m, f, emit_expr(m, head, f), steps, 0)
+}
+
+# an optional step, as the plain step it stands for
+fn plain_step(step) {
+  let name = cond {
+    step.name == 'opt_member' => 'member_p',
+    step.name == 'opt_index' => 'index_p',
+    _ => 'call_p',
+  }
+  synth(name, step.nodes, step)
+}
+
+fn emit_steps(m, f, value0, steps, start) {
+  mut value = value0
+  mut i = start
   while i < steps.size() {
     let step = steps[i]
     let ln = step.line
     let cl = step.column
+    if step.name.starts_with('opt_') {
+      # a?.b: the rest of the chain runs only when a is not nullish
+      let tmp = new_scratch(f)
+      let store = m.assign(
+        kind: 'local',
+        index: tmp,
+        value: value,
+        line: ln,
+        col: cl,
+      )
+      mut rest = [plain_step(step)]
+      for k in range(i + 1, steps.size()) {
+        rest.push(steps[k])
+      }
+      let rest_v = emit_steps(m, f, scratch_ref(m, tmp, ln, cl), rest, 0)
+      let pick = m.make_if_else(
+        cond: call_pre(m, f, '__isnullish', [scratch_ref(m, tmp, ln, cl)], ln, cl),
+        then_branch: nil_l(m, ln, cl),
+        else_branch: rest_v,
+        line: ln,
+        col: cl,
+      )
+      return m.block(stmts_list: make_list(m, [store, pick]), line: ln, col: cl)
+    }
     cond {
       step.name == 'call_p' => {
         cond {
@@ -2905,6 +3370,58 @@ fn emit_postfix(m, node, f) {
               cp.column,
             )
             i = i + 1
+          },
+          !in_prelude &&
+            i + 1 < steps.size() &&
+            steps[i + 1].name == 'opt_call' => {
+            # o.m?.(args): the receiver is kept, and the rest of the chain
+            # runs only when the method is there
+            let cp = steps[i + 1]
+            let recv = new_scratch(f)
+            let fnv = new_scratch(f)
+            let store_r = m.assign(
+              kind: 'local',
+              index: recv,
+              value: value,
+              line: ln,
+              col: cl,
+            )
+            let store_f = m.assign(
+              kind: 'local',
+              index: fnv,
+              value: emit_get(m, f, scratch_ref(m, recv, ln, cl), key, ln, cl),
+              line: ln,
+              col: cl,
+            )
+            let called = call_pre(
+              m,
+              f,
+              '__call',
+              [
+                scratch_ref(m, fnv, ln, cl),
+                scratch_ref(m, recv, ln, cl),
+                emit_arg_array(m, f, cp.nodes[0].nodes, cp.line, cp.column),
+              ],
+              cp.line,
+              cp.column,
+            )
+            mut rest = []
+            for k in range(i + 2, steps.size()) {
+              rest.push(steps[k])
+            }
+            let rest_v = emit_steps(m, f, called, rest, 0)
+            let pick = m.make_if_else(
+              cond: call_pre(m, f, '__isnullish', [scratch_ref(m, fnv, ln, cl)], ln, cl),
+              then_branch: nil_l(m, ln, cl),
+              else_branch: rest_v,
+              line: ln,
+              col: cl,
+            )
+            return m.block(
+              stmts_list: make_list(m, [store_r, store_f, pick]),
+              line: ln,
+              col: cl,
+            )
           },
           _ => value = emit_get(m, f, value, key, ln, cl),
         }
@@ -3095,6 +3612,22 @@ fn emit_assign(m, node, f) {
   let [lhs, op, rhs] = node.nodes
   let ln = op.line
   let cl = op.column
+  if lhs.name == 'arr_pat' || lhs.name == 'obj_pat' {
+    # [a, b] = v: the value is the expression's own
+    let tmp = new_scratch(f)
+    mut ids = [m.assign(
+      kind: 'local',
+      index: tmp,
+      value: emit_expr(m, rhs, f),
+      line: ln,
+      col: cl,
+    )]
+    for x in emit_bind(m, f, lhs, scratch_ref(m, tmp, ln, cl), ln, cl) {
+      ids.push(x)
+    }
+    ids.push(scratch_ref(m, tmp, ln, cl))
+    return m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+  }
   let tg = emit_target(m, f, lhs)
   cond {
     op.token ==
@@ -3349,6 +3882,18 @@ fn emit_object(m, node, f) {
         p.line,
         p.column,
       ),
+      {name: 'getter_p'} => put(
+        str_l(m, "\x01get:" + p.nodes[0].token, p.line, p.column),
+        emit_fn_value(m, p, f, p.nodes[0].token, false),
+        p.line,
+        p.column,
+      ),
+      {name: 'setter_p'} => put(
+        str_l(m, "\x01set:" + p.nodes[0].token, p.line, p.column),
+        emit_fn_value(m, p, f, p.nodes[0].token, false),
+        p.line,
+        p.column,
+      ),
       {name: 'ospread'} => ids.push(call_pre(
         m,
         f,
@@ -3468,6 +4013,13 @@ fn emit_expr(m, node, f) {
       let r = emit_expr(m, node.nodes[1], f)
       emit_binop(m, f, '**', l, r, ln, cl)
     },
+    {name: 'seq_e'} => {
+      mut ids = []
+      for c in node.nodes {
+        ids.push(emit_expr(m, c, f))
+      }
+      m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+    },
     {name: 'lor'} => emit_shortcircuit(m, node, f),
     {name: 'land'} => emit_shortcircuit(m, node, f),
     {name: 'nullish'} => emit_shortcircuit(m, node, f),
@@ -3562,20 +4114,200 @@ fn emit_sub(m, st, f) {
   }
 }
 
+# Bind a pattern to a value: the statements that store it, in order. An
+# identifier writes its binding (a declaration's, or an assignment's
+# target: a global when nothing declares it).
+fn write_ident(m, f, id, v, ln, cl) {
+  let r = resolved[pkey(id)]
+  cond {
+    r.kind == 'var' => var_write(m, f, r, v, ln, cl),
+    r.kind ==
+      'global' => call_pre(
+      m,
+      f,
+      '__gset',
+      [str_l(m, id.token, ln, cl), v],
+      ln,
+      cl,
+    ),
+    _ => fail(id, 'Invalid assignment target'),
+  }
+}
+
+fn emit_bind(m, f, pat, v, ln, cl) {
+  cond {
+    pat.name == 'ident' => [write_ident(m, f, pat, v, ln, cl)],
+    pat.name == 'postfix' || pat.name == 'paren' => {
+      let tg = emit_target(m, f, pat)
+      [with_pre(m, tg.pre, target_write(m, f, tg, v, ln, cl), ln, cl)]
+    },
+    pat.name == 'pat_dflt' || pat.name == 'opat_short' => cond {
+      pat.nodes.size() > 1 => {
+        # the default applies when the value is undefined
+        let tmp = new_scratch(f)
+        let store = m.assign(
+          kind: 'local',
+          index: tmp,
+          value: v,
+          line: ln,
+          col: cl,
+        )
+        let test = m.binary(
+          op: 'eq',
+          lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [scratch_ref(m, tmp, ln, cl)]), line: ln, col: cl),
+          rhs: str_l(m, 'nil', ln, cl),
+          line: ln,
+          col: cl,
+        )
+        let picked = m.make_if_else(
+          cond: test,
+          then_branch: emit_expr(m, pat.nodes[1], f),
+          else_branch: scratch_ref(m, tmp, ln, cl),
+          line: ln,
+          col: cl,
+        )
+        mut ids = [store]
+        for x in emit_bind(m, f, pat.nodes[0], picked, ln, cl) {
+          ids.push(x)
+        }
+        ids
+      },
+      _ => emit_bind(m, f, pat.nodes[0], v, ln, cl),
+    },
+    pat.name == 'arr_pat' => {
+      let tmp = new_scratch(f)
+      mut ids = [m.assign(
+        kind: 'local',
+        index: tmp,
+        value: call_pre(m, f, '__destr_arr', [v], ln, cl),
+        line: ln,
+        col: cl,
+      )]
+      mut i = 0
+      for el in pat.nodes {
+        cond {
+          el.name == 'pat_hole' => nil,
+          el.name == 'rest_b' => {
+            let rest = call_pre(
+              m,
+              f,
+              '__slice_from',
+              [scratch_ref(m, tmp, ln, cl), m.literal(v: i, line: ln, col: cl)],
+              ln,
+              cl,
+            )
+            for x in emit_bind(m, f, el.nodes[0], rest, ln, cl) {
+              ids.push(x)
+            }
+          },
+          _ => {
+            let item = call_pre(
+              m,
+              f,
+              '__at',
+              [scratch_ref(m, tmp, ln, cl), m.literal(v: i, line: ln, col: cl)],
+              ln,
+              cl,
+            )
+            for x in emit_bind(m, f, el, item, ln, cl) {
+              ids.push(x)
+            }
+          },
+        }
+        i = i + 1
+      }
+      ids
+    },
+    pat.name == 'obj_pat' => {
+      let tmp = new_scratch(f)
+      mut ids = [m.assign(
+        kind: 'local',
+        index: tmp,
+        value: call_pre(m, f, '__destr_obj', [v], ln, cl),
+        line: ln,
+        col: cl,
+      )]
+      mut keys = []
+      for el in pat.nodes {
+        cond {
+          el.name == 'rest_b' => {
+            mut kids = []
+            for k in keys {
+              kids.push(str_l(m, k, ln, cl))
+            }
+            let rest = call_pre(
+              m,
+              f,
+              '__obj_rest',
+              [
+                scratch_ref(m, tmp, ln, cl),
+                m.array_lit(items_list: make_list(m, kids), line: ln, col: cl),
+              ],
+              ln,
+              cl,
+            )
+            for x in emit_bind(m, f, el.nodes[0], rest, ln, cl) {
+              ids.push(x)
+            }
+          },
+          _ => {
+            let (key, target) = cond {
+              el.name == 'opat_kv' => (prop_key_text(el.nodes[0]), el.nodes[1]),
+              _ => (el.nodes[0].token, el),
+            }
+            keys.push(key)
+            let item = call_pre(
+              m,
+              f,
+              '__get',
+              [scratch_ref(m, tmp, ln, cl), str_l(m, key, ln, cl)],
+              ln,
+              cl,
+            )
+            for x in emit_bind(m, f, target, item, ln, cl) {
+              ids.push(x)
+            }
+          },
+        }
+      }
+      ids
+    },
+    _ => fail(pat, "unexpected pattern '{pat.name}'"),
+  }
+}
+
+# a literal property key's text: a name, a string, or a number
+fn prop_key_text(k) {
+  cond {
+    k.name == 'string' => unescape(k.token.slice(1, k.token.size() - 1)),
+    k.name == 'number' => number_key(k.token),
+    _ => k.token,
+  }
+}
+
 fn emit_decl(m, node, f) {
   mut ids = []
   mut i = 1
   while i < node.nodes.size() {
     let d = node.nodes[i]
-    let id = d.nodes[0]
-    let r = resolved[pkey(id)]
-    let v = cond {
-      d.nodes.size() > 1 => emit_expr(m, d.nodes[1], f),
+    let pat = d.nodes[0]
+    cond {
+      d.nodes.size() > 1 => {
+        for x in emit_bind(m, f, pat, emit_expr(m, d.nodes[1], f), pat.line, pat.column) {
+          ids.push(x)
+        }
+      },
       node.nodes[0].token == 'var' => nil,  # `var x;` leaves the binding alone
-      _ => nil_l(m, id.line, id.column),
-    }
-    if v != nil {
-      ids.push(var_write(m, f, r, v, id.line, id.column))
+      pat.name ==
+        'ident' => ids.push(write_ident(
+        m,
+        f,
+        pat,
+        nil_l(m, pat.line, pat.column),
+        pat.line,
+        pat.column,
+      )),
+      _ => fail(pat, 'Missing initializer in destructuring declaration'),
     }
     i = i + 1
   }
@@ -3590,7 +4322,6 @@ fn emit_decl(m, node, f) {
   }
 }
 
-# the per-iteration copy of a for head's captured bindings, then the step
 fn for_step_ids(m, f, slots, step_node, ln, cl) {
   mut ids = []
   for s in slots {
@@ -3721,66 +4452,9 @@ fn emit_stmt(m, node, f) {
       ))
       m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
     },
-    {name: 'for_of'} => {
-      let [kw, id, src, body] = node.nodes
-      let slots = block_slots[pkey(node)]
-      let r = resolved[pkey(id)]
-      let it = new_scratch(f)
-      let cur = new_scratch(f)
-      mut ids = [m.assign(
-        kind: 'local',
-        index: it,
-        value: call_pre(m, f, '__iter', [emit_expr(m, src, f)], ln, cl),
-        line: ln,
-        col: cl,
-      )]
-      # cur = __iter_step(it); while (cur != nil) { bind; body; cur = step }
-      fn advance(m2) {
-        [m2.assign(
-          kind: 'local',
-          index: cur,
-          value: call_pre(m2, f, '__iter_step', [scratch_ref(m2, it, ln, cl)], ln, cl),
-          line: ln,
-          col: cl,
-        )]
-      }
-      ids.push(advance(m)[0])
-      loop_ctx[f].push({step: advance})
-      let b = emit_sub(m, body, f)
-      loop_ctx[f].pop()
-      mut body_ids = fresh_slots(m, f, slots, ln, cl)
-      body_ids.push(var_write(
-        m,
-        f,
-        r,
-        m.index(
-          recv: scratch_ref(m, cur, ln, cl),
-          key: m.literal(v: 0, line: ln, col: cl),
-          line: ln,
-          col: cl,
-        ),
-        ln,
-        cl,
-      ))
-      body_ids.push(b)
-      body_ids.push(advance(m)[0])
-      let test = m.make_if_else(
-        cond: m.binary(op: 'eq',
-                                               lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [scratch_ref(m, cur, ln, cl)]), line: ln, col: cl),
-                                               rhs: str_l(m, 'nil', ln, cl), line: ln, col: cl),
-        then_branch: m.bool_literal(v: false, line: ln, col: cl),
-        else_branch: m.bool_literal(v: true, line: ln, col: cl),
-        line: ln,
-        col: cl,
-      )
-      ids.push(m.make_while(
-        cond: test,
-        body: m.block(stmts_list: make_list(m, body_ids), line: ln, col: cl),
-        line: ln,
-        col: cl,
-      ))
-      m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
-    },
+    {name: 'for_of'} => emit_for_each(m, node, f, '__iter'),
+    {name: 'for_in'} => emit_for_each(m, node, f, '__forin_iter'),
+    {name: 'switch_s'} => emit_switch(m, node, f),
     {name: 'return_s'} => {
       let rv = node.nodes[0]
       let v = cond {
@@ -3797,6 +4471,16 @@ fn emit_stmt(m, node, f) {
       }
       let top = ctx[ctx.size() - 1]
       cond {
+        # inside a switch: leave it with the flag set; the enclosing loop
+        # continues after the switch
+        top.cont !=
+          nil => m.block(
+          stmts_list: make_list(m, [
+            m.assign(kind: 'local', index: top.cont, value: m.bool_literal(v: true, line: ln, col: cl), line: ln, col: cl),
+            m.make_break(line: ln, col: cl)]),
+          line: ln,
+          col: cl,
+        ),
         top.step == nil => m.make_continue(line: ln, col: cl),
         _ => {
           mut ids = top.step(m)
@@ -3816,6 +4500,187 @@ fn emit_stmt(m, node, f) {
     {name: 'expr_s'} => emit_expr(m, node.nodes[0], f),
     _ => emit_expr(m, node, f),
   }
+}
+
+# for (pat of/in src) body: the source's iterator (for-in walks its key
+# list), each step binding the pattern anew
+fn emit_for_each(m, node, f, iter_fn) {
+  let ln = node.line
+  let cl = node.column
+  let [kw, pat, src, body] = node.nodes
+  let slots = block_slots[pkey(node)]
+  let it = new_scratch(f)
+  let cur = new_scratch(f)
+  mut ids = [m.assign(
+    kind: 'local',
+    index: it,
+    value: call_pre(m, f, iter_fn, [emit_expr(m, src, f)], ln, cl),
+    line: ln,
+    col: cl,
+  )]
+  fn advance(m2) {
+    [m2.assign(
+      kind: 'local',
+      index: cur,
+      value: call_pre(m2, f, '__iter_step', [scratch_ref(m2, it, ln, cl)], ln, cl),
+      line: ln,
+      col: cl,
+    )]
+  }
+  ids.push(advance(m)[0])
+  loop_ctx[f].push({step: advance})
+  let b = emit_sub(m, body, f)
+  loop_ctx[f].pop()
+  mut body_ids = fresh_slots(m, f, slots, ln, cl)
+  let item = m.index(
+    recv: scratch_ref(m, cur, ln, cl),
+    key: m.literal(v: 0, line: ln, col: cl),
+    line: ln,
+    col: cl,
+  )
+  for x in emit_bind(m, f, pat, item, ln, cl) {
+    body_ids.push(x)
+  }
+  body_ids.push(b)
+  body_ids.push(advance(m)[0])
+  let test = m.make_if_else(
+    cond: m.binary(op: 'eq',
+                   lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [scratch_ref(m, cur, ln, cl)]), line: ln, col: cl),
+                   rhs: str_l(m, 'nil', ln, cl), line: ln, col: cl),
+    then_branch: m.bool_literal(v: false, line: ln, col: cl),
+    else_branch: m.bool_literal(v: true, line: ln, col: cl),
+    line: ln,
+    col: cl,
+  )
+  ids.push(m.make_while(
+    cond: test,
+    body: m.block(stmts_list: make_list(m, body_ids), line: ln, col: cl),
+    line: ln,
+    col: cl,
+  ))
+  m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+}
+
+# switch: pick the first case whose value is === the subject (else the
+# default), then run every case body from there on -- fall-through -- in a
+# loop a break leaves.
+fn emit_switch(m, node, f) {
+  let ln = node.line
+  let cl = node.column
+  let cases = node.nodes.slice(1, node.nodes.size())
+  let slots = block_slots[pkey(node)]
+  let subj = new_scratch(f)
+  let idx = new_scratch(f)
+  let cont = new_scratch(f)
+  let none = 1000000
+  mut ids = fresh_slots(m, f, slots, ln, cl)
+  ids.push(m.assign(
+    kind: 'local',
+    index: subj,
+    value: emit_expr(m, node.nodes[0], f),
+    line: ln,
+    col: cl,
+  ))
+  ids.push(m.assign(
+    kind: 'local',
+    index: idx,
+    value: m.literal(v: none, line: ln, col: cl),
+    line: ln,
+    col: cl,
+  ))
+  ids.push(m.assign(
+    kind: 'local',
+    index: cont,
+    value: m.bool_literal(v: false, line: ln, col: cl),
+    line: ln,
+    col: cl,
+  ))
+  # the tests, in order, each stopping the search
+  mut default_i = nil
+  mut chain = m.block(stmts_list: m.list_new(), line: ln, col: cl)
+  mut k = cases.size() - 1
+  while k >= 0 {
+    let c = cases[k]
+    cond {
+      c.name == 'default_c' => default_i = k,
+      _ => {
+        let test = call_pre(
+          m,
+          f,
+          '__seq',
+          [scratch_ref(m, subj, ln, cl), emit_expr(m, c.nodes[0], f)],
+          c.line,
+          c.column,
+        )
+        chain = m.make_if_else(
+          cond: test,
+          then_branch: m.assign(kind: 'local', index: idx, value: m.literal(v: k, line: ln, col: cl), line: ln, col: cl),
+          else_branch: chain,
+          line: c.line,
+          col: c.column,
+        )
+      },
+    }
+    k = k - 1
+  }
+  ids.push(chain)
+  if default_i != nil {
+    ids.push(m.make_if(
+      cond: m.binary(op: 'eq', lhs: scratch_ref(m, idx, ln, cl), rhs: m.literal(v: none, line: ln, col: cl), line: ln, col: cl),
+      then_branch: m.assign(kind: 'local', index: idx, value: m.literal(v: default_i, line: ln, col: cl), line: ln, col: cl),
+      line: ln,
+      col: cl,
+    ))
+  }
+  loop_ctx[f].push({step: nil, cont: cont})
+  mut body_ids = []
+  for k2 in range(cases.size()) {
+    let c = cases[k2]
+    let body = c.nodes[c.nodes.size() - 1]
+    mut stmt_ids = []
+    emit_stmts_into(m, body.nodes, f, stmt_ids)
+    body_ids.push(m.make_if(
+      cond: m.binary(op: 'le', lhs: scratch_ref(m, idx, ln, cl), rhs: m.literal(v: k2, line: ln, col: cl), line: ln, col: cl),
+      then_branch: m.block(stmts_list: make_list(m, stmt_ids), line: c.line, col: c.column),
+      line: c.line,
+      col: c.column,
+    ))
+  }
+  loop_ctx[f].pop()
+  body_ids.push(m.make_break(line: ln, col: cl))
+  ids.push(m.make_while(
+    cond: m.bool_literal(v: true, line: ln, col: cl),
+    body: m.block(stmts_list: make_list(m, body_ids), line: ln, col: cl),
+    line: ln,
+    col: cl,
+  ))
+  # a continue inside targeted the loop around the switch
+  let outer = loop_ctx[f]
+  if outer.size() > 0 {
+    let top = outer[outer.size() - 1]
+    mut cids = cond {
+      top.step != nil => top.step(m),
+      _ => [],
+    }
+    cids.push(cond {
+      top.cont !=
+        nil => m.block(
+        stmts_list: make_list(m, [
+          m.assign(kind: 'local', index: top.cont, value: m.bool_literal(v: true, line: ln, col: cl), line: ln, col: cl),
+          m.make_break(line: ln, col: cl)]),
+        line: ln,
+        col: cl,
+      ),
+      _ => m.make_continue(line: ln, col: cl),
+    })
+    ids.push(m.make_if(
+      cond: scratch_ref(m, cont, ln, cl),
+      then_branch: m.block(stmts_list: make_list(m, cids), line: ln, col: cl),
+      line: ln,
+      col: cl,
+    ))
+  }
+  m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
 }
 
 fn emit_try(m, node, f) {
@@ -3955,6 +4820,15 @@ fn emit_funcs(m) {
         line: 1,
         col: 1,
       ))
+    }
+    # pattern parameters unpack from their hidden slots
+    if fi.pat_params != nil {
+      for pp in fi.pat_params {
+        let (slot, pat) = pp
+        for x in emit_bind(m, f, pat, m.var_ref(kind: 'local', index: slot, line: 1, col: 1), 1, 1) {
+          ids.push(x)
+        }
+      }
     }
     # captured parameters move into their cells
     for p in range(fi.params.size()) {
