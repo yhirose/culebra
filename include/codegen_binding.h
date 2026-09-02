@@ -50,6 +50,9 @@ inline bool register_codegen_binding() {
           "set_index", {"recv", "key", "value", "line", "col"})
       .method<&codegen::Module::scope>(
           "scope", {"first_local", "end_local", "body", "line", "col"})
+      .method<&codegen::Module::scope_release>(
+          "scope_release",
+          {"first_local", "end_local", "body", "release_list", "line", "col"})
       .method<&codegen::Module::make_return>("make_return",
                                              {"value", "line", "col"})
       .method<&codegen::Module::make_break>("make_break", {"line", "col"})
@@ -81,6 +84,8 @@ inline bool register_codegen_binding() {
       .method<&codegen::Module::set_generator>("set_generator", {"func"})
       .method<&codegen::Module::set_lenient_arity>("set_lenient_arity",
                                                    {"func"})
+      .method<&codegen::Module::set_entry_frame_drops>("set_entry_frame_drops",
+                                                       {"on"})
       .method<&codegen::Module::verify>("verify")
       .method<&codegen::Module::run>("run")
       .method<&codegen::Module::dump_ir>("dump_ir")

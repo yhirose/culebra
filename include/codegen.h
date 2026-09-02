@@ -168,6 +168,15 @@ class Module {
     return id(b.scope(idx32(first_local), idx32(end_local), node(body),
                       pos(line, col)));
   }
+  // The same scope with its release order spelled out: `release_list` holds
+  // var_ref nodes (local or cell), released in that order at every exit --
+  // a front end lists reverse declaration order, captured slots included.
+  int64_t scope_release(int64_t first_local, int64_t end_local, int64_t body,
+                        int64_t release_list, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.scope(idx32(first_local), idx32(end_local), node(body),
+                      take_list(release_list), pos(line, col)));
+  }
 
   // A bare `return` is spelled with an explicit nil_literal argument; the
   // wrap layer has no optional parameters, and the front end lowering a
@@ -284,6 +293,10 @@ class Module {
   void set_lenient_arity(int64_t func) {
     m_.funcs.at(static_cast<size_t>(func)).lenient_arity = true;
   }
+  // Whether the entry frame's own bindings run their drop hooks when the
+  // program ends (on by default). A front end whose top-level scope is
+  // released without destructors, as culebra's is, turns it off.
+  void set_entry_frame_drops(bool on) { entry_frame_drops_ = on; }
 
   // Throws CulebraError("IrError") on failure -- structural, so it carries
   // no useful source position (unlike a run() failure, which does).
@@ -302,7 +315,10 @@ class Module {
   // structural walk.
   void run() {
     verify_or_throw();
-    vm::run(vm::compile(m_));
+    coreir::Runtime rt;
+    vm::RunOptions opts;
+    opts.entry_frame_drops = entry_frame_drops_;
+    vm::run(vm::compile(m_), rt, opts);
   }
 
   std::string dump_ir() { return coreir::to_string(m_); }
@@ -385,6 +401,9 @@ class Module {
     if (s == "genreturn") return coreir::IntrinsicId::GenReturn;
     if (s == "argcount") return coreir::IntrinsicId::ArgCount;
     if (s == "same") return coreir::IntrinsicId::Same;
+    if (s == "fnarity") return coreir::IntrinsicId::FnArity;
+    if (s == "collect") return coreir::IntrinsicId::Collect;
+    if (s == "heapstats") return coreir::IntrinsicId::HeapStats;
     throw std::invalid_argument("CodeGen: unknown intrinsic '" +
                                 std::string(s) + "'");
   }
@@ -392,6 +411,7 @@ class Module {
   coreir::Module m_;
   std::vector<std::vector<int64_t>> lists_;
   std::vector<std::vector<coreir::CaptureSrc>> cmaps_;
+  bool entry_frame_drops_ = true;
 };
 
 }  // namespace culebra::codegen

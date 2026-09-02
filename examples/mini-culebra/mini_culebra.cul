@@ -93,6 +93,20 @@
 # at the receiver, a typed parameter at its argument, a bad default at the
 # call), a dot store adding a key as a mutable one, and an assert's
 # optional label.
+# The drop-timing batch (with cpp-vmlib's owned stack, release lists and
+# entry-frame option) adds: a literal's drop key as a resource, the
+# protocol contract on drop / iter / has_next / next where they are
+# bound, release in reverse declaration order on every exit with captured
+# bindings in their own turn, the for-in order (body locals, element,
+# dispose, iterator, iterable; a throwing dispose swallowed while an
+# error is already unwinding), cycles of resources dropped at the scope
+# exit that owns them (every block and function body is a scope), a
+# program's top-level bindings kept to the end without drop, GC.stat (a
+# full collection, then {live_objects, rc_objects, heap_bytes}; the
+# namespace has no other member), the callback arity check of the
+# higher-order methods (fnarity), a fn declared inside a block, a tuple
+# sliced by a range, and property reads on Strings, Arrays and Functions
+# answering nil.
 #
 # Known differences from culebra, all documented rather than hidden:
 # no StringView type (slice/view give a String); normalize() is the
@@ -106,7 +120,9 @@
 # arguments of a call with keywords are evaluated positionals first; a
 # return-type TypeError points at the function, not the call; a named fn
 # can be called before its declaration statement ran (culebra raises
-# NameError); a callback's parameter count is not checked.
+# NameError); a built-in method name read as a property is nil rather
+# than the "cannot be used as a value" error; the rc_objects of GC.stat
+# equals live_objects (the VM counts every heap object one way).
 #
 # Semantics are culebra's, not the VM's: a prelude of helper functions
 # (written in this same subset, compiled alongside the program) wraps every
@@ -642,7 +658,11 @@ fn __display(v) {
 
 fn __getprop(v, name, line, col) {
   if __typeof(v) != 'object' {
-    __raise('TypeError', 'type error: expected Object, got ' +
+    # a String, Array, or Function has no such property (nil); a scalar
+    # cannot be read through at all
+    let t = __typeof(v)
+    if t == 'string' || t == 'array' || t == 'function' { return nil }
+    __raise('TypeError', 'type error: expected Object, Array, or Tensor, got ' +
             __type_name(v), line, col)
   }
   if __is_instance(v) {
@@ -659,6 +679,7 @@ fn __getprop(v, name, line, col) {
   }
   # a class's new read as a value constructs when called
   if name == 'new' && __is_class(v) { return __class_fn(v, line, col) }
+  if !__objecthas(v, name) { __ns_missing(v, name, line, col) }
   __bind(v[name], v)
 }
 
@@ -1887,6 +1908,7 @@ fn __obj_put(recv, pk, key, val, is_prop, line, col) {
   muts[pk] = true
   recv[pk] = val
   __record_key(recv, pk, key)
+  if __is_protocol_key(pk) { __bind_contract(recv, pk, val, line, col) }
   nil
 }
 
@@ -1948,7 +1970,12 @@ fn __range_bounds(r, n) {
   if __typeof(lo) == 'nil' { lo = 0 }
   mut hi = r['end']
   if __typeof(hi) == 'nil' { hi = n } else {
-    if r['inclusive'] { hi = hi + 1 }
+    # a negative end counts from the back before the inclusive step, and
+    # an inclusive end past the length clamps (no overflow at Long max)
+    if hi < 0 { hi = hi + n }
+    if r['inclusive'] {
+      if hi >= n { hi = n } else { hi = hi + 1 }
+    }
   }
   if lo < 0 { lo = lo + n }
   if hi < 0 { hi = hi + n }
@@ -1977,6 +2004,11 @@ fn __getindex(v, k, line, col) {
   }
   if t == 'object' {
     if __is_tuple(v) {
+      # a range slices a tuple into a tuple
+      if __is_range(k) {
+        let b = __range_bounds(k, __len(__titems(v)))
+        return __mk_tuple(__slice_arr(__titems(v), b[0], b[1]))
+      }
       if __typeof(k) != 'int' {
         __raise('TypeError', 'type error: expected Long, got ' +
                 __type_name(k), line, col)
@@ -2090,8 +2122,23 @@ fn __gen_wrap(raw) {
   obj
 }
 
+# dispose runs at most once per iterator (the loop's quiet close on the
+# unwind path and its defer would otherwise both reach it)
 fn __iter_close(it) {
+  if __typeof(it) == 'object' {
+    if __objecthas(it, "\zclosed") { return nil }
+    it["\zclosed"] = true
+  }
   if __has_proto(it, 'dispose') { __invoke(it, 'dispose', [], 0, 0) }
+  nil
+}
+
+fn __iter_close_quiet(it) {
+  try {
+    __iter_close(it)
+  } catch e {
+    nil
+  }
   nil
 }
 
@@ -2334,7 +2381,15 @@ fn __method(recv, name, pos, kws, apos, line, col) {
      name == 'type_of' || name == 'to_long' || name == 'to_float' ||
      name == 'hash' {
     if !__inst_dunder(recv, name) {
-      if name == 'drop' { if !__is_instance(recv) { return nil } }
+      if name == 'drop' {
+        # an explicit drop() on a plain resource runs its body once
+        if !__is_instance(recv) {
+          if __typeof(recv) == 'object' && __objecthas(recv, "\zdrop") {
+            __drop_once(recv, recv['drop'])
+          }
+          return nil
+        }
+      }
       if name == 'to_string' { return __to_string(recv, line, col) }
       if name == 'inspect' { return __inspect(recv, line, col) }
       if name == 'type_of' { return __type_of(recv, line, col) }
@@ -2412,6 +2467,7 @@ fn __method(recv, name, pos, kws, apos, line, col) {
       __raise('TypeError', 'type error: expected Function, got Nil',
               line, col)
     }
+    if !__objecthas(recv, name) { __ns_missing(recv, name, line, col) }
     if __objecthas(recv, name) {
       # a stored closure called as a method; a self-closure gets the receiver;
       # a stored class or callable instance is called with the shape
@@ -2493,7 +2549,7 @@ fn __array_method(a, name, args, line, col) {
     return 0 - 1
   }
   if name == 'map' {
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     mut out = []
     mut i = 0
     while i < __len(a) {
@@ -2503,7 +2559,7 @@ fn __array_method(a, name, args, line, col) {
     return out
   }
   if name == 'filter' {
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     mut out = []
     mut i = 0
     while i < __len(a) {
@@ -2513,7 +2569,7 @@ fn __array_method(a, name, args, line, col) {
     return out
   }
   if name == 'for_each' {
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     mut i = 0
     while i < __len(a) {
       f(a[i])
@@ -2522,7 +2578,7 @@ fn __array_method(a, name, args, line, col) {
     return nil
   }
   if name == 'reduce' {
-    let f = __check_fn(args[1], line, col)
+    let f = __cb(args[1], name, line, col)
     mut acc = args[0]
     mut i = 0
     while i < __len(a) {
@@ -2532,7 +2588,7 @@ fn __array_method(a, name, args, line, col) {
     return acc
   }
   if name == 'find' {
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     mut i = 0
     while i < __len(a) {
       if __truthy(f(a[i]), line, col) { return a[i] }
@@ -2541,7 +2597,7 @@ fn __array_method(a, name, args, line, col) {
     return nil
   }
   if name == 'any' {
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     mut i = 0
     while i < __len(a) {
       if __truthy(f(a[i]), line, col) { return true }
@@ -2550,7 +2606,7 @@ fn __array_method(a, name, args, line, col) {
     return false
   }
   if name == 'all' {
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     mut i = 0
     while i < __len(a) {
       if !__truthy(f(a[i]), line, col) { return false }
@@ -2637,7 +2693,7 @@ fn __array_method(a, name, args, line, col) {
   }
   if name == 'sort_by' || name == 'sorted_by' {
     __nargs_range(name, args, 1, 2, 'key', line, col)
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     mut rev = false
     if __len(args) == 2 { rev = __truthy(args[1], line, col) }
     let out = __sort_copy(a, f, rev, line, col)
@@ -2652,12 +2708,12 @@ fn __array_method(a, name, args, line, col) {
   if name == 'min_by' || name == 'max_by' {
     __nargs(name, args, 1, line, col)
     return __it_min_max_by(__arr_iter(a), name, 'Array',
-                           __check_fn(args[0], line, col), name == 'min_by',
+                           __cb(args[0], name, line, col), name == 'min_by',
                            line, col)
   }
   if name == 'flat_map' {
     __nargs(name, args, 1, line, col)
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     mut out = []
     mut i = 0
     while i < __len(a) {
@@ -2794,6 +2850,11 @@ fn __object_method(o, name, args, line, col) {
   # anything with has_next/next picks up the lazy iterator set first
   if __is_iterator(o) {
     let r = __iter_method(__norm_iter(o), name, args, line, col)
+    if !__nomethod(r) { return r }
+  } else if __has_proto(o, 'iter') {
+    # an iterable: the chain builds now and asks for the iterator at the
+    # first pull, which is where a broken protocol is reported
+    let r = __iter_method(__lazy_src(o, line, col), name, args, line, col)
     if !__nomethod(r) { return r }
   }
   if name == 'size' { return __obj_visible_size(o) }
@@ -3352,19 +3413,31 @@ fn __tuple_method(t, name, args, line, col) {
 # function fills a one-element lookahead, so has_next() is idempotent and
 # next() past the end yields nil, the way culebra's do.
 
+# iter() answers the receiver it is called on (no back-reference held: the
+# wrapper must reach refcount zero when the loop lets go of it).
 fn __mk_iter(hn, nx) {
-  mut me = nil
-  let o = {iter: fn () { me }, has_next: hn, next: nx}
-  me = o
-  o
+  {iter: fn () { self }, has_next: hn, next: nx}
 }
 
 fn __mk_iter_d(hn, nx, srcs) {
-  mut me = nil
-  let o = {iter: fn () { me }, has_next: hn, next: nx,
-           dispose: fn () { __close_all(srcs) }}
-  me = o
-  o
+  {iter: fn () { self }, has_next: hn, next: nx,
+   dispose: fn () { __close_all(srcs) }}
+}
+
+# An iterable as a lazy source: iter() is asked for at the first pull.
+fn __lazy_src(o, line, col) {
+  mut it = nil
+  let srcs = []
+  fn ensure() {
+    if __typeof(it) == 'nil' {
+      it = __iter(o, line, col)
+      __arraypush(srcs, it)
+    }
+    it
+  }
+  __mk_iter_d(fn () { ensure()['has_next']() },
+              fn () { ensure()['next']() },
+              srcs)
 }
 
 fn __has_dispose(it) { __has_proto(it, 'dispose') }
@@ -3868,11 +3941,11 @@ fn __pair_of(v, line, col) {
 fn __iter_method(src, name, args, line, col) {
   if name == 'map' {
     __nargs(name, args, 1, line, col)
-    return __it_map(src, __check_fn(args[0], line, col))
+    return __it_map(src, __cb(args[0], name, line, col))
   }
   if name == 'filter' {
     __nargs(name, args, 1, line, col)
-    return __it_filter(src, __check_fn(args[0], line, col), line, col)
+    return __it_filter(src, __cb(args[0], name, line, col), line, col)
   }
   if name == 'take' {
     __nargs(name, args, 1, line, col)
@@ -3884,11 +3957,11 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'take_while' {
     __nargs(name, args, 1, line, col)
-    return __it_take_while(src, __check_fn(args[0], line, col), line, col)
+    return __it_take_while(src, __cb(args[0], name, line, col), line, col)
   }
   if name == 'skip_while' {
     __nargs(name, args, 1, line, col)
-    return __it_skip_while(src, __check_fn(args[0], line, col), line, col)
+    return __it_skip_while(src, __cb(args[0], name, line, col), line, col)
   }
   if name == 'step_by' {
     __nargs(name, args, 1, line, col)
@@ -3903,11 +3976,11 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'tap' {
     __nargs(name, args, 1, line, col)
-    return __it_tap(src, __check_fn(args[0], line, col))
+    return __it_tap(src, __cb(args[0], name, line, col))
   }
   if name == 'scan' {
     __nargs(name, args, 2, line, col)
-    return __it_scan(src, args[0], __check_fn(args[1], line, col))
+    return __it_scan(src, args[0], __cb(args[1], name, line, col))
   }
   if name == 'flatten' {
     __nargs(name, args, 0, line, col)
@@ -3915,11 +3988,11 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'flat_map' {
     __nargs(name, args, 1, line, col)
-    return __it_flat(src, __check_fn(args[0], line, col), line, col)
+    return __it_flat(src, __cb(args[0], name, line, col), line, col)
   }
   if name == 'chunk_by' {
     __nargs(name, args, 1, line, col)
-    return __it_chunk_by(src, __check_fn(args[0], line, col), line, col)
+    return __it_chunk_by(src, __cb(args[0], name, line, col), line, col)
   }
   if name == 'chunks' {
     __nargs(name, args, 1, line, col)
@@ -3971,7 +4044,7 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'for_each' {
     __nargs(name, args, 1, line, col)
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     return __term(src, fn () {
       while src.has_next() { f(src.next()) }
       nil
@@ -3979,7 +4052,7 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'reduce' {
     __nargs(name, args, 2, line, col)
-    let f = __check_fn(args[1], line, col)
+    let f = __cb(args[1], name, line, col)
     mut acc = args[0]
     return __term(src, fn () {
       while src.has_next() { acc = f(acc, src.next()) }
@@ -3988,7 +4061,7 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'find' {
     __nargs(name, args, 1, line, col)
-    let p = __check_fn(args[0], line, col)
+    let p = __cb(args[0], name, line, col)
     return __term(src, fn () {
       while src.has_next() {
         let v = src.next()
@@ -3999,7 +4072,7 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'any' {
     __nargs(name, args, 1, line, col)
-    let p = __check_fn(args[0], line, col)
+    let p = __cb(args[0], name, line, col)
     return __term(src, fn () {
       while src.has_next() {
         if __truthy(p(src.next()), line, col) { return true }
@@ -4009,7 +4082,7 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'all' {
     __nargs(name, args, 1, line, col)
-    let p = __check_fn(args[0], line, col)
+    let p = __cb(args[0], name, line, col)
     return __term(src, fn () {
       while src.has_next() {
         if !__truthy(p(src.next()), line, col) { return false }
@@ -4062,7 +4135,7 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'position' {
     __nargs(name, args, 1, line, col)
-    let p = __check_fn(args[0], line, col)
+    let p = __cb(args[0], name, line, col)
     return __term(src, fn () {
       mut i = 0
       while src.has_next() {
@@ -4116,12 +4189,12 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'min_by' {
     __nargs(name, args, 1, line, col)
-    return __it_min_max_by(src, name, 'Iterator', __check_fn(args[0], line, col), true,
+    return __it_min_max_by(src, name, 'Iterator', __cb(args[0], name, line, col), true,
                            line, col)
   }
   if name == 'max_by' {
     __nargs(name, args, 1, line, col)
-    return __it_min_max_by(src, name, 'Iterator', __check_fn(args[0], line, col), false,
+    return __it_min_max_by(src, name, 'Iterator', __cb(args[0], name, line, col), false,
                            line, col)
   }
   if name == 'to_set' {
@@ -4154,7 +4227,7 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'group_by' {
     __nargs(name, args, 1, line, col)
-    let f = __check_fn(args[0], line, col)
+    let f = __cb(args[0], name, line, col)
     return __term(src, fn () {
       mut o = {}
       while src.has_next() {
@@ -4172,7 +4245,7 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'partition' {
     __nargs(name, args, 1, line, col)
-    let p = __check_fn(args[0], line, col)
+    let p = __cb(args[0], name, line, col)
     return __term(src, fn () {
       mut yes = []
       mut no = []
@@ -4834,6 +4907,29 @@ fn __string_ns() {
    from_bytes: fn (bs) { __from_bytes(bs, 0, 0) }}
 }
 
+# GC.stat(): a full collection, then the live heap. A closed namespace: any
+# other member is culebra's AttributeError.
+fn __gc_ns() {
+  mut ns = {stat: fn () {
+    __collect()
+    let s = __heapstats()
+    {live_objects: s['live_objects'], rc_objects: s['live_objects'],
+     heap_bytes: s['heap_bytes']}
+  }}
+  ns["\zN"] = 'GC'
+  ns
+}
+
+fn __ns_missing(o, name, line, col) {
+  if __typeof(o) == 'object' {
+    if __objecthas(o, "\zN") {
+      __raise('AttributeError', "namespace '" + o["\zN"] + "' has no member '" + name + "'",
+              line, col)
+    }
+  }
+  nil
+}
+
 fn __from_cp(cp, line, col) {
   if __typeof(cp) != 'int' {
     __raise('TypeError', 'type error: expected Long, got ' + __type_name(cp),
@@ -5323,7 +5419,132 @@ fn __olit_put(o, key, v, is_mut, line, col) {
   o[pk] = v
   __record_key(o, pk, key)
   if is_mut == 1 { __olit_mut(o, [pk]) }
+  if __is_protocol_key(pk) { __bind_contract(o, pk, v, line, col) }
   o
+}
+
+# The well-known keys a literal may bind: drop installs the hook, and
+# iter / has_next / next must be zero-argument functions where bound.
+fn __with_contract(o, line, col) {
+  let keys = ['drop', 'iter', 'has_next', 'next']
+  mut i = 0
+  while i < 4 {
+    if __objecthas(o, keys[i]) { __bind_contract(o, keys[i], o[keys[i]], line, col) }
+    i = i + 1
+  }
+  o
+}
+
+fn __is_protocol_key(pk) {
+  pk == 'drop' || pk == 'iter' || pk == 'has_next' || pk == 'next'
+}
+
+fn __bind_contract(o, key, f, line, col) {
+  mut ok = __is_fn(f)
+  if ok && __is_marker(f) {
+    if __objecthas(f, "\zspec") {
+      if __len(f["\zspec"][0]) > 0 { ok = false }
+    }
+  }
+  if !ok {
+    __raise('DropContractError',
+            "type error: '" + key + "' must be a Function taking no arguments.", line, col)
+  }
+  if key == 'drop' { __install_drop(o, f, line, col) }
+  nil
+}
+
+# --- Callback arity: a higher-order method calls its callback with a
+# fixed count, and culebra checks the callback can take exactly that
+# (a *rest callback only needs its required ones) before the first call.
+
+fn __cb_arity(name) {
+  if name == 'reduce' || name == 'scan' { return 2 }
+  if name == 'map' || name == 'filter' || name == 'for_each' || name == 'find' ||
+     name == 'any' || name == 'all' || name == 'flat_map' || name == 'take_while' ||
+     name == 'skip_while' || name == 'sort_by' || name == 'sorted_by' ||
+     name == 'min_by' || name == 'max_by' || name == 'group_by' ||
+     name == 'partition' || name == 'chunk_by' || name == 'tap' ||
+     name == 'position' || name == 'count' { return 1 }
+  0 - 1
+}
+
+# [required, total] regular positional parameters of a callable; total is
+# -1 with a *rest. A family accepts through any overload.
+fn __cb_bounds(v) {
+  if __is_marker(v) {
+    if !__objecthas(v, "\zspec") {
+      # a bound method (its family answers) or a zero-parameter self
+      # closure (its hidden receiver slot does not count)
+      let raw = v["\zb"]
+      if __is_family(raw) { return nil }
+      mut n = __fnarity(raw)
+      if !__objecthas(v, "\zns") { n = n - 1 }
+      return [n, n]
+    }
+    let recs = v["\zspec"][0]
+    mut lo = 0
+    mut hi = 0
+    mut i = 0
+    while i < __len(recs) {
+      let kind = recs[i][4]
+      if kind == 'r' { return [lo, 0 - 1] }
+      if kind == 'p' {
+        hi = hi + 1
+        if !recs[i][3] { lo = lo + 1 }
+      }
+      i = i + 1
+    }
+    return [lo, hi]
+  }
+  if __typeof(v) == 'function' {
+    let n = __fnarity(v)
+    return [n, n]
+  }
+  nil
+}
+
+fn __cb_accepts(v, expected) {
+  if __is_family(v) {
+    let ovs = v['ov']
+    mut i = 0
+    while i < __len(ovs) {
+      if __cb_accepts(__mk_specc(ovs[i][0], ovs[i][1], !__objecthas(v, 'free')), expected) {
+        return true
+      }
+      i = i + 1
+    }
+    return false
+  }
+  if __inst_dunder(v, '__call__') {
+    return __cb_accepts(v["\zc"]['methods']['__call__'], expected)
+  }
+  if __is_marker(v) && !__objecthas(v, "\zspec") && __is_family(v["\zb"]) {
+    return __cb_accepts(v["\zb"], expected)
+  }
+  let b = __cb_bounds(v)
+  if __typeof(b) == 'nil' { return true }
+  if b[1] < 0 { return expected >= b[0] }
+  expected == b[1]
+}
+
+fn __cb(v, name, line, col) {
+  let n = __cb_arity(name)
+  if n >= 0 && __is_callable(v) {
+    if !__cb_accepts(v, n) {
+      __raise('TypeError', 'type error: ' + name + ' expects a ' + __tostr(n) +
+              '-parameter function', line, col)
+    }
+  }
+  __check_fn(v, line, col)
+}
+
+# A plain object whose drop key holds a function is a resource like a
+# class instance: the VM runs the hidden hook when its refcount hits
+# zero. The contract is culebra's: a Function taking no arguments.
+fn __install_drop(o, f, line, col) {
+  o["\zdrop"] = fn (o2) { __drop_once(o2, f) }
+  nil
 }
 
 fn __obj_spread(o, src, line, col) {
@@ -5507,7 +5728,8 @@ let intrinsics = {
   __objecthas: ('objecthas', 2), __objectkeys: ('objectkeys', 1),
   __objectremove: ('objectremove', 2),
   __genresume: ('genresume', 2), __genreturn: ('genreturn', 2),
-  __same: ('same', 2), __argcount: ('argcount', 0),
+  __same: ('same', 2), __argcount: ('argcount', 0), __fnarity: ('fnarity', 1),
+  __collect: ('collect', 0), __heapstats: ('heapstats', 0),
 }
 
 # Global builtins user code calls by name; each lowers to the prelude
@@ -6517,10 +6739,24 @@ fn scan_stmts_tracked(stmts, f) {
   cur[0] = stmts
   mut si = 0
   while si < stmts.size() {
-    let s = stmts[si]
+    mut s = stmts[si]
     cur[1] = si
     if s.name == 'fn_decl' {
-      fail(s, "fn declarations are only allowed at a function's top level")
+      # a fn declared inside a block is that block's binding of a closure
+      # literal (culebra scopes it to the block); the statement list keeps
+      # the desugared form for the emitter
+      let d = fn_decl_parts(s)
+      if d.decos.size() > 0 {
+        fail(s, "a decorated fn declaration is only allowed at a function's top level")
+      }
+      mut cn = [d.prms]
+      if d.ret != nil { cn.push(d.ret) }
+      cn.push(d.blk)
+      let clo = {name: 'closure', nodes: cn, line: s.line, column: s.column, key: pkey(s)}
+      s = {name: 'decl', nodes: [{name: 'decl_kw', token: 'let', line: s.line, column: s.column,
+                                 key: pkey(s) + '/k'}, d.id, clo],
+           line: s.line, column: s.column, key: pkey(s) + '/d'}
+      stmts[si] = s
     }
     if s.name == 'defer_s' { has_defer = true }
     scan_stmt(s, f)
@@ -6763,7 +6999,12 @@ fn scan_stmt(node, f) {
     },
     {name: 'for', nodes: [pat, iterable, body]} => {
       scan_expr(iterable, f)
-      new_scratch(f, node)   # the iterator lives across the loop
+      # the iterable and the iterator live across the loop in two adjacent
+      # slots (released in that order at the statement's end); a third
+      # holds an error while the iterator is closed on the way out
+      new_scratch_key(f, pkey(node) + '/src')
+      new_scratch(f, node)
+      new_scratch_key(f, pkey(node) + '/e')
       enter_scope(f)
       let base = nslots[f]
       cond {
@@ -7066,6 +7307,11 @@ fn scan_expr(node, f) {
       # `String` names the namespace holding from_code_point & co
       if r.kind == 'none' && token == 'String' {
         resolved[pkey(node)] = {kind: 'strns'}
+        return nil
+      }
+      # `GC` is the heap-introspection namespace (stat only)
+      if r.kind == 'none' && token == 'GC' {
+        resolved[pkey(node)] = {kind: 'gcns'}
         return nil
       }
       if r.kind == 'none' && !in_prelude &&
@@ -7815,8 +8061,7 @@ fn emit_match(m, node, f) {
     let pre = fresh_cells(m, f, info.base, info.high, arm.line, arm.column)
     let inner = m.block(stmts_list: make_list(m, pre + arm_ids + [guarded]),
                         line: arm.line, col: arm.column)
-    let scoped = m.scope(first_local: info.base, end_local: nslots[f],
-                         body: inner, line: arm.line, col: arm.column)
+    let scoped = emit_scope_of(m, f, info.base, inner, arm.line, arm.column)
     ids.push(m.make_if(cond: notyet, then_branch: scoped, line: ln, col: cl))
     i = i + 1
   }
@@ -8775,8 +9020,7 @@ fn emit_try(m, node, f) {
   }
   let hb = m.block(stmts_list: make_list(m, ids),
                    line: handler.line, col: handler.column)
-  let wrapped = m.scope(first_local: info.base, end_local: nslots[f],
-                        body: hb, line: handler.line, col: handler.column)
+  let wrapped = emit_scope_of(m, f, info.base, hb, handler.line, handler.column)
   m.make_try(caught_local: r.slot, body: b, handler: wrapped,
              line: node.line, col: node.column)
 }
@@ -8802,6 +9046,7 @@ fn emit_expr(m, node, f) {
       let r = resolved[pkey(node)]
       cond {
         r.kind == 'strns' => call_pre(m, f, '__string_ns', [], node.line, node.column),
+        r.kind == 'gcns' => call_pre(m, f, '__gc_ns', [], node.line, node.column),
         r.kind == 'bval' => call_pre(m, f, '__fnval_' + r.name, [], node.line, node.column),
         r.kind == 'fn' && r.funcs.size() == 1 =>
           m.make_closure(func: r.funcs[0], cmap: cmap_for(m, f, r.funcs[0]),
@@ -8976,6 +9221,19 @@ fn emit_expr(m, node, f) {
                        [obj, m.array_lit(items_list: make_list(m, ids2),
                                          line: node.line, col: node.column)],
                        node.line, node.column)
+      }
+      # a literal binding a well-known key (drop, iter, has_next, next) is
+      # checked against the protocol contract, and a drop hook installed
+      mut has_proto = false
+      for pair in node.nodes {
+        let pkn = pair.nodes[0]
+        if is_str_key(pkn) && (pkn.token == 'drop' || pkn.token == 'iter' ||
+                               pkn.token == 'has_next' || pkn.token == 'next') {
+          has_proto = true
+        }
+      }
+      if has_proto && !in_prelude {
+        obj = call_pre(m, f, '__with_contract', [obj, pl, pc], node.line, node.column)
       }
       obj
     },
@@ -9571,9 +9829,14 @@ fn emit_stmt(m, node, f) {
       let cl = node.column
       let itv = emit_expr(m, iterable, f)
       let (pl, pc) = pos_args(m, node)
+      let srcslot = scratch_slot(f, scratch_of[pkey(node) + '/src'])
       let itslot = scratch_slot(f, scratch_of[pkey(node)])
+      let eslot = scratch_slot(f, scratch_of[pkey(node) + '/e'])
+      let store_src = m.assign(kind: 'local', index: srcslot, value: itv, line: ln, col: cl)
       let store_it = m.assign(kind: 'local', index: itslot,
-                              value: call_pre(m, f, '__iter', [itv, pl, pc], ln, cl),
+                              value: call_pre(m, f, '__iter',
+                                              [m.var_ref(kind: 'local', index: srcslot, line: ln, col: cl), pl, pc],
+                                              ln, cl),
                               line: ln, col: cl)
       fn itref() { m.var_ref(kind: 'local', index: itslot, line: ln, col: cl) }
       let has = m.call_value(callee: m.index(recv: itref(),
@@ -9626,8 +9889,7 @@ fn emit_stmt(m, node, f) {
         },
       }
       let b = emit_block_stmts(m, body, f, pre)
-      let wrapped = m.scope(first_local: info.base, end_local: nslots[f],
-                            body: b, line: body.line, col: body.column)
+      let wrapped = emit_scope_of(m, f, info.base, b, body.line, body.column)
       let loop = m.make_while(cond: has, body: wrapped, line: ln, col: cl)
       # The iterator is disposed on every exit path -- drain, break, an
       # early return, or a throw -- via a defer over the whole statement
@@ -9635,8 +9897,20 @@ fn emit_stmt(m, node, f) {
       # without one).
       let closer = m.make_defer(value: call_pre(m, f, '__closer', [itref()], ln, cl),
                                 line: ln, col: cl)
-      m.scope(first_local: 0, end_local: 0,
-              body: m.block(stmts_list: make_list(m, [store_it, closer, loop]),
+      # While an error is already unwinding the iterator is closed quietly
+      # (a throwing dispose is swallowed then) and the error goes on. The
+      # scope over the two slots then releases the iterator, then the
+      # iterable -- culebra's order on every exit.
+      let guarded = m.make_try(
+          caught_local: eslot, body: loop,
+          handler: m.block(stmts_list: make_list(m, [
+                       call_pre(m, f, '__iter_close_quiet', [itref()], ln, cl),
+                       m.make_throw(value: m.var_ref(kind: 'local', index: eslot, line: ln, col: cl),
+                                    line: ln, col: cl)]),
+                           line: ln, col: cl),
+          line: ln, col: cl)
+      m.scope(first_local: srcslot, end_local: itslot + 1,
+              body: m.block(stmts_list: make_list(m, [store_src, store_it, closer, guarded]),
                             line: ln, col: cl),
               line: ln, col: cl)
     },
@@ -9733,6 +10007,24 @@ fn emit_stmt(m, node, f) {
   }
 }
 
+# A scope over [base, nslots) with its release order spelled out: last
+# slot first, a captured slot named through its cell -- culebra releases
+# in reverse declaration order whether or not a closure holds the binding.
+fn emit_scope_of(m, f, base, body, ln, cl) {
+  let rl = m.list_new()
+  mut s = nslots[f] - 1
+  while s >= base {
+    cond {
+      cell_index[f].has(s) =>
+        m.list_push(rl, m.var_ref(kind: 'cell', index: cell_index[f][s], line: ln, col: cl)),
+      _ => m.list_push(rl, m.var_ref(kind: 'local', index: s, line: ln, col: cl)),
+    }
+    s = s - 1
+  }
+  m.scope_release(first_local: base, end_local: nslots[f], body: body,
+                  release_list: rl, line: ln, col: cl)
+}
+
 # Cell refreshes for a scope's own captured slots: entering the region is
 # declaring anew, so closures from earlier entries keep the old box.
 fn fresh_cells(m, f, base, high, ln, cl) {
@@ -9761,17 +10053,13 @@ fn emit_block_stmts(m, blk, f, pre_ids) {
   m.block(stmts_list: make_list(m, ids), line: blk.line, col: blk.column)
 }
 
+# Every block is a scope, whether or not it declares anything: its exit is
+# where the VM resolves the drop-bearing cycles built inside it.
 fn emit_block(m, blk, f) {
   let info = block_info[pkey(blk)]
-  cond {
-    info.wrap => {
-      let pre = fresh_cells(m, f, info.base, info.high, blk.line, blk.column)
-      let b = emit_block_stmts(m, blk, f, pre)
-      m.scope(first_local: info.base, end_local: nslots[f],
-              body: b, line: blk.line, col: blk.column)
-    },
-    _ => emit_block_stmts(m, blk, f, []),
-  }
+  let pre = fresh_cells(m, f, info.base, info.high, blk.line, blk.column)
+  let b = emit_block_stmts(m, blk, f, pre)
+  emit_scope_of(m, f, info.base, b, blk.line, blk.column)
 }
 
 # --- Driver -------------------------------------------------------------------
@@ -9988,9 +10276,14 @@ fn emit_funcs(m) {
     }
     mut body = m.block(stmts_list: make_list(m, ids), line: 1, col: 1)
     let info = block_info[fi.body_key]
-    if info.wrap {
-      body = m.scope(first_local: info.base, end_local: nslots[f],
-                     body: body, line: 1, col: 1)
+    # every function body is a scope, locals or not: its exit is where the
+    # VM resolves the drop-bearing cycles the body (or its callees) built.
+    # The entry function's own bindings are never released by its scope
+    # (culebra keeps top-level bindings to the end, without drop); the
+    # empty range still gives its defers a scope to run at
+    body = cond {
+      f == 0 => m.scope(first_local: 0, end_local: 0, body: body, line: 1, col: 1),
+      _ => emit_scope_of(m, f, info.base, body, 1, 1),
     }
     if f == 0 {
       # whatever escapes the program is reported the way culebra reports it
@@ -10149,6 +10442,8 @@ for path in cli {
     } else if want_bc {
       print(m.dump_bc())
     } else {
+      # culebra releases its top-level bindings without running drop
+      m.set_entry_frame_drops(on: false)
       m.run()
     }
   } catch e {

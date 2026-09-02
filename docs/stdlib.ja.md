@@ -6131,10 +6131,11 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.call(func:, cmap:, line:, col:)` | 関数index `func`の呼び出し。captureはcapture-map `cmap`経由で転送 |
 | `m.make_closure(func:, cmap:, line:, col:)` | 関数`func`のクロージャ**値** —— 保持・受け渡しでき、後から呼べる |
 | `m.call_value(callee:, args_list:, line:, col:)` | `callee`の評価結果が何であれ呼ぶ。引数はステージング用listを消費 |
-| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。コンテナのprimitiveは`'arraypush'`/`'objecthas'`/`'objectremove'`(引数2個)と`'arraypop'`/`'objectkeys'`(引数1個)。空配列のpopは失敗、keysは挿入順。`'same'`(引数2個)は参照の同一性 —— 同じヒープオブジェクトか、スカラーなら同じタグと中身か —— を答える(`eq`はオブジェクト同士を拒む)。`'argcount'`(引数0個)は実行中の関数が呼ばれたときの実引数の個数(`set_lenient_arity`を参照)。`'genresume'`/`'genreturn'`(引数2個)はgeneratorの活性化を駆動する(`set_generator`を参照)。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上 |
+| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。コンテナのprimitiveは`'arraypush'`/`'objecthas'`/`'objectremove'`(引数2個)と`'arraypop'`/`'objectkeys'`(引数1個)。空配列のpopは失敗、keysは挿入順。`'same'`(引数2個)は参照の同一性 —— 同じヒープオブジェクトか、スカラーなら同じタグと中身か —— を答える(`eq`はオブジェクト同士を拒む)。`'argcount'`(引数0個)は実行中の関数が呼ばれたときの実引数の個数(`set_lenient_arity`を参照)。`'genresume'`/`'genreturn'`(引数2個)はgeneratorの活性化を駆動する(`set_generator`を参照)。`'fnarity'`(引数1個)はクロージャの宣言上の仮引数の個数(関数以外は失敗)。`'collect'`(引数0個)はその場で完全なtracing collectionを走らせ、解放したオブジェクト数を返す(回収対象のdrop hookを新しいものから順に先に走らせる)。`'heapstats'`(引数0個)はランタイムのヒープの`{live_objects, heap_bytes}`を返す。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上 |
 | `m.array_lit(items_list:, line:, col:)` / `m.object_lit(kv_list:, line:, col:)` | 要素のステージング用listから配列を、key, value, key, value, …を持つlistからオブジェクトを組み立てる |
 | `m.index(recv:, key:, line:, col:)` / `m.set_index(recv:, key:, value:, line:, col:)` | 読みと書き。`recv`の実体でディスパッチする: 配列はLongのindex(範囲外は失敗)、オブジェクトはStringのkey(無いkeyの読みは`nil`)、文字列は1バイトを文字列として読み出す(書きは拒否) |
 | `m.scope(first_local:, end_local:, body:, line:, col:)` | localスロット`[first_local, end_local)`を所有するレキシカル領域。どの経路で抜けても抜けた時点で解放され、中で登録されたdeferがLIFOで走る |
+| `m.scope_release(first_local:, end_local:, body:, release_list:, line:, col:)` | 同じ領域を、解放順を明示して作る。`release_list`は`var_ref`ノード(範囲内の`'local'`か`'cell'`)の並びで、どの経路で抜けてもその順に解放される。フロントエンドは宣言の逆順を、捕獲されたスロットも含めて並べる —— そうすれば捕獲された束縛もフレームごとでなく自分の番で解放される。解放されたcellは作り直されるので、それを捕獲していたクロージャは古いcellをその値ごと持ち続ける |
 | `m.make_return(value:, line:, col:)` | 実行中の関数から`value`を返す(裸の`return`は明示的な`nil_literal`で綴る) |
 | `m.make_break(line:, col:)` / `m.make_continue(line:, col:)` | 最内の`while`を抜ける / 条件の再評価に戻る。ループ本体の外では`verify()`が拒否する |
 | `m.make_throw(value:, line:, col:)` | 任意の値を送出する |
@@ -6144,6 +6145,7 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.make_yield(value:, line:, col:)` | 実行中のgenerator関数を中断し、再開した側に`value`を渡す。ノード自身の値は次の再開で送り込まれた値。generatorの外では`verify()`が拒む |
 | `m.set_generator(func:)` | 関数`func`をgeneratorにする。呼び出すと本体を走らせる代わりに中断状態の活性化を包んで返す。`'genresume'`(活性化と送る値)は次のyieldまで走らせて`{value, done}`を答え、`'genreturn'`(活性化と値)は途中で閉じる —— 止まっていた本体の未実行のdeferを内側から順に走らせてから`{value, done: true}`を答える |
 | `m.set_lenient_arity(func:)` | `func`の呼び出しが引数の個数を問わなくなる。余分は捨て、届かなかった仮引数は`nil`で始まり、本体は実際に渡された個数を`'argcount'`で読める —— フロントエンドはそれで自前の「引数が足りない」診断を出すか既定値を埋める。指定しなければ個数の不一致は実行器のトラップ |
+| `m.set_entry_frame_drops(on:)` | プログラム終了時に、入口関数自身の束縛のdrop hookを走らせるかどうか(既定は走らせる)。トップレベルのスコープをデストラクタなしで解放する言語のフロントエンドは切る。入口関数のdeferは変わらず走り、内側のスコープも通常どおりdropする |
 
 executorはdrop契約も履行する: `"\x01drop"`キーにクロージャを持つオブジェクトは、refcountが0になった瞬間・解放の前に、そのオブジェクト自身を引数としてクロージャが呼ばれる。throwするデストラクタはstderrに報告して飲み込む。デストラクタが引数をどこかへ保存したら復活扱いで解放はスキップされる。
 | `m.list_new()` | ステージング用list。`stmts_list:`/`args_list:`に渡す |

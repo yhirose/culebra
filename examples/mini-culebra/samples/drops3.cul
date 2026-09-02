@@ -1,0 +1,219 @@
+# Destructor timing the way culebra runs it: a literal's drop, release in
+# reverse declaration order on every exit (captured bindings included),
+# the for-in order (body locals, element, dispose, iterator, iterable),
+# a throwing dispose swallowed while unwinding, cycles of resources
+# dropped at the scope exit that owns them, top-level bindings kept to the
+# end without drop, GC.stat, the protocol contract on the well-known
+# keys, the callback arity check, and a fn declared inside a block.
+fn show(label, f) {
+  let r = try { f() } catch e { "!{e.kind}: {e.message}" }
+  println("{label}: {inspect(r)}")
+}
+class R {
+  new(id) {
+    self.id = id
+  }
+  drop() {
+    println("drop {self.id}")
+  }
+}
+
+# --- a literal with a drop key is a resource ---
+fn lit() {
+  let a = {name: 'a', drop: fn () { println('lit drop a') }}
+  let b = {drop: fn () { println('lit drop b') }, name: 'b'}
+  println('lit body')
+}
+lit()
+println('after lit')
+
+# --- reverse declaration order, captured or not, on every exit ---
+fn order_return() {
+  let z = R.new(80)
+  let a = R.new(81)
+  println((fn () { a.id })())
+  return 1
+}
+order_return()
+fn order_throw() {
+  let z = R.new(90)
+  let a = R.new(91)
+  throw 'x'
+}
+try { order_throw() } catch e { println('caught ' + e) }
+fn order_defer() {
+  let a = R.new(70)
+  defer { println('defer 70') }
+  let b = R.new(71)
+}
+order_defer()
+
+# --- for-in lifetimes ---
+fn make_iter(tag) {
+  mut i = 0
+  {has_next: fn () { i < 2 },
+   next: fn () {
+     i = i + 1
+     R.new("{tag}-e{i}")
+   },
+   dispose: fn () { println("dispose {tag}") },
+   drop: fn () { println("drop iter {tag}") },
+   iter: fn () { self }}
+}
+fn iterable(tag) {
+  {iter: fn () { make_iter(tag) }, drop: fn () { println("drop iterable {tag}") }}
+}
+println('== drain ==')
+for x in iterable('D') {
+  println("body {x.id}")
+}
+println('after drain')
+println('== break ==')
+for x in iterable('B') {
+  let loc = R.new('B-loc')
+  println("body {x.id}")
+  break
+}
+println('after break')
+println('== throw ==')
+try {
+  for x in iterable('T') {
+    println("body {x.id}")
+    throw 'boom'
+  }
+} catch e {
+  println('caught ' + e)
+}
+println('== let-bound ==')
+fn bound() {
+  let s = iterable('L')
+  for x in s {
+    println("body {x.id}")
+  }
+  println('after loop')
+}
+bound()
+println('== temp array ==')
+for x in [R.new('A1')] {
+  println("body {x.id}")
+}
+println('after temp')
+println('== throwing dispose ==')
+fn make_bad(tag) {
+  mut i = 0
+  {has_next: fn () { i < 3 },
+   next: fn () {
+     i = i + 1
+     i
+   },
+   dispose: fn () { throw "from dispose {tag}" },
+   iter: fn () { self }}
+}
+show('dispose on break', fn () {
+  for x in make_bad('K') {
+    break
+  }
+  'no error'
+})
+show('dispose on drain', fn () {
+  for x in make_bad('N') {
+  }
+  'no error'
+})
+show('dispose while unwinding', fn () {
+  for x in make_bad('U') {
+    throw 'original'
+  }
+})
+
+# --- cycles of resources resolve at the owning scope's exit ---
+let log = []
+class C {
+  new(lg) {
+    self.log = lg
+  }
+  drop() {
+    self.log.push(1)
+  }
+}
+fn cyclic() {
+  let a = C.new(log)
+  let b = C.new(log)
+  a.peer = b
+  b.peer = a
+}
+fn run_cyclic() {
+  cyclic()
+  nil
+}
+run_cyclic()
+show('cycle dropped at scope exit', || log.size())
+fn escapes(sink) {
+  let a = C.new(log)
+  a.me = a
+  sink.push(a)
+}
+fn run_escapes() {
+  let sink = []
+  escapes(sink)
+  show('escaped cycle still held', || log.size())
+}
+run_escapes()
+show('escaped cycle dropped with its holder', || log.size())
+
+# --- GC.stat ---
+show('stat keys', || GC.stat().keys())
+show('stat is a namespace', || GC.collect())
+fn churn() {
+  mut i = 0
+  while i < 50 {
+    let a = C.new([])
+    let b = C.new([])
+    a.peer = b
+    b.peer = a
+    i = i + 1
+  }
+}
+churn()
+let base = GC.stat().live_objects
+churn()
+show('no leak across churn', || GC.stat().live_objects - base < 20)
+
+# --- the protocol contract on the well-known keys ---
+show('has_next long', fn () { let o = {has_next: 1}; o })
+show('next 1-arg', fn () { let o = {next: fn (a) { a }}; o })
+show('drop long', fn () { let o = {drop: 1}; o })
+show('drop added later', fn () { mut o = {}; o.drop = 2; o })
+show('dispose is free', fn () { let o = {dispose: 1}; o.dispose })
+
+# --- callback arity ---
+show('map 2-param', || [1, 2].map(fn (a, b) { a }))
+show('scan 1-param', || [1, 2].iter().scan(0, |a| a).collect())
+show('reduce rest', || [1, 2, 3].reduce(0, fn (*xs) { xs[0] + xs[1] }))
+show('map bound method', fn () {
+  class G {
+    new(p) { self.p = p }
+    g(x) { "{self.p} {x}" }
+  }
+  [1, 2].map(G.new('hi').g)
+})
+show('map family', fn () {
+  fn ov(a) { a + 1 }
+  fn ov(a, b) { a + b }
+  [10, 20].map(ov)
+})
+
+# --- a fn declared inside a block ---
+show('block fn', fn () {
+  mut h = nil
+  {
+    let res = {id: 'r'}
+    fn helper() { res.id }
+    h = helper
+  }
+  h()
+})
+
+# --- top-level bindings are kept to the end, without drop ---
+let top = R.new('top')
+println('end of program')
