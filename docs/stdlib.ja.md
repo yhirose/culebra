@@ -73,8 +73,9 @@
 33. [`PriorityQueue`](#33-priorityqueue) — 二分ヒープ、push/popがO(log n)
 34. [`Peg`](#34-peg) — PEGパーサジェネレータ。文法を書くと構文木が返る
 35. [`CodeGen`](#35-codegen) — 小さな言語のIRを手で組み立てて実行する
-36. [設計上の注記](#36-設計上の注記)
-37. [未収録（将来検討）](#37-未収録将来検討)
+36. [`StateMachine`](#36-statemachine) — 入れ子にできる状態機械。テキストでも書ける
+37. [設計上の注記](#37-設計上の注記)
+38. [未収録（将来検討）](#38-未収録将来検討)
 
 **目的別索引**
 
@@ -121,6 +122,7 @@
 | FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
 | 優先度スケジューリング、イベントシミュレーション、最短経路探索 | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
 | 自前の言語・設定フォーマットをパースする | [§34 Peg](#34-peg) — PEG文法を書いて`Peg.parse(grammar, text)`。返る木は`match`で分解できる |
+| 手順・通信手順・画面のモードを状態とイベントで表す | [§36 `StateMachine`](#36-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §19](language.ja.md) |
@@ -6241,7 +6243,151 @@ generatorの活性化(`set_generator`を参照)。変数のcaptureはフロン�
 渡せ、関数の結果として返せる。`CodeGen.Module`はisolateの境界を越えられない
 (`Isolate.spawn`/`Parallel.map`のworkerはそれぞれ自分自身のModuleを組み立てる)。
 
-## 36. 設計上の注記
+## 36. `StateMachine`
+
+入れ子にできる状態機械。言語の組み込みではなく、素のculebraクラス
+（`src/preambles/state_machine.cul`）。状態は入れ子にでき、いま居る状態が
+受け取らなかったイベントは親へ渡され、入れ子の外へ出る遷移はその親の
+`exit`を通って出ていく。
+
+作り方は2通りあるが、出来上がる機械は同じもの。`StateMachine.new`には
+記述用の`Object`を渡すので、guardやactionはその場に普通の関数として書ける。
+`StateMachine.parse`には下記のテキストを渡し、guardとactionは`guards:` /
+`actions:`の表から名前で引く——§34のsemantic actionsと同じ「名前→関数」の表。
+
+```culebra
+let vending = `
+  Vending {
+    idle initial {
+      coin: add_coin -> ready
+    }
+    ready {
+      coin: add_coin -> ready
+      select[enough]:  dispense -> idle
+      select[!enough]: reject   -> ready
+    }
+  }
+`
+let m = StateMachine.parse(vending,
+  guards: {enough: fn (ctx, ev) { ctx.balance >= 100 }},
+  actions: {
+    add_coin: fn (ctx, ev) { ctx.balance += ev.payload },
+    dispense: fn (ctx, ev) { ctx.balance -= 100; ctx.log.push('dispensed') },
+    reject: fn (ctx, ev) { ctx.log.push("only {ctx.balance}") },
+  },
+  context: {mut balance: 0, log: []})
+m.fire('coin', 60)
+inspect(m.state())      # => 'ready'
+m.fire('select')
+m.fire('coin', 60)
+m.fire('select')
+inspect(m.state())      # => 'idle'
+inspect(m.context.log)  # => ['only 60', 'dispensed']
+```
+
+機械のテキストは**そのまま文字列**（バッククォートか単一引用符）で書く。
+`"..."`だと波括弧が変数の埋め込みとして読まれてしまう。
+
+### テキストの書き方
+
+本文の1行は`event ['[' guard ']'] [':' action] ['->' target]`、状態の見出しは
+`name [initial] [entry: action] [exit: action]`。本文側に予約語は無い——
+`entry`・`exit`・`initial`が意味を持つのは見出しの位置だけなので、`entry`という
+名前のイベントも書ける。`#`から行末までは注記。改行は普通の空白なので、
+`a { x -> b }`と1行に詰めても同じ機械になる。
+
+| 書き方 | 意味 |
+| --- | --- |
+| `name { ... }` | 状態。ブロックの中に状態を書けば入れ子になる |
+| `name initial { ... }` | 親に入ったとき既定で入る状態 |
+| `name entry: f exit: g { ... }` | その状態に入るとき`f`、出るとき`g`を呼ぶ |
+| `e -> s` | `e`が来たら`s`へ移る |
+| `e: f -> s` | 出る処理と入る処理の間で`f`を呼ぶ |
+| `e: f` | 内部遷移。`f`だけ呼び、どの状態も出入りしない |
+| `e -> 自分の名前` | 外部遷移。`exit`と`entry`が実際に走る |
+| `e[g] -> s` | guard `g`が通ったときだけ |
+| `e[!g] -> s` | 通らなかったときだけ |
+
+状態名は1つの機械の中で重複しないので、`-> normal`のように経路を書かずに
+名指しできる。同じイベントの行が複数あるときは書いた順に試し、guardが最初に
+通った1本を採る。どれも通らなければ、そのイベントは親へ渡って探索が続く。
+
+### 入れ子
+
+遷移が出入りするのは**その遷移の範囲**より内側の状態だけ。範囲とは、遷移を
+書いた状態と行き先の両方について、自分自身を含めない祖先のうち最も深いもの。
+だから入れ子の中での兄弟どうしの移動では親は出入りせず、外へ出る移動では親の
+`exit`が走る。入れ子の状態へ入るときは`initial`をたどって葉まで降り、途中の
+`entry`を順に呼ぶ。
+
+```culebra
+let player = StateMachine.parse(`
+  Player {
+    stopped initial { play -> normal }
+    playing entry: start_clock exit: stop_clock {
+      stop -> stopped
+      normal initial { seek -> seeking }
+      seeking { done -> normal }
+    }
+  }
+`, actions: {
+  start_clock: fn (ctx, ev) { ctx.log.push('start') },
+  stop_clock: fn (ctx, ev) { ctx.log.push('stop') },
+}, context: {log: []})
+inspect(player.state())                    # => 'stopped'
+player.fire('play')                        # 初期状態をたどって葉まで降りる
+inspect(player.state())                    # => 'normal'
+inspect(player.in_state('playing'))        # => true
+player.fire('seek')                        # `playing`の中に留まる
+inspect(player.context.log)                # => ['start']
+player.fire('stop')                        # `playing`に書いた遷移が効く
+inspect((player.state(), player.context.log))  # => ('stopped', ['start', 'stop'])
+```
+
+### 記述用の`Object`
+
+同じ機械を`Object`で書くと、状態名→`{initial, entry, exit, on, states}`。
+`on`はイベント名から1件または`Array`への対応で、各件は
+`{guard, negate, action, target}`。どのキーも省略できる。ここでのguardと
+actionは関数そのものを書くのが普通だが、`String`を書けばテキスト版と同じく
+`guards:` / `actions:`から引かれる。
+
+```culebra
+let bump = fn (ctx, ev) { ctx.n += 1 }
+let m = StateMachine.new({
+  off: {initial: true, on: {flip: {action: bump, target: 'on'}}},
+  on: {on: {flip: {target: 'off'}}},
+}, context: {mut n: 0})
+m.fire('flip')
+m.fire('flip')
+inspect((m.state(), m.context.n))  # => ('off', 1)
+```
+
+### 一覧
+
+| メンバ | 返り値 |
+|---|---|
+| `StateMachine.new(desc: Object, *, name: String = "", guards: Object = {}, actions: Object = {}, context = nil)` | `StateMachine` |
+| `StateMachine.parse(text: String, *, guards: Object = {}, actions: Object = {}, context = nil, path: String = "")` | `StateMachine` — テキストから作る。`path`は`PegError`に出す対象名 |
+| `m.context` | 渡した`context:`そのもの。guardとactionが受け取る |
+| `m.state()` | `String` — いま居る葉の状態 |
+| `m.in_state(name: String)` | `Bool` — いま居る葉と、それを含むすべての状態について真 |
+| `m.fire(event: String, payload = nil)` | `Bool` — 遷移したかどうか。どの状態も受け取らないイベントは無視され、誤りにはならない |
+| `m.can_fire(event: String, payload = nil)` | `Bool` — `fire`が遷移するかどうか（guardは実際に呼ばれるので、副作用があってはいけない） |
+| `m.reset()` | `Nil` — いまの状態から出て、初期状態に入り直す。contextは呼び手のものなので触らない |
+| `"{m}"` / `to_string(m)` | `String` — `"StateMachine(Name, state=s)"` |
+
+guardとactionは`fn (ctx, ev)`。`ctx`は渡した`context:`、`ev`は
+`{name, payload}`という`Object`——後から項目が増えても、既にある関数が
+受け取れなくなることはない。状態名・guard名・action名は機械を組み立てる
+時点で全て解決するので、綴り違いはそこで`StateMachineError`になる（その
+イベントが実際に来るまで黙っている、ということがない）。初期状態が無い機械、
+初期状態を持たない入れ子、初期状態が2つある兄弟も同じ時点で弾かれる。
+
+扱わないもの: 並行領域と履歴状態（SCXMLの`<parallel>`と`<history>`）。
+機械が同時に居る葉の状態は常に1つ。
+
+## 37. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -6298,7 +6444,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 37. 未収録（将来検討）
+## 38. 未収録（将来検討）
 
 ### 重量級データ構造
 

@@ -75,8 +75,9 @@ Conventions used below:
 33. [`PriorityQueue`](#33-priorityqueue) — binary min-heap, O(log n) push/pop
 34. [`Peg`](#34-peg) — PEG parser generator: write a grammar, get a syntax tree
 35. [`CodeGen`](#35-codegen) — build a small language's IR by hand and run it
-36. [Design notes](#36-design-notes)
-37. [Not included (yet)](#37-not-included-yet)
+36. [`StateMachine`](#36-statemachine) — hierarchical state machine, with a text DSL
+37. [Design notes](#37-design-notes)
+38. [Not included (yet)](#38-not-included-yet)
 
 **Where to find what**
 
@@ -124,6 +125,7 @@ Conventions used below:
 | FIFO queue, sliding window, front+back stack | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
 | Priority scheduling, event simulation, shortest-path search | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
 | Parse a language / config format of your own | [§34 Peg](#34-peg) — write a PEG grammar, `Peg.parse(grammar, text)` → a tree `match` takes apart |
+| Model a workflow, protocol or UI mode as states and events | [§36 `StateMachine`](#36-statemachine) — `StateMachine.parse(text)`, or a description `Object` |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
 | Fill an `Array` with `n` copies of a value | [language spec §19](language.md) — `repeat(n, value)` |
@@ -6423,7 +6425,154 @@ passable as a `call_value` argument, returnable as a function's result.
 A `CodeGen.Module` cannot cross an isolate boundary
 (`Isolate.spawn`/`Parallel.map`'s workers each build their own).
 
-## 36. Design notes
+## 36. `StateMachine`
+
+A hierarchical state machine — a *statechart* — as an ordinary culebra
+class (`src/preambles/state_machine.cul`), not a language builtin. States
+nest, an event the active state does not handle bubbles to its ancestors,
+and leaving a composite state runs its `exit` on the way out.
+
+Two front ends build the same machine. `StateMachine.new` takes a
+description `Object`, so guards and actions are ordinary functions written
+beside it. `StateMachine.parse` takes the text DSL, where guards and
+actions are *names* resolved against the `guards:` / `actions:` tables —
+the same "name → function" table §34's semantic actions use.
+
+```culebra
+let vending = `
+  Vending {
+    idle initial {
+      coin: add_coin -> ready
+    }
+    ready {
+      coin: add_coin -> ready
+      select[enough]:  dispense -> idle
+      select[!enough]: reject   -> ready
+    }
+  }
+`
+let m = StateMachine.parse(vending,
+  guards: {enough: fn (ctx, ev) { ctx.balance >= 100 }},
+  actions: {
+    add_coin: fn (ctx, ev) { ctx.balance += ev.payload },
+    dispense: fn (ctx, ev) { ctx.balance -= 100; ctx.log.push('dispensed') },
+    reject: fn (ctx, ev) { ctx.log.push("only {ctx.balance}") },
+  },
+  context: {mut balance: 0, log: []})
+m.fire('coin', 60)
+inspect(m.state())      # => 'ready'
+m.fire('select')
+m.fire('coin', 60)
+m.fire('select')
+inspect(m.state())      # => 'idle'
+inspect(m.context.log)  # => ['only 60', 'dispensed']
+```
+
+Write the machine as a **raw string** (backtick or single-quoted): a
+`"..."` string would read its braces as interpolation.
+
+### The text DSL
+
+A body line is `event ['[' guard ']'] [':' action] ['->' target]` and a
+state header is `name [initial] [entry: action] [exit: action]`. Nothing in
+a body is a reserved word — `entry`, `exit` and `initial` mean something
+only in a header — so an event may be called `entry`. `#` starts a comment,
+and newlines are ordinary whitespace, so `a { x -> b }` on one line is the
+same machine as the spread-out form.
+
+| Form | Meaning |
+| --- | --- |
+| `name { ... }` | a state; nesting the block makes it composite |
+| `name initial { ... }` | the state its parent enters by default |
+| `name entry: f exit: g { ... }` | run `f` on entering the state, `g` on leaving |
+| `e -> s` | on `e`, go to `s` |
+| `e: f -> s` | …running `f` between the exits and the entries |
+| `e: f` | an internal transition: `f` runs, no state is left or entered |
+| `e -> own-name` | an external self-transition: `exit` then `entry` do run |
+| `e[g] -> s` | only when guard `g` passes |
+| `e[!g] -> s` | only when it does not |
+
+State names are global to one machine, so `-> normal` needs no path. Two
+lines for the same event are tried in order and the first whose guard
+passes wins; if none does, the event keeps bubbling outward.
+
+### Hierarchy
+
+A transition exits and re-enters exactly the states below its **domain** —
+the deepest state that is a proper ancestor of both the state that declared
+the transition and its target. So a move between siblings inside a
+composite state leaves the parent alone, while a move out of it runs the
+parent's `exit`; and entering a composite state descends through `initial`
+to a leaf, running each `entry` on the way down.
+
+```culebra
+let player = StateMachine.parse(`
+  Player {
+    stopped initial { play -> normal }
+    playing entry: start_clock exit: stop_clock {
+      stop -> stopped
+      normal initial { seek -> seeking }
+      seeking { done -> normal }
+    }
+  }
+`, actions: {
+  start_clock: fn (ctx, ev) { ctx.log.push('start') },
+  stop_clock: fn (ctx, ev) { ctx.log.push('stop') },
+}, context: {log: []})
+inspect(player.state())                    # => 'stopped'
+player.fire('play')                        # descends to the initial leaf
+inspect(player.state())                    # => 'normal'
+inspect(player.in_state('playing'))        # => true
+player.fire('seek')                        # stays inside `playing`
+inspect(player.context.log)                # => ['start']
+player.fire('stop')                        # declared on `playing`: bubbles up
+inspect((player.state(), player.context.log))  # => ('stopped', ['start', 'stop'])
+```
+
+### The description form
+
+The same machine as an `Object`: state name → `{initial, entry, exit, on,
+states}`, where `on` maps an event to one candidate or an `Array` of them,
+each `{guard, negate, action, target}`. Every key is optional. Guards and
+actions here are usually the functions themselves; a `String` is looked up
+in `guards:` / `actions:` exactly as the DSL's names are.
+
+```culebra
+let bump = fn (ctx, ev) { ctx.n += 1 }
+let m = StateMachine.new({
+  off: {initial: true, on: {flip: {action: bump, target: 'on'}}},
+  on: {on: {flip: {target: 'off'}}},
+}, context: {mut n: 0})
+m.fire('flip')
+m.fire('flip')
+inspect((m.state(), m.context.n))  # => ('off', 1)
+```
+
+### Members
+
+| Member | Returns |
+|---|---|
+| `StateMachine.new(desc: Object, *, name: String = "", guards: Object = {}, actions: Object = {}, context = nil)` | `StateMachine` |
+| `StateMachine.parse(text: String, *, guards: Object = {}, actions: Object = {}, context = nil, path: String = "")` | `StateMachine` — the same, from the text DSL; `path` names the subject in a `PegError` |
+| `m.context` | the `context:` value, unchanged — guards and actions receive it |
+| `m.state()` | `String` — the active leaf state |
+| `m.in_state(name: String)` | `Bool` — true for the active leaf and for every state containing it |
+| `m.fire(event: String, payload = nil)` | `Bool` — whether a transition was taken; an event no state handles is ignored, not an error |
+| `m.can_fire(event: String, payload = nil)` | `Bool` — whether `fire` would take one (guards run, so they must be free of side effects) |
+| `m.reset()` | `Nil` — leave the active configuration and enter the initial one again; the context is yours and is left alone |
+| `"{m}"` / `to_string(m)` | `String` — `"StateMachine(Name, state=s)"` |
+
+Guards and actions are `fn (ctx, ev)`, where `ctx` is the `context:` value
+and `ev` is `{name, payload}` — an `Object`, so a later field cannot break
+an existing closure. Every state, guard and action name is resolved when
+the machine is built, so a typo raises `StateMachineError` there rather
+than on the first event that would have reached it; so do a machine with no
+initial state, a composite state without one, and two initial siblings.
+
+Not modelled: parallel regions and history states (SCXML's `<parallel>` and
+`<history>`). A machine is in exactly one leaf state at a time.
+
+## 37. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -6479,7 +6628,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 37. Not included (yet)
+## 38. Not included (yet)
 
 ### Heavier data structures
 
