@@ -1453,7 +1453,7 @@ inspect(slow_square(7))  # => 49
 
 ### 11.4 `fn.params` introspection
 
-`Function`値は宣言時のシグネチャを露出する。`@autograd` / `@trace`
+`Function`値は宣言時のシグネチャを読み出せる。`@autograd` / `@trace`
 のようなsignatureを知る必要のあるデコレータはこれを使って書ける。
 
 ```culebra
