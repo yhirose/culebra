@@ -12,19 +12,29 @@ let show = fn (label, f) {
   inspect(r)
 }
 
+// IEEE-754 requires a correctly rounded sqrt, so its digits are the platform's
+// answer everywhere. It says nothing about the transcendental functions, and
+// libm implementations do differ in the last place — glibc's tan(1) ends
+// ...49023 where Apple's ends ...4902 — so those answers are frozen rounded.
+// What this case is watching for is the call shape, which a wrong one moves
+// far more than this.
+let approx = fn (label, f) {
+  show(label, || Math.round(f() * 1e9) / 1e9)
+}
+
 show("sqrt 4", || Math.sqrt(4))
 show("sqrt 2.25", || Math.sqrt(2.25))
 show("sqrt -1", || Math.sqrt(-1.0))
 show("sin 0", || Math.sin(0))
 show("cos 0.0", || Math.cos(0.0))
-show("tan 1", || Math.tan(1))
-show("asin 1", || Math.asin(1))
+approx("tan 1", || Math.tan(1))
+approx("asin 1", || Math.asin(1))
 show("acos 1", || Math.acos(1))
-show("atan 1", || Math.atan(1))
-show("atan2", || Math.atan2(1, 2))
-show("atan2 f", || Math.atan2(1.0, -2.0))
-show("log e", || Math.log(Math.e))
-show("exp 1", || Math.exp(1))
+approx("atan 1", || Math.atan(1))
+approx("atan2", || Math.atan2(1, 2))
+approx("atan2 f", || Math.atan2(1.0, -2.0))
+approx("log e", || Math.log(Math.e))
+approx("exp 1", || Math.exp(1))
 show("abs -3", || Math.abs(-3))
 show("abs -3.5", || Math.abs(-3.5))
 show("abs min", || Math.abs(-9223372036854775807 - 1))

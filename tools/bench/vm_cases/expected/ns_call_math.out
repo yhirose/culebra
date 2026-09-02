@@ -3,14 +3,14 @@ sqrt 2.25: 1.5
 sqrt -1: nan
 sin 0: 0.0
 cos 0.0: 1.0
-tan 1: 1.557407724654902
-asin 1: 1.5707963267948966
+tan 1: 1.557407725
+asin 1: 1.570796327
 acos 1: 0.0
-atan 1: 0.7853981633974483
-atan2: 0.4636476090008061
-atan2 f: 2.677945044588987
+atan 1: 0.785398163
+atan2: 0.463647609
+atan2 f: 2.677945045
 log e: 1.0
-exp 1: 2.718281828459045
+exp 1: 2.718281828
 abs -3: 3
 abs -3.5: 3.5
 abs min: -9223372036854775808
@@ -37,33 +37,33 @@ pi: 3.141592653589793
 chain: '4.0'
 nested: 3
 ufcs-like: [2.0, 3.0]
-sqrt str: {kind: 'TypeError', message: 'type error', line: 56, col: 21}
-sqrt nil: {kind: 'TypeError', message: 'type error', line: 57, col: 21}
-sqrt none: {kind: 'ArityError', message: 'expected 1 positional argument, got 0', line: 58, col: 22}
-sqrt two: {kind: 'ArityError', message: 'expected 1 positional argument, got 2', line: 59, col: 21}
-min none: {kind: 'TypeError', message: 'type error', line: 60, col: 21}
-min str: {kind: 'TypeError', message: 'type error', line: 61, col: 20}
-max bad: {kind: 'TypeError', message: 'type error', line: 62, col: 20}
-pow float: {kind: 'TypeError', message: 'type error: parameter 'base' expects Long', line: 63, col: 31}
-pow neg: {kind: 'TypeError', message: 'type error', line: 64, col: 20}
-pow str2: {kind: 'TypeError', message: 'type error: parameter 'exp' expects Long', line: 65, col: 33}
-wrap zero: {kind: 'ZeroDivisionError', message: 'divide by 0 error', line: 66, col: 22}
-wrap float: {kind: 'TypeError', message: 'type error: parameter 'x' expects Long', line: 67, col: 33}
-sign float: {kind: 'TypeError', message: 'type error: parameter 'x' expects Long', line: 68, col: 33}
-abs nil: {kind: 'TypeError', message: 'type error', line: 69, col: 20}
-clamp str: {kind: 'TypeError', message: 'type error', line: 70, col: 22}
-clamp arity: {kind: 'ArityError', message: 'expected 3 positional arguments, got 2', line: 71, col: 24}
-atan2 str: {kind: 'TypeError', message: 'type error', line: 72, col: 22}
-atan2 arity: {kind: 'ArityError', message: 'expected 2 positional arguments, got 1', line: 73, col: 24}
-floor str: {kind: 'TypeError', message: 'type error', line: 74, col: 22}
-kwarg: {kind: 'TypeError', message: 'function does not accept keyword arguments', line: 75, col: 18}
-bad kwarg: {kind: 'TypeError', message: 'function does not accept keyword arguments', line: 76, col: 22}
-missing: {kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 77, col: 20}
-as value: {kind: 'TypeError', message: 'type error', line: 80, col: 3}
+sqrt str: {kind: 'TypeError', message: 'type error', line: 66, col: 21}
+sqrt nil: {kind: 'TypeError', message: 'type error', line: 67, col: 21}
+sqrt none: {kind: 'ArityError', message: 'expected 1 positional argument, got 0', line: 68, col: 22}
+sqrt two: {kind: 'ArityError', message: 'expected 1 positional argument, got 2', line: 69, col: 21}
+min none: {kind: 'TypeError', message: 'type error', line: 70, col: 21}
+min str: {kind: 'TypeError', message: 'type error', line: 71, col: 20}
+max bad: {kind: 'TypeError', message: 'type error', line: 72, col: 20}
+pow float: {kind: 'TypeError', message: 'type error: parameter 'base' expects Long', line: 73, col: 31}
+pow neg: {kind: 'TypeError', message: 'type error', line: 74, col: 20}
+pow str2: {kind: 'TypeError', message: 'type error: parameter 'exp' expects Long', line: 75, col: 33}
+wrap zero: {kind: 'ZeroDivisionError', message: 'divide by 0 error', line: 76, col: 22}
+wrap float: {kind: 'TypeError', message: 'type error: parameter 'x' expects Long', line: 77, col: 33}
+sign float: {kind: 'TypeError', message: 'type error: parameter 'x' expects Long', line: 78, col: 33}
+abs nil: {kind: 'TypeError', message: 'type error', line: 79, col: 20}
+clamp str: {kind: 'TypeError', message: 'type error', line: 80, col: 22}
+clamp arity: {kind: 'ArityError', message: 'expected 3 positional arguments, got 2', line: 81, col: 24}
+atan2 str: {kind: 'TypeError', message: 'type error', line: 82, col: 22}
+atan2 arity: {kind: 'ArityError', message: 'expected 2 positional arguments, got 1', line: 83, col: 24}
+floor str: {kind: 'TypeError', message: 'type error', line: 84, col: 22}
+kwarg: {kind: 'TypeError', message: 'function does not accept keyword arguments', line: 85, col: 18}
+bad kwarg: {kind: 'TypeError', message: 'function does not accept keyword arguments', line: 86, col: 22}
+missing: {kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 87, col: 20}
+as value: {kind: 'TypeError', message: 'type error', line: 90, col: 3}
 as value ok: 3.0
-ns value: {kind: 'TypeError', message: 'type error', line: 88, col: 3}
+ns value: {kind: 'TypeError', message: 'type error', line: 98, col: 3}
 ns value ok: 3.0
 shadowed: 9
 safe nav: 3.0
 uncaught below: 0
-TypeError: type error at 100:1.
+TypeError: type error at 110:1.
