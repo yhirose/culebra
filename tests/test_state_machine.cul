@@ -129,8 +129,8 @@ fn player() {
   )
 }
 fn drain(m) {
-  let out = m.context.log.slice(0, m.context.log.size())
-  m.context.log = []
+  let out = m.context.log
+  m.context.log = []  # rebinds the field, so `out` keeps the old array alone
   out
 }
 
@@ -230,6 +230,27 @@ assert_eq(
 assert_eq(
   err(|| StateMachine.new({a: {initial: true, onn: {}}})),
   "StateMachineError: state 'a': unknown key 'onn' (expected initial, entry, exit, on, states)",
+)
+# A machine with nowhere to start has no state to report, so it is not a
+# machine. That keeps the synthetic root off every public surface.
+assert_eq(
+  err(|| StateMachine.new({})),
+  "StateMachineError: the machine has no initial state",
+)
+assert_eq(StateMachine.new({a: {initial: true}}).in_state(""), false)
+
+# A caller passing the wrong type gets the standard kind, not this module's.
+assert_eq(
+  err(|| StateMachine.new([])),
+  "TypeError: type error: expected Object for a states description, got Array",
+)
+assert_eq(
+  err(|| StateMachine.new({a: 1})),
+  "TypeError: type error: expected Object for state 'a', got Long",
+)
+assert_eq(
+  err(|| StateMachine.new({a: {initial: true, on: {go: {guard: 1}}}})),
+  "TypeError: type error: expected Function|String for guard at state 'a' on 'go', got Long",
 )
 
 # `entry` / `exit` / `initial` bind only in a header, so an event may use them

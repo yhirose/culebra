@@ -3009,190 +3009,190 @@ let _priority_queue_module = fn () {
 let PriorityQueue = _priority_queue_module()
 )=culpre=";
 
-inline constexpr const char* STATE_MACHINE_MODULE_SOURCE = R"=culpre=(# StateMachine — a hierarchical state machine (a statechart). States nest;
-# an event the active state does not handle bubbles to its ancestors; a
-# transition that leaves a composite state runs that state's `exit` on the
-# way out and the destination's `entry` on the way in.
+inline constexpr const char* STATE_MACHINE_MODULE_SOURCE = R"=culpre=(# StateMachine — a hierarchical state machine (a statechart). States nest, an
+# event the active state does not handle bubbles to its ancestors, and a
+# transition exits and re-enters exactly the states below its domain: the
+# deepest state that properly contains both the state declaring it and its
+# target. docs/stdlib.md carries the reference; this header is the why.
 #
-# Two front ends build the same machine. `StateMachine.new` takes a
-# description Object, so guards and actions are ordinary functions written
-# beside it. `StateMachine.parse` takes the text DSL below, where guards and
-# actions are *names* resolved against the `guards:` / `actions:` tables —
-# the same "name -> function" table `Peg`'s own semantic actions use.
+# Two front ends meet at one engine. `StateMachine.parse` is a pure
+# text -> description transform; `StateMachine.new` checks that description,
+# resolves every name in it, and links it. Both the names and the `[!g]`
+# negation are gone by the time the machine runs — the table holds plain
+# functions, and `_select` has one notion of a guard passing.
 #
-#     Vending {
-#       idle initial {
-#         coin: add_coin -> ready
-#       }
-#       ready {
-#         coin: add_coin -> ready
-#         select[enough]:  dispense -> idle
-#         select[!enough]: reject   -> ready
-#       }
-#     }
-#
-# A body line is `event ['[' guard ']'] [':' action] ['->' target]` and a
-# state header is `name [initial] [entry: action] [exit: action]`. Nothing in
-# the body is a reserved word: `entry` and `exit` mean something only in a
-# header, so an event may be called `entry`. Omitting `-> target` makes an
-# internal transition — the action runs and no state is left or entered —
-# while naming the state you are already in exits and re-enters it. State
-# names are global to one machine, so `-> normal` needs no path. Write the
-# text as a raw string (backtick or single-quoted): a `"..."` string would
-# interpolate its braces.
-#
-# Guards and actions are `fn (ctx, ev)`, where `ctx` is the `context:` value
-# and `ev` is `{name, payload}` — an Object so later fields cannot break an
-# existing closure's arity. Every name is resolved when the machine is built,
-# so a typo raises there rather than on the first event that would reach it.
+# What a transition does is fixed by its source and target, so the domain and
+# the path entered afterwards are settled once, in `_link`, rather than
+# recomputed per event.
 #
 # The DSL is parsed with the native `_Peg` primitives rather than the `Peg`
 # module: a preamble that named `Peg` would need that module registered too,
 # and only the program's own tokens decide what gets registered.
 let _state_machine_module = fn () {
-  # The machine itself is a composite state whose children are the top-level
-  # states, so `initial`, bubbling and the transition domain need no separate
-  # case for "at the top". Its name is one no identifier can spell.
+  # The machine itself is a composite state holding the top-level states, so
+  # `initial`, bubbling and the domain need no separate case for "at the top".
+  # Its name is one no identifier can spell, and it stays inside: a machine
+  # with no initial state is rejected, so `state()` always names a real leaf,
+  # and `in_state` stops before the root.
   let ROOT = ""
 
   let STATE_KEYS = ["initial", "entry", "exit", "on", "states"]
   let CAND_KEYS = ["guard", "negate", "action", "target"]
 
+  # An ill-formed machine; a caller passing the wrong type gets the standard
+  # `TypeError` instead, as in path.cul / time.cul.
+  fn _fail(msg) {
+    throw {kind: "StateMachineError", message: msg}
+  }
+  fn _want(what, got, where) {
+    throw {
+      kind: "TypeError",
+      message: "type error: expected {what} for {where}, got {type_of(got)}",
+    }
+  }
+
   fn _reject_unknown(o, allowed, where) {
     for k in o.keys() {
       if !allowed.contains(k) {
-        throw {
-          kind: "StateMachineError",
-          message: "{where}: unknown key '{k}' (expected {allowed.join(', ')})",
-        }
+        _fail("{where}: unknown key '{k}' (expected {allowed.join(', ')})")
       }
     }
   }
 
-  # A guard/action slot is either a Function (what the description form
-  # writes) or a String naming one (what the DSL emits). Resolving here means
-  # the running machine only ever holds functions.
+  # A guard/action slot holds a callable, or a name for one that the
+  # `guards:` / `actions:` table answers; the DSL only ever emits names.
   fn _resolve(v, table, kind, where) {
     return nil if v == nil
     return v if type_of(v) == "Function"
-    if type_of(v) != "String" {
-      throw {
-        kind: "StateMachineError",
-        message: "{where}: {kind} must be a Function or a name, got {type_of(v)}",
-      }
-    }
+    _want("Function|String", v, "{kind} at {where}") if type_of(v) != "String"
     let f = table.get(v, nil)
-    if f == nil {
-      throw {
-        kind: "StateMachineError",
-        message: "{where}: no {kind} named '{v}'",
-      }
-    }
+    _fail("{where}: no {kind} named '{v}'") if f == nil
     f
   }
 
-  fn _walk(map, parent, states, guards, actions) {
-    if type_of(map) != "Object" {
-      throw {
-        kind: "StateMachineError",
-        message: "states must be an Object, got {type_of(map)}",
-      }
+  fn _candidates(spec, guards, actions, where) {
+    let mut out = []
+    for c in type_of(spec) == "Array" ? spec : [spec] {
+      _reject_unknown(c, CAND_KEYS, where)
+      let g = _resolve(c.get("guard", nil), guards, "guard", where)
+      out.push({
+        # `[!g]` folds into the guard here, so nothing downstream knows it.
+        guard: g != nil && c.get("negate", false) ? |ctx, ev| !g(ctx, ev) : g,
+        action: _resolve(c.get("action", nil), actions, "action", where),
+        target: c.get("target", nil),
+        mut domain: nil,
+        mut enter: nil,
+      })
     }
+    out
+  }
+
+  fn _walk(map, parent, states, guards, actions) {
+    _want("Object", map, "a states description") if type_of(map) != "Object"
     for (name, d) in map.iter() {
-      if states.has(name) {
-        throw {kind: "StateMachineError", message: "duplicate state '{name}'"}
-      }
-      if type_of(d) != "Object" {
-        throw {
-          kind: "StateMachineError",
-          message: "state '{name}': description must be an Object, got {type_of(d)}",
-        }
-      }
+      _fail("duplicate state '{name}'") if states.has(name)
+      _want("Object", d, "state '{name}'") if type_of(d) != "Object"
       _reject_unknown(d, STATE_KEYS, "state '{name}'")
       states[name] = {
-        mut parent: parent,
+        parent: parent,
         mut initial: nil,
-        mut entry: _resolve(
+        entry: _resolve(
           d.get("entry", nil),
           actions,
           "action",
           "state '{name}' entry",
         ),
-        mut exit: _resolve(
+        exit: _resolve(
           d.get("exit", nil),
           actions,
           "action",
           "state '{name}' exit",
         ),
-        mut on: {},
-        mut children: 0,
+        on: {},
       }
-      states[parent].children += 1
       if d.get("initial", false) {
         if states[parent].initial != nil {
-          throw {
-            kind: "StateMachineError",
-            message: "'{states[parent].initial}' and '{name}' are both initial",
-          }
+          _fail("'{states[parent].initial}' and '{name}' are both initial")
         }
         states[parent].initial = name
       }
-      let on = d.get("on", nil)
-      if on != nil {
-        for (event, spec) in on.iter() {
-          let where = "state '{name}' on '{event}'"
-          let mut list = []
-          for c in type_of(spec) == "Array" ? spec : [spec] {
-            _reject_unknown(c, CAND_KEYS, where)
-            list.push({
-              guard: _resolve(c.get("guard", nil), guards, "guard", where),
-              negate: c.get("negate", false),
-              action: _resolve(c.get("action", nil), actions, "action", where),
-              target: c.get("target", nil),
-            })
-          }
-          states[name].on[event] = list
-        }
+      for (event, spec) in d.get("on", {}).iter() {
+        let where = "state '{name}' on '{event}'"
+        states[name].on[event] = _candidates(spec, guards, actions, where)
       }
-      let sub = d.get("states", nil)
-      if sub != nil {
-        _walk(sub, name, states, guards, actions)
-      }
+      _walk(d.get("states", {}), name, states, guards, actions)
     }
   }
 
-  fn _validate(states) {
+  # Entering a composite state means entering its initial child, down to a
+  # leaf: that is where a machine actually rests.
+  fn _leaf(states, s) {
+    let mut cur = s
+    while states[cur].initial != nil {
+      cur = states[cur].initial
+    }
+    cur
+  }
+
+  # The deepest state that is a proper ancestor of both.
+  fn _domain(states, a, b) {
+    let mut x = states[a].parent
+    while x != nil {
+      let mut y = states[b].parent
+      while y != nil {
+        return x if x == y
+        y = states[y].parent
+      }
+      x = states[x].parent
+    }
+    ROOT
+  }
+
+  # The states strictly below `domain`, down to `target`, root-first.
+  fn _path(states, domain, target) {
+    let mut out = []
+    let mut s = target
+    while s != domain {
+      out.push(s)
+      s = states[s].parent
+    }
+    out.reverse()
+    out
+  }
+
+  # A second pass, because a transition may name a state declared later. Every
+  # composite needs an initial child — checked from the child's side, since a
+  # state is composite exactly when another names it as parent.
+  fn _link(states) {
+    _fail("the machine has no initial state") if states[ROOT].initial == nil
     for (name, s) in states.iter() {
-      if s.children > 0 && s.initial == nil {
-        throw {
-          kind: "StateMachineError",
-          message: name == ROOT
-            ? "the machine has no initial state"
-            : "composite state '{name}' has no initial child",
-        }
+      if s.parent != nil && states[s.parent].initial == nil {
+        _fail("composite state '{s.parent}' has no initial child")
       }
       for (event, list) in s.on.iter() {
         for t in list {
-          if t.target != nil && !states.has(t.target) {
-            throw {
-              kind: "StateMachineError",
-              message: "state '{name}' on '{event}': no state named '{t.target}'",
+          if t.target != nil {
+            if !states.has(t.target) {
+              _fail("state '{name}' on '{event}': no state named '{t.target}'")
             }
+            t.domain = _domain(states, name, t.target)
+            t.enter = _path(states, t.domain, _leaf(states, t.target))
           }
         }
       }
     }
   }
 
-  # --- the text DSL -------------------------------------------------------
-  #
-  # `Item <- State / Transition` leans on the trailing block: a state header
-  # is followed by `{`, a transition never is, so the ordered choice settles
-  # it without a keyword. Each modifier keyword carries its own boundary so a
-  # state named `initialize` does not read as `initial` — and the boundary
-  # lives *inside* the `< >` token, because outside one the whitespace after
-  # the literal is skipped first and `initial entry: e` would then see the
-  # `e` as the character that must not follow.
+  # `Item <- State / Transition` leans on the trailing block: a state header is
+  # followed by `{`, a transition never is, so the ordered choice settles it
+  # without a keyword. The `![a-zA-Z0-9_]` is what stops `initialentry: e` from
+  # reading as `initial` plus a second modifier — a name that merely begins
+  # with a keyword (`initialize`) is rejected either way, since a bare
+  # identifier is not legal in modifier position. It has to live *inside* the
+  # `< >` token: outside one the whitespace after the literal is skipped first,
+  # so `initial entry: e` would see the `e` as the character that must not
+  # follow. `Entry`/`Exit` do not need it — their mandatory `:` is already a
+  # boundary — but carry it so the three read alike.
   let GRAMMAR = `
     Machine     <- Ident '{' State* '}'
     State       <- Ident Modifier* '{' Item* '}'
@@ -3215,10 +3215,11 @@ let _state_machine_module = fn () {
   let ACTIONS = {
     Ident: |sv| sv.token,
     Bang: |sv| true,
-    Guard: fn (sv) {
-      sv.values.size() > 1
-        ? {tag: "guard", name: sv.values[1], negate: true}
-        : {tag: "guard", name: sv.values[0], negate: false}
+    # `Bang` only ever prepends, so the name is last either way.
+    Guard: |sv| {
+      tag: "guard",
+      name: sv.values[-1],
+      negate: sv.values.size() > 1,
     },
     Action: |sv| {tag: "action", name: sv.values[0]},
     Target: |sv| {tag: "target", name: sv.values[0]},
@@ -3233,14 +3234,13 @@ let _state_machine_module = fn () {
         mut target: nil,
       }
       for i in 1..sv.values.size() {
-        let v = sv.values[i]
-        if v.tag == "guard" {
-          c.guard = v.name
-          c.negate = v.negate
-        } else if v.tag == "action" {
-          c.action = v.name
-        } else {
-          c.target = v.name
+        match sv.values[i] {
+          {tag: "guard", name, negate} => {
+            c.guard = name
+            c.negate = negate
+          },
+          {tag: "action", name} => c.action = name,
+          {tag: "target", name} => c.target = name,
         }
       }
       {tag: "transition", event: sv.values[0], cand: c}
@@ -3250,17 +3250,16 @@ let _state_machine_module = fn () {
       let mut on = {}
       let mut sub = {}
       for i in 1..sv.values.size() {
-        let v = sv.values[i]
-        if v.tag == "initial" {
-          d["initial"] = true
-        } else if v.tag == "entry" {
-          d["entry"] = v.name
-        } else if v.tag == "exit" {
-          d["exit"] = v.name
-        } else if v.tag == "state" {
-          sub[v.name] = v.desc
-        } else {
-          on.get_or_put(v.event, || []).push(v.cand)
+        match sv.values[i] {
+          {tag: "initial"} => d["initial"] = true,
+          {tag: "entry", name} => d["entry"] = name,
+          {tag: "exit", name} => d["exit"] = name,
+          {tag: "state", name, desc} => sub[name] = desc,
+          {
+            tag: "transition",
+            event,
+            cand,
+          } => on.get_or_put(event, || []).push(cand),
         }
       }
       d["on"] = on if !on.empty()
@@ -3282,23 +3281,25 @@ let _state_machine_module = fn () {
       self.context = context
       let mut states = {}
       states[ROOT] = {
-        mut parent: nil,
+        parent: nil,
         mut initial: nil,
-        mut entry: nil,
-        mut exit: nil,
-        mut on: {},
-        mut children: 0,
+        entry: nil,
+        exit: nil,
+        on: {},
       }
       _walk(desc, ROOT, states, guards, actions)
-      _validate(states)
+      _link(states)
       self._states = states
-      self._current = nil
-      self._enter(ROOT, self._leaf(ROOT), {name: nil, payload: nil})
+      self._boot = _path(states, ROOT, _leaf(states, ROOT))
+      # Standing at the root, `reset` is exactly "enter the initial one".
+      self._current = ROOT
+      self.reset()
     }
 
     # Build from the text DSL. A malformed machine raises `PegError`, whose
     # message carries `path` when one is given.
     static parse(text, *, guards = {}, actions = {}, context = nil, path = "") {
+      # _Peg.parse(grammar, text, start, optimize, packrat, path, actions)
       let m = _Peg.parse(GRAMMAR, text, "", true, true, path, ACTIONS)
       StateMachine.new(
         m.states,
@@ -3316,7 +3317,7 @@ let _state_machine_module = fn () {
     # True for the active leaf and for every composite state containing it.
     in_state(name) {
       let mut s = self._current
-      while s != nil {
+      while s != ROOT {
         return true if s == name
         s = self._states[s].parent
       }
@@ -3325,26 +3326,16 @@ let _state_machine_module = fn () {
 
     fire(name, payload = nil) {
       let ev = {name: name, payload: payload}
-      let hit = self._select(name, ev)
-      return false if hit == nil
-      let t = hit.t
-      if t.target == nil {
+      let t = self._select(name, ev)
+      return false if t == nil
+      if t.enter == nil {
         # An internal transition: the action runs, the configuration stands.
         t.action(self.context, ev) if t.action != nil
         return true
       }
-      # Everything below the domain is left and re-entered; everything at or
-      # above it is untouched. A transition back into its own source state
-      # therefore does exit and re-enter, which is what naming it asks for.
-      let domain = self._domain(hit.source, t.target)
-      let mut s = self._current
-      while s != domain {
-        let ex = self._states[s].exit
-        ex(self.context, ev) if ex != nil
-        s = self._states[s].parent
-      }
+      self._exit(t.domain, ev)
       t.action(self.context, ev) if t.action != nil
-      self._enter(domain, self._leaf(t.target), ev)
+      self._enter(t.enter, ev)
       true
     }
 
@@ -3358,13 +3349,8 @@ let _state_machine_module = fn () {
     # context is the caller's data and is left alone.
     reset() {
       let ev = {name: nil, payload: nil}
-      let mut s = self._current
-      while s != ROOT {
-        let ex = self._states[s].exit
-        ex(self.context, ev) if ex != nil
-        s = self._states[s].parent
-      }
-      self._enter(ROOT, self._leaf(ROOT), ev)
+      self._exit(ROOT, ev)
+      self._enter(self._boot, ev)
     }
 
     __str__() {
@@ -3373,42 +3359,21 @@ let _state_machine_module = fn () {
         : "StateMachine({self.name}, state={self._current})"
     }
 
-    # Entering a composite state means entering its initial child, down to a
-    # leaf: that is where a machine actually rests.
-    _leaf(s) {
-      let mut cur = s
-      while self._states[cur].initial != nil {
-        cur = self._states[cur].initial
-      }
-      cur
-    }
-
-    _enter(domain, target, ev) {
-      let mut path = []
-      let mut s = target
+    _exit(domain, ev) {
+      let mut s = self._current
       while s != domain {
-        path.insert(0, s)
+        let ex = self._states[s].exit
+        ex(self.context, ev) if ex != nil
         s = self._states[s].parent
       }
+    }
+
+    _enter(path, ev) {
       for n in path {
         let en = self._states[n].entry
         en(self.context, ev) if en != nil
       }
-      self._current = target
-    }
-
-    # The deepest state that is a proper ancestor of both.
-    _domain(a, b) {
-      let mut x = self._states[a].parent
-      while x != nil {
-        let mut y = self._states[b].parent
-        while y != nil {
-          return x if x == y
-          y = self._states[y].parent
-        }
-        x = self._states[x].parent
-      }
-      ROOT
+      self._current = path[-1]
     }
 
     # Walk out from the active leaf; the innermost state that both names the
@@ -3420,13 +3385,7 @@ let _state_machine_module = fn () {
         let list = self._states[s].on.get(name, nil)
         if list != nil {
           for t in list {
-            if t.guard == nil {
-              return {source: s, t: t}
-            }
-            let g = t.guard(self.context, ev)
-            if t.negate ? !g : g {
-              return {source: s, t: t}
-            }
+            return t if t.guard == nil || t.guard(self.context, ev)
           }
         }
         s = self._states[s].parent

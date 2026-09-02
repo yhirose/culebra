@@ -58,12 +58,11 @@ let m = StateMachine.parse(
 
 fn step(m, event) {
   let before = m.state()
-  let moved = m.fire(event)
+  m.fire(event)
   let ran = m.context.log.join(", ")
   m.context.log = []
   let dest = ran == "" ? m.state() : "{m.state():<10}   ({ran})"
   println("{before:<10} --{event:<13}-> {dest}")
-  moved
 }
 
 println("start: {m.state()}")

@@ -91,16 +91,21 @@ for (event, payload) in script {
   for m in [from_text, from_desc] {
     m.fire(event, payload)
   }
+  # The claim this example makes, checked on every event rather than at the
+  # end: the two forms took the same transition and ran the same actions.
+  assert_eq(from_text.state(), from_desc.state())
+  assert_eq(from_text.context.log, from_desc.context.log)
+
   let arg = payload == nil ? "" : " {payload}"
   println("{event}{arg} -> {from_text.state()}")
   for line in from_text.context.log {
     println("    {line}")
   }
-  from_text.context.log = []
-  from_desc.context.log = []
+  for m in [from_text, from_desc] {
+    m.context.log = []
+  }
 }
 
 # `select` in `idle` is not an error — no state handles it, so nothing moves.
 println("")
 println("unhandled `select` in {from_text.state()}: {from_text.fire('select')}")
-println("both machines agree: {from_text.state() == from_desc.state()}")

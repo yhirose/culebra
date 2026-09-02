@@ -6564,7 +6564,10 @@ inspect((m.state(), m.context.n))  # => ('off', 1)
 
 Guards and actions are `fn (ctx, ev)`, where `ctx` is the `context:` value
 and `ev` is `{name, payload}` — an `Object`, so a later field cannot break
-an existing closure. Every state, guard and action name is resolved when
+an existing closure. The machine enters its initial configuration twice
+without an event of its own — when it is built and on `reset()` — and the
+`entry` actions that run then see `ev.name` as `nil`. Every state, guard
+and action name is resolved when
 the machine is built, so a typo raises `StateMachineError` there rather
 than on the first event that would have reached it; so do a machine with no
 initial state, a composite state without one, and two initial siblings.
