@@ -3241,17 +3241,27 @@ struct JIT {
   // definition, two consumers — compile_unary_minus and the VM lowering's
   // Neg (the emit_arith_step precedent).
   llvm::Value* emit_neg_step(llvm::Value* v) {
-    auto isLong = builder_.CreateICmpEQ(extract_tag(v),
-                                        builder_.getInt8(TAG_LONG));
+    auto tag = extract_tag(v);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto intBB = llvm::BasicBlock::Create(ctx_, "neg.int", fn);
+    auto floatBB = llvm::BasicBlock::Create(ctx_, "neg.float", fn);
     auto slowBB = llvm::BasicBlock::Create(ctx_, "neg.slow", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "neg.merge", fn);
-    builder_.CreateCondBr(isLong, intBB, slowBB);
+    auto sw = builder_.CreateSwitch(tag, slowBB, 2);
+    sw->addCase(builder_.getInt8(TAG_LONG), intBB);
+    sw->addCase(builder_.getInt8(TAG_FLOAT), floatBB);
 
     OwnedPhi merge(this, "neg.r");
     builder_.SetInsertPoint(intBB);
     merge.add_incoming(make_long(builder_.CreateNeg(extract_data(v), "neg")));
+    builder_.CreateBr(mergeBB);
+
+    // A known Float tag folds this arm to a bare `fneg` (the comparison and
+    // binop Float arms' precedent); the helper below stays for the rest.
+    builder_.SetInsertPoint(floatBB);
+    merge.add_incoming(make_float(builder_.CreateFNeg(
+        builder_.CreateBitCast(extract_data(v), builder_.getDoubleTy()),
+        "fneg")));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(slowBB);
