@@ -1006,6 +1006,180 @@ struct JIT {
     return true;
   }
 
+  // A loop-carried Float travels as the i64 payload of its Value, so the phi
+  // that carries one is an i64 whose incoming edges are `bitcast double` and
+  // whose uses bitcast it straight back. A machine with separate integer and
+  // float registers pays a register move each way, every iteration, on the
+  // loop's critical path. InstCombine has this fold, but only for a phi whose
+  // every incoming is a bitcast with no other user — and the emitter gives the
+  // same bitcast to a second phi (the statement temp that holds the value for
+  // its release), so it declines on exactly the loops that would gain most.
+  //
+  // Take it per connected web of phis instead, constants and poison allowed on
+  // the way in, paying a bitcast back at any use that is not itself a bitcast
+  // to double. That boundary is the one LLVM's own fold leaves behind when it
+  // does fire; in the shapes this catches, those uses sit on the unwind path.
+  //
+  // What makes it sound is the incoming test alone: every edge already carries
+  // a double, or a constant reinterpreted bit for bit as one. The phis change
+  // type; no value changes.
+  struct PromoteFloatPhis : llvm::PassInfoMixin<PromoteFloatPhis> {
+    // The double behind an edge into the web, or null when the edge is not one.
+    static llvm::Value* edge_double(llvm::Value* v) {
+      auto* bc = llvm::dyn_cast<llvm::BitCastInst>(v);
+      return bc && bc->getSrcTy()->isDoubleTy() ? bc->getOperand(0) : nullptr;
+    }
+
+    static bool reads_as_double(const llvm::User* u) {
+      const auto* bc = llvm::dyn_cast<llvm::BitCastInst>(u);
+      return bc && bc->getType()->isDoubleTy();
+    }
+
+    static bool carrier(const llvm::Value* v) {
+      return llvm::isa<llvm::PHINode>(v) && v->getType()->isIntegerTy(64);
+    }
+
+    // The connected component of `seed` under phi-to-phi edges, in `web`.
+    // False when an edge into it carries something that is not a double, a
+    // constant or poison — the walk still finishes, so `seen` covers the whole
+    // component and the caller skips the rest of it too.
+    static bool collect(llvm::PHINode* seed,
+                        llvm::SmallVectorImpl<llvm::PHINode*>& web,
+                        llvm::SmallPtrSetImpl<llvm::PHINode*>& seen) {
+      llvm::SmallVector<llvm::PHINode*, 8> work{seed};
+      seen.insert(seed);
+      web.push_back(seed);
+      bool ok = true;
+      while (!work.empty()) {
+        auto* phi = work.pop_back_val();
+        auto reach = [&](llvm::Value* v) {
+          if (!carrier(v)) return false;
+          auto* p = llvm::cast<llvm::PHINode>(v);
+          if (seen.insert(p).second) {
+            web.push_back(p);
+            work.push_back(p);
+          }
+          return true;
+        };
+        for (llvm::Value* in : phi->incoming_values()) {
+          if (reach(in) || llvm::isa<llvm::ConstantInt>(in) ||
+              llvm::isa<llvm::UndefValue>(in) || edge_double(in))
+            continue;
+          ok = false;
+        }
+        for (llvm::User* u : phi->users()) reach(u);
+      }
+      return ok;
+    }
+
+    // Bitcasts the rewrite would remove against the ones it would add. A use
+    // that already reads the payload as a double loses its bitcast; an
+    // incoming one goes only when this web was its whole audience.
+    static bool worth_it(const llvm::SmallVectorImpl<llvm::PHINode*>& web,
+                         const llvm::SmallPtrSetImpl<llvm::PHINode*>& in_web) {
+      unsigned gain = 0, cost = 0;
+      llvm::SmallPtrSet<llvm::Value*, 8> edges;
+      for (auto* phi : web) {
+        for (llvm::Value* in : phi->incoming_values())
+          if (edge_double(in)) edges.insert(in);
+        for (const llvm::User* u : phi->users()) {
+          if (carrier(u)) continue;
+          if (reads_as_double(u)) ++gain;
+          else ++cost;
+        }
+      }
+      for (auto* e : edges) {
+        bool only_web = true;
+        for (const llvm::User* u : e->users())
+          if (!carrier(u) || !in_web.contains(llvm::cast<llvm::PHINode>(u)))
+            only_web = false;
+        if (only_web) ++gain;
+      }
+      return gain > 0 && gain >= cost;
+    }
+
+    static void rewrite(llvm::SmallVectorImpl<llvm::PHINode*>& web) {
+      auto& ctx = web.front()->getContext();
+      auto* dbl = llvm::Type::getDoubleTy(ctx);
+      llvm::SmallDenseMap<llvm::PHINode*, llvm::PHINode*, 8> promoted;
+      for (auto* phi : web) {
+        llvm::IRBuilder<> b(phi);
+        auto* np = b.CreatePHI(dbl, phi->getNumIncomingValues(), phi->getName());
+        np->setDebugLoc(phi->getDebugLoc());
+        promoted[phi] = np;
+      }
+      llvm::SmallPtrSet<llvm::Instruction*, 8> stale;
+      for (auto* phi : web) {
+        auto* np = promoted[phi];
+        for (unsigned i = 0, n = phi->getNumIncomingValues(); i < n; ++i) {
+          llvm::Value* in = phi->getIncomingValue(i);
+          llvm::Value* nv;
+          if (carrier(in)) {
+            nv = promoted[llvm::cast<llvm::PHINode>(in)];
+          } else if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(in)) {
+            nv = llvm::ConstantFP::get(
+                ctx, llvm::APFloat(llvm::APFloat::IEEEdouble(), c->getValue()));
+          } else if (llvm::isa<llvm::UndefValue>(in)) {
+            nv = llvm::PoisonValue::get(dbl);
+          } else {
+            nv = edge_double(in);
+            stale.insert(llvm::cast<llvm::Instruction>(in));
+          }
+          np->addIncoming(nv, phi->getIncomingBlock(i));
+        }
+      }
+      for (auto* phi : web) {
+        auto* np = promoted[phi];
+        for (llvm::Use& u : llvm::make_early_inc_range(phi->uses())) {
+          auto* user = llvm::cast<llvm::Instruction>(u.getUser());
+          if (carrier(user)) continue;  // its own incoming edge, already set
+          if (reads_as_double(user)) {
+            user->replaceAllUsesWith(np);
+            user->eraseFromParent();
+            continue;
+          }
+          llvm::IRBuilder<> b(user);
+          u.set(b.CreateBitCast(np, phi->getType(), np->getName() + ".bits"));
+        }
+      }
+      // The webs reference each other, so every phi drops its operands before
+      // any of them goes.
+      for (auto* phi : web)
+        phi->replaceAllUsesWith(llvm::PoisonValue::get(phi->getType()));
+      for (auto* phi : web) phi->eraseFromParent();
+      for (auto* bc : stale)
+        if (bc->use_empty()) bc->eraseFromParent();
+    }
+
+    llvm::PreservedAnalyses run(llvm::Function& f,
+                                llvm::FunctionAnalysisManager&) {
+      llvm::SmallVector<llvm::PHINode*, 16> seeds;
+      for (auto& bb : f)
+        for (auto& phi : bb.phis())
+          if (carrier(&phi)) seeds.push_back(&phi);
+
+      bool changed = false;
+      llvm::SmallPtrSet<llvm::PHINode*, 16> seen;
+      for (auto* seed : seeds) {
+        if (seen.contains(seed)) continue;
+        llvm::SmallVector<llvm::PHINode*, 8> web;
+        llvm::SmallPtrSet<llvm::PHINode*, 8> in_web;
+        if (!collect(seed, web, in_web)) {
+          seen.insert(in_web.begin(), in_web.end());
+          continue;
+        }
+        seen.insert(in_web.begin(), in_web.end());
+        if (!worth_it(web, in_web)) continue;
+        rewrite(web);
+        changed = true;
+      }
+      if (!changed) return llvm::PreservedAnalyses::all();
+      llvm::PreservedAnalyses pa;
+      pa.preserveSet<llvm::CFGAnalyses>();
+      return pa;
+    }
+  };
+
   static void optimize_module(llvm::Module& mod, int opt_level) {
     using namespace llvm;
     PassBuilder PB;
@@ -1024,10 +1198,14 @@ struct JIT {
         [](FunctionPassManager& FPM, OptimizationLevel) {
           FPM.addPass(DropSettledRefcounts());
         });
+    // PromoteFloatPhis waits for the very end: the loop passes rotate and
+    // rewrite the phis it reads, and it is the one pass here that wants the
+    // shape they settle on rather than the shape they were handed.
     PB.registerOptimizerLastEPCallback([](ModulePassManager& MPM,
                                           OptimizationLevel,
                                           ThinOrFullLTOPhase) {
       MPM.addPass(createModuleToFunctionPassAdaptor(DropSettledRefcounts()));
+      MPM.addPass(createModuleToFunctionPassAdaptor(PromoteFloatPhis()));
     });
 
     PB.registerModuleAnalyses(MAM);
@@ -1055,6 +1233,10 @@ struct JIT {
     ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(level);
     MPM.run(mod, MAM);
     assert(no_settled_refcounts(mod));
+    // The lowered IR is verified before it gets here (lower_program); this
+    // says the pipeline — PromoteFloatPhis included, which is the one pass
+    // here that rewrites types — handed back something still well formed.
+    assert(!verifyModule(mod, &errs()));
   }
 
 

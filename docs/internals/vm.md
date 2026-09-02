@@ -1107,6 +1107,27 @@ That branch is IR at every release site, which is the cost side: on
 executor lowers nothing, so what pays it is `--jit` and `culebra build` —
 the two lanes chosen for throughput.
 
+The pipeline's other own pass is about how a Float travels. A `Value`
+keeps one in the `i64` payload, so the phi a loop carries it in is an
+`i64` whose incoming edges are `bitcast double` and whose uses bitcast it
+straight back — and on a machine with separate integer and float
+registers that is a register move each way, per iteration, on the loop's
+critical path. `InstCombine` has this fold, but takes it only when every
+incoming is a bitcast with no other user, and here the same bitcast
+feeds a second phi (the statement temp holding the value for its
+release), so it declines on the loops that would gain most.
+`JIT::PromoteFloatPhis` takes it per connected web of phis instead, with
+constants and poison allowed on the way in, and pays a bitcast back at
+any use that is not itself a bitcast to double — the boundary LLVM's own
+fold leaves behind, which in these shapes sits on the unwind path. It
+runs last, after the loop passes have settled the phis, and only where
+at least as many bitcasts go as come. What makes it sound is the
+incoming test alone: every edge already carries a double, or a constant
+reinterpreted bit for bit as one, so the phis change type and no value
+does — a payload read as an integer or a pointer anywhere keeps its
+`i64` phi. `optimize_module` asserts the module still verifies
+afterwards (§10.2).
+
 ### 7.1 Ownership in the lowering
 
 The lowering's C++ holds every transient `+1` in `JIT::Owned`, a

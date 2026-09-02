@@ -1,0 +1,115 @@
+// A Float a loop carries is held as its Value's i64 payload, and the lowering
+// promotes the phis that carry one to real doubles for the length of the loop
+// (PromoteFloatPhis, docs/internals/vm.md §7). The promotion reinterprets a
+// bit pattern, so every pattern has to come back out unchanged — including the
+// ones a naive round trip through a double would disturb — and the value has
+// to stay correct on the paths that leave the loop by another door.
+
+// A loop that only carries the value across its back edge: nothing here
+// touches `v`, so what comes out is exactly what the phis carried.
+let carry = fn (x, n) {
+  mut v = x
+  mut i = 0
+  for _ in 0..n {
+    if i < 0 {
+      v = 1.0
+    }
+    i += 1
+  }
+  v
+}
+
+assert_eq(to_string(carry(-0.0, 100)), "-0.0")
+assert_eq(to_string(carry(0.0, 100)), "0.0")
+assert_eq(carry(5e-324, 100), 5e-324)
+assert_eq(carry(1e-320, 100), 1e-320)
+assert_eq(carry(Math.inf, 100), Math.inf)
+assert_eq(carry(-Math.inf, 100), -Math.inf)
+assert_eq(carry(1.7976931348623157e308, 100), 1.7976931348623157e308)
+
+// NaN is not equal to itself, so it is checked the only way it can be.
+let nan = carry(Math.sqrt(-1.0), 100)
+assert_eq(nan != nan, true)
+assert_eq(to_string(nan), "nan")
+
+// --- A value the loop does arithmetic on, then reads after it. ---
+let sum = fn (n) {
+  mut v = 0.0
+  for _ in 0..n {
+    v += 0.5
+  }
+  v
+}
+assert_eq(sum(100), 50.0)
+
+// --- The tag still answers for the value: a carried Float is a Float to
+// everything that asks, inside the loop and after it. ---
+let typed = fn (n) {
+  mut v = 1.5
+  mut seen = ""
+  for _ in 0..n {
+    v = v + 1.0
+    seen = type_of(v)
+  }
+  [seen, type_of(v), v]
+}
+assert_eq(typed(3), ["Float", "Float", 4.5])
+
+// --- A Long and a Float through the same name: the payload is read as an
+// integer on one pass and as a double on the next, so the phi that carries it
+// must stay an integer one. ---
+let mixed = fn (n) {
+  mut v = 0
+  mut out = []
+  for i in 0..n {
+    out.push(v)
+    v = i % 2 == 0 ? 7 : 2.5
+  }
+  out
+}
+assert_eq(mixed(4), [0, 7, 2.5, 7])
+
+// --- Leaving the loop through an unwind: the carried value is what the
+// handler and the caller see, not a stale or reinterpreted one. ---
+let thrown = fn () {
+  mut v = 1.0
+  try {
+    for _ in 0..100 {
+      v = v * 2.0
+      if v > 100.0 {
+        throw "stop"
+      }
+    }
+  } catch e {
+    return v
+  }
+  -1.0
+}
+assert_eq(thrown(), 128.0)
+
+// --- The value escaping into a call and a container mid-loop: both take the
+// payload as a whole Value, so the promotion has to hand one back. ---
+let escapes = fn (n) {
+  mut v = 0.25
+  mut acc = []
+  for _ in 0..n {
+    v = v + 0.25
+    acc.push(v)
+  }
+  [acc.size(), acc[0], Math.max(v, 0.0)]
+}
+assert_eq(escapes(4), [4, 0.5, 1.25])
+
+// --- Deep in a nested loop, with the inner one carrying its own value. ---
+let nested = fn (n) {
+  mut outer = 0.0
+  for _ in 0..n {
+    mut inner = 1.0
+    for _ in 0..n {
+      inner = inner * 1.5
+    }
+    outer += inner
+  }
+  outer
+}
+assert_eq(nested(3), 3.375 * 3.0)
