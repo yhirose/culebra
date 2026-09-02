@@ -1,0 +1,349 @@
+# The same BPE as `codebot/tokenizer.cul`, fast enough for a corpus that
+# does not fit in one pass. Ported from upstream `storybot/tokenizer.py`,
+# which is what ch04 arrives at.
+#
+# Four changes, each one a section of ch04:
+#
+#   1. Pre-tokens are deduplicated and counted. A corpus repeats itself, so
+#      the merge loop walks unique pre-tokens weighted by frequency instead
+#      of every occurrence.
+#   2. Pair counts are updated incrementally. Only the pre-tokens that
+#      actually contained the merged pair change, and a pair -> pre-tokens
+#      index says which those are.
+#   3. The file is read in chunks whose boundaries are snapped to the end
+#      token, so no pre-token ever straddles two chunks.
+#   4. Those chunks are pre-tokenized in parallel.
+#
+# `encode` changes too: rather than replaying every rule over every
+# pre-token, it repeatedly applies the highest-priority rule that is still
+# applicable, which is what makes a whole-corpus encode finish.
+
+# Upstream's `storybot/tokenizer.py` is a standalone copy of
+# `codebot/tokenizer.py`, not an import of it, and this port keeps that.
+# Culebra gives the arrangement a second reason: an isolate worker sees its
+# own module's globals, but a value read off an *imported* module is a
+# capture, and a module object is not Sendable.
+
+import D from '../common/data.cul'
+
+let PRETOKEN_PATTERN = `'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`
+let PRETOKEN_RE = Regex.compile(PRETOKEN_PATTERN)
+let END_TOKEN = '<|endoftext|>'
+let PAIR_STRIDE = 1048576
+
+fn pack_pair(id1, id2) {
+  id1 * PAIR_STRIDE + id2
+}
+
+fn unpack_pair(key) {
+  [key / PAIR_STRIDE, key % PAIR_STRIDE]
+}
+
+fn pretokenize(text) {
+  PRETOKEN_RE.find_all(text).map(|m| m.value)
+}
+
+fn merge(ids, pair, new_id) {
+  let n = ids.size()
+  mut out = []
+  mut i = 0
+  while i < n {
+    if i < n - 1 && pack_pair(ids[i], ids[i + 1]) == pair {
+      out.push(new_id)
+      i += 2
+    } else {
+      out.push(ids[i])
+      i += 1
+    }
+  }
+  out
+}
+
+fn best_pair(counts) {
+  let wins = |a, b| counts[a] != counts[b] ? counts[a] > counts[b] : a > b
+  counts
+    .keys()
+    .reduce(nil, |best, key| best == nil || wins(key, best) ? key : best)
+}
+
+# --- chunking ---------------------------------------------------------------
+
+# `num_chunks` byte offsets, each moved forward to the next end token so a
+# chunk always holds whole documents. Returns the boundaries including 0
+# and the file size, deduplicated and ascending.
+fn find_chunk_boundaries(text, num_chunks, end_token = END_TOKEN) {
+  let size = text.size()
+  mut bounds = [0]
+  for i in 1..num_chunks {
+    let guess = i * size / num_chunks
+    let found = text.index_of(end_token, guess)
+    bounds.push(found == -1 ? size : found)
+  }
+  bounds.push(size)
+  bounds.to_set().to_array().sorted()
+}
+
+fn chunks(text, num_chunks, end_token = END_TOKEN) {
+  let bounds = find_chunk_boundaries(text, num_chunks, end_token)
+  range(bounds.size() - 1)
+    .map(|i| text.slice(bounds[i], bounds[i + 1]))
+    .collect()
+}
+
+# --- pre-token census -------------------------------------------------------
+#
+# An Object is also the dictionary type, and an own entry shadows the dict
+# builtins: a corpus holding the pre-token `get` would turn `counts.get(...)`
+# into a TypeError, and one holding `keys` would break iteration. `#` cannot
+# start an identifier, so prefixing every data key keeps every builtin
+# reachable. `unkey` takes the prefix back off.
+
+let KEY_PREFIX = '#'
+
+fn census_key(pretoken) {
+  KEY_PREFIX + pretoken
+}
+
+fn census_unkey(k) {
+  k.slice(KEY_PREFIX.size(), k.size())
+}
+
+fn count_pretokens(text, counts, end_token = END_TOKEN) {
+  for part in text.split(end_token) {
+    for pretoken in pretokenize(part) {
+      let k = census_key(pretoken)
+      counts[k] = counts.get(k, 0) + 1
+    }
+  }
+  counts
+}
+
+# Chunk the text, census each chunk in its own isolate, and merge the
+# tallies. `limit` isolates run at once.
+fn count_pretokens_parallel(
+  text,
+  num_chunks = 64,
+  limit = 8,
+  end_token = END_TOKEN,
+) {
+  let per_chunk = Parallel.map(
+    chunks(text, num_chunks, end_token),
+    |chunk| count_pretokens(chunk, {}, end_token),
+    limit: limit,
+  )
+
+  mut total = {}
+  for counts in per_chunk {
+    for k in counts.keys() {
+      total[k] = total.get(k, 0) + counts[k]
+    }
+  }
+  total
+}
+
+# --- training ---------------------------------------------------------------
+
+# One unique pre-token: its current ids and how often the corpus has it.
+class Entry {
+  new(ids, count) {
+    self.ids = ids
+    self.count = count
+  }
+}
+
+fn add_pair_counts(ids, weight, counts) {
+  for w in ids.iter().windows(2) {
+    let key = pack_pair(w[0], w[1])
+    counts[key] = counts.get(key, 0) + weight
+  }
+  counts
+}
+
+# `pretoken_counts` is `{pretoken: occurrences}`; everything below works on
+# unique pre-tokens weighted by that count.
+fn train_bpe_counted(pretoken_counts, vocab_size) {
+  let entries = pretoken_counts
+    .keys()
+    .map(|k| Entry(census_unkey(k).bytes().collect(), pretoken_counts[k]))
+
+  # Pair frequencies over the whole corpus, plus the index that says which
+  # entries a pair occurs in -- the two structures the merge loop keeps in
+  # step instead of recounting from scratch.
+  mut pair_counts = {}
+  mut pair_to_entries = {}
+  for i, e in entries.enumerate() {
+    add_pair_counts(e.ids, e.count, pair_counts)
+    for w in e.ids.iter().windows(2) {
+      pair_to_entries.get_or_put(pack_pair(w[0], w[1]), [].to_set()).add(i)
+    }
+  }
+
+  let num_merges = vocab_size - 256 - 1
+  mut merge_rules = []
+
+  for step in 0..num_merges {
+    break if pair_counts.empty()
+    let pair = best_pair(pair_counts)
+    let new_id = 256 + step
+    merge_rules.push(unpack_pair(pair) + [new_id])
+
+    let affected = pair_to_entries.get(pair, [].to_set()).to_array()
+    pair_to_entries.remove(pair)
+
+    for i in affected {
+      let e = entries[i]
+      let old_ids = e.ids
+      let new_ids = merge(old_ids, pair, new_id)
+
+      # Withdraw what the old id sequence contributed, then post what the
+      # new one contributes. Exact bookkeeping, so a pair that reaches zero
+      # really is gone.
+      mut old_counts = {}
+      add_pair_counts(old_ids, e.count, old_counts)
+      for key in old_counts.keys() {
+        let left = pair_counts.get(key, 0) - old_counts[key]
+        if left <= 0 {
+          pair_counts.remove(key)
+        } else {
+          pair_counts[key] = left
+        }
+        pair_to_entries[key].remove(i) if pair_to_entries.has(key)
+      }
+
+      e.ids = new_ids
+      mut new_counts = {}
+      add_pair_counts(new_ids, e.count, new_counts)
+      for key in new_counts.keys() {
+        pair_counts[key] = pair_counts.get(key, 0) + new_counts[key]
+        pair_to_entries.get_or_put(key, [].to_set()).add(i)
+      }
+    }
+  }
+
+  merge_rules
+}
+
+fn train_bpe(
+  input_text,
+  vocab_size,
+  end_token = END_TOKEN,
+  num_chunks = 64,
+  limit = 8,
+) {
+  train_bpe_counted(
+    count_pretokens_parallel(input_text, num_chunks, limit, end_token),
+    vocab_size,
+  )
+}
+
+# --- encoding ---------------------------------------------------------------
+
+# pair -> [new_id, rank]. The rank is the training order; applying rules in
+# that order gives the same ids as replaying the whole table.
+fn build_rule_index(merge_rules) {
+  mut rule_of = {}
+  for rank, rule in merge_rules.enumerate() {
+    rule_of[pack_pair(rule[0], rule[1])] = [rule[2], rank]
+  }
+  rule_of
+}
+
+# The `[pair, new_id]` of the applicable rule learned earliest, ready to
+# hand to `merge`, or nil when `ids` holds no learned pair at all.
+fn earliest_merge(ids, rule_of) {
+  mut best = nil
+  mut best_rank = 0
+  for w in ids.iter().windows(2) {
+    let key = pack_pair(w[0], w[1])
+    let rule = rule_of.get(key, nil)
+    if rule != nil && (best == nil || rule[1] < best_rank) {
+      best = [key, rule[0]]
+      best_rank = rule[1]
+    }
+  }
+  best
+}
+
+# Merge the earliest-learned applicable pair, over and over. `codebot`'s
+# version replays all N rules over every pre-token instead; this touches
+# only the rules that fire.
+fn encode_pretoken_with(pretoken, rule_of) {
+  mut ids = pretoken.bytes().collect()
+  mut rule = earliest_merge(ids, rule_of)
+  while rule != nil {
+    ids = merge(ids, rule[0], rule[1])
+    rule = earliest_merge(ids, rule_of)
+  }
+  ids
+}
+
+# One chunk encoded inside an isolate.
+fn encode_chunk(chunk, rule_of, end_token, end_token_id) {
+  mut all_ids = []
+  for i, part in chunk.split(end_token).enumerate() {
+    all_ids.push(end_token_id) if i > 0
+    for pretoken in pretokenize(part) {
+      all_ids.extend(encode_pretoken_with(pretoken, rule_of))
+    }
+  }
+  all_ids
+}
+
+class BPETokenizer {
+  new(merge_rules, end_token = END_TOKEN) {
+    self.merge_rules = merge_rules
+    self.end_token = end_token
+    self.end_token_id = 256 + merge_rules.size()
+
+    mut id_to_bytes = range(256).map(|b| [b]).collect()
+    for rule in merge_rules {
+      id_to_bytes.push(id_to_bytes[rule[0]] + id_to_bytes[rule[1]])
+    }
+    id_to_bytes.push(end_token.bytes().collect())
+    self.id_to_bytes = id_to_bytes
+    self.vocab_size = id_to_bytes.size()
+
+    self.rule_of = build_rule_index(merge_rules)
+  }
+
+  encode_pretoken(pretoken) {
+    encode_pretoken_with(pretoken, self.rule_of)
+  }
+
+  encode(input_text) {
+    mut all_ids = []
+    for i, part in input_text.split(self.end_token).enumerate() {
+      all_ids.push(self.end_token_id) if i > 0
+      for pretoken in pretokenize(part) {
+        all_ids.extend(self.encode_pretoken(pretoken))
+      }
+    }
+    all_ids
+  }
+
+  decode(ids) {
+    String.from_bytes(ids.flat_map(|id| self.id_to_bytes[id]))
+  }
+}
+
+# Encode a whole corpus, chunk by chunk and in parallel. The chunk
+# boundaries fall on end tokens, so concatenating the per-chunk ids is the
+# same as encoding the whole text at once.
+fn encode_file(tokenizer, in_path, out_path, num_chunks = 64, limit = 8) {
+  let text = FS.read(in_path)
+  let parts = chunks(text, num_chunks, tokenizer.end_token)
+  let end_token = tokenizer.end_token
+  let rule_of = tokenizer.rule_of
+  let end_id = tokenizer.end_token_id
+  let per_chunk = Parallel.map(
+    parts,
+    |chunk| encode_chunk(chunk, rule_of, end_token, end_id),
+    limit: limit,
+  )
+
+  let ids = per_chunk.flat_map(|c| c)
+  D.write_bin_u16(out_path, ids)
+  ids
+}
+
+export {END_TOKEN, PRETOKEN_PATTERN, pack_pair, unpack_pair, pretokenize, merge, best_pair, census_key, census_unkey, build_rule_index, encode_pretoken_with, encode_chunk, BPETokenizer, find_chunk_boundaries, chunks, count_pretokens, count_pretokens_parallel, add_pair_counts, train_bpe_counted, train_bpe, encode_file}

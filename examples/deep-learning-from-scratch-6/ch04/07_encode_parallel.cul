@@ -1,0 +1,42 @@
+# Encoding a whole corpus, in parallel.
+#
+# The same chunking that made counting parallel makes encoding parallel:
+# boundaries sit on end tokens, so concatenating the per-chunk ids is the
+# same stream as encoding the text in one go. This is what produces the
+# `.bin` every training script reads.
+#
+#   culebra ch04/07_encode_parallel.cul
+#   culebra ch04/07_encode_parallel.cul --full   # needs `just fetch-llm-data`
+
+import P from '../common/paths.cul'
+import D from '../common/data.cul'
+import T from '../codebot/tokenizer.cul'
+import S from '../storybot/tokenizer.cul'
+
+let full = Sys.argv.contains('--full')
+let rules = full
+  ? T.load_merge_rules(P.require_data('merge_rules_1000.json'))
+  : T.load_merge_rules(P.data('merge_rules_sample.json'))
+let corpus = full
+  ? P.require_data('tiny_codes.txt')
+  : P.data('tiny_codes_sample.txt')
+let out = P.data(full ? 'tiny_codes.bin' : 'tiny_codes_sample.bin')
+
+let tokenizer = S.BPETokenizer(rules)
+let text = FS.read(corpus)
+
+let t0 = Sys.time()
+let single = tokenizer.encode(text)
+let single_time = Sys.time() - t0
+
+let t1 = Sys.time()
+let ids = S.encode_file(tokenizer, corpus, out, 32, 8)
+let parallel_time = Sys.time() - t1
+
+inspect("{text.size()} bytes -> {ids.size()} tokens")
+inspect("single-shot: {single_time}s")
+inspect("32 chunks over 8 isolates: {parallel_time}s")
+inspect("speedup: {single_time / parallel_time}x")
+inspect("identical ids: {ids == single}")
+
+inspect("wrote {FS.basename(out)}, reads back: {D.read_bin_u16(out) == ids}")

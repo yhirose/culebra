@@ -1,0 +1,65 @@
+# Optimization 2: update the pair counts instead of recounting them.
+#
+# ch04/01 still sweeps every distinct pre-token on every merge, only to
+# find that almost none of them contained the pair that just merged. Keep
+# the pair counts between steps and repair them: withdraw what the pre-
+# tokens that changed used to contribute, post what they contribute now.
+# An index from pair to the pre-tokens holding it says which those are.
+#
+# This is the whole of `storybot/tokenizer.cul`'s merge loop; the version
+# below is the same algorithm spelled out.
+#
+#   culebra ch04/02_bpe_cache.cul
+
+import P from '../common/paths.cul'
+import T from '../codebot/tokenizer.cul'
+import S from '../storybot/tokenizer.cul'
+
+let text = FS.read(P.data('tiny_codes_sample.txt')).slice(0, 32000)
+let vocab_size = 400
+
+mut pretoken_counts = {}
+S.count_pretokens(text, pretoken_counts)
+inspect("{pretoken_counts.size()} distinct pre-tokens")
+
+# --- ch04/01's version, for the comparison ---------------------------------
+
+fn train_recounting(pretoken_counts, vocab_size) {
+  mut ids_list = pretoken_counts
+    .keys()
+    .map(|k| S.census_unkey(k).bytes().collect())
+  let weights = pretoken_counts.keys().map(|k| pretoken_counts[k])
+
+  mut merge_rules = []
+  for step in 0..vocab_size - 256 - 1 {
+    mut counts = {}
+    for i, ids in ids_list.enumerate() {
+      S.add_pair_counts(ids, weights[i], counts)
+    }
+    break if counts.empty()
+    let pair = T.best_pair(counts)
+    let new_id = 256 + step
+    merge_rules.push(T.unpack_pair(pair) + [new_id])
+    ids_list = ids_list.map(|ids| T.merge(ids, pair, new_id))
+  }
+  merge_rules
+}
+
+let t0 = Sys.time()
+let recounted = train_recounting(pretoken_counts, vocab_size)
+let recount_time = Sys.time() - t0
+
+let t1 = Sys.time()
+let cached = S.train_bpe_counted(pretoken_counts, vocab_size)
+let cache_time = Sys.time() - t1
+
+inspect("recounting every step: {recount_time}s")
+inspect("incremental + cache:  {cache_time}s")
+inspect("speedup: {recount_time / cache_time}x")
+inspect("same merge rules: {recounted == cached}")
+
+# The whole sample, which the ch01 trainer needs 165 s for.
+let t2 = Sys.time()
+let full_rules = S.train_bpe(FS.read(P.data('tiny_codes_sample.txt')), 1000)
+inspect("full sample, vocab 1000: {full_rules.size()} rules in {Sys.time() - t2}s")
+inspect("matches ch01/07's rules: {full_rules == T.load_merge_rules(P.data('merge_rules_sample.json'))}")

@@ -1,0 +1,37 @@
+# Optimization 3: read the corpus in chunks.
+#
+# A corpus that does not fit in memory has to be counted a piece at a time.
+# The pieces cannot be arbitrary byte ranges, though: a cut through the
+# middle of a word would invent two pre-tokens that are not in the text.
+# So each boundary is nudged forward to the next end token, where a cut is
+# always safe.
+#
+#   culebra ch04/03_bpe_chunk.cul
+
+import P from '../common/paths.cul'
+import S from '../storybot/tokenizer.cul'
+
+let text = FS.read(P.data('tiny_codes_sample.txt'))
+let bounds = S.find_chunk_boundaries(text, 8)
+
+inspect("{text.size()} bytes in {bounds.size() - 1} chunks")
+for w in bounds.iter().windows(2) {
+  inspect("  [{w[0]}, {w[1]}) = {w[1] - w[0]} bytes")
+}
+
+# Every interior boundary sits exactly on an end token, so no chunk can
+# begin or end inside a document.
+let interior = bounds.slice(1, bounds.size() - 1)
+inspect("every interior cut is on an end token: {interior.all(|b| text.slice(b, b + S.END_TOKEN.size()) == S.END_TOKEN)}")
+
+# Counting chunk by chunk gives the same census as counting the whole text.
+mut whole = {}
+S.count_pretokens(text, whole)
+
+mut piecewise = {}
+for chunk in S.chunks(text, 8) {
+  S.count_pretokens(chunk, piecewise)
+}
+
+inspect("chunked census matches: {whole == piecewise}")
+inspect("distinct pre-tokens: {whole.size()}")

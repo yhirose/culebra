@@ -1,0 +1,34 @@
+# Encoding, the other half of the cost.
+#
+# `codebot`'s encoder replays every learned rule over every pre-token, in
+# training order: 743 passes over a five-byte word, 742 of which change
+# nothing. But the result only depends on *which* rule fires first, so it
+# is enough to look at the pairs actually present and apply the earliest-
+# learned one, over and over, until none is left.
+#
+#   culebra ch04/06_encode_optimize.cul
+
+import P from '../common/paths.cul'
+import T from '../codebot/tokenizer.cul'
+import S from '../storybot/tokenizer.cul'
+
+let rules = T.load_merge_rules(P.data('merge_rules_sample.json'))
+let text = FS.read(P.data('tiny_codes_sample.txt')).slice(0, 32000)
+
+let replaying = T.BPETokenizer(rules)
+let by_priority = S.BPETokenizer(rules)
+
+let t0 = Sys.time()
+let a = replaying.encode(text)
+let replay_time = Sys.time() - t0
+
+let t1 = Sys.time()
+let b = by_priority.encode(text)
+let priority_time = Sys.time() - t1
+
+inspect("{text.size()} bytes -> {a.size()} tokens")
+inspect("replay all {rules.size()} rules: {replay_time}s")
+inspect("earliest applicable rule: {priority_time}s")
+inspect("speedup: {replay_time / priority_time}x")
+inspect("identical ids: {a == b}")
+inspect("round-trips: {by_priority.decode(b) == text}")

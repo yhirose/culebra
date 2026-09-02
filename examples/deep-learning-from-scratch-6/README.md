@@ -24,23 +24,25 @@ This port is being built chapter by chapter. What runs today:
 
 | | |
 |---|---|
-| `codebot/tokenizer.cul` | the finished byte-level BPE the later chapters import |
+| `codebot/tokenizer.cul` | the byte-level BPE the chapters converge on |
+| `storybot/tokenizer.cul` | the same BPE, fast enough for a whole corpus |
 | `ch01/` | tokenizers, from code points to a trained BPE (9 scripts) |
+| `ch04/` | making that BPE 65x faster, one idea at a time (6 scripts) |
 | `common/` | path resolution and the `uint16` corpus format |
 
 Still to come: ch02 (attention from scratch), ch03 (pretraining, generation,
-SFT, GRPO), ch04 (a fast BPE), ch05 (RoPE, SwiGLU, RMSNorm, KV cache), ch06
-(AdamW, schedulers, DPO, LLM-as-judge), ch07 and ch09 with `storybot` and
-`webbot`.
+SFT, GRPO), ch05 (RoPE, SwiGLU, RMSNorm, KV cache), ch06 (AdamW, schedulers,
+DPO, LLM-as-judge), ch07 and ch09 with the `storybot` and `webbot` models.
 
 ## Layout
 
 ```
 codebot/tokenizer.cul   the shared BPE: pretokenize, train, encode, decode
+storybot/tokenizer.cul  the same BPE, deduplicated, incremental and parallel
 common/paths.cul        data/ and checkpoints/ resolved from the running script
-common/data.cul         .txt and uint16 .bin readers, upstream's own formats
+common/data.cul         the uint16 .bin format, upstream's own
 data/                   what is small enough to commit; the rest is fetched
-ch01/                   one script per section, numbered as upstream numbers them
+ch01/, ch04/            one script per section, numbered as upstream numbers them
 test_*.cul              every test, flat at the package root
 ```
 
@@ -51,6 +53,8 @@ culebra examples/deep-learning-from-scratch-6/ch01/01_char_tokenizer.cul
 culebra examples/deep-learning-from-scratch-6/ch01/06_pretokenize.cul
 culebra examples/deep-learning-from-scratch-6/ch01/07_tiny_codes.cul
 culebra examples/deep-learning-from-scratch-6/ch01/08_eval.cul
+culebra examples/deep-learning-from-scratch-6/ch04/02_bpe_cache.cul
+culebra examples/deep-learning-from-scratch-6/ch04/07_encode_parallel.cul
 culebra test examples/deep-learning-from-scratch-6
 ```
 
@@ -87,7 +91,10 @@ vocabularies diverge on the first ambiguous pair.
 | Upstream | Here |
 |---|---|
 | `ch01/01_char_tokenizer.py` … `09_bpe_encode.py` | `ch01/*.cul`, same numbering |
+| `ch04/01_bpe_optimize.py` … `07_encode_parallel.py` | `ch04/*.cul`, same numbering |
 | `codebot/tokenizer.py` | `codebot/tokenizer.cul` |
+| `storybot/tokenizer.py` | `storybot/tokenizer.cul` |
+| `multiprocessing.Pool` | `Parallel.map` over isolates |
 | `os.chdir(...)` + `sys.path.append('.')` preamble | `common/paths.cul` |
 | `np.fromfile(dtype=np.uint16)` / `.tofile()` | `common/data.cul` |
 
@@ -104,3 +111,14 @@ vocabularies diverge on the first ambiguous pair.
   bytes, so a token cut mid-character round-trips instead of being lost.
 - **`tqdm` progress bars are dropped**; the long-running scripts print
   elapsed time instead.
+- **A pre-token census prefixes its keys with `#`.** An Object doubles as
+  the dictionary type and an own entry shadows the dict builtins, so a
+  corpus containing the pre-token `get` would turn `counts.get(...)` into a
+  `TypeError`. A Python corpus contains it. `#` cannot start an identifier,
+  so the prefix keeps every builtin reachable.
+- **An isolate worker reaches less than a Python subprocess does.** It can
+  call same-module free functions and read same-module constants, but a
+  value read off an *imported* module never crosses, and neither does a
+  compiled `Regex` (a native handle). `storybot/tokenizer.cul` is therefore
+  standalone — which is also how upstream writes it — and its workers take
+  the pattern as a string and compile their own.

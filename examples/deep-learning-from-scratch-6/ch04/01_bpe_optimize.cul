@@ -1,0 +1,71 @@
+# Optimization 1: count each *distinct* pre-token once.
+#
+# ch01's trainer keeps one id list per occurrence, so a corpus with 137,000
+# pre-tokens sweeps 137,000 lists on every one of the 743 merges. But a
+# corpus repeats itself heavily -- the same handful of identifiers and
+# keywords over and over -- so the distinct pre-tokens are far fewer. Keep
+# each one once with a count, and weight its pairs by that count.
+#
+#   culebra ch04/01_bpe_optimize.cul
+
+import P from '../common/paths.cul'
+import T from '../codebot/tokenizer.cul'
+
+# A slice small enough that the ch01 trainer also finishes here.
+let text = FS.read(P.data('tiny_codes_sample.txt')).slice(0, 32000)
+let vocab_size = 400
+
+mut occurrences = 0
+mut distinct = {}
+for part in text.split(T.END_TOKEN) {
+  for pretoken in T.pretokenize(part) {
+    occurrences += 1
+    # `#` cannot start an identifier, so prefixing keeps `distinct.get`
+    # reachable even when the corpus contains the pre-token `get`.
+    let k = "#{pretoken}"
+    distinct[k] = distinct.get(k, 0) + 1
+  }
+}
+inspect("{occurrences} pre-tokens, {distinct.size()} distinct")
+
+fn train_bpe_counted(pretoken_counts, vocab_size) {
+  let keys = pretoken_counts.keys()
+  mut ids_list = keys.map(|k| k.slice(1, k.size()).bytes().collect())
+  let weights = keys.map(|k| pretoken_counts[k])
+
+  let num_merges = vocab_size - 256 - 1
+  mut merge_rules = []
+
+  for step in 0..num_merges {
+    mut counts = {}
+    for i, ids in ids_list.enumerate() {
+      # The only change from ch01: a pair counts once per *occurrence* of
+      # the pre-token it sits in, not once per distinct pre-token.
+      for w in ids.iter().windows(2) {
+        let key = T.pack_pair(w[0], w[1])
+        counts[key] = counts.get(key, 0) + weights[i]
+      }
+    }
+    break if counts.empty()
+
+    let pair = T.best_pair(counts)
+    let new_id = 256 + step
+    merge_rules.push(T.unpack_pair(pair) + [new_id])
+    ids_list = ids_list.map(|ids| T.merge(ids, pair, new_id))
+  }
+
+  merge_rules
+}
+
+let t0 = Sys.time()
+let naive = T.train_bpe(text, vocab_size)
+let naive_time = Sys.time() - t0
+
+let t1 = Sys.time()
+let fast = train_bpe_counted(distinct, vocab_size)
+let fast_time = Sys.time() - t1
+
+inspect("ch01 (one list per occurrence): {naive_time}s")
+inspect("counted (one list per distinct): {fast_time}s")
+inspect("speedup: {naive_time / fast_time}x")
+inspect("same merge rules: {naive == fast}")

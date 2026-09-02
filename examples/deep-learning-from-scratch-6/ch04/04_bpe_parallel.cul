@@ -1,0 +1,40 @@
+# Optimization 4: count the chunks in parallel.
+#
+# Pre-tokenizing is the one embarrassingly parallel part of training: each
+# chunk's census is independent, and the tallies just add up at the end.
+# Upstream reaches for `multiprocessing.Pool`; culebra's `Parallel.map`
+# runs the same shape over a pool of isolates.
+#
+# One constraint shapes the worker: an isolate can reach same-module free
+# functions, same-module constants, its arguments and the stdlib -- and
+# nothing else. A compiled `Regex` is a native handle and never crosses, so
+# `census_chunk` takes the *pattern* and compiles its own.
+#
+#   culebra ch04/04_bpe_parallel.cul
+
+import P from '../common/paths.cul'
+import S from '../storybot/tokenizer.cul'
+
+let text = FS.read(P.data('tiny_codes_sample.txt'))
+let num_chunks = 32
+
+let t0 = Sys.time()
+mut serial = {}
+for chunk in S.chunks(text, num_chunks) {
+  S.count_pretokens(chunk, serial)
+}
+let serial_time = Sys.time() - t0
+
+let t1 = Sys.time()
+let parallel = S.count_pretokens_parallel(text, num_chunks, 8)
+let parallel_time = Sys.time() - t1
+
+inspect("serial:   {serial_time}s")
+inspect("parallel: {parallel_time}s ({num_chunks} chunks, 8 isolates)")
+inspect("speedup: {serial_time / parallel_time}x")
+inspect("same census: {serial == parallel}")
+
+# End to end, that census feeds the same merge loop as before.
+let t2 = Sys.time()
+let rules = S.train_bpe(text, 1000, S.END_TOKEN, num_chunks, 8)
+inspect("train_bpe end to end: {rules.size()} rules in {Sys.time() - t2}s")

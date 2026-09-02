@@ -1,0 +1,107 @@
+# Regression tests for storybot/tokenizer.cul -- ch04's fast BPE.
+#
+# The whole point of these optimizations is that they change nothing but
+# the running time, so almost every test here is an equality against the
+# straightforward implementation in codebot/tokenizer.cul.
+
+import T from './codebot/tokenizer.cul'
+import S from './storybot/tokenizer.cul'
+import D from './common/data.cul'
+
+let CORPUS = 'Say hello! Why hello? Just hello.<|endoftext|>Good morning, world!' +
+  '<|endoftext|>hello again, world.'
+
+@test
+fn chunk_boundaries_land_on_end_tokens_and_cover_the_whole_text() {
+  let bounds = S.find_chunk_boundaries(CORPUS, 4)
+  assert_eq(bounds[0], 0)
+  assert_eq(bounds[bounds.size() - 1], CORPUS.size())
+  # Ascending, so the chunks tile the text without overlap.
+  assert_true(bounds.iter().windows(2).all(|w| w[0] < w[1]))
+  # Every interior cut sits exactly on an end token.
+  for b in bounds.slice(1, bounds.size() - 1) {
+    assert_eq(CORPUS.slice(b, b + S.END_TOKEN.size()), S.END_TOKEN)
+  }
+  assert_eq(S.chunks(CORPUS, 4).join(''), CORPUS)
+}
+
+@test
+fn a_chunked_census_equals_a_whole_text_census() {
+  mut whole = {}
+  S.count_pretokens(CORPUS, whole)
+
+  mut piecewise = {}
+  for chunk in S.chunks(CORPUS, 4) {
+    S.count_pretokens(chunk, piecewise)
+  }
+  assert_eq(whole, piecewise)
+}
+
+@test
+fn a_parallel_census_equals_a_serial_one() {
+  mut serial = {}
+  S.count_pretokens(CORPUS, serial)
+  assert_eq(S.count_pretokens_parallel(CORPUS, 4, 4), serial)
+}
+
+@test
+fn a_census_key_cannot_shadow_a_dictionary_builtin() {
+  # An Object is also the dictionary type, and an own entry shadows the
+  # dict builtins -- a corpus holding the pre-token `get` would otherwise
+  # turn `counts.get(...)` into a TypeError. A Python corpus certainly
+  # holds it.
+  mut counts = {}
+  S.count_pretokens('get size keys has empty remove get', counts)
+  # `get` and ` get` are different pre-tokens, so seven distinct.
+  assert_eq(counts.size(), 7)
+  assert_eq(counts[S.census_key('get')], 1)
+  assert_eq(counts[S.census_key(' get')], 1)
+  assert_eq(S.census_unkey(S.census_key(' get')), ' get')
+  # The builtins still resolve, which is the whole point of the prefix.
+  assert_eq(counts.get(S.census_key('nothing'), 0), 0)
+  assert_true(counts.keys().all(|k| k.starts_with('#')))
+}
+
+@test
+fn the_fast_trainer_learns_exactly_what_the_naive_one_learns() {
+  mut counts = {}
+  S.count_pretokens(CORPUS, counts)
+  assert_eq(S.train_bpe_counted(counts, 280), T.train_bpe(CORPUS, 280))
+  # And through the parallel front end too.
+  assert_eq(
+    S.train_bpe(CORPUS, 280, S.END_TOKEN, 4, 4),
+    T.train_bpe(CORPUS, 280),
+  )
+}
+
+@test
+fn the_fast_encoder_produces_exactly_what_replaying_every_rule_produces() {
+  let rules = T.train_bpe(CORPUS, 300)
+  let naive = T.BPETokenizer(rules)
+  let fast = S.BPETokenizer(rules)
+  assert_eq(fast.end_token_id, naive.end_token_id)
+  assert_eq(fast.vocab_size, naive.vocab_size)
+
+  for text in [CORPUS, 'Say hello!', 'unseen words entirely', '<|endoftext|>', 'Hello世界😁', ''] {
+    assert_eq(fast.encode(text), naive.encode(text))
+    assert_eq(fast.decode(fast.encode(text)), text)
+  }
+}
+
+@test
+fn encoding_a_file_in_parallel_matches_encoding_it_in_one_go() {
+  let rules = T.train_bpe(CORPUS, 300)
+  let tokenizer = S.BPETokenizer(rules)
+  let in_path = FS.join(FS.temp_dir(), 'dl6_encode_in.txt')
+  let out_path = FS.join(FS.temp_dir(), 'dl6_encode_out.bin')
+  defer {
+    FS.remove(in_path) if FS.exists(in_path)
+    FS.remove(out_path) if FS.exists(out_path)
+  }
+
+  FS.write(in_path, CORPUS)
+  let ids = S.encode_file(tokenizer, in_path, out_path, 4, 4)
+  assert_eq(ids, tokenizer.encode(CORPUS))
+  assert_eq(D.read_bin_u16(out_path), ids)
+  assert_eq(tokenizer.decode(ids), CORPUS)
+}
