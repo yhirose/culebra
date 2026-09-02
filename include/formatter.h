@@ -566,6 +566,11 @@ class Printer {
   static bool is_binary_implicit(const std::string& n) {
     return n == "LOGICAL_OR" || n == "LOGICAL_AND" || n == "NIL_COALESCE";
   }
+  // An operator chain carries no brackets of its own, so a break inside it has
+  // nothing to explain it — see print_condition.
+  static bool is_bare_chain(const std::string& n) {
+    return is_binary_explicit(n) || is_binary_implicit(n) || n == "CONDITIONAL";
+  }
   static bool is_unary(const std::string& n) {
     return n == "UNARY_PLUS" || n == "UNARY_MINUS" || n == "UNARY_NOT" ||
            n == "UNARY_BNOT";
@@ -878,7 +883,8 @@ class Printer {
   // its own precedence would otherwise re-associate against `parent_prec`.
   // `parent_name` is the enclosing binary rule, when there is one.
   DocP print_operand(const peg::Ast& node, int parent_prec, bool assoc_safe,
-                     std::string_view parent_name = {}) {
+                     std::string_view parent_name = {},
+                     bool flat_when_bare = false) {
     int cp = prec(node.name);
     bool paren = cp < parent_prec || (cp == parent_prec && !assoc_safe);
     // Parentheses around an operand of the SAME rule stay even when
@@ -890,10 +896,18 @@ class Printer {
     if (!paren && cp == parent_prec && node.name == parent_name) paren = true;
     DocP d = print(node);
     if (paren) return doc_concat({doc_text("("), d, doc_text(")")});
+    // In a condition, an operand that is itself a bare chain must stay flat: a
+    // break there lands between two operands with nothing to explain it. One
+    // with brackets of its own — a call, a parenthesised sub-expression —
+    // carries its breaks inside them, where they read fine.
+    if (flat_when_bare && is_bare_chain(node.name)) return doc_flatten(d);
     return d;
   }
 
-  DocP print_binary(const peg::Ast& node) {
+  // `chain_only` keeps every operand that is itself a bare chain flat, leaving
+  // this chain's own joints as the only bracket-free place a break can land.
+  // It is print_condition's.
+  DocP print_binary(const peg::Ast& node, bool chain_only = false) {
     int P = prec(node.name);
     bool right_assoc = (node.name == "POWER");
 
@@ -913,11 +927,13 @@ class Printer {
     }
 
     size_t m = operands.size();
-    std::vector<DocP> ods{
-        print_operand(*operands[0], P, /*assoc_safe=*/!right_assoc, node.name)};
+    std::vector<DocP> ods{print_operand(*operands[0], P,
+                                       /*assoc_safe=*/!right_assoc, node.name,
+                                       chain_only)};
     for (size_t k = 1; k < m; k++)
       ods.push_back(print_operand(*operands[k], P,
-                                  right_assoc ? (k == m - 1) : false, node.name));
+                                  right_assoc ? (k == m - 1) : false, node.name,
+                                  chain_only));
 
     // An operand that breaks on its own — a call carrying a block argument —
     // leaves the chain nothing worth wrapping: the width is already spent, and
@@ -952,6 +968,22 @@ class Printer {
         std::move(ods[0]),
         doc_indent(kIndent, doc_concat(std::move(cont))),
     }));
+  }
+
+  // The head of an `if` / `while` / `match` carries no brackets of its own, so
+  // a break inside it lands between two operands (`if v ==` / `0 {`) and reads
+  // as a mistake. It renders flat — except at the joints of a top-level
+  // `||` / `&&` / `??` chain, which read as one test continued, and are all
+  // that stands between a long condition and a line that runs off the page.
+  // The whole condition sits one level deeper than the body that follows it,
+  // so no continuation line can be mistaken for the first statement:
+  //   if a ||
+  //       b {
+  //     body
+  //   }
+  DocP print_condition(const peg::Ast& node) {
+    if (!is_binary_implicit(node.name)) return doc_flatten(print(node));
+    return doc_indent(kIndent, print_binary(node, /*chain_only=*/true));
   }
 
   DocP print_range(const peg::Ast& node) {
@@ -1474,14 +1506,14 @@ class Printer {
       }
       parts.push_back(doc_text("; "));
     }
-    parts.push_back(doc_flatten(print(*nodes[off])));
+    parts.push_back(print_condition(*nodes[off]));
     parts.push_back(doc_text(" "));
     parts.push_back(print_block(*nodes[off + 1], node_end(*nodes[off]), false));
     size_t cursor = block_interior(node_end(*nodes[off])).after;
     size_t i = off + 2, n = nodes.size();
     while (n - i >= 2) {
       parts.push_back(doc_text(" else if "));
-      parts.push_back(doc_flatten(print(*nodes[i])));
+      parts.push_back(print_condition(*nodes[i]));
       parts.push_back(doc_text(" "));
       parts.push_back(print_block(*nodes[i + 1], node_end(*nodes[i]), false));
       cursor = block_interior(node_end(*nodes[i])).after;
@@ -1507,7 +1539,7 @@ class Printer {
     // clause renders as `binding, binding; ` before the condition
     // (`while mut i = 0; i < n {…}`); a nobreak clause renders after the body.
     auto wv = culebra::view_while(node);
-    DocP head = doc_flatten(print(*wv.cond));
+    DocP head = print_condition(*wv.cond);
     if (wv.init) {
       std::vector<DocP> parts;
       for (size_t i = 0; i < wv.init->nodes.size(); i++) {
@@ -1608,7 +1640,7 @@ class Printer {
       }
       head.push_back(doc_text("; "));
     }
-    head.push_back(doc_flatten(print(*mv.subject)));
+    head.push_back(print_condition(*mv.subject));
     head.push_back(doc_text(" "));
     head.push_back(print_braced(items, node_end(*mv.subject), ",",
                                 /*empty_ok=*/true, render));

@@ -681,7 +681,7 @@ if ! diff -u "$TMP/lit_want.cul" "$TMP/lit_got.cul" > "$TMP/lit_diff" 2>&1; then
   fail=1
 fi
 
-# --- 1c. Golden fixture: a lambda is never a primary -----------------------
+# --- 1p. Golden fixture: a lambda is never a primary -----------------------
 # A lambda's body runs as far right as it can, so parentheses around one are
 # load-bearing wherever it is an operand: `(|q| f(q))(x)` reprinted without
 # them is a lambda whose body is `f(q)(x)`. prec() used to fall through to its
@@ -714,6 +714,50 @@ if ! diff -u "$TMP/lam_want.cul" "$TMP/lam_got.cul" > "$TMP/lam_diff" 2>&1; then
   echo "FAIL golden (lambda): formatted output differs from expected"
   cat "$TMP/lam_diff"
   cat "$TMP/lam_err"
+  fail=1
+fi
+
+# --- 1q. Golden fixture: how a condition wraps -----------------------------
+# An `if` / `while` / `match` head has no brackets around it, so a break inside
+# it lands between two operands and reads as a mistake. It wraps only at the
+# `||` / `&&` / `??` joints of its own chain, never between the two sides of a
+# comparison, and one level deeper than the body so a continuation line cannot
+# be read as the first statement. Conditions used to render flat at any width,
+# which ran a long test off the page — see include/formatter.h print_condition.
+cat > "$TMP/cond_in.cul" <<'EOF'
+fn f(pressed, pad, y_button, start_button, tries, alpha, beta) {
+  if pressed.contains("f") || pad.pressed(y_button) || pad.pressed(start_button) {
+    println("a")
+  }
+  if pressed.first_reading(alpha) == pad.second_reading(beta) + alpha * beta - 1 {
+    println("b")
+  }
+  while (pressed.first_reading(alpha) < beta || pad.second_reading(beta) < alpha) && tries < 300 {
+    println("c")
+  }
+}
+EOF
+cat > "$TMP/cond_want.cul" <<'EOF'
+fn f(pressed, pad, y_button, start_button, tries, alpha, beta) {
+  if pressed.contains("f") ||
+      pad.pressed(y_button) ||
+      pad.pressed(start_button) {
+    println("a")
+  }
+  if pressed.first_reading(alpha) == pad.second_reading(beta) + alpha * beta - 1 {
+    println("b")
+  }
+  while (pressed.first_reading(alpha) < beta ||
+      pad.second_reading(beta) < alpha) &&
+      tries < 300 {
+    println("c")
+  }
+}
+EOF
+"$CULEBRA" fmt "$TMP/cond_in.cul" > "$TMP/cond_got.cul" 2>"$TMP/cond_err"
+if ! diff -u "$TMP/cond_want.cul" "$TMP/cond_got.cul" > "$TMP/cond_diff" 2>&1; then
+  echo "FAIL golden (condition wrapping): formatted output differs from expected"
+  cat "$TMP/cond_diff"
   fail=1
 fi
 
