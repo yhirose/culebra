@@ -43,3 +43,7 @@ show('map from object', new Map(Object.entries({ p: 1, q: 2 })).get('q'));
 show('built-ins do not enumerate', [Object.keys(Math), Object.keys(Symbol), Object.keys(Map.prototype), Object.keys(Boolean.prototype), (function () { const ks = []; for (const k in new Map()) ks.push(k); return ks; })()]);
 show('nor does an iterator of theirs', [Object.keys(new Map([['a', 1]]).entries()), Object.keys(new Set([1]).values())]);
 show('but console is the host, not the language', ['log', 'warn', 'error', 'info'].map(k => Object.keys(console).indexOf(k) >= 0));
+
+// being a Map is a slot the constructor fills, not something the prototype says
+show('a foreign receiver', [thrown(() => Object.create(Map.prototype).size), thrown(() => Map.prototype.get.call({}, 'a')), thrown(() => Set.prototype.has.call({}, 1)), thrown(() => Map.prototype.forEach.call([], () => {}))]);
+show('and how it reads', (function () { try { Map.prototype.get.call({}, 'a'); return 'no throw'; } catch (e) { return e.message; } })());

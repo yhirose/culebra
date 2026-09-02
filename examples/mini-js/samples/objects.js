@@ -64,3 +64,7 @@ show('assign many', Object.assign({ z: 0 }, { a: 1 }, null, { b: 2 }, { c: 3 }, 
 const numbered = { 1: 'value', 2() { return 'method'; }, get 3() { return 'getter'; }, 0.5: 'half' };
 show('number keys', [numbered[1], numbered[2](), numbered[3], numbered['0.5'], Object.keys(numbered)]);
 show('delete restores enumeration', (function () { const t = { a: 1 }; delete t.a; t.a = 2; return [Object.keys(t), t.a]; })());
+
+const nk = 'made';
+const namedByKey = { [nk]() {}, [nk + 'F']: function () {}, [nk + 'R']: () => 1, [nk + 'N']: function spelled() {}, *[nk + 'Y']() {}, async [nk + 'A']() {} };
+show('a computed key names its function', [namedByKey.made.name, namedByKey.madeF.name, namedByKey.madeR.name, namedByKey.madeN.name, namedByKey.madeY.name, namedByKey.madeA.name]);

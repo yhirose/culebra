@@ -76,3 +76,7 @@ show('an accessor pair lists once', Object.keys({ get v() { return 1; }, set v(x
 class Numbered { 1() { return 'method'; } static 2() { return 'static'; } get 3() { return 'getter'; } 4 = 'field'; }
 show('number keys', (function () { const n = new Numbered(); return [n[1](), Numbered[2](), n[3], n[4], Object.keys(n)]; })());
 show('a deleted member enumerates again', (function () { class D { m() {} } delete D.prototype.m; D.prototype.m = 1; return Object.keys(D.prototype); })());
+
+const ck2 = 'made';
+class ByKey { [ck2]() {} static [ck2 + 'S']() {} *[ck2 + 'Y']() {} async [ck2 + 'A']() {} }
+show('a computed key names its member', [ByKey.prototype[ck2].name, ByKey[ck2 + 'S'].name, ByKey.prototype[ck2 + 'Y'].name, ByKey.prototype[ck2 + 'A'].name]);

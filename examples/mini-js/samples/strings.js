@@ -19,3 +19,10 @@ show('number strings', ['3' * '4', '3' + 4, +'3.5', -'2', +'', +' 12 ', +'1e3', 
 show('char loop', (function () { let r = ''; for (let i = s.length - 1; i >= 0; i--) r += s[i]; return r; })());
 show('immutable', (function () { const t = 'abc'; t[0] = 'z'; return t; })());
 show('concat many', 'a'.concat('b', 1, true, null, 'e'));
+show('for-in reaches String.prototype', (function () {
+  String.prototype.injected = 'p';
+  const ks = [];
+  for (const k in 'ab') ks.push(k);
+  delete String.prototype.injected;
+  return ks;
+})());

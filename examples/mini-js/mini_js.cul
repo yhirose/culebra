@@ -752,6 +752,17 @@ function __proto_get(p, key, recv) {
 }
 // the prototype of a prototype: its own link, else Object.prototype, whose
 // own next is nothing
+// where a receiver's inherited members begin: the same chain __get walks,
+// for a scalar as much as for an object
+function __proto_start(o) {
+  var t = __typeof(o);
+  if (t === 'object') return __is_null(o) ? undefined : __proto_next(o);
+  if (t === 'array') return __G.Array_proto;
+  if (t === 'string') return __G.String_proto;
+  if (t === 'double') return __G.Number_proto;
+  if (t === 'bool') return __G.Boolean_proto;
+  return undefined;
+}
 function __proto_next(p) {
   if (__objecthas(p, '\x01proto')) {
     var q = p['\x01proto'];
@@ -988,14 +999,49 @@ function __run_fields(cls, t) {
   return undefined;
 }
 function __def_method(cls, is_static, key, f) {
-  return __defv(is_static ? cls : cls.prototype, __key(key), f);
+  var name = __key(key);
+  return __defv(is_static ? cls : cls.prototype, name, __named(f, name));
+}
+// A built-in that keeps an internal slot works only on a receiver that has
+// one, and Node names the method and the receiver rather than failing
+// somewhere inside. (An error is the other way round -- see __is_err --
+// because being an error is what the prototype says, not a slot the
+// constructor filled in.)
+function __demand(t, slot, owner, name) {
+  if (__typeof(t) === 'object' && __objecthas(t, slot)) return t;
+  throw __err('TypeError', 'Method ' + owner + '.' + name +
+    ' called on incompatible receiver ' + __receiver_str(t, owner));
+}
+function __receiver_str(t, owner) {
+  if (__typeof(t) === 'array') return '[object Array]';
+  var dot = __str_index_of(owner, '.', 0);
+  var cname = dot < 0 ? owner : __substr(owner, 0, dot);
+  var sp = __str_index_of(cname, ' ', 0);
+  if (sp >= 0) cname = __substr(cname, sp + 1, __len(cname));
+  if (__typeof(t) === 'object' && __objecthas(__G, cname) && __instanceof(t, __G[cname])) {
+    return '#<' + cname + '>';
+  }
+  return '#<Object>';
+}
+// A function written under a computed key has no name until the key is a
+// value, so the definition names it -- one already named (a named function
+// expression, or a member under a spelled-out key) keeps the name it has.
+function __named(f, name) {
+  if (__is_fnobj(f) && f.name === '') __defv(f, 'name', name);
+  return f;
+}
+// an object literal's member under a computed key
+function __def_prop(o, key, v) {
+  var name = __key(key);
+  o[name] = __named(v, name);
+  return undefined;
 }
 // the property an accessor of a given kind ('get' or 'set') is stored under
 function __acc_key(kind, key) { return '\x01' + kind + ':' + __key(key); }
 function __def_accessor(cls, is_static, kind, key, f) {
   var target = is_static ? cls : cls.prototype;
   var name = __key(key);
-  target[__acc_key(kind, name)] = f;
+  target[__acc_key(kind, name)] = __named(f, name);
   __hide(target, name);
   return undefined;
 }
@@ -1100,9 +1146,9 @@ function __obj_rest(o, excluded) {
 // it invalidates itself and no write has to know about it.
 function __forin_keys(o) {
   var out = __own_keys(o);
-  var p = __typeof(o) === 'object' && !__is_null(o) ? __proto_next(o) : undefined;
+  var p = __proto_start(o);
   while (__typeof(p) === 'object') {
-    var nkeys = __len(__objectkeys(p));
+    var nkeys = __len(p);
     var noted = __objecthas(p, '\x01nothing');
     if (noted && p['\x01nothing'] === nkeys) { p = __proto_next(p); continue; }
     var ks = __own_keys(p);
@@ -2001,32 +2047,32 @@ function __init_collections(G) {
   });
   var MP = M.prototype;
   MP['\x01proto'] = G.Object_proto;
-  __def(MP, 'get', function (t, k) { var i = __coll_find(t, k); return i < 0 ? undefined : t['\x01vals'][i]; });
-  __def(MP, 'set', function (t, k, v) {
+  __def(MP, 'get', function (t, k) { __demand(t, '\x01keys', 'Map.prototype', 'get'); var i = __coll_find(t, k); return i < 0 ? undefined : t['\x01vals'][i]; });
+  __def(MP, 'set', function (t, k, v) { __demand(t, '\x01keys', 'Map.prototype', 'set');
     var i = __coll_find(t, k);
     if (i < 0) { __arraypush(t['\x01keys'], k); __arraypush(t['\x01vals'], v); } else { t['\x01vals'][i] = v; }
     return t;
   });
-  __def(MP, 'has', function (t, k) { return __coll_find(t, k) >= 0; });
-  __def(MP, 'delete', function (t, k) {
+  __def(MP, 'has', function (t, k) { __demand(t, '\x01keys', 'Map.prototype', 'has'); return __coll_find(t, k) >= 0; });
+  __def(MP, 'delete', function (t, k) { __demand(t, '\x01keys', 'Map.prototype', 'delete');
     var i = __coll_find(t, k);
     if (i < 0) return false;
     __coll_remove(t['\x01keys'], i);
     __coll_remove(t['\x01vals'], i);
     return true;
   });
-  __def(MP, 'clear', function (t) { t['\x01keys'] = []; t['\x01vals'] = []; return undefined; });
-  __defa(MP, 'get', 'size', function (t) { return __todouble(__len(t['\x01keys'])); });
-  __def(MP, 'forEach', function (t, cb, thisArg) {
+  __def(MP, 'clear', function (t) { __demand(t, '\x01keys', 'Map.prototype', 'clear'); t['\x01keys'] = []; t['\x01vals'] = []; return undefined; });
+  __defa(MP, 'get', 'size', function (t) { __demand(t, '\x01keys', 'get Map.prototype', 'size'); return __todouble(__len(t['\x01keys'])); });
+  __def(MP, 'forEach', function (t, cb, thisArg) { __demand(t, '\x01keys', 'Map.prototype', 'forEach');
     var i = 0;
     while (i < __len(t['\x01keys'])) { __call(cb, thisArg, [t['\x01vals'][i], t['\x01keys'][i], t]); i = i + 1; }
     return undefined;
   });
-  __def(MP, 'keys', function (t) { return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); });
-  __def(MP, 'values', function (t) { return __coll_iter(t, function (c, i) { return c['\x01vals'][i]; }); });
-  __def(MP, 'entries', function (t) { return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01vals'][i]]; }); });
+  __def(MP, 'keys', function (t) { __demand(t, '\x01keys', 'Map.prototype', 'keys'); return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); });
+  __def(MP, 'values', function (t) { __demand(t, '\x01keys', 'Map.prototype', 'values'); return __coll_iter(t, function (c, i) { return c['\x01vals'][i]; }); });
+  __def(MP, 'entries', function (t) { __demand(t, '\x01keys', 'Map.prototype', 'entries'); return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01vals'][i]]; }); });
   MP['\x01iter'] = MP.entries;
-  __def(MP, 'toString', function (t) { return '[object Map]'; });
+  __def(MP, 'toString', function (t) { __demand(t, '\x01keys', 'Map.prototype', 'toString'); return '[object Map]'; });
 
   var S = __ctor(G, 'Set', {}, function (t, init) {
     t['\x01keys'] = [];
@@ -2039,26 +2085,26 @@ function __init_collections(G) {
   });
   var SP = S.prototype;
   SP['\x01proto'] = G.Object_proto;
-  __def(SP, 'add', function (t, v) { if (__coll_find(t, v) < 0) __arraypush(t['\x01keys'], v); return t; });
-  __def(SP, 'has', function (t, v) { return __coll_find(t, v) >= 0; });
-  __def(SP, 'delete', function (t, v) {
+  __def(SP, 'add', function (t, v) { __demand(t, '\x01keys', 'Set.prototype', 'add'); if (__coll_find(t, v) < 0) __arraypush(t['\x01keys'], v); return t; });
+  __def(SP, 'has', function (t, v) { __demand(t, '\x01keys', 'Set.prototype', 'has'); return __coll_find(t, v) >= 0; });
+  __def(SP, 'delete', function (t, v) { __demand(t, '\x01keys', 'Set.prototype', 'delete');
     var i = __coll_find(t, v);
     if (i < 0) return false;
     __coll_remove(t['\x01keys'], i);
     return true;
   });
-  __def(SP, 'clear', function (t) { t['\x01keys'] = []; return undefined; });
-  __defa(SP, 'get', 'size', function (t) { return __todouble(__len(t['\x01keys'])); });
-  __def(SP, 'forEach', function (t, cb, thisArg) {
+  __def(SP, 'clear', function (t) { __demand(t, '\x01keys', 'Set.prototype', 'clear'); t['\x01keys'] = []; return undefined; });
+  __defa(SP, 'get', 'size', function (t) { __demand(t, '\x01keys', 'get Set.prototype', 'size'); return __todouble(__len(t['\x01keys'])); });
+  __def(SP, 'forEach', function (t, cb, thisArg) { __demand(t, '\x01keys', 'Set.prototype', 'forEach');
     var i = 0;
     while (i < __len(t['\x01keys'])) { __call(cb, thisArg, [t['\x01keys'][i], t['\x01keys'][i], t]); i = i + 1; }
     return undefined;
   });
-  __def(SP, 'values', function (t) { return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); });
+  __def(SP, 'values', function (t) { __demand(t, '\x01keys', 'Set.prototype', 'values'); return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); });
   __defv(SP, 'keys', SP.values);
-  __def(SP, 'entries', function (t) { return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01keys'][i]]; }); });
+  __def(SP, 'entries', function (t) { __demand(t, '\x01keys', 'Set.prototype', 'entries'); return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01keys'][i]]; }); });
   SP['\x01iter'] = SP.values;
-  __def(SP, 'toString', function (t) { return '[object Set]'; });
+  __def(SP, 'toString', function (t) { __demand(t, '\x01keys', 'Set.prototype', 'toString'); return '[object Set]'; });
 }
 
 // --- generators -----------------------------------------------------------------
@@ -2088,11 +2134,11 @@ function __iter_obj(v) {
 function __init_generators(G) {
   var GP = {};
   GP['\x01proto'] = G.Object_proto;
-  __def(GP, 'next', function (t, v) { return __genresume(t['\x01gen'], v); });
-  __def(GP, 'return', function (t, v) { return __genreturn(t['\x01gen'], v); });
-  __def(GP, 'throw', function (t, e) { return __genthrow(t['\x01gen'], e); });
+  __def(GP, 'next', function (t, v) { __demand(t, '\x01gen', '[Generator].prototype', 'next'); return __genresume(t['\x01gen'], v); });
+  __def(GP, 'return', function (t, v) { __demand(t, '\x01gen', '[Generator].prototype', 'return'); return __genreturn(t['\x01gen'], v); });
+  __def(GP, 'throw', function (t, e) { __demand(t, '\x01gen', '[Generator].prototype', 'throw'); return __genthrow(t['\x01gen'], e); });
   GP['\x01iter'] = __mkfn(function (t) { return t; }, '[Symbol.iterator]', false);
-  __def(GP, 'toString', function (t) { return '[object Generator]'; });
+  __def(GP, 'toString', function (t) { __demand(t, '\x01gen', '[Generator].prototype', 'toString'); return '[object Generator]'; });
   G.Generator_proto = GP;
 }
 
@@ -2248,15 +2294,15 @@ function __init_promise(G) {
     return undefined;
   });
   G.Promise_proto = PP;
-  __def(PP, 'then', function (t, onF, onR) { return __promise_then(t, onF, onR); });
-  __def(PP, 'catch', function (t, onR) { return __promise_then(t, undefined, onR); });
-  __def(PP, 'finally', function (t, f) {
+  __def(PP, 'then', function (t, onF, onR) { __demand(t, '\x01state', 'Promise.prototype', 'then'); return __promise_then(t, onF, onR); });
+  __def(PP, 'catch', function (t, onR) { __demand(t, '\x01state', 'Promise.prototype', 'catch'); return __promise_then(t, undefined, onR); });
+  __def(PP, 'finally', function (t, f) { __demand(t, '\x01state', 'Promise.prototype', 'finally');
     if (!__is_fnobj(f)) return __promise_then_raw(t, undefined, undefined);
     return __promise_then_raw(t,
       function (v) { return __promise_then_raw(__promise_resolve_value(__call(f, undefined, [])), function (x) { return v; }, undefined); },
       function (e) { return __promise_then_raw(__promise_resolve_value(__call(f, undefined, [])), function (x) { throw e; }, undefined); });
   });
-  __def(PP, 'toString', function (t) { return '[object Promise]'; });
+  __def(PP, 'toString', function (t) { __demand(t, '\x01state', 'Promise.prototype', 'toString'); return '[object Promise]'; });
   __def(Pr, 'resolve', function (t, v) { return __promise_resolve_value(v); });
   __def(Pr, 'reject', function (t, e) { var p = __promise_new(); __promise_reject(p, e); return p; });
   __def(Pr, 'all', function (t, iterable) {
@@ -4692,16 +4738,34 @@ fn emit_object(m, node, f) {
       col: pc,
     ))
   }
+  # A member under a computed key goes through the prelude: the key is only
+  # a value at run time, and an anonymous function takes its name from it,
+  # as JS names one after the property it is written under. A static key is
+  # a plain store with that name already baked into the function.
+  fn put_member(mk, pv, pl, pc) {
+    cond {
+      mk.name == 'computed_k' &&
+        !in_prelude => ids.push(call_pre(
+        m,
+        f,
+        '__def_prop',
+        [scratch_ref(m, tmp, pl, pc), emit_expr(m, mk.nodes[0], f), pv],
+        pl,
+        pc,
+      )),
+      _ => put(emit_mkey(m, f, mk, pl, pc), pv, pl, pc),
+    }
+  }
   for p in node.nodes {
     match p {
-      {name: 'kv_p'} => put(
-        emit_mkey(m, f, p.nodes[0], p.line, p.column),
+      {name: 'kv_p'} => put_member(
+        p.nodes[0],
         emit_expr(m, p.nodes[1], f),
         p.line,
         p.column,
       ),
-      {name: 'method_p'} | {name: 'gmethod_p'} | {name: 'amethod_p'} => put(
-        emit_mkey(m, f, p.nodes[0], p.line, p.column),
+      {name: 'method_p'} | {name: 'gmethod_p'} | {name: 'amethod_p'} => put_member(
+        p.nodes[0],
         emit_fn_value(m, p, f, mkey_name(p.nodes[0]), false),
         p.line,
         p.column,

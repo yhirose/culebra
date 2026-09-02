@@ -90,3 +90,4 @@ let dflt_runs = 0;
 function nextTag() { dflt_runs++; return 'tag' + dflt_runs; }
 function* tagged(tag = nextTag(), n = 2) { while (n > 0) { yield tag; n--; } }
 show('default once', [[...tagged()], [...tagged('given')], dflt_runs, tagged.length]);
+show('a foreign receiver', [thrown(() => count(1).next.call({})), (function () { try { count(1).next.call({}); return 'no throw'; } catch (e) { return e.message; } })()]);

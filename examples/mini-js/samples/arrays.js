@@ -37,3 +37,14 @@ show('concat many', [1].concat([2], 3, [4], [5], 6, [7]));
 show('splice many', (function () { const s = [1, 2, 3]; const cut = s.splice(1, 1, 'a', 'b', 'c', 'd'); return [cut, s]; })());
 show('Array many', [Array(1, 2, 3), Array('one'), Array(3).length]);
 show('Math.max many', [Math.max(1, 9, 3, 8, 2, 7), Math.min(4, 2, 6, 1, 5, 3)]);
+
+show('for-in reaches Array.prototype', (function () {
+  const s = [7, 8];
+  Array.prototype.injected = 'p';
+  const withIt = [];
+  for (const k in s) withIt.push(k);
+  delete Array.prototype.injected;
+  const without = [];
+  for (const k in s) without.push(k);
+  return [withIt, without, Object.keys(s)];
+})());
