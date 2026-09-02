@@ -342,7 +342,19 @@ function __str_index_of(s, needle, from) {
 }
 function __is_digit(c) { return c >= '0' && c <= '9'; }
 function __digit(c) { return __toint(__todouble(__G.digits[c])); }
-function __repeat(s, n) { var out = ''; var i = 0; while (i < n) { out = out + s; i = i + 1; } return out; }
+// Doubling, not n concatenations: the VM's string Add copies the left
+// side each time, so the naive loop is quadratic in the result.
+function __repeat(s, n) {
+  var out = '';
+  var acc = s;
+  var left = n;
+  while (left > 0) {
+    if (__imod(left, 2) === 1) out = out + acc;
+    left = __idiv(left, 2);
+    if (left > 0) acc = acc + acc;
+  }
+  return out;
+}
 
 // Number::toString: the VM's shortest form, reshaped to JS's rules for
 // when the exponent appears (>= 1e21, < 1e-6) and how it is spelled.
@@ -589,7 +601,13 @@ function __aindex(k) {
   var t = __typeof(k);
   var d = 0.0;
   if (t === 'double') d = k;
-  else if (t === 'string') { d = __str_to_num(k); if (__numstr(d) !== k) return -1; }
+  else if (t === 'string') {
+    // every canonical index spells out as digits, so one character rules
+    // out the rest without the parse-and-print round trip
+    if (__len(k) === 0 || !__is_digit(k[0])) return -1;
+    d = __str_to_num(k);
+    if (__numstr(d) !== k) return -1;
+  }
   else return -1;
   if (d !== d || d < 0.0 || d !== __todouble(__toint_safe(d))) return -1;
   return __toint(d);
@@ -599,23 +617,22 @@ function __toint_safe(d) {
   return __toint(d);
 }
 // ToInt32 / ToUint32
-function __toint32(v) {
+// The value modulo 2^32, as a non-negative double: what ToUint32 answers
+// and what ToInt32 folds into the signed range.
+function __mod32(v) {
   var d = __tonum(v);
-  if (d !== d || d === __inf() || d === 0.0 - __inf()) return 0;
+  if (d !== d || d === __inf() || d === 0.0 - __inf()) return 0.0;
   var t = d < 0.0 ? 0.0 - __todouble(__toint_safe(0.0 - d)) : __todouble(__toint_safe(d));
   var m = __fmod(t, 4294967296.0);
   if (m < 0.0) m = m + 4294967296.0;
+  return m;
+}
+function __toint32(v) {
+  var m = __mod32(v);
   if (m >= 2147483648.0) m = m - 4294967296.0;
   return __toint(m);
 }
-function __touint32(v) {
-  var d = __tonum(v);
-  if (d !== d || d === __inf() || d === 0.0 - __inf()) return 0;
-  var t = d < 0.0 ? 0.0 - __todouble(__toint_safe(0.0 - d)) : __todouble(__toint_safe(d));
-  var m = __fmod(t, 4294967296.0);
-  if (m < 0.0) m = m + 4294967296.0;
-  return __toint(m);
-}
+function __touint32(v) { return __toint(__mod32(v)); }
 
 // --- operators -------------------------------------------------------------
 function __prim(v) {
@@ -625,14 +642,26 @@ function __prim(v) {
   return v;
 }
 function __add(a, b) {
+  // ToPrimitive and ToNumber are the identity on two numbers, and every
+  // __typeof allocates -- so the operators take the pair straight.
+  if (__typeof(a) === 'double' && __typeof(b) === 'double') return a + b;
   var pa = __prim(a);
   var pb = __prim(b);
   if (__typeof(pa) === 'string' || __typeof(pb) === 'string') return __str(pa) + __str(pb);
   return __tonum(pa) + __tonum(pb);
 }
-function __sub(a, b) { return __tonum(a) - __tonum(b); }
-function __mul(a, b) { return __tonum(a) * __tonum(b); }
-function __div(a, b) { return __tonum(a) / __tonum(b); }
+function __sub(a, b) {
+  if (__typeof(a) === 'double' && __typeof(b) === 'double') return a - b;
+  return __tonum(a) - __tonum(b);
+}
+function __mul(a, b) {
+  if (__typeof(a) === 'double' && __typeof(b) === 'double') return a * b;
+  return __tonum(a) * __tonum(b);
+}
+function __div(a, b) {
+  if (__typeof(a) === 'double' && __typeof(b) === 'double') return a / b;
+  return __tonum(a) / __tonum(b);
+}
 function __mod(a, b) {
   var x = __tonum(a);
   var y = __tonum(b);
@@ -656,13 +685,12 @@ function __bnot(a) { return __todouble(__bitnot(__toint32(a))); }
 function __shl(a, b) { return __todouble(__wrap32(__ishl(__toint32(a), __bitand(__touint32(b), 31)))); }
 function __shr(a, b) { return __todouble(__ishr(__toint32(a), __bitand(__touint32(b), 31))); }
 function __ushr(a, b) { return __todouble(__ishr(__touint32(a), __bitand(__touint32(b), 31))); }
-function __wrap32(i) {
-  var m = __fmod(__todouble(i), 4294967296.0);
-  if (m < 0.0) m = m + 4294967296.0;
-  if (m >= 2147483648.0) m = m - 4294967296.0;
-  return __toint(m);
-}
+function __wrap32(i) { return __toint32(__todouble(i)); }
 function __cmp_lt(a, b) {
+  if (__typeof(a) === 'double' && __typeof(b) === 'double') {
+    if (a !== a || b !== b) return undefined;
+    return a < b;
+  }
   var pa = __prim(a);
   var pb = __prim(b);
   if (__typeof(pa) === 'string' && __typeof(pb) === 'string') return pa < pb;
@@ -842,13 +870,23 @@ function __own_keys(o) {
       m = m + 1;
     }
     if (__len(ints) > 0) {
-      // insertion sort by numeric value, then the string keys after
+      // insertion sort by numeric value (parsed once per key, not once
+      // per comparison), then the string keys after
+      var nums = [];
+      var p = 0;
+      while (p < __len(ints)) { __arraypush(nums, __str_to_num(ints[p])); p = p + 1; }
       var a = 1;
       while (a < __len(ints)) {
         var x = ints[a];
+        var xn = nums[a];
         var b = a - 1;
-        while (b >= 0 && __str_to_num(ints[b]) > __str_to_num(x)) { ints[b + 1] = ints[b]; b = b - 1; }
+        while (b >= 0 && nums[b] > xn) {
+          ints[b + 1] = ints[b];
+          nums[b + 1] = nums[b];
+          b = b - 1;
+        }
         ints[b + 1] = x;
+        nums[b + 1] = xn;
         a = a + 1;
       }
       var c = 0;
@@ -1158,6 +1196,7 @@ function __init_globals() {
   G.undefined = undefined;
   G.live_jobs = 0;
   G.unhandled = [];
+  G.polling = false;
   G.NaN = __nan();
   G.Infinity = __inf();
   G.Object_proto = {};
@@ -1586,16 +1625,16 @@ function __init_string(G) {
   __def(P, 'padStart', function (t, n, fill) {
     var want = __toint_safe(__tonum(n));
     var f = __typeof(fill) === 'nil' ? ' ' : __str(fill);
-    var out = t;
-    while (__len(out) < want) { out = f + out; }
-    return __len(out) > want ? __substr(out, __len(out) - want, __len(out)) : out;
+    if (__len(t) >= want || __len(f) === 0) return t;
+    var pad = __repeat(f, want - __len(t));
+    return __substr(pad, 0, want - __len(t)) + t;
   });
   __def(P, 'padEnd', function (t, n, fill) {
     var want = __toint_safe(__tonum(n));
     var f = __typeof(fill) === 'nil' ? ' ' : __str(fill);
-    var out = t;
-    while (__len(out) < want) { out = out + f; }
-    return __len(out) > want ? __substr(out, 0, want) : out;
+    if (__len(t) >= want || __len(f) === 0) return t;
+    var pad = __repeat(f, want - __len(t));
+    return t + __substr(pad, 0, want - __len(t));
   });
   __def(P, 'replace', function (t, s, r) {
     var p = __str(s);
@@ -2171,13 +2210,18 @@ function __promise_resolve_value(v) {
 }
 function __track_unhandled(p) {
   __arraypush(__G.unhandled, p);
-  __unhandled_check();
+  // one chain drains the list for every rejection on it
+  if (!__G.polling) {
+    __G.polling = true;
+    __unhandled_check();
+  }
   return undefined;
 }
 // once the queue has drained, a rejection nobody handled ends the program
 function __unhandled_check() {
   __enqueue(function () {
     if (__G.live_jobs > 0) { __unhandled_check(); return undefined; }
+    __G.polling = false;
     var us = __G.unhandled;
     __G.unhandled = [];
     var i = 0;
