@@ -319,7 +319,9 @@ inline char* _str_alloc(uint64_t len) {
 
 inline const char* _culebra_heap_str(std::string_view s) {
   char* data = _str_alloc(s.size());
-  std::memcpy(data, s.data(), s.size());
+  // An empty view can carry a null data(), and memcpy's second argument is
+  // declared non-null whatever the length (UBSan flags it in the doctest run).
+  if (!s.empty()) std::memcpy(data, s.data(), s.size());
   return data;
 }
 
