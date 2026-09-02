@@ -72,14 +72,6 @@ check_err() {
 check_err "undefvar" 'println(x)
 ' "undefined variable 'x'"
 
-# Referencing a multimethod family as a single value has no one closure to
-# build (each overload is its own function).
-check_err "multi-as-value" 'fn g(n: Long) { 1 }
-fn g(s: String) { 2 }
-let h = g
-println(h)
-' "has multiple definitions"
-
 check_err "letassign" 'let x = 1
 x = 2
 println(x)

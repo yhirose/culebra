@@ -1,0 +1,301 @@
+# Calls with a shape: keyword arguments to constructors and methods,
+# overloaded methods and constructors, the operator dunders overloaded on
+# the operand type, @value classes, the synthesized parameters(), hash(),
+# sized arrays, and decorators on classes.
+fn show(label, f) {
+  let r = try { f() } catch e { "!{e.kind}: {e.message}" }
+  println("{label}: {inspect(r)}")
+}
+fn show_at(label, f) {
+  let r = try { f() } catch e { "!{e.kind}: {e.message} @{e.line}:{e.col}" }
+  println("{label}: {inspect(r)}")
+}
+
+class Config {
+  new(host, port = 80) {
+    self.host = host
+    self.port = port
+  }
+  describe(prefix, sep = ':') {
+    "{prefix}{sep}{self.host}{sep}{self.port}"
+  }
+  typed(s: String) {
+    s
+  }
+}
+show('ctor kw', || Config(port: 9, host: 'x').port)
+show('ctor default', || Config('h').port)
+show('ctor new kw', || Config.new(host: 'a', port: 1).describe('c'))
+show('method kw', || Config('h').describe(sep: '/', prefix: 'p'))
+show('method extra dropped', || Config('h').typed('s', 'extra'))
+show('ctor unknown kw', || Config('h', zz: 1))
+show('method unknown kw', || Config('h').describe('p', zz: 1))
+show('method missing', || Config('h').describe())
+show('method both', || Config('h').describe('p', prefix: 'q'))
+show_at('typed mismatch at arg', || Config('h').typed(42))
+show('typed kw mismatch', || Config('h').typed(s: 42))
+show('class via variable', fn () {
+  let makers = [Config]
+  makers[0]('v', port: 2).port
+})
+show('bound method kw', fn () {
+  let d = Config('h').describe
+  d('p', sep: '-')
+})
+show('bound method default', fn () {
+  let d = Config('h').describe
+  d('p')
+})
+
+class Over {
+  new() {
+    self.tag = 'zero'
+  }
+  new(v: Long) {
+    self.tag = "long {v}"
+  }
+  new(s: String, n) {
+    self.tag = "str {s} {n}"
+  }
+  m(a) {
+    1
+  }
+  m(a, b) {
+    2
+  }
+  pick(x: Long) {
+    'long'
+  }
+  pick(x: String) {
+    'str'
+  }
+}
+show('ctor overload 0', || Over().tag)
+show('ctor overload long', || Over(5).tag)
+show('ctor overload str', || Over('s', 2).tag)
+show('ctor overload none', || Over(1.5))
+show('method arity 1', || Over().m(1))
+show('method arity 2', || Over().m(1, 2))
+show('method arity none', || Over().m())
+show('method typed pick', || [Over().pick(1), Over().pick('s')])
+show('method typed none', || Over().pick(1.5))
+show('overload family unknown kw', || Over().m(1, zz: 2))
+
+class Vec {
+  new(x: Long, y: Long) {
+    self.x = x
+    self.y = y
+  }
+  __add__(o: Vec) {
+    Vec(self.x + o.x, self.y + o.y)
+  }
+  __add__(n: Long) {
+    Vec(self.x + n, self.y + n)
+  }
+  __mul__(n: Long) {
+    Vec(self.x * n, self.y * n)
+  }
+  __mul__(o: Vec) {
+    self.x * o.x + self.y * o.y
+  }
+  __eq__(o: Vec) {
+    self.x == o.x && self.y == o.y
+  }
+  __eq__(n: Long) {
+    self.x == n
+  }
+  __index__(i: Long) {
+    [self.x, self.y][i]
+  }
+  __index__(s: String) {
+    "k:{s}"
+  }
+  __setindex__(i: Long, v: Long) {
+    if i == 0 { self.x = v } else { self.y = v }
+  }
+  show() {
+    "({self.x},{self.y})"
+  }
+}
+show('dunder vec+vec', || (Vec(1, 2) + Vec(10, 20)).show())
+show('dunder vec+long', || (Vec(1, 2) + 5).show())
+show('dunder reflected', || (5 + Vec(1, 2)).show())
+show('dunder reflected mul', || (3 * Vec(1, 2)).show())
+show('dunder dot', || Vec(1, 2) * Vec(3, 4))
+show('dunder eq', || [Vec(1, 2) == Vec(1, 2), Vec(1, 2) == 1, Vec(1, 2) == 2, 1 == Vec(1, 2)])
+show('dunder index', || [Vec(1, 2)[1], Vec(1, 2)['a']])
+show('dunder setindex', fn () {
+  let v = Vec(1, 2)
+  v[0] = 9
+  v.show()
+})
+show('dunder no match kind', fn () {
+  let r = try { Vec(1, 2) + 's' } catch e { e.kind }
+  r
+})
+
+@value
+class Pt {
+  x: Float
+  y: Float
+  new(x, y) {
+    self.x = to_float(x)
+    self.y = to_float(y)
+  }
+  __add__(o) {
+    Pt(self.x + o.x, self.y + o.y)
+  }
+}
+show('value fields', || Pt(1, 2).keys())
+show('value display', || "{Pt(1, 2)}")
+show('value eq', || [Pt(1, 2) == Pt(1, 2), Pt(1, 2) == Pt(1, 3), Pt(1, 2) == 5])
+show('value set', || {Pt(1, 2), Pt(1, 2), Pt(2, 1)}.size())
+show('value key', fn () {
+  let m = {}
+  m[Pt(1, 2)] = 'a'
+  m[Pt(1, 2)] = 'b'
+  [m.size(), m[Pt(1, 2)]]
+})
+show('value hash', || Pt(1, 2).hash() == Pt(1, 2).hash())
+show('value frozen', fn () {
+  let v = Pt(1, 2)
+  v.x = 5.0
+})
+show('value add prop', fn () {
+  let v = Pt(1, 2)
+  v.z = 1
+})
+show('value add entry', fn () {
+  let v = Pt(1, 2)
+  v[1] = 1
+})
+show('value remove', fn () {
+  let v = Pt(1, 2)
+  v.remove('x')
+})
+show('value ctor add', fn () {
+  @value
+  class Bad {
+    x: Long
+    new(k) {
+      self.x = 1
+      self[k] = 2
+    }
+  }
+  Bad('z')
+})
+show('value add op', || (Pt(1, 2) + Pt(3, 4)).x)
+
+@derive(Eq, Show)
+class D {
+  new(a, s) {
+    self.a = a
+    self.s = s
+  }
+}
+show('derive to_s', || D(2, 'x').to_s())
+show('derive eq', || D(2, 'x') == D(2, 'x'))
+
+class Leaf {
+  new(d) {
+    self.data = d
+  }
+}
+class Model {
+  new() {
+    self.a = Leaf(1)
+    self.scalar = 42
+    self._cache = Leaf(99)
+    self.rows = [[Leaf(2), Leaf(3)], {k: Leaf(4)}]
+  }
+}
+show('parameters', || Model().parameters().map(|p| p.data))
+show('parameters extra arg ignored', || Model().parameters(1, 2).size())
+class Own {
+  new() {
+    self.a = Leaf(1)
+  }
+  parameters() {
+    ['own']
+  }
+}
+show('parameters override', || Own().parameters())
+
+show('hash long', || [42.hash(), 1.hash() == 2.hash(), true.hash(), false.hash(), nil.hash()])
+show('hash string', || ['hi'.hash() == 'hi'.hash(), 'hi'.hash() == 'ho'.hash()])
+show('hash float', || [2.0.hash() == 2.hash(), 1.5.hash() == 1.5.hash()])
+show('hash array', || [1].hash())
+
+show('sized', || [](3, 7))
+show('sized nil fill', || [0](2))
+show('sized longer literal', || [1, 2, 3](2))
+show('sized nested', || [](2, [](2, 0)))
+show('sized alias', fn () {
+  let a = [](2, {mut v: 1})
+  a[0].v = 9
+  a[1].v
+})
+show('sized negative', || [](-1, 0))
+show('sized bad count', || []('a', 1))
+show('sized three args', || [](1, 2, 3))
+
+let mark = fn (cls) {
+  cls.marked = true
+  cls
+}
+@mark
+class Marked {
+  new() {}
+  static VAL = 1
+}
+show('class decorator', || Marked.marked)
+show('class prop rewrite', fn () {
+  Marked.marked = false
+  Marked.marked
+})
+show('static field immutable', fn () {
+  Marked.VAL = 2
+  Marked.VAL
+})
+
+class Layer {
+  new(w) {
+    self.w = w
+  }
+  __call__(x) {
+    x * self.w
+  }
+}
+class Net {
+  new() {
+    self.l1 = Layer(2)
+    self.l2 = Layer(3)
+  }
+  __call__(x) {
+    self.l2(self.l1(x))
+  }
+}
+fn apply2(cb: Function, v) {
+  cb(cb(v))
+}
+show('callable field chain', || Net()(5))
+show('callable kw', || Layer(2)(x: 4))
+show('callable satisfies Function', || apply2(Layer(3), 2))
+show('plain instance not Function', || apply2(Config('h'), 2))
+show('instance call kw', || Config('h')(a: 1))
+
+fn ov(a) {
+  a + 1
+}
+fn ov(a, b) {
+  a + b
+}
+show('family as value', || [10, 20].map(ov))
+show('family value called', fn () {
+  let h = ov
+  [h(1), h(1, 2)]
+})
+show('family value no match', fn () {
+  let h = ov
+  h()
+})

@@ -54,13 +54,29 @@
 # a missing argument named), the `{mut k: v}` literal form, `(x,)`, `;`,
 # and the remaining SS18 String / Array methods.
 #
+# The call-shape batch adds: keyword arguments to constructors, methods,
+# callable instances, and values called through a variable; overloaded
+# methods and constructors (a class stores each name as a family record
+# that binds the call at run time: a lone overload strictly, with
+# culebra's TypeError / ArityError naming the parameter, a family by the
+# first fit or DispatchError); the operator dunders overloaded on the
+# operand type, with + * == reflected onto a right-hand instance;
+# __setindex__; @value classes (closed field set, frozen after new,
+# derived equality and hash); @derive(Show)'s to_s; the synthesized
+# parameters(); hash(); the sized-array form [items](n, fill); decorators
+# on classes; a multimethod family carried as a value; and a receiver's
+# own method taking precedence over a UFCS call of the same name.
+#
 # Known differences from culebra, all documented rather than hidden:
 # no StringView type (slice/view give a String); normalize() is the
 # identity and graphemes() walks code points (no Unicode database);
 # upper/lower/title cover ASCII, Latin-1, Greek, and Cyrillic; is_alpha
 # knows the major letter blocks; a generator displays as its protocol
 # object; a callback's parameter count is not checked; keyword arguments
-# to built-in methods pass positionally.
+# to built-in methods, and to a plain closure called through a variable,
+# pass positionally; a class object displays all of its descriptor; a
+# user-defined hash() does not make an instance a Set member or key; the
+# arguments of a call with keywords are evaluated positionals first.
 #
 # Semantics are culebra's, not the VM's: a prelude of helper functions
 # (written in this same subset, compiled alongside the program) wraps every
@@ -319,6 +335,7 @@ fn __type_name(v) {
   if __is_set(v) { return 'Set' }
   if __is_tuple(v) { return 'Tuple' }
   if __is_marker(v) { return 'Function' }
+  if __is_family(v) { return 'Function' }
   'Object'
 }
 
@@ -402,6 +419,8 @@ fn __ge(a, b, line, col) {
 
 fn __add(a, b, line, col) {
   if __inst_dunder(a, '__add__') { return __dunder2(a, '__add__', b, line, col) }
+  # commutative reflection: a right-hand instance answers for a plain left
+  if __inst_dunder(b, '__add__') { return __dunder2(b, '__add__', a, line, col) }
   let ta = __typeof(a)
   let tb = __typeof(b)
   if ta == 'string' {
@@ -446,6 +465,7 @@ fn __sub(a, b, line, col) {
 
 fn __mul(a, b, line, col) {
   if __inst_dunder(a, '__mul__') { return __dunder2(a, '__mul__', b, line, col) }
+  if __inst_dunder(b, '__mul__') { return __dunder2(b, '__mul__', a, line, col) }
   __arith_ok('*', a, b, line, col)
   a * b
 }
@@ -579,9 +599,7 @@ fn __getprop(v, name, line, col) {
         return __call_self(ms[name], v, [], line, col)
       }
     }
-    if __objecthas(ms, name) {
-      return __bind(__mk_selfc(ms[name], cls['arities'][name]), v)
-    }
+    if __objecthas(ms, name) { return __bind(__mk_selfc(ms[name]), v) }
     return nil
   }
   __bind(v[name], v)
@@ -608,7 +626,7 @@ fn __inst_conf(v, tname) {
   __objecthas(v["\zc"]['conf'], tname)
 }
 
-fn __construct(cls, args, line, col) {
+fn __construct(cls, pos, kws, apos, line, col) {
   if !__is_class(cls) {
     __raise('TypeError', 'type error: expected Function, got ' +
             __type_name(cls), line, col)
@@ -634,23 +652,286 @@ fn __construct(cls, args, line, col) {
     let dm = cls['methods']['drop']
     inst["\zdrop"] = fn (o) { __drop_once(o, dm) }
   }
-  let ctor = cls['new']
-  __call_self(ctor, inst, args, line, col)
+  __call_selfk(cls['new'], inst, pos, kws, apos, line, col)
+  # a @value instance is frozen the moment new() returns
+  if __objecthas(cls, 'value') { inst["\zv"] = true }
   inst
 }
 
-# Apply a method closure to (self, args...), at the caller's arity.
-fn __call_self(f, self_v, args, line, col) {
-  if __is_marker(f) {
-    return __call_self(f["\zb"], __marker_self(f, self_v), args, line, col)
+# --- Calls with a shape: positional values, keywords, argument positions --
+#
+# A class stores each method (and new) as a family: {"\zf": name, ov: [[closure,
+# spec], ...]} ordered most-typed-first, where a spec lists the declared
+# parameters as [name, runtime type check, type name, has default, is rest].
+# Binding a call shape against a spec is culebra's own rule: a lone overload
+# binds strictly (TypeError / ArityError naming the parameter), a family
+# takes the first overload that fits and raises DispatchError otherwise.
+# kws is nil or [names, values]; apos is nil or the flat [line, col, ...]
+# of the positional arguments, for the errors culebra reports at the argument.
+
+fn __is_family(v) {
+  if __typeof(v) != 'object' { return false }
+  __objecthas(v, "\zf")
+}
+
+fn __apos_line(apos, i, dflt) {
+  if __typeof(apos) == 'nil' { return dflt }
+  if i * 2 + 1 >= __len(apos) { return dflt }
+  apos[i * 2]
+}
+
+fn __apos_col(apos, i, dflt) {
+  if __typeof(apos) == 'nil' { return dflt }
+  if i * 2 + 1 >= __len(apos) { return dflt }
+  apos[i * 2 + 1]
+}
+
+# What a type annotation means at run time (the compiler spells it).
+fn __ty_ok(v, tc) {
+  if __typeof(tc) == 'nil' { return true }
+  if tc == '@tuple' { return __is_tuple(v) }
+  if tc == '@fn' { return __is_callable(v) }
+  if tc[0] == '@' {
+    if __str_index_of(tc, '@trait:', 0) == 0 {
+      return __inst_conf(v, __str_slice(tc, 7, __len(tc)))
+    }
+    return __inst_class_is(v, __str_slice(tc, 5, __len(tc)))
   }
-  let n = __len(args)
-  if n == 0 { return f(self_v) }
-  if n == 1 { return f(self_v, args[0]) }
-  if n == 2 { return f(self_v, args[0], args[1]) }
-  if n == 3 { return f(self_v, args[0], args[1], args[2]) }
-  if n == 4 { return f(self_v, args[0], args[1], args[2], args[3]) }
+  __typeof(v) == tc
+}
+
+fn __index_of_str(xs, s) {
+  mut i = 0
+  while i < __len(xs) {
+    if xs[i] == s { return i }
+    i = i + 1
+  }
+  0 - 1
+}
+
+fn __bind_args(spec, pos, kws, strict, apos, line, col) {
+  mut kwn = []
+  mut kwv = []
+  if __typeof(kws) != 'nil' {
+    kwn = kws[0]
+    kwv = kws[1]
+  }
+  mut args = []
+  mut pi = 0
+  mut used = 0
+  mut i = 0
+  while i < __len(spec) {
+    let rec = spec[i]
+    let pname = rec[0]
+    let ki = __index_of_str(kwn, pname)
+    if rec[4] {
+      # *rest packs whatever positionals remain
+      mut xs = []
+      while pi < __len(pos) {
+        __arraypush(xs, pos[pi])
+        pi = pi + 1
+      }
+      __arraypush(args, xs)
+    } else if pi < __len(pos) {
+      if ki >= 0 {
+        if !strict { return nil }
+        __raise('TypeError', "got argument '" + pname +
+                "' both positionally and as a keyword", line, col)
+      }
+      let v = pos[pi]
+      if !__ty_ok(v, rec[1]) {
+        # a positional type is what dispatch selects on; a Function
+        # parameter is checked after selection, like the keywords below
+        if !strict && rec[1] != '@fn' { return nil }
+        __raise('TypeError', "type error: parameter '" + pname + "' expects " + rec[2],
+                __apos_line(apos, pi, line), __apos_col(apos, pi, col))
+      }
+      __arraypush(args, v)
+      pi = pi + 1
+    } else if ki >= 0 {
+      let v = kwv[ki]
+      if !__ty_ok(v, rec[1]) {
+        __raise('TypeError', "type error: parameter '" + pname + "' expects " + rec[2],
+                line, col)
+      }
+      __arraypush(args, v)
+      used = used + 1
+    } else if rec[3] {
+      __arraypush(args, "\zmissing")   # the callee's prologue evaluates the default
+    } else {
+      if !strict { return nil }
+      __raise('ArityError', "missing required argument '" + pname + "'", line, col)
+    }
+    i = i + 1
+  }
+  if !strict {
+    if pi < __len(pos) { return nil }   # surplus positionals fit no family member
+  }
+  if used != __len(kwn) {
+    if !strict { return nil }
+    mut k = 0
+    while k < __len(kwn) {
+      mut known = false
+      mut j = 0
+      while j < __len(spec) {
+        if spec[j][0] == kwn[k] { known = true }
+        j = j + 1
+      }
+      if !known {
+        __raise('TypeError', "unknown keyword argument '" + kwn[k] + "'", line, col)
+      }
+      k = k + 1
+    }
+  }
+  args
+}
+
+# Keyword values fall in behind the positionals for a callee without a
+# spec (a plain closure, a built-in method): the positional fallback.
+fn __with_kw_values(pos, kws) {
+  if __typeof(kws) == 'nil' { return pos }
+  __concat(pos, kws[1])
+}
+
+fn __first_n(xs, n) {
+  mut out = []
+  mut i = 0
+  while i < n && i < __len(xs) {
+    __arraypush(out, xs[i])
+    i = i + 1
+  }
+  out
+}
+
+# Apply a method-like callable to (self, args...): a marker opens to its
+# closure and receiver, a family binds the shape, a plain closure takes
+# the values positionally.
+fn __call_self(f, self_v, args, line, col) {
+  __call_selfk(f, self_v, args, nil, nil, line, col)
+}
+
+fn __call_selfk(f, self_v, pos, kws, apos, line, col) {
+  if __is_marker(f) {
+    return __call_selfk(f["\zb"], __marker_self(f, self_v), pos, kws, apos, line, col)
+  }
+  if __is_family(f) {
+    let ovs = f['ov']
+    let strict = __len(ovs) == 1
+    let free = __objecthas(f, 'free')
+    mut i = 0
+    while i < __len(ovs) {
+      let args = __bind_args(ovs[i][1], pos, kws, strict, apos, line, col)
+      if __typeof(args) != 'nil' {
+        if free { return __call_n(ovs[i][0], args, line, col) }
+        return __spread_self(ovs[i][0], self_v, args, line, col)
+      }
+      i = i + 1
+    }
+    # a keyword no overload of a multi-definition family declares is refused
+    # by name (a lone overload already bound strictly above)
+    if !strict && __typeof(kws) != 'nil' {
+      let kwn = kws[0]
+      mut k = 0
+      while k < __len(kwn) {
+        mut known = false
+        mut j = 0
+        while j < __len(ovs) {
+          let spec = ovs[j][1]
+          mut p = 0
+          while p < __len(spec) {
+            if spec[p][0] == kwn[k] { known = true }
+            p = p + 1
+          }
+          j = j + 1
+        }
+        if !known {
+          __raise('TypeError', "unknown keyword argument '" + kwn[k] + "'", line, col)
+        }
+        k = k + 1
+      }
+    }
+    __raise('DispatchError', "no matching method for \q" + f["\zf"] + "\q", line, col)
+  }
+  __spread_self(f, self_v, __with_kw_values(pos, kws), line, col)
+}
+
+fn __spread_self(f, s, a, line, col) {
+  let n = __len(a)
+  if n == 0 { return f(s) }
+  if n == 1 { return f(s, a[0]) }
+  if n == 2 { return f(s, a[0], a[1]) }
+  if n == 3 { return f(s, a[0], a[1], a[2]) }
+  if n == 4 { return f(s, a[0], a[1], a[2], a[3]) }
+  if n == 5 { return f(s, a[0], a[1], a[2], a[3], a[4]) }
+  if n == 6 { return f(s, a[0], a[1], a[2], a[3], a[4], a[5]) }
+  if n == 7 { return f(s, a[0], a[1], a[2], a[3], a[4], a[5], a[6]) }
+  if n == 8 { return f(s, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]) }
   __raise('TypeError', 'type error: too many arguments', line, col)
+}
+
+# A call through a value with a shape: what f(a, k: v) compiles to when
+# f is not a name the compiler can bind itself.
+fn __call_nk(v, pos, kws, apos, line, col) {
+  if __is_marker(v) {
+    return __call_selfk(v["\zb"], __marker_self(v, nil), pos, kws, apos, line, col)
+  }
+  if __is_class(v) { return __construct(v, pos, kws, apos, line, col) }
+  if __inst_dunder(v, '__call__') {
+    return __call_selfk(v["\zc"]['methods']['__call__'], v, pos, kws, apos, line, col)
+  }
+  if __typeof(v) != 'function' {
+    __raise('TypeError', 'type error: expected Function, got ' +
+            __type_name(v), line, col)
+  }
+  __call_n(v, __with_kw_values(pos, kws), line, col)
+}
+
+# [items](n) / [items](n, fill): the literal grown to n slots, the new
+# ones all the one fill value (nil when absent); a longer literal is kept.
+fn __array_sized(items, args, line, col) {
+  if __len(args) < 1 || __len(args) > 2 {
+    __raise('TypeError', 'type error: expected Function, got Array', line, col)
+  }
+  let n = args[0]
+  if __typeof(n) != 'int' {
+    __raise('TypeError', 'type error: expected Long, got ' + __type_name(n),
+            line, col)
+  }
+  if n < 0 { __raise('ValueError', 'array size must not be negative', line, col) }
+  mut fill = nil
+  if __len(args) == 2 { fill = args[1] }
+  mut out = []
+  mut i = 0
+  while i < __len(items) {
+    __arraypush(out, items[i])
+    i = i + 1
+  }
+  while i < n {
+    __arraypush(out, fill)
+    i = i + 1
+  }
+  out
+}
+
+# An object that a call site accepts besides a function: a class, or an
+# instance whose class defines __call__.
+fn __callable_obj(v) {
+  if __is_class(v) { return true }
+  __inst_dunder(v, '__call__')
+}
+
+# What a Function annotation accepts: a function, a bound method, or an
+# instance whose class defines __call__ (a class object does not qualify).
+fn __is_callable(v) {
+  if __is_fn(v) { return true }
+  __inst_dunder(v, '__call__')
+}
+
+# A class object called as a function constructs, at the call's own shape.
+fn __class_fn(cls, line, col) {
+  fn (a = nil, b = nil, c = nil, d = nil) {
+    __construct(cls, __first_n([a, b, c, d], __argcount()), nil, nil, line, col)
+  }
 }
 
 fn __inst_dunder(v, name) {
@@ -666,7 +947,12 @@ fn __dunder2(v, name, o, line, col) {
   __call_self(v["\zc"]['methods'][name], v, [o], line, col)
 }
 
-fn __callee_check(v, line, col) { __check_fn(v, line, col) }
+# A user call site accepts what a built-in's callback slot does not: a
+# class object (culebra constructs through it, but map(Cls) is a TypeError).
+fn __callee_check(v, line, col) {
+  if __is_class(v) { return __class_fn(v, line, col) }
+  __check_fn(v, line, col)
+}
 
 fn __mk_tuple(items) {
   mut o = {}
@@ -745,6 +1031,13 @@ fn __eq_obj(a, b) {
 }
 
 fn __eq(a, b) {
+  # an instance's own __eq__ answers for any other operand, on either side
+  if __inst_dunder(a, '__eq__') {
+    return __truthy(__dunder2(a, '__eq__', b, 0, 0), 0, 0)
+  }
+  if __inst_dunder(b, '__eq__') {
+    return __truthy(__dunder2(b, '__eq__', a, 0, 0), 0, 0)
+  }
   let ta = __typeof(a)
   let tb = __typeof(b)
   if ta == tb {
@@ -815,6 +1108,7 @@ fn __repr(v) {
   }
   if t == 'object' {
     if __is_marker(v) { return '[function]' }
+    if __is_family(v) { return '[function]' }
     if __is_tuple(v) {
       let items = __titems(v)
       mut out = '('
@@ -841,7 +1135,9 @@ fn __repr(v) {
           if !__hidden_key(k) {
             if !first { out = out + ', ' }
             first = false
-            out = out + 'mut ' + k + ': ' + __repr(v[k])
+            # a @value instance's fields are frozen, so they show without mut
+            if !__objecthas(v["\zc"], 'value') { out = out + 'mut ' }
+            out = out + k + ': ' + __repr(v[k])
           }
         }
         i = i + 1
@@ -931,43 +1227,76 @@ fn __setindex(recv, key, val, is_prop, line, col) {
     }
     let pk = __hkey(key, line, col)
     if __is_instance(recv) {
-      # instance fields are all mutable, dot and bracket alike
+      if is_prop == 0 {
+        if __inst_dunder(recv, '__setindex__') {
+          __call_selfk(recv["\zc"]['methods']['__setindex__'], recv, [key, val],
+                       nil, nil, line, col)
+          return nil
+        }
+      }
+      # instance fields are all mutable, dot and bracket alike -- except on a
+      # @value instance, whose field set is closed from the start and whose
+      # fields freeze once new() returns
+      if __objecthas(recv["\zc"], 'value') {
+        if __objecthas(recv, "\zv") {
+          if __objecthas(recv, pk) {
+            __raise('ImmutableError', "immutable property '" + pk + "'", line, col)
+          }
+        }
+        if !__objecthas(recv, pk) {
+          if __is_nsk(pk) {
+            __raise('ImmutableError', 'cannot add an entry to a @value instance',
+                    line, col)
+          }
+          __raise('ImmutableError', "cannot add property '" + pk +
+                  "' to a @value instance", line, col)
+        }
+      }
       recv[pk] = val
       __record_key(recv, pk, key)
       return nil
     }
-    if __objecthas(recv, pk) {
-      mut ok = false
-      if __objecthas(recv, "\zm") {
-        if __objecthas(recv["\zm"], pk) { ok = true }
-      }
-      if !ok {
-        if __is_nsk(pk) {
-          __raise('ImmutableError', 'immutable entry on non-String key',
-                  line, col)
-        }
-        __raise('ImmutableError', "immutable property '" + pk + "'",
-                line, col)
-      }
-      recv[pk] = val
-      return nil
-    }
-    if is_prop == 1 {
-      __raise('ImmutableError', "immutable property '" + pk + "'",
-              line, col)
-    }
-    if !__objecthas(recv, "\zm") {
-      mut fresh = {}
-      recv["\zm"] = fresh
-    }
-    let muts = recv["\zm"]
-    muts[pk] = true
-    recv[pk] = val
-    __record_key(recv, pk, key)
-    return nil
+    # a class object is an object whose declared statics are literal keys:
+    # a new property may be added through the dot form too
+    if __is_class(recv) { return __obj_put(recv, pk, key, val, 0, line, col) }
+    return __obj_put(recv, pk, key, val, is_prop, line, col)
   }
   __raise('TypeError', 'type error: expected Object, Array, or Tensor, got ' +
           __type_name(recv), line, col)
+}
+
+# A plain object's store: a literal key is immutable, a bracket-added one
+# is mutable, and the dot form cannot add a key.
+fn __obj_put(recv, pk, key, val, is_prop, line, col) {
+  if __objecthas(recv, pk) {
+    mut ok = false
+    if __objecthas(recv, "\zm") {
+      if __objecthas(recv["\zm"], pk) { ok = true }
+    }
+    if !ok {
+      if __is_nsk(pk) {
+        __raise('ImmutableError', 'immutable entry on non-String key',
+                line, col)
+      }
+      __raise('ImmutableError', "immutable property '" + pk + "'",
+              line, col)
+    }
+    recv[pk] = val
+    return nil
+  }
+  if is_prop == 1 {
+    __raise('ImmutableError', "immutable property '" + pk + "'",
+            line, col)
+  }
+  if !__objecthas(recv, "\zm") {
+    mut fresh = {}
+    recv["\zm"] = fresh
+  }
+  let muts = recv["\zm"]
+  muts[pk] = true
+  recv[pk] = val
+  __record_key(recv, pk, key)
+  nil
 }
 
 fn __is_range(v) {
@@ -1267,24 +1596,27 @@ fn __assert_false(v, line, col) {
 }
 
 # Apply f to an argument array. The IR's CallValue is fixed-arity, so the
-# spread is a size switch; five arguments covers every sample.
-fn __call_n(f0, args, line, col) {
+# spread is a size switch.
+fn __call_n(f0, a, line, col) {
   let f = __as_fn(f0, line, col)
-  let n = __len(args)
+  let n = __len(a)
   if n == 0 { return f() }
-  if n == 1 { return f(args[0]) }
-  if n == 2 { return f(args[0], args[1]) }
-  if n == 3 { return f(args[0], args[1], args[2]) }
-  if n == 4 { return f(args[0], args[1], args[2], args[3]) }
+  if n == 1 { return f(a[0]) }
+  if n == 2 { return f(a[0], a[1]) }
+  if n == 3 { return f(a[0], a[1], a[2]) }
+  if n == 4 { return f(a[0], a[1], a[2], a[3]) }
+  if n == 5 { return f(a[0], a[1], a[2], a[3], a[4]) }
+  if n == 6 { return f(a[0], a[1], a[2], a[3], a[4], a[5]) }
+  if n == 7 { return f(a[0], a[1], a[2], a[3], a[4], a[5], a[6]) }
+  if n == 8 { return f(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]) }
   __raise('TypeError', 'type error: too many arguments', line, col)
 }
 
 fn __check_fn(v, line, col) {
   if __is_marker(v) { return __as_fn(v, line, col) }
+  if __is_family(v) { return __as_fn(v, line, col) }
   if __inst_dunder(v, '__call__') {
-    let cls = v["\zc"]
-    return __bindn(cls['methods']['__call__'], v, cls['arities']['__call__'],
-                   line, col)
+    return __bindn(v["\zc"]['methods']['__call__'], v, line, col)
   }
   if __typeof(v) != 'function' {
     __raise('TypeError', 'type error: expected Function, got ' +
@@ -1332,12 +1664,13 @@ fn __is_space(c) {
   false
 }
 
-fn __method(recv, name, args, line, col) {
+fn __method(recv, name, pos, kws, apos, line, col) {
   let t = __typeof(recv)
   # the global built-ins double as methods on anything that has no own
   # method of the name
   if name == 'drop' || name == 'to_string' || name == 'inspect' ||
-     name == 'type_of' || name == 'to_long' || name == 'to_float' {
+     name == 'type_of' || name == 'to_long' || name == 'to_float' ||
+     name == 'hash' {
     if !__inst_dunder(recv, name) {
       if name == 'drop' { if !__is_instance(recv) { return nil } }
       if name == 'to_string' { return __to_string(recv, line, col) }
@@ -1345,42 +1678,55 @@ fn __method(recv, name, args, line, col) {
       if name == 'type_of' { return __type_of(recv, line, col) }
       if name == 'to_long' { return __to_long(recv, line, col) }
       if name == 'to_float' { return __to_float(recv, line, col) }
+      if name == 'hash' { return __hash_of(recv, line, col) }
     }
   }
+  # a built-in method takes keyword values positionally
+  let args = __with_kw_values(pos, kws)
   if t == 'array' { return __array_method(recv, name, args, line, col) }
   if t == 'string' { return __string_method(recv, name, args, line, col) }
   if t == 'object' {
     if __is_tuple(recv) { return __tuple_method(recv, name, args, line, col) }
     if __is_set(recv) { return __set_method(recv, name, args, line, col) }
     if __is_instance(recv) {
-      let ms = recv["\zc"]['methods']
+      let cls = recv["\zc"]
+      let ms = cls['methods']
       if __objecthas(ms, name) {
         if name == 'drop' {
           __drop_once(recv, ms[name])
           return nil
         }
-        return __call_self(ms[name], recv, args, line, col)
+        return __call_selfk(ms[name], recv, pos, kws, apos, line, col)
       }
       if __objecthas(recv, name) {
         if __is_fn(recv[name]) { return __invoke(recv, name, args, line, col) }
+        if __callable_obj(recv[name]) {
+          return __call_nk(recv[name], pos, kws, apos, line, col)
+        }
+      }
+      if name == 'parameters' { return __parameters(recv) }
+      if name == 'to_s' {
+        if __objecthas(cls, 'show') { return __derive_show(recv) }
       }
       return __object_method(recv, name, args, line, col)
     }
     if __is_class(recv) {
-      if name == 'new' {
-        return __construct(recv, args, line, col)
-      }
+      if name == 'new' { return __construct(recv, pos, kws, apos, line, col) }
       if __objecthas(recv, name) {
         # a static method (or a callable static field)
         if __is_fn(recv[name]) {
-          return __call_n(__check_fn(recv[name], line, col), args, line, col)
+          return __call_nk(recv[name], pos, kws, apos, line, col)
         }
       }
       __raise('TypeError', 'type error: expected Function, got Nil',
               line, col)
     }
     if __objecthas(recv, name) {
-      # a stored closure called as a method; a self-closure gets the receiver
+      # a stored closure called as a method; a self-closure gets the receiver;
+      # a stored class or callable instance is called with the shape
+      if __callable_obj(recv[name]) {
+        return __call_nk(recv[name], pos, kws, apos, line, col)
+      }
       return __invoke(recv, name, args, line, col)
     }
     return __object_method(recv, name, args, line, col)
@@ -1802,10 +2148,78 @@ fn __object_method(o, name, args, line, col) {
   }
   if name == 'remove' {
     let pk = __hkey(args[0], line, col)
+    if __is_instance(o) {
+      if __objecthas(o["\zc"], 'value') {
+        if __objecthas(o, "\zv") {
+          __raise('ImmutableError', "cannot remove property '" + pk +
+                  "' from a @value instance", line, col)
+        }
+      }
+    }
     if __objecthas(o, pk) { __drop_key(o, pk) }
     return nil
   }
   __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+}
+
+# The synthesized parameters(): every class instance reachable from the
+# fields, descending arrays and plain objects, instances themselves being
+# leaves; a field whose name starts with '_' is private state and skipped.
+fn __parameters(o) {
+  mut out = []
+  __params_walk_fields(o, out)
+  out
+}
+
+fn __params_walk_fields(o, out) {
+  let ks = __visible_keys(o)
+  mut i = 0
+  while i < __len(ks) {
+    let k = ks[i]
+    if k != 'class' {
+      if k[0] != '_' { __params_walk(o[k], out) }
+    }
+    i = i + 1
+  }
+  nil
+}
+
+fn __params_walk(v, out) {
+  if __is_instance(v) {
+    __arraypush(out, v)
+    return nil
+  }
+  let t = __typeof(v)
+  if t == 'array' {
+    mut i = 0
+    while i < __len(v) {
+      __params_walk(v[i], out)
+      i = i + 1
+    }
+    return nil
+  }
+  if t == 'object' {
+    if __is_tuple(v) || __is_set(v) || __is_fn(v) || __is_class(v) { return nil }
+    __params_walk_fields(v, out)
+  }
+  nil
+}
+
+# @derive(Show): Name(field, field) over the fields' inspect forms.
+fn __derive_show(o) {
+  let ks = __visible_keys(o)
+  mut out = o["\zc"]['name'] + '('
+  mut first = true
+  mut i = 0
+  while i < __len(ks) {
+    if ks[i] != 'class' {
+      if !first { out = out + ', ' }
+      first = false
+      out = out + __repr(o[ks[i]])
+    }
+    i = i + 1
+  }
+  out + ')'
 }
 
 # --- Hashable keys: non-String Object keys and Set members ------------------
@@ -1845,10 +2259,90 @@ fn __hkey(v, line, col) {
     }
     return out
   }
+  if __is_value_inst(v) {
+    # a @value instance keys by class and fields, like the tuple above
+    let ks = __visible_keys(v)
+    mut out = "\zhv" + v["\zc"]['name'] + '('
+    mut i = 0
+    while i < __len(ks) {
+      if ks[i] != 'class' {
+        let hk = __hkey(v[ks[i]], line, col)
+        out = out + __tostr(__len(hk)) + ':' + hk
+      }
+      i = i + 1
+    }
+    return out
+  }
+  __raise('TypeError', __unhashable_msg(v), line, col)
+}
+
+fn __unhashable_msg(v) {
   let hn = __hash_name(v)
   mut msg = "unhashable type: '" + hn + "'"
   if hn == 'Object' { msg = msg + ' (no hash() method)' }
-  __raise('TypeError', msg, line, col)
+  msg
+}
+
+# A @value instance that keeps the derived equality (no __eq__ of its own)
+# also gets the derived hash; one that writes __eq__ opts out of both.
+fn __is_value_inst(v) {
+  if !__is_instance(v) { return false }
+  if !__objecthas(v["\zc"], 'value') { return false }
+  !__inst_dunder(v, '__eq__')
+}
+
+# hash(): a Long, equal for equal values. The scalar rules are culebra's
+# (a Long is its own hash); strings and non-whole floats use FNV-1a over
+# their bytes, which only needs to agree with itself.
+fn __hash_of(v, line, col) {
+  let t = __typeof(v)
+  if t == 'int' { return v }
+  if t == 'bool' {
+    if v { return 1 }
+    return 0
+  }
+  if t == 'nil' { return 0 }
+  if t == 'double' {
+    if v > 0.0 - 9.0e18 && v < 9.0e18 {
+      let w = __toint(v)
+      if __todouble(w) == v { return w }
+    }
+    return __str_hash(__scalar_display(v))
+  }
+  if t == 'string' { return __str_hash(v) }
+  if __is_tuple(v) { return __hash_items(__titems(v), line, col) }
+  if __is_value_inst(v) {
+    let ks = __visible_keys(v)
+    mut items = [v["\zc"]['name']]
+    mut i = 0
+    while i < __len(ks) {
+      if ks[i] != 'class' { __arraypush(items, v[ks[i]]) }
+      i = i + 1
+    }
+    return __hash_items(items, line, col)
+  }
+  __raise('TypeError', __unhashable_msg(v), line, col)
+}
+
+fn __hash_items(items, line, col) {
+  mut h = 7
+  mut i = 0
+  while i < __len(items) {
+    h = h * 31 + __hash_of(items[i], line, col)
+    i = i + 1
+  }
+  h
+}
+
+fn __str_hash(s) {
+  mut h = 0 - 3750763034362895579
+  mut tbl = {}
+  mut i = 0
+  while i < __len(s) {
+    h = (h ^ __byte_memo(s[i], tbl)) * 1099511628211
+    i = i + 1
+  }
+  h
 }
 
 fn __key_val(o, pk) {
@@ -2991,13 +3485,13 @@ fn __is_marker(v) {
 
 fn __is_fn(v) {
   if __typeof(v) == 'function' { return true }
-  __is_marker(v)
+  if __is_marker(v) { return true }
+  __is_family(v)
 }
 
-fn __mk_selfc(raw, n) {
+fn __mk_selfc(raw) {
   mut o = {}
   o["\zb"] = raw
-  o["\zn"] = n
   o
 }
 
@@ -3006,7 +3500,6 @@ fn __bind(v, recv) {
   if __objecthas(v, "\zS") { return v }
   mut o = {}
   o["\zb"] = v["\zb"]
-  o["\zn"] = v["\zn"]
   o["\zS"] = recv
   o
 }
@@ -3028,22 +3521,44 @@ fn __marker_self(mk, fallback) {
   fallback
 }
 
-# The declared-arity closure a marker stands for, with its receiver fixed:
-# what a callback slot or a plain call site can invoke directly.
-fn __bindn(raw, selfv, n, line, col) {
-  if n == 0 { return fn () { raw(selfv) } }
-  if n == 1 { return fn (a) { raw(selfv, a) } }
-  if n == 2 { return fn (a, b) { raw(selfv, a, b) } }
-  if n == 3 { return fn (a, b, c) { raw(selfv, a, b, c) } }
-  if n == 4 { return fn (a, b, c, d) { raw(selfv, a, b, c, d) } }
-  __raise('TypeError', 'type error: too many parameters', line, col)
+# The closure a marker or family stands for, with its receiver fixed: what
+# a callback slot or a plain call site can invoke directly. It forwards the
+# count it was called with, so the callee's own arity rules still apply.
+fn __bindn(raw, selfv, line, col) {
+  fn (a = nil, b = nil, c = nil, d = nil) {
+    __call_selfk(raw, selfv, __first_n([a, b, c, d], __argcount()), nil, nil,
+                 line, col)
+  }
 }
 
 fn __as_fn(v, line, col) {
   if __is_marker(v) {
-    return __bindn(v["\zb"], __marker_self(v, nil), v["\zn"], line, col)
+    return __bindn(v["\zb"], __marker_self(v, nil), line, col)
   }
+  # a free multimethod family dispatches per call
+  if __is_family(v) { return __bindn(v, nil, line, col) }
   v
+}
+
+# Whether a .name(...) on this receiver is the receiver's own method (an
+# instance's class method or stored closure, a class's static or new), as
+# opposed to a UFCS call of a free function of that name.
+fn __has_method(v, name) {
+  if __is_instance(v) {
+    if __objecthas(v["\zc"]['methods'], name) { return true }
+    if name == 'parameters' || name == 'hash' { return true }
+    if !__objecthas(v, name) { return false }
+    return __is_fn(v[name]) || __callable_obj(v[name])
+  }
+  if __is_class(v) {
+    if name == 'new' { return true }
+    if !__objecthas(v, name) { return false }
+    return __is_fn(v[name]) || __callable_obj(v[name])
+  }
+  if __typeof(v) != 'object' { return false }
+  if __is_tuple(v) || __is_set(v) { return false }
+  if !__objecthas(v, name) { return false }
+  __is_fn(v[name]) || __callable_obj(v[name])
 }
 
 # Calls a callable-looking property with a receiver: a class method, a
@@ -3874,15 +4389,27 @@ fn __pat_type(v, tname) {
 }
 
 
-fn __range_iter3(a, b, step) {
+# The bound is compared directly (inclusive or not) and the advance is
+# overflow-checked, so a range that reaches the Long boundary ends there
+# instead of wrapping.
+fn __range_iter3(a, b, step, incl) {
   mut i = a
+  mut done = false
   __mk_iter(fn () {
-              if step > 0 { return i < b }
+              if done { return false }
+              if step > 0 {
+                if incl { return i <= b }
+                return i < b
+              }
+              if incl { return i >= b }
               i > b
             },
             fn () {
               let v = i
-              i = i + step
+              let nx = i + step
+              if step > 0 && nx < i { done = true }
+              if step < 0 && nx > i { done = true }
+              i = nx
               v
             })
 }
@@ -3898,21 +4425,27 @@ fn __mk_range(a, b, incl, step, line, col) {
   if __typeof(step) != 'nil' { st = step }
   if st == 0 { __raise('ValueError', 'range step must not be zero', line, col) }
   mut hi = b
+  mut inclusive = incl == 1
   if __typeof(b) == 'nil' {
     hi = 9223372036854775807
+    inclusive = true
   } else {
     if __typeof(b) != 'int' {
       __raise('TypeError', 'type error: expected Long, got ' + __type_name(b),
               line, col)
     }
-    if incl == 1 {
-      if st > 0 { hi = b + 1 } else { hi = b - 1 }
+  }
+  let base = __range_iter3(a, hi, st, inclusive)
+  let r = {iter: fn () { __range_iter3(a, hi, st, inclusive) },
+           has_next: base['has_next'], next: base['next']}
+  # the slice bounds stay half-open; an inclusive end is one past
+  mut slice_hi = hi
+  if inclusive {
+    if __typeof(b) != 'nil' {
+      if st > 0 { slice_hi = b + 1 } else { slice_hi = b - 1 }
     }
   }
-  let base = __range_iter3(a, hi, st)
-  let r = {iter: fn () { __range_iter3(a, hi, st) },
-           has_next: base['has_next'], next: base['next']}
-  r["\zr"] = [a, hi]
+  r["\zr"] = [a, slice_hi]
   r
 }
 
@@ -4111,7 +4644,8 @@ let builtin_methods = ['size', 'empty', 'push', 'pop', 'get', 'slice',
                        'is_alpha', 'is_alnum', 'is_space', 'is_ascii', 'upper',
                        'lower', 'capitalize', 'title', 'eq_ignore_case',
                        'normalize', 'to_string', 'view', 'extend', 'insert',
-                       'remove_at', 'sort', 'sort_by', 'sorted_by']
+                       'remove_at', 'sort', 'sort_by', 'sorted_by', 'hash',
+                       'parameters', 'to_s']
 
 let missing_marker = String.from_code_point(1) + 'missing'
 # every byte value in order: the prelude's byte<->string conversions index it
@@ -4123,6 +4657,7 @@ let allbytes_str = String.from_bytes(range(256).collect())
 let gen_end_marker = String.from_code_point(1) + 'gend'
 let exit_marker = String.from_code_point(1) + 'exit'
 let class_marker = String.from_code_point(1) + 'k'
+let family_marker = String.from_code_point(1) + 'f'
 
 let intrinsics = {
   __typeof: ('typeof', 1), __tostr: ('tostr', 1), __len: ('len', 1),
@@ -4131,7 +4666,7 @@ let intrinsics = {
   __objecthas: ('objecthas', 2), __objectkeys: ('objectkeys', 1),
   __objectremove: ('objectremove', 2),
   __genresume: ('genresume', 2), __genreturn: ('genreturn', 2),
-  __same: ('same', 2),
+  __same: ('same', 2), __argcount: ('argcount', 0),
 }
 
 # Global builtins user code calls by name; each lowers to the prelude
@@ -4458,29 +4993,49 @@ fn scan_body_stmts(f, stmts, blk_key) {
     if s.name == 'class_d' {
       let d = class_parts(s)
       declare_var(f, d.id.token, false, d.id)
+      # every method name maps to its overloads in declaration order; keys
+      # carry an 'm:' prefix so a method named `drop` cannot trip the host's
+      # own auto-drop contract on this compiler map
       mut methods = {}
-      mut marities = {}
-      mut ctor = nil
+      mut ctors = []
       for mn in d.methods {
         let it = method_parts(mn)
         let g = new_func(f, "{d.id.token}.{it.id.token}", it.blk.nodes,
                          pkey(it.blk))
         closure_of[pkey(mn)] = g
         cond {
-          it.id.token == 'new' => ctor = g,
+          it.id.token == 'new' => ctors.push(g),
           _ => {
-            # keys carry an 'm:' prefix so a method named `drop` cannot trip
-            # the host's own auto-drop contract on this compiler map
-            methods['m:' + it.id.token] = g
-            marities['m:' + it.id.token] = it.prms.nodes.size()
+            let mk = 'm:' + it.id.token
+            if !methods.has(mk) { methods[mk] = [] }
+            methods[mk].push(g)
           },
         }
       }
       mut synth = nil
-      if ctor == nil {
+      if ctors.size() == 0 {
         # a class without new() accepts no arguments
-        ctor = new_func(f, "{d.id.token}.new", [], 'c:' + pkey(d.id))
-        synth = ctor
+        synth = new_func(f, "{d.id.token}.new", [], 'c:' + pkey(d.id))
+        ctors.push(synth)
+      }
+      # the built-in decorators are flags; the rest are applied to the class
+      # object like a function's
+      mut is_value = false
+      mut is_show = false
+      mut decos = []
+      for dn in d.decos {
+        let dname = dn.nodes[0].token
+        cond {
+          dname == 'value' => is_value = true,
+          dname == 'derive' => {
+            if dn.nodes.size() == 2 {
+              for a in dn.nodes[1].nodes {
+                if a.name == 'ident' && a.token == 'Show' { is_show = true }
+              }
+            }
+          },
+          _ => decos.push(dn),
+        }
       }
       mut smeths = {}
       for mn in d.smethods {
@@ -4500,9 +5055,10 @@ fn scan_body_stmts(f, stmts, blk_key) {
         }
       }
       classes["{f}/{d.id.token}"] =
-          {name: d.id.token, ctor: ctor, methods: methods, marities: marities,
-           synth: synth, smeths: smeths, finits: finits, fields: d.fields,
-           getters: d.getters, sfields: d.sfields}
+          {name: d.id.token, ctors: ctors, methods: methods, synth: synth,
+           smeths: smeths, finits: finits, fields: d.fields,
+           getters: d.getters, sfields: d.sfields, is_value: is_value,
+           is_show: is_show, decos: decos}
     }
     if s.name == 'fn_decl' {
       let d = fn_decl_parts(s)
@@ -4582,6 +5138,16 @@ fn scan_body_stmts(f, stmts, blk_key) {
           if fd.init != nil { walk_fn(ci.finits[fd.id.token], []) }
         }
         for sf in d.sfields { scan_expr(sf.nodes[1], f) }
+        for dn in ci.decos {
+          let r = resolve(f, dn.nodes[0].token)
+          if r.kind == 'none' {
+            fail(dn.nodes[0], "undefined name '{dn.nodes[0].token}'")
+          }
+          note_deco(dn, f, r)
+          if dn.nodes.size() == 2 {
+            for a in dn.nodes[1].nodes { scan_expr(arg_val(a), f) }
+          }
+        }
       },
       s.name == 'fn_decl' => {
         let d = fn_decl_parts(s)
@@ -4646,7 +5212,11 @@ fn type_zero(tname, at) {
 
 fn class_parts(s) {
   mut i = 0
-  while s.nodes[i].name == 'deco' { i = i + 1 }
+  mut decos = []
+  while s.nodes[i].name == 'deco' {
+    decos.push(s.nodes[i])
+    i = i + 1
+  }
   mut methods = []
   mut getters = []
   mut smethods = []
@@ -4680,7 +5250,7 @@ fn class_parts(s) {
     j = j + 1
   }
   {id: s.nodes[i], methods: methods, getters: getters, smethods: smethods,
-   sfields: sfields, fields: fields}
+   sfields: sfields, fields: fields, decos: decos}
 }
 
 # A method walks like a function whose first parameter is `self`.
@@ -5340,13 +5910,11 @@ fn scan_expr(node, f) {
       }
       if r.kind == 'fn' {
         # a named fn used as a value closes over its captures here (the
-        # self-cycle this can build now falls to the backstop); referencing
-        # a whole multimethod family as one value has no single closure
-        if r.funcs.size() > 1 {
-          fail(node, "fn '{token}' has multiple definitions and can only be called")
-        }
+        # self-cycle this can build now falls to the backstop); a whole
+        # multimethod family travels as a family record that dispatches
+        # when called
         resolved[pkey(node)] = r
-        calls[f].push(r.funcs[0])
+        for g in r.funcs { calls[f].push(g) }
         return nil
       }
       note_use(node, f, r)
@@ -5584,8 +6152,9 @@ fn calls_note(f, g) { nil }
 
 # The prelude-only marks give the prelude bytes the surface language cannot
 # spell: \z is 0x01 (the tuple/mut-metadata key prefix -- no user string can
-# collide with it) and \y/\x/\w are the UTF-8 lead-byte thresholds 0xC0 /
-# 0xE0 / 0xF0 its code-point iterator compares against.
+# collide with it), \y/\x/\w are the UTF-8 lead-byte thresholds 0xC0 /
+# 0xE0 / 0xF0 its code-point iterator compares against, and \q is the
+# backtick (which would end the prelude's own raw string).
 fn unescape(s) {
   mut out = ''
   mut i = 0
@@ -5602,6 +6171,7 @@ fn unescape(s) {
           in_prelude && d == 'y' => String.from_bytes([192]),
           in_prelude && d == 'x' => String.from_bytes([224]),
           in_prelude && d == 'w' => String.from_bytes([240]),
+          in_prelude && d == 'q' => String.from_code_point(96),
           _ => d,   # backslash, brace, quotes: the char itself
         }
         i = i + 2
@@ -6141,8 +6711,9 @@ fn emit_call(m, node, f) {
                        line: ln, col: cl)
   }
   if !in_prelude && builtins.has(id.token) {
+    # a built-in takes keyword arguments positionally
     mut arg_ids = []
-    for a in args.nodes { arg_ids.push(emit_expr(m, a, f)) }
+    for a in args.nodes { arg_ids.push(emit_expr(m, arg_val(a), f)) }
     let (pl, pc) = pos_args(m, id)
     let target = cond {
       id.token == 'range' => cond {
@@ -6188,15 +6759,12 @@ fn emit_call(m, node, f) {
   }
   let r = resolved[pkey(id)]
   if r.kind == 'class' {
-    mut arg_ids = []
-    for a in args.nodes { arg_ids.push(emit_expr(m, arg_val(a), f)) }
     let acc = access_from(f, (r.owner, r.slot))
     let clsv = m.var_ref(kind: acc.kind, index: acc.index,
                          line: id.line, col: id.column)
-    let argsarr = m.array_lit(items_list: make_list(m, arg_ids),
-                              line: ln, col: cl)
+    let [posv, kwsv, aposv] = emit_call_shape(m, f, args.nodes, ln, cl)
     let (pl, pc) = pos_args(m, id)
-    return call_pre(m, f, '__construct', [clsv, argsarr, pl, pc], ln, cl)
+    return call_pre(m, f, '__construct', [clsv, posv, kwsv, aposv, pl, pc], ln, cl)
   }
   if r.kind == 'fn' {
     if !needs_dispatch(r.funcs, args) {
@@ -6212,11 +6780,16 @@ fn emit_call(m, node, f) {
     }
     return emit_dispatch(m, f, id.token, r.funcs, args.nodes, nil, node)
   }
-  mut arg_ids = []
-  for a in args.nodes { arg_ids.push(emit_expr(m, arg_val(a), f)) }
   let aa = access_from(f, (r.owner, r.slot))
   let cv = m.var_ref(kind: aa.kind, index: aa.index,
                      line: id.line, col: id.column)
+  if has_kwargs(args.nodes) {
+    let [posv, kwsv, aposv] = emit_call_shape(m, f, args.nodes, ln, cl)
+    let (pl, pc) = pos_args(m, id)
+    return call_pre(m, f, '__call_nk', [cv, posv, kwsv, aposv, pl, pc], ln, cl)
+  }
+  mut arg_ids = []
+  for a in args.nodes { arg_ids.push(emit_expr(m, a, f)) }
   let callee = cond {
     in_prelude => cv,
     _ => {
@@ -6226,6 +6799,155 @@ fn emit_call(m, node, f) {
   }
   m.call_value(callee: callee, args_list: make_list(m, arg_ids),
                line: ln, col: cl)
+}
+
+# Overloads ordered most-typed-first (approximating "most specific"),
+# declaration order among equals.
+fn order_most_typed(fns) {
+  mut order = []
+  for g in fns { order.push(g) }
+  mut oi = 1
+  while oi < order.size() {
+    let g = order[oi]
+    mut oj = oi - 1
+    mut going = true
+    while going {
+      cond {
+        oj < 0 => going = false,
+        typed_count(order[oj]) < typed_count(g) => {
+          order[oj + 1] = order[oj]
+          oj = oj - 1
+        },
+        _ => going = false,
+      }
+    }
+    order[oj + 1] = g
+    oi = oi + 1
+  }
+  order
+}
+
+fn has_kwargs(arg_nodes) {
+  for a in arg_nodes {
+    if a.name == 'kwarg' { return true }
+  }
+  false
+}
+
+# A call's shape for the prelude's runtime binder: the positional values,
+# nil or [names, values] for the keywords, and the positionals' [line, col,
+# ...] so a type error can point at the argument.
+fn emit_call_shape(m, f, arg_nodes, ln, cl) {
+  mut pos = []
+  mut kwn = []
+  mut kwv = []
+  mut apos = []
+  for a in arg_nodes {
+    let vn = arg_val(a)
+    let v = emit_expr(m, vn, f)
+    cond {
+      a.name == 'kwarg' => {
+        kwn.push(m.str_literal(s: a.nodes[0].token, line: a.line, col: a.column))
+        kwv.push(v)
+      },
+      _ => {
+        pos.push(v)
+        apos.push(m.literal(v: vn.line, line: vn.line, col: vn.column))
+        apos.push(m.literal(v: vn.column, line: vn.line, col: vn.column))
+      },
+    }
+  }
+  let posv = m.array_lit(items_list: make_list(m, pos), line: ln, col: cl)
+  let kwsv = cond {
+    kwn.size() == 0 => m.nil_literal(line: ln, col: cl),
+    _ => m.array_lit(items_list: make_list(m, [
+             m.array_lit(items_list: make_list(m, kwn), line: ln, col: cl),
+             m.array_lit(items_list: make_list(m, kwv), line: ln, col: cl)]),
+           line: ln, col: cl),
+  }
+  let aposv = m.array_lit(items_list: make_list(m, apos), line: ln, col: cl)
+  [posv, kwsv, aposv]
+}
+
+# A function's declared parameters as the runtime binder reads them:
+# [name, type check, type name, has default, is rest] each, skipping the
+# first `skip` (a method's self).
+fn emit_spec(m, g, skip, ln, cl) {
+  mut recs = []
+  let specs = funcs[g].pspecs
+  mut i = skip
+  while i < specs.size() {
+    let rec = specs[i]
+    let tc = cond {
+      rec.ty == nil => m.nil_literal(line: ln, col: cl),
+      _ => m.str_literal(s: ty_check_of(rec.ty), line: ln, col: cl),
+    }
+    let tyname = cond { rec.ty == nil => '', _ => rec.ty }
+    recs.push(m.array_lit(items_list: make_list(m, [
+                  m.str_literal(s: rec.pname, line: ln, col: cl), tc,
+                  m.str_literal(s: tyname, line: ln, col: cl),
+                  m.bool_literal(v: rec.dflt != nil, line: ln, col: cl),
+                  m.bool_literal(v: rec.rest, line: ln, col: cl)]),
+              line: ln, col: cl))
+    i = i + 1
+  }
+  m.array_lit(items_list: make_list(m, recs), line: ln, col: cl)
+}
+
+# A family: {"\zf": name, ov: [[closure, spec], ...]}, most-typed overload
+# first. `skip` is 1 for a class's methods (their first parameter is self)
+# and 0 for a free multimethod, which the record marks as such.
+fn emit_family(m, f, name, gs, skip, ln, cl) {
+  mut ovs = []
+  for g in order_most_typed(gs) {
+    ovs.push(m.array_lit(items_list: make_list(m, [
+                 m.make_closure(func: g, cmap: cmap_for(m, f, g), line: ln, col: cl),
+                 emit_spec(m, g, skip, ln, cl)]),
+             line: ln, col: cl))
+  }
+  let kv = m.list_new()
+  m.list_push(kv, m.str_literal(s: family_marker, line: ln, col: cl))
+  m.list_push(kv, m.str_literal(s: name, line: ln, col: cl))
+  m.list_push(kv, m.str_literal(s: 'ov', line: ln, col: cl))
+  m.list_push(kv, m.array_lit(items_list: make_list(m, ovs), line: ln, col: cl))
+  if skip == 0 {
+    m.list_push(kv, m.str_literal(s: 'free', line: ln, col: cl))
+    m.list_push(kv, m.bool_literal(v: true, line: ln, col: cl))
+  }
+  m.object_lit(kv_list: kv, line: ln, col: cl)
+}
+
+# deco1(deco2(v)) for a decorator list, innermost (last written) first; a
+# factory form @deco(args) applies deco(args) to the value.
+fn emit_decorated(m, f, decos, v0) {
+  mut v = v0
+  mut i = decos.size() - 1
+  while i >= 0 {
+    let dn = decos[i].nodes[0]
+    let r = resolved[pkey(dn)]
+    mut callee = cond {
+      r.kind == 'fn' => m.make_closure(func: r.funcs[0],
+                                       cmap: cmap_for(m, f, r.funcs[0]),
+                                       line: dn.line, col: dn.column),
+      _ => {
+        let a = access_from(f, (r.owner, r.slot))
+        m.var_ref(kind: a.kind, index: a.index, line: dn.line, col: dn.column)
+      },
+    }
+    if decos[i].nodes.size() == 2 {
+      mut fargs = []
+      for a in decos[i].nodes[1].nodes { fargs.push(emit_expr(m, arg_val(a), f)) }
+      let (pl, pc) = pos_args(m, dn)
+      callee = call_pre(m, f, '__callee_check',
+                        [m.call_value(callee: callee, args_list: make_list(m, fargs),
+                                      line: dn.line, col: dn.column), pl, pc],
+                        dn.line, dn.column)
+    }
+    v = m.call_value(callee: callee, args_list: make_list(m, [v]),
+                     line: dn.line, col: dn.column)
+    i = i - 1
+  }
+  v
 }
 
 # The multimethod / kwargs / defaults call: evaluate every argument once
@@ -6254,61 +6976,46 @@ fn emit_dispatch(m, f, name, fns, arg_nodes, recv_extra, at) {
     }
   }
 
-  # overloads ordered most-typed-first (approximating "most specific")
-  mut order = []
-  for g in fns { order.push(g) }
-  mut oi = 1
-  while oi < order.size() {
-    let g = order[oi]
-    mut oj = oi - 1
-    mut going = true
-    while going {
-      cond {
-        oj < 0 => going = false,
-        typed_count(order[oj]) < typed_count(g) => {
-          order[oj + 1] = order[oj]
-          oj = oj - 1
-        },
-        _ => going = false,
-      }
-    }
-    order[oj + 1] = g
-    oi = oi + 1
-  }
-
   mut chain = []
-  for g in order {
+  for g in order_most_typed(fns) {
     let plan = overload_plan(g, pos_slots, kw_slots)
     if plan != nil { chain.push((g, plan)) }
   }
   let (pl, pc) = pos_args(m, at)
-  # innermost alternative: no overload matched
-  let kindv = m.str_literal(s: 'DispatchError', line: ln, col: cl)
-  let msgv = m.str_literal(s: 'no matching method for `' + name + '`',
-                           line: ln, col: cl)
-  mut alt = call_pre(m, f, '__raise', [kindv, msgv, pl, pc], ln, cl)
+  # innermost alternative: no overload matched -- a keyword no overload of
+  # a multi-definition family declares is refused by name instead
+  mut alt = nil
+  for a in arg_nodes {
+    if a.name == 'kwarg' && alt == nil && fns.size() > 1 {
+      mut known = false
+      for g in fns {
+        for rec in funcs[g].pspecs {
+          if rec.pname == a.nodes[0].token { known = true }
+        }
+      }
+      if !known {
+        alt = call_pre(m, f, '__raise',
+                       [m.str_literal(s: 'TypeError', line: ln, col: cl),
+                        m.str_literal(s: "unknown keyword argument '" + a.nodes[0].token + "'",
+                                      line: ln, col: cl), pl, pc],
+                       ln, cl)
+      }
+    }
+  }
+  if alt == nil {
+    alt = call_pre(m, f, '__raise',
+                   [m.str_literal(s: 'DispatchError', line: ln, col: cl),
+                    m.str_literal(s: 'no matching method for `' + name + '`',
+                                  line: ln, col: cl), pl, pc],
+                   ln, cl)
+  }
   mut ci = chain.size() - 1
   while ci >= 0 {
     let (g, plan) = chain[ci]
     mut test = ir_bool(m, true, ln, cl)
     for tc in plan.checks {
       let (slot, tyname) = tc
-      fn sref() { m.var_ref(kind: 'local', index: slot, line: ln, col: cl) }
-      let tv = cond {
-        tyname == '@tuple' => call_pre(m, f, '__is_tuple', [sref()], ln, cl),
-        tyname.starts_with('@trait:') =>
-          call_pre(m, f, '__inst_conf',
-                   [sref(), m.str_literal(s: tyname.slice(7, tyname.size()).to_string(), line: ln, col: cl)],
-                   ln, cl),
-        tyname.starts_with('@cls:') =>
-          call_pre(m, f, '__inst_class_is',
-                   [sref(), m.str_literal(s: tyname.slice(5, tyname.size()).to_string(), line: ln, col: cl)],
-                   ln, cl),
-        _ => m.binary(op: 'eq', lhs: ir_typeof(m, sref(), ln, cl),
-                      rhs: m.str_literal(s: tyname, line: ln, col: cl),
-                      line: ln, col: cl),
-      }
-      test = ir_and(m, test, tv, ln, cl)
+      test = ir_and(m, test, emit_ty_test(m, f, slot, tyname, ln, cl), ln, cl)
     }
     mut call_args = []
     for item in plan.args {
@@ -6325,8 +7032,22 @@ fn emit_dispatch(m, f, name, fns, arg_nodes, recv_extra, at) {
         },
       })
     }
-    let callv = m.call_value(callee: m.make_closure(func: g, cmap: cmap_for(m, f, g), line: ln, col: cl),
+    mut callv = m.call_value(callee: m.make_closure(func: g, cmap: cmap_for(m, f, g), line: ln, col: cl),
                              args_list: make_list(m, call_args), line: ln, col: cl)
+    # the chosen overload still refuses a keyword of the wrong type, or a
+    # non-callable where Function was declared
+    mut si = plan.strict.size() - 1
+    while si >= 0 {
+      let (slot, tyname, pname, ty) = plan.strict[si]
+      let bad = call_pre(m, f, '__raise',
+                         [m.str_literal(s: 'TypeError', line: ln, col: cl),
+                          m.str_literal(s: "type error: parameter '" + pname + "' expects " + ty,
+                                        line: ln, col: cl), pl, pc],
+                         ln, cl)
+      callv = m.make_if_else(cond: emit_ty_test(m, f, slot, tyname, ln, cl),
+                             then_branch: callv, else_branch: bad, line: ln, col: cl)
+      si = si - 1
+    }
     alt = m.make_if_else(cond: test, then_branch: callv, else_branch: alt,
                          line: ln, col: cl)
     ci = ci - 1
@@ -6345,11 +7066,15 @@ fn typed_count(g) {
 
 # Can this overload take this call shape at all? nil when it cannot;
 # otherwise {args: [per-param ('slot', i) / ('missing', 0) / ('rest', [..])],
-# checks: [(slot, typeof-name)]}.
+# checks: [(slot, typeof-name)] -- the positional types dispatch selects
+# on -- and strict: [(slot, typeof-name, param, type)], checked once the
+# overload is chosen (a keyword's type, and Function anywhere), the way
+# culebra reports those as a TypeError naming the parameter.
 fn overload_plan(g, pos_slots, kw_slots) {
   let specs = funcs[g].pspecs
   mut args = []
   mut checks = []
+  mut strict = []
   mut pi = 0
   mut used_kw = 0
   mut i = 0
@@ -6367,7 +7092,11 @@ fn overload_plan(g, pos_slots, kw_slots) {
       pi < pos_slots.size() => {
         args.push(('slot', pos_slots[pi]))
         if rec.ty != nil {
-          checks.push((pos_slots[pi], ty_check_of(rec.ty)))
+          let tc = ty_check_of(rec.ty)
+          cond {
+            tc == '@fn' => strict.push((pos_slots[pi], tc, rec.pname, rec.ty)),
+            _ => checks.push((pos_slots[pi], tc)),
+          }
         }
         pi = pi + 1
       },
@@ -6375,7 +7104,7 @@ fn overload_plan(g, pos_slots, kw_slots) {
         args.push(('slot', kw_slots[rec.pname]))
         used_kw = used_kw + 1
         if rec.ty != nil {
-          checks.push((kw_slots[rec.pname], ty_check_of(rec.ty)))
+          strict.push((kw_slots[rec.pname], ty_check_of(rec.ty), rec.pname, rec.ty))
         }
       },
       rec.dflt != nil => args.push(('missing', 0)),
@@ -6385,10 +7114,28 @@ fn overload_plan(g, pos_slots, kw_slots) {
   }
   if pi < pos_slots.size() { return nil }       # extra positionals
   if used_kw != kw_slots.size() { return nil }  # an unknown kwarg
-  args_and_checks(args, checks)
+  {args: args, checks: checks, strict: strict}
 }
 
-fn args_and_checks(args, checks) { {args: args, checks: checks} }
+# The IR test for one (slot, check) pair.
+fn emit_ty_test(m, f, slot, tyname, ln, cl) {
+  fn sref() { m.var_ref(kind: 'local', index: slot, line: ln, col: cl) }
+  cond {
+    tyname == '@tuple' => call_pre(m, f, '__is_tuple', [sref()], ln, cl),
+    tyname == '@fn' => call_pre(m, f, '__is_callable', [sref()], ln, cl),
+    tyname.starts_with('@trait:') =>
+      call_pre(m, f, '__inst_conf',
+               [sref(), m.str_literal(s: tyname.slice(7, tyname.size()).to_string(), line: ln, col: cl)],
+               ln, cl),
+    tyname.starts_with('@cls:') =>
+      call_pre(m, f, '__inst_class_is',
+               [sref(), m.str_literal(s: tyname.slice(5, tyname.size()).to_string(), line: ln, col: cl)],
+               ln, cl),
+    _ => m.binary(op: 'eq', lhs: ir_typeof(m, sref(), ln, cl),
+                  rhs: m.str_literal(s: tyname, line: ln, col: cl),
+                  line: ln, col: cl),
+  }
+}
 
 # What a type annotation means at run time: a typeof name, the tuple mark,
 # a trait conformance check, or an instance-of-class check (any name that
@@ -6396,6 +7143,7 @@ fn args_and_checks(args, checks) { {args: args, checks: checks} }
 fn ty_check_of(ty) {
   cond {
     ty == 'Tuple' => '@tuple',
+    ty == 'Function' => '@fn',
     type_map.has(ty) => type_map[ty],
     traits.has(ty) => '@trait:' + ty,
     _ => '@cls:' + ty,
@@ -6410,11 +7158,7 @@ fn emit_closure_value(m, node, f) {
   let c = m.make_closure(func: g, cmap: cmap_for(m, f, g),
                          line: node.line, col: node.column)
   cond {
-    self_closure.has(g) =>
-      call_pre(m, f, '__mk_selfc',
-               [c, m.literal(v: funcs[g].params.size() - 1, line: node.line,
-                             col: node.column)],
-               node.line, node.column),
+    self_closure.has(g) => call_pre(m, f, '__mk_selfc', [c], node.line, node.column),
     _ => c,
   }
 }
@@ -6422,6 +7166,12 @@ fn emit_closure_value(m, node, f) {
 fn emit_postfix_step(m, f, value, step) {
   let (pl, pc) = pos_args(m, step)
   cond {
+    step.name == 'pcall' && !in_prelude && has_kwargs(step.nodes[0].nodes) => {
+      let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[0].nodes,
+                                                step.line, step.column)
+      call_pre(m, f, '__call_nk', [value, posv, kwsv, aposv, pl, pc],
+               step.line, step.column)
+    },
     step.name == 'pcall' => {
       mut arg_ids = []
       for a in step.nodes[0].nodes { arg_ids.push(emit_expr(m, a, f)) }
@@ -6448,23 +7198,37 @@ fn emit_postfix_step(m, f, value, step) {
               args_list: make_list(m, arg_ids), line: step.line, col: step.column)
         },
         # UFCS: a name outside the built-in method set that resolves to a
-        # function in scope is a free call with the receiver first
+        # function in scope is a free call with the receiver first -- unless
+        # the receiver turns out to have a method of that name, which wins
         !builtin_methods.contains(name.token) && resolved.has(pkey(name)) => {
           let r = resolved[pkey(name)]
-          emit_dispatch(m, f, name.token, r.funcs, step.nodes[1].nodes,
-                        {slot: scratch_slot(f, scratch_of[pkey(name)]),
-                         value: value},
-                        step)
+          let slot = scratch_slot(f, scratch_of[pkey(name)])
+          let ln = step.line
+          let cl = step.column
+          fn sref() { m.var_ref(kind: 'local', index: slot, line: ln, col: cl) }
+          let store = m.assign(kind: 'local', index: slot, value: value, line: ln, col: cl)
+          let own = call_pre(m, f, '__has_method',
+                             [sref(), m.str_literal(s: name.token, line: name.line, col: name.column)],
+                             ln, cl)
+          let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[1].nodes, ln, cl)
+          let via_method = call_pre(m, f, '__method',
+                                    [sref(), m.str_literal(s: name.token, line: name.line, col: name.column),
+                                     posv, kwsv, aposv, pl, pc],
+                                    ln, cl)
+          let via_ufcs = emit_dispatch(m, f, name.token, r.funcs, step.nodes[1].nodes,
+                                       {slot: slot, value: sref()}, step)
+          m.block(stmts_list: make_list(m, [store,
+                      m.make_if_else(cond: own, then_branch: via_method,
+                                     else_branch: via_ufcs, line: ln, col: cl)]),
+                  line: ln, col: cl)
         },
         _ => {
-          mut arg_ids = []
-          for a in step.nodes[1].nodes { arg_ids.push(emit_expr(m, arg_val(a), f)) }
-          let args = m.array_lit(items_list: make_list(m, arg_ids),
-                                 line: step.line, col: step.column)
+          let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[1].nodes,
+                                                    step.line, step.column)
           call_pre(m, f, '__method',
                    [value,
                     m.str_literal(s: name.token, line: name.line, col: name.column),
-                    args, pl, pc],
+                    posv, kwsv, aposv, pl, pc],
                    step.line, step.column)
         },
       }
@@ -6494,7 +7258,24 @@ fn emit_postfix_step(m, f, value, step) {
 }
 
 fn emit_postfix(m, node, f) {
-  emit_postfix_from(m, node, f, emit_expr(m, node.nodes[0], f), 1)
+  let head = node.nodes[0]
+  let v0 = emit_expr(m, head, f)
+  # `[items](n, fill)` is the sized-array form, not a call
+  if head.name == 'array_lit' && node.nodes.size() > 1 && !in_prelude {
+    let step = node.nodes[1]
+    if step.name == 'pcall' {
+      mut arg_ids = []
+      for a in step.nodes[0].nodes { arg_ids.push(emit_expr(m, arg_val(a), f)) }
+      let (pl, pc) = pos_args(m, step)
+      let sized = call_pre(m, f, '__array_sized',
+                           [v0, m.array_lit(items_list: make_list(m, arg_ids),
+                                            line: step.line, col: step.column),
+                            pl, pc],
+                           step.line, step.column)
+      return emit_postfix_from(m, node, f, sized, 2)
+    }
+  }
+  emit_postfix_from(m, node, f, v0, 1)
 }
 
 # `?.` short-circuits the rest of the chain: the receiver is parked in a
@@ -6632,9 +7413,10 @@ fn emit_expr(m, node, f) {
       cond {
         r.kind == 'strns' => call_pre(m, f, '__string_ns', [], node.line, node.column),
         r.kind == 'bval' => call_pre(m, f, '__fnval_' + r.name, [], node.line, node.column),
-        r.kind == 'fn' => m.make_closure(func: r.funcs[0],
-                                         cmap: cmap_for(m, f, r.funcs[0]),
-                                         line: node.line, col: node.column),
+        r.kind == 'fn' && r.funcs.size() == 1 =>
+          m.make_closure(func: r.funcs[0], cmap: cmap_for(m, f, r.funcs[0]),
+                         line: node.line, col: node.column),
+        r.kind == 'fn' => emit_family(m, f, token, r.funcs, 0, node.line, node.column),
         _ => {
           let a = access_from(f, (r.owner, r.slot))
           let ref = m.var_ref(kind: a.kind, index: a.index, line: node.line,
@@ -7045,19 +7827,12 @@ fn emit_class(m, node, f) {
   m.list_push(kv, m.str_literal(s: 'name', line: ln, col: cl))
   m.list_push(kv, m.str_literal(s: d.id.token, line: ln, col: cl))
   m.list_push(kv, m.str_literal(s: 'new', line: ln, col: cl))
-  m.list_push(kv, m.make_closure(func: ci.ctor, cmap: cmap_for(m, f, ci.ctor),
-                                 line: ln, col: cl))
+  m.list_push(kv, emit_family(m, f, 'new', ci.ctors, 1, ln, cl))
   let mkv = m.list_new()
-  let akv = m.list_new()
   for name in ci.methods.keys() {
-    let g = ci.methods[name]
-    m.list_push(mkv, m.str_literal(s: name.slice(2, name.size()).to_string(),
-                                   line: ln, col: cl))
-    m.list_push(mkv, m.make_closure(func: g, cmap: cmap_for(m, f, g),
-                                    line: ln, col: cl))
-    m.list_push(akv, m.str_literal(s: name.slice(2, name.size()).to_string(),
-                                   line: ln, col: cl))
-    m.list_push(akv, m.literal(v: funcs[g].params.size() - 1, line: ln, col: cl))
+    let plain = name.slice(2, name.size()).to_string()
+    m.list_push(mkv, m.str_literal(s: plain, line: ln, col: cl))
+    m.list_push(mkv, emit_family(m, f, plain, ci.methods[name], 1, ln, cl))
   }
   # conforming traits contribute their defaults (never overriding) and a
   # flag the typed-dispatch check reads
@@ -7069,7 +7844,11 @@ fn emit_class(m, node, f) {
       let (rname, rar) = req
       cond {
         ci.methods.has('m:' + rname) => {
-          if ci.marities['m:' + rname] != rar { ok = false }
+          mut fits = false
+          for g in ci.methods['m:' + rname] {
+            if funcs[g].params.size() - 1 == rar { fits = true }
+          }
+          if !fits { ok = false }
         },
         _ => ok = false,
       }
@@ -7079,22 +7858,23 @@ fn emit_class(m, node, f) {
       m.list_push(confkv, m.bool_literal(v: true, line: ln, col: cl))
       for dname in tr.defaults.keys() {
         if !ci.methods.has(dname) {
-          let g = tr.defaults[dname]
-          m.list_push(mkv, m.str_literal(s: dname.slice(2, dname.size()).to_string(),
-                                         line: ln, col: cl))
-          m.list_push(mkv, m.make_closure(func: g, cmap: cmap_for(m, f, g),
-                                          line: ln, col: cl))
-          m.list_push(akv, m.str_literal(s: dname.slice(2, dname.size()).to_string(),
-                                         line: ln, col: cl))
-          m.list_push(akv, m.literal(v: funcs[g].params.size() - 1, line: ln, col: cl))
+          let plain = dname.slice(2, dname.size()).to_string()
+          m.list_push(mkv, m.str_literal(s: plain, line: ln, col: cl))
+          m.list_push(mkv, emit_family(m, f, plain, [tr.defaults[dname]], 1, ln, cl))
         }
       }
     }
   }
   m.list_push(kv, m.str_literal(s: 'methods', line: ln, col: cl))
   m.list_push(kv, m.object_lit(kv_list: mkv, line: ln, col: cl))
-  m.list_push(kv, m.str_literal(s: 'arities', line: ln, col: cl))
-  m.list_push(kv, m.object_lit(kv_list: akv, line: ln, col: cl))
+  if ci.is_value {
+    m.list_push(kv, m.str_literal(s: 'value', line: ln, col: cl))
+    m.list_push(kv, m.bool_literal(v: true, line: ln, col: cl))
+  }
+  if ci.is_show {
+    m.list_push(kv, m.str_literal(s: 'show', line: ln, col: cl))
+    m.list_push(kv, m.bool_literal(v: true, line: ln, col: cl))
+  }
   # declared fields, written before new() runs; getters; statics
   let fl = m.list_new()
   for fd in ci.fields {
@@ -7126,7 +7906,8 @@ fn emit_class(m, node, f) {
   }
   m.list_push(kv, m.str_literal(s: 'conf', line: ln, col: cl))
   m.list_push(kv, m.object_lit(kv_list: confkv, line: ln, col: cl))
-  let clsobj = m.object_lit(kv_list: kv, line: ln, col: cl)
+  let clsobj = emit_decorated(m, f, ci.decos,
+                              m.object_lit(kv_list: kv, line: ln, col: cl))
   let r = resolved[pkey(d.id)]
   let a = access_from(f, (f, r.slot))
   m.assign(kind: a.kind, index: a.index, value: clsobj, line: ln, col: cl)
@@ -7142,35 +7923,9 @@ fn emit_stmt(m, node, f) {
       let d = fn_decl_parts(node)
       if d.decos.size() == 0 { return nil }
       let g = closure_of[pkey(node)]
-      mut v = m.make_closure(func: g, cmap: cmap_for(m, f, g),
-                             line: node.line, col: node.column)
-      mut i = d.decos.size() - 1
-      while i >= 0 {
-        let dn = d.decos[i].nodes[0]
-        let r = resolved[pkey(dn)]
-        mut callee = cond {
-          r.kind == 'fn' => m.make_closure(func: r.funcs[0],
-                                           cmap: cmap_for(m, f, r.funcs[0]),
-                                           line: dn.line, col: dn.column),
-          _ => {
-            let a = access_from(f, (r.owner, r.slot))
-            m.var_ref(kind: a.kind, index: a.index, line: dn.line, col: dn.column)
-          },
-        }
-        # a factory: @deco(args) applies deco(args) to the function
-        if d.decos[i].nodes.size() == 2 {
-          mut fargs = []
-          for a in d.decos[i].nodes[1].nodes { fargs.push(emit_expr(m, arg_val(a), f)) }
-          let (pl, pc) = pos_args(m, dn)
-          callee = call_pre(m, f, '__callee_check',
-                            [m.call_value(callee: callee, args_list: make_list(m, fargs),
-                                          line: dn.line, col: dn.column), pl, pc],
-                            dn.line, dn.column)
-        }
-        v = m.call_value(callee: callee, args_list: make_list(m, [v]),
-                         line: dn.line, col: dn.column)
-        i = i - 1
-      }
+      let v = emit_decorated(m, f, d.decos,
+                             m.make_closure(func: g, cmap: cmap_for(m, f, g),
+                                            line: node.line, col: node.column))
       let rb = resolved[pkey(d.id)]
       let ab = access_from(f, (f, rb.slot))
       m.assign(kind: ab.kind, index: ab.index, value: v,
