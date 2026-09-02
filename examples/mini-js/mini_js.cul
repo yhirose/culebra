@@ -29,7 +29,9 @@
 # classes (extends, super, static, accessors, instance and static fields),
 # Map and Set, Symbol.iterator as the hidden iterator key. J4 -- generator
 # functions and methods on the VM's generators (yield, yield*, next /
-# return / throw, and the iteration protocol over them).
+# return / throw, and the iteration protocol over them). J5 -- Promise on
+# the VM's job queue, and async functions as generators driven by one
+# (await is a yield the driver resumes with the settled value).
 #
 # Known differences: string length/indexing by byte; no TDZ for a captured
 # let (read before its declaration it is undefined); arrays have no holes
@@ -45,7 +47,7 @@ let q = String.from_code_point(39)
 
 let grammar = `
   program    <- stmt*                                          { no_ast_opt }
-  stmt       <- var_decl / gen_decl / fn_decl / class_d / if_s / while_s / do_s / for_of / for_in /
+  stmt       <- var_decl / gen_decl / async_decl / fn_decl / class_d / if_s / while_s / do_s / for_of / for_in /
                 for_s / switch_s / return_s / break_s / continue_s / throw_s /
                 try_s / block / empty_s / expr_s
   var_decl   <- decl_kw declr (',' declr)* ';'?                  { no_ast_opt }
@@ -53,6 +55,7 @@ let grammar = `
   declr      <- binding ('=' !'=' expr)?                         { no_ast_opt }
   fn_decl    <- 'function' ident '(' params ')' block             { no_ast_opt }
   gen_decl   <- 'function' '*' ident '(' params ')' block         { no_ast_opt }
+  async_decl <- 'async' 'function' ident '(' params ')' block     { no_ast_opt }
   params     <- (param (',' param)*)? ','?                        { no_ast_opt }
   param      <- rest_p / dflt_p / binding
   rest_p     <- '...' ident                                      { no_ast_opt }
@@ -97,7 +100,8 @@ let grammar = `
   opat_short <- ident ('=' !'=' expr)?                           { no_ast_opt }
   seq_e      <- expr (',' expr)*
 
-  expr       <- arrow / yield_from / yield_e / assign_e / ternary
+  expr       <- async_arrow / arrow / yield_from / yield_e / assign_e / ternary
+  async_arrow <- 'async' arrow_p '=>' arrow_body                  { no_ast_opt }
   yield_from <- 'yield' '*' expr                                 { no_ast_opt }
   yield_e    <- 'yield' yield_val                                { no_ast_opt }
   yield_val  <- expr?                                            { no_ast_opt }
@@ -131,7 +135,8 @@ let grammar = `
   mul        <- exp_e (mul_op exp_e)*
   mul_op     <- < [*/%] > ![*=]
   exp_e      <- unary ('**' !'=' exp_e)?
-  unary      <- unary_op unary / update
+  unary      <- await_e / unary_op unary / update
+  await_e    <- 'await' unary                                    { no_ast_opt }
   unary_op   <- < '!' !'=' / '-' ![-=] / '+' ![+=] / '~' / 'typeof' / 'void' / 'delete' >
   update     <- pre_inc / post_inc / postfix
   pre_inc    <- inc_op postfix                                   { no_ast_opt }
@@ -152,8 +157,9 @@ let grammar = `
   pname      <- < [a-zA-Z_$][a-zA-Z0-9_$]* >
   primary    <- number / string / template / true_l / false_l / null_l /
                 this_e / super_call / super_mem / array_lit / object_lit /
-                gen_expr / fn_expr / class_e / paren / ident
+                gen_expr / async_expr / fn_expr / class_e / paren / ident
   gen_expr   <- 'function' '*' fn_name '(' params ')' block      { no_ast_opt }
+  async_expr <- 'async' 'function' fn_name '(' params ')' block  { no_ast_opt }
   super_call <- 'super' '(' args ')'                             { no_ast_opt }
   super_mem  <- 'super' '.' pname                                { no_ast_opt }
   class_d    <- 'class' ident class_tail                         { no_ast_opt }
@@ -161,9 +167,10 @@ let grammar = `
   class_name <- ident?                                           { no_ast_opt }
   class_tail <- extends_c '{' (cmember / ';')* '}'               { no_ast_opt }
   extends_c  <- ('extends' postfix)?                             { no_ast_opt }
-  cmember    <- static_c / getter_c / setter_c / gmethod_c / method_c / field_c
+  cmember    <- static_c / getter_c / setter_c / gmethod_c / amethod_c / method_c / field_c
+  amethod_c  <- 'async' mkey '(' params ')' block                { no_ast_opt }
   gmethod_c  <- '*' mkey '(' params ')' block                    { no_ast_opt }
-  static_c   <- 'static' (getter_c / setter_c / gmethod_c / method_c / field_c) { no_ast_opt }
+  static_c   <- 'static' (getter_c / setter_c / gmethod_c / amethod_c / method_c / field_c) { no_ast_opt }
   getter_c   <- 'get' mkey '(' ')' block                         { no_ast_opt }
   setter_c   <- 'set' mkey '(' ident ')' block                   { no_ast_opt }
   method_c   <- mkey '(' params ')' block                        { no_ast_opt }
@@ -180,8 +187,9 @@ let grammar = `
   string     <- < ['] (!['\\] . / '\\' .)* ['] > / < ["] (!["\\] . / '\\' .)* ["] >
   array_lit  <- '[' (arg (',' arg)*)? ','? ']'                   { no_ast_opt }
   object_lit <- '{' (oprop (',' oprop)*)? ','? '}'               { no_ast_opt }
-  oprop      <- getter_p / setter_p / gmethod_p / gcomputed_m / method_p / computed_m / kv_p / computed_p / ospread / short_p
+  oprop      <- getter_p / setter_p / gmethod_p / gcomputed_m / amethod_p / method_p / computed_m / kv_p / computed_p / ospread / short_p
   gmethod_p  <- '*' pname '(' params ')' block                   { no_ast_opt }
+  amethod_p  <- 'async' pname '(' params ')' block               { no_ast_opt }
   gcomputed_m <- '*' '[' expr ']' '(' params ')' block            { no_ast_opt }
   computed_m <- '[' expr ']' '(' params ')' block                { no_ast_opt }
   getter_p   <- 'get' pname '(' ')' block                        { no_ast_opt }
@@ -201,7 +209,7 @@ let grammar = `
                  'new' / 'typeof' / 'instanceof' / 'in' / 'class' / 'extends' /
                  'super' / 'throw' / 'try' / 'catch' / 'finally' / 'break' /
                  'continue' / 'do' / 'void' / 'delete' / 'yield' / 'await' /
-                 'switch' / 'case' / 'default') ![a-zA-Z0-9_$]
+                 'switch' / 'case' / 'default' / 'await') ![a-zA-Z0-9_$]
 
   %whitespace <- ([ \t\r\n]+ / '//' [^\n]* / '/*' (!'*/' .)* '*/')*
   %word       <- [a-zA-Z0-9_$]
@@ -1143,6 +1151,8 @@ function __init_globals() {
   G.hexdigits['A'] = 10; G.hexdigits['B'] = 11; G.hexdigits['C'] = 12; G.hexdigits['D'] = 13;
   G.hexdigits['E'] = 14; G.hexdigits['F'] = 15;
   G.undefined = undefined;
+  G.live_jobs = 0;
+  G.unhandled = [];
   G.NaN = __nan();
   G.Infinity = __inf();
   G.Object_proto = {};
@@ -1167,6 +1177,7 @@ function __init_globals() {
   __init_json(G);
   __init_collections(G);
   __init_generators(G);
+  __init_promise(G);
   return G;
 }
 
@@ -2055,6 +2066,220 @@ function __init_generators(G) {
   G.Generator_proto = GP;
 }
 
+// --- Promise --------------------------------------------------------------------
+// A promise is an object with a hidden state, value and reaction list; the
+// reactions run as jobs on the VM's queue, one per settled reaction, in
+// the order the spec gives them (a then handler's own promise result is
+// adopted through one more job). Jobs are counted so that an unhandled
+// rejection is reported only once the queue has drained.
+function __enqueue_job(c) {
+  __G.live_jobs = __G.live_jobs + 1;
+  __enqueue(function () {
+    __G.live_jobs = __G.live_jobs - 1;
+    try { c(); } catch (e) { throw __uncaught_text(e); }
+  });
+  return undefined;
+}
+function __promise_init(p) {
+  p['\x01state'] = 'pending';
+  p['\x01value'] = undefined;
+  p['\x01reactions'] = [];
+  p['\x01handled'] = false;
+  return p;
+}
+function __promise_new() {
+  var p = {};
+  p['\x01proto'] = __G.Promise_proto;
+  return __promise_init(p);
+}
+function __is_promise(v) { return __typeof(v) === 'object' && __objecthas(v, '\x01state'); }
+function __promise_settle(p, state, v) {
+  if (p['\x01state'] !== 'pending') return undefined;
+  p['\x01state'] = state;
+  p['\x01value'] = v;
+  var rs = p['\x01reactions'];
+  p['\x01reactions'] = [];
+  var i = 0;
+  while (i < __len(rs)) { __promise_react(p, rs[i]); i = i + 1; }
+  if (state === 'rejected' && __len(rs) === 0 && !p['\x01handled']) __track_unhandled(p);
+  return undefined;
+}
+function __promise_react(p, r) {
+  __enqueue_job(function () { __promise_run_reaction(p, r); });
+  return undefined;
+}
+function __promise_run_reaction(p, r) {
+  var fulfilled = p['\x01state'] === 'fulfilled';
+  var handler = fulfilled ? r.onF : r.onR;
+  if (__typeof(handler) === 'nil') {
+    if (fulfilled) __promise_resolve(r.child, p['\x01value']); else __promise_reject(r.child, p['\x01value']);
+    return undefined;
+  }
+  var result;
+  try { result = handler(p['\x01value']); } catch (e) { __promise_reject(r.child, __catch_fix(e)); return undefined; }
+  __promise_resolve(r.child, result);
+  return undefined;
+}
+function __promise_resolve(p, v) {
+  if (p['\x01state'] !== 'pending') return undefined;
+  if (__same(v, p)) { __promise_reject(p, __err('TypeError', 'Chaining cycle detected for promise #<Promise>')); return undefined; }
+  if ((__typeof(v) === 'object' && !__is_null(v)) || __is_fnobj(v)) {
+    var then_;
+    try { then_ = __get(v, 'then'); } catch (e) { __promise_reject(p, __catch_fix(e)); return undefined; }
+    if (__is_fnobj(then_)) {
+      // a thenable is adopted in a job of its own
+      __enqueue_job(function () {
+        var called = false;
+        var res = __mkfn(function (t, x) { if (!called) { called = true; __promise_resolve(p, x); } return undefined; }, '', false);
+        var rej = __mkfn(function (t, e) { if (!called) { called = true; __promise_reject(p, e); } return undefined; }, '', false);
+        try { __call(then_, v, [res, rej]); } catch (e) { if (!called) { called = true; __promise_reject(p, __catch_fix(e)); } }
+      });
+      return undefined;
+    }
+  }
+  __promise_settle(p, 'fulfilled', v);
+  return undefined;
+}
+function __promise_reject(p, e) { __promise_settle(p, 'rejected', e); return undefined; }
+// a reaction with raw handlers (each takes the value, answers the child's)
+function __promise_then_raw(p, onF, onR) {
+  var child = __promise_new();
+  var r = {};
+  r.onF = onF;
+  r.onR = onR;
+  r.child = child;
+  if (p['\x01state'] === 'pending') { __arraypush(p['\x01reactions'], r); }
+  else { p['\x01handled'] = true; __promise_react(p, r); }
+  return child;
+}
+// a reaction with JS handlers
+function __promise_then(p, onF, onR) {
+  var f = __is_fnobj(onF) ? function (v) { return __call(onF, undefined, [v]); } : undefined;
+  var r = __is_fnobj(onR) ? function (e) { return __call(onR, undefined, [e]); } : undefined;
+  return __promise_then_raw(p, f, r);
+}
+function __promise_resolve_value(v) {
+  if (__is_promise(v)) return v;
+  var p = __promise_new();
+  __promise_resolve(p, v);
+  return p;
+}
+function __track_unhandled(p) {
+  __arraypush(__G.unhandled, p);
+  __unhandled_check();
+  return undefined;
+}
+// once the queue has drained, a rejection nobody handled ends the program
+function __unhandled_check() {
+  __enqueue(function () {
+    if (__G.live_jobs > 0) { __unhandled_check(); return undefined; }
+    var us = __G.unhandled;
+    __G.unhandled = [];
+    var i = 0;
+    while (i < __len(us)) {
+      if (!us[i]['\x01handled']) throw __uncaught_text(us[i]['\x01value']);
+      i = i + 1;
+    }
+    return undefined;
+  });
+  return undefined;
+}
+// an async function: its body is a generator whose yields are the awaits;
+// each resumes with the awaited value (or is thrown into on rejection)
+function __async_run(act) {
+  var p = __promise_new();
+  __async_step(act, p, undefined, false);
+  return p;
+}
+function __async_step(act, p, v, is_throw) {
+  var r;
+  try { r = is_throw ? __genthrow(act, v) : __genresume(act, v); }
+  catch (e) { __promise_reject(p, __catch_fix(e)); return undefined; }
+  if (__truthy(r.done)) { __promise_resolve(p, r.value); return undefined; }
+  __promise_then_raw(__promise_resolve_value(r.value),
+                     function (val) { __async_step(act, p, val, false); return undefined; },
+                     function (err) { __async_step(act, p, err, true); return undefined; });
+  return undefined;
+}
+function __init_promise(G) {
+  var PP = {};
+  PP['\x01proto'] = G.Object_proto;
+  PP['\x01noenum'] = true;
+  var Pr = __ctor(G, 'Promise', PP, function (t, executor) {
+    __promise_init(t);
+    if (!__is_fnobj(executor)) throw __err('TypeError', 'Promise resolver ' + __str(executor) + ' is not a function');
+    var res = __mkfn(function (t2, v) { __promise_resolve(t, v); return undefined; }, '', false);
+    var rej = __mkfn(function (t2, e) { __promise_reject(t, e); return undefined; }, '', false);
+    try { __call(executor, undefined, [res, rej]); } catch (e) { __promise_reject(t, __catch_fix(e)); }
+    return undefined;
+  });
+  G.Promise_proto = PP;
+  PP.then = __mkfn(function (t, onF, onR) { return __promise_then(t, onF, onR); }, 'then', false);
+  PP['catch'] = __mkfn(function (t, onR) { return __promise_then(t, undefined, onR); }, 'catch', false);
+  PP['finally'] = __mkfn(function (t, f) {
+    if (!__is_fnobj(f)) return __promise_then_raw(t, undefined, undefined);
+    return __promise_then_raw(t,
+      function (v) { return __promise_then_raw(__promise_resolve_value(__call(f, undefined, [])), function (x) { return v; }, undefined); },
+      function (e) { return __promise_then_raw(__promise_resolve_value(__call(f, undefined, [])), function (x) { throw e; }, undefined); });
+  }, 'finally', false);
+  PP.toString = __mkfn(function (t) { return '[object Promise]'; }, 'toString', false);
+  Pr.resolve = __mkfn(function (t, v) { return __promise_resolve_value(v); }, 'resolve', false);
+  Pr.reject = __mkfn(function (t, e) { var p = __promise_new(); __promise_reject(p, e); return p; }, 'reject', false);
+  Pr.all = __mkfn(function (t, iterable) {
+    var p = __promise_new();
+    var items = __destr_arr(iterable);
+    var n = __len(items);
+    var results = [];
+    var i = 0;
+    while (i < n) { __arraypush(results, undefined); i = i + 1; }
+    var remaining = n;
+    if (n === 0) { __promise_resolve(p, results); return p; }
+    var k = 0;
+    while (k < n) {
+      (function (i2) {
+        __promise_then_raw(__promise_resolve_value(items[i2]),
+          function (v) { results[i2] = v; remaining = remaining - 1; if (remaining === 0) __promise_resolve(p, results); return undefined; },
+          function (e) { __promise_reject(p, e); return undefined; });
+      })(k);
+      k = k + 1;
+    }
+    return p;
+  }, 'all', false);
+  Pr.allSettled = __mkfn(function (t, iterable) {
+    var p = __promise_new();
+    var items = __destr_arr(iterable);
+    var n = __len(items);
+    var results = [];
+    var i = 0;
+    while (i < n) { __arraypush(results, undefined); i = i + 1; }
+    var remaining = n;
+    if (n === 0) { __promise_resolve(p, results); return p; }
+    var k = 0;
+    while (k < n) {
+      (function (i2) {
+        __promise_then_raw(__promise_resolve_value(items[i2]),
+          function (v) { var o = {}; o.status = 'fulfilled'; o.value = v; results[i2] = o; remaining = remaining - 1; if (remaining === 0) __promise_resolve(p, results); return undefined; },
+          function (e) { var o = {}; o.status = 'rejected'; o.reason = e; results[i2] = o; remaining = remaining - 1; if (remaining === 0) __promise_resolve(p, results); return undefined; });
+      })(k);
+      k = k + 1;
+    }
+    return p;
+  }, 'allSettled', false);
+  Pr.race = __mkfn(function (t, iterable) {
+    var p = __promise_new();
+    var items = __destr_arr(iterable);
+    var k = 0;
+    while (k < __len(items)) {
+      __promise_then_raw(__promise_resolve_value(items[k]),
+        function (v) { __promise_resolve(p, v); return undefined; },
+        function (e) { __promise_reject(p, e); return undefined; });
+      k = k + 1;
+    }
+    return p;
+  }, 'race', false);
+  G.queueMicrotask = __mkfn(function (t, f) { __enqueue_job(function () { __call(f, undefined, []); }); return undefined; }, 'queueMicrotask', false);
+}
+
 function __init_math(G) {
   var M = {};
   M.PI = 3.141592653589793;
@@ -2177,6 +2402,7 @@ let intrinsics = {
   __print: ('print', 1),
   __genresume: ('genresume', 2),
   __genthrow: ('genthrow', 2),
+  __enqueue: ('enqueue', 1),
   __genreturn: ('genreturn', 2),
 }
 # Prelude names that are raw VM binary / unary operations over Longs.
@@ -2334,7 +2560,9 @@ fn hoist_block(stmts, f) {
           i = i + 1
         }
       },
-      st.name == 'fn_decl' || st.name == 'gen_decl' => {
+      st.name == 'fn_decl' ||
+        st.name == 'gen_decl' ||
+        st.name == 'async_decl' => {
         declare_var(f, st.nodes[0].token, st.nodes[0])
         fn_nodes.push(st)
       },
@@ -2349,7 +2577,7 @@ fn collect_vars(node, f) {
   if node.nodes == nil {
     return nil
   }
-  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' || node.name == 'getter_p' || node.name == 'setter_p' || node.name == 'class_d' || node.name == 'class_e' || node.name == 'gen_decl' || node.name == 'gen_expr' || node.name == 'gmethod_p' || node.name == 'gcomputed_m' {
+  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' || node.name == 'getter_p' || node.name == 'setter_p' || node.name == 'class_d' || node.name == 'class_e' || node.name == 'gen_decl' || node.name == 'gen_expr' || node.name == 'gmethod_p' || node.name == 'gcomputed_m' || node.name == 'async_decl' || node.name == 'async_expr' || node.name == 'async_arrow' || node.name == 'amethod_p' {
     return nil
   }
   if (node.name == 'var_decl' || node.name == 'var_decl_ns') && node.nodes[0].token == 'var' {
@@ -2538,6 +2766,9 @@ fn scan_stmts(stmts, f) {
     if s.name == 'gen_decl' {
       wrap_generator(f, s, g, id.token)
     }
+    if s.name == 'async_decl' {
+      wrap_async(f, s, g, id.token)
+    }
   }
   for s in stmts {
     scan_stmt(s, f)
@@ -2570,6 +2801,7 @@ fn scan_stmt(node, f) {
     {name: 'var_decl_ns'} => scan_decl(node, f),
     {name: 'fn_decl'} => nil,  # hoisted by scan_stmts
     {name: 'gen_decl'} => nil,
+    {name: 'async_decl'} => nil,
     {name: 'class_d'} => scan_class(node, f),
     {name: 'if_s'} => {
       scan_expr(node.nodes[0], f)
@@ -2781,11 +3013,13 @@ fn scan_class(node, f) {
       },
       mem.name == 'method_c' ||
         mem.name == 'gmethod_c' ||
+        mem.name == 'amethod_c' ||
         mem.name == 'getter_c' ||
         mem.name == 'setter_c' => {
         let (params, blk) = cond {
           mem.name == 'method_c' ||
-            mem.name == 'gmethod_c' => (mem.nodes[1].nodes, mem.nodes[2]),
+            mem.name == 'gmethod_c' ||
+            mem.name == 'amethod_c' => (mem.nodes[1].nodes, mem.nodes[2]),
           mem.name == 'getter_c' => ([], mem.nodes[1]),
           _ => ([mem.nodes[1]], mem.nodes[2]),
         }
@@ -2798,6 +3032,7 @@ fn scan_class(node, f) {
         walk_fn(g, params, nil)
         let fv = cond {
           mem.name == 'gmethod_c' => wrap_generator(f, mem, g, mname),
+          mem.name == 'amethod_c' => wrap_async(f, mem, g, mname),
           _ => g,
         }
         info.members.push({node: mem, is_static: is_static, key: mk, func: fv})
@@ -2859,9 +3094,17 @@ fn resolve_super(node, f) {
 # it forwards its arguments to the raw one and answers the activation
 # wrapped as a generator object.
 fn wrap_generator(f, node, g, name) {
+  wrap_body(f, node, g, name, false)
+}
+fn wrap_async(f, node, g, name) {
+  wrap_body(f, node, g, name, true)
+}
+
+fn wrap_body(f, node, g, name, is_async) {
   funcs[g]['is_gen'] = true
   let w = new_func(f, name, [], nil, false)
   funcs[w]['gen_raw'] = g
+  funcs[w]['is_async'] = is_async
   for d in funcs[g].dflts {
     funcs[w].dflts.push(d)
   }
@@ -2952,6 +3195,25 @@ fn scan_expr(node, f) {
       let g = scan_fn_value(node, f, prms.nodes, blk, false, name)
       wrap_generator(f, node, g, name)
     },
+    {name: 'async_expr'} => {
+      let [fname, prms, blk] = node.nodes
+      let name = cond {
+        fname.nodes.size() > 0 => fname.nodes[0].token,
+        _ => '',
+      }
+      let g = scan_fn_value(node, f, prms.nodes, blk, false, name)
+      wrap_async(f, node, g, name)
+    },
+    {name: 'async_arrow'} => {
+      let [ap, body] = node.nodes
+      let params = cond {
+        ap.name == 'arrow_one' => [ap.nodes[0]],
+        _ => ap.nodes,
+      }
+      let g = scan_fn_value(node, f, params, body, true, '')
+      wrap_async(f, node, g, '')
+    },
+    {name: 'await_e'} => scan_expr(node.nodes[0], f),
     {name: 'yield_e'} => {
       if node.nodes[0].nodes.size() > 0 {
         scan_expr(node.nodes[0].nodes[0], f)
@@ -3043,6 +3305,17 @@ fn scan_expr(node, f) {
               p.nodes[0].token,
             )
             wrap_generator(f, p, g, p.nodes[0].token)
+          },
+          {name: 'amethod_p'} => {
+            let g = scan_fn_value(
+              p,
+              f,
+              p.nodes[1].nodes,
+              p.nodes[2],
+              false,
+              p.nodes[0].token,
+            )
+            wrap_async(f, p, g, p.nodes[0].token)
           },
           {name: 'gcomputed_m'} => {
             scan_expr(p.nodes[0], f)
@@ -3886,7 +4159,9 @@ fn emit_class(m, node, f) {
           pc,
         ))
       },
-      mem.node.name == 'method_c' || mem.node.name == 'gmethod_c' => {
+      mem.node.name == 'method_c' ||
+        mem.node.name == 'gmethod_c' ||
+        mem.node.name == 'amethod_c' => {
         let fv = call_pre(
           m,
           f,
@@ -4559,6 +4834,12 @@ fn emit_object(m, node, f) {
         p.line,
         p.column,
       ),
+      {name: 'amethod_p'} => put(
+        str_l(m, p.nodes[0].token, p.line, p.column),
+        emit_fn_value(m, p, f, p.nodes[0].token, false),
+        p.line,
+        p.column,
+      ),
       {name: 'gcomputed_m'} => put(
         call_pre(
           m,
@@ -4685,6 +4966,12 @@ fn emit_expr(m, node, f) {
     },
     {name: 'paren'} => emit_expr(m, node.nodes[0], f),
     {name: 'arrow'} => emit_fn_value(m, node, f, '', true),
+    {name: 'async_arrow'} => emit_fn_value(m, node, f, '', true),
+    {name: 'await_e'} => m.make_yield(
+      value: emit_expr(m, node.nodes[0], f),
+      line: ln,
+      col: cl,
+    ),
     {name: 'fn_expr'} => {
       let fname = node.nodes[0]
       let name = cond {
@@ -4701,6 +4988,14 @@ fn emit_expr(m, node, f) {
     },
     {name: 'class_e'} => emit_class(m, node, f),
     {name: 'gen_expr'} => {
+      let fname = node.nodes[0]
+      let name = cond {
+        fname.nodes.size() > 0 => fname.nodes[0].token,
+        _ => '',
+      }
+      emit_fn_value(m, node, f, name, false)
+    },
+    {name: 'async_expr'} => {
       let fname = node.nodes[0]
       let name = cond {
         fname.nodes.size() > 0 => fname.nodes[0].token,
@@ -4886,7 +5181,7 @@ fn fresh_slots(m, f, slots, ln, cl) {
 fn emit_stmts_into(m, stmts, f, ids) {
   # hoisted function declarations come first
   for s in stmts {
-    if s.name == 'fn_decl' || s.name == 'gen_decl' {
+    if s.name == 'fn_decl' || s.name == 'gen_decl' || s.name == 'async_decl' {
       let r = resolved[pkey(s.nodes[0])]
       ids.push(var_write(
         m,
@@ -4899,7 +5194,7 @@ fn emit_stmts_into(m, stmts, f, ids) {
     }
   }
   for s in stmts {
-    if s.name != 'fn_decl' && s.name != 'gen_decl' {
+    if s.name != 'fn_decl' && s.name != 'gen_decl' && s.name != 'async_decl' {
       let e = emit_stmt(m, s, f)
       if e != nil {
         ids.push(e)
@@ -5102,8 +5397,11 @@ fn prop_key_text(k) {
 # after the binding, as JS does
 fn emit_named_value(m, f, value, name) {
   cond {
-    value.name == 'arrow' => emit_fn_value(m, value, f, name, true),
-    value.name == 'fn_expr' &&
+    value.name == 'arrow' ||
+      value.name == 'async_arrow' => emit_fn_value(m, value, f, name, true),
+    (value.name == 'fn_expr' ||
+      value.name == 'async_expr' ||
+      value.name == 'gen_expr') &&
       value.nodes[0].nodes.size() ==
         0 => emit_fn_value(m, value, f, name, false),
     value.name == 'class_e' && value.nodes[0].nodes.size() == 0 => {
@@ -5816,7 +6114,7 @@ fn emit_funcs(m) {
           1,
         )
         ids.push(m.make_return(
-          value: call_pre(m, f, '__mkgen', [act], 1, 1),
+          value: call_pre(m, f, cond { fi.is_async == true => '__async_run', _ => '__mkgen' }, [act], 1, 1),
           line: 1,
           col: 1,
         ))
