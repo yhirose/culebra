@@ -1122,7 +1122,9 @@ bitcastを1つ戻して払う — LLVM自身のfoldが発火したときに残�
 解釈し直せる定数である。つまりphiの型は変わるが値は変わらない —
 どこかで整数やポインタとして読まれるペイロードは`i64`のphiのまま
 残る。`optimize_module`は変換後もモジュールがverifyを通ることを
-assertする（§10.2）。
+assertし、`tools/checks/check_float_carry.sh`がその結果をemitされた
+IR上に固定する — このpassが黙って止まっても他の何も気づかない
+からである（§10.2）。
 
 ### 7.1 loweringの中の所有権
 
@@ -1346,7 +1348,11 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
   閉じられているか。unwind edgeのないrethrowがないか）、
   `tools/checks/check_alloca_discipline.sh`（一時slotがエントリブロック
   に留まっているか — ループ中の非エントリ`alloca`は毎パス
-  スタックを伸ばす）、`tools/checks/check_rc_discipline.sh`（`jit.h`内の
+  スタックを伸ばす）、`tools/checks/check_float_carry.sh`
+  （`tools/bench/vector_loop.cul`のscalar行とVector2行を写したprobeで、
+  どの辺もdoubleを運ぶphiがdoubleのphiになっているか。`i64`のphiのまま
+  bitcastで読み戻されていないか — `PromoteFloatPhis`が消す形そのもので、
+  戻ってもテストは何も見ずにループが3割遅くなるだけ）、`tools/checks/check_rc_discipline.sh`（`jit.h`内の
   手書きretain/releaseサイトの数は減る一方であるべき）。
 - **assert。** 出力からは決して分からない3つの不変条件がassert
   レーン（`just test-assert`、CIの`linux-assert`。`NDEBUG`なしで

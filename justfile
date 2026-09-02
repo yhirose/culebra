@@ -1030,6 +1030,13 @@ _run-tests BACKEND:
         bash tools/checks/check_alloca_discipline.sh "$BIN"
     }
 
+    # Float-carry gate: a loop-carried Float must travel as a double phi, not
+    # an i64 one read back through a bitcast. JIT::PromoteFloatPhis does the
+    # retyping and nothing else notices when it stops (no error, the loop is
+    # just a third slower — tools/checks/check_float_carry.sh). Reads emitted
+    # IR, so it runs off the binary alone.
+    run_float_carry() { bash tools/checks/check_float_carry.sh "$BIN"; }
+
     # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
     # creation, so neither the driver nor an AOT binary may carry it in
     # DT_NEEDED or export the forwarders (tools/checks/check_webview_dynload.sh).
@@ -1064,6 +1071,7 @@ _run-tests BACKEND:
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
+        phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
@@ -1096,6 +1104,7 @@ _run-tests BACKEND:
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
+        phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
         phase "culebra-test self"; run_culebra_test_self
@@ -1131,6 +1140,7 @@ _run-tests BACKEND:
         phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
+        phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
         phase "codegen backends (-O0, fast vs --vm)"; run_codegen_backends

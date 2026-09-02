@@ -1126,7 +1126,9 @@ incoming test alone: every edge already carries a double, or a constant
 reinterpreted bit for bit as one, so the phis change type and no value
 does — a payload read as an integer or a pointer anywhere keeps its
 `i64` phi. `optimize_module` asserts the module still verifies
-afterwards (§10.2).
+afterwards, and `tools/checks/check_float_carry.sh` pins the result in
+the emitted IR, since nothing else would notice the pass going quiet
+(§10.2).
 
 ### 7.1 Ownership in the lowering
 
@@ -1337,8 +1339,13 @@ check, used by the Windows CI jobs.
 - `tools/checks/check_eh_balance.sh` (every `__cxa_begin_catch` is closed; no
   rethrow without an unwind edge), `tools/checks/check_alloca_discipline.sh`
   (scratch slots stay in the entry block — a non-entry `alloca` in a loop
-  grows the stack every pass), `tools/checks/check_rc_discipline.sh` (the count
-  of hand-placed retain/release sites in `jit.h` may only shrink).
+  grows the stack every pass), `tools/checks/check_float_carry.sh` (over
+  probes copied from the scalar and Vector2 rows of
+  `tools/bench/vector_loop.cul`, a phi every edge feeds a double is a
+  double phi and not an `i64` one read back through a bitcast — the
+  shape `PromoteFloatPhis` removes, and the one whose return costs a
+  third of the loop without any test seeing it), `tools/checks/check_rc_discipline.sh` (the count of
+  hand-placed retain/release sites in `jit.h` may only shrink).
 - **Asserts.** Three invariants no output can betray ride the assert
   lane (`just test-assert`, CI's `linux-assert`), which runs the whole
   sweep with `NDEBUG` off: the resolved call's predicted chunk is the
