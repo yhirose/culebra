@@ -1111,7 +1111,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     if (tag == TAG_FUNC) return true;
     if (tag == TAG_OBJECT) {
       auto* obj = reinterpret_cast<JitObject*>(data);
-      if (obj->proto) {
+      if (obj->proto()) {
         auto* e = _find_property(obj, "__call__");
         if (e && e->value.tag == TAG_FUNC) return true;
       }
@@ -1152,7 +1152,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     // A class instance with an own/proto `__call__` satisfies `Function`
     // (Option A: structural callable). Mirrors interp's type_matches and
     // the callback adapter; proto-gated so a plain dict isn't callable.
-    if (expected == "Function" && obj->proto) {
+    if (expected == "Function" && obj->proto()) {
       auto* e = _find_property(obj, "__call__");
       if (e && e->value.tag == TAG_FUNC) return true;
     }
@@ -1195,7 +1195,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     std::unordered_map<std::string, size_t> class_methods;
     auto walk_slots = [&](JitObject* o) {
       if (!o || !o->shape) return;
-      for (size_t i = 0; i < o->shape->names.size(); i++) {
+      for (size_t i = 0; i < o->prop_size(); i++) {
         const auto& slot = o->slots[i];
         if (slot.value.tag != TAG_FUNC) continue;
         auto* cls = reinterpret_cast<JitClosure*>(slot.value.data);
@@ -1203,7 +1203,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
         // and `self`); for an overloaded method (a dispatcher) report the
         // widest overload so conformance sees the real arities (mirrors the
         // interp walk). Helper is defined after the multimethod registry.
-        class_methods.emplace(o->shape->names[i],
+        class_methods.emplace(o->prop_name(i),
                               _jit_dispatcher_max_arity(cls));
       }
     };
@@ -1211,7 +1211,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     // instance itself. Walk both so e.g. `to_s` defined on the class
     // is visible to the conformance check.
     walk_slots(obj);
-    walk_slots(obj->proto);
+    walk_slots(obj->proto());
     bool conforms = culebra::class_conforms_to_trait(class_methods, *trait);
     by_trait[trait_name] = conforms;
     return conforms;
@@ -1391,9 +1391,9 @@ inline const JitObjectEntry* _find_property(JitObject* obj,
                                              const char* key) {
   auto idx = obj->find_slot(key);
   if (idx != static_cast<size_t>(-1)) return &obj->slots[idx];
-  if (obj->proto) {
-    idx = obj->proto->find_slot(key);
-    if (idx != static_cast<size_t>(-1)) return &obj->proto->slots[idx];
+  if (obj->proto()) {
+    idx = obj->proto()->find_slot(key);
+    if (idx != static_cast<size_t>(-1)) return &obj->proto()->slots[idx];
   }
   return nullptr;
 }
@@ -2795,14 +2795,30 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
     JitObject* src) {
   auto* o = new JitObject();
   o->refcount = 1;
-  o->proto = src->proto;   // shared class meta (methods)
-  if (o->proto) {
-    o->proto->refcount++;   // each instance holds a +1 (see dtor)
+  o->set_proto(src->proto());   // shared class meta (methods)
+  if (o->proto()) {
+    o->proto()->refcount++;   // each instance holds a +1 (see dtor)
     o->cls = src->cls;      // and one on its class object
     if (o->cls) o->cls->refcount++;
   }
   o->shape = src->shape;   // interned, immortal
   o->slots = src->slots;   // per-field value copy
+  if (src->is_dict) {
+    // A dictionary's names live on the object, not in the shape, so the
+    // copy needs its own index. (`shape` above is the shared sentinel,
+    // which carries no names at all.)
+    auto* d = new DictIndex();
+    d->index.reserve(src->dict_->index.size() * 2);
+    d->names.reserve(src->dict_->names.size());
+    for (size_t i = 0; i < src->dict_->names.size(); i++) {
+      auto it = d->index.emplace(*src->dict_->names[i], i).first;
+      d->names.push_back(&it->first);
+    }
+    o->dict_ = d;
+    o->is_dict = true;
+    // Interned String keys carry no ref, so the order record copies flat.
+    if (src->key_order) o->key_order = new std::vector<JitValue>(*src->key_order);
+  }
   for (auto& e : o->slots) {
     culebra_runtime_value_retain(e.value.tag, e.value.data);
   }

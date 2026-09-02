@@ -228,8 +228,8 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       } else if (obj->shape) {
         // String-only fast path: walk shape->names directly, skipping
         // the per-property key_order push that mixed-key objects need.
-        for (size_t i = 0; i < obj->shape->names.size(); i++) {
-          const auto& name = obj->shape->names[i];
+        for (size_t i = 0; i < obj->prop_size(); i++) {
+          const auto& name = obj->prop_name(i);
           if (has_class_tag && name == "class") continue;
           const auto& entry = obj->slots[i];
           if (!first) s += ", ";

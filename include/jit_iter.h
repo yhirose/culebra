@@ -454,7 +454,7 @@ inline void _culebra_callback_type_precheck(int8_t fn_tag, int64_t fn_data,
   if (fn_tag == TAG_FUNC) return;
   if (fn_tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(fn_data);
-    auto* e = obj->proto ? _find_property(obj, "__call__") : nullptr;
+    auto* e = obj->proto() ? _find_property(obj, "__call__") : nullptr;
     if (e && e->value.tag == TAG_FUNC) return;
   }
   _culebra_value_release_impl(fn_tag, fn_data);  // the callee-consumes +1
@@ -2682,7 +2682,7 @@ inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
 inline const JitValue* _culebra_call_operator(int8_t fn_tag, int64_t fn_data) {
   if (fn_tag != TAG_OBJECT) return nullptr;
   auto* obj = reinterpret_cast<JitObject*>(fn_data);
-  auto* e = obj->proto ? _find_property(obj, "__call__") : nullptr;
+  auto* e = obj->proto() ? _find_property(obj, "__call__") : nullptr;
   return e && e->value.tag == TAG_FUNC ? &e->value : nullptr;
 }
 
@@ -3534,8 +3534,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_object_keys(
     }
     return r;
   }
-  for (size_t i = 0; obj->shape && i < obj->shape->names.size(); i++) {
-    auto& k = obj->shape->names[i];
+  for (size_t i = 0; obj->shape && i < obj->prop_size(); i++) {
+    auto k = obj->prop_name(i);
     auto* buf = _culebra_heap_str(k);
     culebra_runtime_array_push(r, TAG_STRING, reinterpret_cast<int64_t>(buf));
   }

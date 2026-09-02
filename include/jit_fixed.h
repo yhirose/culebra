@@ -855,7 +855,7 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
                                      int64_t val_data) {
   // Class-instance feature only (the call sites also gate on `proto` to
   // skip the slot probe for plain dicts; this keeps the helper self-safe).
-  if (!obj->proto) return false;
+  if (!obj->proto()) return false;
   auto* cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                               "__setindex__");
   if (!cls) return false;
@@ -923,7 +923,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     // its own slots. A plain dict short-circuits on `proto` and sets the
     // slot directly, so its hot path keeps a single lookup (string key is
     // non-refcounted, so only the consumed value is released here).
-    if (obj->proto &&
+    if (obj->proto() &&
         obj->find_slot(reinterpret_cast<const char*>(key_data)) ==
             static_cast<size_t>(-1)) {
       // A user `__setindex__` body's throw unwinds past the release below, so
@@ -946,7 +946,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   // A class instance may route a not-yet-stored key to __setindex__ before
   // the sidecar is activated (key + value are consumed by this helper's
   // contract). A plain dict skips this probe entirely.
-  if (obj->proto) {
+  if (obj->proto()) {
     bool exists = obj->non_string_props &&
                   obj->non_string_props->count(JitValue{key_tag, key_data});
     if (!exists &&
@@ -966,13 +966,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   if (!obj->non_string_props) {
     obj->non_string_props = new JitObject::AnyKeyMap();
     // First non-String key: activate key_order and back-fill with the
-    // String keys already in `shape->names` so interleaved order survives.
-    obj->key_order = new std::vector<JitValue>();
-    if (obj->shape) {
-      obj->key_order->reserve(obj->shape->names.size() + 1);
-      for (const auto& name : obj->shape->names) {
-        obj->key_order->push_back(
-            {TAG_STRING, reinterpret_cast<int64_t>(_intern_str(name))});
+    // String keys already present so interleaved order survives. A
+    // dictionary-mode object already keeps key_order eagerly.
+    if (!obj->key_order) {
+      obj->key_order = new std::vector<JitValue>();
+      if (obj->shape) {
+        obj->key_order->reserve(obj->prop_size() + 1);
+        for (size_t i = 0; i < obj->prop_size(); i++) {
+          obj->key_order->push_back(
+              {TAG_STRING,
+               reinterpret_cast<int64_t>(_intern_str(obj->prop_name(i)))});
+        }
       }
     }
   }
@@ -1010,7 +1014,7 @@ inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
                                   int64_t* out_data) {
   // Subscript overloading is a class-instance feature (matches interp's
   // class_tag gate); a plain dict never routes to __index__.
-  if (!obj->proto) return false;
+  if (!obj->proto()) return false;
   auto r = _try_special_binop(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                               key_tag, key_data, "__index__");
   if (!r) return false;
@@ -1245,7 +1249,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     if (obj->key_order) {
       obj->key_order->push_back(
           {TAG_STRING,
-           reinterpret_cast<int64_t>(_intern_str(obj->shape->names.back()))});
+           reinterpret_cast<int64_t>(_intern_str(obj->prop_name(obj->prop_size() - 1)))});
     }
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
@@ -1309,27 +1313,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
   if (idx == static_cast<size_t>(-1)) {
     _jit_reject_value_add(obj, key, tag, data, line, col, is_init);
     _culebra_check_well_known_prop(key, tag, data);
-    auto* base = before ? before : culebra::shape_registry().root();
-    auto* result = culebra::shape_registry().transition_add(base, key);
-    ic->expected_shape = before;
-    ic->result_shape = result;
-    ic->offset = result->names.size() - 1;
-    ic->prop_mut = mut ? 1 : 0;
-    if (obj->slots.capacity() == 0) obj->slots.reserve(8);
-    obj->slots.push_back({JitValue{tag, data}, mut});
-    obj->shape = result;
-    if (obj->key_order) {
-      obj->key_order->push_back(
-          {TAG_STRING,
-           reinterpret_cast<int64_t>(_intern_str(result->names.back()))});
+    // `append_slot` owns the shape transition, and the flip into dictionary
+    // mode past `kDictAt` properties.
+    idx = obj->append_slot(key, JitValue{tag, data}, mut);
+    // A dictionary shares one sentinel shape with every other dictionary, so
+    // priming here would let this site's cache match a different object and
+    // read its slot `idx`. Leave the cache cold; a dictionary write is a
+    // hash insert either way.
+    if (!obj->is_dict) {
+      ic->expected_shape = before;
+      ic->result_shape = obj->shape;
+      ic->offset = idx;
+      ic->prop_mut = mut ? 1 : 0;
     }
   } else {
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
                         col, /*check_wk=*/true);
-    ic->expected_shape = before;
-    ic->result_shape = before;
-    ic->offset = idx;
-    ic->prop_mut = obj->slots[idx].mut ? 1 : 0;
+    if (!obj->is_dict) {
+      ic->expected_shape = before;
+      ic->result_shape = before;
+      ic->offset = idx;
+      ic->prop_mut = obj->slots[idx].mut ? 1 : 0;
+    }
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
 }
@@ -1435,30 +1440,34 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   // — so both linear scans are already answered. This is the shape a class
   // instance's every method read has (data in own slots, methods on the
   // shared meta behind `proto`).
-  if (obj->shape == ic->owner_shape && obj->proto &&
-      obj->proto->shape == ic->proto_shape) {
-    return obj->proto->slots[ic->proto_offset].value;
+  if (obj->shape == ic->owner_shape && obj->proto() &&
+      obj->proto()->shape == ic->proto_shape) {
+    return obj->proto()->slots[ic->proto_offset].value;
   }
   if (obj->shape) {
-    auto idx = obj->shape->offset(key);
+    auto idx = obj->find_slot(key);
     if (idx != static_cast<size_t>(-1)) {
-      ic->shape = obj->shape;
-      ic->offset = idx;
+      // Same reason as the write cache: every dictionary carries the same
+      // sentinel shape, so it must never prime a per-site cache.
+      if (!obj->is_dict) {
+        ic->shape = obj->shape;
+        ic->offset = idx;
+      }
       return obj->slots[idx].value;
     }
   }
-  if (obj->proto) {
+  if (obj->proto()) {
     // The proto's own slot — _find_property's own first step, so the
     // resolution order is unchanged; only this hit is cacheable, and a name
     // it answers from a second level falls through to the walk below.
-    auto idx = obj->proto->find_slot(key);
+    auto idx = obj->proto()->find_slot(key);
     if (idx != static_cast<size_t>(-1)) {
       ic->owner_shape = obj->shape;
-      ic->proto_shape = obj->proto->shape;
+      ic->proto_shape = obj->proto()->shape;
       ic->proto_offset = idx;
-      return obj->proto->slots[idx].value;
+      return obj->proto()->slots[idx].value;
     }
-    if (auto* proto_entry = _find_property(obj->proto, key))
+    if (auto* proto_entry = _find_property(obj->proto(), key))
       return proto_entry->value;
   }
   // Shared.new view: own slots (markers + reader methods) resolved
@@ -1574,7 +1583,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
 culebra_runtime_object_has_or_trait_default(JitObject* obj, const char* key) {
   if (culebra_runtime_object_has(obj, key)) return true;
-  if (!obj->proto) return false;
+  if (!obj->proto()) return false;
   return _jit_find_trait_default(obj, key) != nullptr;
 }
 
@@ -1617,7 +1626,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_call_method(
     int8_t tag, int64_t data) {
   if (tag != TAG_OBJECT) return {TAG_NIL, 0};
   auto* obj = reinterpret_cast<JitObject*>(data);
-  if (!obj->proto) return {TAG_NIL, 0};
+  if (!obj->proto()) return {TAG_NIL, 0};
   if (auto* e = _find_property(obj, "__call__")) {
     if (e->value.tag == TAG_FUNC) return e->value;
   }
@@ -1780,7 +1789,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   // through a computed key or an alias any more than through `self.z = v`,
   // which the declaration refuses outright.
   inst->fields_closed = class_meta && class_meta->is_value;
-  inst->proto = class_meta;
+  inst->set_proto(class_meta);
   // Retain the meta on the instance so it lives at least as long as
   // any of its instances. The matching release runs in the JitObject
   // destructor (release_impl GC_TAG_OBJECT path).
@@ -1901,7 +1910,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
       /*mut=*/false});
   for (int64_t i = 1; i < n_keys; i++)
     inst->slots.push_back(JitObjectEntry{field_values[i - 1], /*mut=*/false});
-  inst->proto = class_meta;
+  inst->set_proto(class_meta);
   if (class_meta) class_meta->refcount++;
   if (class_meta && _find_property(class_meta, "drop"))
     _jit_owned_bind_drop(inst);

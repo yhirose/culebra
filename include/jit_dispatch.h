@@ -844,7 +844,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
 culebra_runtime_class_self(int8_t self_tag, int64_t self_data) {
   if (self_tag == TAG_OBJECT) {
     auto* o = reinterpret_cast<JitObject*>(self_data);
-    JitObject* cls = o->proto ? o->cls : o->is_class ? o : nullptr;
+    JitObject* cls = o->proto() ? o->cls : o->is_class ? o : nullptr;
     if (cls) {
       cls->refcount++;
       return JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(cls)};
@@ -1139,8 +1139,8 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
           _gc_push_value(out, e.value);
         }
       }
-      if (o->proto) {
-        out.push_back(o->proto);
+      if (o->proto()) {
+        out.push_back(o->proto());
         if (o->cls) out.push_back(o->cls);
       }
       break;
@@ -1209,6 +1209,7 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       _jit_owned_unregister(o);  // owned-stack tombstone (sweep path)
       delete o->key_order;
       delete o->non_string_props;
+      if (o->is_dict) delete o->dict_;
       delete o;
       break;
     }
@@ -1624,8 +1625,8 @@ inline void _jit_walk_collect_params_object(JitObject* obj, JitArray* out) {
   // Both backends iterate Object properties in insertion order. The
   // Shape's names vector already stores them in declaration order.
   if (!obj->shape) return;
-  for (size_t i = 0; i < obj->shape->names.size(); i++) {
-    std::string_view key(obj->shape->names[i]);
+  for (size_t i = 0; i < obj->prop_size(); i++) {
+    std::string_view key(obj->prop_name(i));
     if (key == "class") continue;
     if (!key.empty() && key[0] == '_') continue;
     _jit_walk_collect_params(obj->slots[i].value, out);
@@ -1786,7 +1787,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_receiver(
     int8_t recv_tag, int64_t recv_data, const char* key) {
   if (recv_tag == TAG_OBJECT) {
     auto* recv = reinterpret_cast<JitObject*>(recv_data);
-    if (recv->proto && recv->proto->is_lowered_state && recv->has_own(key)) {
+    if (recv->proto() && recv->proto()->is_lowered_state && recv->has_own(key)) {
       _culebra_value_release_impl(recv_tag, recv_data);
       return {TAG_NO_SELF, 0};
     }
@@ -1804,7 +1805,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     // state class's own methods live on the proto and bind as usual. Twin of
     // the interp's eval_property branch.
     auto* recv = reinterpret_cast<JitObject*>(recv_data);
-    if (recv->proto && recv->proto->is_lowered_state && recv->has_own(key)) {
+    if (recv->proto() && recv->proto()->is_lowered_state && recv->has_own(key)) {
       culebra_runtime_value_retain(view_tag, view_data);
       return {view_tag, view_data};
     }
@@ -1875,7 +1876,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_getter_or_value(
     const char* key) {
   if (view_tag == TAG_FUNC && recv_tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(recv_data);
-    if (obj->proto && obj->find_slot(key) == static_cast<size_t>(-1)) {
+    if (obj->proto() && obj->find_slot(key) == static_cast<size_t>(-1)) {
       auto* method = reinterpret_cast<JitClosure*>(view_data);
       if (_jit_is_getter_fn(method->fn_ptr)) {
         JitValue r = _jit_invoke_getter(method, recv_tag, recv_data);
@@ -1995,8 +1996,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     for (int64_t i = 0; i < n_splat; i++) {
       // Operands were validated as Objects at function entry.
       auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
+      // `prop_name` views stable storage -- the interned shape names, or
+      // the object's own dictionary index -- so the view outlives this
+      // vector. Building a `std::string` here would dangle instead.
       if (obj->shape)
-        for (const auto& nm : obj->shape->names) kwarg_keys.push_back(nm);
+        for (size_t j = 0; j < obj->prop_size(); j++)
+          kwarg_keys.push_back(obj->prop_name(j));
     }
     auto picked = _jit_multifn_resolve(
         cls, positional, n_pos, line, col, release_owned, kwarg_keys);
@@ -2035,16 +2040,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   for (int64_t i = 0; i < n_splat; i++) {
     auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
     if (!obj->shape) continue;
-    for (size_t k = 0; k < obj->shape->names.size(); k++) {
+    for (size_t k = 0; k < obj->prop_size(); k++) {
       // Retain each value so the merged map owns +1; the matching
       // release lands either on the slab transfer or in the catch
       // paths below.
       auto& sv_entry = obj->slots[k].value;
       culebra_runtime_value_retain(sv_entry.tag, sv_entry.data);
-      auto it = merged.find(obj->shape->names[k]);
+      auto it = merged.find(obj->prop_name(k));
       if (it != merged.end())
         _culebra_value_release_impl(it->second.tag, it->second.data);
-      merged.set(obj->shape->names[k], sv_entry);
+      merged.set(obj->prop_name(k), sv_entry);
     }
   }
 

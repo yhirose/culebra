@@ -135,10 +135,10 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       culebra::ValueWalkFrame walk;
       n.kind = K::Object;
       if (o->shape) {
-        for (size_t i = 0; i < o->shape->names.size(); i++) {
+        for (size_t i = 0; i < o->prop_size(); i++) {
           sendable::SendNode key;
           key.kind = K::Str;
-          key.s = o->shape->names[i];
+          key.s = o->prop_name(i);
           n.entries.emplace_back(std::move(key),
                                  jit_serialize(o->slots[i].value, ctx));
           n.entry_mut.push_back(o->slots[i].mut);
@@ -152,14 +152,14 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // as a backref. A meta whose methods reach a native closure (derived
       // eq/show thunks, a method capturing the class object and thus its
       // ctor) rejects exactly like the interp's body==nullptr check.
-      if (o->proto) {
+      if (o->proto()) {
         // Carry the instance's own drop gate rather than re-deriving it
         // from the meta on the other side: a nested instance can relink
         // while its meta is still mid-fill (the memo registers before the
         // entries land), so probing the meta there would depend on the
         // class's member declaration order.
         n.b = o->has_drop;
-        if (auto it = ctx.proto_ids.find(o->proto);
+        if (auto it = ctx.proto_ids.find(o->proto());
             it != ctx.proto_ids.end()) {
           sendable::SendNode ref;
           ref.kind = K::Object;
@@ -168,9 +168,9 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
           n.elems.push_back(std::move(ref));
         } else {
           int proto_ref = ctx.next_id++;
-          ctx.proto_ids.emplace(o->proto, proto_ref);
+          ctx.proto_ids.emplace(o->proto(), proto_ref);
           n.elems.push_back(jit_serialize(
-              {TAG_OBJECT, reinterpret_cast<int64_t>(o->proto)}, ctx));
+              {TAG_OBJECT, reinterpret_cast<int64_t>(o->proto())}, ctx));
           n.elems.back().ref_id = proto_ref;
         }
         // A method that names its class reads the class object through the
@@ -178,7 +178,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         // the class object carries its constructor, a native closure, so
         // the walk refuses exactly where the method's cell capture used to.
         // Every other instance leaves its class behind, as before.
-        if (o->proto->names_class && o->cls)
+        if (o->proto()->names_class && o->cls)
           n.elems.push_back(jit_serialize(
               {TAG_OBJECT, reinterpret_cast<int64_t>(o->cls)}, ctx));
       }
@@ -336,7 +336,7 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       if (!n.elems.empty()) {
         JitValue proto = jit_deserialize(n.elems[0], ctx);
         auto* meta = reinterpret_cast<JitObject*>(proto.data);
-        o->proto = meta;
+        o->set_proto(meta);
         meta->refcount++;
         // n.b carries the sender instance's has_drop gate — don't probe
         // the meta here, it may still be mid-fill for a nested instance.

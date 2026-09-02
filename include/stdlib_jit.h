@@ -1576,9 +1576,9 @@ struct _JitJsonReader {
     auto* obj = reinterpret_cast<JitObject*>(v.data);
     std::vector<std::pair<std::string_view, const JitValue*>> entries;
     if (!obj->shape) return entries;
-    entries.reserve(obj->shape->names.size());
-    for (size_t i = 0; i < obj->shape->names.size(); i++) {
-      entries.emplace_back(obj->shape->names[i], &obj->slots[i].value);
+    entries.reserve(obj->prop_size());
+    for (size_t i = 0; i < obj->prop_size(); i++) {
+      entries.emplace_back(obj->prop_name(i), &obj->slots[i].value);
     }
     return entries;
   }
@@ -1656,10 +1656,10 @@ struct _JitValueGuard {
 inline bool _ns_env_object_pairs(
     JitObject* obj, std::vector<std::pair<std::string, std::string>>& out) {
   if (!obj->shape) return true;
-  for (size_t k = 0; k < obj->shape->names.size(); k++) {
+  for (size_t k = 0; k < obj->prop_size(); k++) {
     const JitValue& sv = obj->slots[k].value;
     if (sv.tag != TAG_STRING && sv.tag != TAG_STRINGVIEW) return false;
-    out.emplace_back(std::string(obj->shape->names[k]),
+    out.emplace_back(std::string(obj->prop_name(k)),
                      std::string(_culebra_str_view(sv.tag, sv.data)));
   }
   return true;
@@ -1689,8 +1689,8 @@ inline std::string _ns_proc_share_ids(
            ": share must be an Object of name -> SharedBuffer";
   auto* obj = reinterpret_cast<JitObject*>(raw.data);
   if (!obj->shape) return {};
-  for (size_t k = 0; k < obj->shape->names.size(); k++) {
-    const std::string& name = obj->shape->names[k];
+  for (size_t k = 0; k < obj->prop_size(); k++) {
+    std::string name(obj->prop_name(k));
     const JitValue& bv = obj->slots[k].value;
     size_t si = (bv.tag == TAG_OBJECT)
                     ? reinterpret_cast<JitObject*>(bv.data)
@@ -1882,10 +1882,10 @@ class _JitKwargResolver {
             "**: splat key must be String", line_, col_);
       }
       if (!obj->shape) continue;
-      for (size_t k = 0; k < obj->shape->names.size(); k++) {
+      for (size_t k = 0; k < obj->prop_size(); k++) {
         auto& v = obj->slots[k].value;
         culebra_runtime_value_retain(v.tag, v.data);
-        insert_or_replace(obj->shape->names[k], v);
+        insert_or_replace(obj->prop_name(k), v);
       }
     }
     for (int64_t i = 0; i < n_kw; i++) {
@@ -2472,8 +2472,8 @@ inline void _http_setup_multipart(JitValue filesv,
   };
   auto* files = reinterpret_cast<JitObject*>(filesv.data);
   if (files->shape) {
-    for (size_t k = 0; k < files->shape->names.size(); k++) {
-      std::string name(files->shape->names[k]);
+    for (size_t k = 0; k < files->prop_size(); k++) {
+      std::string name(files->prop_name(k));
       JitValue v = files->slots[k].value;
       if (v.tag == TAG_ARRAY) {
         auto* arr = reinterpret_cast<JitArray*>(v.data);
@@ -3174,8 +3174,8 @@ inline void _jit_sqlite_bind_params(int64_t stmt_id, JitValue params,
           "TypeError", "SQLite: named parameter keys must be Strings", line, col);
     }
     if (obj->shape) {
-      for (size_t k = 0; k < obj->shape->names.size(); k++) {
-        const std::string& name = obj->shape->names[k];
+      for (size_t k = 0; k < obj->prop_size(); k++) {
+        std::string name(obj->prop_name(k));
         int pi = culebra::sqlite::bind_index(stmt_id, ":" + name);
         if (pi == 0) pi = culebra::sqlite::bind_index(stmt_id, "@" + name);
         if (pi == 0) pi = culebra::sqlite::bind_index(stmt_id, "$" + name);
@@ -5932,12 +5932,12 @@ inline std::string _jit_http_apply_response_meta(
     if (h->shape) {
       // Set incrementally and throw on the first non-String value, matching
       // interp's `res.set_header(k, val.to_string_view())` loop.
-      for (size_t k = 0; k < h->shape->names.size(); k++) {
+      for (size_t k = 0; k < h->prop_size(); k++) {
         JitValue v = h->slots[k].value;
         if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
           culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0, 0);
         culebra::http::http_res_set_header(
-            res, std::string(h->shape->names[k]),
+            res, std::string(h->prop_name(k)),
             std::string(_culebra_str_view(v.tag, v.data)));
       }
     }
@@ -7194,8 +7194,8 @@ inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
       }
       N t = N::table();
       if (obj->shape) {
-        for (size_t i = 0; i < obj->shape->names.size(); i++)
-          t.set(std::string(obj->shape->names[i]),
+        for (size_t i = 0; i < obj->prop_size(); i++)
+          t.set(std::string(obj->prop_name(i)),
                 _jit_to_toml_node(obj->slots[i].value.tag,
                                   obj->slots[i].value.data, line, col,
                                   depth + 1));
@@ -8889,15 +8889,15 @@ inline bool _jit_ns_kwarg_resolve_core(
           "**: splat key must be String", line, col);
     }
     if (obj->shape) {
-      for (size_t k = 0; k < obj->shape->names.size(); k++) {
+      for (size_t k = 0; k < obj->prop_size(); k++) {
         auto& sv = obj->slots[k].value;
         culebra_runtime_value_retain(sv.tag, sv.data);
-        auto it = merged.find(obj->shape->names[k]);
+        auto it = merged.find(obj->prop_name(k));
         if (it != merged.end()) {
           _culebra_value_release_impl(it->second.tag, it->second.data);
           it->second = sv;
         } else {
-          merged.emplace(obj->shape->names[k], sv);
+          merged.emplace(obj->prop_name(k), sv);
         }
       }
     }

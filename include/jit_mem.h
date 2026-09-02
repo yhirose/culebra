@@ -245,8 +245,8 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
         // is outside the subgraph, so the meta stays externally
         // reachable and everything it owns survives with it) — following
         // it keeps the counts exact for instance-only cycles.
-        if (o->proto) {
-          self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->proto)}, id,
+        if (o->proto()) {
+          self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->proto())}, id,
                self);
           if (o->cls)
             self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->cls)}, id,
@@ -412,10 +412,10 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
       auto* o = reinterpret_cast<JitObject*>(data);
       if (--o->refcount == 0) {
         _culebra_call_drop_if_present(o);
-        if (o->proto) {
-          auto* proto = o->proto;
+        if (o->proto()) {
+          auto* proto = o->proto();
           auto* cls = o->cls;
-          o->proto = nullptr;
+          o->set_proto(nullptr);
           o->cls = nullptr;
           _culebra_value_release_impl(GC_TAG_OBJECT,
                                        reinterpret_cast<int64_t>(proto));
@@ -450,6 +450,11 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
           }
           delete o->non_string_props;
           o->non_string_props = nullptr;
+        }
+        if (o->is_dict) {
+          delete o->dict_;
+          o->dict_ = nullptr;
+          o->is_dict = false;
         }
         _gc_note_free(o, GC_TAG_OBJECT);
         delete o;

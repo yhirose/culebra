@@ -1283,12 +1283,13 @@ Non-String keys live in a sidecar map. Compound forms (`obj[k] += v`)
 update the slot in place and require the key to already exist
 (`KeyError` otherwise) and the slot to be mutable.
 
-Caveat — JIT shape growth: each *unique* runtime `String` key used as
-an Object property name allocates a `Shape` in a process-wide registry
-that is never reclaimed. Programs that feed unbounded user-supplied
-strings into `obj[k] = v` will accumulate shapes monotonically. For
-that kind of workload use a non-String key (e.g. wrap in a `Tuple`)
-to keep the data in the sidecar instead.
+An Object built this way is a dictionary and performs like one: insert,
+read and delete stay O(1) as it grows, whatever the key type. The
+fixed-slot layout an Object literal or a class instance gets is a
+different representation, and an object leaves it once it holds enough
+keys that the layout no longer pays — a change of representation only,
+with no change in behaviour.
+
 
 ### Methods and UFCS
 

@@ -1,0 +1,121 @@
+// Conformance: §10 (Objects). An Object doubles as the dictionary type, so
+// it has to stay correct — and stay linear — when its keys come from data
+// rather than from source.
+//
+// Past a property threshold an object stops transitioning shapes and keeps
+// a hash index of its own instead. Everything below has to behave the same
+// on both sides of that flip, so each case spans it: the threshold is 64
+// and these objects hold 200.
+
+let n = 200
+
+fn build(n) {
+  mut o = {}
+  for i in 0..n {
+    o["key{i}"] = i
+  }
+  o
+}
+
+// --- reads -----------------------------------------------------------------
+
+let o = build(n)
+assert_eq(o.size(), n)
+assert_eq(o["key0"], 0)          // before the flip
+assert_eq(o["key63"], 63)        // the last shaped slot
+assert_eq(o["key64"], 64)        // the first dictionary slot
+assert_eq(o["key199"], 199)
+assert_eq(o.get("key150", -1), 150)
+assert_eq(o.get("absent", -1), -1)
+assert_true(o.has("key120"))
+assert_true(!o.has("absent"))
+
+// A data key that collides with a dict builtin still shadows it, before and
+// after the flip — the documented rule, unchanged here.
+mut shadowed = build(n)
+shadowed["get"] = 7
+assert_eq(shadowed["get"], 7)
+
+// --- insertion order -------------------------------------------------------
+
+let ks = o.keys()
+assert_eq(ks.size(), n)
+assert_eq(ks[0], "key0")
+assert_eq(ks[63], "key63")
+assert_eq(ks[64], "key64")
+assert_eq(ks[n - 1], "key199")
+
+mut seen = 0
+mut sum = 0
+for k, v in o {
+  seen += 1
+  sum += v
+}
+assert_eq(seen, n)
+assert_eq(sum, n * (n - 1) / 2)
+
+// --- writes ----------------------------------------------------------------
+
+mut w = build(n)
+w["key100"] = 999
+assert_eq(w["key100"], 999)
+assert_eq(w.size(), n)           // an update is not an insert
+
+w["key200"] = 200
+assert_eq(w.size(), n + 1)
+assert_eq(w["key200"], 200)
+assert_eq(w.keys()[n], "key200")
+
+// --- removal ---------------------------------------------------------------
+
+mut r = build(n)
+r.remove("key0")
+assert_eq(r.size(), n - 1)
+assert_true(!r.has("key0"))
+// Every later key keeps its own value after the slots shift down.
+assert_eq(r["key1"], 1)
+assert_eq(r["key64"], 64)
+assert_eq(r["key199"], 199)
+r.remove("key199")
+assert_eq(r.size(), n - 2)
+assert_eq(r["key198"], 198)
+
+// --- spread, JSON, and mixed keys -------------------------------------------
+
+let copy = {...o}
+assert_eq(copy.size(), n)
+assert_eq(copy["key5"], 5)
+assert_eq(copy.keys()[64], "key64")
+
+assert_eq(JSON.parse(JSON.stringify(o)).size(), n)
+assert_eq(JSON.parse(JSON.stringify(o))["key77"], 77)
+
+mut mixed = build(n)
+mixed[42] = "long key"
+assert_eq(mixed.size(), n + 1)
+assert_eq(mixed[42], "long key")
+assert_eq(mixed["key3"], 3)
+// The non-String key keeps its place in the unified insertion order.
+assert_eq(mixed.keys()[n], 42)
+
+// --- a class instance never flips -------------------------------------------
+
+// Instances reach their methods through a proto, which shares storage with
+// the dictionary index, so they stay shaped however many fields they hold.
+class Bag {
+  new(n) {
+    self.n = n
+  }
+
+  double() {
+    self.n * 2
+  }
+}
+
+mut b = Bag(21)
+for i in 0..n {
+  b["f{i}"] = i
+}
+assert_eq(b.double(), 42)        // the method still resolves
+assert_eq(b["f199"], 199)
+assert_eq(b.n, 21)

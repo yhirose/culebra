@@ -26,6 +26,11 @@ namespace culebra {
 // property count seen in this codebase a flat scan beats both
 // std::map (tree pointer chasing) and unordered_map (hash + bucket)
 // on cache traffic. The slow path is hit only on inline-cache miss.
+//
+// That argument holds for objects whose keys come from source. It does
+// not hold for an Object used as a dictionary, whose keys come from data:
+// there the shape tree is quadratic in both directions, and such an object
+// flips to a per-object hash index instead (see `DictIndex` below).
 struct Shape {
   std::vector<std::string> names;          // insertion order
   std::map<std::string_view, Shape*> add_transitions;
@@ -198,6 +203,45 @@ inline uint64_t _str_len(const char* data);
 inline char* _str_alloc(uint64_t len);
 inline const char* _intern_str(std::string_view s);
 
+// Dictionary mode.
+//
+// An Object doubles as the language's dictionary type, and a dictionary's
+// keys come from data: thousands of distinct runtime Strings. The shape
+// tree is the wrong structure for that -- `transition_add` copies the whole
+// name vector per key, so building an n-key dictionary cost O(n^2) in both
+// time and memory (20,000 String keys: 1.15 s and 4.0 GB peak, against
+// 0.0023 s for the same n Long keys, which have always used a hash
+// sidecar). Past `kDictAt` properties an object stops transitioning shapes
+// and keeps a hash index of its own. Values stay in `slots`, so every
+// caller that resolves a name to a slot index is unaffected.
+struct DictKeyHash {
+  using is_transparent = void;
+  size_t operator()(std::string_view s) const {
+    return std::hash<std::string_view>{}(s);
+  }
+};
+struct DictKeyEq {
+  using is_transparent = void;
+  bool operator()(std::string_view a, std::string_view b) const {
+    return a == b;
+  }
+};
+struct DictIndex {
+  // Owns the names; `unordered_map` keeps its keys at stable addresses, so
+  // `names` can point into it.
+  std::unordered_map<std::string, size_t, DictKeyHash, DictKeyEq> index;
+  std::vector<const std::string*> names;  // slot -> name
+};
+
+// Every dictionary-mode object shares this shape. It is never interned and
+// never primes an inline cache (see the three `ic->` assignments in
+// jit_fixed.h), so a cached shape can never match a dictionary and read a
+// stale slot -- which is what lets dictionary mode leave codegen alone.
+inline culebra::Shape* dict_shape() {
+  static culebra::Shape s;
+  return &s;
+}
+
 struct JitObject {
   int64_t refcount;
   bool has_drop = false;
@@ -211,7 +255,14 @@ struct JitObject {
   // level only — proto chains aren't supported). Class-sugar instances
   // share their special methods through a per-class meta object held
   // here, so each instance's own slots carry only data fields.
-  JitObject* proto = nullptr;
+  //
+  // A dictionary-mode object stores its own name index here instead (see
+  // `DictIndex` and `become_dict`). The two never coexist: an object with a
+  // proto is a class instance and is never flipped.
+  union {
+    JitObject* proto_ = nullptr;
+    DictIndex* dict_;
+  };
   // Property layout: `shape` is a process-interned descriptor mapping
   // names to slot indices; `slots[i]` holds the entry for `shape->names[i]`.
   // Two instances with the same property set share the same Shape*.
@@ -253,6 +304,11 @@ struct JitObject {
   // A Regex match: `m[i]` / `m["name"]` subscripts hit its capture groups
   // (mirrors interp's ObjectValue::is_match). Trailing, like the flags above.
   bool is_match = false;
+  // Dictionary mode: `dict_` is live instead of `proto_`, `shape` is the
+  // shared `dict_shape()` sentinel, and `slots` is indexed through the
+  // hash rather than through the shape. Sits in the padding these flags
+  // already carry, so JitObject stays inside its 128-byte slab class.
+  bool is_dict = false;
   // Index into the owned-resource stack (deterministic drop), -1 when
   // unregistered. Set when `drop` is bound; the
   // release/sweep paths tombstone the entry through it. Trailing field —
@@ -312,13 +368,29 @@ struct JitObject {
 
   // Slot index for `key`, or static_cast<size_t>(-1) if absent.
   size_t find_slot(std::string_view key) const {
+    if (is_dict) {
+      auto it = dict_->index.find(key);
+      return it == dict_->index.end() ? static_cast<size_t>(-1) : it->second;
+    }
     if (!shape) return static_cast<size_t>(-1);
     return shape->offset(key);
   }
   bool has_own(std::string_view key) const {
-    return shape && shape->has(key);
+    return find_slot(key) != static_cast<size_t>(-1);
   }
   size_t prop_size() const { return slots.size(); }
+
+  // The name of slot `i`. The shape stops recording names once an object
+  // is in dictionary mode, so every enumeration goes through here.
+  std::string_view prop_name(size_t i) const {
+    return is_dict ? std::string_view(*dict_->names[i])
+                   : std::string_view(shape->names[i]);
+  }
+
+  // Class instances reach their methods through a proto; dictionaries use
+  // the same storage for their index, and the two never coexist.
+  JitObject* proto() const { return is_dict ? nullptr : proto_; }
+  void set_proto(JitObject* p) { proto_ = p; }
 
   // Append a new property. Caller must ensure `key` is absent;
   // otherwise the shape transition produces a corrupted layout.
@@ -329,9 +401,55 @@ struct JitObject {
   // reserve avoids the std::vector doubling chain (cap 1→2→4→8),
   // turning 4 small heap allocations into one.
   size_t append_slot(std::string_view key, JitValue value, bool mut) {
+    if (is_dict) return append_dict(key, value, mut);
     if (!shape) shape = culebra::shape_registry().root();
+    // A class instance keeps its proto in the shared storage, so it stays
+    // shaped however many fields it grows; only plain Objects flip.
+    if (slots.size() >= kDictAt && !proto_) {
+      become_dict();
+      return append_dict(key, value, mut);
+    }
     return append_slot_shaped(
         culebra::shape_registry().transition_add(shape, key), value, mut);
+  }
+
+  // Past this many properties the shape tree costs more than it saves: each
+  // further key would copy the whole name vector into a fresh interned
+  // Shape that nothing else will ever share.
+  static constexpr size_t kDictAt = 64;
+
+  void become_dict() {
+    auto* d = new DictIndex();
+    d->index.reserve(slots.size() * 2);
+    d->names.reserve(slots.size());
+    for (size_t i = 0; i < slots.size(); i++) {
+      auto it = d->index.emplace(shape->names[i], i).first;
+      d->names.push_back(&it->first);
+    }
+    // `key_order` is the only insertion-order record once the shape stops
+    // growing, so materialize it here if it is still lazy.
+    if (!key_order) {
+      key_order = new std::vector<JitValue>();
+      key_order->reserve(slots.size() + 1);
+      for (const auto& name : shape->names) {
+        key_order->push_back(
+            {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(_intern_str(name))});
+      }
+    }
+    dict_ = d;
+    is_dict = true;
+    shape = dict_shape();
+  }
+
+  size_t append_dict(std::string_view key, JitValue value, bool mut) {
+    auto it = dict_->index.emplace(std::string(key), slots.size()).first;
+    dict_->names.push_back(&it->first);
+    if (slots.capacity() == 0) slots.reserve(8);
+    slots.push_back({value, mut});
+    ++mut_count;
+    key_order->push_back(
+        {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(_intern_str(key))});
+    return slots.size() - 1;
   }
 
   // append_slot with the transition already resolved, for a caller that
@@ -369,9 +487,7 @@ struct JitObject {
   template <class F>
   void for_each(F&& f) const {
     if (!shape) return;
-    for (size_t i = 0; i < shape->names.size(); i++) {
-      f(std::string_view(shape->names[i]), slots[i]);
-    }
+    for (size_t i = 0; i < slots.size(); i++) f(prop_name(i), slots[i]);
   }
 
   // Remove a property by rebuilding the shape from root. Slow path
@@ -381,6 +497,26 @@ struct JitObject {
   void erase(std::string_view key) {
     auto idx = find_slot(key);
     if (idx == static_cast<size_t>(-1)) return;
+    if (is_dict) {
+      // Every later slot shifts down, so the index is rebuilt wholesale --
+      // the same O(n) the shaped path below pays.
+      auto* d = new DictIndex();
+      d->index.reserve(slots.size() * 2);
+      d->names.reserve(slots.size() - 1);
+      std::vector<JitObjectEntry> new_slots;
+      new_slots.reserve(slots.size() - 1);
+      for (size_t i = 0; i < slots.size(); i++) {
+        if (i == idx) continue;
+        auto it = d->index.emplace(*dict_->names[i], new_slots.size()).first;
+        d->names.push_back(&it->first);
+        new_slots.push_back(std::move(slots[i]));
+      }
+      delete dict_;
+      dict_ = d;
+      slots = std::move(new_slots);
+      ++mut_count;
+      return;
+    }
     auto* new_shape = culebra::shape_registry().root();
     std::vector<JitObjectEntry> new_slots;
     new_slots.reserve(slots.size() - 1);
