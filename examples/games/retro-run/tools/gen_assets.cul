@@ -948,7 +948,7 @@ fn trunk(c, x0, y0, x1, y1, w0, w1, tones) {
 # where the clump sits in the crown, a lighter cap on the lit ones, then a
 # speckle of leaves and a darkening underside.
 fn canopy(c, cx, cy, rx, ry, n, r, seed, tones) {
-  c.ellipse(cx, cy, rx * 0.8, ry * 0.8, tones[1])  # so nothing shows through
+  c.ellipse(cx, cy, rx * 0.7, ry * 0.7, tones[1])  # so nothing shows through
   for i in 0..n {
     let a = noise(seed, i, 1) * 2 * Math.pi
     let d = Math.sqrt(noise(seed, i, 2)) * 0.84
@@ -987,31 +987,19 @@ fn canopy(c, cx, cy, rx, ry, n, r, seed, tones) {
   }
 }
 
-# A broadleaf tree: a trunk forking into three limbs under a big crown.
-fn draw_round_tree(
-  c,
-  w,
-  h,
-  seed,
-  tones = ["LEAF0", "LEAF1", "LEAF2", "LEAF3"],
-) {
+# A tree with a lobed crown: a trunk into limbs, each limb ending in its own
+# mass of foliage, so the outline is a cluster of lobes rather than a ball.
+# `lobes` are `[x, y, rx, ry]` as fractions of the box; upper lobes are drawn
+# first so the lower ones overlap them.
+let WOOD = ("WOOD0", "WOOD1", "WOOD2")
+
+fn draw_lobed_tree(c, w, h, seed, tones, lobes, n, r) {
   let bx = w * 0.5
   let by = h * 0.98
-  let fork_y = h * 0.62
-  trunk(c, bx, by, bx, fork_y, w * 0.13, w * 0.09, ("WOOD0", "WOOD1", "WOOD2"))
-  for (dx, dy) in [(-0.22, 0.30), (0.02, 0.22), (0.24, 0.34)] {
-    let tx = bx + w * dx
-    let ty = h * dy
-    trunk(
-      c,
-      bx,
-      fork_y + 2,
-      tx,
-      ty,
-      w * 0.08,
-      w * 0.03,
-      ("WOOD0", "WOOD1", "WOOD2"),
-    )
+  let fork_y = h * 0.64
+  trunk(c, bx, by, bx, fork_y, w * 0.13, w * 0.09, WOOD)
+  for [lx, ly, _, _] in lobes {
+    trunk(c, bx, fork_y + 2, w * lx, h * (ly + 0.05), w * 0.07, w * 0.025, WOOD)
   }
   # Root flare.
   c.poly(
@@ -1040,53 +1028,63 @@ fn draw_round_tree(
     ],
     "WOOD0",
   )
-  canopy(
-    c,
-    w * 0.5,
-    h * 0.36,
-    w * 0.46,
-    h * 0.32,
-    70,
-    Math.min(w, h) * 0.12,
-    seed,
-    tones,
-  )
+  for (i, [lx, ly, rx, ry]) in lobes.sorted_by(|l| l[1]).enumerate() {
+    canopy(
+      c,
+      w * lx,
+      h * ly,
+      w * rx,
+      h * ry,
+      n,
+      Math.min(w, h) * r,
+      seed * 7 + i,
+      tones,
+    )
+  }
   c.outline()
   ground_shadow(c, w * 0.5, by, w * 0.42, h * 0.035)
 }
 
-# A blossom tree: the same shape in pink, with the limbs showing through a
-# looser crown.
-fn draw_blossom_tree(c, w, h, seed) {
-  let bx = w * 0.5
-  let by = h * 0.98
-  let fork_y = h * 0.6
-  trunk(c, bx, by, bx, fork_y, w * 0.12, w * 0.08, ("WOOD0", "WOOD1", "WOOD2"))
-  for (dx, dy) in [(-0.3, 0.26), (-0.08, 0.14), (0.14, 0.18), (0.32, 0.3)] {
-    trunk(
-      c,
-      bx,
-      fork_y + 2,
-      bx + w * dx,
-      h * dy,
-      w * 0.07,
-      w * 0.025,
-      ("WOOD0", "WOOD1", "WOOD2"),
-    )
-  }
-  canopy(
+# A broadleaf: a tall central mass with lower lobes to either side.
+fn draw_round_tree(c, w, h, seed) {
+  draw_lobed_tree(
     c,
-    w * 0.5,
-    h * 0.34,
-    w * 0.47,
-    h * 0.3,
-    110,
-    Math.min(w, h) * 0.075,
+    w,
+    h,
+    seed,
+    ["LEAF0", "LEAF1", "LEAF2", "LEAF3"],
+    [
+      [0.52, 0.17, 0.24, 0.14],
+      [0.22, 0.34, 0.19, 0.13],
+      [0.78, 0.30, 0.18, 0.12],
+      [0.40, 0.42, 0.20, 0.11],
+      [0.66, 0.46, 0.16, 0.10],
+      [0.30, 0.55, 0.12, 0.08],
+    ],
+    22,
+    0.075,
+  )
+}
+
+# A blossom tree: sparser lobes in pink, the limbs showing between them.
+fn draw_blossom_tree(c, w, h, seed) {
+  draw_lobed_tree(
+    c,
+    w,
+    h,
     seed,
     ["BLOSSOM_D", "BLOSSOM_D", "BLOSSOM_L", "P_WHITE"],
+    [
+      [0.30, 0.18, 0.20, 0.12],
+      [0.68, 0.14, 0.22, 0.13],
+      [0.16, 0.38, 0.15, 0.10],
+      [0.50, 0.36, 0.16, 0.10],
+      [0.84, 0.36, 0.14, 0.10],
+      [0.36, 0.52, 0.11, 0.08],
+    ],
+    30,
+    0.05,
   )
-  c.outline()
-  ground_shadow(c, w * 0.5, by, w * 0.4, h * 0.035)
 }
 
 # A bare tree: limbs that fork, thin, and bend toward the light.
@@ -1663,7 +1661,13 @@ fn draw_billboard(c, w, h, seed, design) {
 fn wheels(c, w, floor, tyre_w, tyre_h, inset) {
   for tx in [inset, w - inset - tyre_w] {
     c.rect(tx, floor - tyre_h, tyre_w, tyre_h, "TYRE0")
-    c.rect(tx + 1, floor - tyre_h + 1, tyre_w - 2, 1, "TYRE1")
+    for (
+      x,
+      y,
+    ) in [(tx, floor - tyre_h), (tx + tyre_w - 1, floor - tyre_h), (tx, floor - 1), (tx + tyre_w - 1, floor - 1)] {
+      c.set(x, y, 0)
+    }
+    c.rect(tx + 2, floor - tyre_h + 1, tyre_w - 4, 1, "TYRE1")
     for y in floor - tyre_h + 3..floor - 1 by 2 {
       c.set(tx, y, "TYRE1")
       c.set(tx + tyre_w - 1, y, "TYRE1")
@@ -1671,26 +1675,86 @@ fn wheels(c, w, floor, tyre_w, tyre_h, inset) {
   }
 }
 
-# Tail lamps and a plate on a rear face; `bar` runs one light strip across.
-fn rear_lights(c, x0, x1, y, lamp_h, bar, plate_w, plate_y) {
-  if bar {
-    c.rect(x0, y, x1 - x0, lamp_h, "LAMP_R")
-    c.rect(x0, y, x1 - x0, Math.max(1, lamp_h / 2), "LAMP_RL")
-    for x in x0 + 4..x1 by 5 {
-      c.rect(x, y, 1, lamp_h, "INK")
-    }
-  } else {
-    let lw = Math.max(4, ((x1 - x0) * 0.22).to_long())
-    for lx in [x0, x1 - lw] {
-      c.rect(lx, y, lw, lamp_h, "LAMP_R")
-      c.rect(lx, y, lw, Math.max(1, lamp_h / 2), "LAMP_RL")
-      c.rect(lx + (lx == x0 ? lw - 2 : 0), y, 2, lamp_h, "LAMP_A")
+# Half-width of a body at row `y`, from control points `[[y, half], ...]`
+# (ascending y), smoothed between them so the flanks curve rather than step.
+fn profile(points, y) {
+  return points[0][1] if y <= points[0][0]
+  let last = points[points.size() - 1]
+  return last[1] if y >= last[0]
+  mut i = 0
+  while points[i + 1][0] < y {
+    i += 1
+  }
+  let [y0, h0] = points[i]
+  let [y1, h1] = points[i + 1]
+  let t = (y - y0).to_float() / (y1 - y0)
+  h0 + (h1 - h0) * t * t * (3 - 2 * t)
+}
+
+# Fill a profile's rows: the flanks shade toward the dark tone where the
+# surface turns away, the first `top_light` rows toward the light one.
+fn shell(c, cx, points, tones, top_light) {
+  let (d, m, l) = tones
+  let y0 = points[0][0].to_long()
+  let y1 = points[points.size() - 1][0].to_long()
+  for y in y0..=y1 {
+    let half = profile(points, y)
+    for x in (cx - half).to_long()..=(cx + half).to_long() {
+      let u = Math.abs(x - cx) / Math.max(1.0, half)
+      cond {
+        u > 0.92 => c.set(x, y, d),
+        u > 0.78 => c.mix(x, y, m, d, (u - 0.78) / 0.14),
+        y <
+          y0 +
+            top_light => c.mix(
+          x,
+          y,
+          l,
+          m,
+          (y - y0).to_float() / top_light * 0.8 + u * 0.4,
+        ),
+        _ => c.set(x, y, m),
+      }
     }
   }
-  let px = (x0 + x1) / 2 - plate_w / 2
-  c.rect(px, plate_y, plate_w, 4, "PLATE")
-  for x in px + 2..px + plate_w - 2 by 2 {
-    c.set(x, plate_y + 2, "INK")
+}
+
+# Glass inside a cabin profile, `inset` cells in from the pillars: dark tint
+# with a lighter band low down and two highlight strokes upper left.
+fn glass(c, cx, points, inset) {
+  let y0 = points[0][0].to_long() + inset
+  let y1 = points[points.size() - 1][0].to_long() - inset
+  for y in y0..=y1 {
+    let half = profile(points, y) - inset - 1
+    continue if half < 1
+    let t = (y - y0).to_float() / Math.max(1, y1 - y0)
+    for x in (cx - half).to_long()..=(cx + half).to_long() {
+      c.set(x, y, t > 0.7 ? "GLASS1" : "GLASS0")
+    }
+  }
+  let hw = profile(points, y0 + 2)
+  c.line(cx - hw * 0.55, y1 - 1, cx - hw * 0.2, y0 + 1, "GLASS2", 1)
+  c.line(cx - hw * 0.75, y1 - 1, cx - hw * 0.45, y0 + 2, "GLASS2", 1)
+}
+
+fn plate(c, cx, y, pw) {
+  c.rect(cx - pw / 2.0, y, pw, 4, "PLATE")
+  for x in (cx - pw / 2.0 + 2).to_long()..(cx + pw / 2.0 - 2).to_long() by 2 {
+    c.set(x, y + 2, "INK")
+  }
+}
+
+# A pair of tail lamps that follow the body's curve: each row starts at the
+# flank, so a lamp wraps round the corner the way the profile does. The
+# lower part is the red lens, the top the lit strip, the inner end amber.
+fn wrap_lamps(c, cx, body, y, lamp_h, lw) {
+  for i in 0..lamp_h {
+    let half = profile(body, y + i) - 2
+    for (x0, dir) in [(cx - half, 1), (cx + half - lw, 1)] {
+      c.rect(x0, y + i, lw, 1, i < 2 ? "LAMP_RL" : "LAMP_R")
+      let amber = x0 < cx ? x0 + lw - 2 : x0
+      c.rect(amber, y + i, 2, 1, "LAMP_A") if i >= 1
+    }
   }
 }
 
@@ -1711,172 +1775,216 @@ fn riders(c, cx, top, spacing) {
   }
 }
 
+# The player's convertible: a low wedge whose shoulders swell over wide rear
+# tyres, a full-width lamp bar, a raked screen with the two riders in it.
 fn draw_sports_car(c, w, h, steer, hill) {
+  let cx = w / 2.0
   let floor = h - 1
-  let face_top = 21 + hill
-  # Wide rear tyres, standing proud of the body at the sides and below it.
+  let deck = 16 + hill
   wheels(c, w, floor, 12, 14, 1)
-  c.poly(
-    [
-      5,
-      face_top,
-      w - 5,
-      face_top,
-      w - 3,
-      face_top + 5,
-      w - 3,
-      floor - 5,
-      3,
-      floor - 5,
-      3,
-      face_top + 5,
-    ],
-    "RED1",
+  let body = [
+    [deck, w * 0.36],
+    [deck + 3, w * 0.45],
+    [deck + 7, w * 0.485],
+    [deck + 12, w * 0.49],
+    [floor - 6, w * 0.47],
+    [floor - 3, w * 0.42],
+  ]
+  shell(c, cx, body, ("RED0", "RED1", "RED2"), 4)
+  # The crease where the deck meets the rear face, the bumper, the diffuser.
+  let face = deck + 5
+  c.rect(
+    cx - profile(body, face) + 1,
+    face,
+    profile(body, face) * 2 - 2,
+    1,
+    "RED0",
   )
-  c.poly([9, 16, w - 9, 16, w - 5, face_top, 5, face_top], "RED2")
-  c.rect(5, face_top, w - 10, 1, "RED0")
-  c.rect(3, floor - 9, w - 6, 4, "RED0")  # bumper
-  c.dither(3, face_top + 5, 3, floor - 14 - face_top, "RED0", "RED1")
-  c.dither(w - 6, face_top + 5, 3, floor - 14 - face_top, "RED0", "RED1")
-  rear_lights(c, 7, w - 7, face_top + 3, 5, true, 14, face_top + 10)
-  c.rect(w / 2 - 1, face_top + 10, 2, 4, "PLATE")
-  for ex in [22, w - 28] {
-    c.rect(ex, floor - 5, 6, 2, "CHROME")  # exhausts
-    c.rect(ex + 1, floor - 5, 4, 1, "TYRE1")
+  c.rect(
+    cx - profile(body, floor - 6) + 1,
+    floor - 7,
+    profile(body, floor - 6) * 2 - 2,
+    3,
+    "RED0",
+  )
+  # A lamp bar the width of the tail, rounded at the ends and slatted.
+  let bar_y = face + 2
+  let bar_half = profile(body, bar_y) - 3
+  c.rect(cx - bar_half, bar_y, bar_half * 2, 5, "LAMP_R")
+  c.rect(cx - bar_half + 1, bar_y, bar_half * 2 - 2, 2, "LAMP_RL")
+  for (
+    x,
+    y,
+  ) in [(cx - bar_half, bar_y), (cx + bar_half - 1, bar_y), (cx - bar_half, bar_y + 4), (cx + bar_half - 1, bar_y + 4)] {
+    c.set(x, y, "RED1")
   }
-  # Windscreen, riders, mirrors.
-  c.rect(18, 3, w - 36, 12, "GLASS1")
-  c.rect(18, 3, w - 36, 1, "CHROME")
-  c.rect(18, 3, 1, 12, "CHROME")
-  c.rect(w - 19, 3, 1, 12, "CHROME")
-  c.line(22, 12, 30, 5, "GLASS2", 1)
-  c.line(w - 30, 12, w - 24, 6, "GLASS2", 1)
+  for x in (cx - bar_half + 5).to_long()..(cx + bar_half).to_long() by 6 {
+    c.rect(x, bar_y, 1, 5, "INK")
+  }
+  plate(c, cx, bar_y + 7, 14)
+  for ex in [cx - 18, cx + 12] {
+    c.rect(ex, floor - 4, 6, 2, "CHROME")  # exhausts
+    c.rect(ex + 1, floor - 4, 4, 1, "TYRE1")
+  }
+  # Windscreen: chrome rim, glass inside, the riders in front of it.
+  let screen = [[3, w * 0.28], [6, w * 0.34], [deck - 1, w * 0.36]]
+  shell(c, cx, screen, ("CHROME", "CHROME", "CHROME"), 0)
+  glass(c, cx, screen, 1)
   riders(c, w / 2, 3, 9)
-  c.rect(12, 9, 6, 4, "RED1")
-  c.rect(w - 18, 9, 6, 4, "RED1")
+  c.ellipse(cx - w * 0.41, 10, 3, 2, "RED1")  # mirrors
+  c.ellipse(cx + w * 0.41, 10, 3, 2, "RED1")
   c.outline()
-  c.shear(face_top, -steer * 0.2) if steer != 0
+  c.shear(deck, -steer * 0.2) if steer != 0
   ground_shadow(c, w / 2, floor, w * 0.46, 1)
 }
 
-# Traffic: hardtops of four silhouettes. The proportions are fractions of
-# the box, so an 80x56 coupe and an 88x55 pickup share the routine.
-fn draw_traffic_car(c, w, h, kind, body, seed) {
+# Traffic: hardtops of four silhouettes, each a cabin profile over a body
+# profile. The proportions are fractions of the box, so an 80x56 coupe and
+# an 88x55 pickup share the routine.
+fn draw_hardtop(c, w, h, kind, body, seed) {
   let (d, m, l) = body
-  let floor = h - 2
-  let cab_w = (w * (kind == "pickup" ? 0.6 : 0.72)).to_long()
-  let cab_x = (w - cab_w) / 2
-  let roof_y = (h * 0.06).to_long()
-  let deck_y = (h * (kind == "pickup" ? 0.3 : 0.42)).to_long()
-  let face_y = deck_y + (h * 0.1).to_long()
+  let cx = w / 2.0
+  let floor = h - 1
+  let roof = (h * 0.06).to_long()
+  let deck = (h * cond {
+    kind == "beetle" => 0.46,
+    kind == "pickup" => 0.32,
+    _ => 0.42,
+  }).to_long()
   wheels(
     c,
     w,
     floor,
-    Math.max(8, (w * 0.13).to_long()),
-    (h * 0.22).to_long(),
-    2,
+    Math.max(9, (w * 0.14).to_long()),
+    (h * 0.24).to_long(),
+    1,
   )
-  if kind == "beetle" {
-    c.ellipse(w / 2.0, deck_y, cab_w / 2.0, deck_y - roof_y, m)
-    c.ellipse(w / 2.0, deck_y, cab_w * 0.34, (deck_y - roof_y) * 0.62, "GLASS0")
-    c.ellipse(
-      w / 2.0 - cab_w * 0.1,
-      deck_y - (deck_y - roof_y) * 0.2,
-      cab_w * 0.16,
-      (deck_y - roof_y) * 0.28,
-      "GLASS1",
-    )
-  } else {
-    c.poly(
-      [
-        cab_x + 4,
-        roof_y,
-        cab_x + cab_w - 4,
-        roof_y,
-        cab_x + cab_w,
-        deck_y,
-        cab_x,
-        deck_y,
-      ],
-      m,
-    )
-    c.rect(cab_x + 4, roof_y, cab_w - 8, 1, l)
-    c.poly(
-      [
-        cab_x + 7,
-        roof_y + 3,
-        cab_x + cab_w - 7,
-        roof_y + 3,
-        cab_x + cab_w - 4,
-        deck_y - 2,
-        cab_x + 4,
-        deck_y - 2,
-      ],
-      "GLASS0",
-    )
-    c.rect(cab_x + 5, deck_y - 5, cab_w - 10, 3, "GLASS1")
-    c.line(cab_x + 9, deck_y - 4, cab_x + 15, roof_y + 4, "GLASS2", 1)
+  # The lower body: shoulders that swell over the wheels, tucking in at the sill.
+  let lower = match kind {
+    "sedan" => [
+      [deck, w * 0.43],
+      [deck + 3, w * 0.485],
+      [deck + 9, w * 0.495],
+      [floor - 9, w * 0.49],
+      [floor - 5, w * 0.46],
+      [floor - 2, w * 0.4],
+    ],
+    "beetle" => [
+      [deck, w * 0.36],
+      [deck + 3, w * 0.44],
+      [deck + 8, w * 0.48],
+      [floor - 9, w * 0.485],
+      [floor - 5, w * 0.45],
+      [floor - 2, w * 0.38],
+    ],
+    _ => [
+      [deck, w * 0.40],
+      [deck + 3, w * 0.47],
+      [deck + 8, w * 0.49],
+      [floor - 9, w * 0.485],
+      [floor - 5, w * 0.46],
+      [floor - 2, w * 0.4],
+    ],
   }
-  # Deck / bed, rear face, bumper.
+  # The cabin: a fastback for the coupe, a dome for the beetle, a notchback
+  # otherwise.
+  let cabin = match kind {
+    "coupe" => [
+      [roof, w * 0.2],
+      [roof + 2, w * 0.3],
+      [roof + 6, w * 0.35],
+      [deck, w * 0.41],
+    ],
+    "beetle" => [
+      [roof, w * 0.05],
+      [roof + 3, w * 0.22],
+      [roof + 8, w * 0.31],
+      [deck, w * 0.36],
+    ],
+    "pickup" => [
+      [roof, w * 0.22],
+      [roof + 2, w * 0.29],
+      [roof + 5, w * 0.31],
+      [deck, w * 0.32],
+    ],
+    _ => [
+      [roof, w * 0.27],
+      [roof + 2, w * 0.34],
+      [roof + 6, w * 0.37],
+      [deck, w * 0.41],
+    ],
+  }
+  shell(c, cx, cabin, body, 3)
+  glass(c, cx, cabin, kind == "beetle" ? 4 : 3)
+  shell(c, cx, lower, body, kind == "pickup" ? 2 : 4)
+  let crease = deck + (h * 0.1).to_long()
   if kind == "pickup" {
     # The bed: its rim, the dark inside, and a tailgate with a handle.
-    c.rect(2, deck_y - 2, w - 4, 3, l)
-    c.rect(4, deck_y + 1, w - 8, face_y - deck_y - 1, d)
-    c.rect(w / 2 - 4, face_y + 2, 8, 2, "CHROME")
-  } else {
-    c.poly(
-      [cab_x - 2, deck_y, cab_x + cab_w + 2, deck_y, w - 3, face_y, 3, face_y],
+    c.rect(
+      cx - profile(lower, deck + 1) + 2,
+      deck + 1,
+      profile(lower, deck + 1) * 2 - 4,
+      crease - deck - 1,
+      d,
+    )
+    c.rect(
+      cx - profile(lower, deck) + 1,
+      deck,
+      profile(lower, deck) * 2 - 2,
+      1,
       l,
     )
-  }
-  c.poly(
-    [
-      3,
-      face_y,
-      w - 3,
-      face_y,
-      w - 1,
-      face_y + 4,
-      w - 1,
-      floor - 3,
-      1,
-      floor - 3,
-      1,
-      face_y + 4,
-    ],
-    m,
-  )
-  c.rect(3, face_y, w - 6, 1, d)
-  c.dither(1, face_y + 4, 3, floor - 7 - face_y, d, m)
-  c.dither(w - 4, face_y + 4, 3, floor - 7 - face_y, d, m)
-  c.rect(1, floor - 7, w - 2, 4, kind == "sedan" ? "CHROME" : d)
-  c.rect(1, floor - 7, w - 2, 1, kind == "sedan" ? "WHITE1" : d)
-  if kind == "beetle" {
-    for lx in [6, w - 12] {
-      c.ellipse(lx + 3, face_y + 6, 3, 3, "LAMP_R")
-      c.ellipse(lx + 3, face_y + 5, 2, 1.5, "LAMP_RL")
-    }
-    for y in face_y + 3..face_y + 11 by 2 {
-      c.rect(w / 2 - 9, y, 18, 1, d)
-    }
-    c.rect(w / 2 - 6, floor - 11, 12, 4, "PLATE")
+    c.rect(cx - 4, crease + 2, 8, 2, "CHROME")
   } else {
-    rear_lights(
-      c,
-      4,
-      w - 4,
-      face_y + 3,
-      kind == "sedan" ? 6 : 5,
-      false,
-      14,
-      floor - 12,
+    c.rect(
+      cx - profile(lower, crease) + 2,
+      crease,
+      profile(lower, crease) * 2 - 4,
+      1,
+      d,
     )
   }
-  c.rect(cab_x - 5, deck_y - 6, 5, 3, m)
-  c.rect(cab_x + cab_w, deck_y - 6, 5, 3, m)
+  c.rect(
+    cx - profile(lower, floor - 4) + 1,
+    floor - 5,
+    profile(lower, floor - 4) * 2 - 2,
+    3,
+    kind == "beetle" ? "CHROME" : d,
+  )
+  match kind {
+    "beetle" => {
+      for sx in [cx - w * 0.36, cx + w * 0.36] {
+        c.ellipse(sx, crease + 5, 3.5, 3.5, "LAMP_R")
+        c.ellipse(sx, crease + 4, 2, 1.5, "LAMP_RL")
+      }
+      for y in crease + 2..crease + 10 by 2 {
+        c.rect(cx - 9, y, 18, 1, d)  # engine-lid slats
+      }
+      plate(c, cx, floor - 10, 12)
+    },
+    "sedan" => {
+      wrap_lamps(c, cx, lower, crease + 2, 5, (w * 0.28).to_long())
+      c.rect(cx - w * 0.2, crease + 4, w * 0.4, 1, "CHROME")  # the strip that joins them
+      plate(c, cx, floor - 10, 14)
+    },
+    "pickup" => {
+      for sx in [cx - profile(lower, crease + 2) + 2, cx + profile(lower, crease + 2) - 6] {
+        c.rect(sx, crease + 1, 4, 10, "LAMP_R")
+        c.rect(sx, crease + 1, 4, 3, "LAMP_RL")
+      }
+      plate(c, cx, floor - 10, 12)
+    },
+    _ => {
+      wrap_lamps(c, cx, lower, crease + 2, 5, (w * 0.22).to_long())
+      plate(c, cx, floor - 10, 14)
+    },
+  }
+  let my = roof + (deck - roof) * 0.72
+  c.ellipse(cx - profile(cabin, my) - 3, my, 3, 1.6, m)  # mirrors
+  c.ellipse(cx + profile(cabin, my) + 3, my, 3, 1.6, m)
+  c.rect(cx + w * 0.22, floor - 2, 5, 2, "CHROME") if kind != "beetle"  # exhaust
   c.outline()
-  ground_shadow(c, w / 2, floor + 1, w * 0.46, 1)
+  ground_shadow(c, w / 2, floor, w * 0.46, 1)
 }
 
 # A box body on twin wheels — the truck, and the trailer of the semi. The
@@ -1938,7 +2046,7 @@ fn draw_box_truck(c, w, h, seed, name, band) {
 
 # Which routine draws what. One table, so adding a sprite is one line.
 mut DRAW = {
-  CAR01: |c, w, h| draw_traffic_car(
+  CAR01: |c, w, h| draw_hardtop(
     c,
     w,
     h,
@@ -1946,7 +2054,7 @@ mut DRAW = {
     ("BLUE0", "BLUE1", "BLUE2"),
     1,
   ),
-  CAR02: |c, w, h| draw_traffic_car(
+  CAR02: |c, w, h| draw_hardtop(
     c,
     w,
     h,
@@ -1954,7 +2062,7 @@ mut DRAW = {
     ("YELLOW0", "YELLOW1", "YELLOW2"),
     2,
   ),
-  CAR03: |c, w, h| draw_traffic_car(
+  CAR03: |c, w, h| draw_hardtop(
     c,
     w,
     h,
@@ -1962,7 +2070,7 @@ mut DRAW = {
     ("GREEN0", "GREEN1", "GREEN2"),
     3,
   ),
-  CAR04: |c, w, h| draw_traffic_car(
+  CAR04: |c, w, h| draw_hardtop(
     c,
     w,
     h,

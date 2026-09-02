@@ -567,90 +567,382 @@ mut fast_lap_time = 180.0  # v4's starting target, session-lived
 let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
 Canvas.music(art(MUSIC_FILE), vol: 60) if MUSIC_FILE != nil
 
-# The chiptune fallback — a bossa-flavored run, not a transcription of any
-# particular tune: a brisk ii-V-I-ish turnaround (F△7-Dm7-Gm7-C7, one bar
-# each) with jazzy 6th/7th colour tones and a syncopated "boom-chick" bass in
-# place of the original riff's straight minor arpeggio. Ticked from `update()`
+# The chiptune fallback — a breezy fusion tune, not a transcription of any
+# particular one: sixteen bars over the "royal road" progression (IV△7 V7
+# iii7 vi7, twice) and a ii-V turnaround home, a lyrical lead that holds its
+# long notes, a slap-style bass that pops up the octave, arpeggiated
+# electric-piano chords, and a hat-and-snare backbeat. Ticked from `update()`
 # so its rhythm is exact regardless of display framerate. `tone()` is
 # fire-and-forget (the APU keeps playing the note on its own), so the
-# sequencer is just "is it this note's turn yet"; a `0` in a note table is a
-# rest, not a pitch, and is skipped rather than triggered.
-let LEAD_STEP = 7              # frames per sixteenth-note step (~129 bpm)
-let BASS_STEP = LEAD_STEP * 2  # eighth notes
-let PAD_STEP = LEAD_STEP * 4   # quarter notes
-let BGM_LOOP = LEAD_STEP * 64  # 4 bars of 16 sixteenths
-# A phrase per chord built from its 3rd/5th/6th/7th rather than a plain
-# arpeggio, sequenced down a step bar to bar and dipping to a lower register
-# for the Gm7 bar before C7's dominant run resolves it back down to F.
-let LEAD_NOTES = [
-  # F△7 (F-A-C-E)
-  440, 0, 523, 0, 659, 0, 587, 523, 0, 466, 0, 440, 349, 0, 0, 0,
-  # Dm7 (D-F-A-C)
-  392, 0, 466, 0, 587, 0, 523, 466, 0, 440, 0, 392, 330, 0, 0, 0,
-  # Gm7 (G-Bb-D-F), an octave down for contrast
-  294, 0, 349, 0, 466, 0, 440, 392, 0, 349, 0, 294, 233, 0, 0, 0,
-  # C7 (C-E-G-Bb), the dominant run home
-  330, 0, 392, 0, 466, 0, 440, 392, 0, 330, 0, 262, 196, 0, 0, 0]
-# A syncopated "boom-chick" bossa pattern per bar: root on 1, a chord tone
-# anticipating beat 3 (the classic bossa push), the 5th sustained through
-# beat 3, then the 7th as a pickup into the next bar's root.
-let BASS_NOTES = [
-  175, 0, 0, 220, 262, 0, 0, 330,  # F△7: F root, A, C 5th, E 7th pickup
-  147, 0, 0, 175, 220, 0, 0, 262,  # Dm7: D root, F, A 5th, C 7th pickup
-  196, 0, 0, 233, 294, 0, 0, 349,  # Gm7: G root, Bb, D 5th, F 7th pickup
-  131, 0, 0, 165, 196, 0, 0, 233]  # C7: C root, E, G 5th, Bb pickup (b7 into F)
-# An airy chime on beats 1 and 3 only — the 5th then the 6th/7th colour tone
-# of each chord — for the lounge-jazz shimmer a plain lead/bass duo lacks.
-let PAD_NOTES = [523, 0, 659, 0, 440, 0, 523, 0, 466, 0, 587, 0, 392, 0, 466, 0]
+# sequencer only asks "does a note start on this sixteenth".
+let TICK = 7  # frames per sixteenth (~129 bpm)
+let BAR = 16  # sixteenths per bar
+let BGM_LOOP = TICK * BAR * 16
+
+# Pitches are MIDI numbers, converted once at load.
+let hz = fn (n) {
+  Math.round(440 * Math.exp((n - 69) / 12.0 * Math.log(2.0)))
+}
+
+# One bar each: the bass root, the four chord tones the keys arpeggiate, and
+# the interval the bass uses as a pickup into the next bar (the 6th on a
+# major chord, the 7th elsewhere).
+let CHORDS = [
+  (41, [65, 69, 72, 76], 9),   # F△7
+  (43, [67, 71, 74, 77], 10),  # G7
+  (40, [64, 67, 71, 74], 10),  # Em7
+  (45, [69, 72, 76, 79], 10),  # Am7
+  (41, [65, 69, 72, 76], 9),   # F△7
+  (43, [67, 71, 74, 77], 10),  # G7
+  (40, [64, 67, 71, 74], 10),  # Em7
+  (45, [69, 73, 76, 79], 10),  # A7, lifting into the second half
+  (38, [62, 65, 69, 72], 10),  # Dm7
+  (43, [67, 71, 74, 77], 10),  # G7
+  (36, [60, 64, 67, 71], 9),   # C△7
+  (45, [69, 72, 76, 79], 10),  # Am7
+  (38, [62, 65, 69, 72], 10),  # Dm7
+  (43, [67, 71, 74, 77], 10),  # G7
+  (36, [60, 64, 67, 71], 9),   # C△7
+  (43, [67, 72, 74, 77], 5),   # G7sus4, the run back to the top
+]
+
+# The lead, a bar per line: a pitch starts a note, -1 holds it, 0 rests.
+let LEAD = [
+  84,
+  -1,
+  -1,
+  81,
+  -1,
+  -1,
+  79,
+  -1,
+  -1,
+  -1,
+  76,
+  -1,
+  79,
+  -1,
+  81,
+  -1,
+  83,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  79,
+  -1,
+  81,
+  -1,
+  -1,
+  83,
+  -1,
+  -1,
+  86,
+  -1,
+  83,
+  -1,
+  -1,
+  -1,
+  79,
+  -1,
+  76,
+  -1,
+  74,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  76,
+  79,
+  81,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  0,
+  0,
+  76,
+  79,
+  81,
+  -1,
+  -1,
+  84,
+  -1,
+  -1,
+  86,
+  -1,
+  -1,
+  -1,
+  84,
+  -1,
+  -1,
+  -1,
+  81,
+  -1,
+  83,
+  -1,
+  -1,
+  -1,
+  81,
+  -1,
+  79,
+  -1,
+  77,
+  -1,
+  -1,
+  76,
+  -1,
+  74,
+  -1,
+  -1,
+  76,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  79,
+  -1,
+  83,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  81,
+  -1,
+  81,
+  -1,
+  -1,
+  79,
+  -1,
+  -1,
+  76,
+  -1,
+  73,
+  -1,
+  -1,
+  -1,
+  76,
+  -1,
+  79,
+  -1,
+  81,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  79,
+  -1,
+  77,
+  -1,
+  -1,
+  74,
+  -1,
+  -1,
+  77,
+  -1,
+  79,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  77,
+  -1,
+  74,
+  -1,
+  -1,
+  71,
+  -1,
+  -1,
+  74,
+  -1,
+  76,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  79,
+  -1,
+  -1,
+  76,
+  -1,
+  72,
+  -1,
+  -1,
+  74,
+  -1,
+  -1,
+  72,
+  -1,
+  -1,
+  69,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  0,
+  0,
+  67,
+  69,
+  72,
+  -1,
+  -1,
+  -1,
+  74,
+  -1,
+  77,
+  -1,
+  -1,
+  -1,
+  81,
+  -1,
+  -1,
+  -1,
+  79,
+  -1,
+  77,
+  -1,
+  -1,
+  -1,
+  74,
+  -1,
+  71,
+  -1,
+  74,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  76,
+  -1,
+  79,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  67,
+  69,
+  71,
+  74,
+  76,
+  79,
+  81,
+  83,
+]
+# The bass line as intervals over the bar's root: root and octave pops with
+# the 5th and the pickup toward the end; `nil` is a rest.
+let BASS = [0, nil, nil, 0, 12, nil, 0, nil, nil, 12, nil, 0, 7, nil, -1, nil]
+# Keys: chord tones on every eighth, up and back down.
+let ARP = [0, 1, 2, 3, 2, 3, 1, 2]
+
+# A note table becomes (frequency, length in sixteenths) at each onset.
+let lead_notes = fn () {
+  mut out = repeat(LEAD.size(), nil)
+  for i, n in LEAD.enumerate() {
+    continue if n <= 0
+    mut len = 1
+    while i + len < LEAD.size() && LEAD[i + len] == -1 {
+      len += 1
+    }
+    out[i] = (hz(n), len)
+  }
+  out
+}()
 mut bgm_frame = 0
 
 let tick_bgm = fn () {
-  if bgm_frame % LEAD_STEP == 0 {
-    let note = LEAD_NOTES[(bgm_frame / LEAD_STEP) % LEAD_NOTES.size()]
-    if note != 0 {
+  if bgm_frame % TICK == 0 {
+    let step = bgm_frame / TICK
+    let (root, tones, pickup) = CHORDS[step / BAR]
+    let slot = step % BAR
+    let note = lead_notes[step]
+    if note != nil {
+      let (f, len) = note
       Canvas.tone(
-        note,
-        LEAD_STEP - 2,
-        vol: 16,
+        f,
+        len * TICK - 2,
+        vol: 15,
         wave: Canvas.PULSE,
         attack: 1,
-        decay: 1,
-        release: 3,
+        decay: 2,
+        release: 4,
         duty: Canvas.DUTY_QUARTER,
       )
     }
-  }
-  if bgm_frame % BASS_STEP == 0 {
-    let note = BASS_NOTES[(bgm_frame / BASS_STEP) % BASS_NOTES.size()]
-    if note != 0 {
+    let iv = BASS[slot]
+    if iv != nil {
       Canvas.tone(
-        note,
-        BASS_STEP - 4,
-        vol: 22,
-        wave: Canvas.PULSE2,
-        attack: 1,
-        decay: 2,
-        release: 5,
-        duty: Canvas.DUTY_HALF,
+        hz(root + (iv < 0 ? pickup : iv)),
+        TICK * 2 - 3,
+        vol: 18,
+        wave: Canvas.SAWTOOTH,
+        decay: 3,
+        release: 3,
       )
     }
-  } else if bgm_frame % BASS_STEP == LEAD_STEP {
-    # A soft shaker tick on the offbeat eighth, for a bit of groove under the
-    # melody without it reading as a drum kit.
-    Canvas.tone(2400, 2, vol: 5, wave: Canvas.NOISE, decay: 1, release: 1)
-  }
-  if bgm_frame % PAD_STEP == 0 {
-    let note = PAD_NOTES[(bgm_frame / PAD_STEP) % PAD_NOTES.size()]
-    if note != 0 {
+    if slot % 2 == 0 {
       Canvas.tone(
-        note,
-        PAD_STEP - 6,
-        vol: 9,
+        hz(tones[ARP[slot / 2]]),
+        TICK * 2 - 4,
+        vol: 7,
         wave: Canvas.TRIANGLE,
-        attack: 3,
-        decay: 6,
-        release: 12,
+        attack: 1,
+        decay: 4,
+        release: 6,
       )
+    }
+    cond {
+      slot == 4 ||
+        slot ==
+          12 => Canvas.tone(
+        800,
+        3,
+        vol: 13,
+        wave: Canvas.NOISE,
+        decay: 2,
+        release: 2,
+      ),
+      slot ==
+        14 => Canvas.tone(3000, 3, vol: 6, wave: Canvas.NOISE, release: 3),
+      slot % 2 ==
+        0 => Canvas.tone(3000, 1, vol: 5, wave: Canvas.NOISE, release: 1),
+      _ => nil,
     }
   }
   bgm_frame = (bgm_frame + 1) % BGM_LOOP
