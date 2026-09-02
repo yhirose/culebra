@@ -241,7 +241,15 @@ function __inf() { return 1.0 / 0.0; }
 
 function __is_null(v) { return __typeof(v) === 'object' && __same(v, __G.null); }
 function __is_fnobj(v) { return __typeof(v) === 'object' && __objecthas(v, '\x01fn'); }
-function __is_err(v) { return __typeof(v) === 'object' && __objecthas(v, '\x01msg'); }
+// an error is anything descended from Error.prototype, which carries the brand
+function __is_err(v) {
+  var p = v;
+  while (__typeof(p) === 'object') {
+    if (__objecthas(p, '\x01err')) return true;
+    p = __proto_next(p);
+  }
+  return false;
+}
 function __proto_of(v) {
   var t = __typeof(v);
   if (t === 'object') {
@@ -525,13 +533,7 @@ function __str(v) {
   if (t === 'object') {
     if (__is_null(v)) return 'null';
     if (__is_fnobj(v)) return 'function ' + v.name + '() { [code] }';
-    if (__is_err(v)) {
-      var nm = __get(v, 'name');
-      var msg = v['\x01msg'];
-      if (msg === '') return __str(nm);
-      return __str(nm) + ': ' + __str(msg);
-    }
-    // an object's own toString (a class's, say) speaks for it
+    // an object's own toString (an error's, a class's) speaks for it
     var ts = __get(v, 'toString');
     if (__is_fnobj(ts) && !__same(ts, __G.Object_proto.toString)) return __str(__call(ts, v, []));
     return '[object Object]';
@@ -734,7 +736,6 @@ function __get(o, k) {
   if (t === 'object') {
     var key = __key(k);
     if (__objecthas(o, key)) return o[key];
-    if (key === 'message' && __objecthas(o, '\x01msg')) return o['\x01msg'];
     return __proto_get(o, key, o);
   }
   if (t === 'double') return __proto_get(__G.Number_proto, __key(k), o);
@@ -785,7 +786,6 @@ function __set(o, k, v) {
   }
   if (t === 'object') {
     var key = __key(k);
-    if (key === 'message' && __objecthas(o, '\x01msg')) { o['\x01msg'] = __str(v); return v; }
     if (!__objecthas(o, key)) {
       // an accessor, own or inherited, takes the write
       var sk = '\x01set:' + key;
@@ -805,6 +805,17 @@ function __delete(o, k) {
   if (__typeof(o) === 'object') { __objectremove(o, __key(k)); }
   return true;
 }
+// A property that exists but does not enumerate: everything a class or the
+// runtime defines (methods, accessors, a constructor, a function's name and
+// length and prototype, an error's message), as against what a program
+// writes, which does. The value stays under its own key; what the object
+// carries is the set of keys enumeration passes over.
+function __hide(o, k) {
+  var h = o['\x01hide'];
+  if (__typeof(h) === 'nil') { h = {}; o['\x01hide'] = h; }
+  h[k] = true;
+  return undefined;
+}
 function __own_keys(o) {
   var t = __typeof(o);
   var out = [];
@@ -820,14 +831,23 @@ function __own_keys(o) {
   }
   if (t === 'object') {
     var ks = __objectkeys(o);
+    var hidden = o['\x01hide'];
+    var any_hidden = __typeof(hidden) !== 'nil';
     var ints = [];
     var m = 0;
     while (m < __len(ks)) {
       var key = ks[m];
+      var name = key;
+      var take = true;
       if (key[0] === '\x01') {
-        // an accessor is a key too
-        if (__str_index_of(key, '\x01get:', 0) === 0) __arraypush(out, __substr(key, 5, __len(key)));
-      } else if (__aindex(key) >= 0) __arraypush(ints, key); else __arraypush(out, key);
+        // an accessor is a property too, listed once for the pair
+        name = __substr(key, 5, __len(key));
+        take = __str_index_of(key, '\x01get:', 0) === 0 ||
+          (__str_index_of(key, '\x01set:', 0) === 0 && !__objecthas(o, '\x01get:' + name));
+      }
+      if (take && !(any_hidden && __objecthas(hidden, name))) {
+        if (__aindex(name) >= 0) __arraypush(ints, name); else __arraypush(out, name);
+      }
       m = m + 1;
     }
     if (__len(ints) > 0) {
@@ -864,17 +884,35 @@ function __mkfn(c, name, arrow, len) {
   f['\x01fn'] = c;
   f.name = name;
   f.length = __typeof(len) === 'nil' ? 0.0 : len;
+  var h = { name: true, length: true };
+  f['\x01hide'] = h;
   if (!arrow) {
     var p = {};
     p.constructor = f;
+    p['\x01hide'] = { constructor: true };
     f.prototype = p;
+    h.prototype = true;
   }
   return f;
 }
 // A method on a built-in: the property and the function's own name are the
-// same word, so it is written once.
+// same word, so it is written once. Like every method a class or the
+// runtime defines, it is not enumerable.
 function __def(o, name, c) {
   o[name] = __mkfn(c, name, false);
+  __hide(o, name);
+  return undefined;
+}
+// ... and a built-in's constant or alias, and its accessor, which are not
+// enumerable either
+function __defv(o, name, v) {
+  o[name] = v;
+  __hide(o, name);
+  return undefined;
+}
+function __defa(o, kind, name, c) {
+  o[__acc_key(kind, name)] = __mkfn(c, name, false);
+  __hide(o, name);
   return undefined;
 }
 function __call(f, thisv, args) {
@@ -938,7 +976,6 @@ function __mkclass(name, parent, ctor, fields) {
   }
   c['\x01fields'] = fields;
   var p = c.prototype;
-  p['\x01noenum'] = true;
   if (has_parent) { p['\x01proto'] = parent.prototype; c['\x01proto'] = parent; }
   return c;
 }
@@ -950,6 +987,7 @@ function __run_fields(cls, t) {
 function __def_method(cls, is_static, key, f) {
   var target = is_static ? cls : cls.prototype;
   target[__key(key)] = f;
+  __hide(target, __key(key));
   return undefined;
 }
 // the property an accessor of a given kind ('get' or 'set') is stored under
@@ -957,6 +995,7 @@ function __acc_key(kind, key) { return '\x01' + kind + ':' + __key(key); }
 function __def_accessor(cls, is_static, kind, key, f) {
   var target = is_static ? cls : cls.prototype;
   target[__acc_key(kind, key)] = f;
+  __hide(target, __key(key));
   return undefined;
 }
 function __super_call(cls, t, args) {
@@ -981,8 +1020,14 @@ function __super_callm(cls, is_static, t, key, args) {
 function __err(kind, msg) {
   var e = {};
   e['\x01proto'] = __G[kind].prototype;
-  e['\x01msg'] = msg;
+  __set_message(e, msg);
   return e;
+}
+// an error's message is an own property of its own that does not enumerate
+function __set_message(e, msg) {
+  e.message = __typeof(msg) === 'nil' ? '' : __str(msg);
+  __hide(e, 'message');
+  return undefined;
 }
 // a VM trap caught by user code becomes the JS error it stands for
 function __catch_fix(e) {
@@ -1054,7 +1099,7 @@ function __obj_rest(o, excluded) {
 function __forin_keys(o) {
   var out = __own_keys(o);
   var p = __typeof(o) === 'object' && !__is_null(o) ? __proto_next(o) : undefined;
-  while (__typeof(p) === 'object' && !__is_builtin_proto(p)) {
+  while (__typeof(p) === 'object') {
     var ks = __own_keys(p);
     var i = 0;
     while (i < __len(ks)) {
@@ -1068,11 +1113,6 @@ function __forin_keys(o) {
     p = __proto_next(p);
   }
   return out;
-}
-function __is_builtin_proto(p) {
-  return __same(p, __G.Object_proto) || __same(p, __G.Array_proto) || __same(p, __G.Function_proto) ||
-    __same(p, __G.String_proto) || __same(p, __G.Number_proto) || __same(p, __G.Boolean_proto) ||
-    __objecthas(p, '\x01noenum');
 }
 function __forin_iter(o) { return __iter(__forin_keys(o)); }
 function __gget(name) {
@@ -1196,6 +1236,7 @@ function __ctor(G, name, proto, c) {
   var f = __mkfn(c, name, false);
   f.prototype = proto;
   proto.constructor = f;
+  __hide(proto, 'constructor');
   G[name] = f;
   return f;
 }
@@ -1203,23 +1244,31 @@ function __ctor(G, name, proto, c) {
 function __init_errors(G) {
   var ep = {};
   ep['\x01proto'] = G.Object_proto;
+  // the brand every error inherits, so that one created off the prototype
+  // rather than through a constructor still reads as an error
+  ep['\x01err'] = true;
   ep.name = 'Error';
   ep.message = '';
-  __def(ep, 'toString', function (t) { return __str(t); });
-  __ctor(G, 'Error', ep, function (t, message) {
-    t['\x01msg'] = __typeof(message) === 'nil' ? '' : __str(message);
-    return undefined;
+  __hide(ep, 'name');
+  __hide(ep, 'message');
+  __def(ep, 'toString', function (t) {
+    var nm = __get(t, 'name');
+    var name = __typeof(nm) === 'nil' ? 'Error' : __str(nm);
+    var m = __get(t, 'message');
+    var msg = __typeof(m) === 'nil' ? '' : __str(m);
+    if (name === '') return msg;
+    if (msg === '') return name;
+    return name + ': ' + msg;
   });
+  __ctor(G, 'Error', ep, function (t, message) { __set_message(t, message); return undefined; });
   var names = ['TypeError', 'RangeError', 'ReferenceError', 'SyntaxError'];
   var i = 0;
   while (i < __len(names)) {
     var p = {};
     p['\x01proto'] = ep;
     p.name = names[i];
-    __ctor(G, names[i], p, function (t, message) {
-      t['\x01msg'] = __typeof(message) === 'nil' ? '' : __str(message);
-      return undefined;
-    });
+    __hide(p, 'name');
+    __ctor(G, names[i], p, function (t, message) { __set_message(t, message); return undefined; });
     i = i + 1;
   }
 }
@@ -1608,13 +1657,13 @@ function __init_number(G) {
   });
   __def(N, 'isNaN', function (t, v) { return __typeof(v) === 'double' && v !== v; });
   __def(N, 'isFinite', function (t, v) { return __typeof(v) === 'double' && v === v && v !== __inf() && v !== 0.0 - __inf(); });
-  N.MAX_SAFE_INTEGER = 9007199254740991.0;
-  N.MIN_SAFE_INTEGER = -9007199254740991.0;
-  N.EPSILON = __pow(2.0, -52.0);
-  N.MAX_VALUE = 1.7976931348623157e308;
-  N.POSITIVE_INFINITY = __inf();
-  N.NEGATIVE_INFINITY = 0.0 - __inf();
-  N.NaN = __nan();
+  __defv(N, 'MAX_SAFE_INTEGER', 9007199254740991.0);
+  __defv(N, 'MIN_SAFE_INTEGER', -9007199254740991.0);
+  __defv(N, 'EPSILON', __pow(2.0, -52.0));
+  __defv(N, 'MAX_VALUE', 1.7976931348623157e308);
+  __defv(N, 'POSITIVE_INFINITY', __inf());
+  __defv(N, 'NEGATIVE_INFINITY', 0.0 - __inf());
+  __defv(N, 'NaN', __nan());
   __def(G.Number_proto, 'toString', function (t, radix) {
     if (__typeof(radix) === 'nil' || radix === 10.0) return __numstr(t);
     return __radix_str(t, __toint(radix));
@@ -1696,8 +1745,8 @@ function __init_console(G) {
     __print(out);
     return undefined;
   });
-  c.error = c.log;
-  c.warn = c.log;
+  __defv(c, 'error', c.log);
+  __defv(c, 'warn', c.log);
   c.info = c.log;
   G.console = c;
 }
@@ -1929,7 +1978,7 @@ function __coll_iter(t, pick) {
 }
 function __init_collections(G) {
   var Sym = {};
-  Sym.iterator = '\x01iter';
+  __defv(Sym, 'iterator', '\x01iter');
   G.Symbol = Sym;
   var M = __ctor(G, 'Map', {}, function (t, init) {
     t['\x01keys'] = [];
@@ -1947,7 +1996,6 @@ function __init_collections(G) {
   });
   var MP = M.prototype;
   MP['\x01proto'] = G.Object_proto;
-  MP['\x01noenum'] = true;
   __def(MP, 'get', function (t, k) { var i = __coll_find(t, k); return i < 0 ? undefined : t['\x01vals'][i]; });
   __def(MP, 'set', function (t, k, v) {
     var i = __coll_find(t, k);
@@ -1963,7 +2011,7 @@ function __init_collections(G) {
     return true;
   });
   __def(MP, 'clear', function (t) { t['\x01keys'] = []; t['\x01vals'] = []; return undefined; });
-  MP['\x01get:size'] = __mkfn(function (t) { return __todouble(__len(t['\x01keys'])); }, 'size', false);
+  __defa(MP, 'get', 'size', function (t) { return __todouble(__len(t['\x01keys'])); });
   __def(MP, 'forEach', function (t, cb, thisArg) {
     var i = 0;
     while (i < __len(t['\x01keys'])) { __call(cb, thisArg, [t['\x01vals'][i], t['\x01keys'][i], t]); i = i + 1; }
@@ -1986,7 +2034,6 @@ function __init_collections(G) {
   });
   var SP = S.prototype;
   SP['\x01proto'] = G.Object_proto;
-  SP['\x01noenum'] = true;
   __def(SP, 'add', function (t, v) { if (__coll_find(t, v) < 0) __arraypush(t['\x01keys'], v); return t; });
   __def(SP, 'has', function (t, v) { return __coll_find(t, v) >= 0; });
   __def(SP, 'delete', function (t, v) {
@@ -1996,14 +2043,14 @@ function __init_collections(G) {
     return true;
   });
   __def(SP, 'clear', function (t) { t['\x01keys'] = []; return undefined; });
-  SP['\x01get:size'] = __mkfn(function (t) { return __todouble(__len(t['\x01keys'])); }, 'size', false);
+  __defa(SP, 'get', 'size', function (t) { return __todouble(__len(t['\x01keys'])); });
   __def(SP, 'forEach', function (t, cb, thisArg) {
     var i = 0;
     while (i < __len(t['\x01keys'])) { __call(cb, thisArg, [t['\x01keys'][i], t['\x01keys'][i], t]); i = i + 1; }
     return undefined;
   });
   __def(SP, 'values', function (t) { return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); });
-  SP.keys = SP.values;
+  __defv(SP, 'keys', SP.values);
   __def(SP, 'entries', function (t) { return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01keys'][i]]; }); });
   SP['\x01iter'] = SP.values;
   __def(SP, 'toString', function (t) { return '[object Set]'; });
@@ -2036,7 +2083,6 @@ function __iter_obj(v) {
 function __init_generators(G) {
   var GP = {};
   GP['\x01proto'] = G.Object_proto;
-  GP['\x01noenum'] = true;
   __def(GP, 'next', function (t, v) { return __genresume(t['\x01gen'], v); });
   __def(GP, 'return', function (t, v) { return __genreturn(t['\x01gen'], v); });
   __def(GP, 'throw', function (t, e) { return __genthrow(t['\x01gen'], e); });
@@ -2188,7 +2234,6 @@ function __async_step(act, p, v, is_throw) {
 function __init_promise(G) {
   var PP = {};
   PP['\x01proto'] = G.Object_proto;
-  PP['\x01noenum'] = true;
   var Pr = __ctor(G, 'Promise', PP, function (t, executor) {
     __promise_init(t);
     if (!__is_fnobj(executor)) throw __err('TypeError', 'Promise resolver ' + __str(executor) + ' is not a function');
@@ -2285,8 +2330,8 @@ function __int_pass(d) {
 }
 function __init_math(G) {
   var M = {};
-  M.PI = 3.141592653589793;
-  M.E = 2.718281828459045;
+  __defv(M, 'PI', 3.141592653589793);
+  __defv(M, 'E', 2.718281828459045);
   __def(M, 'abs', function (t, v) { var d = __tonum(v); return d < 0.0 ? 0.0 - d : d; });
   __def(M, 'floor', function (t, v) {
     var d = __tonum(v);

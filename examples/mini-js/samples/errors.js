@@ -55,3 +55,7 @@ show('throw in callback', thrown(() => [1].map(x => { throw new TypeError('cb');
 show('deep recursion', thrown(() => { function r(n) { return r(n + 1) + 1; } return r(0); }));
 show('finally overrides', (function () { try { return 'try'; } finally { log.push('f'); } })());
 show('error in finally path', log.length);
+
+show('message is own but hidden', (function () { const e = new Error('m'); return [e.hasOwnProperty('message'), Object.keys(e), e.message]; })());
+show('off the prototype', (function () { const e = Object.create(Error.prototype); return [String(e), e instanceof Error, e.message, Object.keys(e)]; })());
+show('message written', (function () { const e = new RangeError('a'); e.message = 'b'; return [String(e), Object.keys(e)]; })());

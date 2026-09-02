@@ -59,3 +59,16 @@ class MyError extends Error {
 }
 show('custom error', thrown(() => { throw new MyError('m', 7); }));
 show('custom error props', (function () { try { throw new MyError('m', 7); } catch (e) { return [e.message, e.code, e instanceof MyError, e instanceof Error, e.name, String(e)]; } })());
+
+class Enumerated {
+  constructor() { this.own = 1; }
+  m() {}
+  get g() { return 2; }
+  set s(v) {}
+  static st() {}
+}
+Enumerated.prototype.added = 'by hand';
+show('what enumerates', [Object.keys(new Enumerated()), Object.keys(Enumerated.prototype), Object.keys(Enumerated)]);
+show('for-in reaches the prototype', (function () { const ks = []; for (const k in new Enumerated()) ks.push(k); return ks; })());
+show('a function object', (function () { function f(a, b) {} f.tag = 1; return [Object.keys(f), f.name, f.length, f.hasOwnProperty('name')]; })());
+show('an accessor pair lists once', Object.keys({ get v() { return 1; }, set v(x) {}, set w(x) {} }));
