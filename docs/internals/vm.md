@@ -398,7 +398,7 @@ new closure's captures from the callee chunk's `capture_src_slots`.
 | family | ops | notes |
 |---|---|---|
 | values | `LoadConst` `Move` `Take` `Retain` `Release` | §5.2 |
-| arithmetic, bitwise, comparison | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | each is one runtime dispatch; `d=1` on an arithmetic op marks a compound assignment's in-place Tensor step |
+| arithmetic, bitwise, comparison | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | each is one runtime dispatch, with the arithmetic and comparison ops deciding both-Long and both-numeric inline first; `d=1` on an arithmetic op marks a compound assignment's in-place Tensor step |
 | containers | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/Set/SetAny/Merge` `RangeNew` `ChkLong` | the container absorbs the element's `+1` |
 | access | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `NsWrChk` `NilChk` | read / write / coalescing-write forms of subscript and property access; `PropVal` is a plain property read that may invoke a getter |
 | calls | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` | the JitFn ABI; `CallM` resolves a method (user or built-in) on its receiver; `RecEnter` counts the frame against the recursion limit after the parameters are bound |

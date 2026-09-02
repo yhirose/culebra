@@ -101,12 +101,12 @@ enum class Op : uint8_t {
   Shl,         // emit_bitwise_step. Shift counts mask to the low 6 bits;
   Shr,         // `<<` wraps (unsigned shift), `>>` is arithmetic.
   BitNot,      // regs[a] = ~regs[b], Long-only like the binary five
-  Eq,          // regs[a] = Bool(regs[b] == regs[c]): both-Long inline, else
-  Ne,          // value_equal; ordering ops below go through
-  Lt,          // value_{less,leq,greater,geq} (line/col-carrying, matching
-  Le,          // the interp's nil-ordering and __lt__ dispatch)
-  Gt,          //
-  Ge,          //
+  Eq,          // regs[a] = Bool(regs[b] == regs[c]): both-Long inline,
+  Ne,          // both-numeric via double (the helper's own promotion), else
+  Lt,          // value_equal; the ordering ops below go the same three ways,
+  Le,          // their helpers value_{less,leq,greater,geq} (line/col-
+  Gt,          // carrying, matching the interp's nil-ordering and __lt__
+  Ge,          // dispatch)
   ArrayNew,    // regs[a] = fresh empty Array (+1)
   ArrayAppend, // append regs[c] into array regs[a] at index b; regs[c] = nil
                // (the array absorbs the +1, mirroring compile_array)
@@ -12721,6 +12721,8 @@ struct Exec {
           bool eq;
           if (both_long(l, r)) {
             eq = l.data == r.data;
+          } else if (both_num(l, r)) {
+            eq = as_double(l) == as_double(r);  // the helper's own promotion
           } else {
             // The JIT publishes the operator position before the equality
             // helper (a user __eq__'s bool coercion throws positionless and
@@ -12748,6 +12750,15 @@ struct Exec {
               case Op::Le: res = l.data <= r.data; break;
               case Op::Gt: res = l.data > r.data; break;
               default:     res = l.data >= r.data; break;
+            }
+          } else if (both_num(l, r)) {
+            // The helper's own numeric arm (promoted doubles; false on NaN).
+            double ld = as_double(l), rd = as_double(r);
+            switch (in.op) {
+              case Op::Lt: res = ld < rd; break;
+              case Op::Le: res = ld <= rd; break;
+              case Op::Gt: res = ld > rd; break;
+              default:     res = ld >= rd; break;
             }
           } else {
             auto [line, col] = chunk_pos_at(c, pc);

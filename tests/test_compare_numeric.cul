@@ -1,0 +1,71 @@
+// The numeric arms of the six comparison operators, which both compiled
+// lanes decide inline: Long/Long exactly, and any other Long/Float pairing
+// through the same double promotion the runtime helper applies. The
+// answers here are the helper's, so a lane that folds the dispatch must
+// still agree with one that calls it.
+
+// Float / Float.
+assert_eq(1.5 < 2.5, true)
+assert_eq(2.5 < 1.5, false)
+assert_eq(1.5 <= 1.5, true)
+assert_eq(1.5 > 2.5, false)
+assert_eq(2.5 > 1.5, true)
+assert_eq(2.5 >= 2.5, true)
+assert_eq(2.5 >= 2.6, false)
+assert_eq(1.5 == 1.5, true)
+assert_eq(1.5 != 1.5, false)
+assert_eq(1.5 != 1.6, true)
+assert_eq(-0.0 == 0.0, true)
+assert_eq(-0.0 < 0.0, false)
+
+// Long / Float and Float / Long promote.
+assert_eq(1 < 1.5, true)
+assert_eq(1.5 < 2, true)
+assert_eq(2 > 1.5, true)
+assert_eq(1.5 > 2, false)
+assert_eq(1 <= 1.0, true)
+assert_eq(1.0 >= 1, true)
+assert_eq(1 == 1.0, true)
+assert_eq(1.0 == 1, true)
+assert_eq(1 != 1.0, false)
+assert_eq(2 != 1.0, true)
+
+// Long / Long stays exact past the double mantissa.
+let big = 9007199254740993
+assert_eq(big > 9007199254740992, true)
+assert_eq(big == 9007199254740992, false)
+
+// NaN orders with nothing and equals nothing, itself included; every
+// ordering answer is false, `!=` is true.
+let nan = Math.nan
+assert_eq(nan < 1.0, false)
+assert_eq(nan > 1.0, false)
+assert_eq(nan <= nan, false)
+assert_eq(nan >= nan, false)
+assert_eq(nan == nan, false)
+assert_eq(nan != nan, true)
+assert_eq(nan < 1, false)
+assert_eq(1 > nan, false)
+
+// Infinities.
+assert_eq(Math.inf > 1e308, true)
+assert_eq(-Math.inf < -1e308, true)
+assert_eq(Math.inf == Math.inf, true)
+assert_eq(Math.inf > 9007199254740993, true)
+
+// Values that arrive with an unknown tag take the same arms.
+let vals = [1, 1.0, 2, 0.5, nan]
+assert_eq(vals.map(|v| v < 1.5), [true, true, false, true, false])
+assert_eq(vals.map(|v| v == 1), [true, true, false, false, false])
+
+// The non-numeric arms are still the helper's: nil orders as false,
+// strings by bytes, and a Long against a String is the type error.
+assert_eq(nil < nil, false)
+assert_eq(nil >= nil, false)
+assert_eq('a' < 'b', true)
+let te = try {
+  1 < 'a'
+} catch err {
+  err.kind
+}
+assert_eq(te, 'TypeError')

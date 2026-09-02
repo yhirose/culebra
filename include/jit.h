@@ -2207,6 +2207,16 @@ struct JIT {
                                              "f.bits"));
   }
 
+  // A numeric operand's payload as a double: a Long widens, a Float
+  // reinterprets — the promotion every both-numeric arm shares.
+  llvm::Value* num_as_double(llvm::Value* isLong, llvm::Value* data,
+                             const llvm::Twine& pfx) {
+    auto doubleTy = builder_.getDoubleTy();
+    return builder_.CreateSelect(
+        isLong, builder_.CreateSIToFP(data, doubleTy, pfx + ".l2f"),
+        builder_.CreateBitCast(data, doubleTy, pfx + ".f"), pfx + ".d");
+  }
+
   llvm::Value* make_ptr_value(uint8_t tag, llvm::Value* ptr) {
     return make_value(tag,
                       builder_.CreatePtrToInt(ptr, builder_.getInt64Ty()));
@@ -2919,16 +2929,8 @@ struct JIT {
     builder_.CreateCondBr(bothNum, floatBB, numBB);
 
     builder_.SetInsertPoint(floatBB);
-    auto doubleTy = llvm::Type::getDoubleTy(ctx_);
-    auto lFromFloat = builder_.CreateBitCast(ldata, doubleTy, "l.f");
-    auto lFromLong = builder_.CreateSIToFP(ldata, doubleTy, "l.l2f");
-    auto lDouble = builder_.CreateSelect(lIsLong, lFromLong, lFromFloat,
-                                          "l.d");
-    auto rFromFloat = builder_.CreateBitCast(rdata, doubleTy, "r.f");
-    auto rFromLong = builder_.CreateSIToFP(rdata, doubleTy, "r.l2f");
-    auto rDouble = builder_.CreateSelect(rIsLong, rFromLong, rFromFloat,
-                                          "r.d");
-    merge.add_incoming(float_path(lDouble, rDouble));
+    merge.add_incoming(float_path(num_as_double(lIsLong, ldata, "l"),
+                                  num_as_double(rIsLong, rdata, "r")));
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(numBB);
@@ -3206,15 +3208,19 @@ struct JIT {
 
   // --- Comparison ---
 
-  // Fast Long-Long equality / inequality fast path plus a slow path
-  // that forwards to the runtime helper. String, reference-type, and
-  // numeric cross-type (Long↔Float) all go through the runtime — it
-  // already implements matching semantics with the interpreter.
   // Compile one comparison `lhs OPE rhs` to an i1 (boolean, pre-make_bool).
+  // The same three-way dispatch as emit_binop_dispatch: both-Long is an
+  // icmp, both-numeric promotes to double and is an fcmp, and everything
+  // else — String, Nil, a user `__eq__`/`__lt__`/`cmp`, the type errors on
+  // reference types — goes through the runtime helper, which owns those
+  // semantics. The numeric arms are exactly the helper's own (_culebra_value_
+  // equal / _culebra_value_ord compare promoted doubles; an ordered fcmp is
+  // false on NaN as C++'s `<` is), so a known tag lets SCCP fold the dispatch
+  // away where an always-taken call could not.
   // Factored out so compile_condition can chain `a < b < c` as
   // `(a < b) && (b < c)` with each middle operand evaluated once.
   llvm::Value* emit_comparison_i1(llvm::Value* lhs, llvm::Value* rhs,
-                                     const std::string& ope_str) {
+                                  const std::string& ope_str) {
     // The operands stay frame-owned (borrow contract) on every throw edge of
     // the eq/ordering helpers — direct type error, non-Bool coercion, and a
     // user `__eq__`/`__lt__` dispatch alike.
@@ -3224,129 +3230,106 @@ struct JIT {
     auto rtag = extract_tag(rhs);
     auto rdata = extract_data(rhs);
 
+    bool is_eq = ope_str == "==" || ope_str == "!=";
+    llvm::CmpInst::Predicate ipred, fpred;
+    const char* ord_rt = nullptr;
+    if (is_eq) {
+      ipred = llvm::CmpInst::ICMP_EQ;
+      fpred = llvm::CmpInst::FCMP_OEQ;
+    } else if (ope_str == "<") {
+      ipred = llvm::CmpInst::ICMP_SLT;
+      fpred = llvm::CmpInst::FCMP_OLT;
+      ord_rt = rt::value_less_borrow;
+    } else if (ope_str == "<=") {
+      ipred = llvm::CmpInst::ICMP_SLE;
+      fpred = llvm::CmpInst::FCMP_OLE;
+      ord_rt = rt::value_leq_borrow;
+    } else if (ope_str == ">") {
+      ipred = llvm::CmpInst::ICMP_SGT;
+      fpred = llvm::CmpInst::FCMP_OGT;
+      ord_rt = rt::value_greater_borrow;
+    } else if (ope_str == ">=") {
+      ipred = llvm::CmpInst::ICMP_SGE;
+      fpred = llvm::CmpInst::FCMP_OGE;
+      ord_rt = rt::value_geq_borrow;
+    } else {
+      throw std::runtime_error("invalid comparison operator");
+    }
+
     auto fn = builder_.GetInsertBlock()->getParent();
+    auto intBB = llvm::BasicBlock::Create(ctx_, "cmp.int", fn);
+    auto checkNumBB = llvm::BasicBlock::Create(ctx_, "cmp.check_num", fn);
+    auto floatBB = llvm::BasicBlock::Create(ctx_, "cmp.float", fn);
+    auto slowBB = llvm::BasicBlock::Create(ctx_, "cmp.slow", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "cmp.merge", fn);
 
-    if (ope_str == "==" || ope_str == "!=") {
-      // Fast path: both TAG_LONG — inline icmp. Anything else goes
-      // through the runtime equality helper, which handles Float,
-      // cross-type numeric (`1 == 1.0`), String by contents, and
-      // reference-type identity.
-      auto longTag = builder_.getInt8(TAG_LONG);
-      auto lIsLong = builder_.CreateICmpEQ(ltag, longTag);
-      auto rIsLong = builder_.CreateICmpEQ(rtag, longTag);
-      auto bothLong = builder_.CreateAnd(lIsLong, rIsLong, "eq.bothlong");
+    auto longTag = builder_.getInt8(TAG_LONG);
+    auto floatTag = builder_.getInt8(TAG_FLOAT);
+    auto lIsLong = builder_.CreateICmpEQ(ltag, longTag);
+    auto rIsLong = builder_.CreateICmpEQ(rtag, longTag);
+    auto bothLong = builder_.CreateAnd(lIsLong, rIsLong, "cmp.bothlong");
+    builder_.CreateCondBr(bothLong, intBB, checkNumBB);
 
-      auto fastBB = llvm::BasicBlock::Create(ctx_, "eq.fast", fn);
-      auto slowBB = llvm::BasicBlock::Create(ctx_, "eq.slow", fn);
-      auto mergeBB = llvm::BasicBlock::Create(ctx_, "eq.merge", fn);
-      builder_.CreateCondBr(bothLong, fastBB, slowBB);
+    builder_.SetInsertPoint(intBB);
+    auto intResult = builder_.CreateICmp(ipred, ldata, rdata, "cmp.i");
+    builder_.CreateBr(mergeBB);
 
-      builder_.SetInsertPoint(fastBB);
-      auto fastEq = builder_.CreateICmpEQ(ldata, rdata, "long.eq");
-      auto fastEndBB = builder_.GetInsertBlock();
-      builder_.CreateBr(mergeBB);
+    builder_.SetInsertPoint(checkNumBB);
+    auto lIsFloat = builder_.CreateICmpEQ(ltag, floatTag);
+    auto rIsFloat = builder_.CreateICmpEQ(rtag, floatTag);
+    auto bothNum = builder_.CreateAnd(builder_.CreateOr(lIsLong, lIsFloat),
+                                      builder_.CreateOr(rIsLong, rIsFloat),
+                                      "cmp.bothnum");
+    builder_.CreateCondBr(bothNum, floatBB, slowBB);
 
-      builder_.SetInsertPoint(slowBB);
+    builder_.SetInsertPoint(floatBB);
+    auto floatResult = builder_.CreateFCmp(fpred, num_as_double(lIsLong, ldata, "l"),
+                                           num_as_double(rIsLong, rdata, "r"),
+                                           "cmp.f");
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(slowBB);
+    // Not guarded on the unwind edge: the operands stay frame-owned (borrow
+    // contract), so a region's release ladder is the one releaser on the
+    // throw path.
+    llvm::Value* slowResult;
+    if (is_eq) {
       // `==`/`!=` may invoke a user `__eq__`/`eq` whose bool-coercion throws
       // a positionless error; publish the operator position so the exception
       // boundary backfills it (the ordering ops carry line/col explicitly).
       emit_set_op_pos();
-      // Not guarded on the unwind edge: the operands stay frame-owned
-      // (borrow contract), so a region's release ladder is the one
-      // releaser on the throw path.
-      auto slowEq = emit_call(
+      slowResult = emit_call(
           module_->getOrInsertFunction(
-              rt::value_equal_borrow,
-              builder_.getInt1Ty(),
-              builder_.getInt8Ty(),
-              builder_.getInt64Ty(),
-              builder_.getInt8Ty(),
-              builder_.getInt64Ty()),
+              rt::value_equal_borrow, builder_.getInt1Ty(),
+              builder_.getInt8Ty(), builder_.getInt64Ty(),
+              builder_.getInt8Ty(), builder_.getInt64Ty()),
           {ltag, ldata, rtag, rdata}, "val.eq");
-      auto slowEndBB = builder_.GetInsertBlock();
-      builder_.CreateBr(mergeBB);
-
-      builder_.SetInsertPoint(mergeBB);
-      auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "eq.r");
-      phi->addIncoming(fastEq, fastEndBB);
-      phi->addIncoming(slowEq, slowEndBB);
-      llvm::Value* result = phi;
-      if (ope_str == "!=") result = builder_.CreateNot(result, "neq");
-      return result;
-    }
-
-    // Ordering operators. Fast path for both-Long; runtime helper
-    // handles Float, Long↔Float promotion, String, Nil, and type
-    // errors on reference types.
-    auto longTag = builder_.getInt8(TAG_LONG);
-    auto lIsLong = builder_.CreateICmpEQ(ltag, longTag);
-    auto rIsLong = builder_.CreateICmpEQ(rtag, longTag);
-    auto bothLong = builder_.CreateAnd(lIsLong, rIsLong, "ord.bothlong");
-
-    auto fastBB = llvm::BasicBlock::Create(ctx_, "ord.fast", fn);
-    auto slowBB = llvm::BasicBlock::Create(ctx_, "ord.slow", fn);
-    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ord.merge", fn);
-    builder_.CreateCondBr(bothLong, fastBB, slowBB);
-
-    builder_.SetInsertPoint(fastBB);
-    llvm::Value* fastResult;
-    if (ope_str == "<") {
-      fastResult = builder_.CreateICmpSLT(ldata, rdata);
-    } else if (ope_str == "<=") {
-      fastResult = builder_.CreateICmpSLE(ldata, rdata);
-    } else if (ope_str == ">") {
-      fastResult = builder_.CreateICmpSGT(ldata, rdata);
-    } else if (ope_str == ">=") {
-      fastResult = builder_.CreateICmpSGE(ldata, rdata);
     } else {
-      throw std::runtime_error("invalid comparison operator");
+      // Separate helpers (rather than deriving <=, >, >= from <) because
+      // `nil op nil` is `false` for every ordering operator — not the
+      // standard total-order relationship.
+      slowResult = emit_call(
+          module_->getOrInsertFunction(
+              ord_rt, builder_.getInt1Ty(), builder_.getInt8Ty(),
+              builder_.getInt64Ty(), builder_.getInt8Ty(),
+              builder_.getInt64Ty(), builder_.getInt64Ty(),
+              builder_.getInt64Ty()),
+          {ltag, ldata, rtag, rdata, current_line_val(),
+           current_column_val()},
+          "val.ord");
     }
-    auto fastEndBB = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    // Slow path: dispatch to the helper that mirrors the interpreter's
-    // Value::operator<{,=,>,=}. Separate helpers (rather than deriving
-    // <=, >, >= from <) are necessary because `nil op nil` is `false`
-    // for all ordering operators — not the standard total-order
-    // relationship.
-    builder_.SetInsertPoint(slowBB);
-    const char* ord_rt = nullptr;
-    if (ope_str == "<")
-      ord_rt = rt::value_less_borrow;
-    else if (ope_str == "<=")
-      ord_rt = rt::value_leq_borrow;
-    else if (ope_str == ">")
-      ord_rt = rt::value_greater_borrow;
-    else if (ope_str == ">=")
-      ord_rt = rt::value_geq_borrow;
-    else throw std::runtime_error("invalid comparison operator");
-
-    // Not guarded on the unwind edge (same reason as the eq slow path and
-    // emit_binop_dispatch): the operands stay frame-owned.
-    auto slowResult = emit_call(
-        module_->getOrInsertFunction(ord_rt,
-                                     builder_.getInt1Ty(),
-                                     builder_.getInt8Ty(),
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt8Ty(),
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
-        {ltag, ldata, rtag, rdata,
-         current_line_val(), current_column_val()}, "val.ord");
     auto slowEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "ord.r");
-    phi->addIncoming(fastResult, fastEndBB);
+    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 3, "cmp.r");
+    phi->addIncoming(intResult, intBB);
+    phi->addIncoming(floatResult, floatBB);
     phi->addIncoming(slowResult, slowEndBB);
-    return phi;
+    llvm::Value* result = phi;
+    if (ope_str == "!=") result = builder_.CreateNot(result, "neq");
+    return result;
   }
-
-
-
-
 
   // A literal step needs no runtime zero check — the constant is the proof.
   static bool is_nonzero_constant(llvm::Value* v) {

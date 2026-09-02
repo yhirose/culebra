@@ -400,7 +400,7 @@ captureされた変数は6つのop — `CellNew`、`CellGet`、`CellSet`、
 | ファミリー | op | 備考 |
 |---|---|---|
 | 値 | `LoadConst` `Move` `Take` `Retain` `Release` | §5.2 |
-| 算術・ビット演算・比較 | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | それぞれ1回のランタイムdispatch。算術opの`d=1`は複合代入のin-place Tensorステップを示す |
+| 算術・ビット演算・比較 | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | それぞれ1回のランタイムdispatch。算術と比較のopは両Long・両数値の腕をまずinlineで決める。算術opの`d=1`は複合代入のin-place Tensorステップを示す |
 | コンテナ | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/Set/SetAny/Merge` `RangeNew` `ChkLong` | コンテナは要素の`+1`を吸収する |
 | アクセス | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `NsWrChk` `NilChk` | 添字とプロパティアクセスの読み/書き/coalescing-write形。`PropVal`はgetterを呼ぶこともある素のプロパティ読み取り |
 | 呼び出し | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` | JitFn ABI。`CallM`はreceiver上のメソッド（ユーザー定義または組み込み）を解決する。`RecEnter`はパラメータが束縛された後、フレームを再帰上限に対してカウントする |
