@@ -1,0 +1,84 @@
+# A media player, to show what nesting buys you.
+#
+# Flat state machines get repetitive as soon as several states share a
+# reaction. `stop` and `error` work from `normal`, `buffering` and `seeking`
+# alike; written flat that is six lines, and a seventh state means three more.
+# Here they are written once, on the `playing` state that contains those
+# three, and reached by bubbling: an event the active state does not handle
+# is offered to its parent.
+#
+# Nesting also gives states a lifetime. `playing` holds the playback clock,
+# so it wants to start it when entered and stop it when left — but *not*
+# while moving between its own children. That falls out of one rule: a
+# transition exits and re-enters exactly the states below its domain, the
+# deepest state that properly contains both the state that declared the
+# transition and its target. Moving `normal -> seeking` has domain `playing`,
+# so the clock keeps running; `normal -> paused` has to leave `playing`
+# altogether, so it stops.
+#
+# Run it:  culebra examples/state-machine/media_player.cul
+
+let machine = `
+  MediaPlayer {
+    stopped initial {
+      play -> normal
+    }
+
+    playing entry: clock_on exit: clock_off {
+      stop  -> stopped        # from any of the three states below
+      error -> failed
+
+      normal initial {
+        buffer_low -> buffering
+        seek       -> seeking
+        pause      -> paused
+      }
+      buffering { buffer_ready -> normal }
+      seeking   { seek_done    -> normal }
+    }
+
+    paused {
+      play -> normal
+      stop -> stopped
+    }
+    failed { retry -> stopped }
+  }
+`
+
+fn note(text) {
+  fn (ctx, ev) {
+    ctx.log.push(text)
+  }
+}
+let m = StateMachine.parse(
+  machine,
+  actions: {clock_on: note("clock on"), clock_off: note("clock off")},
+  context: {mut log: []},
+)
+
+fn step(m, event) {
+  let before = m.state()
+  m.fire(event)
+  let ran = m.context.log.join(", ")
+  m.context.log = []
+  let dest = ran == "" ? m.state() : "{m.state():<10}   ({ran})"
+  println("{before:<10} --{event:<13}-> {dest}")
+}
+
+println("start: {m.state()}")
+step(m, "play")  # descends through playing to its initial child
+step(m, "seek")  # sibling move: stays inside playing, clock runs on
+step(m, "seek_done")
+step(m, "buffer_low")
+step(m, "stop")  # `stop` is written on playing, not on buffering
+step(m, "play")
+step(m, "pause")  # leaves playing: the clock stops
+step(m, "play")
+step(m, "error")  # bubbles from the leaf just like `stop` does
+step(m, "retry")
+
+println("")
+m.fire("play")
+m.fire("buffer_low")
+println("in {m.state()}, still inside `playing`? {m.in_state('playing')}")
+println("an event nothing handles is ignored, not an error: {m.fire('spin')}")

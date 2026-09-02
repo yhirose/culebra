@@ -1,0 +1,53 @@
+# A four-function calculator that builds a tree and walks it, rather than
+# interpreting as it parses — `Peg.str` shows exactly the tree `eval` walks.
+# The grammar states each precedence level as one flat repetition
+# (`TERM (TERM_OPERATOR TERM)*`) instead of Additive/Multiplicative's mutual
+# recursion, so `eval` folds left over sibling operator/operand pairs rather
+# than recursing into a named alternative. Ported from cpp-peglib's calc3.cc
+# (https://github.com/yhirose/cpp-peglib/blob/master/example/calc3.cc).
+#
+# Run it:  culebra examples/peg/calc_tree.cul "1 + 2 * 3 - 4 / 2"
+
+let grammar = `
+  EXPRESSION       <-  TERM (TERM_OPERATOR TERM)*
+  TERM             <-  FACTOR (FACTOR_OPERATOR FACTOR)*
+  FACTOR           <-  NUMBER / '(' EXPRESSION ')'
+
+  TERM_OPERATOR    <-  < [-+] >
+  FACTOR_OPERATOR  <-  < [/*] >
+  NUMBER           <-  < [0-9]+ >
+
+  %whitespace      <-  [ \t\r\n]*
+`
+
+fn apply(op, l, r) {
+  match op {
+    "+" => l + r,
+    "-" => l - r,
+    "*" => l * r,
+    "/" => l / r,
+  }
+}
+
+# EXPRESSION and TERM are both "a first operand, then operator/operand
+# pairs" — a single fold serves either level. A node with no operator (a
+# lone FACTOR, say) folds away under AST optimization, so `eval` only ever
+# sees a bare NUMBER or a node with an operator chain.
+fn fold(head, rest) {
+  mut value = eval(head)
+  for [op, operand] in rest.iter().chunks(2) {
+    value = apply(op.token, value, eval(operand))
+  }
+  value
+}
+fn eval(node) {
+  match node {
+    {name: "NUMBER", token} => to_long(token),
+    {nodes: [head, ...rest]} => fold(head, rest),
+  }
+}
+
+let formula = Sys.argv.empty() ? "1 + 2 * 3 - 4 / 2" : Sys.argv[0]
+let tree = Peg.parse(grammar, formula)
+print(Peg.str(tree))
+println("{formula} = {eval(tree)}")

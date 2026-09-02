@@ -17,6 +17,21 @@
       ]
     },
     {
+      "name": "Parsing",
+      "examples": [
+        { "title": "Choice actions", "path": "examples/peg/calc_choice.cul" },
+        { "title": "Parse to a tree", "path": "examples/peg/calc_tree.cul" },
+        { "title": "Operator precedence", "path": "examples/peg/calc_precedence.cul" }
+      ]
+    },
+    {
+      "name": "State Machine",
+      "examples": [
+        { "title": "Vending machine", "path": "examples/state-machine/vending.cul" },
+        { "title": "Nested states", "path": "examples/state-machine/media_player.cul" }
+      ]
+    },
+    {
       "name": "Tensor",
       "examples": [
         { "title": "Tensors", "path": "examples/tensor/tensors.cul" },
