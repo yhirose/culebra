@@ -24,26 +24,25 @@
 #
 #   settings                                     dezero  Tensor
 #   n_layer=1 embed_dim=16 n_head=4 ff_dim=32
-#     context_len=8 batch_size=2                   2.42    0.99  2.5x faster
+#     context_len=8 batch_size=2                   2.46    0.92  2.7x faster
 #   n_layer=2 embed_dim=32 n_head=4 ff_dim=128
-#     context_len=32 batch_size=4                  8.92    7.35  1.21x faster
+#     context_len=32 batch_size=4                  9.03    6.73  1.34x faster
 #   (none: the demo config, embed 64, context 64,
-#     batch 8, 2 layers)                          41.7    46.4   1.11x slower
+#     batch 8, 2 layers)                          42.0    42.1   even
 #
-# The native side wins while a step is many small ops and loses once the
-# tensors are large, which is not the shape one would guess. dezero's ops
-# call the same C++ Tensor kernels, so what it adds is a per-op cost, not
-# a per-element one, and that cost stops mattering as the tensors grow.
-# What it then does that a composed native graph cannot:
-# `F.softmax_cross_entropy` carries a hand-written fused backward
-# ((p - onehot)/n, one pass) where differentiating the composed forward
-# costs ~4 ms a step at the demo config, and the native autograd has no
-# hook for supplying a VJP of one's own.
+# The native side wins by a wide margin while a step is many small ops, and
+# the margin narrows as the tensors grow: dezero's ops call the same C++
+# Tensor kernels, so what it adds is a per-op cost, not a per-element one,
+# and that cost stops mattering at scale.
 #
-# The head split used to cost more here too: `Op::Permute` had no VJP, so
-# it was narrow + per-row transpose + concat, whose backward allocates a
-# full-size zero buffer per piece. `.permute()` is differentiable now, and
-# that alone took the demo config from 48.6 ms/step to 46.4.
+# The demo config used to be a loss (41.7 vs 46.4) for two reasons, both
+# since closed. `Op::Permute` had no VJP, so the head split was narrow +
+# per-row transpose + concat, whose backward allocates a full-size zero
+# buffer per piece; `.permute()` is differentiable now (48.6 -> 46.4). And
+# dezero's `F.softmax_cross_entropy` carries a hand-written fused backward
+# where the native side had to differentiate the composition, ~4 ms a step
+# at this size; `.softmax_cross_entropy()` is now a fused native op with
+# the same closed form (46.4 -> 42.1).
 #
 # Usage matches `pretrain.cul`, plus one extra flag:
 #
@@ -313,17 +312,13 @@ class GPT {
   }
 }
 
-# dezero's `F.softmax_cross_entropy`, op for op: softmax over the last
-# axis, a scatter_to_axis one-hot, and a masked sum of clamped logs.
-fn cross_entropy(logits, targets, n, vocab_size) {
-  let probs = logits.softmax()
-  let onehot = Tensor.scatter_to_axis(
-    Tensor.from(targets),
-    Tensor.ones(n),
-    vocab_size,
-  )
-  (onehot * probs.clamp(1.0e-15, 1.0).log()).sum(1).sum(0) *
-    (-1.0 / to_float(n))
+# dezero's `F.softmax_cross_entropy`. The native op is fused the same way
+# dezero's Function is -- one node with a closed-form backward, not a
+# composition to differentiate through -- so the row count and the vocab
+# size this used to take are read off the shapes, and the batch mean is
+# the one reduction left to spell.
+fn cross_entropy(logits, targets) {
+  logits.softmax_cross_entropy(Tensor.from(targets)).mean(0)
 }
 
 # dezero's `O.Adam`, with the moment estimates on the Param. The new
@@ -376,12 +371,7 @@ fn parameter_count(model) {
 fn batch_loss(model, tokens, cfg) {
   let pair = D.get_batch(tokens, cfg.batch_size, cfg.context_len)
   let logits = model(pair[0], cfg.batch_size, cfg.context_len)
-  cross_entropy(
-    logits,
-    pair[1],
-    cfg.batch_size * cfg.context_len,
-    cfg.vocab_size,
-  )
+  cross_entropy(logits, pair[1])
 }
 
 fn valid_loss(model, tokens, cfg) {

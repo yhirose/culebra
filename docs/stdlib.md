@@ -1651,12 +1651,39 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.max() / .max(axis)` | Float / Tensor | likewise |
 | `.argmax(axis: Long) -> Tensor` | lazy | reduce one axis to indices stored as Float |
 | `.index_select(indices: Tensor) -> Tensor` | lazy | row gather along axis 0: `out[i] = self[indices[i]]` — the embedding-table lookup |
+| `.softmax_cross_entropy(targets: Tensor) -> Tensor` | lazy | fused softmax + cross-entropy over the rows of `[N, C]` logits; one loss per row (`[N]`) |
 | `.to_array() -> Array` | eager | convert to a Culebra Array (forces eval) |
 | `.item() -> Float` | eager | extract the lone element as a Float; throws unless the tensor holds exactly one element (any rank) |
 
 `.item()` is the scalar exit point, complementing `.to_array()` (which is for
 shaped data): use it to read a loss or any single-element result without
 reshaping. `loss.item()` replaces `to_float(loss.to_array()[0])`.
+
+#### `.softmax_cross_entropy(targets: Tensor) -> Tensor`
+
+Softmax over the classes and cross-entropy against `targets`, fused into one
+op. `self` is `[N, C]` logits; `targets` holds one class id per row (`[N]`,
+Float-valued like `.index_select()`'s indices, whose element values are
+likewise not range-checked). The result is one loss per row, so the caller
+picks the reduction:
+
+```culebra
+# doctest: skip
+let rows = logits.softmax_cross_entropy(targets)
+let loss = rows.mean(0)                        # the plain batch mean
+let sft = (rows * mask).sum(0) * (1.0 / kept)  # scoring only some rows
+```
+
+Composing it by hand gives the same value, but a different gradient path:
+composed, `.backward()` walks back through the log, the clamp, the product
+and the softmax, each a full `[N, C]` pass. Fused, the VJP is the closed
+form `softmax(self) - onehot`, in one. At `[512, 1000]` that takes the
+backward from 4.2 ms to 0.7 ms, against a 4.0 ms forward.
+
+The clamp the composed form needs is inside the op: a class whose
+probability underflows to zero contributes `-log(1e-15)` rather than an
+infinite loss. Like dezero's own fused `SoftmaxCrossEntropy`, the backward
+takes the closed form and does not differentiate that clamp.
 
 ### Autograd (reverse-mode)
 
@@ -1681,8 +1708,9 @@ produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.tanh()`, `.sin()`,
 `.cos()`, `.clamp()`, `.transpose()`, `.permute()`, `.reshape()`,
-`.slice()`, `.narrow()`, `Tensor.concat()`, `Tensor.where()`, and
-`.index_select()` / `Tensor.index_add()` (each other's own VJP). Gradients
+`.slice()`, `.narrow()`, `.softmax_cross_entropy()`, `Tensor.concat()`,
+`Tensor.where()`, and `.index_select()` / `Tensor.index_add()` (each
+other's own VJP). Gradients
 un-broadcast automatically, so a bias added across a batch sums back to its
 shape. `.permute()`'s own VJP is the inverse permutation, which is what
 lets an attention head split (`[B, C, H, D]` to `[B, H, C, D]`) train:

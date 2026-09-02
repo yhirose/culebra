@@ -813,6 +813,9 @@ enum class BMeth : uint8_t {
   Shape, Pow, Transpose, Clone, RequiresGrad, Grad, Backward, ZeroGrad,
   Detach, Relu, Sigmoid, Softmax, TensorLog, Reshape, Mean,
   SumAxis, MeanAxis, MaxAxis, Argmax, Dot, LinearSigmoid, Item, IndexSelect,
+  // softmax_cross_entropy(targets): the fused loss, one row-loss per row.
+  // Two Tensors in, same shape as Dot/IndexSelect above.
+  SoftmaxCrossEntropy,
   Narrow,
   // Comparisons: y = (self OP other) ? 1 : 0, same {Any} scalar-or-Tensor
   // arg shape as Pow. Not differentiable (tensor.h's VJP throws).
@@ -1303,6 +1306,9 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"dot", 1, Dot, kRecvTensor, 1, nullptr, {Tensor}, {"other"}},
       {"index_select", 1, IndexSelect, kRecvTensor, 1, nullptr, {Tensor},
        {"indices"}},
+      // One row-loss per logits row, not a batch mean — the caller reduces.
+      {"softmax_cross_entropy", 1, SoftmaxCrossEntropy, kRecvTensor, 1,
+       nullptr, {Tensor}, {"targets"}},
       {"linear_sigmoid", 2, LinearSigmoid, kRecvTensor, 2, nullptr,
        {Tensor, Tensor}, {"x", "b"}},
       {"item", 0, Item, kRecvTensor, 0, nullptr, {}, {}},
@@ -2406,6 +2412,15 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
           TAG_TENSOR,
           reinterpret_cast<int64_t>(culebra_runtime_tensor_index_select(
               ten(recv), ten(args[0])))};
+    case BMeth::SoftmaxCrossEntropy:
+      // A non-rank-2 receiver, or a targets length that doesn't match the
+      // row count, arrives positionless.
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{
+          TAG_TENSOR,
+          reinterpret_cast<int64_t>(
+              culebra_runtime_tensor_softmax_cross_entropy(ten(recv),
+                                                           ten(args[0])))};
     case BMeth::LinearSigmoid:
       culebra_runtime_set_op_pos(line, col);
       return JitValue{

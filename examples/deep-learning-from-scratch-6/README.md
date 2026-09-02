@@ -216,36 +216,42 @@ C++. Given the same initial weights they agree bit-for-bit on the first loss
 and to a relative 1e-7 after eight steps, and a checkpoint written by either
 restores into the other.
 
-The C++ tape is still the slower of the two here, which is not what the
-split predicted:
+The C++ tape wins by a wide margin on a small model and the margin narrows
+as the tensors grow:
 
-| | ms/step |
-|---|---|
-| dezero | 41.7 |
-| native `Tensor` | 46.4 |
+| settings | dezero | native `Tensor` |
+|---|---|---|
+| `n_layer=1 embed_dim=16 n_head=4 ff_dim=32 context_len=8 batch_size=2` | 2.46 | 0.92 |
+| `n_layer=2 embed_dim=32 n_head=4 ff_dim=128 context_len=32 batch_size=4` | 9.03 | 6.73 |
+| the default configuration (embed 64, context 64, batch 8, 2 layers) | 42.0 | 42.1 |
 
-Best of three with the `-O3` build over 60 steps at the default
-configuration, using the ms/step each script prints, which excludes
-validation. The cause is not per-element overhead: dezero's operations call
-the same C++ kernels, so its extra cost is per operation and thins out as
-tensors grow. What is left is one thing dezero can do that a composed
-native graph cannot.
+ms/step, best of three with the `-O3` build over 60 steps, using the ms/step
+each script prints, which excludes validation. The narrowing is not
+per-element overhead: dezero's operations call the same C++ kernels, so its
+extra cost is per operation and thins out as tensors grow.
 
-- **A hand-written backward.** dezero's `SoftmaxCrossEntropy` fuses the
-  softmax and the cross-entropy into one `Function` whose backward is the
-  closed form `(p - onehot) / n`. Differentiating the composition instead
-  costs 4.2 ms/step at this shape, and the native autograd has no hook for
-  supplying a VJP of one's own.
+The default configuration used to be a loss — 41.7 against 46.4 — and
+writing this file is what found the two gaps behind it. Both are now closed,
+and both were the same shape of gap: an operation dezero could write a
+backward for by hand, where the native side had only the composition.
 
-Writing this file also found the gap that used to sit beside it, and closed
-it. `.permute()` had no VJP, so the head split could not be written the way
-the dezero model writes it — `.transpose()` reverses every axis, which from
-rank 3 up is a different operation — and it was built out of per-head
-`narrow` and `concat` instead, whose own VJP allocates a zero buffer the
-size of the whole input for each slice. `.permute()` is differentiable now.
-At this model's head-split shape it runs the split in 0.354 ms against the
-workaround's 1.080, and on the same binary it takes this file from
-48.6 ms/step to 46.4 — about a third of the distance to dezero.
+- **The head split.** `.permute()` had no VJP, so the split could not be
+  written the way the dezero model writes it — `.transpose()` reverses every
+  axis, which from rank 3 up is a different operation — and it was built out
+  of per-head `narrow` and `concat` instead, whose own VJP allocates a zero
+  buffer the size of the whole input for each slice. `.permute()` is
+  differentiable now: 0.354 ms against the workaround's 1.080 at this
+  model's head-split shape, and 48.6 ms/step to 46.4 overall.
+- **The loss.** dezero's `SoftmaxCrossEntropy` fuses the softmax and the
+  cross-entropy into one `Function` whose backward is the closed form
+  `(p - onehot) / n`, the `/ n` being its forward's batch mean.
+  Differentiating the composition instead cost 4.2 ms against a 4.0 ms
+  forward at this model's logits shape. `.softmax_cross_entropy()` is now a
+  fused native op with the same closed form, which takes the file from 46.4
+  to 42.1. It answers one loss per row and leaves the mean to the caller, so
+  the `/ n` lives in the `.mean(0)` this file writes; a loss that scores only
+  some rows — SFT's, which the dezero side writes out by hand in
+  `train/losses.cul` — is then a masked sum over the same rows.
 
 ## Where this differs from upstream
 

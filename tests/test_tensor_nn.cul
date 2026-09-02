@@ -81,6 +81,91 @@ assert_eq(v01, 0.5)
 assert_eq(v10, 0.5)
 assert_true(v11 > 0.99 && v11 < 1.01)
 
+# --- M4.3: fused softmax_cross_entropy ---
+#
+# The oracle is the composed expression this op replaces (dezero's
+# F.softmax_cross_entropy, op for op). Fused and composed must agree on the
+# value *and* on the gradient: fusing exists so backward can take the closed
+# form (p - onehot) instead of walking log/clamp/mul/softmax, and only the
+# gradient comparison pins that form down.
+#
+# Three rows, four classes -- deliberately not square, so an incoming
+# gradient broadcast along the classes instead of the rows is a shape error
+# rather than a silently wrong answer.
+
+let ce_logits = Tensor.from([
+  [1.0, 2.0, 0.5, -1.0],
+  [0.2, -1.0, 3.0, 0.4],
+  [0.0, 0.0, 0.0, 0.0],
+])
+let ce_t = Tensor.from([2.0, 0.0, 1.0])
+
+fn ce_composed(x) {
+  let probs = x.softmax()
+  let onehot = Tensor.scatter_to_axis(ce_t, Tensor.ones(3), 4)
+  (onehot * probs.clamp(1.0e-15, 1.0).log()).sum(1) * -1.0
+}
+
+# One loss per row, not a batch mean -- the caller picks the reduction.
+let ce_fused = ce_logits.softmax_cross_entropy(ce_t)
+assert_eq(ce_fused.shape(), [3])
+let ce_fv = ce_fused.to_array()
+let ce_cv = ce_composed(ce_logits).to_array()
+for i in 0..3 {
+  assert_close(to_float(ce_fv[i]), to_float(ce_cv[i]), 1.0e-6)
+}
+
+# Row 2 is uniform, so every class is equally likely and its loss is log(C)
+# whichever class the target names -- an absolute check, not a differential
+# one against the same composition.
+assert_close(to_float(ce_fv[2]), Math.log(4.0), 1.0e-6)
+
+# The clamp is load-bearing, not decoration. This row's target class
+# underflows to probability 0 in f32, so an unclamped log would report an
+# infinite loss; clamped, the floor is -log(1e-15).
+let ce_far = Tensor
+  .from([[0.0, -200.0]])
+  .softmax_cross_entropy(Tensor.from([1.0]))
+assert_close(to_float(ce_far.to_array()[0]), -Math.log(1.0e-15), 1.0e-3)
+
+# The gradient, weighted differently per row. An implementation that ignored
+# the incoming gradient matches an all-ones weight; this one it does not.
+let ce_w = Tensor.from([3.0, -2.0, 0.5])
+
+let ce_xa = ce_logits.detach().requires_grad()
+(ce_xa.softmax_cross_entropy(ce_t) * ce_w).sum(0).backward()
+
+let ce_xb = ce_logits.detach().requires_grad()
+(ce_composed(ce_xb) * ce_w).sum(0).backward()
+
+let ce_ga = ce_xa.grad().to_array()
+let ce_gb = ce_xb.grad().to_array()
+for i in 0..3 {
+  for j in 0..4 {
+    assert_close(to_float(ce_ga[i][j]), to_float(ce_gb[i][j]), 1.0e-5)
+  }
+}
+
+# And the closed form itself on the uniform row: p is 1/C everywhere, so the
+# gradient is w * (1/C - onehot) -- 0.5 * (0.25 - 1) at the target class, and
+# 0.5 * 0.25 at the other three.
+assert_close(to_float(ce_ga[2][1]), 0.5 * (0.25 - 1.0), 1.0e-6)
+for j in [0, 2, 3] {
+  assert_close(to_float(ce_ga[2][j]), 0.5 * 0.25, 1.0e-6)
+}
+
+# Shapes are checked; element values (the class ids) are not, matching every
+# other Tensor op.
+assert_throws('ValueError', fn () {
+  Tensor.from([1.0, 2.0]).softmax_cross_entropy(Tensor.from([0.0]))
+})
+assert_throws('ValueError', fn () {
+  ce_logits.softmax_cross_entropy(Tensor.from([0.0, 1.0]))
+})
+assert_throws('ValueError', fn () {
+  ce_logits.softmax_cross_entropy(Tensor.from([[0.0], [1.0], [2.0]]))
+})
+
 // --- compound assignment & in-place op ---
 //
 // Phase A gives the syntax; Phase B writes the result through to dst's

@@ -623,6 +623,8 @@ inline constexpr auto tensor_index_select = "culebra_runtime_tensor_index_select
 inline constexpr auto tensor_from_csv     = "culebra_runtime_tensor_from_csv";
 inline constexpr auto tensor_unary        = "culebra_runtime_tensor_unary";
 inline constexpr auto tensor_linear_sigmoid = "culebra_runtime_tensor_linear_sigmoid";
+inline constexpr auto tensor_softmax_cross_entropy =
+    "culebra_runtime_tensor_softmax_cross_entropy";
 inline constexpr auto tensor_requires_grad = "culebra_runtime_tensor_requires_grad";
 inline constexpr auto tensor_grad         = "culebra_runtime_tensor_grad";
 inline constexpr auto tensor_backward     = "culebra_runtime_tensor_backward";

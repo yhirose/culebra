@@ -3316,6 +3316,13 @@ struct Lowering {
                   {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
                   "vbm.tidxsel"));
               break;
+            case BMeth::SoftmaxCrossEntropy:
+              j.emit_set_op_pos();
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_softmax_cross_entropy),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy)},
+                  "vbm.tsmce"));
+              break;
             case BMeth::Item:
               j.emit_set_op_pos();  // multi-element check
               res = val_fn(rt::tensor_item, {arr()});

@@ -10097,6 +10097,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::tensor_dot, ptrTy, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_index_select, ptrTy, ptrTy,
                                    ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_softmax_cross_entropy, ptrTy,
+                                   ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_from_csv, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_unary, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty());

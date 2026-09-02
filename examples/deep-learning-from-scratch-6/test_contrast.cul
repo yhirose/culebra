@@ -118,8 +118,6 @@ fn a_checkpoint_written_by_one_model_restores_into_the_other() {
   let b = T.cross_entropy(
     native(pair[0], cfg.batch_size, cfg.context_len),
     pair[1],
-    cfg.batch_size * cfg.context_len,
-    cfg.vocab_size,
   )
   assert_close(b.item(), a.data.to_array()[0], 1.0e-5 * a.data.to_array()[0])
   FS.remove(dir, true)

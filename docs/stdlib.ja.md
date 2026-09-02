@@ -1614,12 +1614,38 @@ let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 | `.max() / .max(axis)` | Float / Tensor | 同様 |
 | `.argmax(axis: Long) -> Tensor` | lazy | 軸を畳んでインデックスをFloatで格納 |
 | `.index_select(indices: Tensor) -> Tensor` | lazy | 軸0方向の行gather: `out[i] = self[indices[i]]`——embeddingテーブルのlookup |
+| `.softmax_cross_entropy(targets: Tensor) -> Tensor` | lazy | `[N, C]`のlogitsの行ごとにsoftmax + cross-entropyを融合。行あたり1つのloss（`[N]`） |
 | `.to_array() -> Array` | eager | Culebra Arrayへ変換（暗黙eval） |
 | `.item() -> Float` | eager | 唯一の要素をFloatとして取り出す。要素数が1でない（任意rank）場合は例外 |
 
 `.item()`はスカラーの取り出し口で、`.to_array()`（形状を持つデータ用）と対をなす。
 lossなど単一要素の結果をreshapeせず読むのに使う。`loss.item()`は
 `to_float(loss.to_array()[0])`の置き換え。
+
+#### `.softmax_cross_entropy(targets: Tensor) -> Tensor`
+
+クラス方向のsoftmaxと`targets`に対するcross-entropyを1つのopに融合したもの。
+`self`は`[N, C]`のlogits、`targets`は行あたり1つのクラスid（`[N]`、
+`.index_select()`のindicesと同じくFloat値。要素値の範囲検査をしない点も同じ）。
+結果は行ごとのlossなので、どう畳むかは呼び手が決めます:
+
+```culebra
+# doctest: skip
+let rows = logits.softmax_cross_entropy(targets)
+let loss = rows.mean(0)                        # 素直なバッチ平均
+let sft = (rows * mask).sum(0) * (1.0 / kept)  # 一部の行だけ採点する場合
+```
+
+自前で合成しても値は同じですが、勾配の経路が違います。合成した場合
+`.backward()`はlog、clamp、積、softmaxを順に遡り、そのそれぞれが
+`[N, C]`のフルパスです。融合すると、VJPは閉形`softmax(self) - onehot`の
+1パスになります。`[512, 1000]`でbackwardが4.2 msから0.7 msになります
+（forwardは4.0 ms）。
+
+合成版に必要なclampはop内部にあります。確率が0にアンダーフローした
+クラスは、無限大のlossではなく`-log(1e-15)`を寄与します。dezero自身の
+融合`SoftmaxCrossEntropy`と同じく、backwardは閉形を取り、このclampは
+微分しません。
 
 ### 自動微分（reverse-mode）
 
@@ -1644,7 +1670,8 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
 `.softmax()`、`.log()`、`.tanh()`、`.sin()`、`.cos()`、`.clamp()`、
 `.transpose()`、`.permute()`、`.reshape()`、`.slice()`、`.narrow()`、
-`Tensor.concat()`、`Tensor.where()`、`.index_select()` /
+`.softmax_cross_entropy()`、`Tensor.concat()`、`Tensor.where()`、
+`.index_select()` /
 `Tensor.index_add()`（互いが相手のVJP）。勾配は自動でun-broadcastされる
 ので、バッチ越しに加えたbiasは元の形状に和を取って戻ります。
 `.permute()`のVJPは逆置換です。これによりattentionのhead分割

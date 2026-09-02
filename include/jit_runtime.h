@@ -2487,6 +2487,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_index_select
       culebra::tensor_index_select(table->impl, indices->impl));
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor*
+culebra_runtime_tensor_softmax_cross_entropy(JitTensor* logits,
+                                             JitTensor* targets) {
+  return _culebra_jit_tensor_register(
+      culebra::tensor_softmax_cross_entropy(logits->impl, targets->impl));
+}
+
 // Tensor.index_add(indices, values, target_shape) — target_shape is a plain
 // Array of Long, the same variable-length-dims convention reshape's own
 // `dims` Array set.
