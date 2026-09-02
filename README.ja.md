@@ -372,7 +372,9 @@ BLAS級の数値計算です。
   [`docs/deployment.ja.md`](docs/deployment.ja.md)
   / [English](docs/deployment.md)
 * ガイド — culebraで特定のものを作るための、目的別の手引き:
-  [`docs/guides/`](docs/guides/)
+  [`docs/guides/`](docs/guides/) — 現在は
+  [PEGで解析する](docs/guides/parsing-with-peg.ja.md)と
+  [デスクトップアプリを作る](docs/guides/desktop-app.ja.md)
 * クイックガイド — 構文、間違えやすい点、標準ライブラリの全シグネチャを
   1ファイルに凝縮したもの。LLMのプロンプト用に書いていますが、人が最初から
   最後まで読み切れる分量でもあります:

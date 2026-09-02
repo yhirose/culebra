@@ -374,7 +374,9 @@ Documentation
   / [日本語](docs/deployment.ja.md)
 * Guides — task-oriented how-tos for building specific things with
   culebra:
-  [`docs/guides/`](docs/guides/)
+  [`docs/guides/`](docs/guides/) — currently
+  [parsing with PEG](docs/guides/parsing-with-peg.md) and
+  [building a desktop app](docs/guides/desktop-app.md)
 * Quick guide — the syntax, the carried-over mistakes and every stdlib
   signature condensed into one file; written for an LLM prompt, and short
   enough for a human to read start to finish:
