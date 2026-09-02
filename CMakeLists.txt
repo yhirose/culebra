@@ -946,9 +946,25 @@ add_custom_command(
   COMMENT "Embedding misc/{vscode,vim,zed} editor assets"
   VERBATIM)
 
+# The commit `culebra --version` names, past the version in culebra.h. An
+# always-run target rather than a custom command with a DEPENDS list: what the
+# value tracks (HEAD, the tags, the working tree) is not a set of files. The
+# generator rewrites the file only when that value moved, so rebuilding on one
+# commit recompiles and relinks nothing.
+set(_build_info_gen "${CMAKE_CURRENT_BINARY_DIR}/gen/build_info.cc")
+add_custom_target(culebra_build_info
+  BYPRODUCTS ${_build_info_gen}
+  COMMAND ${CMAKE_COMMAND}
+          -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DOUT=${_build_info_gen}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_build_info.cmake
+  COMMENT "Stamping the commit this build came from"
+  VERBATIM)
+
 add_executable(culebra ./src/main.cc ./src/source_dir.cc ./src/docs_cmd.cc
                        ./src/init_cmd.cc ./src/toolchain_cmd.cc
-                       ${_docs_gen} ${_editor_gen})
+                       ${_docs_gen} ${_editor_gen} ${_build_info_gen})
+add_dependencies(culebra culebra_build_info)
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
   # Before 3.24, CMake hands GCC a bare `-flto`, which runs all 128 LTRANS jobs

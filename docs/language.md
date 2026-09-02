@@ -5661,7 +5661,7 @@ file actually named `-` is still reachable by spelling the path, e.g. `./-`.
 | `--emit-llvm`  | With `--jit`, print the generated IR and exit.            |
 | `-O0`..`-O3`   | With `--jit`, select the LLVM optimization level. Default `-O2`. |
 | `-h`, `--help` | Print the option / command summary and exit.              |
-| `--version`    | Print the version and available backends, then exit.      |
+| `--version`    | Print the version, the commit a development build came from, and the available backends, then exit. A build of a release tag with a clean checkout prints the bare version. |
 
 ### Subcommands
 

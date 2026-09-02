@@ -92,8 +92,11 @@ CLAUDE.md の worktree 必須ルールに従う（リリースも例外ではな
 
 1. `include/culebra.h` の `#define CULEBRA_VERSION "X.Y.Z"` を新バージョンに書き換える
    （**ここが単一の真実源** — CLI も Playground もランディングページもこの 1 行を読む）。
-2. `just dev` でビルドし、`./build-dev/culebra --version` が `culebra X.Y.Z (vm+jit)` を
-   返すことを確認する。
+2. `just dev` でビルドし、`./build-dev/culebra --version` の版数部分が `X.Y.Z` に
+   なっていることを確認する。この時点ではまだタグが無く、`git describe` が拾うのは
+   1 つ前のリリースタグなので、出力は `culebra X.Y.Z-<n>-g<hash> (vm+jit)` の形になる
+   （作業中なら `-dirty` 付き）。この suffix は `cmake/gen_build_info.cmake` のもので、
+   タグ付きのクリーンなチェックアウトをビルドしたときだけ消える。
 3. `just site-build` を実行して `site/playground/index.html` の版数表記を更新する。
    **これは省略できない** — `just check-site-version`（CI gate）が culebra.h と突き合わせるので、
    飛ばすと版数 bump のコミットで CI が落ちる。emsdk（`~/Projects/emsdk`）が無い環境なら

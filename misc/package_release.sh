@@ -59,9 +59,18 @@ fi
 version_line=$("$staged" --version)
 want=${tag#v}
 got=$(echo "$version_line" | awk '{print $2}')
-if [ "$want" != "$got" ]; then
-  echo "package_release: tag says $want but the binary reports $got" >&2
+# Anything past the version is the build's commit (see cmake/gen_build_info.cmake),
+# and a release build of the tag has none. The two ways that field can be wrong
+# are different mistakes, so they get different messages.
+got_version=${got%%-*}
+if [ "$want" != "$got_version" ]; then
+  echo "package_release: tag says $want but the binary reports $got_version" >&2
   echo "  (did the release commit update CULEBRA_VERSION in include/culebra.h?)" >&2
+  exit 1
+fi
+if [ "$want" != "$got" ]; then
+  echo "package_release: the binary reports $got, so it was not built from a" >&2
+  echo "  clean checkout of $tag — release from the tagged commit instead." >&2
   exit 1
 fi
 

@@ -1,3 +1,4 @@
+#include <build_info.h>  // build_suffix() — the commit `--version` names
 #include <codegen_binding.h>  // the CodeGen.Module wrap binding; registered
                               // by the TU-level variable below
 #include <compress.h>  // gunzip() — the embedded runtime archives are stored
@@ -2533,7 +2534,8 @@ int run_main(int argc, const char** argv) {
 #else
     constexpr auto backends = "vm";
 #endif
-    std::println(cout, "culebra {} ({})", CULEBRA_VERSION, backends);
+    std::println(cout, "culebra {}{} ({})", CULEBRA_VERSION,
+                 culebra::build_suffix(), backends);
     return 0;
   }
 
