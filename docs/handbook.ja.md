@@ -75,8 +75,8 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
   Peg/Log/Term/Canvas) はどちらも出荷済み。Tier 2/3 (Crypto、Sockets)
   は需要次第 — Ch.14参照。
 - **1.0前。** ソース・APIは変わる可能性。tag付きリリースには3プラット
-  フォームのビルド済みバイナリが付く (§1.1)。CHANGELOGとHomebrew
-  formulaは無く、各リリースのノートが記録。
+  フォームのビルド済みバイナリが付く (§1.1)。CHANGELOGは無く、各
+  リリースのノートが記録。
 
 ---
 
@@ -107,6 +107,15 @@ curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-m
 sudo mv culebra-*/culebra /usr/local/bin/
 culebra --version
 ```
+
+macOSとWindowsはパッケージマネージャからも入れられる:
+
+```bash
+brew install yhirose/culebra/culebra   # macOS
+winget install yhirose.culebra         # Windows
+```
+
+Linux向けのパッケージはまだ無いので、上のダウンロードを使う。
 
 チェックサムと各リリースのノートは
 [releasesページ](https://github.com/yhirose/culebra/releases)にある。

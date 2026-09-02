@@ -79,6 +79,15 @@ of just for this shell:
 sudo mv culebra-*/culebra /usr/local/bin/
 ```
 
+macOS and Windows also install through a package manager:
+
+```bash
+brew install yhirose/culebra/culebra   # macOS
+winget install yhirose.culebra         # Windows
+```
+
+Linux has no package manager entry yet — use the download above.
+
 Checksums and every release's notes are on the
 [releases page](https://github.com/yhirose/culebra/releases).
 

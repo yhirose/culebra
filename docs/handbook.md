@@ -80,8 +80,7 @@ Read this once; the rest of the guide assumes these choices.
   today; Tier 2/3 (Crypto, Sockets) follows demand — see Ch.14.
 - **Pre-1.0.** Source and APIs may change. Tagged releases carry
   prebuilt binaries for the three platforms (§1.1); there is no
-  CHANGELOG and no Homebrew formula — each release's notes on GitHub
-  are the record.
+  CHANGELOG — each release's notes on GitHub are the record.
 
 ---
 
@@ -113,6 +112,15 @@ curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-m
 sudo mv culebra-*/culebra /usr/local/bin/
 culebra --version
 ```
+
+macOS and Windows also install through a package manager:
+
+```bash
+brew install yhirose/culebra/culebra   # macOS
+winget install yhirose.culebra         # Windows
+```
+
+Linux has no package manager entry yet — use the download above.
 
 Checksums and every release's notes are on the
 [releases page](https://github.com/yhirose/culebra/releases).
