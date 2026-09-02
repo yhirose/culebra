@@ -1,0 +1,192 @@
+# Conformance: stdlib (StateMachine). See docs/stdlib.md and
+# docs/language.md.
+#
+# StateMachine — a hierarchical state machine
+# (src/preambles/state_machine.cul). Tested on the executor, JIT and AOT via
+# `just test`; identical stdout (asserts are silent on success).
+#
+# The entry/exit assertions are the load-bearing ones: they pin *which*
+# states a transition leaves and enters, which is the part a flat machine
+# has no opinion about.
+
+# --- flat machine, description form --------------------------------------
+fn add_coin(ctx, ev) { ctx.balance += ev.payload }
+fn dispense(ctx, ev) { ctx.balance -= 100; ctx.log.push("dispense") }
+fn reject(ctx, ev) { ctx.log.push("reject({ctx.balance})") }
+fn enough(ctx, ev) { ctx.balance >= 100 }
+
+let vend_desc = {
+  idle: {initial: true, on: {coin: {action: add_coin, target: "ready"}}},
+  ready: {on: {
+    coin: {action: add_coin, target: "ready"},
+    select: [
+      {guard: enough, action: dispense, target: "idle"},
+      {guard: enough, negate: true, action: reject, target: "ready"},
+    ],
+  }},
+}
+let v = StateMachine.new(vend_desc, name: "Vending", context: {mut balance: 0, log: []})
+assert_eq(v.state(), "idle")
+assert_eq("{v}", "StateMachine(Vending, state=idle)")
+assert_eq(v.fire("coin", 25), true)
+assert_eq(v.state(), "ready")
+assert_eq(v.fire("coin", 25), true)
+assert_eq(v.context.balance, 50)
+assert_eq(v.fire("select"), true)
+assert_eq(v.state(), "ready")
+assert_eq(v.context.log, ["reject(50)"])
+v.fire("coin", 50)
+assert_eq(v.can_fire("select"), true)
+assert_eq(v.fire("select"), true)
+assert_eq(v.state(), "idle")
+assert_eq(v.context.balance, 0)
+assert_eq(v.context.log, ["reject(50)", "dispense"])
+assert_eq(v.fire("nosuch"), false)
+assert_eq(v.can_fire("select"), false)
+
+# --- the same machine through the text DSL --------------------------------
+let vend_dsl = `
+  Vending {
+    idle initial {
+      coin: add_coin -> ready
+    }
+    ready {
+      coin: add_coin -> ready
+      select[enough]:  dispense -> idle
+      select[!enough]: reject   -> ready
+    }
+  }
+`
+let v2 = StateMachine.parse(vend_dsl,
+  guards: {enough: enough},
+  actions: {add_coin: add_coin, dispense: dispense, reject: reject},
+  context: {mut balance: 0, log: []})
+assert_eq("{v2}", "StateMachine(Vending, state=idle)")
+for step in [25, 25] { v2.fire("coin", step) }
+v2.fire("select")
+v2.fire("coin", 50)
+v2.fire("select")
+assert_eq(v2.state(), "idle")
+assert_eq(v2.context.log, ["reject(50)", "dispense"])
+assert_eq(v2.context.balance, 0)
+
+# --- hierarchy: entry/exit chains, bubbling, transition domains -----------
+fn mark(tag) { fn (ctx, ev) { ctx.log.push(tag) } }
+let media = `
+  MediaPlayer {
+    stopped initial {
+      play -> normal
+    }
+    playing entry: e_playing exit: x_playing {
+      stop  -> stopped
+      error -> failed
+      normal initial entry: e_normal exit: x_normal {
+        buffer_low -> buffering
+        seek       -> seeking
+        pause      -> paused
+      }
+      buffering { buffer_ready -> normal }
+      seeking   { seek_done    -> normal }
+    }
+    paused {
+      play -> normal
+      stop -> stopped
+    }
+    failed { reset_it -> stopped }
+  }
+`
+fn player() {
+  StateMachine.parse(media,
+    actions: {
+      e_playing: mark("e_playing"), x_playing: mark("x_playing"),
+      e_normal: mark("e_normal"), x_normal: mark("x_normal"),
+    },
+    context: {mut log: []})
+}
+fn drain(m) {
+  let out = m.context.log.slice(0, m.context.log.size())
+  m.context.log = []
+  out
+}
+
+let p = player()
+assert_eq(p.state(), "stopped")
+assert_eq(drain(p), [])
+
+p.fire("play")
+assert_eq(p.state(), "normal")
+assert_eq(drain(p), ["e_playing", "e_normal"])
+assert_eq(p.in_state("playing"), true)
+assert_eq(p.in_state("paused"), false)
+
+p.fire("seek")
+assert_eq(p.state(), "seeking")
+assert_eq(drain(p), ["x_normal"])
+
+p.fire("seek_done")
+assert_eq(drain(p), ["e_normal"])
+
+p.fire("pause")
+assert_eq(p.state(), "paused")
+assert_eq(drain(p), ["x_normal", "x_playing"])
+
+p.fire("play")
+assert_eq(drain(p), ["e_playing", "e_normal"])
+p.fire("stop")
+assert_eq(p.state(), "stopped")
+assert_eq(drain(p), ["x_normal", "x_playing"])
+
+p.fire("play")
+drain(p)
+p.fire("buffer_low")
+assert_eq(p.state(), "buffering")
+assert_eq(drain(p), ["x_normal"])
+p.fire("error")
+assert_eq(p.state(), "failed")
+assert_eq(drain(p), ["x_playing"])
+p.fire("reset_it")
+assert_eq(p.state(), "stopped")
+
+p.fire("play")
+drain(p)
+p.reset()
+assert_eq(p.state(), "stopped")
+assert_eq(drain(p), ["x_normal", "x_playing"])
+
+# --- self-transition (exits and re-enters) vs internal transition --------
+let sm = StateMachine.parse(`
+  T {
+    a initial entry: e exit: x {
+      hit  -> a
+      tick: bump
+    }
+  }
+`, actions: {e: mark("e"), x: mark("x"), bump: mark("bump")}, context: {mut log: []})
+assert_eq(drain(sm), ["e"])
+sm.fire("hit")
+assert_eq(drain(sm), ["x", "e"])
+sm.fire("tick")
+assert_eq(drain(sm), ["bump"])
+assert_eq(sm.state(), "a")
+
+# --- every name is resolved when the machine is built ---------------------
+fn err(f) { try { f(); "no throw" } catch e { "{e.kind}: {e.message}" } }
+assert_eq(err(|| StateMachine.parse(`M { a initial { go -> nope } }`)),
+          "StateMachineError: state 'a' on 'go': no state named 'nope'")
+assert_eq(err(|| StateMachine.parse(`M { a initial { go[g] -> a } }`)),
+          "StateMachineError: state 'a' on 'go': no guard named 'g'")
+assert_eq(err(|| StateMachine.parse(`M { a initial {} b initial {} }`)),
+          "StateMachineError: 'a' and 'b' are both initial")
+assert_eq(err(|| StateMachine.parse(`M { a {} }`)),
+          "StateMachineError: the machine has no initial state")
+assert_eq(err(|| StateMachine.parse(`M { a initial { b {} } }`)),
+          "StateMachineError: composite state 'a' has no initial child")
+assert_eq(err(|| StateMachine.new({a: {initial: true, onn: {}}})),
+          "StateMachineError: state 'a': unknown key 'onn' (expected initial, entry, exit, on, states)")
+
+# `entry` / `exit` / `initial` bind only in a header, so an event may use them
+let ent = StateMachine.parse(`M { a initial entry: e { entry -> b } b {} }`,
+                             actions: {e: mark("e")}, context: {mut log: []})
+assert_eq(drain(ent), ["e"])
+ent.fire("entry")
+assert_eq(ent.state(), "b")

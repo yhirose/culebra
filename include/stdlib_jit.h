@@ -10248,7 +10248,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
       "Time",    "Args",      "Regex",     "Peg",       "Term",     "Log",
       "Path",    "Canvas",    "__Eff",     "Vector2",   "Vector3",  "Deque",
-      "PriorityQueue",
+      "PriorityQueue", "StateMachine",
       // The bare function globals from those same source modules (assert_*,
       // `replace`) are listed by lazy_fn_group_of below, not here.
 #if defined(CULEBRA_HTTP_ENABLED)

@@ -2120,7 +2120,8 @@ if(CULEBRA_ENABLE_JIT AND NOT CULEBRA_DEV_NO_RT)
   endif()
 
   set(_baked_names Time Term Canvas Args Regex Peg Log Path Vector2 Vector3
-                   Deque PriorityQueue __Eff __Matchers __StringFns)
+                   Deque PriorityQueue StateMachine __Eff __Matchers
+                   __StringFns)
   if(CULEBRA_ENABLE_WEBVIEW)
     list(APPEND _baked_names Desktop)
   endif()
