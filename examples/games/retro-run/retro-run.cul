@@ -198,15 +198,18 @@ let SHEET = sheet._id
 
 # Upstream ships one background; the generated set has one per scene. Loading
 # the same file four times would cost 7.5 MB apiece, so a repeat is aliased —
-# get_or_put only calls the loader on a name it has not seen.
-let backgrounds = fn () {
+# get_or_put only calls the loader on a name it has not seen. The handles
+# themselves are what keep the pixels alive (a sprite frees them with its last
+# reference), so they are held for the whole run and the ids taken from them.
+let background_sprites = fn () {
   mut loaded = {}
   SCENES.map(|scene| {
     let scened = "background_" + scene + ".png"
     let name = ART.exists(scened) ? scened : "background.png"
-    loaded.get_or_put(name, || Canvas.Sprite.from_png(art(name)))._id
+    loaded.get_or_put(name, || Canvas.Sprite.from_png(art(name)))
   })
 }()
+let backgrounds = background_sprites.map(|s| s._id)
 
 # --- colours ---------------------------------------------------------------
 # One palette per scene, in the order SCENES lists them, as flat r,g,b triples:
