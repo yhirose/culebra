@@ -1,0 +1,196 @@
+# The job queue and throwing into a generator, driven through CodeGen.Module:
+# the 'enqueue' and 'genthrow' intrinsics. tests/test_codegen.cul covers the
+# rest of the builder; this exercises just those two, end to end.
+
+fn stmt_block(m, stmts) {
+  let list = m.list_new()
+  for s in stmts {
+    m.list_push(list, s)
+  }
+  m.block(stmts_list: list, line: 1, col: 1)
+}
+
+fn print_stmt(m, value) {
+  let args = m.list_new()
+  m.list_push(args, value)
+  m.intrinsic(name: 'print', args_list: args, line: 1, col: 1)
+}
+
+fn strl(m, v) {
+  m.str_literal(s: v, line: 1, col: 1)
+}
+
+fn local_ref(m, i) {
+  m.var_ref(kind: 'local', index: i, line: 1, col: 1)
+}
+
+fn field_of(m, i, key) {
+  m.index(recv: local_ref(m, i), key: strl(m, key), line: 1, col: 1)
+}
+
+fn enqueue_stmt(m, closure) {
+  let args = m.list_new()
+  m.list_push(args, closure)
+  m.intrinsic(name: 'enqueue', args_list: args, line: 1, col: 1)
+}
+
+fn gen_call(m, name, gen, value) {
+  let args = m.list_new()
+  m.list_push(args, gen)
+  m.list_push(args, value)
+  m.intrinsic(name: name, args_list: args, line: 1, col: 1)
+}
+
+# --- enqueue: jobs run after the entry frame returns, FIFO, and a job's own
+# enqueues land behind every job already waiting. ---
+{
+  let m = CodeGen.Module.new()
+  let cmap = m.add_capture_map(m.capture_map_new())
+  let body = stmt_block(
+    m,
+    [
+      enqueue_stmt(m, m.make_closure(func: 1, cmap: cmap, line: 1, col: 1)),
+      enqueue_stmt(m, m.make_closure(func: 2, cmap: cmap, line: 2, col: 1)),
+      print_stmt(m, strl(m, 'main')),
+    ],
+  )
+  # first: print('first'); enqueue(third) -- third queues behind the waiting second
+  let first = stmt_block(
+    m,
+    [
+      print_stmt(m, strl(m, 'first')),
+      enqueue_stmt(m, m.make_closure(func: 3, cmap: cmap, line: 1, col: 1)),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
+  m.add_func(
+    name: 'first',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: first,
+  )
+  m.add_func(
+    name: 'second',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, strl(m, 'second')),
+  )
+  m.add_func(
+    name: 'third',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, strl(m, 'third')),
+  )
+  m.verify()
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "main\nfirst\nsecond\nthird\n")
+}
+
+# --- genthrow: the value lands at the parked yield as a throw; a body that
+# catches it and yields again answers {value, done: false}; thrown into a
+# finished generator, it comes back out of the call itself. ---
+{
+  let m = CodeGen.Module.new()
+  let cmap = m.add_capture_map(m.capture_map_new())
+  # gen: try { print(yield 1) } catch e { print('caught'); print(e) }; yield 2
+  let guarded = m.make_try(
+    caught_local: 0,
+    body: print_stmt(m, m.make_yield(value: m.literal(v: 1, line: 1, col: 1), line: 1, col: 1)),
+    handler: stmt_block(m, [print_stmt(m, strl(m, 'caught')), print_stmt(m, local_ref(m, 0))]),
+    line: 1,
+    col: 1,
+  )
+  let gen = stmt_block(
+    m,
+    [
+      guarded,
+      m.make_yield(value: m.literal(v: 2, line: 2, col: 1), line: 2, col: 1),
+    ],
+  )
+  # main: g = gen(); r = genresume(g, nil); print(r.value)
+  #       r = genthrow(g, 'boom'); print(r.value); print(r.done)
+  #       r = genresume(g, nil); print(r.done)
+  #       try { genthrow(g, 'again') } catch e { print(e) }
+  fn set_r(m, value) {
+    m.assign(kind: 'local', index: 1, value: value, line: 1, col: 1)
+  }
+  let body = stmt_block(
+    m,
+    [
+      m.assign(
+        kind: 'local',
+        index: 0,
+        value: m.call(func: 1, cmap: cmap, line: 1, col: 1),
+        line: 1,
+        col: 1,
+      ),
+      set_r(
+        m,
+        gen_call(
+          m,
+          'genresume',
+          local_ref(m, 0),
+          m.nil_literal(line: 1, col: 1),
+        ),
+      ),
+      print_stmt(m, field_of(m, 1, 'value')),
+      set_r(m, gen_call(m, 'genthrow', local_ref(m, 0), strl(m, 'boom'))),
+      print_stmt(m, field_of(m, 1, 'value')),
+      print_stmt(m, field_of(m, 1, 'done')),
+      set_r(
+        m,
+        gen_call(
+          m,
+          'genresume',
+          local_ref(m, 0),
+          m.nil_literal(line: 1, col: 1),
+        ),
+      ),
+      print_stmt(m, field_of(m, 1, 'done')),
+      m.make_try(
+        caught_local: 2,
+        body: gen_call(m, 'genthrow', local_ref(m, 0), strl(m, 'again')),
+        handler: print_stmt(m, local_ref(m, 2)),
+        line: 1,
+        col: 1,
+      ),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 3,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
+  m.add_func(
+    name: 'gen',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: gen,
+  )
+  m.set_generator(func: 1)
+  m.verify()
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "1\ncaught\nboom\n2\nfalse\ntrue\nagain\n")
+}
+
+println('test_codegen_jobs OK')

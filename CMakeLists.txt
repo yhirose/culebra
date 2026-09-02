@@ -124,8 +124,7 @@ set(CULEBRA_TENSORLIB_DIR
     CACHE PATH "cpp-tensorlib include directory")
 include_directories(${CULEBRA_TENSORLIB_DIR})
 include_directories(./vendor/cpp-peglib)
-include_directories(./vendor/cpp-vmlib/include)
-include_directories(./vendor/cpp-vmlib/vm/include)
+include_directories(./vendor/cpp-vmlib)
 include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
 include_directories(./vendor/cpp-regexlib)
@@ -1025,21 +1024,16 @@ if(CULEBRA_WRAP_SOURCES)
   endif()
 endif()
 
-# Unlike the __Foreign fixture (header-only), cpp-vmlib's coreir::verify/
-# vm::compile/vm::run/etc. are declared in headers but *defined* in these
-# four .cc files, so the driver (which runs CodeGen.Module directly, not
-# only through a force-loaded archive) needs its own compiled copy of them.
-# Unconditional -- outside both the CULEBRA_ENABLE_JIT branch below (main.cc
-# wraps CodeGen.Module in every configuration, so no-JIT builds link these
-# too) and its CULEBRA_DEV_NO_RT sub-branch -- because this is plain,
-# fast-compiling C++ with no archive/embedding to skip; it has nothing in
-# common with the heavy runtime archives those guards exist for.
-target_sources(culebra PRIVATE
-  ./src/runtime/codegen_rt.cc
-  ./vendor/cpp-vmlib/include/coreir/ir.cc
-  ./vendor/cpp-vmlib/vm/compiler.cc
-  ./vendor/cpp-vmlib/vm/exec.cc
-  ./vendor/cpp-vmlib/vm/bytecode.cc)
+# cpp-vmlib is header-only (vmlib.h), like the __Foreign fixture, so the
+# driver (which runs CodeGen.Module directly, not only through a force-loaded
+# archive) compiles nothing of it separately; what it needs is culebra's own
+# implementation of the coreir_rt_* host contract. Unconditional -- outside
+# both the CULEBRA_ENABLE_JIT branch below (main.cc wraps CodeGen.Module in
+# every configuration, so no-JIT builds link this too) and its
+# CULEBRA_DEV_NO_RT sub-branch -- because this is plain, fast-compiling C++
+# with no archive/embedding to skip; it has nothing in common with the heavy
+# runtime archives those guards exist for.
+target_sources(culebra PRIVATE ./src/runtime/codegen_rt.cc)
 
 if(CULEBRA_ENABLE_JIT)
   # lld ahead of ${llvm_libs}: its archives reach into LLVM, not the other way
@@ -1209,17 +1203,13 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_foreign${CMAKE_STATIC_LIBRARY_SUFFIX}")
   list(APPEND _rt_embed_deps culebra_rt_foreign)
   # CodeGen.Module: cpp-vmlib's Core-IR + register-bytecode compiler/executor
-  # (vendor/cpp-vmlib), wrapped the same way __Foreign is above. Sources are
-  # listed directly (not add_subdirectory'd) so they pick up this archive's
-  # -ffunction-sections/-fdata-sections and join culebra's own LTO policy for
-  # archive objects, matching how the SQLite amalgamation is folded in below.
+  # (vendor/cpp-vmlib, header-only), wrapped the same way __Foreign is above.
+  # The library arrives by inclusion, so this archive's
+  # -ffunction-sections/-fdata-sections and culebra's own LTO policy for
+  # archive objects cover it, as they do the SQLite amalgamation below.
   add_library(culebra_rt_codegen STATIC
     ./src/runtime/culebra_rt_codegen.cc
-    ./src/runtime/codegen_rt.cc
-    ./vendor/cpp-vmlib/include/coreir/ir.cc
-    ./vendor/cpp-vmlib/vm/compiler.cc
-    ./vendor/cpp-vmlib/vm/exec.cc
-    ./vendor/cpp-vmlib/vm/bytecode.cc)
+    ./src/runtime/codegen_rt.cc)
   target_compile_features(culebra_rt_codegen PRIVATE cxx_std_23)
   target_compile_options(culebra_rt_codegen PRIVATE
     -ffunction-sections -fdata-sections)

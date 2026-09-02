@@ -18,11 +18,7 @@
 #include <utility>
 #include <vector>
 
-#include "coreir/ir.h"
-#include "coreir/semantics.h"
-#include "vm/bytecode.h"
-#include "vm/compiler.h"
-#include "vm/exec.h"
+#include "vmlib.h"
 
 #include "shared.h"  // culebra::CulebraError
 
@@ -105,7 +101,7 @@ class Module {
   }
 
   // Builder-side sugar over MakeClosure+CallValue (the one calling mechanism
-  // Core-IR has -- see coreir/ir.h's Tag::MakeClosure comment for why a
+  // Core-IR has -- see vmlib.h's Tag::MakeClosure comment for why a
   // separate "call this function by index" tag was removed rather than kept
   // alongside it). PL/0 procedures take no arguments, so the immediately-built
   // closure is called with an empty argument list; a front end wanting real
@@ -281,9 +277,9 @@ class Module {
         .capture_names.at(static_cast<size_t>(index)) = name;
   }
   // Calling the function then packages a suspended activation instead of
-  // running the body; drive it with the genresume/genreturn intrinsics. A
-  // setter rather than an add_func parameter so every existing caller keeps
-  // its arity.
+  // running the body; drive it with the genresume/genreturn/genthrow
+  // intrinsics. A setter rather than an add_func parameter so every existing
+  // caller keeps its arity.
   void set_generator(int64_t func) {
     m_.funcs.at(static_cast<size_t>(func)).is_generator = true;
   }
@@ -399,11 +395,13 @@ class Module {
     if (s == "objectremove") return coreir::IntrinsicId::ObjectRemove;
     if (s == "genresume") return coreir::IntrinsicId::GenResume;
     if (s == "genreturn") return coreir::IntrinsicId::GenReturn;
+    if (s == "genthrow") return coreir::IntrinsicId::GenThrow;
     if (s == "argcount") return coreir::IntrinsicId::ArgCount;
     if (s == "same") return coreir::IntrinsicId::Same;
     if (s == "fnarity") return coreir::IntrinsicId::FnArity;
     if (s == "collect") return coreir::IntrinsicId::Collect;
     if (s == "heapstats") return coreir::IntrinsicId::HeapStats;
+    if (s == "enqueue") return coreir::IntrinsicId::Enqueue;
     throw std::invalid_argument("CodeGen: unknown intrinsic '" +
                                 std::string(s) + "'");
   }

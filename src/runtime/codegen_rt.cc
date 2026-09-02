@@ -1,7 +1,7 @@
-// culebra's implementation of cpp-vmlib's host-runtime contract
-// (vendor/cpp-vmlib/include/coreir/rt.h) -- the six functions any
-// CodeGen.Module in this process shares. coreir_rt_default.cc (cpp-vmlib's
-// own stdio implementation, for its standalone CLI) is not linked here; these
+// culebra's implementation of cpp-vmlib's host-runtime contract (the
+// coreir/rt.h section of vendor/cpp-vmlib/vmlib.h) -- the six functions any
+// CodeGen.Module in this process shares. The stdio implementation vmlib.h
+// itself carries (behind VMLIB_DEFAULT_RUNTIME) is never enabled here; these
 // definitions are the only ones in the binary.
 //
 // Deliberately does NOT include stdlib_jit.h: that header carries every
@@ -17,13 +17,13 @@
 // guards never reaches it, and an unguarded one arrives with the executor's
 // frames already popped and released by its own unwinder -- throwing a C++
 // exception from here is exactly the documented contract (cpp-vmlib's
-// tests/throw_safety.cc pins the leak-free unwind).
+// test/test_throw_safety.cc pins the leak-free unwind).
 
 #include <cerrno>
 #include <cstdlib>
 #include <string>
 
-#include "coreir/rt.h"
+#include "vmlib.h"
 
 #include "shared.h"
 #include "stdout_capture.h"
