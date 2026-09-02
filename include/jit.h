@@ -24,6 +24,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
@@ -585,6 +586,19 @@ struct JIT {
     return llvm::cast<llvm::Constant>(callee.getCallee());
   }
 
+  // AArch64's early if-conversion speculates a small `if` arm into fcsel
+  // whatever the branch's odds, and an arm that assigns a loop-carried
+  // Float then puts fcmp+fcsel on the loop's critical path (the scalars
+  // row of tools/bench/vector_loop.cul; the Vector2 row's arm is too big
+  // to convert and never paid it). x86 does not run the pass by default,
+  // and neither does the generic CPU that AOT compiles for — the call
+  // from the AOT path keeps the two from diverging if that changes.
+  static void tune_backend() {
+    auto& opts = llvm::cl::getRegisteredOptions();
+    if (auto it = opts.find("aarch64-enable-early-ifcvt"); it != opts.end())
+      static_cast<llvm::cl::opt<bool>*>(it->second)->setValue(false);
+  }
+
   // Process-wide LLVM target init. Concurrent callers race on the
   // built-in target registry, so guard with std::call_once. Each
   // JIT::run() goes through this before touching ORC.
@@ -593,6 +607,7 @@ struct JIT {
     std::call_once(flag, []() {
       llvm::InitializeNativeTarget();
       llvm::InitializeNativeTargetAsmPrinter();
+      tune_backend();
     });
   }
 
@@ -621,6 +636,7 @@ struct JIT {
       LLVMInitializeWebAssemblyAsmPrinter();
       LLVMInitializeWebAssemblyAsmParser();
 #endif
+      tune_backend();
     });
   }
 

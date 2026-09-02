@@ -1130,6 +1130,18 @@ afterwards, and `tools/checks/check_float_carry.sh` pins the result in
 the emitted IR, since nothing else would notice the pass going quiet
 (§10.2).
 
+One knob is turned on the backend itself. AArch64's early
+if-conversion speculates a small `if` arm into `fcsel` whatever the
+branch's odds, and an arm that assigns a loop-carried Float then puts
+`fcmp` and `fcsel` on the loop's critical path: the scalars row of
+`tools/bench/vector_loop.cul` paid a sixth of its step to that, while
+the Vector2 row's arm was too big to convert and never did.
+`JIT::tune_backend` turns the pass off from both target-init paths,
+which is where x86 already stands. Only the JIT was paying it: it
+compiles for the host CPU, while `culebra build` names no CPU and gets
+a generic one the pass does not fire for, so the second call is there
+to keep the lanes from diverging rather than to fix anything today.
+
 ### 7.1 Ownership in the lowering
 
 The lowering's C++ holds every transient `+1` in `JIT::Owned`, a

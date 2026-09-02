@@ -1126,6 +1126,18 @@ assertし、`tools/checks/check_float_carry.sh`がその結果をemitされた
 IR上に固定する — このpassが黙って止まっても他の何も気づかない
 からである（§10.2）。
 
+もう1つ、バックエンド自体に触るノブがある。AArch64のearly
+if-conversionは小さな`if`の腕を分岐の確率に関係なく`fcsel`に
+投機し、その腕がループの持ち回るFloatへ代入していると`fcmp`と
+`fcsel`がループのクリティカルパスに乗る。`tools/bench/vector_loop.cul`
+のscalars行はこれに1stepの6分の1を払っていた一方、Vector2行の腕は
+大きすぎて変換されず、払っていなかった。`JIT::tune_backend`がこの
+passをtarget initの2経路の両方で切る。x86は元から走らせていない。
+実際に払っていたのはJITだけで、JITはhostのCPU向けにコンパイルする一方
+`culebra build`はCPUを指定せずgenericになりこのpassは発火しない。
+つまりAOT側の呼び出しは今何かを直すためではなく、レーンがずれないように
+するためにある。
+
 ### 7.1 loweringの中の所有権
 
 loweringのC++は、すべての一時的な`+1`を`JIT::Owned`に保持する。
