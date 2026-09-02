@@ -43,6 +43,24 @@
 # @derive accepted as a no-op (the default == is already structural), and
 # deterministic drop() -- carried to the VM's drop contract, which calls
 # a hidden-key closure the moment an instance's refcount reaches zero.
+# The generator batch adds: `yield` / `yield from` in named fns, the
+# iter/has_next/next/dispose protocol object, and for-in / yield-from
+# disposing their iterator on every exit path. The iterator batch adds:
+# the lazy iterator method set (map .. enumerate, collect .. unzip) over
+# every source that has has_next/next, Sets and non-String Object keys
+# (one hashable-key spelling under both), `self` inside closure literals
+# (bound by a method call or a dot read, falling back to the enclosing
+# method's receiver), culebra's arity rule for closures (extras dropped,
+# a missing argument named), the `{mut k: v}` literal form, `(x,)`, `;`,
+# and the remaining SS18 String / Array methods.
+#
+# Known differences from culebra, all documented rather than hidden:
+# no StringView type (slice/view give a String); normalize() is the
+# identity and graphemes() walks code points (no Unicode database);
+# upper/lower/title cover ASCII, Latin-1, Greek, and Cyrillic; is_alpha
+# knows the major letter blocks; a generator displays as its protocol
+# object; a callback's parameter count is not checked; keyword arguments
+# to built-in methods pass positionally.
 #
 # Semantics are culebra's, not the VM's: a prelude of helper functions
 # (written in this same subset, compiled alongside the program) wraps every
@@ -1258,8 +1276,11 @@ fn __array_method(a, name, args, line, col) {
     return a[i]
   }
   if name == 'slice' {
+    __nargs(name, args, 2, line, col)
     mut lo = args[0]
     mut hi = args[1]
+    if lo < 0 { lo = lo + __len(a) }
+    if hi < 0 { hi = hi + __len(a) }
     if lo < 0 { lo = 0 }
     if hi > __len(a) { hi = __len(a) }
     mut out = []
@@ -1363,13 +1384,7 @@ fn __array_method(a, name, args, line, col) {
     return true
   }
   if name == 'sum' {
-    mut acc = 0
-    mut i = 0
-    while i < __len(a) {
-      acc = __add(acc, a[i], line, col)
-      i = i + 1
-    }
-    return acc
+    return __iter_method(__arr_iter(a), name, args, line, col)
   }
   if name == 'reverse' {
     mut i = 0
@@ -1383,33 +1398,154 @@ fn __array_method(a, name, args, line, col) {
     }
     return nil
   }
-  if name == 'sorted' {
+  if name == 'extend' {
+    __nargs(name, args, 1, line, col)
+    if __typeof(args[0]) != 'array' {
+      __raise('TypeError', "type error: parameter 'other' expects Array", line, col)
+    }
+    let other = args[0]
+    let n = __len(other)
+    mut i = 0
+    while i < n {
+      __arraypush(a, other[i])
+      i = i + 1
+    }
+    return nil
+  }
+  if name == 'insert' {
+    __nargs(name, args, 2, line, col)
+    mut i = args[0]
+    if i < 0 { i = i + __len(a) }
+    if i < 0 || i > __len(a) {
+      __raise('IndexError', 'index out of range', line, col)
+    }
+    __arraypush(a, nil)
+    mut j = __len(a) - 1
+    while j > i {
+      a[j] = a[j - 1]
+      j = j - 1
+    }
+    a[i] = args[1]
+    return nil
+  }
+  if name == 'remove_at' {
+    __nargs(name, args, 1, line, col)
+    mut i = args[0]
+    if i < 0 { i = i + __len(a) }
+    if i < 0 || i >= __len(a) {
+      __raise('IndexError', 'index out of range', line, col)
+    }
+    let v = a[i]
+    mut j = i
+    while j < __len(a) - 1 {
+      a[j] = a[j + 1]
+      j = j + 1
+    }
+    __arraypop(a)
+    return v
+  }
+  if name == 'sort' || name == 'sorted' {
+    __nargs_range(name, args, 0, 1, 'reverse', line, col)
+    mut rev = false
+    if __len(args) == 1 { rev = __truthy(args[0], line, col) }
+    let out = __sort_copy(a, fn (x) { x }, rev, line, col)
+    if name == 'sorted' { return out }
+    __write_back(a, out)
+    return nil
+  }
+  if name == 'sort_by' || name == 'sorted_by' {
+    __nargs_range(name, args, 1, 2, 'key', line, col)
+    let f = __check_fn(args[0], line, col)
+    mut rev = false
+    if __len(args) == 2 { rev = __truthy(args[1], line, col) }
+    let out = __sort_copy(a, f, rev, line, col)
+    if name == 'sorted_by' { return out }
+    __write_back(a, out)
+    return nil
+  }
+  if name == 'min' || name == 'max' {
+    __nargs(name, args, 0, line, col)
+    return __it_min_max(__arr_iter(a), name, 'Array', name == 'min', line, col)
+  }
+  if name == 'min_by' || name == 'max_by' {
+    __nargs(name, args, 1, line, col)
+    return __it_min_max_by(__arr_iter(a), name, 'Array',
+                           __check_fn(args[0], line, col), name == 'min_by',
+                           line, col)
+  }
+  if name == 'flat_map' {
+    __nargs(name, args, 1, line, col)
+    let f = __check_fn(args[0], line, col)
     mut out = []
     mut i = 0
     while i < __len(a) {
-      __arraypush(out, a[i])
-      i = i + 1
-    }
-    mut k = 1
-    while k < __len(out) {
-      let v = out[k]
-      mut j = k - 1
-      mut go = true
-      while go {
-        if j < 0 { go = false }
-        if go {
-          if __lt(v, out[j], line, col) {
-            out[j + 1] = out[j]
-            j = j - 1
-          } else { go = false }
-        }
+      let r = f(a[i])
+      if __typeof(r) != 'array' {
+        __raise('TypeError', 'type error: flat_map callback must return an Array',
+                line, col)
       }
-      out[j + 1] = v
-      k = k + 1
+      mut j = 0
+      while j < __len(r) {
+        __arraypush(out, r[j])
+        j = j + 1
+      }
+      i = i + 1
     }
     return out
   }
+  if name == 'product' || name == 'group_by' || name == 'partition' ||
+      name == 'to_object' || name == 'unzip' {
+    return __iter_method(__arr_iter(a), name, args, line, col)
+  }
   __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+}
+
+# A stable insertion sort of a copy, keyed once per element; a key that
+# does not compare leaves the receiver untouched, since the copy is what
+# was being ordered.
+fn __sort_copy(a, keyf, rev, line, col) {
+  mut keys = []
+  mut out = []
+  mut i = 0
+  while i < __len(a) {
+    __arraypush(keys, keyf(a[i]))
+    __arraypush(out, a[i])
+    i = i + 1
+  }
+  mut k = 1
+  while k < __len(out) {
+    let v = out[k]
+    let kv = keys[k]
+    mut j = k - 1
+    mut go = true
+    while go {
+      if j < 0 { go = false }
+      if go {
+        mut before = false
+        if rev { before = __lt(keys[j], kv, line, col) } else {
+          before = __lt(kv, keys[j], line, col)
+        }
+        if before {
+          out[j + 1] = out[j]
+          keys[j + 1] = keys[j]
+          j = j - 1
+        } else { go = false }
+      }
+    }
+    out[j + 1] = v
+    keys[j + 1] = kv
+    k = k + 1
+  }
+  out
+}
+
+fn __write_back(a, out) {
+  mut i = 0
+  while i < __len(a) {
+    a[i] = out[i]
+    i = i + 1
+  }
+  nil
 }
 
 fn __string_method(s, name, args, line, col) {
@@ -1431,31 +1567,24 @@ fn __string_method(s, name, args, line, col) {
     if m > __len(s) { return false }
     return __str_slice(s, __len(s) - m, __len(s)) == args[0]
   }
-  if name == 'index_of' { return __str_index_of(s, args[0], 0) }
+  if name == 'index_of' {
+    __nargs_range(name, args, 1, 2, 'sub', line, col)
+    mut start = 0
+    if __len(args) == 2 { start = args[1] }
+    if start < 0 { start = start + __len(s) }
+    if start < 0 { start = 0 }
+    return __str_index_of(s, __str_arg(args[0], line, col), start)
+  }
   if name == 'slice' { return __str_slice(s, args[0], args[1]) }
   if name == 'split' {
-    let sep = args[0]
-    mut out = []
-    mut from = 0
-    mut go = true
-    while go {
-      let hit = __str_index_of(s, sep, from)
-      if hit < 0 {
-        __arraypush(out, __str_slice(s, from, __len(s)))
-        go = false
-      } else {
-        __arraypush(out, __str_slice(s, from, hit))
-        from = hit + __len(sep)
-      }
-    }
-    return out
+    __nargs_range(name, args, 1, 2, 'sep', line, col)
+    mut limit = 0
+    if __len(args) == 2 { limit = args[1] }
+    return __str_split(s, __str_arg(args[0], line, col), limit, line, col)
   }
   if name == 'trim' {
-    mut lo = 0
-    mut hi = __len(s)
-    while lo < hi && __is_space(s[lo]) { lo = lo + 1 }
-    while hi > lo && __is_space(s[hi - 1]) { hi = hi - 1 }
-    return __str_slice(s, lo, hi)
+    __nargs(name, args, 0, line, col)
+    return __trim_side(s, '', true, true)
   }
   if name == 'repeat' {
     mut out = ''
@@ -1466,7 +1595,13 @@ fn __string_method(s, name, args, line, col) {
     }
     return out
   }
-  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+  let r = __string_method2(s, name, args, line, col)
+  if __typeof(r) == 'string' {
+    if r == "\znomethod" {
+      __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+    }
+  }
+  r
 }
 
 fn __object_method(o, name, args, line, col) {
@@ -2356,10 +2491,10 @@ fn __term(src, body) {
   r
 }
 
-fn __it_min_max(src, name, want_lt, line, col) {
+fn __it_min_max(src, name, owner, want_lt, line, col) {
   __term(src, fn () {
     if !src.has_next() {
-      __raise('ValueError', name + ' of empty Iterator', line, col)
+      __raise('ValueError', name + ' of empty ' + owner, line, col)
     }
     mut best = src.next()
     __expect_num(best, line, col)
@@ -2376,10 +2511,10 @@ fn __it_min_max(src, name, want_lt, line, col) {
   })
 }
 
-fn __it_min_max_by(src, name, f, want_lt, line, col) {
+fn __it_min_max_by(src, name, owner, f, want_lt, line, col) {
   __term(src, fn () {
     if !src.has_next() {
-      __raise('ValueError', name + ' of empty Iterator', line, col)
+      __raise('ValueError', name + ' of empty ' + owner, line, col)
     }
     mut best = src.next()
     mut bk = f(best)
@@ -2664,20 +2799,20 @@ fn __iter_method(src, name, args, line, col) {
   }
   if name == 'min' {
     __nargs(name, args, 0, line, col)
-    return __it_min_max(src, name, true, line, col)
+    return __it_min_max(src, name, 'Iterator', true, line, col)
   }
   if name == 'max' {
     __nargs(name, args, 0, line, col)
-    return __it_min_max(src, name, false, line, col)
+    return __it_min_max(src, name, 'Iterator', false, line, col)
   }
   if name == 'min_by' {
     __nargs(name, args, 1, line, col)
-    return __it_min_max_by(src, name, __check_fn(args[0], line, col), true,
+    return __it_min_max_by(src, name, 'Iterator', __check_fn(args[0], line, col), true,
                            line, col)
   }
   if name == 'max_by' {
     __nargs(name, args, 1, line, col)
-    return __it_min_max_by(src, name, __check_fn(args[0], line, col), false,
+    return __it_min_max_by(src, name, 'Iterator', __check_fn(args[0], line, col), false,
                            line, col)
   }
   if name == 'to_set' {
@@ -2880,6 +3015,727 @@ fn __norm_iter(it) {
   }
   __mk_iter(hn, nx)
 }
+
+# --- UTF-8 and the small Unicode tables the String methods need -----------
+#
+# Strings are bytes (culebra's own model); these walk them by code point.
+# Two properties are carried as exact range tables (White_Space, Nd); case
+# mapping covers ASCII, Latin-1, Greek, and Cyrillic; Alphabetic is the
+# major letter blocks. Normalization, graphemes, and full case folding
+# would need the Unicode database and are approximated -- see the header.
+
+fn __bchr(n) { __allbytes()[n] }
+
+fn __byte(c) {
+  # a one-byte string's value, 0..255, via its position in the byte order
+  # (strings compare bytewise, so a binary search over the range works)
+  mut lo = 0
+  mut hi = 255
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if c > __bchr(mid) { lo = mid + 1 } else { hi = mid }
+  }
+  lo
+}
+
+fn __decode_cp(s, i) {
+  # -> [code point, byte length]; an invalid sequence is U+FFFD over 1 byte
+  let n = __len(s)
+  let b0 = __byte(s[i])
+  if b0 < 128 { return [b0, 1] }
+  mut need = 0
+  mut cp = 0
+  if b0 >= 194 && b0 <= 223 {
+    need = 1
+    cp = b0 - 192
+  }
+  if b0 >= 224 && b0 <= 239 {
+    need = 2
+    cp = b0 - 224
+  }
+  if b0 >= 240 && b0 <= 244 {
+    need = 3
+    cp = b0 - 240
+  }
+  if need == 0 { return [65533, 1] }
+  if i + need >= n + 0 {
+    if i + need > n - 0 { return [65533, 1] }
+  }
+  mut k = 1
+  while k <= need {
+    if i + k >= n { return [65533, 1] }
+    let b = __byte(s[i + k])
+    if b < 128 || b > 191 { return [65533, 1] }
+    cp = cp * 64 + (b - 128)
+    k = k + 1
+  }
+  if cp >= 55296 && cp <= 57343 { return [65533, 1] }
+  if cp > 1114111 { return [65533, 1] }
+  [cp, need + 1]
+}
+
+fn __cps(s) {
+  mut out = []
+  mut i = 0
+  while i < __len(s) {
+    let d = __decode_cp(s, i)
+    __arraypush(out, d[0])
+    i = i + d[1]
+  }
+  out
+}
+
+fn __cp_str(cp) {
+  if cp < 128 { return __bchr(cp) }
+  if cp < 2048 {
+    return __bchr(192 + cp / 64) + __bchr(128 + cp % 64)
+  }
+  if cp < 65536 {
+    return __bchr(224 + cp / 4096) + __bchr(128 + (cp / 64) % 64) +
+           __bchr(128 + cp % 64)
+  }
+  __bchr(240 + cp / 262144) + __bchr(128 + (cp / 4096) % 64) +
+      __bchr(128 + (cp / 64) % 64) + __bchr(128 + cp % 64)
+}
+
+fn __cps_str(cps) {
+  mut out = ''
+  mut i = 0
+  while i < __len(cps) {
+    out = out + __cp_str(cps[i])
+    i = i + 1
+  }
+  out
+}
+
+fn __in_ranges(cp, tbl) {
+  mut i = 0
+  while i < __len(tbl) {
+    if cp >= tbl[i] {
+      if cp <= tbl[i + 1] { return true }
+    }
+    i = i + 2
+  }
+  false
+}
+
+fn __ws_table() {
+  [9, 13, 32, 32, 133, 133, 160, 160, 5760, 5760, 8192, 8202, 8232, 8233,
+   8239, 8239, 8287, 8287, 12288, 12288]
+}
+
+fn __nd_table() {
+  [48, 57, 1632, 1641, 1776, 1785, 1984, 1993, 2406, 2415, 2534, 2543,
+   2662, 2671, 2790, 2799, 2918, 2927, 3046, 3055, 3174, 3183, 3302, 3311,
+   3430, 3439, 3558, 3567, 3664, 3673, 3792, 3801, 3872, 3881, 4160, 4169,
+   4240, 4249, 6112, 6121, 6160, 6169, 6470, 6479, 6608, 6617, 6784, 6793,
+   6800, 6809, 6992, 7001, 7088, 7097, 7232, 7241, 7248, 7257, 42528, 42537,
+   43216, 43225, 43264, 43273, 43472, 43481, 43504, 43513, 43600, 43609,
+   44016, 44025, 65296, 65305, 66720, 66729, 68912, 68921, 69734, 69743,
+   69872, 69881, 69942, 69951, 70096, 70105, 70384, 70393, 70736, 70745,
+   70864, 70873, 71248, 71257, 71360, 71369, 71472, 71481, 71904, 71913,
+   72016, 72025, 72784, 72793, 73040, 73049, 73120, 73129, 73552, 73561,
+   92768, 92777, 92864, 92873, 93008, 93017, 120782, 120831, 123200, 123209,
+   123632, 123641, 124144, 124153, 125264, 125273, 130032, 130041]
+}
+
+fn __alpha_table() {
+  [65, 90, 97, 122, 170, 170, 181, 181, 186, 186, 192, 214, 216, 246,
+   248, 705, 710, 721, 736, 740, 748, 748, 750, 750, 880, 884, 886, 887,
+   890, 893, 895, 895, 902, 902, 904, 906, 908, 908, 910, 929, 931, 1013,
+   1015, 1153, 1162, 1327, 1329, 1366, 1369, 1369, 1376, 1416, 1488, 1514,
+   1519, 1522, 1568, 1610, 1646, 1647, 1649, 1747, 2308, 2361, 2365, 2365,
+   2384, 2384, 2392, 2401, 12353, 12438, 12449, 12538, 12549, 12591,
+   13312, 19903, 19968, 40959, 44032, 55203, 65313, 65338, 65345, 65370]
+}
+
+fn __is_ws_cp(cp) { __in_ranges(cp, __ws_table()) }
+
+fn __all_cps(s, pred) {
+  # non-empty and every code point satisfies pred
+  if __len(s) == 0 { return false }
+  let cps = __cps(s)
+  mut i = 0
+  while i < __len(cps) {
+    if !pred(cps[i]) { return false }
+    i = i + 1
+  }
+  true
+}
+
+fn __upper_cp(cp) {
+  if cp >= 97 && cp <= 122 { return cp - 32 }
+  if cp < 128 { return cp }
+  if cp == 255 { return 376 }
+  if cp >= 224 && cp <= 254 && cp != 247 { return cp - 32 }
+  if cp >= 945 && cp <= 969 && cp != 962 { return cp - 32 }
+  if cp >= 1072 && cp <= 1103 { return cp - 32 }
+  if cp >= 1104 && cp <= 1119 { return cp - 80 }
+  cp
+}
+
+fn __lower_cp(cp) {
+  if cp >= 65 && cp <= 90 { return cp + 32 }
+  if cp < 128 { return cp }
+  if cp == 376 { return 255 }
+  if cp >= 192 && cp <= 222 && cp != 215 { return cp + 32 }
+  if cp >= 913 && cp <= 937 { return cp + 32 }
+  if cp >= 1040 && cp <= 1071 { return cp + 32 }
+  if cp >= 1024 && cp <= 1039 { return cp + 80 }
+  cp
+}
+
+fn __upper_str(s) {
+  let cps = __cps(s)
+  mut out = ''
+  mut i = 0
+  while i < __len(cps) {
+    if cps[i] == 223 { out = out + 'SS' } else {
+      out = out + __cp_str(__upper_cp(cps[i]))
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn __lower_str(s) {
+  let cps = __cps(s)
+  mut out = ''
+  mut i = 0
+  while i < __len(cps) {
+    out = out + __cp_str(__lower_cp(cps[i]))
+    i = i + 1
+  }
+  out
+}
+
+fn __fold_str(s) { __lower_str(__upper_str(s)) }
+
+fn __title_str(s, every_word) {
+  let cps = __cps(s)
+  mut out = ''
+  mut at_start = true
+  mut i = 0
+  while i < __len(cps) {
+    let cp = cps[i]
+    mut is_word = false
+    if __in_ranges(cp, __alpha_table()) { is_word = true }
+    if __in_ranges(cp, __nd_table()) { is_word = true }
+    if cp == 39 { is_word = true }
+    cond {
+      !is_word => {
+        out = out + __cp_str(cp)
+        at_start = every_word
+      },
+      at_start => {
+        out = out + __cp_str(__upper_cp(cp))
+        at_start = false
+      },
+      _ => { out = out + __cp_str(__lower_cp(cp)) },
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn __str_rfind(s, sub) {
+  let n = __len(s)
+  let m = __len(sub)
+  if m > n { return 0 - 1 }
+  mut i = n - m
+  while i >= 0 {
+    if __str_slice(s, i, i + m) == sub { return i }
+    i = i - 1
+  }
+  0 - 1
+}
+
+fn __str_count(s, sub) {
+  if __len(sub) == 0 { return 0 }
+  mut n = 0
+  mut from = 0
+  mut go = true
+  while go {
+    let hit = __str_index_of(s, sub, from)
+    if hit < 0 { go = false } else {
+      n = n + 1
+      from = hit + __len(sub)
+    }
+  }
+  n
+}
+
+fn __str_replace(s, pat, repl, only_first) {
+  if __len(pat) == 0 { return s }
+  mut out = ''
+  mut from = 0
+  mut go = true
+  while go {
+    let hit = __str_index_of(s, pat, from)
+    if hit < 0 {
+      out = out + __str_slice(s, from, __len(s))
+      go = false
+    } else {
+      out = out + __str_slice(s, from, hit) + repl
+      from = hit + __len(pat)
+      if only_first {
+        out = out + __str_slice(s, from, __len(s))
+        go = false
+      }
+    }
+  }
+  out
+}
+
+fn __str_split(s, sep, limit, line, col) {
+  if limit < 0 {
+    __raise('ValueError', 'split() limit must not be negative', line, col)
+  }
+  mut out = []
+  if __len(sep) == 0 {
+    __arraypush(out, s)
+    return out
+  }
+  mut from = 0
+  mut go = true
+  while go {
+    mut hit = __str_index_of(s, sep, from)
+    if limit > 0 {
+      if __len(out) == limit - 1 { hit = 0 - 1 }
+    }
+    if hit < 0 {
+      __arraypush(out, __str_slice(s, from, __len(s)))
+      go = false
+    } else {
+      __arraypush(out, __str_slice(s, from, hit))
+      from = hit + __len(sep)
+    }
+  }
+  out
+}
+
+fn __str_rsplit(s, sep, limit, line, col) {
+  if limit < 0 {
+    __raise('ValueError', 'split() limit must not be negative', line, col)
+  }
+  if limit == 0 { return __str_split(s, sep, 0, line, col) }
+  mut pieces = []
+  mut rest = s
+  mut go = true
+  while go {
+    mut hit = 0 - 1
+    if __len(sep) > 0 { hit = __str_rfind(rest, sep) }
+    if __len(pieces) == limit - 1 { hit = 0 - 1 }
+    if hit < 0 {
+      __arraypush(pieces, rest)
+      go = false
+    } else {
+      __arraypush(pieces, __str_slice(rest, hit + __len(sep), __len(rest)))
+      rest = __str_slice(rest, 0, hit)
+    }
+  }
+  mut out = []
+  mut i = __len(pieces) - 1
+  while i >= 0 {
+    __arraypush(out, pieces[i])
+    i = i - 1
+  }
+  out
+}
+
+fn __str_lines(s) {
+  mut out = []
+  mut cur = ''
+  mut i = 0
+  let n = __len(s)
+  while i < n {
+    let c = s[i]
+    cond {
+      c == "\n" => {
+        __arraypush(out, cur)
+        cur = ''
+      },
+      c == "\r" => {
+        __arraypush(out, cur)
+        cur = ''
+        if i + 1 < n {
+          if s[i + 1] == "\n" { i = i + 1 }
+        }
+      },
+      _ => { cur = cur + c },
+    }
+    i = i + 1
+  }
+  if __len(cur) > 0 { __arraypush(out, cur) }
+  out
+}
+
+fn __cp_in(cp, cps) {
+  mut i = 0
+  while i < __len(cps) {
+    if cps[i] == cp { return true }
+    i = i + 1
+  }
+  false
+}
+
+fn __trim_side(s, chars, from_start, from_end) {
+  let use_ws = __len(chars) == 0
+  let set = __cps(chars)
+  let cps = __cps(s)
+  mut lo = 0
+  mut hi = __len(cps)
+  fn strip(cp) {
+    if use_ws { return __is_ws_cp(cp) }
+    __cp_in(cp, set)
+  }
+  if from_start {
+    while lo < hi && strip(cps[lo]) { lo = lo + 1 }
+  }
+  if from_end {
+    while hi > lo && strip(cps[hi - 1]) { hi = hi - 1 }
+  }
+  mut out = []
+  mut i = lo
+  while i < hi {
+    __arraypush(out, cps[i])
+    i = i + 1
+  }
+  __cps_str(out)
+}
+
+fn __split_ws(s) {
+  let cps = __cps(s)
+  mut out = []
+  mut cur = []
+  mut i = 0
+  while i < __len(cps) {
+    if __is_ws_cp(cps[i]) {
+      if __len(cur) > 0 {
+        __arraypush(out, __cps_str(cur))
+        cur = []
+      }
+    } else {
+      __arraypush(cur, cps[i])
+    }
+    i = i + 1
+  }
+  if __len(cur) > 0 { __arraypush(out, __cps_str(cur)) }
+  out
+}
+
+fn __str_tr(s, from, to) {
+  let fc = __cps(from)
+  let tc = __cps(to)
+  let cps = __cps(s)
+  mut out = []
+  mut i = 0
+  while i < __len(cps) {
+    let cp = cps[i]
+    mut j = 0
+    mut hit = 0 - 1
+    while j < __len(fc) {
+      if hit < 0 {
+        if fc[j] == cp { hit = j }
+      }
+      j = j + 1
+    }
+    cond {
+      hit < 0 => __arraypush(out, cp),
+      __len(tc) == 0 => nil,
+      hit < __len(tc) => __arraypush(out, tc[hit]),
+      _ => __arraypush(out, tc[__len(tc) - 1]),
+    }
+    i = i + 1
+  }
+  __cps_str(out)
+}
+
+fn __split_iter(s, sep) {
+  mut from = 0
+  mut done = false
+  __lazy([], fn (slot) {
+    if done { return false }
+    if __len(sep) == 0 {
+      done = true
+      slot[0] = s
+      return true
+    }
+    let hit = __str_index_of(s, sep, from)
+    if hit < 0 {
+      done = true
+      slot[0] = __str_slice(s, from, __len(s))
+      return true
+    }
+    slot[0] = __str_slice(s, from, hit)
+    from = hit + __len(sep)
+    true
+  })
+}
+
+fn __string_ns() {
+  {from_code_point: fn (cp) { __from_cp(cp, 0, 0) },
+   from_code_points: fn (cps) { __from_cps(cps, 0, 0) },
+   from_bytes: fn (bs) { __from_bytes(bs, 0, 0) }}
+}
+
+fn __from_cp(cp, line, col) {
+  mut bad = false
+  if __typeof(cp) != 'int' { bad = true }
+  if !bad {
+    if cp < 0 { bad = true }
+    if cp > 1114111 { bad = true }
+    if cp >= 55296 && cp <= 57343 { bad = true }
+  }
+  if bad {
+    __raise('ValueError', 'String.from_code_point: ' + __tostr(cp) +
+            ' is not a Unicode scalar value.', line, col)
+  }
+  __cp_str(cp)
+}
+
+fn __from_cps(cps, line, col) {
+  if __typeof(cps) != 'array' {
+    __raise('TypeError', 'type error', line, col)
+  }
+  mut out = ''
+  mut i = 0
+  while i < __len(cps) {
+    if __typeof(cps[i]) != 'int' {
+      __raise('TypeError', 'type error', line, col)
+    }
+    out = out + __from_cp(cps[i], line, col)
+    i = i + 1
+  }
+  out
+}
+
+fn __from_bytes(bs, line, col) {
+  if __typeof(bs) != 'array' {
+    __raise('TypeError', 'type error', line, col)
+  }
+  mut out = ''
+  mut i = 0
+  while i < __len(bs) {
+    let b = bs[i]
+    if __typeof(b) != 'int' {
+      __raise('TypeError', 'type error', line, col)
+    }
+    if b < 0 || b > 255 {
+      __raise('ValueError', 'String.from_bytes: ' + __tostr(b) +
+              ' is not a byte (0-255).', line, col)
+    }
+    out = out + __bchr(b)
+    i = i + 1
+  }
+  out
+}
+
+fn __nargs_range(name, args, lo, hi, pname, line, col) {
+  let n = __len(args)
+  if n >= lo && n <= hi { return nil }
+  if n < lo {
+    __raise('ArityError', "missing required argument '" + pname + "'",
+            line, col)
+  }
+  __raise('TypeError', 'takes ' + __tostr(hi) + ' positional arguments but ' +
+          __tostr(n) + ' given', line, col)
+}
+
+fn __str_arg(v, line, col) {
+  if __typeof(v) != 'string' {
+    __raise('TypeError', 'type error: expected String, got ' +
+            __type_name(v), line, col)
+  }
+  v
+}
+
+fn __string_method2(s, name, args, line, col) {
+  if name == 'count' {
+    __nargs(name, args, 1, line, col)
+    return __str_count(s, __str_arg(args[0], line, col))
+  }
+  if name == 'last_index_of' {
+    __nargs(name, args, 1, line, col)
+    return __str_rfind(s, __str_arg(args[0], line, col))
+  }
+  if name == 'lines' {
+    __nargs(name, args, 0, line, col)
+    return __str_lines(s)
+  }
+  if name == 'replace' {
+    __nargs(name, args, 2, line, col)
+    return __str_replace(s, __str_arg(args[0], line, col),
+                         __str_arg(args[1], line, col), false)
+  }
+  if name == 'replace_first' {
+    __nargs(name, args, 2, line, col)
+    return __str_replace(s, __str_arg(args[0], line, col),
+                         __str_arg(args[1], line, col), true)
+  }
+  if name == 'rsplit' {
+    __nargs_range(name, args, 1, 2, 'sep', line, col)
+    mut limit = 0
+    if __len(args) == 2 { limit = args[1] }
+    return __str_rsplit(s, __str_arg(args[0], line, col), limit, line, col)
+  }
+  if name == 'split_once' || name == 'rsplit_once' {
+    __nargs(name, args, 1, line, col)
+    let sep = __str_arg(args[0], line, col)
+    if __len(sep) == 0 { return nil }
+    mut hit = 0
+    if name == 'split_once' { hit = __str_index_of(s, sep, 0) } else {
+      hit = __str_rfind(s, sep)
+    }
+    if hit < 0 { return nil }
+    return __mk_tuple([__str_slice(s, 0, hit),
+                       __str_slice(s, hit + __len(sep), __len(s))])
+  }
+  if name == 'split_iter' {
+    __nargs(name, args, 1, line, col)
+    return __split_iter(s, __str_arg(args[0], line, col))
+  }
+  if name == 'split_whitespace' {
+    __nargs(name, args, 0, line, col)
+    return __split_ws(s)
+  }
+  if name == 'strip_prefix' {
+    __nargs(name, args, 1, line, col)
+    let p = __str_arg(args[0], line, col)
+    if __len(p) <= __len(s) {
+      if __str_slice(s, 0, __len(p)) == p { return __str_slice(s, __len(p), __len(s)) }
+    }
+    return s
+  }
+  if name == 'strip_suffix' {
+    __nargs(name, args, 1, line, col)
+    let p = __str_arg(args[0], line, col)
+    if __len(p) <= __len(s) {
+      if __str_slice(s, __len(s) - __len(p), __len(s)) == p {
+        return __str_slice(s, 0, __len(s) - __len(p))
+      }
+    }
+    return s
+  }
+  if name == 'trim_start' || name == 'trim_end' {
+    __nargs_range(name, args, 0, 1, 'chars', line, col)
+    mut chars = ''
+    if __len(args) == 1 { chars = __str_arg(args[0], line, col) }
+    return __trim_side(s, chars, name == 'trim_start', name == 'trim_end')
+  }
+  if name == 'truncate' {
+    __nargs_range(name, args, 1, 2, 'max', line, col)
+    let mx = args[0]
+    mut ell = '...'
+    if __len(args) == 2 { ell = __str_arg(args[1], line, col) }
+    if mx < 0 {
+      __raise('ValueError', 'truncate() max must not be negative', line, col)
+    }
+    if __len(s) <= mx { return s }
+    if mx < __len(ell) {
+      __raise('ValueError', 'truncate() max must be at least ' +
+              __tostr(__len(ell)), line, col)
+    }
+    return __str_slice(s, 0, mx - __len(ell)) + ell
+  }
+  if name == 'tr' {
+    __nargs(name, args, 2, line, col)
+    return __str_tr(s, __str_arg(args[0], line, col),
+                    __str_arg(args[1], line, col))
+  }
+  if name == 'bytes' {
+    __nargs(name, args, 0, line, col)
+    mut out = []
+    mut i = 0
+    while i < __len(s) {
+      __arraypush(out, __byte(s[i]))
+      i = i + 1
+    }
+    return __arr_iter(out)
+  }
+  if name == 'code_points' || name == 'graphemes' {
+    __nargs(name, args, 0, line, col)
+    if name == 'code_points' { return __arr_iter(__cps(s)) }
+    let cps = __cps(s)
+    mut out = []
+    mut i = 0
+    while i < __len(cps) {
+      __arraypush(out, __cp_str(cps[i]))
+      i = i + 1
+    }
+    return __arr_iter(out)
+  }
+  if name == 'is_digit' {
+    __nargs(name, args, 0, line, col)
+    return __all_cps(s, fn (cp) { __in_ranges(cp, __nd_table()) })
+  }
+  if name == 'is_alpha' {
+    __nargs(name, args, 0, line, col)
+    return __all_cps(s, fn (cp) { __in_ranges(cp, __alpha_table()) })
+  }
+  if name == 'is_alnum' {
+    __nargs(name, args, 0, line, col)
+    return __all_cps(s, fn (cp) {
+      if __in_ranges(cp, __alpha_table()) { return true }
+      __in_ranges(cp, __nd_table())
+    })
+  }
+  if name == 'is_space' {
+    __nargs(name, args, 0, line, col)
+    return __all_cps(s, fn (cp) { __is_ws_cp(cp) })
+  }
+  if name == 'is_ascii' {
+    __nargs(name, args, 0, line, col)
+    return __all_cps(s, fn (cp) { cp < 128 })
+  }
+  if name == 'reverse' {
+    __nargs(name, args, 0, line, col)
+    let cps = __cps(s)
+    mut out = []
+    mut i = __len(cps) - 1
+    while i >= 0 {
+      __arraypush(out, cps[i])
+      i = i - 1
+    }
+    return __cps_str(out)
+  }
+  if name == 'upper' {
+    __nargs(name, args, 0, line, col)
+    return __upper_str(s)
+  }
+  if name == 'lower' {
+    __nargs(name, args, 0, line, col)
+    return __lower_str(s)
+  }
+  if name == 'capitalize' {
+    __nargs(name, args, 0, line, col)
+    return __title_str(s, false)
+  }
+  if name == 'title' {
+    __nargs(name, args, 0, line, col)
+    return __title_str(s, true)
+  }
+  if name == 'eq_ignore_case' {
+    __nargs(name, args, 1, line, col)
+    return __fold_str(s) == __fold_str(__str_arg(args[0], line, col))
+  }
+  if name == 'normalize' {
+    __nargs_range(name, args, 0, 1, 'form', line, col)
+    mut form = 'NFC'
+    if __len(args) == 1 { form = __str_arg(args[0], line, col) }
+    if form != 'NFC' && form != 'NFD' && form != 'NFKC' && form != 'NFKD' {
+      __raise('ValueError', "normalize() form must be 'NFC', 'NFD', 'NFKC', or 'NFKD', got '" +
+              form + "'", line, col)
+    }
+    return s
+  }
+  if name == 'to_string' || name == 'view' {
+    __nargs(name, args, 0, line, col)
+    return s
+  }
+  "\znomethod"
+}
+
 `
 
 # --- Function records and scopes ---------------------------------------------
@@ -2939,9 +3795,20 @@ let builtin_methods = ['size', 'empty', 'push', 'pop', 'get', 'slice',
                        'chunks', 'windows', 'flat_map', 'chain', 'zip',
                        'collect', 'count', 'first', 'last', 'nth', 'position',
                        'product', 'min', 'max', 'min_by', 'max_by',
-                       'to_object', 'group_by', 'partition', 'unzip']
+                       'to_object', 'group_by', 'partition', 'unzip',
+                       'count', 'last_index_of', 'lines', 'replace',
+                       'replace_first', 'rsplit', 'split_once', 'rsplit_once',
+                       'split_iter', 'split_whitespace', 'strip_prefix',
+                       'strip_suffix', 'trim_start', 'trim_end', 'truncate',
+                       'tr', 'bytes', 'code_points', 'graphemes', 'is_digit',
+                       'is_alpha', 'is_alnum', 'is_space', 'is_ascii', 'upper',
+                       'lower', 'capitalize', 'title', 'eq_ignore_case',
+                       'normalize', 'to_string', 'view', 'extend', 'insert',
+                       'remove_at', 'sort', 'sort_by', 'sorted_by']
 
 let missing_marker = String.from_code_point(1) + 'missing'
+# every byte value in order: the prelude's byte<->string conversions index it
+let allbytes_str = String.from_bytes(range(256).collect())
 # What a raw generator yields instead of ever completing: culebra runs a
 # generator body's defers only through dispose, never at the body's own
 # end, so the raw frame must stay suspended -- pending defers intact --
@@ -3644,6 +4511,10 @@ fn scan_call(node, f) {
       if args.nodes.size() != 4 { fail(id, '__error takes 4 arguments') }
       return nil
     }
+    if id.token == '__allbytes' {
+      if args.nodes.size() != 0 { fail(id, '__allbytes takes no arguments') }
+      return nil
+    }
   }
   let r = resolve(f, id.token)
   cond {
@@ -3802,6 +4673,11 @@ fn scan_expr(node, f) {
     {name: 'nil_l'} => nil,
     {name: 'ident', token} => {
       let r = resolve(f, token)
+      # `String` names the namespace holding from_code_point & co
+      if r.kind == 'none' && token == 'String' {
+        resolved[pkey(node)] = {kind: 'strns'}
+        return nil
+      }
       if r.kind == 'none' { fail(node, "undefined variable '{token}'") }
       if r.kind == 'class' {
         resolved[pkey(node)] = {kind: 'var', owner: r.owner, slot: r.slot,
@@ -4559,6 +5435,9 @@ fn emit_call(m, node, f) {
       }
       return m.object_lit(kv_list: kv, line: ln, col: cl)
     }
+    if id.token == '__allbytes' {
+      return m.str_literal(s: allbytes_str, line: ln, col: cl)
+    }
   }
   let r = resolved[pkey(id)]
   if r.kind == 'class' {
@@ -4977,6 +5856,7 @@ fn emit_expr(m, node, f) {
       }
       let r = resolved[pkey(node)]
       cond {
+        r.kind == 'strns' => call_pre(m, f, '__string_ns', [], node.line, node.column),
         r.kind == 'fn' => m.make_closure(func: r.funcs[0],
                                          cmap: cmap_for(m, f, r.funcs[0]),
                                          line: node.line, col: node.column),

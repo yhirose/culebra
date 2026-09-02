@@ -1,0 +1,106 @@
+# arrays2: the mutating methods, the sorts, and the shared terminals
+fn show(label, f) {
+  try { println("{label}: {f()}") } catch e { println("{label}: !{e.kind}: {e.message}") }
+}
+fn ext() {
+  mut a = [1, 2]
+  a.extend([3])
+  a.extend(a)
+  a
+}
+show('extend', ext)
+show('extend_bad', || [1].extend(2))
+fn ins() {
+  mut a = [1, 2, 3]
+  a.insert(1, 'x')
+  a.insert(-1, 'y')
+  a.insert(a.size(), 'z')
+  a
+}
+show('insert', ins)
+show('insert_oob', || [1].insert(5, 0))
+show('insert_neg_oob', || [1].insert(-3, 0))
+fn rem() {
+  mut a = [1, 2, 3]
+  let r = a.remove_at(-1)
+  "{r} {a} {a.remove_at(0)} {a}"
+}
+show('remove_at', rem)
+show('remove_at_oob', || [1].remove_at(1))
+show('remove_at_empty', || [].remove_at(0))
+fn srt() {
+  mut a = [3, 1, 2]
+  let r = a.sort()
+  "{r} {a}"
+}
+show('sort', srt)
+fn srt_rev() {
+  mut a = [3, 1, 2]
+  a.sort(reverse: true)
+  a
+}
+show('sort_rev', srt_rev)
+fn blk1() {
+  mut a = ['b', 'a']
+  a.sort()
+  a
+}
+show('sort_strs', blk1)
+fn blk2() {
+  mut a = [1, 'a']
+  a.sort()
+  a
+}
+show('sort_bad', blk2)
+fn blk3() {
+  mut a = [2.5, 1, 2]
+  a.sort()
+  a
+}
+show('sort_mixed_num', blk3)
+show('sorted', || [3, 1, 2].sorted())
+show('sorted_rev', || [3, 1, 2].sorted(reverse: true))
+fn blk4() {
+  mut a = ['ccc', 'a', 'bb']
+  a.sort_by(|s| s.size())
+  a
+}
+show('sort_by', blk4)
+fn blk5() {
+  mut a = ['ccc', 'a', 'bb']
+  a.sort_by(|s| s.size(), reverse: true)
+  a
+}
+show('sort_by_rev', blk5)
+show('sort_by_stable', || [(1, 'a'), (0, 'b'), (1, 'c'), (0, 'd')].sorted_by(|t| t[0]))
+show('sorted_by', || ['ccc', 'a', 'bb'].sorted_by(|s| s.size()))
+fn blk6() {
+  mut a = [1, 2]
+  a.sort_by(|x| [x])
+  a
+}
+show('sort_by_bad', blk6)
+show('a_min', || [3, 1, 2].min())
+show('a_min_empty', || [].min())
+show('a_max_by', || ['a', 'ccc'].max_by(|s| s.size()))
+show('a_min_by_empty', || [].min_by(|s| s.size()))
+show('a_product', || [2, 3].product())
+show('a_flat_map', || [1, 2].flat_map(|x| [x, x]))
+show('a_flat_map_bad', || [1, 2].flat_map(|x| x))
+show('a_group_by', || [1, 2, 3].group_by(|x| x % 2))
+show('a_partition', || [1, 2, 3].partition(|x| x > 1))
+show('a_to_object', || [('a', 1)].to_object())
+show('a_unzip', || [(1, 2), (3, 4)].unzip())
+show('a_unzip_bad', || [1].unzip())
+show('a_sum_bad', || ['a'].sum())
+fn blk7() {
+  mut a = [1, 2]
+  let r = a.reverse()
+  "{r} {a}"
+}
+show('a_reverse', blk7)
+show('a_pop_empty', || [].pop())
+show('a_get_neg', || [1, 2].get(-1, 'd'))
+show('a_slice_neg', || [1, 2, 3].slice(-2, 5))
+show('a_join_sep', || [1, [2, 3], 'x'].join(', '))
+show('a_index_of_missing', || [1].index_of(9))
