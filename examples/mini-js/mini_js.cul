@@ -1,0 +1,4180 @@
+# mini-js: an ES6 subset, compiled to CodeGen (cpp-vmlib's Core-IR) and run
+# on its bytecode executor. Where mini-culebra proves the backend carries
+# culebra, this proves it carries a language with different rules for
+# everything the VM leaves to the language: coercing operators, prototype
+# delegation, functions as objects, a job queue.
+#
+# The oracle is Node: tests/mini_js_test.sh runs every samples/*.js under
+# both and diffs stdout. Programs print through console.log; the shared
+# samples/fmt.js formats values the same way under both (Node's own
+# console.log formatting of objects is an implementation detail, not the
+# language), and an error is compared by its constructor's name only.
+#
+# The value model, on the VM's own values: a JS number is a Double (so
+# integer arithmetic is exact to 2^53, like JS); a string is the VM's
+# byte string (length and indexing count bytes -- a known difference for
+# non-ASCII text); undefined is nil; null is one object the runtime keeps;
+# an array is a VM array; an object is a VM object with a hidden
+# "\x01proto" key for its prototype; a function is an object carrying its
+# closure under "\x01fn", so it can hold properties (prototype, name) like
+# any other. Every JS function's closure takes `this` as its first
+# parameter, arrows included (theirs is unused: `this` binds lexically).
+#
+# Batches: J1 (this one) -- scalars and their operators, var/let/const,
+# if/while/do/for/for-of/break/continue, functions and closures, arrows,
+# template literals, objects and arrays with the first methods, new,
+# try/catch/throw, the Error classes.
+#
+# Known differences: string length/indexing by byte; no TDZ for a captured
+# let (read before its declaration it is undefined); arrays have no holes
+# (a gap reads as undefined and prints as one); ToPrimitive on objects is
+# fixed ('[object Object]', arrays join); a function's name is only the
+# declared one (no inference from `let f = function () {}`); at most 8 call
+# arguments; sloppy mode only (a receiver-less call sees the global object
+# as `this`, as Node's CommonJS modules do; the program's own `this` is an
+# empty object, like module.exports).
+
+let bt = String.from_code_point(96)
+let q = String.from_code_point(39)
+
+let grammar = `
+  program    <- stmt*                                          { no_ast_opt }
+  stmt       <- var_decl / fn_decl / if_s / while_s / do_s / for_of / for_s /
+                return_s / break_s / continue_s / throw_s / try_s / block /
+                empty_s / expr_s
+  var_decl   <- decl_kw declr (',' declr)* ';'?                  { no_ast_opt }
+  decl_kw    <- < 'var' / 'let' / 'const' >
+  declr      <- ident ('=' !'=' expr)?                           { no_ast_opt }
+  fn_decl    <- 'function' ident '(' params ')' block             { no_ast_opt }
+  params     <- (param (',' param)*)? ','?                        { no_ast_opt }
+  param      <- rest_p / dflt_p / ident
+  rest_p     <- '...' ident                                      { no_ast_opt }
+  dflt_p     <- ident '=' !'=' expr                              { no_ast_opt }
+  if_s       <- 'if' '(' expr ')' stmt else_c?                   { no_ast_opt }
+  else_c     <- 'else' stmt                                      { no_ast_opt }
+  while_s    <- 'while' '(' expr ')' stmt                        { no_ast_opt }
+  do_s       <- 'do' stmt 'while' '(' expr ')' ';'?              { no_ast_opt }
+  for_of     <- 'for' '(' decl_kw ident 'of' expr ')' stmt       { no_ast_opt }
+  for_s      <- 'for' '(' for_init ';' for_cond ';' for_step ')' stmt { no_ast_opt }
+  for_init   <- (var_decl_ns / expr)?                            { no_ast_opt }
+  var_decl_ns <- decl_kw declr (',' declr)*                      { no_ast_opt }
+  for_cond   <- expr?                                            { no_ast_opt }
+  for_step   <- expr?                                            { no_ast_opt }
+  return_s   <- 'return' ret_val ';'?                            { no_ast_opt }
+  ret_val    <- expr?                                            { no_ast_opt }
+  break_s    <- 'break' ';'?                                     { no_ast_opt }
+  continue_s <- 'continue' ';'?                                  { no_ast_opt }
+  throw_s    <- 'throw' expr ';'?                                { no_ast_opt }
+  try_s      <- 'try' block catch_c? finally_c?                  { no_ast_opt }
+  catch_c    <- 'catch' catch_p block                            { no_ast_opt }
+  catch_p    <- ('(' ident ')')?                                 { no_ast_opt }
+  finally_c  <- 'finally' block                                  { no_ast_opt }
+  block      <- '{' stmt* '}'                                    { no_ast_opt }
+  empty_s    <- ';'                                              { no_ast_opt }
+  expr_s     <- expr ';'?                                        { no_ast_opt }
+
+  expr       <- arrow / assign_e / ternary
+  arrow      <- arrow_p '=>' arrow_body                          { no_ast_opt }
+  arrow_p    <- '(' params ')' / arrow_one
+  arrow_one  <- ident                                            { no_ast_opt }
+  arrow_body <- block / expr
+  assign_e   <- postfix assign_op expr                           { no_ast_opt }
+  assign_op  <- < '=' !'=' / '+=' / '-=' / '*=' / '/=' / '%=' / '**=' / '??=' / '||=' / '&&=' >
+  ternary    <- nullish ('?' expr ':' expr)?
+  nullish    <- lor (nullish_op lor)*
+  nullish_op <- < '??' >
+  lor        <- land (lor_op land)*
+  lor_op     <- < '||' > !'='
+  land       <- bor (land_op bor)*
+  land_op    <- < '&&' > !'='
+  bor        <- bxor (bor_op bxor)*
+  bor_op     <- < '|' > ![|=]
+  bxor       <- band (bxor_op band)*
+  bxor_op    <- < '^' > !'='
+  band       <- eq (band_op eq)*
+  band_op    <- < '&' > ![&=]
+  eq         <- rel (eq_op rel)*
+  eq_op      <- < '===' / '!==' / '==' / '!=' >
+  rel        <- shift (rel_op shift)*
+  rel_op     <- < '<=' / '>=' / '<' !'<' / '>' !'>' / 'instanceof' / 'in' >
+  shift      <- add (shift_op add)*
+  shift_op   <- < '<<' / '>>>' / '>>' > !'='
+  add        <- mul (add_op mul)*
+  add_op     <- < '+' > ![+=] / < '-' > ![-=]
+  mul        <- exp_e (mul_op exp_e)*
+  mul_op     <- < [*/%] > ![*=]
+  exp_e      <- unary ('**' !'=' exp_e)?
+  unary      <- unary_op unary / update
+  unary_op   <- < '!' !'=' / '-' ![-=] / '+' ![+=] / '~' / 'typeof' / 'void' / 'delete' >
+  update     <- pre_inc / post_inc / postfix
+  pre_inc    <- inc_op postfix                                   { no_ast_opt }
+  post_inc   <- postfix inc_op                                   { no_ast_opt }
+  inc_op     <- < '++' / '--' >
+  postfix    <- new_e / primary (call_p / index_p / member_p)*
+  new_e      <- 'new' primary (index_p / member_p)* new_args (call_p / index_p / member_p)* { no_ast_opt }
+  new_args   <- ('(' args ')')?                                  { no_ast_opt }
+  call_p     <- '(' args ')'                                     { no_ast_opt }
+  args       <- (arg (',' arg)*)? ','?                           { no_ast_opt }
+  arg        <- spread / expr
+  spread     <- '...' expr                                       { no_ast_opt }
+  index_p    <- '[' expr ']'                                     { no_ast_opt }
+  member_p   <- '.' pname                                        { no_ast_opt }
+  pname      <- < [a-zA-Z_$][a-zA-Z0-9_$]* >
+  primary    <- number / string / template / true_l / false_l / null_l /
+                this_e / array_lit / object_lit / fn_expr / paren / ident
+  true_l     <- 'true'                                           { no_ast_opt }
+  false_l    <- 'false'                                          { no_ast_opt }
+  null_l     <- 'null'                                           { no_ast_opt }
+  this_e     <- 'this'                                           { no_ast_opt }
+  number     <- < '0x' [0-9a-fA-F]+ / '0b' [01]+ / '0o' [0-7]+ /
+                  [0-9]+ ('.' [0-9]*)? exp? / '.' [0-9]+ exp? >
+  exp        <- [eE] [-+]? [0-9]+
+  string     <- < ['] (!['\\] . / '\\' .)* ['] > / < ["] (!["\\] . / '\\' .)* ["] >
+  array_lit  <- '[' (arg (',' arg)*)? ','? ']'                   { no_ast_opt }
+  object_lit <- '{' (oprop (',' oprop)*)? ','? '}'               { no_ast_opt }
+  oprop      <- method_p / kv_p / computed_p / ospread / short_p
+  kv_p       <- pkey ':' expr                                    { no_ast_opt }
+  pkey       <- pname / string / number
+  computed_p <- '[' expr ']' ':' expr                            { no_ast_opt }
+  method_p   <- pname '(' params ')' block                       { no_ast_opt }
+  short_p    <- ident                                            { no_ast_opt }
+  ospread    <- '...' expr                                       { no_ast_opt }
+  fn_expr    <- 'function' fn_name '(' params ')' block          { no_ast_opt }
+  fn_name    <- ident?                                           { no_ast_opt }
+  paren      <- '(' expr ')'                                     { no_ast_opt }
+  ident      <- !keyword < [a-zA-Z_$][a-zA-Z0-9_$]* >
+  keyword    <- ('if' / 'else' / 'while' / 'for' / 'function' / 'return' /
+                 'let' / 'const' / 'var' / 'true' / 'false' / 'null' / 'this' /
+                 'new' / 'typeof' / 'instanceof' / 'in' / 'class' / 'extends' /
+                 'super' / 'throw' / 'try' / 'catch' / 'finally' / 'break' /
+                 'continue' / 'do' / 'void' / 'delete' / 'yield' / 'await') ![a-zA-Z0-9_$]
+
+  %whitespace <- ([ \t\r\n]+ / '//' [^\n]* / '/*' (!'*/' .)* '*/')*
+  %word       <- [a-zA-Z0-9_$]
+` +
+  '  template   <- ' +
+  q +
+  bt +
+  q +
+  ' tpart* ' +
+  q +
+  bt +
+  q +
+  '   { no_ast_opt }' +
+  "\n" +
+  '  tpart      <- tsub / tchunk' +
+  "\n" +
+  '  tsub       <- ' +
+  q +
+  '$' +
+  q +
+  ' ' +
+  q +
+  '{' +
+  q +
+  ' expr ' +
+  q +
+  '}' +
+  q +
+  '   { no_ast_opt }' +
+  "\n" +
+  '  tchunk     <- < (!(' +
+  q +
+  bt +
+  q +
+  ' / ' +
+  q +
+  '$' +
+  q +
+  ' ' +
+  q +
+  '{' +
+  q +
+  ' / ' +
+  q +
+  '\\' +
+  q +
+  ') . / ' +
+  q +
+  '\\' +
+  q +
+  ' .)+ >' +
+  "\n"
+
+# --- The runtime, in JS --------------------------------------------------------
+#
+# Compiled in prelude mode, where the language is the VM's: operators are
+# the raw VM operations over the value tags they accept, a property read
+# is a raw index, and a call of a declared helper is a raw call (no
+# `this`). Only a function *expression* here is a JS function -- the ones
+# stored in the prototypes -- and calls of JS function values go through
+# __call. Names of the form __xxx that match the intrinsic table are VM
+# intrinsics. __G is the global table (built by __init_globals, held by
+# the entry frame, captured by every function).
+
+let prelude_src = `
+function __nan() { return 0.0 / 0.0; }
+function __inf() { return 1.0 / 0.0; }
+
+function __is_null(v) { return __typeof(v) === 'object' && __same(v, __G.null); }
+function __is_fnobj(v) { return __typeof(v) === 'object' && __objecthas(v, '\x01fn'); }
+function __is_err(v) { return __typeof(v) === 'object' && __objecthas(v, '\x01msg'); }
+function __proto_of(v) {
+  var t = __typeof(v);
+  if (t === 'object') {
+    if (__objecthas(v, '\x01proto')) { var q = v['\x01proto']; return __is_null(q) ? undefined : q; }
+    if (__is_fnobj(v)) return __G.Function_proto;
+    return __G.Object_proto;
+  }
+  if (t === 'array') return __G.Array_proto;
+  if (t === 'string') return __G.String_proto;
+  if (t === 'double') return __G.Number_proto;
+  if (t === 'bool') return __G.Boolean_proto;
+  return undefined;
+}
+
+// typeof, as JS spells it
+function __typeof_js(v) {
+  var t = __typeof(v);
+  if (t === 'nil') return 'undefined';
+  if (t === 'bool') return 'boolean';
+  if (t === 'double') return 'number';
+  if (t === 'string') return 'string';
+  if (t === 'object') { if (__is_fnobj(v)) return 'function'; }
+  return 'object';
+}
+
+function __truthy(v) {
+  var t = __typeof(v);
+  if (t === 'nil') return false;
+  if (t === 'bool') return v;
+  if (t === 'double') return v === v && v !== 0.0;
+  if (t === 'string') return __len(v) !== 0;
+  if (t === 'object') return !__is_null(v);
+  return true;
+}
+function __not(v) { return !__truthy(v); }
+function __isnullish(v) { return __typeof(v) === 'nil' || __is_null(v); }
+
+// --- strings ---------------------------------------------------------------
+function __substr(s, a, b) {
+  var out = '';
+  var i = a;
+  while (i < b) { out = out + s[i]; i = i + 1; }
+  return out;
+}
+function __str_index_of(s, needle, from) {
+  var n = __len(s);
+  var m = __len(needle);
+  var i = from;
+  while (i + m <= n) {
+    var j = 0;
+    var ok = true;
+    while (j < m) {
+      if (s[i + j] !== needle[j]) { ok = false; j = m; } else { j = j + 1; }
+    }
+    if (ok) return i;
+    i = i + 1;
+  }
+  return -1;
+}
+function __is_digit(c) { return c >= '0' && c <= '9'; }
+function __digit(c) { return __toint(__todouble(__G.digits[c])); }
+function __repeat(s, n) { var out = ''; var i = 0; while (i < n) { out = out + s; i = i + 1; } return out; }
+
+// Number::toString: the VM's shortest form, reshaped to JS's rules for
+// when the exponent appears (>= 1e21, < 1e-6) and how it is spelled.
+function __numstr(d) {
+  if (d !== d) return 'NaN';
+  if (d === __inf()) return 'Infinity';
+  if (d === 0.0 - __inf()) return '-Infinity';
+  if (d === 0.0) return '0';
+  var neg = d < 0.0;
+  var s = __tostr(neg ? 0.0 - d : d);
+  var epos = __str_index_of(s, 'e', 0);
+  var mant = s;
+  var e = 0;
+  if (epos >= 0) {
+    mant = __substr(s, 0, epos);
+    var es = __substr(s, epos + 1, __len(s));
+    var esign = 1;
+    if (es[0] === '-') { esign = -1; es = __substr(es, 1, __len(es)); }
+    else if (es[0] === '+') { es = __substr(es, 1, __len(es)); }
+    e = esign * __toint(__todouble(__parse_digits(es)));
+  }
+  var dot = __str_index_of(mant, '.', 0);
+  if (epos < 0 && dot < 0 && __len(mant) > 17) {
+    // an integer past 2^53 comes out fully expanded; JS wants the shortest
+    // digit string that still reads back as this double
+    mant = __shortest_int(mant, neg ? 0.0 - d : d);
+  }
+  var ip = dot >= 0 ? __substr(mant, 0, dot) : mant;
+  var fp = dot >= 0 ? __substr(mant, dot + 1, __len(mant)) : '';
+  var digits = '';
+  var n = 0;
+  if (ip === '0') {
+    var z = 0;
+    while (z < __len(fp) && fp[z] === '0') z = z + 1;
+    digits = __substr(fp, z, __len(fp));
+    n = 0 - z;
+  } else {
+    var lead = 0;
+    while (lead + 1 < __len(ip) && ip[lead] === '0') lead = lead + 1;
+    ip = __substr(ip, lead, __len(ip));
+    digits = ip + fp;
+    n = __len(ip);
+  }
+  n = n + e;
+  var k = __len(digits);
+  while (k > 1 && digits[k - 1] === '0') { k = k - 1; }
+  digits = __substr(digits, 0, k);
+  var out = '';
+  if (k <= n && n <= 21) {
+    out = digits + __repeat('0', n - k);
+  } else if (0 < n && n <= 21) {
+    out = __substr(digits, 0, n) + '.' + __substr(digits, n, k);
+  } else if (-6 < n && n <= 0) {
+    out = '0.' + __repeat('0', 0 - n) + digits;
+  } else {
+    var ex = n - 1;
+    var m = k === 1 ? digits : digits[0] + '.' + __substr(digits, 1, k);
+    out = m + 'e' + (ex >= 0 ? '+' : '-') + __numstr(__todouble(ex >= 0 ? ex : 0 - ex));
+  }
+  return neg ? '-' + out : out;
+}
+
+// The shortest prefix of the exact expansion E (rounded) that lies within
+// half an ulp of d, padded back to E's length. Exact decimal string
+// arithmetic: the values are past 2^53, where doubles cannot carry them.
+function __shortest_int(E, d) {
+  var x = d;
+  var e2 = 0;
+  while (x >= 2.0) { x = x / 2.0; e2 = e2 + 1; }
+  var half = __tostr(__pow(2.0, __todouble(e2 - 53)));
+  var p = 1;
+  while (p < __len(E)) {
+    var C = __dstr_round(E, p);
+    var diff = __dstr_cmp(C, E) >= 0 ? __dstr_sub(C, E) : __dstr_sub(E, C);
+    if (__dstr_cmp(diff, half) < 0) return C;
+    p = p + 1;
+  }
+  return E;
+}
+function __dstr_strip(a) {
+  var i = 0;
+  while (i + 1 < __len(a) && a[i] === '0') i = i + 1;
+  return __substr(a, i, __len(a));
+}
+function __dstr_cmp(a, b) {
+  var x = __dstr_strip(a);
+  var y = __dstr_strip(b);
+  if (__len(x) !== __len(y)) return __len(x) < __len(y) ? -1 : 1;
+  if (x < y) return -1;
+  if (x > y) return 1;
+  return 0;
+}
+function __dstr_sub(a, b) {
+  var out = '';
+  var borrow = 0;
+  var i = __len(a) - 1;
+  var j = __len(b) - 1;
+  while (i >= 0) {
+    var v = __digit(a[i]) - borrow - (j >= 0 ? __digit(b[j]) : 0);
+    if (v < 0) { v = v + 10; borrow = 1; } else { borrow = 0; }
+    out = __G.chars[v + 48] + out;
+    i = i - 1;
+    j = j - 1;
+  }
+  return __dstr_strip(out);
+}
+function __dstr_inc(a) {
+  var out = '';
+  var carry = 1;
+  var i = __len(a) - 1;
+  while (i >= 0) {
+    var v = __digit(a[i]) + carry;
+    if (v >= 10) { v = v - 10; carry = 1; } else { carry = 0; }
+    out = __G.chars[v + 48] + out;
+    i = i - 1;
+  }
+  return carry === 1 ? '1' + out : out;
+}
+function __dstr_round(E, p) {
+  var head = __substr(E, 0, p);
+  if (__digit(E[p]) >= 5) head = __dstr_inc(head);
+  return head + __repeat('0', __len(E) - p);
+}
+
+// digits only -> the number they spell (as a string of digits, no sign)
+function __parse_digits(s) {
+  var v = 0.0;
+  var i = 0;
+  while (i < __len(s)) { v = v * 10.0 + __todouble(__digit(s[i])); i = i + 1; }
+  return v;
+}
+function __trim(s) {
+  var a = 0;
+  var b = __len(s);
+  while (a < b && (s[a] === ' ' || s[a] === '\t' || s[a] === '\n' || s[a] === '\r')) a = a + 1;
+  while (b > a && (s[b - 1] === ' ' || s[b - 1] === '\t' || s[b - 1] === '\n' || s[b - 1] === '\r')) b = b - 1;
+  return __substr(s, a, b);
+}
+// StringToNumber: decimal with fraction and exponent, hex, Infinity, else NaN
+function __str_to_num(s0) {
+  var s = __trim(s0);
+  var n = __len(s);
+  if (n === 0) return 0.0;
+  var sign = 1.0;
+  var i = 0;
+  if (s[0] === '-') { sign = -1.0; i = 1; } else if (s[0] === '+') { i = 1; }
+  if (__substr(s, i, n) === 'Infinity') return sign * __inf();
+  if (i + 1 < n && s[i] === '0' && (s[i + 1] === 'x' || s[i + 1] === 'X')) {
+    var hv = 0.0;
+    var j = i + 2;
+    if (j >= n) return __nan();
+    while (j < n) {
+      var hd = __hexval(s[j]);
+      if (hd < 0) return __nan();
+      hv = hv * 16.0 + __todouble(hd);
+      j = j + 1;
+    }
+    return sign * hv;
+  }
+  var ipart = 0.0;
+  var seen = false;
+  while (i < n && __is_digit(s[i])) { ipart = ipart * 10.0 + __todouble(__digit(s[i])); i = i + 1; seen = true; }
+  var fpart = 0.0;
+  var fscale = 1.0;
+  if (i < n && s[i] === '.') {
+    i = i + 1;
+    while (i < n && __is_digit(s[i])) { fpart = fpart * 10.0 + __todouble(__digit(s[i])); fscale = fscale * 10.0; i = i + 1; seen = true; }
+  }
+  if (!seen) return __nan();
+  var v = (ipart * fscale + fpart) / fscale;
+  if (i < n && (s[i] === 'e' || s[i] === 'E')) {
+    i = i + 1;
+    var esign = 1.0;
+    if (i < n && s[i] === '-') { esign = -1.0; i = i + 1; } else if (i < n && s[i] === '+') { i = i + 1; }
+    var ev = 0.0;
+    var eseen = false;
+    while (i < n && __is_digit(s[i])) { ev = ev * 10.0 + __todouble(__digit(s[i])); i = i + 1; eseen = true; }
+    if (!eseen) return __nan();
+    v = v * __pow(10.0, esign * ev);
+  }
+  if (i !== n) return __nan();
+  return sign * v;
+}
+function __hexval(c) {
+  if (__objecthas(__G.hexdigits, c)) return __toint(__todouble(__G.hexdigits[c]));
+  return -1;
+}
+
+// --- conversions -----------------------------------------------------------
+function __tonum(v) {
+  var t = __typeof(v);
+  if (t === 'double') return v;
+  if (t === 'nil') return __nan();
+  if (t === 'bool') return v ? 1.0 : 0.0;
+  if (t === 'string') return __str_to_num(v);
+  if (t === 'object') { if (__is_null(v)) return 0.0; return __str_to_num(__str(v)); }
+  if (t === 'array') return __str_to_num(__str(v));
+  return __nan();
+}
+function __str(v) {
+  var t = __typeof(v);
+  if (t === 'string') return v;
+  if (t === 'double') return __numstr(v);
+  if (t === 'nil') return 'undefined';
+  if (t === 'bool') return v ? 'true' : 'false';
+  if (t === 'array') return __join(v, ',');
+  if (t === 'object') {
+    if (__is_null(v)) return 'null';
+    if (__is_fnobj(v)) return 'function ' + v.name + '() { [code] }';
+    if (__is_err(v)) {
+      var nm = __get(v, 'name');
+      var msg = v['\x01msg'];
+      if (msg === '') return __str(nm);
+      return __str(nm) + ': ' + __str(msg);
+    }
+    return '[object Object]';
+  }
+  return '' + t;
+}
+function __join(arr, sep) {
+  var out = '';
+  var i = 0;
+  var n = __len(arr);
+  while (i < n) {
+    if (i > 0) out = out + sep;
+    var x = arr[i];
+    if (!__isnullish(x)) out = out + __str(x);
+    i = i + 1;
+  }
+  return out;
+}
+// the string an object key is looked up by
+function __key(k) {
+  var t = __typeof(k);
+  if (t === 'string') return k;
+  if (t === 'double') return __numstr(k);
+  return __str(k);
+}
+// an array index, or -1 when the key is not a canonical index
+function __aindex(k) {
+  var t = __typeof(k);
+  var d = 0.0;
+  if (t === 'double') d = k;
+  else if (t === 'string') { d = __str_to_num(k); if (__numstr(d) !== k) return -1; }
+  else return -1;
+  if (d !== d || d < 0.0 || d !== __todouble(__toint_safe(d))) return -1;
+  return __toint(d);
+}
+function __toint_safe(d) {
+  if (d !== d || d > 9.0e15 || d < -9.0e15) return 0;
+  return __toint(d);
+}
+// ToInt32 / ToUint32
+function __toint32(v) {
+  var d = __tonum(v);
+  if (d !== d || d === __inf() || d === 0.0 - __inf()) return 0;
+  var t = d < 0.0 ? 0.0 - __todouble(__toint_safe(0.0 - d)) : __todouble(__toint_safe(d));
+  var m = __fmod(t, 4294967296.0);
+  if (m < 0.0) m = m + 4294967296.0;
+  if (m >= 2147483648.0) m = m - 4294967296.0;
+  return __toint(m);
+}
+function __touint32(v) {
+  var d = __tonum(v);
+  if (d !== d || d === __inf() || d === 0.0 - __inf()) return 0;
+  var t = d < 0.0 ? 0.0 - __todouble(__toint_safe(0.0 - d)) : __todouble(__toint_safe(d));
+  var m = __fmod(t, 4294967296.0);
+  if (m < 0.0) m = m + 4294967296.0;
+  return __toint(m);
+}
+
+// --- operators -------------------------------------------------------------
+function __prim(v) {
+  // ToPrimitive with the fixed answers this runtime gives objects
+  var t = __typeof(v);
+  if (t === 'array' || (t === 'object' && !__is_null(v))) return __str(v);
+  return v;
+}
+function __add(a, b) {
+  var pa = __prim(a);
+  var pb = __prim(b);
+  if (__typeof(pa) === 'string' || __typeof(pb) === 'string') return __str(pa) + __str(pb);
+  return __tonum(pa) + __tonum(pb);
+}
+function __sub(a, b) { return __tonum(a) - __tonum(b); }
+function __mul(a, b) { return __tonum(a) * __tonum(b); }
+function __div(a, b) { return __tonum(a) / __tonum(b); }
+function __mod(a, b) {
+  var x = __tonum(a);
+  var y = __tonum(b);
+  if (x !== x || y !== y || y === 0.0 || x === __inf() || x === 0.0 - __inf()) return __nan();
+  if (y === __inf() || y === 0.0 - __inf()) return x;
+  if (x === 0.0) return x;
+  return __fmod(x, y);
+}
+function __powop(a, b) {
+  var x = __tonum(a);
+  var y = __tonum(b);
+  if (y !== y) return __nan();
+  if (y === 0.0) return 1.0;
+  return __pow(x, y);
+}
+function __neg(a) { return 0.0 - __tonum(a); }
+function __band(a, b) { return __todouble(__bitand(__toint32(a), __toint32(b))); }
+function __bor(a, b) { return __todouble(__bitor(__toint32(a), __toint32(b))); }
+function __bxor(a, b) { return __todouble(__bitxor(__toint32(a), __toint32(b))); }
+function __bnot(a) { return __todouble(__bitnot(__toint32(a))); }
+function __shl(a, b) { return __todouble(__wrap32(__ishl(__toint32(a), __bitand(__touint32(b), 31)))); }
+function __shr(a, b) { return __todouble(__ishr(__toint32(a), __bitand(__touint32(b), 31))); }
+function __ushr(a, b) { return __todouble(__ishr(__touint32(a), __bitand(__touint32(b), 31))); }
+function __wrap32(i) {
+  var m = __fmod(__todouble(i), 4294967296.0);
+  if (m < 0.0) m = m + 4294967296.0;
+  if (m >= 2147483648.0) m = m - 4294967296.0;
+  return __toint(m);
+}
+function __cmp_lt(a, b) {
+  var pa = __prim(a);
+  var pb = __prim(b);
+  if (__typeof(pa) === 'string' && __typeof(pb) === 'string') return pa < pb;
+  var x = __tonum(pa);
+  var y = __tonum(pb);
+  if (x !== x || y !== y) return undefined;
+  return x < y;
+}
+function __lt(a, b) { var r = __cmp_lt(a, b); return r === undefined ? false : r; }
+function __gt(a, b) { var r = __cmp_lt(b, a); return r === undefined ? false : r; }
+function __le(a, b) { var r = __cmp_lt(b, a); return r === undefined ? false : !r; }
+function __ge(a, b) { var r = __cmp_lt(a, b); return r === undefined ? false : !r; }
+function __seq(a, b) {
+  var ta = __typeof(a);
+  var tb = __typeof(b);
+  if (ta !== tb) return false;
+  if (ta === 'object' || ta === 'array' || ta === 'generator') return __same(a, b);
+  if (ta === 'nil') return true;
+  return a === b;
+}
+function __eq(a, b) {
+  var ta = __typeof(a);
+  var tb = __typeof(b);
+  var na = ta === 'nil' || __is_null(a);
+  var nb = tb === 'nil' || __is_null(b);
+  if (na || nb) return na && nb;
+  if (ta === tb) return __seq(a, b);
+  if (ta === 'bool') return __eq(a ? 1.0 : 0.0, b);
+  if (tb === 'bool') return __eq(a, b ? 1.0 : 0.0);
+  if (ta === 'double' && tb === 'string') return a === __str_to_num(b);
+  if (ta === 'string' && tb === 'double') return __str_to_num(a) === b;
+  if (ta === 'object' || ta === 'array') return __eq(__prim(a), b);
+  if (tb === 'object' || tb === 'array') return __eq(a, __prim(b));
+  return false;
+}
+function __instanceof(v, C) {
+  if (!__is_fnobj(C)) throw __err('TypeError', "Right-hand side of 'instanceof' is not callable");
+  var target = C.prototype;
+  if (__typeof(v) !== 'object' && __typeof(v) !== 'array') return false;
+  if (__is_null(v)) return false;
+  var p = __proto_of(v);
+  while (__typeof(p) === 'object') {
+    if (__same(p, target)) return true;
+    p = __proto_next(p);
+  }
+  return false;
+}
+function __in(k, o) {
+  var t = __typeof(o);
+  if (t !== 'object' && t !== 'array') throw __err('TypeError', "Cannot use 'in' operator to search for '" + __key(k) + "' in " + __str(o));
+  return !(__typeof(__get(o, k)) === 'nil' && !__has_own(o, k));
+}
+function __has_own(o, k) {
+  var t = __typeof(o);
+  if (t === 'array') { var i = __aindex(k); if (i >= 0) return i < __len(o); return __key(k) === 'length'; }
+  if (t === 'object') return __objecthas(o, __key(k));
+  return false;
+}
+
+// --- properties --------------------------------------------------------------
+function __get(o, k) {
+  var t = __typeof(o);
+  if (t === 'nil' || (t === 'object' && __is_null(o))) {
+    throw __err('TypeError', 'Cannot read properties of ' + __str(o) + " (reading '" + __key(k) + "')");
+  }
+  if (t === 'array') {
+    var i = __aindex(k);
+    if (i >= 0) return i < __len(o) ? o[i] : undefined;
+    var ks = __key(k);
+    if (ks === 'length') return __todouble(__len(o));
+    return __proto_get(__G.Array_proto, ks);
+  }
+  if (t === 'string') {
+    var si = __aindex(k);
+    if (si >= 0) return si < __len(o) ? o[si] : undefined;
+    var sk = __key(k);
+    if (sk === 'length') return __todouble(__len(o));
+    return __proto_get(__G.String_proto, sk);
+  }
+  if (t === 'object') {
+    var key = __key(k);
+    if (__objecthas(o, key)) return o[key];
+    if (key === 'message' && __objecthas(o, '\x01msg')) return o['\x01msg'];
+    if (__objecthas(o, '\x01proto')) return __proto_get(o['\x01proto'], key);
+    if (__is_fnobj(o)) return __proto_get(__G.Function_proto, key);
+    return __proto_get(__G.Object_proto, key);
+  }
+  if (t === 'double') return __proto_get(__G.Number_proto, __key(k));
+  if (t === 'bool') return __proto_get(__G.Boolean_proto, __key(k));
+  return undefined;
+}
+function __proto_get(p, key) {
+  while (__typeof(p) === 'object') {
+    if (__objecthas(p, key)) return p[key];
+    p = __proto_next(p);
+  }
+  return undefined;
+}
+// the prototype of a prototype: its own link, else Object.prototype, whose
+// own next is nothing
+function __proto_next(p) {
+  if (__objecthas(p, '\x01proto')) {
+    var q = p['\x01proto'];
+    return __is_null(q) ? undefined : q;
+  }
+  if (__same(p, __G.Object_proto)) return undefined;
+  if (__is_fnobj(p)) return __G.Function_proto;
+  return __G.Object_proto;
+}
+function __set(o, k, v) {
+  var t = __typeof(o);
+  if (t === 'nil' || (t === 'object' && __is_null(o))) {
+    throw __err('TypeError', 'Cannot set properties of ' + __str(o) + " (setting '" + __key(k) + "')");
+  }
+  if (t === 'array') {
+    var i = __aindex(k);
+    if (i >= 0) {
+      var n = __len(o);
+      if (i < n) { o[i] = v; return v; }
+      while (n < i) { __arraypush(o, undefined); n = n + 1; }
+      __arraypush(o, v);
+      return v;
+    }
+    if (__key(k) === 'length') {
+      var want = __toint_safe(__tonum(v));
+      while (__len(o) > want) __arraypop(o);
+      while (__len(o) < want) __arraypush(o, undefined);
+      return v;
+    }
+    return v;
+  }
+  if (t === 'object') {
+    var key = __key(k);
+    if (key === 'message' && __objecthas(o, '\x01msg')) { o['\x01msg'] = __str(v); return v; }
+    o[key] = v;
+    return v;
+  }
+  return v;
+}
+function __delete(o, k) {
+  if (__typeof(o) === 'object') { __objectremove(o, __key(k)); }
+  return true;
+}
+function __own_keys(o) {
+  var t = __typeof(o);
+  var out = [];
+  if (t === 'array') {
+    var i = 0;
+    while (i < __len(o)) { __arraypush(out, __numstr(__todouble(i))); i = i + 1; }
+    return out;
+  }
+  if (t === 'string') {
+    var j = 0;
+    while (j < __len(o)) { __arraypush(out, __numstr(__todouble(j))); j = j + 1; }
+    return out;
+  }
+  if (t === 'object') {
+    var ks = __objectkeys(o);
+    var ints = [];
+    var m = 0;
+    while (m < __len(ks)) {
+      var key = ks[m];
+      if (key[0] !== '\x01') {
+        if (__aindex(key) >= 0) __arraypush(ints, key); else __arraypush(out, key);
+      }
+      m = m + 1;
+    }
+    if (__len(ints) > 0) {
+      // insertion sort by numeric value, then the string keys after
+      var a = 1;
+      while (a < __len(ints)) {
+        var x = ints[a];
+        var b = a - 1;
+        while (b >= 0 && __str_to_num(ints[b]) > __str_to_num(x)) { ints[b + 1] = ints[b]; b = b - 1; }
+        ints[b + 1] = x;
+        a = a + 1;
+      }
+      var c = 0;
+      while (c < __len(out)) { __arraypush(ints, out[c]); c = c + 1; }
+      return ints;
+    }
+  }
+  return out;
+}
+
+// --- functions and calls -----------------------------------------------------
+function __mkfn(c, name, arrow, len) {
+  var f = {};
+  f['\x01fn'] = c;
+  f.name = name;
+  f.length = __typeof(len) === 'nil' ? 0.0 : len;
+  if (!arrow) {
+    var p = {};
+    p.constructor = f;
+    f.prototype = p;
+  }
+  return f;
+}
+function __call(f, thisv, args) {
+  if (!__is_fnobj(f)) throw __err('TypeError', __str(f) + ' is not a function');
+  return __apply(f['\x01fn'], __typeof(thisv) === 'nil' ? __G : thisv, args);
+}
+function __callm(o, k, args) {
+  var f = __get(o, k);
+  if (!__is_fnobj(f)) throw __err('TypeError', __key(k) + ' is not a function');
+  return __apply(f['\x01fn'], o, args);
+}
+function __apply(c, t, a) {
+  var n = __len(a);
+  if (n === 0) return c(t);
+  if (n === 1) return c(t, a[0]);
+  if (n === 2) return c(t, a[0], a[1]);
+  if (n === 3) return c(t, a[0], a[1], a[2]);
+  if (n === 4) return c(t, a[0], a[1], a[2], a[3]);
+  if (n === 5) return c(t, a[0], a[1], a[2], a[3], a[4]);
+  if (n === 6) return c(t, a[0], a[1], a[2], a[3], a[4], a[5]);
+  if (n === 7) return c(t, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+  if (n === 8) return c(t, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+  throw __err('RangeError', 'too many arguments (mini-js supports at most 8)');
+}
+function __new(F, args) {
+  if (!__is_fnobj(F)) throw __err('TypeError', __str(F) + ' is not a constructor');
+  var o = {};
+  var p = F.prototype;
+  o['\x01proto'] = __typeof(p) === 'object' ? p : __G.Object_proto;
+  var r = __apply(F['\x01fn'], o, args);
+  if (__typeof(r) === 'object' && !__is_null(r)) return r;
+  if (__typeof(r) === 'array') return r;
+  return o;
+}
+// the arguments an array spread contributes
+function __spread_into(out, v) {
+  var t = __typeof(v);
+  if (t === 'array') { var i = 0; while (i < __len(v)) { __arraypush(out, v[i]); i = i + 1; } return out; }
+  if (t === 'string') { var j = 0; while (j < __len(v)) { __arraypush(out, v[j]); j = j + 1; } return out; }
+  throw __err('TypeError', __str(v) + ' is not iterable');
+}
+
+// --- errors --------------------------------------------------------------------
+function __err(kind, msg) {
+  var e = {};
+  e['\x01proto'] = __G[kind].prototype;
+  e['\x01msg'] = msg;
+  return e;
+}
+// a VM trap caught by user code becomes the JS error it stands for
+function __catch_fix(e) {
+  if (__typeof(e) === 'object' && __objecthas(e, 'line') && __objecthas(e, 'col') && !__objecthas(e, '\x01proto')) {
+    var m = e.message;
+    if (__str_index_of(m, 'recursion limit', 0) >= 0) return __err('RangeError', 'Maximum call stack size exceeded');
+    if (__str_index_of(m, 'read before', 0) >= 0 || __str_index_of(m, 'uninit', 0) >= 0) return __err('ReferenceError', m);
+    return __err('Error', m + ' (at ' + __tostr(e.line) + ':' + __tostr(e.col) + ')');
+  }
+  return e;
+}
+function __uncaught_text(e0) {
+  var e = __catch_fix(e0);
+  if (__is_err(e)) return 'Uncaught ' + __str(e);
+  return 'Uncaught ' + __inspect(e);
+}
+function __rest_pack(hidden, n) {
+  var out = [];
+  var i = 0;
+  while (i < n && i < 8) { __arraypush(out, hidden[i]); i = i + 1; }
+  return out;
+}
+function __obj_spread(target, src) {
+  if (__isnullish(src)) return target;
+  var ks = __own_keys(src);
+  var i = 0;
+  while (i < __len(ks)) { __set(target, ks[i], __get(src, ks[i])); i = i + 1; }
+  return target;
+}
+function __gget(name) {
+  if (__objecthas(__G, name)) return __G[name];
+  throw __err('ReferenceError', name + ' is not defined');
+}
+function __gset(name, v) { __G[name] = v; return v; }
+
+// --- for-of ------------------------------------------------------------------
+// An iterator record: {next} answering {value, done}. Arrays and strings
+// walk by index against their live length.
+function __iter(v) {
+  var t = __typeof(v);
+  if (t === 'array' || t === 'string') {
+    var it = {};
+    it.src = v;
+    it.i = 0;
+    return it;
+  }
+  if (t === 'object' && !__is_null(v)) {
+    var f = __get(v, '\x01iter');
+    if (__is_fnobj(f)) return __call(f, v, []);
+  }
+  throw __err('TypeError', __str(v) + ' is not iterable');
+}
+function __iter_step(it) {
+  if (__objecthas(it, 'src')) {
+    var s = it.src;
+    var i = it.i;
+    if (i >= __len(s)) return undefined;
+    it.i = i + 1;
+    return [s[i]];
+  }
+  var r = __callm(it, 'next', []);
+  if (__truthy(__get(r, 'done'))) return undefined;
+  return [__get(r, 'value')];
+}
+
+// --- inspect (console.log of a non-string) -------------------------------------
+function __inspect(v) {
+  var t = __typeof(v);
+  if (t === 'string') return "'" + v + "'";
+  if (t === 'array') {
+    var out = '[';
+    var i = 0;
+    while (i < __len(v)) { if (i > 0) out = out + ', '; out = out + __inspect(v[i]); i = i + 1; }
+    return out + ']';
+  }
+  if (t === 'object') {
+    if (__is_null(v)) return 'null';
+    if (__is_fnobj(v)) return v.name === '' ? '[Function (anonymous)]' : '[Function: ' + v.name + ']';
+    if (__is_err(v)) return __str(v);
+    var ks = __own_keys(v);
+    if (__len(ks) === 0) return '{}';
+    var o = '{ ';
+    var j = 0;
+    while (j < __len(ks)) { if (j > 0) o = o + ', '; o = o + ks[j] + ': ' + __inspect(v[ks[j]]); j = j + 1; }
+    return o + ' }';
+  }
+  return __str(v);
+}
+function __log_str(v) { return __typeof(v) === 'string' ? v : __inspect(v); }
+
+// --- the globals -------------------------------------------------------------
+function __init_globals() {
+  var G = {};
+  G.null = {};
+  G.digits = {};
+  G.digits['0'] = 0; G.digits['1'] = 1; G.digits['2'] = 2; G.digits['3'] = 3; G.digits['4'] = 4;
+  G.digits['5'] = 5; G.digits['6'] = 6; G.digits['7'] = 7; G.digits['8'] = 8; G.digits['9'] = 9;
+  G.hexdigits = {};
+  G.hexdigits['0'] = 0; G.hexdigits['1'] = 1; G.hexdigits['2'] = 2; G.hexdigits['3'] = 3;
+  G.hexdigits['4'] = 4; G.hexdigits['5'] = 5; G.hexdigits['6'] = 6; G.hexdigits['7'] = 7;
+  G.hexdigits['8'] = 8; G.hexdigits['9'] = 9;
+  G.hexdigits['a'] = 10; G.hexdigits['b'] = 11; G.hexdigits['c'] = 12; G.hexdigits['d'] = 13;
+  G.hexdigits['e'] = 14; G.hexdigits['f'] = 15;
+  G.hexdigits['A'] = 10; G.hexdigits['B'] = 11; G.hexdigits['C'] = 12; G.hexdigits['D'] = 13;
+  G.hexdigits['E'] = 14; G.hexdigits['F'] = 15;
+  G.undefined = undefined;
+  G.NaN = __nan();
+  G.Infinity = __inf();
+  G.Object_proto = {};
+  G.Function_proto = {};
+  G.Function_proto['\x01proto'] = G.Object_proto;
+  G.Array_proto = {};
+  G.Array_proto['\x01proto'] = G.Object_proto;
+  G.String_proto = {};
+  G.String_proto['\x01proto'] = G.Object_proto;
+  G.Number_proto = {};
+  G.Number_proto['\x01proto'] = G.Object_proto;
+  G.Boolean_proto = {};
+  G.Boolean_proto['\x01proto'] = G.Object_proto;
+  __G = G;
+  __init_errors(G);
+  __init_object(G);
+  __init_array(G);
+  __init_string(G);
+  __init_number(G);
+  __init_console(G);
+  __init_math(G);
+  return G;
+}
+
+function __ctor(G, name, proto, c) {
+  var f = __mkfn(c, name, false);
+  f.prototype = proto;
+  proto.constructor = f;
+  G[name] = f;
+  return f;
+}
+
+function __init_errors(G) {
+  var ep = {};
+  ep['\x01proto'] = G.Object_proto;
+  ep.name = 'Error';
+  ep.message = '';
+  ep.toString = __mkfn(function (t) { return __str(t); }, 'toString', false);
+  __ctor(G, 'Error', ep, function (t, message) {
+    t['\x01msg'] = __typeof(message) === 'nil' ? '' : __str(message);
+    return undefined;
+  });
+  var names = ['TypeError', 'RangeError', 'ReferenceError', 'SyntaxError'];
+  var i = 0;
+  while (i < __len(names)) {
+    var p = {};
+    p['\x01proto'] = ep;
+    p.name = names[i];
+    __ctor(G, names[i], p, function (t, message) {
+      t['\x01msg'] = __typeof(message) === 'nil' ? '' : __str(message);
+      return undefined;
+    });
+    i = i + 1;
+  }
+}
+
+function __init_object(G) {
+  var O = __ctor(G, 'Object', G.Object_proto, function (t, v) {
+    if (__typeof(v) === 'nil' || __is_null(v)) return {};
+    return v;
+  });
+  O.keys = __mkfn(function (t, o) {
+    if (__typeof(o) === 'nil' || __is_null(o)) throw __err('TypeError', 'Cannot convert undefined or null to object');
+    return __own_keys(o);
+  }, 'keys', false);
+  O.values = __mkfn(function (t, o) {
+    var ks = __own_keys(o);
+    var out = [];
+    var i = 0;
+    while (i < __len(ks)) { __arraypush(out, __get(o, ks[i])); i = i + 1; }
+    return out;
+  }, 'values', false);
+  O.entries = __mkfn(function (t, o) {
+    var ks = __own_keys(o);
+    var out = [];
+    var i = 0;
+    while (i < __len(ks)) { __arraypush(out, [ks[i], __get(o, ks[i])]); i = i + 1; }
+    return out;
+  }, 'entries', false);
+  O.assign = __mkfn(function (t, target, a, b, c) {
+    var srcs = [a, b, c];
+    var j = 0;
+    while (j < 3) {
+      var s = srcs[j];
+      if (!__isnullish(s)) {
+        var ks = __own_keys(s);
+        var i = 0;
+        while (i < __len(ks)) { __set(target, ks[i], __get(s, ks[i])); i = i + 1; }
+      }
+      j = j + 1;
+    }
+    return target;
+  }, 'assign', false);
+  O.getPrototypeOf = __mkfn(function (t, o) {
+    var p = __proto_of(o);
+    return __typeof(p) === 'nil' ? G.null : p;
+  }, 'getPrototypeOf', false);
+  O.create = __mkfn(function (t, p) {
+    var o = {};
+    o['\x01proto'] = __is_null(p) ? G.null : p;
+    return o;
+  }, 'create', false);
+  G.Object_proto.hasOwnProperty = __mkfn(function (t, k) { return __has_own(t, k); }, 'hasOwnProperty', false);
+  G.Object_proto.toString = __mkfn(function (t) { return __str(t); }, 'toString', false);
+  __ctor(G, 'Function', G.Function_proto, function (t) { throw __err('Error', 'Function constructor is not supported'); });
+  G.Function_proto.call = __mkfn(function (t, thisv, a, b, c, d, e, f, g) {
+    var args = [a, b, c, d, e, f, g];
+    var n = __argcount() - 2;
+    if (n < 0) n = 0;
+    var out = [];
+    var i = 0;
+    while (i < n) { __arraypush(out, args[i]); i = i + 1; }
+    return __call(t, thisv, out);
+  }, 'call', false);
+  G.Function_proto.apply = __mkfn(function (t, thisv, arr) {
+    return __call(t, thisv, __typeof(arr) === 'nil' ? [] : arr);
+  }, 'apply', false);
+  G.Function_proto.bind = __mkfn(function (t, thisv, a, b, c) {
+    var bound = [];
+    var n = __argcount() - 2;
+    var pre = [a, b, c];
+    var i = 0;
+    while (i < n && i < 3) { __arraypush(bound, pre[i]); i = i + 1; }
+    var target = t;
+    return __mkfn(function (t2, x, y, z, w) {
+      var args = [];
+      var j = 0;
+      while (j < __len(bound)) { __arraypush(args, bound[j]); j = j + 1; }
+      var extra = [x, y, z, w];
+      var m = __argcount() - 1;
+      var k = 0;
+      while (k < m && k < 4) { __arraypush(args, extra[k]); k = k + 1; }
+      return __call(target, thisv, args);
+    }, 'bound ' + t.name, false);
+  }, 'bind', false);
+  G.Boolean = __mkfn(function (t, v) { return __truthy(v); }, 'Boolean', false);
+  G.Boolean.prototype = G.Boolean_proto;
+  G.Boolean_proto.constructor = G.Boolean;
+  G.Boolean_proto.toString = __mkfn(function (t) { return __str(t); }, 'toString', false);
+}
+
+function __init_array(G) {
+  var A = __ctor(G, 'Array', G.Array_proto, function (t, n) {
+    if (__argcount() <= 1) return [];
+    var out = [];
+    if (__argcount() === 2 && __typeof(n) === 'double') {
+      var i = 0;
+      while (i < n) { __arraypush(out, undefined); i = i + 1; }
+      return out;
+    }
+    __arraypush(out, n);
+    return out;
+  });
+  A.isArray = __mkfn(function (t, v) { return __typeof(v) === 'array'; }, 'isArray', false);
+  A.of = __mkfn(function (t, a, b, c, d, e, f, g) {
+    var xs = [a, b, c, d, e, f, g];
+    var n = __argcount() - 1;
+    var out = [];
+    var i = 0;
+    while (i < n && i < 7) { __arraypush(out, xs[i]); i = i + 1; }
+    return out;
+  }, 'of', false);
+  A.from = __mkfn(function (t, v, mapf) {
+    var out = [];
+    var it = __iter(v);
+    var r = __iter_step(it);
+    var i = 0;
+    while (__typeof(r) !== 'nil') {
+      __arraypush(out, __typeof(mapf) === 'nil' ? r[0] : __call(mapf, undefined, [r[0], __todouble(i)]));
+      r = __iter_step(it);
+      i = i + 1;
+    }
+    return out;
+  }, 'from', false);
+  var P = G.Array_proto;
+  P.push = __mkfn(function (t, a, b, c, d, e, f, g) {
+    var xs = [a, b, c, d, e, f, g];
+    var n = __argcount() - 1;
+    var i = 0;
+    while (i < n && i < 7) { __arraypush(t, xs[i]); i = i + 1; }
+    return __todouble(__len(t));
+  }, 'push', false);
+  P.pop = __mkfn(function (t) { return __len(t) === 0 ? undefined : __arraypop(t); }, 'pop', false);
+  P.shift = __mkfn(function (t) {
+    if (__len(t) === 0) return undefined;
+    var first = t[0];
+    var i = 1;
+    while (i < __len(t)) { t[i - 1] = t[i]; i = i + 1; }
+    __arraypop(t);
+    return first;
+  }, 'shift', false);
+  P.unshift = __mkfn(function (t, v) {
+    __arraypush(t, undefined);
+    var i = __len(t) - 1;
+    while (i > 0) { t[i] = t[i - 1]; i = i - 1; }
+    t[0] = v;
+    return __todouble(__len(t));
+  }, 'unshift', false);
+  P.forEach = __mkfn(function (t, cb, thisArg) {
+    var i = 0;
+    while (i < __len(t)) { __call(cb, thisArg, [t[i], __todouble(i), t]); i = i + 1; }
+    return undefined;
+  }, 'forEach', false);
+  P.map = __mkfn(function (t, cb, thisArg) {
+    var out = [];
+    var i = 0;
+    while (i < __len(t)) { __arraypush(out, __call(cb, thisArg, [t[i], __todouble(i), t])); i = i + 1; }
+    return out;
+  }, 'map', false);
+  P.filter = __mkfn(function (t, cb, thisArg) {
+    var out = [];
+    var i = 0;
+    while (i < __len(t)) { if (__truthy(__call(cb, thisArg, [t[i], __todouble(i), t]))) __arraypush(out, t[i]); i = i + 1; }
+    return out;
+  }, 'filter', false);
+  P.reduce = __mkfn(function (t, cb, init) {
+    var i = 0;
+    var acc = init;
+    if (__argcount() < 3) {
+      if (__len(t) === 0) throw __err('TypeError', 'Reduce of empty array with no initial value');
+      acc = t[0];
+      i = 1;
+    }
+    while (i < __len(t)) { acc = __call(cb, undefined, [acc, t[i], __todouble(i), t]); i = i + 1; }
+    return acc;
+  }, 'reduce', false);
+  P.some = __mkfn(function (t, cb) {
+    var i = 0;
+    while (i < __len(t)) { if (__truthy(__call(cb, undefined, [t[i], __todouble(i), t]))) return true; i = i + 1; }
+    return false;
+  }, 'some', false);
+  P.every = __mkfn(function (t, cb) {
+    var i = 0;
+    while (i < __len(t)) { if (!__truthy(__call(cb, undefined, [t[i], __todouble(i), t]))) return false; i = i + 1; }
+    return true;
+  }, 'every', false);
+  P.find = __mkfn(function (t, cb) {
+    var i = 0;
+    while (i < __len(t)) { if (__truthy(__call(cb, undefined, [t[i], __todouble(i), t]))) return t[i]; i = i + 1; }
+    return undefined;
+  }, 'find', false);
+  P.findIndex = __mkfn(function (t, cb) {
+    var i = 0;
+    while (i < __len(t)) { if (__truthy(__call(cb, undefined, [t[i], __todouble(i), t]))) return __todouble(i); i = i + 1; }
+    return -1.0;
+  }, 'findIndex', false);
+  P.indexOf = __mkfn(function (t, v) {
+    var i = 0;
+    while (i < __len(t)) { if (__seq(t[i], v)) return __todouble(i); i = i + 1; }
+    return -1.0;
+  }, 'indexOf', false);
+  P.includes = __mkfn(function (t, v) {
+    var i = 0;
+    var nan = __typeof(v) === 'double' && v !== v;
+    while (i < __len(t)) { if (__seq(t[i], v) || (nan && __typeof(t[i]) === 'double' && t[i] !== t[i])) return true; i = i + 1; }
+    return false;
+  }, 'includes', false);
+  P.join = __mkfn(function (t, sep) { return __join(t, __typeof(sep) === 'nil' ? ',' : __str(sep)); }, 'join', false);
+  P.toString = __mkfn(function (t) { return __join(t, ','); }, 'toString', false);
+  P.slice = __mkfn(function (t, a, b) {
+    var n = __len(t);
+    var s = __slice_bounds(n, a, b);
+    var out = [];
+    var i = s[0];
+    while (i < s[1]) { __arraypush(out, t[i]); i = i + 1; }
+    return out;
+  }, 'slice', false);
+  P.concat = __mkfn(function (t, a, b, c) {
+    var out = [];
+    var i = 0;
+    while (i < __len(t)) { __arraypush(out, t[i]); i = i + 1; }
+    var srcs = [a, b, c];
+    var n = __argcount() - 1;
+    var j = 0;
+    while (j < n && j < 3) {
+      var s = srcs[j];
+      if (__typeof(s) === 'array') { var k = 0; while (k < __len(s)) { __arraypush(out, s[k]); k = k + 1; } }
+      else __arraypush(out, s);
+      j = j + 1;
+    }
+    return out;
+  }, 'concat', false);
+  P.reverse = __mkfn(function (t) {
+    var i = 0;
+    var j = __len(t) - 1;
+    while (i < j) { var x = t[i]; t[i] = t[j]; t[j] = x; i = i + 1; j = j - 1; }
+    return t;
+  }, 'reverse', false);
+  P.sort = __mkfn(function (t, cmp) {
+    // insertion sort, stable, with the default string comparison
+    var n = __len(t);
+    var i = 1;
+    while (i < n) {
+      var x = t[i];
+      var j = i - 1;
+      while (j >= 0 && __sort_after(t[j], x, cmp)) { t[j + 1] = t[j]; j = j - 1; }
+      t[j + 1] = x;
+      i = i + 1;
+    }
+    return t;
+  }, 'sort', false);
+  P.splice = __mkfn(function (t, start, count, a, b, c) {
+    var n = __len(t);
+    var s = __toint_safe(__tonum(start));
+    if (s < 0) { s = n + s; if (s < 0) s = 0; }
+    if (s > n) s = n;
+    var dc = __argcount() < 3 ? n - s : __toint_safe(__tonum(count));
+    if (dc < 0) dc = 0;
+    if (s + dc > n) dc = n - s;
+    var removed = [];
+    var rest = [];
+    var i = s;
+    while (i < s + dc) { __arraypush(removed, t[i]); i = i + 1; }
+    while (i < n) { __arraypush(rest, t[i]); i = i + 1; }
+    while (__len(t) > s) __arraypop(t);
+    var ins = [a, b, c];
+    var m = __argcount() - 3;
+    var j = 0;
+    while (j < m && j < 3) { __arraypush(t, ins[j]); j = j + 1; }
+    var k = 0;
+    while (k < __len(rest)) { __arraypush(t, rest[k]); k = k + 1; }
+    return removed;
+  }, 'splice', false);
+  P.fill = __mkfn(function (t, v) { var i = 0; while (i < __len(t)) { t[i] = v; i = i + 1; } return t; }, 'fill', false);
+  P.flat = __mkfn(function (t) {
+    var out = [];
+    var i = 0;
+    while (i < __len(t)) {
+      var x = t[i];
+      if (__typeof(x) === 'array') { var j = 0; while (j < __len(x)) { __arraypush(out, x[j]); j = j + 1; } }
+      else __arraypush(out, x);
+      i = i + 1;
+    }
+    return out;
+  }, 'flat', false);
+}
+function __slice_bounds(n, a, b) {
+  var start = __typeof(a) === 'nil' ? 0 : __toint_safe(__tonum(a));
+  var end = __typeof(b) === 'nil' ? n : __toint_safe(__tonum(b));
+  if (start < 0) { start = n + start; if (start < 0) start = 0; }
+  if (start > n) start = n;
+  if (end < 0) { end = n + end; if (end < 0) end = 0; }
+  if (end > n) end = n;
+  return [start, end];
+}
+function __sort_after(a, b, cmp) {
+  // whether a must come after b
+  if (__typeof(cmp) === 'nil') {
+    if (__typeof(a) === 'nil') return __typeof(b) !== 'nil';
+    if (__typeof(b) === 'nil') return false;
+    return __str(a) > __str(b);
+  }
+  return __tonum(__call(cmp, undefined, [a, b])) > 0.0;
+}
+
+function __init_string(G) {
+  var S = __ctor(G, 'String', G.String_proto, function (t, v) {
+    return __argcount() <= 1 ? '' : __str(v);
+  });
+  S.fromCharCode = __mkfn(function (t, c) { return __G.chars[__toint(__tonum(c))]; }, 'fromCharCode', false);
+  G.chars = __chars_table();
+  var P = G.String_proto;
+  P.charAt = __mkfn(function (t, i) {
+    var k = __typeof(i) === 'nil' ? 0 : __toint_safe(__tonum(i));
+    return k >= 0 && k < __len(t) ? t[k] : '';
+  }, 'charAt', false);
+  P.charCodeAt = __mkfn(function (t, i) {
+    var k = __typeof(i) === 'nil' ? 0 : __toint_safe(__tonum(i));
+    if (k < 0 || k >= __len(t)) return __nan();
+    return __todouble(__G.codes[t[k]]);
+  }, 'charCodeAt', false);
+  G.codes = __codes_table(G.chars);
+  P.indexOf = __mkfn(function (t, s, from) {
+    var f = __typeof(from) === 'nil' ? 0 : __toint_safe(__tonum(from));
+    if (f < 0) f = 0;
+    return __todouble(__str_index_of(t, __str(s), f));
+  }, 'indexOf', false);
+  P.includes = __mkfn(function (t, s) { return __str_index_of(t, __str(s), 0) >= 0; }, 'includes', false);
+  P.startsWith = __mkfn(function (t, s) { var p = __str(s); return __len(p) <= __len(t) && __substr(t, 0, __len(p)) === p; }, 'startsWith', false);
+  P.endsWith = __mkfn(function (t, s) { var p = __str(s); return __len(p) <= __len(t) && __substr(t, __len(t) - __len(p), __len(t)) === p; }, 'endsWith', false);
+  P.slice = __mkfn(function (t, a, b) { var s = __slice_bounds(__len(t), a, b); return __substr(t, s[0], s[1]); }, 'slice', false);
+  P.substring = __mkfn(function (t, a, b) {
+    var n = __len(t);
+    var x = __typeof(a) === 'nil' ? 0 : __toint_safe(__tonum(a));
+    var y = __typeof(b) === 'nil' ? n : __toint_safe(__tonum(b));
+    if (x < 0) x = 0; if (x > n) x = n;
+    if (y < 0) y = 0; if (y > n) y = n;
+    if (x > y) { var z = x; x = y; y = z; }
+    return __substr(t, x, y);
+  }, 'substring', false);
+  P.toUpperCase = __mkfn(function (t) {
+    var out = '';
+    var i = 0;
+    while (i < __len(t)) { var c = t[i]; out = out + (c >= 'a' && c <= 'z' ? __G.chars[__G.codes[c] - 32] : c); i = i + 1; }
+    return out;
+  }, 'toUpperCase', false);
+  P.toLowerCase = __mkfn(function (t) {
+    var out = '';
+    var i = 0;
+    while (i < __len(t)) { var c = t[i]; out = out + (c >= 'A' && c <= 'Z' ? __G.chars[__G.codes[c] + 32] : c); i = i + 1; }
+    return out;
+  }, 'toLowerCase', false);
+  P.trim = __mkfn(function (t) { return __trim(t); }, 'trim', false);
+  P.repeat = __mkfn(function (t, n) { return __repeat(t, __toint_safe(__tonum(n))); }, 'repeat', false);
+  P.split = __mkfn(function (t, sep) {
+    var out = [];
+    if (__typeof(sep) === 'nil') { __arraypush(out, t); return out; }
+    var p = __str(sep);
+    if (__len(p) === 0) { var i = 0; while (i < __len(t)) { __arraypush(out, t[i]); i = i + 1; } return out; }
+    var from = 0;
+    var at = __str_index_of(t, p, 0);
+    while (at >= 0) {
+      __arraypush(out, __substr(t, from, at));
+      from = at + __len(p);
+      at = __str_index_of(t, p, from);
+    }
+    __arraypush(out, __substr(t, from, __len(t)));
+    return out;
+  }, 'split', false);
+  P.concat = __mkfn(function (t, a) { return t + __str(a); }, 'concat', false);
+  P.toString = __mkfn(function (t) { return t; }, 'toString', false);
+  P.padStart = __mkfn(function (t, n, fill) {
+    var want = __toint_safe(__tonum(n));
+    var f = __typeof(fill) === 'nil' ? ' ' : __str(fill);
+    var out = t;
+    while (__len(out) < want) { out = f + out; }
+    return __len(out) > want ? __substr(out, __len(out) - want, __len(out)) : out;
+  }, 'padStart', false);
+  P.padEnd = __mkfn(function (t, n, fill) {
+    var want = __toint_safe(__tonum(n));
+    var f = __typeof(fill) === 'nil' ? ' ' : __str(fill);
+    var out = t;
+    while (__len(out) < want) { out = out + f; }
+    return __len(out) > want ? __substr(out, 0, want) : out;
+  }, 'padEnd', false);
+  P.replace = __mkfn(function (t, s, r) {
+    var p = __str(s);
+    var at = __str_index_of(t, p, 0);
+    if (at < 0) return t;
+    return __substr(t, 0, at) + __str(r) + __substr(t, at + __len(p), __len(t));
+  }, 'replace', false);
+  P.at = __mkfn(function (t, i) {
+    var k = __toint_safe(__tonum(i));
+    if (k < 0) k = __len(t) + k;
+    return k >= 0 && k < __len(t) ? t[k] : undefined;
+  }, 'at', false);
+}
+function __chars_table() {
+  var s = __allchars();
+  var out = [];
+  var i = 0;
+  while (i < 128) { __arraypush(out, s[i]); i = i + 1; }
+  return out;
+}
+function __codes_table(chars) {
+  var out = {};
+  var i = 0;
+  while (i < 128) { out[chars[i]] = i; i = i + 1; }
+  return out;
+}
+
+function __init_number(G) {
+  var N = __ctor(G, 'Number', G.Number_proto, function (t, v) {
+    return __argcount() <= 1 ? 0.0 : __tonum(v);
+  });
+  N.isInteger = __mkfn(function (t, v) {
+    return __typeof(v) === 'double' && v === v && v !== __inf() && v !== 0.0 - __inf() && v === __todouble(__toint_safe(v));
+  }, 'isInteger', false);
+  N.isNaN = __mkfn(function (t, v) { return __typeof(v) === 'double' && v !== v; }, 'isNaN', false);
+  N.isFinite = __mkfn(function (t, v) { return __typeof(v) === 'double' && v === v && v !== __inf() && v !== 0.0 - __inf(); }, 'isFinite', false);
+  N.MAX_SAFE_INTEGER = 9007199254740991.0;
+  N.MIN_SAFE_INTEGER = -9007199254740991.0;
+  N.EPSILON = __pow(2.0, -52.0);
+  N.MAX_VALUE = 1.7976931348623157e308;
+  N.POSITIVE_INFINITY = __inf();
+  N.NEGATIVE_INFINITY = 0.0 - __inf();
+  N.NaN = __nan();
+  G.Number_proto.toString = __mkfn(function (t, radix) {
+    if (__typeof(radix) === 'nil' || radix === 10.0) return __numstr(t);
+    return __radix_str(t, __toint(radix));
+  }, 'toString', false);
+  G.Number_proto.toFixed = __mkfn(function (t, d) { return __to_fixed(t, __typeof(d) === 'nil' ? 0 : __toint(__tonum(d))); }, 'toFixed', false);
+  G.isNaN = __mkfn(function (t, v) { var d = __tonum(v); return d !== d; }, 'isNaN', false);
+  G.isFinite = __mkfn(function (t, v) { var d = __tonum(v); return d === d && d !== __inf() && d !== 0.0 - __inf(); }, 'isFinite', false);
+  G.parseFloat = __mkfn(function (t, v) { return __parse_float(__str(v)); }, 'parseFloat', false);
+  G.parseInt = __mkfn(function (t, v, radix) { return __parse_int(__str(v), __typeof(radix) === 'nil' ? 0 : __toint(__tonum(radix))); }, 'parseInt', false);
+}
+function __radix_str(d, radix) {
+  if (d !== d) return 'NaN';
+  var neg = d < 0.0;
+  var n = __toint_safe(neg ? 0.0 - d : d);
+  if (n === 0) return '0';
+  var digs = '0123456789abcdefghijklmnopqrstuvwxyz';
+  var out = '';
+  while (n > 0) { out = digs[__imod(n, radix)] + out; n = __idiv(n, radix); }
+  return neg ? '-' + out : out;
+}
+function __to_fixed(d, prec) {
+  if (d !== d) return 'NaN';
+  var neg = d < 0.0;
+  var x = neg ? 0.0 - d : d;
+  var scale = __pow(10.0, __todouble(prec));
+  var scaled = x * scale;
+  var r = __todouble(__toint_safe(scaled));
+  if (scaled - r >= 0.5) r = r + 1.0;
+  var whole = __todouble(__toint_safe(r / scale));
+  var frac = r - whole * scale;
+  var fs = __numstr(frac);
+  while (__len(fs) < prec) fs = '0' + fs;
+  var out = __numstr(whole);
+  if (prec > 0) out = out + '.' + fs;
+  return neg && r !== 0.0 ? '-' + out : out;
+}
+function __parse_float(s0) {
+  var s = __trim(s0);
+  var n = __len(s);
+  var i = 0;
+  if (i < n && (s[i] === '-' || s[i] === '+')) i = i + 1;
+  if (__substr(s, i, n) === 'Infinity' || (__len(s) >= i + 8 && __substr(s, i, i + 8) === 'Infinity')) return s[0] === '-' ? 0.0 - __inf() : __inf();
+  var seen = false;
+  while (i < n && __is_digit(s[i])) { i = i + 1; seen = true; }
+  if (i < n && s[i] === '.') { i = i + 1; while (i < n && __is_digit(s[i])) { i = i + 1; seen = true; } }
+  if (!seen) return __nan();
+  if (i < n && (s[i] === 'e' || s[i] === 'E')) {
+    var j = i + 1;
+    if (j < n && (s[j] === '-' || s[j] === '+')) j = j + 1;
+    if (j < n && __is_digit(s[j])) { while (j < n && __is_digit(s[j])) j = j + 1; i = j; }
+  }
+  return __str_to_num(__substr(s, 0, i));
+}
+function __parse_int(s0, radix) {
+  var s = __trim(s0);
+  var n = __len(s);
+  var i = 0;
+  var sign = 1.0;
+  if (i < n && s[i] === '-') { sign = -1.0; i = i + 1; } else if (i < n && s[i] === '+') { i = i + 1; }
+  var r = radix;
+  if (r === 0) r = 10;
+  if ((r === 16 || radix === 0) && i + 1 < n && s[i] === '0' && (s[i + 1] === 'x' || s[i + 1] === 'X')) { r = 16; i = i + 2; }
+  var v = 0.0;
+  var seen = false;
+  while (i < n) {
+    var d = __hexval(s[i]);
+    if (d < 0 || d >= r) { i = n; } else { v = v * __todouble(r) + __todouble(d); i = i + 1; seen = true; }
+  }
+  if (!seen) return __nan();
+  return sign * v;
+}
+
+function __init_console(G) {
+  var c = {};
+  c.log = __mkfn(function (t, a, b, c2, d, e, f, g) {
+    var xs = [a, b, c2, d, e, f, g];
+    var n = __argcount() - 1;
+    var out = '';
+    var i = 0;
+    while (i < n && i < 7) { if (i > 0) out = out + ' '; out = out + __log_str(xs[i]); i = i + 1; }
+    __print(out);
+    return undefined;
+  }, 'log', false);
+  c.error = c.log;
+  c.warn = c.log;
+  c.info = c.log;
+  G.console = c;
+}
+
+function __init_math(G) {
+  var M = {};
+  M.PI = 3.141592653589793;
+  M.E = 2.718281828459045;
+  M.abs = __mkfn(function (t, v) { var d = __tonum(v); return d < 0.0 ? 0.0 - d : d; }, 'abs', false);
+  M.floor = __mkfn(function (t, v) {
+    var d = __tonum(v);
+    if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
+    var i = __todouble(__toint(d));
+    return i > d ? i - 1.0 : i;
+  }, 'floor', false);
+  M.ceil = __mkfn(function (t, v) {
+    var d = __tonum(v);
+    if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
+    var i = __todouble(__toint(d));
+    return i < d ? i + 1.0 : i;
+  }, 'ceil', false);
+  M.trunc = __mkfn(function (t, v) {
+    var d = __tonum(v);
+    if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
+    return __todouble(__toint(d));
+  }, 'trunc', false);
+  M.round = __mkfn(function (t, v) {
+    var d = __tonum(v);
+    if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
+    var f = __todouble(__toint(d));
+    if (f > d) f = f - 1.0;
+    return d - f >= 0.5 ? f + 1.0 : f;
+  }, 'round', false);
+  M.sqrt = __mkfn(function (t, v) { return __pow(__tonum(v), 0.5); }, 'sqrt', false);
+  M.pow = __mkfn(function (t, a, b) { return __powop(a, b); }, 'pow', false);
+  M.max = __mkfn(function (t, a, b, c, d) {
+    var xs = [a, b, c, d];
+    var n = __argcount() - 1;
+    if (n === 0) return 0.0 - __inf();
+    var best = __tonum(a);
+    var i = 1;
+    while (i < n && i < 4) { var x = __tonum(xs[i]); if (x !== x) return __nan(); if (x > best) best = x; i = i + 1; }
+    return best;
+  }, 'max', false);
+  M.min = __mkfn(function (t, a, b, c, d) {
+    var xs = [a, b, c, d];
+    var n = __argcount() - 1;
+    if (n === 0) return __inf();
+    var best = __tonum(a);
+    var i = 1;
+    while (i < n && i < 4) { var x = __tonum(xs[i]); if (x !== x) return __nan(); if (x < best) best = x; i = i + 1; }
+    return best;
+  }, 'min', false);
+  M.sign = __mkfn(function (t, v) { var d = __tonum(v); if (d !== d) return d; return d > 0.0 ? 1.0 : (d < 0.0 ? -1.0 : d); }, 'sign', false);
+  M.random = __mkfn(function (t) { return 0.5; }, 'random', false);
+  G.Math = M;
+}
+`
+
+# --- Compiler tables ------------------------------------------------------------
+
+fn fail(node, msg) {
+  throw {kind: 'MiniError', message: msg, line: node.line, col: node.column}
+}
+
+# The prelude and the user program are separate parse trees whose line/col
+# ranges overlap, so position keys carry which side they are from.
+mut in_prelude = false
+fn pkey(node) {
+  cond {
+    node.key != nil => node.key,
+    in_prelude => "p{node.line}:{node.column}",
+    _ => "u{node.line}:{node.column}",
+  }
+}
+
+mut synth_count = 0
+fn synth(name, nodes, at) {
+  synth_count = synth_count + 1
+  {
+    name: name,
+    nodes: nodes,
+    token: '',
+    line: at.line,
+    column: at.column,
+    key: "s{synth_count}",
+  }
+}
+
+mut funcs = []          # {parent, name, params, stmts, body_expr, is_prelude, is_arrow, ...}
+mut free = []           # per func: {"owner:slot": (owner, slot)}
+mut calls = []          # per func: [callee func index...]
+mut capture_index = []  # per func: {"owner:slot": capture index}
+mut cell_index = []     # per func (the owner): {slot: cell index}
+mut nslots = []         # per func: named local slots
+mut nscratch = []       # per func: lowering temps, appended after the named slots
+mut scope_stack = []    # per func: [{map: {name: slot}, slots: [slot...]}]
+mut closure_of = {}     # pkey of a function node -> func index
+mut resolved = {}       # pkey of an ident -> {kind: 'var', owner, slot} | {kind: 'global', name}
+mut block_slots = {}    # pkey of a block -> the slots it declares
+mut prelude_named = {}  # prelude fn name -> func index
+mut g_slot = 0          # main's slot holding __G
+mut this_slot = 0       # main's `this`
+mut loop_ctx = []       # per func (emit time): [{step: fn(m) -> [ids]}...]
+
+# Prelude names that are VM intrinsics, with their arities.
+let intrinsics = {
+  __typeof: ('typeof', 1),
+  __tostr: ('tostr', 1),
+  __len: ('len', 1),
+  __toint: ('toint', 1),
+  __todouble: ('todouble', 1),
+  __fmod: ('fmod', 2),
+  __pow: ('pow', 2),
+  __arraypush: ('arraypush', 2),
+  __arraypop: ('arraypop', 1),
+  __objecthas: ('objecthas', 2),
+  __objectkeys: ('objectkeys', 1),
+  __objectremove: ('objectremove', 2),
+  __same: ('same', 2),
+  __argcount: ('argcount', 0),
+  __print: ('print', 1),
+  __genresume: ('genresume', 2),
+  __genreturn: ('genreturn', 2),
+}
+# Prelude names that are raw VM binary / unary operations over Longs.
+let raw_binops = {
+  __bitand: 'bitand',
+  __bitor: 'bitor',
+  __bitxor: 'bitxor',
+  __ishl: 'shl',
+  __ishr: 'shr',
+  __idiv: 'div',
+  __imod: 'mod',
+  __bitnot: 'bitnot',
+}
+
+fn new_func(parent, name, stmts, body_expr, is_arrow) {
+  let f = funcs.size()
+  funcs.push({
+    parent: parent,
+    name: name,
+    params: [],
+    dflts: [],
+    stmts: stmts,
+    body_expr: body_expr,
+    is_prelude: in_prelude,
+    is_arrow: is_arrow,
+    var_names: [],
+  })
+  free.push({})
+  calls.push([])
+  capture_index.push({})
+  cell_index.push({})
+  nslots.push(0)
+  nscratch.push(0)
+  scope_stack.push([])
+  loop_ctx.push([])
+  # every function reaches the global table through main's cell
+  if f != 0 {
+    free[f]["0:{g_slot}"] = (0, g_slot)
+  }
+  f
+}
+
+# --- Pass A: bind ---------------------------------------------------------------
+
+fn enter_scope(f) {
+  scope_stack[f].push({map: {}, slots: []})
+}
+fn leave_scope(f) {
+  scope_stack[f].pop()
+}
+
+fn declare_var(f, name, at) {
+  let scopes = scope_stack[f]
+  let top = scopes[scopes.size() - 1]
+  if top.map.has(name) {
+    let slot = top.map[name]
+    if at != nil {
+      resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
+    }
+    return slot
+  }
+  let slot = nslots[f]
+  nslots[f] = slot + 1
+  top.map[name] = slot
+  top.slots.push(slot)
+  if at != nil {
+    resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
+  }
+  slot
+}
+
+# `var` binds at the function's outermost scope wherever it appears
+fn declare_fn_var(f, name, at) {
+  let scopes = scope_stack[f]
+  # already visible (a parameter, or declared before)? keep that slot
+  mut i = scopes.size() - 1
+  while i >= 0 {
+    if scopes[i].map.has(name) {
+      let slot = scopes[i].map[name]
+      if at != nil {
+        resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
+      }
+      return slot
+    }
+    i = i - 1
+  }
+  let slot = nslots[f]
+  nslots[f] = slot + 1
+  scopes[0].map[name] = slot
+  scopes[0].slots.push(slot)
+  funcs[f].var_names.push(slot)
+  if at != nil {
+    resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
+  }
+  slot
+}
+
+fn resolve(f, name) {
+  if name == '__G' {
+    return {kind: 'var', owner: 0, slot: g_slot}
+  }
+  mut h = f
+  while h != nil {
+    let scopes = scope_stack[h]
+    mut i = scopes.size() - 1
+    while i >= 0 {
+      if scopes[i].map.has(name) {
+        return {kind: 'var', owner: h, slot: scopes[i].map[name]}
+      }
+      i = i - 1
+    }
+    h = funcs[h].parent
+  }
+  if in_prelude && prelude_named.has(name) {
+    return {kind: 'fn', func: prelude_named[name]}
+  }
+  if in_prelude && intrinsics.has(name) {
+    return {kind: 'intrinsic', name: name}
+  }
+  if in_prelude && raw_binops.has(name) {
+    return {kind: 'rawop', name: name}
+  }
+  if in_prelude && name == '__allchars' {
+    return {kind: 'const'}
+  }
+  {kind: 'global', name: name}
+}
+
+fn use_var(f, owner, slot) {
+  if owner != f {
+    free[f]["{owner}:{slot}"] = (owner, slot)
+  }
+}
+
+fn note_use(node, f) {
+  let r = resolve(f, node.token)
+  resolved[pkey(node)] = r
+  if r.kind == 'var' {
+    use_var(f, r.owner, r.slot)
+  }
+  r
+}
+
+# Names a statement list declares at its own level (hoisted to the block
+# start): let/const/function. `var` names go to the function.
+fn hoist_block(stmts, f) {
+  mut fn_nodes = []
+  for s in stmts {
+    cond {
+      s.name == 'var_decl' || s.name == 'var_decl_ns' => {
+        let kw = s.nodes[0].token
+        mut i = 1
+        while i < s.nodes.size() {
+          let id = s.nodes[i].nodes[0]
+          cond {
+            kw == 'var' => declare_fn_var(f, id.token, id),
+            _ => declare_var(f, id.token, id),
+          }
+          i = i + 1
+        }
+      },
+      s.name == 'fn_decl' => {
+        declare_var(f, s.nodes[0].token, s.nodes[0])
+        fn_nodes.push(s)
+      },
+      _ => nil,
+    }
+  }
+  fn_nodes
+}
+
+# `var` declarations anywhere in a function body (nested blocks included,
+# nested functions excluded) belong to the function
+fn collect_vars(node, f) {
+  if node.nodes == nil {
+    return nil
+  }
+  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' {
+    return nil
+  }
+  if (node.name == 'var_decl' || node.name == 'var_decl_ns') && node.nodes[0].token == 'var' {
+    mut i = 1
+    while i < node.nodes.size() {
+      declare_fn_var(f, node.nodes[i].nodes[0].token, nil)
+      i = i + 1
+    }
+  }
+  if node.name == 'for_of' && node.nodes[0].token == 'var' {
+    declare_fn_var(f, node.nodes[1].token, nil)
+  }
+  for c in node.nodes {
+    collect_vars(c, f)
+  }
+  nil
+}
+
+fn param_parts(p) {
+  cond {
+    p.name == 'rest_p' => {id: p.nodes[0], dflt: nil, rest: true},
+    p.name == 'dflt_p' => {id: p.nodes[0], dflt: p.nodes[1], rest: false},
+    _ => {id: p, dflt: nil, rest: false},
+  }
+}
+
+# A function's binding walk: `this` first (unless an arrow: it captures
+# the enclosing one), then the parameters, the function's vars, then the
+# body as a block.
+fn walk_fn(f, param_nodes, this_node) {
+  enter_scope(f)
+  let fi = funcs[f]
+  cond {
+    # the prelude spells its receiver parameter itself (a helper has none)
+    fi.is_prelude => nil,
+    fi.is_arrow => {
+      declare_var(f, "\x01this", nil)
+      fi.params.push("\x01this")
+    },
+    _ => {
+      declare_var(f, 'this', nil)
+      fi.params.push('this')
+    },
+  }
+  for p in param_nodes {
+    let pp = param_parts(p)
+    cond {
+      pp.rest => {
+        fi['rest'] = pp.id.token
+        mut k = 0
+        while k < 8 {
+          declare_var(f, "\x01r{k}", nil)
+          fi.params.push("\x01r{k}")
+          k = k + 1
+        }
+        declare_var(f, pp.id.token, pp.id)
+      },
+      _ => {
+        declare_var(f, pp.id.token, pp.id)
+        fi.params.push(pp.id.token)
+        fi.dflts.push(pp.dflt)
+      },
+    }
+  }
+  if fi.self_name != nil {
+    fi['self_slot'] = declare_var(f, fi.self_name, fi.self_node)
+  }
+  cond {
+    fi.body_expr != nil => {
+      for pp in fi.dflts {
+        if pp != nil {
+          scan_expr(pp, f)
+        }
+      }
+      scan_expr(fi.body_expr, f)
+    },
+    _ => {
+      for s in fi.stmts {
+        collect_vars(s, f)
+      }
+      for pp in fi.dflts {
+        if pp != nil {
+          scan_expr(pp, f)
+        }
+      }
+      scan_stmts(fi.stmts, f)
+    },
+  }
+  leave_scope(f)
+}
+
+fn scan_stmts(stmts, f) {
+  let fn_nodes = hoist_block(stmts, f)
+  for s in fn_nodes {
+    let id = s.nodes[0]
+    let g = new_func(f, id.token, s.nodes[2].nodes, nil, false)
+    closure_of[pkey(s)] = g
+    calls[f].push(g)
+    walk_fn(g, s.nodes[1].nodes, nil)
+  }
+  for s in stmts {
+    scan_stmt(s, f)
+  }
+}
+
+fn scan_block(blk, f) {
+  enter_scope(f)
+  scan_stmts(blk.nodes, f)
+  let scopes = scope_stack[f]
+  block_slots[pkey(blk)] = scopes[scopes.size() - 1].slots
+  leave_scope(f)
+}
+
+# a statement in a position that is not a block still gets its own scope
+fn scan_sub(st, f) {
+  cond {
+    st.name == 'block' => scan_block(st, f),
+    _ => {
+      enter_scope(f)
+      scan_stmts([st], f)
+      leave_scope(f)
+    },
+  }
+}
+
+fn scan_stmt(node, f) {
+  match node {
+    {name: 'var_decl'} => scan_decl(node, f),
+    {name: 'var_decl_ns'} => scan_decl(node, f),
+    {name: 'fn_decl'} => nil,  # hoisted by scan_stmts
+    {name: 'if_s'} => {
+      scan_expr(node.nodes[0], f)
+      scan_sub(node.nodes[1], f)
+      if node.nodes.size() > 2 {
+        scan_sub(node.nodes[2].nodes[0], f)
+      }
+    },
+    {name: 'while_s'} => {
+      scan_expr(node.nodes[0], f)
+      scan_sub(node.nodes[1], f)
+    },
+    {name: 'do_s'} => {
+      scan_sub(node.nodes[0], f)
+      scan_expr(node.nodes[1], f)
+    },
+    {name: 'for_of'} => {
+      let [kw, id, src, body] = node.nodes
+      scan_expr(src, f)
+      enter_scope(f)
+      cond {
+        kw.token == 'var' => declare_fn_var(f, id.token, id),
+        _ => declare_var(f, id.token, id),
+      }
+      scan_sub(body, f)
+      let scopes = scope_stack[f]
+      block_slots[pkey(node)] = scopes[scopes.size() - 1].slots
+      leave_scope(f)
+    },
+    {name: 'for_s'} => {
+      let [init, cnd, step, body] = node.nodes
+      enter_scope(f)
+      if init.nodes.size() > 0 {
+        let i0 = init.nodes[0]
+        cond {
+          i0.name == 'var_decl_ns' => scan_decl(i0, f),
+          _ => scan_expr(i0, f),
+        }
+      }
+      if cnd.nodes.size() > 0 {
+        scan_expr(cnd.nodes[0], f)
+      }
+      if step.nodes.size() > 0 {
+        scan_expr(step.nodes[0], f)
+      }
+      scan_sub(body, f)
+      let scopes = scope_stack[f]
+      block_slots[pkey(node)] = scopes[scopes.size() - 1].slots
+      leave_scope(f)
+    },
+    {name: 'return_s'} => {
+      if node.nodes[0].nodes.size() > 0 {
+        scan_expr(node.nodes[0].nodes[0], f)
+      }
+    },
+    {name: 'break_s'} => nil,
+    {name: 'continue_s'} => nil,
+    {name: 'throw_s'} => scan_expr(node.nodes[0], f),
+    {name: 'try_s'} => {
+      scan_block(node.nodes[0], f)
+      mut i = 1
+      while i < node.nodes.size() {
+        let c = node.nodes[i]
+        cond {
+          c.name == 'catch_c' => {
+            enter_scope(f)
+            let cp = c.nodes[0]
+            # the caught value always has a slot, named or not
+            let slot = cond {
+              cp.nodes.size() >
+                0 => declare_var(f, cp.nodes[0].token, cp.nodes[0]),
+              _ => declare_var(f, "\x01caught", nil),
+            }
+            resolved[pkey(c)] = {kind: 'var', owner: f, slot: slot}
+            scan_block(c.nodes[1], f)
+            leave_scope(f)
+          },
+          _ => {
+            let g = new_func(f, 'finally', c.nodes[0].nodes, nil, true)
+            closure_of[pkey(c)] = g
+            calls[f].push(g)
+            walk_fn(g, [], nil)
+          },
+        }
+        i = i + 1
+      }
+    },
+    {name: 'block'} => scan_block(node, f),
+    {name: 'empty_s'} => nil,
+    {name: 'expr_s'} => scan_expr(node.nodes[0], f),
+    _ => scan_expr(node, f),
+  }
+}
+
+fn scan_decl(node, f) {
+  let kw = node.nodes[0].token
+  mut i = 1
+  while i < node.nodes.size() {
+    let d = node.nodes[i]
+    let id = d.nodes[0]
+    # hoist_block declared it when the block was entered; a for-init or
+    # a var is declared here
+    cond {
+      kw == 'var' => declare_fn_var(f, id.token, id),
+      resolved.has(pkey(id)) => nil,
+      _ => declare_var(f, id.token, id),
+    }
+    if d.nodes.size() > 1 {
+      scan_expr(d.nodes[1], f)
+    }
+    i = i + 1
+  }
+}
+
+fn scan_fn_value(node, f, param_nodes, body, is_arrow, name) {
+  let stmts = cond {
+    body.name == 'block' => body.nodes,
+    _ => nil,
+  }
+  let body_expr = cond {
+    body.name == 'block' => nil,
+    _ => body,
+  }
+  let g = new_func(f, name, stmts, body_expr, is_arrow)
+  closure_of[pkey(node)] = g
+  calls[f].push(g)
+  walk_fn(g, param_nodes, nil)
+  g
+}
+
+fn scan_expr(node, f) {
+  match node {
+    {name: 'ident'} => note_use(node, f),
+    {name: 'number'} => nil,
+    {name: 'string'} => nil,
+    {name: 'true_l'} => nil,
+    {name: 'false_l'} => nil,
+    {name: 'null_l'} => nil,
+    {name: 'this_e'} => {
+      let r = resolve(f, 'this')
+      resolved[pkey(node)] = r
+      if r.kind == 'var' {
+        use_var(f, r.owner, r.slot)
+      }
+    },
+    {name: 'template'} => {
+      for p in node.nodes {
+        if p.name == 'tsub' {
+          scan_expr(p.nodes[0], f)
+        }
+      }
+    },
+    {name: 'arrow'} => {
+      let [ap, body] = node.nodes
+      let params = cond {
+        ap.name == 'arrow_one' => [ap.nodes[0]],
+        _ => ap.nodes,
+      }
+      scan_fn_value(node, f, params, body, true, '')
+    },
+    {name: 'fn_expr'} => {
+      let [fname, prms, blk] = node.nodes
+      let name = cond {
+        fname.nodes.size() > 0 => fname.nodes[0].token,
+        _ => '',
+      }
+      cond {
+        name != '' => {
+          # a named function expression sees its own name inside
+          let g = new_func(f, name, blk.nodes, nil, false)
+          closure_of[pkey(node)] = g
+          calls[f].push(g)
+          funcs[g]['self_name'] = name
+          funcs[g]['self_node'] = fname.nodes[0]
+          walk_fn(g, prms.nodes, nil)
+        },
+        _ => scan_fn_value(node, f, prms.nodes, blk, false, ''),
+      }
+    },
+    {name: 'assign_e'} => {
+      scan_target(node.nodes[0], f)
+      scan_expr(node.nodes[2], f)
+    },
+    {name: 'pre_inc'} => scan_target(node.nodes[1], f),
+    {name: 'post_inc'} => scan_target(node.nodes[0], f),
+    {name: 'unary'} => {
+      for c in node.nodes {
+        if c.name != 'unary_op' {
+          scan_expr(c, f)
+        }
+      }
+    },
+    {name: 'postfix'} => {
+      scan_expr(node.nodes[0], f)
+      mut i = 1
+      while i < node.nodes.size() {
+        let step = node.nodes[i]
+        cond {
+          step.name == 'call_p' => scan_args(step.nodes[0], f),
+          step.name == 'index_p' => scan_expr(step.nodes[0], f),
+          _ => nil,
+        }
+        i = i + 1
+      }
+    },
+    {name: 'new_e'} => {
+      for c in node.nodes {
+        cond {
+          c.name == 'new_args' => {
+            if c.nodes.size() > 0 {
+              scan_args(c.nodes[0], f)
+            }
+          },
+          c.name == 'call_p' => scan_args(c.nodes[0], f),
+          c.name == 'index_p' => scan_expr(c.nodes[0], f),
+          c.name == 'member_p' => nil,
+          _ => scan_expr(c, f),
+        }
+      }
+    },
+    {name: 'array_lit'} => {
+      for c in node.nodes {
+        scan_expr(arg_val(c), f)
+      }
+    },
+    {name: 'object_lit'} => {
+      for p in node.nodes {
+        match p {
+          {name: 'kv_p'} => scan_expr(p.nodes[1], f),
+          {name: 'computed_p'} => {
+            scan_expr(p.nodes[0], f)
+            scan_expr(p.nodes[1], f)
+          },
+          {name: 'method_p'} => scan_fn_value(
+            p,
+            f,
+            p.nodes[1].nodes,
+            p.nodes[2],
+            false,
+            p.nodes[0].token,
+          ),
+          {name: 'short_p'} => note_use(p.nodes[0], f),
+          {name: 'ospread'} => scan_expr(p.nodes[0], f),
+          _ => nil,
+        }
+      }
+    },
+    {name: 'paren'} => scan_expr(node.nodes[0], f),
+    {name: 'spread'} => scan_expr(node.nodes[0], f),
+    {name: 'ternary'} => {
+      for c in node.nodes {
+        scan_expr(c, f)
+      }
+    },
+    {name: 'exp_e'} => {
+      for c in node.nodes {
+        scan_expr(c, f)
+      }
+    },
+    _ => {
+      # a binary chain: operands interleaved with op tokens
+      if node.nodes != nil {
+        for c in node.nodes {
+          if !c.name.ends_with('_op') {
+            scan_expr(c, f)
+          }
+        }
+      }
+    },
+  }
+  nil
+}
+
+fn arg_val(a) {
+  cond {
+    a.name == 'spread' => a.nodes[0],
+    _ => a,
+  }
+}
+
+fn scan_args(args, f) {
+  for a in args.nodes {
+    scan_expr(arg_val(a), f)
+  }
+}
+
+fn scan_target(t, f) {
+  cond {
+    t.name == 'ident' => note_use(t, f),
+    t.name == 'postfix' => scan_expr(t, f),
+    t.name == 'paren' => scan_target(t.nodes[0], f),
+    _ => fail(t, 'Invalid left-hand side in assignment'),
+  }
+}
+
+# --- Pass B: captures -------------------------------------------------------------
+
+fn solve() {
+  mut changed = true
+  while changed {
+    changed = false
+    for f in range(funcs.size()) {
+      for g in calls[f] {
+        for v in free[g].values() {
+          let (o, s) = v
+          if o != f {
+            let key = "{o}:{s}"
+            if !free[f].has(key) {
+              free[f][key] = v
+              changed = true
+            }
+          }
+        }
+      }
+      let p = funcs[f].parent
+      if p != nil {
+        for v in free[f].values() {
+          let (o, s) = v
+          if o != p {
+            let key = "{o}:{s}"
+            if !free[p].has(key) {
+              free[p][key] = v
+              changed = true
+            }
+          }
+        }
+      }
+    }
+  }
+  for f in range(funcs.size()) {
+    mut i = 0
+    for v in free[f].values() {
+      let (o, s) = v
+      capture_index[f]["{o}:{s}"] = i
+      i = i + 1
+      if !cell_index[o].has(s) {
+        cell_index[o][s] = cell_index[o].size()
+      }
+    }
+  }
+}
+
+fn access_from(f, v) {
+  let (o, s) = v
+  cond {
+    o == f => cond {
+      cell_index[f].has(s) => {kind: 'cell', index: cell_index[f][s]},
+      _ => {kind: 'local', index: s},
+    },
+    _ => {kind: 'capture', index: capture_index[f]["{o}:{s}"]},
+  }
+}
+
+# --- Pass C: emit ------------------------------------------------------------------
+
+fn make_list(m, ids) {
+  let list = m.list_new()
+  for x in ids {
+    m.list_push(list, x)
+  }
+  list
+}
+
+fn cmap_for(m, f, g) {
+  let cmap = m.capture_map_new()
+  for v in free[g].values() {
+    let a = access_from(f, v)
+    m.capture_map_push(cmap, kind: a.kind, index: a.index)
+  }
+  m.add_capture_map(cmap)
+}
+
+fn call_pre(m, f, name, arg_ids, ln, cl) {
+  let g = prelude_named[name]
+  let callee = m.make_closure(
+    func: g,
+    cmap: cmap_for(m, f, g),
+    line: ln,
+    col: cl,
+  )
+  m.call_value(
+    callee: callee,
+    args_list: make_list(m, arg_ids),
+    line: ln,
+    col: cl,
+  )
+}
+
+fn var_read(m, f, r, ln, cl) {
+  let a = access_from(f, (r.owner, r.slot))
+  m.var_ref(kind: a.kind, index: a.index, line: ln, col: cl)
+}
+
+fn var_write(m, f, r, v, ln, cl) {
+  let a = access_from(f, (r.owner, r.slot))
+  m.assign(kind: a.kind, index: a.index, value: v, line: ln, col: cl)
+}
+
+fn gref(m, f, ln, cl) {
+  var_read(m, f, {owner: 0, slot: g_slot}, ln, cl)
+}
+
+fn nil_l(m, ln, cl) {
+  m.nil_literal(line: ln, col: cl)
+}
+fn str_l(m, s, ln, cl) {
+  m.str_literal(s: s, line: ln, col: cl)
+}
+fn dbl_l(m, v, ln, cl) {
+  m.double_literal(v: v, line: ln, col: cl)
+}
+
+fn new_scratch(f) {
+  let k = nscratch[f]
+  nscratch[f] = k + 1
+  nslots[f] + k
+}
+
+fn scratch_ref(m, slot, ln, cl) {
+  m.var_ref(kind: 'local', index: slot, line: ln, col: cl)
+}
+
+# a user-mode value's truthiness, or the raw VM test inside the prelude
+fn emit_test(m, f, v, ln, cl) {
+  cond {
+    in_prelude => v,
+    _ => call_pre(m, f, '__truthy', [v], ln, cl),
+  }
+}
+
+fn unescape(s) {
+  mut out = ''
+  mut i = 0
+  while i < s.size() {
+    let c = s.slice(i, i + 1)
+    cond {
+      c == "\\" && i + 1 < s.size() => {
+        let d = s.slice(i + 1, i + 2)
+        cond {
+          d == 'n' => {
+            out = out + "\n"
+            i = i + 2
+          },
+          d == 't' => {
+            out = out + "\t"
+            i = i + 2
+          },
+          d == 'r' => {
+            out = out + "\r"
+            i = i + 2
+          },
+          d == '0' => {
+            out = out + String.from_code_point(0)
+            i = i + 2
+          },
+          d == 'x' && i + 3 < s.size() => {
+            out = out +
+              String.from_code_point(to_long(s.slice(i + 2, i + 4), base: 16))
+            i = i + 4
+          },
+          d == 'u' && i + 5 < s.size() => {
+            out = out +
+              String.from_code_point(to_long(s.slice(i + 2, i + 6), base: 16))
+            i = i + 6
+          },
+          d == "\n" => i = i + 2,  # a line continuation
+          _ => {
+            out = out + d
+            i = i + 2
+          },
+        }
+      },
+      _ => {
+        out = out + c
+        i = i + 1
+      },
+    }
+  }
+  out
+}
+
+fn number_value(tok) {
+  cond {
+    tok.starts_with('0x') ||
+      tok.starts_with('0X') => to_float(to_long(
+      tok.slice(2, tok.size()),
+      base: 16,
+    )),
+    tok.starts_with('0b') ||
+      tok.starts_with('0B') => to_float(to_long(
+      tok.slice(2, tok.size()),
+      base: 2,
+    )),
+    tok.starts_with('0o') ||
+      tok.starts_with('0O') => to_float(to_long(
+      tok.slice(2, tok.size()),
+      base: 8,
+    )),
+    tok.starts_with('.') => to_float('0' + tok),
+    tok.ends_with('.') => to_float(tok + '0'),
+    _ => to_float(tok),
+  }
+}
+
+let binop_pre = {
+  '+': '__add',
+  '-': '__sub',
+  '*': '__mul',
+  '/': '__div',
+  '%': '__mod',
+  '**': '__powop',
+  '<': '__lt',
+  '<=': '__le',
+  '>': '__gt',
+  '>=': '__ge',
+  '===': '__seq',
+  '==': '__eq',
+  '&': '__band',
+  '|': '__bor',
+  '^': '__bxor',
+  '<<': '__shl',
+  '>>': '__shr',
+  '>>>': '__ushr',
+  'instanceof': '__instanceof',
+  'in': '__in',
+}
+let binop_raw = {
+  '+': 'add',
+  '-': 'sub',
+  '*': 'mul',
+  '/': 'div',
+  '%': 'mod',
+  '<': 'lt',
+  '<=': 'le',
+  '>': 'gt',
+  '>=': 'ge',
+  '===': 'eq',
+  '==': 'eq',
+  '!==': 'ne',
+  '!=': 'ne',
+  '&': 'bitand',
+  '|': 'bitor',
+  '^': 'bitxor',
+  '<<': 'shl',
+  '>>': 'shr',
+}
+
+fn emit_binop(m, f, tok, l, r, ln, cl) {
+  cond {
+    in_prelude => cond {
+      tok ==
+        '**' => m.intrinsic(
+        name: 'pow',
+        args_list: make_list(m, [l, r]),
+        line: ln,
+        col: cl,
+      ),
+      tok ==
+        '%' => m.intrinsic(
+        name: 'fmod',
+        args_list: make_list(m, [l, r]),
+        line: ln,
+        col: cl,
+      ),
+      _ => m.binary(op: binop_raw[tok], lhs: l, rhs: r, line: ln, col: cl),
+    },
+    tok == '!==' => ir_not(m, call_pre(m, f, '__seq', [l, r], ln, cl), ln, cl),
+    tok == '!=' => ir_not(m, call_pre(m, f, '__eq', [l, r], ln, cl), ln, cl),
+    _ => call_pre(m, f, binop_pre[tok], [l, r], ln, cl),
+  }
+}
+
+fn ir_not(m, v, ln, cl) {
+  m.make_if_else(
+    cond: v,
+    then_branch: m.bool_literal(v: false, line: ln, col: cl),
+    else_branch: m.bool_literal(v: true, line: ln, col: cl),
+    line: ln,
+    col: cl,
+  )
+}
+
+fn is_undefined_node(n) {
+  n.name == 'ident' && n.token == 'undefined'
+}
+
+# a left-associative operator chain: [operand, op, operand, op, ...]
+fn emit_chain(m, node, f) {
+  mut acc = emit_expr(m, node.nodes[0], f)
+  mut i = 1
+  while i + 1 < node.nodes.size() {
+    let op = node.nodes[i]
+    let rn = node.nodes[i + 1]
+    let tok = op.token
+    # in the prelude a comparison against undefined is a tag test: the VM's
+    # eq refuses two different tags
+    cond {
+      in_prelude &&
+        (tok == '===' || tok == '!==' || tok == '==' || tok == '!=') &&
+        (is_undefined_node(rn) ||
+          i == 1 && is_undefined_node(node.nodes[0])) => {
+        let subject = cond {
+          is_undefined_node(rn) => acc,
+          _ => emit_expr(m, rn, f),
+        }
+        let test = m.binary(
+          op: 'eq',
+          lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [subject]), line: op.line, col: op.column),
+          rhs: str_l(m, 'nil', op.line, op.column),
+          line: op.line,
+          col: op.column,
+        )
+        acc = cond {
+          tok == '===' || tok == '==' => test,
+          _ => ir_not(m, test, op.line, op.column),
+        }
+      },
+      _ => {
+        let rhs = emit_expr(m, rn, f)
+        acc = emit_binop(m, f, tok, acc, rhs, op.line, op.column)
+      },
+    }
+    i = i + 2
+  }
+  acc
+}
+
+# && / || / ??: the left operand is kept in a temp and is the result when
+# the test says so
+fn emit_shortcircuit(m, node, f) {
+  let n = node.name
+  mut acc = emit_expr(m, node.nodes[0], f)
+  mut i = 1
+  while i + 1 < node.nodes.size() {
+    let op = node.nodes[i]
+    let ln = op.line
+    let cl = op.column
+    let tmp = new_scratch(f)
+    let store = m.assign(
+      kind: 'local',
+      index: tmp,
+      value: acc,
+      line: ln,
+      col: cl,
+    )
+    let rhs = emit_expr(m, node.nodes[i + 1], f)
+    let test = cond {
+      n == 'nullish' => cond {
+        in_prelude => m.binary(
+          op: 'eq',
+          lhs: scratch_ref(m, tmp, ln, cl),
+          rhs: nil_l(m, ln, cl),
+          line: ln,
+          col: cl,
+        ),
+        _ => call_pre(
+          m,
+          f,
+          '__isnullish',
+          [scratch_ref(m, tmp, ln, cl)],
+          ln,
+          cl,
+        ),
+      },
+      _ => emit_test(m, f, scratch_ref(m, tmp, ln, cl), ln, cl),
+    }
+    let pick = cond {
+      n ==
+        'lor' => m.make_if_else(
+        cond: test,
+        then_branch: scratch_ref(m, tmp, ln, cl),
+        else_branch: rhs,
+        line: ln,
+        col: cl,
+      ),
+      n ==
+        'land' => m.make_if_else(
+        cond: test,
+        then_branch: rhs,
+        else_branch: scratch_ref(m, tmp, ln, cl),
+        line: ln,
+        col: cl,
+      ),
+      _ => m.make_if_else(
+        cond: test,
+        then_branch: rhs,
+        else_branch: scratch_ref(m, tmp, ln, cl),
+        line: ln,
+        col: cl,
+      ),
+    }
+    acc = m.block(stmts_list: make_list(m, [store, pick]), line: ln, col: cl)
+    i = i + 2
+  }
+  acc
+}
+
+fn emit_string(m, node) {
+  let tok = node.token
+  str_l(m, unescape(tok.slice(1, tok.size() - 1)), node.line, node.column)
+}
+
+# The literal's text between substitutions is read back from the source
+# (the parser skips whitespace before each part, so a chunk node has lost
+# its leading spaces); a substitution's value goes through ToString.
+fn emit_template(m, node, f) {
+  let ln = node.line
+  let cl = node.column
+  let src = cond {
+    in_prelude => prelude_src,
+    _ => cur_src,
+  }
+  mut acc = str_l(m, '', ln, cl)
+  mut cursor = node.position + 1
+  fn chunk(upto) {
+    if upto > cursor {
+      acc = m.binary(
+        op: 'add',
+        lhs: acc,
+        rhs: str_l(m, unescape(src.slice(cursor, upto).to_string()), ln, cl),
+        line: ln,
+        col: cl,
+      )
+    }
+  }
+  for p in node.nodes {
+    if p.name == 'tsub' {
+      chunk(p.position)
+      let v = emit_expr(m, p.nodes[0], f)
+      let sv = cond {
+        in_prelude => v,
+        _ => call_pre(m, f, '__str', [v], p.line, p.column),
+      }
+      acc = m.binary(op: 'add', lhs: acc, rhs: sv, line: ln, col: cl)
+      # the node's length runs past the whitespace the parser skipped after
+      # the closing brace; back up to the brace itself
+      mut end = p.position + p.length
+      while src.slice(end - 1, end) != '}' {
+        end = end - 1
+      }
+      cursor = end
+    }
+  }
+  chunk(node.position + node.length - 1)
+  acc
+}
+
+# JS's Function.length: the parameters before the first default or rest
+fn fn_length(g) {
+  let ds = funcs[g].dflts
+  for i in range(ds.size()) {
+    if ds[i] != nil {
+      return i
+    }
+  }
+  ds.size()
+}
+
+fn emit_fn_value(m, node, f, name, is_arrow) {
+  let g = closure_of[pkey(node)]
+  let c = m.make_closure(
+    func: g,
+    cmap: cmap_for(m, f, g),
+    line: node.line,
+    col: node.column,
+  )
+  cond {
+    # a prelude helper referenced as a value is the raw closure; a prelude
+    # function expression is a JS function like any other
+    in_prelude => c,
+    _ => call_pre(
+      m,
+      f,
+      '__mkfn',
+      [
+        c,
+        str_l(m, name, node.line, node.column),
+        m.bool_literal(v: is_arrow, line: node.line, col: node.column),
+        dbl_l(m, to_float(fn_length(g)), node.line, node.column),
+      ],
+      node.line,
+      node.column,
+    ),
+  }
+}
+
+# [values...] with spreads expanded: an array literal when there is no
+# spread, else built by __spread_into
+fn emit_arg_array(m, f, arg_nodes, ln, cl) {
+  mut has_spread = false
+  for a in arg_nodes {
+    if a.name == 'spread' {
+      has_spread = true
+    }
+  }
+  cond {
+    !has_spread => {
+      mut ids = []
+      for a in arg_nodes {
+        ids.push(emit_expr(m, a, f))
+      }
+      m.array_lit(items_list: make_list(m, ids), line: ln, col: cl)
+    },
+    _ => {
+      let tmp = new_scratch(f)
+      mut ids = [m.assign(
+        kind: 'local',
+        index: tmp,
+        value: m.array_lit(items_list: m.list_new(), line: ln, col: cl),
+        line: ln,
+        col: cl,
+      )]
+      for a in arg_nodes {
+        cond {
+          a.name ==
+            'spread' => ids.push(call_pre(
+            m,
+            f,
+            '__spread_into',
+            [scratch_ref(m, tmp, ln, cl), emit_expr(m, a.nodes[0], f)],
+            a.line,
+            a.column,
+          )),
+          _ => ids.push(m.intrinsic(
+            name: 'arraypush',
+            args_list: make_list(m, [scratch_ref(m, tmp, ln, cl), emit_expr(m, a, f)]),
+            line: a.line,
+            col: a.column,
+          )),
+        }
+      }
+      ids.push(scratch_ref(m, tmp, ln, cl))
+      m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+    },
+  }
+}
+
+fn emit_get(m, f, obj, key, ln, cl) {
+  cond {
+    in_prelude => m.index(recv: obj, key: key, line: ln, col: cl),
+    _ => call_pre(m, f, '__get', [obj, key], ln, cl),
+  }
+}
+
+fn emit_set(m, f, obj, key, v, ln, cl) {
+  cond {
+    in_prelude => m.set_index(recv: obj, key: key, value: v, line: ln, col: cl),
+    _ => call_pre(m, f, '__set', [obj, key, v], ln, cl),
+  }
+}
+
+# a call of a raw prelude closure (no receiver)
+fn emit_raw_call(m, f, callee, arg_nodes, ln, cl) {
+  mut ids = []
+  for a in arg_nodes {
+    ids.push(emit_expr(m, a, f))
+  }
+  m.call_value(callee: callee, args_list: make_list(m, ids), line: ln, col: cl)
+}
+
+fn emit_postfix(m, node, f) {
+  let head = node.nodes[0]
+  let steps = node.nodes.slice(1, node.nodes.size())
+  # an intrinsic or raw op in the prelude is spelled as a call
+  if in_prelude && head.name == 'ident' && steps.size() == 1 && steps[0].name == 'call_p' {
+    let r = resolved[pkey(head)]
+    if r.kind == 'intrinsic' {
+      let (iname, _) = intrinsics[head.token]
+      mut ids = []
+      for a in steps[0].nodes[0].nodes {
+        ids.push(emit_expr(m, a, f))
+      }
+      return m.intrinsic(
+        name: iname,
+        args_list: make_list(m, ids),
+        line: node.line,
+        col: node.column,
+      )
+    }
+    if r.kind == 'const' {
+      # the 128 ASCII characters, which the prelude cannot spell itself
+      return str_l(
+        m,
+        String.from_bytes(range(128).collect()),
+        node.line,
+        node.column,
+      )
+    }
+    if r.kind == 'rawop' {
+      let args = steps[0].nodes[0].nodes
+      let op = raw_binops[head.token]
+      let l = emit_expr(m, args[0], f)
+      cond {
+        args.size() ==
+          1 => return m.unary(
+          op: 'bitnot',
+          operand: l,
+          line: node.line,
+          col: node.column,
+        ),
+        _ => return m.binary(
+          op: op,
+          lhs: l,
+          rhs: emit_expr(m, args[1], f),
+          line: node.line,
+          col: node.column,
+        ),
+      }
+    }
+  }
+  mut value = emit_expr(m, head, f)
+  mut i = 0
+  while i < steps.size() {
+    let step = steps[i]
+    let ln = step.line
+    let cl = step.column
+    cond {
+      step.name == 'call_p' => {
+        cond {
+          in_prelude => value = emit_raw_call(
+            m,
+            f,
+            value,
+            step.nodes[0].nodes,
+            ln,
+            cl,
+          ),
+          _ => value = call_pre(
+            m,
+            f,
+            '__call',
+            [
+              value,
+              nil_l(m, ln, cl),
+              emit_arg_array(m, f, step.nodes[0].nodes, ln, cl),
+            ],
+            ln,
+            cl,
+          ),
+        }
+      },
+      step.name == 'member_p' || step.name == 'index_p' => {
+        let key = cond {
+          step.name == 'member_p' => str_l(m, step.nodes[0].token, ln, cl),
+          _ => emit_expr(m, step.nodes[0], f),
+        }
+        # a method call keeps the receiver: o.m(args)
+        cond {
+          !in_prelude &&
+            i + 1 < steps.size() &&
+            steps[i + 1].name == 'call_p' => {
+            let cp = steps[i + 1]
+            value = call_pre(
+              m,
+              f,
+              '__callm',
+              [
+                value,
+                key,
+                emit_arg_array(m, f, cp.nodes[0].nodes, cp.line, cp.column),
+              ],
+              cp.line,
+              cp.column,
+            )
+            i = i + 1
+          },
+          _ => value = emit_get(m, f, value, key, ln, cl),
+        }
+      },
+      _ => fail(step, 'unexpected postfix'),
+    }
+    i = i + 1
+  }
+  value
+}
+
+fn emit_new(m, node, f) {
+  let ln = node.line
+  let cl = node.column
+  mut value = emit_expr(m, node.nodes[0], f)
+  mut i = 1
+  while i < node.nodes.size() {
+    let step = node.nodes[i]
+    cond {
+      step.name == 'new_args' => {
+        let arg_nodes = cond {
+          step.nodes.size() > 0 => step.nodes[0].nodes,
+          _ => [],
+        }
+        value = call_pre(
+          m,
+          f,
+          '__new',
+          [value, emit_arg_array(m, f, arg_nodes, ln, cl)],
+          ln,
+          cl,
+        )
+      },
+      step.name ==
+        'call_p' => value = call_pre(
+        m,
+        f,
+        '__call',
+        [
+          value,
+          nil_l(m, step.line, step.column),
+          emit_arg_array(m, f, step.nodes[0].nodes, step.line, step.column),
+        ],
+        step.line,
+        step.column,
+      ),
+      _ => {
+        let key = cond {
+          step.name ==
+            'member_p' => str_l(m, step.nodes[0].token, step.line, step.column),
+          _ => emit_expr(m, step.nodes[0], f),
+        }
+        cond {
+          i + 1 < node.nodes.size() && node.nodes[i + 1].name == 'call_p' => {
+            let cp = node.nodes[i + 1]
+            value = call_pre(
+              m,
+              f,
+              '__callm',
+              [
+                value,
+                key,
+                emit_arg_array(m, f, cp.nodes[0].nodes, cp.line, cp.column),
+              ],
+              cp.line,
+              cp.column,
+            )
+            i = i + 1
+          },
+          _ => value = emit_get(m, f, value, key, step.line, step.column),
+        }
+      },
+    }
+    i = i + 1
+  }
+  value
+}
+
+# --- assignment targets ---
+
+# {kind: 'var', r} | {kind: 'global', name} | {kind: 'prop', obj_id, key_id}
+# with the object and key already evaluated into temps
+fn emit_target(m, f, t) {
+  cond {
+    t.name == 'paren' => emit_target(m, f, t.nodes[0]),
+    t.name == 'ident' => {
+      let r = resolved[pkey(t)]
+      cond {
+        r.kind == 'var' => {kind: 'var', r: r, pre: []},
+        r.kind == 'global' => {kind: 'global', name: t.token, pre: []},
+        _ => fail(t, 'Invalid assignment target'),
+      }
+    },
+    t.name == 'postfix' => {
+      let last = t.nodes[t.nodes.size() - 1]
+      if last.name != 'member_p' && last.name != 'index_p' {
+        fail(t, 'Invalid assignment target')
+      }
+      let base = cond {
+        t.nodes.size() == 2 => t.nodes[0],
+        _ => synth('postfix', t.nodes.slice(0, t.nodes.size() - 1), t),
+      }
+      let ln = last.line
+      let cl = last.column
+      let ot = new_scratch(f)
+      let kt = new_scratch(f)
+      let key = cond {
+        last.name == 'member_p' => str_l(m, last.nodes[0].token, ln, cl),
+        _ => emit_expr(m, last.nodes[0], f),
+      }
+      let pre = [
+        m.assign(
+          kind: 'local',
+          index: ot,
+          value: emit_expr(m, base, f),
+          line: ln,
+          col: cl,
+        ),
+        m.assign(kind: 'local', index: kt, value: key, line: ln, col: cl),
+      ]
+      {kind: 'prop', ot: ot, kt: kt, pre: pre, ln: ln, cl: cl}
+    },
+    _ => fail(t, 'Invalid assignment target'),
+  }
+}
+
+fn target_read(m, f, tg, ln, cl) {
+  cond {
+    tg.kind == 'var' => var_read(m, f, tg.r, ln, cl),
+    tg.kind ==
+      'global' => call_pre(m, f, '__gget', [str_l(m, tg.name, ln, cl)], ln, cl),
+    _ => emit_get(
+      m,
+      f,
+      scratch_ref(m, tg.ot, ln, cl),
+      scratch_ref(m, tg.kt, ln, cl),
+      ln,
+      cl,
+    ),
+  }
+}
+
+# the write, as a node whose value is the stored value
+fn target_write(m, f, tg, v, ln, cl) {
+  cond {
+    tg.kind == 'var' => {
+      let st = var_write(m, f, tg.r, v, ln, cl)
+      m.block(
+        stmts_list: make_list(m, [st, var_read(m, f, tg.r, ln, cl)]),
+        line: ln,
+        col: cl,
+      )
+    },
+    tg.kind == 'global' => cond {
+      in_prelude => m.set_index(
+        recv: gref(m, f, ln, cl),
+        key: str_l(m, tg.name, ln, cl),
+        value: v,
+        line: ln,
+        col: cl,
+      ),
+      _ => call_pre(m, f, '__gset', [str_l(m, tg.name, ln, cl), v], ln, cl),
+    },
+    _ => emit_set(
+      m,
+      f,
+      scratch_ref(m, tg.ot, ln, cl),
+      scratch_ref(m, tg.kt, ln, cl),
+      v,
+      ln,
+      cl,
+    ),
+  }
+}
+
+fn with_pre(m, pre, v, ln, cl) {
+  cond {
+    pre.size() == 0 => v,
+    _ => {
+      mut ids = pre
+      ids.push(v)
+      m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+    },
+  }
+}
+
+fn emit_assign(m, node, f) {
+  let [lhs, op, rhs] = node.nodes
+  let ln = op.line
+  let cl = op.column
+  let tg = emit_target(m, f, lhs)
+  cond {
+    op.token ==
+      '=' => with_pre(
+      m,
+      tg.pre,
+      target_write(m, f, tg, emit_expr(m, rhs, f), ln, cl),
+      ln,
+      cl,
+    ),
+    op.token == '||=' || op.token == '&&=' || op.token == '??=' => {
+      let cur = target_read(m, f, tg, ln, cl)
+      let tmp = new_scratch(f)
+      let store = m.assign(
+        kind: 'local',
+        index: tmp,
+        value: cur,
+        line: ln,
+        col: cl,
+      )
+      let test = cond {
+        op.token ==
+          '??=' => call_pre(
+          m,
+          f,
+          '__isnullish',
+          [scratch_ref(m, tmp, ln, cl)],
+          ln,
+          cl,
+        ),
+        _ => emit_test(m, f, scratch_ref(m, tmp, ln, cl), ln, cl),
+      }
+      let write = target_write(m, f, tg, emit_expr(m, rhs, f), ln, cl)
+      let pick = cond {
+        op.token ==
+          '||=' => m.make_if_else(
+          cond: test,
+          then_branch: scratch_ref(m, tmp, ln, cl),
+          else_branch: write,
+          line: ln,
+          col: cl,
+        ),
+        op.token ==
+          '&&=' => m.make_if_else(
+          cond: test,
+          then_branch: write,
+          else_branch: scratch_ref(m, tmp, ln, cl),
+          line: ln,
+          col: cl,
+        ),
+        _ => m.make_if_else(
+          cond: test,
+          then_branch: write,
+          else_branch: scratch_ref(m, tmp, ln, cl),
+          line: ln,
+          col: cl,
+        ),
+      }
+      mut ids = tg.pre
+      ids.push(store)
+      ids.push(pick)
+      m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+    },
+    _ => {
+      let bop = op.token.slice(0, op.token.size() - 1).to_string()
+      let cur = target_read(m, f, tg, ln, cl)
+      let v = emit_binop(m, f, bop, cur, emit_expr(m, rhs, f), ln, cl)
+      with_pre(m, tg.pre, target_write(m, f, tg, v, ln, cl), ln, cl)
+    },
+  }
+}
+
+fn emit_update(m, node, f, prefix) {
+  let (op, t) = cond {
+    prefix => (node.nodes[0], node.nodes[1]),
+    _ => (node.nodes[1], node.nodes[0]),
+  }
+  let ln = op.line
+  let cl = op.column
+  let tg = emit_target(m, f, t)
+  let tmp = new_scratch(f)
+  let old = cond {
+    in_prelude => target_read(m, f, tg, ln, cl),
+    _ => call_pre(m, f, '__tonum', [target_read(m, f, tg, ln, cl)], ln, cl),
+  }
+  let store = m.assign(kind: 'local', index: tmp, value: old, line: ln, col: cl)
+  let delta = cond {
+    in_prelude => m.literal(v: 1, line: ln, col: cl),
+    _ => dbl_l(m, 1.0, ln, cl),
+  }
+  let nv = m.binary(
+    op: cond { op.token == '++' => 'add', _ => 'sub' },
+    lhs: scratch_ref(m, tmp, ln, cl),
+    rhs: delta,
+    line: ln,
+    col: cl,
+  )
+  let write = target_write(m, f, tg, nv, ln, cl)
+  mut ids = tg.pre
+  ids.push(store)
+  cond {
+    prefix => ids.push(write),
+    _ => {
+      ids.push(write)
+      ids.push(scratch_ref(m, tmp, ln, cl))
+    },
+  }
+  m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+}
+
+fn emit_unary(m, node, f) {
+  if node.nodes.size() == 1 {
+    return emit_expr(m, node.nodes[0], f)
+  }
+  let [op, operand] = node.nodes
+  let ln = op.line
+  let cl = op.column
+  let tok = op.token
+  cond {
+    tok == 'typeof' => {
+      # typeof of an unbound name is 'undefined', not a ReferenceError
+      let v = cond {
+        !in_prelude &&
+          operand.name == 'ident' &&
+          resolved[pkey(operand)].kind ==
+            'global' => m.index(
+          recv: gref(m, f, ln, cl),
+          key: str_l(m, operand.token, ln, cl),
+          line: ln,
+          col: cl,
+        ),
+        _ => emit_expr(m, operand, f),
+      }
+      cond {
+        in_prelude => m.intrinsic(
+          name: 'typeof',
+          args_list: make_list(m, [v]),
+          line: ln,
+          col: cl,
+        ),
+        _ => call_pre(m, f, '__typeof_js', [v], ln, cl),
+      }
+    },
+    tok ==
+      'void' => m.block(
+      stmts_list: make_list(m, [emit_expr(m, operand, f), nil_l(m, ln, cl)]),
+      line: ln,
+      col: cl,
+    ),
+    tok == 'delete' => {
+      let tg = emit_target(m, f, operand)
+      cond {
+        tg.kind ==
+          'prop' => with_pre(
+          m,
+          tg.pre,
+          call_pre(
+            m,
+            f,
+            '__delete',
+            [scratch_ref(m, tg.ot, ln, cl), scratch_ref(m, tg.kt, ln, cl)],
+            ln,
+            cl,
+          ),
+          ln,
+          cl,
+        ),
+        _ => m.bool_literal(v: true, line: ln, col: cl),
+      }
+    },
+    in_prelude => {
+      let v = emit_expr(m, operand, f)
+      cond {
+        tok == '!' => ir_not(m, v, ln, cl),
+        tok == '-' => m.unary(op: 'neg', operand: v, line: ln, col: cl),
+        tok == '+' => v,
+        _ => m.unary(op: 'bitnot', operand: v, line: ln, col: cl),
+      }
+    },
+    _ => {
+      let v = emit_expr(m, operand, f)
+      let name = cond {
+        tok == '!' => '__not',
+        tok == '-' => '__neg',
+        tok == '+' => '__tonum',
+        _ => '__bnot',
+      }
+      call_pre(m, f, name, [v], ln, cl)
+    },
+  }
+}
+
+fn emit_object(m, node, f) {
+  let ln = node.line
+  let cl = node.column
+  let tmp = new_scratch(f)
+  mut ids = [m.assign(
+    kind: 'local',
+    index: tmp,
+    value: m.object_lit(kv_list: m.list_new(), line: ln, col: cl),
+    line: ln,
+    col: cl,
+  )]
+  fn put(pk, pv, pl, pc) {
+    ids.push(m.set_index(
+      recv: scratch_ref(m, tmp, pl, pc),
+      key: pk,
+      value: pv,
+      line: pl,
+      col: pc,
+    ))
+  }
+  for p in node.nodes {
+    match p {
+      {name: 'kv_p'} => {
+        let k = p.nodes[0]
+        let kstr = cond {
+          k.name == 'string' => unescape(k.token.slice(1, k.token.size() - 1)),
+          k.name == 'number' => number_key(k.token),
+          _ => k.token,
+        }
+        put(
+          str_l(m, kstr, p.line, p.column),
+          emit_expr(m, p.nodes[1], f),
+          p.line,
+          p.column,
+        )
+      },
+      {name: 'computed_p'} => {
+        let kstr = cond {
+          in_prelude => emit_expr(m, p.nodes[0], f),
+          _ => call_pre(
+            m,
+            f,
+            '__key',
+            [emit_expr(m, p.nodes[0], f)],
+            p.line,
+            p.column,
+          ),
+        }
+        put(kstr, emit_expr(m, p.nodes[1], f), p.line, p.column)
+      },
+      {name: 'method_p'} => put(
+        str_l(m, p.nodes[0].token, p.line, p.column),
+        emit_fn_value(m, p, f, p.nodes[0].token, false),
+        p.line,
+        p.column,
+      ),
+      {name: 'short_p'} => put(
+        str_l(m, p.nodes[0].token, p.line, p.column),
+        emit_expr(m, p.nodes[0], f),
+        p.line,
+        p.column,
+      ),
+      {name: 'ospread'} => ids.push(call_pre(
+        m,
+        f,
+        '__obj_spread',
+        [scratch_ref(m, tmp, p.line, p.column), emit_expr(m, p.nodes[0], f)],
+        p.line,
+        p.column,
+      )),
+      _ => nil,
+    }
+  }
+  ids.push(scratch_ref(m, tmp, ln, cl))
+  m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+}
+
+# a numeric literal key, spelled the way ToString would
+fn number_key(tok) {
+  let v = number_value(tok)
+  cond {
+    v == to_float(to_long(v)) && v < 1.0e21 && v > -1.0e21 => "{to_long(v)}",
+    _ => "{v}",
+  }
+}
+
+fn emit_expr(m, node, f) {
+  let ln = node.line
+  let cl = node.column
+  match node {
+    {name: 'number'} => cond {
+      in_prelude &&
+        !node.token.contains('.') &&
+        !node.token.contains('e') &&
+        !node.token.contains('E') => m.literal(
+        v: to_long(node.token),
+        line: ln,
+        col: cl,
+      ),
+      _ => dbl_l(m, number_value(node.token), ln, cl),
+    },
+    {name: 'string'} => emit_string(m, node),
+    {name: 'template'} => emit_template(m, node, f),
+    {name: 'true_l'} => m.bool_literal(v: true, line: ln, col: cl),
+    {name: 'false_l'} => m.bool_literal(v: false, line: ln, col: cl),
+    {name: 'null_l'} => m.index(
+      recv: gref(m, f, ln, cl),
+      key: str_l(m, 'null', ln, cl),
+      line: ln,
+      col: cl,
+    ),
+    {name: 'this_e'} => {
+      let r = resolved[pkey(node)]
+      cond {
+        r.kind == 'var' => var_read(m, f, r, ln, cl),
+        _ => nil_l(m, ln, cl),
+      }
+    },
+    {name: 'ident'} => {
+      let r = resolved[pkey(node)]
+      cond {
+        r.kind == 'var' => var_read(m, f, r, ln, cl),
+        r.kind ==
+          'fn' => m.make_closure(
+          func: r.func,
+          cmap: cmap_for(m, f, r.func),
+          line: ln,
+          col: cl,
+        ),
+        r.kind == 'global' => cond {
+          node.token == 'undefined' => nil_l(m, ln, cl),
+          in_prelude => m.index(
+            recv: gref(m, f, ln, cl),
+            key: str_l(m, node.token, ln, cl),
+            line: ln,
+            col: cl,
+          ),
+          _ => call_pre(m, f, '__gget', [str_l(m, node.token, ln, cl)], ln, cl),
+        },
+        _ => fail(node, "cannot use '{node.token}' as a value"),
+      }
+    },
+    {name: 'paren'} => emit_expr(m, node.nodes[0], f),
+    {name: 'arrow'} => emit_fn_value(m, node, f, '', true),
+    {name: 'fn_expr'} => {
+      let fname = node.nodes[0]
+      let name = cond {
+        fname.nodes.size() > 0 => fname.nodes[0].token,
+        _ => '',
+      }
+      let v = emit_fn_value(m, node, f, name, false)
+      cond {
+        # a named function expression binds its own name in its scope: the
+        # closure is stored into that slot the first time it runs (below,
+        # in the prologue), so the value here is just the function
+        _ => v,
+      }
+    },
+    {name: 'assign_e'} => emit_assign(m, node, f),
+    {name: 'pre_inc'} => emit_update(m, node, f, true),
+    {name: 'post_inc'} => emit_update(m, node, f, false),
+    {name: 'unary'} => emit_unary(m, node, f),
+    {name: 'postfix'} => emit_postfix(m, node, f),
+    {name: 'new_e'} => emit_new(m, node, f),
+    {name: 'array_lit'} => emit_arg_array(m, f, node.nodes, ln, cl),
+    {name: 'object_lit'} => emit_object(m, node, f),
+    {name: 'ternary'} => {
+      let [c, a, b] = node.nodes
+      m.make_if_else(
+        cond: emit_test(m, f, emit_expr(m, c, f), ln, cl),
+        then_branch: emit_expr(m, a, f),
+        else_branch: emit_expr(m, b, f),
+        line: ln,
+        col: cl,
+      )
+    },
+    {name: 'exp_e'} => {
+      let l = emit_expr(m, node.nodes[0], f)
+      let r = emit_expr(m, node.nodes[1], f)
+      emit_binop(m, f, '**', l, r, ln, cl)
+    },
+    {name: 'lor'} => emit_shortcircuit(m, node, f),
+    {name: 'land'} => emit_shortcircuit(m, node, f),
+    {name: 'nullish'} => emit_shortcircuit(m, node, f),
+    {name: 'spread'} => fail(node, 'unexpected spread'),
+    _ => cond {
+      node.nodes != nil && node.nodes.size() >= 3 => emit_chain(m, node, f),
+      node.nodes != nil &&
+        node.nodes.size() == 1 => emit_expr(m, node.nodes[0], f),
+      _ => fail(node, "unexpected expression '{node.name}'"),
+    },
+  }
+}
+
+# --- statements ---
+
+fn emit_block(m, blk, f) {
+  let slots = block_slots[pkey(blk)]
+  mut ids = fresh_slots(m, f, slots, blk.line, blk.column)
+  emit_stmts_into(m, blk.nodes, f, ids)
+  m.block(stmts_list: make_list(m, ids), line: blk.line, col: blk.column)
+}
+
+# a block's own bindings start out undefined on every entry; a captured
+# one gets a fresh cell so earlier closures keep theirs
+fn fresh_slots(m, f, slots, ln, cl) {
+  mut ids = []
+  for s in slots {
+    cond {
+      cell_index[f].has(s) => {
+        ids.push(m.cell_fresh(cell: cell_index[f][s], line: ln, col: cl))
+        ids.push(m.assign(
+          kind: 'cell',
+          index: cell_index[f][s],
+          value: nil_l(m, ln, cl),
+          line: ln,
+          col: cl,
+        ))
+      },
+      _ => ids.push(m.assign(
+        kind: 'local',
+        index: s,
+        value: nil_l(m, ln, cl),
+        line: ln,
+        col: cl,
+      )),
+    }
+  }
+  ids
+}
+
+fn emit_stmts_into(m, stmts, f, ids) {
+  # hoisted function declarations come first
+  for s in stmts {
+    if s.name == 'fn_decl' {
+      let r = resolved[pkey(s.nodes[0])]
+      ids.push(var_write(
+        m,
+        f,
+        r,
+        emit_fn_value(m, s, f, s.nodes[0].token, false),
+        s.line,
+        s.column,
+      ))
+    }
+  }
+  for s in stmts {
+    if s.name != 'fn_decl' {
+      let e = emit_stmt(m, s, f)
+      if e != nil {
+        ids.push(e)
+      }
+    }
+  }
+  nil
+}
+
+fn emit_sub(m, st, f) {
+  cond {
+    st.name == 'block' => emit_block(m, st, f),
+    _ => {
+      let e = emit_stmt(m, st, f)
+      cond {
+        e ==
+          nil => m.block(
+          stmts_list: m.list_new(),
+          line: st.line,
+          col: st.column,
+        ),
+        _ => e,
+      }
+    },
+  }
+}
+
+fn emit_decl(m, node, f) {
+  mut ids = []
+  mut i = 1
+  while i < node.nodes.size() {
+    let d = node.nodes[i]
+    let id = d.nodes[0]
+    let r = resolved[pkey(id)]
+    let v = cond {
+      d.nodes.size() > 1 => emit_expr(m, d.nodes[1], f),
+      node.nodes[0].token == 'var' => nil,  # `var x;` leaves the binding alone
+      _ => nil_l(m, id.line, id.column),
+    }
+    if v != nil {
+      ids.push(var_write(m, f, r, v, id.line, id.column))
+    }
+    i = i + 1
+  }
+  cond {
+    ids.size() == 0 => nil,
+    ids.size() == 1 => ids[0],
+    _ => m.block(
+      stmts_list: make_list(m, ids),
+      line: node.line,
+      col: node.column,
+    ),
+  }
+}
+
+# the per-iteration copy of a for head's captured bindings, then the step
+fn for_step_ids(m, f, slots, step_node, ln, cl) {
+  mut ids = []
+  for s in slots {
+    if cell_index[f].has(s) {
+      let tmp = new_scratch(f)
+      let ci = cell_index[f][s]
+      ids.push(m.assign(
+        kind: 'local',
+        index: tmp,
+        value: m.var_ref(kind: 'cell', index: ci, line: ln, col: cl),
+        line: ln,
+        col: cl,
+      ))
+      ids.push(m.cell_fresh(cell: ci, line: ln, col: cl))
+      ids.push(m.assign(
+        kind: 'cell',
+        index: ci,
+        value: scratch_ref(m, tmp, ln, cl),
+        line: ln,
+        col: cl,
+      ))
+    }
+  }
+  if step_node != nil {
+    ids.push(emit_expr(m, step_node, f))
+  }
+  ids
+}
+
+fn emit_stmt(m, node, f) {
+  let ln = node.line
+  let cl = node.column
+  match node {
+    {name: 'var_decl'} => emit_decl(m, node, f),
+    {name: 'var_decl_ns'} => emit_decl(m, node, f),
+    {name: 'fn_decl'} => nil,
+    {name: 'if_s'} => {
+      let c = emit_test(m, f, emit_expr(m, node.nodes[0], f), ln, cl)
+      let t = emit_sub(m, node.nodes[1], f)
+      cond {
+        node.nodes.size() >
+          2 => m.make_if_else(
+          cond: c,
+          then_branch: t,
+          else_branch: emit_sub(m, node.nodes[2].nodes[0], f),
+          line: ln,
+          col: cl,
+        ),
+        _ => m.make_if(cond: c, then_branch: t, line: ln, col: cl),
+      }
+    },
+    {name: 'while_s'} => {
+      loop_ctx[f].push({step: nil})
+      let body = emit_sub(m, node.nodes[1], f)
+      loop_ctx[f].pop()
+      m.make_while(
+        cond: emit_test(m, f, emit_expr(m, node.nodes[0], f), ln, cl),
+        body: body,
+        line: ln,
+        col: cl,
+      )
+    },
+    {name: 'do_s'} => {
+      # first = true; while (first || cond) { first = false; body }
+      let flag = new_scratch(f)
+      loop_ctx[f].push({step: nil})
+      let body = emit_sub(m, node.nodes[0], f)
+      loop_ctx[f].pop()
+      let test = m.make_if_else(
+        cond: scratch_ref(m, flag, ln, cl),
+        then_branch: m.bool_literal(v: true, line: ln, col: cl),
+        else_branch: emit_test(m, f, emit_expr(m, node.nodes[1], f), ln, cl),
+        line: ln,
+        col: cl,
+      )
+      let clear = m.assign(
+        kind: 'local',
+        index: flag,
+        value: m.bool_literal(v: false, line: ln, col: cl),
+        line: ln,
+        col: cl,
+      )
+      m.block(
+        stmts_list: make_list(m, [
+          m.assign(kind: 'local', index: flag, value: m.bool_literal(v: true, line: ln, col: cl), line: ln, col: cl),
+          m.make_while(cond: test, body: m.block(stmts_list: make_list(m, [clear, body]), line: ln, col: cl), line: ln, col: cl)]),
+        line: ln,
+        col: cl,
+      )
+    },
+    {name: 'for_s'} => {
+      let [init, cnd, step, body] = node.nodes
+      let slots = block_slots[pkey(node)]
+      mut ids = fresh_slots(m, f, slots, ln, cl)
+      if init.nodes.size() > 0 {
+        let i0 = init.nodes[0]
+        let e = cond {
+          i0.name == 'var_decl_ns' => emit_decl(m, i0, f),
+          _ => emit_expr(m, i0, f),
+        }
+        if e != nil {
+          ids.push(e)
+        }
+      }
+      let step_node = cond {
+        step.nodes.size() > 0 => step.nodes[0],
+        _ => nil,
+      }
+      loop_ctx[f].push({step: fn (m2) {
+        for_step_ids(m2, f, slots, step_node, ln, cl)
+      }})
+      let b = emit_sub(m, body, f)
+      loop_ctx[f].pop()
+      mut body_ids = [b]
+      for s in for_step_ids(m, f, slots, step_node, ln, cl) {
+        body_ids.push(s)
+      }
+      let test = cond {
+        cnd.nodes.size() >
+          0 => emit_test(m, f, emit_expr(m, cnd.nodes[0], f), ln, cl),
+        _ => m.bool_literal(v: true, line: ln, col: cl),
+      }
+      ids.push(m.make_while(
+        cond: test,
+        body: m.block(stmts_list: make_list(m, body_ids), line: ln, col: cl),
+        line: ln,
+        col: cl,
+      ))
+      m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+    },
+    {name: 'for_of'} => {
+      let [kw, id, src, body] = node.nodes
+      let slots = block_slots[pkey(node)]
+      let r = resolved[pkey(id)]
+      let it = new_scratch(f)
+      let cur = new_scratch(f)
+      mut ids = [m.assign(
+        kind: 'local',
+        index: it,
+        value: call_pre(m, f, '__iter', [emit_expr(m, src, f)], ln, cl),
+        line: ln,
+        col: cl,
+      )]
+      # cur = __iter_step(it); while (cur != nil) { bind; body; cur = step }
+      fn advance(m2) {
+        [m2.assign(
+          kind: 'local',
+          index: cur,
+          value: call_pre(m2, f, '__iter_step', [scratch_ref(m2, it, ln, cl)], ln, cl),
+          line: ln,
+          col: cl,
+        )]
+      }
+      ids.push(advance(m)[0])
+      loop_ctx[f].push({step: advance})
+      let b = emit_sub(m, body, f)
+      loop_ctx[f].pop()
+      mut body_ids = fresh_slots(m, f, slots, ln, cl)
+      body_ids.push(var_write(
+        m,
+        f,
+        r,
+        m.index(
+          recv: scratch_ref(m, cur, ln, cl),
+          key: m.literal(v: 0, line: ln, col: cl),
+          line: ln,
+          col: cl,
+        ),
+        ln,
+        cl,
+      ))
+      body_ids.push(b)
+      body_ids.push(advance(m)[0])
+      let test = m.make_if_else(
+        cond: m.binary(op: 'eq',
+                                               lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [scratch_ref(m, cur, ln, cl)]), line: ln, col: cl),
+                                               rhs: str_l(m, 'nil', ln, cl), line: ln, col: cl),
+        then_branch: m.bool_literal(v: false, line: ln, col: cl),
+        else_branch: m.bool_literal(v: true, line: ln, col: cl),
+        line: ln,
+        col: cl,
+      )
+      ids.push(m.make_while(
+        cond: test,
+        body: m.block(stmts_list: make_list(m, body_ids), line: ln, col: cl),
+        line: ln,
+        col: cl,
+      ))
+      m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+    },
+    {name: 'return_s'} => {
+      let rv = node.nodes[0]
+      let v = cond {
+        rv.nodes.size() > 0 => emit_expr(m, rv.nodes[0], f),
+        _ => nil_l(m, ln, cl),
+      }
+      m.make_return(value: v, line: ln, col: cl)
+    },
+    {name: 'break_s'} => m.make_break(line: ln, col: cl),
+    {name: 'continue_s'} => {
+      let ctx = loop_ctx[f]
+      if ctx.size() == 0 {
+        fail(node, 'Illegal continue statement')
+      }
+      let top = ctx[ctx.size() - 1]
+      cond {
+        top.step == nil => m.make_continue(line: ln, col: cl),
+        _ => {
+          mut ids = top.step(m)
+          ids.push(m.make_continue(line: ln, col: cl))
+          m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+        },
+      }
+    },
+    {name: 'throw_s'} => m.make_throw(
+      value: emit_expr(m, node.nodes[0], f),
+      line: ln,
+      col: cl,
+    ),
+    {name: 'try_s'} => emit_try(m, node, f),
+    {name: 'block'} => emit_block(m, node, f),
+    {name: 'empty_s'} => nil,
+    {name: 'expr_s'} => emit_expr(m, node.nodes[0], f),
+    _ => emit_expr(m, node, f),
+  }
+}
+
+fn emit_try(m, node, f) {
+  let ln = node.line
+  let cl = node.column
+  mut body = emit_block(m, node.nodes[0], f)
+  mut catch_c = nil
+  mut finally_c = nil
+  mut i = 1
+  while i < node.nodes.size() {
+    let c = node.nodes[i]
+    cond {
+      c.name == 'catch_c' => catch_c = c,
+      _ => finally_c = c,
+    }
+    i = i + 1
+  }
+  if catch_c != nil {
+    let r = resolved[pkey(catch_c)]
+    let a = access_from(f, (f, r.slot))
+    # the VM lands the value in a plain local; a captured binding is copied
+    # into its cell after the trap-to-error fix
+    let slot = cond {
+      a.kind == 'local' => a.index,
+      _ => new_scratch(f),
+    }
+    let fixed = cond {
+      in_prelude => scratch_ref(m, slot, ln, cl),
+      _ => call_pre(
+        m,
+        f,
+        '__catch_fix',
+        [scratch_ref(m, slot, ln, cl)],
+        ln,
+        cl,
+      ),
+    }
+    let bind = cond {
+      a.kind ==
+        'local' => m.assign(
+        kind: 'local',
+        index: slot,
+        value: fixed,
+        line: ln,
+        col: cl,
+      ),
+      _ => m.block(
+        stmts_list: make_list(m, [m.cell_fresh(cell: a.index, line: ln, col: cl),
+                                             m.assign(kind: 'cell', index: a.index, value: fixed, line: ln, col: cl)]),
+        line: ln,
+        col: cl,
+      ),
+    }
+    let handler = m.block(
+      stmts_list: make_list(m, [bind, emit_block(m, catch_c.nodes[1], f)]),
+      line: ln,
+      col: cl,
+    )
+    body = m.make_try(
+      caught_local: slot,
+      body: body,
+      handler: handler,
+      line: ln,
+      col: cl,
+    )
+  }
+  if finally_c != nil {
+    # finally runs on every way out: as a defer in a scope around the try
+    let g = closure_of[pkey(finally_c)]
+    let d = m.make_defer(
+      value: m.make_closure(func: g, cmap: cmap_for(m, f, g), line: ln, col: cl),
+      line: ln,
+      col: cl,
+    )
+    body = m.scope(
+      first_local: 0,
+      end_local: 0,
+      body: m.block(stmts_list: make_list(m, [d, body]), line: ln, col: cl),
+      line: ln,
+      col: cl,
+    )
+  }
+  body
+}
+
+# --- functions and the driver ---
+
+fn emit_funcs(m) {
+  for f in range(funcs.size()) {
+    let fi = funcs[f]
+    in_prelude = fi.is_prelude
+    mut ids = []
+    # defaults: a parameter that arrived undefined takes its default
+    for pi in range(fi.dflts.size()) {
+      let d = fi.dflts[pi]
+      if d != nil {
+        let slot = pi + cond {
+          fi.params.size() > fi.dflts.size() => 1,
+          _ => 0,
+        }
+        let test = m.binary(
+          op: 'eq',
+          lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [m.var_ref(kind: 'local', index: slot, line: 1, col: 1)]), line: 1, col: 1),
+          rhs: str_l(m, 'nil', 1, 1),
+          line: 1,
+          col: 1,
+        )
+        ids.push(m.make_if(
+          cond: test,
+          then_branch: m.assign(kind: 'local', index: slot, value: emit_expr(m, d, f), line: 1, col: 1),
+          line: 1,
+          col: 1,
+        ))
+      }
+    }
+    # a rest parameter: pack the hidden trailing slots by the supplied count
+    if fi.rest != nil {
+      let first = fi.params.size() - 8
+      mut hidden = []
+      for k in range(8) {
+        hidden.push(m.var_ref(kind: 'local', index: first + k, line: 1, col: 1))
+      }
+      let n = m.binary(
+        op: 'sub',
+        lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
+        rhs: m.literal(v: first, line: 1, col: 1),
+        line: 1,
+        col: 1,
+      )
+      let rslot = fi.params.size()
+      let a = access_from(f, (f, rslot))
+      ids.push(m.assign(
+        kind: a.kind,
+        index: a.index,
+        value: call_pre(m, f, '__rest_pack',
+                                        [m.array_lit(items_list: make_list(m, hidden), line: 1, col: 1), n], 1, 1),
+        line: 1,
+        col: 1,
+      ))
+    }
+    # captured parameters move into their cells
+    for p in range(fi.params.size()) {
+      if cell_index[f].has(p) {
+        ids.push(m.assign(
+          kind: 'cell',
+          index: cell_index[f][p],
+          value: m.var_ref(kind: 'local', index: p, line: 1, col: 1),
+          line: 1,
+          col: 1,
+        ))
+      }
+    }
+    # a named function expression's own name
+    if fi.self_slot != nil {
+      let a = access_from(f, (f, fi.self_slot))
+      ids.push(m.assign(
+        kind: a.kind,
+        index: a.index,
+        value: call_pre(m, f, '__mkfn',
+                                        [m.make_closure(func: f, cmap: cmap_for(m, f, f), line: 1, col: 1),
+                                         str_l(m, fi.name, 1, 1), m.bool_literal(v: false, line: 1, col: 1)], 1, 1),
+        line: 1,
+        col: 1,
+      ))
+    }
+    # the function's vars start out undefined
+    for s in fi.var_names {
+      let a = access_from(f, (f, s))
+      ids.push(m.assign(
+        kind: a.kind,
+        index: a.index,
+        value: nil_l(m, 1, 1),
+        line: 1,
+        col: 1,
+      ))
+    }
+    if f == 0 {
+      ids.push(m.assign(
+        kind: 'cell',
+        index: cell_index[0][g_slot],
+        value: call_pre(m, 0, '__init_globals', [], 1, 1),
+        line: 1,
+        col: 1,
+      ))
+      let ta = access_from(0, (0, this_slot))
+      ids.push(m.assign(
+        kind: ta.kind,
+        index: ta.index,
+        value: m.object_lit(kv_list: m.list_new(), line: 1, col: 1),
+        line: 1,
+        col: 1,
+      ))
+    }
+    cond {
+      fi.body_expr !=
+        nil => ids.push(m.make_return(
+        value: emit_expr(m, fi.body_expr, f),
+        line: 1,
+        col: 1,
+      )),
+      _ => {
+        emit_stmts_into(m, fi.stmts, f, ids)
+        ids.push(m.make_return(value: nil_l(m, 1, 1), line: 1, col: 1))
+      },
+    }
+    mut body = m.block(stmts_list: make_list(m, ids), line: 1, col: 1)
+    if f == 0 {
+      # whatever escapes the program is reported the way Node reports it
+      let slot = new_scratch(0)
+      let caught = m.var_ref(kind: 'local', index: slot, line: 1, col: 1)
+      body = m.make_try(
+        caught_local: slot,
+        body: body,
+        handler: m.make_throw(value: call_pre(m, 0, '__uncaught_text', [caught], 1, 1), line: 1, col: 1),
+        line: 1,
+        col: 1,
+      )
+    }
+    let func = m.add_func(
+      name: fi.name,
+      num_locals: nslots[f] + nscratch[f],
+      num_captures: free[f].size(),
+      num_cells: cell_index[f].size(),
+      num_params: fi.params.size(),
+      body: body,
+    )
+    m.set_lenient_arity(func: func)
+  }
+  in_prelude = false
+}
+
+fn build(m, prelude_tree, root) {
+  let main = new_func(nil, 'main', root.nodes, nil, false)
+  enter_scope(main)
+  g_slot = declare_var(main, '__G', nil)
+  this_slot = declare_var(main, 'this', nil)
+
+  in_prelude = true
+  # prelude helpers are parentless raw closures; each is registered before
+  # any body is walked so they can call each other in any order
+  for s in prelude_tree.nodes {
+    if s.name != 'fn_decl' {
+      fail(s, 'the prelude holds function declarations only')
+    }
+    let id = s.nodes[0]
+    prelude_named[id.token] = new_func(
+      nil,
+      id.token,
+      s.nodes[2].nodes,
+      nil,
+      false,
+    )
+  }
+  for s in prelude_tree.nodes {
+    let g = prelude_named[s.nodes[0].token]
+    walk_fn(g, s.nodes[1].nodes, nil)
+  }
+  in_prelude = false
+
+  # main's body: the program's statements, in main's own scope
+  for s in root.nodes {
+    collect_vars(s, main)
+  }
+  scan_stmts(root.nodes, main)
+  let scopes = scope_stack[main]
+  block_slots["0:0"] = scopes[0].slots
+  leave_scope(main)
+
+  solve()
+  emit_funcs(m)
+}
+
+let want_ir = Sys.argv.contains('--ir')
+let want_bc = Sys.argv.contains('--bc')
+let want_ast = Sys.argv.contains('--ast')
+mut lib_src = ''
+mut cli = []
+mut skip = false
+for i in range(Sys.argv.size()) {
+  let a = Sys.argv[i]
+  cond {
+    skip => skip = false,
+    a == '--lib' => {
+      lib_src = lib_src + FS.read(Sys.argv[i + 1]) + "\n"
+      skip = true
+    },
+    a == '--ir' || a == '--bc' || a == '--ast' => nil,
+    _ => cli.push(a),
+  }
+}
+if cli.empty() {
+  println("usage: culebra mini_js.cul [--lib FILE.js] [--ir | --bc] PROGRAM.js...")
+  Sys.exit(1)
+}
+
+let prelude_tree = Peg.parse(grammar, prelude_src, path: '<prelude>')
+
+mut cur_src = ''
+mut had_err = false
+for path in cli {
+  if cli.size() > 1 {
+    println('-----8<----- ' + path.split('/')[-1])
+  }
+  funcs = []
+  free = []
+  calls = []
+  capture_index = []
+  cell_index = []
+  nslots = []
+  nscratch = []
+  scope_stack = []
+  closure_of = {}
+  resolved = {}
+  block_slots = {}
+  prelude_named = {}
+  loop_ctx = []
+  synth_count = 0
+  in_prelude = false
+  try {
+    cur_src = lib_src + FS.read(path)
+    let tree = Peg.parse(grammar, cur_src, path: path)
+    if want_ast {
+      inspect(tree)
+      continue
+    }
+    let m = CodeGen.Module.new()
+    build(m, prelude_tree, tree)
+    m.verify()
+    if want_ir {
+      print(m.dump_ir())
+    } else if want_bc {
+      print(m.dump_bc())
+    } else {
+      m.run()
+    }
+  } catch e {
+    match e {
+      {kind: 'MiniError'} => {
+        IO.eprintln("{path}:{e.line}:{e.col}: SyntaxError: {e.message}")
+        had_err = true
+      },
+      {kind: 'PegError'} => {
+        IO.eprintln(e.message)
+        had_err = true
+      },
+      {kind: 'IrError'} => {
+        cond {
+          e.message.starts_with('uncaught: ') => IO.eprintln(e
+            .message
+            .slice(10, e.message.size())
+            .to_string()),
+          _ => IO.eprintln("{path}:{e.line}:{e.col}: {e.message}"),
+        }
+        had_err = true
+      },
+      _ => throw e,
+    }
+  }
+}
+if had_err {
+  Sys.exit(1)
+}

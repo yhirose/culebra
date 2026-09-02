@@ -2048,6 +2048,15 @@ add_test(NAME mini_culebra_test
 # lane's blanket --timeout 300 as the sample set grows.
 set_tests_properties(mini_culebra_test PROPERTIES TIMEOUT 900)
 
+# examples/mini-js/mini_js.cul against Node (the oracle; skipped where node is
+# not installed): the samples are ES6 programs both run, printing through the
+# shared fmt.js, under the executor and JIT -- two whole top-level scripts as
+# subprocesses again.
+add_test(NAME mini_js_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/mini_js_test.sh
+                 $<TARGET_FILE:culebra>)
+set_tests_properties(mini_js_test PROPERTIES TIMEOUT 900)
+
 # Log records on stderr — content (levels, fields, filtering, child binding)
 # across interp / JIT / AOT (logs never reach stdout, so the .cul sweep can't
 # verify them).
