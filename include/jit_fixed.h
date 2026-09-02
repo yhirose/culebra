@@ -57,58 +57,58 @@ inline void _jit_fa_set(JitObject* v, int64_t i, int8_t tag, int64_t data,
                             data);
 }
 
-// Registry of native (C++-bodied) closure fn_ptrs. A native closure is not
-// Sendable: it can't be rebuilt on another Runtime, and its captures may
-// hold raw same-heap pointers (the iterator wrappers cache upstream closure
-// pointers, the ns-method closure a NsMethod*) that would silently cross
-// the heap boundary — the JIT serializer rejects them like the interp's
-// body==nullptr check (sendable.h). Every C++-side closure builder
-// registers its thunk; the multifn dispatcher stays out (the serializer
-// rebuilds it from the method tables). Mutex-guarded: child isolates build
-// natives concurrently. The set is bounded by the number of distinct C++
-// thunk addresses, so it only ever holds a handful of entries.
-inline std::mutex& _jit_native_fns_mutex() {
-  static std::mutex m;
-  return m;
-}
-inline std::unordered_set<const void*>& _jit_native_fns() {
-  static std::unordered_set<const void*> s;
-  return s;
-}
-inline void _jit_register_native_fn(const void* fn_ptr) {
-  // Per-thread memo: iterator wrappers register on every construction, so
-  // skip the mutex once this thread has seen the thunk (the global set is
-  // append-only, so a hit can never go stale).
-  static thread_local std::unordered_set<const void*> seen;
-  if (!seen.insert(fn_ptr).second) return;
-  std::lock_guard<std::mutex> lk(_jit_native_fns_mutex());
-  _jit_native_fns().insert(fn_ptr);
-}
-inline bool _jit_is_native_fn(const void* fn_ptr) {
-  std::lock_guard<std::mutex> lk(_jit_native_fns_mutex());
-  return _jit_native_fns().contains(fn_ptr);
+// Two registries of compiled-body addresses, and one reason they live
+// together: an address only names the code it was taken from for as long as
+// that code stays mapped. A JIT arena is freed with its Runtime and the next
+// Runtime's compiler is handed the same pages, so a body address can come
+// back meaning something else entirely. Held per Runtime, so an entry can
+// never outlive the code it describes.
+//
+// The doctest lane found this the hard way: one program's class getter and a
+// later one's `handle` adapter landed on the same address, the adapter read
+// as a getter, and a bare property read invoked it 0-arg — surfacing as
+// "ArityError: missing required argument '_eh_args'" in a program with no
+// getter in it. Only on a machine whose codegen happened to place them so,
+// which is why an unrelated change to the JIT's code size could turn it on.
+//
+// `natives` — a native (C++-bodied) closure is not Sendable: it can't be
+// rebuilt on another Runtime, and its captures may hold raw same-heap
+// pointers (the iterator wrappers cache upstream closure pointers, the
+// ns-method closure a NsMethod*) that would silently cross the heap
+// boundary. The JIT serializer rejects them like the interp's body==nullptr
+// check (sendable.h). Every C++-side closure builder registers its thunk, and
+// so does a class declaration for its synthesized constructor; the multifn
+// dispatcher stays out (the serializer rebuilds it from the method tables).
+//
+// `getters` — the JIT twin of interp's FunctionValue::is_getter. A class
+// getter's compiled body is registered when its class declaration runs, and a
+// bare property read (`obj.name`, no call parens) resolving to a proto method
+// in this set invokes it 0-arg instead of yielding a bound method
+// (culebra_runtime_bind_method_value). Own-slot lambdas never register.
+//
+// No lock: the current Runtime is thread-local (shared.h `_culebra_rt`), so
+// each thread registers into its own, the way every other substate works.
+struct _JitFnRegistry {
+  std::unordered_set<const void*> natives;
+  std::unordered_set<const void*> getters;
+};
+
+inline _JitFnRegistry& _jit_fn_registry() {
+  return culebra::runtime_substate<_JitFnRegistry>(culebra::kSlotJitFnRegistry);
 }
 
-// Getter registry — the JIT twin of interp's FunctionValue::is_getter. A class
-// getter's compiled body address is registered here when its class declaration
-// runs; a bare property read (`obj.name`, no call parens) that resolves to a
-// proto method whose fn_ptr is in this set invokes it 0-arg instead of yielding
-// a bound method (culebra_runtime_bind_method_value). Append-only and keyed by
-// the unique compiled-body address, so a hit never goes stale and can't collide
-// with a plain method. Shares the native-fn mutex (both are cold, decl-time).
-inline std::unordered_set<const void*>& _jit_getter_fns() {
-  static std::unordered_set<const void*> s;
-  return s;
+inline void _jit_register_native_fn(const void* fn_ptr) {
+  _jit_fn_registry().natives.insert(fn_ptr);
 }
+inline bool _jit_is_native_fn(const void* fn_ptr) {
+  return _jit_fn_registry().natives.contains(fn_ptr);
+}
+
 inline void _jit_register_getter_fn(const void* fn_ptr) {
-  static thread_local std::unordered_set<const void*> seen;
-  if (!seen.insert(fn_ptr).second) return;
-  std::lock_guard<std::mutex> lk(_jit_native_fns_mutex());
-  _jit_getter_fns().insert(fn_ptr);
+  _jit_fn_registry().getters.insert(fn_ptr);
 }
 inline bool _jit_is_getter_fn(const void* fn_ptr) {
-  std::lock_guard<std::mutex> lk(_jit_native_fns_mutex());
-  return _jit_getter_fns().contains(fn_ptr);
+  return _jit_fn_registry().getters.contains(fn_ptr);
 }
 
 // Emitted-code entry point: register a compiled getter closure by its body

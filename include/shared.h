@@ -2173,6 +2173,11 @@ enum RuntimeSlot : size_t {
   kSlotJitHooks,
   kSlotJitModuleTable,
   kSlotJitNamespaceTable,
+  // Compiled-body addresses this Runtime has to recognize later (jit_fixed.h:
+  // natives that cannot be sent, class getters a bare read invokes). A code
+  // address only names anything while that code is mapped, which is for as
+  // long as this Runtime's JIT — hence a slot rather than a process global.
+  kSlotJitFnRegistry,
   kSlotFileTable,
   // The session name table vm.h's repl_session() falls back to when no
   // session is current on the thread. A slot rather than one object for the
