@@ -41,9 +41,22 @@ rather than a numpy `ndarray`; a scalar is a 1-element `[1]` `Tensor`. This
 port's autodiff is entirely its own — it does not use `Tensor`'s native
 `requires_grad`/`.backward()`, which is a separate, unrelated feature of
 the host language. Elementwise `sin`/`cos`/`tanh`/`exp`/comparisons all
-ride a native `Tensor` op directly now; `LeakyReLU`'s piecewise forward is
-the one holdout still round-tripping through a nested Culebra Array (see
-`functions.cul`'s own header comment).
+ride a native `Tensor` op directly now, as do `Dropout`'s keep mask and
+`Max`/`Min`'s backward mask; `LeakyReLU`'s piecewise forward is the one
+holdout still round-tripping through a nested Culebra Array (see
+`functions.cul`'s own header comment). Two of those needed a detour around
+a missing `Tensor` primitive: the keep mask wants a uniform draw and
+`Tensor` only generates normals, so it inverts Box-Muller (for independent
+`z1`, `z2` the value `exp(-(z1^2 + z2^2)/2)` is exactly uniform, and
+comparing against a scalar threshold skips the `exp` entirely); and `Min`
+reduces the negation and negates back, because `Tensor` has `.max()` but
+no `.min()`.
+
+Batched (rank >= 3) shapes work throughout. `matmul`'s VJP transposes only
+the last two axes rather than reversing all of them, so a `[B, T, D]`
+operand backprops, and `LayerNorm`, `Dropout`, `Max` and `Min` all handle
+rank 3 and above — enough for a batched multi-head attention built on
+`transpose(x, axes)` + batched `matmul`.
 
 Culebra has no class inheritance, so `Function` and `Layer` are not base
 classes here: every op is its own class with `forward`/`backward` methods
@@ -69,6 +82,26 @@ after `col2im`'s fold and after `Pooling`'s own scatter-fold (since
 one `Pooling`'s own backward just moved onto `.scatter_to_axis()`/`.fold()`).
 `conv_mnist.cul` still trains on a small subset rather than the full 60k
 images.
+
+### Graph lifetime
+
+Upstream holds `Function.outputs` as `weakref`s, which keeps the forward
+graph acyclic: refcounting reclaims a spent graph the moment the caller
+drops the output. Culebra has no weak reference, so `Variable.backward`
+breaks the cycle from the other side instead. It clears each visited
+`Function`'s `output` field once that node's backward has run, and it
+scopes `enable_backprop` over the gradient accumulation as well as over
+`backward` itself — upstream's `with using_config('enable_backprop',
+create_graph)` block spans both, so `x.grad + gx` records no graph of its
+own. Either edge left in place makes every op (the first) or every diamond
+(the second) leave a cycle behind that only the collector can reclaim.
+That is invisible on the small examples here and expensive on a
+transformer-sized training loop, where the culebra objects are few and tiny
+but each one owns megabytes of `Tensor` payload the collector's own byte
+threshold cannot see: measured on a 11.4M-parameter GPT step, dropping both
+edges cut wall clock 2.5x and peak memory 8x. Both are skipped when
+`create_graph` is on, where the graph is deliberately kept for a
+higher-order derivative.
 
 ## Examples
 

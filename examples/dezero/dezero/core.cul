@@ -74,31 +74,6 @@ fn as_variable(x) {
   }
 }
 
-# Tensor has no elementwise sin/cos/tanh/exp and no comparison operator, so
-# functions.cul's trig/exp ops and this file's max/min masks round-trip
-# through nested Culebra Arrays instead. `map_nested`/`zip_nested` walk a
-# `to_array()` result to whatever depth it has (1-D vector or 2-D matrix,
-# the only ranks this port's Tensor usage produces).
-fn map_nested(v, f) {
-  match v {
-    xs: Array => xs.map(|x| map_nested(x, f)),
-    _ => f(v),
-  }
-}
-
-fn zip_nested(a, b, f) {
-  match a {
-    # `.zip()` yields `{first, second}` Objects, not Tuples — a `|(x, y)|`
-    # destructure on it throws `ValueError`, so read the fields by name.
-    xs: Array => xs
-      .iter()
-      .zip(b.iter())
-      .map(|pair| zip_nested(pair.first, pair.second, f))
-      .collect(),
-    _ => f(a, b),
-  }
-}
-
 # Reinserts a size-1 dim at `axis` — the shape an axis-reducing op's output
 # would have under `keepdims=true`, needed wherever a reduced gradient must
 # be reshaped before it can broadcast back against the pre-reduction shape.
@@ -109,8 +84,7 @@ fn insert_axis(shape, axis) {
 fn raw_elementwise(t, f) {
   # `Tensor.to_array()` refuses rank > 2 (needed by e.g. a conv/pooling
   # activation on a [N,C,H,W] tensor), so flatten to 1-D first — a plain
-  # `map` over that is also simpler than `map_nested`'s recursive walk,
-  # since every element is now at the same depth.
+  # `map` over that also puts every element at the same depth.
   shape = t.shape()
   flat = t.reshape([shape.product()]).to_array()
   Tensor.from(flat.map(f)).reshape(shape)
@@ -185,11 +159,16 @@ class Variable {
       f = funcs.pop()
       gy = f.output.grad
 
+      # Upstream's `with using_config('enable_backprop', create_graph)` spans
+      # the accumulation below as well, not just `f.backward` -- with
+      # create_graph off, `x.grad + gx` must not record a graph of its own.
       saved = enable_backprop
       enable_backprop = create_graph
-      gxs = f.backward(gy)
-      enable_backprop = saved
+      defer {
+        enable_backprop = saved
+      }
 
+      gxs = f.backward(gy)
       gxs_list = if f.inputs.size() == 1 {
         [gxs]
       } else {
@@ -207,7 +186,13 @@ class Variable {
         add_func(x.creator) if x.creator != nil
       }
 
+      # Upstream keeps `Function.outputs` as weakrefs, so the graph is acyclic
+      # and refcounting frees it as soon as the caller drops the output.
+      # Culebra has no weak reference, so the strong back-edge is dropped here
+      # instead: `!create_graph` already declares this graph spent (the line
+      # above discards its gradients for the same reason).
       f.output.grad = nil if !retain_grad
+      f.output = nil if !create_graph
     }
   }
 
@@ -661,6 +646,20 @@ fn transpose(x, axes = nil) {
 
 # --- matrix multiply ---------------------------------------------------------
 
+# matmul's VJP needs the *matrix* transpose of an operand: only the last two
+# axes swap, the batch axes stay put. `transpose(v)` with no axes reverses
+# every axis, which coincides with that at rank 2 and not above it -- a
+# batched `[B, T, D]` operand came back as `[D, T, B]`, so `Tensor.dot`
+# rejected the shapes and batched attention could not backprop at all.
+fn swap_last_two_axes(v) {
+  n = as_variable(v).ndim
+  if n <= 2 {
+    transpose(v)
+  } else {
+    transpose(v, range(n - 2).collect() + [n - 1, n - 2])
+  }
+}
+
 class MatMul {
   generation = 0
   inputs = nil
@@ -673,7 +672,7 @@ class MatMul {
 
   backward(gy) {
     (x, w) = (self.inputs[0], self.inputs[1])
-    (matmul(gy, transpose(w)), matmul(transpose(x), gy))
+    (matmul(gy, swap_last_two_axes(w)), matmul(swap_last_two_axes(x), gy))
   }
 }
 
@@ -683,19 +682,9 @@ fn matmul(x, w) {
 
 # --- max / min --------------------------------------------------------------
 #
-# Tensor has no elementwise comparison operator, so the backward mask is
-# built by walking `to_array()` on both sides instead of a vectorized
-# comparison. Ties (more than one element equal to the max) split the
-# incoming gradient across every tied position, same as upstream.
-
-fn mask_equal(a, b) {
-  bc = raw_broadcast_to(b, a.shape())
-  Tensor.from(zip_nested(a.to_array(), bc.to_array(), |p, q| if p == q {
-    1.0
-  } else {
-    0.0
-  }))
-}
+# The backward mask rides `Tensor.eq()`, which broadcasts `b` against `a` on
+# its own. Ties (more than one element equal to the max) split the incoming
+# gradient across every tied position, same as upstream.
 
 # `Max`/`Min` share everything but which Tensor reduction `forward` calls —
 # both route their (identical) backward math through this one function,
@@ -709,7 +698,7 @@ fn arg_reduce_backward(f, gy) {
   }
   gy_r = reshape(gy, shape)
   y_r = Variable(f.y_data.reshape(shape))
-  cond = mask_equal(x.data, y_r.data)
+  cond = x.data.eq(y_r.data)
   broadcast_to(gy_r, f.x_shape) * as_variable(cond)
 }
 
@@ -755,12 +744,14 @@ class Min {
     self.keepdims = keepdims
   }
 
+  # Tensor has `.max()` but no `.min()`.
   forward(x) {
     self.x_shape = x.shape()
+    neg_x = x * -1.0
     y = if self.axis == nil {
-      Tensor.from([x.min()])
+      Tensor.from([neg_x.max()]) * -1.0
     } else {
-      x.min(self.axis)
+      neg_x.max(self.axis) * -1.0
     }
     self.y_data = y
     y
@@ -882,4 +873,4 @@ fn where_(cond, a, b) {
   apply2(Where(cond), a, b)
 }
 
-export {Variable, Parameter, as_array, as_variable, no_grad, test_mode, is_training, apply1, apply2, add, sub, mul, neg, div, pow_, reshape, transpose, sum, sum_to, broadcast_to, matmul, max_, min_, narrow, concat2, where_, raw_sum_to, raw_broadcast_to, map_nested, zip_nested, raw_elementwise, insert_axis}
+export {Variable, Parameter, as_array, as_variable, no_grad, test_mode, is_training, apply1, apply2, add, sub, mul, neg, div, pow_, reshape, transpose, sum, sum_to, broadcast_to, matmul, max_, min_, narrow, concat2, where_, raw_sum_to, raw_broadcast_to, raw_elementwise, insert_axis}

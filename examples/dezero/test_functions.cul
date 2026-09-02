@@ -201,3 +201,57 @@ fn rope_pos_zero_is_the_identity_for_a_single_row() {
   Tensor.eval(y.data)
   assert_eq(y.data.to_array(), x.data.to_array())
 }
+
+@test
+fn dropout_keeps_the_right_fraction_and_preserves_the_mean() {
+  # The mask is built from two `Tensor.randn` draws via Box-Muller in
+  # reverse, so the keep decision really is Bernoulli(1 - ratio) and the
+  # surviving units are scaled by 1/(1 - ratio).
+  Random.seed(11)
+  for ratio in [0.1, 0.5] {
+    x = dz.Variable(Tensor.ones(200, 200))
+    y = F.dropout(x, ratio)
+    Tensor.eval(y.data)
+    n = 40000.0
+    assert_close(y.data.gt(0.0).sum() / n, 1.0 - ratio, 0.01)
+    assert_close(y.data.sum() / n, 1.0, 0.02)
+  }
+}
+
+@test
+fn dropout_handles_a_transformer_shaped_rank_3_input() {
+  # The mask used to be a nested Culebra Array handed to `Tensor.from`,
+  # which takes rank 2 at most -- an attention-weight mask could not be
+  # built at all.
+  Random.seed(12)
+  x = dz.Variable(Tensor.randn(4, 8, 16))
+  y = F.dropout(x, 0.1)
+  assert_eq(y.data.shape(), [4, 8, 16])
+  dz.sum(y, nil).backward()
+  Tensor.eval(x.grad.data)
+  assert_eq(x.grad.data.shape(), [4, 8, 16])
+}
+
+@test
+fn dropout_with_ratio_zero_is_the_identity_while_training() {
+  x = dz.Variable(Tensor.ones(3, 4))
+  y = F.dropout(x, 0.0)
+  Tensor.eval(y.data)
+  assert_eq(
+    y.data.to_array(),
+    [[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
+  )
+}
+
+@test
+fn softmax_rejects_an_axis_that_is_not_the_last_one() {
+  # `Tensor.softmax()` only ever normalizes the last axis, so any other
+  # `axis` would pair that forward with a backward that sums elsewhere.
+  x = dz.Variable(Tensor.randn(2, 3, 4))
+  assert_throws("ValueError", fn () {
+    F.softmax(x, 1)
+  })
+  y = F.softmax(x, 2)
+  Tensor.eval(y.data)
+  assert_eq(y.data.shape(), [2, 3, 4])
+}

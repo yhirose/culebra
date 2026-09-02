@@ -254,6 +254,18 @@ class Softmax {
   }
 
   forward(x) {
+    # `Tensor.softmax()` always normalizes over the last axis, and the
+    # backward below sums over `self.axis`. The two only agree when `axis`
+    # names the last axis -- any other value would pair a forward that
+    # normalized somewhere else with a matching-looking backward, so reject
+    # it rather than return a silently wrong answer.
+    last = x.shape().size() - 1
+    if self.axis != last {
+      throw {
+        kind: "ValueError",
+        message: "dezero: softmax(axis={self.axis}) on a rank-{last + 1} input -- Tensor.softmax normalizes the last axis only, so axis must be {last}",
+      }
+    }
     x.softmax()
   }
 
@@ -428,18 +440,19 @@ fn accuracy(y, t) {
   dz.Variable(Tensor.from([to_float(correct) / to_float(n)]))
 }
 
-fn random_mask_like(shape, keep_prob, scale) {
-  if shape.empty() {
-    if Random.uniform(0.0, 1.0) < keep_prob {
-      scale
-    } else {
-      0.0
-    }
-  } else {
-    range(shape[0])
-      .map(|_| random_mask_like(shape.slice(1, shape.size()), keep_prob, scale))
-      .collect()
-  }
+# An inverted-dropout keep mask: `1/(1 - ratio)` where a unit survives and
+# `0.0` where it is dropped, built entirely from native Tensor ops.
+#
+# Tensor's only random generator is `randn`, so the uniform this wants comes
+# from Box-Muller in reverse: for independent z1, z2 ~ N(0, 1) the value
+# exp(-(z1^2 + z2^2)/2) is exactly Uniform(0, 1). Dropping when that uniform
+# falls below `ratio` is the same as keeping when z1^2 + z2^2 <= -2*ln(ratio),
+# which is a plain scalar threshold -- no exp, and no approximation.
+fn bernoulli_keep_mask(shape, drop_ratio) {
+  z1 = Tensor.randn(shape)
+  z2 = Tensor.randn(shape)
+  (z1 * z1 + z2 * z2).le(-2.0 * Math.log(drop_ratio)) *
+    (1.0 / (1.0 - drop_ratio))
 }
 
 class Dropout {
@@ -453,12 +466,8 @@ class Dropout {
   }
 
   forward(x) {
-    if dz.is_training() {
-      self.mask = Tensor.from(random_mask_like(
-        x.shape(),
-        1.0 - self.dropout_ratio,
-        1.0 / (1.0 - self.dropout_ratio),
-      ))
+    if dz.is_training() && self.dropout_ratio > 0.0 {
+      self.mask = bernoulli_keep_mask(x.shape(), self.dropout_ratio)
       x * self.mask
     } else {
       self.mask = nil

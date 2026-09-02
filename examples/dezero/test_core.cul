@@ -281,3 +281,107 @@ fn where_routes_gradient_through_the_selected_side_only() {
   assert_eq(a.grad.data.to_array(), [1.0, 0.0, 1.0])
   assert_eq(b.grad.data.to_array(), [0.0, 1.0, 0.0])
 }
+
+@test
+fn a_batched_matmuls_gradient_matches_a_per_batch_rank_2_loop() {
+  # matmul's VJP has to transpose only the last two axes. Reversing every
+  # axis (the rank-2 matrix transpose) leaves a `[B, T, D]` operand as
+  # `[D, T, B]`, which `Tensor.dot` rejects outright.
+  b = 3
+  t = 4
+  d = 2
+  qa = Tensor.randn(b * t, d)
+  ka = Tensor.randn(b * d, t)
+  w = Tensor.randn(b, t, t)
+  Tensor.eval(qa, ka, w)
+
+  q = dz.Variable(qa.reshape([b, t, d]))
+  k = dz.Variable(ka.reshape([b, d, t]))
+  s = dz.matmul(q, k)
+  assert_eq(s.data.shape(), [b, t, t])
+  # A non-constant weighting, so a wrong transpose cannot pass by symmetry.
+  dz.sum(dz.mul(s, dz.Variable(w)), nil).backward()
+  Tensor.eval(q.grad.data)
+  batched = q.grad.data.reshape([b * t, d]).to_array()
+
+  mut looped = []
+  for i in 0..b {
+    qi = dz.Variable(qa.narrow([0, i * t, (i + 1) * t]))
+    ki = dz.Variable(ka.narrow([0, i * d, (i + 1) * d]))
+    wi = dz.Variable(w.narrow([0, i, i + 1]).reshape([t, t]))
+    dz.sum(dz.mul(dz.matmul(qi, ki), wi), nil).backward()
+    Tensor.eval(qi.grad.data)
+    for row in qi.grad.data.to_array() {
+      looped.push(row)
+    }
+  }
+
+  for i in 0..b * t {
+    for j in 0..d {
+      assert_close(batched[i][j], looped[i][j], 1.0e-5)
+    }
+  }
+}
+
+@test
+fn backward_drops_the_graph_it_walked_when_create_graph_is_off() {
+  # Upstream DeZero holds `Function.outputs` as weakrefs and scopes
+  # `enable_backprop` over the gradient accumulation as well as `backward`
+  # itself, so a spent graph is acyclic and refcounting reclaims it. Culebra
+  # has no weak reference, so `backward` drops both edges by hand; both are
+  # observable from here.
+  x = scalar(2.0)
+  y = dz.add(x.__pow__(2), x.__pow__(3))  # a diamond: x is used twice
+  creator = y.creator
+  y.backward()
+
+  assert_close(item(x.grad), 2.0 * 2.0 + 3.0 * 4.0, 1.0e-5)
+  # the Function -> output back-edge is gone
+  assert_eq(creator.output, nil)
+  # and the accumulated gradient recorded no graph of its own
+  assert_eq(x.grad.creator, nil)
+}
+
+@test
+fn backward_keeps_the_graph_when_create_graph_is_on() {
+  x = scalar(2.0)
+  y = x.__pow__(3)
+  creator = y.creator
+  y.backward(false, true)
+  assert_eq(creator.output == nil, false)
+  # the first derivative is itself differentiable
+  gx = x.grad
+  x.grad = nil
+  gx.backward()
+  assert_close(item(x.grad), 6.0 * 2.0, 1.0e-5)
+}
+
+@test
+fn min_reduces_an_axis_and_routes_gradient_to_the_smallest_entry() {
+  # Tensor has no `.min()`, so Min reduces the negation and negates back.
+  x = dz.Variable(Tensor.from([[3.0, 1.0, 2.0], [5.0, 9.0, 4.0]]))
+  y = dz.min_(x, 1)
+  Tensor.eval(y.data)
+  assert_eq(y.data.to_array(), [1.0, 4.0])
+
+  dz.sum(y, nil).backward()
+  Tensor.eval(x.grad.data)
+  assert_eq(x.grad.data.to_array(), [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+}
+
+@test
+fn max_and_min_reduce_a_rank_3_input() {
+  # The backward mask used to be built by walking `to_array()`, which raises
+  # above rank 2; it rides `Tensor.eq()` now.
+  x = dz.Variable(Tensor.randn(2, 3, 4))
+  hi = dz.max_(x, 2)
+  assert_eq(hi.data.shape(), [2, 3])
+  dz.sum(hi, nil).backward()
+  Tensor.eval(x.grad.data)
+  assert_eq(x.grad.data.shape(), [2, 3, 4])
+  # one contribution per reduced row
+  assert_close(x.grad.data.sum(), 6.0, 1.0e-5)
+
+  lo = dz.min_(x, 1)
+  assert_eq(lo.data.shape(), [2, 4])
+}
