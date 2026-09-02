@@ -133,8 +133,8 @@ let HIRU = {
   GRASS_L: [56, 168, 56],
   ROAD_D: [96, 96, 108],
   ROAD_L: [106, 106, 118],
-  RUMBLE_D: [216, 48, 48],
-  RUMBLE_L: [240, 240, 240],
+  RUMBLE_D: [192, 88, 80],
+  RUMBLE_L: [232, 228, 220],
   FOG: [212, 236, 252],
 }
 let ASAYAKE = {
@@ -169,8 +169,8 @@ let ASAYAKE = {
   GRASS_L: [116, 156, 76],
   ROAD_D: [104, 96, 120],
   ROAD_L: [114, 106, 130],
-  RUMBLE_D: [216, 72, 72],
-  RUMBLE_L: [248, 232, 216],
+  RUMBLE_D: [188, 100, 92],
+  RUMBLE_L: [240, 224, 208],
   FOG: [248, 204, 148],
 }
 let YUUGURE = {
@@ -205,8 +205,8 @@ let YUUGURE = {
   GRASS_L: [144, 136, 56],
   ROAD_D: [104, 88, 104],
   ROAD_L: [114, 98, 114],
-  RUMBLE_D: [208, 64, 56],
-  RUMBLE_L: [248, 224, 192],
+  RUMBLE_D: [184, 92, 76],
+  RUMBLE_L: [240, 216, 184],
   FOG: [248, 196, 108],
 }
 let TWILIGHT = {
@@ -241,8 +241,8 @@ let TWILIGHT = {
   GRASS_L: [56, 100, 88],
   ROAD_D: [64, 56, 88],
   ROAD_L: [74, 66, 98],
-  RUMBLE_D: [160, 56, 80],
-  RUMBLE_L: [208, 176, 200],
+  RUMBLE_D: [136, 72, 92],
+  RUMBLE_L: [200, 172, 192],
   FOG: [180, 124, 176],
 }
 
@@ -279,6 +279,11 @@ fn noise(*args) {
   for a in args {
     h = (h ^ a.to_long() & 0xFFFFFFFF) * 16777619 & 0xFFFFFFFF
   }
+  # FNV barely stirs its last input (noise(s, i, 1) and noise(s, i, 2) came
+  # out within 0.4% of each other), so finish with an avalanche.
+  h = (h ^ h >> 16) * 0x85EBCA6B & 0xFFFFFFFF
+  h = (h ^ h >> 13) * 0xC2B2AE35 & 0xFFFFFFFF
+  h = h ^ h >> 16
   h.to_float() / 4294967295.0
 }
 
@@ -944,147 +949,152 @@ fn trunk(c, x0, y0, x1, y1, w0, w1, tones) {
   c.line(x0 + w0 * 0.2, y0, x1 + w1 * 0.2, y1, l, Math.max(1.0, w0 * 0.12))
 }
 
-# Foliage as overlapping clumps, each lit from the upper left: a base tone by
-# where the clump sits in the crown, a lighter cap on the lit ones, then a
-# speckle of leaves and a darkening underside.
-fn canopy(c, cx, cy, rx, ry, n, r, seed, tones) {
-  c.ellipse(cx, cy, rx * 0.7, ry * 0.7, tones[1])  # so nothing shows through
+# Fine foliage: a scatter of small leaf strokes over an ellipse, dense in the
+# middle and thinning to a ragged edge, lit from the upper left; `hang` lets
+# the lower ones droop below it. No outline goes over these — bordering every
+# leaf would fill the gaps in — so the wood is outlined before the leaves go on.
+fn foliage(c, cx, cy, rx, ry, n, seed, tones, hang = 0.0, stroke = 2.5) {
   for i in 0..n {
     let a = noise(seed, i, 1) * 2 * Math.pi
-    let d = Math.sqrt(noise(seed, i, 2)) * 0.84
+    let d = Math.sqrt(noise(seed, i, 2))
     let px = cx + Math.cos(a) * d * rx
-    let py = cy + Math.sin(a) * d * ry
-    let pr = r * (0.6 + 0.8 * noise(seed, i, 3))
-    let lit = (cy - py) / ry * 0.7 -
-      (px - cx) / rx * 0.5 +
-      (noise(seed, i, 4) - 0.5) * 0.7
-    let base = cond {
-      lit > 0.3 => 2,
-      lit > -0.5 => 1,
+    let py = cy + Math.sin(a) * d * ry + hang * ry * noise(seed, i, 5)
+    let lit = (cy - py) / ry * 0.6 -
+      (px - cx) / rx * 0.4 +
+      (noise(seed, i, 3) - 0.5) * 0.9
+    let tone = tones[cond {
+      lit > 0.35 => 2,
+      lit > -0.3 => 1,
       _ => 0,
-    }
-    c.circle(px, py, pr, tones[base])
-    c.circle(
-      px - pr * 0.28,
-      py - pr * 0.3,
-      pr * 0.5,
-      tones[base + 1],
-    ) if base >= 1
-  }
-  let ids = tones.map(|t| c.id(t))
-  for (
-    x,
-    y,
-  ) in grid((cx - rx).to_long()..(cx + rx).to_long() + 1, (cy - ry).to_long()..(cy + ry).to_long() + 1) {
-    let v = c.get(x, y)
-    let i = ids.index_of(v)
-    continue if i < 0
-    if noise(seed, x, y, 11) < 0.07 {
-      c.set(x, y, tones[Math.max(0, i - 1)])
-    } else if y > cy + ry * 0.4 && i > 0 {
-      c.mix(x, y, v, tones[i - 1], (y - cy - ry * 0.4) / (ry * 0.6) * 0.7)
+    }]
+    let len = (noise(seed, i, 4) * stroke).to_long()
+    let dir = noise(seed, i, 6) < 0.5 ? 1 : -1
+    for k in 0..=len {
+      c.set(px + k * dir, py + k, tone)
     }
   }
 }
 
-# A tree with a lobed crown: a trunk into limbs, each limb ending in its own
-# mass of foliage, so the outline is a cluster of lobes rather than a ball.
-# `lobes` are `[x, y, rx, ry]` as fractions of the box; upper lobes are drawn
-# first so the lower ones overlap them.
 let WOOD = ("WOOD0", "WOOD1", "WOOD2")
+let BARK = ("WHITE0", "WHITE1", "WHITE2")
 
-fn draw_lobed_tree(c, w, h, seed, tones, lobes, n, r) {
+# A birch: a slim white trunk marked with dark lenticels, leaders that bend
+# outward, and light hanging foliage that lets the branches show through.
+fn draw_birch(c, w, h, seed) {
   let bx = w * 0.5
   let by = h * 0.98
-  let fork_y = h * 0.64
-  trunk(c, bx, by, bx, fork_y, w * 0.13, w * 0.09, WOOD)
-  for [lx, ly, _, _] in lobes {
-    trunk(c, bx, fork_y + 2, w * lx, h * (ly + 0.05), w * 0.07, w * 0.025, WOOD)
-  }
-  # Root flare.
-  c.poly(
-    [
-      bx - w * 0.065,
-      by - h * 0.06,
-      bx + w * 0.065,
-      by - h * 0.06,
-      bx + w * 0.13,
-      by,
-      bx - w * 0.13,
-      by,
-    ],
-    "WOOD1",
-  )
-  c.poly(
-    [
-      bx - w * 0.065,
-      by - h * 0.06,
-      bx - w * 0.03,
-      by - h * 0.06,
-      bx - w * 0.08,
-      by,
-      bx - w * 0.13,
-      by,
-    ],
-    "WOOD0",
-  )
-  for (i, [lx, ly, rx, ry]) in lobes.sorted_by(|l| l[1]).enumerate() {
-    canopy(
-      c,
-      w * lx,
-      h * ly,
-      w * rx,
-      h * ry,
-      n,
-      Math.min(w, h) * r,
-      seed * 7 + i,
-      tones,
-    )
+  let fork = h * 0.5
+  let fx = bx + w * 0.02
+  trunk(c, bx, by, fx, fork, w * 0.085, w * 0.05, BARK)
+  let tips = [
+    [bx - w * 0.3, h * 0.14],
+    [bx - w * 0.06, h * 0.03],
+    [bx + w * 0.16, h * 0.06],
+    [bx + w * 0.34, h * 0.18],
+  ]
+  for (i, [tx, ty]) in tips.enumerate() {
+    let mx = fx + (tx - fx) * 0.45 + (noise(seed, i) - 0.5) * w * 0.08
+    let my = fork - (fork - ty) * 0.5
+    trunk(c, fx, fork + 2, mx, my, w * 0.045, w * 0.03, BARK)
+    trunk(c, mx, my, tx, ty, w * 0.03, w * 0.012, BARK)
+    c.line(mx, my, mx + (tx - bx) * 0.5, my - h * 0.1, "WHITE0", 1)
+    c.line(tx, ty, tx + (tx - bx) * 0.3, ty + h * 0.08, "WHITE0", 1)
   }
   c.outline()
-  ground_shadow(c, w * 0.5, by, w * 0.42, h * 0.035)
+  for j in 0..12 {
+    let y = fork + (by - fork) * (0.08 + 0.85 * noise(seed, j, 9))
+    let t = (by - y) / (by - fork)
+    let half = w * 0.0425 * (1 - 0.4 * t)
+    let x = bx + w * 0.02 * t - half + 1
+    c.rect(
+      x + half * noise(seed, j, 11),
+      y,
+      half * (0.5 + noise(seed, j, 10) * 0.7),
+      1,
+      "INK",
+    )
+  }
+  let tones = ["LEAF1", "LEAF2", "LEAF3"]
+  for (i, [tx, ty]) in tips.enumerate() {
+    foliage(
+      c,
+      tx,
+      ty + h * 0.07,
+      w * 0.19,
+      h * 0.14,
+      900,
+      seed * 11 + i,
+      tones,
+      0.9,
+      3.0,
+    )
+    foliage(
+      c,
+      (tx + fx) / 2,
+      (ty + fork) / 2,
+      w * 0.14,
+      h * 0.11,
+      500,
+      seed * 13 + i,
+      tones,
+      0.9,
+      3.0,
+    )
+  }
+  ground_shadow(c, bx, by, w * 0.36, h * 0.03)
 }
 
-# A broadleaf: a tall central mass with lower lobes to either side.
-fn draw_round_tree(c, w, h, seed) {
-  draw_lobed_tree(
-    c,
-    w,
-    h,
-    seed,
-    ["LEAF0", "LEAF1", "LEAF2", "LEAF3"],
-    [
-      [0.52, 0.17, 0.24, 0.14],
-      [0.22, 0.34, 0.19, 0.13],
-      [0.78, 0.30, 0.18, 0.12],
-      [0.40, 0.42, 0.20, 0.11],
-      [0.66, 0.46, 0.16, 0.10],
-      [0.30, 0.55, 0.12, 0.08],
-    ],
-    22,
-    0.075,
-  )
-}
-
-# A blossom tree: sparser lobes in pink, the limbs showing between them.
-fn draw_blossom_tree(c, w, h, seed) {
-  draw_lobed_tree(
-    c,
-    w,
-    h,
-    seed,
-    ["BLOSSOM_D", "BLOSSOM_D", "BLOSSOM_L", "P_WHITE"],
-    [
-      [0.30, 0.18, 0.20, 0.12],
-      [0.68, 0.14, 0.22, 0.13],
-      [0.16, 0.38, 0.15, 0.10],
-      [0.50, 0.36, 0.16, 0.10],
-      [0.84, 0.36, 0.14, 0.10],
-      [0.36, 0.52, 0.11, 0.08],
-    ],
-    30,
-    0.05,
-  )
+# A cherry: a dark trunk fanning into branches, each tip in a cloud of
+# blossom fine enough for the wood to show between.
+fn draw_cherry(c, w, h, seed) {
+  let bx = w * 0.5
+  let by = h * 0.98
+  let fork = h * 0.56
+  let fx = bx - w * 0.03
+  trunk(c, bx, by, fx, fork, w * 0.11, w * 0.06, WOOD)
+  let tips = [
+    [bx - w * 0.42, h * 0.3],
+    [bx - w * 0.22, h * 0.1],
+    [bx + w * 0.04, h * 0.05],
+    [bx + w * 0.26, h * 0.1],
+    [bx + w * 0.44, h * 0.28],
+  ]
+  for (i, [tx, ty]) in tips.enumerate() {
+    let mx = fx + (tx - fx) * 0.5 + (noise(seed, i) - 0.5) * w * 0.06
+    let my = fork - (fork - ty) * 0.55
+    trunk(c, fx, fork + 2, mx, my, w * 0.05, w * 0.03, WOOD)
+    trunk(c, mx, my, tx, ty, w * 0.03, w * 0.012, WOOD)
+    c.line(mx, my, mx + (tx - bx) * 0.3, my - h * 0.12, "WOOD0", 1)
+  }
+  c.outline()
+  let tones = ["BLOSSOM_D", "BLOSSOM_L", "P_WHITE"]
+  for (i, [tx, ty]) in tips.enumerate() {
+    foliage(
+      c,
+      tx,
+      ty + h * 0.03,
+      w * 0.18,
+      h * 0.14,
+      650,
+      seed * 11 + i,
+      tones,
+      0.5,
+      1.4,
+    )
+    foliage(
+      c,
+      (tx + fx) / 2,
+      (ty + fork) / 2,
+      w * 0.13,
+      h * 0.1,
+      320,
+      seed * 13 + i,
+      tones,
+      0.5,
+      1.4,
+    )
+  }
+  ground_shadow(c, bx, by, w * 0.36, h * 0.03)
 }
 
 # A bare tree: limbs that fork, thin, and bend toward the light.
@@ -1156,28 +1166,40 @@ fn draw_palm_sprite(c, w, h, seed) {
   ground_shadow(c, w * 0.46, h * 0.98, w * 0.3, h * 0.012)
 }
 
+# A shrub: stems fanning up from the foot under a mound of fine leaves.
 fn draw_bush(c, w, h, seed, flowers = false) {
-  canopy(
-    c,
-    w * 0.5,
-    h * 0.55,
-    w * 0.47,
-    h * 0.36,
-    80,
-    Math.min(w, h) * 0.17,
-    seed,
-    ["LEAF0", "LEAF1", "LEAF2", "LEAF3"],
-  )
-  if flowers {
-    for i in 0..40 {
-      let fx = w * (0.08 + 0.84 * noise(seed, i, 7))
-      let fy = h * (0.2 + 0.55 * noise(seed, i, 8))
-      continue if c.get(fx, fy) == 0
-      c.circle(fx, fy, 1.5, noise(seed, i, 9) < 0.6 ? "FLOWER" : "BLOSSOM_L")
-      c.set(fx, fy, "P_YELLOW")
-    }
+  for i in 0..5 {
+    c.line(
+      w * 0.5 + (i - 2) * w * 0.03,
+      h * 0.95,
+      w * (0.2 + 0.6 * i / 4.0),
+      h * (0.3 + 0.2 * noise(seed, i)),
+      "WOOD0",
+      1,
+    )
   }
   c.outline()
+  foliage(
+    c,
+    w * 0.5,
+    h * 0.56,
+    w * 0.46,
+    h * 0.36,
+    2600,
+    seed,
+    ["LEAF1", "LEAF2", "LEAF3"],
+    0.2,
+    3.0,
+  )
+  if flowers {
+    for i in 0..60 {
+      let fx = w * (0.08 + 0.84 * noise(seed, i, 7))
+      let fy = h * (0.2 + 0.6 * noise(seed, i, 8))
+      continue if c.get(fx, fy) == 0
+      c.set(fx, fy, noise(seed, i, 9) < 0.6 ? "FLOWER" : "P_WHITE")
+      c.set(fx + 1, fy, "BLOSSOM_L")
+    }
+  }
   ground_shadow(c, w * 0.5, h * 0.94, w * 0.44, h * 0.05)
 }
 
@@ -1292,25 +1314,25 @@ fn draw_stump(c, w, h, seed) {
 # A boulder: an irregular silhouette split into facets (nearest of a few
 # seed points), each toned by which way it faces, with cracks between.
 fn draw_boulder(c, w, h, seed) {
-  let n = 14
+  let n = 18
   let cx = w * 0.5
-  let cy = h * 0.56
+  let cy = h * 0.5
+  let ground = h * 0.9  # the row the rock sits on
   mut pts = []
   for i in 0..n {
     let a = i.to_float() / n * 2 * Math.pi
-    let r = 0.7 + 0.3 * noise(seed, i, 1)
-    let flat = Math.sin(a) > 0.3 ? 0.75 : 1.0
+    let r = 0.7 + 0.3 * noise(seed, i, 1) * (0.5 + 0.5 * noise(seed, i / 3, 7))
     pts.push(cx + Math.cos(a) * w * 0.48 * r)
-    pts.push(cy + Math.sin(a) * h * 0.42 * r * flat)
+    pts.push(Math.min(ground, cy + Math.sin(a) * h * 0.46 * r))
   }
   c.poly(pts, "ROCK1")
-  let seeds = iota(12 + (w / 12).to_long()).map(fn (i) {
+  let seeds = iota(16 + (w / 10).to_long()).map(fn (i) {
     let qx = w * (0.05 + 0.9 * noise(seed, i, 2))
     let qy = h * (0.1 + 0.8 * noise(seed, i, 3))
     let lit = (cy - qy) / h * 2.0 -
       (qx - cx) / w * 1.2 +
       (noise(seed, i, 4) - 0.5) * 0.8
-    [qx, qy, Math.clamp(Math.round(lit * 1.6 + 1.4), 0, 3)]
+    [qx, qy, Math.clamp(Math.round(lit * 1.8 + 1.3), 0, 3)]
   })
   let facet = fn (x, y) {
     seeds
@@ -1332,19 +1354,21 @@ fn draw_boulder(c, w, h, seed) {
       _ => tones[tone],
     }
   })
-  # Grit, and the underside in shadow.
+  # Weathering: each facet darkens toward its lower edge, blotches of the
+  # next tone down mottle the surface, and a few grains catch the light.
   c.recolor(["ROCK1", "ROCK2", "ROCK3"], fn (x, y, v) {
     let i = tones.index_of(KEYS[v])
+    let s = seeds[facet(x, y)]
+    let local = Math.clamp((y - s[1]) / (h * 0.22), 0.0, 1.0)
     cond {
-      noise(seed, x, y, 5) < 0.1 => tones[i - 1],
-      y > cy + h * 0.25 &&
-        noise(seed, x, y, 6) <
-          (y - cy - h * 0.25) / (h * 0.3) => tones[Math.max(0, i - 1)],
+      noise(seed, x, y, 5) < 0.05 => tones[Math.min(3, i + 1)],
+      noise(seed, x / 5, y / 4, 8) < 0.28 => tones[i - 1],
+      local > 0.4 && noise(seed, x, y, 6) < (local - 0.4) * 1.2 => tones[i - 1],
       _ => nil,
     }
   })
   c.outline()
-  ground_shadow(c, cx, cy + h * 0.42, w * 0.46, h * 0.05)
+  ground_shadow(c, cx, ground, w * 0.46, h * 0.045)
 }
 
 # A ruined watchtower: rows of stone with the shading of a cylinder, slit
@@ -1775,41 +1799,31 @@ fn riders(c, cx, top, spacing) {
   }
 }
 
-# The player's convertible: a low wedge whose shoulders swell over wide rear
-# tyres, a full-width lamp bar, a raked screen with the two riders in it.
+# The player's car, after the mid-engined coupés of the early nineties: low
+# and wide, a slim glass canopy over a broad tail, a lamp bar the width of
+# the car under a lip spoiler, a black lower bumper. The roof is off, so the
+# two riders sit up through the canopy. `hill` adds rows to the tail and
+# moves everything above it down with them.
 fn draw_sports_car(c, w, h, steer, hill) {
   let cx = w / 2.0
   let floor = h - 1
-  let deck = 16 + hill
-  wheels(c, w, floor, 12, 14, 1)
+  let top = 3 + hill
+  let deck = 17 + hill
+  wheels(c, w, floor, 13, 15, 0)
   let body = [
-    [deck, w * 0.36],
-    [deck + 3, w * 0.45],
-    [deck + 7, w * 0.485],
-    [deck + 12, w * 0.49],
-    [floor - 6, w * 0.47],
-    [floor - 3, w * 0.42],
+    [deck, w * 0.40],
+    [deck + 2, w * 0.47],
+    [deck + 6, w * 0.5],
+    [floor - 8, w * 0.5],
+    [floor - 4, w * 0.48],
+    [floor - 2, w * 0.44],
   ]
-  shell(c, cx, body, ("RED0", "RED1", "RED2"), 4)
-  # The crease where the deck meets the rear face, the bumper, the diffuser.
-  let face = deck + 5
-  c.rect(
-    cx - profile(body, face) + 1,
-    face,
-    profile(body, face) * 2 - 2,
-    1,
-    "RED0",
-  )
-  c.rect(
-    cx - profile(body, floor - 6) + 1,
-    floor - 7,
-    profile(body, floor - 6) * 2 - 2,
-    3,
-    "RED0",
-  )
-  # A lamp bar the width of the tail, rounded at the ends and slatted.
-  let bar_y = face + 2
-  let bar_half = profile(body, bar_y) - 3
+  shell(c, cx, body, ("RED0", "RED1", "RED2"), 3)
+  # The lip spoiler along the deck's trailing edge, the lamp bar under it.
+  c.rect(cx - w * 0.42, deck - 1, w * 0.84, 2, "RED0")
+  c.rect(cx - w * 0.40, deck - 2, w * 0.80, 1, "RED2")
+  let bar_y = deck + 3
+  let bar_half = profile(body, bar_y) - 2
   c.rect(cx - bar_half, bar_y, bar_half * 2, 5, "LAMP_R")
   c.rect(cx - bar_half + 1, bar_y, bar_half * 2 - 2, 2, "LAMP_RL")
   for (
@@ -1818,24 +1832,39 @@ fn draw_sports_car(c, w, h, steer, hill) {
   ) in [(cx - bar_half, bar_y), (cx + bar_half - 1, bar_y), (cx - bar_half, bar_y + 4), (cx + bar_half - 1, bar_y + 4)] {
     c.set(x, y, "RED1")
   }
-  for x in (cx - bar_half + 5).to_long()..(cx + bar_half).to_long() by 6 {
+  for x in (cx - bar_half + 7).to_long()..(cx + bar_half).to_long() by 8 {
     c.rect(x, bar_y, 1, 5, "INK")
   }
-  plate(c, cx, bar_y + 7, 14)
-  for ex in [cx - 18, cx + 12] {
+  # The black lower bumper, darkening toward the ground, with the plate and
+  # the pipes.
+  let low = floor - 9
+  for y in low..floor - 1 {
+    let half = profile(body, y) - 1
+    for x in (cx - half).to_long()..=(cx + half).to_long() {
+      c.mix(x, y, "TYRE1", "TYRE0", (y - low).to_float() / (floor - 1 - low))
+    }
+  }
+  plate(c, cx, low + 2, 14)
+  for ex in [cx - w * 0.3, cx + w * 0.3 - 6] {
     c.rect(ex, floor - 4, 6, 2, "CHROME")  # exhausts
     c.rect(ex + 1, floor - 4, 4, 1, "TYRE1")
   }
-  # Windscreen: chrome rim, glass inside, the riders in front of it.
-  let screen = [[3, w * 0.28], [6, w * 0.34], [deck - 1, w * 0.36]]
-  shell(c, cx, screen, ("CHROME", "CHROME", "CHROME"), 0)
-  glass(c, cx, screen, 1)
-  riders(c, w / 2, 3, 9)
-  c.ellipse(cx - w * 0.41, 10, 3, 2, "RED1")  # mirrors
-  c.ellipse(cx + w * 0.41, 10, 3, 2, "RED1")
+  # The canopy: pillars in body colour, glass between, the riders through it.
+  let canopy = [
+    [top, w * 0.2],
+    [top + 3, w * 0.3],
+    [top + 8, w * 0.35],
+    [deck, w * 0.39],
+  ]
+  shell(c, cx, canopy, ("RED0", "RED1", "RED2"), 0)
+  glass(c, cx, canopy, 2)
+  c.rect(cx - w * 0.2, top, w * 0.4, 1, "INK")  # the roof hoop
+  riders(c, cx, top, 8)
+  c.ellipse(cx - w * 0.43, top + 8, 3, 2, "RED1")  # mirrors
+  c.ellipse(cx + w * 0.43, top + 8, 3, 2, "RED1")
   c.outline()
   c.shear(deck, -steer * 0.2) if steer != 0
-  ground_shadow(c, w / 2, floor, w * 0.46, 1)
+  ground_shadow(c, w / 2, floor, w * 0.48, 1)
 }
 
 # Traffic: hardtops of four silhouettes, each a cabin profile over a body
@@ -2086,8 +2115,8 @@ mut DRAW = {
   PLAYER_UPHILL_STRAIGHT: |c, w, h| draw_sports_car(c, w, h, 0, 4),
   PLAYER_UPHILL_LEFT: |c, w, h| draw_sports_car(c, w, h, -1, 4),
   PLAYER_UPHILL_RIGHT: |c, w, h| draw_sports_car(c, w, h, 1, 4),
-  TREE1: |c, w, h| draw_round_tree(c, w, h, 20),
-  TREE2: |c, w, h| draw_blossom_tree(c, w, h, 21),
+  TREE1: |c, w, h| draw_birch(c, w, h, 20),
+  TREE2: |c, w, h| draw_cherry(c, w, h, 21),
   DEAD_TREE1: |c, w, h| draw_dead_tree(c, w, h, 22),
   DEAD_TREE2: |c, w, h| draw_dead_tree(c, w, h, 23),
   PALM_TREE: |c, w, h| draw_palm_sprite(c, w, h, 24),
