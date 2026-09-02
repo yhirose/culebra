@@ -20,9 +20,11 @@ an ordinary string in your program. And choice is **ordered** — `a / b`
 commits to `a` the moment `a` matches, rather than reporting a
 shift/reduce conflict for you to resolve — which means a PEG is
 unambiguous by construction and reads top to bottom in the order it is
-written. Left recursion, which plain PEG cannot express, works here: the
-engine is [cpp-peglib](https://github.com/yhirose/cpp-peglib), the same
-parser culebra's own front end runs on, and it supports it.
+written. One classic PEG limitation does not apply here: left recursion,
+which a PEG normally cannot express at all, is supported, because the
+engine is [cpp-peglib](https://github.com/yhirose/cpp-peglib) — the same
+parser culebra's own front end runs on — and it is one of the
+implementations extended to handle it.
 
 ## Why a grammar
 
@@ -251,8 +253,15 @@ reported.
 Four-function arithmetic is the smallest job that needs real grammar
 design, because precedence has to come from the shape of the rules. The
 convention is one rule per precedence level, the looser binding one
-referring to the tighter one — and each of those rules is left-recursive,
-which is exactly how the textbook writes it:
+referring to the tighter one.
+
+Write those rules the way a grammar textbook does and each one comes out
+**left-recursive**: `Expr <- Expr AddOp Term / Term`. A PEG normally
+cannot do that — a rule that reaches itself without having consumed
+anything loops forever, which is why plain PEG grammars are written
+around it. cpp-peglib is one of the implementations extended to handle
+left recursion (CPython's own PEG parser is another), so here the
+textbook form is simply available:
 
 ```culebra
 let calc = `
@@ -557,12 +566,12 @@ first-class functions need `call` to take a value instead of a name.
 
 ## 4. Pitfalls
 
-**Left recursion works — but plain PEG says it should not.** `Expr <-
-Expr AddOp Term / Term` is fine here, both directly and through another
-rule, and it gives you the left-nested tree you want (§2). It is worth
-knowing that this is cpp-peglib going beyond textbook PEG, in which a
-rule that reaches itself without consuming anything simply loops: a
-grammar you carry to another PEG library may need rewriting as
+**Left recursion works here, but it is an extension.** `Expr <- Expr
+AddOp Term / Term` parses, directly or through another rule, and gives
+the left-nested tree you want (§2). Remember that this is not PEG as
+originally defined: there, a rule that reaches itself without having
+consumed anything loops forever, and many implementations still behave
+that way. A grammar you carry elsewhere may need rewriting as
 `Expr <- Term (AddOp Term)*`.
 
 **Ordered choice is not alternation.** `'a' / 'ab'` never matches `ab`.
