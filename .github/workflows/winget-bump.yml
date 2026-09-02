@@ -22,6 +22,11 @@ name: Bump winget manifest
 # by this action) with the public_repo scope, from an account that has
 # forked microsoft/winget-pkgs — see the action's README for the fork
 # step. Default fork-user is the repo owner (yhirose), which matches.
+#
+# WINGET_TOKEN's public_repo scope reaches every public repo the account
+# can write to, not just winget-pkgs, so pinned to a commit rather than
+# the mutable v2 tag: a compromised or malicious update to the action
+# would otherwise run with that token on the next release, unreviewed.
 on:
   release:
     types: [published]
@@ -33,7 +38,7 @@ jobs:
   bump:
     runs-on: windows-latest
     steps:
-      - uses: vedantmgoyal9/winget-releaser@v2
+      - uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
         with:
           identifier: yhirose.culebra
           installers-regex: 'culebra-windows-x64\.zip$'
