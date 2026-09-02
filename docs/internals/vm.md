@@ -319,9 +319,13 @@ mutability bit:
   read before the declaring statement ran raises `NameError` through
   `UnboundErr`, the read guard on lazy cells.
 - The arms of `if` / `cond` do not open a scope, so a name several arms
-  declare shares **one cell**, and which declaration ran is a fact of
+  declare shares **one binding**, and which declaration ran is a fact of
   this call: the compiler records each declaration's `mut` in a slot
-  beside the cell (`Binding::mut_slot`) and a bare write consults it.
+  beside it (`Binding::mut_slot`) and a bare write consults it. The
+  binding is a cell only when a closure captures the name or the
+  declaration is a `fn` / class / enum; otherwise it is a plain slot
+  holding the same sentinel, so the lowering sees the value rather than
+  a heap load and the tag it carries folds like any local's.
 - A declaration never writes through a borrowed capture: `fn () { let
   sh = sh + 1 }` shadows the enclosing `sh` rather than assigning it,
   because owning the cell is what distinguishes the two.

@@ -4525,6 +4525,23 @@ class Compiler {
     emit(Op::CellSet, dst, owned_src(at, r));
   }
 
+  // A write into an existing binding, whichever storage it has — the shape
+  // a pre-declaration's fill and every later write share.
+  void store_binding(const peg::Ast& at, const Binding& b, ExprResult r) {
+    if (b.is_cell) store_cell(at, b.slot, r);
+    else store_into(b.slot, r);
+  }
+
+  // The value of a lazy binding for a sentinel test: a cell's contents come
+  // out into a fresh temp, a plain slot IS the value, so the probe is the
+  // slot itself.
+  int32_t lazy_probe(const peg::Ast& at, const Binding& b) {
+    if (!b.is_cell) return b.slot;
+    int32_t probe = alloc_temp(at);
+    emit(Op::CellGet, probe, b.slot);
+    return probe;
+  }
+
   // A write to a cell a binding was resolved through invalidates what was
   // resolved: the closures already holding that cell now reach other code.
   // `CellNew` needs no such step — its slot is freshly allocated for a
@@ -4707,8 +4724,7 @@ class Compiler {
       emit(Op::ImmutErr, kconst_str(b.name));
       return false;
     }
-    if (b.is_cell) store_cell(at, b.slot, r);
-    else store_into(b.slot, r);
+    store_binding(at, b, r);
     return true;
   }
 
@@ -4724,18 +4740,17 @@ class Compiler {
     // assign_shadowing's does: a scope of its own here would roll the slot
     // number back, and the read this assignment returns would take the same
     // number and overwrite the probe's `+1` instead of releasing it.
-    int32_t probe = alloc_temp(at);
-    emit(Op::CellGet, probe, b.slot);
+    int32_t probe = lazy_probe(at, b);
     size_t to_declare = emit(Op::JumpIfTag, probe, 0, TAG_NO_SELF);
     // Reassignment: the declaration's own `mut` decides.
     size_t to_immut = emit(Op::JumpIfFalse, b.mut_slot);
-    store_cell(at, b.slot, r);
+    store_binding(at, b, r);
     size_t to_join = emit(Op::Jump, 0);
     patch_to_here(to_immut);
     emit(Op::ImmutErr, kconst_str(b.name));
-    // Declaration: fill the cell and record that it was not a `mut` one.
+    // Declaration: fill the binding and record that it was not a `mut` one.
     patch_to_here(to_declare);
-    store_cell(at, b.slot, r);
+    store_binding(at, b, r);
     emit(Op::LoadConst, b.mut_slot, kconst({TAG_BOOL, 0}));
     patch_to_here(to_join);
     return true;
@@ -4747,7 +4762,12 @@ class Compiler {
   // environment chain answers.
   ExprResult read_shadowing(const peg::Ast& at, const Binding& b) {
     int32_t out = alloc_temp(at);
-    emit(Op::CellGet, out, b.slot);
+    if (b.is_cell) {
+      emit(Op::CellGet, out, b.slot);
+    } else {
+      emit(Op::Move, out, b.slot);
+      emit(Op::Retain, out);
+    }
     size_t to_outer = emit(Op::JumpIfTag, out, 0, TAG_NO_SELF);
     size_t to_join = emit(Op::Jump, 0);
     patch_to_here(to_outer);
@@ -4767,14 +4787,13 @@ class Compiler {
   // own. Only one arm ever executes, so both may consume the RHS temp.
   ExprResult assign_shadowing(const peg::Ast& ast, const peg::Ast& tgt,
                               const Binding& b, ExprResult r) {
-    int32_t probe = alloc_temp(tgt);
-    emit(Op::CellGet, probe, b.slot);
+    int32_t probe = lazy_probe(tgt, b);
     size_t to_outer = emit(Op::JumpIfTag, probe, 0, TAG_NO_SELF);
     if (!b.is_mut) {
       StampGuard pos(*this, ast);
       emit(Op::ImmutErr, kconst_str(b.name));
     } else {
-      store_cell(tgt, b.slot, r);
+      store_binding(tgt, b, r);
     }
     size_t to_join = emit(Op::Jump, 0);
     patch_to_here(to_outer);
@@ -5196,21 +5215,26 @@ class Compiler {
     std::string name;
     bool is_mut;
     bool implicit;
+    // A `fn` / class / enum name: its declaration installs through the cell
+    // (MultifnReg appends to what it holds), so it is minted as one even
+    // where a value declaration would take a plain slot.
+    bool in_cell;
   };
   using DeclList = std::vector<Decl>;
 
   static void add_decl(DeclList& decls, const peg::Ast* at, std::string name,
-                       bool is_mut, bool implicit = false) {
+                       bool is_mut, bool implicit = false,
+                       bool in_cell = false) {
     for (const auto& d : decls)
       if (d.name == name) return;  // overloads share the first decl's cell
-    decls.push_back({at, std::move(name), is_mut, implicit});
+    decls.push_back({at, std::move(name), is_mut, implicit, in_cell});
   }
 
-  // Mint one lazy cell per name and register it in the current scope,
+  // Mint one lazy binding per name and register it in the current scope,
   // shadowing whatever the name meant here. A read before the declaration
   // runs finds the sentinel and falls through to the shadowed binding (or to
-  // the NameError); the declaration statement fills the cell it finds rather
-  // than minting its own (predeclared_here).
+  // the NameError); the declaration statement fills the binding it finds
+  // rather than minting its own (predeclared_here).
   void predeclare_cells(const peg::Ast& ast, const DeclList& decls,
                         bool conditional = false) {
     if (decls.empty()) return;
@@ -5237,9 +5261,21 @@ class Compiler {
       return;
     }
     TempScope ts(*this);
+    // A cell only where a closure can hold the name (a forward reference
+    // always can: that is what pre-declared it) or the declaration installs
+    // through it. A conditional value declaration nobody captures takes a
+    // plain slot holding the same sentinel: the reads keep their guard, and
+    // the lowering's mem2reg then sees the value itself instead of a load
+    // from heap memory, so the tag it carries folds like any local's.
     std::vector<int32_t> cslots;
-    for (const auto& d : decls)
-      cslots.push_back(alloc_cell_slot(*d.at, d.name));
+    std::vector<bool> plain;
+    for (const auto& d : decls) {
+      bool cell = !conditional || d.in_cell ||
+                  info_->captured_locals.contains(d.name);
+      cslots.push_back(cell ? alloc_cell_slot(*d.at, d.name)
+                            : alloc_slot(*d.at, d.name));
+      plain.push_back(!cell);
+    }
     // A conditional binding's mutability is decided when a declaration runs,
     // so it needs a slot to say so in (Binding::mut_slot). Taken before the
     // shared temp below so it outlives the statement, like the cells.
@@ -5247,12 +5283,17 @@ class Compiler {
     if (conditional)
       for (const auto& d : decls)
         mslots.push_back(alloc_slot(*d.at, "(" + d.name + ".decl_mut)"));
-    int32_t tmp = alloc_temp(ast);
+    int32_t tmp = -1;
     for (size_t k = 0; k < decls.size(); ++k) {
-      emit(Op::LoadConst, tmp, kconst({TAG_NO_SELF, 0}));
-      emit(Op::CellNew, cslots[k], tmp);  // nils tmp; reloaded per name
-      Binding b{decls[k].name, cslots[k], decls[k].is_mut, /*is_cell=*/true,
-                /*lazy=*/true};
+      if (plain[k]) {
+        emit(Op::LoadConst, cslots[k], kconst({TAG_NO_SELF, 0}));
+      } else {
+        if (tmp < 0) tmp = alloc_temp(ast);
+        emit(Op::LoadConst, tmp, kconst({TAG_NO_SELF, 0}));
+        emit(Op::CellNew, cslots[k], tmp);  // nils tmp; reloaded per name
+      }
+      Binding b{decls[k].name, cslots[k], decls[k].is_mut,
+                /*is_cell=*/!plain[k], /*lazy=*/true};
       b.shadowed = shadowed[k];
       b.shadowed_builtin = shadowed_builtin[k];
       b.conditional = conditional;
@@ -5320,7 +5361,7 @@ class Compiler {
       while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) i++;
       add_decl(decls, node.nodes[i].get(),
                std::string(culebra::parse_generic_head(node.nodes[i]->token).outer),
-               /*is_mut=*/false);
+               /*is_mut=*/false, /*implicit=*/false, /*in_cell=*/true);
       return;
     }
     if (node.tag == "DESTRUCTURE_ASSIGN"_) {
@@ -7098,7 +7139,7 @@ class Compiler {
       // of minting a second one, and the binding stops being lazy.
       if (Binding* pre = predeclared_here(name)) {
         auto rhs = compile_assign_rhs(ast, av);
-        store_cell(*tgt, pre->slot, rhs);
+        store_binding(*tgt, *pre, rhs);
         slot_rank_[pre->slot] = next_rank_++;  // released as declared here
         emit_session_decl_bind(*pre, decl_mut);
         // A conditional binding is shared by every arm that declares the
@@ -10684,7 +10725,7 @@ class Compiler {
     InitScope init(*this, ast, iv.init);
     // An arm body declares into the scope around the `if`. Whether it ran is
     // a run-time fact, so the names take the pre-declaration a forward
-    // reference takes: one lazy cell per name for the whole `if` — shared by
+    // reference takes: one lazy binding per name for the whole `if` — shared by
     // the arms, so `if c { let a = 1 } else { let a = 2 }` reads whichever arm
     // ran — shadowing what the name meant before, and still holding the
     // sentinel (hence NameError) when no arm declared it. An init clause opens
@@ -11070,7 +11111,7 @@ class Compiler {
       // minting a second one — compile_assign_var's rule, which a collapsed
       // `if` arm's declaring destructure now reaches too.
       if (Binding* pre = predeclared_here(name)) {
-        store_cell(at, pre->slot, v);
+        store_binding(at, *pre, v);
         slot_rank_[pre->slot] = next_rank_++;
         emit_session_decl_bind(*pre, is_mut);
         pre->is_mut = is_mut;

@@ -1,0 +1,138 @@
+// A `let` inside an `if` / `cond` arm declares into the scope around it
+// (tests/test_conditional_decl.cul has the rules). When no closure captures
+// the name the binding lives in a plain slot rather than a heap cell; the
+// two storages must be indistinguishable from the program's side. Each pair
+// below runs the same shape twice — once captured (a cell), once not (a
+// slot) — and expects the same answers on every backend.
+
+// --- Value declared in one arm, read after the `if`. ---
+fn slot_read_after(a) {
+  if a { let k = 10 } else { let k = 20 }
+  k * 2
+}
+fn cell_read_after(a) {
+  if a { let k = 10 } else { let k = 20 }
+  let peek = fn () {
+    k
+  }
+  peek() * 2
+}
+assert_eq(slot_read_after(true), 20)
+assert_eq(slot_read_after(false), 40)
+assert_eq(cell_read_after(true), 20)
+assert_eq(cell_read_after(false), 40)
+
+// --- The arm that did not run leaves the name undeclared: NameError from
+// the read, whichever storage. ---
+assert_throws("NameError", fn () {
+  fn slot_unbound(a) {
+    if a { let k = 1 }
+    k
+  }
+  slot_unbound(false)
+})
+assert_throws("NameError", fn () {
+  fn cell_unbound(a) {
+    if a { let k = 1 }
+    let peek = fn () {
+      k
+    }
+    peek()
+  }
+  cell_unbound(false)
+})
+
+// --- `mut` in the arm, reassigned after; an immutable arm refuses. ---
+fn slot_mut_after(a) {
+  if a { mut k = 1 } else { let k = 2 }
+  k = 5
+  k
+}
+assert_eq(slot_mut_after(true), 5)
+assert_throws("ImmutableError", fn () {
+  slot_mut_after(false)
+})
+
+// --- The conditional name shadows an outer binding until its arm runs:
+// before that the read (and the write) mean the outer one. ---
+let outer = "outer"
+fn slot_shadow(a) {
+  let before = outer
+  if a { let outer = "inner" }
+  [before, outer]
+}
+assert_eq(slot_shadow(true), ["outer", "inner"])
+assert_eq(slot_shadow(false), ["outer", "outer"])
+
+// --- Destructuring in an arm declares each leaf the same way. ---
+fn slot_destructure(a) {
+  if a { let [x, y] = [1, 2] } else { let [x, y] = [3, 4] }
+  x + y
+}
+assert_eq(slot_destructure(true), 3)
+assert_eq(slot_destructure(false), 7)
+
+// --- A hot loop: the name re-arms every iteration and the arithmetic on
+// it stays exact (the shape whose lowering the slot storage exists for). ---
+fn clamp_loop(n) {
+  mut vx = 3.0
+  mut vy = 0.0
+  for _ in 0..n {
+    vx += 0.5 * 0.016
+    vy += -9.8 * 0.016
+    let speed = Math.sqrt(vx * vx + vy * vy)
+    if speed > 4.0 {
+      let k = 4.0 / speed
+      vx *= k
+      vy *= k
+    }
+    if vy < -3.0 {
+      vy = -vy * 0.8
+    }
+  }
+  [vx, vy]
+}
+let got = clamp_loop(200)
+assert_eq(got[0] * got[0] + got[1] * got[1] <= 16.0 + 1e-9, true)
+
+// --- `if` as an expression whose arm declares: the declaration still lands
+// in the enclosing scope, the expression still yields the arm's value. ---
+fn slot_if_expr(a) {
+  let r = if a { let t = 7; t + 1 } else { 0 }
+  [r, a ? t : -1]
+}
+assert_eq(slot_if_expr(true), [8, 7])
+assert_eq(slot_if_expr(false), [0, -1])
+
+// --- A `fn` declared in an arm keeps its dispatcher cell (an overload can
+// append to it), and still reads after the `if`. ---
+fn arm_fn(a) {
+  if a {
+    fn twice(x) { x * 2 }
+  } else {
+    fn twice(x) { x * 3 }
+  }
+  twice(5)
+}
+assert_eq(arm_fn(true), 10)
+assert_eq(arm_fn(false), 15)
+
+// --- Deterministic drop: an arm-declared value drops at the scope's end in
+// declaration order, same as an unconditional local. ---
+mut log = []
+class Noisy {
+  new(tag) {
+    self.tag = tag
+  }
+  drop() {
+    log.push(self.tag)
+  }
+}
+fn drops(a) {
+  let first = Noisy.new("first")
+  if a { let second = Noisy.new("second") }
+  let third = Noisy.new("third")
+  nil
+}
+drops(true)
+assert_eq(log, ["third", "second", "first"])
