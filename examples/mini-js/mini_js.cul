@@ -27,7 +27,9 @@
 # parameters, for-of heads, assignment), switch, for-in, optional
 # chaining, accessors in object literals, the comma operator, JSON. J3 --
 # classes (extends, super, static, accessors, instance and static fields),
-# Map and Set, Symbol.iterator as the hidden iterator key.
+# Map and Set, Symbol.iterator as the hidden iterator key. J4 -- generator
+# functions and methods on the VM's generators (yield, yield*, next /
+# return / throw, and the iteration protocol over them).
 #
 # Known differences: string length/indexing by byte; no TDZ for a captured
 # let (read before its declaration it is undefined); arrays have no holes
@@ -43,13 +45,14 @@ let q = String.from_code_point(39)
 
 let grammar = `
   program    <- stmt*                                          { no_ast_opt }
-  stmt       <- var_decl / fn_decl / class_d / if_s / while_s / do_s / for_of / for_in /
+  stmt       <- var_decl / gen_decl / fn_decl / class_d / if_s / while_s / do_s / for_of / for_in /
                 for_s / switch_s / return_s / break_s / continue_s / throw_s /
                 try_s / block / empty_s / expr_s
   var_decl   <- decl_kw declr (',' declr)* ';'?                  { no_ast_opt }
   decl_kw    <- < 'var' / 'let' / 'const' >
   declr      <- binding ('=' !'=' expr)?                         { no_ast_opt }
   fn_decl    <- 'function' ident '(' params ')' block             { no_ast_opt }
+  gen_decl   <- 'function' '*' ident '(' params ')' block         { no_ast_opt }
   params     <- (param (',' param)*)? ','?                        { no_ast_opt }
   param      <- rest_p / dflt_p / binding
   rest_p     <- '...' ident                                      { no_ast_opt }
@@ -94,7 +97,10 @@ let grammar = `
   opat_short <- ident ('=' !'=' expr)?                           { no_ast_opt }
   seq_e      <- expr (',' expr)*
 
-  expr       <- arrow / assign_e / ternary
+  expr       <- arrow / yield_from / yield_e / assign_e / ternary
+  yield_from <- 'yield' '*' expr                                 { no_ast_opt }
+  yield_e    <- 'yield' yield_val                                { no_ast_opt }
+  yield_val  <- expr?                                            { no_ast_opt }
   arrow      <- arrow_p '=>' arrow_body                          { no_ast_opt }
   arrow_p    <- '(' params ')' / arrow_one
   arrow_one  <- ident                                            { no_ast_opt }
@@ -146,7 +152,8 @@ let grammar = `
   pname      <- < [a-zA-Z_$][a-zA-Z0-9_$]* >
   primary    <- number / string / template / true_l / false_l / null_l /
                 this_e / super_call / super_mem / array_lit / object_lit /
-                fn_expr / class_e / paren / ident
+                gen_expr / fn_expr / class_e / paren / ident
+  gen_expr   <- 'function' '*' fn_name '(' params ')' block      { no_ast_opt }
   super_call <- 'super' '(' args ')'                             { no_ast_opt }
   super_mem  <- 'super' '.' pname                                { no_ast_opt }
   class_d    <- 'class' ident class_tail                         { no_ast_opt }
@@ -154,8 +161,9 @@ let grammar = `
   class_name <- ident?                                           { no_ast_opt }
   class_tail <- extends_c '{' (cmember / ';')* '}'               { no_ast_opt }
   extends_c  <- ('extends' postfix)?                             { no_ast_opt }
-  cmember    <- static_c / getter_c / setter_c / method_c / field_c
-  static_c   <- 'static' (getter_c / setter_c / method_c / field_c) { no_ast_opt }
+  cmember    <- static_c / getter_c / setter_c / gmethod_c / method_c / field_c
+  gmethod_c  <- '*' mkey '(' params ')' block                    { no_ast_opt }
+  static_c   <- 'static' (getter_c / setter_c / gmethod_c / method_c / field_c) { no_ast_opt }
   getter_c   <- 'get' mkey '(' ')' block                         { no_ast_opt }
   setter_c   <- 'set' mkey '(' ident ')' block                   { no_ast_opt }
   method_c   <- mkey '(' params ')' block                        { no_ast_opt }
@@ -172,7 +180,9 @@ let grammar = `
   string     <- < ['] (!['\\] . / '\\' .)* ['] > / < ["] (!["\\] . / '\\' .)* ["] >
   array_lit  <- '[' (arg (',' arg)*)? ','? ']'                   { no_ast_opt }
   object_lit <- '{' (oprop (',' oprop)*)? ','? '}'               { no_ast_opt }
-  oprop      <- getter_p / setter_p / method_p / computed_m / kv_p / computed_p / ospread / short_p
+  oprop      <- getter_p / setter_p / gmethod_p / gcomputed_m / method_p / computed_m / kv_p / computed_p / ospread / short_p
+  gmethod_p  <- '*' pname '(' params ')' block                   { no_ast_opt }
+  gcomputed_m <- '*' '[' expr ']' '(' params ')' block            { no_ast_opt }
   computed_m <- '[' expr ']' '(' params ')' block                { no_ast_opt }
   getter_p   <- 'get' pname '(' ')' block                        { no_ast_opt }
   setter_p   <- 'set' pname '(' ident ')' block                  { no_ast_opt }
@@ -1071,6 +1081,14 @@ function __iter(v) {
   }
   throw __err('TypeError', __str(v) + ' is not iterable');
 }
+// leaving a for-of early: the iterator's return(), when it has one (a
+// finished generator's is a no-op)
+function __iter_close(it) {
+  if (__typeof(it) !== 'object' || __objecthas(it, 'src')) return undefined;
+  var r = __get(it, 'return');
+  if (__is_fnobj(r)) __call(r, it, []);
+  return undefined;
+}
 function __iter_step(it) {
   if (__objecthas(it, 'src')) {
     var s = it.src;
@@ -1148,6 +1166,7 @@ function __init_globals() {
   __init_math(G);
   __init_json(G);
   __init_collections(G);
+  __init_generators(G);
   return G;
 }
 
@@ -2000,6 +2019,42 @@ function __init_collections(G) {
   SP.toString = __mkfn(function (t) { return '[object Set]'; }, 'toString', false);
 }
 
+// --- generators -----------------------------------------------------------------
+// A generator object holds the VM activation; next / return / throw are the
+// VM's own intrinsics, whose {value, done} answer is JS's shape already.
+function __mkgen(act) {
+  var g = {};
+  g['\x01gen'] = act;
+  g['\x01proto'] = __G.Generator_proto;
+  return g;
+}
+// any iterable as an object with next(), for yield* to drive
+function __iter_obj(v) {
+  var it = __iter(v);
+  if (!__objecthas(it, 'src')) return it;
+  var o = {};
+  o.next = __mkfn(function (t) {
+    var r = {};
+    var step = __iter_step(it);
+    if (__typeof(step) === 'nil') { r.value = undefined; r.done = true; return r; }
+    r.value = step[0];
+    r.done = false;
+    return r;
+  }, 'next', false);
+  return o;
+}
+function __init_generators(G) {
+  var GP = {};
+  GP['\x01proto'] = G.Object_proto;
+  GP['\x01noenum'] = true;
+  GP.next = __mkfn(function (t, v) { return __genresume(t['\x01gen'], v); }, 'next', false);
+  GP['return'] = __mkfn(function (t, v) { return __genreturn(t['\x01gen'], v); }, 'return', false);
+  GP['throw'] = __mkfn(function (t, e) { return __genthrow(t['\x01gen'], e); }, 'throw', false);
+  GP['\x01iter'] = __mkfn(function (t) { return t; }, '[Symbol.iterator]', false);
+  GP.toString = __mkfn(function (t) { return '[object Generator]'; }, 'toString', false);
+  G.Generator_proto = GP;
+}
+
 function __init_math(G) {
   var M = {};
   M.PI = 3.141592653589793;
@@ -2101,6 +2156,7 @@ mut g_slot = 0          # main's slot holding __G
 mut this_slot = 0       # main's `this`
 mut loop_ctx = []       # per func (emit time): [{step: fn(m) -> [ids]}...]
 mut classes = {}        # pkey of a class node -> {home, derived, name, ctor, fields, members}
+mut for_close = {}      # pkey of a for-of -> {func: the closer, slot: its iterator binding}
 
 # Prelude names that are VM intrinsics, with their arities.
 let intrinsics = {
@@ -2120,6 +2176,7 @@ let intrinsics = {
   __argcount: ('argcount', 0),
   __print: ('print', 1),
   __genresume: ('genresume', 2),
+  __genthrow: ('genthrow', 2),
   __genreturn: ('genreturn', 2),
 }
 # Prelude names that are raw VM binary / unary operations over Longs.
@@ -2277,7 +2334,7 @@ fn hoist_block(stmts, f) {
           i = i + 1
         }
       },
-      st.name == 'fn_decl' => {
+      st.name == 'fn_decl' || st.name == 'gen_decl' => {
         declare_var(f, st.nodes[0].token, st.nodes[0])
         fn_nodes.push(st)
       },
@@ -2292,7 +2349,7 @@ fn collect_vars(node, f) {
   if node.nodes == nil {
     return nil
   }
-  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' || node.name == 'getter_p' || node.name == 'setter_p' || node.name == 'class_d' || node.name == 'class_e' {
+  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' || node.name == 'getter_p' || node.name == 'setter_p' || node.name == 'class_d' || node.name == 'class_e' || node.name == 'gen_decl' || node.name == 'gen_expr' || node.name == 'gmethod_p' || node.name == 'gcomputed_m' {
     return nil
   }
   if (node.name == 'var_decl' || node.name == 'var_decl_ns') && node.nodes[0].token == 'var' {
@@ -2478,6 +2535,9 @@ fn scan_stmts(stmts, f) {
     closure_of[pkey(s)] = g
     calls[f].push(g)
     walk_fn(g, s.nodes[1].nodes, nil)
+    if s.name == 'gen_decl' {
+      wrap_generator(f, s, g, id.token)
+    }
   }
   for s in stmts {
     scan_stmt(s, f)
@@ -2509,6 +2569,7 @@ fn scan_stmt(node, f) {
     {name: 'var_decl'} => scan_decl(node, f),
     {name: 'var_decl_ns'} => scan_decl(node, f),
     {name: 'fn_decl'} => nil,  # hoisted by scan_stmts
+    {name: 'gen_decl'} => nil,
     {name: 'class_d'} => scan_class(node, f),
     {name: 'if_s'} => {
       scan_expr(node.nodes[0], f)
@@ -2619,6 +2680,17 @@ fn scan_for_each(node, f) {
   let [kw, pat, src, body] = node.nodes
   scan_expr(src, f)
   enter_scope(f)
+  if node.name == 'for_of' {
+    # leaving the loop early closes the iterator (a generator's finally
+    # runs): the iterator lives in a hidden binding a deferred closer
+    # captures
+    let slot = declare_var(f, "\x01it" + pkey(node), nil)
+    let g = new_func(f, 'iterclose', [], nil, true)
+    funcs[g]['close_of'] = {owner: f, slot: slot}
+    use_var(g, f, slot)
+    calls[f].push(g)
+    for_close[pkey(node)] = {func: g, slot: slot}
+  }
   declare_pattern(f, pat, kw.token)
   scan_pattern_dflts(pat, f)
   scan_sub(body, f)
@@ -2708,10 +2780,12 @@ fn scan_class(node, f) {
         info.ctor = g
       },
       mem.name == 'method_c' ||
+        mem.name == 'gmethod_c' ||
         mem.name == 'getter_c' ||
         mem.name == 'setter_c' => {
         let (params, blk) = cond {
-          mem.name == 'method_c' => (mem.nodes[1].nodes, mem.nodes[2]),
+          mem.name == 'method_c' ||
+            mem.name == 'gmethod_c' => (mem.nodes[1].nodes, mem.nodes[2]),
           mem.name == 'getter_c' => ([], mem.nodes[1]),
           _ => ([mem.nodes[1]], mem.nodes[2]),
         }
@@ -2722,7 +2796,11 @@ fn scan_class(node, f) {
         funcs[g]['is_static'] = is_static
         use_var(g, f, home)
         walk_fn(g, params, nil)
-        info.members.push({node: mem, is_static: is_static, key: mk, func: g})
+        let fv = cond {
+          mem.name == 'gmethod_c' => wrap_generator(f, mem, g, mname),
+          _ => g,
+        }
+        info.members.push({node: mem, is_static: is_static, key: mk, func: fv})
       },
       mem.name == 'field_c' && is_static => {
         if mem.nodes.size() > 1 {
@@ -2774,6 +2852,30 @@ fn resolve_super(node, f) {
     h = funcs[h].parent
   }
   fail(node, "'super' keyword unexpected here")
+}
+
+# A generator function is two VM functions: the raw generator (the body,
+# with the parameters) and a wrapper that is the JS-visible function --
+# it forwards its arguments to the raw one and answers the activation
+# wrapped as a generator object.
+fn wrap_generator(f, node, g, name) {
+  funcs[g]['is_gen'] = true
+  let w = new_func(f, name, [], nil, false)
+  funcs[w]['gen_raw'] = g
+  for d in funcs[g].dflts {
+    funcs[w].dflts.push(d)
+  }
+  calls[w].push(g)
+  enter_scope(w)
+  declare_var(w, 'this', nil)
+  funcs[w].params.push('this')
+  for k in range(8) {
+    declare_var(w, "\x01a{k}", nil)
+    funcs[w].params.push("\x01a{k}")
+  }
+  leave_scope(w)
+  closure_of[pkey(node)] = w
+  w
 }
 
 fn scan_fn_value(node, f, param_nodes, body, is_arrow, name) {
@@ -2841,6 +2943,21 @@ fn scan_expr(node, f) {
         _ => scan_fn_value(node, f, prms.nodes, blk, false, ''),
       }
     },
+    {name: 'gen_expr'} => {
+      let [fname, prms, blk] = node.nodes
+      let name = cond {
+        fname.nodes.size() > 0 => fname.nodes[0].token,
+        _ => '',
+      }
+      let g = scan_fn_value(node, f, prms.nodes, blk, false, name)
+      wrap_generator(f, node, g, name)
+    },
+    {name: 'yield_e'} => {
+      if node.nodes[0].nodes.size() > 0 {
+        scan_expr(node.nodes[0].nodes[0], f)
+      }
+    },
+    {name: 'yield_from'} => scan_expr(node.nodes[0], f),
     {name: 'assign_e'} => {
       scan_target(node.nodes[0], f)
       scan_expr(node.nodes[2], f)
@@ -2915,6 +3032,22 @@ fn scan_expr(node, f) {
           {name: 'computed_m'} => {
             scan_expr(p.nodes[0], f)
             scan_fn_value(p, f, p.nodes[1].nodes, p.nodes[2], false, '')
+          },
+          {name: 'gmethod_p'} => {
+            let g = scan_fn_value(
+              p,
+              f,
+              p.nodes[1].nodes,
+              p.nodes[2],
+              false,
+              p.nodes[0].token,
+            )
+            wrap_generator(f, p, g, p.nodes[0].token)
+          },
+          {name: 'gcomputed_m'} => {
+            scan_expr(p.nodes[0], f)
+            let g = scan_fn_value(p, f, p.nodes[1].nodes, p.nodes[2], false, '')
+            wrap_generator(f, p, g, '')
           },
           {name: 'getter_p'} => scan_fn_value(
             p,
@@ -3753,7 +3886,7 @@ fn emit_class(m, node, f) {
           pc,
         ))
       },
-      mem.node.name == 'method_c' => {
+      mem.node.name == 'method_c' || mem.node.name == 'gmethod_c' => {
         let fv = call_pre(
           m,
           f,
@@ -4420,6 +4553,25 @@ fn emit_object(m, node, f) {
         p.line,
         p.column,
       ),
+      {name: 'gmethod_p'} => put(
+        str_l(m, p.nodes[0].token, p.line, p.column),
+        emit_fn_value(m, p, f, p.nodes[0].token, false),
+        p.line,
+        p.column,
+      ),
+      {name: 'gcomputed_m'} => put(
+        call_pre(
+          m,
+          f,
+          '__key',
+          [emit_expr(m, p.nodes[0], f)],
+          p.line,
+          p.column,
+        ),
+        emit_fn_value(m, p, f, '', false),
+        p.line,
+        p.column,
+      ),
       {name: 'short_p'} => put(
         str_l(m, p.nodes[0].token, p.line, p.column),
         emit_expr(m, p.nodes[0], f),
@@ -4548,6 +4700,70 @@ fn emit_expr(m, node, f) {
       }
     },
     {name: 'class_e'} => emit_class(m, node, f),
+    {name: 'gen_expr'} => {
+      let fname = node.nodes[0]
+      let name = cond {
+        fname.nodes.size() > 0 => fname.nodes[0].token,
+        _ => '',
+      }
+      emit_fn_value(m, node, f, name, false)
+    },
+    {name: 'yield_e'} => {
+      let yv = node.nodes[0]
+      let v = cond {
+        yv.nodes.size() > 0 => emit_expr(m, yv.nodes[0], f),
+        _ => nil_l(m, ln, cl),
+      }
+      m.make_yield(value: v, line: ln, col: cl)
+    },
+    {name: 'yield_from'} => {
+      # it = iterator(expr); r = it.next(); while (!r.done) { sent = yield r.value; r = it.next(sent) }; r.value
+      let it = new_scratch(f)
+      let r = new_scratch(f)
+      let sent = new_scratch(f)
+      fn next_of(arg) {
+        call_pre(
+          m,
+          f,
+          '__callm',
+          [
+            scratch_ref(m, it, ln, cl),
+            str_l(m, 'next', ln, cl),
+            m.array_lit(items_list: make_list(m, [arg]), line: ln, col: cl),
+          ],
+          ln,
+          cl,
+        )
+      }
+      fn field(k) {
+        call_pre(
+          m,
+          f,
+          '__get',
+          [scratch_ref(m, r, ln, cl), str_l(m, k, ln, cl)],
+          ln,
+          cl,
+        )
+      }
+      let body = m.block(
+        stmts_list: make_list(m, [
+          m.assign(kind: 'local', index: sent, value: m.make_yield(value: field('value'), line: ln, col: cl), line: ln, col: cl),
+          m.assign(kind: 'local', index: r, value: next_of(scratch_ref(m, sent, ln, cl)), line: ln, col: cl)]),
+        line: ln,
+        col: cl,
+      )
+      m.block(
+        stmts_list: make_list(m, [
+          m.assign(kind: 'local', index: it,
+                   value: call_pre(m, f, '__iter_obj', [emit_expr(m, node.nodes[0], f)], ln, cl), line: ln, col: cl),
+          m.assign(kind: 'local', index: r, value: next_of(nil_l(m, ln, cl)), line: ln, col: cl),
+          m.make_while(cond: ir_not(m, call_pre(m, f, '__truthy', [field('done')], ln, cl), ln, cl),
+                       body: body, line: ln, col: cl),
+          field('value')]),
+        line: ln,
+        col: cl,
+      )
+    },
     {name: 'super_call'} => {
       let r = resolved[pkey(node)]
       let call = call_pre(
@@ -4670,7 +4886,7 @@ fn fresh_slots(m, f, slots, ln, cl) {
 fn emit_stmts_into(m, stmts, f, ids) {
   # hoisted function declarations come first
   for s in stmts {
-    if s.name == 'fn_decl' {
+    if s.name == 'fn_decl' || s.name == 'gen_decl' {
       let r = resolved[pkey(s.nodes[0])]
       ids.push(var_write(
         m,
@@ -4683,7 +4899,7 @@ fn emit_stmts_into(m, stmts, f, ids) {
     }
   }
   for s in stmts {
-    if s.name != 'fn_decl' {
+    if s.name != 'fn_decl' && s.name != 'gen_decl' {
       let e = emit_stmt(m, s, f)
       if e != nil {
         ids.push(e)
@@ -5130,12 +5346,26 @@ fn emit_for_each(m, node, f, iter_fn) {
   let ln = node.line
   let cl = node.column
   let [kw, pat, src, body] = node.nodes
-  let slots = block_slots[pkey(node)]
-  let it = new_scratch(f)
+  let closer = cond {
+    for_close.has(pkey(node)) => for_close[pkey(node)],
+    _ => nil,
+  }
   let cur = new_scratch(f)
+  # the iterator: a hidden binding (for-of, whose closer captures it) or a
+  # plain temp (for-in)
+  let it_slot = cond {
+    closer != nil => closer.slot,
+    _ => new_scratch(f),
+  }
+  # the loop's own bindings, refreshed per iteration -- not the iterator's
+  let slots = block_slots[pkey(node)].filter(|sl| sl != it_slot)
+  let it_a = access_from(f, (f, it_slot))
+  fn it_ref(m2) {
+    m2.var_ref(kind: it_a.kind, index: it_a.index, line: ln, col: cl)
+  }
   mut ids = [m.assign(
-    kind: 'local',
-    index: it,
+    kind: it_a.kind,
+    index: it_a.index,
     value: call_pre(m, f, iter_fn, [emit_expr(m, src, f)], ln, cl),
     line: ln,
     col: cl,
@@ -5144,7 +5374,7 @@ fn emit_for_each(m, node, f, iter_fn) {
     [m2.assign(
       kind: 'local',
       index: cur,
-      value: call_pre(m2, f, '__iter_step', [scratch_ref(m2, it, ln, cl)], ln, cl),
+      value: call_pre(m2, f, '__iter_step', [it_ref(m2)], ln, cl),
       line: ln,
       col: cl,
     )]
@@ -5180,7 +5410,24 @@ fn emit_for_each(m, node, f, iter_fn) {
     line: ln,
     col: cl,
   ))
-  m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+  let loop = m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+  cond {
+    closer != nil => {
+      let d = m.make_defer(
+        value: m.make_closure(func: closer.func, cmap: cmap_for(m, f, closer.func), line: ln, col: cl),
+        line: ln,
+        col: cl,
+      )
+      m.scope(
+        first_local: 0,
+        end_local: 0,
+        body: m.block(stmts_list: make_list(m, [d, loop]), line: ln, col: cl),
+        line: ln,
+        col: cl,
+      )
+    },
+    _ => loop,
+  }
 }
 
 # switch: pick the first case whose value is === the subject (else the
@@ -5518,6 +5765,62 @@ fn emit_funcs(m) {
       ))
     }
     cond {
+      fi.close_of != nil => {
+        let a = access_from(f, (fi.close_of.owner, fi.close_of.slot))
+        ids.push(call_pre(
+          m,
+          f,
+          '__iter_close',
+          [m.var_ref(kind: a.kind, index: a.index, line: 1, col: 1)],
+          1,
+          1,
+        ))
+        ids.push(m.make_return(value: nil_l(m, 1, 1), line: 1, col: 1))
+      },
+      fi.gen_raw != nil => {
+        # the wrapper: the raw generator's activation, as a generator object
+        mut hidden = []
+        for k in range(8) {
+          hidden.push(m.var_ref(kind: 'local', index: 1 + k, line: 1, col: 1))
+        }
+        let cnt = m.binary(
+          op: 'sub',
+          lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
+          rhs: m.literal(v: 1, line: 1, col: 1),
+          line: 1,
+          col: 1,
+        )
+        let args = call_pre(
+          m,
+          f,
+          '__rest_pack',
+          [m.array_lit(items_list: make_list(m, hidden), line: 1, col: 1), cnt],
+          1,
+          1,
+        )
+        let act = call_pre(
+          m,
+          f,
+          '__apply',
+          [
+            m.make_closure(
+              func: fi.gen_raw,
+              cmap: cmap_for(m, f, fi.gen_raw),
+              line: 1,
+              col: 1,
+            ),
+            m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+            args,
+          ],
+          1,
+          1,
+        )
+        ids.push(m.make_return(
+          value: call_pre(m, f, '__mkgen', [act], 1, 1),
+          line: 1,
+          col: 1,
+        ))
+      },
       fi.field_inits != nil => {
         # this.key = init, in order; a computed key was evaluated at the
         # class definition (captured through the home is not needed: the
@@ -5576,6 +5879,9 @@ fn emit_funcs(m) {
       body: body,
     )
     m.set_lenient_arity(func: func)
+    if fi.is_gen == true {
+      m.set_generator(func: func)
+    }
   }
   in_prelude = false
 }
@@ -5666,6 +5972,7 @@ for path in cli {
   prelude_named = {}
   loop_ctx = []
   classes = {}
+  for_close = {}
   synth_count = 0
   in_prelude = false
   try {
