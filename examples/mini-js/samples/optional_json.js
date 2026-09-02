@@ -34,3 +34,6 @@ show('roundtrip', JSON.stringify(JSON.parse(JSON.stringify(data))));
 show('parse error', thrown(() => JSON.parse('{bad')));
 show('parse error 2', thrown(() => JSON.parse('[1,]')));
 show('toJSON', JSON.stringify({ toJSON() { return 'custom'; } }));
+
+class Boxed { constructor(v) { this.v = v; } }
+show('new then optional', [new Boxed(null).v?.x, new Boxed({ x: 1 }).v?.x, new Boxed(5)?.v, new Boxed(null).v?.f()]);

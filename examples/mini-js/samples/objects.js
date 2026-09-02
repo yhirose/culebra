@@ -47,3 +47,15 @@ show('proto props', [Object.keys(p), typeof p.len, p.hasOwnProperty('len')]);
 
 const getterish = { get() { return 'g'; } };
 show('method named get', getterish.get());
+
+const ck = 'dyn';
+const computed = {
+  get [ck]() { return this.v; },
+  set [ck](x) { this.v = x * 2; },
+  [ck + 'M']() { var inner = 'own'; return inner; },
+  'two words'() { return 'quoted method'; },
+  *[ck + 'G']() { yield 1; },
+};
+computed.dyn = 4;
+show('computed members', [computed.dyn, computed.dynM(), computed['two words'](), [...computed.dynG()]]);
+show('computed method scope', thrown(() => inner));

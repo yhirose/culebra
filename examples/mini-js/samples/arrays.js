@@ -27,3 +27,6 @@ show('destructure via index', (function () { const s = [10, 20]; const p = s[0],
 show('equality', [[1] === [1], a === a, [1, 2] == '1,2']);
 show('array in bool', [!![], [] == false, [0] == false]);
 show('string methods on arrays', thrown(() => a.toUpperCase()));
+
+const decoy = { src: 'not an array', i: 0, next() { this.i++; return this.i > 2 ? { done: true } : { value: this.i, done: false }; } };
+show('own iterator named src', [...{ [Symbol.iterator]() { return decoy; } }]);

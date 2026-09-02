@@ -148,7 +148,8 @@ let grammar = `
   opt_member <- '?.' pname                                       { no_ast_opt }
   opt_index  <- '?.' '[' expr ']'                                { no_ast_opt }
   opt_call   <- '?.' '(' args ')'                                { no_ast_opt }
-  new_e      <- 'new' primary (index_p / member_p)* new_args (call_p / index_p / member_p)* { no_ast_opt }
+  new_e      <- 'new' primary (index_p / member_p)* new_args
+                (call_p / index_p / member_p / opt_call / opt_index / opt_member)* { no_ast_opt }
   new_args   <- ('(' args ')')?                                  { no_ast_opt }
   call_p     <- '(' args ')'                                     { no_ast_opt }
   args       <- (arg (',' arg)*)? ','?                           { no_ast_opt }
@@ -189,17 +190,15 @@ let grammar = `
   string     <- < ['] (!['\\] . / '\\' .)* ['] > / < ["] (!["\\] . / '\\' .)* ["] >
   array_lit  <- '[' (arg (',' arg)*)? ','? ']'                   { no_ast_opt }
   object_lit <- '{' (oprop (',' oprop)*)? ','? '}'               { no_ast_opt }
-  oprop      <- getter_p / setter_p / gmethod_p / gcomputed_m / amethod_p / method_p / computed_m / kv_p / computed_p / ospread / short_p
-  gmethod_p  <- '*' pname '(' params ')' block                   { no_ast_opt }
-  amethod_p  <- 'async' pname '(' params ')' block               { no_ast_opt }
-  gcomputed_m <- '*' '[' expr ']' '(' params ')' block            { no_ast_opt }
-  computed_m <- '[' expr ']' '(' params ')' block                { no_ast_opt }
-  getter_p   <- 'get' pname '(' ')' block                        { no_ast_opt }
-  setter_p   <- 'set' pname '(' ident ')' block                  { no_ast_opt }
+  oprop      <- getter_p / setter_p / gmethod_p / amethod_p / method_p / kv_p / computed_p / ospread / short_p
+  gmethod_p  <- '*' mkey '(' params ')' block                    { no_ast_opt }
+  amethod_p  <- 'async' mkey '(' params ')' block                { no_ast_opt }
+  getter_p   <- 'get' mkey '(' ')' block                         { no_ast_opt }
+  setter_p   <- 'set' mkey '(' ident ')' block                   { no_ast_opt }
   kv_p       <- pkey ':' expr                                    { no_ast_opt }
   pkey       <- pname / string / number
   computed_p <- '[' expr ']' ':' expr                            { no_ast_opt }
-  method_p   <- pname '(' params ')' block                       { no_ast_opt }
+  method_p   <- mkey '(' params ')' block                        { no_ast_opt }
   short_p    <- ident                                            { no_ast_opt }
   ospread    <- '...' expr                                       { no_ast_opt }
   fn_expr    <- 'function' fn_name '(' params ')' block          { no_ast_opt }
@@ -953,9 +952,11 @@ function __def_method(cls, is_static, key, f) {
   target[__key(key)] = f;
   return undefined;
 }
+// the property an accessor of a given kind ('get' or 'set') is stored under
+function __acc_key(kind, key) { return '\x01' + kind + ':' + __key(key); }
 function __def_accessor(cls, is_static, kind, key, f) {
   var target = is_static ? cls : cls.prototype;
-  target['\x01' + kind + ':' + __key(key)] = f;
+  target[__acc_key(kind, key)] = f;
   return undefined;
 }
 function __super_call(cls, t, args) {
@@ -1085,13 +1086,14 @@ function __gset(name, v) { __G[name] = v; return v; }
 
 // --- for-of ------------------------------------------------------------------
 // An iterator record: {next} answering {value, done}. Arrays and strings
-// walk by index against their live length.
+// walk by index against their live length, under hidden keys a user's own
+// iterator cannot spell.
 function __iter(v) {
   var t = __typeof(v);
   if (t === 'array' || t === 'string') {
     var it = {};
-    it.src = v;
-    it.i = 0;
+    it['\x01src'] = v;
+    it['\x01i'] = 0;
     return it;
   }
   if (t === 'object' && !__is_null(v)) {
@@ -1103,17 +1105,17 @@ function __iter(v) {
 // leaving a for-of early: the iterator's return(), when it has one (a
 // finished generator's is a no-op)
 function __iter_close(it) {
-  if (__typeof(it) !== 'object' || __objecthas(it, 'src')) return undefined;
+  if (__typeof(it) !== 'object' || __objecthas(it, '\x01src')) return undefined;
   var r = __get(it, 'return');
   if (__is_fnobj(r)) __call(r, it, []);
   return undefined;
 }
 function __iter_step(it) {
-  if (__objecthas(it, 'src')) {
-    var s = it.src;
-    var i = it.i;
+  if (__objecthas(it, '\x01src')) {
+    var s = it['\x01src'];
+    var i = it['\x01i'];
     if (i >= __len(s)) return undefined;
-    it.i = i + 1;
+    it['\x01i'] = i + 1;
     return [s[i]];
   }
   var r = __callm(it, 'next', []);
@@ -2046,7 +2048,7 @@ function __mkgen(act) {
 // any iterable as an object with next(), for yield* to drive
 function __iter_obj(v) {
   var it = __iter(v);
-  if (!__objecthas(it, 'src')) return it;
+  if (!__objecthas(it, '\x01src')) return it;
   var o = {};
   __def(o, 'next', function (t) {
     var r = {};
@@ -2607,7 +2609,6 @@ let fn_forms = {
   method_p: true,
   gmethod_p: true,
   amethod_p: true,
-  gcomputed_m: true,
   getter_p: true,
   setter_p: true,
   class_d: true,
@@ -2987,6 +2988,21 @@ fn scan_decl(node, f) {
   }
 }
 
+# A member key, in a class body or an object literal: a computed one is an
+# expression of the enclosing function and leaves the member unnamed.
+fn mkey_name(mk) {
+  cond {
+    mk.name == 'computed_k' => '',
+    _ => prop_key_text(mk),
+  }
+}
+fn scan_mkey(mk, f) {
+  if mk.name == 'computed_k' {
+    scan_expr(mk.nodes[0], f)
+  }
+  mkey_name(mk)
+}
+
 # A class: every method, accessor and the constructor is a function of its
 # own whose `super` reaches the class through a hidden binding in the
 # enclosing scope (the home); instance fields become one more function the
@@ -3020,14 +3036,7 @@ fn scan_class(node, f) {
       mem = mem.nodes[0]
     }
     let mk = mem.nodes[0]
-    if mk.name == 'computed_k' {
-      scan_expr(mk.nodes[0], f)
-    }
-    let mname = cond {
-      mk.name == 'computed_k' => '',
-      mk.name == 'string' => mk.token,
-      _ => mk.token,
-    }
+    let mname = scan_mkey(mk, f)
     cond {
       mem.name == 'method_c' &&
         !is_static &&
@@ -3313,64 +3322,23 @@ fn scan_expr(node, f) {
             scan_expr(p.nodes[0], f)
             scan_expr(p.nodes[1], f)
           },
-          {name: 'method_p'} => scan_fn_value(
-            p,
-            f,
-            p.nodes[1].nodes,
-            p.nodes[2],
-            false,
-            p.nodes[0].token,
-          ),
           {name: 'short_p'} => note_use(p.nodes[0], f),
           {name: 'ospread'} => scan_expr(p.nodes[0], f),
-          {name: 'computed_m'} => {
-            scan_expr(p.nodes[0], f)
-            scan_fn_value(p, f, p.nodes[1].nodes, p.nodes[2], false, '')
+          # the rest are functions under an mkey, as a class's members are
+          _ => {
+            let mname = scan_mkey(p.nodes[0], f)
+            let (params, body) = cond {
+              p.name == 'getter_p' => ([], p.nodes[1]),
+              p.name == 'setter_p' => ([p.nodes[1]], p.nodes[2]),
+              _ => (p.nodes[1].nodes, p.nodes[2]),
+            }
+            let g = scan_fn_value(p, f, params, body, false, mname)
+            cond {
+              p.name == 'gmethod_p' => wrap_generator(f, p, g, mname),
+              p.name == 'amethod_p' => wrap_async(f, p, g, mname),
+              _ => nil,
+            }
           },
-          {name: 'gmethod_p'} => {
-            let g = scan_fn_value(
-              p,
-              f,
-              p.nodes[1].nodes,
-              p.nodes[2],
-              false,
-              p.nodes[0].token,
-            )
-            wrap_generator(f, p, g, p.nodes[0].token)
-          },
-          {name: 'amethod_p'} => {
-            let g = scan_fn_value(
-              p,
-              f,
-              p.nodes[1].nodes,
-              p.nodes[2],
-              false,
-              p.nodes[0].token,
-            )
-            wrap_async(f, p, g, p.nodes[0].token)
-          },
-          {name: 'gcomputed_m'} => {
-            scan_expr(p.nodes[0], f)
-            let g = scan_fn_value(p, f, p.nodes[1].nodes, p.nodes[2], false, '')
-            wrap_generator(f, p, g, '')
-          },
-          {name: 'getter_p'} => scan_fn_value(
-            p,
-            f,
-            [],
-            p.nodes[1],
-            false,
-            p.nodes[0].token,
-          ),
-          {name: 'setter_p'} => scan_fn_value(
-            p,
-            f,
-            [p.nodes[1]],
-            p.nodes[2],
-            false,
-            p.nodes[0].token,
-          ),
-          _ => nil,
         }
       }
     },
@@ -4736,8 +4704,8 @@ fn emit_object(m, node, f) {
         put(kstr, emit_expr(m, p.nodes[1], f), p.line, p.column)
       },
       {name: 'method_p'} | {name: 'gmethod_p'} | {name: 'amethod_p'} => put(
-        str_l(m, p.nodes[0].token, p.line, p.column),
-        emit_fn_value(m, p, f, p.nodes[0].token, false),
+        emit_mkey(m, f, p.nodes[0], p.line, p.column),
+        emit_fn_value(m, p, f, mkey_name(p.nodes[0]), false),
         p.line,
         p.column,
       ),
@@ -4747,28 +4715,19 @@ fn emit_object(m, node, f) {
         p.line,
         p.column,
       ),
-      {name: 'computed_m'} | {name: 'gcomputed_m'} => put(
-        call_pre(
+      {name: 'getter_p'} | {name: 'setter_p'} => put(
+        emit_acc_key(
           m,
           f,
-          '__key',
-          [emit_expr(m, p.nodes[0], f)],
+          cond {
+            p.name == 'getter_p' => 'get',
+            _ => 'set',
+          },
+          p.nodes[0],
           p.line,
           p.column,
         ),
-        emit_fn_value(m, p, f, '', false),
-        p.line,
-        p.column,
-      ),
-      {name: 'getter_p'} => put(
-        str_l(m, "\x01get:" + p.nodes[0].token, p.line, p.column),
-        emit_fn_value(m, p, f, p.nodes[0].token, false),
-        p.line,
-        p.column,
-      ),
-      {name: 'setter_p'} => put(
-        str_l(m, "\x01set:" + p.nodes[0].token, p.line, p.column),
-        emit_fn_value(m, p, f, p.nodes[0].token, false),
+        emit_fn_value(m, p, f, mkey_name(p.nodes[0]), false),
         p.line,
         p.column,
       ),
@@ -4785,6 +4744,37 @@ fn emit_object(m, node, f) {
   }
   ids.push(scratch_ref(m, tmp, ln, cl))
   m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+}
+
+# The property name a member key stores under, and the one an accessor of
+# that name stores under; a computed key is only known at run time.
+fn emit_mkey(m, f, mk, ln, cl) {
+  cond {
+    mk.name ==
+      'computed_k' => call_pre(
+      m,
+      f,
+      '__key',
+      [emit_expr(m, mk.nodes[0], f)],
+      ln,
+      cl,
+    ),
+    _ => str_l(m, prop_key_text(mk), ln, cl),
+  }
+}
+fn emit_acc_key(m, f, kind, mk, ln, cl) {
+  cond {
+    mk.name ==
+      'computed_k' => call_pre(
+      m,
+      f,
+      '__acc_key',
+      [str_l(m, kind, ln, cl), emit_expr(m, mk.nodes[0], f)],
+      ln,
+      cl,
+    ),
+    _ => str_l(m, "\x01{kind}:{prop_key_text(mk)}", ln, cl),
+  }
 }
 
 # a numeric literal key, spelled the way ToString would
