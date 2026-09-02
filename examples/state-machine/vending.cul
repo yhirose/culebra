@@ -1,0 +1,106 @@
+# A vending machine, written twice.
+#
+# `StateMachine` has two front ends over one engine: a text DSL and a
+# description Object. This example builds the same machine both ways and runs
+# the same events through both, so the two traces have to match — which is
+# the point. The DSL is the readable form; the Object is what you reach for
+# when the machine is assembled by code rather than written by hand.
+#
+# The behaviour lives in neither form. Guards and actions are ordinary
+# culebra functions; the DSL only names them, and the names are resolved when
+# the machine is built (misspell one and you hear about it there, not on the
+# event that would have reached it).
+#
+# Run it:  culebra examples/state-machine/vending.cul
+
+let PRICE = 100
+
+# --- the behaviour, shared by both machines ------------------------------
+fn enough(ctx, ev) {
+  ctx.balance >= PRICE
+}
+fn add_coin(ctx, ev) {
+  ctx.balance += ev.payload
+  ctx.log.push("+{ev.payload} = {ctx.balance}")
+}
+fn dispense(ctx, ev) {
+  ctx.balance -= PRICE
+  ctx.log.push("dispense, {ctx.balance} left")
+}
+fn reject(ctx, ev) {
+  ctx.log.push("need {PRICE - ctx.balance} more")
+}
+
+let guards = {enough: enough}
+let actions = {add_coin: add_coin, dispense: dispense, reject: reject}
+
+# --- form 1: the text DSL ------------------------------------------------
+#
+# `select` is listed twice: the candidates are tried in the order written and
+# the first whose guard passes wins. Write the machine as a raw string — a
+# "..." string would read the braces as interpolation.
+let text = `
+  Vending {
+    idle initial {
+      coin: add_coin -> ready
+    }
+    ready {
+      coin: add_coin -> ready
+      select[enough]:  dispense -> idle
+      select[!enough]: reject   -> ready
+    }
+  }
+`
+
+# --- form 2: the same machine as data ------------------------------------
+#
+# The fallback here has no guard at all rather than a negated one: a
+# candidate with no guard always passes, so putting it last says the same
+# thing as `[!enough]`.
+let desc = {
+  idle: {initial: true, on: {coin: {action: add_coin, target: "ready"}}},
+  ready: {on: {
+    coin: {action: add_coin, target: "ready"},
+    select: [
+      {guard: enough, action: dispense, target: "idle"},
+      {action: reject, target: "ready"},
+    ],
+  }},
+}
+
+fn fresh() {
+  {mut balance: 0, mut log: []}
+}
+let from_text = StateMachine.parse(
+  text,
+  guards: guards,
+  actions: actions,
+  context: fresh(),
+)
+let from_desc = StateMachine.new(desc, name: "Vending", context: fresh())
+
+# --- run the same events through both ------------------------------------
+let script = [
+  ("coin", 25),
+  ("coin", 25),
+  ("select", nil),
+  ("coin", 50),
+  ("select", nil),
+]
+for (event, payload) in script {
+  for m in [from_text, from_desc] {
+    m.fire(event, payload)
+  }
+  let arg = payload == nil ? "" : " {payload}"
+  println("{event}{arg} -> {from_text.state()}")
+  for line in from_text.context.log {
+    println("    {line}")
+  }
+  from_text.context.log = []
+  from_desc.context.log = []
+}
+
+# `select` in `idle` is not an error — no state handles it, so nothing moves.
+println("")
+println("unhandled `select` in {from_text.state()}: {from_text.fire('select')}")
+println("both machines agree: {from_text.state() == from_desc.state()}")

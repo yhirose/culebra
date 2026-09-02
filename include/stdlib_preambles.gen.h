@@ -3083,7 +3083,10 @@ let _state_machine_module = fn () {
     }
     let f = table.get(v, nil)
     if f == nil {
-      throw {kind: "StateMachineError", message: "{where}: no {kind} named '{v}'"}
+      throw {
+        kind: "StateMachineError",
+        message: "{where}: no {kind} named '{v}'",
+      }
     }
     f
   }
@@ -3109,8 +3112,18 @@ let _state_machine_module = fn () {
       states[name] = {
         mut parent: parent,
         mut initial: nil,
-        mut entry: _resolve(d.get("entry", nil), actions, "action", "state '{name}' entry"),
-        mut exit: _resolve(d.get("exit", nil), actions, "action", "state '{name}' exit"),
+        mut entry: _resolve(
+          d.get("entry", nil),
+          actions,
+          "action",
+          "state '{name}' entry",
+        ),
+        mut exit: _resolve(
+          d.get("exit", nil),
+          actions,
+          "action",
+          "state '{name}' exit",
+        ),
         mut on: {},
         mut children: 0,
       }
@@ -3129,7 +3142,7 @@ let _state_machine_module = fn () {
         for (event, spec) in on.iter() {
           let where = "state '{name}' on '{event}'"
           let mut list = []
-          for c in (type_of(spec) == "Array" ? spec : [spec]) {
+          for c in type_of(spec) == "Array" ? spec : [spec] {
             _reject_unknown(c, CAND_KEYS, where)
             list.push({
               guard: _resolve(c.get("guard", nil), guards, "guard", where),
@@ -3213,7 +3226,12 @@ let _state_machine_module = fn () {
     Entry: |sv| {tag: "entry", name: sv.values[0]},
     Exit: |sv| {tag: "exit", name: sv.values[0]},
     Transition: fn (sv) {
-      let mut c = {mut guard: nil, mut negate: false, mut action: nil, mut target: nil}
+      let mut c = {
+        mut guard: nil,
+        mut negate: false,
+        mut action: nil,
+        mut target: nil,
+      }
       for i in 1..sv.values.size() {
         let v = sv.values[i]
         if v.tag == "guard" {
@@ -3282,8 +3300,13 @@ let _state_machine_module = fn () {
     # message carries `path` when one is given.
     static parse(text, *, guards = {}, actions = {}, context = nil, path = "") {
       let m = _Peg.parse(GRAMMAR, text, "", true, true, path, ACTIONS)
-      StateMachine.new(m.states, name: m.name, guards: guards, actions: actions,
-                       context: context)
+      StateMachine.new(
+        m.states,
+        name: m.name,
+        guards: guards,
+        actions: actions,
+        context: context,
+      )
     }
 
     state() {
@@ -3401,7 +3424,7 @@ let _state_machine_module = fn () {
               return {source: s, t: t}
             }
             let g = t.guard(self.context, ev)
-            if (t.negate ? !g : g) {
+            if t.negate ? !g : g {
               return {source: s, t: t}
             }
           }
