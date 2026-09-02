@@ -533,6 +533,11 @@ class Printer {
   // Precedence of an expression node by its (optimized) name. Atoms / leaves
   // and anything unlisted bind tightest (16) so they never get parenthesized.
   static int prec(const std::string& name) {
+    // A lambda's body runs as far right as it can, so it is never a primary
+    // and needs parentheses as an operand of anything -- `(|q| f(q))(x)`
+    // reprinted without them is a lambda whose body is `f(q)(x)`. The
+    // default below is 16 (binds tightest), which is the wrong answer here.
+    if (name == "LAMBDA") return 0;
     if (name == "CONDITIONAL") return 1;
     if (name == "NIL_COALESCE") return 2;
     if (name == "LOGICAL_OR") return 3;

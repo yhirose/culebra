@@ -681,6 +681,42 @@ if ! diff -u "$TMP/lit_want.cul" "$TMP/lit_got.cul" > "$TMP/lit_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1c. Golden fixture: a lambda is never a primary -----------------------
+# A lambda's body runs as far right as it can, so parentheses around one are
+# load-bearing wherever it is an operand: `(|q| f(q))(x)` reprinted without
+# them is a lambda whose body is `f(q)(x)`. prec() used to fall through to its
+# default (16, binds tightest) for LAMBDA, and the safety net refused the file
+# rather than emit that — see include/formatter.h prec().
+cat > "$TMP/lam_in.cul" <<'EOF'
+let xs=[1,2,3]
+inspect((|q| q.size())(xs))
+inspect((|x| x*2)(5)+1)
+inspect(1+(|x| x*2)(5))
+let table=[|x| x+1,|x| x*2]
+inspect(table[1](10))
+inspect(xs.map(|x| x*2))
+let add=|a| |b| a+b
+inspect(add(2)(3))
+EOF
+cat > "$TMP/lam_want.cul" <<'EOF'
+let xs = [1, 2, 3]
+inspect((|q| q.size())(xs))
+inspect((|x| x * 2)(5) + 1)
+inspect(1 + (|x| x * 2)(5))
+let table = [|x| x + 1, |x| x * 2]
+inspect(table[1](10))
+inspect(xs.map(|x| x * 2))
+let add = |a| |b| a + b
+inspect(add(2)(3))
+EOF
+"$CULEBRA" fmt "$TMP/lam_in.cul" > "$TMP/lam_got.cul" 2>"$TMP/lam_err"
+if ! diff -u "$TMP/lam_want.cul" "$TMP/lam_got.cul" > "$TMP/lam_diff" 2>&1; then
+  echo "FAIL golden (lambda): formatted output differs from expected"
+  cat "$TMP/lam_diff"
+  cat "$TMP/lam_err"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are
