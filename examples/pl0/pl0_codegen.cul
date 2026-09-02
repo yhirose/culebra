@@ -94,9 +94,9 @@ fn cmp_name(tok) {
 # module-level `mut` globals -- a second `Binder.new()` in the same process
 # starts from nothing rather than inheriting another compile's leftovers.
 class Binder {
-  blocks = []         # {parent, name, consts, var_slot, var_names, procs, children, body}
+  blocks = []                  # {parent, name, consts, var_slot, var_names, procs, children, body}
   frames = front.Frames.new()  # blocks and Frames share indices: collect registers both
-  ir = nil            # the Emitter, once build has the Module
+  ir = nil                     # the Emitter, once build has the Module
 
   # --- Phase 1: collect declarations -----------------------------------------
   #

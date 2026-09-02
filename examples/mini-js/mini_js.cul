@@ -2524,24 +2524,27 @@ fn synth(name, nodes, at) {
   }
 }
 
-mut funcs = []          # {parent, name, params, stmts, body_expr, is_prelude, is_arrow, ...}
-let frames = front.Frames.new()  # per func: what it captures, which slots are cells
-mut ir = nil            # the Emitter over the program being compiled
-mut nslots = []         # per func: named local slots
-mut scope_stack = []    # per func: [{map: {name: slot}, slots: [slot...]}]
-mut closure_of = {}     # pkey of a function node -> func index
-mut resolved = {}       # pkey of an ident -> {kind: 'var', owner, slot} | {kind: 'global', name}
-mut block_slots = {}    # pkey of a block -> the slots it declares
-mut prelude_named = {}  # prelude fn name -> func index
-mut prelude_bound = {}  # prelude top-level binding name -> its key on __G
-mut prelude_inits = []  # [{key, init}], in prelude order
-mut prelude_end = 0     # funcs.size() once the prelude is bound
-mut prelude_nslots = [] # nslots for funcs[0..prelude_end) as pass A left them
-mut g_slot = 0          # main's slot holding __G
-mut this_slot = 0       # main's `this`
-mut loop_ctx = []       # per func (emit time): [{step: fn(m) -> [ids]}...]
-mut classes = {}        # pkey of a class node -> {home, derived, name, ctor, fields, members}
-mut for_close = {}      # pkey of a for-of -> {func: the closer, slot: its iterator binding}
+mut funcs = []           # {parent, name, params, stmts, body_expr, is_prelude, is_arrow, ...}
+mut nslots = []          # per func: named local slots
+mut scope_stack = []     # per func: [{map: {name: slot}, slots: [slot...]}]
+mut closure_of = {}      # pkey of a function node -> func index
+mut resolved = {}        # pkey of an ident -> {kind: 'var', owner, slot} | {kind: 'global', name}
+mut block_slots = {}     # pkey of a block -> the slots it declares
+mut prelude_named = {}   # prelude fn name -> func index
+mut prelude_bound = {}   # prelude top-level binding name -> its key on __G
+mut prelude_inits = []   # [{key, init}], in prelude order
+mut prelude_end = 0      # funcs.size() once the prelude is bound
+mut prelude_nslots = []  # nslots for funcs[0..prelude_end) as pass A left them
+mut g_slot = 0           # main's slot holding __G
+mut this_slot = 0        # main's `this`
+mut loop_ctx = []        # per func (emit time): [{step: fn(m) -> [ids]}...]
+mut classes = {}         # pkey of a class node -> {home, derived, name, ctor, fields, members}
+mut for_close = {}       # pkey of a for-of -> {func: the closer, slot: its iterator binding}
+
+# per func, what it captures and which of its slots are cells (front.cul);
+# the Emitter is over the program being compiled
+let frames = front.Frames.new()
+mut ir = nil
 
 # Prelude names that are VM intrinsics, with their arities.
 let intrinsics = {
@@ -3803,56 +3806,29 @@ fn emit_chain(m, node, f) {
 # the test says so
 fn emit_shortcircuit(m, node, f) {
   let n = node.name
-  mut acc = emit_expr(m, node.nodes[0], f)
-  mut i = 1
-  while i + 1 < node.nodes.size() {
-    let op = node.nodes[i]
-    let ln = op.line
-    let cl = op.column
+  let [head, ...pairs] = node.nodes
+  mut acc = emit_expr(m, head, f)
+  for [op, rn] in pairs.iter().chunks(2) {
     let tmp = new_scratch(f)
-    let store = m.assign(
-      kind: 'local',
-      index: tmp,
-      value: acc,
-      line: ln,
-      col: cl,
-    )
-    let rhs = emit_expr(m, node.nodes[i + 1], f)
+    let t = fn () {
+      ir.local(tmp, op)
+    }
+    let store = ir.store_local(tmp, acc, op)
+    let rhs = emit_expr(m, rn, f)
     let test = cond {
       n == 'nullish' => cond {
-        in_prelude => m.binary(
-          op: 'eq',
-          lhs: scratch_ref(m, tmp, ln, cl),
-          rhs: nil_l(m, ln, cl),
-          line: ln,
-          col: cl,
-        ),
-        _ => call_pre(
-          m,
-          f,
-          '__isnullish',
-          [scratch_ref(m, tmp, ln, cl)],
-          ln,
-          cl,
-        ),
+        in_prelude => ir.binary('eq', t(), ir.nil_literal(op), op),
+        _ => call_pre(m, f, '__isnullish', [t()], op.line, op.column),
       },
-      _ => emit_test(m, f, scratch_ref(m, tmp, ln, cl), ln, cl),
+      _ => emit_test(m, f, t(), op.line, op.column),
     }
     # `||` answers the left operand when the test passes; `&&` and `??`
     # answer the right one
     let (then_b, else_b) = cond {
-      n == 'lor' => (scratch_ref(m, tmp, ln, cl), rhs),
-      _ => (rhs, scratch_ref(m, tmp, ln, cl)),
+      n == 'lor' => (t(), rhs),
+      _ => (rhs, t()),
     }
-    let pick = m.make_if_else(
-      cond: test,
-      then_branch: then_b,
-      else_branch: else_b,
-      line: ln,
-      col: cl,
-    )
-    acc = m.block(stmts_list: ir.list([store, pick]), line: ln, col: cl)
-    i = i + 2
+    acc = ir.seq([store], ir.make_if_else(test, then_b, else_b, op), op)
   }
   acc
 }
@@ -5357,11 +5333,7 @@ fn emit_decl(m, node, f) {
   cond {
     ids.size() == 0 => nil,
     ids.size() == 1 => ids[0],
-    _ => m.block(
-      stmts_list: ir.list(ids),
-      line: node.line,
-      col: node.column,
-    ),
+    _ => m.block(stmts_list: ir.list(ids), line: node.line, col: node.column),
   }
 }
 

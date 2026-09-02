@@ -44,7 +44,9 @@ class Frames {
     self.free.size() - 1
   }
 
-  size() { self.free.size() }
+  size() {
+    self.free.size()
+  }
 
   # For a front end that binds a runtime once and then compiles program
   # after program against it: drop the functions from `n` on, and start one
@@ -74,7 +76,9 @@ class Frames {
     }
   }
 
-  note_call(f, g) { self.calls[f].push(g) }
+  note_call(f, g) {
+    self.calls[f].push(g)
+  }
 
   # Everything `src` needs from further out, `dst` must supply. Answers
   # whether that added anything.
@@ -151,13 +155,23 @@ class Frames {
     m.add_capture_map(cmap)
   }
 
-  num_captures(f) { self.free[f].size() }
-  num_cells(f) { self.cell_index[f].size() }
-  in_cell(f, slot) { self.cell_index[f].has(slot) }
-  cell_of(f, slot) { self.cell_index[f][slot] }
+  num_captures(f) {
+    self.free[f].size()
+  }
+  num_cells(f) {
+    self.cell_index[f].size()
+  }
+  in_cell(f, slot) {
+    self.cell_index[f].has(slot)
+  }
+  cell_of(f, slot) {
+    self.cell_index[f][slot]
+  }
 
   # (owner, slot) of every variable `f` captures, in capture-index order
-  captures(f) { self.free[f].values() }
+  captures(f) {
+    self.free[f].values()
+  }
 }
 
 # --- Emitter: the IR shapes every lowering builds -------------------------
@@ -171,7 +185,9 @@ class Frames {
 let ORIGIN = {line: 1, column: 1}
 
 # a position for a caller that holds the numbers rather than the node
-fn pos(line, column) { {line: line, column: column} }
+fn pos(line, column) {
+  {line: line, column: column}
+}
 
 class Emitter {
   new(m, frames) {
@@ -179,15 +195,21 @@ class Emitter {
     self.frames = frames
   }
 
-  literal(v, at) { self.m.literal(v: v, line: at.line, col: at.column) }
+  literal(v, at) {
+    self.m.literal(v: v, line: at.line, col: at.column)
+  }
   bool_literal(v, at) {
     self.m.bool_literal(v: v, line: at.line, col: at.column)
   }
   double_literal(v, at) {
     self.m.double_literal(v: v, line: at.line, col: at.column)
   }
-  str_literal(s, at) { self.m.str_literal(s: s, line: at.line, col: at.column) }
-  nil_literal(at) { self.m.nil_literal(line: at.line, col: at.column) }
+  str_literal(s, at) {
+    self.m.str_literal(s: s, line: at.line, col: at.column)
+  }
+  nil_literal(at) {
+    self.m.nil_literal(line: at.line, col: at.column)
+  }
 
   unary(op, operand, at) {
     self.m.unary(op: op, operand: operand, line: at.line, col: at.column)
@@ -291,7 +313,9 @@ class Emitter {
       at,
     )
   }
-  land(a, b, at) { self.make_if_else(a, b, self.bool_literal(false, at), at) }
+  land(a, b, at) {
+    self.make_if_else(a, b, self.bool_literal(false, at), at)
+  }
 
   # a closure of `g` built in `f`'s frame, and a call of one
   closure(f, g, at) {
@@ -302,7 +326,9 @@ class Emitter {
       col: at.column,
     )
   }
-  call(f, g, args, at) { self.call_value(self.closure(f, g, at), args, at) }
+  call(f, g, args, at) {
+    self.call_value(self.closure(f, g, at), args, at)
+  }
 
   # the capture and cell counts are Frames' to answer
   add_func(name, f, num_locals, num_params, body) {
