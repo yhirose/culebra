@@ -1,8 +1,8 @@
 # Parsing with PEG
 
 A guide to the `Peg` namespace: reaching for a grammar where a regex runs
-out, designing a small language of your own, and writing an interpreter
-for one. Every code block here runs — they are executed as doctests on
+out, and going from there to a language of your own with an interpreter
+to run it. Every code block here runs — they are executed as doctests on
 both engines.
 
 The API reference is [`stdlib.md` §34](../stdlib.md#34-peg). This guide is
@@ -34,164 +34,151 @@ properties do most of that work:
 The engine is [cpp-peglib](https://github.com/yhirose/cpp-peglib), the same
 parser culebra's own front end runs on.
 
-## 1. Search and replace a regex cannot do
+## 1. Extracting from lines, where a regex cannot reach
 
-These are the jobs where a regex either fails outright or turns into
-something nobody wants to maintain. The shape of the solution is the same
-each time: describe the *whole* text with a grammar — including the parts
-you do not care about — and then walk the pieces.
+The everyday shape of a text job is a loop over lines: match a pattern in
+each one, pull out its parts. A regex is the right tool for that right up
+until the pattern *nests* — and then it is not merely awkward, it is
+outside what a regular language can express. Three examples, each a job
+you have probably done with a regex, each with one recursive rule in it.
 
-### 1.1 Change a name, but not inside strings and comments
+### 1.1 A log line with a structured payload
 
-The classic rename. A regex has no way to know whether a match sits inside
-a string literal, so `s/total/sum/g` corrupts data and comments. The
-grammar knows, because strings and comments are rules of their own and the
-ordered choice tries them first:
+Timestamp, level, message: standard regex work. The payload after `ctx=`
+is not, because objects and arrays nest inside it.
 
 ```culebra
 let g = `
-  Doc     <- Chunk*                        { no_ast_opt }
-  Chunk   <- Str / Comment / Ident / Other
-  Str     <- < '"' ( '\\' . / !'"' . )* '"' >
-  Comment <- < '#' (!'\n' .)* >
-  Ident   <- < [a-zA-Z_] [a-zA-Z0-9_]* >
-  Other   <- < . >
+  Line  <- Time Level Msg 'ctx=' Obj
+  Time  <- < [0-9:T-]+ >
+  Level <- < [A-Z]+ >
+  Msg   <- < [a-z_]+ >
+  Obj   <- '{' Pair (',' Pair)* '}'    { no_ast_opt }
+  Pair  <- Key ':' Value
+  Key   <- < [a-z_]+ >
+  Value <- Obj / Arr / Word
+  Arr   <- '[' Value (',' Value)* ']'  { no_ast_opt }
+  Word  <- < [^ ,}\]]+ >
+  %whitespace <- [ ]*
 `
-fn rename(src, from, to) {
-  mut out = ''
-  for n in Peg.parse(g, src).nodes {
-    out = out + (n.name == 'Ident' && n.token == from ? to : n.token)
+let p = Peg.compile(g)
+
+fn depth(n) {
+  match n {
+    {name: 'Obj', nodes} => 1 + nodes.map(|kv| depth(kv.nodes[1])).max(),
+    {name: 'Arr', nodes} => 1 + nodes.map(depth).max(),
+    _ => 0,
   }
-  out
 }
-let src = 'total = total + 1  # total, in a comment
-label = "total, in a string"'
-println(rename(src, 'total', 'sum'))
+
+let log = '2026-09-01T10:00:02 WARN retry ctx={user: {id: 7, tags: [a, b]}, path: /x}
+2026-09-01T10:00:05 INFO ok ctx={path: /y}'
+for line in log.lines() {
+  let n = p.parse(line)
+  let ctx = n.nodes[3]
+  let keys = ctx.nodes.map(|kv| kv.nodes[0].token)
+  println("{n.nodes[1].token} {n.nodes[2].token} keys={keys} depth={depth(ctx)}")
+}
 # => |
-# sum = sum + 1  # total, in a comment
-# label = "total, in a string"
+# WARN retry keys=['user', 'path'] depth=3
+# INFO ok keys=['path'] depth=1
 ```
 
-`Other <- < . >` is the rule that makes this work: every byte of the
-subject belongs to some chunk, so re-joining the tokens reproduces the
-input exactly except where you change it. A grammar that only described
-the interesting parts would need a separate mechanism to carry the gaps.
+A regex loses this in two separate ways, and it is worth being precise
+about both.
 
-### 1.2 Nesting — the thing a regex cannot count
+It cannot find where the value **ends**. `ctx=\{(.*)\}` is greedy and runs
+to the last `}` on the line; `ctx=\{(.*?)\}` is lazy and stops at the
+first one, which on line 1 is the `}` closing `{id: 7, tags: [a, b]}` —
+so the captured payload is cut in half.
 
-Block comments that nest are the standard counterexample to regular
-expressions. `/\*.*?\*/` stops at the first `*/`, and `/\*.*\*/` swallows
-everything to the last one; neither is right, and no amount of cleverness
-fixes it, because counting is outside what a regular language can do. A
-rule that mentions itself has no such limit:
+And it cannot tell **which level** a key is on. "List the top-level keys"
+has no regex formulation at all: `id` and `tags` look exactly like `user`
+and `path` to a pattern with no notion of depth. The grammar has that
+notion for free, which is also why `depth` can be six lines.
+
+### 1.2 A type signature
+
+Reading a symbol list or a compiler diagnostic and pulling out the outer
+type and its arguments. The single hardest thing to do to a nested type
+with a regex is the thing you always want: split the arguments at the
+top-level commas.
 
 ```culebra
 let g = `
-  Doc     <- Piece*                { no_ast_opt }
-  Piece   <- Comment / Text
-  Comment <- '/*' ( Comment / !'*/' . )* '*/'
-  Text    <- < ( !'/*' . )+ >
+  Type <- Name ('<' Args '>')?  { no_ast_opt }
+  Name <- < [A-Za-z_] [A-Za-z0-9_]* >
+  Args <- Type (',' Type)*      { no_ast_opt }
+  %whitespace <- [ ]*
 `
-fn strip(src) {
-  mut out = ''
-  for n in Peg.parse(g, src).nodes {
-    if n.name == 'Text' {
-      out = out + n.token
+let p = Peg.compile(g)
+let lines = 'Map<String, List<Pair<Int, String>>>
+Result<Vec<u8>, Error>
+i32'
+for src in lines.lines() {
+  let n = p.parse(src)
+  let args = n.nodes.size() > 1 ? n.nodes[1].nodes : []
+  let texts = args.map(|a| src.slice(a.position, a.position + a.length))
+  println("{n.nodes[0].token} <- {texts}")
+}
+# => |
+# Map <- ['String', 'List<Pair<Int, String>>']
+# Result <- ['Vec<u8>', 'Error']
+# i32 <- []
+```
+
+Take `<(.+)>` and split the capture on `,` and the first line comes apart
+as `String`, `List<Pair<Int`, `String>>`. Every deeper comma is a comma to
+a regex. `Type` referring to itself through `Args` is the entire fix, and
+the grammar is four lines.
+
+Note the last line: `i32` has no arguments at all, and the same grammar
+handles it because the `<...>` group is optional. Handling "and sometimes
+the pattern is absent" is where a regex sprouts its second alternative and
+its third capture group.
+
+### 1.3 A Markdown link
+
+Scanning prose for links and pulling out the text and the URL. The
+familiar `\[([^\]]*)\]\(([^)]*)\)` works until a link text contains
+brackets or a URL contains parentheses — and Wikipedia URLs contain
+parentheses constantly.
+
+```culebra
+let g = `
+  Doc   <- (Link / Other)*        { no_ast_opt }
+  Link  <- '[' Text ']' '(' Url ')'
+  Text  <- < Inner* >
+  Inner <- '[' Inner* ']' / !']' .
+  Url   <- < Part* >
+  Part  <- '(' Part* ')' / !')' .
+  Other <- < . >
+`
+let p = Peg.compile(g)
+let lines = 'See [the [inner] guide](https://x/a(b).md) now.
+Also [plain](https://y/z) and [a] alone.'
+for line in lines.lines() {
+  for n in p.parse(line).nodes {
+    if n.name == 'Link' {
+      println("text={n.nodes[0].token}  url={n.nodes[1].token}")
     }
   }
-  out
 }
-println(strip('a /* one /* nested */ still a comment */ b'))  # => a  b
+# => |
+# text=the [inner] guide  url=https://x/a(b).md
+# text=plain  url=https://y/z
 ```
 
-`Comment <- '/*' ( Comment / !'*/' . )* '*/'` reads as the definition
-does: an opener, then any number of *either* a whole nested comment or a
-character that does not begin the closer, then the closer.
+`[^\]]*` stops at the first `]`, so the first link comes out as
+`the [inner` with a URL of nothing; `[^)]*` truncates the URL at `a(b`.
+Both are the same mistake — a character class cannot count — and both are
+fixed by one self-referring rule.
 
-### 1.3 Escapes
-
-The other place regexes get fragile. `"([^"]*)"` breaks on `"a\"b"`, and
-the fixed version is write-only. As a grammar it is two alternatives in the
-order you would say them out loud — a backslash takes whatever follows it,
-otherwise take any character that is not the closing quote:
-
-```culebra
-let g = `
-  Str  <- '"' < Char* > '"'
-  Char <- '\\' . / !'"' .
-`
-println(Peg.compile(g).parse('"a\"b\\c"').token)  # => a\"b\\c
-```
-
-The order of those two alternatives is the whole trick. Swap them and
-`!'"' .` consumes the backslash on its own, the next character is read as
-ordinary, and an escaped quote ends the string early. This is Hubert's
-point about ordered choice being semantic rather than a formality.
-
-### 1.4 Composing rules: balanced parentheses that know about strings
-
-Here is what "rules compose" buys you. Pulling the argument list out of a
-call needs balanced parentheses — already impossible for a regex — and
-real input has parentheses inside string literals that must not count.
-Adding that is one alternative in one rule:
-
-```culebra
-let g = `
-  Call     <- Name '(' Args ')'
-  Name     <- < [a-zA-Z_] [a-zA-Z0-9_]* >
-  Args     <- < Balanced >
-  Balanced <- ( Str / '(' Balanced ')' / !')' . )*
-  Str      <- '"' ( '\\' . / !'"' . )* '"'
-`
-let node = Peg.compile(g).parse('f(g(1, h(2)), "x)y")')
-println(node.nodes[0].token)  # => f
-println(node.nodes[1].token)  # => g(1, h(2)), "x)y"
-```
-
-The `)` inside `"x)y"` did not close anything, because `Str` is tried
-first and consumes the whole literal in one step.
-
-### 1.5 A structural rewrite
-
-Put those together and you can do refactors that are not text substitution
-at all. This one turns `f(a, b)` into `a.f(b)` — the arguments may be
-nested calls, and may contain commas and parentheses inside strings:
-
-```culebra
-let g = `
-  Doc    <- Piece*                          { no_ast_opt }
-  Piece  <- Call / Str / Other
-  Call   <- Name '(' Arg (',' Arg)* ')'
-  Name   <- < [a-zA-Z_] [a-zA-Z0-9_]* >
-  Arg    <- < ( Str / '(' Nested ')' / [^,()] )+ >
-  Nested <- ( Str / '(' Nested ')' / [^()] )*
-  Str    <- < '"' ( '\\' . / !'"' . )* '"' >
-  Other  <- < . >
-`
-fn to_ufcs(src) {
-  mut out = ''
-  for n in Peg.parse(g, src).nodes {
-    match n {
-      {name: 'Call', nodes} => {
-        let args = nodes.slice(1, nodes.size()).map(|x| x.token.trim())
-        let rest = args.slice(1, args.size()).join(', ')
-        out = out + "{args[0]}.{nodes[0].token}({rest})"
-      },
-      _ => out = out + n.token,
-    }
-  }
-  out
-}
-println(to_ufcs('log(fmt("a,b", x), 2) and keep("f(1, 2)")'))
-# => fmt("a,b", x).log(2) and "f(1, 2)".keep()
-```
-
-Note what was *not* rewritten: the `f(1, 2)` inside the string. Try
-expressing that condition in a regex.
-
-When you would rather edit the original text than rebuild it, every node
-carries `position` and `length`, so `src.slice(n.position, n.position +
-n.length)` is that node's exact source and you can splice around it.
+This example also shows the other half of line work: `Other <- < . >`
+means the grammar describes the *whole* line, not just the interesting
+part, so a line can hold any number of links and any amount of prose
+between them. `[a]` on the second line is not a link and is simply not
+reported.
 
 ## 2. Arithmetic: precedence, and two ways to evaluate
 
@@ -288,98 +275,7 @@ Use the tree when you want to inspect, transform, or walk the input more
 than once; use actions when the parse *is* the computation and the tree
 would only be built to be thrown away.
 
-## 3. Designing a small DSL
-
-A DSL earns its keep when the alternative is a configuration format that
-grows conditionals. Here is a filter language — the kind of thing behind a
-search box — over a list of records.
-
-Design it by writing the sentences you want first:
-
-    status = open and priority >= 2
-    priority = 1 or status = open
-
-then read the precedence off them: `or` binds loosest, then `and`, then a
-single comparison. That is the same ladder as the arithmetic above.
-
-```culebra
-let grammar = `
-  Query  <- Or
-  Or     <- And ('or' And)*
-  And    <- Cmp ('and' Cmp)*
-  Cmp    <- Field Op Value
-  Field  <- < [a-z_]+ >
-  Op     <- < '>=' / '<=' / '!=' / '=' / '>' / '<' >
-  Value  <- Number / Word
-  Number <- < '-'? [0-9]+ >
-  Word   <- < [a-zA-Z_] [a-zA-Z0-9_]* >
-  %whitespace <- [ \t]*
-`
-let q = Peg.compile(grammar)
-
-fn compare(op, a, b) {
-  match op {
-    '=' => a == b,
-    '!=' => a != b,
-    '<' => a < b,
-    '<=' => a <= b,
-    '>' => a > b,
-    _ => a >= b,
-  }
-}
-fn eval(n, row) {
-  match n {
-    {name: 'Or', nodes} => nodes.any(|c| eval(c, row)),
-    {name: 'And', nodes} => nodes.all(|c| eval(c, row)),
-    {name: 'Cmp', nodes: [f, op, v]} => {
-      if !row.has(f.token) {
-        throw "no field named '{f.token}'"
-      }
-      compare(op.token, row[f.token], v.name == 'Number' ? to_long(v.token) : v.token)
-    },
-  }
-}
-
-let rows = [
-  {title: 'write guide', status: 'open', priority: 3},
-  {title: 'fix build', status: 'done', priority: 1},
-  {title: 'read paper', status: 'open', priority: 1},
-]
-fn select(rows, text) {
-  let tree = q.parse(text, 'filter')
-  rows.filter(|r| eval(tree, r)).map(|r| r.title)
-}
-inspect(select(rows, 'status = open and priority >= 2'))  # => ['write guide']
-inspect(select(rows, 'priority = 1 or status = open'))
-# => ['write guide', 'fix build', 'read paper']
-```
-
-Two things worth copying from this grammar.
-
-**The operator order is load-bearing.** `Op <- < '>=' / '<=' / '!=' / '='
-/ '>' / '<' >` lists the two-character operators first. Ordered choice
-takes the first alternative that matches, so with `'>'` ahead of `'>='`
-the input `>=` matches `>` and the parse then fails on a stray `=`. The
-rule of thumb: **longer literals before their own prefixes**.
-
-**Name the subject when you parse it.** `q.parse(text, 'filter')` puts
-that name in the error, so a user's typo comes back as a diagnostic
-rather than a bare offset:
-
-```culebra
-let q = Peg.compile(`
-  Query  <- Cmp
-  Cmp    <- Field Op Value
-  Field  <- < [a-z_]+ >
-  Op     <- < '>=' / '<=' / '!=' / '=' / '>' / '<' >
-  Value  <- < [a-zA-Z0-9_]+ >
-  %whitespace <- [ \t]*
-`)
-inspect(try { q.parse('status =', 'filter') } catch e { e.message })
-# => 'filter:1:9: syntax error, expecting <Value>.'
-```
-
-## 4. A small language
+## 3. A small language
 
 Everything above scales to a real interpreter without changing method. The
 language below has integer variables, arithmetic, comparison, `if`/`else`,
@@ -597,7 +493,7 @@ Extending it is mostly grammar. Strings are a `Str` rule and a case in
 `eval`; `else if` chains fall out of making `Else <- 'else' (If / Block)`;
 first-class functions need `call` to take a value instead of a name.
 
-## 5. Pitfalls
+## 4. Pitfalls
 
 **Left recursion is not allowed.** `Expr <- Expr '+' Term` never
 terminates, because the parser tries `Expr` again before consuming

@@ -1,8 +1,8 @@
 # PEGで解析する
 
 `Peg`名前空間の使い方を、順を追って紹介します。正規表現では手が届かない
-ところで文法を書く方法、自分用の小さな言語を設計する方法、そしてその
-インタプリタを書く方法までを扱います。
+ところで文法を書くところから始めて、最後は自分用の小さな言語と、それを
+動かすインタプリタまで作ります。
 
 このガイドに出てくるコードブロックは、すべて実際に動きます。doctestとして
 両方のエンジンで実行されているので、書きっぱなしのものは1つもありません。
@@ -40,181 +40,157 @@ PEGはその中間にあります。小さな仕事なら正規表現と同じ�
 エンジンには[cpp-peglib](https://github.com/yhirose/cpp-peglib)を使って
 います。culebra自身のフロントエンドが載っているのと同じパーサです。
 
-## 1. 正規表現にはできない検索と置換
+## 1. 行から取り出す — 正規表現の手が届かないところ
 
-まずは、正規表現ではそもそも解けないか、解けたとしても誰も保守したく
-ない形になってしまう仕事から見ていきます。
+テキストを扱う仕事のいちばんよくある形は、行のループです。1行ずつ
+パターンに当てて、その中身を取り出していきます。正規表現はまさにその
+ための道具なのですが、パターンが**入れ子になった**とたんに、話が変わり
+ます。書きにくくなるのではなく、正規言語で表せる範囲の外に出てしまう
+のです。
 
-解き方の形は、実はどれも同じです。**関心のない部分も含めてテキスト全体を
-文法で書き**、そのあとで断片を順に見ていきます。ここを押さえておくと、
-以下の5つが全部同じ話に見えてくるはずです。
+ここでは3つ例を挙げます。どれも正規表現で一度はやったことのある仕事で、
+どれも再帰する規則が1つだけ入っています。
 
-### 1.1 文字列とコメントの中は避けて名前を変える
+### 1.1 構造化ペイロードを持つログ行
 
-いちばんよくある置換から始めましょう。正規表現には、見つけた一致が
-文字列リテラルの中にあるのかどうかを知る手段がありません。ですから
-`s/total/sum/g`は、データもコメントも一緒に壊してしまいます。
-
-一方、文法のほうは知っています。文字列とコメントがそれぞれ独立した規則に
-なっていて、順序付き選択がそれを先に試すからです。
+時刻、レベル、メッセージ。ここまでは正規表現の得意分野です。ですが
+`ctx=`のあとの値は違います。オブジェクトと配列が入れ子になっているから
+です。
 
 ```culebra
 let g = `
-  Doc     <- Chunk*                        { no_ast_opt }
-  Chunk   <- Str / Comment / Ident / Other
-  Str     <- < '"' ( '\\' . / !'"' . )* '"' >
-  Comment <- < '#' (!'\n' .)* >
-  Ident   <- < [a-zA-Z_] [a-zA-Z0-9_]* >
-  Other   <- < . >
+  Line  <- Time Level Msg 'ctx=' Obj
+  Time  <- < [0-9:T-]+ >
+  Level <- < [A-Z]+ >
+  Msg   <- < [a-z_]+ >
+  Obj   <- '{' Pair (',' Pair)* '}'    { no_ast_opt }
+  Pair  <- Key ':' Value
+  Key   <- < [a-z_]+ >
+  Value <- Obj / Arr / Word
+  Arr   <- '[' Value (',' Value)* ']'  { no_ast_opt }
+  Word  <- < [^ ,}\]]+ >
+  %whitespace <- [ ]*
 `
-fn rename(src, from, to) {
-  mut out = ''
-  for n in Peg.parse(g, src).nodes {
-    out = out + (n.name == 'Ident' && n.token == from ? to : n.token)
+let p = Peg.compile(g)
+
+fn depth(n) {
+  match n {
+    {name: 'Obj', nodes} => 1 + nodes.map(|kv| depth(kv.nodes[1])).max(),
+    {name: 'Arr', nodes} => 1 + nodes.map(depth).max(),
+    _ => 0,
   }
-  out
 }
-let src = 'total = total + 1  # total, コメントの中
-label = "total, 文字列の中"'
-println(rename(src, 'total', 'sum'))
+
+let log = '2026-09-01T10:00:02 WARN retry ctx={user: {id: 7, tags: [a, b]}, path: /x}
+2026-09-01T10:00:05 INFO ok ctx={path: /y}'
+for line in log.lines() {
+  let n = p.parse(line)
+  let ctx = n.nodes[3]
+  let keys = ctx.nodes.map(|kv| kv.nodes[0].token)
+  println("{n.nodes[1].token} {n.nodes[2].token} keys={keys} depth={depth(ctx)}")
+}
 # => |
-# sum = sum + 1  # total, コメントの中
-# label = "total, 文字列の中"
+# WARN retry keys=['user', 'path'] depth=3
+# INFO ok keys=['path'] depth=1
 ```
 
-これを成り立たせている立役者は、地味ですが`Other <- < . >`です。この規則が
-あるおかげで、入力のすべてのバイトがどれかの断片に属します。だから
-トークンを繋ぎ直すと、変えたところ以外は入力がそのまま戻ってきます。
-関心のある部分だけを書いた文法だと、残りの隙間を運ぶ仕組みを別に用意する
-ことになってしまいます。
+正規表現がここで負ける負け方は2つあります。どちらも押さえておく価値が
+あります。
 
-### 1.2 入れ子 — 正規表現には数えられません
+1つめは、**値がどこで終わるのかを決められない**ことです。
+`ctx=\{(.*)\}`は貪欲なので、その行の最後の`}`まで走ってしまいます。
+`ctx=\{(.*?)\}`は控えめなので、最初の`}`で止まります。1行目でそれに
+あたるのは`{id: 7, tags: [a, b]}`を閉じている`}`なので、取り出した
+ペイロードは途中で切れてしまいます。
 
-入れ子になるブロックコメントは、正規表現の限界を示す定番の例です。
-`/\*.*?\*/`は最初の`*/`で止まってしまいますし、`/\*.*\*/`は最後の`*/`まで
-飲み込んでしまいます。どちらも正しくありませんし、工夫を重ねても直り
-ません。数を数えることが、そもそも正規言語の外側にあるからです。
+2つめは、**そのキーがどの階層にあるのかを区別できない**ことです。
+「トップレベルのキーだけ並べる」は、正規表現では書きようがありません。
+深さという概念を持たないパターンにとって、`id`と`tags`は`user`や`path`と
+まったく同じに見えるからです。文法のほうは、その概念を最初から持って
+います。`depth`が6行で書けているのも同じ理由です。
 
-自分自身を参照できる規則には、その制限がありません。
+### 1.2 型シグネチャ
+
+シンボル一覧やコンパイラの診断を読んで、外側の型名とその型引数を取り
+出す仕事です。入れ子になった型に対して正規表現でやりたくなることの
+うち、いちばん難しいのが、いちばんやりたいことでもあります。トップ
+レベルのカンマで引数を分けることです。
 
 ```culebra
 let g = `
-  Doc     <- Piece*                { no_ast_opt }
-  Piece   <- Comment / Text
-  Comment <- '/*' ( Comment / !'*/' . )* '*/'
-  Text    <- < ( !'/*' . )+ >
+  Type <- Name ('<' Args '>')?  { no_ast_opt }
+  Name <- < [A-Za-z_] [A-Za-z0-9_]* >
+  Args <- Type (',' Type)*      { no_ast_opt }
+  %whitespace <- [ ]*
 `
-fn strip(src) {
-  mut out = ''
-  for n in Peg.parse(g, src).nodes {
-    if n.name == 'Text' {
-      out = out + n.token
+let p = Peg.compile(g)
+let lines = 'Map<String, List<Pair<Int, String>>>
+Result<Vec<u8>, Error>
+i32'
+for src in lines.lines() {
+  let n = p.parse(src)
+  let args = n.nodes.size() > 1 ? n.nodes[1].nodes : []
+  let texts = args.map(|a| src.slice(a.position, a.position + a.length))
+  println("{n.nodes[0].token} <- {texts}")
+}
+# => |
+# Map <- ['String', 'List<Pair<Int, String>>']
+# Result <- ['Vec<u8>', 'Error']
+# i32 <- []
+```
+
+`<(.+)>`で中身を取って`,`で分割すると、1行目は`String`、
+`List<Pair<Int`、`String>>`の3つに割れてしまいます。正規表現にとっては、
+どの深さのカンマも同じカンマだからです。`Type`が`Args`を通して自分自身を
+参照している、それだけで直ります。文法は4行です。
+
+最後の行にも注目してください。`i32`には型引数がありませんが、同じ文法が
+そのまま扱えています。`<...>`のまとまりを省略可能にしてあるからです。
+「そのパターンが無いこともある」への対応は、正規表現なら2つ目の選択肢と
+3つ目のキャプチャグループが生えはじめるところです。
+
+### 1.3 Markdownのリンク
+
+文章の中からリンクを拾って、テキストとURLを取り出す仕事です。おなじみの
+`\[([^\]]*)\]\(([^)]*)\)`は、リンクテキストに角括弧が入るか、URLに丸括弧が
+入るまでは動きます。そしてWikipediaのURLには、丸括弧がしょっちゅう
+入っています。
+
+```culebra
+let g = `
+  Doc   <- (Link / Other)*        { no_ast_opt }
+  Link  <- '[' Text ']' '(' Url ')'
+  Text  <- < Inner* >
+  Inner <- '[' Inner* ']' / !']' .
+  Url   <- < Part* >
+  Part  <- '(' Part* ')' / !')' .
+  Other <- < . >
+`
+let p = Peg.compile(g)
+let lines = 'See [the [inner] guide](https://x/a(b).md) now.
+Also [plain](https://y/z) and [a] alone.'
+for line in lines.lines() {
+  for n in p.parse(line).nodes {
+    if n.name == 'Link' {
+      println("text={n.nodes[0].token}  url={n.nodes[1].token}")
     }
   }
-  out
 }
-println(strip('a /* one /* nested */ still a comment */ b'))  # => a  b
+# => |
+# text=the [inner] guide  url=https://x/a(b).md
+# text=plain  url=https://y/z
 ```
 
-`Comment <- '/*' ( Comment / !'*/' . )* '*/'`という行は、定義をそのまま
-読み下せます。開き記号があって、そのあとに「入れ子のコメント1つ」か
-「閉じ記号を始めない文字」のどちらかが好きなだけ続いて、最後に閉じ記号、
-というだけです。
+`[^\]]*`は最初の`]`で止まるので、1つめのリンクはテキストが`the [inner`に
+なり、URLは空になってしまいます。`[^)]*`のほうもURLを`a(b`で切って
+しまいます。どちらも同じ間違いです。文字クラスは数を数えられません。
+そしてどちらも、自分自身を参照する規則1つで直ります。
 
-### 1.3 エスケープ
-
-正規表現が脆くなる、もう1つの場所です。`"([^"]*)"`は`"a\"b"`で壊れます。
-直した版は、書けたとしても読み返せないものになりがちです。
-
-文法にすると、口で説明するときと同じ順序で並んだ2つの選択肢になります。
-バックスラッシュなら次の1文字を連れていく、そうでなければ閉じ引用符でない
-任意の文字を取る、というだけです。
-
-```culebra
-let g = `
-  Str  <- '"' < Char* > '"'
-  Char <- '\\' . / !'"' .
-`
-println(Peg.compile(g).parse('"a\"b\\c"').token)  # => a\"b\\c
-```
-
-ここでは、この2つの並び順が肝心です。逆にすると`!'"' .`のほうが単独で
-バックスラッシュを消費してしまい、次の文字が普通の文字として読まれて、
-エスケープしたはずの引用符で文字列が途中で終わってしまいます。Hubertが
-「順序付き選択は形式ではなく意味を持つ」と書いているのは、まさにこういう
-ことです。
-
-### 1.4 規則を組み合わせる — 文字列を知っている括弧の釣り合い
-
-「規則どうしを組み合わせられる」ことが何を買ってくれるのか、という例を
-見てみましょう。
-
-呼び出しから引数リストを取り出すには、括弧の釣り合いを取る必要があります。
-この時点で正規表現には無理なのですが、さらに実際の入力には、文字列
-リテラルの中の括弧が出てきます。そちらは数に入れてはいけません。
-
-この追加は、1つの規則に選択肢を1つ足すだけで済みます。
-
-```culebra
-let g = `
-  Call     <- Name '(' Args ')'
-  Name     <- < [a-zA-Z_] [a-zA-Z0-9_]* >
-  Args     <- < Balanced >
-  Balanced <- ( Str / '(' Balanced ')' / !')' . )*
-  Str      <- '"' ( '\\' . / !'"' . )* '"'
-`
-let node = Peg.compile(g).parse('f(g(1, h(2)), "x)y")')
-println(node.nodes[0].token)  # => f
-println(node.nodes[1].token)  # => g(1, h(2)), "x)y"
-```
-
-`"x)y"`の中の`)`は、何も閉じていません。`Str`のほうが先に試されて、
-リテラル全体を1手で消費してしまうからです。
-
-### 1.5 構造を見た書き換え
-
-ここまでを組み合わせると、単なるテキスト置換ではない書き換えができる
-ようになります。次の例は`f(a, b)`を`a.f(b)`に変えます。引数が入れ子の
-呼び出しでもかまいませんし、文字列の中にカンマや括弧が入っていても
-大丈夫です。
-
-```culebra
-let g = `
-  Doc    <- Piece*                          { no_ast_opt }
-  Piece  <- Call / Str / Other
-  Call   <- Name '(' Arg (',' Arg)* ')'
-  Name   <- < [a-zA-Z_] [a-zA-Z0-9_]* >
-  Arg    <- < ( Str / '(' Nested ')' / [^,()] )+ >
-  Nested <- ( Str / '(' Nested ')' / [^()] )*
-  Str    <- < '"' ( '\\' . / !'"' . )* '"' >
-  Other  <- < . >
-`
-fn to_ufcs(src) {
-  mut out = ''
-  for n in Peg.parse(g, src).nodes {
-    match n {
-      {name: 'Call', nodes} => {
-        let args = nodes.slice(1, nodes.size()).map(|x| x.token.trim())
-        let rest = args.slice(1, args.size()).join(', ')
-        out = out + "{args[0]}.{nodes[0].token}({rest})"
-      },
-      _ => out = out + n.token,
-    }
-  }
-  out
-}
-println(to_ufcs('log(fmt("a,b", x), 2) and keep("f(1, 2)")'))
-# => fmt("a,b", x).log(2) and "f(1, 2)".keep()
-```
-
-書き換え**られなかった**ほうにも目を向けてみてください。文字列の中の
-`f(1, 2)`はそのまま残っています。この条件を正規表現で書こうとすると、
-どうなるでしょうか。
-
-なお、木を組み直すのではなく元のテキストを直接編集したい場合もあると
-思います。そのときは、各ノードが`position`と`length`を持っているので、
-`src.slice(n.position, n.position + n.length)`がそのノードの原文に
-なります。その前後を繋げば大丈夫です。
+この例には、行を扱うときのもう半分も出ています。`Other <- < . >`がある
+おかげで、文法が興味のある部分だけでなく**行全体**を記述しています。
+だから1行にリンクがいくつあってもよく、あいだに文章がどれだけあっても
+かまいません。2行目の`[a]`はリンクではないので、そのまま報告されずに
+済んでいます。
 
 ## 2. 四則計算 — 優先順位と、評価の2通り
 
@@ -314,100 +290,7 @@ inspect(Peg.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
 ときは木を使ってください。解析すること自体が計算になっていて、木は
 作って捨てるだけになるときは、actionsのほうが素直です。
 
-## 3. 小さなDSLを設計する
-
-DSLが割に合うのは、代わりに置くものが「条件分岐の増えていく設定ファイル」
-になってしまうときです。ここでは、レコードの一覧を絞り込む言語を作って
-みます。検索ボックスの裏側にあるようなものだと思ってください。
-
-設計は、書きたい文を先に並べるところから始めるのがおすすめです。
-
-    status = open and priority >= 2
-    priority = 1 or status = open
-
-こう並べてみると、優先順位が読み取れます。`or`がいちばん弱く、次が`and`、
-いちばん強いのが比較1つ。上の四則計算と同じ梯子です。
-
-```culebra
-let grammar = `
-  Query  <- Or
-  Or     <- And ('or' And)*
-  And    <- Cmp ('and' Cmp)*
-  Cmp    <- Field Op Value
-  Field  <- < [a-z_]+ >
-  Op     <- < '>=' / '<=' / '!=' / '=' / '>' / '<' >
-  Value  <- Number / Word
-  Number <- < '-'? [0-9]+ >
-  Word   <- < [a-zA-Z_] [a-zA-Z0-9_]* >
-  %whitespace <- [ \t]*
-`
-let q = Peg.compile(grammar)
-
-fn compare(op, a, b) {
-  match op {
-    '=' => a == b,
-    '!=' => a != b,
-    '<' => a < b,
-    '<=' => a <= b,
-    '>' => a > b,
-    _ => a >= b,
-  }
-}
-fn eval(n, row) {
-  match n {
-    {name: 'Or', nodes} => nodes.any(|c| eval(c, row)),
-    {name: 'And', nodes} => nodes.all(|c| eval(c, row)),
-    {name: 'Cmp', nodes: [f, op, v]} => {
-      if !row.has(f.token) {
-        throw "no field named '{f.token}'"
-      }
-      compare(op.token, row[f.token], v.name == 'Number' ? to_long(v.token) : v.token)
-    },
-  }
-}
-
-let rows = [
-  {title: 'write guide', status: 'open', priority: 3},
-  {title: 'fix build', status: 'done', priority: 1},
-  {title: 'read paper', status: 'open', priority: 1},
-]
-fn select(rows, text) {
-  let tree = q.parse(text, 'filter')
-  rows.filter(|r| eval(tree, r)).map(|r| r.title)
-}
-inspect(select(rows, 'status = open and priority >= 2'))  # => ['write guide']
-inspect(select(rows, 'priority = 1 or status = open'))
-# => ['write guide', 'fix build', 'read paper']
-```
-
-この文法には、真似する価値のある点が2つあります。
-
-**演算子の並び順が効いています。** `Op <- < '>=' / '<=' / '!=' / '=' /
-'>' / '<' >`では、2文字の演算子を先に並べています。順序付き選択は最初に
-一致した選択肢を採るので、もし`'>'`を`'>='`より前に置いてしまうと、入力
-`>=`は`>`のほうに一致してしまい、残った`=`のところで解析が失敗します。
-
-目安として覚えておくとよいのは、**長いリテラルを、その接頭辞になるものより
-前に置く**、という一言です。
-
-**解析するときに、入力に名前を付けましょう。** `q.parse(text, 'filter')`と
-書くと、その名前がエラーに入ります。利用者の打ち間違いが、素のオフセット
-ではなく、読める診断として返ってくるようになります。
-
-```culebra
-let q = Peg.compile(`
-  Query  <- Cmp
-  Cmp    <- Field Op Value
-  Field  <- < [a-z_]+ >
-  Op     <- < '>=' / '<=' / '!=' / '=' / '>' / '<' >
-  Value  <- < [a-zA-Z0-9_]+ >
-  %whitespace <- [ \t]*
-`)
-inspect(try { q.parse('status =', 'filter') } catch e { e.message })
-# => 'filter:1:9: syntax error, expecting <Value>.'
-```
-
-## 4. 小さな言語
+## 3. 小さな言語
 
 ここまでのやり方は、そのまま本物のインタプリタまで届きます。
 
@@ -629,7 +512,7 @@ inspect(run('
 `Else <- 'else' (If / Block)`にすれば自然に出てきます。第一級関数にする
 には、`call`が名前ではなく値を受け取るようにします。
 
-## 5. 落とし穴
+## 4. 落とし穴
 
 最後に、先に知っておくと半日を節約できるものを並べておきます。
 
