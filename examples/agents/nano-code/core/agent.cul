@@ -32,6 +32,7 @@ class Agent {
     self.tools = config.tools.values().collect()
     self.max_steps = config.max_steps ?? 10
     self.verbose = config.verbose ?? false
+    self.stream = config.stream ?? false
     self.approval_func = config.approval_func ?? approval.request_approval
   }
 
@@ -48,12 +49,18 @@ class Agent {
       }
 
       messages = self.manage_context(messages)
-      let response = lm.generate_text(self.model, messages, self.tools)
+      let response = self.ask(messages)
 
       let said = response.text ?? ''
       if !said.empty() {
         final_text = said
-        println(said)
+        # A streamed answer reached the screen as it was written, so all that
+        # is left of the printing is the newline `println` would have added.
+        if self.stream {
+          println('')
+        } else {
+          println(said)
+        }
       } else if self.verbose && !(response.reasoning ?? '').empty() {
         # Not upstream's. A model that thinks before it answers can spend a
         # whole turn on it, and a step that prints nothing at all reads as a
@@ -88,6 +95,16 @@ class Agent {
     }
 
     {text: final_text}
+  }
+
+  # One turn. Streamed, the answer is printed as it is written; whole, it is
+  # printed once above. Either way the reply is the same shape, which is what
+  # lets the rest of the loop not care which it was.
+  ask(messages) {
+    if !self.stream {
+      return lm.generate_text(self.model, messages, self.tools)
+    }
+    lm.stream_text(self.model, messages, self.tools, |piece| IO.print(piece))
   }
 
   # One call: its result is appended to `messages`, and the answer says whether

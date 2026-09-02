@@ -1,0 +1,132 @@
+# Server-Sent Events, decoded incrementally.
+#
+# The stdlib has this already — `Http.sse` (stdlib.md §15) parses the same
+# format — but it opens the stream itself with a GET, and both streaming
+# endpoints here are a POST carrying the conversation as a JSON body. So the
+# stream arrives through `into:` instead, a chunk at a time, and the format is
+# decoded here.
+#
+# A chunk is not a line and a line is not an event: a delta can be split across
+# two reads of the socket, and a multi-byte character with it. Whatever is left
+# after the last newline stays in the buffer until the rest of it arrives, which
+# is what makes those two cases the same case.
+#
+# The subset is what the two endpoints send, and what the WHATWG event-stream
+# grammar says about it: `field: value` with one optional space, `data`
+# accumulating across lines, a blank line dispatching, `:` a comment. `retry`
+# and any other field are ignored rather than refused — a server is allowed to
+# send fields a client does not know.
+
+class SseDecoder {
+  new() {
+    self.buffer = ''
+    self.data_lines = []
+    self.event_type = ''
+    self.id = ''
+  }
+
+  # Every event completed by this chunk, in order. An event is
+  # `{event, data, id}` — the same three fields `Http.sse` hands its callback.
+  feed(chunk) {
+    self.buffer = self.buffer + chunk
+    mut events = []
+    mut cut = self.buffer.index_of("\n")
+    while cut >= 0 {
+      # A `\r\n` server and a `\n` server say the same thing.
+      let line = self.buffer.slice(0, cut).trim_end("\r")
+      self.buffer = "{self.buffer.slice(cut + 1, self.buffer.size())}"
+      let event = self.take_line(line)
+      if event != nil {
+        events.push(event)
+      }
+      cut = self.buffer.index_of("\n")
+    }
+    events
+  }
+
+  take_line(line) {
+    if line.empty() {
+      return self.dispatch()
+    }
+    # A comment. Servers send one as a keep-alive, which is the reason to know
+    # about them at all.
+    return nil if line.starts_with(':')
+
+    let halves = line.split_once(':')
+    # A line with no colon is that field with an empty value.
+    let name = halves == nil ? line : halves[0]
+    let raw = halves == nil ? '' : halves[1]
+    # Exactly one leading space belongs to the framing, not to the value.
+    let value = raw.starts_with(' ') ? raw.slice(1, raw.size()) : raw
+
+    if name == 'data' {
+      self.data_lines.push("{value}")
+    } else if name == 'event' {
+      self.event_type = "{value}"
+    } else if name == 'id' {
+      self.id = "{value}"
+    }
+    nil
+  }
+
+  # A blank line ends an event — unless there was no `data` at all, which is a
+  # comment block or a stray newline and dispatches nothing.
+  dispatch() {
+    if self.data_lines.empty() {
+      self.event_type = ''
+      return nil
+    }
+    let event = {
+      event: self.event_type.empty() ? 'message' : self.event_type,
+      data: self.data_lines.join("\n"),
+      id: self.id,
+    }
+    self.data_lines = []
+    self.event_type = ''
+    event
+  }
+}
+
+# How many bytes of the stream to keep for a failure to quote. A refusal
+# arrives as a body like any other — the sink gets it instead of `res.body`,
+# which `into:` leaves empty — and it is short. A stream that succeeds is long
+# and already consumed event by event, so there is no reason to hold it whole.
+let RAW_KEEP = 2000
+
+# One streamed response body: the `into:` sink, the decoder behind it, and the
+# prefix kept back in case the response turns out to be a refusal.
+#
+# Both providers read their stream through this; only what they do with an
+# event differs.
+class EventStream {
+  new(on_event) {
+    self.on_event = on_event
+    self.decoder = SseDecoder.new()
+    self.raw = ''
+    self.events = 0
+  }
+
+  # The `into:` argument: a `|chunk|` closure called as the body arrives.
+  sink() {
+    |chunk| self.absorb(chunk)
+  }
+
+  absorb(chunk) {
+    if self.raw.size() < RAW_KEEP {
+      self.raw = self.raw + chunk
+    }
+    for event in self.decoder.feed(chunk) {
+      self.events += 1
+      self.on_event(event)
+    }
+  }
+
+  # The failed response, as the rest of the code expects one: `into:` took the
+  # body, so it is put back here for `api_error` to read. A `json()` of its own
+  # rather than the real one, which would parse the empty `res.body`.
+  failure(res) {
+    {status: res.status, body: self.raw, json: fn () { JSON.parse(self.raw) }}
+  }
+}
+
+export {SseDecoder, EventStream}

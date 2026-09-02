@@ -8,8 +8,9 @@ chapter at a time.
 
 The port covers the core of chapters 2 through 6: the message model, the
 provider interface, the four tools, the thought loop, the approval gate and
-context compression. It follows upstream's structure file by file, so the two
-can be read side by side; every place it does not is listed at the end.
+context compression, plus appendix A's streaming. It follows upstream's
+structure file by file, so the two can be read side by side; every place it
+does not is listed at the end.
 
 ## Running it
 
@@ -25,6 +26,7 @@ export LLM_API_KEY=...
 
 culebra nano-code.cul "add a test for Math.wrap and run the tests"
 culebra nano-code.cul --yolo "fix the failing test"
+culebra nano-code.cul --stream "explain what hello.cul does"
 ```
 
 | Variable | Meaning |
@@ -36,7 +38,8 @@ culebra nano-code.cul --yolo "fix the failing test"
 | `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL` | where that format is spoken, if not the vendor |
 
 `--yolo` runs the tools that change things without asking. Nothing outside the
-workspace can be read or written.
+workspace can be read or written. `--stream` prints the answer as it is
+written rather than when it is done.
 
 ### Through OpenRouter
 
@@ -69,6 +72,7 @@ and `createOpenAI({ baseURL })` is in its own signature.
 | `core/prompt.cul`, `core/prompt.md` | `src/core/prompt.ts`, `src/core/prompt.md` |
 | `core/security.cul` | `src/core/security.ts` |
 | `core/clean_messages.cul` | the copy each provider carries upstream |
+| `core/sse.cul` | what upstream's SDKs decode for it (appendix A) |
 | `core/workspace.cul` | the containment check all four tools share |
 | `tools/read_file.cul` … | `src/tools/readFile.ts` … |
 | `providers/openai.cul` | `src/providers/openai.ts` |
@@ -98,6 +102,45 @@ A fourth difference is not cosmetic: the Messages format requires
 `max_tokens`, so that provider defaults it, and chat-completions does not, so
 that one sends nothing unless asked. Making the two agree there would be
 making one of them wrong.
+
+## Streaming
+
+`--stream` prints the answer as the model writes it. Upstream's appendix A.
+
+Streaming is a second way to *ask*, not a second kind of reply: `do_stream`
+answers exactly what `do_generate` answers, and `on_text` sees the answer being
+written on the way there. That is by construction rather than by agreement —
+the events are assembled into the body the non-streaming endpoint would have
+sent, and the same `read_reply` interprets it either way. `test_streaming.cul`
+writes each case both ways and compares them, which is the only property worth
+testing here.
+
+It is a trait of its own (`StreamingLanguageModel`), because a model is allowed
+not to have it: conformance is structural, so a provider with both methods
+satisfies both traits, and a scripted model in a test satisfies only the first.
+
+Three things about the wire are worth knowing:
+
+- **`Http.sse` is not what opens the stream.** The stdlib decodes this exact
+  format (stdlib.md §15), but it opens the stream itself with a `GET`, and both
+  of these endpoints are a `POST` carrying the conversation as a JSON body. So
+  the body arrives through `into:` a chunk at a time and `core/sse.cul` decodes
+  it. A `POST` that streams back is the shape a streaming LLM API has, so this
+  is the one part of the port that a stdlib with `Http.sse` in it still has to
+  write by hand.
+- **A chunk is not an event, and a line is not a chunk.** A delta can be split
+  across two reads of the socket, and a multi-byte character with it. Whatever
+  follows the last newline waits in the buffer for the rest of it, which makes
+  those two the same case; `test_sse.cul` checks every split point of the same
+  bytes.
+- **The arguments of a tool call arrive as a document written a few characters
+  at a time**, so they cannot be read until the block ends. A turn cut off in
+  the middle of one leaves it unparseable, which is answered with an empty call
+  rather than a raised error — the tool is what says what was missing.
+
+`into:` also takes the body away from `res.body`, so a refusal has nothing left
+to quote by the time the status is known. The stream keeps its first bytes back
+for that.
 
 ## Where this differs from upstream
 
@@ -140,6 +183,5 @@ where it has a `switch` — these are deliberate:
     provider has nowhere to put them and ignores them.
 
 Not ported: chapter 7 (git and GitHub), chapter 8 (the sandbox and
-`webFetch`), appendix A (streaming), appendix B (the Responses API), and the
-Google provider, which is a third wire format neither of these is written in
-terms of.
+`webFetch`), appendix B (the Responses API), and the Google provider, which is
+a third wire format neither of these is written in terms of.

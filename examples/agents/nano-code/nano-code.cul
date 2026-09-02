@@ -6,7 +6,7 @@ import tools from './tools/index.cul'
 import factory from './providers/model_factory.cul'
 
 # Ported from upstream's `bin/cli.ts`, without the parts this port leaves out:
-# no --sandbox, no --stream, no --responses, no Issue-driven mode.
+# no --sandbox, no --responses, no Issue-driven mode.
 #
 # The workspace is `./workspace` under the working directory, as upstream
 # resolves it, so this is run from the directory holding it:
@@ -31,6 +31,12 @@ let SPEC = {
       type: 'Bool',
       default: false,
       doc: 'run tools that change things without asking',
+    },
+    {
+      name: 'stream',
+      type: 'Bool',
+      default: false,
+      doc: 'print the answer as it is written rather than when it is done',
     },
   ],
 }
@@ -67,6 +73,9 @@ fn main() {
   if opts.yolo {
     println('[mode] approving every tool call (--yolo)')
   }
+  if opts.stream {
+    println('[mode] streaming the answer as it is written (--stream)')
+  }
   println("Task: {clip(opts.task)}")
   println('')
 
@@ -84,6 +93,7 @@ fn main() {
     tools: tools.make_tools(workspace.Workspace.new(root)),
     max_steps: MAX_STEPS,
     verbose: true,
+    stream: opts.stream,
     approval_func: opts.yolo ? approval.approve_all : nil,
   })
 
@@ -107,7 +117,7 @@ fn parse(argv) {
   # A spec cannot say `repeated, at least one`, so this is the one usage rule
   # left to state here — and it is a usage error like any other.
   fail('say what to do') if opts.task.empty()
-  {yolo: opts.yolo, task: opts.task.join(' ')}
+  {yolo: opts.yolo, stream: opts.stream, task: opts.task.join(' ')}
 }
 
 fn fail(message) {

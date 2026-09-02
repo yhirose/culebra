@@ -1,6 +1,7 @@
 import msg from '../core/message.cul'
 import clean from '../core/clean_messages.cul'
 import err from '../core/errors.cul'
+import sse from '../core/sse.cul'
 import api_error from './api_error.cul'
 
 # Ported from upstream's `src/providers/openai.ts`.
@@ -38,6 +39,36 @@ class OpenAIModel {
   }
 
   do_generate(params) {
+    let res = self.http.post('/chat/completions',
+                             json: self.body_for(params, false))
+    if !res.ok {
+      throw err.llm_api_error(res.status, PROVIDER,
+                              api_error.explain(PROVIDER, res))
+    }
+    read_reply(api_error.parsed(PROVIDER, res))
+  }
+
+  # The same turn, streamed. As in the other format, the deltas are assembled
+  # into the body a non-streaming request would have returned, so `read_reply`
+  # is what interprets it either way.
+  do_stream(params, on_text) {
+    let turn = OpenAIStream.new(on_text)
+    let stream = sse.EventStream.new(|e| turn.take(e))
+    let res = self.http.post('/chat/completions',
+                             json: self.body_for(params, true),
+                             into: stream.sink())
+    if !res.ok {
+      throw err.llm_api_error(res.status, PROVIDER,
+                              api_error.explain(PROVIDER, stream.failure(res)))
+    }
+    if stream.events == 0 {
+      throw err.llm_api_error(res.status, PROVIDER,
+        "{PROVIDER} wire: the stream closed without sending an event")
+    }
+    read_reply(turn.finish())
+  }
+
+  body_for(params, streaming) {
     let history = clean.clean_messages(params.messages)
 
     mut body = {model: self.model_id, messages: turns_of(history)}
@@ -50,13 +81,13 @@ class OpenAIModel {
     if !specs.empty() {
       body.tools = tools_of(specs)
     }
-
-    let res = self.http.post('/chat/completions', json: body)
-    if !res.ok {
-      throw err.llm_api_error(res.status, PROVIDER,
-                              api_error.explain(PROVIDER, res))
+    if streaming {
+      body.stream = true
+      # Usage is left out of a stream unless it is asked for, and a turn
+      # without it reports nothing about what it cost.
+      body.stream_options = {include_usage: true}
     }
-    read_reply(api_error.parsed(PROVIDER, res))
+    body
   }
 }
 
@@ -161,6 +192,126 @@ fn args_of(f) {
   parsed ?? {}
 }
 
+# --- what comes back, a piece at a time -------------------------------------
+
+# Where the other format numbers blocks and opens each one, this format sends
+# a partial turn per frame: `delta` holds whatever grew since the last one, and
+# a tool call is identified by its index in the list rather than by a block.
+# The pieces are added up and handed back as the turn they amount to.
+
+# The frame that ends the stream. It is a sentinel rather than JSON, which is
+# the one thing here that would raise if it were read as a frame.
+let DONE = '[DONE]'
+
+class OpenAIStream {
+  new(on_text) {
+    self.on_text = on_text
+    self.content = ''
+    self.reasoning = ''
+    self.calls = []
+    self.finish_reason = nil
+    self.usage = nil
+    self.failure = nil
+  }
+
+  take(event) {
+    return nil if event.data == DONE
+    let payload = try {
+      JSON.parse(event.data)
+    } catch _e {
+      nil
+    }
+    return nil if payload == nil
+
+    # A failure can arrive as a frame of its own, or beside the turn it could
+    # not produce. Kept rather than raised: `read_reply` already knows what a
+    # choice carrying an error means.
+    if payload.error != nil {
+      self.failure = payload.error
+      return nil
+    }
+    if payload.usage != nil {
+      self.usage = payload.usage
+    }
+
+    let choices = payload.choices ?? []
+    return nil if choices.empty()
+    let choice = choices[0]
+    if choice.error != nil {
+      self.failure = choice.error
+      return nil
+    }
+    if choice.finish_reason != nil {
+      self.finish_reason = choice.finish_reason
+    }
+    self.grow(choice.delta ?? {})
+    nil
+  }
+
+  grow(delta) {
+    let said = delta.content ?? ''
+    if !said.empty() {
+      self.content = self.content + said
+      if self.on_text != nil {
+        self.on_text(said)
+      }
+    }
+    # Thinking, where this format puts it: a field beside the answer rather
+    # than a block of its own. It is not what the model said, so it is not
+    # what a watcher hears.
+    self.reasoning = self.reasoning + (delta.reasoning ?? '')
+    for call in (delta.tool_calls ?? []) {
+      self.grow_call(call)
+    }
+  }
+
+  # A call's id and name arrive with the first piece of it; the arguments
+  # accumulate across the pieces that follow.
+  grow_call(delta) {
+    let index = delta.index ?? 0
+    while self.calls.size() <= index {
+      self.calls.push(nil)
+    }
+    if self.calls[index] == nil {
+      self.calls[index] = {mut id: '', mut name: '', mut arguments: ''}
+    }
+    let call = self.calls[index]
+    if delta.id != nil {
+      call.id = delta.id
+    }
+    let f = delta.function ?? {}
+    if f.name != nil {
+      call.name = f.name
+    }
+    call.arguments = call.arguments + (f.arguments ?? '')
+  }
+
+  # The body the non-streaming endpoint would have sent. The arguments stay a
+  # JSON string, as they are on that wire — `read_reply` is what parses them,
+  # and what forgives a document the model left unfinished.
+  finish() {
+    if self.failure != nil {
+      return {choices: [{error: self.failure}]}
+    }
+    {
+      choices: [{
+        message: {
+          content: self.content,
+          reasoning: self.reasoning,
+          tool_calls: self.calls.filter(|c| c != nil).map(|c| call_frame_of(c)),
+        },
+        finish_reason: self.finish_reason,
+      }],
+      usage: self.usage,
+    }
+  }
+}
+
+fn call_frame_of(c) {
+  {id: c.id, type: 'function',
+   function: {name: c.name, arguments: c.arguments}}
+}
+
 # This format's own names, kept as they are where they already agree.
 fn finish_reason_of(reason) {
   match reason {
@@ -183,5 +334,5 @@ fn usage_of(u) {
   }
 }
 
-export {create_openai, OpenAIModel}
+export {create_openai, OpenAIModel, OpenAIStream}
 export {turns_of, tools_of, read_reply, finish_reason_of, args_of}

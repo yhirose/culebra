@@ -36,4 +36,20 @@ fn generate_text(model: LanguageModel, messages, tools = []) {
   model.do_generate({messages: messages, tools: tools})
 }
 
-export {generate_text}
+# Streaming is a second way to ask, not a second kind of reply: `do_stream`
+# answers exactly what `do_generate` answers, and `on_text` sees the answer
+# being written on the way there. Upstream's appendix A.
+#
+# A trait of its own because a model is allowed not to have it — a scripted one
+# in a test, or an endpoint that will not stream — and a `LanguageModel` that
+# cannot stream is still a `LanguageModel`. Conformance is structural, so a
+# provider with both methods satisfies both traits without saying so.
+trait StreamingLanguageModel {
+  do_stream(params, on_text) -> Object
+}
+
+fn stream_text(model: StreamingLanguageModel, messages, tools, on_text) {
+  model.do_stream({messages: messages, tools: tools}, on_text)
+}
+
+export {generate_text, stream_text}

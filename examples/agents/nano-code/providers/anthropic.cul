@@ -1,6 +1,7 @@
 import msg from '../core/message.cul'
 import clean from '../core/clean_messages.cul'
 import err from '../core/errors.cul'
+import sse from '../core/sse.cul'
 import api_error from './api_error.cul'
 
 # Ported from upstream's `src/providers/anthropic.ts`.
@@ -45,6 +46,42 @@ class AnthropicModel {
   }
 
   do_generate(params) {
+    let res = self.http.post('/messages', json: self.body_for(params, false))
+    if !res.ok {
+      throw err.llm_api_error(res.status, PROVIDER,
+                              api_error.explain(PROVIDER, res))
+    }
+    read_reply(api_error.parsed(PROVIDER, res))
+  }
+
+  # The same turn, streamed: `on_text` is called with each piece of the answer
+  # as it arrives. What comes back is what `do_generate` would have answered,
+  # and by construction rather than by agreement — the events are assembled
+  # into the body the non-streaming endpoint would have sent, and `read_reply`
+  # is what reads it either way.
+  do_stream(params, on_text) {
+    let turn = AnthropicStream.new(on_text)
+    let stream = sse.EventStream.new(|e| turn.take(e))
+    let res = self.http.post('/messages', json: self.body_for(params, true),
+                             into: stream.sink())
+    if !res.ok {
+      # `into:` took the body, so what the refusal said is in the stream's own
+      # buffer rather than in `res.body`.
+      throw err.llm_api_error(res.status, PROVIDER,
+                              api_error.explain(PROVIDER, stream.failure(res)))
+    }
+    # A 200 that carried no event at all. Read as a finished turn this is a
+    # model with nothing to say, and the run ends in silence — the same reason
+    # `read_reply` raises on a failure carried inside a 200.
+    if stream.events == 0 {
+      throw err.llm_api_error(res.status, PROVIDER,
+        "{PROVIDER} wire: the stream closed without sending an event")
+    }
+    read_reply(turn.finish())
+  }
+
+  # Both ways of asking send the same body; only `stream` differs.
+  body_for(params, streaming) {
     # Repair the call/result pairing first: compression can have cut a tool
     # call away from its result, and this format rejects a history where the
     # two do not match up.
@@ -63,13 +100,10 @@ class AnthropicModel {
     if !specs.empty() {
       body.tools = tools_of(specs)
     }
-
-    let res = self.http.post('/messages', json: body)
-    if !res.ok {
-      throw err.llm_api_error(res.status, PROVIDER,
-                              api_error.explain(PROVIDER, res))
+    if streaming {
+      body.stream = true
     }
-    read_reply(api_error.parsed(PROVIDER, res))
+    body
   }
 }
 
@@ -183,6 +217,160 @@ fn call_of(b) {
   {tool_call_id: b.id, name: b.name, args: b.input ?? {}}
 }
 
+# --- what comes back, a piece at a time -------------------------------------
+
+# This format streams deltas against numbered blocks: a block is opened, its
+# content arrives in pieces, and it is closed. A turn's text can be split at
+# any point, and a tool call's arguments arrive as a JSON document written a
+# few characters at a time — which is why the arguments cannot be read until
+# the block ends.
+#
+# The pieces are held in a shape of this class's own and turned into the
+# format's blocks at the end, so that what `finish` answers is exactly a
+# non-streaming body.
+class AnthropicStream {
+  new(on_text) {
+    self.on_text = on_text
+    self.blocks = []
+    self.stop_reason = nil
+    self.sent = 0
+    self.received = 0
+    self.failure = nil
+  }
+
+  take(event) {
+    # A frame that will not parse is not worth ending the turn over: the next
+    # one usually carries the same content, and the stream says when it broke.
+    let payload = try {
+      JSON.parse(event.data)
+    } catch _e {
+      nil
+    }
+    return nil if payload == nil
+
+    let kind = payload.type
+    if kind == 'message_start' {
+      self.open(payload)
+    } else if kind == 'content_block_start' {
+      self.open_block(payload)
+    } else if kind == 'content_block_delta' {
+      self.grow_block(payload)
+    } else if kind == 'message_delta' {
+      self.close(payload)
+    } else if kind == 'error' {
+      # Kept rather than raised here: `read_reply` already knows what to do
+      # with a body that is an error in place of a turn.
+      self.failure = payload
+    }
+    nil
+  }
+
+  open(payload) {
+    let usage = (payload.message ?? {}).usage ?? {}
+    self.sent = usage.input_tokens ?? 0
+    self.received = usage.output_tokens ?? 0
+  }
+
+  open_block(payload) {
+    let block = payload.content_block ?? {}
+    self.put(payload.index ?? 0, {
+      kind: block.type ?? 'text',
+      id: block.id,
+      name: block.name,
+      data: block.data,
+      # A block opens with what it already has, which for a thinking block is
+      # under a name of its own.
+      mut text: block.text ?? block.thinking ?? '',
+      mut json: '',
+      mut signature: block.signature ?? '',
+    })
+  }
+
+  grow_block(payload) {
+    let block = self.at(payload.index ?? 0)
+    return nil if block == nil
+
+    let delta = payload.delta ?? {}
+    let kind = delta.type
+    if kind == 'text_delta' {
+      let said = delta.text ?? ''
+      block.text = block.text + said
+      # The one place a piece leaves this class as it arrives, rather than at
+      # the end: what the model is saying, to whoever is watching it be said.
+      if self.on_text != nil && !said.empty() {
+        self.on_text(said)
+      }
+    } else if kind == 'thinking_delta' {
+      block.text = block.text + (delta.thinking ?? '')
+    } else if kind == 'input_json_delta' {
+      block.json = block.json + (delta.partial_json ?? '')
+    } else if kind == 'signature_delta' {
+      block.signature = block.signature + (delta.signature ?? '')
+    }
+    nil
+  }
+
+  close(payload) {
+    self.stop_reason = (payload.delta ?? {}).stop_reason ?? self.stop_reason
+    # The final count. What `message_start` carried was the count so far.
+    self.received = (payload.usage ?? {}).output_tokens ?? self.received
+  }
+
+  # Blocks are numbered, and nothing says they arrive in order.
+  put(index, block) {
+    while self.blocks.size() <= index {
+      self.blocks.push(nil)
+    }
+    self.blocks[index] = block
+  }
+
+  at(index) {
+    index >= 0 && index < self.blocks.size() ? self.blocks[index] : nil
+  }
+
+  # The body the non-streaming endpoint would have sent.
+  finish() {
+    return self.failure if self.failure != nil
+    {
+      content: self.blocks.filter(|b| b != nil).map(|b| block_of(b)),
+      stop_reason: self.stop_reason,
+      usage: {input_tokens: self.sent, output_tokens: self.received},
+    }
+  }
+}
+
+fn block_of(b) {
+  if b.kind == 'tool_use' {
+    return {type: 'tool_use', id: b.id, name: b.name, input: args_of(b.json)}
+  }
+  if b.kind == 'thinking' {
+    # The signature is what makes the block checkable when it goes back, and a
+    # block that never carried one is sent as it came rather than with an empty
+    # one invented for it.
+    return b.signature.empty()
+      ? {type: 'thinking', thinking: b.text}
+      : {type: 'thinking', thinking: b.text, signature: b.signature}
+  }
+  if b.kind == 'redacted_thinking' {
+    return {type: 'redacted_thinking', data: b.data}
+  }
+  {type: 'text', text: b.text}
+}
+
+# A document written across deltas, read once it is whole. A turn cut short
+# leaves it unfinished, which is answered with an empty call rather than a
+# raised SyntaxError — the same choice the other format makes for the same
+# reason (providers/openai.cul, `args_of`).
+fn args_of(text) {
+  return {} if text.empty()
+  let parsed = try {
+    JSON.parse(text)
+  } catch _e {
+    nil
+  }
+  parsed ?? {}
+}
+
 # This format's three names, onto the set both providers answer with.
 fn finish_reason_of(stop_reason) {
   match stop_reason {
@@ -203,5 +391,5 @@ fn usage_of(u) {
    total_tokens: sent + received}
 }
 
-export {create_anthropic, AnthropicModel}
+export {create_anthropic, AnthropicModel, AnthropicStream}
 export {system_blocks, turns_of, tools_of, read_reply, finish_reason_of}

@@ -1,0 +1,111 @@
+import sse from './core/sse.cul'
+
+# The decoder, fed the way a socket feeds it: in chunks that fall wherever they
+# fall. What is being checked is that where a chunk ends never changes what
+# comes out.
+
+fn events_of(chunks) {
+  let dec = sse.SseDecoder.new()
+  mut out = []
+  for c in chunks {
+    for e in dec.feed(c) {
+      out.push(e)
+    }
+  }
+  out
+}
+
+@test
+fn reads_one_event_out_of_one_chunk() {
+  let out = events_of(["event: ping\ndata: \{\"a\":1}\n\n"])
+  assert_eq(out.size(), 1)
+  assert_eq(out[0].event, 'ping')
+  assert_eq(out[0].data, '{"a":1}')
+}
+
+@test
+fn an_event_with_no_type_is_a_message() {
+  # What the chat-completions format sends: `data:` alone, no `event:` line.
+  let out = events_of(["data: hello\n\n"])
+  assert_eq(out[0].event, 'message')
+  assert_eq(out[0].data, 'hello')
+}
+
+@test
+fn a_chunk_boundary_anywhere_gives_the_same_events() {
+  let whole = "event: delta\ndata: one\n\ndata: two\n\n"
+  let expected = events_of([whole])
+
+  # Every possible split of the same bytes into two chunks.
+  for i in range(1, whole.size()) {
+    let split = events_of([whole.slice(0, i), whole.slice(i, whole.size())])
+    assert_eq(split, expected)
+  }
+  assert_eq(expected.size(), 2)
+}
+
+@test
+fn a_multi_byte_character_split_across_chunks_survives() {
+  # The reason the buffer holds bytes rather than decoded text: a chunk can end
+  # in the middle of a character, and the halves are only meaningful rejoined.
+  let whole = "data: 日本語\n\n"
+  let out = events_of([whole.slice(0, 8), whole.slice(8, whole.size())])
+  assert_eq(out[0].data, '日本語')
+}
+
+@test
+fn several_data_lines_are_one_payload_joined_by_newlines() {
+  let out = events_of(["data: first\ndata: second\n\n"])
+  assert_eq(out[0].data, "first\nsecond")
+}
+
+@test
+fn a_comment_is_not_an_event() {
+  # Servers send one as a keep-alive; read as data it would be parsed as JSON
+  # and end the stream.
+  let out = events_of([": keep-alive\n\ndata: real\n\n"])
+  assert_eq(out.size(), 1)
+  assert_eq(out[0].data, 'real')
+}
+
+@test
+fn carriage_returns_are_framing_rather_than_content() {
+  let out = events_of(["event: ping\r\ndata: x\r\n\r\n"])
+  assert_eq(out[0].event, 'ping')
+  assert_eq(out[0].data, 'x')
+}
+
+@test
+fn only_one_space_after_the_colon_belongs_to_the_framing() {
+  # The second space is the value's, and a payload can begin with one.
+  let out = events_of(["data:  padded\n\n"])
+  assert_eq(out[0].data, ' padded')
+}
+
+@test
+fn a_field_with_no_value_is_an_empty_value() {
+  let out = events_of(["data\ndata: x\n\n"])
+  assert_eq(out[0].data, "\nx")
+}
+
+@test
+fn an_id_carries_to_later_events_as_the_last_one_seen() {
+  let out = events_of(["id: 7\ndata: a\n\ndata: b\n\n"])
+  assert_eq(out[0].id, '7')
+  assert_eq(out[1].id, '7')
+}
+
+@test
+fn an_unfinished_event_waits_for_the_rest() {
+  let dec = sse.SseDecoder.new()
+  assert_true(dec.feed("data: half").empty())
+  assert_true(dec.feed(" and half\n").empty())
+  assert_eq(dec.feed("\n")[0].data, 'half and half')
+}
+
+@test
+fn a_field_this_client_does_not_know_is_ignored() {
+  let out = events_of(["retry: 3000\ndata: x\n\n"])
+  assert_eq(out.size(), 1)
+  assert_eq(out[0].data, 'x')
+}

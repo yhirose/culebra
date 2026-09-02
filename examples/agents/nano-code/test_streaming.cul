@@ -1,0 +1,499 @@
+import anthropic from './providers/anthropic.cul'
+import openai from './providers/openai.cul'
+import agent from './core/agent.cul'
+import msg from './core/message.cul'
+
+# Ported from the streaming half of upstream's appendix A.
+#
+# The property worth testing is not that streaming works but that it agrees:
+# the same turn, sent as deltas, has to answer exactly what it answers whole.
+# So every case here is written twice — once as a stream of events and once as
+# the body a non-streaming request would have returned — and the two are
+# compared. That is also how the code is built: the events are assembled into
+# that body and read by the same `read_reply`, so a difference would be a bug
+# in the assembly rather than a difference of interpretation.
+
+# A client whose POST streams: it hands the canned chunks to the `into:` sink
+# the way the socket would, and answers with an empty body as `into:` leaves it.
+class StreamStub {
+  new(chunks) {
+    self.chunks = chunks
+    self.status = 200
+    self.sent = []
+  }
+
+  failing(status, body) {
+    self.status = status
+    self.chunks = [body]
+    self
+  }
+
+  post(path, json, into = nil) {
+    self.sent.push({path: path, body: json})
+    for chunk in self.chunks {
+      into(chunk)
+    }
+    {ok: self.status >= 200 && self.status < 300, status: self.status,
+     body: '', json: fn () { JSON.parse('') }}
+  }
+
+  last_body() {
+    self.sent[self.sent.size() - 1].body
+  }
+}
+
+# One event, framed as the wire frames it.
+fn event(kind, payload) {
+  "event: {kind}\ndata: {JSON.stringify(payload)}\n\n"
+}
+
+fn said(chunks) {
+  mut heard = []
+  {chunks: chunks, heard: heard}
+}
+
+# --- the Messages format ----------------------------------------------------
+
+fn anthropic_events() {
+  [
+    event('message_start',
+          {type: 'message_start',
+           message: {usage: {input_tokens: 11, output_tokens: 1}}}),
+    event('content_block_start',
+          {type: 'content_block_start', index: 0,
+           content_block: {type: 'text', text: ''}}),
+    event('content_block_delta',
+          {type: 'content_block_delta', index: 0,
+           delta: {type: 'text_delta', text: 'I will '}}),
+    event('content_block_delta',
+          {type: 'content_block_delta', index: 0,
+           delta: {type: 'text_delta', text: 'read it.'}}),
+    event('content_block_stop', {type: 'content_block_stop', index: 0}),
+    event('content_block_start',
+          {type: 'content_block_start', index: 1,
+           content_block: {type: 'tool_use', id: 'c1', name: 'readFile',
+                           input: {}}}),
+    event('content_block_delta',
+          {type: 'content_block_delta', index: 1,
+           delta: {type: 'input_json_delta', partial_json: '{"path"'}}),
+    event('content_block_delta',
+          {type: 'content_block_delta', index: 1,
+           delta: {type: 'input_json_delta', partial_json: ':"a.txt"}'}}),
+    event('content_block_stop', {type: 'content_block_stop', index: 1}),
+    event('message_delta',
+          {type: 'message_delta', delta: {stop_reason: 'tool_use'},
+           usage: {output_tokens: 7}}),
+    event('message_stop', {type: 'message_stop'}),
+  ]
+}
+
+# The same turn as one body, which is what the non-streaming endpoint sends.
+fn anthropic_whole() {
+  {
+    content: [
+      {type: 'text', text: 'I will read it.'},
+      {type: 'tool_use', id: 'c1', name: 'readFile', input: {path: 'a.txt'}},
+    ],
+    stop_reason: 'tool_use',
+    usage: {input_tokens: 11, output_tokens: 7},
+  }
+}
+
+fn anthropic_stream(chunks, on_text) {
+  let http = StreamStub.new(chunks)
+  let out = anthropic.AnthropicModel.new(http, 'a-model')
+    .do_stream({messages: [msg.user('read a.txt')]}, on_text)
+  {out: out, http: http}
+}
+
+@test
+fn a_streamed_turn_answers_what_the_whole_turn_answers() {
+  let streamed = anthropic_stream(anthropic_events(), nil).out
+  assert_eq(streamed, anthropic.read_reply(anthropic_whole()))
+}
+
+@test
+fn the_answer_arrives_in_pieces_while_it_is_being_written() {
+  mut heard = []
+  let streamed = anthropic_stream(anthropic_events(),
+                                  |piece| heard.push(piece)).out
+
+  # What the watcher heard, and in the order it was said.
+  assert_eq(heard, ['I will ', 'read it.'])
+  # And it adds up to the answer, so nothing is printed twice or lost.
+  assert_eq(heard.join(''), streamed.text)
+}
+
+@test
+fn the_arguments_of_a_call_are_read_once_they_are_whole() {
+  # They arrive as a JSON document a few characters at a time; read early,
+  # `{"path"` is a syntax error rather than a call.
+  let streamed = anthropic_stream(anthropic_events(), nil).out
+  assert_eq(streamed.tool_calls,
+            [{tool_call_id: 'c1', name: 'readFile', args: {path: 'a.txt'}}])
+}
+
+@test
+fn a_call_cut_off_mid_document_is_an_empty_call() {
+  # The model stopped in the middle of writing the arguments. The tool says
+  # what was missing; a SyntaxError here would end the run instead.
+  let cut = [
+    event('content_block_start',
+          {type: 'content_block_start', index: 0,
+           content_block: {type: 'tool_use', id: 'c1', name: 'readFile',
+                           input: {}}}),
+    event('content_block_delta',
+          {type: 'content_block_delta', index: 0,
+           delta: {type: 'input_json_delta', partial_json: '{"pa'}}),
+    event('message_delta',
+          {type: 'message_delta', delta: {stop_reason: 'max_tokens'},
+           usage: {output_tokens: 7}}),
+  ]
+  let streamed = anthropic_stream(cut, nil).out
+  assert_eq(streamed.tool_calls[0].args, {})
+  assert_eq(streamed.finish_reason, 'length')
+}
+
+@test
+fn thinking_streams_apart_from_the_answer_and_goes_back_whole() {
+  let thinking = [
+    event('content_block_start',
+          {type: 'content_block_start', index: 0,
+           content_block: {type: 'thinking', thinking: ''}}),
+    event('content_block_delta',
+          {type: 'content_block_delta', index: 0,
+           delta: {type: 'thinking_delta', thinking: 'first, '}}),
+    event('content_block_delta',
+          {type: 'content_block_delta', index: 0,
+           delta: {type: 'thinking_delta', thinking: 'look around'}}),
+    event('content_block_delta',
+          {type: 'content_block_delta', index: 0,
+           delta: {type: 'signature_delta', signature: 'abc123'}}),
+    event('content_block_stop', {type: 'content_block_stop', index: 0}),
+    event('content_block_start',
+          {type: 'content_block_start', index: 1,
+           content_block: {type: 'text', text: ''}}),
+    event('content_block_delta',
+          {type: 'content_block_delta', index: 1,
+           delta: {type: 'text_delta', text: 'Done.'}}),
+    event('message_delta',
+          {type: 'message_delta', delta: {stop_reason: 'end_turn'},
+           usage: {output_tokens: 7}}),
+  ]
+  mut heard = []
+  let streamed = anthropic_stream(thinking, |piece| heard.push(piece)).out
+
+  # The thinking is not what the model said, so it is not what a watcher hears.
+  assert_eq(heard, ['Done.'])
+  assert_eq(streamed.text, 'Done.')
+  assert_eq(streamed.reasoning, 'first, look around')
+  # And the block goes back with its signature, which is what makes it
+  # checkable when the next turn carries it.
+  assert_eq(streamed.reasoning_blocks,
+            [{type: 'thinking', thinking: 'first, look around',
+              signature: 'abc123'}])
+}
+
+@test
+fn a_streamed_failure_is_raised_rather_than_read_as_a_turn() {
+  # This format sends a broken generation as an event, mid-stream, after a
+  # perfectly ordinary 200.
+  let broken = [
+    event('content_block_start',
+          {type: 'content_block_start', index: 0,
+           content_block: {type: 'text', text: ''}}),
+    event('error',
+          {type: 'error',
+           error: {type: 'overloaded_error', message: 'the model is busy'}}),
+  ]
+  let raised = try {
+    anthropic_stream(broken, nil)
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(raised.kind, 'LLMApiError')
+  assert_true(raised.message.contains('the model is busy'))
+}
+
+@test
+fn asks_for_a_stream_and_sends_the_same_body_otherwise() {
+  let http = anthropic_stream(anthropic_events(), nil).http
+  let body = http.last_body()
+
+  assert_eq(http.sent[0].path, '/messages')
+  assert_true(body.stream)
+  assert_eq(body.model, 'a-model')
+  assert_eq(body.messages, [{role: 'user', content: 'read a.txt'}])
+}
+
+@test
+fn a_refusal_is_read_out_of_the_stream_rather_than_the_empty_body() {
+  # `into:` takes the body, so `res.body` is empty by the time the status is
+  # known. Without the stream's own copy there is nothing to quote.
+  let http = StreamStub.new([]).failing(429,
+    JSON.stringify({error: {type: 'rate_limit_error',
+                            message: 'slow down please'}}))
+  let raised = try {
+    anthropic.AnthropicModel.new(http, 'a-model')
+      .do_stream({messages: [msg.user('go')]}, nil)
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(raised.kind, 'LLMApiError')
+  assert_eq(raised.status, 429)
+  assert_true(raised.message.contains('slow down please'))
+}
+
+@test
+fn a_stream_that_says_nothing_at_all_is_a_failure() {
+  # A 200 that closes without an event. Read as a finished turn it is a model
+  # with nothing to say, and the run ends in silence with no reason given.
+  let raised = try {
+    anthropic_stream([], nil)
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(raised.kind, 'LLMApiError')
+  assert_true(raised.message.contains('without sending an event'))
+}
+
+# --- the chat-completions format --------------------------------------------
+#
+# The same turn again, in the other format's spelling: a partial turn per
+# frame rather than numbered blocks, and a `[DONE]` sentinel to close.
+
+fn frame(payload) {
+  "data: {JSON.stringify(payload)}\n\n"
+}
+
+fn openai_events() {
+  [
+    frame({choices: [{index: 0, delta: {role: 'assistant',
+                                        content: 'I will '}}]}),
+    frame({choices: [{index: 0, delta: {content: 'read it.'}}]}),
+    frame({choices: [{index: 0, delta: {tool_calls: [
+      {index: 0, id: 'c1', type: 'function',
+       function: {name: 'readFile', arguments: ''}}]}}]}),
+    frame({choices: [{index: 0, delta: {tool_calls: [
+      {index: 0, function: {arguments: '{"path"'}}]}}]}),
+    frame({choices: [{index: 0, delta: {tool_calls: [
+      {index: 0, function: {arguments: ':"a.txt"}'}}]}}]}),
+    frame({choices: [{index: 0, delta: {}, finish_reason: 'tool_calls'}]}),
+    frame({choices: [], usage: {prompt_tokens: 11, completion_tokens: 7,
+                                total_tokens: 18}}),
+    "data: [DONE]\n\n",
+  ]
+}
+
+fn openai_whole() {
+  {
+    choices: [{
+      message: {
+        content: 'I will read it.',
+        tool_calls: [{id: 'c1', type: 'function',
+                      function: {name: 'readFile',
+                                 arguments: '{"path":"a.txt"}'}}],
+      },
+      finish_reason: 'tool_calls',
+    }],
+    usage: {prompt_tokens: 11, completion_tokens: 7, total_tokens: 18},
+  }
+}
+
+fn openai_stream(chunks, on_text) {
+  let http = StreamStub.new(chunks)
+  let out = openai.OpenAIModel.new(http, 'a-model')
+    .do_stream({messages: [msg.user('read a.txt')]}, on_text)
+  {out: out, http: http}
+}
+
+@test
+fn the_other_format_streams_to_the_same_answer_too() {
+  let streamed = openai_stream(openai_events(), nil).out
+  assert_eq(streamed, openai.read_reply(openai_whole()))
+}
+
+@test
+fn the_other_format_hands_over_its_pieces_as_they_arrive() {
+  mut heard = []
+  let streamed = openai_stream(openai_events(), |piece| heard.push(piece)).out
+
+  assert_eq(heard, ['I will ', 'read it.'])
+  assert_eq(heard.join(''), streamed.text)
+  assert_eq(streamed.tool_calls,
+            [{tool_call_id: 'c1', name: 'readFile', args: {path: 'a.txt'}}])
+}
+
+@test
+fn the_sentinel_that_closes_the_stream_is_not_a_frame() {
+  # `[DONE]` is not JSON. Read as one it raises, and the turn is lost on the
+  # last frame of a stream that otherwise worked.
+  let out = openai_stream([
+    frame({choices: [{delta: {content: 'done'}, finish_reason: 'stop'}]}),
+    "data: [DONE]\n\n",
+  ], nil).out
+  assert_eq(out.text, 'done')
+  assert_eq(out.finish_reason, 'stop')
+}
+
+@test
+fn thinking_in_the_other_format_stays_out_of_what_was_said() {
+  mut heard = []
+  let out = openai_stream([
+    frame({choices: [{delta: {reasoning: 'the user wants '}}]}),
+    frame({choices: [{delta: {reasoning: 'a greeting'}}]}),
+    frame({choices: [{delta: {content: 'Done.'}, finish_reason: 'stop'}]}),
+  ], |piece| heard.push(piece)).out
+
+  assert_eq(heard, ['Done.'])
+  assert_eq(out.text, 'Done.')
+  assert_eq(out.reasoning, 'the user wants a greeting')
+  # This format has no place to send it back, so nothing goes with the turn.
+  assert_eq(out.reasoning_blocks, [])
+}
+
+@test
+fn a_failure_carried_in_a_frame_is_raised() {
+  let raised = try {
+    openai_stream([
+      frame({choices: [{delta: {content: 'thinking'}}]}),
+      frame({error: {code: 502, message: 'the provider gave up'}}),
+    ], nil)
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(raised.kind, 'LLMApiError')
+  assert_true(raised.message.contains('the provider gave up'))
+}
+
+@test
+fn the_other_format_asks_for_usage_along_with_the_stream() {
+  # Usage is left out of a stream unless it is asked for, and upstream reports
+  # what a turn cost.
+  let body = openai_stream(openai_events(), nil).http.last_body()
+  assert_true(body.stream)
+  assert_eq(body.stream_options, {include_usage: true})
+}
+
+# --- the loop ---------------------------------------------------------------
+#
+# What the loop has to preserve is that streaming is a matter of *when* the
+# answer appears, not of what appears. So the same run is done both ways and
+# the two transcripts are compared.
+
+# A model that answers from a list either way: whole, or a piece at a time.
+class BothWaysModel {
+  new(replies) {
+    self.replies = replies
+    self.asked = 0
+  }
+
+  reply() {
+    let i = self.asked
+    self.asked += 1
+    i < self.replies.size() ? self.replies[i] : {text: 'nothing more to do.'}
+  }
+
+  do_generate(_params) {
+    self.reply()
+  }
+
+  do_stream(_params, on_text) {
+    let reply = self.reply()
+    let text = reply.text ?? ''
+    # Said the way a stream says it: in pieces that fall wherever they fall,
+    # and that add up to exactly the answer.
+    if !text.empty() {
+      let cut = text.size() / 2
+      on_text(text.slice(0, cut))
+      on_text(text.slice(cut, text.size()))
+    }
+    reply
+  }
+}
+
+# A model that cannot stream. Upstream's SDKs have the same distinction.
+class WholeOnlyModel {
+  new() {
+    self.asked = 0
+  }
+
+  do_generate(_params) {
+    self.asked += 1
+    {text: 'done'}
+  }
+}
+
+fn run(model, streaming) {
+  IO.capture(fn () {
+    agent.Agent.new({
+      name: 'test-agent',
+      instructions: 'do as you are told',
+      model: model,
+      tools: {},
+      max_steps: 3,
+      stream: streaming,
+    }).generate('go')
+  })
+}
+
+@test
+fn a_streamed_run_prints_what_the_same_run_prints_whole() {
+  # The pieces arrive with their own spacing, and what a reader ends up with is
+  # the answer and one newline — the same transcript either way.
+  let whole = run(BothWaysModel.new([{text: 'all done'}]), false)
+  let streamed = run(BothWaysModel.new([{text: 'all done'}]), true)
+  assert_eq(streamed, whole)
+}
+
+@test
+fn the_answer_of_a_streamed_run_is_still_what_comes_back() {
+  let model = BothWaysModel.new([{text: 'all done'}])
+  mut out = nil
+  IO.capture(fn () {
+    out = agent.Agent.new({
+      name: 'test-agent', instructions: 'go on', model: model, tools: {},
+      max_steps: 3, stream: true,
+    }).generate('go')
+  })
+  assert_eq(out.text, 'all done')
+}
+
+@test
+fn a_model_that_cannot_stream_says_so_at_the_call() {
+  # Structural conformance: no `do_stream`, no `StreamingLanguageModel`. The
+  # failure names the call rather than surfacing as a nil several frames later.
+  let raised = try {
+    run(WholeOnlyModel.new(), true)
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(raised.kind, 'DispatchError')
+}
+
+@test
+fn two_calls_in_one_stream_are_told_apart_by_their_index() {
+  # Both grow at once, a piece of each per frame; only the index says which
+  # arguments belong to which call.
+  let out = openai_stream([
+    frame({choices: [{delta: {tool_calls: [
+      {index: 0, id: 'c1', function: {name: 'readFile', arguments: '{"p'}},
+      {index: 1, id: 'c2', function: {name: 'writeFile', arguments: '{"p'}},
+    ]}}]}),
+    frame({choices: [{delta: {tool_calls: [
+      {index: 0, function: {arguments: 'ath":"a.txt"}'}},
+      {index: 1, function: {arguments: 'ath":"b.txt"}'}},
+    ]}}]}),
+    frame({choices: [{delta: {}, finish_reason: 'tool_calls'}]}),
+  ], nil).out
+
+  assert_eq(out.tool_calls, [
+    {tool_call_id: 'c1', name: 'readFile', args: {path: 'a.txt'}},
+    {tool_call_id: 'c2', name: 'writeFile', args: {path: 'b.txt'}},
+  ])
+}

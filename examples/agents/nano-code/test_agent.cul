@@ -11,7 +11,8 @@ import err from './core/errors.cul'
 # does, so what the loop did is read off the model: `seen` is one entry per
 # turn, holding the history it was asked with.
 #
-# The streaming case upstream tests is not ported: this port has no streaming.
+# The streaming half of the loop is exercised in test_streaming.cul, where the
+# two ways of asking are run against each other.
 
 # A model that answers from a list, and remembers what it was asked.
 class ScriptedModel {
