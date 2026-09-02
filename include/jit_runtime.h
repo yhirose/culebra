@@ -2709,17 +2709,33 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
   return o;
 }
 
+// The per-callsite Shape cache every static-key-list construction site
+// shares (ObjectNewShaped's own runtime half below, and
+// culebra_runtime_materialize_value in jit_fixed.h): `*shape_cache` starts
+// null and is resolved on the callsite's first execution, then reused
+// forever — the Shape a given (static) key list resolves to never changes,
+// so a benign race refills it with the identical canonical pointer on every
+// path (same argument as JitPropIC's cache; `transition_add`'s own lock is
+// what makes concurrent resolution idempotent). A Shape* is a per-process
+// pointer, so this laziness is load-bearing for AOT: the value baked at
+// `culebra build` time would be garbage in the binary's own run.
+inline culebra::Shape* _jit_resolve_cached_shape(void** shape_cache,
+                                                 const char* const* keys,
+                                                 int64_t n_keys) {
+  auto* shape = reinterpret_cast<culebra::Shape*>(*shape_cache);
+  if (!shape) {
+    shape = culebra::shape_registry().root();
+    for (int64_t i = 0; i < n_keys; i++)
+      shape = culebra::shape_registry().transition_add(shape, keys[i]);
+    *shape_cache = shape;
+  }
+  return shape;
+}
+
 // Object::ObjectNewShaped's runtime half: build the object with its final
 // Shape and (nil, immutable) slots already in place, instead of transitioning
 // through one Shape per key as the ObjectSet run that follows would
-// otherwise do (see Chunk::ObjectShapeSpec). `*shape_cache` starts null and
-// is resolved on the callsite's first execution, then reused forever — the
-// Shape a given (static) key list resolves to never changes, so a benign
-// race refills it with the identical canonical pointer on every path (same
-// argument as JitPropIC's cache; `transition_add`'s own lock is what makes
-// concurrent resolution idempotent). A Shape* is a per-process pointer, so
-// this laziness is load-bearing for AOT: the value baked at `culebra build`
-// time would be garbage in the binary's own run.
+// otherwise do (see Chunk::ObjectShapeSpec).
 //
 // Each slot starts `mut=false` — irrelevant, since ObjectSet's is_init=true
 // overwrite (the only way a shaped slot's value ever changes before the
@@ -2731,13 +2747,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
 // JitObject::mut_count).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new_shaped(
     void** shape_cache, const char* const* keys, int64_t n_keys) {
-  auto* shape = reinterpret_cast<culebra::Shape*>(*shape_cache);
-  if (!shape) {
-    shape = culebra::shape_registry().root();
-    for (int64_t i = 0; i < n_keys; i++)
-      shape = culebra::shape_registry().transition_add(shape, keys[i]);
-    *shape_cache = shape;
-  }
+  auto* shape = _jit_resolve_cached_shape(shape_cache, keys, n_keys);
   auto* o = new JitObject();
   o->refcount = 1;
   o->shape = shape;

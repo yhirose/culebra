@@ -91,12 +91,10 @@ assert_eq(takes_untyped(v).keys(), ['class', 'x', 'y'])
 # top-level statement (reproduced with a plain, non-`@value` class too —
 # not this feature's leak), so the only sound comparison is two points
 # already inside the steady state.
-mut i = 0
 mut live_at_10 = -1
-while i < 500 {
+for i in 0..500 {
   takes_untyped(v)
-  i = i + 1
-  if i == 10 { live_at_10 = GC.stat().live_objects }
+  if i == 9 { live_at_10 = GC.stat().live_objects }
 }
 assert_eq(GC.stat().live_objects, live_at_10)
 

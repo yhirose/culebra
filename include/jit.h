@@ -2141,6 +2141,33 @@ struct JIT {
     return builder_.CreateBitCast(gv, ptrTy);
   }
 
+  // The per-callsite Shape-cache pair every static-key-list construction
+  // site's lowering needs (ObjectNewShaped, ValueBox): a private, lazily-
+  // filled global pointer — a Shape* baked at AOT-compile time would be a
+  // dangling address in the compiled binary's own, later, process, so
+  // `_jit_resolve_cached_shape` (jit_runtime.h) resolves it on first
+  // execution instead — plus the key C-string pointer array that runtime
+  // half reads. `prefix` names the globals for readability in an IR dump;
+  // `counter` disambiguates repeat callsites sharing one prefix.
+  std::pair<llvm::GlobalVariable*, llvm::Value*> build_shape_cache_globals(
+      const std::vector<const char*>& keys, const char* prefix,
+      int& counter) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto* cacheGlobal = new llvm::GlobalVariable(
+        *module_, ptrTy, /*isConstant=*/false,
+        llvm::GlobalValue::PrivateLinkage,
+        llvm::ConstantPointerNull::get(ptrTy),
+        std::string(prefix) + ".cache." + std::to_string(counter++));
+    std::vector<llvm::Constant*> keyPtrs;
+    keyPtrs.reserve(keys.size());
+    std::string keyTag = std::string(prefix) + ".key";
+    for (const char* k : keys)
+      keyPtrs.push_back(get_or_create_global_str(k, keyTag.c_str()));
+    std::string keysTag = std::string(prefix) + ".keys";
+    auto keysArray = build_str_ptr_array(keyPtrs, keysTag.c_str());
+    return {cacheGlobal, keysArray};
+  }
+
 
   // --- Value helpers ---
 

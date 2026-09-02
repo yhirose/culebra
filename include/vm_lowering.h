@@ -1180,20 +1180,8 @@ struct Lowering {
         }
         case Op::ObjectNewShaped: {
           const auto& spec = c.object_shape_specs[in.b];
-          // Own cache cell per callsite, resolved lazily the same way the
-          // executor's chunk.object_shape_specs[i].shape is — a Shape* baked
-          // at AOT-compile time would be a dangling address in the compiled
-          // binary's own, later, process.
-          auto* cacheGlobal = new llvm::GlobalVariable(
-              *j.module_, ptrTy, /*isConstant=*/false,
-              llvm::GlobalValue::PrivateLinkage,
-              llvm::ConstantPointerNull::get(ptrTy),
-              ".obj.shape.cache." + std::to_string(j.obj_shape_counter_++));
-          std::vector<llvm::Constant*> keyPtrs;
-          keyPtrs.reserve(spec.keys.size());
-          for (const char* k : spec.keys)
-            keyPtrs.push_back(j.get_or_create_global_str(k, ".shape.key"));
-          auto keysArray = j.build_str_ptr_array(keyPtrs, ".shape.keys");
+          auto [cacheGlobal, keysArray] = j.build_shape_cache_globals(
+              spec.keys, ".obj.shape", j.obj_shape_counter_);
           auto obj = j.emit_call(
               j.module_->getOrInsertFunction(rt::object_new_shaped, ptrTy,
                                              ptrTy, ptrTy, i64Ty),
@@ -4279,20 +4267,8 @@ struct Lowering {
         case Op::ValueBox: {
           const auto& spec = c.value_box_specs[in.c];
           const int64_t n_fields = static_cast<int64_t>(spec.keys.size()) - 1;
-          // Own cache cell per callsite, resolved lazily exactly like
-          // ObjectNewShaped's own — a Shape* baked at AOT-compile time
-          // would be a dangling address in the compiled binary's own,
-          // later, process.
-          auto* cacheGlobal = new llvm::GlobalVariable(
-              *j.module_, ptrTy, /*isConstant=*/false,
-              llvm::GlobalValue::PrivateLinkage,
-              llvm::ConstantPointerNull::get(ptrTy),
-              ".value.box.cache." + std::to_string(j.value_box_counter_++));
-          std::vector<llvm::Constant*> keyPtrs;
-          keyPtrs.reserve(spec.keys.size());
-          for (const char* k : spec.keys)
-            keyPtrs.push_back(j.get_or_create_global_str(k, ".value.box.key"));
-          auto keysArray = j.build_str_ptr_array(keyPtrs, ".value.box.keys");
+          auto [cacheGlobal, keysArray] = j.build_shape_cache_globals(
+              spec.keys, ".value.box", j.value_box_counter_);
           // The field values are scattered across N separate slot allocas
           // (each Chunk slot is its own alloca, not a contiguous array), so
           // pack them into one entry-block alloca first — MakeInst's own

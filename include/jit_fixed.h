@@ -1885,21 +1885,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
 // nothing here ever asks whether the field set is closed, because nothing
 // here is ever an append.
 //
-// `*shape_cache` starts null and is resolved on this callsite's first
-// execution, then reused forever — the same argument ObjectNewShaped's own
-// runtime half already makes (a Shape* is a per-process pointer, so this
-// laziness is load-bearing for AOT).
+// The Shape cache (`*shape_cache`) is the same per-callsite one
+// ObjectNewShaped's runtime half uses — see `_jit_resolve_cached_shape`
+// (jit_runtime.h) for why the laziness is load-bearing for AOT.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
     void** shape_cache, const char* const* keys, int64_t n_keys,
     JitObject* class_meta, const char* class_name,
     const JitValue* field_values) {
-  auto* shape = reinterpret_cast<culebra::Shape*>(*shape_cache);
-  if (!shape) {
-    shape = culebra::shape_registry().root();
-    for (int64_t i = 0; i < n_keys; i++)
-      shape = culebra::shape_registry().transition_add(shape, keys[i]);
-    *shape_cache = shape;
-  }
+  auto* shape = _jit_resolve_cached_shape(shape_cache, keys, n_keys);
   auto* inst = culebra_runtime_object_new();
   inst->shape = shape;
   inst->slots.reserve(static_cast<size_t>(n_keys));
