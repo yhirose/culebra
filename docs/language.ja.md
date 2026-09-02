@@ -5738,6 +5738,8 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表
 | `tests/test_fs.cul` | stdlib §3 (`FS`) |
 | `tests/test_json.cul` | stdlib §9 (`JSON`) |
 | `tests/test_tensor.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_nn.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_ops.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_time.cul` | stdlib §5 (`Time`) |
 | `tests/test_import.cul` | §24 (モジュール) — `tests/test_import_helpers/*.cul`が依存先 |
 

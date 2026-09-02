@@ -1,0 +1,217 @@
+# Conformance: stdlib §7 (Tensor). See docs/stdlib.md and docs/language.md §25.
+#
+# Tensor.where, index_select/index_add, scatter_to_axis, concat, narrow,
+# comparisons (gt/lt/ge/le/eq/ne), tanh/sin/cos/clamp, and .rope(). Split
+# from test_tensor.cul: one flat script compiles as a single JIT
+# function, whose optimization cost grows superlinearly with size.
+#
+# Run with:  ./build/culebra tests/test_tensor_ops.cul
+#            ./build/culebra --jit tests/test_tensor_ops.cul
+
+# --- Tensor.where(cond, a, b): elementwise select ---------------------------
+
+let where_cond = Tensor.from([[1.0, 0.0], [0.0, 1.0]])
+let where_a = Tensor.from([[10.0, 20.0], [30.0, 40.0]])
+let where_b = Tensor.from([[-1.0, -2.0], [-3.0, -4.0]])
+assert_eq(Tensor.where(where_cond, where_a, where_b).to_array(),
+         [[10.0, -2.0], [-3.0, 40.0]])
+
+# `a`/`b` may be scalars, lifted the same way a binop lifts one.
+assert_eq(Tensor.where(where_cond, where_a, -100.0).to_array(),
+         [[10.0, -100.0], [-100.0, 40.0]])
+
+# cond broadcasts against a batch, same rule as any other binop.
+let where_mask = Tensor.from([[1.0, 0.0, 1.0]])
+let where_x = Tensor.zeros(4, 3) + 1.0
+assert_eq(to_string(Tensor.where(where_mask, where_x, 0.0).shape()), "[4, 3]")
+
+# VJP: da = g*cond, db = g*(1-cond); cond itself gets no gradient.
+let where_ga = Tensor.from([[2.0, 3.0, 5.0]]).requires_grad()
+let where_gb = Tensor.from([[7.0, 11.0, 13.0]]).requires_grad()
+let where_gy = Tensor.where(Tensor.from([[1.0, 0.0, 1.0]]), where_ga, where_gb)
+(where_gy * Tensor.from([[1.0, 2.0, 3.0]])).sum(1).sum(0).backward()
+assert_eq(where_ga.grad().to_array(), [[1.0, 0.0, 3.0]])
+assert_eq(where_gb.grad().to_array(), [[0.0, 2.0, 0.0]])
+
+# --- index_select / Tensor.index_add: the embedding-table lookup -----------
+
+let table = Tensor.from([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+let sel_idx = Tensor.from([2.0, 0.0, 2.0])
+assert_eq(table.index_select(sel_idx).to_array(),
+         [[5.0, 6.0], [1.0, 2.0], [5.0, 6.0]])
+
+# index_select's exact dual: repeated indices accumulate.
+let add_idx = Tensor.from([1.0, 1.0, 0.0])
+let add_values = Tensor.from([[10.0, 20.0], [30.0, 40.0], [1.0, 2.0]])
+assert_eq(Tensor.index_add(add_idx, add_values, [4, 2]).to_array(),
+         [[1.0, 2.0], [40.0, 60.0], [0.0, 0.0], [0.0, 0.0]])
+
+# VJP: index_select/index_add are each other's dual gradient.
+let table_g = Tensor.from([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]).requires_grad()
+let sel = table_g.index_select(Tensor.from([0.0, 2.0, 0.0]))
+(sel * Tensor.from([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])).sum(1).sum(0).backward()
+assert_eq(table_g.grad().to_array(), [[4.0, 4.0], [0.0, 0.0], [2.0, 2.0]])
+
+# --- Tensor.scatter_to_axis(indices, values, size): one-hot scatter --------
+
+let sc_idx = Tensor.from([2.0, 0.0, 1.0])
+let sc_values = Tensor.from([5.0, 7.0, 9.0])
+assert_eq(Tensor.scatter_to_axis(sc_idx, sc_values, 4).to_array(),
+         [[0.0, 0.0, 5.0, 0.0], [7.0, 0.0, 0.0, 0.0], [0.0, 9.0, 0.0, 0.0]])
+
+# --- Tensor.concat(parts, axis): axis defaults to 0 (rows), any axis works -
+
+let cc_a = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+let cc_b = Tensor.from([[5.0, 6.0], [7.0, 8.0]])
+
+let cc_c0 = Tensor.concat([cc_a, cc_b])
+let cc_c1 = Tensor.concat([cc_a, cc_b], 1)
+assert_eq(cc_c0.to_array(), [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+assert_eq(Tensor.concat([cc_a, cc_b], 0).to_array(), cc_c0.to_array())
+assert_eq(cc_c1.to_array(), [[1.0, 2.0, 5.0, 6.0], [3.0, 4.0, 7.0, 8.0]])
+assert_eq(Tensor.concat([cc_a, cc_b], -1).to_array(), cc_c1.to_array())
+
+# rank-3 (KV-cache shape: concat along the sequence axis)
+let cc_k1 = Tensor.zeros(2, 1, 3)
+let cc_k2 = Tensor.ones(2, 1, 3)
+assert_eq(Tensor.concat([cc_k1, cc_k2], 1).shape(), [2, 2, 3])
+
+# backward routes each part's own axis-window of the upstream grad back to it
+let cc_ga = cc_a.requires_grad()
+let cc_gb = cc_b.requires_grad()
+Tensor.concat([cc_ga, cc_gb], 1).sum(1).sum(0).backward()
+assert_eq(cc_ga.grad().to_array(), [[1.0, 1.0], [1.0, 1.0]])
+assert_eq(cc_gb.grad().to_array(), [[1.0, 1.0], [1.0, 1.0]])
+
+assert_throws('ValueError', fn () { Tensor.concat([]) })
+assert_throws('ValueError', fn () { Tensor.concat([cc_a, Tensor.zeros(2, 3)]) })
+
+# --- .narrow([axis, start, end]): .slice() generalized to any axis --------
+
+let narrow_x = Tensor.from(
+  [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]],
+)
+assert_eq(narrow_x.narrow([0, 1, 2]).to_array(), [[5.0, 6.0, 7.0, 8.0]])
+assert_eq(narrow_x.narrow([1, 1, 3]).to_array(),
+         [[2.0, 3.0], [6.0, 7.0], [10.0, 11.0]])
+
+# Works through a non-contiguous view (post-permute), not just a fresh
+# contiguous tensor — array::slice's own strides math, not a memcpy.
+let narrow_y = Tensor.from([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]).permute([1, 0])
+assert_eq(narrow_y.narrow([1, 1, 3]).to_array(), [[3.0, 5.0], [4.0, 6.0]])
+
+assert_throws('IndexError', fn () { narrow_x.narrow([5, 0, 1]) })
+
+# d/dx narrow(x, [axis, start, end]) is a zero-pad of gy back out to x's
+# own axis length -- 1 at the selected window, 0 elsewhere.
+let narrow_gx = narrow_x.requires_grad()
+narrow_gx.narrow([1, 1, 3]).sum(0).sum(0).backward()
+assert_eq(
+  narrow_gx.grad().to_array(),
+  [[0.0, 1.0, 1.0, 0.0], [0.0, 1.0, 1.0, 0.0], [0.0, 1.0, 1.0, 0.0]],
+)
+
+# --- comparisons: gt/lt/ge/le/eq/ne -----------------------------------------
+# Not differentiable (Max/Argmax's own precedent) -- ReLU/LeakyReLU/Clip's
+# backward gate composes the result with `*` rather than .backward()'ing
+# through the comparison itself.
+
+let cx = Tensor.from([-2.0, -1.0, 0.0, 1.0, 2.0])
+assert_eq(cx.gt(0.0).to_array(), [0.0, 0.0, 0.0, 1.0, 1.0])
+assert_eq(cx.lt(0.0).to_array(), [1.0, 1.0, 0.0, 0.0, 0.0])
+assert_eq(cx.ge(1.0).to_array(), [0.0, 0.0, 0.0, 1.0, 1.0])
+assert_eq(cx.le(-1.0).to_array(), [1.0, 1.0, 0.0, 0.0, 0.0])
+assert_eq(cx.eq(0.0).to_array(), [0.0, 0.0, 1.0, 0.0, 0.0])
+assert_eq(cx.ne(0.0).to_array(), [1.0, 1.0, 0.0, 1.0, 1.0])
+
+# Tensor vs Tensor (same shape), not just Tensor vs scalar.
+let cy = Tensor.from([1.0, -1.0, 0.0, 1.0, 3.0])
+assert_eq(cx.gt(cy).to_array(), [0.0, 0.0, 0.0, 0.0, 0.0])
+
+# the concrete ReLU-backward-gate composition: gy * (x > 0).
+let cgy = Tensor.from([1.0, 1.0, 1.0, 1.0, 1.0])
+assert_eq((cgy * cx.gt(0.0)).to_array(), [0.0, 0.0, 0.0, 1.0, 1.0])
+
+assert_throws('ValueError', fn () {
+  Tensor.from([1.0, 2.0]).requires_grad().gt(0.0).backward()
+})
+
+# --- tanh/sin/cos/clamp ------------------------------------------------------
+# Differentiable (native VJP) as well as forward-only: examples/dezero's own
+# Tanh/Sin/Cos/Clip classes still write their own backward on top of these,
+# but .backward() through the raw Tensor node works too — both are supported.
+
+let tx = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0])
+assert_close(tx.tanh().to_array()[0], -0.9640275800758169, 1.0e-6)
+assert_close(tx.sin().to_array()[0], -0.9092974268256817, 1.0e-6)
+assert_close(tx.cos().to_array()[0], -0.4161468365471424, 1.0e-6)
+assert_eq(tx.clamp(-1.0, 1.0).to_array(), [-1.0, -0.5, 0.0, 0.5, 1.0])
+
+# fused epilogue composes (same as exp_/sqrt_ do).
+assert_close((tx.tanh() * 2.0).to_array()[0], -1.9280551601516338, 1.0e-6)
+
+# d/dx tanh(x) = 1 - tanh(x)^2
+let ty = tx.requires_grad().tanh()
+ty.sum(0).backward()
+let tanh0 = -0.9640275800758169
+assert_close(tx.grad().to_array()[0], 1.0 - tanh0 * tanh0, 1.0e-6)
+
+# d/dx sin(x) = cos(x)
+let sx = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0]).requires_grad()
+sx.sin().sum(0).backward()
+assert_close(sx.grad().to_array()[0], Math.cos(-2.0), 1.0e-6)
+
+# d/dx cos(x) = -sin(x)
+let cx = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0]).requires_grad()
+cx.cos().sum(0).backward()
+assert_close(cx.grad().to_array()[0], -Math.sin(-2.0), 1.0e-6)
+
+# d/dx clamp(x, lo, hi) = 1 inside [lo, hi], 0 outside
+let px = Tensor.from([-2.0, -0.5, 0.0, 0.5, 2.0]).requires_grad()
+px.clamp(-1.0, 1.0).sum(0).backward()
+assert_eq(px.grad().to_array(), [0.0, 1.0, 1.0, 1.0, 0.0])
+
+# --- .rope(pos, base): rotary position embedding -----------------------------
+# Half-split (GPT-NeoX / HF-llama) convention: pairs (j, j+D/2) of the last
+# axis rotate by angle = position * base^(-2j/D), position = pos + (r % T).
+# Forward-only for now (see tensor.h's Op::Rope comment) -- a training-time
+# RoPE composes from slice/mul/concat instead of this fused decode fast path.
+
+# pos=0 rotates every row by angle 0 regardless of theta -> identity.
+let rx = Tensor.from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+assert_eq(rx.rope(0, 10000.0).to_array(), rx.to_array())
+
+# pos=1, base=10000.0, D=4: hand-computed against the half-split formula.
+let r1 = Tensor.from([[1.0, 2.0, 3.0, 4.0]]).rope(1, 10000.0).to_array()[0]
+assert_close(r1[0], -1.9841106485555497, 1.0e-6)
+assert_close(r1[1], 1.959900667496664, 1.0e-6)
+assert_close(r1[2], 2.462377902412316, 1.0e-6)
+assert_close(r1[3], 4.019799668334994, 1.0e-6)
+
+# base may be a Long too (coerced, same as clamp's lo/hi).
+assert_eq(
+  Tensor.from([[1.0, 2.0, 3.0, 4.0]]).rope(1, 10000).to_array(),
+  Tensor.from([[1.0, 2.0, 3.0, 4.0]]).rope(1, 10000.0).to_array(),
+)
+
+# [H,T,D] (prefill shape): row r's position is pos + (r % T). `.from` has no
+# 3D literal and `.to_array` caps at rank 2, so reshape a 2D [2,4] up to
+# [2,1,4] (T=1, same math as [H,D]) and back down after rope.
+let rt3 = Tensor
+  .from([[1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0]])
+  .reshape([2, 1, 4])
+let rt3out = rt3.rope(1, 10000.0).reshape([2, 4]).to_array()
+assert_eq(rt3out[0], r1)
+assert_eq(rt3out[1], r1)
+
+# forward-only: .backward() through rope raises rather than silently
+# skipping (same contract as the comparisons above).
+assert_throws('ValueError', fn () {
+  Tensor
+    .from([[1.0, 2.0, 3.0, 4.0]])
+    .requires_grad()
+    .rope(0, 10000.0)
+    .backward()
+})
+
+inspect("test_tensor_ops: OK")
