@@ -1,17 +1,19 @@
 # デスクトップアプリを作る
 
-culebraの`Webview`・`Desktop`名前空間で小さなデスクトップアプリを作る手順。
-ネイティブウィンドウ、素のHTML/CSS/JSで書いたUI、ローカルHTTPサーバの
-向こう側にいるculebraバックエンド — これら全部が1つのバイナリとして
-出荷される。[`examples/webview/`](../../examples/webview/)にある同じ
-アプリを1ステップずつ組み立てる。先に完成コードを読みたければそちらの
-ファイルを直接実行してもよい。
+culebraの`Webview`・`Desktop`名前空間を使って、小さなデスクトップアプリを
+作る手順を紹介します。ネイティブウィンドウ、素のHTML/CSS/JSで書いたUI、
+そしてローカルHTTPサーバの向こう側にいるculebraバックエンド。これらが全部
+まとめて1つのバイナリになります。
 
-このガイドが扱うのは`Desktop`/`Webview`の**使い方**。APIリファレンスは
-[`stdlib.ja.md` §29](../stdlib.ja.md#29-desktop--webview)、内部の仕組み
+[`examples/webview/`](../../examples/webview/)にあるのと同じアプリを、
+1ステップずつ組み立てていきます。先に完成形を読みたい方は、そちらの
+ファイルを直接実行してみてください。
+
+このガイドが扱うのは`Desktop`/`Webview`の**使い方**です。APIリファレンスは
+[`stdlib.ja.md` §29](../stdlib.ja.md#29-desktop--webview)に、内部の仕組み
 （loopback bridge、`Embed.dir`のdev/AOT切り替え、プラットフォームごとの
 ビルド要件、Ubuntuのsandbox注意点の全文）は
-[`examples/webview/README.md`](../../examples/webview/README.md)を参照。
+[`examples/webview/README.md`](../../examples/webview/README.md)にあります。
 
 目次
 ----
@@ -34,8 +36,8 @@ culebraの`Webview`・`Desktop`名前空間で小さなデスクトップアプ�
 
 ### 1. ウィンドウを1行で
 
-生のバインディングは`Webview.Window`。作って、何か表示するものを与えて、
-イベントループを回すだけ。
+生のバインディングは`Webview.Window`です。作って、表示するものを与えて、
+イベントループを回すだけです。
 
 ```culebra
 # doctest: skip
@@ -46,32 +48,34 @@ w.set_html("<h1>It works</h1>")
 w.run()
 ```
 
-`run()`は呼び出したスレッドをウィンドウが閉じるまでブロックする — それが
-GUIスレッドの仕事のすべて。`set_html`はHTML文字列リテラルをそのまま
-受け取るので、このバージョンにはサーバも別ファイルもない。完全に動く版は
-[`examples/webview/hello.cul`](../../examples/webview/hello.cul)を参照。
-実際のアプリはHTML/CSS/JSをファイルから配信する — それが次に出てくる
-`Desktop.run`。
+`run()`は、呼び出したスレッドをウィンドウが閉じるまでブロックします。
+GUIスレッドの仕事はこれで全部です。`set_html`はHTML文字列リテラルを
+そのまま受け取るので、この版にはサーバも別ファイルも出てきません。動く
+完成形は[`examples/webview/hello.cul`](../../examples/webview/hello.cul)に
+あります。
+
+実際のアプリでは、HTML/CSS/JSはファイルから配信することになります。それを
+やってくれるのが、次に出てくる`Desktop.run`です。
 
 ### 2. 自前のフロントエンドを配信する
 
-`Desktop.run`は`Webview.Window`の上に建てたfacade: ローカルHTTPサーバを
-起動し、そこへウィンドウを向け、ウィンドウが閉じるまでブロックする。
-`assets:`にディレクトリを渡せば`/`で配信される。
+`Desktop.run`は`Webview.Window`の上に建てた窓口です。ローカルHTTPサーバを
+起動し、そこへウィンドウを向けて、ウィンドウが閉じるまでブロックします。
+`assets:`にディレクトリを渡すと、その中身が`/`で配信されます。
 
 ```culebra
 # doctest: skip
 Desktop.run({title: "My App", size: [720, 560], assets: Embed.dir("dist")})
 ```
 
-`Embed.dir("dist")`はコード変更なしに**backendごとに**解決先が変わる:
-ソースから実行するとエントリスクリプトの隣にあるディレクトリを実ディスクから
-生きたまま読む（`dist/index.html`を編集してウィンドウをreloadすれば
-そのまま反映される）。`culebra build`はビルド時にそのディレクトリを
-walkし、バイト列を実行ファイルへ焼き込む。後半の詳細は
-[§6](#6-単一バイナリとして配布する)。
+`Embed.dir("dist")`は、コードを変えないまま、**バックエンドごとに**
+解決先が変わります。ソースから実行したときは、エントリスクリプトの隣に
+あるディスク上のディレクトリをそのまま読みます。`dist/index.html`を編集して
+ウィンドウを再読み込みすれば、すぐ反映されます。`culebra build`のほうは
+ビルド時にそのディレクトリを歩いて、バイト列を実行ファイルへ焼き込みます。
+後者の詳しい話は[§6](#6-単一バイナリとして配布する)にあります。
 
-`dist/`は普通の静的サイトと同じレイアウトでよい。
+`dist/`のレイアウトは、普通の静的サイトと同じで大丈夫です。
 
 ```
 dist/
@@ -80,13 +84,14 @@ dist/
   app.js
 ```
 
-[`examples/webview/dist/`](../../examples/webview/dist/)に、このガイドが
-組み立てる最終形の3ファイルがある。
+[`examples/webview/dist/`](../../examples/webview/dist/)に、このガイドで
+組み立てる最終形の3ファイルが置いてあります。
 
 ### 3. APIルートを追加する
 
-`routes:`クロージャは、ウィンドウが開く前にアプリ自身のエンドポイントを
-（[§15](../stdlib.ja.md#15-http)が説明するのと同じ）`Http`サーバへ登録する。
+`routes:`に渡すクロージャは、ウィンドウが開く前に、アプリ自身の
+エンドポイントを`Http`サーバへ登録します（[§15](../stdlib.ja.md#15-http)が
+説明しているものと同じサーバです）。
 
 ```culebra
 # doctest: skip
@@ -108,18 +113,19 @@ Desktop.run({assets: Embed.dir("dist"), routes: fn (srv) {
 ```
 
 これは[`examples/webview/desktop_app.cul`](../../examples/webview/desktop_app.cul)
-と同じ形: 固定メッセージを返す`GET`と、ページが送ってきたものをそのまま
-返す`POST`（実ファイルには3つ目のルートもある — 永続化された訪問回数
-カウンタで、詳しくは下のレシピ
-[「ワーカー間で安全に状態を持つ」](#ワーカー間で安全に状態を持つ)を参照）。
-ハンドラの戻り値がそのままレスポンスになる規則は素の`Http.server()`と
-同じ — `String`なら`200 text/plain`、それ以外は
-`content_type`/`body`/`status`/`headers`を持つ`Object`で自由に制御する。
+と同じ形です。固定メッセージを返す`GET`と、ページが送ってきたものを
+そのまま返す`POST`の2本です。実ファイルにはもう1本、訪問回数を数えて
+保存しておくルートもあります。そちらは下のレシピ
+[「ワーカー間で安全に状態を持つ」](#ワーカー間で安全に状態を持つ)で扱います。
+
+ハンドラの戻り値がそのままレスポンスになる規則は、素の`Http.server()`と
+同じです。`String`を返せば`200 text/plain`になりますし、それ以外は
+`content_type`/`body`/`status`/`headers`を持つ`Object`で自由に決められます。
 
 ### 4. JavaScriptから呼び出す
 
-ページはただのWebページなので、他のどんなHTTPバックエンドに対してと
-同じように`fetch`でAPIへ届く。
+ページはただのWebページなので、他のHTTPバックエンドを相手にするときと
+同じように、`fetch`でAPIへ届きます。
 
 ```js
 async function load() {
@@ -140,17 +146,19 @@ async function send() {
 }
 ```
 
-これが[§3](#3-apiルートを追加する)の2つのルートを呼んでいる`dist/app.js`。
-ネイティブなJS↔culebraブリッジは一切介在しない — ページは
-`127.0.0.1:PORT`へ普通のHTTPで話しかけているだけで、どこかのリモート
-サーバに対してと変わらない。つまり普段のWeb開発の作法もそのまま持ち込める
-— dev tools、`fetch`、相対URL、ブラウザキャッシュ。
+これが、[§3](#3-apiルートを追加する)で作った2つのルートを呼んでいる
+`dist/app.js`です。ネイティブなJS↔culebraブリッジのようなものは、
+一切あいだに入っていません。ページは`127.0.0.1:PORT`へ普通のHTTPで
+話しかけているだけで、どこかのリモートサーバを相手にするのと変わりません。
+
+ですから、普段のWeb開発の作法もそのまま持ち込めます。dev tools、`fetch`、
+相対URL、ブラウザキャッシュ。どれもいつもどおりに使えます。
 
 ### 5. ページからウィンドウを閉じる
 
-`Desktop.run`のアプリには`POST /__quit`が自動登録されるので、ページは
-フレーム自身の閉じるボタンに頼らず、同じHTTPブリッジ経由でアプリを
-終了できる。
+`Desktop.run`で作ったアプリには`POST /__quit`が自動で登録されます。ですから
+ページは、ウィンドウ枠の閉じるボタンに頼らなくても、同じHTTPの経路を通って
+アプリを終了させられます。
 
 ```js
 document.getElementById("quit").addEventListener("click", () => {
@@ -158,10 +166,10 @@ document.getElementById("quit").addEventListener("click", () => {
 });
 ```
 
-ページ側が「閉じてよいタイミング」を自分で**決めたい**場合 — 例えば
-確認ダイアログを出してから、といった場合 — ネイティブ側はフレームの
-閉じるボタンを尊重する前に、ページ自身の`window`グローバルにある2つの
-慣習的な名前のプロパティを探す。
+「閉じてよいタイミング」をページ側で**決めたい**こともあります。たとえば
+確認ダイアログを先に出したい場合です。そういうときのために、ネイティブ側は
+閉じるボタンの操作をそのまま通す前に、ページの`window`グローバルにある
+決まった名前のプロパティを2つ探しにいきます。
 
 ```js
 document.getElementById("quit").addEventListener("click", requestQuit);
@@ -177,19 +185,21 @@ async function requestQuit() {
 }
 ```
 
-`__culebra_close__()`はネイティブウィンドウに実際に閉じるよう伝える関数、
-`__culebra_before_close__`はページがその呼び出しをゲートできるopt-inの
-フックだ。`examples/webview/dist/app.js`には完全版があり、ページ内の
-`confirmDialog`（`window.confirm()`ではなく、アプリ自身の見た目に合わせた
-プレーンな`Promise`を返すヘルパー）も含む。正確な呼び出し順は
+`__culebra_close__()`は、ネイティブウィンドウに「実際に閉じてよい」と
+伝える関数です。`__culebra_before_close__`のほうは、その呼び出しの手前に
+ページが割り込むためのフックで、定義するかどうかは任意です。
+
+`examples/webview/dist/app.js`に完全版が入っています。ページ内の
+`confirmDialog`も一緒です（`window.confirm()`ではなく、アプリ自身の見た目に
+合わせた、`Promise`を返すだけの小さなヘルパーです）。正確な呼び出し順は
 stdlibリファレンスの
 [「ページの`window`オブジェクト」](../stdlib.ja.md#ページのwindowオブジェクト)
-を参照。
+にあります。
 
 ### 6. 単一バイナリとして配布する
 
-`culebra build`はculebraバックエンドと焼き込み済みの`dist/`アセットを
-まとめて1つの実行ファイルへコンパイルする。
+`culebra build`は、culebraバックエンドと焼き込んだ`dist/`のアセットを
+まとめて、1つの実行ファイルにコンパイルします。
 
 ```sh
 culebra build examples/webview/desktop_app.cul -o app
@@ -197,12 +207,13 @@ culebra build examples/webview/desktop_app.cul -o app
 ./app
 ```
 
-バイナリの隣に`dist/`は要らない — どこへコピーしても動く。`culebra build`
-はWebViewフレームワークのリンクも、プログラムが実際に`Webview`/`Desktop`
-を参照しているかどうかでゲートするので、どちらも使わないプログラムは
-何もリンクしない。
+できたバイナリの隣に`dist/`を置く必要はありません。どこへコピーしても
+動きます。`culebra build`はWebViewフレームワークをリンクするかどうかも、
+プログラムが実際に`Webview`/`Desktop`を参照しているかどうかで決めるので、
+どちらも使わないプログラムには何もリンクされません。
 
-開発中は毎回ビルドせず、完成したアプリをそのまま実行すればよい。
+開発中は毎回ビルドしなくてかまいません。完成したアプリをそのまま実行
+できます。
 
 ```sh
 culebra examples/webview/desktop_app.cul          # バイトコードVM (既定)
@@ -213,11 +224,14 @@ culebra --jit examples/webview/desktop_app.cul    # 同じ出力、JIT経由
 
 ### 固定ポートを選ぶ
 
-デフォルトでは`Desktop.run`はまずポート`8731`を試し、それが塞がっていれば
-OSが割り当てた空きポートへ落ちる — 2つのculebraデスクトップアプリを
-並べて動かすには便利だが、ページのorigin（つまり`localStorage`）が
-実行のたびに変わりうるということでもある。`port:`を渡せば固定でき、
-かつ空いていなければ黙ってfallbackせず、はっきり失敗するようになる。
+既定では、`Desktop.run`はまずポート`8731`を試して、塞がっていればOSが
+割り当てた空きポートに移ります。culebraのデスクトップアプリを2つ並べて
+動かすときには便利な挙動です。
+
+ただしこれは、ページのorigin、つまり`localStorage`の置き場所が、実行の
+たびに変わりうるということでもあります。`port:`を渡すと固定できますし、
+そのポートが空いていなければ、黙って別のポートに移らずにはっきり失敗して
+くれるようになります。
 
 ```culebra
 # doctest: skip
@@ -232,18 +246,20 @@ Desktop.run({
 
 ### ワーカー間で安全に状態を持つ
 
-`Desktop.run`のサーバはワーカープール（`workers:`、デフォルト`4`）で
-リクエストを捌く — そして**各ワーカーは自分のランタイム、自分のヒープを
-持つ**。これがルートハンドラがSendableでなければならない理由: 外側の
-mutable変数やnon-Sendableなハンドル（`SQLite`のコネクションも含む）を
-捕獲できない。これは[§15](../stdlib.ja.md#15-http)と
-[§12](../stdlib.ja.md#12-isolate)が`Http.server()`と`Isolate.spawn()`一般
-について説明しているのと同じ規則だ。1つの`db`ハンドルをハンドラ間で
-共有しようとすると、リクエストが1本も走る前に`SendError`が飛ぶ。
+`Desktop.run`のサーバは、ワーカープール（`workers:`、既定は`4`）で
+リクエストを捌きます。そして**ワーカーはそれぞれ自分のランタイムと自分の
+ヒープを持ちます**。
 
-直し方も同じ節が示す通り: リソースを捕獲せず、必要になったハンドラの
-中で毎回開き直す。ファイルバックの小さなストアなら、リクエストごとに
-開くコストは無視できる。
+ルートハンドラがSendableでなければならないのは、これが理由です。外側の
+可変変数や、Sendableでないハンドル（`SQLite`の接続も含みます）は捕獲でき
+ません。[§15](../stdlib.ja.md#15-http)と
+[§12](../stdlib.ja.md#12-isolate)が`Http.server()`や`Isolate.spawn()`に
+ついて説明しているのと同じ規則です。1つの`db`ハンドルをハンドラ間で
+共有しようとすると、リクエストが1本も走らないうちに`SendError`が飛びます。
+
+直し方も同じで、リソースを捕獲せずに、必要になったハンドラの中で毎回
+開き直します。ファイルに置いた小さなストアなら、リクエストごとに開く
+コストは気にしなくて大丈夫です。
 
 ```culebra
 let db = SQLite.open(":memory:")
@@ -260,11 +276,12 @@ inspect(db.query("SELECT text FROM notes")[0]["text"])  # => 'walk the dog'
 db.close()
 ```
 
-ルートの中でも同じ3行 — `SQLite.open`、作業、`close()`（ハンドラの末尾で
-スコープを抜けるに任せてもよい）— が、上のin-memoryの部分を実ファイルに
-置き換えるだけで成り立つ。`examples/webview/desktop_app.cul`はまさにこれを
-永続化された訪問回数カウンタに適用していて、`/api/hello`・`/api/echo`と
-並ぶもう1つのルートになっている。
+ルートの中でも、やることは同じ3行です。`SQLite.open`して、作業して、
+`close()`します。最後のものは、ハンドラの末尾でスコープを抜けるのに任せても
+かまいません。上のメモリ上のデータベースを実ファイルに置き換えるだけで
+成り立ちます。`examples/webview/desktop_app.cul`はまさにこれを訪問回数の
+カウンタに使っていて、`/api/hello`・`/api/echo`と並ぶ3本目のルートに
+なっています。
 
 ```culebra
 # doctest: skip
@@ -283,52 +300,63 @@ srv.post("/api/visit", fn (req) {
 })
 ```
 
-`dist/app.js`の`trackVisit()`が読み込み時にこれを呼び、結果を表示する —
-`culebra examples/webview/desktop_app.cul`を実行してウィンドウを閉じ、
-もう一度実行してみるとよい。カウントは続きから始まる。プロセスではなく
-アプリを実行した場所の隣にある`visits.db`に住んでいるからだ。同時書き込みの
-直列化はSQLite自身のファイルロックが引き受ける — ハンドルを捕獲しないこと
-以外に、culebra側で気を配る調整は要らない。
+`dist/app.js`の`trackVisit()`が読み込み時にこれを呼んで、結果を表示します。
+`culebra examples/webview/desktop_app.cul`を実行してウィンドウを閉じ、もう
+一度実行してみてください。カウントは続きから始まります。数はプロセスでは
+なく、アプリを実行した場所の隣にある`visits.db`に入っているからです。
+
+同時に書き込もうとしたときの順番待ちは、SQLite自身のファイルロックが
+引き受けてくれます。ハンドルを捕獲しないこと以外に、culebra側で気を配る
+ことはありません。
 
 ### 1つのウィンドウで複数ページを扱う
 
-`assets:`はディレクトリ全体を配信するので、HTMLファイルが複数あっても
-静的サイトとまったく同じように振る舞う — culebra側のコードは要らず、
-リンク1本でよい。[`examples/webview/dist/`](../../examples/webview/dist/)の
-`dist/about.html`が2枚目のページで、`dist/index.html`は普通のやり方で
-そこへ届く。
+`assets:`はディレクトリ全体を配信するので、HTMLファイルが複数あっても、
+静的サイトとまったく同じように振る舞います。culebra側のコードは要りません。
+リンクを1本書くだけです。[`examples/webview/dist/`](../../examples/webview/dist/)の
+`dist/about.html`が2枚目のページで、`dist/index.html`からは普通のやり方で
+そこへ行けます。
 
 ```html
 <p class="nav"><a href="about.html">About this app</a></p>
 ```
 
-それだけでよい — サーバはディレクトリ全体を配信しているので、
-`GET /about.html`にはすでに答えられる。クリックを介さないプログラム的な
-遷移は別の層の話: [§1](#1-ウィンドウを1行で)の生のウィンドウハンドルに
-対する`Webview.Window.navigate(url)`であり、`Desktop.run`はこれを
-`routes:`には公開していない。複数ウィンドウのAPIはまだない — 1回の
-`Desktop.run`呼び出しはプロセスの生存期間中1つのウィンドウに対応する。
+これだけで済みます。サーバはディレクトリ全体を配信しているので、
+`GET /about.html`にはもう答えられる状態です。
+
+クリックを介さずにプログラムから遷移させたい場合は、別の層の話になります。
+[§1](#1-ウィンドウを1行で)で出てきた生のウィンドウハンドルに対する
+`Webview.Window.navigate(url)`がそれで、`Desktop.run`はこれを`routes:`には
+公開していません。複数ウィンドウのAPIもまだありません。1回の
+`Desktop.run`呼び出しは、プロセスが生きているあいだ1つのウィンドウに
+対応します。
 [examples/webview/README.mdの「Not here yet」](../../examples/webview/README.md#not-here-yet)
-を参照。
+に一覧があります。
 
 ### Ubuntuでウィンドウが開かない
 
 Ubuntu 23.10以降で`webview: failed to create window`（あるいは
-`bwrap` / `RTM_NEWADDR`のクラッシュ）は、WebKitGTK自身のsandboxが必要と
-する非特権user namespaceへのAppArmor制限が原因 — WebKitGTKを埋め込む
-アプリはすべて同じ症状に当たり、culebraも例外ではない。最新のUbuntu
-（24.04.2以降）はすでに修正済みのプロファイルを同梱している。古い、または
-削ぎ落とされたイメージでは、どちらかを行う。
+`bwrap`や`RTM_NEWADDR`まわりのクラッシュ）が出ることがあります。原因は
+culebraではなく、WebKitGTK自身のsandboxが必要とする非特権user namespaceに、
+AppArmorの制限がかかっていることです。WebKitGTKを埋め込むアプリは、どれも
+同じ症状に当たります。
+
+新しめのUbuntu（24.04.2以降）は、修正済みのプロファイルを最初から持って
+います。古いイメージや、削ぎ落とされたイメージの場合は、次のどちらかを
+してください。
 
 ```sh
 sudo apt install --reinstall bubblewrap apparmor
 ```
 
-または自分のバイナリ1つにだけnamespaceを許可する — 正確なprofileは
+あるいは、自分のバイナリ1つにだけnamespaceを許可する方法もあります。
+正確なプロファイルは
 [examples/webview/README.mdのAppArmorの節](../../examples/webview/README.md#the-sandbox-on-ubuntu-family-systems-apparmor)
-を参照。これはOSのポリシーの性質であってアプリの問題ではない — Debian、
-Fedora、Arch、Ubuntu由来のpatchが入っていないkernelはどれもこの対応が
-不要だ。
+にあります。
+
+これはOSのポリシーの性質であって、アプリ側の問題ではありません。Debian、
+Fedora、Arch、それにUbuntu由来のパッチが入っていないカーネルでは、どれも
+この対応は要りません。
 
 ## 次に読むもの
 
