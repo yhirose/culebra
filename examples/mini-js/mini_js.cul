@@ -209,7 +209,7 @@ let grammar = `
                  'new' / 'typeof' / 'instanceof' / 'in' / 'class' / 'extends' /
                  'super' / 'throw' / 'try' / 'catch' / 'finally' / 'break' /
                  'continue' / 'do' / 'void' / 'delete' / 'yield' / 'await' /
-                 'switch' / 'case' / 'default' / 'await') ![a-zA-Z0-9_$]
+                 'switch' / 'case' / 'default') ![a-zA-Z0-9_$]
 
   %whitespace <- ([ \t\r\n]+ / '//' [^\n]* / '/*' (!'*/' .)* '*/')*
   %word       <- [a-zA-Z0-9_$]
@@ -872,6 +872,12 @@ function __mkfn(c, name, arrow, len) {
   }
   return f;
 }
+// A method on a built-in: the property and the function's own name are the
+// same word, so it is written once.
+function __def(o, name, c) {
+  o[name] = __mkfn(c, name, false);
+  return undefined;
+}
 function __call(f, thisv, args) {
   if (!__is_fnobj(f)) throw __err('TypeError', __str(f) + ' is not a function');
   return __apply(f['\x01fn'], __typeof(thisv) === 'nil' ? __G : thisv, args);
@@ -932,7 +938,6 @@ function __mkclass(name, parent, ctor, fields) {
     c = __mkfn(ctor, name, false);
   }
   c['\x01fields'] = fields;
-  c['\x01class'] = true;
   var p = c.prototype;
   p['\x01noenum'] = true;
   if (has_parent) { p['\x01proto'] = parent.prototype; c['\x01proto'] = parent; }
@@ -1194,7 +1199,7 @@ function __init_errors(G) {
   ep['\x01proto'] = G.Object_proto;
   ep.name = 'Error';
   ep.message = '';
-  ep.toString = __mkfn(function (t) { return __str(t); }, 'toString', false);
+  __def(ep, 'toString', function (t) { return __str(t); });
   __ctor(G, 'Error', ep, function (t, message) {
     t['\x01msg'] = __typeof(message) === 'nil' ? '' : __str(message);
     return undefined;
@@ -1218,25 +1223,25 @@ function __init_object(G) {
     if (__typeof(v) === 'nil' || __is_null(v)) return {};
     return v;
   });
-  O.keys = __mkfn(function (t, o) {
+  __def(O, 'keys', function (t, o) {
     if (__typeof(o) === 'nil' || __is_null(o)) throw __err('TypeError', 'Cannot convert undefined or null to object');
     return __own_keys(o);
-  }, 'keys', false);
-  O.values = __mkfn(function (t, o) {
+  });
+  __def(O, 'values', function (t, o) {
     var ks = __own_keys(o);
     var out = [];
     var i = 0;
     while (i < __len(ks)) { __arraypush(out, __get(o, ks[i])); i = i + 1; }
     return out;
-  }, 'values', false);
-  O.entries = __mkfn(function (t, o) {
+  });
+  __def(O, 'entries', function (t, o) {
     var ks = __own_keys(o);
     var out = [];
     var i = 0;
     while (i < __len(ks)) { __arraypush(out, [ks[i], __get(o, ks[i])]); i = i + 1; }
     return out;
-  }, 'entries', false);
-  O.assign = __mkfn(function (t, target, a, b, c) {
+  });
+  __def(O, 'assign', function (t, target, a, b, c) {
     var srcs = [a, b, c];
     var j = 0;
     while (j < 3) {
@@ -1249,20 +1254,20 @@ function __init_object(G) {
       j = j + 1;
     }
     return target;
-  }, 'assign', false);
-  O.getPrototypeOf = __mkfn(function (t, o) {
+  });
+  __def(O, 'getPrototypeOf', function (t, o) {
     var p = __proto_of(o);
     return __typeof(p) === 'nil' ? G.null : p;
-  }, 'getPrototypeOf', false);
-  O.create = __mkfn(function (t, p) {
+  });
+  __def(O, 'create', function (t, p) {
     var o = {};
     o['\x01proto'] = __is_null(p) ? G.null : p;
     return o;
-  }, 'create', false);
-  G.Object_proto.hasOwnProperty = __mkfn(function (t, k) { return __has_own(t, k); }, 'hasOwnProperty', false);
-  G.Object_proto.toString = __mkfn(function (t) { return __str(t); }, 'toString', false);
+  });
+  __def(G.Object_proto, 'hasOwnProperty', function (t, k) { return __has_own(t, k); });
+  __def(G.Object_proto, 'toString', function (t) { return __str(t); });
   __ctor(G, 'Function', G.Function_proto, function (t) { throw __err('Error', 'Function constructor is not supported'); });
-  G.Function_proto.call = __mkfn(function (t, thisv, a, b, c, d, e, f, g) {
+  __def(G.Function_proto, 'call', function (t, thisv, a, b, c, d, e, f, g) {
     var args = [a, b, c, d, e, f, g];
     var n = __argcount() - 2;
     if (n < 0) n = 0;
@@ -1270,11 +1275,11 @@ function __init_object(G) {
     var i = 0;
     while (i < n) { __arraypush(out, args[i]); i = i + 1; }
     return __call(t, thisv, out);
-  }, 'call', false);
-  G.Function_proto.apply = __mkfn(function (t, thisv, arr) {
+  });
+  __def(G.Function_proto, 'apply', function (t, thisv, arr) {
     return __call(t, thisv, __typeof(arr) === 'nil' ? [] : arr);
-  }, 'apply', false);
-  G.Function_proto.bind = __mkfn(function (t, thisv, a, b, c) {
+  });
+  __def(G.Function_proto, 'bind', function (t, thisv, a, b, c) {
     var bound = [];
     var n = __argcount() - 2;
     var pre = [a, b, c];
@@ -1291,11 +1296,11 @@ function __init_object(G) {
       while (k < m && k < 4) { __arraypush(args, extra[k]); k = k + 1; }
       return __call(target, thisv, args);
     }, 'bound ' + t.name, false);
-  }, 'bind', false);
-  G.Boolean = __mkfn(function (t, v) { return __truthy(v); }, 'Boolean', false);
+  });
+  __def(G, 'Boolean', function (t, v) { return __truthy(v); });
   G.Boolean.prototype = G.Boolean_proto;
   G.Boolean_proto.constructor = G.Boolean;
-  G.Boolean_proto.toString = __mkfn(function (t) { return __str(t); }, 'toString', false);
+  __def(G.Boolean_proto, 'toString', function (t) { return __str(t); });
 }
 
 function __init_array(G) {
@@ -1310,16 +1315,16 @@ function __init_array(G) {
     __arraypush(out, n);
     return out;
   });
-  A.isArray = __mkfn(function (t, v) { return __typeof(v) === 'array'; }, 'isArray', false);
-  A.of = __mkfn(function (t, a, b, c, d, e, f, g) {
+  __def(A, 'isArray', function (t, v) { return __typeof(v) === 'array'; });
+  __def(A, 'of', function (t, a, b, c, d, e, f, g) {
     var xs = [a, b, c, d, e, f, g];
     var n = __argcount() - 1;
     var out = [];
     var i = 0;
     while (i < n && i < 7) { __arraypush(out, xs[i]); i = i + 1; }
     return out;
-  }, 'of', false);
-  A.from = __mkfn(function (t, v, mapf) {
+  });
+  __def(A, 'from', function (t, v, mapf) {
     var out = [];
     var it = __iter(v);
     var r = __iter_step(it);
@@ -1330,49 +1335,49 @@ function __init_array(G) {
       i = i + 1;
     }
     return out;
-  }, 'from', false);
+  });
   var P = G.Array_proto;
-  P.push = __mkfn(function (t, a, b, c, d, e, f, g) {
+  __def(P, 'push', function (t, a, b, c, d, e, f, g) {
     var xs = [a, b, c, d, e, f, g];
     var n = __argcount() - 1;
     var i = 0;
     while (i < n && i < 7) { __arraypush(t, xs[i]); i = i + 1; }
     return __todouble(__len(t));
-  }, 'push', false);
-  P.pop = __mkfn(function (t) { return __len(t) === 0 ? undefined : __arraypop(t); }, 'pop', false);
-  P.shift = __mkfn(function (t) {
+  });
+  __def(P, 'pop', function (t) { return __len(t) === 0 ? undefined : __arraypop(t); });
+  __def(P, 'shift', function (t) {
     if (__len(t) === 0) return undefined;
     var first = t[0];
     var i = 1;
     while (i < __len(t)) { t[i - 1] = t[i]; i = i + 1; }
     __arraypop(t);
     return first;
-  }, 'shift', false);
-  P.unshift = __mkfn(function (t, v) {
+  });
+  __def(P, 'unshift', function (t, v) {
     __arraypush(t, undefined);
     var i = __len(t) - 1;
     while (i > 0) { t[i] = t[i - 1]; i = i - 1; }
     t[0] = v;
     return __todouble(__len(t));
-  }, 'unshift', false);
-  P.forEach = __mkfn(function (t, cb, thisArg) {
+  });
+  __def(P, 'forEach', function (t, cb, thisArg) {
     var i = 0;
     while (i < __len(t)) { __call(cb, thisArg, [t[i], __todouble(i), t]); i = i + 1; }
     return undefined;
-  }, 'forEach', false);
-  P.map = __mkfn(function (t, cb, thisArg) {
+  });
+  __def(P, 'map', function (t, cb, thisArg) {
     var out = [];
     var i = 0;
     while (i < __len(t)) { __arraypush(out, __call(cb, thisArg, [t[i], __todouble(i), t])); i = i + 1; }
     return out;
-  }, 'map', false);
-  P.filter = __mkfn(function (t, cb, thisArg) {
+  });
+  __def(P, 'filter', function (t, cb, thisArg) {
     var out = [];
     var i = 0;
     while (i < __len(t)) { if (__truthy(__call(cb, thisArg, [t[i], __todouble(i), t]))) __arraypush(out, t[i]); i = i + 1; }
     return out;
-  }, 'filter', false);
-  P.reduce = __mkfn(function (t, cb, init) {
+  });
+  __def(P, 'reduce', function (t, cb, init) {
     var i = 0;
     var acc = init;
     if (__argcount() < 3) {
@@ -1382,49 +1387,49 @@ function __init_array(G) {
     }
     while (i < __len(t)) { acc = __call(cb, undefined, [acc, t[i], __todouble(i), t]); i = i + 1; }
     return acc;
-  }, 'reduce', false);
-  P.some = __mkfn(function (t, cb) {
+  });
+  __def(P, 'some', function (t, cb) {
     var i = 0;
     while (i < __len(t)) { if (__truthy(__call(cb, undefined, [t[i], __todouble(i), t]))) return true; i = i + 1; }
     return false;
-  }, 'some', false);
-  P.every = __mkfn(function (t, cb) {
+  });
+  __def(P, 'every', function (t, cb) {
     var i = 0;
     while (i < __len(t)) { if (!__truthy(__call(cb, undefined, [t[i], __todouble(i), t]))) return false; i = i + 1; }
     return true;
-  }, 'every', false);
-  P.find = __mkfn(function (t, cb) {
+  });
+  __def(P, 'find', function (t, cb) {
     var i = 0;
     while (i < __len(t)) { if (__truthy(__call(cb, undefined, [t[i], __todouble(i), t]))) return t[i]; i = i + 1; }
     return undefined;
-  }, 'find', false);
-  P.findIndex = __mkfn(function (t, cb) {
+  });
+  __def(P, 'findIndex', function (t, cb) {
     var i = 0;
     while (i < __len(t)) { if (__truthy(__call(cb, undefined, [t[i], __todouble(i), t]))) return __todouble(i); i = i + 1; }
     return -1.0;
-  }, 'findIndex', false);
-  P.indexOf = __mkfn(function (t, v) {
+  });
+  __def(P, 'indexOf', function (t, v) {
     var i = 0;
     while (i < __len(t)) { if (__seq(t[i], v)) return __todouble(i); i = i + 1; }
     return -1.0;
-  }, 'indexOf', false);
-  P.includes = __mkfn(function (t, v) {
+  });
+  __def(P, 'includes', function (t, v) {
     var i = 0;
     var nan = __typeof(v) === 'double' && v !== v;
     while (i < __len(t)) { if (__seq(t[i], v) || (nan && __typeof(t[i]) === 'double' && t[i] !== t[i])) return true; i = i + 1; }
     return false;
-  }, 'includes', false);
-  P.join = __mkfn(function (t, sep) { return __join(t, __typeof(sep) === 'nil' ? ',' : __str(sep)); }, 'join', false);
-  P.toString = __mkfn(function (t) { return __join(t, ','); }, 'toString', false);
-  P.slice = __mkfn(function (t, a, b) {
+  });
+  __def(P, 'join', function (t, sep) { return __join(t, __typeof(sep) === 'nil' ? ',' : __str(sep)); });
+  __def(P, 'toString', function (t) { return __join(t, ','); });
+  __def(P, 'slice', function (t, a, b) {
     var n = __len(t);
     var s = __slice_bounds(n, a, b);
     var out = [];
     var i = s[0];
     while (i < s[1]) { __arraypush(out, t[i]); i = i + 1; }
     return out;
-  }, 'slice', false);
-  P.concat = __mkfn(function (t, a, b, c) {
+  });
+  __def(P, 'concat', function (t, a, b, c) {
     var out = [];
     var i = 0;
     while (i < __len(t)) { __arraypush(out, t[i]); i = i + 1; }
@@ -1438,14 +1443,14 @@ function __init_array(G) {
       j = j + 1;
     }
     return out;
-  }, 'concat', false);
-  P.reverse = __mkfn(function (t) {
+  });
+  __def(P, 'reverse', function (t) {
     var i = 0;
     var j = __len(t) - 1;
     while (i < j) { var x = t[i]; t[i] = t[j]; t[j] = x; i = i + 1; j = j - 1; }
     return t;
-  }, 'reverse', false);
-  P.sort = __mkfn(function (t, cmp) {
+  });
+  __def(P, 'sort', function (t, cmp) {
     // insertion sort, stable, with the default string comparison
     var n = __len(t);
     var i = 1;
@@ -1457,8 +1462,8 @@ function __init_array(G) {
       i = i + 1;
     }
     return t;
-  }, 'sort', false);
-  P.splice = __mkfn(function (t, start, count, a, b, c) {
+  });
+  __def(P, 'splice', function (t, start, count, a, b, c) {
     var n = __len(t);
     var s = __toint_safe(__tonum(start));
     if (s < 0) { s = n + s; if (s < 0) s = 0; }
@@ -1479,9 +1484,9 @@ function __init_array(G) {
     var k = 0;
     while (k < __len(rest)) { __arraypush(t, rest[k]); k = k + 1; }
     return removed;
-  }, 'splice', false);
-  P.fill = __mkfn(function (t, v) { var i = 0; while (i < __len(t)) { t[i] = v; i = i + 1; } return t; }, 'fill', false);
-  P.flat = __mkfn(function (t) {
+  });
+  __def(P, 'fill', function (t, v) { var i = 0; while (i < __len(t)) { t[i] = v; i = i + 1; } return t; });
+  __def(P, 'flat', function (t) {
     var out = [];
     var i = 0;
     while (i < __len(t)) {
@@ -1491,7 +1496,7 @@ function __init_array(G) {
       i = i + 1;
     }
     return out;
-  }, 'flat', false);
+  });
 }
 function __slice_bounds(n, a, b) {
   var start = __typeof(a) === 'nil' ? 0 : __toint_safe(__tonum(a));
@@ -1516,29 +1521,29 @@ function __init_string(G) {
   var S = __ctor(G, 'String', G.String_proto, function (t, v) {
     return __argcount() <= 1 ? '' : __str(v);
   });
-  S.fromCharCode = __mkfn(function (t, c) { return __G.chars[__toint(__tonum(c))]; }, 'fromCharCode', false);
+  __def(S, 'fromCharCode', function (t, c) { return __G.chars[__toint(__tonum(c))]; });
   G.chars = __chars_table();
   var P = G.String_proto;
-  P.charAt = __mkfn(function (t, i) {
+  __def(P, 'charAt', function (t, i) {
     var k = __typeof(i) === 'nil' ? 0 : __toint_safe(__tonum(i));
     return k >= 0 && k < __len(t) ? t[k] : '';
-  }, 'charAt', false);
-  P.charCodeAt = __mkfn(function (t, i) {
+  });
+  __def(P, 'charCodeAt', function (t, i) {
     var k = __typeof(i) === 'nil' ? 0 : __toint_safe(__tonum(i));
     if (k < 0 || k >= __len(t)) return __nan();
     return __todouble(__G.codes[t[k]]);
-  }, 'charCodeAt', false);
+  });
   G.codes = __codes_table(G.chars);
-  P.indexOf = __mkfn(function (t, s, from) {
+  __def(P, 'indexOf', function (t, s, from) {
     var f = __typeof(from) === 'nil' ? 0 : __toint_safe(__tonum(from));
     if (f < 0) f = 0;
     return __todouble(__str_index_of(t, __str(s), f));
-  }, 'indexOf', false);
-  P.includes = __mkfn(function (t, s) { return __str_index_of(t, __str(s), 0) >= 0; }, 'includes', false);
-  P.startsWith = __mkfn(function (t, s) { var p = __str(s); return __len(p) <= __len(t) && __substr(t, 0, __len(p)) === p; }, 'startsWith', false);
-  P.endsWith = __mkfn(function (t, s) { var p = __str(s); return __len(p) <= __len(t) && __substr(t, __len(t) - __len(p), __len(t)) === p; }, 'endsWith', false);
-  P.slice = __mkfn(function (t, a, b) { var s = __slice_bounds(__len(t), a, b); return __substr(t, s[0], s[1]); }, 'slice', false);
-  P.substring = __mkfn(function (t, a, b) {
+  });
+  __def(P, 'includes', function (t, s) { return __str_index_of(t, __str(s), 0) >= 0; });
+  __def(P, 'startsWith', function (t, s) { var p = __str(s); return __len(p) <= __len(t) && __substr(t, 0, __len(p)) === p; });
+  __def(P, 'endsWith', function (t, s) { var p = __str(s); return __len(p) <= __len(t) && __substr(t, __len(t) - __len(p), __len(t)) === p; });
+  __def(P, 'slice', function (t, a, b) { var s = __slice_bounds(__len(t), a, b); return __substr(t, s[0], s[1]); });
+  __def(P, 'substring', function (t, a, b) {
     var n = __len(t);
     var x = __typeof(a) === 'nil' ? 0 : __toint_safe(__tonum(a));
     var y = __typeof(b) === 'nil' ? n : __toint_safe(__tonum(b));
@@ -1546,22 +1551,22 @@ function __init_string(G) {
     if (y < 0) y = 0; if (y > n) y = n;
     if (x > y) { var z = x; x = y; y = z; }
     return __substr(t, x, y);
-  }, 'substring', false);
-  P.toUpperCase = __mkfn(function (t) {
+  });
+  __def(P, 'toUpperCase', function (t) {
     var out = '';
     var i = 0;
     while (i < __len(t)) { var c = t[i]; out = out + (c >= 'a' && c <= 'z' ? __G.chars[__G.codes[c] - 32] : c); i = i + 1; }
     return out;
-  }, 'toUpperCase', false);
-  P.toLowerCase = __mkfn(function (t) {
+  });
+  __def(P, 'toLowerCase', function (t) {
     var out = '';
     var i = 0;
     while (i < __len(t)) { var c = t[i]; out = out + (c >= 'A' && c <= 'Z' ? __G.chars[__G.codes[c] + 32] : c); i = i + 1; }
     return out;
-  }, 'toLowerCase', false);
-  P.trim = __mkfn(function (t) { return __trim(t); }, 'trim', false);
-  P.repeat = __mkfn(function (t, n) { return __repeat(t, __toint_safe(__tonum(n))); }, 'repeat', false);
-  P.split = __mkfn(function (t, sep) {
+  });
+  __def(P, 'trim', function (t) { return __trim(t); });
+  __def(P, 'repeat', function (t, n) { return __repeat(t, __toint_safe(__tonum(n))); });
+  __def(P, 'split', function (t, sep) {
     var out = [];
     if (__typeof(sep) === 'nil') { __arraypush(out, t); return out; }
     var p = __str(sep);
@@ -1575,34 +1580,34 @@ function __init_string(G) {
     }
     __arraypush(out, __substr(t, from, __len(t)));
     return out;
-  }, 'split', false);
-  P.concat = __mkfn(function (t, a) { return t + __str(a); }, 'concat', false);
-  P.toString = __mkfn(function (t) { return t; }, 'toString', false);
-  P.padStart = __mkfn(function (t, n, fill) {
+  });
+  __def(P, 'concat', function (t, a) { return t + __str(a); });
+  __def(P, 'toString', function (t) { return t; });
+  __def(P, 'padStart', function (t, n, fill) {
     var want = __toint_safe(__tonum(n));
     var f = __typeof(fill) === 'nil' ? ' ' : __str(fill);
     var out = t;
     while (__len(out) < want) { out = f + out; }
     return __len(out) > want ? __substr(out, __len(out) - want, __len(out)) : out;
-  }, 'padStart', false);
-  P.padEnd = __mkfn(function (t, n, fill) {
+  });
+  __def(P, 'padEnd', function (t, n, fill) {
     var want = __toint_safe(__tonum(n));
     var f = __typeof(fill) === 'nil' ? ' ' : __str(fill);
     var out = t;
     while (__len(out) < want) { out = out + f; }
     return __len(out) > want ? __substr(out, 0, want) : out;
-  }, 'padEnd', false);
-  P.replace = __mkfn(function (t, s, r) {
+  });
+  __def(P, 'replace', function (t, s, r) {
     var p = __str(s);
     var at = __str_index_of(t, p, 0);
     if (at < 0) return t;
     return __substr(t, 0, at) + __str(r) + __substr(t, at + __len(p), __len(t));
-  }, 'replace', false);
-  P.at = __mkfn(function (t, i) {
+  });
+  __def(P, 'at', function (t, i) {
     var k = __toint_safe(__tonum(i));
     if (k < 0) k = __len(t) + k;
     return k >= 0 && k < __len(t) ? t[k] : undefined;
-  }, 'at', false);
+  });
 }
 function __chars_table() {
   var s = __allchars();
@@ -1622,11 +1627,11 @@ function __init_number(G) {
   var N = __ctor(G, 'Number', G.Number_proto, function (t, v) {
     return __argcount() <= 1 ? 0.0 : __tonum(v);
   });
-  N.isInteger = __mkfn(function (t, v) {
+  __def(N, 'isInteger', function (t, v) {
     return __typeof(v) === 'double' && v === v && v !== __inf() && v !== 0.0 - __inf() && v === __todouble(__toint_safe(v));
-  }, 'isInteger', false);
-  N.isNaN = __mkfn(function (t, v) { return __typeof(v) === 'double' && v !== v; }, 'isNaN', false);
-  N.isFinite = __mkfn(function (t, v) { return __typeof(v) === 'double' && v === v && v !== __inf() && v !== 0.0 - __inf(); }, 'isFinite', false);
+  });
+  __def(N, 'isNaN', function (t, v) { return __typeof(v) === 'double' && v !== v; });
+  __def(N, 'isFinite', function (t, v) { return __typeof(v) === 'double' && v === v && v !== __inf() && v !== 0.0 - __inf(); });
   N.MAX_SAFE_INTEGER = 9007199254740991.0;
   N.MIN_SAFE_INTEGER = -9007199254740991.0;
   N.EPSILON = __pow(2.0, -52.0);
@@ -1634,15 +1639,15 @@ function __init_number(G) {
   N.POSITIVE_INFINITY = __inf();
   N.NEGATIVE_INFINITY = 0.0 - __inf();
   N.NaN = __nan();
-  G.Number_proto.toString = __mkfn(function (t, radix) {
+  __def(G.Number_proto, 'toString', function (t, radix) {
     if (__typeof(radix) === 'nil' || radix === 10.0) return __numstr(t);
     return __radix_str(t, __toint(radix));
-  }, 'toString', false);
-  G.Number_proto.toFixed = __mkfn(function (t, d) { return __to_fixed(t, __typeof(d) === 'nil' ? 0 : __toint(__tonum(d))); }, 'toFixed', false);
-  G.isNaN = __mkfn(function (t, v) { var d = __tonum(v); return d !== d; }, 'isNaN', false);
-  G.isFinite = __mkfn(function (t, v) { var d = __tonum(v); return d === d && d !== __inf() && d !== 0.0 - __inf(); }, 'isFinite', false);
-  G.parseFloat = __mkfn(function (t, v) { return __parse_float(__str(v)); }, 'parseFloat', false);
-  G.parseInt = __mkfn(function (t, v, radix) { return __parse_int(__str(v), __typeof(radix) === 'nil' ? 0 : __toint(__tonum(radix))); }, 'parseInt', false);
+  });
+  __def(G.Number_proto, 'toFixed', function (t, d) { return __to_fixed(t, __typeof(d) === 'nil' ? 0 : __toint(__tonum(d))); });
+  __def(G, 'isNaN', function (t, v) { var d = __tonum(v); return d !== d; });
+  __def(G, 'isFinite', function (t, v) { var d = __tonum(v); return d === d && d !== __inf() && d !== 0.0 - __inf(); });
+  __def(G, 'parseFloat', function (t, v) { return __parse_float(__str(v)); });
+  __def(G, 'parseInt', function (t, v, radix) { return __parse_int(__str(v), __typeof(radix) === 'nil' ? 0 : __toint(__tonum(radix))); });
 }
 function __radix_str(d, radix) {
   if (d !== d) return 'NaN';
@@ -1708,7 +1713,7 @@ function __parse_int(s0, radix) {
 
 function __init_console(G) {
   var c = {};
-  c.log = __mkfn(function (t, a, b, c2, d, e, f, g) {
+  __def(c, 'log', function (t, a, b, c2, d, e, f, g) {
     var xs = [a, b, c2, d, e, f, g];
     var n = __argcount() - 1;
     var out = '';
@@ -1716,7 +1721,7 @@ function __init_console(G) {
     while (i < n && i < 7) { if (i > 0) out = out + ' '; out = out + __log_str(xs[i]); i = i + 1; }
     __print(out);
     return undefined;
-  }, 'log', false);
+  });
   c.error = c.log;
   c.warn = c.log;
   c.info = c.log;
@@ -1725,13 +1730,13 @@ function __init_console(G) {
 
 function __init_json(G) {
   var J = {};
-  J.stringify = __mkfn(function (t, v, replacer, indent) {
+  __def(J, 'stringify', function (t, v, replacer, indent) {
     var ind = '';
     if (__typeof(indent) === 'double') { ind = __repeat(' ', __toint_safe(indent > 10.0 ? 10.0 : indent)); }
     else if (__typeof(indent) === 'string') { ind = indent; }
     return __json_str(v, ind, '');
-  }, 'stringify', false);
-  J.parse = __mkfn(function (t, s) {
+  });
+  __def(J, 'parse', function (t, s) {
     var st = {};
     st.s = __str(s);
     st.i = 0;
@@ -1739,7 +1744,7 @@ function __init_json(G) {
     __json_ws(st);
     if (st.i < __len(st.s)) __json_fail(st);
     return v;
-  }, 'parse', false);
+  });
   G.JSON = J;
 }
 function __json_quote(s) {
@@ -1937,14 +1942,14 @@ function __coll_remove(arr, i) {
 function __coll_iter(t, pick) {
   var it = {};
   it.i = 0;
-  it.next = __mkfn(function (t2) {
+  __def(it, 'next', function (t2) {
     var r = {};
     if (it.i >= __len(t['\x01keys'])) { r.value = undefined; r.done = true; return r; }
     r.value = pick(t, it.i);
     r.done = false;
     it.i = it.i + 1;
     return r;
-  }, 'next', false);
+  });
   it['\x01iter'] = __mkfn(function (t2) { return it; }, '[Symbol.iterator]', false);
   return it;
 }
@@ -1969,32 +1974,32 @@ function __init_collections(G) {
   var MP = M.prototype;
   MP['\x01proto'] = G.Object_proto;
   MP['\x01noenum'] = true;
-  MP.get = __mkfn(function (t, k) { var i = __coll_find(t, k); return i < 0 ? undefined : t['\x01vals'][i]; }, 'get', false);
-  MP.set = __mkfn(function (t, k, v) {
+  __def(MP, 'get', function (t, k) { var i = __coll_find(t, k); return i < 0 ? undefined : t['\x01vals'][i]; });
+  __def(MP, 'set', function (t, k, v) {
     var i = __coll_find(t, k);
     if (i < 0) { __arraypush(t['\x01keys'], k); __arraypush(t['\x01vals'], v); } else { t['\x01vals'][i] = v; }
     return t;
-  }, 'set', false);
-  MP.has = __mkfn(function (t, k) { return __coll_find(t, k) >= 0; }, 'has', false);
-  MP['delete'] = __mkfn(function (t, k) {
+  });
+  __def(MP, 'has', function (t, k) { return __coll_find(t, k) >= 0; });
+  __def(MP, 'delete', function (t, k) {
     var i = __coll_find(t, k);
     if (i < 0) return false;
     __coll_remove(t['\x01keys'], i);
     __coll_remove(t['\x01vals'], i);
     return true;
-  }, 'delete', false);
-  MP.clear = __mkfn(function (t) { t['\x01keys'] = []; t['\x01vals'] = []; return undefined; }, 'clear', false);
+  });
+  __def(MP, 'clear', function (t) { t['\x01keys'] = []; t['\x01vals'] = []; return undefined; });
   MP['\x01get:size'] = __mkfn(function (t) { return __todouble(__len(t['\x01keys'])); }, 'size', false);
-  MP.forEach = __mkfn(function (t, cb, thisArg) {
+  __def(MP, 'forEach', function (t, cb, thisArg) {
     var i = 0;
     while (i < __len(t['\x01keys'])) { __call(cb, thisArg, [t['\x01vals'][i], t['\x01keys'][i], t]); i = i + 1; }
     return undefined;
-  }, 'forEach', false);
-  MP.keys = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); }, 'keys', false);
-  MP.values = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return c['\x01vals'][i]; }); }, 'values', false);
-  MP.entries = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01vals'][i]]; }); }, 'entries', false);
+  });
+  __def(MP, 'keys', function (t) { return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); });
+  __def(MP, 'values', function (t) { return __coll_iter(t, function (c, i) { return c['\x01vals'][i]; }); });
+  __def(MP, 'entries', function (t) { return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01vals'][i]]; }); });
   MP['\x01iter'] = MP.entries;
-  MP.toString = __mkfn(function (t) { return '[object Map]'; }, 'toString', false);
+  __def(MP, 'toString', function (t) { return '[object Map]'; });
 
   var S = __ctor(G, 'Set', {}, function (t, init) {
     t['\x01keys'] = [];
@@ -2008,26 +2013,26 @@ function __init_collections(G) {
   var SP = S.prototype;
   SP['\x01proto'] = G.Object_proto;
   SP['\x01noenum'] = true;
-  SP.add = __mkfn(function (t, v) { if (__coll_find(t, v) < 0) __arraypush(t['\x01keys'], v); return t; }, 'add', false);
-  SP.has = __mkfn(function (t, v) { return __coll_find(t, v) >= 0; }, 'has', false);
-  SP['delete'] = __mkfn(function (t, v) {
+  __def(SP, 'add', function (t, v) { if (__coll_find(t, v) < 0) __arraypush(t['\x01keys'], v); return t; });
+  __def(SP, 'has', function (t, v) { return __coll_find(t, v) >= 0; });
+  __def(SP, 'delete', function (t, v) {
     var i = __coll_find(t, v);
     if (i < 0) return false;
     __coll_remove(t['\x01keys'], i);
     return true;
-  }, 'delete', false);
-  SP.clear = __mkfn(function (t) { t['\x01keys'] = []; return undefined; }, 'clear', false);
+  });
+  __def(SP, 'clear', function (t) { t['\x01keys'] = []; return undefined; });
   SP['\x01get:size'] = __mkfn(function (t) { return __todouble(__len(t['\x01keys'])); }, 'size', false);
-  SP.forEach = __mkfn(function (t, cb, thisArg) {
+  __def(SP, 'forEach', function (t, cb, thisArg) {
     var i = 0;
     while (i < __len(t['\x01keys'])) { __call(cb, thisArg, [t['\x01keys'][i], t['\x01keys'][i], t]); i = i + 1; }
     return undefined;
-  }, 'forEach', false);
-  SP.values = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); }, 'values', false);
+  });
+  __def(SP, 'values', function (t) { return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); });
   SP.keys = SP.values;
-  SP.entries = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01keys'][i]]; }); }, 'entries', false);
+  __def(SP, 'entries', function (t) { return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01keys'][i]]; }); });
   SP['\x01iter'] = SP.values;
-  SP.toString = __mkfn(function (t) { return '[object Set]'; }, 'toString', false);
+  __def(SP, 'toString', function (t) { return '[object Set]'; });
 }
 
 // --- generators -----------------------------------------------------------------
@@ -2044,25 +2049,25 @@ function __iter_obj(v) {
   var it = __iter(v);
   if (!__objecthas(it, 'src')) return it;
   var o = {};
-  o.next = __mkfn(function (t) {
+  __def(o, 'next', function (t) {
     var r = {};
     var step = __iter_step(it);
     if (__typeof(step) === 'nil') { r.value = undefined; r.done = true; return r; }
     r.value = step[0];
     r.done = false;
     return r;
-  }, 'next', false);
+  });
   return o;
 }
 function __init_generators(G) {
   var GP = {};
   GP['\x01proto'] = G.Object_proto;
   GP['\x01noenum'] = true;
-  GP.next = __mkfn(function (t, v) { return __genresume(t['\x01gen'], v); }, 'next', false);
-  GP['return'] = __mkfn(function (t, v) { return __genreturn(t['\x01gen'], v); }, 'return', false);
-  GP['throw'] = __mkfn(function (t, e) { return __genthrow(t['\x01gen'], e); }, 'throw', false);
+  __def(GP, 'next', function (t, v) { return __genresume(t['\x01gen'], v); });
+  __def(GP, 'return', function (t, v) { return __genreturn(t['\x01gen'], v); });
+  __def(GP, 'throw', function (t, e) { return __genthrow(t['\x01gen'], e); });
   GP['\x01iter'] = __mkfn(function (t) { return t; }, '[Symbol.iterator]', false);
-  GP.toString = __mkfn(function (t) { return '[object Generator]'; }, 'toString', false);
+  __def(GP, 'toString', function (t) { return '[object Generator]'; });
   G.Generator_proto = GP;
 }
 
@@ -2214,18 +2219,18 @@ function __init_promise(G) {
     return undefined;
   });
   G.Promise_proto = PP;
-  PP.then = __mkfn(function (t, onF, onR) { return __promise_then(t, onF, onR); }, 'then', false);
-  PP['catch'] = __mkfn(function (t, onR) { return __promise_then(t, undefined, onR); }, 'catch', false);
-  PP['finally'] = __mkfn(function (t, f) {
+  __def(PP, 'then', function (t, onF, onR) { return __promise_then(t, onF, onR); });
+  __def(PP, 'catch', function (t, onR) { return __promise_then(t, undefined, onR); });
+  __def(PP, 'finally', function (t, f) {
     if (!__is_fnobj(f)) return __promise_then_raw(t, undefined, undefined);
     return __promise_then_raw(t,
       function (v) { return __promise_then_raw(__promise_resolve_value(__call(f, undefined, [])), function (x) { return v; }, undefined); },
       function (e) { return __promise_then_raw(__promise_resolve_value(__call(f, undefined, [])), function (x) { throw e; }, undefined); });
-  }, 'finally', false);
-  PP.toString = __mkfn(function (t) { return '[object Promise]'; }, 'toString', false);
-  Pr.resolve = __mkfn(function (t, v) { return __promise_resolve_value(v); }, 'resolve', false);
-  Pr.reject = __mkfn(function (t, e) { var p = __promise_new(); __promise_reject(p, e); return p; }, 'reject', false);
-  Pr.all = __mkfn(function (t, iterable) {
+  });
+  __def(PP, 'toString', function (t) { return '[object Promise]'; });
+  __def(Pr, 'resolve', function (t, v) { return __promise_resolve_value(v); });
+  __def(Pr, 'reject', function (t, e) { var p = __promise_new(); __promise_reject(p, e); return p; });
+  __def(Pr, 'all', function (t, iterable) {
     var p = __promise_new();
     var items = __destr_arr(iterable);
     var n = __len(items);
@@ -2244,8 +2249,8 @@ function __init_promise(G) {
       k = k + 1;
     }
     return p;
-  }, 'all', false);
-  Pr.allSettled = __mkfn(function (t, iterable) {
+  });
+  __def(Pr, 'allSettled', function (t, iterable) {
     var p = __promise_new();
     var items = __destr_arr(iterable);
     var n = __len(items);
@@ -2264,8 +2269,8 @@ function __init_promise(G) {
       k = k + 1;
     }
     return p;
-  }, 'allSettled', false);
-  Pr.race = __mkfn(function (t, iterable) {
+  });
+  __def(Pr, 'race', function (t, iterable) {
     var p = __promise_new();
     var items = __destr_arr(iterable);
     var k = 0;
@@ -2276,42 +2281,42 @@ function __init_promise(G) {
       k = k + 1;
     }
     return p;
-  }, 'race', false);
-  G.queueMicrotask = __mkfn(function (t, f) { __enqueue_job(function () { __call(f, undefined, []); }); return undefined; }, 'queueMicrotask', false);
+  });
+  __def(G, 'queueMicrotask', function (t, f) { __enqueue_job(function () { __call(f, undefined, []); }); return undefined; });
 }
 
 function __init_math(G) {
   var M = {};
   M.PI = 3.141592653589793;
   M.E = 2.718281828459045;
-  M.abs = __mkfn(function (t, v) { var d = __tonum(v); return d < 0.0 ? 0.0 - d : d; }, 'abs', false);
-  M.floor = __mkfn(function (t, v) {
+  __def(M, 'abs', function (t, v) { var d = __tonum(v); return d < 0.0 ? 0.0 - d : d; });
+  __def(M, 'floor', function (t, v) {
     var d = __tonum(v);
     if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
     var i = __todouble(__toint(d));
     return i > d ? i - 1.0 : i;
-  }, 'floor', false);
-  M.ceil = __mkfn(function (t, v) {
+  });
+  __def(M, 'ceil', function (t, v) {
     var d = __tonum(v);
     if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
     var i = __todouble(__toint(d));
     return i < d ? i + 1.0 : i;
-  }, 'ceil', false);
-  M.trunc = __mkfn(function (t, v) {
+  });
+  __def(M, 'trunc', function (t, v) {
     var d = __tonum(v);
     if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
     return __todouble(__toint(d));
-  }, 'trunc', false);
-  M.round = __mkfn(function (t, v) {
+  });
+  __def(M, 'round', function (t, v) {
     var d = __tonum(v);
     if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
     var f = __todouble(__toint(d));
     if (f > d) f = f - 1.0;
     return d - f >= 0.5 ? f + 1.0 : f;
-  }, 'round', false);
-  M.sqrt = __mkfn(function (t, v) { return __pow(__tonum(v), 0.5); }, 'sqrt', false);
-  M.pow = __mkfn(function (t, a, b) { return __powop(a, b); }, 'pow', false);
-  M.max = __mkfn(function (t, a, b, c, d) {
+  });
+  __def(M, 'sqrt', function (t, v) { return __pow(__tonum(v), 0.5); });
+  __def(M, 'pow', function (t, a, b) { return __powop(a, b); });
+  __def(M, 'max', function (t, a, b, c, d) {
     var xs = [a, b, c, d];
     var n = __argcount() - 1;
     if (n === 0) return 0.0 - __inf();
@@ -2319,8 +2324,8 @@ function __init_math(G) {
     var i = 1;
     while (i < n && i < 4) { var x = __tonum(xs[i]); if (x !== x) return __nan(); if (x > best) best = x; i = i + 1; }
     return best;
-  }, 'max', false);
-  M.min = __mkfn(function (t, a, b, c, d) {
+  });
+  __def(M, 'min', function (t, a, b, c, d) {
     var xs = [a, b, c, d];
     var n = __argcount() - 1;
     if (n === 0) return __inf();
@@ -2328,9 +2333,9 @@ function __init_math(G) {
     var i = 1;
     while (i < n && i < 4) { var x = __tonum(xs[i]); if (x !== x) return __nan(); if (x < best) best = x; i = i + 1; }
     return best;
-  }, 'min', false);
-  M.sign = __mkfn(function (t, v) { var d = __tonum(v); if (d !== d) return d; return d > 0.0 ? 1.0 : (d < 0.0 ? -1.0 : d); }, 'sign', false);
-  M.random = __mkfn(function (t) { return 0.5; }, 'random', false);
+  });
+  __def(M, 'sign', function (t, v) { var d = __tonum(v); if (d !== d) return d; return d > 0.0 ? 1.0 : (d < 0.0 ? -1.0 : d); });
+  __def(M, 'random', function (t) { return 0.5; });
   G.Math = M;
 }
 `
@@ -2371,7 +2376,6 @@ mut calls = []          # per func: [callee func index...]
 mut capture_index = []  # per func: {"owner:slot": capture index}
 mut cell_index = []     # per func (the owner): {slot: cell index}
 mut nslots = []         # per func: named local slots
-mut nscratch = []       # per func: lowering temps, appended after the named slots
 mut scope_stack = []    # per func: [{map: {name: slot}, slots: [slot...]}]
 mut closure_of = {}     # pkey of a function node -> func index
 mut resolved = {}       # pkey of an ident -> {kind: 'var', owner, slot} | {kind: 'global', name}
@@ -2385,25 +2389,25 @@ mut for_close = {}      # pkey of a for-of -> {func: the closer, slot: its itera
 
 # Prelude names that are VM intrinsics, with their arities.
 let intrinsics = {
-  __typeof: ('typeof', 1),
-  __tostr: ('tostr', 1),
-  __len: ('len', 1),
-  __toint: ('toint', 1),
-  __todouble: ('todouble', 1),
-  __fmod: ('fmod', 2),
-  __pow: ('pow', 2),
-  __arraypush: ('arraypush', 2),
-  __arraypop: ('arraypop', 1),
-  __objecthas: ('objecthas', 2),
-  __objectkeys: ('objectkeys', 1),
-  __objectremove: ('objectremove', 2),
-  __same: ('same', 2),
-  __argcount: ('argcount', 0),
-  __print: ('print', 1),
-  __genresume: ('genresume', 2),
-  __genthrow: ('genthrow', 2),
-  __enqueue: ('enqueue', 1),
-  __genreturn: ('genreturn', 2),
+  __typeof: 'typeof',
+  __tostr: 'tostr',
+  __len: 'len',
+  __toint: 'toint',
+  __todouble: 'todouble',
+  __fmod: 'fmod',
+  __pow: 'pow',
+  __arraypush: 'arraypush',
+  __arraypop: 'arraypop',
+  __objecthas: 'objecthas',
+  __objectkeys: 'objectkeys',
+  __objectremove: 'objectremove',
+  __same: 'same',
+  __argcount: 'argcount',
+  __print: 'print',
+  __genresume: 'genresume',
+  __genthrow: 'genthrow',
+  __enqueue: 'enqueue',
+  __genreturn: 'genreturn',
 }
 # Prelude names that are raw VM binary / unary operations over Longs.
 let raw_binops = {
@@ -2435,7 +2439,6 @@ fn new_func(parent, name, stmts, body_expr, is_arrow) {
   capture_index.push({})
   cell_index.push({})
   nslots.push(0)
-  nscratch.push(0)
   scope_stack.push([])
   loop_ctx.push([])
   # every function reaches the global table through main's cell
@@ -2450,6 +2453,14 @@ fn new_func(parent, name, stmts, body_expr, is_arrow) {
 fn enter_scope(f) {
   scope_stack[f].push({map: {}, slots: []})
 }
+# Leave the scope, recording the slots it declared under the node that owns
+# it -- what the emitter refreshes per entry.
+fn close_scope(f, node) {
+  let scopes = scope_stack[f]
+  block_slots[pkey(node)] = scopes[scopes.size() - 1].slots
+  leave_scope(f)
+}
+
 fn leave_scope(f) {
   scope_stack[f].pop()
 }
@@ -2778,9 +2789,7 @@ fn scan_stmts(stmts, f) {
 fn scan_block(blk, f) {
   enter_scope(f)
   scan_stmts(blk.nodes, f)
-  let scopes = scope_stack[f]
-  block_slots[pkey(blk)] = scopes[scopes.size() - 1].slots
-  leave_scope(f)
+  close_scope(f, blk)
 }
 
 # a statement in a position that is not a block still gets its own scope
@@ -2797,8 +2806,7 @@ fn scan_sub(st, f) {
 
 fn scan_stmt(node, f) {
   match node {
-    {name: 'var_decl'} => scan_decl(node, f),
-    {name: 'var_decl_ns'} => scan_decl(node, f),
+    {name: 'var_decl'} | {name: 'var_decl_ns'} => scan_decl(node, f),
     {name: 'fn_decl'} => nil,  # hoisted by scan_stmts
     {name: 'gen_decl'} => nil,
     {name: 'async_decl'} => nil,
@@ -2818,8 +2826,7 @@ fn scan_stmt(node, f) {
       scan_sub(node.nodes[0], f)
       scan_expr(node.nodes[1], f)
     },
-    {name: 'for_of'} => scan_for_each(node, f),
-    {name: 'for_in'} => scan_for_each(node, f),
+    {name: 'for_of'} | {name: 'for_in'} => scan_for_each(node, f),
     {name: 'switch_s'} => {
       scan_expr(node.nodes[0], f)
       # the cases share one block scope
@@ -2838,9 +2845,7 @@ fn scan_stmt(node, f) {
         i = i + 1
       }
       scan_stmts(all, f)
-      let scopes = scope_stack[f]
-      block_slots[pkey(node)] = scopes[scopes.size() - 1].slots
-      leave_scope(f)
+      close_scope(f, node)
     },
     {name: 'for_s'} => {
       let [init, cnd, step, body] = node.nodes
@@ -2859,9 +2864,7 @@ fn scan_stmt(node, f) {
         scan_expr(step.nodes[0], f)
       }
       scan_sub(body, f)
-      let scopes = scope_stack[f]
-      block_slots[pkey(node)] = scopes[scopes.size() - 1].slots
-      leave_scope(f)
+      close_scope(f, node)
     },
     {name: 'return_s'} => {
       if node.nodes[0].nodes.size() > 0 {
@@ -2926,9 +2929,7 @@ fn scan_for_each(node, f) {
   declare_pattern(f, pat, kw.token)
   scan_pattern_dflts(pat, f)
   scan_sub(body, f)
-  let scopes = scope_stack[f]
-  block_slots[pkey(node)] = scopes[scopes.size() - 1].slots
-  leave_scope(f)
+  close_scope(f, node)
 }
 
 fn scan_decl(node, f) {
@@ -2973,7 +2974,6 @@ fn scan_class(node, f) {
   let derived = ext.nodes.size() > 0
   mut info = {
     home: home,
-    derived: derived,
     mut name: cname,
     mut ctor: nil,
     fields: [],
@@ -3534,10 +3534,12 @@ fn dbl_l(m, v, ln, cl) {
   m.double_literal(v: v, line: ln, col: cl)
 }
 
+# A lowering temp: one more local, appended after the named ones (every
+# declaration is bound in pass A, so the count is settled before emit).
 fn new_scratch(f) {
-  let k = nscratch[f]
-  nscratch[f] = k + 1
-  nslots[f] + k
+  let k = nslots[f]
+  nslots[f] = k + 1
+  k
 }
 
 fn scratch_ref(m, slot, ln, cl) {
@@ -3704,6 +3706,18 @@ fn ir_not(m, v, ln, cl) {
   )
 }
 
+# `typeof v == 'nil'` -- how the compiler asks "is this undefined?", since
+# the VM's own eq refuses two different tags.
+fn is_undef(m, v, ln, cl) {
+  m.binary(
+    op: 'eq',
+    lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [v]), line: ln, col: cl),
+    rhs: str_l(m, 'nil', ln, cl),
+    line: ln,
+    col: cl,
+  )
+}
+
 fn is_undefined_node(n) {
   n.name == 'ident' && n.token == 'undefined'
 }
@@ -3727,13 +3741,7 @@ fn emit_chain(m, node, f) {
           is_undefined_node(rn) => acc,
           _ => emit_expr(m, rn, f),
         }
-        let test = m.binary(
-          op: 'eq',
-          lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [subject]), line: op.line, col: op.column),
-          rhs: str_l(m, 'nil', op.line, op.column),
-          line: op.line,
-          col: op.column,
-        )
+        let test = is_undef(m, subject, op.line, op.column)
         acc = cond {
           tok == '===' || tok == '==' => test,
           _ => ir_not(m, test, op.line, op.column),
@@ -3892,19 +3900,7 @@ fn emit_fn_value(m, node, f, name, is_arrow) {
     # a prelude helper referenced as a value is the raw closure; a prelude
     # function expression is a JS function like any other
     in_prelude => c,
-    _ => call_pre(
-      m,
-      f,
-      '__mkfn',
-      [
-        c,
-        str_l(m, name, node.line, node.column),
-        m.bool_literal(v: is_arrow, line: node.line, col: node.column),
-        dbl_l(m, to_float(fn_length(g)), node.line, node.column),
-      ],
-      node.line,
-      node.column,
-    ),
+    _ => mkfn_id(m, f, g, name, is_arrow, true, node.line, node.column),
   }
 }
 
@@ -3989,7 +3985,7 @@ fn emit_postfix(m, node, f) {
   if in_prelude && head.name == 'ident' && steps.size() == 1 && steps[0].name == 'call_p' {
     let r = resolved[pkey(head)]
     if r.kind == 'intrinsic' {
-      let (iname, _) = intrinsics[head.token]
+      let iname = intrinsics[head.token]
       mut ids = []
       for a in steps[0].nodes[0].nodes {
         ids.push(emit_expr(m, a, f))
@@ -4050,11 +4046,7 @@ fn emit_postfix(m, node, f) {
       cp.line,
       cp.column,
     )
-    mut rest = []
-    for k in range(1, steps.size()) {
-      rest.push(steps[k])
-    }
-    return emit_steps(m, f, called, rest, 0)
+    return emit_steps(m, f, called, steps, 1)
   }
   emit_steps(m, f, emit_expr(m, head, f), steps, 0)
 }
@@ -4096,23 +4088,7 @@ fn emit_class(m, node, f) {
   }
   let fields = cond {
     info.fields_func !=
-      nil => call_pre(
-      m,
-      f,
-      '__mkfn',
-      [
-        m.make_closure(
-          func: info.fields_func,
-          cmap: cmap_for(m, f, info.fields_func),
-          line: ln,
-          col: cl,
-        ),
-        str_l(m, 'fields', ln, cl),
-        m.bool_literal(v: false, line: ln, col: cl),
-      ],
-      ln,
-      cl,
-    ),
+      nil => mkfn_id(m, f, info.fields_func, 'fields', false, false, ln, cl),
     _ => nil_l(m, ln, cl),
   }
   let home = {owner: f, slot: info.home}
@@ -4162,24 +4138,7 @@ fn emit_class(m, node, f) {
       mem.node.name == 'method_c' ||
         mem.node.name == 'gmethod_c' ||
         mem.node.name == 'amethod_c' => {
-        let fv = call_pre(
-          m,
-          f,
-          '__mkfn',
-          [
-            m.make_closure(
-              func: mem.func,
-              cmap: cmap_for(m, f, mem.func),
-              line: pl,
-              col: pc,
-            ),
-            str_l(m, prop_key_text(mk), pl, pc),
-            m.bool_literal(v: false, line: pl, col: pc),
-            dbl_l(m, to_float(fn_length(mem.func)), pl, pc),
-          ],
-          pl,
-          pc,
-        )
+        let fv = mkfn_id(m, f, mem.func, prop_key_text(mk), false, true, pl, pc)
         ids.push(call_pre(
           m,
           f,
@@ -4194,20 +4153,13 @@ fn emit_class(m, node, f) {
           mem.node.name == 'getter_c' => 'get',
           _ => 'set',
         }
-        let fv = call_pre(
+        let fv = mkfn_id(
           m,
           f,
-          '__mkfn',
-          [
-            m.make_closure(
-              func: mem.func,
-              cmap: cmap_for(m, f, mem.func),
-              line: pl,
-              col: pc,
-            ),
-            str_l(m, prop_key_text(mk), pl, pc),
-            m.bool_literal(v: false, line: pl, col: pc),
-          ],
+          mem.func,
+          prop_key_text(mk),
+          false,
+          false,
           pl,
           pc,
         )
@@ -4259,10 +4211,7 @@ fn emit_steps(m, f, value0, steps, start) {
         line: ln,
         col: cl,
       )
-      mut rest = [plain_step(step)]
-      for k in range(i + 1, steps.size()) {
-        rest.push(steps[k])
-      }
+      let rest = [plain_step(step)] + steps.slice(i + 1, steps.size())
       let rest_v = emit_steps(m, f, scratch_ref(m, tmp, ln, cl), rest, 0)
       let pick = m.make_if_else(
         cond: call_pre(m, f, '__isnullish', [scratch_ref(m, tmp, ln, cl)], ln, cl),
@@ -4357,11 +4306,7 @@ fn emit_steps(m, f, value0, steps, start) {
               cp.line,
               cp.column,
             )
-            mut rest = []
-            for k in range(i + 2, steps.size()) {
-              rest.push(steps[k])
-            }
-            let rest_v = emit_steps(m, f, called, rest, 0)
+            let rest_v = emit_steps(m, f, called, steps, i + 2)
             let pick = m.make_if_else(
               cond: call_pre(m, f, '__isnullish', [scratch_ref(m, fnv, ln, cl)], ln, cl),
               then_branch: nil_l(m, ln, cl),
@@ -4385,71 +4330,37 @@ fn emit_steps(m, f, value0, steps, start) {
   value
 }
 
+# `new C.of[k](args).m()`: the grammar puts `new_args` after the steps that
+# name the constructor and before the ones applied to the object, so each
+# half is an ordinary postfix chain around one __new.
 fn emit_new(m, node, f) {
   let ln = node.line
   let cl = node.column
-  mut value = emit_expr(m, node.nodes[0], f)
-  mut i = 1
-  while i < node.nodes.size() {
-    let step = node.nodes[i]
-    cond {
-      step.name == 'new_args' => {
-        let arg_nodes = cond {
-          step.nodes.size() > 0 => step.nodes[0].nodes,
-          _ => [],
-        }
-        value = call_pre(
-          m,
-          f,
-          '__new',
-          [value, emit_arg_array(m, f, arg_nodes, ln, cl)],
-          ln,
-          cl,
-        )
-      },
-      step.name ==
-        'call_p' => value = call_pre(
-        m,
-        f,
-        '__call',
-        [
-          value,
-          nil_l(m, step.line, step.column),
-          emit_arg_array(m, f, step.nodes[0].nodes, step.line, step.column),
-        ],
-        step.line,
-        step.column,
-      ),
-      _ => {
-        let key = cond {
-          step.name ==
-            'member_p' => str_l(m, step.nodes[0].token, step.line, step.column),
-          _ => emit_expr(m, step.nodes[0], f),
-        }
-        cond {
-          i + 1 < node.nodes.size() && node.nodes[i + 1].name == 'call_p' => {
-            let cp = node.nodes[i + 1]
-            value = call_pre(
-              m,
-              f,
-              '__callm',
-              [
-                value,
-                key,
-                emit_arg_array(m, f, cp.nodes[0].nodes, cp.line, cp.column),
-              ],
-              cp.line,
-              cp.column,
-            )
-            i = i + 1
-          },
-          _ => value = emit_get(m, f, value, key, step.line, step.column),
-        }
-      },
-    }
-    i = i + 1
+  let steps = node.nodes
+  mut cut = 1
+  while steps[cut].name != 'new_args' {
+    cut = cut + 1
   }
-  value
+  let callee = emit_steps(
+    m,
+    f,
+    emit_expr(m, steps[0], f),
+    steps.slice(0, cut),
+    1,
+  )
+  let arg_nodes = cond {
+    steps[cut].nodes.size() > 0 => steps[cut].nodes[0].nodes,
+    _ => [],
+  }
+  let obj = call_pre(
+    m,
+    f,
+    '__new',
+    [callee, emit_arg_array(m, f, arg_nodes, ln, cl)],
+    ln,
+    cl,
+  )
+  emit_steps(m, f, obj, steps, cut + 1)
 }
 
 # --- assignment targets ---
@@ -4795,12 +4706,7 @@ fn emit_object(m, node, f) {
   for p in node.nodes {
     match p {
       {name: 'kv_p'} => {
-        let k = p.nodes[0]
-        let kstr = cond {
-          k.name == 'string' => unescape(k.token.slice(1, k.token.size() - 1)),
-          k.name == 'number' => number_key(k.token),
-          _ => k.token,
-        }
+        let kstr = prop_key_text(p.nodes[0])
         put(
           str_l(m, kstr, p.line, p.column),
           emit_expr(m, p.nodes[1], f),
@@ -4822,34 +4728,9 @@ fn emit_object(m, node, f) {
         }
         put(kstr, emit_expr(m, p.nodes[1], f), p.line, p.column)
       },
-      {name: 'method_p'} => put(
+      {name: 'method_p'} | {name: 'gmethod_p'} | {name: 'amethod_p'} => put(
         str_l(m, p.nodes[0].token, p.line, p.column),
         emit_fn_value(m, p, f, p.nodes[0].token, false),
-        p.line,
-        p.column,
-      ),
-      {name: 'gmethod_p'} => put(
-        str_l(m, p.nodes[0].token, p.line, p.column),
-        emit_fn_value(m, p, f, p.nodes[0].token, false),
-        p.line,
-        p.column,
-      ),
-      {name: 'amethod_p'} => put(
-        str_l(m, p.nodes[0].token, p.line, p.column),
-        emit_fn_value(m, p, f, p.nodes[0].token, false),
-        p.line,
-        p.column,
-      ),
-      {name: 'gcomputed_m'} => put(
-        call_pre(
-          m,
-          f,
-          '__key',
-          [emit_expr(m, p.nodes[0], f)],
-          p.line,
-          p.column,
-        ),
-        emit_fn_value(m, p, f, '', false),
         p.line,
         p.column,
       ),
@@ -4859,7 +4740,7 @@ fn emit_object(m, node, f) {
         p.line,
         p.column,
       ),
-      {name: 'computed_m'} => put(
+      {name: 'computed_m'} | {name: 'gcomputed_m'} => put(
         call_pre(
           m,
           f,
@@ -4965,8 +4846,13 @@ fn emit_expr(m, node, f) {
       }
     },
     {name: 'paren'} => emit_expr(m, node.nodes[0], f),
-    {name: 'arrow'} => emit_fn_value(m, node, f, '', true),
-    {name: 'async_arrow'} => emit_fn_value(m, node, f, '', true),
+    {name: 'arrow'} | {name: 'async_arrow'} => emit_fn_value(
+      m,
+      node,
+      f,
+      '',
+      true,
+    ),
     {name: 'await_e'} => m.make_yield(
       value: emit_expr(m, node.nodes[0], f),
       line: ln,
@@ -4978,13 +4864,10 @@ fn emit_expr(m, node, f) {
         fname.nodes.size() > 0 => fname.nodes[0].token,
         _ => '',
       }
-      let v = emit_fn_value(m, node, f, name, false)
-      cond {
-        # a named function expression binds its own name in its scope: the
-        # closure is stored into that slot the first time it runs (below,
-        # in the prologue), so the value here is just the function
-        _ => v,
-      }
+      # a named function expression binds its own name in its scope: the
+      # prologue stores the closure into that slot, so the value here is
+      # just the function
+      emit_fn_value(m, node, f, name, false)
     },
     {name: 'class_e'} => emit_class(m, node, f),
     {name: 'gen_expr'} => {
@@ -5128,9 +5011,11 @@ fn emit_expr(m, node, f) {
       }
       m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
     },
-    {name: 'lor'} => emit_shortcircuit(m, node, f),
-    {name: 'land'} => emit_shortcircuit(m, node, f),
-    {name: 'nullish'} => emit_shortcircuit(m, node, f),
+    {name: 'lor'} | {name: 'land'} | {name: 'nullish'} => emit_shortcircuit(
+      m,
+      node,
+      f,
+    ),
     {name: 'spread'} => fail(node, 'unexpected spread'),
     _ => cond {
       node.nodes != nil && node.nodes.size() >= 3 => emit_chain(m, node, f),
@@ -5260,13 +5145,7 @@ fn emit_bind(m, f, pat, v, ln, cl) {
           line: ln,
           col: cl,
         )
-        let test = m.binary(
-          op: 'eq',
-          lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [scratch_ref(m, tmp, ln, cl)]), line: ln, col: cl),
-          rhs: str_l(m, 'nil', ln, cl),
-          line: ln,
-          col: cl,
-        )
+        let test = is_undef(m, scratch_ref(m, tmp, ln, cl), ln, cl)
         let picked = m.make_if_else(
           cond: test,
           then_branch: emit_expr(m, pat.nodes[1], f),
@@ -5486,8 +5365,7 @@ fn emit_stmt(m, node, f) {
   let ln = node.line
   let cl = node.column
   match node {
-    {name: 'var_decl'} => emit_decl(m, node, f),
-    {name: 'var_decl_ns'} => emit_decl(m, node, f),
+    {name: 'var_decl'} | {name: 'var_decl_ns'} => emit_decl(m, node, f),
     {name: 'fn_decl'} => nil,
     {name: 'class_d'} => {
       let id = node.nodes[0]
@@ -5693,15 +5571,7 @@ fn emit_for_each(m, node, f, iter_fn) {
   }
   body_ids.push(b)
   body_ids.push(advance(m)[0])
-  let test = m.make_if_else(
-    cond: m.binary(op: 'eq',
-                   lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [scratch_ref(m, cur, ln, cl)]), line: ln, col: cl),
-                   rhs: str_l(m, 'nil', ln, cl), line: ln, col: cl),
-    then_branch: m.bool_literal(v: false, line: ln, col: cl),
-    else_branch: m.bool_literal(v: true, line: ln, col: cl),
-    line: ln,
-    col: cl,
-  )
+  let test = ir_not(m, is_undef(m, scratch_ref(m, cur, ln, cl), ln, cl), ln, cl)
   ids.push(m.make_while(
     cond: test,
     body: m.block(stmts_list: make_list(m, body_ids), line: ln, col: cl),
@@ -5935,6 +5805,45 @@ fn emit_try(m, node, f) {
 
 # --- functions and the driver ---
 
+# The JS function object for VM function g: its closure, its name, whether
+# it binds `this` lexically, and (where a caller wants it) the arity a
+# `fn.length` reports.
+fn mkfn_id(m, f, g, name, is_arrow, with_len, ln, cl) {
+  mut args = [
+    m.make_closure(func: g, cmap: cmap_for(m, f, g), line: ln, col: cl),
+    str_l(m, name, ln, cl),
+    m.bool_literal(v: is_arrow, line: ln, col: cl),
+  ]
+  if with_len {
+    args.push(dbl_l(m, to_float(fn_length(g)), ln, cl))
+  }
+  call_pre(m, f, '__mkfn', args, ln, cl)
+}
+
+# The positionals that overflowed a function's declared parameters: the
+# eight hidden trailing slots, trimmed to the count the call supplied.
+fn rest_pack(m, f, first, ln, cl) {
+  mut hidden = []
+  for k in range(8) {
+    hidden.push(m.var_ref(kind: 'local', index: first + k, line: ln, col: cl))
+  }
+  let cnt = m.binary(
+    op: 'sub',
+    lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(), line: ln, col: cl),
+    rhs: m.literal(v: first, line: ln, col: cl),
+    line: ln,
+    col: cl,
+  )
+  call_pre(
+    m,
+    f,
+    '__rest_pack',
+    [m.array_lit(items_list: make_list(m, hidden), line: ln, col: cl), cnt],
+    ln,
+    cl,
+  )
+}
+
 fn emit_funcs(m) {
   for f in range(funcs.size()) {
     let fi = funcs[f]
@@ -5948,12 +5857,11 @@ fn emit_funcs(m) {
           fi.params.size() > fi.dflts.size() => 1,
           _ => 0,
         }
-        let test = m.binary(
-          op: 'eq',
-          lhs: m.intrinsic(name: 'typeof', args_list: make_list(m, [m.var_ref(kind: 'local', index: slot, line: 1, col: 1)]), line: 1, col: 1),
-          rhs: str_l(m, 'nil', 1, 1),
-          line: 1,
-          col: 1,
+        let test = is_undef(
+          m,
+          m.var_ref(kind: 'local', index: slot, line: 1, col: 1),
+          1,
+          1,
         )
         ids.push(m.make_if(
           cond: test,
@@ -5965,25 +5873,11 @@ fn emit_funcs(m) {
     }
     # a rest parameter: pack the hidden trailing slots by the supplied count
     if fi.rest != nil {
-      let first = fi.params.size() - 8
-      mut hidden = []
-      for k in range(8) {
-        hidden.push(m.var_ref(kind: 'local', index: first + k, line: 1, col: 1))
-      }
-      let n = m.binary(
-        op: 'sub',
-        lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
-        rhs: m.literal(v: first, line: 1, col: 1),
-        line: 1,
-        col: 1,
-      )
-      let rslot = fi.params.size()
-      let a = access_from(f, (f, rslot))
+      let a = access_from(f, (f, fi.params.size()))
       ids.push(m.assign(
         kind: a.kind,
         index: a.index,
-        value: call_pre(m, f, '__rest_pack',
-                                        [m.array_lit(items_list: make_list(m, hidden), line: 1, col: 1), n], 1, 1),
+        value: rest_pack(m, f, fi.params.size() - 8, 1, 1),
         line: 1,
         col: 1,
       ))
@@ -6027,9 +5921,7 @@ fn emit_funcs(m) {
       ids.push(m.assign(
         kind: a.kind,
         index: a.index,
-        value: call_pre(m, f, '__mkfn',
-                                        [m.make_closure(func: f, cmap: cmap_for(m, f, f), line: 1, col: 1),
-                                         str_l(m, fi.name, 1, 1), m.bool_literal(v: false, line: 1, col: 1)], 1, 1),
+        value: mkfn_id(m, f, f, fi.name, false, false, 1, 1),
         line: 1,
         col: 1,
       ))
@@ -6077,25 +5969,7 @@ fn emit_funcs(m) {
       },
       fi.gen_raw != nil => {
         # the wrapper: the raw generator's activation, as a generator object
-        mut hidden = []
-        for k in range(8) {
-          hidden.push(m.var_ref(kind: 'local', index: 1 + k, line: 1, col: 1))
-        }
-        let cnt = m.binary(
-          op: 'sub',
-          lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
-          rhs: m.literal(v: 1, line: 1, col: 1),
-          line: 1,
-          col: 1,
-        )
-        let args = call_pre(
-          m,
-          f,
-          '__rest_pack',
-          [m.array_lit(items_list: make_list(m, hidden), line: 1, col: 1), cnt],
-          1,
-          1,
-        )
+        let args = rest_pack(m, f, 1, 1, 1)
         let act = call_pre(
           m,
           f,
@@ -6170,7 +6044,7 @@ fn emit_funcs(m) {
     }
     let func = m.add_func(
       name: fi.name,
-      num_locals: nslots[f] + nscratch[f],
+      num_locals: nslots[f],
       num_captures: free[f].size(),
       num_cells: cell_index[f].size(),
       num_params: fi.params.size(),
@@ -6217,8 +6091,6 @@ fn build(m, prelude_tree, root) {
     collect_vars(s, main)
   }
   scan_stmts(root.nodes, main)
-  let scopes = scope_stack[main]
-  block_slots["0:0"] = scopes[0].slots
   leave_scope(main)
 
   solve()
@@ -6262,7 +6134,6 @@ for path in cli {
   capture_index = []
   cell_index = []
   nslots = []
-  nscratch = []
   scope_stack = []
   closure_of = {}
   resolved = {}
