@@ -8,10 +8,10 @@ Culebraクイックガイド
 [`stdlib.ja.md`](stdlib.ja.md)) は合計15万トークン規模で、これは
 そのうちプロンプトに載る部分です。
 
-以下の` ```culebra ` ブロックはすべて `culebra test --doc docs` が
+以下の` ```culebra `ブロックはすべて`culebra test --doc docs`が
 実行するので、実装から乖離することはありません。行末の
-`# => <値>` は検証済みの stdout、`# !! <パターン>` は検証済みの throw
-です。§4 は `just gen-quick-guide` がリファレンスから生成します —
+`# => <値>`は検証済みのstdout、`# !! <パターン>`は検証済みのthrow
+です。§4は`just gen-quick-guide`がリファレンスから生成します —
 手で編集しないでください。
 
 目次
@@ -35,8 +35,8 @@ culebra lint .                   # 静的検査; 警告1 / エラー2でexit
 culebra docs -g 'Math.wrap'      # リファレンスから署名を引く
 ```
 
-ソースファイルの拡張子は `.cul`。プロジェクトファイルもマニフェストも
-パッケージマネージャもありません。§4 の内容はすべて `import` なしで
+ソースファイルの拡張子は`.cul`。プロジェクトファイルもマニフェストも
+パッケージマネージャもありません。§4の内容はすべて`import`なしで
 スコープに入っています。
 
 未定義の名前はプログラム実行**前**に弾かれるので、ライブラリ名の当て
@@ -47,21 +47,21 @@ culebra docs -g 'Math.wrap'      # リファレンスから署名を引く
 puts('hi')
 ```
 
-弾かれるのは名前であってメンバではありません。`Math.abss(1)` や
-`xs.len()` は `lint` を素通りし、その行が実行されて初めて落ちます。
-存在しないプロパティはエラーでなく `nil` です。書いたら実行すること
-— lint を通しただけのプログラムは検査されていません。
+弾かれるのは名前であってメンバではありません。`Math.abss(1)`や
+`xs.len()`は`lint`を素通りし、その行が実行されて初めて落ちます。
+存在しないプロパティはエラーでなく`nil`です。書いたら実行すること
+— lintを通しただけのプログラムは検査されていません。
 
 リファレンス一式はバイナリの中にあり、実行中のビルドと常に一致します。
-`culebra docs -g <パターン>` は一致したセクションを表示し、無ければ
-exit 1 になるので、出力を読まずに API の実在を判定できます。パターン
+`culebra docs -g <パターン>`は一致したセクションを表示し、無ければ
+exit 1になるので、出力を読まずにAPIの実在を判定できます。パターン
 は識別子か語句であって、質問文ではありません。
 
 ## 2. 構文
 
 ### 2.1 束縛
 
-束縛は `mut` を付けない限り不変です。裸の `x = ...` は新規束縛を作るか、
+束縛は`mut`を付けない限り不変です。裸の`x = ...`は新規束縛を作るか、
 最も近い外側の束縛を再代入します。
 
 ```culebra
@@ -88,7 +88,7 @@ inspect(try {
 ```
 
 **キャプチャした外側**の変数をシャドウする束縛の導入はコンパイル時
-エラーです。1 つの関数内でのブロックローカルな再束縛は問題ありません。
+エラーです。1つの関数内でのブロックローカルな再束縛は問題ありません。
 
 ### 2.2 型
 
@@ -108,12 +108,12 @@ inspect(type_of({1, 2}))               # => 'Set'
 inspect(type_of('hello'.slice(1, 3)))  # => 'StringView'
 ```
 
-12 番目が `Tensor` です (§4)。クラス・モジュール・エラーはいずれも
-`Object` の上に構築されています。
+12番目が`Tensor`です (§4)。クラス・モジュール・エラーはいずれも
+`Object`の上に構築されています。
 
 ### 2.3 制御フロー
 
-`if` / `match` / `cond` は式、`while` / `for` は文です。
+`if` / `match` / `cond`は式、`while` / `for`は文です。
 
 ```culebra
 n = 7
@@ -160,9 +160,9 @@ for k, v in {a: 1, b: 2} {
 # 'b=2'
 ```
 
-`break` / `continue` は両方のループで使えます。`nobreak` ブロックは
-ループが `break` されなかったときだけ走ります。`while` / `if` /
-`match` は構文内に閉じた init 節を取れます:
+`break` / `continue`は両方のループで使えます。`nobreak`ブロックは
+ループが`break`されなかったときだけ走ります。`while` / `if` /
+`match`は構文内に閉じたinit節を取れます:
 
 ```culebra
 for v in [1, 3, 5] {
@@ -204,15 +204,15 @@ inspect([[1, 2]].map(fn ((a, b)) {
 ```
 
 値としてリテラルを束縛する (`name = fn (...) { ... }`) か、宣言形式
-`fn name(...) { ... }` を使うかのどちらか。その場で渡す callback は
-`|x|`。波括弧も使え、`|x| { ... }` は `fn (x) { ... }` と同じく文を
+`fn name(...) { ... }`を使うかのどちらか。その場で渡すcallbackは
+`|x|`。波括弧も使え、`|x| { ... }`は`fn (x) { ... }`と同じく文を
 受け付ける。
 
 **名前を付けて呼ぶ関数**、特に再帰関数には宣言形式を使うこと。
 [ジェネレータ](#26-イテレータ)になれる、[多重ディスパッチ](#29-クラスufcs多重ディスパッチtrait)
-に参加できる、`fn.name` にソースレベルの名前が入るのはいずれも宣言形式
-だけだが、それ以外の点では2つの形式は等価で、どちらの body でも裸の
-`fn` はその関数自身を呼ぶ:
+に参加できる、`fn.name`にソースレベルの名前が入るのはいずれも宣言形式
+だけだが、それ以外の点では2つの形式は等価で、どちらのbodyでも裸の
+`fn`はその関数自身を呼ぶ:
 
 ```culebra
 fn fib(x) {
@@ -226,8 +226,8 @@ inspect(fib(10))   # => 55
 inspect(fib.name)  # => 'fib'
 ```
 
-ブロックは最後の式に評価されるので `return` はほとんど不要です。`*`
-以降はキーワード専用、`**rest` は未知のキーワードを、`*rest` は余った
+ブロックは最後の式に評価されるので`return`はほとんど不要です。`*`
+以降はキーワード専用、`**rest`は未知のキーワードを、`*rest`は余った
 位置引数を集めます:
 
 ```culebra
@@ -252,9 +252,9 @@ inspect('hello, {name}')  # => 'hello, {name}'
 inspect('a' + 'b')        # => 'ab'
 ```
 
-`size()` は UTF-8 のバイト数、`for` と `iter()` は Unicode スカラー
-1 個ずつ、`graphemes()` は書記素クラスタ 1 個ずつ進みます。`s[i]`
-演算子は**ありません** — バイトオフセットを取る `slice` を使います。
+`size()`はUTF-8のバイト数、`for`と`iter()`はUnicodeスカラー
+1個ずつ、`graphemes()`は書記素クラスタ1個ずつ進みます。`s[i]`
+演算子は**ありません** — バイトオフセットを取る`slice`を使います。
 
 ```culebra
 inspect('café'.size())                        # => 5
@@ -264,9 +264,9 @@ inspect('hello world'.split(' '))              # => ['hello', 'world']
 inspect(['a', 'b'].join('-'))                  # => 'a-b'
 ```
 
-`"""` はブロック文字列。`"..."` と同じく補間し、閉じ区切りのインデントを
-取り除き、その直前の改行も落とす。閉じ `"""` は独立した行に置く。複数行の
-文字列は `\n` を連結せずこれを使う。
+`"""`はブロック文字列。`"..."`と同じく補間し、閉じ区切りのインデントを
+取り除き、その直前の改行も落とす。閉じ`"""`は独立した行に置く。複数行の
+文字列は`\n`を連結せずこれを使う。
 
 ```culebra
 sql = """
@@ -279,8 +279,8 @@ inspect(sql.lines())  # => ['SELECT *', 'FROM t']
 
 ### 2.6 イテレータ
 
-`range` は遅延、`iota` は確保します。`.iter()` は Array を遅延化し、
-チェーンは最初の consumer で止まって中間 Array を作りません。
+`range`は遅延、`iota`は確保します。`.iter()`はArrayを遅延化し、
+チェーンは最初のconsumerで止まって中間Arrayを作りません。
 
 ```culebra
 inspect(iota(3))  # => [0, 1, 2]
@@ -297,7 +297,7 @@ for i, v in ['x', 'y'].enumerate() {
 # '1:y'
 ```
 
-body に `yield` を含む `fn` はジェネレータになり、呼ぶとイテレータが
+bodyに`yield`を含む`fn`はジェネレータになり、呼ぶとイテレータが
 返ります。
 
 ```culebra
@@ -311,7 +311,7 @@ fn countdown(start) {
 inspect(countdown(3).collect())  # => [3, 2, 1]
 ```
 
-`iter()` / `has_next()` / `next()` を持つオブジェクトなら何でも `for`
+`iter()` / `has_next()` / `next()`を持つオブジェクトなら何でも`for`
 と全チェーンメソッドで使えます。
 
 ### 2.7 パターンマッチ
@@ -337,11 +337,11 @@ inspect(describe([1, 2, 3]))    # => 'head=1 rest=2'
 inspect(describe({name: 'z'}))  # => 'named z'
 ```
 
-網羅性検査はありません。`_` の腕を用意してください。
+網羅性検査はありません。`_`の腕を用意してください。
 
 ### 2.8 エラー・`defer`・`drop`
 
-throw できる値に制限はなく、`try` は式です。
+throwできる値に制限はなく、`try`は式です。
 
 ```culebra
 check = fn (x) {
@@ -362,7 +362,7 @@ inspect(try {
 })  # => 7
 ```
 
-組み込みエラーは `kind` を持つ Object です:
+組み込みエラーは`kind`を持つObjectです:
 
 ```culebra
 inspect(try {
@@ -372,8 +372,8 @@ inspect(try {
 })  # => 'ZeroDivisionError'
 ```
 
-`defer` は囲むブロックのあらゆる脱出経路で LIFO 順に走ります。引数
-なしの `drop` プロパティを持つ Object は、最後の参照が消えた時点で
+`defer`は囲むブロックのあらゆる脱出経路でLIFO順に走ります。引数
+なしの`drop`プロパティを持つObjectは、最後の参照が消えた時点で
 それが呼ばれます。
 
 ```culebra
@@ -408,9 +408,9 @@ inspect('after')
 
 ### 2.9 クラス・UFCS・多重ディスパッチ・trait
 
-フィールドには `self` でアクセスします (`this` ではありません)。
-クラス自体の呼び出しは `.new` の短縮形です。クラスも Object リテラルと
-同じ規則で `drop()` を定義でき (2.8)、インスタンスへの最後の参照が
+フィールドには`self`でアクセスします (`this`ではありません)。
+クラス自体の呼び出しは`.new`の短縮形です。クラスもObjectリテラルと
+同じ規則で`drop()`を定義でき (2.8)、インスタンスへの最後の参照が
 消えた時点でそれが呼ばれます。
 
 ```culebra
@@ -440,12 +440,12 @@ inspect(c.wheels)  # => 4
 inspect(c.class)   # => 'Car'
 ```
 
-演算子は dunder メソッド (`__add__`、`__eq__`、`__lt__`、`__index__`、
-`__setindex__`、`__call__` 等) に対応します。逆側メソッド
+演算子はdunderメソッド (`__add__`、`__eq__`、`__lt__`、`__index__`、
+`__setindex__`、`__call__`等) に対応します。逆側メソッド
 (`__radd__`) はありません — その演算を所有する型の側にオーバーロード
 を置いてください。
 
-自由関数 `f(x, ...)` は `x.f(...)` として呼べますが、既存のプロパティ
+自由関数`f(x, ...)`は`x.f(...)`として呼べますが、既存のプロパティ
 やメソッドが常に優先されます:
 
 ```culebra
@@ -473,9 +473,9 @@ inspect(area(Circle(2)))  # => 12
 inspect(area(10))         # => 10
 ```
 
-`trait` は構造的です。メソッド名とアリティが一致するクラスは `impl`
-宣言なしで適合します。trait メソッドはデフォルト実装の body を持て、
-`@derive(Eq, Hash, Show, Comparable)` が定型の適合メソッドを生成します。
+`trait`は構造的です。メソッド名とアリティが一致するクラスは`impl`
+宣言なしで適合します。traitメソッドはデフォルト実装のbodyを持て、
+`@derive(Eq, Hash, Show, Comparable)`が定型の適合メソッドを生成します。
 
 ```culebra
 trait Greeter {
@@ -521,8 +521,8 @@ inspect({Shape.Origin, Shape.Origin}.size())  # => 1
 
 ### 2.10 エフェクト
 
-`perform` は、意味を外側の `handle` が決める操作を発行します。継続は
-multi-shot です。
+`perform`は、意味を外側の`handle`が決める操作を発行します。継続は
+multi-shotです。
 
 ```culebra
 effect fn ask()
@@ -534,12 +534,12 @@ inspect(handle {
 })  # => 42
 ```
 
-`resume` を呼ばない節は残りの計算を捨てます — これはまさに例外です。
-`with return(v) { ... }` は正常完了時の値を写します。
+`resume`を呼ばない節は残りの計算を捨てます — これはまさに例外です。
+`with return(v) { ... }`は正常完了時の値を写します。
 
 ### 2.11 モジュール
 
-`export` / `import` はトップレベル専用なので、依存グラフは parse 時に
+`export` / `import`はトップレベル専用なので、依存グラフはparse時に
 確定します。
 
 ```culebra
@@ -558,14 +558,14 @@ import lib from './lib.cul'
 inspect(lib.greet('world'))  # => 'hello, world'
 ```
 
-パスは import 元ファイルからの相対で解決される単一引用符リテラルです。
-各モジュールの評価は 1 回だけ。循環は `ImportError` になります。
+パスはimport元ファイルからの相対で解決される単一引用符リテラルです。
+各モジュールの評価は1回だけ。循環は`ImportError`になります。
 
 ### 2.12 オプショナル型注釈
 
-注釈が検査されるのは代入・引数渡し・戻り値の 3 境界だけで、それ以外
-では検査されません。`Long | String` は Union、`T?` は `T | Nil`、
-`Array<Long>` は要素型を**文書化**しますが要素ごとの検査はしません。
+注釈が検査されるのは代入・引数渡し・戻り値の3境界だけで、それ以外
+では検査されません。`Long | String`はUnion、`T?`は`T | Nil`、
+`Array<Long>`は要素型を**文書化**しますが要素ごとの検査はしません。
 
 ```culebra
 show = fn (x: Long | String) -> String {
@@ -580,37 +580,37 @@ inspect(show('hi'))  # => 'hi'
 各行は、他言語の習慣のまま書くと失敗するか、黙って別のものになる
 ケースです。
 
-| つい書くもの | Culebra では |
+| つい書くもの | Culebraでは |
 |---|---|
-| `'text {x}'` の補間 | 補間されるのは `"..."` のみ。`'...'` はリテラル |
-| `puts` / `console.log` / 改行付きの `print(x)` | `inspect(x)` はクォート付きデバッグ形式、`println(x)` は生+改行、`print(x)` は生 |
+| `'text {x}'`の補間 | 補間されるのは`"..."`のみ。`'...'`はリテラル |
+| `puts` / `console.log` / 改行付きの`print(x)` | `inspect(x)`はクォート付きデバッグ形式、`println(x)`は生+改行、`print(x)`は生 |
 | `this` | `self` |
-| `x \|> f()` | UFCS の `x.f()`。パイプライン演算子は無い |
-| 1 要素の Set として `{3}` | `SyntaxError`。1 要素は `{3,}`、`{}` は空 Object |
-| 集合の `a \| b` / `a & b` | メソッド: `a.union(b)` / `a.intersect(b)` / `a.diff(b)` |
-| `{a: 1} + {b: 2}` | `TypeError`。Object のマージ演算子は無い |
-| String への `s[0]` | `TypeError`。バイトオフセットを取る `s.slice(0, 1)` を使う |
-| `-7 % 3 == 2` (Python) | `-1` — 符号は被除数に従う (C 流) |
-| `-7 / 2 == -4` (Python) | `-3` — Long 除算はゼロ方向に切り捨て |
-| `if [] { }` / `if '' { }` | `TypeError`。判定できるのは `Bool` / `Long` / `Float` のみ |
+| `x \|> f()` | UFCSの`x.f()`。パイプライン演算子は無い |
+| 1要素のSetとして`{3}` | `SyntaxError`。1要素は`{3,}`、`{}`は空Object |
+| 集合の`a \| b` / `a & b` | メソッド: `a.union(b)` / `a.intersect(b)` / `a.diff(b)` |
+| `{a: 1} + {b: 2}` | `TypeError`。Objectのマージ演算子は無い |
+| Stringへの`s[0]` | `TypeError`。バイトオフセットを取る`s.slice(0, 1)`を使う |
+| `-7 % 3 == 2` (Python) | `-1` — 符号は被除数に従う (C流) |
+| `-7 / 2 == -4` (Python) | `-3` — Long除算はゼロ方向に切り捨て |
+| `if [] { }` / `if '' { }` | `TypeError`。判定できるのは`Bool` / `Long` / `Float`のみ |
 | `0 == false` | `false` — 型をまたぐ暗黙変換は無い |
-| `.length` / `.count` | `.size()`。存在しないプロパティは `nil` なので `.length` は raise せず `nil` になる |
+| `.length` / `.count` | `.size()`。存在しないプロパティは`nil`なので`.length`はraiseせず`nil`になる |
 | `.append(x)` | `.push(x)` |
 | `del a[i]` / `a.splice(i, 1)` | `a.remove_at(i)`。取り除いた要素を返す |
-| `obj['missing']` | `KeyError`。`obj.missing` は `nil`、`obj.get('missing', dflt)` は fallback を取る |
+| `obj['missing']` | `KeyError`。`obj.missing`は`nil`、`obj.get('missing', dflt)`はfallbackを取る |
 | `'ab' * 3` | `TypeError`。文字列の繰り返し演算子は無い |
 | `s.find(x)` / `s.indexOf(x)` | `s.index_of(x)` — バイトオフセット、無ければ`-1` |
 | `s.ljust(10)` / `s.padStart(10)` / `s.zfill(5)` | 補間の書式指定: `"{s:<10}"`、`"{n:05}"` |
 | 引数なしの`s.split()`（空白で分割） | `s.split_whitespace()`。`split`は必ず区切りを取る |
 | 引数への代入 | 引数は不変 — `ImmutableError` |
-| 同一スコープで `x = 1` を 2 回 | `ImmutableError`。`mut x = 1` と宣言する |
+| 同一スコープで`x = 1`を2回 | `ImmutableError`。`mut x = 1`と宣言する |
 | `and` / `or` / `not` | `&&` / `\|\|` / `!` |
 | `elif` | `else if` |
-| コメントが `#` だけ、または `//` だけ | 両方使える。加えて `/* ... */` |
-| `async` / `await` | 設計上存在しない — I/O は blocking。`Isolate` / `Parallel` を使う |
-| パッケージマネージャ | §4 の内容はすべて `import` なしでスコープにある |
+| コメントが`#`だけ、または`//`だけ | 両方使える。加えて`/* ... */` |
+| `async` / `await` | 設計上存在しない — I/Oはblocking。`Isolate` / `Parallel`を使う |
+| パッケージマネージャ | §4の内容はすべて`import`なしでスコープにある |
 
-エラーにならず値が返るぶん見落としやすいものが 2 つ:
+エラーにならず値が返るぶん見落としやすいものが2つ:
 
 ```culebra
 # split が返すのは String ではなく StringView。安いが type_of は異なる
@@ -632,37 +632,37 @@ inspect([1, 2].size())  # => 2
 
 | 動くが | こう書く |
 |---|---|
-| 値としての `if c { a } else { b }` | `c ? a : b` |
-| 値を返す `if` / `else if`の連鎖 | 1つの値を定数群と比較するなら`match`、互いに無関係な条件なら`cond` |
+| 値としての`if c { a } else { b }` | `c ? a : b` |
+| 値を返す`if` / `else if`の連鎖 | 1つの値を定数群と比較するなら`match`、互いに無関係な条件なら`cond` |
 | `"a" + x + "b"`（値の前後にリテラル文字列を継ぎ足す） | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |
 | `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |
-| ループの外に `mut i = 0` を置いて `i += 1` | `for i, v in xs.enumerate()` |
-| `mut out = []` + `for` + `out.push(f(x))` | `xs.map(f)`（`filter` も同様） |
+| ループの外に`mut i = 0`を置いて`i += 1` | `for i, v in xs.enumerate()` |
+| `mut out = []` + `for` + `out.push(f(x))` | `xs.map(f)`（`filter`も同様） |
 | `mut t = {}` + `for` + `t[k] = v` | `xs.map(\|x\| (k(x), v(x))).to_object()` |
-| `mut found = false` + `while !found` | `for x in xs { … break }` か `xs.find(p)` |
-| `mut hit = false` + `for` + `if p(x) { hit = true; break }` | `xs.any(p)`（逆は `xs.all(p)`） |
-| `"a\n" + "b\n"` | `"""` ブロック |
+| `mut found = false` + `while !found` | `for x in xs { … break }`か`xs.find(p)` |
+| `mut hit = false` + `for` + `if p(x) { hit = true; break }` | `xs.any(p)`（逆は`xs.all(p)`） |
+| `"a\n" + "b\n"` | `"""`ブロック |
 | `.map(fn (x) { expr })` | `.map(\|x\| expr)` |
 | `range(0, n)` | `range(n)` |
 | `iota(n).map(\|_\| v)` | `repeat(n, v)` |
 | `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
 | `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
 | `{k1: v1, k2: obj.k2, k3: obj.k3}`（1つ変えるために全フィールドを手コピー） | `{...obj, k1: v1}` |
-| `if cond { stmt }` — `else` なしの単文 | `stmt if cond`（否定は `stmt unless cond`） |
-| `if x == nil { x = v }` / `if !d.has(k) { d[k] = v }` | `x ??= v` / `d[k] ??= v`（`obj.key` にも使える） |
-| `"{a.b(c).d ?? e}"`（長く入れ子になった式をそのまま埋め込む） | `let x = a.b(c).d ?? e` としてから `"{x}"` |
+| `if cond { stmt }` — `else`なしの単文 | `stmt if cond`（否定は`stmt unless cond`） |
+| `if x == nil { x = v }` / `if !d.has(k) { d[k] = v }` | `x ??= v` / `d[k] ??= v`（`obj.key`にも使える） |
+| `"{a.b(c).d ?? e}"`（長く入れ子になった式をそのまま埋め込む） | `let x = a.b(c).d ?? e`としてから`"{x}"` |
 
-`cond` は主語のない `match` なので、互いに無関係な条件の連鎖は
-`cond { a > 1 => …, b < 2 => …, _ => … }` になる。完走したかどうかを
-知りたいループはフラグでなく `nobreak` ブロックを使う。
+`cond`は主語のない`match`なので、互いに無関係な条件の連鎖は
+`cond { a > 1 => …, b < 2 => …, _ => … }`になる。完走したかどうかを
+知りたいループはフラグでなく`nobreak`ブロックを使う。
 
 ## 4. シグネチャ索引
 
-レシーバ名は慣例です: `s` は String、`a` は Array、`o` は Object、
-`it` は Iterator、`re` はコンパイル済み Regex、`f` は開いた File。
-レシーバが付いていないエントリ (**セットのメソッド** の `contains(x)`、
-**Http** の `json()` 等) は、そのグループ自身の型のメソッドです。
+レシーバ名は慣例です: `s`はString、`a`はArray、`o`はObject、
+`it`はIterator、`re`はコンパイル済みRegex、`f`は開いたFile。
+レシーバが付いていないエントリ (**セットのメソッド** の`contains(x)`、
+**Http** の`json()`等) は、そのグループ自身の型のメソッドです。
 **(experimental)**が付いたグループはビルド時のopt-inで、リリースバイナリ
 には入っていないことがあります（[`stdlib.ja.md`](stdlib.ja.md)の該当節に
 書いてあります）。

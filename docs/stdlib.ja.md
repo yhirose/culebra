@@ -1608,7 +1608,7 @@ let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 | `.pad(params: Array) -> Tensor` | new buffer | `[axis, before, after]`。`axis`沿いにゼロパディング |
 | `.fold(params: Array) -> Tensor` | new buffer | `[axis, orig_size, step]`。`.unfold()`の逆——重なる窓をscatter-addで`axis`へ戻す |
 | `.sum() -> Float` | scalar | 全要素和（暗黙eval） |
-| `.sum(axis: Long?) -> Tensor` | lazy | 軸を1つ畳む。axis が nil なら軸指定なし＝スカラー形と同じ |
+| `.sum(axis: Long?) -> Tensor` | lazy | 軸を1つ畳む。axisがnilなら軸指定なし＝スカラー形と同じ |
 | `.mean() / .mean(axis)` | Float / Tensor | 同様 |
 | `.max() / .max(axis)` | Float / Tensor | 同様 |
 | `.argmax(axis: Long) -> Tensor` | lazy | 軸を畳んでインデックスをFloatで格納 |

@@ -978,7 +978,7 @@ ownedな`String`です。文字列と非文字列の連結（`'n: ' + 1`）は
 
     a + b                    # 新しい配列。a・bは変わらない
     a += b                   # aを連結結果に再束縛する
-    [...a, ...b]             # a + b と同じ結果
+    [...a, ...b]             # a + bと同じ結果
 
 コピーはshallowで、要素は`slice`と同様に元の配列と共有されます。新し
 い配列を作らずその場で追加するには`a.extend(b)`（§18.2）を使います。
@@ -2626,7 +2626,7 @@ let width = "v" + match n {
   （`s if s == x => ...`）。
 * パターンは左から右、サブパターンは深さ優先で評価されます。
 * パターンが導入した束縛`name`はそのアームのガードと本体で有効。
-* `|`（or）サブパターンは束縛できません。alternative 内の名前はその枝を
+* `|`（or）サブパターンは束縛できません。alternative内の名前はその枝を
   通った経路にしか存在しないため、束縛を書くと`SyntaxError`です
   （`a | _`、`5 | a`、`Ok(x) | Err(x)`）。`|`の中にはリテラルと`_`だけを
   置き、束縛の形ごとにアーム（もしくはパターン）を分けます。
@@ -5421,7 +5421,7 @@ fn ...`は前の式のmatmul継続ではなく、独立した2 statementとし�
 | `dap` | Debug Adapter Protocolをstdin/stdoutで話す（起動するのはエディタ） | [`tooling.ja.md` §4](tooling.ja.md#4-デバッグ-culebra-dap) |
 | `build <in.cul> -o <out>` | AOTコンパイルして単体実行ファイルを生成（バンドルされるモジュールグラフは §24、クロスコンパイル用フラグは`culebra build --help`） | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
 | `wrap` | 自前のC++ クラスを組み込みとして公開する拡張`culebra`バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
-| `toolchain [status\|install\|uninstall]` | `build` がこのホストでリンクするために必要なものを報告・導入・削除する | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
+| `toolchain [status\|install\|uninstall]` | `build`がこのホストでリンクするために必要なものを報告・導入・削除する | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
 
 
 スクリプトを指定しない場合、自動的にREPLが起動します。REPLは常に

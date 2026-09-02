@@ -288,7 +288,7 @@ per-function cleanup slotへspillされる。以下の契約のどれか1つ
 | 契約 | unwindパスで誰が解放するか | 使われる場所 |
 |---|---|---|
 | Caller-cleans | 呼び出しサイトのregionごとのcleanup pad（`ThrowGuard`）。regionがthrowし得ないと分かれば削除される | 組み込みメソッドのreceiverと引数、呼び出しのcallee式、代入のターゲット、UFCSのcallee |
-| Callee-cleans-on-throw | ヘルパーの本体全体を覆うガード（`JitUnwindRelease`）。すべてのthrowが呼び手の一時値を解放する — user-dispatchウィンドウと直接エラーの両方 | 演算子の実装、receiver所有下でのindex/property access、not-a-function エラーパス |
+| Callee-cleans-on-throw | ヘルパーの本体全体を覆うガード（`JitUnwindRelease`）。すべてのthrowが呼び手の一時値を解放する — user-dispatchウィンドウと直接エラーの両方 | 演算子の実装、receiver所有下でのindex/property access、not-a-functionエラーパス |
 | Callee-consumes-on-every-exit | ヘルパーの入口で宣言される所有引数ハンドル（`JitOwnedVal`）。通常returnとunwindの両方で解放する | ネイティブメソッドのエントリポイント、高階関数のaccumulatorとcallback |
 | Borrow-neutral invoke | 呼び出し元がcalleeが消費する参照を鋳造し他には一切触れないので、本体がreturnしてもthrowしても呼び出しはrefcount中立である | ユーザー定義dispatchが走るすべてのウィンドウ — 演算子オーバーロード、`eq`/`hash`/`cmp`、`__index__`、プロパティのgetter |
 | Transfer | 渡ってきた参照がそのまま返されるか、capture cellやslotに直接渡される | イテレータ自身のメソッド、遅延構築されるcombinatorのcapture cell |

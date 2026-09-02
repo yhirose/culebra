@@ -617,7 +617,7 @@ defineしてはいけない**。AOT archiveの生成元TU
 
 * [`tests/embedding/mt_smoke.cc`](../tests/embedding/mt_smoke.cc) —
   4つのホストスレッドがそれぞれtry/catch付きスクリプトをparse +
-  Embed セッションを実行、加えてJITパスでも4スレッド。合計240並行実行。
+  Embedセッションを実行、加えてJITパスでも4スレッド。合計240並行実行。
 * [`tests/embedding/mi_smoke.cc`](../tests/embedding/mi_smoke.cc) —
   1スレッド内で2つのRuntime（それぞれ自分のEmbedを持つ）を
   交互に切替え、独立したPRNG状態
