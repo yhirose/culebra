@@ -25,14 +25,16 @@
 # template literals, objects and arrays with the first methods, new,
 # try/catch/throw, the Error classes. J2 -- destructuring (declarations,
 # parameters, for-of heads, assignment), switch, for-in, optional
-# chaining, accessors in object literals, the comma operator, JSON.
+# chaining, accessors in object literals, the comma operator, JSON. J3 --
+# classes (extends, super, static, accessors, instance and static fields),
+# Map and Set, Symbol.iterator as the hidden iterator key.
 #
 # Known differences: string length/indexing by byte; no TDZ for a captured
 # let (read before its declaration it is undefined); arrays have no holes
 # (a gap reads as undefined and prints as one); ToPrimitive on objects is
-# fixed ('[object Object]', arrays join); a function's name is only the
-# declared one (no inference from `let f = function () {}`); at most 8 call
-# arguments; sloppy mode only (a receiver-less call sees the global object
+# fixed ('[object Object]', arrays join); a function's name is inferred
+# only from a declaration's initializer, not from an assignment or a
+# property; at most 8 call arguments; sloppy mode only (a receiver-less call sees the global object
 # as `this`, as Node's CommonJS modules do; the program's own `this` is an
 # empty object, like module.exports).
 
@@ -41,7 +43,7 @@ let q = String.from_code_point(39)
 
 let grammar = `
   program    <- stmt*                                          { no_ast_opt }
-  stmt       <- var_decl / fn_decl / if_s / while_s / do_s / for_of / for_in /
+  stmt       <- var_decl / fn_decl / class_d / if_s / while_s / do_s / for_of / for_in /
                 for_s / switch_s / return_s / break_s / continue_s / throw_s /
                 try_s / block / empty_s / expr_s
   var_decl   <- decl_kw declr (',' declr)* ';'?                  { no_ast_opt }
@@ -143,7 +145,23 @@ let grammar = `
   member_p   <- '.' pname                                        { no_ast_opt }
   pname      <- < [a-zA-Z_$][a-zA-Z0-9_$]* >
   primary    <- number / string / template / true_l / false_l / null_l /
-                this_e / array_lit / object_lit / fn_expr / paren / ident
+                this_e / super_call / super_mem / array_lit / object_lit /
+                fn_expr / class_e / paren / ident
+  super_call <- 'super' '(' args ')'                             { no_ast_opt }
+  super_mem  <- 'super' '.' pname                                { no_ast_opt }
+  class_d    <- 'class' ident class_tail                         { no_ast_opt }
+  class_e    <- 'class' class_name class_tail                    { no_ast_opt }
+  class_name <- ident?                                           { no_ast_opt }
+  class_tail <- extends_c '{' (cmember / ';')* '}'               { no_ast_opt }
+  extends_c  <- ('extends' postfix)?                             { no_ast_opt }
+  cmember    <- static_c / getter_c / setter_c / method_c / field_c
+  static_c   <- 'static' (getter_c / setter_c / method_c / field_c) { no_ast_opt }
+  getter_c   <- 'get' mkey '(' ')' block                         { no_ast_opt }
+  setter_c   <- 'set' mkey '(' ident ')' block                   { no_ast_opt }
+  method_c   <- mkey '(' params ')' block                        { no_ast_opt }
+  field_c    <- mkey ('=' !'=' expr)? ';'?                       { no_ast_opt }
+  mkey       <- computed_k / pname / string
+  computed_k <- '[' expr ']'                                     { no_ast_opt }
   true_l     <- 'true'                                           { no_ast_opt }
   false_l    <- 'false'                                          { no_ast_opt }
   null_l     <- 'null'                                           { no_ast_opt }
@@ -154,7 +172,8 @@ let grammar = `
   string     <- < ['] (!['\\] . / '\\' .)* ['] > / < ["] (!["\\] . / '\\' .)* ["] >
   array_lit  <- '[' (arg (',' arg)*)? ','? ']'                   { no_ast_opt }
   object_lit <- '{' (oprop (',' oprop)*)? ','? '}'               { no_ast_opt }
-  oprop      <- getter_p / setter_p / method_p / kv_p / computed_p / ospread / short_p
+  oprop      <- getter_p / setter_p / method_p / computed_m / kv_p / computed_p / ospread / short_p
+  computed_m <- '[' expr ']' '(' params ')' block                { no_ast_opt }
   getter_p   <- 'get' pname '(' ')' block                        { no_ast_opt }
   setter_p   <- 'set' pname '(' ident ')' block                  { no_ast_opt }
   kv_p       <- pkey ':' expr                                    { no_ast_opt }
@@ -521,6 +540,9 @@ function __str(v) {
       if (msg === '') return __str(nm);
       return __str(nm) + ': ' + __str(msg);
     }
+    // an object's own toString (a class's, say) speaks for it
+    var ts = __get(v, 'toString');
+    if (__is_fnobj(ts) && !__same(ts, __G.Object_proto.toString)) return __str(__call(ts, v, []));
     return '[object Object]';
   }
   return '' + t;
@@ -868,8 +890,67 @@ function __new(F, args) {
 function __spread_into(out, v) {
   var t = __typeof(v);
   if (t === 'array') { var i = 0; while (i < __len(v)) { __arraypush(out, v[i]); i = i + 1; } return out; }
-  if (t === 'string') { var j = 0; while (j < __len(v)) { __arraypush(out, v[j]); j = j + 1; } return out; }
-  throw __err('TypeError', __str(v) + ' is not iterable');
+  var it = __iter(v);
+  var r = __iter_step(it);
+  while (__typeof(r) !== 'nil') { __arraypush(out, r[0]); r = __iter_step(it); }
+  return out;
+}
+
+// --- classes -------------------------------------------------------------------
+// A class is a constructor function object whose prototype (marked
+// non-enumerable for for-in) chains to the parent's; the class itself
+// chains to the parent for the statics. Instance fields are a function the
+// constructor runs -- at entry for a base class, after super() for a
+// derived one; a class without its own constructor gets the default.
+function __mkclass(name, parent, ctor, fields) {
+  var has_parent = __typeof(parent) !== 'nil';
+  if (has_parent && !__is_fnobj(parent)) throw __err('TypeError', 'Class extends value ' + __str(parent) + ' is not a constructor or null');
+  var c;
+  if (__typeof(ctor) === 'nil') {
+    c = __mkfn(has_parent
+      ? function (t, a, b, c2, d, e, f, g, h) { __apply(parent['\x01fn'], t, __rest_pack([a, b, c2, d, e, f, g, h], __argcount() - 1)); __run_fields(c, t); return undefined; }
+      : function (t) { __run_fields(c, t); return undefined; }, name, false);
+  } else {
+    c = __mkfn(ctor, name, false);
+  }
+  c['\x01fields'] = fields;
+  c['\x01class'] = true;
+  var p = c.prototype;
+  p['\x01noenum'] = true;
+  if (has_parent) { p['\x01proto'] = parent.prototype; c['\x01proto'] = parent; }
+  return c;
+}
+function __run_fields(cls, t) {
+  var f = cls['\x01fields'];
+  if (__is_fnobj(f)) __call(f, t, []);
+  return undefined;
+}
+function __def_method(cls, is_static, key, f) {
+  var target = is_static ? cls : cls.prototype;
+  target[__key(key)] = f;
+  return undefined;
+}
+function __def_accessor(cls, is_static, kind, key, f) {
+  var target = is_static ? cls : cls.prototype;
+  target['\x01' + kind + ':' + __key(key)] = f;
+  return undefined;
+}
+function __super_call(cls, t, args) {
+  var parent = cls['\x01proto'];
+  if (!__is_fnobj(parent)) throw __err('TypeError', "'super' keyword unexpected here");
+  __apply(parent['\x01fn'], t, args);
+  return undefined;
+}
+function __super_home(cls, is_static) {
+  return is_static ? cls['\x01proto'] : cls.prototype['\x01proto'];
+}
+function __super_get(cls, is_static, t, key) {
+  return __proto_get(__super_home(cls, is_static), __key(key), t);
+}
+function __super_callm(cls, is_static, t, key, args) {
+  var f = __super_get(cls, is_static, t, key);
+  if (!__is_fnobj(f)) throw __err('TypeError', '(intermediate value).' + __key(key) + ' is not a function');
+  return __apply(f['\x01fn'], t, args);
 }
 
 // --- errors --------------------------------------------------------------------
@@ -1066,6 +1147,7 @@ function __init_globals() {
   __init_console(G);
   __init_math(G);
   __init_json(G);
+  __init_collections(G);
   return G;
 }
 
@@ -1802,6 +1884,122 @@ function __json_string(st) {
   }
 }
 
+// --- Map / Set --------------------------------------------------------------------
+// Keys and values in two parallel arrays (insertion order, linear search by
+// SameValueZero); iteration is live, by index.
+function __same_zero(a, b) {
+  if (__seq(a, b)) return true;
+  return __typeof(a) === 'double' && __typeof(b) === 'double' && a !== a && b !== b;
+}
+function __coll_find(t, k) {
+  var ks = t['\x01keys'];
+  var i = 0;
+  while (i < __len(ks)) { if (__same_zero(ks[i], k)) return i; i = i + 1; }
+  return -1;
+}
+function __coll_remove(arr, i) {
+  var j = i;
+  while (j + 1 < __len(arr)) { arr[j] = arr[j + 1]; j = j + 1; }
+  __arraypop(arr);
+  return undefined;
+}
+// an iterator over a collection's live arrays: pick answers the value
+function __coll_iter(t, pick) {
+  var it = {};
+  it.i = 0;
+  it.next = __mkfn(function (t2) {
+    var r = {};
+    if (it.i >= __len(t['\x01keys'])) { r.value = undefined; r.done = true; return r; }
+    r.value = pick(t, it.i);
+    r.done = false;
+    it.i = it.i + 1;
+    return r;
+  }, 'next', false);
+  it['\x01iter'] = __mkfn(function (t2) { return it; }, '[Symbol.iterator]', false);
+  return it;
+}
+function __init_collections(G) {
+  var Sym = {};
+  Sym.iterator = '\x01iter';
+  G.Symbol = Sym;
+  var M = __ctor(G, 'Map', {}, function (t, init) {
+    t['\x01keys'] = [];
+    t['\x01vals'] = [];
+    if (!__isnullish(init)) {
+      var it = __iter(init);
+      var r = __iter_step(it);
+      while (__typeof(r) !== 'nil') {
+        var e = __destr_arr(r[0]);
+        __callm(t, 'set', [__at(e, 0), __at(e, 1)]);
+        r = __iter_step(it);
+      }
+    }
+    return undefined;
+  });
+  var MP = M.prototype;
+  MP['\x01proto'] = G.Object_proto;
+  MP['\x01noenum'] = true;
+  MP.get = __mkfn(function (t, k) { var i = __coll_find(t, k); return i < 0 ? undefined : t['\x01vals'][i]; }, 'get', false);
+  MP.set = __mkfn(function (t, k, v) {
+    var i = __coll_find(t, k);
+    if (i < 0) { __arraypush(t['\x01keys'], k); __arraypush(t['\x01vals'], v); } else { t['\x01vals'][i] = v; }
+    return t;
+  }, 'set', false);
+  MP.has = __mkfn(function (t, k) { return __coll_find(t, k) >= 0; }, 'has', false);
+  MP['delete'] = __mkfn(function (t, k) {
+    var i = __coll_find(t, k);
+    if (i < 0) return false;
+    __coll_remove(t['\x01keys'], i);
+    __coll_remove(t['\x01vals'], i);
+    return true;
+  }, 'delete', false);
+  MP.clear = __mkfn(function (t) { t['\x01keys'] = []; t['\x01vals'] = []; return undefined; }, 'clear', false);
+  MP['\x01get:size'] = __mkfn(function (t) { return __todouble(__len(t['\x01keys'])); }, 'size', false);
+  MP.forEach = __mkfn(function (t, cb, thisArg) {
+    var i = 0;
+    while (i < __len(t['\x01keys'])) { __call(cb, thisArg, [t['\x01vals'][i], t['\x01keys'][i], t]); i = i + 1; }
+    return undefined;
+  }, 'forEach', false);
+  MP.keys = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); }, 'keys', false);
+  MP.values = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return c['\x01vals'][i]; }); }, 'values', false);
+  MP.entries = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01vals'][i]]; }); }, 'entries', false);
+  MP['\x01iter'] = MP.entries;
+  MP.toString = __mkfn(function (t) { return '[object Map]'; }, 'toString', false);
+
+  var S = __ctor(G, 'Set', {}, function (t, init) {
+    t['\x01keys'] = [];
+    if (!__isnullish(init)) {
+      var it = __iter(init);
+      var r = __iter_step(it);
+      while (__typeof(r) !== 'nil') { __callm(t, 'add', [r[0]]); r = __iter_step(it); }
+    }
+    return undefined;
+  });
+  var SP = S.prototype;
+  SP['\x01proto'] = G.Object_proto;
+  SP['\x01noenum'] = true;
+  SP.add = __mkfn(function (t, v) { if (__coll_find(t, v) < 0) __arraypush(t['\x01keys'], v); return t; }, 'add', false);
+  SP.has = __mkfn(function (t, v) { return __coll_find(t, v) >= 0; }, 'has', false);
+  SP['delete'] = __mkfn(function (t, v) {
+    var i = __coll_find(t, v);
+    if (i < 0) return false;
+    __coll_remove(t['\x01keys'], i);
+    return true;
+  }, 'delete', false);
+  SP.clear = __mkfn(function (t) { t['\x01keys'] = []; return undefined; }, 'clear', false);
+  SP['\x01get:size'] = __mkfn(function (t) { return __todouble(__len(t['\x01keys'])); }, 'size', false);
+  SP.forEach = __mkfn(function (t, cb, thisArg) {
+    var i = 0;
+    while (i < __len(t['\x01keys'])) { __call(cb, thisArg, [t['\x01keys'][i], t['\x01keys'][i], t]); i = i + 1; }
+    return undefined;
+  }, 'forEach', false);
+  SP.values = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return c['\x01keys'][i]; }); }, 'values', false);
+  SP.keys = SP.values;
+  SP.entries = __mkfn(function (t) { return __coll_iter(t, function (c, i) { return [c['\x01keys'][i], c['\x01keys'][i]]; }); }, 'entries', false);
+  SP['\x01iter'] = SP.values;
+  SP.toString = __mkfn(function (t) { return '[object Set]'; }, 'toString', false);
+}
+
 function __init_math(G) {
   var M = {};
   M.PI = 3.141592653589793;
@@ -1902,6 +2100,7 @@ mut prelude_named = {}  # prelude fn name -> func index
 mut g_slot = 0          # main's slot holding __G
 mut this_slot = 0       # main's `this`
 mut loop_ctx = []       # per func (emit time): [{step: fn(m) -> [ids]}...]
+mut classes = {}        # pkey of a class node -> {home, derived, name, ctor, fields, members}
 
 # Prelude names that are VM intrinsics, with their arities.
 let intrinsics = {
@@ -2082,6 +2281,7 @@ fn hoist_block(stmts, f) {
         declare_var(f, st.nodes[0].token, st.nodes[0])
         fn_nodes.push(st)
       },
+      st.name == 'class_d' => declare_var(f, st.nodes[0].token, st.nodes[0]),
       _ => nil,
     }
   }
@@ -2092,7 +2292,7 @@ fn collect_vars(node, f) {
   if node.nodes == nil {
     return nil
   }
-  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' || node.name == 'getter_p' || node.name == 'setter_p' {
+  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' || node.name == 'getter_p' || node.name == 'setter_p' || node.name == 'class_d' || node.name == 'class_e' {
     return nil
   }
   if (node.name == 'var_decl' || node.name == 'var_decl_ns') && node.nodes[0].token == 'var' {
@@ -2309,6 +2509,7 @@ fn scan_stmt(node, f) {
     {name: 'var_decl'} => scan_decl(node, f),
     {name: 'var_decl_ns'} => scan_decl(node, f),
     {name: 'fn_decl'} => nil,  # hoisted by scan_stmts
+    {name: 'class_d'} => scan_class(node, f),
     {name: 'if_s'} => {
       scan_expr(node.nodes[0], f)
       scan_sub(node.nodes[1], f)
@@ -2449,6 +2650,132 @@ fn scan_decl(node, f) {
   }
 }
 
+# A class: every method, accessor and the constructor is a function of its
+# own whose `super` reaches the class through a hidden binding in the
+# enclosing scope (the home); instance fields become one more function the
+# constructor runs.
+fn scan_class(node, f) {
+  let tail = node.nodes[1]
+  let ext = tail.nodes[0]
+  let cname = cond {
+    node.name == 'class_d' => node.nodes[0].token,
+    node.nodes[0].nodes.size() > 0 => node.nodes[0].nodes[0].token,
+    _ => '',
+  }
+  if ext.nodes.size() > 0 {
+    scan_expr(ext.nodes[0], f)
+  }
+  let home = declare_var(f, "\x01home" + pkey(node), nil)
+  let derived = ext.nodes.size() > 0
+  mut info = {
+    home: home,
+    derived: derived,
+    mut name: cname,
+    mut ctor: nil,
+    fields: [],
+    members: [],
+  }
+  mut i = 1
+  while i < tail.nodes.size() {
+    mut mem = tail.nodes[i]
+    mut is_static = false
+    if mem.name == 'static_c' {
+      is_static = true
+      mem = mem.nodes[0]
+    }
+    let mk = mem.nodes[0]
+    if mk.name == 'computed_k' {
+      scan_expr(mk.nodes[0], f)
+    }
+    let mname = cond {
+      mk.name == 'computed_k' => '',
+      mk.name == 'string' => mk.token,
+      _ => mk.token,
+    }
+    cond {
+      mem.name == 'method_c' &&
+        !is_static &&
+        mk.name != 'computed_k' &&
+        mk.token == 'constructor' => {
+        let g = new_func(f, cname, mem.nodes[2].nodes, nil, false)
+        closure_of[pkey(mem)] = g
+        calls[f].push(g)
+        funcs[g]['home'] = {owner: f, slot: home}
+        funcs[g]['is_ctor'] = true
+        funcs[g]['derived'] = derived
+        use_var(g, f, home)
+        walk_fn(g, mem.nodes[1].nodes, nil)
+        info.ctor = g
+      },
+      mem.name == 'method_c' ||
+        mem.name == 'getter_c' ||
+        mem.name == 'setter_c' => {
+        let (params, blk) = cond {
+          mem.name == 'method_c' => (mem.nodes[1].nodes, mem.nodes[2]),
+          mem.name == 'getter_c' => ([], mem.nodes[1]),
+          _ => ([mem.nodes[1]], mem.nodes[2]),
+        }
+        let g = new_func(f, mname, blk.nodes, nil, false)
+        closure_of[pkey(mem)] = g
+        calls[f].push(g)
+        funcs[g]['home'] = {owner: f, slot: home}
+        funcs[g]['is_static'] = is_static
+        use_var(g, f, home)
+        walk_fn(g, params, nil)
+        info.members.push({node: mem, is_static: is_static, key: mk, func: g})
+      },
+      mem.name == 'field_c' && is_static => {
+        if mem.nodes.size() > 1 {
+          scan_expr(mem.nodes[1], f)
+        }
+        info.members.push({node: mem, is_static: true, key: mk, func: nil})
+      },
+      mem.name == 'field_c' => info.fields.push(mem),
+      _ => nil,
+    }
+    i = i + 1
+  }
+  if info.fields.size() > 0 {
+    # the initializers run as a method of their own, in order
+    let g = new_func(f, cname + '.fields', [], nil, false)
+    calls[f].push(g)
+    funcs[g]['home'] = {owner: f, slot: home}
+    funcs[g]['field_inits'] = info.fields
+    use_var(g, f, home)
+    enter_scope(g)
+    declare_var(g, 'this', nil)
+    funcs[g].params.push('this')
+    for fld in info.fields {
+      if fld.nodes.size() > 1 {
+        scan_expr(fld.nodes[1], g)
+      }
+    }
+    leave_scope(g)
+    info['fields_func'] = g
+  }
+  classes[pkey(node)] = info
+  nil
+}
+
+# `super` inside a method (or an arrow within one) names the method's home
+fn resolve_super(node, f) {
+  mut h = f
+  while h != nil {
+    if funcs[h].home != nil {
+      let r = {
+        kind: 'super',
+        home: funcs[h].home,
+        is_static: funcs[h].is_static == true,
+      }
+      resolved[pkey(node)] = r
+      use_var(f, r.home.owner, r.home.slot)
+      return r
+    }
+    h = funcs[h].parent
+  }
+  fail(node, "'super' keyword unexpected here")
+}
+
 fn scan_fn_value(node, f, param_nodes, body, is_arrow, name) {
   let stmts = cond {
     body.name == 'block' => body.nodes,
@@ -2585,6 +2912,10 @@ fn scan_expr(node, f) {
           ),
           {name: 'short_p'} => note_use(p.nodes[0], f),
           {name: 'ospread'} => scan_expr(p.nodes[0], f),
+          {name: 'computed_m'} => {
+            scan_expr(p.nodes[0], f)
+            scan_fn_value(p, f, p.nodes[1].nodes, p.nodes[2], false, '')
+          },
           {name: 'getter_p'} => scan_fn_value(
             p,
             f,
@@ -2607,6 +2938,24 @@ fn scan_expr(node, f) {
     },
     {name: 'paren'} => scan_expr(node.nodes[0], f),
     {name: 'spread'} => scan_expr(node.nodes[0], f),
+    {name: 'class_e'} => scan_class(node, f),
+    {name: 'super_call'} => {
+      scan_args(node.nodes[0], f)
+      resolve_super(node, f)
+      let r = resolve(f, 'this')
+      resolved["this@" + pkey(node)] = r
+      if r.kind == 'var' {
+        use_var(f, r.owner, r.slot)
+      }
+    },
+    {name: 'super_mem'} => {
+      resolve_super(node, f)
+      let r = resolve(f, 'this')
+      resolved["this@" + pkey(node)] = r
+      if r.kind == 'var' {
+        use_var(f, r.owner, r.slot)
+      }
+    },
     {name: 'ternary'} => {
       for c in node.nodes {
         scan_expr(c, f)
@@ -3277,7 +3626,202 @@ fn emit_postfix(m, node, f) {
       }
     }
   }
+  # super.m(args) keeps the receiver and starts the lookup at the parent
+  if head.name == 'super_mem' && steps.size() > 0 && steps[0].name == 'call_p' {
+    let r = resolved[pkey(head)]
+    let cp = steps[0]
+    let called = call_pre(
+      m,
+      f,
+      '__super_callm',
+      [
+        home_ref(m, f, r, head.line, head.column),
+        m.bool_literal(v: r.is_static, line: head.line, col: head.column),
+        this_ref(m, f, head),
+        str_l(m, head.nodes[0].token, head.line, head.column),
+        emit_arg_array(m, f, cp.nodes[0].nodes, cp.line, cp.column),
+      ],
+      cp.line,
+      cp.column,
+    )
+    mut rest = []
+    for k in range(1, steps.size()) {
+      rest.push(steps[k])
+    }
+    return emit_steps(m, f, called, rest, 0)
+  }
   emit_steps(m, f, emit_expr(m, head, f), steps, 0)
+}
+
+fn home_ref(m, f, r, ln, cl) {
+  var_read(m, f, {owner: r.home.owner, slot: r.home.slot}, ln, cl)
+}
+
+# the `this` a super form runs with (resolved next to the node)
+fn this_ref(m, f, node) {
+  let r = resolved["this@" + pkey(node)]
+  cond {
+    r.kind == 'var' => var_read(m, f, r, node.line, node.column),
+    _ => nil_l(m, node.line, node.column),
+  }
+}
+
+# The class value: the constructor function object, its prototype filled
+# with the methods and accessors, the statics on itself.
+fn emit_class(m, node, f) {
+  let ln = node.line
+  let cl = node.column
+  let info = classes[pkey(node)]
+  let tail = node.nodes[1]
+  let ext = tail.nodes[0]
+  let parent = cond {
+    ext.nodes.size() > 0 => emit_expr(m, ext.nodes[0], f),
+    _ => nil_l(m, ln, cl),
+  }
+  let ctor = cond {
+    info.ctor !=
+      nil => m.make_closure(
+      func: info.ctor,
+      cmap: cmap_for(m, f, info.ctor),
+      line: ln,
+      col: cl,
+    ),
+    _ => nil_l(m, ln, cl),
+  }
+  let fields = cond {
+    info.fields_func !=
+      nil => call_pre(
+      m,
+      f,
+      '__mkfn',
+      [
+        m.make_closure(
+          func: info.fields_func,
+          cmap: cmap_for(m, f, info.fields_func),
+          line: ln,
+          col: cl,
+        ),
+        str_l(m, 'fields', ln, cl),
+        m.bool_literal(v: false, line: ln, col: cl),
+      ],
+      ln,
+      cl,
+    ),
+    _ => nil_l(m, ln, cl),
+  }
+  let home = {owner: f, slot: info.home}
+  mut ids = [var_write(
+    m,
+    f,
+    home,
+    call_pre(
+      m,
+      f,
+      '__mkclass',
+      [str_l(m, info.name, ln, cl), parent, ctor, fields],
+      ln,
+      cl,
+    ),
+    ln,
+    cl,
+  )]
+  for mem in info.members {
+    let mk = mem.key
+    let key = cond {
+      mk.name == 'computed_k' => emit_expr(m, mk.nodes[0], f),
+      _ => str_l(m, prop_key_text(mk), mem.node.line, mem.node.column),
+    }
+    let is_static = m.bool_literal(
+      v: mem.is_static,
+      line: mem.node.line,
+      col: mem.node.column,
+    )
+    let pl = mem.node.line
+    let pc = mem.node.column
+    cond {
+      mem.node.name == 'field_c' => {
+        let v = cond {
+          mem.node.nodes.size() > 1 => emit_expr(m, mem.node.nodes[1], f),
+          _ => nil_l(m, pl, pc),
+        }
+        ids.push(call_pre(
+          m,
+          f,
+          '__set',
+          [var_read(m, f, home, pl, pc), key, v],
+          pl,
+          pc,
+        ))
+      },
+      mem.node.name == 'method_c' => {
+        let fv = call_pre(
+          m,
+          f,
+          '__mkfn',
+          [
+            m.make_closure(
+              func: mem.func,
+              cmap: cmap_for(m, f, mem.func),
+              line: pl,
+              col: pc,
+            ),
+            str_l(m, prop_key_text(mk), pl, pc),
+            m.bool_literal(v: false, line: pl, col: pc),
+            dbl_l(m, to_float(fn_length(mem.func)), pl, pc),
+          ],
+          pl,
+          pc,
+        )
+        ids.push(call_pre(
+          m,
+          f,
+          '__def_method',
+          [var_read(m, f, home, pl, pc), is_static, key, fv],
+          pl,
+          pc,
+        ))
+      },
+      _ => {
+        let kind = cond {
+          mem.node.name == 'getter_c' => 'get',
+          _ => 'set',
+        }
+        let fv = call_pre(
+          m,
+          f,
+          '__mkfn',
+          [
+            m.make_closure(
+              func: mem.func,
+              cmap: cmap_for(m, f, mem.func),
+              line: pl,
+              col: pc,
+            ),
+            str_l(m, prop_key_text(mk), pl, pc),
+            m.bool_literal(v: false, line: pl, col: pc),
+          ],
+          pl,
+          pc,
+        )
+        ids.push(call_pre(
+          m,
+          f,
+          '__def_accessor',
+          [
+            var_read(m, f, home, pl, pc),
+            is_static,
+            str_l(m, kind, pl, pc),
+            key,
+            fv,
+          ],
+          pl,
+          pc,
+        ))
+      },
+    }
+  }
+  ids.push(var_read(m, f, home, ln, cl))
+  m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
 }
 
 # an optional step, as the plain step it stands for
@@ -3882,6 +4426,19 @@ fn emit_object(m, node, f) {
         p.line,
         p.column,
       ),
+      {name: 'computed_m'} => put(
+        call_pre(
+          m,
+          f,
+          '__key',
+          [emit_expr(m, p.nodes[0], f)],
+          p.line,
+          p.column,
+        ),
+        emit_fn_value(m, p, f, '', false),
+        p.line,
+        p.column,
+      ),
       {name: 'getter_p'} => put(
         str_l(m, "\x01get:" + p.nodes[0].token, p.line, p.column),
         emit_fn_value(m, p, f, p.nodes[0].token, false),
@@ -3989,6 +4546,46 @@ fn emit_expr(m, node, f) {
         # in the prologue), so the value here is just the function
         _ => v,
       }
+    },
+    {name: 'class_e'} => emit_class(m, node, f),
+    {name: 'super_call'} => {
+      let r = resolved[pkey(node)]
+      let call = call_pre(
+        m,
+        f,
+        '__super_call',
+        [
+          home_ref(m, f, r, ln, cl),
+          this_ref(m, f, node),
+          emit_arg_array(m, f, node.nodes[0].nodes, ln, cl),
+        ],
+        ln,
+        cl,
+      )
+      # the instance fields of the class whose constructor this is run
+      # once the parent has built the object
+      m.block(
+        stmts_list: make_list(m, [call,
+          call_pre(m, f, '__run_fields', [home_ref(m, f, r, ln, cl), this_ref(m, f, node)], ln, cl)]),
+        line: ln,
+        col: cl,
+      )
+    },
+    {name: 'super_mem'} => {
+      let r = resolved[pkey(node)]
+      call_pre(
+        m,
+        f,
+        '__super_get',
+        [
+          home_ref(m, f, r, ln, cl),
+          m.bool_literal(v: r.is_static, line: ln, col: cl),
+          this_ref(m, f, node),
+          str_l(m, node.nodes[0].token, ln, cl),
+        ],
+        ln,
+        cl,
+      )
     },
     {name: 'assign_e'} => emit_assign(m, node, f),
     {name: 'pre_inc'} => emit_update(m, node, f, true),
@@ -4285,6 +4882,22 @@ fn prop_key_text(k) {
   }
 }
 
+# `let f = function () {}` / `= () => ..` / `= class {}` names the value
+# after the binding, as JS does
+fn emit_named_value(m, f, value, name) {
+  cond {
+    value.name == 'arrow' => emit_fn_value(m, value, f, name, true),
+    value.name == 'fn_expr' &&
+      value.nodes[0].nodes.size() ==
+        0 => emit_fn_value(m, value, f, name, false),
+    value.name == 'class_e' && value.nodes[0].nodes.size() == 0 => {
+      classes[pkey(value)].name = name
+      emit_class(m, value, f)
+    },
+    _ => emit_expr(m, value, f),
+  }
+}
+
 fn emit_decl(m, node, f) {
   mut ids = []
   mut i = 1
@@ -4293,7 +4906,11 @@ fn emit_decl(m, node, f) {
     let pat = d.nodes[0]
     cond {
       d.nodes.size() > 1 => {
-        for x in emit_bind(m, f, pat, emit_expr(m, d.nodes[1], f), pat.line, pat.column) {
+        let v = cond {
+          pat.name == 'ident' => emit_named_value(m, f, d.nodes[1], pat.token),
+          _ => emit_expr(m, d.nodes[1], f),
+        }
+        for x in emit_bind(m, f, pat, v, pat.line, pat.column) {
           ids.push(x)
         }
       },
@@ -4358,6 +4975,11 @@ fn emit_stmt(m, node, f) {
     {name: 'var_decl'} => emit_decl(m, node, f),
     {name: 'var_decl_ns'} => emit_decl(m, node, f),
     {name: 'fn_decl'} => nil,
+    {name: 'class_d'} => {
+      let id = node.nodes[0]
+      let r = resolved[pkey(id)]
+      var_write(m, f, r, emit_class(m, node, f), ln, cl)
+    },
     {name: 'if_s'} => {
       let c = emit_test(m, f, emit_expr(m, node.nodes[0], f), ln, cl)
       let t = emit_sub(m, node.nodes[1], f)
@@ -4821,6 +5443,18 @@ fn emit_funcs(m) {
         col: 1,
       ))
     }
+    # a base class's constructor runs the instance fields at entry
+    if fi.is_ctor == true && fi.derived != true {
+      let hr = var_read(m, f, {owner: fi.home.owner, slot: fi.home.slot}, 1, 1)
+      ids.push(call_pre(
+        m,
+        f,
+        '__run_fields',
+        [hr, m.var_ref(kind: 'local', index: 0, line: 1, col: 1)],
+        1,
+        1,
+      ))
+    }
     # pattern parameters unpack from their hidden slots
     if fi.pat_params != nil {
       for pp in fi.pat_params {
@@ -4884,6 +5518,31 @@ fn emit_funcs(m) {
       ))
     }
     cond {
+      fi.field_inits != nil => {
+        # this.key = init, in order; a computed key was evaluated at the
+        # class definition (captured through the home is not needed: the
+        # key expression is re-evaluated here, which the samples avoid)
+        for fld in fi.field_inits {
+          let mk = fld.nodes[0]
+          let key = cond {
+            mk.name == 'computed_k' => emit_expr(m, mk.nodes[0], f),
+            _ => str_l(m, prop_key_text(mk), fld.line, fld.column),
+          }
+          let v = cond {
+            fld.nodes.size() > 1 => emit_expr(m, fld.nodes[1], f),
+            _ => nil_l(m, fld.line, fld.column),
+          }
+          ids.push(call_pre(
+            m,
+            f,
+            '__set',
+            [m.var_ref(kind: 'local', index: 0, line: 1, col: 1), key, v],
+            fld.line,
+            fld.column,
+          ))
+        }
+        ids.push(m.make_return(value: nil_l(m, 1, 1), line: 1, col: 1))
+      },
       fi.body_expr !=
         nil => ids.push(m.make_return(
         value: emit_expr(m, fi.body_expr, f),
@@ -5006,6 +5665,7 @@ for path in cli {
   block_slots = {}
   prelude_named = {}
   loop_ctx = []
+  classes = {}
   synth_count = 0
   in_prelude = false
   try {
