@@ -47,9 +47,9 @@ its own. `--assets` still reads a directory instead.
 
 ## Assets
 
-`assets/` holds generated placeholder art — see `assets/README.md` for what's
-fixed (sprite/background rectangles, which the game's scale and collision
-depend on) versus free to redraw.
+`assets/` holds the generated art — see `assets/README.md` for what's fixed
+(sprite/background rectangles, which the game's scale and collision depend on)
+versus free to redraw.
 
 `--assets` reads from somewhere else instead — a copy of upstream's own art,
 say (personal use, not redistribution — see the note in `assets/README.md`).

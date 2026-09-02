@@ -1,13 +1,16 @@
 # retro-run assets
 
-Generated, not drawn by hand — run `culebra ../tools/gen_assets.cul` to rebuild
-them (`--jit` halves the ~20s). The generator needs nothing but culebra itself:
-`Canvas.Sprite` bakes the palette and `to_png` writes the files.
+Generated, not drawn by hand — run `culebra --jit ../tools/gen_assets.cul` to
+rebuild them (about a minute; a second argument of `backgrounds` or `sprites`
+rebuilds one set while iterating on it). The generator needs nothing but
+culebra itself: shapes are rasterised through `Canvas`, `Canvas.Sprite` bakes
+the palette and `to_png` writes the files.
 
-These are **placeholders**. Upstream javascript-racer's `sprites.png` is lifted
-from OutRun and its music may not be redistributed, so nothing from it is
-vendored here. Redraw any of these by hand and the game will not notice, as long
-as the sizes below stay exactly as they are.
+Nothing here is lifted from anywhere. Upstream javascript-racer's `sprites.png`
+is taken from OutRun and its music may not be redistributed, so none of it is
+vendored; these are original drawings in the same spirit — a coast road, a red
+convertible with two riders, billboards, palms. Redraw any of them by hand and
+the game will not notice, as long as the sizes below stay exactly as they are.
 
 | file | size | contents |
 | --- | --- | --- |
@@ -25,9 +28,9 @@ as the sizes below stay exactly as they are.
   and what sets the world scale (`SPRITES.SCALE = 0.3 / PLAYER_STRAIGHT.w`), so a
   sprite that outgrows its box will collide wrongly at a distance the player can
   see but not explain.
-- The three background layer rectangles, and that each layer's horizontal detail
-  repeats with a period dividing 1280 — the layers scroll and wrap, so anything
-  that doesn't divide shows a seam sliding past.
+- The three background layer rectangles, and that each layer wraps
+  horizontally — the layers scroll, so a shape that changes abruptly across the
+  seam shows as a line sliding past.
 - That the four backgrounds are **geometry-identical**. The day cycle cross-fades
   them, so a ridge one pixel out would ghost through the blend.
 
@@ -44,12 +47,24 @@ loads them with `Canvas.Sprite.from_png` and verifies every rectangle is where
 `common.js` says, that no sprite fills its whole box, and that the four
 backgrounds still share one mask.
 
+## Layout of a background
+
+The road's vanishing point is half-way down each 480-pixel layer, so
+everything worth looking at sits above that line: the sky ramp with its clouds
+and the sun, two mountain ridges over a strip of sea and sand, the palms and
+scrub of the tree line. Below the line each layer is filled solid, which only
+shows when the road dips.
+
 ## Palette
 
-Warm pastel, plum-ish ink instead of black, dithering instead of intermediate
-tones. The base values, the saturation boost and the light/dark narrowing all
-live at the top of `gen_assets.cul`, which is the single source for both the art
-and `retro-run.cul`'s road colours.
+Saturated 16-bit-style colours, a dark blue-violet ink for outlines instead of
+black, ordered (Bayer) dithering for gradients and shading. Every colour lives
+at the top of `gen_assets.cul`: `COMMON` holds what the sprite sheet uses and
+does not change with the time of day; each scene table holds the sky ramp,
+clouds, sun, ridges, sea and tree line, plus the road-side colours (`GRASS_*`,
+`ROAD_*`, `RUMBLE_*`, `FOG`, `SKY0`) that `retro-run.cul`'s `SCENE_COLORS`
+copies. The generator prints that table at the end of a run, so the two cannot
+drift silently.
 
 `sprites.png` is baked once with the **day** palette and is not recoloured per
 scene — only the backgrounds have four variants.
