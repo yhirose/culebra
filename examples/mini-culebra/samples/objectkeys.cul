@@ -1,0 +1,130 @@
+# objectkeys: non-String keys, written and read
+fn show(label, f) {
+  try { println("{label}: {f()}") } catch e { println("{label}: !{e.kind}: {e.message}") }
+}
+fn k1() {
+  mut o = {}
+  o[1] = 'one'
+  o[(1, 2)] = 'pair'
+  o[true] = 'b'
+  o[1.5] = 'f'
+  o['s'] = 's'
+  o
+}
+show('disp', k1)
+show('get', || k1()[1])
+show('get_tuple', || k1()[(1, 2)])
+show('get_missing', || k1()[2])
+show('keys', || k1().keys())
+show('has', || k1().has(1))
+show('has_str', || k1().has('1'))
+show('size', || k1().size())
+show('iter', || k1().iter().collect())
+show('values', || k1().values().collect())
+show('get_m', || k1().get(1, 'dflt'))
+show('get_m2', || k1().get(7, 'dflt'))
+fn removed() {
+  mut o = k1()
+  o.remove(1)
+  o
+}
+show('remove', removed)
+fn int_vs_float() {
+  mut o = {}
+  o[1] = 'i'
+  o[1.0] = 'f'
+  o
+}
+show('1_vs_1.0', int_vs_float)
+fn nil_key() {
+  mut o = {}
+  o[nil] = 'n'
+  o
+}
+show('nil', nil_key)
+fn arr_key() {
+  mut o = {}
+  o[[1]] = 'n'
+  o
+}
+show('arr_key', arr_key)
+fn obj_key() {
+  mut o = {}
+  o[{a: 1}] = 'n'
+  o
+}
+show('obj_key', obj_key)
+fn set_key() {
+  mut o = {}
+  o[{1, 2}] = 'n'
+  o
+}
+show('set_key', set_key)
+show('lit_long', || {1: 'a', 2: 'b'})
+show('lit_mixed', || {(0, 0): 'origin', 1.5: 'x', nil: 'n', true: 't'})
+show('lit_dup', || {1: 'a', 1: 'b'})
+show('lit_order', || {a: 1, 2: 'b', c: 3})
+fn lit_immut() {
+  let o = {1: 'a'}
+  o[1] = 'b'
+  o
+}
+show('lit_immut', lit_immut)
+show('str_obj_bad_key', || {a: 1}[1])
+show('str_obj_get', || {a: 1}.get(1, 'd'))
+show('prop', || k1().s)
+fn eq() {
+  mut a = {}
+  a[1] = 'x'
+  mut b = {}
+  b[1] = 'x'
+  a == b
+}
+show('eq', eq)
+fn nested_repr() {
+  mut o = {}
+  o[(1, 'a')] = [1]
+  "{o}"
+}
+show('nested_repr', nested_repr)
+fn get_or_put() {
+  mut o = {}
+  o.get_or_put(1, []).push(9)
+  o.get_or_put(1, []).push(10)
+  o.get_or_put('lazy', || 'made')
+  o
+}
+show('get_or_put', get_or_put)
+fn reassign() {
+  mut o = {}
+  o[1] = 2
+  o[1] = 3
+  o
+}
+show('reassign', reassign)
+fn keys_math() {
+  mut o = {}
+  o[1] = 2
+  o.keys()[0] + 1
+}
+show('keys_math', keys_math)
+show('to_object_key', || [(1, 'a')].iter().to_object()[1])
+fn group_keys() {
+  let g = [1, 2, 3, 4].iter().group_by(|x| x % 2)
+  "{g} {g[1]} {g.keys()}"
+}
+show('group_keys', group_keys)
+show('presence', || {}.presence())
+show('presence2', || {a: 1}.presence())
+fn mut_keys() {
+  let o = {mut x: 1, y: 2, mut 3: 'c'}
+  o.x = 10
+  o[3] = 'd'
+  "{o} {o.x}"
+}
+show('mut_keys', mut_keys)
+fn mut_key_immut() {
+  let o = {mut x: 1, y: 2}
+  o.y = 3
+}
+show('mut_key_immut', mut_key_immut)

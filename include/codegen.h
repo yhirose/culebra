@@ -278,6 +278,12 @@ class Module {
   void set_generator(int64_t func) {
     m_.funcs.at(static_cast<size_t>(func)).is_generator = true;
   }
+  // Calls of this function tolerate any argument count (extras dropped,
+  // missing params nil); the body reads the supplied count with the
+  // argcount intrinsic.
+  void set_lenient_arity(int64_t func) {
+    m_.funcs.at(static_cast<size_t>(func)).lenient_arity = true;
+  }
 
   // Throws CulebraError("IrError") on failure -- structural, so it carries
   // no useful source position (unlike a run() failure, which does).
@@ -377,6 +383,8 @@ class Module {
     if (s == "objectremove") return coreir::IntrinsicId::ObjectRemove;
     if (s == "genresume") return coreir::IntrinsicId::GenResume;
     if (s == "genreturn") return coreir::IntrinsicId::GenReturn;
+    if (s == "argcount") return coreir::IntrinsicId::ArgCount;
+    if (s == "same") return coreir::IntrinsicId::Same;
     throw std::invalid_argument("CodeGen: unknown intrinsic '" +
                                 std::string(s) + "'");
   }

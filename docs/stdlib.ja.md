@@ -6132,7 +6132,7 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.call(func:, cmap:, line:, col:)` | 関数index `func`の呼び出し。captureはcapture-map `cmap`経由で転送 |
 | `m.make_closure(func:, cmap:, line:, col:)` | 関数`func`のクロージャ**値** —— 保持・受け渡しでき、後から呼べる |
 | `m.call_value(callee:, args_list:, line:, col:)` | `callee`の評価結果が何であれ呼ぶ。引数はステージング用listを消費 |
-| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。コンテナのprimitiveは`'arraypush'`/`'objecthas'`/`'objectremove'`(引数2個)と`'arraypop'`/`'objectkeys'`(引数1個)。空配列のpopは失敗、keysは挿入順。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上 |
+| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。コンテナのprimitiveは`'arraypush'`/`'objecthas'`/`'objectremove'`(引数2個)と`'arraypop'`/`'objectkeys'`(引数1個)。空配列のpopは失敗、keysは挿入順。`'same'`(引数2個)は参照の同一性 —— 同じヒープオブジェクトか、スカラーなら同じタグと中身か —— を答える(`eq`はオブジェクト同士を拒む)。`'argcount'`(引数0個)は実行中の関数が呼ばれたときの実引数の個数(`set_lenient_arity`を参照)。`'genresume'`/`'genreturn'`(引数2個)はgeneratorの活性化を駆動する(`set_generator`を参照)。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上 |
 | `m.array_lit(items_list:, line:, col:)` / `m.object_lit(kv_list:, line:, col:)` | 要素のステージング用listから配列を、key, value, key, value, …を持つlistからオブジェクトを組み立てる |
 | `m.index(recv:, key:, line:, col:)` / `m.set_index(recv:, key:, value:, line:, col:)` | 読みと書き。`recv`の実体でディスパッチする: 配列はLongのindex(範囲外は失敗)、オブジェクトはStringのkey(無いkeyの読みは`nil`)、文字列は1バイトを文字列として読み出す(書きは拒否) |
 | `m.scope(first_local:, end_local:, body:, line:, col:)` | localスロット`[first_local, end_local)`を所有するレキシカル領域。どの経路で抜けても抜けた時点で解放され、中で登録されたdeferがLIFOで走る |
@@ -6142,6 +6142,9 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.make_try(caught_local:, body:, handler:, line:, col:)` | `body`を保護する。throw(またはexecutorのトラップ —— 0除算・型違いのオペランド)が運んだ値がlocalスロット`caught_local`に入り、`handler`で実行が再開する。トラップの値は`{message, line, col}`のオブジェクト。完了した側の子の値を返す |
 | `m.make_defer(value:, line:, col:)` | 引数0個のcallableを、囲む`scope()`の脱出時に走るよう登録する —— fall-through・`break`・`continue`・`return`・throwのunwindのいずれでも走る。scopeの外のdeferは`verify()`が拒否する |
 | `m.cell_fresh(cell:, line:, col:)` | フレームのcell 1個を新しいboxに置き換える —— 「ループの反復ごとの束縛」の正体。過去の反復で作られたクロージャは古いcellを保持し続ける |
+| `m.make_yield(value:, line:, col:)` | 実行中のgenerator関数を中断し、再開した側に`value`を渡す。ノード自身の値は次の再開で送り込まれた値。generatorの外では`verify()`が拒む |
+| `m.set_generator(func:)` | 関数`func`をgeneratorにする。呼び出すと本体を走らせる代わりに中断状態の活性化を包んで返す。`'genresume'`(活性化と送る値)は次のyieldまで走らせて`{value, done}`を答え、`'genreturn'`(活性化と値)は途中で閉じる —— 止まっていた本体の未実行のdeferを内側から順に走らせてから`{value, done: true}`を答える |
+| `m.set_lenient_arity(func:)` | `func`の呼び出しが引数の個数を問わなくなる。余分は捨て、届かなかった仮引数は`nil`で始まり、本体は実際に渡された個数を`'argcount'`で読める —— フロントエンドはそれで自前の「引数が足りない」診断を出すか既定値を埋める。指定しなければ個数の不一致は実行器のトラップ |
 
 executorはdrop契約も履行する: `"\x01drop"`キーにクロージャを持つオブジェクトは、refcountが0になった瞬間・解放の前に、そのオブジェクト自身を引数としてクロージャが呼ばれる。throwするデストラクタはstderrに報告して飲み込む。デストラクタが引数をどこかへ保存したら復活扱いで解放はスキップされる。
 | `m.list_new()` | ステージング用list。`stmts_list:`/`args_list:`に渡す |
@@ -6214,8 +6217,8 @@ exceeded"`)を送出する。
 
 ### 対象範囲
 
-値は`nil`・真偽値・整数・浮動小数点・文字列・配列・オブジェクト・クロージャ。
-generatorは無い。変数のcaptureはフロントエンドがIRを
+値は`nil`・真偽値・整数・浮動小数点・文字列・配列・オブジェクト・クロージャ・
+generatorの活性化(`set_generator`を参照)。変数のcaptureはフロントエンドがIRを
 組み立てる時点で一度だけ解決され、実行時には解決されない。`make_closure`で
 組み立てたクロージャは第一級値で、変数に保持でき、`call_value`の引数として
 渡せ、関数の結果として返せる。`CodeGen.Module`はisolateの境界を越えられない

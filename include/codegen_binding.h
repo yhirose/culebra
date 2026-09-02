@@ -79,6 +79,8 @@ inline bool register_codegen_binding() {
       .method<&codegen::Module::set_capture_name>("set_capture_name",
                                                   {"func", "index", "name"})
       .method<&codegen::Module::set_generator>("set_generator", {"func"})
+      .method<&codegen::Module::set_lenient_arity>("set_lenient_arity",
+                                                   {"func"})
       .method<&codegen::Module::verify>("verify")
       .method<&codegen::Module::run>("run")
       .method<&codegen::Module::dump_ir>("dump_ir")

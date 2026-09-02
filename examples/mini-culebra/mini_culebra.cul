@@ -170,12 +170,18 @@ let grammar = `
   subscript  <- '[' _ expr ']' _                            { no_ast_opt }
   primary    <- float / number / str_dq / str_sq / true_l / false_l /
                 nil_l / closure / lambda / call / if / try / match / cond_e /
-                ident / array_lit / object_lit / tuple / paren
+                ident / array_lit / object_lit / set_lit / tuple / paren
   array_lit  <- '[' _ (expr (',' _ expr)* (',' _)?)? ']' _  { no_ast_opt }
   object_lit <- '{' _ (obj_pair (',' _ obj_pair)* (',' _)?)? '}' _ { no_ast_opt }
-  obj_pair   <- okey ':' _ expr                             { no_ast_opt }
-  okey       <- ident / str_sq
-  tuple      <- '(' _ expr (',' _ expr)+ (',' _)? ')' _     { no_ast_opt }
+  obj_pair   <- mut_pair / plain_pair
+  mut_pair   <- 'mut' __ okey ':' _ expr                    { no_ast_opt }
+  plain_pair <- okey ':' _ expr                             { no_ast_opt }
+  okey       <- ident / str_sq / nskey
+  nskey      <- float / number / true_l / false_l / nil_l / tuple
+  set_lit    <- '{' _ expr (',' _ expr)+ (',' _)? '}' _ /
+                '{' _ expr ',' _ '}' _                    { no_ast_opt }
+  tuple      <- '(' _ expr (',' _ expr)+ (',' _)? ')' _ /
+                '(' _ expr ',' _ ')' _                      { no_ast_opt }
   lambda     <- '|' _ params '|' _ expr                     { no_ast_opt }
   paren      <- '(' _ expr ')' _
   closure    <- 'fn' _ '(' _ fparams ')' _ ret_ann? block
@@ -203,7 +209,7 @@ let grammar = `
   number     <- < '0x' [0-9a-fA-F]+ / '0b' [01]+ / [0-9]+ > _
   ~kw_end    <- ![a-zA-Z0-9_] _
 
-  ~_         <- (comment / [ \t\r\n])*
+  ~_         <- (comment / [ \t\r\n] / ';')*
   ~__        <- ![a-zA-Z0-9_] _
   comment    <- '#' [^\r\n]*
 `
@@ -247,6 +253,9 @@ fn __type_name(v) {
   if t == 'nil' { return 'Nil' }
   if t == 'function' { return 'Function' }
   if t == 'array' { return 'Array' }
+  if __is_set(v) { return 'Set' }
+  if __is_tuple(v) { return 'Tuple' }
+  if __is_marker(v) { return 'Function' }
   'Object'
 }
 
@@ -285,12 +294,27 @@ fn __scalar_eq(a, b) {
 }
 
 fn __cmp_ok(a, b, line, col) {
-  if __typeof(a) == 'string' {
-    if __typeof(b) == 'string' { return nil }
-    __raise('TypeError', 'type error: expected String, got ' +
-            __type_name(b), line, col)
+  let ta = __typeof(a)
+  let tb = __typeof(b)
+  if ta == 'string' {
+    if tb == 'string' { return nil }
   }
-  __num2(a, b, line, col)
+  if ta == 'bool' {
+    if tb == 'bool' { return nil }
+  }
+  if __is_num(a) {
+    if __is_num(b) { return nil }
+  }
+  __raise('TypeError', 'type error: cannot compare ' + __type_name(a) +
+          ' and ' + __type_name(b), line, col)
+}
+
+fn __cmpv(v) {
+  if __typeof(v) == 'bool' {
+    if v { return 1 }
+    return 0
+  }
+  v
 }
 
 fn __lt(a, b, line, col) {
@@ -298,41 +322,73 @@ fn __lt(a, b, line, col) {
     return __truthy(__dunder2(a, '__lt__', b, line, col), line, col)
   }
   __cmp_ok(a, b, line, col)
-  a < b
+  __cmpv(a) < __cmpv(b)
 }
 fn __le(a, b, line, col) {
   __cmp_ok(a, b, line, col)
-  a <= b
+  __cmpv(a) <= __cmpv(b)
 }
 fn __gt(a, b, line, col) {
   __cmp_ok(a, b, line, col)
-  a > b
+  __cmpv(a) > __cmpv(b)
 }
 fn __ge(a, b, line, col) {
   __cmp_ok(a, b, line, col)
-  a >= b
+  __cmpv(a) >= __cmpv(b)
 }
 
 fn __add(a, b, line, col) {
   if __inst_dunder(a, '__add__') { return __dunder2(a, '__add__', b, line, col) }
-  if __typeof(a) == 'string' {
-    if __typeof(b) == 'string' { return a + b }
-    __raise('TypeError', 'type error: expected String, got ' +
-            __type_name(b), line, col)
+  let ta = __typeof(a)
+  let tb = __typeof(b)
+  if ta == 'string' {
+    if tb == 'string' { return a + b }
   }
-  __num2(a, b, line, col)
+  if ta == 'array' {
+    if tb == 'array' { return __concat(a, b) }
+  }
+  __arith_ok('+', a, b, line, col)
   a + b
+}
+
+fn __is_num(v) {
+  let t = __typeof(v)
+  if t == 'int' { return true }
+  t == 'double'
+}
+
+fn __arith_ok(op, a, b, line, col) {
+  if __is_num(a) {
+    if __is_num(b) { return nil }
+  }
+  __raise('TypeError', "type error: cannot apply '" + op + "' to " +
+          __type_name(a) + ' and ' + __type_name(b), line, col)
+}
+
+fn __concat(a, b) {
+  mut out = []
+  mut i = 0
+  while i < __len(a) {
+    __arraypush(out, a[i])
+    i = i + 1
+  }
+  mut j = 0
+  while j < __len(b) {
+    __arraypush(out, b[j])
+    j = j + 1
+  }
+  out
 }
 
 fn __sub(a, b, line, col) {
   if __inst_dunder(a, '__sub__') { return __dunder2(a, '__sub__', b, line, col) }
-  __num2(a, b, line, col)
+  __arith_ok('-', a, b, line, col)
   a - b
 }
 
 fn __mul(a, b, line, col) {
   if __inst_dunder(a, '__mul__') { return __dunder2(a, '__mul__', b, line, col) }
-  __num2(a, b, line, col)
+  __arith_ok('*', a, b, line, col)
   a * b
 }
 
@@ -349,7 +405,7 @@ fn __both_int(a, b) {
 }
 
 fn __div(a, b, line, col) {
-  __num2(a, b, line, col)
+  __arith_ok('/', a, b, line, col)
   if __zero(b) { __raise('ZeroDivisionError', 'divide by 0 error', line, col) }
   if __both_int(a, b) {
     if a == (1 << 63) {
@@ -360,7 +416,7 @@ fn __div(a, b, line, col) {
 }
 
 fn __mod(a, b, line, col) {
-  __num2(a, b, line, col)
+  __arith_ok('%', a, b, line, col)
   if __zero(b) { __raise('ZeroDivisionError', 'divide by 0 error', line, col) }
   if __both_int(a, b) {
     if a == (1 << 63) {
@@ -384,7 +440,7 @@ fn __ipow(base, exp) {
 }
 
 fn __pow(a, b, line, col) {
-  __num2(a, b, line, col)
+  __arith_ok('**', a, b, line, col)
   if __both_int(a, b) {
     if b >= 0 { return __ipow(a, b) }
     if a == 0 { __raise('ZeroDivisionError', 'divide by 0 error', line, col) }
@@ -453,7 +509,16 @@ fn __getprop(v, name, line, col) {
     __raise('TypeError', 'type error: expected Object, got ' +
             __type_name(v), line, col)
   }
-  v[name]
+  if __is_instance(v) {
+    if __objecthas(v, name) { return __bind(v[name], v) }
+    let cls = v['class']
+    let ms = cls['methods']
+    if __objecthas(ms, name) {
+      return __bind(__mk_selfc(ms[name], cls['arities'][name]), v)
+    }
+    return nil
+  }
+  __bind(v[name], v)
 }
 
 fn __is_class(v) {
@@ -498,6 +563,9 @@ fn __construct(cls, args, line, col) {
 
 # Apply a method closure to (self, args...), at the caller's arity.
 fn __call_self(f, self_v, args, line, col) {
+  if __is_marker(f) {
+    return __call_self(f["\zb"], __marker_self(f, self_v), args, line, col)
+  }
   let n = __len(args)
   if n == 0 { return f(self_v) }
   if n == 1 { return f(self_v, args[0]) }
@@ -521,6 +589,7 @@ fn __dunder2(v, name, o, line, col) {
 }
 
 fn __callee_check(v, line, col) {
+  if __is_marker(v) { return __as_fn(v, line, col) }
   if __typeof(v) != 'function' {
     __raise('TypeError', 'type error: expected Function, got ' +
             __type_name(v), line, col)
@@ -541,7 +610,6 @@ fn __is_tuple(v) {
 
 fn __titems(t) { t["\zt"] }
 
-fn __hidden_key(k) { k[0] == "\z" }
 
 fn __destr(v, n, line, col) {
   let t = __typeof(v)
@@ -595,27 +663,37 @@ fn __eq_inst_fields(a, b) {
 
 fn __eq_obj(a, b) {
   let ka = __objectkeys(a)
-  let kb = __objectkeys(b)
-  if __len(ka) != __len(kb) { return false }
+  mut n = 0
   mut i = 0
   while i < __len(ka) {
     let k = ka[i]
-    if !__objecthas(b, k) { return false }
-    if !__truthy(__eq(a[k], b[k]), 0, 0) { return false }
+    if !__hidden_key(k) {
+      n = n + 1
+      if !__objecthas(b, k) { return false }
+      if !__truthy(__eq(a[k], b[k]), 0, 0) { return false }
+    }
     i = i + 1
   }
-  true
+  n == __obj_visible_size(b)
 }
 
 fn __eq(a, b) {
   let ta = __typeof(a)
   let tb = __typeof(b)
   if ta == tb {
-    if ta == 'function' { return false }
+    if ta == 'function' { return __same(a, b) }
     if ta == 'array' {
+      if __same(a, b) { return true }
       if tb == 'array' { return __eq_list(a, b) }
     }
     if ta == 'object' {
+      if __same(a, b) { return true }
+      if __is_marker(a) {
+        if !__is_marker(b) { return false }
+        if !__same(a["\zb"], b["\zb"]) { return false }
+        return __same(__marker_self(a, nil), __marker_self(b, nil))
+      }
+      if __is_marker(b) { return false }
       let at = __is_tuple(a)
       let bt = __is_tuple(b)
       if at {
@@ -623,6 +701,13 @@ fn __eq(a, b) {
         return false
       }
       if bt { return false }
+      let asx = __is_set(a)
+      let bsx = __is_set(b)
+      if asx {
+        if bsx { return __set_eq(a, b) }
+        return false
+      }
+      if bsx { return false }
       let ai = __is_instance(a)
       let bi = __is_instance(b)
       if ai {
@@ -662,6 +747,7 @@ fn __repr(v) {
     return out + ']'
   }
   if t == 'object' {
+    if __is_marker(v) { return '[function]' }
     if __is_tuple(v) {
       let items = __titems(v)
       mut out = '('
@@ -671,6 +757,7 @@ fn __repr(v) {
         out = out + __repr(items[i])
         i = i + 1
       }
+      if __len(items) == 1 { out = out + ',' }
       return out + ')'
     }
     if __is_instance(v) {
@@ -694,6 +781,7 @@ fn __repr(v) {
       }
       return out + '}'
     }
+    if __is_set(v) { return __set_repr(v) }
     mut muts = {}
     mut has_muts = false
     if __objecthas(v, "\zm") {
@@ -712,7 +800,7 @@ fn __repr(v) {
         if has_muts {
           if __objecthas(muts, k) { out = out + 'mut ' }
         }
-        out = out + k + ': ' + __repr(v[k])
+        out = out + __key_repr(v, k) + ': ' + __repr(v[k])
       }
       i = i + 1
     }
@@ -770,29 +858,35 @@ fn __setindex(recv, key, val, is_prop, line, col) {
       __raise('TypeError', 'type error: expected Object, Array, or Tensor, got Tuple',
               line, col)
     }
+    if __is_set(recv) {
+      __raise('TypeError', 'type error: expected Object, Array, or Tensor, got Set',
+              line, col)
+    }
+    let pk = __hkey(key, line, col)
     if __is_instance(recv) {
       # instance fields are all mutable, dot and bracket alike
-      recv[key] = val
+      recv[pk] = val
+      __record_key(recv, pk, key)
       return nil
     }
-    if __typeof(key) != 'string' {
-      __raise('TypeError', 'type error: expected String, got ' +
-              __type_name(key), line, col)
-    }
-    if __objecthas(recv, key) {
+    if __objecthas(recv, pk) {
       mut ok = false
       if __objecthas(recv, "\zm") {
-        if __objecthas(recv["\zm"], key) { ok = true }
+        if __objecthas(recv["\zm"], pk) { ok = true }
       }
       if !ok {
-        __raise('ImmutableError', "immutable property '" + key + "'",
+        if __is_nsk(pk) {
+          __raise('ImmutableError', 'immutable entry on non-String key',
+                  line, col)
+        }
+        __raise('ImmutableError', "immutable property '" + pk + "'",
                 line, col)
       }
-      recv[key] = val
+      recv[pk] = val
       return nil
     }
     if is_prop == 1 {
-      __raise('ImmutableError', "immutable property '" + key + "'",
+      __raise('ImmutableError', "immutable property '" + pk + "'",
               line, col)
     }
     if !__objecthas(recv, "\zm") {
@@ -800,8 +894,9 @@ fn __setindex(recv, key, val, is_prop, line, col) {
       recv["\zm"] = fresh
     }
     let muts = recv["\zm"]
-    muts[key] = true
-    recv[key] = val
+    muts[pk] = true
+    recv[pk] = val
+    __record_key(recv, pk, key)
     return nil
   }
   __raise('TypeError', 'type error: expected Object, Array, or Tensor, got ' +
@@ -841,14 +936,14 @@ fn __getindex(v, k, line, col) {
         return __dunder2(v, '__index__', k, line, col)
       }
     }
-    if __typeof(k) != 'string' {
-      __raise('TypeError', 'type error: expected String, got ' +
-              __type_name(k), line, col)
+    if __is_set(v) {
+      __raise('TypeError', 'type error: expected Array, got Set', line, col)
     }
-    if !__objecthas(v, k) {
+    let pk = __hkey(k, line, col)
+    if !__objecthas(v, pk) {
       __raise('KeyError', 'key not present', line, col)
     }
-    return v[k]
+    return v[pk]
   }
   __raise('TypeError', 'type error: expected Object, Array, or Tensor, got ' +
           __type_name(v), line, col)
@@ -867,50 +962,8 @@ fn __cp_len(c) {
   l
 }
 
-fn __arr_iter(items) {
-  mut i = 0
-  {has_next: fn () { i < __len(items) },
-   next: fn () {
-     let v = items[i]
-     i = i + 1
-     v
-   }}
-}
 
-fn __str_iter(s) {
-  mut i = 0
-  {has_next: fn () { i < __len(s) },
-   next: fn () {
-     let l = __cp_len(s[i])
-     mut out = ''
-     mut j = 0
-     while j < l {
-       if i + j < __len(s) {
-         out = out + s[i + j]
-       }
-       j = j + 1
-     }
-     i = i + l
-     out
-   }}
-}
 
-fn __entries_iter(o) {
-  let ks = __objectkeys(o)
-  mut vis = []
-  mut i = 0
-  while i < __len(ks) {
-    if !__hidden_key(ks[i]) { __arraypush(vis, ks[i]) }
-    i = i + 1
-  }
-  mut j = 0
-  {has_next: fn () { j < __len(vis) },
-   next: fn () {
-     let k = vis[j]
-     j = j + 1
-     __mk_tuple([k, o[k]])
-   }}
-}
 
 fn __gen_wrap(raw) {
   mut la = nil
@@ -962,14 +1015,7 @@ fn __gen_wrap(raw) {
 }
 
 fn __iter_close(it) {
-  if __typeof(it) == 'object' {
-    if __objecthas(it, 'dispose') {
-      if __typeof(it['dispose']) == 'function' {
-        it.dispose()
-        nil
-      }
-    }
-  }
+  if __has_proto(it, 'dispose') { __invoke(it, 'dispose', [], 0, 0) }
   nil
 }
 
@@ -977,40 +1023,7 @@ fn __closer(it) {
   fn () { __iter_close(it) }
 }
 
-fn __iter(v, line, col) {
-  let t = __typeof(v)
-  if t == 'array' { return __arr_iter(v) }
-  if t == 'string' { return __str_iter(v) }
-  if t == 'object' {
-    if __is_tuple(v) { return __arr_iter(__titems(v)) }
-    if __objecthas(v, 'iter') {
-      let it = v.iter()
-      if __typeof(it) != 'object' {
-        __raise('TypeError', 'type error: iter() must return an iterator',
-                line, col)
-      }
-      if !__objecthas(it, 'has_next') {
-        __raise('TypeError', 'type error: iter() must return an iterator',
-                line, col)
-      }
-      return it
-    }
-    if __objecthas(v, 'has_next') { return v }
-    return __entries_iter(v)
-  }
-  __raise('TypeError', 'type error: expected an iterable, got ' +
-          __type_name(v), line, col)
-}
 
-fn __range_iter(a, b) {
-  mut i = a
-  {has_next: fn () { i < b },
-   next: fn () {
-     let v = i
-     i = i + 1
-     v
-   }}
-}
 
 fn __range2(a, b, line, col) {
   let base = __range_iter(a, b)
@@ -1111,7 +1124,8 @@ fn __assert_false(v, line, col) {
 
 # Apply f to an argument array. The IR's CallValue is fixed-arity, so the
 # spread is a size switch; five arguments covers every sample.
-fn __call_n(f, args, line, col) {
+fn __call_n(f0, args, line, col) {
+  let f = __as_fn(f0, line, col)
   let n = __len(args)
   if n == 0 { return f() }
   if n == 1 { return f(args[0]) }
@@ -1122,6 +1136,7 @@ fn __call_n(f, args, line, col) {
 }
 
 fn __check_fn(v, line, col) {
+  if __is_marker(v) { return __as_fn(v, line, col) }
   if __typeof(v) != 'function' {
     __raise('TypeError', 'type error: expected Function, got ' +
             __type_name(v), line, col)
@@ -1173,15 +1188,23 @@ fn __method(recv, name, args, line, col) {
   if t == 'array' { return __array_method(recv, name, args, line, col) }
   if t == 'string' { return __string_method(recv, name, args, line, col) }
   if t == 'object' {
-    if __is_tuple(recv) {
-      if name == 'size' { return __len(__titems(recv)) }
-      __raise('TypeError', 'type error: expected Function, got Nil',
-              line, col)
-    }
+    if __is_tuple(recv) { return __tuple_method(recv, name, args, line, col) }
+    if __is_set(recv) { return __set_method(recv, name, args, line, col) }
     if __is_instance(recv) {
       let ms = recv['class']['methods']
       if __objecthas(ms, name) {
         return __call_self(ms[name], recv, args, line, col)
+      }
+      if __objecthas(recv, name) {
+        if __is_fn(recv[name]) { return __invoke(recv, name, args, line, col) }
+      }
+      if __is_iterator(recv) {
+        let r = __iter_method(__norm_iter(recv), name, args, line, col)
+        mut handled = true
+        if __typeof(r) == 'string' {
+          if r == "\znomethod" { handled = false }
+        }
+        if handled { return r }
       }
       return __object_method(recv, name, args, line, col)
     }
@@ -1193,9 +1216,16 @@ fn __method(recv, name, args, line, col) {
               line, col)
     }
     if __objecthas(recv, name) {
-      # a stored closure called as a method, applied at the caller's arity
-      let f = __check_fn(recv[name], line, col)
-      return __call_n(f, args, line, col)
+      # a stored closure called as a method; a self-closure gets the receiver
+      return __invoke(recv, name, args, line, col)
+    }
+    if __is_iterator(recv) {
+      let r = __iter_method(__norm_iter(recv), name, args, line, col)
+      mut handled = true
+      if __typeof(r) == 'string' {
+        if r == "\znomethod" { handled = false }
+      }
+      if handled { return r }
     }
     return __object_method(recv, name, args, line, col)
   }
@@ -1205,6 +1235,13 @@ fn __method(recv, name, args, line, col) {
 fn __array_method(a, name, args, line, col) {
   if name == 'size' { return __len(a) }
   if name == 'empty' { return __len(a) == 0 }
+  if name == 'presence' {
+    if __len(a) == 0 { return nil }
+    return a
+  }
+  if name == 'iter' { return __arr_iter(a) }
+  if name == 'enumerate' { return __it_enumerate(__arr_iter(a)) }
+  if name == 'to_set' { return __mk_set(a, line, col) }
   if name == 'push' {
     __arraypush(a, args[0])
     return nil
@@ -1378,6 +1415,11 @@ fn __array_method(a, name, args, line, col) {
 fn __string_method(s, name, args, line, col) {
   if name == 'size' { return __len(s) }
   if name == 'empty' { return __len(s) == 0 }
+  if name == 'presence' {
+    if __len(s) == 0 { return nil }
+    return s
+  }
+  if name == 'iter' { return __str_iter(s) }
   if name == 'contains' { return __str_index_of(s, args[0], 0) >= 0 }
   if name == 'starts_with' {
     let m = __len(args[0])
@@ -1430,36 +1472,1413 @@ fn __string_method(s, name, args, line, col) {
 fn __object_method(o, name, args, line, col) {
   if name == 'size' { return __obj_visible_size(o) }
   if name == 'empty' { return __obj_visible_size(o) == 0 }
+  if name == 'presence' {
+    if __obj_visible_size(o) == 0 { return nil }
+    return o
+  }
   if name == 'keys' {
-    let ks = __objectkeys(o)
+    let ks = __visible_keys(o)
     mut out = []
     mut i = 0
     while i < __len(ks) {
-      if !__hidden_key(ks[i]) { __arraypush(out, ks[i]) }
+      __arraypush(out, __key_val(o, ks[i]))
       i = i + 1
     }
     return out
   }
   if name == 'values' {
-    let ks = __objectkeys(o)
+    let ks = __visible_keys(o)
     mut vis = []
     mut i = 0
     while i < __len(ks) {
-      if !__hidden_key(ks[i]) { __arraypush(vis, o[ks[i]]) }
+      __arraypush(vis, o[ks[i]])
       i = i + 1
     }
     return __arr_iter(vis)
   }
-  if name == 'has' { return __objecthas(o, args[0]) }
+  if name == 'iter' { return __entries_iter(o) }
+  if name == 'has' { return __objecthas(o, __hkey(args[0], line, col)) }
   if name == 'get' {
-    if __objecthas(o, args[0]) { return o[args[0]] }
+    let pk = __hkey(args[0], line, col)
+    if __objecthas(o, pk) { return o[pk] }
     return args[1]
   }
+  if name == 'get_or_put' {
+    let pk = __hkey(args[0], line, col)
+    if __objecthas(o, pk) { return o[pk] }
+    mut val = args[1]
+    if __typeof(val) == 'function' { val = val() }
+    __setindex(o, args[0], val, 0, line, col)
+    return val
+  }
   if name == 'remove' {
-    __objectremove(o, args[0])
+    let pk = __hkey(args[0], line, col)
+    if __objecthas(o, pk) { __drop_key(o, pk) }
     return nil
   }
   __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+}
+
+# --- Hashable keys: non-String Object keys and Set members ------------------
+#
+# A non-String key lives under a physical key spelled "\zh" + tag + text
+# (type-strict, so 1 / 1.0 / true are three keys); the original value sits
+# in the hidden "\zK" table for keys() / iteration / display. The "\zh"
+# prefix is the one \z-prefixed key that is *visible*.
+
+fn __hidden_key(k) {
+  if k[0] != "\z" { return false }
+  k[1] != 'h'
+}
+
+fn __is_nsk(pk) { pk[0] == "\z" }
+
+fn __hash_name(v) {
+  if __is_set(v) { return 'Set' }
+  if __is_marker(v) { return 'Function' }
+  let t = __typeof(v)
+  if t == 'array' { return 'Array' }
+  if t == 'function' { return 'Function' }
+  'Object'
+}
+
+fn __hkey(v, line, col) {
+  let t = __typeof(v)
+  if t == 'string' { return v }
+  if t == 'int' { return "\zhi" + __tostr(v) }
+  if t == 'double' { return "\zhd" + __scalar_display(v) }
+  if t == 'bool' {
+    if v { return "\zhb1" }
+    return "\zhb0"
+  }
+  if t == 'nil' { return "\zhn" }
+  if __is_tuple(v) {
+    let items = __titems(v)
+    mut out = "\zht"
+    mut i = 0
+    while i < __len(items) {
+      let hk = __hkey(items[i], line, col)
+      out = out + __tostr(__len(hk)) + ':' + hk
+      i = i + 1
+    }
+    return out
+  }
+  let hn = __hash_name(v)
+  mut msg = "unhashable type: '" + hn + "'"
+  if hn == 'Object' { msg = msg + ' (no hash() method)' }
+  __raise('TypeError', msg, line, col)
+}
+
+fn __key_val(o, pk) {
+  if __is_nsk(pk) { return o["\zK"][pk] }
+  pk
+}
+
+fn __key_repr(o, pk) {
+  if __is_nsk(pk) { return __repr(o["\zK"][pk]) }
+  pk
+}
+
+fn __record_key(o, pk, key) {
+  if !__is_nsk(pk) { return nil }
+  if !__objecthas(o, "\zK") {
+    mut fresh = {}
+    o["\zK"] = fresh
+  }
+  let tbl = o["\zK"]
+  tbl[pk] = key
+  nil
+}
+
+fn __olit_nsk(o, keys) {
+  mut i = 0
+  while i < __len(keys) {
+    __record_key(o, __hkey(keys[i], 0, 0), keys[i])
+    i = i + 1
+  }
+  o
+}
+
+fn __olit_mut(o, pks) {
+  if !__objecthas(o, "\zm") {
+    mut fresh = {}
+    o["\zm"] = fresh
+  }
+  let muts = o["\zm"]
+  mut i = 0
+  while i < __len(pks) {
+    muts[pks[i]] = true
+    i = i + 1
+  }
+  o
+}
+
+fn __drop_key(o, pk) {
+  __objectremove(o, pk)
+  if __is_nsk(pk) {
+    if __objecthas(o, "\zK") { __objectremove(o["\zK"], pk) }
+  }
+  if __objecthas(o, "\zm") {
+    if __objecthas(o["\zm"], pk) { __objectremove(o["\zm"], pk) }
+  }
+  nil
+}
+
+fn __visible_keys(o) {
+  let ks = __objectkeys(o)
+  mut out = []
+  mut i = 0
+  while i < __len(ks) {
+    if !__hidden_key(ks[i]) { __arraypush(out, ks[i]) }
+    i = i + 1
+  }
+  out
+}
+
+fn __nargs(name, args, n, line, col) {
+  if __len(args) == n { return nil }
+  mut word = ' arguments but '
+  if n == 1 { word = ' argument but ' }
+  __raise('ArityError', "'" + name + "' takes " + __tostr(n) + word +
+          __tostr(__len(args)) + ' given', line, col)
+}
+
+# --- Set: an Object carrying its members under the hidden "\zs" table -----
+
+fn __is_set(v) {
+  if __typeof(v) != 'object' { return false }
+  __objecthas(v, "\zs")
+}
+
+fn __new_set() {
+  mut s = {}
+  mut members = {}
+  s["\zs"] = members
+  s
+}
+
+fn __set_add(s, v, line, col) {
+  let pk = __hkey(v, line, col)
+  let ms = s["\zs"]
+  if __objecthas(ms, pk) { return false }
+  ms[pk] = v
+  true
+}
+
+fn __mk_set(items, line, col) {
+  let s = __new_set()
+  mut i = 0
+  while i < __len(items) {
+    __set_add(s, items[i], line, col)
+    i = i + 1
+  }
+  s
+}
+
+fn __set_items(s) {
+  let ms = s["\zs"]
+  let ks = __objectkeys(ms)
+  mut out = []
+  mut i = 0
+  while i < __len(ks) {
+    __arraypush(out, ms[ks[i]])
+    i = i + 1
+  }
+  out
+}
+
+fn __set_has(s, v, line, col) { __objecthas(s["\zs"], __hkey(v, line, col)) }
+
+fn __set_size(s) { __len(__objectkeys(s["\zs"])) }
+
+fn __set_repr(s) {
+  let items = __set_items(s)
+  mut out = '{'
+  mut i = 0
+  while i < __len(items) {
+    if i > 0 { out = out + ', ' }
+    out = out + __repr(items[i])
+    i = i + 1
+  }
+  out + '}'
+}
+
+fn __set_eq(a, b) {
+  if __set_size(a) != __set_size(b) { return false }
+  let items = __set_items(a)
+  mut i = 0
+  while i < __len(items) {
+    if !__set_has(b, items[i], 0, 0) { return false }
+    i = i + 1
+  }
+  true
+}
+
+fn __set_arg(v, line, col) {
+  if !__is_set(v) {
+    __raise('TypeError', "type error: parameter 'other' expects Set", line, col)
+  }
+  v
+}
+
+fn __set_method(s, name, args, line, col) {
+  if name == 'size' {
+    __nargs(name, args, 0, line, col)
+    return __set_size(s)
+  }
+  if name == 'empty' {
+    __nargs(name, args, 0, line, col)
+    return __set_size(s) == 0
+  }
+  if name == 'presence' {
+    __nargs(name, args, 0, line, col)
+    if __set_size(s) == 0 { return nil }
+    return s
+  }
+  if name == 'contains' {
+    __nargs(name, args, 1, line, col)
+    return __set_has(s, args[0], line, col)
+  }
+  if name == 'to_array' {
+    __nargs(name, args, 0, line, col)
+    return __set_items(s)
+  }
+  if name == 'iter' {
+    __nargs(name, args, 0, line, col)
+    return __arr_iter(__set_items(s))
+  }
+  if name == 'add' {
+    __nargs(name, args, 1, line, col)
+    return __set_add(s, args[0], line, col)
+  }
+  if name == 'remove' {
+    __nargs(name, args, 1, line, col)
+    let pk = __hkey(args[0], line, col)
+    if !__objecthas(s["\zs"], pk) { return false }
+    __objectremove(s["\zs"], pk)
+    return true
+  }
+  if name == 'union' {
+    __nargs(name, args, 1, line, col)
+    let b = __set_arg(args[0], line, col)
+    let out = __mk_set(__set_items(s), line, col)
+    let bs = __set_items(b)
+    mut i = 0
+    while i < __len(bs) {
+      __set_add(out, bs[i], line, col)
+      i = i + 1
+    }
+    return out
+  }
+  if name == 'intersect' {
+    __nargs(name, args, 1, line, col)
+    let b = __set_arg(args[0], line, col)
+    let out = __new_set()
+    let xs = __set_items(s)
+    mut i = 0
+    while i < __len(xs) {
+      if __set_has(b, xs[i], line, col) { __set_add(out, xs[i], line, col) }
+      i = i + 1
+    }
+    return out
+  }
+  if name == 'diff' {
+    __nargs(name, args, 1, line, col)
+    let b = __set_arg(args[0], line, col)
+    let out = __new_set()
+    let xs = __set_items(s)
+    mut i = 0
+    while i < __len(xs) {
+      if !__set_has(b, xs[i], line, col) { __set_add(out, xs[i], line, col) }
+      i = i + 1
+    }
+    return out
+  }
+  if name == 'sym_diff' {
+    __nargs(name, args, 1, line, col)
+    let b = __set_arg(args[0], line, col)
+    let out = __new_set()
+    let xs = __set_items(s)
+    mut i = 0
+    while i < __len(xs) {
+      if !__set_has(b, xs[i], line, col) { __set_add(out, xs[i], line, col) }
+      i = i + 1
+    }
+    let ys = __set_items(b)
+    mut j = 0
+    while j < __len(ys) {
+      if !__set_has(s, ys[j], line, col) { __set_add(out, ys[j], line, col) }
+      j = j + 1
+    }
+    return out
+  }
+  if name == 'subset' {
+    __nargs(name, args, 1, line, col)
+    let b = __set_arg(args[0], line, col)
+    let xs = __set_items(s)
+    mut i = 0
+    while i < __len(xs) {
+      if !__set_has(b, xs[i], line, col) { return false }
+      i = i + 1
+    }
+    return true
+  }
+  if name == 'superset' {
+    __nargs(name, args, 1, line, col)
+    let b = __set_arg(args[0], line, col)
+    let ys = __set_items(b)
+    mut i = 0
+    while i < __len(ys) {
+      if !__set_has(s, ys[i], line, col) { return false }
+      i = i + 1
+    }
+    return true
+  }
+  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+}
+
+fn __tuple_method(t, name, args, line, col) {
+  let items = __titems(t)
+  if name == 'size' {
+    __nargs(name, args, 0, line, col)
+    return __len(items)
+  }
+  if name == 'empty' {
+    __nargs(name, args, 0, line, col)
+    return __len(items) == 0
+  }
+  if name == 'presence' {
+    __nargs(name, args, 0, line, col)
+    if __len(items) == 0 { return nil }
+    return t
+  }
+  if name == 'contains' {
+    __nargs(name, args, 1, line, col)
+    mut i = 0
+    while i < __len(items) {
+      if __truthy(__eq(items[i], args[0]), line, col) { return true }
+      i = i + 1
+    }
+    return false
+  }
+  if name == 'to_array' {
+    __nargs(name, args, 0, line, col)
+    mut out = []
+    mut i = 0
+    while i < __len(items) {
+      __arraypush(out, items[i])
+      i = i + 1
+    }
+    return out
+  }
+  if name == 'iter' {
+    __nargs(name, args, 0, line, col)
+    return __arr_iter(items)
+  }
+  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+}
+
+# --- Iterators -------------------------------------------------------------
+#
+# Every built-in iterator is {iter, has_next, next} (plus dispose when a
+# source it pulls from has one). Adapters are built on __lazy: a pull
+# function fills a one-element lookahead, so has_next() is idempotent and
+# next() past the end yields nil, the way culebra's do.
+
+fn __mk_iter(hn, nx) {
+  mut me = nil
+  let o = {iter: fn () { me }, has_next: hn, next: nx}
+  me = o
+  o
+}
+
+fn __mk_iter_d(hn, nx, srcs) {
+  mut me = nil
+  let o = {iter: fn () { me }, has_next: hn, next: nx,
+           dispose: fn () { __close_all(srcs) }}
+  me = o
+  o
+}
+
+fn __has_dispose(it) { __has_proto(it, 'dispose') }
+
+fn __any_dispose(srcs) {
+  mut i = 0
+  while i < __len(srcs) {
+    if __has_dispose(srcs[i]) { return true }
+    i = i + 1
+  }
+  false
+}
+
+fn __close_all(srcs) {
+  mut i = 0
+  while i < __len(srcs) {
+    __iter_close(srcs[i])
+    i = i + 1
+  }
+  nil
+}
+
+fn __is_iterator(v) {
+  if !__has_proto(v, 'has_next') { return false }
+  __has_proto(v, 'next')
+}
+
+fn __lazy(srcs, pull) {
+  mut la = nil
+  mut has_la = false
+  mut done = false
+  mut slot = [nil]
+  fn fill() {
+    if has_la { return nil }
+    if done { return nil }
+    if pull(slot) {
+      la = slot[0]
+      has_la = true
+    } else {
+      done = true
+    }
+    nil
+  }
+  let hn = fn () {
+    fill()
+    has_la
+  }
+  let nx = fn () {
+    fill()
+    if !has_la { return nil }
+    has_la = false
+    let v = la
+    la = nil
+    v
+  }
+  if __any_dispose(srcs) { return __mk_iter_d(hn, nx, srcs) }
+  __mk_iter(hn, nx)
+}
+
+fn __arr_iter(items) {
+  mut i = 0
+  __mk_iter(fn () { i < __len(items) },
+            fn () {
+              if i >= __len(items) { return nil }
+              let v = items[i]
+              i = i + 1
+              v
+            })
+}
+
+fn __str_iter(s) {
+  mut i = 0
+  __mk_iter(fn () { i < __len(s) },
+            fn () {
+              if i >= __len(s) { return nil }
+              let l = __cp_len(s[i])
+              mut out = ''
+              mut j = 0
+              while j < l {
+                if i + j < __len(s) {
+                  out = out + s[i + j]
+                }
+                j = j + 1
+              }
+              i = i + l
+              out
+            })
+}
+
+fn __entries_iter(o) {
+  let vis = __visible_keys(o)
+  mut j = 0
+  __mk_iter(fn () { j < __len(vis) },
+            fn () {
+              if j >= __len(vis) { return nil }
+              let k = vis[j]
+              j = j + 1
+              __mk_tuple([__key_val(o, k), o[k]])
+            })
+}
+
+fn __range_iter(a, b) {
+  mut i = a
+  __mk_iter(fn () { i < b },
+            fn () {
+              if i >= b { return nil }
+              let v = i
+              i = i + 1
+              v
+            })
+}
+
+fn __iter_or_nil(v, line, col) {
+  let t = __typeof(v)
+  if t == 'array' { return __arr_iter(v) }
+  if t == 'string' { return __str_iter(v) }
+  if t == 'object' {
+    if __is_tuple(v) { return __arr_iter(__titems(v)) }
+    if __is_set(v) { return __arr_iter(__set_items(v)) }
+    if __has_proto(v, 'iter') {
+      let it = __invoke(v, 'iter', [], line, col)
+      if __typeof(it) != 'object' {
+        __raise('TypeError', 'type error: iter() did not return an Object',
+                line, col)
+      }
+      if !__is_iterator(it) {
+        __raise('TypeError', 'type error: iterator missing has_next()/next()',
+                line, col)
+      }
+      return __norm_iter(it)
+    }
+    return __entries_iter(v)
+  }
+  nil
+}
+
+fn __iter(v, line, col) {
+  let it = __iter_or_nil(v, line, col)
+  if __typeof(it) == 'nil' {
+    __raise('TypeError', 'type error: expected an iterable, got ' +
+            __type_name(v), line, col)
+  }
+  it
+}
+
+# flatten / flat_map coerce their inner values with a different message
+fn __iter_coerce(v, line, col) {
+  let it = __iter_or_nil(v, line, col)
+  if __typeof(it) == 'nil' {
+    __raise('TypeError',
+            'type error: expected Array, Tuple, Set, Object, or String, got ' +
+            __type_name(v), line, col)
+  }
+  it
+}
+
+fn __copy_arr(xs) {
+  mut out = []
+  mut i = 0
+  while i < __len(xs) {
+    __arraypush(out, xs[i])
+    i = i + 1
+  }
+  out
+}
+
+fn __it_map(src, f) {
+  __lazy([src], fn (slot) {
+    if !src.has_next() { return false }
+    slot[0] = f(src.next())
+    true
+  })
+}
+
+fn __it_filter(src, p, line, col) {
+  __lazy([src], fn (slot) {
+    while src.has_next() {
+      let v = src.next()
+      if __truthy(p(v), line, col) {
+        slot[0] = v
+        return true
+      }
+    }
+    false
+  })
+}
+
+fn __it_take(src, n) {
+  mut left = n
+  __lazy([src], fn (slot) {
+    if left <= 0 { return false }
+    if !src.has_next() { return false }
+    slot[0] = src.next()
+    left = left - 1
+    true
+  })
+}
+
+fn __it_skip(src, n) {
+  mut pending = n
+  __lazy([src], fn (slot) {
+    while pending > 0 {
+      if !src.has_next() { return false }
+      src.next()
+      pending = pending - 1
+    }
+    if !src.has_next() { return false }
+    slot[0] = src.next()
+    true
+  })
+}
+
+fn __it_take_while(src, p, line, col) {
+  mut stopped = false
+  __lazy([src], fn (slot) {
+    if stopped { return false }
+    if !src.has_next() { return false }
+    let v = src.next()
+    if !__truthy(p(v), line, col) {
+      stopped = true
+      return false
+    }
+    slot[0] = v
+    true
+  })
+}
+
+fn __it_skip_while(src, p, line, col) {
+  mut skipping = true
+  __lazy([src], fn (slot) {
+    while skipping {
+      if !src.has_next() { return false }
+      let v = src.next()
+      if !__truthy(p(v), line, col) {
+        skipping = false
+        slot[0] = v
+        return true
+      }
+    }
+    if !src.has_next() { return false }
+    slot[0] = src.next()
+    true
+  })
+}
+
+fn __it_step_by(src, n) {
+  mut first = true
+  __lazy([src], fn (slot) {
+    if !first {
+      mut k = 1
+      while k < n {
+        if !src.has_next() { return false }
+        src.next()
+        k = k + 1
+      }
+    }
+    first = false
+    if !src.has_next() { return false }
+    slot[0] = src.next()
+    true
+  })
+}
+
+fn __it_distinct(src, line, col) {
+  mut seen = {}
+  __lazy([src], fn (slot) {
+    while src.has_next() {
+      let v = src.next()
+      let pk = __hkey(v, line, col)
+      if !__objecthas(seen, pk) {
+        seen[pk] = true
+        slot[0] = v
+        return true
+      }
+    }
+    false
+  })
+}
+
+fn __it_tap(src, f) {
+  __lazy([src], fn (slot) {
+    if !src.has_next() { return false }
+    let v = src.next()
+    f(v)
+    slot[0] = v
+    true
+  })
+}
+
+fn __it_scan(src, init, f) {
+  mut acc = init
+  __lazy([src], fn (slot) {
+    if !src.has_next() { return false }
+    acc = f(acc, src.next())
+    slot[0] = acc
+    true
+  })
+}
+
+# flatten and flat_map share one shape: an inner iterator drained before
+# the next outer element is coerced
+fn __it_flat(src, f, line, col) {
+  mut inner = nil
+  mut has_inner = false
+  __lazy([src], fn (slot) {
+    mut go = true
+    while go {
+      if has_inner {
+        if inner.has_next() {
+          slot[0] = inner.next()
+          return true
+        }
+        __iter_close(inner)
+        has_inner = false
+      }
+      if !src.has_next() { go = false } else {
+        inner = __iter_coerce(f(src.next()), line, col)
+        has_inner = true
+      }
+    }
+    false
+  })
+}
+
+fn __it_chunk_by(src, f, line, col) {
+  mut pend = nil
+  mut has_pend = false
+  __lazy([src], fn (slot) {
+    if !has_pend {
+      if !src.has_next() { return false }
+      pend = src.next()
+      has_pend = true
+    }
+    let key = f(pend)
+    mut group = [pend]
+    has_pend = false
+    mut go = true
+    while go {
+      if !src.has_next() { go = false } else {
+        let v = src.next()
+        if __truthy(__eq(f(v), key), line, col) {
+          __arraypush(group, v)
+        } else {
+          pend = v
+          has_pend = true
+          go = false
+        }
+      }
+    }
+    slot[0] = group
+    true
+  })
+}
+
+fn __it_chunks(src, n) {
+  __lazy([src], fn (slot) {
+    if !src.has_next() { return false }
+    mut group = []
+    while __len(group) < n && src.has_next() {
+      __arraypush(group, src.next())
+    }
+    slot[0] = group
+    true
+  })
+}
+
+fn __it_windows(src, n) {
+  mut buf = []
+  mut primed = false
+  __lazy([src], fn (slot) {
+    if !primed {
+      primed = true
+      while __len(buf) < n && src.has_next() {
+        __arraypush(buf, src.next())
+      }
+      if __len(buf) < n { return false }
+      slot[0] = __copy_arr(buf)
+      return true
+    }
+    if !src.has_next() { return false }
+    mut nb = []
+    mut i = 1
+    while i < __len(buf) {
+      __arraypush(nb, buf[i])
+      i = i + 1
+    }
+    __arraypush(nb, src.next())
+    buf = nb
+    slot[0] = __copy_arr(buf)
+    true
+  })
+}
+
+fn __it_chain(src, other, line, col) {
+  let o2 = __iter_coerce(other, line, col)
+  mut first_done = false
+  __lazy([src, o2], fn (slot) {
+    if !first_done {
+      if src.has_next() {
+        slot[0] = src.next()
+        return true
+      }
+      first_done = true
+    }
+    if !o2.has_next() { return false }
+    slot[0] = o2.next()
+    true
+  })
+}
+
+fn __it_zip(src, other, line, col) {
+  let o2 = __iter_coerce(other, line, col)
+  __lazy([src, o2], fn (slot) {
+    if !src.has_next() { return false }
+    if !o2.has_next() { return false }
+    let a = src.next()
+    let b = o2.next()
+    slot[0] = {first: a, second: b}
+    true
+  })
+}
+
+fn __it_enumerate(src) {
+  mut i = 0
+  __lazy([src], fn (slot) {
+    if !src.has_next() { return false }
+    let v = src.next()
+    slot[0] = __mk_tuple([i, v])
+    i = i + 1
+    true
+  })
+}
+
+# A terminal closes its source exactly once: after the result on success,
+# before rethrowing on failure (a dispose that throws while unwinding is
+# swallowed so the original error is the one that escapes).
+fn __term(src, body) {
+  mut failed = false
+  mut err = nil
+  mut r = nil
+  try {
+    r = body()
+  } catch e {
+    failed = true
+    err = e
+  }
+  if failed {
+    try {
+      __iter_close(src)
+    } catch e2 {
+      nil
+    }
+    throw err
+  }
+  __iter_close(src)
+  r
+}
+
+fn __it_min_max(src, name, want_lt, line, col) {
+  __term(src, fn () {
+    if !src.has_next() {
+      __raise('ValueError', name + ' of empty Iterator', line, col)
+    }
+    mut best = src.next()
+    __expect_num(best, line, col)
+    while src.has_next() {
+      let v = src.next()
+      __expect_num(v, line, col)
+      if want_lt {
+        if v < best { best = v }
+      } else {
+        if v > best { best = v }
+      }
+    }
+    best
+  })
+}
+
+fn __it_min_max_by(src, name, f, want_lt, line, col) {
+  __term(src, fn () {
+    if !src.has_next() {
+      __raise('ValueError', name + ' of empty Iterator', line, col)
+    }
+    mut best = src.next()
+    mut bk = f(best)
+    __expect_num(bk, line, col)
+    while src.has_next() {
+      let v = src.next()
+      let k = f(v)
+      __expect_num(k, line, col)
+      mut better = false
+      if want_lt {
+        if k < bk { better = true }
+      } else {
+        if k > bk { better = true }
+      }
+      if better {
+        best = v
+        bk = k
+      }
+    }
+    best
+  })
+}
+
+fn __pair_of(v, line, col) {
+  if __is_tuple(v) {
+    let items = __titems(v)
+    if __len(items) == 2 { return items }
+  } else {
+    if __typeof(v) == 'object' {
+      if !__is_set(v) {
+        if __objecthas(v, 'first') {
+          if __objecthas(v, 'second') { return [v['first'], v['second']] }
+        }
+      }
+    }
+  }
+  __raise('TypeError',
+          'type error: unzip expects (a, b) tuples or {first, second} objects',
+          line, col)
+}
+
+fn __iter_method(src, name, args, line, col) {
+  if name == 'map' {
+    __nargs(name, args, 1, line, col)
+    return __it_map(src, __check_fn(args[0], line, col))
+  }
+  if name == 'filter' {
+    __nargs(name, args, 1, line, col)
+    return __it_filter(src, __check_fn(args[0], line, col), line, col)
+  }
+  if name == 'take' {
+    __nargs(name, args, 1, line, col)
+    return __it_take(src, args[0])
+  }
+  if name == 'skip' {
+    __nargs(name, args, 1, line, col)
+    return __it_skip(src, args[0])
+  }
+  if name == 'take_while' {
+    __nargs(name, args, 1, line, col)
+    return __it_take_while(src, __check_fn(args[0], line, col), line, col)
+  }
+  if name == 'skip_while' {
+    __nargs(name, args, 1, line, col)
+    return __it_skip_while(src, __check_fn(args[0], line, col), line, col)
+  }
+  if name == 'step_by' {
+    __nargs(name, args, 1, line, col)
+    if args[0] < 1 {
+      __raise('ValueError', 'step_by() n must be at least 1', line, col)
+    }
+    return __it_step_by(src, args[0])
+  }
+  if name == 'distinct' {
+    __nargs(name, args, 0, line, col)
+    return __it_distinct(src, line, col)
+  }
+  if name == 'tap' {
+    __nargs(name, args, 1, line, col)
+    return __it_tap(src, __check_fn(args[0], line, col))
+  }
+  if name == 'scan' {
+    __nargs(name, args, 2, line, col)
+    return __it_scan(src, args[0], __check_fn(args[1], line, col))
+  }
+  if name == 'flatten' {
+    __nargs(name, args, 0, line, col)
+    return __it_flat(src, fn (v) { v }, line, col)
+  }
+  if name == 'flat_map' {
+    __nargs(name, args, 1, line, col)
+    return __it_flat(src, __check_fn(args[0], line, col), line, col)
+  }
+  if name == 'chunk_by' {
+    __nargs(name, args, 1, line, col)
+    return __it_chunk_by(src, __check_fn(args[0], line, col), line, col)
+  }
+  if name == 'chunks' {
+    __nargs(name, args, 1, line, col)
+    if args[0] < 1 {
+      __raise('ValueError', 'chunks() n must be at least 1', line, col)
+    }
+    return __it_chunks(src, args[0])
+  }
+  if name == 'windows' {
+    __nargs(name, args, 1, line, col)
+    if args[0] < 1 {
+      __raise('ValueError', 'windows() n must be at least 1', line, col)
+    }
+    return __it_windows(src, args[0])
+  }
+  if name == 'chain' {
+    __nargs(name, args, 1, line, col)
+    return __it_chain(src, args[0], line, col)
+  }
+  if name == 'zip' {
+    __nargs(name, args, 1, line, col)
+    return __it_zip(src, args[0], line, col)
+  }
+  if name == 'enumerate' {
+    __nargs(name, args, 0, line, col)
+    return __it_enumerate(src)
+  }
+  if name == 'collect' {
+    __nargs(name, args, 0, line, col)
+    return __term(src, fn () {
+      mut out = []
+      while src.has_next() { __arraypush(out, src.next()) }
+      out
+    })
+  }
+  if name == 'join' {
+    __nargs(name, args, 1, line, col)
+    let sep = args[0]
+    return __term(src, fn () {
+      mut out = ''
+      mut first = true
+      while src.has_next() {
+        if !first { out = out + sep }
+        first = false
+        out = out + __display(src.next())
+      }
+      out
+    })
+  }
+  if name == 'for_each' {
+    __nargs(name, args, 1, line, col)
+    let f = __check_fn(args[0], line, col)
+    return __term(src, fn () {
+      while src.has_next() { f(src.next()) }
+      nil
+    })
+  }
+  if name == 'reduce' {
+    __nargs(name, args, 2, line, col)
+    let f = __check_fn(args[1], line, col)
+    mut acc = args[0]
+    return __term(src, fn () {
+      while src.has_next() { acc = f(acc, src.next()) }
+      acc
+    })
+  }
+  if name == 'find' {
+    __nargs(name, args, 1, line, col)
+    let p = __check_fn(args[0], line, col)
+    return __term(src, fn () {
+      while src.has_next() {
+        let v = src.next()
+        if __truthy(p(v), line, col) { return v }
+      }
+      nil
+    })
+  }
+  if name == 'any' {
+    __nargs(name, args, 1, line, col)
+    let p = __check_fn(args[0], line, col)
+    return __term(src, fn () {
+      while src.has_next() {
+        if __truthy(p(src.next()), line, col) { return true }
+      }
+      false
+    })
+  }
+  if name == 'all' {
+    __nargs(name, args, 1, line, col)
+    let p = __check_fn(args[0], line, col)
+    return __term(src, fn () {
+      while src.has_next() {
+        if !__truthy(p(src.next()), line, col) { return false }
+      }
+      true
+    })
+  }
+  if name == 'count' {
+    __nargs(name, args, 0, line, col)
+    return __term(src, fn () {
+      mut n = 0
+      while src.has_next() {
+        src.next()
+        n = n + 1
+      }
+      n
+    })
+  }
+  if name == 'first' {
+    __nargs(name, args, 0, line, col)
+    return __term(src, fn () {
+      if !src.has_next() { return nil }
+      src.next()
+    })
+  }
+  if name == 'last' {
+    __nargs(name, args, 0, line, col)
+    return __term(src, fn () {
+      mut v = nil
+      while src.has_next() { v = src.next() }
+      v
+    })
+  }
+  if name == 'nth' {
+    __nargs(name, args, 1, line, col)
+    let n = args[0]
+    if n < 0 {
+      __raise('ValueError', 'nth() n must not be negative', line, col)
+    }
+    return __term(src, fn () {
+      mut i = 0
+      while i < n {
+        if !src.has_next() { return nil }
+        src.next()
+        i = i + 1
+      }
+      if !src.has_next() { return nil }
+      src.next()
+    })
+  }
+  if name == 'position' {
+    __nargs(name, args, 1, line, col)
+    let p = __check_fn(args[0], line, col)
+    return __term(src, fn () {
+      mut i = 0
+      while src.has_next() {
+        if __truthy(p(src.next()), line, col) { return i }
+        i = i + 1
+      }
+      nil
+    })
+  }
+  if name == 'contains' {
+    __nargs(name, args, 1, line, col)
+    let want = args[0]
+    return __term(src, fn () {
+      while src.has_next() {
+        if __truthy(__eq(src.next(), want), line, col) { return true }
+      }
+      false
+    })
+  }
+  if name == 'sum' {
+    __nargs(name, args, 0, line, col)
+    return __term(src, fn () {
+      mut acc = 0
+      while src.has_next() {
+        let v = src.next()
+        __expect_num(v, line, col)
+        acc = acc + v
+      }
+      acc
+    })
+  }
+  if name == 'product' {
+    __nargs(name, args, 0, line, col)
+    return __term(src, fn () {
+      mut acc = 1
+      while src.has_next() {
+        let v = src.next()
+        __expect_num(v, line, col)
+        acc = acc * v
+      }
+      acc
+    })
+  }
+  if name == 'min' {
+    __nargs(name, args, 0, line, col)
+    return __it_min_max(src, name, true, line, col)
+  }
+  if name == 'max' {
+    __nargs(name, args, 0, line, col)
+    return __it_min_max(src, name, false, line, col)
+  }
+  if name == 'min_by' {
+    __nargs(name, args, 1, line, col)
+    return __it_min_max_by(src, name, __check_fn(args[0], line, col), true,
+                           line, col)
+  }
+  if name == 'max_by' {
+    __nargs(name, args, 1, line, col)
+    return __it_min_max_by(src, name, __check_fn(args[0], line, col), false,
+                           line, col)
+  }
+  if name == 'to_set' {
+    __nargs(name, args, 0, line, col)
+    return __term(src, fn () {
+      let s = __new_set()
+      while src.has_next() { __set_add(s, src.next(), line, col) }
+      s
+    })
+  }
+  if name == 'to_object' {
+    __nargs(name, args, 0, line, col)
+    return __term(src, fn () {
+      mut o = {}
+      while src.has_next() {
+        let v = src.next()
+        mut ok = false
+        if __is_tuple(v) {
+          if __len(__titems(v)) == 2 { ok = true }
+        }
+        if !ok {
+          __raise('TypeError', 'type error: to_object expects (key, value) tuples',
+                  line, col)
+        }
+        let kv = __titems(v)
+        __setindex(o, kv[0], kv[1], 0, line, col)
+      }
+      o
+    })
+  }
+  if name == 'group_by' {
+    __nargs(name, args, 1, line, col)
+    let f = __check_fn(args[0], line, col)
+    return __term(src, fn () {
+      mut o = {}
+      while src.has_next() {
+        let v = src.next()
+        let key = f(v)
+        let pk = __hkey(key, line, col)
+        if !__objecthas(o, pk) {
+          mut bucket = []
+          __setindex(o, key, bucket, 0, line, col)
+        }
+        __arraypush(o[pk], v)
+      }
+      o
+    })
+  }
+  if name == 'partition' {
+    __nargs(name, args, 1, line, col)
+    let p = __check_fn(args[0], line, col)
+    return __term(src, fn () {
+      mut yes = []
+      mut no = []
+      while src.has_next() {
+        let v = src.next()
+        if __truthy(p(v), line, col) { __arraypush(yes, v) } else { __arraypush(no, v) }
+      }
+      __mk_tuple([yes, no])
+    })
+  }
+  if name == 'unzip' {
+    __nargs(name, args, 0, line, col)
+    return __term(src, fn () {
+      mut xs = []
+      mut ys = []
+      while src.has_next() {
+        let pr = __pair_of(src.next(), line, col)
+        __arraypush(xs, pr[0])
+        __arraypush(ys, pr[1])
+      }
+      __mk_tuple([xs, ys])
+    })
+  }
+  "\znomethod"
+}
+
+# --- Bound methods and self in closures ----------------------------------
+#
+# A closure that mentions self compiles with a hidden receiver parameter
+# in front of its declared ones and is carried as a marker object
+# {"\zb": raw, "\zn": declared arity[, "\zS": bound receiver]}. A method call
+# supplies the receiver, a dot read binds it (an already-bound marker keeps
+# its receiver), and a plain call passes nil -- which the body's prologue
+# replaces with the receiver of the enclosing method, if any, so a closure
+# built inside a method still sees self when called on its own.
+
+fn __is_marker(v) {
+  if __typeof(v) != 'object' { return false }
+  __objecthas(v, "\zb")
+}
+
+fn __is_fn(v) {
+  if __typeof(v) == 'function' { return true }
+  __is_marker(v)
+}
+
+fn __mk_selfc(raw, n) {
+  mut o = {}
+  o["\zb"] = raw
+  o["\zn"] = n
+  o
+}
+
+fn __bind(v, recv) {
+  if !__is_marker(v) { return v }
+  if __objecthas(v, "\zS") { return v }
+  mut o = {}
+  o["\zb"] = v["\zb"]
+  o["\zn"] = v["\zn"]
+  o["\zS"] = recv
+  o
+}
+
+fn __self_pick(sp, outer) {
+  if __typeof(sp) == 'nil' { return outer }
+  sp
+}
+
+fn __self_use(v, line, col) {
+  if __typeof(v) == 'nil' {
+    __raise('NameError', "undefined variable 'self'", line, col)
+  }
+  v
+}
+
+fn __marker_self(mk, fallback) {
+  if __objecthas(mk, "\zS") { return mk["\zS"] }
+  fallback
+}
+
+# The declared-arity closure a marker stands for, with its receiver fixed:
+# what a callback slot or a plain call site can invoke directly.
+fn __bindn(raw, selfv, n, line, col) {
+  if n == 0 { return fn () { raw(selfv) } }
+  if n == 1 { return fn (a) { raw(selfv, a) } }
+  if n == 2 { return fn (a, b) { raw(selfv, a, b) } }
+  if n == 3 { return fn (a, b, c) { raw(selfv, a, b, c) } }
+  if n == 4 { return fn (a, b, c, d) { raw(selfv, a, b, c, d) } }
+  __raise('TypeError', 'type error: too many parameters', line, col)
+}
+
+fn __as_fn(v, line, col) {
+  if __is_marker(v) {
+    return __bindn(v["\zb"], __marker_self(v, nil), v["\zn"], line, col)
+  }
+  v
+}
+
+# Calls a callable-looking property with a receiver: a class method, a
+# self-closure marker, or a plain closure (which takes no receiver).
+fn __invoke(o, name, args, line, col) {
+  if __is_instance(o) {
+    let ms = o['class']['methods']
+    if __objecthas(ms, name) {
+      return __call_self(ms[name], o, args, line, col)
+    }
+  }
+  if !__objecthas(o, name) {
+    __raise('TypeError', 'type error: iterator missing has_next()/next()',
+            line, col)
+  }
+  let f = o[name]
+  if __is_marker(f) {
+    return __call_self(f["\zb"], __marker_self(f, o), args, line, col)
+  }
+  __call_n(__check_fn(f, line, col), args, line, col)
+}
+
+fn __has_proto(o, name) {
+  if __typeof(o) != 'object' { return false }
+  if __is_instance(o) {
+    if __objecthas(o['class']['methods'], name) { return true }
+  }
+  if !__objecthas(o, name) { return false }
+  __is_fn(o[name])
+}
+
+# The adapters drive their source with raw protocol calls, which only a
+# plain object holding plain closures answers; anything else (an instance,
+# a marker-holding object) is wrapped so those calls go through __invoke.
+fn __norm_iter(it) {
+  if !__is_instance(it) {
+    mut plain = true
+    if __typeof(it['has_next']) != 'function' { plain = false }
+    if __typeof(it['next']) != 'function' { plain = false }
+    if __objecthas(it, 'dispose') {
+      if __typeof(it['dispose']) != 'function' { plain = false }
+    }
+    if plain { return it }
+  }
+  let hn = fn () { __invoke(it, 'has_next', [], 0, 0) }
+  let nx = fn () { __invoke(it, 'next', [], 0, 0) }
+  if __has_proto(it, 'dispose') {
+    mut me = nil
+    let o = {iter: fn () { me }, has_next: hn, next: nx,
+             dispose: fn () { __invoke(it, 'dispose', [], 0, 0) }}
+    me = o
+    return o
+  }
+  __mk_iter(hn, nx)
 }
 `
 
@@ -1488,6 +2907,13 @@ mut resolved = {}       # "line:col" of an ident use/decl -> resolution
 mut scratch_of = {}     # "line:col" of an op token -> scratch index
 mut block_info = {}     # "line:col" of a block -> {base, wrap}
 mut prelude_named = {}  # prelude fn name -> func index
+# closure literals that mention `self`: func -> how `self` resolves in the
+# enclosing function (kind 'var' record, or 'none'), plus the closure's own
+# `self` slot and definition position for its prologue diagnostics
+mut self_closure = {}
+mut self_slot = {}
+mut closure_funcs = {}
+mut fn_pos = {}
 mut in_prelude = false
 mut scope_stack = []    # per func: [{map: {name: (slot, is_mut)}}...]
 mut loop_depth = {}     # func -> depth (scan-time)
@@ -1505,7 +2931,15 @@ let builtin_methods = ['size', 'empty', 'push', 'pop', 'get', 'slice',
                        'for_each', 'reduce', 'find', 'any', 'all', 'sum',
                        'reverse', 'sorted', 'starts_with', 'ends_with',
                        'split', 'trim', 'repeat', 'keys', 'values', 'has',
-                       'remove']
+                       'remove', 'presence', 'iter', 'enumerate', 'to_set',
+                       'get_or_put', 'to_array', 'union', 'intersect', 'diff',
+                       'sym_diff', 'subset', 'superset', 'add',
+                       'take', 'skip', 'take_while', 'skip_while', 'step_by',
+                       'distinct', 'tap', 'scan', 'flatten', 'chunk_by',
+                       'chunks', 'windows', 'flat_map', 'chain', 'zip',
+                       'collect', 'count', 'first', 'last', 'nth', 'position',
+                       'product', 'min', 'max', 'min_by', 'max_by',
+                       'to_object', 'group_by', 'partition', 'unzip']
 
 let missing_marker = String.from_code_point(1) + 'missing'
 # What a raw generator yields instead of ever completing: culebra runs a
@@ -1522,6 +2956,7 @@ let intrinsics = {
   __objecthas: ('objecthas', 2), __objectkeys: ('objectkeys', 1),
   __objectremove: ('objectremove', 2),
   __genresume: ('genresume', 2), __genreturn: ('genreturn', 2),
+  __same: ('same', 2),
 }
 
 # Global builtins user code calls by name; each lowers to the prelude
@@ -1569,8 +3004,10 @@ fn declare_var(f, name, is_mut, at) {
   if scopes[scopes.size() - 1].map.has(name) {
     fail(at, "'{name}' is already defined")
   }
-  # culebra rejects shadowing across a function boundary
+  # culebra rejects shadowing across a function boundary (`self` is the
+  # receiver, redeclared per function on purpose)
   mut h = funcs[f].parent
+  if name == 'self' || name == '__selfp' { h = nil }
   while h != nil {
     let outer = scope_stack[h]
     mut i = outer.size() - 1
@@ -1932,8 +3369,28 @@ fn note_deco(dn, f, r) {
 # block wraps in a Scope when it declares anything beyond the params or
 # registers defers (params stay outside the range -- they live as long as
 # the frame).
+# Whether a subtree names `self` anywhere -- nested closures included,
+# since an inner closure's `self` falls back to the enclosing one's.
+fn mentions_self(node) {
+  if node.name == 'ident' {
+    if node.token == 'self' { return true }
+  }
+  if node.nodes != nil {
+    for c in node.nodes {
+      if mentions_self(c) { return true }
+    }
+  }
+  false
+}
+
 fn walk_fn(f, param_nodes) {
   enter_scope(f)
+  if self_closure.has(f) {
+    # the hidden receiver parameter sits in front of the declared ones
+    declare_var(f, '__selfp', false, {name: 'ident', token: '__selfp', line: 0, column: f})
+    funcs[f].params.push('__selfp')
+    funcs[f].pspecs.push({pname: '__selfp', ty: nil, dflt: nil, rest: false, id: nil})
+  }
   for p in param_nodes {
     let rec = param_record(p)
     declare_var(f, rec.pname, false, rec.id)
@@ -1943,6 +3400,14 @@ fn walk_fn(f, param_nodes) {
   # a default's expression binds in the callee, after the params before it
   for rec in funcs[f].pspecs {
     if rec.dflt != nil { scan_expr(rec.dflt, f) }
+  }
+  if self_closure.has(f) {
+    # `self` is a local the prologue fills: the supplied receiver, or the
+    # enclosing function's `self` when the call supplied none
+    self_slot[f] = declare_var(f, 'self', false,
+                               {name: 'ident', token: 'self', line: 0, column: 1000000 + f})
+    let outer = self_closure[f]
+    if outer.kind == 'var' { use_var(f, outer.owner, outer.slot) }
   }
   let base = nslots[f]
   let has_defer = scan_body_stmts(f, funcs[f].stmts, funcs[f].body_key)
@@ -2361,12 +3826,20 @@ fn scan_expr(node, f) {
     {name: 'array_lit'} => { for e in node.nodes { scan_expr(e, f) } },
     {name: 'tuple'} => { for e in node.nodes { scan_expr(e, f) } },
     {name: 'object_lit'} => {
-      for pair in node.nodes { scan_expr(pair.nodes[1], f) }
+      for pair in node.nodes {
+        let k = pair.nodes[0]
+        if k.name != 'ident' && k.name != 'str_sq' { scan_expr(k, f) }
+        scan_expr(pair.nodes[1], f)
+      }
     },
+    {name: 'set_lit'} => { for e in node.nodes { scan_expr(e, f) } },
     {name: 'lambda', nodes: [prms, bodye]} => {
       let g = new_func(f, "fn@{node.line}:{node.column}", [bodye],
                        pkey(node))
       closure_of[pkey(node)] = g
+      closure_funcs[g] = true
+      fn_pos[g] = (node.line, node.column)
+      if mentions_self(bodye) { self_closure[g] = resolve(f, 'self') }
       let saved = loop_depth[f]
       walk_fn(g, prms.nodes)
       loop_depth[f] = saved
@@ -2375,6 +3848,9 @@ fn scan_expr(node, f) {
       let g = new_func(f, "fn@{node.line}:{node.column}", blk.nodes,
                        pkey(blk))
       closure_of[pkey(node)] = g
+      closure_funcs[g] = true
+      fn_pos[g] = (node.line, node.column)
+      if mentions_self(blk) { self_closure[g] = resolve(f, 'self') }
       let saved = loop_depth[f]
       walk_fn(g, prms.nodes)
       loop_depth[f] = saved
@@ -3301,6 +4777,22 @@ fn ty_check_of(ty) {
 }
 
 
+# A closure value; one that mentions `self` travels as a marker carrying
+# its declared arity, so a method call or dot read can supply the receiver.
+fn emit_closure_value(m, node, f) {
+  let g = closure_of[pkey(node)]
+  let c = m.make_closure(func: g, cmap: cmap_for(m, f, g),
+                         line: node.line, col: node.column)
+  cond {
+    self_closure.has(g) =>
+      call_pre(m, f, '__mk_selfc',
+               [c, m.literal(v: funcs[g].params.size() - 1, line: node.line,
+                             col: node.column)],
+               node.line, node.column),
+    _ => c,
+  }
+}
+
 fn emit_postfix_step(m, f, value, step) {
   let (pl, pc) = pos_args(m, step)
   cond {
@@ -3490,8 +4982,17 @@ fn emit_expr(m, node, f) {
                                          line: node.line, col: node.column),
         _ => {
           let a = access_from(f, (r.owner, r.slot))
-          m.var_ref(kind: a.kind, index: a.index, line: node.line,
-                    col: node.column)
+          let ref = m.var_ref(kind: a.kind, index: a.index, line: node.line,
+                              col: node.column)
+          cond {
+            # a closure's `self` may be unbound: nil until a receiver arrives
+            token == 'self' && self_slot.has(r.owner) &&
+                self_slot[r.owner] == r.slot => {
+              let (pl, pc) = pos_args(m, node)
+              call_pre(m, f, '__self_use', [ref, pl, pc], node.line, node.column)
+            },
+            _ => ref,
+          }
         },
       }
     },
@@ -3511,23 +5012,56 @@ fn emit_expr(m, node, f) {
     },
     {name: 'object_lit'} => {
       let kv = m.list_new()
+      mut nsk = []
+      mut muts = []
+      let (pl, pc) = pos_args(m, node)
+      fn key_node(kn) {
+        cond {
+          kn.name == 'ident' || kn.name == 'str_sq' =>
+            m.str_literal(s: kn.token, line: kn.line, col: kn.column),
+          # a non-String key is stored under its hash spelling; the
+          # original value is recorded afterwards for keys() and display
+          _ => call_pre(m, f, '__hkey', [emit_expr(m, kn, f), pl, pc],
+                        kn.line, kn.column),
+        }
+      }
       for pair in node.nodes {
         let k = pair.nodes[0]
-        m.list_push(kv, m.str_literal(s: k.token, line: k.line, col: k.column))
+        m.list_push(kv, key_node(k))
+        if k.name != 'ident' && k.name != 'str_sq' { nsk.push(k) }
+        if pair.name == 'mut_pair' { muts.push(k) }
         m.list_push(kv, emit_expr(m, pair.nodes[1], f))
       }
-      m.object_lit(kv_list: kv, line: node.line, col: node.column)
+      mut obj = m.object_lit(kv_list: kv, line: node.line, col: node.column)
+      if nsk.size() > 0 {
+        mut ids = []
+        for k in nsk { ids.push(emit_expr(m, k, f)) }
+        obj = call_pre(m, f, '__olit_nsk',
+                       [obj, m.array_lit(items_list: make_list(m, ids),
+                                         line: node.line, col: node.column)],
+                       node.line, node.column)
+      }
+      if muts.size() > 0 {
+        mut ids2 = []
+        for k in muts { ids2.push(key_node(k)) }
+        obj = call_pre(m, f, '__olit_mut',
+                       [obj, m.array_lit(items_list: make_list(m, ids2),
+                                         line: node.line, col: node.column)],
+                       node.line, node.column)
+      }
+      obj
     },
-    {name: 'lambda'} => {
-      let g = closure_of[pkey(node)]
-      m.make_closure(func: g, cmap: cmap_for(m, f, g),
-                     line: node.line, col: node.column)
+    {name: 'set_lit'} => {
+      let (pl, pc) = pos_args(m, node)
+      mut ids = []
+      for e in node.nodes { ids.push(emit_expr(m, e, f)) }
+      call_pre(m, f, '__mk_set',
+               [m.array_lit(items_list: make_list(m, ids),
+                            line: node.line, col: node.column), pl, pc],
+               node.line, node.column)
     },
-    {name: 'closure'} => {
-      let g = closure_of[pkey(node)]
-      m.make_closure(func: g, cmap: cmap_for(m, f, g),
-                     line: node.line, col: node.column)
-    },
+    {name: 'lambda'} => emit_closure_value(m, node, f),
+    {name: 'closure'} => emit_closure_value(m, node, f),
     {name: 'if'} => emit_if(m, node, f, node.line, node.column),
     {name: 'try'} => emit_try(m, node, f),
     {name: 'neg'} => emit_unary(m, node, f, 'neg'),
@@ -3695,12 +5229,16 @@ fn emit_class(m, node, f) {
   m.list_push(kv, m.make_closure(func: ci.ctor, cmap: cmap_for(m, f, ci.ctor),
                                  line: ln, col: cl))
   let mkv = m.list_new()
+  let akv = m.list_new()
   for name in ci.methods.keys() {
     let g = ci.methods[name]
     m.list_push(mkv, m.str_literal(s: name.slice(2, name.size()).to_string(),
                                    line: ln, col: cl))
     m.list_push(mkv, m.make_closure(func: g, cmap: cmap_for(m, f, g),
                                     line: ln, col: cl))
+    m.list_push(akv, m.str_literal(s: name.slice(2, name.size()).to_string(),
+                                   line: ln, col: cl))
+    m.list_push(akv, m.literal(v: funcs[g].params.size() - 1, line: ln, col: cl))
   }
   # conforming traits contribute their defaults (never overriding) and a
   # flag the typed-dispatch check reads
@@ -3727,12 +5265,17 @@ fn emit_class(m, node, f) {
                                          line: ln, col: cl))
           m.list_push(mkv, m.make_closure(func: g, cmap: cmap_for(m, f, g),
                                           line: ln, col: cl))
+          m.list_push(akv, m.str_literal(s: dname.slice(2, dname.size()).to_string(),
+                                         line: ln, col: cl))
+          m.list_push(akv, m.literal(v: funcs[g].params.size() - 1, line: ln, col: cl))
         }
       }
     }
   }
   m.list_push(kv, m.str_literal(s: 'methods', line: ln, col: cl))
   m.list_push(kv, m.object_lit(kv_list: mkv, line: ln, col: cl))
+  m.list_push(kv, m.str_literal(s: 'arities', line: ln, col: cl))
+  m.list_push(kv, m.object_lit(kv_list: akv, line: ln, col: cl))
   m.list_push(kv, m.str_literal(s: 'conf', line: ln, col: cl))
   m.list_push(kv, m.object_lit(kv_list: confkv, line: ln, col: cl))
   let clsobj = m.object_lit(kv_list: kv, line: ln, col: cl)
@@ -4027,22 +5570,51 @@ fn emit_funcs(m) {
     # Prologue, in order: a defaulted parameter that received the missing
     # marker evaluates its default -- in this scope, so it can name earlier
     # params -- and only then is a captured parameter copied into its cell.
+    let is_closure = closure_funcs.has(f)
     for pi in range(fi.pspecs.size()) {
       let rec = fi.pspecs[pi]
-      if rec.dflt != nil {
-        fn pref() { m.var_ref(kind: 'local', index: pi, line: 1, col: 1) }
-        let is_marker = ir_and(
-            m,
-            m.binary(op: 'eq', lhs: ir_typeof(m, pref(), 1, 1),
-                     rhs: m.str_literal(s: 'string', line: 1, col: 1),
-                     line: 1, col: 1),
-            m.binary(op: 'eq', lhs: pref(),
-                     rhs: m.str_literal(s: missing_marker, line: 1, col: 1),
-                     line: 1, col: 1),
-            1, 1)
-        let fill = m.assign(kind: 'local', index: pi,
-                            value: emit_expr(m, rec.dflt, f), line: 1, col: 1)
-        ids.push(m.make_if(cond: is_marker, then_branch: fill, line: 1, col: 1))
+      fn pref() { m.var_ref(kind: 'local', index: pi, line: 1, col: 1) }
+      # a closure is called through call_value with whatever count the
+      # caller had (lenient arity), so a parameter nothing arrived for is
+      # detected by the supplied count
+      fn absent() {
+        m.binary(op: 'le', lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(),
+                                             line: 1, col: 1),
+                 rhs: m.literal(v: pi, line: 1, col: 1), line: 1, col: 1)
+      }
+      cond {
+        rec.dflt != nil => {
+          let is_marker = ir_and(
+              m,
+              m.binary(op: 'eq', lhs: ir_typeof(m, pref(), 1, 1),
+                       rhs: m.str_literal(s: 'string', line: 1, col: 1),
+                       line: 1, col: 1),
+              m.binary(op: 'eq', lhs: pref(),
+                       rhs: m.str_literal(s: missing_marker, line: 1, col: 1),
+                       line: 1, col: 1),
+              1, 1)
+          let missing = cond {
+            is_closure => m.make_if_else(cond: absent(),
+                                         then_branch: ir_bool(m, true, 1, 1),
+                                         else_branch: is_marker, line: 1, col: 1),
+            _ => is_marker,
+          }
+          let fill = m.assign(kind: 'local', index: pi,
+                              value: emit_expr(m, rec.dflt, f), line: 1, col: 1)
+          ids.push(m.make_if(cond: missing, then_branch: fill, line: 1, col: 1))
+        },
+        is_closure && rec.pname != '__selfp' && !rec.rest => {
+          let (dl, dc) = fn_pos[f]
+          let raise = call_pre(m, f, '__raise',
+                               [m.str_literal(s: 'ArityError', line: 1, col: 1),
+                                m.str_literal(s: "missing required argument '" + rec.pname + "'",
+                                              line: 1, col: 1),
+                                m.literal(v: dl, line: 1, col: 1),
+                                m.literal(v: dc, line: 1, col: 1)],
+                               1, 1)
+          ids.push(m.make_if(cond: absent(), then_branch: raise, line: 1, col: 1))
+        },
+        _ => nil,
       }
     }
     for p in range(fi.params.size()) {
@@ -4069,6 +5641,23 @@ fn emit_funcs(m) {
       ids.push(m.make_return(value: call_pre(m, f, '__gen_wrap', [rc], 1, 1),
                              line: 1, col: 1))
     }
+    if self_closure.has(f) {
+      let outer = self_closure[f]
+      let outer_ref = cond {
+        outer.kind == 'var' => {
+          let a = access_from(f, (outer.owner, outer.slot))
+          m.var_ref(kind: a.kind, index: a.index, line: 1, col: 1)
+        },
+        _ => m.nil_literal(line: 1, col: 1),
+      }
+      let picked = call_pre(m, f, '__self_pick',
+                            [m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+                             outer_ref],
+                            1, 1)
+      let a2 = access_from(f, (f, self_slot[f]))
+      ids.push(m.assign(kind: a2.kind, index: a2.index, value: picked,
+                        line: 1, col: 1))
+    }
     for s in fi.stmts {
       let e = emit_stmt(m, s, f)
       if e != nil { ids.push(e) }
@@ -4094,6 +5683,7 @@ fn emit_funcs(m) {
                           num_cells: cell_index[f].size(),
                           num_params: fi.params.size(), body: body)
     if fi.is_gen == true { m.set_generator(func: func) }
+    m.set_lenient_arity(func: func)
     mut i = 0
     for v in free[f].values() {
       let (o, s) = v
@@ -4163,6 +5753,10 @@ for path in cli {
   scratch_of = {}
   block_info = {}
   prelude_named = {}
+  self_closure = {}
+  self_slot = {}
+  closure_funcs = {}
+  fn_pos = {}
   in_prelude = false
   scope_stack = []
   loop_depth = {}

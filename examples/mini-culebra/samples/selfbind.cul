@@ -1,0 +1,141 @@
+# selfbind: `self` inside closures, bound methods, and the operator messages
+fn show(label, f) {
+  try { println("{label}: {f()}") } catch e { println("{label}: !{e.kind}: {e.message}") }
+}
+let o = {name: 'o', g: fn (x) { "{self.name}:{x}" }, f: fn () { self.name }}
+show('method_self', || o.f())
+show('method_self_arg', || o.g(1))
+fn extracted() {
+  let g1 = o.g
+  g1(1)
+}
+show('extracted', extracted)
+fn rebind() {
+  let g1 = o.g
+  let o3 = {g: g1, name: 'o3'}
+  o3.g(1)
+}
+show('rebind', rebind)
+let f0 = fn () { self.name }
+let o4 = {name: 'o4', f: f0}
+let o5 = {name: 'o5', f: f0}
+show('same_closure_two_objs', || "{o4.f()} {o5.f()}")
+show('direct_unbound', || f0())
+show('cb_unbound', || [1].map(fn (x) { self }))
+fn inner_direct() {
+  let o6 = {v: 1, outer: fn () { let inner6 = fn () { self.v }; inner6() }}
+  o6.outer()
+}
+show('inner_called_direct_in_method', inner_direct)
+fn callback_in_method() {
+  let o7 = {v: 7, m: fn () { [1].map(fn (x) { self.v + x }) }}
+  o7.m()
+}
+show('callback_inside_method', callback_in_method)
+fn escaped() {
+  let o8 = {v: 8, m: fn () { let gg = fn () { self.v }; gg }}
+  let g8 = o8.m()
+  g8()
+}
+show('escaped_inner', escaped)
+fn literal_in_fn() {
+  let mk = fn () { {v: 9, m: fn () { self.v }} }
+  mk().m()
+}
+show('literal_in_fn', literal_in_fn)
+fn identity() {
+  let o9 = {v: 10, m: fn () { self }}
+  o9.m() == o9
+}
+show('self_identity', identity)
+fn inner_rebound() {
+  let o10 = {v: 11, m: fn () { fn () { self.v } }}
+  let h10 = o10.m()
+  let o11 = {v: 12, h: h10}
+  o11.h()
+}
+show('inner_rebound', inner_rebound)
+fn lambda_self() {
+  let p = {v: 5, get: || self.v}
+  p.get()
+}
+show('lambda_self', lambda_self)
+fn mut_via_self() {
+  let it = {mut i: 3, iter: fn () { self }, has_next: fn () { self.i > 0 },
+            next: fn () { self.i = self.i - 1; self.i }}
+  it.collect()
+}
+show('mut_via_self', mut_via_self)
+let countdown = fn (start) {
+  mut i = start
+  {iter: fn () { self }, has_next: fn () { i > 0 }, next: fn () { let v = i; i = i - 1; v }}
+}
+show('user_iter_map', || countdown(3).map(|x| x * 2).collect())
+fn user_iter_for() {
+  mut s = ''
+  for v in countdown(3) { s = s + "{v}" }
+  s
+}
+show('user_iter_for', user_iter_for)
+class Ctr {
+  new(n) { self.n = n }
+  has_next() { self.n > 0 }
+  next() {
+    let v = self.n
+    self.n = self.n - 1
+    v
+  }
+}
+show('class_iter_map', || Ctr.new(3).map(|x| x * 2).collect())
+class It2 {
+  new() { self.i = 0 }
+  iter() { self }
+  has_next() { self.i < 2 }
+  next() {
+    self.i = self.i + 1
+    self.i
+  }
+}
+show('class_iter', || It2.new().collect())
+fn class_for() {
+  mut s = 0
+  for v in It2.new() { s = s + v }
+  s
+}
+show('class_iter_for', class_for)
+class Greeter {
+  new(who) { self.who = who }
+  hi(x) { "{self.who} hi {x}" }
+}
+show('bound_class_method', || [1, 2].map(Greeter.new('g').hi))
+show('self_missing_arg', || o.g())
+fn plain_hasnext_for() {
+  mut s = ''
+  for v in {has_next: fn () { false }, next: fn () { nil }} { s = s + "{v}" }
+  s
+}
+show('for_plain_hasnext', plain_hasnext_for)
+show('plain_hasnext_count', || {has_next: fn () { false }, next: fn () { nil }}.count())
+# closures: a missing argument is named, an extra one is dropped
+let h2 = fn (x) { x }
+show('extra_args', || h2(1, 2))
+show('missing_arg', || h2())
+let f2 = fn (a, b) { a }
+show('missing_second', || f2(1))
+# operators on the wrong types
+show('obj_plus', || {a: 1} + {b: 2})
+show('arr_plus_int', || [1] + 2)
+show('nil_plus', || nil + 1)
+show('str_plus_int', || 'a' + 1)
+show('arr_concat', || [1] + [2])
+show('mod_str', || 'a' % 2)
+show('pow_str', || 'a' ** 2)
+show('div_nil', || nil / 2)
+show('mul_int_str', || 2 * 'ab')
+show('cmp_str_int', || 'a' < 1)
+show('cmp_nil', || nil < 1)
+show('cmp_bool', || "{true < false} {false < true} {true <= true}")
+show('cmp_arr', || [1] < [2])
+show('cmp_tuple', || (1,) < (2,))
+show('cmp_set', || {1,} < {2,})
+show('one_tuple', || (1,))

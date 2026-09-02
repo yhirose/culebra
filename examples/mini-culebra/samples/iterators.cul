@@ -1,0 +1,138 @@
+# iterators: the lazy method set over every built-in source
+fn show(label, f) {
+  try { println("{label}: {f()}") } catch e { println("{label}: !{e.kind}: {e.message}") }
+}
+fn nums() {
+  yield 1
+  yield 2
+  yield 3
+  yield 4
+}
+show('map', || nums().map(|x| x * 10).collect())
+show('filter', || nums().filter(|x| x % 2 == 0).collect())
+show('take', || nums().take(2).collect())
+show('take0', || nums().take(0).collect())
+show('skip', || nums().skip(2).collect())
+show('skipbig', || nums().skip(9).collect())
+show('take_while', || nums().take_while(|x| x < 3).collect())
+show('skip_while', || nums().skip_while(|x| x < 3).collect())
+show('step_by', || nums().step_by(2).collect())
+show('step_by0', || nums().step_by(0).collect())
+show('distinct', || [1, 2, 1, 3, 2].iter().distinct().collect())
+show('distinct_unhash', || [[1], [1]].iter().distinct().collect())
+show('tap', || nums().tap(|x| println("tap {x}")).take(2).collect())
+show('scan', || nums().scan(0, |a, x| a + x).collect())
+show('flatten', || [[1, 2], [3]].iter().flatten().collect())
+show('flatten_str', || ['ab', 'c'].iter().flatten().collect())
+show('flatten_bad', || [1, 2].iter().flatten().collect())
+show('chunk_by', || [1, 1, 2, 3, 3, 1].iter().chunk_by(|x| x).collect())
+show('chunks', || nums().chunks(3).collect())
+show('chunks0', || nums().chunks(0).collect())
+show('windows', || nums().windows(2).collect())
+show('windows_big', || nums().windows(9).collect())
+show('flat_map', || nums().flat_map(|x| [x, x]).collect())
+show('flat_map_iter', || [2, 3].iter().flat_map(|x| range(x)).collect())
+show('chain', || [1].iter().chain([2, 3].iter()).collect())
+show('chain_arr', || [1].iter().chain([2, 3]).collect())
+show('zip', || [1, 2, 3].iter().zip(['a', 'b'].iter()).collect())
+show('zip_first', || [1].iter().zip([2].iter()).first().first)
+show('enumerate', || ['a', 'b'].iter().enumerate().collect())
+show('enumerate_arr', || ['a', 'b'].enumerate().collect())
+show('collect', || nums().collect())
+show('join', || nums().join('-'))
+show('join_mixed', || [1, 'a', nil, true, 1.5].iter().join(','))
+show('for_each', || nums().for_each(|x| print(x)))
+show('reduce', || nums().reduce(0, |a, x| a + x))
+show('find', || nums().find(|x| x > 2))
+show('find_none', || nums().find(|x| x > 20))
+show('any', || nums().any(|x| x > 3))
+show('all', || nums().all(|x| x > 0))
+show('all_empty', || [].iter().all(|x| x > 0))
+show('count', || nums().count())
+show('first', || nums().first())
+show('first_empty', || [].iter().first())
+show('last', || nums().last())
+show('nth', || nums().nth(2))
+show('nth_big', || nums().nth(20))
+show('nth_neg', || nums().nth(-1))
+show('position', || nums().position(|x| x == 3))
+show('position_none', || nums().position(|x| x == 30))
+show('contains', || nums().contains(3))
+show('sum', || nums().sum())
+show('sum_empty', || [].iter().sum())
+show('sum_mixed', || [1, 2.5].iter().sum())
+show('sum_bad', || ['a'].iter().sum())
+show('product', || nums().product())
+show('product_empty', || [].iter().product())
+show('min', || [3, 1, 2].iter().min())
+show('min_mixed', || [3, 1.5, 2].iter().min())
+show('min_empty', || [].iter().min())
+show('min_bad', || ['a', 'b'].iter().min())
+show('max', || [3, 1, 2].iter().max())
+show('min_by', || ['ccc', 'a', 'bb', 'd'].iter().min_by(|s| s.size()))
+show('max_by', || ['ccc', 'a', 'bb', 'ddd'].iter().max_by(|s| s.size()))
+show('min_by_empty', || [].iter().min_by(|s| s.size()))
+show('to_set', || [1, 2, 1].iter().to_set())
+show('to_object', || [('a', 1), ('b', 2), ('a', 3)].iter().to_object())
+show('to_object_bad', || [1].iter().to_object())
+show('group_by', || nums().group_by(|x| x % 2))
+show('partition', || nums().partition(|x| x % 2 == 0))
+show('unzip', || [(1, 'a'), (2, 'b')].iter().unzip())
+show('unzip_obj', || [{first: 1, second: 2}].iter().unzip())
+show('unzip_bad', || [1].iter().unzip())
+# exhaustion: a drained iterator stays drained
+let ex = nums()
+show('ex1', || ex.collect())
+show('ex2', || ex.collect())
+show('ex_has_next', || ex.has_next())
+# sources: string, object, tuple, range
+show('str_map', || 'héllo'.iter().map(|c| c + '.').join(''))
+show('obj_iter', || {a: 1, b: 2}.iter().map(|kv| "{kv[0]}={kv[1]}").collect())
+show('obj_values', || {a: 1, b: 2}.values().map(|v| v * 2).collect())
+show('obj_keys_iter', || {a: 1}.keys().iter().collect())
+show('range_chain', || range(5).filter(|x| x > 1).step_by(2).collect())
+show('tuple_iter', || (1, 2).iter().map(|x| x + 1).collect())
+show('display', || [1].iter())
+show('display_chain', || nums().map(|x| x))
+# dispose forwarding through combinators and terminals
+fn gd() {
+  defer { println('gd cleanup') }
+  yield 1
+  yield 2
+  yield 3
+}
+show('dispose_find', || gd().map(|x| x * 2).find(|x| x == 4))
+show('dispose_take', || gd().take(1).collect())
+show('dispose_collect', || gd().collect())
+show('dispose_zip', || gd().zip(gd()).count())
+show('dispose_throw', || gd().map(|x| x / 0).collect())
+fn loop_break() {
+  for v in gd().filter(|x| x > 1) {
+    if v == 2 { break }
+  }
+  'ok'
+}
+show('dispose_for', loop_break)
+# laziness: nothing is pulled until a terminal asks
+fn loud() {
+  println('pulled')
+  yield 1
+}
+let lazy = loud().map(|x| x)
+println('built')
+show('lazy_first', || lazy.first())
+fn take_then_rest() {
+  let a = nums()
+  a.take(2).collect()
+  a.collect()
+}
+show('take_then_rest', take_then_rest)
+fn skip_lazy() {
+  let a = nums()
+  let s = a.skip(1)
+  a.next()
+  s.collect()
+}
+show('skip_lazy', skip_lazy)
+show('has_next_on_chain', || nums().map(|x| x).has_next())
+show('iter_on_chain', || nums().map(|x| x).iter().collect())

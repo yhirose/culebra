@@ -6310,7 +6310,7 @@ list id afterward is undefined.
 | `m.call(func:, cmap:, line:, col:)` | a call to function index `func`, forwarding captures via capture-map `cmap` |
 | `m.make_closure(func:, cmap:, line:, col:)` | a closure *value* over function `func` — storable, passable, callable later |
 | `m.call_value(callee:, args_list:, line:, col:)` | a call of whatever `callee` evaluates to, consuming a staging list of arguments |
-| `m.intrinsic(name:, args_list:, line:, col:)` | `name` is `'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'` (1 arg each), `'readint'` (0 args), or `'fmod'`/`'pow'` (2 args); `'printraw'` is `'print'` without the trailing newline; the container primitives are `'arraypush'`/`'objecthas'`/`'objectremove'` (2 args) and `'arraypop'`/`'objectkeys'` (1 arg) — pop from empty fails, keys come back in insertion order. `tostr` formats whole doubles bare — `4`, not `4.0` — so a front end with other display rules post-processes; `typeof` yields the tag as a string (`'int'`, `'double'`, `'string'`, …); `toint` truncates toward zero and fails on NaN/∞/out-of-range; `fmod` is IEEE fmod with the integer-mod zero-divisor failure; `pow` is over doubles |
+| `m.intrinsic(name:, args_list:, line:, col:)` | `name` is `'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'` (1 arg each), `'readint'` (0 args), or `'fmod'`/`'pow'` (2 args); `'printraw'` is `'print'` without the trailing newline; the container primitives are `'arraypush'`/`'objecthas'`/`'objectremove'` (2 args) and `'arraypop'`/`'objectkeys'` (1 arg) — pop from empty fails, keys come back in insertion order; `'same'` (2 args) answers reference identity — the same heap object, or for scalars the same tag and payload — which `eq` refuses for two objects; `'argcount'` (0 args) is the count of arguments the running function was called with (see `set_lenient_arity`); `'genresume'`/`'genreturn'` (2 args) drive a generator activation (see `set_generator`). `tostr` formats whole doubles bare — `4`, not `4.0` — so a front end with other display rules post-processes; `typeof` yields the tag as a string (`'int'`, `'double'`, `'string'`, …); `toint` truncates toward zero and fails on NaN/∞/out-of-range; `fmod` is IEEE fmod with the integer-mod zero-divisor failure; `pow` is over doubles |
 | `m.array_lit(items_list:, line:, col:)` / `m.object_lit(kv_list:, line:, col:)` | an array from a staging list of items; an object from a staging list holding key, value, key, value, … |
 | `m.index(recv:, key:, line:, col:)` / `m.set_index(recv:, key:, value:, line:, col:)` | reads and writes, dispatching on what `recv` turns out to be: an array takes a Long index (out of range fails), an object a String key (a missing key reads as `nil`), and a string reads one byte out as a string (writes are refused) |
 | `m.scope(first_local:, end_local:, body:, line:, col:)` | a lexical region owning local slots `[first_local, end_local)` — released when the region exits, however it exits; defers registered inside run then, LIFO |
@@ -6320,6 +6320,9 @@ list id afterward is undefined.
 | `m.make_try(caught_local:, body:, handler:, line:, col:)` | guards `body`; a throw (or an executor trap — divide by zero, a wrong-typed operand) lands what it carried in local slot `caught_local` and resumes in `handler`. A trap's value is an object `{message, line, col}`. Yields the value of whichever child finished |
 | `m.make_defer(value:, line:, col:)` | registers a 0-arity callable to run when the enclosing `scope()` exits — on fall-through, `break`, `continue`, `return`, and unwinding throws alike; `verify()` rejects a defer outside a scope |
 | `m.cell_fresh(cell:, line:, col:)` | replaces one frame cell with a fresh box — what a loop iteration's own binding means: closures from earlier iterations keep the old cell |
+| `m.make_yield(value:, line:, col:)` | suspends the running generator function, handing `value` to whoever resumed it; the node's own value is what the next resume sends in. `verify()` rejects it outside a generator |
+| `m.set_generator(func:)` | marks function `func` as a generator: calling it packages a suspended activation instead of running the body. `'genresume'` (the activation and a value to send) runs it to its next yield and answers `{value, done}`; `'genreturn'` (the activation and a value) closes it early, running the parked body's pending defers innermost-first, and answers `{value, done: true}` |
+| `m.set_lenient_arity(func:)` | calls of `func` accept any argument count: extras are dropped, a parameter nothing arrived for starts as `nil`, and the body reads the count actually supplied with `'argcount'` — so a front end raises its own missing-argument diagnostic or fills a default. Without it, a count mismatch is an executor trap |
 
 The executor also honors a drop contract: an object whose `"\x01drop"` key holds a closure gets it called — with the object as its one argument — the moment the object's refcount reaches zero, before it is freed. A throwing destructor is reported to stderr and swallowed; a destructor that stores its argument resurrects the object and the free is skipped.
 | `m.list_new()` | a staging list, for `stmts_list:`/`args_list:` above |
@@ -6395,8 +6398,8 @@ process's own stack.
 ### Scope
 
 Values are `nil`, booleans, integers, doubles, strings, arrays, objects,
-and closures; there are no generators, and a variable's capture is
-resolved once, when a front end builds the IR, not at run time. A closure
+closures, and generator activations (see `set_generator`); a variable's
+capture is resolved once, when a front end builds the IR, not at run time. A closure
 built with `make_closure` is a first-class value: storable in a variable,
 passable as a `call_value` argument, returnable as a function's result.
 A `CodeGen.Module` cannot cross an isolate boundary

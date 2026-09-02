@@ -1,0 +1,78 @@
+# sets: literals, membership, algebra, mutation
+fn show(label, f) {
+  try { println("{label}: {f()}") } catch e { println("{label}: !{e.kind}: {e.message}") }
+}
+show('disp', || {1, 2, 3})
+show('type', || type_of({1, 2}))
+show('one', || {42,})
+show('mixed', || {1, 'two', 3.14, true, nil})
+show('dup', || {1, 1, 2})
+show('num_types', || {1, 1.0, true}.size())
+show('eq', || {1, 2, 3} == {3, 2, 1})
+show('ne', || {1, 2} == {1, 2, 3})
+show('eq_arr', || {1, 2} == [1, 2])
+show('eq_typed', || {1,} == {1.0,})
+show('size', || {1, 2}.size())
+show('empty_disp', || [].to_set())
+show('empty', || [].to_set().empty())
+show('presence', || [].to_set().presence())
+show('presence2', || {1,}.presence())
+show('contains', || {1, 'a'}.contains('a'))
+show('contains_f', || {1, 'a'}.contains(1.0))
+show('union', || {1, 2}.union({2, 3}))
+show('intersect', || {1, 2, 3}.intersect({3, 2, 9}))
+show('diff', || {1, 2, 3}.diff({2,}))
+show('sym_diff', || {1, 2}.sym_diff({2, 3}))
+show('subset', || {1,}.subset({1, 2}))
+show('subset_f', || {1, 5}.subset({1, 2}))
+show('superset', || {1, 2}.superset({1,}))
+show('to_array', || {3, 1, 2}.to_array())
+show('iter', || {3, 1}.iter().map(|x| x * 2).collect())
+fn set_for() {
+  mut s = ''
+  for x in {1, 2} { s = s + "{x}" }
+  s
+}
+show('for', set_for)
+fn set_add() {
+  mut s = {1,}
+  let r = s.add(2)
+  "{r} {s}"
+}
+show('add', set_add)
+fn set_add_dup() {
+  mut s = {1,}
+  s.add(1)
+}
+show('add_dup', set_add_dup)
+fn set_remove() {
+  mut s = {1, 2}
+  let r = s.remove(1)
+  "{r} {s}"
+}
+show('remove', set_remove)
+fn set_remove_no() {
+  mut s = {1,}
+  s.remove(9)
+}
+show('remove_no', set_remove_no)
+fn set_add_let() {
+  let s = {1,}
+  s.add(2)
+  s
+}
+show('add_let', set_add_let)
+show('unhash', || {[1], 2})
+show('tuple_members', || {(1, 2), (1, 2), (2, 1)})
+show('nested', || {{1, 2}, {1, 2}})
+show('union_bad', || {1,}.union([2]))
+show('in_arr', || [{1, 2}, 'x'])
+show('index', || {1, 2}[0])
+let s1 = {1,}
+show('truthy', || if s1 { 'y' } else { 'n' })
+show('plus', || {1,} + {2,})
+show('map_missing', || {3, 1}.map(|x| x))
+show('collect', || {3, 1}.iter().to_set())
+show('of_strs', || ['b', 'a', 'b'].to_set())
+show('in_obj', || {s: {1, 2}})
+show('arity', || {1,}.union())
