@@ -1,0 +1,216 @@
+# GRPO: learning from a reward, with the group as its own baseline.
+#
+#   culebra train/grpo.cul
+#   culebra train/grpo.cul max_iters=100
+#
+# The task is single-digit addition, which the model has never been taught.
+# For each prompt it writes `group_size` answers; each is scored 1 or 0; the
+# advantage of an answer is its reward minus the group's mean. That
+# subtraction is the whole trick -- no value network, the group is the
+# baseline. An answer better than its siblings is reinforced, one worse is
+# discouraged, and a group that is all right or all wrong contributes
+# nothing, which is correct: it carries no information about what to change.
+#
+# The update is PPO's clipped surrogate, so a step cannot move the policy
+# far from the one that generated the samples.
+#
+# Reads the SFT checkpoint and writes its own beside it.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import O from '../../dezero/dezero/optimizers.cul'
+import M from '../codebot/model.cul'
+import U from '../codebot/utils.cul'
+import T from '../codebot/tokenizer.cul'
+import CK from '../common/checkpoint.cul'
+import P from '../common/paths.cul'
+import Plot from '../common/plot.cul'
+import R from './reward.cul'
+import SD from './sft_data.cul'
+
+let args = Sys.argv
+let full = args.contains('--full')
+let from_dir = P.checkpoint(full ? 'codebot-sft-full' : 'codebot-sft-demo')
+
+if !FS.exists("{from_dir}/manifest.json") {
+  throw {
+    kind: "IOError",
+    message: "no fine-tuned checkpoint at {from_dir} -- run train/sft.cul{full ? ' --full' : ''} first",
+  }
+}
+
+fn setting(args, key, fallback) {
+  let hit = args.find(|a| a.starts_with("{key}="))
+  hit == nil ? fallback : hit.slice(key.size() + 1, hit.size())
+}
+
+let max_iters = to_long(setting(args, 'max_iters', '30'))
+let group_size = to_long(setting(args, 'group_size', '4'))
+let prompts_per_step = to_long(setting(args, 'prompts_per_step', '4'))
+let max_new = to_long(setting(args, 'max_new', '12'))
+let epsilon = to_float(setting(args, 'epsilon', '0.2'))
+let lr = to_float(setting(args, 'lr', '7e-6'))
+
+let loaded = CK.load(from_dir)
+let cfg = loaded.config
+let model = M.GPT(cfg)
+CK.restore(model, loaded)
+
+# The policy the samples came from. GRPO's ratio is against this, and it is
+# refreshed from the live model at the top of every step.
+let old_model = M.GPT(cfg)
+CK.restore(old_model, loaded)
+
+let rules_name = full ? 'merge_rules_1000.json' : 'merge_rules_sample.json'
+let tokenizer = T.load_tokenizer(P.data(rules_name))
+let tasks = R.arithmetic_tasks()
+inspect("fine-tuned: {from_dir} (step {loaded.step})")
+inspect("{tasks.size()} tasks, group {group_size}, {prompts_per_step} prompts per step")
+
+fn copy_params(into, from) {
+  for i, e in into.named_params().enumerate() {
+    e.param.data = from.named_params()[i].param.data
+  }
+}
+
+# One prompt, `group_size` completions, and each one's advantage.
+fn sample_group(model, tokenizer, task, group_size, max_new, cfg) {
+  let prompt_ids = tokenizer.encode(SD.prompt_text(task.question))
+  let completions = range(group_size).map(fn (_) {
+    let ids = U.generate(model, cfg, prompt_ids, max_new, 1.0, 0)
+    ids.slice(prompt_ids.size(), ids.size())
+  }).collect()
+  let rewards = completions.map(|ids| R.reward(
+    task.answer,
+    tokenizer.decode(ids),
+  ))
+  let mean = rewards.sum() / to_float(group_size)
+  range(group_size)
+    .map(|i| {
+      prompt_ids: prompt_ids,
+      completion_ids: completions[i],
+      reward: rewards[i],
+      advantage: rewards[i] - mean,
+    })
+    .collect()
+}
+
+# Probability the model assigns to each token that actually follows.
+# Position i predicts position i + 1, so the last position has no target and
+# the mask is shifted with the labels.
+fn token_probs(model, cfg, rows, b) {
+  let logits = model(rows.flat_map(|r| r.ids), b, cfg.context_len)
+  let probs = F.softmax(logits, 1)
+  let labels = rows.flat_map(fn (r) {
+    r.ids.slice(1, r.ids.size()) + [0]
+  })
+  let onehot = dz.Variable(Tensor.scatter_to_axis(
+    Tensor.from(labels),
+    Tensor.ones(b * cfg.context_len),
+    cfg.vocab_size,
+  ))
+  dz.sum(dz.mul(probs, onehot), 1)
+}
+
+# One padded row per sampled completion: the ids, and a mask that is 1 only
+# where the model wrote something.
+fn build_rows(group, context_len) {
+  group.map(fn (s) {
+    let ids = s.prompt_ids + s.completion_ids
+    let keep = repeat(s.prompt_ids.size(), 0.0) +
+      repeat(s.completion_ids.size(), 1.0)
+    let pad = context_len - ids.size()
+    pad >= 0
+      ? {
+        ids: ids + repeat(pad, 0),
+        mask: keep.slice(1, keep.size()) + repeat(pad + 1, 0.0),
+        advantage: s.advantage,
+      }
+      : {
+        ids: ids.slice(0, context_len),
+        mask: keep.slice(1, context_len + 1),
+        advantage: s.advantage,
+      }
+  })
+}
+
+let opt = O.Adam(lr)
+opt.setup(model)
+
+mut history = []
+let t0 = Sys.time()
+
+for step in 1..max_iters + 1 {
+  copy_params(old_model, model)
+
+  mut groups = []
+  dz.test_mode(fn () {
+    for _ in 0..prompts_per_step {
+      groups.push(sample_group(
+        old_model,
+        tokenizer,
+        tasks[Random.int(0, tasks.size())],
+        group_size,
+        max_new,
+        cfg,
+      ))
+    }
+  })
+  let group = groups.flat_map(|g| g)
+
+  let accuracy = group.map(|s| s.reward).sum() / to_float(group.size())
+  # A group whose answers all score the same has every advantage at zero and
+  # contributes nothing. That is correct -- it says nothing about what to
+  # change -- but it means a model that is never right learns nothing, so the
+  # count is worth watching rather than leaving to look like a broken step.
+  let informative = groups
+    .filter(|g| g.map(|s| s.reward).max() > g.map(|s| s.reward).min())
+    .size()
+  let rows = build_rows(group, cfg.context_len)
+  let b = rows.size()
+  let advantages = dz.Variable(Tensor
+    .from(rows.flat_map(|r| repeat(cfg.context_len, r.advantage)))
+    .reshape([b * cfg.context_len]))
+  let mask = dz.Variable(Tensor
+    .from(rows.flat_map(|r| r.mask))
+    .reshape([b * cfg.context_len]))
+
+  mut old_p = nil
+  dz.test_mode(fn () {
+    dz.no_grad(fn () {
+      old_p = token_probs(old_model, cfg, rows, b)
+      Tensor.eval(old_p.data)
+    })
+  })
+
+  mut loss = nil
+  dz.test_mode(fn () {
+    let p = token_probs(model, cfg, rows, b)
+    let ratio = dz.div(p, dz.add(old_p.data, 1.0e-8))
+    let unclipped = dz.mul(ratio, advantages)
+    let clipped = dz.mul(
+      F.clip(ratio, 1.0 - epsilon, 1.0 + epsilon),
+      advantages,
+    )
+    # dezero has no elementwise minimum; `a - relu(a - b)` is one, and it
+    # sends the gradient to whichever side is smaller, which is what the
+    # clipped objective is for.
+    let smaller = dz.sub(unclipped, F.relu(dz.sub(unclipped, clipped)))
+    let objective = dz.mul(smaller, mask)
+    loss = dz.mul(dz.sum(objective, nil), -1.0 / to_float(b))
+  })
+
+  model.cleargrads()
+  loss.backward()
+  opt.update()
+
+  Tensor.eval(loss.data)
+  history.push([to_float(step), accuracy, loss.data.to_array()[0]])
+  inspect("step {step}/{max_iters}  accuracy {accuracy}  {informative}/{prompts_per_step} groups with a signal  loss {loss.data.to_array()[0]}")
+}
+
+inspect("{max_iters} steps in {Sys.time() - t0}s")
+Plot.plot_curves(history.map(|h| h[0]), [['accuracy', history.map(|h| h[1])]])
+
+let out_dir = P.checkpoint(full ? 'codebot-grpo-full' : 'codebot-grpo-demo')
+inspect("saved {CK.save(out_dir, cfg, max_iters, model.named_params())} parameters to {out_dir}")

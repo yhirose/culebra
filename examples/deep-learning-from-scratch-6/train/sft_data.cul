@@ -1,0 +1,41 @@
+# Turning an instruction/response pair into one training example.
+#
+# The prompt and the response are one sequence; what separates them is the
+# mask, which is 0 wherever a prediction should not be scored. Upstream
+# writes the same thing as a label of -100 and `ignore_index=-100`.
+
+import T from '../codebot/tokenizer.cul'
+
+# Upstream's format, verbatim.
+fn prompt_text(instruction) {
+  "### Instruction:\n{instruction}\n\n### Response:\n"
+}
+
+# `inputs` is what the model sees, `targets` what it should predict, and
+# `mask` which of those predictions count. Everything is shifted by one,
+# because position i predicts position i + 1. Padding is scored nowhere.
+fn build_sample(tokenizer, item, context_len) {
+  let prompt_ids = tokenizer.encode(prompt_text(item.instruction))
+  # The end token closes the response, so the model learns where to stop.
+  let response_ids = tokenizer.encode("{item.response}{T.END_TOKEN}")
+  let ids = prompt_ids + response_ids
+  let keep = repeat(prompt_ids.size(), 0.0) + repeat(response_ids.size(), 1.0)
+
+  mut inputs = ids.slice(0, ids.size() - 1)
+  mut targets = ids.slice(1, ids.size())
+  mut mask = keep.slice(1, keep.size())
+
+  let pad = context_len - inputs.size()
+  if pad > 0 {
+    inputs += repeat(pad, 0)
+    targets += repeat(pad, 0)
+    mask += repeat(pad, 0.0)
+  } else if pad < 0 {
+    inputs = inputs.slice(0, context_len)
+    targets = targets.slice(0, context_len)
+    mask = mask.slice(0, context_len)
+  }
+  {inputs: inputs, targets: targets, mask: mask}
+}
+
+export {prompt_text, build_sample}

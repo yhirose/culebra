@@ -1,0 +1,29 @@
+# The task GRPO learns, and how an answer is scored.
+#
+# Single-digit addition: 81 prompts the model has never been taught, with a
+# reward that is 1 when the last integer it wrote is the right one and 0
+# otherwise. Nothing about the reward is differentiable, which is the point
+# -- it is the only signal, and the policy gradient is what turns it into an
+# update.
+
+let NUMBER = Regex.compile(`-?\d+`)
+
+fn arithmetic_tasks() {
+  mut tasks = []
+  for i in 1..10 {
+    for j in 1..10 {
+      tasks.push({question: "{i}+{j}=", answer: i + j})
+    }
+  }
+  tasks
+}
+
+# Upstream takes the *last* integer in the response, so a model that shows
+# its working is still scored on its conclusion.
+fn reward(answer, response) {
+  let found = NUMBER.find_all(response).map(|m| m.value)
+  return 0.0 if found.empty()
+  to_long(found[found.size() - 1]) == answer ? 1.0 : 0.0
+}
+
+export {arithmetic_tasks, reward, NUMBER}

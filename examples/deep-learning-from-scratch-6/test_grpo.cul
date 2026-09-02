@@ -1,0 +1,107 @@
+# The reward, and the clipped surrogate that turns it into a gradient.
+#
+# The training script cannot be a test -- at the demo size the model is
+# never right, so every group scores the same and the update is correctly
+# zero. What is testable is the machinery: that a group with no spread
+# produces no signal, that a positive advantage raises the probability of
+# what was sampled and a negative one lowers it, and that the clip caps how
+# far one step can move.
+
+import dz from '../dezero/dezero/core.cul'
+import F from '../dezero/dezero/functions.cul'
+import R from './train/reward.cul'
+
+@test
+fn the_task_is_every_single_digit_sum() {
+  let tasks = R.arithmetic_tasks()
+  assert_eq(tasks.size(), 81)
+  assert_eq(tasks[0], {question: '1+1=', answer: 2})
+  assert_eq(tasks[80], {question: '9+9=', answer: 18})
+}
+
+@test
+fn the_reward_reads_the_last_number_written() {
+  assert_eq(R.reward(7, '7'), 1.0)
+  # A model that shows its working is scored on its conclusion.
+  assert_eq(R.reward(7, '3 + 4 = 7'), 1.0)
+  assert_eq(R.reward(7, '7 is wrong, I mean 8'), 0.0)
+  assert_eq(R.reward(-3, 'the answer is -3'), 1.0)
+}
+
+@test
+fn an_answer_with_no_number_scores_zero() {
+  assert_eq(R.reward(7, 'I do not know'), 0.0)
+  assert_eq(R.reward(7, ''), 0.0)
+}
+
+fn advantages(rewards) {
+  let mean = rewards.sum() / to_float(rewards.size())
+  rewards.map(|r| r - mean)
+}
+
+@test
+fn a_group_that_all_scores_the_same_carries_no_signal() {
+  # This is the property that makes the demo look idle: it is correct.
+  assert_eq(advantages([0.0, 0.0, 0.0, 0.0]), [0.0, 0.0, 0.0, 0.0])
+  assert_eq(advantages([1.0, 1.0, 1.0, 1.0]), [0.0, 0.0, 0.0, 0.0])
+}
+
+@test
+fn advantages_are_centred_on_the_group() {
+  let a = advantages([1.0, 0.0, 0.0, 0.0])
+  assert_close(a.sum(), 0.0, 1.0e-12)
+  assert_true(a[0] > 0.0)
+  assert_true(a[1] < 0.0)
+}
+
+# The surrogate as the training script computes it, over one scalar ratio.
+fn surrogate(ratio_value, advantage, epsilon) {
+  let ratio = dz.Variable(Tensor.from([ratio_value]))
+  let adv = dz.Variable(Tensor.from([advantage]))
+  let unclipped = dz.mul(ratio, adv)
+  let clipped = dz.mul(F.clip(ratio, 1.0 - epsilon, 1.0 + epsilon), adv)
+  let smaller = dz.sub(unclipped, F.relu(dz.sub(unclipped, clipped)))
+  let loss = dz.mul(smaller, -1.0)
+  loss.backward()
+  Tensor.eval(loss.data, ratio.grad.data)
+  {loss: loss.data.to_array()[0], grad: ratio.grad.data.to_array()[0]}
+}
+
+@test
+fn a_better_than_average_answer_is_reinforced() {
+  # Loss is negated, so pushing the ratio up must lower it.
+  let at_one = surrogate(1.0, 0.5, 0.2)
+  assert_true(at_one.grad < 0.0)
+  assert_close(at_one.loss, -0.5, 1.0e-6)
+}
+
+@test
+fn a_worse_than_average_answer_is_discouraged() {
+  let at_one = surrogate(1.0, -0.5, 0.2)
+  assert_true(at_one.grad > 0.0)
+  assert_close(at_one.loss, 0.5, 1.0e-6)
+}
+
+@test
+fn the_clip_stops_a_step_from_running_away() {
+  # A positive advantage past 1 + epsilon: the objective is capped, so the
+  # gradient stops.
+  let far = surrogate(1.9, 0.5, 0.2)
+  assert_close(far.loss, -0.5 * 1.2, 1.0e-6)
+  assert_close(far.grad, 0.0, 1.0e-6)
+
+  # Below the cap it still moves.
+  let near = surrogate(1.1, 0.5, 0.2)
+  assert_close(near.loss, -0.5 * 1.1, 1.0e-6)
+  assert_true(near.grad < 0.0)
+}
+
+@test
+fn the_clip_is_one_sided_for_a_negative_advantage() {
+  # With a negative advantage the objective is the *lower* of the two, so
+  # the unclipped branch wins above 1 + epsilon and the gradient survives:
+  # an answer worse than its group can always be pushed down further.
+  let far = surrogate(1.9, -0.5, 0.2)
+  assert_close(far.loss, 0.5 * 1.9, 1.0e-6)
+  assert_true(far.grad > 0.0)
+}

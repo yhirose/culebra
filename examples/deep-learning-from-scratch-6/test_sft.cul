@@ -1,0 +1,134 @@
+# The masked loss, and the sample it is fed.
+#
+# The masked loss is checked against dezero's unmasked one rather than
+# against hand-computed numbers: an all-ones mask must reproduce it exactly,
+# and a partial mask must reproduce what the kept rows alone would give.
+# Both are equalities, not tolerances.
+
+import dz from '../dezero/dezero/core.cul'
+import F from '../dezero/dezero/functions.cul'
+import T from './codebot/tokenizer.cul'
+import LS from './train/losses.cul'
+import SD from './train/sft_data.cul'
+
+fn fixture() {
+  Random.seed(0)
+  {logits: Tensor.randn(6, 5), targets: [1, 0, 4, 2, 3, 1]}
+}
+
+@test
+fn an_all_ones_mask_is_the_unmasked_loss() {
+  let f = fixture()
+  let plain = F.softmax_cross_entropy(dz.Variable(f.logits), f.targets)
+  let masked = LS.masked_softmax_cross_entropy(
+    dz.Variable(f.logits),
+    f.targets,
+    repeat(6, 1.0),
+  )
+  Tensor.eval(plain.data, masked.data)
+  assert_eq(masked.data.to_array()[0], plain.data.to_array()[0])
+}
+
+@test
+fn a_partial_mask_is_the_loss_over_the_kept_rows() {
+  let f = fixture()
+  let masked = LS.masked_softmax_cross_entropy(
+    dz.Variable(f.logits),
+    f.targets,
+    [1.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+  )
+  # Rows 0, 2 and 5, taken out and scored on their own.
+  let kept = Tensor.concat([
+    f.logits.narrow([0, 0, 1]),
+    f.logits.narrow([0, 2, 3]),
+    f.logits.narrow([0, 5, 6]),
+  ])
+  let direct = F.softmax_cross_entropy(dz.Variable(kept), [1, 4, 1])
+  Tensor.eval(masked.data, direct.data)
+  assert_eq(masked.data.to_array()[0], direct.data.to_array()[0])
+}
+
+@test
+fn a_masked_row_gets_exactly_no_gradient() {
+  let f = fixture()
+  let mask = [1.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+  let v = dz.Variable(f.logits)
+  LS.masked_softmax_cross_entropy(v, f.targets, mask).backward()
+  Tensor.eval(v.grad.data)
+  let g = v.grad.data.to_array()
+  for i in 0..6 {
+    for j in 0..5 {
+      assert_eq(g[i][j], 0.0) if mask[i] == 0.0
+    }
+    assert_true(range(5).map(|j| Math.abs(g[i][j])).max() >
+      0.0) if mask[i] == 1.0
+  }
+}
+
+@test
+fn a_fully_masked_batch_does_not_divide_by_zero() {
+  let f = fixture()
+  let loss = LS.masked_softmax_cross_entropy(
+    dz.Variable(f.logits),
+    f.targets,
+    repeat(6, 0.0),
+  )
+  Tensor.eval(loss.data)
+  assert_eq(loss.data.to_array()[0], 0.0)
+}
+
+fn tiny_tokenizer() {
+  # Two merge rules is enough: what matters here is the masking, not the
+  # vocabulary.
+  T.BPETokenizer([[32, 32, 256], [256, 256, 257]])
+}
+
+@test
+fn the_prompt_is_masked_and_the_response_is_not() {
+  let tok = tiny_tokenizer()
+  let item = {instruction: 'add', response: 'ok'}
+  let sample = SD.build_sample(tok, item, 128)
+
+  let prompt_len = tok.encode(SD.prompt_text(item.instruction)).size()
+  let response_len = tok.encode("{item.response}{T.END_TOKEN}").size()
+
+  # The shift by one moves the boundary down by one position.
+  assert_eq(sample.mask.slice(0, prompt_len - 1), repeat(prompt_len - 1, 0.0))
+  assert_eq(
+    sample.mask.slice(prompt_len - 1, prompt_len - 1 + response_len),
+    repeat(response_len, 1.0),
+  )
+  assert_eq(sample.mask.sum(), to_float(response_len))
+}
+
+@test
+fn every_target_is_the_next_input() {
+  let tok = tiny_tokenizer()
+  let sample = SD.build_sample(tok, {instruction: 'add', response: 'ok'}, 128)
+  # Inside the real (unpadded) region, target[i] is input[i + 1].
+  let real = tok.encode(SD.prompt_text('add')).size() +
+    tok.encode("ok{T.END_TOKEN}").size() -
+    1
+  for i in 0..real - 1 {
+    assert_eq(sample.targets[i], sample.inputs[i + 1])
+  }
+}
+
+@test
+fn a_sample_is_padded_or_truncated_to_the_context() {
+  let tok = tiny_tokenizer()
+  for context_len in [8, 128] {
+    let sample = SD.build_sample(
+      tok,
+      {instruction: 'add', response: 'ok'},
+      context_len,
+    )
+    assert_eq(sample.inputs.size(), context_len)
+    assert_eq(sample.targets.size(), context_len)
+    assert_eq(sample.mask.size(), context_len)
+  }
+  # Padding is never scored, so a truncated-to-8 sample cannot pick up mask
+  # from positions that do not exist.
+  let short = SD.build_sample(tok, {instruction: 'add', response: 'ok'}, 8)
+  assert_true(short.mask.sum() <= 8.0)
+}

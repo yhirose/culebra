@@ -1,0 +1,56 @@
+# Cross-entropy that ignores some of its targets.
+#
+# Fine-tuning on instruction/response pairs trains the model to write the
+# response, not to write the prompt back. Both are in the same sequence, so
+# the distinction has to live in the loss: the prompt positions get a mask
+# of 0 and contribute nothing, to the value or to the gradient.
+#
+# dezero's `SoftmaxCrossEntropy` (functions.cul) has no mask, and dezero is
+# finished, so this is the book's own version rather than an addition to it.
+# The structure is the same -- softmax and cross-entropy fused into one
+# Function so backward is the closed-form `(softmax(x) - onehot) / N` rather
+# than composed sub-gradients.
+
+import dz from '../../dezero/dezero/core.cul'
+
+class MaskedSoftmaxCrossEntropy {
+  generation = 0
+  inputs = nil
+  output = nil
+  seen = -1
+
+  # `t` is one Long class id per row; `mask` is one 0.0/1.0 Float per row.
+  new(t, mask) {
+    self.t = t
+    self.mask = mask
+  }
+
+  forward(x) {
+    let probs = x.softmax()
+    self.probs = probs
+    let n = x.shape()[0]
+    let c = x.shape()[1]
+    let keep = Tensor.from(self.mask).reshape([n, 1])
+    self.keep = keep
+    # Averaging over the kept rows, not all of them, keeps the scale
+    # comparable with the unmasked loss.
+    self.kept = Math.max(1.0, self.mask.sum())
+    let onehot = Tensor.scatter_to_axis(Tensor.from(self.t), Tensor.ones(n), c)
+    self.onehot = onehot
+    let picked = (onehot * probs.clamp(1.0e-15, 1.0).log())
+      .sum(1)
+      .reshape([n, 1])
+    (picked * keep).sum(0).reshape([1]) * (-1.0 / self.kept)
+  }
+
+  backward(gy) {
+    let diff = (self.probs - self.onehot) * self.keep * (1.0 / self.kept)
+    dz.as_variable(diff) * gy
+  }
+}
+
+fn masked_softmax_cross_entropy(x, t, mask) {
+  dz.apply1(MaskedSoftmaxCrossEntropy(t, mask), x)
+}
+
+export {masked_softmax_cross_entropy, MaskedSoftmaxCrossEntropy}

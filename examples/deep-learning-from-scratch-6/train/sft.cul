@@ -1,0 +1,98 @@
+# Supervised fine-tuning: teach the pretrained model to answer, not continue.
+#
+#   culebra train/sft.cul
+#   culebra train/sft.cul --full max_iters=500
+#
+# The whole idea is in the loss. An instruction and its response are one
+# sequence, so nothing in the input distinguishes "text the model was given"
+# from "text the model should have produced". A mask does: prompt positions
+# contribute nothing to the loss or to the gradient, which is upstream's
+# `ignore_index=-100` written out.
+#
+# Reads the checkpoint pretrain.cul wrote and writes its own beside it.
+
+import O from '../../dezero/dezero/optimizers.cul'
+import M from '../codebot/model.cul'
+import T from '../codebot/tokenizer.cul'
+import CK from '../common/checkpoint.cul'
+import P from '../common/paths.cul'
+import Plot from '../common/plot.cul'
+import LS from './losses.cul'
+import SD from './sft_data.cul'
+
+let args = Sys.argv
+let full = args.contains('--full')
+let from_dir = P.checkpoint(full ? 'codebot-full' : 'codebot-demo')
+
+if !FS.exists("{from_dir}/manifest.json") {
+  throw {
+    kind: "IOError",
+    message: "no pretrained checkpoint at {from_dir} -- run train/pretrain.cul{full ? ' --full' : ''} first",
+  }
+}
+
+let loaded = CK.load(from_dir)
+# The architecture comes from the checkpoint and is not up for negotiation
+# here; only the length of the fine-tuning run is.
+let cfg = loaded.config
+let iters_arg = args.find(|a| a.starts_with('max_iters='))
+let max_iters = iters_arg == nil ? 200 : to_long(iters_arg.split('=')[1])
+
+let model = M.GPT(cfg)
+CK.restore(model, loaded)
+inspect("pretrained: {from_dir} (step {loaded.step})")
+
+let rules_name = full ? 'merge_rules_1000.json' : 'merge_rules_sample.json'
+let tokenizer = T.load_tokenizer(P.data(rules_name))
+let pairs = JSON.parse(FS.read(P.data(full
+  ? 'tiny_codes_sft.json'
+  : 'tiny_codes_sft_sample.json')))
+inspect("{pairs.size()} instruction/response pairs")
+
+let samples = pairs.map(|item| SD.build_sample(
+  tokenizer,
+  item,
+  cfg.context_len,
+))
+let answered = samples.map(|s| s.mask.sum()).sum() / to_float(samples.size())
+inspect("average response length: {answered} of {cfg.context_len} positions")
+
+let opt = O.Adam(cfg.lr)
+opt.setup(model)
+
+let report_every = Math.max(1, max_iters / 20)
+mut history = []
+let t0 = Sys.time()
+
+for step in 1..max_iters + 1 {
+  let batch = range(cfg.batch_size)
+    .map(|_| samples[Random.int(0, samples.size())])
+    .collect()
+  let logits = model(
+    batch.flat_map(|s| s.inputs),
+    cfg.batch_size,
+    cfg.context_len,
+  )
+  let loss = LS.masked_softmax_cross_entropy(
+    logits,
+    batch.flat_map(|s| s.targets),
+    batch.flat_map(|s| s.mask),
+  )
+  model.cleargrads()
+  loss.backward()
+  opt.update()
+
+  if step % report_every == 0 || step == 1 {
+    Tensor.eval(loss.data)
+    let value = loss.data.to_array()[0]
+    history.push([to_float(step), value])
+    inspect("step {step}/{max_iters}  loss {value}")
+  }
+}
+
+let elapsed = Sys.time() - t0
+inspect("fine-tuned {max_iters} steps in {elapsed}s")
+Plot.plot_curves(history.map(|h| h[0]), [['sft loss', history.map(|h| h[1])]])
+
+let out_dir = P.checkpoint(full ? 'codebot-sft-full' : 'codebot-sft-demo')
+inspect("saved {CK.save(out_dir, cfg, max_iters, model.named_params())} parameters to {out_dir}")
