@@ -4,6 +4,7 @@
 # checked is structure, not learning.
 
 import dz from '../dezero/dezero/core.cul'
+import F from '../dezero/dezero/functions.cul'
 import M from './codebot/model.cul'
 import U from './codebot/utils.cul'
 import C from './common/config.cul'
@@ -124,6 +125,28 @@ fn logits_in_test_mode(model, cfg, ids, b, c) {
     rows = out.data.to_array()
   })
   rows
+}
+
+@test
+fn an_untrained_model_starts_at_ln_vocab() {
+  # `L.EmbedID` draws at unit variance and the unembedding is that table
+  # transposed, so without the 0.02 scale the logits start at a standard
+  # deviation of sqrt(embed_dim): the first loss was 30.6 rather than
+  # ln(1000), and at the book's width it sat pinned on the cross-entropy's
+  # 1e-15 clamp.
+  Random.seed(1)
+  let cfg = tiny()
+  let n = cfg.context_len
+  let model = M.GPT(cfg)
+  let ids = range(n).map(|_| Random.int(0, cfg.vocab_size)).collect()
+  let targets = range(n).map(|_| Random.int(0, cfg.vocab_size)).collect()
+  mut value = 0.0
+  dz.test_mode(fn () {
+    let loss = F.softmax_cross_entropy(model(ids, 1, n), targets)
+    Tensor.eval(loss.data)
+    value = loss.data.to_array()[0]
+  })
+  assert_close(value, Math.log(to_float(cfg.vocab_size)), 0.3)
 }
 
 @test

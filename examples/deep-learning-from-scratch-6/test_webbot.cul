@@ -67,6 +67,18 @@ fn one_kv_head_per_query_head_is_storybots_attention() {
 }
 
 @test
+fn one_kv_head_serves_consecutive_query_heads() {
+  # `n_kv_head == n_head` makes the group size 1, so the equivalence test
+  # above cannot see the order the groups are laid out in. This can:
+  # grouped means [kv0, kv0, kv1, kv1], not [kv0, kv1, kv0, kv1].
+  let attn = W.GroupedQueryAttention(4, 4, 2, 0.0, S.RoPE(1))
+  let two = dz.Variable(Tensor.from([10.0, 20.0]).reshape([2, 1, 1]))
+  let out = attn.expand(two, 1, 1)
+  Tensor.eval(out.data)
+  assert_eq(out.data.reshape([4]).to_array(), [10.0, 10.0, 20.0, 20.0])
+}
+
+@test
 fn fewer_kv_heads_means_fewer_parameters() {
   Random.seed(4)
   let full = W.parameter_count(W.GPT(tiny(4)))

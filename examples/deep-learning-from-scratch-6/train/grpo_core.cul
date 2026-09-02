@@ -1,0 +1,82 @@
+# The arithmetic GRPO is made of, separated from the loop that drives it.
+#
+# `train/grpo.cul` cannot be imported -- it throws on a missing checkpoint
+# before it defines anything -- so anything a test needs to reach lives
+# here instead of being copied into the test file. A copy would pass while
+# the real one was wrong, which is the failure mode this package has
+# already paid for once.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+
+# The group is its own baseline: an answer is reinforced or discouraged
+# relative to its siblings, and a group that scores flat says nothing.
+fn advantages(rewards) {
+  let mean = rewards.sum() / to_float(rewards.size())
+  rewards.map(|r| r - mean)
+}
+
+# One padded row per sampled completion: the ids, and a mask that is 1 only
+# at positions whose *target* is a token the model wrote.
+#
+# Position i predicts position i + 1, so the mask is `keep` shifted left by
+# one -- and the last position of the window has no target at all (its label
+# is a sentinel), so it is never scored. Both branches have to drop it.
+fn build_rows(group, context_len) {
+  group.map(fn (s) {
+    let ids = s.prompt_ids + s.completion_ids
+    let keep = repeat(s.prompt_ids.size(), 0.0) +
+      repeat(s.completion_ids.size(), 1.0)
+    let pad = context_len - ids.size()
+    pad >= 0
+      ? {
+        ids: ids + repeat(pad, 0),
+        mask: keep.slice(1, keep.size()) + repeat(pad + 1, 0.0),
+        advantage: s.advantage,
+      }
+      : {
+        ids: ids.slice(0, context_len),
+        mask: keep.slice(1, context_len) + [0.0],
+        advantage: s.advantage,
+      }
+  })
+}
+
+# The labels `token_probs` scores: each row's ids shifted one along, with a
+# sentinel in the last position that `build_rows` masks out.
+fn labels_of(rows) {
+  rows.flat_map(fn (r) {
+    r.ids.slice(1, r.ids.size()) + [0]
+  })
+}
+
+# Probability the model assigns to each token that actually follows.
+fn token_probs(model, cfg, rows, b) {
+  let probs = F.softmax(model(rows.flat_map(|r| r.ids), b, cfg.context_len), 1)
+  let onehot = dz.Variable(Tensor.scatter_to_axis(
+    Tensor.from(labels_of(rows)),
+    Tensor.ones(b * cfg.context_len),
+    cfg.vocab_size,
+  ))
+  dz.sum(dz.mul(probs, onehot), 1)
+}
+
+# PPO's clipped surrogate, negated into a loss. dezero has no elementwise
+# minimum; `a - relu(a - b)` is one, and it routes the gradient to whichever
+# side is smaller, which is what the clip is for.
+fn clipped_loss(ratio, advantage, mask, epsilon, b) {
+  let unclipped = dz.mul(ratio, advantage)
+  let clipped = dz.mul(F.clip(ratio, 1.0 - epsilon, 1.0 + epsilon), advantage)
+  let smaller = dz.sub(unclipped, F.relu(dz.sub(unclipped, clipped)))
+  dz.mul(dz.sum(dz.mul(smaller, mask), nil), -1.0 / to_float(b))
+}
+
+# Per-row values spread across that row's positions, as the flattened
+# `[b * context_len]` the loss works in.
+fn spread(rows, context_len, f) {
+  dz.Variable(Tensor
+    .from(rows.flat_map(|r| repeat(context_len, f(r))))
+    .reshape([rows.size() * context_len]))
+}
+
+export {advantages, build_rows, labels_of, token_probs, clipped_loss, spread}

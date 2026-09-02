@@ -8,7 +8,7 @@
 # far one step can move.
 
 import dz from '../dezero/dezero/core.cul'
-import F from '../dezero/dezero/functions.cul'
+import G from './train/grpo_core.cul'
 import R from './train/reward.cul'
 
 @test
@@ -34,37 +34,80 @@ fn an_answer_with_no_number_scores_zero() {
   assert_eq(R.reward(7, ''), 0.0)
 }
 
-fn advantages(rewards) {
-  let mean = rewards.sum() / to_float(rewards.size())
-  rewards.map(|r| r - mean)
-}
-
 @test
 fn a_group_that_all_scores_the_same_carries_no_signal() {
   # This is the property that makes the demo look idle: it is correct.
-  assert_eq(advantages([0.0, 0.0, 0.0, 0.0]), [0.0, 0.0, 0.0, 0.0])
-  assert_eq(advantages([1.0, 1.0, 1.0, 1.0]), [0.0, 0.0, 0.0, 0.0])
+  assert_eq(G.advantages([0.0, 0.0, 0.0, 0.0]), [0.0, 0.0, 0.0, 0.0])
+  assert_eq(G.advantages([1.0, 1.0, 1.0, 1.0]), [0.0, 0.0, 0.0, 0.0])
 }
 
 @test
 fn advantages_are_centred_on_the_group() {
-  let a = advantages([1.0, 0.0, 0.0, 0.0])
+  let a = G.advantages([1.0, 0.0, 0.0, 0.0])
   assert_close(a.sum(), 0.0, 1.0e-12)
   assert_true(a[0] > 0.0)
   assert_true(a[1] < 0.0)
 }
 
-# The surrogate as the training script computes it, over one scalar ratio.
+# One scalar ratio through the shipped loss. Writing the surrogate out
+# again here would be a copy that passes while the real one is wrong.
 fn surrogate(ratio_value, advantage, epsilon) {
   let ratio = dz.Variable(Tensor.from([ratio_value]))
-  let adv = dz.Variable(Tensor.from([advantage]))
-  let unclipped = dz.mul(ratio, adv)
-  let clipped = dz.mul(F.clip(ratio, 1.0 - epsilon, 1.0 + epsilon), adv)
-  let smaller = dz.sub(unclipped, F.relu(dz.sub(unclipped, clipped)))
-  let loss = dz.mul(smaller, -1.0)
+  let loss = G.clipped_loss(
+    ratio,
+    dz.Variable(Tensor.from([advantage])),
+    dz.Variable(Tensor.from([1.0])),
+    epsilon,
+    1,
+  )
   loss.backward()
   Tensor.eval(loss.data, ratio.grad.data)
   {loss: loss.data.to_array()[0], grad: ratio.grad.data.to_array()[0]}
+}
+
+# `build_rows` pads or truncates; either way the window's last position has
+# no target -- its label is a sentinel -- so it must never be scored.
+fn row_for(prompt, completion, context_len) {
+  G.build_rows(
+    [{prompt_ids: prompt, completion_ids: completion, advantage: 1.0}],
+    context_len,
+  )[0]
+}
+
+@test
+fn only_the_tokens_the_model_wrote_are_scored() {
+  let row = row_for([1, 2, 3], [4, 5], 8)
+  # Positions 0..1 predict the prompt, 2..3 predict the completion, the
+  # rest is padding.
+  assert_eq(row.mask, [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+  assert_eq(row.ids, [1, 2, 3, 4, 5, 0, 0, 0])
+}
+
+@test
+fn a_truncated_row_does_not_score_its_sentinel_label() {
+  # The completion runs past the window, so the row is cut. The label of
+  # the last position falls outside the window and comes back as the
+  # sentinel 0; scoring it would train the model towards a token it never
+  # wrote.
+  let row = row_for([1, 2, 3], [4, 5, 6, 7, 8, 9], 8)
+  assert_eq(row.ids, [1, 2, 3, 4, 5, 6, 7, 8])
+  assert_eq(row.mask, [0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0])
+  # Stated the other way: the mask is zero wherever the label is a sentinel.
+  let labels = G.labels_of([row])
+  for i in 0..8 {
+    assert_eq(row.mask[i], 0.0) if i == 7
+  }
+  assert_eq(labels[7], 0)
+}
+
+@test
+fn the_mask_and_the_labels_are_the_same_length_as_the_window() {
+  for context_len in [4, 8, 16] {
+    let row = row_for([1, 2], [3, 4, 5], context_len)
+    assert_eq(row.ids.size(), context_len)
+    assert_eq(row.mask.size(), context_len)
+    assert_eq(G.labels_of([row]).size(), context_len)
+  }
 }
 
 @test

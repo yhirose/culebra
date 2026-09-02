@@ -16,6 +16,7 @@
 import dz from '../../dezero/dezero/core.cul'
 import F from '../../dezero/dezero/functions.cul'
 import O from '../../dezero/dezero/optimizers.cul'
+import Opt from './optim.cul'
 import M from '../codebot/model.cul'
 import C from '../common/config.cul'
 import CK from '../common/checkpoint.cul'
@@ -43,8 +44,18 @@ Random.seed(0)
 let model = M.GPT(cfg)
 inspect("model: {M.parameter_count(model)} parameters")
 
-let opt = O.Adam(cfg.lr)
+# AdamW and a warmup-then-cosine schedule, which is what chapter 6 adds to
+# this loop. `--adam` runs chapter 3's optimizer instead, so the difference
+# is one flag rather than one edit.
+let plain = args.contains('--adam')
+let opt = plain ? O.Adam(cfg.lr) : Opt.AdamW(cfg.lr)
 opt.setup(model)
+# Upstream's grad_clip = 1.0. dezero's hook already clips by the global norm
+# over every parameter, so nothing here reimplements it.
+opt.add_hook(O.ClipGrad(1.0))
+inspect(plain
+  ? 'optimizer: Adam, fixed lr'
+  : 'optimizer: AdamW, warmup + cosine decay')
 
 # Held out for a loss the model never trained on. The corpus is one stream,
 # so the split is a slice rather than a shuffle.
@@ -82,6 +93,7 @@ let t0 = Sys.time()
 
 for step in 1..cfg.max_iters + 1 {
   let started = Sys.time()
+  Opt.set_lr(opt, step, cfg) if !plain
   let loss = batch_loss(model, train_tokens, cfg)
   model.cleargrads()
   loss.backward()
@@ -93,7 +105,7 @@ for step in 1..cfg.max_iters + 1 {
     let train = loss.data.to_array()[0]
     let valid = valid_loss(model, valid_tokens, cfg)
     history.push([to_float(step), train, valid])
-    inspect("step {step}/{cfg.max_iters}  train {train}  valid {valid}  {train_time / to_float(step) * 1000.0} ms/step")
+    inspect("step {step}/{cfg.max_iters}  train {train}  valid {valid}  lr {opt.alpha}  {train_time / to_float(step) * 1000.0} ms/step")
   }
 }
 

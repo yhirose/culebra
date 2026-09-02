@@ -258,6 +258,60 @@ fn a_checkpoint_that_half_matches_is_an_error() {
 
 # --- the KV cache -----------------------------------------------------------
 
+# A `[1, t, 1]` block whose value at position p is p, so a slice can be
+# read back as the positions it kept.
+fn positions_block(t) {
+  Tensor.from(range(t).map(|p| to_float(p)).collect()).reshape([1, t, 1])
+}
+
+fn positions_of(x) {
+  Tensor.eval(x.data)
+  x.data.reshape([x.data.shape()[1]]).to_array()
+}
+
+@test
+fn the_cache_evicts_the_oldest_positions_not_the_newest() {
+  # Keeping the oldest instead would leave `causal_bias(c, t)` believing
+  # the t keys it sees end at the current position when they do not, and
+  # nothing about the shapes would change.
+  let cache = U.KVCache(1, 4)
+  let block = dz.Variable(positions_block(6))
+  cache.put(0, block, block)
+  assert_eq(positions_of(cache.k[0]), [2.0, 3.0, 4.0, 5.0])
+  assert_eq(positions_of(cache.past(0, 1).k), [3.0, 4.0, 5.0])
+}
+
+@test
+fn the_feed_forward_gate_is_silu_and_not_the_identity() {
+  # `swiglu_hidden(12)` is 8, so with embed_dim 8 every matrix is square and
+  # the block can be set to compute silu(x) exactly: w1 the identity, w3
+  # zero with a bias of one, w2 the identity.
+  let e = 8
+  assert_eq(M.swiglu_hidden(12), e)
+  let ffn = M.FFN(e, 12, 0.0)
+  let eye = Tensor.from(range(e)
+    .map(|i| range(e).map(|j| i == j ? 1.0 : 0.0).collect())
+    .collect())
+  ffn.w1.w.data = eye
+  ffn.w1.b.data = Tensor.zeros(1, e)
+  ffn.w3.w.data = Tensor.zeros(e, e)
+  ffn.w3.b.data = Tensor.ones(1, e)
+  ffn.w2.w.data = eye
+  ffn.w2.b.data = Tensor.zeros(1, e)
+
+  let xs = [-3.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 4.0]
+  mut got = nil
+  dz.test_mode(fn () {
+    let out = ffn(dz.Variable(Tensor.from([xs])))
+    Tensor.eval(out.data)
+    got = out.data.to_array()[0]
+  })
+  for i in 0..e {
+    # A plain bilinear GLU -- the gate without SiLU -- would return xs[i].
+    assert_close(got[i], xs[i] / (1.0 + Math.exp(-xs[i])), 1.0e-5)
+  }
+}
+
 @test
 fn the_cache_generates_exactly_what_the_full_recompute_does() {
   Random.seed(9)

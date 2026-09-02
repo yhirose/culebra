@@ -17,7 +17,6 @@
 # Reads the SFT checkpoint and writes its own beside it.
 
 import dz from '../../dezero/dezero/core.cul'
-import F from '../../dezero/dezero/functions.cul'
 import O from '../../dezero/dezero/optimizers.cul'
 import M from '../codebot/model.cul'
 import U from '../codebot/utils.cul'
@@ -25,6 +24,7 @@ import T from '../codebot/tokenizer.cul'
 import CK from '../common/checkpoint.cul'
 import P from '../common/paths.cul'
 import Plot from '../common/plot.cul'
+import G from './grpo_core.cul'
 import R from './reward.cul'
 import SD from './sft_data.cul'
 
@@ -84,54 +84,15 @@ fn sample_group(model, tokenizer, task, group_size, max_new, cfg) {
     task.answer,
     tokenizer.decode(ids),
   ))
-  let mean = rewards.sum() / to_float(group_size)
+  let adv = G.advantages(rewards)
   range(group_size)
     .map(|i| {
       prompt_ids: prompt_ids,
       completion_ids: completions[i],
       reward: rewards[i],
-      advantage: rewards[i] - mean,
+      advantage: adv[i],
     })
     .collect()
-}
-
-# Probability the model assigns to each token that actually follows.
-# Position i predicts position i + 1, so the last position has no target and
-# the mask is shifted with the labels.
-fn token_probs(model, cfg, rows, b) {
-  let logits = model(rows.flat_map(|r| r.ids), b, cfg.context_len)
-  let probs = F.softmax(logits, 1)
-  let labels = rows.flat_map(fn (r) {
-    r.ids.slice(1, r.ids.size()) + [0]
-  })
-  let onehot = dz.Variable(Tensor.scatter_to_axis(
-    Tensor.from(labels),
-    Tensor.ones(b * cfg.context_len),
-    cfg.vocab_size,
-  ))
-  dz.sum(dz.mul(probs, onehot), 1)
-}
-
-# One padded row per sampled completion: the ids, and a mask that is 1 only
-# where the model wrote something.
-fn build_rows(group, context_len) {
-  group.map(fn (s) {
-    let ids = s.prompt_ids + s.completion_ids
-    let keep = repeat(s.prompt_ids.size(), 0.0) +
-      repeat(s.completion_ids.size(), 1.0)
-    let pad = context_len - ids.size()
-    pad >= 0
-      ? {
-        ids: ids + repeat(pad, 0),
-        mask: keep.slice(1, keep.size()) + repeat(pad + 1, 0.0),
-        advantage: s.advantage,
-      }
-      : {
-        ids: ids.slice(0, context_len),
-        mask: keep.slice(1, context_len + 1),
-        advantage: s.advantage,
-      }
-  })
 }
 
 let opt = O.Adam(lr)
@@ -166,11 +127,9 @@ for step in 1..max_iters + 1 {
   let informative = groups
     .filter(|g| g.map(|s| s.reward).max() > g.map(|s| s.reward).min())
     .size()
-  let rows = build_rows(group, cfg.context_len)
+  let rows = G.build_rows(group, cfg.context_len)
   let b = rows.size()
-  let advantages = dz.Variable(Tensor
-    .from(rows.flat_map(|r| repeat(cfg.context_len, r.advantage)))
-    .reshape([b * cfg.context_len]))
+  let advantage = G.spread(rows, cfg.context_len, |r| r.advantage)
   let mask = dz.Variable(Tensor
     .from(rows.flat_map(|r| r.mask))
     .reshape([b * cfg.context_len]))
@@ -178,26 +137,16 @@ for step in 1..max_iters + 1 {
   mut old_p = nil
   dz.test_mode(fn () {
     dz.no_grad(fn () {
-      old_p = token_probs(old_model, cfg, rows, b)
+      old_p = G.token_probs(old_model, cfg, rows, b)
       Tensor.eval(old_p.data)
     })
   })
 
   mut loss = nil
   dz.test_mode(fn () {
-    let p = token_probs(model, cfg, rows, b)
+    let p = G.token_probs(model, cfg, rows, b)
     let ratio = dz.div(p, dz.add(old_p.data, 1.0e-8))
-    let unclipped = dz.mul(ratio, advantages)
-    let clipped = dz.mul(
-      F.clip(ratio, 1.0 - epsilon, 1.0 + epsilon),
-      advantages,
-    )
-    # dezero has no elementwise minimum; `a - relu(a - b)` is one, and it
-    # sends the gradient to whichever side is smaller, which is what the
-    # clipped objective is for.
-    let smaller = dz.sub(unclipped, F.relu(dz.sub(unclipped, clipped)))
-    let objective = dz.mul(smaller, mask)
-    loss = dz.mul(dz.sum(objective, nil), -1.0 / to_float(b))
+    loss = G.clipped_loss(ratio, advantage, mask, epsilon, b)
   })
 
   model.cleargrads()

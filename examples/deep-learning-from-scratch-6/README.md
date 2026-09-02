@@ -269,7 +269,9 @@ file is here.
   `storybot/model.py` and edits the attention; here the file is the delta, so
   a reader sees grouped-query attention and nothing else. With
   `n_kv_head == n_head` its logits are bit-identical to storybot's, which a
-  test asserts.
+  test asserts -- though that check cannot see the *order* the groups are
+  laid out in, because at one query head per group there is no order to
+  see, so a second test pins that separately.
 - **RoPE is written out rather than calling `Tensor.rope`.** The native one
   uses the half-split convention where the book uses interleaved. The two
   are the same rotation under a fixed permutation of the head dimension, and

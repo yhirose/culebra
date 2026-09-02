@@ -66,6 +66,33 @@ fn a_masked_row_gets_exactly_no_gradient() {
 }
 
 @test
+fn a_kept_rows_gradient_is_the_unmasked_one_exactly() {
+  # The zero-gradient test above passes even if the backward has the wrong
+  # sign or the wrong scale, and a sign flip would train the model away
+  # from its answers. Pin the kept rows against dezero's own gradient.
+  let f = fixture()
+  let mask = [1.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+  let kept = [0, 2, 5]
+
+  let v = dz.Variable(f.logits)
+  LS.masked_softmax_cross_entropy(v, f.targets, mask).backward()
+  Tensor.eval(v.grad.data)
+  let got = v.grad.data.to_array()
+
+  let rows = Tensor.concat(kept.map(|i| f.logits.narrow([0, i, i + 1])))
+  let w = dz.Variable(rows)
+  F.softmax_cross_entropy(w, kept.map(|i| f.targets[i])).backward()
+  Tensor.eval(w.grad.data)
+  let want = w.grad.data.to_array()
+
+  for r, i in kept.enumerate() {
+    for j in 0..5 {
+      assert_eq(got[i][j], want[r][j])
+    }
+  }
+}
+
+@test
 fn a_fully_masked_batch_does_not_divide_by_zero() {
   let f = fixture()
   let loss = LS.masked_softmax_cross_entropy(
