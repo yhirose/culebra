@@ -8826,7 +8826,9 @@ inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
   cls->refcount = 1;
   cls->fn_ptr = reinterpret_cast<void*>(_jit_ns_method_trampoline);
   cls->n_captures = 1;
-  cls->captures = new JitCell*[1];
+  // calloc, not new[]: the release path frees this with std::free, the
+  // way culebra_runtime_closure_new's does.
+  cls->captures = static_cast<JitCell**>(std::calloc(1, sizeof(JitCell*)));
   cls->captures[0] = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(m));
   cls->arity = m->arity < 0 ? JIT_VARIADIC_ARITY : static_cast<size_t>(m->arity);
