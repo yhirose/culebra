@@ -13,36 +13,18 @@ APIのリファレンスは[`stdlib.ja.md` §34](../stdlib.ja.md#34-peg)にあ�
 
 ## PEGとは
 
-PEG（parsing expression grammar）は、テキストの形を書き表した規則の
-集まりです。規則とテキストをエンジンに渡すと、何にどう一致したかを木に
-して返してくれます。
-
-```culebra
-let g = `
-  Setting <- Name '=' Number
-  Name    <- < [a-z]+ >
-  Number  <- < [0-9]+ >
-  %whitespace <- [ ]*
-`
-let n = Peg.parse(g, 'width = 320')
-
-inspect(n.name)                     # => 'Setting'
-inspect(n.nodes[0].token)           # => 'width'
-inspect(to_long(n.nodes[1].token))  # => 320
-```
-
-`名前 <- 式`が規則の定義です。式は、リテラル（`'='`）、文字クラス
-（`[a-z]`）、並び（続けて書く）、順序付き選択（`a / b`）、繰り返し
-（`*` `+` `?`）、先読み（`!a` `&a`）を組み合わせて作ります。`< ... >`は
-「この範囲の文字列をノードに残す」という印で、`%whitespace`はトークンの
-あいだで読み飛ばしてよいものを指定します。記法はだいたいこれで、残りは
-[`stdlib.ja.md` §34](../stdlib.ja.md#34-peg)にあります。
-
-これまでに見たことのある文法と違う点が2つあります。1つは、選択に
-**順序がある**ことです。`a / b`は`a`が一致した時点で`a`に決めるので、
-曖昧さを解消する必要がなく、字句解析を別に走らせる必要もありません。
-もう1つは、規則が自分自身を参照できることです。このガイドの残りは、
-すべてここから出てきます。
+PEG（parsing expression grammar）は、構文解析器を得るために書く文法
+です。かつてYACCに渡していた仕事だと思ってください。実務で効いてくる
+違いは3つあります。字句解析器を別に用意しなくてよいこと（PEGは
+トークンと同じように文字も記述できるので、字句解析も規則として書けます）。
+ビルド手順が要らないこと（`Peg.compile`が実行時に文法を読み込むので、
+文法はプログラムの中のただの文字列です）。そして選択に**順序がある**
+こと — `a / b`は`a`が一致した時点で`a`に決めるので、shift/reduce
+conflictが報告されて解決を迫られる、ということが起きません。つまりPEGは
+作りからして曖昧さを持たず、書いた順に上から読めます。素のPEGでは書け
+ない左再帰も、ここでは使えます。エンジンが
+[cpp-peglib](https://github.com/yhirose/cpp-peglib)（culebra自身の
+フロントエンドが載っているのと同じパーサ）で、対応しているからです。
 
 ## なぜ文法を書くのでしょうか
 
@@ -281,12 +263,13 @@ for line in lines.lines() {
 規則の形そのものから出さなければならないからです。
 
 定石は、優先順位1段につき規則を1つ作り、結合の弱いほうが強いほうを参照
-する形にすることです。
+する形にすることです。そしてその各規則は左再帰になります。教科書に載って
+いるとおりの書き方です。
 
 ```culebra
 let calc = `
-  Expr   <- Term (AddOp Term)*
-  Term   <- Factor (MulOp Factor)*
+  Expr   <- Expr AddOp Term / Term
+  Term   <- Term MulOp Factor / Factor
   Factor <- Number / '(' Expr ')'
   AddOp  <- < '+' / '-' >
   MulOp  <- < '*' / '/' >
@@ -297,35 +280,31 @@ let calc = `
 fn eval(n) {
   match n {
     {name: 'Number', token} => to_long(token),
-    {nodes} => {
-      mut acc = eval(nodes[0])
-      mut i = 1
-      while i < nodes.size() {
-        let r = eval(nodes[i + 1])
-        acc = match nodes[i].token {
-          '+' => acc + r,
-          '-' => acc - r,
-          '*' => acc * r,
-          _ => acc / r,
-        }
-        i += 2
-      }
-      acc
+    {nodes: [a, op, b]} => match op.token {
+      '+' => eval(a) + eval(b),
+      '-' => eval(a) - eval(b),
+      '*' => eval(a) * eval(b),
+      _ => eval(a) / eval(b),
     },
+    _ => throw "unexpected {n.name}",
   }
 }
 
 inspect(eval(Peg.parse(calc, '1 + 2 * 3')))    # => 7
 inspect(eval(Peg.parse(calc, '(1 + 2) * 3')))  # => 9
+inspect(eval(Peg.parse(calc, '1 - 2 - 3')))    # => -4
 ```
 
-`Expr <- Term (AddOp Term)*`が作るのは、`[Term, op, Term, op, Term]`と
-いう平らな並びです。評価器が2つ飛ばしで歩いて左から畳んでいるのは、
-そのためです。
+`Expr <- Expr AddOp Term / Term`は、そのまま読める形をしています。式とは、
+式と演算子と項が並んだものか、あるいは項1つである、と言っています。
+返ってくる木は**左**に入れ子になるので、`1 - 2 - 3`は`2`ではなく`-4`に
+なります。ノードはどれも子3つの組なので、評価器は分岐1つで済みます。
 
-この結合方向は、実は自分で選んでいます。規則を`Term AddOp Expr`と書けば
-右に入れ子になり、`1 - 2 - 3`の答えが`-4`ではなく`2`になります。意図した
-ほうを選んでください。
+もう1つの書き方が`Expr <- Term (AddOp Term)*`です。左再帰を避ける代わりに、
+`[Term, op, Term, op, Term]`という平らな並びが返ってくるので、自分で
+畳みながら結合方向を決めることになります。平らな並びが欲しいときは
+こちらを使ってください。そうでなければ、左再帰の形のほうが文法も評価器も
+短く済みます。
 
 `%whitespace`は、文法を読める形に保ってくれる唯一の糖衣構文です。これが
 ないと、どの規則にも空白の入りうる位置を書き並べることになってしまいます。
@@ -338,8 +317,8 @@ inspect(eval(Peg.parse(calc, '(1 + 2) * 3')))  # => 9
 
 ```culebra
 let calc = `
-  Expr   <- Term (AddOp Term)*
-  Term   <- Factor (MulOp Factor)*
+  Expr   <- Expr AddOp Term / Term
+  Term   <- Term MulOp Factor / Factor
   Factor <- Number / '(' Expr ')'
   AddOp  <- < '+' / '-' >
   MulOp  <- < '*' / '/' >
@@ -347,31 +326,28 @@ let calc = `
   %whitespace <- [ \t\r\n]*
 `
 
-fn fold(sv) {
-  mut acc = sv.values[0]
-  mut i = 1
-  while i < sv.values.size() {
-    let r = sv.values[i + 1]
-    acc = match sv.values[i] {
-      '+' => acc + r,
-      '-' => acc - r,
-      '*' => acc * r,
-      _ => acc / r,
-    }
-    i += 2
+fn apply(sv) {
+  if sv.values.size() < 3 {
+    return sv.values[0]
   }
-  acc
+  match sv.values[1] {
+    '+' => sv.values[0] + sv.values[2],
+    '-' => sv.values[0] - sv.values[2],
+    '*' => sv.values[0] * sv.values[2],
+    _ => sv.values[0] / sv.values[2],
+  }
 }
 
 let actions = {
   Number: |sv| to_long(sv.token),
   AddOp: |sv| sv.token,
   MulOp: |sv| sv.token,
-  Expr: fold,
-  Term: fold,
+  Expr: apply,
+  Term: apply,
 }
 
 inspect(Peg.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
+inspect(Peg.parse(calc, '8 / 4 / 2', actions: actions))      # => 1
 ```
 
 使い分けの目安はこうです。入力を調べたい、変換したい、何度も歩きたい
@@ -403,9 +379,9 @@ let grammar = `
   ExprStmt <- Expr ';'                           { no_ast_opt }
 
   Expr     <- Cmp
-  Cmp      <- Add (CmpOp Add)?
-  Add      <- Mul (AddOp Mul)*
-  Mul      <- Unary (MulOp Unary)*
+  Cmp      <- Add CmpOp Add / Add
+  Add      <- Add AddOp Mul / Mul
+  Mul      <- Mul MulOp Unary / Unary
   Unary    <- Neg / Primary
   Neg      <- '-' Unary                          { no_ast_opt }
   Primary  <- Call / Number / Ident / '(' Expr ')'
@@ -473,19 +449,8 @@ fn run(src) {
       {name: 'Ident', token} => lookup(scopes, token),
       {name: 'Neg', nodes: [x]} => -eval(x, scopes),
       {name: 'Call', nodes: [f, args]} => call(f.token, args.nodes.map(|arg| eval(arg, scopes))),
-      {name: 'Cmp', nodes: [a, op, b]} => binop(op.token, eval(a, scopes), eval(b, scopes)),
-      {nodes} => fold(nodes, scopes),
+      {nodes: [a, op, b]} => binop(op.token, eval(a, scopes), eval(b, scopes)),
     }
-  }
-
-  fn fold(nodes, scopes) {
-    mut acc = eval(nodes[0], scopes)
-    mut i = 1
-    while i < nodes.size() {
-      acc = binop(nodes[i].token, acc, eval(nodes[i + 1], scopes))
-      i += 2
-    }
-    acc
   }
 
   fn call(name, args) {
@@ -610,10 +575,13 @@ inspect(run('
 
 最後に、先に知っておくと半日を節約できるものを並べておきます。
 
-**左再帰は書けません。** `Expr <- Expr '+' Term`は停止しません。何も消費
-しないうちに`Expr`をもう一度試してしまうからです。代わりに繰り返しで書いて
-（`Expr <- Term ('+' Term)*`）、§2のように自分で畳んでください。yacc系の
-文法から移ってくると、この習慣だけは通用しません。
+**左再帰は書けます。ただし素のPEGでは書けないことになっています。**
+`Expr <- Expr AddOp Term / Term`はここでは問題なく動きますし、別の規則を
+経由した間接的な左再帰も通ります。木も、望みどおり左に入れ子になります
+（§2）。ただしこれは、cpp-peglibが教科書的なPEGを超えて対応している
+部分です。素のPEGでは、何も消費しないまま自分に戻る規則はそのまま
+ループします。他のPEGライブラリへ持っていく文法なら、
+`Expr <- Term (AddOp Term)*`の形に書き直す必要があるかもしれません。
 
 **順序付き選択は「どちらか」ではありません。** `'a' / 'ab'`は`ab`に決して
 一致しません。長い選択肢と長いリテラルを先に置いてください。

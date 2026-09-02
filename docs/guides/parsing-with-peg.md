@@ -11,36 +11,18 @@ what each call does.
 
 ## What a PEG is
 
-A PEG — a *parsing expression grammar* — is a set of rules describing the
-shape of a piece of text. You hand the rules and the text to the engine,
-and it hands back a tree of what matched.
-
-```culebra
-let g = `
-  Setting <- Name '=' Number
-  Name    <- < [a-z]+ >
-  Number  <- < [0-9]+ >
-  %whitespace <- [ ]*
-`
-let n = Peg.parse(g, 'width = 320')
-
-inspect(n.name)                     # => 'Setting'
-inspect(n.nodes[0].token)           # => 'width'
-inspect(to_long(n.nodes[1].token))  # => 320
-```
-
-`Name <- expression` defines a rule. An expression is built from literals
-(`'='`), character classes (`[a-z]`), sequence (one thing after another),
-ordered choice (`a / b`), repetition (`*` `+` `?`) and lookahead (`!a`
-`&a`). `< ... >` marks the span whose text you want kept on the node, and
-`%whitespace` says what may be skipped between tokens. That is most of the
-notation; [`stdlib.md` §34](../stdlib.md#34-peg) has the rest.
-
-Two things set it apart from grammars you may have met before. Choice is
-**ordered**: `a / b` commits to `a` the moment `a` matches, so there is
-no ambiguity to resolve and no separate tokenizer pass to run first. And
-a rule may refer to itself — which is where everything else in this guide
-comes from.
+A PEG — a *parsing expression grammar* — is a grammar you write to get a
+parser, the job you would once have handed to YACC. Three differences
+matter in practice. There is no separate lexer: a PEG describes characters
+as readily as tokens, so the tokenizer is just more rules. There is no
+build step: `Peg.compile` loads a grammar at run time, and the grammar is
+an ordinary string in your program. And choice is **ordered** — `a / b`
+commits to `a` the moment `a` matches, rather than reporting a
+shift/reduce conflict for you to resolve — which means a PEG is
+unambiguous by construction and reads top to bottom in the order it is
+written. Left recursion, which plain PEG cannot express, works here: the
+engine is [cpp-peglib](https://github.com/yhirose/cpp-peglib), the same
+parser culebra's own front end runs on, and it supports it.
 
 ## Why a grammar
 
@@ -269,12 +251,13 @@ reported.
 Four-function arithmetic is the smallest job that needs real grammar
 design, because precedence has to come from the shape of the rules. The
 convention is one rule per precedence level, the looser binding one
-referring to the tighter one:
+referring to the tighter one — and each of those rules is left-recursive,
+which is exactly how the textbook writes it:
 
 ```culebra
 let calc = `
-  Expr   <- Term (AddOp Term)*
-  Term   <- Factor (MulOp Factor)*
+  Expr   <- Expr AddOp Term / Term
+  Term   <- Term MulOp Factor / Factor
   Factor <- Number / '(' Expr ')'
   AddOp  <- < '+' / '-' >
   MulOp  <- < '*' / '/' >
@@ -285,33 +268,31 @@ let calc = `
 fn eval(n) {
   match n {
     {name: 'Number', token} => to_long(token),
-    {nodes} => {
-      mut acc = eval(nodes[0])
-      mut i = 1
-      while i < nodes.size() {
-        let r = eval(nodes[i + 1])
-        acc = match nodes[i].token {
-          '+' => acc + r,
-          '-' => acc - r,
-          '*' => acc * r,
-          _ => acc / r,
-        }
-        i += 2
-      }
-      acc
+    {nodes: [a, op, b]} => match op.token {
+      '+' => eval(a) + eval(b),
+      '-' => eval(a) - eval(b),
+      '*' => eval(a) * eval(b),
+      _ => eval(a) / eval(b),
     },
+    _ => throw "unexpected {n.name}",
   }
 }
 
 inspect(eval(Peg.parse(calc, '1 + 2 * 3')))    # => 7
 inspect(eval(Peg.parse(calc, '(1 + 2) * 3')))  # => 9
+inspect(eval(Peg.parse(calc, '1 - 2 - 3')))    # => -4
 ```
 
-`Expr <- Term (AddOp Term)*` gives a flat list — `[Term, op, Term, op,
-Term]` — which is why the evaluator walks it in steps of two and folds
-left. That associativity is a choice you are making: writing the rule as
-`Term AddOp Expr` instead would nest to the right, and `1 - 2 - 3` would
-come out `2` rather than `-4`.
+`Expr <- Expr AddOp Term / Term` says what it means: an expression is an
+expression, an operator and a term — or just a term. The tree comes back
+nested to the *left*, which is why `1 - 2 - 3` is `-4` and not `2`, and
+each node is a plain three-child triple, so the evaluator is one arm.
+
+The alternative shape is `Expr <- Term (AddOp Term)*`, which avoids the
+left recursion and hands you a flat list — `[Term, op, Term, op, Term]` —
+that you fold yourself, choosing the associativity as you go. Reach for
+that when you actually want the flat list; otherwise the recursive form
+is shorter at both ends.
 
 `%whitespace` is the one piece of syntax sugar that keeps a grammar
 readable. Without it every rule has to spell out where spaces may appear.
@@ -324,8 +305,8 @@ returns what that rule contributes to its parent.
 
 ```culebra
 let calc = `
-  Expr   <- Term (AddOp Term)*
-  Term   <- Factor (MulOp Factor)*
+  Expr   <- Expr AddOp Term / Term
+  Term   <- Term MulOp Factor / Factor
   Factor <- Number / '(' Expr ')'
   AddOp  <- < '+' / '-' >
   MulOp  <- < '*' / '/' >
@@ -333,31 +314,28 @@ let calc = `
   %whitespace <- [ \t\r\n]*
 `
 
-fn fold(sv) {
-  mut acc = sv.values[0]
-  mut i = 1
-  while i < sv.values.size() {
-    let r = sv.values[i + 1]
-    acc = match sv.values[i] {
-      '+' => acc + r,
-      '-' => acc - r,
-      '*' => acc * r,
-      _ => acc / r,
-    }
-    i += 2
+fn apply(sv) {
+  if sv.values.size() < 3 {
+    return sv.values[0]
   }
-  acc
+  match sv.values[1] {
+    '+' => sv.values[0] + sv.values[2],
+    '-' => sv.values[0] - sv.values[2],
+    '*' => sv.values[0] * sv.values[2],
+    _ => sv.values[0] / sv.values[2],
+  }
 }
 
 let actions = {
   Number: |sv| to_long(sv.token),
   AddOp: |sv| sv.token,
   MulOp: |sv| sv.token,
-  Expr: fold,
-  Term: fold,
+  Expr: apply,
+  Term: apply,
 }
 
 inspect(Peg.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
+inspect(Peg.parse(calc, '8 / 4 / 2', actions: actions))      # => 1
 ```
 
 Use the tree when you want to inspect, transform, or walk the input more
@@ -387,9 +365,9 @@ let grammar = `
   ExprStmt <- Expr ';'                           { no_ast_opt }
 
   Expr     <- Cmp
-  Cmp      <- Add (CmpOp Add)?
-  Add      <- Mul (AddOp Mul)*
-  Mul      <- Unary (MulOp Unary)*
+  Cmp      <- Add CmpOp Add / Add
+  Add      <- Add AddOp Mul / Mul
+  Mul      <- Mul MulOp Unary / Unary
   Unary    <- Neg / Primary
   Neg      <- '-' Unary                          { no_ast_opt }
   Primary  <- Call / Number / Ident / '(' Expr ')'
@@ -457,19 +435,8 @@ fn run(src) {
       {name: 'Ident', token} => lookup(scopes, token),
       {name: 'Neg', nodes: [x]} => -eval(x, scopes),
       {name: 'Call', nodes: [f, args]} => call(f.token, args.nodes.map(|arg| eval(arg, scopes))),
-      {name: 'Cmp', nodes: [a, op, b]} => binop(op.token, eval(a, scopes), eval(b, scopes)),
-      {nodes} => fold(nodes, scopes),
+      {nodes: [a, op, b]} => binop(op.token, eval(a, scopes), eval(b, scopes)),
     }
-  }
-
-  fn fold(nodes, scopes) {
-    mut acc = eval(nodes[0], scopes)
-    mut i = 1
-    while i < nodes.size() {
-      acc = binop(nodes[i].token, acc, eval(nodes[i + 1], scopes))
-      i += 2
-    }
-    acc
   }
 
   fn call(name, args) {
@@ -590,11 +557,13 @@ first-class functions need `call` to take a value instead of a name.
 
 ## 4. Pitfalls
 
-**Left recursion is not allowed.** `Expr <- Expr '+' Term` never
-terminates, because the parser tries `Expr` again before consuming
-anything. Write repetition instead — `Expr <- Term ('+' Term)*` — and fold
-the list yourself, as in §2. This is the one habit that transfers badly
-from yacc-style grammars.
+**Left recursion works — but plain PEG says it should not.** `Expr <-
+Expr AddOp Term / Term` is fine here, both directly and through another
+rule, and it gives you the left-nested tree you want (§2). It is worth
+knowing that this is cpp-peglib going beyond textbook PEG, in which a
+rule that reaches itself without consuming anything simply loops: a
+grammar you carry to another PEG library may need rewriting as
+`Expr <- Term (AddOp Term)*`.
 
 **Ordered choice is not alternation.** `'a' / 'ab'` never matches `ab`.
 Put longer alternatives, and longer literals, first.
