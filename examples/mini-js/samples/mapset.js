@@ -47,3 +47,27 @@ show('but console is the host, not the language', ['log', 'warn', 'error', 'info
 // being a Map is a slot the constructor fills, not something the prototype says
 show('a foreign receiver', [thrown(() => Object.create(Map.prototype).size), thrown(() => Map.prototype.get.call({}, 'a')), thrown(() => Set.prototype.has.call({}, 1)), thrown(() => Map.prototype.forEach.call([], () => {}))]);
 show('and how it reads', (function () { try { Map.prototype.get.call({}, 'a'); return 'no throw'; } catch (e) { return e.message; } })());
+
+// keys of every kind, and the positions they keep as members come and go
+const ok1 = {};
+const ok2 = {};
+const ak = [1, 2];
+const mk = new Map();
+mk.set(ok1, 'a');
+mk.set(ok2, 'b');
+mk.set(ak, 'c');
+mk.set([1, 2], 'd');
+mk.set(NaN, 'n');
+mk.set(-0, 'z');
+mk.set('1', 's');
+mk.set(1, 'num');
+show('every key stands for itself', [mk.size, mk.get(ok1), mk.get(ok2), mk.get(ak), mk.get([1, 2]), mk.get(NaN), mk.get(0), mk.get('1'), mk.get(1)]);
+mk.delete(ok1);
+mk.delete(NaN);
+show('and the rest keep their places', [mk.size, mk.get(ok2), mk.get(ak), mk.get(1), [...mk.values()]]);
+show('a key is not marked by being one', [Object.keys(ok1), JSON.stringify(ok2), Object.keys(ak).length]);
+const gap = new Set([1, 2, 3, 4]);
+gap.delete(2);
+gap.add(5);
+gap.add(3);
+show('a set closes over the gap', [[...gap], gap.has(3), gap.has(2), gap.size]);

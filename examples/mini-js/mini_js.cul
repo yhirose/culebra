@@ -816,7 +816,7 @@ function __delete(o, k) {
     var key = __key(k);
     __objectremove(o, key);
     var h = o['\x01hide'];
-    if (__typeof(h) !== 'nil') __objectremove(h, key);
+    if (__typeof(h) !== 'nil' && __objecthas(h, key)) __objectremove(__own_hide(o), key);
   }
   return true;
 }
@@ -825,9 +825,27 @@ function __delete(o, k) {
 // length and prototype, an error's message), as against what a program
 // writes, which does. The value stays under its own key; what the object
 // carries is the set of keys enumeration passes over.
-function __hide(o, k) {
+//
+// Most objects that carry one carry the same one: every function hides the
+// same three names, every prototype the one. Those sets are made once and
+// shared, and an object that writes to the set it was handed gets a copy of
+// its own first (the shared ones are marked, so the test is a lookup).
+function __own_hide(o) {
   var h = o['\x01hide'];
-  if (__typeof(h) === 'nil') { h = {}; o['\x01hide'] = h; }
+  if (__typeof(h) === 'nil') { h = {}; o['\x01hide'] = h; return h; }
+  if (!__objecthas(h, '\x01shared')) return h;
+  var own = {};
+  var ks = __objectkeys(h);
+  var i = 0;
+  while (i < __len(ks)) {
+    if (ks[i] !== '\x01shared') own[ks[i]] = true;
+    i = i + 1;
+  }
+  o['\x01hide'] = own;
+  return own;
+}
+function __hide(o, k) {
+  var h = __own_hide(o);
   h[k] = true;
   return undefined;
 }
@@ -897,19 +915,22 @@ function __own_keys(o) {
 }
 
 // --- functions and calls -----------------------------------------------------
+let __ARROW_HIDE = { name: true, length: true, '\x01shared': true };
+let __FN_HIDE = { name: true, length: true, prototype: true, '\x01shared': true };
+let __PROTO_HIDE = { constructor: true, '\x01shared': true };
 function __mkfn(c, name, arrow, len) {
   var f = {};
   f['\x01fn'] = c;
   f.name = name;
-  f.length = __typeof(len) === 'nil' ? 0.0 : len;
-  var h = { name: true, length: true };
-  f['\x01hide'] = h;
-  if (!arrow) {
+  f.length = __argcount() > 3 ? len : 0.0;
+  if (arrow) {
+    f['\x01hide'] = __ARROW_HIDE;
+  } else {
     var p = {};
     p.constructor = f;
-    p['\x01hide'] = { constructor: true };
+    p['\x01hide'] = __PROTO_HIDE;
     f.prototype = p;
-    h.prototype = true;
+    f['\x01hide'] = __FN_HIDE;
   }
   return f;
 }
@@ -1240,7 +1261,7 @@ function __log_str(v) { return __typeof(v) === 'string' ? v : __inspect(v); }
 
 // --- the globals -------------------------------------------------------------
 function __init_globals() {
-  var G = {};
+  var G = __G;
   G.null = {};
   G.digits = {};
   G.digits['0'] = 0; G.digits['1'] = 1; G.digits['2'] = 2; G.digits['3'] = 3; G.digits['4'] = 4;
@@ -1270,7 +1291,6 @@ function __init_globals() {
   G.Number_proto['\x01proto'] = G.Object_proto;
   G.Boolean_proto = {};
   G.Boolean_proto['\x01proto'] = G.Object_proto;
-  __G = G;
   __init_errors(G);
   __init_object(G);
   __init_array(G);
@@ -1282,7 +1302,7 @@ function __init_globals() {
   __init_collections(G);
   __init_generators(G);
   __init_promise(G);
-  return G;
+  return undefined;
 }
 
 function __ctor(G, name, proto, c) {
@@ -2000,11 +2020,60 @@ function __same_zero(a, b) {
   if (__seq(a, b)) return true;
   return __typeof(a) === 'double' && __typeof(b) === 'double' && a !== a && b !== b;
 }
+// A Map or a Set carries a side table from a key's name to its position, so
+// a lookup is one read rather than a walk. A value that has no name -- an
+// array, whose only equal is itself -- is not in the table, and falls back
+// to the walk; it can never equal a value that does have one.
+let __OID = { n: 0 };
+function __coll_name(v) {
+  var t = __typeof(v);
+  if (t === 'string') return 's' + v;
+  if (t === 'double') return 'n' + __numstr(v);
+  if (t === 'object') {
+    var k = v['\x01ok'];
+    if (__typeof(k) === 'nil') {
+      k = 'o' + __numstr(__todouble(__OID.n));
+      __OID.n = __OID.n + 1;
+      v['\x01ok'] = k;
+    }
+    return k;
+  }
+  if (t === 'bool') return v ? 'b1' : 'b0';
+  if (t === 'nil') return 'u';
+  return undefined;
+}
 function __coll_find(t, k) {
+  var kk = __coll_name(k);
+  if (__typeof(kk) === 'nil') {
+    var ks = t['\x01keys'];
+    var i = 0;
+    while (i < __len(ks)) { if (__same_zero(ks[i], k)) return i; i = i + 1; }
+    return -1;
+  }
+  var at = t['\x01idx'][kk];
+  return __typeof(at) === 'nil' ? -1 : at;
+}
+function __coll_push(t, k) {
   var ks = t['\x01keys'];
-  var i = 0;
-  while (i < __len(ks)) { if (__same_zero(ks[i], k)) return i; i = i + 1; }
-  return -1;
+  __arraypush(ks, k);
+  var kk = __coll_name(k);
+  if (__typeof(kk) !== 'nil') t['\x01idx'][kk] = __len(ks) - 1;
+  return undefined;
+}
+// Drop the key at position i: every later position shifts down by one, in
+// the array and in the side table alike.
+function __coll_drop(t, i) {
+  var ix = t['\x01idx'];
+  var kk = __coll_name(t['\x01keys'][i]);
+  if (__typeof(kk) !== 'nil') __objectremove(ix, kk);
+  var names = __objectkeys(ix);
+  var j = 0;
+  while (j < __len(names)) {
+    if (ix[names[j]] > i) ix[names[j]] = ix[names[j]] - 1;
+    j = j + 1;
+  }
+  __coll_remove(t['\x01keys'], i);
+  return undefined;
 }
 function __coll_remove(arr, i) {
   var j = i;
@@ -2034,6 +2103,7 @@ function __init_collections(G) {
   var M = __ctor(G, 'Map', {}, function (t, init) {
     t['\x01keys'] = [];
     t['\x01vals'] = [];
+    t['\x01idx'] = {};
     if (!__isnullish(init)) {
       var it = __iter(init);
       var r = __iter_step(it);
@@ -2050,18 +2120,18 @@ function __init_collections(G) {
   __def(MP, 'get', function (t, k) { __demand(t, '\x01keys', 'Map.prototype', 'get'); var i = __coll_find(t, k); return i < 0 ? undefined : t['\x01vals'][i]; });
   __def(MP, 'set', function (t, k, v) { __demand(t, '\x01keys', 'Map.prototype', 'set');
     var i = __coll_find(t, k);
-    if (i < 0) { __arraypush(t['\x01keys'], k); __arraypush(t['\x01vals'], v); } else { t['\x01vals'][i] = v; }
+    if (i < 0) { __coll_push(t, k); __arraypush(t['\x01vals'], v); } else { t['\x01vals'][i] = v; }
     return t;
   });
   __def(MP, 'has', function (t, k) { __demand(t, '\x01keys', 'Map.prototype', 'has'); return __coll_find(t, k) >= 0; });
   __def(MP, 'delete', function (t, k) { __demand(t, '\x01keys', 'Map.prototype', 'delete');
     var i = __coll_find(t, k);
     if (i < 0) return false;
-    __coll_remove(t['\x01keys'], i);
+    __coll_drop(t, i);
     __coll_remove(t['\x01vals'], i);
     return true;
   });
-  __def(MP, 'clear', function (t) { __demand(t, '\x01keys', 'Map.prototype', 'clear'); t['\x01keys'] = []; t['\x01vals'] = []; return undefined; });
+  __def(MP, 'clear', function (t) { __demand(t, '\x01keys', 'Map.prototype', 'clear'); t['\x01keys'] = []; t['\x01vals'] = []; t['\x01idx'] = {}; return undefined; });
   __defa(MP, 'get', 'size', function (t) { __demand(t, '\x01keys', 'get Map.prototype', 'size'); return __todouble(__len(t['\x01keys'])); });
   __def(MP, 'forEach', function (t, cb, thisArg) { __demand(t, '\x01keys', 'Map.prototype', 'forEach');
     var i = 0;
@@ -2076,6 +2146,7 @@ function __init_collections(G) {
 
   var S = __ctor(G, 'Set', {}, function (t, init) {
     t['\x01keys'] = [];
+    t['\x01idx'] = {};
     if (!__isnullish(init)) {
       var it = __iter(init);
       var r = __iter_step(it);
@@ -2085,15 +2156,15 @@ function __init_collections(G) {
   });
   var SP = S.prototype;
   SP['\x01proto'] = G.Object_proto;
-  __def(SP, 'add', function (t, v) { __demand(t, '\x01keys', 'Set.prototype', 'add'); if (__coll_find(t, v) < 0) __arraypush(t['\x01keys'], v); return t; });
+  __def(SP, 'add', function (t, v) { __demand(t, '\x01keys', 'Set.prototype', 'add'); if (__coll_find(t, v) < 0) __coll_push(t, v); return t; });
   __def(SP, 'has', function (t, v) { __demand(t, '\x01keys', 'Set.prototype', 'has'); return __coll_find(t, v) >= 0; });
   __def(SP, 'delete', function (t, v) { __demand(t, '\x01keys', 'Set.prototype', 'delete');
     var i = __coll_find(t, v);
     if (i < 0) return false;
-    __coll_remove(t['\x01keys'], i);
+    __coll_drop(t, i);
     return true;
   });
-  __def(SP, 'clear', function (t) { __demand(t, '\x01keys', 'Set.prototype', 'clear'); t['\x01keys'] = []; return undefined; });
+  __def(SP, 'clear', function (t) { __demand(t, '\x01keys', 'Set.prototype', 'clear'); t['\x01keys'] = []; t['\x01idx'] = {}; return undefined; });
   __defa(SP, 'get', 'size', function (t) { __demand(t, '\x01keys', 'get Set.prototype', 'size'); return __todouble(__len(t['\x01keys'])); });
   __def(SP, 'forEach', function (t, cb, thisArg) { __demand(t, '\x01keys', 'Set.prototype', 'forEach');
     var i = 0;
@@ -2425,13 +2496,16 @@ fn fail(node, msg) {
 }
 
 # The prelude and the user program are separate parse trees whose line/col
-# ranges overlap, so position keys carry which side they are from.
+# ranges overlap, so position keys carry which side they are from -- and one
+# run compiles several programs, so a program's keys carry its turn as well
+# (the prelude's tables outlive them all).
 mut in_prelude = false
+mut prog_gen = 0
 fn pkey(node) {
   cond {
     node.key != nil => node.key,
     in_prelude => "p{node.line}:{node.column}",
-    _ => "u{node.line}:{node.column}",
+    _ => "u{prog_gen}:{node.line}:{node.column}",
   }
 }
 
@@ -2459,6 +2533,10 @@ mut closure_of = {}     # pkey of a function node -> func index
 mut resolved = {}       # pkey of an ident -> {kind: 'var', owner, slot} | {kind: 'global', name}
 mut block_slots = {}    # pkey of a block -> the slots it declares
 mut prelude_named = {}  # prelude fn name -> func index
+mut prelude_bound = {}  # prelude top-level binding name -> its key on __G
+mut prelude_inits = []  # [{key, init}], in prelude order
+mut prelude_end = 0     # funcs.size() once the prelude is bound
+mut prelude_nslots = [] # nslots for funcs[0..prelude_end) as pass A left them
 mut g_slot = 0          # main's slot holding __G
 mut this_slot = 0       # main's `this`
 mut loop_ctx = []       # per func (emit time): [{step: fn(m) -> [ids]}...]
@@ -2604,6 +2682,9 @@ fn resolve(f, name) {
       i = i - 1
     }
     h = funcs[h].parent
+  }
+  if in_prelude && prelude_bound.has(name) {
+    return {kind: 'preconst', key: prelude_bound[name]}
   }
   if in_prelude && prelude_named.has(name) {
     return {kind: 'fn', func: prelude_named[name]}
@@ -4878,6 +4959,13 @@ fn emit_expr(m, node, f) {
           line: ln,
           col: cl,
         ),
+        r.kind ==
+          'preconst' => m.index(
+          recv: gref(m, f, ln, cl),
+          key: str_l(m, r.key, ln, cl),
+          line: ln,
+          col: cl,
+        ),
         r.kind == 'global' => cond {
           node.token == 'undefined' => nil_l(m, ln, cl),
           in_prelude => m.index(
@@ -5987,13 +6075,27 @@ fn emit_funcs(m) {
       ))
     }
     if f == 0 {
+      # the global table exists before anything fills it, so the prelude's
+      # own constants have a home that __init_globals can already reach
       ids.push(m.assign(
         kind: 'cell',
         index: cell_index[0][g_slot],
-        value: call_pre(m, 0, '__init_globals', [], 1, 1),
+        value: m.object_lit(kv_list: m.list_new(), line: 1, col: 1),
         line: 1,
         col: 1,
       ))
+      in_prelude = true
+      for b in prelude_inits {
+        ids.push(m.set_index(
+          recv: gref(m, 0, 1, 1),
+          key: str_l(m, b.key, 1, 1),
+          value: emit_expr(m, b.init, 0),
+          line: 1,
+          col: 1,
+        ))
+      }
+      in_prelude = false
+      ids.push(call_pre(m, 0, '__init_globals', [], 1, 1))
       let ta = access_from(0, (0, this_slot))
       ids.push(m.assign(
         kind: ta.kind,
@@ -6103,40 +6205,113 @@ fn emit_funcs(m) {
   in_prelude = false
 }
 
-fn build(m, prelude_tree, root) {
-  let main = new_func(nil, 'main', root.nodes, nil, false)
-  enter_scope(main)
-  g_slot = declare_var(main, '__G', nil)
-  this_slot = declare_var(main, 'this', nil)
-
+# main is funcs[0] and the prelude follows it. The prelude's binding pass is
+# the same whatever program is compiled, so it runs once; each program then
+# rebuilds main's own entry and drops the functions the last one left.
+fn build_prelude(prelude_tree) {
   in_prelude = true
   # prelude helpers are parentless raw closures; each is registered before
-  # any body is walked so they can call each other in any order
+  # any body is walked so they can call each other in any order. A top-level
+  # binding is a constant of the runtime: it takes a slot of main's that a
+  # program's own names cannot reach, and main's prologue initializes it
+  # before __init_globals -- so its initializer cannot read __G.
   for s in prelude_tree.nodes {
-    if s.name != 'fn_decl' {
-      fail(s, 'the prelude holds function declarations only')
+    cond {
+      s.name == 'fn_decl' => {
+        let id = s.nodes[0]
+        prelude_named[id.token] = new_func(
+          nil,
+          id.token,
+          s.nodes[2].nodes,
+          nil,
+          false,
+        )
+      },
+      s.name == 'var_decl' => {
+        mut i = 1
+        while i < s.nodes.size() {
+          let d = s.nodes[i]
+          if d.nodes[0].name != 'ident' || d.nodes.size() < 2 {
+            fail(d, 'a prelude binding is a plain name with an initializer')
+          }
+          # \x01 keeps the runtime's own names out of the program's globals
+          let key = "\x01{d.nodes[0].token}"
+          prelude_bound[d.nodes[0].token] = key
+          prelude_inits.push({key: key, init: d.nodes[1]})
+          i = i + 1
+        }
+      },
+      _ => fail(
+        s,
+        'the prelude holds function declarations and constant bindings only',
+      ),
     }
-    let id = s.nodes[0]
-    prelude_named[id.token] = new_func(
-      nil,
-      id.token,
-      s.nodes[2].nodes,
-      nil,
-      false,
-    )
   }
   for s in prelude_tree.nodes {
-    let g = prelude_named[s.nodes[0].token]
-    walk_fn(g, s.nodes[1].nodes, nil)
+    if s.name == 'fn_decl' {
+      let g = prelude_named[s.nodes[0].token]
+      walk_fn(g, s.nodes[1].nodes, nil)
+    }
+  }
+  for b in prelude_inits {
+    scan_expr(b.init, 0)
   }
   in_prelude = false
+  prelude_end = funcs.size()
+  prelude_nslots = []
+  for f in range(prelude_end) {
+    prelude_nslots.push(nslots[f])
+  }
+}
 
+fn reset_main(stmts) {
+  in_prelude = false
+  while funcs.size() > prelude_end {
+    funcs.pop()
+    free.pop()
+    calls.pop()
+    capture_index.pop()
+    cell_index.pop()
+    nslots.pop()
+    scope_stack.pop()
+    loop_ctx.pop()
+  }
+  # emit hands itself scratch slots as it walks, so the prelude's slot counts
+  # go back to what its binding pass left; solve fills the two indexes afresh
+  for f in range(prelude_end) {
+    nslots[f] = prelude_nslots[f]
+    capture_index[f] = {}
+    cell_index[f] = {}
+  }
+  funcs[0] = {
+    parent: nil,
+    name: 'main',
+    params: [],
+    dflts: [],
+    stmts: stmts,
+    body_expr: nil,
+    is_prelude: false,
+    is_arrow: false,
+    var_names: [],
+  }
+  free[0] = {}
+  calls[0] = []
+  scope_stack[0] = []
+  loop_ctx[0] = []
+  nslots[0] = 0
+  enter_scope(0)
+  g_slot = declare_var(0, '__G', nil)
+  this_slot = declare_var(0, 'this', nil)
+}
+
+fn build(m, root) {
+  reset_main(root.nodes)
   # main's body: the program's statements, in main's own scope
   for s in root.nodes {
-    collect_vars(s, main)
+    collect_vars(s, 0)
   }
-  scan_stmts(root.nodes, main)
-  leave_scope(main)
+  scan_stmts(root.nodes, 0)
+  leave_scope(0)
 
   solve()
   emit_funcs(m)
@@ -6167,6 +6342,13 @@ if cli.empty() {
 }
 
 let prelude_tree = Peg.parse(grammar, prelude_src, path: '<prelude>')
+# main's shell first: every other function reaches the global table through
+# main's cell, so its slots have to exist before the prelude is bound
+let main_shell = new_func(nil, 'main', [], nil, false)
+enter_scope(main_shell)
+g_slot = declare_var(main_shell, '__G', nil)
+this_slot = declare_var(main_shell, 'this', nil)
+build_prelude(prelude_tree)
 
 mut cur_src = ''
 mut had_err = false
@@ -6174,22 +6356,7 @@ for path in cli {
   if cli.size() > 1 {
     println('-----8<----- ' + FS.basename(path))
   }
-  funcs = []
-  free = []
-  calls = []
-  capture_index = []
-  cell_index = []
-  nslots = []
-  scope_stack = []
-  closure_of = {}
-  resolved = {}
-  block_slots = {}
-  prelude_named = {}
-  loop_ctx = []
-  classes = {}
-  for_close = {}
-  synth_count = 0
-  in_prelude = false
+  prog_gen = prog_gen + 1
   try {
     cur_src = lib_src + FS.read(path)
     let tree = Peg.parse(grammar, cur_src, path: path)
@@ -6198,7 +6365,7 @@ for path in cli {
       continue
     }
     let m = CodeGen.Module.new()
-    build(m, prelude_tree, tree)
+    build(m, tree)
     m.verify()
     if want_ir {
       print(m.dump_ir())

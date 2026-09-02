@@ -80,3 +80,15 @@ show('a deleted member enumerates again', (function () { class D { m() {} } dele
 const ck2 = 'made';
 class ByKey { [ck2]() {} static [ck2 + 'S']() {} *[ck2 + 'Y']() {} async [ck2 + 'A']() {} }
 show('a computed key names its member', [ByKey.prototype[ck2].name, ByKey[ck2 + 'S'].name, ByKey.prototype[ck2 + 'Y'].name, ByKey.prototype[ck2 + 'A'].name]);
+
+// what a class hides, it hides on itself: the set of names a function's
+// object passes over is its own, however many functions start out alike
+class Hidden { m() {} get g() { return 1; } static s() {} }
+function plain() {}
+plain.s = 1;
+plain.prototype.m = 2;
+plain.prototype.g = 3;
+show('a name hidden on one function is not hidden on another', [Object.keys(plain), Object.keys(plain.prototype), Object.keys(Hidden), Object.keys(Hidden.prototype)]);
+const bare = () => {};
+bare.s = 4;
+show('nor on an arrow', [Object.keys(bare), bare.length, plain.length]);
