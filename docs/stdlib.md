@@ -17,11 +17,10 @@ in [§13 below](#13-matchers). Methods on built-in types (`String`,
 `Array`, `Object`) are specified in
 [§18 of the language spec](language.md).
 
-The CLI (`src/main.cc`) additionally installs `inspect`, `print`, and
-`println` as globals aliased to `IO.inspect` / `IO.print` / `IO.println`
-(see [§22 of the language spec](language.md)). Embedders that use
-`culebra::environment()` directly get a clean namespace without those
-aliases.
+`inspect`, `print` and `println` are additionally bound as globals
+aliased to `IO.inspect` / `IO.print` / `IO.println` (see
+[§22 of the language spec](language.md)). They are unconditional, so an
+embedded program sees them exactly as a script does.
 
 Conventions used below:
 
@@ -6407,20 +6406,20 @@ A `CodeGen.Module` cannot cross an isolate boundary
 
 ## 36. Design notes
 
-### Namespace-first, CLI-aliased globals
+### Namespace-first, with three global shortcuts
 
-The library adds **no global names beyond the matcher family**:
-everything else lives under `Math`, `IO`, `Random`, or `Sys`. This
-keeps `culebra::environment()` free of surprises for embedders who
-use Culebra as a scripting engine inside a host application.
+The library adds **no global names beyond the matcher family and three
+output shortcuts**: everything else lives under `Math`, `IO`, `Random`,
+or `Sys`. Keeping the surface namespaced is what lets a host embed
+Culebra without a pile of names turning up in its scripts' global scope.
 
-For CLI scripting, however, `inspect` / `print` / `println` are so
-pervasive that writing `IO.inspect` everywhere adds friction. The CLI
-binary (`src/main.cc`) installs them as globals right after
-constructing the environment — pointing to the same function values
-that live under `IO`, so there is no duplication. V8 takes an
-analogous approach: the engine provides no `print`, and the `d8` shell
-installs one.
+The exception is `inspect` / `print` / `println`. Writing `IO.inspect`
+everywhere adds enough friction that all three are bound as globals,
+pointing at the same function values that live under `IO`, so there is
+no duplication. Unlike the matcher family they are not scoped to a
+subcommand: every lane binds them, so an embedded program and a script
+agree about what `println` means. V8 draws the same line in a different
+place — the engine provides no `print` and the `d8` shell installs one.
 
 ### Namespaces as first-class values
 

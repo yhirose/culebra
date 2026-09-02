@@ -1877,24 +1877,32 @@ archiveに差し替わるので、全feature archiveを抱えると ~12.5 MBの�
 
 ## 17. 埋め込み概観
 
-Culebraはheader-friendlyなC++23ライブラリ。最小埋め込み例:
+Culebraはヘッダだけで使えるC++23ライブラリ。最小の埋め込み例:
 
 ```cpp
 #include <culebra.h>
+#include <vm_embed.h>
 
 int main() {
-  auto env  = culebra::environment();
-  auto value = culebra::eval(env, R"(
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;   // 標準ライブラリとtraitを登録済み
+
+  culebra::vm::Value val;
+  std::vector<std::string> msgs;
+  embed.run_source("<inline>", R"(
     add = fn (a, b) { a + b }
     add(40, 2)
-  )");
-  std::cout << culebra::to_string(value) << "\n";   // 42
+  )", val, msgs);
+  std::cout << val.to_long() << "\n";   // 42
 }
 ```
 
-環境構築は埋め込み側。`IO`は提供されるが、CLI専用aliasの
-`inspect` / `print`はホスト側で用意する設計。エラーは
-`culebra::Error`例外としてthrowされ、元の値と行/列情報を持つ。
+`vm::Embed`はセッション。`run_source`は前の実行が作った束縛を引き継ぎ、
+ホスト側は`embed.global`で読み、`embed.call`で呼べる。標準ライブラリは
+登録済みで、`inspect` / `print` / `println`のグローバルも入る（スクリプト
+から見えるのと同じ名前）。スクリプト側の`throw`は`culebra::CulebraError`
+例外になり、投げられた値のkind・メッセージ・位置を持つ。
 
 環境カスタマイズ、値変換、JITホスト、AOT-archive埋め込み経路
 (`libculebra_rt.a`) の詳細は [`deployment.ja.md`](deployment.ja.md)。

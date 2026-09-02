@@ -5709,10 +5709,9 @@ running user code:
 
 These are convenience shortcuts for the most common output calls;
 they point to the same function values that live under `IO`, so
-`inspect(x)` and `IO.inspect(x)` are fully equivalent. Embedders that use
-`culebra::environment()` directly do not receive these aliases —
-their environment contains only `Math`, `IO`, `Sys`, and the core
-built-ins from §19.
+`inspect(x)` and `IO.inspect(x)` are fully equivalent. Both engines bind
+them unconditionally, so a program embedded in a C++ host sees the same
+three names a script does.
 
 ---
 

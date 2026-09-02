@@ -169,8 +169,8 @@ the test suite, write the `if`/`throw` directly (Go-style, see
 
 When invoked through this subcommand, `test` / `@test` / `@parametrize`
 become **ambient globals** alongside the always-available matcher family
-— no `import` required. This mirrors how `inspect` / `print` are ambient
-under script-execution mode but absent from `culebra::environment()`.
+— no `import` required. They are bound for the length of one run, on top
+of the stdlib names every lane already has.
 
 ```sh
 culebra test                       # discover & run from current dir

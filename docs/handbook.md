@@ -1913,21 +1913,29 @@ Culebra is a header-friendly C++23 library. Minimal embed:
 
 ```cpp
 #include <culebra.h>
+#include <vm_embed.h>
 
 int main() {
-  auto env  = culebra::environment();
-  auto value = culebra::eval(env, R"(
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  culebra::vm::Embed embed;   // stdlib installed, traits registered
+
+  culebra::vm::Value val;
+  std::vector<std::string> msgs;
+  embed.run_source("<inline>", R"(
     add = fn (a, b) { a + b }
     add(40, 2)
-  )");
-  std::cout << culebra::to_string(value) << "\n";   // 42
+  )", val, msgs);
+  std::cout << val.to_long() << "\n";   // 42
 }
 ```
 
-The embedder constructs the environment, so `IO` is present but
-`inspect` / `print` (the CLI aliases) are not — your host owns I/O.
-Errors surface as `culebra::Error` exceptions carrying the original
-thrown value plus line/column.
+`vm::Embed` is a session: each `run_source` sees the bindings the
+earlier ones made, and the host reads them back with `embed.global` or
+calls them with `embed.call`. The standard library is installed, and so
+are the `inspect` / `print` / `println` globals — the same names a
+script sees. A script-level `throw` surfaces as a `culebra::CulebraError`
+carrying the thrown value's kind, message and position.
 
 See [`deployment.md`](deployment.md) for environment customization,
 value conversion, hosting the JIT, and the AOT-archive embed pathway
