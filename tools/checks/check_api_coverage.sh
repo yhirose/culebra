@@ -31,7 +31,7 @@ LIST=tools/checks/api_untested.txt
 UPDATE=0
 [ "${1:-}" = --update ] && UPDATE=1
 
-WORK=$(mktemp -d)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/culebra-api.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # 1. Namespace signatures: `**Ns** — Ns.fn(...); ...` lines inside the

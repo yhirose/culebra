@@ -38,7 +38,7 @@ if [[ ! -x "$BIN" ]]; then
   exit 2
 fi
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/culebra-eh.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 # Full probe: exercises the pad kinds that re-raise — try/catch (region pad),

@@ -75,7 +75,7 @@ else
   # patterns dominate the gate (~5 s each); parallel they collapse to the
   # slowest single pattern. Per-pattern output is buffered and replayed in list
   # order; a leak/error drops a marker file collected afterward.
-  work="$(mktemp -d)" || { echo "error: mktemp -d failed" >&2; exit 2; }
+  work="$(mktemp -d "${TMPDIR:-/tmp}/culebra-leak.XXXXXX")" || { echo "error: mktemp -d failed" >&2; exit 2; }
   trap 'rm -rf "$work"' EXIT
   list="$work/patterns"
   "$CULEBRA" --jit "$PATTERNS" list 2>/dev/null | grep -v '^[[:space:]]*$' > "$list"

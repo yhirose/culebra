@@ -14,7 +14,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-work=$(mktemp -d)
+work=$(mktemp -d "${TMPDIR:-/tmp}/culebra-pe-exports.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 cat > "$work/nm" <<'EOF'

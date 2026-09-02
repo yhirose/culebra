@@ -27,7 +27,7 @@ bin="$BUILD_DIR/culebra"
 [[ -x "$bin" ]] || { echo "check_aot_link_portability: no $BUILD_DIR/culebra" >&2; exit 1; }
 bin=$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")
 
-work=$(mktemp -d)
+work=$(mktemp -d "${TMPDIR:-/tmp}/culebra-aotlink.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 # The driver is a native binary: on MSYS2 it reads none of this shell's mount
 # table, so hand it a Windows path or the cache it prints is a different

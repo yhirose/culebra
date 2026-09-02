@@ -13,7 +13,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="$HERE/release_diff.py"
-WORK="$(mktemp -d)" || { echo "error: mktemp -d failed" >&2; exit 2; }
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/culebra-rdiff.XXXXXX")" || { echo "error: mktemp -d failed" >&2; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
 cd "$WORK"
 

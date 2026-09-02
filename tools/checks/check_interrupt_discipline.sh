@@ -85,7 +85,7 @@ fi
 # `} catch (...) {` is balanced, and then the whole chain is judged by its first
 # handler and this catch-all is never seen. That was a live hole — it hid two
 # chains on this very surface.
-probe="$(mktemp -d)"
+probe="$(mktemp -d "${TMPDIR:-/tmp}/culebra-interrupt.XXXXXX")"
 trap 'rm -rf "$probe"' EXIT
 cat > "$probe/swallow.cc" <<'EOF'
 void f() {

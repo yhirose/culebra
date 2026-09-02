@@ -79,7 +79,7 @@ check_binary "driver" "$bin"
 # An AOT binary that names Webview: force-loads the feature archive, so it
 # carries the same forwarders and must hold the same two properties. Built into
 # a temp dir; no window is ever created (the name only has to be scanned).
-work=$(mktemp -d)
+work=$(mktemp -d "${TMPDIR:-/tmp}/culebra-webview.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 printf 'if false { Webview.Window.new() }\nprintln("ok")\n' > "$work/w.cul"
 if ! "$bin" build "$work/w.cul" -o "$work/w" > "$work/build.log" 2>&1; then

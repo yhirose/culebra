@@ -24,7 +24,7 @@ if [[ ! -x "$BIN" ]]; then
   exit 2
 fi
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/culebra-alloca.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 # Probe: the shapes whose emitters allocate scratch slots, each inside a loop
