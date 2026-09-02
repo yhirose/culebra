@@ -18,47 +18,86 @@ So `Linear`, `LayerNorm`, `EmbedID`, `dropout`, `softmax_cross_entropy` and
 `Adam` come from dezero, while the attention block, RoPE, the KV cache,
 AdamW, the schedulers and the whole BPE tokenizer are written here.
 
-## Status
-
-This port is being built chapter by chapter. What runs today:
+## What is here
 
 | | |
 |---|---|
-| `codebot/tokenizer.cul` | the byte-level BPE the chapters converge on |
-| `codebot/model.cul` | the GPT: causal multi-head attention, pre-norm blocks, tied weights |
-| `codebot/utils.cul` | sampling, with temperature and top-k |
-| `storybot/tokenizer.cul` | the same BPE, fast enough for a whole corpus |
-| `storybot/model.cul` | the improved GPT: RoPE, RMSNorm, SwiGLU |
-| `storybot/utils.cul` | the same sampling, with a KV cache |
 | `ch01/` | tokenizers, from code points to a trained BPE (9 scripts) |
 | `ch02/` | attention, from a soft dictionary to the assembled GPT (8 scripts) |
 | `ch04/` | making that BPE 681x faster, one idea at a time (6 scripts) |
-| `train/` | pretraining and generation |
+| `codebot/` | the byte-level BPE, the GPT, and sampling |
+| `storybot/` | the same BPE at corpus scale, and the improved GPT: RoPE, RMSNorm, SwiGLU, KV cache |
+| `webbot/` | that model with grouped-query attention |
+| `train/` | pretraining, generation, SFT, GRPO, AdamW and schedules, and the contrast implementation |
 | `common/` | configuration, checkpoints, paths, the `uint16` corpus format, ASCII plots |
 
-Still to come: SFT and GRPO, AdamW and learning-rate schedules, DPO,
-`webbot`'s grouped-query attention, and the contrast implementation on
-culebra's own `Tensor` autograd.
+Upstream's chapters 3, 5, 6, 7 and 9 are here as `train/` and the three
+bots rather than as numbered scripts. Those chapters are a progression of
+training regimes over one model, and each of their scripts is a driver;
+folding them into one file per technique keeps the technique legible and
+loses nothing. Chapters 1, 2 and 4 stay numbered, because there each script
+*is* a step of an argument.
+
+## What is not here
+
+Full-scale runs, for reasons that are arithmetic rather than choice, and
+which the scripts print rather than hide:
+
+- **Chapter 7's own corpus.** 11.9 GB of text in a Culebra byte Array
+  (8 bytes an element) is 95 GB. This machine has 15 GB. Chunking moves the
+  text but not the pair-count table. The default is the first 20 MB of
+  `owt_valid.txt`; `--full` is all 290 MB of it.
+- **Chapter 9 at its own size.** 114M parameters x 100,000 iterations x an
+  effective batch of 128 x a context of 1024 is 13.1 billion tokens, about
+  9 EFLOP. At the 2.0 TFLOP/s this machine's Metal backend actually sustains
+  that is 52 days with dezero's overhead counted as zero. Upstream assumes
+  eight A100s and one day.
+- **Distributed training.** Culebra has isolates, channels and
+  `SharedBuffer`, so single-machine data parallelism is writable, but
+  `Tensor.use_gpu()` is a process-wide setting and there is one GPU. Chapter
+  9's DDP folds into the gradient accumulation upstream already has.
+- **Mixed precision.** Culebra's `Tensor` is f32 with no other dtype, so
+  there is no autocast to port. What does port is the part that is not about
+  dtype: loss scaling, and skipping a step whose gradients went non-finite.
+- **An LLM judge over HTTP.** Preference data is generated locally and
+  deterministically instead, so the tests need no network and no key.
 
 ## Layout
 
 ```
 codebot/tokenizer.cul   the shared BPE: pretokenize, train, encode, decode
-storybot/tokenizer.cul  the same BPE, deduplicated, incremental and parallel
 codebot/model.cul       the GPT the training scripts import
 codebot/utils.cul       sampling one token at a time
+storybot/tokenizer.cul  the same BPE, deduplicated, incremental and parallel
 storybot/model.cul      the improved GPT: RoPE, RMSNorm, SwiGLU
 storybot/utils.cul      the same sampling, with chapter 5's KV cache
+webbot/model.cul        storybot with grouped-query attention -- only the delta
+webbot/utils.cul        re-exports storybot's; the cache needed no change
+
+train/pretrain.cul      the training loop
+train/generate.cul      sampling from a checkpoint
+train/sft.cul           instruction tuning, on a masked loss
+train/grpo.cul          learning from a reward, the group as its own baseline
+train/optim.cul         AdamW, warmup + cosine decay
+train/losses.cul        cross-entropy that ignores some of its targets
+train/pretrain_tensor.cul  the same loop on culebra's own Tensor autograd
+
 common/config.cul       the book's hyperparameters, and the scaled-down default
 common/checkpoint.cul   torch.save's job, as CSV plus a manifest
 common/paths.cul        data/ and checkpoints/ resolved from the running script
 common/data.cul         the uint16 .bin format and batch sampling
 common/plot.cul         curves and histograms, drawn in text
-train/                  pretraining and generation
+
 data/                   what is small enough to commit; the rest is fetched
 ch01/, ch02/, ch04/     one script per section, numbered as upstream numbers them
 test_*.cul              every test, flat at the package root
 ```
+
+`common/` and `train/` are the only directories upstream does not have.
+Upstream's chapter scripts each open with `os.chdir(...)` and
+`sys.path.append('.')` and then repeat their configuration inline; putting
+paths, configuration and checkpoints in one place each is what replaces
+that.
 
 ## Running
 
@@ -70,8 +109,12 @@ culebra ch04/02_bpe_cache.cul       # and then make it fast
 culebra ch02/08_multi_head.cul      # attention, one section at a time
 culebra ch02/10_gpt2.cul            # the assembled GPT, untrained
 
-culebra train/pretrain.cul          # ~20 s at the default size
+culebra train/pretrain.cul          # ~15 s at the default size
 culebra train/generate.cul          # sample from what it just wrote
+culebra train/sft.cul               # then teach it to answer
+culebra train/grpo.cul              # then to add up
+
+culebra train/lr_schedule.cul       # what warmup + cosine decay looks like
 
 culebra test .
 ```
@@ -86,9 +129,21 @@ culebra train/generate.cul temperature=0.0 prompt='def '
 
 A checkpoint carries the configuration it was trained with, so
 `generate.cul` rebuilds the same architecture rather than being told what
-to build. At the default size the model is 0.17M parameters trained for
-300 steps on 100k tokens: it does not write working code, but it does
-produce indentation, keywords and balanced quotes, which is the point.
+to build, and each stage reads the one before it: `sft.cul` starts from
+what `pretrain.cul` wrote, `grpo.cul` from what `sft.cul` wrote.
+
+At the default size the model is 0.17M parameters trained for 300 steps on
+100k tokens. It does not write working code. It does write things shaped
+like code -- `command = input('Enter`, balanced quotes, indentation -- and
+the point of the default is that the whole pipeline runs in under a minute,
+not that the result is good.
+
+`grpo.cul` at that size will report an accuracy of zero and no gradient,
+and that is the arithmetic rather than a fault: a model that is never right
+gives every answer in a group the same reward, every advantage is then zero,
+and GRPO correctly concludes there is nothing to learn from. The step line
+prints how many groups carried a signal so this reads as what it is. It
+needs a model good enough to be right sometimes, which is `--full`.
 
 The executor is the right engine for these. `--jit` is fine on ch01, which
 imports no tensors (0.42 s against the executor's 0.02 s), but from ch02 on
@@ -131,13 +186,64 @@ vocabularies diverge on the first ambiguous pair.
 | Upstream | Here |
 |---|---|
 | `ch01/01_char_tokenizer.py` … `09_bpe_encode.py` | `ch01/*.cul`, same numbering |
+| `ch02/01_soft_dict.py` … `10_gpt2.py` | `ch02/*.cul`, same numbering |
 | `ch04/01_bpe_optimize.py` … `07_encode_parallel.py` | `ch04/*.cul`, same numbering |
-| `codebot/tokenizer.py` | `codebot/tokenizer.cul` |
-| `storybot/tokenizer.py` | `storybot/tokenizer.cul` |
-| `storybot/model.py`, `storybot/utils.py` | `storybot/model.cul`, `storybot/utils.cul` |
+| `ch03/01_pretrain.py`, `02_generate.py` | `train/pretrain.cul`, `train/generate.cul` |
+| `ch03/03_sft.py` | `train/sft.cul` + `train/sft_data.cul` + `train/losses.cul` |
+| `ch03/09_grpo.py` | `train/grpo.cul` + `train/reward.cul` |
+| `ch05/*` (RoPE, SwiGLU, RMSNorm, KV cache) | `storybot/model.cul`, `storybot/utils.cul` |
+| `ch06/*` (AdamW, schedulers) | `train/optim.cul`, `train/lr_schedule.cul` |
+| `ch06/04_mixed_precision.py` | loss scaling only; there is no second dtype |
+| `ch07/*` (corpus-scale BPE) | `storybot/tokenizer.cul` driven with `--full` |
+| `ch09/*` (DDP pretraining) | `train/pretrain.cul` with gradient accumulation |
+| `codebot/tokenizer.py`, `model.py`, `utils.py` | `codebot/*.cul` |
+| `storybot/tokenizer.py`, `model.py`, `utils.py` | `storybot/*.cul` |
+| `webbot/model.py`, `utils.py` | `webbot/*.cul` |
+| `ch02/graph.py`, `ch05/graph.py`, `ch06/lr_graph.py` | `common/plot.cul`, drawn in text |
+| `torch.save` / `load_state_dict` | `common/checkpoint.cul` |
 | `multiprocessing.Pool` | `Parallel.map` over isolates |
 | `os.chdir(...)` + `sys.path.append('.')` preamble | `common/paths.cul` |
 | `np.fromfile(dtype=np.uint16)` / `.tofile()` | `common/data.cul` |
+| `tqdm` | elapsed time, printed |
+
+## Two autograds, side by side
+
+`train/pretrain.cul` runs on [`examples/dezero`](../dezero), whose autograd
+is written in Culebra: every operation allocates an object and the tape is
+walked by the interpreter. `train/pretrain_tensor.cul` is the same model and
+the same loop written directly against `Tensor.backward()`, whose tape is in
+C++. Given the same initial weights they agree bit-for-bit on the first loss
+and to a relative 1e-7 after eight steps, and a checkpoint written by either
+restores into the other.
+
+The C++ tape is the slower of the two here, which is not what the split
+predicted:
+
+| | ms/step |
+|---|---|
+| dezero | 40.5 |
+| native `Tensor` | 48.8 |
+
+Measured with the `-O3` build over 60 steps at the default configuration,
+using the ms/step each script prints, which excludes validation. The cause
+is not per-element overhead: dezero's operations call the same C++ kernels,
+so its extra cost is per operation and thins out as tensors grow. It is two
+things dezero can do that a composed native graph cannot.
+
+- **A hand-written backward.** dezero's `SoftmaxCrossEntropy` fuses the
+  softmax and the cross-entropy into one `Function` whose backward is the
+  closed form `(p - onehot) / n`. Differentiating the composition instead
+  costs 7.1 ms/step, of which the softmax's own forward and backward are
+  5.3. Culebra's native autograd has no hook for supplying a VJP.
+- **A batched transpose.** `Op::Permute` has no VJP at all
+  (`Tensor.backward: permute is not differentiable yet`), and `.transpose()`
+  on rank 3 or more reverses every axis rather than the last two, so there
+  is no way to swap a batched matrix's inner axes. The head split is written
+  without one, and `narrow`'s VJP allocates a zero buffer the size of the
+  whole input for each slice.
+
+Both are concrete gaps in culebra rather than in the port, which is why this
+file is here.
 
 ## Where this differs from upstream
 
@@ -157,6 +263,23 @@ vocabularies diverge on the first ambiguous pair.
   corpus containing the pre-token `get` would turn `counts.get(...)` into a
   `TypeError`. A Python corpus contains it. `#` cannot start an identifier,
   so the prefix keeps every builtin reachable.
+- **The book's chapters 3, 5, 6, 7 and 9 are one file per technique**, not
+  one per section. See "What is here".
+- **`webbot/model.cul` imports what it did not change.** Upstream copies
+  `storybot/model.py` and edits the attention; here the file is the delta, so
+  a reader sees grouped-query attention and nothing else. With
+  `n_kv_head == n_head` its logits are bit-identical to storybot's, which a
+  test asserts.
+- **RoPE is written out rather than calling `Tensor.rope`.** The native one
+  uses the half-split convention where the book uses interleaved. The two
+  are the same rotation under a fixed permutation of the head dimension, and
+  a test asserts that identity — but permuting Q and K there and back costs
+  more than the rotation, and `Tensor.rope` carries no VJP.
+- **The embedding tables are scaled to 0.02 at initialisation.** dezero's
+  `EmbedID` draws at unit variance, and because the unembedding is that
+  table transposed, the untouched scale is the logit scale: at the book's
+  width the softmax starts saturated and the first loss sits exactly on
+  `-log(1e-15)`, the clamp inside the cross-entropy.
 - **An isolate worker sees its own module, and only its own module.** It
   reads same-module globals — a compiled `Regex` included — but a value
   read off an *imported* module is a capture, and a module object is not
