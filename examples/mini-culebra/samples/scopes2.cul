@@ -1,0 +1,160 @@
+# Names and scopes, the corpus-driven batch: redeclaration in one list,
+# closures inside a let's own initializer, bare assignment to a later mut,
+# the static shadow rule, reads ahead of a declaration, declared return
+# types, __ARGS__, built-in arity errors, ranges as plain objects, grid(),
+# and UFCS through closures and built-ins.
+fn show(label, f) {
+  let r = try { f() } catch e { "!{e.kind}: {e.message}" }
+  println("{label}: {inspect(r)}")
+}
+
+# --- redeclaration in the same list rebinds the same binding ---
+fn redecl() {
+  let x = 1
+  let g = fn () { x }
+  let x = x + 1
+  mut s = 0
+  s = s + 1
+  mut s = 10
+  s = s + 1
+  [g(), x, s]
+}
+show('redecl', redecl)
+fn redecl_closure() {
+  let r = fn (n) { n == 0 ? 'old' : r(n - 1) }
+  let keep = r
+  let r = fn (n) { 'new' }
+  keep(1)
+}
+show('redecl closure follows', redecl_closure)
+
+# --- a closure in the initializer names the binding being declared ---
+fn in_array() {
+  let rec = [fn (n) { n > 0 ? rec[0](n - 1) : 'wrapped' }]
+  rec[0](2)
+}
+show('closure in array init', in_array)
+fn in_object() {
+  let o = {f: fn () { o.v }, v: 3}
+  o.f()
+}
+show('closure in object init', in_object)
+fn own_name() {
+  let rec = fn (n) { n > 0 ? fn(n - 1) : rec == fn }
+  rec(2)
+}
+show('fn is the binding', own_name)
+
+# --- bare assignment inside a closure to a mut declared later ---
+let bump = fn () {
+  counter = counter + 1
+  counter
+}
+mut counter = 0
+show('bare assign later mut', bump)
+show('bare assign later mut again', bump)
+let fresh_one = fn () {
+  fresh = 5
+  fresh
+}
+show('bare assign new binding', fresh_one)
+
+# --- reads ahead of the declaration ---
+let cap_u = fn () { unbound_u + 1 }
+show('read before let via capture', cap_u)
+show('read before let direct', fn () { unbound_u + 1 })
+let unbound_u = 41
+show('read after let', cap_u)
+
+# --- the shadow rule: top-level names and for variables are free ---
+let outer = 7
+fn sh1() {
+  let seen = outer
+  let outer = 1
+  [seen, outer]
+}
+show('top-level name shadowed', sh1)
+fn sh2() {
+  let g = fn () { outer }
+  let outer = 1
+  [g(), outer]
+}
+show('later local outranks outer', sh2)
+fn sh3() {
+  let outer = outer + 1
+  outer
+}
+show('initializer reads outer', sh3)
+let with_for = fn () {
+  let fs = [1, 2]
+  mut acc = 0
+  for f in fs {
+    acc = acc + f
+  }
+  [fs.map(|f| f * 10), acc]
+}
+show('for variable is free', with_for)
+
+# --- declared return types ---
+let rt = fn () -> Long { 'nope' }
+show('return type', rt)
+fn rt2() -> Long {
+  return 's'
+}
+show('return type stmt', rt2)
+let rt3 = fn (x) -> Long | String { x }
+show('return union', || [rt3(1), rt3('a')])
+show('return union bad', || rt3(1.5))
+let rt4 = fn () -> Long? { nil }
+show('return optional', rt4)
+let rt5 = fn (x) -> Long {
+  if x { return 1 }
+  'z'
+}
+show('return falls off', || [rt5(true), try { rt5(false) } catch e { e.kind }])
+
+# --- __ARGS__ ---
+let logger = fn (level) { "[{level}] " + __ARGS__.join(' ') }
+show('__ARGS__ overflow', || logger('info', 'a', 'b'))
+show('__ARGS__ empty', || logger('info'))
+let greet = fn () {
+  if __ARGS__.size() > 0 { "hello {__ARGS__[0]}" } else { 'hello' }
+}
+show('__ARGS__ via UFCS', || 'world'.greet())
+
+# --- built-in arity is a runtime ArityError ---
+show('grid 1 arg', || grid(1..2))
+show('inspect 0 args', || inspect())
+show('to_string 2 args', || to_string(1, 2))
+show('assert_eq 1 arg', || assert_eq(1))
+
+# --- ranges are plain objects, recognized by shape ---
+show('range display', || "{1..3} {1..=3} {1..} {1..10 by 2}")
+show('range fields', fn () { let r = 1..3; [r.start, r.end, r.inclusive, r.class] })
+show('range keys', || (1..3).keys())
+show('range type', || type_of(1..3))
+show('range eq', || 1..3 == 1..3)
+show('range methods', || (1..4).map(|x| x * x).collect())
+let complete = {"class": "Range", "start": 1, "end": 3, "inclusive": false}
+show('handbuilt slice', || [1, 2, 3, 4][complete])
+show('handbuilt for', fn () { mut xs = []; for x in complete { xs.push(x) }; xs })
+show('handbuilt display', || "{complete}")
+let partial = {"class": "Range"}
+show('partial display', || "{partial}")
+show('partial index', || [1, 2][partial])
+show('partial for', fn () { mut xs = []; for x in partial { xs.push(x) }; xs })
+show('grid', || grid(1..3, 1..=2).collect())
+show('grid partial', || grid(partial, partial))
+show('range at MAX', fn () { mut xs = []; for x in 9223372036854775806..=9223372036854775807 { xs.push(x) }; xs })
+
+# --- UFCS through a closure variable and a built-in ---
+double = fn (x) { x * 2 }
+show('ufcs closure', || 42.double())
+show('ufcs builtin range', || 3.range().collect())
+show('ufcs builtin range step', || 0.range(10, step: 3).collect())
+show('ufcs builtin iota', || 3.iota())
+class Own {
+  new() {}
+  double() { 'method wins' }
+}
+show('own method over ufcs', || Own().double())

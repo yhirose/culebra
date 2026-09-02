@@ -66,6 +66,18 @@
 # parameters(); hash(); the sized-array form [items](n, fill); decorators
 # on classes; a multimethod family carried as a value; and a receiver's
 # own method taking precedence over a UFCS call of the same name.
+# The scope batch adds: a redeclaration in the same statement list
+# rebinding the same binding, a closure inside a let's own initializer
+# naming that binding, a bare assignment inside a closure reaching a mut
+# declared later, an enclosing function's later declaration outranking
+# anything further out, culebra's static shadow rule (a name any
+# enclosing function binds, the top level and for variables excepted),
+# NameError for a binding read before its declaration ran, declared
+# return types (unions and ?), __ARGS__, built-in arity as a runtime
+# ArityError, ranges as the plain {class, start, end, inclusive, step}
+# objects culebra builds (recognized by shape, so a hand-built one is a
+# range too), grid(), UFCS through closure variables and built-ins, and
+# the ZWJ / combining-mark rules of graphemes().
 #
 # Known differences from culebra, all documented rather than hidden:
 # no StringView type (slice/view give a String); normalize() is the
@@ -76,7 +88,10 @@
 # to built-in methods, and to a plain closure called through a variable,
 # pass positionally; a class object displays all of its descriptor; a
 # user-defined hash() does not make an instance a Set member or key; the
-# arguments of a call with keywords are evaluated positionals first.
+# arguments of a call with keywords are evaluated positionals first; a
+# return-type TypeError points at the function, not the call; a named fn
+# can be called before its declaration statement ran (culebra raises
+# NameError); a callback's parameter count is not checked.
 #
 # Semantics are culebra's, not the VM's: a prelude of helper functions
 # (written in this same subset, compiled alongside the program) wraps every
@@ -132,8 +147,9 @@ let grammar = `
   trait_d    <- 'trait' __ ident '{' nl (titem nl)* '}' _
   titem      <- ident '(' nl fparams nl ')' _ ret_ann? (nl block)? { no_ast_opt }
   ret_ann    <- '->' _ tyexpr                               { no_ast_opt }
-  tyexpr     <- tyatom tyor* ('?' _)?
+  tyexpr     <- tyatom tyor* tyopt?
   tyor       <- '|' _ tyatom                                { no_ast_opt }
+  tyopt      <- < '?' > _                                   { no_ast_opt }
   tyatom     <- fn_ty / ident
   fn_ty      <- 'fn' _ '(' nl (tyexpr (nl ',' nl tyexpr)*)? nl ')' _ ('->' _ tyexpr)? { no_ast_opt }
 
@@ -176,10 +192,10 @@ let grammar = `
                  'throw' / 'defer') ![a-zA-Z0-9_]
 
   expr       <- ternary
-  ternary    <- rangee (nl '?' !'?' nl expr nl ':' nl expr)?
-  rangee     <- range_lit / nilco
-  range_lit  <- nilco range_op nilco? step? / range_op nilco step? { no_ast_opt }
-  step       <- 'by' __ nilco                               { no_ast_opt }
+  ternary    <- nilco (nl '?' !'?' nl expr nl ':' nl expr)?
+  rangee     <- range_lit / add
+  range_lit  <- add range_op add? step? / range_op add? step? { no_ast_opt }
+  step       <- 'by' __ add                                 { no_ast_opt }
   range_op   <- < '..=' / '..' > _
   nilco      <- lor (nilco_op lor)*
   nilco_op   <- < '??' > nl
@@ -218,7 +234,7 @@ let grammar = `
   bxor_op    <- < '^' > nl
   band       <- shift (band_op shift)*
   band_op    <- < '&' > ![&=] nl
-  shift      <- add (shift_op add)*
+  shift      <- rangee (shift_op rangee)*
   shift_op   <- < '<<' / '>>' > nl
   add        <- mul (add_op mul)*
   add_op     <- < [+-] > ![=] nl
@@ -913,6 +929,29 @@ fn __array_sized(items, args, line, col) {
   out
 }
 
+# A binding a closure named before its declaration ran: reading it while
+# it still holds the unbound mark is culebra's NameError.
+fn __fwd_read(v, name, line, col) {
+  if __typeof(v) == 'string' {
+    if v == "\zunbound" {
+      __raise('NameError', "undefined variable '" + name + "'", line, col)
+    }
+  }
+  v
+}
+
+# A declared return type: the value must satisfy one of the alternatives
+# (nil is one when the annotation ends in ?).
+fn __ret_check(v, tcs, opt, text, line, col) {
+  if opt && __typeof(v) == 'nil' { return v }
+  mut i = 0
+  while i < __len(tcs) {
+    if __ty_ok(v, tcs[i]) { return v }
+    i = i + 1
+  }
+  __raise('TypeError', 'type error: return value expects ' + text, line, col)
+}
+
 # An object that a call site accepts besides a function: a class, or an
 # instance whose class defines __call__.
 fn __callable_obj(v) {
@@ -925,6 +964,14 @@ fn __callable_obj(v) {
 fn __is_callable(v) {
   if __is_fn(v) { return true }
   __inst_dunder(v, '__call__')
+}
+
+# UFCS through a callable variable: the receiver is the first positional
+# (its position is the call's).
+fn __ufcs_call(fnv, recv, pos, kws, apos, line, col) {
+  mut apos2 = nil
+  if __typeof(apos) != 'nil' { apos2 = __concat([line, col], apos) }
+  __call_nk(fnv, __concat([recv], pos), kws, apos2, line, col)
 }
 
 # A class object called as a function constructs, at the call's own shape.
@@ -1145,6 +1192,7 @@ fn __repr(v) {
       return out + '}'
     }
     if __is_set(v) { return __set_repr(v) }
+    if __is_range(v) { return __range_repr(v) }
     mut muts = {}
     mut has_muts = false
     if __objecthas(v, "\zm") {
@@ -1152,12 +1200,21 @@ fn __repr(v) {
       has_muts = true
     }
     let ks = __objectkeys(v)
+    # a plain object whose class key names a String displays like an
+    # instance of that name
+    mut named = false
     mut out = '{'
+    if __objecthas(v, 'class') {
+      if __typeof(v['class']) == 'string' {
+        named = true
+        out = v['class'] + ' {'
+      }
+    }
     mut first = true
     mut i = 0
     while i < __len(ks) {
       let k = ks[i]
-      if !__hidden_key(k) {
+      if !__hidden_key(k) && !(named && k == 'class') {
         if !first { out = out + ', ' }
         first = false
         if has_muts {
@@ -1299,15 +1356,66 @@ fn __obj_put(recv, pk, key, val, is_prop, line, col) {
   nil
 }
 
+# A range is recognized structurally, as culebra does: a plain object
+# whose class is "Range", start / end Long or nil, inclusive Bool, and
+# step absent or Long. A..b builds exactly that shape, and a hand-built
+# one is indistinguishable from it.
 fn __is_range(v) {
   if __typeof(v) != 'object' { return false }
-  __objecthas(v, "\zr")
+  if __is_instance(v) || __is_tuple(v) || __is_set(v) { return false }
+  if !__objecthas(v, 'class') { return false }
+  if __typeof(v['class']) != 'string' { return false }
+  if v['class'] != 'Range' { return false }
+  if !__objecthas(v, 'start') || !__objecthas(v, 'end') || !__objecthas(v, 'inclusive') {
+    return false
+  }
+  let ts = __typeof(v['start'])
+  let te = __typeof(v['end'])
+  if ts != 'int' && ts != 'nil' { return false }
+  if te != 'int' && te != 'nil' { return false }
+  if __typeof(v['inclusive']) != 'bool' { return false }
+  if __objecthas(v, 'step') {
+    if __typeof(v['step']) != 'int' { return false }
+  }
+  true
 }
 
+fn __range_step(r) {
+  if __objecthas(r, 'step') { return r['step'] }
+  1
+}
+
+# The iterator over a range's integers.
+fn __range_iter_of(r) {
+  mut a = r['start']
+  if __typeof(a) == 'nil' { a = 0 }
+  mut hi = r['end']
+  mut inclusive = r['inclusive']
+  if __typeof(hi) == 'nil' {
+    hi = 9223372036854775807
+    inclusive = true
+  }
+  __range_iter3(a, hi, __range_step(r), inclusive)
+}
+
+fn __range_repr(r) {
+  mut out = ''
+  if __typeof(r['start']) != 'nil' { out = out + __tostr(r['start']) }
+  out = out + '..'
+  if r['inclusive'] { out = out + '=' }
+  if __typeof(r['end']) != 'nil' { out = out + __tostr(r['end']) }
+  if __range_step(r) != 1 { out = out + ' by ' + __tostr(__range_step(r)) }
+  out
+}
+
+# Half-open slice bounds for a range key against a length-n sequence.
 fn __range_bounds(r, n) {
-  let ab = r["\zr"]
-  mut lo = ab[0]
-  mut hi = ab[1]
+  mut lo = r['start']
+  if __typeof(lo) == 'nil' { lo = 0 }
+  mut hi = r['end']
+  if __typeof(hi) == 'nil' { hi = n } else {
+    if r['inclusive'] { hi = hi + 1 }
+  }
   if lo < 0 { lo = lo + n }
   if hi < 0 { hi = hi + n }
   if lo < 0 { lo = 0 }
@@ -1688,6 +1796,9 @@ fn __method(recv, name, pos, kws, apos, line, col) {
   if t == 'object' {
     if __is_tuple(recv) { return __tuple_method(recv, name, args, line, col) }
     if __is_set(recv) { return __set_method(recv, name, args, line, col) }
+    # a range answers iter() with its integers; anything else it is asked
+    # is the plain object underneath (no iterator method set)
+    if name == 'iter' && __is_range(recv) { return __range_iter_of(recv) }
     if __is_instance(recv) {
       let cls = recv["\zc"]
       let ms = cls['methods']
@@ -2764,6 +2875,7 @@ fn __iter_or_nil(v, line, col) {
   if t == 'object' {
     if __is_tuple(v) { return __arr_iter(__titems(v)) }
     if __is_set(v) { return __arr_iter(__set_items(v)) }
+    if __is_range(v) { return __range_iter_of(v) }
     if __has_proto(v, 'iter') {
       let it = __invoke(v, 'iter', [], line, col)
       if __typeof(it) != 'object' {
@@ -4090,8 +4202,11 @@ fn __string_ns() {
 }
 
 fn __from_cp(cp, line, col) {
+  if __typeof(cp) != 'int' {
+    __raise('TypeError', 'type error: expected Long, got ' + __type_name(cp),
+            line, col)
+  }
   mut bad = false
-  if __typeof(cp) != 'int' { bad = true }
   if !bad {
     if cp < 0 { bad = true }
     if cp > 1114111 { bad = true }
@@ -4267,13 +4382,27 @@ fn __string_method2(s, name, args, line, col) {
   if name == 'code_points' || name == 'graphemes' {
     __nargs(name, args, 0, line, col)
     if name == 'code_points' { return __arr_iter(__cps(s)) }
+    # clusters: a zero-width joiner glues the next scalar on, and a
+    # variation selector, an emoji modifier, or a combining mark attaches
+    # to what came before (the small rules; no full Unicode database)
     let cps = __cps(s)
     mut out = []
+    mut cur = ''
     mut i = 0
     while i < __len(cps) {
-      __arraypush(out, __cp_str(cps[i]))
+      let cp = cps[i]
+      let attaches = (cp >= 768 && cp <= 879) || cp == 65038 || cp == 65039 ||
+                     (cp >= 127995 && cp <= 127999) || cp == 8205
+      if cur != '' && !attaches {
+        if cps[i - 1] != 8205 {
+          __arraypush(out, cur)
+          cur = ''
+        }
+      }
+      cur = cur + __cp_str(cp)
       i = i + 1
     }
+    if cur != '' { __arraypush(out, cur) }
     return __arr_iter(out)
   }
   if name == 'is_digit' || name == 'is_alpha' || name == 'is_alnum' ||
@@ -4417,36 +4546,20 @@ fn __range_iter3(a, b, step, incl) {
 # a..b / a..=b / a.. (open, for slicing) / by step; the bounds ride along
 # under "\zr" for the index forms
 fn __mk_range(a, b, incl, step, line, col) {
-  if __typeof(a) != 'int' {
+  if __typeof(a) != 'int' && __typeof(a) != 'nil' {
     __raise('TypeError', 'type error: expected Long, got ' + __type_name(a),
             line, col)
   }
   mut st = 1
   if __typeof(step) != 'nil' { st = step }
   if st == 0 { __raise('ValueError', 'range step must not be zero', line, col) }
-  mut hi = b
-  mut inclusive = incl == 1
-  if __typeof(b) == 'nil' {
-    hi = 9223372036854775807
-    inclusive = true
-  } else {
+  if __typeof(b) != 'nil' {
     if __typeof(b) != 'int' {
       __raise('TypeError', 'type error: expected Long, got ' + __type_name(b),
               line, col)
     }
   }
-  let base = __range_iter3(a, hi, st, inclusive)
-  let r = {iter: fn () { __range_iter3(a, hi, st, inclusive) },
-           has_next: base['has_next'], next: base['next']}
-  # the slice bounds stay half-open; an inclusive end is one past
-  mut slice_hi = hi
-  if inclusive {
-    if __typeof(b) != 'nil' {
-      if st > 0 { slice_hi = b + 1 } else { slice_hi = b - 1 }
-    }
-  }
-  r["\zr"] = [a, slice_hi]
-  r
+  {class: 'Range', start: a, end: b, inclusive: incl == 1, step: st}
 }
 
 # What escapes main: culebra's own one-line report, then a marker throw
@@ -4464,6 +4577,7 @@ fn __fix_trap(e) {
   if __str_index_of(msg, 'divide', 0) >= 0 { kind = 'ZeroDivisionError' }
   if __str_index_of(msg, 'argument(s)', 0) >= 0 { kind = 'ArityError' }
   if __str_index_of(msg, 'before', 0) >= 0 { kind = 'NameError' }
+  if __str_index_of(msg, 'uninitialized', 0) >= 0 { kind = 'NameError' }
   if __str_index_of(msg, 'recursion', 0) >= 0 { kind = 'RecursionError' }
   {kind: kind, message: msg, line: e['line'], col: e['col']}
 }
@@ -4493,12 +4607,57 @@ fn __fnval_iota() {
   }
 }
 fn __fnval_range() {
-  fn (a, b = nil) {
+  fn (a, b = nil, step = nil) {
     if __typeof(b) == 'nil' { return __range1(a, 0, 0) }
-    __range2(a, b, 0, 0)
+    if __typeof(step) == 'nil' { return __range2(a, b, 0, 0) }
+    __range3(a, b, step, 0, 0)
   }
 }
+fn __fnval_grid() { fn (a, b) { __grid(a, b, 0, 0) } }
 fn __fnval_inspect() { fn (v) { __inspect(v, 0, 0) } }
+
+# grid(x_range, y_range): the (x, y) tuples of two bounded ranges, x
+# varying fastest.
+fn __grid(xr, yr, line, col) {
+  if !__is_range(xr) {
+    __raise('TypeError', "type error: parameter 'x_range' expects Range", line, col)
+  }
+  if !__is_range(yr) {
+    __raise('TypeError', "type error: parameter 'y_range' expects Range", line, col)
+  }
+  mut i = 0
+  while i < 2 {
+    let r = [xr, yr][i]
+    if __typeof(r['start']) == 'nil' || __typeof(r['end']) == 'nil' {
+      __raise('TypeError', 'cannot iterate an unbounded range', line, col)
+    }
+    if __range_step(r) == 0 {
+      __raise('ValueError', 'range() step must not be zero', line, col)
+    }
+    i = i + 1
+  }
+  let ys = __range_iter_of(yr)
+  mut xs = __range_iter_of(xr)
+  mut y = nil
+  mut have_y = false
+  fn advance() {
+    # move to the next y that has an x; false at the end
+    while true {
+      if have_y {
+        if xs['has_next']() { return true }
+      }
+      if !ys['has_next']() { return false }
+      y = ys['next']()
+      have_y = true
+      xs = __range_iter_of(xr)
+    }
+  }
+  __mk_iter(fn () { advance() },
+            fn () {
+              if !advance() { return nil }
+              __mk_tuple([xs['next'](), y])
+            })
+}
 fn __fnval_type_of() { fn (v) { __type_of(v, 0, 0) } }
 fn __fnval_to_string() { fn (v) { __to_string(v, 0, 0) } }
 fn __fnval_to_long() { fn (v) { __to_long(v, 0, 0) } }
@@ -4569,7 +4728,24 @@ fn __assert_throws(kind, f, line, col) {
 }
 
 
-fn __range3(a, b, step, line, col) { __mk_range(a, b, 0, step, line, col) }
+fn __range3(a0, b0, step, line, col) {
+  if __typeof(step) != 'int' {
+    __raise('TypeError', 'type error: expected Long, got ' + __type_name(step),
+            line, col)
+  }
+  if step == 0 { __raise('ValueError', 'range step must not be zero', line, col) }
+  # range(n, step: s) counts from 0
+  mut a = a0
+  mut b = b0
+  if __typeof(b) == 'nil' {
+    b = a
+    a = 0
+  }
+  let base = __range_iter3(a, b, step, false)
+  {iter: fn () { __range_iter3(a, b, step, false) },
+   has_next: base['has_next'],
+   next: base['next']}
+}
 
 `
 
@@ -4605,6 +4781,9 @@ mut self_closure = {}
 mut self_slot = {}
 mut fn_pos = {}
 mut own_binding = {}   # letrec closure func -> the variable holding it
+mut pending_own = nil  # the binding the closure about to be scanned is let-bound to
+mut fwd_slots = {}     # "owner/slot" -> name, for bindings a closure named before they ran
+mut args_info = {}     # func -> {slot, first, count}: where its __ARGS__ live
 mut predeclared = {}   # "f/scope/name" slots taken by a forward reference
 mut runtime_immut = {}  # assignments that raise ImmutableError when run
 mut bare_init = {}     # "f/slot" bare bindings still awaiting their first write
@@ -4658,6 +4837,7 @@ let gen_end_marker = String.from_code_point(1) + 'gend'
 let exit_marker = String.from_code_point(1) + 'exit'
 let class_marker = String.from_code_point(1) + 'k'
 let family_marker = String.from_code_point(1) + 'f'
+let unbound_marker = String.from_code_point(1) + 'unbound'
 
 let intrinsics = {
   __typeof: ('typeof', 1), __tostr: ('tostr', 1), __len: ('len', 1),
@@ -4677,7 +4857,7 @@ let builtins = {
   to_float: ('__to_float', 1), iota: nil, range: nil,
   assert_eq: ('__assert_eq', 2), assert_true: ('__assert_true', 1),
   assert_throws: ('__assert_throws', 2),
-  assert_false: ('__assert_false', 1),
+  assert_false: ('__assert_false', 1), grid: ('__grid', 2),
 }
 
 fn new_func(parent, name, stmts, body_key) {
@@ -4776,68 +4956,157 @@ fn pat_binder(pat, name) {
 fn forward_declare(g, name) {
   mut h = funcs[g].parent
   while h != nil {
-    let scopes = scope_stack[h]
-    mut i = scopes.size() - 1
-    while i >= 0 {
-      let cur = scopes[i].cur
-      if cur[0] != nil {
-        mut j = cur[1] + 1
-        while j < cur[0].size() {
-          let d = decl_of(cur[0][j], name)
-          if d != nil {
-            let slot = nslots[h]
-            nslots[h] = slot + 1
-            scopes[i].map[name] = (slot, d.is_mut)
-            predeclared["{h}/{i}/{name}"] = true
-            return {kind: 'var', owner: h, slot: slot, is_mut: d.is_mut}
-          }
-          j = j + 1
-        }
-      }
-      i = i - 1
-    }
+    let fr = forward_declare_in(h, name)
+    if fr != nil { return fr }
     h = funcs[h].parent
+  }
+  nil
+}
+
+# The later declaration of `name` in one of h's open scopes, if any,
+# given its slot now.
+fn forward_declare_in(h, name) {
+  let scopes = scope_stack[h]
+  mut i = scopes.size() - 1
+  while i >= 0 {
+    let cur = scopes[i].cur
+    if cur[0] != nil {
+      # the statement being walked counts: a closure inside a let's own
+      # initializer names the binding that let declares
+      mut j = cur[1]
+      while j < cur[0].size() {
+        let d = decl_of(cur[0][j], name)
+        if d != nil {
+          let slot = nslots[h]
+          nslots[h] = slot + 1
+          scopes[i].map[name] = (slot, d.is_mut)
+          predeclared["{h}/{i}/{name}"] = true
+          # until the declaration runs the binding holds the unbound mark,
+          # which a read through the capture reports as culebra's NameError
+          fwd_slots["{h}/{slot}"] = name
+          return {kind: 'var', owner: h, slot: slot, is_mut: d.is_mut}
+        }
+        j = j + 1
+      }
+    }
+    i = i - 1
   }
   nil
 }
 
 fn declare_var(f, name, is_mut, at) {
   let scopes = scope_stack[f]
-  if scopes[scopes.size() - 1].map.has(name) {
+  let top = scopes[scopes.size() - 1]
+  if top.map.has(name) {
     let pk = "{f}/{scopes.size() - 1}/{name}"
     if predeclared.has(pk) {
       # a forward reference already took the slot
       predeclared.remove(pk)
-      let (slot, _) = scopes[scopes.size() - 1].map[name]
-      resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot, is_mut: is_mut}
-      return slot
     }
-    fail(at, "'{name}' is already defined")
+    # declared again in the same list: culebra rebinds the same binding
+    # (a closure built before the redeclaration follows it), so the slot
+    # is reused and only the mutability is updated
+    let (slot, _) = top.map[name]
+    top.map[name] = (slot, is_mut)
+    resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot, is_mut: is_mut}
+    return slot
   }
-  # culebra rejects shadowing across a function boundary (`self` is the
-  # receiver, redeclared per function on purpose)
-  mut h = funcs[f].parent
-  if name == 'self' || name == '__selfp' { h = nil }
-  while h != nil {
-    let outer = scope_stack[h]
-    mut i = outer.size() - 1
-    while i >= 0 {
-      if outer[i].map.has(name) {
-        let (osl, _) = outer[i].map[name]
-        if free[f].has("{h}:{osl}") {
+  # culebra's shadow rule is static: a name that any enclosing function
+  # (the top level excepted -- its names act as globals) binds anywhere in
+  # its body cannot be bound again inside a nested function, captured or
+  # not, textually before or after (`self` is the receiver, redeclared per
+  # function on purpose)
+  if !funcs[f].is_prelude && name != 'self' && name != '__selfp' && name != '_' {
+    mut h = funcs[f].parent
+    while h != nil {
+      # a raw generator redeclares its wrapper's parameters by construction
+      if funcs[h].parent != nil && funcs[h].gen_raw != f {
+        if local_names(h).has(name) {
           fail(at, "cannot shadow outer variable '{name}' (declared in an enclosing function)")
         }
       }
-      i = i - 1
+      h = funcs[h].parent
     }
-    h = funcs[h].parent
   }
   let slot = nslots[f]
   nslots[f] = slot + 1
-  scopes[scopes.size() - 1].map[name] = (slot, is_mut)
+  top.map[name] = (slot, is_mut)
   resolved[pkey(at)] =
       {kind: 'var', owner: f, slot: slot, is_mut: is_mut}
   slot
+}
+
+# Every name function g binds anywhere in its own body (parameters, let /
+# mut and pattern declarations, for and catch variables, match bindings,
+# bare bindings, nested fn and class names), nested functions excluded:
+# the set culebra's shadow check reads. Collected once per function.
+mut local_name_sets = {}
+fn local_names(g) {
+  let key = "{g}"
+  if local_name_sets.has(key) { return local_name_sets[key] }
+  mut names = {}
+  for p in funcs[g].params { names[p] = true }
+  for st in funcs[g].stmts { collect_binders(st, names, g) }
+  local_name_sets[key] = names
+  names
+}
+
+# Whether an enclosing function (the top level included) binds name.
+fn bound_outside(g, name) {
+  mut h = funcs[g].parent
+  while h != nil {
+    if local_names(h).has(name) { return true }
+    h = funcs[h].parent
+  }
+  false
+}
+
+fn collect_binders(node, names, g) {
+  if node.nodes == nil { return nil }
+  if is_fn_boundary(node.name) { return nil }
+  let n = node.name
+  cond {
+    n == 'decl' => pat_names(node.nodes[1], names),
+    n == 'pdecl' => pat_names(node.nodes[1], names),
+    # a for variable is block-scoped and deliberately left out; a bare
+    # assignment binds locally only when no outer scope has the name
+    n == 'try' => names[node.nodes[1].token] = true,
+    n == 'assign' => {
+      let lhs = node.nodes[0]
+      if lhs.name == 'ident' && node.nodes[1].token == '=' {
+        if !bound_outside(g, lhs.token) { names[lhs.token] = true }
+      }
+    },
+    n == 'fn_decl' => names[fn_decl_parts(node).id.token] = true,
+    n == 'class_d' => names[class_parts(node).id.token] = true,
+    n == 'arm' => pat_names(node.nodes[0], names),
+    _ => nil,
+  }
+  for c in node.nodes { collect_binders(c, names, g) }
+  nil
+}
+
+# The identifiers a declaration / for / match pattern binds.
+fn pat_names(pat, names) {
+  cond {
+    pat.name == 'ident' => names[pat.token] = true,
+    pat.name == 'typed_pat' || pat.name == 'typed_pt' || pat.name == 'bind_p' ||
+        pat.name == 'rest_pt' => names[pat.nodes[0].token] = true,
+    pat.name == 'tup_pat' || pat.name == 'arr_pat' || pat.name == 'bare_tup' ||
+        pat.name == 'arr_p' || pat.name == 'tup_p' => {
+      for sp in pat.nodes { pat_names(sp, names) }
+    },
+    pat.name == 'obj_p' => {
+      for op in pat.nodes {
+        cond {
+          op.nodes.size() == 2 => pat_names(op.nodes[1], names),
+          _ => names[op.nodes[0].token] = true,
+        }
+      }
+    },
+    _ => nil,
+  }
+  nil
 }
 
 fn new_scratch(f, at) {
@@ -4887,6 +5156,14 @@ fn resolve(f, name) {
     if funcs[h].is_prelude && prelude_named.has(name) {
       return {kind: 'fn', funcs: [prelude_named[name]]}
     }
+    # an enclosing function's later declaration outranks anything further
+    # out (culebra binds a nested function's free name at call time, when
+    # that declaration has run); a function's own later declarations do
+    # not count for its own direct reads
+    if h != f {
+      let fr = forward_declare_in(h, name)
+      if fr != nil { return fr }
+    }
     h = funcs[h].parent
   }
   {kind: 'none'}
@@ -4928,19 +5205,87 @@ fn fn_decl_parts(s) {
     i = i + 1
   }
   mut blk = s.nodes[i + 2]
-  if blk.name == 'ret_ann' { blk = s.nodes[i + 3] }
-  {decos: decos, id: s.nodes[i], prms: s.nodes[i + 1], blk: blk}
+  mut ret = nil
+  if blk.name == 'ret_ann' {
+    ret = blk
+    blk = s.nodes[i + 3]
+  }
+  {decos: decos, id: s.nodes[i], prms: s.nodes[i + 1], blk: blk, ret: ret}
 }
 
 # a method/titem node: [ident, fparams, ret_ann?, block?]
 fn method_parts(n) {
   mut blk = nil
+  mut ret = nil
   mut i = 2
   while i < n.nodes.size() {
     if n.nodes[i].name == 'block' { blk = n.nodes[i] }
+    if n.nodes[i].name == 'ret_ann' { ret = n.nodes[i] }
     i = i + 1
   }
-  {id: n.nodes[0], prms: n.nodes[1], blk: blk}
+  {id: n.nodes[0], prms: n.nodes[1], blk: blk, ret: ret}
+}
+
+# A declared return type, as the runtime check reads it: the type checks
+# of its alternatives, whether nil is allowed, and the annotation's text
+# for the error; nil when the annotation is a function type (unchecked).
+fn ret_spec(ann) {
+  let ty = ann.nodes[0]
+  mut checks = []
+  mut names = []
+  mut opt = false
+  fn take(atom) {
+    if atom.name != 'ident' { return false }
+    checks.push(ty_check_of(atom.token))
+    names.push(atom.token)
+    true
+  }
+  cond {
+    ty.name == 'ident' => { if !take(ty) { return nil } },
+    ty.name == 'tyexpr' => {
+      for c in ty.nodes {
+        cond {
+          c.name == 'tyor' => { if !take(c.nodes[0]) { return nil } },
+          c.name == 'tyopt' => opt = true,
+          _ => { if !take(c) { return nil } },
+        }
+      }
+    },
+    _ => return nil,
+  }
+  mut text = names.join(' | ')
+  if opt { text = text + '?' }
+  {checks: checks, opt: opt, text: text}
+}
+
+# Whether a statement's emitted node carries the value the enclosing
+# function falls off with (a declaration, loop, or control transfer does
+# not).
+fn is_value_stmt(node) {
+  let n = node.name
+  !(n == 'decl' || n == 'pdecl' || n == 'assign' || n == 'while' || n == 'for' ||
+    n == 'return_s' || n == 'break_s' || n == 'continue_s' || n == 'throw_s' ||
+    n == 'defer_s' || n == 'yield_v' || n == 'yield_f' || n == 'class_d' ||
+    n == 'trait_d' || n == 'fn_decl' || n == 'mod_stmt')
+}
+
+# Wrap a value leaving function f in its declared return-type check.
+fn emit_ret_check(m, f, v, ln, cl) {
+  if !funcs[f].has('ret') { return v }
+  let spec = ret_spec(funcs[f].ret)
+  if spec == nil { return v }
+  mut cs = []
+  for tc in spec.checks { cs.push(m.str_literal(s: tc, line: ln, col: cl)) }
+  let (pl, pc) = cond {
+    fn_pos.has(f) => (m.literal(v: fn_pos[f][0], line: ln, col: cl),
+                      m.literal(v: fn_pos[f][1], line: ln, col: cl)),
+    _ => pos_args(m, {line: ln, column: cl}),
+  }
+  call_pre(m, f, '__ret_check',
+           [v, m.array_lit(items_list: make_list(m, cs), line: ln, col: cl),
+            m.bool_literal(v: spec.opt, line: ln, col: cl),
+            m.str_literal(s: spec.text, line: ln, col: cl), pl, pc],
+           ln, cl)
 }
 
 # Whether a statement subtree contains a yield of its own -- not one hidden
@@ -5003,6 +5348,7 @@ fn scan_body_stmts(f, stmts, blk_key) {
         let g = new_func(f, "{d.id.token}.{it.id.token}", it.blk.nodes,
                          pkey(it.blk))
         closure_of[pkey(mn)] = g
+        if it.ret != nil { funcs[g]['ret'] = it.ret }
         cond {
           it.id.token == 'new' => ctors.push(g),
           _ => {
@@ -5042,6 +5388,7 @@ fn scan_body_stmts(f, stmts, blk_key) {
         let it = method_parts(mn)
         let g = new_func(f, "{d.id.token}.{it.id.token}", it.blk.nodes, pkey(it.blk))
         closure_of[pkey(mn)] = g
+        if it.ret != nil { funcs[g]['ret'] = it.ret }
         smeths[it.id.token] = g
       }
       mut finits = {}
@@ -5094,6 +5441,7 @@ fn scan_body_stmts(f, stmts, blk_key) {
           },
           _ => {
             let g = new_func(f, d.id.token, d.blk.nodes, pkey(d.blk))
+            if d.ret != nil { funcs[g]['ret'] = d.ret }
             cond {
               funcs[f].named.has(d.id.token) =>
                 funcs[f].named[d.id.token].push(g),
@@ -5316,6 +5664,25 @@ fn note_deco(dn, f, r) {
 # the frame).
 # Whether a subtree names `self` anywhere -- nested closures included,
 # since an inner closure's `self` falls back to the enclosing one's.
+# Whether a statement list names `name` directly (nested functions have
+# their own).
+fn mentions_name(stmts, name) {
+  for st in stmts {
+    if mentions_name_in(st, name) { return true }
+  }
+  false
+}
+
+fn mentions_name_in(node, name) {
+  if node.name == 'ident' && node.token == name { return true }
+  if node.nodes == nil { return false }
+  if is_fn_boundary(node.name) { return false }
+  for c in node.nodes {
+    if mentions_name_in(c, name) { return true }
+  }
+  false
+}
+
 fn mentions_self(node) {
   if node.name == 'ident' {
     if node.token == 'self' { return true }
@@ -5341,6 +5708,21 @@ fn walk_fn(f, param_nodes) {
     declare_var(f, rec.pname, false, rec.id)
     funcs[f].params.push(rec.pname)
     funcs[f].pspecs.push(rec)
+  }
+  # a closure body naming __ARGS__ takes eight hidden trailing parameters,
+  # which the prologue trims to the positionals that overflowed
+  if fn_pos.has(f) && mentions_name(funcs[f].stmts, '__ARGS__') {
+    let at = synth('ident', [], funcs[f].stmts[0])
+    let first = funcs[f].params.size()
+    for k in range(8) {
+      let hn = "\x01a{k}"
+      declare_var(f, hn, false, at)
+      funcs[f].params.push(hn)
+      funcs[f].pspecs.push({pname: hn, ty: nil, dflt: nil, rest: false, id: nil,
+                            hidden: true})
+    }
+    let slot = declare_var(f, '__ARGS__', false, at)
+    args_info[f] = {slot: slot, first: first, count: 8}
   }
   # a default's expression binds in the callee, after the params before it
   for rec in funcs[f].pspecs {
@@ -5456,7 +5838,13 @@ fn hoist_bare(f, stmts) {
   mut out = []
   for st in stmts { collect_bare(st, out) }
   for lhs in out {
-    let r = resolve(f, lhs.token)
+    mut r = resolve(f, lhs.token)
+    # a name an enclosing scope declares further on is that binding
+    # (culebra resolves the assignment when the closure runs)
+    if r.kind == 'none' {
+      let fr = forward_declare(f, lhs.token)
+      if fr != nil { r = fr }
+    }
     if r.kind == 'none' {
       mut later = false
       for st in stmts {
@@ -5517,9 +5905,11 @@ fn scan_stmt(node, f) {
                    (value.name == 'closure' || value.name == 'lambda')
       if letrec {
         declare_var(f, pat.token, is_mut_kw(kw.token), pat)
+        # the closure may name itself through `fn`: its scan picks the
+        # binding up before walking the body
+        pending_own = resolved[pkey(pat)]
         scan_expr(value, f)
-        # the closure may name itself through `fn`
-        own_binding[closure_of[pkey(value)]] = resolved[pkey(pat)]
+        pending_own = nil
       } else {
         scan_expr(value, f)
         cond {
@@ -5683,27 +6073,9 @@ fn scan_call(node, f) {
     if args.nodes.size() != 1 { fail(id, "{id.token} takes 1 argument") }
     return nil
   }
-  if !in_prelude && builtins.has(id.token) {
-    cond {
-      id.token == 'range' => {
-        if args.nodes.size() < 1 || args.nodes.size() > 3 {
-          fail(id, 'range takes 1 to 3 arguments')
-        }
-      },
-      id.token == 'iota' => {
-        if args.nodes.size() < 1 || args.nodes.size() > 2 {
-          fail(id, 'iota takes 1 or 2 arguments')
-        }
-      },
-      _ => {
-        let (_, arity) = builtins[id.token]
-        if args.nodes.size() != arity {
-          fail(id, "{id.token} takes {arity} argument(s)")
-        }
-      },
-    }
-    return nil
-  }
+  # a built-in's arity is checked when the call runs (culebra's ArityError
+  # is catchable), so the scan only notes the arguments
+  if !in_prelude && builtins.has(id.token) { return nil }
   if in_prelude {
     if intrinsics.has(id.token) {
       let (_, arity) = intrinsics[id.token]
@@ -5859,6 +6231,13 @@ fn scan_chain_ops(node, f, give_scratch) {
 fn scan_mcall_target(step, f) {
   let name = step.nodes[0]
   if builtin_methods.contains(name.token) { return nil }
+  # a global built-in (range, inspect, ...) takes the receiver as its first
+  # argument, like any free function
+  if !in_prelude && builtins.has(name.token) {
+    resolved[pkey(name)] = {kind: 'bval', name: name.token}
+    new_scratch(f, name)
+    return nil
+  }
   let r = resolve(f, name.token)
   if r.kind == 'fn' {
     resolved[pkey(name)] = r
@@ -5866,6 +6245,12 @@ fn scan_mcall_target(step, f) {
     # the receiver + each argument each hold a slot across dispatch
     new_scratch(f, name)
     for a in step.nodes[1].nodes { new_scratch(f, arg_val(a)) }
+  }
+  # a variable holding a callable serves UFCS too; the receiver holds a
+  # slot across the own-method test
+  if r.kind == 'var' {
+    note_use(name, f, r)
+    new_scratch(f, name)
   }
 }
 
@@ -5968,6 +6353,10 @@ fn scan_expr(node, f) {
                        pkey(node))
       closure_of[pkey(node)] = g
       fn_pos[g] = (node.line, node.column)
+      if pending_own != nil {
+        own_binding[g] = pending_own
+        pending_own = nil
+      }
       if mentions_self(bodye) { self_closure[g] = resolve(f, 'self') }
       let saved = loop_depth[f]
       walk_fn(g, prms.nodes)
@@ -5980,6 +6369,11 @@ fn scan_expr(node, f) {
                        pkey(blk))
       closure_of[pkey(node)] = g
       fn_pos[g] = (node.line, node.column)
+      if nodes.size() == 3 { funcs[g]['ret'] = nodes[1] }
+      if pending_own != nil {
+        own_binding[g] = pending_own
+        pending_own = nil
+      }
       if mentions_self(blk) { self_closure[g] = resolve(f, 'self') }
       let saved = loop_depth[f]
       walk_fn(g, prms.nodes)
@@ -6715,10 +7109,62 @@ fn emit_call(m, node, f) {
     mut arg_ids = []
     for a in args.nodes { arg_ids.push(emit_expr(m, arg_val(a), f)) }
     let (pl, pc) = pos_args(m, id)
+    # the wrong count is culebra's runtime ArityError, in its two wordings
+    let n = args.nodes.size()
+    let bad = cond {
+      id.token == 'range' || id.token == 'iota' => cond {
+        n < 1 || n > 3 => "'" + id.token + "' takes 1 to 2 arguments but {n} given",
+        _ => nil,
+      },
+      id.token == 'grid' => cond {
+        n != 2 => "'grid' takes 2 arguments but {n} given",
+        _ => nil,
+      },
+      _ => {
+        let (_, arity) = builtins[id.token]
+        cond {
+          n != arity => "expected {arity} positional argument" +
+                        cond { arity == 1 => '', _ => 's' } + ", got {n}",
+          _ => nil,
+        }
+      },
+    }
+    if bad != nil {
+      let ids2 = arg_ids
+      ids2.push(call_pre(m, f, '__raise',
+                         [m.str_literal(s: 'ArityError', line: ln, col: cl),
+                          m.str_literal(s: bad, line: ln, col: cl), pl, pc],
+                         ln, cl))
+      return m.block(stmts_list: make_list(m, ids2), line: ln, col: cl)
+    }
+    # range's step is keyword-only: the positionals pick start/end, and a
+    # step keyword selects the stepped form with the end left nil for one
+    # positional
+    mut npos = 0
+    mut stepv = nil
+    mut posv = []
+    for i in range(args.nodes.size()) {
+      let a = args.nodes[i]
+      cond {
+        a.name == 'kwarg' && a.nodes[0].token == 'step' && id.token == 'range' =>
+          stepv = arg_ids[i],
+        a.name == 'kwarg' => nil,
+        _ => {
+          npos = npos + 1
+          posv.push(arg_ids[i])
+        },
+      }
+    }
+    if id.token == 'range' && stepv != nil {
+      if posv.size() == 1 { posv.push(m.nil_literal(line: ln, col: cl)) }
+      posv.push(stepv)
+      arg_ids = posv
+    }
     let target = cond {
       id.token == 'range' => cond {
-        args.nodes.size() == 1 => '__range1',
-        args.nodes.size() == 2 => '__range2',
+        stepv != nil => '__range3',
+        npos == 1 => '__range1',
+        npos == 2 => '__range2',
         _ => '__range3',
       },
       id.token == 'iota' => cond {
@@ -6878,6 +7324,10 @@ fn emit_spec(m, g, skip, ln, cl) {
   mut i = skip
   while i < specs.size() {
     let rec = specs[i]
+    if rec.hidden == true {
+      i = i + 1
+      continue
+    }
     let tc = cond {
       rec.ty == nil => m.nil_literal(line: ln, col: cl),
       _ => m.str_literal(s: ty_check_of(rec.ty), line: ln, col: cl),
@@ -7215,8 +7665,24 @@ fn emit_postfix_step(m, f, value, step) {
                                     [sref(), m.str_literal(s: name.token, line: name.line, col: name.column),
                                      posv, kwsv, aposv, pl, pc],
                                     ln, cl)
-          let via_ufcs = emit_dispatch(m, f, name.token, r.funcs, step.nodes[1].nodes,
-                                       {slot: slot, value: sref()}, step)
+          let via_ufcs = cond {
+            r.kind == 'fn' =>
+              emit_dispatch(m, f, name.token, r.funcs, step.nodes[1].nodes,
+                            {slot: slot, value: sref()}, step),
+            r.kind == 'bval' =>
+              call_pre(m, f, '__ufcs_call',
+                       [call_pre(m, f, '__fnval_' + r.name, [], name.line, name.column),
+                        sref(), posv, kwsv, aposv, pl, pc],
+                       ln, cl),
+            _ => {
+              # a callable variable: the receiver goes first
+              let a = access_from(f, (r.owner, r.slot))
+              call_pre(m, f, '__ufcs_call',
+                       [m.var_ref(kind: a.kind, index: a.index, line: name.line, col: name.column),
+                        sref(), posv, kwsv, aposv, pl, pc],
+                       ln, cl)
+            },
+          }
           m.block(stmts_list: make_list(m, [store,
                       m.make_if_else(cond: own, then_branch: via_method,
                                      else_branch: via_ufcs, line: ln, col: cl)]),
@@ -7428,6 +7894,14 @@ fn emit_expr(m, node, f) {
               let (pl, pc) = pos_args(m, node)
               call_pre(m, f, '__self_use', [ref, pl, pc], node.line, node.column)
             },
+            # a binding named before its declaration ran is still unbound
+            # (read through a capture or directly, ahead of the let)
+            fwd_slots.has("{r.owner}/{r.slot}") => {
+              let (pl, pc) = pos_args(m, node)
+              call_pre(m, f, '__fwd_read',
+                       [ref, m.str_literal(s: token, line: node.line, col: node.column), pl, pc],
+                       node.line, node.column)
+            },
             _ => ref,
           }
         },
@@ -7487,7 +7961,7 @@ fn emit_expr(m, node, f) {
       }
       let incl = cond { op.token == '..=' => 1, _ => 0 }
       let lo = cond {
-        open_start => m.literal(v: 0, line: ln, col: cl),
+        open_start => m.nil_literal(line: ln, col: cl),
         _ => emit_expr(m, a, f),
       }
       call_pre(m, f, '__mk_range', [lo, hi, m.literal(v: incl, line: ln, col: cl), st, pl, pc],
@@ -8102,7 +8576,8 @@ fn emit_stmt(m, node, f) {
             node.nodes.size() == 1 => emit_expr(m, node.nodes[0], f),
             _ => m.nil_literal(line: node.line, col: node.column),
           }
-          m.make_return(value: v, line: node.line, col: node.column)
+          m.make_return(value: emit_ret_check(m, f, v, node.line, node.column),
+                        line: node.line, col: node.column)
         },
       }
     },
@@ -8166,6 +8641,11 @@ fn fresh_cells(m, f, base, high, ln, cl) {
   while s < high {
     if cell_index[f].has(s) {
       ids.push(m.cell_fresh(cell: cell_index[f][s], line: ln, col: cl))
+      if fwd_slots.has("{f}/{s}") {
+        ids.push(m.assign(kind: 'cell', index: cell_index[f][s],
+                          value: m.str_literal(s: unbound_marker, line: ln, col: cl),
+                          line: ln, col: cl))
+      }
     }
     s = s + 1
   }
@@ -8240,7 +8720,7 @@ fn emit_funcs(m) {
                               value: emit_expr(m, rec.dflt, f), line: 1, col: 1)
           ids.push(m.make_if(cond: missing, then_branch: fill, line: 1, col: 1))
         },
-        is_closure && rec.pname != '__selfp' && !rec.rest => {
+        is_closure && rec.pname != '__selfp' && !rec.rest && rec.hidden != true => {
           let (dl, dc) = fn_pos[f]
           let raise = call_pre(m, f, '__raise',
                                [m.str_literal(s: 'ArityError', line: 1, col: 1),
@@ -8286,6 +8766,33 @@ fn emit_funcs(m) {
                           line: 1, col: 1))
       }
     }
+    # a binding some closure named before its declaration starts unbound
+    for s in range(nslots[f]) {
+      if fwd_slots.has("{f}/{s}") && cell_index[f].has(s) {
+        ids.push(m.assign(kind: 'cell', index: cell_index[f][s],
+                          value: m.str_literal(s: unbound_marker, line: 1, col: 1),
+                          line: 1, col: 1))
+      }
+    }
+    # __ARGS__: the positionals that overflowed the declared parameters,
+    # read off the hidden trailing slots by the supplied count
+    if args_info.has(f) {
+      let ai = args_info[f]
+      mut hidden = []
+      for k in range(ai.count) {
+        hidden.push(m.var_ref(kind: 'local', index: ai.first + k, line: 1, col: 1))
+      }
+      let overflow = m.binary(op: 'sub',
+                              lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
+                              rhs: m.literal(v: ai.first, line: 1, col: 1), line: 1, col: 1)
+      let a2 = access_from(f, (f, ai.slot))
+      ids.push(m.assign(kind: a2.kind, index: a2.index,
+                        value: call_pre(m, f, '__first_n',
+                                        [m.array_lit(items_list: make_list(m, hidden), line: 1, col: 1),
+                                         overflow],
+                                        1, 1),
+                        line: 1, col: 1))
+    }
     let rw = fi.gen_raw
     if rw != nil {
       # The wrapper's whole body: call the raw generator (its closure built
@@ -8323,6 +8830,15 @@ fn emit_funcs(m) {
     for s in fi.stmts {
       let e = emit_stmt(m, s, f)
       if e != nil { ids.push(e) }
+    }
+    # a declared return type also covers the value the body falls off with
+    if fi.has('ret') && fi.is_gen != true && fi.stmts.size() > 0 {
+      let last = fi.stmts[fi.stmts.size() - 1]
+      cond {
+        is_value_stmt(last) && ids.size() > 0 =>
+          ids[ids.size() - 1] = emit_ret_check(m, f, ids[ids.size() - 1], last.line, last.column),
+        _ => ids.push(emit_ret_check(m, f, m.nil_literal(line: 1, col: 1), last.line, last.column)),
+      }
     }
     if fi.is_gen == true {
       # The end sentinel: falling off the body suspends here forever
@@ -8468,6 +8984,10 @@ for path in cli {
   self_slot = {}
   fn_pos = {}
   own_binding = {}
+  pending_own = nil
+  local_name_sets = {}
+  fwd_slots = {}
+  args_info = {}
   synth_count = 0
   predeclared = {}
   runtime_immut = {}
