@@ -72,3 +72,7 @@ show('what enumerates', [Object.keys(new Enumerated()), Object.keys(Enumerated.p
 show('for-in reaches the prototype', (function () { const ks = []; for (const k in new Enumerated()) ks.push(k); return ks; })());
 show('a function object', (function () { function f(a, b) {} f.tag = 1; return [Object.keys(f), f.name, f.length, f.hasOwnProperty('name')]; })());
 show('an accessor pair lists once', Object.keys({ get v() { return 1; }, set v(x) {}, set w(x) {} }));
+
+class Numbered { 1() { return 'method'; } static 2() { return 'static'; } get 3() { return 'getter'; } 4 = 'field'; }
+show('number keys', (function () { const n = new Numbered(); return [n[1](), Numbered[2](), n[3], n[4], Object.keys(n)]; })());
+show('a deleted member enumerates again', (function () { class D { m() {} } delete D.prototype.m; D.prototype.m = 1; return Object.keys(D.prototype); })());

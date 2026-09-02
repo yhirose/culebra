@@ -178,7 +178,8 @@ let grammar = `
   setter_c   <- 'set' mkey '(' ident ')' block                   { no_ast_opt }
   method_c   <- mkey '(' params ')' block                        { no_ast_opt }
   field_c    <- mkey ('=' !'=' expr)? ';'?                       { no_ast_opt }
-  mkey       <- computed_k / pname / string
+  mkey       <- computed_k / pkey
+  pkey       <- pname / string / number
   computed_k <- '[' expr ']'                                     { no_ast_opt }
   true_l     <- 'true'                                           { no_ast_opt }
   false_l    <- 'false'                                          { no_ast_opt }
@@ -190,14 +191,12 @@ let grammar = `
   string     <- < ['] (!['\\] . / '\\' .)* ['] > / < ["] (!["\\] . / '\\' .)* ["] >
   array_lit  <- '[' (arg (',' arg)*)? ','? ']'                   { no_ast_opt }
   object_lit <- '{' (oprop (',' oprop)*)? ','? '}'               { no_ast_opt }
-  oprop      <- getter_p / setter_p / gmethod_p / amethod_p / method_p / kv_p / computed_p / ospread / short_p
+  oprop      <- getter_p / setter_p / gmethod_p / amethod_p / method_p / kv_p / ospread / short_p
   gmethod_p  <- '*' mkey '(' params ')' block                    { no_ast_opt }
   amethod_p  <- 'async' mkey '(' params ')' block                { no_ast_opt }
   getter_p   <- 'get' mkey '(' ')' block                         { no_ast_opt }
   setter_p   <- 'set' mkey '(' ident ')' block                   { no_ast_opt }
-  kv_p       <- pkey ':' expr                                    { no_ast_opt }
-  pkey       <- pname / string / number
-  computed_p <- '[' expr ']' ':' expr                            { no_ast_opt }
+  kv_p       <- mkey ':' expr                                    { no_ast_opt }
   method_p   <- mkey '(' params ')' block                        { no_ast_opt }
   short_p    <- ident                                            { no_ast_opt }
   ospread    <- '...' expr                                       { no_ast_opt }
@@ -802,7 +801,12 @@ function __set(o, k, v) {
   return v;
 }
 function __delete(o, k) {
-  if (__typeof(o) === 'object') { __objectremove(o, __key(k)); }
+  if (__typeof(o) === 'object') {
+    var key = __key(k);
+    __objectremove(o, key);
+    var h = o['\x01hide'];
+    if (__typeof(h) !== 'nil') __objectremove(h, key);
+  }
   return true;
 }
 // A property that exists but does not enumerate: everything a class or the
@@ -841,9 +845,12 @@ function __own_keys(o) {
       var take = true;
       if (key[0] === '\x01') {
         // an accessor is a property too, listed once for the pair
-        name = __substr(key, 5, __len(key));
-        take = __str_index_of(key, '\x01get:', 0) === 0 ||
-          (__str_index_of(key, '\x01set:', 0) === 0 && !__objecthas(o, '\x01get:' + name));
+        var is_get = __str_index_of(key, '\x01get:', 0) === 0;
+        take = is_get || __str_index_of(key, '\x01set:', 0) === 0;
+        if (take) {
+          name = __substr(key, 5, __len(key));
+          take = is_get || !__objecthas(o, '\x01get:' + name);
+        }
       }
       if (take && !(any_hidden && __objecthas(hidden, name))) {
         if (__aindex(name) >= 0) __arraypush(ints, name); else __arraypush(out, name);
@@ -898,11 +905,7 @@ function __mkfn(c, name, arrow, len) {
 // A method on a built-in: the property and the function's own name are the
 // same word, so it is written once. Like every method a class or the
 // runtime defines, it is not enumerable.
-function __def(o, name, c) {
-  o[name] = __mkfn(c, name, false);
-  __hide(o, name);
-  return undefined;
-}
+function __def(o, name, c) { return __defv(o, name, __mkfn(c, name, false)); }
 // ... and a built-in's constant or alias, and its accessor, which are not
 // enumerable either
 function __defv(o, name, v) {
@@ -958,8 +961,8 @@ function __spread_into(out, v) {
 }
 
 // --- classes -------------------------------------------------------------------
-// A class is a constructor function object whose prototype (marked
-// non-enumerable for for-in) chains to the parent's; the class itself
+// A class is a constructor function object whose prototype chains to the
+// parent's (its members are not enumerable, like any defined ones); the class itself
 // chains to the parent for the statics. Instance fields are a function the
 // constructor runs -- at entry for a base class, after super() for a
 // derived one; a class without its own constructor gets the default.
@@ -985,17 +988,15 @@ function __run_fields(cls, t) {
   return undefined;
 }
 function __def_method(cls, is_static, key, f) {
-  var target = is_static ? cls : cls.prototype;
-  target[__key(key)] = f;
-  __hide(target, __key(key));
-  return undefined;
+  return __defv(is_static ? cls : cls.prototype, __key(key), f);
 }
 // the property an accessor of a given kind ('get' or 'set') is stored under
 function __acc_key(kind, key) { return '\x01' + kind + ':' + __key(key); }
 function __def_accessor(cls, is_static, kind, key, f) {
   var target = is_static ? cls : cls.prototype;
-  target[__acc_key(kind, key)] = f;
-  __hide(target, __key(key));
+  var name = __key(key);
+  target[__acc_key(kind, name)] = f;
+  __hide(target, name);
   return undefined;
 }
 function __super_call(cls, t, args) {
@@ -1025,9 +1026,7 @@ function __err(kind, msg) {
 }
 // an error's message is an own property of its own that does not enumerate
 function __set_message(e, msg) {
-  e.message = __typeof(msg) === 'nil' ? '' : __str(msg);
-  __hide(e, 'message');
-  return undefined;
+  return __defv(e, 'message', __typeof(msg) === 'nil' ? '' : __str(msg));
 }
 // a VM trap caught by user code becomes the JS error it stands for
 function __catch_fix(e) {
@@ -1094,13 +1093,20 @@ function __obj_rest(o, excluded) {
   }
   return out;
 }
-// for-in: own keys, then the enumerable keys up the chain (the built-in
-// prototypes' members are not enumerable)
+// for-in: own keys, then the enumerable keys up the chain. A prototype whose
+// members are all hidden -- every built-in one, every class one -- answers
+// nothing, and goes on answering nothing until its own keys change, so it
+// remembers the count it had when it did. The note is one of those keys, so
+// it invalidates itself and no write has to know about it.
 function __forin_keys(o) {
   var out = __own_keys(o);
   var p = __typeof(o) === 'object' && !__is_null(o) ? __proto_next(o) : undefined;
   while (__typeof(p) === 'object') {
+    var nkeys = __len(__objectkeys(p));
+    var noted = __objecthas(p, '\x01nothing');
+    if (noted && p['\x01nothing'] === nkeys) { p = __proto_next(p); continue; }
     var ks = __own_keys(p);
+    if (__len(ks) === 0) { p['\x01nothing'] = noted ? nkeys : nkeys + 1; p = __proto_next(p); continue; }
     var i = 0;
     while (i < __len(ks)) {
       var k = ks[i];
@@ -1123,8 +1129,9 @@ function __gset(name, v) { __G[name] = v; return v; }
 
 // --- for-of ------------------------------------------------------------------
 // An iterator record: {next} answering {value, done}. Arrays and strings
-// walk by index against their live length, under hidden keys a user's own
-// iterator cannot spell.
+// walk by index against their live length, under the hidden keys the fast
+// path is recognised by -- hidden ones rather than the src and i a program
+// might reach for, which is what a user's own iterator used to collide with.
 function __iter(v) {
   var t = __typeof(v);
   if (t === 'array' || t === 'string') {
@@ -1247,10 +1254,8 @@ function __init_errors(G) {
   // the brand every error inherits, so that one created off the prototype
   // rather than through a constructor still reads as an error
   ep['\x01err'] = true;
-  ep.name = 'Error';
-  ep.message = '';
-  __hide(ep, 'name');
-  __hide(ep, 'message');
+  __defv(ep, 'name', 'Error');
+  __defv(ep, 'message', '');
   __def(ep, 'toString', function (t) {
     var nm = __get(t, 'name');
     var name = __typeof(nm) === 'nil' ? 'Error' : __str(nm);
@@ -1260,15 +1265,15 @@ function __init_errors(G) {
     if (msg === '') return name;
     return name + ': ' + msg;
   });
-  __ctor(G, 'Error', ep, function (t, message) { __set_message(t, message); return undefined; });
+  var body = function (t, message) { __set_message(t, message); return undefined; };
+  __ctor(G, 'Error', ep, body);
   var names = ['TypeError', 'RangeError', 'ReferenceError', 'SyntaxError'];
   var i = 0;
   while (i < __len(names)) {
     var p = {};
     p['\x01proto'] = ep;
-    p.name = names[i];
-    __hide(p, 'name');
-    __ctor(G, names[i], p, function (t, message) { __set_message(t, message); return undefined; });
+    __defv(p, 'name', names[i]);
+    __ctor(G, names[i], p, body);
     i = i + 1;
   }
 }
@@ -1322,9 +1327,7 @@ function __init_object(G) {
   __def(G.Function_proto, 'bind', function (t, thisv, ...bound) {
     var target = t;
     return __mkfn(function (t2, ...extra) {
-      var args = [];
-      var j = 0;
-      while (j < __len(bound)) { __arraypush(args, bound[j]); j = j + 1; }
+      var args = __slice_from(bound, 0);
       var k = 0;
       while (k < __len(extra)) { __arraypush(args, extra[k]); k = k + 1; }
       return __call(target, thisv, args);
@@ -1332,7 +1335,7 @@ function __init_object(G) {
   });
   __def(G, 'Boolean', function (t, v) { return __truthy(v); });
   G.Boolean.prototype = G.Boolean_proto;
-  G.Boolean_proto.constructor = G.Boolean;
+  __defv(G.Boolean_proto, 'constructor', G.Boolean);
   __def(G.Boolean_proto, 'toString', function (t) { return __str(t); });
 }
 
@@ -1736,17 +1739,19 @@ function __parse_int(s0, radix) {
   return sign * v;
 }
 
+// console belongs to the host rather than the language, and Node's members
+// enumerate where a built-in's do not, so these are plain properties
 function __init_console(G) {
   var c = {};
-  __def(c, 'log', function (t, ...xs) {
+  c.log = __mkfn(function (t, ...xs) {
     var out = '';
     var i = 0;
     while (i < __len(xs)) { if (i > 0) out = out + ' '; out = out + __log_str(xs[i]); i = i + 1; }
     __print(out);
     return undefined;
-  });
-  __defv(c, 'error', c.log);
-  __defv(c, 'warn', c.log);
+  }, 'log', false);
+  c.error = c.log;
+  c.warn = c.log;
   c.info = c.log;
   G.console = c;
 }
@@ -1964,13 +1969,13 @@ function __coll_remove(arr, i) {
 // an iterator over a collection's live arrays: pick answers the value
 function __coll_iter(t, pick) {
   var it = {};
-  it.i = 0;
+  it['\x01i'] = 0;
   __def(it, 'next', function (t2) {
     var r = {};
-    if (it.i >= __len(t['\x01keys'])) { r.value = undefined; r.done = true; return r; }
-    r.value = pick(t, it.i);
+    if (it['\x01i'] >= __len(t['\x01keys'])) { r.value = undefined; r.done = true; return r; }
+    r.value = pick(t, it['\x01i']);
     r.done = false;
-    it.i = it.i + 1;
+    it['\x01i'] = it['\x01i'] + 1;
     return r;
   });
   it['\x01iter'] = __mkfn(function (t2) { return it; }, '[Symbol.iterator]', false);
@@ -3017,6 +3022,39 @@ fn scan_mkey(mk, f) {
   mkey_name(mk)
 }
 
+# A member's parameters and body, by its form: an accessor spells them
+# differently from a method, in a class body and an object literal alike.
+fn member_params_body(mem) {
+  cond {
+    mem.name.starts_with('getter') => ([], mem.nodes[1]),
+    mem.name.starts_with('setter') => ([mem.nodes[1]], mem.nodes[2]),
+    _ => (mem.nodes[1].nodes, mem.nodes[2]),
+  }
+}
+# ... and the function a call reaches: a generator or async member is its raw
+# body plus the wrapper that answers the activation.
+fn wrap_member(f, mem, g, mname) {
+  cond {
+    mem.name.starts_with('gmethod') => wrap_generator(f, mem, g, mname),
+    mem.name.starts_with('amethod') => wrap_async(f, mem, g, mname),
+    _ => g,
+  }
+}
+
+# What a step after a primary contributes to the scan -- the same list the
+# emitter walks, for a postfix chain and for a new expression alike.
+fn scan_step(step, f) {
+  cond {
+    step.name == 'call_p' ||
+      step.name == 'opt_call' => scan_args(step.nodes[0], f),
+    step.name == 'index_p' ||
+      step.name == 'opt_index' => scan_expr(step.nodes[0], f),
+    step.name == 'new_args' &&
+      step.nodes.size() > 0 => scan_args(step.nodes[0], f),
+    _ => nil,
+  }
+}
+
 # A class: every method, accessor and the constructor is a function of its
 # own whose `super` reaches the class through a hidden binding in the
 # enclosing scope (the home); instance fields become one more function the
@@ -3071,13 +3109,7 @@ fn scan_class(node, f) {
         mem.name == 'amethod_c' ||
         mem.name == 'getter_c' ||
         mem.name == 'setter_c' => {
-        let (params, blk) = cond {
-          mem.name == 'method_c' ||
-            mem.name == 'gmethod_c' ||
-            mem.name == 'amethod_c' => (mem.nodes[1].nodes, mem.nodes[2]),
-          mem.name == 'getter_c' => ([], mem.nodes[1]),
-          _ => ([mem.nodes[1]], mem.nodes[2]),
-        }
+        let (params, blk) = member_params_body(mem)
         let g = new_func(f, mname, blk.nodes, nil, false)
         closure_of[pkey(mem)] = g
         calls[f].push(g)
@@ -3085,11 +3117,7 @@ fn scan_class(node, f) {
         funcs[g]['is_static'] = is_static
         use_var(g, f, home)
         walk_fn(g, params, nil)
-        let fv = cond {
-          mem.name == 'gmethod_c' => wrap_generator(f, mem, g, mname),
-          mem.name == 'amethod_c' => wrap_async(f, mem, g, mname),
-          _ => g,
-        }
+        let fv = wrap_member(f, mem, g, mname)
         info.members.push({node: mem, is_static: is_static, key: mk, func: fv})
       },
       mem.name == 'field_c' && is_static => {
@@ -3160,10 +3188,6 @@ fn wrap_body(f, node, g, name, is_async) {
   let w = new_func(f, name, [], nil, false)
   funcs[w]['gen_raw'] = g
   funcs[w]['is_async'] = is_async
-  # the body's defaults, for the arity the wrapper reports as `length`
-  for d in funcs[g].dflts {
-    funcs[w].dflts.push(d)
-  }
   calls[w].push(g)
   enter_scope(w)
   declare_var(w, 'this', nil)
@@ -3294,34 +3318,12 @@ fn scan_expr(node, f) {
         }
       }
     },
-    {name: 'postfix'} => {
+    {name: 'postfix'} | {name: 'new_e'} => {
       scan_expr(node.nodes[0], f)
       mut i = 1
       while i < node.nodes.size() {
-        let step = node.nodes[i]
-        cond {
-          step.name == 'call_p' ||
-            step.name == 'opt_call' => scan_args(step.nodes[0], f),
-          step.name == 'index_p' ||
-            step.name == 'opt_index' => scan_expr(step.nodes[0], f),
-          _ => nil,
-        }
+        scan_step(node.nodes[i], f)
         i = i + 1
-      }
-    },
-    {name: 'new_e'} => {
-      for c in node.nodes {
-        cond {
-          c.name == 'new_args' => {
-            if c.nodes.size() > 0 {
-              scan_args(c.nodes[0], f)
-            }
-          },
-          c.name == 'call_p' => scan_args(c.nodes[0], f),
-          c.name == 'index_p' => scan_expr(c.nodes[0], f),
-          c.name == 'member_p' => nil,
-          _ => scan_expr(c, f),
-        }
       }
     },
     {name: 'array_lit'} => {
@@ -3332,9 +3334,8 @@ fn scan_expr(node, f) {
     {name: 'object_lit'} => {
       for p in node.nodes {
         match p {
-          {name: 'kv_p'} => scan_expr(p.nodes[1], f),
-          {name: 'computed_p'} => {
-            scan_expr(p.nodes[0], f)
+          {name: 'kv_p'} => {
+            scan_mkey(p.nodes[0], f)
             scan_expr(p.nodes[1], f)
           },
           {name: 'short_p'} => note_use(p.nodes[0], f),
@@ -3342,17 +3343,13 @@ fn scan_expr(node, f) {
           # the rest are functions under an mkey, as a class's members are
           _ => {
             let mname = scan_mkey(p.nodes[0], f)
-            let (params, body) = cond {
-              p.name == 'getter_p' => ([], p.nodes[1]),
-              p.name == 'setter_p' => ([p.nodes[1]], p.nodes[2]),
-              _ => (p.nodes[1].nodes, p.nodes[2]),
-            }
-            let g = scan_fn_value(p, f, params, body, false, mname)
-            cond {
-              p.name == 'gmethod_p' => wrap_generator(f, p, g, mname),
-              p.name == 'amethod_p' => wrap_async(f, p, g, mname),
-              _ => nil,
-            }
+            let (params, body) = member_params_body(p)
+            wrap_member(
+              f,
+              p,
+              scan_fn_value(p, f, params, body, false, mname),
+              mname,
+            )
           },
         }
       }
@@ -3886,7 +3883,12 @@ fn emit_template(m, node, f) {
 
 # JS's Function.length: the parameters before the first default or rest
 fn fn_length(g) {
-  let ds = funcs[g].dflts
+  # a generator's wrapper takes no parameters of its own: its arity is the
+  # body's, which is where the defaults are
+  let ds = funcs[cond {
+    funcs[g].gen_raw != nil => funcs[g].gen_raw,
+    _ => g,
+  }].dflts
   for i in range(ds.size()) {
     if ds[i] != nil {
       return i
@@ -4111,10 +4113,7 @@ fn emit_class(m, node, f) {
   )]
   for mem in info.members {
     let mk = mem.key
-    let key = cond {
-      mk.name == 'computed_k' => emit_expr(m, mk.nodes[0], f),
-      _ => str_l(m, prop_key_text(mk), mem.node.line, mem.node.column),
-    }
+    let key = emit_mkey(m, f, mk, mem.node.line, mem.node.column)
     let is_static = m.bool_literal(
       v: mem.is_static,
       line: mem.node.line,
@@ -4695,29 +4694,12 @@ fn emit_object(m, node, f) {
   }
   for p in node.nodes {
     match p {
-      {name: 'kv_p'} => {
-        let kstr = prop_key_text(p.nodes[0])
-        put(
-          str_l(m, kstr, p.line, p.column),
-          emit_expr(m, p.nodes[1], f),
-          p.line,
-          p.column,
-        )
-      },
-      {name: 'computed_p'} => {
-        let kstr = cond {
-          in_prelude => emit_expr(m, p.nodes[0], f),
-          _ => call_pre(
-            m,
-            f,
-            '__key',
-            [emit_expr(m, p.nodes[0], f)],
-            p.line,
-            p.column,
-          ),
-        }
-        put(kstr, emit_expr(m, p.nodes[1], f), p.line, p.column)
-      },
+      {name: 'kv_p'} => put(
+        emit_mkey(m, f, p.nodes[0], p.line, p.column),
+        emit_expr(m, p.nodes[1], f),
+        p.line,
+        p.column,
+      ),
       {name: 'method_p'} | {name: 'gmethod_p'} | {name: 'amethod_p'} => put(
         emit_mkey(m, f, p.nodes[0], p.line, p.column),
         emit_fn_value(m, p, f, mkey_name(p.nodes[0]), false),
@@ -4731,17 +4713,7 @@ fn emit_object(m, node, f) {
         p.column,
       ),
       {name: 'getter_p'} | {name: 'setter_p'} => put(
-        emit_acc_key(
-          m,
-          f,
-          cond {
-            p.name == 'getter_p' => 'get',
-            _ => 'set',
-          },
-          p.nodes[0],
-          p.line,
-          p.column,
-        ),
+        emit_acc_key(m, f, p, p.line, p.column),
         emit_fn_value(m, p, f, mkey_name(p.nodes[0]), false),
         p.line,
         p.column,
@@ -4765,22 +4737,21 @@ fn emit_object(m, node, f) {
 # that name stores under; a computed key is only known at run time.
 fn emit_mkey(m, f, mk, ln, cl) {
   cond {
-    mk.name ==
-      'computed_k' => call_pre(
-      m,
-      f,
-      '__key',
-      [emit_expr(m, mk.nodes[0], f)],
-      ln,
-      cl,
-    ),
-    _ => str_l(m, prop_key_text(mk), ln, cl),
+    mk.name != 'computed_k' => str_l(m, prop_key_text(mk), ln, cl),
+    in_prelude => emit_expr(m, mk.nodes[0], f),
+    _ => call_pre(m, f, '__key', [emit_expr(m, mk.nodes[0], f)], ln, cl),
   }
 }
-fn emit_acc_key(m, f, kind, mk, ln, cl) {
+fn emit_acc_key(m, f, mem, ln, cl) {
+  let kind = cond {
+    mem.name.starts_with('getter') => 'get',
+    _ => 'set',
+  }
+  let mk = mem.nodes[0]
   cond {
-    mk.name ==
-      'computed_k' => call_pre(
+    mk.name !=
+      'computed_k' => str_l(m, "\x01{kind}:{prop_key_text(mk)}", ln, cl),
+    _ => call_pre(
       m,
       f,
       '__acc_key',
@@ -4788,7 +4759,6 @@ fn emit_acc_key(m, f, kind, mk, ln, cl) {
       ln,
       cl,
     ),
-    _ => str_l(m, "\x01{kind}:{prop_key_text(mk)}", ln, cl),
   }
 }
 
@@ -5862,30 +5832,28 @@ fn emit_funcs(m) {
     in_prelude = fi.is_prelude
     mut ids = []
     # defaults: a parameter that arrived undefined takes its default. A
-    # generator's wrapper forwards only what the call supplied, so the
-    # defaults are the body's -- the wrapper keeps a copy of the list for
-    # `length` alone, and evaluating them here would run them twice.
-    if fi.gen_raw == nil {
-      for pi in range(fi.dflts.size()) {
-        let d = fi.dflts[pi]
-        if d != nil {
-          let slot = pi + cond {
-            fi.params.size() > fi.dflts.size() => 1,
-            _ => 0,
-          }
-          let test = is_undef(
-            m,
-            m.var_ref(kind: 'local', index: slot, line: 1, col: 1),
-            1,
-            1,
-          )
-          ids.push(m.make_if(
-            cond: test,
-            then_branch: m.assign(kind: 'local', index: slot, value: emit_expr(m, d, f), line: 1, col: 1),
-            line: 1,
-            col: 1,
-          ))
+    # generator's wrapper has no parameters of its own, so it has no
+    # defaults either -- they are the body's, and running them here as well
+    # would run them twice.
+    for pi in range(fi.dflts.size()) {
+      let d = fi.dflts[pi]
+      if d != nil {
+        let slot = pi + cond {
+          fi.params.size() > fi.dflts.size() => 1,
+          _ => 0,
         }
+        let test = is_undef(
+          m,
+          m.var_ref(kind: 'local', index: slot, line: 1, col: 1),
+          1,
+          1,
+        )
+        ids.push(m.make_if(
+          cond: test,
+          then_branch: m.assign(kind: 'local', index: slot, value: emit_expr(m, d, f), line: 1, col: 1),
+          line: 1,
+          col: 1,
+        ))
       }
     }
     # a rest parameter: pack the hidden trailing slots by the supplied count
@@ -6015,11 +5983,7 @@ fn emit_funcs(m) {
         # class definition (captured through the home is not needed: the
         # key expression is re-evaluated here, which the samples avoid)
         for fld in fi.field_inits {
-          let mk = fld.nodes[0]
-          let key = cond {
-            mk.name == 'computed_k' => emit_expr(m, mk.nodes[0], f),
-            _ => str_l(m, prop_key_text(mk), fld.line, fld.column),
-          }
+          let key = emit_mkey(m, f, fld.nodes[0], fld.line, fld.column)
           let v = cond {
             fld.nodes.size() > 1 => emit_expr(m, fld.nodes[1], f),
             _ => nil_l(m, fld.line, fld.column),
