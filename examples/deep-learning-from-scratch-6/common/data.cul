@@ -35,4 +35,26 @@ fn write_bin_u16(path, tokens) {
   FS.write(path, String.from_bytes(bytes))
 }
 
-export {read_bin_u16, write_bin_u16}
+# One training batch: `batch_size` windows of `context_len` tokens drawn
+# uniformly at random, and the same windows shifted one token along. Both
+# come back flat, `[batch_size * context_len]`, which is the shape the
+# models here feed to an embedding lookup.
+#
+# Upstream's `TokenDataset` indexes a `Dataset` and lets a `DataLoader`
+# shuffle it; upstream's own ch09 does exactly this instead, with
+# `torch.randint`.
+fn get_batch(tokens, batch_size, context_len) {
+  let last = tokens.size() - context_len - 1
+  mut inputs = []
+  mut targets = []
+  for _ in 0..batch_size {
+    let start = Random.int(0, last)
+    for t in 0..context_len {
+      inputs.push(tokens[start + t])
+      targets.push(tokens[start + t + 1])
+    }
+  }
+  [inputs, targets]
+}
+
+export {read_bin_u16, write_bin_u16, get_batch}

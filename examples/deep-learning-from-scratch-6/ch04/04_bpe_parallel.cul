@@ -5,17 +5,27 @@
 # Upstream reaches for `multiprocessing.Pool`; culebra's `Parallel.map`
 # runs the same shape over a pool of isolates.
 #
-# One constraint shapes the worker: an isolate can reach same-module free
-# functions, same-module constants, its arguments and the stdlib -- and
-# nothing else. A compiled `Regex` is a native handle and never crosses, so
-# `census_chunk` takes the *pattern* and compiles its own.
+# One constraint shapes the worker: it sees its own module's globals --
+# including the compiled `Regex` -- but a value read off an *imported*
+# module is a capture, and a module object is not Sendable. That is why
+# `storybot/tokenizer.cul` stands alone rather than importing `codebot`.
+#
+# `--full` is the run that produces `data/merge_rules_1000.json`, the
+# vocabulary every later chapter loads -- upstream's `ch04/04` ends by
+# saving its merge rules the same way.
 #
 #   culebra ch04/04_bpe_parallel.cul
+#   culebra ch04/04_bpe_parallel.cul --full   # needs `just fetch-llm-data`
 
 import P from '../common/paths.cul'
+import T from '../codebot/tokenizer.cul'
 import S from '../storybot/tokenizer.cul'
 
-let text = FS.read(P.data('tiny_codes_sample.txt'))
+let full = Sys.argv.contains('--full')
+let corpus = full
+  ? P.require_data('tiny_codes.txt')
+  : P.data('tiny_codes_sample.txt')
+let text = FS.read(corpus)
 let num_chunks = 32
 
 let t0 = Sys.time()
@@ -38,3 +48,9 @@ inspect("same census: {serial == parallel}")
 let t2 = Sys.time()
 let rules = S.train_bpe(text, 1000, S.END_TOKEN, num_chunks, 8)
 inspect("train_bpe end to end: {rules.size()} rules in {Sys.time() - t2}s")
+
+if full {
+  let out = P.data('merge_rules_1000.json')
+  T.save_merge_rules(rules, out)
+  inspect("saved {FS.basename(out)}")
+}

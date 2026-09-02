@@ -1384,6 +1384,34 @@ fetch-mnist:
     done
     echo "MNIST data ready in $out"
 
+# The book's own train splits (TinyStories 2.2 GB, OpenWebText 11.9 GB) are
+# deliberately not fetched -- see that package's README for why they cannot
+# run here.
+# Download the ~325 MB of corpora examples/deep-learning-from-scratch-6 uses.
+[group("bench")]
+fetch-llm-data:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=examples/deep-learning-from-scratch-6/data
+    mkdir -p "$out"
+    upstream='https://raw.githubusercontent.com/oreilly-japan/deep-learning-from-scratch-6/main'
+    hub='https://huggingface.co/datasets/koki0702/zero-llm-data/resolve/main'
+    fetch() {
+      if [[ -s "$out/$2" ]]; then
+        echo "$out/$2 already present"
+        return
+      fi
+      echo "fetching $2"
+      curl -fsSL "$1" -o "$out/$2"
+    }
+    fetch "$upstream/codebot/tiny_codes.txt"          tiny_codes.txt
+    fetch "$upstream/codebot/tiny_codes.bin"          tiny_codes.bin
+    fetch "$upstream/codebot/tiny_codes_sft.json"     tiny_codes_sft.json
+    fetch "$upstream/storybot/tiny_stories_dpo.json"  tiny_stories_dpo.json
+    fetch "$hub/storybot/tiny_stories_valid.txt"      tiny_stories_valid.txt
+    fetch "$hub/webbot/owt_valid.txt"                 owt_valid.txt
+    echo "LLM corpora ready in $out"
+
 # Check vendor/* submodules for upstream updates (dry-run by default).
 # Pass `--run` to actually check out the latest commit for outdated ones
 # (working tree only — review + rebuild + test before committing).

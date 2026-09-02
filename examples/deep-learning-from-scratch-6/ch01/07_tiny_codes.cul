@@ -6,8 +6,9 @@
 #                                           # `just fetch-llm-data`)
 #
 # `--full` writes `data/merge_rules_1000.json`, which is generated and not
-# committed. The sample run below takes about 2.5 minutes -- ch04 is the
-# chapter that makes this fast.
+# committed. It takes about 70 minutes here; `ch04/04_bpe_parallel.cul
+# --full` writes the same file in 83 s, which is what ch04 is for. The
+# sample run below takes about 2.5 minutes.
 
 import P from '../common/paths.cul'
 import T from '../codebot/tokenizer.cul'

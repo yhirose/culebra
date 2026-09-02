@@ -144,3 +144,29 @@ fn the_package_root_is_found_from_a_test_file_at_the_root() {
   assert_eq(FS.basename(P.data('x.txt')), 'x.txt')
   assert_true(P.data('x.txt').contains('data'))
 }
+
+@test
+fn a_batch_is_windows_of_the_corpus_and_their_next_tokens() {
+  Random.seed(5)
+  let tokens = range(200).collect()
+  let batch = D.get_batch(tokens, 4, 8)
+  let inputs = batch[0]
+  let targets = batch[1]
+
+  assert_eq(inputs.size(), 32)
+  assert_eq(targets.size(), 32)
+
+  # Each row is consecutive, and its target row is the same window shifted
+  # one token along -- which is what makes this next-token prediction.
+  for b in 0..4 {
+    for t in 0..8 {
+      let i = b * 8 + t
+      assert_eq(targets[i], inputs[i] + 1)
+      assert_eq(inputs[i], inputs[b * 8] + t) if t > 0
+    }
+  }
+
+  # A window never runs off the end.
+  assert_true(inputs.all(|v| v >= 0 && v < 200))
+  assert_true(targets.all(|v| v >= 0 && v < 200))
+}

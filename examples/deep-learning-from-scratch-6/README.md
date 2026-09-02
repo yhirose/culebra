@@ -40,7 +40,7 @@ DPO, LLM-as-judge), ch07 and ch09 with the `storybot` and `webbot` models.
 codebot/tokenizer.cul   the shared BPE: pretokenize, train, encode, decode
 storybot/tokenizer.cul  the same BPE, deduplicated, incremental and parallel
 common/paths.cul        data/ and checkpoints/ resolved from the running script
-common/data.cul         the uint16 .bin format, upstream's own
+common/data.cul         the uint16 .bin format and batch sampling
 data/                   what is small enough to commit; the rest is fetched
 ch01/, ch04/            one script per section, numbered as upstream numbers them
 test_*.cul              every test, flat at the package root
@@ -76,9 +76,16 @@ against:
 | `data/tiny_codes_sample.txt` | 256 KB | the first 1,372 documents of upstream's TinyCodes corpus |
 | `data/merge_rules_sample.json` | 10 KB | what `ch01/07_tiny_codes.cul` learns from that sample |
 
-Fetched by `just fetch-llm-data`, never committed: `tiny_codes.txt` (6.5 MB)
-and the corpora the later chapters need. Anything a script generates —
-`*.bin`, `merge_rules_1000.json`, checkpoints — is ignored by git.
+`just fetch-llm-data` downloads the rest — about 325 MB, none of it
+committed. Anything a script generates (`*.bin`, `merge_rules_1000.json`,
+checkpoints) is ignored by git too. [`data/README.md`](data/README.md) says
+where each file comes from, how to regenerate the committed ones, and which
+of upstream's corpora are deliberately absent.
+
+The vocabulary the later chapters load, `data/merge_rules_1000.json`, comes
+from `ch04/04_bpe_parallel.cul --full` in 83 s. `ch01/07_tiny_codes.cul
+--full` writes the same file with the straightforward trainer, in about 70
+minutes — which is what ch04 exists to fix.
 
 Upstream ships its merge rules as a pickle, which Culebra cannot read, so
 this port retrains them and stores them as JSON. That the two agree is
@@ -116,9 +123,8 @@ vocabularies diverge on the first ambiguous pair.
   corpus containing the pre-token `get` would turn `counts.get(...)` into a
   `TypeError`. A Python corpus contains it. `#` cannot start an identifier,
   so the prefix keeps every builtin reachable.
-- **An isolate worker reaches less than a Python subprocess does.** It can
-  call same-module free functions and read same-module constants, but a
-  value read off an *imported* module never crosses, and neither does a
-  compiled `Regex` (a native handle). `storybot/tokenizer.cul` is therefore
-  standalone — which is also how upstream writes it — and its workers take
-  the pattern as a string and compile their own.
+- **An isolate worker sees its own module, and only its own module.** It
+  reads same-module globals — a compiled `Regex` included — but a value
+  read off an *imported* module is a capture, and a module object is not
+  Sendable. So `storybot/tokenizer.cul` stands alone rather than importing
+  `codebot`, which is also how upstream writes it.
