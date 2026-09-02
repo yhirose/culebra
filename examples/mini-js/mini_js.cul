@@ -42,6 +42,8 @@
 # as `this`, as Node's CommonJS modules do; the program's own `this` is an
 # empty object, like module.exports).
 
+# A backtick would end the raw string the grammar is written in, so the
+# template rules spell it @BQ@ and it is substituted in.
 let bt = String.from_code_point(96)
 let q = String.from_code_point(39)
 
@@ -213,55 +215,15 @@ let grammar = `
 
   %whitespace <- ([ \t\r\n]+ / '//' [^\n]* / '/*' (!'*/' .)* '*/')*
   %word       <- [a-zA-Z0-9_$]
-` +
-  '  template   <- ' +
-  q +
-  bt +
-  q +
-  ' tpart* ' +
-  q +
-  bt +
-  q +
-  '   { no_ast_opt }' +
-  "\n" +
-  '  tpart      <- tsub / tchunk' +
-  "\n" +
-  '  tsub       <- ' +
-  q +
-  '$' +
-  q +
-  ' ' +
-  q +
-  '{' +
-  q +
-  ' expr ' +
-  q +
-  '}' +
-  q +
-  '   { no_ast_opt }' +
-  "\n" +
-  '  tchunk     <- < (!(' +
-  q +
-  bt +
-  q +
-  ' / ' +
-  q +
-  '$' +
-  q +
-  ' ' +
-  q +
-  '{' +
-  q +
-  ' / ' +
-  q +
-  '\\' +
-  q +
-  ') . / ' +
-  q +
-  '\\' +
-  q +
-  ' .)+ >' +
-  "\n"
+
+  template   <- @BQ@ tpart* @BQ@                                 { no_ast_opt }
+  tpart      <- tsub / tchunk
+  tsub       <- '$' '{' expr '}'                                 { no_ast_opt }
+  tchunk     <- < (!(@BQ@ / '$' '{' / '\\') . / '\\' .)+ >
+`.replace(
+  '@BQ@',
+  q + bt + q,
+)
 
 # --- The runtime, in JS --------------------------------------------------------
 #
@@ -1036,12 +998,18 @@ function __uncaught_text(e0) {
   if (__is_err(e)) return 'Uncaught ' + __str(e);
   return 'Uncaught ' + __inspect(e);
 }
+// The first n of a fixed slot list: how a variadic function gathers what
+// its call actually supplied, whether the slots are a compiled function's
+// hidden trailing parameters or a builtin's own.
 function __rest_pack(hidden, n) {
   var out = [];
   var i = 0;
-  while (i < n && i < 8) { __arraypush(out, hidden[i]); i = i + 1; }
+  while (i < n && i < __len(hidden)) { __arraypush(out, hidden[i]); i = i + 1; }
   return out;
 }
+// A builtin's own arguments: its first parameter is the receiver, and
+// __argcount answers for the frame it is called in, so the count is taken
+// here rather than inside the gather.
 function __obj_spread(target, src) {
   if (__isnullish(src)) return target;
   var ks = __own_keys(src);
@@ -1356,12 +1324,7 @@ function __init_array(G) {
   });
   __def(A, 'isArray', function (t, v) { return __typeof(v) === 'array'; });
   __def(A, 'of', function (t, a, b, c, d, e, f, g) {
-    var xs = [a, b, c, d, e, f, g];
-    var n = __argcount() - 1;
-    var out = [];
-    var i = 0;
-    while (i < n && i < 7) { __arraypush(out, xs[i]); i = i + 1; }
-    return out;
+    return __rest_pack([a, b, c, d, e, f, g], __argcount() - 1);
   });
   __def(A, 'from', function (t, v, mapf) {
     var out = [];
@@ -1377,10 +1340,9 @@ function __init_array(G) {
   });
   var P = G.Array_proto;
   __def(P, 'push', function (t, a, b, c, d, e, f, g) {
-    var xs = [a, b, c, d, e, f, g];
-    var n = __argcount() - 1;
+    var xs = __rest_pack([a, b, c, d, e, f, g], __argcount() - 1);
     var i = 0;
-    while (i < n && i < 7) { __arraypush(t, xs[i]); i = i + 1; }
+    while (i < __len(xs)) { __arraypush(t, xs[i]); i = i + 1; }
     return __todouble(__len(t));
   });
   __def(P, 'pop', function (t) { return __len(t) === 0 ? undefined : __arraypop(t); });
@@ -1472,10 +1434,9 @@ function __init_array(G) {
     var out = [];
     var i = 0;
     while (i < __len(t)) { __arraypush(out, t[i]); i = i + 1; }
-    var srcs = [a, b, c];
-    var n = __argcount() - 1;
+    var srcs = __rest_pack([a, b, c], __argcount() - 1);
     var j = 0;
-    while (j < n && j < 3) {
+    while (j < __len(srcs)) {
       var s = srcs[j];
       if (__typeof(s) === 'array') { var k = 0; while (k < __len(s)) { __arraypush(out, s[k]); k = k + 1; } }
       else __arraypush(out, s);
@@ -1753,11 +1714,10 @@ function __parse_int(s0, radix) {
 function __init_console(G) {
   var c = {};
   __def(c, 'log', function (t, a, b, c2, d, e, f, g) {
-    var xs = [a, b, c2, d, e, f, g];
-    var n = __argcount() - 1;
+    var xs = __rest_pack([a, b, c2, d, e, f, g], __argcount() - 1);
     var out = '';
     var i = 0;
-    while (i < n && i < 7) { if (i > 0) out = out + ' '; out = out + __log_str(xs[i]); i = i + 1; }
+    while (i < __len(xs)) { if (i > 0) out = out + ' '; out = out + __log_str(xs[i]); i = i + 1; }
     __print(out);
     return undefined;
   });
@@ -2329,6 +2289,25 @@ function __init_promise(G) {
   __def(G, 'queueMicrotask', function (t, f) { __enqueue_job(function () { __call(f, undefined, []); }); return undefined; });
 }
 
+// Math.max / Math.min: the same fold, with the comparison flipped. NaN
+// anywhere wins, and no arguments answers the identity.
+function __extreme(xs, want_max) {
+  if (__len(xs) === 0) return want_max ? 0.0 - __inf() : __inf();
+  var best = __tonum(xs[0]);
+  var i = 1;
+  while (i < __len(xs)) {
+    var x = __tonum(xs[i]);
+    if (x !== x) return __nan();
+    if (want_max ? x > best : x < best) best = x;
+    i = i + 1;
+  }
+  return best;
+}
+// floor/ceil/trunc/round pass NaN, the infinities and anything past the
+// exact-integer range straight through.
+function __int_pass(d) {
+  return d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15;
+}
 function __init_math(G) {
   var M = {};
   M.PI = 3.141592653589793;
@@ -2336,24 +2315,24 @@ function __init_math(G) {
   __def(M, 'abs', function (t, v) { var d = __tonum(v); return d < 0.0 ? 0.0 - d : d; });
   __def(M, 'floor', function (t, v) {
     var d = __tonum(v);
-    if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
+    if (__int_pass(d)) return d;
     var i = __todouble(__toint(d));
     return i > d ? i - 1.0 : i;
   });
   __def(M, 'ceil', function (t, v) {
     var d = __tonum(v);
-    if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
+    if (__int_pass(d)) return d;
     var i = __todouble(__toint(d));
     return i < d ? i + 1.0 : i;
   });
   __def(M, 'trunc', function (t, v) {
     var d = __tonum(v);
-    if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
+    if (__int_pass(d)) return d;
     return __todouble(__toint(d));
   });
   __def(M, 'round', function (t, v) {
     var d = __tonum(v);
-    if (d !== d || d === __inf() || d === 0.0 - __inf() || d > 9.0e15 || d < -9.0e15) return d;
+    if (__int_pass(d)) return d;
     var f = __todouble(__toint(d));
     if (f > d) f = f - 1.0;
     return d - f >= 0.5 ? f + 1.0 : f;
@@ -2361,22 +2340,10 @@ function __init_math(G) {
   __def(M, 'sqrt', function (t, v) { return __pow(__tonum(v), 0.5); });
   __def(M, 'pow', function (t, a, b) { return __powop(a, b); });
   __def(M, 'max', function (t, a, b, c, d) {
-    var xs = [a, b, c, d];
-    var n = __argcount() - 1;
-    if (n === 0) return 0.0 - __inf();
-    var best = __tonum(a);
-    var i = 1;
-    while (i < n && i < 4) { var x = __tonum(xs[i]); if (x !== x) return __nan(); if (x > best) best = x; i = i + 1; }
-    return best;
+    return __extreme(__rest_pack([a, b, c, d], __argcount() - 1), true);
   });
   __def(M, 'min', function (t, a, b, c, d) {
-    var xs = [a, b, c, d];
-    var n = __argcount() - 1;
-    if (n === 0) return __inf();
-    var best = __tonum(a);
-    var i = 1;
-    while (i < n && i < 4) { var x = __tonum(xs[i]); if (x !== x) return __nan(); if (x < best) best = x; i = i + 1; }
-    return best;
+    return __extreme(__rest_pack([a, b, c, d], __argcount() - 1), false);
   });
   __def(M, 'sign', function (t, v) { var d = __tonum(v); if (d !== d) return d; return d > 0.0 ? 1.0 : (d < 0.0 ? -1.0 : d); });
   __def(M, 'random', function (t) { return 0.5; });
@@ -2615,9 +2582,7 @@ fn hoist_block(stmts, f) {
           i = i + 1
         }
       },
-      st.name == 'fn_decl' ||
-        st.name == 'gen_decl' ||
-        st.name == 'async_decl' => {
+      fn_decl_forms.has(st.name) => {
         declare_var(f, st.nodes[0].token, st.nodes[0])
         fn_nodes.push(st)
       },
@@ -2628,11 +2593,34 @@ fn hoist_block(stmts, f) {
   fn_nodes
 }
 
+# The forms whose body belongs to a function of its own: a `var` inside one
+# is that function's, and a scan must not descend past it.
+let fn_forms = {
+  fn_decl: true,
+  fn_expr: true,
+  arrow: true,
+  gen_decl: true,
+  gen_expr: true,
+  async_decl: true,
+  async_expr: true,
+  async_arrow: true,
+  method_p: true,
+  gmethod_p: true,
+  amethod_p: true,
+  gcomputed_m: true,
+  getter_p: true,
+  setter_p: true,
+  class_d: true,
+  class_e: true,
+}
+# ... and the three that are hoisted declarations of one.
+let fn_decl_forms = {fn_decl: true, gen_decl: true, async_decl: true}
+
 fn collect_vars(node, f) {
   if node.nodes == nil {
     return nil
   }
-  if node.name == 'fn_decl' || node.name == 'fn_expr' || node.name == 'arrow' || node.name == 'method_p' || node.name == 'getter_p' || node.name == 'setter_p' || node.name == 'class_d' || node.name == 'class_e' || node.name == 'gen_decl' || node.name == 'gen_expr' || node.name == 'gmethod_p' || node.name == 'gcomputed_m' || node.name == 'async_decl' || node.name == 'async_expr' || node.name == 'async_arrow' || node.name == 'amethod_p' {
+  if fn_forms.has(node.name) {
     return nil
   }
   if (node.name == 'var_decl' || node.name == 'var_decl_ns') && node.nodes[0].token == 'var' {
@@ -3463,35 +3451,39 @@ fn scan_target(t, f) {
 
 # --- Pass B: captures -------------------------------------------------------------
 
+# Everything `src` needs from further out, `dst` must supply. Answers
+# whether that added anything.
+fn lift_free(dst, src) {
+  mut added = false
+  for v in free[src].values() {
+    let (o, sl) = v
+    if o != dst {
+      let key = "{o}:{sl}"
+      if !free[dst].has(key) {
+        free[dst][key] = v
+        added = true
+      }
+    }
+  }
+  added
+}
+
 fn solve() {
   mut changed = true
   while changed {
     changed = false
     for f in range(funcs.size()) {
+      # a call obliges the caller to hand the callee its captures; a nested
+      # function obliges its parent the same way (a wrapper is pushed onto
+      # its own calls list, so the two edges are not the same edge)
       for g in calls[f] {
-        for v in free[g].values() {
-          let (o, s) = v
-          if o != f {
-            let key = "{o}:{s}"
-            if !free[f].has(key) {
-              free[f][key] = v
-              changed = true
-            }
-          }
+        if lift_free(f, g) {
+          changed = true
         }
       }
       let p = funcs[f].parent
-      if p != nil {
-        for v in free[f].values() {
-          let (o, s) = v
-          if o != p {
-            let key = "{o}:{s}"
-            if !free[p].has(key) {
-              free[p][key] = v
-              changed = true
-            }
-          }
-        }
+      if p != nil && lift_free(p, f) {
+        changed = true
       }
     }
   }
@@ -3840,31 +3832,19 @@ fn emit_shortcircuit(m, node, f) {
       },
       _ => emit_test(m, f, scratch_ref(m, tmp, ln, cl), ln, cl),
     }
-    let pick = cond {
-      n ==
-        'lor' => m.make_if_else(
-        cond: test,
-        then_branch: scratch_ref(m, tmp, ln, cl),
-        else_branch: rhs,
-        line: ln,
-        col: cl,
-      ),
-      n ==
-        'land' => m.make_if_else(
-        cond: test,
-        then_branch: rhs,
-        else_branch: scratch_ref(m, tmp, ln, cl),
-        line: ln,
-        col: cl,
-      ),
-      _ => m.make_if_else(
-        cond: test,
-        then_branch: rhs,
-        else_branch: scratch_ref(m, tmp, ln, cl),
-        line: ln,
-        col: cl,
-      ),
+    # `||` answers the left operand when the test passes; `&&` and `??`
+    # answer the right one
+    let (then_b, else_b) = cond {
+      n == 'lor' => (scratch_ref(m, tmp, ln, cl), rhs),
+      _ => (rhs, scratch_ref(m, tmp, ln, cl)),
     }
+    let pick = m.make_if_else(
+      cond: test,
+      then_branch: then_b,
+      else_branch: else_b,
+      line: ln,
+      col: cl,
+    )
     acc = m.block(stmts_list: make_list(m, [store, pick]), line: ln, col: cl)
     i = i + 2
   }
@@ -3951,12 +3931,7 @@ fn emit_fn_value(m, node, f, name, is_arrow) {
 # [values...] with spreads expanded: an array literal when there is no
 # spread, else built by __spread_into
 fn emit_arg_array(m, f, arg_nodes, ln, cl) {
-  mut has_spread = false
-  for a in arg_nodes {
-    if a.name == 'spread' {
-      has_spread = true
-    }
-  }
+  let has_spread = arg_nodes.any(|a| a.name == 'spread')
   cond {
     !has_spread => {
       mut ids = []
@@ -4568,31 +4543,19 @@ fn emit_assign(m, node, f) {
         _ => emit_test(m, f, scratch_ref(m, tmp, ln, cl), ln, cl),
       }
       let write = target_write(m, f, tg, emit_expr(m, rhs, f), ln, cl)
-      let pick = cond {
-        op.token ==
-          '||=' => m.make_if_else(
-          cond: test,
-          then_branch: scratch_ref(m, tmp, ln, cl),
-          else_branch: write,
-          line: ln,
-          col: cl,
-        ),
-        op.token ==
-          '&&=' => m.make_if_else(
-          cond: test,
-          then_branch: write,
-          else_branch: scratch_ref(m, tmp, ln, cl),
-          line: ln,
-          col: cl,
-        ),
-        _ => m.make_if_else(
-          cond: test,
-          then_branch: write,
-          else_branch: scratch_ref(m, tmp, ln, cl),
-          line: ln,
-          col: cl,
-        ),
+      # `||=` keeps the current value when the test passes; `&&=` and `??=`
+      # take the write
+      let (then_b, else_b) = cond {
+        op.token == '||=' => (scratch_ref(m, tmp, ln, cl), write),
+        _ => (write, scratch_ref(m, tmp, ln, cl)),
       }
+      let pick = m.make_if_else(
+        cond: test,
+        then_branch: then_b,
+        else_branch: else_b,
+        line: ln,
+        col: cl,
+      )
       mut ids = tg.pre
       ids.push(store)
       ids.push(pick)
@@ -5110,7 +5073,7 @@ fn fresh_slots(m, f, slots, ln, cl) {
 fn emit_stmts_into(m, stmts, f, ids) {
   # hoisted function declarations come first
   for s in stmts {
-    if s.name == 'fn_decl' || s.name == 'gen_decl' || s.name == 'async_decl' {
+    if fn_decl_forms.has(s.name) {
       let r = resolved[pkey(s.nodes[0])]
       ids.push(var_write(
         m,
@@ -5123,7 +5086,7 @@ fn emit_stmts_into(m, stmts, f, ids) {
     }
   }
   for s in stmts {
-    if s.name != 'fn_decl' && s.name != 'gen_decl' && s.name != 'async_decl' {
+    if !fn_decl_forms.has(s.name) {
       let e = emit_stmt(m, s, f)
       if e != nil {
         ids.push(e)
@@ -6141,6 +6104,7 @@ fn build(m, prelude_tree, root) {
   emit_funcs(m)
 }
 
+let flags = {'--ir': true, '--bc': true, '--ast': true}
 let want_ir = Sys.argv.contains('--ir')
 let want_bc = Sys.argv.contains('--bc')
 let want_ast = Sys.argv.contains('--ast')
@@ -6155,7 +6119,7 @@ for i in range(Sys.argv.size()) {
       lib_src = lib_src + FS.read(Sys.argv[i + 1]) + "\n"
       skip = true
     },
-    a == '--ir' || a == '--bc' || a == '--ast' => nil,
+    flags.has(a) => nil,
     _ => cli.push(a),
   }
 }
@@ -6170,7 +6134,7 @@ mut cur_src = ''
 mut had_err = false
 for path in cli {
   if cli.size() > 1 {
-    println('-----8<----- ' + path.split('/')[-1])
+    println('-----8<----- ' + FS.basename(path))
   }
   funcs = []
   free = []
