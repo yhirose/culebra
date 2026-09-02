@@ -1,0 +1,308 @@
+# The part of a Core-IR front end that is the same for every language:
+# which function captures which variable (and how -- a local, a cell the
+# closure reaches through, or a capture of its own), and the handful of
+# IR shapes every lowering builds over and over. pl0_codegen.cul,
+# mini_culebra.cul and mini_js.cul each `import` this; what stays in each
+# is its grammar, its scoping rules and its emit rules.
+#
+# Functions are numbered by the front end in the order it registers them
+# with `Frames.add`; the front end keeps its own per-function record beside
+# (parameters, body, whatever the language needs) and only the capture
+# tables live here.
+
+# --- Frames: free variables -> captures and cells -------------------------
+#
+# A variable is a (owner, slot) pair: the function that declares it and its
+# local index there. A function that reads a variable it does not own has
+# it free. Two obligations close the free sets over the program: a call
+# from f to g builds g's closure in f's frame, so f must capture whatever g
+# captures; and a function nested in p has its closure built in p's frame,
+# the same way. Iterated to a fixpoint (recursion is why one pass is not
+# enough), then numbered: capture_index says where a function's own capture
+# list holds a free variable, cell_index says which of the owner's slots
+# have to be cells rather than plain locals (a closure cannot capture a
+# local -- it would die with the frame; see coreir/ir.h's verifier).
+
+class Frames {
+  new() {
+    self.parent = []         # per func: the func whose frame builds its closure, or nil
+    self.free = []           # per func: {"owner:slot": (owner, slot)}, insertion order
+    self.calls = []          # per func: [callee...]
+    self.capture_index = []  # per func: {"owner:slot": capture index}
+    self.cell_index = []     # per func (the owner): {slot: cell index}
+  }
+
+  # Registers the next function. `parent` is the function whose frame its
+  # closure is built in; nil when closures are only ever built at call
+  # sites (PL/0), in which case the call edges alone carry the captures.
+  add(parent) {
+    self.parent.push(parent)
+    self.free.push({})
+    self.calls.push([])
+    self.capture_index.push({})
+    self.cell_index.push({})
+    self.free.size() - 1
+  }
+
+  size() { self.free.size() }
+
+  # `f` refers to (owner, slot); free unless f owns it
+  use(f, owner, slot) {
+    if owner != f {
+      self.free[f]["{owner}:{slot}"] = (owner, slot)
+    }
+  }
+
+  note_call(f, g) { self.calls[f].push(g) }
+
+  # Everything `src` needs from further out, `dst` must supply. Answers
+  # whether that added anything.
+  lift(dst, src) {
+    mut added = false
+    for v in self.free[src].values() {
+      let (o, s) = v
+      if o != dst {
+        let key = "{o}:{s}"
+        if !self.free[dst].has(key) {
+          self.free[dst][key] = v
+          added = true
+        }
+      }
+    }
+    added
+  }
+
+  solve() {
+    mut changed = true
+    while changed {
+      changed = false
+      for f in range(self.size()) {
+        for g in self.calls[f] {
+          if self.lift(f, g) {
+            changed = true
+          }
+        }
+        let p = self.parent[f]
+        if p != nil && self.lift(p, f) {
+          changed = true
+        }
+      }
+    }
+    for f in range(self.size()) {
+      for i, v in self.free[f].values().enumerate() {
+        let (o, s) = v
+        self.capture_index[f]["{o}:{s}"] = i
+        if !self.cell_index[o].has(s) {
+          self.cell_index[o][s] = self.cell_index[o].size()
+        }
+      }
+    }
+  }
+
+  # `f`'s own view of a variable: its own slot (a cell if anything nested
+  # captures it, otherwise a plain local), or the index `f` captures it at.
+  access(f, owner, slot) {
+    cond {
+      owner == f => cond {
+        self.cell_index[f].has(slot) => {
+          kind: 'cell',
+          index: self.cell_index[f][slot],
+        },
+        _ => {kind: 'local', index: slot},
+      },
+      _ => {kind: 'capture', index: self.capture_index[f]["{owner}:{slot}"]},
+    }
+  }
+
+  # The forwarding table for a closure of `g` built in `f`'s frame: each
+  # variable `g` captures, resolved in `f`.
+  cmap(m, f, g) {
+    let cmap = m.capture_map_new()
+    for v in self.free[g].values() {
+      let (o, s) = v
+      let a = self.access(f, o, s)
+      m.capture_map_push(cmap, kind: a.kind, index: a.index)
+    }
+    m.add_capture_map(cmap)
+  }
+
+  num_captures(f) { self.free[f].size() }
+  num_cells(f) { self.cell_index[f].size() }
+  in_cell(f, slot) { self.cell_index[f].has(slot) }
+
+  # (owner, slot) of every variable `f` captures, in capture-index order
+  captures(f) { self.free[f].values() }
+}
+
+# --- Emitter: the IR shapes every lowering builds -------------------------
+#
+# A thin layer over CodeGen.Module. Positions come from a node (`at`: any
+# Object with `line` and `column` -- a parse node or one the front end
+# made up) instead of a line/col pair; ORIGIN stands for code the compiler
+# invented. Methods named after a Module method build exactly that node;
+# the others are the compositions the three front ends kept re-spelling.
+
+let ORIGIN = {line: 1, column: 1}
+
+class Emitter {
+  new(m, fr) {
+    self.m = m
+    self.fr = fr
+  }
+
+  literal(v, at) { self.m.literal(v: v, line: at.line, col: at.column) }
+  bool_literal(v, at) {
+    self.m.bool_literal(v: v, line: at.line, col: at.column)
+  }
+  double_literal(v, at) {
+    self.m.double_literal(v: v, line: at.line, col: at.column)
+  }
+  str_literal(s, at) { self.m.str_literal(s: s, line: at.line, col: at.column) }
+  nil_literal(at) { self.m.nil_literal(line: at.line, col: at.column) }
+
+  unary(op, operand, at) {
+    self.m.unary(op: op, operand: operand, line: at.line, col: at.column)
+  }
+  binary(op, lhs, rhs, at) {
+    self.m.binary(op: op, lhs: lhs, rhs: rhs, line: at.line, col: at.column)
+  }
+  make_if(cond, then_branch, at) {
+    self.m.make_if(
+      cond: cond,
+      then_branch: then_branch,
+      line: at.line,
+      col: at.column,
+    )
+  }
+  make_if_else(cond, then_branch, else_branch, at) {
+    self.m.make_if_else(
+      cond: cond,
+      then_branch: then_branch,
+      else_branch: else_branch,
+      line: at.line,
+      col: at.column,
+    )
+  }
+  make_while(cond, body, at) {
+    self.m.make_while(cond: cond, body: body, line: at.line, col: at.column)
+  }
+
+  # Module takes variadic shapes as staged lists (see codegen.h)
+  list(ids) {
+    let list = self.m.list_new()
+    for x in ids {
+      self.m.list_push(list, x)
+    }
+    list
+  }
+  block(ids, at) {
+    self.m.block(stmts_list: self.list(ids), line: at.line, col: at.column)
+  }
+  # statements, then the value the block answers with
+  seq(stmts, value, at) {
+    let ids = []
+    for s in stmts {
+      ids.push(s)
+    }
+    ids.push(value)
+    self.block(ids, at)
+  }
+  intrinsic(name, args, at) {
+    self.m.intrinsic(
+      name: name,
+      args_list: self.list(args),
+      line: at.line,
+      col: at.column,
+    )
+  }
+  call_value(callee, args, at) {
+    self.m.call_value(
+      callee: callee,
+      args_list: self.list(args),
+      line: at.line,
+      col: at.column,
+    )
+  }
+
+  # a variable as `f` sees it
+  read(f, owner, slot, at) {
+    let a = self.fr.access(f, owner, slot)
+    self.m.var_ref(kind: a.kind, index: a.index, line: at.line, col: at.column)
+  }
+  write(f, owner, slot, value, at) {
+    let a = self.fr.access(f, owner, slot)
+    self.m.assign(
+      kind: a.kind,
+      index: a.index,
+      value: value,
+      line: at.line,
+      col: at.column,
+    )
+  }
+  # a lowering temp: always a plain local of the current function
+  local(slot, at) {
+    self.m.var_ref(kind: 'local', index: slot, line: at.line, col: at.column)
+  }
+  store_local(slot, value, at) {
+    self.m.assign(
+      kind: 'local',
+      index: slot,
+      value: value,
+      line: at.line,
+      col: at.column,
+    )
+  }
+
+  # boolean connectives over values the VM's own test understands
+  lnot(v, at) {
+    self.make_if_else(
+      v,
+      self.bool_literal(false, at),
+      self.bool_literal(true, at),
+      at,
+    )
+  }
+  land(a, b, at) { self.make_if_else(a, b, self.bool_literal(false, at), at) }
+
+  # a closure of `g` built in `f`'s frame, and a call of one
+  closure(f, g, at) {
+    self.m.make_closure(
+      func: g,
+      cmap: self.fr.cmap(self.m, f, g),
+      line: at.line,
+      col: at.column,
+    )
+  }
+  call(f, g, args, at) { self.call_value(self.closure(f, g, at), args, at) }
+
+  # the capture and cell counts are Frames' to answer
+  add_func(name, f, num_locals, num_params, body) {
+    self.m.add_func(
+      name: name,
+      num_locals: num_locals,
+      num_captures: self.fr.num_captures(f),
+      num_cells: self.fr.num_cells(f),
+      num_params: num_params,
+      body: body,
+    )
+  }
+  # names `func`'s captures in index order; name_of(owner, slot) -> String
+  name_captures(func, f, name_of) {
+    for i, v in self.fr.captures(f).enumerate() {
+      let (o, s) = v
+      self.m.set_capture_name(func: func, index: i, name: name_of(o, s))
+    }
+  }
+
+  # what every driver does once the module is built
+  finish(want_ir, want_bc) {
+    self.m.verify()
+    cond {
+      want_ir => print(self.m.dump_ir()),
+      want_bc => print(self.m.dump_bc()),
+      _ => self.m.run(),
+    }
+  }
+}
+
+export {Frames, Emitter, ORIGIN}

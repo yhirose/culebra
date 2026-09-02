@@ -15,11 +15,16 @@
 # AST again once a program is running. See "Name resolution" below, and
 # cpp-vmlib's own examples/pl0/binder.cc for the C++ twin of this file --
 # same four phases (collect declarations, scan free variables, solve captures
-# by fixpoint, emit), same PL/0, different host language.
+# by fixpoint, emit), same PL/0, different host language. The two phases that
+# are the same for every language -- the capture solver and the IR shapes a
+# lowering builds over and over -- live in ../codegen-front/front.cul, shared
+# with mini_culebra.cul and mini_js.cul.
 #
 # Run it:  culebra examples/pl0/pl0_codegen.cul examples/pl0/samples/square.pas
 #          culebra examples/pl0/pl0_codegen.cul --ir examples/pl0/samples/square.pas
 #          culebra examples/pl0/pl0_codegen.cul --bc examples/pl0/samples/square.pas
+
+import front from '../codegen-front/front.cul'
 
 let grammar = `
   program    <- _ block '.' _
@@ -63,14 +68,6 @@ fn fail(node, msg) {
   throw {kind: 'Pl0Error', message: msg, line: node.line, col: node.column}
 }
 
-fn make_list(m, items) {
-  let list = m.list_new()
-  for item in items {
-    m.list_push(list, item)
-  }
-  list
-}
-
 fn binop_name(tok) {
   match tok {
     '+' => 'add',
@@ -98,10 +95,8 @@ fn cmp_name(tok) {
 # starts from nothing rather than inheriting another compile's leftovers.
 class Binder {
   blocks = []         # {parent, name, consts, var_slot, var_names, procs, children, body}
-  free = []           # per block: Set of (declaring_block, slot) tuples
-  calls = []          # per block: [callee_block...]
-  capture_index = []  # per block: {(declaring_block, slot): capture_index}
-  cell_index = []     # per block (the owner): {slot: cell_index}
+  fr = front.Frames.new()  # blocks and Frames share indices: collect registers both
+  ir = nil            # the Emitter, once build has the Module
 
   # --- Phase 1: collect declarations -----------------------------------------
   #
@@ -145,6 +140,9 @@ class Binder {
       children: [],
       body: node.nodes[3],
     })
+    # no parent edge: a PL/0 closure exists only at its call site, so the
+    # call edges alone say what a procedure has to capture
+    self.fr.add(nil)
 
     let [cst, vr, prc, _] = node.nodes
     for [cname, cvalue] in cst.nodes.iter().chunks(2) {
@@ -221,16 +219,14 @@ class Binder {
   # --- Phase 2: free variables -------------------------------------------------
   #
   # A reference block doesn't declare is free, and has to be captured from
-  # whichever ancestor does declare it. `solve_captures` below closes this over
-  # the call graph: if f calls g, everything g captures that f doesn't own
+  # whichever ancestor does declare it. `Frames.solve` closes this over the
+  # call graph: if f calls g, everything g captures that f doesn't own
   # itself must be captured by f too (recursion makes this a fixpoint, not a
   # single pass -- self-recursion is the case a single pass misses).
 
   note_ref(block, var) {
-    let (vb, _) = var
-    if vb != block {
-      self.free[block].add(var)
-    }
+    let (vb, vs) = var
+    self.fr.use(block, vb, vs)
   }
 
   scan_chain(nodes, block) {
@@ -285,7 +281,7 @@ class Binder {
         if g < 0 {
           fail(name, "undefined procedure '{name.token}'")
         }
-        self.calls[block].push(g)
+        self.fr.note_call(block, g)
       },
       {name: 'if', nodes: [cond, body]} => {
         self.scan_cond(cond, block)
@@ -315,72 +311,6 @@ class Binder {
     self.scan_stmt(self.blocks[block].body, block)
   }
 
-  solve_captures() {
-    mut changed = true
-    while changed {
-      changed = false
-      for f in range(self.blocks.size()) {
-        for g in self.calls[f] {
-          for var in self.free[g].iter() {
-            let (vb, _) = var
-            if vb != f && self.free[f].add(var) {
-              changed = true
-            }
-          }
-        }
-      }
-    }
-
-    # Every block's free set is walked once here for two independent purposes:
-    # capture_index says where *this* block's own capture list holds a free
-    # variable; cell_index says which of the *owning* block's own slots that
-    # variable forces into a cell rather than a local (a closure cannot
-    # capture a local -- it would die with the frame while the closure
-    # captured into it may not; see coreir/ir.h's verifier). cell_index is
-    # keyed on the owning block's own slot number alone (never a (block,
-    # slot) pair the way free/capture_index are): cell_index[b] only ever
-    # holds slots b itself owns.
-    for f in range(self.blocks.size()) {
-      for i, var in self.free[f].iter().enumerate() {
-        let (vb, vs) = var
-        self.capture_index[f][var] = i
-        if !self.cell_index[vb].has(vs) {
-          self.cell_index[vb][vs] = self.cell_index[vb].size()
-        }
-      }
-    }
-  }
-
-  # `f`'s own view of a variable: its own slot (a cell if some nested call
-  # captures it, otherwise a plain local), or the index `f` captures it at.
-  access(f, var) {
-    let (vb, vs) = var
-    cond {
-      vb == f => {
-        if self.cell_index[f].has(vs) {
-          {kind: 'cell', index: self.cell_index[f][vs]}
-        } else {
-          {kind: 'local', index: vs}
-        }
-      },
-      _ => {kind: 'capture', index: self.capture_index[f][var]},
-    }
-  }
-
-  # The forwarding table for a call from `f` to `g`: for each variable `g`
-  # captures, resolve it in `f`'s own frame. A self-recursive call (g == f)
-  # forwards `f`'s own captures straight through, which is why this is per call
-  # site and not per function -- see cpp-vmlib's README for fib.pas's version
-  # of this exact table.
-  make_capture_map(m, f, g) {
-    let cmap = m.capture_map_new()
-    for var in self.free[g].iter() {
-      let a = self.access(f, var)
-      m.capture_map_push(cmap, kind: a.kind, index: a.index)
-    }
-    m.add_capture_map(cmap)
-  }
-
   # --- Phase 3: emit -----------------------------------------------------------
 
   # `expression <- sign? term (term_op term)*` and `term <- factor (factor_op
@@ -388,63 +318,43 @@ class Binder {
   # then operator/operand pairs, left-associated. The sign binds to the first
   # term only, so -a*b+c is ((-(a*b)) + c) -- same fact pl0.cul's own `chain`
   # leans on, restated here as IR construction instead of arithmetic.
-  emit_chain(m, nodes, f) {
+  emit_chain(nodes, f) {
     let [head, ...rest] = nodes
     if head.name == 'sign' {
       let [first, ...pairs] = rest
-      mut acc = self.emit_expr(m, first, f)
+      mut acc = self.emit_expr(first, f)
       if head.token == '-' {
-        acc = m.unary(
-          op: 'neg',
-          operand: acc,
-          line: head.line,
-          col: head.column,
-        )
+        acc = self.ir.unary('neg', acc, head)
       }
-      self.emit_fold(m, pairs, acc, f)
+      self.emit_fold(pairs, acc, f)
     } else {
-      self.emit_fold(m, rest, self.emit_expr(m, head, f), f)
+      self.emit_fold(rest, self.emit_expr(head, f), f)
     }
   }
 
-  emit_fold(m, pairs, acc, f) {
+  emit_fold(pairs, acc, f) {
     mut value = acc
     for [op, operand] in pairs.iter().chunks(2) {
-      let rhs = self.emit_expr(m, operand, f)
-      value = m.binary(
-        op: binop_name(op.token),
-        lhs: value,
-        rhs: rhs,
-        line: op.line,
-        col: op.column,
-      )
+      let rhs = self.emit_expr(operand, f)
+      value = self.ir.binary(binop_name(op.token), value, rhs, op)
     }
     value
   }
 
-  emit_expr(m, node, f) {
+  emit_expr(node, f) {
     match node {
-      {name: 'number'} => m.literal(
-        v: to_long(node.token),
-        line: node.line,
-        col: node.column,
-      ),
+      {name: 'number'} => self.ir.literal(to_long(node.token), node),
       {name: 'ident', token} => {
         let r = self.lookup_value(f, token)
         if r.is_const {
-          m.literal(v: r.cval, line: node.line, col: node.column)
+          self.ir.literal(r.cval, node)
         } else {
-          let a = self.access(f, r.var)
-          m.var_ref(
-            kind: a.kind,
-            index: a.index,
-            line: node.line,
-            col: node.column,
-          )
+          let (vb, vs) = r.var
+          self.ir.read(f, vb, vs, node)
         }
       },
-      {name: 'expression', nodes} => self.emit_chain(m, nodes, f),
-      {name: 'term', nodes} => self.emit_chain(m, nodes, f),
+      {name: 'expression', nodes} => self.emit_chain(nodes, f),
+      {name: 'term', nodes} => self.emit_chain(nodes, f),
       _ => fail(node, "cannot evaluate {node.name}"),
     }
   }
@@ -452,110 +362,60 @@ class Binder {
   # ODD e is e mod 2 != 0. cpp-peglib's own pl0.cc reads it as e != 0 in both of
   # its lanes, agreeing with itself while disagreeing with the language -- see
   # cpp-vmlib's examples/pl0/README.md for the sample that catches it.
-  emit_cond(m, node, f) {
+  emit_cond(node, f) {
     match node {
       {name: 'odd', nodes: [value]} => {
-        let e = self.emit_expr(m, value, f)
-        let ln = node.line
-        let cl = node.column
-        let rem = m.binary(
-          op: 'mod',
-          lhs: e,
-          rhs: m.literal(v: 2, line: ln, col: cl),
-          line: ln,
-          col: cl,
-        )
-        m.binary(
-          op: 'ne',
-          lhs: rem,
-          rhs: m.literal(v: 0, line: ln, col: cl),
-          line: ln,
-          col: cl,
-        )
+        let e = self.emit_expr(value, f)
+        let rem = self.ir.binary('mod', e, self.ir.literal(2, node), node)
+        self.ir.binary('ne', rem, self.ir.literal(0, node), node)
       },
       {name: 'compare', nodes: [l, op, r]} => {
-        let lhs = self.emit_expr(m, l, f)
-        let rhs = self.emit_expr(m, r, f)
-        m.binary(
-          op: cmp_name(op.token),
-          lhs: lhs,
-          rhs: rhs,
-          line: op.line,
-          col: op.column,
-        )
+        let lhs = self.emit_expr(l, f)
+        let rhs = self.emit_expr(r, f)
+        self.ir.binary(cmp_name(op.token), lhs, rhs, op)
       },
       _ => fail(node, "cannot evaluate {node.name} as a condition"),
     }
   }
 
-  emit_stmt(m, node, f) {
+  emit_stmt(node, f) {
     match node {
       {
         name: 'statements',
         nodes,
-      } => m.block(
-        stmts_list: make_list(m, nodes.map(|n| self.emit_stmt(m, n, f))),
-        line: node.line,
-        col: node.column,
-      ),
+      } => self.ir.block(nodes.map(|n| self.emit_stmt(n, f)), node),
       {name: 'assignment', nodes: [name, value]} => {
-        let var = self.lookup_assign(f, name.token, name)
-        let v = self.emit_expr(m, value, f)
-        let a = self.access(f, var)
-        m.assign(
-          kind: a.kind,
-          index: a.index,
-          value: v,
-          line: node.line,
-          col: node.column,
-        )
+        let (vb, vs) = self.lookup_assign(f, name.token, name)
+        let v = self.emit_expr(value, f)
+        self.ir.write(f, vb, vs, v, node)
       },
+      # The closure is built here, per call site, because a self-recursive
+      # call (g == f) forwards `f`'s own captures straight through -- see
+      # cpp-vmlib's README for fib.pas's version of that table.
       {name: 'call', nodes: [name]} => {
         let g = self.lookup_proc(f, name.token)
-        let cmap = self.make_capture_map(m, f, g)
-        m.call(func: g, cmap: cmap, line: node.line, col: node.column)
+        self.ir.call(f, g, [], node)
       },
       {name: 'if', nodes: [cond, body]} => {
-        let c = self.emit_cond(m, cond, f)
-        let t = self.emit_stmt(m, body, f)
-        m.make_if(cond: c, then_branch: t, line: node.line, col: node.column)
+        let c = self.emit_cond(cond, f)
+        let t = self.emit_stmt(body, f)
+        self.ir.make_if(c, t, node)
       },
       {name: 'while', nodes: [cond, body]} => {
-        let c = self.emit_cond(m, cond, f)
-        let b = self.emit_stmt(m, body, f)
-        m.make_while(cond: c, body: b, line: node.line, col: node.column)
+        let c = self.emit_cond(cond, f)
+        let b = self.emit_stmt(body, f)
+        self.ir.make_while(c, b, node)
       },
       {name: 'out', nodes: [value]} => {
-        let v = self.emit_expr(m, value, f)
-        m.intrinsic(
-          name: 'print',
-          args_list: make_list(m, [v]),
-          line: node.line,
-          col: node.column,
-        )
+        let v = self.emit_expr(value, f)
+        self.ir.intrinsic('print', [v], node)
       },
       {name: 'in', nodes: [name]} => {
-        let var = self.lookup_assign(f, name.token, name)
-        let read = m.intrinsic(
-          name: 'readint',
-          args_list: make_list(m, []),
-          line: node.line,
-          col: node.column,
-        )
-        let a = self.access(f, var)
-        m.assign(
-          kind: a.kind,
-          index: a.index,
-          value: read,
-          line: node.line,
-          col: node.column,
-        )
+        let (vb, vs) = self.lookup_assign(f, name.token, name)
+        let read = self.ir.intrinsic('readint', [], node)
+        self.ir.write(f, vb, vs, read, node)
       },
-      {name: 'statement'} => m.block(
-        stmts_list: make_list(m, []),
-        line: node.line,
-        col: node.column,
-      ),
+      {name: 'statement'} => self.ir.block([], node),
       _ => fail(node, "cannot execute {node.name}"),
     }
   }
@@ -563,45 +423,29 @@ class Binder {
   # --- Driver ------------------------------------------------------------------
 
   build(m, root) {
+    self.ir = front.Emitter.new(m, self.fr)
     self.collect(root, nil, 'main')
-    for _ in range(self.blocks.size()) {
-      self.free.push([].to_set())
-      self.calls.push([])
-      self.capture_index.push({})
-      self.cell_index.push({})
-    }
     self.scan_block(0)
-    self.solve_captures()
+    self.fr.solve()
 
     # Blocks and funcs share indices by construction: block 0 (the program's
     # own outermost scope) is emitted first, so it becomes func #0, the entry
     # point CodeGen requires.
     for f in range(self.blocks.size()) {
-      let body = self.emit_stmt(m, self.blocks[f].body, f)
-      let func = m.add_func(
-        name: self.blocks[f].name,
-        num_locals: self.blocks[f].var_names.size(),
-        num_captures: self.free[f].size(),
-        num_cells: self.cell_index[f].size(),
-        num_params: 0,
-        body: body,
+      let body = self.emit_stmt(self.blocks[f].body, f)
+      let func = self.ir.add_func(
+        self.blocks[f].name,
+        f,
+        self.blocks[f].var_names.size(),
+        0,
+        body,
       )
-      for i in range(self.blocks[f].var_names.size()) {
-        m.set_local_name(
-          func: func,
-          index: i,
-          name: self.blocks[f].var_names[i],
-        )
+      for i, name in self.blocks[f].var_names.enumerate() {
+        m.set_local_name(func: func, index: i, name: name)
       }
-      for i, var in self.free[f].iter().enumerate() {
-        let (vb, vs) = var
-        m.set_capture_name(
-          func: func,
-          index: i,
-          name: self.blocks[vb].var_names[vs],
-        )
-      }
+      self.ir.name_captures(func, f, |vb, vs| self.blocks[vb].var_names[vs])
     }
+    self.ir
   }
 }
 
@@ -617,16 +461,7 @@ try {
   # `program <- _ block '.' _` folds to a single child, so the root that
   # arrives is the block itself -- same fact pl0.cul's own driver leans on.
   let tree = Peg.parse(grammar, FS.read(args[0]), path: args[0])
-  let m = CodeGen.Module.new()
-  Binder.new().build(m, tree)
-  m.verify()
-  if want_ir {
-    print(m.dump_ir())
-  } else if want_bc {
-    print(m.dump_bc())
-  } else {
-    m.run()
-  }
+  Binder.new().build(CodeGen.Module.new(), tree).finish(want_ir, want_bc)
 } catch e {
   match e {
     {kind: 'Pl0Error'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
