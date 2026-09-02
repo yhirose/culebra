@@ -46,6 +46,27 @@ class Frames {
 
   size() { self.free.size() }
 
+  # For a front end that binds a runtime once and then compiles program
+  # after program against it: drop the functions from `n` on, and start one
+  # of the kept ones (the entry function) over. What the kept functions
+  # capture stays; solve renumbers everything.
+  truncate(n) {
+    while self.size() > n {
+      self.parent.pop()
+      self.free.pop()
+      self.calls.pop()
+      self.capture_index.pop()
+      self.cell_index.pop()
+    }
+  }
+  reset(f, parent) {
+    self.parent[f] = parent
+    self.free[f] = {}
+    self.calls[f] = []
+    self.capture_index[f] = {}
+    self.cell_index[f] = {}
+  }
+
   # `f` refers to (owner, slot); free unless f owns it
   use(f, owner, slot) {
     if owner != f {
@@ -89,6 +110,10 @@ class Frames {
       }
     }
     for f in range(self.size()) {
+      self.capture_index[f] = {}
+      self.cell_index[f] = {}
+    }
+    for f in range(self.size()) {
       for i, v in self.free[f].values().enumerate() {
         let (o, s) = v
         self.capture_index[f]["{o}:{s}"] = i
@@ -129,6 +154,7 @@ class Frames {
   num_captures(f) { self.free[f].size() }
   num_cells(f) { self.cell_index[f].size() }
   in_cell(f, slot) { self.cell_index[f].has(slot) }
+  cell_of(f, slot) { self.cell_index[f][slot] }
 
   # (owner, slot) of every variable `f` captures, in capture-index order
   captures(f) { self.free[f].values() }
@@ -144,10 +170,13 @@ class Frames {
 
 let ORIGIN = {line: 1, column: 1}
 
+# a position for a caller that holds the numbers rather than the node
+fn pos(line, column) { {line: line, column: column} }
+
 class Emitter {
-  new(m, fr) {
+  new(m, frames) {
     self.m = m
-    self.fr = fr
+    self.frames = frames
   }
 
   literal(v, at) { self.m.literal(v: v, line: at.line, col: at.column) }
@@ -226,11 +255,11 @@ class Emitter {
 
   # a variable as `f` sees it
   read(f, owner, slot, at) {
-    let a = self.fr.access(f, owner, slot)
+    let a = self.frames.access(f, owner, slot)
     self.m.var_ref(kind: a.kind, index: a.index, line: at.line, col: at.column)
   }
   write(f, owner, slot, value, at) {
-    let a = self.fr.access(f, owner, slot)
+    let a = self.frames.access(f, owner, slot)
     self.m.assign(
       kind: a.kind,
       index: a.index,
@@ -268,7 +297,7 @@ class Emitter {
   closure(f, g, at) {
     self.m.make_closure(
       func: g,
-      cmap: self.fr.cmap(self.m, f, g),
+      cmap: self.frames.cmap(self.m, f, g),
       line: at.line,
       col: at.column,
     )
@@ -280,17 +309,17 @@ class Emitter {
     self.m.add_func(
       name: name,
       num_locals: num_locals,
-      num_captures: self.fr.num_captures(f),
-      num_cells: self.fr.num_cells(f),
+      num_captures: self.frames.num_captures(f),
+      num_cells: self.frames.num_cells(f),
       num_params: num_params,
       body: body,
     )
   }
-  # names `func`'s captures in index order; name_of(owner, slot) -> String
+  # names `func`'s captures in index order; name_of(i, owner, slot) -> String
   name_captures(func, f, name_of) {
-    for i, v in self.fr.captures(f).enumerate() {
+    for i, v in self.frames.captures(f).enumerate() {
       let (o, s) = v
-      self.m.set_capture_name(func: func, index: i, name: name_of(o, s))
+      self.m.set_capture_name(func: func, index: i, name: name_of(i, o, s))
     }
   }
 
@@ -305,4 +334,4 @@ class Emitter {
   }
 }
 
-export {Frames, Emitter, ORIGIN}
+export {Frames, Emitter, ORIGIN, pos}

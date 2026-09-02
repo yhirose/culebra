@@ -95,7 +95,7 @@ fn cmp_name(tok) {
 # starts from nothing rather than inheriting another compile's leftovers.
 class Binder {
   blocks = []         # {parent, name, consts, var_slot, var_names, procs, children, body}
-  fr = front.Frames.new()  # blocks and Frames share indices: collect registers both
+  frames = front.Frames.new()  # blocks and Frames share indices: collect registers both
   ir = nil            # the Emitter, once build has the Module
 
   # --- Phase 1: collect declarations -----------------------------------------
@@ -142,7 +142,7 @@ class Binder {
     })
     # no parent edge: a PL/0 closure exists only at its call site, so the
     # call edges alone say what a procedure has to capture
-    self.fr.add(nil)
+    self.frames.add(nil)
 
     let [cst, vr, prc, _] = node.nodes
     for [cname, cvalue] in cst.nodes.iter().chunks(2) {
@@ -226,7 +226,7 @@ class Binder {
 
   note_ref(block, var) {
     let (vb, vs) = var
-    self.fr.use(block, vb, vs)
+    self.frames.use(block, vb, vs)
   }
 
   scan_chain(nodes, block) {
@@ -281,7 +281,7 @@ class Binder {
         if g < 0 {
           fail(name, "undefined procedure '{name.token}'")
         }
-        self.fr.note_call(block, g)
+        self.frames.note_call(block, g)
       },
       {name: 'if', nodes: [cond, body]} => {
         self.scan_cond(cond, block)
@@ -423,10 +423,10 @@ class Binder {
   # --- Driver ------------------------------------------------------------------
 
   build(m, root) {
-    self.ir = front.Emitter.new(m, self.fr)
+    self.ir = front.Emitter.new(m, self.frames)
     self.collect(root, nil, 'main')
     self.scan_block(0)
-    self.fr.solve()
+    self.frames.solve()
 
     # Blocks and funcs share indices by construction: block 0 (the program's
     # own outermost scope) is emitted first, so it becomes func #0, the entry
@@ -443,7 +443,7 @@ class Binder {
       for i, name in self.blocks[f].var_names.enumerate() {
         m.set_local_name(func: func, index: i, name: name)
       }
-      self.ir.name_captures(func, f, |vb, vs| self.blocks[vb].var_names[vs])
+      self.ir.name_captures(func, f, |_, vb, vs| self.blocks[vb].var_names[vs])
     }
     self.ir
   }
