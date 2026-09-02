@@ -2883,6 +2883,15 @@ struct VmProgram {
     uint32_t pc;
   };
   std::map<int64_t, std::vector<CallSiteRef>> resolved_by_cell;
+  // The same for the reads a constant binding folded (Binding::Known::
+  // constant): each is a LoadConst standing in for the CellGet of `slot`
+  // it would otherwise have been, which is what revocation writes back.
+  struct ConstSiteRef {
+    int32_t chunk;
+    uint32_t pc;
+    int32_t slot;
+  };
+  std::map<int64_t, std::vector<ConstSiteRef>> const_sites_by_cell;
   int64_t next_known_cell = 0;
 };
 
@@ -3437,6 +3446,7 @@ class Compiler {
     // The revocation bookkeeping dies with the compile: the chunks now carry
     // every answer either consumer reads.
     prog.resolved_by_cell.clear();
+    prog.const_sites_by_cell.clear();
     return prog;
   }
 
@@ -3534,6 +3544,13 @@ class Compiler {
       // ordinary boxed way". Rides `Known` so a capture inherits it and a
       // re-declaration strikes it, exactly as the two answers above do.
       const peg::Ast* value_class = nullptr;
+      // The scalar every read of this name yields, for a name whose
+      // declaration wrote a literal (grant_known_const): the read IS the
+      // constant, so nothing chases the cell and the tag is in the code
+      // for the lowering to fold on. Same "written exactly once" rule and
+      // the same revocation through `cell` — a re-declaration writes the
+      // cell those reads resolved through, and they go back to reading it.
+      std::optional<JitValue> constant;
     };
     Known known;
     // A `let mut` local proven, by a whole-scope walk run before any of its
@@ -3986,11 +4003,55 @@ class Compiler {
     if (b.is_cell && b.known.cell < 0) b.known.cell = prog_.next_known_cell++;
   }
 
+  // `b` is a `let` whose declaration wrote a scalar literal, and reads as
+  // that scalar for as long as it is in scope: grant_known_chunk's rule
+  // again, and a cell id for the same reason. Only a cell binding takes it.
+  // A plain slot's read is the slot itself, and the lowering already sees
+  // the constant stored into it; what a cell hides is the value behind the
+  // pointer — from the lowering's folding, and from the executor as a load
+  // and a retain per read.
+  void grant_known_const(Binding& b, const peg::Ast& rhs) {
+    if (!b.is_cell || b.lazy || !binding_writes_once(b)) return;
+    auto v = literal_scalar(rhs);
+    if (!v) return;
+    b.known.constant = *v;
+    if (b.known.cell < 0) b.known.cell = prog_.next_known_cell++;
+  }
+
+  // The scalar an expression spells when it is a literal — a NUMBER, FLOAT
+  // or BOOLEAN, or the negation of a numeric one — as the constant
+  // compile_expr loads for it (Op::Neg's Long arm wraps, so this does).
+  static std::optional<JitValue> literal_scalar(const peg::Ast& e) {
+    using namespace peg::udl;
+    switch (e.tag) {
+      case "NUMBER"_:
+        return JitValue{TAG_LONG, culebra::parse_integer_literal(e.token)};
+      case "FLOAT"_:
+        return JitValue{TAG_FLOAT,
+                        _culebra_double_to_bits(e.token_to_number<double>())};
+      case "BOOLEAN"_:
+        return JitValue{TAG_BOOL, e.token == "true"};
+      case "UNARY_MINUS"_: {
+        auto v = literal_scalar(*e.nodes[1]);
+        if (!v) return std::nullopt;
+        if (v->tag == TAG_LONG)
+          return JitValue{TAG_LONG, static_cast<int64_t>(
+                                        0 - static_cast<uint64_t>(v->data))};
+        if (v->tag == TAG_FLOAT)
+          return JitValue{TAG_FLOAT, _culebra_double_to_bits(
+                                         -_culebra_float_to_double(v->data))};
+        return std::nullopt;  // `-true` is the runtime's own TypeError
+      }
+      default:
+        return std::nullopt;
+    }
+  }
+
   // A second declaration of the same name in this scope writes the cell the
   // first one owns, so a site resolved through it may now call the wrong
-  // code. Strike every one of them — including the sites that ran before
-  // the re-declaration and were right to resolve, since telling those apart
-  // means knowing whether a loop wraps both.
+  // code — or read the wrong value. Strike every one of them — including
+  // the sites that ran before the re-declaration and were right to resolve,
+  // since telling those apart means knowing whether a loop wraps both.
   void revoke_known(Binding& b) {
     if (b.known.cell >= 0) {
       auto it = prog_.resolved_by_cell.find(b.known.cell);
@@ -3999,31 +4060,38 @@ class Compiler {
           // Only the chunk is struck. Where the callee is read matters to
           // the instruction's own operand — the `b` of a borrowed site names
           // a cell either way — so that bit survives the revocation.
-          auto& w = call_targets_of(s.chunk)[s.pc];
+          auto& w = chunk_ref(s.chunk).call_targets[s.pc];
           w = decode_call_target(w).callee_in_cell
                   ? encode_call_target({-1, Chunk::Reach::Direct, true})
                   : kNoCallTarget;
         }
         prog_.resolved_by_cell.erase(it);
       }
+      auto ct = prog_.const_sites_by_cell.find(b.known.cell);
+      if (ct != prog_.const_sites_by_cell.end()) {
+        // A folded read becomes the cell read it stood for, into the same
+        // register.
+        for (const auto& s : ct->second) {
+          auto& in = chunk_ref(s.chunk).code[s.pc];
+          in = Insn{Op::CellGet, in.a, s.slot};
+        }
+        prog_.const_sites_by_cell.erase(ct);
+      }
     }
     b.known = {};
   }
 
-  // Where a resolved site's entry lives. A cell only ever reaches sites in
-  // the chunk that declared it — still being built, so its table is
-  // `chunk_` — and in the nested chunks that captured it, which finished
-  // and moved into the program before the re-declaration could run.
-  std::vector<int32_t>& call_targets_of(int32_t chunk) {
-    return chunk == chunk_idx_
-               ? chunk_.call_targets
-               : prog_.chunks[static_cast<size_t>(chunk)].call_targets;
-  }
-
-  // A chunk's signature, whether or not its compile has finished: the one
-  // being built lives in `chunk_` and is not in the program yet, which is
-  // exactly the chunk a `fn name`'s own recursive call names.
+  // A chunk, whether or not its compile has finished: the one being built
+  // lives in `chunk_` and is not in the program yet — the chunk a `fn name`'s
+  // own recursive call names, and the one a cell's sites are struck in (a
+  // cell only ever reaches sites in the chunk that declared it, still being
+  // built, and in the nested chunks that captured it, which finished and
+  // moved into the program before the re-declaration could run).
   const Chunk& chunk_ref(int32_t chunk) const {
+    return chunk == chunk_idx_ ? chunk_
+                               : prog_.chunks[static_cast<size_t>(chunk)];
+  }
+  Chunk& chunk_ref(int32_t chunk) {
     return chunk == chunk_idx_ ? chunk_
                                : prog_.chunks[static_cast<size_t>(chunk)];
   }
@@ -4399,19 +4467,20 @@ class Compiler {
   // resolved: the closures already holding that cell now reach other code.
   // `CellNew` needs no such step — its slot is freshly allocated for a
   // binding that does not exist yet.
-  // Only `chunk` triggers this, deliberately, and `ctor` must not: the two
-  // grants stand on opposite sides of the write. A `let f = fn …` is granted
-  // AFTER its store, so any store it must survive is someone else's; a class
-  // name is granted BEFORE the class object exists — the chunk index is
-  // reserved early so a method constructing its own class can resolve — and
-  // the declaration's own `store_cell` would then revoke the grant it just
-  // made. Testing `ctor` here turns every `C.new(...)` after a class
-  // declaration back into a dynamic call, and does it silently: nothing
-  // fails, the resolution simply stops happening.
+  // Only `chunk` and `constant` trigger this, deliberately, and `ctor` must
+  // not: the grants stand on opposite sides of the write. A `let f = fn …`
+  // or `let k = 1` is granted AFTER its store, so any store it must survive
+  // is someone else's; a class name is granted BEFORE the class object
+  // exists — the chunk index is reserved early so a method constructing its
+  // own class can resolve — and the declaration's own `store_cell` would
+  // then revoke the grant it just made. Testing `ctor` here turns every
+  // `C.new(...)` after a class declaration back into a dynamic call, and
+  // does it silently: nothing fails, the resolution simply stops happening.
   void invalidate_cell(int32_t slot) {
     for (auto& sc : scopes_)
       for (auto& b : sc.bindings)
-        if (b.slot == slot && b.known.chunk >= 0) revoke_known(b);
+        if (b.slot == slot && (b.known.chunk >= 0 || b.known.constant))
+          revoke_known(b);
   }
 
   // A read of a cell binding: the value comes out retained, so the result
@@ -4674,6 +4743,16 @@ class Compiler {
       return {b.slot, false};
     }
     int32_t t = alloc_temp(at);
+    if (b.known.constant) {
+      // The cell's contents are known (never granted to a lazy binding, so
+      // no sentinel to test): load them, and remember the site for the
+      // re-declaration that would have to write the cell read back.
+      assert(b.known.cell >= 0 && "a constant fact is anchored to its cell");
+      size_t ix = emit(Op::LoadConst, t, kconst(*b.known.constant));
+      prog_.const_sites_by_cell[b.known.cell].push_back(
+          {chunk_idx_, static_cast<uint32_t>(ix), b.slot});
+      return {t, true};
+    }
     emit(Op::CellGet, t, b.slot);
     if (b.lazy && unbound_guard) emit(Op::UnboundErr, t, kconst_str(b.name));
     return {t, true};
@@ -6300,6 +6379,10 @@ class Compiler {
         std::erase_if(sites, [&](const auto& s) {
           return static_cast<size_t>(s.chunk) >= mark;
         });
+      for (auto& [cell, sites] : prog_.const_sites_by_cell)
+        std::erase_if(sites, [&](const auto& s) {
+          return static_cast<size_t>(s.chunk) >= mark;
+        });
       prog_.chunks.resize(mark);
       return emit_poison_chunk(ast, u);
     }
@@ -6966,6 +7049,7 @@ class Compiler {
           pre->is_mut = decl_mut;
         settle_predeclared(*pre);
         grant_known_chunk(*pre, rhs.chunk);
+        grant_known_const(*pre, *av.rhs);
         return read_binding(*tgt, *pre);
       }
       // Re-declaring a captured name in the same scope writes the cell the
@@ -6979,6 +7063,7 @@ class Compiler {
         emit_session_decl_bind(*held, decl_mut);
         held->is_mut = decl_mut;
         grant_known_chunk(*held, rhs.chunk);
+        grant_known_const(*held, *av.rhs);
         return read_binding(*tgt, *held);
       }
       // A REPL line's top-level declaration binds in the session, so the
@@ -7025,6 +7110,7 @@ class Compiler {
       }
       push_binding({name, slot, decl_mut, cell});
       grant_known_chunk(scopes_.back().bindings.back(), rhs.chunk);
+      grant_known_const(scopes_.back().bindings.back(), *av.rhs);
       return read_binding(*tgt, scopes_.back().bindings.back());
     }
     const Binding* b = lookup_or_session(*tgt, name);
@@ -11322,22 +11408,11 @@ class Compiler {
     using namespace peg::udl;
     StampGuard pos(*this, ast);
     switch (ast.tag) {
-      case "NUMBER"_: {
-        int32_t t = alloc_temp(ast);
-        emit(Op::LoadConst, t,
-             kconst_long(parse_integer_literal(ast.token)));
-        return {t, true};
-      }
-      case "FLOAT"_: {
-        int32_t t = alloc_temp(ast);
-        emit(Op::LoadConst, t,
-             kconst({TAG_FLOAT,
-                     _culebra_double_to_bits(ast.token_to_number<double>())}));
-        return {t, true};
-      }
+      case "NUMBER"_:
+      case "FLOAT"_:
       case "BOOLEAN"_: {
         int32_t t = alloc_temp(ast);
-        emit(Op::LoadConst, t, kconst({TAG_BOOL, ast.token == "true"}));
+        emit(Op::LoadConst, t, kconst(*literal_scalar(ast)));
         return {t, true};
       }
       case "NIL"_: {

@@ -421,7 +421,17 @@ reached, the cell the answer is anchored to, and (below) the constructor a
 `.new` on the name would enter. A capture inherits it, since the cell it
 borrows is the one that binding owns, and a later declaration writing that
 cell strikes what was resolved through it. The per-call answer goes in
-`call_targets`. Only the code is static:
+`call_targets`.
+
+The same record carries the scalar a `let` written once from a literal
+holds (`Known::constant`). A read of such a name through a cell — a
+captured `DT = 0.016` — is then the constant itself, a `LoadConst` where
+a `CellGet` would have been: neither engine chases the cell, and the tag
+is in the code for the lowering's SCCP to fold the downstream arithmetic
+and comparison dispatches on. A plain slot needs no such fact, since the
+lowering already sees what was stored into it. The strike is the same
+one: a re-declaration writes the folded reads back into the cell reads
+they stood for (`const_sites_by_cell`). Only the code is static:
 the closure still rides the register, because its captures are the
 caller's. Both consumers then skip the same three things — the
 `TAG_FUNC` gate with its two cold probes, the parameter-meta lookup

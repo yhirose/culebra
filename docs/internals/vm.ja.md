@@ -423,6 +423,15 @@ captureされた変数は6つのop — `CellNew`、`CellGet`、`CellSet`、
 captureはこれを引き継ぐ。borrowするcellはその束縛が所有する当のcellだから
 であり、後の宣言がそのcellを書き換えたときは、それを通して解決済みの
 呼び出しサイトを取り消す。呼び出し命令ごとの答えは`call_targets`に記録する。
+
+同じレコードは、リテラルから1度だけ書かれた`let`が持つスカラーも運ぶ
+（`Known::constant`）。そうした名前をcell越しに読む — captureされた
+`DT = 0.016` — と、読みはその定数そのものになり、`CellGet`があった場所に
+`LoadConst`が置かれる: どちらのエンジンもcellを辿らず、タグがコードの中に
+あるので、loweringのSCCPが下流の算術・比較のdispatchを畳める。plainな
+slotにはこの事実は要らない — loweringはそこに何が格納されたかを既に見て
+いる。取り消しも同じ1つである: 再宣言は、畳まれた読みをそれが代わりを
+務めていたcellの読みへ書き戻す（`const_sites_by_cell`）。
 静的なのはコードだけである: closure自体は
 レジスタに乗ったままで、そのcaptureは呼び手のものだからだ。両consumer
 は同じ3つを飛ばす — 2つのcold probeを伴う`TAG_FUNC`ゲート、

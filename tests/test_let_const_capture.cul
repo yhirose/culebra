@@ -1,0 +1,138 @@
+// A `let` written once from a scalar literal reads as that literal
+// wherever the name is captured: the compiler folds the read instead of
+// chasing the cell. Everything a cell read could observe — a re-declaration
+// writing the cell, a `mut` rebinding, a forward reference — must still
+// read the same through the fold.
+
+// The shape the fold exists for: a top-level constant read inside a closure.
+let DT = 0.016
+let GY = -9.8
+let N = 3
+let ON = true
+let step = fn (v) {
+  v + GY * DT
+}
+assert_eq(step(0.0), -9.8 * 0.016)
+let count = fn () {
+  mut k = 0
+  for _ in 0..N {
+    k += 1
+  }
+  ON ? k : -k
+}
+assert_eq(count(), 3)
+
+// Nested capture: the fact reaches through two closures.
+let outer = fn () {
+  let inner = fn () {
+    DT * 2.0
+  }
+  inner()
+}
+assert_eq(outer(), 0.032)
+
+// A re-declaration in the same scope writes the cell the closures hold, so
+// a closure built before it reads the new value from then on (the interp
+// overwrites the environment's entry).
+let K = 1
+let read_k = fn () {
+  K
+}
+assert_eq(read_k(), 1)
+let before = read_k()
+let K = 2
+assert_eq(before, 1)
+assert_eq(read_k(), 2)
+let read_k2 = fn () {
+  K
+}
+assert_eq(read_k2(), 2)
+let K = 3
+assert_eq(read_k(), 3)
+assert_eq(read_k2(), 3)
+
+// A re-declaration to a non-scalar goes the same way.
+let S = 5
+let read_s = fn () {
+  S
+}
+assert_eq(read_s(), 5)
+let S = 'five'
+assert_eq(read_s(), 'five')
+
+// `mut` is never folded: the closure sees every write.
+mut M = 10
+let read_m = fn () {
+  M
+}
+M = 11
+assert_eq(read_m(), 11)
+
+// A conditional declaration is a run-time fact, not a fold.
+let pick = fn (flag) {
+  if flag {
+    let C = 1
+  } else {
+    let C = 2
+  }
+  let read_c = fn () {
+    C
+  }
+  read_c()
+}
+assert_eq(pick(true), 1)
+assert_eq(pick(false), 2)
+
+// A forward reference: the closure captures the cell before the
+// declaration runs, and reading it too early is still the NameError.
+let early = fn () {
+  LATE
+}
+let e = try {
+  early()
+} catch err {
+  err.kind
+}
+assert_eq(e, 'NameError')
+let LATE = 7
+assert_eq(early(), 7)
+
+// An annotated declaration folds like a bare one.
+let T: Long = 42
+let read_t = fn () {
+  T
+}
+assert_eq(read_t(), 42)
+
+// A per-iteration local captured by a closure made in the body.
+mut fns = []
+for i in 0..3 {
+  let base = 100
+  fns.push(|| base + i)
+}
+assert_eq(fns.map(|f| f()), [100, 101, 102])
+
+// Shadowing in an inner scope declares a different name; the outer fold
+// is untouched.
+let Z = 1
+let shadow = fn () {
+  let Z = 2
+  let inner = fn () {
+    Z
+  }
+  inner()
+}
+assert_eq(shadow(), 2)
+let read_z = fn () {
+  Z
+}
+assert_eq(read_z(), 1)
+
+// The constant is a value like any other where it is used.
+let LIMIT = 40.0
+let clamp = fn (x) {
+  x > LIMIT ? LIMIT : x
+}
+assert_eq(clamp(50.0), 40.0)
+assert_eq(clamp(3.5), 3.5)
+assert_eq([LIMIT, -GY, N].map(|v| v), [40.0, 9.8, 3])
