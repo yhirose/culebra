@@ -1,0 +1,49 @@
+# The same soft lookup, written as three matrix operations.
+#
+#   attention(Q, K, V) = softmax(Q K^T) V
+#
+# ch02/01 did this one query at a time with plain arithmetic. Nothing about
+# the idea changes here; the loops just become `dot` and `softmax` on a
+# Tensor, so all three queries are answered at once.
+
+# Keys: (action, drama, comedy) per movie.
+let K = Tensor.from([
+  [8.0, 2.0, 3.0],
+  [3.0, 9.0, 1.0],
+  [1.0, 2.0, 9.0],
+  [5.0, 5.0, 5.0],
+  [7.0, 6.0, 2.0],
+  [2.0, 7.0, 6.0],
+  [9.0, 1.0, 1.0],
+])
+
+# Values: one user's rating per movie.
+let V = Tensor.from([[85.0], [70.0], [60.0], [75.0], [80.0], [65.0], [90.0]])
+
+# Queries: three new movies.
+let Q = Tensor.from([
+  [6.0, 4.0, 5.0],  # balanced, leaning action
+  [2.0, 8.0, 3.0],  # drama
+  [4.0, 3.0, 7.0],  # leaning comedy
+])
+
+fn attention(q, k, v) {
+  # `softmax` normalizes the last axis, which is what "over the keys" means
+  # once the scores are laid out one query per row.
+  let weights = q.dot(k.transpose()).softmax()
+  [weights.dot(v), weights]
+}
+
+let out = attention(Q, K, V)
+Tensor.eval(out[0], out[1])
+
+let queries = Q.to_array()
+let ratings = out[0].to_array()
+for i, movie in queries.enumerate() {
+  inspect("movie {movie}: predicted {ratings[i][0]}")
+}
+
+inspect('--- attention weights, one row per query ---')
+for i, row in out[1].to_array().enumerate() {
+  inspect("  query {i}: {row.map(|w| Math.round(w * 100.0))}%")
+}

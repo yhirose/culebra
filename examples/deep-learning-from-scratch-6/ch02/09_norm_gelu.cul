@@ -1,0 +1,182 @@
+# The two pieces that sit around attention in a transformer block.
+#
+# LayerNorm normalizes each position across its own embedding, then scales
+# and shifts it by learned parameters. GELU is the activation the feed-
+# forward network uses instead of ReLU: smooth, and not exactly zero for
+# small negatives. Both are written out here rather than borrowed, because
+# writing them out is the section.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import L from '../../dezero/dezero/layers.cul'
+import Plot from '../common/plot.cul'
+
+class LayerNorm {
+  new(embed_dim) {
+    self.gamma = dz.Parameter(Tensor.ones(1, embed_dim))
+    self.beta = dz.Parameter(Tensor.zeros(1, embed_dim))
+    self.eps = 1.0e-5
+  }
+
+  __call__(x) {
+    let v = dz.as_variable(x)
+    let last = v.ndim - 1
+    let n = to_float(v.shape[last])
+    let kd = v.shape.slice(0, last) + [1]
+    let mean = dz.reshape(dz.mul(dz.sum(v, last), 1.0 / n), kd)
+    let centered = dz.sub(v, mean)
+    let var = dz.reshape(
+      dz.mul(dz.sum(dz.mul(centered, centered), last), 1.0 / n),
+      kd,
+    )
+    # Load-bearing: see BatchNorm.forward in dezero's layers.cul.
+    Tensor.eval(mean.data, var.data)
+    let std = dz.pow_(dz.add(var, self.eps), 0.5)
+    dz.add(dz.mul(self.gamma, dz.div(centered, std)), self.beta)
+  }
+
+  params() {
+    [self.gamma, self.beta]
+  }
+}
+
+# The tanh approximation the book uses.
+fn gelu(x) {
+  let root = Math.sqrt(2.0 / 3.141592653589793)
+  let inner = dz.mul(dz.add(x, dz.mul(dz.pow_(x, 3.0), 0.044715)), root)
+  dz.mul(dz.mul(x, 0.5), dz.add(F.tanh(inner), 1.0))
+}
+
+Random.seed(0)
+
+# LayerNorm leaves each row with mean 0 and variance 1.
+let norm = LayerNorm(8)
+let x = dz.Variable(Tensor.randn(4, 8) * 5.0 + 3.0)
+let y = norm(x)
+Tensor.eval(y.data)
+for i, row in y.data.to_array().enumerate() {
+  let mean = row.sum() / 8.0
+  let var = row.map(|v| (v - mean) * (v - mean)).sum() / 8.0
+  inspect("  row {i}: mean {mean} var {var}")
+}
+
+# GELU against ReLU, and against dezero's own gelu -- which uses the
+# sigmoid approximation `x * sigmoid(1.702x)` rather than this tanh one,
+# so the two agree in shape and differ in the third decimal.
+let probe = dz.Variable(Tensor.from(range(-30, 31)
+  .map(|i| to_float(i) / 10.0)
+  .collect()))
+let mine = gelu(probe)
+let theirs = F.gelu(probe)
+Tensor.eval(mine.data, theirs.data)
+let tanh_y = mine.data.to_array()
+let sigmoid_y = theirs.data.to_array()
+let worst = range(tanh_y.size())
+  .map(|i| Math.abs(tanh_y[i] - sigmoid_y[i]))
+  .max()
+inspect("tanh vs sigmoid GELU, largest gap over [-3, 3]: {worst}")
+
+let xs = range(-30, 31).map(|i| to_float(i) / 10.0).collect()
+Plot.plot_curves(xs, [['ReLU', xs.map(|v| Math.max(0.0, v))], ['GELU', tanh_y]])
+
+# The block: pre-norm attention and feed-forward, each added back in.
+class FFN {
+  new(embed_dim, hidden_dim) {
+    self.fc1 = L.Linear(hidden_dim, false, embed_dim)
+    self.fc2 = L.Linear(embed_dim, false, hidden_dim)
+  }
+
+  __call__(x) {
+    self.fc2(gelu(self.fc1(x)))
+  }
+
+  params() {
+    self.fc1.params() + self.fc2.params()
+  }
+}
+
+# The attention from `08`, carried over rather than borrowed: dezero's own
+# `L.MultiHeadAttention` loops over heads and applies RoPE, and this chapter
+# has introduced neither.
+fn causal_bias(c) {
+  mut rows = []
+  for i in 0..c {
+    rows.push(range(c).map(|j| j <= i ? 0.0 : -1.0e9).collect())
+  }
+  Tensor.from(rows).reshape([1, c, c])
+}
+
+class MultiHeadAttention {
+  new(embed_dim, n_head) {
+    self.n_head = n_head
+    self.head_dim = embed_dim / n_head
+    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
+    self.w_q = L.Linear(embed_dim, false, embed_dim)
+    self.w_k = L.Linear(embed_dim, false, embed_dim)
+    self.w_v = L.Linear(embed_dim, false, embed_dim)
+    self.w_o = L.Linear(embed_dim, false, embed_dim)
+  }
+
+  __call__(x, b, c) {
+    let h = self.n_head
+    let d = self.head_dim
+    let heads = |p| dz.reshape(
+      dz.transpose(dz.reshape(p, [b, c, h, d]), [0, 2, 1, 3]),
+      [b * h, c, d],
+    )
+    let scores = dz.mul(
+      dz.matmul(
+        heads(self.w_q(x)),
+        dz.transpose(heads(self.w_k(x)), [0, 2, 1]),
+      ),
+      self.scale,
+    )
+    let hidden = dz.matmul(
+      F.softmax(dz.add(scores, causal_bias(c)), 2),
+      heads(self.w_v(x)),
+    )
+    self.w_o(dz.reshape(
+      dz.transpose(dz.reshape(hidden, [b, h, c, d]), [0, 2, 1, 3]),
+      [b * c, h * d],
+    ))
+  }
+
+  params() {
+    self.w_q.params() +
+      self.w_k.params() +
+      self.w_v.params() +
+      self.w_o.params()
+  }
+}
+
+class Block {
+  new(embed_dim, n_head, ff_dim) {
+    self.norm1 = LayerNorm(embed_dim)
+    self.attn = MultiHeadAttention(embed_dim, n_head)
+    self.norm2 = LayerNorm(embed_dim)
+    self.ffn = FFN(embed_dim, ff_dim)
+  }
+
+  __call__(x, b, c) {
+    let h = dz.add(x, self.attn(self.norm1(x), b, c))
+    dz.add(h, self.ffn(self.norm2(h)))
+  }
+
+  params() {
+    self.norm1.params() +
+      self.attn.params() +
+      self.norm2.params() +
+      self.ffn.params()
+  }
+}
+
+let block = Block(32, 4, 128)
+let seq = dz.Variable(Tensor.randn(2 * 6, 32))
+let out = block(seq, 2, 6)
+Tensor.eval(out.data)
+inspect("block: {seq.shape} -> {out.data.shape()}")
+dz.sum(out, nil).backward()
+for i, p in block.params().enumerate() {
+  Tensor.eval(p.grad.data)
+  inspect("  param {i} {p.data.shape()} -> grad {p.grad.data.shape()}")
+}

@@ -1,0 +1,146 @@
+# Many heads, one matrix multiply each.
+#
+# One attention head learns one notion of relevance. Several, run in
+# parallel over slices of the same projection, learn several. The efficient
+# form is not a loop over heads: project once into H*D columns, then reshape
+# so the head axis sits beside the batch axis and a single batched matmul
+# does all of them.
+#
+#   (B, C, H*D) -> (B, C, H, D) -> (B, H, C, D) -> (B*H, C, D)
+#
+# dezero's `transpose(x, axes)` is the general permute, and `matmul` on
+# rank 3 is batched over the leading axis.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import L from '../../dezero/dezero/layers.cul'
+
+fn causal_bias(c) {
+  mut rows = []
+  for i in 0..c {
+    rows.push(range(c).map(|j| j <= i ? 0.0 : -1.0e9).collect())
+  }
+  Tensor.from(rows).reshape([1, c, c])
+}
+
+class MultiHeadAttention {
+  new(embed_dim, n_head, head_dim) {
+    self.n_head = n_head
+    self.head_dim = head_dim
+    self.scale = 1.0 / Math.sqrt(to_float(head_dim))
+    let inner = n_head * head_dim
+    self.w_q = L.Linear(inner, false, embed_dim)
+    self.w_k = L.Linear(inner, false, embed_dim)
+    self.w_v = L.Linear(inner, false, embed_dim)
+    self.w_o = L.Linear(embed_dim, false, inner)
+  }
+
+  # x is the flattened (B*C, E); b and c say how to fold it back.
+  __call__(x, b, c) {
+    let h = self.n_head
+    let d = self.head_dim
+
+    # (B*C, H*D) -> (B, C, H, D) -> (B, H, C, D) -> (B*H, C, D)
+    let heads = |p| dz.reshape(
+      dz.transpose(dz.reshape(p, [b, c, h, d]), [0, 2, 1, 3]),
+      [b * h, c, d],
+    )
+    let q = heads(self.w_q(x))
+    let k = heads(self.w_k(x))
+    let v = heads(self.w_v(x))
+
+    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), self.scale)
+    let weights = F.softmax(dz.add(scores, causal_bias(c)), 2)
+    let hidden = dz.matmul(weights, v)  # (B*H, C, D)
+
+    # Back the other way, so each position's heads sit side by side.
+    let merged = dz.reshape(
+      dz.transpose(dz.reshape(hidden, [b, h, c, d]), [0, 2, 1, 3]),
+      [b * c, h * d],
+    )
+    self.w_o(merged)
+  }
+
+  params() {
+    self.w_q.params() +
+      self.w_k.params() +
+      self.w_v.params() +
+      self.w_o.params()
+  }
+}
+
+Random.seed(0)
+let b = 2
+let c = 10
+let e = 512
+let mha = MultiHeadAttention(e, 8, 64)
+
+let x = dz.Variable(Tensor.randn(b * c, e))
+let y = mha(x, b, c)
+Tensor.eval(y.data)
+inspect("input shape:  [{b}, {c}, {e}]")
+inspect("output shape: [{b}, {c}, {y.data.shape()[1]}]")
+
+# The heads really are independent, and this is where that gets checked:
+# take the columns one head owns, attend over them alone, and compare with
+# the corresponding rows of the batched result.
+let hs = 2
+let ds = 4
+let cs = 3
+let small = MultiHeadAttention(hs * ds, hs, ds)
+let xs = dz.Variable(Tensor.randn(cs, hs * ds))
+let scale = 1.0 / Math.sqrt(to_float(ds))
+
+let split = |p| dz.reshape(
+  dz.transpose(dz.reshape(p, [1, cs, hs, ds]), [0, 2, 1, 3]),
+  [hs, cs, ds],
+)
+let q = split(small.w_q(xs))
+let k = split(small.w_k(xs))
+let v = split(small.w_v(xs))
+let joint = dz.matmul(
+  F.softmax(
+    dz.add(
+      dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), scale),
+      causal_bias(cs),
+    ),
+    2,
+  ),
+  v,
+)
+Tensor.eval(joint.data)
+let all = joint.data.reshape([hs * cs, ds]).to_array()
+
+for head in 0..hs {
+  let slice_of = |t| dz.Variable(t.data.narrow([0, head, head + 1]))
+  let alone = dz.matmul(
+    F.softmax(
+      dz.add(
+        dz.mul(
+          dz.matmul(slice_of(q), dz.transpose(slice_of(k), [0, 2, 1])),
+          scale,
+        ),
+        causal_bias(cs),
+      ),
+      2,
+    ),
+    slice_of(v),
+  )
+  Tensor.eval(alone.data)
+  let mine = alone.data.reshape([cs, ds]).to_array()
+  let worst = range(cs)
+    .flat_map(|t| range(ds)
+      .map(|j| Math.abs(all[head * cs + t][j] - mine[t][j]))
+      .collect())
+    .max()
+  inspect("  head {head} computed alone, largest difference: {worst}")
+}
+
+# And the whole thing backprops to every projection, output included, which
+# is what makes it trainable. Printing the gradient's shape rather than
+# `grad != nil` keeps the line falsifiable: a missing gradient throws here.
+dz.sum(small(xs, 1, cs), nil).backward()
+for i, p in small.params().enumerate() {
+  Tensor.eval(p.grad.data)
+  inspect("  param {i} {p.data.shape()} -> grad {p.grad.data.shape()}")
+}

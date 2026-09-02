@@ -1,0 +1,62 @@
+# Why the scores are divided by the square root of the key dimension.
+#
+# `softmax` is scale-sensitive: feed it numbers that are far apart and it
+# collapses onto the largest one. A dot product of two d-dimensional random
+# vectors has variance d, so the wider the key vectors get, the more extreme
+# the scores become and the sharper -- eventually one-hot -- the attention.
+# Dividing by sqrt(d) puts the variance back at 1 whatever d is.
+#
+# Each sample below draws its own pair of vectors. Drawing one vector and
+# dotting many others against it would measure something else: conditioned
+# on that vector, the variance is its squared norm, which for d = 10 is a
+# chi-square with a standard deviation of 4.5.
+
+import Plot from '../common/plot.cul'
+
+# What "scale-sensitive" means, at its most obvious.
+let x = Tensor.from([100.0, 200.0, 300.0])
+let collapsed = x.softmax()
+Tensor.eval(collapsed)
+inspect("softmax([100, 200, 300]) = {collapsed.to_array()}")
+
+Random.seed(0)
+let n = 20000
+
+fn variance(xs) {
+  let mean = xs.sum() / to_float(xs.size())
+  xs.map(|v| (v - mean) * (v - mean)).sum() / to_float(xs.size())
+}
+
+# n independent dot products of two standard-normal vectors.
+fn dots(n, d) {
+  let r = (Tensor.randn(n, d) * Tensor.randn(n, d)).sum(1)
+  Tensor.eval(r)
+  r.reshape([n]).to_array()
+}
+
+inspect('--- dot product variance, before and after scaling ---')
+for d in [4, 16, 64, 256] {
+  let raw = dots(n, d)
+  let scaled = raw.map(|v| v / Math.sqrt(to_float(d)))
+  inspect("  d = {d}: raw {variance(raw)}, scaled {variance(scaled)}")
+}
+
+# The consequence, at one width: how peaked the attention becomes.
+let d = 64
+let raw = dots(n, d)
+let scaled = raw.map(|v| v / Math.sqrt(to_float(d)))
+
+# Only one histogram: dividing by a constant is a change of units, and a
+# histogram normalized to its own range comes out bar for bar identical.
+# What scaling changes is the axis, and what that does to the softmax is
+# the two lines below.
+Plot.plot_histogram("dot products at d = {d}", raw, 15)
+
+# Softmax over one row of each, to make "sharper" concrete.
+let row = fn (xs) {
+  let probs = Tensor.from(xs.slice(0, 8)).softmax()
+  Tensor.eval(probs)
+  probs.to_array().map(|p| Math.round(p * 100.0))
+}
+inspect("softmax of 8 unscaled scores (%): {row(raw)}")
+inspect("softmax of the same, scaled  (%): {row(scaled)}")

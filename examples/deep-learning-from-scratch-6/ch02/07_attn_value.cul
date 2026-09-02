@@ -1,0 +1,76 @@
+# The value projection, and why attention needs a third matrix.
+#
+# So far a query and a key decided *how much* to attend. What is actually
+# summed is a third projection of the same input: the value. Splitting
+# "what makes two positions relevant to each other" from "what a position
+# contributes once it is judged relevant" is what lets one head learn a
+# relation and still pass along something other than the input itself.
+#
+# Take the value matrix away -- attend over x directly -- and the output is
+# a convex combination of the inputs, so it can never leave their hull.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import L from '../../dezero/dezero/layers.cul'
+
+fn causal_bias(c) {
+  mut rows = []
+  for i in 0..c {
+    rows.push(range(c).map(|j| j <= i ? 0.0 : -1.0e9).collect())
+  }
+  Tensor.from(rows).reshape([1, c, c])
+}
+
+Random.seed(0)
+let b = 1
+let c = 4
+let e = 6
+let d = 6
+
+let x = dz.Variable(Tensor.randn(b * c, e))
+let w_q = L.Linear(d, false, e)
+let w_k = L.Linear(d, false, e)
+let w_v = L.Linear(e, false, e)
+
+let q = dz.reshape(w_q(x), [b, c, d])
+let k = dz.reshape(w_k(x), [b, c, d])
+let weights = F.softmax(
+  dz.add(
+    dz.mul(
+      dz.matmul(q, dz.transpose(k, [0, 2, 1])),
+      1.0 / Math.sqrt(to_float(d)),
+    ),
+    causal_bias(c),
+  ),
+  2,
+)
+
+# Without a value projection: attend over the raw input.
+let plain = dz.matmul(weights, dz.reshape(x, [b, c, e]))
+
+# With one: attend over a learned view of it.
+let valued = dz.matmul(weights, dz.reshape(w_v(x), [b, c, e]))
+
+Tensor.eval(plain.data, valued.data, x.data)
+inspect('attention over the input itself vs over a value projection')
+inspect("  weights row sums: {weights.data.sum(2).reshape([b * c]).to_array()}")
+
+# Every output of the value-free form lies between the smallest and largest
+# input it was allowed to see. The value projection is not bound that way.
+let xs = x.data.to_array()
+let ps = plain.data.reshape([b * c, e]).to_array()
+let vs = valued.data.reshape([b * c, e]).to_array()
+
+# Does every output lie between the smallest and largest input it was
+# allowed to see?
+fn inside_hull(rows) {
+  range(c).all(fn (t) {
+    range(e).all(fn (j) {
+      let seen = range(t + 1).map(|s| xs[s][j]).collect()
+      rows[t][j] >= seen.min() - 1.0e-6 && rows[t][j] <= seen.max() + 1.0e-6
+    })
+  })
+}
+
+inspect("  no value matrix: every output inside the inputs' range = {inside_hull(ps)}")
+inspect("  with a value matrix:                                    = {inside_hull(vs)}")

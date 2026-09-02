@@ -1,0 +1,85 @@
+# Self-attention, and the mask that makes it causal.
+#
+# The queries, keys and values are no longer given: each is a learned
+# projection of the same input, which is what makes this *self*-attention.
+# And a language model may not look ahead, so before the softmax every
+# score above the diagonal is pushed to minus infinity -- position i sees
+# only positions 0..i.
+#
+# Shapes follow the book: x is (B, C, E) for batch, context length and
+# embedding width. dezero's `Linear` infers its input width from `shape[1]`,
+# so the projections run on the flattened (B*C, E) view and the result is
+# reshaped back.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import L from '../../dezero/dezero/layers.cul'
+
+# 0 where a position may attend, a large negative where it may not. Adding
+# this before the softmax is `masked_fill(mask == 0, -inf)`; a finite -1e9
+# keeps the exponentials from producing NaN.
+fn causal_bias(c) {
+  mut rows = []
+  for i in 0..c {
+    rows.push(range(c).map(|j| j <= i ? 0.0 : -1.0e9).collect())
+  }
+  Tensor.from(rows).reshape([1, c, c])
+}
+
+class Attention {
+  new(embed_dim, key_dim) {
+    self.embed_dim = embed_dim
+    self.key_dim = key_dim
+    self.scale = 1.0 / Math.sqrt(to_float(key_dim))
+    self.w_q = L.Linear(key_dim, false, embed_dim)
+    self.w_k = L.Linear(key_dim, false, embed_dim)
+    self.w_v = L.Linear(embed_dim, false, embed_dim)
+  }
+
+  __call__(x, b, c) {
+    let d = self.key_dim
+    let e = self.embed_dim
+    let q = dz.reshape(self.w_q(x), [b, c, d])
+    let k = dz.reshape(self.w_k(x), [b, c, d])
+    let v = dz.reshape(self.w_v(x), [b, c, e])
+
+    # (B, C, D) x (B, D, C) -> (B, C, C): every query against every key.
+    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), self.scale)
+    let weights = F.softmax(dz.add(scores, causal_bias(c)), 2)
+    dz.matmul(weights, v)  # (B, C, E)
+  }
+}
+
+Random.seed(0)
+let b = 2
+let c = 5
+let e = 256
+
+let attention = Attention(e, 64)
+let x = dz.Variable(Tensor.randn(b * c, e))
+let y = attention(x, b, c)
+Tensor.eval(y.data)
+
+inspect("input shape:  [{b}, {c}, {e}] (flattened to {x.shape})")
+inspect("output shape: {y.data.shape()}")
+
+# The mask is the whole point, so look at it. One sequence this time, so
+# that "row t" and "position t" are the same thing: change the input at the
+# last position and no earlier output may move, while that one must.
+let one = dz.Variable(Tensor.randn(c, e))
+let bumped = dz.Variable(Tensor.concat([
+  one.data.narrow([0, 0, c - 1]),
+  one.data.narrow([0, c - 1, c]) + 1.0,
+]))
+
+let before = attention(one, 1, c)
+let after = attention(bumped, 1, c)
+Tensor.eval(before.data, after.data)
+
+let a = before.data.reshape([c, e]).to_array()
+let a2 = after.data.reshape([c, e]).to_array()
+inspect("perturbing position {c - 1} of a single sequence:")
+for t in 0..c {
+  let gap = range(e).map(|j| Math.abs(a[t][j] - a2[t][j])).max()
+  inspect("  position {t}: largest change {gap}")
+}

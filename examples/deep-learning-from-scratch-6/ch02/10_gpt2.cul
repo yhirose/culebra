@@ -1,0 +1,167 @@
+# Everything in this chapter, assembled: GPT-2's architecture.
+#
+# Token embedding + learned position embedding, N pre-norm blocks of
+# (multi-head causal attention, feed-forward), a final LayerNorm, and a
+# projection back to the vocabulary. That last projection shares its matrix
+# with the token embedding -- "weight tying" -- which removes vocab_size *
+# embed_dim parameters and ties "what a token looks like going in" to "what
+# it looks like being predicted".
+#
+# The published GPT-2 weights are not something this package downloads, so
+# what runs here is the untrained structure: shapes, parameter counts, and
+# a forward pass that produces a distribution over the vocabulary. Training
+# it is chapter 3.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import L from '../../dezero/dezero/layers.cul'
+
+fn causal_bias(c) {
+  mut rows = []
+  for i in 0..c {
+    rows.push(range(c).map(|j| j <= i ? 0.0 : -1.0e9).collect())
+  }
+  Tensor.from(rows).reshape([1, c, c])
+}
+
+class MultiHeadAttention {
+  new(embed_dim, n_head) {
+    self.n_head = n_head
+    self.head_dim = embed_dim / n_head
+    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
+    # `L.Linear(out, nobias, in)`: the middle argument turns bias *off*.
+    # GPT-2 biases every linear, so it stays false throughout this file.
+    self.w_q = L.Linear(embed_dim, false, embed_dim)
+    self.w_k = L.Linear(embed_dim, false, embed_dim)
+    self.w_v = L.Linear(embed_dim, false, embed_dim)
+    self.w_o = L.Linear(embed_dim, false, embed_dim)
+  }
+
+  __call__(x, b, c) {
+    let h = self.n_head
+    let d = self.head_dim
+    let heads = |p| dz.reshape(
+      dz.transpose(dz.reshape(p, [b, c, h, d]), [0, 2, 1, 3]),
+      [b * h, c, d],
+    )
+    let q = heads(self.w_q(x))
+    let k = heads(self.w_k(x))
+    let v = heads(self.w_v(x))
+
+    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), self.scale)
+    let hidden = dz.matmul(F.softmax(dz.add(scores, causal_bias(c)), 2), v)
+    self.w_o(dz.reshape(
+      dz.transpose(dz.reshape(hidden, [b, h, c, d]), [0, 2, 1, 3]),
+      [b * c, h * d],
+    ))
+  }
+
+  params() {
+    self.w_q.params() +
+      self.w_k.params() +
+      self.w_v.params() +
+      self.w_o.params()
+  }
+}
+
+class FFN {
+  new(embed_dim, ff_dim) {
+    self.fc1 = L.Linear(ff_dim, false, embed_dim)
+    self.fc2 = L.Linear(embed_dim, false, ff_dim)
+  }
+
+  __call__(x) {
+    self.fc2(F.gelu(self.fc1(x)))
+  }
+
+  params() {
+    self.fc1.params() + self.fc2.params()
+  }
+}
+
+class Block {
+  new(embed_dim, n_head, ff_dim) {
+    # `L.LayerNorm` sizes gamma and beta on its first forward, so a model
+    # counted before any forward would report them as absent.
+    self.norm1 = L.LayerNorm()
+    self.norm1.init_params(embed_dim)
+    self.attn = MultiHeadAttention(embed_dim, n_head)
+    self.norm2 = L.LayerNorm()
+    self.norm2.init_params(embed_dim)
+    self.ffn = FFN(embed_dim, ff_dim)
+  }
+
+  __call__(x, b, c) {
+    let h = dz.add(x, self.attn(self.norm1(x), b, c))
+    dz.add(h, self.ffn(self.norm2(h)))
+  }
+
+  params() {
+    self.norm1.params() +
+      self.attn.params() +
+      self.norm2.params() +
+      self.ffn.params()
+  }
+}
+
+class GPT {
+  new(cfg) {
+    self.cfg = cfg
+    self.embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
+    self.pos_embed = L.EmbedID(cfg.context_len, cfg.embed_dim)
+    self.blocks = range(cfg.n_layer)
+      .map(|_| Block(cfg.embed_dim, cfg.n_head, cfg.ff_dim))
+      .collect()
+    self.norm = L.LayerNorm()
+    self.norm.init_params(cfg.embed_dim)
+    # Weight tying: the unembedding *is* the embedding, read the other way.
+    self.unembed_w = self.embed.w
+  }
+
+  # `ids` is a flat Array of b * c token ids, row-major.
+  __call__(ids, b, c) {
+    let positions = range(b).flat_map(|_| range(c).collect()).collect()
+    mut x = dz.add(self.embed(ids), self.pos_embed(positions))
+    for block in self.blocks {
+      x = block(x, b, c)
+    }
+    dz.matmul(self.norm(x), dz.transpose(self.unembed_w, [1, 0]))
+  }
+
+  params() {
+    [self.embed.w, self.pos_embed.w] +
+      self.norm.params() +
+      self.blocks.iter().flat_map(|b| b.params()).collect()
+  }
+}
+
+let cfg = {
+  context_len: 256,
+  vocab_size: 1000,
+  embed_dim: 384,
+  n_head: 6,
+  n_layer: 6,
+  ff_dim: 1536,
+}
+
+let model = GPT(cfg)
+let params = model.params()
+let total = params.map(|p| p.data.shape().product()).sum()
+
+inspect('GPT, in the configuration the book trains')
+inspect("  context {cfg.context_len}, vocab {cfg.vocab_size}, embed {cfg.embed_dim}")
+inspect("  {cfg.n_layer} blocks of {cfg.n_head} heads, ff {cfg.ff_dim}")
+inspect("  {params.size()} parameter tensors, {total} parameters")
+inspect("  weight tying saves {cfg.vocab_size * cfg.embed_dim} of them")
+
+# One forward pass, to show the shapes line up end to end.
+let b = 2
+let c = 8
+let ids = range(b * c).map(|_| Random.int(0, cfg.vocab_size)).collect()
+let logits = model(ids, b, c)
+Tensor.eval(logits.data)
+inspect("forward: {b} x {c} ids -> logits {logits.data.shape()}")
+
+let probs = logits.data.softmax()
+Tensor.eval(probs)
+inspect("  each row is a distribution: first row sums to {probs.narrow([0, 0, 1]).sum()}")

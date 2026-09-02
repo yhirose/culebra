@@ -1,0 +1,187 @@
+import dz from '../dezero/dezero/core.cul'
+import F from '../dezero/dezero/functions.cul'
+import L from '../dezero/dezero/layers.cul'
+
+fn causal_bias(c) {
+  mut rows = []
+  for i in 0..c {
+    rows.push(range(c).map(|j| j <= i ? 0.0 : -1.0e9).collect())
+  }
+  Tensor.from(rows).reshape([1, c, c])
+}
+
+fn attend(q, k, v, c, scale) {
+  let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), scale)
+  dz.matmul(F.softmax(dz.add(scores, causal_bias(c)), 2), v)
+}
+
+fn variance(xs) {
+  let m = xs.sum() / to_float(xs.size())
+  xs.map(|x| (x - m) * (x - m)).sum() / to_float(xs.size())
+}
+
+@test
+fn test_softmax_rows_sum_to_one() {
+  Random.seed(1)
+  let scores = dz.Variable(Tensor.randn(2, 5, 5) * 4.0)
+  let w = F.softmax(dz.add(scores, causal_bias(5)), 2)
+  Tensor.eval(w.data)
+  for row in w.data.sum(2).reshape([10]).to_array() {
+    assert_close(row, 1.0, 1.0e-5)
+  }
+}
+
+@test
+fn test_causal_mask_hides_the_future() {
+  Random.seed(2)
+  let c = 6
+  let e = 8
+  let x = Tensor.randn(c, e)
+  let scale = 1.0 / Math.sqrt(to_float(e))
+  let run = fn (t) {
+    let r = dz.reshape(dz.Variable(t), [1, c, e])
+    let y = attend(r, r, r, c, scale)
+    Tensor.eval(y.data)
+    y.data.reshape([c, e]).to_array()
+  }
+  let base = run(x)
+  # Perturb only the last position; nothing before it may move.
+  let bumped = run(Tensor.concat([
+    x.narrow([0, 0, c - 1]),
+    x.narrow([0, c - 1, c]) + 1.0,
+  ]))
+  for t in 0..c - 1 {
+    for j in 0..e {
+      assert_close(base[t][j], bumped[t][j], 1.0e-6)
+    }
+  }
+  # And the last one must.
+  assert_true(Math.abs(base[c - 1][0] - bumped[c - 1][0]) > 1.0e-6)
+}
+
+@test
+fn test_multi_head_matches_heads_computed_separately() {
+  Random.seed(3)
+  let c = 4
+  let h = 3
+  let d = 5
+  let scale = 1.0 / Math.sqrt(to_float(d))
+
+  let q = dz.Variable(Tensor.randn(h, c, d))
+  let k = dz.Variable(Tensor.randn(h, c, d))
+  let v = dz.Variable(Tensor.randn(h, c, d))
+  let joint = attend(q, k, v, c, scale)
+  Tensor.eval(joint.data)
+  let all = joint.data.reshape([h * c, d]).to_array()
+
+  # One head on its own must reproduce its slice of the batched result.
+  for i in 0..h {
+    let one = |t| dz.Variable(t.data.narrow([0, i, i + 1]))
+    let alone = attend(one(q), one(k), one(v), c, scale)
+    Tensor.eval(alone.data)
+    let mine = alone.data.reshape([c, d]).to_array()
+    for t in 0..c {
+      for j in 0..d {
+        assert_close(all[i * c + t][j], mine[t][j], 1.0e-6)
+      }
+    }
+  }
+}
+
+# The test above starts from tensors already shaped (H, C, D), so it only
+# checks that matmul batches over the leading axis. The step that actually
+# splits heads -- reshape to [B, C, H, D], transpose to [B, H, C, D], flatten
+# -- is what this one covers: drop the transpose and it fails.
+@test
+fn test_head_split_keeps_each_head_on_its_own_columns() {
+  Random.seed(8)
+  let b = 2
+  let c = 3
+  let h = 2
+  let d = 4
+  let scale = 1.0 / Math.sqrt(to_float(d))
+
+  # One projection, laid out the way `Linear` produces it: (B*C, H*D).
+  let p = dz.Variable(Tensor.randn(b * c, h * d))
+  let heads = |t| dz.reshape(
+    dz.transpose(dz.reshape(t, [b, c, h, d]), [0, 2, 1, 3]),
+    [b * h, c, d],
+  )
+  let q = heads(p)
+  let joint = attend(q, q, q, c, scale)
+  Tensor.eval(joint.data, p.data)
+  let all = joint.data.reshape([b * h * c, d]).to_array()
+  let raw = p.data.to_array()
+
+  for bi in 0..b {
+    for hi in 0..h {
+      let rows = range(c)
+        .map(|t| range(d).map(|j| raw[bi * c + t][hi * d + j]).collect())
+        .collect()
+      let one = dz.Variable(Tensor.from(rows).reshape([1, c, d]))
+      let alone = attend(one, one, one, c, scale)
+      Tensor.eval(alone.data)
+      let mine = alone.data.reshape([c, d]).to_array()
+      for t in 0..c {
+        for j in 0..d {
+          assert_close(all[(bi * h + hi) * c + t][j], mine[t][j], 1.0e-5)
+        }
+      }
+    }
+  }
+}
+
+@test
+fn test_scaling_keeps_the_score_variance_at_one() {
+  Random.seed(4)
+  let n = 20000
+  for d in [16, 64] {
+    # Independent pairs. One shared vector would instead measure its own
+    # squared norm, which at these widths swings by tens of percent.
+    let r = (Tensor.randn(n, d) * Tensor.randn(n, d)).sum(1)
+    Tensor.eval(r)
+    let dots = r.reshape([n]).to_array()
+    let scaled = dots.map(|x| x / Math.sqrt(to_float(d)))
+    assert_close(variance(dots) / to_float(d), 1.0, 0.05)
+    assert_close(variance(scaled), 1.0, 0.05)
+  }
+}
+
+@test
+fn test_attention_backprops_to_every_projection() {
+  Random.seed(5)
+  let b = 2
+  let c = 3
+  let e = 16
+  let x = dz.Variable(Tensor.randn(b * c, e))
+  let w_q = L.Linear(e, false, e)
+  let w_k = L.Linear(e, false, e)
+  let w_v = L.Linear(e, false, e)
+  let fold = |p| dz.reshape(p, [b, c, e])
+  let y = attend(
+    fold(w_q(x)),
+    fold(w_k(x)),
+    fold(w_v(x)),
+    c,
+    1.0 / Math.sqrt(to_float(e)),
+  )
+  dz.sum(y, nil).backward()
+  for p in w_q.params() + w_k.params() + w_v.params() {
+    assert_true(p.grad != nil)
+    Tensor.eval(p.grad.data)
+    assert_eq(p.grad.data.shape(), p.data.shape())
+  }
+}
+
+@test
+fn test_layer_norm_normalizes_each_row() {
+  Random.seed(6)
+  let norm = L.LayerNorm()
+  let y = norm(dz.Variable(Tensor.randn(4, 12) * 5.0 + 3.0))
+  Tensor.eval(y.data)
+  for row in y.data.to_array() {
+    let m = row.sum() / 12.0
+    assert_close(m, 0.0, 1.0e-4)
+    assert_close(row.map(|v| (v - m) * (v - m)).sum() / 12.0, 1.0, 1.0e-3)
+  }
+}

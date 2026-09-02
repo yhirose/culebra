@@ -1,0 +1,54 @@
+# Attention, before it is called attention: a dictionary that answers a key
+# it has never seen.
+#
+# An ordinary dictionary needs an exact key. This one scores the query
+# against every key it holds, turns those scores into weights that sum to
+# one, and returns the weighted average of the values. Nothing is looked
+# up; everything contributes, in proportion to how well it matches.
+
+# An ordinary dictionary first.
+let d = {apple: 100, banana: 200, cherry: 300, durian: 400}
+inspect("exact lookup, d['banana'] = {d['banana']}")
+
+# Now keys that are points in a space -- (action, drama, comedy), each 0-10
+# -- and values that are one user's ratings out of 100.
+let keys = [
+  [8, 2, 3],  # action-heavy
+  [3, 9, 1],  # drama-heavy
+  [1, 2, 9],  # comedy-heavy
+  [5, 5, 5],  # balanced
+  [7, 6, 2],  # action drama
+  [2, 7, 6],  # comedy drama
+  [9, 1, 1],  # pure action
+]
+let values = [85, 70, 60, 75, 80, 65, 90]
+
+fn dot(a, b) {
+  range(a.size()).map(|i| to_float(a[i] * b[i])).sum()
+}
+
+fn softmax(xs) {
+  # Subtracting the maximum first is the standard guard: it changes nothing
+  # mathematically and keeps `exp` away from overflow.
+  let hi = xs.max()
+  let e = xs.map(|x| Math.exp(x - hi))
+  let total = e.sum()
+  e.map(|v| v / total)
+}
+
+fn soft_lookup(query, keys, values) {
+  let weights = softmax(keys.map(|k| dot(query, k)))
+  let answer = range(values.size())
+    .map(|i| weights[i] * to_float(values[i]))
+    .sum()
+  [answer, weights]
+}
+
+let new_movie = [6, 4, 5]
+let result = soft_lookup(new_movie, keys, values)
+
+inspect("predicted rating for {new_movie}: {result[0]}")
+inspect('--- how much each key contributed ---')
+for i, k in keys.enumerate() {
+  inspect("  {k}: {result[1][i] * 100.0}%")
+}
