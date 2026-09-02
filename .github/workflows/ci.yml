@@ -149,6 +149,13 @@ jobs:
           ./build/culebra test --doc --vm --jobs "$jobs" tests/doctest docs
           ./build/culebra test --doc --jit --jobs "$jobs" tests/doctest docs
 
+      # The other half of the docs: the ```cpp blocks a host author copies.
+      # `test --doc` reads ```culebra fences only, and the step above calls the
+      # binary rather than `just doctest`, so the recipe's own dependency on
+      # this would never run here — name it explicitly.
+      - name: Doctest (embedding examples compile)
+        run: just check-docs-cpp
+
       # docs/quick-guide.md's signature index is generated from language.md
       # and stdlib.md; fail if a reference edit landed without regenerating
       # it.
@@ -455,6 +462,12 @@ jobs:
           jobs=$(getconf _NPROCESSORS_ONLN)
           ./build/culebra test --doc --vm --jobs "$jobs" tests/doctest docs
           ./build/culebra test --doc --jit --jobs "$jobs" tests/doctest docs
+
+      # Same as the ubuntu lane, and worth its own run here: the headers a
+      # host includes carry per-platform branches, so a macOS-only break in
+      # them shows up nowhere else.
+      - name: Doctest (embedding examples compile)
+        run: just check-docs-cpp
 
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt

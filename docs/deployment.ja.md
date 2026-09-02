@@ -321,6 +321,55 @@ LLVMレーンを使う場合は`<stdlib_jit.h>`を追加し、起動時に
 `culebra::install_jit_stdlib()`を1回呼んで、
 `culebra::JIT::run(ast)`を使います。
 
+### ホストプログラムのビルド
+
+インストール手順も、リンクすべきライブラリもありません。ホストは
+culebraのチェックアウトに対して直接ビルドします。ヘッダがvendor配下の
+ライブラリを参照するので、それらのディレクトリもinclude pathに入ります。
+
+VMレーンにLLVMは要りません:
+
+```sh
+c++ -std=c++23 \
+    -I culebra/include \
+    -I culebra/vendor/cpp-peglib \
+    -I culebra/vendor/cpp-vmlib \
+    -I culebra/vendor/cpp-unicodelib \
+    -I culebra/vendor/cpp-tensorlib/include \
+    -I culebra/vendor/stb \
+    -I culebra/vendor/cpp-regexlib \
+    host.cpp -lz -o host
+```
+
+どれも省けません。`vendor/stb`が無いと`font_ttf.h`で、
+`vendor/cpp-regexlib`が無いと`regex.h`でビルドが止まります —
+stdlibがどちらも無条件に参照するためです。`-lz`はAOTのリンクが
+必要とするzlibと同じもので（[§1](#ホスト側に必要なもの)）、
+`Compress`とPNGライタが参照するため、スクリプトが使うかどうかに
+関わらずホスト側でリンクします。
+
+LLVMレーン（`JIT::run`・`JIT::build_object`）では、該当ヘッダを
+有効にするdefineとLLVM本体が加わります:
+
+```sh
+c++ -std=c++23 -DCULEBRA_JIT_ENABLED \
+    -I "$(llvm-config --includedir)" \
+    ...上の-Iリスト... \
+    host.cpp $(llvm-config --ldflags --libs --system-libs) -lz -o host
+```
+
+`-DCULEBRA_JIT_ENABLED`が無ければ`jit.h`と`vm_lowering.h`は
+プリプロセスの結果が空になります。`culebra.h`はそのままコンパイルでき、
+VMも動き、ホストのどこもLLVMを参照しません。culebra自身のno-JITビルドが
+使っているのと同じスイッチです。
+
+`Http`と`SQLite`は`CULEBRA_HTTP_ENABLED` / `CULEBRA_SQLITE_ENABLED`を
+定義しない限り入りません（`culebra`のビルドでCMakeが設定するのと同じ
+名前です）。定義するならそれぞれvendor配下のディレクトリ
+（`vendor/cpp-httplib`・`vendor/sqlite`）をinclude pathに足し、
+固有のリンク依存も付きます。定義しなければ、この2つの名前は
+どちらのレーンにも存在しません。
+
 スクリプトが`Sys.argv`として見る値はプロセス全体のホルダです。
 起動時に1回入れてください:
 
@@ -561,6 +610,7 @@ preambleが`println` / `inspect`を定義している。（`Stringer` / `Eq` /
 #include <stdlib_jit.h>
 
 int main() {
+  std::string src = "1 + 2";                  // 実際のホストではファイルから読む
   std::vector<std::string> msgs;
   culebra::ModuleLoader loader;
   auto modules = loader.load_program("prog.cul", src, msgs);
@@ -811,7 +861,7 @@ namespace分。ソースが名指ししないものはnullエントリ）を運�
 届き、シンボルでは参照しないので、そのコードを参照するのは`Shared` /
 `Isolate` / `Parallel` / `Net`のadapterだけになり、それらのgroupと一緒に
 落ちます。ランタイム自身のメッセージは`std::format`ではなくculebraの小さな
-フォーマッタ（`include/format.h`）で組み立てます。`std::format`の実装は
+フォーマッタ（`include/rt_format.h`）で組み立てます。`std::format`の実装は
 1つの引数visitorが整数・浮動小数・文字列のformatterをまとめて名指しするので
 リンク単位が1ブロックになり、到達する呼び出しが1つあるだけでhelloが15%
 太るためです。補間の書式指定（`"{x:.2f}"`）を書いたプログラムは今も

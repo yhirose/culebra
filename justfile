@@ -163,11 +163,28 @@ check-registrar-rooted:
 check-pe-exports-gen:
     tools/checks/check_pe_exports_gen.sh
 
+# The embedding chapter names headers a host includes, and `doctest` reads
+# ```culebra fences only — so a rename broke those examples with nothing to
+# say so. This half only resolves the names, which is the half that a rename
+# breaks; compiling them is `check-docs-cpp` below.
+[group("test")]
+[doc("Verify every #include in a docs C++ example resolves (fast half)")]
+check-docs-cpp-includes:
+    tools/checks/check_docs_cpp.sh --fast
+
+# The rest of it: every docs example that is a complete program compiles with
+# the flags deployment.md tells a reader to type. ~25s with the blocks built in
+# parallel, so it rides `doctest` rather than the always-on lane.
+[group("docs")]
+[doc("Compile the complete C++ examples in docs with the documented flags")]
+check-docs-cpp:
+    tools/checks/check_docs_cpp.sh
+
 # Every committed file a generator produces, checked against its source, plus
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it
@@ -1184,7 +1201,7 @@ _run-tests BACKEND:
 # have to agree on what it prints.
 [doc("Run ` ```culebra ` doctest blocks in docs/ (VM + JIT)")]
 [group("test")]
-doctest LANE="all": build
+doctest LANE="all": build check-docs-cpp
     #!/usr/bin/env bash
     set -euo pipefail
     # One process per core: the JIT lane compiles an LLVM module per block, so

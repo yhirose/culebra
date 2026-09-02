@@ -324,6 +324,54 @@ For the LLVM lane, add `<stdlib_jit.h>`, call
 `culebra::install_jit_stdlib()` once at startup, and use
 `culebra::JIT::run(ast)`.
 
+### Building your host program
+
+There is no install step and no library to link against: a host builds
+against a culebra checkout. The headers reach into the vendored
+libraries, so those directories are on the include path too.
+
+The VM lane needs no LLVM at all:
+
+```sh
+c++ -std=c++23 \
+    -I culebra/include \
+    -I culebra/vendor/cpp-peglib \
+    -I culebra/vendor/cpp-vmlib \
+    -I culebra/vendor/cpp-unicodelib \
+    -I culebra/vendor/cpp-tensorlib/include \
+    -I culebra/vendor/stb \
+    -I culebra/vendor/cpp-regexlib \
+    host.cpp -lz -o host
+```
+
+Every entry is load-bearing: the build stops in `font_ttf.h` without
+`vendor/stb` and in `regex.h` without `vendor/cpp-regexlib`, because the
+stdlib reaches both unconditionally. `-lz` is the zlib an AOT link needs
+for the same reason ([§1](#host-requirements)) — `Compress` and the PNG
+writer refer to it whether or not the script does.
+
+The LLVM lane — `JIT::run`, `JIT::build_object` — adds the define that
+turns those headers on, plus LLVM:
+
+```sh
+c++ -std=c++23 -DCULEBRA_JIT_ENABLED \
+    -I "$(llvm-config --includedir)" \
+    ...the -I list above... \
+    host.cpp $(llvm-config --ldflags --libs --system-libs) -lz -o host
+```
+
+Without `-DCULEBRA_JIT_ENABLED`, `jit.h` and `vm_lowering.h` preprocess
+to nothing: `culebra.h` still compiles, the VM still runs, and no part of
+the host refers to LLVM. It is the same switch a no-JIT build of culebra
+itself uses.
+
+`Http` and `SQLite` stay out unless `CULEBRA_HTTP_ENABLED` /
+`CULEBRA_SQLITE_ENABLED` are defined — the names CMake sets for a
+`culebra` build. Each then wants its vendored directory on the include
+path (`vendor/cpp-httplib`, `vendor/sqlite`) and brings its own link
+dependency. Undefined, those two names are simply absent from both
+lanes.
+
 What the script sees as `Sys.argv` is a process-wide holder. Fill it
 once at startup:
 
@@ -558,6 +606,7 @@ splice the stdlib preamble *before* handing the modules to
 #include <stdlib_jit.h>
 
 int main() {
+  std::string src = "1 + 2";                  // read it off disk in a real host
   std::vector<std::string> msgs;
   culebra::ModuleLoader loader;
   auto modules = loader.load_program("prog.cul", src, msgs);
@@ -818,7 +867,7 @@ property and index paths reach a `Shared` view's reader through a hook
 the view's constructor installs, never by symbol, so only the
 `Shared` / `Isolate` / `Parallel` / `Net` adapters refer to that code
 and it goes with their groups. The runtime's own messages are built by
-a small formatter of culebra's (`include/format.h`) rather than
+a small formatter of culebra's (`include/rt_format.h`) rather than
 `std::format`, whose implementation links as one block — a single
 argument visitor names the integer, float and string formatters
 together, so one reachable call would add 15% to a hello. A program
