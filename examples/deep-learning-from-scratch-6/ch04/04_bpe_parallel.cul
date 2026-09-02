@@ -12,8 +12,7 @@
 #
 # Fewer, larger chunks win. Merging the per-chunk tallies is serial, and
 # its cost grows with the number of chunks, so that merge -- not the isolate
-# boundary -- is what bounds the speedup. Measured on the sample: 8 chunks
-# over 4 isolates 2.7x, 32 over 8 2.2x, 128 over 20 1.8x.
+# boundary -- is what bounds the speedup.
 #
 # `--full` is the run that produces `data/merge_rules_1000.json`, the
 # vocabulary every later chapter loads -- upstream's `ch04/04` ends by

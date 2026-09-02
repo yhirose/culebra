@@ -1,0 +1,76 @@
+# What `torch.save` does here: a directory of CSV, plus a manifest.
+#
+#   checkpoints/<name>/
+#     manifest.json      {config: {...}, step: N, params: [{name, shape}]}
+#     embed.w.csv
+#     blocks.0.attn.wq.w.csv
+#     ...
+#
+# Full-precision CSV round-trips bit-exact, so a reload is the same model
+# and not an approximation of it. The manifest carries the shape because a
+# CSV file is a list of rows and cannot say on its own whether one row of N
+# numbers was `[N]` or `[1, N]`; it carries the config so `load` can
+# rebuild the model without being told what it was.
+
+fn param_path(dir, name) {
+  "{dir}/{name}.csv"
+}
+
+# `named` is [{name, param}] -- what a model's `named_params()` returns.
+fn save(dir, cfg, step, named) {
+  FS.mkdir(dir)
+  mut entries = []
+  for e in named {
+    let t = e.param.data.detach()
+    Tensor.eval(t)
+    let shape = t.shape()
+    let rows = shape.size() == 1 ? [t.to_array()] : t.to_array()
+    FS.write(param_path(dir, e.name), CSV.stringify(rows))
+    entries.push({name: e.name, shape: shape})
+  }
+  FS.write(
+    "{dir}/manifest.json",
+    JSON.stringify({config: cfg, step: step, params: entries}, 2),
+  )
+  entries.size()
+}
+
+fn manifest(dir) {
+  JSON.parse(FS.read("{dir}/manifest.json"))
+}
+
+# Returns {config, step, tensors: {name -> Tensor}}. Shapes come back
+# exactly as they were saved.
+fn load(dir) {
+  let m = manifest(dir)
+  mut tensors = {}
+  for entry in m.params {
+    let t = Tensor.from_csv(param_path(dir, entry.name))
+    tensors[entry.name] = t.reshape(entry.shape)
+  }
+  {config: m.config, step: m.step, tensors: tensors}
+}
+
+# Copy a loaded checkpoint into a live model. Every parameter the model
+# declares must be present, and no extra: a checkpoint that half-matches is
+# a misconfiguration, not something to paper over.
+fn restore(model, loaded) {
+  let named = model.named_params()
+  # Everything is checked before anything is written: a caller that catches
+  # the error is left with the model it had, not half of someone else's.
+  let missing = named.find(|e| !loaded.tensors.has(e.name))
+  throw {
+    kind: "KeyError",
+    message: "checkpoint has no parameter '{missing.name}'",
+  } if missing != nil
+  throw {
+    kind: "ValueError",
+    message: "checkpoint has {loaded.tensors.size()} parameters, model has {named.size()}",
+  } if loaded.tensors.size() != named.size()
+  for e in named {
+    e.param.data = loaded.tensors[e.name]
+  }
+  named.size()
+}
+
+export {save, load, restore, manifest}

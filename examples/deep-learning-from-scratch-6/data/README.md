@@ -24,7 +24,7 @@ Everything a script writes is ignored by git:
 
 | File | Made by |
 |---|---|
-| `merge_rules_1000.json` | `ch04/04_bpe_parallel.cul --full` (83 s), or `ch01/07_tiny_codes.cul --full` (about 70 minutes, same result) |
+| `merge_rules_1000.json` | `ch04/04_bpe_parallel.cul --full` (6.8 s), or `ch01/07_tiny_codes.cul --full` (4,634 s, same 743 rules) |
 | `merge_rules_sample.json` | `ch01/07_tiny_codes.cul` — committed, but reproducible |
 | `*.bin` | `ch01/09_bpe_encode.cul` or `ch04/07_encode_parallel.cul` |
 

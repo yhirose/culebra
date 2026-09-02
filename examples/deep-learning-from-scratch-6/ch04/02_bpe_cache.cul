@@ -58,7 +58,7 @@ inspect("incremental + cache:  {cache_time}s")
 inspect("speedup: {recount_time / cache_time}x")
 inspect("same merge rules: {recounted == cached}")
 
-# The whole sample, which the ch01 trainer needs 165 s for.
+# The whole sample, which the ch01 trainer needs about 148 s for.
 let t2 = Sys.time()
 let full_rules = S.train_bpe(FS.read(P.data('tiny_codes_sample.txt')), 1000)
 inspect("full sample, vocab 1000: {full_rules.size()} rules in {Sys.time() - t2}s")

@@ -1,0 +1,207 @@
+# The GPT the later chapters train, assembled from what ch02 built up.
+#
+# dezero has no inheritance, so each class writes its own `__call__` and
+# `params()`, the way examples/dezero/dezero/layers.cul does. The one thing
+# upstream's `nn.Module` did for free and is written out here is parameter
+# *names*: a checkpoint needs them, so `named_params()` is the primary
+# definition and `params()` is derived from it. Keeping it that way round
+# means the two cannot drift.
+#
+# Two shape conventions, both forced by dezero:
+#
+#   - Activations are the flattened `[B*C, E]`, folded up to `[B, C, ...]`
+#     only inside attention. `L.Linear` reads its input width from
+#     `shape[1]`, so a rank-3 activation would take the wrong axis.
+#   - `L.EmbedID` takes a flat Array of ids and returns `[len(ids), E]`.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import L from '../../dezero/dezero/layers.cul'
+
+# 0 where a position may attend, a large negative where it may not. Adding
+# this before the softmax is `masked_fill(mask == 0, -inf)`; a finite -1e9
+# keeps the exponentials from producing NaN.
+#
+# Cached per width: it is a constant with no gradient, and rebuilding it in
+# every block of every forward costs 6.7 ms at the book's context length.
+mut BIAS_CACHE = {}
+
+fn build_causal_bias(c) {
+  mut rows = []
+  for i in 0..c {
+    rows.push(range(c).map(|j| j <= i ? 0.0 : -1.0e9).collect())
+  }
+  Tensor.from(rows).reshape([1, c, c])
+}
+
+fn causal_bias(c) {
+  BIAS_CACHE[c] ??= build_causal_bias(c)
+  BIAS_CACHE[c]
+}
+
+class MultiHeadAttention {
+  new(embed_dim, n_head, dropout_rate) {
+    self.n_head = n_head
+    self.head_dim = embed_dim / n_head
+    self.dropout_rate = dropout_rate
+    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
+    # `L.Linear(out, nobias, in)` -- the middle argument turns bias off.
+    # GPT-2 keeps it, so every projection here has one.
+    self.w_q = L.Linear(embed_dim, false, embed_dim)
+    self.w_k = L.Linear(embed_dim, false, embed_dim)
+    self.w_v = L.Linear(embed_dim, false, embed_dim)
+    self.w_o = L.Linear(embed_dim, false, embed_dim)
+  }
+
+  __call__(x, b, c) {
+    let h = self.n_head
+    let d = self.head_dim
+    # (B*C, H*D) -> (B, C, H, D) -> (B, H, C, D) -> (B*H, C, D)
+    let heads = |p| dz.reshape(
+      dz.transpose(dz.reshape(p, [b, c, h, d]), [0, 2, 1, 3]),
+      [b * h, c, d],
+    )
+    let q = heads(self.w_q(x))
+    let k = heads(self.w_k(x))
+    let v = heads(self.w_v(x))
+
+    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), self.scale)
+    let weights = F.dropout(
+      F.softmax(dz.add(scores, causal_bias(c)), 2),
+      self.dropout_rate,
+    )
+    let hidden = dz.matmul(weights, v)
+
+    let merged = dz.reshape(
+      dz.transpose(dz.reshape(hidden, [b, h, c, d]), [0, 2, 1, 3]),
+      [b * c, h * d],
+    )
+    F.dropout(self.w_o(merged), self.dropout_rate)
+  }
+
+  named_params(prefix) {
+    [
+      {name: "{prefix}wq.w", param: self.w_q.w},
+      {name: "{prefix}wq.b", param: self.w_q.b},
+      {name: "{prefix}wk.w", param: self.w_k.w},
+      {name: "{prefix}wk.b", param: self.w_k.b},
+      {name: "{prefix}wv.w", param: self.w_v.w},
+      {name: "{prefix}wv.b", param: self.w_v.b},
+      {name: "{prefix}wo.w", param: self.w_o.w},
+      {name: "{prefix}wo.b", param: self.w_o.b},
+    ]
+  }
+}
+
+class FFN {
+  new(embed_dim, ff_dim, dropout_rate) {
+    self.dropout_rate = dropout_rate
+    self.fc1 = L.Linear(ff_dim, false, embed_dim)
+    self.fc2 = L.Linear(embed_dim, false, ff_dim)
+  }
+
+  __call__(x) {
+    F.dropout(self.fc2(F.gelu(self.fc1(x))), self.dropout_rate)
+  }
+
+  named_params(prefix) {
+    [
+      {name: "{prefix}fc1.w", param: self.fc1.w},
+      {name: "{prefix}fc1.b", param: self.fc1.b},
+      {name: "{prefix}fc2.w", param: self.fc2.w},
+      {name: "{prefix}fc2.b", param: self.fc2.b},
+    ]
+  }
+}
+
+class Block {
+  new(embed_dim, n_head, ff_dim, dropout_rate) {
+    # LayerNorm sizes itself on its first forward. A checkpoint has to be
+    # saveable before any forward has run, so settle the shape here.
+    self.norm1 = L.LayerNorm()
+    self.norm1.init_params(embed_dim)
+    self.attn = MultiHeadAttention(embed_dim, n_head, dropout_rate)
+    self.norm2 = L.LayerNorm()
+    self.norm2.init_params(embed_dim)
+    self.ffn = FFN(embed_dim, ff_dim, dropout_rate)
+  }
+
+  __call__(x, b, c) {
+    let h = dz.add(x, self.attn(self.norm1(x), b, c))
+    dz.add(h, self.ffn(self.norm2(h)))
+  }
+
+  named_params(prefix) {
+    [
+      {name: "{prefix}norm1.gamma", param: self.norm1.gamma},
+      {name: "{prefix}norm1.beta", param: self.norm1.beta},
+    ] +
+      self.attn.named_params("{prefix}attn.") +
+      [
+        {name: "{prefix}norm2.gamma", param: self.norm2.gamma},
+        {name: "{prefix}norm2.beta", param: self.norm2.beta},
+      ] +
+      self.ffn.named_params("{prefix}ffn.")
+  }
+}
+
+class GPT {
+  new(cfg) {
+    self.cfg = cfg
+    self.embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
+    self.pos_embed = L.EmbedID(cfg.context_len, cfg.embed_dim)
+    self.blocks = range(cfg.n_layer)
+      .map(|_| Block(cfg.embed_dim, cfg.n_head, cfg.ff_dim, cfg.dropout))
+      .collect()
+    self.norm = L.LayerNorm()
+    self.norm.init_params(cfg.embed_dim)
+  }
+
+  # `ids` is a flat Array of `b * c` token ids, row-major. Returns logits
+  # shaped [b * c, vocab_size].
+  __call__(ids, b, c) {
+    let positions = range(b).flat_map(|_| range(c).collect()).collect()
+    mut x = F.dropout(
+      dz.add(self.embed(ids), self.pos_embed(positions)),
+      self.cfg.dropout,
+    )
+    for block in self.blocks {
+      x = block(x, b, c)
+    }
+    # Weight tying: the unembedding is the token embedding read the other
+    # way, so it is not a parameter of its own.
+    dz.matmul(self.norm(x), dz.transpose(self.embed.w, [1, 0]))
+  }
+
+  # The primary definition. `embed.w` appears exactly once even though the
+  # forward pass uses it twice -- listing it twice would make Adam update
+  # it twice per step.
+  named_params() {
+    mut out = [
+      {name: 'embed.w', param: self.embed.w},
+      {name: 'pos_embed.w', param: self.pos_embed.w},
+    ]
+    for i, block in self.blocks.enumerate() {
+      out += block.named_params("blocks.{i}.")
+    }
+    out.push({name: 'norm.gamma', param: self.norm.gamma})
+    out.push({name: 'norm.beta', param: self.norm.beta})
+    out
+  }
+
+  params() {
+    self.named_params().map(|e| e.param)
+  }
+
+  cleargrads() {
+    for p in self.params() {
+      p.cleargrad()
+    }
+  }
+}
+
+fn parameter_count(model) {
+  model.params().map(|p| p.data.shape().product()).sum()
+}
+
+export {GPT, Block, FFN, MultiHeadAttention, causal_bias, parameter_count}

@@ -1,0 +1,67 @@
+# Sampling from a checkpoint written by pretrain.cul.
+#
+#   culebra train/generate.cul
+#   culebra train/generate.cul --full prompt='def '
+#   culebra train/generate.cul temperature=0.0     # greedy
+#
+# A model trained for a few hundred steps on 100k tokens does not write
+# code. What it does produce is the shape of code -- indentation, keywords,
+# balanced quotes -- which is the point the chapter makes about how little
+# is needed before structure appears.
+
+import M from '../codebot/model.cul'
+import U from '../codebot/utils.cul'
+import T from '../codebot/tokenizer.cul'
+import C from '../common/config.cul'
+import CK from '../common/checkpoint.cul'
+import P from '../common/paths.cul'
+
+let args = Sys.argv
+let full = args.contains('--full')
+let dir = P.checkpoint(full ? 'codebot-full' : 'codebot-demo')
+
+if !FS.exists("{dir}/manifest.json") {
+  throw {
+    kind: "IOError",
+    message: "no checkpoint at {dir} -- run train/pretrain.cul{full ? ' --full' : ''} first",
+  }
+}
+
+# Settings that describe the sampling rather than the model. Everything
+# else comes out of the checkpoint, so a generation cannot silently use a
+# different architecture than the one that was trained.
+fn setting(args, key, fallback) {
+  let hit = args.find(|a| a.starts_with("{key}="))
+  hit == nil ? fallback : hit.slice(key.size() + 1, hit.size())
+}
+
+let loaded = CK.load(dir)
+let cfg = loaded.config
+let model = M.GPT(cfg)
+CK.restore(model, loaded)
+inspect("checkpoint: {dir} (step {loaded.step})")
+inspect("config: {C.describe(cfg)}")
+
+# Through `require_data`, so a missing vocabulary names the command that
+# produces it instead of failing as a bare read inside the tokenizer.
+let rules = full
+  ? P.require_data('merge_rules_1000.json')
+  : P.data('merge_rules_sample.json')
+let tokenizer = T.load_tokenizer(rules)
+
+let prompt = setting(args, 'prompt', 'def ')
+let max_new = to_long(setting(args, 'max_new', '128'))
+let temperature = to_float(setting(args, 'temperature', '0.8'))
+let top_k = to_long(setting(args, 'top_k', '40'))
+
+let prompt_ids = tokenizer.encode(prompt)
+inspect("prompt: {prompt} ({prompt_ids.size()} tokens), temperature {temperature}, top_k {top_k}")
+
+let t0 = Sys.time()
+let ids = U.generate(model, cfg, prompt_ids, max_new, temperature, top_k)
+let elapsed = Sys.time() - t0
+
+inspect('--- generated ---')
+inspect(tokenizer.decode(ids))
+inspect('---')
+inspect("{max_new} tokens in {elapsed}s ({elapsed / to_float(max_new) * 1000.0} ms/token)")

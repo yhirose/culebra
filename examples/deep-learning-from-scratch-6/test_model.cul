@@ -1,0 +1,198 @@
+# Regression tests for the GPT, its configuration and its checkpoints.
+#
+# Everything here runs at a size that finishes in a second; what is being
+# checked is structure, not learning.
+
+import dz from '../dezero/dezero/core.cul'
+import M from './codebot/model.cul'
+import U from './codebot/utils.cul'
+import C from './common/config.cul'
+import CK from './common/checkpoint.cul'
+
+fn tiny() {
+  C.from_args([
+    'context_len=8',
+    'vocab_size=32',
+    'embed_dim=16',
+    'n_head=4',
+    'n_layer=2',
+    'ff_dim=32',
+    'batch_size=2',
+  ])
+}
+
+@test
+fn config_keeps_each_setting_at_its_declared_type() {
+  let cfg = C.from_args(['n_layer=4', 'lr=1e-3'])
+  assert_eq(type_of(cfg.n_layer), 'Long')
+  assert_eq(type_of(cfg.lr), 'Float')
+  assert_eq(cfg.n_layer, 4)
+  assert_close(cfg.lr, 0.001, 1.0e-12)
+}
+
+@test
+fn config_rejects_a_setting_that_is_not_a_setting() {
+  assert_throws('ValueError', fn () {
+    C.from_args(['n_layerz=4'])
+  })
+}
+
+@test
+fn config_rejects_a_width_the_heads_cannot_divide() {
+  assert_throws('ValueError', fn () {
+    C.from_args(['embed_dim=64', 'n_head=5'])
+  })
+}
+
+@test
+fn full_selects_the_books_own_numbers() {
+  assert_eq(C.from_args(['--full']), C.book())
+}
+
+@test
+fn a_checkpoint_round_trips_bit_exact_at_every_rank() {
+  Random.seed(1)
+  let dir = "{FS.temp_dir()}/dl6_ckpt_test"
+  let named = [
+    {name: 'matrix', param: {data: Tensor.randn(7, 5)}},
+    {name: 'row', param: {data: Tensor.randn(1, 9)}},
+    {name: 'vector', param: {data: Tensor.randn(11)}},
+  ]
+  assert_eq(CK.save(dir, tiny(), 3, named), 3)
+
+  let loaded = CK.load(dir)
+  assert_eq(loaded.step, 3)
+  for e in named {
+    let back = loaded.tensors[e.name]
+    Tensor.eval(back, e.param.data)
+    assert_eq(back.shape(), e.param.data.shape())
+    let flat = |t| t.reshape([t.shape().product()]).to_array()
+    let want = flat(e.param.data)
+    let got = flat(back)
+    for i in 0..want.size() {
+      assert_eq(got[i], want[i])
+    }
+  }
+}
+
+@test
+fn weight_tying_lists_the_embedding_once() {
+  let model = M.GPT(tiny())
+  let named = model.named_params()
+  let names = named.map(|e| e.name)
+  assert_eq(names.size(), names.to_set().size())
+
+  # Stamp each entry; a Variable reached twice loses its first stamp, which
+  # is what would make Adam update it twice per step.
+  for i, e in named.enumerate() {
+    e.param.probe_index = i
+  }
+  assert_true(named.enumerate().all(|p| p[1].param.probe_index == p[0]))
+}
+
+@test
+fn every_parameter_is_rank_two_or_less() {
+  # The CSV checkpoint relies on this; `to_array()` stops at rank 2.
+  let model = M.GPT(tiny())
+  assert_true(model.named_params().all(|e| e.param.data.shape().size() <= 2))
+}
+
+@test
+fn the_forward_pass_produces_one_row_of_logits_per_position() {
+  Random.seed(2)
+  let cfg = tiny()
+  let b = 3
+  let ids = range(b * cfg.context_len)
+    .map(|_| Random.int(0, cfg.vocab_size))
+    .collect()
+  let logits = M.GPT(cfg)(ids, b, cfg.context_len)
+  Tensor.eval(logits.data)
+  assert_eq(logits.data.shape(), [b * cfg.context_len, cfg.vocab_size])
+}
+
+@test
+fn backward_reaches_every_parameter() {
+  Random.seed(3)
+  let cfg = tiny()
+  let model = M.GPT(cfg)
+  let ids = range(2 * cfg.context_len)
+    .map(|_| Random.int(0, cfg.vocab_size))
+    .collect()
+  dz.sum(model(ids, 2, cfg.context_len), nil).backward()
+  for p in model.params() {
+    assert_true(p.grad != nil)
+    Tensor.eval(p.grad.data)
+    assert_eq(p.grad.data.shape(), p.data.shape())
+  }
+}
+
+@test
+fn a_restored_model_computes_what_the_saved_one_did() {
+  Random.seed(4)
+  let cfg = tiny()
+  let trained = M.GPT(cfg)
+  let dir = "{FS.temp_dir()}/dl6_model_test"
+  CK.save(dir, cfg, 11, trained.named_params())
+
+  let fresh = M.GPT(cfg)
+  assert_eq(CK.restore(fresh, CK.load(dir)), trained.named_params().size())
+
+  let ids = range(cfg.context_len)
+    .map(|_| Random.int(0, cfg.vocab_size))
+    .collect()
+  mut rows = nil
+  # Dropout is random, so the two runs are only comparable in test mode.
+  dz.test_mode(fn () {
+    let a = trained(ids, 1, cfg.context_len)
+    let b = fresh(ids, 1, cfg.context_len)
+    Tensor.eval(a.data, b.data)
+    rows = [a.data.to_array()[0], b.data.to_array()[0]]
+  })
+  for i in 0..rows[0].size() {
+    assert_eq(rows[1][i], rows[0][i])
+  }
+}
+
+@test
+fn a_checkpoint_that_half_matches_is_an_error() {
+  let cfg = tiny()
+  let dir = "{FS.temp_dir()}/dl6_partial_test"
+  CK.save(dir, cfg, 0, M.GPT(cfg).named_params().slice(0, 4))
+  assert_throws('KeyError', fn () {
+    CK.restore(M.GPT(cfg), CK.load(dir))
+  })
+}
+
+@test
+fn temperature_zero_takes_the_most_likely_token() {
+  let logits = [0.1, 5.0, 2.0, -1.0, 3.5]
+  assert_eq(U.sample_from(logits, 0.0, 0), 1)
+  assert_eq(U.sample_from(logits, 0.0, 2), 1)
+}
+
+@test
+fn top_k_never_draws_outside_the_top_k() {
+  Random.seed(5)
+  let logits = [0.1, 5.0, 2.0, -1.0, 3.5]
+  mut counts = [0, 0, 0, 0, 0]
+  for _ in 0..2000 {
+    counts[U.sample_from(logits, 1.0, 3)] += 1
+  }
+  # 1, 4 and 2 are the three largest; 0 and 3 must never come up.
+  assert_eq(counts[0], 0)
+  assert_eq(counts[3], 0)
+  assert_true(counts[1] > counts[4])
+  assert_true(counts[4] > counts[2])
+}
+
+@test
+fn generation_appends_exactly_the_tokens_asked_for() {
+  Random.seed(6)
+  let cfg = tiny()
+  let model = M.GPT(cfg)
+  let prompt = [3, 1, 4]
+  let out = U.generate(model, cfg, prompt, 5, 0.0, 0)
+  assert_eq(out.size(), prompt.size() + 5)
+  assert_eq(out.slice(0, 3), prompt)
+  assert_true(out.all(|id| id >= 0 && id < cfg.vocab_size))
+}

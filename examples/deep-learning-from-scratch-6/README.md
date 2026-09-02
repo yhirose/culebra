@@ -25,38 +25,67 @@ This port is being built chapter by chapter. What runs today:
 | | |
 |---|---|
 | `codebot/tokenizer.cul` | the byte-level BPE the chapters converge on |
+| `codebot/model.cul` | the GPT: causal multi-head attention, pre-norm blocks, tied weights |
+| `codebot/utils.cul` | sampling, with temperature and top-k |
 | `storybot/tokenizer.cul` | the same BPE, fast enough for a whole corpus |
 | `ch01/` | tokenizers, from code points to a trained BPE (9 scripts) |
-| `ch04/` | making that BPE 65x faster, one idea at a time (6 scripts) |
-| `common/` | path resolution and the `uint16` corpus format |
+| `ch02/` | attention, from a soft dictionary to the assembled GPT (8 scripts) |
+| `ch04/` | making that BPE 681x faster, one idea at a time (6 scripts) |
+| `train/` | pretraining and generation |
+| `common/` | configuration, checkpoints, paths, the `uint16` corpus format, ASCII plots |
 
-Still to come: ch02 (attention from scratch), ch03 (pretraining, generation,
-SFT, GRPO), ch05 (RoPE, SwiGLU, RMSNorm, KV cache), ch06 (AdamW, schedulers,
-DPO, LLM-as-judge), ch07 and ch09 with the `storybot` and `webbot` models.
+Still to come: SFT and GRPO, the improved model (RoPE, SwiGLU, RMSNorm, KV
+cache) as `storybot`, AdamW and learning-rate schedules, DPO, `webbot`'s
+grouped-query attention, and the contrast implementation on culebra's own
+`Tensor` autograd.
 
 ## Layout
 
 ```
 codebot/tokenizer.cul   the shared BPE: pretokenize, train, encode, decode
 storybot/tokenizer.cul  the same BPE, deduplicated, incremental and parallel
+codebot/model.cul       the GPT the training scripts import
+codebot/utils.cul       sampling one token at a time
+common/config.cul       the book's hyperparameters, and the scaled-down default
+common/checkpoint.cul   torch.save's job, as CSV plus a manifest
 common/paths.cul        data/ and checkpoints/ resolved from the running script
 common/data.cul         the uint16 .bin format and batch sampling
+common/plot.cul         curves and histograms, drawn in text
+train/                  pretraining and generation
 data/                   what is small enough to commit; the rest is fetched
-ch01/, ch04/            one script per section, numbered as upstream numbers them
+ch01/, ch02/, ch04/     one script per section, numbered as upstream numbers them
 test_*.cul              every test, flat at the package root
 ```
 
 ## Running
 
 ```bash
-culebra examples/deep-learning-from-scratch-6/ch01/01_char_tokenizer.cul
-culebra examples/deep-learning-from-scratch-6/ch01/06_pretokenize.cul
-culebra examples/deep-learning-from-scratch-6/ch01/07_tiny_codes.cul
-culebra examples/deep-learning-from-scratch-6/ch01/08_eval.cul
-culebra examples/deep-learning-from-scratch-6/ch04/02_bpe_cache.cul
-culebra examples/deep-learning-from-scratch-6/ch04/07_encode_parallel.cul
-culebra test examples/deep-learning-from-scratch-6
+cd examples/deep-learning-from-scratch-6
+
+culebra ch01/07_tiny_codes.cul      # train a BPE the straightforward way
+culebra ch04/02_bpe_cache.cul       # and then make it fast
+culebra ch02/08_multi_head.cul      # attention, one section at a time
+culebra ch02/10_gpt2.cul            # the assembled GPT, untrained
+
+culebra train/pretrain.cul          # ~20 s at the default size
+culebra train/generate.cul          # sample from what it just wrote
+
+culebra test .
 ```
+
+Training and generation take the same settings: `--full` for the book's
+own hyperparameters, or `key=value` for one at a time.
+
+```bash
+culebra train/pretrain.cul max_iters=2000 n_layer=4
+culebra train/generate.cul temperature=0.0 prompt='def '
+```
+
+A checkpoint carries the configuration it was trained with, so
+`generate.cul` rebuilds the same architecture rather than being told what
+to build. At the default size the model is 0.17M parameters trained for
+300 steps on 100k tokens: it does not write working code, but it does
+produce indentation, keywords and balanced quotes, which is the point.
 
 The executor is the right engine for these. `--jit` is fine on ch01, which
 imports no tensors (0.42 s against the executor's 0.02 s), but from ch02 on
@@ -83,9 +112,10 @@ where each file comes from, how to regenerate the committed ones, and which
 of upstream's corpora are deliberately absent.
 
 The vocabulary the later chapters load, `data/merge_rules_1000.json`, comes
-from `ch04/04_bpe_parallel.cul --full` in 83 s. `ch01/07_tiny_codes.cul
---full` writes the same file with the straightforward trainer, in about 70
-minutes — which is what ch04 exists to fix.
+from `ch04/04_bpe_parallel.cul --full` in 6.8 s. `ch01/07_tiny_codes.cul
+--full` writes the same file with the straightforward trainer, in 4,634 s
+(77 minutes) — which is what ch04 exists to fix. Both were measured on the
+6.5 MB corpus with an `-O3` build; both produce the same 743 rules.
 
 Upstream ships its merge rules as a pickle, which Culebra cannot read, so
 this port retrains them and stores them as JSON. That the two agree is

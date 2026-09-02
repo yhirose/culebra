@@ -1,0 +1,84 @@
+# Hyperparameters, in one place.
+#
+# `book()` is what upstream's ch03/01_pretrain.py sets, verbatim. `demo()`
+# is the same keys with the magnitudes dropped so a run finishes in
+# minutes; it is the default, because a reader should be able to run every
+# script here without waiting a day.
+#
+# Scripts take `--full` for the book's numbers and `key=value` for
+# individual overrides, so a run can be described entirely by its command
+# line:
+#
+#   culebra train/pretrain.cul
+#   culebra train/pretrain.cul --full
+#   culebra train/pretrain.cul n_layer=4 max_iters=2000
+
+# ch03/01_pretrain.py, unchanged. About 11.1M parameters.
+fn book() {
+  {
+    context_len: 256,
+    vocab_size: 1000,
+    batch_size: 32,
+    lr: 3.0e-4,
+    max_iters: 20000,
+    embed_dim: 384,
+    n_head: 6,
+    n_layer: 6,
+    ff_dim: 1536,
+    dropout: 0.1,
+  }
+}
+
+# The same keys, small enough to finish. 0.17M parameters.
+fn demo() {
+  {
+    context_len: 64,
+    vocab_size: 1000,
+    batch_size: 8,
+    lr: 3.0e-3,
+    max_iters: 300,
+    embed_dim: 64,
+    n_head: 4,
+    n_layer: 2,
+    ff_dim: 256,
+    dropout: 0.1,
+  }
+}
+
+# Floats keep their type, everything else that parses as an integer becomes
+# one. `lr=1e-3` and `dropout=0` both have to land on the right type,
+# because a Long where a Float belongs fails much later and confusingly.
+# The setting's current value says what type the override must parse to,
+# so `lr=1e-3` stays a Float and `n_layer=4` a Long.
+fn parse_value(reference, text) {
+  type_of(reference) == 'Float' ? to_float(text) : to_long(text)
+}
+
+# `args` is Sys.argv without the program name.
+fn from_args(args) {
+  # Object literal keys are immutable; spread inserts them at runtime, so
+  # the overrides below can write to the copy.
+  mut cfg = {...args.contains('--full') ? book() : demo()}
+  for arg in args {
+    continue if !arg.contains('=')
+    let parts = arg.split('=')
+    let key = parts[0]
+    throw {
+      kind: "ValueError",
+      message: "unknown setting '{key}'",
+    } if !cfg.has(key)
+    cfg[key] = parse_value(cfg[key], parts[1])
+  }
+  throw {
+    kind: "ValueError",
+    message: "embed_dim {cfg.embed_dim} is not divisible by n_head {cfg.n_head}",
+  } if cfg.embed_dim % cfg.n_head != 0
+  cfg
+}
+
+fn describe(cfg) {
+  let arch = "{cfg.n_layer} x {cfg.n_head} heads, embed {cfg.embed_dim}, ff {cfg.ff_dim}"
+  "{arch}, context {cfg.context_len}, batch {cfg.batch_size}, lr {cfg.lr}"
+}
+
+export {book, demo, from_args, describe}

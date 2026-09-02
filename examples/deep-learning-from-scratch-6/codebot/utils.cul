@@ -1,0 +1,52 @@
+# Sampling text out of a trained model.
+#
+# One token at a time: run the context through the model, take the logits
+# for the last position, turn them into a distribution, draw, append, and
+# repeat with the window slid along. No KV cache here -- the whole context
+# is recomputed every step, which is what makes chapter 5's cache worth
+# writing.
+
+import dz from '../../dezero/dezero/core.cul'
+
+# `temperature` divides the logits: below 1 sharpens the distribution,
+# above 1 flattens it, and 0 means take the most likely token every time.
+# `top_k` keeps only that many candidates before drawing.
+fn sample_from(logits, temperature, top_k) {
+  let ranked = logits.enumerate().collect().sorted_by(|e| e[1], reverse: true)
+  let kept = top_k > 0
+    ? ranked.slice(0, Math.min(top_k, ranked.size()))
+    : ranked
+  return kept[0][0] if temperature == 0.0
+
+  # Subtracting the max before exponentiating is the usual guard against
+  # overflow; it leaves the distribution unchanged.
+  let top = kept[0][1]
+  let weights = kept.map(|e| Math.exp((e[1] - top) / temperature))
+  Random.weighted_choice(kept.map(|e| e[0]), weights)
+}
+
+# `prompt_ids` seeds the context; the result is prompt plus `max_new`
+# generated ids.
+fn generate(model, cfg, prompt_ids, max_new, temperature = 1.0, top_k = 0) {
+  mut ids = prompt_ids.slice(0, prompt_ids.size())
+  dz.test_mode(fn () {
+    dz.no_grad(fn () {
+      for _ in 0..max_new {
+        # The model is trained at exactly one context length, so feed it
+        # that: the last `context_len` tokens, left-padded while the
+        # sequence is still shorter than the window.
+        let window = ids.size() >= cfg.context_len
+          ? ids.slice(ids.size() - cfg.context_len, ids.size())
+          : repeat(cfg.context_len - ids.size(), 0) + ids
+        let logits = model(window, 1, cfg.context_len)
+        Tensor.eval(logits.data)
+        let last = logits.data.narrow([0, cfg.context_len - 1, cfg.context_len])
+        Tensor.eval(last)
+        ids.push(sample_from(last.to_array()[0], temperature, top_k))
+      }
+    })
+  })
+  ids
+}
+
+export {generate, sample_from}

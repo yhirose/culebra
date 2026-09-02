@@ -1,0 +1,110 @@
+# Pretraining: predict the next token, on a corpus of code.
+#
+# This is upstream's ch03/01_pretrain.py. The loop is the ordinary one --
+# sample a batch of windows, cross-entropy against the same windows shifted
+# one token along, Adam, repeat -- and the only thing worth saying about it
+# is what it costs, which the run prints.
+#
+#   culebra train/pretrain.cul                 # the demo config, minutes
+#   culebra train/pretrain.cul --full          # the book's, see README
+#   culebra train/pretrain.cul max_iters=1000  # any single override
+#
+# The default corpus is the `tiny_codes_sample.bin` that
+# ch01/09_bpe_encode.cul writes; `--full` reads `tiny_codes.bin`, which
+# `just fetch-llm-data` downloads.
+
+import dz from '../../dezero/dezero/core.cul'
+import F from '../../dezero/dezero/functions.cul'
+import O from '../../dezero/dezero/optimizers.cul'
+import M from '../codebot/model.cul'
+import C from '../common/config.cul'
+import CK from '../common/checkpoint.cul'
+import D from '../common/data.cul'
+import P from '../common/paths.cul'
+import Plot from '../common/plot.cul'
+
+let args = Sys.argv
+let cfg = C.from_args(args)
+let full = args.contains('--full')
+let corpus = P.data(full ? 'tiny_codes.bin' : 'tiny_codes_sample.bin')
+
+if !FS.exists(corpus) {
+  throw {
+    kind: "IOError",
+    message: "{corpus} is missing -- run ch01/09_bpe_encode.cul (or `just fetch-llm-data` for --full)",
+  }
+}
+
+let tokens = D.read_bin_u16(corpus)
+inspect("corpus: {FS.basename(corpus)}, {tokens.size()} tokens")
+inspect("config: {C.describe(cfg)}")
+
+Random.seed(0)
+let model = M.GPT(cfg)
+inspect("model: {M.parameter_count(model)} parameters")
+
+let opt = O.Adam(cfg.lr)
+opt.setup(model)
+
+# Held out for a loss the model never trained on. The corpus is one stream,
+# so the split is a slice rather than a shuffle.
+let split = tokens.size() * 9 / 10
+let train_tokens = tokens.slice(0, split)
+let valid_tokens = tokens.slice(split, tokens.size())
+
+fn batch_loss(model, tokens, cfg) {
+  let pair = D.get_batch(tokens, cfg.batch_size, cfg.context_len)
+  let logits = model(pair[0], cfg.batch_size, cfg.context_len)
+  F.softmax_cross_entropy(logits, pair[1])
+}
+
+fn valid_loss(model, tokens, cfg) {
+  mut total = 0.0
+  dz.test_mode(fn () {
+    dz.no_grad(fn () {
+      for _ in 0..5 {
+        let loss = batch_loss(model, tokens, cfg)
+        Tensor.eval(loss.data)
+        total += loss.data.to_array()[0]
+      }
+    })
+  })
+  total / 5.0
+}
+
+let report_every = Math.max(1, cfg.max_iters / 20)
+mut history = []
+# Only the training step is timed. Folding the validation passes into the
+# average would put the reported cost of one step 6% high, and the very
+# first report, which pays for one validation out of one step, 2.3x high.
+mut train_time = 0.0
+let t0 = Sys.time()
+
+for step in 1..cfg.max_iters + 1 {
+  let started = Sys.time()
+  let loss = batch_loss(model, train_tokens, cfg)
+  model.cleargrads()
+  loss.backward()
+  opt.update()
+  Tensor.eval(loss.data)
+  train_time += Sys.time() - started
+
+  if step % report_every == 0 || step == 1 {
+    let train = loss.data.to_array()[0]
+    let valid = valid_loss(model, valid_tokens, cfg)
+    history.push([to_float(step), train, valid])
+    inspect("step {step}/{cfg.max_iters}  train {train}  valid {valid}  {train_time / to_float(step) * 1000.0} ms/step")
+  }
+}
+
+inspect("trained {cfg.max_iters} steps in {train_time}s ({train_time / to_float(cfg.max_iters) * 1000.0} ms/step), {Sys.time() - t0}s including validation")
+
+let steps = history.map(|h| h[0])
+Plot.plot_curves(
+  steps,
+  [['train', history.map(|h| h[1])], ['valid', history.map(|h| h[2])]],
+)
+
+let dir = P.checkpoint(full ? 'codebot-full' : 'codebot-demo')
+let saved = CK.save(dir, cfg, cfg.max_iters, model.named_params())
+inspect("saved {saved} parameters to {dir}")
