@@ -7428,10 +7428,10 @@ class Compiler {
     auto fv = culebra::view_for(ast);
     const auto& id = *fv.binding;
     // Fast path: `for <ident> in <a>..<b>` walks a Long counter, as the JIT's
-    // compile_for_counted_range does. Everything else — a pattern binding, a
-    // sink, an unbounded range, any other iterable — opens the protocol.
-    if (id.tag == "IDENTIFIER"_ && id.is_token && id.token != "_" &&
-        fv.iter->tag == "RANGE"_) {
+    // compile_for_counted_range does — a sink included, which is the same
+    // loop binding nothing. Everything else — a pattern binding, an
+    // unbounded range, any other iterable — opens the protocol.
+    if (id.tag == "IDENTIFIER"_ && id.is_token && fv.iter->tag == "RANGE"_) {
       auto lay = culebra::decode_range_layout(*fv.iter);
       if (lay.start && lay.end) {
         compile_for_counted_range(ast, fv, lay);
@@ -7572,11 +7572,14 @@ class Compiler {
                                  const culebra::RangeLayout& lay) {
     using namespace peg::udl;
     const auto& id = *fv.binding;
+    // A sink walks the same counter with nothing bound: ForLoop still writes
+    // its hidden slot, and no read of it is ever compiled.
+    bool sink = culebra::is_sink_name(id.token);
     // A captured loop variable gets a fresh cell each iteration (the
     // interp's per-iteration scope): ForLoop keeps writing a hidden plain
     // slot, and the body opens with a CellNew from it — so every closure
     // made in iteration N holds iteration N's value.
-    bool cell = info_->captured_locals.contains(std::string(id.token));
+    bool cell = !sink && info_->captured_locals.contains(std::string(id.token));
 
     int32_t broke = alloc_broke_slot(ast, fv.nobreak);
     push_scope(ast);
@@ -7584,7 +7587,8 @@ class Compiler {
     alloc_slot(ast, "(for.end)");
     alloc_slot(ast, "(for.step)");
     alloc_slot(ast, "(for.done)");
-    int32_t var = alloc_slot(id, cell ? "(for.val)" : std::string(id.token));
+    int32_t var = alloc_slot(id, cell || sink ? "(for.val)"
+                                              : std::string(id.token));
     int32_t bind = var;
     if (cell) bind = alloc_cell_slot(id, std::string(id.token));
 
@@ -7607,7 +7611,7 @@ class Compiler {
     }
     size_t prep = emit(Op::ForPrep, base);
 
-    push_binding({std::string(id.token), bind, false, cell});
+    if (!sink) push_binding({std::string(id.token), bind, false, cell});
     loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
                       scopes_.size()});
     size_t body_ix = chunk_.code.size();
