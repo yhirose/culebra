@@ -201,6 +201,33 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
   }
 }
 
+// The namespace functions a direct `Math.f(args)` compiles to Op::NsCall
+// (vm.h's nsfn_specs names them, stdlib_jit.h's culebra_runtime_ns_call
+// dispatches over them, jit.h's emit_ns_call inlines the Float family).
+// Declared here, on the layer every consumer includes.
+enum class NsFn : uint8_t {
+  MathAbs,
+  MathMin,
+  MathMax,
+  MathPow,
+  MathSign,
+  MathClamp,
+  MathWrap,
+  MathLog,
+  MathExp,
+  MathSqrt,
+  MathSin,
+  MathCos,
+  MathTan,
+  MathAsin,
+  MathAcos,
+  MathAtan,
+  MathAtan2,
+  MathFloor,
+  MathCeil,
+  MathRound,
+};
+
 // Stamp a position onto a still-positionless error. Re-notes the pending
 // carrier, which is what a catch pad reads for the error Object's line/col.
 // (_jit_backfill_op_pos below is the same rule against the published op

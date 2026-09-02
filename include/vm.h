@@ -659,6 +659,12 @@ enum class Op : uint8_t {
                // every other input — a String to parse, anything else to
                // reject — goes to to_float_any with the instruction's
                // line/col, so the parse and the TypeError stay identical
+  NsCall,      // regs[a] = namespace function c (an NsFn) over the d
+               // arguments in the run at b, all borrowed — the direct
+               // `Math.f(args)` shape (compile_ns_call), reaching the
+               // helper straight through culebra_runtime_ns_call with this
+               // instruction's line/col; the lowering inlines the Float
+               // family where the tag is numeric (emit_ns_call)
   Safepoint,   // interrupt poll — every loop back edge carries one
   DropSuppress,  // culebra_runtime_set_drop_suppressed(a): brackets the top
                  // level's own release ladder, whose bindings leak
@@ -1319,6 +1325,62 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"values", 0, Values, kRecvObject, 0, nullptr, {}, {}},
   };
   return kSpecs;
+}
+
+// The namespace functions a direct `Ns.f(args)` call compiles to Op::NsCall
+// instead of NsGet + PropRaw + CallRecv + CallM (compile_ns_call): the call
+// reaches the helper the namespace closure's adapter would, minus the
+// resolver, the closure and the argument slab — and the lowering inlines
+// the Float family where the tag is known. A row carries only the name and
+// the id; arity and the declared parameter types are the canonical
+// signature's (canon_sigs.gen.h), so the op cannot drift from the binder.
+struct NsFnSpec {
+  std::string_view ns;
+  std::string_view name;
+  NsFn id;
+};
+
+inline std::span<const NsFnSpec> nsfn_specs() {
+  using enum NsFn;
+  static constexpr NsFnSpec kSpecs[] = {
+      {"Math", "abs", MathAbs},     {"Math", "min", MathMin},
+      {"Math", "max", MathMax},     {"Math", "pow", MathPow},
+      {"Math", "sign", MathSign},   {"Math", "clamp", MathClamp},
+      {"Math", "wrap", MathWrap},   {"Math", "log", MathLog},
+      {"Math", "exp", MathExp},     {"Math", "sqrt", MathSqrt},
+      {"Math", "sin", MathSin},     {"Math", "cos", MathCos},
+      {"Math", "tan", MathTan},     {"Math", "asin", MathAsin},
+      {"Math", "acos", MathAcos},   {"Math", "atan", MathAtan},
+      {"Math", "atan2", MathAtan2}, {"Math", "floor", MathFloor},
+      {"Math", "ceil", MathCeil},   {"Math", "round", MathRound},
+  };
+  return kSpecs;
+}
+
+inline const NsFnSpec* nsfn_lookup(std::string_view ns,
+                                   std::string_view name) {
+  for (const auto& s : nsfn_specs())
+    if (s.ns == ns && s.name == name) return &s;
+  return nullptr;
+}
+
+// The row's canonical signature — its arity bounds and parameter types —
+// out of its namespace's group (the same table the runtime binder reads).
+inline const culebra::CanonSig* nsfn_sig(const NsFnSpec& s) {
+  for (const auto& g : ns_groups()) {
+    if (g.ns != s.ns || !g.group) continue;
+    for (const auto& c : g.group->sigs)
+      if (c.name == s.name) return &c;
+  }
+  return nullptr;
+}
+
+// The name an id prints as in a chunk dump.
+inline std::string nsfn_name(int32_t id) {
+  for (const auto& s : nsfn_specs())
+    if (static_cast<int32_t>(s.id) == id)
+      return std::string(s.ns) + "." + std::string(s.name);
+  return "?";
 }
 
 // The static half of the UFCS gate (interp's receiver_has_property): the
@@ -7815,6 +7877,60 @@ class Compiler {
     return !is_kwarg(a0) && !is_kwarg_splat(a0);
   }
 
+  // `Ns.f(a, b)` at the head of a chain, `Ns` an unshadowed stdlib namespace
+  // and `f` a function nsfn_specs lists whose canonical signature admits
+  // this positional count: the direct-call shape Op::NsCall compiles
+  // (compile_ns_call). Everything else — a keyword, a count the signature
+  // refuses, `Ns?.f`, a local named `Ns`, the function read as a value —
+  // takes the generic route and the runtime's own diagnostics, exactly as
+  // is_direct_global_call's peepholes do.
+  const NsFnSpec* ns_call_head(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.size() < 3) return nullptr;
+    const auto& head = *ast.nodes[0];
+    const auto& post = *ast.nodes[1];
+    const auto& args = *ast.nodes[2];
+    if (head.tag != "IDENTIFIER"_ || post.original_tag != "DOT"_ ||
+        args.original_tag != "ARGUMENTS"_ || has_kwargs(args))
+      return nullptr;
+    // The table first: every `x.m(args)` chain passes here, and the scope
+    // walk and the resolver's string are only worth paying for a row.
+    const NsFnSpec* spec = nsfn_lookup(head.token, post.token);
+    if (!spec || lookup(head.token) || !is_stdlib_namespace(head.token))
+      return nullptr;
+    const culebra::CanonSig* sig = nsfn_sig(*spec);
+    if (!sig) return nullptr;
+    auto argc = static_cast<int>(args.nodes.size());
+    bool admits = sig->variadic ||
+                  (argc >= sig->min_arity && argc <= sig->max_arity);
+    return admits ? spec : nullptr;
+  }
+
+  // The arguments left to right into one run, then every declared parameter
+  // type checked at its argument — after the whole list ran, which is the
+  // trampoline's order — then the op. The helper's own errors report at the
+  // chain head, where the closure route's dispatch backfilled them.
+  ExprResult compile_ns_call(const peg::Ast& at, const peg::Ast& args,
+                             const NsFnSpec& spec) {
+    StampGuard pos(*this, at);
+    const auto* sig = nsfn_sig(spec);
+    int32_t argc = static_cast<int32_t>(args.nodes.size());
+    int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
+    for (int32_t i = 0; i < argc; i++) alloc_temp(*args.nodes[i]);
+    for (int32_t i = 0; i < argc; i++)
+      store_into(base + i, compile_expr(*args.nodes[i]),
+                 /*dst_is_fresh=*/true);
+    for (int32_t i = 0; i < argc && i < sig->n_params; i++) {
+      const auto& p = sig->params[i];
+      if (p.type.empty()) continue;
+      StampGuard arg_pos(*this, *args.nodes[i]);
+      emit_param_type_check(p.type, base + i, p.name);
+    }
+    int32_t t = alloc_temp(at);
+    emit(Op::NsCall, t, base, static_cast<int32_t>(spec.id), argc);
+    return {t, true};
+  }
+
   // --- Unboxed `@value` inlining -------------------------------------------
   //
   // A construction whose class the compiler named (Binding::Known::ctor) and
@@ -9020,11 +9136,7 @@ class Compiler {
       store_into(slot, args[i], /*dst_is_fresh=*/true);
       if (!ps[i].type.empty()) {
         StampGuard pos(*this, *arg_asts[i]);
-        std::vector<size_t> skip;
-        emit_type_check_gate(ps[i].type, slot, skip);
-        emit(Op::ChkTypeAt, slot, kconst_str(ps[i].type),
-             kconst_str(culebra::format("parameter '{}'", ps[i].name)), -1);
-        for (size_t ix : skip) patch_to_here(ix);
+        emit_param_type_check(ps[i].type, slot, ps[i].name);
       }
       push_binding({ps[i].name, slot, /*is_mut=*/false});
     }
@@ -9742,11 +9854,16 @@ class Compiler {
     // copying into a register first (borrowed_call_head). `res.slot` is then
     // the CELL's slot, which only the Call the next loop turn emits knows how
     // to read — so this is the one shape where the head result is not a value.
-    const Binding* borrowed = fn_direct ? nullptr : borrowed_call_head(ast);
-    auto res = fn_direct  ? ExprResult{chunk_.fn_slot, false}
-               : borrowed ? read_borrowed_head(*ast.nodes[0], *borrowed)
-                          : compile_expr(*ast.nodes[0]);
-    for (size_t i = 1; i < ast.nodes.size(); ++i) {
+    // A namespace function at the head (`Math.sqrt(x)`, ns_call_head) is one
+    // op over its arguments, so the chain resumes past its ARGUMENTS.
+    const NsFnSpec* nsfn = fn_direct ? nullptr : ns_call_head(ast);
+    const Binding* borrowed =
+        fn_direct || nsfn ? nullptr : borrowed_call_head(ast);
+    auto res = nsfn      ? compile_ns_call(ast, *ast.nodes[2], *nsfn)
+               : fn_direct ? ExprResult{chunk_.fn_slot, false}
+               : borrowed  ? read_borrowed_head(*ast.nodes[0], *borrowed)
+                           : compile_expr(*ast.nodes[0]);
+    for (size_t i = nsfn ? 3 : 1; i < ast.nodes.size(); ++i) {
       const auto& post = *ast.nodes[i];
       if (post.original_tag == "ARGUMENTS"_) {
         // Only the head's own call reaches a callee the compiler can name —
@@ -11249,6 +11366,18 @@ class Compiler {
     }
   }
 
+  // A declared parameter type checked at its argument (stamped by the
+  // caller): the tag gate, then the check the gate skips when the tag
+  // already matches, reported as "parameter 'x'".
+  void emit_param_type_check(std::string_view type, int32_t slot,
+                             std::string_view pname) {
+    std::vector<size_t> skip;
+    emit_type_check_gate(type, slot, skip);
+    emit(Op::ChkTypeAt, slot, kconst_str(type),
+         kconst_str(culebra::format("parameter '{}'", pname)), -1);
+    for (size_t ix : skip) patch_to_here(ix);
+  }
+
   // A pattern's type annotation: fall through when the subject satisfies it,
   // jump (via `fail`) when it doesn't. Mirrors the JIT's TYPED_IDENT emitter
   // alternative for alternative — a primitive name is a tag compare over the
@@ -11849,8 +11978,8 @@ inline std::string dump(const Chunk& c) {
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
       "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
       "ForOpen",   "ForNext",   "ForDispose",
-      "ForPrep",   "ForLoop",   "Println",    "ToFloat",      "Safepoint",
-      "DropSuppress",
+      "ForPrep",   "ForLoop",   "Println",    "ToFloat",      "NsCall",
+      "Safepoint", "DropSuppress",
       "BArity",    "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
       "ReplCell",  "ReplBind",  "DbgStmt",
       "Halt"};
@@ -11879,6 +12008,8 @@ inline std::string dump(const Chunk& c) {
                                                : "");
       if (t.callee_in_cell) out += "  [callee in cell]";
     }
+    if (in.op == Op::NsCall)
+      out += culebra::format("  -> {}", nsfn_name(in.c));
     out += "\n";
   }
   return out;
@@ -14371,6 +14502,22 @@ struct Exec {
             auto [line, col] = chunk_pos_at(c, pc);
             regs[in.a] = culebra_runtime_to_float_any(
                 static_cast<int8_t>(v.tag), v.data, line, col);
+          }
+          ++pc;
+          break;
+        }
+        case Op::NsCall: {
+          // The position only on the throw path: every error the dispatch
+          // raises is positioned by the line/col it is handed, so a
+          // positionless call plus the backfill reports the same thing
+          // without a positions-table search per call.
+          try {
+            regs[in.a] =
+                culebra_runtime_ns_call(in.c, &regs[in.b], in.d, 0, 0);
+          } catch (culebra::CulebraError& e) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            _jit_backfill_error_pos(e, line, col);
+            throw;
           }
           ++pc;
           break;

@@ -146,6 +146,7 @@ multifn_unbound	0
 namespace_methods	0
 namespace_values	0
 nesting_shadowing	0
+ns_call_math	255
 object_literal	0
 polymorphic_methods	0
 primitive_namespaces	0

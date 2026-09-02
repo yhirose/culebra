@@ -410,6 +410,7 @@ new closure's captures from the callee chunk's `capture_src_slots`.
 | loops | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | a counted `for` over a Long range is the fused pair, a sink (`for _ in 0..n`) included; anything else walks a 12-slot cursor (`ForSlot`) through the protocol |
 | exceptions and defer | `Throw` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` | §5.5; `OwnedMark`/`OwnedExit` bracket a scope on the owned-resource stack for deterministic `drop` |
 | strings and output | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | interpolation, and the `println(<one arg>)` peephole |
+| namespace functions | `NsCall` `ToFloat` | a direct `Math.f(args)` / `to_float(x)` reaches its helper without the resolver or a closure (§5.4) |
 | sessions and debug | `ReplCell` `ReplBind` `DbgStmt` | §8.1, §8.3 |
 
 **A callee the compiler can name.** A `let name = fn …` its statement
@@ -902,6 +903,23 @@ that name at that arity** — everything outside the mask is answered as a
 miss. Higher-order forms (`map`, `filter`, `sorted(by:)`, …) type-check
 their callback parameter first, as the binder walks parameters in
 order.
+
+The namespace functions have the same shape one level up. A direct
+`Math.f(args)` — the namespace identifier unshadowed, no keyword, a
+positional count the canonical signature admits — compiles to `NsCall`
+over an id from `nsfn_specs()` instead of `NsGet` + `PropRaw` +
+`CallRecv` + `CallM`, and both engines reach the helper the namespace
+closure's adapter would have through one dispatch
+(`culebra_runtime_ns_call`), with the call's own position for the
+helper's errors. The row carries only the name and the id: arity and the
+declared parameter types are read from `canon_sigs.gen.h`, and a typed
+parameter is checked at its argument with `ChkTypeAt` after the whole
+list ran, which is the closure trampoline's order. The lowering inlines
+the Float family (`sqrt`, `sin`, `exp`, …, `abs`, `atan2`) behind a
+numeric tag test — the LLVM intrinsic where one exists, which is the
+very libm call the helper makes — so a known tag folds the call to one
+instruction. Every other spelling (`Math?.f`, `let m = Math`, `Math.f`
+as a value, a keyword) keeps the generic route and its diagnostics.
 
 ### 5.5 Exceptions, `defer`, and unwinding
 

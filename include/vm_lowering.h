@@ -4626,6 +4626,22 @@ struct Lowering {
         case Op::ToFloat:
           b.CreateStore(j.emit_to_float_step(load_slot(in.b)), slots[in.a]);
           break;
+        case Op::NsCall: {
+          auto [line, col] = chunk_pos_at(c, i);
+          std::vector<llvm::Value*> argv;
+          for (int32_t k = 0; k < in.d; ++k) argv.push_back(load_slot(in.b + k));
+          // The helper arm's argument run: an entry-block scratch like a
+          // call's slab, which the inline arms never touch.
+          IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+          llvm::Value* slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
+          if (in.d > 0)
+            slab = eb.CreateAlloca(ArrayType::get(j.valueType_, in.d), nullptr,
+                                   "ns.args");
+          b.CreateStore(j.emit_ns_call(static_cast<NsFn>(in.c), argv, slab,
+                                       line, col),
+                        slots[in.a]);
+          break;
+        }
         case Op::Safepoint:
           j.emit_safepoint();
           break;

@@ -412,6 +412,7 @@ captureされた変数は6つのop — `CellNew`、`CellGet`、`CellSet`、
 | ループ | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | Long範囲の数え上げ`for`は融合されたペア（sinkの`for _ in 0..n`も含む）。それ以外は12個のslotからなるカーソル（`ForSlot`）でプロトコルを歩く |
 | 例外とdefer | `Throw` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` | §5.5。`OwnedMark`/`OwnedExit`は決定的`drop`のためowned-resourceスタック上でスコープを括る |
 | 文字列と出力 | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | 補間、および`println(<引数1個>)`のpeephole |
+| namespace関数 | `NsCall` `ToFloat` | 直接の`Math.f(args)` / `to_float(x)`はresolverもclosureも経ずにhelperへ届く（§5.4） |
 | セッションとデバッグ | `ReplCell` `ReplBind` `DbgStmt` | §8.1、§8.3 |
 
 **コンパイラが名指しできる呼び先。** その文リストが1度だけ宣言する
@@ -896,6 +897,21 @@ receiverマスクはその名前・arityを解決するreceiverの集合と厳�
 られる。高階な形式（`map`、`filter`、`sorted(by:)`、…）は、
 バインダーがパラメータを順に歩くのと同じ順で、まずcallbackパラメータ
 を型チェックする。
+
+namespace関数も1段上で同じ形を取る。直接の`Math.f(args)` — namespace
+識別子がshadowされておらず、keywordがなく、位置引数の個数を正準
+シグネチャが認める — は`NsGet` + `PropRaw` + `CallRecv` + `CallM`の
+代わりに`nsfn_specs()`のidを持つ`NsCall`にコンパイルされ、両エンジンは
+namespace closureのadapterが届いたであろうhelperへ1つのdispatch
+（`culebra_runtime_ns_call`）で届く。helperのエラーには呼び出し自身の
+位置が渡る。行が持つのは名前とidだけである: arityとパラメータの宣言型は
+`canon_sigs.gen.h`から読み、型付きパラメータは引数リスト全体が走った後に
+その引数の位置で`ChkTypeAt`で検査する — closure trampolineと同じ順で
+ある。loweringはFloat系（`sqrt`、`sin`、`exp`、…、`abs`、`atan2`）を
+数値タグの検査の背後にinlineする — LLVM intrinsicがあればそれを使い、
+これはhelperが呼ぶlibmの当の呼び出しに落ちる — ので、タグが既知なら
+呼び出しは1命令に畳まれる。それ以外の綴り（`Math?.f`、`let m = Math`、
+値としての`Math.f`、keyword）は汎用経路とその診断のままである。
 
 ### 5.5 例外、`defer`、unwind
 

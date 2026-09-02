@@ -271,6 +271,52 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_clamp(
                                         _math_num(hit, hid, line, col)));
 }
 
+// The one dispatch both engines call for Op::NsCall (the ids are NsFn,
+// jit_runtime.h; the rows vm.h's nsfn_specs), and what the Math closure
+// adapters below forward to with no position of their own. The arguments
+// are borrowed; the result is the helper's fresh scalar. A typed parameter
+// (pow, sign and wrap take Longs) was checked at its argument before the
+// call — by the compiler's ChkTypeAt, or by the closure trampoline — so
+// the Long reads here take the payload as is.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_ns_call(
+    int32_t id, const JitValue* a, int64_t n, int64_t line, int64_t col) {
+  auto tag = [&](int64_t i) { return static_cast<int8_t>(a[i].tag); };
+  auto unary = [&](JitValue (*f)(int8_t, int64_t, int64_t, int64_t)) {
+    return f(tag(0), a[0].data, line, col);
+  };
+  switch (static_cast<NsFn>(id)) {
+    case NsFn::MathAbs: return unary(culebra_runtime_math_abs);
+    case NsFn::MathMin: return culebra_runtime_math_min(a, n, line, col);
+    case NsFn::MathMax: return culebra_runtime_math_max(a, n, line, col);
+    case NsFn::MathPow:
+      return {TAG_LONG,
+              culebra_runtime_math_pow(a[0].data, a[1].data, line, col)};
+    case NsFn::MathSign: return {TAG_LONG, culebra::math::sign(a[0].data)};
+    case NsFn::MathClamp:
+      return culebra_runtime_math_clamp(tag(0), a[0].data, tag(1), a[1].data,
+                                        tag(2), a[2].data, line, col);
+    case NsFn::MathWrap:
+      return {TAG_LONG,
+              culebra_runtime_math_wrap(a[0].data, a[1].data, line, col)};
+    case NsFn::MathLog: return unary(culebra_runtime_math_log);
+    case NsFn::MathExp: return unary(culebra_runtime_math_exp);
+    case NsFn::MathSqrt: return unary(culebra_runtime_math_sqrt);
+    case NsFn::MathSin: return unary(culebra_runtime_math_sin);
+    case NsFn::MathCos: return unary(culebra_runtime_math_cos);
+    case NsFn::MathTan: return unary(culebra_runtime_math_tan);
+    case NsFn::MathAsin: return unary(culebra_runtime_math_asin);
+    case NsFn::MathAcos: return unary(culebra_runtime_math_acos);
+    case NsFn::MathAtan: return unary(culebra_runtime_math_atan);
+    case NsFn::MathAtan2:
+      return culebra_runtime_math_atan2(tag(0), a[0].data, tag(1), a[1].data,
+                                        line, col);
+    case NsFn::MathFloor: return unary(culebra_runtime_math_floor);
+    case NsFn::MathCeil: return unary(culebra_runtime_math_ceil);
+    case NsFn::MathRound: return unary(culebra_runtime_math_round);
+  }
+  throw_type_error_at(line, col);  // an id the compiler never emits
+}
+
 // --- Random ---
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_random_seed(int64_t n) {
@@ -4502,71 +4548,34 @@ inline JitValue _ns_sqlite_version(JitValue*, int64_t) {
 }
 #endif  // CULEBRA_SQLITE_ENABLED
 
-// Math
-inline JitValue _ns_math_abs(JitValue* a, int64_t) {
-  return culebra_runtime_math_abs(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_log(JitValue* a, int64_t) {
-  return culebra_runtime_math_log(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_exp(JitValue* a, int64_t) {
-  return culebra_runtime_math_exp(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_sqrt(JitValue* a, int64_t) {
-  return culebra_runtime_math_sqrt(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_sin(JitValue* a, int64_t) {
-  return culebra_runtime_math_sin(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_cos(JitValue* a, int64_t) {
-  return culebra_runtime_math_cos(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_tan(JitValue* a, int64_t) {
-  return culebra_runtime_math_tan(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_asin(JitValue* a, int64_t) {
-  return culebra_runtime_math_asin(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_acos(JitValue* a, int64_t) {
-  return culebra_runtime_math_acos(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_atan(JitValue* a, int64_t) {
-  return culebra_runtime_math_atan(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_atan2(JitValue* a, int64_t) {
-  return culebra_runtime_math_atan2(a[0].tag, a[0].data, a[1].tag, a[1].data, 0,
-                                    0);
-}
-inline JitValue _ns_math_floor(JitValue* a, int64_t) {
-  return culebra_runtime_math_floor(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_ceil(JitValue* a, int64_t) {
-  return culebra_runtime_math_ceil(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_round(JitValue* a, int64_t) {
-  return culebra_runtime_math_round(a[0].tag, a[0].data, 0, 0);
-}
-inline JitValue _ns_math_min(JitValue* a, int64_t n) {
-  return culebra_runtime_math_min(a, n, 0, 0);
-}
-inline JitValue _ns_math_max(JitValue* a, int64_t n) {
-  return culebra_runtime_math_max(a, n, 0, 0);
-}
-inline JitValue _ns_math_pow(JitValue* a, int64_t) {
-  return _ns_adapt::v_long(culebra_runtime_math_pow(
-      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), 0, 0));
-}
-inline JitValue _ns_math_sign(JitValue* a, int64_t) {
-  return _ns_adapt::v_long(culebra::math::sign(_ns_adapt::take_long(a[0])));
-}
-inline JitValue _ns_math_clamp(JitValue* a, int64_t) {
-  return culebra_runtime_math_clamp(a[0].tag, a[0].data, a[1].tag, a[1].data,
-                                    a[2].tag, a[2].data, 0, 0);
-}
-inline JitValue _ns_math_wrap(JitValue* a, int64_t) {
-  return _ns_adapt::v_long(culebra_runtime_math_wrap(
-      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), 0, 0));
-}
+// Math: each closure adapter is the direct-call dispatch (Op::NsCall's
+// culebra_runtime_ns_call) without a position of its own.
+#define CUL_NS_MATH(name, id)                                           \
+  inline JitValue _ns_math_##name(JitValue* a, int64_t n) {             \
+    return culebra_runtime_ns_call(static_cast<int32_t>(NsFn::id), a, n, \
+                                   0, 0);                               \
+  }
+CUL_NS_MATH(abs, MathAbs)
+CUL_NS_MATH(min, MathMin)
+CUL_NS_MATH(max, MathMax)
+CUL_NS_MATH(pow, MathPow)
+CUL_NS_MATH(sign, MathSign)
+CUL_NS_MATH(clamp, MathClamp)
+CUL_NS_MATH(wrap, MathWrap)
+CUL_NS_MATH(log, MathLog)
+CUL_NS_MATH(exp, MathExp)
+CUL_NS_MATH(sqrt, MathSqrt)
+CUL_NS_MATH(sin, MathSin)
+CUL_NS_MATH(cos, MathCos)
+CUL_NS_MATH(tan, MathTan)
+CUL_NS_MATH(asin, MathAsin)
+CUL_NS_MATH(acos, MathAcos)
+CUL_NS_MATH(atan, MathAtan)
+CUL_NS_MATH(atan2, MathAtan2)
+CUL_NS_MATH(floor, MathFloor)
+CUL_NS_MATH(ceil, MathCeil)
+CUL_NS_MATH(round, MathRound)
+#undef CUL_NS_MATH
 
 // _Time / _Term / _Canvas — the three ABI primitive namespaces the user-facing
 // `Time` / `Term` / `Canvas` modules are written against. compile_ns_call
@@ -9777,6 +9786,10 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::to_float_any, jit.valueType_,
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::ns_call, jit.valueType_,
+                               jit.builder_.getInt32Ty(), ptrTy,
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::type_of, ptrTy,
                                jit.builder_.getInt8Ty());
   jit.module_->getOrInsertFunction(rt::input, ptrTy);

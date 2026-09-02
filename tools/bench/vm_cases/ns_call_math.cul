@@ -1,0 +1,100 @@
+# Every Math.* call shape, well-formed and not: the answers and the errors
+# (kind, message, position) must not move when the direct-call shape stops
+# going through the namespace closure.
+let show = fn (label, f) {
+  let r = try {
+    f()
+  } catch e {
+    e
+  }
+  print(label)
+  print(": ")
+  inspect(r)
+}
+
+show("sqrt 4", || Math.sqrt(4))
+show("sqrt 2.25", || Math.sqrt(2.25))
+show("sqrt -1", || Math.sqrt(-1.0))
+show("sin 0", || Math.sin(0))
+show("cos 0.0", || Math.cos(0.0))
+show("tan 1", || Math.tan(1))
+show("asin 1", || Math.asin(1))
+show("acos 1", || Math.acos(1))
+show("atan 1", || Math.atan(1))
+show("atan2", || Math.atan2(1, 2))
+show("atan2 f", || Math.atan2(1.0, -2.0))
+show("log e", || Math.log(Math.e))
+show("exp 1", || Math.exp(1))
+show("abs -3", || Math.abs(-3))
+show("abs -3.5", || Math.abs(-3.5))
+show("abs min", || Math.abs(-9223372036854775807 - 1))
+show("floor 2.5", || Math.floor(2.5))
+show("floor -2.5", || Math.floor(-2.5))
+show("floor 3", || Math.floor(3))
+show("ceil 2.5", || Math.ceil(2.5))
+show("round 2.5", || Math.round(2.5))
+show("round 3.5", || Math.round(3.5))
+show("round 3", || Math.round(3))
+show("min", || Math.min(3, 1, 2))
+show("min f", || Math.min(3, 1.5, 2))
+show("min 1", || Math.min(3))
+show("max", || Math.max(3, 1, 2))
+show("max f", || Math.max(1, 2.5))
+show("pow", || Math.pow(2, 10))
+show("pow 0 0", || Math.pow(0, 0))
+show("sign", || Math.sign(-2))
+show("sign 0", || Math.sign(0))
+show("clamp", || Math.clamp(5, 1, 3))
+show("clamp f", || Math.clamp(0.5, 1, 3))
+show("wrap", || Math.wrap(-1, 3))
+show("pi", || Math.pi)
+show("chain", || Math.sqrt(16).to_string())
+show("nested", || Math.abs(Math.floor(-2.5)))
+show("ufcs-like", || [4, 9].map(|x| Math.sqrt(x)))
+
+# errors
+show("sqrt str", || Math.sqrt("a"))
+show("sqrt nil", || Math.sqrt(nil))
+show("sqrt none", || Math.sqrt())
+show("sqrt two", || Math.sqrt(1, 2))
+show("min none", || Math.min())
+show("min str", || Math.min(1, "a", 3))
+show("max bad", || Math.max(1, [2]))
+show("pow float", || Math.pow(2.0, 3))
+show("pow neg", || Math.pow(2, -1))
+show("pow str2", || Math.pow(2, "x"))
+show("wrap zero", || Math.wrap(1, 0))
+show("wrap float", || Math.wrap(1.5, 3))
+show("sign float", || Math.sign(2.5))
+show("abs nil", || Math.abs(nil))
+show("clamp str", || Math.clamp(1, "a", 3))
+show("clamp arity", || Math.clamp(1, 2))
+show("atan2 str", || Math.atan2(1, "x"))
+show("atan2 arity", || Math.atan2(1))
+show("floor str", || Math.floor("x"))
+show("kwarg", || Math.sqrt(x: 4))
+show("bad kwarg", || Math.sqrt(y: 4))
+show("missing", || Math.nope(1))
+show("as value", fn () {
+  let f = Math.sqrt
+  f("a")
+})
+show("as value ok", fn () {
+  let f = Math.sqrt
+  f(9)
+})
+show("ns value", fn () {
+  let m = Math
+  m.sqrt("a")
+})
+show("ns value ok", fn () {
+  let m = Math
+  m.sqrt(9)
+})
+show("shadowed", fn () {
+  let Math = {sqrt: fn (x) { x }}
+  Math.sqrt(9)
+})
+show("safe nav", || Math?.sqrt(9))
+show("uncaught below", || 0)
+Math.sqrt("boom")

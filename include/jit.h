@@ -1562,8 +1562,8 @@ struct JIT {
   struct UnwindCovered {
     JIT* jit_;
     std::vector<llvm::Value*> vals_;
-    UnwindCovered(JIT* jit, std::initializer_list<llvm::Value*> vals)
-        : jit_(jit), vals_(vals) {
+    UnwindCovered(JIT* jit, std::vector<llvm::Value*> vals)
+        : jit_(jit), vals_(std::move(vals)) {
       jit_->cover_on_unwind(vals_);
     }
     ~UnwindCovered() { jit_->uncover_on_unwind(vals_); }
@@ -3087,6 +3087,150 @@ struct JIT {
         {tag, data, current_line_val(), current_column_val()},
         "tofloat.any"));
     builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    return merge.finish(mergeBB).consume();
+  }
+
+  // Op::NsCall — the namespace functions vm.h compiles a direct `Math.f(x)`
+  // to (nsfn_specs). Where the answer is a double function of numeric
+  // operands (the unary Float family, abs, atan2), a numeric tag takes the
+  // libm call inline — through the LLVM intrinsic that stands for it where
+  // one exists, which lowers to the very call the helper makes — so a known
+  // tag lets SCCP fold the dispatch away. Everything else, and every other
+  // function, is the runtime's one dispatch over the same helpers
+  // (culebra_runtime_ns_call), which also owns every error. `slab` is the
+  // entry-block scratch that arm hands the arguments over in.
+  llvm::Value* emit_ns_call(NsFn id, const std::vector<llvm::Value*>& args,
+                            llvm::Value* slab, int64_t line, int64_t col) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto doubleTy = builder_.getDoubleTy();
+    auto i64Ty = builder_.getInt64Ty();
+    auto slowBB = llvm::BasicBlock::Create(ctx_, "ns.slow", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ns.merge", fn);
+    OwnedPhi merge(this, "ns.r");
+
+    // One tag and payload per operand, shared by every test below.
+    llvm::SmallVector<llvm::Value*, 3> tag, data;
+    for (auto* v : args) {
+      tag.push_back(extract_tag(v));
+      data.push_back(extract_data(v));
+    }
+    auto is_long = [&](size_t k) {
+      return builder_.CreateICmpEQ(tag[k], builder_.getInt8(TAG_LONG));
+    };
+    auto is_num = [&](size_t k) {
+      return builder_.CreateOr(
+          is_long(k),
+          builder_.CreateICmpEQ(tag[k], builder_.getInt8(TAG_FLOAT)));
+    };
+    auto as_double = [&](size_t k) {
+      return num_as_double(is_long(k), data[k], "ns");
+    };
+    auto libm = [&](const char* name, llvm::ArrayRef<llvm::Value*> xs) {
+      std::vector<llvm::Type*> tys(xs.size(), doubleTy);
+      return builder_.CreateCall(
+          module_->getOrInsertFunction(
+              name, llvm::FunctionType::get(doubleTy, tys, false)),
+          xs, name);
+    };
+    // Every arm ends by handing its result to the merge.
+    auto done = [&](llvm::Value* r) {
+      merge.add_incoming(r);
+      builder_.CreateBr(mergeBB);
+    };
+
+    switch (id) {
+      case NsFn::MathLog:
+      case NsFn::MathExp:
+      case NsFn::MathSqrt:
+      case NsFn::MathSin:
+      case NsFn::MathCos:
+      case NsFn::MathTan:
+      case NsFn::MathAsin:
+      case NsFn::MathAcos:
+      case NsFn::MathAtan: {
+        auto numBB = llvm::BasicBlock::Create(ctx_, "ns.num", fn);
+        builder_.CreateCondBr(is_num(0), numBB, slowBB);
+        builder_.SetInsertPoint(numBB);
+        auto d = as_double(0);
+        llvm::Value* r = nullptr;
+        switch (id) {
+          case NsFn::MathLog:
+            r = builder_.CreateUnaryIntrinsic(llvm::Intrinsic::log, d);
+            break;
+          case NsFn::MathExp:
+            r = builder_.CreateUnaryIntrinsic(llvm::Intrinsic::exp, d);
+            break;
+          case NsFn::MathSqrt:
+            r = builder_.CreateUnaryIntrinsic(llvm::Intrinsic::sqrt, d);
+            break;
+          case NsFn::MathSin:
+            r = builder_.CreateUnaryIntrinsic(llvm::Intrinsic::sin, d);
+            break;
+          case NsFn::MathCos:
+            r = builder_.CreateUnaryIntrinsic(llvm::Intrinsic::cos, d);
+            break;
+          case NsFn::MathTan: r = libm("tan", {d}); break;
+          case NsFn::MathAsin: r = libm("asin", {d}); break;
+          case NsFn::MathAcos: r = libm("acos", {d}); break;
+          case NsFn::MathAtan: r = libm("atan", {d}); break;
+          default: assert(false && "not a unary Float function"); break;
+        }
+        done(make_float(r));
+        break;
+      }
+      case NsFn::MathAtan2: {
+        auto numBB = llvm::BasicBlock::Create(ctx_, "ns.num", fn);
+        builder_.CreateCondBr(builder_.CreateAnd(is_num(0), is_num(1)), numBB,
+                              slowBB);
+        builder_.SetInsertPoint(numBB);
+        done(make_float(libm("atan2", {as_double(0), as_double(1)})));
+        break;
+      }
+      case NsFn::MathAbs: {
+        auto intBB = llvm::BasicBlock::Create(ctx_, "ns.int", fn);
+        auto checkBB = llvm::BasicBlock::Create(ctx_, "ns.check", fn);
+        auto floatBB = llvm::BasicBlock::Create(ctx_, "ns.float", fn);
+        builder_.CreateCondBr(is_long(0), intBB, checkBB);
+        builder_.SetInsertPoint(intBB);
+        // Wrapping, as the helper's `x < 0 ? -x : x` is on INT64_MIN.
+        auto zero = builder_.getInt64(0);
+        done(make_long(builder_.CreateSelect(
+            builder_.CreateICmpSLT(data[0], zero),
+            builder_.CreateSub(zero, data[0]), data[0])));
+        builder_.SetInsertPoint(checkBB);
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(tag[0], builder_.getInt8(TAG_FLOAT)), floatBB,
+            slowBB);
+        builder_.SetInsertPoint(floatBB);
+        done(make_float(builder_.CreateUnaryIntrinsic(
+            llvm::Intrinsic::fabs, builder_.CreateBitCast(data[0], doubleTy))));
+        break;
+      }
+      default:
+        builder_.CreateBr(slowBB);
+        break;
+    }
+
+    builder_.SetInsertPoint(slowBB);
+    if (!args.empty()) {
+      auto arrTy = llvm::ArrayType::get(valueType_, args.size());
+      for (size_t k = 0; k < args.size(); ++k)
+        builder_.CreateStore(args[k],
+                             builder_.CreateConstGEP2_64(arrTy, slab, 0, k));
+    }
+    // The operands stay frame-owned on the helper's throw (borrow contract),
+    // as emit_to_float_step's does.
+    UnwindCovered cover(this, args);
+    done(emit_value_call(
+        module_->getOrInsertFunction(
+            rt::ns_call, valueType_, builder_.getInt32Ty(),
+            llvm::PointerType::get(ctx_, 0), i64Ty, i64Ty, i64Ty),
+        {builder_.getInt32(static_cast<int32_t>(id)), slab,
+         builder_.getInt64(static_cast<int64_t>(args.size())),
+         builder_.getInt64(line), builder_.getInt64(col)},
+        "ns.call"));
 
     builder_.SetInsertPoint(mergeBB);
     return merge.finish(mergeBB).consume();

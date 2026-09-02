@@ -1027,6 +1027,7 @@ inline constexpr auto throw_              = "culebra_runtime_throw";
 inline constexpr auto to_long             = "culebra_runtime_to_long";
 inline constexpr auto to_long_any         = "culebra_runtime_to_long_any";
 inline constexpr auto to_float_any        = "culebra_runtime_to_float_any";
+inline constexpr auto ns_call             = "culebra_runtime_ns_call";
 inline constexpr auto type_check          = "culebra_runtime_type_check";
 inline constexpr auto type_matches        = "culebra_runtime_type_matches";
 inline constexpr auto register_trait_default
