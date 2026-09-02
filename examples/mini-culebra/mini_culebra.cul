@@ -162,7 +162,7 @@ let grammar = `
   expr       <- ternary
   ternary    <- rangee (nl '?' !'?' nl expr nl ':' nl expr)?
   rangee     <- range_lit / nilco
-  range_lit  <- nilco range_op nilco? step?                 { no_ast_opt }
+  range_lit  <- nilco range_op nilco? step? / range_op nilco step? { no_ast_opt }
   step       <- 'by' __ nilco                               { no_ast_opt }
   range_op   <- < '..=' / '..' > _
   nilco      <- lor (nilco_op lor)*
@@ -170,7 +170,7 @@ let grammar = `
   match      <- 'match' __ expr nl '{' nl arm (nl ',' nl arm)* (nl ',')? nl '}' _
   arm        <- pattern guard? '=>' nl arm_body             { no_ast_opt }
   guard      <- 'if' __ expr                                { no_ast_opt }
-  arm_body   <- block / expr
+  arm_body   <- expr / block
   cond_e     <- 'cond' _ '{' nl carm (nl ',' nl carm)* (nl ',')? nl '}' _
   carm       <- (wild_p / expr) '=>' nl arm_body            { no_ast_opt }
   pattern    <- nil_p / true_p / false_p / float_p / num_p / str_p /
@@ -576,7 +576,7 @@ fn __getprop(v, name, line, col) {
   }
   if __is_instance(v) {
     if __objecthas(v, name) { return __bind(v[name], v) }
-    let cls = v['class']
+    let cls = v["\zc"]
     let ms = cls['methods']
     if __objecthas(cls, 'getters') {
       if __objecthas(cls['getters'], name) {
@@ -599,18 +599,17 @@ fn __is_class(v) {
 
 fn __is_instance(v) {
   if __typeof(v) != 'object' { return false }
-  if !__objecthas(v, 'class') { return false }
-  __is_class(v['class'])
+  __objecthas(v, "\zc")
 }
 
 fn __inst_class_is(v, cname) {
   if !__is_instance(v) { return false }
-  v['class']['name'] == cname
+  v["\zc"]['name'] == cname
 }
 
 fn __inst_conf(v, tname) {
   if !__is_instance(v) { return false }
-  __objecthas(v['class']['conf'], tname)
+  __objecthas(v["\zc"]['conf'], tname)
 }
 
 fn __construct(cls, args, line, col) {
@@ -619,7 +618,8 @@ fn __construct(cls, args, line, col) {
             __type_name(cls), line, col)
   }
   mut inst = {}
-  inst['class'] = cls
+  inst['class'] = cls['name']
+  inst["\zc"] = cls
   if __objecthas(cls, 'fields') {
     let fs = cls['fields']
     mut i = 0
@@ -659,21 +659,21 @@ fn __call_self(f, self_v, args, line, col) {
 
 fn __inst_dunder(v, name) {
   if !__is_instance(v) { return false }
-  __objecthas(v['class']['methods'], name)
+  __objecthas(v["\zc"]['methods'], name)
 }
 
 fn __dunder1(v, name, line, col) {
-  __call_self(v['class']['methods'][name], v, [], line, col)
+  __call_self(v["\zc"]['methods'][name], v, [], line, col)
 }
 
 fn __dunder2(v, name, o, line, col) {
-  __call_self(v['class']['methods'][name], v, [o], line, col)
+  __call_self(v["\zc"]['methods'][name], v, [o], line, col)
 }
 
 fn __callee_check(v, line, col) {
   if __is_marker(v) { return __as_fn(v, line, col) }
   if __is_instance(v) {
-    let cls = v['class']
+    let cls = v["\zc"]
     if __objecthas(cls['methods'], '__call__') {
       return __bindn(cls['methods']['__call__'], v, cls['arities']['__call__'],
                      line, col)
@@ -801,7 +801,7 @@ fn __eq(a, b) {
       let bi = __is_instance(b)
       if ai {
         if !bi { return false }
-        if a['class']['name'] != b['class']['name'] { return false }
+        if a["\zc"]['name'] != b["\zc"]['name'] { return false }
         if __inst_dunder(a, '__eq__') {
           return __truthy(__dunder2(a, '__eq__', b, 0, 0), 0, 0)
         }
@@ -854,7 +854,7 @@ fn __repr(v) {
         return __dunder1(v, '__str__', 0, 0)
       }
       let ks = __objectkeys(v)
-      mut out = v['class']['name'] + ' {'
+      mut out = v["\zc"]['name'] + ' {'
       mut first = true
       mut i = 0
       while i < __len(ks) {
@@ -1213,7 +1213,57 @@ fn __to_float(v, line, col) {
   let t = __typeof(v)
   if t == 'int' { return __todouble(v) }
   if t == 'double' { return v }
+  if t == 'string' { return __parse_float(v, line, col) }
   __raise('TypeError', 'type error', line, col)
+}
+
+fn __parse_float(v, line, col) {
+  let n = __len(v)
+  mut i = 0
+  mut sign = 1.0
+  if n > 0 {
+    if v[0] == '-' {
+      sign = 0.0 - 1.0
+      i = 1
+    }
+  }
+  mut mant = 0.0
+  mut digits = 0
+  while i < n && v[i] >= '0' && v[i] <= '9' {
+    mant = mant * 10.0 + __todouble(__digit(v[i]))
+    digits = digits + 1
+    i = i + 1
+  }
+  if i < n && v[i] == '.' {
+    i = i + 1
+    mut scale = 0.1
+    while i < n && v[i] >= '0' && v[i] <= '9' {
+      mant = mant + __todouble(__digit(v[i])) * scale
+      scale = scale / 10.0
+      digits = digits + 1
+      i = i + 1
+    }
+  }
+  if digits == 0 { __raise('TypeError', 'type error', line, col) }
+  if i < n && (v[i] == 'e' || v[i] == 'E') {
+    i = i + 1
+    mut esign = 1
+    if i < n && (v[i] == '-' || v[i] == '+') {
+      if v[i] == '-' { esign = 0 - 1 }
+      i = i + 1
+    }
+    mut e = 0
+    mut ed = 0
+    while i < n && v[i] >= '0' && v[i] <= '9' {
+      e = e * 10 + __digit(v[i])
+      ed = ed + 1
+      i = i + 1
+    }
+    if ed == 0 { __raise('TypeError', 'type error', line, col) }
+    mant = mant * __fpow(10.0, __todouble(esign * e))
+  }
+  if i != n { __raise('TypeError', 'type error', line, col) }
+  sign * mant
 }
 
 fn __assert_eq(a, b, line, col) {
@@ -1254,7 +1304,7 @@ fn __call_n(f0, args, line, col) {
 fn __check_fn(v, line, col) {
   if __is_marker(v) { return __as_fn(v, line, col) }
   if __is_instance(v) {
-    let cls = v['class']
+    let cls = v["\zc"]
     if __objecthas(cls['methods'], '__call__') {
       return __bindn(cls['methods']['__call__'], v, cls['arities']['__call__'],
                      line, col)
@@ -1312,9 +1362,10 @@ fn __method(recv, name, args, line, col) {
   # method of the name
   mut own = false
   if __is_instance(recv) {
-    if __objecthas(recv['class']['methods'], name) { own = true }
+    if __objecthas(recv["\zc"]['methods'], name) { own = true }
   }
   if !own {
+    if name == 'drop' && !__is_instance(recv) { return nil }
     if name == 'to_string' { return __to_string(recv, line, col) }
     if name == 'inspect' { return __inspect(recv, line, col) }
     if name == 'type_of' { return __type_of(recv, line, col) }
@@ -1327,7 +1378,7 @@ fn __method(recv, name, args, line, col) {
     if __is_tuple(recv) { return __tuple_method(recv, name, args, line, col) }
     if __is_set(recv) { return __set_method(recv, name, args, line, col) }
     if __is_instance(recv) {
-      let ms = recv['class']['methods']
+      let ms = recv["\zc"]['methods']
       if __objecthas(ms, name) {
         if name == 'drop' {
           __drop_once(recv, ms[name])
@@ -3104,7 +3155,7 @@ fn __as_fn(v, line, col) {
 # self-closure marker, or a plain closure (which takes no receiver).
 fn __invoke(o, name, args, line, col) {
   if __is_instance(o) {
-    let ms = o['class']['methods']
+    let ms = o["\zc"]['methods']
     if __objecthas(ms, name) {
       return __call_self(ms[name], o, args, line, col)
     }
@@ -3123,7 +3174,7 @@ fn __invoke(o, name, args, line, col) {
 fn __has_proto(o, name) {
   if __typeof(o) != 'object' { return false }
   if __is_instance(o) {
-    if __objecthas(o['class']['methods'], name) { return true }
+    if __objecthas(o["\zc"]['methods'], name) { return true }
   }
   if !__objecthas(o, name) { return false }
   __is_fn(o[name])
@@ -3912,7 +3963,7 @@ fn __pat_type(v, tname) {
   if tname == 'Set' { return __is_set(v) }
   if tname == 'Object' { return t == 'object' }
   if !__is_instance(v) { return false }
-  let cls = v['class']
+  let cls = v["\zc"]
   if cls['name'] == tname { return true }
   if __objecthas(cls, 'conf') {
     if __objecthas(cls['conf'], tname) { return true }
@@ -3966,7 +4017,26 @@ fn __mk_range(a, b, incl, step, line, col) {
 
 # What escapes main: culebra's own one-line report, then a marker throw
 # the driver turns into the exit status.
-fn __report_uncaught(e) {
+# The executor's own failures are {message, line, col}; culebra's carry a
+# kind, so one is read off the message before a handler sees the value.
+fn __fix_trap(e) {
+  if __typeof(e) != 'object' { return e }
+  if __objecthas(e, 'kind') { return e }
+  if !__objecthas(e, 'message') { return e }
+  if !__objecthas(e, 'line') { return e }
+  let msg = e['message']
+  mut kind = 'TypeError'
+  if __str_index_of(msg, 'index out of range', 0) >= 0 { kind = 'IndexError' }
+  if __str_index_of(msg, 'divide', 0) >= 0 { kind = 'ZeroDivisionError' }
+  if __str_index_of(msg, 'argument(s)', 0) >= 0 { kind = 'ArityError' }
+  if __str_index_of(msg, 'before', 0) >= 0 { kind = 'NameError' }
+  if __str_index_of(msg, 'unhashable', 0) >= 0 { kind = 'TypeError' }
+  if __str_index_of(msg, 'recursion', 0) >= 0 { kind = 'RecursionError' }
+  {kind: kind, message: msg, line: e['line'], col: e['col']}
+}
+
+fn __report_uncaught(e0) {
+  let e = __fix_trap(e0)
   if __typeof(e) == 'object' {
     if __objecthas(e, 'message') && __objecthas(e, 'line') && __objecthas(e, 'col') {
       mut head = ''
@@ -4044,7 +4114,7 @@ fn __assert_throws(kind, f, line, col) {
     f()
   } catch e {
     threw = true
-    got = e
+    got = __fix_trap(e)
   }
   if !threw {
     __raise('AssertionError', "assert_throws('" + kind + "', fn): expected throw but fn returned normally",
@@ -4060,6 +4130,9 @@ fn __assert_throws(kind, f, line, col) {
   }
   nil
 }
+
+
+fn __range3(a, b, step, line, col) { __mk_range(a, b, 0, step, line, col) }
 
 `
 
@@ -4097,6 +4170,7 @@ mut closure_funcs = {}
 mut fn_pos = {}
 mut own_binding = {}   # letrec closure func -> the variable holding it
 mut predeclared = {}   # "f/scope/name" slots taken by a forward reference
+mut runtime_immut = {}  # assignments that raise ImmutableError when run
 mut bare_init = {}     # "f/slot" bare bindings still awaiting their first write
 mut uncaught_slot = 0  # main's local for the value an uncaught throw carries
 mut pat_mut = false    # whether a `let mut <pattern>` is being scanned
@@ -4649,6 +4723,21 @@ fn deco_walked_index(f, name) {
   i
 }
 
+# The literal a typed field without an initializer starts from.
+fn type_zero(tname, at) {
+  let ln = at.line
+  let cl = at.column + 800000
+  cond {
+    tname == 'Long' => {name: 'number', token: '0', line: ln, column: cl},
+    tname == 'Float' => {name: 'float', token: '0.0', line: ln, column: cl},
+    tname == 'String' => {name: 'str_sq', token: '', line: ln, column: cl},
+    tname == 'Bool' => {name: 'false_l', nodes: [], line: ln, column: cl},
+    tname == 'Array' => {name: 'array_lit', nodes: [], line: ln, column: cl},
+    tname == 'Object' => {name: 'object_lit', nodes: [], line: ln, column: cl},
+    _ => nil,
+  }
+}
+
 fn class_parts(s) {
   mut i = 0
   while s.nodes[i].name == 'deco' { i = i + 1 }
@@ -4670,8 +4759,13 @@ fn class_parts(s) {
       mem.name == 'static_f' => sfields.push(mem),
       mem.name == 'field' => {
         mut init = nil
+        mut ty = nil
         for part in mem.nodes {
           if part.name == 'finit' { init = part.nodes[0] }
+          if part.name == 'ftype' { ty = part.nodes[0] }
+        }
+        if init == nil && ty != nil && ty.name == 'ident' {
+          init = type_zero(ty.token, mem.nodes[0])
         }
         fields.push({id: mem.nodes[0], init: init})
       },
@@ -4721,6 +4815,9 @@ fn scan_decorated(s, d, f) {
       fail(dn.nodes[0], "undefined name '{dn.nodes[0].token}'")
     }
     note_deco(dn, f, r)
+    if dn.nodes.size() == 2 {
+      for a in dn.nodes[1].nodes { scan_expr(arg_val(a), f) }
+    }
   }
   # the wrapped closure: letrec -- the body may name itself
   declare_var(f, d.id.token, false, d.id)
@@ -4971,6 +5068,8 @@ fn scan_stmt(node, f) {
             cond {
               # a bare binding's first write is its initialization
               bare_init.has(bk) && op.token == '=' => bare_init.remove(bk),
+              # culebra reports a write to a captured immutable when it runs
+              r.owner != f => runtime_immut[pkey(lhs)] = true,
               _ => fail(lhs, "cannot assign to immutable '{lhs.token}'"),
             }
           }
@@ -5116,8 +5215,8 @@ fn scan_call(node, f) {
   if !in_prelude && builtins.has(id.token) {
     cond {
       id.token == 'range' => {
-        if args.nodes.size() < 1 || args.nodes.size() > 2 {
-          fail(id, 'range takes 1 or 2 arguments')
+        if args.nodes.size() < 1 || args.nodes.size() > 3 {
+          fail(id, 'range takes 1 to 3 arguments')
         }
       },
       id.token == 'iota' => {
@@ -6154,7 +6253,8 @@ fn emit_call(m, node, f) {
     let target = cond {
       id.token == 'range' => cond {
         args.nodes.size() == 1 => '__range1',
-        _ => '__range2',
+        args.nodes.size() == 2 => '__range2',
+        _ => '__range3',
       },
       id.token == 'iota' => cond {
         args.nodes.size() == 1 => '__iota1',
@@ -6589,6 +6689,13 @@ fn emit_try(m, node, f) {
   let r = resolved[pkey(id)]
   let info = block_info[pkey(handler)]
   mut ids = []
+  # an executor trap gets its kind first, in the local slot the VM filled
+  ids.push(m.assign(kind: 'local', index: r.slot,
+                    value: call_pre(m, f, '__fix_trap',
+                                    [m.var_ref(kind: 'local', index: r.slot,
+                                               line: id.line, col: id.column)],
+                                    id.line, id.column),
+                    line: id.line, col: id.column))
   # a captured caught variable arrives in its local slot and moves into the
   # cell every other reference resolves to (same shape as parameters)
   if cell_index[f].has(r.slot) {
@@ -6689,11 +6796,12 @@ fn emit_expr(m, node, f) {
       let (pl, pc) = pos_args(m, node)
       let ln = node.line
       let cl = node.column
+      let open_start = nodes[0].name == 'range_op'
       let a = nodes[0]
-      let op = nodes[1]
+      let op = cond { open_start => nodes[0], _ => nodes[1] }
       mut hi = m.nil_literal(line: ln, col: cl)
       mut st = m.nil_literal(line: ln, col: cl)
-      mut i = 2
+      mut i = cond { open_start => 1, _ => 2 }
       while i < nodes.size() {
         cond {
           nodes[i].name == 'step' => st = emit_expr(m, nodes[i].nodes[0], f),
@@ -6702,8 +6810,11 @@ fn emit_expr(m, node, f) {
         i = i + 1
       }
       let incl = cond { op.token == '..=' => 1, _ => 0 }
-      call_pre(m, f, '__mk_range',
-               [emit_expr(m, a, f), hi, m.literal(v: incl, line: ln, col: cl), st, pl, pc],
+      let lo = cond {
+        open_start => m.literal(v: 0, line: ln, col: cl),
+        _ => emit_expr(m, a, f),
+      }
+      call_pre(m, f, '__mk_range', [lo, hi, m.literal(v: incl, line: ln, col: cl), st, pl, pc],
                ln, cl)
     },
     {name: 'shorthand'} => {
@@ -6944,6 +7055,15 @@ fn emit_assign(m, node, f) {
     }
   }
   cond {
+    lhs.name == 'ident' && runtime_immut.has(pkey(lhs)) => {
+      let (pl, pc) = pos_args(m, lhs)
+      call_pre(m, f, '__raise',
+               [m.str_literal(s: 'ImmutableError', line: ln, col: cl),
+                m.str_literal(s: "cannot reassign '" + lhs.token + "' (declared without 'mut')",
+                              line: ln, col: cl),
+                pl, pc],
+               ln, cl)
+    },
     lhs.name == 'ident' => {
       let r = resolved[pkey(lhs)]
       let a = access_from(f, (r.owner, r.slot))
@@ -7149,7 +7269,7 @@ fn emit_stmt(m, node, f) {
       while i >= 0 {
         let dn = d.decos[i].nodes[0]
         let r = resolved[pkey(dn)]
-        let callee = cond {
+        mut callee = cond {
           r.kind == 'fn' => m.make_closure(func: r.funcs[0],
                                            cmap: cmap_for(m, f, r.funcs[0]),
                                            line: dn.line, col: dn.column),
@@ -7157,6 +7277,16 @@ fn emit_stmt(m, node, f) {
             let a = access_from(f, (r.owner, r.slot))
             m.var_ref(kind: a.kind, index: a.index, line: dn.line, col: dn.column)
           },
+        }
+        # a factory: @deco(args) applies deco(args) to the function
+        if d.decos[i].nodes.size() == 2 {
+          mut fargs = []
+          for a in d.decos[i].nodes[1].nodes { fargs.push(emit_expr(m, arg_val(a), f)) }
+          let (pl, pc) = pos_args(m, dn)
+          callee = call_pre(m, f, '__callee_check',
+                            [m.call_value(callee: callee, args_list: make_list(m, fargs),
+                                          line: dn.line, col: dn.column), pl, pc],
+                            dn.line, dn.column)
         }
         v = m.call_value(callee: callee, args_list: make_list(m, [v]),
                          line: dn.line, col: dn.column)
@@ -7700,6 +7830,7 @@ for path in cli {
   fn_pos = {}
   own_binding = {}
   predeclared = {}
+  runtime_immut = {}
   bare_init = {}
   uncaught_slot = 0
   pat_mut = false
