@@ -86,6 +86,77 @@ assert_eq(cc_gb.grad().to_array(), [[1.0, 1.0], [1.0, 1.0]])
 assert_throws('ValueError', fn () { Tensor.concat([]) })
 assert_throws('ValueError', fn () { Tensor.concat([cc_a, Tensor.zeros(2, 3)]) })
 
+# --- .permute(axes): the VJP is the inverse permutation --------------------
+# Reached only from a user's own forward pass: backward() suppresses the tape,
+# so the permutes Dot's own VJP builds internally never need this arm.
+
+# d/dx sum(permute(x) * w) puts w's element back where permute took it from.
+# [1, 2, 0] is not its own inverse ([2, 0, 1] is), so a VJP that permuted
+# forward instead of back would land the weights somewhere else.
+let pm_flat = range(24).map(|i| to_float(i)).collect()
+let pm_w = Tensor.from(pm_flat).reshape([3, 4, 2])
+let pm_x = Tensor.from(pm_flat).reshape([2, 3, 4]).requires_grad()
+(pm_x.permute([1, 2, 0]) * pm_w).sum(2).sum(1).sum(0).backward()
+# x[i][j][k] became permuted[j][k][i], so it was weighted by w[j][k][i].
+assert_eq(
+  pm_x.grad().reshape([24]).to_array(),
+  range(24)
+    .map(fn (f) {
+      let i = f / 12
+      let j = f % 12 / 4
+      let k = f % 4
+      to_float(j * 8 + k * 2 + i)
+    })
+    .collect(),
+)
+
+# The head split an attention block writes: [B, C, H, D] -> [B, H, C, D].
+# Rank 4 is the shape an attention block uses; from rank 3 up `.transpose()`
+# is a different operation, not this one -- it reverses every axis.
+let pm_h = Tensor.randn(2 * 3, 4 * 5).requires_grad()
+let pm_split = pm_h.reshape([2, 3, 4, 5]).permute([0, 2, 1, 3])
+(pm_split * pm_split).sum(3).sum(2).sum(1).sum(0).backward()
+# d/dx sum(x^2) is 2x wherever the permutation moved it.
+assert_eq(
+  pm_h.grad().reshape([120]).to_array(),
+  pm_h.reshape([120]).to_array().map(|v| 2.0 * v),
+)
+
+# An identity permutation still routes the gradient.
+let pm_id = Tensor.from([[1.0, 2.0], [3.0, 4.0]]).requires_grad()
+(pm_id.permute([0, 1]) * 3.0).sum(1).sum(0).backward()
+assert_eq(pm_id.grad().to_array(), [[3.0, 3.0], [3.0, 3.0]])
+
+# Rank 1 has nothing to invert, and it packs to exactly 0 -- so this is what
+# pins the sentinel apart from a legal value. A sentinel of 0 rather than -1
+# leaves every other permute test green and silently kills this one.
+let pm_1d = Tensor.from([1.0, 2.0, 3.0]).requires_grad()
+(pm_1d.permute([0]) * 2.0).sum(0).backward()
+assert_eq(pm_1d.grad().to_array(), [2.0, 2.0, 2.0])
+
+# The cap is at rank 15, where the top nibble stops short of the sign bit.
+# A stride of anything but four bits corrupts a permutation this wide, and
+# dropping the cap shifts by 64 at rank 16 instead of refusing.
+let pm_wide15 = Tensor.from([1.0, 2.0]).reshape(repeat(14, 1) + [2])
+let pm_wide = pm_wide15.requires_grad()
+mut pm_sum = pm_wide.permute(range(15).map(|i| 14 - i).collect()) * 3.0
+for axis in 0..15 {
+  pm_sum = pm_sum.sum(14 - axis)
+}
+pm_sum.backward()
+assert_eq(pm_wide.grad().reshape([2]).to_array(), [3.0, 3.0])
+
+let pm_too_wide = Tensor.from([1.0, 2.0])
+  .reshape(repeat(15, 1) + [2])
+  .requires_grad()
+assert_throws('ValueError', fn () {
+  mut wide = pm_too_wide.permute(range(16).map(|i| 15 - i).collect())
+  for axis in 0..16 {
+    wide = wide.sum(15 - axis)
+  }
+  wide.backward()
+})
+
 # --- .narrow([axis, start, end]): .slice() generalized to any axis --------
 
 let narrow_x = Tensor.from(

@@ -24,23 +24,26 @@
 #
 #   settings                                     dezero  Tensor
 #   n_layer=1 embed_dim=16 n_head=4 ff_dim=32
-#     context_len=8 batch_size=2                   2.30    1.02  2.3x faster
+#     context_len=8 batch_size=2                   2.42    0.99  2.5x faster
 #   n_layer=2 embed_dim=32 n_head=4 ff_dim=128
-#     context_len=32 batch_size=4                  8.91    7.68  1.16x faster
+#     context_len=32 batch_size=4                  8.92    7.35  1.21x faster
 #   (none: the demo config, embed 64, context 64,
-#     batch 8, 2 layers)                          40.4    48.9   1.21x slower
+#     batch 8, 2 layers)                          41.7    46.4   1.11x slower
 #
 # The native side wins while a step is many small ops and loses once the
 # tensors are large, which is not the shape one would guess. dezero's ops
 # call the same C++ Tensor kernels, so what it adds is a per-op cost, not
 # a per-element one, and that cost stops mattering as the tensors grow.
-# Two things it then does that the native autograd has no way to express:
+# What it then does that a composed native graph cannot:
 # `F.softmax_cross_entropy` carries a hand-written fused backward
 # ((p - onehot)/n, one pass) where differentiating the composed forward
-# costs ~7 ms a step at the demo config, and `Op::Permute` has no VJP, so
-# the rank-4 head transpose below is narrow + per-row transpose + concat,
-# whose backward allocates a full-size zero buffer per piece (~7 ms per
-# layer per step at the same config).
+# costs ~4 ms a step at the demo config, and the native autograd has no
+# hook for supplying a VJP of one's own.
+#
+# The head split used to cost more here too: `Op::Permute` had no VJP, so
+# it was narrow + per-row transpose + concat, whose backward allocates a
+# full-size zero buffer per piece. `.permute()` is differentiable now, and
+# that alone took the demo config from 48.6 ms/step to 46.4.
 #
 # Usage matches `pretrain.cul`, plus one extra flag:
 #
@@ -151,19 +154,12 @@ class MultiHeadAttention {
     t.narrow([1, hi * d, (hi + 1) * d]).reshape([b, c, d])
   }
 
-  # The same slice as (B, D, C), for the K side of Q @ K^T. `Op::Permute`
-  # has no VJP ("Tensor.backward: permute is not differentiable yet"), so
-  # the last two axes are swapped one batch row at a time with the rank-2
-  # `.transpose()`, which does -- this is the one place the dezero model's
-  # rank-4 transpose has no direct equivalent.
+  # The same slice as (B, D, C), for the K side of Q @ K^T. `.transpose()`
+  # reverses every axis, so at rank 3 it is a different operation; the two
+  # that matter are swapped with `.permute()`, whose VJP is the inverse
+  # permutation.
   head_view_t(t, hi, b, c) {
-    let d = self.head_dim
-    let flat = t.narrow([1, hi * d, (hi + 1) * d]).reshape([b * c, d])
-    mut rows = []
-    for bi in 0..b {
-      rows.push(flat.slice(bi * c, (bi + 1) * c).transpose())
-    }
-    Tensor.concat(rows, 0).reshape([b, d, c])
+    self.head_view(t, hi, b, c).permute([0, 2, 1])
   }
 
   causal(c) {

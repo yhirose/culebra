@@ -1643,14 +1643,20 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 の出力も勾配を追跡します。微分可能なopは`+ - * /`、`.pow()`（底に
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
 `.softmax()`、`.log()`、`.tanh()`、`.sin()`、`.cos()`、`.clamp()`、
-`.transpose()`、`.reshape()`、`.slice()`、`.narrow()`、`Tensor.concat()`、
-`Tensor.where()`、`.index_select()` / `Tensor.index_add()`（互いが
-相手のVJP）。勾配は自動でun-broadcastされるので、バッチ越しに加えた
-biasは元の形状に和を取って戻ります。`.unfold()`、`.pad()`、
-`.fold()`、`.permute()`、`.rope()`、`Tensor.scatter_to_axis()`は
-今のところforward-onlyです——これらを通した`.backward()`は例外を
-投げます。im2col方式のconvやpoolingレイヤー、Q/Kに適用するRoPEなど
-これらを使う学習ループは、今のところ自前でbackwardを書きます。
+`.transpose()`、`.permute()`、`.reshape()`、`.slice()`、`.narrow()`、
+`Tensor.concat()`、`Tensor.where()`、`.index_select()` /
+`Tensor.index_add()`（互いが相手のVJP）。勾配は自動でun-broadcastされる
+ので、バッチ越しに加えたbiasは元の形状に和を取って戻ります。
+`.permute()`のVJPは逆置換です。これによりattentionのhead分割
+（`[B, C, H, D]`から`[B, H, C, D]`）が学習できます——`.transpose()`は
+*全*軸を反転するので、rank 3以上では別の操作であって、これの短縮形では
+ありません。置換はノード自身のスカラースロットに1軸4ビットで収めるため、
+rank 16以上の`.permute()`を通した`.backward()`は、切り詰めた置換を
+保存するのではなく例外を投げます。`.unfold()`、`.pad()`、`.fold()`、`.rope()`、
+`Tensor.scatter_to_axis()`は今のところforward-onlyです——これらを通した
+`.backward()`は例外を投げます。im2col方式のconvやpoolingレイヤー、
+Q/Kに適用するRoPEなどこれらを使う学習ループは、今のところ自前で
+backwardを書きます。
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()`（および`.max()` /
 `.argmax()`）は恒久的に微分不可能です——比較を通した`.backward()`は常に
 例外を投げます（PyTorch/numpyと同じ）。0/1マスクは`*`で合成してください

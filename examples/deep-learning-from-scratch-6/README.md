@@ -216,34 +216,36 @@ C++. Given the same initial weights they agree bit-for-bit on the first loss
 and to a relative 1e-7 after eight steps, and a checkpoint written by either
 restores into the other.
 
-The C++ tape is the slower of the two here, which is not what the split
-predicted:
+The C++ tape is still the slower of the two here, which is not what the
+split predicted:
 
 | | ms/step |
 |---|---|
-| dezero | 40.5 |
-| native `Tensor` | 48.8 |
+| dezero | 41.7 |
+| native `Tensor` | 46.4 |
 
-Measured with the `-O3` build over 60 steps at the default configuration,
-using the ms/step each script prints, which excludes validation. The cause
-is not per-element overhead: dezero's operations call the same C++ kernels,
-so its extra cost is per operation and thins out as tensors grow. It is two
-things dezero can do that a composed native graph cannot.
+Best of three with the `-O3` build over 60 steps at the default
+configuration, using the ms/step each script prints, which excludes
+validation. The cause is not per-element overhead: dezero's operations call
+the same C++ kernels, so its extra cost is per operation and thins out as
+tensors grow. What is left is one thing dezero can do that a composed
+native graph cannot.
 
 - **A hand-written backward.** dezero's `SoftmaxCrossEntropy` fuses the
   softmax and the cross-entropy into one `Function` whose backward is the
   closed form `(p - onehot) / n`. Differentiating the composition instead
-  costs 7.1 ms/step, of which the softmax's own forward and backward are
-  5.3. Culebra's native autograd has no hook for supplying a VJP.
-- **A batched transpose.** `Op::Permute` has no VJP at all
-  (`Tensor.backward: permute is not differentiable yet`), and `.transpose()`
-  on rank 3 or more reverses every axis rather than the last two, so there
-  is no way to swap a batched matrix's inner axes. The head split is written
-  without one, and `narrow`'s VJP allocates a zero buffer the size of the
-  whole input for each slice.
+  costs 4.2 ms/step at this shape, and the native autograd has no hook for
+  supplying a VJP of one's own.
 
-Both are concrete gaps in culebra rather than in the port, which is why this
-file is here.
+Writing this file also found the gap that used to sit beside it, and closed
+it. `.permute()` had no VJP, so the head split could not be written the way
+the dezero model writes it — `.transpose()` reverses every axis, which from
+rank 3 up is a different operation — and it was built out of per-head
+`narrow` and `concat` instead, whose own VJP allocates a zero buffer the
+size of the whole input for each slice. `.permute()` is differentiable now.
+At this model's head-split shape it runs the split in 0.354 ms against the
+workaround's 1.080, and on the same binary it takes this file from
+48.6 ms/step to 46.4 — about a third of the distance to dezero.
 
 ## Where this differs from upstream
 

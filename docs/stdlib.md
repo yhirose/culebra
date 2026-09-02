@@ -1680,11 +1680,17 @@ the underlying tensor library.
 produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.tanh()`, `.sin()`,
-`.cos()`, `.clamp()`, `.transpose()`, `.reshape()`, `.slice()`,
-`.narrow()`, `Tensor.concat()`, `Tensor.where()`, and `.index_select()` /
-`Tensor.index_add()` (each other's own VJP). Gradients un-broadcast
-automatically, so a bias added across a batch sums back to its shape.
-`.unfold()`, `.pad()`, `.fold()`, `.permute()`, `.rope()`, and
+`.cos()`, `.clamp()`, `.transpose()`, `.permute()`, `.reshape()`,
+`.slice()`, `.narrow()`, `Tensor.concat()`, `Tensor.where()`, and
+`.index_select()` / `Tensor.index_add()` (each other's own VJP). Gradients
+un-broadcast automatically, so a bias added across a batch sums back to its
+shape. `.permute()`'s own VJP is the inverse permutation, which is what
+lets an attention head split (`[B, C, H, D]` to `[B, H, C, D]`) train:
+`.transpose()` reverses *every* axis, so from rank 3 up it is a different
+operation, not a shorthand for this one. The permutation rides in the node's
+own scalar slot, four bits an axis, so `.backward()` through a `.permute()`
+of rank 16 or more raises rather than storing one it has truncated.
+`.unfold()`, `.pad()`, `.fold()`, `.rope()`, and
 `Tensor.scatter_to_axis()` are forward-only so far — `.backward()` through
 them raises; a training loop that uses them (e.g. an im2col-style conv, a
 pooling layer, or RoPE applied to Q/K) writes its own backward pass around

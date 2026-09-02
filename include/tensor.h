@@ -734,6 +734,14 @@ inline TensorPtr tensor_transpose(TensorPtr t) {
                         /*op_param=*/0, /*is_view=*/true);
 }
 
+// A permutation is packed four bits per axis into `op_param` so the VJP can
+// read it back; -1 marks "not packed" (rank too wide), which is the only
+// case that stays forward-only. Fifteen axes stop at bit 59, leaving the
+// sign bit alone so the packed value is always non-negative and cannot
+// collide with the sentinel.
+inline constexpr size_t kPermuteMaxPackedRank = 15;
+inline constexpr int64_t kPermuteNotPacked = -1;
+
 // General axis reorder: `axes[i]` names which of `t`'s own axes becomes the
 // result's axis `i`. Zero-copy, like transpose() above. tensorlib's own
 // array::transpose(axes) only checks the count matches rank — it does not
@@ -761,11 +769,22 @@ inline TensorPtr tensor_permute(TensorPtr t, std::vector<int64_t> axes) {
     seen[static_cast<size_t>(a)] = true;
     iaxes[i] = static_cast<int>(a);
   }
+  // The VJP is the inverse permutation, so it needs these axes back, and
+  // four bits each is enough to pack one into op_param (see the constants
+  // above). A rank past that keeps the old forward-only behaviour rather
+  // than storing a truncated permutation.
+  int64_t packed = kPermuteNotPacked;
+  if (r <= kPermuteMaxPackedRank) {
+    packed = 0;
+    for (size_t i = 0; i < r; i++) {
+      packed |= static_cast<int64_t>(iaxes[i]) << (4 * i);
+    }
+  }
   auto v = _tl_guard([&] { return t->value.transpose(std::move(iaxes)); });
   auto dtype = t->dtype;
   return tensor_make_op(Op::Permute, std::move(v), dtype,
-                        std::vector<TensorPtr>{std::move(t)},
-                        /*op_param=*/0, /*is_view=*/true);
+                        std::vector<TensorPtr>{std::move(t)}, packed,
+                        /*is_view=*/true);
 }
 
 // Slice along axis 0 (rows): [start, end). Matches Array's .slice()
@@ -1376,13 +1395,26 @@ inline void _tensor_vjp(const TensorPtr& n) {
       // something does reach it.
       throw CulebraError("ValueError",
           "Tensor.backward: unfold / pad / fold are not differentiable yet.");
-    case Op::Permute:
-      // The VJP is the inverse permutation, which needs the forward axes
-      // back — TensorImpl has nowhere to keep an arbitrary-length list
-      // today (op_param is one int64_t, sized for Slice's start). Unreached
-      // for the same reason as Unfold/Pad/Fold above.
-      throw CulebraError("ValueError",
-          "Tensor.backward: permute is not differentiable yet.");
+    case Op::Permute: {
+      // y = x.permute(axes); dx = g.permute(axes^-1), where the inverse
+      // sends axis `axes[i]` back to position `i`. The forward packed those
+      // axes into op_param (see tensor_permute); only a rank past what fits
+      // there is still forward-only.
+      if (n->op_param == kPermuteNotPacked) {
+        throw CulebraError("ValueError",
+            "Tensor.backward: permute of rank > " +
+                std::to_string(kPermuteMaxPackedRank) +
+                " is not differentiable.");
+      }
+      size_t r = n->shape.rank();
+      std::vector<int64_t> inverse(r);
+      for (size_t i = 0; i < r; i++) {
+        auto axis = static_cast<size_t>((n->op_param >> (4 * i)) & 0xF);
+        inverse[axis] = static_cast<int64_t>(i);
+      }
+      _tensor_grad_add(n->inputs[0], tensor_permute(g, std::move(inverse)));
+      break;
+    }
     case Op::Narrow: {
       // The VJP is a zero-pad back out to the original axis length --
       // op_param/extra0/extra1 (axis/start/end, stashed by tensor_narrow)
