@@ -3480,7 +3480,7 @@ throws `HttpError`; a bad `headers` value throws `TypeError`.
 | `Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object |
 | `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object |
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object — any method (PATCH, OPTIONS, …) |
-| `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | response Object — streams Server-Sent Events to `on_event`; see below |
+| `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | response Object — opens a `GET` and streams Server-Sent Events to `on_event`; see below |
 | `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | a persistent client handle (base URL + default headers + connection reuse); see below |
 | `Http.server()` | an HTTP server handle (register routes + `static` + `ws`, then `listen`); see below |
 | `Http.ws(url)` | connect a WebSocket client; returns a handle (`send`/`receive`/`for`/`close`/`is_open`); see below |
@@ -3654,9 +3654,14 @@ an `IOError`.
 
 Open a [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
 (`text/event-stream`) stream — a long-lived `GET` whose `on_event` callback is
-invoked once per event as it arrives. This is the wire format that streaming
-LLM and chat APIs use. The call blocks for the life of the stream and returns
-the final response Object after the server closes it.
+invoked once per event as it arrives. The call blocks for the life of the
+stream and returns the final response Object after the server closes it.
+
+**It opens a `GET`, and only a `GET`**, as the protocol does — a browser's
+`EventSource` cannot POST either. Streaming LLM and chat APIs speak this same
+wire format but ask for it over a **`POST`** carrying the request as a JSON
+body, which puts them out of reach here: stream those with the `into:` argument
+above and decode the frames yourself (below).
 
 Each event is an Object with three String fields:
 
@@ -3668,13 +3673,25 @@ Each event is an Object with three String fields:
 
 ```culebra
 # doctest: skip
-Http.sse("https://api.example/v1/stream", fn (e) {
-  if e.data == "[DONE]" {
-    return
+Http.sse("https://api.example/v1/events", fn (e) {
+  if e.event == "progress" {
+    IO.println("{e.id}: {e.data}")
   }
-  let delta = JSON.parse(e.data)
-  IO.print(delta.choices[0].delta.content)
 })
+```
+
+A `POST` that streams its answer back — which is what every LLM API is — takes
+the other route. `into:` hands you the body a chunk at a time, and the frames
+are yours to split: `field: value` lines, one blank line between events, and a
+chunk boundary that can fall anywhere (mid-line, or mid-character).
+
+```culebra
+# doctest: skip
+Http.post(
+  "https://api.example/v1/chat",
+  json: {model: model, messages: messages, stream: true},
+  into: fn (chunk) { decoder.feed(chunk) },
+)
 ```
 
 `Accept: text/event-stream` is sent automatically unless you set `Accept`

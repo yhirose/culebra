@@ -3385,7 +3385,7 @@ inspect(Regex.escape("a.b(c)"))                         # => 'a\.b\(c\)'
 | `Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject |
 | `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject |
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject — 任意のメソッド（PATCH、OPTIONS …） |
-| `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject — Server-Sent Eventsを`on_event`にストリーム（後述） |
+| `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject — `GET`を開いてServer-Sent Eventsを`on_event`にストリーム（後述） |
 | `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | 永続クライアントハンドル（ベースURL + デフォルトヘッダ + 接続再利用、後述） |
 | `Http.server()` | HTTPサーバハンドル（ルート + `static` + `ws`を登録して`listen`、後述） |
 | `Http.ws(url)` | WebSocketクライアント接続。ハンドル（`send`/`receive`/`for`/`close`/`is_open`）を返す（後述） |
@@ -3554,9 +3554,13 @@ partの値が`String` / `Object` / `Array`以外、`Object`が`content` / `path`
 
 [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
 （`text/event-stream`）ストリームを開きます — 長寿命の`GET`で、イベントが届くたびに
-`on_event`コールバックを1回ずつ呼びます。ストリーミングLLM/チャットAPIが使う
-ワイヤ形式です。呼び出しはストリームが続く間blockingで、サーバが閉じた後に最終的な
-レスポンスObjectを返します。
+`on_event`コールバックを1回ずつ呼びます。呼び出しはストリームが続く間blockingで、
+サーバが閉じた後に最終的なレスポンスObjectを返します。
+
+**開くのは`GET`だけです。** プロトコル自体がそうなっており（ブラウザの`EventSource`も
+POSTできません）、ストリーミングLLM/チャットAPIは同じワイヤ形式をリクエストをJSON
+bodyに載せた**`POST`**で要求するため、この関数では届きません。それらは上記の`into:`で
+レスポンスbodyを受け取り、フレームを自分でデコードします（後述）。
 
 各イベントは3つのStringフィールドを持つObjectです:
 
@@ -3568,13 +3572,25 @@ partの値が`String` / `Object` / `Array`以外、`Object`が`content` / `path`
 
 ```culebra
 # doctest: skip
-Http.sse("https://api.example/v1/stream", fn (e) {
-  if e.data == "[DONE]" {
-    return
+Http.sse("https://api.example/v1/events", fn (e) {
+  if e.event == "progress" {
+    IO.println("{e.id}: {e.data}")
   }
-  let delta = JSON.parse(e.data)
-  IO.print(delta.choices[0].delta.content)
 })
+```
+
+回答をストリームで返す`POST`——LLM APIはすべてこれ——はもう一方の経路を使います。
+`into:`がbodyをチャンク単位で渡すので、フレームの分割は自分で行います:
+`field: value`の行、イベントの区切りは空行1つ、そしてチャンク境界はどこにでも
+（行の途中にも、文字の途中にも）落ちます。
+
+```culebra
+# doctest: skip
+Http.post(
+  "https://api.example/v1/chat",
+  json: {model: model, messages: messages, stream: true},
+  into: fn (chunk) { decoder.feed(chunk) },
+)
 ```
 
 `Accept`を自分で設定しない限り`Accept: text/event-stream`は自動で送られます。
