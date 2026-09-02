@@ -154,13 +154,21 @@ check full --jit "$TMP/full.cul"
 check loop --jit "$TMP/min.cul"
 
 # Source ceiling: one place builds landingpads, so a new pad has to go through
-# the cleanup/handler split rather than hand-rolling its own prologue.
-pads=$(grep -ho "CreateLandingPad" include/*.h | wc -l)
-if (( pads > 1 )); then
-  echo "eh-balance FAIL: CreateLandingPad appears $pads times (ceiling 1)" >&2
-  echo "  Landingpads are built only by jit.h emit_landingpad, which is what" >&2
-  echo "  decides whether the pad opens the exception. Route the new pad" >&2
-  echo "  through JitCleanupPad (cleanup) or emit_handler_prologue (handler)." >&2
+# the cleanup/handler split rather than hand-rolling its own prologue. The scan
+# is recursive and the expected count is exact: a non-recursive include/*.h
+# glob would read 0 the moment a header moved into a subdirectory, and 0
+# satisfies a "no more than one" ceiling while measuring nothing.
+pads=$(grep -rho "CreateLandingPad" --include='*.h' include/ | wc -l)
+if (( pads != 1 )); then
+  if (( pads == 0 )); then
+    echo "eh-balance FAIL: no CreateLandingPad under include/ — this half of" >&2
+    echo "  the gate proves nothing. Did emit_landingpad move or get renamed?" >&2
+  else
+    echo "eh-balance FAIL: CreateLandingPad appears $pads times (expected 1)" >&2
+    echo "  Landingpads are built only by jit.h emit_landingpad, which is what" >&2
+    echo "  decides whether the pad opens the exception. Route the new pad" >&2
+    echo "  through JitCleanupPad (cleanup) or emit_handler_prologue (handler)." >&2
+  fi
   fail=1
 else
   echo "eh-balance OK (source): landingpads are built in one place"

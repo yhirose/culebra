@@ -10,7 +10,37 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 fail=0
+
+# Every path this gate measures is hardcoded below, and several counts are
+# taken with `|| true` so a genuine zero can pass. That combination makes a
+# rename invisible: grep on a missing file prints nothing, `|| true` swallows
+# the error, and the ratchet then evaluates `(( "" > 0 ))`, which is false.
+# Guard both ends — the paths must exist, and a count must be a number.
+for f in include/jit.h include/stdlib_jit.h include/sendable_jit.h; do
+  [[ -f $f ]] || {
+    echo "rc-discipline FAIL: no $f — renamed or moved? update this gate" >&2
+    exit 1
+  }
+done
+
 ratchet() { # name actual ceiling
+  if ! [[ $2 =~ ^[0-9]+$ ]]; then
+    echo "rc-discipline FAIL: $1 produced no count ('$2') — the pattern or" >&2
+    echo "  the path it scans moved; this ratchet is measuring nothing." >&2
+    fail=1
+    return
+  fi
+  # A nonzero ceiling asserts a population exists. If it has emptied, the code
+  # being guarded was renamed, moved or deleted, and the ratchet now passes
+  # while measuring nothing. Hard-zero invariants carry ceiling 0 and are
+  # unaffected.
+  if (( $3 > 0 && $2 == 0 )); then
+    echo "rc-discipline FAIL: $1 = 0 against ceiling $3 — the population this" >&2
+    echo "  ratchet guards is empty, so it proves nothing. Repoint it at the" >&2
+    echo "  code that replaced it, or retire it." >&2
+    fail=1
+    return
+  fi
   if (( $2 > $3 )); then
     echo "rc-discipline FAIL: $1 = $2 (ceiling $3) — new hand-placed RC ops?" >&2
     echo "  Use the ownership layer instead." >&2
@@ -127,7 +157,7 @@ ratchet "bare RC calls (sendable_jit.h)" "$(count_bare include/sendable_jit.h)" 
 # blind spot emit_borrow_to_owned has on the codegen side. Count the call sites
 # on their own ceiling so the seam cannot become a quiet way to add hand-placed
 # retains. Current population: 1 (Sys.env returning its borrowed `fallback`).
-rbrw=$(grep -E "JitOwnedVal::from_borrowed\(" include/*.h \
+rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
 ratchet "runtime borrow->owned seam sites" "$rbrw" 1
 
@@ -181,8 +211,8 @@ tassign=$(grep -cE '(llvm::Value|auto) ?\* ?[A-Za-z_]+ ?= ?[^;]*\.consume\(\);' 
 ratchet "typed consume assignments (jit.h)" "$tassign" 0
 
 if (( fail )); then exit 1; fi
-echo "rc-discipline OK (release=$rel/51 retain=$ret/29 borrow=$brw/5" \
+echo "rc-discipline OK (release=$rel/55 retain=$ret/34 borrow=$brw/5" \
      "rt-borrow=$rbrw/1 tail-self=$tail_self/0" \
-     "stdlib=$(count_bare include/stdlib_jit.h)/98" \
+     "stdlib=$(count_bare include/stdlib_jit.h)/100" \
      "sendable=$(count_bare include/sendable_jit.h)/11 throwguard=$tg/21" \
      "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"

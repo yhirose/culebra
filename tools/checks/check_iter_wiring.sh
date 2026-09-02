@@ -16,8 +16,8 @@
 #        closure caches). A new terminal reaching for them fails here.
 #
 # 2. Combinator upstream wiring: a lazy combinator must hand its upstream(s)
-#    to the wrapper factory (`_make_iterator(step, {upstream})` interp /
-#    `_iter_wrap_fast<Fn>({cells}, n_upstreams)` JIT) or dispose stops
+#    to the wrapper factory (`_iter_wrap_fast<Fn>({cells}, n_upstreams)`,
+#    the shared-runtime form both lanes go through) or dispose stops
 #    forwarding through the chain — the skip_while/flatten/... regression
 #    class (every rebase that added combinators forgot at least one). The
 #    no-upstream call population is exactly the audited LEAF set (source
@@ -29,6 +29,23 @@ cd "$(dirname "$0")/../.."
 
 fail=0
 ratchet() { # name actual ceiling
+  if ! [[ $2 =~ ^[0-9]+$ ]]; then
+    echo "iter-wiring FAIL: $1 produced no count ('$2') — the pattern or the" >&2
+    echo "  path it scans moved; this ratchet is measuring nothing." >&2
+    fail=1
+    return
+  fi
+  # A nonzero ceiling asserts a population exists. If it has emptied, the code
+  # being guarded was renamed, moved or deleted, and the ratchet now passes
+  # while measuring nothing. Hard-zero invariants carry ceiling 0 and are
+  # unaffected.
+  if (( $3 > 0 && $2 == 0 )); then
+    echo "iter-wiring FAIL: $1 = 0 against ceiling $3 — the population this" >&2
+    echo "  ratchet guards is empty, so it proves nothing. Repoint it at the" >&2
+    echo "  code that replaced it, or retire it." >&2
+    fail=1
+    return
+  fi
   if (( $2 > $3 )); then
     echo "iter-wiring FAIL: $1 = $2 (ceiling $3)" >&2
     echo "  Terminals drive through JitIterDrive; lazy combinators pass" >&2
@@ -87,7 +104,13 @@ def nargs(text, start):
         i += 1
     return 0
 total = 0
-for f in sorted(glob.glob('include/*.h')):
+# Recursive: a non-recursive include/*.h glob would scan nothing the moment a
+# header moved into a subdirectory, and a 0 satisfies every ceiling below.
+files = sorted(glob.glob('include/**/*.h', recursive=True))
+if not files:
+    sys.stderr.write("iter-wiring FAIL: no headers under include/ — path moved?\n")
+    sys.exit(1)
+for f in files:
     text = open(f).read()
     for m in re.finditer(pat, text):
         if 'inline' in text[max(0, m.start()-40):m.start()]: continue  # defs
@@ -96,19 +119,19 @@ print(total)
 PYEOF
 }
 
-# interp: leaf sources (range/string/File/Net/stdin/isolate/...) = 21.
-# 21 -> 22 (2026-08-13, reviewed): FS.watch's handle iterates OS change events,
-# a source with no upstream culebra iterator — same leaf shape as the Net/File
-# handles beside it.
-mi=$(count_no_upstream '_make_iterator\s*\(')
-ratchet "no-upstream _make_iterator calls (interp leaves)" "$mi" 22
+# Retired 2026-09-02: the `_make_iterator` twin counted the tree-walking
+# interpreter's leaf sources, and that engine's body went in d0d00303. The
+# name has since matched nothing, so the ratchet passed 0 against a ceiling of
+# 22 while proving nothing — the empty-population guard in ratchet() is what
+# surfaced it. The surviving population is the shared-runtime `_iter_wrap_fast`
+# form below, which both the executor and the JIT go through.
 
-# JIT: leaf sources = 15 (9 jit_iter.h + 6 stdlib_jit.h) — grid_new joined
+# leaf sources = 15 (9 jit_iter.h + 6 stdlib_jit.h) — grid_new joined
 # math_range/iota et al. as a new source factory (no upstream iterator).
 # 15 -> 16 (2026-08-13, reviewed): the JIT twin of the FS.watch leaf above.
 wf=$(count_no_upstream '_iter_wrap_fast<[^>]*>\s*\(')
-ratchet "no-upstream _iter_wrap_fast calls (JIT leaves)" "$wf" 16
+ratchet "no-upstream _iter_wrap_fast calls (leaves)" "$wf" 16
 
 if (( fail )); then exit 1; fi
 echo "iter-wiring OK (pull=$pull/0 advance_raw=$adv/25 has_next_closure=$hnc/4" \
-     "make_iterator-leaves=$mi/21 wrap_fast-leaves=$wf/15)"
+     "wrap_fast-leaves=$wf/16)"
