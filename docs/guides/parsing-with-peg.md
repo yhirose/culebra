@@ -9,6 +9,39 @@ The API reference is [`stdlib.md` §34](../stdlib.md#34-peg). This guide is
 about *when* to use it and how to shape a grammar; the reference is about
 what each call does.
 
+## What a PEG is
+
+A PEG — a *parsing expression grammar* — is a set of rules describing the
+shape of a piece of text. You hand the rules and the text to the engine,
+and it hands back a tree of what matched.
+
+```culebra
+let g = `
+  Setting <- Name '=' Number
+  Name    <- < [a-z]+ >
+  Number  <- < [0-9]+ >
+  %whitespace <- [ ]*
+`
+let n = Peg.parse(g, 'width = 320')
+
+inspect(n.name)                     # => 'Setting'
+inspect(n.nodes[0].token)           # => 'width'
+inspect(to_long(n.nodes[1].token))  # => 320
+```
+
+`Name <- expression` defines a rule. An expression is built from literals
+(`'='`), character classes (`[a-z]`), sequence (one thing after another),
+ordered choice (`a / b`), repetition (`*` `+` `?`) and lookahead (`!a`
+`&a`). `< ... >` marks the span whose text you want kept on the node, and
+`%whitespace` says what may be skipped between tokens. That is most of the
+notation; [`stdlib.md` §34](../stdlib.md#34-peg) has the rest.
+
+Two things set it apart from grammars you may have met before. Choice is
+**ordered**: `a / b` commits to `a` the moment `a` matches, so there is
+no ambiguity to resolve and no separate tokenizer pass to run first. And
+a rule may refer to itself — which is where everything else in this guide
+comes from.
+
 ## Why a grammar
 
 Bert Hubert put the case for PEG well in
@@ -44,8 +77,24 @@ you have probably done with a regex, each with one recursive rule in it.
 
 ### 1.1 A log line with a structured payload
 
-Timestamp, level, message: standard regex work. The payload after `ctx=`
-is not, because objects and arrays nest inside it.
+Here is the input — a log file where each line carries a structured
+context object:
+
+```
+2026-09-01T10:00:02 WARN retry ctx={user: {id: 7, tags: [a, b]}, path: /x}
+2026-09-01T10:00:05 INFO ok ctx={path: /y}
+```
+
+and here is what we want out of each line: the level, the message, the
+names of the **top-level** keys in `ctx`, and how deeply it nests.
+
+```
+WARN retry keys=['user', 'path'] depth=3
+INFO ok keys=['path'] depth=1
+```
+
+Timestamp, level and message are standard regex work. The payload after
+`ctx=` is not, because objects and arrays nest inside it.
 
 ```culebra
 let g = `
@@ -73,6 +122,7 @@ fn depth(n) {
 
 let log = '2026-09-01T10:00:02 WARN retry ctx={user: {id: 7, tags: [a, b]}, path: /x}
 2026-09-01T10:00:05 INFO ok ctx={path: /y}'
+
 for line in log.lines() {
   let n = p.parse(line)
   let ctx = n.nodes[3]
@@ -99,10 +149,26 @@ notion for free, which is also why `depth` can be six lines.
 
 ### 1.2 A type signature
 
-Reading a symbol list or a compiler diagnostic and pulling out the outer
-type and its arguments. The single hardest thing to do to a nested type
-with a regex is the thing you always want: split the arguments at the
-top-level commas.
+The input is a list of type names — from a symbol dump, or a compiler
+diagnostic:
+
+```
+Map<String, List<Pair<Int, String>>>
+Result<Vec<u8>, Error>
+i32
+```
+
+and we want the outer type paired with its arguments, split at the
+top-level commas and nowhere else:
+
+```
+Map <- ['String', 'List<Pair<Int, String>>']
+Result <- ['Vec<u8>', 'Error']
+i32 <- []
+```
+
+That split is the one thing you always want from a nested type, and the
+one thing a regex can never do.
 
 ```culebra
 let g = `
@@ -112,9 +178,11 @@ let g = `
   %whitespace <- [ ]*
 `
 let p = Peg.compile(g)
+
 let lines = 'Map<String, List<Pair<Int, String>>>
 Result<Vec<u8>, Error>
 i32'
+
 for src in lines.lines() {
   let n = p.parse(src)
   let args = n.nodes.size() > 1 ? n.nodes[1].nodes : []
@@ -139,10 +207,24 @@ its third capture group.
 
 ### 1.3 A Markdown link
 
-Scanning prose for links and pulling out the text and the URL. The
-familiar `\[([^\]]*)\]\(([^)]*)\)` works until a link text contains
-brackets or a URL contains parentheses — and Wikipedia URLs contain
-parentheses constantly.
+The input is prose with links in it, and both the link text and the URL
+happen to contain brackets of their own:
+
+```
+See [the [inner] guide](https://x/a(b).md) now.
+Also [plain](https://y/z) and [a] alone.
+```
+
+We want the text and the URL of each real link, and nothing for the bare
+`[a]`:
+
+```
+text=the [inner] guide  url=https://x/a(b).md
+text=plain  url=https://y/z
+```
+
+The familiar `\[([^\]]*)\]\(([^)]*)\)` handles this until exactly those
+brackets show up — and Wikipedia URLs contain parentheses constantly.
 
 ```culebra
 let g = `
@@ -155,8 +237,10 @@ let g = `
   Other <- < . >
 `
 let p = Peg.compile(g)
+
 let lines = 'See [the [inner] guide](https://x/a(b).md) now.
 Also [plain](https://y/z) and [a] alone.'
+
 for line in lines.lines() {
   for n in p.parse(line).nodes {
     if n.name == 'Link' {
@@ -197,6 +281,7 @@ let calc = `
   Number <- < '-'? [0-9]+ >
   %whitespace <- [ \t\r\n]*
 `
+
 fn eval(n) {
   match n {
     {name: 'Number', token} => to_long(token),
@@ -217,6 +302,7 @@ fn eval(n) {
     },
   }
 }
+
 inspect(eval(Peg.parse(calc, '1 + 2 * 3')))    # => 7
 inspect(eval(Peg.parse(calc, '(1 + 2) * 3')))  # => 9
 ```
@@ -246,6 +332,7 @@ let calc = `
   Number <- < '-'? [0-9]+ >
   %whitespace <- [ \t\r\n]*
 `
+
 fn fold(sv) {
   mut acc = sv.values[0]
   mut i = 1
@@ -261,6 +348,7 @@ fn fold(sv) {
   }
   acc
 }
+
 let actions = {
   Number: |sv| to_long(sv.token),
   AddOp: |sv| sv.token,
@@ -268,6 +356,7 @@ let actions = {
   Expr: fold,
   Term: fold,
 }
+
 inspect(Peg.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
 ```
 
@@ -328,6 +417,7 @@ fn lookup(scopes, name) {
   }
   throw "undefined variable '{name}'"
 }
+
 fn store(scopes, name, v) {
   mut i = scopes.size() - 1
   while i >= 0 {
@@ -339,6 +429,7 @@ fn store(scopes, name, v) {
   }
   scopes[scopes.size() - 1][name] = v
 }
+
 fn binop(op, a, b) {
   match op {
     '+' => a + b,
@@ -370,6 +461,7 @@ fn run(src) {
       {nodes} => fold(nodes, scopes),
     }
   }
+
   fn fold(nodes, scopes) {
     mut acc = eval(nodes[0], scopes)
     mut i = 1
@@ -379,6 +471,7 @@ fn run(src) {
     }
     acc
   }
+
   fn call(name, args) {
     if name == 'print' {
       out.push(args[0])
@@ -399,6 +492,7 @@ fn run(src) {
       _ => nil,
     }
   }
+
   fn exec_block(block, scopes) {
     for st in block.nodes {
       let r = exec(st, scopes)
@@ -408,6 +502,7 @@ fn run(src) {
     }
     nil
   }
+
   fn exec(n, scopes) {
     match n {
       {name: 'Fn', nodes: [name, params, body]} => {
@@ -517,6 +612,7 @@ let g = `
   Wrap  <- Inner
   Inner <- < [0-9]+ >
 `
+
 print(Peg.str(Peg.parse(g, '1')))
 # => |
 # - Inner (1)

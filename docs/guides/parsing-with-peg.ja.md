@@ -11,17 +11,50 @@ APIのリファレンスは[`stdlib.ja.md` §34](../stdlib.ja.md#34-peg)にあ�
 あちらは「各呼び出しが何をするか」を引くための文書で、こちらは
 「どういうときに使うか」「文法をどう組み立てるか」のための文書です。
 
+## PEGとは
+
+PEG（parsing expression grammar）は、テキストの形を書き表した規則の
+集まりです。規則とテキストをエンジンに渡すと、何にどう一致したかを木に
+して返してくれます。
+
+```culebra
+let g = `
+  Setting <- Name '=' Number
+  Name    <- < [a-z]+ >
+  Number  <- < [0-9]+ >
+  %whitespace <- [ ]*
+`
+let n = Peg.parse(g, 'width = 320')
+
+inspect(n.name)                     # => 'Setting'
+inspect(n.nodes[0].token)           # => 'width'
+inspect(to_long(n.nodes[1].token))  # => 320
+```
+
+`名前 <- 式`が規則の定義です。式は、リテラル（`'='`）、文字クラス
+（`[a-z]`）、並び（続けて書く）、順序付き選択（`a / b`）、繰り返し
+（`*` `+` `?`）、先読み（`!a` `&a`）を組み合わせて作ります。`< ... >`は
+「この範囲の文字列をノードに残す」という印で、`%whitespace`はトークンの
+あいだで読み飛ばしてよいものを指定します。記法はだいたいこれで、残りは
+[`stdlib.ja.md` §34](../stdlib.ja.md#34-peg)にあります。
+
+これまでに見たことのある文法と違う点が2つあります。1つは、選択に
+**順序がある**ことです。`a / b`は`a`が一致した時点で`a`に決めるので、
+曖昧さを解消する必要がなく、字句解析を別に走らせる必要もありません。
+もう1つは、規則が自分自身を参照できることです。このガイドの残りは、
+すべてここから出てきます。
+
 ## なぜ文法を書くのでしょうか
 
 Bert Hubertが[Practical PEG parsing](https://berthub.eu/articles/posts/practical-peg-parsing/)
 という記事で、PEGの立ち位置をうまく言い表しています。簡単なことは簡単に、
 難しいことも可能に、というのがそれです。
 
-正規表現は、簡単な側ではとても優秀です。ただ、難しい側には答えを持って
-いません。難しい側というのは構造が出てくるところ、つまり入れ子や、
-エスケープや、「このトークン、ただしあのトークンの中にあるものは除く」
-といった話です。そこで手書きのスキャナを書きはじめて、気がつくと半日
-たっている、というのがよくある展開ではないでしょうか。
+正規表現は、簡単なことにはとても向いています。ただ、難しくなってくると
+手が出せません。ここでいう難しさとは構造のことです。入れ子、エスケープ、
+「このトークン、ただしあのトークンの中にあるものは除く」といったもの
+です。そこで手書きのスキャナを書きはじめて、気がつくと半日たっている、
+というのがよくある展開ではないでしょうか。
 
 PEGはその中間にあります。小さな仕事なら正規表現と同じくらいの手間で
 書けますし、正規表現と違って、仕事が育っても壊れません。効いているのは
@@ -31,9 +64,8 @@ PEGはその中間にあります。小さな仕事なら正規表現と同じ�
   自分自身を参照することもできます。入れ子が扱えるのはこのおかげで、
   正規表現に根本的に欠けているのもここです。
 * **選択に順序があります。** `a / b`は、まず`a`を試して、失敗したときだけ
-  `b`を試します。解決すべき曖昧さがそもそも生まれません。曖昧さがないと
-  いうことは、文法が書いたとおりの意味を、書いた順序どおりに持つという
-  ことです。
+  `b`を試します。どちらを採るか迷う場面が生まれないので、文法は書いた
+  とおりの意味を、書いた順序どおりに持ちます。
 * **木が手に入ります。** culebraでは木が素の`Object`なので、`match`が
   そのまま分解できます。あいだにvisitor APIのようなものを挟みません。
 
@@ -53,9 +85,24 @@ PEGはその中間にあります。小さな仕事なら正規表現と同じ�
 
 ### 1.1 構造化ペイロードを持つログ行
 
-時刻、レベル、メッセージ。ここまでは正規表現の得意分野です。ですが
-`ctx=`のあとの値は違います。オブジェクトと配列が入れ子になっているから
-です。
+まず入力を見てください。1行ごとに、構造を持ったコンテキストが付いている
+ログです。
+
+```
+2026-09-01T10:00:02 WARN retry ctx={user: {id: 7, tags: [a, b]}, path: /x}
+2026-09-01T10:00:05 INFO ok ctx={path: /y}
+```
+
+ここから各行について、レベル、メッセージ、`ctx`の**トップレベルの**キー名、
+そして入れ子の深さを取り出したい、とします。欲しい出力はこうです。
+
+```
+WARN retry keys=['user', 'path'] depth=3
+INFO ok keys=['path'] depth=1
+```
+
+時刻・レベル・メッセージまでは正規表現の得意分野です。ですが`ctx=`の
+あとの値は違います。オブジェクトと配列が入れ子になっているからです。
 
 ```culebra
 let g = `
@@ -83,6 +130,7 @@ fn depth(n) {
 
 let log = '2026-09-01T10:00:02 WARN retry ctx={user: {id: 7, tags: [a, b]}, path: /x}
 2026-09-01T10:00:05 INFO ok ctx={path: /y}'
+
 for line in log.lines() {
   let n = p.parse(line)
   let ctx = n.nodes[3]
@@ -94,8 +142,8 @@ for line in log.lines() {
 # INFO ok keys=['path'] depth=1
 ```
 
-正規表現がここで負ける負け方は2つあります。どちらも押さえておく価値が
-あります。
+ここで正規表現がうまくいかない理由は、2つあります。どちらも知って
+おく価値があります。
 
 1つめは、**値がどこで終わるのかを決められない**ことです。
 `ctx=\{(.*)\}`は貪欲なので、その行の最後の`}`まで走ってしまいます。
@@ -111,10 +159,26 @@ for line in log.lines() {
 
 ### 1.2 型シグネチャ
 
-シンボル一覧やコンパイラの診断を読んで、外側の型名とその型引数を取り
-出す仕事です。入れ子になった型に対して正規表現でやりたくなることの
-うち、いちばん難しいのが、いちばんやりたいことでもあります。トップ
-レベルのカンマで引数を分けることです。
+入力は型名の一覧です。シンボルの一覧や、コンパイラの診断から出てくるような
+ものだと思ってください。
+
+```
+Map<String, List<Pair<Int, String>>>
+Result<Vec<u8>, Error>
+i32
+```
+
+ここから、外側の型名と、その型引数を取り出します。引数はトップレベルの
+カンマでだけ分けます。
+
+```
+Map <- ['String', 'List<Pair<Int, String>>']
+Result <- ['Vec<u8>', 'Error']
+i32 <- []
+```
+
+この「トップレベルのカンマでだけ分ける」が、入れ子の型に対していちばん
+やりたいことであり、正規表現には決してできないことでもあります。
 
 ```culebra
 let g = `
@@ -124,9 +188,11 @@ let g = `
   %whitespace <- [ ]*
 `
 let p = Peg.compile(g)
+
 let lines = 'Map<String, List<Pair<Int, String>>>
 Result<Vec<u8>, Error>
 i32'
+
 for src in lines.lines() {
   let n = p.parse(src)
   let args = n.nodes.size() > 1 ? n.nodes[1].nodes : []
@@ -146,15 +212,30 @@ for src in lines.lines() {
 
 最後の行にも注目してください。`i32`には型引数がありませんが、同じ文法が
 そのまま扱えています。`<...>`のまとまりを省略可能にしてあるからです。
-「そのパターンが無いこともある」への対応は、正規表現なら2つ目の選択肢と
-3つ目のキャプチャグループが生えはじめるところです。
+「そのパターンが無いこともある」に対応しようとすると、正規表現では
+たいてい、選択肢を1つ増やしてキャプチャグループを足すことになります。
 
 ### 1.3 Markdownのリンク
 
-文章の中からリンクを拾って、テキストとURLを取り出す仕事です。おなじみの
-`\[([^\]]*)\]\(([^)]*)\)`は、リンクテキストに角括弧が入るか、URLに丸括弧が
-入るまでは動きます。そしてWikipediaのURLには、丸括弧がしょっちゅう
+入力はリンクを含む文章です。ここではリンクテキストにも、URLにも、括弧が
 入っています。
+
+```
+See [the [inner] guide](https://x/a(b).md) now.
+Also [plain](https://y/z) and [a] alone.
+```
+
+取り出したいのは、本物のリンクのテキストとURLです。リンクの形をしていない
+`[a]`は拾いません。
+
+```
+text=the [inner] guide  url=https://x/a(b).md
+text=plain  url=https://y/z
+```
+
+おなじみの`\[([^\]]*)\]\(([^)]*)\)`は、いま挙げたような括弧が出てくるまでは
+ちゃんと動きます。そしてWikipediaのURLには、丸括弧がしょっちゅう入って
+います。
 
 ```culebra
 let g = `
@@ -167,8 +248,10 @@ let g = `
   Other <- < . >
 `
 let p = Peg.compile(g)
+
 let lines = 'See [the [inner] guide](https://x/a(b).md) now.
 Also [plain](https://y/z) and [a] alone.'
+
 for line in lines.lines() {
   for n in p.parse(line).nodes {
     if n.name == 'Link' {
@@ -186,11 +269,11 @@ for line in lines.lines() {
 しまいます。どちらも同じ間違いです。文字クラスは数を数えられません。
 そしてどちらも、自分自身を参照する規則1つで直ります。
 
-この例には、行を扱うときのもう半分も出ています。`Other <- < . >`がある
-おかげで、文法が興味のある部分だけでなく**行全体**を記述しています。
-だから1行にリンクがいくつあってもよく、あいだに文章がどれだけあっても
-かまいません。2行目の`[a]`はリンクではないので、そのまま報告されずに
-済んでいます。
+この例には、行を扱うときのもう1つのコツも入っています。`Other <- < . >`が
+あるおかげで、この文法は興味のある部分だけでなく**行全体**を書き表して
+います。だから1行にリンクがいくつあってもよく、あいだに文章がどれだけ
+あってもかまいません。2行目の`[a]`はリンクの形をしていないので、拾われ
+ません。
 
 ## 2. 四則計算 — 優先順位と、評価の2通り
 
@@ -210,6 +293,7 @@ let calc = `
   Number <- < '-'? [0-9]+ >
   %whitespace <- [ \t\r\n]*
 `
+
 fn eval(n) {
   match n {
     {name: 'Number', token} => to_long(token),
@@ -230,6 +314,7 @@ fn eval(n) {
     },
   }
 }
+
 inspect(eval(Peg.parse(calc, '1 + 2 * 3')))    # => 7
 inspect(eval(Peg.parse(calc, '(1 + 2) * 3')))  # => 9
 ```
@@ -261,6 +346,7 @@ let calc = `
   Number <- < '-'? [0-9]+ >
   %whitespace <- [ \t\r\n]*
 `
+
 fn fold(sv) {
   mut acc = sv.values[0]
   mut i = 1
@@ -276,6 +362,7 @@ fn fold(sv) {
   }
   acc
 }
+
 let actions = {
   Number: |sv| to_long(sv.token),
   AddOp: |sv| sv.token,
@@ -283,6 +370,7 @@ let actions = {
   Expr: fold,
   Term: fold,
 }
+
 inspect(Peg.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
 ```
 
@@ -345,6 +433,7 @@ fn lookup(scopes, name) {
   }
   throw "undefined variable '{name}'"
 }
+
 fn store(scopes, name, v) {
   mut i = scopes.size() - 1
   while i >= 0 {
@@ -356,6 +445,7 @@ fn store(scopes, name, v) {
   }
   scopes[scopes.size() - 1][name] = v
 }
+
 fn binop(op, a, b) {
   match op {
     '+' => a + b,
@@ -387,6 +477,7 @@ fn run(src) {
       {nodes} => fold(nodes, scopes),
     }
   }
+
   fn fold(nodes, scopes) {
     mut acc = eval(nodes[0], scopes)
     mut i = 1
@@ -396,6 +487,7 @@ fn run(src) {
     }
     acc
   }
+
   fn call(name, args) {
     if name == 'print' {
       out.push(args[0])
@@ -416,6 +508,7 @@ fn run(src) {
       _ => nil,
     }
   }
+
   fn exec_block(block, scopes) {
     for st in block.nodes {
       let r = exec(st, scopes)
@@ -425,6 +518,7 @@ fn run(src) {
     }
     nil
   }
+
   fn exec(n, scopes) {
     match n {
       {name: 'Fn', nodes: [name, params, body]} => {
@@ -537,6 +631,7 @@ let g = `
   Wrap  <- Inner
   Inner <- < [0-9]+ >
 `
+
 print(Peg.str(Peg.parse(g, '1')))
 # => |
 # - Inner (1)
