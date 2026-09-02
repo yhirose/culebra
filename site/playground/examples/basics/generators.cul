@@ -3,6 +3,7 @@ fn countdown(start) {
     yield i
   }
 }
+
 for v in countdown(3) {
   println("{v}...")
 }

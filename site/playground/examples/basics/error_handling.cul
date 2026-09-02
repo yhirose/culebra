@@ -1,0 +1,35 @@
+fn risky(n) {
+  if n < 0 {
+    throw {kind: "RangeError", message: "n must be >= 0, got {n}"}
+  }
+  n * 2
+}
+
+try {
+  println("risky(21) = {risky(21)}")
+  risky(-1)
+} catch e {
+  println("caught {e.kind}: {e.message}")
+}
+
+# defer runs on every exit path, in LIFO order — even when the block throws
+fn use_resource(fail) {
+  defer {
+    println("release: second")
+  }
+  defer {
+    println("release: first")
+  }
+  if fail {
+    throw "boom"
+  }
+  "ok"
+}
+
+println(use_resource(false))
+
+try {
+  use_resource(true)
+} catch e {
+  println("caught: {e}")
+}

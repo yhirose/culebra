@@ -27,3 +27,32 @@ let b = Vec2.new(3, 4)
 println("a + b   = {a + b}")
 println("a * 10  = {a * 10}")
 println("|b|     = {b.len}")  # getter: reads like a field
+
+# UFCS: any free function f(x, ...) doubles as a method x.f(...)
+fn scaled(v: Vec2, k) {
+  v * k
+}
+
+println("b.scaled(2) = {b.scaled(2)}")
+
+# a trait is structural — any class with matching method names/arities
+# conforms, with no `impl` declaration
+trait Greeter {
+  hello() -> String
+}
+
+class Robot {
+  new(id) {
+    self.id = id
+  }
+
+  hello() {
+    "beep {self.id}"
+  }
+}
+
+fn greet(g: Greeter) {
+  g.hello()
+}
+
+println(greet(Robot.new(7)))

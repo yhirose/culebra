@@ -3,17 +3,17 @@
     {
       "name": "Basics",
       "examples": [
-        { "title": "Hello", "path": "examples/language/greeting.cul" },
-        { "title": "Functions & closures", "path": "examples/language/closures.cul" },
-        { "title": "Classes & operators", "path": "examples/language/classes.cul" },
-        { "title": "Control flow", "path": "examples/language/flow.cul" },
-        { "title": "Pattern matching", "path": "examples/language/match.cul" },
-        { "title": "Generators", "path": "examples/language/generators.cul" },
-        { "title": "Iterators", "path": "examples/language/iterator.cul" },
-        { "title": "Strings", "path": "examples/language/string.cul" },
-        { "title": "Arrays", "path": "examples/language/array.cul" },
-        { "title": "Algebraic effects", "path": "examples/language/effects.cul" },
-        { "title": "Error handling", "path": "examples/language/error_handling.cul" }
+        { "title": "Hello", "path": "examples/basics/greeting.cul" },
+        { "title": "Functions & closures", "path": "examples/basics/closures.cul" },
+        { "title": "Classes & traits", "path": "examples/basics/classes.cul" },
+        { "title": "Control flow", "path": "examples/basics/flow.cul" },
+        { "title": "Pattern matching", "path": "examples/basics/match.cul" },
+        { "title": "Generators", "path": "examples/basics/generators.cul" },
+        { "title": "Iterators", "path": "examples/basics/iterator.cul" },
+        { "title": "Strings", "path": "examples/basics/string.cul" },
+        { "title": "Arrays", "path": "examples/basics/array.cul" },
+        { "title": "Algebraic effects", "path": "examples/basics/effects.cul" },
+        { "title": "Error handling", "path": "examples/basics/error_handling.cul" }
       ]
     },
     {
