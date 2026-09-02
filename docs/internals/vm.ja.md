@@ -1136,7 +1136,9 @@ passをtarget initの2経路の両方で切る。x86は元から走らせてい�
 実際に払っていたのはJITだけで、JITはhostのCPU向けにコンパイルする一方
 `culebra build`はCPUを指定せずgenericになりこのpassは発火しない。
 つまりAOT側の呼び出しは今何かを直すためではなく、レーンがずれないように
-するためにある。
+するためにある。切れているかどうかはIRに現れないので、
+`tools/checks/check_early_ifcvt.sh`がJITの出したobjectを読み戻して
+確かめる（§10.2）。
 
 ### 7.1 loweringの中の所有権
 
@@ -1348,7 +1350,7 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
 `misc/run_all_backends.sh`は対称性チェックの単一スクリプト版で
 あり、Windows CIジョブが使う。
 
-### 10.2 emitされたIRへのチェック
+### 10.2 loweringの出力へのチェック
 
 - `culebra --jit --emit-llvm f.cul | opt -passes=verify` — lowering
   作業の常設チェック。`run_program`も自分が構築するすべての
@@ -1364,7 +1366,12 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
   （`tools/bench/vector_loop.cul`のscalar行とVector2行を写したprobeで、
   どの辺もdoubleを運ぶphiがdoubleのphiになっているか。`i64`のphiのまま
   bitcastで読み戻されていないか — `PromoteFloatPhis`が消す形そのもので、
-  戻ってもテストは何も見ずにループが3割遅くなるだけ）、`tools/checks/check_rc_discipline.sh`（`jit.h`内の
+  戻ってもテストは何も見ずにループが3割遅くなるだけ）、
+  `tools/checks/check_early_ifcvt.sh`（同じ行の機械語を
+  `CULEBRA_JIT_CACHE`と`objdump`で読み戻し、ループに`fcsel`が無いこと
+  でAArch64のearly if-conversionが切れたままだと確かめる — IRには
+  現れないノブなので、そのcodegenがあるホストでだけ検査する）、
+  `tools/checks/check_rc_discipline.sh`（`jit.h`内の
   手書きretain/releaseサイトの数は減る一方であるべき）。
 - **assert。** 出力からは決して分からない3つの不変条件がassert
   レーン（`just test-assert`、CIの`linux-assert`。`NDEBUG`なしで

@@ -1141,6 +1141,9 @@ which is where x86 already stands. Only the JIT was paying it: it
 compiles for the host CPU, while `culebra build` names no CPU and gets
 a generic one the pass does not fire for, so the second call is there
 to keep the lanes from diverging rather than to fix anything today.
+The IR cannot show whether the option still holds, so
+`tools/checks/check_early_ifcvt.sh` reads the JIT's object back
+instead (§10.2).
 
 ### 7.1 Ownership in the lowering
 
@@ -1340,7 +1343,7 @@ folds the exit code in — stdout alone lets a segfault read as agreement.
 `misc/run_all_backends.sh` is the single-script form of the symmetry
 check, used by the Windows CI jobs.
 
-### 10.2 Checks on the emitted IR
+### 10.2 Checks on what the lowering emits
 
 - `culebra --jit --emit-llvm f.cul | opt -passes=verify` — the standing
   check for lowering work; `run_program` also verifies every module it
@@ -1356,8 +1359,13 @@ check, used by the Windows CI jobs.
   `tools/bench/vector_loop.cul`, a phi every edge feeds a double is a
   double phi and not an `i64` one read back through a bitcast — the
   shape `PromoteFloatPhis` removes, and the one whose return costs a
-  third of the loop without any test seeing it), `tools/checks/check_rc_discipline.sh` (the count of
-  hand-placed retain/release sites in `jit.h` may only shrink).
+  third of the loop without any test seeing it),
+  `tools/checks/check_early_ifcvt.sh` (the same row's machine code, read
+  back through `CULEBRA_JIT_CACHE` and `objdump`: the loop holds no
+  `fcsel`, so AArch64's early if-conversion is still off — a knob the IR
+  cannot show, checked only where that codegen exists),
+  `tools/checks/check_rc_discipline.sh` (the count of hand-placed
+  retain/release sites in `jit.h` may only shrink).
 - **Asserts.** Three invariants no output can betray ride the assert
   lane (`just test-assert`, CI's `linux-assert`), which runs the whole
   sweep with `NDEBUG` off: the resolved call's predicted chunk is the

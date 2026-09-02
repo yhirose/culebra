@@ -41,7 +41,9 @@ trap 'rm -rf "$TMP"' EXIT
 # edge, constants captured from the enclosing scope, a `let` inside an `if`
 # arm, a unary minus, and the `@value` fields of a Vector2 held in frame
 # slots. Each is a hole the scalar-floor work closed; each puts a carried
-# Float through a phi.
+# Float through a phi. check_early_ifcvt.sh keeps its own copy of the scalar
+# row rather than sharing this one, so that a row added here for this gate
+# cannot break the shape that one requires.
 cat > "$TMP/consts.cul" <<'CUL'
 let DT = 0.016
 let GX = 0.5

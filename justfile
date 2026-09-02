@@ -1037,6 +1037,13 @@ _run-tests BACKEND:
     # IR, so it runs off the binary alone.
     run_float_carry() { bash tools/checks/check_float_carry.sh "$BIN"; }
 
+    # Early if-conversion gate: JIT::tune_backend turns the AArch64 pass
+    # off, and nothing in the IR shows whether it still does — an LLVM that
+    # renamed the option would leave the lookup empty and the loop slower
+    # (tools/checks/check_early_ifcvt.sh). Reads the JIT's object via
+    # CULEBRA_JIT_CACHE + objdump; skips out loud on a non-AArch64 host.
+    run_early_ifcvt() { bash tools/checks/check_early_ifcvt.sh "$BIN"; }
+
     # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
     # creation, so neither the driver nor an AOT binary may carry it in
     # DT_NEEDED or export the forwarders (tools/checks/check_webview_dynload.sh).
@@ -1072,6 +1079,7 @@ _run-tests BACKEND:
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
+        phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
@@ -1105,6 +1113,7 @@ _run-tests BACKEND:
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
+        phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
         phase "culebra-test self"; run_culebra_test_self
@@ -1141,6 +1150,7 @@ _run-tests BACKEND:
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
+        phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
         phase "codegen backends (-O0, fast vs --vm)"; run_codegen_backends
