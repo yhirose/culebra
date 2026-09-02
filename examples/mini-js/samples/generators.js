@@ -85,3 +85,8 @@ show('lazy', (function () {
 show('generator expression', [...(function* () { yield 'x'; })()]);
 show('Array.from', Array.from(count(3), x => x * x));
 show('done after return', (function () { const c = count(1); c.next(); c.next(); return c.next(); })());
+
+let dflt_runs = 0;
+function nextTag() { dflt_runs++; return 'tag' + dflt_runs; }
+function* tagged(tag = nextTag(), n = 2) { while (n > 0) { yield tag; n--; } }
+show('default once', [[...tagged()], [...tagged('given')], dflt_runs, tagged.length]);

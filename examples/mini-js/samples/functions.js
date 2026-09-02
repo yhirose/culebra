@@ -60,3 +60,7 @@ function arguments_len(a, b) { return (a === undefined ? 0 : 1) + (b === undefin
 show('return undefined', (function () {})());
 show('typeof fn', typeof (() => 1));
 show('fn as value', [1, 2, 3].map(String));
+
+function joinAll(a, b, c, d, e, f, g) { return [this.tag, a, b, c, d, e, f, g].join('|'); }
+show('call many', joinAll.call({ tag: 'T' }, 1, 2, 3, 4, 5, 6, 7));
+show('bind many', joinAll.bind({ tag: 'B' }, 1, 2, 3, 4)(5, 6, 7));

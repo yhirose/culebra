@@ -59,3 +59,4 @@ const computed = {
 computed.dyn = 4;
 show('computed members', [computed.dyn, computed.dynM(), computed['two words'](), [...computed.dynG()]]);
 show('computed method scope', thrown(() => inner));
+show('assign many', Object.assign({ z: 0 }, { a: 1 }, null, { b: 2 }, { c: 3 }, { d: 4 }));

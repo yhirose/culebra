@@ -18,3 +18,4 @@ show('to string', [String(null), String(undefined), String(12.5), (12).toString(
 show('number strings', ['3' * '4', '3' + 4, +'3.5', -'2', +'', +' 12 ', +'1e3', +'0x10', +'abc' !== +'abc']);
 show('char loop', (function () { let r = ''; for (let i = s.length - 1; i >= 0; i--) r += s[i]; return r; })());
 show('immutable', (function () { const t = 'abc'; t[0] = 'z'; return t; })());
+show('concat many', 'a'.concat('b', 1, true, null, 'e'));

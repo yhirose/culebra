@@ -931,7 +931,7 @@ function __mkclass(name, parent, ctor, fields) {
   var c;
   if (__typeof(ctor) === 'nil') {
     c = __mkfn(has_parent
-      ? function (t, a, b, c2, d, e, f, g, h) { __apply(parent['\x01fn'], t, __rest_pack([a, b, c2, d, e, f, g, h], __argcount() - 1)); __run_fields(c, t); return undefined; }
+      ? function (t, ...args) { __apply(parent['\x01fn'], t, args); __run_fields(c, t); return undefined; }
       : function (t) { __run_fields(c, t); return undefined; }, name, false);
   } else {
     c = __mkfn(ctor, name, false);
@@ -999,18 +999,15 @@ function __uncaught_text(e0) {
   if (__is_err(e)) return 'Uncaught ' + __str(e);
   return 'Uncaught ' + __inspect(e);
 }
-// The first n of a fixed slot list: how a variadic function gathers what
-// its call actually supplied, whether the slots are a compiled function's
-// hidden trailing parameters or a builtin's own.
+// The first n of a rest parameter's hidden trailing slots: what the call
+// actually supplied. A builtin gathers with a rest parameter of its own, so
+// its ceiling is the one every call has -- the arguments __apply can pass.
 function __rest_pack(hidden, n) {
   var out = [];
   var i = 0;
   while (i < n && i < __len(hidden)) { __arraypush(out, hidden[i]); i = i + 1; }
   return out;
 }
-// A builtin's own arguments: its first parameter is the receiver, and
-// __argcount answers for the frame it is called in, so the count is taken
-// here rather than inside the gather.
 function __obj_spread(target, src) {
   if (__isnullish(src)) return target;
   var ks = __own_keys(src);
@@ -1250,18 +1247,9 @@ function __init_object(G) {
     while (i < __len(ks)) { __arraypush(out, [ks[i], __get(o, ks[i])]); i = i + 1; }
     return out;
   });
-  __def(O, 'assign', function (t, target, a, b, c) {
-    var srcs = [a, b, c];
+  __def(O, 'assign', function (t, target, ...srcs) {
     var j = 0;
-    while (j < 3) {
-      var s = srcs[j];
-      if (!__isnullish(s)) {
-        var ks = __own_keys(s);
-        var i = 0;
-        while (i < __len(ks)) { __set(target, ks[i], __get(s, ks[i])); i = i + 1; }
-      }
-      j = j + 1;
-    }
+    while (j < __len(srcs)) { __obj_spread(target, srcs[j]); j = j + 1; }
     return target;
   });
   __def(O, 'getPrototypeOf', function (t, o) {
@@ -1276,33 +1264,20 @@ function __init_object(G) {
   __def(G.Object_proto, 'hasOwnProperty', function (t, k) { return __has_own(t, k); });
   __def(G.Object_proto, 'toString', function (t) { return __str(t); });
   __ctor(G, 'Function', G.Function_proto, function (t) { throw __err('Error', 'Function constructor is not supported'); });
-  __def(G.Function_proto, 'call', function (t, thisv, a, b, c, d, e, f, g) {
-    var args = [a, b, c, d, e, f, g];
-    var n = __argcount() - 2;
-    if (n < 0) n = 0;
-    var out = [];
-    var i = 0;
-    while (i < n) { __arraypush(out, args[i]); i = i + 1; }
-    return __call(t, thisv, out);
+  __def(G.Function_proto, 'call', function (t, thisv, ...args) {
+    return __call(t, thisv, args);
   });
   __def(G.Function_proto, 'apply', function (t, thisv, arr) {
     return __call(t, thisv, __typeof(arr) === 'nil' ? [] : arr);
   });
-  __def(G.Function_proto, 'bind', function (t, thisv, a, b, c) {
-    var bound = [];
-    var n = __argcount() - 2;
-    var pre = [a, b, c];
-    var i = 0;
-    while (i < n && i < 3) { __arraypush(bound, pre[i]); i = i + 1; }
+  __def(G.Function_proto, 'bind', function (t, thisv, ...bound) {
     var target = t;
-    return __mkfn(function (t2, x, y, z, w) {
+    return __mkfn(function (t2, ...extra) {
       var args = [];
       var j = 0;
       while (j < __len(bound)) { __arraypush(args, bound[j]); j = j + 1; }
-      var extra = [x, y, z, w];
-      var m = __argcount() - 1;
       var k = 0;
-      while (k < m && k < 4) { __arraypush(args, extra[k]); k = k + 1; }
+      while (k < __len(extra)) { __arraypush(args, extra[k]); k = k + 1; }
       return __call(target, thisv, args);
     }, 'bound ' + t.name, false);
   });
@@ -1313,21 +1288,16 @@ function __init_object(G) {
 }
 
 function __init_array(G) {
-  var A = __ctor(G, 'Array', G.Array_proto, function (t, n) {
-    if (__argcount() <= 1) return [];
+  // one number is a length, anything else is the elements
+  var A = __ctor(G, 'Array', G.Array_proto, function (t, ...xs) {
+    if (__len(xs) !== 1 || __typeof(xs[0]) !== 'double') return xs;
     var out = [];
-    if (__argcount() === 2 && __typeof(n) === 'double') {
-      var i = 0;
-      while (i < n) { __arraypush(out, undefined); i = i + 1; }
-      return out;
-    }
-    __arraypush(out, n);
+    var i = 0;
+    while (i < xs[0]) { __arraypush(out, undefined); i = i + 1; }
     return out;
   });
   __def(A, 'isArray', function (t, v) { return __typeof(v) === 'array'; });
-  __def(A, 'of', function (t, a, b, c, d, e, f, g) {
-    return __rest_pack([a, b, c, d, e, f, g], __argcount() - 1);
-  });
+  __def(A, 'of', function (t, ...xs) { return xs; });
   __def(A, 'from', function (t, v, mapf) {
     var out = [];
     var it = __iter(v);
@@ -1341,8 +1311,7 @@ function __init_array(G) {
     return out;
   });
   var P = G.Array_proto;
-  __def(P, 'push', function (t, a, b, c, d, e, f, g) {
-    var xs = __rest_pack([a, b, c, d, e, f, g], __argcount() - 1);
+  __def(P, 'push', function (t, ...xs) {
     var i = 0;
     while (i < __len(xs)) { __arraypush(t, xs[i]); i = i + 1; }
     return __todouble(__len(t));
@@ -1356,11 +1325,14 @@ function __init_array(G) {
     __arraypop(t);
     return first;
   });
-  __def(P, 'unshift', function (t, v) {
-    __arraypush(t, undefined);
-    var i = __len(t) - 1;
-    while (i > 0) { t[i] = t[i - 1]; i = i - 1; }
-    t[0] = v;
+  __def(P, 'unshift', function (t, ...xs) {
+    var n = __len(xs);
+    var i = 0;
+    while (i < n) { __arraypush(t, undefined); i = i + 1; }
+    var j = __len(t) - 1;
+    while (j >= n) { t[j] = t[j - n]; j = j - 1; }
+    var k = 0;
+    while (k < n) { t[k] = xs[k]; k = k + 1; }
     return __todouble(__len(t));
   });
   __def(P, 'forEach', function (t, cb, thisArg) {
@@ -1432,11 +1404,10 @@ function __init_array(G) {
     while (i < s[1]) { __arraypush(out, t[i]); i = i + 1; }
     return out;
   });
-  __def(P, 'concat', function (t, a, b, c) {
+  __def(P, 'concat', function (t, ...srcs) {
     var out = [];
     var i = 0;
     while (i < __len(t)) { __arraypush(out, t[i]); i = i + 1; }
-    var srcs = __rest_pack([a, b, c], __argcount() - 1);
     var j = 0;
     while (j < __len(srcs)) {
       var s = srcs[j];
@@ -1465,7 +1436,7 @@ function __init_array(G) {
     }
     return t;
   });
-  __def(P, 'splice', function (t, start, count, a, b, c) {
+  __def(P, 'splice', function (t, start, count, ...ins) {
     var n = __len(t);
     var s = __toint_safe(__tonum(start));
     if (s < 0) { s = n + s; if (s < 0) s = 0; }
@@ -1479,10 +1450,8 @@ function __init_array(G) {
     while (i < s + dc) { __arraypush(removed, t[i]); i = i + 1; }
     while (i < n) { __arraypush(rest, t[i]); i = i + 1; }
     while (__len(t) > s) __arraypop(t);
-    var ins = [a, b, c];
-    var m = __argcount() - 3;
     var j = 0;
-    while (j < m && j < 3) { __arraypush(t, ins[j]); j = j + 1; }
+    while (j < __len(ins)) { __arraypush(t, ins[j]); j = j + 1; }
     var k = 0;
     while (k < __len(rest)) { __arraypush(t, rest[k]); k = k + 1; }
     return removed;
@@ -1583,7 +1552,12 @@ function __init_string(G) {
     __arraypush(out, __substr(t, from, __len(t)));
     return out;
   });
-  __def(P, 'concat', function (t, a) { return t + __str(a); });
+  __def(P, 'concat', function (t, ...xs) {
+    var out = t;
+    var i = 0;
+    while (i < __len(xs)) { out = out + __str(xs[i]); i = i + 1; }
+    return out;
+  });
   __def(P, 'toString', function (t) { return t; });
   __def(P, 'padStart', function (t, n, fill) {
     var want = __toint_safe(__tonum(n));
@@ -1715,8 +1689,7 @@ function __parse_int(s0, radix) {
 
 function __init_console(G) {
   var c = {};
-  __def(c, 'log', function (t, a, b, c2, d, e, f, g) {
-    var xs = __rest_pack([a, b, c2, d, e, f, g], __argcount() - 1);
+  __def(c, 'log', function (t, ...xs) {
     var out = '';
     var i = 0;
     while (i < __len(xs)) { if (i > 0) out = out + ' '; out = out + __log_str(xs[i]); i = i + 1; }
@@ -2341,12 +2314,8 @@ function __init_math(G) {
   });
   __def(M, 'sqrt', function (t, v) { return __pow(__tonum(v), 0.5); });
   __def(M, 'pow', function (t, a, b) { return __powop(a, b); });
-  __def(M, 'max', function (t, a, b, c, d) {
-    return __extreme(__rest_pack([a, b, c, d], __argcount() - 1), true);
-  });
-  __def(M, 'min', function (t, a, b, c, d) {
-    return __extreme(__rest_pack([a, b, c, d], __argcount() - 1), false);
-  });
+  __def(M, 'max', function (t, ...xs) { return __extreme(xs, true); });
+  __def(M, 'min', function (t, ...xs) { return __extreme(xs, false); });
   __def(M, 'sign', function (t, v) { var d = __tonum(v); if (d !== d) return d; return d > 0.0 ? 1.0 : (d < 0.0 ? -1.0 : d); });
   __def(M, 'random', function (t) { return 0.5; });
   G.Math = M;
@@ -3146,6 +3115,7 @@ fn wrap_body(f, node, g, name, is_async) {
   let w = new_func(f, name, [], nil, false)
   funcs[w]['gen_raw'] = g
   funcs[w]['is_async'] = is_async
+  # the body's defaults, for the arity the wrapper reports as `length`
   for d in funcs[g].dflts {
     funcs[w].dflts.push(d)
   }
@@ -5846,26 +5816,31 @@ fn emit_funcs(m) {
     let fi = funcs[f]
     in_prelude = fi.is_prelude
     mut ids = []
-    # defaults: a parameter that arrived undefined takes its default
-    for pi in range(fi.dflts.size()) {
-      let d = fi.dflts[pi]
-      if d != nil {
-        let slot = pi + cond {
-          fi.params.size() > fi.dflts.size() => 1,
-          _ => 0,
+    # defaults: a parameter that arrived undefined takes its default. A
+    # generator's wrapper forwards only what the call supplied, so the
+    # defaults are the body's -- the wrapper keeps a copy of the list for
+    # `length` alone, and evaluating them here would run them twice.
+    if fi.gen_raw == nil {
+      for pi in range(fi.dflts.size()) {
+        let d = fi.dflts[pi]
+        if d != nil {
+          let slot = pi + cond {
+            fi.params.size() > fi.dflts.size() => 1,
+            _ => 0,
+          }
+          let test = is_undef(
+            m,
+            m.var_ref(kind: 'local', index: slot, line: 1, col: 1),
+            1,
+            1,
+          )
+          ids.push(m.make_if(
+            cond: test,
+            then_branch: m.assign(kind: 'local', index: slot, value: emit_expr(m, d, f), line: 1, col: 1),
+            line: 1,
+            col: 1,
+          ))
         }
-        let test = is_undef(
-          m,
-          m.var_ref(kind: 'local', index: slot, line: 1, col: 1),
-          1,
-          1,
-        )
-        ids.push(m.make_if(
-          cond: test,
-          then_branch: m.assign(kind: 'local', index: slot, value: emit_expr(m, d, f), line: 1, col: 1),
-          line: 1,
-          col: 1,
-        ))
       }
     }
     # a rest parameter: pack the hidden trailing slots by the supplied count

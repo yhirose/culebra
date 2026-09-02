@@ -24,6 +24,10 @@ new Promise((res, rej) => { tick('executor'); res(1); rej(2); res(3); })
 async function add(a, b) { return a + (await b); }
 add(1, Promise.resolve(2)).then(v => tick('add ' + v));
 
+let dflt_runs = 0;
+async function defaulted(v = ++dflt_runs) { return await v; }
+defaulted().then(v => defaulted(9).then(w => tick('default once ' + [v, w, dflt_runs, defaulted.length].join(' '))));
+
 async function failing() { throw new TypeError('bad'); }
 failing().catch(e => tick('rejected async ' + e.constructor.name));
 
