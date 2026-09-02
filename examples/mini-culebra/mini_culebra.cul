@@ -77,136 +77,178 @@
 # What's out (deliberately, for now): generators, string subscripts,
 # isolates, and fn/class declarations below a function's top level. A closure may not refer to its own binding
 # (`let f = fn () { f() }` -- the cell->closure->cell cycle needs the
-# Known asymmetries with the real culebra, all
-# unreachable from the samples: an arity mismatch and a few other
-# executor-level traps surface as IrError-shaped diagnostics rather than
-# culebra's ArityError; function values never compare equal; and a line
-# beginning with a binary-operator character (`-`, `(`) continues the
-# previous expression -- the grammar here skips newlines everywhere, where
-# the real parser ends a statement at one.
+# The syntax batch adds: statement modifiers (`stmt if c` / `unless`),
+# `//` and `/* */` comments, `let mut`, typed `let`, `for k, v in`,
+# `**=` / `??=`, spread in array and object literals, object shorthand,
+# `fn` as the running function, the class members `static NAME = v`,
+# `static m()`, `get m()`, and declared fields (typed ones start at the
+# type's zero), bare `x = v` bindings, names a nested function resolves
+# to a later declaration in an enclosing scope, `a..b` / `a..=b` ranges
+# (with `by`, and open-ended for slicing), `?.`, `0o` literals, tuple
+# parameters, rest / typed patterns, `(a, b) = ...` parallel assignment,
+# and culebra's own one-line report for an uncaught error. The grammar
+# is newline-aware the way culebra's is: a line that begins with `(`,
+# `[`, or an operator starts a new statement, while a line that ends
+# with an operator, a comma, or an opening bracket continues.
 #
 # Run it:  culebra examples/mini-culebra/mini_culebra.cul prog.cul
 #          culebra examples/mini-culebra/mini_culebra.cul --ir prog.cul
 #          culebra examples/mini-culebra/mini_culebra.cul --bc prog.cul
 
 let grammar = `
-  program    <- _ stmt*                                     { no_ast_opt }
-  stmt       <- class_d / trait_d / fn_decl / decl / while / for / if / try /
-                match / cond_e / return_s / break_s / continue_s / throw_s /
-                defer_s / yield_f / yield_v / bare_block / assign / expr
-  class_d    <- deco* 'class' __ ident '{' _ method* '}' _
-  method     <- ident '(' _ fparams ')' _ ret_ann? block    { no_ast_opt }
-  trait_d    <- 'trait' __ ident '{' _ titem* '}' _
-  titem      <- ident '(' _ fparams ')' _ ret_ann? block?   { no_ast_opt }
-  ret_ann    <- '->' _ ident                                { no_ast_opt }
+  program    <- nl (stmt nl)*                               { no_ast_opt }
+  stmt       <- mod_stmt / core_stmt
+  mod_stmt   <- core_stmt mod_kw expr                        { no_ast_opt }
+  mod_kw     <- < 'if' / 'unless' > kw_end
+  core_stmt  <- class_d / trait_d / fn_decl / decl / pdecl / while / for / if /
+                try / match / cond_e / return_s / break_s / continue_s /
+                throw_s / defer_s / yield_f / yield_v / bare_block / assign /
+                expr
+  class_d    <- deco* 'class' __ ident '{' nl (cmember nl)* '}' _
+  cmember    <- static_f / static_m / getter / method / field
+  static_f   <- 'static' __ ident '=' !'=' nl expr           { no_ast_opt }
+  static_m   <- 'static' __ method                          { no_ast_opt }
+  getter     <- 'get' __ method                             { no_ast_opt }
+  method     <- ident '(' nl fparams nl ')' _ ret_ann? nl block { no_ast_opt }
+  field      <- ident ftype? finit?                          { no_ast_opt }
+  ftype      <- ':' _ tyexpr                                { no_ast_opt }
+  finit      <- '=' !'=' nl expr                            { no_ast_opt }
+  trait_d    <- 'trait' __ ident '{' nl (titem nl)* '}' _
+  titem      <- ident '(' nl fparams nl ')' _ ret_ann? (nl block)? { no_ast_opt }
+  ret_ann    <- '->' _ tyexpr                               { no_ast_opt }
+  tyexpr     <- tyatom tyor* ('?' _)?
+  tyor       <- '|' _ tyatom                                { no_ast_opt }
+  tyatom     <- fn_ty / ident
+  fn_ty      <- 'fn' _ '(' nl (tyexpr (nl ',' nl tyexpr)*)? nl ')' _ ('->' _ tyexpr)? { no_ast_opt }
 
-  fn_decl    <- deco* 'fn' __ ident '(' _ fparams ')' _ ret_ann? block
-  deco       <- '@' ident ('(' _ args ')' _)? _             { no_ast_opt }
-  fparams    <- (fparam (',' _ fparam)*)?                   { no_ast_opt }
-  fparam     <- rest_p / tydef_p / typed_p / def_p / ident
+  fn_decl    <- deco* 'fn' __ ident '(' nl fparams nl ')' _ ret_ann? nl block
+  deco       <- '@' ident ('(' nl args nl ')' _)? nl        { no_ast_opt }
+  fparams    <- (fparam (nl ',' nl fparam)*)?               { no_ast_opt }
+  fparam     <- rest_p / tydef_p / typed_p / def_p / dparam / ident
   rest_p     <- '*' ident                                   { no_ast_opt }
-  tydef_p    <- ident ':' _ ident '=' !'=' _ expr           { no_ast_opt }
-  typed_p    <- ident ':' _ ident                           { no_ast_opt }
-  def_p      <- ident '=' !'=' _ expr                       { no_ast_opt }
-  params     <- (ident (',' _ ident)*)?                     { no_ast_opt }
-  decl       <- decl_kw decl_pat '=' !'=' _ expr
-  decl_pat   <- tup_pat / arr_pat / ident
-  tup_pat    <- '(' _ ident (',' _ ident)+ ')' _            { no_ast_opt }
-  arr_pat    <- '[' _ ident (',' _ ident)* ']' _            { no_ast_opt }
-  decl_kw    <- < 'let' / 'mut' > __
-  while      <- 'while' __ expr block
-  for        <- 'for' __ for_pat 'in' __ expr block
-  for_pat    <- tup_pat / ident
-  if         <- 'if' __ expr block ('else' __ (if / block))?
-  try        <- 'try' _ block 'catch' __ ident block
+  tydef_p    <- ident ':' _ tyexpr '=' !'=' nl expr         { no_ast_opt }
+  typed_p    <- ident ':' _ tyexpr                          { no_ast_opt }
+  dparam     <- tup_pat                                     { no_ast_opt }
+  def_p      <- ident '=' !'=' nl expr                      { no_ast_opt }
+  params     <- (lparam (nl ',' nl lparam)*)?               { no_ast_opt }
+  lparam     <- dparam / ident
+  decl       <- decl_kw decl_pat '=' !'=' nl expr
+  pdecl      <- decl_kw pattern '=' !'=' nl expr             { no_ast_opt }
+  decl_pat   <- typed_pat / tup_pat / arr_pat / ident
+  typed_pat  <- ident ':' _ tyexpr                          { no_ast_opt }
+  tup_pat    <- '(' nl ident (nl ',' nl ident)+ nl ')' _    { no_ast_opt }
+  bare_tup   <- ident (',' _ ident)+                        { no_ast_opt }
+  arr_pat    <- '[' nl ident (nl ',' nl ident)* nl ']' _    { no_ast_opt }
+  decl_kw    <- < 'let' __ 'mut' ![a-zA-Z0-9_] / 'let' / 'mut' > __
+  while      <- 'while' __ expr nl block
+  for        <- 'for' __ for_pat 'in' __ expr nl block
+  for_pat    <- tup_pat / arr_pat / bare_tup / ident
+  if         <- 'if' __ expr nl block (nl 'else' __ (if / block))?
+  try        <- 'try' _ nl block nl 'catch' __ ident nl block
   return_s   <- 'return' kw_end (!stmt_kw expr)?            { no_ast_opt }
   break_s    <- 'break' kw_end                              { no_ast_opt }
   continue_s <- 'continue' kw_end                           { no_ast_opt }
   throw_s    <- 'throw' __ expr                             { no_ast_opt }
-  defer_s    <- 'defer' _ block                             { no_ast_opt }
+  defer_s    <- 'defer' _ nl block                          { no_ast_opt }
   yield_f    <- 'yield' kw_end 'from' kw_end expr           { no_ast_opt }
   yield_v    <- 'yield' kw_end expr                         { no_ast_opt }
   bare_block <- block                                       { no_ast_opt }
-  assign     <- postfix assign_op _ expr
-  assign_op  <- < '+=' / '-=' / '*=' / '/=' / '%=' / '=' !'=' >
-  block      <- '{' _ stmt* '}' _                           { no_ast_opt }
+  assign     <- postfix assign_op nl expr
+  assign_op  <- < '**=' / '??=' / '+=' / '-=' / '*=' / '/=' / '%=' / '=' !'=' >
+  block      <- '{' nl (stmt nl)* '}' _                     { no_ast_opt }
   stmt_kw    <- ('let' / 'mut' / 'while' / 'return' / 'break' / 'continue' /
                  'throw' / 'defer') ![a-zA-Z0-9_]
 
   expr       <- ternary
-  ternary    <- nilco ('?' !'?' _ expr ':' _ expr)?
+  ternary    <- rangee (nl '?' !'?' nl expr nl ':' nl expr)?
+  rangee     <- range_lit / nilco
+  range_lit  <- nilco range_op nilco? step?                 { no_ast_opt }
+  step       <- 'by' __ nilco                               { no_ast_opt }
+  range_op   <- < '..=' / '..' > _
   nilco      <- lor (nilco_op lor)*
-  nilco_op   <- < '??' > _
-  match      <- 'match' __ expr '{' _ arm (',' _ arm)* (',' _)? '}' _
-  arm        <- pattern guard? '=>' _ arm_body              { no_ast_opt }
+  nilco_op   <- < '??' > nl
+  match      <- 'match' __ expr nl '{' nl arm (nl ',' nl arm)* (nl ',')? nl '}' _
+  arm        <- pattern guard? '=>' nl arm_body             { no_ast_opt }
   guard      <- 'if' __ expr                                { no_ast_opt }
   arm_body   <- block / expr
-  cond_e     <- 'cond' _ '{' _ carm (',' _ carm)* (',' _)? '}' _
-  carm       <- (wild_p / expr) '=>' _ arm_body             { no_ast_opt }
+  cond_e     <- 'cond' _ '{' nl carm (nl ',' nl carm)* (nl ',')? nl '}' _
+  carm       <- (wild_p / expr) '=>' nl arm_body            { no_ast_opt }
   pattern    <- nil_p / true_p / false_p / float_p / num_p / str_p /
-                obj_p / arr_p / tup_p / wild_p / bind_p
+                obj_p / arr_p / tup_p / wild_p / typed_pt / bind_p
+  typed_pt   <- ident ':' _ ident                           { no_ast_opt }
+  rest_pt    <- '...' ident                                 { no_ast_opt }
+  apat       <- rest_pt / pattern
   nil_p      <- 'nil' kw_end                                { no_ast_opt }
   true_p     <- 'true' kw_end                               { no_ast_opt }
   false_p    <- 'false' kw_end                              { no_ast_opt }
   float_p    <- float                                       { no_ast_opt }
   num_p      <- number                                      { no_ast_opt }
   str_p      <- str_sq                                      { no_ast_opt }
-  obj_p      <- '{' _ (opat (',' _ opat)*)? '}' _           { no_ast_opt }
-  opat       <- ident (':' _ pattern)?                      { no_ast_opt }
-  arr_p      <- '[' _ (pattern (',' _ pattern)*)? ']' _     { no_ast_opt }
-  tup_p      <- '(' _ pattern (',' _ pattern)+ ')' _        { no_ast_opt }
+  obj_p      <- '{' nl (opat (nl ',' nl opat)*)? nl '}' _   { no_ast_opt }
+  opat       <- pname (':' nl pattern)?                     { no_ast_opt }
+  arr_p      <- '[' nl (apat (nl ',' nl apat)*)? nl ']' _   { no_ast_opt }
+  tup_p      <- '(' nl pattern (nl ',' nl pattern)+ nl ')' _ { no_ast_opt }
   wild_p     <- '_' ![a-zA-Z0-9_] _                         { no_ast_opt }
   bind_p     <- ident                                       { no_ast_opt }
   lor        <- land (lor_op land)*
-  lor_op     <- < '||' > _
+  lor_op     <- < '||' > nl
   land       <- cmp (land_op cmp)*
-  land_op    <- < '&&' > _
+  land_op    <- < '&&' > nl
   cmp        <- bor (cmp_op bor)*
-  cmp_op     <- < '==' / '!=' / '<=' / '<' !'<' / '>=' / '>' !'>' > _
+  cmp_op     <- < '==' / '!=' / '<=' / '<' !'<' / '>=' / '>' !'>' > nl
   bor        <- bxor (bor_op bxor)*
-  bor_op     <- < '|' > ![|=] _
+  bor_op     <- < '|' > ![|=] nl
   bxor       <- band (bxor_op band)*
-  bxor_op    <- < '^' > _
+  bxor_op    <- < '^' > nl
   band       <- shift (band_op shift)*
-  band_op    <- < '&' > ![&=] _
+  band_op    <- < '&' > ![&=] nl
   shift      <- add (shift_op add)*
-  shift_op   <- < '<<' / '>>' > _
+  shift_op   <- < '<<' / '>>' > nl
   add        <- mul (add_op mul)*
-  add_op     <- < [+-] > ![=] _
+  add_op     <- < [+-] > ![=] nl
   mul        <- unary (mul_op unary)*
-  mul_op     <- < [*/%] > !'*' ![=] _
+  mul_op     <- < [*/%] > !'*' ![=] nl
   unary      <- neg / lnot / bnot / power
   neg        <- '-' _ unary                                 { no_ast_opt }
   lnot       <- '!' !'=' _ unary                            { no_ast_opt }
   bnot       <- '~' _ unary                                 { no_ast_opt }
   power      <- postfix (pow_op unary)?
-  pow_op     <- < '**' > _
-  postfix    <- primary (mcall / pcall / prop / subscript)*
-  pcall      <- '(' _ args ')' _                            { no_ast_opt }
-  mcall      <- '.' ident '(' _ args ')' _                  { no_ast_opt }
-  prop       <- '.' ident                                   { no_ast_opt }
-  subscript  <- '[' _ expr ']' _                            { no_ast_opt }
+  pow_op     <- < '**' > nl
+  postfix    <- primary (nmcall / nprop / mcall / pcall / prop / subscript)*
+  nmcall     <- nl '?.' pname '(' nl args nl ')' _          { no_ast_opt }
+  nprop      <- nl '?.' pname                               { no_ast_opt }
+  pcall      <- '(' nl args nl ')' _                        { no_ast_opt }
+  mcall      <- nl '.' pname '(' nl args nl ')' _           { no_ast_opt }
+  prop       <- nl '.' pname                                { no_ast_opt }
+  subscript  <- '[' nl expr nl ']' _                        { no_ast_opt }
   primary    <- float / number / str_dq / str_sq / true_l / false_l /
                 nil_l / closure / lambda / call / if / try / match / cond_e /
-                ident / array_lit / object_lit / set_lit / tuple / paren
-  array_lit  <- '[' _ (expr (',' _ expr)* (',' _)?)? ']' _  { no_ast_opt }
-  object_lit <- '{' _ (obj_pair (',' _ obj_pair)* (',' _)?)? '}' _ { no_ast_opt }
-  obj_pair   <- mut_pair / plain_pair
-  mut_pair   <- 'mut' __ okey ':' _ expr                    { no_ast_opt }
-  plain_pair <- okey ':' _ expr                             { no_ast_opt }
-  okey       <- ident / str_sq / nskey
+                ident / array_lit / object_lit / shorthand / set_lit /
+                tuple / fnself / paren
+  fnself     <- 'fn' kw_end                                 { no_ast_opt }
+  array_lit  <- '[' nl (aitem (nl ',' nl aitem)* (nl ',')?)? nl ']' _ { no_ast_opt }
+  aitem      <- spread / expr
+  spread     <- '...' _ expr                                { no_ast_opt }
+  shorthand  <- '{' nl ident (nl ',' nl ident)* (nl ',')? nl '}' _ { no_ast_opt }
+  object_lit <- '{' nl (obj_pair (nl ',' nl obj_pair)* (nl ',')?)? nl '}' _ { no_ast_opt }
+  obj_pair   <- mut_pair / plain_pair / ospread
+  ospread    <- '...' _ expr                                { no_ast_opt }
+  mut_pair   <- 'mut' __ okey ':' nl expr                   { no_ast_opt }
+  plain_pair <- okey ':' nl expr                            { no_ast_opt }
+  okey       <- pname / str_sq / dq_key / nskey
+  dq_key     <- '"' < [^"{\\]* > '"' _
   nskey      <- float / number / true_l / false_l / nil_l / tuple
-  set_lit    <- '{' _ expr (',' _ expr)+ (',' _)? '}' _ /
-                '{' _ expr ',' _ '}' _                    { no_ast_opt }
-  tuple      <- '(' _ expr (',' _ expr)+ (',' _)? ')' _ /
-                '(' _ expr ',' _ ')' _                      { no_ast_opt }
-  lambda     <- '|' _ params '|' _ expr                     { no_ast_opt }
-  paren      <- '(' _ expr ')' _
-  closure    <- 'fn' _ '(' _ fparams ')' _ ret_ann? block
-  call       <- ident '(' _ args ')' _
-  args       <- (argx (',' _ argx)*)?                       { no_ast_opt }
+  set_lit    <- '{' nl expr (nl ',' nl expr)+ (nl ',')? nl '}' _ /
+                '{' nl expr nl ',' nl '}' _                 { no_ast_opt }
+  tuple      <- '(' nl expr (nl ',' nl expr)+ (nl ',')? nl ')' _ /
+                '(' nl expr nl ',' nl ')' _                 { no_ast_opt }
+  lambda     <- '|' _ params '|' nl expr                    { no_ast_opt }
+  paren      <- '(' nl expr nl ')' _
+  closure    <- 'fn' _ '(' nl fparams nl ')' _ ret_ann? nl block
+  call       <- ident '(' nl args nl ')' _
+  args       <- (argx (nl ',' nl argx)* (nl ',')?)?         { no_ast_opt }
   argx       <- kwarg / expr
-  kwarg      <- ident ':' !':' _ expr                       { no_ast_opt }
+  kwarg      <- ident ':' !':' nl expr                      { no_ast_opt }
 
   true_l     <- 'true' kw_end                               { no_ast_opt }
   false_l    <- 'false' kw_end                              { no_ast_opt }
@@ -214,22 +256,24 @@ let grammar = `
   str_sq     <- "'" < [^']* > "'" _
   str_dq     <- '"' dq_part* '"' _                          { no_ast_opt }
   dq_part    <- interp / dq_chars
-  interp     <- '{' _ expr '}'                              { no_ast_opt }
+  interp     <- '{' nl expr nl '}'                          { no_ast_opt }
   dq_chars   <- < ('\\' . / [^"{\\])+ >
 
   keyword    <- ('let' / 'mut' / 'fn' / 'if' / 'else' / 'while' / 'for' /
                  'in' / 'try' / 'catch' / 'return' / 'break' / 'continue' /
                  'throw' / 'defer' / 'true' / 'false' / 'nil' / 'match' /
-                 'cond' / 'class' / 'trait') ![a-zA-Z0-9_]
+                 'class' / 'trait') ![a-zA-Z0-9_]
   ident      <- !keyword < [a-zA-Z_] [a-zA-Z0-9_]* > _
+  pname      <- < [a-zA-Z_] [a-zA-Z0-9_]* > _
   float      <- < [0-9]+ ('.' [0-9]+ ([eE] [+-]? [0-9]+)? /
                           [eE] [+-]? [0-9]+) > _
-  number     <- < '0x' [0-9a-fA-F]+ / '0b' [01]+ / [0-9]+ > _
+  number     <- < '0x' [0-9a-fA-F]+ / '0b' [01]+ / '0o' [0-7]+ / [0-9]+ > _
   ~kw_end    <- ![a-zA-Z0-9_] _
 
-  ~_         <- (comment / [ \t\r\n] / ';')*
+  ~_         <- (comment / [ \t])*
   ~__        <- ![a-zA-Z0-9_] _
-  comment    <- '#' [^\r\n]*
+  ~nl        <- (comment / [ \t\r\n] / ';')*
+  comment    <- '#' [^\r\n]* / '//' [^\r\n]* / '/*' (!'*/' .)* '*/'
 `
 
 fn fail(node, msg) {
@@ -423,6 +467,7 @@ fn __both_int(a, b) {
 }
 
 fn __div(a, b, line, col) {
+  if __inst_dunder(a, '__div__') { return __dunder2(a, '__div__', b, line, col) }
   __arith_ok('/', a, b, line, col)
   if __zero(b) { __raise('ZeroDivisionError', 'divide by 0 error', line, col) }
   if __both_int(a, b) {
@@ -434,6 +479,7 @@ fn __div(a, b, line, col) {
 }
 
 fn __mod(a, b, line, col) {
+  if __inst_dunder(a, '__mod__') { return __dunder2(a, '__mod__', b, line, col) }
   __arith_ok('%', a, b, line, col)
   if __zero(b) { __raise('ZeroDivisionError', 'divide by 0 error', line, col) }
   if __both_int(a, b) {
@@ -458,6 +504,7 @@ fn __ipow(base, exp) {
 }
 
 fn __pow(a, b, line, col) {
+  if __inst_dunder(a, '__pow__') { return __dunder2(a, '__pow__', b, line, col) }
   __arith_ok('**', a, b, line, col)
   if __both_int(a, b) {
     if b >= 0 { return __ipow(a, b) }
@@ -531,6 +578,11 @@ fn __getprop(v, name, line, col) {
     if __objecthas(v, name) { return __bind(v[name], v) }
     let cls = v['class']
     let ms = cls['methods']
+    if __objecthas(cls, 'getters') {
+      if __objecthas(cls['getters'], name) {
+        return __call_self(ms[name], v, [], line, col)
+      }
+    }
     if __objecthas(ms, name) {
       return __bind(__mk_selfc(ms[name], cls['arities'][name]), v)
     }
@@ -568,11 +620,23 @@ fn __construct(cls, args, line, col) {
   }
   mut inst = {}
   inst['class'] = cls
+  if __objecthas(cls, 'fields') {
+    let fs = cls['fields']
+    mut i = 0
+    while i < __len(fs) {
+      let init = fs[i][1]
+      if __typeof(init) == 'nil' { inst[fs[i][0]] = nil } else {
+        inst[fs[i][0]] = init()
+      }
+      i = i + 1
+    }
+  }
   # the VM's drop contract: a "\zd" prefix cannot be spelled by programs,
   # and the executor calls the stored method with the instance when its
   # refcount hits zero
   if __objecthas(cls['methods'], 'drop') {
-    inst["\zdrop"] = cls['methods']['drop']
+    let dm = cls['methods']['drop']
+    inst["\zdrop"] = fn (o) { __drop_once(o, dm) }
   }
   let ctor = cls['new']
   __call_self(ctor, inst, args, line, col)
@@ -608,6 +672,13 @@ fn __dunder2(v, name, o, line, col) {
 
 fn __callee_check(v, line, col) {
   if __is_marker(v) { return __as_fn(v, line, col) }
+  if __is_instance(v) {
+    let cls = v['class']
+    if __objecthas(cls['methods'], '__call__') {
+      return __bindn(cls['methods']['__call__'], v, cls['arities']['__call__'],
+                     line, col)
+    }
+  }
   if __typeof(v) != 'function' {
     __raise('TypeError', 'type error: expected Function, got ' +
             __type_name(v), line, col)
@@ -921,9 +992,30 @@ fn __setindex(recv, key, val, is_prop, line, col) {
           __type_name(recv), line, col)
 }
 
+fn __is_range(v) {
+  if __typeof(v) != 'object' { return false }
+  __objecthas(v, "\zr")
+}
+
+fn __range_bounds(r, n) {
+  let ab = r["\zr"]
+  mut lo = ab[0]
+  mut hi = ab[1]
+  if lo < 0 { lo = lo + n }
+  if hi < 0 { hi = hi + n }
+  if lo < 0 { lo = 0 }
+  if hi > n { hi = n }
+  if hi < lo { hi = lo }
+  [lo, hi]
+}
+
 fn __getindex(v, k, line, col) {
   let t = __typeof(v)
   if t == 'array' {
+    if __is_range(k) {
+      let b = __range_bounds(k, __len(v))
+      return __slice_arr(v, b[0], b[1])
+    }
     if __typeof(k) != 'int' {
       __raise('TypeError', 'type error: expected Long, got ' +
               __type_name(k), line, col)
@@ -962,6 +1054,12 @@ fn __getindex(v, k, line, col) {
       __raise('KeyError', 'key not present', line, col)
     }
     return v[pk]
+  }
+  if t == 'string' {
+    if __is_range(k) {
+      let b = __range_bounds(k, __len(v))
+      return __str_slice(v, b[0], b[1])
+    }
   }
   __raise('TypeError', 'type error: expected Object, Array, or Tensor, got ' +
           __type_name(v), line, col)
@@ -1155,6 +1253,13 @@ fn __call_n(f0, args, line, col) {
 
 fn __check_fn(v, line, col) {
   if __is_marker(v) { return __as_fn(v, line, col) }
+  if __is_instance(v) {
+    let cls = v['class']
+    if __objecthas(cls['methods'], '__call__') {
+      return __bindn(cls['methods']['__call__'], v, cls['arities']['__call__'],
+                     line, col)
+    }
+  }
   if __typeof(v) != 'function' {
     __raise('TypeError', 'type error: expected Function, got ' +
             __type_name(v), line, col)
@@ -1203,6 +1308,19 @@ fn __is_space(c) {
 
 fn __method(recv, name, args, line, col) {
   let t = __typeof(recv)
+  # the global built-ins double as methods on anything that has no own
+  # method of the name
+  mut own = false
+  if __is_instance(recv) {
+    if __objecthas(recv['class']['methods'], name) { own = true }
+  }
+  if !own {
+    if name == 'to_string' { return __to_string(recv, line, col) }
+    if name == 'inspect' { return __inspect(recv, line, col) }
+    if name == 'type_of' { return __type_of(recv, line, col) }
+    if name == 'to_long' { return __to_long(recv, line, col) }
+    if name == 'to_float' { return __to_float(recv, line, col) }
+  }
   if t == 'array' { return __array_method(recv, name, args, line, col) }
   if t == 'string' { return __string_method(recv, name, args, line, col) }
   if t == 'object' {
@@ -1211,6 +1329,10 @@ fn __method(recv, name, args, line, col) {
     if __is_instance(recv) {
       let ms = recv['class']['methods']
       if __objecthas(ms, name) {
+        if name == 'drop' {
+          __drop_once(recv, ms[name])
+          return nil
+        }
         return __call_self(ms[name], recv, args, line, col)
       }
       if __objecthas(recv, name) {
@@ -1229,6 +1351,12 @@ fn __method(recv, name, args, line, col) {
     if __is_class(recv) {
       if name == 'new' {
         return __construct(recv, args, line, col)
+      }
+      if __objecthas(recv, name) {
+        # a static method (or a callable static field)
+        if __is_fn(recv[name]) {
+          return __call_n(__check_fn(recv[name], line, col), args, line, col)
+        }
       }
       __raise('TypeError', 'type error: expected Function, got Nil',
               line, col)
@@ -2123,10 +2251,20 @@ fn __str_iter(s) {
 }
 
 fn __entries_iter(o) {
+  # a snapshot of the keys; one removed before its turn is skipped, and
+  # each value is read live at its step
   let vis = __visible_keys(o)
   mut j = 0
-  __mk_iter(fn () { j < __len(vis) },
+  fn settle() {
+    while j < __len(vis) && !__objecthas(o, vis[j]) { j = j + 1 }
+    nil
+  }
+  __mk_iter(fn () {
+              settle()
+              j < __len(vis)
+            },
             fn () {
+              settle()
               if j >= __len(vis) { return nil }
               let k = vis[j]
               j = j + 1
@@ -3736,6 +3874,193 @@ fn __string_method2(s, name, args, line, col) {
   "\znomethod"
 }
 
+
+fn __slice_arr(items, lo, hi) {
+  mut out = []
+  mut i = lo
+  while i < hi {
+    __arraypush(out, items[i])
+    i = i + 1
+  }
+  out
+}
+
+fn __spread_items(v, line, col) {
+  let t = __typeof(v)
+  if t == 'array' { return __copy_arr(v) }
+  if t == 'object' {
+    if __is_tuple(v) { return __copy_arr(__titems(v)) }
+    if __is_set(v) { return __set_items(v) }
+  }
+  let it = __iter(v, line, col)
+  mut out = []
+  while it.has_next() { __arraypush(out, it.next()) }
+  out
+}
+
+# name: Type in a pattern: a scalar type name, a class, or a trait.
+fn __pat_type(v, tname) {
+  let t = __typeof(v)
+  if tname == 'Long' { return t == 'int' }
+  if tname == 'Float' { return t == 'double' }
+  if tname == 'String' { return t == 'string' }
+  if tname == 'Bool' { return t == 'bool' }
+  if tname == 'Nil' { return t == 'nil' }
+  if tname == 'Array' { return t == 'array' }
+  if tname == 'Function' { return __is_fn(v) }
+  if tname == 'Tuple' { return __is_tuple(v) }
+  if tname == 'Set' { return __is_set(v) }
+  if tname == 'Object' { return t == 'object' }
+  if !__is_instance(v) { return false }
+  let cls = v['class']
+  if cls['name'] == tname { return true }
+  if __objecthas(cls, 'conf') {
+    if __objecthas(cls['conf'], tname) { return true }
+  }
+  false
+}
+
+
+fn __range_iter3(a, b, step) {
+  mut i = a
+  __mk_iter(fn () {
+              if step > 0 { return i < b }
+              i > b
+            },
+            fn () {
+              let v = i
+              i = i + step
+              v
+            })
+}
+
+# a..b / a..=b / a.. (open, for slicing) / by step; the bounds ride along
+# under "\zr" for the index forms
+fn __mk_range(a, b, incl, step, line, col) {
+  if __typeof(a) != 'int' {
+    __raise('TypeError', 'type error: expected Long, got ' + __type_name(a),
+            line, col)
+  }
+  mut st = 1
+  if __typeof(step) != 'nil' { st = step }
+  if st == 0 { __raise('ValueError', 'range step must not be zero', line, col) }
+  mut hi = b
+  if __typeof(b) == 'nil' {
+    hi = 9223372036854775807
+  } else {
+    if __typeof(b) != 'int' {
+      __raise('TypeError', 'type error: expected Long, got ' + __type_name(b),
+              line, col)
+    }
+    if incl == 1 {
+      if st > 0 { hi = b + 1 } else { hi = b - 1 }
+    }
+  }
+  let base = __range_iter3(a, hi, st)
+  mut me = nil
+  let r = {iter: fn () { __range_iter3(a, hi, st) },
+           has_next: base['has_next'], next: base['next']}
+  r["\zr"] = [a, hi]
+  r
+}
+
+# What escapes main: culebra's own one-line report, then a marker throw
+# the driver turns into the exit status.
+fn __report_uncaught(e) {
+  if __typeof(e) == 'object' {
+    if __objecthas(e, 'message') && __objecthas(e, 'line') && __objecthas(e, 'col') {
+      mut head = ''
+      if __objecthas(e, 'kind') {
+        if __typeof(e['kind']) == 'string' { head = e['kind'] + ': ' }
+      }
+      println(head + e['message'] + ' at ' + __tostr(e['line']) + ':' +
+              __tostr(e['col']) + '.')
+      throw "\zexit"
+    }
+  }
+  println('uncaught: ' + __display(e) + '.')
+  throw "\zexit"
+}
+
+# Built-in functions carried as values.
+fn __fnval_iota() {
+  fn (a, b = nil) {
+    if __typeof(b) == 'nil' { return __iota1(a, 0, 0) }
+    __iota2(a, b, 0, 0)
+  }
+}
+fn __fnval_range() {
+  fn (a, b = nil) {
+    if __typeof(b) == 'nil' { return __range1(a, 0, 0) }
+    __range2(a, b, 0, 0)
+  }
+}
+fn __fnval_inspect() { fn (v) { __inspect(v, 0, 0) } }
+fn __fnval_type_of() { fn (v) { __type_of(v, 0, 0) } }
+fn __fnval_to_string() { fn (v) { __to_string(v, 0, 0) } }
+fn __fnval_to_long() { fn (v) { __to_long(v, 0, 0) } }
+fn __fnval_to_float() { fn (v) { __to_float(v, 0, 0) } }
+fn __fnval_assert_eq() { fn (a, b) { __assert_eq(a, b, 0, 0) } }
+fn __fnval_assert_true() { fn (v) { __assert_true(v, 0, 0) } }
+fn __fnval_assert_false() { fn (v) { __assert_false(v, 0, 0) } }
+fn __fnval_println() { fn (v) { println(v) } }
+fn __fnval_print() { fn (v) { print(v) } }
+
+
+fn __drop_once(o, dm) {
+  if __objecthas(o, "\zdd") { return nil }
+  o["\zdd"] = true
+  __call_self(dm, o, [], 0, 0)
+  nil
+}
+
+fn __olit_set(o, k, v, is_mut) {
+  o[k] = v
+  if is_mut == 1 { __olit_mut(o, [k]) }
+  o
+}
+
+fn __obj_spread(o, src, line, col) {
+  if __typeof(src) != 'object' {
+    __raise('TypeError', 'type error: expected Object, got ' + __type_name(src),
+            line, col)
+  }
+  let ks = __visible_keys(src)
+  mut i = 0
+  while i < __len(ks) {
+    let k = ks[i]
+    o[k] = src[k]
+    __olit_mut(o, [k])
+    if __is_nsk(k) { __record_key(o, k, __key_val(src, k)) }
+    i = i + 1
+  }
+  o
+}
+
+fn __assert_throws(kind, f, line, col) {
+  mut threw = false
+  mut got = nil
+  try {
+    f()
+  } catch e {
+    threw = true
+    got = e
+  }
+  if !threw {
+    __raise('AssertionError', "assert_throws('" + kind + "', fn): expected throw but fn returned normally",
+            line, col)
+  }
+  mut gk = ''
+  if __typeof(got) == 'object' {
+    if __objecthas(got, 'kind') { gk = __display(got['kind']) }
+  }
+  if gk != kind {
+    __raise('AssertionError', "assert_throws: expected kind '" + kind + "' but got '" + gk + "'",
+            line, col)
+  }
+  nil
+}
+
 `
 
 # --- Function records and scopes ---------------------------------------------
@@ -3770,6 +4095,11 @@ mut self_closure = {}
 mut self_slot = {}
 mut closure_funcs = {}
 mut fn_pos = {}
+mut own_binding = {}   # letrec closure func -> the variable holding it
+mut predeclared = {}   # "f/scope/name" slots taken by a forward reference
+mut bare_init = {}     # "f/slot" bare bindings still awaiting their first write
+mut uncaught_slot = 0  # main's local for the value an uncaught throw carries
+mut pat_mut = false    # whether a `let mut <pattern>` is being scanned
 mut in_prelude = false
 mut scope_stack = []    # per func: [{map: {name: (slot, is_mut)}}...]
 mut loop_depth = {}     # func -> depth (scan-time)
@@ -3814,6 +4144,7 @@ let allbytes_str = String.from_bytes(range(256).collect())
 # end, so the raw frame must stay suspended -- pending defers intact --
 # until a genreturn (or never). The wrapper treats this value as "done".
 let gen_end_marker = String.from_code_point(1) + 'gend'
+let exit_marker = String.from_code_point(1) + 'exit'
 let class_marker = String.from_code_point(1) + 'k'
 
 let intrinsics = {
@@ -3833,13 +4164,16 @@ let builtins = {
   to_string: ('__to_string', 1), to_long: ('__to_long', 1),
   to_float: ('__to_float', 1), iota: nil, range: nil,
   assert_eq: ('__assert_eq', 2), assert_true: ('__assert_true', 1),
+  assert_throws: ('__assert_throws', 2),
   assert_false: ('__assert_false', 1),
 }
 
 fn new_func(parent, name, stmts, body_key) {
   let f = funcs.size()
   funcs.push({parent: parent, name: name, params: [], pspecs: [], named: {},
-              stmts: stmts, body_key: body_key, is_prelude: in_prelude})
+              stmts: stmts, body_key: body_key, is_prelude: in_prelude,
+              is_named: name != 'main' && !name.contains('.') &&
+                        !name.contains('@')})
   free.push({})
   calls.push([])
   capture_index.push({})
@@ -3852,23 +4186,120 @@ fn new_func(parent, name, stmts, body_key) {
 }
 
 # A parameter node in any of its five shapes, normalized.
+# A dispatch type name; a function type or a union has none.
+fn ty_name(ty) {
+  cond { ty.name == 'ident' => ty.token, _ => nil }
+}
+
 fn param_record(node) {
   match node {
     {name: 'rest_p', nodes: [id]} =>
       {pname: id.token, ty: nil, dflt: nil, rest: true, id: id},
     {name: 'tydef_p', nodes: [id, ty, dflt]} =>
-      {pname: id.token, ty: ty.token, dflt: dflt, rest: false, id: id},
+      {pname: id.token, ty: ty_name(ty), dflt: dflt, rest: false, id: id},
     {name: 'typed_p', nodes: [id, ty]} =>
-      {pname: id.token, ty: ty.token, dflt: nil, rest: false, id: id},
+      {pname: id.token, ty: ty_name(ty), dflt: nil, rest: false, id: id},
     {name: 'def_p', nodes: [id, dflt]} =>
       {pname: id.token, ty: nil, dflt: dflt, rest: false, id: id},
+    {name: 'dparam', nodes: [tp]} =>
+      {pname: "\x01d{tp.line}:{tp.column}", ty: nil, dflt: nil, rest: false,
+       id: {name: 'ident', token: "\x01d{tp.line}:{tp.column}", line: tp.line,
+            column: tp.column + 700000},
+       destr: tp},
     _ => {pname: node.token, ty: nil, dflt: nil, rest: false, id: node},
   }
+}
+
+# Whether a statement declares `name`; the declaring node and mutability.
+fn decl_of(st, name) {
+  if st.name == 'decl' {
+    let [kw, pat, _] = st.nodes
+    if pat.name == 'ident' {
+      if pat.token == name { return {is_mut: is_mut_kw(kw.token), id: pat} }
+      return nil
+    }
+    for id in pat.nodes {
+      if id.token == name { return {is_mut: is_mut_kw(kw.token), id: id} }
+    }
+    return nil
+  }
+  if st.name == 'pdecl' {
+    let [kw, pat, _] = st.nodes
+    let id = pat_binder(pat, name)
+    if id != nil { return {is_mut: is_mut_kw(kw.token), id: id} }
+  }
+  nil
+}
+
+fn pat_binder(pat, name) {
+  if pat.name == 'bind_p' || pat.name == 'typed_pt' || pat.name == 'rest_pt' {
+    if pat.nodes[0].token == name { return pat.nodes[0] }
+    return nil
+  }
+  if pat.name == 'obj_p' {
+    for op in pat.nodes {
+      cond {
+        op.nodes.size() == 2 => {
+          let r = pat_binder(op.nodes[1], name)
+          if r != nil { return r }
+        },
+        op.nodes[0].token == name => { return op.nodes[0] },
+        _ => nil,
+      }
+    }
+    return nil
+  }
+  if pat.name == 'arr_p' || pat.name == 'tup_p' {
+    for sp in pat.nodes {
+      let r = pat_binder(sp, name)
+      if r != nil { return r }
+    }
+  }
+  nil
+}
+
+# A free name in function g that an enclosing function declares later in
+# a scope still being walked: declare it there now, and let the eventual
+# `let` reuse the slot.
+fn forward_declare(g, name) {
+  mut h = funcs[g].parent
+  while h != nil {
+    let scopes = scope_stack[h]
+    mut i = scopes.size() - 1
+    while i >= 0 {
+      let cur = scopes[i].cur
+      if cur[0] != nil {
+        mut j = cur[1] + 1
+        while j < cur[0].size() {
+          let d = decl_of(cur[0][j], name)
+          if d != nil {
+            let slot = nslots[h]
+            nslots[h] = slot + 1
+            scopes[i].map[name] = (slot, d.is_mut)
+            predeclared["{h}/{i}/{name}"] = true
+            return {kind: 'var', owner: h, slot: slot, is_mut: d.is_mut}
+          }
+          j = j + 1
+        }
+      }
+      i = i - 1
+    }
+    h = funcs[h].parent
+  }
+  nil
 }
 
 fn declare_var(f, name, is_mut, at) {
   let scopes = scope_stack[f]
   if scopes[scopes.size() - 1].map.has(name) {
+    let pk = "{f}/{scopes.size() - 1}/{name}"
+    if predeclared.has(pk) {
+      # a forward reference already took the slot
+      predeclared.remove(pk)
+      let (slot, _) = scopes[scopes.size() - 1].map[name]
+      resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot, is_mut: is_mut}
+      return slot
+    }
     fail(at, "'{name}' is already defined")
   }
   # culebra rejects shadowing across a function boundary (`self` is the
@@ -3880,7 +4311,10 @@ fn declare_var(f, name, is_mut, at) {
     mut i = outer.size() - 1
     while i >= 0 {
       if outer[i].map.has(name) {
-        fail(at, "cannot shadow outer variable '{name}' (declared in an enclosing function)")
+        let (osl, _) = outer[i].map[name]
+        if free[f].has("{h}:{osl}") {
+          fail(at, "cannot shadow outer variable '{name}' (declared in an enclosing function)")
+        }
       }
       i = i - 1
     }
@@ -3960,7 +4394,15 @@ fn note_use(node, f, r) {
 # Sibling named fns register before any sibling body is walked, so mutual
 # recursion resolves; everything else binds in textual order.
 
-fn enter_scope(f) { scope_stack[f].push({map: {}}) }
+fn enter_scope(f) { scope_stack[f].push({map: {}, cur: [nil, 0]}) }
+
+# The statement list a scope is walking, and how far it got: what lets a
+# nested function's free name find a declaration that comes later in an
+# enclosing scope (culebra binds those at call time).
+fn scope_cursor(f) {
+  let scopes = scope_stack[f]
+  scopes[scopes.size() - 1].cur
+}
 fn leave_scope(f) { scope_stack[f].pop() }
 
 # A fn_decl's pieces: [deco..., ident, fparams, block]. Decorated functions
@@ -4057,9 +4499,33 @@ fn scan_body_stmts(f, stmts, blk_key) {
           },
         }
       }
-      if ctor == nil { fail(d.id, "class '{d.id.token}' has no new()") }
+      mut synth = nil
+      if ctor == nil {
+        # a class without new() accepts no arguments
+        ctor = new_func(f, "{d.id.token}.new", [], 'c:' + pkey(d.id))
+        synth = ctor
+      }
+      mut smeths = {}
+      for mn in d.smethods {
+        let it = method_parts(mn)
+        let g = new_func(f, "{d.id.token}.{it.id.token}", it.blk.nodes, pkey(it.blk))
+        closure_of[pkey(mn)] = g
+        smeths[it.id.token] = g
+      }
+      mut finits = {}
+      for fd in d.fields {
+        cond {
+          fd.init != nil => {
+            let g = new_func(f, "{d.id.token}.{fd.id.token}", [fd.init], pkey(fd.init))
+            finits[fd.id.token] = g
+          },
+          _ => finits[fd.id.token] = nil,
+        }
+      }
       classes["{f}/{d.id.token}"] =
-          {name: d.id.token, ctor: ctor, methods: methods, marities: marities}
+          {name: d.id.token, ctor: ctor, methods: methods, marities: marities,
+           synth: synth, smeths: smeths, finits: finits, fields: d.fields,
+           getters: d.getters, sfields: d.sfields}
     }
     if s.name == 'fn_decl' {
       let d = fn_decl_parts(s)
@@ -4105,7 +4571,12 @@ fn scan_body_stmts(f, stmts, blk_key) {
       }
     }
   }
-  for s in stmts {
+  let cur = scope_cursor(f)
+  cur[0] = stmts
+  mut si = 0
+  while si < stmts.size() {
+    let s = stmts[si]
+    cur[1] = si
     cond {
       s.name == 'trait_d' => {
         mut i = 1
@@ -4120,10 +4591,20 @@ fn scan_body_stmts(f, stmts, blk_key) {
       },
       s.name == 'class_d' => {
         let d = class_parts(s)
+        let ci = classes["{f}/{d.id.token}"]
         for mn in d.methods {
           let it = method_parts(mn)
           walk_method(closure_of[pkey(mn)], it.prms.nodes)
         }
+        if ci.synth != nil { walk_method(ci.synth, []) }
+        for mn in d.smethods {
+          let it = method_parts(mn)
+          walk_fn(closure_of[pkey(mn)], it.prms.nodes)
+        }
+        for fd in d.fields {
+          if fd.init != nil { walk_fn(ci.finits[fd.id.token], []) }
+        }
+        for sf in d.sfields { scan_expr(sf.nodes[1], f) }
       },
       s.name == 'fn_decl' => {
         let d = fn_decl_parts(s)
@@ -4147,6 +4628,7 @@ fn scan_body_stmts(f, stmts, blk_key) {
         scan_stmt(s, f)
       },
     }
+    si = si + 1
   }
   has_defer
 }
@@ -4171,12 +4653,34 @@ fn class_parts(s) {
   mut i = 0
   while s.nodes[i].name == 'deco' { i = i + 1 }
   mut methods = []
+  mut getters = []
+  mut smethods = []
+  mut sfields = []
+  mut fields = []
   mut j = i + 1
   while j < s.nodes.size() {
-    methods.push(s.nodes[j])
+    let mem = s.nodes[j]
+    cond {
+      mem.name == 'method' => methods.push(mem),
+      mem.name == 'getter' => {
+        methods.push(mem.nodes[0])
+        getters.push(mem.nodes[0].nodes[0].token)
+      },
+      mem.name == 'static_m' => smethods.push(mem.nodes[0]),
+      mem.name == 'static_f' => sfields.push(mem),
+      mem.name == 'field' => {
+        mut init = nil
+        for part in mem.nodes {
+          if part.name == 'finit' { init = part.nodes[0] }
+        }
+        fields.push({id: mem.nodes[0], init: init})
+      },
+      _ => fail(mem, 'unsupported class member'),
+    }
     j = j + 1
   }
-  {id: s.nodes[i], methods: methods}
+  {id: s.nodes[i], methods: methods, getters: getters, smethods: smethods,
+   sfields: sfields, fields: fields}
 }
 
 # A method walks like a function whose first parameter is `self`.
@@ -4192,6 +4696,7 @@ fn walk_method(g, param_nodes) {
   for rec in funcs[g].pspecs {
     if rec.dflt != nil { scan_expr(rec.dflt, g) }
   }
+  hoist_bare(g, funcs[g].stmts)
   let base = nslots[g]
   let has_defer = scan_body_stmts(g, funcs[g].stmts, funcs[g].body_key)
   leave_scope(g)
@@ -4267,6 +4772,9 @@ fn walk_fn(f, param_nodes) {
   # a default's expression binds in the callee, after the params before it
   for rec in funcs[f].pspecs {
     if rec.dflt != nil { scan_expr(rec.dflt, f) }
+    if rec.destr != nil {
+      for id in rec.destr.nodes { declare_var(f, id.token, false, id) }
+    }
   }
   if self_closure.has(f) {
     # `self` is a local the prologue fills: the supplied receiver, or the
@@ -4276,6 +4784,7 @@ fn walk_fn(f, param_nodes) {
     let outer = self_closure[f]
     if outer.kind == 'var' { use_var(f, outer.owner, outer.slot) }
   }
+  hoist_bare(f, funcs[f].stmts)
   let base = nslots[f]
   let has_defer = scan_body_stmts(f, funcs[f].stmts, funcs[f].body_key)
   leave_scope(f)
@@ -4295,6 +4804,7 @@ fn walk_gen_raw(f2, param_nodes) {
     funcs[f2].pspecs.push({pname: rec.pname, ty: nil, dflt: nil, rest: false,
                            id: rec.id})
   }
+  hoist_bare(f2, funcs[f2].stmts)
   let base = nslots[f2]
   let has_defer = scan_body_stmts(f2, funcs[f2].stmts, funcs[f2].body_key)
   leave_scope(f2)
@@ -4306,16 +4816,113 @@ fn scan_block(blk, f) {
   enter_scope(f)
   let base = nslots[f]
   mut has_defer = false
-  for s in blk.nodes {
+  let cur = scope_cursor(f)
+  cur[0] = blk.nodes
+  mut si = 0
+  while si < blk.nodes.size() {
+    let s = blk.nodes[si]
+    cur[1] = si
     if s.name == 'fn_decl' {
       fail(s, "fn declarations are only allowed at a function's top level")
     }
     if s.name == 'defer_s' { has_defer = true }
     scan_stmt(s, f)
+    si = si + 1
   }
   leave_scope(f)
   block_info[pkey(blk)] =
       {base: base, high: nslots[f], wrap: nslots[f] > base || has_defer}
+}
+
+fn is_mut_kw(tok) { tok != 'let' }
+
+# `x = v` with no binding in sight declares x in the function's own
+# scope (immutably); every such name is declared at function entry so the
+# slot lives outside any block's range.
+fn collect_bare(node, out) {
+  if node.nodes == nil { return nil }
+  let n = node.name
+  if n == 'closure' || n == 'lambda' || n == 'fn_decl' || n == 'class_d' ||
+     n == 'trait_d' || n == 'defer_s' || n == 'method' {
+    return nil
+  }
+  if n == 'assign' {
+    let lhs = node.nodes[0]
+    if lhs.name == 'ident' && node.nodes[1].token == '=' { out.push(lhs) }
+  }
+  for c in node.nodes { collect_bare(c, out) }
+  nil
+}
+
+fn declares_name(node, name) {
+  if node.nodes == nil { return false }
+  let n = node.name
+  if n == 'closure' || n == 'lambda' || n == 'fn_decl' || n == 'class_d' ||
+     n == 'trait_d' || n == 'defer_s' || n == 'method' {
+    return false
+  }
+  if n == 'decl' || n == 'pdecl' {
+    if decl_of(node, name) != nil { return true }
+  }
+  for c in node.nodes {
+    if declares_name(c, name) { return true }
+  }
+  false
+}
+
+fn hoist_bare(f, stmts) {
+  mut out = []
+  for st in stmts { collect_bare(st, out) }
+  for lhs in out {
+    let r = resolve(f, lhs.token)
+    if r.kind == 'none' {
+      mut later = false
+      for st in stmts {
+        if declares_name(st, lhs.token) { later = true }
+      }
+      let scopes = scope_stack[f]
+      if !later && !scopes[scopes.size() - 1].map.has(lhs.token) {
+        let slot = declare_var(f, lhs.token, false,
+                               {name: 'ident', token: lhs.token, line: 0,
+                                column: 3000000 + nslots[f]})
+        bare_init["{f}/{slot}"] = true
+      }
+    }
+  }
+  nil
+}
+
+fn is_str_key(k) {
+  k.name == 'ident' || k.name == 'pname' || k.name == 'str_sq' || k.name == 'dq_key'
+}
+
+fn scan_target(t, f, op) {
+  cond {
+    t.name == 'ident' => {
+      let r = resolve(f, t.token)
+      if r.kind == 'none' { fail(t, "undefined variable '{t.token}'") }
+      if r.kind != 'var' { fail(t, "cannot assign to '{t.token}'") }
+      if !r.is_mut {
+        let bk = "{r.owner}/{r.slot}"
+        cond {
+          bare_init.has(bk) => bare_init.remove(bk),
+          _ => fail(t, "cannot assign to immutable '{t.token}'"),
+        }
+      }
+      note_use(t, f, r)
+    },
+    t.name == 'postfix' => {
+      scan_expr(t.nodes[0], f)
+      mut i = 1
+      while i < t.nodes.size() {
+        let step = t.nodes[i]
+        if step.name == 'subscript' { scan_expr(step.nodes[0], f) }
+        if step.name == 'mcall' { fail(step, 'cannot assign to a call') }
+        i = i + 1
+      }
+    },
+    _ => fail(t, 'cannot assign to this expression'),
+  }
 }
 
 fn scan_stmt(node, f) {
@@ -4329,18 +4936,27 @@ fn scan_stmt(node, f) {
       let letrec = pat.name == 'ident' &&
                    (value.name == 'closure' || value.name == 'lambda')
       if letrec {
-        declare_var(f, pat.token, kw.token == 'mut', pat)
+        declare_var(f, pat.token, is_mut_kw(kw.token), pat)
         scan_expr(value, f)
+        # the closure may name itself through `fn`
+        own_binding[closure_of[pkey(value)]] = resolved[pkey(pat)]
       } else {
         scan_expr(value, f)
         cond {
           pat.name == 'tup_pat' || pat.name == 'arr_pat' => {
             new_scratch(f, pat)
-            for id in pat.nodes { declare_var(f, id.token, kw.token == 'mut', id) }
+            for id in pat.nodes { declare_var(f, id.token, is_mut_kw(kw.token), id) }
           },
-          _ => declare_var(f, pat.token, kw.token == 'mut', pat),
+          _ => declare_var(f, pat.token, is_mut_kw(kw.token), pat),
         }
       }
+    },
+    {name: 'pdecl', nodes: [kw, pat, value]} => {
+      scan_expr(value, f)
+      new_scratch(f, node)
+      pat_mut = is_mut_kw(kw.token)
+      scan_pattern(pat, f)
+      pat_mut = false
     },
     {name: 'assign', nodes: [lhs, op, value]} => {
       scan_expr(value, f)
@@ -4350,8 +4966,21 @@ fn scan_stmt(node, f) {
           if r.kind == 'none' { fail(lhs, "undefined variable '{lhs.token}'") }
           if r.kind == 'class' { fail(lhs, "cannot assign to class '{lhs.token}'") }
           if r.kind == 'fn' { fail(lhs, "cannot assign to fn '{lhs.token}'") }
-          if !r.is_mut { fail(lhs, "cannot assign to immutable '{lhs.token}'") }
+          if !r.is_mut {
+            let bk = "{r.owner}/{r.slot}"
+            cond {
+              # a bare binding's first write is its initialization
+              bare_init.has(bk) && op.token == '=' => bare_init.remove(bk),
+              _ => fail(lhs, "cannot assign to immutable '{lhs.token}'"),
+            }
+          }
           note_use(lhs, f, r)
+        },
+        # (a, b) = ..., [p, q] = ..., {g, h} = ...: every target as it
+        # would be on its own, written after the whole right side
+        lhs.name == 'tuple' || lhs.name == 'array_lit' || lhs.name == 'shorthand' => {
+          new_scratch(f, node)
+          for t in lhs.nodes { scan_target(t, f, op) }
         },
         # a[k] = v / o.k = v: the receiver chain is an expression; the last
         # step is the write target
@@ -4384,18 +5013,24 @@ fn scan_stmt(node, f) {
       enter_scope(f)
       let base = nslots[f]
       cond {
-        pat.name == 'tup_pat' =>
+        pat.name == 'tup_pat' || pat.name == 'arr_pat' =>
           for id in pat.nodes { declare_var(f, id.token, false, id) },
         _ => declare_var(f, pat.token, false, pat),
       }
       loop_depth[f] = loop_depth[f] + 1
       mut has_defer = false
-      for s in body.nodes {
+      let cur = scope_cursor(f)
+      cur[0] = body.nodes
+      mut si = 0
+      while si < body.nodes.size() {
+        let s = body.nodes[si]
+        cur[1] = si
         if s.name == 'fn_decl' {
           fail(s, "fn declarations are only allowed at a function's top level")
         }
         if s.name == 'defer_s' { has_defer = true }
         scan_stmt(s, f)
+        si = si + 1
       }
       loop_depth[f] = loop_depth[f] - 1
       leave_scope(f)
@@ -4518,7 +5153,11 @@ fn scan_call(node, f) {
   }
   let r = resolve(f, id.token)
   cond {
-    r.kind == 'none' => fail(id, "undefined name '{id.token}'"),
+    r.kind == 'none' => {
+      let fr = forward_declare(f, id.token)
+      if fr == nil { fail(id, "undefined name '{id.token}'") }
+      note_use(id, f, fr)
+    },
     r.kind == 'class' => {
       resolved[pkey(id)] = r
       use_var(f, r.owner, r.slot)
@@ -4603,12 +5242,14 @@ fn scan_arm(arm, f) {
 
 fn scan_pattern(pat, f) {
   match pat {
-    {name: 'bind_p', nodes: [id]} => declare_var(f, id.token, false, id),
+    {name: 'bind_p', nodes: [id]} => declare_var(f, id.token, pat_mut, id),
+    {name: 'typed_pt', nodes: [id, ty]} => declare_var(f, id.token, pat_mut, id),
+    {name: 'rest_pt', nodes: [id]} => declare_var(f, id.token, pat_mut, id),
     {name: 'obj_p'} => {
       for op in pat.nodes {
         cond {
           op.nodes.size() == 2 => scan_pattern(op.nodes[1], f),
-          _ => declare_var(f, op.nodes[0].token, false, op.nodes[0]),
+          _ => declare_var(f, op.nodes[0].token, pat_mut, op.nodes[0]),
         }
       }
     },
@@ -4678,6 +5319,18 @@ fn scan_expr(node, f) {
         resolved[pkey(node)] = {kind: 'strns'}
         return nil
       }
+      if r.kind == 'none' && !in_prelude &&
+         (builtins.has(token) || token == 'println' || token == 'print') {
+        resolved[pkey(node)] = {kind: 'bval', name: token}
+        return nil
+      }
+      if r.kind == 'none' {
+        let fr = forward_declare(f, token)
+        if fr != nil {
+          note_use(node, f, fr)
+          return nil
+        }
+      }
       if r.kind == 'none' { fail(node, "undefined variable '{token}'") }
       if r.kind == 'class' {
         resolved[pkey(node)] = {kind: 'var', owner: r.owner, slot: r.slot,
@@ -4699,13 +5352,46 @@ fn scan_expr(node, f) {
       note_use(node, f, r)
     },
     {name: 'call'} => scan_call(node, f),
-    {name: 'array_lit'} => { for e in node.nodes { scan_expr(e, f) } },
+    {name: 'array_lit'} => {
+      for e in node.nodes {
+        cond {
+          e.name == 'spread' => scan_expr(e.nodes[0], f),
+          _ => scan_expr(e, f),
+        }
+      }
+    },
+    {name: 'spread'} => fail(node, 'spread is only allowed inside an array literal'),
+    {name: 'range_lit', nodes} => {
+      for c in nodes {
+        cond {
+          c.name == 'range_op' => nil,
+          c.name == 'step' => scan_expr(c.nodes[0], f),
+          _ => scan_expr(c, f),
+        }
+      }
+    },
     {name: 'tuple'} => { for e in node.nodes { scan_expr(e, f) } },
+    {name: 'shorthand'} => { for e in node.nodes { scan_expr(e, f) } },
+    {name: 'fnself'} => {
+      cond {
+        own_binding.has(f) => note_use(node, f, own_binding[f]),
+        funcs[f].is_named == true => {
+          resolved[pkey(node)] = {kind: 'fn', funcs: [f]}
+          calls[f].push(f)
+        },
+        _ => resolved[pkey(node)] = {kind: 'selfclosure'},
+      }
+    },
     {name: 'object_lit'} => {
       for pair in node.nodes {
-        let k = pair.nodes[0]
-        if k.name != 'ident' && k.name != 'str_sq' { scan_expr(k, f) }
-        scan_expr(pair.nodes[1], f)
+        cond {
+          pair.name == 'ospread' => scan_expr(pair.nodes[0], f),
+          _ => {
+            let k = pair.nodes[0]
+            if !is_str_key(k) { scan_expr(k, f) }
+            scan_expr(pair.nodes[1], f)
+          },
+        }
       }
     },
     {name: 'set_lit'} => { for e in node.nodes { scan_expr(e, f) } },
@@ -4720,7 +5406,9 @@ fn scan_expr(node, f) {
       walk_fn(g, prms.nodes)
       loop_depth[f] = saved
     },
-    {name: 'closure', nodes: [prms, blk]} => {
+    {name: 'closure', nodes} => {
+      let prms = nodes[0]
+      let blk = nodes[nodes.size() - 1]
       let g = new_func(f, "fn@{node.line}:{node.column}", blk.nodes,
                        pkey(blk))
       closure_of[pkey(node)] = g
@@ -4750,6 +5438,12 @@ fn scan_expr(node, f) {
           for a in step.nodes[1].nodes { scan_expr(arg_val(a), f) }
           scan_mcall_target(step, f)
         }
+        if step.name == 'nmcall' {
+          new_scratch(f, step)
+          for a in step.nodes[1].nodes { scan_expr(arg_val(a), f) }
+          scan_mcall_target(step, f)
+        }
+        if step.name == 'nprop' { new_scratch(f, step) }
         if step.name == 'pcall' {
           for a in step.nodes[0].nodes { scan_expr(arg_val(a), f) }
         }
@@ -4932,6 +5626,7 @@ fn parse_int_token(tok) {
   cond {
     tok.starts_with('0x') => to_long(tok.slice(2, tok.size()), base: 16),
     tok.starts_with('0b') => to_long(tok.slice(2, tok.size()), base: 2),
+    tok.starts_with('0o') => to_long(tok.slice(2, tok.size()), base: 8),
     _ => to_long(tok),
   }
 }
@@ -5129,6 +5824,9 @@ fn emit_pat_test(m, f, pat, subj, ln, cl) {
   match pat {
     {name: 'wild_p'} => ir_bool(m, true, ln, cl),
     {name: 'bind_p'} => ir_bool(m, true, ln, cl),
+    {name: 'rest_pt'} => ir_bool(m, true, ln, cl),
+    {name: 'typed_pt', nodes: [id, ty]} =>
+      call_pre(m, f, '__pat_type', [subj(), m.str_literal(s: ty.token, line: ln, col: cl)], ln, cl),
     {name: 'nil_p'} => m.binary(op: 'eq', lhs: ir_typeof(m, subj(), ln, cl),
                                 rhs: m.str_literal(s: 'nil', line: ln, col: cl),
                                 line: ln, col: cl),
@@ -5186,21 +5884,54 @@ fn emit_seq_pat(m, f, pat, subj, tyname, ln, cl) {
   ir_and(m, t, emit_seq_items(m, f, pat, subj, ln, cl), ln, cl)
 }
 
-fn emit_seq_items(m, f, pat, items, ln, cl) {
-  let n = pat.nodes.size()
+fn rest_index(pat) {
+  mut i = 0
+  while i < pat.nodes.size() {
+    if pat.nodes[i].name == 'rest_pt' { return i }
+    i = i + 1
+  }
+  0 - 1
+}
+
+fn seq_len(m, items, ln, cl) {
   let la = m.list_new()
   m.list_push(la, items())
-  let lenv = m.intrinsic(name: 'len', args_list: la, line: ln, col: cl)
-  mut t = m.binary(op: 'eq', lhs: lenv, rhs: m.literal(v: n, line: ln, col: cl),
-                   line: ln, col: cl)
+  m.intrinsic(name: 'len', args_list: la, line: ln, col: cl)
+}
+
+# The item an element pattern reads: a fixed index before a rest, an
+# index counted from the end after it.
+fn seq_item(m, pat, items, idx, ln, cl) {
+  let ri = rest_index(pat)
+  let n = pat.nodes.size()
+  cond {
+    ri < 0 || idx < ri =>
+      m.index(recv: items(), key: m.literal(v: idx, line: ln, col: cl),
+              line: ln, col: cl),
+    _ => m.index(recv: items(),
+                 key: m.binary(op: 'sub', lhs: seq_len(m, items, ln, cl),
+                               rhs: m.literal(v: n - idx, line: ln, col: cl),
+                               line: ln, col: cl),
+                 line: ln, col: cl),
+  }
+}
+
+fn emit_seq_items(m, f, pat, items, ln, cl) {
+  let n = pat.nodes.size()
+  let ri = rest_index(pat)
+  mut t = cond {
+    ri < 0 => m.binary(op: 'eq', lhs: seq_len(m, items, ln, cl),
+                       rhs: m.literal(v: n, line: ln, col: cl), line: ln, col: cl),
+    _ => m.binary(op: 'ge', lhs: seq_len(m, items, ln, cl),
+                  rhs: m.literal(v: n - 1, line: ln, col: cl), line: ln, col: cl),
+  }
   mut i = 0
   while i < n {
     let idx = i
-    fn sub() {
-      m.index(recv: items(), key: m.literal(v: idx, line: ln, col: cl),
-              line: ln, col: cl)
+    if idx != ri {
+      fn sub() { seq_item(m, pat, items, idx, ln, cl) }
+      t = ir_and(m, t, emit_pat_test(m, f, pat.nodes[idx], sub, ln, cl), ln, cl)
     }
-    t = ir_and(m, t, emit_pat_test(m, f, pat.nodes[idx], sub, ln, cl), ln, cl)
     i = i + 1
   }
   t
@@ -5210,6 +5941,12 @@ fn emit_seq_items(m, f, pat, items, ln, cl) {
 fn emit_pat_binds(m, f, pat, subj, ids, ln, cl) {
   match pat {
     {name: 'bind_p', nodes: [id]} => {
+      let r = resolved[pkey(id)]
+      let a = access_from(f, (f, r.slot))
+      ids.push(m.assign(kind: a.kind, index: a.index, value: subj(),
+                        line: id.line, col: id.column))
+    },
+    {name: 'typed_pt', nodes: [id, ty]} => {
       let r = resolved[pkey(id)]
       let a = access_from(f, (f, r.slot))
       ids.push(m.assign(kind: a.kind, index: a.index, value: subj(),
@@ -5243,14 +5980,30 @@ fn emit_pat_binds(m, f, pat, subj, ids, ln, cl) {
 }
 
 fn emit_seq_binds(m, f, pat, items, ids, ln, cl) {
+  let ri = rest_index(pat)
+  let n = pat.nodes.size()
   mut i = 0
-  while i < pat.nodes.size() {
+  while i < n {
     let idx = i
-    fn sub() {
-      m.index(recv: items(), key: m.literal(v: idx, line: ln, col: cl),
-              line: ln, col: cl)
+    cond {
+      idx == ri => {
+        let id = pat.nodes[idx].nodes[0]
+        let r = resolved[pkey(id)]
+        let a = access_from(f, (f, r.slot))
+        let rest = call_pre(m, f, '__slice_arr',
+                            [items(), m.literal(v: idx, line: ln, col: cl),
+                             m.binary(op: 'sub', lhs: seq_len(m, items, ln, cl),
+                                      rhs: m.literal(v: n - 1 - idx, line: ln, col: cl),
+                                      line: ln, col: cl)],
+                            ln, cl)
+        ids.push(m.assign(kind: a.kind, index: a.index, value: rest,
+                          line: id.line, col: id.column))
+      },
+      _ => {
+        fn sub() { seq_item(m, pat, items, idx, ln, cl) }
+        emit_pat_binds(m, f, pat.nodes[idx], sub, ids, ln, cl)
+      },
     }
-    emit_pat_binds(m, f, pat.nodes[idx], sub, ids, ln, cl)
     i = i + 1
   }
 }
@@ -5747,14 +6500,34 @@ fn emit_postfix_step(m, f, value, step) {
 }
 
 fn emit_postfix(m, node, f) {
+  emit_postfix_from(m, node, f, emit_expr(m, node.nodes[0], f), 1)
+}
+
+# `?.` short-circuits the rest of the chain: the receiver is parked in a
+# scratch slot, and every later step runs only when it is not nil.
+fn emit_postfix_from(m, node, f, value, i) {
   let nodes = node.nodes
-  mut value = emit_expr(m, nodes[0], f)
-  mut i = 1
-  while i < nodes.size() {
-    value = emit_postfix_step(m, f, value, nodes[i])
-    i = i + 1
+  if i >= nodes.size() { return value }
+  let step = nodes[i]
+  cond {
+    step.name == 'nprop' || step.name == 'nmcall' => {
+      let slot = scratch_slot(f, scratch_of[pkey(step)])
+      let ln = step.line
+      let cl = step.column
+      fn sref() { m.var_ref(kind: 'local', index: slot, line: ln, col: cl) }
+      let store = m.assign(kind: 'local', index: slot, value: value, line: ln, col: cl)
+      let plain = {name: cond { step.name == 'nprop' => 'prop', _ => 'mcall' },
+                   nodes: step.nodes, line: step.line, column: step.column}
+      let rest = emit_postfix_from(m, node, f, emit_postfix_step(m, f, sref(), plain), i + 1)
+      let guarded = m.make_if_else(
+          cond: m.binary(op: 'eq', lhs: ir_typeof(m, sref(), ln, cl),
+                         rhs: m.str_literal(s: 'nil', line: ln, col: cl), line: ln, col: cl),
+          then_branch: m.nil_literal(line: ln, col: cl), else_branch: rest,
+          line: ln, col: cl)
+      m.block(stmts_list: make_list(m, [store, guarded]), line: ln, col: cl)
+    },
+    _ => emit_postfix_from(m, node, f, emit_postfix_step(m, f, value, step), i + 1),
   }
-  value
 }
 
 fn emit_unary(m, node, f, which) {
@@ -5857,6 +6630,7 @@ fn emit_expr(m, node, f) {
       let r = resolved[pkey(node)]
       cond {
         r.kind == 'strns' => call_pre(m, f, '__string_ns', [], node.line, node.column),
+        r.kind == 'bval' => call_pre(m, f, '__fnval_' + r.name, [], node.line, node.column),
         r.kind == 'fn' => m.make_closure(func: r.funcs[0],
                                          cmap: cmap_for(m, f, r.funcs[0]),
                                          line: node.line, col: node.column),
@@ -5878,10 +6652,78 @@ fn emit_expr(m, node, f) {
     },
     {name: 'call'} => emit_call(m, node, f),
     {name: 'array_lit'} => {
-      mut ids = []
-      for e in node.nodes { ids.push(emit_expr(m, e, f)) }
-      m.array_lit(items_list: make_list(m, ids), line: node.line,
-                  col: node.column)
+      # runs of plain items become literals; each spread appends its
+      # source's items, so [a, ...xs, b] is concat(concat([a], xs), [b])
+      let ln = node.line
+      let cl = node.column
+      let (pl, pc) = pos_args(m, node)
+      mut acc = nil
+      mut run = []
+      fn flush() {
+        if run.size() > 0 || acc == nil {
+          let lit = m.array_lit(items_list: make_list(m, run), line: ln, col: cl)
+          acc = cond {
+            acc == nil => lit,
+            _ => call_pre(m, f, '__concat', [acc, lit], ln, cl),
+          }
+          run = []
+        }
+      }
+      for e in node.nodes {
+        cond {
+          e.name == 'spread' => {
+            flush()
+            acc = call_pre(m, f, '__concat',
+                           [acc, call_pre(m, f, '__spread_items',
+                                          [emit_expr(m, e.nodes[0], f), pl, pc],
+                                          e.line, e.column)],
+                           ln, cl)
+          },
+          _ => run.push(emit_expr(m, e, f)),
+        }
+      }
+      flush()
+      acc
+    },
+    {name: 'range_lit', nodes} => {
+      let (pl, pc) = pos_args(m, node)
+      let ln = node.line
+      let cl = node.column
+      let a = nodes[0]
+      let op = nodes[1]
+      mut hi = m.nil_literal(line: ln, col: cl)
+      mut st = m.nil_literal(line: ln, col: cl)
+      mut i = 2
+      while i < nodes.size() {
+        cond {
+          nodes[i].name == 'step' => st = emit_expr(m, nodes[i].nodes[0], f),
+          _ => hi = emit_expr(m, nodes[i], f),
+        }
+        i = i + 1
+      }
+      let incl = cond { op.token == '..=' => 1, _ => 0 }
+      call_pre(m, f, '__mk_range',
+               [emit_expr(m, a, f), hi, m.literal(v: incl, line: ln, col: cl), st, pl, pc],
+               ln, cl)
+    },
+    {name: 'shorthand'} => {
+      let kv = m.list_new()
+      for id in node.nodes {
+        m.list_push(kv, m.str_literal(s: id.token, line: id.line, col: id.column))
+        m.list_push(kv, emit_expr(m, id, f))
+      }
+      m.object_lit(kv_list: kv, line: node.line, col: node.column)
+    },
+    {name: 'fnself'} => {
+      let r = resolved[pkey(node)]
+      cond {
+        r.kind == 'var' => {
+          let a = access_from(f, (r.owner, r.slot))
+          m.var_ref(kind: a.kind, index: a.index, line: node.line, col: node.column)
+        },
+        _ => m.make_closure(func: f, cmap: cmap_for(m, f, f),
+                            line: node.line, col: node.column),
+      }
     },
     {name: 'tuple'} => {
       mut ids = []
@@ -5897,7 +6739,7 @@ fn emit_expr(m, node, f) {
       let (pl, pc) = pos_args(m, node)
       fn key_node(kn) {
         cond {
-          kn.name == 'ident' || kn.name == 'str_sq' =>
+          is_str_key(kn) =>
             m.str_literal(s: kn.token, line: kn.line, col: kn.column),
           # a non-String key is stored under its hash spelling; the
           # original value is recorded afterwards for keys() and display
@@ -5905,10 +6747,41 @@ fn emit_expr(m, node, f) {
                         kn.line, kn.column),
         }
       }
+      mut has_spread = false
+      for pair in node.nodes {
+        if pair.name == 'ospread' { has_spread = true }
+      }
+      if has_spread {
+        # built entry by entry, so a spread lands in sequence with the pairs
+        mut obj2 = m.object_lit(kv_list: m.list_new(), line: node.line, col: node.column)
+        for pair in node.nodes {
+          cond {
+            pair.name == 'ospread' =>
+              obj2 = call_pre(m, f, '__obj_spread',
+                              [obj2, emit_expr(m, pair.nodes[0], f), pl, pc],
+                              pair.line, pair.column),
+            _ => {
+              let k = pair.nodes[0]
+              let is_mut = cond { pair.name == 'mut_pair' => 1, _ => 0 }
+              obj2 = call_pre(m, f, '__olit_set',
+                              [obj2, key_node(k), emit_expr(m, pair.nodes[1], f),
+                               m.literal(v: is_mut, line: k.line, col: k.column)],
+                              k.line, k.column)
+              if !is_str_key(k) {
+                obj2 = call_pre(m, f, '__olit_nsk',
+                                [obj2, m.array_lit(items_list: make_list(m, [emit_expr(m, k, f)]),
+                                                   line: k.line, col: k.column)],
+                                k.line, k.column)
+              }
+            },
+          }
+        }
+        return obj2
+      }
       for pair in node.nodes {
         let k = pair.nodes[0]
         m.list_push(kv, key_node(k))
-        if k.name != 'ident' && k.name != 'str_sq' { nsk.push(k) }
+        if !is_str_key(k) { nsk.push(k) }
         if pair.name == 'mut_pair' { muts.push(k) }
         m.list_push(kv, emit_expr(m, pair.nodes[1], f))
       }
@@ -5987,6 +6860,37 @@ fn emit_expr(m, node, f) {
 # compound forms re-emit the read; the receiver chain is evaluated twice,
 # which for the sample programs (variables and fields) is indistinguishable
 # from once.
+# One assignment target -- a variable or an index/property chain -- written
+# with an already-evaluated value.
+fn emit_target_write(m, f, t, item) {
+  cond {
+    t.name == 'ident' => {
+      let r = resolved[pkey(t)]
+      let a = access_from(f, (r.owner, r.slot))
+      m.assign(kind: a.kind, index: a.index, value: item, line: t.line, col: t.column)
+    },
+    _ => {
+      let steps = t.nodes
+      let last = steps[steps.size() - 1]
+      mut recv = emit_expr(m, steps[0], f)
+      mut i = 1
+      while i < steps.size() - 1 {
+        recv = emit_postfix_step(m, f, recv, steps[i])
+        i = i + 1
+      }
+      let (pl, pc) = pos_args(m, last)
+      let key = cond {
+        last.name == 'prop' => m.str_literal(s: last.nodes[0].token, line: last.line, col: last.column),
+        _ => emit_expr(m, last.nodes[0], f),
+      }
+      let is_prop = cond { last.name == 'prop' => 1, _ => 0 }
+      call_pre(m, f, '__setindex',
+               [recv, key, item, m.literal(v: is_prop, line: last.line, col: last.column), pl, pc],
+               t.line, t.column)
+    },
+  }
+}
+
 fn emit_assign(m, node, f) {
   let [lhs, op, value] = node.nodes
   let ln = node.line
@@ -6017,14 +6921,25 @@ fn emit_assign(m, node, f) {
       read_back == nil => v,
       _ => {
         let (pl, pc) = pos_args(m, op)
-        let name = cond {
-          op.token == '+=' => '__add',
-          op.token == '-=' => '__sub',
-          op.token == '*=' => '__mul',
-          op.token == '/=' => '__div',
-          _ => '__mod',
+        cond {
+          op.token == '??=' =>
+            m.make_if_else(cond: m.binary(op: 'eq', lhs: ir_typeof(m, read_back(), op.line, op.column),
+                                          rhs: m.str_literal(s: 'nil', line: op.line, col: op.column),
+                                          line: op.line, col: op.column),
+                           then_branch: v, else_branch: read_back(),
+                           line: op.line, col: op.column),
+          _ => {
+            let name = cond {
+              op.token == '+=' => '__add',
+              op.token == '-=' => '__sub',
+              op.token == '*=' => '__mul',
+              op.token == '/=' => '__div',
+              op.token == '**=' => '__pow',
+              _ => '__mod',
+            }
+            call_pre(m, f, name, [read_back(), v, pl, pc], op.line, op.column)
+          },
         }
-        call_pre(m, f, name, [read_back(), v, pl, pc], op.line, op.column)
       },
     }
   }
@@ -6037,6 +6952,31 @@ fn emit_assign(m, node, f) {
       }
       m.assign(kind: a.kind, index: a.index, value: rhs_of(cur_var),
                line: ln, col: cl)
+    },
+    lhs.name == 'tuple' || lhs.name == 'array_lit' || lhs.name == 'shorthand' => {
+      let tmp = scratch_slot(f, scratch_of[pkey(node)])
+      let (pl, pc) = pos_args(m, lhs)
+      let n = lhs.nodes.size()
+      fn tref() { m.var_ref(kind: 'local', index: tmp, line: ln, col: cl) }
+      let src_v = cond {
+        lhs.name == 'shorthand' => emit_expr(m, value, f),
+        _ => call_pre(m, f, '__destr',
+                      [emit_expr(m, value, f), m.literal(v: n, line: ln, col: cl), pl, pc],
+                      ln, cl),
+      }
+      mut ids = [m.assign(kind: 'local', index: tmp, value: src_v, line: ln, col: cl)]
+      for k in range(n) {
+        let t = lhs.nodes[k]
+        let item = cond {
+          lhs.name == 'shorthand' =>
+            call_pre(m, f, '__getprop',
+                     [tref(), m.str_literal(s: t.token, line: t.line, col: t.column), pl, pc],
+                     t.line, t.column),
+          _ => m.index(recv: tref(), key: m.literal(v: k, line: ln, col: cl), line: ln, col: cl),
+        }
+        ids.push(emit_target_write(m, f, t, item))
+      }
+      m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
     },
     _ => {
       # postfix: everything up to the last step is the receiver expression
@@ -6156,6 +7096,35 @@ fn emit_class(m, node, f) {
   m.list_push(kv, m.object_lit(kv_list: mkv, line: ln, col: cl))
   m.list_push(kv, m.str_literal(s: 'arities', line: ln, col: cl))
   m.list_push(kv, m.object_lit(kv_list: akv, line: ln, col: cl))
+  # declared fields, written before new() runs; getters; statics
+  let fl = m.list_new()
+  for fd in ci.fields {
+    let g = ci.finits[fd.id.token]
+    let init = cond {
+      g == nil => m.nil_literal(line: ln, col: cl),
+      _ => m.make_closure(func: g, cmap: cmap_for(m, f, g), line: ln, col: cl),
+    }
+    m.list_push(fl, m.array_lit(items_list: make_list(m, [m.str_literal(s: fd.id.token, line: ln, col: cl), init]),
+                                line: ln, col: cl))
+  }
+  m.list_push(kv, m.str_literal(s: 'fields', line: ln, col: cl))
+  m.list_push(kv, m.array_lit(items_list: fl, line: ln, col: cl))
+  let gkv = m.list_new()
+  for gname in ci.getters {
+    m.list_push(gkv, m.str_literal(s: gname, line: ln, col: cl))
+    m.list_push(gkv, m.bool_literal(v: true, line: ln, col: cl))
+  }
+  m.list_push(kv, m.str_literal(s: 'getters', line: ln, col: cl))
+  m.list_push(kv, m.object_lit(kv_list: gkv, line: ln, col: cl))
+  for sname in ci.smeths.keys() {
+    let g = ci.smeths[sname]
+    m.list_push(kv, m.str_literal(s: sname, line: ln, col: cl))
+    m.list_push(kv, m.make_closure(func: g, cmap: cmap_for(m, f, g), line: ln, col: cl))
+  }
+  for sf in ci.sfields {
+    m.list_push(kv, m.str_literal(s: sf.nodes[0].token, line: ln, col: cl))
+    m.list_push(kv, emit_expr(m, sf.nodes[1], f))
+  }
   m.list_push(kv, m.str_literal(s: 'conf', line: ln, col: cl))
   m.list_push(kv, m.object_lit(kv_list: confkv, line: ln, col: cl))
   let clsobj = m.object_lit(kv_list: kv, line: ln, col: cl)
@@ -6229,12 +7198,36 @@ fn emit_stmt(m, node, f) {
         _ => {
           let r = resolved[pkey(pat)]
           let a = access_from(f, (f, r.slot))
-          m.assign(kind: a.kind, index: a.index, value: v,
-                   line: node.line, col: node.column)
+          let st = m.assign(kind: a.kind, index: a.index, value: v,
+                            line: node.line, col: node.column)
+          # a `let` yields its value when it ends a block
+          m.block(stmts_list: make_list(m, [st, m.var_ref(kind: a.kind, index: a.index,
+                                                          line: node.line, col: node.column)]),
+                  line: node.line, col: node.column)
         },
       }
     },
     {name: 'assign', nodes: [lhs, op, value]} => emit_assign(m, node, f),
+    {name: 'pdecl', nodes: [kw, pat, value]} => {
+      let ln = node.line
+      let cl = node.column
+      let tmp = scratch_slot(f, scratch_of[pkey(node)])
+      fn subj() { m.var_ref(kind: 'local', index: tmp, line: ln, col: cl) }
+      let (pl, pc) = pos_args(m, pat)
+      mut ids = [m.assign(kind: 'local', index: tmp, value: emit_expr(m, value, f),
+                          line: ln, col: cl)]
+      let fail_v = call_pre(m, f, '__raise',
+                            [m.str_literal(s: 'ValueError', line: ln, col: cl),
+                             m.str_literal(s: 'destructure pattern did not match value',
+                                           line: ln, col: cl),
+                             pl, pc],
+                            ln, cl)
+      ids.push(m.make_if_else(cond: emit_pat_test(m, f, pat, subj, ln, cl),
+                              then_branch: m.nil_literal(line: ln, col: cl),
+                              else_branch: fail_v, line: ln, col: cl))
+      emit_pat_binds(m, f, pat, subj, ids, ln, cl)
+      m.block(stmts_list: make_list(m, ids), line: ln, col: cl)
+    },
     {name: 'for', nodes: [pat, iterable, body]} => {
       let ln = node.line
       let cl = node.column
@@ -6256,7 +7249,7 @@ fn emit_stmt(m, node, f) {
       let info = block_info[pkey(body)]
       mut pre = fresh_cells(m, f, info.base, info.high, body.line, body.column)
       cond {
-        pat.name == 'tup_pat' => {
+        pat.name == 'tup_pat' || pat.name == 'arr_pat' => {
           # (k, v) in ...: next() yields a pair; unpack via its items. The
           # first slot temporarily holds the items array and is overwritten
           # last.
@@ -6497,6 +7490,31 @@ fn emit_funcs(m) {
         _ => nil,
       }
     }
+    for pi in range(fi.pspecs.size()) {
+      let rec = fi.pspecs[pi]
+      if rec.destr != nil {
+        # a destructuring parameter: unpack the hidden slot into its names
+        let tp = rec.destr
+        let n = tp.nodes.size()
+        let (pl, pc) = pos_args(m, tp)
+        ids.push(m.assign(kind: 'local', index: pi,
+                          value: call_pre(m, f, '__destr',
+                                          [m.var_ref(kind: 'local', index: pi, line: 1, col: 1),
+                                           m.literal(v: n, line: 1, col: 1), pl, pc],
+                                          1, 1),
+                          line: 1, col: 1))
+        for k in range(n) {
+          let id = tp.nodes[k]
+          let r = resolved[pkey(id)]
+          let a = access_from(f, (f, r.slot))
+          ids.push(m.assign(kind: a.kind, index: a.index,
+                            value: m.index(recv: m.var_ref(kind: 'local', index: pi, line: 1, col: 1),
+                                           key: m.literal(v: k, line: 1, col: 1),
+                                           line: 1, col: 1),
+                            line: 1, col: 1))
+        }
+      }
+    }
     for p in range(fi.params.size()) {
       if cell_index[f].has(p) {
         let src = m.var_ref(kind: 'local', index: p, line: 1, col: 1)
@@ -6557,6 +7575,13 @@ fn emit_funcs(m) {
       body = m.scope(first_local: info.base, end_local: nslots[f],
                      body: body, line: 1, col: 1)
     }
+    if f == 0 {
+      # whatever escapes the program is reported the way culebra reports it
+      let caught = m.var_ref(kind: 'local', index: uncaught_slot, line: 1, col: 1)
+      body = m.make_try(caught_local: uncaught_slot, body: body,
+                        handler: call_pre(m, f, '__report_uncaught', [caught], 1, 1),
+                        line: 1, col: 1)
+    }
     let func = m.add_func(name: fi.name,
                           num_locals: nslots[f] + nscratch[f],
                           num_captures: free[f].size(),
@@ -6574,7 +7599,40 @@ fn emit_funcs(m) {
   in_prelude = false
 }
 
+# Surface forms the binder never sees: a statement modifier becomes the
+# `if` it stands for, a comma-separated for target becomes the tuple
+# pattern, and a typed `let` drops its annotation.
+fn desugar(node) {
+  if node.nodes == nil { return nil }
+  mut i = 0
+  while i < node.nodes.size() {
+    let c = node.nodes[i]
+    cond {
+      c.name == 'mod_stmt' => {
+        let [stmt, kw, cnd] = c.nodes
+        let test = cond {
+          kw.token == 'unless' =>
+            {name: 'lnot', nodes: [cnd], line: cnd.line, column: cnd.column},
+          _ => cnd,
+        }
+        node.nodes[i] = {name: 'if',
+                         nodes: [test, {name: 'block', nodes: [stmt],
+                                        line: stmt.line, column: stmt.column + 500000}],
+                         line: c.line, column: c.column}
+      },
+      c.name == 'bare_tup' =>
+        node.nodes[i] = {name: 'tup_pat', nodes: c.nodes, line: c.line, column: c.column},
+      c.name == 'typed_pat' => node.nodes[i] = c.nodes[0],
+      _ => nil,
+    }
+    desugar(node.nodes[i])
+    i = i + 1
+  }
+  nil
+}
+
 fn build(m, prelude_tree, root) {
+  desugar(root)
   # main is funcs[0]; the prelude's functions follow; then the program's.
   let main = new_func(nil, 'main', root.nodes, "0:0")
 
@@ -6591,8 +7649,11 @@ fn build(m, prelude_tree, root) {
   in_prelude = false
 
   enter_scope(main)
+  hoist_bare(main, root.nodes)
   let has_defer = scan_body_stmts(main, root.nodes, "0:0")
   leave_scope(main)
+  uncaught_slot = nslots[main]
+  nslots[main] = uncaught_slot + 1
   block_info["0:0"] =
       {base: 0, high: nslots[main], wrap: nslots[main] > 0 || has_defer}
 
@@ -6637,6 +7698,11 @@ for path in cli {
   self_slot = {}
   closure_funcs = {}
   fn_pos = {}
+  own_binding = {}
+  predeclared = {}
+  bare_init = {}
+  uncaught_slot = 0
+  pat_mut = false
   in_prelude = false
   scope_stack = []
   loop_depth = {}
@@ -6659,7 +7725,14 @@ for path in cli {
     match e {
       {kind: 'MiniError'} => println("{path}:{e.line}:{e.col}: {e.message}"),
       {kind: 'PegError'} => println(e.message),
-      {kind: 'IrError'} => println("{path}:{e.line}:{e.col}: {e.message}"),
+      {kind: 'IrError'} => {
+        # the program's own uncaught report already printed; only the
+        # exit status is left to mirror
+        cond {
+          e.message.contains(exit_marker) => { if cli.size() == 1 { Sys.exit(255) } },
+          _ => println("{path}:{e.line}:{e.col}: {e.message}"),
+        }
+      },
       _ => throw e,
     }
     had_err = true
