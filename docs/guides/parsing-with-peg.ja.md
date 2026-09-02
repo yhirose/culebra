@@ -363,222 +363,167 @@ inspect(Peg.parse(calc, '8 / 4 / 2', actions: actions))      # => 1
 ときは木を使ってください。解析すること自体が計算になっていて、木は
 作って捨てるだけになるときは、actionsのほうが素直です。
 
-## 3. 小さな言語
+## 3. 言語まるごと
 
-ここまでのやり方は、そのまま本物のインタプリタまで届きます。
+これから動かすプログラムを、先に見てください。
 
-これから作る言語は、整数の変数、算術、比較、`if`/`else`、`while`、
-引数つきの関数、そして再帰を持ちます。プログラムと呼べるものが書ける
-程度には揃っています。文法と評価器をあわせて130行ほどです。
+```
+def fib(x)
+  x < 2 ? 1 : fib(x - 2) + fib(x - 1)
 
-長めですが、ここまでに出てきた道具しか使っていません。
+for n from 1 to 10
+  puts(fib(n))
+```
+
+出力はこうなってほしい、とします。
+
+```
+[1, 2, 3, 5, 8, 13, 21, 34, 55, 89]
+```
+
+この言語は[fiblang](https://github.com/yhirose/fiblang)です。まさにこの
+プログラムを書くためだけに存在していて、それ以外には何もできません。
+一度に読み切れる大きさですし、実在の言語でもあります。この文法は
+cpp-peglib自身のテストケースの1つです。
+
+fiblangでは**すべてが式**です。`for`も式なので、プログラムに文の区切りが
+なく、文法にも文の規則がありません。関数の引数は1つ、比較演算子は1つ、
+算術演算子は2つ。これで言語の全部です。
+
+下の文法はfiblangのもので、エラー回復用の2つの演算子（`↑`と`%recover`）
+だけ外してあります。あれは別の機能なので、ここでは扱いません。
 
 ```culebra
 let grammar = `
-  Program  <- Stmt+                              { no_ast_opt }
-  Stmt     <- Fn / Return / If / While / Assign / ExprStmt
-  Fn       <- 'fn' Ident '(' Params ')' Block    { no_ast_opt }
-  Params   <- (Ident (',' Ident)*)?              { no_ast_opt }
-  Block    <- '{' Stmt* '}'                      { no_ast_opt }
-  Return   <- 'return' Expr ';'                  { no_ast_opt }
-  If       <- 'if' Expr Block Else?              { no_ast_opt }
-  Else     <- 'else' Block
-  While    <- 'while' Expr Block                 { no_ast_opt }
-  Assign   <- Ident '=' Expr ';'                 { no_ast_opt }
-  ExprStmt <- Expr ';'                           { no_ast_opt }
+  START             <- STATEMENTS
+  STATEMENTS        <- (DEFINITION / EXPRESSION)*   { no_ast_opt }
+  DEFINITION        <- 'def' Identifier '(' Identifier ')' EXPRESSION
+  EXPRESSION        <- TERNARY
+  TERNARY           <- CONDITION ('?' EXPRESSION ':' EXPRESSION)?
+  CONDITION         <- INFIX (ConditionOperator INFIX)?
+  INFIX             <- CALL (InfixOperator CALL)*
+  CALL              <- PRIMARY ('(' EXPRESSION ')')?
+  PRIMARY           <- FOR / Identifier / '(' EXPRESSION ')' / Number
+  FOR               <- 'for' Identifier 'from' Number 'to' Number EXPRESSION
 
-  Expr     <- Cmp
-  Cmp      <- Add CmpOp Add / Add
-  Add      <- Add AddOp Mul / Mul
-  Mul      <- Mul MulOp Unary / Unary
-  Unary    <- Neg / Primary
-  Neg      <- '-' Unary                          { no_ast_opt }
-  Primary  <- Call / Number / Ident / '(' Expr ')'
-  Call     <- Ident '(' Args ')'                 { no_ast_opt }
-  Args     <- (Expr (',' Expr)*)?                { no_ast_opt }
+  ConditionOperator <- < '<' >
+  InfixOperator     <- < '+' / '-' >
+  Identifier        <- !Keyword < [a-zA-Z][a-zA-Z0-9_]* >
+  Number            <- < [0-9]+ >
+  Keyword           <- 'def' / 'for' / 'from' / 'to'
 
-  CmpOp    <- < '==' / '!=' / '<=' / '>=' / '<' / '>' >
-  AddOp    <- < '+' / '-' >
-  MulOp    <- < '*' / '/' / '%' >
-  Number   <- < [0-9]+ >
-  Ident    <- < !Keyword [a-z_] [a-zA-Z0-9_]* >
-  Keyword  <- ('fn' / 'return' / 'if' / 'else' / 'while') ![a-zA-Z0-9_]
-
-  %whitespace <- ([ \t\r\n] / '#' (!'\n' .)*)*
+  %whitespace       <- [ \t\r\n]*
+  %word             <- [a-zA-Z]
 `
-let lang = Peg.compile(grammar)
-
-fn lookup(scopes, name) {
-  mut i = scopes.size() - 1
-  while i >= 0 {
-    if scopes[i].has(name) {
-      return scopes[i][name]
-    }
-    i -= 1
-  }
-  throw "undefined variable '{name}'"
-}
-
-fn store(scopes, name, v) {
-  mut i = scopes.size() - 1
-  while i >= 0 {
-    if scopes[i].has(name) {
-      scopes[i][name] = v
-      return nil
-    }
-    i -= 1
-  }
-  scopes[scopes.size() - 1][name] = v
-}
-
-fn binop(op, a, b) {
-  match op {
-    '+' => a + b,
-    '-' => a - b,
-    '*' => a * b,
-    '/' => a / b,
-    '%' => a % b,
-    '==' => a == b,
-    '!=' => a != b,
-    '<' => a < b,
-    '<=' => a <= b,
-    '>' => a > b,
-    _ => a >= b,
-  }
-}
+let fiblang = Peg.compile(grammar)
 
 fn run(src) {
-  let tree = lang.parse(src, 'program')
   mut fns = {}
   mut out = []
 
-  fn eval(n, scopes) {
+  fn eval(n, env) {
     match n {
       {name: 'Number', token} => to_long(token),
-      {name: 'Ident', token} => lookup(scopes, token),
-      {name: 'Neg', nodes: [x]} => -eval(x, scopes),
-      {name: 'Call', nodes: [f, args]} => call(f.token, args.nodes.map(|arg| eval(arg, scopes))),
-      {nodes: [a, op, b]} => binop(op.token, eval(a, scopes), eval(b, scopes)),
-    }
-  }
 
-  fn call(name, args) {
-    if name == 'print' {
-      out.push(args[0])
-      return nil
-    }
-    if !fns.has(name) {
-      throw "undefined function '{name}'"
-    }
-    let f = fns[name]
-    mut frame = {}
-    mut i = 0
-    while i < f.params.size() {
-      frame[f.params[i]] = args[i]
-      i += 1
-    }
-    match exec_block(f.body, [frame]) {
-      {ret} => ret,
-      _ => nil,
-    }
-  }
+      {name: 'Identifier', token} => env[token],
 
-  fn exec_block(block, scopes) {
-    for st in block.nodes {
-      let r = exec(st, scopes)
-      if r != nil {
-        return r
-      }
-    }
-    nil
-  }
+      {name: 'CONDITION', nodes: [a, op, b]} => eval(a, env) < eval(b, env),
 
-  fn exec(n, scopes) {
-    match n {
-      {name: 'Fn', nodes: [name, params, body]} => {
-        fns[name.token] = {params: params.nodes.map(|prm| prm.token), body: body}
-        nil
+      {name: 'TERNARY', nodes: [c, t, f]} => eval(c, env) ? eval(t, env) : eval(f, env),
+
+      {name: 'INFIX', nodes} => {
+        mut acc = eval(nodes[0], env)
+        mut i = 1
+        while i < nodes.size() {
+          let r = eval(nodes[i + 1], env)
+          acc = nodes[i].token == '+' ? acc + r : acc - r
+          i += 2
+        }
+        acc
       },
-      {name: 'Assign', nodes: [name, e]} => {
-        store(scopes, name.token, eval(e, scopes))
-        nil
-      },
-      {name: 'Return', nodes: [e]} => {ret: eval(e, scopes)},
-      {name: 'If', nodes} => {
-        if eval(nodes[0], scopes) {
-          exec_block(nodes[1], scopes)
-        } else if nodes.size() > 2 {
-          exec_block(nodes[2], scopes)
+
+      {name: 'CALL', nodes: [f, arg]} => {
+        let v = eval(arg, env)
+        if f.token == 'puts' {
+          out.push(v)
+          v
         } else {
-          nil
+          let d = fns[f.token]
+          mut frame = {}
+          frame[d.param] = v
+          eval(d.body, frame)
         }
       },
-      {name: 'While', nodes: [cond, body]} => {
-        mut r = nil
-        while r == nil && eval(cond, scopes) {
-          r = exec_block(body, scopes)
+
+      {name: 'FOR', nodes: [name, lo, hi, body]} => {
+        for i in to_long(lo.token)..=to_long(hi.token) {
+          mut inner = {...env}
+          inner[name.token] = i
+          eval(body, inner)
         }
-        r
+        nil
       },
-      {name: 'ExprStmt', nodes: [e]} => {
-        eval(e, scopes)
+
+      {name: 'DEFINITION', nodes: [name, param, body]} => {
+        fns[name.token] = {param: param.token, body: body}
+        nil
+      },
+
+      {name: 'STATEMENTS', nodes} => {
+        for c in nodes {
+          eval(c, env)
+        }
         nil
       },
     }
   }
 
-  exec_block(tree, [{}])
+  eval(fiblang.parse(src, 'fib'), {})
   out
 }
 
-inspect(run('
-  # 素朴な再帰と、それを使うループ
-  fn fib(n) {
-    if n < 2 { return n; }
-    return fib(n - 1) + fib(n - 2);
-  }
+inspect(run('def fib(x)
+  x < 2 ? 1 : fib(x - 2) + fib(x - 1)
 
-  i = 0;
-  while i < 10 {
-    print(fib(i));
-    i = i + 1;
-  }
-'))
-# => [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+for n from 1 to 10
+  puts(fib(n))'))
+# => [1, 2, 3, 5, 8, 13, 21, 34, 55, 89]
 ```
 
-この中には、言語の文法を書くたびに出てくる判断が4つ入っています。名前を
-付けておくと、次に自分で書くときに思い出しやすいはずです。
+この中で名前を付けておきたいものが4つあります。どれも、言語の文法を書く
+たびに出てくる話です。
 
-**キーワードは識別子から除外する必要があります。** `Ident <- < !Keyword
-[a-z_] [a-zA-Z0-9_]* >`の先読みがないと、`Primary <- ... / Ident`が
-`else`を変数名として受け付けてしまいます。止まるべき解析が、間違った形の
-まま成功してしまうわけです。`Keyword`の末尾を`![a-zA-Z0-9_]`にしてあるのは、
-`iffy`のような名前を普通の識別子のままにしておくためです。
+**すべてを式にしていることが、この文法の小ささを支えています。** 文の
+規則も、ブロックも、区切り記号も、`return`もありません。`for`も`def`も
+ほかと同じ式ですし、関数の本体は式1つです。逆に言うと、式でない機能を
+足すたびに、規則が1つと評価器の分岐が1つ増えます。
 
-**規則の名前そのものが情報を持つところに`no_ast_opt`を置きます。** 子が
-1つだけのノードは、その子で置き換えられます。これはほとんどの場所で
-ありがたい挙動で、木を帳簿ではなく構造の話に保ってくれます。
+**キーワードは2重に外す必要があります。** `Identifier <- !Keyword < ... >`
+は、`for`が変数名として読まれるのを止めます。もう半分が
+`%word <- [a-zA-Z]`です。これは「文法の中の`'for'`のようなリテラルは
+単語の切れ目で終わらなければならない」とパーサに伝えるもので、これが
+ないと`format`という変数名が`for`と`mat`に読まれてしまいます。
 
-困るのは、規則そのものが情報になっている場合です。文が1つだけの`Block`も
-`Block`のままでいてほしいですし、`Return`が返す式に潰れてしまっては困り
-ます。子を位置で読む親を持つ規則も同じで、畳まれると位置がずれてしまい
-ます。
+**AST最適化が刈り込みをしてくれるので、評価器には意味のある規則しか
+届きません。** `EXPRESSION <- TERNARY`は子が1つなので丸ごと消えます。
+`TERNARY`が残るのは実際に`?`が一致したときだけ、`CONDITION`が残るのは
+`<`が一致したときだけ、`CALL`が残るのは括弧があったときだけです。評価器の
+分岐が規則ごとではなく**概念ごと**になっているのは、そのためです。
+例外は`STATEMENTS`で、`{ no_ast_opt }`を付けてあります。文が1つだけの
+プログラムでも、その1文ではなくリストとして届いてほしいからです。
 
-**文が返すのは値ではなく合図です。** `exec`は「続行」なら`nil`を、
-「`return`が起きた」ならオブジェクトを返し、`exec_block`は最初の非`nil`で
-止まります。ここでの非局所脱出はこれだけです。`break`のある言語なら、
-同じ経路に別の形を1つ足すことになります。
+**また平らな並びが出てきます。** `INFIX <- CALL (InfixOperator CALL)*`は
+§2で見た繰り返しの形なので、`a - b - c`は子5つとして届き、評価器が§2と
+同じ6行で左から畳んでいます。もう一方の書き方
+（`INFIX <- INFIX InfixOperator CALL / CALL`）にすれば、最初から入れ子で
+届いて、分岐は子3つになります。両方が載っているので、並べて見比べて
+みてください。
 
-**スコープは配列にして、後ろから探します。** `store`は既存の束縛が
-見つかればそこへ代入し、見つからなければいちばん内側のスコープに作ります。
-関数呼び出しは、呼び出し側の内側に入れ子にするのではなく、新しいフレームを
-積みます。再帰が動くのはそのおかげです。
-
-ここから拡張していく場合、作業のほとんどは文法の側になります。文字列を
-足すなら`Str`規則と`eval`の分岐が1つずつ、`else if`の連鎖は
-`Else <- 'else' (If / Block)`にすれば自然に出てきます。第一級関数にする
-には、`call`が名前ではなく値を受け取るようにします。
+ここから育てるときも、作業はほとんど規則を足すことです。引数を2つに
+するなら`DEFINITION`の中を`Identifier (',' Identifier)*`にして、`frame`を
+リストで埋めます。演算子を増やすなら`InfixOperator`や`ConditionOperator`に
+足したうえで、§2のやり方で優先順位の段を1つ用意します。分岐を書く前に
+木の形を見たくなったら、`Peg.str`が表示してくれます（§4）。
 
 ## 4. 落とし穴
 
