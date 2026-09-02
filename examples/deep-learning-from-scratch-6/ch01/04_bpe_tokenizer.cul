@@ -1,0 +1,72 @@
+# The other half of BPE: replaying learned merge rules on new text, and
+# turning ids back into text.
+#
+# Still self-contained, and still the first stage -- no end token, no
+# pre-tokenization. `merge_rules` is an Array of `[id1, id2, new_id]` in
+# training order, because `encode` has to replay them in that order.
+
+let STRIDE = 65536
+
+fn pack(id1, id2) {
+  id1 * STRIDE + id2
+}
+
+fn merge(ids, pair, new_id) {
+  let n = ids.size()
+  mut merged = []
+  mut i = 0
+  while i < n {
+    if i < n - 1 && pack(ids[i], ids[i + 1]) == pair {
+      merged.push(new_id)
+      i += 2
+    } else {
+      merged.push(ids[i])
+      i += 1
+    }
+  }
+  merged
+}
+
+class BPETokenizer {
+  new(merge_rules) {
+    self.merge_rules = merge_rules
+
+    # id -> the bytes it stands for. Ids 0-255 are the byte values; each
+    # merged id is its two halves concatenated, and both are already in the
+    # table because ids are assigned in training order.
+    mut id_to_bytes = range(256).map(|b| [b]).collect()
+    for rule in merge_rules {
+      id_to_bytes.push(id_to_bytes[rule[0]] + id_to_bytes[rule[1]])
+    }
+    self.id_to_bytes = id_to_bytes
+    self.vocab_size = id_to_bytes.size()
+  }
+
+  encode(text) {
+    mut ids = text.bytes().collect()
+    for rule in self.merge_rules {
+      ids = merge(ids, pack(rule[0], rule[1]), rule[2])
+    }
+    ids
+  }
+
+  decode(ids) {
+    String.from_bytes(ids.flat_map(|id| self.id_to_bytes[id]))
+  }
+}
+
+# The rules ch01/03 learned.
+let merge_rules = [
+  [105, 115, 256],
+  [256, 32, 257],
+  [105, 110, 258],
+  [72, 101, 259],
+]
+let tokenizer = BPETokenizer(merge_rules)
+
+let text = 'Hello世界😁'
+let ids = tokenizer.encode(text)
+
+inspect(ids)
+# [259, 108, 108, 111, 228, 184, 150, 231, 149, 140, 240, 159, 152, 129]
+inspect(tokenizer.decode(ids))  # 'Hello世界😁'

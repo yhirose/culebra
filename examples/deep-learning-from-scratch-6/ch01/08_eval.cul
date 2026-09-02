@@ -1,0 +1,40 @@
+# What did the tokenizer actually learn, and how much does it compress?
+#
+#   culebra ch01/08_eval.cul          # the rules ch01/07 trained on the sample
+#   culebra ch01/08_eval.cul --full   # data/merge_rules_1000.json
+
+import P from '../common/paths.cul'
+import T from '../codebot/tokenizer.cul'
+
+let full = Sys.argv.contains('--full')
+let rules_path = full
+  ? P.require_data('merge_rules_1000.json')
+  : P.data('merge_rules_sample.json')
+let corpus = full
+  ? P.require_data('tiny_codes.txt')
+  : P.data('tiny_codes_sample.txt')
+
+let tokenizer = T.load_tokenizer(rules_path)
+
+# The first merges are the most frequent byte pairs; the last ones are whole
+# words the corpus repeats.
+let show = fn (label, from, to) {
+  inspect(label)
+  for id in from..to {
+    inspect("  id {id}: '{tokenizer.decode([id])}'")
+  }
+}
+
+show('first learned:', 256, 266)
+show('last learned:', tokenizer.end_token_id - 10, tokenizer.end_token_id)
+
+# Compression: bytes in, tokens out.
+let sample = FS.read(corpus).slice(0, 10000)
+let byte_count = sample.size()
+let ids = tokenizer.encode(sample)
+let ratio = to_float(byte_count) / to_float(ids.size())
+
+inspect('--- compression ---')
+inspect("bytes:  {byte_count}")
+inspect("tokens: {ids.size()}")
+inspect("ratio:  {ratio} bytes per token")

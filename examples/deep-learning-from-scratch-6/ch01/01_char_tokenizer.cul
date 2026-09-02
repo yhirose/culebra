@@ -1,0 +1,34 @@
+# A tokenizer whose vocabulary is "every Unicode character".
+#
+# Python spells the two directions `ord` and `chr`; culebra spells them
+# `s.code_points()` and `String.from_code_point`, and iterating a String
+# yields one scalar at a time.
+
+let text = 'hello世界😁'
+inspect(text.iter().collect())  # ['h', 'e', 'l', 'l', 'o', '世', '界', '😁']
+
+inspect('h'.code_points().first())     # 104
+inspect('😁'.code_points().first())  # 128513
+
+inspect(String.from_code_point(104))     # 'h'
+inspect(String.from_code_point(128513))  # '😁'
+
+let ids = text.code_points().collect()
+inspect(ids)  # [104, 101, 108, 108, 111, 19990, 30028, 128513]
+
+class CharTokenizer {
+  encode(text) {
+    text.code_points().collect()
+  }
+
+  decode(ids) {
+    String.from_code_points(ids)
+  }
+}
+
+let tokenizer = CharTokenizer()
+
+let encoded = tokenizer.encode(text)
+inspect(encoded)  # [104, 101, 108, 108, 111, 19990, 30028, 128513]
+
+inspect(tokenizer.decode(encoded))  # 'hello世界😁'

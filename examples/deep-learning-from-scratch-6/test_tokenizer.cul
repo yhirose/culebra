@@ -1,0 +1,146 @@
+# Regression tests for codebot/tokenizer.cul and common/.
+#
+# Everything here runs on inline corpora -- no download, no network, and no
+# dependency on the committed data files beyond what ch01/07 regenerates.
+
+import T from './codebot/tokenizer.cul'
+import P from './common/paths.cul'
+import D from './common/data.cul'
+
+@test
+fn pretokenize_splits_the_way_gpt2_does() {
+  # Leading spaces attach to the following word, contractions stay whole,
+  # and runs of punctuation group together.
+  assert_eq(
+    T.pretokenize("Say hello! Why hello?"),
+    ['Say', ' hello', '!', ' Why', ' hello', '?'],
+  )
+  assert_eq(T.pretokenize("it's a test"), ['it', "'s", ' a', ' test'])
+  assert_eq(T.pretokenize('x = 1'), ['x', ' =', ' 1'])
+}
+
+@test
+fn a_pair_packs_and_unpacks_and_keeps_its_order() {
+  assert_eq(T.unpack_pair(T.pack_pair(257, 32)), [257, 32])
+  assert_eq(T.unpack_pair(T.pack_pair(0, 0)), [0, 0])
+  # Packing has to be monotonic in (id1, id2) for best_pair's two-scalar
+  # tie-break to mean what upstream's three-element key means.
+  assert_true(T.pack_pair(3, 9) < T.pack_pair(4, 0))
+  assert_true(T.pack_pair(3, 8) < T.pack_pair(3, 9))
+}
+
+@test
+fn merge_replaces_every_occurrence_left_to_right() {
+  assert_eq(T.merge([1, 2, 3, 1, 2], T.pack_pair(1, 2), 4), [4, 3, 4])
+  # Overlapping matches: the left one wins and consumes both elements.
+  assert_eq(T.merge([1, 1, 1], T.pack_pair(1, 1), 9), [9, 1])
+  assert_eq(T.merge([1, 2], T.pack_pair(3, 4), 9), [1, 2])
+}
+
+@test
+fn count_pairs_counts_adjacent_pairs_only() {
+  mut counts = {}
+  T.count_pairs([1, 2, 3, 1, 2], counts)
+  assert_eq(counts[T.pack_pair(1, 2)], 2)
+  assert_eq(counts[T.pack_pair(2, 3)], 1)
+  assert_eq(counts[T.pack_pair(3, 1)], 1)
+  assert_eq(counts.size(), 3)
+}
+
+@test
+fn best_pair_breaks_a_tie_toward_the_larger_pair() {
+  # Upstream's key is `(count, id1, id2)`; with equal counts the larger
+  # (id1, id2) wins, and id1 outranks id2.
+  mut counts = {}
+  counts[T.pack_pair(1, 9)] = 2
+  counts[T.pack_pair(5, 0)] = 2
+  counts[T.pack_pair(9, 9)] = 1
+  assert_eq(T.unpack_pair(T.best_pair(counts)), [5, 0])
+}
+
+@test
+fn training_is_deterministic_and_stays_inside_a_pretoken() {
+  let text = 'Say hello! Why hello? Just hello.'
+  let a = T.train_bpe(text, 265)
+  let b = T.train_bpe(text, 265)
+  assert_eq(a, b)
+
+  # Pre-tokenization is what keeps a merge inside a word: every learned
+  # token has to be a substring of some single pre-token, so nothing can
+  # glue 'hello' to the '!' after it.
+  let tok = T.BPETokenizer(a)
+  let pretokens = T.pretokenize(text)
+  for id in 256..tok.end_token_id {
+    let piece = tok.decode([id])
+    assert_true(pretokens.any(|p| p.contains(piece)))
+  }
+}
+
+@test
+fn encode_and_decode_round_trip_including_the_end_token() {
+  let rules = T.train_bpe('Hello world!<|endoftext|>This is BPE training.', 280)
+  let tok = T.BPETokenizer(rules)
+  assert_eq(tok.end_token_id, 256 + rules.size())
+  assert_eq(tok.vocab_size, 257 + rules.size())
+
+  for text in ['Hello world!', '<|endoftext|>', 'a<|endoftext|>b', 'Hello世界😁', ''] {
+    assert_eq(tok.decode(tok.encode(text)), text)
+  }
+
+  # The end token is one id, not a run of bytes.
+  assert_eq(tok.encode('<|endoftext|>'), [tok.end_token_id])
+}
+
+@test
+fn a_hand_written_rule_table_encodes_the_way_upstream_prints_it() {
+  # ch01/04's example, rules and all.
+  let tok = T.BPETokenizer([
+    [105, 115, 256],
+    [256, 32, 257],
+    [105, 110, 258],
+    [72, 101, 259],
+  ])
+  assert_eq(
+    tok.encode('Hello世界😁'),
+    [259, 108, 108, 111, 228, 184, 150, 231, 149, 140, 240, 159, 152, 129],
+  )
+  assert_eq(tok.decode(tok.encode('Hello世界😁')), 'Hello世界😁')
+}
+
+# One scratch file, removed on every exit path -- a failing assertion
+# inside must not leave it behind.
+fn with_temp_file(name, f) {
+  let path = FS.join(FS.temp_dir(), name)
+  defer {
+    FS.remove(path) if FS.exists(path)
+  }
+  f(path)
+}
+
+@test
+fn merge_rules_survive_a_json_round_trip() {
+  let rules = T.train_bpe('abcabcabc', 260)
+  with_temp_file('dl6_rules_test.json', fn (path) {
+    T.save_merge_rules(rules, path)
+    assert_eq(T.load_merge_rules(path), rules)
+  })
+}
+
+@test
+fn a_token_stream_survives_the_uint16_binary_round_trip() {
+  let tokens = [0, 1, 255, 256, 257, 999, 65535]
+  with_temp_file('dl6_bin_test.bin', fn (path) {
+    D.write_bin_u16(path, tokens)
+    # Two bytes per token, little-endian, exactly like numpy's tofile.
+    assert_eq(FS.read(path).size(), 2 * tokens.size())
+    assert_eq(D.read_bin_u16(path), tokens)
+  })
+}
+
+@test
+fn the_package_root_is_found_from_a_test_file_at_the_root() {
+  let root = P.package_root()
+  assert_true(FS.exists(FS.join(root, 'codebot', 'tokenizer.cul')))
+  assert_eq(FS.basename(P.data('x.txt')), 'x.txt')
+  assert_true(P.data('x.txt').contains('data'))
+}

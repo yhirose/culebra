@@ -1,0 +1,30 @@
+# Train the tokenizer this book's model actually uses, on the TinyCodes
+# corpus, and save the merge rules for every later chapter to load.
+#
+#   culebra ch01/07_tiny_codes.cul          # data/tiny_codes_sample.txt (~256 KB)
+#   culebra ch01/07_tiny_codes.cul --full   # data/tiny_codes.txt (6.5 MB, needs
+#                                           # `just fetch-llm-data`)
+#
+# `--full` writes `data/merge_rules_1000.json`, which is generated and not
+# committed. The sample run below takes about 2.5 minutes -- ch04 is the
+# chapter that makes this fast.
+
+import P from '../common/paths.cul'
+import T from '../codebot/tokenizer.cul'
+
+let full = Sys.argv.contains('--full')
+let corpus = full
+  ? P.require_data('tiny_codes.txt')
+  : P.data('tiny_codes_sample.txt')
+let vocab_size = 1000
+
+let text = FS.read(corpus)
+inspect("corpus: {FS.basename(corpus)} ({text.size()} bytes)")
+
+let t0 = Sys.time()
+let merge_rules = T.train_bpe(text, vocab_size)
+inspect("{merge_rules.size()} merge rules in {Sys.time() - t0}s")
+
+let out = P.data(full ? 'merge_rules_1000.json' : 'merge_rules_sample.json')
+T.save_merge_rules(merge_rules, out)
+inspect("saved {FS.basename(out)}")

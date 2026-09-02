@@ -1,0 +1,30 @@
+# A tokenizer whose vocabulary is the 256 byte values.
+#
+# Every character now costs one to four ids, but the vocabulary is finite
+# and nothing is ever out-of-vocabulary. `s.bytes()` walks the UTF-8
+# encoding itself; `String.from_bytes` is its inverse and does no
+# validation, so a partial character round-trips as its raw bytes.
+
+inspect('A'.bytes().collect())    # [65]
+inspect('あ'.bytes().collect())  # [227, 129, 130]
+
+inspect(String.from_bytes([65]))  # 'A'
+
+class ByteTokenizer {
+  encode(text) {
+    text.bytes().collect()
+  }
+
+  decode(ids) {
+    String.from_bytes(ids)
+  }
+}
+
+let tokenizer = ByteTokenizer()
+let text = 'hello世界😁'
+
+let ids = tokenizer.encode(text)
+inspect(ids)
+# [104, 101, 108, 108, 111, 228, 184, 150, 231, 149, 140, 240, 159, 152, 129]
+
+inspect(tokenizer.decode(ids))  # 'hello世界😁'

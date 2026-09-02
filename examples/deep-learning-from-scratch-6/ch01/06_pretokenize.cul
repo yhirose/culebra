@@ -1,0 +1,35 @@
+# Pre-tokenization: split the text into word-ish chunks *before* counting
+# pairs, so no merged token can straddle a word boundary.
+#
+# Without it, " hello" and "hello." compete as separate strings and the
+# merge table fills up with punctuation glued to words. The pattern below
+# is GPT-2's, and culebra's Regex takes it verbatim -- `\p{L}`, `\p{N}` and
+# the `(?!\S)` lookahead all work as written.
+#
+# This is the last piece; `codebot/tokenizer.cul` is this file, tidied.
+
+import T from '../codebot/tokenizer.cul'
+
+# A backtick raw string: the pattern itself contains `'`.
+let PATTERN = re`'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`
+
+fn pretokenize(text) {
+  PATTERN.find_all(text).map(|m| m.value)
+}
+
+inspect(pretokenize("Say hello! Why hello?"))
+# ['Say', ' hello', '!', ' Why', ' hello', '?']
+
+let sample_text = 'Say hello! Why hello? Just hello.<|endoftext|>Good morning!'
+let merge_rules = T.train_bpe(sample_text, 270)
+let tokenizer = T.BPETokenizer(merge_rules)
+
+let text = 'Say hello!'
+let ids = tokenizer.encode(text)
+inspect(ids)
+inspect(tokenizer.decode(ids))
+
+# What each id stands for -- the merged ones are whole words now.
+for id in ids {
+  inspect("{id} -> '{tokenizer.decode([id])}'")
+}

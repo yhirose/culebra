@@ -1,0 +1,116 @@
+# A special token: `<|endoftext|>` marks a document boundary.
+#
+# It gets one id of its own, above every merged id, and it never takes part
+# in a merge -- training splits the corpus on it first, so no merged token
+# can ever straddle two documents.
+
+let STRIDE = 65536
+let END_TOKEN = '<|endoftext|>'
+
+fn pack(id1, id2) {
+  id1 * STRIDE + id2
+}
+
+fn unpack(key) {
+  [key / STRIDE, key % STRIDE]
+}
+
+fn count_pairs(ids, counts) {
+  for w in ids.iter().windows(2) {
+    let key = pack(w[0], w[1])
+    counts[key] = counts.get(key, 0) + 1
+  }
+  counts
+}
+
+fn merge(ids, pair, new_id) {
+  let n = ids.size()
+  mut merged = []
+  mut i = 0
+  while i < n {
+    if i < n - 1 && pack(ids[i], ids[i + 1]) == pair {
+      merged.push(new_id)
+      i += 2
+    } else {
+      merged.push(ids[i])
+      i += 1
+    }
+  }
+  merged
+}
+
+fn train_bpe(input_text, vocab_size, end_token = END_TOKEN) {
+  # Split on the special token, so a merge can never cross a document.
+  mut ids_list = input_text.split(end_token).map(|text| text.bytes().collect())
+
+  # 256 byte values, one slot for the end token, the rest are merges.
+  let num_merges = vocab_size - 256 - 1
+  mut merge_rules = []
+
+  for step in 0..num_merges {
+    mut counts = {}
+    for ids in ids_list {
+      count_pairs(ids, counts)
+    }
+    break if counts.empty()
+
+    let best = counts.keys().max_by(|k| counts[k])
+    let new_id = 256 + step
+    merge_rules.push(unpack(best) + [new_id])
+    ids_list = ids_list.map(|ids| merge(ids, best, new_id))
+  }
+
+  merge_rules
+}
+
+let sample_text = 'Hello world!<|endoftext|>This is BPE training.'
+let merge_rules = train_bpe(sample_text, 260)
+for rule in merge_rules {
+  inspect("({rule[0]}, {rule[1]}) -> {rule[2]}")
+}
+# (105, 115) -> 256 / (256, 32) -> 257 / (105, 110) -> 258
+
+class BPETokenizer {
+  new(merge_rules, end_token = END_TOKEN) {
+    self.merge_rules = merge_rules
+    self.end_token = end_token
+    self.end_token_id = 256 + merge_rules.size()
+
+    mut id_to_bytes = range(256).map(|b| [b]).collect()
+    for rule in merge_rules {
+      id_to_bytes.push(id_to_bytes[rule[0]] + id_to_bytes[rule[1]])
+    }
+    id_to_bytes.push(end_token.bytes().collect())
+    self.id_to_bytes = id_to_bytes
+    self.vocab_size = id_to_bytes.size()
+  }
+
+  encode_text(text) {
+    mut ids = text.bytes().collect()
+    for rule in self.merge_rules {
+      ids = merge(ids, pack(rule[0], rule[1]), rule[2])
+    }
+    ids
+  }
+
+  # Splitting drops the separator, so put its id back between the parts.
+  encode(input_text) {
+    mut all_ids = []
+    for i, text in input_text.split(self.end_token).enumerate() {
+      all_ids.push(self.end_token_id) if i > 0
+      all_ids.extend(self.encode_text(text))
+    }
+    all_ids
+  }
+
+  decode(ids) {
+    String.from_bytes(ids.flat_map(|id| self.id_to_bytes[id]))
+  }
+}
+
+let tokenizer = BPETokenizer(merge_rules)
+
+let text = 'Hello world!<|endoftext|>'
+let ids = tokenizer.encode(text)
+inspect(ids)
+inspect(tokenizer.decode(ids))

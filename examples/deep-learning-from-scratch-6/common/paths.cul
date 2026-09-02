@@ -1,0 +1,50 @@
+# Where this package's data and checkpoints live, resolved from the running
+# script rather than the working directory.
+#
+# Upstream's chapter scripts `os.chdir` to the repo root on their first two
+# lines so their relative paths resolve. `Sys.script` is the entry script's
+# absolute path even when read from inside an imported module, so the same
+# job takes no chdir and no argument passing.
+
+# Walk up from the running script until the directory that holds this
+# module. Chapter scripts sit one level down, the test files sit at the
+# root, and `culebra test <dir>` runs them from wherever the user is.
+fn package_root() {
+  mut dir = FS.dirname(Sys.script)
+  while !FS.exists(FS.join(dir, 'common', 'paths.cul')) {
+    let parent = FS.dirname(dir)
+    if parent == dir || parent.empty() {
+      throw {
+        kind: "IOError",
+        message: "deep-learning-from-scratch-6: no package root above {Sys.script}",
+      }
+    }
+    dir = parent
+  }
+  dir
+}
+
+fn data(name) {
+  FS.join(package_root(), 'data', name)
+}
+
+fn checkpoint(name) {
+  FS.join(package_root(), 'checkpoints', name)
+}
+
+# `just fetch-llm-data` puts the large corpora under `data/`, and the
+# `--full` scripts generate the rest. Anything a script reads should come
+# through here, so a missing file names the task that produces it instead
+# of failing as a bare `FS.read` deep inside the tokenizer.
+fn require_data(name) {
+  let path = data(name)
+  if !FS.exists(path) {
+    throw {
+      kind: "IOError",
+      message: "{name} not found under {FS.dirname(path)}; run `just fetch-llm-data` from the repo root first",
+    }
+  }
+  path
+}
+
+export {package_root, data, checkpoint, require_data}

@@ -1,0 +1,174 @@
+# Byte-level BPE, ported from upstream `codebot/tokenizer.py`.
+#
+# The chapter scripts under ch01/ build this up one idea at a time; this is
+# the finished version they converge on, and the one every later chapter
+# imports.
+#
+# Two things differ from a transliteration:
+#
+#   - A pair of adjacent ids is one packed `Long` key, not a tuple. Object
+#     keys are hashed, and packing is much cheaper than interpolating
+#     `"{a},{b}"` (measured: 0.048 s vs 1.22 s for one count sweep over the
+#     first 500 KB of tiny_codes.txt, `culebra` release build, single run).
+#     Packing is also monotonic in `(id1, id2)` lexicographic order, which
+#     is what makes the tie-break below a two-scalar comparison.
+#   - `merge_rules` is an Array of `[id1, id2, new_id]` triples rather than
+#     a dict. The order is the training order and `encode` replays it, so
+#     making that explicit beats relying on a map's iteration order.
+
+# GPT-2's pre-tokenizer. A backtick raw string because the pattern itself
+# contains `'` (the `'s`/`'ll` contraction alternative). The source is kept
+# beside the compiled form because a compiled Regex is a native handle and
+# cannot cross an isolate boundary -- a parallel worker recompiles it.
+let PRETOKEN_PATTERN = `'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`
+let PRETOKEN_RE = Regex.compile(PRETOKEN_PATTERN)
+
+let END_TOKEN = '<|endoftext|>'
+
+# Ids stay below this, so `id1 * PAIR_STRIDE + id2` is injective and ordered.
+# 2^20 leaves room for the 50,000-entry vocabulary ch07 trains.
+let PAIR_STRIDE = 1048576
+
+fn pack_pair(id1, id2) {
+  id1 * PAIR_STRIDE + id2
+}
+
+fn unpack_pair(key) {
+  [key / PAIR_STRIDE, key % PAIR_STRIDE]
+}
+
+fn pretokenize(text) {
+  PRETOKEN_RE.find_all(text).map(|m| m.value)
+}
+
+# Adds every adjacent pair in `ids` to `counts`, which the caller owns so a
+# whole corpus can be swept into one table.
+fn count_pairs(ids, counts) {
+  for w in ids.iter().windows(2) {
+    let key = pack_pair(w[0], w[1])
+    counts[key] = counts.get(key, 0) + 1
+  }
+  counts
+}
+
+# The most frequent pair, ties broken toward the larger `(id1, id2)` --
+# upstream's `max(counts, key=lambda p: (counts[p], p[0], p[1]))`. A packed
+# key orders the same way as that pair, so this needs two scalars, not three.
+fn best_pair(counts) {
+  let wins = |a, b| counts[a] != counts[b] ? counts[a] > counts[b] : a > b
+  counts
+    .keys()
+    .reduce(nil, |best, key| best == nil || wins(key, best) ? key : best)
+}
+
+# Every `pair` in `ids` replaced by `new_id`, left to right.
+fn merge(ids, pair, new_id) {
+  let n = ids.size()
+  mut out = []
+  mut i = 0
+  while i < n {
+    if i < n - 1 && pack_pair(ids[i], ids[i + 1]) == pair {
+      out.push(new_id)
+      i += 2
+    } else {
+      out.push(ids[i])
+      i += 1
+    }
+  }
+  out
+}
+
+# Greedy BPE over `input_text`, split first on `end_token` (which never
+# takes part in a merge) and then into pre-tokens (so no merge crosses a
+# word boundary). Returns `[[id1, id2, new_id], ...]` in training order.
+fn train_bpe(input_text, vocab_size, end_token = END_TOKEN) {
+  mut ids_list = []
+  for text in input_text.split(end_token) {
+    for pretoken in pretokenize(text) {
+      ids_list.push(pretoken.bytes().collect())
+    }
+  }
+
+  # 256 single bytes plus one slot for the end token.
+  let num_merges = vocab_size - 256 - 1
+  mut merge_rules = []
+
+  for step in 0..num_merges {
+    mut counts = {}
+    for ids in ids_list {
+      count_pairs(ids, counts)
+    }
+    break if counts.empty()
+
+    let pair = best_pair(counts)
+    let new_id = 256 + step
+    merge_rules.push(unpack_pair(pair) + [new_id])
+    ids_list = ids_list.map(|ids| merge(ids, pair, new_id))
+  }
+
+  merge_rules
+}
+
+class BPETokenizer {
+  new(merge_rules, end_token = END_TOKEN) {
+    self.merge_rules = merge_rules
+    self.end_token = end_token
+    self.end_token_id = 256 + merge_rules.size()
+
+    # id -> the bytes it stands for. An Array indexed by id rather than a
+    # map: ids are dense and assigned in order, so the merged entry's two
+    # halves are always already filled in.
+    mut id_to_bytes = range(256).map(|b| [b]).collect()
+    for rule in merge_rules {
+      id_to_bytes.push(id_to_bytes[rule[0]] + id_to_bytes[rule[1]])
+    }
+    id_to_bytes.push(end_token.bytes().collect())
+    self.id_to_bytes = id_to_bytes
+    self.vocab_size = id_to_bytes.size()
+  }
+
+  # The merge rules replayed in training order over one pre-token.
+  encode_pretoken(pretoken) {
+    mut ids = pretoken.bytes().collect()
+    for rule in self.merge_rules {
+      ids = merge(ids, pack_pair(rule[0], rule[1]), rule[2])
+    }
+    ids
+  }
+
+  # Splitting on the end token drops it, so put its id back between the
+  # parts -- upstream keeps it with a capturing `re.split` instead.
+  encode(input_text) {
+    mut all_ids = []
+    for i, part in input_text.split(self.end_token).enumerate() {
+      all_ids.push(self.end_token_id) if i > 0
+      for pretoken in pretokenize(part) {
+        all_ids.extend(self.encode_pretoken(pretoken))
+      }
+    }
+    all_ids
+  }
+
+  # Unlike upstream's `errors="replace"`, a byte sequence that is not valid
+  # UTF-8 (a token cut mid-character) comes back as those raw bytes rather
+  # than U+FFFD -- culebra Strings carry arbitrary bytes.
+  decode(ids) {
+    String.from_bytes(ids.flat_map(|id| self.id_to_bytes[id]))
+  }
+}
+
+# `[[id1, id2, new_id], ...]` as JSON. Upstream pickles the dict; JSON keeps
+# the file readable and the order explicit.
+fn save_merge_rules(merge_rules, path) {
+  FS.write(path, JSON.stringify(merge_rules))
+}
+
+fn load_merge_rules(path) {
+  JSON.parse(FS.read(path))
+}
+
+fn load_tokenizer(path, end_token = END_TOKEN) {
+  BPETokenizer(load_merge_rules(path), end_token)
+}
+
+export {END_TOKEN, PRETOKEN_PATTERN, PRETOKEN_RE, BPETokenizer, pretokenize, pack_pair, unpack_pair, count_pairs, best_pair, merge, train_bpe, save_merge_rules, load_merge_rules, load_tokenizer}

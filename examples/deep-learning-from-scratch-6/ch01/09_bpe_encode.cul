@@ -1,0 +1,36 @@
+# Encode the whole corpus once and keep the ids, so training never pays for
+# tokenization again.
+#
+#   culebra ch01/09_bpe_encode.cul          # the sample
+#   culebra ch01/09_bpe_encode.cul --full   # data/tiny_codes.txt -> .bin
+#
+# The output is upstream's format: a flat run of little-endian uint16, what
+# `np.array(ids, dtype=np.uint16).tofile(...)` writes.
+
+import P from '../common/paths.cul'
+import D from '../common/data.cul'
+import T from '../codebot/tokenizer.cul'
+
+let full = Sys.argv.contains('--full')
+let rules_path = full
+  ? P.require_data('merge_rules_1000.json')
+  : P.data('merge_rules_sample.json')
+let corpus = full
+  ? P.require_data('tiny_codes.txt')
+  : P.data('tiny_codes_sample.txt')
+let out = P.data(full ? 'tiny_codes.bin' : 'tiny_codes_sample.bin')
+
+let tokenizer = T.load_tokenizer(rules_path)
+let text = FS.read(corpus)
+
+let t0 = Sys.time()
+let ids = tokenizer.encode(text)
+inspect("encoded {text.size()} bytes into {ids.size()} tokens in {Sys.time() - t0}s")
+
+D.write_bin_u16(out, ids)
+inspect("wrote {FS.basename(out)}")
+inspect("first 20: {ids.slice(0, 20)}")
+
+# Read it back the way every training script will.
+let back = D.read_bin_u16(out)
+inspect("round-trips: {back.size() == ids.size() && back.slice(0, 20) == ids.slice(0, 20)}")

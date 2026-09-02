@@ -1,0 +1,84 @@
+# Byte-pair encoding, trained.
+#
+# Count every adjacent pair, merge the most frequent one into a new id,
+# repeat. This file is self-contained on purpose -- it is the first stage,
+# before pre-tokenization (ch01/06) and before the end token (ch01/05).
+#
+# A pair is one packed `Long` here rather than a tuple, so it can be a
+# dictionary key: `id1 * 65536 + id2`.
+
+let STRIDE = 65536
+
+fn pack(id1, id2) {
+  id1 * STRIDE + id2
+}
+
+fn unpack(key) {
+  [key / STRIDE, key % STRIDE]
+}
+
+fn count_pairs(ids) {
+  mut counts = {}
+  for w in ids.iter().windows(2) {
+    let key = pack(w[0], w[1])
+    counts[key] = counts.get(key, 0) + 1
+  }
+  counts
+}
+
+let example_ids = [1, 2, 3, 1, 2]
+let counts = count_pairs(example_ids)
+for key in counts.keys() {
+  inspect("{unpack(key)}: {counts[key]}")
+}
+# [1, 2]: 2 / [2, 3]: 1 / [3, 1]: 1
+
+fn merge(ids, pair, new_id) {
+  let n = ids.size()
+  mut merged = []
+  mut i = 0
+  while i < n {
+    if i < n - 1 && pack(ids[i], ids[i + 1]) == pair {
+      merged.push(new_id)
+      i += 2
+    } else {
+      merged.push(ids[i])
+      i += 1
+    }
+  }
+  merged
+}
+
+inspect(merge(example_ids, pack(1, 2), 4))  # [4, 3, 4]
+
+fn train_bpe(text, vocab_size) {
+  # The text as one flat run of byte ids.
+  mut ids = text.bytes().collect()
+
+  # 256 byte values are the starting vocabulary; the rest are merges.
+  let num_merges = vocab_size - 256
+  mut merge_rules = []
+
+  for step in 0..num_merges {
+    let counts = count_pairs(ids)
+    break if counts.empty()
+
+    # The most frequent pair. `max_by` keeps the earlier element on a tie,
+    # which is what Python's `max` does over an insertion-ordered dict.
+    # ch01/07 and the shared tokenizer break ties explicitly instead, so
+    # that a second run cannot pick a different pair.
+    let best = counts.keys().max_by(|k| counts[k])
+
+    let new_id = 256 + step
+    merge_rules.push(unpack(best) + [new_id])
+    ids = merge(ids, best, new_id)
+  }
+
+  merge_rules
+}
+
+let rules = train_bpe('Hello world! This is BPE training.', 260)
+for rule in rules {
+  inspect("({rule[0]}, {rule[1]}) -> {rule[2]}")
+}
+# (105, 115) -> 256 / (256, 32) -> 257 / (105, 110) -> 258 / (72, 101) -> 259
