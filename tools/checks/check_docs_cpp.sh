@@ -86,11 +86,21 @@ while IFS= read -r line; do
   printf '#include <%s>\n' "$hdr" \
     | "$CXXBIN" -std=c++23 -fsyntax-only -x c++ - 2>/dev/null && continue
   echo "docs-cpp FAIL: <$hdr> is neither under include/ nor findable —" >&2
-  echo "  renamed, moved, or a typo. Named in a \`\`\`cpp block." >&2
+  echo "  renamed, moved, or a typo. Named by a \`\`\`cpp block in the docs" >&2
+  echo "  or by the embedding sample on the landing page." >&2
   missing=1
-done < <(grep -ho '#include *<[^>]*>' "$TMP"/*.cpp 2>/dev/null | sort -u)
+done < <({
+  grep -ho '#include *<[^>]*>' "$TMP"/*.cpp 2>/dev/null
+  # The landing page carries the same embedding sample, HTML-escaped, so no
+  # pass that rewrites `#include <x>` ever touched it. It sat one release
+  # behind the headers until this check reached it.
+  # Tags first (they use real angle brackets), then the entities that spell
+  # the include's own brackets — the other order eats `#include</span>`.
+  sed -e 's/<[^>]*>//g' -e 's/&lt;/</g' -e 's/&gt;/>/g' site/*.html 2>/dev/null \
+    | grep -ho '#include *<[^>]*>'
+} | sort -u)
 (( missing )) && fail=1
-(( missing )) || echo "docs-cpp OK (includes): every <header> in $blocks block(s) resolves"
+(( missing )) || echo "docs-cpp OK (includes): every <header> in $blocks block(s) and site/ resolves"
 
 (( fast )) && exit $fail
 
