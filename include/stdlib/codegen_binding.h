@@ -88,6 +88,7 @@ inline bool register_codegen_binding() {
                                                        {"on"})
       .method<&codegen::Module::verify>("verify")
       .method<&codegen::Module::run>("run")
+      .method<&codegen::Module::compile>("compile")
       .method<&codegen::Module::dump_ir>("dump_ir")
       .method<&codegen::Module::dump_bc>("dump_bc")
       .method<&codegen::Module::num_nodes>("num_nodes")
@@ -134,6 +135,22 @@ inline bool register_codegen_binding() {
                                               {"cmap", "index"})
       .method<&codegen::Module::capture_index>("capture_index",
                                                 {"cmap", "index"});
+
+  // Program has no .ctor: Module::compile() is the only way to get one, so
+  // that a Program's existence itself means its module passed verify().
+  wrap<codegen::Program>("CodeGen", "Program")
+      // The depth bound's default is cpp-vmlib's own, read from it rather
+      // than copied: a submodule bump that changes it must not leave this
+      // behind naming the old one.
+      .method<&codegen::Program::run>(
+          "run", {{"rt", nullptr},
+                  {"max_call_depth", vm::RunOptions{}.max_call_depth}})
+      .method<&codegen::Program::dump_bc>("dump_bc");
+  wrap<codegen::Runtime>("CodeGen", "Runtime")
+      .ctor<>()
+      .method<&codegen::Runtime::live_objects>("live_objects")
+      .method<&codegen::Runtime::heap_bytes>("heap_bytes")
+      .method<&codegen::Runtime::collect>("collect");
   return true;
 }
 

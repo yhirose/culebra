@@ -6463,7 +6463,7 @@ failure class `verify()` itself reports.
 | `m.node_col(node:)` | the node's own source column |
 | `m.num_children(node:)` | how many children `node` has |
 | `m.child(node:, index:)` | the `index`-th child, as a node id |
-| `m.const_kind(node:)` | which of the four payloads a `literal` node holds — `'nil'`/`'int'`/`'bool'`/`'double'`/`'str'` |
+| `m.const_kind(node:)` | which of the five kinds a `literal` node holds — `'nil'`/`'int'`/`'bool'`/`'double'`/`'str'` |
 | `m.int_const(node:)` | an int literal's value; fails on any other kind |
 | `m.bool_const(node:)` | a bool literal's value; fails on any other kind |
 | `m.double_const(node:)` | a double literal's value; fails on any other kind |
@@ -6496,6 +6496,49 @@ failure class `verify()` itself reports.
 `node_op`/`var_kind`/`capture_kind`/`const_kind` return the same strings the
 builders above accept as `op:`/`kind:`/`name:` — a value read back from one
 of these can be fed straight into another builder call.
+
+### Compiling once, running many times
+
+`m.compile()` does everything `m.run()` does except the run itself:
+verifies `m` and returns a `CodeGen.Program`, so a script can run the same
+compiled program more than once, or inspect the heap in between runs —
+neither is possible through `m.run()` alone.
+
+| Call | Does |
+| --- | --- |
+| `m.compile()` | verifies `m`; returns a `CodeGen.Program` |
+| `CodeGen.Runtime.new()` | an empty heap a program can run on |
+| `p.run(rt:, max_call_depth:)` | runs the program; both optional — `rt` defaults to a throwaway heap (same as `m.run()`), `max_call_depth` to `10000` |
+| `p.dump_bc()` | `m.dump_bc()`'s output for the already-compiled program |
+| `rt.live_objects()` | the heap's current object count |
+| `rt.heap_bytes()` | the heap's current size in bytes |
+| `rt.collect()` | a full collection now — the same one the `'collect'` intrinsic runs from inside a program, run from outside instead; answers how many objects it freed |
+
+```culebra
+let m = CodeGen.Module.new()
+let forty_two = m.binary(op: 'add', lhs: m.literal(v: 40, line: 1, col: 1),
+                         rhs: m.literal(v: 2, line: 1, col: 1), line: 1, col: 1)
+let args = m.list_new()
+m.list_push(args, forty_two)
+m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+           body: m.intrinsic(name: 'print', args_list: args, line: 1, col: 1))
+m.verify()
+
+let p = m.compile()
+let rt = CodeGen.Runtime.new()
+p.run(rt: rt)  # => 42
+p.run(rt: rt)  # => 42
+inspect(rt.live_objects())  # => 0
+```
+
+A `Runtime` that still holds objects from a *different* compiled program
+refuses to run one: a `Program`'s closures index their own chunk table, and
+reading another program's would misread it. `rt.collect()` — or simply
+using a fresh `Runtime` — clears the way.
+
+`entry_frame_drops` is a property of the compiled `Program`, not a `run()`
+argument: call `m.set_entry_frame_drops(on:)` before `compile()` to decide
+it, the same flag that already decides what `m.run()` does.
 
 ### Variables are captures, not static links
 
@@ -6553,8 +6596,9 @@ closures, and generator activations (see `set_generator`); a variable's
 capture is resolved once, when a front end builds the IR, not at run time. A closure
 built with `make_closure` is a first-class value: storable in a variable,
 passable as a `call_value` argument, returnable as a function's result.
-A `CodeGen.Module` cannot cross an isolate boundary
-(`Isolate.spawn`/`Parallel.map`'s workers each build their own).
+Neither `CodeGen.Module`, `CodeGen.Program` nor `CodeGen.Runtime` can cross
+an isolate boundary (`Isolate.spawn`/`Parallel.map`'s workers each build
+their own).
 
 ## 36. `StateMachine`
 

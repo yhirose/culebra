@@ -6277,7 +6277,7 @@ Dumperと同じ経路で木を辿れる。不正なnode/func/cmap id、あるい
 | `m.node_col(node:)` | そのノード自身のソース列 |
 | `m.num_children(node:)` | `node`の子の数 |
 | `m.child(node:, index:)` | `index`番目の子。ノードidで返る |
-| `m.const_kind(node:)` | `literal`ノードが持つ4種の実体のどれか —— `'nil'`/`'int'`/`'bool'`/`'double'`/`'str'` |
+| `m.const_kind(node:)` | `literal`ノードが持つ5種のどれか —— `'nil'`/`'int'`/`'bool'`/`'double'`/`'str'` |
 | `m.int_const(node:)` | int literalの値。他の種類では失敗する |
 | `m.bool_const(node:)` | bool literalの値。他の種類では失敗する |
 | `m.double_const(node:)` | double literalの値。他の種類では失敗する |
@@ -6310,6 +6310,49 @@ Dumperと同じ経路で木を辿れる。不正なnode/func/cmap id、あるい
 `node_op`/`var_kind`/`capture_kind`/`const_kind`が返す文字列は、上のbuilderが
 `op:`/`kind:`/`name:`として受け取るのと同じもの —— これらで読み戻した値は、
 そのまま別のbuilder呼び出しに渡せる。
+
+### 1度コンパイルして何度も走らせる
+
+`m.compile()`は`m.run()`が行うことのうち実行そのものを除く全て —— `m`を
+verifyし、`CodeGen.Program`を返す。だから同じコンパイル済みプログラムを
+2度以上走らせたり、runの合間にheapを覗いたりできる —— どちらも`m.run()`
+だけでは不可能だった。
+
+| 呼び出し | すること |
+| --- | --- |
+| `m.compile()` | `m`をverifyする。`CodeGen.Program`を返す |
+| `CodeGen.Runtime.new()` | プログラムが走れる空のheap |
+| `p.run(rt:, max_call_depth:)` | プログラムを走らせる。両方省略可能 —— `rt`は既定で使い捨てheap(`m.run()`と同じ)、`max_call_depth`は既定で`10000` |
+| `p.dump_bc()` | コンパイル済みプログラムに対する`m.dump_bc()`の出力 |
+| `rt.live_objects()` | そのheapの現在のオブジェクト数 |
+| `rt.heap_bytes()` | そのheapの現在のバイト数 |
+| `rt.collect()` | その場で完全なcollectionを走らせる —— プログラムの中から`'collect'`intrinsicが走らせるのと同じものを外から走らせる。解放したオブジェクト数を返す |
+
+```culebra
+let m = CodeGen.Module.new()
+let forty_two = m.binary(op: 'add', lhs: m.literal(v: 40, line: 1, col: 1),
+                         rhs: m.literal(v: 2, line: 1, col: 1), line: 1, col: 1)
+let args = m.list_new()
+m.list_push(args, forty_two)
+m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+           body: m.intrinsic(name: 'print', args_list: args, line: 1, col: 1))
+m.verify()
+
+let p = m.compile()
+let rt = CodeGen.Runtime.new()
+p.run(rt: rt)  # => 42
+p.run(rt: rt)  # => 42
+inspect(rt.live_objects())  # => 0
+```
+
+**別の**コンパイル済みプログラムのオブジェクトをまだ保持している`Runtime`
+では走らせられない: `Program`のクロージャは自分自身のchunk表を指すindexを
+持つので、別プログラムのchunk表を読むと読み違える。`rt.collect()`(または
+単に新しい`Runtime`を使うこと)で道が空く。
+
+`entry_frame_drops`はコンパイル済み`Program`のプロパティであって`run()`の
+引数ではない: `compile()`より前に`m.set_entry_frame_drops(on:)`を呼んで
+決める —— `m.run()`の挙動を決めているのと同じフラグだ。
 
 ### 変数はcaptureであり静的リンクではない
 
@@ -6364,7 +6407,8 @@ exceeded"`)を送出する。
 generatorの活性化(`set_generator`を参照)。変数のcaptureはフロントエンドがIRを
 組み立てる時点で一度だけ解決され、実行時には解決されない。`make_closure`で
 組み立てたクロージャは第一級値で、変数に保持でき、`call_value`の引数として
-渡せ、関数の結果として返せる。`CodeGen.Module`はisolateの境界を越えられない
+渡せ、関数の結果として返せる。`CodeGen.Module`・`CodeGen.Program`・
+`CodeGen.Runtime`のいずれもisolateの境界を越えられない
 (`Isolate.spawn`/`Parallel.map`のworkerはそれぞれ自分自身のModuleを組み立てる)。
 
 ## 36. `StateMachine`

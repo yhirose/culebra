@@ -1,16 +1,19 @@
 #pragma once
 // CodeGen.Module -- a script-visible builder over cpp-vmlib's Core-IR and its
-// register-bytecode compiler/executor (vendor/cpp-vmlib). Wrapped for scripts
-// via wrap.h in codegen_binding.h.
+// register-bytecode compiler/executor (vendor/cpp-vmlib), plus Program and
+// Runtime (below), the compile-once/run-many-times split over the same
+// library. Wrapped for scripts via wrap.h in codegen_binding.h.
 //
-// IR nodes are plain int64_t (coreir::NodeId::v), not handles: wrap.h cannot
-// marshal a handle or an array as a method argument (see wrap.h's own
-// jit_arg_get), so every node a script holds onto has to be a scalar, and
-// this Module is the only object wrap.h needs to wrap at all. Variadic
-// shapes (a Block's statements, a Call's arguments, a capture map's entries)
-// go through a small generic list-staging mechanism for the same reason --
-// see list_new/list_push and capture_map_new/capture_map_push below.
+// IR nodes are plain int64_t (coreir::NodeId::v), not handles: a Module
+// method taking one as an argument only needs a scalar, not wrap.h's
+// (newer) handle-argument support, and every node a script holds onto has
+// to be a scalar regardless -- there is no reader that could hand one back
+// any other way. Variadic shapes (a Block's statements, a Call's arguments,
+// a capture map's entries) go through a small generic list-staging
+// mechanism for the same reason -- see list_new/list_push and
+// capture_map_new/capture_map_push below.
 
+#include <atomic>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -23,6 +26,83 @@
 #include "base/shared.h"  // culebra::CulebraError
 
 namespace culebra::codegen {
+
+class Program;
+
+// The compile-time-checked heap CodeGen.Program.run() actually runs on.
+// Exposes only what a host may safely watch from outside: live_objects()/
+// heap_bytes() (Runtime::collect() runs every condemned object's drop hook
+// first, same as the 'collect' intrinsic; calling it here between runs does
+// too), never the GC/host-embedding hooks cpp-vmlib's Runtime also carries
+// (set_drop_fn, first_object, owned_*, Runtime::Scope) -- a script cannot be
+// a host, and exposing them would put a memory-safety violation within
+// script reach.
+class Runtime {
+ public:
+  Runtime() = default;
+
+  int64_t live_objects() const { return rt_.live_objects(); }
+  int64_t heap_bytes() const { return rt_.heap_bytes(); }
+  int64_t collect() { return rt_.collect(); }
+
+ private:
+  friend class Program;
+  coreir::Runtime rt_;
+  // The id of the Program this heap's objects belong to (0 = none yet).
+  // Program::run's own guard reads this; nothing else does.
+  uint64_t bound_ = 0;
+};
+
+// A verified, compiled program: Module::compile() is the only way to get
+// one, and it verifies first, so vm::run's trust in verify()'s invariants
+// (funcs is non-empty, every index in range) holds by construction here --
+// unlike Module::run(), nothing between compiling and running could have
+// skipped it. entry_frame_drops is a property of the compiled program
+// (Module's flag at the moment compile() ran), not a per-run argument: a
+// script that wants both call set_entry_frame_drops() before compile().
+class Program {
+ public:
+  Program(vm::Program p, bool entry_frame_drops)
+      : p_(std::move(p)), entry_frame_drops_(entry_frame_drops) {}
+
+  // rt is nil (the default) -- a program's own throwaway heap, same as
+  // Module::run() -- or a Runtime to run on, so a script can compile once
+  // and run many times, and inspect the heap in between runs. A rt that
+  // still holds another program's objects is refused: a ClosureObj's own
+  // func field is an index into ITS Program's chunks (push_closure indexes
+  // p.chunks[c->func] unchecked), so reusing a heap across two different
+  // compiled programs without collecting first would read the wrong
+  // program's chunk table the moment a leftover closure from the first one
+  // is called by the GC's own drop-hook dispatch during the second's run.
+  void run(Runtime* rt, int64_t max_call_depth) {
+    vm::RunOptions opts;
+    opts.entry_frame_drops = entry_frame_drops_;
+    opts.max_call_depth = static_cast<int>(max_call_depth);
+    if (!rt) {
+      coreir::Runtime scratch;  // the program's own heap, gone at the return
+      vm::run(p_, scratch, opts);
+      return;
+    }
+    if (rt->bound_ != 0 && rt->bound_ != id_ && rt->rt_.live_objects() != 0) {
+      throw culebra::CulebraError(
+          "IrError", "runtime still holds objects from another program", 0, 0);
+    }
+    rt->bound_ = id_;
+    vm::run(p_, rt->rt_, opts);
+  }
+
+  std::string dump_bc() const { return vm::to_string(p_); }
+
+ private:
+  static uint64_t next_id() {
+    static std::atomic<uint64_t> n{1};
+    return n++;
+  }
+
+  vm::Program p_;
+  bool entry_frame_drops_;
+  uint64_t id_ = next_id();
+};
 
 class Module {
  public:
@@ -308,20 +388,20 @@ class Module {
   // otherwise reach undefined behavior in native code -- not a catchable
   // script-level error -- on something as simple as an empty Module. A
   // script that already called verify() itself just pays a second, cheap
-  // structural walk.
-  void run() {
+  // structural walk. compile() carries the same guarantee for a script
+  // that wants to run the same program more than once, or inspect the heap
+  // between runs -- see Program above.
+  Program compile() {
     verify_or_throw();
-    coreir::Runtime rt;
-    vm::RunOptions opts;
-    opts.entry_frame_drops = entry_frame_drops_;
-    vm::run(vm::compile(m_), rt, opts);
+    return Program(vm::compile(m_), entry_frame_drops_);
   }
 
+  // Sugar over compile(): a throwaway Runtime, run once. The single call
+  // site every example front end and tests/test_codegen.cul still use.
+  void run() { compile().run(nullptr, vm::RunOptions{}.max_call_depth); }
+
   std::string dump_ir() { return coreir::to_string(m_); }
-  std::string dump_bc() {
-    verify_or_throw();
-    return vm::to_string(vm::compile(m_));
-  }
+  std::string dump_bc() { return compile().dump_bc(); }
 
   // --- Reading the IR back ---------------------------------------------
   //
@@ -347,20 +427,14 @@ class Module {
   }
   int64_t child(int64_t node, int64_t index) const {
     const coreir::NodeId n = checked_node(node);
-    const int64_t n_children = static_cast<int64_t>(m_.num_children(n));
-    if (index < 0 || index >= n_children) {
-      throw culebra::CulebraError(
-          "IrError", "node #" + std::to_string(node) + " has " +
-                        std::to_string(n_children) + " children, no #" +
-                        std::to_string(index),
-          0, 0);
-    }
+    checked_sub_index("node", node, m_.num_children(n), "children", index);
     return id(m_.child(n, static_cast<uint32_t>(index)));
   }
 
-  // Literal: const_kind says which of the four payloads a node holds, and
-  // each of the other four checks it before decoding -- int_const on a str
-  // literal is a caller mistake, not a silent reinterpretation of its bits.
+  // Literal: const_kind says which of the five kinds a node holds, and each
+  // of the four decoders checks it first -- int_const on a str literal is a
+  // caller mistake, not a silent reinterpretation of its bits. (Nil has no
+  // payload to read, hence five kinds but four decoders.)
   std::string const_kind(int64_t node) const {
     const coreir::NodeId n = require_tag(node, coreir::Tag::Literal, "const_kind");
     return coreir::name_of(m_.const_kind(n));
@@ -405,15 +479,15 @@ class Module {
       case coreir::Tag::VarRef:
       case coreir::Tag::Assign:
         throw culebra::CulebraError(
-            "IrError", "node #" + std::to_string(node) + " is " +
-                          describe(coreir::name_of(tag)) +
-                          "; its op is a var kind -- use var_kind()",
+            "IrError",
+            culebra::format("node #{} is {}; use var_kind() for its var kind",
+                            node, describe(coreir::name_of(tag))),
             0, 0);
       default:
         throw culebra::CulebraError(
-            "IrError", "node #" + std::to_string(node) + " is " +
-                          describe(coreir::name_of(tag)) +
-                          ", which has no operator",
+            "IrError",
+            culebra::format("node #{} is {}, which has no operator", node,
+                            describe(coreir::name_of(tag))),
             0, 0);
     }
   }
@@ -484,11 +558,11 @@ class Module {
   }
   std::string func_local_name(int64_t func, int64_t index) const {
     const auto& f = m_.funcs[checked_func(func)];
-    return checked_name(f.local_names, func, index, "local");
+    return checked_name(f.local_names, func, index, "locals");
   }
   std::string func_capture_name(int64_t func, int64_t index) const {
     const auto& f = m_.funcs[checked_func(func)];
-    return checked_name(f.capture_names, func, index, "capture");
+    return checked_name(f.capture_names, func, index, "captures");
   }
 
   // Capture maps: capture_map_push's own arguments, read back one at a time.
@@ -531,25 +605,25 @@ class Module {
 
   // vmlib.h owns each enum's vocabulary (name_of/from_name); a second, hand-
   // typed copy here could drift from it the moment cpp-vmlib gains a member.
+  // The four named wrappers stay because their call sites read better than
+  // an explicit template argument would.
+  template <class E>
+  static E to_enum(std::string_view s, const char* what) {
+    if (auto v = coreir::from_name<E>(s)) return *v;
+    throw std::invalid_argument(
+        culebra::format("CodeGen: unknown {} '{}'", what, s));
+  }
   static coreir::VarKind to_kind(std::string_view s) {
-    if (auto k = coreir::from_name<coreir::VarKind>(s)) return *k;
-    throw std::invalid_argument("CodeGen: unknown var kind '" +
-                                std::string(s) + "'");
+    return to_enum<coreir::VarKind>(s, "var kind");
   }
   static coreir::UnOp to_unop(std::string_view s) {
-    if (auto op = coreir::from_name<coreir::UnOp>(s)) return *op;
-    throw std::invalid_argument("CodeGen: unknown unary op '" +
-                                std::string(s) + "'");
+    return to_enum<coreir::UnOp>(s, "unary op");
   }
   static coreir::BinOp to_binop(std::string_view s) {
-    if (auto op = coreir::from_name<coreir::BinOp>(s)) return *op;
-    throw std::invalid_argument("CodeGen: unknown binary op '" +
-                                std::string(s) + "'");
+    return to_enum<coreir::BinOp>(s, "binary op");
   }
   static coreir::IntrinsicId to_intrinsic(std::string_view s) {
-    if (auto id = coreir::from_name<coreir::IntrinsicId>(s)) return *id;
-    throw std::invalid_argument("CodeGen: unknown intrinsic '" +
-                                std::string(s) + "'");
+    return to_enum<coreir::IntrinsicId>(s, "intrinsic");
   }
 
   // "a varref" / "an assign": several tag and kind names (Assign, If,
@@ -566,40 +640,63 @@ class Module {
 
   // Bounds/kind checks for the read-out API: unlike node() above (always
   // called on an id this same Module just handed out), a reader's id is
-  // whatever the caller passed in, so it is checked against m_.nodes.size()
-  // before ever reaching coreir::Module::at, which does not check itself.
-  coreir::NodeId checked_node(int64_t v) const {
-    if (v < 0 || static_cast<size_t>(v) >= m_.nodes.size()) {
-      throw culebra::CulebraError("IrError", "no node #" + std::to_string(v),
-                                  0, 0);
+  // whatever the caller passed in, so it is checked against the table's own
+  // size before ever reaching coreir::Module::at, which does not check
+  // itself.
+  static size_t checked_index(int64_t v, size_t size, const char* what) {
+    if (v < 0 || static_cast<size_t>(v) >= size) {
+      throw culebra::CulebraError(
+          "IrError", culebra::format("no {} #{}", what, v), 0, 0);
     }
-    return coreir::NodeId{static_cast<uint32_t>(v)};
+    return static_cast<size_t>(v);
+  }
+  // The same for an index INTO one of those: how many the owner has is worth
+  // saying, since a caller reading a node's children is usually walking them.
+  static void checked_sub_index(const char* owner, int64_t owner_id,
+                                size_t count, const char* what,
+                                int64_t index) {
+    if (index < 0 || static_cast<size_t>(index) >= count) {
+      throw culebra::CulebraError(
+          "IrError",
+          culebra::format("{} #{} has {} {}, no #{}", owner, owner_id, count,
+                          what, index),
+          0, 0);
+    }
+  }
+  coreir::NodeId checked_node(int64_t v) const {
+    return coreir::NodeId{
+        static_cast<uint32_t>(checked_index(v, m_.nodes.size(), "node"))};
+  }
+  size_t checked_func(int64_t v) const {
+    return checked_index(v, m_.funcs.size(), "func");
+  }
+  size_t checked_cmap(int64_t v) const {
+    return checked_index(v, m_.capture_maps.size(), "capture map");
+  }
+
+  // "node #3 is a binary, not a literal (int_const)" and its ConstKind twin:
+  // one shape, since name_of is overloaded on both enums.
+  template <class E>
+  static void require_same(const char* what, int64_t id, E got, E want,
+                           const char* accessor) {
+    if (got != want) {
+      throw culebra::CulebraError(
+          "IrError",
+          culebra::format("{} #{} is {}, not {} ({})", what, id,
+                          describe(coreir::name_of(got)),
+                          describe(coreir::name_of(want)), accessor),
+          0, 0);
+    }
   }
   coreir::NodeId require_tag(int64_t v, coreir::Tag want,
                              const char* accessor) const {
     const coreir::NodeId n = checked_node(v);
-    const coreir::Tag got = m_.at(n).tag;
-    if (got != want) {
-      throw culebra::CulebraError(
-          "IrError", "node #" + std::to_string(v) + " is " +
-                        describe(coreir::name_of(got)) + ", not " +
-                        describe(coreir::name_of(want)) + " (" + accessor +
-                        ")",
-          0, 0);
-    }
+    require_same("node", v, m_.at(n).tag, want, accessor);
     return n;
   }
   void require_const_kind(coreir::NodeId n, coreir::ConstKind want,
                           const char* accessor) const {
-    const coreir::ConstKind got = m_.const_kind(n);
-    if (got != want) {
-      throw culebra::CulebraError(
-          "IrError", "literal #" + std::to_string(n.v) + " is " +
-                        describe(coreir::name_of(got)) + ", not " +
-                        describe(coreir::name_of(want)) + " (" + accessor +
-                        ")",
-          0, 0);
-    }
+    require_same("literal", n.v, m_.const_kind(n), want, accessor);
   }
   coreir::VarRefView require_varref_or_assign(int64_t v) const {
     const coreir::NodeId n = checked_node(v);
@@ -610,47 +707,21 @@ class Module {
       return {a.kind, a.index};
     }
     throw culebra::CulebraError(
-        "IrError", "node #" + std::to_string(v) + " is " +
-                      describe(coreir::name_of(tag)) +
-                      ", not a varref or assign",
+        "IrError",
+        culebra::format("node #{} is {}, not a varref or assign", v,
+                        describe(coreir::name_of(tag))),
         0, 0);
-  }
-  size_t checked_func(int64_t v) const {
-    if (v < 0 || static_cast<size_t>(v) >= m_.funcs.size()) {
-      throw culebra::CulebraError("IrError", "no func #" + std::to_string(v),
-                                  0, 0);
-    }
-    return static_cast<size_t>(v);
-  }
-  size_t checked_cmap(int64_t v) const {
-    if (v < 0 || static_cast<size_t>(v) >= m_.capture_maps.size()) {
-      throw culebra::CulebraError(
-          "IrError", "no capture map #" + std::to_string(v), 0, 0);
-    }
-    return static_cast<size_t>(v);
   }
   const std::string& checked_name(const std::vector<std::string>& names,
                                   int64_t func, int64_t index,
                                   const char* what) const {
-    if (index < 0 || static_cast<size_t>(index) >= names.size()) {
-      throw culebra::CulebraError(
-          "IrError", "func #" + std::to_string(func) + " has " +
-                        std::to_string(names.size()) + " " + what +
-                        "(s), no #" + std::to_string(index),
-          0, 0);
-    }
+    checked_sub_index("func", func, names.size(), what, index);
     return names[static_cast<size_t>(index)];
   }
   const coreir::CaptureSrc& checked_capture_entry(int64_t cmap,
                                                    int64_t index) const {
     const auto& entries = m_.capture_maps[checked_cmap(cmap)];
-    if (index < 0 || static_cast<size_t>(index) >= entries.size()) {
-      throw culebra::CulebraError(
-          "IrError", "capture map #" + std::to_string(cmap) + " has " +
-                        std::to_string(entries.size()) + " entrie(s), no #" +
-                        std::to_string(index),
-          0, 0);
-    }
+    checked_sub_index("capture map", cmap, entries.size(), "entries", index);
     return entries[static_cast<size_t>(index)];
   }
 

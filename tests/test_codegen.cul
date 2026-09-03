@@ -119,13 +119,7 @@ fn print_stmt(m, value) {
 {
   let m = CodeGen.Module.new()
   m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: 9999)
-  mut kind = nil
-  try {
-    m.verify()
-  } catch e {
-    kind = e.kind
-  }
-  assert_eq(kind, 'IrError')
+  assert_throws('IrError', || m.verify())
 }
 
 # --- Runtime errors: divide by zero and an uninitialized read both surface
@@ -359,6 +353,159 @@ fn tostr_node(m, v) {
   m.add_func(name: 'f', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: fbody)
   m.verify()
   assert_eq(IO.capture(fn () { m.run() }), "42\n")
+}
+
+# --- compile() + Program.run(): the same compiled program, run twice on
+# the same Runtime -- proves Program doesn't get consumed by its own run,
+# and doesn't silently recompile the Module underneath it. ---
+{
+  let m = CodeGen.Module.new()
+  let forty = m.literal(v: 40, line: 1, col: 1)
+  let two = m.literal(v: 2, line: 1, col: 1)
+  let sum = m.binary(op: 'add', lhs: forty, rhs: two, line: 1, col: 1)
+  let body = stmt_block(m, [print_stmt(m, sum)])
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.verify()
+
+  let p = m.compile()
+  let rt = CodeGen.Runtime.new()
+  assert_eq(IO.capture(fn () { p.run(rt: rt) }), "42\n")
+  assert_eq(IO.capture(fn () { p.run(rt: rt) }), "42\n")
+  assert_eq(p.dump_bc(), m.dump_bc())
+}
+
+# --- compile() on an unverified, malformed module fails the same way
+# run()/verify() already do -- not native UB, an IrError. compile() is the
+# only way to get a Program, so a Program's mere existence means its
+# module already passed verify(). ---
+{
+  let m = CodeGen.Module.new()  # no funcs at all
+  assert_throws('IrError', || m.compile())
+}
+
+# --- Runtime: live_objects()/heap_bytes() see a reference cycle a plain
+# run() leaves behind, and collect() (only) frees it. Run outside any
+# make_try, so the JSON-args()-count style check below distinguishes the
+# runtime's OWN collect() from the in-program 'collect' intrinsic. ---
+{
+  let m = CodeGen.Module.new()
+  let obj = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
+  let key = m.str_literal(s: 'self', line: 1, col: 1)
+  let loc = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
+  let cycle = m.set_index(recv: loc, key: key, value: loc, line: 1, col: 1)
+  let body = stmt_block(m, [assign, cycle])
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.verify()
+
+  let p = m.compile()
+  let rt = CodeGen.Runtime.new()
+  p.run(rt: rt)
+  assert_true(rt.live_objects() > 0)
+  assert_true(rt.heap_bytes() > 0)
+  assert_true(rt.collect() > 0)
+  assert_eq(rt.live_objects(), 0)
+
+  # Running outside a program's own execution never fires a drop hook:
+  # collect() called with nothing left to free just answers 0, quietly.
+  assert_eq(rt.collect(), 0)
+}
+
+# --- A Runtime that still holds objects from another compiled program
+# refuses to run a second one -- ClosureObj::func is an index into ITS
+# OWN Program's chunk table, so reusing the heap across two different
+# programs without collecting first would read the wrong program's
+# chunks the moment a leftover closure is ever invoked. Collecting first
+# makes reuse safe again. ---
+{
+  fn make_cycle_module() {
+    let m = CodeGen.Module.new()
+    let obj = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
+    let key = m.str_literal(s: 'self', line: 1, col: 1)
+    let loc = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+    let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
+    let cycle = m.set_index(recv: loc, key: key, value: loc, line: 1, col: 1)
+    let body = stmt_block(m, [assign, cycle])
+    m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+    m.verify()
+    m
+  }
+  let pa = make_cycle_module().compile()
+  let pb = make_cycle_module().compile()
+  let rt = CodeGen.Runtime.new()
+
+  pa.run(rt: rt)
+  assert_true(rt.live_objects() > 0)
+
+  let guard = try { pb.run(rt: rt) } catch e { e }
+  assert_eq("{guard.kind}: {guard.message}",
+            'IrError: runtime still holds objects from another program')
+
+  rt.collect()
+  pb.run(rt: rt)  # safe now that the heap is empty
+  assert_true(rt.live_objects() > 0)  # pb ran, and left its own cycle behind
+}
+
+# --- max_call_depth is a real, per-run override: the same program that
+# runs fine by default fails at a small explicit depth. Confirms the
+# optional argument actually reaches RunOptions, not just parses. ---
+{
+  fn make_self_call_module() {
+    let m = CodeGen.Module.new()
+    let cmap = m.add_capture_map(m.capture_map_new())
+    let call = m.call(func: 0, cmap: cmap, line: 1, col: 1)
+    m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: call)
+    m.verify()
+    m
+  }
+  let p = make_self_call_module().compile()
+  let deep = try { p.run(rt: nil, max_call_depth: 5) } catch e { e }
+  assert_eq("{deep.kind}: {deep.message}", 'IrError: recursion limit exceeded')
+}
+
+# --- entry_frame_drops is inherited from the Module at compile() time,
+# not a run() argument: flipping it before compile() changes what the
+# compiled Program does, same as it changes what m.run() does. ---
+{
+  fn make_drop_module(m) {
+    let obj = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
+    let key = m.str_literal(s: "\x01drop", line: 1, col: 1)
+    let dropfn_body = print_stmt(m, m.str_literal(s: 'dropped', line: 1, col: 1))
+    let cmap = m.add_capture_map(m.capture_map_new())
+    let dropfn = m.make_closure(func: 1, cmap: cmap, line: 1, col: 1)
+    let loc = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+    let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
+    let setdrop = m.set_index(recv: loc, key: key, value: dropfn, line: 1, col: 1)
+    let body = stmt_block(m, [assign, setdrop])
+    m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+    m.add_func(name: 'ondrop', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1, body: dropfn_body)
+    m.verify()
+  }
+
+  let m_on = CodeGen.Module.new()
+  make_drop_module(m_on)
+  assert_eq(IO.capture(fn () { m_on.compile().run(rt: nil) }), "dropped\n")
+
+  let m_off = CodeGen.Module.new()
+  make_drop_module(m_off)
+  m_off.set_entry_frame_drops(on: false)
+  assert_eq(IO.capture(fn () { m_off.compile().run(rt: nil) }), "")
+}
+
+# --- Program/Runtime are wrap.h handles like any other: drop() is
+# idempotent, and use-after-drop is ClosedError, not a crash. ---
+{
+  let m = CodeGen.Module.new()
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: m.nil_literal(line: 1, col: 1))
+  m.verify()
+  let p = m.compile()
+  let rt = CodeGen.Runtime.new()
+  p.drop()
+  assert_throws('ClosedError', || p.run(rt: rt))
+
+  rt.drop()
+  assert_throws('ClosedError', || rt.live_objects())
 }
 
 println('test_codegen OK')
