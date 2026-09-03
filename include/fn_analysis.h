@@ -875,6 +875,20 @@ struct FnAnalysis {
       return;
     }
 
+    // The other two places an IDENTIFIER names something that is not a
+    // variable of this scope (OBJECT_PROPERTY above is the third): a keyword
+    // argument's label names the callee's parameter, and a pattern entry's
+    // key names the property being matched. Walking them as reads made a
+    // closure claim the name as free, which is harmless where something
+    // binds it and a rejected program where an inner statement list declares
+    // it further down. Everything to the right of the label is a read.
+    if (node.tag == "KWARG"_ || node.tag == "OBJECT_PAT_ENTRY"_) {
+      for (size_t i = 1; i < node.nodes.size(); i++) {
+        visit_for_frees(*node.nodes[i], my_locals, outer, info);
+      }
+      return;
+    }
+
     if (node.tag == "ASSIGNMENT"_) {
       auto av = culebra::view_assignment(node);
       if (av.lvalcnt == 1) {

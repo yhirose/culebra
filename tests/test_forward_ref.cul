@@ -202,3 +202,49 @@ assert_eq(after_block(), 8)
   assert_eq(use_builtin(), 'Long')
   assert_eq(type_of('s'), 'String')
 }
+
+# A keyword argument's label and an object pattern's key name a parameter and
+# a property, not a variable of the scope they are written in. Reading them as
+# variables made a closure claim the name as a free variable, which an inner
+# statement list declaring it further down turned into a rejected program.
+fn labelled(key: String) {
+  key
+}
+
+fn label_vs_inner_let(xs) {
+  mut out = []
+  fn put(v) {
+    out.push(labelled(key: v))
+  }
+  for x in xs {
+    let key = "{x}!"
+    put(key)
+  }
+  out
+}
+assert_eq(label_vs_inner_let(['a', 'b']), ['a!', 'b!'])
+
+fn pattern_key_vs_inner_let(xs) {
+  mut out = []
+  let take = fn (v) {
+    match v {
+      {key: k} => out.push(k),
+      _ => out.push('none'),
+    }
+  }
+  for x in xs {
+    let key = {key: "{x}!"}
+    take(key)
+  }
+  out
+}
+assert_eq(pattern_key_vs_inner_let(['a', 'b']), ['a!', 'b!'])
+
+# The label still names the callee's parameter, and a value spelled the same
+# as the label is still the enclosing binding it reads.
+fn same_name_value() {
+  let key = 'read'
+  let f = fn () { labelled(key: key) }
+  f()
+}
+assert_eq(same_name_value(), 'read')
