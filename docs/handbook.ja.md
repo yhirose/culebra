@@ -108,14 +108,13 @@ sudo mv culebra-*/culebra /usr/local/bin/
 culebra --version
 ```
 
-macOSとWindowsはパッケージマネージャからも入れられる:
+macOSはパッケージマネージャからも入れられる:
 
 ```bash
-brew install yhirose/culebra/culebra   # macOS
-winget install yhirose.culebra         # Windows
+brew install yhirose/culebra/culebra
 ```
 
-Linux向けのパッケージはまだ無いので、上のダウンロードを使う。
+WindowsとLinux向けのパッケージはまだ無いので、上のダウンロードを使う。
 
 チェックサムと各リリースのノートは
 [releasesページ](https://github.com/yhirose/culebra/releases)にある。
