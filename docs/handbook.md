@@ -52,7 +52,7 @@ Read this once; the rest of the guide assumes these choices.
 
 - **Two backends, one compiler.** A bytecode VM and an LLVM ORC JIT
   share the same parser, AST, and bytecode compiler. The VM has no
-  LLVM dependency (a ~23 MB driver against ~82 MB once LLVM is linked
+  LLVM dependency (a ~16 MB driver against ~86 MB once LLVM is linked
   in); the JIT runs the same program at `-O2`. Both are maintained —
   neither is going away.
 - **Eight everyday types.** `Nil`, `Bool`, `Long`, `Float`, `String`,
@@ -143,7 +143,7 @@ produces the bytecode VM, and the JIT too if LLVM 20+ is installed:
 
 ```bash
 just build              # with JIT
-just build-no-jit       # no LLVM: the bytecode VM only, ~23 MB
+just build-no-jit       # no LLVM: the bytecode VM only, ~16 MB
 just dev                # fast no-LTO -O1 build into build-dev/ (inner loop)
 just test-dev           # quick VM==JIT check vs build-dev/ (after each edit)
 just test               # all backends + embed smoke (parallel; JOBS=1 to serialize)
@@ -1881,7 +1881,7 @@ also drop the Accelerate / Metal frameworks the tensor engine needs.
 
 ```bash
 ./build/culebra build my-program.cul -o ./out
-./out                                     # standalone, ~6 MB on macOS
+./out                                     # standalone, ~0.5 MB on macOS
 otool -L ./out                            # no Accelerate, no Metal, no LLVM
 ```
 
@@ -1910,10 +1910,10 @@ build, sysroot expectations, and the full cross-compile workflow.
 
 A "hello world" using `inspect` doesn't need the tensor or HTTP
 runtime glue. Tracing the call graph from the entry file lets the
-linker drop unreferenced runtime helpers (~450 of them) and, when no
+linker drop unreferenced runtime helpers (~530 of them) and, when no
 `Tensor` reference is found, swap in a no-tensor archive. The result
-is ~6 MB where a program force-loading every feature archive is
-~12.5 MB.
+is ~0.5 MB where a program force-loading every feature archive is
+~11.6 MB.
 
 ## 17. Embedding overview
 

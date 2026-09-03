@@ -160,10 +160,12 @@ covers that.
 Each feature axis force-loads independently (mechanism: [§4](#4-shared-runtime-archive-layout)),
 so a program using neither `Tensor` nor `Http` links only the base
 archive. Dropping OpenSSL alone is worth ~4.7 MB (a non-Http binary is
-~7.6 MB vs ~12.2 MB for an Http one, since OpenSSL is statically
+~0.4 MB vs ~5.2 MB for an Http one, since OpenSSL is statically
 linked). The same gating covers one self-hosted subsystem that links
 no external library but carries its own code: the regex engine
-(`Regex`, including `re'...'` literals, ~320 KB of cpp-regexlib). It
+(`Regex`, including `re'...'` literals). The axis costs ~0.9 MB —
+cpp-regexlib plus the namespace's own group, measured as ~0.55 MB of
+code and ~0.24 MB of tables. It
 still needs the weak/strong split even though nothing external is at
 stake, because a `__builtin_cpu_supports` runtime-dispatch check inside
 it makes the compiler emit a start-up CPUID constructor for whatever
@@ -195,7 +197,9 @@ $ culebra build my-program.cul -o /tmp/my-program     # no Tensor use
 $ otool -L /tmp/my-program
 /tmp/my-program:
         /usr/lib/libc++.1.dylib
+        /System/Library/Frameworks/CoreServices.framework/.../CoreServices
         /usr/lib/libSystem.B.dylib
+        /System/Library/Frameworks/CoreFoundation.framework/.../CoreFoundation
 ```
 
 A Tensor user keeps the full archive plus the framework:
@@ -218,7 +222,7 @@ lld alike: the embedded runtime archive carries thousands of
 platform's `strip` tool removes the global symbol table the linker
 leaves behind, the same step the release packaging applies to
 `culebra` itself. Together they take a `print("hello")` binary from
-0.47 MB to 0.38 MB; the dynamic symbols the loader needs survive
+0.66 MB to 0.55 MB; the dynamic symbols the loader needs survive
 both. Pass `--keep-symbols` to skip both for debugging. Cross-compiled
 outputs (`--target`) stop after the link step, since the host's
 `strip` does not read a foreign object format; a `strip` missing from
@@ -922,14 +926,14 @@ argument visitor names the integer, float and string formatters
 together, so one reachable call would add 15% to a hello. A program
 that writes an interpolation format spec (`"{x:.2f}"`) still links it,
 because that spec *is* `std::format`'s mini-language. Together with the
-feature axes this is what keeps a `print("hello")` binary under
-0.4 MB. A namespace the scan missed does not silently read as `nil`:
+feature axes this is what keeps a `print("hello")` binary near
+0.5 MB. A namespace the scan missed does not silently read as `nil`:
 reaching it raises an `InternalError` naming the namespace.
 
 These archives are **embedded directly into the `culebra` driver**
 via cpp-embedlib — the driver is a single self-contained binary, no
 sibling `.a` files need to be installed. They are stored deflated,
-which is 33.8 MB of the driver against 6.9 MB. On first invocation of
+which is 10.3 MB of the driver rather than 30.9 MB. On first invocation of
 `culebra build`, the required archives are inflated to
 `$HOME/.cache/culebra/<fingerprint>/lib*.a`; subsequent invocations
 reuse the cache. The fingerprint is a content-hash of the embedded

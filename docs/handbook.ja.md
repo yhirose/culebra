@@ -50,7 +50,7 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
 
 - **2バックエンド、1コンパイラ。** バイトコードVMとLLVM ORC JITが
   同じパーサ・AST・バイトコードコンパイラを共有。VMはLLVM非依存
-  (ドライバ ~23 MB。LLVMを含めると ~82 MB)、JITは`-O2`で同じ
+  (ドライバ ~16 MB。LLVMを含めると ~86 MB)、JITは`-O2`で同じ
   プログラムを実行。両方を維持 — どちらも捨てません。
 - **日常的に使う8つの型。** `Nil` / `Bool` / `Long` / `Float` /
   `String` / `Array` / `Object` / `Function`、加えて用途特化の4つ
@@ -137,7 +137,7 @@ masterを追う場合とCulebra自体を開発する場合にだけ必要。`jus
 
 ```bash
 just build              # JIT付き
-just build-no-jit       # LLVM 無し: bytecode VMのみ、~23 MB
+just build-no-jit       # LLVM 無し: bytecode VMのみ、~16 MB
 just dev                # LTO無し -O1の高速ビルド → build-dev/ (内側ループ用)
 just test-dev           # build-dev/ でVM==JITを素早く確認 (各編集ごと)
 just test               # 全backend + embedスモークテスト (並列; JOBS=1で逐次化)
@@ -1851,7 +1851,7 @@ tensorエンジンが必要とするAccelerate / Metalフレームワーク依�
 
 ```bash
 ./build/culebra build my-program.cul -o ./out
-./out                                     # standalone、~6 MB on macOS
+./out                                     # standalone、~0.5 MB on macOS
 otool -L ./out                            # Accelerate も Metal も LLVM も無し
 ```
 
@@ -1879,9 +1879,9 @@ macOSはXcode Command Line Tools、Linuxは`cc`。`build`は開始前に確認�
 
 `inspect`だけ使う "hello world" はtensorもHTTPランタイムも要らない。
 エントリファイルからcall graphを辿ることで、参照されていないラン
-タイムヘルパ (~450個) を落とせる。`Tensor`参照が無ければtensor抜きの
-archiveに差し替わるので、全feature archiveを抱えると ~12.5 MBのところ
-~6 MBに収まる。
+タイムヘルパ (~530個) を落とせる。`Tensor`参照が無ければtensor抜きの
+archiveに差し替わるので、全feature archiveを抱えると ~11.6 MBのところ
+~0.5 MBに収まる。
 
 ## 17. 埋め込み概観
 

@@ -155,11 +155,13 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 各機能軸は独立にforce-loadされる（仕組みは
 [§4](#4-共有-runtime-archive-レイアウト) 参照）ので、`Tensor`も
 `Http`も使わないプログラムはbaseのみをlinkする。OpenSSLを
-落とすだけで約4.7 MB効く（非Httpバイナリ ~7.6 MBに対しHttp版は
-~12.2 MB、OpenSSLは静的リンクのため）。同じゲーティングは、外部
+落とすだけで約4.7 MB効く（非Httpバイナリ ~0.4 MBに対しHttp版は
+~5.2 MB、OpenSSLは静的リンクのため）。同じゲーティングは、外部
 ライブラリを引かないが自前のコードを抱える1つのサブシステムにも
-効く: 正規表現エンジン（`Regex`、`re'...'`リテラルを含む、
-cpp-regexlibの約320 KB）。外部依存が無くても弱/強分岐が要るのは、
+効く: 正規表現エンジン（`Regex`、`re'...'`リテラルを含む）。この軸の
+コストは約0.9 MBで、cpp-regexlibとこのnamespace自身のgroupの合計。
+実測の内訳はコード約0.55 MBとテーブル約0.24 MB。
+外部依存が無くても弱/強分岐が要るのは、
 エンジン内部の`__builtin_cpu_supports`によるランタイム分岐チェックが
 コンパイラに、それをコンパイルする翻訳単位ごとの起動時CPUID
 コンストラクタを生成させるためで、これを無条件にすると自前のコード
@@ -188,7 +190,9 @@ $ culebra build my-program.cul -o /tmp/my-program     # Tensor 未使用
 $ otool -L /tmp/my-program
 /tmp/my-program:
         /usr/lib/libc++.1.dylib
+        /System/Library/Frameworks/CoreServices.framework/.../CoreServices
         /usr/lib/libSystem.B.dylib
+        /System/Library/Frameworks/CoreFoundation.framework/.../CoreFoundation
 ```
 
 Tensorを使うプログラムでは全部入りアーカイブとフレームワーク
@@ -212,7 +216,7 @@ lldのいずれも解釈する。埋め込みランタイムアーカイブに�
 次にプラットフォームの`strip`ツールがリンカの残したグローバル
 シンボルテーブルを除去する（リリースパッケージが`culebra`本体に
 掛けているのと同じ処理）。この2つで`print("hello")`のバイナリは
-0.47 MB → 0.38 MBになる。ローダが必要とする動的シンボルは
+0.66 MB → 0.55 MBになる。ローダが必要とする動的シンボルは
 どちらの段階でも残る。デバッグ用に両方を飛ばすには`--keep-symbols`
 を渡す。クロスコンパイル（`--target`）の出力はリンク段階で止まる
 （ホストの`strip`は他形式のオブジェクトを読めない）。`PATH`に
@@ -915,14 +919,14 @@ namespace分。ソースが名指ししないものはnullエントリ）を運�
 リンク単位が1ブロックになり、到達する呼び出しが1つあるだけでhelloが15%
 太るためです。補間の書式指定（`"{x:.2f}"`）を書いたプログラムは今も
 `std::format`をリンクします — その書式こそ`std::format`のミニ言語だからです。
-機能軸と合わせて、これが`print("hello")`のバイナリを0.4 MB未満
+機能軸と合わせて、これが`print("hello")`のバイナリを0.5 MB前後
 に保っています。走査が見落としたnamespaceは黙って`nil`に読めたりはせず、
 到達した時点でそのnamespace名を含む`InternalError`になります。
 
 これらのアーカイブはcpp-embedlibによって **`culebra`ドライバに
 直接埋め込まれています** — ドライバは単体で完結する1バイナリで、
 サイドカーの`.a`ファイルを別途インストールする必要はありません。
-deflate圧縮して格納しており、ドライバ内で33.8 MBのところ6.9 MB
+deflate圧縮して格納しており、ドライバ内で30.9 MBのところ10.3 MB
 です。`culebra build`の初回呼び出し時に必要なアーカイブを
 `$HOME/.cache/culebra/<fingerprint>/lib*.a`へ展開し、2回目以降は
 キャッシュを再利用します。fingerprintは埋め込みアーカイブのコンテ
