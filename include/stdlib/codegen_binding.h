@@ -89,7 +89,51 @@ inline bool register_codegen_binding() {
       .method<&codegen::Module::verify>("verify")
       .method<&codegen::Module::run>("run")
       .method<&codegen::Module::dump_ir>("dump_ir")
-      .method<&codegen::Module::dump_bc>("dump_bc");
+      .method<&codegen::Module::dump_bc>("dump_bc")
+      .method<&codegen::Module::num_nodes>("num_nodes")
+      .method<&codegen::Module::node_tag>("node_tag", {"node"})
+      .method<&codegen::Module::node_line>("node_line", {"node"})
+      .method<&codegen::Module::node_col>("node_col", {"node"})
+      .method<&codegen::Module::num_children>("num_children", {"node"})
+      .method<&codegen::Module::child>("child", {"node", "index"})
+      .method<&codegen::Module::const_kind>("const_kind", {"node"})
+      .method<&codegen::Module::int_const>("int_const", {"node"})
+      .method<&codegen::Module::bool_const>("bool_const", {"node"})
+      .method<&codegen::Module::double_const>("double_const", {"node"})
+      .method<&codegen::Module::str_const>("str_const", {"node"})
+      .method<&codegen::Module::node_op>("node_op", {"node"})
+      .method<&codegen::Module::var_kind>("var_kind", {"node"})
+      .method<&codegen::Module::var_index>("var_index", {"node"})
+      .method<&codegen::Module::scope_first_local>("scope_first_local",
+                                                    {"node"})
+      .method<&codegen::Module::scope_end_local>("scope_end_local", {"node"})
+      .method<&codegen::Module::try_caught_local>("try_caught_local", {"node"})
+      .method<&codegen::Module::closure_func>("closure_func", {"node"})
+      .method<&codegen::Module::closure_cmap>("closure_cmap", {"node"})
+      .method<&codegen::Module::cell_index>("cell_index", {"node"})
+      .method<&codegen::Module::num_funcs>("num_funcs")
+      .method<&codegen::Module::func_name>("func_name", {"func"})
+      .method<&codegen::Module::func_num_locals>("func_num_locals", {"func"})
+      .method<&codegen::Module::func_num_captures>("func_num_captures",
+                                                    {"func"})
+      .method<&codegen::Module::func_num_cells>("func_num_cells", {"func"})
+      .method<&codegen::Module::func_num_params>("func_num_params", {"func"})
+      .method<&codegen::Module::func_body>("func_body", {"func"})
+      .method<&codegen::Module::func_is_generator>("func_is_generator",
+                                                    {"func"})
+      .method<&codegen::Module::func_lenient_arity>("func_lenient_arity",
+                                                     {"func"})
+      .method<&codegen::Module::func_local_name>("func_local_name",
+                                                  {"func", "index"})
+      .method<&codegen::Module::func_capture_name>("func_capture_name",
+                                                    {"func", "index"})
+      .method<&codegen::Module::num_capture_maps>("num_capture_maps")
+      .method<&codegen::Module::num_capture_entries>("num_capture_entries",
+                                                      {"cmap"})
+      .method<&codegen::Module::capture_kind>("capture_kind",
+                                              {"cmap", "index"})
+      .method<&codegen::Module::capture_index>("capture_index",
+                                                {"cmap", "index"});
   return true;
 }
 

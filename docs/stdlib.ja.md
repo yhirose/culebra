@@ -6238,8 +6238,6 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.set_generator(func:)` | 関数`func`をgeneratorにする。呼び出すと本体を走らせる代わりに中断状態の活性化を包んで返す。`'genresume'`(活性化と送る値)は次のyieldまで走らせて`{value, done}`を答え、`'genreturn'`(活性化と値)は途中で閉じる —— 止まっていた本体の未実行のdeferを内側から順に走らせてから`{value, done: true}`を答える。`'genthrow'`(活性化と値)は止まっていたyieldにその値を、yield式が投げたかのように届ける —— 本体のハンドラが先に見て、投げが越えるdeferは走り、本体が捕まえなかったものはgeneratorをdoneにして呼び出しから出てくる。捕まえて再びyieldした本体は通常のresumeと同じく`{value, done: false}`を答える。まだ始まっていない・すでに終わったgeneratorには値の落ち先となるフレームがないので、呼び出しの場でそのまま投げられる |
 | `m.set_lenient_arity(func:)` | `func`の呼び出しが引数の個数を問わなくなる。余分は捨て、届かなかった仮引数は`nil`で始まり、本体は実際に渡された個数を`'argcount'`で読める —— フロントエンドはそれで自前の「引数が足りない」診断を出すか既定値を埋める。指定しなければ個数の不一致は実行器のトラップ |
 | `m.set_entry_frame_drops(on:)` | プログラム終了時に、入口関数自身の束縛のdrop hookを走らせるかどうか(既定は走らせる)。トップレベルのスコープをデストラクタなしで解放する言語のフロントエンドは切る。入口関数のdeferは変わらず走り、内側のスコープも通常どおりdropする |
-
-executorはdrop契約も履行する: `"\x01drop"`キーにクロージャを持つオブジェクトは、refcountが0になった瞬間・解放の前に、そのオブジェクト自身を引数としてクロージャが呼ばれる。throwするデストラクタはstderrに報告して飲み込む。デストラクタが引数をどこかへ保存したら復活扱いで解放はスキップされる。
 | `m.list_new()` | ステージング用list。`stmts_list:`/`args_list:`に渡す |
 | `m.list_push(list:, value:)` | ステージング用listにノードidを追加する |
 | `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | 関数。indexを返す(`funcs[0]`が`run()`の開始点) |
@@ -6253,6 +6251,8 @@ executorはdrop契約も履行する: `"\x01drop"`キーにクロージャを持
 | `m.dump_ir()` | 木の可読なダンプ(デバッグ用) |
 | `m.dump_bc()` | コンパイル済みbytecodeの可読なダンプ(デバッグ用) |
 
+executorはdrop契約も履行する: `"\x01drop"`キーにクロージャを持つオブジェクトは、refcountが0になった瞬間・解放の前に、そのオブジェクト自身を引数としてクロージャが呼ばれる。throwするデストラクタはstderrに報告して飲み込む。デストラクタが引数をどこかへ保存したら復活扱いで解放はスキップされる。
+
 `kind:`は`'local'`(その関数自身のスロット)、`'cell'`(同じくその関数自身の
 スロットだが、この関数が行う呼び出しがcaptureできるようbox化したもの)、
 `'capture'`(外側から借りたスロット)のいずれか。変数参照は実行時の名前解決
@@ -6260,6 +6260,56 @@ executorはdrop契約も履行する: `"\x01drop"`キーにクロージャを持
 
 ステージング用listやcapture mapは、`block()`/`intrinsic()`/`call()`に渡した
 瞬間に消費されて消える。渡した後に同じidを使い回すのは未定義。
+
+### IRを読み返す
+
+上のbuilderにはそれぞれ対応する読み出しがある: スクリプト自身の定数畳み込みや、
+`dump_ir()`の文字列マッチではなくノードの形を検査するテストが、Compilerや
+Dumperと同じ経路で木を辿れる。不正なnode/func/cmap id、あるいはtagやliteralの
+種類を取り違えた読み出しは`IrError`を送出する —— `verify()`自身が報告するのと
+同じ失敗の種類だ。
+
+| 呼び出し | 読むもの |
+| --- | --- |
+| `m.num_nodes()` | これまでに作られたノード数 |
+| `m.node_tag(node:)` | タグ名 —— `'literal'`・`'varref'`… `dump_ir()`が印字するのと同じ語彙 |
+| `m.node_line(node:)` | そのノード自身のソース行 |
+| `m.node_col(node:)` | そのノード自身のソース列 |
+| `m.num_children(node:)` | `node`の子の数 |
+| `m.child(node:, index:)` | `index`番目の子。ノードidで返る |
+| `m.const_kind(node:)` | `literal`ノードが持つ4種の実体のどれか —— `'nil'`/`'int'`/`'bool'`/`'double'`/`'str'` |
+| `m.int_const(node:)` | int literalの値。他の種類では失敗する |
+| `m.bool_const(node:)` | bool literalの値。他の種類では失敗する |
+| `m.double_const(node:)` | double literalの値。他の種類では失敗する |
+| `m.str_const(node:)` | str literalの値。他の種類では失敗する |
+| `m.node_op(node:)` | `unary`/`binary`/`intrinsic`ノードの演算子名 —— `op:`/`name:`が受け取るのと同じ語彙。`varref`/`assign`は`var_kind()`へ誘導される |
+| `m.var_kind(node:)` | `varref`か`assign`ノードの`'local'`/`'capture'`/`'cell'` |
+| `m.var_index(node:)` | `varref`か`assign`ノードのスロットindex |
+| `m.scope_first_local(node:)` | `scope`ノードが所有する最初のlocalスロット |
+| `m.scope_end_local(node:)` | `scope`ノードが所有する最後のlocalスロットの1つ先 |
+| `m.try_caught_local(node:)` | `try`ノードの捕捉値localスロット |
+| `m.closure_func(node:)` | `makeclosure`ノードの関数index |
+| `m.closure_cmap(node:)` | `makeclosure`ノードのcapture-map index |
+| `m.cell_index(node:)` | `cellfresh`ノードのcell index |
+| `m.num_funcs()` | 存在する関数の数 |
+| `m.func_name(func:)` | その名前 |
+| `m.func_num_locals(func:)` | そのlocalスロット数 |
+| `m.func_num_captures(func:)` | そのcaptureスロット数 |
+| `m.func_num_cells(func:)` | そのcellスロット数 |
+| `m.func_num_params(func:)` | その仮引数の数 |
+| `m.func_body(func:)` | その本体。ノードidで返る |
+| `m.func_is_generator(func:)` | `set_generator`が呼ばれたかどうか |
+| `m.func_lenient_arity(func:)` | `set_lenient_arity`が呼ばれたかどうか |
+| `m.func_local_name(func:, index:)` | `set_local_name`がそのlocalに付けた名前 |
+| `m.func_capture_name(func:, index:)` | `set_capture_name`がそのcaptureに付けた名前 |
+| `m.num_capture_maps()` | 存在するcapture mapの数 |
+| `m.num_capture_entries(cmap:)` | `cmap`が持つ要素の数 |
+| `m.capture_kind(cmap:, index:)` | その要素の`kind:` |
+| `m.capture_index(cmap:, index:)` | その要素のスロットindex |
+
+`node_op`/`var_kind`/`capture_kind`/`const_kind`が返す文字列は、上のbuilderが
+`op:`/`kind:`/`name:`として受け取るのと同じもの —— これらで読み戻した値は、
+そのまま別のbuilder呼び出しに渡せる。
 
 ### 変数はcaptureであり静的リンクではない
 

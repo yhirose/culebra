@@ -6424,8 +6424,6 @@ list id afterward is undefined.
 | `m.set_generator(func:)` | marks function `func` as a generator: calling it packages a suspended activation instead of running the body. `'genresume'` (the activation and a value to send) runs it to its next yield and answers `{value, done}`; `'genreturn'` (the activation and a value) closes it early, running the parked body's pending defers innermost-first, and answers `{value, done: true}`; `'genthrow'` (the activation and a value) delivers the value at the parked yield as if the yield expression had thrown it — the body's own handlers get the first look, its defers run as the throw crosses them, and one the body does not catch comes out of the call with the generator done; a body that catches it and yields again answers `{value, done: false}` like any resume. A generator that never started or already finished has no frame for the value to land in, so it is thrown at the call itself |
 | `m.set_lenient_arity(func:)` | calls of `func` accept any argument count: extras are dropped, a parameter nothing arrived for starts as `nil`, and the body reads the count actually supplied with `'argcount'` — so a front end raises its own missing-argument diagnostic or fills a default. Without it, a count mismatch is an executor trap |
 | `m.set_entry_frame_drops(on:)` | whether the entry function's own bindings run their drop hooks when the program ends (on by default). A front end whose top-level scope is released without destructors turns it off; the entry function's defers still run, and every nested scope still drops as usual |
-
-The executor also honors a drop contract: an object whose `"\x01drop"` key holds a closure gets it called — with the object as its one argument — the moment the object's refcount reaches zero, before it is freed. A throwing destructor is reported to stderr and swallowed; a destructor that stores its argument resurrects the object and the free is skipped.
 | `m.list_new()` | a staging list, for `stmts_list:`/`args_list:` above |
 | `m.list_push(list:, value:)` | appends a node id to a staging list |
 | `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |
@@ -6439,6 +6437,8 @@ The executor also honors a drop contract: an object whose `"\x01drop"` key holds
 | `m.dump_ir()` | a readable dump of the tree, for debugging |
 | `m.dump_bc()` | a readable dump of the compiled bytecode, for debugging |
 
+The executor also honors a drop contract: an object whose `"\x01drop"` key holds a closure gets it called — with the object as its one argument — the moment the object's refcount reaches zero, before it is freed. A throwing destructor is reported to stderr and swallowed; a destructor that stores its argument resurrects the object and the free is skipped.
+
 `kind:` is `'local'` (this function's own slot), `'cell'` (also this
 function's own slot, but boxed so a call this function makes can capture it),
 or `'capture'` (borrowed from an enclosing one). A variable reference is
@@ -6446,6 +6446,56 @@ never a name lookup at run time — see "Variables are captures" below.
 
 A staging list or capture map is consumed — and gone — the moment it's handed
 to `block()`/`intrinsic()`/`call()`; reusing its id afterward is undefined.
+
+### Reading the IR back
+
+Every builder above has a reader: a script's own constant folder, or a test
+asserting a node's shape rather than substring-matching `dump_ir()`, walks
+the tree the same way the Compiler and Dumper do. A bad node/func/cmap id, or
+a reader called on the wrong tag or literal kind, raises `IrError` — the same
+failure class `verify()` itself reports.
+
+| Call | Reads |
+| --- | --- |
+| `m.num_nodes()` | how many nodes exist so far |
+| `m.node_tag(node:)` | the tag name — `'literal'`, `'varref'`, … — the same vocabulary `dump_ir()` prints |
+| `m.node_line(node:)` | the node's own source line |
+| `m.node_col(node:)` | the node's own source column |
+| `m.num_children(node:)` | how many children `node` has |
+| `m.child(node:, index:)` | the `index`-th child, as a node id |
+| `m.const_kind(node:)` | which of the four payloads a `literal` node holds — `'nil'`/`'int'`/`'bool'`/`'double'`/`'str'` |
+| `m.int_const(node:)` | an int literal's value; fails on any other kind |
+| `m.bool_const(node:)` | a bool literal's value; fails on any other kind |
+| `m.double_const(node:)` | a double literal's value; fails on any other kind |
+| `m.str_const(node:)` | a str literal's value; fails on any other kind |
+| `m.node_op(node:)` | the operator name for a `unary`/`binary`/`intrinsic` node — the same vocabulary `op:`/`name:` accept; a `varref`/`assign` is redirected to `var_kind()` instead |
+| `m.var_kind(node:)` | `'local'`/`'capture'`/`'cell'`, for a `varref` or `assign` node |
+| `m.var_index(node:)` | the slot index, for a `varref` or `assign` node |
+| `m.scope_first_local(node:)` | a `scope` node's first owned local slot |
+| `m.scope_end_local(node:)` | one past a `scope` node's last owned local slot |
+| `m.try_caught_local(node:)` | a `try` node's caught-value local slot |
+| `m.closure_func(node:)` | a `makeclosure` node's function index |
+| `m.closure_cmap(node:)` | a `makeclosure` node's capture-map index |
+| `m.cell_index(node:)` | a `cellfresh` node's cell index |
+| `m.num_funcs()` | how many functions exist |
+| `m.func_name(func:)` | its name |
+| `m.func_num_locals(func:)` | its local-slot count |
+| `m.func_num_captures(func:)` | its capture-slot count |
+| `m.func_num_cells(func:)` | its cell-slot count |
+| `m.func_num_params(func:)` | its parameter count |
+| `m.func_body(func:)` | its body, as a node id |
+| `m.func_is_generator(func:)` | whether `set_generator` was called on it |
+| `m.func_lenient_arity(func:)` | whether `set_lenient_arity` was called on it |
+| `m.func_local_name(func:, index:)` | the name `set_local_name` gave that local |
+| `m.func_capture_name(func:, index:)` | the name `set_capture_name` gave that capture |
+| `m.num_capture_maps()` | how many capture maps exist |
+| `m.num_capture_entries(cmap:)` | how many entries `cmap` has |
+| `m.capture_kind(cmap:, index:)` | that entry's `kind:` |
+| `m.capture_index(cmap:, index:)` | that entry's slot index |
+
+`node_op`/`var_kind`/`capture_kind`/`const_kind` return the same strings the
+builders above accept as `op:`/`kind:`/`name:` — a value read back from one
+of these can be fed straight into another builder call.
 
 ### Variables are captures, not static links
 

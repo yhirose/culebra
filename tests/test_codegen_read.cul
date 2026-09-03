@@ -1,0 +1,338 @@
+# Structural reads over CodeGen.Module's IR -- what a script could
+# previously only get at by substring-matching dump_ir(), which breaks the
+# moment the dumper's own formatting changes. Every accessor here routes
+# through vendor/cpp-vmlib's own Views (view_scope, view_try, ...), the same
+# ones the Compiler and Dumper read, so these assertions pin structure
+# rather than text. tests/test_codegen.cul covers the builder; this covers
+# reading back what it built.
+
+fn stmt_block(m, stmts) {
+  let list = m.list_new()
+  for s in stmts { m.list_push(list, s) }
+  m.block(stmts_list: list, line: 1, col: 1)
+}
+
+# --- Every tag's node_tag, one of each in a single module. ---
+{
+  let m = CodeGen.Module.new()
+  let lit = m.literal(v: 1, line: 1, col: 1)
+  let vr = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  let un = m.unary(op: 'neg', operand: lit, line: 1, col: 1)
+  let bin = m.binary(op: 'add', lhs: lit, rhs: lit, line: 1, col: 1)
+  let asn = m.assign(kind: 'local', index: 0, value: lit, line: 1, col: 1)
+  let iff = m.make_if(cond: lit, then_branch: stmt_block(m, []), line: 1, col: 1)
+  let ifelse = m.make_if_else(cond: lit, then_branch: stmt_block(m, []),
+                              else_branch: stmt_block(m, []), line: 1, col: 1)
+  let whl = m.make_while(cond: lit, body: stmt_block(m, []), line: 1, col: 1)
+  let blk = stmt_block(m, [])
+  let intr = m.intrinsic(name: 'tostr', args_list: m.list_new(), line: 1, col: 1)
+  let cmap = m.add_capture_map(m.capture_map_new())
+  let clos = m.make_closure(func: 0, cmap: cmap, line: 1, col: 1)
+  let callv = m.call_value(callee: clos, args_list: m.list_new(), line: 1, col: 1)
+  let arrlit = m.array_lit(items_list: m.list_new(), line: 1, col: 1)
+  let objlit = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
+  let idx = m.index(recv: arrlit, key: lit, line: 1, col: 1)
+  let setidx = m.set_index(recv: arrlit, key: lit, value: lit, line: 1, col: 1)
+  let scp = m.scope(first_local: 0, end_local: 1, body: stmt_block(m, []), line: 1, col: 1)
+  let ret = m.make_return(value: lit, line: 1, col: 1)
+  let brk = m.make_break(line: 1, col: 1)
+  let cont = m.make_continue(line: 1, col: 1)
+  let thr = m.make_throw(value: lit, line: 1, col: 1)
+  let trycatch = m.make_try(caught_local: 0, body: stmt_block(m, []),
+                            handler: stmt_block(m, []), line: 1, col: 1)
+  let deferred = m.make_defer(value: clos, line: 1, col: 1)
+  let cellf = m.cell_fresh(cell: 0, line: 1, col: 1)
+  let yld = m.make_yield(value: lit, line: 1, col: 1)
+
+  assert_eq(m.node_tag(node: lit), 'literal')
+  assert_eq(m.node_tag(node: vr), 'varref')
+  assert_eq(m.node_tag(node: un), 'unary')
+  assert_eq(m.node_tag(node: bin), 'binary')
+  assert_eq(m.node_tag(node: asn), 'assign')
+  assert_eq(m.node_tag(node: iff), 'if')
+  assert_eq(m.node_tag(node: ifelse), 'if')
+  assert_eq(m.node_tag(node: whl), 'while')
+  assert_eq(m.node_tag(node: blk), 'block')
+  assert_eq(m.node_tag(node: intr), 'intrinsic')
+  assert_eq(m.node_tag(node: clos), 'makeclosure')
+  assert_eq(m.node_tag(node: callv), 'callvalue')
+  assert_eq(m.node_tag(node: arrlit), 'arraylit')
+  assert_eq(m.node_tag(node: objlit), 'objectlit')
+  assert_eq(m.node_tag(node: idx), 'index')
+  assert_eq(m.node_tag(node: setidx), 'setindex')
+  assert_eq(m.node_tag(node: scp), 'scope')
+  assert_eq(m.node_tag(node: ret), 'return')
+  assert_eq(m.node_tag(node: brk), 'break')
+  assert_eq(m.node_tag(node: cont), 'continue')
+  assert_eq(m.node_tag(node: thr), 'throw')
+  assert_eq(m.node_tag(node: trycatch), 'try')
+  assert_eq(m.node_tag(node: deferred), 'defer')
+  assert_eq(m.node_tag(node: cellf), 'cellfresh')
+  assert_eq(m.node_tag(node: yld), 'yield')
+}
+
+# --- Binary's two children, in lhs/rhs order. ---
+{
+  let m = CodeGen.Module.new()
+  let lhs = m.literal(v: 10, line: 1, col: 1)
+  let rhs = m.literal(v: 20, line: 1, col: 1)
+  let bin = m.binary(op: 'sub', lhs: lhs, rhs: rhs, line: 1, col: 1)
+  assert_eq(m.num_children(node: bin), 2)
+  assert_eq(m.child(node: bin, index: 0), lhs)
+  assert_eq(m.child(node: bin, index: 1), rhs)
+}
+
+# --- Optional children, told apart by num_children alone: if vs if/else,
+# scope vs scope with a release list, return's optional value. ---
+{
+  let m = CodeGen.Module.new()
+  let cond = m.literal(v: 1, line: 1, col: 1)
+  let then_b = stmt_block(m, [])
+  let else_b = stmt_block(m, [])
+  let iff = m.make_if(cond: cond, then_branch: then_b, line: 1, col: 1)
+  let ifelse = m.make_if_else(cond: cond, then_branch: then_b,
+                              else_branch: else_b, line: 1, col: 1)
+  assert_eq(m.num_children(node: iff), 2)
+  assert_eq(m.num_children(node: ifelse), 3)
+
+  let body = stmt_block(m, [])
+  let scp = m.scope(first_local: 0, end_local: 1, body: body, line: 1, col: 1)
+  let release_list = m.list_new()
+  m.list_push(release_list, m.var_ref(kind: 'local', index: 0, line: 1, col: 1))
+  let scpr = m.scope_release(first_local: 0, end_local: 1, body: body,
+                             release_list: release_list, line: 1, col: 1)
+  assert_eq(m.num_children(node: scp), 1)
+  assert_eq(m.num_children(node: scpr), 2)
+
+  assert_eq(m.num_children(node: m.make_return(value: cond, line: 1, col: 1)), 1)
+}
+
+# --- Position is the node's own, not its parent's or a child's. ---
+{
+  let m = CodeGen.Module.new()
+  let lhs = m.literal(v: 1, line: 10, col: 20)
+  let rhs = m.literal(v: 2, line: 11, col: 21)
+  let bin = m.binary(op: 'add', lhs: lhs, rhs: rhs, line: 12, col: 22)
+  assert_eq(m.node_line(node: bin), 12)
+  assert_eq(m.node_col(node: bin), 22)
+  assert_eq(m.node_line(node: lhs), 10)
+  assert_eq(m.node_col(node: lhs), 20)
+  assert_eq(m.node_line(node: rhs), 11)
+  assert_eq(m.node_col(node: rhs), 21)
+}
+
+# --- const_kind plus one payload reader per literal kind; a mismatched
+# reader is an error rather than a silent reinterpretation of the bits. ---
+{
+  let m = CodeGen.Module.new()
+  let i = m.literal(v: 42, line: 1, col: 1)
+  let b = m.bool_literal(v: true, line: 1, col: 1)
+  let d = m.double_literal(v: 1.5, line: 1, col: 1)
+  let n = m.nil_literal(line: 1, col: 1)
+  let s = m.str_literal(s: 'hi', line: 1, col: 1)
+
+  assert_eq(m.const_kind(node: i), 'int')
+  assert_eq(m.int_const(node: i), 42)
+  assert_eq(m.const_kind(node: b), 'bool')
+  assert_eq(m.bool_const(node: b), true)
+  assert_eq(m.const_kind(node: d), 'double')
+  assert_eq(m.double_const(node: d), 1.5)
+  assert_eq(m.const_kind(node: n), 'nil')
+  assert_eq(m.const_kind(node: s), 'str')
+  assert_eq(m.str_const(node: s), 'hi')
+
+  mut caught = nil
+  try { m.int_const(node: s) } catch e { caught = e }
+  assert_eq(caught.kind, 'IrError')
+  assert_eq(caught.message, 'literal #4 is a str, not an int (int_const)')
+}
+
+# --- node_op / var_kind's vocabulary is the same one the builders accept --
+# a round trip, not just a read: the value read back is fed into a second
+# builder call to confirm it is still recognized. ---
+{
+  let m = CodeGen.Module.new()
+  let lit = m.literal(v: 1, line: 1, col: 1)
+
+  for op in ['add', 'sub', 'mul', 'div', 'mod', 'eq', 'ne', 'lt', 'le', 'gt',
+             'ge', 'bitand', 'bitor', 'bitxor', 'shl', 'shr'] {
+    let n = m.binary(op: op, lhs: lit, rhs: lit, line: 1, col: 1)
+    let read_back = m.node_op(node: n)
+    assert_eq(read_back, op)
+    m.binary(op: read_back, lhs: lit, rhs: lit, line: 1, col: 1)
+  }
+
+  for op in ['neg', 'bitnot'] {
+    let n = m.unary(op: op, operand: lit, line: 1, col: 1)
+    let read_back = m.node_op(node: n)
+    assert_eq(read_back, op)
+    m.unary(op: read_back, operand: lit, line: 1, col: 1)
+  }
+
+  for name in ['print', 'readint', 'len', 'tostr', 'typeof', 'toint',
+               'todouble', 'fmod', 'pow', 'printraw', 'arraypush',
+               'arraypop', 'objecthas', 'objectkeys', 'objectremove',
+               'genresume', 'genreturn', 'genthrow', 'argcount', 'same',
+               'fnarity', 'collect', 'heapstats', 'enqueue'] {
+    let n = m.intrinsic(name: name, args_list: m.list_new(), line: 1, col: 1)
+    let read_back = m.node_op(node: n)
+    assert_eq(read_back, name)
+    m.intrinsic(name: read_back, args_list: m.list_new(), line: 1, col: 1)
+  }
+
+  for kind in ['local', 'capture', 'cell'] {
+    let n = m.var_ref(kind: kind, index: 0, line: 1, col: 1)
+    let read_back = m.var_kind(node: n)
+    assert_eq(read_back, kind)
+    m.var_ref(kind: read_back, index: 0, line: 1, col: 1)
+  }
+}
+
+# --- var_kind/var_index, distinct index per kind so a field mix-up would be
+# caught; assign shares the same reader varref does. ---
+{
+  let m = CodeGen.Module.new()
+  let loc = m.var_ref(kind: 'local', index: 3, line: 1, col: 1)
+  let cap = m.var_ref(kind: 'capture', index: 5, line: 1, col: 1)
+  let cel = m.var_ref(kind: 'cell', index: 7, line: 1, col: 1)
+  assert_eq(m.var_kind(node: loc), 'local')
+  assert_eq(m.var_index(node: loc), 3)
+  assert_eq(m.var_kind(node: cap), 'capture')
+  assert_eq(m.var_index(node: cap), 5)
+  assert_eq(m.var_kind(node: cel), 'cell')
+  assert_eq(m.var_index(node: cel), 7)
+
+  let asn = m.assign(kind: 'cell', index: 9, value: loc, line: 1, col: 1)
+  assert_eq(m.var_kind(node: asn), 'cell')
+  assert_eq(m.var_index(node: asn), 9)
+}
+
+# --- scope's local range: first != end, so a swap would be caught. ---
+{
+  let m = CodeGen.Module.new()
+  let scp = m.scope(first_local: 2, end_local: 5, body: stmt_block(m, []),
+                    line: 1, col: 1)
+  assert_eq(m.scope_first_local(node: scp), 2)
+  assert_eq(m.scope_end_local(node: scp), 5)
+}
+
+# --- try's caught local slot. ---
+{
+  let m = CodeGen.Module.new()
+  let trycatch = m.make_try(caught_local: 4, body: stmt_block(m, []),
+                            handler: stmt_block(m, []), line: 1, col: 1)
+  assert_eq(m.try_caught_local(node: trycatch), 4)
+}
+
+# --- closure's func and capture-map indices, distinct so a swap would be
+# caught. ---
+{
+  let m = CodeGen.Module.new()
+  let cmap = m.add_capture_map(m.capture_map_new())
+  let clos = m.make_closure(func: 3, cmap: cmap, line: 1, col: 1)
+  assert_eq(m.closure_func(node: clos), 3)
+  assert_eq(m.closure_cmap(node: clos), cmap)
+}
+
+# --- The function table: every field distinct across two funcs, so a
+# field mix-up (num_cells answering as num_locals, say) would be caught. ---
+{
+  let m = CodeGen.Module.new()
+  let body0 = stmt_block(m, [])
+  let f0 = m.add_func(name: 'main', num_locals: 3, num_captures: 1,
+                      num_cells: 2, num_params: 1, body: body0)
+  m.set_local_name(func: f0, index: 0, name: 'x')
+  m.set_capture_name(func: f0, index: 0, name: 'y')
+
+  let body1 = stmt_block(m, [])
+  let f1 = m.add_func(name: 'gen', num_locals: 4, num_captures: 2,
+                      num_cells: 1, num_params: 2, body: body1)
+  m.set_generator(func: f1)
+  m.set_lenient_arity(func: f1)
+
+  assert_eq(m.num_funcs(), 2)
+  assert_eq(m.func_name(func: f0), 'main')
+  assert_eq(m.func_num_locals(func: f0), 3)
+  assert_eq(m.func_num_captures(func: f0), 1)
+  assert_eq(m.func_num_cells(func: f0), 2)
+  assert_eq(m.func_num_params(func: f0), 1)
+  assert_eq(m.func_body(func: f0), body0)
+  assert_eq(m.func_is_generator(func: f0), false)
+  assert_eq(m.func_lenient_arity(func: f0), false)
+  assert_eq(m.func_local_name(func: f0, index: 0), 'x')
+  assert_eq(m.func_capture_name(func: f0, index: 0), 'y')
+
+  assert_eq(m.func_name(func: f1), 'gen')
+  assert_eq(m.func_num_locals(func: f1), 4)
+  assert_eq(m.func_num_captures(func: f1), 2)
+  assert_eq(m.func_num_cells(func: f1), 1)
+  assert_eq(m.func_num_params(func: f1), 2)
+  assert_eq(m.func_body(func: f1), body1)
+  assert_eq(m.func_is_generator(func: f1), true)
+  assert_eq(m.func_lenient_arity(func: f1), true)
+}
+
+# --- Capture maps, two of different length with mixed kinds, so an
+# entry-order or index mix-up would be caught. ---
+{
+  let m = CodeGen.Module.new()
+  let cm0 = m.capture_map_new()
+  m.capture_map_push(cmap: cm0, kind: 'cell', index: 2)
+  let map0 = m.add_capture_map(cmap: cm0)
+
+  let cm1 = m.capture_map_new()
+  m.capture_map_push(cmap: cm1, kind: 'capture', index: 1)
+  m.capture_map_push(cmap: cm1, kind: 'cell', index: 4)
+  let map1 = m.add_capture_map(cmap: cm1)
+
+  assert_eq(m.num_capture_maps(), 2)
+  assert_eq(m.num_capture_entries(cmap: map0), 1)
+  assert_eq(m.capture_kind(cmap: map0, index: 0), 'cell')
+  assert_eq(m.capture_index(cmap: map0, index: 0), 2)
+
+  assert_eq(m.num_capture_entries(cmap: map1), 2)
+  assert_eq(m.capture_kind(cmap: map1, index: 0), 'capture')
+  assert_eq(m.capture_index(cmap: map1, index: 0), 1)
+  assert_eq(m.capture_kind(cmap: map1, index: 1), 'cell')
+  assert_eq(m.capture_index(cmap: map1, index: 1), 4)
+}
+
+# --- A bad id is IrError, naming the id (or count) in the message. ---
+{
+  let m = CodeGen.Module.new()
+  let lit = m.literal(v: 1, line: 1, col: 1)
+
+  mut caught = nil
+  try { m.node_tag(node: 9999) } catch e { caught = e }
+  assert_eq(caught.kind, 'IrError')
+  assert_eq(caught.message, 'no node #9999')
+
+  caught = nil
+  try { m.child(node: lit, index: 0) } catch e { caught = e }
+  assert_eq(caught.kind, 'IrError')
+  assert_eq(caught.message, 'node #0 has 0 children, no #0')
+
+  caught = nil
+  try { m.func_name(func: 7) } catch e { caught = e }
+  assert_eq(caught.kind, 'IrError')
+  assert_eq(caught.message, 'no func #7')
+
+  let cm = m.add_capture_map(m.capture_map_new())
+  caught = nil
+  try { m.capture_kind(cmap: cm, index: 3) } catch e { caught = e }
+  assert_eq(caught.kind, 'IrError')
+  assert_eq(caught.message, 'capture map #0 has 0 entries, no #3')
+}
+
+# --- node_op on a varref/assign redirects to var_kind rather than quietly
+# answering the wrong question. ---
+{
+  let m = CodeGen.Module.new()
+  let vr = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  mut caught = nil
+  try { m.node_op(node: vr) } catch e { caught = e }
+  assert_eq(caught.kind, 'IrError')
+  assert_eq(caught.message, "node #0 is a varref; use var_kind() for its var kind")
+}
+
+println('test_codegen_read OK')
