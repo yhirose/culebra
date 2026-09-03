@@ -6176,7 +6176,7 @@ fn is_value_stmt(node) {
 }
 
 # Wrap a value leaving function f in its declared return-type check.
-fn emit_ret_check(m, f, v, ln, cl) {
+fn emit_ret_check(m, f, v, at) {
   if !funcs[f].has('ret') { return v }
   if !ret_specs.has(f) { ret_specs[f] = ret_spec(funcs[f].ret) }
   let spec = ret_specs[f]
@@ -6188,17 +6188,16 @@ fn emit_ret_check(m, f, v, ln, cl) {
     }
   }
   mut cs = []
-  for tc in spec.checks { cs.push(m.str_literal(s: tc, line: ln, col: cl)) }
+  for tc in spec.checks { cs.push(ir.str_literal(tc, at)) }
   let (pl, pc) = cond {
-    fn_pos.has(f) => (m.literal(v: fn_pos[f][0], line: ln, col: cl),
-                      m.literal(v: fn_pos[f][1], line: ln, col: cl)),
-    _ => pos_args(m, {line: ln, column: cl}),
+    fn_pos.has(f) => (ir.literal(fn_pos[f][0], at),
+                      ir.literal(fn_pos[f][1], at)),
+    _ => pos_args(m, {line: at.line, column: at.column}),
   }
   call_pre(m, f, '__ret_check',
-           [v, m.array_lit(items_list: ir.list(cs), line: ln, col: cl),
-            m.bool_literal(v: spec.opt, line: ln, col: cl),
-            m.str_literal(s: spec.text, line: ln, col: cl), pl, pc],
-           ln, cl)
+           [v, m.array_lit(items_list: ir.list(cs), line: at.line, col: at.column),
+            ir.bool_literal(spec.opt, at),
+            ir.str_literal(spec.text, at), pl, pc], at)
 }
 
 # Whether a statement subtree contains a yield of its own -- not one hidden
@@ -7440,17 +7439,17 @@ fn scratch_slot(f, k) { nslots[f] + k }
 # Raw IR fragments the lowering composes without prelude round-trips: the
 # checks below only ever compare typeof (a string) against a literal, which
 # the VM's own eq handles.
-fn ir_typeof(m, v, ln, cl) { ir.intrinsic('typeof', [v], front.pos(ln, cl)) }
+fn ir_typeof(m, v, at) { ir.intrinsic('typeof', [v], at) }
 
-fn ir_bool(m, v, ln, cl) { m.bool_literal(v: v, line: ln, col: cl) }
+fn ir_bool(m, v, at) { ir.bool_literal(v, at) }
 
-fn ir_and(m, a, b, ln, cl) { ir.land(a, b, front.pos(ln, cl)) }
+fn ir_and(m, a, b, at) { ir.land(a, b, at) }
 
 # A call to a prelude helper, with the user-site position threaded in. Pass C
 # discovers prelude calls the scan didn't see (they come from the lowering
 # itself); the prelude captures nothing, so no fixpoint re-run is needed.
-fn call_pre(m, f, name, arg_ids, ln, cl) {
-  ir.call(f, prelude_named[name], arg_ids, front.pos(ln, cl))
+fn call_pre(m, f, name, arg_ids, at) {
+  ir.call(f, prelude_named[name], arg_ids, at)
 }
 
 # The prelude-only marks give the prelude bytes the surface language cannot
@@ -7552,8 +7551,7 @@ fn emit_binop(m, f, tok, lhs_id, rhs_id, op_node, at) {
   if in_prelude || binop_prelude(tok) == nil {
     if tok == '==' || tok == '!=' {
       if !in_prelude {
-        let e = call_pre(m, f, '__eq', [lhs_id, rhs_id],
-                         op_node.line, op_node.column)
+        let e = call_pre(m, f, '__eq', [lhs_id, rhs_id], op_node)
         if tok == '==' { return e }
         return ir.make_if_else(
           e,
@@ -7566,8 +7564,7 @@ fn emit_binop(m, f, tok, lhs_id, rhs_id, op_node, at) {
     return ir.binary(binop_raw(tok), lhs_id, rhs_id, op_node)
   }
   let (ln, cl) = pos_args(m, at)
-  call_pre(m, f, binop_prelude(tok), [lhs_id, rhs_id, ln, cl],
-           op_node.line, op_node.column)
+  call_pre(m, f, binop_prelude(tok), [lhs_id, rhs_id, ln, cl], op_node)
 }
 
 fn emit_left_chain(m, node, f) {
@@ -7626,7 +7623,7 @@ fn emit_shortcircuit(m, node, f) {
     let store = ir.store_local(slot, value, op)
     let t = fn () { ir.local(slot, op) }
     let (pl, pc) = pos_args(m, op)
-    let c = call_pre(m, f, '__truthy', [t(), pl, pc], op.line, op.column)
+    let c = call_pre(m, f, '__truthy', [t(), pl, pc], op)
     let rhs = emit_expr(m, rn, f)
     let picked = cond {
       op.token == '&&' => ir.make_if_else(c, rhs, t(), op),
@@ -7645,7 +7642,7 @@ fn emit_nilco(m, node, f) {
     let slot = scratch_slot(f, scratch_of[pkey(op)])
     let store = ir.store_local(slot, value, op)
     fn tref() { ir.local(slot, op) }
-    let isnil = ir.binary('eq', ir_typeof(m, tref(), op.line, op.column),
+    let isnil = ir.binary('eq', ir_typeof(m, tref(), op),
                           ir.str_literal('nil', op), op)
     let picked = ir.make_if_else(isnil, emit_expr(m, rn, f), tref(), op)
     value = ir.seq([store], picked, op)
@@ -7656,68 +7653,80 @@ fn emit_nilco(m, node, f) {
 # One pattern, compiled to a test over `subj()` (a fresh reference each
 # call) plus binding assignments run when the arm is taken. Sub-values are
 # re-read through index chains -- pure reads, so repetition is safe.
-fn emit_pat_test(m, f, pat, subj, ln, cl) {
+fn emit_pat_test(m, f, pat, subj, at) {
   match pat {
-    {name: 'wild_p'} => ir_bool(m, true, ln, cl),
-    {name: 'bind_p'} => ir_bool(m, true, ln, cl),
-    {name: 'rest_pt'} => ir_bool(m, true, ln, cl),
+    {name: 'wild_p'} => ir_bool(m, true, at),
+    {name: 'bind_p'} => ir_bool(m, true, at),
+    {name: 'rest_pt'} => ir_bool(m, true, at),
     {name: 'typed_pt', nodes: [id, ty]} =>
-      call_pre(m, f, '__pat_type', [subj(), m.str_literal(s: ty.token, line: ln, col: cl)], ln, cl),
-    {name: 'nil_p'} => m.binary(op: 'eq', lhs: ir_typeof(m, subj(), ln, cl),
-                                rhs: m.str_literal(s: 'nil', line: ln, col: cl),
-                                line: ln, col: cl),
-    {name: 'true_p'} => emit_pat_eq(m, f, subj, m.bool_literal(v: true, line: ln, col: cl), ln, cl),
-    {name: 'false_p'} => emit_pat_eq(m, f, subj, m.bool_literal(v: false, line: ln, col: cl), ln, cl),
+      call_pre(m, f, '__pat_type', [subj(), ir.str_literal(ty.token, at)], at),
+    {name: 'nil_p'} => ir.binary(
+      'eq',
+      ir_typeof(m, subj(), at),
+      ir.str_literal('nil', at),
+      at,
+    ),
+    {name: 'true_p'} => emit_pat_eq(m, f, subj, ir.bool_literal(true, at), at),
+    {name: 'false_p'} => emit_pat_eq(m, f, subj, ir.bool_literal(false, at), at),
     {name: 'num_p'} => emit_pat_eq(m, f, subj,
-                                   m.literal(v: parse_int_token(pat.nodes[0].token), line: ln, col: cl),
-                                   ln, cl),
+                                   ir.literal(
+                                     parse_int_token(pat.nodes[0].token),
+                                     at,
+                                   ), at),
     {name: 'float_p'} => emit_pat_eq(m, f, subj,
-                                     m.double_literal(v: to_float(pat.nodes[0].token), line: ln, col: cl),
-                                     ln, cl),
+                                     ir.double_literal(
+                                       to_float(pat.nodes[0].token),
+                                       at,
+                                     ), at),
     {name: 'str_p'} => emit_pat_eq(m, f, subj,
-                                   m.str_literal(s: pat.nodes[0].token, line: ln, col: cl),
-                                   ln, cl),
+                                   ir.str_literal(pat.nodes[0].token, at), at),
     {name: 'obj_p'} => {
-      mut t = m.binary(op: 'eq', lhs: ir_typeof(m, subj(), ln, cl),
-                       rhs: m.str_literal(s: 'object', line: ln, col: cl),
-                       line: ln, col: cl)
+      mut t = ir.binary(
+        'eq',
+        ir_typeof(m, subj(), at),
+        ir.str_literal('object', at),
+        at,
+      )
       for op in pat.nodes {
         let key = op.nodes[0].token
         let ha = m.list_new()
         m.list_push(ha, subj())
-        m.list_push(ha, m.str_literal(s: key, line: ln, col: cl))
+        m.list_push(ha, ir.str_literal(key, at))
         let haskey = m.intrinsic(name: 'objecthas', args_list: ha,
-                                 line: ln, col: cl)
-        t = ir_and(m, t, haskey, ln, cl)
+                                 line: at.line, col: at.column)
+        t = ir_and(m, t, haskey, at)
         if op.nodes.size() == 2 {
           fn sub() {
-            m.index(recv: subj(), key: m.str_literal(s: key, line: ln, col: cl),
-                    line: ln, col: cl)
+            m.index(recv: subj(), key: ir.str_literal(key, at),
+                    line: at.line, col: at.column)
           }
-          t = ir_and(m, t, emit_pat_test(m, f, op.nodes[1], sub, ln, cl), ln, cl)
+          t = ir_and(m, t, emit_pat_test(m, f, op.nodes[1], sub, at), at)
         }
       }
       t
     },
-    {name: 'arr_p'} => emit_seq_pat(m, f, pat, subj, 'array', ln, cl),
+    {name: 'arr_p'} => emit_seq_pat(m, f, pat, subj, 'array', at),
     {name: 'tup_p'} => {
-      let items = fn () { call_pre(m, f, '__titems', [subj()], ln, cl) }
-      let ist = call_pre(m, f, '__is_tuple', [subj()], ln, cl)
-      ir_and(m, ist, emit_seq_items(m, f, pat, items, ln, cl), ln, cl)
+      let items = fn () { call_pre(m, f, '__titems', [subj()], at) }
+      let ist = call_pre(m, f, '__is_tuple', [subj()], at)
+      ir_and(m, ist, emit_seq_items(m, f, pat, items, at), at)
     },
     _ => fail(pat, "unsupported pattern {pat.name}"),
   }
 }
 
-fn emit_pat_eq(m, f, subj, lit, ln, cl) {
-  call_pre(m, f, '__eq', [subj(), lit], ln, cl)
+fn emit_pat_eq(m, f, subj, lit, at) {
+  call_pre(m, f, '__eq', [subj(), lit], at)
 }
 
-fn emit_seq_pat(m, f, pat, subj, tyname, ln, cl) {
-  let t = m.binary(op: 'eq', lhs: ir_typeof(m, subj(), ln, cl),
-                   rhs: m.str_literal(s: tyname, line: ln, col: cl),
-                   line: ln, col: cl)
-  ir_and(m, t, emit_seq_items(m, f, pat, subj, ln, cl), ln, cl)
+fn emit_seq_pat(m, f, pat, subj, tyname, at) {
+  let t = ir.binary(
+    'eq',
+    ir_typeof(m, subj(), at),
+    ir.str_literal(tyname, at),
+    at,
+  )
+  ir_and(m, t, emit_seq_items(m, f, pat, subj, at), at)
 }
 
 fn rest_index(pat) {
@@ -7729,44 +7738,55 @@ fn rest_index(pat) {
   0 - 1
 }
 
-fn seq_len(m, items, ln, cl) {
+fn seq_len(m, items, at) {
   let la = m.list_new()
   m.list_push(la, items())
-  m.intrinsic(name: 'len', args_list: la, line: ln, col: cl)
+  m.intrinsic(name: 'len', args_list: la, line: at.line, col: at.column)
 }
 
 # The item an element pattern reads: a fixed index before a rest, an
 # index counted from the end after it.
-fn seq_item(m, pat, items, idx, ln, cl) {
+fn seq_item(m, pat, items, idx, at) {
   let ri = rest_index(pat)
   let n = pat.nodes.size()
   cond {
     ri < 0 || idx < ri =>
-      m.index(recv: items(), key: m.literal(v: idx, line: ln, col: cl),
-              line: ln, col: cl),
+      m.index(recv: items(), key: ir.literal(idx, at),
+              line: at.line, col: at.column),
     _ => m.index(recv: items(),
-                 key: m.binary(op: 'sub', lhs: seq_len(m, items, ln, cl),
-                               rhs: m.literal(v: n - idx, line: ln, col: cl),
-                               line: ln, col: cl),
-                 line: ln, col: cl),
+                 key: ir.binary(
+                   'sub',
+                   seq_len(m, items, at),
+                   ir.literal(n - idx, at),
+                   at,
+                 ),
+                 line: at.line, col: at.column),
   }
 }
 
-fn emit_seq_items(m, f, pat, items, ln, cl) {
+fn emit_seq_items(m, f, pat, items, at) {
   let n = pat.nodes.size()
   let ri = rest_index(pat)
   mut t = cond {
-    ri < 0 => m.binary(op: 'eq', lhs: seq_len(m, items, ln, cl),
-                       rhs: m.literal(v: n, line: ln, col: cl), line: ln, col: cl),
-    _ => m.binary(op: 'ge', lhs: seq_len(m, items, ln, cl),
-                  rhs: m.literal(v: n - 1, line: ln, col: cl), line: ln, col: cl),
+    ri < 0 => ir.binary(
+      'eq',
+      seq_len(m, items, at),
+      ir.literal(n, at),
+      at,
+    ),
+    _ => ir.binary(
+      'ge',
+      seq_len(m, items, at),
+      ir.literal(n - 1, at),
+      at,
+    ),
   }
   mut i = 0
   while i < n {
     let idx = i
     if idx != ri {
-      fn sub() { seq_item(m, pat, items, idx, ln, cl) }
-      t = ir_and(m, t, emit_pat_test(m, f, pat.nodes[idx], sub, ln, cl), ln, cl)
+      fn sub() { seq_item(m, pat, items, idx, at) }
+      t = ir_and(m, t, emit_pat_test(m, f, pat.nodes[idx], sub, at), at)
     }
     i = i + 1
   }
@@ -7774,7 +7794,7 @@ fn emit_seq_items(m, f, pat, items, ln, cl) {
 }
 
 # Binding assignments for a taken arm, in pattern order.
-fn emit_pat_binds(m, f, pat, subj, ids, ln, cl) {
+fn emit_pat_binds(m, f, pat, subj, ids, at) {
   match pat {
     {name: 'bind_p', nodes: [id]} => {
       let r = resolved[pkey(id)]
@@ -7788,28 +7808,28 @@ fn emit_pat_binds(m, f, pat, subj, ids, ln, cl) {
       for op in pat.nodes {
         let key = op.nodes[0].token
         fn sub() {
-          m.index(recv: subj(), key: m.str_literal(s: key, line: ln, col: cl),
-                  line: ln, col: cl)
+          m.index(recv: subj(), key: ir.str_literal(key, at),
+                  line: at.line, col: at.column)
         }
         cond {
-          op.nodes.size() == 2 => emit_pat_binds(m, f, op.nodes[1], sub, ids, ln, cl),
+          op.nodes.size() == 2 => emit_pat_binds(m, f, op.nodes[1], sub, ids, at),
           _ => {
             let r = resolved[pkey(op.nodes[0])]
-            ids.push(ir.write(f, f, r.slot, sub(), front.pos(ln, cl)))
+            ids.push(ir.write(f, f, r.slot, sub(), at))
           },
         }
       }
     },
-    {name: 'arr_p'} => emit_seq_binds(m, f, pat, subj, ids, ln, cl),
+    {name: 'arr_p'} => emit_seq_binds(m, f, pat, subj, ids, at),
     {name: 'tup_p'} => {
-      let items = fn () { call_pre(m, f, '__titems', [subj()], ln, cl) }
-      emit_seq_binds(m, f, pat, items, ids, ln, cl)
+      let items = fn () { call_pre(m, f, '__titems', [subj()], at) }
+      emit_seq_binds(m, f, pat, items, ids, at)
     },
     _ => nil,
   }
 }
 
-fn emit_seq_binds(m, f, pat, items, ids, ln, cl) {
+fn emit_seq_binds(m, f, pat, items, ids, at) {
   let ri = rest_index(pat)
   let n = pat.nodes.size()
   mut i = 0
@@ -7820,16 +7840,18 @@ fn emit_seq_binds(m, f, pat, items, ids, ln, cl) {
         let id = pat.nodes[idx].nodes[0]
         let r = resolved[pkey(id)]
         let rest = call_pre(m, f, '__slice_arr',
-                            [items(), m.literal(v: idx, line: ln, col: cl),
-                             m.binary(op: 'sub', lhs: seq_len(m, items, ln, cl),
-                                      rhs: m.literal(v: n - 1 - idx, line: ln, col: cl),
-                                      line: ln, col: cl)],
-                            ln, cl)
+                            [items(), ir.literal(idx, at),
+                             ir.binary(
+                               'sub',
+                               seq_len(m, items, at),
+                               ir.literal(n - 1 - idx, at),
+                               at,
+                             )], at)
         ids.push(ir.write(f, f, r.slot, rest, id))
       },
       _ => {
-        fn sub() { seq_item(m, pat, items, idx, ln, cl) }
-        emit_pat_binds(m, f, pat.nodes[idx], sub, ids, ln, cl)
+        fn sub() { seq_item(m, pat, items, idx, at) }
+        emit_pat_binds(m, f, pat.nodes[idx], sub, ids, at)
       },
     }
     i = i + 1
@@ -7846,7 +7868,7 @@ fn emit_match(m, node, f) {
   mut ids = [
     m.assign(kind: 'local', index: subj_slot,
              value: emit_expr(m, node.nodes[0], f), line: ln, col: cl),
-    m.assign(kind: 'local', index: flag_slot, value: ir_bool(m, false, ln, cl),
+    m.assign(kind: 'local', index: flag_slot, value: ir_bool(m, false, node),
              line: ln, col: cl),
     m.assign(kind: 'local', index: res_slot,
              value: m.nil_literal(line: ln, col: cl), line: ln, col: cl),
@@ -7860,18 +7882,18 @@ fn emit_match(m, node, f) {
     if arm.nodes.size() == 3 { guard = arm.nodes[1] }
     let notyet = m.make_if_else(
         cond: m.var_ref(kind: 'local', index: flag_slot, line: ln, col: cl),
-        then_branch: ir_bool(m, false, ln, cl),
-        else_branch: emit_pat_test(m, f, pat, subj, ln, cl),
+        then_branch: ir_bool(m, false, node),
+        else_branch: emit_pat_test(m, f, pat, subj, node),
         line: ln, col: cl)
     # taken: bindings, then guard, then body into the result
     mut arm_ids = []
-    emit_pat_binds(m, f, pat, subj, arm_ids, ln, cl)
+    emit_pat_binds(m, f, pat, subj, arm_ids, node)
     let bodyv = cond {
       body.name == 'block' => emit_block(m, body, f),
       _ => emit_expr(m, body, f),
     }
     let take = m.block(stmts_list: ir.list([
-        m.assign(kind: 'local', index: flag_slot, value: ir_bool(m, true, ln, cl),
+        m.assign(kind: 'local', index: flag_slot, value: ir_bool(m, true, node),
                  line: ln, col: cl),
         m.assign(kind: 'local', index: res_slot, value: bodyv, line: ln, col: cl),
     ]), line: ln, col: cl)
@@ -7880,14 +7902,14 @@ fn emit_match(m, node, f) {
       _ => {
         let (pl, pc) = pos_args(m, guard)
         let g0 = emit_expr(m, guard.nodes[0], f)
-        let g = call_pre(m, f, '__truthy', [g0, pl, pc], ln, cl)
+        let g = call_pre(m, f, '__truthy', [g0, pl, pc], node)
         m.make_if(cond: g, then_branch: take, line: ln, col: cl)
       },
     }
     let info = block_info[pkey(arm)]
-    let pre = fresh_cells(m, f, info.base, info.high, arm.line, arm.column)
+    let pre = fresh_cells(m, f, info.base, info.high, arm)
     let inner = ir.block(pre + arm_ids + [guarded], arm)
-    let scoped = emit_scope_of(m, f, info.base, info.high, inner, arm.line, arm.column)
+    let scoped = emit_scope_of(m, f, info.base, info.high, inner, arm)
     ids.push(m.make_if(cond: notyet, then_branch: scoped, line: ln, col: cl))
     i = i + 1
   }
@@ -7901,7 +7923,7 @@ fn emit_cond(m, node, f) {
   let flag_slot = scratch_slot(f, scratch_of[pkey(node)])
   let res_slot = scratch_slot(f, scratch_of[pkey(node.nodes[0])])
   mut ids = [
-    m.assign(kind: 'local', index: flag_slot, value: ir_bool(m, false, ln, cl),
+    m.assign(kind: 'local', index: flag_slot, value: ir_bool(m, false, node),
              line: ln, col: cl),
     m.assign(kind: 'local', index: res_slot,
              value: m.nil_literal(line: ln, col: cl), line: ln, col: cl),
@@ -7910,23 +7932,22 @@ fn emit_cond(m, node, f) {
     let head = carm.nodes[0]
     let body = carm.nodes[1]
     let ctest = cond {
-      head.name == 'wild_p' => ir_bool(m, true, ln, cl),
+      head.name == 'wild_p' => ir_bool(m, true, node),
       _ => {
         let (pl, pc) = pos_args(m, head)
-        call_pre(m, f, '__truthy', [emit_expr(m, head, f), pl, pc],
-                 head.line, head.column)
+        call_pre(m, f, '__truthy', [emit_expr(m, head, f), pl, pc], head)
       },
     }
     let notyet = m.make_if_else(
         cond: m.var_ref(kind: 'local', index: flag_slot, line: ln, col: cl),
-        then_branch: ir_bool(m, false, ln, cl),
+        then_branch: ir_bool(m, false, node),
         else_branch: ctest, line: ln, col: cl)
     let bodyv = cond {
       body.name == 'block' => emit_block(m, body, f),
       _ => emit_expr(m, body, f),
     }
     let take = m.block(stmts_list: ir.list([
-        m.assign(kind: 'local', index: flag_slot, value: ir_bool(m, true, ln, cl),
+        m.assign(kind: 'local', index: flag_slot, value: ir_bool(m, true, node),
                  line: ln, col: cl),
         m.assign(kind: 'local', index: res_slot, value: bodyv, line: ln, col: cl),
     ]), line: ln, col: cl)
@@ -7942,29 +7963,26 @@ fn emit_interp(m, node, f) {
     let piece = cond {
       # {expr:spec}: the spec's own {field}s are Longs spliced in as digits
       part.name == 'interp' && part.nodes.size() == 2 => {
-        let (ln, cl) = (part.line, part.column)
         let v = emit_expr(m, part.nodes[0], f)
         mut specv = nil
         for sp in part.nodes[1].nodes {
           let sv = cond {
             sp.name == 'spec_arg' => {
               let (al, ac) = pos_args(m, sp)
-              call_pre(m, f, '__spec_arg', [emit_expr(m, sp.nodes[0], f), al, ac], sp.line, sp.column)
+              call_pre(m, f, '__spec_arg', [emit_expr(m, sp.nodes[0], f), al, ac], sp)
             },
             _ => ir.str_literal(sp.token, sp),
           }
           specv = cond {
             specv == nil => sv,
-            _ => m.binary(op: 'add', lhs: specv, rhs: sv, line: ln, col: cl),
+            _ => ir.binary('add', specv, sv, part),
           }
         }
         let (pl, pc) = pos_args(m, part)
-        call_pre(m, f, '__format', [v, specv, pl, pc], ln, cl)
+        call_pre(m, f, '__format', [v, specv, pl, pc], part)
       },
-      part.name == 'interp' => {
-        let (ln, cl) = (part.line, part.column)
-        call_pre(m, f, '__display', [emit_expr(m, part.nodes[0], f)], ln, cl)
-      },
+      part.name == 'interp' => call_pre(
+        m, f, '__display', [emit_expr(m, part.nodes[0], f)], part),
       _ => ir.str_literal(unescape(part.token), part),
     }
     value = cond {
@@ -7986,7 +8004,7 @@ fn emit_call(m, node, f) {
     let v = emit_expr(m, args.nodes[0], f)
     let shown = cond {
       in_prelude => v,   # the prelude prints strings it already formatted
-      _ => call_pre(m, f, '__display', [v], ln, cl),
+      _ => call_pre(m, f, '__display', [v], node),
     }
     let iname = cond { id.token == 'println' => 'print', _ => 'printraw' }
     return m.intrinsic(name: iname, args_list: ir.list([shown]),
@@ -8024,8 +8042,7 @@ fn emit_call(m, node, f) {
       let ids2 = arg_ids
       ids2.push(call_pre(m, f, '__raise',
                          [m.str_literal(s: 'ArityError', line: ln, col: cl),
-                          m.str_literal(s: bad, line: ln, col: cl), pl, pc],
-                         ln, cl))
+                          m.str_literal(s: bad, line: ln, col: cl), pl, pc], node))
       return m.block(stmts_list: ir.list(ids2), line: ln, col: cl)
     }
     # range's step is keyword-only: the positionals pick start/end, and a
@@ -8075,7 +8092,7 @@ fn emit_call(m, node, f) {
     }
     arg_ids.push(pl)
     arg_ids.push(pc)
-    return call_pre(m, f, target, arg_ids, ln, cl)
+    return call_pre(m, f, target, arg_ids, node)
   }
   if in_prelude {
     if intrinsics.has(id.token) {
@@ -8103,19 +8120,18 @@ fn emit_call(m, node, f) {
   let r = resolved[pkey(id)]
   if r.kind == 'class' {
     let clsv = ir.read(f, r.owner, r.slot, id)
-    let [posv, kwsv, aposv] = emit_call_shape(m, f, args.nodes, ln, cl)
+    let [posv, kwsv, aposv] = emit_call_shape(m, f, args.nodes, node)
     let (pl, pc) = pos_args(m, id)
-    return call_pre(m, f, '__construct', [clsv, posv, kwsv, aposv, pl, pc], ln, cl)
+    return call_pre(m, f, '__construct', [clsv, posv, kwsv, aposv, pl, pc], node)
   }
   if r.kind == 'fn' {
     # a **splat makes the keyword set dynamic: bind at run time through
     # the family record instead of the compile-time dispatch chain
     if has_splat(args.nodes) {
-      let [posv, kwsv, aposv] = emit_call_shape(m, f, args.nodes, ln, cl)
+      let [posv, kwsv, aposv] = emit_call_shape(m, f, args.nodes, node)
       let (pl, pc) = pos_args(m, id)
       return call_pre(m, f, '__call_nk',
-                      [emit_family(m, f, id.token, r.funcs, 0, ln, cl), posv, kwsv, aposv, pl, pc],
-                      ln, cl)
+                      [emit_family(m, f, id.token, r.funcs, 0, node), posv, kwsv, aposv, pl, pc], node)
     }
     if !needs_dispatch(r.funcs, args) {
       # the plain shape keeps the direct emission: one overload, exact
@@ -8134,9 +8150,9 @@ fn emit_call(m, node, f) {
   # a call through a value carries its shape, so a closure's parameter
   # list binds it and a type error lands on the argument
   if !in_prelude {
-    let [posv, kwsv, aposv] = emit_call_shape(m, f, args.nodes, ln, cl)
+    let [posv, kwsv, aposv] = emit_call_shape(m, f, args.nodes, node)
     let (pl, pc) = pos_args(m, id)
-    return call_pre(m, f, '__call_nk', [cv, posv, kwsv, aposv, pl, pc], ln, cl)
+    return call_pre(m, f, '__call_nk', [cv, posv, kwsv, aposv, pl, pc], node)
   }
   mut arg_ids = []
   for a in args.nodes { arg_ids.push(emit_expr(m, a, f)) }
@@ -8187,7 +8203,7 @@ fn has_splat(arg_nodes) {
 # nil or [names, values] for the keywords, and the positionals' [line, col,
 # ...] so a type error can point at the argument. With a **splat the
 # keywords are merged at run time, in source order, later ones winning.
-fn emit_call_shape(m, f, arg_nodes, ln, cl) {
+fn emit_call_shape(m, f, arg_nodes, at) {
   mut pos = []
   mut kwn = []
   mut kwv = []
@@ -8202,14 +8218,17 @@ fn emit_call_shape(m, f, arg_nodes, ln, cl) {
         let namev = ir.str_literal(a.nodes[0].token, a)
         kwn.push(namev)
         kwv.push(v)
-        items.push(m.array_lit(items_list: ir.list([namev, v]), line: ln, col: cl))
+        items.push(m.array_lit(items_list: ir.list([namev, v]), line: at.line, col: at.column))
       },
       a.name == 'kwsplat' => {
         # a bad splat operand is reported at the call
-        items.push(m.array_lit(items_list: ir.list([m.nil_literal(line: ln, col: cl), v,
-                                                         m.literal(v: ln, line: ln, col: cl),
-                                                         m.literal(v: cl, line: ln, col: cl)]),
-                               line: ln, col: cl))
+        items.push(m.array_lit(items_list: ir.list([ir.nil_literal(at), v,
+                                                         ir.literal(at.line, at),
+                                                         ir.literal(
+                                                           at.column,
+                                                           at,
+                                                         )]),
+                               line: at.line, col: at.column))
       },
       _ => {
         pos.push(v)
@@ -8218,19 +8237,19 @@ fn emit_call_shape(m, f, arg_nodes, ln, cl) {
       },
     }
   }
-  let posv = m.array_lit(items_list: ir.list(pos), line: ln, col: cl)
+  let posv = m.array_lit(items_list: ir.list(pos), line: at.line, col: at.column)
   let kwsv = cond {
     splat => call_pre(m, f, '__merge_kws',
-                      [m.array_lit(items_list: ir.list(items), line: ln, col: cl)], ln, cl),
-    kwn.size() == 0 => m.nil_literal(line: ln, col: cl),
+                      [m.array_lit(items_list: ir.list(items), line: at.line, col: at.column)], at),
+    kwn.size() == 0 => ir.nil_literal(at),
     _ => m.array_lit(items_list: ir.list([
-             m.array_lit(items_list: ir.list(kwn), line: ln, col: cl),
-             m.array_lit(items_list: ir.list(kwv), line: ln, col: cl)]),
-           line: ln, col: cl),
+             m.array_lit(items_list: ir.list(kwn), line: at.line, col: at.column),
+             m.array_lit(items_list: ir.list(kwv), line: at.line, col: at.column)]),
+           line: at.line, col: at.column),
   }
   let aposv = cond {
-    apos.size() == 0 => m.nil_literal(line: ln, col: cl),
-    _ => m.array_lit(items_list: ir.list(apos), line: ln, col: cl),
+    apos.size() == 0 => ir.nil_literal(at),
+    _ => m.array_lit(items_list: ir.list(apos), line: at.line, col: at.column),
   }
   [posv, kwsv, aposv]
 }
@@ -8241,7 +8260,7 @@ fn emit_call_shape(m, f, arg_nodes, ln, cl) {
 # keyword), 'k' (keyword-only, after a bare *), 'r' (*rest) or 'kr'
 # (**rest); cap is the positional count a bare * caps the call at, or -1
 # without one; fixable says a typed default can fail in the prologue.
-fn emit_spec(m, g, skip, ln, cl) {
+fn emit_spec(m, g, skip, at) {
   mut recs = []
   let specs = funcs[g].pspecs
   let kfrom = cond { funcs[g].has('kwonly_from') => funcs[g].kwonly_from, _ => -1 }
@@ -8257,8 +8276,8 @@ fn emit_spec(m, g, skip, ln, cl) {
       continue
     }
     let tc = cond {
-      rec.ty == nil => m.nil_literal(line: ln, col: cl),
-      _ => m.str_literal(s: ty_check_of(rec.ty), line: ln, col: cl),
+      rec.ty == nil => ir.nil_literal(at),
+      _ => ir.str_literal(ty_check_of(rec.ty), at),
     }
     let tyname = cond { rec.ty == nil => '', _ => rec.ty }
     let kind = cond {
@@ -8270,42 +8289,42 @@ fn emit_spec(m, g, skip, ln, cl) {
     if kind == 'p' { npos = npos + 1 }
     if rec.ty != nil && rec.dflt != nil { fix = true }
     recs.push(m.array_lit(items_list: ir.list([
-                  m.str_literal(s: rec.pname, line: ln, col: cl), tc,
-                  m.str_literal(s: tyname, line: ln, col: cl),
-                  m.bool_literal(v: rec.dflt != nil, line: ln, col: cl),
-                  m.str_literal(s: kind, line: ln, col: cl)]),
-              line: ln, col: cl))
+                  ir.str_literal(rec.pname, at), tc,
+                  ir.str_literal(tyname, at),
+                  ir.bool_literal(rec.dflt != nil, at),
+                  ir.str_literal(kind, at)]),
+              line: at.line, col: at.column))
     i = i + 1
   }
   let cap = cond { kfrom >= 0 => npos, _ => -1 }
   m.array_lit(items_list: ir.list([
-      m.array_lit(items_list: ir.list(recs), line: ln, col: cl),
-      m.literal(v: cap, line: ln, col: cl),
-      m.bool_literal(v: fix, line: ln, col: cl)]),
-    line: ln, col: cl)
+      m.array_lit(items_list: ir.list(recs), line: at.line, col: at.column),
+      ir.literal(cap, at),
+      ir.bool_literal(fix, at)]),
+    line: at.line, col: at.column)
 }
 
 # A family: {"\zf": name, ov: [[closure, spec], ...]}, most-typed overload
 # first. `skip` is 1 for a class's methods (their first parameter is self)
 # and 0 for a free multimethod, which the record marks as such.
-fn emit_family(m, f, name, gs, skip, ln, cl) {
+fn emit_family(m, f, name, gs, skip, at) {
   mut ovs = []
   for g in order_most_typed(gs) {
     ovs.push(m.array_lit(items_list: ir.list([
-                 m.make_closure(func: g, cmap: frames.cmap(m, f, g), line: ln, col: cl),
-                 emit_spec(m, g, skip, ln, cl)]),
-             line: ln, col: cl))
+                 ir.closure(f, g, at),
+                 emit_spec(m, g, skip, at)]),
+             line: at.line, col: at.column))
   }
   let kv = m.list_new()
-  m.list_push(kv, m.str_literal(s: family_marker, line: ln, col: cl))
-  m.list_push(kv, m.str_literal(s: name, line: ln, col: cl))
-  m.list_push(kv, m.str_literal(s: 'ov', line: ln, col: cl))
-  m.list_push(kv, m.array_lit(items_list: ir.list(ovs), line: ln, col: cl))
+  m.list_push(kv, ir.str_literal(family_marker, at))
+  m.list_push(kv, ir.str_literal(name, at))
+  m.list_push(kv, ir.str_literal('ov', at))
+  m.list_push(kv, m.array_lit(items_list: ir.list(ovs), line: at.line, col: at.column))
   if skip == 0 {
-    m.list_push(kv, m.str_literal(s: 'free', line: ln, col: cl))
-    m.list_push(kv, m.bool_literal(v: true, line: ln, col: cl))
+    m.list_push(kv, ir.str_literal('free', at))
+    m.list_push(kv, ir.bool_literal(true, at))
   }
-  m.object_lit(kv_list: kv, line: ln, col: cl)
+  m.object_lit(kv_list: kv, line: at.line, col: at.column)
 }
 
 # deco1(deco2(v)) for a decorator list, innermost (last written) first; a
@@ -8322,8 +8341,7 @@ fn emit_decorated(m, f, decos, v0) {
         # a decorator held in a variable may be a closure marker
         let (pl, pc) = pos_args(m, dn)
         call_pre(m, f, '__callee_check',
-                 [ir.read(f, r.owner, r.slot, dn), pl, pc],
-                 dn.line, dn.column)
+                 [ir.read(f, r.owner, r.slot, dn), pl, pc], dn)
       },
     }
     if decos[i].nodes.size() == 2 {
@@ -8331,8 +8349,7 @@ fn emit_decorated(m, f, decos, v0) {
       for a in decos[i].nodes[1].nodes { fargs.push(emit_expr(m, arg_val(a), f)) }
       let (pl, pc) = pos_args(m, dn)
       callee = call_pre(m, f, '__callee_check',
-                        [ir.call_value(callee, fargs, dn), pl, pc],
-                        dn.line, dn.column)
+                        [ir.call_value(callee, fargs, dn), pl, pc], dn)
     }
     v = ir.call_value(callee, [v], dn)
     i = i - 1
@@ -8387,8 +8404,7 @@ fn emit_dispatch(m, f, name, fns, arg_nodes, recv_extra, at) {
         alt = call_pre(m, f, '__raise',
                        [m.str_literal(s: 'TypeError', line: ln, col: cl),
                         m.str_literal(s: "unknown keyword argument '" + a.nodes[0].token + "'",
-                                      line: ln, col: cl), pl, pc],
-                       ln, cl)
+                                      line: ln, col: cl), pl, pc], at)
       }
     }
   }
@@ -8396,16 +8412,15 @@ fn emit_dispatch(m, f, name, fns, arg_nodes, recv_extra, at) {
     alt = call_pre(m, f, '__raise',
                    [m.str_literal(s: 'DispatchError', line: ln, col: cl),
                     m.str_literal(s: 'no matching method for `' + name + '`',
-                                  line: ln, col: cl), pl, pc],
-                   ln, cl)
+                                  line: ln, col: cl), pl, pc], at)
   }
   mut ci = chain.size() - 1
   while ci >= 0 {
     let (g, plan) = chain[ci]
-    mut test = ir_bool(m, true, ln, cl)
+    mut test = ir_bool(m, true, at)
     for tc in plan.checks {
       let (slot, tyname) = tc
-      test = ir_and(m, test, emit_ty_test(m, f, slot, tyname, ln, cl), ln, cl)
+      test = ir_and(m, test, emit_ty_test(m, f, slot, tyname, at), at)
     }
     mut call_args = []
     for item in plan.args {
@@ -8440,9 +8455,8 @@ fn emit_dispatch(m, f, name, fns, arg_nodes, recv_extra, at) {
       let bad = call_pre(m, f, '__raise',
                          [m.str_literal(s: 'TypeError', line: ln, col: cl),
                           m.str_literal(s: "type error: parameter '" + pname + "' expects " + ty,
-                                        line: ln, col: cl), pl, pc],
-                         ln, cl)
-      callv = m.make_if_else(cond: emit_ty_test(m, f, slot, tyname, ln, cl),
+                                        line: ln, col: cl), pl, pc], at)
+      callv = m.make_if_else(cond: emit_ty_test(m, f, slot, tyname, at),
                              then_branch: callv, else_branch: bad, line: ln, col: cl)
       si = si - 1
     }
@@ -8534,11 +8548,10 @@ fn overload_plan(g, pos_slots, kw_slots) {
 }
 
 # The IR test for one (slot, check) pair.
-fn emit_ty_test(m, f, slot, tyname, ln, cl) {
+fn emit_ty_test(m, f, slot, tyname, at) {
   call_pre(m, f, '__ty_ok',
-           [m.var_ref(kind: 'local', index: slot, line: ln, col: cl),
-            m.str_literal(s: tyname, line: ln, col: cl)],
-           ln, cl)
+           [ir.local(slot, at),
+            ir.str_literal(tyname, at)], at)
 }
 
 # What a type annotation means at run time: a typeof name, the tuple mark,
@@ -8567,10 +8580,9 @@ fn emit_closure_value(m, node, f) {
   let has_spec = !in_prelude && closure_needs_spec(g)
   cond {
     has_spec => call_pre(m, f, '__mk_specc',
-                         [c, emit_spec(m, g, 0, node.line, node.column),
-                          ir.bool_literal(self_closure.has(g), node)],
-                         node.line, node.column),
-    self_closure.has(g) => call_pre(m, f, '__mk_selfc', [c], node.line, node.column),
+                         [c, emit_spec(m, g, 0, node),
+                          ir.bool_literal(self_closure.has(g), node)], node),
+    self_closure.has(g) => call_pre(m, f, '__mk_selfc', [c], node),
     _ => c,
   }
 }
@@ -8586,18 +8598,15 @@ fn emit_postfix_step(m, f, value, step, at) {
   let (pl, pc) = pos_args(m, at)
   cond {
     step.name == 'pcall' && !in_prelude => {
-      let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[0].nodes,
-                                                step.line, step.column)
-      call_pre(m, f, '__call_nk', [value, posv, kwsv, aposv, pl, pc],
-               step.line, step.column)
+      let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[0].nodes, step)
+      call_pre(m, f, '__call_nk', [value, posv, kwsv, aposv, pl, pc], step)
     },
     step.name == 'pcall' => {
       mut arg_ids = []
       for a in step.nodes[0].nodes { arg_ids.push(emit_expr(m, a, f)) }
       let callee = cond {
         in_prelude => value,
-        _ => call_pre(m, f, '__callee_check', [value, pl, pc],
-                      step.line, step.column),
+        _ => call_pre(m, f, '__callee_check', [value, pl, pc], step),
       }
       ir.call_value(callee, arg_ids, step)
     },
@@ -8629,37 +8638,32 @@ fn emit_postfix_step(m, f, value, step, at) {
           fn sref() { m.var_ref(kind: 'local', index: slot, line: ln, col: cl) }
           let store = m.assign(kind: 'local', index: slot, value: value, line: ln, col: cl)
           let own = call_pre(m, f, '__has_method',
-                             [sref(), ir.str_literal(name.token, name)],
-                             ln, cl)
-          let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[1].nodes, ln, cl)
+                             [sref(), ir.str_literal(name.token, name)], step)
+          let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[1].nodes, step)
           let nl_ = m.literal(v: name.line, line: ln, col: cl)
           let nc_ = m.literal(v: name.column, line: ln, col: cl)
           let via_method = call_pre(m, f, '__method',
                                     [sref(), ir.str_literal(name.token, name),
-                                     posv, kwsv, aposv, pl, pc],
-                                    ln, cl)
+                                     posv, kwsv, aposv, pl, pc], step)
           let via_ufcs = cond {
             r.kind == 'fn' && !has_splat(step.nodes[1].nodes) =>
               emit_dispatch(m, f, name.token, r.funcs, step.nodes[1].nodes,
                             {slot: slot, value: sref()}, step),
             r.kind == 'fn' =>
               call_pre(m, f, '__ufcs_call',
-                       [emit_family(m, f, name.token, r.funcs, 0, ln, cl),
+                       [emit_family(m, f, name.token, r.funcs, 0, step),
                         sref(), nl_, nc_,
-                        posv, kwsv, aposv, pl, pc],
-                       ln, cl),
+                        posv, kwsv, aposv, pl, pc], step),
             r.kind == 'bval' =>
               call_pre(m, f, '__ufcs_call',
-                       [call_pre(m, f, '__fnval_' + r.name, [], name.line, name.column),
+                       [call_pre(m, f, '__fnval_' + r.name, [], name),
                         sref(), nl_, nc_,
-                        posv, kwsv, aposv, pl, pc],
-                       ln, cl),
+                        posv, kwsv, aposv, pl, pc], step),
             _ => {
               # a callable variable: the receiver goes first
               call_pre(m, f, '__ufcs_call',
                        [ir.read(f, r.owner, r.slot, name),
-                        sref(), nl_, nc_, posv, kwsv, aposv, pl, pc],
-                       ln, cl)
+                        sref(), nl_, nc_, posv, kwsv, aposv, pl, pc], step)
             },
           }
           m.block(stmts_list: ir.list([store,
@@ -8668,13 +8672,11 @@ fn emit_postfix_step(m, f, value, step, at) {
                   line: ln, col: cl)
         },
         _ => {
-          let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[1].nodes,
-                                                    step.line, step.column)
+          let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[1].nodes, step)
           call_pre(m, f, '__method',
                    [value,
                     ir.str_literal(name.token, name),
-                    posv, kwsv, aposv, pl, pc],
-                   step.line, step.column)
+                    posv, kwsv, aposv, pl, pc], step)
         },
       }
     },
@@ -8685,16 +8687,14 @@ fn emit_postfix_step(m, f, value, step, at) {
       _ => call_pre(m, f, '__getprop',
                     [value,
                      ir.str_literal(step.nodes[0].token, step),
-                     pl, pc],
-                    step.line, step.column),
+                     pl, pc], step),
     },
     _ => cond {   # subscript
       in_prelude => m.index(recv: value,
                             key: emit_expr(m, step.nodes[0], f),
                             line: step.line, col: step.column),
       _ => call_pre(m, f, '__getindex',
-                    [value, emit_expr(m, step.nodes[0], f), pl, pc],
-                    step.line, step.column),
+                    [value, emit_expr(m, step.nodes[0], f), pl, pc], step),
     },
   }
 }
@@ -8712,8 +8712,7 @@ fn emit_postfix(m, node, f) {
       let sized = call_pre(m, f, '__array_sized',
                            [v0, m.array_lit(items_list: ir.list(arg_ids),
                                             line: step.line, col: step.column),
-                            pl, pc],
-                           step.line, step.column)
+                            pl, pc], step)
       return emit_postfix_from(m, node, f, sized, 2)
     }
   }
@@ -8737,7 +8736,7 @@ fn emit_postfix_from(m, node, f, value, i) {
                    nodes: step.nodes, line: step.line, column: step.column}
       let rest = emit_postfix_from(m, node, f, emit_postfix_step(m, f, sref(), plain, node.nodes[0]), i + 1)
       let guarded = m.make_if_else(
-          cond: m.binary(op: 'eq', lhs: ir_typeof(m, sref(), ln, cl),
+          cond: m.binary(op: 'eq', lhs: ir_typeof(m, sref(), step),
                          rhs: m.str_literal(s: 'nil', line: ln, col: cl), line: ln, col: cl),
           then_branch: m.nil_literal(line: ln, col: cl), else_branch: rest,
           line: ln, col: cl)
@@ -8764,10 +8763,10 @@ fn emit_unary(m, node, f, which) {
   }
   let (pl, pc) = pos_args(m, node)
   cond {
-    which == 'neg' => call_pre(m, f, '__neg', [e, pl, pc], ln, cl),
-    which == 'bnot' => call_pre(m, f, '__bnot', [e, pl, pc], ln, cl),
+    which == 'neg' => call_pre(m, f, '__neg', [e, pl, pc], node),
+    which == 'bnot' => call_pre(m, f, '__bnot', [e, pl, pc], node),
     _ => {
-      let c = call_pre(m, f, '__truthy', [e, pl, pc], ln, cl)
+      let c = call_pre(m, f, '__truthy', [e, pl, pc], node)
       m.make_if_else(cond: c,
                      then_branch: m.bool_literal(v: false, line: ln, col: cl),
                      else_branch: m.bool_literal(v: true, line: ln, col: cl),
@@ -8776,13 +8775,13 @@ fn emit_unary(m, node, f, which) {
   }
 }
 
-fn emit_if(m, node, f, ln, cl) {
+fn emit_if(m, node, f, at) {
   let c0 = emit_expr(m, node.nodes[0], f)
   let c = cond {
     in_prelude => c0,
     _ => {
       let (pl, pc) = pos_args(m, node)
-      call_pre(m, f, '__truthy', [c0, pl, pc], node.line, node.column)
+      call_pre(m, f, '__truthy', [c0, pl, pc], node)
     },
   }
   let t = emit_block(m, node.nodes[1], f)
@@ -8790,7 +8789,7 @@ fn emit_if(m, node, f, ln, cl) {
     node.nodes.size() == 3 => {
       let alt = node.nodes[2]
       let e = cond {
-        alt.name == 'if' => emit_if(m, alt, f, alt.line, alt.column),
+        alt.name == 'if' => emit_if(m, alt, f, alt),
         _ => emit_block(m, alt, f),
       }
       ir.make_if_else(c, t, e, node)
@@ -8808,7 +8807,7 @@ fn emit_try(m, node, f) {
   # an executor trap gets its kind first, in the local slot the VM filled
   ids.push(ir.store_local(
     r.slot,
-    call_pre(m, f, '__fix_trap', [ir.local(r.slot, id)], id.line, id.column),
+    call_pre(m, f, '__fix_trap', [ir.local(r.slot, id)], id),
     id,
   ))
   # a captured caught variable arrives in its local slot and moves into the
@@ -8823,7 +8822,7 @@ fn emit_try(m, node, f) {
     if e != nil { ids.push(e) }
   }
   let hb = ir.block(ids, handler)
-  let wrapped = emit_scope_of(m, f, info.base, info.high, hb, handler.line, handler.column)
+  let wrapped = emit_scope_of(m, f, info.base, info.high, hb, handler)
   m.make_try(caught_local: r.slot, body: b, handler: wrapped,
              line: node.line, col: node.column)
 }
@@ -8846,12 +8845,12 @@ fn emit_expr(m, node, f) {
       }
       let r = resolved[pkey(node)]
       cond {
-        r.kind == 'strns' => call_pre(m, f, '__string_ns', [], node.line, node.column),
-        r.kind == 'gcns' => call_pre(m, f, '__gc_ns', [], node.line, node.column),
-        r.kind == 'bval' => call_pre(m, f, '__fnval_' + r.name, [], node.line, node.column),
+        r.kind == 'strns' => call_pre(m, f, '__string_ns', [], node),
+        r.kind == 'gcns' => call_pre(m, f, '__gc_ns', [], node),
+        r.kind == 'bval' => call_pre(m, f, '__fnval_' + r.name, [], node),
         r.kind == 'fn' && r.funcs.size() == 1 =>
           ir.closure(f, r.funcs[0], node),
-        r.kind == 'fn' => emit_family(m, f, token, r.funcs, 0, node.line, node.column),
+        r.kind == 'fn' => emit_family(m, f, token, r.funcs, 0, node),
         _ => {
           let ref = ir.read(f, r.owner, r.slot, node)
           cond {
@@ -8859,15 +8858,14 @@ fn emit_expr(m, node, f) {
             token == 'self' && self_slot.has(r.owner) &&
                 self_slot[r.owner] == r.slot => {
               let (pl, pc) = pos_args(m, node)
-              call_pre(m, f, '__self_use', [ref, pl, pc], node.line, node.column)
+              call_pre(m, f, '__self_use', [ref, pl, pc], node)
             },
             # a binding named before its declaration ran is still unbound
             # (read through a capture or directly, ahead of the let)
             fwd_slots.has("{r.owner}/{r.slot}") => {
               let (pl, pc) = pos_args(m, node)
               call_pre(m, f, '__fwd_read',
-                       [ref, ir.str_literal(token, node), pl, pc],
-                       node.line, node.column)
+                       [ref, ir.str_literal(token, node), pl, pc], node)
             },
             _ => ref,
           }
@@ -8889,7 +8887,7 @@ fn emit_expr(m, node, f) {
           let lit = m.array_lit(items_list: ir.list(run), line: ln, col: cl)
           acc = cond {
             acc == nil => lit,
-            _ => call_pre(m, f, '__concat', [acc, lit], ln, cl),
+            _ => call_pre(m, f, '__concat', [acc, lit], node),
           }
           run = []
         }
@@ -8900,9 +8898,7 @@ fn emit_expr(m, node, f) {
             flush()
             acc = call_pre(m, f, '__concat',
                            [acc, call_pre(m, f, '__spread_items',
-                                          [emit_expr(m, e.nodes[0], f), pl, pc],
-                                          e.line, e.column)],
-                           ln, cl)
+                                          [emit_expr(m, e.nodes[0], f), pl, pc], e)], node)
           },
           _ => run.push(emit_expr(m, e, f)),
         }
@@ -8932,8 +8928,7 @@ fn emit_expr(m, node, f) {
         open_start => m.nil_literal(line: ln, col: cl),
         _ => emit_expr(m, a, f),
       }
-      call_pre(m, f, '__mk_range', [lo, hi, m.literal(v: incl, line: ln, col: cl), st, pl, pc],
-               ln, cl)
+      call_pre(m, f, '__mk_range', [lo, hi, m.literal(v: incl, line: ln, col: cl), st, pl, pc], node)
     },
     {name: 'shorthand'} => {
       let kv = m.list_new()
@@ -8957,7 +8952,7 @@ fn emit_expr(m, node, f) {
       for e in node.nodes { ids.push(emit_expr(m, e, f)) }
       let items = m.array_lit(items_list: ir.list(ids),
                               line: node.line, col: node.column)
-      call_pre(m, f, '__mk_tuple', [items], node.line, node.column)
+      call_pre(m, f, '__mk_tuple', [items], node)
     },
     {name: 'object_lit'} => {
       let kv = m.list_new()
@@ -8969,8 +8964,7 @@ fn emit_expr(m, node, f) {
             ir.str_literal(kn.token, kn),
           # a non-String key is stored under its hash spelling; the
           # original value is recorded afterwards for keys() and display
-          _ => call_pre(m, f, '__hkey', [emit_expr(m, kn, f), pl, pc],
-                        kn.line, kn.column),
+          _ => call_pre(m, f, '__hkey', [emit_expr(m, kn, f), pl, pc], kn),
         }
       }
       mut incremental = false
@@ -8985,8 +8979,7 @@ fn emit_expr(m, node, f) {
           cond {
             pair.name == 'ospread' =>
               obj2 = call_pre(m, f, '__obj_spread',
-                              [obj2, emit_expr(m, pair.nodes[0], f), pl, pc],
-                              pair.line, pair.column),
+                              [obj2, emit_expr(m, pair.nodes[0], f), pl, pc], pair),
             _ => {
               let k = pair.nodes[0]
               let is_mut = cond { pair.name == 'mut_pair' => 1, _ => 0 }
@@ -8996,8 +8989,7 @@ fn emit_expr(m, node, f) {
               }
               obj2 = call_pre(m, f, '__olit_put',
                               [obj2, kexpr, emit_expr(m, pair.nodes[1], f),
-                               ir.literal(is_mut, k), pl, pc],
-                              k.line, k.column)
+                               ir.literal(is_mut, k), pl, pc], k)
             },
           }
         }
@@ -9015,8 +9007,7 @@ fn emit_expr(m, node, f) {
         for k in muts { ids2.push(key_node(k)) }
         obj = call_pre(m, f, '__olit_mut',
                        [obj, m.array_lit(items_list: ir.list(ids2),
-                                         line: node.line, col: node.column)],
-                       node.line, node.column)
+                                         line: node.line, col: node.column)], node)
       }
       # a literal binding a well-known key (drop, iter, has_next, next) is
       # checked against the protocol contract, and a drop hook installed
@@ -9029,7 +9020,7 @@ fn emit_expr(m, node, f) {
         }
       }
       if has_proto && !in_prelude {
-        obj = call_pre(m, f, '__with_contract', [obj, pl, pc], node.line, node.column)
+        obj = call_pre(m, f, '__with_contract', [obj, pl, pc], node)
       }
       obj
     },
@@ -9039,12 +9030,11 @@ fn emit_expr(m, node, f) {
       for e in node.nodes { ids.push(emit_expr(m, e, f)) }
       call_pre(m, f, '__mk_set',
                [m.array_lit(items_list: ir.list(ids),
-                            line: node.line, col: node.column), pl, pc],
-               node.line, node.column)
+                            line: node.line, col: node.column), pl, pc], node)
     },
     {name: 'lambda'} => emit_closure_value(m, node, f),
     {name: 'closure'} => emit_closure_value(m, node, f),
-    {name: 'if'} => emit_if(m, node, f, node.line, node.column),
+    {name: 'if'} => emit_if(m, node, f, node),
     {name: 'try'} => emit_try(m, node, f),
     {name: 'neg'} => emit_unary(m, node, f, 'neg'),
     {name: 'lnot'} => emit_unary(m, node, f, 'lnot'),
@@ -9065,7 +9055,7 @@ fn emit_expr(m, node, f) {
       let cl = node.column
       let c0 = emit_expr(m, nodes[0], f)
       let (pl, pc) = pos_args(m, node)
-      let c = call_pre(m, f, '__truthy', [c0, pl, pc], ln, cl)
+      let c = call_pre(m, f, '__truthy', [c0, pl, pc], node)
       m.make_if_else(cond: c, then_branch: emit_expr(m, nodes[1], f),
                      else_branch: emit_expr(m, nodes[2], f), line: ln, col: cl)
     },
@@ -9101,8 +9091,7 @@ fn emit_target_write(m, f, t, item, mut_add) {
                   "cannot reassign '" + t.token + "' (declared without 'mut')",
                   t,
                 ),
-                pl, pc],
-               t.line, t.column)
+                pl, pc], t)
     },
     t.name == 'ident' => {
       let r = resolved[pkey(t)]
@@ -9124,8 +9113,7 @@ fn emit_target_write(m, f, t, item, mut_add) {
       }
       let is_prop = cond { mut_add => 0, last.name == 'prop' => 1, _ => 0 }
       call_pre(m, f, '__setindex',
-               [recv, key, item, ir.literal(is_prop, last), pl, pc],
-               t.line, t.column)
+               [recv, key, item, ir.literal(is_prop, last), pl, pc], t)
     },
   }
 }
@@ -9245,7 +9233,7 @@ fn emit_passign(m, node, f) {
   let (pl, pc) = pos_args(m, pat)
   fn tref() { m.var_ref(kind: 'local', index: tmp, line: ln, col: cl) }
   mut ids = [m.assign(kind: 'local', index: tmp,
-                      value: call_pre(m, f, '__destr_pat', [emit_expr(m, value, f), spec, pl, pc], ln, cl),
+                      value: call_pre(m, f, '__destr_pat', [emit_expr(m, value, f), spec, pl, pc], node),
                       line: ln, col: cl)]
   for k in range(targets.size()) {
     let item = m.index(recv: tref(), key: m.literal(v: k, line: ln, col: cl), line: ln, col: cl)
@@ -9301,7 +9289,7 @@ fn emit_assign(m, node, f, res) {
             ir.make_if_else(
               ir.binary(
                 'eq',
-                ir_typeof(m, read_back(), op.line, op.column),
+                ir_typeof(m, read_back(), op),
                 ir.str_literal('nil', op),
                 op,
               ),
@@ -9318,7 +9306,7 @@ fn emit_assign(m, node, f, res) {
               op.token == '**=' => '__pow',
               _ => '__mod',
             }
-            call_pre(m, f, name, [read_back(), v, pl, pc], op.line, op.column)
+            call_pre(m, f, name, [read_back(), v, pl, pc], op)
           },
         }
       },
@@ -9331,13 +9319,12 @@ fn emit_assign(m, node, f, res) {
                [m.str_literal(s: 'ImmutableError', line: ln, col: cl),
                 m.str_literal(s: "cannot reassign '" + lhs.token + "' (declared without 'mut')",
                               line: ln, col: cl),
-                pl, pc],
-               ln, cl)
+                pl, pc], node)
     },
     lhs.name == 'ident' => {
       let r = resolved[pkey(lhs)]
       let cur_var = fn () { ir.read(f, r.owner, r.slot, lhs) }
-      ir.write(f, r.owner, r.slot, rhs_of(cur_var), front.pos(ln, cl))
+      ir.write(f, r.owner, r.slot, rhs_of(cur_var), node)
     },
     lhs.name == 'tuple' || lhs.name == 'array_lit' || lhs.name == 'shorthand' => {
       let tmp = scratch_slot(f, scratch_of[pkey(node)])
@@ -9347,8 +9334,7 @@ fn emit_assign(m, node, f, res) {
       let src_v = cond {
         lhs.name == 'shorthand' => emit_expr(m, value, f),
         _ => call_pre(m, f, '__destr',
-                      [emit_expr(m, value, f), m.literal(v: n, line: ln, col: cl), pl, pc],
-                      ln, cl),
+                      [emit_expr(m, value, f), m.literal(v: n, line: ln, col: cl), pl, pc], node),
       }
       mut ids = [m.assign(kind: 'local', index: tmp, value: src_v, line: ln, col: cl)]
       for k in range(n) {
@@ -9356,8 +9342,7 @@ fn emit_assign(m, node, f, res) {
         let item = cond {
           lhs.name == 'shorthand' =>
             call_pre(m, f, '__getprop',
-                     [tref(), ir.str_literal(t.token, t), pl, pc],
-                     t.line, t.column),
+                     [tref(), ir.str_literal(t.token, t), pl, pc], t),
           _ => m.index(recv: tref(), key: m.literal(v: k, line: ln, col: cl), line: ln, col: cl),
         }
         ids.push(emit_target_write(m, f, t, item, false))
@@ -9395,8 +9380,7 @@ fn emit_assign(m, node, f, res) {
           fn kref() { m.var_ref(kind: 'local', index: kslot, line: ln, col: cl) }
           let cur_read = fn () {
             call_pre(m, f, '__getindex_or_prop',
-                     [rref(), kref(), ir.literal(is_prop, last), pl, pc],
-                     last.line, last.column)
+                     [rref(), kref(), ir.literal(is_prop, last), pl, pc], last)
           }
           mut ids = stores
           cond {
@@ -9407,26 +9391,23 @@ fn emit_assign(m, node, f, res) {
               fn nref() { m.var_ref(kind: 'local', index: nslot, line: ln, col: cl) }
               ids.push(m.assign(kind: 'local', index: nslot,
                                 value: call_pre(m, f, '__nilco_read',
-                                                [rref(), kref(), m.literal(v: is_prop, line: ln, col: cl), pl, pc],
-                                                ln, cl),
+                                                [rref(), kref(), m.literal(v: is_prop, line: ln, col: cl), pl, pc], node),
                                 line: ln, col: cl))
               let store = call_pre(m, f, '__setindex',
                                    [rref(), kref(), rhs_of(nil),
-                                    ir.literal(is_prop, last), pl, pc],
-                                   ln, cl)
+                                    ir.literal(is_prop, last), pl, pc], node)
               let keep = cond {
                 res == nil => m.nil_literal(line: ln, col: cl),
                 _ => m.assign(kind: 'local', index: res, value: nref(), line: ln, col: cl),
               }
               ids.push(m.make_if_else(
-                  cond: m.binary(op: 'eq', lhs: ir_typeof(m, nref(), ln, cl),
+                  cond: m.binary(op: 'eq', lhs: ir_typeof(m, nref(), node),
                                  rhs: m.str_literal(s: 'nil', line: ln, col: cl), line: ln, col: cl),
                   then_branch: store, else_branch: keep, line: ln, col: cl))
             },
             _ => ids.push(call_pre(m, f, '__setindex',
                                    [rref(), kref(), rhs_of(cur_read),
-                                    ir.literal(is_prop, last), pl, pc],
-                                   ln, cl)),
+                                    ir.literal(is_prop, last), pl, pc], node)),
           }
           m.block(stmts_list: ir.list(ids), line: ln, col: cl)
         },
@@ -9450,12 +9431,12 @@ fn emit_class(m, node, f) {
   m.list_push(kv, m.str_literal(s: 'name', line: ln, col: cl))
   m.list_push(kv, m.str_literal(s: d.id.token, line: ln, col: cl))
   m.list_push(kv, m.str_literal(s: 'new', line: ln, col: cl))
-  m.list_push(kv, emit_family(m, f, 'new', ci.ctors, 1, ln, cl))
+  m.list_push(kv, emit_family(m, f, 'new', ci.ctors, 1, node))
   let mkv = m.list_new()
   for name in ci.methods.keys() {
     let plain = name.slice(2, name.size()).to_string()
     m.list_push(mkv, m.str_literal(s: plain, line: ln, col: cl))
-    m.list_push(mkv, emit_family(m, f, plain, ci.methods[name], 1, ln, cl))
+    m.list_push(mkv, emit_family(m, f, plain, ci.methods[name], 1, node))
   }
   # conforming traits contribute their defaults (never overriding) and a
   # flag the typed-dispatch check reads
@@ -9483,7 +9464,7 @@ fn emit_class(m, node, f) {
         if !ci.methods.has(dname) {
           let plain = dname.slice(2, dname.size()).to_string()
           m.list_push(mkv, m.str_literal(s: plain, line: ln, col: cl))
-          m.list_push(mkv, emit_family(m, f, plain, [tr.defaults[dname]], 1, ln, cl))
+          m.list_push(mkv, emit_family(m, f, plain, [tr.defaults[dname]], 1, node))
         }
       }
     }
@@ -9536,7 +9517,7 @@ fn emit_class(m, node, f) {
   let clsobj = emit_decorated(m, f, ci.decos,
                               m.object_lit(kv_list: kv, line: ln, col: cl))
   let r = resolved[pkey(d.id)]
-  ir.write(f, f, r.slot, clsobj, front.pos(ln, cl))
+  ir.write(f, f, r.slot, clsobj, node)
 }
 
 fn emit_stmt(m, node, f) {
@@ -9562,8 +9543,7 @@ fn emit_stmt(m, node, f) {
           let n = pat.nodes.size()
           let (pl, pc) = pos_args(m, pat)
           let checked = call_pre(m, f, '__destr',
-                                 [v, ir.literal(n, pat), pl, pc],
-                                 pat.line, pat.column)
+                                 [v, ir.literal(n, pat), pl, pc], pat)
           mut ids = [ir.store_local(tmp, checked, pat)]
           mut i = 0
           while i < n {
@@ -9601,12 +9581,11 @@ fn emit_stmt(m, node, f) {
                             [m.str_literal(s: 'ValueError', line: ln, col: cl),
                              m.str_literal(s: 'destructure pattern did not match value',
                                            line: ln, col: cl),
-                             pl, pc],
-                            ln, cl)
-      ids.push(m.make_if_else(cond: emit_pat_test(m, f, pat, subj, ln, cl),
+                             pl, pc], node)
+      ids.push(m.make_if_else(cond: emit_pat_test(m, f, pat, subj, node),
                               then_branch: m.nil_literal(line: ln, col: cl),
                               else_branch: fail_v, line: ln, col: cl))
-      emit_pat_binds(m, f, pat, subj, ids, ln, cl)
+      emit_pat_binds(m, f, pat, subj, ids, node)
       m.block(stmts_list: ir.list(ids), line: ln, col: cl)
     },
     {name: 'for', nodes: [pat, iterable, body]} => {
@@ -9620,8 +9599,7 @@ fn emit_stmt(m, node, f) {
       let store_src = m.assign(kind: 'local', index: srcslot, value: itv, line: ln, col: cl)
       let store_it = m.assign(kind: 'local', index: itslot,
                               value: call_pre(m, f, '__iter',
-                                              [m.var_ref(kind: 'local', index: srcslot, line: ln, col: cl), pl, pc],
-                                              ln, cl),
+                                              [m.var_ref(kind: 'local', index: srcslot, line: ln, col: cl), pl, pc], node),
                               line: ln, col: cl)
       fn itref() { m.var_ref(kind: 'local', index: itslot, line: ln, col: cl) }
       let has = m.call_value(callee: m.index(recv: itref(),
@@ -9633,7 +9611,7 @@ fn emit_stmt(m, node, f) {
                                                line: ln, col: cl),
                                args_list: ir.list([]), line: ln, col: cl)
       let info = block_info[pkey(body)]
-      mut pre = fresh_cells(m, f, info.base, info.high, body.line, body.column)
+      mut pre = fresh_cells(m, f, info.base, info.high, body)
       cond {
         pat.name == 'tup_pat' || pat.name == 'arr_pat' => {
           # (k, v) in ...: next() yields a pair; unpack via its items. The
@@ -9644,8 +9622,7 @@ fn emit_stmt(m, node, f) {
           let r0 = resolved[pkey(first)]
           pre.push(ir.write(f, f, r0.slot,
                             call_pre(m, f, '__destr',
-                                     [nextv, m.literal(v: n, line: ln, col: cl), pl, pc],
-                                     ln, cl),
+                                     [nextv, m.literal(v: n, line: ln, col: cl), pl, pc], node),
                             first))
           mut i = n - 1
           while i >= 1 {
@@ -9670,13 +9647,13 @@ fn emit_stmt(m, node, f) {
         },
       }
       let b = emit_block_stmts(m, body, f, pre)
-      let wrapped = emit_scope_of(m, f, info.base, info.high, b, body.line, body.column)
+      let wrapped = emit_scope_of(m, f, info.base, info.high, b, body)
       let loop = m.make_while(cond: has, body: wrapped, line: ln, col: cl)
       # The iterator is disposed on every exit path -- drain, break, an
       # early return, or a throw -- via a defer over the whole statement
       # (culebra's optional-dispose contract; a no-op for iterators
       # without one).
-      let closer = m.make_defer(value: call_pre(m, f, '__closer', [itref()], ln, cl),
+      let closer = m.make_defer(value: call_pre(m, f, '__closer', [itref()], node),
                                 line: ln, col: cl)
       # While an error is already unwinding the iterator is closed quietly
       # (a throwing dispose is swallowed then) and the error goes on. The
@@ -9685,7 +9662,7 @@ fn emit_stmt(m, node, f) {
       let guarded = m.make_try(
           caught_local: eslot, body: loop,
           handler: m.block(stmts_list: ir.list([
-                       call_pre(m, f, '__iter_close_quiet', [itref()], ln, cl),
+                       call_pre(m, f, '__iter_close_quiet', [itref()], node),
                        m.make_throw(value: m.var_ref(kind: 'local', index: eslot, line: ln, col: cl),
                                     line: ln, col: cl)]),
                            line: ln, col: cl),
@@ -9701,7 +9678,7 @@ fn emit_stmt(m, node, f) {
         in_prelude => c0,
         _ => {
           let (pl, pc) = pos_args(m, cnd)
-          call_pre(m, f, '__truthy', [c0, pl, pc], cnd.line, cnd.column)
+          call_pre(m, f, '__truthy', [c0, pl, pc], cnd)
         },
       }
       let b = emit_block(m, body, f)
@@ -9728,7 +9705,7 @@ fn emit_stmt(m, node, f) {
             node.nodes.size() == 1 => emit_expr(m, node.nodes[0], f),
             _ => ir.nil_literal(node),
           }
-          m.make_return(value: emit_ret_check(m, f, v, node.line, node.column),
+          m.make_return(value: emit_ret_check(m, f, v, node),
                         line: node.line, col: node.column)
         },
       }
@@ -9753,10 +9730,10 @@ fn emit_stmt(m, node, f) {
       let (pl, pc) = pos_args(m, node)
       let itslot = scratch_slot(f, scratch_of[pkey(node)])
       let store = m.assign(kind: 'local', index: itslot,
-                           value: call_pre(m, f, '__iter', [itv, pl, pc], ln, cl),
+                           value: call_pre(m, f, '__iter', [itv, pl, pc], node),
                            line: ln, col: cl)
       fn itref() { m.var_ref(kind: 'local', index: itslot, line: ln, col: cl) }
-      let closer = m.make_defer(value: call_pre(m, f, '__closer', [itref()], ln, cl),
+      let closer = m.make_defer(value: call_pre(m, f, '__closer', [itref()], node),
                                 line: ln, col: cl)
       let has = m.call_value(callee: m.index(recv: itref(),
                                              key: m.str_literal(s: 'has_next', line: ln, col: cl),
@@ -9787,33 +9764,33 @@ fn emit_stmt(m, node, f) {
 # A scope over [base, nslots) with its release order spelled out: last
 # slot first, a captured slot named through its cell -- culebra releases
 # in reverse declaration order whether or not a closure holds the binding.
-fn emit_scope_of(m, f, base, high, body, ln, cl) {
+fn emit_scope_of(m, f, base, high, body, at) {
   let rl = m.list_new()
   mut s = high - 1
   while s >= base {
     cond {
       frames.in_cell(f, s) =>
-        m.list_push(rl, m.var_ref(kind: 'cell', index: frames.cell_of(f, s), line: ln, col: cl)),
-      _ => m.list_push(rl, m.var_ref(kind: 'local', index: s, line: ln, col: cl)),
+        m.list_push(rl, m.var_ref(kind: 'cell', index: frames.cell_of(f, s), line: at.line, col: at.column)),
+      _ => m.list_push(rl, ir.local(s, at)),
     }
     s = s - 1
   }
   m.scope_release(first_local: base, end_local: high, body: body,
-                  release_list: rl, line: ln, col: cl)
+                  release_list: rl, line: at.line, col: at.column)
 }
 
 # Cell refreshes for a scope's own captured slots: entering the region is
 # declaring anew, so closures from earlier entries keep the old box.
-fn fresh_cells(m, f, base, high, ln, cl) {
+fn fresh_cells(m, f, base, high, at) {
   mut ids = []
   mut s = base
   while s < high {
     if frames.in_cell(f, s) {
-      ids.push(m.cell_fresh(cell: frames.cell_of(f, s), line: ln, col: cl))
+      ids.push(m.cell_fresh(cell: frames.cell_of(f, s), line: at.line, col: at.column))
       if fwd_slots.has("{f}/{s}") {
         ids.push(m.assign(kind: 'cell', index: frames.cell_of(f, s),
-                          value: m.str_literal(s: unbound_marker, line: ln, col: cl),
-                          line: ln, col: cl))
+                          value: ir.str_literal(unbound_marker, at),
+                          line: at.line, col: at.column))
       }
     }
     s = s + 1
@@ -9834,9 +9811,9 @@ fn emit_block_stmts(m, blk, f, pre_ids) {
 # where the VM resolves the drop-bearing cycles built inside it.
 fn emit_block(m, blk, f) {
   let info = block_info[pkey(blk)]
-  let pre = fresh_cells(m, f, info.base, info.high, blk.line, blk.column)
+  let pre = fresh_cells(m, f, info.base, info.high, blk)
   let b = emit_block_stmts(m, blk, f, pre)
-  emit_scope_of(m, f, info.base, info.high, b, blk.line, blk.column)
+  emit_scope_of(m, f, info.base, info.high, b, blk)
 }
 
 # --- Driver -------------------------------------------------------------------
@@ -9873,7 +9850,7 @@ fn emit_funcs(m) {
               m,
               ir.binary(
                 'eq',
-                ir_typeof(m, pref(), 1, 1),
+                ir_typeof(m, pref(), front.ORIGIN),
                 ir.str_literal('string', front.ORIGIN),
                 front.ORIGIN,
               ),
@@ -9882,12 +9859,11 @@ fn emit_funcs(m) {
                 pref(),
                 ir.str_literal(missing_marker, front.ORIGIN),
                 front.ORIGIN,
-              ),
-              1, 1)
+              ), front.ORIGIN)
           let missing = cond {
             is_closure => ir.make_if_else(
               absent(),
-              ir_bool(m, true, 1, 1),
+              ir_bool(m, true, front.ORIGIN),
               is_marker,
               front.ORIGIN,
             ),
@@ -9903,9 +9879,9 @@ fn emit_funcs(m) {
                   call_pre(m, f, '__ty_ok', [pref(), ir.str_literal(
                     ty_check_of(rec.ty),
                     front.ORIGIN,
-                  )], 1, 1),
-                  ir_bool(m, false, 1, 1),
-                  ir_bool(m, true, 1, 1),
+                  )], front.ORIGIN),
+                  ir_bool(m, false, front.ORIGIN),
+                  ir_bool(m, true, front.ORIGIN),
                   front.ORIGIN,
                 ),
                 call_pre(m, f, '__raise_fixable', [ir.str_literal(
@@ -9914,7 +9890,7 @@ fn emit_funcs(m) {
                 ), ir.str_literal(
                   "type error: parameter '" + rec.pname + "' expects " + rec.ty,
                   front.ORIGIN,
-                )], 1, 1),
+                )], front.ORIGIN),
                 front.ORIGIN,
               )],
               front.ORIGIN,
@@ -9932,8 +9908,7 @@ fn emit_funcs(m) {
                                   front.ORIGIN,
                                 ),
                                 ir.literal(dl, front.ORIGIN),
-                                ir.literal(dc, front.ORIGIN)],
-                               1, 1)
+                                ir.literal(dc, front.ORIGIN)], front.ORIGIN)
           ids.push(ir.make_if(absent(), raise, front.ORIGIN))
         },
         _ => nil,
@@ -9954,7 +9929,7 @@ fn emit_funcs(m) {
           ), ir.literal(
             n,
             front.ORIGIN,
-          ), pl, pc], 1, 1),
+          ), pl, pc], front.ORIGIN),
           front.ORIGIN,
         ))
         for k in range(n) {
@@ -9999,8 +9974,7 @@ fn emit_funcs(m) {
       )
       ids.push(ir.write(f, f, ai.slot, call_pre(m, f, '__first_n',
                                         [m.array_lit(items_list: ir.list(hidden), line: 1, col: 1),
-                                         overflow],
-                                        1, 1), front.ORIGIN))
+                                         overflow], front.ORIGIN), front.ORIGIN))
     }
     # a *rest slot: open the binder's mark, or (a closure) pack the slot
     # and the hidden overflow by the supplied count
@@ -10022,8 +9996,7 @@ fn emit_funcs(m) {
                                          n, ir.bool_literal(
                                            ri.count > 0,
                                            front.ORIGIN,
-                                         )],
-                                        1, 1), front.ORIGIN))
+                                         )], front.ORIGIN), front.ORIGIN))
     }
     let rw = fi.gen_raw
     if rw != nil {
@@ -10040,7 +10013,7 @@ fn emit_funcs(m) {
         cargs,
         front.ORIGIN,
       )
-      ids.push(m.make_return(value: call_pre(m, f, '__gen_wrap', [rc], 1, 1),
+      ids.push(m.make_return(value: call_pre(m, f, '__gen_wrap', [rc], front.ORIGIN),
                              line: 1, col: 1))
     }
     if self_closure.has(f) {
@@ -10053,8 +10026,7 @@ fn emit_funcs(m) {
       }
       let picked = call_pre(m, f, '__self_pick',
                             [ir.local(0, front.ORIGIN),
-                             outer_ref],
-                            1, 1)
+                             outer_ref], front.ORIGIN)
       ids.push(ir.write(f, f, self_slot[f], picked, front.ORIGIN))
     }
     for s in fi.stmts {
@@ -10066,8 +10038,8 @@ fn emit_funcs(m) {
       let last = fi.stmts[fi.stmts.size() - 1]
       cond {
         is_value_stmt(last) && ids.size() > 0 =>
-          ids[ids.size() - 1] = emit_ret_check(m, f, ids[ids.size() - 1], last.line, last.column),
-        _ => ids.push(emit_ret_check(m, f, ir.nil_literal(front.ORIGIN), last.line, last.column)),
+          ids[ids.size() - 1] = emit_ret_check(m, f, ids[ids.size() - 1], last),
+        _ => ids.push(emit_ret_check(m, f, ir.nil_literal(front.ORIGIN), last)),
       }
     }
     if fi.is_gen == true {
@@ -10087,13 +10059,13 @@ fn emit_funcs(m) {
     # empty range still gives its defers a scope to run at
     body = cond {
       f == 0 => m.scope(first_local: 0, end_local: 0, body: body, line: 1, col: 1),
-      _ => emit_scope_of(m, f, info.base, info.high, body, 1, 1),
+      _ => emit_scope_of(m, f, info.base, info.high, body, front.ORIGIN),
     }
     if f == 0 {
       # whatever escapes the program is reported the way culebra reports it
       let caught = ir.local(uncaught_slot, front.ORIGIN)
       body = m.make_try(caught_local: uncaught_slot, body: body,
-                        handler: call_pre(m, f, '__report_uncaught', [caught], 1, 1),
+                        handler: call_pre(m, f, '__report_uncaught', [caught], front.ORIGIN),
                         line: 1, col: 1)
     }
     let func = ir.add_func(fi.name, f, nslots[f] + nscratch[f],
