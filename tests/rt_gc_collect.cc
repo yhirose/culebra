@@ -1,5 +1,5 @@
 // Phase 0 standalone validation of the conservative mark-sweep
-// (include/jit_gc.h). Two properties, tested at the right strength:
+// (include/rt_gc.h). Two properties, tested at the right strength:
 //
 //   * mark+sweep is exact when roots are precise  -> collect_precise()
 //     asserts the unreachable set is reclaimed deterministically.
@@ -8,9 +8,9 @@
 //     (a stale stack/register word that looks like a pointer). So we only
 //     assert "reachable survives" for collect(), never an exact count.
 //
-//   clang++ -std=c++20 -O2 -Iinclude tests/jit_gc_collect.cc -o /tmp/gcc && /tmp/gcc
+//   clang++ -std=c++20 -O2 -Iinclude tests/rt_gc_collect.cc -o /tmp/gcc && /tmp/gcc
 
-#include "jit_gc.h"
+#include "rt_gc.h"
 
 #include <cassert>
 #include <cstdio>

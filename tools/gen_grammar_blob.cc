@@ -1,4 +1,4 @@
-// Generates include/grammar_blob.h from culebra::grammar_ (grammar_def.h).
+// Generates include/grammar_blob.gen.h from culebra::grammar_ (grammar_def.h).
 //
 // Run via `just gen-blob` after changing the grammar or bumping
 // vendor/cpp-peglib — the blob layout is peglib-version-specific. Skipping it
@@ -41,7 +41,7 @@ std::string read_file(const char* path) {
 
 int main(int argc, char** argv) {
   bool check = false;
-  const char* out = "include/grammar_blob.h";
+  const char* out = "include/grammar_blob.gen.h";
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--check") == 0) {
       check = true;

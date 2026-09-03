@@ -58,7 +58,7 @@ struct SendNode {
   // forms never mix: an interp program ships interp closures, a JIT program
   // ships JIT closures. `jit_fn != nullptr` selects the JIT form.
   void* jit_fn = nullptr;
-  // …and what that closure IS (jit_value.h JIT_CLOSURE_*). A property the
+  // …and what that closure IS (rt_value.inc.h JIT_CLOSURE_*). A property the
   // receiving Runtime cannot infer: it never ran the class declaration the
   // getter came from, and the code address it would have to ask is not an
   // identity across Runtimes. So the closure carries its own answers over.

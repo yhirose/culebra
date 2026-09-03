@@ -8,7 +8,7 @@
 // of the binder's rules serves the whole front end; nothing here touches LLVM.
 
 #include <canon_sigs.h>   // CanonSig / the per-receiver signature tables
-#include <rt.h>           // the TAG_* receiver tags (jit_value.h)
+#include <rt.h>           // the TAG_* receiver tags (rt_value.inc.h)
 #include <parser.h>       // ArgScan, scan_arg_list
 #include <shared.h>       // the arity / kwargs error message builders
 

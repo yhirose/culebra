@@ -6,7 +6,7 @@
 // and positional arity bounds. This is the compiled lanes' single source for
 // binding and diagnostics; it was derived from the tree-walker's own
 // parameter tables while both engines existed (Phase 4 B7-a), and the data
-// lives in canon_sigs.gen.h, maintained by hand since B7-f (the generator
+// lives in canon_sigs_table.h, maintained by hand since B7-f (the generator
 // read the deleted engine; a signature change edits the table directly).
 //
 // Nothing here touches the interpreter, LLVM, or the GC — plain std types
@@ -68,7 +68,7 @@ struct CanonSig {
 
 }  // namespace culebra
 
-#include "canon_sigs.gen.h"
+#include "canon_sigs_table.h"
 
 namespace culebra {
 

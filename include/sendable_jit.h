@@ -1119,7 +1119,7 @@ inline JitValue _jit_shared_val_child(JitObject* view, int64_t id,
 }
 
 // `view.name` data read on an own-slot miss — Object-node field, nil on
-// miss (mirroring a plain Object). Reached through jit_runtime.h's
+// miss (mirroring a plain Object). Reached through rt_runtime.inc.h's
 // _jit_shared_val_prop_hook, which _jit_make_shared_val_view installs.
 inline JitValue _jit_shared_val_prop_impl(JitObject* view, const char* name,
                                           int64_t line, int64_t col) {
@@ -1430,7 +1430,7 @@ inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node) {
   h->is_shared_val = true;
   h->has_drop = true;
   // The one place a view comes into being, so the one place the generic
-  // get/index paths learn how to read it (jit_runtime.h).
+  // get/index paths learn how to read it (rt_runtime.inc.h).
   _jit_shared_val_prop_hook().store(_jit_shared_val_prop_impl,
                                     std::memory_order_release);
   _jit_shared_val_index_hook().store(_jit_shared_val_index_impl,

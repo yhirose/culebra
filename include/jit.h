@@ -1989,7 +1989,7 @@ struct JIT {
   };
 
   // One refcount helper call. Both helpers open with the same
-  // `_is_refcounted_value_tag` guard (jit_mem.h), so a tag the emitter already
+  // `_is_refcounted_value_tag` guard (rt_mem.inc.h), so a tag the emitter already
   // knows answers it here: the call is simply not emitted, rather than emitted
   // for DropSettledRefcounts to sweep back out.
   void emit_refcount_call(const char* sym, llvm::Value* tag,
@@ -2343,7 +2343,7 @@ struct JIT {
   // site's lowering needs (ObjectNewShaped, ValueBox): a private, lazily-
   // filled global pointer — a Shape* baked at AOT-compile time would be a
   // dangling address in the compiled binary's own, later, process, so
-  // `_jit_resolve_cached_shape` (jit_runtime.h) resolves it on first
+  // `_jit_resolve_cached_shape` (rt_runtime.inc.h) resolves it on first
   // execution instead — plus the key C-string pointer array that runtime
   // half reads. `prefix` names the globals for readability in an IR dump;
   // `counter` disambiguates repeat callsites sharing one prefix.

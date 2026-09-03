@@ -3,7 +3,7 @@
 #
 # docs/quick-guide.md's generated signature index (misc/gen_quick_guide.cul)
 # is a machine-readable list of every `Ns.fn(...)` the reference docs
-# document, native and preamble-defined alike — the thing canon_sigs.gen.h
+# document, native and preamble-defined alike — the thing canon_sigs_table.h
 # alone cannot give, since it only knows natives. The PEG grammar
 # (include/grammar_def.h) is the same kind of list for keywords, contextual
 # ones included, so a new control-flow form (`cond`, `nobreak`, `effect`)

@@ -272,7 +272,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_clamp(
 }
 
 // The one dispatch both engines call for Op::NsCall (the ids are NsFn,
-// jit_runtime.h; the rows vm.h's nsfn_specs), and what the Math closure
+// rt_runtime.inc.h; the rows vm.h's nsfn_specs), and what the Math closure
 // adapters below forward to with no position of their own. The arguments
 // are borrowed; the result is the helper's fresh scalar. A typed parameter
 // (pow, sign and wrap take Longs) was checked at its argument before the
@@ -7652,7 +7652,7 @@ inline JitValue _ns_peg_test(JitValue* a, int64_t) {
 // collector can't scan — for the parse's duration; nothing needs pinning
 // against the mark-sweep backstop because nothing runs during that window).
 // Composed from JitOwnedVal rather than holding a bare JitValue: every
-// retain/release this needs already exists on that RAII type (jit_runtime.h),
+// retain/release this needs already exists on that RAII type (rt_runtime.inc.h),
 // so copying, assigning and destroying a JitAny adds no new hand-placed RC
 // call for the ratchet in tools/checks/check_rc_discipline.sh to count.
 //===------------------------------------------------------------------------//

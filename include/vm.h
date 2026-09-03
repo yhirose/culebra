@@ -1335,7 +1335,7 @@ inline std::span<const BMethSpec> bmeth_specs() {
 // resolver, the closure and the argument slab — and the lowering inlines
 // the Float family where the tag is known. A row carries only the name and
 // the id; arity and the declared parameter types are the canonical
-// signature's (canon_sigs.gen.h), so the op cannot drift from the binder.
+// signature's (canon_sigs_table.h), so the op cannot drift from the binder.
 struct NsFnSpec {
   std::string_view ns;
   std::string_view name;
@@ -2803,7 +2803,7 @@ struct Chunk {
   }
 };
 
-// What a closure built over `c` is (jit_value.h JIT_CLOSURE_*). Both lanes
+// What a closure built over `c` is (rt_value.inc.h JIT_CLOSURE_*). Both lanes
 // derive it from the chunk, at the one moment a closure comes into existence,
 // so the answer cannot depend on which of them is running — nor on where the
 // body's code happened to land.
@@ -4221,7 +4221,7 @@ class Compiler {
           {chunk_idx_, static_cast<uint32_t>(ix)});
   }
 
-  // Runtime string layout via _str_init (jit_string.h — the same header +
+  // Runtime string layout via _str_init (rt_string.inc.h — the same header +
   // NUL shape the JIT bakes into .rodata); the value points at the bytes
   // (see the str_arena comment on Chunk). Repeated spellings (a lazy
   // binding's name read at every site) intern to one entry.
@@ -9604,7 +9604,7 @@ class Compiler {
   }
 
   // `dunder_for_op`: the special method an arithmetic opcode reaches on the
-  // boxed path (`jit_runtime.h`'s `_dispatch_arith_special`/`CUL_NUM_BINOP`),
+  // boxed path (`rt_runtime.inc.h`'s `_dispatch_arith_special`/`CUL_NUM_BINOP`),
   // for the subset this inlines. Reflection (`3 * v` where only `v` has
   // `__mul__`) is not attempted — only an LHS the compiler has already
   // proven unboxed is a candidate, so a name-only match on the RHS side
@@ -12732,7 +12732,7 @@ struct Exec {
     [[maybe_unused]] gc::Heap* sp_heap = nullptr;
     if constexpr (gc::kDeferToSafepoint) sp_heap = &_gc_heap();
     for (;;) {
-      // The wasm safepoint: the only place a deferred collect runs (jit_gc.h
+      // The wasm safepoint: the only place a deferred collect runs (rt_gc.h
       // kDeferToSafepoint). Between instructions every live value of every
       // frame sits in a register window on the linear-memory stack, which
       // the conservative scan does see — unless a helper frame that may hold
@@ -13453,7 +13453,7 @@ struct Exec {
             try {
               // Rooted: gate (regs[b]), receiver (regs[b+1]) and args
               // (regs[b+2..], nil'd only after the return) stay in this
-              // frame's registers for the call's duration (jit_value.h).
+              // frame's registers for the call's duration (rt_value.inc.h).
               r = _jit_invoke_rooted(reinterpret_cast<JitClosure*>(gate.data),
                                      regs[in.b + 1], in.d,
                                      in.d ? &regs[in.b + 2] : nullptr);
@@ -13871,7 +13871,7 @@ struct Exec {
             // Rooted: callee (regs[b]), receiver (== callee on the __call__
             // path) and args (regs[c..], nil'd only after the return) all
             // stay in this frame's registers for the call's duration, so a
-            // safepoint collect beneath it sees them (jit_value.h).
+            // safepoint collect beneath it sees them (rt_value.inc.h).
             r = _jit_invoke_rooted(reinterpret_cast<JitClosure*>(target.data),
                                    self, in.d, in.d ? &regs[in.c] : nullptr);
           } catch (...) {
@@ -13953,7 +13953,7 @@ struct Exec {
           try {
             // Rooted: callee (regs[b]), receiver (regs[c]) and args
             // (regs[c+1..], nil'd only after the return) stay in this
-            // frame's registers for the call's duration (jit_value.h).
+            // frame's registers for the call's duration (rt_value.inc.h).
             r = _jit_invoke_rooted(reinterpret_cast<JitClosure*>(target.data),
                                    self, in.d,
                                    in.d ? &regs[in.c + 1] : nullptr);
@@ -14479,7 +14479,7 @@ struct Exec {
           int64_t step = regs[in.a + 2].data;
           if (step == 0) {
             // The runtime helper is the sole owner of this diagnostic
-            // (jit_iter.h); routing through it keeps the lanes identical.
+            // (rt_iter.inc.h); routing through it keeps the lanes identical.
             auto [line, col] = chunk_pos_at(c, pc);
             culebra_runtime_range_step_check(step, line, col);
           }

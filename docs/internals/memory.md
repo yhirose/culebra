@@ -118,7 +118,7 @@ refcount would be, and are reclaimed by the tracing collector alone
 (§6). Nil, Bool, Long and Float are immediates.
 
 Objects are allocated from a per-`Runtime` slab allocator
-(`jit_slab.h`): size-segregated, carving 64 KB chunks, non-moving, and
+(`rt_slab.h`): size-segregated, carving 64 KB chunks, non-moving, and
 lock-free because a `Runtime` — and with it the heap, the collector, the
 defer stack and the exception carrier — is one per thread. The
 collector's own per-object metadata lives outside the object in an
@@ -128,7 +128,7 @@ a header it does not own.
 Deterministic `drop` rides on the same count: an object whose refcount
 reaches zero runs its `drop` before its children are released. Objects
 that have a `drop` are also registered on a per-`Runtime` *owned stack*
-(`jit_owned.h`) from the moment `drop` is bound; a scope exit resolves
+(`rt_owned.inc.h`) from the moment `drop` is bound; a scope exit resolves
 the entries above its mark, so a drop-having object that escaped into a
 cycle inside the scope is still dropped at the scope boundary
 (`culebra_runtime_owned_scope_exit`). The full contract — timing, order,
@@ -606,7 +606,7 @@ the move: a helper suspended *between* two VM frames (an iterator op
 whose callback is running) may hold the only reference in its own
 locals. The invariant is **no collection while any such frame is on
 the stack**, enforced at one choke point: every helper-to-user call
-passes through `_jit_invoke` (`jit_value.h`), whose
+passes through `_jit_invoke` (`rt_value.inc.h`), whose
 `SafepointUnsafeScope` defers the poll for the call's duration. The
 dispatch sites audited to keep callee, receiver and arguments in
 registers for the whole call use `_jit_invoke_rooted` and stay

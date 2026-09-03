@@ -93,7 +93,7 @@ _gen-blob-tool:
     ccache=$(command -v ccache || true); $ccache "{{blob_cxx}}" -std=c++23 -O2 -I include -I vendor/cpp-peglib -c tools/gen_grammar_blob.cc -o build-dev/gen_grammar_blob.o
     "{{blob_cxx}}" build-dev/gen_grammar_blob.o -o build-dev/gen_grammar_blob
 
-# Regenerate include/grammar_blob.h — the serialized grammar that lets
+# Regenerate include/grammar_blob.gen.h — the serialized grammar that lets
 # get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
 # grammar (grammar_def.h) or bumping vendor/cpp-peglib (the blob layout is
 # peglib-version-specific). Skipping it still runs correctly — get_parser()
@@ -101,12 +101,12 @@ _gen-blob-tool:
 # startup, silently. `just check-blob` is the gate that catches it.
 [group("build")]
 gen-blob: _gen-blob-tool
-    ./build-dev/gen_grammar_blob include/grammar_blob.h
+    ./build-dev/gen_grammar_blob include/grammar_blob.gen.h
 
-# Verify include/grammar_blob.h is in sync with the grammar (CI gate).
+# Verify include/grammar_blob.gen.h is in sync with the grammar (CI gate).
 [group("build")]
 check-blob: _gen-blob-tool
-    ./build-dev/gen_grammar_blob --check include/grammar_blob.h
+    ./build-dev/gen_grammar_blob --check include/grammar_blob.gen.h
 
 # Every built-in method name reaches the differential corpus (tools/difftest).
 [group("build")]
@@ -238,7 +238,7 @@ test-no-jit: build-no-jit
 
 # Same Release + JIT shape as `just dev`, minus -DNDEBUG, so the tree's asserts
 # actually execute. Every other lane is Release, so without this one NO build
-# ever runs an assert — jit_slab.h's cross-allocator free guard sat dead while
+# ever runs an assert — rt_slab.h's cross-allocator free guard sat dead while
 # exactly that corruption shipped. -O1 keeps rebuilds in inner-loop range; its
 # own build-assert/ dir keeps the NDEBUG flag flip out of the other lanes'
 # ccache keys, which also means this lane is always ccache-cold on first use —
@@ -317,7 +317,7 @@ coverage: coverage-build
     @echo "coverage: full list in build-cov/corpus_only.txt"
 
 # Build with ASan+UBSan (no-LTO Release) and smoke the JIT GC paths.
-# The conservative stack scanner (scan_range, jit_gc.h) is exempted from
+# The conservative stack scanner (scan_range, rt_gc.h) is exempted from
 # ASan via no_sanitize("address"); without that, every JIT GC collect
 # aborts with a stack-buffer-underflow. GC_STRESS=1 forces a collect on
 # every allocation, so the feature files below hammer scan_range. Any

@@ -13,14 +13,16 @@
 // helpers on a module, and the AOT bootstrap — which needs no LLVM itself but
 // only exists where `culebra build` can emit an object to link it into.
 //
-// The `jit_`-prefixed fragment headers below are historical names from when
-// this layer was the first ~10,600 lines of jit.h. They have no includes of
-// their own, rely on the block above them, and MUST be included in exactly
-// this order.
+// The `.inc.h` headers in the second block are not standalone: they are this
+// file's body, split for size when this layer was carved out of jit.h's first
+// ~10,600 lines. They rely on the block above them and MUST be included in
+// exactly this order — `rt_runtime.inc.h` opens an `extern "C"` block that
+// stays open across rt_fixed / rt_dispatch and closes in rt_iter. Include
+// rt.h; never one of them on its own.
 
 #include <fn_analysis.h>
-#include <jit_gc.h>
-#include <jit_slab.h>
+#include <rt_gc.h>
+#include <rt_slab.h>
 #include <packable.h>
 #include <parser.h>
 #include <rt_format.h>
@@ -56,14 +58,14 @@
 #include <unordered_set>
 #include <vector>
 
-#include <jit_value.h>
-#include <jit_owned.h>
-#include <jit_string.h>
-#include <jit_runtime.h>
-#include <jit_fixed.h>
-#include <jit_dispatch.h>
-#include <jit_iter.h>
-#include <jit_mem.h>
+#include <rt_value.inc.h>
+#include <rt_owned.inc.h>
+#include <rt_string.inc.h>
+#include <rt_runtime.inc.h>
+#include <rt_fixed.inc.h>
+#include <rt_dispatch.inc.h>
+#include <rt_iter.inc.h>
+#include <rt_mem.inc.h>
 
 namespace culebra {
 

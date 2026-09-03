@@ -396,7 +396,7 @@ inline void throw_if_too_many_positionals(int64_t cap, int64_t n_pos,
 
 // --- recursion guard --------------------------------------------------
 // One logical culebra call = one unit, counted by the compiled-function
-// prologue (the counter itself is `_jit_thread.depth`, jit_runtime.h — it
+// prologue (the counter itself is `_jit_thread.depth`, rt_runtime.inc.h — it
 // rides in the same thread-local object as the positions a call publishes,
 // so the prologue pays one dyld lookup for both). Without the guard a deep
 // recursion overflows the C stack and dies as an uncatchable SIGSEGV. 1000
@@ -2137,7 +2137,7 @@ inline double parse_double_strict(std::string_view s, int64_t line,
 // can't be direct members.
 enum RuntimeSlot : size_t {
   kSlotInterpGc = 0,
-  // Backs the hot JIT structs/buffers (jit_slab.h). MUST stay below kSlotJitGc
+  // Backs the hot JIT structs/buffers (rt_slab.h). MUST stay below kSlotJitGc
   // and below every JitValue-holding table slot: ~Runtime destroys substates
   // in reverse slot order, and those table dtors (module/namespace/test) free
   // pinned structs through the slab's operator delete during teardown, so the
@@ -2185,7 +2185,7 @@ enum RuntimeSlot : size_t {
   // their storage goes when this Runtime's heap and slab do.
   kSlotReplSession,
   // Per-scope owned-resource stacks for deterministic drop (one per
-  // backend; see jit_owned.h "owned stack"). Entries are
+  // backend; see rt_owned.inc.h "owned stack"). Entries are
   // non-owning, so destruction order relative to the GC slots is moot —
   // but ~InterpGC's collect resolves this slot after it was nulled, so
   // every Runtime that ran interp code revives it empty. ~Runtime's sweep
@@ -2229,7 +2229,7 @@ struct Runtime;
 // caches this thread's default Runtime, so the no-scope path — every plain
 // `culebra script.cul` — resolves in one _tlv_get_addr instead of the pair a
 // function-local `static thread_local` charges: its guard, then itself. Two
-// pointers in one object for the same reason (jit_runtime.h's `_jit_thread`):
+// pointers in one object for the same reason (rt_runtime.inc.h's `_jit_thread`):
 // on Mach-O each `thread_local` an entry touches is its own call into dyld.
 struct RuntimeTls {
   Runtime* current = nullptr;

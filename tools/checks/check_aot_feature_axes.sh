@@ -190,7 +190,7 @@ expect_absent none 'culebra::_canvas_detail::ttf_rasterize' "stb_truetype"
 expect_absent none 'culebra::foreign_fixture::' "the fixture's own C++ class"
 # The isolate transfer graph (serialize / SharedVal readers / channel
 # endpoints) is reached only through the hooks _jit_make_shared_val_view
-# installs (jit_runtime.h), never by symbol from the generic property paths.
+# installs (rt_runtime.inc.h), never by symbol from the generic property paths.
 expect_absent none 'culebra::jit_serialize[(]' "the isolate transfer graph"
 expect_absent none 'culebra::_jit_shared_val_prop_impl[(]' "the SharedVal reader"
 expect_absent none '_jit_isolate_teardown_join_all' "the isolate teardown join"

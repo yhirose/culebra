@@ -53,7 +53,7 @@ struct Lowering {
         c.param_types, c.param_declared_types, c.cb_min, c.cb_max);
   }
 
-  // The JitFn ABI signature (jit_value.h), spelled once for both the chunk
+  // The JitFn ABI signature (rt_value.inc.h), spelled once for both the chunk
   // function creation and the indirect call site.
   static llvm::FunctionType* jit_fn_type(llvm::IRBuilder<>& b,
                                          llvm::Type* ptrTy) {
@@ -320,7 +320,7 @@ struct Lowering {
       return b.CreateLoad(i64Ty, owned_mark_ptr(d), "owned.mark");
     };
 
-    // Frame-ABI arguments (function chunks only; see JitFn in jit_value.h).
+    // Frame-ABI arguments (function chunks only; see JitFn in rt_value.inc.h).
     llvm::Value* retPtr = nullptr;
     llvm::Value* clsArg = nullptr;
     llvm::Value* selfTag = nullptr;

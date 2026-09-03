@@ -7,8 +7,8 @@
 // fragments rely on rt.h's #include block and are included by rt.h in a
 // fixed sequence (see rt.h); they are not standalone headers.
 
-// Continues the runtime extern "C" block opened in jit_runtime.h
-// (split across jit_fixed.h / jit_dispatch.h / jit_iter.h).
+// Continues the runtime extern "C" block opened in rt_runtime.inc.h
+// (split across rt_fixed.inc.h / rt_dispatch.inc.h / rt_iter.inc.h).
 extern "C" {
 
 // --- Multimethod dispatch (interp-parity, see eval_multifn_decl) ---
@@ -39,7 +39,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(
 // position here just before an indirect closure call; the thunk reads it on
 // the (cold) DispatchError path. Only read after a store on the same call,
 // so the single i64-pair store per call is the only cost on the hot path.
-// (Every position this file publishes lives in `_jit_thread`, jit_runtime.h.)
+// (Every position this file publishes lives in `_jit_thread`, rt_runtime.inc.h.)
 
 // Build a variant instance: tagged with `class` = variant name and
 // `__enum` = parent enum name, with the `arity` declared payload fields
@@ -1167,7 +1167,7 @@ inline void _jit_gc_enumerate_roots(std::vector<void*>& out) {
   auto& rt = culebra::current_runtime();
   if (rt.thrown_data)
     _gc_push_value(out, JitValue{rt.thrown_tag, rt.thrown_data});
-  // In-flight algebraic-effect abort payloads (jit_runtime.h): each lives only
+  // In-flight algebraic-effect abort payloads (rt_runtime.inc.h): each lives only
   // inside its unwinding CulebraEffAbort exception object, off the scanned
   // stack, so a collect mid-unwind would sweep it without this root.
   for (auto& v : _eff_abort_inflight) _gc_push_value(out, v);
@@ -2197,5 +2197,5 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
                      slab.data());
 }
 
-}  // extern "C" (block continues in jit_iter.h)
+}  // extern "C" (block continues in rt_iter.inc.h)
 

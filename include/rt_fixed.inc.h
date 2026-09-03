@@ -8,8 +8,8 @@
 // fragments rely on rt.h's #include block and are included by rt.h in a
 // fixed sequence (see rt.h); they are not standalone headers.
 
-// Continues the runtime extern "C" block opened in jit_runtime.h
-// (split across jit_fixed.h / jit_dispatch.h / jit_iter.h).
+// Continues the runtime extern "C" block opened in rt_runtime.inc.h
+// (split across rt_fixed.inc.h / rt_dispatch.inc.h / rt_iter.inc.h).
 extern "C" {
 
 // --- FixedArray view byte helpers (used by both the [i] index hooks here
@@ -67,7 +67,7 @@ inline int64_t _jit_handle_long(JitObject* h, const char* key) {
 }
 
 // Every closure is born through this one constructor, which is where its
-// flags are fixed (jit_value.h JIT_CLOSURE_*). Defined in jit_dispatch.h,
+// flags are fixed (rt_value.inc.h JIT_CLOSURE_*). Defined in rt_dispatch.inc.h,
 // included after this file.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
     void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags);
@@ -1820,7 +1820,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
 //
 // The Shape cache (`*shape_cache`) is the same per-callsite one
 // ObjectNewShaped's runtime half uses — see `_jit_resolve_cached_shape`
-// (jit_runtime.h) for why the laziness is load-bearing for AOT.
+// (rt_runtime.inc.h) for why the laziness is load-bearing for AOT.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
     void** shape_cache, const char* const* keys, int64_t n_keys,
     JitObject* class_meta, const char* class_name,
@@ -1886,5 +1886,5 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(
   return n;
 }
 
-}  // extern "C" (block continues in jit_dispatch.h)
+}  // extern "C" (block continues in rt_dispatch.inc.h)
 

@@ -1,7 +1,7 @@
 #pragma once
 // culebra PEG grammar — single source of truth.
-// parser.h loads it (or the prebuilt grammar_blob.h); tools/gen_grammar_blob.cc
-// serializes it into grammar_blob.h. Regenerate with `just gen-blob`.
+// parser.h loads it (or the prebuilt grammar_blob.gen.h); tools/gen_grammar_blob.cc
+// serializes it into grammar_blob.gen.h. Regenerate with `just gen-blob`.
 namespace culebra {
 
 const auto grammar_ = R"(

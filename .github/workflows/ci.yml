@@ -103,7 +103,7 @@ jobs:
 
       # A stale blob still runs correctly, it just falls back to load_grammar()
       # and costs ~10 ms on every startup — no other gate can see that.
-      - name: Check grammar blob sync (grammar_def.h -> grammar_blob.h)
+      - name: Check grammar blob sync (grammar_def.h -> grammar_blob.gen.h)
         run: just check-blob
 
       # Regenerating the served page needs emsdk, which no runner has, so a
@@ -998,7 +998,7 @@ jobs:
 
   # The only lane that runs with asserts live. Every other job — and every local
   # `just` build — is CMAKE_BUILD_TYPE=Release, i.e. -DNDEBUG, so the tree's
-  # asserts never execute: jit_slab.h's cross-allocator-free guard sat dead
+  # asserts never execute: rt_slab.h's cross-allocator-free guard sat dead
   # while exactly that corruption shipped and surfaced as an intermittent
   # SIGABRT in the isolate lane. Ubuntu only — these asserts check
   # backend-neutral invariants (Runtime teardown, the GC heap, the slab), so a

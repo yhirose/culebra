@@ -115,7 +115,7 @@ refcountがあるはずの場所にインラインの長さヘッダを運び、
 コレクタだけによって回収される（§6）。Nil、Bool、Long、Floatは
 即値である。
 
-オブジェクトはper-`Runtime`のスラブアロケータ（`jit_slab.h`）から
+オブジェクトはper-`Runtime`のスラブアロケータ（`rt_slab.h`）から
 割り当てられる: サイズ別に分離され、64 KBのchunkを切り出し、
 moveせず、ロックフリーである — なぜなら`Runtime`（そしてそれに
 伴うヒープ、コレクタ、deferスタック、例外キャリア）はスレッドごとに
@@ -126,7 +126,7 @@ retain/releaseのコードは自分が所有していないヘッダに一切触
 決定的な`drop`は同じカウントに乗る: refcountがゼロに達した
 オブジェクトは、その子が解放される前に`drop`を実行する。`drop`を
 持つオブジェクトは`drop`が束縛された瞬間からper-`Runtime`の
-*owned stack*（`jit_owned.h`）にも登録される。スコープを抜けると
+*owned stack*（`rt_owned.inc.h`）にも登録される。スコープを抜けると
 そのマークより上のエントリが解決されるので、スコープ内でサイクルに
 逃げ込んだdrop持ちオブジェクトでも、スコープ境界で`drop`される
 （`culebra_runtime_owned_scope_exit`）。契約全体 — タイミング、
@@ -617,7 +617,7 @@ inlineでのcollectionは一切走らない。閾値超過はpending flagを
 イテレータop）が、自分自身のlocalsに唯一の参照を保持しているかも
 しれない。不変条件は**そのようなフレームがスタック上にある間は
 collectionを行わない**であり、1つの絞り口で強制される: helper
-からuserへのすべての呼び出しは`_jit_invoke`（`jit_value.h`）を
+からuserへのすべての呼び出しは`_jit_invoke`（`rt_value.inc.h`）を
 通り、その`SafepointUnsafeScope`が呼び出しの間pollを延期する。
 callee・receiver・引数を呼び出しの全期間レジスタに保つよう監査
 されたdispatchサイトは`_jit_invoke_rooted`を使いcollectable

@@ -19,7 +19,7 @@
 
 # The JIT's conservative collector may retain an orphan across collections
 # while a stale callee-saved register / stack word still looks like a
-# pointer to it (jit_gc.h: completeness is best-effort). Two pieces of
+# pointer to it (rt_gc.h: completeness is best-effort). Two pieces of
 # hygiene keep the observations deterministic on both backends: interleave
 # real, register-churning work with a few collections (gc_settle), and run
 # each case's mutating part inside a helper fn — its spills then live in a

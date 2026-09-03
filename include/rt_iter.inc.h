@@ -9,8 +9,8 @@
 // fragments rely on rt.h's #include block and are included by rt.h in a
 // fixed sequence (see rt.h); they are not standalone headers.
 
-// Continues the runtime extern "C" block opened in jit_runtime.h
-// (split across jit_fixed.h / jit_dispatch.h / jit_iter.h).
+// Continues the runtime extern "C" block opened in rt_runtime.inc.h
+// (split across rt_fixed.inc.h / rt_dispatch.inc.h / rt_iter.inc.h).
 extern "C" {
 
 // --- Iterator protocol runtime --------------------------------------------
@@ -3549,7 +3549,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_shared_val(
 // instead of chaining is_fixed_array_view / is_shared_val / is_shared_buffer
 // / is_packed_view separately — mirrors the single-call style
 // object_get_any / object_set_any already use for these same flags in
-// their own C++ bodies (jit_fixed.h). None of `??=`'s receiver kinds have
+// their own C++ bodies (rt_fixed.inc.h). None of `??=`'s receiver kinds have
 // a clean `nil` sentinel to coalesce against (a packed scalar can't read
 // back as nil; Shared.new is unconditionally immutable), so each is
 // rejected outright before the plain-dict/class-instance path runs.

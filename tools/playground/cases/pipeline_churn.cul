@@ -2,7 +2,7 @@
 # object spread, filter, a count — plus a little string churn (traced-only
 # bytes only the collector reclaims). Crosses the collector's allocation
 # threshold every few thousand iterations, which is what exercises the wasm
-# safepoint protocol (jit_gc.h kDeferToSafepoint): before it, a threshold
+# safepoint protocol (rt_gc.h kDeferToSafepoint): before it, a threshold
 # collect fired at the allocation site, swept a value whose only reference
 # sat in a wasm local the conservative scan cannot see, and this loop
 # trapped with "memory access out of bounds" around iteration ~10k.

@@ -41,7 +41,7 @@ SHARED = (
     ("culebra::JIT::", "emitter"),
     ("culebra::_jit_", "runtime"),
     ("culebra_runtime_", "runtime"),
-    # The GC heap (jit_gc.h) and the Canvas natives (canvas.h, font_ttf.h) are
+    # The GC heap (rt_gc.h) and the Canvas natives (canvas.h, font_ttf.h) are
     # reached through the runtime helpers above rather than named by the
     # engines, but a bug in either is a bug both engines inherit — same fate,
     # so the same accounting.

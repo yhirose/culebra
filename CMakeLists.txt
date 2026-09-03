@@ -1961,10 +1961,10 @@ target_include_directories(source_newlines_test PRIVATE include
                            vendor/cpp-peglib)
 add_test(NAME source_newlines_test COMMAND source_newlines_test)
 
-# GC unit tests — the standalone collector (include/jit_gc.h) validated in
+# GC unit tests — the standalone collector (include/rt_gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no
 # JIT/LLVM link, independent of the in-tree jit.h wiring.
-foreach(gc_test jit_gc_phase0 jit_gc_collect)
+foreach(gc_test rt_gc_phase0 rt_gc_collect)
   add_executable(${gc_test} tests/${gc_test}.cc)
   target_compile_features(${gc_test} PRIVATE cxx_std_20)
   target_include_directories(${gc_test} PRIVATE include)

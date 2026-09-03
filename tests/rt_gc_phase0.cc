@@ -1,13 +1,13 @@
 // Phase 0 standalone validation for the new conservative GC heap.
-// Builds nothing of the JIT — exercises include/jit_gc.h in isolation:
+// Builds nothing of the JIT — exercises include/rt_gc.h in isolation:
 //   - allocation + live counters
 //   - pointer validation (live / interior / random / freed)
 //   - conservative stack scan finding a known root
 //   - global-root registry
 // Compile + run directly, e.g.:
-//   clang++ -std=c++20 -O2 -Iinclude tests/jit_gc_phase0.cc -o /tmp/gc0 && /tmp/gc0
+//   clang++ -std=c++20 -O2 -Iinclude tests/rt_gc_phase0.cc -o /tmp/gc0 && /tmp/gc0
 
-#include "jit_gc.h"
+#include "rt_gc.h"
 
 #include <cassert>
 #include <cstdio>

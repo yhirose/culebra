@@ -60,7 +60,7 @@ int64_t coreir_rt_in(int64_t line, int64_t col) {
 }
 
 void coreir_rt_poll(void) {
-  // Mirrors the JIT/AOT loop backedge's own convention (jit_runtime.h's
+  // Mirrors the JIT/AOT loop backedge's own convention (rt_runtime.inc.h's
   // culebra_runtime_safepoint): a relaxed load first, the real check -- which
   // also handles an isolate's own sticky cancel -- only when it might matter.
   if (culebra::culebra_g_wake.load(std::memory_order_relaxed)) {

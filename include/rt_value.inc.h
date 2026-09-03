@@ -102,7 +102,7 @@ inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
 
 }  // namespace culebra
 
-// Per-Runtime slab allocator backing the hot JIT structs (see jit_slab.h).
+// Per-Runtime slab allocator backing the hot JIT structs (see rt_slab.h).
 // Lives in the kSlotJitSlab substate — placed BELOW kSlotJitGc in the slot
 // enum so reverse-order Runtime teardown frees it LAST, after every
 // higher-slot table dtor (module/namespace/test) has released its pinned
@@ -151,7 +151,7 @@ struct JitArray {
   // established `JitArray` IR struct layout that codegen accesses by GEP index.
   int64_t gc_slot = -1;
 
-  // Route allocation through the per-Runtime slab (jit_slab.h). Member
+  // Route allocation through the per-Runtime slab (rt_slab.h). Member
   // operators keep every `new JitArray()` / `delete a` call site unchanged
   // and add no field (refcount stays at offset 0). Sized delete only, so the
   // sized form is always selected and the slab knows the size class.
@@ -235,7 +235,7 @@ struct DictIndex {
 
 // Every dictionary-mode object shares this shape. It is never interned and
 // never primes an inline cache (see the three `ic->` assignments in
-// jit_fixed.h), so a cached shape can never match a dictionary and read a
+// rt_fixed.inc.h), so a cached shape can never match a dictionary and read a
 // stale slot -- which is what lets dictionary mode leave codegen alone.
 inline culebra::Shape* dict_shape() {
   static culebra::Shape s;
@@ -673,7 +673,7 @@ static constexpr int8_t TAG_NO_SELF = 126;
 // The `_rooted` variant is for call sites audited to keep every value they
 // hold in scanned memory (the VM frame's register window) for the call's
 // whole duration — the dispatch's BMeth/Call/CallM arms. Everything else goes
-// through `_jit_invoke`, whose guard tells the wasm safepoint (jit_gc.h
+// through `_jit_invoke`, whose guard tells the wasm safepoint (rt_gc.h
 // kDeferToSafepoint) that a helper frame which may hold the only reference
 // to a live object in unscannable wasm locals is on the stack, so no
 // collection may run beneath this call. Native builds: the guard is a no-op
@@ -809,13 +809,13 @@ static constexpr int8_t GC_TAG_CELL = 100;
 // Traced-only: a heap String is registered as a GC leaf node (no children,
 // no refcount) so the tracing backstop can reclaim it. It stays OUT of
 // _is_refcounted_value_tag on purpose — retain/release must remain no-ops
-// (zero per-op cost); only the collector reclaims strings. See jit_string.h.
+// (zero per-op cost); only the collector reclaims strings. See rt_string.inc.h.
 static constexpr int8_t GC_TAG_STRING = TAG_STRING;
 // Traced-only, like GC_TAG_STRING: the heap-allocated JitStringView descriptor
 // is a GC node whose single child is the backing String it borrows (owner_base
 // edge). Tracing it keeps a borrowed backing alive for exactly as long as any
 // live view references it, and reclaims the descriptor itself. Also OUT of
-// _is_refcounted_value_tag — retain/release stay no-ops. See jit_string.h.
+// _is_refcounted_value_tag — retain/release stay no-ops. See rt_string.inc.h.
 static constexpr int8_t GC_TAG_STRINGVIEW = TAG_STRINGVIEW;
 
 // Is this tag a refcounted heap value (the container/handle tags, excluding
@@ -998,7 +998,7 @@ inline void _jit_gc_finalize_dead(const std::vector<void*>& dead);
 
 // Traced-only tags carry no refcount at offset 0 (String bytes / a view's
 // borrowed ptr live there). The Heap's RC-accounting paths consult this to
-// leave them out of the reference-count arithmetic. See jit_gc.h NoRcFn.
+// leave them out of the reference-count arithmetic. See rt_gc.h NoRcFn.
 inline bool _jit_gc_is_traced_only(uint8_t type_tag) {
   return type_tag == GC_TAG_STRING || type_tag == GC_TAG_STRINGVIEW;
 }

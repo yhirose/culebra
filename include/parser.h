@@ -17,7 +17,7 @@
 #include <vector>
 
 #include "grammar_def.h"       // culebra::grammar_ — single source of truth
-#include "grammar_blob.h"      // prebuilt serialized grammar (generated; `just gen-blob`)
+#include "grammar_blob.gen.h"      // prebuilt serialized grammar (generated; `just gen-blob`)
 #include "grammar_blob_key.h"  // grammar_blob_key() — shared with the blob generator
 
 namespace culebra {

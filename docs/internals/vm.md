@@ -67,19 +67,23 @@ Where things live:
 
 | Component | Header | Notes |
 |---|---|---|
-| Runtime value model and helpers | `rt.h` and the `jit_*.h` fragments it includes | LLVM-free; the whole stdlib sits on it (`stdlib_jit.h`) |
+| Runtime value model and helpers | `rt.h` and the `rt_*.inc.h` fragments it includes | LLVM-free; the whole stdlib sits on it (`stdlib_jit.h`) |
 | Front-end analysis | `fn_analysis.h` | `FuncInfo` / `FnAnalysis`, shared by both consumers |
 | Bytecode format, compiler, executor | `vm.h` | `Op`, `Chunk`, `VmProgram`, `vm::Compiler`, `vm::Exec` |
 | LLVM lowering, `--jit`, AOT | `vm_lowering.h` | the only VM header that needs LLVM |
 | LLVM codegen context | `jit.h` | `struct JIT`: emitters, ownership handles, ORC/`exec`, object cache |
 | Sessions (REPL, `culebra test`, embedding) | `vm_session.h`, `vm_repl.h`, `test_engine.h`, `vm_embed.h` | top-level bindings that outlive a program |
 | Debugger | `debug_engine.h`, `vm_debug.h`, `dap.h` | the DAP protocol over a six-question engine interface |
-| Canonical stdlib signatures | `canon_sigs.h`, `canon_sigs.gen.h` | parameter names/types/defaults every lane binds against |
-| Collector, slab | `jit_gc.h`, `jit_slab.h` | see [`memory.md`](memory.md) |
+| Canonical stdlib signatures | `canon_sigs.h`, `canon_sigs_table.h` | parameter names/types/defaults every lane binds against |
+| Collector, slab | `rt_gc.h`, `rt_slab.h` | see [`memory.md`](memory.md) |
 
-The `jit_` prefix on the runtime fragments is historical: they were the
-first ~10k lines of `jit.h` before the runtime was split out, and they
-are now shared by both engines.
+Names carry the boundary. `jit` means LLVM is involved — `jit.h` and
+nothing else in that layer — while the runtime both engines share is
+`rt.h` and the `rt_*.inc.h` fragments it includes. The `.inc.h` says
+those fragments are not standalone headers: they are rt.h's body, split
+for size when this layer was carved out of the first ~10k lines of
+`jit.h`, and one `extern "C"` block runs across four of them, so rt.h
+includes them in a fixed order and nothing else includes them at all.
 
 ## 2. The pipeline of a run
 
@@ -152,12 +156,12 @@ whose subject *is* the default.
 ## 3. The runtime layer
 
 `rt.h` is what both consumers stand on. It includes, in a fixed order,
-the value model (`jit_value.h`), the owned-resource stack for
-deterministic `drop` (`jit_owned.h`), strings (`jit_string.h`), the core
-`extern "C"` helpers (`jit_runtime.h`), fixed-layout views and class
-construction (`jit_fixed.h`), multimethod dispatch and the keyword-call
-machinery (`jit_dispatch.h`), the iterator protocol (`jit_iter.h`), and
-the reference-counting implementation (`jit_mem.h`). None of it names
+the value model (`rt_value.inc.h`), the owned-resource stack for
+deterministic `drop` (`rt_owned.inc.h`), strings (`rt_string.inc.h`), the core
+`extern "C"` helpers (`rt_runtime.inc.h`), fixed-layout views and class
+construction (`rt_fixed.inc.h`), multimethod dispatch and the keyword-call
+machinery (`rt_dispatch.inc.h`), the iterator protocol (`rt_iter.inc.h`), and
+the reference-counting implementation (`rt_mem.inc.h`). None of it names
 LLVM.
 
 ### 3.1 The value model
@@ -197,7 +201,7 @@ The heap objects a VM needs are the runtime's existing ones:
 - `JitArray`, `JitSet`, tuples, `JitTensor`.
 
 Objects are allocated from a per-`Runtime` slab allocator
-(`jit_slab.h`): size-segregated, non-moving, no locking, because a
+(`rt_slab.h`): size-segregated, non-moving, no locking, because a
 `Runtime` — the thread-local root of the heap, the namespace caches, the
 class and overload registries, the defer stack and the exception carrier
 — is one per isolate. Two isolates share code and nothing else (§3.4).
@@ -228,7 +232,7 @@ tabulates them. Two RAII forms recur in the helpers' own C++:
 `JitUnwindRelease` (release only if the helper throws).
 
 The per-thread state a call frame touches sits in two objects:
-`_jit_thread` (`jit_runtime.h`) holds every source position a call
+`_jit_thread` (`rt_runtime.inc.h`) holds every source position a call
 publishes and the recursion depth, and `_culebra_rt` (`shared.h`) holds
 this thread's current `Runtime` alongside a cache of its default. The
 grouping is not tidiness. Mach-O has no initial-exec TLS model, so every
@@ -261,7 +265,7 @@ preamble splice of §2.
 
 The parameter lists every native declares — names, types, defaults,
 keyword-only and rest markers, arity bounds — are one generated table,
-`canon_sigs.gen.h`, read through `canon_sigs.h` by the compiler (for
+`canon_sigs_table.h`, read through `canon_sigs.h` by the compiler (for
 compile-time checks and `f.params` introspection), by the runtime's
 binder (for keyword calls and typed-parameter errors), and by the AOT
 archive. A signature change edits that table.
@@ -916,7 +920,7 @@ over an id from `nsfn_specs()` instead of `NsGet` + `PropRaw` +
 closure's adapter would have through one dispatch
 (`culebra_runtime_ns_call`), with the call's own position for the
 helper's errors. The row carries only the name and the id: arity and the
-declared parameter types are read from `canon_sigs.gen.h`, and a typed
+declared parameter types are read from `canon_sigs_table.h`, and a typed
 parameter is checked at its argument with `ChkTypeAt` after the whole
 list ran, which is the closure trampoline's order. The lowering inlines
 the Float family (`sqrt`, `sin`, `exp`, …, `abs`, `atan2`) behind a

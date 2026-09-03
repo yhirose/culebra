@@ -6,7 +6,7 @@
 # review):
 #
 # 1. Terminal drive discipline: every terminal drain goes through
-#    JitIterDrive (jit_iter.h), which owns the protocol closures AND the
+#    JitIterDrive (rt_iter.inc.h), which owns the protocol closures AND the
 #    dispose-on-every-exit contract. A hand-rolled pull loop skips the
 #    dispose, so raw uses of the drive primitives are pinned:
 #      - `_iter_pull(`   outside JitIterDrive = 0 (hard zero)
@@ -126,7 +126,7 @@ PYEOF
 # surfaced it. The surviving population is the shared-runtime `_iter_wrap_fast`
 # form below, which both the executor and the JIT go through.
 
-# leaf sources = 15 (9 jit_iter.h + 6 stdlib_jit.h) — grid_new joined
+# leaf sources = 15 (9 rt_iter.inc.h + 6 stdlib_jit.h) — grid_new joined
 # math_range/iota et al. as a new source factory (no upstream iterator).
 # 15 -> 16 (2026-08-13, reviewed): the JIT twin of the FS.watch leaf above.
 wf=$(count_no_upstream '_iter_wrap_fast<[^>]*>\s*\(')

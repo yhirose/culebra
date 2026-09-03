@@ -1,6 +1,7 @@
 #pragma once
 
-// Core extern "C" runtime callable from JIT'd code: printing, errors,
+// Core extern "C" runtime both compiled lanes call — the executor directly,
+// the LLVM lowering through emitted calls: printing, errors,
 // throw/defer machinery, type checks, numeric / array / set / tuple /
 // tensor / object runtime, and @packable SharedBuffer views.
 //
@@ -2745,7 +2746,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
 
 // The per-callsite Shape cache every static-key-list construction site
 // shares (ObjectNewShaped's own runtime half below, and
-// culebra_runtime_materialize_value in jit_fixed.h): `*shape_cache` starts
+// culebra_runtime_materialize_value in rt_fixed.inc.h): `*shape_cache` starts
 // null and is resolved on the callsite's first execution, then reused
 // forever — the Shape a given (static) key list resolves to never changes,
 // so a benign race refills it with the identical canonical pointer on every
@@ -3465,5 +3466,5 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
   // _consume releases the assigned value (the write only borrowed it).
 }
 
-}  // extern "C" (block continues in jit_fixed.h)
+}  // extern "C" (block continues in rt_fixed.inc.h)
 

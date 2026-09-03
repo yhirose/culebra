@@ -65,19 +65,23 @@ loweringはそれらへの呼び出しを生成する。2つのレーンが同�
 
 | 要素 | ヘッダ | 備考 |
 |---|---|---|
-| ランタイム値表現とヘルパー | `rt.h`とそれがincludeする`jit_*.h`断片 | LLVM非依存。stdlib全体がこの上に載る（`stdlib_jit.h`） |
+| ランタイム値表現とヘルパー | `rt.h`とそれがincludeする`rt_*.inc.h`断片 | LLVM非依存。stdlib全体がこの上に載る（`stdlib_jit.h`） |
 | フロントエンド解析 | `fn_analysis.h` | `FuncInfo` / `FnAnalysis`。両消費者が共有 |
 | バイトコード形式・コンパイラ・executor | `vm.h` | `Op`、`Chunk`、`VmProgram`、`vm::Compiler`、`vm::Exec` |
 | LLVM lowering、`--jit`、AOT | `vm_lowering.h` | LLVMを必要とする唯一のVMヘッダ |
 | LLVM codegenコンテキスト | `jit.h` | `struct JIT`: emitter群、所有権ハンドル、ORC/`exec`、object cache |
 | セッション（REPL、`culebra test`、embedding） | `vm_session.h`、`vm_repl.h`、`test_engine.h`、`vm_embed.h` | プログラムより長生きするトップレベル束縛 |
 | デバッガ | `debug_engine.h`、`vm_debug.h`、`dap.h` | 6問のエンジンインターフェースの上のDAPプロトコル |
-| 正典stdlibシグネチャ | `canon_sigs.h`、`canon_sigs.gen.h` | 全レーンが束縛の根拠にするパラメータ名/型/デフォルト |
-| コレクタ、スラブ | `jit_gc.h`、`jit_slab.h` | [`memory.md`](memory.ja.md)参照 |
+| 正典stdlibシグネチャ | `canon_sigs.h`、`canon_sigs_table.h` | 全レーンが束縛の根拠にするパラメータ名/型/デフォルト |
+| コレクタ、スラブ | `rt_gc.h`、`rt_slab.h` | [`memory.md`](memory.ja.md)参照 |
 
-ランタイム断片群の`jit_`という接頭辞は歴史的なものである: これらは
-ランタイムが切り出される前は`jit.h`の先頭約1万行だった名残で、いまは
-両エンジンが共有している。
+名前が境界を表す。`jit`はLLVMが絡むことを意味し、その層に属するのは
+`jit.h`だけである。両エンジンが共有するランタイムは`rt.h`と、それが
+includeする`rt_*.inc.h`断片群になる。`.inc.h`は「独立したヘッダでは
+ない」ことを言っている: これらは`rt.h`の本体であり、この層が`jit.h`の
+先頭約1万行から切り出されたときにサイズの都合で分割したものである。
+1つの`extern "C"`ブロックが4ファイルにまたがるため、`rt.h`が固定順で
+includeし、他のどこからもincludeしない。
 
 ## 2. 1回の実行のパイプライン
 
@@ -153,12 +157,12 @@ release-diffゲート（§10.3）で、そこでは既定そのものが対象�
 ## 3. ランタイム層
 
 `rt.h`は両消費者が立つ土台である。固定順で、値表現
-（`jit_value.h`）、決定的な`drop`のためのowned-resourceスタック
-（`jit_owned.h`）、文字列（`jit_string.h`）、中核の`extern "C"`
-ヘルパー（`jit_runtime.h`）、固定レイアウトのビューとクラス構築
-（`jit_fixed.h`）、マルチメソッドdispatchとキーワード呼び出し機構
-（`jit_dispatch.h`）、イテレータプロトコル（`jit_iter.h`）、参照
-カウント実装（`jit_mem.h`）をincludeする。どれもLLVMを名指しない。
+（`rt_value.inc.h`）、決定的な`drop`のためのowned-resourceスタック
+（`rt_owned.inc.h`）、文字列（`rt_string.inc.h`）、中核の`extern "C"`
+ヘルパー（`rt_runtime.inc.h`）、固定レイアウトのビューとクラス構築
+（`rt_fixed.inc.h`）、マルチメソッドdispatchとキーワード呼び出し機構
+（`rt_dispatch.inc.h`）、イテレータプロトコル（`rt_iter.inc.h`）、参照
+カウント実装（`rt_mem.inc.h`）をincludeする。どれもLLVMを名指しない。
 
 ### 3.1 値表現
 
@@ -197,7 +201,7 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   への`+1`を持つ（`JitObject::cls`）。
 - `JitArray`、`JitSet`、タプル、`JitTensor`。
 
-オブジェクトはper-`Runtime`のスラブアロケータ（`jit_slab.h`）から
+オブジェクトはper-`Runtime`のスラブアロケータ（`rt_slab.h`）から
 割り当てられる: サイズ別に分離され、moveせず、ロックしない —
 なぜなら`Runtime`（ヒープ、名前空間キャッシュ、クラス・オーバー
 ロードレジストリ、deferスタック、例外キャリアのスレッドローカルな
@@ -229,7 +233,7 @@ consume-on-every-exit、transfer）に従う。`memory.md` §4.3が一覧に
 `JitUnwindRelease`（ヘルパーがthrowしたときだけ解放する）。
 
 呼び出しフレームが触るスレッドローカルな状態は、2つのオブジェクトに
-まとめてある: `_jit_thread`（`jit_runtime.h`）が呼び出しの発行する
+まとめてある: `_jit_thread`（`rt_runtime.inc.h`）が呼び出しの発行する
 ソース位置すべてと再帰深さを持ち、`_culebra_rt`（`shared.h`）が
 このスレッドの現在の`Runtime`と既定`Runtime`のキャッシュを持つ。
 これは整頓ではない。Mach-Oにはinitial-exec TLSモデルが無く、
@@ -263,7 +267,7 @@ Culebraで書かれたstdlibモジュール（`Time`、`Regex`、`Path`、
 
 すべてのnativeが宣言するパラメータリスト — 名前・型・デフォルト・
 keyword-onlyおよびrestマーカー・arity境界 — は1つの生成テーブル
-`canon_sigs.gen.h`であり、`canon_sigs.h`経由でコンパイラ（コンパイル
+`canon_sigs_table.h`であり、`canon_sigs.h`経由でコンパイラ（コンパイル
 時チェックと`f.params`のintrospection用）、ランタイムのバインダー
 （キーワード呼び出しと型付きパラメータエラー用）、AOTアーカイブが
 読む。シグネチャの変更はこのテーブルを直接編集する。
@@ -909,7 +913,7 @@ namespace関数も1段上で同じ形を取る。直接の`Math.f(args)` — nam
 namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 （`culebra_runtime_ns_call`）で届く。helperのエラーには呼び出し自身の
 位置が渡る。行が持つのは名前とidだけである: arityとパラメータの宣言型は
-`canon_sigs.gen.h`から読み、型付きパラメータは引数リスト全体が走った後に
+`canon_sigs_table.h`から読み、型付きパラメータは引数リスト全体が走った後に
 その引数の位置で`ChkTypeAt`で検査する — closure trampolineと同じ順で
 ある。loweringはFloat系（`sqrt`、`sin`、`exp`、…、`abs`、`atan2`）を
 数値タグの検査の背後にinlineする — LLVM intrinsicがあればそれを使い、

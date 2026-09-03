@@ -189,7 +189,7 @@ class GcRegistry {
 // One hazard remains at that poll: a runtime helper suspended BETWEEN two VM
 // frames (an iterator op mid-collect invoking a user closure) may hold the
 // only reference to a live object in its wasm locals. SafepointUnsafeScope
-// brackets exactly those closure invocations (jit_value.h `_jit_invoke`, the
+// brackets exactly those closure invocations (rt_value.inc.h `_jit_invoke`, the
 // single choke point every helper-to-user call passes through); while any
 // such frame is on the stack the poll — and every explicit collect — defers.
 // The dispatch call sites audited to keep all their values in registers for
