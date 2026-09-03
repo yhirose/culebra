@@ -21,7 +21,7 @@ cd "$(dirname "$0")/../.."
 # a zero-match grep from killing the script under `set -e` before the
 # anchors-moved diagnostic below can run.
 names=$(sed -n '/^inline const std::unordered_set<std::string_view>& builtin_method_names/,/return kNames;/p' \
-        include/shared.h | grep -o '"[A-Za-z_0-9]*"' | tr -d '"' | sort -u) || true
+        include/base/shared.h | grep -o '"[A-Za-z_0-9]*"' | tr -d '"' | sort -u) || true
 swept=$(sed -n '/^let methods = \[/,/\]/p' tools/difftest/gen.cul \
         | grep -o "'[A-Za-z_0-9]*'" | tr -d "'" | sort -u) || true
 

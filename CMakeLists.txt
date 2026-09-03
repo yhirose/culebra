@@ -131,10 +131,10 @@ include_directories(./vendor/cpp-regexlib)
 include_directories(./vendor/cpp-httplib)
 # stb_image (vendor/stb/stb_image.h, public domain) — the PNG decoder behind
 # Canvas.Sprite.from_png. Header-only with its own inflate, so it adds no link
-# dependency; see include/image.h for how it is compiled in. stb_truetype
+# dependency; see include/stdlib/image.h for how it is compiled in. stb_truetype
 # (vendor/stb/stb_truetype.h, same licence) is the TTF/OTF rasterizer behind
 # Canvas.Font, same shape — header-only, no link dependency; see
-# include/font_ttf.h.
+# include/stdlib/font_ttf.h.
 include_directories(./vendor/stb)
 # Builtin SQLite namespace. OFF drops the amalgamation entirely (no sqlite3
 # object, no link, no `SQLite` name in either backend) — the WASM playground
@@ -1060,7 +1060,7 @@ if(CULEBRA_ENABLE_JIT)
 
   # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
   # baked source path is the default when CULEBRA_HOME is unset. Scoped to
-  # source_dir.cc, not the target — see include/source_dir.h.
+  # source_dir.cc, not the target — see include/base/source_dir.h.
   set_source_files_properties(./src/source_dir.cc PROPERTIES
     COMPILE_DEFINITIONS "CULEBRA_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
@@ -1944,7 +1944,7 @@ endif()
 target_link_libraries(fswatcher_test ${_core_frameworks})
 add_test(NAME fswatcher_test COMMAND fswatcher_test)
 
-# Message formatter (include/rt_format.h) against std::format, which is what it
+# Message formatter (include/base/format.h) against std::format, which is what it
 # has to render: the messages it builds are compared across the three lanes
 # and against the previous release. Header-only, no interpreter/JIT linkage.
 add_executable(format_test test/format_test.cc)
@@ -1952,7 +1952,7 @@ target_compile_features(format_test PRIVATE cxx_std_23)
 target_include_directories(format_test PRIVATE include)
 add_test(NAME format_test COMMAND format_test)
 
-# The parse funnel's newline normalization (include/parser.h): a CRLF file
+# The parse funnel's newline normalization (include/frontend/parser.h): a CRLF file
 # parses to the same tree as the LF one, and a bare \r is rejected. The
 # end-to-end half runs on Windows CI, whose checkout has CRLF endings.
 add_executable(source_newlines_test test/source_newlines_test.cc)
@@ -1961,7 +1961,7 @@ target_include_directories(source_newlines_test PRIVATE include
                            vendor/cpp-peglib)
 add_test(NAME source_newlines_test COMMAND source_newlines_test)
 
-# GC unit tests — the standalone collector (include/rt_gc.h) validated in
+# GC unit tests — the standalone collector (include/rt/gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no
 # JIT/LLVM link, independent of the in-tree jit.h wiring.
 foreach(gc_test rt_gc_phase0 rt_gc_collect)
@@ -1971,7 +1971,7 @@ foreach(gc_test rt_gc_phase0 rt_gc_collect)
   add_test(NAME ${gc_test} COMMAND ${gc_test})
 endforeach()
 
-# Lint regression (include/lint.h): the static let-reassignment check must
+# Lint regression (include/frontend/lint.h): the static let-reassignment check must
 # abort before eval, and the sound-negative cases (let mut, separate
 # scopes, block-locals) must be accepted. Driven E2E through the built
 # `culebra` binary, which all backends share via the ModuleLoader.
@@ -1986,7 +1986,7 @@ add_test(NAME docs_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs_test.sh
                  $<TARGET_FILE:culebra>)
 
-# Source formatter (include/formatter.h): golden-fixture output, the comment
+# Source formatter (include/cli/formatter.h): golden-fixture output, the comment
 # guard (commented files are left untouched in Phase 0), and a corpus sweep
 # asserting the re-parse safety net never refuses and formatting is idempotent.
 add_test(NAME fmt_test
@@ -2009,7 +2009,7 @@ add_test(NAME init_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/init_test.sh
                  $<TARGET_FILE:culebra>)
 
-# Compile-time error position symmetry (include/jit.h compile() wrapper):
+# Compile-time error position symmetry (include/jit/jit.h compile() wrapper):
 # the JIT must backfill the compiling node's line/col onto position-less
 # compile-time throws, matching the interp's eval() stamping byte-for-byte.
 add_test(NAME jit_error_pos_test
@@ -2149,7 +2149,7 @@ if(CULEBRA_ENABLE_JIT AND NOT CULEBRA_DEV_NO_RT)
       OUTPUT "${_o}"
       COMMAND culebra_preamble_cc ${_n} -o "${_o}"
       DEPENDS culebra_preamble_cc
-              "${CMAKE_CURRENT_SOURCE_DIR}/include/stdlib_preambles.gen.h"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/stdlib/preambles.gen.h"
       COMMENT "Baking stdlib preamble ${_n}"
       VERBATIM)
     list(APPEND _baked_objs "${_o}")
@@ -2158,7 +2158,7 @@ if(CULEBRA_ENABLE_JIT AND NOT CULEBRA_DEV_NO_RT)
   set_source_files_properties(${_baked_objs} PROPERTIES EXTERNAL_OBJECT TRUE)
   # The driver's table: name -> entry, over exactly the objects above.
   set(_baked_tu "${_baked_dir}/baked_preambles.gen.cc")
-  set(_baked_src "// Generated by CMakeLists.txt (baked stdlib preamble) — do not edit.\n#include <stdlib_preamble.h>\n\n")
+  set(_baked_src "// Generated by CMakeLists.txt (baked stdlib preamble) — do not edit.\n#include <stdlib/preamble.h>\n\n")
   foreach(_n IN LISTS _baked_names)
     string(APPEND _baked_src "extern \"C\" void culebra_preamble_${_n}();\n")
   endforeach()

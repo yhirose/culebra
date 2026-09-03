@@ -1,5 +1,5 @@
 # `culebra test`'s ambient bindings, in culebra so that both engines run the
-# same ones. The runner (include/test_runner.h) reads __TestRegistry back and
+# same ones. The runner (include/cli/test_runner.h) reads __TestRegistry back and
 # calls each entry; every field it needs is computed here, so nothing but the
 # function value itself has to cross the C++ boundary.
 #

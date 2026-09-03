@@ -10,7 +10,7 @@
 // link can never drop, and every binary carried the fixture's class/method
 // metadata and the wrap template instantiations behind it (~64 KB) whether or
 // not the program names `__Foreign`.
-#include <foreign_binding.h>
+#include <interop/foreign_binding.h>
 
 // The registrar variable belongs to the TU, not the header — see wrap.h.
 namespace {

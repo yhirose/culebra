@@ -6,14 +6,14 @@
 // appends past it to name a development build is build_info.h's.
 #define CULEBRA_VERSION "0.4.0"
 
-#include "module_loader.h"
+#include "frontend/module_loader.h"
 
 // The compiled lanes run bytecode: vm.h holds the compiler and the executor,
 // and needs no LLVM. vm_lowering.h adds the second consumer of the same
 // bytecode and defines JIT::run / JIT::build_object over it.
-#include "vm.h"
+#include "vm/vm.h"
 
 #ifdef CULEBRA_JIT_ENABLED
-#include "jit.h"
-#include "vm_lowering.h"
+#include "jit/jit.h"
+#include "jit/lowering.h"
 #endif

@@ -22,7 +22,7 @@ blob_cxx := if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/o
 # Share ccache entries between worktrees of the same commit: every -I CMake
 # generates is an absolute path into this checkout, so without a base_dir each
 # new worktree pays a full cold build. Only sound while no cacheable TU bakes in
-# an absolute path — see include/source_dir.h.
+# an absolute path — see include/base/source_dir.h.
 export CCACHE_BASEDIR := justfile_directory()
 
 # Keep Canvas headless under every recipe. A window-enabled build (the default
@@ -93,7 +93,7 @@ _gen-blob-tool:
     ccache=$(command -v ccache || true); $ccache "{{blob_cxx}}" -std=c++23 -O2 -I include -I vendor/cpp-peglib -c tools/gen_grammar_blob.cc -o build-dev/gen_grammar_blob.o
     "{{blob_cxx}}" build-dev/gen_grammar_blob.o -o build-dev/gen_grammar_blob
 
-# Regenerate include/grammar_blob.gen.h — the serialized grammar that lets
+# Regenerate include/frontend/grammar_blob.gen.h — the serialized grammar that lets
 # get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
 # grammar (grammar_def.h) or bumping vendor/cpp-peglib (the blob layout is
 # peglib-version-specific). Skipping it still runs correctly — get_parser()
@@ -101,12 +101,12 @@ _gen-blob-tool:
 # startup, silently. `just check-blob` is the gate that catches it.
 [group("build")]
 gen-blob: _gen-blob-tool
-    ./build-dev/gen_grammar_blob include/grammar_blob.gen.h
+    ./build-dev/gen_grammar_blob include/frontend/grammar_blob.gen.h
 
-# Verify include/grammar_blob.gen.h is in sync with the grammar (CI gate).
+# Verify include/frontend/grammar_blob.gen.h is in sync with the grammar (CI gate).
 [group("build")]
 check-blob: _gen-blob-tool
-    ./build-dev/gen_grammar_blob --check include/grammar_blob.gen.h
+    ./build-dev/gen_grammar_blob --check include/frontend/grammar_blob.gen.h
 
 # Every built-in method name reaches the differential corpus (tools/difftest).
 [group("build")]
@@ -172,6 +172,15 @@ check-pe-exports-gen:
 check-header-naming:
     tools/checks/check_header_naming.sh
 
+# include/ is ten directories and the directory is the layer, so an include
+# either goes down the stack or is one of the three recorded inversions. This
+# is the check the directories were for: while the tree was flat, which layer
+# a file belonged to was a question only a reader could answer.
+[group("test")]
+[doc("Verify every include crosses layers in an allowed direction (ratchet)")]
+check-layering:
+    tools/checks/check_layering.sh
+
 # The embedding chapter names headers a host includes, and `doctest` reads
 # ```culebra fences only — so a rename broke those examples with nothing to
 # say so. This half only resolves the names, which is the half that a rename
@@ -193,7 +202,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-layering
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it
@@ -279,7 +288,7 @@ build-scene *extra:
 # The AOT runtime archives are embedded in the binary, so it needs nothing else
 # to run scripts or to `culebra build`. Only `Embed.dir` and `culebra wrap` read
 # a source checkout — from the path baked in at build time, or $CULEBRA_HOME
-# (include/source_dir.h) — so keep this tree, or point CULEBRA_HOME at one.
+# (include/base/source_dir.h) — so keep this tree, or point CULEBRA_HOME at one.
 [doc("Install the Release binary into PREFIX/bin (default /usr/local, sudo only if needed).")]
 [group("build")]
 install PREFIX='/usr/local': build
@@ -363,7 +372,7 @@ clean:
     rm -rf build build-dev build-gate build-asan build-assert build-no-jit build-cov
     rm -rf .cache-ccache .zed .vscode .vimspector.json misc/*/.zed
 
-# Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/parser.h
+# Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/frontend/parser.h
 [group("build")]
 sync-grammar:
     misc/sync_grammar.sh
@@ -373,7 +382,7 @@ sync-grammar:
 check-grammar-sync:
     misc/sync_grammar.sh --check
 
-# Regenerate include/stdlib_preambles.gen.h from src/preambles/*.cul
+# Regenerate include/stdlib/preambles.gen.h from src/preambles/*.cul
 [group("build")]
 gen-preambles:
     misc/gen_preambles.sh

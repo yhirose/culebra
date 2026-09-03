@@ -83,9 +83,24 @@ Grammar
 -------
 
 `misc/culebra.peg` and the `cul.vim` keyword list are generated from
-`include/grammar_def.h`:
+`include/frontend/grammar_def.h`:
 
 ```bash
 just sync-grammar        # regenerate after touching the grammar
 just check-grammar-sync  # CI gate: verify they are in sync
+```
+
+Adding a file
+-------------
+
+`include/` is ten directories, and the directory is the layer an include
+may point down into. `docs/internals/layout.md` is the rule for where a
+file goes and what it is called — the layer table, what `jit`, `.gen.h`
+and `.inc.h` are allowed to mean, and the checklist for a new
+standard-library namespace. Two gates hold it, both inside
+`just test-dev`:
+
+```bash
+just check-layering       # no include points up a layer
+just check-header-naming  # jit / .gen.h / .inc.h still mean what they claim
 ```

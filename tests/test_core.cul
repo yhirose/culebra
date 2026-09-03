@@ -1493,7 +1493,7 @@ test_compound_assign = fn () {
 test_compound_assign()
 
 // Regression: nested 2D index-assign underflowed inner-array refcount
-// under --jit (see compile_assignment in include/jit.h).
+// under --jit (see compile_assignment in include/jit/jit.h).
 test_chained_index_assign_in_nested_loops = fn () {
   mut g = []
   for i in range(3) {

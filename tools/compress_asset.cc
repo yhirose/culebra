@@ -5,7 +5,7 @@
 // writing the output where we ask lets the embedded entry keep the archive's
 // own name — the driver's inflate (materialize_archive, src/main.cc) then
 // needs no filename convention to agree with. zlib is already required.
-#include <compress.h>
+#include <stdlib/compress.h>
 
 #include <fstream>
 #include <print>

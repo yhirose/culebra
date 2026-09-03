@@ -1,6 +1,6 @@
 // Native desktop window backend for the `Canvas` 2D framebuffer namespace,
 // built only with -DCULEBRA_ENABLE_CANVAS_WINDOW=ON. The value-neutral
-// framebuffer/sprite core lives in include/canvas.h and stays raylib-free; this
+// framebuffer/sprite core lives in include/stdlib/canvas.h and stays raylib-free; this
 // file provides just the backend-specific pieces its native branch declares:
 // present (upload the frame to a texture, scale it up, block to vsync), polled
 // keyboard/mouse input, and the window's close state. It mirrors the Scene
@@ -11,7 +11,7 @@
 // raylib + SDL3 are the same vendored statics Scene links; CMake shares one
 // build between the two knobs.
 
-#include "canvas.h"
+#include "stdlib/canvas.h"
 
 #include <algorithm>
 #include <chrono>

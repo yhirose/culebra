@@ -286,7 +286,7 @@ JIT, and you can drive the bytecode VM or the JIT from C++.
 
 ```cpp
 #include <culebra.h>
-#include <vm_embed.h>
+#include <vm/embed.h>
 
 int main() {
   culebra::Runtime rt;
@@ -607,9 +607,9 @@ splice the stdlib preamble *before* handing the modules to
 
 ```cpp
 #include <culebra.h>
-#include <module_loader.h>
-#include <stdlib_preamble.h>
-#include <stdlib_rt.h>
+#include <frontend/module_loader.h>
+#include <stdlib/preamble.h>
+#include <stdlib/bindings.h>
 
 int main() {
   std::string src = "1 + 2";                  // read it off disk in a real host
@@ -711,7 +711,7 @@ write one declaration TU:
 
 ```cpp
 // vec2_binding.cpp
-#include <wrap.h>
+#include <interop/wrap.h>
 #include "vec2.hpp"
 
 namespace {
@@ -873,7 +873,7 @@ property and index paths reach a `Shared` view's reader through a hook
 the view's constructor installs, never by symbol, so only the
 `Shared` / `Isolate` / `Parallel` / `Net` adapters refer to that code
 and it goes with their groups. The runtime's own messages are built by
-a small formatter of culebra's (`include/rt_format.h`) rather than
+a small formatter of culebra's (`include/base/format.h`) rather than
 `std::format`, whose implementation links as one block — a single
 argument visitor names the integer, float and string formatters
 together, so one reachable call would add 15% to a hello. A program

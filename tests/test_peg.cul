@@ -1,5 +1,5 @@
 // Conformance: stdlib Peg (PEG parser). See docs/stdlib.md.
-// Engine: include/peg.h over the vendored cpp-peglib — the same parser
+// Engine: include/stdlib/peg.h over the vendored cpp-peglib — the same parser
 // generator culebra's own front end runs on.
 //
 // Write grammars as backtick RAW strings: no escape processing and no

@@ -5,7 +5,9 @@
 ではない — 観測可能な言語契約は[`language.md`](../language.ja.md)が
 規範であり、両者が食い違う場合は`language.ja.md`が勝つ。ランタイムの
 メモリ管理側 — 参照カウント、LLVM loweringの所有権規律、tracing
-backstop — は別の文書[`memory.md`](memory.ja.md)にある。
+backstop — は別の文書[`memory.md`](memory.ja.md)にある。以下の各ファイルが
+どの層に属し、その名前が何を意味してよいかは[`layout.md`](layout.ja.md)に
+ある。
 
 英語原本は[`vm.md`](vm.md)。
 
@@ -1501,7 +1503,7 @@ tree-walkerより約7ms遅くexecutor上で起動する — preambleが歩かれ
 次に既定エンジンになり（v0.3.0）、最終的にインタプリタとその
 オラクル群が退役して唯一のエンジンになった（v0.3.1が両エンジンを
 持つ最後のリリースである）。§10.3のrelease-diffゲートが、独立した
-第二の意見としてインタプリタに代わるものである。`include/vm.h`、
-`include/vm_lowering.h`、`include/rt.h`のコミット履歴が移行の記録
+第二の意見としてインタプリタに代わるものである。`include/vm/vm.h`、
+`include/jit/lowering.h`、`include/rt/rt.h`のコミット履歴が移行の記録
 を残している。それを始めた設計提案とフェーズごとの知見は、ここで
 なくその履歴の中に生きている。

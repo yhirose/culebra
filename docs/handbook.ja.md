@@ -1890,7 +1890,7 @@ Culebraはヘッダだけで使えるC++23ライブラリ。最小の埋め込�
 
 ```cpp
 #include <culebra.h>
-#include <vm_embed.h>
+#include <vm/embed.h>
 
 int main() {
   culebra::Runtime rt;

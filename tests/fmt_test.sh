@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression test for `culebra fmt` (include/formatter.h). Three checks:
+# Regression test for `culebra fmt` (include/cli/formatter.h). Three checks:
 #   1. Golden fixture: a messy comment-bearing input formats to an exact
 #      expected output (operator spacing, blocks, leading/trailing comments).
 #   2. Corpus safety: every real `.cul` under tests/ and examples/ formats
@@ -53,7 +53,7 @@ fi
 # A `{ ... }` statement block nested inside a fn/loop body must keep its braces
 # and reformat its interior (comments included). The optimizer folds the
 # enclosing body's `{` onto the scope, which once made fmt strip the inner
-# braces (safety net refused) — see include/formatter.h print_lexical_scope.
+# braces (safety net refused) — see include/cli/formatter.h print_lexical_scope.
 cat > "$TMP/blk_in.cul" <<'EOF'
 fn g() {
   // before block
@@ -96,7 +96,7 @@ fi
 # `(a * b) / c` and `a * b / c` mean the same thing but are different trees.
 # Associativity once made fmt drop those parentheses, which reshaped the AST
 # and made the re-parse safety net refuse the whole file — see
-# include/formatter.h print_operand.
+# include/cli/formatter.h print_operand.
 cat > "$TMP/par_in.cul" <<'EOF'
 let a=1
 let b=2
@@ -134,7 +134,7 @@ fi
 # way a block's statements get theirs; a literal without comments keeps the
 # compact form. A comment anywhere inside forces the break, nested literals
 # included, since a Doc that hard-breaks may not sit inside a group.
-# See include/formatter.h print_brace_literal.
+# See include/cli/formatter.h print_brace_literal.
 cat > "$TMP/brc_in.cul" <<'EOF'
 let  o = {a: 1,
   # inside an object literal
@@ -207,7 +207,7 @@ fi
 # while the enclosing statement list emitted it too, so it appeared twice and
 # the preservation net refused the file. Only bare-atom bodies hit this: a
 # `return`/`let`/call/binary statement is a node the block can't collapse onto.
-# See include/formatter.h tight_span.
+# See include/cli/formatter.h tight_span.
 cat > "$TMP/atom_in.cul" <<'EOF'
 fn f() {
   # why the literal
@@ -258,7 +258,7 @@ fi
 # --- 1f. Golden fixture: postfix `if`/`unless` statement modifiers --------
 # `stmt if cond` / `stmt unless cond` is its own one-line canonical shape
 # (parse_for_format keeps the modifier node intact — see
-# include/parser.h view_postfix_modifier — unlike a full `if cond { ... }`
+# include/frontend/parser.h view_postfix_modifier — unlike a full `if cond { ... }`
 # block, which always expands to multiple lines regardless of source form).
 cat > "$TMP/mod_in.cul" <<'EOF'
 fn f(v) {
@@ -315,7 +315,7 @@ fi
 # token sits inside its own braces — which once made a depth-counting test read
 # such a comment as belonging to the statement, freeze the whole `try` verbatim,
 # and preserve a one-line `catch` body that the canonical style always expands.
-# See include/formatter.h owner_.
+# See include/cli/formatter.h owner_.
 cat > "$TMP/own_in.cul" <<'EOF'
 try {
   work()  // why
@@ -359,7 +359,7 @@ fi
 # `)` inside a comment or a string is not one. Counting it left the pair
 # looking unbalanced, so the parentheses stayed on and dragged the comment into
 # the leaf's text while the enclosing block emitted it too, refusing the file.
-# See include/formatter.h encloses_whole.
+# See include/cli/formatter.h encloses_whole.
 cat > "$TMP/brk_in.cul" <<'EOF'
 fn f() { ( # )
   1 ) }
@@ -397,7 +397,7 @@ fi
 # after it renders as if flat and lands glued to the block's closing brace, one
 # indent level too deep. A list keeps the block hugged only while at most one
 # element follows it; anything else lays out one element per line.
-# See include/formatter.h print_delimited.
+# See include/cli/formatter.h print_delimited.
 cat > "$TMP/blk2_in.cul" <<'EOF'
 run(1, 2, fn () {
   true
@@ -446,7 +446,7 @@ fi
 # is the indent: the wrap never happens, but the continuation's indent still
 # reaches the block's own lines, so it lands a level deeper than the same call
 # written without the chain. Each construct stays flat instead.
-# See include/formatter.h print_call / print_binary / print_ternary.
+# See include/cli/formatter.h print_call / print_binary / print_ternary.
 cat > "$TMP/chn_in.cul" <<'EOF'
 a = xs.map(fn (x) {
   x
@@ -501,7 +501,7 @@ fi
 # bracket — so a second comment sitting after the LAST element is already in
 # it, and trailing it onto the item as well printed it twice, which the
 # comment-preservation net refused. A list with only the late comment has no
-# slice and still collapses. See include/formatter.h print_items.
+# slice and still collapses. See include/cli/formatter.h print_items.
 cat > "$TMP/slc_in.cul" <<'EOF'
 let pats = [
   re'a',        # first
@@ -534,7 +534,7 @@ fi
 # that is the sole statement of a block inherits that block's span (the
 # optimizer's single-child widening). The scan then found the ENCLOSING brace
 # and gave the body that block's interior, so the comment above the keyword
-# was printed a second time inside the body. See include/formatter.h
+# was printed a second time inside the body. See include/cli/formatter.h
 # print_try / print_defer.
 cat > "$TMP/lone_in.cul" <<'EOF'
 fn f(a) {
@@ -596,7 +596,7 @@ fi
 # enclosing block's span the same way a lone `try` / `defer` does — and it has
 # no body node to scan from, since its arms start inside the brace. Both a
 # comment above the keyword and one inside the arms once came out twice.
-# See include/formatter.h print_cond.
+# See include/cli/formatter.h print_cond.
 cat > "$TMP/cnd_in.cul" <<'EOF'
 fn grade(n) {
   # above a sole cond
@@ -641,7 +641,7 @@ fi
 # wears that block's braces, so scanning from its position found the BLOCK's
 # interior and the literal's elements printed the comments the block was
 # already printing. A literal bound to a name never folds, so it stayed fine
-# either way — both belong here. See include/formatter.h print_brace_literal.
+# either way — both belong here. See include/cli/formatter.h print_brace_literal.
 cat > "$TMP/lit_in.cul" <<'EOF'
 fn tool() {
   {
@@ -686,7 +686,7 @@ fi
 # load-bearing wherever it is an operand: `(|q| f(q))(x)` reprinted without
 # them is a lambda whose body is `f(q)(x)`. prec() used to fall through to its
 # default (16, binds tightest) for LAMBDA, and the safety net refused the file
-# rather than emit that — see include/formatter.h prec().
+# rather than emit that — see include/cli/formatter.h prec().
 cat > "$TMP/lam_in.cul" <<'EOF'
 let xs=[1,2,3]
 inspect((|q| q.size())(xs))
@@ -723,7 +723,7 @@ fi
 # `||` / `&&` / `??` joints of its own chain, never between the two sides of a
 # comparison, and one level deeper than the body so a continuation line cannot
 # be read as the first statement. Conditions used to render flat at any width,
-# which ran a long test off the page — see include/formatter.h print_condition.
+# which ran a long test off the page — see include/cli/formatter.h print_condition.
 cat > "$TMP/cond_in.cul" <<'EOF'
 fn f(pressed, pad, y_button, start_button, tries, alpha, beta) {
   if pressed.contains("f") || pad.pressed(y_button) || pad.pressed(start_button) {

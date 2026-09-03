@@ -6,7 +6,7 @@
 // step (784-512-256-64-256-512-784, sigmoid, MSE, SGD, batch=100, 600 steps = 1
 // epoch over 60000 rows), with NO Culebra in the loop. The forward is
 // (W.dot(h)+b).sigmoid() — the same expansion Culebra's `linear_sigmoid` lowers
-// to (see include/tensor.h) — and the backward mirrors the .cul line-for-line,
+// to (see include/stdlib/tensor.h) — and the backward mirrors the .cul line-for-line,
 // including the per-layer ones-tensor allocation, so the only difference from the
 // .cul run is Culebra's object model. CPU backend (pixel values don't affect
 // timing, so the data is synthetic).

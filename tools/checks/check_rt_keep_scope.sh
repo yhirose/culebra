@@ -7,8 +7,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-# culebra_aot_bootstrap (include/runtime/runtime_aot.h) is looked up by name
-# from JIT-generated IR for the AOT entry point (include/jit.h, mod.get()
+# culebra_aot_bootstrap (include/aot/bootstrap.h) is looked up by name
+# from JIT-generated IR for the AOT entry point (include/jit/jit.h, mod.get()
 # symbol lookup) exactly like a culebra_runtime_* helper, just without the
 # prefix. (The Shared.new readers used to be here too — declared in
 # rt_runtime.inc.h, defined only in sendable_rt.h — until they became hooks the
@@ -22,7 +22,7 @@ EXCEPTIONS='culebra_aot_bootstrap'
 fail=0
 checked=0
 while IFS= read -r file; do
-  [[ "$file" == include/runtime/rt_macros.h ]] && continue
+  [[ "$file" == include/rt/macros.h ]] && continue
   out=$(awk -v exc="$EXCEPTIONS" '
     function judge() {
       checked++

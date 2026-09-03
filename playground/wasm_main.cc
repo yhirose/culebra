@@ -14,11 +14,11 @@
 // change needed. IO.print alone doesn't auto-flush; run_culebra flushes
 // once more at the end so a plain script's trailing print()-without-\n text
 // is never lost, matching the old behavior for non-TUI scripts.
-#include <module_loader.h>
-#include <stdlib_rt.h>  // the stdlib the executor resolves through
-#include <stdlib_preamble.h>
-#include <vfs.h>
-#include <vm.h>
+#include <frontend/module_loader.h>
+#include <stdlib/bindings.h>  // the stdlib the executor resolves through
+#include <stdlib/preamble.h>
+#include <stdlib/vfs.h>
+#include <vm/vm.h>
 
 #include <emscripten.h>
 #include <emscripten/emscripten.h>

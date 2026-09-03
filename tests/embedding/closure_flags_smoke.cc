@@ -18,7 +18,7 @@
 #include <iostream>
 
 #include <culebra.h>
-#include <vm_embed.h>
+#include <vm/embed.h>
 
 // Unity-TU entry (smoke_suite.cc): the named namespace keeps this file's
 // internals from colliding with the other smokes.

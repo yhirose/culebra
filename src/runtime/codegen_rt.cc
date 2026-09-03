@@ -25,8 +25,8 @@
 
 #include "vmlib.h"
 
-#include "shared.h"
-#include "stdout_capture.h"
+#include "base/shared.h"
+#include "base/stdout_capture.h"
 
 extern "C" {
 

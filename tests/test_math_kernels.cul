@@ -1,6 +1,6 @@
 # Conformance: the Math namespace's numeric semantics are identical across
 # interp / JIT / AOT — both backends call the shared kernels in
-# include/stdlib_math.h (promotion, exact Long comparison, edge errors).
+# include/stdlib/math.h (promotion, exact Long comparison, edge errors).
 #
 # Regression: Math.min/max used to compare Long args through double on the
 # interp, collapsing neighbours past 2^53 (`Math.min(2^53+1, 2^53)` returned

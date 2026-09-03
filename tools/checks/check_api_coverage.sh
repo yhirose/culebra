@@ -5,7 +5,7 @@
 # is a machine-readable list of every `Ns.fn(...)` the reference docs
 # document, native and preamble-defined alike — the thing canon_sigs_table.h
 # alone cannot give, since it only knows natives. The PEG grammar
-# (include/grammar_def.h) is the same kind of list for keywords, contextual
+# (include/frontend/grammar_def.h) is the same kind of list for keywords, contextual
 # ones included, so a new control-flow form (`cond`, `nobreak`, `effect`)
 # shows up here the same way a new namespace function does.
 #
@@ -26,7 +26,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 QUICKGUIDE=docs/quick-guide.md
-GRAMMAR=include/grammar_def.h
+GRAMMAR=include/frontend/grammar_def.h
 LIST=tools/checks/api_untested.txt
 UPDATE=0
 [ "${1:-}" = --update ] && UPDATE=1

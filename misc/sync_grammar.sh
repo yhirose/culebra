@@ -2,7 +2,7 @@
 # Sync misc/culebra.peg and the AUTO-KEYWORDS blocks in the editor syntax files
 # (misc/vim/culebra.vim, misc/vscode/syntaxes/culebra.tmLanguage.json,
 # misc/zed/languages/culebra/highlights.scm, playground/culebra-lang.js — the
-# last only on branches where it exists) from include/grammar_def.h (the
+# last only on branches where it exists) from include/frontend/grammar_def.h (the
 # single-source grammar; parser.h #includes it) and misc/keyword-map.txt.
 # Run `misc/sync_grammar.sh` to overwrite the files;
 # `misc/sync_grammar.sh --check` exits non-zero if any is stale.
@@ -16,13 +16,13 @@ if [[ "${1:-}" == "--check" ]]; then
   CHECK=1
 fi
 
-PARSER=include/grammar_def.h
+PARSER=include/frontend/grammar_def.h
 PEG=misc/culebra.peg
 VIM=misc/vim/culebra.vim
 TM=misc/vscode/syntaxes/culebra.tmLanguage.json
 ZED=misc/zed/languages/culebra/highlights.scm
 CMLANG=playground/culebra-lang.js
-STDLIB=include/stdlib_rt.h
+STDLIB=include/stdlib/bindings.h
 MAP=misc/keyword-map.txt
 
 # Name the directory explicitly: macOS mktemp ignores TMPDIR for a bare call and

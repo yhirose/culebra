@@ -28,7 +28,7 @@
 #define NOUSER  // CloseWindow(), ShowCursor() and the rest of the window API
 #endif
 
-#include <wrap.h>
+#include <interop/wrap.h>
 
 #include <cstdarg>
 #include <cstdio>

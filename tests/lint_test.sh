@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression test for the static lint pass (include/lint.h): the
+# Regression test for the static lint pass (include/frontend/lint.h): the
 # let-reassignment check must abort BEFORE eval (the sound subset) and
 # must NOT flag the sound-negative cases. Driven end-to-end through the
 # culebra binary so it exercises the real ModuleLoader wiring that all

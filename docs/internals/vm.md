@@ -6,7 +6,9 @@ not a specification: the observable language contract is normative in
 [`language.md`](../language.md), and where the two disagree,
 `language.md` wins. The memory-management half of the runtime — reference
 counting, the ownership discipline of the LLVM lowering, and the tracing
-backstop — has its own document, [`memory.md`](memory.md).
+backstop — has its own document, [`memory.md`](memory.md). Which layer
+each file below belongs to, and what its name is allowed to mean, is
+[`layout.md`](layout.md).
 
 The Japanese mirror of this file is [`vm.ja.md`](vm.ja.md).
 
@@ -1493,6 +1495,6 @@ deleted), then the default engine (v0.3.0), and finally the only engine
 once the interpreter and its oracles were retired (v0.3.1 is the last
 release carrying both). The release-diff gate of §10.3 is what replaced
 the interpreter as the independent second opinion. The commit history
-of `include/vm.h`, `include/vm_lowering.h` and `include/rt.h` records
+of `include/vm/vm.h`, `include/jit/lowering.h` and `include/rt/rt.h` records
 the migration; the design proposal that started it and the per-phase
 findings live in that history rather than here.

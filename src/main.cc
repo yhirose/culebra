@@ -1,39 +1,39 @@
-#include <build_info.h>  // build_suffix() — the commit `--version` names
-#include <codegen_binding.h>  // the CodeGen.Module wrap binding; registered
+#include <base/build_info.h>  // build_suffix() — the commit `--version` names
+#include <stdlib/codegen_binding.h>  // the CodeGen.Module wrap binding; registered
                               // by the TU-level variable below
-#include <compress.h>  // gunzip() — the embedded runtime archives are stored
+#include <stdlib/compress.h>  // gunzip() — the embedded runtime archives are stored
                        // compressed (transitive too, but this file names it)
 #include <culebra.h>
-#include <dap.h>
-#include <docs_cmd.h>
-#include <foreign_binding.h>  // the __Foreign.Counter wrap fixture
+#include <cli/dap.h>
+#include <cli/docs_cmd.h>
+#include <interop/foreign_binding.h>  // the __Foreign.Counter wrap fixture
                               // (tests/test_foreign.cul); registered by the
                               // TU-level variable below
-#include <doctest_runner.h>
-#include <exe_path.h>  // current_executable_path — `--doc --jobs` re-runs this
-#include <formatter.h>
-#include <init_cmd.h>
-#include <toolchain_cmd.h>
-#include <proc.h>  // run_all — the doc shards are child processes
-#include <source_dir.h>
-#include <test_engine.h>
-#include <test_runner.h>
-#include <vfs.h>  // main_script_dir() — set here for Embed's dev disk fallback
+#include <cli/doctest_runner.h>
+#include <base/exe_path.h>  // current_executable_path — `--doc --jobs` re-runs this
+#include <cli/formatter.h>
+#include <cli/init_cmd.h>
+#include <cli/toolchain_cmd.h>
+#include <stdlib/proc.h>  // run_all — the doc shards are child processes
+#include <base/source_dir.h>
+#include <cli/test_engine.h>
+#include <cli/test_runner.h>
+#include <stdlib/vfs.h>  // main_script_dir() — set here for Embed's dev disk fallback
                   // (pulled transitively only on the JIT/AOT path otherwise)
 #ifdef CULEBRA_JIT_ENABLED
 #ifndef CULEBRA_WRAP_LINK_FLAGS
 #define CULEBRA_WRAP_LINK_FLAGS ""
 #endif
-#include <runtime/aot_scan.h>
+#include <aot/scan.h>
 #include "culebra_rt_assets.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #endif
 // The bytecode compiler, its executor and the stdlib they run on: no LLVM,
 // so the CLI has these engines whether or not this build has the JIT.
-#include <stdlib_rt.h>
-#include <vm.h>
-#include <vm_repl.h>
+#include <stdlib/bindings.h>
+#include <vm/vm.h>
+#include <cli/repl.h>
 #include <algorithm>
 #include <chrono>
 #include <mutex>
@@ -329,7 +329,7 @@ constexpr const char* kMachoCxxLink = "-lc++";
 constexpr const char* kElfCxxLink = "-lstdc++ -lm";
 
 // What a missing toolchain means, and whether one is there, now live with the
-// subcommand that installs it (include/toolchain_cmd.h): the answer differs
+// subcommand that installs it (include/cli/toolchain_cmd.h): the answer differs
 // per platform and `culebra build` is no longer the only caller.
 
 // Where a std::system() command's chatter goes when it isn't wanted. Same split
@@ -1071,7 +1071,7 @@ int run_build(const BuildOptions& opts) {
         }
         return o;
       };
-      std::string src = "#include <vfs.h>\nnamespace {\n";
+      std::string src = "#include <stdlib/vfs.h>\nnamespace {\n";
       size_t ti = 0;
       for (const auto& dir : embed_dirs) {
         fs::path root = base / dir;

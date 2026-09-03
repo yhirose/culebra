@@ -1,4 +1,4 @@
-#include "toolchain_cmd.h"
+#include "cli/toolchain_cmd.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -14,11 +14,11 @@
 // The version, without reaching for culebra.h — which would pull the parser
 // and the whole engine into a translation unit that only needs a string. Same
 // re-export init_cmd.cc pins the Zed grammar fetch with.
-#include <editor_assets_embedded.h>
-#include <exe_path.h>  // find_on_path
-#include <hash.h>      // culebra::hashing::sha256
-#include <os_compat.h>  // os_isatty
-#include <proc.h>       // run_command (spawn tar by argv, not through a shell)
+#include <cli/editor_assets_embedded.h>
+#include <base/exe_path.h>  // find_on_path
+#include <stdlib/hash.h>      // culebra::hashing::sha256
+#include <base/os_compat.h>  // os_isatty
+#include <stdlib/proc.h>       // run_command (spawn tar by argv, not through a shell)
 
 #ifdef CULEBRA_INPROCESS_LLD
 #include <lld/Common/Driver.h>

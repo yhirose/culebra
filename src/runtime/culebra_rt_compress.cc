@@ -10,4 +10,4 @@
 // small.
 
 #define CULEBRA_RT_COMPRESS_STRONG
-#include <compress.h>
+#include <stdlib/compress.h>

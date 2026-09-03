@@ -1,5 +1,5 @@
 // Range iteration at the int64 boundary. The sequence semantics live in
-// RangeBounds (include/range_bounds.h), shared by the interp, the JIT's
+// RangeBounds (include/base/range_bounds.h), shared by the interp, the JIT's
 // iterator runtime and the JIT's counted-range fast path — these cases pin
 // the boundary behaviour on every path: the inclusive endpoint is compared
 // directly (no `end + 1` normalization, which used to overflow into an

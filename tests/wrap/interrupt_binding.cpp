@@ -11,7 +11,7 @@
 // Registered under `Probe` so a program that names neither namespace still
 // links no wrap archive at all (wrap_test asserts that separately).
 
-#include <wrap.h>
+#include <interop/wrap.h>
 
 #include <stdexcept>
 

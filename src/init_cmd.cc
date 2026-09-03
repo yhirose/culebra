@@ -1,4 +1,4 @@
-#include "init_cmd.h"
+#include "cli/init_cmd.h"
 
 #include <zlib.h>  // crc32() for the hand-rolled .vsix (STORE-only) writer
 
@@ -13,12 +13,12 @@
 #include <string_view>
 #include <vector>
 
-#include <os_compat.h>  // os_isatty (stdin_is_interactive)
+#include <base/os_compat.h>  // os_isatty (stdin_is_interactive)
 
-#include <exe_path.h>  // current_executable_path, find_on_path
+#include <base/exe_path.h>  // current_executable_path, find_on_path
 
-#include "docs_embedded.h"
-#include "editor_assets_embedded.h"
+#include "cli/docs_embedded.h"
+#include "cli/editor_assets_embedded.h"
 
 namespace culebra {
 namespace fs = std::filesystem;

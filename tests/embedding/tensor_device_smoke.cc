@@ -10,7 +10,7 @@
 #include <iostream>
 
 #include <culebra.h>
-#include <tensor.h>
+#include <stdlib/tensor.h>
 
 namespace tensor_device_smoke_ns {
 

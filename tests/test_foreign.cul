@@ -1,5 +1,5 @@
 # Phase 3: a hand-bound C++ class behind the `__Foreign`
-# namespace — Counter from include/foreign_fixture.h. End to end this
+# namespace — Counter from include/interop/foreign_fixture.h. End to end this
 # exercises: construction, method dispatch through the shared thunk
 # table, eager-copy marshalling (Long / String), the three return-value
 # ownership shapes, the `closed` safety contract, and the

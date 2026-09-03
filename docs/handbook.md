@@ -1921,7 +1921,7 @@ Culebra is a header-friendly C++23 library. Minimal embed:
 
 ```cpp
 #include <culebra.h>
-#include <vm_embed.h>
+#include <vm/embed.h>
 
 int main() {
   culebra::Runtime rt;

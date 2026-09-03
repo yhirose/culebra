@@ -1,4 +1,4 @@
-// Unit test for the parse funnel's newline normalization (include/parser.h).
+// Unit test for the parse funnel's newline normalization (include/frontend/parser.h).
 //
 // Source newlines are LF. A CRLF file is normalized in place before the
 // grammar sees it, because a `\r` left in the buffer lands inside string
@@ -13,7 +13,7 @@
 //
 // Built and run by CTest (see CMakeLists.txt).
 
-#include <parser.h>
+#include <frontend/parser.h>
 
 #include <cstdio>
 #include <string>

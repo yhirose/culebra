@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regression test for the parser's behaviour on pathological nesting.
 #
-# Depth (include/parser.h get_parser's enter/leave hooks): deep
+# Depth (include/frontend/parser.h get_parser's enter/leave hooks): deep
 # machine-written nesting must be a SyntaxError, not a C-stack SIGSEGV;
 # realistic generated nesting must still parse. Nesting descends through
 # whichever recursive rule family probes first (a `[` tower dives through the

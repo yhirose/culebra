@@ -22,7 +22,7 @@ culStorage:     let mut static get
 # identifiers so a class or enum you declare does not read as something the
 # language already knows (`Anim` vs `Canvas`). Grouped as in docs/stdlib.md.
 # `sync_grammar.sh --check` verifies these lines cover every capitalized name
-# in builtin_var_names() (include/stdlib_rt.h).
+# in builtin_var_names() (include/stdlib/bindings.h).
 culBuiltin:     Nil Bool Long Float String Array Object Function Any
 culBuiltin:     Math IO FS File Embed Time Random Sys Tensor JSON Args Proc Path
 culBuiltin:     Isolate Channel Parallel Signal SharedBuffer Shared GC Regex Http

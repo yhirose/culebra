@@ -2,7 +2,7 @@
 
 本書はCulebraプログラミング言語の構文と実行時セマンティクスを
 定義する規範的ドキュメントです。2つのエンジン — バイトコードVMの
-executor（`include/vm.h`）とそのLLVM lowering（`include/vm_lowering.h`、
+executor（`include/vm/vm.h`）とそのLLVM lowering（`include/jit/lowering.h`、
 `--jit`とAOT）— は本書の記述どおりに実装することを要求され、
 エンジン間または本書との差異はバグです。
 
@@ -193,7 +193,7 @@ CRLFのcheckoutはLFのものと完全に同じに振る舞う — 三重引用�
 ## 3. 文法
 
 完全なPEG文法は単一の真実源である
-[`include/grammar_def.h`](../include/grammar_def.h) にあります
+[`include/frontend/grammar_def.h`](../include/frontend/grammar_def.h) にあります
 （`parser.h`はこれを読み込みます）。トップレベルのルール:
 
     PROGRAM     <- STATEMENTS
@@ -5616,8 +5616,8 @@ export）は同じファイル内のインライン`try { ... } catch { ... }`�
 
 ## 25. 付録: VM ↔ JIT の差分
 
-本書が規範的です。VMのexecutor（`include/vm.h`）とLLVM lowering
-（`include/vm_lowering.h`）は同じコンパイラが生成した同じバイト
+本書が規範的です。VMのexecutor（`include/vm/vm.h`）とLLVM lowering
+（`include/jit/lowering.h`）は同じコンパイラが生成した同じバイト
 コードを消費し、すべてのプログラムについて**観測可能な挙動が
 一致する**ことを要求されます — 戻り値・副作用順・エラー`kind` /
 `message` / 位置情報すべて同じ。内部表現は外部観測動作が一致する

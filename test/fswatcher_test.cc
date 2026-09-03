@@ -1,4 +1,4 @@
-// Unit test for the value-neutral file-watching core (include/fswatcher.h).
+// Unit test for the value-neutral file-watching core (include/stdlib/fswatcher.h).
 // Runs entirely inside a temporary directory: create / modify / delete are
 // driven directly and pulled back through fs_watch_next, with no interpreter
 // or JIT linkage.
@@ -13,7 +13,7 @@
 //
 // Built and run by CTest (see CMakeLists.txt).
 
-#include <fswatcher.h>
+#include <stdlib/fswatcher.h>
 
 #include <chrono>
 #include <cstdio>

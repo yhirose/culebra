@@ -8,7 +8,7 @@
 // and the wrap template instantiations behind it whether or not the program
 // names `CodeGen`.
 
-#include <codegen_binding.h>
+#include <stdlib/codegen_binding.h>
 
 // The registrar variable belongs to the TU, not the header -- see wrap.h.
 namespace {

@@ -5,7 +5,7 @@
 // structure: it parses a file as a stream of tokens (comments, strings, regex
 // literals, numbers, keywords, types, calls, identifiers, operators) so that
 // `highlights.scm` can colour them. It is a lexer, not the language's real
-// parser (the PEG in include/parser.h is that).
+// parser (the PEG in include/frontend/parser.h is that).
 //
 // Two constructs need real structure, so they are rules rather than opaque
 // tokens: string interpolation (`"... {expr} ..."`) and triple-quoted strings

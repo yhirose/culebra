@@ -138,14 +138,14 @@ done
 # mentions grammar_blob.gen.h. Regenerating unconditionally is idempotent. Never
 # fatal: the checkouts above are already applied, and a peglib bump that breaks
 # the generator's own compile is exactly when the closing advice is needed.
-blob_before=$(git hash-object include/grammar_blob.gen.h)
+blob_before=$(git hash-object include/frontend/grammar_blob.gen.h)
 echo
-echo "regenerating include/grammar_blob.gen.h (keyed to the cpp-peglib version)"
+echo "regenerating include/frontend/grammar_blob.gen.h (keyed to the cpp-peglib version)"
 just gen-blob || echo "WARNING: gen-blob failed — run it before committing" >&2
 
 echo
 echo "done. Review each submodule's log, rebuild (\`just dev\`), run \`just test-dev\`,"
 echo "then commit each bump separately (\`Bump <name>: ...\`, see git log for style)."
-if [[ "$(git hash-object include/grammar_blob.gen.h)" != "$blob_before" ]]; then
+if [[ "$(git hash-object include/frontend/grammar_blob.gen.h)" != "$blob_before" ]]; then
   echo "NOTE: grammar_blob.gen.h changed — commit it with the bump that invalidated it."
 fi

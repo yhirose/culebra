@@ -12,7 +12,7 @@
 #     link error, no ldd hit) — regexlib.h's __builtin_cpu_supports() call
 #     makes GCC emit a start-up CPUID constructor for whatever translation
 #     unit compiles it, and that constructor is NOT function-level dead code
-#     (see the comment in include/regex.h), so if regexlib.h ever gets
+#     (see the comment in include/stdlib/regex.h), so if regexlib.h ever gets
 #     included from a translation unit that is unconditionally linked (not
 #     this axis's own archive), an unrelated hello-world binary picks up the
 #     constructor even though nothing calls it.
@@ -24,7 +24,7 @@
 #     to name it. Its argument visitor names the integer, float and string
 #     formatters from one function, so one reachable std::format call links
 #     all of it — 15% of a hello — and a header the runtime archive compiles
-#     therefore formats messages with culebra::format (include/rt_format.h).
+#     therefore formats messages with culebra::format (include/base/format.h).
 #     Losing that is silent too: the build links, the binary grows. Every
 #     probe below is checked for it, since the leak follows whatever the
 #     program touches (a @packable class, Proc, a wrapped class), and the
@@ -301,13 +301,13 @@ if (( fail )); then
   in _rt_embed_files (CMakeLists). A Regex strong body where none was
   expected, or a `reg::` symbol in `none`: something bypasses the
   CULEBRA_RT_REGEX_WEAK gate, or regexlib.h leaked into an always-linked
-  translation unit (see the comment in include/regex.h).
+  translation unit (see the comment in include/stdlib/regex.h).
   Proc / Canvas / Peg: a choke present in `none`, or absent where it was
   named: something outside the choke reaches the engine unconditionally, or
   the adapter isn't reachable only through its kNsRows_* table.
   libstdc++'s formatter in a probe: a header the runtime archive compiles
   called std::format (or std::print/println) — put the message on
-  culebra::format instead, see include/rt_format.h. Missing from `spec`:
+  culebra::format instead, see include/base/format.h. Missing from `spec`:
   the control stopped working, so fix the probe (or fmt_machinery) before
   trusting the rest.
   A namespace group or adapter in a binary that never names it: something in

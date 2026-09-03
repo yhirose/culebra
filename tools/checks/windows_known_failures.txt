@@ -5,7 +5,7 @@
 # so does an entry that starts passing (delete it in the same commit that fixes
 # it). Everything not listed here must pass — which is the point, because until
 # 2026-08-28 the Windows lanes ran 6 of the 215 files and a registration that
-# died in the clang/lld switch went unnoticed (see include/wrap.h).
+# died in the clang/lld switch went unnoticed (see include/interop/wrap.h).
 #
 # Grouped by cause, so the list reads as a work list rather than a tally.
 

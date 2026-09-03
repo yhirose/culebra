@@ -1,7 +1,7 @@
 # Ratchet for tools/checks/check_api_coverage.sh.
 #
 # Each line names a namespace function (`Ns.fn`, from docs/quick-guide.md's
-# generated signature index) or a grammar keyword (from include/grammar_def.h)
+# generated signature index) or a grammar keyword (from include/frontend/grammar_def.h)
 # that no tests/*.cul, tests/*.sh or executed doctest block ever calls.
 #
 # The check FAILS on such a name that is NOT listed here (documented but

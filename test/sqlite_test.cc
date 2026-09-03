@@ -1,11 +1,11 @@
 // Deterministic, offline unit test for the value-neutral SQLite core
-// (include/sqlite.h). Exercises the cursor API the three backends drive:
+// (include/stdlib/sqlite.h). Exercises the cursor API the three backends drive:
 // open -> prepare -> bind -> step -> column, runtime type mapping, named and
 // positional parameters, error reporting, and changes()/last_insert_rowid().
 //
 // Built and run by CTest (see CMakeLists.txt). No interpreter/JIT linkage.
 
-#include <sqlite.h>
+#include <stdlib/sqlite.h>
 
 #include <cassert>
 #include <cstdio>

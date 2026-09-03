@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression test for the REPL (include/vm_repl.h): what a session echoes and
+# Regression test for the REPL (include/cli/repl.h): what a session echoes and
 # what state it carries across lines. Driving it needs a process with a piped
 # stdin, so no .cul sweep can reach any of this. Each session asserts its own
 # expected output — the cross-engine diff retired with the tree-walker's

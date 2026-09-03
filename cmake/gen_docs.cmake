@@ -65,7 +65,7 @@ endforeach()
 
 file(WRITE "${OUT}"
 "// Generated from docs/*.md by cmake/gen_docs.cmake — do not edit.
-#include \"docs_embedded.h\"
+#include \"cli/docs_embedded.h\"
 
 namespace culebra::docs {
 namespace {

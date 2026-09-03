@@ -1,5 +1,5 @@
 " Vim syntax file for Culebra (.cul)
-" Tracks the grammar in include/parser.h.
+" Tracks the grammar in include/frontend/parser.h.
 
 if exists("b:current_syntax")
   finish

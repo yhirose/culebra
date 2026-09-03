@@ -1,7 +1,7 @@
 //
 //  http_test.cc
 //
-//  Self-contained test suite for include/http.h (the value-neutral HTTP
+//  Self-contained test suite for include/stdlib/http.h (the value-neutral HTTP
 //  client core behind the `Http` stdlib namespace). Spins up an in-process
 //  cpp-httplib server on an ephemeral loopback port so the happy paths are
 //  deterministic and need no network. Also covers the transport-error and
@@ -19,7 +19,7 @@
 #include <string>
 #include <thread>
 
-#include "http.h"
+#include "stdlib/http.h"
 
 namespace {
 

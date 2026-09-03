@@ -39,20 +39,20 @@ cd "$(dirname "$0")/../.."
 # here.
 kFiles=(
   src/main.cc
-  include/dap.h
-  include/debug_engine.h
-  include/http.h
-  include/lint.h
-  include/net.h
-  include/parser.h
-  include/repl_core.h
-  include/runtime/runtime_aot.h
-  include/sendable_rt.h
-  include/test_engine.h
-  include/test_runner.h
-  include/vm_debug.h
-  include/vm_embed.h
-  include/vm_session.h
+  include/cli/dap.h
+  include/cli/debug_engine.h
+  include/stdlib/http.h
+  include/frontend/lint.h
+  include/stdlib/net.h
+  include/frontend/parser.h
+  include/cli/repl_core.h
+  include/aot/bootstrap.h
+  include/conc/sendable.h
+  include/cli/test_engine.h
+  include/cli/test_runner.h
+  include/vm/debug.h
+  include/vm/embed.h
+  include/vm/session.h
   playground/wasm_main.cc
 )
 

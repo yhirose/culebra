@@ -35,9 +35,12 @@ RETIRED=(
   jit_dispatch.h jit_iter.h jit_mem.h jit_gc.h jit_slab.h
   canon_sigs.gen.h stdlib_jit.h sendable_jit.h
 )
+# layout.md is excluded because naming these is its job: it is the document
+# that says which spellings were retired and what each one had come to hide.
+# This script is excluded for the same reason — the list above is the list.
 for old in "${RETIRED[@]}"; do
   hits=$(grep -rIln --exclude-dir=vendor --exclude-dir=build --exclude-dir=build-dev \
-         --exclude-dir=.git --exclude=check_header_naming.sh -F "$old" . 2>/dev/null || true)
+         --exclude-dir=.git --exclude=check_header_naming.sh --exclude=layout.md --exclude=layout.ja.md -F "$old" . 2>/dev/null || true)
   if [[ -n $hits ]]; then
     note "\`$old\` was renamed away but is named again in:"
     printf '  %s\n' $hits >&2
@@ -47,14 +50,14 @@ done
 # substring, so a plain -F search would be clean either way; match the bare
 # form only where it is not followed by the new suffix.
 hits=$(grep -rIln --exclude-dir=vendor --exclude-dir=build --exclude-dir=build-dev \
-       --exclude-dir=.git --exclude=check_header_naming.sh -E 'grammar_blob\.h([^a-z]|$)' . 2>/dev/null || true)
+       --exclude-dir=.git --exclude=check_header_naming.sh --exclude=layout.md --exclude=layout.ja.md -E 'grammar_blob\.h([^a-z]|$)' . 2>/dev/null || true)
 [[ -n $hits ]] && { note "\`grammar_blob.h\` was renamed to grammar_blob.gen.h; still named in:"; printf '  %s\n' $hits >&2; }
 
 # --- 2. jit means LLVM ------------------------------------------------------
 
 # Files allowed to name LLVM. Shrink this as the layering tightens; adding to
 # it means a new part of the tree stopped building without LLVM.
-LLVM_OK=(include/jit.h include/vm_lowering.h include/stdlib_rt.h)
+LLVM_OK=(include/jit/jit.h include/jit/lowering.h include/stdlib/bindings.h)
 mapfile -t llvm_users < <(
   grep -rIl --exclude-dir=vendor -E '(#include *<llvm/)|llvm::' include/ 2>/dev/null | sort)
 for f in "${llvm_users[@]}"; do
@@ -71,12 +74,17 @@ done
 
 # --- 3. .gen.h means generated, both ways -----------------------------------
 
-# Every committed .gen.h is named by a recipe that regenerates it.
+# Every committed .gen.h is named by a recipe that regenerates it. The count
+# matters as much as the loop: a glob that stops matching passes this check
+# while measuring nothing, which is exactly how three other gates went quiet.
+gens=0
 while IFS= read -r g; do
+  gens=$((gens + 1))
   base=$(basename "$g")
   grep -rIq -F "$base" justfile misc tools 2>/dev/null \
     || note "$g is named .gen.h but no recipe under justfile/misc/tools writes it."
 done < <(git ls-files 'include/*.gen.h' 'include/**/*.gen.h')
+(( gens > 0 )) || note "no .gen.h under include/ — the generated headers moved, and this check is measuring nothing."
 
 # Every path a generator writes into include/ ends in .gen.h.
 while IFS= read -r p; do
@@ -86,12 +94,17 @@ done < <(grep -rIhoE 'include/[A-Za-z0-9_./]+\.h' misc/gen_*.sh tools/gen_*.cc 2
 
 # --- 4. .inc.h is rt.h's body ----------------------------------------------
 
+# Same shape: if the fragments were renamed out from under this pattern there
+# would be nothing to find, and nothing to say so.
+frags=$(find include -name '*.inc.h' | wc -l | tr -d ' ')
+(( frags > 0 )) || note "no .inc.h under include/ — the rt.h fragments moved, and this check is measuring nothing."
+
 while IFS= read -r line; do
   f=${line%%:*}
-  [[ $f == include/rt.h ]] && continue
+  [[ $f == include/rt/rt.h ]] && continue
   note "$f includes an .inc.h fragment; only rt.h may (they are its body, and one extern \"C\" block spans four of them)."
 done < <(grep -rIn --exclude-dir=vendor --exclude-dir=build --exclude-dir=build-dev \
-         -E '#include *[<"]rt_[a-z]+\.inc\.h[>"]' include/ src/ tests/ 2>/dev/null || true)
+         -E '#include *[<"]rt/[a-z]+\.inc\.h[>"]' include/ src/ tests/ 2>/dev/null || true)
 
 (( fail )) && exit 1
 echo "header-naming OK (retired names gone; LLVM confined to ${#LLVM_OK[@]} files; .gen.h and .inc.h mean what they say)"

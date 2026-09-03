@@ -1,4 +1,4 @@
-#include "docs_cmd.h"
+#include "cli/docs_cmd.h"
 
 #include <regexlib.h>
 
@@ -13,8 +13,8 @@
 #include <string_view>
 #include <vector>
 
-#include "docs_embedded.h"
-#include "term.h"
+#include "cli/docs_embedded.h"
+#include "stdlib/term.h"
 
 namespace culebra {
 namespace {

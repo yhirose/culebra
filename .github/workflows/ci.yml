@@ -1642,7 +1642,7 @@ jobs:
       # The wrap machinery, through all three backends — and the only lane that
       # runs it on Windows. `wrap<T>` registers from a variable whose sole
       # purpose is its initializer, which is the shape lld's --gc-sections
-      # silently drops (see include/wrap.h); the JIT lanes prove the driver's
+      # silently drops (see include/interop/wrap.h); the JIT lanes prove the driver's
       # registrar survived and the AOT one proves the `__Foreign` archive's,
       # force-loaded by naming the namespace. tests/test_foreign.cul is the
       # same file `just test` runs everywhere else.

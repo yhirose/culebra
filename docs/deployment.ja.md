@@ -280,7 +280,7 @@ LLVMをリンクすれば、C++ からbytecode VMやJITを駆動できます。
 
 ```cpp
 #include <culebra.h>
-#include <vm_embed.h>
+#include <vm/embed.h>
 
 int main() {
   culebra::Runtime rt;
@@ -611,9 +611,9 @@ preambleが`println` / `inspect`を定義している。（`Stringer` / `Eq` /
 
 ```cpp
 #include <culebra.h>
-#include <module_loader.h>
-#include <stdlib_preamble.h>
-#include <stdlib_rt.h>
+#include <frontend/module_loader.h>
+#include <stdlib/preamble.h>
+#include <stdlib/bindings.h>
 
 int main() {
   std::string src = "1 + 2";                  // 実際のホストではファイルから読む
@@ -713,7 +713,7 @@ class Vec2 {
 
 ```cpp
 // vec2_binding.cpp
-#include <wrap.h>
+#include <interop/wrap.h>
 #include "vec2.hpp"
 
 namespace {
@@ -867,7 +867,7 @@ namespace分。ソースが名指ししないものはnullエントリ）を運�
 届き、シンボルでは参照しないので、そのコードを参照するのは`Shared` /
 `Isolate` / `Parallel` / `Net`のadapterだけになり、それらのgroupと一緒に
 落ちます。ランタイム自身のメッセージは`std::format`ではなくculebraの小さな
-フォーマッタ（`include/rt_format.h`）で組み立てます。`std::format`の実装は
+フォーマッタ（`include/base/format.h`）で組み立てます。`std::format`の実装は
 1つの引数visitorが整数・浮動小数・文字列のformatterをまとめて名指しするので
 リンク単位が1ブロックになり、到達する呼び出しが1つあるだけでhelloが15%
 太るためです。補間の書式指定（`"{x:.2f}"`）を書いたプログラムは今も

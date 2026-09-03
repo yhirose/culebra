@@ -78,7 +78,7 @@ string(REGEX REPLACE "^#define CULEBRA_VERSION \"([^\"]*)\"" "\\1" CULEBRA_VERSI
 
 file(WRITE "${OUT}"
 "// Generated from misc/{vscode,vim,zed}/* by cmake/gen_editor_assets.cmake — do not edit.
-#include \"editor_assets_embedded.h\"
+#include \"cli/editor_assets_embedded.h\"
 
 namespace culebra::editor_assets {
 namespace {

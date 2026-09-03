@@ -2,8 +2,8 @@
 
 This document defines the syntax and runtime semantics of the Culebra
 programming language. It is normative: both engines — the bytecode
-VM's executor (`include/vm.h`) and its LLVM lowering
-(`include/vm_lowering.h`, `--jit` and AOT) — are required to implement
+VM's executor (`include/vm/vm.h`) and its LLVM lowering
+(`include/jit/lowering.h`, `--jit` and AOT) — are required to implement
 what this document says, and a divergence between them or from this
 text is a bug.
 
@@ -209,7 +209,7 @@ between statements are fine.
 ## 3. Grammar
 
 The full PEG grammar is in
-[`include/grammar_def.h`](../include/grammar_def.h), the single source
+[`include/frontend/grammar_def.h`](../include/frontend/grammar_def.h), the single source
 of truth that `parser.h` loads. Its top-level rules:
 
     PROGRAM     <- STATEMENTS
@@ -5888,8 +5888,8 @@ where the failing source is itself another helper.
 
 ## 25. Appendix: VM ↔ JIT divergence
 
-This document is normative. The VM's executor (`include/vm.h`) and
-the LLVM lowering (`include/vm_lowering.h`) consume the same bytecode
+This document is normative. The VM's executor (`include/vm/vm.h`) and
+the LLVM lowering (`include/jit/lowering.h`) consume the same bytecode
 from the same compiler and are required to produce **identical
 observable behavior** for every program — same return values, same
 side-effect ordering, same error `kind` / `message` / location.

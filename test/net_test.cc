@@ -1,5 +1,5 @@
 // Deterministic, offline unit test for the value-neutral socket core
-// (include/net.h). Everything runs over loopback on ephemeral ports in a single
+// (include/stdlib/net.h). Everything runs over loopback on ephemeral ports in a single
 // thread — a TCP connect completes into the listener's accept queue before
 // accept() is called, so no threading is needed and nothing depends on external
 // DNS or reachability.
@@ -11,7 +11,7 @@
 //
 // Built and run by CTest (see CMakeLists.txt). No interpreter/JIT linkage.
 
-#include <net.h>
+#include <stdlib/net.h>
 
 #include <atomic>
 #include <cstdio>

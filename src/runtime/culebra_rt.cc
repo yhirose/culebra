@@ -9,12 +9,12 @@
 // `culebra_rt` CMake target.
 
 #include <culebra.h>
-#include <stdlib_rt.h>
+#include <stdlib/bindings.h>
 // The __Foreign wrap fixture is NOT here: its static initializer would keep
 // the wrap metadata behind it in every binary. It has its own archive
 // (culebra_rt_foreign.cc), force-loaded when the program names __Foreign.
 
 // The AOT entry itself, which only a build that can emit an object needs.
 #ifdef CULEBRA_JIT_ENABLED
-#include <runtime/runtime_aot.h>
+#include <aot/bootstrap.h>
 #endif

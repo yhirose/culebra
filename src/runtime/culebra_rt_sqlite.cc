@@ -10,4 +10,4 @@
 // strong, non-inline definitions; sqlite.h is value-neutral (no
 // interpreter/JIT types), so this TU stays small.
 
-#include <sqlite.h>
+#include <stdlib/sqlite.h>

@@ -12,4 +12,4 @@
 // no interpreter/JIT Value layer), so this TU stays small.
 
 #define CULEBRA_RT_TENSOR_EVAL_STRONG
-#include <tensor.h>
+#include <stdlib/tensor.h>

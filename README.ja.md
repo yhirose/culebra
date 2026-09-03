@@ -282,7 +282,7 @@ C++ホストへの組み込み
 
 ```cpp
 #include <culebra.h>
-#include <vm_embed.h>
+#include <vm/embed.h>
 
 int main() {
   culebra::Runtime rt;

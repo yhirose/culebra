@@ -37,7 +37,7 @@ done < <(git ls-files 'include/*.h' 'include/**/*.h')
 if [[ $fail -ne 0 ]]; then
   echo "check_registrar_rooting: the definitions above run only for their" >&2
   echo "  initializer's side effect, and a header cannot root one — see the" >&2
-  echo "  two shapes that work in include/wrap.h." >&2
+  echo "  two shapes that work in include/interop/wrap.h." >&2
   exit 1
 fi
 echo "registrar-rooting OK"

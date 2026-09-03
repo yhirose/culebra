@@ -14,7 +14,7 @@
 // so including it here emits webview's C API into this TU. The native
 // frameworks (WebKit / WebKitGTK / WebView2) are supplied by CULEBRA_WEBVIEW_LINK.
 
-#include <wrap.h>
+#include <interop/wrap.h>
 
 #include <atomic>
 #include <memory>

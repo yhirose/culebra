@@ -1,4 +1,4 @@
-// Unit test for the runtime's message formatter (include/rt_format.h).
+// Unit test for the runtime's message formatter (include/base/format.h).
 //
 // The formatter exists to keep libstdc++'s out of AOT binaries (see the
 // header, and tools/checks/check_aot_feature_axes.sh), so the property that
@@ -15,7 +15,7 @@
 //
 // Built and run by CTest (see CMakeLists.txt).
 
-#include <rt_format.h>
+#include <base/format.h>
 
 #include <cstdint>
 #include <cstdio>

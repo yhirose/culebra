@@ -13,7 +13,7 @@
 // The anonymous namespace keeps the registrar local to this TU; with
 // several binding TUs each just needs its own registrar variable.
 
-#include <wrap.h>
+#include <interop/wrap.h>
 
 #include "vec2.hpp"
 

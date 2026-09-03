@@ -1,5 +1,5 @@
 #!/bin/sh
-# Generate include/stdlib_preambles.gen.h from the culebra sources in
+# Generate include/stdlib/preambles.gen.h from the culebra sources in
 # src/preambles/*.cul (the editable single source of truth). Each .cul is
 # embedded verbatim as a `<NAME>_MODULE_SOURCE` raw-string constant, so the
 # single self-contained `culebra` binary keeps carrying them. Most are stdlib
@@ -9,7 +9,7 @@
 set -eu
 DIR=$(cd "$(dirname "$0")/.." && pwd)
 SRC="$DIR/src/preambles"
-OUT="$DIR/include/stdlib_preambles.gen.h"
+OUT="$DIR/include/stdlib/preambles.gen.h"
 gen() {
   printf '// Generated from src/preambles/*.cul by misc/gen_preambles.sh — do not edit.\n'
   printf '// Edit the .cul sources, then run `just gen-preambles` (CI checks sync).\n'
