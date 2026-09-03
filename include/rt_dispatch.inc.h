@@ -522,7 +522,7 @@ inline const JitParamMeta* (*_jit_closure_meta_hook)(JitClosure*) = nullptr;
 
 // The same seam for the other kind of shared entry point: every native stdlib
 // closure runs through one trampoline, so its signature cannot key the per-fn
-// table either. stdlib_jit.h installs this — it owns the derivation from the
+// table either. stdlib_rt.h installs this — it owns the derivation from the
 // canonical interp parameter list, which is where a native's signature lives.
 // Kept separate from the hook above because both can be installed at once (a
 // VM run reaches native closures too).
@@ -537,7 +537,7 @@ inline JitCell* (*_jit_closure_desc_hook)(JitClosure*) = nullptr;
 
 // Hook for stdlib namespace methods (FS/Proc/...). All such methods share
 // one trampoline fn_ptr, so they can't key the per-fn JitParamMeta table;
-// stdlib_jit.h installs this hook to resolve a kwarg call against the
+// stdlib_rt.h installs this hook to resolve a kwarg call against the
 // NsParamMeta carried in the closure's capture. Returns true if it handled
 // the call (writing the result to *out); false if `cls` isn't an ns-method
 // closure, so the regular meta-lookup path runs. Ownership of the +1 on
@@ -548,7 +548,7 @@ inline bool (*_jit_ns_kwarg_hook)(
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
     JitValue* out) = nullptr;
 
-// stdlib_jit.h installs this hook so an ns-method closure passed as a HOF
+// stdlib_rt.h installs this hook so an ns-method closure passed as a HOF
 // callback is arity-gated by its real declared bounds. ns-method closures
 // share one trampoline fn_ptr (so they carry no per-fn JitParamMeta) and a
 // kwarg-capable method is created with JIT_VARIADIC_ARITY, which would
@@ -1153,7 +1153,7 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
 
 // Roots held in containers outside any scanned stack. Exhaustive over the
 // jit.h-local global tables; the cached namespace objects (built in
-// stdlib_jit.h) are instead pinned at creation, so they need no entry here.
+// stdlib_rt.h) are instead pinned at creation, so they need no entry here.
 inline void _jit_gc_enumerate_roots(std::vector<void*>& out) {
   for (auto& [_, v] : _jit_module_table()) _gc_push_value(out, v);
   for (auto& [_, methods] : _jit_trait_default_impls())
@@ -1564,7 +1564,7 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
     // A fresh activation of this declaration: its own dispatcher over its
     // own table. The suffix only has to be unique within the Runtime's
     // table map; process-wide so a table deserialized from another
-    // Runtime (sendable_jit.h keeps the sender's key) can't be collided
+    // Runtime (sendable_rt.h keeps the sender's key) can't be collided
     // into by a locally minted one.
     static std::atomic<uint64_t> gen{0};
     name = std::string(name_cstr) + '\x1f' +

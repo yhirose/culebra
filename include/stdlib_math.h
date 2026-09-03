@@ -1,7 +1,7 @@
 #pragma once
 
-// Math-namespace kernels shared by the binding layer (stdlib_jit.h) and
-// the JIT/AOT runtime (stdlib_jit.h).
+// Math-namespace kernels shared by the binding layer (stdlib_rt.h) and
+// the JIT/AOT runtime (stdlib_rt.h).
 //
 // Each kernel owns one semantic decision — Long/Float promotion, exact
 // 64-bit comparison, edge-case errors — so the two backends cannot drift:
@@ -9,7 +9,7 @@
 // Value / JIT tag+data) to and from `Num` at the boundary, and the
 // parameter lists both binders use already come from the one canonical
 // spec (see "Single source of truth for the calling convention" in
-// stdlib_jit.h). Errors throw CulebraError through the caller-provided
+// stdlib_rt.h). Errors throw CulebraError through the caller-provided
 // position, producing identical kind/message/position on both backends.
 //
 // `PosFn` is a callable returning std::pair{line, col}; kernels call it

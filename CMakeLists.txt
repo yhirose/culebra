@@ -1863,7 +1863,7 @@ endif()
 if(CULEBRA_ENABLE_HTTP)
   target_link_libraries(smoke_suite ${_ssl_libs})
 endif()
-# The embedding TUs include vm_embed.h -> stdlib_jit.h -> compress.h inline, which calls
+# The embedding TUs include vm_embed.h -> stdlib_rt.h -> compress.h inline, which calls
 # zlib directly, so the suite needs libz.
 target_link_libraries(smoke_suite ZLIB::ZLIB)
 # ... and the same stack reaches fswatcher.h, which calls FSEvents on macOS.

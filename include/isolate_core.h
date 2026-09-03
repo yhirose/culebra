@@ -5,7 +5,7 @@
 // fan_in merge machinery, Signal.notify delivery, the Parallel worker-pool
 // state, and the teardown join helpers. Everything here speaks SendNode and
 // plain C++ — no Value / Environment / JitValue — so the compiled lanes
-// (sendable_jit.h) include this alone. Moved verbatim from isolate.h
+// (sendable_rt.h) include this alone. Moved verbatim from isolate.h
 // (Phase 4 B7-b), whose tree-walker half retired with the engine (B7-f).
 
 #include <packable.h>       // shared_buffer_drop
@@ -237,7 +237,7 @@ inline std::vector<std::shared_ptr<IsolateCore>> chan_merge_producers(int64_t mi
 
 // Producers of every merge_registry entry (Channel.fan_in(items, fn)) not
 // yet joined. Shared by both backends' teardown walks: interp's below and
-// JIT's _jit_isolate_teardown_join_all (sendable_jit.h) — a fan_in producer
+// JIT's _jit_isolate_teardown_join_all (sendable_rt.h) — a fan_in producer
 // always runs through this same registry regardless of which backend spawned
 // it (a process runs under exactly one backend, so the two walks never race).
 inline void collect_live_merge_producers(

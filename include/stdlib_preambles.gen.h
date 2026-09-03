@@ -2099,7 +2099,7 @@ let Args = _args_module()
 inline constexpr const char* MATCHERS_MODULE_SOURCE = R"=culpre=(// assert_throws is the one matcher that stays here: it calls the function it
 // is handed and reads `f.params`, and its failure message already names the
 // expected and the actual kind. The comparison matchers are native (see
-// kBuiltinFns in stdlib_jit.h) so that a failure carries the position of the
+// kBuiltinFns in stdlib_rt.h) so that a failure carries the position of the
 // assert_* call, which a throw from inside this file cannot.
 let assert_throws = fn (kind, f) {
   if f.params.size() != 0 {

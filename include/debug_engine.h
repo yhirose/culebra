@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-#include <stdlib_jit.h>
+#include <stdlib_rt.h>
 #include <vm.h>
 #include <vm_debug.h>
 

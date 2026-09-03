@@ -16,7 +16,7 @@
 # The failure is silent and Windows-only — the build links, and the effect is
 # just missing at run time — so a rule is the only thing that keeps it away.
 # Two shapes work, and this permits both:
-#   - call it from a live path (stdlib_jit.h: _jit_ns_install_hooks, run from
+#   - call it from a live path (stdlib_rt.h: _jit_ns_install_hooks, run from
 #     the one function that makes the closures the hooks answer for);
 #   - put the variable in a .cc, where it is not a COMDAT and its static-init
 #     entry stays (wrap.h's idiom; foreign_binding.h exports the function two

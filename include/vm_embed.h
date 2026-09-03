@@ -17,7 +17,7 @@
 
 #include <fn_traits.h>
 #include <script_teardown.h>  // ScriptTeardownGuard (run boundaries)
-#include <stdlib_jit.h>       // install_jit_stdlib, the runtime helpers
+#include <stdlib_rt.h>       // install_jit_stdlib, the runtime helpers
 #include <vm.h>
 #include <vm_session.h>
 

@@ -144,7 +144,7 @@ inline std::vector<std::string> pin_param_names(std::vector<std::string> names,
 // The declaration instantiates per-method handle thunks (plain functions —
 // the member-fn pointer is a NON-TYPE template argument, so each method gets
 // its own static thunk, exactly the hand-written Phase 3 shape), ns adapters
-// for the NsMethod-style dispatch, and a row registry stdlib_jit.h merges
+// for the NsMethod-style dispatch, and a row registry stdlib_rt.h merges
 // with its static table. Type checks and error positions follow the Phase 3
 // thunk conventions: param type-check BEFORE the closed check, TypeError at
 // the argument's threaded position (argpos / call_arg0 fallback),
@@ -545,7 +545,7 @@ struct is_const_member<R (C::*)(A...) const> : std::true_type {};
 
 // Builder. Destruction finalizes: the class registers under (ns, name)
 // (wrap_registry.h), and its ctor / statics land in the shared ns-row
-// registry stdlib_jit.h merges with its static table.
+// registry stdlib_rt.h merges with its static table.
 template <class T>
 class ClassBinder {
  public:

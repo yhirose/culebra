@@ -7,7 +7,7 @@
 // backends call http_request() and adapt HttpResult into their own object
 // representation, and both build a server handler's request/response Object
 // from the neutral ServerRequest/ServerResponse below. Keeping this header
-// value-neutral lets the binding layer (stdlib_jit.h) include it without
+// value-neutral lets the binding layer (stdlib_rt.h) include it without
 // pulling each other in (mirrors proc.h) — and lets the core runtime archive
 // (CULEBRA_RT_HTTP_REQUEST_WEAK) compile the whole binding surface without
 // ever declaring an httplib type; see the include guard below.
@@ -272,7 +272,7 @@ inline std::string encode_query(const HeaderList& pairs) {
 // runtime archives exactly like tensor_eval_node:
 //   - core archive   (CULEBRA_RT_HTTP_REQUEST_WEAK):   weak stubs, never
 //     touch httplib::Client/Server, so no CALL of ours reaches ssl/zlib —
-//     and, since the binding layer (stdlib_jit.h) names only
+//     and, since the binding layer (stdlib_rt.h) names only
 //     the neutral ServerRequest/ServerResponse, this TU never *declares* an
 //     httplib type either (httplib.h itself is `#if`-gated out above).
 //   - http archive   (CULEBRA_RT_HTTP_REQUEST_STRONG): strong real bodies,

@@ -9,7 +9,7 @@
 // `culebra_rt` CMake target.
 
 #include <culebra.h>
-#include <stdlib_jit.h>
+#include <stdlib_rt.h>
 // The __Foreign wrap fixture is NOT here: its static initializer would keep
 // the wrap metadata behind it in every binary. It has its own archive
 // (culebra_rt_foreign.cc), force-loaded when the program names __Foreign.

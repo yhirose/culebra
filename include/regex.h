@@ -1,7 +1,7 @@
 #pragma once
 
 // Value-neutral regex core for the Regex namespace (the `_Regex` native rows
-// in stdlib_jit.h). Mirrors http.h / sqlite.h: no Value / JitValue here — the
+// in stdlib_rt.h). Mirrors http.h / sqlite.h: no Value / JitValue here — the
 // binding layer adapts the byte spans below into its own Match objects.
 //
 // Linkage partitioning, the http_request / tensor_eval_node choke applied to

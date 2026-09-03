@@ -10,7 +10,7 @@
 #include <vector>
 
 #include <culebra.h>
-#include <stdlib_jit.h>
+#include <stdlib_rt.h>
 #include <vm_embed.h>
 
 // Unity-TU entry (smoke_suite.cc): the named namespace keeps

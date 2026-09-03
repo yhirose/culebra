@@ -47,7 +47,7 @@ kFiles=(
   include/parser.h
   include/repl_core.h
   include/runtime/runtime_aot.h
-  include/sendable_jit.h
+  include/sendable_rt.h
   include/test_engine.h
   include/test_runner.h
   include/vm_debug.h

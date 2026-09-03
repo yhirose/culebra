@@ -3,7 +3,7 @@
 // The compiled-lane registry rows a wrap.h class declaration produces:
 // WrappedNsRow (an NsMethod-shaped row per ctor/static, with the full
 // declared signature) and the class-name list. Split out of wrap.h so
-// stdlib_jit.h can read the registries without wrap.h's interp half
+// stdlib_rt.h can read the registries without wrap.h's interp half
 // (Phase 4 B7-b); wrap.h includes this and pushes into both.
 
 #include <rt.h>  // JitValue (the adapter signature)
@@ -14,7 +14,7 @@
 namespace culebra {
 
 // One NsMethod-shaped row per ctor/static of a wrapped class.
-// stdlib_jit.h materializes NsMethod rows from these (lazily, after
+// stdlib_rt.h materializes NsMethod rows from these (lazily, after
 // static-init froze the registry, so the c_str pointers are stable) and
 // merges them into every table consumer. The class name rides in `sub`:
 // `Ns.Class.method` is a nested namespace, slow-path only — the same
@@ -36,7 +36,7 @@ struct WrappedNsRow {
   // B7-f note: these subsume arg0_type/arg0_name (== param_types[0] /
   // param_names[0]), and since every wrap row now synthesizes a full
   // CanonSig, the "canonical lookup failed → arg0 only" fallbacks in
-  // stdlib_jit.h are unreachable for wrap rows — delete, don't rediscover.
+  // stdlib_rt.h are unreachable for wrap rows — delete, don't rediscover.
   std::vector<std::string> param_names;
   std::vector<std::string> param_types;
   std::string return_type;

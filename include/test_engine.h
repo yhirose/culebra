@@ -13,7 +13,7 @@
 
 #include <module_loader.h>
 #include <script_teardown.h>
-#include <stdlib_jit.h>
+#include <stdlib_rt.h>
 #include <test_runner.h>
 #include <vfs.h>  // MainScriptScope — Embed.dir / Sys.script are per program
 #include <vm_session.h>

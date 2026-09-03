@@ -114,7 +114,7 @@ echo "rt-archive-tls OK ($checked feature archives," \
 # The core archive must never declare an httplib type, let alone reference the
 # TLS/compression libraries behind it: http.h gates the httplib.h include on
 # CULEBRA_RT_HTTP_REQUEST_WEAK, and the binding layer (
-# stdlib_jit.h) names only the neutral ServerRequest/ServerResponse on the
+# stdlib_rt.h) names only the neutral ServerRequest/ServerResponse on the
 # server side. A program that never uses Http should therefore link no such
 # symbol at all. This is easy to lose silently: ELF/Mach-O dead-strip an
 # unreferenced undefined symbol, so only Windows notices when one comes back
@@ -137,7 +137,7 @@ if [[ -n "$leak" ]]; then
   A program that never uses Http should link no such symbol -- ELF/Mach-O
   dead-strip these, so only Windows AOT (src/main.cc's win_static) would
   notice, silently paying ~4 MB again for every program regardless of use.
-  Check that no binding (stdlib_jit.h) or http.h server-side
+  Check that no binding (stdlib_rt.h) or http.h server-side
   declaration names an httplib type directly; see http.h's
   ServerRequest/ServerResponse for the neutral shape to use instead.
 EOF

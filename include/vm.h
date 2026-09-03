@@ -17,7 +17,7 @@
 #include <range_bounds.h>
 #include <rt.h>  // the shared value model and runtime helpers
 #include <shared.h>
-#include <stdlib_jit.h>  // culebra_runtime_println + the rt::println decl hook
+#include <stdlib_rt.h>  // culebra_runtime_println + the rt::println decl hook
 
 #include <algorithm>
 #include <bit>
@@ -7916,7 +7916,7 @@ class Compiler {
 
   // Direct 1-positional-arg call to the unshadowed global `name` — the
   // dedicated-op peephole, mirroring the JIT's own direct emits
-  // (stdlib_jit.h), so both compiled lanes skip the resolver + closure
+  // (stdlib_rt.h), so both compiled lanes skip the resolver + closure
   // invoke for the common shape. `println` takes it because the call is the
   // whole statement; `to_float` because the conversion is two tag tests and
   // the invoke costs more than the work. Every other shape (bare `f()`,

@@ -5,7 +5,7 @@
 // No dependency on culebra Value / JitValue / GC: the interp and JIT backends
 // both drive these int64 handle ids and adapt the results into their own object
 // representation (mirrors proc.h / http.h / sqlite.h). Keeping the header
-// value-neutral lets the binding layer (stdlib_jit.h) include it without
+// value-neutral lets the binding layer (stdlib_rt.h) include it without
 // pulling each other in.
 //
 //   connect / listen / accept            — TCP, blocking with an optional

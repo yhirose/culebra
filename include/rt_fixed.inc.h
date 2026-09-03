@@ -60,7 +60,7 @@ inline void _jit_fa_set(JitObject* v, int64_t i, int8_t tag, int64_t data,
 // Handle plumbing shared by every native-handle builder (Proc / File /
 // Foreign / wrap.h-generated handles): a typed slot read, the
 // captureless method-closure constructor, and the bind helper. Live
-// here (not stdlib_jit.h) so wrap.h's generated thunks can use them.
+// here (not stdlib_rt.h) so wrap.h's generated thunks can use them.
 inline int64_t _jit_handle_long(JitObject* h, const char* key) {
   size_t i = h->find_slot(key);
   return i == static_cast<size_t>(-1) ? -1 : h->slots[i].value.data;
@@ -120,7 +120,7 @@ inline void _jit_handle_bind_method(
 
 // A captureless native method closure (reads its state from `self`). Generic
 // JIT-object helper — channel/isolate/SharedBuffer handles use it too. Lives
-// here (not sendable_jit.h) so the FixedArray view, ODR-used from this file,
+// here (not sendable_rt.h) so the FixedArray view, ODR-used from this file,
 // is fully defined where it is used.
 inline JitClosure* _jit_native_method(
     void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {

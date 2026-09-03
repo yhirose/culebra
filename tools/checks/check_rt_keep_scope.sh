@@ -11,7 +11,7 @@ cd "$(dirname "$0")/../.."
 # from JIT-generated IR for the AOT entry point (include/jit.h, mod.get()
 # symbol lookup) exactly like a culebra_runtime_* helper, just without the
 # prefix. (The Shared.new readers used to be here too — declared in
-# rt_runtime.inc.h, defined only in sendable_jit.h — until they became hooks the
+# rt_runtime.inc.h, defined only in sendable_rt.h — until they became hooks the
 # view constructor installs, so nothing links against them by name any more.)
 EXCEPTIONS='culebra_aot_bootstrap'
 

@@ -1,20 +1,19 @@
 #pragma once
 
-// JIT side of the isolate value transfer (C2-c).
+// The runtime side of isolate value transfer (C2-c): JitValue <-> SendNode.
 //
-// The interpreter and the JIT share the same isolate architecture, matching
-// every isolate-based runtime (V8 Workers, Ruby Ractor, Java, Go, Erlang):
-// **immutable code is shared, the mutable heap is isolated, only data is
-// copied.** The interp's "code" is the AST (shared, process-lifetime); the
-// JIT's is the compiled `JitClosure::fn_ptr` (shared while the LLJIT is alive,
-// which spans the whole JIT::run and therefore every isolate joined within it).
+// Culebra's isolates follow the architecture every isolate-based runtime uses
+// (V8 Workers, Ruby Ractor, Java, Go, Erlang): **immutable code is shared, the
+// mutable heap is isolated, only data is copied.** The shared code here is the
+// compiled `JitClosure::fn_ptr`, live as long as the engine that produced it —
+// which spans the whole run, and therefore every isolate joined within it.
 //
-// So a JIT closure crosses a thread boundary as (fn_ptr + positionally-copied
+// So a closure crosses a thread boundary as (fn_ptr + positionally-copied
 // captures) — no AST, no names: the compiled body reads captures[i] by index,
 // so the child rebuilds the cells in the same order. The child runs on its own
-// JIT heap (fresh Runtime) and invokes the shared fn_ptr. Symmetric with the
-// interp: both ship a shared code reference + copied data and run on their own
-// heap. Values cross via the same neutral sendable::SendNode.
+// heap (a fresh Runtime) and invokes the shared fn_ptr. Values cross as the
+// neutral sendable::SendNode, which is what keeps this symmetric across the
+// executor and the LLVM lane.
 
 #include <atomic>
 #include <mutex>

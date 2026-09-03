@@ -9,7 +9,7 @@
 //   culebra_preamble_cc <Name> -o <object>
 //   culebra_preamble_cc --check-list <Name>…   exit 1 unless that is the list
 #include <culebra.h>
-#include <stdlib_jit.h>
+#include <stdlib_rt.h>
 #include <stdlib_preamble.h>
 #include <vm_lowering.h>
 

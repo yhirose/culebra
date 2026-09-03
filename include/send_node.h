@@ -3,7 +3,7 @@
 // The neutral transfer representation (SendNode) plus the two helpers every
 // backend's serializer shares: send_error (one SendError spelling) and the
 // Shared.new freeze flag. Owns no GC-heap pointer and no engine type, so
-// the compiled lanes' serializer (sendable_jit.h) and the isolate/channel
+// the compiled lanes' serializer (sendable_rt.h) and the isolate/channel
 // core (isolate_core.h) can include it without the interp. Moved verbatim
 // from sendable.h (Phase 4 B7-b).
 

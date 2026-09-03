@@ -34,7 +34,7 @@ SOURCES=(docs/*.md README.md README.ja.md)
 
 # The include path a host build needs, exactly as documented. Every entry
 # is load-bearing: without vendor/stb the build stops in font_ttf.h,
-# without vendor/cpp-regexlib in regex.h — stdlib_jit.h reaches both
+# without vendor/cpp-regexlib in regex.h — stdlib_rt.h reaches both
 # unconditionally.
 INC=(-I include
      -I vendor/cpp-peglib

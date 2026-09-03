@@ -317,7 +317,7 @@ culebra::vm::Value val;
 embed.run(modules, val, msgs);
 ```
 
-LLVMレーンを使う場合は`<stdlib_jit.h>`を追加し、起動時に
+LLVMレーンを使う場合は`<stdlib_rt.h>`を追加し、起動時に
 `culebra::install_jit_stdlib()`を1回呼んで、
 `culebra::JIT::run(ast)`を使います。
 
@@ -613,7 +613,7 @@ preambleが`println` / `inspect`を定義している。（`Stringer` / `Eq` /
 #include <culebra.h>
 #include <module_loader.h>
 #include <stdlib_preamble.h>
-#include <stdlib_jit.h>
+#include <stdlib_rt.h>
 
 int main() {
   std::string src = "1 + 2";                  // 実際のホストではファイルから読む

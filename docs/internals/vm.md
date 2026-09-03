@@ -67,7 +67,7 @@ Where things live:
 
 | Component | Header | Notes |
 |---|---|---|
-| Runtime value model and helpers | `rt.h` and the `rt_*.inc.h` fragments it includes | LLVM-free; the whole stdlib sits on it (`stdlib_jit.h`) |
+| Runtime value model and helpers | `rt.h` and the `rt_*.inc.h` fragments it includes | LLVM-free; the whole stdlib sits on it (`stdlib_rt.h`) |
 | Front-end analysis | `fn_analysis.h` | `FuncInfo` / `FnAnalysis`, shared by both consumers |
 | Bytecode format, compiler, executor | `vm.h` | `Op`, `Chunk`, `VmProgram`, `vm::Compiler`, `vm::Exec` |
 | LLVM lowering, `--jit`, AOT | `vm_lowering.h` | the only VM header that needs LLVM |
@@ -244,7 +244,7 @@ value either holds, halved what a culebra call costs.
 
 ### 3.3 The standard library
 
-`stdlib_jit.h` binds the standard library: native namespaces (`Math`,
+`stdlib_rt.h` binds the standard library: native namespaces (`Math`,
 `IO`, `Random`, `FS`, `Net`, `Canvas`, …) as one `kNsRows_*` table each
 that the runtime resolves by name — grouped per namespace so an AOT
 binary links only the namespaces its source names (`ns_groups()`,
@@ -274,7 +274,7 @@ archive. A signature change edits that table.
 
 `Isolate.spawn`, `Channel` and `Parallel` are built on `isolate_core.h`
 (the channel registry, fan-in, the worker pool, teardown joins — all
-engine-neutral, speaking `SendNode`) and `sendable_jit.h` (the value
+engine-neutral, speaking `SendNode`) and `sendable_rt.h` (the value
 serializer). A closure crosses a thread boundary as its code reference
 plus positionally copied captures: the child rebuilds the cells in the
 same order on a `Runtime` of its own. A closure that captures a `mut`
@@ -1312,7 +1312,7 @@ share nothing.
 ## 9. Build configurations
 
 `CULEBRA_JIT_ENABLED` means "LLVM is linked". It guards `jit.h`,
-`vm_lowering.h`, the `declare_runtime` member of `stdlib_jit.h`, and the
+`vm_lowering.h`, the `declare_runtime` member of `stdlib_rt.h`, and the
 AOT bootstrap. Everything else — the runtime layer, the compiler, the
 executor, the stdlib, the sessions — builds without it, so a build
 without LLVM (`cmake` with the JIT option off, `just build-no-jit`) is a

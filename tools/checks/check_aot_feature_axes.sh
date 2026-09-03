@@ -31,7 +31,7 @@
 #     `spec` probe is the control that proves the check still bites.
 #   - Proc, the Canvas PNG/TTF decoders, and Peg are NOT an axis: they compile
 #     as plain `inline` code, reached only through their `_ns_*` adapters. Once
-#     a namespace's dispatch group (stdlib_jit.h ns_groups()) is unreferenced,
+#     a namespace's dispatch group (stdlib_rt.h ns_groups()) is unreferenced,
 #     `--gc-sections` drops the group, its adapters, and everything only they
 #     reached — the same mechanism §4 of docs/deployment.md describes for
 #     Math/IO. This script checks that these choke functions are present when
@@ -196,7 +196,7 @@ expect_absent none 'culebra::_jit_shared_val_prop_impl[(]' "the SharedVal reader
 expect_absent none '_jit_isolate_teardown_join_all' "the isolate teardown join"
 expect_absent none "$fmt_machinery" "libstdc++'s formatter, a program that formats nothing"
 expect_output none "none"
-# The namespace groups (stdlib_jit.h ns_groups()): a namespace's dispatch rows
+# The namespace groups (stdlib_rt.h ns_groups()): a namespace's dispatch rows
 # and adapters link only when the program names it. No axis, no choke — the
 # program object's culebra_aot_ns_groups[] is the one reference that keeps a
 # group, so an unnamed one is dead-stripped with everything only it reached.

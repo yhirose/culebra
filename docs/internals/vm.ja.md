@@ -65,7 +65,7 @@ loweringはそれらへの呼び出しを生成する。2つのレーンが同�
 
 | 要素 | ヘッダ | 備考 |
 |---|---|---|
-| ランタイム値表現とヘルパー | `rt.h`とそれがincludeする`rt_*.inc.h`断片 | LLVM非依存。stdlib全体がこの上に載る（`stdlib_jit.h`） |
+| ランタイム値表現とヘルパー | `rt.h`とそれがincludeする`rt_*.inc.h`断片 | LLVM非依存。stdlib全体がこの上に載る（`stdlib_rt.h`） |
 | フロントエンド解析 | `fn_analysis.h` | `FuncInfo` / `FnAnalysis`。両消費者が共有 |
 | バイトコード形式・コンパイラ・executor | `vm.h` | `Op`、`Chunk`、`VmProgram`、`vm::Compiler`、`vm::Exec` |
 | LLVM lowering、`--jit`、AOT | `vm_lowering.h` | LLVMを必要とする唯一のVMヘッダ |
@@ -245,7 +245,7 @@ culebraの呼び出しコストは半分になった。
 
 ### 3.3 標準ライブラリ
 
-`stdlib_jit.h`が標準ライブラリを束縛する: ネイティブ名前空間
+`stdlib_rt.h`が標準ライブラリを束縛する: ネイティブ名前空間
 （`Math`、`IO`、`Random`、`FS`、`Net`、`Canvas`、…）を実行時が名前
 で解決する名前空間ごとの`kNsRows_*`テーブルとして — 名前空間単位に
 まとめてあるのは、AOTバイナリがソースの名指しした名前空間だけをlink
@@ -276,7 +276,7 @@ keyword-onlyおよびrestマーカー・arity境界 — は1つの生成テー�
 
 `Isolate.spawn`、`Channel`、`Parallel`は`isolate_core.h`（channel
 レジストリ、fan-in、worker pool、teardownのjoin — すべてエンジン
-非依存で`SendNode`を語る）と`sendable_jit.h`（値シリアライザ）の
+非依存で`SendNode`を語る）と`sendable_rt.h`（値シリアライザ）の
 上に構築されている。クロージャはスレッド境界を、自分のコード参照
 に位置ベースでコピーされたcaptureを添えて越える: 子は同じ順序で
 cellを自分の`Runtime`上に再構築する。`mut`束縛をcaptureしている
@@ -1314,7 +1314,7 @@ evaluate、set_variable。`VmDebugEngine`は`Debug::Step`でコンパイル
 ## 9. ビルド構成
 
 `CULEBRA_JIT_ENABLED`は「LLVMがリンクされている」ことを意味する。
-これは`jit.h`、`vm_lowering.h`、`stdlib_jit.h`の`declare_runtime`
+これは`jit.h`、`vm_lowering.h`、`stdlib_rt.h`の`declare_runtime`
 メンバ、AOT bootstrapをガードする。それ以外 — ランタイム層、
 コンパイラ、executor、stdlib、セッション — はこれなしでビルド
 できるので、LLVMなしのビルド（JITオプションoffの`cmake`、

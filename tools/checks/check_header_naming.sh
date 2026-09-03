@@ -33,7 +33,7 @@ note() { echo "header-naming FAIL: $*" >&2; fail=1; }
 RETIRED=(
   jit_value.h jit_owned.h jit_string.h jit_runtime.h jit_fixed.h
   jit_dispatch.h jit_iter.h jit_mem.h jit_gc.h jit_slab.h
-  canon_sigs.gen.h
+  canon_sigs.gen.h stdlib_jit.h sendable_jit.h
 )
 for old in "${RETIRED[@]}"; do
   hits=$(grep -rIln --exclude-dir=vendor --exclude-dir=build --exclude-dir=build-dev \
@@ -54,7 +54,7 @@ hits=$(grep -rIln --exclude-dir=vendor --exclude-dir=build --exclude-dir=build-d
 
 # Files allowed to name LLVM. Shrink this as the layering tightens; adding to
 # it means a new part of the tree stopped building without LLVM.
-LLVM_OK=(include/jit.h include/vm_lowering.h include/stdlib_jit.h)
+LLVM_OK=(include/jit.h include/vm_lowering.h include/stdlib_rt.h)
 mapfile -t llvm_users < <(
   grep -rIl --exclude-dir=vendor -E '(#include *<llvm/)|llvm::' include/ 2>/dev/null | sort)
 for f in "${llvm_users[@]}"; do

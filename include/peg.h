@@ -1,7 +1,7 @@
 #pragma once
 
 // Value-neutral PEG core for the `Peg` namespace (the `_Peg` native rows in
-// stdlib_jit.h). Mirrors regex.h / http.h: no Value / JitValue here — the
+// stdlib_rt.h). Mirrors regex.h / http.h: no Value / JitValue here — the
 // binding layer turns the flat node table below into its own Objects.
 //
 // culebra's own front end already runs on cpp-peglib (parser.h), so handing a
@@ -15,7 +15,7 @@
 // Unlike regex.h, this header carries no linkage split: it is always compiled
 // into the core archive, whether or not a program ever names `Peg` (see
 // docs/deployment.md §1 for the size trade-off and why Regex/Tensor can't
-// make the same call). The namespace-group mechanism (stdlib_jit.h's dispatch
+// make the same call). The namespace-group mechanism (stdlib_rt.h's dispatch
 // rows) does dead-strip the actual parsing entry points --
 // culebra::pegparser::compile() itself is absent from a binary that never
 // names Peg, verified with `nm -C --defined-only` on a `--keep-symbols` build
@@ -24,7 +24,7 @@
 // leaves vtables and typeinfo behind that `--gc-sections` keeps no matter
 // what (shared with culebra's own front end, parser.h, which needs a working
 // peg::parser regardless of this header), plus a handful of
-// `std::function`-wrapped local lambdas in this file and stdlib_jit.h (the
+// `std::function`-wrapped local lambdas in this file and stdlib_rt.h (the
 // grammar's error logger, the JIT's action-map builder) whose
 // `_Function_handler<...>::_M_manager` template instantiation outlives its
 // only caller -- a known comdat/--gc-sections gap where a template
@@ -307,7 +307,7 @@ struct _AnyBox {
 // reduction) rather than copying it -- `vs` is a fresh SemanticValues no one
 // reads again after this reduce call, so every one of its slots is read at
 // most once. That, not just style, is what keeps the binding layer's own
-// payload wrapper (JitAny, stdlib_jit.h) off the hook for a retain it would
+// payload wrapper (JitAny, stdlib_rt.h) off the hook for a retain it would
 // otherwise need on every level a value passes through on its way up.
 inline std::any _peg_unbox(std::any& boxed) {
   if (!boxed.has_value()) return std::any();

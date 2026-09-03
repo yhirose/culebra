@@ -31,7 +31,7 @@
 #endif
 // The bytecode compiler, its executor and the stdlib they run on: no LLVM,
 // so the CLI has these engines whether or not this build has the JIT.
-#include <stdlib_jit.h>
+#include <stdlib_rt.h>
 #include <vm.h>
 #include <vm_repl.h>
 #include <algorithm>
@@ -54,7 +54,7 @@ using namespace std;
 
 namespace culebra {
 // Point the load-stage undefined-variable lint at the engines' own name
-// universe (builtin_global_names, stdlib_jit.h).
+// universe (builtin_global_names, stdlib_rt.h).
 void install_undefined_var_lint() {
   lint::builtin_names_hook = [] { return &builtin_global_names(); };
 }
@@ -302,7 +302,7 @@ constexpr bool kLinkStripsGlobals = true;
 // std::print, so the AOT'd binary needs it too. Placed before the driver's
 // implicit -lstdc++ so the experimental lib resolves against the base.
 // ws2_32 mirrors the driver link (see CMakeLists WIN32 block): net.h reaches
-// the base runtime archive via stdlib_jit.h, so even a socket-free program
+// the base runtime archive via stdlib_rt.h, so even a socket-free program
 // pulls Winsock out of libculebra_rt.a. OpenSSL/zlib do NOT need the same
 // treatment: the core archive declares no httplib type (http.h gates the
 // include), so only the Http axis supplies CULEBRA_SSL_LINK.

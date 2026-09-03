@@ -16,7 +16,7 @@ fail=0
 # rename invisible: grep on a missing file prints nothing, `|| true` swallows
 # the error, and the ratchet then evaluates `(( "" > 0 ))`, which is false.
 # Guard both ends — the paths must exist, and a count must be a number.
-for f in include/jit.h include/stdlib_jit.h include/sendable_jit.h; do
+for f in include/jit.h include/stdlib_rt.h include/sendable_rt.h; do
   [[ -f $f ]] || {
     echo "rc-discipline FAIL: no $f — renamed or moved? update this gate" >&2
     exit 1
@@ -98,11 +98,11 @@ brw=$(grep "emit_borrow_to_owned(" include/jit.h \
 ratchet "borrow->owned conversions (jit.h)" "$brw" 5
 
 # Native-method endpoints consume self via RAII (JitMethodSelf at entry), not
-# a tail release a throw would skip. sendable_jit.h is fully converted; keep
+# a tail release a throw would skip. sendable_rt.h is fully converted; keep
 # it at zero.
 tail_self=$(grep -c "culebra_runtime_value_release(self\.tag, self\.data)" \
-            include/sendable_jit.h || true)
-ratchet "tail self-releases (sendable_jit.h)" "$tail_self" 0
+            include/sendable_rt.h || true)
+ratchet "tail self-releases (sendable_rt.h)" "$tail_self" 0
 
 # Helper-side (runtime C++) bare RC calls per file (GAP3-ENFORCE ratchet). A
 # helper that owns a value across a may-throw region uses the RAII forms
@@ -142,7 +142,7 @@ count_bare() { # file
 # after the call returns), so each of the n copies needs its own retain
 # before array_push absorbs it. Same "no Owned/JitOwnedVal layer reachable
 # from a raw runtime adapter" shape as random_choice/weighted_choice above.
-ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 100
+ratchet "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib_rt.h)" 100
 # 17 -> 12 (2026-08-01): the isolate/parallel child entries hold the rebuilt
 # closure, its args and the call result in JitOwnedVal, so their tail releases
 # are gone — and with them the hang a throwing child caused by never dropping a
@@ -150,7 +150,7 @@ ratchet "bare RC calls (stdlib_jit.h)" "$(count_bare include/stdlib_jit.h)" 100
 # 12 -> 11 (2026-08-08): the Shared view's iterator keeps its state in closure
 # captures, so its `iter` self-returning reader (and that reader's hand-placed
 # retain) is gone.
-ratchet "bare RC calls (sendable_jit.h)" "$(count_bare include/sendable_jit.h)" 11
+ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/sendable_rt.h)" 11
 
 # Runtime-side borrow -> +1 seam (JitOwnedVal::from_borrowed). Its retain lives
 # inside the ownership layer, so it is invisible to count_bare above — the same
@@ -203,9 +203,9 @@ ratchet "hand-built %Value phis (jit.h)" "$vphi" 0
 # (emit_property_get returns +0, emit_comparison_i1 returns i1), so this
 # stays a plain grep.
 rawc=$({ grep -cE "llvm::Value\* (JIT::|JitExtension::)?(try_)?compile_" \
-         include/jit.h include/stdlib_jit.h || true; } \
+         include/jit.h include/stdlib_rt.h || true; } \
        | awk -F: '{s+=$2} END {print s}')
-ratchet "raw-returning compile_* helpers (jit.h + stdlib_jit.h)" "$rawc" 0
+ratchet "raw-returning compile_* helpers (jit.h + stdlib_rt.h)" "$rawc" 0
 tassign=$(grep -cE '(llvm::Value|auto) ?\* ?[A-Za-z_]+ ?= ?[^;]*\.consume\(\);' \
           include/jit.h || true)
 ratchet "typed consume assignments (jit.h)" "$tassign" 0
@@ -213,6 +213,6 @@ ratchet "typed consume assignments (jit.h)" "$tassign" 0
 if (( fail )); then exit 1; fi
 echo "rc-discipline OK (release=$rel/55 retain=$ret/34 borrow=$brw/5" \
      "rt-borrow=$rbrw/1 tail-self=$tail_self/0" \
-     "stdlib=$(count_bare include/stdlib_jit.h)/100" \
-     "sendable=$(count_bare include/sendable_jit.h)/11 throwguard=$tg/21" \
+     "stdlib=$(count_bare include/stdlib_rt.h)/100" \
+     "sendable=$(count_bare include/sendable_rt.h)/11 throwguard=$tg/21" \
      "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"

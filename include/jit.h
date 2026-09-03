@@ -1322,7 +1322,7 @@ struct JIT {
 
  private:
   // Friend declared so extension implementations (e.g. JitExtension in
-  // stdlib_jit.h) can reach JIT internals (builder_/module_/make_long/
+  // stdlib_rt.h) can reach JIT internals (builder_/module_/make_long/
   // extract_tag/...) without those being part of the public surface.
   friend struct JitExtension;
   friend struct vm::Lowering;
@@ -2629,7 +2629,7 @@ struct JIT {
     // which is Tensor's, the only one there is. So every program's compiled
     // code contains this call, gated at runtime by the receiver's tag,
     // whether or not that program ever mentions Tensor. Declaring it only
-    // from Tensor's own declare_runtime (stdlib_jit.h) left a host that
+    // from Tensor's own declare_runtime (stdlib_rt.h) left a host that
     // skips install_jit_stdlib() with an undeclared function and a crash in
     // JIT::emit_call, not a script-level error -- getFunction() found
     // nothing to call.
@@ -5072,7 +5072,7 @@ struct JIT {
     // declared after `jit`, so on any exit path — including an uncaught throw
     // that skips past the script's own h.join() — this runs FIRST during
     // unwind. Every isolate's compiled body is the same JitClosure::fn_ptr
-    // living in this LLJIT (sendable_jit.h); one still running when the
+    // living in this LLJIT (sendable_rt.h); one still running when the
     // module's code memory is freed returns into memory the teardown just
     // unmapped. See isolate_teardown_join_hook (shared.h). A watch left open
     // is stopped for the reason script_teardown.h gives.

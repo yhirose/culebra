@@ -3,7 +3,7 @@
 // TOML parse / serialize for the `TOML` stdlib namespace.
 //
 // Value-neutral core (no culebra types), shared by the interp
-// and the JIT/AOT runtime helpers (stdlib_jit.h) so the
+// and the JIT/AOT runtime helpers (stdlib_rt.h) so the
 // three backends agree byte-for-byte. Parsing produces a neutral `Node`
 // tree (Table / Array / String / Int / Float / Bool); each backend converts
 // that tree to its own Value type. Serialization is the dual: a backend

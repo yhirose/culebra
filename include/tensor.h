@@ -16,7 +16,7 @@
 //   tensorlib (tl::)      <- storage, lazy graph + fusion, evaluation,
 //                            backends (Accelerate/Metal now, CUDA in M6)
 //   tensor.h              <- this file (TensorImpl = Op tape + tl::array)
-//   stdlib_jit.h          <- Tensor namespace registration
+//   stdlib_rt.h          <- Tensor namespace registration
 //
 // AOT feature gating (mirrors the Http/OpenSSL pattern): tensorlib is
 // compiled in TL_RUNTIME_HOOKS mode, so creation and graph building

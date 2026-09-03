@@ -83,7 +83,7 @@ Grammar
 -------
 
 `misc/culebra.peg` and the `cul.vim` keyword list are generated from
-`include/parser.h`:
+`include/grammar_def.h`:
 
 ```bash
 just sync-grammar        # regenerate after touching the grammar

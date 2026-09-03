@@ -2431,12 +2431,12 @@ inline void _consume_sigint() {
 inline std::atomic<bool> culebra_g_signal_notify{false};
 inline std::atomic<bool> culebra_g_signal_pending{false};
 
-// Hook sendable_jit.h fills in at load, read by jit.h and the script
+// Hook sendable_rt.h fills in at load, read by jit.h and the script
 // teardown guard — kept as a hook so script_teardown.h stays light instead
 // of pulling the whole isolate stack into every consumer. Called right
 // before JIT::exec tears
 // down the LLJIT: every isolate's compiled body is the SAME JitClosure::fn_ptr
-// living in that LLJIT (sendable_jit.h), so a spawn still running when the
+// living in that LLJIT (sendable_rt.h), so a spawn still running when the
 // module's code memory is freed returns into unmapped memory. Cancels + joins
 // whatever is still outstanding — a no-op once every isolate has already been
 // joined (the normal case), which is the vast majority of runs.

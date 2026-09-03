@@ -22,7 +22,7 @@ VIM=misc/vim/culebra.vim
 TM=misc/vscode/syntaxes/culebra.tmLanguage.json
 ZED=misc/zed/languages/culebra/highlights.scm
 CMLANG=playground/culebra-lang.js
-STDLIB=include/stdlib_jit.h
+STDLIB=include/stdlib_rt.h
 MAP=misc/keyword-map.txt
 
 # Name the directory explicitly: macOS mktemp ignores TMPDIR for a bare call and

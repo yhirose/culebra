@@ -40,7 +40,7 @@
 #include <stdout_capture.h>  // program_out() / ProgramOutCapture (IO.capture)
 #include <peg.h>    // the value-neutral Peg choke
 #include <regex.h>  // the value-neutral Regex choke (the Regex AOT axis)
-#include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
+#include <sendable_rt.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
 #include <stdlib_math.h>   // Math kernels shared with the interp
 #ifdef CULEBRA_JIT_ENABLED
 #include <jit.h>  // JitExtension::declare_runtime emits on the module

@@ -1,7 +1,7 @@
 // Conformance: each stdlib namespace must be addressable as a first-class
 // value. `let m = NS; m.method(...)` (slow path, via _jit_ns_method_trampoline
 // on JIT/AOT) must return the same observable behavior as `NS.method(...)`
-// (fast path, via compile_ns_call). See stdlib_jit.h::kNsMethods.
+// (fast path, via compile_ns_call). See stdlib_rt.h::kNsMethods.
 
 // --- IO (standard streams + console) ---
 let io = IO

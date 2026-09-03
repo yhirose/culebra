@@ -24,7 +24,7 @@ namespace culebra {
 
 // A parameter default's payload discriminator. Canonical stdlib defaults are
 // only ever these literal scalars; the generator emits the enumerator names,
-// and _jit_default_from_canon (stdlib_jit.h) decodes them.
+// and _jit_default_from_canon (stdlib_rt.h) decodes them.
 enum class CanonDefault : int8_t { None, Nil, Bool, Long, Float, Str };
 
 // One declared parameter. Field names/types intentionally match the uses the
@@ -99,7 +99,7 @@ inline std::string canon_sig_key(std::string_view ns, std::string_view sub,
 // receiver split interp's eval_property dispatched on (String and StringView
 // share one table by construction; the generator emits it once). The
 // stdlib-native rows (kCanonSigs_<Ns>, kCanonSigs_Bare) have no accessor
-// here: their one reader is stdlib_jit.h's _canon_sig, which merges them
+// here: their one reader is stdlib_rt.h's _canon_sig, which merges them
 // with the wrap-declared rows into a single registry.
 inline const CanonSigTable& canon_object_sigs() {
   static const CanonSigTable t = _canon_detail::build(kCanonObjectSigs);

@@ -3,7 +3,7 @@
 // dotenv-style `.env` parsing for the `Env` stdlib namespace.
 //
 // Value-neutral core (no culebra types), shared by the interp
-// and the JIT/AOT slow-path adapters (stdlib_jit.h) so the
+// and the JIT/AOT slow-path adapters (stdlib_rt.h) so the
 // three backends agree byte-for-byte. Parsing is lenient (no errors):
 // malformed lines are skipped, every value comes back as a String.
 //

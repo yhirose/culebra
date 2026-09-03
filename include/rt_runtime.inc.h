@@ -203,7 +203,7 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
 }
 
 // The namespace functions a direct `Math.f(args)` compiles to Op::NsCall
-// (vm.h's nsfn_specs names them, stdlib_jit.h's culebra_runtime_ns_call
+// (vm.h's nsfn_specs names them, stdlib_rt.h's culebra_runtime_ns_call
 // dispatches over them, jit.h's emit_ns_call inlines the Float family).
 // Declared here, on the layer every consumer includes.
 enum class NsFn : uint8_t {
@@ -3054,7 +3054,7 @@ inline bool _jit_is_shared_buffer(JitObject* obj) {
 }
 
 inline bool _jit_is_shared_val(JitObject* obj) { return obj->is_shared_val; }
-// Shared.new view readers. The bodies live in sendable_jit.h and are reached
+// Shared.new view readers. The bodies live in sendable_rt.h and are reached
 // through these hooks rather than by symbol: the generic get/index paths
 // would otherwise name the SharedVal reader, and through it the whole
 // SendNode / channel / serialize graph, in every binary — a hello-world AOT
@@ -3062,7 +3062,7 @@ inline bool _jit_is_shared_val(JitObject* obj) { return obj->is_shared_val; }
 // _jit_make_shared_val_view ran, and that constructor installs both hooks,
 // so the reader is reachable only from the adapters that create views
 // (Shared / Isolate / Parallel / Net) and a program naming none of them
-// links none of it (namespace-group dead-stripping, stdlib_jit.h
+// links none of it (namespace-group dead-stripping, stdlib_rt.h
 // ns_groups()). A null hook on a shared view is a broken invariant, not a
 // missing feature, and is reported as such.
 extern "C++" {

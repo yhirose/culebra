@@ -320,7 +320,7 @@ culebra::vm::Value val;
 embed.run(modules, val, msgs);
 ```
 
-For the LLVM lane, add `<stdlib_jit.h>`, call
+For the LLVM lane, add `<stdlib_rt.h>`, call
 `culebra::install_jit_stdlib()` once at startup, and use
 `culebra::JIT::run(ast)`.
 
@@ -609,7 +609,7 @@ splice the stdlib preamble *before* handing the modules to
 #include <culebra.h>
 #include <module_loader.h>
 #include <stdlib_preamble.h>
-#include <stdlib_jit.h>
+#include <stdlib_rt.h>
 
 int main() {
   std::string src = "1 + 2";                  // read it off disk in a real host
