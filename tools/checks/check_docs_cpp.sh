@@ -99,15 +99,22 @@ done < <(grep -ho '#include *<[^>]*>' "$TMP"/*.cpp 2>/dev/null | sort -u)
 # The LLVM lane needs LLVM's own headers. Find llvm-config the way an
 # embedder would; with none present, say so rather than passing the JIT
 # blocks silently.
+#
+# The last resort takes the highest version installed, not the first the glob
+# names: an Ubuntu runner already carries LLVM 16, and culebra's JIT needs 20+,
+# so the lexical order compiled the embedding examples against headers the
+# project cannot build with at all — every push, from the day this gate landed.
+# A machine with two LLVMs is the normal case, not an odd one.
 llvm_inc=""
 if [[ -n ${LLVM_CONFIG:-} ]] && command -v "$LLVM_CONFIG" >/dev/null 2>&1; then
   llvm_inc=$("$LLVM_CONFIG" --includedir)
 elif command -v llvm-config >/dev/null 2>&1; then
   llvm_inc=$(llvm-config --includedir)
 else
-  for c in /usr/lib/llvm-*/bin/llvm-config /opt/homebrew/opt/llvm/bin/llvm-config; do
+  while IFS= read -r c; do
     [[ -x $c ]] && { llvm_inc=$("$c" --includedir); break; }
-  done
+  done < <(printf '%s\n' /usr/lib/llvm-*/bin/llvm-config | sort -Vr
+           printf '%s\n' /opt/homebrew/opt/llvm/bin/llvm-config)
 fi
 
 progs=()
@@ -143,7 +150,9 @@ if (( bad > 0 )); then
   while IFS= read -r f; do
     echo "docs-cpp FAIL: $(basename "$f") does not compile with the flags" >&2
     echo "  documented in deployment.md (Building your host program):" >&2
-    sed -n '1,10p' "$f.err" >&2
+    # Lead with the errors: a header cascade opens with warnings out of LLVM's
+    # own headers, and the first ten lines said nothing about the failure.
+    { grep -m5 'error:' "$f.err" || sed -n '1,10p' "$f.err"; } >&2
   done < <(sed -n 's/^BAD //p' "$TMP/results")
   fail=1
 fi
