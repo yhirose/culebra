@@ -3886,7 +3886,9 @@ returns. The `ws` handle reads and writes messages:
 | --- | --- |
 | `for msg in ws { … }` | iterate inbound messages (each a `String`); ends when the peer closes |
 | `ws.receive()` | the next inbound message as a `String`, or `nil` when the peer closes |
+| `ws.try_receive()` | take a message without blocking; answers `Message(String)`, `Empty`, or `Closed` (needs `set_timeout`; see below) |
 | `ws.send(msg)` | send a text message; returns `false` if the peer has gone away |
+| `ws.set_timeout(ms)` | how long a read waits before reporting `Empty`; `0` waits forever |
 | `ws.close()` | close the connection |
 | `ws.is_open()` | whether the connection is still open |
 
@@ -4033,8 +4035,9 @@ tried.
 
 Connect a WebSocket client to `url` (`ws://host:port/path`) and return a handle
 with the same shape as the server-side `ws`: `send(msg)`, `receive()` (a `String`,
-or `nil` once the peer closes), `for msg in ws`, `close()`, and `is_open()`. A bad
-URL or a failed connect is an `HttpError`.
+or `nil` once the peer closes), `try_receive()`, `set_timeout(ms)`,
+`for msg in ws`, `close()`, and `is_open()`. A bad URL or a failed connect is an
+`HttpError`.
 
 ```culebra
 # doctest: skip
@@ -4046,6 +4049,47 @@ for msg in ws {
 }  # drains messages until the server closes
 ws.close()
 ```
+
+#### Reading and sending on one connection — `set_timeout` + `try_receive`
+
+A ws handle belongs to the thread that opened it (it is not Sendable, and the
+registry behind it is per-thread), so both directions of a connection are
+driven from one place. `receive()` and `for msg in ws` block until a message
+arrives, which leaves no room to send — the loop is parked in the read.
+
+`set_timeout(ms)` bounds that wait, and `try_receive()` reports what came of
+it. It answers with the same three variants
+[`Channel.try_recv`](#receiving-without-blocking--rxtry_recv-and-rxdrain) uses,
+for the same reason — `nil` cannot mean a message, "nothing yet" and "closed"
+at once:
+
+```culebra
+# doctest: skip
+enum WsResult { Message(String), Empty, Closed }
+```
+
+```culebra
+# doctest: skip
+ws.set_timeout(50)  # ms; 0 waits forever
+while running {
+  match ws.try_receive() {
+    Message(m) => world.apply(m),
+    Empty()    => nil,          # nothing this round — fall through and send
+    Closed()   => running = false,
+  }
+  for out in outbox.drain() {
+    ws.send(out)
+  }
+}
+```
+
+Note the `()` on `Empty()` and `Closed()`, as in a `Channel` match: a bare
+`Empty` is an identifier pattern that matches anything.
+
+`receive()` and `for msg in ws` keep their meaning under a timeout — they wait
+for the *next message*, and a timeout is the absence of one, not the end of the
+stream. They do become interruptible with one set, since the wait between
+attempts is where a Ctrl+C lands.
 
 ### Embed
 

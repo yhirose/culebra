@@ -284,6 +284,26 @@ wiso = Isolate.spawn(fn () {
       i = i + 1
     }
   })
+  # A bounded read hands control back without closing the connection, so this
+  # handler writes on its own schedule instead of parking in a read — the shape
+  # a relay needs. It answers a message, and speaks up on its own after a few
+  # empty rounds.
+  srv.ws("/tick", fn (req, ws) {
+    ws.set_timeout(50)
+    mut empties = 0
+    mut running = true
+    while running {
+      match ws.try_receive() {
+        Message(m) => ws.send("got:" + m),
+        Empty() => empties = empties + 1,
+        Closed() => running = false,
+      }
+      if empties == 3 {
+        ws.send("tick")
+        empties = 0
+      }
+    }
+  })
   wtx.send(srv.bind(0))
   wtx.drop()
   srv.serve(workers: 2)
@@ -320,6 +340,32 @@ for m in wp {
   pushed.push(m)
 }
 inspect("ws pushed -> " + pushed.to_string())
+
+# try_receive answers Empty / Message / Closed rather than overloading nil.
+# Empty is pinned against a peer that was sent nothing, so no amount of load
+# turns it into a message; the Message side gets a timeout long enough that a
+# slow machine cannot turn it back into Empty.
+wt = Http.ws(WBASE + "/echo")
+wt.set_timeout(50)
+inspect(wt.try_receive())
+inspect("open after timeout = " + wt.is_open().to_string())
+wt.set_timeout(5000)
+wt.send("three")
+inspect(wt.try_receive())
+# receive() keeps meaning "the next message" with a timeout set.
+wt.send("four")
+inspect("blocking receive -> " + wt.receive())
+wt.close()
+inspect(wt.try_receive())
+
+# The server side of the same thing: nothing is sent to /tick until after its
+# unprompted message arrives, so that message can only have come from the
+# handler's own timeout path.
+wk = Http.ws(WBASE + "/tick")
+inspect("server timeout path -> " + wk.receive())
+wk.send("five")
+inspect("server still answers -> " + wk.receive())
+wk.close()
 
 # A bad URL is an HttpError.
 mut werr = "none"

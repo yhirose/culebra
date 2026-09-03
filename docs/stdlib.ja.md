@@ -3778,7 +3778,9 @@ streamクロージャはworkerスレッド上で実行されるため、`workers
 | --- | --- |
 | `for msg in ws { … }` | 受信メッセージ（各`String`）を反復。peerのcloseで終了 |
 | `ws.receive()` | 次の受信メッセージ（`String`）。peerがcloseすると`nil` |
+| `ws.try_receive()` | ブロックせずに1件取る。`Message(String)`・`Empty`・`Closed`のいずれか（`set_timeout`が要る。下記参照） |
 | `ws.send(msg)` | テキストメッセージを送信。peer切断時は`false` |
+| `ws.set_timeout(ms)` | 読み取りが`Empty`を返すまでの待ち時間。`0`は無期限 |
 | `ws.close()` | 接続を閉じる |
 | `ws.is_open()` | 接続がまだ開いているか |
 
@@ -3917,8 +3919,8 @@ srv.serve(workers: 4)
 
 WebSocketクライアントを`url`（`ws://host:port/path`）に接続し、サーバ側`ws`と
 同じ形のハンドル（`send(msg)`・`receive()`（`String`、peerがcloseすると`nil`）・
-`for msg in ws`・`close()`・`is_open()`）を返します。不正なURLや接続失敗は
-`HttpError`です。
+`try_receive()`・`set_timeout(ms)`・`for msg in ws`・`close()`・`is_open()`）を
+返します。不正なURLや接続失敗は`HttpError`です。
 
 ```culebra
 # doctest: skip
@@ -3930,6 +3932,46 @@ for msg in ws {
 }  # サーバが close するまでメッセージを drain
 ws.close()
 ```
+
+#### 1本の接続で読みながら送る — `set_timeout`と`try_receive`
+
+wsハンドルはそれを開いたスレッドのものです（Sendableではなく、背後のレジストリも
+スレッドごと）。つまり接続の送受信は1箇所から動かすことになります。ところが
+`receive()`と`for msg in ws`はメッセージが届くまで戻らないので、待っている間は
+送信の番が回ってきません。
+
+`set_timeout(ms)`でその待ち時間を区切り、結果を`try_receive()`が答えます。返る形は
+[`Channel.try_recv`](#ブロックしない受信--rxtry_recvとrxdrain)と同じ3変種で、理由も
+同じです。`nil`に「メッセージ」「まだ来ていない」「もう来ない」の3つを兼ねさせられ
+ません。
+
+```culebra
+# doctest: skip
+enum WsResult { Message(String), Empty, Closed }
+```
+
+```culebra
+# doctest: skip
+ws.set_timeout(50)  # ミリ秒。0は無期限
+while running {
+  match ws.try_receive() {
+    Message(m) => world.apply(m),
+    Empty()    => nil,          # 今回は何も来ていない。このまま送信へ
+    Closed()   => running = false,
+  }
+  for out in outbox.drain() {
+    ws.send(out)
+  }
+}
+```
+
+`Empty()`と`Closed()`の`()`は`Channel`のmatchと同じ理由で要ります。裸の`Empty`は
+何にでも一致する識別子パターンです。
+
+タイムアウトを設定しても`receive()`と`for msg in ws`の意味は変わりません。どちらも
+**次のメッセージ**を待つもので、タイムアウトはメッセージが無いというだけで終端では
+ないからです。ただし待ち直す隙にCtrl+Cが届くようになるので、中断できるようには
+なります。
 
 ### Embed
 

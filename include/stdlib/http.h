@@ -1101,7 +1101,16 @@ struct WsConn {
   std::unique_ptr<httplib::ws::WebSocketClient> client;      // owned (client handle)
   int receive(std::string& out) {
     httplib::ws::ReadResult r = server ? server->read(out) : client->read(out);
-    return r == httplib::ws::Fail ? 0 : 1;  // Text/Binary → 1; Fail (closed) → 0
+    if (r == httplib::ws::Timeout) return -1;  // still open, nothing consumed
+    return r == httplib::ws::Fail ? 0 : 1;     // Text/Binary → 1; Fail → 0
+  }
+  // 0 waits forever, as on a Socket. Only a connection that has one set can
+  // report a timeout, which is what lets one thread both read and send here.
+  void set_read_timeout(int64_t ms) {
+    auto sec = static_cast<time_t>(ms / 1000);
+    auto usec = static_cast<time_t>((ms % 1000) * 1000);
+    if (server) server->set_read_timeout(sec, usec);
+    else if (client) client->set_read_timeout(sec, usec);
   }
   bool send(const char* d, size_t n) {
     std::string s(d, n);  // send as a Text frame (the std::string overload)
@@ -1512,7 +1521,8 @@ CULEBRA_RT_HTTP_LINKAGE int64_t ws_client_open(const std::string& url,
 }
 
 // Read the next message into `out`. Returns 1 on a message, 0 on close / a stale
-// id (so a loop or for-in ends).
+// id (so a loop or for-in ends), -1 when the read timeout elapsed with the
+// connection still open.
 CULEBRA_RT_HTTP_LINKAGE int ws_receive(int64_t id, std::string& out) {
 #if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
   (void)id; (void)out;
@@ -1520,6 +1530,20 @@ CULEBRA_RT_HTTP_LINKAGE int ws_receive(int64_t id, std::string& out) {
 #else
   WsConn* c = g_ws_conns.get(id);
   return c ? c->receive(out) : 0;
+#endif
+}
+
+// Bound how long a read waits before reporting a timeout (0 = forever).
+// False on a stale id.
+CULEBRA_RT_HTTP_LINKAGE bool ws_set_timeout(int64_t id, int64_t ms) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id; (void)ms;
+  return false;
+#else
+  WsConn* c = g_ws_conns.get(id);
+  if (!c) return false;
+  c->set_read_timeout(ms);
+  return true;
 #endif
 }
 
