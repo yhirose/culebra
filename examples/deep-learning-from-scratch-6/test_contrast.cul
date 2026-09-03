@@ -138,7 +138,6 @@ fn the_same_weights_give_the_same_loss_sequence() {
   CK.restore(dezero, loaded)
   let native = T.GPT(cfg)
   CK.restore(native, loaded)
-  native.mark_leaves()
 
   let a = dezero_losses(dezero, cfg, tokens, STEPS)
   let b = tensor_losses(native, cfg, tokens, STEPS)

@@ -70,6 +70,13 @@ fn restore(model, loaded) {
   for e in named {
     e.param.data = loaded.tensors[e.name]
   }
+  # What was just written is a plain value read off a CSV, and a parameter
+  # has to be able to take a gradient again after a restore. Only the model
+  # knows how its own parameters carry one -- a native-Tensor model re-marks
+  # its leaves, a dezero one keeps grad on the Variable and has nothing to
+  # do -- so ask it. Leaving this to the caller is a step nothing reports
+  # when it is skipped: training just runs on with zero gradients.
+  model.mark_leaves() if model.mark_leaves != nil
   named.size()
 }
 

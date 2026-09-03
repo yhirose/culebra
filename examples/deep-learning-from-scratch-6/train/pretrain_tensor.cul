@@ -304,7 +304,9 @@ class GPT {
   }
 
   # `common/checkpoint.cul` writes a plain Tensor into `param.data`, which
-  # is not a grad-tracking leaf. Call this after a restore.
+  # is not a grad-tracking leaf. `restore` calls this itself; it is here
+  # rather than inline there because what makes a leaf is the model's own
+  # business (dezero's parameters need nothing).
   mark_leaves() {
     for p in self.params() {
       p.data = p.data.detach().requires_grad()
@@ -409,7 +411,6 @@ fn main() {
   let from = args.index_of('--from')
   if from >= 0 && from + 1 < args.size() {
     let n = CK.restore(model, CK.load(args[from + 1]))
-    model.mark_leaves()
     inspect("restored {n} parameters from {args[from + 1]}")
   }
   inspect("model: {parameter_count(model)} parameters")
