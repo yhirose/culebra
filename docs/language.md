@@ -208,9 +208,8 @@ between statements are fine.
 
 ## 3. Grammar
 
-The full PEG grammar is in
-[`include/frontend/grammar_def.h`](../include/frontend/grammar_def.h), the single source
-of truth that `parser.h` loads. Its top-level rules:
+The full PEG grammar is one source of truth, which the parser loads
+verbatim. Its top-level rules:
 
     PROGRAM     <- STATEMENTS
     STATEMENTS  <- (STATEMENT ((';' / newline) STATEMENT?)*)?

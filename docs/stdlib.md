@@ -1460,10 +1460,10 @@ build_some_structure()
 inspect(GC.stat().live_objects - base)  # objects retained by the structure
 ```
 
-This is the foundation for leak-regression tests (see
-`tests/test_gc_no_leak.cul`): assert that a delta stays bounded across many
-iterations. Memory is otherwise managed automatically — see the language
-spec for the memory model and deterministic `drop`.
+This is the foundation for leak-regression tests: assert that a delta
+stays bounded across many iterations. Memory is otherwise managed
+automatically — see the language spec for the memory model and
+deterministic `drop`.
 
 ---
 
@@ -1726,10 +1726,10 @@ them for now.
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()` (and `.max()` /
 `.argmax()`) are never differentiable — `.backward()` through a comparison
 always raises, the same as PyTorch/numpy: compose the 0/1 mask with `*`
-instead (a ReLU-style backward gate is the concrete pattern). `examples/
-dezero`'s own Tanh/Sin/Cos/Clip classes still write their own backward
-composed from other native ops rather than relying on this — both paths
-work, whichever a caller's own autograd style needs.
+instead (a ReLU-style backward gate is the concrete pattern). Writing a
+Tanh/Sin/Cos/Clip backward by hand, composed from other native ops rather
+than relying on this, stays valid too — both paths work, whichever a
+caller's own autograd style needs.
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()

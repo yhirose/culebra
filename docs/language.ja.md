@@ -192,9 +192,8 @@ CRLFのcheckoutはLFのものと完全に同じに振る舞う — 三重引用�
 
 ## 3. 文法
 
-完全なPEG文法は単一の真実源である
-[`include/frontend/grammar_def.h`](../include/frontend/grammar_def.h) にあります
-（`parser.h`はこれを読み込みます）。トップレベルのルール:
+完全なPEG文法は単一の真実源で、パーサーはそれをそのまま読み込みます。
+トップレベルのルール:
 
     PROGRAM     <- STATEMENTS
     STATEMENTS  <- (STATEMENT ((';' / newline) STATEMENT?)*)?

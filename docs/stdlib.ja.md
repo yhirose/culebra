@@ -1425,9 +1425,9 @@ build_some_structure()
 inspect(GC.stat().live_objects - base)  # 構造が保持しているオブジェクト数
 ```
 
-これはリーク回帰テストの土台になる（`tests/test_gc_no_leak.cul`参照）:
-多数の反復をまたいでdeltaが有界に留まることをassertする。メモリは
-それ以外は自動管理 — メモリモデルと確定的`drop`は言語仕様を参照。
+これはリーク回帰テストの土台になる: 多数の反復をまたいでdeltaが有界に
+留まることをassertする。メモリはそれ以外は自動管理 — メモリモデルと
+確定的`drop`は言語仕様を参照。
 
 ---
 
@@ -1687,10 +1687,9 @@ backwardを書きます。
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()`（および`.max()` /
 `.argmax()`）は恒久的に微分不可能です——比較を通した`.backward()`は常に
 例外を投げます（PyTorch/numpyと同じ）。0/1マスクは`*`で合成してください
-（ReLU系のbackward gateが具体例）。`examples/dezero`自身の
-Tanh/Sin/Cos/Clipクラスは、今もこれらのopから自前でbackwardを
-組み立てていますが、これはネイティブVJPと共存する選択の一つで
-あって必須ではありません——どちらの経路でも動きます。
+（ReLU系のbackward gateが具体例）。Tanh/Sin/Cos/Clipのbackwardを
+これらのopから自前で組み立てるやり方も、ネイティブVJPと共存する
+選択の一つとして今も有効です——どちらの経路でも動きます。
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()
