@@ -119,8 +119,8 @@ enum class Op {
   // primitive). IndexSelect/IndexAdd are exact duals with real VJPs;
   // ScatterAxis is forward-only (see the VJP switch).
   IndexSelect, IndexAdd, ScatterAxis,
-  Narrow,  // `.slice()` generalized to any axis. Zero-copy view, no
-           // backward yet (see the VJP switch).
+  Narrow,  // `.slice()` generalized to any axis. Zero-copy view; its VJP
+           // is the zero-pad back out (see the VJP switch).
   // Rotary position embedding: pairs (j, j+D/2) of the last axis rotate by
   // a position/frequency-dependent angle. `pos` rides in op_param and `base`
   // in extra0, which is all its VJP needs: the rotation's transpose is the
@@ -832,15 +832,15 @@ inline TensorPtr tensor_narrow(TensorPtr t, int64_t axis, int64_t start,
     return t->value.slice(static_cast<int>(axis), start, end - start);
   });
   auto dtype = t->dtype;
-  // op_param/extra0/extra1 keep axis/start/end for the VJP (a zero-pad
-  // back out to the original axis length) -- see its own comment. start/
-  // end ride the same float slots Clip's lo/hi use; both are small
-  // integer shape indices, well inside float's exact-integer range.
+  // op_param/extra0 keep axis/start for the VJP (a zero-pad back out to the
+  // original axis length) -- see its own comment; the length it pads to comes
+  // off the input's own shape, so `end` needs no slot. `start` rides the same
+  // float slot Clip's `lo` uses: a shape index, well inside float's
+  // exact-integer range.
   auto out = tensor_make_op(Op::Narrow, std::move(v), dtype,
                             std::vector<TensorPtr>{std::move(t)},
                             /*op_param=*/axis, /*is_view=*/true);
   out->extra0 = static_cast<float>(start);
-  out->extra1 = static_cast<float>(end);
   return out;
 }
 
@@ -1184,17 +1184,20 @@ inline TensorPtr _tensor_relu_backward(const TensorPtr& g, const TensorPtr& x) {
   return _tensor_wrap_const(std::move(v), x->dtype);
 }
 
-// Scatter `g` (the gradient of a row-slice) into rows [start, start+len)
-// of a zero tensor shaped like the slice's source: zeros + in-place add
-// through a row view.
-inline TensorPtr _tensor_slice_backward(const TensorPtr& g,
-                                        const TensorShape& src_shape,
-                                        Dtype dt, int64_t start) {
-  auto v = _tl_guard([&] {
-    auto out = tl::array::zeros(src_shape.dims);
-    out.slice(start, g->shape.dims[0]).add_(g->value);
-    return out;
-  });
+// The VJP of taking the window [start, start+len) of one axis: zero-pad `g`
+// back out to the source's length on that axis. `.slice()` is `.narrow()` on
+// axis 0, so both arms of the switch route here — one pass through tl's pad
+// rather than a zero buffer plus an in-place add through a view.
+//
+// `.pad()` is forward-only itself, but that guards *its* callers going
+// through .backward(); used here as a plain value-builder inside another
+// op's VJP it is fine, the same way Concat's VJP uses tensor_narrow.
+inline TensorPtr _tensor_window_backward(const TensorPtr& g, int64_t axis,
+                                         int64_t start, int64_t src_len,
+                                         Dtype dt) {
+  int64_t after = src_len - start - g->shape.dims[axis];
+  auto v = _tl_guard(
+      [&] { return g->value.pad(static_cast<int>(axis), start, after); });
   return _tensor_wrap_const(std::move(v), dt);
 }
 
@@ -1413,7 +1416,8 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Slice:
       _tensor_grad_add(
           n->inputs[0],
-          _tensor_slice_backward(g, n->inputs[0]->shape, dt, n->op_param));
+          _tensor_window_backward(g, 0, n->op_param,
+                                  n->inputs[0]->shape.dims[0], dt));
       break;
     case Op::Concat: {
       // Each part owns a contiguous window of the output along op_param
@@ -1506,20 +1510,14 @@ inline void _tensor_vjp(const TensorPtr& n) {
       break;
     }
     case Op::Narrow: {
-      // The VJP is a zero-pad back out to the original axis length --
-      // op_param/extra0/extra1 (axis/start/end, stashed by tensor_narrow)
-      // are exactly what that needs. `.pad()` is forward-only itself
-      // (see Op::Pad's own case below) but that only guards *its* callers
-      // going through .backward() -- used here as a plain value-builder
-      // inside Narrow's own VJP, it's fine (same idea as Concat's VJP
-      // using tensor_narrow as a plain extraction tool above).
+      // A zero-pad back out to the original axis length, off op_param/extra0
+      // (axis/start, stashed by tensor_narrow) -- Slice is this on axis 0 and
+      // shares the helper.
       int64_t axis = n->op_param;
-      int64_t start = static_cast<int64_t>(n->extra0);
-      int64_t end = static_cast<int64_t>(n->extra1);
-      int64_t after = n->inputs[0]->shape.dims[axis] - end;
-      auto gv = _tl_guard(
-          [&] { return g->value.pad(static_cast<int>(axis), start, after); });
-      _tensor_grad_add(n->inputs[0], _tensor_wrap_const(std::move(gv), dt));
+      _tensor_grad_add(
+          n->inputs[0],
+          _tensor_window_backward(g, axis, static_cast<int64_t>(n->extra0),
+                                  n->inputs[0]->shape.dims[axis], dt));
       break;
     }
     case Op::Where: {
