@@ -246,6 +246,20 @@ assert_eq(px.grad().to_array(), [0.0, 1.0, 1.0, 1.0, 0.0])
 # Half-split (GPT-NeoX / HF-llama) convention: pairs (j, j+D/2) of the last
 # axis rotate by angle = position * base^(-2j/D), position = pos + (r % T).
 
+# A global function of the same name must not take the call. A built-in
+# method whose canon_sigs_table.h row is missing falls through to UFCS sugar
+# for a same-named free function instead -- silently, and only when one is
+# in scope, which is why this reads as a plain assertion about `.rope()`
+# rather than about the table. `rope` had no row for its first two weeks.
+# It takes the method's own arity, so UFCS really can bind it: a free
+# function of the wrong shape would only ever produce a DispatchError,
+# which is the loud half of this bug and not the half worth a test.
+mut rope_free_calls = 0
+fn rope(x, pos, base) {
+  rope_free_calls += 1
+  x
+}
+
 # pos=0 rotates every row by angle 0 regardless of theta -> identity.
 let rx = Tensor.from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
 assert_eq(rx.rope(0, 10000.0).to_array(), rx.to_array())
@@ -293,5 +307,8 @@ let rg0 = Tensor.from([[1.0, 2.0, 3.0, 4.0]]).requires_grad()
 (rg0.rope(0, 10000.0) * Tensor.from([[5.0, 6.0, 7.0, 8.0]])).sum(1).sum(0)
   .backward()
 assert_eq(rg0.grad().to_array(), [[5.0, 6.0, 7.0, 8.0]])
+
+# Nothing above went through the free function.
+assert_eq(rope_free_calls, 0)
 
 inspect("test_tensor_ops: OK")

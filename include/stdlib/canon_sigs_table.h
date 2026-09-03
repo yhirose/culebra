@@ -1527,6 +1527,9 @@ inline constexpr CanonParam kCanonParamPool[] = {
   {"hi", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   // 127: softmax_cross_entropy
   {"targets", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
+  // 128: rope
+  {"pos", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"base", false, false, false, false, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonObjectSigs[] = {
@@ -1683,6 +1686,7 @@ inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "relu", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "requires_grad", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "reshape", kCanonParamPool + 79, 1, "Tensor", 1, 1, false, -1, -1, -1},
+  {"", "", "rope", kCanonParamPool + 128, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "shape", nullptr, 0, "Array", 0, 0, false, -1, -1, -1},
   {"", "", "sigmoid", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "sin", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
