@@ -245,8 +245,6 @@ assert_eq(px.grad().to_array(), [0.0, 1.0, 1.0, 1.0, 0.0])
 # --- .rope(pos, base): rotary position embedding -----------------------------
 # Half-split (GPT-NeoX / HF-llama) convention: pairs (j, j+D/2) of the last
 # axis rotate by angle = position * base^(-2j/D), position = pos + (r % T).
-# Forward-only for now (see tensor.h's Op::Rope comment) -- a training-time
-# RoPE composes from slice/mul/concat instead of this fused decode fast path.
 
 # pos=0 rotates every row by angle 0 regardless of theta -> identity.
 let rx = Tensor.from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
@@ -275,14 +273,25 @@ let rt3out = rt3.rope(1, 10000.0).reshape([2, 4]).to_array()
 assert_eq(rt3out[0], r1)
 assert_eq(rt3out[1], r1)
 
-# forward-only: .backward() through rope raises rather than silently
-# skipping (same contract as the comparisons above).
-assert_throws('ValueError', fn () {
-  Tensor
-    .from([[1.0, 2.0, 3.0, 4.0]])
-    .requires_grad()
-    .rope(0, 10000.0)
-    .backward()
-})
+# VJP. Rotating by an angle has its own transpose for an inverse, and the
+# sign flip M that negates the second half of the last axis turns one into
+# the other (M R M = R^T), so the backward is the forward again on a
+# flipped gradient, flipped back. With g = ones that leaves dx[j] = c + s
+# and dx[j+h] = c - s for the same c/s the forward assertions above used.
+let rgx = Tensor.from([[1.0, 2.0, 3.0, 4.0]]).requires_grad()
+rgx.rope(1, 10000.0).sum(1).sum(0).backward()
+let rgg = rgx.grad().to_array()[0]
+assert_close(rgg[0], 0.5403023058681398 + 0.8414709848078965, 1.0e-6)
+assert_close(rgg[1], 0.9999500004166653 + 0.009999833334166664, 1.0e-6)
+assert_close(rgg[2], 0.5403023058681398 - 0.8414709848078965, 1.0e-6)
+assert_close(rgg[3], 0.9999500004166653 - 0.009999833334166664, 1.0e-6)
+
+# pos = 0 is the identity, so its VJP is too -- and this one would also pass
+# if rope's arm did nothing at all, which is what the assertions above rule
+# out.
+let rg0 = Tensor.from([[1.0, 2.0, 3.0, 4.0]]).requires_grad()
+(rg0.rope(0, 10000.0) * Tensor.from([[5.0, 6.0, 7.0, 8.0]])).sum(1).sum(0)
+  .backward()
+assert_eq(rg0.grad().to_array(), [[5.0, 6.0, 7.0, 8.0]])
 
 inspect("test_tensor_ops: OK")

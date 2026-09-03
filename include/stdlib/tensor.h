@@ -122,12 +122,10 @@ enum class Op {
   Narrow,  // `.slice()` generalized to any axis. Zero-copy view, no
            // backward yet (see the VJP switch).
   // Rotary position embedding: pairs (j, j+D/2) of the last axis rotate by
-  // a position/frequency-dependent angle. Forward-only for now (see the VJP
-  // switch) -- same reason Unfold/Pad/Fold/Permute/Narrow/ScatterAxis are:
-  // a training-time RoPE composes from existing differentiable primitives
-  // (slice the two halves, multiply by precomputed cos/sin constant
-  // tensors, concat back), so this fused native op is a decode/inference
-  // fast path, not something .backward() needs to see through.
+  // a position/frequency-dependent angle. `pos` rides in op_param and `base`
+  // in extra0, which is all its VJP needs: the rotation's transpose is the
+  // same rotation conjugated by a sign flip, so the backward re-runs the
+  // forward rather than keeping a cos/sin table (see the VJP switch).
   Rope,
 };
 
@@ -1001,13 +999,15 @@ inline TensorPtr tensor_clamp(TensorPtr a, float lo, float hi) {
 // rope(x, pos, base) needs an int64 and a float tensor_unary's (op, a)
 // signature has nowhere to carry, so its own builder (same reason
 // tensor_clamp above has one). `pos` rides in op_param (Slice's own
-// "one scalar" slot); `base` needs nothing stored back since Rope is
-// forward-only (see the Op enum's own comment and the VJP switch).
+// "one scalar" slot) and `base` in extra0 (Clip's own); the VJP re-runs the
+// forward and needs both back.
 inline TensorPtr tensor_rope(TensorPtr x, int64_t pos, float base = 10000.0f) {
   auto v = _tl_guard([&] { return tl::array::rope(x->value, pos, base); });
   auto dtype = x->dtype;
-  return tensor_make_op(Op::Rope, std::move(v), dtype,
-                        std::vector<TensorPtr>{std::move(x)}, pos);
+  auto out = tensor_make_op(Op::Rope, std::move(v), dtype,
+                            std::vector<TensorPtr>{std::move(x)}, pos);
+  out->extra0 = base;
+  return out;
 }
 
 // Fused MLP forward: sigmoid(W @ x + b). Bias is broadcast against
@@ -1195,6 +1195,20 @@ inline TensorPtr _tensor_slice_backward(const TensorPtr& g,
     out.slice(start, g->shape.dims[0]).add_(g->value);
     return out;
   });
+  return _tensor_wrap_const(std::move(v), dt);
+}
+
+// The sign flip that turns rope's rotation into its own transpose: +1 over
+// the first half of the last axis, -1 over the second. Shaped [1, ..., 1, D]
+// so one row's worth broadcasts across however many rows the gradient has.
+inline TensorPtr _tensor_rope_sign_mask(const TensorShape& shape, Dtype dt) {
+  auto d = shape.dims.back();
+  std::vector<float> m(static_cast<size_t>(d), 1.0f);
+  for (int64_t j = d / 2; j < d; j++) m[static_cast<size_t>(j)] = -1.0f;
+  std::vector<int64_t> dims(shape.dims.size(), 1);
+  dims.back() = d;
+  auto v = _tl_guard(
+      [&] { return tl::array::from(std::move(m), std::move(dims)); });
   return _tensor_wrap_const(std::move(v), dt);
 }
 
@@ -1544,15 +1558,22 @@ inline void _tensor_vjp(const TensorPtr& n) {
       // forward-only, writing its own gradient by hand around it).
       throw CulebraError("ValueError",
           "Tensor.backward: scatter_to_axis is not differentiable yet.");
-    case Op::Rope:
-      // The VJP is the transpose rotation (angle negated), which needs the
-      // same cos/sin table the forward used and nothing here keeps it
-      // (op_param is pos, sized for Slice's one scalar; base isn't stored
-      // back at all — see the Op enum's own comment). Unreached today: a
-      // training-time RoPE composes from existing differentiable
-      // primitives instead of this fused decode/inference fast path.
-      throw CulebraError("ValueError",
-          "Tensor.backward: rope is not differentiable yet.");
+    case Op::Rope: {
+      // y = R x, where R rotates each pair (j, j+D/2) of the last axis by
+      // that row's angle: [[c, -s], [s, c]] over the two halves. So dx =
+      // R^T g, and R^T = M R M for the sign flip M that negates the second
+      // half — conjugating by M flips both off-diagonal blocks, which is
+      // exactly the transpose. That makes the pullback the forward run
+      // again, on a sign-flipped gradient and flipped back: no cos/sin
+      // table to keep, and the angles come out right for free because
+      // op_param/extra0 hold the same pos/base the forward used.
+      auto m = _tensor_rope_sign_mask(n->shape, dt);
+      auto rot = tensor_rope(tensor_binop(Op::Mul, g, m), n->op_param,
+                             static_cast<float>(n->extra0));
+      _tensor_grad_add(n->inputs[0],
+                       tensor_binop(Op::Mul, std::move(rot), std::move(m)));
+      break;
+    }
   }
 }
 

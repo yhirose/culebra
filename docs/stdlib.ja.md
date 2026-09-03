@@ -1670,7 +1670,7 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
 `.softmax()`、`.log()`、`.tanh()`、`.sin()`、`.cos()`、`.clamp()`、
 `.transpose()`、`.permute()`、`.reshape()`、`.slice()`、`.narrow()`、
-`.softmax_cross_entropy()`、`Tensor.concat()`、`Tensor.where()`、
+`.rope()`、`.softmax_cross_entropy()`、`Tensor.concat()`、`Tensor.where()`、
 `.index_select()` /
 `Tensor.index_add()`（互いが相手のVJP）。勾配は自動でun-broadcastされる
 ので、バッチ越しに加えたbiasは元の形状に和を取って戻ります。
@@ -1679,11 +1679,14 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 *全*軸を反転するので、rank 3以上では別の操作であって、これの短縮形では
 ありません。置換はノード自身のスカラースロットに1軸4ビットで収めるため、
 rank 16以上の`.permute()`を通した`.backward()`は、切り詰めた置換を
-保存するのではなく例外を投げます。`.unfold()`、`.pad()`、`.fold()`、`.rope()`、
+保存するのではなく例外を投げます。`.rope()`も何も保存しません。
+回転行列の逆は自身の転置であり、head次元の後ろ半分の符号を反転して
+から回して戻せばその転置になるので、backwardは順方向をもう一度
+走らせるだけで済みます——使ったcos/sinの表を持ち回る必要がありません。
+`.unfold()`、`.pad()`、`.fold()`、
 `Tensor.scatter_to_axis()`は今のところforward-onlyです——これらを通した
-`.backward()`は例外を投げます。im2col方式のconvやpoolingレイヤー、
-Q/Kに適用するRoPEなどこれらを使う学習ループは、今のところ自前で
-backwardを書きます。
+`.backward()`は例外を投げます。im2col方式のconvやpoolingレイヤーなど
+これらを使う学習ループは、今のところ自前でbackwardを書きます。
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()`（および`.max()` /
 `.argmax()`）は恒久的に微分不可能です——比較を通した`.backward()`は常に
 例外を投げます（PyTorch/numpyと同じ）。0/1マスクは`*`で合成してください

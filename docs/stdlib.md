@@ -1708,9 +1708,9 @@ produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.tanh()`, `.sin()`,
 `.cos()`, `.clamp()`, `.transpose()`, `.permute()`, `.reshape()`,
-`.slice()`, `.narrow()`, `.softmax_cross_entropy()`, `Tensor.concat()`,
-`Tensor.where()`, and `.index_select()` / `Tensor.index_add()` (each
-other's own VJP). Gradients
+`.slice()`, `.narrow()`, `.rope()`, `.softmax_cross_entropy()`,
+`Tensor.concat()`, `Tensor.where()`, and `.index_select()` /
+`Tensor.index_add()` (each other's own VJP). Gradients
 un-broadcast automatically, so a bias added across a batch sums back to its
 shape. `.permute()`'s own VJP is the inverse permutation, which is what
 lets an attention head split (`[B, C, H, D]` to `[B, H, C, D]`) train:
@@ -1718,11 +1718,14 @@ lets an attention head split (`[B, C, H, D]` to `[B, H, C, D]`) train:
 operation, not a shorthand for this one. The permutation rides in the node's
 own scalar slot, four bits an axis, so `.backward()` through a `.permute()`
 of rank 16 or more raises rather than storing one it has truncated.
-`.unfold()`, `.pad()`, `.fold()`, `.rope()`, and
-`Tensor.scatter_to_axis()` are forward-only so far — `.backward()` through
-them raises; a training loop that uses them (e.g. an im2col-style conv, a
-pooling layer, or RoPE applied to Q/K) writes its own backward pass around
-them for now.
+`.rope()` needs nothing stored either: rotation by an angle has its own
+transpose for an inverse, and negating the second half of the head
+dimension before and after turns the forward rotation into that transpose
+— so the backward re-runs the forward rather than keeping the cosines it
+used. `.unfold()`, `.pad()`, `.fold()`, and `Tensor.scatter_to_axis()` are
+forward-only so far — `.backward()` through them raises; a training loop
+that uses them (an im2col-style conv, or a pooling layer) writes its own
+backward pass around them for now.
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()` (and `.max()` /
 `.argmax()`) are never differentiable — `.backward()` through a comparison
 always raises, the same as PyTorch/numpy: compose the 0/1 mask with `*`
