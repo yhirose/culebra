@@ -5,8 +5,9 @@ A culebra port of Jake Gordon's
 (`v4.final.html`, MIT) — the pseudo-3D road, the segment/curve/hill geometry,
 the AI traffic, collision, and lap timing all come from the original. What's
 different: the art (generated, not lifted — see `assets/README.md`), a
-four-scene day cycle that gives each scene a quarter of the track, and the
-shape of the hot loops, rewritten for a tree-walking interpreter rather than a
+four-scene day cycle that gives each scene a quarter of the track, a race
+around it — a three-second count-in, two laps, a results screen, where the
+original runs forever — and the shape of the hot loops, rewritten for a tree-walking interpreter rather than a
 JIT'd browser (see `retro-run.cul`'s header comment for why).
 
 ## Run
@@ -23,7 +24,8 @@ instead of the local filesystem, everything else is identical. Open it as
 `http://localhost:...`, not `http://[::]`: the latter is treated as
 non-secure and breaks WebGPU.
 
-Controls are arrow keys or WASD. A bare number overrides the draw distance
+Controls are arrow keys or WASD, and space starts another race from the
+results screen. A bare number overrides the draw distance
 (default 300, matching v4's own default; its tweak UI allows 100..500), and
 `--assets <dir>` reads the art from somewhere else:
 

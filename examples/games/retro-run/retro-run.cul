@@ -2,13 +2,16 @@
 #
 # The pseudo-3D road, the projection, the road geometry, the AI and every
 # constant come from the original; what changed is the art (generated, see
-# assets/README.md), the day cycle (four scenes over one lap) and the shape of
-# the hot loops. The interpreter charges a C++ stack unwind for `return`,
+# assets/README.md), the day cycle (four scenes over one lap), the race around
+# it (a count-in, two laps, a results screen — the original runs forever), and
+# the shape of the hot loops. The interpreter charges a C++ stack unwind for
+# `return`,
 # `break` and `continue`, so the loops that run per car or per segment carry a
 # `done` flag instead, and the drawing calls go straight to the `_Canvas.*`
 # primitives rather than through the preamble wrappers.
 #
-# Controls: arrows or WASD. Run with --jit for the smoothest frame time.
+# Controls: arrows or WASD, space to race again from the results screen. Run
+# with --jit for the smoothest frame time.
 # An optional first argument overrides the draw distance, e.g.
 #   culebra --jit retro-run.cul 150
 # Shortening it trims the far road/background/sprites and, since v4's own AI
@@ -492,6 +495,11 @@ let reset_props = fn () {
   }
 }
 
+# The stretch at the line the traffic is kept off. The camera starts at
+# segment 0 with the car PLAYER_Z ahead of it, so a car scattered into the
+# first few segments is drawn between the two — on top of the player.
+let START_CLEAR = 30
+
 let reset_cars = fn () {
   cars = []
   for _ in 0..TOTAL_CARS {
@@ -499,7 +507,7 @@ let reset_cars = fn () {
     let art = CARS[Random.int(0, CARS.size())]
     # The semi is slower, so it needs a narrower spread to stay behind traffic.
     let spread = art == SEMI ? 4.0 : 2.0
-    let seg = Random.int(0, segments.size())
+    let seg = Random.int(START_CLEAR, segments.size())
     let car = Car.new(
       art,
       Random.uniform(0.0, 1.0) * side,
@@ -558,6 +566,20 @@ mut key_slower = false
 mut current_lap_time = 0.0
 mut last_lap_time = 0.0
 mut fast_lap_time = 180.0  # v4's starting target, session-lived
+
+# Seconds to the drop, counting down from COUNT_IN; it keeps falling past zero
+# so GO! can hold for a beat, and the physics wait for it to reach zero.
+let COUNT_IN = 3.0
+let GO_HOLD = 0.9
+mut count_in = COUNT_IN
+mut counted = 4  # the last number that has had its beep
+
+# The race is two laps — the original runs forever, but a lap is a couple of
+# minutes, so a flag has to fall somewhere.
+let TOTAL_LAPS = 2
+mut lap = 1
+mut total_time = 0.0
+mut finished = false
 
 # --- BGM ---------------------------------------------------------------
 # A music.ogg / music.mp3 next to the art (upstream's own soundtrack, say)
@@ -948,6 +970,49 @@ let tick_bgm = fn () {
   bgm_frame = (bgm_frame + 1) % BGM_LOOP
 }
 
+# --- race control ----------------------------------------------------------
+# The world is frozen while the count-in runs, so only the clock, the beeps and
+# the music advance: three beeps a second apart and a higher one on the drop.
+let tick_count_in = fn (dt) {
+  count_in -= dt
+  let n = Math.ceil(count_in)
+  if n < counted {
+    counted = n
+    Canvas.tone(
+      n > 0 ? 660 : 990,
+      n > 0 ? 8 : 20,
+      vol: 25,
+      wave: Canvas.PULSE,
+      decay: 2,
+      release: 4,
+    )
+  }
+  tick_bgm() if MUSIC_FILE == nil
+}
+
+# Back to the line for another two laps. The traffic is scattered again (a
+# segment holds its own cars, so those lists are emptied first) and the best
+# lap is deliberately kept: it is the session's target, not the race's.
+let restart_race = fn () {
+  for segment in segments {
+    segment.cars = []
+  }
+  reset_cars()
+  position = 0.0
+  speed = 0.0
+  player_x = 0.0
+  sky_offset = 0.0
+  hill_offset = 0.0
+  tree_offset = 0.0
+  current_lap_time = 0.0
+  last_lap_time = 0.0
+  total_time = 0.0
+  lap = 1
+  finished = false
+  count_in = COUNT_IN
+  counted = 4
+}
+
 # --- update ----------------------------------------------------------------
 # How far a car steers this frame to get around whatever is in front of it.
 let steer_car = fn (car, car_index, player_index, n, player_half) {
@@ -1102,8 +1167,14 @@ let update = fn (dt) {
     if current_lap_time > 0.0 && start_position < PLAYER_Z {
       last_lap_time = current_lap_time
       current_lap_time = 0.0
+      total_time += last_lap_time
       if last_lap_time < fast_lap_time {
         fast_lap_time = last_lap_time
+      }
+      if lap == TOTAL_LAPS {
+        finished = true
+      } else {
+        lap += 1
       }
     } else {
       current_lap_time += dt
@@ -1539,9 +1610,75 @@ let format_time = fn (t) {
 let draw_hud = fn () {
   _Canvas.rect(0, 0, W, 14, HUD_BG, 1)
   Canvas.text("{5 * Math.round(speed / 500.0)} MPH", 8, 3, HUD_FG)
+  Canvas.text("LAP {lap}/{TOTAL_LAPS}", 88, 3, HUD_FG)
   Canvas.text("TIME {format_time(current_lap_time)}", 152, 3, HUD_FG)
   Canvas.text("LAST {format_time(last_lap_time)}", 320, 3, HUD_FG)
   Canvas.text("BEST {format_time(fast_lap_time)}", 480, 3, HUD_FG)
+}
+
+let BANNER_SHADOW = Canvas.rgba(128, 124, 136)
+let PANEL_BG = Canvas.rgba(28, 22, 40, 168)
+
+# One line of banner text, centred, with a one-block grey drop shadow so it
+# reads against either the sky or the tarmac.
+let draw_banner = fn (s, y, scale) {
+  let x = (W - Canvas.text_width(s, scale)) / 2
+  Canvas.text(s, x + scale, y + scale, BANNER_SHADOW, scale)
+  Canvas.text(s, x, y, HUD_FG, scale)
+}
+
+# How far a row of a rounded panel is inset — 0 down the straight sides, and
+# the corner circle's own offset across the r rows at each end.
+let corner_inset = fn (dy, h, r) {
+  let dv = cond {
+    dy < r => r - dy,
+    dy >= h - r => dy - (h - r) + 1,
+    _ => 0,
+  }
+  r - Math.floor(Math.sqrt((r * r - dv * dv) * 1.0))
+}
+
+# A rounded panel, translucent enough to leave the road showing through. The
+# fill is laid down one row at a time because a translucent colour darkens
+# what it covers every time it is drawn, and rows cannot overlap; the edge is
+# opaque, so its runs are free to.
+let draw_panel = fn (x, y, w, h, r) {
+  for dy in 0..h {
+    let inset = corner_inset(dy, h, r)
+    _Canvas.rect(x + inset, y + dy, w - 2 * inset, 1, PANEL_BG, 1)
+  }
+  _Canvas.rect(x + r, y, w - 2 * r, 1, HUD_FG, 1)
+  _Canvas.rect(x + r, y + h - 1, w - 2 * r, 1, HUD_FG, 1)
+  _Canvas.rect(x, y + r, 1, h - 2 * r, HUD_FG, 1)
+  _Canvas.rect(x + w - 1, y + r, 1, h - 2 * r, HUD_FG, 1)
+  # The arc, a row at a time, each run reaching back to the row above so the
+  # steps between them are closed rather than left as gaps.
+  mut prev = r
+  for dy in 0..r {
+    let inset = corner_inset(dy, h, r)
+    let run = prev - inset + 1
+    _Canvas.rect(x + inset, y + dy, run, 1, HUD_FG, 1)
+    _Canvas.rect(x + w - prev - 1, y + dy, run, 1, HUD_FG, 1)
+    _Canvas.rect(x + inset, y + h - 1 - dy, run, 1, HUD_FG, 1)
+    _Canvas.rect(x + w - prev - 1, y + h - 1 - dy, run, 1, HUD_FG, 1)
+    prev = inset
+  }
+}
+
+# The count-in: the number, then GO!, over the frozen road.
+let draw_count_in = fn () {
+  let n = Math.ceil(count_in)
+  draw_banner(n > 0 ? "{n}" : "GO!", (H - 8 * 6) / 2, 6)
+}
+
+# The results, on a panel because the road behind them is a still image and
+# every one of these lines has to be readable at a glance.
+let draw_finish = fn () {
+  draw_panel(120, 150, 400, 160, 12)
+  draw_banner("FINISH", 170, 5)
+  draw_banner("TOTAL {format_time(total_time)}", 228, 2)
+  draw_banner("BEST {format_time(fast_lap_time)}", 252, 2)
+  draw_banner("PRESS SPACE TO RACE AGAIN", 285, 1)
 }
 
 let render = fn () {
@@ -1624,8 +1761,9 @@ let render = fn () {
     if mi == player_index {
       # The camera sits exactly CAMERA_HEIGHT above the car and PLAYER_Z behind
       # it, so the car's own projection is the constant H — v4 interpolates its
-      # camera-space height to arrive at the same number.
-      draw_player(speed / MAX_SPEED, H * 1.0, cond {
+      # camera-space height to arrive at the same number, then four pixels up
+      # so the bottom of the car clears the edge of the framebuffer.
+      draw_player(speed / MAX_SPEED, H - 4.0, cond {
         key_left => -1.0,
         key_right => 1.0,
         _ => 0.0,
@@ -1636,6 +1774,8 @@ let render = fn () {
   }
 
   draw_hud()
+  draw_count_in() if count_in > -GO_HOLD
+  draw_finish() if finished
 }
 
 # --- main ------------------------------------------------------------------
@@ -1658,6 +1798,8 @@ let frame = fn () {
   let dt = Math.min(4.0 * STEP, now - last)
   last = now
 
+  restart_race() if finished && Canvas.key('space')
+
   let held = _Canvas.buttons()
   key_left = held & Canvas.LEFT != 0
   key_right = held & Canvas.RIGHT != 0
@@ -1667,7 +1809,16 @@ let frame = fn () {
   gdt += dt
   while gdt > STEP {
     gdt -= STEP
-    update(STEP)
+    # Exactly one of these runs, and each keeps the music going: the world is
+    # frozen both before the drop and after the flag.
+    if count_in > 0.0 {
+      tick_count_in(STEP)
+    } else if finished {
+      tick_bgm() if MUSIC_FILE == nil
+    } else {
+      count_in -= STEP if count_in > -GO_HOLD
+      update(STEP)
+    }
   }
   render()
   true
