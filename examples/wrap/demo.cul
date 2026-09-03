@@ -3,10 +3,13 @@
 # ClosedError. Run under interp / --jit / AOT — output must match.
 let v = Geo.Vec2.new(3.0, 4.0)
 inspect(v.len())
-v.scale(2.0)
+v.scale(2.0)  # bias omitted -> defaults to 0.0
 inspect(v.show())
 let u = v.unit()
 inspect(u.len())
+inspect(v.dot(u))       # handle argument: u borrows for the call
+v.scale(1.0, bias: 1.0) # bias supplied
+inspect(v.show())
 inspect(Geo.Vec2.dims())
 {
   let tmp = Geo.Vec2.new(1.0, 0.0)

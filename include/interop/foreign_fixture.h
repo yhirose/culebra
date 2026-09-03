@@ -34,6 +34,20 @@ class Counter {
   }
   std::string label() const { return "Counter(" + std::to_string(value_) + ")"; }
 
+  // Wrap.h Gap A/B fixture: a handle argument borrows (merge/steal/
+  // add_maybe never take ownership of `o`), and bump_by/scale exercise a
+  // trailing optional.
+  void merge(const Counter& o) { value_ += o.value_; }        // const U& — no bump on o
+  void steal(Counter& o) {                                    // U& — bumps o
+    value_ += o.value_;
+    o.value_ = 0;
+  }
+  void add_maybe(Counter* o) {                                // U* — nil accepted
+    if (o) value_ += o->value_;
+  }
+  void bump_by(int64_t n) { value_ += n; }                    // trailing default
+  void scale(int64_t k, int64_t off) { value_ = value_ * k + off; }
+
   // The three return-ownership shapes.
   Counter clone() const { return Counter(value_); }            // by value
   std::unique_ptr<Counter> fork() const {                      // unique_ptr
@@ -72,6 +86,12 @@ class Box {
   int64_t peek() const { return inner_.value(); }
   void reset(int64_t v) { inner_ = Counter(v); }
   void touch() {}  // non-const, but harmless — preserves_borrows
+
+  // Gap A on a second wrapped class: `other` is a handle argument of a
+  // DIFFERENT wrapped type than the receiver, so its bump is independent of
+  // whatever the receiver's own const-ness does.
+  void poke(Box& other) { other.reset(0); }         // Box& — bumps other
+  void peek_at(const Box&) const {}                 // const Box& — no bump
 
  private:
   Counter inner_;

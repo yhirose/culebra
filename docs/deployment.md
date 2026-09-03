@@ -792,6 +792,7 @@ for `Tensor` / `Http`, applied to the `libculebra_rt_wrap.a` archive.
 | `std::string` / `std::string_view` / `const char*` | `String` |
 | `T` by value, `std::unique_ptr<T>` | owned instance of wrapped `T` |
 | `std::shared_ptr<T>` | instance holding one share |
+| `U&` / `const U&` / `U*` / `const U*` (wrapped `U`, method parameter only) | a handle of `U` — see below |
 
 A method returning `T&` / `const T&` of a wrapped class is a
 **compile-time error** under `.method` — references are not an
@@ -820,6 +821,48 @@ A non-const method that provably never invalidates borrows can opt out:
 Misdeclaring const-ness or this flag is an author-contract violation
 (the sol2/pybind11 deal) — the failure mode is a spurious or missed
 stale error, never memory-unsafety on the culebra side.
+
+A method parameter can itself name a wrapped class — **an argument
+borrows the caller's handle for the call; only a return moves ownership**
+(the mirror image of the by-value/`unique_ptr`/`shared_ptr` row above).
+`U&`/`const U&` require a live handle of `U`; `U*`/`const U*` additionally
+accept `nil`. A non-const `U&`/`U*` bumps that argument's own generation,
+exactly as a non-const receiver bumps its own — value, `U&&` and smart-pointer
+parameters of a wrapped class have no ownership shape to give up, so they
+are not supported (a `.method` declaring one fails to compile):
+
+```cpp
+void merge(const Counter& o) { value_ += o.value_; }  // borrows, doesn't bump
+void steal(Counter& o) { value_ += o.value_; o.value_ = 0; }  // bumps o
+void add_maybe(Counter* o) { if (o) value_ += o->value_; }  // nil accepted
+```
+```culebra
+let c = __Foreign.Counter.new(1)
+let o = __Foreign.Counter.new(2)
+c.merge(o)      # o unaffected
+c.add_maybe(nil)
+```
+
+A trailing parameter can default, so a call may omit it: spell that entry
+as `{"name", value}` instead of a bare name (a bool, integer, float/double,
+string, or `nullptr` for a `U*`/`const U*` parameter — there is no
+expression evaluator here, so the default is always a C++-side literal):
+
+```cpp
+.method<&Counter::bump_by>("bump_by", {{"n", 1L}})
+.method<&Counter::scale>("scale", {"k", {"off", 0L}})
+```
+```culebra
+let c = __Foreign.Counter.new(1)
+c.bump_by()          # n defaults to 1
+c.bump_by(n: 5)
+c.scale(2)           # off defaults to 0
+c.scale(2, off: 1)
+```
+
+Optional parameters must be a trailing run, and both extensions apply to
+`.method`/`.borrowed_method` only — a `.ctor`/`.static_method` parameter is
+always required and cannot yet name a wrapped class.
 
 Containers (`std::vector`/`std::map`) and callbacks are not yet
 marshalled.

@@ -1166,6 +1166,24 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
         if (class_tag_view == expected) return true;
       }
     }
+    // A wrapped C++ instance (wrap.h) carries its class name in `__foreign__`
+    // instead of `class` — never both — so a method parameter declared
+    // `U&`/`const U&`/`U*` of a wrapped class accepts a handle of U exactly
+    // as `s: Square` accepts a Square instance. Anything that already
+    // answered with a class tag (a class instance, an enum variant) is not a
+    // handle, and skips the lookup: find_slot misses by walking every
+    // property name, and every failing check reaches here.
+    if (class_tag_view.empty()) {
+      if (auto fidx = obj->find_slot("__foreign__");
+          fidx != static_cast<size_t>(-1)) {
+        const auto& f_slot = obj->slots[fidx].value;
+        if (f_slot.tag == TAG_STRING &&
+            std::string_view(reinterpret_cast<const char*>(f_slot.data)) ==
+                expected) {
+          return true;
+        }
+      }
+    }
     // Enum variant: also matches the parent enum name (`__enum` field),
     // so `r: Result` accepts any `Result.*` variant. Mirrors interp.
     if (auto en = _jit_enum_name(obj); en && *en == expected) return true;

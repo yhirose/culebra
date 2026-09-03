@@ -25,7 +25,10 @@ const bool registered = [] {
       .method<&demo::Vec2::x>("x")
       .method<&demo::Vec2::y>("y")
       .method<&demo::Vec2::len>("len")
-      .method<&demo::Vec2::scale>("scale", {"k"})
+      // `bias` is a trailing optional (wrap.h Gap B): `v.scale(2.0)` still
+      // works, defaulting bias to 0.0.
+      .method<&demo::Vec2::scale>("scale", {"k", {"bias", 0.0}})
+      .method<&demo::Vec2::dot>("dot", {"o"})
       .method<&demo::Vec2::show>("show")
       .method<&demo::Vec2::unit>("unit")
       .static_method<&demo::Vec2::dims>("dims");

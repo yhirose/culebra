@@ -150,38 +150,96 @@ inline std::vector<std::string> pin_param_names(std::vector<std::string> names,
 // the argument's threaded position (argpos / call_arg0 fallback),
 // ClosedError at the call site.
 
-// Annotation check through the canonical matcher — the SAME predicate the
-// ns-method trampoline applies to ctor/static params, so a String param
-// rejects a StringView slice identically on every path.
-template <class A>
-inline bool jit_arg_matches(const JitValue& v) {
-  return _culebra_value_matches_type(
-      v.tag, v.data, _detail::type_annotation_for<std::decay_t<A>>());
-}
+// A declared method parameter: its name, and — for a trailing optional —
+// the default a call site may omit. Implicitly constructible from a bare
+// name, so every existing `{"a", "b"}` list keeps its spelling and its
+// meaning; only a parameter that wants to be optional spells one entry as
+// `{"name", value}` instead. Defaults are C++-side literals, not Culebra
+// expressions (there is no evaluator here): the four kinds jit_lower_return
+// and jit_arg_get already know how to move as a bare JitValue. Optional
+// parameters must be a trailing run — nothing here checks that; it mirrors
+// how the underlying has-default bitmap (_jit_make_handle_meta) already
+// reads it, min_arity first.
+struct wrap_param {
+  std::string name;
+  bool has_default = false;
+  int8_t default_tag = TAG_NIL;
+  int64_t default_data = 0;
 
-template <class A>
-inline std::decay_t<A> jit_arg_get(const JitValue& v) {
-  using D = std::decay_t<A>;
-  if constexpr (std::is_integral_v<D> && !std::is_same_v<D, bool>) {
-    return static_cast<D>(v.data);
-  } else if constexpr (std::is_same_v<D, double> || std::is_same_v<D, float>) {
-    double d;
-    std::memcpy(&d, &v.data, sizeof(double));
-    return static_cast<D>(d);
-  } else if constexpr (std::is_same_v<D, bool>) {
-    return v.data != 0;
-  } else {
-    return D(_culebra_str_view(v.tag, v.data));
+  wrap_param() = default;
+  wrap_param(const char* n) : name(n) {}
+  wrap_param(std::string n) : name(std::move(n)) {}
+
+  // One template, not an overload per kind: `0L`/`0`/`nullptr` are all
+  // mutually-convertible null-pointer-constant-or-arithmetic literals, so
+  // overload resolution between separate bool/int64_t/double/nullptr_t
+  // constructors ranks their conversions as equally good and rejects the
+  // call as ambiguous. Branching on the deduced type inside one
+  // constructor sidesteps that; only one candidate exists to select.
+  template <class V>
+  wrap_param(std::string n, V v) : name(std::move(n)), has_default(true) {
+    using D = std::decay_t<V>;
+    if constexpr (std::is_same_v<D, std::nullptr_t>) {
+      default_tag = TAG_NIL;
+    } else if constexpr (std::is_same_v<D, bool>) {
+      default_tag = TAG_BOOL;
+      default_data = v ? 1 : 0;
+    } else if constexpr (std::is_floating_point_v<D>) {
+      default_tag = TAG_FLOAT;
+      double d = static_cast<double>(v);
+      std::memcpy(&default_data, &d, sizeof(double));
+    } else if constexpr (std::is_integral_v<D>) {
+      default_tag = TAG_LONG;
+      default_data = static_cast<int64_t>(v);
+    } else if constexpr (std::is_constructible_v<std::string, V>) {
+      // Interned (immortal, GC-invisible — the same storage a handle's
+      // __foreign__ name uses), so an omitted argument costs no allocation
+      // and needs no rooting.
+      default_tag = TAG_STRING;
+      default_data =
+          reinterpret_cast<int64_t>(_intern_str(std::string(v)));
+    } else {
+      static_assert(!sizeof(V*),
+                    "wrap.h: a wrap_param default must be nullptr, bool, an "
+                    "integer, a float/double, or a string");
+    }
   }
-}
 
-// Per-(T, method) param names for the thunk's error wording. Filled by
-// the binder at static-init; constinit for the same ordering reason as
-// jit_class_info.
+  JitValue default_value() const { return {default_tag, default_data}; }
+};
+
+// Per-(T, method) params for the thunk's error wording and its optional
+// defaults. Filled by the binder at static-init; constinit for the same
+// ordering reason as jit_class_info.
 template <class T, auto Mf>
 struct jit_method_info {
-  static constinit inline std::vector<std::string> param_names;
+  static constinit inline std::vector<wrap_param> params;
 };
+
+// The JitValue at slot i, or its declared default when the caller omitted
+// it (i >= n, a plain positional call shorter than the full arity; or a
+// TAG_UNFILLED slot, the kwargs resolver's own omission marker). Mirrors
+// _jit_file_arg_present's reasoning: check `i < n` before ever touching
+// `args[i]`, so a short positional call never reads past what the caller
+// actually supplied.
+template <class T, auto Mf>
+inline JitValue jit_arg_or_default(int64_t n, JitValue* args, size_t i) {
+  if (static_cast<int64_t>(i) < n && args[i].tag != TAG_UNFILLED) {
+    return args[i];
+  }
+  return jit_method_info<T, Mf>::params[i].default_value();
+}
+
+// pin_param_names's twin for method/borrowed_method: fill an omitted
+// parameter's name the same way, over wrap_param instead of a bare string.
+inline std::vector<wrap_param> pin_wrap_params(std::vector<wrap_param> params,
+                                               size_t arity) {
+  params.resize(arity);
+  for (size_t i = 0; i < arity; i++) {
+    if (params[i].name.empty()) params[i].name = "_arg" + std::to_string(i);
+  }
+  return params;
+}
 
 // Per-T binding info, filled once by the binder's static-init run: the
 // display name handles carry, and the method table the handle builder
@@ -200,6 +258,11 @@ struct jit_class_info {
     const JitParamMeta* meta;
   };
   static constinit inline std::string name;
+  // The `T?` annotation a U* parameter of this class carries (param_type_name
+  // above) — computed once here rather than concatenated at every call, so
+  // that annotation is always a view of process-lifetime storage, never a
+  // temporary.
+  static constinit inline std::string opt_name;
   static constinit inline std::vector<Method> methods;
 };
 
@@ -375,12 +438,144 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
+// A method parameter naming a wrapped class: U& / const U& (a required
+// handle, resolved to a live T&) or U* / const U* (nil accepted, resolved to
+// nullptr). Never std::string — that spelling already means the String
+// primitive, marshalled through jit_arg_get's other branch below. A method
+// wanting to give up ownership of one of its own arguments still can't:
+// value, && and smart-pointer parameters of a wrapped class don't match
+// either partial specialization here, so they fall through to the string
+// branch and fail to compile — the same asymmetry jit_lower_return's
+// static_assert states for returns applies to arguments in the other
+// direction: an argument borrows the caller's handle for the call, only a
+// return moves ownership.
+template <class A>
+struct handle_target {
+ private:
+  using NoRef = std::remove_reference_t<A>;
+  using NoPtr = std::remove_pointer_t<A>;
+  static constexpr bool is_ref =
+      std::is_lvalue_reference_v<A> && std::is_class_v<NoRef> &&
+      !std::is_same_v<std::remove_cv_t<NoRef>, std::string>;
+  static constexpr bool is_ptr =
+      std::is_pointer_v<A> && std::is_class_v<NoPtr>;
+
+ public:
+  using type = std::conditional_t<
+      is_ref, std::remove_cv_t<NoRef>,
+      std::conditional_t<is_ptr, std::remove_cv_t<NoPtr>, void>>;
+  static constexpr bool is_pointer = is_ptr;
+  // A non-const U&/U* can mutate the referent, so passing one bumps its
+  // generation the same way a non-const receiver does; const doesn't.
+  static constexpr bool is_mutable =
+      is_ref ? !std::is_const_v<NoRef> : (is_ptr && !std::is_const_v<NoPtr>);
+};
+
+// The declared Culebra annotation for a parameter: a wrapped class's own
+// display name (so `fn f(c: Counter)` and a `Counter` method parameter mean
+// the same thing) for a handle shape, the fixed primitive table otherwise.
+// Not constexpr — a wrapped class's name is filled by its own wrap<>
+// declaration's constructor, at a point this parameter's declaration cannot
+// see — so both jit_arg_matches and jit_check_args's kAnnos read through
+// this one function rather than each keeping an independent, possibly
+// stale copy (decay_t here vs plain Args there was exactly that drift,
+// before this existed: a `const int&` param's error wording read blank).
+template <class A>
+inline std::string_view param_type_name() {
+  using Target = typename handle_target<A>::type;
+  if constexpr (std::is_void_v<Target>) {
+    return _detail::type_annotation_for<std::decay_t<A>>();
+  } else if constexpr (handle_target<A>::is_pointer) {
+    return jit_class_info<Target>::opt_name;
+  } else {
+    return jit_class_info<Target>::name;
+  }
+}
+
+// Annotation check through the canonical matcher — the SAME predicate the
+// ns-method trampoline applies to ctor/static params, so a String param
+// rejects a StringView slice identically on every path.
+template <class A>
+inline bool jit_arg_matches(const JitValue& v) {
+  return _culebra_value_matches_type(v.tag, v.data, param_type_name<A>());
+}
+
+template <class A>
+inline decltype(auto) jit_arg_get(const JitValue& v) {
+  using Target = typename handle_target<A>::type;
+  if constexpr (!std::is_void_v<Target>) {
+    if constexpr (handle_target<A>::is_pointer) {
+      return v.tag == TAG_NIL ? static_cast<Target*>(nullptr)
+                              : jit_handle_self<Target>(v);
+    } else {
+      return *jit_handle_self<Target>(v);
+    }
+  } else {
+    using D = std::decay_t<A>;
+    if constexpr (std::is_integral_v<D> && !std::is_same_v<D, bool>) {
+      return static_cast<D>(v.data);
+    } else if constexpr (std::is_same_v<D, double> || std::is_same_v<D, float>) {
+      double d;
+      std::memcpy(&d, &v.data, sizeof(double));
+      return static_cast<D>(d);
+    } else if constexpr (std::is_same_v<D, bool>) {
+      return v.data != 0;
+    } else {
+      return D(_culebra_str_view(v.tag, v.data));
+    }
+  }
+}
+
+// A sequenced pass over the handle-typed elements of Args, left to right —
+// resolving a handle argument inside the actual (obj->*Mf)(...) call has
+// unspecified argument evaluation order, so which of two invalid arguments
+// gets reported would be compiler-dependent (difftest and a macOS/Linux
+// toolchain difference would both see it). This pass — not that call — is
+// what fixes the order; jit_arg_get's own resolution afterward is redundant
+// but always succeeds once this one has.
+template <class A>
+inline void jit_arg_handle_check(int64_t n, JitValue* args, size_t i) {
+  using Target = typename handle_target<A>::type;
+  if constexpr (!std::is_void_v<Target>) {
+    if (static_cast<int64_t>(i) >= n) return;  // absent; a default supplies it
+    const JitValue& v = args[i];
+    if (v.tag == TAG_UNFILLED || v.tag == TAG_NIL) return;
+    (void)jit_handle_self<Target>(v);  // ClosedError on a dropped/stale handle
+  }
+}
+template <class... Args>
+inline void jit_resolve_arg_handles(int64_t n, JitValue* args) {
+  size_t i = 0;
+  (jit_arg_handle_check<Args>(n, args, i++), ...);
+}
+
+// Companion pass: bump the generation of every non-const handle argument,
+// mirroring what a non-const receiver already does. Runs after resolution
+// (so a stale argument reports ClosedError, not a bump on top of it) and
+// before the call.
+template <class A>
+inline void jit_arg_handle_bump(int64_t n, JitValue* args, size_t i) {
+  using Target = typename handle_target<A>::type;
+  if constexpr (!std::is_void_v<Target> && handle_target<A>::is_mutable) {
+    if (static_cast<int64_t>(i) >= n) return;
+    const JitValue& v = args[i];
+    if (v.tag == TAG_UNFILLED || v.tag == TAG_NIL) return;
+    jit_bump_handle_gen<Target>(v);
+  }
+}
+template <class... Args>
+inline void jit_bump_arg_handles(int64_t n, JitValue* args) {
+  size_t i = 0;
+  (jit_arg_handle_bump<Args>(n, args, i++), ...);
+}
+
 // Binder-order param checks shared by the method and borrowed thunks:
 // a missing required argument is an ArityError at the call site, a
 // wrong-typed one a TypeError at the argument's threaded position —
 // both released `fn` first.
 template <class T, auto Mf, class... Args>
 inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
+  const auto& params = jit_method_info<T, Mf>::params;
   size_t bad = sizeof...(Args);
   bool missing = false;
   {
@@ -388,33 +583,38 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
     auto check_one = [&](bool present, bool ok) {
       if (bad == sizeof...(Args)) {
         if (!present) {
-          bad = i;
-          missing = true;
+          if (!params[i].has_default) {
+            bad = i;
+            missing = true;
+          }
         } else if (!ok) {
           bad = i;
         }
       }
       ++i;
     };
-    (check_one(static_cast<int64_t>(i) < n,
-               static_cast<int64_t>(i) < n && jit_arg_matches<Args>(args[i])),
+    (check_one(static_cast<int64_t>(i) < n && args[i].tag != TAG_UNFILLED,
+               static_cast<int64_t>(i) < n && args[i].tag != TAG_UNFILLED &&
+                   jit_arg_matches<Args>(args[i])),
      ...);
   }
   if (bad < sizeof...(Args)) {
     culebra_runtime_value_release(self.tag, self.data);
-    const auto& names = jit_method_info<T, Mf>::param_names;
     if (missing) {
       throw culebra::CulebraError(
-          "ArityError", culebra::missing_required_arg_message(names[bad]),
+          "ArityError",
+          culebra::missing_required_arg_message(params[bad].name),
           _jit_thread.call_line, _jit_thread.call_col);
     }
-    static constexpr std::string_view kAnnos[] = {
-        _detail::type_annotation_for<Args>()...};
+    // Not constexpr: a wrapped-class parameter's annotation (param_type_name)
+    // reads that class's own display name, filled at runtime by its wrap<>
+    // declaration.
+    static const std::string_view kAnnos[] = {param_type_name<Args>()...};
     auto pos = _jit_arg_pos(static_cast<int>(bad));
     throw culebra::CulebraError(
         "TypeError",
-        culebra::format("type error: parameter '{}' expects {}", names[bad],
-                        kAnnos[bad]),
+        culebra::format("type error: parameter '{}' expects {}",
+                        params[bad].name, kAnnos[bad]),
         pos.line, pos.col);
   }
 }
@@ -442,28 +642,38 @@ auto surface_native_error_at_call_site(F&& f) -> decltype(f()) {
   }
 }
 
-// One handle method thunk per (T, member fn). Self arrives +1, released on
+// One handle method thunk per (T, member fn). Self and every argument arrive
+// +1 (callee-consumes, same ABI JitMethodArgs documents): self is released on
 // every exit by the guard below — an early release on a temp receiver would
 // fire its drop and erase the table entry under our feet, so the guard runs at
 // scope exit, after the body. `jit_check_args` still owns its own binder-throw
-// release (it runs before the guard is armed); the guard closes the previously
-// leaking ClosedError (jit_handle_self) and body-throw paths.
+// release of self (it runs before the guard is armed); the guard closes the
+// previously leaking ClosedError (jit_handle_self) and body-throw paths.
+// Args are guarded from the top, before jit_check_args even runs: a handle
+// argument (Gap A) is itself a +1 reference, and nothing here forwards or
+// stores it, so without this it leaked on every call — most visibly a
+// temporary (`c.merge(Counter.new(5))`) whose only reference was the
+// argument slot.
 // `Bump` (a non-const method without preserves_borrows) increments the
 // generation after validation, BEFORE the call.
 template <class T, auto Mf, class R, bool Bump, class... Args>
 void jit_method_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                           int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
+  JitMethodArgs _a{n, args};
   jit_check_args<T, Mf, Args...>(self, n, args);
   JitMethodSelf _s{self};
   T* obj = jit_handle_self<T>(self);
+  jit_resolve_arg_handles<Args...>(n, args);  // order-fixing; see its own comment
   if constexpr (Bump) jit_bump_handle_gen<T>(self);
+  jit_bump_arg_handles<Args...>(n, args);
   auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
     if constexpr (std::is_void_v<R>) {
-      (obj->*Mf)(jit_arg_get<Args>(args[I])...);
+      (obj->*Mf)(jit_arg_get<Args>(jit_arg_or_default<T, Mf>(n, args, I))...);
       return {TAG_NIL, 0};
     } else {
-      auto&& r = (obj->*Mf)(jit_arg_get<Args>(args[I])...);
+      auto&& r = (obj->*Mf)(
+          jit_arg_get<Args>(jit_arg_or_default<T, Mf>(n, args, I))...);
       return jit_lower_return<R>(std::forward<decltype(r)>(r));
     }
   };
@@ -478,6 +688,7 @@ template <class T, auto Mf, class T2, class... Args>
 void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                             int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
+  JitMethodArgs _a{n, args};  // see jit_method_thunk
   jit_check_args<T, Mf, Args...>(self, n, args);
   // Release self on every exit (see jit_method_thunk). The borrow handle keeps
   // its own reference to self as its parent, so the scope-exit release — after
@@ -485,9 +696,12 @@ void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
   // the ClosedError / body-throw strand.
   JitMethodSelf _s{self};
   T* obj = jit_handle_self<T>(self);
+  jit_resolve_arg_handles<Args...>(n, args);  // see jit_method_thunk
+  jit_bump_arg_handles<Args...>(n, args);
   int64_t pgen = jit_handle_gen(reinterpret_cast<JitObject*>(self.data));
   auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
-    auto& r = (obj->*Mf)(jit_arg_get<Args>(args[I])...);
+    auto& r = (obj->*Mf)(
+        jit_arg_get<Args>(jit_arg_or_default<T, Mf>(n, args, I))...);
     return jit_make_borrow_handle<T2>(const_cast<T2*>(&r), self, pgen);
   };
   *__ret = surface_native_error_at_call_site(
@@ -553,6 +767,7 @@ class ClassBinder {
     assert(wrap_detail::jit_class_info<T>::name.empty() &&
            "wrap<T>: this class is already wrapped");
     wrap_detail::jit_class_info<T>::name = name;
+    wrap_detail::jit_class_info<T>::opt_name = name + "?";
     name_ = std::move(name);
   }
 
@@ -570,11 +785,12 @@ class ClassBinder {
   // function pointer). A non-const method bumps the instance's generation (staling its
   // borrows) unless declared wrap_policy::preserves_borrows.
   template <auto Mf>
-  ClassBinder& method(std::string name, std::vector<std::string> names = {},
+  ClassBinder& method(std::string name,
+                      std::vector<wrap_detail::wrap_param> params = {},
                       wrap_policy policy = wrap_policy::standard) {
     using traits = culebra::fn_traits<decltype(Mf)>;
     return method_impl<Mf, typename traits::ret>(
-        std::move(name), std::move(names), policy,
+        std::move(name), std::move(params), policy,
         static_cast<typename traits::args*>(nullptr));
   }
 
@@ -584,7 +800,7 @@ class ClassBinder {
   // Taking a borrow never bumps the generation.
   template <auto Mf>
   ClassBinder& borrowed_method(std::string name,
-                               std::vector<std::string> names = {}) {
+                               std::vector<wrap_detail::wrap_param> params = {}) {
     using traits = culebra::fn_traits<decltype(Mf)>;
     using R = typename traits::ret;
     static_assert(std::is_lvalue_reference_v<R>,
@@ -594,7 +810,7 @@ class ClassBinder {
     static_assert(std::is_class_v<T2>,
                   "wrap.h: borrowed_method's referent must be a wrapped "
                   "class");
-    return borrowed_impl<Mf, T2>(std::move(name), std::move(names),
+    return borrowed_impl<Mf, T2>(std::move(name), std::move(params),
                                  static_cast<typename traits::args*>(nullptr));
   }
 
@@ -613,20 +829,59 @@ class ClassBinder {
   ClassBinder& operator=(const ClassBinder&) = delete;
 
  private:
+  // A declared default that jit_arg_get could not honour. Only U*/const U*
+  // reads nil as "no object"; a nil standing in for a U&/const U& would
+  // dereference a nil handle, which no other declaration mistake in this
+  // header can do (the rest are static_asserts). Assert-only, like the
+  // already-wrapped check in the constructor -- the `linux-assert` lane and
+  // `just test-assert` are where a binding gets to find out.
+  template <class... Args>
+  static void assert_defaults_declarable(
+      const std::vector<wrap_detail::wrap_param>& params) {
+    if constexpr (sizeof...(Args) > 0) {
+      static constexpr bool kNeedsHandle[] = {
+          (!std::is_void_v<typename wrap_detail::handle_target<Args>::type> &&
+           !wrap_detail::handle_target<Args>::is_pointer)...};
+      for (size_t i = 0; i < sizeof...(Args); i++) {
+        assert((!params[i].has_default || !kNeedsHandle[i]) &&
+               "wrap.h: a U& / const U& parameter cannot default -- only "
+               "U* / const U* reads nil as no object");
+      }
+    }
+  }
+
+  // Splits a pinned wrap_param list into the two flat vectors
+  // _jit_make_handle_meta wants (names, has-default bits) — shared by
+  // method_impl and borrowed_impl.
+  static std::pair<std::vector<std::string>, std::vector<bool>>
+  split_wrap_params(const std::vector<wrap_detail::wrap_param>& params) {
+    std::vector<std::string> names;
+    std::vector<bool> has_default;
+    names.reserve(params.size());
+    has_default.reserve(params.size());
+    for (const auto& p : params) {
+      names.push_back(p.name);
+      has_default.push_back(p.has_default);
+    }
+    return {std::move(names), std::move(has_default)};
+  }
+
   template <auto Mf, class R, class... Args>
-  ClassBinder& method_impl(std::string name, std::vector<std::string> names,
+  ClassBinder& method_impl(std::string name,
+                           std::vector<wrap_detail::wrap_param> params,
                            wrap_policy policy, std::tuple<Args...>*) {
     const bool bump =
         !wrap_detail::is_const_member<decltype(Mf)>::value &&
         policy != wrap_policy::preserves_borrows;
-    auto pinned = wrap_detail::pin_param_names(std::move(names),
-                                               sizeof...(Args));
-    wrap_detail::jit_method_info<T, Mf>::param_names = pinned;
+    auto pinned =
+        wrap_detail::pin_wrap_params(std::move(params), sizeof...(Args));
+    assert_defaults_declarable<Args...>(pinned);
+    auto [names, has_default] = split_wrap_params(pinned);
+    wrap_detail::jit_method_info<T, Mf>::params = std::move(pinned);
     const JitParamMeta* meta =
         sizeof...(Args) == 0
             ? nullptr
-            : _jit_make_handle_meta(pinned,
-                                    std::vector<bool>(sizeof...(Args), false));
+            : _jit_make_handle_meta(std::move(names), std::move(has_default));
     wrap_detail::jit_class_info<T>::methods.push_back(
         {std::move(name),
          bump ? &wrap_detail::jit_method_thunk<T, Mf, R, true, Args...>
@@ -636,16 +891,18 @@ class ClassBinder {
   }
 
   template <auto Mf, class T2, class... Args>
-  ClassBinder& borrowed_impl(std::string name, std::vector<std::string> names,
+  ClassBinder& borrowed_impl(std::string name,
+                             std::vector<wrap_detail::wrap_param> params,
                              std::tuple<Args...>*) {
-    auto pinned = wrap_detail::pin_param_names(std::move(names),
-                                               sizeof...(Args));
-    wrap_detail::jit_method_info<T, Mf>::param_names = pinned;
+    auto pinned =
+        wrap_detail::pin_wrap_params(std::move(params), sizeof...(Args));
+    assert_defaults_declarable<Args...>(pinned);
+    auto [names, has_default] = split_wrap_params(pinned);
+    wrap_detail::jit_method_info<T, Mf>::params = std::move(pinned);
     const JitParamMeta* meta =
         sizeof...(Args) == 0
             ? nullptr
-            : _jit_make_handle_meta(pinned,
-                                    std::vector<bool>(sizeof...(Args), false));
+            : _jit_make_handle_meta(std::move(names), std::move(has_default));
     wrap_detail::jit_class_info<T>::methods.push_back(
         {std::move(name),
          &wrap_detail::jit_borrowed_thunk<T, Mf, T2, Args...>,

@@ -16,10 +16,13 @@ class Vec2 {
   double x() const { return x_; }
   double y() const { return y_; }
   double len() const { return std::sqrt(x_ * x_ + y_ * y_); }
-  void scale(double k) {
-    x_ *= k;
-    y_ *= k;
+  void scale(double k, double bias) {
+    x_ = x_ * k + bias;
+    y_ = y_ * k + bias;
   }
+  // A handle argument (wrap.h Gap A): `o` borrows for the call, same as any
+  // other wrapped-class parameter.
+  double dot(const Vec2& o) const { return x_ * o.x_ + y_ * o.y_; }
   std::string show() const { return std::format("Vec2({}, {})", x_, y_); }
   // By-value return — the owning shape.
   Vec2 unit() const {

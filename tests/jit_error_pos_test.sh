@@ -299,6 +299,19 @@ c.divide(0)'
 check_same "wrap borrowed body"    'let b = __Foreign.Box.new(5)
 b.slot(1)'
 
+# A handle-typed parameter (wrap.h Gap A/B) resolves through the same
+# thunk ABI: its TypeError/ClosedError/ArityError must land at the same
+# position on both backends too.
+check_same "wrap arg type"    'let c = __Foreign.Counter.new(1)
+let b = __Foreign.Box.new(1)
+c.merge(b)'
+check_same "wrap arg closed"  'let c = __Foreign.Counter.new(1)
+let o = __Foreign.Counter.new(2)
+o.drop()
+c.merge(o)'
+check_same "wrap arg missing" 'let c = __Foreign.Counter.new(1)
+c.scale()'
+
 # A File handle method is entered through a thunk ABI with no line/col, so it
 # hands the published call site to the same helper the interp calls with its
 # own — one case per method that can fail. lines()/chunks() report where the

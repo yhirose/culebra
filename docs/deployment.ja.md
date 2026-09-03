@@ -791,6 +791,7 @@ scope終端の確定drop（循環込み）、冪等な明示`drop()`、use-after
 | `std::string` / `std::string_view` / `const char*` | `String` |
 | 値返しの`T`・`std::unique_ptr<T>` | ラップ済み`T`の所有インスタンス |
 | `std::shared_ptr<T>` | shareを1つ保持するインスタンス |
+| `U&` / `const U&` / `U*` / `const U*`（ラップ済み`U`、methodの引数のみ） | `U`のハンドル — 後述 |
 
 ラップ済みクラスの`T&` / `const T&`返しは`.method`では**コンパイル
 エラー**です — 参照は所有形状ではありません。`.borrowed_method`で
@@ -818,6 +819,48 @@ c.value()   # !! ClosedError
 const性やこのフラグの誤宣言は著者の契約違反（sol2/pybind11と同じ
 建付け）ですが、その場合も「staleエラーの過剰/欠落」であってculebra
 側のメモリ非安全には絶対になりません。
+
+methodの引数はラップ済みクラスを直接名指せます。**引数はその呼び出しの
+間だけ呼び出し元のハンドルを借用する — 所有権を移すのは戻り値だけ**
+です（上の値返し/`unique_ptr`/`shared_ptr`の行の鏡像）。`U&`/`const U&`は
+`U`の生きたハンドルを要求し、`U*`/`const U*`はそれに加えて`nil`も
+受け付けます。非constの`U&`/`U*`は非constのreceiverが自分自身をbumpする
+のとまったく同じ形で、その引数自身のgenerationをbumpします。ラップ済み
+クラスの値渡し・`U&&`・スマートポインタ引数には委譲すべき所有権が無いので
+サポート対象外です（`.method`宣言はコンパイルエラーになります）:
+
+```cpp
+void merge(const Counter& o) { value_ += o.value_; }  // 借用のみ、bumpしない
+void steal(Counter& o) { value_ += o.value_; o.value_ = 0; }  // oをbump
+void add_maybe(Counter* o) { if (o) value_ += o->value_; }  // nil可
+```
+```culebra
+let c = __Foreign.Counter.new(1)
+let o = __Foreign.Counter.new(2)
+c.merge(o)      # oは変化しない
+c.add_maybe(nil)
+```
+
+末尾の引数はデフォルト値を持て、呼び出し側は省略できます。宣言する
+エントリは素の名前でなく`{"name", value}`にします（bool・整数・
+float/double・文字列、`U*`/`const U*`引数なら`nullptr`のいずれか —
+ここには式評価器が無いので、デフォルト値は常にC++側のリテラルです）:
+
+```cpp
+.method<&Counter::bump_by>("bump_by", {{"n", 1L}})
+.method<&Counter::scale>("scale", {"k", {"off", 0L}})
+```
+```culebra
+let c = __Foreign.Counter.new(1)
+c.bump_by()          # nは既定で1
+c.bump_by(n: 5)
+c.scale(2)           # offは既定で0
+c.scale(2, off: 1)
+```
+
+optional引数は末尾に連続していなければならず、この2つの拡張はどちらも
+`.method`/`.borrowed_method`限定です — `.ctor`/`.static_method`の引数は
+常に必須で、まだラップ済みクラスを名指せません。
 
 コンテナ（`std::vector`/`std::map`）とコールバックは未対応です。
 

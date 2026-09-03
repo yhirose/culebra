@@ -130,4 +130,238 @@ assert_eq(__Foreign.Counter.live(), 0)
 }
 assert_eq(__Foreign.Counter.live(), 0)
 
+# --- wrap.h Gap A: a handle argument borrows for the call. merge takes
+# `const Counter&` (no bump on its argument), steal takes `Counter&` (bumps
+# it), add_maybe takes `Counter*` (nil accepted). ---
+{
+  let c = __Foreign.Counter.new(1)
+  let o = __Foreign.Counter.new(2)
+  c.merge(o)
+  assert_eq(c.value(), 3)
+  assert_eq(o.value(), 2)  # merge's `const Counter&` didn't touch it
+
+  c.steal(o)
+  assert_eq(c.value(), 5)
+  assert_eq(o.value(), 0)  # steal's own body zeroes it, not the wrap layer
+
+  c.add_maybe(nil)
+  assert_eq(c.value(), 5)
+  c.add_maybe(o)
+  assert_eq(c.value(), 5)  # o is 0 now
+  c.drop()
+  o.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- A handle argument of the wrong wrapped class is a TypeError at the
+# argument, the same as any other declared type. ---
+{
+  let c = __Foreign.Counter.new(1)
+  let b = __Foreign.Box.new(1)
+  mut kind = nil
+  try {
+    c.merge(b)
+  } catch e {
+    kind = e.kind
+  }
+  assert_eq(kind, 'TypeError')
+  c.drop()
+  b.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- Neither is a plain Object, a scalar, or nil (a required `const T&`
+# parameter, unlike `T*`, does not accept nil). ---
+{
+  let c = __Foreign.Counter.new(1)
+  for bad in [{}, 5, 'x', nil] {
+    mut kind = nil
+    try {
+      c.merge(bad)
+    } catch e {
+      kind = e.kind
+    }
+    assert_eq(kind, 'TypeError')
+  }
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- A dropped handle argument is ClosedError at the call site -- resolved
+# before the native call ever runs, so nothing reads freed memory. ---
+{
+  let c = __Foreign.Counter.new(1)
+  let o = __Foreign.Counter.new(2)
+  o.drop()
+  mut kind = nil
+  mut message = nil
+  try {
+    c.merge(o)
+  } catch e {
+    kind = e.kind
+    message = e.message
+  }
+  assert_eq(kind, 'ClosedError')
+  assert_eq(message, 'Counter instance was dropped')
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- A dropped RECEIVER (argument still fine) is ClosedError too, the same
+# shape a dropped argument is above -- self and args share the one check. ---
+{
+  let c = __Foreign.Counter.new(1)
+  let o = __Foreign.Counter.new(2)
+  c.drop()
+  mut kind = nil
+  mut message = nil
+  try {
+    c.merge(o)
+  } catch e {
+    kind = e.kind
+    message = e.message
+  }
+  assert_eq(kind, 'ClosedError')
+  assert_eq(message, 'Counter instance was dropped')
+  o.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- The argument type-check runs before the receiver's closed-check: a
+# dropped receiver AND a wrong-typed argument reports the TypeError. ---
+{
+  let c = __Foreign.Counter.new(1)
+  c.drop()
+  mut kind = nil
+  try {
+    c.merge(5)
+  } catch e {
+    kind = e.kind
+  }
+  assert_eq(kind, 'TypeError')
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- A handle built by hand from script-writable slots (no real table
+# entry) is ClosedError, not a crash: the id table miss is the only thing
+# that ever runs, never a raw pointer read. ---
+{
+  let c = __Foreign.Counter.new(1)
+  let forged = {__foreign__: 'Counter', _id: 999999}
+  mut kind = nil
+  try {
+    c.merge(forged)
+  } catch e {
+    kind = e.kind
+  }
+  assert_eq(kind, 'ClosedError')
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- A borrow taken from a Box argument stales exactly when the argument's
+# own const-ness says it should: poke's `Box&` bumps, peek_at's `const
+# Box&` does not. ---
+{
+  let b1 = __Foreign.Box.new(1)
+  let b2 = __Foreign.Box.new(9)
+  let inner = b2.inner()
+  b1.poke(b2)
+  mut kind = nil
+  try {
+    inner.value()
+  } catch e {
+    kind = e.kind
+  }
+  assert_eq(kind, 'ClosedError')
+  b1.drop()
+  b2.drop()
+}
+{
+  let b1 = __Foreign.Box.new(1)
+  let b3 = __Foreign.Box.new(9)
+  let inner3 = b3.inner()
+  b1.peek_at(b3)
+  assert_eq(inner3.value(), 9)  # untouched: peek_at's argument is const
+  b1.drop()
+  b3.drop()
+}
+
+# --- Aliasing: a handle passed as its own argument doesn't crash or
+# double-free (the argument's +1 and the receiver's +1 are independent). ---
+{
+  let c = __Foreign.Counter.new(3)
+  c.merge(c)
+  assert_eq(c.value(), 6)
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- A temporary handle argument is dropped when the call returns: the
+# thunk releases every argument (callee-consumes), not only `self`. Without
+# that release this leaks the temporary Counter.new(5) on every iteration. ---
+{
+  let c = __Foreign.Counter.new(1)
+  let before = __Foreign.Counter.live()
+  for _ in 0..10 {
+    c.merge(__Foreign.Counter.new(5))
+  }
+  assert_eq(__Foreign.Counter.live(), before)
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- wrap.h Gap B: a trailing optional argument. bump_by defaults `n` to 1;
+# scale's `k` stays required while `off` defaults to 0. Positional, keyword,
+# and the all-required error all agree with the interpreter's own arity
+# rules. ---
+{
+  let c = __Foreign.Counter.new(1)
+  c.bump_by()
+  assert_eq(c.value(), 2)
+  c.bump_by(n: 5)
+  assert_eq(c.value(), 7)
+
+  c.scale(2)
+  assert_eq(c.value(), 14)
+  c.scale(2, off: 1)
+  assert_eq(c.value(), 29)
+
+  mut kind = nil
+  mut message = nil
+  try {
+    c.scale()
+  } catch e {
+    kind = e.kind
+    message = e.message
+  }
+  assert_eq(kind, 'ArityError')
+  assert_eq(message, "missing required argument 'k'")
+
+  # a wrong-typed value in the OMITTED slot's place still reports TypeError,
+  # not silently accepted because the slot has a default.
+  kind = nil
+  try {
+    c.bump_by('x')
+  } catch e {
+    kind = e.kind
+  }
+  assert_eq(kind, 'TypeError')
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- __Foreign.Counter.new itself has no default (ctor/static params are
+# out of this feature's scope): the constructor still requires `start`. ---
+{
+  mut kind = nil
+  try {
+    __Foreign.Counter.new()
+  } catch e {
+    kind = e.kind
+  }
+  assert_eq(kind, 'ArityError')
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
 inspect('test_foreign OK')
