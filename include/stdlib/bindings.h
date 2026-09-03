@@ -2904,7 +2904,7 @@ inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
   }
   auto* dispose_cls = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_file_iter_dispose_fn), 1, 0,
-      JIT_CLOSURE_NATIVE);
+      JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
   culebra_runtime_cell_retain(id_cell);  // wrap_fast's closures keep it alive
   dispose_cls->captures[0] = id_cell;
   it->set_or_append("dispose",
@@ -8822,8 +8822,8 @@ inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
   culebra::gc::Heap::CollectPause _pause(_gc_heap());
   auto* cls = culebra_runtime_closure_new(
       reinterpret_cast<void*>(_jit_ns_method_trampoline), 1,
-      m->arity < 0 ? JIT_VARIADIC_ARITY : static_cast<size_t>(m->arity),
-      JIT_CLOSURE_NATIVE);
+      m->arity < 0 ? JIT_VARIADIC_ARITY : static_cast<uint32_t>(m->arity),
+      JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
   cls->captures[0] = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(m));
   return cls;
@@ -9288,12 +9288,12 @@ inline const NsParamMeta* _ns_type_meta(const NsMethod* m) {
   return it == table.end() ? nullptr : it->second;
 }
 
-// Introspection view of a native stdlib closure. `fn.params` / `.return_type`
-// read a JitParamMeta keyed by fn_ptr, and every native closure shares one
-// trampoline, so nothing was ever registered for them and the compiled
-// engines reported an empty signature where the interpreter — reading the
-// canonical FunctionValue directly — reported the real one. Derived here from
-// that same canonical source, so the two cannot drift.
+// Introspection view of a native stdlib closure. `fn.params` /
+// `.return_type` read the JitParamMeta a closure carries, and every native
+// stdlib closure shares one trampoline over a NsMethod its capture names —
+// so rather than build one per closure, derive it from that same canonical
+// source, which is where the interpreter reads it too. The two cannot
+// drift.
 namespace _ns_introspect_detail {
 struct NativeMeta {
   std::vector<std::string> names;      // stable storage for the cstrings
@@ -9353,7 +9353,10 @@ inline std::unique_ptr<NativeMeta> build(const NsMethod* m) {
                           // declared and effective views are the same one.
                           nm->type_ptrs.data(),
                           sig->min_arity,
-                          sig->variadic ? -1 : sig->max_arity};
+                          sig->variadic ? -1 : sig->max_arity,
+                          // A native body closes over nothing.
+                          /*mut_capture_names=*/nullptr,
+                          /*n_mut_captures=*/0};
   return nm;
 }
 }  // namespace _ns_introspect_detail
@@ -9466,16 +9469,18 @@ struct _LazyNsBuilder {
   // Everything else the closure constructor takes, so the rebuild produces
   // the same closure rather than one that merely runs the same code.
   uint64_t flags = 0;
+  const JitParamMeta* meta = nullptr;
 };
 inline _NameMap<_LazyNsBuilder>& _lazy_ns_builders() {
   static _NameMap<_LazyNsBuilder> r;
   return r;
 }
 inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr,
-                                      int64_t desc, uint64_t flags) {
+                                      int64_t desc, uint64_t flags,
+                                      const JitParamMeta* meta) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
-  _lazy_ns_builders().insert_or_assign(name,
-                                       _LazyNsBuilder{fn_ptr, desc, flags});
+  _lazy_ns_builders().insert_or_assign(
+      name, _LazyNsBuilder{fn_ptr, desc, flags, meta});
 }
 inline _LazyNsBuilder _lazy_ns_builder(std::string_view name) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
@@ -9513,7 +9518,7 @@ inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
     // descriptor, in a cell of this Runtime's own), none where the fn_ptr is
     // the whole answer.
     auto* cls = culebra_runtime_closure_new(bd.fn_ptr, bd.desc ? 1 : 0,
-                                            /*arity=*/0, bd.flags);
+                                            /*arity=*/0, bd.flags, bd.meta);
     if (bd.desc) cls->captures[0] = culebra_runtime_cell_new(TAG_LONG, bd.desc);
     JitValue r = _culebra_invoke0(cls);
     culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(cls));
@@ -9662,7 +9667,7 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
         0, 0);
   }
   _lazy_ns_register_builder(name ? name : "", c->fn_ptr,
-                            desc ? desc->value.data : 0, c->flags);
+                            desc ? desc->value.data : 0, c->flags, c->meta);
 }
 
 // Cold arm of jit.h's emit_reject_bare_builtin_method. The codegen filter

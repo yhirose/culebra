@@ -2938,6 +2938,7 @@ struct VmChunkMeta {
   std::vector<const char*> declared_types;
   std::vector<uint8_t> has_default_bits;
   std::vector<uint8_t> mut_bits;
+  std::vector<const char*> mut_captures;
   std::string fn_name;
   std::string return_type;
   JitParamMeta meta{};
@@ -2994,6 +2995,8 @@ inline void build_param_metas(VmProgram& p) {
               ? c.param_declared_types[i].c_str()
               : "");
     }
+    for (const auto& nm : c.mut_capture_names)
+      m->mut_captures.push_back(nm.c_str());
     size_t n = m->names.size();
     m->has_default_bits.assign((n + 7) / 8, 0);
     m->mut_bits.assign((n + 7) / 8, 0);
@@ -3014,7 +3017,10 @@ inline void build_param_metas(VmProgram& p) {
                            m->types.data(),
                            m->declared_types.data(),
                            c.cb_min,
-                           c.cb_max};
+                           c.cb_max,
+                           m->mut_captures.empty() ? nullptr
+                                                   : m->mut_captures.data(),
+                           static_cast<int64_t>(m->mut_captures.size())};
     p.param_metas.push_back(std::move(m));
   }
 }
@@ -10008,11 +10014,10 @@ class Compiler {
   // at the fn literal ("UFCS candidate capture of ..."), and a candidate that
   // is a builtin never enters scopes_ at all — is_stdlib_global catches those.
   // `.name` / `.params` / `.return_type` on a Function receiver are answered
-  // by culebra_runtime_fn_introspect_get, which reads the signature out of a
-  // side table keyed by code address. The executor's closures all share one
-  // address, so they answer through _jit_closure_meta_hook instead — the seam
-  // the keyword resolver and the arity check already use — and the chunk meta
-  // the hook hands back carries the name, the return type and the parameters.
+  // by culebra_runtime_fn_introspect_get, which reads the signature out of
+  // the metadata the closure carries — the same one the keyword resolver and
+  // the arity check read, holding the name, the return type and the
+  // parameters.
 
   // The compile-time UFCS candidate for `name` at this site, if any:
   // a scope binding first (Function-ness is a
@@ -12104,8 +12109,8 @@ struct Exec {
     return cls->captures[0];
   }
 
-  // The validation every other consumer of the seam shares: captures[0]
-  // carries a descriptor naming a chunk of a live program.
+  // The descriptor behind a closure, validated: captures[0] names a chunk of
+  // a live program.
   static const VmFnDesc* closure_desc(JitClosure* cls) {
     auto* cell = desc_for_closure(cls);
     if (!cell) return nullptr;
@@ -12116,25 +12121,13 @@ struct Exec {
     return d;
   }
 
-  // What a keyword call binds against, for closures this executor runs. They
-  // all share one fn_ptr, so the per-fn table cannot hold them; the chunk
-  // behind the closure is in its descriptor capture, and the program built a
-  // JitParamMeta for each.
-  static const JitParamMeta* meta_for_closure(JitClosure* cls) {
-    const auto* d = closure_desc(cls);
-    if (!d || static_cast<size_t>(d->chunk) >= d->prog->param_metas.size())
-      return nullptr;
-    return &d->prog->param_metas[d->chunk]->meta;
-  }
-
-  // Third consumer of the same seam: whether this closure captures a `mut`
-  // binding, which is what makes it unsendable. The chunk recorded the
-  // names at compile time (see Chunk::mut_capture_names).
-  static const std::string* mut_capture_for_closure(JitClosure* cls) {
-    const auto* d = closure_desc(cls);
-    if (!d) return nullptr;
-    const auto& names = d->prog->chunks[d->chunk].mut_capture_names;
-    return names.empty() ? nullptr : &names.front();
+  // The metadata a closure over chunk `i` carries — built once per program
+  // (build_param_metas) and handed to every closure MakeClosure mints, the
+  // way the lowering hands over its module global.
+  static const JitParamMeta* chunk_meta(const VmProgram& p, int32_t i) {
+    return static_cast<size_t>(i) < p.param_metas.size()
+               ? &p.param_metas[i]->meta
+               : nullptr;
   }
 
   // Safe for programs that outlive their own execution too (the REPL's
@@ -12147,9 +12140,7 @@ struct Exec {
 
   static void prepare(VmProgram& p) {
     build_param_metas(p);
-    _jit_closure_meta_hook = &meta_for_closure;
     _jit_closure_desc_hook = &desc_for_closure;
-    _jit_closure_mut_capture_hook = &mut_capture_for_closure;
     p.descs.resize(p.chunks.size());
     for (size_t i = 0; i < p.chunks.size(); ++i)
       p.descs[i] = {&p, static_cast<int32_t>(i)};
@@ -13791,7 +13782,8 @@ struct Exec {
           auto n = f.capture_src_slots.size();
           auto* mc = culebra_runtime_closure_new(
               reinterpret_cast<void*>(&trampoline), 1 + n,
-              static_cast<size_t>(f.arity), chunk_closure_flags(f));
+              static_cast<size_t>(f.arity), chunk_closure_flags(f),
+              chunk_meta(p, in.b));
           // The descriptor rides in a cell of this closure's own, like every
           // other capture: cells are refcounted non-atomically and freed into
           // the slab of the Runtime that allocated them, so one shared per

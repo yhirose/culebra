@@ -50,7 +50,8 @@ inline int run() {
 
   auto read = [&](uint64_t flags) {
     auto* m = culebra_runtime_closure_new(reinterpret_cast<void*>(&body),
-                                          /*n_captures=*/0, /*arity=*/0, flags);
+                                          /*n_captures=*/0, /*arity=*/0, flags,
+                                          /*meta=*/nullptr);
     JitValue view{TAG_FUNC, reinterpret_cast<int64_t>(m)};
     JitValue got = culebra_runtime_bind_method_value(
         static_cast<int8_t>(self.tag), self.data,

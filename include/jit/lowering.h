@@ -50,7 +50,8 @@ struct Lowering {
     return j.emit_param_meta_global(
         fn, c.param_names, has_default, idx(c.kwargs_rest_idx),
         idx(c.first_kw_only_idx), c.multifn_name, c.return_type, muts,
-        c.param_types, c.param_declared_types, c.cb_min, c.cb_max);
+        c.param_types, c.param_declared_types, c.cb_min, c.cb_max,
+        c.mut_capture_names);
   }
 
   // The JitFn ABI signature (rt_value.inc.h), spelled once for both the chunk
@@ -3792,49 +3793,23 @@ struct Lowering {
         case Op::MakeClosure: {
           const Chunk& f = p.chunks[in.b];
           auto n = f.capture_src_slots.size();
-          auto cls = j.emit_call(
-              j.module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
-                                             i64Ty, i64Ty, i64Ty),
-              {fns[in.b], b.getInt64(static_cast<int64_t>(n)),
-               b.getInt64(f.arity),
-               b.getInt64(static_cast<int64_t>(chunk_closure_flags(f)))},
-              "cls");
-          // Register this chunk's parameter metadata under its function's
-          // address, so a keyword call can resolve names against it. The
-          // registration is idempotent (same key, same pointer), so it can
-          // run at every MakeClosure site rather than at module init.
-          // The metadata is a global of THIS module, not a pointer into the
-          // compiler's heap: an AOT object outlives the process that wrote
-          // it, so a baked address would be dangling by the time the built
-          // program ran.
+          // The body's metadata — the parameter names a keyword call binds
+          // against, the `mut` bindings `Isolate.spawn` rejects it on, what
+          // introspection reports — is a global of THIS module, not a
+          // pointer into the compiler's heap: an AOT object outlives the
+          // process that wrote it, so a baked address would be dangling by
+          // the time the built program ran. Cached per chunk: the globals
+          // are constant, so every site naming a chunk gets the same one.
           if (!metas[in.b])
             metas[in.b] = param_meta_global(j, p.chunks[in.b], fns[in.b]);
-          j.emit_call(
-              j.module_->getOrInsertFunction(rt::register_param_meta,
-                                             b.getVoidTy(), ptrTy, ptrTy),
-              {fns[in.b], metas[in.b]});
-          // Same for the `mut` bindings it closes over, the fact
-          // `Isolate.spawn` rejects it on. Each lowered chunk is its own
-          // function, so the fn_ptr-keyed table works here (the executor,
-          // whose closures share one entry point, answers through a hook
-          // instead).
-          if (!f.mut_capture_names.empty()) {
-            std::vector<llvm::Constant*> names;
-            for (const auto& nm : f.mut_capture_names)
-              names.push_back(b.CreateGlobalString(nm, ".vm.mutcap"));
-            auto arrTy =
-                llvm::ArrayType::get(ptrTy, names.size());
-            auto namesG = new llvm::GlobalVariable(
-                *j.module_, arrTy, /*isConstant=*/true,
-                llvm::GlobalValue::PrivateLinkage,
-                llvm::ConstantArray::get(arrTy, names), ".vm.mutcaps");
-            j.emit_call(
-                j.module_->getOrInsertFunction(rt::register_mut_captures,
-                                               b.getVoidTy(), ptrTy, ptrTy,
-                                               i64Ty),
-                {fns[in.b], namesG,
-                 b.getInt64(static_cast<int64_t>(names.size()))});
-          }
+          auto cls = j.emit_call(
+              j.module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
+                                             i64Ty, i64Ty, i64Ty, ptrTy),
+              {fns[in.b], b.getInt64(static_cast<int64_t>(n)),
+               b.getInt64(f.arity),
+               b.getInt64(static_cast<int64_t>(chunk_closure_flags(f))),
+               metas[in.b]},
+              "cls");
           if (n > 0) {
             auto capsFieldPtr =
                 b.CreateStructGEP(j.closureType_, cls, 3, "caps.ptr");
@@ -4899,10 +4874,9 @@ inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
   auto value_decls = parse_baked_value_decls(baked);
   auto prog = Compiler::compile_modules(
       modules, debug ? Debug::Break : Debug::Off, &value_decls);
-  // Nothing host-side to prepare: keyword-call metadata is a global of the
-  // lowered module, registered by each MakeClosure site (see Lowering's
-  // param_meta_global). Exec::prepare's host-side tables are the executor
-  // lane's alone.
+  // Nothing host-side to prepare: a body's metadata is a global of the
+  // lowered module, handed to each closure at its MakeClosure site (see
+  // Lowering's param_meta_global).
   Lowering::run_program(prog, emit_llvm, opt_level, fast_codegen,
                         JIT::jit_module_name(modules, fast_codegen, opt_level),
                         baked);

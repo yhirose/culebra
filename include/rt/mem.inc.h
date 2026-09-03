@@ -690,8 +690,6 @@ inline constexpr auto self_merge          = "culebra_runtime_self_merge";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";
 inline constexpr auto cell_retain         = "culebra_runtime_cell_retain";
 inline constexpr auto closure_new         = "culebra_runtime_closure_new";
-inline constexpr auto register_param_meta = "culebra_runtime_register_param_meta";
-inline constexpr auto register_mut_captures = "culebra_runtime_register_mut_captures";
 inline constexpr auto fn_introspect_get    = "culebra_runtime_fn_introspect_get";
 inline constexpr auto call_with_kwargs    = "culebra_runtime_call_with_kwargs";
 inline constexpr auto debugger_break      = "culebra_runtime_debugger_break";
@@ -929,7 +927,6 @@ inline constexpr auto inspect             = "culebra_runtime_inspect";
 inline constexpr auto iota                = "culebra_runtime_iota";
 inline constexpr auto math_range           = "culebra_runtime_math_range";
 inline constexpr auto grid_new             = "culebra_runtime_grid_new";
-inline constexpr auto check_pos_count      = "culebra_runtime_check_pos_count";
 inline constexpr auto check_pos_count_cls  =
     "culebra_runtime_check_pos_count_cls";
 inline constexpr auto iter_collect         = "culebra_runtime_iter_collect";

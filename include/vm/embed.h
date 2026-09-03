@@ -392,11 +392,11 @@ class Embed {
         param_names[i] = "_arg" + std::to_string(i);
     }
     auto& fns = _embed_detail::host_fns();
-    // No kwargs meta: the param-meta table is keyed by fn_ptr and every
-    // define shares this one trampoline, so per-define names cannot be
-    // registered there. Host functions bind positionally; the names feed
-    // the per-argument TypeError text. A host needing keyword binding
-    // declares a wrap.h class instead.
+    // No kwargs meta: every define shares this one trampoline and the names
+    // are known only per define, so there is no per-body metadata to carry.
+    // Host functions bind positionally; the names feed the per-argument
+    // TypeError text. A host needing keyword binding declares a wrap.h class
+    // instead.
     fns.push_back(_embed_detail::make_adapter<std::decay_t<Fn>,
                                               typename Traits::ret>(
         std::forward<Fn>(fn), std::string(name), std::move(param_names),
@@ -404,7 +404,7 @@ class Embed {
     auto idx = static_cast<int64_t>(fns.size() - 1);
     auto* cls = culebra_runtime_closure_new(
         reinterpret_cast<void*>(&_embed_detail::trampoline), 1, arity,
-        JIT_CLOSURE_NATIVE);
+        JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
     cls->captures[0] = culebra_runtime_cell_new(TAG_LONG, idx);
     auto* cell = cells_.cell(name);
     _culebra_value_release_impl(cell->value.tag, cell->value.data);

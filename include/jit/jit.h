@@ -2694,7 +2694,7 @@ struct JIT {
     module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
-                                 builder_.getInt64Ty());
+                                 builder_.getInt64Ty(), ptrTy);
     module_->getOrInsertFunction(rt::value_retain,
                                  builder_.getVoidTy(),
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
@@ -2918,10 +2918,6 @@ struct JIT {
     module_->getOrInsertFunction(rt::grid_new, ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
-                                 builder_.getInt64Ty(),
-                                 builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::check_pos_count, builder_.getVoidTy(),
-                                 ptrTy, builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::set_call_site, builder_.getVoidTy(),
@@ -4185,7 +4181,8 @@ struct JIT {
       const std::vector<bool>& paramMuts = {},
       const std::vector<std::string>& paramTypes = {},
       const std::vector<std::string>& paramDeclaredTypes = {},
-      long cbMin = 0, long cbMax = 0) {
+      long cbMin = 0, long cbMax = 0,
+      const std::vector<std::string>& mutCaptures = {}) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
     auto i8Ty = builder_.getInt8Ty();
@@ -4195,6 +4192,25 @@ struct JIT {
     // fn.return_type can be read by introspection. Emit a minimal
     // meta with null param-array pointers and n_params=0; the
     // runtime helper's loops skip element access when n_params==0.
+    // The `mut` bindings the body closes over — nearly always none, so the
+    // array is emitted only where there is one. Shared by both arms below.
+    llvm::Constant* mutCapG = llvm::ConstantPointerNull::get(ptrTy);
+    if (!mutCaptures.empty()) {
+      std::vector<llvm::Constant*> caps;
+      caps.reserve(mutCaptures.size());
+      for (const auto& nm : mutCaptures)
+        caps.push_back(builder_.CreateGlobalString(
+            nm, ".param.mutcap." + fnBase + "." + nm));
+      auto capsArrTy = llvm::ArrayType::get(ptrTy, caps.size());
+      mutCapG = new llvm::GlobalVariable(
+          *module_, capsArrTy, /*isConstant=*/true,
+          llvm::GlobalValue::PrivateLinkage,
+          llvm::ConstantArray::get(capsArrTy, caps),
+          fnBase + ".pmeta.mutcaps");
+    }
+    auto nMutCaps =
+        llvm::ConstantInt::get(i64Ty, static_cast<int64_t>(mutCaptures.size()));
+
     if (paramNames.empty()) {
       auto fnNameG = builder_.CreateGlobalString(
           fnName, fnBase + ".pmeta.fn");
@@ -4202,7 +4218,7 @@ struct JIT {
           returnType, fnBase + ".pmeta.ret");
       auto metaTy = llvm::StructType::get(ctx_,
           {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty,
-           ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty});
+           ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty, ptrTy, i64Ty});
       auto nullPtr = llvm::ConstantPointerNull::get(ptrTy);
       auto metaInit = llvm::ConstantStruct::get(
           metaTy,
@@ -4214,7 +4230,8 @@ struct JIT {
            llvm::ConstantExpr::getBitCast(retTyG, ptrTy),
            nullPtr, nullPtr, nullPtr,
            llvm::ConstantInt::get(i64Ty, cbMin),
-           llvm::ConstantInt::get(i64Ty, cbMax)});
+           llvm::ConstantInt::get(i64Ty, cbMax),
+           mutCapG, nMutCaps});
       auto metaGlobal = new llvm::GlobalVariable(
           *module_, metaTy, /*isConstant=*/true,
           llvm::GlobalValue::PrivateLinkage, metaInit,
@@ -4316,7 +4333,7 @@ struct JIT {
     // fields at the end so kwargs dispatch consumers stay unaffected.
     auto metaTy = llvm::StructType::get(ctx_,
         {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty,
-         ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty});
+         ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty, ptrTy, i64Ty});
     auto metaInit = llvm::ConstantStruct::get(
         metaTy,
         {llvm::ConstantExpr::getBitCast(namesGlobal, ptrTy),
@@ -4333,7 +4350,8 @@ struct JIT {
          llvm::ConstantExpr::getBitCast(typesGlobal, ptrTy),
          llvm::ConstantExpr::getBitCast(declaredGlobal, ptrTy),
          llvm::ConstantInt::get(i64Ty, cbMin),
-         llvm::ConstantInt::get(i64Ty, cbMax)});
+         llvm::ConstantInt::get(i64Ty, cbMax),
+         mutCapG, nMutCaps});
     auto metaGlobal = new llvm::GlobalVariable(
         *module_, metaTy, /*isConstant=*/true,
         llvm::GlobalValue::PrivateLinkage, metaInit,
@@ -4988,8 +5006,12 @@ struct JIT {
 
     if (check_kw_only) {
       emit_call(
-          module_->getFunction(rt::check_pos_count),
-          {fnPtr,
+          module_->getOrInsertFunction(rt::check_pos_count_cls,
+                                       builder_.getVoidTy(), ptrTy,
+                                       builder_.getInt64Ty(),
+                                       builder_.getInt64Ty(),
+                                       builder_.getInt64Ty()),
+          {clsPtr,
            builder_.getInt64(static_cast<int64_t>(userArgs.size())),
            current_line_val(), current_column_val()});
     }

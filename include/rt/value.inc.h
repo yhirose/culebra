@@ -597,18 +597,25 @@ struct JitCell {
 };
 static_assert(sizeof(JitCell) <= 32 && !std::is_polymorphic_v<JitCell>);
 
+struct JitParamMeta;  // jit_dispatch.h
+
 struct JitClosure {
   int64_t refcount;
   void* fn_ptr;
   size_t n_captures;
   JitCell** captures;
-  size_t arity;  // number of user-visible params (excluding __cls__, this)
-  // What this closure IS, as opposed to where its code happens to live. Set
-  // once at construction (culebra_runtime_closure_new) and never after, so
-  // there is no window in which a closure exists without its own answer.
-  // Codegen does not see this word: the IR `Closure` type declares the five
-  // fields above and reaches nothing past them.
-  uint64_t flags = 0;
+  // Codegen reaches nothing past `captures` — the IR `Closure` type is GEP'd
+  // at fields 0..3 and no further — so everything below is the runtime's own,
+  // and may be packed. All of it is fixed at construction
+  // (culebra_runtime_closure_new) and never after, so there is no window in
+  // which a closure exists without its own answers.
+  uint32_t arity = 0;   // user-visible params (excluding __cls__, this)
+  uint32_t flags = 0;   // JIT_CLOSURE_*, below
+  // The body's own metadata: the parameter names a keyword call binds
+  // against, the `mut` bindings it closes over, and what introspection
+  // reports. Null where the body has none of that — the C++-bodied closures
+  // and the multifn dispatcher, whose overloads carry their own.
+  const JitParamMeta* meta = nullptr;
 
   static void* operator new(size_t n) { return _slab().alloc(n); }
   static void operator delete(void* p, size_t n) { _slab().free(p, n); }
@@ -640,7 +647,7 @@ inline constexpr uint64_t JIT_CLOSURE_NATIVE = 1ull << 1;
 // checks (`_culebra_expect_callback`) accept it for any expected arity, since
 // the trampoline validates the real count. Never collides with a real param
 // count, and the well-known-prop arity==0 checks only ever see user methods.
-inline constexpr size_t JIT_VARIADIC_ARITY = static_cast<size_t>(-1);
+inline constexpr uint32_t JIT_VARIADIC_ARITY = static_cast<uint32_t>(-1);
 
 // Uniform calling convention for every JIT closure. Callers build a
 // stack slab of user args and pass (cls, this, n_args, args_ptr); the

@@ -27,7 +27,8 @@ extern "C" {
 // Forward declarations — closure_new, cell_new and value_release_impl are
 // defined later in this file but used by the multimethod runtime.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
-    void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags);
+    void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags,
+    const JitParamMeta* meta);
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(
     int8_t tag, int64_t data);
 
@@ -129,7 +130,7 @@ culebra_runtime_make_variant_ctor(const char* variant_name,
                                     const char* enum_name, int64_t arity) {
   auto* cls = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/0,
-      static_cast<size_t>(arity), JIT_CLOSURE_NATIVE);
+      static_cast<size_t>(arity), JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
   _jit_variant_ctor_info()[cls] = {std::string(variant_name),
                                     std::string(enum_name)};
   return cls;
@@ -341,17 +342,16 @@ culebra_runtime_make_derived_method(int64_t kind) {
     case 3: thunk = reinterpret_cast<void*>(&_jit_derived_cmp_thunk); arity = 1; break;
   }
   return culebra_runtime_closure_new(thunk, /*n_captures=*/0, arity,
-                                     JIT_CLOSURE_NATIVE);
+                                     JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
 }
 
-// Parameter metadata attached to JIT-compiled user functions. The side
-// table below is keyed by `fn_ptr` (the underlying JitFn pointer) and
-// populated at JIT-module init time for each FUNCTION literal. It lets
-// `culebra_runtime_call_with_kwargs` resolve names → slab positions
-// at runtime — supporting indirect callees (captures, method values,
-// UFCS) and dynamic `**variable` splats. Built-in closures created by
-// `culebra_runtime_closure_new` from runtime helpers (iter wrappers
-// etc.) never register meta and so reject kwargs.
+// What a function body declares, in the form the runtime reads it back: one
+// of these per body, built where the body is compiled and pointed at by every
+// closure over it (JitClosure::meta). It lets
+// `culebra_runtime_call_with_kwargs` resolve names → slab positions at
+// runtime — supporting indirect callees (captures, method values, UFCS) and
+// dynamic `**variable` splats — and it is what introspection reports.
+// Closures with C++ bodies carry none, and so reject kwargs.
 struct JitParamMeta {
   const char* const* names;  // pointers into module-level globals
   // Bit i is set if param i has a default expression. The callee
@@ -391,14 +391,20 @@ struct JitParamMeta {
   // callbacks exactly like the interpreter.
   int64_t cb_min;
   int64_t cb_max;
+  // Names of the `mut` bindings the body closes over, in capture order.
+  // `Isolate.spawn` rejects a closure that captures one (the child's copy
+  // would silently diverge from the parent's) and the message names it.
+  // Null / 0 for a body that captures none, which is nearly all of them.
+  const char* const* mut_capture_names;
+  int64_t n_mut_captures;
 };
 
 // Layout matches the LLVM struct emitted in emit_param_meta_global.
-// Adding a field requires updating both — the assert catches drift. Twelve
+// Adding a field requires updating both — the assert catches drift. Fourteen
 // machine words is a size proxy for that field list, so it speaks only where a
 // pointer is 8 bytes; wasm32 packs the same fields smaller, which is not drift.
 static_assert(sizeof(void*) != 8 ||
-                  sizeof(JitParamMeta) == 12 * sizeof(int64_t),
+                  sizeof(JitParamMeta) == 14 * sizeof(int64_t),
               "JitParamMeta C++ / LLVM layout drift");
 
 // Build (once) a stable JitParamMeta from a handle method's param names
@@ -444,81 +450,22 @@ inline const JitParamMeta* _jit_make_handle_meta(
                          /*type_names=*/s->empties.data(),
                          /*declared_type_names=*/s->empties.data(),
                          cb_min,
-                         static_cast<int64_t>(n)};
+                         static_cast<int64_t>(n),
+                         /*mut_capture_names=*/nullptr,
+                         /*n_mut_captures=*/0};
   const JitParamMeta* ret = &s->meta;
   storage.push_back(std::move(s));
   return ret;
 }
 
 
-// thread_local: keyed by per-thread JIT-compiled fn pointers (see the
-// note on _jit_variant_ctor_info). No cross-thread sharing needed.
-inline std::unordered_map<void*, const JitParamMeta*>&
-_jit_param_meta_table() {
-  static thread_local std::unordered_map<void*, const JitParamMeta*> tbl;
-  return tbl;
+// The first `mut`-captured free-var name, or null if the body closes over
+// none. The sendability check's whole question, asked of the closure that
+// has to answer it.
+inline const char* _jit_first_mut_capture_of(JitClosure* c) {
+  const JitParamMeta* m = c ? c->meta : nullptr;
+  return m && m->n_mut_captures > 0 ? m->mut_capture_names[0] : nullptr;
 }
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_param_meta(
-    void* fn_ptr, const JitParamMeta* meta) {
-  _jit_param_meta_table()[fn_ptr] = meta;
-}
-
-inline const JitParamMeta* _jit_lookup_param_meta(void* fn_ptr) {
-  auto& tbl = _jit_param_meta_table();
-  auto it = tbl.find(fn_ptr);
-  return it == tbl.end() ? nullptr : it->second;
-}
-
-// thread_local: fn_ptr -> names of free vars the lambda captured as `mut`.
-// Same keying/thread rationale as _jit_param_meta_table. Registered at closure
-// construction for lambdas that have any mut capture, read by jit_serialize to
-// reject them at an isolate boundary — interp parity with sendable.h, where a
-// `mut` capture would silently snapshot rather than track the parent's value.
-inline std::unordered_map<void*, std::vector<std::string>>&
-_jit_mut_capture_table() {
-  static thread_local std::unordered_map<void*, std::vector<std::string>> tbl;
-  return tbl;
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_mut_captures(
-    void* fn_ptr, const char* const* names, int64_t n) {
-  auto& v = _jit_mut_capture_table()[fn_ptr];
-  if (!v.empty()) return;  // idempotent: same fn_ptr always has the same set
-  v.reserve(static_cast<size_t>(n));
-  for (int64_t i = 0; i < n; i++) v.emplace_back(names[i]);
-}
-
-// The first `mut`-captured free-var name, or nullptr if the lambda captured
-// none (including lambdas never registered — they have no mut captures).
-inline const std::string* _jit_first_mut_capture(void* fn_ptr) {
-  auto& tbl = _jit_mut_capture_table();
-  auto it = tbl.find(fn_ptr);
-  return (it == tbl.end() || it->second.empty()) ? nullptr : &it->second.front();
-}
-
-// Same question for a closure whose code is not a distinct fn_ptr — see
-// _jit_closure_meta_hook, which this mirrors. The VM executor installs it;
-// null for anything it does not recognise, so the fn_ptr table stands.
-inline const std::string* (*_jit_closure_mut_capture_hook)(JitClosure*) =
-    nullptr;
-
-// The question every sendability check actually asks: does THIS closure
-// capture a mutable binding? Routes to whichever of the two knows.
-inline const std::string* _jit_first_mut_capture_of(JitClosure* c) {
-  if (_jit_closure_mut_capture_hook) {
-    if (const std::string* nm = _jit_closure_mut_capture_hook(c)) return nm;
-  }
-  return _jit_first_mut_capture(c->fn_ptr);
-}
-
-// Hook for closures whose code is not a distinct fn_ptr: the VM executor
-// interprets every chunk through one entry point, so its closures cannot key
-// the per-fn JitParamMeta table either. It installs this to answer with the
-// chunk's own metadata; returns null for anything it does not recognise, so
-// the regular lookup stands. (The VM's lowering lane needs no hook — there
-// each chunk is its own function, and it registers like the AST path.)
-inline const JitParamMeta* (*_jit_closure_meta_hook)(JitClosure*) = nullptr;
 
 // The same seam for the other kind of shared entry point: every native stdlib
 // closure runs through one trampoline, so its signature cannot key the per-fn
@@ -559,33 +506,22 @@ inline bool (*_jit_ns_kwarg_hook)(
 inline bool (*_jit_ns_callback_arity_hook)(
     JitClosure* cls, int64_t* cb_min, int64_t* cb_max) = nullptr;
 
-// Enforce kw-only at runtime for dynamic-callee positional calls.
-// `let g = f; g(1, 2)` where f is kw-only would otherwise fill the
-// kw-only slot positionally without the compile-time static check
-// firing — this runtime guard catches that case to match the interp.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count(
-    void* fn_ptr, int64_t n_pos, int64_t line, int64_t col) {
-  const JitParamMeta* meta = _jit_lookup_param_meta(fn_ptr);
-  if (!meta) return;
-  culebra::throw_if_too_many_positionals(meta->first_kw_only_idx, n_pos,
-                                          line, col);
-}
-
 // extern "C++" to match the definition's linkage: the predicate lives in the
 // island further down, next to the thunk address it tests against.
 extern "C++" {
 inline bool _jit_is_multifn_dispatcher(JitClosure* c);
 }
 
-// The same guard for a callee whose code is not a distinct fn_ptr (the VM
-// executor's closures all share one), asked by closure instead.
+// Enforce kw-only at runtime for dynamic-callee positional calls.
+// `let g = f; g(1, 2)` where f is kw-only would otherwise fill the
+// kw-only slot positionally without the compile-time static check
+// firing — this runtime guard catches that case to match the interp.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count_cls(
     JitClosure* cls, int64_t n_pos, int64_t line, int64_t col) {
-  // A dispatcher has no meta under either key, and the overload it picks
-  // enforces its own keyword-only params: two table lookups per call.
+  // A dispatcher carries no meta of its own, and the overload it picks
+  // enforces its own keyword-only params.
   if (_jit_is_multifn_dispatcher(cls)) return;
-  const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
-  if (!meta && _jit_closure_meta_hook) meta = _jit_closure_meta_hook(cls);
+  const JitParamMeta* meta = cls ? cls->meta : nullptr;
   if (!meta) return;
   culebra::throw_if_too_many_positionals(meta->first_kw_only_idx, n_pos,
                                           line, col);
@@ -861,21 +797,18 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
   // through to the captured method before resolving the metadata.
   if (cls && cls->fn_ptr == reinterpret_cast<void*>(&_jit_bound_method_thunk))
     cls = reinterpret_cast<JitClosure*>(cls->captures[1]->value.data);
-  // A closure whose code is not a distinct fn_ptr (the VM executor's all
-  // share one) answers by closure instead — the check_pos_count_cls seam.
   auto meta_of = [](JitClosure* c) -> const JitParamMeta* {
     if (!c) return nullptr;
-    if (const JitParamMeta* m = _jit_lookup_param_meta(c->fn_ptr)) return m;
-    if (_jit_closure_meta_hook) {
-      if (const JitParamMeta* m = _jit_closure_meta_hook(c)) return m;
-    }
+    if (c->meta) return c->meta;
+    // Every stdlib namespace method shares one trampoline, so its signature
+    // is derived from the NsMethod its capture carries rather than built per
+    // closure. stdlib_jit.h installs the derivation.
     return _jit_native_meta_hook ? _jit_native_meta_hook(c) : nullptr;
   };
   const JitParamMeta* meta = meta_of(cls);
-  // Multifn dispatcher fallback: dispatchers share a single thunk
-  // address, so per-name body meta isn't keyed by fn_ptr. Go through the
-  // dispatcher's record to its table and take the body's meta — surfaces
-  // the first registered method's signature (interp parity with the
+  // Multifn dispatcher fallback: a dispatcher declares no parameters of its
+  // own. Go through its record to its table and take the body's meta —
+  // surfaces the first registered method's signature (interp parity with the
   // dispatcher exposing the first method's params/name/return_type).
   if (!meta) {
     if (const auto* rec = _jit_dispatcher_record(cls)) {
@@ -1008,7 +941,7 @@ inline JitClosure* _jit_multifn_new_dispatcher(const std::string& name,
                                                size_t arity) {
   auto* c = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk),
-      /*n_captures=*/2, arity, /*flags=*/0);
+      /*n_captures=*/2, arity, /*flags=*/0, /*meta=*/nullptr);
   auto& rec = _jit_multifn_dispatchers()[c];
   rec.name = name;
   c->captures[kMultifnRecordCapture] = culebra_runtime_cell_new(
@@ -1668,19 +1601,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(int8_t tag,
 // --- Closure runtime ---
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
-    void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags) {
+    void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags,
+    const JitParamMeta* meta) {
   auto* c = new JitClosure();
   c->refcount = 1;
   c->fn_ptr = fn_ptr;
   c->n_captures = n_captures;
-  c->flags = flags;
+  c->flags = static_cast<uint32_t>(flags);
+  c->meta = meta;
   // calloc (zero-init): the caller fills captures[i] after this returns, and a
   // collect in that window would otherwise read uninitialised slots as roots.
   c->captures =
       n_captures ? static_cast<JitCell**>(
                        std::calloc(n_captures, sizeof(JitCell*)))
                  : nullptr;
-  c->arity = arity;
+  c->arity = static_cast<uint32_t>(arity);
   _gc_register(c, GC_TAG_FUNC);
   return c;
 }
@@ -1758,7 +1693,7 @@ inline JitValue _jit_make_bound_method(int8_t recv_tag,
                                                   JitClosure* method) {
   auto* bound = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_jit_bound_method_thunk), 2, method->arity,
-      JIT_CLOSURE_NATIVE);
+      JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
   culebra_runtime_value_retain(recv_tag, recv_data);
   bound->captures[0] = culebra_runtime_cell_new(recv_tag, recv_data);
   JitValue mval{TAG_FUNC, reinterpret_cast<int64_t>(method)};
@@ -1881,8 +1816,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_getter_or_value(
 }
 
 // Runtime kwarg resolver: routes a call carrying keyword arguments
-// and/or dynamic `**splat` operands against a closure whose parameter
-// names live in the JitParamMeta side table. Mirrors the interp's
+// and/or dynamic `**splat` operands against the parameter names the
+// closure's own JitParamMeta carries. Mirrors the interp's
 // `bind_call_args` algorithm — splats merge first (later wins),
 // explicit kwargs layer on top. Missing defaulted slots get the
 // `TAG_UNFILLED` sentinel; the callee prologue's existing default
@@ -2003,12 +1938,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
         n_splat, splat_objs, line, col);
   }
 
-  const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
-  if (!meta && _jit_closure_meta_hook) meta = _jit_closure_meta_hook(cls);
+  const JitParamMeta* meta = cls->meta;
   if (!meta) {
     // No parameter metadata means the closure's parameters live behind its
-    // own prologue or trampoline (a VM function, a native builtin wrapper) —
-    // the side table only describes AST-compiled functions. With keyword
+    // own prologue or trampoline (a native builtin wrapper). With keyword
     // content present that is a real error: nothing here can bind a name.
     // Without any (a 0-kwarg call routed through this entry, e.g.
     // get_or_put's lazy-init thunk), there is no binder work at all — hand

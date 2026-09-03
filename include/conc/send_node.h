@@ -63,6 +63,9 @@ struct SendNode {
   // getter came from, and the code address it would have to ask is not an
   // identity across Runtimes. So the closure carries its own answers over.
   uint64_t jit_flags = 0;
+  // …and its body's metadata, a constant of the same module. Borrowed, never
+  // owned: it outlives every closure over that body.
+  void* jit_meta = nullptr;
   // Closure — JIT multifn dispatcher (`fn name`): the dispatcher thunk shares
   // fn_ptr, but its overload methods live in a thread_local table, so they are
   // shipped explicitly (method bodies in `elems`, types/variadic parallel) and

@@ -311,12 +311,15 @@ inline JitObject* _iter_wrap_new(
     cls->captures[i++] = value_cell;
   };
   auto* iter_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(&_iter_self_iter_fn), 0, 0, JIT_CLOSURE_NATIVE);
+      reinterpret_cast<void*>(&_iter_self_iter_fn), 0, 0, JIT_CLOSURE_NATIVE,
+      /*meta=*/nullptr);
   auto* has_next_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(has_next_fn), total, 0, JIT_CLOSURE_NATIVE);
+      reinterpret_cast<void*>(has_next_fn), total, 0, JIT_CLOSURE_NATIVE,
+      /*meta=*/nullptr);
   write_captures(has_next_cls);
   auto* next_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(next_fn), total, 0, JIT_CLOSURE_NATIVE);
+      reinterpret_cast<void*>(next_fn), total, 0, JIT_CLOSURE_NATIVE,
+      /*meta=*/nullptr);
   write_captures(next_cls);
   // Only attach the forwarding dispose when something upstream actually has
   // one, so a built-in chain keeps a dispose-free wrapper (and the for-in exit
@@ -327,7 +330,7 @@ inline JitObject* _iter_wrap_new(
     if (_iter_method_closure(captures.begin()[i]->value, "dispose")) {
       dispose_cls = culebra_runtime_closure_new(
           reinterpret_cast<void*>(&_iter_dispose_upstreams_fn), n_up, 0,
-          JIT_CLOSURE_NATIVE);
+          JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
       for (size_t j = 0; j < n_up; j++) {
         culebra_runtime_cell_retain(captures.begin()[j]);
         dispose_cls->captures[j] = captures.begin()[j];
@@ -2659,12 +2662,9 @@ inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
     }
   }
   if (cls->arity == JIT_VARIADIC_ARITY) return true;
-  const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
-  // A closure whose code is not a distinct fn_ptr (the VM executor runs every
-  // chunk through one entry point) answers through the same hook the keyword
-  // resolver asks — without it a `*args` callback reads as its bare slot
-  // count and a defaulted one as its full arity.
-  if (!meta && _jit_closure_meta_hook) meta = _jit_closure_meta_hook(cls);
+  // Without the body's own metadata a `*args` callback would read as its
+  // bare slot count and a defaulted one as its full arity.
+  const JitParamMeta* meta = cls->meta;
   if (meta) {
     return culebra::callback_arity_accepts(meta->cb_min, meta->cb_max,
                                            static_cast<long>(expected));
@@ -2739,7 +2739,7 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
       culebra_runtime_value_retain(TAG_FUNC, e->data);
       auto* adapter = culebra_runtime_closure_new(
           reinterpret_cast<void*>(&_culebra_callable_adapter), 2,
-          expected_arity, JIT_CLOSURE_NATIVE);
+          expected_arity, JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
       adapter->captures[0] = culebra_runtime_cell_new(fn_tag, fn_data);
       adapter->captures[1] = culebra_runtime_cell_new(TAG_FUNC, e->data);
       return adapter;

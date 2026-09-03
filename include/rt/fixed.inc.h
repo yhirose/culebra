@@ -66,34 +66,26 @@ inline int64_t _jit_handle_long(JitObject* h, const char* key) {
   return i == static_cast<size_t>(-1) ? -1 : h->slots[i].value.data;
 }
 
-// Every closure is born through this one constructor, which is where its
-// flags are fixed (rt_value.inc.h JIT_CLOSURE_*). Defined in rt_dispatch.inc.h,
-// included after this file.
+// Every closure is born through this one constructor, which is where what it
+// is (rt_value.inc.h JIT_CLOSURE_*) and what its body declares are both
+// fixed. Defined in rt_dispatch.inc.h, included after this file.
+struct JitParamMeta;
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
-    void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags);
+    void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags,
+    const JitParamMeta* meta);
 
 // Native-handle method param metadata (kwargs binding) — built by
-// _jit_make_handle_meta (defined after JitParamMeta below) and passed
-// straight to the bind chokepoint, so no process-global relay is needed.
-struct JitParamMeta;
+// _jit_make_handle_meta (defined after JitParamMeta below) and carried by
+// the closure itself, so the kwargs resolver can bind by name.
 inline const JitParamMeta* _jit_make_handle_meta(
     std::vector<std::string> names, std::vector<bool> has_default);
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_param_meta(
-    void* fn_ptr, const JitParamMeta* meta);
 
 inline JitClosure* _jit_make_handle_method(
     void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t arity,
     const JitParamMeta* meta = nullptr) {
-  auto* cls = culebra_runtime_closure_new(reinterpret_cast<void*>(fn),
-                                          /*n_captures=*/0, arity,
-                                          JIT_CLOSURE_NATIVE);
-  // Seed this thread's param-meta table so the kwargs resolver can bind
-  // by name. The table is thread_local and register is idempotent (same
-  // fn_ptr → same meta), so concurrent isolates building the same handle
-  // each seed their own table with no shared mutable state.
-  if (meta)
-    culebra_runtime_register_param_meta(reinterpret_cast<void*>(fn), meta);
-  return cls;
+  return culebra_runtime_closure_new(reinterpret_cast<void*>(fn),
+                                     /*n_captures=*/0, arity,
+                                     JIT_CLOSURE_NATIVE, meta);
 }
 
 // Slot a handle method onto `h` — shared by every native-handle builder
@@ -126,7 +118,7 @@ inline JitClosure* _jit_native_method(
     void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
   return culebra_runtime_closure_new(reinterpret_cast<void*>(fn),
                                      /*n_captures=*/0, /*arity=*/0,
-                                     JIT_CLOSURE_NATIVE);
+                                     JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
 }
 
 // Attach a captureless native method `fn` under name `nm` to a view or

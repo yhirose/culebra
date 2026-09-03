@@ -211,6 +211,10 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       ctx.closure_ids.emplace(c, n.ref_id);  // before recursing (fib recursion)
       n.jit_fn = c->fn_ptr;
       n.jit_flags = c->flags;
+      // The body's metadata is a constant of the module both Runtimes run
+      // (the LLJIT outlives every closure over that body), so the rebuilt
+      // closure points at the same one rather than losing it.
+      n.jit_meta = const_cast<void*>(static_cast<const void*>(c->meta));
       n.i = static_cast<int64_t>(c->arity);
       // `fn name` is a dispatcher thunk: its overloads live in a thread_local
       // table, so ship each method body + its dispatch types explicitly.
@@ -236,9 +240,9 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         sendable::send_error("a native/builtin function is not Sendable");
       // A `mut` capture is not Sendable: the value would silently diverge from
       // the parent's. Reject at the boundary, matching the interp (sendable.h).
-      if (auto* nm = _jit_first_mut_capture_of(c))
+      if (const char* nm = _jit_first_mut_capture_of(c))
         sendable::send_error(
-            "closure captures the mutable variable '" + *nm +
+            "closure captures the mutable variable '" + std::string(nm) +
             "' (mutable captures are not Sendable — pass it as an "
             "argument instead)");
       n.elems.reserve(c->n_captures);  // positional captures
@@ -379,7 +383,8 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         return cv;
       }
       auto* c = culebra_runtime_closure_new(
-          n.jit_fn, n.elems.size(), static_cast<size_t>(n.i), n.jit_flags);
+          n.jit_fn, n.elems.size(), static_cast<size_t>(n.i), n.jit_flags,
+          reinterpret_cast<const JitParamMeta*>(n.jit_meta));
       JitValue cv{TAG_FUNC, reinterpret_cast<int64_t>(c)};
       ctx.closures.emplace(n.ref_id, cv);
       for (size_t i = 0; i < n.elems.size(); i++) {
@@ -1392,8 +1397,9 @@ inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   };
   constexpr size_t n_caps = std::size(caps);
   auto reader = [&](void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-    auto* cls = culebra_runtime_closure_new(reinterpret_cast<void*>(f),
-                                            n_caps, 0, JIT_CLOSURE_NATIVE);
+    auto* cls = culebra_runtime_closure_new(
+        reinterpret_cast<void*>(f), n_caps, 0, JIT_CLOSURE_NATIVE,
+        /*meta=*/nullptr);
     for (size_t i = 0; i < n_caps; i++) {
       culebra_runtime_cell_retain(caps[i]);
       cls->captures[i] = caps[i];
