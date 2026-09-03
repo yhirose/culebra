@@ -154,6 +154,15 @@ check-interrupt-discipline:
 check-registrar-rooted:
     tools/checks/check_registrar_rooting.sh
 
+# vendor/cpp-vmlib owns the IR's vocabulary now (name_of/from_name); CodeGen
+# only re-exports it. A member added upstream reaches scripts the moment the
+# submodule bumps -- undocumented, and for a new Tag with no builder and no
+# reader at all.
+[group("test")]
+[doc("Verify every cpp-vmlib IR enum member is documented and reachable from CodeGen")]
+check-codegen-enums:
+    tools/checks/check_codegen_enum_coverage.sh
+
 # The PE export-table generator, against a fixed nm listing. It runs on no
 # other platform, so this is the only place a change to it is exercised before
 # Windows CI — where a wrong one is a short .def and a JIT that resolves
@@ -202,7 +211,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-layering
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-layering check-codegen-enums
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

@@ -111,6 +111,15 @@ jobs:
       - name: Check Playground version sync (culebra.h -> site/playground)
         run: just check-site-version
 
+      # vendor/cpp-vmlib is a submodule: a bump can hand scripts a new IR
+      # vocabulary member with nothing documenting it, or a new Tag with no
+      # builder and no reader at all. Needs no build, so it runs here with the
+      # rest of check-generated's members -- check-generated itself is not run
+      # as a unit anywhere in CI (the test jobs below call `just _run-tests`
+      # directly), so this is the only place this specific member is checked.
+      - name: Check CodeGen IR vocabulary coverage (vmlib.h -> CodeGen)
+        run: just check-codegen-enums
+
       # mold (Rui Ueyama's modern linker, ~2-3x faster than lld on Linux) for
       # the LLVM-heavy static link step.
       - name: Build (interpreter + JIT)
