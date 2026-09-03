@@ -347,61 +347,25 @@ class Module {
     return out;
   }
 
+  // vmlib.h owns each enum's vocabulary (name_of/from_name); a second, hand-
+  // typed copy here could drift from it the moment cpp-vmlib gains a member.
   static coreir::VarKind to_kind(std::string_view s) {
-    if (s == "local") return coreir::VarKind::Local;
-    if (s == "capture") return coreir::VarKind::Capture;
-    if (s == "cell") return coreir::VarKind::Cell;
+    if (auto k = coreir::from_name<coreir::VarKind>(s)) return *k;
     throw std::invalid_argument("CodeGen: unknown var kind '" +
                                 std::string(s) + "'");
   }
   static coreir::UnOp to_unop(std::string_view s) {
-    if (s == "neg") return coreir::UnOp::Neg;
-    if (s == "bitnot") return coreir::UnOp::BitNot;
+    if (auto op = coreir::from_name<coreir::UnOp>(s)) return *op;
     throw std::invalid_argument("CodeGen: unknown unary op '" +
                                 std::string(s) + "'");
   }
   static coreir::BinOp to_binop(std::string_view s) {
-    static constexpr std::pair<std::string_view, coreir::BinOp> kOps[] = {
-        {"add", coreir::BinOp::Add}, {"sub", coreir::BinOp::Sub},
-        {"mul", coreir::BinOp::Mul}, {"div", coreir::BinOp::Div},
-        {"mod", coreir::BinOp::Mod}, {"eq", coreir::BinOp::Eq},
-        {"ne", coreir::BinOp::Ne},   {"lt", coreir::BinOp::Lt},
-        {"le", coreir::BinOp::Le},   {"gt", coreir::BinOp::Gt},
-        {"ge", coreir::BinOp::Ge},   {"bitand", coreir::BinOp::BitAnd},
-        {"bitor", coreir::BinOp::BitOr}, {"bitxor", coreir::BinOp::BitXor},
-        {"shl", coreir::BinOp::Shl}, {"shr", coreir::BinOp::Shr},
-    };
-    for (const auto& [name, op] : kOps) {
-      if (s == name) return op;
-    }
+    if (auto op = coreir::from_name<coreir::BinOp>(s)) return *op;
     throw std::invalid_argument("CodeGen: unknown binary op '" +
                                 std::string(s) + "'");
   }
   static coreir::IntrinsicId to_intrinsic(std::string_view s) {
-    if (s == "print") return coreir::IntrinsicId::Print;
-    if (s == "readint") return coreir::IntrinsicId::ReadInt;
-    if (s == "len") return coreir::IntrinsicId::Len;
-    if (s == "tostr") return coreir::IntrinsicId::ToStr;
-    if (s == "typeof") return coreir::IntrinsicId::TypeOf;
-    if (s == "toint") return coreir::IntrinsicId::ToInt;
-    if (s == "todouble") return coreir::IntrinsicId::ToDouble;
-    if (s == "fmod") return coreir::IntrinsicId::FMod;
-    if (s == "pow") return coreir::IntrinsicId::Pow;
-    if (s == "printraw") return coreir::IntrinsicId::PrintRaw;
-    if (s == "arraypush") return coreir::IntrinsicId::ArrayPush;
-    if (s == "arraypop") return coreir::IntrinsicId::ArrayPop;
-    if (s == "objecthas") return coreir::IntrinsicId::ObjectHas;
-    if (s == "objectkeys") return coreir::IntrinsicId::ObjectKeys;
-    if (s == "objectremove") return coreir::IntrinsicId::ObjectRemove;
-    if (s == "genresume") return coreir::IntrinsicId::GenResume;
-    if (s == "genreturn") return coreir::IntrinsicId::GenReturn;
-    if (s == "genthrow") return coreir::IntrinsicId::GenThrow;
-    if (s == "argcount") return coreir::IntrinsicId::ArgCount;
-    if (s == "same") return coreir::IntrinsicId::Same;
-    if (s == "fnarity") return coreir::IntrinsicId::FnArity;
-    if (s == "collect") return coreir::IntrinsicId::Collect;
-    if (s == "heapstats") return coreir::IntrinsicId::HeapStats;
-    if (s == "enqueue") return coreir::IntrinsicId::Enqueue;
+    if (auto id = coreir::from_name<coreir::IntrinsicId>(s)) return *id;
     throw std::invalid_argument("CodeGen: unknown intrinsic '" +
                                 std::string(s) + "'");
   }
