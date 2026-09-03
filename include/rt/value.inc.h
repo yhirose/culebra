@@ -597,7 +597,7 @@ struct JitCell {
 };
 static_assert(sizeof(JitCell) <= 32 && !std::is_polymorphic_v<JitCell>);
 
-struct JitParamMeta;  // jit_dispatch.h
+struct JitParamMeta;  // rt_dispatch.inc.h
 
 struct JitClosure {
   int64_t refcount;

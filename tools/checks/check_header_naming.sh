@@ -28,6 +28,14 @@ cd "$(dirname "$0")/../.."
 fail=0
 note() { echo "header-naming FAIL: $*" >&2; fail=1; }
 
+# What this check is about is the source tree. Every build directory holds
+# CMake dependency files that quote whatever the headers were called when
+# they were written, so a stale one names a retired header forever and the
+# check fails on a tree that is perfectly clean. `build*` rather than the
+# four names that exist today: `build-asan`, `build-cov` and `build-no-jit`
+# are one `just` recipe away, and each would have re-opened this.
+SKIP=(--exclude-dir='build*' --exclude-dir=vendor --exclude-dir=.git)
+
 # --- 1. names that were renamed away ---------------------------------------
 
 RETIRED=(
@@ -39,8 +47,8 @@ RETIRED=(
 # that says which spellings were retired and what each one had come to hide.
 # This script is excluded for the same reason — the list above is the list.
 for old in "${RETIRED[@]}"; do
-  hits=$(grep -rIln --exclude-dir=vendor --exclude-dir=build --exclude-dir=build-dev \
-         --exclude-dir=.git --exclude=check_header_naming.sh --exclude=layout.md --exclude=layout.ja.md -F "$old" . 2>/dev/null || true)
+  hits=$(grep -rIln "${SKIP[@]}" \
+         --exclude=check_header_naming.sh --exclude=layout.md --exclude=layout.ja.md -F "$old" . 2>/dev/null || true)
   if [[ -n $hits ]]; then
     note "\`$old\` was renamed away but is named again in:"
     printf '  %s\n' $hits >&2
@@ -49,8 +57,8 @@ done
 # grammar_blob.h is retired too, but grammar_blob.gen.h contains it as no
 # substring, so a plain -F search would be clean either way; match the bare
 # form only where it is not followed by the new suffix.
-hits=$(grep -rIln --exclude-dir=vendor --exclude-dir=build --exclude-dir=build-dev \
-       --exclude-dir=.git --exclude=check_header_naming.sh --exclude=layout.md --exclude=layout.ja.md -E 'grammar_blob\.h([^a-z]|$)' . 2>/dev/null || true)
+hits=$(grep -rIln "${SKIP[@]}" \
+       --exclude=check_header_naming.sh --exclude=layout.md --exclude=layout.ja.md -E 'grammar_blob\.h([^a-z]|$)' . 2>/dev/null || true)
 [[ -n $hits ]] && { note "\`grammar_blob.h\` was renamed to grammar_blob.gen.h; still named in:"; printf '  %s\n' $hits >&2; }
 
 # --- 2. jit means LLVM ------------------------------------------------------
@@ -103,7 +111,7 @@ while IFS= read -r line; do
   f=${line%%:*}
   [[ $f == include/rt/rt.h ]] && continue
   note "$f includes an .inc.h fragment; only rt.h may (they are its body, and one extern \"C\" block spans four of them)."
-done < <(grep -rIn --exclude-dir=vendor --exclude-dir=build --exclude-dir=build-dev \
+done < <(grep -rIn "${SKIP[@]}" \
          -E '#include *[<"]rt/[a-z]+\.inc\.h[>"]' include/ src/ tests/ 2>/dev/null || true)
 
 (( fail )) && exit 1

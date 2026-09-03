@@ -802,7 +802,7 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
     if (c->meta) return c->meta;
     // Every stdlib namespace method shares one trampoline, so its signature
     // is derived from the NsMethod its capture carries rather than built per
-    // closure. stdlib_jit.h installs the derivation.
+    // closure. stdlib/bindings.h installs the derivation.
     return _jit_native_meta_hook ? _jit_native_meta_hook(c) : nullptr;
   };
   const JitParamMeta* meta = meta_of(cls);
