@@ -402,10 +402,9 @@ class Embed {
         std::forward<Fn>(fn), std::string(name), std::move(param_names),
         static_cast<Args*>(nullptr)));
     auto idx = static_cast<int64_t>(fns.size() - 1);
-    _jit_register_native_fn(
-        reinterpret_cast<const void*>(&_embed_detail::trampoline));
     auto* cls = culebra_runtime_closure_new(
-        reinterpret_cast<void*>(&_embed_detail::trampoline), 1, arity);
+        reinterpret_cast<void*>(&_embed_detail::trampoline), 1, arity,
+        JIT_CLOSURE_NATIVE);
     cls->captures[0] = culebra_runtime_cell_new(TAG_LONG, idx);
     auto* cell = cells_.cell(name);
     _culebra_value_release_impl(cell->value.tag, cell->value.data);

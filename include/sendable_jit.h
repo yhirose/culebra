@@ -211,6 +211,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       n.ref_id = ctx.next_id++;
       ctx.closure_ids.emplace(c, n.ref_id);  // before recursing (fib recursion)
       n.jit_fn = c->fn_ptr;
+      n.jit_flags = c->flags;
       n.i = static_cast<int64_t>(c->arity);
       // `fn name` is a dispatcher thunk: its overloads live in a thread_local
       // table, so ship each method body + its dispatch types explicitly.
@@ -232,8 +233,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // (iterator wrappers, ns-method NsMethod*). Matches the interp's
       // body==nullptr rejection; without this the child dereferences
       // parent-heap state and hangs or crashes.
-      if (_jit_is_native_fn(c->fn_ptr) ||
-          (_jit_closure_is_native_hook && _jit_closure_is_native_hook(c)))
+      if (c->flags & JIT_CLOSURE_NATIVE)
         sendable::send_error("a native/builtin function is not Sendable");
       // A `mut` capture is not Sendable: the value would silently diverge from
       // the parent's. Reject at the boundary, matching the interp (sendable.h).
@@ -379,8 +379,8 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         _jit_multifn_refresh_mono(c);
         return cv;
       }
-      auto* c = culebra_runtime_closure_new(n.jit_fn, n.elems.size(),
-                                            static_cast<size_t>(n.i));
+      auto* c = culebra_runtime_closure_new(
+          n.jit_fn, n.elems.size(), static_cast<size_t>(n.i), n.jit_flags);
       JitValue cv{TAG_FUNC, reinterpret_cast<int64_t>(c)};
       ctx.closures.emplace(n.ref_id, cv);
       for (size_t i = 0; i < n.elems.size(); i++) {
@@ -1393,9 +1393,8 @@ inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   };
   constexpr size_t n_caps = std::size(caps);
   auto reader = [&](void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-    _jit_register_native_fn(reinterpret_cast<const void*>(f));
     auto* cls = culebra_runtime_closure_new(reinterpret_cast<void*>(f),
-                                            n_caps, 0);
+                                            n_caps, 0, JIT_CLOSURE_NATIVE);
     for (size_t i = 0; i < n_caps; i++) {
       culebra_runtime_cell_retain(caps[i]);
       cls->captures[i] = caps[i];

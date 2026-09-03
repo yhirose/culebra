@@ -58,6 +58,11 @@ struct SendNode {
   // forms never mix: an interp program ships interp closures, a JIT program
   // ships JIT closures. `jit_fn != nullptr` selects the JIT form.
   void* jit_fn = nullptr;
+  // …and what that closure IS (jit_value.h JIT_CLOSURE_*). A property the
+  // receiving Runtime cannot infer: it never ran the class declaration the
+  // getter came from, and the code address it would have to ask is not an
+  // identity across Runtimes. So the closure carries its own answers over.
+  uint64_t jit_flags = 0;
   // Closure — JIT multifn dispatcher (`fn name`): the dispatcher thunk shares
   // fn_ptr, but its overload methods live in a thread_local table, so they are
   // shipped explicitly (method bodies in `elems`, types/variadic parallel) and

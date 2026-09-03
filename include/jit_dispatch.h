@@ -27,7 +27,7 @@ extern "C" {
 // Forward declarations — closure_new, cell_new and value_release_impl are
 // defined later in this file but used by the multimethod runtime.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
-    void* fn_ptr, size_t n_captures, size_t arity);
+    void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags);
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(
     int8_t tag, int64_t data);
 
@@ -127,11 +127,9 @@ inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t sel
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
 culebra_runtime_make_variant_ctor(const char* variant_name,
                                     const char* enum_name, int64_t arity) {
-  _jit_register_native_fn(
-      reinterpret_cast<const void*>(&_jit_variant_ctor_thunk));
   auto* cls = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/0,
-      static_cast<size_t>(arity));
+      static_cast<size_t>(arity), JIT_CLOSURE_NATIVE);
   _jit_variant_ctor_info()[cls] = {std::string(variant_name),
                                     std::string(enum_name)};
   return cls;
@@ -342,8 +340,8 @@ culebra_runtime_make_derived_method(int64_t kind) {
     case 2: thunk = reinterpret_cast<void*>(&_jit_derived_show_thunk); arity = 0; break;
     case 3: thunk = reinterpret_cast<void*>(&_jit_derived_cmp_thunk); arity = 1; break;
   }
-  _jit_register_native_fn(thunk);
-  return culebra_runtime_closure_new(thunk, /*n_captures=*/0, arity);
+  return culebra_runtime_closure_new(thunk, /*n_captures=*/0, arity,
+                                     JIT_CLOSURE_NATIVE);
 }
 
 // Parameter metadata attached to JIT-compiled user functions. The side
@@ -513,13 +511,6 @@ inline const std::string* _jit_first_mut_capture_of(JitClosure* c) {
   }
   return _jit_first_mut_capture(c->fn_ptr);
 }
-
-// Third question of the same shape: is this closure's body something no
-// other Runtime can rebuild? The fn_ptr registry answers for a C++-bodied
-// closure; the executor's constructor thunks are ordinary chunks, so they
-// need the hook to be rejected as their interp/JIT twins are (a class
-// object carries its ctor, so this is what makes sending one an error).
-inline bool (*_jit_closure_is_native_hook)(JitClosure*) = nullptr;
 
 // Hook for closures whose code is not a distinct fn_ptr: the VM executor
 // interprets every chunk through one entry point, so its closures cannot key
@@ -1017,7 +1008,7 @@ inline JitClosure* _jit_multifn_new_dispatcher(const std::string& name,
                                                size_t arity) {
   auto* c = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk),
-      /*n_captures=*/2, arity);
+      /*n_captures=*/2, arity, /*flags=*/0);
   auto& rec = _jit_multifn_dispatchers()[c];
   rec.name = name;
   c->captures[kMultifnRecordCapture] = culebra_runtime_cell_new(
@@ -1677,11 +1668,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(int8_t tag,
 // --- Closure runtime ---
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
-    void* fn_ptr, size_t n_captures, size_t arity) {
+    void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags) {
   auto* c = new JitClosure();
   c->refcount = 1;
   c->fn_ptr = fn_ptr;
   c->n_captures = n_captures;
+  c->flags = flags;
   // calloc (zero-init): the caller fills captures[i] after this returns, and a
   // collect in that window would otherwise read uninitialised slots as roots.
   c->captures =
@@ -1764,10 +1756,9 @@ inline JitValue _jit_invoke_getter(JitClosure* method,
 inline JitValue _jit_make_bound_method(int8_t recv_tag,
                                                   int64_t recv_data,
                                                   JitClosure* method) {
-  _jit_register_native_fn(
-      reinterpret_cast<const void*>(&_jit_bound_method_thunk));
   auto* bound = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(&_jit_bound_method_thunk), 2, method->arity);
+      reinterpret_cast<void*>(&_jit_bound_method_thunk), 2, method->arity,
+      JIT_CLOSURE_NATIVE);
   culebra_runtime_value_retain(recv_tag, recv_data);
   bound->captures[0] = culebra_runtime_cell_new(recv_tag, recv_data);
   JitValue mval{TAG_FUNC, reinterpret_cast<int64_t>(method)};
@@ -1814,8 +1805,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     // path; `obj.name()` compiles as a method call and never lands here, so
     // both spellings yield the same value. `view` is borrowed here (the
     // caller releases the receiver separately), so nothing to release.
-    // Only class-compiled getters register; own-slot lambdas never match.
-    if (_jit_is_getter_fn(method->fn_ptr)) {
+    // Only a class getter's own closure carries the flag; own-slot lambdas
+    // and the dispatcher that replaces overloaded arms never do.
+    if (method->flags & JIT_CLOSURE_GETTER) {
       return _jit_invoke_getter(method, recv_tag, recv_data);
     }
     // Bind `self`=receiver for EVERY function-valued property read — own
@@ -1878,7 +1870,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_getter_or_value(
     auto* obj = reinterpret_cast<JitObject*>(recv_data);
     if (obj->proto() && obj->find_slot(key) == static_cast<size_t>(-1)) {
       auto* method = reinterpret_cast<JitClosure*>(view_data);
-      if (_jit_is_getter_fn(method->fn_ptr)) {
+      if (method->flags & JIT_CLOSURE_GETTER) {
         JitValue r = _jit_invoke_getter(method, recv_tag, recv_data);
         _culebra_value_release_impl(view_tag, view_data);  // drop owned view
         return r;

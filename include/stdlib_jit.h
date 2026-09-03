@@ -2902,10 +2902,9 @@ inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
     it = _iter_wrap_fast<&_file_lines_fast_fn>(
         {handle_cell, id_cell, line_cell, col_cell});
   }
-  _jit_register_native_fn(
-      reinterpret_cast<const void*>(&_file_iter_dispose_fn));
   auto* dispose_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(&_file_iter_dispose_fn), 1, 0);
+      reinterpret_cast<void*>(&_file_iter_dispose_fn), 1, 0,
+      JIT_CLOSURE_NATIVE);
   culebra_runtime_cell_retain(id_cell);  // wrap_fast's closures keep it alive
   dispose_cls->captures[0] = id_cell;
   it->set_or_append("dispose",
@@ -8816,23 +8815,17 @@ inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
   // Every closure those hooks answer for is made here, so this is where they
   // are installed (see _jit_ns_install_hooks for why not at static-init time).
   _jit_ns_install_hooks();
-  _jit_register_native_fn(
-      reinterpret_cast<const void*>(&_jit_ns_method_trampoline));
-  // Atomic w.r.t. collection: the capture cell is registered before `cls`
-  // itself is, so a GC_STRESS collect mid-build would find the cell
-  // unreachable (its only ref is the not-yet-registered cls) and sweep it.
+  // Atomic w.r.t. collection: the closure is registered with the collector
+  // by its constructor, before the capture cell exists, so a GC_STRESS
+  // collect mid-build would find the cell unreachable (its only ref is the
+  // slot being filled) and sweep it.
   culebra::gc::Heap::CollectPause _pause(_gc_heap());
-  auto* cls = new JitClosure();
-  cls->refcount = 1;
-  cls->fn_ptr = reinterpret_cast<void*>(_jit_ns_method_trampoline);
-  cls->n_captures = 1;
-  // calloc, not new[]: the release path frees this with std::free, the
-  // way culebra_runtime_closure_new's does.
-  cls->captures = static_cast<JitCell**>(std::calloc(1, sizeof(JitCell*)));
+  auto* cls = culebra_runtime_closure_new(
+      reinterpret_cast<void*>(_jit_ns_method_trampoline), 1,
+      m->arity < 0 ? JIT_VARIADIC_ARITY : static_cast<size_t>(m->arity),
+      JIT_CLOSURE_NATIVE);
   cls->captures[0] = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(m));
-  cls->arity = m->arity < 0 ? JIT_VARIADIC_ARITY : static_cast<size_t>(m->arity);
-  _gc_register(cls, GC_TAG_FUNC);
   return cls;
 }
 
@@ -9470,15 +9463,19 @@ inline std::mutex& _lazy_ns_builder_mutex() {
 struct _LazyNsBuilder {
   void* fn_ptr = nullptr;
   int64_t desc = 0;
+  // Everything else the closure constructor takes, so the rebuild produces
+  // the same closure rather than one that merely runs the same code.
+  uint64_t flags = 0;
 };
 inline _NameMap<_LazyNsBuilder>& _lazy_ns_builders() {
   static _NameMap<_LazyNsBuilder> r;
   return r;
 }
 inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr,
-                                      int64_t desc) {
+                                      int64_t desc, uint64_t flags) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
-  _lazy_ns_builders().insert_or_assign(name, _LazyNsBuilder{fn_ptr, desc});
+  _lazy_ns_builders().insert_or_assign(name,
+                                       _LazyNsBuilder{fn_ptr, desc, flags});
 }
 inline _LazyNsBuilder _lazy_ns_builder(std::string_view name) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
@@ -9516,7 +9513,7 @@ inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
     // descriptor, in a cell of this Runtime's own), none where the fn_ptr is
     // the whole answer.
     auto* cls = culebra_runtime_closure_new(bd.fn_ptr, bd.desc ? 1 : 0,
-                                            /*arity=*/0);
+                                            /*arity=*/0, bd.flags);
     if (bd.desc) cls->captures[0] = culebra_runtime_cell_new(TAG_LONG, bd.desc);
     JitValue r = _culebra_invoke0(cls);
     culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(cls));
@@ -9665,7 +9662,7 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
         0, 0);
   }
   _lazy_ns_register_builder(name ? name : "", c->fn_ptr,
-                            desc ? desc->value.data : 0);
+                            desc ? desc->value.data : 0, c->flags);
 }
 
 // Cold arm of jit.h's emit_reject_bare_builtin_method. The codegen filter

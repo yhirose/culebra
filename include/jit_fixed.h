@@ -57,77 +57,6 @@ inline void _jit_fa_set(JitObject* v, int64_t i, int8_t tag, int64_t data,
                             data);
 }
 
-// Two registries of compiled-body addresses, and one reason they live
-// together: an address only names the code it was taken from for as long as
-// that code stays mapped. A JIT arena is freed with its Runtime and the next
-// Runtime's compiler is handed the same pages, so a body address can come
-// back meaning something else entirely. Held per Runtime, so an entry can
-// never outlive the code it describes.
-//
-// The doctest lane found this the hard way: one program's class getter and a
-// later one's `handle` adapter landed on the same address, the adapter read
-// as a getter, and a bare property read invoked it 0-arg — surfacing as
-// "ArityError: missing required argument '_eh_args'" in a program with no
-// getter in it. Only on a machine whose codegen happened to place them so,
-// which is why an unrelated change to the JIT's code size could turn it on.
-//
-// `natives` — a native (C++-bodied) closure is not Sendable: it can't be
-// rebuilt on another Runtime, and its captures may hold raw same-heap
-// pointers (the iterator wrappers cache upstream closure pointers, the
-// ns-method closure a NsMethod*) that would silently cross the heap
-// boundary. The JIT serializer rejects them like the interp's body==nullptr
-// check (sendable.h). Every C++-side closure builder registers its thunk, and
-// so does a class declaration for its synthesized constructor; the multifn
-// dispatcher stays out (the serializer rebuilds it from the method tables).
-//
-// `getters` — the JIT twin of interp's FunctionValue::is_getter. A class
-// getter's compiled body is registered when its class declaration runs, and a
-// bare property read (`obj.name`, no call parens) resolving to a proto method
-// in this set invokes it 0-arg instead of yielding a bound method
-// (culebra_runtime_bind_method_value). Own-slot lambdas never register.
-//
-// No lock: the current Runtime is thread-local (shared.h `_culebra_rt`), so
-// each thread registers into its own, the way every other substate works.
-struct _JitFnRegistry {
-  std::unordered_set<const void*> natives;
-  std::unordered_set<const void*> getters;
-};
-
-inline _JitFnRegistry& _jit_fn_registry() {
-  return culebra::runtime_substate<_JitFnRegistry>(culebra::kSlotJitFnRegistry);
-}
-
-inline void _jit_register_native_fn(const void* fn_ptr) {
-  _jit_fn_registry().natives.insert(fn_ptr);
-}
-inline bool _jit_is_native_fn(const void* fn_ptr) {
-  return _jit_fn_registry().natives.contains(fn_ptr);
-}
-
-inline void _jit_register_getter_fn(const void* fn_ptr) {
-  _jit_fn_registry().getters.insert(fn_ptr);
-}
-inline bool _jit_is_getter_fn(const void* fn_ptr) {
-  return _jit_fn_registry().getters.contains(fn_ptr);
-}
-
-// Emitted-code entry point: register a compiled getter closure by its body
-// address (only known once the class declaration runs).
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_getter(
-    JitClosure* method) {
-  _jit_register_getter_fn(method->fn_ptr);
-}
-
-// Emitted-code entry point: a class declaration registers its synthesized
-// constructor here at runtime (the compiled address only exists then). The
-// ctor is native on the interp side (body == nullptr), so neither backend
-// can ship it — registering makes capturing a class object or `C.new`
-// reject with the interp's exact message.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_native_fn(
-    void* fn_ptr) {
-  _jit_register_native_fn(fn_ptr);
-}
-
 // Handle plumbing shared by every native-handle builder (Proc / File /
 // Foreign / wrap.h-generated handles): a typed slot read, the
 // captureless method-closure constructor, and the bind helper. Live
@@ -136,6 +65,12 @@ inline int64_t _jit_handle_long(JitObject* h, const char* key) {
   size_t i = h->find_slot(key);
   return i == static_cast<size_t>(-1) ? -1 : h->slots[i].value.data;
 }
+
+// Every closure is born through this one constructor, which is where its
+// flags are fixed (jit_value.h JIT_CLOSURE_*). Defined in jit_dispatch.h,
+// included after this file.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
+    void* fn_ptr, size_t n_captures, size_t arity, uint64_t flags);
 
 // Native-handle method param metadata (kwargs binding) — built by
 // _jit_make_handle_meta (defined after JitParamMeta below) and passed
@@ -149,20 +84,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_param_meta(
 inline JitClosure* _jit_make_handle_method(
     void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t arity,
     const JitParamMeta* meta = nullptr) {
-  _jit_register_native_fn(reinterpret_cast<const void*>(fn));
-  auto* cls = new JitClosure();
-  cls->refcount = 1;
-  cls->fn_ptr = reinterpret_cast<void*>(fn);
-  cls->n_captures = 0;
-  cls->captures = nullptr;
-  cls->arity = arity;
+  auto* cls = culebra_runtime_closure_new(reinterpret_cast<void*>(fn),
+                                          /*n_captures=*/0, arity,
+                                          JIT_CLOSURE_NATIVE);
   // Seed this thread's param-meta table so the kwargs resolver can bind
   // by name. The table is thread_local and register is idempotent (same
   // fn_ptr → same meta), so concurrent isolates building the same handle
   // each seed their own table with no shared mutable state.
   if (meta)
     culebra_runtime_register_param_meta(reinterpret_cast<void*>(fn), meta);
-  _gc_register(cls, GC_TAG_FUNC);
   return cls;
 }
 
@@ -194,15 +124,9 @@ inline void _jit_handle_bind_method(
 // is fully defined where it is used.
 inline JitClosure* _jit_native_method(
     void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-  _jit_register_native_fn(reinterpret_cast<const void*>(fn));
-  auto* c = new JitClosure();
-  c->refcount = 1;
-  c->fn_ptr = reinterpret_cast<void*>(fn);
-  c->n_captures = 0;
-  c->captures = nullptr;
-  c->arity = 0;
-  _gc_register(c, GC_TAG_FUNC);
-  return c;
+  return culebra_runtime_closure_new(reinterpret_cast<void*>(fn),
+                                     /*n_captures=*/0, /*arity=*/0,
+                                     JIT_CLOSURE_NATIVE);
 }
 
 // Attach a captureless native method `fn` under name `nm` to a view or

@@ -310,16 +310,13 @@ inline JitObject* _iter_wrap_new(
     culebra_runtime_cell_retain(value_cell);
     cls->captures[i++] = value_cell;
   };
-  _jit_register_native_fn(reinterpret_cast<const void*>(&_iter_self_iter_fn));
-  _jit_register_native_fn(reinterpret_cast<const void*>(has_next_fn));
-  _jit_register_native_fn(reinterpret_cast<const void*>(next_fn));
   auto* iter_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(&_iter_self_iter_fn), 0, 0);
+      reinterpret_cast<void*>(&_iter_self_iter_fn), 0, 0, JIT_CLOSURE_NATIVE);
   auto* has_next_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(has_next_fn), total, 0);
+      reinterpret_cast<void*>(has_next_fn), total, 0, JIT_CLOSURE_NATIVE);
   write_captures(has_next_cls);
   auto* next_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(next_fn), total, 0);
+      reinterpret_cast<void*>(next_fn), total, 0, JIT_CLOSURE_NATIVE);
   write_captures(next_cls);
   // Only attach the forwarding dispose when something upstream actually has
   // one, so a built-in chain keeps a dispose-free wrapper (and the for-in exit
@@ -328,10 +325,9 @@ inline JitObject* _iter_wrap_new(
   size_t n_up = n_upstreams < captures.size() ? n_upstreams : captures.size();
   for (size_t i = 0; i < n_up && !dispose_cls; i++) {
     if (_iter_method_closure(captures.begin()[i]->value, "dispose")) {
-      _jit_register_native_fn(
-          reinterpret_cast<const void*>(&_iter_dispose_upstreams_fn));
       dispose_cls = culebra_runtime_closure_new(
-          reinterpret_cast<void*>(&_iter_dispose_upstreams_fn), n_up, 0);
+          reinterpret_cast<void*>(&_iter_dispose_upstreams_fn), n_up, 0,
+          JIT_CLOSURE_NATIVE);
       for (size_t j = 0; j < n_up; j++) {
         culebra_runtime_cell_retain(captures.begin()[j]);
         dispose_cls->captures[j] = captures.begin()[j];
@@ -2741,11 +2737,9 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
       // retain. Capturing the closure lets the per-element forward skip
       // the property lookup.
       culebra_runtime_value_retain(TAG_FUNC, e->data);
-      _jit_register_native_fn(
-          reinterpret_cast<const void*>(&_culebra_callable_adapter));
       auto* adapter = culebra_runtime_closure_new(
           reinterpret_cast<void*>(&_culebra_callable_adapter), 2,
-          expected_arity);
+          expected_arity, JIT_CLOSURE_NATIVE);
       adapter->captures[0] = culebra_runtime_cell_new(fn_tag, fn_data);
       adapter->captures[1] = culebra_runtime_cell_new(TAG_FUNC, e->data);
       return adapter;

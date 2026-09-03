@@ -521,10 +521,6 @@ enum class Op : uint8_t {
                // (run_field_init; both borrowed). Emitted at the top of a
                // `new` body, after parameter binding — interp's timing, so
                // an arity error fires with no field side effects.
-  RegGetter,   // register closure regs[a] as a getter, so a bare `obj.name`
-               // read invokes it (culebra_runtime_register_getter, keyed by
-               // the closure's fn_ptr). Emitted once per getter method, at
-               // its declaration — the JIT's register_getter call.
   SelfMerge,   // regs[a] = the frame's `self`: the ABI receiver when the
                // call supplied one, else the value in the captured cell
                // regs[b] (rt::self_merge, +1 either way). Only a frame that
@@ -2621,11 +2617,10 @@ struct Chunk {
   // call, so the prologue skips the nil rewrite there.
   int32_t self_slot = -1;
   bool self_raw = false;
-  // A getter body (`get x() { … }`). The runtime's getter registry is keyed
-  // by a closure's fn_ptr, and every executor closure shares one interpreter
-  // entry point — so a getter chunk's closures get their own (see
-  // Exec::getter_trampoline), which is what makes the key mean "this code is
-  // a getter" in that lane too.
+  // A getter body (`get x() { … }`): a bare `obj.x` read invokes a closure
+  // over this chunk rather than yielding a bound method. Read at MakeClosure
+  // by both lanes (chunk_closure_flags) — the interp's
+  // FunctionValue::is_getter, carried where it belongs.
   bool is_getter = false;
   // Method-name tables for ClassMeta, indexed by its `d` operand. Stable
   // storage: the executor hands build_class_meta an array of these c_str()s.
@@ -2807,6 +2802,15 @@ struct Chunk {
     variadic = src.variadic;
   }
 };
+
+// What a closure built over `c` is (jit_value.h JIT_CLOSURE_*). Both lanes
+// derive it from the chunk, at the one moment a closure comes into existence,
+// so the answer cannot depend on which of them is running — nor on where the
+// body's code happened to land.
+inline uint64_t chunk_closure_flags(const Chunk& c) {
+  return (c.is_getter ? JIT_CLOSURE_GETTER : 0u) |
+         (c.forwards_args ? JIT_CLOSURE_NATIVE : 0u);
+}
 
 // The argument positions the call at `ix` published, or null when it has
 // none (the call site stands in — the interp binder's own fallback).
@@ -5634,23 +5638,19 @@ class Compiler {
   void emit_member_closure(int32_t dst, const std::vector<size_t>& arms,
                            const std::vector<const peg::Ast*>& asts,
                            const std::vector<int32_t>& chunks) {
-    auto make_arm = [&](size_t i, int32_t slot) {
-      emit(Op::MakeClosure, slot, chunks[i]);
-      // A getter registers where it maps 1:1 to its source method, before
-      // the meta absorbs it (the JIT's register_getter site). An overloaded
-      // one still registers, and still loses the bare-read invoke: the
-      // dispatcher that replaces it is not a getter.
-      if (culebra::view_method(*asts[i]).is_getter) emit(Op::RegGetter, slot);
-    };
+    // Getter-ness rides the chunk (Chunk::is_getter), so MakeClosure alone
+    // says it. An overloaded getter still loses the bare-read invoke: the
+    // dispatcher that replaces its arms is a closure of its own, and not one
+    // of them.
     if (arms.size() == 1) {
-      make_arm(arms.front(), dst);
+      emit(Op::MakeClosure, dst, chunks[arms.front()]);
       return;
     }
     int32_t into = -1;
     for (size_t k = 0; k < arms.size(); k++) {
       TempScope ats(*this);
       int32_t body = alloc_temp(*asts[arms[k]]);
-      make_arm(arms[k], body);
+      emit(Op::MakeClosure, body, chunks[arms[k]]);
       int32_t out = k == 0 ? dst : alloc_temp(*asts[arms[k]]);
       emit(Op::MultifnReg, out, body, into, chunks[arms[k]]);
       forget_temp(body);  // the registry absorbed the body's +1 (reg is nil)
@@ -5661,10 +5661,10 @@ class Compiler {
   // `class Name { new(...) {...}  m(...) {...}  get g() {...}
   //               static f(...) {...}  static K = e  x = e  y: T = e }`.
   // The runtime shape is the JIT's: one shared meta Object holding the
-  // instance methods (getters among them, registered so a bare read invokes
-  // them), instances delegating to it through `proto`, and a class namespace
-  // Object carrying `new` plus the statics, marked so `C(args)` reaches the
-  // constructor. Field initializers become a synthetic thunk the `new` body
+  // instance methods (getters among them, whose own closures say so, so a
+  // bare read invokes them), instances delegating to it through `proto`, and
+  // a class namespace Object carrying `new` plus the statics, marked so
+  // `C(args)` reaches the constructor. Field initializers become a synthetic thunk the `new` body
   // runs after its parameters bound. Same-named members with distinct
   // signatures merge into one dispatcher through the runtime multimethod
   // registry, exactly as a free `fn name` overload set does.
@@ -12026,7 +12026,7 @@ inline std::string dump(const Chunk& c) {
       "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "ClsSelf",      "WkErr",
       "ClassMeta", "DeriveFn",  "RegPack",    "EnumVariant",  "TypeMatch",
       "ClassObj",  "BindStatic",
-      "MakeInst",  "ValueBox",  "FieldInit", "RegGetter",  "SelfMerge",
+      "MakeInst",  "ValueBox",  "FieldInit", "SelfMerge",
       "TraitReset", "TraitDefault", "TraitReg", "PosSnap", "ChkTypeAt",
       "ChkArg",    "JumpIfFilled", "ArgsRest",   "KwRest",     "RecEnter",
       "RecLeave",
@@ -12098,8 +12098,7 @@ struct Exec {
   // closure is not one of ours (its fn_ptr is not a VM trampoline). The
   // lazy-namespace registry rebuilds closures from it (see the desc hook).
   static JitCell* desc_for_closure(JitClosure* cls) {
-    if (!cls || (cls->fn_ptr != reinterpret_cast<void*>(&trampoline) &&
-                 cls->fn_ptr != reinterpret_cast<void*>(&getter_trampoline)))
+    if (!cls || cls->fn_ptr != reinterpret_cast<void*>(&trampoline))
       return nullptr;
     if (cls->n_captures == 0 || !cls->captures) return nullptr;
     return cls->captures[0];
@@ -12138,15 +12137,6 @@ struct Exec {
     return names.empty() ? nullptr : &names.front();
   }
 
-  // A constructor thunk is this executor's synthetic `new`, and the interp
-  // registers its own as native — which is what makes sending a class object
-  // (it carries its `new`) the SendError it is everywhere else. An ordinary chunk closure stays
-  // sendable: its descriptor names a chunk of the same program.
-  static bool is_native_closure(JitClosure* cls) {
-    const auto* d = closure_desc(cls);
-    return d && d->prog->chunks[d->chunk].forwards_args;
-  }
-
   // Safe for programs that outlive their own execution too (the REPL's
   // case): a closure one line built stays callable from a later one, since
   // the descriptor a closure carries is its own cell.
@@ -12160,7 +12150,6 @@ struct Exec {
     _jit_closure_meta_hook = &meta_for_closure;
     _jit_closure_desc_hook = &desc_for_closure;
     _jit_closure_mut_capture_hook = &mut_capture_for_closure;
-    _jit_closure_is_native_hook = &is_native_closure;
     p.descs.resize(p.chunks.size());
     for (size_t i = 0; i < p.chunks.size(); ++i)
       p.descs[i] = {&p, static_cast<int32_t>(i)};
@@ -12193,18 +12182,6 @@ struct Exec {
     auto* d = reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
     *ret = run_frame(*d->prog, d->chunk, cls, n_args, args, self_tag,
                      self_data);
-  }
-
-  // The same entry point, for getter bodies only. The runtime decides
-  // whether a bare `obj.name` read invokes the method by looking its
-  // fn_ptr up in the getter registry — a key that identifies the code
-  // behind a closure. In the lowering each chunk is its own function, so
-  // that key already distinguishes getters; here one interpreter runs
-  // every chunk, so getters need a second door to keep the key honest.
-  static void getter_trampoline(JitValue* ret, JitClosure* cls,
-                                int8_t self_tag, int64_t self_data,
-                                int64_t n_args, JitValue* args) {
-    trampoline(ret, cls, self_tag, self_data, n_args, args);
   }
 
   static JitValue run_frame(const VmProgram& p, int32_t chunk_idx,
@@ -13813,9 +13790,8 @@ struct Exec {
           const Chunk& f = p.chunks[in.b];
           auto n = f.capture_src_slots.size();
           auto* mc = culebra_runtime_closure_new(
-              f.is_getter ? reinterpret_cast<void*>(&getter_trampoline)
-                          : reinterpret_cast<void*>(&trampoline),
-              1 + n, static_cast<size_t>(f.arity));
+              reinterpret_cast<void*>(&trampoline), 1 + n,
+              static_cast<size_t>(f.arity), chunk_closure_flags(f));
           // The descriptor rides in a cell of this closure's own, like every
           // other capture: cells are refcounted non-atomically and freed into
           // the slab of the Runtime that allocated them, so one shared per
@@ -14298,14 +14274,6 @@ struct Exec {
           culebra_runtime_run_field_init(
               reinterpret_cast<JitClosure*>(regs[in.a].data),
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
-          ++pc;
-          break;
-        case Op::RegGetter:
-          // Registers this lane's getter entry point, which every getter
-          // closure here shares — an idempotent insert, unlike the lowering
-          // where each getter chunk registers its own function.
-          culebra_runtime_register_getter(
-              reinterpret_cast<JitClosure*>(regs[in.a].data));
           ++pc;
           break;
         case Op::SelfMerge: {

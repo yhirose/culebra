@@ -12,7 +12,7 @@
 // namespace so the unity TU has no symbol collisions.
 
 #include "define_smoke.cc"
-#include "fn_registry_smoke.cc"
+#include "closure_flags_smoke.cc"
 #include "mi_smoke.cc"
 #include "module_scope_smoke.cc"
 #include "mt_smoke.cc"
@@ -27,8 +27,8 @@
 int main(int argc, char** argv) {
   if (argc == 2) {
     if (std::strcmp(argv[1], "define") == 0) return define_smoke_ns::run();
-    if (std::strcmp(argv[1], "fn_registry") == 0)
-      return fn_registry_smoke_ns::run();
+    if (std::strcmp(argv[1], "closure_flags") == 0)
+      return closure_flags_smoke_ns::run();
     if (std::strcmp(argv[1], "mi") == 0) return mi_smoke_ns::run();
     if (std::strcmp(argv[1], "module_scope") == 0)
       return module_scope_smoke_ns::run();

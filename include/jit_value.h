@@ -603,12 +603,37 @@ struct JitClosure {
   size_t n_captures;
   JitCell** captures;
   size_t arity;  // number of user-visible params (excluding __cls__, this)
-  int64_t gc_slot = -1;  // see JitArray::gc_slot
+  // What this closure IS, as opposed to where its code happens to live. Set
+  // once at construction (culebra_runtime_closure_new) and never after, so
+  // there is no window in which a closure exists without its own answer.
+  // Codegen does not see this word: the IR `Closure` type declares the five
+  // fields above and reaches nothing past them.
+  uint64_t flags = 0;
 
   static void* operator new(size_t n) { return _slab().alloc(n); }
   static void operator delete(void* p, size_t n) { _slab().free(p, n); }
 };
 static_assert(sizeof(JitClosure) <= 48 && !std::is_polymorphic_v<JitClosure>);
+
+// A closure's own answers to the two questions the runtime used to ask of its
+// code address. An address names the code it was taken from only while that
+// code stays mapped, and a JIT arena is freed with its Runtime — so the next
+// Runtime's compiler is handed the same pages and an address comes back
+// meaning something else. Carried by the closure, the answers cannot go stale,
+// they survive an isolate boundary with the value they describe, and the
+// executor needs no second entry point to keep a key honest.
+//
+// GETTER — a class getter (`get x() { … }`). A bare property read (`obj.x`,
+// no call parens) resolving to one invokes it 0-arg instead of yielding a
+// bound method. The interp's FunctionValue::is_getter.
+//
+// NATIVE — a C++-bodied closure, or the synthesized constructor thunk a class
+// declaration builds. Not Sendable: it cannot be rebuilt on another Runtime,
+// and its captures may hold raw same-heap pointers (the iterator wrappers
+// cache upstream closure pointers, the ns-method closure an NsMethod*) that
+// would silently cross the heap boundary. The interp's body == nullptr.
+inline constexpr uint64_t JIT_CLOSURE_GETTER = 1ull << 0;
+inline constexpr uint64_t JIT_CLOSURE_NATIVE = 1ull << 1;
 
 // Sentinel `arity` for a variadic closure (a builtin ns-method that accepts a
 // range of arg counts, e.g. range/iota/Math.min). Higher-order callback

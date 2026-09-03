@@ -410,7 +410,7 @@ captureされた変数は6つのop — `CellNew`、`CellGet`、`CellSet`、
 | 呼び出し | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` | JitFn ABI。`CallM`はreceiver上のメソッド（ユーザー定義または組み込み）を解決する。`RecEnter`はパラメータが束縛された後、フレームを再帰上限に対してカウントする |
 | 組み込みメソッド | `MethGate` `ChkParam` `BMeth` `BArity` `CbType` `ArityChk` `BareMethChk` | §5.4 |
 | クロージャと名前 | `MakeClosure` `CellNew` `CellGet` `CellSet` `CellRelease` `BindCapture` `ImmutErr` `UnboundErr` `NsGet` `LazyNsReg` `FnHandle` `ModReg` `ModGet` | §4.1、§4.2。`ModReg`/`ModGet`はモジュールのexportオブジェクトを公開/読み取る |
-| 関数とクラス | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldInit` `BindStatic` `RegGetter` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg`はランタイムのarity-dispatchレジストリに本体を登録する。クラス宣言はmetaを構築しメンバを登録する |
+| 関数とクラス | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldInit` `BindStatic` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg`はランタイムのarity-dispatchレジストリに本体を登録する。クラス宣言はmetaを構築しメンバを登録する |
 | パターン | `TypeMatch` `SeqChk` `SeqGet` `SeqRest` `ObjGet` `DestrErr` `JumpIfTag` | `match`の腕とdestructuring。テストが失敗すると次の腕へジャンプし、その時点で何も生きていない |
 | 制御フロー | `Jump` `JumpIfFalse` `JumpIfTrue` `JumpIfNil` `JumpIfNotNil` `Halt` | `JumpIfFalse`は共有のtruthiness変換を運ぶ（非Bool条件はTypeError） |
 | ループ | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | Long範囲の数え上げ`for`は融合されたペア（sinkの`for _ in 0..n`も含む）。それ以外は12個のslotからなるカーソル（`ForSlot`）でプロトコルを歩く |
@@ -975,15 +975,29 @@ or-patternの中のbinding alternative、制御フローの条件式の中の
 ### 6.1 クロージャとtrampoline
 
 executorのクロージャは本物の`JitClosure`であり、`fn_ptr`は
-`Exec::trampoline`（またはgetterでは`getter_trampoline` — これに
-より`fn_ptr`をキーとするランタイムのgetterレジストリがgetter本体を
-見分けられる）である。その`captures[0]`は`VmFnDesc`
+`Exec::trampoline`である。その`captures[0]`は`VmFnDesc`
 （`{program, chunk}`）を保持するcellであり、本物のcaptureはその
 後に続く。ネイティブコードはVM関数をloweringされた関数と全く同じ
 方法で呼び、より多くを知る必要があるランタイムのヘルパー — キーワード
 解決器（`_jit_closure_meta_hook`）、遅延名前空間の再構築器、
-sendability検査、native-constructor検査 — は`Exec::prepare`が
-インストールするフック経由でdescriptorを読む。
+`mut`捕獲の検査 — は`Exec::prepare`がインストールするフック経由で
+descriptorを読む。
+
+そのクロージャが何であるかを知るのに、フックも第二の入口も要らない。
+getter本体であることも構築子thunkであることもchunkの性質なので、
+`MakeClosure`がchunkから読み取り（`chunk_closure_flags`）、両レーン
+ともクロージャの構築子に渡す。クロージャは`JIT_CLOSURE_GETTER`/
+`JIT_CLOSURE_NATIVE`を生まれた時から持っている。
+
+以前はどちらもコンパイル済み本体の番地をキーとする横表だった。
+そのためこのレーンはtrampolineをもう1つ持たされていた — 解釈実行の
+chunkは`fn_ptr`が1つしかなく、番地では2種類のchunkを区別できない。
+そして全レーンが「番地は誰かが握っている限り同じものを指す」という
+前提の上に立っていた。実際にはそうならない。JITのアリーナは
+`Runtime`と一緒に解放され、次の`Runtime`が同じページを受け取るので、
+前の`Runtime`で作った項目が、後からそこに載った別物の答えになって
+しまう。クロージャ自身が持てば答えは値と一緒にisolate境界も越える。
+受け取り側の`Runtime`にある表では、そこまでは追えない。
 
 descriptor cellはクロージャに属し、`MakeClosure`ごとに1つである。
 chunkのすべてのクロージャで1つのcellを共有する方式も試されたが

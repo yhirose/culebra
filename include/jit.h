@@ -2693,6 +2693,7 @@ struct JIT {
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
                                  builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::value_retain,
                                  builder_.getVoidTy(),

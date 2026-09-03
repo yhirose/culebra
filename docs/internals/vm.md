@@ -408,7 +408,7 @@ new closure's captures from the callee chunk's `capture_src_slots`.
 | calls | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` | the JitFn ABI; `CallM` resolves a method (user or built-in) on its receiver; `RecEnter` counts the frame against the recursion limit after the parameters are bound |
 | built-in methods | `MethGate` `ChkParam` `BMeth` `BArity` `CbType` `ArityChk` `BareMethChk` | §5.4 |
 | closures and names | `MakeClosure` `CellNew` `CellGet` `CellSet` `CellRelease` `BindCapture` `ImmutErr` `UnboundErr` `NsGet` `LazyNsReg` `FnHandle` `ModReg` `ModGet` | §4.1, §4.2; `ModReg`/`ModGet` publish and read a module's export object |
-| functions and classes | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldInit` `BindStatic` `RegGetter` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg` registers a body into the runtime's arity-dispatch registry; class declarations build a meta and register members |
+| functions and classes | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldInit` `BindStatic` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg` registers a body into the runtime's arity-dispatch registry; class declarations build a meta and register members |
 | patterns | `TypeMatch` `SeqChk` `SeqGet` `SeqRest` `ObjGet` `DestrErr` `JumpIfTag` | `match` arms and destructuring; a failed test jumps to the next arm with nothing live |
 | control flow | `Jump` `JumpIfFalse` `JumpIfTrue` `JumpIfNil` `JumpIfNotNil` `Halt` | `JumpIfFalse` carries the shared truthiness coercion (a non-Bool condition is a TypeError) |
 | loops | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | a counted `for` over a Long range is the fused pair, a sink (`for _ in 0..n`) included; anything else walks a 12-slot cursor (`ForSlot`) through the protocol |
@@ -983,14 +983,28 @@ root without registration.
 ### 6.1 Closures and the trampoline
 
 An executor closure is a real `JitClosure` whose `fn_ptr` is
-`Exec::trampoline` (or `getter_trampoline`, so the runtime's getter
-registry — keyed by `fn_ptr` — can still tell a getter body apart). Its
-`captures[0]` is a cell holding a `VmFnDesc` (`{program, chunk}`); the
-real captures follow. Native code calls a VM function exactly as it
-calls a lowered one, and the runtime's helpers that need to know more —
-the keyword resolver (`_jit_closure_meta_hook`), the lazy-namespace
-rebuilder, the sendability check, the native-constructor test — read
-the descriptor through hooks `Exec::prepare` installs.
+`Exec::trampoline`. Its `captures[0]` is a cell holding a `VmFnDesc`
+(`{program, chunk}`); the real captures follow. Native code calls a VM
+function exactly as it calls a lowered one, and the runtime's helpers
+that need to know more — the keyword resolver
+(`_jit_closure_meta_hook`), the lazy-namespace rebuilder, the `mut`
+capture check — read the descriptor through hooks `Exec::prepare`
+installs.
+
+What a closure *is* takes no hook and no second entry point. A getter
+body and a constructor thunk are properties of the chunk, so
+`MakeClosure` reads them off it (`chunk_closure_flags`) and passes them
+to the closure constructor, in both lanes: the closure carries
+`JIT_CLOSURE_GETTER` / `JIT_CLOSURE_NATIVE` from birth. They used to be
+side tables keyed by the compiled body's address, which cost this lane a
+second trampoline — one `fn_ptr` per interpreted chunk means an address
+cannot tell two kinds of chunk apart — and cost every lane the
+assumption that an address means the same thing for as long as anyone
+holds it. It does not: a JIT arena is freed with its `Runtime`, the next
+one is handed the same pages, and an entry made under the first answers
+for whatever lands there next. On the closure the answers also cross an
+isolate boundary with the value they describe, which a table on the
+receiving `Runtime` could not do.
 
 The descriptor cell belongs to the closure, one per `MakeClosure`. A cell
 shared by every closure of a chunk was tried and is wrong: closures of

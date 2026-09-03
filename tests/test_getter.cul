@@ -79,3 +79,19 @@ class Getter {
 assert_eq(Getter.new(5).get(), 5)
 // A getter declared with parameters is a SyntaxError — asserted out-of-band in
 // the JIT/interp symmetry harness, not here (it is a whole-module parse error).
+
+// --- a getter is still a getter on the other side of an isolate ---
+// What makes a bare read invoke rides the closure, so it crosses with the
+// value. Keyed by the compiled body's address it could not: the child never
+// runs the class declaration, and an address means nothing in its arena.
+class Doubler {
+  new(n) {
+    self.n = n
+  }
+  get twice() {
+    self.n * 2
+  }
+}
+let d = Doubler.new(21)
+assert_eq(d.twice, 42)
+assert_eq(Isolate.spawn(|x| x.twice, d).join(), 42)

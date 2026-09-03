@@ -3794,9 +3794,10 @@ struct Lowering {
           auto n = f.capture_src_slots.size();
           auto cls = j.emit_call(
               j.module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
-                                             i64Ty, i64Ty),
+                                             i64Ty, i64Ty, i64Ty),
               {fns[in.b], b.getInt64(static_cast<int64_t>(n)),
-               b.getInt64(f.arity)},
+               b.getInt64(f.arity),
+               b.getInt64(static_cast<int64_t>(chunk_closure_flags(f)))},
               "cls");
           // Register this chunk's parameter metadata under its function's
           // address, so a keyword call can resolve names against it. The
@@ -3812,14 +3813,6 @@ struct Lowering {
               j.module_->getOrInsertFunction(rt::register_param_meta,
                                              b.getVoidTy(), ptrTy, ptrTy),
               {fns[in.b], metas[in.b]});
-          // A constructor thunk is native as far as sendability goes,
-          // which is what makes sending a class object a SendError.
-          if (f.forwards_args) {
-            j.emit_call(
-                j.module_->getOrInsertFunction(rt::register_native_fn,
-                                               b.getVoidTy(), ptrTy),
-                {fns[in.b]});
-          }
           // Same for the `mut` bindings it closes over, the fact
           // `Isolate.spawn` rejects it on. Each lowered chunk is its own
           // function, so the fn_ptr-keyed table works here (the executor,
@@ -4320,12 +4313,6 @@ struct Lowering {
                j.extract_tag(self), j.extract_data(self)});
           break;
         }
-        case Op::RegGetter:
-          j.emit_call(
-              j.module_->getOrInsertFunction(rt::register_getter,
-                                             b.getVoidTy(), ptrTy),
-              {b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy)});
-          break;
         case Op::SelfMerge: {
           auto abi = load_slot(in.b);
           b.CreateStore(j.make_nil(), slots[in.b]);  // the +1 transfers
