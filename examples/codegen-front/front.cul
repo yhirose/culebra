@@ -258,6 +258,17 @@ class Emitter {
     ids.push(value)
     self.block(ids, at)
   }
+  array_lit(items, at) {
+    self.m.array_lit(
+      items_list: self.list(items),
+      line: at.line,
+      col: at.column,
+    )
+  }
+  # kv is a flat [key, value, key, value...], the shape Module's list takes
+  object_lit(kv, at) {
+    self.m.object_lit(kv_list: self.list(kv), line: at.line, col: at.column)
+  }
   intrinsic(name, args, at) {
     self.m.intrinsic(
       name: name,
@@ -270,6 +281,59 @@ class Emitter {
     self.m.call_value(
       callee: callee,
       args_list: self.list(args),
+      line: at.line,
+      col: at.column,
+    )
+  }
+
+  # reads and writes through a value, and the statement forms
+  index(recv, key, at) {
+    self.m.index(recv: recv, key: key, line: at.line, col: at.column)
+  }
+  set_index(recv, key, value, at) {
+    self.m.set_index(
+      recv: recv,
+      key: key,
+      value: value,
+      line: at.line,
+      col: at.column,
+    )
+  }
+  make_return(value, at) {
+    self.m.make_return(value: value, line: at.line, col: at.column)
+  }
+  make_throw(value, at) {
+    self.m.make_throw(value: value, line: at.line, col: at.column)
+  }
+  make_yield(value, at) {
+    self.m.make_yield(value: value, line: at.line, col: at.column)
+  }
+  make_defer(value, at) {
+    self.m.make_defer(value: value, line: at.line, col: at.column)
+  }
+  make_break(at) {
+    self.m.make_break(line: at.line, col: at.column)
+  }
+  make_continue(at) {
+    self.m.make_continue(line: at.line, col: at.column)
+  }
+  make_try(caught_local, body, handler, at) {
+    self.m.make_try(
+      caught_local: caught_local,
+      body: body,
+      handler: handler,
+      line: at.line,
+      col: at.column,
+    )
+  }
+  cell_fresh(cell, at) {
+    self.m.cell_fresh(cell: cell, line: at.line, col: at.column)
+  }
+  scope(first_local, end_local, body, at) {
+    self.m.scope(
+      first_local: first_local,
+      end_local: end_local,
+      body: body,
       line: at.line,
       col: at.column,
     )

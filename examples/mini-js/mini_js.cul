@@ -3904,7 +3904,7 @@ fn emit_arg_array(m, f, arg_nodes, at) {
       for a in arg_nodes {
         ids.push(emit_expr(m, a, f))
       }
-      m.array_lit(items_list: ir.list(ids), line: at.line, col: at.column)
+      ir.array_lit(ids, at)
     },
     _ => {
       let tmp = new_scratch(f)
@@ -3938,20 +3938,14 @@ fn emit_arg_array(m, f, arg_nodes, at) {
 
 fn emit_get(m, f, obj, key, at) {
   cond {
-    in_prelude => m.index(recv: obj, key: key, line: at.line, col: at.column),
+    in_prelude => ir.index(obj, key, at),
     _ => call_pre(m, f, '__get', [obj, key], at),
   }
 }
 
 fn emit_set(m, f, obj, key, v, at) {
   cond {
-    in_prelude => m.set_index(
-      recv: obj,
-      key: key,
-      value: v,
-      line: at.line,
-      col: at.column,
-    ),
+    in_prelude => ir.set_index(obj, key, v, at),
     _ => call_pre(m, f, '__set', [obj, key, v], at),
   }
 }
@@ -4381,13 +4375,7 @@ fn target_write(m, f, tg, v, at) {
       ir.block([st, var_read(m, f, tg.r, at)], at)
     },
     tg.kind == 'global' => cond {
-      in_prelude => m.set_index(
-        recv: gref(m, f, at),
-        key: str_l(m, tg.name, at),
-        value: v,
-        line: at.line,
-        col: at.column,
-      ),
+      in_prelude => ir.set_index(gref(m, f, at), str_l(m, tg.name, at), v, at),
       _ => call_pre(m, f, '__gset', [str_l(m, tg.name, at), v], at),
     },
     _ => emit_set(
@@ -4975,11 +4963,7 @@ fn fresh_slots(m, f, slots, at) {
   for s in slots {
     cond {
       frames.in_cell(f, s) => {
-        ids.push(m.cell_fresh(
-          cell: frames.cell_of(f, s),
-          line: at.line,
-          col: at.column,
-        ))
+        ids.push(ir.cell_fresh(frames.cell_of(f, s), at))
         ids.push(m.assign(
           kind: 'cell',
           index: frames.cell_of(f, s),
@@ -5136,14 +5120,7 @@ fn emit_bind(m, f, pat, v, at) {
               m,
               f,
               '__obj_rest',
-              [
-                scratch_ref(m, tmp, at),
-                m.array_lit(
-                  items_list: ir.list(kids),
-                  line: at.line,
-                  col: at.column,
-                ),
-              ],
+              [scratch_ref(m, tmp, at), ir.array_lit(kids, at)],
               at,
             )
             for x in emit_bind(m, f, el.nodes[0], rest, at) {
@@ -5244,7 +5221,7 @@ fn for_step_ids(m, f, slots, step_node, at) {
         m.var_ref(kind: 'cell', index: ci, line: at.line, col: at.column),
         at,
       ))
-      ids.push(m.cell_fresh(cell: ci, line: at.line, col: at.column))
+      ids.push(ir.cell_fresh(ci, at))
       ids.push(m.assign(
         kind: 'cell',
         index: ci,
@@ -5739,16 +5716,7 @@ fn rest_pack(m, f, first, at) {
     ir.literal(first, at),
     at,
   )
-  call_pre(
-    m,
-    f,
-    '__rest_pack',
-    [
-      m.array_lit(items_list: ir.list(hidden), line: at.line, col: at.column),
-      cnt,
-    ],
-    at,
-  )
+  call_pre(m, f, '__rest_pack', [ir.array_lit(hidden, at), cnt], at)
 }
 
 fn emit_funcs(m) {
@@ -5848,12 +5816,11 @@ fn emit_funcs(m) {
       ))
       in_prelude = true
       for b in prelude_inits {
-        ids.push(m.set_index(
-          recv: gref(m, 0, front.ORIGIN),
-          key: str_l(m, b.key, front.ORIGIN),
-          value: emit_expr(m, b.init, 0),
-          line: 1,
-          col: 1,
+        ids.push(ir.set_index(
+          gref(m, 0, front.ORIGIN),
+          str_l(m, b.key, front.ORIGIN),
+          emit_expr(m, b.init, 0),
+          front.ORIGIN,
         ))
       }
       in_prelude = false
@@ -5875,7 +5842,7 @@ fn emit_funcs(m) {
           [ir.read(f, fi.close_of.owner, fi.close_of.slot, front.ORIGIN)],
           front.ORIGIN,
         ))
-        ids.push(m.make_return(value: nil_l(m, front.ORIGIN), line: 1, col: 1))
+        ids.push(ir.make_return(nil_l(m, front.ORIGIN), front.ORIGIN))
       },
       fi.gen_raw != nil => {
         # the wrapper: the raw generator's activation, as a generator object
@@ -5891,11 +5858,16 @@ fn emit_funcs(m) {
           ],
           front.ORIGIN,
         )
-        ids.push(m.make_return(
-          value: call_pre(m, f, cond { fi.is_async == true => '__async_run', _ => '__mkgen' }, [act], front.ORIGIN),
-          line: 1,
-          col: 1,
-        ))
+        ids.push(ir.make_return(call_pre(
+          m,
+          f,
+          cond {
+            fi.is_async == true => '__async_run',
+            _ => '__mkgen',
+          },
+          [act],
+          front.ORIGIN,
+        ), front.ORIGIN))
       },
       fi.field_inits != nil => {
         # this.key = init, in order; a computed key was evaluated at the
@@ -5915,17 +5887,16 @@ fn emit_funcs(m) {
             fld,
           ))
         }
-        ids.push(m.make_return(value: nil_l(m, front.ORIGIN), line: 1, col: 1))
+        ids.push(ir.make_return(nil_l(m, front.ORIGIN), front.ORIGIN))
       },
       fi.body_expr !=
-        nil => ids.push(m.make_return(
-        value: emit_expr(m, fi.body_expr, f),
-        line: 1,
-        col: 1,
+        nil => ids.push(ir.make_return(
+        emit_expr(m, fi.body_expr, f),
+        front.ORIGIN,
       )),
       _ => {
         emit_stmts_into(m, fi.stmts, f, ids)
-        ids.push(m.make_return(value: nil_l(m, front.ORIGIN), line: 1, col: 1))
+        ids.push(ir.make_return(nil_l(m, front.ORIGIN), front.ORIGIN))
       },
     }
     mut body = ir.block(ids, front.ORIGIN)
@@ -5933,12 +5904,14 @@ fn emit_funcs(m) {
       # whatever escapes the program is reported the way Node reports it
       let slot = new_scratch(0)
       let caught = ir.local(slot, front.ORIGIN)
-      body = m.make_try(
-        caught_local: slot,
-        body: body,
-        handler: m.make_throw(value: call_pre(m, 0, '__uncaught_text', [caught], front.ORIGIN), line: 1, col: 1),
-        line: 1,
-        col: 1,
+      body = ir.make_try(
+        slot,
+        body,
+        ir.make_throw(
+          call_pre(m, 0, '__uncaught_text', [caught], front.ORIGIN),
+          front.ORIGIN,
+        ),
+        front.ORIGIN,
       )
     }
     let func = ir.add_func(fi.name, f, nslots[f], fi.params.size(), body)
