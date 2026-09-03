@@ -338,6 +338,17 @@ class Emitter {
       col: at.column,
     )
   }
+  # the same, naming what the scope releases on the way out
+  scope_release(first_local, end_local, body, release, at) {
+    self.m.scope_release(
+      first_local: first_local,
+      end_local: end_local,
+      body: body,
+      release_list: self.list(release),
+      line: at.line,
+      col: at.column,
+    )
+  }
 
   # a variable as `f` sees it
   read(f, owner, slot, at) {
@@ -357,6 +368,19 @@ class Emitter {
   # a lowering temp: always a plain local of the current function
   local(slot, at) {
     self.m.var_ref(kind: 'local', index: slot, line: at.line, col: at.column)
+  }
+  # a cell by its own index, for a site that resolved one already
+  cell(index, at) {
+    self.m.var_ref(kind: 'cell', index: index, line: at.line, col: at.column)
+  }
+  store_cell(index, value, at) {
+    self.m.assign(
+      kind: 'cell',
+      index: index,
+      value: value,
+      line: at.line,
+      col: at.column,
+    )
   }
   store_local(slot, value, at) {
     self.m.assign(
