@@ -98,7 +98,6 @@
 22. Command-line interface > Subcommands
 23. Known limitations
 24. Modules > Backend equivalence
-24. Modules > Conformance tests
 24. Modules > Errors
 24. Modules > Evaluation rules
 24. Modules > Exports
@@ -109,7 +108,6 @@
 25. Appendix: VM ↔ JIT divergence > Permitted internal optimizations
 25. Appendix: VM ↔ JIT divergence > Technical differences without behavioral impact
 25. Appendix: VM ↔ JIT divergence > Top-level drop note (§17)
-26. Appendix: conformance test mapping
 3. Grammar > Expression-oriented syntax
 4. Types
 5. Values and identity

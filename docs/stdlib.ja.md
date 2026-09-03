@@ -1775,8 +1775,7 @@ Tensorで意味づけしておらず、`@`は出力形状が変わるためin-pl
 
 ### バックエンドとデバイス選択
 
-評価はvendoredな`cpp-tensorlib`エンジン（`vendor/cpp-tensorlib`）に
-委譲されます。lazy graph・カーネル融合・デバイスバックエンドはすべて
+評価はvendoredな`cpp-tensorlib`エンジンに委譲されます。lazy graph・カーネル融合・デバイスバックエンドはすべて
 そちら側の責務です:
 
 - **CPU** — ベクトル化カーネル（AVX2 / NEON）。macOSではBLAS形状の
@@ -3377,8 +3376,7 @@ inspect(Regex.escape("a.b(c)"))                         # => 'a\.b\(c\)'
 対応構文（literal / `.` / 文字クラス / `* + ? {n,m}` greedy・lazy / `|` /
 キャプチャ・名前付きグループ / `\d \w \s \b` / lookahead / 可変長lookbehind /
 `\p{…}` Unicodeプロパティ）とマッチモデル・資源上限は、vendor化したエンジン
-[cpp-regexlib](https://github.com/yhirose/cpp-regexlib)（`vendor/cpp-regexlib`）に
-記載しています。
+[cpp-regexlib](https://github.com/yhirose/cpp-regexlib)に記載しています。
 
 ---
 
@@ -4679,8 +4677,7 @@ WASM PlaygroundではCanvasプログラムは **Canvasタブ**で動く — フ�
 `<canvas>`に表示され、キーボード / ポインタが入力になり、`tone`はWebAudioで
 鳴る。ネイティブではmacOS・Linux・Windowsで（`Scene`と同じvendored静的
 raylib + SDL3を使い）**実際のデスクトップウィンドウを開く**。Linuxでの
-ビルドにはSDL3が挙げるビルド依存
-（`vendor/SDL/docs/README-linux.md`）が必要で、探索するX11 / 音声のヘッダが
+ビルドにはSDL3が挙げるビルド依存が必要で、探索するX11 / 音声のヘッダが
 無いとSDL3のconfigureが失敗するので、入っていないマシンでは
 `-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`でconfigureする。Windowsでは追加の
 パッケージは不要 — SDL3のWin32バックエンドが要るヘッダはmingw-w64の
@@ -5692,7 +5689,7 @@ window.__culebra_before_close__ = () => {
 ## 30. `Vector2`
 
 グラフィックス/ゲームコード向けの最小限の2D floatベクトル——言語組み込み
-ではなく普通のculebraクラス(`src/preambles/vector2.cul`)です。要素は
+ではなく普通のculebraクラスです。要素は
 常に`Float`: `new`は`Long | Float`を受けてcoerceするので`Vector2.new(1,
 0)`は動きますが、`.x` / `.y`が`Long`になることはありません。
 
@@ -5767,8 +5764,8 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 
 ## 32. `Deque`
 
-両端キュー——言語組み込みではなく普通のculebraクラス
-(`src/preambles/deque.cul`)です。成長するリングバッファ(配列 +
+両端キュー——言語組み込みではなく普通のculebraクラスです。
+成長するリングバッファ(配列 +
 先頭インデックス + 要素数)で実装しているため、どちらの端での
 `push`/`pop`も償却O(1)です。`Array`(言語仕様§18)は末尾でしか
 伸縮しません(`push`/`pop`)。`Array`でFIFOキューを組もうとすると
@@ -5810,8 +5807,8 @@ inspect(q.size())       # => 1
 
 ## 33. `PriorityQueue`
 
-`Array`上の二分ヒープ——言語組み込みではなく普通のculebraクラス
-(`src/preambles/priority_queue.cul`)です。`push`/`pop`はO(log n)で、
+`Array`上の二分ヒープ——言語組み込みではなく普通のculebraクラスです。
+`push`/`pop`はO(log n)で、
 素朴な代替（`Array`をソート済みに保つ、あるいはpopのたびに最小値を
 線形探索する）は1回あたりO(n log n)またはO(n)になります。
 
@@ -6277,8 +6274,8 @@ generatorの活性化(`set_generator`を参照)。変数のcaptureはフロン�
 
 ## 36. `StateMachine`
 
-入れ子にできる状態機械。言語の組み込みではなく、素のculebraクラス
-（`src/preambles/state_machine.cul`）。状態は入れ子にでき、いま居る状態が
+入れ子にできる状態機械。言語の組み込みではなく、素のculebraクラス。
+状態は入れ子にでき、いま居る状態が
 受け取らなかったイベントは親へ渡され、入れ子の外へ出る遷移はその親の
 `exit`を通って出ていく。
 

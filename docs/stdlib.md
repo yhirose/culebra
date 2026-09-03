@@ -1818,7 +1818,7 @@ in-place is unsafe).
 ### Backends and device selection
 
 Evaluation is delegated to the vendored `cpp-tensorlib` engine
-(`vendor/cpp-tensorlib`), which owns the lazy graph, kernel fusion,
+which owns the lazy graph, kernel fusion,
 and the device backends:
 
 - **CPU** — vectorized kernels (AVX2 / NEON); Accelerate supplies the
@@ -3476,7 +3476,7 @@ The supported syntax (literal / `.` / character classes / `* + ? {n,m}` greedy
 and lazy / `|` / capturing and named groups / `\d \w \s \b` / lookahead /
 variable-length lookbehind / `\p{…}` Unicode properties) and the full matching
 model and resource limits are documented in the vendored engine,
-[cpp-regexlib](https://github.com/yhirose/cpp-regexlib) (`vendor/cpp-regexlib`).
+[cpp-regexlib](https://github.com/yhirose/cpp-regexlib).
 
 ---
 
@@ -4820,7 +4820,7 @@ Playground a Canvas program runs in the **Canvas tab** — frames are shown on a
 Natively a build **opens a real desktop window** on macOS, Linux and Windows,
 using vendored static raylib + SDL3, the same backend the
 `Scene` namespace links. Building it on Linux needs SDL3's documented build
-dependencies present (`vendor/SDL/docs/README-linux.md`); SDL3's configure fails
+dependencies present; SDL3's configure fails
 outright when the X11 or audio headers it probes for are missing, so a machine
 without them should configure with `-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`. Windows
 needs no such packages — the mingw-w64 toolchain already has the headers SDL3's
@@ -5853,7 +5853,7 @@ window.__culebra_before_close__ = () => {
 ## 30. `Vector2`
 
 A minimal 2D float vector for graphics/game code — an ordinary culebra
-class (`src/preambles/vector2.cul`), not a language builtin. Elements are
+class, not a language builtin. Elements are
 always `Float`: `new` accepts `Long | Float` and coerces, so
 `Vector2.new(1, 0)` works, but `.x` / `.y` are never `Long`.
 
@@ -5932,7 +5932,7 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 ## 32. `Deque`
 
 A double-ended queue — an ordinary culebra class
-(`src/preambles/deque.cul`), not a language builtin. Backed by a
+, not a language builtin. Backed by a
 growable ring buffer (array + head index + count), so `push`/`pop` at
 either end are O(1) amortized. `Array` (language spec §18) only ever
 grows or shrinks at its end (`push`/`pop`); a FIFO queue built on
@@ -5975,7 +5975,7 @@ ambiguity `Array.pop()` already accepts (a pushed `nil` and an empty
 ## 33. `PriorityQueue`
 
 A binary min-heap over an `Array` — an ordinary culebra class
-(`src/preambles/priority_queue.cul`), not a language builtin.
+, not a language builtin.
 `push`/`pop` are O(log n); the naive alternative — an `Array` kept
 sorted, or scanned for the minimum on every pop — is O(n log n) or
 O(n) per operation.
@@ -6462,7 +6462,7 @@ A `CodeGen.Module` cannot cross an isolate boundary
 ## 36. `StateMachine`
 
 A hierarchical state machine — a *statechart* — as an ordinary culebra
-class (`src/preambles/state_machine.cul`), not a language builtin. States
+class, not a language builtin. States
 nest, an event the active state does not handle bubbles to its ancestors,
 and leaving a composite state runs its `exit` on the way out.
 
