@@ -360,6 +360,12 @@ c++ -std=c++23 -DCULEBRA_JIT_ENABLED \
     host.cpp $(llvm-config --ldflags --libs --system-libs) -lz -o host
 ```
 
+It has to be LLVM 20 or newer — the floor `CMakeLists.txt` enforces for
+culebra's own build. On a machine carrying several, a bare `llvm-config`
+is whichever one is first on `PATH`, which is not necessarily that one:
+name the version's own binary (`llvm-config-20`, or the one under the
+prefix you built culebra against) rather than trusting the plain name.
+
 Without `-DCULEBRA_JIT_ENABLED`, `jit.h` and `vm_lowering.h` preprocess
 to nothing: `culebra.h` still compiles, the VM still runs, and no part of
 the host refers to LLVM. It is the same switch a no-JIT build of culebra

@@ -358,6 +358,12 @@ c++ -std=c++23 -DCULEBRA_JIT_ENABLED \
     host.cpp $(llvm-config --ldflags --libs --system-libs) -lz -o host
 ```
 
+LLVMは20以降が要ります（`CMakeLists.txt`がculebra自身のビルドに課している
+下限と同じです）。複数のLLVMが入ったマシンでは、素の`llvm-config`は
+`PATH`の先頭にあるものであって、目的のバージョンとは限りません。
+`llvm-config-20`のようにバージョン付きの名前か、culebraをビルドした
+prefix配下のものを名指ししてください。
+
 `-DCULEBRA_JIT_ENABLED`が無ければ`jit.h`と`vm_lowering.h`は
 プリプロセスの結果が空になります。`culebra.h`はそのままコンパイルでき、
 VMも動き、ホストのどこもLLVMを参照しません。culebra自身のno-JITビルドが

@@ -58,7 +58,7 @@ for f in "${SOURCES[@]}"; do
     inb        { print > file }
   ' "$f"
 done
-blocks=$(find "$TMP" -name '*.cpp' | wc -l)
+blocks=$(find "$TMP" -name '*.cpp' | wc -l | tr -d ' ')
 
 if (( blocks == 0 )); then
   echo "docs-cpp FAIL: no \`\`\`cpp fences in ${SOURCES[*]} — the docs moved" >&2
@@ -105,14 +105,35 @@ done < <(grep -ho '#include *<[^>]*>' "$TMP"/*.cpp 2>/dev/null | sort -u)
 # so the lexical order compiled the embedding examples against headers the
 # project cannot build with at all — every push, from the day this gate landed.
 # A machine with two LLVMs is the normal case, not an odd one.
+#
+# Ordering alone still lands on a wrong one where the newest installed is under
+# the floor, and the compile error that follows reads as a broken example
+# rather than a missing toolchain. So a candidate also has to clear
+# CULEBRA_MIN_LLVM_VERSION, read out of CMakeLists.txt so the gate and the
+# build cannot drift; below it, the JIT blocks skip and say why.
+LLVM_FLOOR=$(sed -n 's/^set(CULEBRA_MIN_LLVM_VERSION \([0-9]\{1,\}\).*/\1/p' CMakeLists.txt)
+: "${LLVM_FLOOR:=20}"
+
 llvm_inc=""
-if [[ -n ${LLVM_CONFIG:-} ]] && command -v "$LLVM_CONFIG" >/dev/null 2>&1; then
-  llvm_inc=$("$LLVM_CONFIG" --includedir)
-elif command -v llvm-config >/dev/null 2>&1; then
-  llvm_inc=$(llvm-config --includedir)
+llvm_via=""
+accept_llvm() { # llvm-config path or name
+  local c=$1 v
+  [[ -n $c ]] || return 1
+  command -v "$c" >/dev/null 2>&1 || [[ -x $c ]] || return 1
+  v=$("$c" --version 2>/dev/null) || return 1
+  [[ $v =~ ^([0-9]+) ]] || return 1
+  (( BASH_REMATCH[1] >= LLVM_FLOOR )) || return 1
+  llvm_inc=$("$c" --includedir 2>/dev/null) || return 1
+  [[ -n $llvm_inc ]] || return 1
+  llvm_via=$c
+  return 0
+}
+
+if [[ -n ${LLVM_CONFIG:-} ]] && accept_llvm "$LLVM_CONFIG"; then :
+elif accept_llvm llvm-config; then :
 else
   while IFS= read -r c; do
-    [[ -x $c ]] && { llvm_inc=$("$c" --includedir); break; }
+    accept_llvm "$c" && break
   done < <(printf '%s\n' /usr/lib/llvm-*/bin/llvm-config | sort -Vr
            printf '%s\n' /opt/homebrew/opt/llvm/bin/llvm-config)
 fi
@@ -159,7 +180,8 @@ fi
 
 if (( fail == 0 )); then
   msg="docs-cpp OK (compile): $built complete example(s) build"
-  (( skipped > 0 )) && msg="$msg, $skipped skipped (no llvm-config)"
+  [[ -n $llvm_via ]] && msg="$msg (LLVM via $llvm_via)"
+  (( skipped > 0 )) && msg="$msg, $skipped skipped: no llvm-config >= $LLVM_FLOOR"
   echo "$msg"
 fi
 
