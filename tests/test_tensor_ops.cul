@@ -46,6 +46,21 @@ let add_values = Tensor.from([[10.0, 20.0], [30.0, 40.0], [1.0, 2.0]])
 assert_eq(Tensor.index_add(add_idx, add_values, [4, 2]).to_array(),
          [[1.0, 2.0], [40.0, 60.0], [0.0, 0.0], [0.0, 0.0]])
 
+assert_throws('ValueError', fn () {
+  Tensor.eval(Tensor.index_add(Tensor.from([4.0]), Tensor.from([[1.0, 2.0]]),
+                               [4, 2]))
+})
+
+# A label outside the table is caught before either backend runs. Left
+# unchecked it was an out-of-bounds read here and an out-of-bounds WRITE in
+# index_add / scatter_to_axis below, since every kernel indexes bare-handed.
+assert_throws('ValueError', fn () {
+  Tensor.eval(table.index_select(Tensor.from([0.0, 4.0])))
+})
+assert_throws('ValueError', fn () {
+  Tensor.eval(table.index_select(Tensor.from([-1.0])))
+})
+
 # VJP: index_select/index_add are each other's dual gradient.
 let table_g = Tensor.from([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]).requires_grad()
 let sel = table_g.index_select(Tensor.from([0.0, 2.0, 0.0]))
@@ -58,6 +73,11 @@ let sc_idx = Tensor.from([2.0, 0.0, 1.0])
 let sc_values = Tensor.from([5.0, 7.0, 9.0])
 assert_eq(Tensor.scatter_to_axis(sc_idx, sc_values, 4).to_array(),
          [[0.0, 0.0, 5.0, 0.0], [7.0, 0.0, 0.0, 0.0], [0.0, 9.0, 0.0, 0.0]])
+
+# `size` is the new axis, so it is also the bound on every label.
+assert_throws('ValueError', fn () {
+  Tensor.eval(Tensor.scatter_to_axis(sc_idx, sc_values, 2))
+})
 
 # --- Tensor.concat(parts, axis): axis defaults to 0 (rows), any axis works -
 
