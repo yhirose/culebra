@@ -16,4 +16,29 @@
 # `unsupported` on the baseline side means the older binary could not even
 # parse the case — syntax that release predates.
 
-# Empty since v0.4.0 shipped — no behaviour change since that release yet.
+# Eighteen built-in Tensor methods reach the corpus for the first time. Every
+# one was added after v0.4.0 and none is in that binary's own table, so the
+# baseline answers each case as an unknown member where this build answers as
+# a built-in — the "a release adds built-ins the older binary has never heard
+# of" case above. What is new is only that the corpus reaches them at all:
+# each was left out of builtin_method_names(), which is both the sweep list's
+# source and the filter in front of a built-in call's cold diagnostics, so
+# they lost those checks and this comparison at the same time.
+m|*|clamp|*
+m|*|cos|*
+m|*|eq|*
+m|*|fold|*
+m|*|ge|*
+m|*|gt|*
+m|*|index_select|*
+m|*|le|*
+m|*|lt|*
+m|*|narrow|*
+m|*|ne|*
+m|*|pad|*
+m|*|permute|*
+m|*|rope|*
+m|*|sin|*
+m|*|softmax_cross_entropy|*
+m|*|tanh|*
+m|*|unfold|*

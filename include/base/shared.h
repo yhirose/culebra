@@ -47,13 +47,18 @@ namespace culebra {
 
 // Names of value-type built-in methods (Array / String / Set / Tuple / Object-
 // dict / Iterator / Tensor). These are dispatched inline by the JIT (no stored
-// closure) and table-wrapped by the interp, so a BARE reference to one
+// closure) and table-wrapped by the executor, so a BARE reference to one
 // (`let m = [1,2].map`) is not a first-class value on either backend — both
 // reject it (call it, or wrap it in a lambda). A user-defined property/method
 // of the same name on an Object/class is found first and stays first-class, so
-// this set is only consulted after the stored-property lookup misses. Single
-// source for both backends' bare-method-reference check AND the startup
-// drift self-check in culebra.h.
+// this set is only consulted after the stored-property lookup misses.
+//
+// It is also the compile-time filter in front of the three cold diagnostics a
+// built-in call owes (BareMethChk, and the arity and keyword arms of BArity):
+// a name the tables implement but this set omits silently loses them. So the
+// set has to hold every name in vm/vm.h's kSpecs, and every name here has to
+// reach the differential corpus — tools/checks/check_difftest_coverage.sh
+// gates both halves of that chain.
 inline const std::unordered_set<std::string_view>& builtin_method_names() {
   static const std::unordered_set<std::string_view> kNames = {
       "size",       "empty",       "presence",   "push",       "pop",
@@ -80,7 +85,11 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "view",       "split_iter",  "shape",      "pow",        "transpose",
       "reshape",    "mean",        "argmax",     "to_array",   "dot",
       "linear_sigmoid", "clone",   "relu",       "sigmoid",    "softmax",
-      "log",
+      "log",        "tanh",        "sin",        "cos",        "clamp",
+      "gt",         "lt",          "ge",         "le",         "eq",
+      "ne",         "permute",     "narrow",     "index_select",
+      "unfold",     "pad",         "fold",       "rope",
+      "softmax_cross_entropy",
       "add",
       "union",      "intersect",   "diff",       "sym_diff",   "subset",
       "superset",   "requires_grad","grad",      "backward",   "zero_grad",
