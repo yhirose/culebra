@@ -16,6 +16,11 @@ END_MARK = '<!-- END GENERATED -->'
 
 HEADING = re'^#{3,5} (.+)$'
 TABLE = re'^\|\s*`([^`]+)`([^`|]*)\|(.*)$'
+# The same row, when its first cell holds SEVERAL signatures
+# (`m.index(...)` / `m.set_index(...)`): TABLE cannot match one at all --
+# its note group stops at the next backtick -- so the whole row, every
+# signature in it, used to be dropped. Ten of stdlib.md's own were.
+TABLE_MULTI = re'^\|\s*(`[^`]+`[^|]*)\|(.*)$'
 BULLET = re'^\s*[*-]\s+\*\*`([^`]+)`\*\*'
 BARE = re'^`[A-Za-z_][A-Za-z0-9_.]*`$'
 CELL_RET = re'^\s*`([^`]+)`\s*(—|-|$)'
@@ -116,8 +121,22 @@ fn harvest(lines) {
         }
         cands.push(sig)
       } else {
-        bm = BULLET.find(line)
-        cands.push(unescape(bm[1])) if bm != nil && bm[1].contains('(')
+        mm = TABLE_MULTI.find(line)
+        if mm != nil {
+          # Several signatures in one cell: each takes the row's return type,
+          # but not the trailing note above — between two of them that text is
+          # only the ` / ` separating them.
+          r = ret_of(mm[2])
+          for span in SPAN.find_all_str(mm[1]) {
+            inner = unescape(strip_ticks(span))
+            if inner.contains('(') {
+              cands.push(r == nil || inner.contains('->') ? inner : inner + ' -> ' + r)
+            }
+          }
+        } else {
+          bm = BULLET.find(line)
+          cands.push(unescape(bm[1])) if bm != nil && bm[1].contains('(')
+        }
       }
     }
     for sig in cands {
