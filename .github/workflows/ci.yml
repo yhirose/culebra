@@ -651,12 +651,13 @@ jobs:
       # release tried to build. Here rather than in build-ubuntu because this
       # job holds the Linux download's configuration and is off the critical
       # path. The archive is not uploaded; what is checked is that the script
-      # runs.
+      # runs. `--dev` because this build is not the tag and says so in its
+      # version, which off a tag is correct rather than a mistake.
       - name: Dry-run the release packaging
         run: |
           v=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
           [ -n "$v" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
-          misc/package_release.sh ./build/culebra "v$v" linux x64
+          misc/package_release.sh ./build/culebra "v$v" linux x64 --dev
 
   # The macOS half of the job above: test-macos pins the window OFF, so this is
   # the macOS download's configuration and nothing but a `v*` tag used to build
@@ -742,7 +743,7 @@ jobs:
         run: |
           v=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
           [ -n "$v" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
-          misc/package_release.sh ./build/culebra "v$v" macos arm64
+          misc/package_release.sh ./build/culebra "v$v" macos arm64 --dev
 
   # Scene is the one namespace no released binary carries: CMake defaults it
   # OFF, so until this job nothing built it anywhere — the wrap binding, the

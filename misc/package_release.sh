@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Package one release build into the archive GitHub Releases serves.
 #
-# Usage: misc/package_release.sh <binary> <tag> <os> <arch>
+# Usage: misc/package_release.sh <binary> <tag> <os> <arch> [--dev]
 #   <binary>  path to the built culebra (or culebra.exe)
 #   <tag>     the release tag, e.g. v0.1.0
 #   <os>      macos | linux | windows
 #   <arch>    arm64 | x64
+#   --dev     the CI dry run: this build is not the tag, so let its version
+#             carry the commit it came from (see the check below)
 #
 # Single-sources the naming convention and the checksum across the release
 # workflow's per-platform jobs, which otherwise cannot share steps (each needs
@@ -23,8 +25,14 @@
 # itself answers definitively with `culebra --version`.
 set -euo pipefail
 
+dev=0
+if [ "${5-}" = "--dev" ]; then
+  dev=1
+  set -- "$1" "$2" "$3" "$4"
+fi
+
 if [ $# -ne 4 ]; then
-  echo "usage: package_release.sh <binary> <tag> <os> <arch>" >&2
+  echo "usage: package_release.sh <binary> <tag> <os> <arch> [--dev]" >&2
   exit 2
 fi
 
@@ -68,10 +76,18 @@ if [ "$want" != "$got_version" ]; then
   echo "  (did the release commit update CULEBRA_VERSION in include/culebra.h?)" >&2
   exit 1
 fi
+# Only a build of the tag itself has a bare version. CI runs this script on
+# every push precisely so a release is not the first time it runs, and there
+# the suffix is not a mistake but the point of it (`--version: name the commit
+# a development build came from`) — so this one check is what --dev trades
+# away, and the header check above still holds either way.
 if [ "$want" != "$got" ]; then
-  echo "package_release: the binary reports $got, so it was not built from a" >&2
-  echo "  clean checkout of $tag — release from the tagged commit instead." >&2
-  exit 1
+  if [ "$dev" -eq 0 ]; then
+    echo "package_release: the binary reports $got, so it was not built from a" >&2
+    echo "  clean checkout of $tag — release from the tagged commit instead." >&2
+    exit 1
+  fi
+  echo "package_release: --dev, so $got naming its commit is expected"
 fi
 
 # One smoke per engine the binary says it has, ~10 ms each: the executor
