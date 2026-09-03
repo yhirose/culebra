@@ -163,6 +163,15 @@ check-registrar-rooted:
 check-pe-exports-gen:
     tools/checks/check_pe_exports_gen.sh
 
+# What the names in include/ claim: `jit` means LLVM, `.gen.h` means generated,
+# `.inc.h` means rt.h's body. Each of those drifted before it was checked, and
+# the rename that fixed them was reintroduced in three comments by the very
+# next rebase — a branch written before the rename, landing after it.
+[group("test")]
+[doc("Verify header names still mean what they claim (LLVM / generated / fragment)")]
+check-header-naming:
+    tools/checks/check_header_naming.sh
+
 # The embedding chapter names headers a host includes, and `doctest` reads
 # ```culebra fences only — so a rename broke those examples with nothing to
 # say so. This half only resolves the names, which is the half that a rename
@@ -184,7 +193,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it
