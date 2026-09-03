@@ -2764,7 +2764,8 @@ fn collect_vars(node, f) {
   if fn_forms.has(node.name) {
     return nil
   }
-  if (node.name == 'var_decl' || node.name == 'var_decl_ns') && node.nodes[0].token == 'var' {
+  if (node.name == 'var_decl' || node.name == 'var_decl_ns') &&
+      node.nodes[0].token == 'var' {
     mut i = 1
     while i < node.nodes.size() {
       for id in pattern_idents(node.nodes[i].nodes[0], []) {
@@ -2773,7 +2774,8 @@ fn collect_vars(node, f) {
       i = i + 1
     }
   }
-  if (node.name == 'for_of' || node.name == 'for_in') && node.nodes[0].token == 'var' {
+  if (node.name == 'for_of' || node.name == 'for_in') &&
+      node.nodes[0].token == 'var' {
     for id in pattern_idents(node.nodes[1], []) {
       declare_fn_var(f, id.token, nil)
     }
@@ -3901,12 +3903,7 @@ fn fn_length(g) {
 
 fn emit_fn_value(m, node, f, name, is_arrow) {
   let g = closure_of[pkey(node)]
-  let c = m.make_closure(
-    func: g,
-    cmap: frames.cmap(m, f, g),
-    line: node.line,
-    col: node.column,
-  )
+  let c = ir.closure(f, g, node)
   cond {
     # a prelude helper referenced as a value is the raw closure; a prelude
     # function expression is a JS function like any other
@@ -3947,11 +3944,10 @@ fn emit_arg_array(m, f, arg_nodes, ln, cl) {
             a.line,
             a.column,
           )),
-          _ => ids.push(m.intrinsic(
-            name: 'arraypush',
-            args_list: ir.list([scratch_ref(m, tmp, ln, cl), emit_expr(m, a, f)]),
-            line: a.line,
-            col: a.column,
+          _ => ids.push(ir.intrinsic(
+            'arraypush',
+            [scratch_ref(m, tmp, ln, cl), emit_expr(m, a, f)],
+            a,
           )),
         }
       }
@@ -3988,7 +3984,10 @@ fn emit_postfix(m, node, f) {
   let head = node.nodes[0]
   let steps = node.nodes.slice(1, node.nodes.size())
   # an intrinsic or raw op in the prelude is spelled as a call
-  if in_prelude && head.name == 'ident' && steps.size() == 1 && steps[0].name == 'call_p' {
+  if in_prelude &&
+      head.name == 'ident' &&
+      steps.size() == 1 &&
+      steps[0].name == 'call_p' {
     let r = resolved[pkey(head)]
     if r.kind == 'intrinsic' {
       let iname = intrinsics[head.token]
@@ -3996,12 +3995,7 @@ fn emit_postfix(m, node, f) {
       for a in steps[0].nodes[0].nodes {
         ids.push(emit_expr(m, a, f))
       }
-      return m.intrinsic(
-        name: iname,
-        args_list: ir.list(ids),
-        line: node.line,
-        col: node.column,
-      )
+      return ir.intrinsic(iname, ids, node)
     }
     if r.kind == 'const' {
       # the 128 ASCII characters, which the prelude cannot spell itself
@@ -4017,20 +4011,8 @@ fn emit_postfix(m, node, f) {
       let op = raw_binops[head.token]
       let l = emit_expr(m, args[0], f)
       cond {
-        args.size() ==
-          1 => return m.unary(
-          op: 'bitnot',
-          operand: l,
-          line: node.line,
-          col: node.column,
-        ),
-        _ => return m.binary(
-          op: op,
-          lhs: l,
-          rhs: emit_expr(m, args[1], f),
-          line: node.line,
-          col: node.column,
-        ),
+        args.size() == 1 => return ir.unary('bitnot', l, node),
+        _ => return ir.binary(op, l, emit_expr(m, args[1], f), node),
       }
     }
   }
@@ -4044,7 +4026,7 @@ fn emit_postfix(m, node, f) {
       '__super_callm',
       [
         home_ref(m, f, r, head.line, head.column),
-        m.bool_literal(v: r.is_static, line: head.line, col: head.column),
+        ir.bool_literal(r.is_static, head),
         this_ref(m, f, head),
         str_l(m, head.nodes[0].token, head.line, head.column),
         emit_arg_array(m, f, cp.nodes[0].nodes, cp.line, cp.column),
@@ -5041,7 +5023,7 @@ fn emit_block(m, blk, f) {
   let slots = block_slots[pkey(blk)]
   mut ids = fresh_slots(m, f, slots, blk.line, blk.column)
   emit_stmts_into(m, blk.nodes, f, ids)
-  m.block(stmts_list: ir.list(ids), line: blk.line, col: blk.column)
+  ir.block(ids, blk)
 }
 
 # a block's own bindings start out undefined on every entry; a captured
@@ -5333,7 +5315,7 @@ fn emit_decl(m, node, f) {
   cond {
     ids.size() == 0 => nil,
     ids.size() == 1 => ids[0],
-    _ => m.block(stmts_list: ir.list(ids), line: node.line, col: node.column),
+    _ => ir.block(ids, node),
   }
 }
 
@@ -5654,12 +5636,17 @@ fn emit_switch(m, node, f) {
           c.line,
           c.column,
         )
-        chain = m.make_if_else(
-          cond: test,
-          then_branch: m.assign(kind: 'local', index: idx, value: m.literal(v: k, line: ln, col: cl), line: ln, col: cl),
-          else_branch: chain,
-          line: c.line,
-          col: c.column,
+        chain = ir.make_if_else(
+          test,
+          m.assign(
+            kind: 'local',
+            index: idx,
+            value: m.literal(v: k, line: ln, col: cl),
+            line: ln,
+            col: cl,
+          ),
+          chain,
+          c,
         )
       },
     }
@@ -5681,11 +5668,16 @@ fn emit_switch(m, node, f) {
     let body = c.nodes[c.nodes.size() - 1]
     mut stmt_ids = []
     emit_stmts_into(m, body.nodes, f, stmt_ids)
-    body_ids.push(m.make_if(
-      cond: m.binary(op: 'le', lhs: scratch_ref(m, idx, ln, cl), rhs: m.literal(v: k2, line: ln, col: cl), line: ln, col: cl),
-      then_branch: m.block(stmts_list: ir.list(stmt_ids), line: c.line, col: c.column),
-      line: c.line,
-      col: c.column,
+    body_ids.push(ir.make_if(
+      m.binary(
+        op: 'le',
+        lhs: scratch_ref(m, idx, ln, cl),
+        rhs: m.literal(v: k2, line: ln, col: cl),
+        line: ln,
+        col: cl,
+      ),
+      ir.block(stmt_ids, c),
+      c,
     ))
   }
   loop_ctx[f].pop()
@@ -5865,17 +5857,11 @@ fn emit_funcs(m) {
           fi.params.size() > fi.dflts.size() => 1,
           _ => 0,
         }
-        let test = is_undef(
-          m,
-          m.var_ref(kind: 'local', index: slot, line: 1, col: 1),
-          1,
-          1,
-        )
-        ids.push(m.make_if(
-          cond: test,
-          then_branch: m.assign(kind: 'local', index: slot, value: emit_expr(m, d, f), line: 1, col: 1),
-          line: 1,
-          col: 1,
+        let test = is_undef(m, ir.local(slot, front.ORIGIN), 1, 1)
+        ids.push(ir.make_if(
+          test,
+          ir.store_local(slot, emit_expr(m, d, f), front.ORIGIN),
+          front.ORIGIN,
         ))
       }
     }
@@ -5896,7 +5882,7 @@ fn emit_funcs(m) {
         m,
         f,
         '__run_fields',
-        [hr, m.var_ref(kind: 'local', index: 0, line: 1, col: 1)],
+        [hr, ir.local(0, front.ORIGIN)],
         1,
         1,
       ))
@@ -5905,7 +5891,7 @@ fn emit_funcs(m) {
     if fi.pat_params != nil {
       for pp in fi.pat_params {
         let (slot, pat) = pp
-        for x in emit_bind(m, f, pat, m.var_ref(kind: 'local', index: slot, line: 1, col: 1), 1, 1) {
+        for x in emit_bind(m, f, pat, ir.local(slot, front.ORIGIN), 1, 1) {
           ids.push(x)
         }
       }
@@ -5916,7 +5902,7 @@ fn emit_funcs(m) {
         ids.push(m.assign(
           kind: 'cell',
           index: frames.cell_of(f, p),
-          value: m.var_ref(kind: 'local', index: p, line: 1, col: 1),
+          value: ir.local(p, front.ORIGIN),
           line: 1,
           col: 1,
         ))
@@ -5986,13 +5972,8 @@ fn emit_funcs(m) {
           f,
           '__apply',
           [
-            m.make_closure(
-              func: fi.gen_raw,
-              cmap: frames.cmap(m, f, fi.gen_raw),
-              line: 1,
-              col: 1,
-            ),
-            m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+            ir.closure(f, fi.gen_raw, front.ORIGIN),
+            ir.local(0, front.ORIGIN),
             args,
           ],
           1,
@@ -6018,7 +5999,7 @@ fn emit_funcs(m) {
             m,
             f,
             '__set',
-            [m.var_ref(kind: 'local', index: 0, line: 1, col: 1), key, v],
+            [ir.local(0, front.ORIGIN), key, v],
             fld.line,
             fld.column,
           ))
@@ -6036,11 +6017,11 @@ fn emit_funcs(m) {
         ids.push(m.make_return(value: nil_l(m, 1, 1), line: 1, col: 1))
       },
     }
-    mut body = m.block(stmts_list: ir.list(ids), line: 1, col: 1)
+    mut body = ir.block(ids, front.ORIGIN)
     if f == 0 {
       # whatever escapes the program is reported the way Node reports it
       let slot = new_scratch(0)
-      let caught = m.var_ref(kind: 'local', index: slot, line: 1, col: 1)
+      let caught = ir.local(slot, front.ORIGIN)
       body = m.make_try(
         caught_local: slot,
         body: body,

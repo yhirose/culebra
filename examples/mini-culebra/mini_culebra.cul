@@ -7540,8 +7540,8 @@ fn binop_raw(tok) {
 }
 
 fn pos_args(m, node) {
-  (m.literal(v: node.line, line: node.line, col: node.column),
-   m.literal(v: node.column, line: node.line, col: node.column))
+  (ir.literal(node.line, node),
+   ir.literal(node.column, node))
 }
 
 # One binary application, per dialect: the prelude compiles the raw VM
@@ -7555,14 +7555,15 @@ fn emit_binop(m, f, tok, lhs_id, rhs_id, op_node, at) {
         let e = call_pre(m, f, '__eq', [lhs_id, rhs_id],
                          op_node.line, op_node.column)
         if tok == '==' { return e }
-        return m.make_if_else(cond: e,
-                              then_branch: m.bool_literal(v: false, line: op_node.line, col: op_node.column),
-                              else_branch: m.bool_literal(v: true, line: op_node.line, col: op_node.column),
-                              line: op_node.line, col: op_node.column)
+        return ir.make_if_else(
+          e,
+          ir.bool_literal(false, op_node),
+          ir.bool_literal(true, op_node),
+          op_node,
+        )
       }
     }
-    return m.binary(op: binop_raw(tok), lhs: lhs_id, rhs: rhs_id,
-                    line: op_node.line, col: op_node.column)
+    return ir.binary(binop_raw(tok), lhs_id, rhs_id, op_node)
   }
   let (ln, cl) = pos_args(m, at)
   call_pre(m, f, binop_prelude(tok), [lhs_id, rhs_id, ln, cl],
@@ -7885,8 +7886,7 @@ fn emit_match(m, node, f) {
     }
     let info = block_info[pkey(arm)]
     let pre = fresh_cells(m, f, info.base, info.high, arm.line, arm.column)
-    let inner = m.block(stmts_list: ir.list(pre + arm_ids + [guarded]),
-                        line: arm.line, col: arm.column)
+    let inner = ir.block(pre + arm_ids + [guarded], arm)
     let scoped = emit_scope_of(m, f, info.base, info.high, inner, arm.line, arm.column)
     ids.push(m.make_if(cond: notyet, then_branch: scoped, line: ln, col: cl))
     i = i + 1
@@ -7951,7 +7951,7 @@ fn emit_interp(m, node, f) {
               let (al, ac) = pos_args(m, sp)
               call_pre(m, f, '__spec_arg', [emit_expr(m, sp.nodes[0], f), al, ac], sp.line, sp.column)
             },
-            _ => m.str_literal(s: sp.token, line: sp.line, col: sp.column),
+            _ => ir.str_literal(sp.token, sp),
           }
           specv = cond {
             specv == nil => sv,
@@ -7965,17 +7965,15 @@ fn emit_interp(m, node, f) {
         let (ln, cl) = (part.line, part.column)
         call_pre(m, f, '__display', [emit_expr(m, part.nodes[0], f)], ln, cl)
       },
-      _ => m.str_literal(s: unescape(part.token), line: part.line,
-                         col: part.column),
+      _ => ir.str_literal(unescape(part.token), part),
     }
     value = cond {
       value == nil => piece,
-      _ => m.binary(op: 'add', lhs: value, rhs: piece,
-                    line: node.line, col: node.column),
+      _ => ir.binary('add', value, piece, node),
     }
   }
   if value == nil {
-    return m.str_literal(s: '', line: node.line, col: node.column)
+    return ir.str_literal('', node)
   }
   value
 }
@@ -8201,7 +8199,7 @@ fn emit_call_shape(m, f, arg_nodes, ln, cl) {
     let v = emit_expr(m, vn, f)
     cond {
       a.name == 'kwarg' => {
-        let namev = m.str_literal(s: a.nodes[0].token, line: a.line, col: a.column)
+        let namev = ir.str_literal(a.nodes[0].token, a)
         kwn.push(namev)
         kwv.push(v)
         items.push(m.array_lit(items_list: ir.list([namev, v]), line: ln, col: cl))
@@ -8215,8 +8213,8 @@ fn emit_call_shape(m, f, arg_nodes, ln, cl) {
       },
       _ => {
         pos.push(v)
-        apos.push(m.literal(v: vn.line, line: vn.line, col: vn.column))
-        apos.push(m.literal(v: vn.column, line: vn.line, col: vn.column))
+        apos.push(ir.literal(vn.line, vn))
+        apos.push(ir.literal(vn.column, vn))
       },
     }
   }
@@ -8319,9 +8317,7 @@ fn emit_decorated(m, f, decos, v0) {
     let dn = decos[i].nodes[0]
     let r = resolved[pkey(dn)]
     mut callee = cond {
-      r.kind == 'fn' => m.make_closure(func: r.funcs[0],
-                                       cmap: frames.cmap(m, f, r.funcs[0]),
-                                       line: dn.line, col: dn.column),
+      r.kind == 'fn' => ir.closure(f, r.funcs[0], dn),
       _ => {
         # a decorator held in a variable may be a closure marker
         let (pl, pc) = pos_args(m, dn)
@@ -8335,12 +8331,10 @@ fn emit_decorated(m, f, decos, v0) {
       for a in decos[i].nodes[1].nodes { fargs.push(emit_expr(m, arg_val(a), f)) }
       let (pl, pc) = pos_args(m, dn)
       callee = call_pre(m, f, '__callee_check',
-                        [m.call_value(callee: callee, args_list: ir.list(fargs),
-                                      line: dn.line, col: dn.column), pl, pc],
+                        [ir.call_value(callee, fargs, dn), pl, pc],
                         dn.line, dn.column)
     }
-    v = m.call_value(callee: callee, args_list: ir.list([v]),
-                     line: dn.line, col: dn.column)
+    v = ir.call_value(callee, [v], dn)
     i = i - 1
   }
   v
@@ -8565,8 +8559,7 @@ fn ty_check_of(ty) {
 # its declared arity, so a method call or dot read can supply the receiver.
 fn emit_closure_value(m, node, f) {
   let g = closure_of[pkey(node)]
-  let c = m.make_closure(func: g, cmap: frames.cmap(m, f, g),
-                         line: node.line, col: node.column)
+  let c = ir.closure(f, g, node)
   # a closure with parameters travels with its parameter list, so any
   # call site -- a property call, a callback slot, a keyword call --
   # binds by name and type the way culebra does; one that mentions self
@@ -8575,7 +8568,7 @@ fn emit_closure_value(m, node, f) {
   cond {
     has_spec => call_pre(m, f, '__mk_specc',
                          [c, emit_spec(m, g, 0, node.line, node.column),
-                          m.bool_literal(v: self_closure.has(g), line: node.line, col: node.column)],
+                          ir.bool_literal(self_closure.has(g), node)],
                          node.line, node.column),
     self_closure.has(g) => call_pre(m, f, '__mk_selfc', [c], node.line, node.column),
     _ => c,
@@ -8606,8 +8599,7 @@ fn emit_postfix_step(m, f, value, step, at) {
         _ => call_pre(m, f, '__callee_check', [value, pl, pc],
                       step.line, step.column),
       }
-      m.call_value(callee: callee, args_list: ir.list(arg_ids),
-                   line: step.line, col: step.column)
+      ir.call_value(callee, arg_ids, step)
     },
     step.name == 'mcall' => {
       let name = step.nodes[0]
@@ -8617,11 +8609,14 @@ fn emit_postfix_step(m, f, value, step, at) {
         in_prelude => {
           mut arg_ids = []
           for a in step.nodes[1].nodes { arg_ids.push(emit_expr(m, a, f)) }
-          m.call_value(
-              callee: m.index(recv: value,
-                              key: m.str_literal(s: name.token, line: name.line, col: name.column),
-                              line: step.line, col: step.column),
-              args_list: ir.list(arg_ids), line: step.line, col: step.column)
+          ir.call_value(
+            m.index(recv: value, key: ir.str_literal(
+              name.token,
+              name,
+            ), line: step.line, col: step.column),
+            arg_ids,
+            step,
+          )
         },
         # UFCS: a name outside the built-in method set that resolves to a
         # function in scope is a free call with the receiver first -- unless
@@ -8634,13 +8629,13 @@ fn emit_postfix_step(m, f, value, step, at) {
           fn sref() { m.var_ref(kind: 'local', index: slot, line: ln, col: cl) }
           let store = m.assign(kind: 'local', index: slot, value: value, line: ln, col: cl)
           let own = call_pre(m, f, '__has_method',
-                             [sref(), m.str_literal(s: name.token, line: name.line, col: name.column)],
+                             [sref(), ir.str_literal(name.token, name)],
                              ln, cl)
           let [posv, kwsv, aposv] = emit_call_shape(m, f, step.nodes[1].nodes, ln, cl)
           let nl_ = m.literal(v: name.line, line: ln, col: cl)
           let nc_ = m.literal(v: name.column, line: ln, col: cl)
           let via_method = call_pre(m, f, '__method',
-                                    [sref(), m.str_literal(s: name.token, line: name.line, col: name.column),
+                                    [sref(), ir.str_literal(name.token, name),
                                      posv, kwsv, aposv, pl, pc],
                                     ln, cl)
           let via_ufcs = cond {
@@ -8677,7 +8672,7 @@ fn emit_postfix_step(m, f, value, step, at) {
                                                     step.line, step.column)
           call_pre(m, f, '__method',
                    [value,
-                    m.str_literal(s: name.token, line: name.line, col: name.column),
+                    ir.str_literal(name.token, name),
                     posv, kwsv, aposv, pl, pc],
                    step.line, step.column)
         },
@@ -8685,14 +8680,11 @@ fn emit_postfix_step(m, f, value, step, at) {
     },
     step.name == 'prop' => cond {
       in_prelude => m.index(recv: value,
-                            key: m.str_literal(s: step.nodes[0].token,
-                                               line: step.line,
-                                               col: step.column),
+                            key: ir.str_literal(step.nodes[0].token, step),
                             line: step.line, col: step.column),
       _ => call_pre(m, f, '__getprop',
                     [value,
-                     m.str_literal(s: step.nodes[0].token, line: step.line,
-                                   col: step.column),
+                     ir.str_literal(step.nodes[0].token, step),
                      pl, pc],
                     step.line, step.column),
     },
@@ -8801,10 +8793,9 @@ fn emit_if(m, node, f, ln, cl) {
         alt.name == 'if' => emit_if(m, alt, f, alt.line, alt.column),
         _ => emit_block(m, alt, f),
       }
-      m.make_if_else(cond: c, then_branch: t, else_branch: e,
-                     line: node.line, col: node.column)
+      ir.make_if_else(c, t, e, node)
     },
-    _ => m.make_if(cond: c, then_branch: t, line: node.line, col: node.column),
+    _ => ir.make_if(c, t, node),
   }
 }
 
@@ -8815,17 +8806,15 @@ fn emit_try(m, node, f) {
   let info = block_info[pkey(handler)]
   mut ids = []
   # an executor trap gets its kind first, in the local slot the VM filled
-  ids.push(m.assign(kind: 'local', index: r.slot,
-                    value: call_pre(m, f, '__fix_trap',
-                                    [m.var_ref(kind: 'local', index: r.slot,
-                                               line: id.line, col: id.column)],
-                                    id.line, id.column),
-                    line: id.line, col: id.column))
+  ids.push(ir.store_local(
+    r.slot,
+    call_pre(m, f, '__fix_trap', [ir.local(r.slot, id)], id.line, id.column),
+    id,
+  ))
   # a captured caught variable arrives in its local slot and moves into the
   # cell every other reference resolves to (same shape as parameters)
   if frames.in_cell(f, r.slot) {
-    let src = m.var_ref(kind: 'local', index: r.slot,
-                        line: id.line, col: id.column)
+    let src = ir.local(r.slot, id)
     ids.push(m.assign(kind: 'cell', index: frames.cell_of(f, r.slot), value: src,
                       line: id.line, col: id.column))
   }
@@ -8833,8 +8822,7 @@ fn emit_try(m, node, f) {
     let e = emit_stmt(m, s, f)
     if e != nil { ids.push(e) }
   }
-  let hb = m.block(stmts_list: ir.list(ids),
-                   line: handler.line, col: handler.column)
+  let hb = ir.block(ids, handler)
   let wrapped = emit_scope_of(m, f, info.base, info.high, hb, handler.line, handler.column)
   m.make_try(caught_local: r.slot, body: b, handler: wrapped,
              line: node.line, col: node.column)
@@ -8843,17 +8831,15 @@ fn emit_try(m, node, f) {
 fn emit_expr(m, node, f) {
   match node {
     {name: 'number'} =>
-      m.literal(v: parse_int_token(node.token), line: node.line,
-                col: node.column),
+      ir.literal(parse_int_token(node.token), node),
     {name: 'float'} =>
-      m.double_literal(v: to_float(node.token), line: node.line,
-                       col: node.column),
+      ir.double_literal(to_float(node.token), node),
     {name: 'str_sq'} =>
-      m.str_literal(s: node.token, line: node.line, col: node.column),
+      ir.str_literal(node.token, node),
     {name: 'str_dq'} => emit_interp(m, node, f),
-    {name: 'true_l'} => m.bool_literal(v: true, line: node.line, col: node.column),
-    {name: 'false_l'} => m.bool_literal(v: false, line: node.line, col: node.column),
-    {name: 'nil_l'} => m.nil_literal(line: node.line, col: node.column),
+    {name: 'true_l'} => ir.bool_literal(true, node),
+    {name: 'false_l'} => ir.bool_literal(false, node),
+    {name: 'nil_l'} => ir.nil_literal(node),
     {name: 'ident', token} => {
       if !resolved.has(pkey(node)) {
         fail(node, "DEBUG unresolved ident '{token}' key={pkey(node)} f={f}")
@@ -8864,8 +8850,7 @@ fn emit_expr(m, node, f) {
         r.kind == 'gcns' => call_pre(m, f, '__gc_ns', [], node.line, node.column),
         r.kind == 'bval' => call_pre(m, f, '__fnval_' + r.name, [], node.line, node.column),
         r.kind == 'fn' && r.funcs.size() == 1 =>
-          m.make_closure(func: r.funcs[0], cmap: frames.cmap(m, f, r.funcs[0]),
-                         line: node.line, col: node.column),
+          ir.closure(f, r.funcs[0], node),
         r.kind == 'fn' => emit_family(m, f, token, r.funcs, 0, node.line, node.column),
         _ => {
           let ref = ir.read(f, r.owner, r.slot, node)
@@ -8881,7 +8866,7 @@ fn emit_expr(m, node, f) {
             fwd_slots.has("{r.owner}/{r.slot}") => {
               let (pl, pc) = pos_args(m, node)
               call_pre(m, f, '__fwd_read',
-                       [ref, m.str_literal(s: token, line: node.line, col: node.column), pl, pc],
+                       [ref, ir.str_literal(token, node), pl, pc],
                        node.line, node.column)
             },
             _ => ref,
@@ -8953,7 +8938,7 @@ fn emit_expr(m, node, f) {
     {name: 'shorthand'} => {
       let kv = m.list_new()
       for id in node.nodes {
-        m.list_push(kv, m.str_literal(s: id.token, line: id.line, col: id.column))
+        m.list_push(kv, ir.str_literal(id.token, id))
         m.list_push(kv, emit_expr(m, id, f))
       }
       m.object_lit(kv_list: kv, line: node.line, col: node.column)
@@ -8964,8 +8949,7 @@ fn emit_expr(m, node, f) {
         r.kind == 'var' => {
           ir.read(f, r.owner, r.slot, node)
         },
-        _ => m.make_closure(func: f, cmap: frames.cmap(m, f, f),
-                            line: node.line, col: node.column),
+        _ => ir.closure(f, f, node),
       }
     },
     {name: 'tuple'} => {
@@ -8982,7 +8966,7 @@ fn emit_expr(m, node, f) {
       fn key_node(kn) {
         cond {
           is_str_key(kn) =>
-            m.str_literal(s: kn.token, line: kn.line, col: kn.column),
+            ir.str_literal(kn.token, kn),
           # a non-String key is stored under its hash spelling; the
           # original value is recorded afterwards for keys() and display
           _ => call_pre(m, f, '__hkey', [emit_expr(m, kn, f), pl, pc],
@@ -9007,12 +8991,12 @@ fn emit_expr(m, node, f) {
               let k = pair.nodes[0]
               let is_mut = cond { pair.name == 'mut_pair' => 1, _ => 0 }
               let kexpr = cond {
-                is_str_key(k) => m.str_literal(s: k.token, line: k.line, col: k.column),
+                is_str_key(k) => ir.str_literal(k.token, k),
                 _ => emit_expr(m, k, f),
               }
               obj2 = call_pre(m, f, '__olit_put',
                               [obj2, kexpr, emit_expr(m, pair.nodes[1], f),
-                               m.literal(v: is_mut, line: k.line, col: k.column), pl, pc],
+                               ir.literal(is_mut, k), pl, pc],
                               k.line, k.column)
             },
           }
@@ -9112,9 +9096,11 @@ fn emit_target_write(m, f, t, item, mut_add) {
     t.name == 'ident' && runtime_immut.has(pkey(t)) => {
       let (pl, pc) = pos_args(m, t)
       call_pre(m, f, '__raise',
-               [m.str_literal(s: 'ImmutableError', line: t.line, col: t.column),
-                m.str_literal(s: "cannot reassign '" + t.token + "' (declared without 'mut')",
-                              line: t.line, col: t.column),
+               [ir.str_literal('ImmutableError', t),
+                ir.str_literal(
+                  "cannot reassign '" + t.token + "' (declared without 'mut')",
+                  t,
+                ),
                 pl, pc],
                t.line, t.column)
     },
@@ -9133,12 +9119,12 @@ fn emit_target_write(m, f, t, item, mut_add) {
       }
       let (pl, pc) = pos_args(m, steps[0])
       let key = cond {
-        last.name == 'prop' => m.str_literal(s: last.nodes[0].token, line: last.line, col: last.column),
+        last.name == 'prop' => ir.str_literal(last.nodes[0].token, last),
         _ => emit_expr(m, last.nodes[0], f),
       }
       let is_prop = cond { mut_add => 0, last.name == 'prop' => 1, _ => 0 }
       call_pre(m, f, '__setindex',
-               [recv, key, item, m.literal(v: is_prop, line: last.line, col: last.column), pl, pc],
+               [recv, key, item, ir.literal(is_prop, last), pl, pc],
                t.line, t.column)
     },
   }
@@ -9162,9 +9148,10 @@ fn new_scratch_key(f, key) {
 fn emit_assign_expr(m, node, f) {
   let res = scratch_slot(f, scratch_of[pkey(node) + '/r'])
   let store = emit_assign(m, synth_assign(node, false), f, res)
-  m.block(stmts_list: ir.list([store,
-              m.var_ref(kind: 'local', index: res, line: node.line, col: node.column)]),
-          line: node.line, col: node.column)
+  ir.block(
+    [store, ir.local(res, node)],
+    node,
+  )
 }
 
 # Pattern assignment `[a, b: Long, ...rest] = v` / `(a, b) = v` /
@@ -9284,8 +9271,7 @@ fn emit_assign(m, node, f, res) {
       i = i + 1
     }
     let key = cond {
-      last.name == 'prop' => m.str_literal(s: last.nodes[0].token,
-                                           line: last.line, col: last.column),
+      last.name == 'prop' => ir.str_literal(last.nodes[0].token, last),
       _ => emit_expr(m, last.nodes[0], f),
     }
     return m.set_index(recv: recv, key: key,
@@ -9312,11 +9298,17 @@ fn emit_assign(m, node, f, res) {
         let (pl, pc) = pos_args(m, op)
         cond {
           op.token == '??=' =>
-            m.make_if_else(cond: m.binary(op: 'eq', lhs: ir_typeof(m, read_back(), op.line, op.column),
-                                          rhs: m.str_literal(s: 'nil', line: op.line, col: op.column),
-                                          line: op.line, col: op.column),
-                           then_branch: v, else_branch: read_back(),
-                           line: op.line, col: op.column),
+            ir.make_if_else(
+              ir.binary(
+                'eq',
+                ir_typeof(m, read_back(), op.line, op.column),
+                ir.str_literal('nil', op),
+                op,
+              ),
+              v,
+              read_back(),
+              op,
+            ),
           _ => {
             let name = cond {
               op.token == '+=' => '__add',
@@ -9364,7 +9356,7 @@ fn emit_assign(m, node, f, res) {
         let item = cond {
           lhs.name == 'shorthand' =>
             call_pre(m, f, '__getprop',
-                     [tref(), m.str_literal(s: t.token, line: t.line, col: t.column), pl, pc],
+                     [tref(), ir.str_literal(t.token, t), pl, pc],
                      t.line, t.column),
           _ => m.index(recv: tref(), key: m.literal(v: k, line: ln, col: cl), line: ln, col: cl),
         }
@@ -9384,8 +9376,7 @@ fn emit_assign(m, node, f, res) {
       }
       let (pl, pc) = pos_args(m, steps[0])
       let key = cond {
-        last.name == 'prop' => m.str_literal(s: last.nodes[0].token,
-                                             line: last.line, col: last.column),
+        last.name == 'prop' => ir.str_literal(last.nodes[0].token, last),
         _ => emit_expr(m, last.nodes[0], f),
       }
       let is_prop = cond { mut_add => 0, last.name == 'prop' => 1, _ => 0 }
@@ -9404,7 +9395,7 @@ fn emit_assign(m, node, f, res) {
           fn kref() { m.var_ref(kind: 'local', index: kslot, line: ln, col: cl) }
           let cur_read = fn () {
             call_pre(m, f, '__getindex_or_prop',
-                     [rref(), kref(), m.literal(v: is_prop, line: last.line, col: last.column), pl, pc],
+                     [rref(), kref(), ir.literal(is_prop, last), pl, pc],
                      last.line, last.column)
           }
           mut ids = stores
@@ -9421,7 +9412,7 @@ fn emit_assign(m, node, f, res) {
                                 line: ln, col: cl))
               let store = call_pre(m, f, '__setindex',
                                    [rref(), kref(), rhs_of(nil),
-                                    m.literal(v: is_prop, line: last.line, col: last.column), pl, pc],
+                                    ir.literal(is_prop, last), pl, pc],
                                    ln, cl)
               let keep = cond {
                 res == nil => m.nil_literal(line: ln, col: cl),
@@ -9434,7 +9425,7 @@ fn emit_assign(m, node, f, res) {
             },
             _ => ids.push(call_pre(m, f, '__setindex',
                                    [rref(), kref(), rhs_of(cur_read),
-                                    m.literal(v: is_prop, line: last.line, col: last.column), pl, pc],
+                                    ir.literal(is_prop, last), pl, pc],
                                    ln, cl)),
           }
           m.block(stmts_list: ir.list(ids), line: ln, col: cl)
@@ -9559,8 +9550,7 @@ fn emit_stmt(m, node, f) {
       if d.decos.size() == 0 { return nil }
       let g = closure_of[pkey(node)]
       let v = emit_decorated(m, f, d.decos,
-                             m.make_closure(func: g, cmap: frames.cmap(m, f, g),
-                                            line: node.line, col: node.column))
+                             ir.closure(f, g, node))
       let rb = resolved[pkey(d.id)]
       ir.write(f, f, rb.slot, v, node)
     },
@@ -9572,23 +9562,20 @@ fn emit_stmt(m, node, f) {
           let n = pat.nodes.size()
           let (pl, pc) = pos_args(m, pat)
           let checked = call_pre(m, f, '__destr',
-                                 [v, m.literal(v: n, line: pat.line, col: pat.column), pl, pc],
+                                 [v, ir.literal(n, pat), pl, pc],
                                  pat.line, pat.column)
-          mut ids = [m.assign(kind: 'local', index: tmp, value: checked,
-                              line: pat.line, col: pat.column)]
+          mut ids = [ir.store_local(tmp, checked, pat)]
           mut i = 0
           while i < n {
             let id = pat.nodes[i]
             let r = resolved[pkey(id)]
-            let item = m.index(recv: m.var_ref(kind: 'local', index: tmp,
-                                               line: id.line, col: id.column),
-                               key: m.literal(v: i, line: id.line, col: id.column),
+            let item = m.index(recv: ir.local(tmp, id),
+                               key: ir.literal(i, id),
                                line: id.line, col: id.column)
             ids.push(ir.write(f, f, r.slot, item, id))
             i = i + 1
           }
-          m.block(stmts_list: ir.list(ids), line: node.line,
-                  col: node.column)
+          ir.block(ids, node)
         },
         _ => {
           let r = resolved[pkey(pat)]
@@ -9666,14 +9653,14 @@ fn emit_stmt(m, node, f) {
             let r = resolved[pkey(id)]
             pre.push(ir.write(f, f, r.slot,
                               m.index(recv: ir.read(f, f, r0.slot, id),
-                                      key: m.literal(v: i, line: id.line, col: id.column),
+                                      key: ir.literal(i, id),
                                       line: id.line, col: id.column),
                               id))
             i = i - 1
           }
           pre.push(ir.write(f, f, r0.slot,
                             m.index(recv: ir.read(f, f, r0.slot, first),
-                                    key: m.literal(v: 0, line: first.line, col: first.column),
+                                    key: ir.literal(0, first),
                                     line: first.line, col: first.column),
                             first))
         },
@@ -9718,7 +9705,7 @@ fn emit_stmt(m, node, f) {
         },
       }
       let b = emit_block(m, body, f)
-      m.make_while(cond: c, body: b, line: node.line, col: node.column)
+      ir.make_while(c, b, node)
     },
     {name: 'return_s'} => {
       cond {
@@ -9732,17 +9719,14 @@ fn emit_stmt(m, node, f) {
           if node.nodes.size() == 1 {
             ids.push(emit_expr(m, node.nodes[0], f))
           }
-          ids.push(m.make_yield(value: m.str_literal(s: gen_end_marker,
-                                                     line: node.line,
-                                                     col: node.column),
+          ids.push(m.make_yield(value: ir.str_literal(gen_end_marker, node),
                                 line: node.line, col: node.column))
-          m.block(stmts_list: ir.list(ids), line: node.line,
-                  col: node.column)
+          ir.block(ids, node)
         },
         _ => {
           let v = cond {
             node.nodes.size() == 1 => emit_expr(m, node.nodes[0], f),
-            _ => m.nil_literal(line: node.line, col: node.column),
+            _ => ir.nil_literal(node),
           }
           m.make_return(value: emit_ret_check(m, f, v, node.line, node.column),
                         line: node.line, col: node.column)
@@ -9792,8 +9776,7 @@ fn emit_stmt(m, node, f) {
     },
     {name: 'defer_s'} => {
       let g = closure_of[pkey(node)]
-      let c = m.make_closure(func: g, cmap: frames.cmap(m, f, g),
-                             line: node.line, col: node.column)
+      let c = ir.closure(f, g, node)
       m.make_defer(value: c, line: node.line, col: node.column)
     },
     {name: 'bare_block', nodes: [blk]} => emit_block(m, blk, f),
@@ -9844,7 +9827,7 @@ fn emit_block_stmts(m, blk, f, pre_ids) {
     let e = emit_stmt(m, s, f)
     if e != nil { ids.push(e) }
   }
-  m.block(stmts_list: ir.list(ids), line: blk.line, col: blk.column)
+  ir.block(ids, blk)
 }
 
 # Every block is a scope, whether or not it declares anything: its exit is
@@ -9872,63 +9855,86 @@ fn emit_funcs(m) {
     let is_closure = fn_pos.has(f)
     for pi in range(fi.pspecs.size()) {
       let rec = fi.pspecs[pi]
-      fn pref() { m.var_ref(kind: 'local', index: pi, line: 1, col: 1) }
+      fn pref() { ir.local(pi, front.ORIGIN) }
       # a closure is called through call_value with whatever count the
       # caller had (lenient arity), so a parameter nothing arrived for is
       # detected by the supplied count
       fn absent() {
-        m.binary(op: 'le', lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(),
-                                             line: 1, col: 1),
-                 rhs: m.literal(v: pi, line: 1, col: 1), line: 1, col: 1)
+        ir.binary(
+          'le',
+          m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
+          ir.literal(pi, front.ORIGIN),
+          front.ORIGIN,
+        )
       }
       cond {
         rec.dflt != nil => {
           let is_marker = ir_and(
               m,
-              m.binary(op: 'eq', lhs: ir_typeof(m, pref(), 1, 1),
-                       rhs: m.str_literal(s: 'string', line: 1, col: 1),
-                       line: 1, col: 1),
-              m.binary(op: 'eq', lhs: pref(),
-                       rhs: m.str_literal(s: missing_marker, line: 1, col: 1),
-                       line: 1, col: 1),
+              ir.binary(
+                'eq',
+                ir_typeof(m, pref(), 1, 1),
+                ir.str_literal('string', front.ORIGIN),
+                front.ORIGIN,
+              ),
+              ir.binary(
+                'eq',
+                pref(),
+                ir.str_literal(missing_marker, front.ORIGIN),
+                front.ORIGIN,
+              ),
               1, 1)
           let missing = cond {
-            is_closure => m.make_if_else(cond: absent(),
-                                         then_branch: ir_bool(m, true, 1, 1),
-                                         else_branch: is_marker, line: 1, col: 1),
+            is_closure => ir.make_if_else(
+              absent(),
+              ir_bool(m, true, 1, 1),
+              is_marker,
+              front.ORIGIN,
+            ),
             _ => is_marker,
           }
-          let fill0 = m.assign(kind: 'local', index: pi,
-                               value: emit_expr(m, rec.dflt, f), line: 1, col: 1)
+          let fill0 = ir.store_local(pi, emit_expr(m, rec.dflt, f), front.ORIGIN)
           # a typed parameter's default is checked too; the caller places
           # the error at the call
           let fill = cond {
-            rec.ty != nil => m.block(stmts_list: ir.list([fill0,
-                m.make_if(cond: m.make_if_else(cond: call_pre(m, f, '__ty_ok',
-                                                                  [pref(), m.str_literal(s: ty_check_of(rec.ty), line: 1, col: 1)], 1, 1),
-                                               then_branch: ir_bool(m, false, 1, 1),
-                                               else_branch: ir_bool(m, true, 1, 1), line: 1, col: 1),
-                          then_branch: call_pre(m, f, '__raise_fixable',
-                                                [m.str_literal(s: 'TypeError', line: 1, col: 1),
-                                                 m.str_literal(s: "type error: parameter '" + rec.pname + "' expects " + rec.ty,
-                                                               line: 1, col: 1)],
-                                                1, 1),
-                          line: 1, col: 1)]),
-              line: 1, col: 1),
+            rec.ty != nil => ir.block(
+              [fill0, ir.make_if(
+                ir.make_if_else(
+                  call_pre(m, f, '__ty_ok', [pref(), ir.str_literal(
+                    ty_check_of(rec.ty),
+                    front.ORIGIN,
+                  )], 1, 1),
+                  ir_bool(m, false, 1, 1),
+                  ir_bool(m, true, 1, 1),
+                  front.ORIGIN,
+                ),
+                call_pre(m, f, '__raise_fixable', [ir.str_literal(
+                  'TypeError',
+                  front.ORIGIN,
+                ), ir.str_literal(
+                  "type error: parameter '" + rec.pname + "' expects " + rec.ty,
+                  front.ORIGIN,
+                )], 1, 1),
+                front.ORIGIN,
+              )],
+              front.ORIGIN,
+            ),
             _ => fill0,
           }
-          ids.push(m.make_if(cond: missing, then_branch: fill, line: 1, col: 1))
+          ids.push(ir.make_if(missing, fill, front.ORIGIN))
         },
         is_closure && rec.pname != '__selfp' && !rec.rest && rec.hidden != true => {
           let (dl, dc) = fn_pos[f]
           let raise = call_pre(m, f, '__raise',
-                               [m.str_literal(s: 'ArityError', line: 1, col: 1),
-                                m.str_literal(s: "missing required argument '" + rec.pname + "'",
-                                              line: 1, col: 1),
-                                m.literal(v: dl, line: 1, col: 1),
-                                m.literal(v: dc, line: 1, col: 1)],
+                               [ir.str_literal('ArityError', front.ORIGIN),
+                                ir.str_literal(
+                                  "missing required argument '" + rec.pname + "'",
+                                  front.ORIGIN,
+                                ),
+                                ir.literal(dl, front.ORIGIN),
+                                ir.literal(dc, front.ORIGIN)],
                                1, 1)
-          ids.push(m.make_if(cond: absent(), then_branch: raise, line: 1, col: 1))
+          ids.push(ir.make_if(absent(), raise, front.ORIGIN))
         },
         _ => nil,
       }
@@ -9940,18 +9946,23 @@ fn emit_funcs(m) {
         let tp = rec.destr
         let n = tp.nodes.size()
         let (pl, pc) = pos_args(m, tp)
-        ids.push(m.assign(kind: 'local', index: pi,
-                          value: call_pre(m, f, '__destr',
-                                          [m.var_ref(kind: 'local', index: pi, line: 1, col: 1),
-                                           m.literal(v: n, line: 1, col: 1), pl, pc],
-                                          1, 1),
-                          line: 1, col: 1))
+        ids.push(ir.store_local(
+          pi,
+          call_pre(m, f, '__destr', [ir.local(
+            pi,
+            front.ORIGIN,
+          ), ir.literal(
+            n,
+            front.ORIGIN,
+          ), pl, pc], 1, 1),
+          front.ORIGIN,
+        ))
         for k in range(n) {
           let id = tp.nodes[k]
           let r = resolved[pkey(id)]
           ids.push(ir.write(f, f, r.slot,
-                            m.index(recv: m.var_ref(kind: 'local', index: pi, line: 1, col: 1),
-                                    key: m.literal(v: k, line: 1, col: 1),
+                            m.index(recv: ir.local(pi, front.ORIGIN),
+                                    key: ir.literal(k, front.ORIGIN),
                                     line: 1, col: 1),
                             front.ORIGIN))
         }
@@ -9959,7 +9970,7 @@ fn emit_funcs(m) {
     }
     for p in range(fi.params.size()) {
       if frames.in_cell(f, p) {
-        let src = m.var_ref(kind: 'local', index: p, line: 1, col: 1)
+        let src = ir.local(p, front.ORIGIN)
         ids.push(m.assign(kind: 'cell', index: frames.cell_of(f, p), value: src,
                           line: 1, col: 1))
       }
@@ -9968,7 +9979,7 @@ fn emit_funcs(m) {
     for s in range(nslots[f]) {
       if fwd_slots.has("{f}/{s}") && frames.in_cell(f, s) {
         ids.push(m.assign(kind: 'cell', index: frames.cell_of(f, s),
-                          value: m.str_literal(s: unbound_marker, line: 1, col: 1),
+                          value: ir.str_literal(unbound_marker, front.ORIGIN),
                           line: 1, col: 1))
       }
     }
@@ -9978,11 +9989,14 @@ fn emit_funcs(m) {
       let ai = args_info[f]
       mut hidden = []
       for k in range(ai.count) {
-        hidden.push(m.var_ref(kind: 'local', index: ai.first + k, line: 1, col: 1))
+        hidden.push(ir.local(ai.first + k, front.ORIGIN))
       }
-      let overflow = m.binary(op: 'sub',
-                              lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
-                              rhs: m.literal(v: ai.first, line: 1, col: 1), line: 1, col: 1)
+      let overflow = ir.binary(
+        'sub',
+        m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
+        ir.literal(ai.first, front.ORIGIN),
+        front.ORIGIN,
+      )
       ids.push(ir.write(f, f, ai.slot, call_pre(m, f, '__first_n',
                                         [m.array_lit(items_list: ir.list(hidden), line: 1, col: 1),
                                          overflow],
@@ -9994,15 +10008,21 @@ fn emit_funcs(m) {
       let ri = rest_info[f]
       mut hidden = []
       for k in range(ri.count) {
-        hidden.push(m.var_ref(kind: 'local', index: ri.first + k, line: 1, col: 1))
+        hidden.push(ir.local(ri.first + k, front.ORIGIN))
       }
-      let n = m.binary(op: 'sub',
-                       lhs: m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
-                       rhs: m.literal(v: ri.slot, line: 1, col: 1), line: 1, col: 1)
+      let n = ir.binary(
+        'sub',
+        m.intrinsic(name: 'argcount', args_list: m.list_new(), line: 1, col: 1),
+        ir.literal(ri.slot, front.ORIGIN),
+        front.ORIGIN,
+      )
       ids.push(ir.write(f, f, ri.slot, call_pre(m, f, '__rest_fix',
-                                        [m.var_ref(kind: 'local', index: ri.slot, line: 1, col: 1),
+                                        [ir.local(ri.slot, front.ORIGIN),
                                          m.array_lit(items_list: ir.list(hidden), line: 1, col: 1),
-                                         n, m.bool_literal(v: ri.count > 0, line: 1, col: 1)],
+                                         n, ir.bool_literal(
+                                           ri.count > 0,
+                                           front.ORIGIN,
+                                         )],
                                         1, 1), front.ORIGIN))
     }
     let rw = fi.gen_raw
@@ -10013,12 +10033,13 @@ fn emit_funcs(m) {
       # above -- and hand back the protocol object over the activation.
       mut cargs = []
       for pi2 in range(fi.params.size()) {
-        cargs.push(m.var_ref(kind: 'local', index: pi2, line: 1, col: 1))
+        cargs.push(ir.local(pi2, front.ORIGIN))
       }
-      let rc = m.call_value(callee: m.make_closure(func: rw,
-                                                   cmap: frames.cmap(m, f, rw),
-                                                   line: 1, col: 1),
-                            args_list: ir.list(cargs), line: 1, col: 1)
+      let rc = ir.call_value(
+        ir.closure(f, rw, front.ORIGIN),
+        cargs,
+        front.ORIGIN,
+      )
       ids.push(m.make_return(value: call_pre(m, f, '__gen_wrap', [rc], 1, 1),
                              line: 1, col: 1))
     }
@@ -10028,10 +10049,10 @@ fn emit_funcs(m) {
         outer.kind == 'var' => {
           ir.read(f, outer.owner, outer.slot, front.ORIGIN)
         },
-        _ => m.nil_literal(line: 1, col: 1),
+        _ => ir.nil_literal(front.ORIGIN),
       }
       let picked = call_pre(m, f, '__self_pick',
-                            [m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+                            [ir.local(0, front.ORIGIN),
                              outer_ref],
                             1, 1)
       ids.push(ir.write(f, f, self_slot[f], picked, front.ORIGIN))
@@ -10046,7 +10067,7 @@ fn emit_funcs(m) {
       cond {
         is_value_stmt(last) && ids.size() > 0 =>
           ids[ids.size() - 1] = emit_ret_check(m, f, ids[ids.size() - 1], last.line, last.column),
-        _ => ids.push(emit_ret_check(m, f, m.nil_literal(line: 1, col: 1), last.line, last.column)),
+        _ => ids.push(emit_ret_check(m, f, ir.nil_literal(front.ORIGIN), last.line, last.column)),
       }
     }
     if fi.is_gen == true {
@@ -10054,11 +10075,10 @@ fn emit_funcs(m) {
       # instead of returning, keeping the frame's defers pending for a
       # dispose. It sits inside the body's own Scope, so nothing has run
       # its exit yet.
-      ids.push(m.make_yield(value: m.str_literal(s: gen_end_marker,
-                                                 line: 1, col: 1),
+      ids.push(m.make_yield(value: ir.str_literal(gen_end_marker, front.ORIGIN),
                             line: 1, col: 1))
     }
-    mut body = m.block(stmts_list: ir.list(ids), line: 1, col: 1)
+    mut body = ir.block(ids, front.ORIGIN)
     let info = block_info[fi.body_key]
     # every function body is a scope, locals or not: its exit is where the
     # VM resolves the drop-bearing cycles the body (or its callees) built.
@@ -10071,7 +10091,7 @@ fn emit_funcs(m) {
     }
     if f == 0 {
       # whatever escapes the program is reported the way culebra reports it
-      let caught = m.var_ref(kind: 'local', index: uncaught_slot, line: 1, col: 1)
+      let caught = ir.local(uncaught_slot, front.ORIGIN)
       body = m.make_try(caught_local: uncaught_slot, body: body,
                         handler: call_pre(m, f, '__report_uncaught', [caught], 1, 1),
                         line: 1, col: 1)
