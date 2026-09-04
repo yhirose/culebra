@@ -97,6 +97,7 @@ inline bool register_codegen_binding() {
       .method<&codegen::Module::set_generator>("set_generator", {"func"})
       .method<&codegen::Module::set_lenient_arity>("set_lenient_arity",
                                                    {"func"})
+      .method<&codegen::Module::set_tail_calls>("set_tail_calls", {"func"})
       .method<&codegen::Module::set_entry_frame_drops>("set_entry_frame_drops",
                                                        {"on"})
       .method<&codegen::Module::verify>("verify")
@@ -153,6 +154,7 @@ inline bool register_codegen_binding() {
                                                     {"func"})
       .method<&codegen::Module::func_lenient_arity>("func_lenient_arity",
                                                      {"func"})
+      .method<&codegen::Module::func_tail_calls>("func_tail_calls", {"func"})
       .method<&codegen::Module::func_local_name>("func_local_name",
                                                   {"func", "index"})
       .method<&codegen::Module::func_capture_name>("func_capture_name",

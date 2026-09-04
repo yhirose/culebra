@@ -422,6 +422,17 @@ class Module {
   void set_lenient_arity(int64_t func) {
     m_.funcs.at(static_cast<size_t>(func)).lenient_arity = true;
   }
+  // A call in tail position -- a Return's operand, or a body's final value
+  // through Block/If/Switch/Scope -- replaces this function's frame instead
+  // of stacking on it, so a loop written as a call chain runs in one frame
+  // however long it goes. The frame exits BEFORE the callee runs, which is
+  // the one thing this changes: a local's drop hook precedes the callee's
+  // own output, where an ordinary call has it follow. A call inside a try
+  // body, or crossing a scope that declares defers or its own release
+  // order, stays an ordinary call -- each of those needs the frame.
+  void set_tail_calls(int64_t func) {
+    m_.funcs.at(static_cast<size_t>(func)).tail_calls = true;
+  }
   // Whether the entry frame's own bindings run their drop hooks when the
   // program ends (on by default). A front end whose top-level scope is
   // released without destructors, as culebra's is, turns it off.
@@ -687,6 +698,9 @@ class Module {
   }
   bool func_lenient_arity(int64_t func) const {
     return m_.funcs[checked_func(func)].lenient_arity;
+  }
+  bool func_tail_calls(int64_t func) const {
+    return m_.funcs[checked_func(func)].tail_calls;
   }
   std::string func_local_name(int64_t func, int64_t index) const {
     const auto& f = m_.funcs[checked_func(func)];

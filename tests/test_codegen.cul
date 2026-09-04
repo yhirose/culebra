@@ -854,4 +854,53 @@ fn counting_loops(m, depth) {
             'IrError: Break names a loop that is not open')
 }
 
+# --- A function may opt into tail calls: a call chain deeper than the frame
+# limit completes in one frame. The control is the same module with the flag
+# off, which really does exhaust the limit -- without it this test would pass
+# on a build that ignored the flag entirely. ---
+fn counting_chain(m) {
+  # down(n) = n == 0 ? 'bottom' : down(n - 1), reached through main.
+  let empty = m.add_capture_map(m.capture_map_new())
+  let n = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  let self_ref = m.make_closure(func: 1, cmap: empty, line: 1, col: 1)
+  let args = m.list_new()
+  m.list_push(args, m.binary(op: 'sub', lhs: n, rhs: m.literal(v: 1, line: 1, col: 1),
+                             line: 1, col: 1))
+  let down_body = m.make_if_else(
+    cond: m.binary(op: 'eq', lhs: n, rhs: m.literal(v: 0, line: 1, col: 1),
+                   line: 1, col: 1),
+    then_branch: m.make_return(value: m.str_literal(s: 'bottom', line: 1, col: 1),
+                               line: 1, col: 1),
+    else_branch: m.make_return(
+      value: m.call_value(callee: self_ref, args_list: args, line: 1, col: 1),
+      line: 1, col: 1),
+    line: 1, col: 1)
+
+  let call_args = m.list_new()
+  m.list_push(call_args, m.literal(v: 50000, line: 1, col: 1))  # 5x the limit
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: print_stmt(m, m.call_value(
+               callee: m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
+               args_list: call_args, line: 1, col: 1)))
+  m.add_func(name: 'down', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
+             body: down_body)
+  m
+}
+{
+  let m = counting_chain(CodeGen.Module.new())
+  assert_false(m.func_tail_calls(func: 1))
+  m.set_tail_calls(func: 1)
+  assert_true(m.func_tail_calls(func: 1))
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "bottom\n")
+}
+{
+  # The control: the same chain without the flag really does run out of
+  # frames, so the case above is testing the optimization, not the arithmetic.
+  let m = counting_chain(CodeGen.Module.new())
+  m.verify()
+  let err = try { m.run() } catch e { e }
+  assert_eq("{err.kind}: {err.message}", 'IrError: recursion limit exceeded')
+}
+
 println('test_codegen OK')
