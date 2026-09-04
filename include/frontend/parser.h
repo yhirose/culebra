@@ -531,15 +531,33 @@ inline const peg::Ast* nobreak_block_of(const peg::Ast& loop) {
   return clause ? clause->nodes[0].get() : nullptr;
 }
 
+// A loop's optional leading LOOP_LABEL node, or nullptr when unlabelled.
+// LOOP_LABEL is a token rule, so it is a leaf the AstOptimizer keeps and a
+// labelled loop is exactly one whose first child carries that tag.
+inline const peg::Ast* loop_label_of(const peg::Ast& loop) {
+  using namespace peg::udl;
+  if (loop.nodes.empty()) return nullptr;
+  const auto& first = *loop.nodes[0];
+  return first.tag == "LOOP_LABEL"_ ? &first : nullptr;
+}
+
+// The label a BREAK / CONTINUE names, or an empty view when it has none.
+inline std::string_view break_label_of(const peg::Ast& a) {
+  using namespace peg::udl;
+  if (a.nodes.empty() || a.nodes[0]->tag != "LOOP_LABEL"_) return {};
+  return a.nodes[0]->token;
+}
+
 // View of a WHILE AST node — see grammar:
-//   WHILE <- while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
-// Both the init clause and the nobreak clause are optional, so the
-// condition/body indices float. INIT_CLAUSE / NOBREAK_CLAUSE are kept by the
-// AstOptimizer (parser.h keep-list), so their presence is a first-/last-child
-// tag test. All WHILE consumers (interp eval_while, JIT compile_while /
-// scan_eh_defer, formatter, lint, transforms) read through this view so the
-// grammar's optional-clause shape lives in exactly one place.
+//   WHILE <- (LOOP_LABEL _ ':' _)? while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
+// The label, the init clause and the nobreak clause are all optional, so the
+// condition/body indices float. LOOP_LABEL / INIT_CLAUSE / NOBREAK_CLAUSE
+// survive the AstOptimizer (a token leaf, and the parser.h keep-list), so
+// their presence is a first-/last-child tag test. All WHILE consumers (the
+// bytecode compiler, formatter, lint, transforms) read through this view so
+// the grammar's optional-clause shape lives in exactly one place.
 struct WhileView {
+  const peg::Ast* label;    // LOOP_LABEL token node, or nullptr when absent
   const peg::Ast* init;     // INIT_CLAUSE node, or nullptr when absent
   const peg::Ast* cond;     // condition EXPRESSION
   const peg::Ast* body;     // body BLOCK
@@ -548,10 +566,14 @@ struct WhileView {
 
 inline WhileView view_while(const peg::Ast& a) {
   using namespace peg::udl;
-  bool has_init = !a.nodes.empty() && a.nodes[0]->tag == "INIT_CLAUSE"_;
-  size_t off = has_init ? 1 : 0;
+  const peg::Ast* label = loop_label_of(a);
+  size_t off = label ? 1 : 0;
+  bool has_init = off < a.nodes.size() && a.nodes[off]->tag == "INIT_CLAUSE"_;
+  const peg::Ast* init = has_init ? a.nodes[off].get() : nullptr;
+  if (has_init) off++;
   return WhileView{
-      has_init ? a.nodes[0].get() : nullptr,
+      label,
+      init,
       a.nodes[off].get(),
       a.nodes[off + 1].get(),
       nobreak_block_of(a),
@@ -559,11 +581,12 @@ inline WhileView view_while(const peg::Ast& a) {
 }
 
 // View of a FOR AST node — see grammar:
-//   FOR <- for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
-// The binding/iterable/body indices are fixed; only the trailing nobreak
-// clause floats. Consumers that only need the first three children still index
-// directly; this view is for the ones that also handle nobreak.
+//   FOR <- (LOOP_LABEL _ ':' _)? for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
+// The binding/iterable/body indices shift by one when the loop is labelled,
+// and the trailing nobreak clause floats — so every consumer goes through
+// here rather than indexing children itself.
 struct ForView {
+  const peg::Ast* label;    // LOOP_LABEL token node, or nullptr when absent
   const peg::Ast* binding;  // FOR_BINDING / pattern / IDENTIFIER
   const peg::Ast* iter;     // iterable EXPRESSION
   const peg::Ast* body;     // body BLOCK
@@ -571,10 +594,13 @@ struct ForView {
 };
 
 inline ForView view_for(const peg::Ast& a) {
+  const peg::Ast* label = loop_label_of(a);
+  size_t off = label ? 1 : 0;
   return ForView{
-      a.nodes[0].get(),
-      a.nodes[1].get(),
-      a.nodes[2].get(),
+      label,
+      a.nodes[off].get(),
+      a.nodes[off + 1].get(),
+      a.nodes[off + 2].get(),
       nobreak_block_of(a),
   };
 }
@@ -2060,6 +2086,11 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       // so the loop's last child is a NOBREAK_CLAUSE tag when present (else it
       // would collapse onto the BLOCK and be indistinguishable from the body).
       "NOBREAK_CLAUSE",
+      // BREAK / CONTINUE must be kept: a labelled `break outer` has exactly
+      // one child (its LOOP_LABEL) and would otherwise collapse onto the
+      // label, losing the statement's own tag. The unlabelled form is a
+      // childless leaf either way.
+      "BREAK", "CONTINUE",
       "MATCH_ARMS", "GUARD", "COND", "COND_ARM",
       "ARRAY_PATTERN", "OBJECT_PATTERN",
       "CTOR_PATTERN",

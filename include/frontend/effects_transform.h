@@ -825,8 +825,16 @@ class EffectsLowerer {
   // parameter name (unique so a nested computation doesn't shadow an enclosing
   // one — culebra forbids shadowing an enclosing-fn variable).
   struct CpsState {
+    // Each enclosing CPS-managed loop, innermost last: its header and exit
+    // states, plus the label it carries (empty when unlabelled) so a labelled
+    // break/continue jumps to that loop's states rather than the innermost.
+    struct CpsLoop {
+      int header;
+      int exit;
+      std::string label;
+    };
     std::vector<std::string> states;
-    std::vector<std::pair<int, int>> loop_stack;  // (header, exit) innermost last
+    std::vector<CpsLoop> loop_stack;
     std::vector<std::string> defer_bodies;        // reverse source order (LIFO)
     int terminal = -1;                            // state that returns EFF_DONE
     std::string rv;                               // resume parameter name
@@ -1060,6 +1068,19 @@ class EffectsLowerer {
     return cps_seq(st, body_stmts(block), cont, tail, rw);
   }
 
+  // The enclosing loop a break/continue targets, or nullptr when its label
+  // names none (which `has_escaping_loop_ctrl` should already have kept out of
+  // a CPS-managed body — failing closed here rather than mis-jumping).
+  static const CpsState::CpsLoop* target_loop(const CpsState& st,
+                                              const peg::Ast& node) {
+    if (st.loop_stack.empty()) return nullptr;
+    auto label = culebra::break_label_of(node);
+    if (label.empty()) return &st.loop_stack.back();
+    for (auto it = st.loop_stack.rbegin(); it != st.loop_stack.rend(); ++it)
+      if (it->label == label) return &*it;
+    return nullptr;
+  }
+
   int cps_while(CpsState& st, const peg::Ast* w, int cont,
                 const PromotedLocals& rw) const {
     if (w->nodes.size() < 2) { st.failed = true; return -1; }
@@ -1073,7 +1094,8 @@ class EffectsLowerer {
       normal_exit = cps_block_seq(st, *wv.nobreak, cont, /*tail=*/false, rw);
       if (st.failed) return -1;
     }
-    st.loop_stack.push_back({h, cont});
+    st.loop_stack.push_back(
+        {h, cont, wv.label ? std::string(wv.label->token) : std::string()});
     int body_entry = cps_block_seq(st, *wv.body, h, /*tail=*/false, rw);
     st.loop_stack.pop_back();
     if (st.failed) return -1;
@@ -1146,13 +1168,10 @@ class EffectsLowerer {
     if (u->tag == "RETURN"_) return cps_return(st, u, rw);
     if (u->tag == "THROW"_) return cps_throw(st, u, rw);
     if (u->tag == "DEFER"_) return cps_defer(st, u, cont, rw);
-    if (u->tag == "BREAK"_) {
-      if (st.loop_stack.empty()) { st.failed = true; return -1; }
-      return cps_jump(st, st.loop_stack.back().second);
-    }
-    if (u->tag == "CONTINUE"_) {
-      if (st.loop_stack.empty()) { st.failed = true; return -1; }
-      return cps_jump(st, st.loop_stack.back().first);
+    if (u->tag == "BREAK"_ || u->tag == "CONTINUE"_) {
+      const auto* target = target_loop(st, *u);
+      if (!target) { st.failed = true; return -1; }
+      return cps_jump(st, u->tag == "BREAK"_ ? target->exit : target->header);
     }
     if (u->tag == "LEXICAL_SCOPE"_ || u->tag == "STATEMENTS"_) {
       return cps_block_seq(st, *u, cont, tail, rw);
@@ -1366,9 +1385,10 @@ class EffectsLowerer {
     for (auto it = fors.rbegin(); it != fors.rend(); ++it) {
       auto* f = *it;
       if (f->nodes.size() < 3) continue;
-      const auto& var_node = *f->nodes[0];
-      const auto& expr_node = *f->nodes[1];
-      const auto& blk_node = *f->nodes[2];
+      auto fv = culebra::view_for(*f);
+      const auto& var_node = *fv.binding;
+      const auto& expr_node = *fv.iter;
+      const auto& blk_node = *fv.body;
       if (var_node.tag != "IDENTIFIER"_) {
         throw CulebraError(
             "SyntaxError",
@@ -1388,14 +1408,19 @@ class EffectsLowerer {
       if (const peg::Ast* nc = culebra::nobreak_clause_of(*f)) {
         nobreak_suffix = std::string(" ") + std::string(slice(*nc));
       }
+      // A label belongs to the loop, not to the iterator binding: it moves onto
+      // the desugared `while` so `break outer` inside the body still names it.
+      std::string label_prefix;
+      if (fv.label) label_prefix = std::string(fv.label->token) + ": ";
       auto replacement = std::format(
           "let {0} = ({1}).iter(){4}\n"
-          "while {0}.has_next() {{{4}\n"
+          "{6}while {0}.has_next() {{{4}\n"
           "  let {2} = {0}.next(){4}\n"
           "  {3}\n"
           "}}{5}",
           iter_var, std::string(slice(expr_node)),
-          std::string(var_node.token), body_text, prov, nobreak_suffix);
+          std::string(var_node.token), body_text, prov, nobreak_suffix,
+          label_prefix);
       out.replace(f->position - base, f->length, replacement);
     }
     return out;

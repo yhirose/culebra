@@ -120,8 +120,14 @@ const auto grammar_ = R"(
   THROW                    <-  throw _sp_ !_nl_ EXPRESSION
   YIELD_FROM               <-  yield _sp_ from _sp_ !_nl_ EXPRESSION                  { no_ast_opt }
   YIELD                    <-  yield _sp_ !_nl_ EXPRESSION                            { no_ast_opt }
-  BREAK                    <-  break
-  CONTINUE                 <-  continue
+  # An optional loop label targets an enclosing labelled loop instead of the
+  # innermost one (`break outer`). The label must sit on the same line as the
+  # keyword — `_sp_ !_nl_`, RETURN's rule above — so a bare `break` followed by
+  # a line that starts with an identifier stays two statements. `!(if /
+  # unless)` keeps the trailing statement modifiers (`break if done`) out of
+  # the label slot, since IDENTIFIER does not exclude keywords.
+  BREAK                    <-  break (_sp_ !_nl_ !(if / unless) LOOP_LABEL)?
+  CONTINUE                 <-  continue (_sp_ !_nl_ !(if / unless) LOOP_LABEL)?
   DEFER                    <-  defer _ BLOCK
   LEXICAL_SCOPE            <-  BLOCK
 
@@ -274,7 +280,13 @@ const auto grammar_ = R"(
   # presence is a last-child tag test (see view_while / view_for). `nobreak` is
   # contextual: it is recognized only in this trailing position, so it stays a
   # valid identifier elsewhere (IDENTIFIER does not exclude keywords).
-  WHILE                    <-  while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
+  # Optional leading loop label (`outer: for … { break outer }`): LOOP_LABEL is
+  # a token rule, so it is a leaf the AstOptimizer never collapses and its
+  # presence is a first-child tag test, ahead of INIT_CLAUSE (see view_while /
+  # view_for). A label is contextual the way `nobreak` is — recognized only
+  # immediately before `while` / `for`, so it stays a name everywhere else.
+  WHILE                    <-  (LOOP_LABEL _ ':' _)? while _ (INIT_CLAUSE _ ';' _)? EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
+  LOOP_LABEL               <-  < IdentInitChar IdentChar* >
   INIT_CLAUSE              <-  INIT_BINDING (_ ',' _ INIT_BINDING)*
   INIT_BINDING             <-  DESTRUCTURE_ASSIGN / ASSIGNMENT
   NOBREAK_CLAUSE           <-  nobreak _ BLOCK
@@ -287,7 +299,7 @@ const auto grammar_ = R"(
   # there is only one target (so `for x in xs` binds a single name), and
   # keeps it as a FOR_BINDING node for two-or-more. The pattern matcher in
   # both backends treats FOR_BINDING identically to TUPLE_PATTERN.
-  FOR                      <-  for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?   { no_ast_opt }
+  FOR                      <-  (LOOP_LABEL _ ':' _)? for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?   { no_ast_opt }
   FOR_BINDING              <-  FOR_PAT (_ ',' _ FOR_PAT)*
   FOR_PAT                  <-  TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
   # An optional init clause (`if mut x = f(); x > 0 { … }`, C++17-style) scopes

@@ -891,9 +891,10 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
   for (auto it = fors.rbegin(); it != fors.rend(); ++it) {
     auto* f = *it;
     if (f->nodes.size() < 3) continue;
-    const auto& var_node = *f->nodes[0];
-    const auto& expr_node = *f->nodes[1];
-    const auto& blk_node = *f->nodes[2];
+    auto fv = culebra::view_for(*f);
+    const auto& var_node = *fv.binding;
+    const auto& expr_node = *fv.iter;
+    const auto& blk_node = *fv.body;
     auto expr_sv = ast_source_slice(expr_node, src);
     auto blk_inner = strip_block_braces(
         ast_source_slice(blk_node, src));
@@ -917,15 +918,19 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
       nobreak_suffix =
           std::string(" ") + std::string(ast_source_slice(*nc, src));
     }
+    // A label belongs to the loop, not to the iterator binding: it moves onto
+    // the desugared `while` so `break outer` inside the body still names it.
+    std::string label_prefix;
+    if (fv.label) label_prefix = std::string(fv.label->token) + ": ";
     auto replacement = std::format(
         "let {0} = ({1}).iter(){4}\n"
-        "while {0}.has_next() {{{4}\n"
+        "{6}while {0}.has_next() {{{4}\n"
         "  let {2} = {0}.next(){4}\n"
         "  {3}\n"
         "}}{5}",
         iter_var, std::string(expr_sv),
         std::string(var_node.token), body_text, line_marker(orig),
-        nobreak_suffix);
+        nobreak_suffix, label_prefix);
     out.replace(f->position - base, f->length, replacement);
   }
   return out;
@@ -1105,23 +1110,42 @@ inline void emit_ctor_param_and_local_inits(
 // loop — break/continue/return must become state jumps. A self-contained
 // inner loop with its own internal break stays verbatim-safe (the break
 // binds to that real inner loop). Stops at fn boundaries.
-inline bool has_escaping_loop_ctrl(const peg::Ast& node, int loop_depth = 0) {
+//
+// `open` is the labels of the loops within `node` that enclose the walk,
+// innermost last (empty for an unlabelled one), so a labelled break escapes
+// exactly when no loop inside `node` carries its label — `break outer` inside
+// a nested loop is escaping even though its depth is not 0.
+inline bool escaping_loop_ctrl(const peg::Ast& node,
+                               std::vector<std::string_view>& open) {
   using namespace peg::udl;
   if (is_fn_boundary(node.tag)) return false;
   if (node.tag == "RETURN"_) return true;
-  if ((node.tag == "BREAK"_ || node.tag == "CONTINUE"_) && loop_depth == 0) {
-    return true;
+  if (node.tag == "BREAK"_ || node.tag == "CONTINUE"_) {
+    auto label = culebra::break_label_of(node);
+    if (label.empty()) return open.empty();
+    return std::find(open.begin(), open.end(), label) == open.end();
   }
   bool is_loop = node.tag == "WHILE"_ || node.tag == "FOR"_;
+  const peg::Ast* label = is_loop ? culebra::loop_label_of(node) : nullptr;
   for (auto& c : node.nodes) {
     // A loop body is one level deeper (its break/continue are bound here); but
     // a trailing `nobreak { … }` runs *outside* the loop, so its break/continue
     // escape to an enclosing loop — walk it at the current depth.
-    int d = (is_loop && c->tag != "NOBREAK_CLAUSE"_) ? loop_depth + 1
-                                                     : loop_depth;
-    if (has_escaping_loop_ctrl(*c, d)) return true;
+    if (!is_loop || c->tag == "NOBREAK_CLAUSE"_) {
+      if (escaping_loop_ctrl(*c, open)) return true;
+      continue;
+    }
+    open.push_back(label ? label->token : std::string_view{});
+    bool escapes = escaping_loop_ctrl(*c, open);
+    open.pop_back();
+    if (escapes) return true;
   }
   return false;
+}
+
+inline bool has_escaping_loop_ctrl(const peg::Ast& node) {
+  std::vector<std::string_view> open;
+  return escaping_loop_ctrl(node, open);
 }
 
 struct CpsBuilder {
@@ -1129,8 +1153,27 @@ struct CpsBuilder {
   const PromotedLocals& rewrite_set;
   std::vector<std::string> states;
   int terminal = -1;  // state that sets drained + returns false
-  // (header, exit) of each enclosing CPS-managed loop, innermost last.
-  std::vector<std::pair<int, int>> loop_stack;
+  // Each enclosing CPS-managed loop, innermost last: its header and exit
+  // states, plus the label it carries (empty when unlabelled) so a labelled
+  // break/continue jumps to that loop's states rather than the innermost.
+  struct CpsLoop {
+    int header;
+    int exit;
+    std::string label;
+  };
+  std::vector<CpsLoop> loop_stack;
+
+  // The enclosing loop a break/continue targets, or nullptr when its label
+  // names none (which `has_escaping_loop_ctrl` should already have kept out
+  // of a CPS-managed body — failing closed here rather than mis-jumping).
+  const CpsLoop* target_loop(const peg::Ast& node) const {
+    if (loop_stack.empty()) return nullptr;
+    auto label = culebra::break_label_of(node);
+    if (label.empty()) return &loop_stack.back();
+    for (auto it = loop_stack.rbegin(); it != loop_stack.rend(); ++it)
+      if (it->label == label) return &*it;
+    return nullptr;
+  }
   // `defer { B }` bodies, in source order. Each is registered (a
   // `_g_defer_K` flag set true) when its state is reached and run at
   // dispose in reverse (LIFO).
@@ -1215,13 +1258,10 @@ struct CpsBuilder {
           rw(*u->nodes[0]), mk(*u->nodes[0]), cont);
       return e;
     }
-    if (u->tag == "BREAK"_) {
-      if (loop_stack.empty()) { failed = true; return -1; }
-      return jump_state(loop_stack.back().second);
-    }
-    if (u->tag == "CONTINUE"_) {
-      if (loop_stack.empty()) { failed = true; return -1; }
-      return jump_state(loop_stack.back().first);
+    if (u->tag == "BREAK"_ || u->tag == "CONTINUE"_) {
+      const CpsLoop* target = target_loop(*u);
+      if (!target) { failed = true; return -1; }
+      return jump_state(u->tag == "BREAK"_ ? target->exit : target->header);
     }
     if (u->tag == "RETURN"_) {
       // Generators ignore a return value; `return` just ends iteration.
@@ -1252,7 +1292,8 @@ struct CpsBuilder {
         normal_exit = compile_seq(body_stmts(*wv.nobreak), cont);
         if (failed) return -1;
       }
-      loop_stack.push_back({h, cont});
+      loop_stack.push_back(
+          {h, cont, wv.label ? std::string(wv.label->token) : std::string()});
       int body_entry = compile_seq(body_stmts(*wv.body), h);
       loop_stack.pop_back();
       if (failed) return -1;

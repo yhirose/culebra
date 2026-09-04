@@ -338,6 +338,21 @@ for n in 0..10 {
 # 4
 ```
 
+ループにはラベルを付けられ、`break` / `continue`でそのラベルを
+指定できます。指定すると最内ループではなくそのループを抜けるので、
+入れ子の探索をフラグ変数なしで止められます:
+
+```culebra
+search: for row in [[1, 2], [3, 4], [5, 6]] {
+  for cell in row {
+    if cell == 4 {
+      inspect(cell)  # => 4
+      break search
+    }
+  }
+}
+```
+
 ### 2.5 `nobreak` / init 節 / `cond` / `? :`
 
 ループには`nobreak`ブロックを付けられます。`break`せずに完走した

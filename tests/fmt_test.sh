@@ -91,6 +91,45 @@ if ! diff -u "$TMP/blk_want.cul" "$TMP/blk_got.cul" > "$TMP/blk_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1b2. Golden fixture: loop labels -------------------------------------
+# The label is a child of the loop node and of the break, not source the
+# printer slices, so a printer that ignored it would silently drop it (the
+# re-parse safety net then refuses the file). The spacing the grammar allows
+# around both — `outer:for`, `break    outer` — normalizes here.
+cat > "$TMP/lbl_in.cul" <<'EOF'
+outer:for x in [1,2] {
+  inner:while true {
+     break    outer if x==2
+     continue inner
+  } nobreak { inspect('no') }
+} nobreak {
+  inspect('all')
+}
+lbl: while mut i = 0; i<3 { i=i+1; break lbl if i==2 }
+EOF
+cat > "$TMP/lbl_want.cul" <<'EOF'
+outer: for x in [1, 2] {
+  inner: while true {
+    break outer if x == 2
+    continue inner
+  } nobreak {
+    inspect('no')
+  }
+} nobreak {
+  inspect('all')
+}
+lbl: while mut i = 0; i < 3 {
+  i = i + 1
+  break lbl if i == 2
+}
+EOF
+"$CULEBRA" fmt "$TMP/lbl_in.cul" > "$TMP/lbl_got.cul" 2>"$TMP/lbl_err"
+if ! diff -u "$TMP/lbl_want.cul" "$TMP/lbl_got.cul" > "$TMP/lbl_diff" 2>&1; then
+  echo "FAIL golden (loop labels): formatted output differs from expected"
+  cat "$TMP/lbl_diff"
+  fail=1
+fi
+
 # --- 1c. Golden fixture: same-precedence parentheses -----------------------
 # The grammar folds a run of same-precedence operators into ONE flat node, so
 # `(a * b) / c` and `a * b / c` mean the same thing but are different trees.

@@ -90,6 +90,54 @@ expect_accept "nested loop in fn"       'for i in [1] {
   fn f() { for j in [1, 2] { break } }
 }'
 
+# Rejected: a loop label that names no enclosing loop, and one that shadows an
+# enclosing loop's. Both abort before eval, with the same message the bytecode
+# compiler rejects with (`no enclosing loop labelled` / `duplicate loop label`).
+expect_label_reject() {
+  printf 'inspect("RAN")\n%s\n' "$3" > "$TMP/t.cul"
+  out=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)
+  if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"$2"* ]]; then
+    echo "FAIL label-reject [$1]: $out"; fail=1
+  fi
+}
+expect_label_reject "unknown label" "no enclosing loop labelled 'nope'" \
+  'for i in [1] { break nope }'
+expect_label_reject "unknown label on continue" \
+  "no enclosing loop labelled 'nope'" 'for i in [1] { continue nope }'
+expect_label_reject "label names an inner loop from outside" \
+  "no enclosing loop labelled 'inner'" 'for i in [1] {
+  inner: for j in [1] { }
+  break inner
+}'
+expect_label_reject "label is not a variable" \
+  "no enclosing loop labelled 'v'" 'let v = 1
+for i in [1] { break v }'
+expect_label_reject "duplicate label" "duplicate loop label 'dup'" \
+  'dup: for i in [1] { dup: for j in [1] { break dup } }'
+expect_label_reject "duplicate label across loop forms" \
+  "duplicate loop label 'dup'" 'dup: while true { dup: for j in [1] { break } }'
+# A label reaches no further than the enclosing function, so this is the plain
+# no-loop-here rejection rather than an unknown label.
+expect_loop_reject "labelled break in fn in loop" \
+  'outer: for i in [1] { fn f() { break outer } }'
+expect_loop_reject "labelled break in defer in loop" \
+  'outer: for i in [1] { defer { break outer } }'
+
+expect_accept "labelled break out of a nest" 'outer: for i in [1] {
+  for j in [1] { break outer }
+}'
+expect_accept "labelled continue out of a nest" 'outer: for i in [1] {
+  for j in [1] { continue outer }
+}'
+expect_accept "label reused in a sibling nest" 'outer: for i in [1] { break outer }
+outer: for i in [1] { break outer }'
+expect_accept "label reused inside a fn" 'outer: for i in [1] {
+  fn f() { outer: for j in [1] { break outer } }
+}'
+expect_accept "label shadowed by a nested unlabelled loop" 'outer: for i in [1] {
+  for j in [1] { for k in [1] { break outer } }
+}'
+
 # Duplicate parameter names: the earlier binding is unreachable (calls bind
 # last-wins), so it aborts before eval with "SyntaxError: duplicate parameter".
 expect_dup_reject() {

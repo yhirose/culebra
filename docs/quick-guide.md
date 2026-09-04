@@ -163,9 +163,12 @@ for k, v in {a: 1, b: 2} {
 # 'b=2'
 ```
 
-`break` and `continue` work in both loops. A `nobreak` block runs only
-if the loop was not broken out of. `while`, `if` and `match` accept an
-init clause scoped to the construct:
+`break` and `continue` work in both loops. Either loop may carry a
+label, and `break` / `continue` may name one to leave (or advance) that
+loop instead of the innermost — the label goes on the same line as the
+keyword, and names no variable. A `nobreak` block runs only if the loop
+was not broken out of. `while`, `if` and `match` accept an init clause
+scoped to the construct:
 
 ```culebra
 for v in [1, 3, 5] {
@@ -182,6 +185,15 @@ while mut i = 0; i < 3 {
 if let m = 6; m > 5 {
   inspect('big')
 }  # => 'big'
+
+search: for row in [[1, 2], [3, 4]] {
+  for cell in row {
+    if cell == 3 {
+      inspect(cell)  # => 3
+      break search
+    }
+  }
+}
 ```
 
 ### 2.4 Functions

@@ -1,0 +1,264 @@
+// Labelled `break` / `continue`: `outer: for … { break outer }` targets an
+// enclosing loop instead of the innermost one. The label is resolved by the
+// bytecode compiler, so the jump is an ordinary one and every lane (executor,
+// --jit, AOT) runs the same instruction stream — what these cases pin is the
+// teardown a labelled jump owes on its way out of the loops it abandons.
+
+let xs = [1, 2, 3]
+let ys = [10, 20, 30]
+
+// --- (1) break leaves the whole nest ---
+mut seen = []
+outer1: for x in xs {
+  for y in ys {
+    seen.push((x, y))
+    break outer1 if y == 20
+  }
+}
+assert_eq(seen, [(1, 10), (1, 20)])
+
+// --- (2) continue skips the rest of the labelled loop's iteration ---
+mut seen2 = []
+outer2: for x in xs {
+  for y in ys {
+    seen2.push((x, y))
+    continue outer2
+  }
+  seen2.push('tail')
+}
+assert_eq(seen2, [(1, 10), (2, 10), (3, 10)])
+
+// --- (3) an unlabelled break still means the innermost loop ---
+mut seen3 = []
+outer3: for x in xs {
+  for y in ys {
+    break
+  }
+  seen3.push(x)
+}
+assert_eq(seen3, [1, 2, 3])
+
+// --- (4) the two loop forms label each other's nest ---
+mut seen4 = []
+w4: while true {
+  for y in ys {
+    break w4
+  }
+  seen4.push('never')
+}
+assert_eq(seen4, [])
+
+mut seen5 = []
+f5: for x in xs {
+  while true {
+    break f5 if x == 2
+    seen5.push(x)
+    break
+  }
+}
+assert_eq(seen5, [1])
+
+// --- (5) `nobreak` sees the labelled break as a break ---
+mut log6 = ''
+found6: for x in xs {
+  for y in ys {
+    break found6 if y == 10
+  } nobreak {
+    log6 = "{log6}inner;"
+  }
+} nobreak {
+  log6 = "{log6}outer;"
+}
+assert_eq(log6, '')  // neither tail runs: both loops were broken out of
+
+// The inner loop finishing normally still runs its own nobreak.
+mut log7 = ''
+found7: for x in xs {
+  for y in [] {
+  } nobreak {
+    log7 = "{log7}inner;"
+    break found7
+  }
+} nobreak {
+  log7 = "{log7}outer;"
+}
+assert_eq(log7, 'inner;')
+
+// --- (6) defers of the abandoned loops fire, innermost first ---
+mut log8 = ''
+outer8: for x in xs {
+  defer { log8 = "{log8}outer;" }
+  for y in ys {
+    defer { log8 = "{log8}inner;" }
+    break outer8
+  }
+}
+assert_eq(log8, 'inner;outer;')
+
+// --- (7) the abandoned inner iterator is disposed, the target's after it ---
+mut log9 = ''
+fn iter9(tag) {
+  mut i = 0
+  {
+    iter: fn () {
+      self
+    },
+    has_next: fn () {
+      i < 4
+    },
+    next: fn () {
+      i = i + 1
+      i
+    },
+    dispose: fn () {
+      log9 = "{log9}{tag};"
+    },
+  }
+}
+outer9: for a in iter9('out') {
+  for b in iter9('in') {
+    break outer9
+  }
+}
+assert_eq(log9, 'in;out;')
+
+// --- (8) a labelled jump out of a `try` runs its way out ---
+mut log10 = ''
+outer10: for x in xs {
+  for y in ys {
+    try {
+      break outer10 if y == 20
+      log10 = "{log10}{y};"
+    } catch e {
+      log10 = "{log10}caught;"
+    }
+  }
+}
+assert_eq(log10, '10;')
+
+// --- (9) break/continue are expressions, labelled too ---
+mut seen11 = []
+outer11: for x in xs {
+  for y in ys {
+    match y {
+      20 => break outer11,
+      _ => seen11.push(y),
+    }
+  }
+}
+assert_eq(seen11, [10])
+
+// --- (10) a `while` init clause is torn down by a labelled break too ---
+mut seen12 = []
+outer12: while mut i = 0; i < 3 {
+  i = i + 1
+  while mut j = 0; j < 3 {
+    j = j + 1
+    seen12.push((i, j))
+    break outer12 if i == 2
+  }
+}
+assert_eq(seen12, [(1, 1), (1, 2), (1, 3), (2, 1)])
+
+// --- (11) the same label may name a loop in a sibling nest ---
+mut n13 = 0
+same: for x in xs {
+  break same
+}
+same: for x in xs {
+  n13 = n13 + 1
+  break same
+}
+assert_eq(n13, 1)
+
+// --- (12) a label is not a variable: the name stays free ---
+let outer = 'a name'
+outer: for x in xs {
+  break outer
+}
+assert_eq(outer, 'a name')
+
+// --- (13) a label crosses no function boundary, so a fn may reuse the name ---
+outer14: for x in xs {
+  let f = fn () {
+    outer14: for y in ys {
+      break outer14
+    }
+    'inner fn'
+  }
+  assert_eq(f(), 'inner fn')
+  break outer14
+}
+
+// --- (14) the label must sit on the keyword's own line ---
+// Without that rule `break` + a following identifier statement would parse as
+// one labelled break.
+mut hit15 = 0
+for x in xs {
+  break
+  hit15 = 1
+}
+assert_eq(hit15, 0)
+
+// --- (15) statement modifiers still bind after a label ---
+mut seen16 = []
+outer16: for x in xs {
+  for y in ys {
+    continue outer16 if y == 10
+    break outer16 unless y == 99
+  }
+  seen16.push(x)
+}
+assert_eq(seen16, [])
+
+// --- (16) a labelled break inside a generator's yielding nest ---
+fn gen17() {
+  outer: for x in xs {
+    for y in ys {
+      break outer if x == 2
+      yield (x, y)
+    }
+  }
+}
+assert_eq(gen17().collect(), [(1, 10), (1, 20), (1, 30)])
+
+fn gen18() {
+  row: for x in xs {
+    for y in ys {
+      yield (x, y)
+      continue row
+    }
+  }
+}
+assert_eq(gen18().collect(), [(1, 10), (2, 10), (3, 10)])
+
+// --- (17) and inside a suspending (effectful) nest ---
+effect fn ask19()
+
+effect fn scan19() {
+  mut seen = []
+  outer: for x in xs {
+    for y in ys {
+      let v = perform ask19()
+      break outer if v + y > 25
+      seen.push((x, y, v))
+    }
+  }
+  seen
+}
+assert_eq(handle { scan19() } with ask19(resume) { resume(7) }, [(1, 10, 7)])
+
+effect fn scan20() {
+  mut seen = []
+  row: for x in xs {
+    for y in ys {
+      let v = perform ask20()
+      seen.push((x, y, v))
+      continue row
+    }
+  }
+  seen
+}
+effect fn ask20()
+assert_eq(handle { scan20() } with ask20(resume) { resume(1) },
+          [(1, 10, 1), (2, 10, 1), (3, 10, 1)])

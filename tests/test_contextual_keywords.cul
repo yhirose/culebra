@@ -67,3 +67,32 @@ for i in [1, 2] {
   total = total + 100
 }
 assert_eq(total, 109)
+
+// A loop label reserves no word: it is recognized only directly before a
+// `while` / `for` and directly after a `break` / `continue`, so the same name
+// is still a variable, a parameter, and an object key.
+let outer = "a name"
+outer: for i in [1, 2] {
+  for j in [1] {
+    break outer
+  }
+}
+assert_eq(outer, "a name")
+
+fn label_param(outer) {
+  outer: while true {
+    break outer
+  }
+  outer
+}
+assert_eq(label_param(7), 7)
+
+// Even a contextual keyword is available as a label.
+nobreak: for i in [1, 2] {
+  for j in [1] {
+    continue nobreak
+  }
+} nobreak {
+  total = total + 1000
+}
+assert_eq(total, 1109)

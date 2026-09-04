@@ -131,7 +131,10 @@ contextual inside a range literal (`0..10 by 2`). The other seven
 introduce constructs with a distinctive shape — `cond {` … `}` needs at
 least one `test => body` arm, `nobreak` follows a loop body, `from`
 follows an `import` — so `let with = 1` and `if handle { … }` both name
-a variable. Type annotation names (`Nil`, `Bool`, `Long`, `Float`,
+a variable. A **loop label** (`outer: for … { break outer }`, §12) is
+contextual in the same way but reserves no word at all: it is recognized
+only directly before a `while` / `for` and directly after a `break` /
+`continue`, so the name it uses stays free for a variable. Type annotation names (`Nil`, `Bool`, `Long`, `Float`,
 `String`, `Array`, `Object`, `Function`, `Any`) are not reserved
 either; they are contextual and only recognized after `:` or `->`.
 
@@ -2617,6 +2620,45 @@ of a ternary takes one directly. See [Arm bodies](#arm-bodies) for the
 arm form, and [Diverging expressions](#diverging-expressions) for what
 this means in the middle of a larger expression.
 
+**Labels.** A `while` or `for` may carry a label, and `break` / `continue`
+may name one — the jump then leaves (or advances) *that* loop rather than
+the innermost:
+
+    label: while cond { body }
+    label: for var in iterable { body }
+
+    break label       # exit the loop named `label`
+    continue label    # next iteration of the loop named `label`
+
+```culebra
+let grid = [[1, 2], [3, 4], [5, 6]]
+mut found = nil
+search: for row in grid {
+  for cell in row {
+    if cell == 4 {
+      found = cell
+      break search
+    }
+  }
+}
+inspect(found)  # => 4
+```
+
+The label must sit on the same line as its `break` / `continue`, so a bare
+`break` followed by a line that starts with an identifier stays two
+statements. A label reaches only the loops of the function it is written
+in — a `break outer` inside a nested `fn` or a `defer` block is the same
+`SyntaxError` a bare `break` there is. Naming a label no enclosing loop
+carries, or reusing a label an enclosing loop already carries, is a
+`SyntaxError` checked before the program runs.
+
+A label is not a binding: the name stays available for a variable, and
+the same label may name a loop in a sibling nest.
+
+Leaving a nest by label is the same exit as leaving one loop at a time —
+the abandoned loops run their `defer` blocks (innermost first) and close
+their iterators before the jump lands.
+
 ### `nobreak` (loop-else)
 
     while cond { body } nobreak { … }
@@ -2650,7 +2692,11 @@ A `while` init clause is in scope in its `nobreak` block (the counter
 survives to the post-loop step); a `for` loop variable is not (it is
 per-iteration and already gone). A `break` / `continue` inside a
 `nobreak` block belongs to an *enclosing* loop, since the block runs
-after this loop has finished. `nobreak` is a contextual keyword —
+after this loop has finished — including by label, so a labelled
+`break` there leaves the nest the way it does anywhere else. A loop
+abandoned by a labelled `break` from inside its body does **not** run
+its own `nobreak` block: it was broken out of. `nobreak` is a contextual
+keyword —
 recognized only in this trailing position, so it stays usable as an
 ordinary identifier elsewhere.
 

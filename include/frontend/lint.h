@@ -105,21 +105,49 @@ class ScopeWalker {
  private:
   std::vector<Scope> scopes_;
   std::vector<Diagnostic>& diags_;
-  int loop_depth_ = 0;
+  // The loops a break/continue here could target, innermost last, each held
+  // by its label (empty for an unlabelled loop). Its depth is what the
+  // outside-a-loop check reads; its names are what a labelled `break outer`
+  // resolves against.
+  std::vector<std::string> loop_labels_;
 
-  // RAII override of loop_depth_ for the span of a body walk: a loop body
-  // bumps it (+1), a function / lambda / method / class / trait body resets
-  // it to 0 — break/continue cannot cross a function boundary, matching the
-  // compiled backends' per-function loop scoping and every mainstream
-  // language. (The interp
-  // completes them through its flow slot, which likewise travels only to the
-  // nearest enclosing loop, so this rule is the same shape in both backends.)
-  struct LoopDepthGuard {
-    int& slot;
-    int saved;
-    LoopDepthGuard(int& s, int v) : slot(s), saved(s) { slot = v; }
-    ~LoopDepthGuard() { slot = saved; }
+  // RAII entry into a loop body: the loop is a break/continue target for the
+  // span of the walk.
+  struct LoopScope {
+    std::vector<std::string>& stack;
+    LoopScope(std::vector<std::string>& s, const peg::Ast* label) : stack(s) {
+      stack.emplace_back(label ? std::string(label->token) : std::string());
+    }
+    ~LoopScope() { stack.pop_back(); }
   };
+
+  // RAII function boundary: a function / lambda / method / class / trait body
+  // or a defer thunk, where no enclosing loop is reachable — break/continue
+  // cannot cross a call, matching the compiled backend's per-chunk loop
+  // scoping and every mainstream language.
+  struct LoopBoundary {
+    std::vector<std::string>& stack;
+    std::vector<std::string> saved;
+    explicit LoopBoundary(std::vector<std::string>& s)
+        : stack(s), saved(std::move(s)) {
+      stack.clear();
+    }
+    ~LoopBoundary() { stack = std::move(saved); }
+  };
+
+  // A label that shadows an enclosing loop's would make `break outer` mean
+  // two loops in the same nest; culebra rejects the ambiguity rather than
+  // resolving it by rule (the bytecode compiler rejects it too).
+  void check_dup_loop_label(const peg::Ast* label) {
+    if (!label) return;
+    if (std::find(loop_labels_.begin(), loop_labels_.end(), label->token) ==
+        loop_labels_.end())
+      return;
+    diags_.push_back(Diagnostic{
+        "SyntaxError", std::format("duplicate loop label '{}'", label->token),
+        static_cast<long>(label->line), static_cast<long>(label->column),
+        Severity::Error});
+  }
 
   // Nesting depth inside function-like bodies (function / lambda / method /
   // defer closure). `return` is valid only when this is > 0; a top-level
@@ -310,7 +338,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       check_dup_params(*fv.params);
       check_reserved_params(*fv.params);
       check_param_wellformed(*fv.params);
-      LoopDepthGuard g(loop_depth_, 0);
+      LoopBoundary g(loop_labels_);
       FnDepthGuard fg(fn_depth_);
       scoped(*fv.body, [&](Scope& s) { collect_idents(*fv.params, s.muts); });
       return;
@@ -328,7 +356,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // It is also a function boundary for `return` (which exits the defer
       // closure, docs §defer).
       scopes_.emplace_back();
-      LoopDepthGuard g(loop_depth_, 0);
+      LoopBoundary g(loop_labels_);
       FnDepthGuard fg(fn_depth_);
       walk_children(node);
       scopes_.pop_back();
@@ -355,7 +383,8 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       }
       walk(*wv.cond);
       {
-        LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
+        check_dup_loop_label(wv.label);
+        LoopScope g(loop_labels_, wv.label);
         scoped(*wv.body, [](Scope&) {});
       }
       // The nobreak block runs after the loop, so a break/continue inside it
@@ -390,7 +419,8 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       auto fv = culebra::view_for(node);
       walk(*fv.iter);
       {
-        LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
+        check_dup_loop_label(fv.label);
+        LoopScope g(loop_labels_, fv.label);
         scoped(*fv.body, [&](Scope& s) { collect_idents(*fv.binding, s.muts); });
       }
       if (fv.nobreak) scoped(*fv.nobreak, [](Scope&) {});
@@ -438,7 +468,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       check_dup_params(*node.nodes[i + 1]);
       check_reserved_params(*node.nodes[i + 1]);
       check_param_wellformed(*node.nodes[i + 1]);
-      LoopDepthGuard g(loop_depth_, 0);
+      LoopBoundary g(loop_labels_);
       FnDepthGuard fg(fn_depth_);
       scoped(*node.nodes.back(),
              [&](Scope& s) { collect_idents(*node.nodes[i + 1], s.muts); });
@@ -471,7 +501,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       auto class_name =
           culebra::parse_generic_head(node.nodes[i]->token).outer;
       // Method bodies and field initializers are function-boundary contexts.
-      LoopDepthGuard g(loop_depth_, 0);
+      LoopBoundary g(loop_labels_);
       std::vector<std::pair<std::string, std::string>> pk_fields;
       bool pk_ok = true;
       // `@value` fixes the semantics rather than a byte layout, but its
@@ -757,7 +787,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
     case "TRAIT_DECL"_: {
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);
-      LoopDepthGuard g(loop_depth_, 0);
+      LoopBoundary g(loop_labels_);
       auto trait_name = culebra::parse_generic_head(
           culebra::parse_trait_head(node.nodes[i]->token).name).outer;
       std::set<std::string, std::less<>> method_names;
@@ -791,12 +821,24 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // time and the interp would otherwise leave the completion pending with
       // no loop to consume it; hoisting the check here gives all backends the
       // same SyntaxError + position before eval.
-      if (loop_depth_ == 0) {
+      if (loop_labels_.empty()) {
         diags_.push_back(Diagnostic{
             "SyntaxError",
             node.tag == "BREAK"_ ? "break outside loop" : "continue outside loop",
             static_cast<long>(node.line), static_cast<long>(node.column),
             Severity::Error});
+        return;
+      }
+      // A label names one of the enclosing loops; one that names none is the
+      // same certain failure as no loop at all, so it is reported here too.
+      if (auto label = culebra::break_label_of(node); !label.empty() &&
+          std::find(loop_labels_.begin(), loop_labels_.end(), label) ==
+              loop_labels_.end()) {
+        diags_.push_back(Diagnostic{
+            "SyntaxError",
+            std::format("no enclosing loop labelled '{}'", label),
+            static_cast<long>(node.nodes[0]->line),
+            static_cast<long>(node.nodes[0]->column), Severity::Error});
       }
       return;
     case "RETURN"_:

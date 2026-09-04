@@ -3710,6 +3710,12 @@ class Compiler {
     // mark is the lowest of the scopes a break or continue abandons, so
     // resolving from it covers them all.
     size_t body_scope_index = 0;
+    // The loop's label (`outer: for …`), empty when unlabelled. A labelled
+    // `break` / `continue` names one of these instead of taking the
+    // innermost loop; the search is over this compiler's stack alone, so a
+    // label never reaches into an enclosing function's loops (each chunk
+    // compiles with its own Compiler).
+    std::string label;
   };
   struct ExprResult {
     int32_t slot;
@@ -5130,7 +5136,13 @@ class Compiler {
         bool brk = ast.tag == "BREAK"_;
         if (loops_.empty())
           reject(ast, brk ? "break outside a loop" : "continue outside a loop");
-        auto& lc = loops_.back();
+        auto& lc = *resolve_loop_target(ast);
+        // Every watermark below is the *target* loop's, so a labelled jump
+        // out of a nest needs no extra teardown of its own: the wider
+        // release range covers the loops it abandons on the way, and
+        // release_down_to closes an inner for-in's iterator as it frees the
+        // slot holding it. The target's own iterator sits below its
+        // watermark and stays open — its exit path disposes it.
         // A break/continue jumps out mid-statement: the enclosing
         // statements' in-flight temps still hold values (interp frees them
         // as the signal unwinds the eval frames). Release nils them, which
@@ -7695,7 +7707,7 @@ class Compiler {
     emit(Op::ForOpen, base);
 
     loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
-                      scopes_.size()});
+                      scopes_.size(), loop_label(fv.label)});
     size_t head_ix = chunk_.code.size();
     // A step's positionless throws report at the statement, not at the
     // iterable expression the open reports at. The position rides in c/d as
@@ -7829,7 +7841,7 @@ class Compiler {
 
     if (!sink) push_binding({std::string(id.token), bind, false, cell});
     loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
-                      scopes_.size()});
+                      scopes_.size(), loop_label(fv.label)});
     size_t body_ix = chunk_.code.size();
     if (cell) emit(Op::CellNew, bind, var);
     compile_block(*fv.body);
@@ -7856,6 +7868,33 @@ class Compiler {
     size_t skip = emit(Op::JumpIfTrue, broke_slot);
     compile_block(*nobreak);
     patch_to_here(skip);
+  }
+
+  // The loop a `break` / `continue` jumps to: the innermost one, or the one
+  // its label names. Rejects a label no enclosing loop of this chunk carries
+  // — including one that only an enclosing *function* carries, since a loop
+  // is not a control-flow target across a call.
+  LoopCtx* resolve_loop_target(const peg::Ast& ast) {
+    std::string_view label = culebra::break_label_of(ast);
+    if (label.empty()) return &loops_.back();
+    for (auto it = loops_.rbegin(); it != loops_.rend(); ++it)
+      if (it->label == label) return &*it;
+    reject(*ast.nodes[0],
+           culebra::format("no enclosing loop labelled '{}'", label));
+    return &loops_.back();  // unreachable: reject throws
+  }
+
+  // The label a loop introduces, rejecting one that shadows an enclosing
+  // loop's — `outer` would then mean two loops in the same nest, and picking
+  // the innermost silently is the kind of ambiguity culebra refuses at parse
+  // time rather than resolving by rule.
+  std::string loop_label(const peg::Ast* label) {
+    if (!label) return {};
+    std::string name(label->token);
+    for (auto& lc : loops_)
+      if (lc.label == name)
+        reject(*label, culebra::format("duplicate loop label '{}'", name));
+    return name;
   }
 
   // The flag slot a loop with a `nobreak` clause needs, cleared before the
@@ -7890,7 +7929,7 @@ class Compiler {
     size_t exit_jump = emit(Op::JumpIfFalse, cond_slot);
 
     loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
-                      scopes_.size()});
+                      scopes_.size(), loop_label(wv.label)});
     compile_block(*wv.body);
     emit(Op::Jump, static_cast<int32_t>(top_ix));
     size_t exit_ix = chunk_.code.size();

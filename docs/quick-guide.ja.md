@@ -160,7 +160,10 @@ for k, v in {a: 1, b: 2} {
 # 'b=2'
 ```
 
-`break` / `continue`は両方のループで使えます。`nobreak`ブロックは
+`break` / `continue`は両方のループで使えます。どちらのループにも
+ラベルを付けられ、`break` / `continue`でそのラベルを指定すると、最内
+ループではなくそのループを抜けます（次のiterationへ進みます）。ラベルは
+キーワードと同じ行に置き、変数名は取りません。`nobreak`ブロックは
 ループが`break`されなかったときだけ走ります。`while` / `if` /
 `match`は構文内に閉じたinit節を取れます:
 
@@ -179,6 +182,15 @@ while mut i = 0; i < 3 {
 if let m = 6; m > 5 {
   inspect('big')
 }  # => 'big'
+
+search: for row in [[1, 2], [3, 4]] {
+  for cell in row {
+    if cell == 3 {
+      inspect(cell)  # => 3
+      break search
+    }
+  }
+}
 ```
 
 ### 2.4 関数

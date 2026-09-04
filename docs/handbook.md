@@ -351,6 +351,21 @@ for n in 0..10 {
 # 4
 ```
 
+A loop may carry a label, and `break` / `continue` may name one — the
+jump then leaves that loop rather than the innermost, which is how a
+nested search stops without a flag variable:
+
+```culebra
+search: for row in [[1, 2], [3, 4], [5, 6]] {
+  for cell in row {
+    if cell == 4 {
+      inspect(cell)  # => 4
+      break search
+    }
+  }
+}
+```
+
 ### 2.5 `nobreak`, init clauses, `cond`, and `? :`
 
 A loop may carry a `nobreak` block that runs only when the loop

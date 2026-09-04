@@ -1534,9 +1534,25 @@ class Printer {
                        print_block(*nobreak, node_end(after), false)});
   }
 
+  // `break outer` / `continue outer`: the run of spaces the grammar allows
+  // between the keyword and its label normalizes to one. A node the optimizer
+  // widened over enclosing braces keeps the generic tail's span shedding.
+  DocP print_break(const peg::Ast& node, std::string_view kw) {
+    if (is_wrapper_collapsed(node))
+      return doc_text(std::string(tight_span(node)));
+    return doc_text(std::string(kw) + " " +
+                    std::string(culebra::break_label_of(node)));
+  }
+
+  // Render a loop's optional leading `label: `, or nothing.
+  DocP print_loop_label(const peg::Ast* label) {
+    if (!label) return doc_text("");
+    return doc_text(std::string(label->token) + ": ");
+  }
+
   DocP print_while(const peg::Ast& node) {
-    // [(INIT_CLAUSE)?, condition, BLOCK, (NOBREAK_CLAUSE)?]. The optional init
-    // clause renders as `binding, binding; ` before the condition
+    // [(LOOP_LABEL)?, (INIT_CLAUSE)?, condition, BLOCK, (NOBREAK_CLAUSE)?]. The
+    // optional init clause renders as `binding, binding; ` before the condition
     // (`while mut i = 0; i < n {…}`); a nobreak clause renders after the body.
     auto wv = culebra::view_while(node);
     DocP head = print_condition(*wv.cond);
@@ -1550,16 +1566,18 @@ class Printer {
       parts.push_back(head);
       head = doc_concat(std::move(parts));
     }
-    return doc_concat({doc_text("while "), head, doc_text(" "),
+    return doc_concat({print_loop_label(wv.label), doc_text("while "), head,
+                       doc_text(" "),
                        print_block(*wv.body, node_end(*wv.cond), false),
                        print_nobreak(wv.nobreak, *wv.body)});
   }
 
   DocP print_for(const peg::Ast& node) {
-    // [binding, iter, BLOCK, (NOBREAK_CLAUSE)?]. The binding is a single var or
-    // a pattern; a nobreak clause renders after the body.
+    // [(LOOP_LABEL)?, binding, iter, BLOCK, (NOBREAK_CLAUSE)?]. The binding is a
+    // single var or a pattern; a nobreak clause renders after the body.
     auto fv = culebra::view_for(node);
-    return doc_concat({doc_text("for "), print_for_binding(*fv.binding),
+    return doc_concat({print_loop_label(fv.label), doc_text("for "),
+                       print_for_binding(*fv.binding),
                        doc_text(" in "), doc_flatten(print(*fv.iter)), doc_text(" "),
                        print_block(*fv.body, node_end(*fv.iter), false),
                        print_nobreak(fv.nobreak, *fv.body)});
@@ -1778,6 +1796,12 @@ class Printer {
     if (n == "IF") return print_if(node);
     if (n == "WHILE") return print_while(node);
     if (n == "FOR") return print_for(node);
+    // Only a labelled break/continue needs a printer of its own; the bare
+    // keyword is a leaf the generic tail below already prints.
+    if (n == "BREAK" && !culebra::break_label_of(node).empty())
+      return print_break(node, "break");
+    if (n == "CONTINUE" && !culebra::break_label_of(node).empty())
+      return print_break(node, "continue");
     if (n == "DEFER") return print_defer(node);
     if (n == "TRY") return print_try(node);
     if (n == "MATCH") return print_match(node);

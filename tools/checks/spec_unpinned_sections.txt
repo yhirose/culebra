@@ -39,7 +39,6 @@
 11. Functions and closures > Recursion: `fn`
 11. Functions and closures > Return
 12. Control flow > Diverging expressions
-12. Control flow > `break` and `continue`
 12. Control flow > `debugger`
 12. Control flow > `if`
 12. Control flow > `nobreak` (loop-else)
