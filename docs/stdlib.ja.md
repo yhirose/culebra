@@ -5294,7 +5294,7 @@ post stack）なので、出力はフラットシェーディングのプリミ�
 
 `Scene`は **ゲームエンジンではない**。物理・当たり判定なし、モデル / テクスチャ
 のimportなし（ジオメトリは手続き生成か頂点単位の組み立て、テクスチャはプロセス
-内生成）、スケルタルアニメーションなし、マウス入力なし。狙いは*組み立てる*
+内生成）、スケルタルアニメーションなし。狙いは*組み立てる*
 3D — 可視化、手続き的シーン、チェイスカメラ付きの車両 / フライトデモ — であって、
 アセット駆動のゲームではない。サーキットのメッシュ、チェイスカメラ、
 ゲームパッド操作といったレーシングデモの形が、設計の基準になっている。
@@ -5330,6 +5330,19 @@ GPUを必要とするため）。位置とサイズは`Float`
 | `view.render_3d()` | シーングラフを描画し、2Dオーバーレイ用にフレームを開く |
 | `view.begin_2d()` | 純2Dフレームを開く（3Dパスなし） |
 | `view.present()` | フレームを確定して提示 |
+| `view.fullscreen(on)` / `view.is_fullscreen() -> Bool` | フルスクリーンの切替 / 現在フルスクリーンか |
+| `view.resizable(on)` / `view.resized() -> Bool` | 端をドラッグしてのリサイズを許す / このフレームでサイズが変わったか |
+| `view.size(w, h)` / `view.title(s)` | ウィンドウの寸法 / タイトルを設定 |
+| `view.vsync(on)` | `present()`でディスプレイのリフレッシュを待つ |
+| `view.cursor(on)` / `view.mouse_capture(on)` | ポインタの表示 / 非表示、ウィンドウに固定（マウスルック用） |
+| `view.clipboard() -> String` / `view.set_clipboard(s)` | システムのクリップボード |
+| `view.fps() -> Long` / `view.time() -> Float` | 実測フレームレート / ウィンドウを開いてからの秒数 |
+| `view.supersample(n)` | ウィンドウの`n`倍で描いて縮小する（1–4。既定の2がアンチエイリアス） |
+| `view.clip_planes(near, far)` | 3Dパスのクリップ面（メートル。既定2と8000。コックピットカメラは`near`を手前に） |
+
+3Dのターゲットはウィンドウに追従する: リサイズやフルスクリーン切替が認識された
+（その直後の`present()`）後のフレームは、古い解像度を引き伸ばすのでなく新しい
+解像度で描かれる。
 
 ### シーングラフ
 
@@ -5398,7 +5411,7 @@ canvasは同時に1枚だけ: 閉じる前の2枚目の`canvas()`は`RuntimeErro
 | `view.sun(dx,dy,dz, intensity, r,g,b)` | 指向性ライト（2カスケード影）。`(0, 0, 0)`は方向を指さないので拒否される |
 | `view.ambient(intensity, r, g, b)` | フィルライト |
 | `view.fog(start, end, r, g, b)` | 距離フォグ |
-| `view.screenshot(path)` | 現フレームをPNGに保存 |
+| `view.screenshot(path)` | 描いている途中のフレームをPNGに保存 — `render_3d()` / `begin_2d()`の後、`present()`の前に呼ぶ。後では表示済みバッファは既に無く、1〜2フレーム古い絵になる |
 
 ### 2D オーバーレイ
 
@@ -5428,6 +5441,7 @@ canvasは同時に1枚だけ: 閉じる前の2枚目の`canvas()`は`RuntimeErro
 `"left"` `"right"`、ショルダーは`"lb"` `"rb"`、トリガーは`"lt"` `"rt"`、
 `"select"` `"guide"` `"start"`、スティック押し込みは`"l3"` `"r3"`。軸は`"lx"`
 `"ly"` `"rx"` `"ry"` `"lt"` `"rt"`。`index`でパッド（0–3）を選び、既定は最初の1台。
+マウスはウィンドウ座標で報告し、ボタンは`"left"`・`"right"`・`"middle"`。
 
 | メソッド | 結果 |
 | --- | --- |
@@ -5438,6 +5452,10 @@ canvasは同時に1枚だけ: 閉じる前の2枚目の`canvas()`は`RuntimeErro
 | `view.pad(name, index = 0) -> Bool` / `pad_pressed(name, index = 0) -> Bool` | ボタン押下中 / 今押された |
 | `view.rumble(left, right, sec, index = 0)` | ハプティクス（SonyパッドとXInput。Xbox × macOSは無音） |
 | `view.pad_name(index = 0) -> String` / `view.gamepad_mappings(db)` | パッド識別 / SDLマッピングDB読込 |
+| `view.mouse_x()` / `mouse_y() -> Float` | ポインタ位置 |
+| `view.mouse_dx()` / `mouse_dy() -> Float` | 前フレームからの移動量（capture中も） |
+| `view.mouse_wheel() -> Float` | このフレームのホイール量 |
+| `view.mouse(button) -> Bool` / `mouse_pressed(button) -> Bool` | マウスボタン押下中 / 今押された |
 
 ### 音声
 

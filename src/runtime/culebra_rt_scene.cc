@@ -682,13 +682,8 @@ class View {
     depth_ = LoadShaderFromMemory(kVS_DEPTH, kFS_DEPTH);
     post_ = LoadShaderFromMemory(0, kFS_POST);   // default 2D VS + our composite FS
     loc_aascale_ = GetShaderLocation(post_, "aaScale");
-    float aa = (float)ss_;
-    SetShaderValue(post_, loc_aascale_, &aa, SHADER_UNIFORM_FLOAT);
-    // Supersampled targets: render the scene + post at ss_x resolution, then
-    // box-downsample to the window for cheap, high-quality antialiasing.
-    scene_rt_ = LoadRenderTexture((int)w * ss_, (int)h * ss_);
-    post_rt_ = LoadRenderTexture((int)w * ss_, (int)h * ss_);
-    SetTextureFilter(post_rt_.texture, TEXTURE_FILTER_BILINEAR);   // averages on downscale
+    set_aa_uniform();
+    alloc_targets((int)w * ss_, (int)h * ss_);
     shadowmap0_ = LoadShadowmap(2048, 2048);
     shadowmap1_ = LoadShadowmap(2048, 2048);
     mat_ = LoadMaterialDefault();
@@ -747,6 +742,59 @@ class View {
   double dt() const { return GetFrameTime(); }
   double width() const { return GetScreenWidth(); }
   double height() const { return GetScreenHeight(); }
+  int64_t fps() const { return GetFPS(); }
+  double time() const { return GetTime(); }
+
+  // --- the window ---------------------------------------------------------
+  // SDL applies these live; the render targets follow the new size at the next
+  // render_3d() (sync_targets), so a fullscreen or dragged-out frame is drawn
+  // at its own resolution rather than stretched from the old one.
+  void fullscreen(bool on) { if (on != IsWindowFullscreen()) ToggleFullscreen(); }
+  bool is_fullscreen() const { return IsWindowFullscreen(); }
+  void resizable(bool on) {
+    if (on) SetWindowState(FLAG_WINDOW_RESIZABLE); else ClearWindowState(FLAG_WINDOW_RESIZABLE);
+  }
+  bool resized() const { return IsWindowResized(); }   // one-frame edge
+  void size(int64_t w, int64_t h) { SetWindowSize((int)w, (int)h); }
+  void title(std::string s) { SetWindowTitle(s.c_str()); }
+  void vsync(bool on) {
+    if (on) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
+  }
+  void cursor(bool on) { if (on) ShowCursor(); else HideCursor(); }
+  // Captured: hidden and locked to the window, mouse_dx/dy still report motion
+  // (a chase camera's mouse look).
+  void mouse_capture(bool on) { if (on) DisableCursor(); else EnableCursor(); }
+  std::string clipboard() const { const char* s = GetClipboardText(); return s ? s : ""; }
+  void set_clipboard(std::string s) { SetClipboardText(s.c_str()); }
+
+  // Supersample factor (1 = off, 2 = default); the whole scene and post pass
+  // render at this multiple of the window and box-filter down. The single
+  // largest performance knob for a scene-heavy frame.
+  void supersample(int64_t n) {
+    ss_ = (int)(n < 1 ? 1 : n > 4 ? 4 : n);
+    set_aa_uniform();
+    sync_targets();
+  }
+  // Near / far clip planes of the 3D pass (metres). The near plane is far out
+  // by default: depth precision is what keeps coplanar road layers from
+  // z-fighting at range, and a chase camera never sits within metres of
+  // geometry. A cockpit camera does, and pulls it in here.
+  void clip_planes(double near, double far) { near_ = (float)near; far_ = (float)far; }
+
+  // --- the mouse: window points, buttons by name ----------------------------
+  double mouse_x() const { return GetMousePosition().x; }
+  double mouse_y() const { return GetMousePosition().y; }
+  double mouse_dx() const { return GetMouseDelta().x; }
+  double mouse_dy() const { return GetMouseDelta().y; }
+  double mouse_wheel() const { return GetMouseWheelMove(); }
+  bool mouse(std::string button) const {
+    int b = culebra::keynames::mouse_button_of(button);
+    return b >= 0 && IsMouseButtonDown(b);
+  }
+  bool mouse_pressed(std::string button) const {
+    int b = culebra::keynames::mouse_button_of(button);
+    return b >= 0 && IsMouseButtonPressed(b);
+  }
 
   // Keys by name (stdlib/keynames.h — the vocabulary Canvas.key and
   // Term.read_key share); an unknown name is a key that is never pressed.
@@ -806,9 +854,19 @@ class View {
     fogend_ = (float)end;
     set_fog_uniform();
   }
-  // raylib resolves a relative path against its own base directory (beside
-  // the binary); a script means the working directory, as FS does.
+  // Save the frame being drawn: call it between render_3d() / begin_2d() and
+  // present(). After present() the buffer that was shown is gone — swapped
+  // out, and on a double- or triple-buffered display what glReadPixels then
+  // sees is a frame or two behind (the first one black) — so a shot taken
+  // there is stale, not the frame the script just drew. raylib resolves a
+  // relative path against its own base directory (beside the binary); a script
+  // means the working directory, as FS does.
   void screenshot(std::string path) {
+    if (!frame_open_)
+      TraceLog(LOG_ERROR,
+               "Scene: screenshot() outside a frame saves a stale buffer — "
+               "call it after render_3d() / begin_2d() and before present().");
+    rlDrawRenderBatchActive();   // the overlay drawn so far is still batched
     TakeScreenshot(std::filesystem::absolute(path).string().c_str());
   }
 
@@ -949,6 +1007,7 @@ class View {
 
   void render_3d() {
     close_stray_canvas("render_3d");
+    sync_targets();
     Matrix id = MatrixIdentity();
     Vector3 focus = cam_.target;
 
@@ -966,10 +1025,10 @@ class View {
     SetShaderValue(lit_, loc_viewpos_, &vp, SHADER_UNIFORM_VEC3);
 
     // --- lit pass: render the scene into an off-screen target -------------
-    // Push the near plane far out: the chase camera never sits within metres of
-    // geometry, and raylib's 0.01 default crushes depth precision so coplanar
-    // layers (road / white lines / kerbs / gravel) z-fight and flicker at range.
-    rlSetClipPlanes(2.0, 8000.0);
+    // The near plane sits far out by default (see clip_planes): raylib's 0.01
+    // crushes depth precision so coplanar layers (road / white lines / kerbs /
+    // gravel) z-fight and flicker at range.
+    rlSetClipPlanes(near_, far_);
     BeginTextureMode(scene_rt_);
     ClearBackground(bg_);
     if (has_sky_)   // gradient sky behind the scene (3D draws over it via depth)
@@ -999,6 +1058,7 @@ class View {
     // --- downsample the supersampled result to the window (the AA step) -----
     // The 2D overlay (HUD) is drawn by the caller AFTER this, so it stays crisp.
     BeginDrawing();
+    frame_open_ = true;
     DrawTexturePro(post_rt_.texture,
                    Rectangle{0, 0, (float)sw, -(float)sh},
                    Rectangle{0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()},
@@ -1009,9 +1069,13 @@ class View {
   void begin_2d() {
     close_stray_canvas("begin_2d");
     BeginDrawing();
+    frame_open_ = true;
     ClearBackground(bg_);
   }
-  void present() { EndDrawing(); }
+  void present() {
+    EndDrawing();
+    frame_open_ = false;
+  }
 
   // Alpha for subsequent 2D draws (0..255). The RGBA contract: 2D colours take
   // r,g,b and this shared alpha, so HUD fades / translucent panels are possible
@@ -1043,6 +1107,26 @@ class View {
     canvas_end();
   }
   std::shared_ptr<Node> push(std::shared_ptr<Node> n) { roots_.push_back(n); return n; }
+  // Supersampled targets: the scene + post render at ss_x the window, then
+  // box-downsample to it for cheap, high-quality antialiasing.
+  void alloc_targets(int w, int h) {
+    scene_rt_ = LoadRenderTexture(w, h);
+    post_rt_ = LoadRenderTexture(w, h);
+    SetTextureFilter(post_rt_.texture, TEXTURE_FILTER_BILINEAR);   // averages on downscale
+  }
+  // Re-fit the targets when the window (or ss_) has changed since they were
+  // made — the frame after a resize or a fullscreen toggle.
+  void sync_targets() {
+    int w = GetScreenWidth() * ss_, h = GetScreenHeight() * ss_;
+    if (w == scene_rt_.texture.width && h == scene_rt_.texture.height) return;
+    UnloadRenderTexture(scene_rt_);
+    UnloadRenderTexture(post_rt_);
+    alloc_targets(w, h);
+  }
+  void set_aa_uniform() {
+    float aa = (float)ss_;
+    SetShaderValue(post_, loc_aascale_, &aa, SHADER_UNIFORM_FLOAT);
+  }
   // Bind one pass's invariants. `m` is the pass's material (lit or depth).
   RenderCtx pass_ctx(::Material& m, bool lit) {
     return RenderCtx{.mat = m, .cube = cube_, .sphere = sphere_, .cyl = cyl_,
@@ -1074,12 +1158,14 @@ class View {
   int64_t alpha_ = 255;        // shared alpha for 2D draws
   std::vector<std::shared_ptr<Node>> roots_;
   std::shared_ptr<Texture> open_canvas_;   // the canvas being drawn into, while open
+  bool frame_open_ = false;   // between render_3d()/begin_2d() and present()
   bool quit_ = false;
   Texture2D white_{};
   Shader lit_{}, depth_{}, post_{};
   ::Material mat_{}, depth_mat_{};   // raylib's (gfx::Material is the script's)
   RenderTexture2D shadowmap0_{}, shadowmap1_{}, scene_rt_{}, post_rt_{};
   int ss_ = 2;              // supersample factor for antialiasing
+  float near_ = 2.0f, far_ = 8000.0f;   // 3D clip planes, metres
   int loc_aascale_ = 0;
   Camera3D light_{};
   Mesh cube_{}, sphere_{}, cyl_{}, plane_{};
@@ -1185,6 +1271,28 @@ const bool registered = [] {
       .method<&gfx::View::dt>("dt")
       .method<&gfx::View::width>("width")
       .method<&gfx::View::height>("height")
+      .method<&gfx::View::fps>("fps")
+      .method<&gfx::View::time>("time")
+      .method<&gfx::View::fullscreen>("fullscreen", {"on"})
+      .method<&gfx::View::is_fullscreen>("is_fullscreen")
+      .method<&gfx::View::resizable>("resizable", {"on"})
+      .method<&gfx::View::resized>("resized")
+      .method<&gfx::View::size>("size", {"w", "h"})
+      .method<&gfx::View::title>("title", {"s"})
+      .method<&gfx::View::vsync>("vsync", {"on"})
+      .method<&gfx::View::cursor>("cursor", {"on"})
+      .method<&gfx::View::mouse_capture>("mouse_capture", {"on"})
+      .method<&gfx::View::clipboard>("clipboard")
+      .method<&gfx::View::set_clipboard>("set_clipboard", {"s"})
+      .method<&gfx::View::supersample>("supersample", {"n"})
+      .method<&gfx::View::clip_planes>("clip_planes", {"near", "far"})
+      .method<&gfx::View::mouse_x>("mouse_x")
+      .method<&gfx::View::mouse_y>("mouse_y")
+      .method<&gfx::View::mouse_dx>("mouse_dx")
+      .method<&gfx::View::mouse_dy>("mouse_dy")
+      .method<&gfx::View::mouse_wheel>("mouse_wheel")
+      .method<&gfx::View::mouse>("mouse", {"button"})
+      .method<&gfx::View::mouse_pressed>("mouse_pressed", {"button"})
       .method<&gfx::View::quit>("quit")
       .method<&gfx::View::key>("key", {"name"})
       .method<&gfx::View::key_pressed>("key_pressed", {"name"})

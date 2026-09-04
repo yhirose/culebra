@@ -5459,7 +5459,7 @@ flat-shaded primitives.
 
 `Scene` is **not a game engine**. It has no physics or collision, no
 model/texture import (geometry is procedural or built vertex-by-vertex, and
-textures are generated in-process), no skeletal animation, and no mouse input.
+textures are generated in-process), and no skeletal animation.
 It targets 3D you *construct* — visualisations, procedural scenes, vehicle or
 flight demos with a chase camera — rather than asset-driven games. A
 racing demo — circuit mesh, chase camera, gamepad steering — is the
@@ -5496,6 +5496,19 @@ or pure 2D (`begin_2d()` → draws → `present()`).
 | `view.render_3d()` | render the scene graph, then open the frame for a 2D overlay |
 | `view.begin_2d()` | open a pure-2D frame (no 3D pass) |
 | `view.present()` | finish and show the frame |
+| `view.fullscreen(on)` / `view.is_fullscreen() -> Bool` | switch fullscreen on or off / is it on now |
+| `view.resizable(on)` / `view.resized() -> Bool` | let the user drag the edges / did the size change this frame |
+| `view.size(w, h)` / `view.title(s)` | set the window's size / its title |
+| `view.vsync(on)` | wait for the display's refresh at `present()` |
+| `view.cursor(on)` / `view.mouse_capture(on)` | show or hide the pointer / lock it to the window for mouse-look |
+| `view.clipboard() -> String` / `view.set_clipboard(s)` | the system clipboard |
+| `view.fps() -> Long` / `view.time() -> Float` | measured frame rate / seconds since the window opened |
+| `view.supersample(n)` | render at `n`× the window and downsample (1–4; the default 2 is the antialiasing) |
+| `view.clip_planes(near, far)` | the 3D pass's clip planes in metres (default 2 and 8000; a cockpit camera pulls `near` in) |
+
+The 3D targets follow the window: once a resize or a fullscreen toggle has been
+noticed (at the `present()` after it), frames render at the new resolution
+rather than being stretched from the old.
 
 ### Scene graph
 
@@ -5565,7 +5578,7 @@ Lighting is set on the view:
 | `view.sun(dx,dy,dz, intensity, r,g,b)` | directional light (two-cascade shadows); `(0, 0, 0)` names no direction and is refused |
 | `view.ambient(intensity, r, g, b)` | fill light |
 | `view.fog(start, end, r, g, b)` | distance fog |
-| `view.screenshot(path)` | save the current frame to a PNG |
+| `view.screenshot(path)` | save the frame being drawn to a PNG — call it after `render_3d()` / `begin_2d()` and before `present()`; afterwards the shown buffer is gone and the shot would be a frame or two stale |
 
 ### 2D overlay
 
@@ -5596,6 +5609,8 @@ normalizes every pad to: face buttons `"a"` `"b"` `"x"` `"y"` (the Xbox letters
 `"right"`, shoulders `"lb"` `"rb"`, triggers `"lt"` `"rt"`, `"select"`
 `"guide"` `"start"`, stick clicks `"l3"` `"r3"`; axes `"lx"` `"ly"` `"rx"`
 `"ry"` `"lt"` `"rt"`. `index` picks the pad (0–3) and defaults to the first.
+The mouse reports in window points; its buttons are `"left"`, `"right"` and
+`"middle"`.
 
 | Method | Result |
 | --- | --- |
@@ -5606,6 +5621,10 @@ normalizes every pad to: face buttons `"a"` `"b"` `"x"` `"y"` (the Xbox letters
 | `view.pad(name, index = 0) -> Bool` / `pad_pressed(name, index = 0) -> Bool` | button held / just pressed |
 | `view.rumble(left, right, sec, index = 0)` | haptics (Sony pads and XInput; Xbox-on-macOS is silent) |
 | `view.pad_name(index = 0) -> String` / `view.gamepad_mappings(db)` | pad identity / load an SDL mapping DB |
+| `view.mouse_x()` / `mouse_y() -> Float` | pointer position |
+| `view.mouse_dx()` / `mouse_dy() -> Float` | pointer motion since the last frame (also while captured) |
+| `view.mouse_wheel() -> Float` | wheel delta this frame |
+| `view.mouse(button) -> Bool` / `mouse_pressed(button) -> Bool` | mouse button held / just pressed |
 
 ### Audio
 

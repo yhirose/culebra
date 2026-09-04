@@ -86,6 +86,14 @@ inline int pad_button_of(std::string_view name) {
   return it == m.end() ? GAMEPAD_BUTTON_UNKNOWN : it->second;
 }
 
+// Mouse buttons. -1 names no button; a caller reads that as never pressed.
+inline int mouse_button_of(std::string_view name) {
+  if (name == "left") return MOUSE_BUTTON_LEFT;
+  if (name == "right") return MOUSE_BUTTON_RIGHT;
+  if (name == "middle") return MOUSE_BUTTON_MIDDLE;
+  return -1;
+}
+
 // Gamepad axes: the two sticks by half, and the analogue triggers. -1 names
 // no axis; a caller reads that as 0.0, so an unknown name is a centred stick.
 inline int pad_axis_of(std::string_view name) {

@@ -76,6 +76,38 @@ view.rect(0.0, 0.0, 160.0, 120.0, 30, 30, 30)
 view.present()
 println("frame {view.width()}x{view.height()} dt>=0 {view.dt() >= 0.0}")
 
+# --- the window: a resize is drawn at the new size, not stretched from the old ---
+view.title("scene api (resized)")
+view.resizable(true)
+view.size(320, 240)
+view.render_3d()
+view.present()   # the resize is noticed here at the latest (the event pump)
+view.render_3d()
+view.screenshot("scene_api_resized.png")   # a frame at the new size
+view.present()
+let r1 = view.resized()   # the edge is per frame; a Bool either way
+view.set_clipboard("scene")
+let clip = view.clipboard()
+println("window {view.width()}x{view.height()} fps>=0 {view.fps() >= 0} time>0 {view.time() > 0.0} resized {r1 == true || r1 == false} clipboard '{clip}'")
+view.supersample(1)
+view.clip_planes(0.5, 500.0)
+view.render_3d()
+view.present()
+view.fullscreen(true)
+let fs = view.is_fullscreen()
+view.render_3d()
+view.present()
+view.fullscreen(false)
+view.vsync(true)
+view.cursor(false)
+view.cursor(true)
+view.mouse_capture(true)
+view.mouse_capture(false)
+println("fullscreen-was {fs == true || fs == false}")
+let mx = view.mouse_x()
+let mwheel = view.mouse_wheel()
+println("mouse {mx >= 0.0 || mx < 0.0} dx {view.mouse_dx()} wheel {mwheel} {view.mouse("left")} {view.mouse_pressed("right")} {view.mouse("wheel")}")
+
 # --- input: nothing is pressed on a machine nobody is touching ---
 let k1 = view.key("escape")
 let k2 = view.key_pressed("a")
@@ -98,7 +130,9 @@ let c1 = view.closing()
 println("closing {c0} -> {c1}")
 
 # --- a relative screenshot path means the working directory ---
+view.begin_2d()
 view.screenshot("scene_api.png")
+view.present()
 println("screenshot {FS.exists("scene_api.png")}")
 
 # --- the handle types are the contract ---
@@ -135,12 +169,19 @@ let nested = try {
 view.canvas_end()
 println("nested canvas: {nested}")
 view.drop()
+
+# The frame drawn after the resize has content at the new size (read back
+# through Canvas's headless framebuffer, as the render probe does).
+Canvas.init(320, 240)
+let shot = Canvas.Sprite.from_png(FS.read("scene_api_resized.png"))
+shot.draw(0, 0)
+println("resized frame drew: {Canvas.get_pixel(160, 120) != Canvas.get_pixel(2, 2)}")
 EOF
 
 [ -n "${GITHUB_ACTIONS:-}" ] && prefix="::error::" || prefix="ERROR: "
 fail=0
 for engine in "--vm" "--jit"; do
-  if ! "$CULEBRA" "$engine" scene_api.cul > "out${engine}.txt" 2>&1; then
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul > "out${engine}.txt" 2>&1; then
     echo "${prefix}scene_api_test: $engine exited non-zero:" >&2
     cat "out${engine}.txt" >&2
     fail=1
@@ -167,6 +208,10 @@ expect "ball 3.0 0.5 0.0"
 expect "keys false false false false"
 expect "closing false -> true"
 expect "screenshot true"
+expect "window 320.0x240.0 fps>=0 true time>0 true resized true clipboard 'scene'"
+expect "fullscreen-was true"
+expect "mouse true dx 0.0 wheel 0.0 false false false"
+expect "resized frame drew: true"
 expect "texture(material): TypeError"
 expect "material(texture): TypeError"
 expect "texture(dropped): ClosedError"

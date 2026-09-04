@@ -31,12 +31,10 @@ view.ambient(0.4, 180, 200, 220)
 let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 view.add_box(2.0, 2.0, 2.0).material(gold)
 
-for i in 0..10 {
-  view.camera(4.0, 3.0, 5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 55.0)
-  view.render_3d()
-  view.present()
-}
-view.screenshot("scene_smoke.png")   # relative to the working directory
+view.camera(4.0, 3.0, 5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 55.0)
+view.render_3d()
+view.screenshot("scene_smoke.png")   # the frame being drawn; relative to the cwd
+view.present()
 view.drop()
 
 # Back through Canvas (headless framebuffer) to read the pixels.
