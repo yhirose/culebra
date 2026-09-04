@@ -88,10 +88,10 @@ check_floor() {
     note "its own parse of ${name} found only ${n} member(s) (expected >= ${floor}) -- fix this script before trusting it"
   fi
 }
-check_floor Tag "$tag_members" 24
-check_floor UnOp "$unop_members" 2
-check_floor BinOp "$binop_members" 16
-check_floor IntrinsicId "$intrinsic_members" 24
+check_floor Tag "$tag_members" 28
+check_floor UnOp "$unop_members" 8
+check_floor BinOp "$binop_members" 23
+check_floor IntrinsicId "$intrinsic_members" 36
 check_floor VarKind "$varkind_members" 3
 check_floor ConstKind "$constkind_members" 5
 
@@ -199,6 +199,7 @@ TryCatch|try|make_try|try_caught_local
 Defer|defer|make_defer|node_tag
 CellFresh|cellfresh|cell_fresh|cell_index
 Yield|yield|make_yield|node_tag
+NativeRef|nativeref|native_ref|native_index
 "
 
 mapped_members=$(echo "$TAG_MAP" | awk -F'|' 'NF==4{print $1}')
@@ -232,8 +233,8 @@ while IFS= read -r m; do
   fi
 done <<< "$mapped_members"
 
-if [ "$n_mapped" -lt 24 ]; then
-  note "TAG_MAP has only ${n_mapped} row(s) (expected >= 24) -- its own table shrank"
+if [ "$n_mapped" -lt 28 ]; then
+  note "TAG_MAP has only ${n_mapped} row(s) (expected >= 28) -- its own table shrank"
 fi
 
 if [ "$fail" -ne 0 ]; then

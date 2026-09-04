@@ -586,4 +586,208 @@ fn tostr_node(m, v) {
   assert_throws('ClosedError', || rt.live_objects())
 }
 
+# --- The vocabulary the second wave added reaches scripts through the same
+# generic intrinsic() the older ones do -- no new builder method, because
+# none of these is a node shape of its own. Each family is actually RUN
+# here, not just named: a typo in any of these names is an unknown-intrinsic
+# error, so a green run is the proof the name resolves. ---
+
+fn call_intr(m, name, args) {
+  let list = m.list_new()
+  for a in args { m.list_push(list, a) }
+  m.intrinsic(name: name, args_list: list, line: 1, col: 1)
+}
+
+# Map: a keyed container whose keys are whole values, read and written with
+# the same index/set_index an object takes.
+{
+  let m = CodeGen.Module.new()
+  let map = call_intr(m, 'mapnew', [])
+  let body = stmt_block(m, [
+    m.assign(kind: 'local', index: 0, value: map, line: 1, col: 1),
+    m.set_index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+                key: m.literal(v: 7, line: 1, col: 1),
+                value: m.str_literal(s: 'seven', line: 1, col: 1), line: 1, col: 1),
+    print_stmt(m, m.index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+                          key: m.literal(v: 7, line: 1, col: 1), line: 1, col: 1)),
+    print_stmt(m, call_intr(m, 'len',
+                            [m.var_ref(kind: 'local', index: 0, line: 1, col: 1)])),
+  ])
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
+             body: body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "seven\n1\n")
+}
+
+# Slices and bytes.
+{
+  let m = CodeGen.Module.new()
+  let hello = m.str_literal(s: 'hello', line: 1, col: 1)
+  let body = stmt_block(m, [
+    print_stmt(m, call_intr(m, 'strslice', [hello, m.literal(v: 1, line: 1, col: 1),
+                                            m.literal(v: 4, line: 1, col: 1)])),
+    print_stmt(m, call_intr(m, 'strbyte', [hello, m.literal(v: 0, line: 1, col: 1)])),
+    print_stmt(m, call_intr(m, 'strfrombyte', [m.literal(v: 65, line: 1, col: 1)])),
+  ])
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "ell\n104\nA\n")
+}
+{
+  # arrayslice copies -- writing the slice leaves the source alone.
+  let m = CodeGen.Module.new()
+  let items = m.list_new()
+  for v in [10, 20, 30] { m.list_push(items, m.literal(v: v, line: 1, col: 1)) }
+  let body = stmt_block(m, [
+    m.assign(kind: 'local', index: 0,
+             value: m.array_lit(items_list: items, line: 1, col: 1), line: 1, col: 1),
+    m.assign(kind: 'local', index: 1,
+             value: call_intr(m, 'arrayslice',
+                              [m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+                               m.literal(v: 0, line: 1, col: 1),
+                               m.literal(v: 2, line: 1, col: 1)]), line: 1, col: 1),
+    m.set_index(recv: m.var_ref(kind: 'local', index: 1, line: 1, col: 1),
+                key: m.literal(v: 0, line: 1, col: 1),
+                value: m.literal(v: 99, line: 1, col: 1), line: 1, col: 1),
+    print_stmt(m, call_intr(m, 'len',
+                            [m.var_ref(kind: 'local', index: 1, line: 1, col: 1)])),
+    print_stmt(m, m.index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+                          key: m.literal(v: 0, line: 1, col: 1), line: 1, col: 1)),
+  ])
+  m.add_func(name: 'main', num_locals: 2, num_captures: 0, num_cells: 0, num_params: 0,
+             body: body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "2\n10\n")
+}
+
+# Coroutines: an ordinary function driven by the six intrinsics. The yield
+# sits one call deep, which is the whole difference from a generator -- it
+# parks the call stack, not one frame.
+{
+  let m = CodeGen.Module.new()
+  let empty = m.add_capture_map(m.capture_map_new())
+
+  # inner() yields 1 then 2; outer() calls it, so the yields sit a frame
+  # deeper than the coroutine itself -- the whole difference from a
+  # generator, which can only suspend the one frame that holds the yield.
+  let inner_body = stmt_block(m, [
+    call_intr(m, 'coroyield', [m.literal(v: 1, line: 1, col: 1)]),
+    call_intr(m, 'coroyield', [m.literal(v: 2, line: 1, col: 1)]),
+  ])
+  let outer_body = stmt_block(m, [
+    m.call(func: 1, cmap: empty, line: 1, col: 1),
+    m.str_literal(s: 'done', line: 1, col: 1),
+  ])
+
+  let co = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  fn resumed(mm, co) { call_intr(mm, 'cororesume', [co, mm.nil_literal(line: 1, col: 1)]) }
+  let main_body = stmt_block(m, [
+    m.assign(kind: 'local', index: 0,
+             value: call_intr(m, 'corocreate',
+                              [m.make_closure(func: 2, cmap: empty, line: 1, col: 1)]),
+             line: 1, col: 1),
+    print_stmt(m, call_intr(m, 'corostatus', [co])),
+    print_stmt(m, m.index(recv: resumed(m, co),
+                          key: m.str_literal(s: 'value', line: 1, col: 1),
+                          line: 1, col: 1)),
+    print_stmt(m, call_intr(m, 'corostatus', [co])),
+    print_stmt(m, m.index(recv: resumed(m, co),
+                          key: m.str_literal(s: 'value', line: 1, col: 1),
+                          line: 1, col: 1)),
+    print_stmt(m, m.index(recv: resumed(m, co),
+                          key: m.str_literal(s: 'done', line: 1, col: 1),
+                          line: 1, col: 1)),
+    print_stmt(m, call_intr(m, 'corostatus', [co])),
+    # corocurrent at the top is nil -- nothing is running us.
+    print_stmt(m, call_intr(m, 'typeof', [call_intr(m, 'corocurrent', [])])),
+  ])
+  # funcs[0] is the entry point, so main goes in first: inner lands at 1 and
+  # outer at 2, which is what the nodes above already name.
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
+             body: main_body)
+  m.add_func(name: 'inner', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: inner_body)
+  # The first resume calls it as f(sent), so it takes the one parameter.
+  m.add_func(name: 'outer', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
+             body: outer_body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }),
+            "start\n1\nsuspended\n2\ntrue\ndone\nnil\n")
+}
+{
+  # enqueue takes a coroutine as readily as a closure -- which is what makes
+  # the job queue a scheduler. The queue is drained after the entry function
+  # returns, so 'queued' prints before the job's own output.
+  let m = CodeGen.Module.new()
+  let empty = m.add_capture_map(m.capture_map_new())
+  let job_body = print_stmt(m, m.str_literal(s: 'ran', line: 1, col: 1))
+  let co = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
+             body: stmt_block(m, [
+               m.assign(kind: 'local', index: 0,
+                        value: call_intr(m, 'corocreate',
+                                         [m.make_closure(func: 1, cmap: empty,
+                                                         line: 1, col: 1)]),
+                        line: 1, col: 1),
+               call_intr(m, 'enqueue', [co]),
+               print_stmt(m, m.str_literal(s: 'queued', line: 1, col: 1)),
+             ]))
+  m.add_func(name: 'job', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
+             body: job_body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "queued\nran\n")
+}
+{
+  # A scheduled coroutine that parks with nothing left to wake it is the
+  # scheduler's own safety net, not a hang -- Go's "all goroutines are
+  # asleep". The queue running dry while it is still suspended is the check.
+  let m = CodeGen.Module.new()
+  let empty = m.add_capture_map(m.capture_map_new())
+  let job_body = call_intr(m, 'coroyield', [m.nil_literal(line: 1, col: 1)])
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
+             body: stmt_block(m, [
+               m.assign(kind: 'local', index: 0,
+                        value: call_intr(m, 'corocreate',
+                                         [m.make_closure(func: 1, cmap: empty,
+                                                         line: 1, col: 1)]),
+                        line: 1, col: 1),
+               call_intr(m, 'enqueue',
+                         [m.var_ref(kind: 'local', index: 0, line: 1, col: 1)]),
+             ]))
+  m.add_func(name: 'job', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
+             body: job_body)
+  m.verify()
+  let err = try { m.run() } catch e { e }
+  assert_eq(err.kind, 'IrError')
+  assert_true(err.message.contains('deadlock'))
+}
+{
+  # coroclose ends a suspended coroutine early: the rest of its body never
+  # runs, and its status settles at done.
+  let m = CodeGen.Module.new()
+  let empty = m.add_capture_map(m.capture_map_new())
+  let body = stmt_block(m, [
+    print_stmt(m, m.str_literal(s: 'ran', line: 1, col: 1)),
+    call_intr(m, 'coroyield', [m.nil_literal(line: 1, col: 1)]),
+    print_stmt(m, m.str_literal(s: 'unreachable', line: 1, col: 1)),
+  ])
+  let co = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
+             body: stmt_block(m, [
+               m.assign(kind: 'local', index: 0,
+                        value: call_intr(m, 'corocreate',
+                                         [m.make_closure(func: 1, cmap: empty,
+                                                         line: 1, col: 1)]),
+                        line: 1, col: 1),
+               call_intr(m, 'cororesume', [co, m.nil_literal(line: 1, col: 1)]),
+               call_intr(m, 'coroclose', [co]),
+               print_stmt(m, call_intr(m, 'corostatus', [co])),
+             ]))
+  m.add_func(name: 'job', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
+             body: body)
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "ran\ndone\n")
+}
+
 println('test_codegen OK')

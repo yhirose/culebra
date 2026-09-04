@@ -341,6 +341,20 @@ class Module {
         b.intrinsic(to_intrinsic(name), take_list(args_list), pos(line, col)));
   }
 
+  // A host function the module calls but does not carry: declare_native
+  // interns the name and answers its index, native_ref builds the value that
+  // names it, and an ordinary call_value calls it. What the name resolves to
+  // is supplied per run -- Program.run's `natives` -- never by the module,
+  // which holds names alone.
+  int64_t declare_native(std::string_view name) {
+    coreir::Builder b(m_);
+    return b.declare_native(std::string(name));
+  }
+  int64_t native_ref(int64_t index, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.native_ref(idx32(index), pos(line, col)));
+  }
+
   // Generic staging for a node's variadic children -- consumed and gone once
   // handed to block()/intrinsic() (or, packed as CaptureSrc, add_capture_map()
   // below). Reusing a list id afterward is undefined.
@@ -614,6 +628,11 @@ class Module {
                m_, require_tag(node, coreir::Tag::TryCatch, "try_caught_local"))
         .caught_local;
   }
+  int64_t native_index(int64_t node) const {
+    return coreir::view_native_ref(
+               m_, require_tag(node, coreir::Tag::NativeRef, "native_index"))
+        .index;
+  }
   int64_t closure_func(int64_t node) const {
     return coreir::view_make_closure(
                m_, require_tag(node, coreir::Tag::MakeClosure, "closure_func"))
@@ -663,6 +682,14 @@ class Module {
   std::string func_capture_name(int64_t func, int64_t index) const {
     const auto& f = m_.funcs[checked_func(func)];
     return checked_name(f.capture_names, func, index, "captures");
+  }
+
+  // Natives: declare_native's own argument, read back one at a time.
+  int64_t num_natives() const {
+    return static_cast<int64_t>(m_.natives.size());
+  }
+  std::string native_name(int64_t index) const {
+    return m_.natives[checked_index(index, m_.natives.size(), "native")];
   }
 
   // Capture maps: capture_map_push's own arguments, read back one at a time.

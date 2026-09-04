@@ -335,4 +335,46 @@ fn stmt_block(m, stmts) {
   assert_eq(caught.message, "node #0 is a varref; use var_kind() for its var kind")
 }
 
+# --- A native the module names but does not carry: declare_native interns
+# the name (the same name twice is the same index), native_ref points at it,
+# and both read back. What the name resolves to is a run-time question --
+# tests/test_codegen.cul asks it. ---
+{
+  let m = CodeGen.Module.new()
+  assert_eq(m.num_natives(), 0)
+  let shout = m.declare_native(name: 'shout')
+  let count = m.declare_native(name: 'count')
+  assert_eq(shout, 0)
+  assert_eq(count, 1)
+  assert_eq(m.declare_native(name: 'shout'), 0)  # interned, not appended
+  assert_eq(m.num_natives(), 2)
+  assert_eq(m.native_name(index: 0), 'shout')
+  assert_eq(m.native_name(index: 1), 'count')
+
+  let ref = m.native_ref(index: shout, line: 3, col: 7)
+  assert_eq(m.node_tag(node: ref), 'nativeref')
+  assert_eq(m.native_index(node: ref), shout)
+  assert_eq(m.num_children(node: ref), 0)
+  assert_eq(m.node_line(node: ref), 3)
+
+  # A tag that is not a nativeref, and an index nothing handed out.
+  mut caught = nil
+  try { m.native_index(node: m.nil_literal(line: 1, col: 1)) } catch e { caught = e }
+  assert_eq(caught.kind, 'IrError')
+
+  caught = nil
+  try { m.native_name(index: 2) } catch e { caught = e }
+  assert_eq(caught.kind, 'IrError')
+}
+{
+  # verify() is what rejects an out-of-range native index -- the builder
+  # takes it, the module is malformed, and compile() refuses it.
+  let m = CodeGen.Module.new()
+  m.declare_native(name: 'only')
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: m.native_ref(index: 9, line: 1, col: 1))
+  let err = try { m.verify() } catch e { e }
+  assert_eq("{err.kind}: {err.message}", 'IrError: native index out of range')
+}
+
 println('test_codegen_read OK')

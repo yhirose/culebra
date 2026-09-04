@@ -45,6 +45,9 @@ inline bool register_codegen_binding() {
           "call_value", {"callee", "args_list", "line", "col"})
       .method<&codegen::Module::intrinsic>(
           "intrinsic", {"name", "args_list", "line", "col"})
+      .method<&codegen::Module::declare_native>("declare_native", {"name"})
+      .method<&codegen::Module::native_ref>("native_ref",
+                                            {"index", "line", "col"})
       .method<&codegen::Module::array_lit>("array_lit",
                                            {"items_list", "line", "col"})
       .method<&codegen::Module::object_lit>("object_lit",
@@ -131,6 +134,7 @@ inline bool register_codegen_binding() {
                                                     {"node"})
       .method<&codegen::Module::scope_end_local>("scope_end_local", {"node"})
       .method<&codegen::Module::try_caught_local>("try_caught_local", {"node"})
+      .method<&codegen::Module::native_index>("native_index", {"node"})
       .method<&codegen::Module::closure_func>("closure_func", {"node"})
       .method<&codegen::Module::closure_cmap>("closure_cmap", {"node"})
       .method<&codegen::Module::cell_index>("cell_index", {"node"})
@@ -150,6 +154,8 @@ inline bool register_codegen_binding() {
                                                   {"func", "index"})
       .method<&codegen::Module::func_capture_name>("func_capture_name",
                                                     {"func", "index"})
+      .method<&codegen::Module::num_natives>("num_natives")
+      .method<&codegen::Module::native_name>("native_name", {"index"})
       .method<&codegen::Module::num_capture_maps>("num_capture_maps")
       .method<&codegen::Module::num_capture_entries>("num_capture_entries",
                                                       {"cmap"})
