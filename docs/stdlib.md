@@ -5580,6 +5580,31 @@ field see through glass to the solid geometry behind — the same reading a
 blob shadow or a windscreen wants. A transparent surface casts no shadow
 unless it is a cutout, whose shape is real.
 
+### Post-processing
+
+`render_3d()` runs the frame through a post pass: depth of field, ambient
+occlusion, bloom, tonemap, saturation, and — when asked — a vignette and colour
+grading. Each has a knob; the defaults are the look the shader was tuned with,
+and `0` turns a pass off.
+
+| Method | Effect |
+| --- | --- |
+| `view.post(on)` | the whole pass (off: the lit frame as is, antialiasing included) |
+| `view.exposure(k)` | tonemap exposure (default 1.35) |
+| `view.saturation(k)` | 1 = as lit (default 1.1) |
+| `view.bloom(threshold, strength)` | glow bleeding from what is brighter than `threshold` (defaults 0.7, 1.5) |
+| `view.dof(strength, range)` | depth of field around the screen centre's depth (defaults 0.85, 3.5) |
+| `view.ssao(strength, radius)` | ambient occlusion (defaults 0.45, 3.0) |
+| `view.vignette(k)` | darken the corners (default 0) |
+| `view.lut(tex, amount = 1.0)` | colour grading through a 3D LUT, blended in by `amount`; `nil` turns it off |
+
+A LUT is a `Texture` holding a horizontal strip of `n` slices, each `n`×`n`,
+`n` being the texture's height (a 4096×64 strip is 64 slices): blue selects
+the slice, red runs across it, green down it. Build one with `Scene.Image` and
+upload it with mipmaps and repeat off (`view.texture(img, false, false)`); the
+pass samples a cell as a cell. The identity LUT — every cell its own colour —
+leaves a frame alone, and a graded one is what a colour tool exports.
+
 ### A second camera
 
 `view.render_to(tex, px,py,pz, tx,ty,tz, ux,uy,uz, fov)` renders the scene

@@ -370,6 +370,81 @@ println("plain plate split: {is_red(a_left) != is_red(a_right)}")
 println("mirrored plate swaps: {is_red(a_left) == is_red(b_right) && is_red(a_right) == is_red(b_left)}")
 EOF
 
+# Colour grading and the post knobs: the same red box through no LUT, an
+# identity LUT (must match) and a red/green-swapping LUT (must swap), then with
+# every knob turned and with the post pass off. A 16-slice LUT quantizes to
+# about 8 per channel, so the identity tolerance leaves room for that.
+cat > scene_lut.cul <<'EOF'
+let view = Scene.View.new(160, 120, "scene lut")
+view.background(20, 24, 30)
+view.ambient(1.0, 255, 255, 255)
+let red = view.add_material().rgb(255, 0, 0).unlit()
+view.add_box(3.0, 3.0, 3.0).material(red)
+view.camera(0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 50.0)
+fn lut_image(swap) {
+  let n = 16
+  let img = Scene.Image.new(n * n, n)
+  for b in 0..n {
+    for g in 0..n {
+      for r in 0..n {
+        let rv = r * 255 / (n - 1)
+        let gv = g * 255 / (n - 1)
+        let bv = b * 255 / (n - 1)
+        if swap {
+          img.pixel(b * n + r, g, gv, rv, bv)
+        } else {
+          img.pixel(b * n + r, g, rv, gv, bv)
+        }
+      }
+    }
+  }
+  img
+}
+let identity = view.texture(lut_image(false), false, false).filter("point").wrap("clamp")
+let swapped = view.texture(lut_image(true), false, false).filter("point").wrap("clamp")
+fn shot(path) {
+  view.render_3d()
+  view.screenshot(path)
+  view.present()
+}
+shot("lut_none.png")
+view.lut(identity)
+shot("lut_identity.png")
+view.lut(swapped)
+shot("lut_swap.png")
+view.lut(nil)
+view.exposure(2.0)
+view.saturation(1.5)
+view.bloom(0.5, 2.0)
+view.dof(0.5, 2.0)
+view.ssao(0.3, 2.0)
+view.vignette(0.5)
+shot("lut_knobs.png")
+view.post(false)
+shot("lut_nopost.png")
+view.drop()
+
+Canvas.init(160, 120)
+fn px(path) {
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read(path)).draw(0, 0)
+  Canvas.get_pixel(80, 60)
+}
+fn red_of(v) { v & 255 }
+fn green_of(v) { (v >> 8) & 255 }
+fn blue_of(v) { (v >> 16) & 255 }
+fn close(a, b) { Math.abs(a - b) <= 12 }
+let none = px("lut_none.png")
+let ident = px("lut_identity.png")
+let sw = px("lut_swap.png")
+let knobs = px("lut_knobs.png")
+let nopost = px("lut_nopost.png")
+println("identity lut matches: {close(red_of(none), red_of(ident)) && close(green_of(none), green_of(ident)) && close(blue_of(none), blue_of(ident))}")
+println("swap lut swaps: {close(red_of(sw), green_of(none)) && close(green_of(sw), red_of(none))}")
+println("knobs change the frame: {knobs != none}")
+println("post off still draws: {red_of(nopost) > 150 && green_of(nopost) < 60}")
+EOF
+
 # Scene.Image needs no window, so this program opens none: the one part of Scene
 # that runs with no display at all, and the one whose answers are exact pixels.
 cat > scene_image.cul <<'EOF'
@@ -504,6 +579,30 @@ for want in "beacon in the target: true upright: true" \
 done
 [ $fail -eq 0 ] || exit 1
 echo "OK: a second camera renders into a texture, upright, and uv(-1) mirrors it"
+
+for engine in "--vm" "--jit"; do
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_lut.cul > "lut${engine}.txt" 2>&1; then
+    echo "${prefix}scene_api_test: LUT program $engine exited non-zero:" >&2
+    cat "lut${engine}.txt" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+if ! diff "lut--vm.txt" "lut--jit.txt" > diff.txt; then
+  echo "${prefix}scene_api_test: the VM and the JIT disagree on the LUT:" >&2
+  cat diff.txt >&2
+  exit 1
+fi
+for want in "identity lut matches: true" "swap lut swaps: true" \
+            "knobs change the frame: true" "post off still draws: true"; do
+  if ! grep -qxF "$want" "lut--vm.txt"; then
+    echo "${prefix}scene_api_test: LUT line missing: $want" >&2
+    cat "lut--vm.txt" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+echo "OK: the LUT grades the frame and the post knobs bind"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2>&1; then

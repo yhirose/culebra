@@ -277,6 +277,22 @@ static const char* kFS_POST = R"(#version 330
 in vec2 fragTexCoord;
 uniform sampler2D texture0;     // .rgb = lit scene, .a = linear camera depth
 uniform float aaScale;          // supersample factor: keep screen-space radii constant
+// The knobs (View::exposure and friends); the defaults are the numbers the
+// look was tuned with, and a script that never touches them gets that look.
+uniform float dofStrength;      // 0.85
+uniform float dofRange;         // 3.5
+uniform float ssaoStrength;     // 0.45
+uniform float ssaoRadius;       // 3.0 (texels at aaScale)
+uniform float bloomThreshold;   // 0.7
+uniform float bloomStrength;    // 1.5
+uniform float exposure;         // 1.35
+uniform float saturation;       // 1.10
+uniform float vignette;         // 0
+// Colour grading: a 3D LUT as a horizontal strip of lutSize slices, each
+// lutSize x lutSize (blue selects the slice, red runs across it, green down).
+uniform sampler2D lutTex;
+uniform float lutSize;          // 0 = no LUT
+uniform float lutAmount;        // 0..1
 out vec4 finalColor;
 void main() {
   vec2 texel = aaScale / vec2(textureSize(texture0, 0));
@@ -287,15 +303,15 @@ void main() {
   // --- depth of field: gentle blur by circle-of-confusion from |depth-focus|.
   // Subtle (cinematic), so the track stays readable; only the far background
   // and the very near foreground soften.
-  float coc = clamp(abs(depth - focus) * 3.5, 0.0, 1.0);
+  float coc = clamp(abs(depth - focus) * dofRange, 0.0, 1.0);
   vec3 c = center.rgb;
-  if (coc > 0.05) {
+  if (coc > 0.05 && dofStrength > 0.0) {
     vec3 acc = vec3(0.0);
     for (int i = 0; i < 8; i++) {
       float a = float(i) * 0.7853982;
       acc += texture(texture0, fragTexCoord + vec2(cos(a), sin(a)) * texel * coc * 2.0).rgb;
     }
-    c = mix(c, acc / 8.0, coc * 0.85);
+    c = mix(c, acc / 8.0, coc * dofStrength);
   }
 
   // --- SSAO (depth-only): darken where neighbours sit nearer the camera ----
@@ -306,22 +322,35 @@ void main() {
   float occ = 0.0;
   for (int i = 0; i < 8; i++) {
     float a = float(i) * 0.7853982;
-    float nd = texture(texture0, fragTexCoord + vec2(cos(a), sin(a)) * texel * 3.0).a;
+    float nd = texture(texture0, fragTexCoord + vec2(cos(a), sin(a)) * texel * ssaoRadius).a;
     occ += step(nd, depth - 0.008);
   }
-  c *= 1.0 - (occ / 8.0) * 0.45;
+  c *= 1.0 - (occ / 8.0) * ssaoStrength;
 
   // --- bloom (wide bright-pass bleed for a soft glow) ---
   vec3 bloom = vec3(0.0);
   for (int x = -2; x <= 2; x++)
     for (int y = -2; y <= 2; y++)
-      bloom += max(texture(texture0, fragTexCoord + vec2(x, y) * texel * 4.5).rgb - 0.7, vec3(0.0));
-  c += (bloom / 25.0) * 1.5;
+      bloom += max(texture(texture0, fragTexCoord + vec2(x, y) * texel * 4.5).rgb - bloomThreshold, vec3(0.0));
+  c += (bloom / 25.0) * bloomStrength;
 
-  // --- tonemap + saturation ---
-  c = vec3(1.0) - exp(-c * 1.35);
+  // --- tonemap + saturation + vignette ---
+  c = vec3(1.0) - exp(-c * exposure);
   float l = dot(c, vec3(0.299, 0.587, 0.114));
-  c = mix(vec3(l), c, 1.10);
+  c = mix(vec3(l), c, saturation);
+  c *= 1.0 - vignette * smoothstep(0.35, 0.85, distance(fragTexCoord, vec2(0.5)));
+
+  // --- colour grading through the LUT, the last word on the colour ---
+  if (lutSize > 0.5) {
+    float n = lutSize;
+    vec3 q = clamp(c, 0.0, 1.0) * (n - 1.0);
+    float b0 = floor(q.b);
+    float b1 = min(b0 + 1.0, n - 1.0);
+    vec2 uv0 = vec2((b0 * n + q.r + 0.5) / (n * n), (q.g + 0.5) / n);
+    vec2 uv1 = vec2((b1 * n + q.r + 0.5) / (n * n), (q.g + 0.5) / n);
+    vec3 graded = mix(texture(lutTex, uv0).rgb, texture(lutTex, uv1).rgb, q.b - b0);
+    c = mix(c, graded, lutAmount);
+  }
   finalColor = vec4(c, 1.0);
 }
 )";
@@ -983,6 +1012,10 @@ class View {
     post_ = LoadShaderFromMemory(0, kFS_POST);   // default 2D VS + our composite FS
     loc_aascale_ = GetShaderLocation(post_, "aaScale");
     set_aa_uniform();
+    loc_lut_ = GetShaderLocation(post_, "lutTex");
+    loc_lutsize_ = GetShaderLocation(post_, "lutSize");
+    loc_lutamount_ = GetShaderLocation(post_, "lutAmount");
+    set_post_uniforms();
     alloc_targets((int)w * ss_, (int)h * ss_);
     shadowmap0_ = LoadShadowmap(2048, 2048);
     shadowmap1_ = LoadShadowmap(2048, 2048);
@@ -1066,6 +1099,32 @@ class View {
   void mouse_capture(bool on) { if (on) DisableCursor(); else EnableCursor(); }
   std::string clipboard() const { const char* s = GetClipboardText(); return s ? s : ""; }
   void set_clipboard(std::string s) { SetClipboardText(s.c_str()); }
+
+  // --- the post stack: each pass's strength, and a colour-grading LUT ------
+  // The defaults are the look the shader was tuned with; 0 turns a pass off.
+  void post(bool on) { post_on_ = on; }
+  void exposure(double k) { look_.exposure = (float)k; set_post_uniforms(); }
+  void saturation(double k) { look_.saturation = (float)k; set_post_uniforms(); }
+  void bloom(double threshold, double strength) {
+    look_.bloom_threshold = (float)threshold; look_.bloom_strength = (float)strength; set_post_uniforms();
+  }
+  void dof(double strength, double range) {
+    look_.dof_strength = (float)strength; look_.dof_range = (float)range; set_post_uniforms();
+  }
+  void ssao(double strength, double radius) {
+    look_.ssao_strength = (float)strength; look_.ssao_radius = (float)radius; set_post_uniforms();
+  }
+  void vignette(double k) { look_.vignette = (float)k; set_post_uniforms(); }
+  // A 3D LUT as a horizontal strip: n slices of n x n, n = the texture's
+  // height (a 4096 x 64 strip is 64 slices). Blue picks the slice, red runs
+  // across it, green down. Built with Scene.Image, uploaded with mipmaps off;
+  // the post pass samples it with point filtering so a cell is a cell.
+  // `amount` blends the graded colour in; nil turns grading off.
+  void lut(const Texture* tex, double amount) {
+    lut_ = tex ? tex->shared_from_this() : nullptr;
+    look_.lut_amount = (float)amount;
+    set_post_uniforms();
+  }
 
   // Supersample factor (1 = off, 2 = default); the whole scene and post pass
   // render at this multiple of the window and box-filter down. The single
@@ -1507,24 +1566,36 @@ class View {
     rlEnableColorBlend();
     EndTextureMode();
 
-    // --- post pass at supersample resolution (SSAO/DoF/bloom/tonemap) -------
+    // --- post pass at supersample resolution (SSAO/DoF/bloom/tonemap/LUT) ---
     int sw = scene_rt_.texture.width, sh = scene_rt_.texture.height;
-    BeginTextureMode(post_rt_);
-    BeginShaderMode(post_);
-    // RenderTextures are y-flipped; a negative source height flips it upright.
-    DrawTextureRec(scene_rt_.texture, Rectangle{0, 0, (float)sw, -(float)sh},
-                   Vector2{0, 0}, WHITE);
-    EndShaderMode();
-    EndTextureMode();
+    if (post_on_) {
+      BeginTextureMode(post_rt_);
+      BeginShaderMode(post_);
+      // The LUT rides a second sampler, bound while the post shader is active.
+      bool lut_live = lut_ && lut_->live();
+      float lut_size = lut_live ? (float)lut_->tex.height : 0.0f;
+      SetShaderValue(post_, loc_lutsize_, &lut_size, SHADER_UNIFORM_FLOAT);
+      if (lut_live) SetShaderValueTexture(post_, loc_lut_, lut_->tex);
+      // RenderTextures are y-flipped; a negative source height flips it upright.
+      DrawTextureRec(scene_rt_.texture, Rectangle{0, 0, (float)sw, -(float)sh},
+                     Vector2{0, 0}, WHITE);
+      EndShaderMode();
+      EndTextureMode();
+    }
 
     // --- downsample the supersampled result to the window (the AA step) -----
     // The 2D overlay (HUD) is drawn by the caller AFTER this, so it stays crisp.
     BeginDrawing();
     frame_open_ = true;
-    DrawTexturePro(post_rt_.texture,
+    // With the post pass off the scene target is shown as is — with blending
+    // off, since its alpha is depth, not coverage. The batch is flushed before
+    // blending comes back so the state change lands after this draw.
+    if (!post_on_) rlDisableColorBlend();
+    DrawTexturePro((post_on_ ? post_rt_ : scene_rt_).texture,
                    Rectangle{0, 0, (float)sw, -(float)sh},
                    Rectangle{0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()},
                    Vector2{0, 0}, 0.0f, WHITE);
+    if (!post_on_) { rlDrawRenderBatchActive(); rlEnableColorBlend(); }
   }
   // Open a frame for 2D-only screens (menus / pause), with no 3D or shadow
   // passes — pair with present(). (render_3d() opens the frame for 3D scenes.)
@@ -1761,6 +1832,24 @@ class View {
     float aa = (float)ss_;
     SetShaderValue(post_, loc_aascale_, &aa, SHADER_UNIFORM_FLOAT);
   }
+  // The post knobs are set on change, not per frame: they are uniforms of one
+  // shader that nothing else touches. The LUT sampler is the exception (bound
+  // in render_3d, while the shader is active).
+  void set_post_uniforms() {
+    auto set = [&](const char* name, float v) {
+      SetShaderValue(post_, GetShaderLocation(post_, name), &v, SHADER_UNIFORM_FLOAT);
+    };
+    set("dofStrength", look_.dof_strength);
+    set("dofRange", look_.dof_range);
+    set("ssaoStrength", look_.ssao_strength);
+    set("ssaoRadius", look_.ssao_radius);
+    set("bloomThreshold", look_.bloom_threshold);
+    set("bloomStrength", look_.bloom_strength);
+    set("exposure", look_.exposure);
+    set("saturation", look_.saturation);
+    set("vignette", look_.vignette);
+    SetShaderValue(post_, loc_lutamount_, &look_.lut_amount, SHADER_UNIFORM_FLOAT);
+  }
   // Bind one pass's invariants. `m` is the pass's material (lit or depth).
   RenderCtx pass_ctx(::Material& m) {
     return RenderCtx{.mat = m, .cube = cube_, .sphere = sphere_, .cyl = cyl_, .plane = plane_};
@@ -1799,6 +1888,16 @@ class View {
   int ss_ = 2;              // supersample factor for antialiasing
   float near_ = 2.0f, far_ = 8000.0f;   // 3D clip planes, metres
   int loc_aascale_ = 0;
+  int loc_lut_ = 0, loc_lutsize_ = 0, loc_lutamount_ = 0;
+  bool post_on_ = true;
+  struct Post {   // the look's tuned defaults (see kFS_POST)
+    float dof_strength = 0.85f, dof_range = 3.5f;
+    float ssao_strength = 0.45f, ssao_radius = 3.0f;
+    float bloom_threshold = 0.7f, bloom_strength = 1.5f;
+    float exposure = 1.35f, saturation = 1.10f, vignette = 0.0f;
+    float lut_amount = 0.0f;
+  } look_;
+  std::shared_ptr<const Texture> lut_;
   Camera3D light_{};
   Mesh cube_{}, sphere_{}, cyl_{}, plane_{};
   int loc_dir_ = 0, loc_lcol_ = 0, loc_amb_ = 0;
@@ -1984,6 +2083,14 @@ const bool registered = [] {
       .method<&gfx::View::mouse_capture>("mouse_capture", {"on"})
       .method<&gfx::View::clipboard>("clipboard")
       .method<&gfx::View::set_clipboard>("set_clipboard", {"s"})
+      .method<&gfx::View::post>("post", {"on"})
+      .method<&gfx::View::exposure>("exposure", {"k"})
+      .method<&gfx::View::saturation>("saturation", {"k"})
+      .method<&gfx::View::bloom>("bloom", {"threshold", "strength"})
+      .method<&gfx::View::dof>("dof", {"strength", "range"})
+      .method<&gfx::View::ssao>("ssao", {"strength", "radius"})
+      .method<&gfx::View::vignette>("vignette", {"k"})
+      .method<&gfx::View::lut>("lut", {"tex", {"amount", 1.0}})
       .method<&gfx::View::supersample>("supersample", {"n"})
       .method<&gfx::View::clip_planes>("clip_planes", {"near", "far"})
       .method<&gfx::View::mouse_x>("mouse_x")
