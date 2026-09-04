@@ -66,7 +66,7 @@ Conventions used below:
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
 26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls, tone, sound, music)
-27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (experimental)
+27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry
 28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
 29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
 30. [`Vector2`](#30-vector2) — minimal 2D float vector for graphics/game code (also stands in for a "Point")
@@ -5465,14 +5465,15 @@ flight demos with a chase camera — rather than asset-driven games. A
 racing demo — circuit mesh, chase camera, gamepad steering — is the
 shape it is designed around.
 
-`Scene` is **experimental**: its API is still settling and can change between
-releases. It is in every build that has the `Canvas` window backend — the
-default on macOS, Linux and Windows, so the released binaries carry it — on
-the same vendored static SDL3 + raylib; `-DCULEBRA_ENABLE_SCENE=OFF` leaves it
-out. Linux is where a frame is drawn on every push (under Xvfb) and macOS is
+`Scene` is in every build that has the `Canvas` window backend — the default
+on macOS, Linux and Windows, so the released binaries carry it — on the same
+vendored static SDL3 + raylib; `-DCULEBRA_ENABLE_SCENE=OFF` leaves it out.
+Linux is where a frame is drawn on every push (under Xvfb,
+`tests/scene_api_test.sh` calling every method on both engines) and macOS is
 where it is run by hand, while the Windows build is linked but has yet to open
-a window. It has no headless mode, so — unlike `Canvas` — `Scene` programs run
-neither headless nor in the Playground.
+a window. A `View` has no headless mode, so — unlike `Canvas` — `Scene`
+programs run neither headless nor in the Playground; `Scene.Image`, the
+CPU-side image baker, is the one part that needs no window.
 
 ### The view and the frame loop
 

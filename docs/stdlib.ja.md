@@ -64,7 +64,7 @@
 24. [`TOML`](#24-toml) — TOML設定をparse / stringify
 25. [`SQLite`](#25-sqlite) — 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション）
 26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御 / tone / 効果音 / music）
-27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ（experimental）
+27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ
 28. [`Net`](#28-net) — 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ）
 29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで
 30. [`Vector2`](#30-vector2) — グラフィックス/ゲーム向けの最小限の2D floatベクトル（「Point」の代わりも兼ねる）
@@ -5299,14 +5299,14 @@ PNGのバイト列から読む）、スケルタルアニメーションなし�
 アセット駆動のゲームではない。サーキットのメッシュ、チェイスカメラ、
 ゲームパッド操作といったレーシングデモの形が、設計の基準になっている。
 
-`Scene`は **experimental**でAPIはまだ固まりきっておらず、リリース間で変わりうる。
-`Canvas`のウィンドウバックエンドを持つビルドには必ず入る — macOS・Linux・Windows
-の既定で、リリースバイナリもこれを持つ — vendoredな静的SDL3 + raylibを`Canvas`と
-共用し、`-DCULEBRA_ENABLE_SCENE=OFF`で外せる。フレームを実際に
-描いて確認しているのはLinux（毎pushのCIがXvfb下で描く）とmacOS（手動）で、
-Windowsビルドはリンクまでは通るがまだウィンドウを開いたことがない。ヘッドレス
-モードは無いので、`Canvas`と違い`Scene`プログラムはヘッドレスでもPlaygroundでも
-動かない。
+`Scene`は`Canvas`のウィンドウバックエンドを持つビルドには必ず入る — macOS・
+Linux・Windowsの既定で、リリースバイナリもこれを持つ — vendoredな静的SDL3 +
+raylibを`Canvas`と共用し、`-DCULEBRA_ENABLE_SCENE=OFF`で外せる。フレームを
+実際に描いて確認しているのはLinux（毎pushのCIがXvfb下で`tests/scene_api_test.sh`
+を回し、全メソッドを両エンジンで呼ぶ）とmacOS（手動）で、Windowsビルドは
+リンクまでは通るがまだウィンドウを開いたことがない。`View`にヘッドレスモードは
+無いので、`Canvas`と違い`Scene`プログラムはヘッドレスでもPlaygroundでも動かない。
+ウィンドウ無しで動くのはCPU側の画像ベイカー`Scene.Image`だけ。
 
 ### View とフレームループ
 

@@ -1793,7 +1793,7 @@ inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 | Concurrency | `Isolate`, `Channel`, `Parallel`, `Shared`, `SharedBuffer` |
 | Storage | `SQLite`, `Search` (a full-text index, experimental) |
 | Time, CLI, logging | `Time`, `Args`, `Log` |
-| Terminal and graphics | `Term`, `Canvas`, `Scene` (experimental), `Desktop` |
+| Terminal and graphics | `Term`, `Canvas`, `Scene`, `Desktop` |
 
 [`stdlib.md`](stdlib.md) documents each of them. Its index lists the
 namespaces in order, and the "Where to find what" table right below it
