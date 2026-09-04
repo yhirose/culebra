@@ -134,6 +134,12 @@ uniform sampler2D texture0;
 // texture0. Binding them as ad-hoc extra samplers read a zero texture on macOS.
 uniform sampler2D texture1;     // near cascade (tight, crisp)
 uniform sampler2D texture2;     // far cascade (wide)
+// The normal map rides the ROUGHNESS map slot (texture3) — the same working
+// material path as the cascades. Meshes carry no tangents, so the tangent
+// frame is rebuilt per fragment from screen-space derivatives of position
+// and UV (Schüler's method): exact on flat faces, good enough on curved ones.
+uniform sampler2D normalMap;
+uniform float normalStrength;   // 0 = no normal map
 uniform mat4 lightVP0;
 uniform mat4 lightVP1;
 uniform vec4 colDiffuse;
@@ -194,6 +200,17 @@ void main() {
   float cover = opacity * tex.a;
   if (cutoff > 0.0 && cover < cutoff) discard;
   vec3 N = normalize(fragNormal);
+  if (normalStrength > 0.0) {
+    vec3 dp1 = dFdx(fragWorld), dp2 = dFdy(fragWorld);
+    vec2 duv1 = dFdx(fragUV), duv2 = dFdy(fragUV);
+    vec3 dp2perp = cross(dp2, N), dp1perp = cross(N, dp1);
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+    float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+    vec3 nm = texture(normalMap, fragUV).xyz * 2.0 - 1.0;
+    nm.xy *= normalStrength;
+    N = normalize(mat3(T * invmax, B * invmax, N) * normalize(nm));
+  }
   vec3 L = -normalize(lightDir);
   float d = max(dot(N, L), 0.0);
 
@@ -465,8 +482,16 @@ class Material : public std::enable_shared_from_this<Material> {
   bool casts_shadow_ = true, fog_ = true;
   Blend blend_ = Blend::Over;
   Vector4 uv_{1, 1, 0, 0};   // scale.xy, offset.zw
+  std::shared_ptr<const Texture> normal;
+  float normal_strength = 0.0f;
 
   Material& rgb(int64_t r, int64_t g, int64_t b) { color = col(r, g, b); return *this; }
+  // A tangent-space normal map (Scene.Image.to_normal makes one); nil removes it.
+  Material& normal_map(const Texture* t, double strength) {
+    normal = t ? t->shared_from_this() : nullptr;
+    normal_strength = t ? (float)strength : 0.0f;
+    return *this;
+  }
   Material& pbr(double m, double r) { metallic = (float)m; roughness = (float)r; return *this; }
   Material& texture(const Texture* t) { tex = t ? t->shared_from_this() : nullptr; return *this; }
   Material& opacity(int64_t a) { opacity_ = chan(a); return *this; }
@@ -707,14 +732,53 @@ struct DrawItem {
   unsigned char opacity;   // node x material, 0..255
 };
 
-class Node {
+// The six planes of a view-projection, for culling a node's bounding sphere
+// before it becomes a DrawItem. Gribb/Hartmann: each plane is a sum or
+// difference of the matrix's fourth row with another. raymath names a
+// Matrix's fields by column-major index but declares them in row order
+// (m0, m4, m8, m12 is the first row), so rows are spelled by name — indexing
+// from &m0 would hand back columns.
+struct Frustum {
+  Vector4 plane[6];
+  static Frustum from(const Matrix& m) {
+    Vector4 r0{m.m0, m.m4, m.m8, m.m12};
+    Vector4 r1{m.m1, m.m5, m.m9, m.m13};
+    Vector4 r2{m.m2, m.m6, m.m10, m.m14};
+    Vector4 r3{m.m3, m.m7, m.m11, m.m15};
+    auto add = [](Vector4 a, Vector4 b, float s) {
+      Vector4 p{a.x + s * b.x, a.y + s * b.y, a.z + s * b.z, a.w + s * b.w};
+      float len = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+      return Vector4{p.x / len, p.y / len, p.z / len, p.w / len};
+    };
+    Frustum f;
+    f.plane[0] = add(r3, r0, 1);    // left
+    f.plane[1] = add(r3, r0, -1);   // right
+    f.plane[2] = add(r3, r1, 1);    // bottom
+    f.plane[3] = add(r3, r1, -1);   // top
+    f.plane[4] = add(r3, r2, 1);    // near
+    f.plane[5] = add(r3, r2, -1);   // far
+    return f;
+  }
+  bool visible(Vector3 c, float r) const {
+    for (const Vector4& p : plane)
+      if (p.x * c.x + p.y * c.y + p.z * c.z + p.w < -r) return false;
+    return true;
+  }
+};
+
+class Node : public std::enable_shared_from_this<Node> {
  public:
   Shape shape = Shape::Group;
   double w = 1, h = 1, d = 1, radius = 0.5;
   double px = 0, py = 0, pz = 0;
   double ex = 0, ey = 0, ez = 0;            // euler radians, ZYX
   double ax = 0, ay = 1, az = 0, ang = 0;   // axis-angle spin (radians)
+  Quaternion quat_{0, 0, 0, 1};             // replaces the euler when set (quat())
+  bool use_quat_ = false;
+  bool billboard_ = false;                  // face the camera (collect)
+  double cull_radius_ = 0;                  // 0 = from the shape, < 0 = never culled
   double scx = 1, scy = 1, scz = 1;
+  std::weak_ptr<Node> parent_;              // set by push(); a root has none
   Color color = WHITE;
   std::shared_ptr<const Material> mat;   // null = the inline tint alone
   int64_t order = 0;          // draw order: lower first (SceneKit's renderingOrder)
@@ -731,6 +795,7 @@ class Node {
   bool mesh_built = false;
   ::Mesh mesh_{};   // GL ids + indices — see build(); the vertex data is ours
   uint64_t mesh_epoch_ = 0;   // the GL context mesh_ was uploaded under
+  float mesh_radius_ = 0;     // farthest pushed vertex, for culling (build())
 
   // local-transform cache: recomputed only when a setter dirties it, so a
   // static subtree's matrix is built once, not 3x/frame across the passes.
@@ -762,6 +827,66 @@ class Node {
   Node& set_name(std::string n) { name = std::move(n); return *this; }
   Node& hide() { visible = false; return *this; }
   Node& show() { visible = true; return *this; }
+  // A quaternion orientation — what an integrator hands over, and what a car
+  // going over a crest needs where euler(ZYX) would gimbal-lock. Replaces the
+  // euler angles; spin() still composes on top.
+  Node& quat(double x, double y, double z, double w) {
+    quat_ = QuaternionNormalize(Quaternion{(float)x, (float)y, (float)z, (float)w});
+    use_quat_ = true;
+    local_dirty_ = true;
+    return *this;
+  }
+  Node& billboard(bool on) { billboard_ = on; return *this; }
+  Node& cull_radius(double r) { cull_radius_ = r; return *this; }
+
+  // --- the graph as data: parents, children, names, size --------------------
+  // Detach from the parent (a root is removed through view.remove()). The
+  // handle stays valid; the node just draws nowhere until re-added.
+  Node& remove() {
+    if (auto p = parent_.lock()) p->remove_child(this);
+    else TraceLog(LOG_ERROR, "Scene: node.remove() on a root — use view.remove(node).");
+    return *this;
+  }
+  void remove_child(const Node* child) {
+    for (auto it = children.begin(); it != children.end(); ++it)
+      if (it->get() == child) {
+        (*it)->parent_.reset();
+        children.erase(it);
+        return;
+      }
+  }
+  int64_t child_count() const { return (int64_t)children.size(); }
+  std::shared_ptr<Node> child_at(int64_t i) const {
+    if (i < 0 || (size_t)i >= children.size())
+      throw std::runtime_error("Scene: child_at(" + std::to_string(i) + ") — the node has " +
+                               std::to_string(children.size()) + " children");
+    return children[(size_t)i];
+  }
+  // Depth-first by name(), this node's subtree excluded of itself. A name
+  // nothing carries is an error rather than a nil handle: has() is the test.
+  std::shared_ptr<Node> find(std::string n) const {
+    if (auto f = search(n)) return f;
+    throw std::runtime_error("Scene: no node named '" + n + "'");
+  }
+  bool has(std::string n) const { return search(n) != nullptr; }
+  std::shared_ptr<Node> search(const std::string& n) const {
+    for (const auto& ch : children) {
+      if (ch->name == n) return ch;
+      if (auto f = ch->search(n)) return f;
+    }
+    return nullptr;
+  }
+  // Vertices a custom mesh holds (pushed, or uploaded) — so a builder can start
+  // a new node before the 65535 cap.
+  int64_t vertex_count() const { return mesh_built ? mesh_.vertexCount : (int64_t)(mv.size() / 3); }
+  // Position after every ancestor's transform — where the node is in the world.
+  Matrix world() const {
+    auto p = parent_.lock();
+    return p ? MatrixMultiply(local(), p->world()) : local();
+  }
+  double world_x() const { return world().m12; }
+  double world_y() const { return world().m13; }
+  double world_z() const { return world().m14; }
 
   // custom-mesh builders (scalar push — no array marshalling needed)
   Node& vertex(double x, double y, double z, double nx, double ny, double nz) {
@@ -817,6 +942,10 @@ class Node {
     m.vertices = nullptr;
     m.normals = nullptr;
     m.texcoords = nullptr;
+    float r2 = 0;
+    for (size_t i = 0; i + 2 < mv.size(); i += 3)
+      r2 = std::max(r2, mv[i] * mv[i] + mv[i + 1] * mv[i + 1] + mv[i + 2] * mv[i + 2]);
+    mesh_radius_ = std::sqrt(r2);
     if (mesh_built) unload_mesh();   // rebuilt: drop the older upload
     mesh_ = m;
     mesh_epoch_ = gl_epoch();
@@ -858,7 +987,8 @@ class Node {
   Matrix local() const {
     if (local_dirty_) {
       Matrix s = MatrixScale((float)scx, (float)scy, (float)scz);
-      Matrix r = MatrixRotateZYX(Vector3{(float)ex, (float)ey, (float)ez});
+      Matrix r = use_quat_ ? QuaternionToMatrix(quat_)
+                           : MatrixRotateZYX(Vector3{(float)ex, (float)ey, (float)ez});
       Matrix t = MatrixTranslate((float)px, (float)py, (float)pz);
       Matrix m = MatrixMultiply(s, r);
       if (ang != 0) m = MatrixMultiply(m, MatrixRotate(Vector3{(float)ax, (float)ay, (float)az}, (float)ang));
@@ -910,29 +1040,65 @@ class Node {
     for (const auto& ch : children) ch->render(world, ctx);
   }
 
+  // The bounding sphere's radius in local units, for culling: the shape's own
+  // (a mesh's farthest vertex), unless cull_radius() says otherwise.
+  double bound_radius() const {
+    if (cull_radius_ != 0) return cull_radius_;
+    switch (shape) {
+      case Shape::Box: return 0.5 * std::sqrt(w * w + h * h + d * d);
+      case Shape::Sphere: return radius;
+      case Shape::Cylinder: return std::sqrt(radius * radius + h * h * 0.25);
+      case Shape::Plane: return 0.5 * std::sqrt(w * w + d * d);
+      case Shape::Mesh: return mesh_radius_;
+      case Shape::Group: return 0;
+    }
+    return 0;
+  }
+
   // The lit pass, first half: one DrawItem per drawable node, depth-first, so
-  // View::emit can sort them (see DrawItem).
-  void collect(const Matrix& parent, const RenderCtx& ctx, Vector3 eye,
-               std::vector<DrawItem>& out) const {
+  // View::emit can sort them (see DrawItem). `cam_rot` is the camera's rotation
+  // for billboards; `fr` the frustum to cull against, or null for none.
+  void collect(const Matrix& parent, const RenderCtx& ctx, const Camera3D& cam, const Matrix& cam_rot,
+               const Frustum* fr, std::vector<DrawItem>& out) const {
     if (!visible) return;
     Matrix world = MatrixMultiply(local(), parent);
-    if (mesh_for(ctx)) {
-      int64_t op = mat ? opacity_ * mat->opacity_ / 255 : opacity_;
-      out.push_back(DrawItem{
-          .node = this,
-          .world = world,
-          .draw = shape == Shape::Mesh ? world : MatrixMultiply(shape_scale(), world),
-          .mat = mat.get(),
-          .order = order,
-          .depth = Vector3Distance(Vector3{world.m12, world.m13, world.m14}, eye),
-          .transparent = mat ? mat->transparent(opacity_) : op < 255,
-          .opacity = (unsigned char)op});
+    if (billboard_) {   // the node's rotation replaced by the camera's, in the world
+      Matrix s = MatrixScale((float)scx, (float)scy, (float)scz);
+      Matrix t = MatrixTranslate(world.m12, world.m13, world.m14);
+      world = MatrixMultiply(MatrixMultiply(s, cam_rot), t);
     }
-    for (const auto& ch : children) ch->collect(world, ctx, eye, out);
+    if (mesh_for(ctx)) {
+      Vector3 pos{world.m12, world.m13, world.m14};
+      bool culled = false;
+      if (fr && cull_radius_ >= 0) {
+        // The world matrix's largest axis scale, so a scaled node's sphere grows.
+        float sx = Vector3Length(Vector3{world.m0, world.m1, world.m2});
+        float sy = Vector3Length(Vector3{world.m4, world.m5, world.m6});
+        float sz = Vector3Length(Vector3{world.m8, world.m9, world.m10});
+        culled = !fr->visible(pos, (float)bound_radius() * std::max({sx, sy, sz}));
+      }
+      if (!culled) {
+        int64_t op = mat ? opacity_ * mat->opacity_ / 255 : opacity_;
+        out.push_back(DrawItem{
+            .node = this,
+            .world = world,
+            .draw = shape == Shape::Mesh ? world : MatrixMultiply(shape_scale(), world),
+            .mat = mat.get(),
+            .order = order,
+            .depth = Vector3Distance(pos, cam.position),
+            .transparent = mat ? mat->transparent(opacity_) : op < 255,
+            .opacity = (unsigned char)op});
+      }
+    }
+    for (const auto& ch : children) ch->collect(world, ctx, cam, cam_rot, fr, out);
   }
 
  private:
-  std::shared_ptr<Node> push(std::shared_ptr<Node> n) { children.push_back(n); return n; }
+  std::shared_ptr<Node> push(std::shared_ptr<Node> n) {
+    n->parent_ = shared_from_this();
+    children.push_back(n);
+    return n;
+  }
 
   // Has this mesh's GL side survived? It dies with the View that uploaded it
   // (see gl_epoch), and drawing with ids the current context reused would draw
@@ -1004,6 +1170,10 @@ class View {
     loc_fogon_ = GetShaderLocation(lit_, "fogOn");
     loc_alphamode_ = GetShaderLocation(lit_, "alphaMode");
     loc_uv_ = GetShaderLocation(lit_, "uvXform");
+    loc_nstrength_ = GetShaderLocation(lit_, "normalStrength");
+    // DrawMesh binds maps[i] to shader.locs[MAP_DIFFUSE + i]; raylib fills the
+    // first three (texture0..2), so the normal map's slot is named here.
+    lit_.locs[SHADER_LOC_MAP_ROUGHNESS] = GetShaderLocation(lit_, "normalMap");
     sky_top_ = Color{135, 165, 205, 255};   // default reflected sky until sky() is called
     sky_bot_ = Color{182, 202, 224, 255};
     set_sky_uniform();
@@ -1370,7 +1540,7 @@ class View {
     // Alpha is coverage here, not depth: no post pass reads this target, and a
     // sprite() of it (or anything else blending by alpha) must see the image
     // as opaque, not as 0.4% of itself.
-    lit_pass(cam.position, /*depth_in_alpha=*/false);
+    lit_pass(cam, /*depth_in_alpha=*/false);
     EndMode3D();
     rlEnableColorBlend();
     EndTextureMode();
@@ -1396,6 +1566,29 @@ class View {
   }
 
   std::shared_ptr<Node> add_node() { return push(std::make_shared<Node>()); }
+  // Take a node out of the scene — a root, or a child through its parent. The
+  // handle stays valid; the node just draws nowhere until re-added.
+  void remove(const Node& n) {
+    for (auto it = roots_.begin(); it != roots_.end(); ++it)
+      if (it->get() == &n) { roots_.erase(it); return; }
+    if (auto p = n.parent_.lock()) { p->remove_child(&n); return; }
+    TraceLog(LOG_ERROR, "Scene: view.remove(): the node is not in this scene. Ignored.");
+  }
+  std::shared_ptr<Node> find(std::string name) const {
+    for (const auto& r : roots_) {
+      if (r->name == name) return r;
+      if (auto f = r->search(name)) return f;
+    }
+    throw std::runtime_error("Scene: no node named '" + name + "'");
+  }
+  bool has(std::string name) const {
+    for (const auto& r : roots_)
+      if (r->name == name || r->search(name)) return true;
+    return false;
+  }
+  // Frustum culling of nodes whose bounding sphere is off screen (default
+  // on). Off is for measuring what it saves, or a shape whose bound is wrong.
+  void culling(bool on) { culling_ = on; }
   std::shared_ptr<Node> add_box(double w, double h, double d) { return push(Node::make_box(w, h, d)); }
   std::shared_ptr<Node> add_sphere(double r) { return push(Node::make_sphere(r)); }
   std::shared_ptr<Node> add_cylinder(double r, double h) { return push(Node::make_cylinder(r, h)); }
@@ -1436,15 +1629,22 @@ class View {
     return MatrixMultiply(lv, lp);
   }
 
-  // The lit pass, inside a BeginMode3D: collect from the eye's point of view,
-  // then emit. Shared by render_3d() (whose target the post pass reads, so
-  // opaque alpha carries depth) and render_to() (whose target is an image, so
-  // alpha is coverage).
-  void lit_pass(Vector3 eye, bool depth_in_alpha) {
+  // The lit pass, inside a BeginMode3D: collect from the camera's point of
+  // view, then emit. Shared by render_3d() (whose target the post pass reads,
+  // so opaque alpha carries depth) and render_to() (whose target is an image,
+  // so alpha is coverage). The frustum and the camera's rotation come from the
+  // matrices BeginMode3D just installed.
+  void lit_pass(const Camera3D& cam, bool depth_in_alpha) {
     items_.clear();
     auto ctx = pass_ctx(mat_);
     Matrix id = MatrixIdentity();
-    for (const auto& n : roots_) n->collect(id, ctx, eye, items_);
+    Matrix view = rlGetMatrixModelview();
+    Frustum fr = Frustum::from(MatrixMultiply(view, rlGetMatrixProjection()));
+    // The view's rotation, transposed: what a billboard turns by to face the eye.
+    Matrix cam_rot = MatrixTranspose(view);
+    cam_rot.m12 = cam_rot.m13 = cam_rot.m14 = 0;
+    cam_rot.m3 = cam_rot.m7 = cam_rot.m11 = 0;
+    for (const auto& n : roots_) n->collect(id, ctx, cam, cam_rot, culling_ ? &fr : nullptr, items_);
     emit(items_, depth_in_alpha);
   }
 
@@ -1492,8 +1692,12 @@ class View {
       // v' = 1 - (v * vs + vo) = v * -vs + (1 - vo): the flip composes with the
       // material's own transform, so a mirror's uv(-1, 1, 1, 0) still mirrors.
       if (m && m->tex && m->tex->live() && m->tex->flip_v) { uv.y = -uv.y; uv.w = 1.0f - uv.w; }
+      bool nm = m && m->normal && m->normal->live();
+      float nstrength = nm ? m->normal_strength : 0.0f;
       mat_.maps[MATERIAL_MAP_DIFFUSE].color = c;
       mat_.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
+      mat_.maps[MATERIAL_MAP_ROUGHNESS].texture = nm ? m->normal->tex : white_;
+      SetShaderValue(lit_, loc_nstrength_, &nstrength, SHADER_UNIFORM_FLOAT);
       SetShaderValue(lit_, loc_metallic_, &metallic, SHADER_UNIFORM_FLOAT);
       SetShaderValue(lit_, loc_rough_, &roughness, SHADER_UNIFORM_FLOAT);
       SetShaderValue(lit_, loc_opacity_, &opacity, SHADER_UNIFORM_FLOAT);
@@ -1561,7 +1765,7 @@ class View {
     rlDisableColorBlend();
     BeginMode3D(cam_);
     // cascades are bound automatically via mat_.maps[SPECULAR/NORMAL]
-    lit_pass(cam_.position, /*depth_in_alpha=*/true);
+    lit_pass(cam_, /*depth_in_alpha=*/true);
     EndMode3D();
     rlEnableColorBlend();
     EndTextureMode();
@@ -1906,7 +2110,8 @@ class View {
   int loc_skytop_ = 0, loc_skybot_ = 0;
   int loc_metallic_ = 0, loc_rough_ = 0;
   int loc_opacity_ = 0, loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_fogon_ = 0;
-  int loc_alphamode_ = 0, loc_uv_ = 0;
+  int loc_alphamode_ = 0, loc_uv_ = 0, loc_nstrength_ = 0;
+  bool culling_ = true;
   std::vector<DrawItem> items_;   // the lit pass's draw list, reused each frame
   bool blend_set_ = false;        // set_blend has programmed the custom factors once
   Vector3 dir_ = Vector3{0.5f, -1.0f, -0.6f};
@@ -2106,7 +2311,8 @@ const bool registered = [] {
       .borrowed_method<&gfx::Material::casts_shadow>("casts_shadow", {"on"})
       .borrowed_method<&gfx::Material::fog>("fog", {"on"})
       .borrowed_method<&gfx::Material::blend>("blend", {"name"})
-      .borrowed_method<&gfx::Material::uv>("uv", {"us", "vs", {"uo", 0.0}, {"vo", 0.0}});
+      .borrowed_method<&gfx::Material::uv>("uv", {"us", "vs", {"uo", 0.0}, {"vo", 0.0}})
+      .borrowed_method<&gfx::Material::normal_map>("normal_map", {"tex", {"strength", 1.0}});
 
   culebra::wrap<gfx::Node>("Scene", "Node")
       .borrowed_method<&gfx::Node::move>("move", {"x", "y", "z"})
@@ -2121,6 +2327,18 @@ const bool registered = [] {
       .borrowed_method<&gfx::Node::material>("material", {"m"})
       .borrowed_method<&gfx::Node::set_order>("order", {"n"})
       .borrowed_method<&gfx::Node::opacity>("opacity", {"a"})
+      .borrowed_method<&gfx::Node::quat>("quat", {"x", "y", "z", "w"})
+      .borrowed_method<&gfx::Node::billboard>("billboard", {{"on", true}})
+      .borrowed_method<&gfx::Node::cull_radius>("cull_radius", {"r"})
+      .borrowed_method<&gfx::Node::remove>("remove")
+      .method<&gfx::Node::child_count>("child_count")
+      .method<&gfx::Node::child_at>("child_at", {"i"})
+      .method<&gfx::Node::find>("find", {"name"})
+      .method<&gfx::Node::has>("has", {"name"})
+      .method<&gfx::Node::vertex_count>("vertex_count")
+      .method<&gfx::Node::world_x>("world_x")
+      .method<&gfx::Node::world_y>("world_y")
+      .method<&gfx::Node::world_z>("world_z")
       .borrowed_method<&gfx::Node::set_name>("name", {"n"})
       .borrowed_method<&gfx::Node::hide>("hide")
       .borrowed_method<&gfx::Node::show>("show")
@@ -2205,6 +2423,10 @@ const bool registered = [] {
       .method<&gfx::View::font>("font", {"path", "size", {"chars", ""}})
       .method<&gfx::View::font_bytes>("font_bytes", {"data", "size", {"chars", ""}})
       .method<&gfx::View::add_node>("add_node")
+      .method<&gfx::View::remove>("remove", {"node"})
+      .method<&gfx::View::find>("find", {"name"})
+      .method<&gfx::View::has>("has", {"name"})
+      .method<&gfx::View::culling>("culling", {"on"})
       .method<&gfx::View::add_box>("add_box", {"w", "h", "d"})
       .method<&gfx::View::add_sphere>("add_sphere", {"r"})
       .method<&gfx::View::add_cylinder>("add_cylinder", {"r", "h"})

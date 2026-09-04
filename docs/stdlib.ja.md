@@ -5363,8 +5363,18 @@ GPUを必要とするため）。位置とサイズは`Float`
 | `node.material(m)` | `Material`を割り当て（下記）。`nil`でtintだけに戻る |
 | `node.order(n)` | 描画順: 小さいほど先（既定0。ワールド内のHUD板は大きな値に） |
 | `node.opacity(a)` | 0–255。マテリアルの値に掛かる |
+| `node.quat(x, y, z, w)` | 姿勢をクォータニオンで — 積分器が渡してくる形。オイラー角を置き換える（`spin`は上に重なる） |
+| `node.billboard(on = true)` | 毎フレームカメラに正対する（ワールド内のスプライト、遠景の木のカード） |
 | `node.hide()` / `show()` / `name(n)` | 可視性 / ラベル |
 | `node.x()` / `y()` / `z() -> Float` | 位置を読み戻す |
+| `node.world_x()` / `world_y()` / `world_z() -> Float` | 祖先すべての変換を掛けた後の位置 |
+| `node.child_count() -> Long` / `node.child_at(i) -> Node` | 子ノード（範囲外は`RuntimeError`） |
+| `node.find(name) -> Node` / `node.has(name) -> Bool` | 名前付きの子孫（無い名前の`find`は`RuntimeError`。`has`が判定） |
+| `node.remove()` | 親から外す — ハンドルは有効なまま、再追加までどこにも描かれない |
+| `node.vertex_count() -> Long` | カスタムメッシュの頂点数（push済みまたはアップロード済み）。上限の前に次のノードへ移るため |
+| `node.cull_radius(r)` | カリングに使う境界球（0 = 形状から。負なら決してカリングしない） |
+| `view.remove(node)` / `view.find(name) -> Node` / `view.has(name) -> Bool` | 同じことをシーン全体（ルート含む）に |
+| `view.culling(on)` | 境界球が画面外のノードを飛ばす（既定on。絵は決して変わらない） |
 
 カスタムメッシュは頂点と三角形から組み、最後に確定する: `m.vertex(x, y, z, nx,
 ny, nz)`（または`vertex_uv(…, u, v)`）が頂点、`m.tri(a, b, c)`が頂点インデックス
@@ -5384,6 +5394,7 @@ ny, nz)`（または`vertex_uv(…, u, v)`）が頂点、`m.tri(a, b, c)`が頂�
 | `mat.pbr(metallic, roughness) -> Material` | PBR応答。どちらも0–1（既定は0と0.85） |
 | `mat.texture(tex) -> Material` | サンプルする`Texture`。`nil`で無し |
 | `mat.uv(us, vs, uo = 0.0, vo = 0.0) -> Material` | テクスチャ座標の拡縮とオフセット（路面のタイル。`us`に`-1.0`で左右反転） |
+| `mat.normal_map(tex, strength = 1.0) -> Material` | タンジェント空間の法線マップ（`Scene.Image.to_normal`が作る）。タンジェント枠はピクセルごとに導出するのでメッシュにタンジェントは不要。`nil`で外す |
 | `mat.opacity(a) -> Material` | 0–255。255未満で透過面になる |
 | `mat.cutout(threshold) -> Material` | 被覆（opacity × テクスチャalpha）がこれ未満のピクセルを捨てる（葉のカード）。0でoff |
 | `mat.blend(name) -> Material` | 透過面が背後と混ざる方法: `"over"`（既定）、`"add"`（ランプ、光）、`"multiply"`、`"screen"` |

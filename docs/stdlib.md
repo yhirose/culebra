@@ -5529,8 +5529,18 @@ persistent geometry once and move it each frame.
 | `node.material(m)` | assign a `Material` (below); `nil` goes back to the tint alone |
 | `node.order(n)` | draw order: lower draws first (default 0; a HUD plate in the world sits at a high one) |
 | `node.opacity(a)` | 0–255, multiplied into the material's |
+| `node.quat(x, y, z, w)` | orientation as a quaternion — what an integrator hands over; replaces the euler angles (`spin` still composes) |
+| `node.billboard(on = true)` | face the camera every frame (a sprite in the world, a distant tree card) |
 | `node.hide()` / `show()` / `name(n)` | visibility / label |
 | `node.x()` / `y()` / `z() -> Float` | read back position |
+| `node.world_x()` / `world_y()` / `world_z() -> Float` | position after every ancestor's transform |
+| `node.child_count() -> Long` / `node.child_at(i) -> Node` | the children (out of range is a `RuntimeError`) |
+| `node.find(name) -> Node` / `node.has(name) -> Bool` | a named descendant (`find` of a name nothing carries is a `RuntimeError`; `has` is the test) |
+| `node.remove()` | detach from the parent — the handle stays valid, the node draws nowhere until re-added |
+| `node.vertex_count() -> Long` | a custom mesh's vertices, pushed or uploaded — to start a new node before the cap |
+| `node.cull_radius(r)` | the bounding sphere culling uses (0 = from the shape; negative = never culled) |
+| `view.remove(node)` / `view.find(name) -> Node` / `view.has(name) -> Bool` | the same over the whole scene, roots included |
+| `view.culling(on)` | skip nodes whose bounding sphere is off screen (default on; it never changes the picture) |
 
 A custom mesh is built from vertices and triangles, then finalised:
 `m.vertex(x, y, z, nx, ny, nz)` (or `vertex_uv(…, u, v)`) adds a vertex,
@@ -5551,6 +5561,7 @@ setters, so one reads as a single expression:
 | `mat.pbr(metallic, roughness) -> Material` | PBR response, both 0–1 (the defaults are 0 and 0.85) |
 | `mat.texture(tex) -> Material` | a `Texture` to sample, or `nil` for none |
 | `mat.uv(us, vs, uo = 0.0, vo = 0.0) -> Material` | scale and offset the texture coordinates (tiling a road; `-1.0` in `us` mirrors) |
+| `mat.normal_map(tex, strength = 1.0) -> Material` | a tangent-space normal map (`Scene.Image.to_normal` makes one); the tangent frame is derived per pixel, so a mesh needs no tangents; `nil` removes it |
 | `mat.opacity(a) -> Material` | 0–255; below 255 the surface is transparent |
 | `mat.cutout(threshold) -> Material` | discard where coverage (opacity × texture alpha) is below it (a leaf card); 0 turns it off |
 | `mat.blend(name) -> Material` | how a transparent surface meets what is behind it: `"over"` (default), `"add"` (lamps, glows), `"multiply"`, `"screen"` |

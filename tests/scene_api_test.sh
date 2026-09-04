@@ -177,6 +177,45 @@ let mx = view.mouse_x()
 let mwheel = view.mouse_wheel()
 println("mouse {mx >= 0.0 || mx < 0.0} dx {view.mouse_dx()} wheel {mwheel} {view.mouse("left")} {view.mouse_pressed("right")} {view.mouse("wheel")}")
 
+# --- the graph as data, and culling that changes nothing visible ---
+let tree = view.add_node().move(1.0, 2.0, 3.0).name("tree")
+let leaf = tree.add_box(0.2, 0.2, 0.2).move(1.0, 0.0, 0.0).name("leaf")
+leaf.add_sphere(0.1).name("fruit")
+println("graph {tree.child_count()} {tree.child_at(0).world_x()} {view.find("fruit").world_z()} {view.has("leaf")} {tree.has("nope")} {leaf.vertex_count()} {mesh.vertex_count()}")
+let missing = try {
+  view.find("nope")
+  "accepted"
+} catch e {
+  e.kind
+}
+let oob = try {
+  tree.child_at(5)
+  "accepted"
+} catch e {
+  e.kind
+}
+println("find/child_at errors: {missing} {oob}")
+leaf.quat(0.0, 0.7071, 0.0, 0.7071).billboard().billboard(false).cull_radius(-1.0)
+leaf.remove()
+println("removed {tree.child_count()} {view.has("fruit")}")
+view.remove(tree)
+println("root removed {view.has("tree")}")
+view.add_box(1.0, 1.0, 1.0).move(1000.0, 0.0, 0.0)   # off screen: culled, or drawn to nothing
+let bumps = Scene.Image.new(8, 8).fill(128, 128, 128).noise(1, 2.0, 255).to_normal(2.0)
+let bumpy = view.add_material().rgb(180, 180, 180).normal_map(view.texture(bumps), 1.0)
+view.add_box(1.0, 1.0, 1.0).move(-3.0, 2.0, 0.0).material(bumpy)
+view.camera(4.0, 3.0, 5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 55.0)
+view.culling(true)
+view.render_3d()
+view.screenshot("cull_on.png")
+view.present()
+view.culling(false)
+view.render_3d()
+view.screenshot("cull_off.png")
+view.present()
+view.culling(true)
+println("culling invisible: {FS.read("cull_on.png") == FS.read("cull_off.png")}")
+
 # --- input: nothing is pressed on a machine nobody is touching ---
 let k1 = view.key("escape")
 let k2 = view.key_pressed("a")
@@ -694,6 +733,11 @@ expect "resized frame drew: true"
 expect "font 24.0 glyphs 12 bytes-form 24.0 12"
 expect "text_width grows true default true height true"
 expect "image text with a font drew: true"
+expect "graph 1 2.0 3.0 true false 0 3"
+expect "find/child_at errors: RuntimeError RuntimeError"
+expect "removed 0 false"
+expect "root removed false"
+expect "culling invisible: true"
 expect "missing font: RuntimeError"
 expect "2d frame drew: true"
 expect "clip cut: true"
