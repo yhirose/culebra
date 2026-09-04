@@ -1,0 +1,116 @@
+# Regression tests for lin.cul, run against the same 16 programs the
+# original rust_zero/linz ships as its own worked examples and error cases
+# (examples/linz/samples/*.lin).
+
+import lin from './lin.cul'
+
+fn check(name) {
+  let path = "{FS.dirname(Sys.script)}/samples/{name}.lin"
+  let tree = Peg.parse(lin.grammar, FS.read(path), path: path)
+  let (t, _) = lin.typing(tree, {})
+  lin.type_to_s(t)
+}
+
+fn rejected(name) {
+  try {
+    check(name)
+    nil
+  } catch e {
+    e
+  }
+}
+
+@test
+fn ex1_lin_bool_to_bool_identity_like_if() {
+  assert_eq(check('ex1'), 'lin (lin bool -> lin bool)')
+}
+
+@test
+fn ex2_let_binds_an_un_bool() {
+  assert_eq(check('ex2'), 'un bool')
+}
+
+@test
+fn ex3_a_lin_fn_may_free_its_own_parameter() {
+  assert_eq(check('ex3'), 'lin (lin bool -> lin bool)')
+}
+
+@test
+fn ex4_split_then_free_both_halves() {
+  assert_eq(check('ex4'), 'un bool')
+}
+
+@test
+fn ex5_applying_a_lin_fn_consumes_the_argument() {
+  assert_eq(check('ex5'), 'un (un bool * un bool)')
+}
+
+@test
+fn ex6_an_un_pair_of_un_bools() {
+  assert_eq(check('ex6'), 'un (un bool * un bool)')
+}
+
+@test
+fn ex7_split_may_read_a_lin_field_from_both_branches() {
+  assert_eq(check('ex7'), 'lin (lin (lin bool * lin bool) -> lin bool)')
+}
+
+@test
+fn ex8_a_lin_pair_built_from_two_lin_lets() {
+  assert_eq(check('ex8'), 'lin (lin bool * lin bool)')
+}
+
+@test
+fn err1_un_pair_cannot_hold_a_lin_value() {
+  let e = rejected('err1')
+  assert_eq(e.kind, 'LinzError')
+  assert_true(e.message.contains("can't hold a lin-qualified value"))
+}
+
+@test
+fn err2_a_freed_lin_parameter_cannot_be_read_again() {
+  let e = rejected('err2')
+  assert_eq(e.kind, 'LinzError')
+  assert_true(e.message.contains('undefined, already used'))
+}
+
+@test
+fn err3_freeing_twice_is_rejected() {
+  let e = rejected('err3')
+  assert_eq(e.kind, 'LinzError')
+  assert_true(e.message.contains('already freed'))
+}
+
+@test
+fn err4_split_must_consume_every_lin_half() {
+  let e = rejected('err4')
+  assert_eq(e.kind, 'LinzError')
+  assert_true(e.message.contains("consume lin-qualified variable \"y\""))
+}
+
+@test
+fn err5_if_branches_must_consume_the_same_lin_variables() {
+  let e = rejected('err5')
+  assert_eq(e.kind, 'LinzError')
+  assert_true(e.message.contains('consume different lin-qualified variables'))
+}
+
+@test
+fn err6_an_un_fn_cannot_capture_a_lin_value() {
+  let e = rejected('err6')
+  assert_eq(e.kind, 'LinzError')
+  assert_true(e.message.contains('undefined, already used, or not capturable'))
+}
+
+@test
+fn err7_a_top_level_lin_let_must_be_consumed() {
+  let e = rejected('err7')
+  assert_eq(e.kind, 'LinzError')
+  assert_true(e.message.contains('never consumed'))
+}
+
+@test
+fn parse_err_a_typo_keyword_is_a_syntax_error() {
+  let e = rejected('parse_err')
+  assert_eq(e.kind, 'PegError')
+}

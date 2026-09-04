@@ -1,0 +1,273 @@
+# A type checker for a tiny linear-type lambda calculus — every value is
+# tagged `lin` (used exactly once) or `un` (used freely), and the checker's
+# job is to prove that tagging honest. Booleans, pairs and closures, plus
+# `let` / `if` / `split` (pair destructuring) / `free` (early-drop a `lin`
+# value) / application. Ported from rust_zero's `linz`
+# (https://github.com/ytakano/rust_zero/tree/master/ch09/linz), a hand-rolled
+# nom parser + a mutable, depth-indexed type-environment stack. The grammar
+# below is a PEG instead, and the checker threads an *immutable* environment
+# through as an ordinary return value — see "Why an immutable environment"
+# below for what that buys.
+#
+# Run it:  culebra examples/linz/linz.cul examples/linz/samples/ex1.lin
+#          culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
+#
+# `ex*.lin` type-check; `err*.lin` are rejected for a linearity or type
+# reason; `parse_err.lin` doesn't even parse.
+
+let grammar = `
+  PROGRAM <- _ EXPR _
+
+  EXPR   <- LET / IF / SPLIT / FREE / APP / QVAL / VAR
+
+  LET    <- 'let' __ IDENT ':' _ TYPE '=' _ EXPR ';' _ EXPR
+  IF     <- 'if' __ EXPR '{' _ EXPR '}' _ 'else' __ '{' _ EXPR '}' _
+  SPLIT  <- 'split' __ EXPR 'as' __ IDENT ',' _ IDENT '{' _ EXPR '}' _
+  FREE   <- 'free' __ IDENT ';' _ EXPR
+  APP    <- '(' _ EXPR EXPR ')' _
+  QVAL   <- QUAL VAL
+  VAR    <- IDENT
+
+  VAL    <- BOOL / PAIR / FN
+  BOOL   <- < 'true' / 'false' > __
+  PAIR   <- '<' _ EXPR ',' _ EXPR '>' _
+  FN     <- 'fn' __ IDENT ':' _ TYPE '{' _ EXPR '}' _
+
+  QUAL   <- < 'lin' / 'un' > __
+
+  RESERVED <- ('let' / 'if' / 'else' / 'split' / 'as' / 'free' / 'fn'
+               / 'lin' / 'un' / 'true' / 'false' / 'bool') ![a-zA-Z]
+  IDENT    <- !RESERVED < [a-zA-Z]+ > _
+
+  TYPE   <- QUAL PRIM
+  PRIM   <- BOOLTY / '(' _ TYPE OP TYPE ')' _
+  BOOLTY <- 'bool' __
+  OP     <- < '*' / '->' > _
+
+  ~_     <- [ \t\r\n]*
+  ~__    <- ![a-zA-Z] _
+`
+
+# --- Types ---------------------------------------------------------------
+#
+# A type is `{qual, prim}` plus `left`/`right` (pair) or `arg`/`ret` (arrow).
+# It has to be a value distinct from the TYPE parse node: two occurrences of
+# `lin bool` parsed from different positions are equal types but unequal
+# nodes (position is part of a node's own identity), and the checker compares
+# types with plain `==` throughout (function application, `let`'s
+# annotation, `if`'s branches). Building this shape once, right after
+# parsing a TYPE, is cheaper than teaching every comparison to ignore
+# position.
+
+fn to_type(node) {
+  let q = node.nodes[0].token
+  match node.nodes[1] {
+    {name: 'BOOLTY'} => {qual: q, prim: 'bool'},
+    {
+      name: 'PRIM',
+      nodes: [l, op, r],
+    } => op.token == '*'
+      ? {qual: q, prim: 'pair', left: to_type(l), right: to_type(r)}
+      : {qual: q, prim: 'fun', arg: to_type(l), ret: to_type(r)},
+  }
+}
+
+fn type_to_s(t) {
+  let p = match t.prim {
+    'bool' => 'bool',
+    'pair' => "({type_to_s(t.left)} * {type_to_s(t.right)})",
+    'fun' => "({type_to_s(t.arg)} -> {type_to_s(t.ret)})",
+  }
+  "{t.qual} {p}"
+}
+
+# --- Why an immutable environment -----------------------------------------
+#
+# The environment is one flat `{name: type}` — no lin/un split, no
+# depth-indexed scope stack. `lin` and `un` don't need separate storage:
+# using a variable already means looking at its own `qual`. And every
+# construct that opens a scope (`let`, `split`, a function body) already
+# gets a private copy for free, because `typing` never mutates `env` — it
+# takes one and returns `(type, env')`, so the caller's binding is
+# untouched by construction. Nested scoping, `if`'s "both branches must
+# consume the same lin variables" check (plain `==` on the two resulting
+# environments — no depth bookkeeping to compare), and an `un` closure's
+# "can't see a lin capture" rule (typecheck the body against a *filtered*
+# copy — nothing to save and restore afterwards) all fall out of this
+# rather than needing their own machinery.
+
+fn bound(env, name, t) {
+  mut e = {...env}
+  e[name] = t
+  e
+}
+fn unbound(env, name) {
+  mut e = {...env}
+  e.remove(name)
+  e
+}
+fn un_only(env) {
+  env.iter().filter(|kv| kv[1].qual == 'un').to_object()
+}
+
+# Reports a name from `env` that's `lin` and still sitting there unused —
+# the "forgot to consume it" check shared by `let`, `split` and a function
+# body.
+fn unconsumed(env, names) {
+  names.filter(|n| env.has(n) && env[n].qual == 'lin')
+}
+
+fn fail(node, msg) {
+  throw {kind: 'LinzError', message: msg, line: node.line, col: node.column}
+}
+
+# --- Checking --------------------------------------------------------------
+#
+# `typing(node, env) -> (type, env')`. Every case reads as "type the
+# subexpressions left to right, threading env through, then say what this
+# node's own type and outgoing env are" — the same order the grammar itself
+# reads the source in, and the same order lin values actually get consumed
+# in.
+
+fn typing(node, env) {
+  match node {
+    {name: 'IDENT', token} => typing_var(node, token, env),
+    {name: 'APP', nodes: [f, a]} => typing_app(node, f, a, env),
+    {name: 'QVAL', nodes: [q, v]} => typing_qval(q.token, v, env),
+    {name: 'FREE', nodes: [v, e]} => typing_free(node, v.token, e, env),
+    {name: 'IF', nodes: [c, t, e]} => typing_if(node, c, t, e, env),
+    {
+      name: 'SPLIT',
+      nodes: [e, l, r, body],
+    } => typing_split(node, e, l.token, r.token, body, env),
+    {
+      name: 'LET',
+      nodes: [v, ty, e1, e2],
+    } => typing_let(node, v.token, ty, e1, e2, env),
+  }
+}
+
+fn typing_var(at, name, env) {
+  if !env.has(name) {
+    fail(at, "\"{name}\" is undefined, already used, or not capturable here")
+  }
+  let t = env[name]
+  (t, t.qual == 'lin' ? unbound(env, name) : env)
+}
+
+fn typing_app(at, f, a, env) {
+  let (tf, env1) = typing(f, env)
+  if tf.prim != 'fun' {
+    fail(at, "applying a non-function value")
+  }
+  let (ta, env2) = typing(a, env1)
+  if tf.arg != ta {
+    fail(at, "argument type doesn't match the function's parameter type")
+  }
+  (tf.ret, env2)
+}
+
+fn typing_qval(q, v, env) {
+  match v {
+    {name: 'BOOL'} => ({qual: q, prim: 'bool'}, env),
+    {name: 'PAIR', nodes: [e1, e2]} => typing_pair(q, e1, e2, env),
+    {
+      name: 'FN',
+      nodes: [var, ty, body],
+    } => typing_fn(q, var.token, ty, body, env),
+  }
+}
+
+fn typing_pair(q, e1, e2, env) {
+  let (t1, env1) = typing(e1, env)
+  let (t2, env2) = typing(e2, env1)
+  if q == 'un' && (t1.qual == 'lin' || t2.qual == 'lin') {
+    fail(e1, "an un-qualified pair can't hold a lin-qualified value")
+  }
+  ({qual: q, prim: 'pair', left: t1, right: t2}, env2)
+}
+
+# A function literal is checked right where it's written, against the
+# environment at that point — this is where a closure's captures get
+# consumed, not at some later "call" the checker never simulates. `un`
+# narrows what's visible first (a lin capture would let one closure call
+# smuggle a lin value out twice), and either way the parameter itself never
+# escapes into the caller's environment.
+fn typing_fn(q, var, ty_node, body, env) {
+  let ty = to_type(ty_node)
+  let inner = q == 'un' ? un_only(env) : env
+  let (t, env2) = typing(body, bound(inner, var, ty))
+  if !unconsumed(env2, [var]).empty() {
+    fail(
+      body,
+      "the function body doesn't consume lin-qualified parameter \"{var}\"",
+    )
+  }
+  (
+    {qual: q, prim: 'fun', arg: ty, ret: t},
+    q == 'un' ? env : unbound(env2, var),
+  )
+}
+
+fn typing_free(at, var, e, env) {
+  if !(env.has(var) && env[var].qual == 'lin') {
+    fail(at, "\"{var}\" is already freed, or isn't a lin-qualified variable")
+  }
+  typing(e, unbound(env, var))
+}
+
+fn typing_if(at, cond, then, els, env) {
+  let (tc, env1) = typing(cond, env)
+  if tc.prim != 'bool' {
+    fail(cond, "an if-condition must be bool")
+  }
+  let (t_then, env_then) = typing(then, env1)
+  let (t_els, env_els) = typing(els, env1)
+  if t_then != t_els {
+    fail(at, "the then and else branches have different types")
+  }
+  if env_then != env_els {
+    fail(
+      at,
+      "the then and else branches consume different lin-qualified variables",
+    )
+  }
+  (t_then, env_then)
+}
+
+fn typing_split(at, e, left, right, body, env) {
+  if left == right {
+    fail(at, "split's two variable names must differ")
+  }
+  let (t, env1) = typing(e, env)
+  if t.prim != 'pair' {
+    fail(e, "split's operand must be a pair")
+  }
+  let (
+    t2,
+    env2,
+  ) = typing(body, bound(bound(env1, left, t.left), right, t.right))
+  let left_over = unconsumed(env2, [left, right])
+  if !left_over.empty() {
+    fail(
+      body,
+      "split's body doesn't consume lin-qualified variable \"{left_over[0]}\"",
+    )
+  }
+  (t2, unbound(unbound(env2, left), right))
+}
+
+fn typing_let(at, var, ty_node, e1, e2, env) {
+  let (t1, env1) = typing(e1, env)
+  let ty = to_type(ty_node)
+  if t1 != ty {
+    fail(at, "\"{var}\"'s value doesn't have its declared type")
+  }
+  let (t2, env2) = typing(e2, bound(env1, var, ty))
+  if !unconsumed(env2, [var]).empty() {
+    fail(e2, "\"{var}\" is lin-qualified and never consumed")
+  }
+  (t2, unbound(env2, var))
+}
+
+export {grammar, to_type, type_to_s, typing}

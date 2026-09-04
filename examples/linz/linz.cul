@@ -1,0 +1,30 @@
+# CLI driver for lin.cul — see that file for the checker itself.
+#
+# Run it:  culebra examples/linz/linz.cul examples/linz/samples/ex1.lin
+#          culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
+
+import lin from './lin.cul'
+
+let want_ast = Sys.argv.contains('--ast')
+let args = Sys.argv.filter(|a| a != '--ast')
+if args.empty() {
+  println("usage: culebra linz.cul [--ast] PROGRAM.lin")
+  Sys.exit(1)
+}
+
+try {
+  let tree = Peg.parse(lin.grammar, FS.read(args[0]), path: args[0])
+  if want_ast {
+    print(Peg.str(tree))
+  } else {
+    let (t, _) = lin.typing(tree, {})
+    println(lin.type_to_s(t))
+  }
+} catch e {
+  match e {
+    {kind: 'LinzError'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
+    {kind: 'PegError'} => println(e.message),
+    _ => throw e,
+  }
+  Sys.exit(1)
+}
