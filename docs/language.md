@@ -4300,6 +4300,8 @@ receiver is never mutated.
 | `s.iter() -> Iterator<StringView>`              | Lazy walk yielding **one-scalar `StringView`s** (UTF-8 scalar). What `for c in s { ... }` uses internally. Invalid bytes yield as one-byte substrings. |
 | `s.code_points() -> Iterator<Long>`             | Lazy walk yielding **Unicode scalar values** as `Long` (`U+0000`–`U+10FFFF`). For numeric / range / classification work where the per-scalar allocation of `iter` is wasteful. Invalid bytes yield as `0`–`255`. |
 | `s.graphemes() -> Iterator<StringView>`         | Lazy walk yielding **Extended Grapheme Clusters** (UAX #29) — one user-perceived character per step (e.g. an emoji ZWJ sequence is a single element). |
+| `s.words() -> Iterator<Tuple>`                  | Lazy walk yielding **UAX #29 word boundary** segments as `(text, is_word)` pairs — every run between two boundaries is its own segment, including whitespace/punctuation runs; `is_word` is `true` when the segment holds at least one alphabetic or numeric scalar. Filter to real words: `s.words().filter(\|(_, w)\| w).map(\|(t, _)\| t)`. |
+| `s.sentences() -> Iterator<StringView>`         | Lazy walk yielding **UAX #29 sentence boundary** segments — one sentence per step, trailing whitespace stays attached to the sentence before it. |
 | `s.bytes() -> Iterator<Long>`                   | Lazy walk yielding the receiver's **raw UTF-8 bytes** as `Long` (`0`–`255`), one byte per step — no decoding, unlike `code_points`. For when the encoding itself is wanted (hashing, tokenizer vocabularies, wire formats). |
 | `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out. Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u`/`\U` literal escapes (§4.1) reject at parse time. |
 | `String.from_code_points(cps: Array) -> String` | The plural inverse of `code_points()`: an `Array` of Unicode scalar values in, a `String` out. Each element passes through the same gate as `from_code_point`, so `String.from_code_points([cp]) == String.from_code_point(cp)`; a non-`Long` element is a `TypeError`, an out-of-range one a `ValueError`. |
@@ -4316,8 +4318,10 @@ inspect(String.from_code_points([99, 97, 102, 233]))  # => 'café'
 #### StringView
 
 `StringView` is a borrowed view over an owning `String`'s bytes.
-`slice` / `split` / `view` / `iter` / `graphemes` return `StringView`
-instead of `String` to avoid per-call copies. The view keeps its
+`slice` / `split` / `view` / `iter` / `graphemes` / `sentences` return
+`StringView` instead of `String` to avoid per-call copies (`words`
+yields a `StringView` too, inside each `(text, is_word)` tuple). The
+view keeps its
 source alive (shared ownership), so a view outlives the temp that
 created it:
 
@@ -4366,18 +4370,32 @@ inspect('👨‍👩‍👧'.graphemes().count())    # => 1
 upper = 'Hello World'.code_points().filter(fn (cp) {
   cp >= 65 && cp <= 90
 }).count()  # 2 ('H', 'W')
+
+# Word segments (UAX #29): whitespace/punctuation are their own
+# segments too, so filter on `is_word` to keep only the real words
+inspect('Hello, world!'.words().collect())
+# => [('Hello', true), (',', false), (' ', false), ('world', true), ('!', false)]
+inspect('Hello, world!'.words().filter(|(_, w)| w).map(|(t, _)| t).collect())
+# => ['Hello', 'world']
+
+# Sentence segments (UAX #29): trailing whitespace stays with the
+# sentence before it
+inspect('Hello. World.'.sentences().collect())  # => ['Hello. ', 'World.']
 ```
 
-All three iterators **decode the source string on demand**: each
-`next()` only touches as much of the UTF-8 buffer as that step needs.
+These iterators **decode the source string on demand**: each `next()`
+only touches as much of the UTF-8 buffer as that step needs.
 `s.graphemes().take(3).collect()` on a multi-megabyte `s` therefore
-reads only enough bytes to resolve the first three clusters. The
-per-iterator state (decode offset, lookahead buffer) is independent,
-so multiple iterators derived from the same String walk in parallel
-without interfering with each other.
+reads only enough bytes to resolve the first three clusters — `words`
+and `sentences` share the same windowed-decode implementation, just
+feeding it a different boundary rule. The per-iterator state (decode
+offset, lookahead buffer) is independent, so multiple iterators
+derived from the same String walk in parallel without interfering
+with each other.
 
-**JIT**: `iter` / `code_points` / `graphemes` return iterator Objects
-that the JIT drives through the same protocol path as user-defined
+**JIT**: `iter` / `code_points` / `graphemes` / `words` / `sentences`
+return iterator Objects that the JIT drives through the same protocol
+path as user-defined
 iterators. Semantics match the VM's; throughput is dominated
 by the per-step closure dispatch. For maximum speed over Arrays and
 direct String scalars, prefer `for c in s { ... }` (native loop).

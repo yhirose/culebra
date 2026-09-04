@@ -4074,6 +4074,8 @@ matcher一族`assert_true` / `assert_eq`等）は
 | `s.iter() -> Iterator<StringView>`              | UTF-8をスカラー単位でwalkし**1スカラー`StringView`** をyield。`for c in s { ... }`の内部実装。不正バイトは1バイト部分view |
 | `s.code_points() -> Iterator<Long>`             | **Unicodeスカラー値**を`Long`（`U+0000`–`U+10FFFF`）としてyieldする遅延イテレータ。`iter`の毎反復アロケが無駄になる数値・範囲・分類処理向け。不正バイトは生バイト値（0–255） |
 | `s.graphemes() -> Iterator<StringView>`         | **Extended Grapheme Cluster**（UAX #29）を1つずつyield。1ステップが1ユーザー知覚文字（絵文字ZWJシーケンス等は1要素にまとまる） |
+| `s.words() -> Iterator<Tuple>`                  | **UAX #29の単語境界**でセグメントに分け、`(text, is_word)`のペアを1つずつyield。境界と境界の間は全部1セグメントになるので、空白や句読点の並びもセグメントとして出てくる。`is_word`はそのセグメントに英数字が1文字でも含まれていれば`true`。単語だけ欲しいときは`s.words().filter(\|(_, w)\| w).map(\|(t, _)\| t)`のようにfilterで絞り込む |
+| `s.sentences() -> Iterator<StringView>`         | **UAX #29の文境界**でセグメントに分けて1つずつyield。1ステップが1文になり、末尾の空白は直前の文にそのままくっつく |
 | `s.bytes() -> Iterator<Long>`                   | レシーバの**生UTF-8バイト**を`Long`（`0`–`255`）として1バイトずつyield — `code_points`と違いデコードしない。エンコーディングそのものが欲しい場面向け（ハッシュ計算、tokenizerの語彙、ワイヤーフォーマット等） |
 | `String.from_code_point(cp: Long) -> String`    | `code_points()`の逆演算: Unicodeスカラー値1つを受け取り1文字の`String`を返す。`cp`が`U+10FFFF`超過またはサロゲート範囲`U+D800`–`U+DFFF`の場合`ValueError`（`\u`/`\U`リテラルエスケープ §4.1がパース時に拒否するのと同じ境界） |
 | `String.from_code_points(cps: Array) -> String` | `code_points()`の複数形の逆演算: Unicodeスカラー値の`Array`を受け取り`String`を返す。各要素は`from_code_point`と同じゲートを通るので`String.from_code_points([cp]) == String.from_code_point(cp)`。要素が`Long`でなければ`TypeError`、範囲外なら`ValueError` |
@@ -4090,8 +4092,10 @@ inspect(String.from_code_points([99, 97, 102, 233]))  # => 'café'
 #### StringView
 
 `StringView`は所有権付き`String`のバイト列を借用するview。
-`slice` / `split` / `view` / `iter` / `graphemes`はper-callコピー
-を避けるため`String`ではなく`StringView`を返す。viewはsource
+`slice` / `split` / `view` / `iter` / `graphemes` / `sentences`は
+per-callコピーを避けるため`String`ではなく`StringView`を返す
+（`words`も`(text, is_word)`のペアの中で`StringView`をyieldする）。
+viewはsource
 を生かし続ける (shared ownership) ので、viewを作ったtempが消えても
 viewは有効:
 
@@ -4140,17 +4144,29 @@ inspect('👨‍👩‍👧'.graphemes().count())    # => 1
 upper = 'Hello World'.code_points().filter(fn (cp) {
   cp >= 65 && cp <= 90
 }).count()  # 2 ('H', 'W')
+
+# 単語セグメント（UAX #29）: 空白や句読点も1セグメントとして出て
+# くるので、本当の単語だけ欲しければ is_word で filter する
+inspect('Hello, world!'.words().collect())
+# => [('Hello', true), (',', false), (' ', false), ('world', true), ('!', false)]
+inspect('Hello, world!'.words().filter(|(_, w)| w).map(|(t, _)| t).collect())
+# => ['Hello', 'world']
+
+# 文セグメント（UAX #29）: 末尾の空白は直前の文にそのままくっつく
+inspect('Hello. World.'.sentences().collect())  # => ['Hello. ', 'World.']
 ```
 
-3種のイテレータはすべて **UTF-8を逐次decode** します。各
+これらのイテレータはすべて **UTF-8を逐次decode** します。各
 `next()`ステップで必要なぶんだけバッファを進めるので、数MBの
 文字列に対して`s.graphemes().take(3).collect()`としても最初の
-3クラスタを解決するのに必要なバイト数しか触りません。イテレータ
-ごとの内部状態（decodeオフセットとlookaheadバッファ）は独立
-しているため、同じ文字列から派生した複数のイテレータを並走
-させても互いに干渉しません。
+3クラスタを解決するのに必要なバイト数しか触りません（`words`と
+`sentences`も同じwindow decode実装を共有し、境界の判定規則だけが
+違います）。イテレータごとの内部状態（decodeオフセットとlookahead
+バッファ）は独立しているため、同じ文字列から派生した複数の
+イテレータを並走させても互いに干渉しません。
 
-**JIT**: `iter` / `code_points` / `graphemes`はiterator
+**JIT**: `iter` / `code_points` / `graphemes` / `words` /
+`sentences`はiterator
 オブジェクトを返し、JITはユーザー定義イテレータと同じプロトコル
 経路で駆動します。セマンティクスはVMと一致。性能は
 ステップあたりのクロージャ呼出コストが支配的なので、速度重視で

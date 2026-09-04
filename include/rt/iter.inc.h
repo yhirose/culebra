@@ -1832,6 +1832,188 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_graphemes(
        win_cap_cell, win_buf_cell});
 }
 
+// words: lazy walk yielding UAX #29 word boundary segments as `(text,
+// is_word)` tuples. Every run between two word boundaries is its own
+// segment — including whitespace/punctuation runs — so `is_word` flags
+// whether the segment holds actual word content (at least one alphabetic
+// or numeric scalar), the same heuristic Rust's `unicode_words()` and JS's
+// `Intl.Segmenter` `isWordLike` use. Streaming shape mirrors `graphemes`
+// above — see its comment for the windowing rationale; `_grapheme_window_
+// extend` is boundary-agnostic so it is reused as-is.
+inline void _iter_words_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                int8_t* out_tag, int64_t* out_data) {
+  auto* buf_cell = cls->captures[0];
+  auto* src_len_cell = cls->captures[1];
+  auto* src_off_cell = cls->captures[2];
+  auto* win_start_cell = cls->captures[3];
+  auto* win_count_cell = cls->captures[4];
+  auto* win_cap_cell = cls->captures[5];
+  auto* win_buf_cell = cls->captures[6];
+
+  const char* s = reinterpret_cast<const char*>(buf_cell->value.data);
+  int64_t src_len = src_len_cell->value.data;
+
+  _grapheme_window_extend(s, src_len, src_off_cell, win_cap_cell, win_buf_cell,
+                          win_count_cell, win_count_cell->value.data + 1);
+  if (win_count_cell->value.data == 0) {
+    *done = true;
+    return;
+  }
+
+  int64_t seg_len;
+  for (;;) {
+    int64_t avail = win_count_cell->value.data;
+    auto* win = reinterpret_cast<char32_t*>(win_buf_cell->value.data);
+    size_t len = culebra::word_segment_length(win, static_cast<size_t>(avail));
+    if (len == 0) len = 1;
+    seg_len = static_cast<int64_t>(len);
+    if (seg_len < avail || src_off_cell->value.data >= src_len) break;
+    _grapheme_window_extend(s, src_len, src_off_cell, win_cap_cell,
+                            win_buf_cell, win_count_cell,
+                            avail + kGraphemeWindowExtendChunk);
+  }
+
+  auto* win = reinterpret_cast<char32_t*>(win_buf_cell->value.data);
+  bool is_word = false;
+  for (int64_t i = 0; i < seg_len; i++) {
+    if (unicode::is_alphabetic(win[i]) || unicode::is_number(win[i])) {
+      is_word = true;
+      break;
+    }
+  }
+
+  int64_t byte_off = win_start_cell->value.data;
+  for (int64_t i = 0; i < seg_len; i++) {
+    char32_t cp;
+    size_t bytes;
+    if (!unicode::utf8::decode_codepoint(s + byte_off,
+                                         static_cast<size_t>(src_len - byte_off),
+                                         bytes, cp)) {
+      bytes = 1;
+    }
+    byte_off += static_cast<int64_t>(bytes);
+  }
+
+  auto* v = _culebra_heap_view(s + win_start_cell->value.data,
+                               byte_off - win_start_cell->value.data, s);
+
+  int64_t remaining = win_count_cell->value.data - seg_len;
+  if (remaining > 0) {
+    std::memmove(win, win + seg_len,
+                 static_cast<size_t>(remaining) * sizeof(char32_t));
+  }
+  win_count_cell->value.data = remaining;
+  win_start_cell->value.data = byte_off;
+
+  // tuple_push takes ownership of the value's +1 (same as enumerate above).
+  auto* pair = culebra_runtime_tuple_new();
+  culebra_runtime_tuple_push(pair, TAG_STRINGVIEW, reinterpret_cast<int64_t>(v));
+  culebra_runtime_tuple_push(pair, TAG_BOOL, is_word ? 1 : 0);
+
+  *done = false;
+  *out_tag = TAG_TUPLE;
+  *out_data = reinterpret_cast<int64_t>(pair);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_words(
+    const char* s) {
+  auto* buf_cell = culebra_runtime_cell_new(
+      TAG_STRING, reinterpret_cast<int64_t>(s));
+  auto* src_len_cell = culebra_runtime_cell_new(
+      TAG_LONG, static_cast<int64_t>(_str_len(s)));
+  auto* src_off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* win_start_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* win_count_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* win_cap_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* win_buf_cell = culebra_runtime_cell_new(TAG_STRING, 0);
+  return _iter_wrap_fast<&_iter_words_fast_fn>(
+      {buf_cell, src_len_cell, src_off_cell, win_start_cell, win_count_cell,
+       win_cap_cell, win_buf_cell});
+}
+
+// sentences: lazy walk yielding UAX #29 sentence boundary segments as
+// zero-copy StringViews — one sentence per step, trailing whitespace stays
+// attached to the sentence before it. Identical shape to `graphemes`
+// above, just a different boundary predicate.
+inline void _iter_sentences_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                    int8_t* out_tag, int64_t* out_data) {
+  auto* buf_cell = cls->captures[0];
+  auto* src_len_cell = cls->captures[1];
+  auto* src_off_cell = cls->captures[2];
+  auto* win_start_cell = cls->captures[3];
+  auto* win_count_cell = cls->captures[4];
+  auto* win_cap_cell = cls->captures[5];
+  auto* win_buf_cell = cls->captures[6];
+
+  const char* s = reinterpret_cast<const char*>(buf_cell->value.data);
+  int64_t src_len = src_len_cell->value.data;
+
+  _grapheme_window_extend(s, src_len, src_off_cell, win_cap_cell, win_buf_cell,
+                          win_count_cell, win_count_cell->value.data + 1);
+  if (win_count_cell->value.data == 0) {
+    *done = true;
+    return;
+  }
+
+  int64_t seg_len;
+  for (;;) {
+    int64_t avail = win_count_cell->value.data;
+    auto* win = reinterpret_cast<char32_t*>(win_buf_cell->value.data);
+    size_t len =
+        culebra::sentence_segment_length(win, static_cast<size_t>(avail));
+    if (len == 0) len = 1;
+    seg_len = static_cast<int64_t>(len);
+    if (seg_len < avail || src_off_cell->value.data >= src_len) break;
+    _grapheme_window_extend(s, src_len, src_off_cell, win_cap_cell,
+                            win_buf_cell, win_count_cell,
+                            avail + kGraphemeWindowExtendChunk);
+  }
+
+  int64_t byte_off = win_start_cell->value.data;
+  for (int64_t i = 0; i < seg_len; i++) {
+    char32_t cp;
+    size_t bytes;
+    if (!unicode::utf8::decode_codepoint(s + byte_off,
+                                         static_cast<size_t>(src_len - byte_off),
+                                         bytes, cp)) {
+      bytes = 1;
+    }
+    byte_off += static_cast<int64_t>(bytes);
+  }
+
+  auto* v = _culebra_heap_view(s + win_start_cell->value.data,
+                               byte_off - win_start_cell->value.data, s);
+
+  auto* win = reinterpret_cast<char32_t*>(win_buf_cell->value.data);
+  int64_t remaining = win_count_cell->value.data - seg_len;
+  if (remaining > 0) {
+    std::memmove(win, win + seg_len,
+                 static_cast<size_t>(remaining) * sizeof(char32_t));
+  }
+  win_count_cell->value.data = remaining;
+  win_start_cell->value.data = byte_off;
+
+  *done = false;
+  *out_tag = TAG_STRINGVIEW;
+  *out_data = reinterpret_cast<int64_t>(v);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_sentences(
+    const char* s) {
+  auto* buf_cell = culebra_runtime_cell_new(
+      TAG_STRING, reinterpret_cast<int64_t>(s));
+  auto* src_len_cell = culebra_runtime_cell_new(
+      TAG_LONG, static_cast<int64_t>(_str_len(s)));
+  auto* src_off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* win_start_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* win_count_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* win_cap_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* win_buf_cell = culebra_runtime_cell_new(TAG_STRING, 0);
+  return _iter_wrap_fast<&_iter_sentences_fast_fn>(
+      {buf_cell, src_len_cell, src_off_cell, win_start_cell, win_count_cell,
+       win_cap_cell, win_buf_cell});
+}
+
 // Wrap a JitArray as a one-shot iterator Object. Used to drive
 // flat_map callbacks that return Arrays.
 inline void _iter_from_array_fast_fn(JitClosure* cls, JitValue, bool* done,

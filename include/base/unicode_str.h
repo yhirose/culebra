@@ -177,6 +177,29 @@ inline std::string str_reverse(std::string_view s) {
   return out;
 }
 
+// UAX #29 word/sentence segment length: the same first-boundary-forward
+// scan cpp-unicodelib's own grapheme_length (unicodelib.h) uses, built on
+// top of the is_word_boundary/is_sentence_boundary predicates it already
+// exposes (it has no word/sentence equivalent of grapheme_length itself).
+// Kept here rather than upstream so a future switch to a fancier
+// (locale/dictionary based) segmentation backend only has to change this
+// file.
+inline size_t word_segment_length(const char32_t* s32, size_t l) {
+  size_t i = 1;
+  for (; i < l; i++) {
+    if (unicode::is_word_boundary(s32, l, i)) return i;
+  }
+  return i;
+}
+
+inline size_t sentence_segment_length(const char32_t* s32, size_t l) {
+  size_t i = 1;
+  for (; i < l; i++) {
+    if (unicode::is_sentence_boundary(s32, l, i)) return i;
+  }
+  return i;
+}
+
 // The `is_*` family: true when the receiver is non-empty and every scalar
 // satisfies the property. An empty receiver is false throughout — one rule
 // for the whole family instead of a per-method exception. An undecodable

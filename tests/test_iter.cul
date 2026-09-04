@@ -134,6 +134,36 @@ assert_eq('a👨‍👩‍👧b'.code_points().count(), 7)
 assert_eq('a👨‍👩‍👧b'.graphemes().count(), 3)
 assert_eq(''.graphemes().count(), 0)
 
+# --- String.words() — Iterator<Tuple> over UAX #29 word boundary segments ---
+# Every run between two boundaries is its own segment (whitespace and
+# punctuation included), tagged `(text, is_word)`.
+ws = 'Hello, world!'.words().collect()
+assert_eq(ws.size(), 5)
+assert_eq(ws[0], ('Hello', true))
+assert_eq(ws[1], (',', false))
+assert_eq(ws[2], (' ', false))
+assert_eq(ws[3], ('world', true))
+assert_eq(ws[4], ('!', false))
+
+# Filtering on is_word keeps only the real words
+real_words = 'Hello, world!'.words().filter(|(_, w)| w).map(|(t, _)| t).collect()
+assert_eq(real_words, ['Hello', 'world'])
+
+# Non-ASCII words and an apostrophe held inside a word (WB6/WB7 MidNumLet)
+assert_eq('café résumé'.words().filter(|(_, w)| w).map(|(t, _)| t).collect(),
+  ['café', 'résumé'])
+assert_eq("don't stop".words().filter(|(_, w)| w).map(|(t, _)| t).collect(),
+  ["don't", 'stop'])
+
+assert_eq(''.words().count(), 0)
+
+# --- String.sentences() — Iterator<StringView> over UAX #29 sentence boundary segments ---
+# One sentence per step; trailing whitespace stays attached to the sentence
+# before it.
+assert_eq('Hello. World.'.sentences().collect(), ['Hello. ', 'World.'])
+assert_eq('One sentence only'.sentences().collect(), ['One sentence only'])
+assert_eq(''.sentences().count(), 0)
+
 # --- String.bytes() — Iterator<Long> over raw UTF-8 bytes (no decoding) ---
 bs = 'café'.bytes().collect()
 assert_eq(bs.size(), 5)  # 'é' is 2 bytes; code_points() above sees 4 scalars

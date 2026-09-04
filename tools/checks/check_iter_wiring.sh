@@ -129,9 +129,12 @@ PYEOF
 # leaf sources = 15 (9 rt_iter.inc.h + 6 stdlib_rt.h) — grid_new joined
 # math_range/iota et al. as a new source factory (no upstream iterator).
 # 15 -> 16 (2026-08-13, reviewed): the JIT twin of the FS.watch leaf above.
+# 16 -> 18 (reviewed): String.words()/sentences() (UAX #29 segmentation),
+# each its own leaf source over the receiver String, same shape as the
+# graphemes leaf beside them.
 wf=$(count_no_upstream '_iter_wrap_fast<[^>]*>\s*\(')
-ratchet "no-upstream _iter_wrap_fast calls (leaves)" "$wf" 16
+ratchet "no-upstream _iter_wrap_fast calls (leaves)" "$wf" 18
 
 if (( fail )); then exit 1; fi
 echo "iter-wiring OK (pull=$pull/0 advance_raw=$adv/25 has_next_closure=$hnc/4" \
-     "wrap_fast-leaves=$wf/16)"
+     "wrap_fast-leaves=$wf/18)"

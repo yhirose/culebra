@@ -1612,6 +1612,7 @@ inline constexpr CanonSig kCanonStringSigs[] = {
   {"", "", "repeat", kCanonParamPool + 45, 1, "", 1, 1, false, -1, -1, -1},
   {"", "", "reverse", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"", "", "rsplit", kCanonParamPool + 46, 2, "", 1, 2, false, -1, -1, -1},
+  {"", "", "sentences", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"", "", "size", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"", "", "slice", kCanonParamPool + 48, 2, "", 2, 2, false, -1, -1, -1},
   {"", "", "split", kCanonParamPool + 50, 2, "", 1, 2, false, -1, -1, -1},
@@ -1629,6 +1630,7 @@ inline constexpr CanonSig kCanonStringSigs[] = {
   {"", "", "truncate", kCanonParamPool + 60, 2, "", 1, 2, false, -1, -1, -1},
   {"", "", "upper", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"", "", "view", nullptr, 0, "", 0, 0, false, -1, -1, -1},
+  {"", "", "words", nullptr, 0, "", 0, 0, false, -1, -1, -1},
 };
 
 inline constexpr CanonSig kCanonSetSigs[] = {

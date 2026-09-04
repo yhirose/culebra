@@ -10266,6 +10266,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                ptrTy, ptrTy, i8, i64, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::str_code_points, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::str_graphemes, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::str_words, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::str_sentences, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::str_bytes, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);

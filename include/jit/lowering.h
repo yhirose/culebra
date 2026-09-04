@@ -2949,11 +2949,15 @@ struct Lowering {
             }
             case BMeth::CodePoints:
             case BMeth::Bytes:
-            case BMeth::Graphemes: {
+            case BMeth::Graphemes:
+            case BMeth::Words:
+            case BMeth::Sentences: {
               auto id2 = static_cast<BMeth>(in.c);
               const char* sym = id2 == BMeth::CodePoints ? rt::str_code_points
                                 : id2 == BMeth::Bytes    ? rt::str_bytes
-                                                         : rt::str_graphemes;
+                                : id2 == BMeth::Graphemes ? rt::str_graphemes
+                                : id2 == BMeth::Words    ? rt::str_words
+                                                         : rt::str_sentences;
               res = j.make_object(j.emit_call(
                   j.module_->getOrInsertFunction(sym, ptrTy, ptrTy),
                   {cstr(recv)}, "vbm.sw"));

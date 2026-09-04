@@ -797,7 +797,7 @@ enum class BMeth : uint8_t {
   // iterator object. `Iter` is the general one; the String walkers and
   // SplitIter answer a String's own; Enumerate/ToObject/Unzip are
   // Array-or-iterator duals like ToSet.
-  Iter, CodePoints, Bytes, Graphemes, SplitIter, StrCount,
+  Iter, CodePoints, Bytes, Graphemes, Words, Sentences, SplitIter, StrCount,
   Enumerate, ToObject, Unzip,
   // Iterator-only, on an iterator-shaped Object: the lazy adapters that wrap
   // one iterator in another, and the terminals that drive one to its end.
@@ -1200,6 +1200,8 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"code_points", 0, CodePoints, kRecvStrLike, 0, nullptr, {}, {}},
       {"bytes", 0, Bytes, kRecvStrLike, 0, nullptr, {}, {}},
       {"graphemes", 0, Graphemes, kRecvStrLike, 0, nullptr, {}, {}},
+      {"words", 0, Words, kRecvStrLike, 0, nullptr, {}, {}},
+      {"sentences", 0, Sentences, kRecvStrLike, 0, nullptr, {}, {}},
       {"split_iter", 1, SplitIter, kRecvStrLike, 1, nullptr, {StrLike},
        {"sep"}},
       // `count` is the one name two tables bind at DIFFERENT arities — a
@@ -2172,6 +2174,10 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       return obj(culebra_runtime_str_bytes(cstr(recv)));
     case BMeth::Graphemes:
       return obj(culebra_runtime_str_graphemes(cstr(recv)));
+    case BMeth::Words:
+      return obj(culebra_runtime_str_words(cstr(recv)));
+    case BMeth::Sentences:
+      return obj(culebra_runtime_str_sentences(cstr(recv)));
     case BMeth::SplitIter: {
       // "Lazy in API, eager underneath": split first, then walk the pieces.
       // array_iter takes its own `+1` on the Array, so split's fresh one is

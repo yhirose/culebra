@@ -170,6 +170,7 @@ let methods = [
   'rope',
   'rsplit',
   'scan',
+  'sentences',
   'shape',
   'sigmoid',
   'sin',
@@ -216,6 +217,7 @@ let methods = [
   'values',
   'view',
   'windows',
+  'words',
   'zero_grad',
   'zip',
 ]
