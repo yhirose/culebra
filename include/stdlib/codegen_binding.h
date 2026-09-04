@@ -30,6 +30,11 @@ inline bool register_codegen_binding() {
       .method<&codegen::Module::make_if_else>(
           "make_if_else",
           {"cond", "then_branch", "else_branch", "line", "col"})
+      .method<&codegen::Module::make_switch>(
+          "make_switch", {"subject", "arms_list", "line", "col"})
+      .method<&codegen::Module::make_switch_default>(
+          "make_switch_default",
+          {"subject", "arms_list", "default_body", "line", "col"})
       .method<&codegen::Module::make_while>(
           "make_while", {"cond", "body", "line", "col"})
       .method<&codegen::Module::block>("block", {"stmts_list", "line", "col"})
@@ -48,6 +53,10 @@ inline bool register_codegen_binding() {
                                        {"recv", "key", "line", "col"})
       .method<&codegen::Module::set_index>(
           "set_index", {"recv", "key", "value", "line", "col"})
+      .method<&codegen::Module::field_get>(
+          "field_get", {"recv", "slot", "name", "line", "col"})
+      .method<&codegen::Module::field_set>(
+          "field_set", {"recv", "slot", "name", "value", "line", "col"})
       .method<&codegen::Module::scope>(
           "scope", {"first_local", "end_local", "body", "line", "col"})
       .method<&codegen::Module::scope_release>(
@@ -105,6 +114,19 @@ inline bool register_codegen_binding() {
       .method<&codegen::Module::node_op>("node_op", {"node"})
       .method<&codegen::Module::var_kind>("var_kind", {"node"})
       .method<&codegen::Module::var_index>("var_index", {"node"})
+      .method<&codegen::Module::switch_subject>("switch_subject", {"node"})
+      .method<&codegen::Module::switch_arm_count>("switch_arm_count",
+                                                   {"node"})
+      .method<&codegen::Module::switch_key>("switch_key", {"node", "index"})
+      .method<&codegen::Module::switch_body>("switch_body", {"node", "index"})
+      .method<&codegen::Module::switch_has_default>("switch_has_default",
+                                                     {"node"})
+      .method<&codegen::Module::switch_default_body>("switch_default_body",
+                                                      {"node"})
+      .method<&codegen::Module::field_slot>("field_slot", {"node"})
+      .method<&codegen::Module::field_name>("field_name", {"node"})
+      .method<&codegen::Module::field_receiver>("field_receiver", {"node"})
+      .method<&codegen::Module::field_set_value>("field_set_value", {"node"})
       .method<&codegen::Module::scope_first_local>("scope_first_local",
                                                     {"node"})
       .method<&codegen::Module::scope_end_local>("scope_end_local", {"node"})

@@ -6213,19 +6213,21 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.literal(v:, line:, col:)` | 整数定数 |
 | `m.bool_literal(v:, line:, col:)` / `m.double_literal(v:, line:, col:)` / `m.nil_literal(line:, col:)` / `m.str_literal(s:, line:, col:)` | 残りのスカラー定数 |
 | `m.var_ref(kind:, index:, line:, col:)` | local/captureスロット`index`の読み |
-| `m.unary(op:, operand:, line:, col:)` | `op`は`'neg'`か`'bitnot'` |
-| `m.binary(op:, lhs:, rhs:, line:, col:)` | `op`は`add sub mul div mod eq ne lt le gt ge bitand bitor bitxor shl shr`のいずれか(ビット演算はLong専用。シフト量は下位6ビットでマスクされ、`shr`は算術シフト) |
+| `m.unary(op:, operand:, line:, col:)` | `op`は`'neg'`/`'bitnot'`、または`wrapi8 wrapi16 wrapi32 wrapu8 wrapu16 wrapu32`のいずれか —— Longをその幅に切り詰め、符号拡張(`wrapi*`)またはゼロ拡張(`wrapu*`)して戻す。固定幅の`int`/`uint`(C#/Java/Goのサブセットなど)を下ろすフロントエンド向け。オペランドは既にLongでなければならず、これらはどれも`lt`/`le`/`gt`/`ge`/`div`/`mod`/`shr`が自前のwrapなしに前提とする正規化済みの形にスロットの値を保つ |
+| `m.binary(op:, lhs:, rhs:, line:, col:)` | `op`は`add sub mul div mod eq ne lt le gt ge bitand bitor bitxor shl shr`のいずれか(ビット演算はLong専用。シフト量は下位6ビットでマスクされ、`shr`は算術シフト)、または`udiv umod ushr ult ule ugt uge`のいずれか —— `uint64`に必要な符号なし版。そのビットパターンは、幅の狭い符号なし値が正規化済みで既にそうであるのとは違い、符号付きLongの大小順に乗らないため |
 | `m.assign(kind:, index:, value:, line:, col:)` | local/captureスロット`index`への書き |
 | `m.make_if(cond:, then_branch:, line:, col:)` | `else`の無い`if` |
 | `m.make_if_else(cond:, then_branch:, else_branch:, line:, col:)` | `if`/`else` |
+| `m.make_switch(subject:, arms_list:, line:, col:)` / `m.make_switch_default(subject:, arms_list:, default_body:, line:, col:)` | `subject`を`arms_list`(key, body, key, body, …。各keyはLongかStringのリテラルノードで、全部同じ種類・重複なし —— どちらも`verify()`が検査する)で分岐する。`make_switch_default`は何も一致しなかったときの腕を足す。一致がなくdefaultも無ければ`nil`(`else`の無い`if`と同じ)。keyの種類とsubjectの型が食い違えば失敗する。腕の中の`break`は最内の`while`を捕まえたままで、switch自体は`break`を捕まえない(`if`と同じ) |
 | `m.make_while(cond:, body:, line:, col:)` | ループ |
 | `m.block(stmts_list:, line:, col:)` | 文の並び。ステージング用listを消費する |
 | `m.call(func:, cmap:, line:, col:)` | 関数index `func`の呼び出し。captureはcapture-map `cmap`経由で転送 |
 | `m.make_closure(func:, cmap:, line:, col:)` | 関数`func`のクロージャ**値** —— 保持・受け渡しでき、後から呼べる |
 | `m.call_value(callee:, args_list:, line:, col:)` | `callee`の評価結果が何であれ呼ぶ。引数はステージング用listを消費 |
-| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。コンテナのprimitiveは`'arraypush'`/`'objecthas'`/`'objectremove'`(引数2個)と`'arraypop'`/`'objectkeys'`(引数1個)。空配列のpopは失敗、keysは挿入順。`'same'`(引数2個)は参照の同一性 —— 同じヒープオブジェクトか、スカラーなら同じタグと中身か —— を答える(`eq`はオブジェクト同士を拒む)。`'argcount'`(引数0個)は実行中の関数が呼ばれたときの実引数の個数(`set_lenient_arity`を参照)。`'genresume'`/`'genreturn'`/`'genthrow'`(引数2個)はgeneratorの活性化を駆動する(`set_generator`を参照)。`'enqueue'`(引数1個、引数0個のクロージャ)はそれを実行のジョブキューに積む —— エントリ関数が戻ったあとにFIFO順で消化され、各ジョブは次に移る前に最後まで走るので、ジョブ自身が積んだものは待っている全ジョブの後ろに並ぶ —— 値は`nil`。`'fnarity'`(引数1個)はクロージャの宣言上の仮引数の個数(関数以外は失敗)。`'collect'`(引数0個)はその場で完全なtracing collectionを走らせ、解放したオブジェクト数を返す(回収対象のdrop hookを新しいものから順に先に走らせる)。`'heapstats'`(引数0個)はランタイムのヒープの`{live_objects, heap_bytes}`を返す。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上 |
+| `m.intrinsic(name:, args_list:, line:, col:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`/`'tofloat32'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。コンテナのprimitiveは`'arraypush'`/`'objecthas'`/`'objectremove'`(引数2個)と`'arraypop'`/`'objectkeys'`(引数1個)。空配列のpopは失敗、keysは挿入順。`'same'`(引数2個)は参照の同一性 —— 同じヒープオブジェクトか、スカラーなら同じタグと中身か —— を答える(`eq`はオブジェクト同士を拒む)。`'argcount'`(引数0個)は実行中の関数が呼ばれたときの実引数の個数(`set_lenient_arity`を参照)。`'genresume'`/`'genreturn'`/`'genthrow'`(引数2個)はgeneratorの活性化を駆動する(`set_generator`を参照)。`'enqueue'`(引数1個、引数0個のクロージャ)はそれを実行のジョブキューに積む —— エントリ関数が戻ったあとにFIFO順で消化され、各ジョブは次に移る前に最後まで走るので、ジョブ自身が積んだものは待っている全ジョブの後ろに並ぶ —— 値は`nil`。`'fnarity'`(引数1個)はクロージャの宣言上の仮引数の個数(関数以外は失敗)。`'collect'`(引数0個)はその場で完全なtracing collectionを走らせ、解放したオブジェクト数を返す(回収対象のdrop hookを新しいものから順に先に走らせる)。`'heapstats'`(引数0個)はランタイムのヒープの`{live_objects, heap_bytes}`を返す。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上。`tofloat32`はDouble(整数引数は`todouble`と同様まず幅拡張される)を最も近い`float`へ丸め、その値をちょうど保持するDoubleへ戻す —— `float`と`double`の両方を持つフロントエンドが自前では作れない丸め —— `float`自身の最大/最小値へ飽和し、実際のオーバーフロー境界を超えたときだけ+-infinityになる。NaNはそのまま通る |
 | `m.array_lit(items_list:, line:, col:)` / `m.object_lit(kv_list:, line:, col:)` | 要素のステージング用listから配列を、key, value, key, value, …を持つlistからオブジェクトを組み立てる |
 | `m.index(recv:, key:, line:, col:)` / `m.set_index(recv:, key:, value:, line:, col:)` | 読みと書き。`recv`の実体でディスパッチする: 配列はLongのindex(範囲外は失敗)、オブジェクトはStringのkey(無いkeyの読みは`nil`)、文字列は1バイトを文字列として読み出す(書きは拒否) |
+| `m.field_get(recv:, slot:, name:, line:, col:)` / `m.field_set(recv:, slot:, name:, value:, line:, col:)` | フロントエンド自身が採番した`slot`にあるstructフィールド(localスロットの番号付けと同じ契約) —— `index`/`set_index`のkey比較ではなく直接読み書きするので、`recv`はどちらかがそこに届く前に、その通りのslot順で`object_lit`によって全フィールドが組み立て済みでなければならない。`name`はトラップメッセージ("field 'next' of …")のためだけに保持され、実行には一切使われない |
 | `m.scope(first_local:, end_local:, body:, line:, col:)` | localスロット`[first_local, end_local)`を所有するレキシカル領域。どの経路で抜けても抜けた時点で解放され、中で登録されたdeferがLIFOで走る |
 | `m.scope_release(first_local:, end_local:, body:, release_list:, line:, col:)` | 同じ領域を、解放順を明示して作る。`release_list`は`var_ref`ノード(範囲内の`'local'`か`'cell'`)の並びで、どの経路で抜けてもその順に解放される。フロントエンドは宣言の逆順を、捕獲されたスロットも含めて並べる —— そうすれば捕獲された束縛もフレームごとでなく自分の番で解放される。解放されたcellは作り直されるので、それを捕獲していたクロージャは古いcellをその値ごと持ち続ける |
 | `m.make_return(value:, line:, col:)` | 実行中の関数から`value`を返す(裸の`return`は明示的な`nil_literal`で綴る) |
@@ -6285,6 +6287,13 @@ Dumperと同じ経路で木を辿れる。不正なnode/func/cmap id、あるい
 | `m.node_op(node:)` | `unary`/`binary`/`intrinsic`ノードの演算子名 —— `op:`/`name:`が受け取るのと同じ語彙。`varref`/`assign`は`var_kind()`へ誘導される |
 | `m.var_kind(node:)` | `varref`か`assign`ノードの`'local'`/`'capture'`/`'cell'` |
 | `m.var_index(node:)` | `varref`か`assign`ノードのスロットindex |
+| `m.switch_subject(node:)` | `switch`ノードのsubject(ノードid) |
+| `m.switch_arm_count(node:)` | `node`が持つ`(key, body)`の腕の数 |
+| `m.switch_key(node:, index:)` / `m.switch_body(node:, index:)` | `index`番目の腕のkeyかbody(ノードid) |
+| `m.switch_has_default(node:)` | `node`にdefaultの腕があるか |
+| `m.switch_default_body(node:)` | そのdefaultの腕(ノードid)。無ければ失敗 |
+| `m.field_slot(node:)` / `m.field_name(node:)` / `m.field_receiver(node:)` | `fieldget`か`fieldset`ノードについて、そのslot・診断専用の名前・受け手(ノードid) |
+| `m.field_set_value(node:)` | `fieldset`ノードの値(ノードid) |
 | `m.scope_first_local(node:)` | `scope`ノードが所有する最初のlocalスロット |
 | `m.scope_end_local(node:)` | `scope`ノードが所有する最後のlocalスロットの1つ先 |
 | `m.try_caught_local(node:)` | `try`ノードの捕捉値localスロット |

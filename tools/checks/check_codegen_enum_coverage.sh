@@ -178,6 +178,7 @@ Unary|unary|unary|node_op
 Binary|binary|binary|node_op
 Assign|assign|assign|var_kind
 If|if|make_if|node_tag
+Switch|switch|make_switch|switch_arm_count
 While|while|make_while|node_tag
 Block|block|block|node_tag
 Intrinsic|intrinsic|intrinsic|node_op
@@ -187,6 +188,8 @@ ArrayLit|arraylit|array_lit|node_tag
 ObjectLit|objectlit|object_lit|node_tag
 Index|index|index|node_tag
 SetIndex|setindex|set_index|node_tag
+FieldGet|fieldget|field_get|field_slot
+FieldSet|fieldset|field_set|field_slot
 Scope|scope|scope|scope_first_local
 Return|return|make_return|node_tag
 Break|break|make_break|node_tag

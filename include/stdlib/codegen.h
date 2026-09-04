@@ -170,6 +170,23 @@ class Module {
                         pos(line, col)));
   }
 
+  // arms_list holds key, body, key, body, ... -- the flat shape object_lit's
+  // kv_list already uses, re-paired the same way. Each key must be a
+  // literal node (int or str, all one ConstKind, pairwise distinct --
+  // verify() enforces both); Break passes through a switch the same way it
+  // passes through an if, so a switch-scoped break is a front end's own
+  // lowering, not something this builds in.
+  int64_t make_switch(int64_t subject, int64_t arms_list, int64_t line,
+                      int64_t col) {
+    return make_switch_impl(subject, arms_list, coreir::NodeId{}, line, col);
+  }
+  int64_t make_switch_default(int64_t subject, int64_t arms_list,
+                              int64_t default_body, int64_t line,
+                              int64_t col) {
+    return make_switch_impl(subject, arms_list, node(default_body), line,
+                            col);
+  }
+
   int64_t make_while(int64_t cond, int64_t body, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_while(node(cond), node(body), pos(line, col)));
@@ -234,6 +251,25 @@ class Module {
     coreir::Builder b(m_);
     return id(b.set_index(node(recv), node(key), node(value),
                           pos(line, col)));
+  }
+
+  // A struct field at a slot the front end assigns, read/written in O(1)
+  // rather than index/set_index's key comparison -- `name` is carried only
+  // for a trap message ("field 'next' of ..."), never read to execute
+  // anything. `recv` must already be built through object_lit with every
+  // field present (props in key order); set_index's own key comparison
+  // never has that requirement, which is the whole difference in cost.
+  int64_t field_get(int64_t recv, int64_t slot, std::string_view name,
+                    int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.field_get(node(recv), idx32(slot), std::string(name),
+                          pos(line, col)));
+  }
+  int64_t field_set(int64_t recv, int64_t slot, std::string_view name,
+                    int64_t value, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.field_set(node(recv), idx32(slot), std::string(name),
+                          node(value), pos(line, col)));
   }
 
   // Scopes, non-local exits, exceptions, defers -- the Core-IR surface the
@@ -498,6 +534,70 @@ class Module {
     return require_varref_or_assign(node).index;
   }
 
+  // Switch's shape is decided by arm count and parity, not a fixed child
+  // position (the same reason cpp-vmlib's own compiler and verifier read it
+  // through one View rather than each rederiving it) -- these give a script
+  // the same one place, instead of it recomputing "rest odd means there is
+  // a default" by hand.
+  int64_t switch_subject(int64_t node) const {
+    return id(coreir::view_switch(
+                   m_, require_tag(node, coreir::Tag::Switch, "switch_subject"))
+                  .subject);
+  }
+  int64_t switch_arm_count(int64_t node) const {
+    return coreir::view_switch(
+               m_, require_tag(node, coreir::Tag::Switch, "switch_arm_count"))
+        .arm_count;
+  }
+  int64_t switch_key(int64_t node, int64_t index) const {
+    const coreir::NodeId n =
+        require_tag(node, coreir::Tag::Switch, "switch_key");
+    const auto arm_count = coreir::view_switch(m_, n).arm_count;
+    checked_sub_index("node", node, arm_count, "switch arms", index);
+    return id(coreir::switch_key(m_, n, static_cast<uint32_t>(index)));
+  }
+  int64_t switch_body(int64_t node, int64_t index) const {
+    const coreir::NodeId n =
+        require_tag(node, coreir::Tag::Switch, "switch_body");
+    const auto arm_count = coreir::view_switch(m_, n).arm_count;
+    checked_sub_index("node", node, arm_count, "switch arms", index);
+    return id(coreir::switch_body(m_, n, static_cast<uint32_t>(index)));
+  }
+  bool switch_has_default(int64_t node) const {
+    return coreir::view_switch(
+               m_, require_tag(node, coreir::Tag::Switch, "switch_has_default"))
+        .default_body.valid();
+  }
+  int64_t switch_default_body(int64_t node) const {
+    const auto v = coreir::view_switch(
+        m_, require_tag(node, coreir::Tag::Switch, "switch_default_body"));
+    if (!v.default_body.valid()) {
+      throw culebra::CulebraError(
+          "IrError",
+          culebra::format("node #{} has no default arm", node), 0, 0);
+    }
+    return id(v.default_body);
+  }
+
+  // FieldGet/FieldSet share slot and name_const (FieldSet adds the value
+  // child) -- one check for both, the same way require_varref_or_assign
+  // covers VarRef/Assign.
+  int64_t field_slot(int64_t node) const {
+    return require_field(node, "field_slot").slot;
+  }
+  std::string field_name(int64_t node) const {
+    return m_.str_const_at(require_field(node, "field_name").name_const);
+  }
+  int64_t field_receiver(int64_t node) const {
+    return id(require_field(node, "field_receiver").receiver);
+  }
+  int64_t field_set_value(int64_t node) const {
+    return id(coreir::view_field_set(
+                   m_, require_tag(node, coreir::Tag::FieldSet,
+                                   "field_set_value"))
+                  .value);
+  }
+
   // One tag each, via the same Views the Compiler and Dumper read.
   int64_t scope_first_local(int64_t node) const {
     return coreir::view_scope(
@@ -601,6 +701,23 @@ class Module {
     out.reserve(raw.size());
     for (int64_t v : raw) out.push_back(node(v));
     return out;
+  }
+
+  // Shared by make_switch/make_switch_default: re-pairs arms_list the same
+  // way object_lit re-pairs kv_list, then builds with whichever default
+  // (possibly invalid, meaning none) the caller already resolved.
+  int64_t make_switch_impl(int64_t subject, int64_t arms_list,
+                           coreir::NodeId default_body, int64_t line,
+                           int64_t col) {
+    const std::vector<coreir::NodeId> flat = take_list(arms_list);
+    std::vector<std::pair<coreir::NodeId, coreir::NodeId>> arms;
+    arms.reserve(flat.size() / 2);
+    for (size_t i = 0; i + 1 < flat.size(); i += 2) {
+      arms.push_back({flat[i], flat[i + 1]});
+    }
+    coreir::Builder b(m_);
+    return id(
+        b.make_switch(node(subject), arms, default_body, pos(line, col)));
   }
 
   // vmlib.h owns each enum's vocabulary (name_of/from_name); a second, hand-
@@ -710,6 +827,20 @@ class Module {
         "IrError",
         culebra::format("node #{} is {}, not a varref or assign", v,
                         describe(coreir::name_of(tag))),
+        0, 0);
+  }
+  coreir::FieldView require_field(int64_t v, const char* accessor) const {
+    const coreir::NodeId n = checked_node(v);
+    const coreir::Tag tag = m_.at(n).tag;
+    if (tag == coreir::Tag::FieldGet) return coreir::view_field_get(m_, n);
+    if (tag == coreir::Tag::FieldSet) {
+      const auto s = coreir::view_field_set(m_, n);
+      return {s.slot, s.name_const, s.receiver};
+    }
+    throw culebra::CulebraError(
+        "IrError",
+        culebra::format("node #{} is {}, not a fieldget or fieldset ({})", v,
+                        describe(coreir::name_of(tag)), accessor),
         0, 0);
   }
   const std::string& checked_name(const std::vector<std::string>& names,

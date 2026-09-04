@@ -70,6 +70,39 @@ fn print_stmt(m, value) {
   assert_eq(IO.capture(fn () { m.run() }), "3\n2\n1\n")
 }
 
+# switch: case a, b: sharing one body between two keys, a default arm, and
+# no match with no default falling through as nil (the same as an if with
+# no else taken). Read-back exercises every switch_* accessor once.
+{
+  let m = CodeGen.Module.new()
+  fn lit(m, v) { m.literal(v: v, line: 1, col: 1) }
+  fn arms(m, pairs) {
+    let list = m.list_new()
+    for pair in pairs { for n in pair { m.list_push(list, n) } }
+    list
+  }
+  let shared = lit(m, 100)
+  let with_default = m.make_switch_default(
+    subject: lit(m, 2),
+    arms_list: arms(m, [[lit(m, 1), shared], [lit(m, 2), shared],
+                        [lit(m, 3), lit(m, 300)]]),
+    default_body: lit(m, -1), line: 1, col: 1)
+  let no_default = m.make_switch(subject: lit(m, 99),
+                                 arms_list: arms(m, [[lit(m, 1), lit(m, 1)]]),
+                                 line: 1, col: 1)
+  let body = stmt_block(m, [print_stmt(m, with_default), print_stmt(m, no_default)])
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.verify()
+  assert_eq(m.switch_arm_count(with_default), 3)
+  assert_true(m.switch_has_default(with_default))
+  assert_eq(m.int_const(m.switch_key(with_default, 0)), 1)
+  assert_eq(m.switch_body(with_default, 0), m.switch_body(with_default, 1))
+  assert_eq(m.int_const(m.switch_default_body(with_default)), -1)
+  assert_false(m.switch_has_default(no_default))
+  assert_throws('IrError', || m.switch_default_body(no_default))
+  assert_eq(IO.capture(fn () { m.run() }), "100\nnil\n")
+}
+
 # --- A capture forwarded through a self-recursive call unchanged -- the
 # exact shape examples/pl0/README.md documents for fib.pas. `countdown`
 # doesn't own `n`; it captures main's, and each recursive call forwards
@@ -287,6 +320,38 @@ fn tostr_node(m, v) {
   m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
   m.verify()
   assert_eq(IO.capture(fn () { m.run() }), "99\n2\n7\n")
+}
+
+# field_get/field_set: a struct-shaped object (object_lit, so props already
+# sit in slot order) read and written by slot, O(1) rather than index's key
+# comparison.
+{
+  let m = CodeGen.Module.new()
+  fn lit(m, v) { m.literal(v: v, line: 1, col: 1) }
+  fn strl(m, v) { m.str_literal(s: v, line: 1, col: 1) }
+  let kvs = m.list_new()
+  m.list_push(kvs, strl(m, 'x')); m.list_push(kvs, lit(m, 10))
+  m.list_push(kvs, strl(m, 'y')); m.list_push(kvs, lit(m, 20))
+  let obj = m.object_lit(kv_list: kvs, line: 1, col: 1)
+  let o = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  let getx = m.field_get(recv: o, slot: 0, name: 'x', line: 1, col: 1)
+  let sety = m.field_set(recv: o, slot: 1, name: 'y', value: lit(m, 99), line: 1, col: 1)
+  let gety = m.field_get(recv: o, slot: 1, name: 'y', line: 1, col: 1)
+  let body = stmt_block(m, [
+    m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1),
+    print_stmt(m, getx),
+    sety,
+    print_stmt(m, gety),
+  ])
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.verify()
+  assert_eq(m.field_slot(getx), 0)
+  assert_eq(m.field_name(getx), 'x')
+  assert_eq(m.field_slot(sety), 1)
+  assert_eq(m.field_name(sety), 'y')
+  assert_eq(m.int_const(m.field_set_value(sety)), 99)
+  assert_throws('IrError', || m.field_set_value(getx))
+  assert_eq(IO.capture(fn () { m.run() }), "10\n99\n")
 }
 
 # Scope + defer + break: the defer fires when the loop-body scope exits
