@@ -227,6 +227,7 @@ enum class NsFn : uint8_t {
   MathFloor,
   MathCeil,
   MathRound,
+  MathF32,
 };
 
 // Stamp a position onto a still-positionless error. Re-notes the pending

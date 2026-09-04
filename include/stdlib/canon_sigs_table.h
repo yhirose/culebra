@@ -95,6 +95,8 @@ inline constexpr CanonParam kCanonParams_Math[] = {
   {"x", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   // 24: Math.round
   {"x", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 25: Math.f32
+  {"x", false, false, false, false, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Math[] = {
@@ -118,6 +120,7 @@ inline constexpr CanonSig kCanonSigs_Math[] = {
   {"Math", "", "floor", kCanonParams_Math + 22, 1, "Long", 1, 1, false, -1, -1, -1},
   {"Math", "", "ceil", kCanonParams_Math + 23, 1, "Long", 1, 1, false, -1, -1, -1},
   {"Math", "", "round", kCanonParams_Math + 24, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"Math", "", "f32", kCanonParams_Math + 25, 1, "Float", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_FS[] = {

@@ -248,6 +248,18 @@ inspect(Math.round(2.5))  # => 2
 inspect(Math.round(3.5))  # => 4
 ```
 
+### `Math.f32(x: Long|Float) -> Float`
+
+最も近い`float`（IEEE binary32）に丸めて`Float`として返します。
+単精度で書かれた計算（ゲームの乱数生成器、32bit値を格納するファイル形式
+など）を`Float`のまま再現するためのものです。`float`の最大値をわずかに
+超える値はその最大値に戻り、さらに外側は`±inf`、`nan`は`nan`のままです。
+
+```culebra
+inspect(Math.f32(0.1))       # => 0.10000000149011612
+inspect(Math.f32(16777217))  # => 16777216.0
+```
+
 ### `Math.pow(base: Long, exp: Long) -> Long`
 
 整数累乗。繰り返し二乗法で`base ** exp`を計算します。

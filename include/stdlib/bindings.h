@@ -208,6 +208,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_math_wrap(
   return culebra::math::wrap(x, n, [&] { return std::pair(line, col); });
 }
 
+// Round to float and back, as the Core IR's tofloat32 does (cpp-vmlib's
+// Op::ToFloat32): a bare static_cast<float> is undefined past float's range,
+// so that range is handled by hand -- up to the rounding midpoint a value
+// comes back as float's max, beyond it as infinity, and NaN stays NaN.
+inline double _culebra_f32_round(double d) {
+  constexpr double kFloatMax =
+      static_cast<double>(std::numeric_limits<float>::max());
+  constexpr double kFloatOverflow = 0x1.ffffffp127;  // (2-2^-24)*2^127
+  if (std::isnan(d)) return d;
+  if (d >= kFloatOverflow) return std::numeric_limits<double>::infinity();
+  if (d > kFloatMax) return kFloatMax;
+  if (d <= -kFloatOverflow) return -std::numeric_limits<double>::infinity();
+  if (d < -kFloatMax) return -kFloatMax;
+  return static_cast<double>(static_cast<float>(d));
+}
+
 #define CUL_MATH_F2F(name, fn)                                          \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_##name(    \
       int8_t tag, int64_t data, int64_t line, int64_t col) {            \
@@ -217,6 +233,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_math_wrap(
                 [](double x) { return fn(x); }))};                      \
   }
 CUL_MATH_F2F(log,  std::log)
+CUL_MATH_F2F(f32,  _culebra_f32_round)
 CUL_MATH_F2F(exp,  std::exp)
 CUL_MATH_F2F(sqrt, std::sqrt)
 CUL_MATH_F2F(sin,  std::sin)
@@ -305,6 +322,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_ns_call(
     case NsFn::MathLog: return unary(culebra_runtime_math_log);
     case NsFn::MathExp: return unary(culebra_runtime_math_exp);
     case NsFn::MathSqrt: return unary(culebra_runtime_math_sqrt);
+    case NsFn::MathF32: return unary(culebra_runtime_math_f32);
     case NsFn::MathSin: return unary(culebra_runtime_math_sin);
     case NsFn::MathCos: return unary(culebra_runtime_math_cos);
     case NsFn::MathTan: return unary(culebra_runtime_math_tan);
@@ -4580,6 +4598,7 @@ CUL_NS_MATH(wrap, MathWrap)
 CUL_NS_MATH(log, MathLog)
 CUL_NS_MATH(exp, MathExp)
 CUL_NS_MATH(sqrt, MathSqrt)
+CUL_NS_MATH(f32, MathF32)
 CUL_NS_MATH(sin, MathSin)
 CUL_NS_MATH(cos, MathCos)
 CUL_NS_MATH(tan, MathTan)
@@ -8846,6 +8865,7 @@ inline const NsMethod kNsRows_Math[] = {
   {"Math",   "floor",     1, &_ns_math_floor},
   {"Math",   "ceil",      1, &_ns_math_ceil},
   {"Math",   "round",     1, &_ns_math_round},
+  {"Math",   "f32",       1, &_ns_math_f32},
 };
 inline const NsMethod kNsRows_FS[] = {
   {"FS",     "join",     -1, &_ns_fs_join},
@@ -10624,7 +10644,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                     rt::math_sin, rt::math_cos, rt::math_tan,
                     rt::math_asin, rt::math_acos, rt::math_atan,
                     rt::math_floor, rt::math_ceil, rt::math_round,
-                    rt::math_abs}) {
+                    rt::math_f32, rt::math_abs}) {
     jit.module_->getOrInsertFunction(name, jit.valueType_,
                                  jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                  jit.builder_.getInt64Ty(),

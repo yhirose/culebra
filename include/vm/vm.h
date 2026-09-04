@@ -1357,6 +1357,7 @@ inline std::span<const NsFnSpec> nsfn_specs() {
       {"Math", "acos", MathAcos},   {"Math", "atan", MathAtan},
       {"Math", "atan2", MathAtan2}, {"Math", "floor", MathFloor},
       {"Math", "ceil", MathCeil},   {"Math", "round", MathRound},
+      {"Math", "f32", MathF32},
   };
   return kSpecs;
 }

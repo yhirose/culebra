@@ -702,6 +702,7 @@ inline constexpr auto input               = "culebra_runtime_input";
 inline constexpr auto math_pow            = "culebra_runtime_math_pow";
 inline constexpr auto math_clamp          = "culebra_runtime_math_clamp";
 inline constexpr auto math_wrap           = "culebra_runtime_math_wrap";
+inline constexpr auto math_f32            = "culebra_runtime_math_f32";
 inline constexpr auto math_log            = "culebra_runtime_math_log";
 inline constexpr auto math_exp            = "culebra_runtime_math_exp";
 inline constexpr auto math_sqrt           = "culebra_runtime_math_sqrt";

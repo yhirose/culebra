@@ -122,6 +122,7 @@ assert_eq(
     "floor",
     "ceil",
     "round",
+    "f32",
     "pi",
     "e",
     "inf",

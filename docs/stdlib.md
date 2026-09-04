@@ -255,6 +255,19 @@ inspect(Math.round(2.5))  # => 2
 inspect(Math.round(3.5))  # => 4
 ```
 
+### `Math.f32(x: Long|Float) -> Float`
+
+Round to the nearest `float` (IEEE binary32) and return it as a `Float`,
+for reproducing a computation written in single precision — a game's
+random-number generator, a file format that stores 32-bit values —
+without leaving `Float`. A value just past `float`'s largest finite value
+rounds back to it, further out becomes `±inf`, and `nan` stays `nan`.
+
+```culebra
+inspect(Math.f32(0.1))       # => 0.10000000149011612
+inspect(Math.f32(16777217))  # => 16777216.0
+```
+
 ### `Math.pow(base: Long, exp: Long) -> Long`
 
 Integer exponentiation. `base ** exp`, computed by repeated squaring.
