@@ -1,0 +1,124 @@
+# Conformance: stdlib §7 (Tensor). See docs/stdlib.md and docs/language.md §25.
+#
+# Compound assignment / in-place ops on Tensor lvalues, basic autograd
+# (y = sum(x*x), matmul), and device selection (cpu/gpu/auto). Split
+# from test_tensor_nn.cul (see that file's header for why).
+#
+# Run with:  ./build/culebra tests/test_tensor_nn_ops.cul
+#            ./build/culebra --jit tests/test_tensor_nn_ops.cul
+
+// --- compound assignment & in-place op ---
+//
+// Phase A gives the syntax; Phase B writes the result through to dst's
+// existing buffer when dst owns its storage. We verify both the result
+// values *and* that the same buffer was reused — by holding a second
+// reference to the same Tensor and checking the mutation is visible
+// there (which it would NOT be if the path allocated a fresh Tensor).
+
+mut t_add = Tensor.from([[10.0, 20.0]])
+let alias_add = t_add
+t_add += Tensor.from([[1.0, 2.0]])
+Tensor.eval(alias_add)
+assert_eq(to_float(alias_add.to_array()[0][0]), 11.0)
+assert_eq(to_float(alias_add.to_array()[0][1]), 22.0)
+
+mut t_sub = Tensor.from([[10.0, 20.0]])
+let alias_sub = t_sub
+t_sub -= Tensor.from([[1.0, 2.0]])
+Tensor.eval(alias_sub)
+assert_eq(to_float(alias_sub.to_array()[0][0]), 9.0)
+
+mut t_mul = Tensor.from([[10.0, 20.0]])
+t_mul *= Tensor.from([[2.0, 3.0]])
+Tensor.eval(t_mul)
+assert_eq(to_float(t_mul.to_array()[0][1]), 60.0)
+
+mut t_div = Tensor.from([[10.0, 20.0]])
+t_div /= Tensor.from([[2.0, 4.0]])
+Tensor.eval(t_div)
+assert_eq(to_float(t_div.to_array()[0][1]), 5.0)
+
+// Scalar rhs: lifts to a rank-0 Tensor and broadcasts.
+mut t_scal = Tensor.from([[10.0, 20.0, 30.0]])
+t_scal *= 2.0
+Tensor.eval(t_scal)
+let tsv = t_scal.to_array()
+assert_eq(to_float(tsv[0][0]), 20.0)
+assert_eq(to_float(tsv[0][2]), 60.0)
+
+// Compound-assign on an object property that holds a Tensor.
+mut model = {mut W: Tensor.from([[5.0]])}
+let alias_W = model.W
+model.W -= Tensor.from([[2.0]])
+Tensor.eval(alias_W)
+assert_eq(to_float(alias_W.to_array()[0][0]), 3.0)
+
+// --- autograd: y = sum(x*x) -> dy/dx = 2x ---
+mut ag_x = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+ag_x = ag_x.requires_grad()
+let ag_y = (ag_x * ag_x).reshape([4]).sum(0)
+ag_y.backward()
+assert_eq(to_float(ag_y.item()), 30.0)
+let ag_g = ag_x.grad().to_array()
+assert_eq(to_float(ag_g[0][0]), 2.0)
+assert_eq(to_float(ag_g[1][1]), 8.0)
+
+// autograd through matmul: d/dw sum(w @ x) = row-sums of x
+mut ag_w = Tensor.from([[0.5, -0.5], [1.0, 1.0]])
+ag_w = ag_w.requires_grad()
+let ag_h = ag_w.dot(ag_x).reshape([4]).sum(0)
+ag_h.backward()
+let ag_wg = ag_w.grad().to_array()
+assert_eq(to_float(ag_wg[0][0]), 3.0)
+assert_eq(to_float(ag_wg[0][1]), 7.0)
+
+// Regression: a forward-only result (both operands non-grad -> the op tape
+// is elided, node is a Const leaf) marked requires_grad() after the fact
+// must backward cleanly, giving grad=ones — not crash on an op tag whose
+// operands were never recorded.
+mut ag_z = Tensor
+  .from([[1.0, 2.0], [3.0, 4.0]])
+  .dot(Tensor.from([[1.0, 0.0], [0.0, 1.0]]))
+ag_z = ag_z.requires_grad()
+ag_z.backward()
+let ag_zg = ag_z.grad().to_array()
+assert_eq(to_float(ag_zg[0][0]), 1.0)
+assert_eq(to_float(ag_zg[1][1]), 1.0)
+
+# --- device selection ---
+#
+# Runs the same asserts on whichever device the build has: use_gpu() falls
+# back to the CPU path when no backend is compiled in or no device is
+# reachable, so this doubles as the fallback contract. Every value below is
+# exact in f32, so the result does not depend on a backend's accumulation
+# order — GPU and CPU must agree bit for bit.
+assert_eq(type_of(Tensor.gpu_available()), "Bool")
+
+# Nothing above pinned a device, so the documented default is what is in
+# effect. device() reports the selection, not where an op happened to run.
+assert_eq(Tensor.device(), "auto")
+
+let dev_a = Tensor.from([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).reshape([2, 3])
+let dev_b = Tensor.from([0.5, -1.0, 2.0, 1.5, -0.5, 0.25]).reshape([3, 2])
+
+Tensor.use_gpu()
+assert_eq(Tensor.device(), "gpu")
+let dev_m = dev_a.dot(dev_b)
+Tensor.eval(dev_m)
+assert_eq(to_string(dev_m.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")
+let dev_r = (dev_a * 2.0 + 1.0).relu().sum(1)
+Tensor.eval(dev_r)
+assert_eq(to_string(dev_r.to_array()), "[15.0, 33.0]")
+
+Tensor.use_auto()
+assert_eq(Tensor.device(), "auto")
+let dev_m2 = dev_a.dot(dev_b)
+Tensor.eval(dev_m2)
+assert_eq(to_string(dev_m2.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")
+
+Tensor.use_cpu()
+assert_eq(Tensor.device(), "cpu")
+let dev_m3 = dev_a.dot(dev_b)
+Tensor.eval(dev_m3)
+assert_eq(to_string(dev_m3.to_array()), "[[3.0, 2.75], [9.0, 5.0]]")
+

@@ -551,7 +551,14 @@ _run-tests BACKEND:
                   cat "$d/$name.vm.err"; } > "$d/$name.err"
                 touch "$d/$name.fail"; exit 0
             fi
+            # Timed separately from the vm run above: --jit compile time is
+            # what check_jit_file_budget below ratchets, and folding the vm
+            # run in would blur a slow file into the same number as a slow
+            # backend mismatch.
+            t0=$(date +%s%N)
             out_jit=$(cul --jit "$f" 2> "$d/$name.jit.err"); rc_jit=$?
+            t1=$(date +%s%N)
+            echo $(( (t1 - t0) / 1000000 )) > "$d/$name.jitms"
             if [[ "$rc_jit" -ne 0 ]]; then
                 { echo "--jit failed for $f (rc=$rc_jit):"; \
                   cat "$d/$name.jit.err"; } > "$d/$name.err"
@@ -574,6 +581,44 @@ _run-tests BACKEND:
             exit 1
         fi
         echo "test (vm vs jit) OK"
+        check_jit_file_budget "$d"
+    }
+
+    # The sweep's wall clock is bounded by its slowest single file (they run
+    # in parallel), and that slowest file is always a `--jit` compile — LLVM's
+    # optimization cost grows superlinearly (~N^1.9) with a flat script's
+    # single-function size, so ordinary incremental growth compounds into a
+    # sudden outlier rather than a gradual one (see the test_iter/test_effects
+    # split of 2026-07-31 and the test_tensor split of 2026-09-02, then their
+    # own regrowth past the same line five and two weeks later). No prior
+    # commit made either file slow on its own; each crossed a threshold that
+    # nothing was watching.
+    #
+    # This times the file inside the same JOBS-way parallel run the sweep
+    # always uses, deliberately — that contention is real (measured 2.5-3x
+    # over an idle run on this box) and is what a regressed file actually
+    # costs the gate. CULEBRA_JIT_FILE_BUDGET_MS overrides the ceiling; the
+    # default sits above every file's measured contended time on this
+    # machine (worst observed 42s) with headroom for slower/noisier CI
+    # runners, while a return to the 2026-07/09 incidents (which idle at
+    # 35-64s, i.e. well over 100s under this same contention) still trips it.
+    check_jit_file_budget() {
+        local d="$1"
+        local budget_ms="${CULEBRA_JIT_FILE_BUDGET_MS:-60000}"
+        local f name ms over=()
+        for f in "$d"/*.jitms; do
+            [[ -e "$f" ]] || continue
+            name=$(basename "$f" .jitms)
+            ms=$(cat "$f")
+            (( ms > budget_ms )) && over+=("$ms $name")
+        done
+        (( ${#over[@]} == 0 )) && return 0
+        echo "test (vm vs jit) FAIL: tests/*.cul --jit compile time exceeds ${budget_ms}ms:" >&2
+        printf '%s\n' "${over[@]}" | sort -rn | while read -r ms name; do
+            echo "  ${ms}ms  tests/$name.cul" >&2
+        done
+        echo "split the file at section boundaries (see tests/test_tensor_ops.cul's header for the pattern); a flat script compiles as one JIT function, whose optimization cost grows superlinearly with size." >&2
+        exit 1
     }
 
     # Guard the non-default JIT codegen paths (--jit -O0 = unoptimized IR over
@@ -591,9 +636,13 @@ _run-tests BACKEND:
     # One job per (file, backend) pair, heaviest files first: the effects
     # trio dominates the phase, so keeping a heavy file's two backend runs
     # in one job would leave every other lane idle waiting for it.
-    codegen_files="tests/test_effects_resume.cul \
-        tests/test_effects_defer.cul \
+    # test_effects_resume_gen.cul carries the generator-CPS-inside-effects
+    # shape that used to live in test_effects_resume.cul before it was split
+    # further (2026-09-04); that split file itself is small enough now to
+    # not need a codegen-backends slot of its own.
+    codegen_files="tests/test_effects_defer.cul \
         tests/test_effects.cul \
+        tests/test_effects_resume_gen.cul \
         tests/test_dynamic_perform.cul \
         tests/test_transform_error_lines.cul \
         tests/test_forin_codegen.cul \

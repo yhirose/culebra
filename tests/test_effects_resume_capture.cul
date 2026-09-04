@@ -1,0 +1,149 @@
+// Conformance: algebraic effects — nested-handle capture: an inner
+// handle's body or handler clause reads/writes an enclosing effect
+// body's local, including through multi-shot resume and two nesting
+// levels. Split from test_effects_resume.cul (see that file's header
+// for why).
+//
+// Run with:  ./build/culebra tests/test_effects_resume_capture.cul
+//            ./build/culebra --jit tests/test_effects_resume_capture.cul
+
+// --- nested-handle capture: an inner handle reads/writes an enclosing binding ---
+
+// inner handle BODY reads an enclosing computation local
+effect fn cap_out()
+effect fn cap_in()
+effect fn cap_body() {
+  let base = perform cap_out()
+  handle { base + perform cap_in() } with cap_in(k) { k(100) }
+}
+assert_eq(handle { cap_body() } with cap_out(k) { k(5) }, 105)
+
+// inner handler CLAUSE reads an enclosing local (interp lexically captured this,
+// the JIT did not — now both reach it through `_eff_self`)
+effect fn cap_body2() {
+  let base = perform cap_out()
+  handle { perform cap_in() } with cap_in(k) { k(base) }
+}
+assert_eq(handle { cap_body2() } with cap_out(k) { k(7) }, 7)
+
+// inner handler CLAUSE mutates an enclosing local (write-back to the outer frame)
+effect fn cap_tick()
+effect fn cap_body3() {
+  mut acc = 0
+  let r = handle {
+    perform cap_tick(); perform cap_tick(); "done"
+  } with cap_tick(k) { acc = acc + 1; k(nil) }
+  to_string(acc) + r
+}
+assert_eq(handle { cap_body3() } with cap_out(k) { k(nil) }, "2done")
+
+// inner local coexists with an enclosing capture
+effect fn cap_body4() {
+  let base = perform cap_out()
+  handle { let z = 5; base + z + perform cap_in() } with cap_in(k) { k(1) }
+}
+assert_eq(handle { cap_body4() } with cap_out(k) { k(100) }, 106)
+
+// capture through two nesting levels (inner-inner reads outer-outer + mid locals)
+effect fn cap_e1()
+effect fn cap_e2()
+effect fn cap_body5() {
+  let base = perform cap_out()
+  handle {
+    let m = perform cap_e1()
+    handle { base + m + perform cap_e2() } with cap_e2(k) { k(30) }
+  } with cap_e1(k) { k(200) }
+}
+assert_eq(handle { cap_body5() } with cap_out(k) { k(1000) }, 1230)
+
+// capture combined with multi-shot: each fork sees the captured binding
+effect fn cap_pick(a, b)
+effect fn cap_body6() {
+  let base = perform cap_out()
+  handle { base + perform cap_pick(1, 2) } with cap_pick(a, b, k) { [k(a), k(b)] }
+}
+assert_eq(handle { cap_body6() } with cap_out(k) { k(10) }, [11, 12])
+
+// a top-level nested handle whose body reads the outer handle's local
+let cap_g = handle {
+  let x = perform cap_out()
+  handle { x + perform cap_in() } with cap_in(k) { k(100) }
+} with cap_out(k) { k(5) }
+assert_eq(cap_g, 105)
+
+// a `self.` in a string literal is NOT a capture (detection walks the AST, not
+// the raw text) — a top-level handle carrying such text must not synthesize a
+// `_eff_self` wrapper over a nonexistent `self`.
+effect fn cap_ask()
+let cap_h = handle {
+  let msg = "path is self.foo"
+  let v = perform cap_ask()
+  v + msg.size()
+} with cap_ask(k) { k(3) }
+assert_eq(cap_h, 3 + 16)
+
+// a local name that also appears as literal text inside a string / comment must
+// NOT be rewritten there; only interpolation `{expr}` and code are rewritten.
+effect fn sc_ask()
+effect fn sc_body() {
+  let base = perform sc_ask()       # comment mentioning base stays literal
+  let lit = "the base rate"         # literal 'base' — untouched
+  let raw = 'base'                  # single-quote raw — untouched
+  let interp = "v={base} lit=base"  # {base} rewritten, literal 'base' untouched
+  "{base}|{lit}|{raw}|{interp}"
+}
+assert_eq(
+  handle { sc_body() } with sc_ask(k) { k(5) },
+  "5|the base rate|base|v=5 lit=base",
+)
+
+// all three comment forms (# / // / block) are skipped even when they contain a
+// local name or an unbalanced quote (which would otherwise open a phantom
+// string). The block comment is mid-expression (its only valid position).
+effect fn cm_ask()
+effect fn cm_body() {
+  let base = perform cm_ask()  // don't rewrite base in this line comment
+  let y = /* it's base */ base + 1
+  y  # base again, still literal
+}
+assert_eq(handle { cm_body() } with cm_ask(k) { k(10) }, 11)
+
+// an effectful `effect fn` called outside a driver raises EffectError instead
+// of returning an un-driven computation object — both in ordinary code and in a
+// handler clause (neither is a `_step`, so `__Eff.stepping()` is false there).
+effect fn cl_g()
+effect fn cl_f() { let v = perform cl_g(); v * 2 }
+let cl_bare = try {
+  cl_f()
+  "no-error"
+} catch e {
+  e.kind
+}
+assert_eq(cl_bare, "EffectError")
+
+effect fn cl_x()
+let cl_in_clause = handle { perform cl_x() } with cl_x(k) {
+  let caught = try { cl_f(); "no-error" } catch e { e.kind }
+  k(caught)
+}
+assert_eq(cl_in_clause, "EffectError")
+
+// but a delegate call (effect fn from another effect fn / a handle body) still
+// runs under the driver
+effect fn cl_inner() { let a = perform cl_g(); a + 1 }
+effect fn cl_outer() { let b = cl_inner(); b * 10 }
+assert_eq(handle { cl_outer() } with cl_g(k) { k(5) }, 60)
+
+// `self.`-lookalike text inside a string survives a capturing nested handle
+// (the capture redirects are string-aware, like the locals rewrite)
+effect fn sc2_o()
+effect fn sc2_i()
+effect fn sc2_body() {
+  let base = perform sc2_o()
+  handle {
+    let m = "path is self.foo"
+    to_string(base) + "|" + m + "|" + to_string(perform sc2_i())
+  } with sc2_i(k) { k(1) }
+}
+assert_eq(handle { sc2_body() } with sc2_o(k) { k(5) }, "5|path is self.foo|1")
+

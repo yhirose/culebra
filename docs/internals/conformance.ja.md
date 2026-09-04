@@ -23,6 +23,8 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表
 | `tests/test_forward_ref.cul` | §6 (スコープ)、§11 (closure)、§20 |
 | `tests/test_iter.cul` | §12 (`for ... in`)、§18 (iterator protocol、Stringメソッド)、§19 (`range`、`iota`) |
 | `tests/test_iter_combinators.cul` | §18 (lazy combinator群、無限ソースのlaziness) |
+| `tests/test_iter_combinators_group.cul` | §18 (`min_by`/`max_by`、`to_set`/`to_object`/`group_by`/`partition`) |
+| `tests/test_iter_combinators_stream.cul` | §18 (`unzip`/`flatten`/`scan`/`distinct`/`tap`/`step_by`/`chunk_by`、無限ソースのlaziness) |
 | `tests/test_iter_terminal.cul` | §18 (terminal iteratorメソッド、§18.5 protocol contract) |
 | `tests/test_kwargs.cul` | §11 (キーワード引数、`**` splat)、§20 (kwargs in多重dispatch)、§7 (mixed callの評価順) |
 | `tests/test_match_class.cul` | §13 (型パターン) |
@@ -37,7 +39,11 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表
 | `tests/test_json.cul` | stdlib §9 (`JSON`) |
 | `tests/test_tensor.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_tensor_nn.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_nn_xent.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_nn_ops.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_nn_graph.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_tensor_ops.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_ops_rope.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_time.cul` | stdlib §5 (`Time`) |
 | `tests/test_import.cul` | §24 (モジュール) — `tests/test_import_helpers/*.cul`が依存先 |
 

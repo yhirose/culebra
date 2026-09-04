@@ -1,0 +1,192 @@
+// Conformance: algebraic effects — named fns and generators inside
+// effect / handle bodies: recursion, mutual recursion, closures over a
+// body local (including across a suspension / escaping a fork), and
+// nested named generator fns. Split from test_effects_resume.cul (see
+// that file's header for why).
+//
+// Run with:  ./build/culebra tests/test_effects_resume_closures.cul
+//            ./build/culebra --jit tests/test_effects_resume_closures.cul
+
+// --- named fns and generators inside effect / handle bodies ---------------
+// A named fn declared at the body's statement level persists across
+// suspensions: it stays a real `fn` declaration, emitted where it was
+// written, and is then stored in the name's promoted slot (each state block
+// is a fresh scope). Effect locals it reads come from the instance, or — when
+// a closure reads them too — from the box that closure captures.
+effect fn nf_ask()
+effect fn nf_body() {
+  fn h(n) { n * 2 }
+  let x = perform nf_ask()
+  h(x)
+}
+assert_eq(handle { nf_body() } with nf_ask(k) { k(5) }, 10)
+
+// recursion binds to the declaration itself (the multifn uplink), not back
+// through the slot the decl was just stored in
+effect fn nf_rec() {
+  let base = perform nf_ask()
+  fn fact(n) {
+    if n <= 1 { return base }
+    n * fact(n - 1)
+  }
+  fact(4)
+}
+assert_eq(handle { nf_rec() } with nf_ask(k) { k(1) }, 24)
+
+// mutual recursion between two named fns of one body
+effect fn nf_mutual() {
+  let base = perform nf_ask()
+  fn ev(n) {
+    if n == 0 { return base }
+    od(n - 1)
+  }
+  fn od(n) {
+    if n == 0 { return base + 1 }
+    ev(n - 1)
+  }
+  [ev(4), od(4)]
+}
+assert_eq(handle { nf_mutual() } with nf_ask(k) { k(100) }, [100, 101])
+
+// a named fn called from inside a closure: the name is read through its slot
+// there, and the closure gets it whether it was declared before or after
+effect fn nf_from_closure() {
+  let base = perform nf_ask()
+  fn dbl(n) { n * 2 + base }
+  let via = fn (n) { dbl(n) }
+  let early = fn () { late(1) }
+  fn late(n) { n + base }
+  [dbl(3), via(3), early()]
+}
+assert_eq(handle { nf_from_closure() } with nf_ask(k) { k(1) }, [7, 7, 2])
+
+// a body local read by a closure AND by a nested handle: the closure captures
+// it directly, the handle reaches it the same way it always did
+effect fn nf_in()
+effect fn nf_both() {
+  let base = perform nf_ask()
+  let via = fn (n) { n + base }
+  let inner = handle { base + perform nf_in() } with nf_in(k) { k(5) }
+  [via(1), inner]
+}
+assert_eq(handle { nf_both() } with nf_ask(k) { k(10) }, [11, 15])
+
+// a closure over a suspension-bound local, resumed twice: each fork gets the
+// value its own resume bound
+effect fn nf_pick(a, b)
+effect fn nf_multi() {
+  let x = perform nf_pick(1, 2)
+  let f = fn (k) { k + x }
+  f(10)
+}
+assert_eq(
+  handle { nf_multi() } with nf_pick(a, b, r) { [r(a), r(b)] },
+  [11, 12],
+)
+
+// ... and the same when the closure ESCAPES the fork. A fork is a shallow copy
+// of the frame, so the box a closure reads a local through has to be re-made
+// per fork (`_eff_refork`) or every fork would share the one the snapshot
+// holds — the scalar it replaced was copied per fork.
+effect fn nf_escape() {
+  let x = perform nf_pick(1, 2)
+  let g = fn () { x }
+  g
+}
+let nf_gs = handle { nf_escape() } with nf_pick(a, b, r) { [r(a), r(b)] }
+assert_eq([nf_gs[0](), nf_gs[1]()], [1, 2])
+
+// a heap value the body itself shares stays aliased across forks, as ever
+effect fn nf_alias() {
+  let acc = []
+  let push = fn (k) { acc.push(k) }
+  let x = perform nf_pick(1, 2)
+  push(x)
+  acc
+}
+mut nf_seen = []
+handle { nf_alias() } with nf_pick(a, b, r) {
+  nf_seen.push(r(a))
+  nf_seen.push(r(b))
+}
+assert_eq(nf_seen[0], [1, 2])
+
+// a closure that WRITES a body local: the write is visible to the body and to
+// the next call, across a suspension
+effect fn nf_write() {
+  let start = perform nf_ask()
+  mut acc = start
+  let bump = fn (k) { acc = acc + k }
+  bump(1)
+  let more = perform nf_ask()
+  bump(more)
+  acc
+}
+assert_eq(handle { nf_write() } with nf_ask(k) { k(5) }, 11)
+
+// a nested named generator fn captures effect locals and works in an effect
+// body, a handle body, and a handler clause; the fragment re-parse runs the
+// generator chain over it
+effect fn yg_body() {
+  let x = perform nf_ask()
+  fn g(n) {
+    yield n
+    yield n + x
+  }
+  g(10).collect()
+}
+assert_eq(handle { yg_body() } with nf_ask(k) { k(5) }, [10, 15])
+
+let yg_handle = handle {
+  let x = perform nf_ask()
+  fn g2(n) { yield n; yield n * x }
+  g2(3).collect()
+} with nf_ask(k) { k(7) }
+assert_eq(yg_handle, [3, 21])
+
+let yg_clause = handle { perform nf_ask() } with nf_ask(k) {
+  fn g3() { yield 1; yield 2 }
+  k(g3().collect())
+}
+assert_eq(yg_clause, [1, 2])
+
+// for-in and yield-from inside the nested generator
+fn yg_base() {
+  yield 100
+  yield 200
+}
+effect fn yg_mix() {
+  let x = perform nf_ask()
+  fn g4() {
+    for v in [1, 2] { yield v + x }
+    yield from yg_base()
+  }
+  g4().collect()
+}
+assert_eq(handle { yg_mix() } with nf_ask(k) { k(10) }, [11, 12, 100, 200])
+
+// multi-shot resume across a body that defines a nested generator
+effect fn yg_choose()
+effect fn yg_ms() {
+  let b = perform yg_choose()
+  fn g5(n) { yield n; yield n + 1 }
+  g5(b).collect()
+}
+assert_eq(
+  handle { yg_ms() } with yg_choose(k) { [k(10), k(20)] },
+  [[10, 11], [20, 21]],
+)
+
+// a named fn in a CPS-visited tail `if` arm works too
+effect fn yg_tail() {
+  let x = perform nf_ask()
+  if x > 0 {
+    fn g6() { yield x }
+    g6().collect()
+  }
+}
+assert_eq(handle { yg_tail() } with nf_ask(k) { k(3) }, [3])
+
+// (bare yield / a named fn buried in verbatim control flow stay parse-time
+// SyntaxErrors — verified manually on both backends, not runnable here)
+

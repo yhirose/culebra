@@ -1,0 +1,106 @@
+# Conformance: stdlib §7 (Tensor). See docs/stdlib.md and docs/language.md §25.
+#
+# Deep autograd graphs (RNN-style unrolling, shared subgraphs, dropping
+# an un-backward()'d chain), the arithmetic-operator type errors, the
+# chainable-method identity contract, Tensor.no_grad, and .item().
+# Split from test_tensor_nn.cul (see that file's header for why).
+#
+# Run with:  ./build/culebra tests/test_tensor_nn_graph.cul
+#            ./build/culebra --jit tests/test_tensor_nn_graph.cul
+
+# --- deep autograd graph: RNN-style unrolling must not overflow the C
+# stack, in `.backward()`'s topological walk or in dropping the graph.
+# 6000 clears the depths that used to crash the un-fixed recursion
+# (backward ~70-80k, drop ~160-180k) many times over while staying fast
+# even under --jit's CULEBRA_GC_STRESS=1 (collect on every allocation),
+# which goes quadratic on a long linear chain — see the analogous note
+# on test_deep_values.cul's teardown depths.
+let leaf = Tensor.from([1.0]).requires_grad()
+mut chain = leaf
+for _ in 0..6000 {
+  # `+=` would route through tensor_inplace_binop and defeat the point of
+  # this test (mutating one node in place, never building the chain).
+  chain = chain + Tensor.from([1.0])
+}
+chain.backward()
+# Pure addition propagates grad=1 unchanged through every level, so a
+# non-1.0 result would mean the walk stopped short of the leaf (or
+# double-counted a node) somewhere in the 6000-deep chain.
+assert_eq(to_string(leaf.grad().to_array()), "[1.0]")
+
+# Gradient accumulation through a genuinely shared subgraph (`a` feeds
+# both of `b`'s inputs and `c`'s second input) — the topo walk must
+# still visit each node exactly once and sum every contribution:
+# a=2, b=a*a=4, c=b+a=6, d=c*b=24, dL/da = 44 (hand-derived via the
+# chain rule; matches both backends bit-for-bit).
+let sh_a = Tensor.from([2.0]).requires_grad()
+let sh_b = sh_a * sh_a
+let sh_c = sh_b + sh_a
+let sh_d = sh_c * sh_b
+sh_d.backward()
+assert_eq(to_string(sh_a.grad().to_array()), "[44.0]")
+
+# Dropping a deep graph that was never backward()'d recurses the same
+# chain through TensorImpl's own destructor (a dtor can't throw, so this
+# is a structural bound, not the walk's catchable path above).
+tensor_drop_deep = fn () {
+  mut d = Tensor.from([1.0]).requires_grad()
+  for _ in 0..6000 {
+    d = d + Tensor.from([1.0])  # see the chain-building comment above
+  }
+  0
+}
+assert_eq(0, tensor_drop_deep())
+
+# An operand a Tensor operator cannot lift reports the canonical arithmetic
+# wording, the same as every other type error of that shape — including the
+# operators that have no tensor form at all (`%`, `@`).
+let op_err = fn (f) {
+  try {
+    f()
+    "no throw"
+  } catch e {
+    e.message
+  }
+}
+let ten_err = Tensor.from([1.0])
+assert_eq(op_err(fn () { ten_err + 'x' }),
+          "type error: cannot apply '+' to Tensor and String")
+assert_eq(op_err(fn () { 'x' * ten_err }),
+          "type error: cannot apply '*' to String and Tensor")
+assert_eq(op_err(fn () { ten_err - nil }),
+          "type error: cannot apply '-' to Tensor and Nil")
+assert_eq(op_err(fn () { ten_err / [1] }),
+          "type error: cannot apply '/' to Tensor and Array")
+assert_eq(op_err(fn () { ten_err % 2 }),
+          "type error: cannot apply '%' to Tensor and Long")
+assert_eq(op_err(fn () { ten_err @ ten_err }),
+          "type error: cannot apply '@' to Tensor and Tensor")
+# The compound forms route through the in-place helper, which declines a
+# non-liftable rhs so the wording has a single source.
+assert_eq(op_err(fn () {
+  mut c = Tensor.from([1.0])
+  c += 'x'
+}), "type error: cannot apply '+' to Tensor and String")
+
+# `requires_grad` / `backward` / `zero_grad` are chainable — each hands back
+# the receiver, so the result is the same tensor, not a second handle onto
+# the same storage. The methods that do produce a new tensor stay distinct.
+let same_t = Tensor.from([1.0, 2.0])
+assert_true(same_t == same_t.requires_grad())
+assert_true(same_t == same_t.zero_grad())
+let loss_t = (same_t * same_t).sum(0)
+assert_true(loss_t == loss_t.backward())
+assert_false(same_t == same_t.clone())
+assert_false(same_t == same_t.detach())
+assert_false(same_t == same_t.grad())
+assert_false(same_t == Tensor.from([1.0, 2.0]))
+
+# `Tensor.no_grad(fn)` runs fn with tape recording suppressed and returns
+# whatever fn returns, tensor or not.
+assert_eq(Tensor.no_grad(fn () { 7 }), 7)
+let ng = Tensor.no_grad(fn () { Tensor.from([1.0, 2.0]) + Tensor.from([3.0, 4.0]) })
+assert_eq(ng.to_array(), [4.0, 6.0])
+
+# .item() is for exactly one element; two is an error, not the first of them.
+assert_throws('ValueError', fn () { Tensor.from([1.0, 2.0]).item() })

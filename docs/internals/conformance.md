@@ -23,6 +23,8 @@ touch multiple sections, marked "(broad)".
 | `tests/test_forward_ref.cul` | §6 (scope), §11 (closures), §20 |
 | `tests/test_iter.cul` | §12 (`for ... in`), §18 (iterator protocol, String methods), §19 (`range`, `iota`) |
 | `tests/test_iter_combinators.cul` | §18 (lazy combinator families, unbounded-source laziness) |
+| `tests/test_iter_combinators_group.cul` | §18 (`min_by`/`max_by`, `to_set`/`to_object`/`group_by`/`partition`) |
+| `tests/test_iter_combinators_stream.cul` | §18 (`unzip`/`flatten`/`scan`/`distinct`/`tap`/`step_by`/`chunk_by`, unbounded-source laziness) |
 | `tests/test_iter_terminal.cul` | §18 (terminal iterator methods, §18.5 protocol contract) |
 | `tests/test_kwargs.cul` | §11 (keyword arguments, `**` splat), §20 (kwargs in multimethods), §7 (evaluation order for mixed calls) |
 | `tests/test_match_class.cul` | §13 (type patterns) |
@@ -37,7 +39,11 @@ touch multiple sections, marked "(broad)".
 | `tests/test_json.cul` | stdlib §9 (`JSON`) |
 | `tests/test_tensor.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_tensor_nn.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_nn_xent.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_nn_ops.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_nn_graph.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_tensor_ops.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_ops_rope.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_time.cul` | stdlib §5 (`Time`) |
 | `tests/test_import.cul` | §24 (Modules) — uses `tests/test_import_helpers/*.cul` as dependencies |
 

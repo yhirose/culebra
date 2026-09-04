@@ -1,0 +1,151 @@
+# Conformance: §17 (iterator protocol), §18. See docs/language.md §25.
+#
+# min_by / max_by, and to_set / to_object / group_by / partition. Split
+# from test_iter_combinators.cul (see that file's header for why).
+#
+# Run with:  ./build/culebra tests/test_iter_combinators_group.cul
+#            ./build/culebra --jit tests/test_iter_combinators_group.cul
+
+# --- min_by / max_by -----------------------------------------------------
+# The key orders, the element comes back. Both receiver kinds.
+mut people = [{name: 'a', age: 30}, {name: 'b', age: 20}, {name: 'c', age: 25}]
+assert_eq(people.min_by(|p| p.age).name, 'b')
+assert_eq(people.max_by(|p| p.age).name, 'a')
+assert_eq(people.iter().min_by(|p| p.age).name, 'b')
+assert_eq(people.iter().max_by(|p| p.age).name, 'a')
+assert_eq(['aa', 'b', 'ccc'].max_by(|s| s.size()), 'ccc')
+assert_eq(['aa', 'b', 'ccc'].iter().min_by(|s| s.size()), 'b')
+# Float keys are fine, and an inverted key inverts the winner.
+assert_eq([1, 2, 3].min_by(|x| 0 - x * 1.5), 3)
+assert_eq([1, 2, 3].max_by(|x| -x), 1)
+# Ties keep the earlier element.
+assert_eq([{k: 1, t: 'first'}, {k: 1, t: 'second'}].min_by(|o| o.k).t, 'first')
+assert_eq([{k: 1, t: 'first'}, {k: 1, t: 'second'}].max_by(|o| o.k).t, 'first')
+# The key is computed exactly once per element.
+mut keycalls = 0
+assert_eq([5, 3, 9, 1].min_by(fn (x) {
+  keycalls = keycalls + 1
+  x
+}), 1)
+assert_eq(keycalls, 4)
+# Empty throws, like min/max.
+try {
+  [].min_by(|x| x)
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
+try {
+  [].iter().max_by(|x| x)
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ValueError")
+}
+# A non-numeric key reports like the unkeyed forms.
+try {
+  [1, 2].min_by(|x| 'k')
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+
+# --- to_set / group_by / partition ---------------------------------------
+# to_set is the only way to build a Set from a collection (set literals are
+# the only other spelling), so it serves Array receivers as well.
+assert_eq([1, 2, 2, 3, 1].to_set(), {1, 2, 3})
+assert_eq([1, 2, 2, 3, 1].iter().to_set(), {1, 2, 3})
+assert_eq([].to_set().size(), 0)
+assert_eq([].iter().to_set().size(), 0)
+assert_eq(range(5).map(|x| x % 2).to_set(), {0, 1})
+assert_eq([(1, 2), (1, 2), (3, 4)].to_set(), {(1, 2), (3, 4)})
+# First-seen order is kept. Member identity follows Object-key identity,
+# which distinguishes types rather than numeric value, so these stay three.
+assert_eq(['b', 'a', 'b'].to_set().to_array(), ['b', 'a'])
+assert_eq([1, 1.0, true].to_set().size(), 3)
+assert_eq([1, 1.0, true].to_set(), {1, 1.0, true})
+# An unhashable element reports like any other unhashable key.
+try {
+  [[1]].to_set()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+try {
+  [[1]].iter().to_set()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+
+# to_object is to_set's Object twin: the way back from (key, value) pairs,
+# so a lookup table is an expression (a `let`) instead of a `mut` + loop.
+assert_eq([('a', 1), ('b', 2)].to_object(), {a: 1, b: 2})
+assert_eq([('a', 1), ('b', 2)].iter().to_object(), {a: 1, b: 2})
+assert_eq([].to_object().size(), 0)
+assert_eq([].iter().to_object().size(), 0)
+# It inverts Object.iter(), so the pair round-trips and a value remap is a chain.
+mut src = {a: 1, b: 2, c: 3}
+assert_eq(src.iter().to_object(), src)
+assert_eq(
+  src.iter().map(|(k, v)| (k, v * 10)).to_object(),
+  {a: 10, b: 20, c: 30},
+)
+assert_eq(['x', 'y'].enumerate().map(|(i, n)| (n, i)).to_object(), {x: 0, y: 1})
+# A repeated key overwrites in place: last value, first-seen position.
+assert_eq([('a', 1), ('b', 2), ('a', 9)].to_object(), {a: 9, b: 2})
+assert_eq([('a', 1), ('b', 2), ('a', 9)].to_object().keys(), ['a', 'b'])
+# Non-String keys work, exactly as `o[k] = v` does.
+assert_eq([(1, 'x'), (2, 'y')].to_object()[1], 'x')
+assert_eq([(1, 'x'), ('s', 'y'), (true, 'z')].to_object().size(), 3)
+# Entries are mutable, like a normal runtime-inserted dict entry (`o[k] = v`).
+mut built = [('a', 1)].to_object()
+built.a = 2
+assert_eq(built.a, 2)
+# An element that is not a 2-tuple, and an unhashable key, both report here.
+try {
+  [1, 2].to_object()
+  assert_true(false)
+} catch e {
+  assert_eq(e.message, "type error: to_object expects (key, value) tuples")
+}
+try {
+  [('a', 1, 2)].iter().to_object()
+  assert_true(false)
+} catch e {
+  assert_eq(e.message, "type error: to_object expects (key, value) tuples")
+}
+try {
+  [([1], 'v')].to_object()
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+
+# group_by buckets into Arrays under f(x), in first-seen key order.
+mut staff = [{n: 'a', d: 'eng'}, {n: 'b', d: 'ops'}, {n: 'c', d: 'eng'}]
+assert_eq(staff.group_by(|p| p.d).eng.size(), 2)
+assert_eq(staff.iter().group_by(|p| p.d).ops.size(), 1)
+assert_eq([1, 2, 3, 4, 5].group_by(|x| x % 2)[1], [1, 3, 5])
+assert_eq([1, 2, 3, 4, 5].iter().group_by(|x| x % 2)[0], [2, 4])
+assert_eq(['aa', 'b', 'cc'].group_by(|s| s.size())[2], ['aa', 'cc'])
+assert_eq([].group_by(|x| x).keys().size(), 0)
+try {
+  [1].group_by(|x| [x])
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+
+# partition splits in one pass and returns a Tuple, so it destructures.
+assert_eq([1, 2, 3, 4, 5].partition(|x| x % 2 == 0), ([2, 4], [1, 3, 5]))
+assert_eq([1, 2, 3, 4, 5].iter().partition(|x| x % 2 == 0), ([2, 4], [1, 3, 5]))
+mut evens = nil
+mut odds = nil
+(evens, odds) = [1, 2, 3, 4].partition(|x| x % 2 == 0)
+assert_eq(evens, [2, 4])
+assert_eq(odds, [1, 3])
+# Order is preserved in both halves, and an all-or-nothing predicate is fine.
+assert_eq([1, 2, 3].partition(|x| true), ([1, 2, 3], []))
+assert_eq([1, 2, 3].partition(|x| false), ([], [1, 2, 3]))
+assert_eq([].iter().partition(|x| true), ([], []))
+
