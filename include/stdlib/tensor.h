@@ -625,7 +625,20 @@ inline bool _tl_binop_has_scalar_fast_path(Op op) {
 
 // Build a lazy elementwise binop node. Shapes are broadcast per numpy
 // rules; dtype must match (no implicit promotion in Phase 1).
-inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
+//
+// Choked like tensor_eval_node, for a different dependency: `+` on two
+// values reaches here whenever either side is a Tensor, and the generic
+// arithmetic helper that does the reaching is live in every binary. The
+// tl kernels this instantiates (map_binary over each elementwise lambda)
+// are pure C++, so they sit in the core archive rather than behind the
+// backend choke, and a `print("hello")` binary carried all of them.
+CULEBRA_RT_TENSOR_EVAL_LINKAGE TensorPtr tensor_binop(Op op, TensorPtr a,
+                                                      TensorPtr b) {
+#ifdef CULEBRA_RT_TENSOR_EVAL_WEAK
+  (void)op, (void)a, (void)b;
+  throw CulebraError("InternalError",
+                     "tensor runtime entered in a no-tensor binary", 0, 0);
+#else
   if (a->dtype != b->dtype) {
     throw CulebraError("ValueError", "Tensor: dtype mismatch in binop.");
   }
@@ -645,6 +658,7 @@ inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
   auto dtype = a->dtype;
   return tensor_make_op(op, std::move(v), dtype,
                         std::vector<TensorPtr>{std::move(a), std::move(b)});
+#endif
 }
 
 // Rank-0 Tensor holding a single scalar — used to lift scalar Float
@@ -661,7 +675,17 @@ inline TensorPtr tensor_scalar(double v, Dtype d) {
 // Returns false (caller falls back to the lazy path) if dst is a
 // view, lazy, dtype-mismatched, or the broadcast result would not
 // fit in dst.shape — keeps semantics identical to the lazy form.
-inline bool tensor_inplace_binop(TensorImpl& dst, Op op, TensorPtr rhs) {
+//
+// Choked with tensor_binop and for the same reason: `+=` reaches the tl
+// kernels through its own path, so gating only the lazy form would leave
+// them linked.
+CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_inplace_binop(TensorImpl& dst, Op op,
+                                                         TensorPtr rhs) {
+#ifdef CULEBRA_RT_TENSOR_EVAL_WEAK
+  (void)dst, (void)op, (void)rhs;
+  throw CulebraError("InternalError",
+                     "tensor runtime entered in a no-tensor binary", 0, 0);
+#else
   if (dst.is_view) return false;
   if (!dst.value.materialized()) return false;
   if (!dst.is_contiguous()) return false;
@@ -681,6 +705,7 @@ inline bool tensor_inplace_binop(TensorImpl& dst, Op op, TensorPtr rhs) {
     return 0;
   });
   return true;
+#endif
 }
 
 // Build a lazy reduction along `axis`. Output shape drops that axis

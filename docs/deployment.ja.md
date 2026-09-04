@@ -155,18 +155,27 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 各機能軸は独立にforce-loadされる（仕組みは
 [§4](#4-共有-runtime-archive-レイアウト) 参照）ので、`Tensor`も
 `Http`も使わないプログラムはbaseのみをlinkする。OpenSSLを
-落とすだけで約4.7 MB効く（非Httpバイナリ ~0.4 MBに対しHttp版は
-~5.2 MB、OpenSSLは静的リンクのため）。同じゲーティングは、外部
-ライブラリを引かないが自前のコードを抱える1つのサブシステムにも
-効く: 正規表現エンジン（`Regex`、`re'...'`リテラルを含む）。この軸の
-コストは約0.9 MBで、cpp-regexlibとこのnamespace自身のgroupの合計。
-実測の内訳はコード約0.55 MBとテーブル約0.24 MB。
+落とすだけで約4.7 MB効く（非Httpバイナリ ~0.3 MBに対しHttp版は
+~5.1 MB、OpenSSLは静的リンクのため）。同じゲーティングは、外部
+ライブラリを引かないが自前のコードを抱える2つのサブシステムにも
+効く。1つめは正規表現エンジン（`Regex`、`re'...'`リテラルを含む）。
+この軸のコストは約0.9 MBで、cpp-regexlibとこのnamespace自身のgroupの
+合計。実測の内訳はコード約0.55 MBとテーブル約0.24 MB。
 外部依存が無くても弱/強分岐が要るのは、
 エンジン内部の`__builtin_cpu_supports`によるランタイム分岐チェックが
 コンパイラに、それをコンパイルする翻訳単位ごとの起動時CPUID
 コンストラクタを生成させるためで、これを無条件にすると自前のコード
-以外にもこのコンストラクタが全バイナリに入ってしまう。`Proc`の
-fork/exec層、`Canvas.Sprite.from_png` / `Canvas.Font`の背後の
+以外にもこのコンストラクタが全バイナリに入ってしまう。
+
+2つめはTensorのelementwiseカーネルで、これがこの軸に乗る理由は
+バックエンドのchokeではカバーできない。`culebra::tensor_eval_node`が
+ゲートするのはBLASとMetalだが、cpp-tensorlibの`map_binary`実体化は
+純粋なC++なので外部依存では締め出せない。しかも汎用の算術ヘルパは
+どちらかの被演算子が`Tensor`でありうる限りそこへ到達する — つまり
+算術を含む全バイナリが該当する。そこで`culebra::tensor_binop`と
+`culebra::tensor_inplace_binop`（遅延の`+`とin-placeの`+=`の経路）に
+同じ弱/強分岐を掛けている。効果は約115 KBで、helloの4分の1に当たる。
+`Proc`のfork/exec層、`Canvas.Sprite.from_png` / `Canvas.Font`の背後の
 PNG/TTFデコーダ、そして`Peg`（cpp-peglib）も外部ライブラリを引かない
 が、それぞれ専用のchokeは不要——自身のnamespaceのdispatch tableを
 通じてのみ到達するプレーンなコードとしてコンパイルされるので、
@@ -216,7 +225,7 @@ lldのいずれも解釈する。埋め込みランタイムアーカイブに�
 次にプラットフォームの`strip`ツールがリンカの残したグローバル
 シンボルテーブルを除去する（リリースパッケージが`culebra`本体に
 掛けているのと同じ処理）。この2つで`print("hello")`のバイナリは
-0.66 MB → 0.55 MBになる。ローダが必要とする動的シンボルは
+0.52 MB → 0.42 MBになる。ローダが必要とする動的シンボルは
 どちらの段階でも残る。デバッグ用に両方を飛ばすには`--keep-symbols`
 を渡す。クロスコンパイル（`--target`）の出力はリンク段階で止まる
 （ホストの`strip`は他形式のオブジェクトを読めない）。`PATH`に
@@ -880,7 +889,7 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 | Archive | 内容 |
 |---|---|
 | `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`Peg`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeでなく下のnamespace-group単位のdead-strippingに委ねる——3つのうち`Peg`だけは未使用でも固定約53 KBのpeglib RTTI/vtableメタデータを残す（§1参照） |
-| `libculebra_rt_tensor.a` | 強いtensor choke（BLAS / Accelerateを引く） |
+| `libculebra_rt_tensor.a` | 強いtensor choke 2種: バックエンド側（BLAS / Accelerateを引く）と、汎用の算術経路が到達してしまうelementwiseカーネル（[§1](#tensor-free--http-free-バイナリ)参照） |
 | `libculebra_rt_http.a` | 強いhttp choke（OpenSSL + zlibを引く） |
 | `libculebra_rt_compress.a` | 強いcompress choke（zlibを引く。`to_png`もこれに乗る） |
 | `libculebra_rt_sqlite.a` | 強いsqlite choke＋sqlite3 amalgamation |
@@ -919,7 +928,7 @@ namespace分。ソースが名指ししないものはnullエントリ）を運�
 リンク単位が1ブロックになり、到達する呼び出しが1つあるだけでhelloが15%
 太るためです。補間の書式指定（`"{x:.2f}"`）を書いたプログラムは今も
 `std::format`をリンクします — その書式こそ`std::format`のミニ言語だからです。
-機能軸と合わせて、これが`print("hello")`のバイナリを0.5 MB前後
+機能軸と合わせて、これが`print("hello")`のバイナリを0.4 MB前後
 に保っています。走査が見落としたnamespaceは黙って`nil`に読めたりはせず、
 到達した時点でそのnamespace名を含む`InternalError`になります。
 

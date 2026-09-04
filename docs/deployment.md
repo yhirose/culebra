@@ -160,17 +160,28 @@ covers that.
 Each feature axis force-loads independently (mechanism: [§4](#4-shared-runtime-archive-layout)),
 so a program using neither `Tensor` nor `Http` links only the base
 archive. Dropping OpenSSL alone is worth ~4.7 MB (a non-Http binary is
-~0.4 MB vs ~5.2 MB for an Http one, since OpenSSL is statically
-linked). The same gating covers one self-hosted subsystem that links
-no external library but carries its own code: the regex engine
-(`Regex`, including `re'...'` literals). The axis costs ~0.9 MB —
-cpp-regexlib plus the namespace's own group, measured as ~0.55 MB of
-code and ~0.24 MB of tables. It
+~0.3 MB vs ~5.1 MB for an Http one, since OpenSSL is statically
+linked). The same gating covers two self-hosted subsystems that link
+no external library but carry their own code. The first is the regex
+engine (`Regex`, including `re'...'` literals). That axis costs
+~0.9 MB — cpp-regexlib plus the namespace's own group, measured as
+~0.55 MB of code and ~0.24 MB of tables. It
 still needs the weak/strong split even though nothing external is at
 stake, because a `__builtin_cpu_supports` runtime-dispatch check inside
 it makes the compiler emit a start-up CPUID constructor for whatever
 translation unit compiles the engine — leaving that unconditional would
-put the constructor in every binary, not just its own code. `Proc`'s
+put the constructor in every binary, not just its own code.
+
+The second is Tensor's elementwise kernels, and they are on the axis
+for a reason the backend choke does not cover. `culebra::
+tensor_eval_node` gates BLAS and Metal, but cpp-tensorlib's
+`map_binary` instantiations are pure C++, so nothing external kept them
+out — and the generic arithmetic helper reaches them whenever either
+operand could be a `Tensor`, which is every binary that does
+arithmetic at all. `culebra::tensor_binop` and
+`culebra::tensor_inplace_binop` (the lazy `+` and the in-place `+=`
+paths) therefore take the same weak/strong split, which is worth
+~115 KB — a quarter of a hello. `Proc`'s
 fork/exec layer, the PNG/TTF decoders behind
 `Canvas.Sprite.from_png` / `Canvas.Font`, and `Peg` (cpp-peglib) link
 nothing external either but need no choke of their own: they compile
@@ -222,7 +233,7 @@ lld alike: the embedded runtime archive carries thousands of
 platform's `strip` tool removes the global symbol table the linker
 leaves behind, the same step the release packaging applies to
 `culebra` itself. Together they take a `print("hello")` binary from
-0.66 MB to 0.55 MB; the dynamic symbols the loader needs survive
+0.52 MB to 0.42 MB; the dynamic symbols the loader needs survive
 both. Pass `--keep-symbols` to skip both for debugging. Cross-compiled
 outputs (`--target`) stop after the link step, since the host's
 `strip` does not read a foreign object format; a `strip` missing from
@@ -884,7 +895,7 @@ emits it as a base archive plus one small archive per heavy feature
 | Archive | Contents |
 |---|---|
 | `libculebra_rt.a` | base — everything, but with **weak stubs** for each feature's choke (so nothing it can call reaches BLAS, OpenSSL, zlib, sqlite3 or the regex engine); the subprocess layer, the image decoders (stb_image / stb_truetype), and the cpp-peglib parser generator (`Peg`) link nothing external, so they compile straight into this archive and rely on the namespace-group dead-stripping below rather than a choke of their own — `Peg` is the one of the three that still leaves a fixed ~53 KB of peglib RTTI/vtable metadata behind even unused (see [§1](#tensor-free-and-http-free-binaries)) |
-| `libculebra_rt_tensor.a` | strong tensor choke (pulls BLAS / Accelerate) |
+| `libculebra_rt_tensor.a` | strong tensor chokes: the backend one (pulls BLAS / Accelerate) and the elementwise kernels the generic arithmetic path would otherwise reach (see [§1](#tensor-free-and-http-free-binaries)) |
 | `libculebra_rt_http.a` | strong http choke (pulls OpenSSL + zlib) |
 | `libculebra_rt_compress.a` | strong compress choke (pulls zlib; `to_png` rides it too) |
 | `libculebra_rt_sqlite.a` | strong sqlite choke plus the sqlite3 amalgamation |
@@ -927,7 +938,7 @@ together, so one reachable call would add 15% to a hello. A program
 that writes an interpolation format spec (`"{x:.2f}"`) still links it,
 because that spec *is* `std::format`'s mini-language. Together with the
 feature axes this is what keeps a `print("hello")` binary near
-0.5 MB. A namespace the scan missed does not silently read as `nil`:
+0.4 MB. A namespace the scan missed does not silently read as `nil`:
 reaching it raises an `InternalError` naming the namespace.
 
 These archives are **embedded directly into the `culebra` driver**

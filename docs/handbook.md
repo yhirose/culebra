@@ -1881,7 +1881,7 @@ also drop the Accelerate / Metal frameworks the tensor engine needs.
 
 ```bash
 ./build/culebra build my-program.cul -o ./out
-./out                                     # standalone, ~0.5 MB on macOS
+./out                                     # standalone, ~0.4 MB on macOS
 otool -L ./out                            # no Accelerate, no Metal, no LLVM
 ```
 
@@ -1912,7 +1912,7 @@ A "hello world" using `inspect` doesn't need the tensor or HTTP
 runtime glue. Tracing the call graph from the entry file lets the
 linker drop unreferenced runtime helpers (~530 of them) and, when no
 `Tensor` reference is found, swap in a no-tensor archive. The result
-is ~0.5 MB where a program force-loading every feature archive is
+is ~0.4 MB where a program force-loading every feature archive is
 ~11.6 MB.
 
 ## 17. Embedding overview

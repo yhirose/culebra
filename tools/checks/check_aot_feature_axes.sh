@@ -171,6 +171,17 @@ foreign_choke='jit_class_info<culebra::foreign_fixture::Counter>::methods'
 # namespace-group-strippable, so it gets its own force-load axis.
 codegen_choke='jit_class_info<culebra::codegen::Module>::methods'
 
+# Tensor's elementwise kernels. The backend choke (tensor_eval_node) gates
+# BLAS/Metal, but cpp-tensorlib's map_binary instantiations are pure C++ and
+# so were never behind it -- and the generic arithmetic helper reaches them
+# whenever either operand could be a Tensor, which is every binary. They are
+# choked at culebra::tensor_binop / tensor_inplace_binop (tensor.h) instead.
+# Checked by the kernels rather than by the choke's nm class: ld64 reports the
+# core archive's weak definition as 'T' once it is the only one linked, so the
+# class letter cannot tell the stub from the real body. Losing this axis is
+# silent -- the binary still runs, it just carries ~115 KB it never enters.
+tensor_kernels='tl::detail::map_binary'
+
 # 1. Names none of them: Regex stubbed, Proc/Canvas/Peg engines entirely absent.
 build none 'IO.print("none")'
 expect_class none "$regex_choke" "W?" "expected 'W' or absent" "no Regex use"
@@ -195,6 +206,7 @@ expect_absent none 'culebra::jit_serialize[(]' "the isolate transfer graph"
 expect_absent none 'culebra::_jit_shared_val_prop_impl[(]' "the SharedVal reader"
 expect_absent none '_jit_isolate_teardown_join_all' "the isolate teardown join"
 expect_absent none "$fmt_machinery" "libstdc++'s formatter, a program that formats nothing"
+expect_absent none "$tensor_kernels" "cpp-tensorlib's elementwise kernels"
 expect_output none "none"
 # The namespace groups (stdlib_rt.h ns_groups()): a namespace's dispatch rows
 # and adapters link only when the program names it. No axis, no choke — the
@@ -275,6 +287,20 @@ expect_class codegen "$peg_choke" "" "expected absent" "CodeGen only"
 expect_absent codegen "$fmt_machinery" "libstdc++'s formatter, CodeGen"
 expect_output codegen "42"
 
+# Tensor: `+=` and `+` both have to reach the real kernels, and the printed
+# value is what proves they did — the core archive's stub throws rather than
+# computing, so a binary that force-loaded nothing would die here instead of
+# quietly answering wrong.
+build tensor 'mut a = Tensor.from([[1.0, 2.0]])
+a += Tensor.from([[10.0, 20.0]])
+let b = a + Tensor.from([[100.0, 200.0]])
+IO.print(b.to_array()[0][1])'
+expect_present tensor "$tensor_kernels" "Tensor named, the kernels must link"
+expect_class tensor "$regex_choke" "W?" "expected 'W' or absent" "Tensor only"
+expect_class tensor "$peg_choke" "" "expected absent" "Tensor only"
+expect_absent tensor "$fmt_machinery" "libstdc++'s formatter, Tensor"
+expect_output tensor "222.0"
+
 # A Shared.new view: its reader arrives through the hook, and the view's
 # `copy` reaches the deserializer, which reaches everything else.
 build shared 'let s = Shared.new({a: 1, xs: [10, 20]})
@@ -316,4 +342,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / __Foreign / CodeGen by axis; Proc/Canvas/Peg/Shared by namespace group; Peg's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK (Regex / Tensor / __Foreign / CodeGen by axis; Proc/Canvas/Peg/Shared by namespace group; Peg's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"
