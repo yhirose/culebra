@@ -16,36 +16,41 @@
 # reason; `parse_err.lin` doesn't even parse.
 
 let grammar = `
-  PROGRAM <- _ EXPR _
+  PROGRAM <- EXPR
 
   EXPR   <- LET / IF / SPLIT / FREE / APP / QVAL / VAR
 
-  LET    <- 'let' __ IDENT ':' _ TYPE '=' _ EXPR ';' _ EXPR
-  IF     <- 'if' __ EXPR '{' _ EXPR '}' _ 'else' __ '{' _ EXPR '}' _
-  SPLIT  <- 'split' __ EXPR 'as' __ IDENT ',' _ IDENT '{' _ EXPR '}' _
-  FREE   <- 'free' __ IDENT ';' _ EXPR
-  APP    <- '(' _ EXPR EXPR ')' _
+  LET    <- 'let' IDENT ':' TYPE '=' EXPR ';' EXPR
+  IF     <- 'if' EXPR '{' EXPR '}' 'else' '{' EXPR '}'
+  SPLIT  <- 'split' EXPR 'as' IDENT ',' IDENT '{' EXPR '}'
+  FREE   <- 'free' IDENT ';' EXPR
+  APP    <- '(' EXPR EXPR ')'
   QVAL   <- QUAL VAL
   VAR    <- IDENT
 
   VAL    <- BOOL / PAIR / FN
-  BOOL   <- < 'true' / 'false' > __
-  PAIR   <- '<' _ EXPR ',' _ EXPR '>' _
-  FN     <- 'fn' __ IDENT ':' _ TYPE '{' _ EXPR '}' _
+  BOOL   <- < 'true' / 'false' >
+  PAIR   <- '<' EXPR ',' EXPR '>'
+  FN     <- 'fn' IDENT ':' TYPE '{' EXPR '}'
 
-  QUAL   <- < 'lin' / 'un' > __
+  QUAL   <- < 'lin' / 'un' >
 
-  RESERVED <- ('let' / 'if' / 'else' / 'split' / 'as' / 'free' / 'fn'
-               / 'lin' / 'un' / 'true' / 'false' / 'bool') ![a-zA-Z]
-  IDENT    <- !RESERVED < [a-zA-Z]+ > _
+  # %word makes every quoted literal here self-boundary-checking — 'let'
+  # matches 'let' but not the first three letters of 'lettuce' — so this
+  # exists only to keep those keywords from doubling as identifiers (a
+  # bare 'lin' backtracks out of QVAL into VAR otherwise, since a PEG
+  # retries the next alternative rather than committing to one).
+  RESERVED <- 'let' / 'if' / 'else' / 'split' / 'as' / 'free' / 'fn'
+              / 'lin' / 'un' / 'true' / 'false' / 'bool'
+  IDENT    <- !RESERVED < [a-zA-Z]+ >
 
   TYPE   <- QUAL PRIM
-  PRIM   <- BOOLTY / '(' _ TYPE OP TYPE ')' _
-  BOOLTY <- 'bool' __
-  OP     <- < '*' / '->' > _
+  PRIM   <- BOOLTY / '(' TYPE OP TYPE ')'
+  BOOLTY <- 'bool'
+  OP     <- < '*' / '->' >
 
-  ~_     <- [ \t\r\n]*
-  ~__    <- ![a-zA-Z] _
+  %whitespace <- [ \t\r\n]*
+  %word       <- [a-zA-Z]+
 `
 
 # --- Types ---------------------------------------------------------------
