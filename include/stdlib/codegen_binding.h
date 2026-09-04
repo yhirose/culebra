@@ -7,6 +7,73 @@
 
 namespace culebra {
 
+// Reads one declared argument of a hand-written thunk: the caller's value, or
+// nil where it was omitted, checked against the annotation `A` would carry on
+// a deduced thunk. The type check is the part a raw thunk must not skip --
+// jit_handle_self reinterpret_casts what it is handed, so an unchecked Long
+// in a handle's slot is a wild pointer rather than a TypeError.
+template <class A>
+inline JitValue codegen_raw_arg(int64_t n, JitValue* args, int64_t i,
+                                const char* name) {
+  // An omitted slot is the declared default's, not a value to check: every
+  // parameter here is optional, so nil-because-absent must not be read as a
+  // nil the caller passed.
+  if (n <= i || args[i].tag == TAG_UNFILLED) return {TAG_NIL, 0};
+  const JitValue v = args[i];
+  if (!wrap_detail::jit_arg_matches<A>(v)) {
+    const auto pos = _jit_arg_pos(static_cast<int>(i));
+    throw culebra::CulebraError(
+        "TypeError",
+        culebra::format("type error: parameter '{}' expects {}", name,
+                        wrap_detail::param_type_name<A>()),
+        pos.line, pos.col);
+  }
+  return v;
+}
+
+// Program.run's own thunk. `natives` is an Object of culebra Functions,
+// which .method<>()'s deduced marshalling has no branch for (jit_arg_get
+// reads handles and scalars, never a raw value), so this reads the three
+// arguments itself -- the door wrap.h's raw_method opens. A raw thunk owes
+// the whole ABI contract the deduced ones get for free: the ownership
+// guards, the argument type checks, and the error surfacing.
+inline void codegen_program_run_thunk(JitValue* __ret, JitClosure*,
+                                      int8_t self_tag, int64_t self_data,
+                                      int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  // The method ABI is callee-consumes: self and every argument arrive at +1
+  // and are ours to release on every exit, including an unwinding one.
+  JitMethodArgs _a{n, args};
+  JitMethodSelf _s{self};
+  auto* prog = wrap_detail::jit_handle_self<codegen::Program>(self);
+  const JitValue rt_v =
+      codegen_raw_arg<codegen::Runtime*>(n, args, 0, "rt");
+  codegen::Runtime* rt =
+      rt_v.tag == TAG_NIL
+          ? nullptr
+          : wrap_detail::jit_handle_self<codegen::Runtime>(rt_v);
+  const JitValue depth_v = codegen_raw_arg<long>(n, args, 1, "max_call_depth");
+  const int64_t depth = depth_v.tag == TAG_NIL
+                            ? vm::RunOptions{}.max_call_depth
+                            : depth_v.data;
+  // No annotation names "an Object", so this one is checked by hand.
+  const JitValue natives =
+      (n > 2 && args[2].tag != TAG_UNFILLED) ? args[2] : JitValue{TAG_NIL, 0};
+  if (natives.tag != TAG_NIL && natives.tag != TAG_OBJECT) {
+    const auto pos = _jit_arg_pos(2);
+    throw culebra::CulebraError(
+        "TypeError", "type error: parameter 'natives' expects Object",
+        pos.line, pos.col);
+  }
+  // The same guard the deduced thunks end with: a native body's own C++
+  // exception becomes a catchable RuntimeError instead of escaping the
+  // process, and a positionless CulebraError gets the call site.
+  *__ret = wrap_detail::surface_native_error_at_call_site([&] {
+    prog->run(rt, depth, natives);
+    return JitValue{TAG_NIL, 0};
+  });
+}
+
 inline bool register_codegen_binding() {
   wrap<codegen::Module>("CodeGen", "Module")
       .ctor<>()
@@ -175,9 +242,10 @@ inline bool register_codegen_binding() {
       // The depth bound's default is cpp-vmlib's own, read from it rather
       // than copied: a submodule bump that changes it must not leave this
       // behind naming the old one.
-      .method<&codegen::Program::run>(
-          "run", {{"rt", nullptr},
-                  {"max_call_depth", vm::RunOptions{}.max_call_depth}})
+      .raw_method("run", &codegen_program_run_thunk,
+                  {{"rt", nullptr},
+                   {"max_call_depth", vm::RunOptions{}.max_call_depth},
+                   {"natives", nullptr}})
       .method<&codegen::Program::dump_bc>("dump_bc");
   wrap<codegen::Runtime>("CodeGen", "Runtime")
       .ctor<>()

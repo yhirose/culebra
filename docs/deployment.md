@@ -920,8 +920,27 @@ Optional parameters must be a trailing run, and both extensions apply to
 `.method`/`.borrowed_method` only — a `.ctor`/`.static_method` parameter is
 always required and cannot yet name a wrapped class.
 
-Containers (`std::vector`/`std::map`) and callbacks are not yet
-marshalled.
+Containers (`std::vector`/`std::map`) and callbacks are not marshalled
+automatically. A method that needs one — a `Function` to call back into, or
+an arbitrary `Object` to read — declares itself with `.raw_method(name,
+thunk, params)` and writes the thunk by hand. The declarative half still
+applies, so the method keeps its parameter names, keyword arguments and
+defaults; what the thunk owes in exchange is the whole ABI contract the
+deduced ones get for free:
+
+- Release self and the arguments (`JitMethodSelf` / `JitMethodArgs`) — the
+  ABI is callee-consumes, so without them every call leaks a reference.
+- Type-check each argument before using it. `jit_check_args` runs only on
+  the deduced path, and `jit_handle_self` reinterprets whatever it is handed,
+  so an unchecked scalar in a handle's slot is a wild pointer rather than a
+  `TypeError`.
+- Resolve the receiver with `wrap_detail::jit_handle_self<T>`, read the
+  arguments (a `TAG_UNFILLED` slot is one the caller omitted), and write the
+  result through `surface_native_error_at_call_site` into `__ret`, so a C++
+  exception from the body becomes a catchable error at the call site instead
+  of escaping the process.
+
+`CodeGen.Program.run`'s `natives:` table is the in-tree example.
 
 `tests/wrap_test.sh` runs the end-to-end pipeline check for this
 workflow.

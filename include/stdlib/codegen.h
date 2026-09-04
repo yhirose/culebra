@@ -24,6 +24,10 @@
 #include "vmlib.h"
 
 #include "base/shared.h"  // culebra::CulebraError
+// The natives bridge below marshals culebra values and calls a culebra
+// closure, so this header needs the runtime layer -- the same reason
+// interop/wrap.h includes it rather than waiting for culebra.h.
+#include <rt/rt.h>
 
 namespace culebra::codegen {
 
@@ -53,6 +57,174 @@ class Runtime {
   uint64_t bound_ = 0;
 };
 
+// --- Host functions: what a module's declared natives actually do ----------
+//
+// A module carries native NAMES (Module::declare_native); vm::RunOptions
+// carries the implementations, as C++ function pointers. A script cannot
+// produce one of those, so Program.run bridges: it takes an Object mapping
+// each declared name to an ordinary culebra Function, and registers one
+// NativeFn per name that marshals the arguments across, calls the closure,
+// and marshals the answer back.
+//
+// The two heaps stay apart: coreir::Runtime's and culebra's are collected
+// independently, with no coordination, so only values with no heap identity
+// to share cross -- nil, bools, ints, doubles and strings, as copies.
+// Anything else is a named TypeError rather than a silent coercion.
+namespace natives {
+
+// The five kinds, guest -> culebra. `what` names the side and the slot for
+// the TypeError a value of any other kind gets -- a callable, not a string,
+// because every crossing that succeeds would otherwise pay to build and
+// throw away a message. This runs once per argument of every native call.
+template <class What>
+inline JitValue marshal_in(const coreir::Value& v, What&& what) {
+  if (v.is_nil()) return {TAG_NIL, 0};
+  if (v.is_bool()) return {TAG_BOOL, v.as_bool() ? 1 : 0};
+  if (v.is_int()) return {TAG_LONG, v.as_int()};
+  if (v.is_double()) {
+    int64_t bits = 0;
+    const double d = v.as_double();
+    std::memcpy(&bits, &d, sizeof d);
+    return {TAG_FLOAT, bits};
+  }
+  if (v.is_str()) {
+    return {TAG_STRING,
+            reinterpret_cast<int64_t>(_culebra_heap_str(v.as_str()))};
+  }
+  throw culebra::CulebraError("TypeError", what(), 0, 0);
+}
+
+// The same five, culebra -> guest, `what` lazy for the same reason.
+// Allocates in the guest's own heap, which is the one current on this thread
+// for the length of the run.
+template <class What>
+inline coreir::Value marshal_out(JitValue v, What&& what) {
+  switch (v.tag) {
+    case TAG_NIL: return coreir::Value();
+    case TAG_BOOL: return coreir::Value::make_bool(v.data != 0);
+    case TAG_LONG: return coreir::Value::make_int(v.data);
+    case TAG_FLOAT: {
+      double d = 0;
+      std::memcpy(&d, &v.data, sizeof d);
+      return coreir::Value::make_double(d);
+    }
+    case TAG_STRING:
+    case TAG_STRINGVIEW:
+      return coreir::Value::make_str(
+          std::string(_culebra_str_view(v.tag, v.data)));
+    default:
+      throw culebra::CulebraError("TypeError", what(), 0, 0);
+  }
+}
+
+// The {kind, message, line, col} object a native's failure carries: the
+// executor's own trap shape (NativeCall::trap) plus the kind, so a guest
+// TryCatch reads a bridged error the same way it reads a native one.
+inline coreir::Value make_error(const std::string& kind,
+                                const std::string& message,
+                                coreir::SrcPos pos) {
+  coreir::Value e = coreir::Value::make_object();
+  e.as_object()->set("kind", coreir::Value::make_str(kind));
+  e.as_object()->set("message", coreir::Value::make_str(message));
+  e.as_object()->set("line", coreir::Value::make_int(pos.line));
+  e.as_object()->set("col", coreir::Value::make_int(pos.col));
+  return e;
+}
+
+// A culebra throw crossing into the guest: a scalar as itself, so the
+// program's catch sees exactly what was thrown, anything else as the
+// {kind, message, line, col} object a culebra error would have shown.
+inline coreir::Value cross_thrown(JitValue thrown, coreir::SrcPos pos) {
+  switch (thrown.tag) {
+    case TAG_NIL:
+    case TAG_BOOL:
+    case TAG_LONG:
+    case TAG_FLOAT:
+    case TAG_STRING:
+    case TAG_STRINGVIEW:
+      return marshal_out(thrown, [] { return std::string(); });
+    default: {
+      std::string kind, message;
+      describe_thrown_value(thrown, kind, message);
+      return make_error(kind.empty() ? "RuntimeError" : kind, message, pos);
+    }
+  }
+}
+
+// The closure runs over an empty thrown-value carrier, and whatever it left
+// there is released on the way out: this is the pair a guarded call uses
+// when it answers its own exception (mem.inc.h's drop hook is the same
+// shape). Both halves matter -- the closure must not see a throw already in
+// flight further out, and a throw it makes is answered here rather than by
+// culebra, so leaving it in the carrier would hand the NEXT run this
+// program's error. RAII because Interrupted crosses this frame too, and it
+// must not skip the restore on its way to ending the run.
+struct ThrownCarrierGuard {
+  int8_t flag = 0, tag = 0;
+  int64_t data = 0;
+  ThrownCarrierGuard() { culebra_runtime_save_thrown(&flag, &tag, &data); }
+  ~ThrownCarrierGuard() { culebra_runtime_restore_thrown(flag, tag, data); }
+  ThrownCarrierGuard(const ThrownCarrierGuard&) = delete;
+  ThrownCarrierGuard& operator=(const ThrownCarrierGuard&) = delete;
+};
+
+// One bound native. The guard holds this table's own reference to the
+// closure; `cls` is the borrowed pointer the shim reaches it through, and
+// the address of the BoundNative itself is what rides in NativeDef::ctx --
+// hence unique_ptr, so a growing vector never moves it.
+struct BoundNative {
+  std::string name;
+  JitClosure* cls = nullptr;
+  JitOwnedVal guard;
+};
+
+// The NativeFn the guest calls. Every exit the guest can observe goes
+// through `result` or `error`; an Interrupted still ends the whole run, as
+// it does everywhere else.
+inline bool shim(coreir::NativeCall& call) {
+  auto* bn = static_cast<BoundNative*>(call.ctx);
+  ThrownCarrierGuard carrier;
+  try {
+    if (call.argc != static_cast<int32_t>(bn->cls->arity)) {
+      call.error = make_error(
+          "ArityError",
+          culebra::format("{} takes {} argument(s), given {}", bn->name,
+                          static_cast<int64_t>(bn->cls->arity),
+                          static_cast<int64_t>(call.argc)),
+          call.pos);
+      return false;
+    }
+    std::vector<JitValue> argv;
+    argv.reserve(static_cast<size_t>(call.argc));
+    for (int32_t i = 0; i < call.argc; i++) {
+      argv.push_back(marshal_in(call.arg(i), [&] {
+        return culebra::format(
+            "native '{}': argument {} is a {}, which cannot cross into a "
+            "culebra function (nil, Bool, Long, Float and String do)",
+            bn->name, static_cast<int64_t>(i),
+            coreir::type_name(call.arg(i).tag()));
+      }));
+    }
+    JitOwnedVal ret(_jit_invoke(bn->cls, JitValue{TAG_NO_SELF, 0}, call.argc,
+                                argv.empty() ? nullptr : argv.data()));
+    call.result = marshal_out(ret.borrow(), [&] {
+      return culebra::format(
+          "native '{}' returned a value that cannot cross back into the "
+          "program (nil, Bool, Long, Float and String do)",
+          bn->name);
+    });
+    return true;
+  } catch (const CulebraException& e) {
+    call.error = cross_thrown({e.tag, e.data}, call.pos);
+    return false;
+  } catch (const culebra::CulebraError& e) {
+    call.error = make_error(e.kind, e.what(), call.pos);
+    return false;
+  }
+}
+
+}  // namespace natives
+
 // A verified, compiled program: Module::compile() is the only way to get
 // one, and it verifies first, so vm::run's trust in verify()'s invariants
 // (funcs is non-empty, every index in range) holds by construction here --
@@ -74,10 +246,19 @@ class Program {
   // compiled programs without collecting first would read the wrong
   // program's chunk table the moment a leftover closure from the first one
   // is called by the GC's own drop-hook dispatch during the second's run.
-  void run(Runtime* rt, int64_t max_call_depth) {
+  // `natives` maps each name the module declared to the culebra Function
+  // that implements it -- nil or an empty Object where it declared none.
+  // The table lives exactly as long as this call: vm::run drains the job
+  // queue (enqueued closures and scheduled coroutines alike) before it
+  // returns, so nothing can call a native afterwards.
+  void run(Runtime* rt = nullptr,
+           int64_t max_call_depth = vm::RunOptions{}.max_call_depth,
+           JitValue natives_obj = {TAG_NIL, 0}) {
+    std::vector<std::unique_ptr<natives::BoundNative>> bound;
     vm::RunOptions opts;
     opts.entry_frame_drops = entry_frame_drops_;
     opts.max_call_depth = static_cast<int>(max_call_depth);
+    opts.natives = bind_natives(natives_obj, bound);
     if (!rt) {
       coreir::Runtime scratch;  // the program's own heap, gone at the return
       vm::run(p_, scratch, opts);
@@ -94,6 +275,55 @@ class Program {
   std::string dump_bc() const { return vm::to_string(p_); }
 
  private:
+  // Resolves every name the module declared against the supplied table,
+  // failing here rather than inside vm::run so the diagnostic can name the
+  // one that is missing. A name in the table the module never declared is
+  // not an error: one table can serve several programs.
+  std::vector<vm::NativeDef> bind_natives(
+      JitValue natives_obj,
+      std::vector<std::unique_ptr<natives::BoundNative>>& bound) const {
+    std::vector<vm::NativeDef> defs;
+    if (p_.natives.empty()) return defs;
+    JitObject* table = natives_obj.tag == TAG_OBJECT
+                           ? reinterpret_cast<JitObject*>(natives_obj.data)
+                           : nullptr;
+    for (const std::string& name : p_.natives) {
+      const size_t slot =
+          table ? table->find_slot(name) : static_cast<size_t>(-1);
+      if (slot == static_cast<size_t>(-1)) {
+        throw culebra::CulebraError(
+            "IrError",
+            culebra::format("native '{}' is declared but not supplied", name),
+            0, 0);
+      }
+      const JitValue fn = table->slots[slot].value;
+      if (fn.tag != TAG_FUNC) {
+        throw culebra::CulebraError(
+            "TypeError",
+            culebra::format("native '{}' must be a Function, got {}", name,
+                            _culebra_tag_name(fn.tag)),
+            0, 0);
+      }
+      auto* cls = reinterpret_cast<JitClosure*>(fn.data);
+      if (cls->arity == JIT_VARIADIC_ARITY) {
+        throw culebra::CulebraError(
+            "TypeError",
+            culebra::format("native '{}' must take a fixed number of "
+                            "arguments",
+                            name),
+            0, 0);
+      }
+      bound.push_back(std::make_unique<natives::BoundNative>(
+          natives::BoundNative{name, cls,
+                               JitOwnedVal::from_borrowed(fn)}));
+      // arity -1: no check in the executor. Its own would raise a
+      // kind-less trap, where the shim's carries kind 'ArityError' like
+      // every other answer this bridge gives.
+      defs.push_back({name, -1, &natives::shim, bound.back().get()});
+    }
+    return defs;
+  }
+
   static uint64_t next_id() {
     static std::atomic<uint64_t> n{1};
     return n++;
@@ -462,7 +692,7 @@ class Module {
 
   // Sugar over compile(): a throwaway Runtime, run once. The single call
   // site every example front end and tests/test_codegen.cul still use.
-  void run() { compile().run(nullptr, vm::RunOptions{}.max_call_depth); }
+  void run() { compile().run(); }
 
   std::string dump_ir() { return coreir::to_string(m_); }
   std::string dump_bc() { return compile().dump_bc(); }

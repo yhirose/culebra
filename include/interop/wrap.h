@@ -251,9 +251,14 @@ inline std::vector<wrap_param> pin_wrap_params(std::vector<wrap_param> params,
 // against other TUs' initializers.
 template <class T>
 struct jit_class_info {
+  // The uniform closure ABI every method thunk conforms to, named once so a
+  // hand-written thunk's declaration and ClassBinder's own signatures cannot
+  // drift from the row that stores it.
+  using MethodThunk = void (*)(JitValue*, JitClosure*, int8_t, int64_t, int64_t,
+                               JitValue*);
   struct Method {
     std::string name;
-    void (*thunk)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*);
+    MethodThunk thunk;
     size_t arity;
     const JitParamMeta* meta;
   };
@@ -823,6 +828,29 @@ class ClassBinder {
         static_cast<typename traits::args*>(nullptr));
   }
 
+  // A hand-written thunk instead of the deduced one -- for a parameter
+  // shape jit_arg_get has no branch for: a Function the method will call
+  // back into, or an arbitrary Object it will read. Every existing "call a
+  // script closure from C++" site in this codebase (Array.map, sort, an
+  // Http route handler) is a raw adapter for exactly this reason; this
+  // gives a wrapped class the same door without giving up the declarative
+  // registration around it, so the method still gets parameter names,
+  // keyword arguments and defaults.
+  //
+  // The thunk owns its whole ABI contract in exchange: resolving self
+  // (jit_handle_self<T>), reading args (TAG_UNFILLED means the caller
+  // omitted an optional one), and writing *__ret. `params` declares the
+  // arity and the names, exactly as method() does.
+  ClassBinder& raw_method(
+      std::string name,
+      typename wrap_detail::jit_class_info<T>::MethodThunk thunk,
+      std::vector<wrap_detail::wrap_param> params = {}) {
+    const size_t arity = params.size();
+    push_method_row(std::move(name), thunk, arity,
+                    wrap_detail::pin_wrap_params(std::move(params), arity));
+    return *this;
+  }
+
   ~ClassBinder() { wrapped_class_names().push_back({ns_, name_}); }
 
   ClassBinder(const ClassBinder&) = delete;
@@ -866,6 +894,21 @@ class ClassBinder {
     return {std::move(names), std::move(has_default)};
   }
 
+  // The registration tail all three method forms share: the parameter meta a
+  // keyword call binds against, then one row in the class's method table.
+  void push_method_row(
+      std::string name,
+      typename wrap_detail::jit_class_info<T>::MethodThunk thunk, size_t arity,
+      const std::vector<wrap_detail::wrap_param>& pinned) {
+    auto [names, has_default] = split_wrap_params(pinned);
+    const JitParamMeta* meta =
+        arity == 0 ? nullptr
+                   : _jit_make_handle_meta(std::move(names),
+                                           std::move(has_default));
+    wrap_detail::jit_class_info<T>::methods.push_back(
+        {std::move(name), thunk, arity, meta});
+  }
+
   template <auto Mf, class R, class... Args>
   ClassBinder& method_impl(std::string name,
                            std::vector<wrap_detail::wrap_param> params,
@@ -876,17 +919,11 @@ class ClassBinder {
     auto pinned =
         wrap_detail::pin_wrap_params(std::move(params), sizeof...(Args));
     assert_defaults_declarable<Args...>(pinned);
-    auto [names, has_default] = split_wrap_params(pinned);
+    push_method_row(std::move(name),
+                    bump ? &wrap_detail::jit_method_thunk<T, Mf, R, true, Args...>
+                         : &wrap_detail::jit_method_thunk<T, Mf, R, false, Args...>,
+                    sizeof...(Args), pinned);
     wrap_detail::jit_method_info<T, Mf>::params = std::move(pinned);
-    const JitParamMeta* meta =
-        sizeof...(Args) == 0
-            ? nullptr
-            : _jit_make_handle_meta(std::move(names), std::move(has_default));
-    wrap_detail::jit_class_info<T>::methods.push_back(
-        {std::move(name),
-         bump ? &wrap_detail::jit_method_thunk<T, Mf, R, true, Args...>
-              : &wrap_detail::jit_method_thunk<T, Mf, R, false, Args...>,
-         sizeof...(Args), meta});
     return *this;
   }
 
@@ -897,16 +934,10 @@ class ClassBinder {
     auto pinned =
         wrap_detail::pin_wrap_params(std::move(params), sizeof...(Args));
     assert_defaults_declarable<Args...>(pinned);
-    auto [names, has_default] = split_wrap_params(pinned);
+    push_method_row(std::move(name),
+                    &wrap_detail::jit_borrowed_thunk<T, Mf, T2, Args...>,
+                    sizeof...(Args), pinned);
     wrap_detail::jit_method_info<T, Mf>::params = std::move(pinned);
-    const JitParamMeta* meta =
-        sizeof...(Args) == 0
-            ? nullptr
-            : _jit_make_handle_meta(std::move(names), std::move(has_default));
-    wrap_detail::jit_class_info<T>::methods.push_back(
-        {std::move(name),
-         &wrap_detail::jit_borrowed_thunk<T, Mf, T2, Args...>,
-         sizeof...(Args), meta});
     return *this;
   }
 

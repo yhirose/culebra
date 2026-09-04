@@ -6335,7 +6335,7 @@ verifyし、`CodeGen.Program`を返す。だから同じコンパイル済みプ
 | --- | --- |
 | `m.compile()` | `m`をverifyする。`CodeGen.Program`を返す |
 | `CodeGen.Runtime.new()` | プログラムが走れる空のheap |
-| `p.run(rt:, max_call_depth:)` | プログラムを走らせる。両方省略可能 —— `rt`は既定で使い捨てheap(`m.run()`と同じ)、`max_call_depth`は既定で`10000` |
+| `p.run(rt: nil, max_call_depth: 10000, natives: nil)` | コンパイル済みプログラムを走らせる。`rt`は走らせる`CodeGen.Runtime`(nilなら使い捨てのヒープ)、`max_call_depth`はフレームスタックの上限。`natives`はモジュールの`declare_native`が名付けたものの実体を渡す —— 宣言済みの各名前を通常のculebraの`Function`に対応付けるObjectで、プログラムは他の値と同じように呼ぶ。モジュールが宣言した名前は全て表に無ければならない(無いものを名指しした`IrError`が、実行が始まる前に出る)。表にあってモジュールが宣言していない名前は単に使われないので、1つの表を複数のプログラムで使い回せる。境界を越える値はコピーされ、越えられるのは`nil`・`Bool`・`Long`・`Float`・`String`だけ: プログラムのヒープとculebra自身のヒープは独立に回収されるので、配列・オブジェクト・map・クロージャ・coroutineを渡すには2つのコレクタが合意する必要がある。それ以外は —— 引数でも戻り値でも —— 該当スロットを名指しした`TypeError`になり、プログラム自身の`make_try`で捕まえられる。引数の個数違い(関数自身のarityと突き合わせる)も、関数が投げたものも同じ: `nil`/`Bool`/`Long`/`Float`/`String`はそのまま届き、それ以外はculebraのエラーが持つ`{kind, message, line, col}`オブジェクトとして届く |
 | `p.dump_bc()` | コンパイル済みプログラムに対する`m.dump_bc()`の出力 |
 | `rt.live_objects()` | そのheapの現在のオブジェクト数 |
 | `rt.heap_bytes()` | そのheapの現在のバイト数 |

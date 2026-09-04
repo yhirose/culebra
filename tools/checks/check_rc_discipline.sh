@@ -156,10 +156,13 @@ ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 
 # inside the ownership layer, so it is invisible to count_bare above — the same
 # blind spot emit_borrow_to_owned has on the codegen side. Count the call sites
 # on their own ceiling so the seam cannot become a quiet way to add hand-placed
-# retains. Current population: 1 (Sys.env returning its borrowed `fallback`).
+# retains. Current population: 2 (Sys.env returning its borrowed `fallback`;
+# CodeGen.Program.run's natives table, which holds each bound closure for the
+# run rather than trusting the caller's Object to keep it -- a native could
+# reach that Object and remove the very entry the shim is about to call).
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
-ratchet "runtime borrow->owned seam sites" "$rbrw" 1
+ratchet "runtime borrow->owned seam sites" "$rbrw" 2
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed

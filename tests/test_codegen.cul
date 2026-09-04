@@ -669,8 +669,7 @@ fn call_intr(m, name, args) {
   let empty = m.add_capture_map(m.capture_map_new())
 
   # inner() yields 1 then 2; outer() calls it, so the yields sit a frame
-  # deeper than the coroutine itself -- the whole difference from a
-  # generator, which can only suspend the one frame that holds the yield.
+  # deeper than the coroutine.
   let inner_body = stmt_block(m, [
     call_intr(m, 'coroyield', [m.literal(v: 1, line: 1, col: 1)]),
     call_intr(m, 'coroyield', [m.literal(v: 2, line: 1, col: 1)]),
@@ -901,6 +900,220 @@ fn counting_chain(m) {
   m.verify()
   let err = try { m.run() } catch e { e }
   assert_eq("{err.kind}: {err.message}", 'IrError: recursion limit exceeded')
+}
+
+# --- Host functions: a module names them, run() says what they do. ----------
+
+# A call of native `name` with `args`, as a node.
+fn native_call(m, name, args) {
+  let idx = m.declare_native(name: name)
+  let list = m.list_new()
+  for a in args { m.list_push(list, a) }
+  m.call_value(callee: m.native_ref(index: idx, line: 1, col: 1),
+               args_list: list, line: 1, col: 1)
+}
+
+# main = print(name(args...))
+fn native_call_module(m, name, args) {
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: print_stmt(m, native_call(m, name, args)))
+  m.verify()
+  m
+}
+
+# main = try { name(args...) } catch e { print(e[key]) } -- the shape every
+# "the program catches what the bridge reports" case below wants.
+fn native_catch_module(m, name, args, key) {
+  let caught = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
+             body: m.make_try(
+               caught_local: 0, body: native_call(m, name, args),
+               handler: print_stmt(m, m.index(recv: caught,
+                                              key: m.str_literal(s: key, line: 1, col: 1),
+                                              line: 1, col: 1)),
+               line: 1, col: 1))
+  m.verify()
+  m
+}
+
+{
+  # The answer flows on into the program's own arithmetic, not just to print.
+  let m = CodeGen.Module.new()
+  let idx = m.declare_native(name: 'add')
+  let args = m.list_new()
+  m.list_push(args, m.literal(v: 2, line: 1, col: 1))
+  m.list_push(args, m.literal(v: 3, line: 1, col: 1))
+  let called = m.call_value(callee: m.native_ref(index: idx, line: 1, col: 1),
+                            args_list: args, line: 1, col: 1)
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: print_stmt(m, m.binary(op: 'mul', lhs: called,
+                                          rhs: m.literal(v: 10, line: 1, col: 1),
+                                          line: 1, col: 1)))
+  m.verify()
+  let out = IO.capture(fn () { m.compile().run(natives: {add: |a, b| a + b}) })
+  assert_eq(out, "50\n")
+}
+{
+  # Strings cross as copies, both ways.
+  let m = CodeGen.Module.new()
+  let mm = native_call_module(m, 'shout', [m.str_literal(s: 'hi', line: 1, col: 1)])
+  assert_eq(IO.capture(fn () { mm.compile().run(natives: {shout: |s| s + '!'}) }),
+            "hi!\n")
+}
+{
+  # Float and Bool round-trip through the boundary.
+  let m = CodeGen.Module.new()
+  let mm = native_call_module(m, 'half', [m.double_literal(v: 5.0, line: 1, col: 1)])
+  assert_eq(IO.capture(fn () { mm.compile().run(natives: {half: |x| x / 2.0}) }),
+            "2.5\n")
+}
+{
+  # A native's throw is the program's to catch: a scalar arrives as itself.
+  let m = CodeGen.Module.new()
+  let idx = m.declare_native(name: 'boom')
+  let call = m.call_value(callee: m.native_ref(index: idx, line: 1, col: 1),
+                          args_list: m.list_new(), line: 1, col: 1)
+  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
+             body: m.make_try(caught_local: 0, body: call,
+                              handler: print_stmt(
+                                m, m.var_ref(kind: 'local', index: 0, line: 1, col: 1)),
+                              line: 1, col: 1))
+  m.verify()
+  let out = IO.capture(fn () {
+    m.compile().run(natives: {boom: fn () { throw 'kaboom' }})
+  })
+  assert_eq(out, "kaboom\n")
+}
+{
+  # A non-scalar throw cannot cross as itself, so it arrives as the
+  # {kind, message, line, col} object a culebra error would have shown.
+  let m = native_catch_module(CodeGen.Module.new(), 'boom', [], 'message')
+  let out = IO.capture(fn () {
+    m.compile().run(natives: {boom: || throw {kind: 'MyError', message: 'nope'}})
+  })
+  assert_eq(out, "nope\n")
+}
+{
+  # A culebra-level error inside the native is the same shape.
+  let m = CodeGen.Module.new()
+  let mm = native_call_module(m, 'bad', [m.literal(v: 1, line: 1, col: 1)])
+  let p = mm.compile()
+  let err = try { p.run(natives: {bad: |n| n.no_such_method()}) } catch e { e }
+  assert_true(err != nil)
+}
+{
+  # A native's throw is answered HERE, so it must not stay in flight on the
+  # culebra side: the guest caught it, and culebra never will. The check is
+  # the very next run, with nothing in between to clear a stale carrier --
+  # it must fail for its own reason, not be handed the previous throw.
+  let thrower = CodeGen.Module.new()
+  let ti = thrower.declare_native(name: 'boom')
+  let tcall = thrower.call_value(callee: thrower.native_ref(index: ti, line: 1, col: 1),
+                                 args_list: thrower.list_new(), line: 1, col: 1)
+  thrower.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0,
+                   num_params: 0,
+                   body: thrower.make_try(caught_local: 0, body: tcall,
+                                          handler: thrower.nil_literal(line: 1, col: 1),
+                                          line: 1, col: 1))
+  thrower.verify()
+  thrower.compile().run(natives: {boom: fn () { throw 'kaboom' }})
+
+  let m = CodeGen.Module.new()
+  let idx = m.declare_native(name: 'unsupplied')
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: m.native_ref(index: idx, line: 1, col: 1))
+  m.verify()
+  let err = try { m.compile().run() } catch e { e }
+  assert_eq("{err.kind}: {err.message}",
+            "IrError: native 'unsupplied' is declared but not supplied")
+}
+{
+  # Declared but not supplied -- named, and refused before the run starts.
+  let m = CodeGen.Module.new()
+  let mm = native_call_module(m, 'missing', [])
+  let p = mm.compile()
+  let err = try { p.run() } catch e { e }
+  assert_eq("{err.kind}: {err.message}",
+            "IrError: native 'missing' is declared but not supplied")
+  # The error is positioned at the call, like every other wrapped method's:
+  # run's own thunk is hand-written, so it owes that guard itself.
+  assert_true(err.line > 0)
+}
+{
+  # Supplied as something that is not a Function.
+  let m = CodeGen.Module.new()
+  let mm = native_call_module(m, 'nope', [])
+  let p = mm.compile()
+  let err = try { p.run(natives: {nope: 5}) } catch e { e }
+  assert_eq("{err.kind}: {err.message}",
+            "TypeError: native 'nope' must be a Function, got Long")
+}
+{
+  # run's thunk is hand-written, so the argument type check the deduced ones
+  # get from wrap.h is its own to do. Without it jit_handle_self would
+  # reinterpret_cast a Long into a handle -- a wild pointer, not an error.
+  let m = CodeGen.Module.new()
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: m.nil_literal(line: 1, col: 1))
+  m.verify()
+  let p = m.compile()
+  assert_throws('TypeError', || p.run(rt: 5))
+  assert_throws('TypeError', || p.run(rt: m))  # a handle of the wrong class
+  assert_throws('TypeError', || p.run(max_call_depth: 'oops'))
+  assert_throws('TypeError', || p.run(natives: 5))
+  p.run()  # and every argument is still optional
+}
+{
+  # A name the module never declared is fine: one table can serve several
+  # programs, and this one declares nothing at all.
+  let m = CodeGen.Module.new()
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: print_stmt(m, m.literal(v: 1, line: 1, col: 1)))
+  m.verify()
+  assert_eq(IO.capture(fn () { m.compile().run(natives: {unused: || 0}) }), "1\n")
+}
+{
+  # Arity is checked against the culebra closure, and the guest can catch it.
+  let m = CodeGen.Module.new()
+  let mm = native_catch_module(m, 'add', [m.literal(v: 1, line: 1, col: 1)], 'kind')
+  let out = IO.capture(fn () { mm.compile().run(natives: {add: |a, b| a + b}) })
+  assert_eq(out, "ArityError\n")
+}
+{
+  # A value with heap identity cannot cross either way -- named, catchable,
+  # and not a crash. Out first: the guest hands an array to the native.
+  let m = CodeGen.Module.new()
+  let items = m.list_new()
+  m.list_push(items, m.literal(v: 1, line: 1, col: 1))
+  let mm = native_catch_module(m, 'take',
+                               [m.array_lit(items_list: items, line: 1, col: 1)], 'kind')
+  assert_eq(IO.capture(fn () { mm.compile().run(natives: {take: |x| 0}) }),
+            "TypeError\n")
+}
+{
+  # And back: the native returns an array.
+  let m = native_catch_module(CodeGen.Module.new(), 'give', [], 'kind')
+  assert_eq(IO.capture(fn () { m.compile().run(natives: {give: || [1, 2]}) }),
+            "TypeError\n")
+}
+{
+  # Two declared names may share one closure, and the same Program may run
+  # twice with different tables -- the table is built per run, not cached.
+  let m = CodeGen.Module.new()
+  let a = m.declare_native(name: 'a')
+  let b = m.declare_native(name: 'b')
+  fn call0(mm, i) {
+    mm.call_value(callee: mm.native_ref(index: i, line: 1, col: 1),
+                  args_list: mm.list_new(), line: 1, col: 1)
+  }
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: stmt_block(m, [print_stmt(m, call0(m, a)),
+                                  print_stmt(m, call0(m, b))]))
+  m.verify()
+  let p = m.compile()
+  let same = || 7
+  assert_eq(IO.capture(fn () { p.run(natives: {a: same, b: same}) }), "7\n7\n")
+  assert_eq(IO.capture(fn () { p.run(natives: {a: || 1, b: || 2}) }), "1\n2\n")
 }
 
 println('test_codegen OK')
