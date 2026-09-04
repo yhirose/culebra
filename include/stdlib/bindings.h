@@ -38,6 +38,7 @@
 #include <stdlib/kernels.h>  // File/FS/Time/Net/Regex kernels shared with interp
 #include <base/shared.h>
 #include <base/stdout_capture.h>  // program_out() / ProgramOutCapture (IO.capture)
+#include <stdlib/fst.h>    // the value-neutral FST choke
 #include <stdlib/peg.h>    // the value-neutral Peg choke
 #include <stdlib/regex.h>  // the value-neutral Regex choke (the Regex AOT axis)
 #include <conc/sendable.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
@@ -7831,6 +7832,282 @@ inline JitValue _ns_peg_parse(JitValue* a, int64_t) {
   return _jit_peg_tree(culebra::pegparser::parse(*h, text, optimize, path));
 }
 
+//===-- FST: the `FST` namespace functions. Like Regex and Peg, slow-path
+// adapters that build the JitArray / JitObject results directly. Every one
+// takes the dictionary's byte code String as a[0] and rebuilds the matcher
+// from it (fst.h measures why that beats holding a handle open), so the
+// culebra classes in the FST preamble carry nothing but that String. Map and
+// IndexMap share one adapter body per operation, instantiated for
+// std::string and for index_t; the NsMethod table names both instantiations.
+//===------------------------------------------------------------------------//
+
+namespace _fst_adapt {
+
+inline void set_field(JitObject* o, const char* name, JitValue v) {
+  culebra_runtime_object_set(o, name, false, v.tag, v.data, 0, 0);
+}
+
+inline JitValue str(std::string_view s) {
+  return _ns_adapt::v_string(_culebra_heap_str(s));
+}
+
+// A key list: Array of String, element-checked the way String.from_bytes
+// checks its Longs, so the failing element is named at the same call.
+inline std::vector<std::string> keys(JitValue v) {
+  auto* arr = _ns_adapt::take_array(v);
+  std::vector<std::string> out;
+  out.reserve(arr->size);
+  for (size_t i = 0; i < arr->size; i++) {
+    if (arr->items[i].tag != ::TAG_STRING) {
+      throw culebra::CulebraError("TypeError", "FST: keys must be Strings", 0,
+                                  0);
+    }
+    out.emplace_back(_ns_adapt::take_sv(arr->items[i]));
+  }
+  return out;
+}
+
+// One entry's value, per output type.
+template <typename O> inline O value_of(JitValue v) {
+  if constexpr (std::is_same_v<O, std::string>) {
+    if (v.tag != ::TAG_STRING) {
+      throw culebra::CulebraError("TypeError",
+                                  "FST: Map values must be Strings", 0, 0);
+    }
+    return std::string(_ns_adapt::take_sv(v));
+  } else {
+    if (v.tag != ::TAG_LONG) {
+      throw culebra::CulebraError("TypeError",
+                                  "FST: IndexMap values must be Longs", 0, 0);
+    }
+    auto n = _ns_adapt::take_long(v);
+    if (n < culebra::fstdict::kIndexMin || n > culebra::fstdict::kIndexMax) {
+      throw culebra::CulebraError(
+          "ValueError",
+          culebra::format("FST: IndexMap value {} is outside 0..{}", n,
+                          culebra::fstdict::kIndexMax),
+          0, 0);
+    }
+    return static_cast<culebra::fstdict::index_t>(n);
+  }
+}
+
+// An entries argument: an Object, whose keys are the dictionary's. A
+// non-String key lives in the sidecar rather than in the shape, so reject one
+// outright instead of compiling a dictionary that silently lacks it.
+template <typename O>
+inline std::vector<std::pair<std::string, O>> entries(JitValue v) {
+  auto* obj = _ns_adapt::take_object(v);
+  if (obj->non_string_props && !obj->non_string_props->empty()) {
+    throw culebra::CulebraError("TypeError", "FST: keys must be Strings", 0, 0);
+  }
+  std::vector<std::pair<std::string, O>> out;
+  out.reserve(obj->prop_size());
+  for (size_t i = 0; i < obj->prop_size(); i++) {
+    out.emplace_back(std::string(obj->prop_name(i)),
+                     value_of<O>(obj->slots[i].value));
+  }
+  return out;
+}
+
+template <typename O> inline JitValue surfaced(const O& v) {
+  if constexpr (std::is_same_v<O, std::string>) {
+    return str(v);
+  } else {
+    return _ns_adapt::v_long(static_cast<int64_t>(v));
+  }
+}
+
+inline JitValue string_array(const std::vector<std::string>& list) {
+  auto* arr = culebra_runtime_array_new_reserved(list.size());
+  for (const auto& s : list) {
+    auto v = str(s);
+    culebra_runtime_array_push(arr, v.tag, v.data);
+  }
+  return _ns_adapt::v_array(arr);
+}
+
+template <typename O>
+inline JitValue entry_array(
+    const std::vector<culebra::fstdict::Entry<O>>& list) {
+  auto* arr = culebra_runtime_array_new_reserved(list.size());
+  for (const auto& e : list) {
+    auto* o = culebra_runtime_object_new();
+    set_field(o, "key", str(e.key));
+    set_field(o, "value", surfaced<O>(e.value));
+    culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(o));
+  }
+  return _ns_adapt::v_array(arr);
+}
+
+// The edit budget is a count; the three costs must be positive, since a
+// zero-cost edit lets the automaton accept without bound.
+inline size_t budget(JitValue v, const char* param) {
+  auto n = _ns_adapt::require_long(v, param);
+  if (n < 0) {
+    throw culebra::CulebraError(
+        "ValueError", culebra::format("FST: {} must be >= 0", param), 0, 0);
+  }
+  return static_cast<size_t>(n);
+}
+inline size_t cost(JitValue v, const char* param) {
+  auto n = _ns_adapt::require_long(v, param);
+  if (n < 1) {
+    throw culebra::CulebraError(
+        "ValueError", culebra::format("FST: {} must be >= 1", param), 0, 0);
+  }
+  return static_cast<size_t>(n);
+}
+
+inline std::string_view bytecode(JitValue v) {
+  return _ns_adapt::require_sv(v, "bytecode", "StringLike");
+}
+
+}  // namespace _fst_adapt
+
+inline JitValue _ns_fst_compile_set(JitValue* a, int64_t) {
+  return _fst_adapt::str(culebra::fstdict::compile_set(
+      _fst_adapt::keys(a[0]), _ns_adapt::require_bool(a[1], "sorted")));
+}
+inline JitValue _ns_fst_compile_auto_index(JitValue* a, int64_t) {
+  return _fst_adapt::str(culebra::fstdict::compile_auto_index(
+      _fst_adapt::keys(a[0]), _ns_adapt::require_bool(a[1], "sorted")));
+}
+template <typename O> inline JitValue _ns_fst_compile_map(JitValue* a, int64_t) {
+  return _fst_adapt::str(culebra::fstdict::compile_map<O>(
+      _fst_adapt::entries<O>(a[0]), _ns_adapt::require_bool(a[1], "sorted")));
+}
+
+inline JitValue _ns_fst_set_check(JitValue* a, int64_t) {
+  culebra::fstdict::set_check(_fst_adapt::bytecode(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_fst_set_contains(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra::fstdict::set_contains(
+      _fst_adapt::bytecode(a[0]), _ns_adapt::require_sv(a[1], "key",
+                                                        "StringLike")));
+}
+inline JitValue _ns_fst_set_common_prefix_search(JitValue* a, int64_t) {
+  auto lengths = culebra::fstdict::set_common_prefix_search(
+      _fst_adapt::bytecode(a[0]), _ns_adapt::require_sv(a[1], "text",
+                                                        "StringLike"));
+  auto* arr = culebra_runtime_array_new_reserved(lengths.size());
+  for (auto len : lengths) {
+    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(len));
+  }
+  return _ns_adapt::v_array(arr);
+}
+// nil, not 0, for "nothing matched": a key is never empty (EmptyKey is a
+// compile error), so a real 0-length prefix hit cannot occur.
+inline JitValue _ns_fst_set_longest_common_prefix_search(JitValue* a, int64_t) {
+  auto len = culebra::fstdict::set_longest_common_prefix_search(
+      _fst_adapt::bytecode(a[0]),
+      _ns_adapt::require_sv(a[1], "text", "StringLike"));
+  return len ? _ns_adapt::v_long(static_cast<int64_t>(len))
+             : _ns_adapt::v_nil();
+}
+inline JitValue _ns_fst_set_predictive_search(JitValue* a, int64_t) {
+  return _fst_adapt::string_array(culebra::fstdict::set_predictive_search(
+      _fst_adapt::bytecode(a[0]),
+      _ns_adapt::require_sv(a[1], "prefix", "StringLike")));
+}
+inline JitValue _ns_fst_set_edit_distance_search(JitValue* a, int64_t) {
+  return _fst_adapt::string_array(culebra::fstdict::set_edit_distance_search(
+      _fst_adapt::bytecode(a[0]),
+      _ns_adapt::require_sv(a[1], "word", "StringLike"),
+      _fst_adapt::budget(a[2], "max_edits"),
+      _fst_adapt::cost(a[3], "insert_cost"),
+      _fst_adapt::cost(a[4], "delete_cost"),
+      _fst_adapt::cost(a[5], "replace_cost")));
+}
+inline JitValue _ns_fst_set_suggest(JitValue* a, int64_t) {
+  auto ranked = culebra::fstdict::set_suggest(
+      _fst_adapt::bytecode(a[0]),
+      _ns_adapt::require_sv(a[1], "word", "StringLike"));
+  auto* arr = culebra_runtime_array_new_reserved(ranked.size());
+  for (const auto& r : ranked) {
+    auto* o = culebra_runtime_object_new();
+    _fst_adapt::set_field(o, "ratio", _ns_adapt::v_float(r.ratio));
+    _fst_adapt::set_field(o, "key", _fst_adapt::str(r.key));
+    culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(o));
+  }
+  return _ns_adapt::v_array(arr);
+}
+
+template <typename O> inline JitValue _ns_fst_map_check(JitValue* a, int64_t) {
+  culebra::fstdict::map_check<O>(_fst_adapt::bytecode(a[0]));
+  return _ns_adapt::v_nil();
+}
+template <typename O> inline JitValue _ns_fst_map_get(JitValue* a, int64_t) {
+  O out{};
+  if (!culebra::fstdict::map_get<O>(
+          _fst_adapt::bytecode(a[0]),
+          _ns_adapt::require_sv(a[1], "key", "StringLike"), out)) {
+    return _ns_adapt::v_nil();
+  }
+  return _fst_adapt::surfaced<O>(out);
+}
+template <typename O>
+inline JitValue _ns_fst_map_common_prefix_search(JitValue* a, int64_t) {
+  auto hits = culebra::fstdict::map_common_prefix_search<O>(
+      _fst_adapt::bytecode(a[0]),
+      _ns_adapt::require_sv(a[1], "text", "StringLike"));
+  auto* arr = culebra_runtime_array_new_reserved(hits.size());
+  for (const auto& hit : hits) {
+    auto* o = culebra_runtime_object_new();
+    _fst_adapt::set_field(o, "length",
+                          _ns_adapt::v_long(static_cast<int64_t>(hit.length)));
+    _fst_adapt::set_field(o, "value", _fst_adapt::surfaced<O>(hit.value));
+    culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(o));
+  }
+  return _ns_adapt::v_array(arr);
+}
+template <typename O>
+inline JitValue _ns_fst_map_longest_common_prefix_search(JitValue* a, int64_t) {
+  O out{};
+  auto len = culebra::fstdict::map_longest_common_prefix_search<O>(
+      _fst_adapt::bytecode(a[0]),
+      _ns_adapt::require_sv(a[1], "text", "StringLike"), out);
+  if (!len) return _ns_adapt::v_nil();
+  auto* o = culebra_runtime_object_new();
+  _fst_adapt::set_field(o, "length",
+                        _ns_adapt::v_long(static_cast<int64_t>(len)));
+  _fst_adapt::set_field(o, "value", _fst_adapt::surfaced<O>(out));
+  return _ns_adapt::v_object(o);
+}
+template <typename O>
+inline JitValue _ns_fst_map_predictive_search(JitValue* a, int64_t) {
+  return _fst_adapt::entry_array<O>(
+      culebra::fstdict::map_predictive_search<O>(
+          _fst_adapt::bytecode(a[0]),
+          _ns_adapt::require_sv(a[1], "prefix", "StringLike")));
+}
+template <typename O>
+inline JitValue _ns_fst_map_edit_distance_search(JitValue* a, int64_t) {
+  return _fst_adapt::entry_array<O>(
+      culebra::fstdict::map_edit_distance_search<O>(
+          _fst_adapt::bytecode(a[0]),
+          _ns_adapt::require_sv(a[1], "word", "StringLike"),
+          _fst_adapt::budget(a[2], "max_edits"),
+          _fst_adapt::cost(a[3], "insert_cost"),
+          _fst_adapt::cost(a[4], "delete_cost"),
+          _fst_adapt::cost(a[5], "replace_cost")));
+}
+template <typename O> inline JitValue _ns_fst_map_suggest(JitValue* a, int64_t) {
+  auto ranked = culebra::fstdict::map_suggest<O>(
+      _fst_adapt::bytecode(a[0]),
+      _ns_adapt::require_sv(a[1], "word", "StringLike"));
+  auto* arr = culebra_runtime_array_new_reserved(ranked.size());
+  for (const auto& r : ranked) {
+    auto* o = culebra_runtime_object_new();
+    _fst_adapt::set_field(o, "ratio", _ns_adapt::v_float(r.ratio));
+    _fst_adapt::set_field(o, "key", _fst_adapt::str(r.key));
+    _fst_adapt::set_field(o, "value", _fst_adapt::surfaced<O>(r.value));
+    culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(o));
+  }
+  return _ns_adapt::v_array(arr);
+}
+
 // NsParamMeta — the per-parameter view for stdlib methods that accept
 // kwargs / have defaults — is exactly the canonical signature row
 // (canon_sigs.h, generated from the interp's own parameter lists while both
@@ -8216,6 +8493,36 @@ inline const NsMethod kNsRows_Peg_native[] = {
   {"_Peg",   "parse", 7, &_ns_peg_parse},
   {"_Peg",   "test",  4, &_ns_peg_test},
 };
+// Every query takes the byte code String first; the three class prefixes pick
+// the matcher's output type. Defaults (`sorted`, the edit costs) live in the
+// preamble, so every row here is required-arity.
+inline const NsMethod kNsRows_FST_native[] = {
+  {"_FST",   "compile_set",        2, &_ns_fst_compile_set},
+  {"_FST",   "compile_auto_index", 2, &_ns_fst_compile_auto_index},
+  {"_FST",   "compile_map",        2, &_ns_fst_compile_map<std::string>},
+  {"_FST",   "compile_index_map",  2, &_ns_fst_compile_map<culebra::fstdict::index_t>},
+  {"_FST",   "set_check",                        1, &_ns_fst_set_check},
+  {"_FST",   "set_contains",                     2, &_ns_fst_set_contains},
+  {"_FST",   "set_common_prefix_search",         2, &_ns_fst_set_common_prefix_search},
+  {"_FST",   "set_longest_common_prefix_search", 2, &_ns_fst_set_longest_common_prefix_search},
+  {"_FST",   "set_predictive_search",            2, &_ns_fst_set_predictive_search},
+  {"_FST",   "set_edit_distance_search",         6, &_ns_fst_set_edit_distance_search},
+  {"_FST",   "set_suggest",                      2, &_ns_fst_set_suggest},
+  {"_FST",   "map_check",                        1, &_ns_fst_map_check<std::string>},
+  {"_FST",   "map_get",                          2, &_ns_fst_map_get<std::string>},
+  {"_FST",   "map_common_prefix_search",         2, &_ns_fst_map_common_prefix_search<std::string>},
+  {"_FST",   "map_longest_common_prefix_search", 2, &_ns_fst_map_longest_common_prefix_search<std::string>},
+  {"_FST",   "map_predictive_search",            2, &_ns_fst_map_predictive_search<std::string>},
+  {"_FST",   "map_edit_distance_search",         6, &_ns_fst_map_edit_distance_search<std::string>},
+  {"_FST",   "map_suggest",                      2, &_ns_fst_map_suggest<std::string>},
+  {"_FST",   "index_check",                        1, &_ns_fst_map_check<culebra::fstdict::index_t>},
+  {"_FST",   "index_get",                          2, &_ns_fst_map_get<culebra::fstdict::index_t>},
+  {"_FST",   "index_common_prefix_search",         2, &_ns_fst_map_common_prefix_search<culebra::fstdict::index_t>},
+  {"_FST",   "index_longest_common_prefix_search", 2, &_ns_fst_map_longest_common_prefix_search<culebra::fstdict::index_t>},
+  {"_FST",   "index_predictive_search",            2, &_ns_fst_map_predictive_search<culebra::fstdict::index_t>},
+  {"_FST",   "index_edit_distance_search",         6, &_ns_fst_map_edit_distance_search<culebra::fstdict::index_t>},
+  {"_FST",   "index_suggest",                      2, &_ns_fst_map_suggest<culebra::fstdict::index_t>},
+};
 inline const NsMethod kNsRows_Net[] = {
   {"Net",    "connect", 2, &_ns_net_connect},
   {"Net",    "listen",  1, &_ns_net_listen},
@@ -8497,6 +8804,8 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Regex_native{
     kNsRows_Regex_native, kCanonSigs_Regex_native};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Peg_native{
     kNsRows_Peg_native, kCanonSigs_Peg_native};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_FST_native{
+    kNsRows_FST_native, kCanonSigs_FST_native};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Net{
     kNsRows_Net, kCanonSigs_Net};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Proc{
@@ -8565,6 +8874,7 @@ inline const NsGroupRef kNsGroups[] = {
   {"GC", &culebra_ns_group_GC},
   {"_Regex", &culebra_ns_group_Regex_native},
   {"_Peg", &culebra_ns_group_Peg_native},
+  {"_FST", &culebra_ns_group_FST_native},
   {"Net", &culebra_ns_group_Net},
   {"Proc", &culebra_ns_group_Proc},
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -10296,7 +10606,8 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
-      "_Regex",  "_Peg",      "Proc",      "Net",       "Isolate",  "Channel",
+      "_Regex",  "_Peg",      "_FST",      "Proc",      "Net",      "Isolate",
+      "Channel",
       "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "Env",       "UUID",       "String",
@@ -10308,7 +10619,8 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // the lazy-ns builder registry). Listed here so closures capture-skip
       // them and bare references compile to namespace_get — mirroring the
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
-      "Time",    "Args",      "Regex",     "Peg",       "Term",     "Log",
+      "Time",    "Args",      "Regex",     "Peg",       "FST",      "Term",
+      "Log",
       "Path",    "Canvas",    "__Eff",     "Vector2",   "Vector3",  "Deque",
       "PriorityQueue", "StateMachine",
       // The bare function globals from those same source modules (assert_*,

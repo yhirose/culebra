@@ -28,4 +28,4 @@ culBuiltin:     Math IO FS File Embed Time Random Sys Tensor JSON Args Proc Path
 culBuiltin:     Isolate Channel Parallel Signal SharedBuffer Shared GC Regex Http
 culBuiltin:     Encoding Compress Hash CSV Env UUID Term Log TOML SQLite
 culBuiltin:     Canvas Scene Net Desktop Webview Vector2 Vector3 Deque PriorityQueue StateMachine
-culBuiltin:     Peg
+culBuiltin:     Peg FST

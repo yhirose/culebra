@@ -2327,6 +2327,139 @@ let _peg_module = fn () {
 let Peg = _peg_module()
 )=culpre=";
 
+inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn () {
+  class Set {
+    new(bytecode) {
+      self._bc = bytecode
+      _FST.set_check(bytecode)
+    }
+    contains(key) {
+      _FST.set_contains(self._bc, key)
+    }
+    common_prefix_search(text) {
+      _FST.set_common_prefix_search(self._bc, text)
+    }
+    longest_common_prefix_search(text) {
+      _FST.set_longest_common_prefix_search(self._bc, text)
+    }
+    predictive_search(prefix) {
+      _FST.set_predictive_search(self._bc, prefix)
+    }
+    edit_distance_search(
+      word,
+      max_edits,
+      insert_cost = 1,
+      delete_cost = 1,
+      replace_cost = 1,
+    ) {
+      _FST.set_edit_distance_search(
+        self._bc,
+        word,
+        max_edits,
+        insert_cost,
+        delete_cost,
+        replace_cost,
+      )
+    }
+    suggest(word) {
+      _FST.set_suggest(self._bc, word)
+    }
+  }
+  class Map {
+    new(bytecode) {
+      self._bc = bytecode
+      _FST.map_check(bytecode)
+    }
+    get(key) {
+      _FST.map_get(self._bc, key)
+    }
+    common_prefix_search(text) {
+      _FST.map_common_prefix_search(self._bc, text)
+    }
+    longest_common_prefix_search(text) {
+      _FST.map_longest_common_prefix_search(self._bc, text)
+    }
+    predictive_search(prefix) {
+      _FST.map_predictive_search(self._bc, prefix)
+    }
+    edit_distance_search(
+      word,
+      max_edits,
+      insert_cost = 1,
+      delete_cost = 1,
+      replace_cost = 1,
+    ) {
+      _FST.map_edit_distance_search(
+        self._bc,
+        word,
+        max_edits,
+        insert_cost,
+        delete_cost,
+        replace_cost,
+      )
+    }
+    suggest(word) {
+      _FST.map_suggest(self._bc, word)
+    }
+  }
+  class IndexMap {
+    new(bytecode) {
+      self._bc = bytecode
+      _FST.index_check(bytecode)
+    }
+    get(key) {
+      _FST.index_get(self._bc, key)
+    }
+    common_prefix_search(text) {
+      _FST.index_common_prefix_search(self._bc, text)
+    }
+    longest_common_prefix_search(text) {
+      _FST.index_longest_common_prefix_search(self._bc, text)
+    }
+    predictive_search(prefix) {
+      _FST.index_predictive_search(self._bc, prefix)
+    }
+    edit_distance_search(
+      word,
+      max_edits,
+      insert_cost = 1,
+      delete_cost = 1,
+      replace_cost = 1,
+    ) {
+      _FST.index_edit_distance_search(
+        self._bc,
+        word,
+        max_edits,
+        insert_cost,
+        delete_cost,
+        replace_cost,
+      )
+    }
+    suggest(word) {
+      _FST.index_suggest(self._bc, word)
+    }
+  }
+  {
+    compile_set: fn (keys, sorted = false) {
+      _FST.compile_set(keys, sorted)
+    },
+    compile_map: fn (entries, sorted = false) {
+      _FST.compile_map(entries, sorted)
+    },
+    compile_index_map: fn (entries, sorted = false) {
+      _FST.compile_index_map(entries, sorted)
+    },
+    compile_auto_index: fn (keys, sorted = false) {
+      _FST.compile_auto_index(keys, sorted)
+    },
+    Set: Set,
+    Map: Map,
+    IndexMap: IndexMap,
+  }
+}
+let FST = _fst_module()
+)=culpre=";
+
 inline constexpr const char* STRING_FNS_MODULE_SOURCE = R"=culpre=(let replace = fn (s, pat, repl) {
   if type_of(pat) == "String" || type_of(pat) == "StringView" {
     s.split(pat).join(repl)

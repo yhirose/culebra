@@ -14,7 +14,7 @@ gen() {
   printf '// Generated from src/preambles/*.cul by misc/gen_preambles.sh — do not edit.\n'
   printf '// Edit the .cul sources, then run `just gen-preambles` (CI checks sync).\n'
   printf '#pragma once\n\n'
-  for base in time term canvas args matchers regex peg string_fns log desktop path vector2 vector3 deque priority_queue state_machine effects test_ambient; do
+  for base in time term canvas args matchers regex peg fst string_fns log desktop path vector2 vector3 deque priority_queue state_machine effects test_ambient; do
     name=$(printf '%s' "$base" | tr 'a-z' 'A-Z')
     printf 'inline constexpr const char* %s_MODULE_SOURCE = R"=culpre=(' "$name"
     cat "$SRC/$base.cul"

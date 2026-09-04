@@ -386,6 +386,121 @@ inline constexpr CanonSig kCanonSigs_Peg_native[] = {
   {"_Peg", "", "test", kCanonParams_Peg_native + 10, 4, "Bool", 4, 4, false, -1, -1, -1},
 };
 
+inline constexpr CanonParam kCanonParams_FST_native[] = {
+  // 0: _FST.compile_set
+  {"keys", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"sorted", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 2: _FST.compile_auto_index
+  {"keys", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"sorted", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 4: _FST.compile_map
+  {"entries", false, false, false, false, false, "Object", CanonDefault::None, 0, {}},
+  {"sorted", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 6: _FST.compile_index_map
+  {"entries", false, false, false, false, false, "Object", CanonDefault::None, 0, {}},
+  {"sorted", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 8: _FST.set_check
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 9: _FST.set_contains
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"key", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 11: _FST.set_common_prefix_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 13: _FST.set_longest_common_prefix_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 15: _FST.set_predictive_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"prefix", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 17: _FST.set_edit_distance_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"word", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"max_edits", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"insert_cost", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"delete_cost", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"replace_cost", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 23: _FST.set_suggest
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"word", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 25: _FST.map_check
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 26: _FST.map_get
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"key", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 28: _FST.map_common_prefix_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 30: _FST.map_longest_common_prefix_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 32: _FST.map_predictive_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"prefix", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 34: _FST.map_edit_distance_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"word", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"max_edits", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"insert_cost", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"delete_cost", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"replace_cost", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 40: _FST.map_suggest
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"word", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 42: _FST.index_check
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 43: _FST.index_get
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"key", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 45: _FST.index_common_prefix_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 47: _FST.index_longest_common_prefix_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 49: _FST.index_predictive_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"prefix", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 51: _FST.index_edit_distance_search
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"word", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"max_edits", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"insert_cost", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"delete_cost", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"replace_cost", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 57: _FST.index_suggest
+  {"bytecode", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"word", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonSig kCanonSigs_FST_native[] = {
+  {"_FST", "", "compile_set", kCanonParams_FST_native + 0, 2, "String", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "compile_auto_index", kCanonParams_FST_native + 2, 2, "String", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "compile_map", kCanonParams_FST_native + 4, 2, "String", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "compile_index_map", kCanonParams_FST_native + 6, 2, "String", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "set_check", kCanonParams_FST_native + 8, 1, "", 1, 1, false, -1, -1, -1},
+  {"_FST", "", "set_contains", kCanonParams_FST_native + 9, 2, "Bool", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "set_common_prefix_search", kCanonParams_FST_native + 11, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "set_longest_common_prefix_search", kCanonParams_FST_native + 13, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "set_predictive_search", kCanonParams_FST_native + 15, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "set_edit_distance_search", kCanonParams_FST_native + 17, 6, "", 6, 6, false, -1, -1, -1},
+  {"_FST", "", "set_suggest", kCanonParams_FST_native + 23, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "map_check", kCanonParams_FST_native + 25, 1, "", 1, 1, false, -1, -1, -1},
+  {"_FST", "", "map_get", kCanonParams_FST_native + 26, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "map_common_prefix_search", kCanonParams_FST_native + 28, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "map_longest_common_prefix_search", kCanonParams_FST_native + 30, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "map_predictive_search", kCanonParams_FST_native + 32, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "map_edit_distance_search", kCanonParams_FST_native + 34, 6, "", 6, 6, false, -1, -1, -1},
+  {"_FST", "", "map_suggest", kCanonParams_FST_native + 40, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "index_check", kCanonParams_FST_native + 42, 1, "", 1, 1, false, -1, -1, -1},
+  {"_FST", "", "index_get", kCanonParams_FST_native + 43, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "index_common_prefix_search", kCanonParams_FST_native + 45, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "index_longest_common_prefix_search", kCanonParams_FST_native + 47, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "index_predictive_search", kCanonParams_FST_native + 49, 2, "", 2, 2, false, -1, -1, -1},
+  {"_FST", "", "index_edit_distance_search", kCanonParams_FST_native + 51, 6, "", 6, 6, false, -1, -1, -1},
+  {"_FST", "", "index_suggest", kCanonParams_FST_native + 57, 2, "", 2, 2, false, -1, -1, -1},
+};
+
 inline constexpr CanonParam kCanonParams_Net[] = {
   // 0: Net.connect
   {"host", false, false, false, false, false, "String", CanonDefault::None, 0, {}},

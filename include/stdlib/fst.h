@@ -109,8 +109,10 @@ inline std::string compile_set(const std::vector<std::string>& keys,
   return os.str();
 }
 
-// Keys only, each key's value its 0-based rank in sorted order: loads as
-// `FST.IndexMap`. This is cpp-fstlib's own "auto index" mode, which is why
+// Keys only, each key's value its 0-based position in `keys`: loads as
+// `FST.IndexMap`. cpp-fstlib feeds the *input* index, not the sorted rank
+// (measured), so the value indexes the caller's own array whether or not it
+// was sorted. This is cpp-fstlib's own "auto index" mode, which is why
 // index_t is uint32_t.
 inline std::string compile_auto_index(const std::vector<std::string>& keys,
                                       bool sorted) {
