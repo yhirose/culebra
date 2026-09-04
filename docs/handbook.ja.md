@@ -72,7 +72,7 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
 - **batteries-included、ティア制。** コア
   (Math/IO/FS/File/Sys/Random/String/Time/Args) とTier 1
   (Regex/Http/Hash/Encoding/Compress/JSON/CSV/TOML/SQLite/UUID/
-  Peg/Log/Term/Canvas) はどちらも出荷済み。Tier 2/3 (Crypto、Sockets)
+  Peg/FST/Log/Term/Canvas) はどちらも出荷済み。Tier 2/3 (Crypto、Sockets)
   は需要次第 — Ch.14参照。
 - **1.0前。** ソース・APIは変わる可能性。tag付きリリースには3プラット
   フォームのビルド済みバイナリが付く (§1.1)。CHANGELOGは無く、各
@@ -1742,7 +1742,7 @@ inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 
 | 領域 | 名前空間 |
 |---|---|
-| 数値・テキスト | `Math`、`Regex` |
+| 数値・テキスト | `Math`、`Regex`、`FST`（引くために組み上げた辞書） |
 | ファイル・プロセス・環境 | `FS`、`File`、`Path`、`Proc`、`Sys`、`Env` |
 | データ形式 | `JSON`、`CSV`、`TOML`、`Encoding`、`Compress`、`Hash`、`UUID`、`Peg`（自前の文法） |
 | ネットワーク | `Http`、`Net` |
