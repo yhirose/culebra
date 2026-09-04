@@ -397,12 +397,14 @@ c++ -std=c++23 \
     -I culebra/vendor/cpp-tensorlib/include \
     -I culebra/vendor/stb \
     -I culebra/vendor/cpp-regexlib \
+    -I culebra/vendor/cpp-fstlib \
     host.cpp -lz -o host
 ```
 
 Every entry is load-bearing: the build stops in `font_ttf.h` without
-`vendor/stb` and in `regex.h` without `vendor/cpp-regexlib`, because the
-stdlib reaches both unconditionally. `-lz` is the zlib an AOT link needs
+`vendor/stb`, in `regex.h` without `vendor/cpp-regexlib`, and in `fst.h`
+without `vendor/cpp-fstlib`, because the stdlib reaches all three
+unconditionally. `-lz` is the zlib an AOT link needs
 for the same reason ([§1](#host-requirements)) — `Compress` and the PNG
 writer refer to it whether or not the script does.
 

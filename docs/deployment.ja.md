@@ -390,12 +390,13 @@ c++ -std=c++23 \
     -I culebra/vendor/cpp-tensorlib/include \
     -I culebra/vendor/stb \
     -I culebra/vendor/cpp-regexlib \
+    -I culebra/vendor/cpp-fstlib \
     host.cpp -lz -o host
 ```
 
 どれも省けません。`vendor/stb`が無いと`font_ttf.h`で、
-`vendor/cpp-regexlib`が無いと`regex.h`でビルドが止まります —
-stdlibがどちらも無条件に参照するためです。`-lz`はAOTのリンクが
+`vendor/cpp-regexlib`が無いと`regex.h`で、`vendor/cpp-fstlib`が無いと
+`fst.h`でビルドが止まります — stdlibがどれも無条件に参照するためです。`-lz`はAOTのリンクが
 必要とするzlibと同じもので（[§1](#ホスト側に必要なもの)）、
 `Compress`とPNGライタが参照するため、スクリプトが使うかどうかに
 関わらずホスト側でリンクします。
