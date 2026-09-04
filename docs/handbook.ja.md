@@ -50,7 +50,7 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
 
 - **2バックエンド、1コンパイラ。** バイトコードVMとLLVM ORC JITが
   同じパーサ・AST・バイトコードコンパイラを共有。VMはLLVM非依存
-  (ドライバ ~16 MB。LLVMを含めると ~86 MB)、JITは`-O2`で同じ
+  (ドライバ ~19 MB。LLVMを含めると ~92 MB)、JITは`-O2`で同じ
   プログラムを実行。両方を維持 — どちらも捨てません。
 - **日常的に使う8つの型。** `Nil` / `Bool` / `Long` / `Float` /
   `String` / `Array` / `Object` / `Function`、加えて用途特化の4つ
@@ -137,7 +137,7 @@ masterを追う場合とCulebra自体を開発する場合にだけ必要。`jus
 
 ```bash
 just build              # JIT付き
-just build-no-jit       # LLVM 無し: bytecode VMのみ、~16 MB
+just build-no-jit       # LLVM 無し: bytecode VMのみ、~19 MB
 just dev                # LTO無し -O1の高速ビルド → build-dev/ (内側ループ用)
 just test-dev           # build-dev/ でVM==JITを素早く確認 (各編集ごと)
 just test               # 全backend + embedスモークテスト (並列; JOBS=1で逐次化)

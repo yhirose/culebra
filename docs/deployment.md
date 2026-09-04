@@ -1066,7 +1066,7 @@ reaching it raises an `InternalError` naming the namespace.
 These archives are **embedded directly into the `culebra` driver**
 via cpp-embedlib — the driver is a single self-contained binary, no
 sibling `.a` files need to be installed. They are stored deflated,
-which is 10.3 MB of the driver rather than 30.9 MB. On first invocation of
+which is 11.9 MB of the driver rather than 37.4 MB. On first invocation of
 `culebra build`, the required archives are inflated to
 `$HOME/.cache/culebra/<fingerprint>/lib*.a`; subsequent invocations
 reuse the cache. The fingerprint is a content-hash of the embedded

@@ -5467,7 +5467,9 @@ shape it is designed around.
 
 `Scene` is in every build that has the `Canvas` window backend — the default
 on macOS, Linux and Windows, so the released binaries carry it — on the same
-vendored static SDL3 + raylib; `-DCULEBRA_ENABLE_SCENE=OFF` leaves it out.
+vendored static SDL3 + raylib; `-DCULEBRA_ENABLE_SCENE=OFF` leaves it out. A
+`Scene` program built with `culebra build` links raylib and SDL3 statically
+and comes out at ~5.1 MB on macOS arm64 (a `print` alone is ~0.4 MB).
 Linux is where a frame is drawn on every push (under Xvfb,
 `tests/scene_api_test.sh` calling every method on both engines) and macOS is
 where it is run by hand, while the Windows build is linked but has yet to open

@@ -5301,7 +5301,9 @@ PNGのバイト列から読む）、スケルタルアニメーションなし�
 
 `Scene`は`Canvas`のウィンドウバックエンドを持つビルドには必ず入る — macOS・
 Linux・Windowsの既定で、リリースバイナリもこれを持つ — vendoredな静的SDL3 +
-raylibを`Canvas`と共用し、`-DCULEBRA_ENABLE_SCENE=OFF`で外せる。フレームを
+raylibを`Canvas`と共用し、`-DCULEBRA_ENABLE_SCENE=OFF`で外せる。`culebra build`
+した`Scene`プログラムはraylibとSDL3を静的リンクし、macOS arm64で約5.1 MBになる
+（`print`だけなら約0.4 MB）。フレームを
 実際に描いて確認しているのはLinux（毎pushのCIがXvfb下で`tests/scene_api_test.sh`
 を回し、全メソッドを両エンジンで呼ぶ）とmacOS（手動）で、Windowsビルドは
 リンクまでは通るがまだウィンドウを開いたことがない。`View`にヘッドレスモードは

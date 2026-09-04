@@ -52,7 +52,7 @@ Read this once; the rest of the guide assumes these choices.
 
 - **Two backends, one compiler.** A bytecode VM and an LLVM ORC JIT
   share the same parser, AST, and bytecode compiler. The VM has no
-  LLVM dependency (a ~16 MB driver against ~86 MB once LLVM is linked
+  LLVM dependency (a ~19 MB driver against ~92 MB once LLVM is linked
   in); the JIT runs the same program at `-O2`. Both are maintained —
   neither is going away.
 - **Eight everyday types.** `Nil`, `Bool`, `Long`, `Float`, `String`,
@@ -143,7 +143,7 @@ produces the bytecode VM, and the JIT too if LLVM 20+ is installed:
 
 ```bash
 just build              # with JIT
-just build-no-jit       # no LLVM: the bytecode VM only, ~16 MB
+just build-no-jit       # no LLVM: the bytecode VM only, ~19 MB
 just dev                # fast no-LTO -O1 build into build-dev/ (inner loop)
 just test-dev           # quick VM==JIT check vs build-dev/ (after each edit)
 just test               # all backends + embed smoke (parallel; JOBS=1 to serialize)
