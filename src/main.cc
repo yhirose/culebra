@@ -619,6 +619,12 @@ static constexpr FeatureAxis kFeatureAxes[] = {
 // Cross-compiling with Tensor would need a target-specific BLAS link, which we
 // don't bundle — run_build rejects that pair up front by this row.
 static constexpr size_t kTensorAxis = 0;
+// The one axis with two archives rather than one: --no-tls swaps in the
+// httplib built without OpenSSL, which is the whole point of the flag (OpenSSL
+// is 82% of what Http adds). Both are embedded, exactly one is force-loaded.
+static constexpr size_t kHttpAxis = 1;
+static_assert(std::string_view(kFeatureAxes[kTensorAxis].names[0]) == "Tensor");
+static_assert(std::string_view(kFeatureAxes[kHttpAxis].names[0]) == "Http");
 
 // An axis whose link needs a whole third-party static (OpenSSL for Http, SDL3 +
 // raylib for Scene/Canvas) names it `@libssl.a@` rather than by the path it sat
@@ -685,6 +691,7 @@ struct BuildOptions {
   string rt_lib;     // override runtime archive path (for cross-compile)
   bool emit_llvm = false;
   bool keep_symbols = false;  // skip the symbol strip (for debugging)
+  bool no_tls = false;        // link the Http axis without OpenSSL
   int opt_level = 2;
 };
 #endif  // CULEBRA_JIT_ENABLED — end of build/wrap-only helpers
@@ -781,6 +788,9 @@ void print_build_usage(ostream& os) {
         "                     the output (for debugging)\n"
         "  --keep-symbols     Keep the symbol table in the output (default:\n"
         "                     stripped). Use for debugging.\n"
+        "  --no-tls           Build Http without TLS: no OpenSSL, so the\n"
+        "                     binary is ~3.9 MB smaller but `https://` and\n"
+        "                     `wss://` raise HttpError at run time.\n"
         "  --target=<triple>  Cross-compile for the given LLVM target\n"
         "                     triple (e.g. x86_64-unknown-linux-gnu).\n"
         "                     Default: host triple.\n"
@@ -871,6 +881,8 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
       opts.emit_llvm = true;
     } else if (arg == "--keep-symbols") {
       opts.keep_symbols = true;
+    } else if (arg == "--no-tls") {
+      opts.no_tls = true;
     } else if (arg.starts_with("--target=")) {
       opts.target = arg.substr(9);
     } else if (arg.starts_with("--sysroot=")) {
@@ -1260,9 +1272,15 @@ int run_build(const BuildOptions& opts) {
   for (size_t i = 0; i < std::size(kFeatureAxes); i++) {
     if (!used[i]) continue;
     const auto& ax = kFeatureAxes[i];
+    // The Http axis is the one with two archives: --no-tls picks the httplib
+    // built without OpenSSL, and the link that goes with it keeps only what
+    // httplib itself needs (zlib, threads, sockets).
+    bool notls = (i == kHttpAxis && opts.no_tls);
     if (host_build && ax.embedded)
-      force_load_feature(feature_objs, ax.archive);
-    expand_archive_names(feature_links, ax.link_flags);
+      force_load_feature(feature_objs,
+                         notls ? "libculebra_rt_http_notls.a" : ax.archive);
+    expand_archive_names(feature_links,
+                         notls ? CULEBRA_SSL_LINK_NOTLS : ax.link_flags);
   }
   // The wrap archive holds static registrars nothing references by name, so it
   // needs the same force-load for the binding to register at all; its flags are

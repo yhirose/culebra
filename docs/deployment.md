@@ -144,6 +144,7 @@ covers that.
 | `-O<level>` | Optimization level 0–3 (default 2). |
 | `--emit-llvm` | Also write the program's LLVM IR (for debugging). |
 | `--keep-symbols` | Keep the symbol table in the output, for debugging (see [Symbol stripping](#symbol-stripping) below). |
+| `--no-tls` | Link `Http` without OpenSSL. ~3.9 MB smaller; `https://` and `wss://` then raise `HttpError` (see [Building Http without TLS](#building-http-without-tls) below). |
 | `--target=<triple>` | Cross-compile for the given LLVM triple. |
 | `--sysroot=<path>` | Forwarded to `cc` as `--sysroot=`. |
 | `--rt-lib=<path>` | Override the runtime archive path (required for cross-compile). |
@@ -222,6 +223,46 @@ $ otool -L /tmp/microgpt_tensor
         /System/Library/Frameworks/Accelerate.framework/.../Accelerate
         /usr/lib/libSystem.B.dylib
 ```
+
+### Building Http without TLS
+
+OpenSSL is 82% of what `Http` adds to a binary, and a program that only
+ever speaks `http://` pays all of it. `--no-tls` links the other half of
+the Http axis — cpp-httplib built without TLS — and appends no OpenSSL
+archive:
+
+```sh
+$ culebra build fetch.cul -o fetch            # 5.07 MB
+$ culebra build fetch.cul -o fetch --no-tls   # 1.22 MB
+```
+
+Measured on macOS arm64 for a one-line `Http.get`. The 3.9 MB is
+2.1 MB of code, 1.6 MB of tables and 0.2 MB of strings; the tables are
+why compressing them instead would not work, since precomputed elliptic
+curve points are incompressible (deflate takes that section to 87%).
+
+The scan cannot decide this on its own. Which archive an axis needs is
+read off the names a program mentions, and `Http.get(url)` does not say
+whether `url` is `https://` — that is a run-time value, and a program
+that builds one from a config file would compile fine and fail in the
+field. So the choice is yours to make at build time, and a binary built
+this way refuses a TLS URL rather than falling back to plaintext:
+
+```
+HttpError: Http: this binary was built with --no-tls, so https URLs are
+not supported: https://example.com/  at 1:9.
+```
+
+`wss://` refuses the same way. Everything else is unchanged: `http://`,
+`ws://`, the server, and the transparent gzip decode all still work, and
+zlib is still linked.
+
+This is the one place where an AOT binary is allowed to diverge from the
+other two lanes: the VM and `--jit` always have TLS, since they run
+inside a `culebra` that carries OpenSSL either way. The divergence is
+confined to a flag you passed, it is loud rather than silent, and the
+default is unchanged — build without `--no-tls` and all three lanes
+agree as they always did.
 
 ### Symbol stripping
 
@@ -897,6 +938,7 @@ emits it as a base archive plus one small archive per heavy feature
 | `libculebra_rt.a` | base — everything, but with **weak stubs** for each feature's choke (so nothing it can call reaches BLAS, OpenSSL, zlib, sqlite3 or the regex engine); the subprocess layer, the image decoders (stb_image / stb_truetype), and the cpp-peglib parser generator (`Peg`) link nothing external, so they compile straight into this archive and rely on the namespace-group dead-stripping below rather than a choke of their own — `Peg` is the one of the three that still leaves a fixed ~53 KB of peglib RTTI/vtable metadata behind even unused (see [§1](#tensor-free-and-http-free-binaries)) |
 | `libculebra_rt_tensor.a` | strong tensor chokes: the backend one (pulls BLAS / Accelerate) and the elementwise kernels the generic arithmetic path would otherwise reach (see [§1](#tensor-free-and-http-free-binaries)) |
 | `libculebra_rt_http.a` | strong http choke (pulls OpenSSL + zlib) |
+| `libculebra_rt_http_notls.a` | the same choke with cpp-httplib's TLS off, force-loaded in its place under `--no-tls` (see [§1](#building-http-without-tls)). The one axis with two archives; a link takes exactly one, and the base carries neither |
 | `libculebra_rt_compress.a` | strong compress choke (pulls zlib; `to_png` rides it too) |
 | `libculebra_rt_sqlite.a` | strong sqlite choke plus the sqlite3 amalgamation |
 | `libculebra_rt_regex.a` | strong regex choke (the cpp-regexlib engine, ~320 KB) |

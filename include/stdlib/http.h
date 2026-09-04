@@ -293,6 +293,12 @@ inline std::string encode_query(const HeaderList& pairs) {
 // option, since the two configurations would disagree about httplib's inline
 // bodies and the linker folds them across the archives, segfaulting the
 // first Http program built that way (measured).
+//
+// What --no-tls does instead is build a *second* strong object with TLS off
+// (src/runtime/culebra_rt_http_notls.cc) and force-load that one in place of
+// the first. The two never meet: the core archive holds neither, and a link
+// takes exactly one. That is what makes the configuration split safe here and
+// not one archive up.
 #if defined(CULEBRA_RT_HTTP_REQUEST_STRONG)
 #define CULEBRA_RT_HTTP_LINKAGE
 #elif defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
@@ -642,6 +648,37 @@ struct HttpClient {
   explicit HttpClient(const std::string& origin) : cli(origin) {}
 };
 
+// True when this object cannot speak TLS and the URL asks it to. Without
+// CPPHTTPLIB_OPENSSL_SUPPORT, httplib's Client constructor throws
+// std::invalid_argument("'https' scheme is not supported.") — which reaches the
+// user as a crash naming neither culebra nor the flag that made the binary this
+// way. Refuse first instead, so `https://` is an ordinary HttpError.
+//
+// The TLS build compiles this too and always answers false: keeping one shape
+// for both means the call sites below read the same in either configuration.
+// It sits inside the non-weak region so it is confined to whichever feature
+// object a binary force-loads — a helper shared with the core archive would be
+// folded across the two configurations, the hazard the note above describes.
+inline bool _http_tls_scheme_rejected(const std::string& url,
+                                      std::string& err) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  (void)url;
+  (void)err;
+  return false;
+#else
+  for (std::string_view scheme : {"https", "wss"}) {
+    std::string prefix = std::string(scheme) + "://";
+    if (url.size() >= prefix.size() &&
+        _iequals(std::string_view(url).substr(0, prefix.size()), prefix)) {
+      err = "Http: this binary was built with --no-tls, so " +
+            std::string(scheme) + " URLs are not supported: " + url;
+      return true;
+    }
+  }
+  return false;
+#endif
+}
+
 #endif  // !CULEBRA_RT_HTTP_REQUEST_WEAK
 
 CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
@@ -658,6 +695,10 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
   HttpResult out;
   std::string origin, path, err;
   if (!split_url(req.url, origin, path, err)) {
+    out.error = std::move(err);
+    return out;
+  }
+  if (_http_tls_scheme_rejected(req.url, err)) {
     out.error = std::move(err);
     return out;
   }
@@ -700,6 +741,7 @@ CULEBRA_RT_HTTP_LINKAGE int64_t http_client_open(const std::string& base_url,
     err = std::move(serr);
     return -1;
   }
+  if (_http_tls_scheme_rejected(base_url, err)) return -1;
   // "/" means no prefix; otherwise drop a trailing slash so join_path is clean.
   if (base_path == "/") base_path.clear();
   else if (!base_path.empty() && base_path.back() == '/') base_path.pop_back();
@@ -1505,6 +1547,7 @@ CULEBRA_RT_HTTP_LINKAGE int64_t ws_client_open(const std::string& url,
   err = "Http runtime not linked (no Http use detected at build)";
   return -1;
 #else
+  if (_http_tls_scheme_rejected(url, err)) return -1;
   auto client = std::make_unique<httplib::ws::WebSocketClient>(url);
   if (!client->is_valid()) {
     err = "Http.ws: invalid WebSocket URL: " + url;

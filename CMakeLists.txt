@@ -282,6 +282,19 @@ if(CULEBRA_ENABLE_HTTP)
   elseif(WIN32)
     set(_ssl_link "${_ssl_link} -lcrypt32 -lbcrypt -lws2_32")
   endif()
+
+  # The same link, minus everything only OpenSSL wanted, for `--no-tls`. What
+  # stays is what httplib itself needs whether or not it speaks TLS: zlib for
+  # the gzip decode, threads for the server's worker pool, Winsock for the
+  # sockets. What goes is OpenSSL's two archives, macOS's keychain trust store
+  # (Security/CoreFoundation), Linux's dlopen for its engines, and Windows'
+  # entropy and root store (bcrypt, crypt32).
+  set(_ssl_link_notls "-lz")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_ssl_link_notls "${_ssl_link_notls} -lpthread")
+  elseif(WIN32)
+    set(_ssl_link_notls "${_ssl_link_notls} -lws2_32")
+  endif()
 endif()
 
 # cpp-embedlib provides the cpp_embedlib_add() macro used below to bake
@@ -1146,6 +1159,17 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   target_compile_options(culebra_rt_http PRIVATE
     -ffunction-sections -fdata-sections)
 
+  # The same feature object without TLS, which `culebra build --no-tls`
+  # force-loads instead. OpenSSL is 82% of what Http adds to a binary
+  # (docs/deployment.md §1), so this half is 1.22 MB where the other is 5.07.
+  # -U undoes the directory-wide CPPHTTPLIB_OPENSSL_SUPPORT for this target
+  # alone; the source's #ifdef guard fails the build if a generator ever emits
+  # COMPILE_OPTIONS before COMPILE_DEFINITIONS and the -U stops landing.
+  add_library(culebra_rt_http_notls STATIC ./src/runtime/culebra_rt_http_notls.cc)
+  target_compile_features(culebra_rt_http_notls PRIVATE cxx_std_23)
+  target_compile_options(culebra_rt_http_notls PRIVATE
+    -UCPPHTTPLIB_OPENSSL_SUPPORT -ffunction-sections -fdata-sections)
+
   # Compress feature object: the strong real culebra::compress::gzip/gunzip
   # (the lone zlib anchor — the only code that calls deflate/inflate).
   # Force-loaded only when the AST scan reports Compress use, mirroring the
@@ -1188,15 +1212,18 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_tensor${CMAKE_STATIC_LIBRARY_SUFFIX}")
   set(_rt_http_archive
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_http${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(_rt_http_notls_archive
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_http_notls${CMAKE_STATIC_LIBRARY_SUFFIX}")
   set(_rt_compress_archive
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_compress${CMAKE_STATIC_LIBRARY_SUFFIX}")
   set(_rt_embed_files
     "${_rt_archive}"
     "${_rt_tensor_archive}"
     "${_rt_http_archive}"
+    "${_rt_http_notls_archive}"
     "${_rt_compress_archive}")
   set(_rt_embed_deps culebra_rt culebra_rt_tensor culebra_rt_http
-    culebra_rt_compress)
+    culebra_rt_http_notls culebra_rt_compress)
   # Regex feature object: the same weak choke, applied to a self-hosted
   # subsystem (regex.h) that links nothing external but costs every binary
   # its code (and, via __builtin_cpu_supports, a start-up CPUID constructor)
@@ -1337,7 +1364,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # of the JIT's own image. Ratchets: tools/checks/check_rt_archive_tls.sh for what the
   # archives may define, tools/checks/check_jit_host_symbols.sh for what the driver
   # must still define.
-  foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_compress
+  foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_http_notls
+                      culebra_rt_compress
                       culebra_rt_regex culebra_rt_foreign culebra_rt_codegen
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
                       culebra_rt_webview culebra_rt_wrap)
@@ -1529,10 +1557,13 @@ if(CULEBRA_ENABLE_HTTP)
   # references Http (see aot_scan_namespaces). Programs that never touch Http
   # avoid the OpenSSL dependency, same as Tensor/BLAS.
   if(CULEBRA_ENABLE_JIT)
-    target_compile_definitions(culebra PRIVATE CULEBRA_SSL_LINK="${_ssl_link}")
+    target_compile_definitions(culebra PRIVATE
+      CULEBRA_SSL_LINK="${_ssl_link}"
+      CULEBRA_SSL_LINK_NOTLS="${_ssl_link_notls}")
   endif()
 elseif(CULEBRA_ENABLE_JIT)
-  target_compile_definitions(culebra PRIVATE CULEBRA_SSL_LINK="")
+  target_compile_definitions(culebra PRIVATE CULEBRA_SSL_LINK=""
+    CULEBRA_SSL_LINK_NOTLS="")
 endif()
 
 # zlib for the Compress namespace: always linked into the `culebra` driver (the

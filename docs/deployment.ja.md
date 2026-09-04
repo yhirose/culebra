@@ -139,6 +139,7 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 | `-O<level>` | 最適化レベル0–3（デフォルト2） |
 | `--emit-llvm` | プログラムのLLVM IRも書き出す（デバッグ用） |
 | `--keep-symbols` | デバッグ用にシンボルテーブルを出力に残す（詳細は後述の[シンボルの除去](#シンボルの除去)を参照） |
+| `--no-tls` | `Http`をOpenSSL抜きでリンクする。約3.9 MB小さくなるが、`https://`と`wss://`は`HttpError`になる（後述の[TLS抜きでHttpをビルドする](#tls抜きでhttpをビルドする)を参照） |
 | `--target=<triple>` | 指定LLVM triple向けにクロスコンパイル |
 | `--sysroot=<path>` | `cc`の`--sysroot=`にそのまま渡す |
 | `--rt-lib=<path>` | ランタイムアーカイブのパスを上書き（cross-compileでは必須） |
@@ -214,6 +215,44 @@ $ otool -L /tmp/microgpt_tensor
         /System/Library/Frameworks/Accelerate.framework/.../Accelerate
         /usr/lib/libSystem.B.dylib
 ```
+
+### TLS抜きでHttpをビルドする
+
+`Http`がバイナリに足すもののうち82%はOpenSSLで、`http://`しか喋らない
+プログラムもそれを丸ごと払っています。`--no-tls`はHttp軸のもう半分
+（TLS無しでビルドしたcpp-httplib）をリンクし、OpenSSLのアーカイブを
+一切追加しません:
+
+```sh
+$ culebra build fetch.cul -o fetch            # 5.07 MB
+$ culebra build fetch.cul -o fetch --no-tls   # 1.22 MB
+```
+
+macOS arm64で1行の`Http.get`を実測した値です。差の3.9 MBはコード
+2.1 MB・テーブル1.6 MB・文字列0.2 MB。テーブルが効かない理由でもあり、
+楕円曲線の事前計算値は圧縮できません（deflateしてもこのセクションは
+87%にしかなりません）。
+
+これを走査で自動判定することはできません。どのアーカイブが要るかは
+プログラムが名指しする名前から決まりますが、`Http.get(url)`を見ても
+`url`が`https://`かどうかは分かりません。それは実行時の値で、設定
+ファイルからURLを組み立てるプログラムはコンパイルが通って現場で失敗
+します。だからこれはビルド時に人が決めるものにしてあり、この形で
+ビルドしたバイナリはTLSのURLを平文にフォールバックさせず拒否します:
+
+```
+HttpError: Http: this binary was built with --no-tls, so https URLs are
+not supported: https://example.com/  at 1:9.
+```
+
+`wss://`も同じです。それ以外は変わりません。`http://`・`ws://`・
+サーバ・gzipの透過展開はそのまま動き、zlibもリンクされたままです。
+
+AOTバイナリが他の2レーンと食い違うことを許している唯一の箇所です。
+VMと`--jit`は常にTLSを持ちます（どちらもOpenSSLを積んだ`culebra`の中で
+走るため）。食い違いは自分で渡したフラグの範囲に限られ、黙ってではなく
+明示的に失敗し、既定は変わりません。`--no-tls`を付けずにビルドすれば
+3レーンは従来どおり一致します。
 
 ### シンボルの除去
 
@@ -891,6 +930,7 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 | `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`Peg`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeでなく下のnamespace-group単位のdead-strippingに委ねる——3つのうち`Peg`だけは未使用でも固定約53 KBのpeglib RTTI/vtableメタデータを残す（§1参照） |
 | `libculebra_rt_tensor.a` | 強いtensor choke 2種: バックエンド側（BLAS / Accelerateを引く）と、汎用の算術経路が到達してしまうelementwiseカーネル（[§1](#tensor-free--http-free-バイナリ)参照） |
 | `libculebra_rt_http.a` | 強いhttp choke（OpenSSL + zlibを引く） |
+| `libculebra_rt_http_notls.a` | 同じchokeをcpp-httplibのTLS無しでビルドしたもの。`--no-tls`のときこちらが代わりにforce-loadされる（[§1](#tls抜きでhttpをビルドする)参照）。アーカイブが2本ある唯一の軸で、1回のリンクは必ず片方だけを取り、baseはどちらも持たない |
 | `libculebra_rt_compress.a` | 強いcompress choke（zlibを引く。`to_png`もこれに乗る） |
 | `libculebra_rt_sqlite.a` | 強いsqlite choke＋sqlite3 amalgamation |
 | `libculebra_rt_regex.a` | 強いregex choke（cpp-regexlibエンジン、約320 KB） |
