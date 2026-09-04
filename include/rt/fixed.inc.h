@@ -1150,15 +1150,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_object_has_any(
 // too or a reassigned `drop`/`iter`/... contract violation, or a `drop`
 // slot's owned-stack registration, would silently go unenforced once the
 // cache warms up.
+//
+// Both obligations key off the *name*, which every caller spells as a
+// compile-time literal, so `key_kind` carries the two answers as constants
+// (bit 0: is_well_known_prop, bit 1: the name is `drop`) instead of
+// re-deriving them per write. The write path is hot — a `self.x = v` in a
+// loop reached this function twice through `strlen` on a string the emitter
+// already knew.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     JitObject* obj, const char* key, JitPropSetIC* ic, int8_t tag,
-    int64_t data, int64_t line, int64_t col, bool mut, bool is_init) {
+    int64_t data, int64_t line, int64_t col, bool mut, bool is_init,
+    int8_t key_kind) {
   if (ic->expected_shape == ic->result_shape) {
     _jit_overwrite_slot(obj->slots[ic->offset], key, tag, data, mut, is_init,
-                        line, col, /*check_wk=*/true);
+                        line, col, /*check_wk=*/(key_kind & 1) != 0);
   } else {
     _jit_reject_value_add(obj, key, tag, data, line, col, is_init);
-    _culebra_check_well_known_prop(key, tag, data);
+    if (key_kind & 1) _culebra_check_well_known_prop(key, tag, data);
     if (obj->slots.capacity() == 0) obj->slots.reserve(8);
     obj->slots.push_back({JitValue{tag, data}, ic->prop_mut != 0});
     obj->shape = static_cast<culebra::Shape*>(ic->result_shape);
@@ -1168,7 +1176,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
            reinterpret_cast<int64_t>(_intern_str(obj->prop_name(obj->prop_size() - 1)))});
     }
   }
-  if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
+  if (key_kind & 2) _jit_owned_bind_drop(obj);
 }
 
 // The two receivers a property write never stores a slot on. `view.field = v`

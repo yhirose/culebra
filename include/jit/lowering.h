@@ -3643,13 +3643,21 @@ struct Lowering {
           b.CreateCondBr(shapeMatch, fastBB, slowBB);
 
           b.SetInsertPoint(fastBB);
+          // The two name-keyed contract checks object_set_fast owes, answered
+          // here where the name is a literal (bit 0: well-known, bit 1: drop).
+          std::string_view keysv(nm);
+          int8_t key_kind =
+              static_cast<int8_t>((culebra::is_well_known_prop(keysv) ? 1 : 0) |
+                                  (keysv == "drop" ? 2 : 0));
           j.emit_call(
               j.module_->getOrInsertFunction(
                   rt::object_set_fast, b.getVoidTy(), ptrTy, ptrTy, ptrTy,
-                  i8Ty, i64Ty, i64Ty, i64Ty, b.getInt1Ty(), b.getInt1Ty()),
+                  i8Ty, i64Ty, i64Ty, i64Ty, b.getInt1Ty(), b.getInt1Ty(),
+                  i8Ty),
               {objPtr, keyPtr, icGlobal, j.extract_tag(val),
                j.extract_data(val), j.current_line_val(),
-               j.current_column_val(), b.getInt1(true), b.getInt1(false)});
+               j.current_column_val(), b.getInt1(true), b.getInt1(false),
+               b.getInt8(key_kind)});
           b.CreateBr(mergeBB);
 
           b.SetInsertPoint(slowBB);
