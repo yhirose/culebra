@@ -6233,7 +6233,7 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | `m.scope(first_local:, end_local:, body:, line:, col:)` | localスロット`[first_local, end_local)`を所有するレキシカル領域。どの経路で抜けても抜けた時点で解放され、中で登録されたdeferがLIFOで走る |
 | `m.scope_release(first_local:, end_local:, body:, release_list:, line:, col:)` | 同じ領域を、解放順を明示して作る。`release_list`は`var_ref`ノード(範囲内の`'local'`か`'cell'`)の並びで、どの経路で抜けてもその順に解放される。フロントエンドは宣言の逆順を、捕獲されたスロットも含めて並べる —— そうすれば捕獲された束縛もフレームごとでなく自分の番で解放される。解放されたcellは作り直されるので、それを捕獲していたクロージャは古いcellをその値ごと持ち続ける |
 | `m.make_return(value:, line:, col:)` | 実行中の関数から`value`を返す(裸の`return`は明示的な`nil_literal`で綴る) |
-| `m.make_break(line:, col:)` / `m.make_continue(line:, col:)` | 最内の`while`を抜ける / 条件の再評価に戻る。ループ本体の外では`verify()`が拒否する |
+| `m.make_break(line:, col:, depth: 0)` / `m.make_continue(line:, col:, depth: 0)` | `while`を抜ける/再判定する。`depth`は外側のループをいくつ飛ばすかで、`0`(既定)が最も内側。自前でラベルを解決したfront endはdepthで答えればよく、IR側にラベル表は要らない。途中のスコープはどちらの場合も出る際に離れる。ループ本体の外や、実際に開いているより深いループを名指したものは`verify()`が弾く |
 | `m.make_throw(value:, line:, col:)` | 任意の値を送出する |
 | `m.make_try(caught_local:, body:, handler:, line:, col:)` | `body`を保護する。throw(またはexecutorのトラップ —— 0除算・型違いのオペランド)が運んだ値がlocalスロット`caught_local`に入り、`handler`で実行が再開する。トラップの値は`{message, line, col}`のオブジェクト。完了した側の子の値を返す |
 | `m.make_defer(value:, line:, col:)` | 引数0個のcallableを、囲む`scope()`の脱出時に走るよう登録する —— fall-through・`break`・`continue`・`return`・throwのunwindのいずれでも走る。scopeの外のdeferは`verify()`が拒否する |

@@ -67,9 +67,10 @@ inline bool register_codegen_binding() {
           {"first_local", "end_local", "body", "release_list", "line", "col"})
       .method<&codegen::Module::make_return>("make_return",
                                              {"value", "line", "col"})
-      .method<&codegen::Module::make_break>("make_break", {"line", "col"})
-      .method<&codegen::Module::make_continue>("make_continue",
-                                               {"line", "col"})
+      .method<&codegen::Module::make_break>("make_break",
+                                            {"line", "col", {"depth", 0L}})
+      .method<&codegen::Module::make_continue>(
+          "make_continue", {"line", "col", {"depth", 0L}})
       .method<&codegen::Module::make_throw>("make_throw",
                                             {"value", "line", "col"})
       .method<&codegen::Module::make_try>(
@@ -134,6 +135,8 @@ inline bool register_codegen_binding() {
                                                     {"node"})
       .method<&codegen::Module::scope_end_local>("scope_end_local", {"node"})
       .method<&codegen::Module::try_caught_local>("try_caught_local", {"node"})
+      .method<&codegen::Module::break_depth>("break_depth", {"node"})
+      .method<&codegen::Module::continue_depth>("continue_depth", {"node"})
       .method<&codegen::Module::native_index>("native_index", {"node"})
       .method<&codegen::Module::closure_func>("closure_func", {"node"})
       .method<&codegen::Module::closure_cmap>("closure_cmap", {"node"})

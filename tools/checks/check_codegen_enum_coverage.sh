@@ -192,8 +192,8 @@ FieldGet|fieldget|field_get|field_slot
 FieldSet|fieldset|field_set|field_slot
 Scope|scope|scope|scope_first_local
 Return|return|make_return|node_tag
-Break|break|make_break|node_tag
-Continue|continue|make_continue|node_tag
+Break|break|make_break|break_depth
+Continue|continue|make_continue|continue_depth
 Throw|throw|make_throw|node_tag
 TryCatch|try|make_try|try_caught_local
 Defer|defer|make_defer|node_tag

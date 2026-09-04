@@ -790,4 +790,68 @@ fn call_intr(m, name, args) {
   assert_eq(IO.capture(fn () { m.run() }), "ran\ndone\n")
 }
 
+# --- A break may name the loop it leaves. Two nested loops: depth 0 leaves
+# the inner one, depth 1 leaves the outer one from inside the inner. ---
+fn counting_loops(m, depth) {
+  # i = 0; while i < 3 { i = i + 1; j = 0; while j < 3 { j = j + 1; break^depth }
+  #                      print(i) }
+  # print('after')
+  let i = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  let j = m.var_ref(kind: 'local', index: 1, line: 1, col: 1)
+  fn lt3(mm, v) { mm.binary(op: 'lt', lhs: v, rhs: mm.literal(v: 3, line: 1, col: 1), line: 1, col: 1) }
+  fn bump(mm, slot, v) {
+    mm.assign(kind: 'local', index: slot,
+              value: mm.binary(op: 'add', lhs: v, rhs: mm.literal(v: 1, line: 1, col: 1),
+                               line: 1, col: 1), line: 1, col: 1)
+  }
+  let inner = m.make_while(
+    cond: lt3(m, j),
+    body: stmt_block(m, [bump(m, 1, j), m.make_break(line: 1, col: 1, depth: depth)]),
+    line: 1, col: 1)
+  let outer = m.make_while(
+    cond: lt3(m, i),
+    body: stmt_block(m, [bump(m, 0, i),
+                         m.assign(kind: 'local', index: 1,
+                                  value: m.literal(v: 0, line: 1, col: 1), line: 1, col: 1),
+                         inner,
+                         print_stmt(m, i)]),
+    line: 1, col: 1)
+  m.add_func(name: 'main', num_locals: 2, num_captures: 0, num_cells: 0, num_params: 0,
+             body: stmt_block(m, [
+               m.assign(kind: 'local', index: 0, value: m.literal(v: 0, line: 1, col: 1),
+                        line: 1, col: 1),
+               outer,
+               print_stmt(m, m.str_literal(s: 'after', line: 1, col: 1)),
+             ]))
+  m.verify()
+  m
+}
+{
+  # depth 0: only the inner loop ends, so the outer one runs all three times.
+  assert_eq(IO.capture(fn () { counting_loops(CodeGen.Module.new(), 0).run() }),
+            "1\n2\n3\nafter\n")
+}
+{
+  # depth 1: the first pass through the inner loop leaves the OUTER one, so
+  # the print after the inner loop never runs at all.
+  assert_eq(IO.capture(fn () { counting_loops(CodeGen.Module.new(), 1).run() }),
+            "after\n")
+}
+{
+  # Read back, and refused when it names a loop that is not open.
+  let m = CodeGen.Module.new()
+  let brk = m.make_break(line: 1, col: 1, depth: 2)
+  let cont = m.make_continue(line: 1, col: 1)
+  assert_eq(m.break_depth(node: brk), 2)
+  assert_eq(m.continue_depth(node: cont), 0)  # the default
+  assert_throws('IrError', || m.break_depth(node: cont))
+
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
+             body: m.make_while(cond: m.bool_literal(v: true, line: 1, col: 1),
+                                body: brk, line: 1, col: 1))
+  let err = try { m.verify() } catch e { e }
+  assert_eq("{err.kind}: {err.message}",
+            'IrError: Break names a loop that is not open')
+}
+
 println('test_codegen OK')

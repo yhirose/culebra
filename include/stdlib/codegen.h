@@ -298,14 +298,17 @@ class Module {
     return id(b.make_return(node(value), pos(line, col)));
   }
 
-  int64_t make_break(int64_t line, int64_t col) {
+  // `depth` is how many enclosing loops to skip -- 0, the default, leaves
+  // the innermost. A front end that resolves its own labels answers with a
+  // depth, so the IR needs no label table of its own.
+  int64_t make_break(int64_t line, int64_t col, int64_t depth) {
     coreir::Builder b(m_);
-    return id(b.make_break(pos(line, col)));
+    return id(b.make_break(pos(line, col), idx32(depth)));
   }
 
-  int64_t make_continue(int64_t line, int64_t col) {
+  int64_t make_continue(int64_t line, int64_t col, int64_t depth) {
     coreir::Builder b(m_);
-    return id(b.make_continue(pos(line, col)));
+    return id(b.make_continue(pos(line, col), idx32(depth)));
   }
 
   int64_t make_throw(int64_t value, int64_t line, int64_t col) {
@@ -627,6 +630,16 @@ class Module {
     return coreir::view_try(
                m_, require_tag(node, coreir::Tag::TryCatch, "try_caught_local"))
         .caught_local;
+  }
+  int64_t break_depth(int64_t node) const {
+    return coreir::view_break(
+               m_, require_tag(node, coreir::Tag::Break, "break_depth"))
+        .depth;
+  }
+  int64_t continue_depth(int64_t node) const {
+    return coreir::view_continue(
+               m_, require_tag(node, coreir::Tag::Continue, "continue_depth"))
+        .depth;
   }
   int64_t native_index(int64_t node) const {
     return coreir::view_native_ref(
