@@ -314,6 +314,28 @@ struct JIT {
 #endif
   }
 
+  // The terminator this block ends with, or null while it is still open.
+  // Not `BasicBlock::getTerminator()`: LLVM 23 turned that into an asserting
+  // accessor that returns the last instruction whatever it is (the nullable
+  // form is the new `getTerminatorOrNull()`, absent before 23), so with
+  // NDEBUG a `!getTerminator()` test read "already closed" for every open
+  // block and the branch that should have closed it was never emitted.
+  static llvm::Instruction* terminator_of(llvm::BasicBlock* bb) {
+    return bb->empty() || !bb->back().isTerminator() ? nullptr : &bb->back();
+  }
+
+  // Close the current block — unless something inside it already did: an arm
+  // that threw and left an `unreachable`, or a `br` an inner diamond emitted.
+  // Every "terminate what I am sitting on" site goes through these two, so
+  // the question above is asked in one place.
+  void close_block(llvm::BasicBlock* dest) {
+    if (!terminator_of(builder_.GetInsertBlock())) builder_.CreateBr(dest);
+  }
+  void close_block_unreachable() {
+    if (!terminator_of(builder_.GetInsertBlock()))
+      builder_.CreateUnreachable();
+  }
+
   // Loop safepoint: inline a relaxed load of the process "wake" flag and a cold
   // branch to the throwing slow path. One byte load + one not-taken branch on the
   // hot path; the truth check (Ctrl+C vs per-isolate cancel) and the throw live
@@ -341,9 +363,7 @@ struct JIT {
     // Throws Interrupted when still set; returns (rejoining the loop) if a
     // racing consumer already cleared the flag.
     emit_call(module_->getFunction(rt::safepoint), {});
-    if (!builder_.GetInsertBlock()->getTerminator()) {
-      builder_.CreateBr(contBB);
-    }
+    close_block(contBB);
     builder_.SetInsertPoint(contBB);
   }
 
@@ -1465,9 +1485,7 @@ struct JIT {
     emit_call(module_->getOrInsertFunction(rt::owned_scope_exit,
                                            builder_.getVoidTy(), i64Ty),
               {mark});
-    if (!builder_.GetInsertBlock()->getTerminator()) {
-      builder_.CreateBr(contBB);
-    }
+    close_block(contBB);
     builder_.SetInsertPoint(contBB);
   }
 
@@ -1868,7 +1886,7 @@ struct JIT {
 
     ~CleanupPad() {
       auto& b = jit_.builder_;
-      if (opened_ && !b.GetInsertBlock()->getTerminator()) {
+      if (opened_ && !terminator_of(b.GetInsertBlock())) {
         auto ptrTy = llvm::PointerType::get(jit_.ctx_, 0);
         auto fn = b.GetInsertBlock()->getParent();
         auto exc = b.CreateLoad(ptrTy, jit_.exception_slot(), "exc");
@@ -1968,7 +1986,7 @@ struct JIT {
     // call order.
     Owned finish(llvm::BasicBlock* mergeBB) {
       for (auto& [v, bb] : incoming_) {
-        auto* term = bb->getTerminator();
+        auto* term = terminator_of(bb);
         bool targets_merge = false;
         for (unsigned i = 0; term && i < term->getNumSuccessors(); ++i)
           if (term->getSuccessor(i) == mergeBB) targets_merge = true;
@@ -2068,8 +2086,7 @@ struct JIT {
     builder_.CreateCondBr(emit_tag_is_refcounted(tag), ownedBB, contBB);
     builder_.SetInsertPoint(ownedBB);
     emit_refcount_call(rt::value_release, tag, data);
-    if (!builder_.GetInsertBlock()->getTerminator())
-      builder_.CreateBr(contBB);
+    close_block(contBB);
     builder_.SetInsertPoint(contBB);
   }
 

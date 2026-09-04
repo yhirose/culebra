@@ -852,7 +852,7 @@ struct Lowering {
                                                  ptrTy, b.getInt8Ty()),
                   {b.getInt64(line), b.getInt64(col),
                    b.CreateGlobalString("Function"), tag});
-      if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+      j.close_block_unreachable();
       b.SetInsertPoint(okBB);
       auto* calleePhi = b.CreatePHI(j.valueType_, 3, "call.callee");
       calleePhi->addIncoming(callee0, fromBB);
@@ -940,7 +940,7 @@ struct Lowering {
     // interp reports.
     for (size_t i = 0; i < c.code.size(); ++i) {
       if (auto it = blocks.find(static_cast<int32_t>(i)); it != blocks.end()) {
-        if (!b.GetInsertBlock()->getTerminator()) b.CreateBr(it->second);
+        j.close_block(it->second);
         b.SetInsertPoint(it->second);
       }
       {
@@ -1302,7 +1302,7 @@ struct Lowering {
           b.SetInsertPoint(errBB);
           j.emit_throw_error("NilError", "`!!` applied to nil",
                              j.current_line_, j.current_column_);
-          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          j.close_block_unreachable();
           b.SetInsertPoint(okBB);
           break;
         }
@@ -1448,7 +1448,7 @@ struct Lowering {
               j.module_->getOrInsertFunction(rt::destructure_mismatch,
                                              b.getVoidTy(), i64Ty, i64Ty),
               {b.getInt64(line), b.getInt64(col)});
-          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          j.close_block_unreachable();
           break;
         }
         case Op::Index: {
@@ -1743,7 +1743,7 @@ struct Lowering {
               missBB, contBB);
           auto throw_msg = [&](const std::string& msg) {
             j.emit_throw_error("ArityError", msg, line, col);
-            if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+            j.close_block_unreachable();
           };
           std::vector<std::pair<int8_t, llvm::BasicBlock*>> arms;
           for (int8_t t = 0; t < 16; ++t) {
@@ -1821,7 +1821,7 @@ struct Lowering {
           auto [line, col] = chunk_pos_at(c, i);
           j.emit_throw_error("TypeError", bmeth_param_message(spec, in.d), line,
                              col);
-          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          j.close_block_unreachable();
           b.SetInsertPoint(contBB);
           break;
         }
@@ -3924,7 +3924,7 @@ struct Lowering {
                         {b.getInt64(line), b.getInt64(col),
                          b.CreateGlobalString("Function"),
                          j.extract_tag(callee)});
-            if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+            j.close_block_unreachable();
           }
           b.SetInsertPoint(readyBB);
           // The values, in one slab: positionals, then keyword values, then
@@ -3983,7 +3983,7 @@ struct Lowering {
               std::string(_str_sv(
                   reinterpret_cast<const char*>(c.consts[in.c].data))),
               line, col);
-          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          j.close_block_unreachable();
           // Instructions follow in the same run — the throw is unconditional,
           // so they are dead, but they still need somewhere well-formed to
           // land (a throw inside a region ends its block with an invoke).
@@ -4053,7 +4053,7 @@ struct Lowering {
           j.emit_immutable_assign_throw(
               reinterpret_cast<const char*>(c.consts[in.a].data),
               static_cast<size_t>(line), static_cast<size_t>(col));
-          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          j.close_block_unreachable();
           break;
         }
         case Op::UnboundErr: {
@@ -4068,7 +4068,7 @@ struct Lowering {
           j.emit_throw_error("NameError",
                              std::format("undefined variable '{}'", nm),
                              j.current_line_, j.current_column_);
-          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          j.close_block_unreachable();
           b.SetInsertPoint(okBB);
           break;
         }
@@ -4142,7 +4142,7 @@ struct Lowering {
               j.module_->getOrInsertFunction(rt::wk_contract_error,
                                              b.getVoidTy(), ptrTy),
               {vm_str_const(in.a, ".vm.wkname")});
-          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          j.close_block_unreachable();
           break;
         }
         case Op::ClassMeta: {
@@ -4487,7 +4487,7 @@ struct Lowering {
                           i64Ty, i64Ty),
                       {j.extract_tag(v), j.extract_data(v),
                        b.getInt64(line), b.getInt64(col)});
-          if (!b.GetInsertBlock()->getTerminator()) b.CreateUnreachable();
+          j.close_block_unreachable();
           break;
         }
         case Op::DeferMark: {
@@ -4662,7 +4662,7 @@ struct Lowering {
                 std::string(_str_sv(reinterpret_cast<const char*>(
                     c.consts[arm.msg_k].data))),
                 arm.line, arm.col);
-            if (!b.GetInsertBlock()->getTerminator()) b.CreateBr(okBB);
+            j.close_block(okBB);
             b.SetInsertPoint(okBB);
           }
           break;
